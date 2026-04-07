@@ -51,7 +51,7 @@ Rules:
 
 ### UNSAT proofs
 
-Write DRAT proof to `<output_dir>/proof.out`. This is required from iteration 07 onward.
+Write DRAT proof to `<output_dir>/proof.out`. This is required from every iteration.
 
 ## Code Conventions
 

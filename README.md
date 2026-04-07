@@ -129,13 +129,13 @@ bash tools/bench.sh ./solver/01-naive-dpll/run.sh benchmarks/*.cnf
 
 | #  | Name               | Key Technique                                    | Goal                              |
 |----|--------------------|-------------------------------------------------|-----------------------------------|
-| 01 | naive-dpll         | Basic DPLL with unit propagation                | Correct baseline                  |
+| 01 | naive-dpll         | Basic DPLL with unit propagation + DRAT proofs  | Correct baseline                  |
 | 02 | cdcl               | Conflict-Driven Clause Learning                 | Solve medium instances            |
 | 03 | watched-literals   | Two-watched-literal BCP                         | Fast unit propagation             |
 | 04 | vsids              | VSIDS decision heuristic                        | Better branching                  |
 | 05 | restarts           | Luby/geometric restart policies                 | Escape bad search branches        |
 | 06 | preprocessing      | BVE, self-subsumption, failed literals          | Simplify before solving           |
-| 07 | proof-logging      | DRAT proof generation                           | Full UNSAT certification          |
+| 07 | lrat-proofs        | LRAT proof trimming + verified checking         | Compact verified proofs           |
 | 08 | phase-saving       | Phase saving + polarities                       | Better default assignments        |
 | 09 | clause-db-mgmt     | Clause deletion, LBD scoring, tier system       | Control memory usage              |
 | 10 | inprocessing       | On-the-fly simplification during search         | Continuous formula reduction      |
