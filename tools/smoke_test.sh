@@ -3,67 +3,132 @@
 #
 # Usage: bash tools/smoke_test.sh solver/NN-name
 #
-# Runs all tests in tests/cnf/sat/ and tests/cnf/unsat/ against the solver,
-# checking that it reports the correct result and (for SAT) a valid assignment.
+# Runs all tests in tests/cnf/sat/ and tests/cnf/unsat/ against the solver.
+# Checks:
+#   - SAT instances: correct s-line + assignment satisfies every clause
+#   - UNSAT instances: correct s-line + proof.out exists (and runs checker if available)
+#
+# All outputs are logged to log/<timestamp>/ for debugging.
 
 set -euo pipefail
 
-SOLVER_DIR="${1:?Usage: bash tools/smoke_test.sh solver/NN-name}"
+SOLVER_REL="${1:?Usage: bash tools/smoke_test.sh solver/NN-name}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SOLVER_DIR="$(cd "$REPO_ROOT/$SOLVER_DIR" 2>/dev/null && pwd)" || {
-    echo "ERROR: solver directory not found: $1" >&2
+SOLVER_DIR="$(cd "$REPO_ROOT/$SOLVER_REL" 2>/dev/null && pwd)" || {
+    echo "ERROR: solver directory not found: $SOLVER_REL" >&2
     exit 1
 }
 RUN_SH="$SOLVER_DIR/run.sh"
 
-if [[ ! -x "$RUN_SH" && ! -f "$RUN_SH" ]]; then
+if [[ ! -f "$RUN_SH" ]]; then
     echo "ERROR: $RUN_SH not found" >&2
     exit 1
 fi
 
+# --- set up log directory ---
+TIMESTAMP=$(date +%Y-%m-%d-%H-%M-%S)
+LOG_DIR="$REPO_ROOT/log/$TIMESTAMP"
+mkdir -p "$LOG_DIR"
+
 PASS=0
 FAIL=0
-ERRORS=""
-PROOF_DIR=$(mktemp -d)
-trap 'rm -rf "$PROOF_DIR"' EXIT
+TOTAL=0
 
 # --- helpers ---
 
-run_solver() {
-    local cnf="$1"
-    bash "$RUN_SH" "$cnf" "$PROOF_DIR" 2>/dev/null
+log() {
+    echo "$@" | tee -a "$LOG_DIR/summary.log"
 }
 
-check_sat_result() {
+run_one_test() {
     local cnf="$1"
     local expected="$2"  # SATISFIABLE or UNSATISFIABLE
-    local output
-    output=$(run_solver "$cnf") || true
+    local name
+    name=$(basename "$cnf" .cnf)
+    TOTAL=$((TOTAL + 1))
 
+    local test_dir="$LOG_DIR/$name"
+    mkdir -p "$test_dir"
+
+    # Create a proof output dir for this test
+    local proof_dir="$test_dir/proof"
+    mkdir -p "$proof_dir"
+
+    # Run solver, capture stdout and stderr
+    local output=""
+    local exit_code=0
+    output=$(bash "$RUN_SH" "$cnf" "$proof_dir" 2>"$test_dir/stderr.log") || exit_code=$?
+    echo "$output" > "$test_dir/stdout.log"
+    echo "$exit_code" > "$test_dir/exit_code.log"
+
+    # Extract s-line
     local s_line
-    s_line=$(echo "$output" | grep '^s ' | head -1)
+    s_line=$(echo "$output" | grep '^s ' | head -1) || true
 
     if [[ -z "$s_line" ]]; then
+        log "  FAIL  $name — no 's' line in output"
+        echo "REASON: no s-line found in stdout" > "$test_dir/failure.log"
         FAIL=$((FAIL + 1))
-        ERRORS+="  FAIL $(basename "$cnf"): no 's' line in output\n"
         return
     fi
 
     if [[ "$s_line" != "s $expected" ]]; then
+        log "  FAIL  $name — expected 's $expected', got '$s_line'"
+        echo "REASON: wrong s-line: expected 's $expected', got '$s_line'" > "$test_dir/failure.log"
         FAIL=$((FAIL + 1))
-        ERRORS+="  FAIL $(basename "$cnf"): expected 's $expected', got '$s_line'\n"
         return
     fi
 
-    # For SAT results, verify the assignment satisfies the formula
+    # --- SAT-specific checks: verify assignment ---
     if [[ "$expected" == "SATISFIABLE" ]]; then
-        if ! verify_assignment "$cnf" "$output"; then
+        local verify_result
+        verify_result=$(verify_assignment "$cnf" "$output" 2>&1) || {
+            log "  FAIL  $name — $verify_result"
+            echo "REASON: $verify_result" > "$test_dir/failure.log"
             FAIL=$((FAIL + 1))
-            ERRORS+="  FAIL $(basename "$cnf"): assignment does not satisfy formula\n"
             return
-        fi
+        }
     fi
 
+    # --- UNSAT-specific checks: proof.out must exist ---
+    if [[ "$expected" == "UNSATISFIABLE" ]]; then
+        if [[ ! -f "$proof_dir/proof.out" ]]; then
+            log "  FAIL  $name — no proof.out generated"
+            echo "REASON: proof.out not found in $proof_dir" > "$test_dir/failure.log"
+            FAIL=$((FAIL + 1))
+            return
+        fi
+
+        # Log proof file info
+        ls -la "$proof_dir/proof.out" > "$test_dir/proof_info.log" 2>&1
+
+        # Run drat-trim if available
+        if command -v drat-trim &>/dev/null; then
+            local checker_output
+            checker_output=$(drat-trim "$cnf" "$proof_dir/proof.out" 2>&1) || {
+                log "  FAIL  $name — drat-trim rejected proof"
+                echo "$checker_output" > "$test_dir/checker.log"
+                echo "REASON: drat-trim rejected proof" > "$test_dir/failure.log"
+                FAIL=$((FAIL + 1))
+                return
+            }
+            echo "$checker_output" > "$test_dir/checker.log"
+            if ! echo "$checker_output" | grep -qi "VERIFIED\|ACCEPTED"; then
+                log "  FAIL  $name — drat-trim did not verify proof"
+                echo "REASON: drat-trim output did not contain VERIFIED" > "$test_dir/failure.log"
+                FAIL=$((FAIL + 1))
+                return
+            fi
+            log "  PASS  $name (proof verified by drat-trim)"
+        else
+            log "  PASS  $name (proof.out exists, no checker available)"
+        fi
+
+        PASS=$((PASS + 1))
+        return
+    fi
+
+    log "  PASS  $name"
     PASS=$((PASS + 1))
 }
 
@@ -82,32 +147,51 @@ verify_assignment() {
     done < <(echo "$output" | grep '^v ')
 
     if [[ ${#lits[@]} -eq 0 ]]; then
-        # No v lines for a SAT result is a failure
+        echo "no v-lines found for SAT result"
         return 1
     fi
 
-    # Build a set of true literals
+    # Check for contradictions (both x and -x assigned)
+    declare -A assigned
+    for lit in "${lits[@]}"; do
+        local var="${lit#-}"
+        if [[ -n "${assigned[$var]+x}" ]]; then
+            local prev="${assigned[$var]}"
+            if [[ "$prev" != "$lit" ]]; then
+                echo "contradictory assignment: both $prev and $lit"
+                return 1
+            fi
+        fi
+        assigned[$var]="$lit"
+    done
+
+    # Build set of true literals for fast lookup
     declare -A true_lits
     for lit in "${lits[@]}"; do
         true_lits[$lit]=1
     done
 
-    # Check each clause: at least one literal must be in the assignment
+    # Check each clause in the CNF
+    local clause_num=0
     while IFS= read -r line; do
-        # Skip comments and header
+        # Skip comments, header, empty lines
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
         [[ "$line" =~ ^c ]] && continue
         [[ "$line" =~ ^p ]] && continue
-        [[ -z "$line" ]] && continue
 
+        clause_num=$((clause_num + 1))
         local clause_sat=0
+        local clause_lits=""
         for lit in $line; do
             [[ "$lit" == "0" ]] && break
+            clause_lits+="$lit "
             if [[ -n "${true_lits[$lit]+x}" ]]; then
                 clause_sat=1
-                break
             fi
         done
-        if [[ $clause_sat -eq 0 ]]; then
+
+        if [[ $clause_sat -eq 0 && -n "$clause_lits" ]]; then
+            echo "clause $clause_num not satisfied: ($clause_lits)"
             return 1
         fi
     done < "$cnf"
@@ -117,53 +201,40 @@ verify_assignment() {
 
 # --- main ---
 
-echo "=== Smoke test: $(basename "$SOLVER_DIR") ==="
-echo ""
+log "=== Smoke test: $(basename "$SOLVER_DIR") ==="
+log "    Date: $(date)"
+log "    Log:  $LOG_DIR"
+log ""
 
 # Build first
-echo "Building..."
-(cd "$SOLVER_DIR" && bash build.sh) >/dev/null 2>&1 || {
-    echo "ERROR: build.sh failed" >&2
+log "Building..."
+if ! (cd "$SOLVER_DIR" && bash build.sh) > "$LOG_DIR/build.log" 2>&1; then
+    log "ERROR: build.sh failed (see $LOG_DIR/build.log)"
     exit 1
-}
-echo ""
+fi
+log "Build OK"
+log ""
 
 # Run SAT tests
-echo "--- SAT instances ---"
+log "--- SAT instances ---"
 for cnf in "$REPO_ROOT"/tests/cnf/sat/*.cnf; do
     [[ -f "$cnf" ]] || continue
-    printf "  %-30s " "$(basename "$cnf")"
-    check_sat_result "$cnf" "SATISFIABLE"
-    if [[ $((PASS + FAIL)) -eq $PASS ]]; then
-        # Last test passed (PASS just incremented and FAIL didn't)
-        echo "PASS"
-    else
-        echo "FAIL"
-    fi
+    run_one_test "$cnf" "SATISFIABLE"
 done
 
-echo ""
+log ""
 
 # Run UNSAT tests
-echo "--- UNSAT instances ---"
+log "--- UNSAT instances ---"
 for cnf in "$REPO_ROOT"/tests/cnf/unsat/*.cnf; do
     [[ -f "$cnf" ]] || continue
-    printf "  %-30s " "$(basename "$cnf")"
-    local_pass=$PASS
-    check_sat_result "$cnf" "UNSATISFIABLE"
-    if [[ $PASS -gt $local_pass ]]; then
-        echo "PASS"
-    else
-        echo "FAIL"
-    fi
+    run_one_test "$cnf" "UNSATISFIABLE"
 done
 
-echo ""
-echo "=== Results: $PASS passed, $FAIL failed ==="
+log ""
+log "=== Results: $PASS passed, $FAIL failed, $TOTAL total ==="
+log "    Log directory: $LOG_DIR"
 
 if [[ $FAIL -gt 0 ]]; then
-    echo ""
-    echo "Failures:"
-    echo -e "$ERRORS"
     exit 1
 fi

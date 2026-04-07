@@ -1,0 +1,8 @@
+[package]
+name = "sat-solver-01-naive-dpll"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "sat-solver"
+path = "src/main.rs"
