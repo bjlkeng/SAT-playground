@@ -12,9 +12,12 @@ SAT-playground/
 ├── CLAUDE.md
 ├── benchmarks/             # SAT Competition 2025 benchmark instances (DIMACS CNF)
 │   └── README.md           # Instructions for downloading benchmarks
-├── tools/                  # Shared scripts: runner, comparator, benchmark downloader
-│   ├── run_solver.sh       # Uniform runner that wraps any iteration's solver
-│   ├── verify.sh           # Verify SAT assignments / UNSAT proofs
+├── tests/                  # Smoke test suite
+│   └── cnf/
+│       ├── sat/            # SAT instances (unit, two_clause, three_sat, all_positive)
+│       └── unsat/          # UNSAT instances (contradiction, empty_clause, pigeonhole, chain)
+├── tools/                  # Shared scripts
+│   ├── smoke_test.sh       # Run smoke tests against a solver iteration
 │   └── bench.sh            # Run a solver against the full benchmark suite
 └── solver/                 # All solver iterations
     ├── 01-naive-dpll/
@@ -115,8 +118,11 @@ cd solver/01-naive-dpll && bash build.sh
 # Run on a single instance
 bash run.sh ../../benchmarks/some_instance.cnf /tmp/proof_output
 
+# Run smoke tests (8 small SAT + UNSAT instances)
+bash tools/smoke_test.sh solver/01-naive-dpll
+
 # Run against all benchmarks with timing
-bash ../../tools/bench.sh ./run.sh ../../benchmarks/*.cnf
+bash tools/bench.sh ./solver/01-naive-dpll/run.sh benchmarks/*.cnf
 ```
 
 ## Iteration Roadmap

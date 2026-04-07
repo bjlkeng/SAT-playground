@@ -79,16 +79,27 @@ When creating a new iteration:
 # Unit tests within an iteration
 cd solver/NN-name && cargo test
 
-# Quick smoke test with a trivial SAT instance
-echo "p cnf 2 2\n1 2 0\n-1 2 0" > /tmp/test.cnf
-bash run.sh /tmp/test.cnf /tmp/out
-# Should print: s SATISFIABLE and valid v lines
-
-# Quick UNSAT test
-echo "p cnf 1 2\n1 0\n-1 0" > /tmp/unsat.cnf
-bash run.sh /tmp/unsat.cnf /tmp/out
-# Should print: s UNSATISFIABLE
+# Smoke test — runs all 8 test instances (4 SAT + 4 UNSAT)
+bash tools/smoke_test.sh solver/NN-name
 ```
+
+### Smoke Test Suite
+
+Located in `tests/cnf/`, these are small hand-crafted instances that run in under a second:
+
+**SAT instances** (`tests/cnf/sat/`):
+- `unit.cnf` — single unit clause (trivial)
+- `two_clause.cnf` — 2 vars, 2 clauses
+- `three_sat.cnf` — 5 vars, 6 clauses (small 3-SAT)
+- `all_positive.cnf` — 3 vars, all positive literals
+
+**UNSAT instances** (`tests/cnf/unsat/`):
+- `contradiction.cnf` — x AND NOT x
+- `empty_clause.cnf` — contains an empty clause
+- `pigeonhole_3_2.cnf` — 3 pigeons, 2 holes (classic)
+- `chain_unsat.cnf` — implication chain forcing contradiction
+
+The smoke test script (`tools/smoke_test.sh`) builds the solver, runs all instances, checks the `s` line, and verifies SAT assignments satisfy the formula.
 
 ## DIMACS CNF Format Reference
 

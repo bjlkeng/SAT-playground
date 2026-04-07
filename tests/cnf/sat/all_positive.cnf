@@ -1,0 +1,5 @@
+c Every clause has all positive literals — SAT by setting all vars true
+p cnf 3 3
+1 2 3 0
+1 2 0
+2 3 0
