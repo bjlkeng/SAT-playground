@@ -8,13 +8,13 @@ This repo builds Boolean SAT solvers iteratively in Rust, one directory per iter
 
 ```bash
 # Build any iteration
-cd NN-name && bash build.sh        # runs: cargo build --release
+cd solver/NN-name && bash build.sh        # runs: cargo build --release
 
 # Run on a CNF instance
 bash run.sh path/to/instance.cnf /tmp/proof_dir
 
 # Run benchmarks
-bash tools/bench.sh ./NN-name/run.sh benchmarks/*.cnf
+bash tools/bench.sh ./solver/NN-name/run.sh benchmarks/*.cnf
 ```
 
 ## Solver Interface Contract (SAT Competition 2025)
@@ -66,7 +66,7 @@ Write DRAT proof to `<output_dir>/proof.out`. This is required from iteration 07
 
 When creating a new iteration:
 
-1. Copy the previous iteration directory: `cp -r NN-prev/ MM-name/`
+1. Copy the previous iteration directory: `cp -r solver/NN-prev/ solver/MM-name/`
 2. Update `Cargo.toml` package name
 3. Implement the new technique
 4. Add unit tests for the new feature
@@ -77,7 +77,7 @@ When creating a new iteration:
 
 ```bash
 # Unit tests within an iteration
-cd NN-name && cargo test
+cd solver/NN-name && cargo test
 
 # Quick smoke test with a trivial SAT instance
 echo "p cnf 2 2\n1 2 0\n-1 2 0" > /tmp/test.cnf

@@ -16,22 +16,23 @@ SAT-playground/
 │   ├── run_solver.sh       # Uniform runner that wraps any iteration's solver
 │   ├── verify.sh           # Verify SAT assignments / UNSAT proofs
 │   └── bench.sh            # Run a solver against the full benchmark suite
-├── 01-naive-dpll/          # Iteration 1: Basic DPLL
-├── 02-cdcl/                # Iteration 2: Conflict-Driven Clause Learning
-├── 03-watched-literals/    # Iteration 3: Two-watched-literal scheme
-├── 04-vsids/               # Iteration 4: VSIDS branching heuristic
-├── 05-restarts/            # Iteration 5: Restart strategies (Luby, geometric)
-├── 06-preprocessing/       # Iteration 6: SatELite-style preprocessing (BVE, subsumption)
-├── 07-proof-logging/       # Iteration 7: DRAT proof generation for UNSAT certificates
-└── ...                     # Further iterations as needed
+└── solver/                 # All solver iterations
+    ├── 01-naive-dpll/
+    ├── 02-cdcl/
+    ├── 03-watched-literals/
+    ├── 04-vsids/
+    ├── 05-restarts/
+    ├── 06-preprocessing/
+    ├── 07-proof-logging/
+    └── ...
 ```
 
 ### Iteration Directory Layout
 
-Each iteration is a standalone Rust project (Cargo workspace member):
+Each iteration is a standalone Rust project:
 
 ```
-NN-name/
+solver/NN-name/
 ├── Cargo.toml
 ├── src/
 │   └── main.rs
@@ -109,13 +110,13 @@ See `benchmarks/README.md` for full setup instructions.
 
 ```bash
 # Build iteration 01
-cd 01-naive-dpll && bash build.sh
+cd solver/01-naive-dpll && bash build.sh
 
 # Run on a single instance
-bash run.sh ../benchmarks/some_instance.cnf /tmp/proof_output
+bash run.sh ../../benchmarks/some_instance.cnf /tmp/proof_output
 
 # Run against all benchmarks with timing
-bash ../tools/bench.sh ./run.sh ../benchmarks/*.cnf
+bash ../../tools/bench.sh ./run.sh ../../benchmarks/*.cnf
 ```
 
 ## Iteration Roadmap
