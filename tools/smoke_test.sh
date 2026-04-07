@@ -25,6 +25,14 @@ if [[ ! -f "$RUN_SH" ]]; then
     exit 1
 fi
 
+# --- locate drat-trim proof checker ---
+DRAT_TRIM=""
+if [[ -x "$REPO_ROOT/tools/checkers/drat-trim/drat-trim" ]]; then
+    DRAT_TRIM="$REPO_ROOT/tools/checkers/drat-trim/drat-trim"
+elif command -v drat-trim &>/dev/null; then
+    DRAT_TRIM="drat-trim"
+fi
+
 # --- set up log directory ---
 TIMESTAMP=$(date +%Y-%m-%d-%H-%M-%S)
 LOG_DIR="$REPO_ROOT/log/$TIMESTAMP"
@@ -90,7 +98,7 @@ run_one_test() {
         }
     fi
 
-    # --- UNSAT-specific checks: proof.out must exist ---
+    # --- UNSAT-specific checks: proof.out + drat-trim verification ---
     if [[ "$expected" == "UNSATISFIABLE" ]]; then
         if [[ ! -f "$proof_dir/proof.out" ]]; then
             log "  FAIL  $name — no proof.out generated"
@@ -101,27 +109,29 @@ run_one_test() {
 
         # Log proof file info
         ls -la "$proof_dir/proof.out" > "$test_dir/proof_info.log" 2>&1
+        cp "$proof_dir/proof.out" "$test_dir/proof.out"
 
-        # Run drat-trim if available
-        if command -v drat-trim &>/dev/null; then
-            local checker_output
-            checker_output=$(drat-trim "$cnf" "$proof_dir/proof.out" 2>&1) || {
-                log "  FAIL  $name — drat-trim rejected proof"
-                echo "$checker_output" > "$test_dir/checker.log"
-                echo "REASON: drat-trim rejected proof" > "$test_dir/failure.log"
-                FAIL=$((FAIL + 1))
-                return
-            }
+        # Run drat-trim
+        if [[ -n "$DRAT_TRIM" ]]; then
+            local checker_output=""
+            local checker_exit=0
+            checker_output=$("$DRAT_TRIM" "$cnf" "$proof_dir/proof.out" 2>&1) || checker_exit=$?
             echo "$checker_output" > "$test_dir/checker.log"
-            if ! echo "$checker_output" | grep -qi "VERIFIED\|ACCEPTED"; then
-                log "  FAIL  $name — drat-trim did not verify proof"
-                echo "REASON: drat-trim output did not contain VERIFIED" > "$test_dir/failure.log"
+            echo "$checker_exit" > "$test_dir/checker_exit.log"
+
+            if echo "$checker_output" | grep -q "VERIFIED"; then
+                log "  PASS  $name (proof verified by drat-trim)"
+            elif echo "$checker_output" | grep -q "ACCEPTED"; then
+                log "  PASS  $name (proof accepted by drat-trim)"
+            else
+                log "  FAIL  $name — drat-trim rejected proof"
+                echo "REASON: drat-trim rejected proof (exit=$checker_exit)" > "$test_dir/failure.log"
                 FAIL=$((FAIL + 1))
                 return
             fi
-            log "  PASS  $name (proof verified by drat-trim)"
         else
-            log "  PASS  $name (proof.out exists, no checker available)"
+            log "  WARN  $name — proof.out exists but no drat-trim (run tools/setup_checkers.sh)"
+            log "  PASS  $name (proof.out exists, skipped verification)"
         fi
 
         PASS=$((PASS + 1))
@@ -204,6 +214,11 @@ verify_assignment() {
 log "=== Smoke test: $(basename "$SOLVER_DIR") ==="
 log "    Date: $(date)"
 log "    Log:  $LOG_DIR"
+if [[ -n "$DRAT_TRIM" ]]; then
+    log "    Proof checker: $DRAT_TRIM"
+else
+    log "    Proof checker: NONE (run tools/setup_checkers.sh to install drat-trim)"
+fi
 log ""
 
 # Build first

@@ -22,3 +22,6 @@ target
 
 # Smoke test logs
 log/
+
+# Proof checkers (built locally via tools/setup_checkers.sh)
+tools/checkers/
