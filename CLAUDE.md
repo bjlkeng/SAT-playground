@@ -62,6 +62,13 @@ Write DRAT proof to `<output_dir>/proof.out`. This is required from iteration 07
 - **Each iteration directory is self-contained** — copy-and-modify from the previous iteration, don't use workspace dependencies between iterations
 - **Test with small hand-crafted CNF files first**, then graduate to competition benchmarks
 
+## Development Rules
+
+- **Run smoke tests after every change** to a solver: `bash tools/smoke_test.sh solver/NN-name`
+- **Only commit solver changes that pass the smoke test** (all 8 tests green). If a test fails, fix the solver before committing.
+- **Never modify `tools/smoke_test.sh`** unless the user explicitly asks for changes to it.
+- **Always commit and push** when the user asks — don't skip the push step.
+
 ## Iteration Workflow
 
 When creating a new iteration:
@@ -70,8 +77,9 @@ When creating a new iteration:
 2. Update `Cargo.toml` package name
 3. Implement the new technique
 4. Add unit tests for the new feature
-5. Run against benchmarks and record results in the iteration's `README.md`
-6. Ensure `build.sh` and `run.sh` still work
+5. Run `bash tools/smoke_test.sh solver/MM-name` — all 8 tests must pass
+6. Run against benchmarks and record results in the iteration's `README.md`
+7. Ensure `build.sh` and `run.sh` still work
 
 ## Testing
 
