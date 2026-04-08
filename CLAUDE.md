@@ -14,7 +14,7 @@ cd solver/NN-name && bash build.sh        # runs: cargo build --release
 bash run.sh path/to/instance.cnf /tmp/proof_dir
 
 # Run benchmarks
-bash tools/bench.sh ./solver/NN-name/run.sh benchmarks/*.cnf
+bash tools/bench.sh solver/NN-name
 ```
 
 ## Solver Interface Contract (SAT Competition 2025)

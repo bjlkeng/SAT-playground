@@ -25,3 +25,6 @@ log/
 
 # Proof checkers (built locally via tools/setup_checkers.sh)
 tools/checkers/
+
+# Benchmark instances (downloaded via tools/bench.sh or manually)
+benchmarks/
