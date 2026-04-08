@@ -27,4 +27,7 @@ log/
 tools/checkers/
 
 # Benchmark instances (downloaded via tools/bench.sh or manually)
-benchmarks/
+benchmarks/cnf/*
+!benchmarks/cnf/.gitkeep
+benchmarks/reference-solvers/*
+!benchmarks/reference-solvers/.gitkeep

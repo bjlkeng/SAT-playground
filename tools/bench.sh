@@ -77,6 +77,15 @@ if [[ ! -d "$BENCH_DIR" ]]; then
     exit 1
 fi
 
+# --- locate verification tools ---
+VERIFY_SAT="$REPO_ROOT/tools/verify_sat.py"
+DRAT_TRIM=""
+if [[ -x "$REPO_ROOT/tools/checkers/drat-trim/drat-trim" ]]; then
+    DRAT_TRIM="$REPO_ROOT/tools/checkers/drat-trim/drat-trim"
+elif command -v drat-trim &>/dev/null; then
+    DRAT_TRIM="drat-trim"
+fi
+
 # --- locate timeout command ---
 TIMEOUT_CMD=""
 if command -v gtimeout &>/dev/null; then
@@ -117,6 +126,12 @@ echo "    Date:      $(date)"
 echo "    Timeout:   ${TIMEOUT}s"
 echo "    Memory:    ${MEMLIMIT_MB} MB"
 echo "    Instances: $TOTAL"
+echo "    SAT checker: $VERIFY_SAT"
+if [[ -n "$DRAT_TRIM" ]]; then
+    echo "    DRAT checker: $DRAT_TRIM"
+else
+    echo "    DRAT checker: NONE (run tools/setup_checkers.sh)"
+fi
 echo "    Log:       $LOG_DIR"
 echo ""
 
@@ -130,7 +145,7 @@ echo ""
 
 # --- CSV header ---
 RESULTS_CSV="$LOG_DIR/results.csv"
-echo "instance,result,time_s,timeout,exit_code" > "$RESULTS_CSV"
+echo "instance,result,verified,time_s,timeout,exit_code" > "$RESULTS_CSV"
 
 # --- counters ---
 SOLVED=0
@@ -166,21 +181,16 @@ run_instance() {
 
     # Run solver with timeout and memory limit
     local start_time end_time elapsed
-    start_time=$(date +%s.%N 2>/dev/null || date +%s)
-
     local output=""
     local stderr_output=""
     local exit_code=0
     stderr_output=$(mktemp)
+
+    start_time=$(date +%s.%N 2>/dev/null || date +%s)
     output=$(
         ulimit -v "$MEMLIMIT_KB" 2>/dev/null
         "$TIMEOUT_CMD" "$TIMEOUT" bash "$RUN_SH" "$solver_input" "$proof_dir" 2>"$stderr_output"
     ) || exit_code=$?
-
-    # Clean up decompressed file and proof output
-    [[ "$cnf" == *.cnf.gz ]] && rm -f "$solver_input"
-    rm -rf "$proof_dir"
-
     end_time=$(date +%s.%N 2>/dev/null || date +%s)
 
     # Compute elapsed time
@@ -208,7 +218,57 @@ run_instance() {
         esac
     fi
 
-    # Log errors only
+    # --- Verify correctness ---
+    local verified="skip"
+
+    if [[ "$result" == "SAT" ]]; then
+        # Verify assignment satisfies the formula
+        local stdout_file="$TEMP_DIR/stdout.tmp"
+        echo "$output" > "$stdout_file"
+        if python3 "$VERIFY_SAT" "$solver_input" "$stdout_file" >/dev/null 2>&1; then
+            verified="ok"
+        else
+            verified="FAIL"
+            {
+                echo "--- $name: SAT verification failed ---"
+                python3 "$VERIFY_SAT" "$solver_input" "$stdout_file" 2>&1 || true
+                echo ""
+            } >> "$ERRORS_LOG"
+        fi
+        rm -f "$stdout_file"
+    elif [[ "$result" == "UNSAT" ]]; then
+        # Verify DRAT proof
+        if [[ -f "$proof_dir/proof.out" ]]; then
+            if [[ -n "$DRAT_TRIM" ]]; then
+                local checker_output=""
+                checker_output=$("$DRAT_TRIM" "$solver_input" "$proof_dir/proof.out" 2>&1) || true
+                if echo "$checker_output" | grep -qE "VERIFIED|ACCEPTED"; then
+                    verified="ok"
+                else
+                    verified="FAIL"
+                    {
+                        echo "--- $name: DRAT proof rejected ---"
+                        echo "$checker_output" | tail -5
+                        echo ""
+                    } >> "$ERRORS_LOG"
+                fi
+            else
+                verified="no-checker"
+            fi
+        else
+            verified="no-proof"
+            {
+                echo "--- $name: UNSAT but no proof.out ---"
+                echo ""
+            } >> "$ERRORS_LOG"
+        fi
+    fi
+
+    # Clean up decompressed file and proof output
+    [[ "$cnf" == *.cnf.gz ]] && rm -f "$solver_input"
+    rm -rf "$proof_dir"
+
+    # Log errors
     if [[ "$result" == "ERROR" ]]; then
         {
             echo "--- $name (exit=$exit_code) ---"
@@ -223,10 +283,10 @@ run_instance() {
     clamped_time=$(perl -e "printf '%.3f', ($elapsed > $TIMEOUT) ? $TIMEOUT : $elapsed")
 
     # Write CSV row
-    echo "$name,$result,$clamped_time,$TIMEOUT,$exit_code" >> "$RESULTS_CSV"
+    echo "$name,$result,$verified,$clamped_time,$TIMEOUT,$exit_code" >> "$RESULTS_CSV"
 
     # Status line
-    local status_icon
+    local status_icon verified_icon
     case "$result" in
         SAT)     status_icon="SAT    " ;;
         UNSAT)   status_icon="UNSAT  " ;;
@@ -234,7 +294,14 @@ run_instance() {
         TIMEOUT) status_icon="TIMEOUT" ;;
         ERROR)   status_icon="ERROR  " ;;
     esac
-    printf "[%3d/%d] %s %8.2fs  %s\n" "$idx" "$TOTAL" "$status_icon" "$clamped_time" "$name"
+    case "$verified" in
+        ok)         verified_icon="" ;;
+        skip)       verified_icon="" ;;
+        FAIL)       verified_icon=" [VERIFY FAIL]" ;;
+        no-checker) verified_icon=" [no checker]" ;;
+        no-proof)   verified_icon=" [no proof]" ;;
+    esac
+    printf "[%3d/%d] %s %8.2fs  %s%s\n" "$idx" "$TOTAL" "$status_icon" "$clamped_time" "$name" "$verified_icon"
 }
 
 # Run all instances sequentially
@@ -250,7 +317,7 @@ echo "=== Computing PAR-2 score ==="
 # Read results CSV and compute
 {
     read -r _header  # skip header
-    while IFS=',' read -r name result time_s timeout_val exit_code; do
+    while IFS=',' read -r name result verified time_s timeout_val exit_code; do
         case "$result" in
             SAT)
                 SAT_COUNT=$((SAT_COUNT + 1))
