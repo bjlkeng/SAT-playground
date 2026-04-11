@@ -1,0 +1,12 @@
+[package]
+name = "gen-crypto-bench"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "gen-crypto-bench"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+rand = "0.8"
