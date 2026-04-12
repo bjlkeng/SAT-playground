@@ -24,8 +24,8 @@ if [[ -f "$HOME/.cargo/env" ]]; then
 fi
 
 # --- defaults (SAT Competition 2025 Main Track) ---
-TIMEOUT=5000
-MEMLIMIT_MB=30720
+TIMEOUT=3600
+MEMLIMIT_MB=16384
 BENCH_DIR=""
 JOBS=1
 SOLVER_REL=""
@@ -68,7 +68,7 @@ fi
 
 # Default benchmark dir
 if [[ -z "$BENCH_DIR" ]]; then
-    BENCH_DIR="$REPO_ROOT/benchmarks/cnf"
+    BENCH_DIR="$REPO_ROOT/benchmarks/sat-comp-2025"
 fi
 
 if [[ ! -d "$BENCH_DIR" ]]; then
@@ -107,12 +107,12 @@ mkdir -p "$LOG_DIR"
 # --- memory limit (KB for ulimit -v) ---
 MEMLIMIT_KB=$((MEMLIMIT_MB * 1024))
 
-# --- collect benchmark instances (.cnf or .cnf.gz) ---
-mapfile -t CNF_FILES < <(find "$BENCH_DIR" \( -name '*.cnf' -o -name '*.cnf.gz' \) -type f | sort)
+# --- collect benchmark instances (.cnf, .cnf.gz, or .cnf.xz) ---
+mapfile -t CNF_FILES < <(find "$BENCH_DIR" \( -name '*.cnf' -o -name '*.cnf.gz' -o -name '*.cnf.xz' \) -type f | sort)
 TOTAL=${#CNF_FILES[@]}
 
 if [[ $TOTAL -eq 0 ]]; then
-    echo "ERROR: no .cnf or .cnf.gz files found in $BENCH_DIR" >&2
+    echo "ERROR: no .cnf, .cnf.gz, or .cnf.xz files found in $BENCH_DIR" >&2
     exit 1
 fi
 
@@ -165,18 +165,22 @@ run_instance() {
     local cnf="$1"
     local idx="$2"
     local name
-    name=$(basename "$cnf" .cnf.gz)
+    name=$(basename "$cnf" .cnf.xz)
+    name=$(basename "$name" .cnf.gz)
     name=$(basename "$name" .cnf)
 
     local proof_dir="$TEMP_DIR/proof"
     rm -rf "$proof_dir"
     mkdir -p "$proof_dir"
 
-    # Decompress .cnf.gz to temp file if needed
+    # Decompress compressed files to temp if needed
     local solver_input="$cnf"
     if [[ "$cnf" == *.cnf.gz ]]; then
         solver_input="$TEMP_DIR/$name.cnf"
         gzip -dkc "$cnf" > "$solver_input"
+    elif [[ "$cnf" == *.cnf.xz ]]; then
+        solver_input="$TEMP_DIR/$name.cnf"
+        xz -dkc "$cnf" > "$solver_input"
     fi
 
     # Run solver with timeout and memory limit
@@ -265,7 +269,7 @@ run_instance() {
     fi
 
     # Clean up decompressed file and proof output
-    [[ "$cnf" == *.cnf.gz ]] && rm -f "$solver_input"
+    [[ "$cnf" == *.cnf.gz || "$cnf" == *.cnf.xz ]] && rm -f "$solver_input"
     rm -rf "$proof_dir"
 
     # Log errors

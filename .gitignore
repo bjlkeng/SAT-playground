@@ -27,7 +27,7 @@ log/
 tools/checkers/
 
 # Benchmark instances (downloaded via tools/bench.sh or manually)
-benchmarks/cnf/*
-!benchmarks/cnf/.gitkeep
+benchmarks/sat-comp-2025/*
+!benchmarks/sat-comp-2025/.gitkeep
 benchmarks/reference-solvers/*
 !benchmarks/reference-solvers/.gitkeep
