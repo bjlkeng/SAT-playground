@@ -28,6 +28,8 @@ tools/checkers/
 
 # Benchmark instances (downloaded via tools/bench.sh or manually)
 benchmarks/sat-comp-2025/*
-!benchmarks/sat-comp-2025/.gitkeep
+!benchmarks/sat-comp-2025/MANIFEST.txt
+benchmarks/sat-comp-2025-medium/*
+!benchmarks/sat-comp-2025-medium/MANIFEST.txt
 benchmarks/reference-solvers/*
 !benchmarks/reference-solvers/.gitkeep

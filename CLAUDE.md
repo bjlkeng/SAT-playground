@@ -143,7 +143,9 @@ Competition scoring is PAR-2: sum of runtimes for solved instances + 2 × 5000s 
 
 ## Code-Level Optimization Workflow
 
-After implementing a new solver iteration, run this optimization loop to squeeze out code-level performance before moving on. These are non-algorithmic changes only.
+**Only run this when the user explicitly asks for it.** Do not automatically optimize after implementing a solver.
+
+After implementing a new solver iteration, this optimization loop squeezes out code-level performance. These are non-algorithmic changes only.
 
 ### Procedure
 
@@ -170,6 +172,34 @@ overflow-checks = false
 [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
 RUSTFLAGS="-C target-cpu=native" cargo build --release
 ```
+
+## Running Full/Medium SAT Competition 2025 Benchmarks
+
+When running benchmarks against `benchmarks/sat-comp-2025/` or `benchmarks/sat-comp-2025-medium/`, **always use a cron job** so the run survives if the Claude session ends. Use `tools/run_bench_reference.sh` as the wrapper (it logs output and manages sentinel files).
+
+```bash
+# Schedule via one-shot cron (runs once, 1 minute from now)
+# Example: run reference solvers on sat-comp-2025-medium
+echo "$(date -d '+1 min' '+%M %H %d %m') * bash /home/bojji/code/SAT-playground/tools/run_bench_reference.sh -d benchmarks/sat-comp-2025-medium" | crontab -
+
+# Or for custom solver benchmarks, use bench.sh inside a similar nohup/cron wrapper
+```
+
+Monitor progress via sentinel files:
+- `log/bench_reference_RUNNING` — exists while benchmark is active (contains PID and start time)
+- `log/bench_reference_DONE` — created on completion (contains log file path)
+
+## Status Reporting
+
+When the user asks for status (e.g. "status?", "how's it going?", "what's running?"):
+
+1. **CPU usage**: Run `ps aux --sort=-%cpu | head -20` and report SAT solver processes (sat-solver, minisat, kissat, etc.) with their CPU%, runtime, and instance name
+2. **Running solvers**: Run `pgrep -a sat-solver; pgrep -a minisat; pgrep -a kissat` to identify active solver processes
+3. **Benchmark progress**: Find the most recent active benchmark log:
+   - Check `log/bench_reference_RUNNING` for reference solver runs
+   - Find the latest `log/bench-*` or `log/bench_reference_*` directory/file
+   - Report how many instances are solved vs total, and current instance being worked on
+   - Use `tail` on the log file or `wc -l` on `results.csv` to get progress counts
 
 ## Current State
 

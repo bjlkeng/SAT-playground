@@ -102,7 +102,7 @@ while IFS= read -r f; do
     if [[ "$f" == *.cnf ]] || [[ ! -v "INSTANCES[$base]" ]]; then
         INSTANCES["$base"]="$f"
     fi
-done < <(find "$BENCH_DIR" \( -name '*.cnf' -o -name '*.cnf.gz' -o -name '*.cnf.xz' \) -type f | sort)
+done < <(find -L "$BENCH_DIR" \( -name '*.cnf' -o -name '*.cnf.gz' -o -name '*.cnf.xz' \) -type f | sort)
 
 # Sort instance keys
 mapfile -t SORTED_KEYS < <(printf '%s\n' "${!INSTANCES[@]}" | sort)
