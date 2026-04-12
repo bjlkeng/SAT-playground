@@ -141,6 +141,56 @@ Competition scoring is PAR-2: sum of runtimes for solved instances + 2 × 5000s 
 - **Proof formats:** DRAT → LRAT (via drat-trim) → cake_lpr; or DRAT → GRAT (via gratgen) → gratchk; or VeriPB → cake_pb_cnf
 - **Benchmark source:** https://benchmark-database.de/?track=main_2025&context=cnf
 
+## Current State
+
+### Solver 01: naive-dpll (COMPLETE)
+
+`solver/01-naive-dpll/` — Working naive DPLL solver with:
+- Unit propagation to fixpoint, recursive branching with backtracking
+- DRAT proof output (empty clause) for UNSAT, verified by drat-trim
+- 8 Rust unit tests, all 8 smoke tests pass
+- No CDCL, no watched literals, no heuristics
+
+### Proof Checker
+
+drat-trim is built at `tools/checkers/drat-trim/drat-trim` (run `bash tools/setup_checkers.sh` to rebuild). The smoke test and bench.sh both use it to verify UNSAT proofs.
+
+### Reference Solvers
+
+Located in `benchmarks/reference-solvers/`:
+- **MiniSat:** `benchmarks/reference-solvers/minisat/build/release/bin/minisat`
+- **Kissat (sc2024):** `benchmarks/reference-solvers/kissat-sc2024/`
+- **Kissat (latest):** `benchmarks/reference-solvers/kissat-latest/`
+
+### Benchmark Generators
+
+- **`tools/gen_crypto_bench/`** — Generates XOR-heavy Feistel cipher key recovery CNF instances (Tseitin encoding of AND/XOR gates). Scales via `--block-size`, `--key-size`, `--rounds`.
+- **`tools/gen_random_3sat/`** — Generates random 3-SAT at phase transition (ratio 4.267). Scales via `--vars`.
+
+### Profiling Benchmark Suite
+
+Run all 6 profiling instances with a single command:
+
+```bash
+bash tools/bench.sh -t 120 -d benchmarks/profiling solver/NN-name
+```
+
+**Baseline (01-naive-dpll): PAR-2 795.2, 3/6 solved**
+
+| Instance | Type | Vars | Clauses | Result | Time |
+|----------|------|------|---------|--------|------|
+| feistel_b64_k32_r8 | crypto | 1120 | 3968 | SAT | 15.6s |
+| feistel_b64_k32_r10 | crypto | 1376 | 4928 | TIMEOUT | >120s |
+| feistel_b64_k32_r12 | crypto | 1632 | 5888 | TIMEOUT | >120s |
+| random_v110_s1 | 3-SAT | 110 | 469 | UNSAT | 6.8s |
+| random_v130_s3 | 3-SAT | 130 | 555 | SAT | 52.9s |
+| random_v140_s1 | 3-SAT | 140 | 597 | TIMEOUT | >120s |
+
+Additional benchmark dirs:
+- `benchmarks/crypto/` — 3 hard crypto instances only
+- `benchmarks/random-3sat/` — 3 random 3-SAT instances only
+- `benchmarks/crypto-easy/` — easier crypto instances for quick testing
+
 ## Common Pitfalls
 
 - Forgetting the trailing `0` on `v` lines
