@@ -17,7 +17,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # --- defaults ---
-TIMEOUT=3600
+TIMEOUT=1800
 MEMLIMIT_MB=16384
 BENCH_DIR=""
 declare -a SOLVERS=()

@@ -24,7 +24,7 @@ if [[ -f "$HOME/.cargo/env" ]]; then
 fi
 
 # --- defaults (SAT Competition 2025 Main Track) ---
-TIMEOUT=3600
+TIMEOUT=1800
 MEMLIMIT_MB=16384
 BENCH_DIR=""
 JOBS=1
