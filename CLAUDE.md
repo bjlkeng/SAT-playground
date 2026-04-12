@@ -141,15 +141,46 @@ Competition scoring is PAR-2: sum of runtimes for solved instances + 2 × 5000s 
 - **Proof formats:** DRAT → LRAT (via drat-trim) → cake_lpr; or DRAT → GRAT (via gratgen) → gratchk; or VeriPB → cake_pb_cnf
 - **Benchmark source:** https://benchmark-database.de/?track=main_2025&context=cnf
 
+## Code-Level Optimization Workflow
+
+After implementing a new solver iteration, run this optimization loop to squeeze out code-level performance before moving on. These are non-algorithmic changes only.
+
+### Procedure
+
+1. **Baseline**: Run `bash tools/bench.sh -t 120 -d benchmarks/profiling solver/NN-name` and record PAR-2
+2. **Iterate** (at least 10 attempts): Make one change at a time, benchmark, keep improvements, revert regressions
+3. **Smoke test**: Verify all 8 tests pass after every change
+4. **Record**: Document every *successful* improvement and its PAR-2 impact in the solver's `README.md`, including machine environment metadata
+
+### Standard Optimizations (apply to every solver)
+
+**Cargo.toml release profile** (always include):
+```toml
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+overflow-checks = false
+```
+
+**build.sh** (always include):
+```bash
+[[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
+
 ## Current State
 
-### Solver 01: naive-dpll (COMPLETE)
+### Solver 01: naive-dpll (COMPLETE + OPTIMIZED)
 
 `solver/01-naive-dpll/` — Working naive DPLL solver with:
 - Unit propagation to fixpoint, recursive branching with backtracking
 - DRAT proof output (empty clause) for UNSAT, verified by drat-trim
 - 8 Rust unit tests, all 8 smoke tests pass
 - No CDCL, no watched literals, no heuristics
+- **Code-level optimized**: PAR-2 796→539 (32% improvement, 4/6 solved). See `solver/01-naive-dpll/README.md` for full optimization log.
 
 ### Proof Checker
 
@@ -175,16 +206,16 @@ Run all 6 profiling instances with a single command:
 bash tools/bench.sh -t 120 -d benchmarks/profiling solver/NN-name
 ```
 
-**Baseline (01-naive-dpll): PAR-2 795.2, 3/6 solved**
+**Current best (01-naive-dpll, optimized): PAR-2 539, 4/6 solved**
 
 | Instance | Type | Vars | Clauses | Result | Time |
 |----------|------|------|---------|--------|------|
-| feistel_b64_k32_r8 | crypto | 1120 | 3968 | SAT | 15.6s |
+| feistel_b64_k32_r8 | crypto | 1120 | 3968 | SAT | 5.4s |
 | feistel_b64_k32_r10 | crypto | 1376 | 4928 | TIMEOUT | >120s |
 | feistel_b64_k32_r12 | crypto | 1632 | 5888 | TIMEOUT | >120s |
-| random_v110_s1 | 3-SAT | 110 | 469 | UNSAT | 6.8s |
-| random_v130_s3 | 3-SAT | 130 | 555 | SAT | 52.9s |
-| random_v140_s1 | 3-SAT | 140 | 597 | TIMEOUT | >120s |
+| random_v110_s1 | 3-SAT | 110 | 469 | UNSAT | 2.1s |
+| random_v130_s3 | 3-SAT | 130 | 555 | SAT | 16.2s |
+| random_v140_s1 | 3-SAT | 140 | 597 | UNSAT | 35.3s |
 
 Additional benchmark dirs:
 - `benchmarks/crypto/` — 3 hard crypto instances only
