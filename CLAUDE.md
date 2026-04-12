@@ -177,17 +177,51 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
 
 When running benchmarks against `benchmarks/sat-comp-2025/` or `benchmarks/sat-comp-2025-medium/`, **always use a cron job** so the run survives if the Claude session ends. Use `tools/run_bench_reference.sh` as the wrapper (it logs output and manages sentinel files).
 
-```bash
-# Schedule via one-shot cron (runs once, 1 minute from now)
-# Example: run reference solvers on sat-comp-2025-medium
-echo "$(date -d '+1 min' '+%M %H %d %m') * bash /home/bojji/code/SAT-playground/tools/run_bench_reference.sh -d benchmarks/sat-comp-2025-medium" | crontab -
+### One-shot cron pattern (preserves existing crontab)
 
-# Or for custom solver benchmarks, use bench.sh inside a similar nohup/cron wrapper
+```bash
+# 1. Pick a time ~2 min from now
+date '+%M %H %d %m'   # e.g. "17 21 11 04"
+
+# 2. Append one-shot entry (MUST preserve existing crontab)
+EXISTING=$(crontab -l 2>/dev/null)
+echo "$EXISTING
+19 21 11 04 * /bin/bash /home/bojji/code/SAT-playground/tools/run_bench_reference.sh -t 1800 -m 16384 -d /home/bojji/code/SAT-playground/benchmarks/sat-comp-2025-medium" | crontab -
+
+# 3. Verify it started (wait ~2 min, check sentinel)
+cat log/bench_reference_RUNNING
+
+# 4. IMMEDIATELY clean up the cron entry so it doesn't re-fire
+crontab -l | grep -v 'run_bench_reference' | crontab -
+
+# 5. Monitor progress
+tail -f log/bench_reference_*.log
+# Or check instance counts:
+wc -l log/bench-kissat-latest-*/results.csv
 ```
 
-Monitor progress via sentinel files:
+### Key flags for run_bench_reference.sh
+
+- `-t <seconds>` — per-instance timeout (default: 3600)
+- `-m <MB>` — memory limit (default: 16384)
+- `-d <path>` — benchmark directory (default: benchmarks/sat-comp-2025)
+- Positional args: solver names (default: kissat-latest kissat-sc2024 minisat)
+
+### Monitor progress
+
 - `log/bench_reference_RUNNING` — exists while benchmark is active (contains PID and start time)
 - `log/bench_reference_DONE` — created on completion (contains log file path)
+- Results CSVs: `log/bench-<solver>-<timestamp>/results.csv`
+
+### Important: kill ALL solver processes when stopping
+
+```bash
+pkill -f 'bench_reference'; pkill -f 'run_bench_reference'
+pkill -f 'kissat.*\.cnf'; pkill -f 'minisat.*\.cnf'
+# Verify: ps aux | grep -E 'kissat|minisat|bench_reference' | grep -v grep
+```
+
+Processes spawned by the script can outlive the parent if only the wrapper is killed. Always kill the solver binaries directly too.
 
 ## Status Reporting
 
