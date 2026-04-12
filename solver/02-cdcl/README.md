@@ -95,13 +95,13 @@ Results:
 
 | Instance | Type | Result | Time |
 |----------|------|--------|------|
-| feistel_b64_k32_r10 | crypto | SAT | 0.165s |
-| feistel_b64_k32_r12 | crypto | SAT | 4.720s |
-| feistel_b64_k32_r8 | crypto | SAT | 0.029s |
-| random_v110_s1 | 3-SAT | UNSAT | 3.184s |
-| random_v130_s3 | 3-SAT | SAT | 23.620s |
-| random_v140_s1 | 3-SAT | UNSAT | 54.132s |
+| feistel_b64_k32_r12 | crypto | SAT | 4.623s |
+| feistel_b64_k32_r14 | crypto | SAT | 58.556s |
+| feistel_b64_k32_r16 | crypto | TIMEOUT | 120.000s |
+| random_v110_s1 | 3-SAT | UNSAT | 3.186s |
+| random_v130_s3 | 3-SAT | SAT | 23.817s |
+| random_v140_s1 | 3-SAT | UNSAT | 53.979s |
 
-**PAR-2: 85.850 (6/6 solved)**
+**PAR-2: 384.161 (5/6 solved)**
 
-This already outperforms `01-naive-dpll` by a large margin even without watched literals or heuristic tuning. The remaining work for later iterations should focus on reducing propagation cost and improving branching quality, not reworking the overall search model again.
+This is a much better stress profile than the earlier suite because none of the Feistel cases are trivial anymore: the lightest crypto case is already multi-second, the middle one is near a minute, and the largest one cleanly exercises the timeout path. The remaining work for later iterations should focus on reducing propagation cost and improving branching quality.
