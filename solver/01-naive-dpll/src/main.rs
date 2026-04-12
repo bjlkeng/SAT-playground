@@ -3,81 +3,88 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
-/// A literal is a non-zero i32. Positive = true, negative = negated.
-/// Variables are 1-based.
+const UNASSIGNED: u8 = 0;
+const TRUE: u8 = 1;
+const FALSE: u8 = 2;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LitState {
-    True,
-    False,
-    Unassigned,
+enum ClauseState {
+    Satisfied,
+    Conflict,
+    Unit(i32),
+    Undetermined,
 }
 
 struct Solver {
     num_vars: usize,
-    clauses: Vec<Vec<i32>>,
+    clauses: Vec<Box<[i32]>>,
     /// assignment[v] for variable v (1-based, index 0 unused)
-    assignment: Vec<Option<bool>>,
-    /// DRAT proof clauses (each clause is a vec of literals, empty vec = empty clause)
+    /// 0 = unassigned, 1 = true, 2 = false
+    assignment: Vec<u8>,
+    /// DRAT proof clauses
     proof: Vec<Vec<i32>>,
 }
 
 impl Solver {
     fn new(num_vars: usize, clauses: Vec<Vec<i32>>) -> Self {
+        let clauses: Vec<Box<[i32]>> = clauses.into_iter().map(|c| c.into_boxed_slice()).collect();
         Solver {
             num_vars,
             clauses,
-            assignment: vec![None; num_vars + 1],
+            assignment: vec![UNASSIGNED; num_vars + 1],
             proof: Vec::new(),
         }
     }
 
-    fn lit_state(&self, lit: i32) -> LitState {
+    #[inline(always)]
+    fn lit_value(&self, lit: i32) -> u8 {
         let var = lit.unsigned_abs() as usize;
-        match self.assignment[var] {
-            None => LitState::Unassigned,
-            Some(val) => {
-                let polarity = lit > 0;
-                if val == polarity {
-                    LitState::True
+        let val = self.assignment[var];
+        if val == UNASSIGNED {
+            return UNASSIGNED;
+        }
+        if (lit > 0) == (val == TRUE) {
+            TRUE
+        } else {
+            FALSE
+        }
+    }
+
+    #[inline(always)]
+    fn assign(&mut self, lit: i32) {
+        let var = lit.unsigned_abs() as usize;
+        self.assignment[var] = if lit > 0 { TRUE } else { FALSE };
+    }
+
+    #[inline(always)]
+    fn unassign(&mut self, var: usize) {
+        self.assignment[var] = UNASSIGNED;
+    }
+
+    #[inline(always)]
+    fn clause_state(&self, clause: &[i32]) -> ClauseState {
+        let mut unassigned_count = 0u32;
+        let mut unassigned_lit = 0i32;
+        for &lit in clause {
+            let v = self.lit_value(lit);
+            if v == TRUE {
+                return ClauseState::Satisfied;
+            }
+            if v == UNASSIGNED {
+                unassigned_count += 1;
+                if unassigned_count == 1 {
+                    unassigned_lit = lit;
                 } else {
-                    LitState::False
+                    return ClauseState::Undetermined;
                 }
             }
         }
-    }
-
-    fn assign(&mut self, lit: i32) {
-        let var = lit.unsigned_abs() as usize;
-        self.assignment[var] = Some(lit > 0);
-    }
-
-    fn unassign(&mut self, var: usize) {
-        self.assignment[var] = None;
-    }
-
-    /// Returns the state of a clause: true if satisfied, false if all lits false (conflict),
-    /// or the list of unassigned literals if undetermined.
-    fn clause_state(&self, clause: &[i32]) -> ClauseState {
-        let mut unassigned = Vec::new();
-        for &lit in clause {
-            match self.lit_state(lit) {
-                LitState::True => return ClauseState::Satisfied,
-                LitState::False => {}
-                LitState::Unassigned => unassigned.push(lit),
-            }
-        }
-        if unassigned.is_empty() {
+        if unassigned_count == 0 {
             ClauseState::Conflict
-        } else if unassigned.len() == 1 {
-            ClauseState::Unit(unassigned[0])
         } else {
-            ClauseState::Undetermined
+            ClauseState::Unit(unassigned_lit)
         }
     }
 
-    /// Run unit propagation. Returns true if no conflict, false if conflict found.
-    /// Pushes assigned variables onto `trail` so they can be undone on backtrack.
     fn unit_propagate(&mut self, trail: &mut Vec<usize>) -> bool {
         let mut changed = true;
         while changed {
@@ -97,26 +104,32 @@ impl Solver {
         true
     }
 
-    /// Pick the first unassigned variable (simple heuristic).
     fn pick_variable(&self) -> Option<usize> {
         for v in 1..=self.num_vars {
-            if self.assignment[v].is_none() {
+            if self.assignment[v] == UNASSIGNED {
                 return Some(v);
             }
         }
         None
     }
 
-    /// Check if all clauses are satisfied.
-    fn all_satisfied(&self) -> bool {
-        self.clauses.iter().all(|c| {
-            c.iter().any(|&lit| self.lit_state(lit) == LitState::True)
-        })
+    fn has_conflict(&self) -> bool {
+        for clause in &self.clauses {
+            let mut satisfied = false;
+            for &lit in clause {
+                if self.lit_value(lit) == TRUE {
+                    satisfied = true;
+                    break;
+                }
+            }
+            if !satisfied {
+                return true;
+            }
+        }
+        false
     }
 
-    /// Main DPLL search. Returns true if SAT, false if UNSAT.
     fn solve(&mut self) -> bool {
-        // Check for empty clauses upfront
         if self.clauses.iter().any(|c| c.is_empty()) {
             self.proof.push(vec![]);
             return false;
@@ -125,46 +138,41 @@ impl Solver {
     }
 
     fn dpll(&mut self) -> bool {
-        // Unit propagation
-        let mut trail = Vec::new();
+        let mut trail = Vec::with_capacity(self.num_vars);
         if !self.unit_propagate(&mut trail) {
-            // Undo propagated assignments
             for &var in &trail {
                 self.unassign(var);
             }
             return false;
         }
 
-        // Check if all clauses satisfied
-        if self.all_satisfied() {
-            return true;
-        }
-
-        // Pick a branching variable
         let var = match self.pick_variable() {
             Some(v) => v,
             None => {
-                // All assigned but not all satisfied → conflict
-                for &v in &trail {
-                    self.unassign(v);
+                if self.has_conflict() {
+                    for &v in &trail {
+                        self.unassign(v);
+                    }
+                    return false;
                 }
-                return false;
+                return true;
             }
         };
 
-        // Try positive then negative
-        for &polarity in &[true, false] {
-            let lit = if polarity { var as i32 } else { -(var as i32) };
-            self.assign(lit);
-
-            if self.dpll() {
-                return true;
-            }
-
-            self.unassign(var);
+        // Try positive polarity
+        self.assign(var as i32);
+        if self.dpll() {
+            return true;
         }
+        self.unassign(var);
 
-        // Both branches failed — undo unit propagation trail and backtrack
+        // Try negative polarity
+        self.assign(-(var as i32));
+        if self.dpll() {
+            return true;
+        }
+        self.unassign(var);
+
         for &v in &trail {
             self.unassign(v);
         }
@@ -172,14 +180,6 @@ impl Solver {
     }
 }
 
-enum ClauseState {
-    Satisfied,
-    Conflict,
-    Unit(i32),
-    Undetermined,
-}
-
-/// Parse a DIMACS CNF file, returning (num_vars, clauses).
 fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
     let file = fs::File::open(path).unwrap_or_else(|e| {
         eprintln!("Error opening {}: {}", path, e);
@@ -213,8 +213,7 @@ fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
                 Err(_) => continue,
             };
             if lit == 0 {
-                clauses.push(current_clause.clone());
-                current_clause.clear();
+                clauses.push(std::mem::take(&mut current_clause));
             } else {
                 current_clause.push(lit);
             }
@@ -228,7 +227,6 @@ fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
     (num_vars, clauses)
 }
 
-/// Write DRAT proof to file.
 fn write_proof(output_dir: &str, proof: &[Vec<i32>]) {
     let proof_path = Path::new(output_dir).join("proof.out");
     let mut file = fs::File::create(&proof_path).unwrap_or_else(|e| {
@@ -246,15 +244,13 @@ fn write_proof(output_dir: &str, proof: &[Vec<i32>]) {
     }
 }
 
-/// Print a satisfying assignment, respecting 4096-char line limit.
-fn print_assignment(assignment: &[Option<bool>]) {
+fn print_assignment(assignment: &[u8]) {
     let mut line = String::from("v");
-    // Skip index 0 (unused)
     for var in 1..assignment.len() {
-        let lit = match assignment[var] {
-            Some(true) => var as i32,
-            Some(false) => -(var as i32),
-            None => var as i32, // unassigned → default to positive (don't-care)
+        let lit = if assignment[var] == FALSE {
+            -(var as i32)
+        } else {
+            var as i32
         };
         let token = format!(" {}", lit);
         if line.len() + token.len() > 4090 {
@@ -285,7 +281,6 @@ fn main() {
         print_assignment(&solver.assignment);
     } else {
         println!("s UNSATISFIABLE");
-        // For basic DPLL, write minimal DRAT proof: just the empty clause
         if solver.proof.is_empty() {
             solver.proof.push(vec![]);
         }
@@ -303,38 +298,33 @@ mod tests {
 
     #[test]
     fn test_unit_clause_sat() {
-        // x1 = true
         let mut s = make_solver(1, vec![vec![1]]);
         assert!(s.solve());
-        assert_eq!(s.assignment[1], Some(true));
+        assert_eq!(s.assignment[1], TRUE);
     }
 
     #[test]
     fn test_contradiction_unsat() {
-        // x1 AND NOT x1
         let mut s = make_solver(1, vec![vec![1], vec![-1]]);
         assert!(!s.solve());
     }
 
     #[test]
     fn test_empty_clause_unsat() {
-        // Contains empty clause
         let mut s = make_solver(2, vec![vec![1, 2], vec![]]);
         assert!(!s.solve());
     }
 
     #[test]
     fn test_two_clause_sat() {
-        // (x1) AND (x2)
         let mut s = make_solver(2, vec![vec![1], vec![2]]);
         assert!(s.solve());
-        assert_eq!(s.assignment[1], Some(true));
-        assert_eq!(s.assignment[2], Some(true));
+        assert_eq!(s.assignment[1], TRUE);
+        assert_eq!(s.assignment[2], TRUE);
     }
 
     #[test]
     fn test_chain_unsat() {
-        // x1, -1 2, -2 3, -3  (chain forces contradiction)
         let mut s = make_solver(3, vec![vec![1], vec![-1, 2], vec![-2, 3], vec![-3]]);
         assert!(!s.solve());
     }
@@ -351,15 +341,8 @@ mod tests {
         ];
         let mut s = make_solver(5, clauses.clone());
         assert!(s.solve());
-        // Verify all clauses satisfied
         for clause in &clauses {
-            let sat = clause.iter().any(|&lit| {
-                let var = lit.unsigned_abs() as usize;
-                match s.assignment[var] {
-                    Some(val) => val == (lit > 0),
-                    None => false,
-                }
-            });
+            let sat = clause.iter().any(|&lit| s.lit_value(lit) == TRUE);
             assert!(sat, "Clause {:?} not satisfied", clause);
         }
     }
@@ -383,9 +366,7 @@ mod tests {
 
     #[test]
     fn test_no_clauses_sat() {
-        let s_result = make_solver(3, vec![]);
-        // No clauses → trivially SAT
-        let mut s = s_result;
+        let mut s = make_solver(3, vec![]);
         assert!(s.solve());
     }
 }
