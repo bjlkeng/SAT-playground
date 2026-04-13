@@ -270,16 +270,16 @@ Run all 6 profiling instances with a single command:
 bash tools/bench.sh -t 120 -d benchmarks/profiling solver/NN-name
 ```
 
-**Current best (02-cdcl): PAR-2 384.161, 5/6 solved**
+**Current best (02-cdcl, optimized): PAR-2 364.486, 5/6 solved**
 
 | Instance | Type | Vars | Clauses | Result | Time |
 |----------|------|------|---------|--------|------|
-| feistel_b64_k32_r12 | crypto | 1632 | 5888 | SAT | 4.6s |
-| feistel_b64_k32_r14 | crypto | 1888 | 6848 | SAT | 58.6s |
+| feistel_b64_k32_r12 | crypto | 1632 | 5888 | SAT | 4.0s |
+| feistel_b64_k32_r14 | crypto | 1888 | 6848 | SAT | 49.6s |
 | feistel_b64_k32_r16 | crypto | 2144 | 7808 | TIMEOUT | >120s |
-| random_v110_s1 | 3-SAT | 110 | 469 | UNSAT | 3.2s |
-| random_v130_s3 | 3-SAT | 130 | 555 | SAT | 23.8s |
-| random_v140_s1 | 3-SAT | 140 | 597 | UNSAT | 54.0s |
+| random_v110_s1 | 3-SAT | 110 | 469 | UNSAT | 2.9s |
+| random_v130_s3 | 3-SAT | 130 | 555 | SAT | 20.9s |
+| random_v140_s1 | 3-SAT | 140 | 597 | UNSAT | 47.1s |
 
 Additional benchmark dirs:
 - `benchmarks/crypto/` — Feistel crypto instances (`r8`, `r10`, `r12`, `r14`, `r16`)

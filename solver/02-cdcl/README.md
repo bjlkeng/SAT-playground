@@ -36,7 +36,7 @@ The solver keeps explicit mutable state instead of using recursion:
 
 - `assignment[v]` stores `UNASSIGNED`, `TRUE`, or `FALSE`
 - `decision_level[v]` stores the level where `v` was assigned
-- `reason[v]` stores the clause index that implied `v`, or `None` for decisions
+- `reason[v]` stores the clause index that implied `v`, or a sentinel for decisions
 - `trail` stores literals in assignment order
 - `trail_limits` stores the trail index where each decision level starts
 
@@ -81,7 +81,50 @@ Completed checks for this iteration:
 - `bash tools/smoke_test.sh solver/02-cdcl` — 8/8 smoke tests passed
 - All 4 UNSAT smoke-test proofs verified with `drat-trim`
 
-## Profiling Benchmark Baseline
+## Code-Level Optimization Log
+
+The profiling suite was refreshed before optimization so the Feistel instances were no longer trivial:
+
+- `feistel_b64_k32_r12`
+- `feistel_b64_k32_r14`
+- `feistel_b64_k32_r16`
+- `random_v110_s1`
+- `random_v130_s3`
+- `random_v140_s1`
+
+Baseline before code-level tuning:
+
+- **PAR-2:** `384.161`
+- **Solved:** `5/6`
+
+Successful optimization attempts kept in the solver:
+
+1. **Reason sentinel instead of `Option<usize>`**
+   Replaced per-variable `Option<usize>` reason tracking with a plain `usize` plus `NO_REASON` sentinel.
+   PAR-2 improved from `384.161` to `382.088`.
+
+2. **Reusable conflict-analysis scratch buffers**
+   Moved `seen`, `resolved`, and `learned` scratch storage into the solver so conflict analysis stops allocating fresh vectors on every conflict.
+   PAR-2 improved from `382.088` to `379.009`.
+
+3. **Direct clause scanning inside `propagate()`**
+   Removed the extra `ClauseState` layer in the propagation hot path and scanned clauses directly inside `propagate()`.
+   PAR-2 improved from `379.009` to `367.450`.
+
+4. **Branch cursor for first-unassigned selection**
+   Cached the lowest plausible unassigned variable index and reset it on backtrack, preserving the same branching rule while avoiding repeated scans from variable `1`.
+   PAR-2 improved from `367.450` to `364.486`.
+
+Additional attempts were benchmarked and reverted because they did not improve PAR-2. Those included:
+
+- inlining `enqueue` logic
+- narrowing `decision_level` to `u32`
+- advancing the branch cursor past the chosen variable
+- preallocating `trail_limits`
+- enlarging the learned-clause scratch buffer
+- forcing `mark_clause_literals()` inline
+
+## Profiling Benchmark Results
 
 Environment:
 
@@ -95,13 +138,13 @@ Results:
 
 | Instance | Type | Result | Time |
 |----------|------|--------|------|
-| feistel_b64_k32_r12 | crypto | SAT | 4.623s |
-| feistel_b64_k32_r14 | crypto | SAT | 58.556s |
+| feistel_b64_k32_r12 | crypto | SAT | 3.957s |
+| feistel_b64_k32_r14 | crypto | SAT | 49.614s |
 | feistel_b64_k32_r16 | crypto | TIMEOUT | 120.000s |
-| random_v110_s1 | 3-SAT | UNSAT | 3.186s |
-| random_v130_s3 | 3-SAT | SAT | 23.817s |
-| random_v140_s1 | 3-SAT | UNSAT | 53.979s |
+| random_v110_s1 | 3-SAT | UNSAT | 2.886s |
+| random_v130_s3 | 3-SAT | SAT | 20.908s |
+| random_v140_s1 | 3-SAT | UNSAT | 47.121s |
 
-**PAR-2: 384.161 (5/6 solved)**
+**PAR-2: 364.486 (5/6 solved)**
 
-This is a much better stress profile than the earlier suite because none of the Feistel cases are trivial anymore: the lightest crypto case is already multi-second, the middle one is near a minute, and the largest one cleanly exercises the timeout path. The remaining work for later iterations should focus on reducing propagation cost and improving branching quality.
+This is a `19.675` point PAR-2 improvement over the refreshed-suite baseline, about `5.1%` better without changing the algorithmic structure of the solver. The remaining work for later iterations should focus on reducing propagation cost further and improving branching quality.
