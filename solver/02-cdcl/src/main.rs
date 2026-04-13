@@ -498,4 +498,25 @@ mod tests {
         assert!(!s.solve());
         assert!(s.learned_clause_count() > 0);
     }
+
+    #[test]
+    fn test_unsat_proof_logs_learned_clause_before_empty_clause() {
+        let clauses = vec![
+            vec![1, 2],
+            vec![-1, 2],
+            vec![1, -2],
+            vec![-1, -2],
+        ];
+        let mut s = make_solver(2, clauses);
+        assert!(!s.solve());
+        assert!(s.learned_clause_count() > 0);
+        assert!(
+            s.proof.iter().any(|clause| !clause.is_empty()),
+            "expected proof to contain at least one learned clause before the empty clause",
+        );
+        assert!(
+            matches!(s.proof.last(), Some(clause) if clause.is_empty()),
+            "expected proof to end with the empty clause",
+        );
+    }
 }
