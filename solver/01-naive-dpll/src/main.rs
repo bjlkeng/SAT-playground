@@ -6,6 +6,7 @@ use std::path::Path;
 const UNASSIGNED: u8 = 0;
 const TRUE: u8 = 1;
 const FALSE: u8 = 2;
+const NO_REASON: usize = usize::MAX;
 
 enum ClauseState {
     Satisfied,
@@ -22,6 +23,50 @@ struct Solver {
     assignment: Vec<u8>,
     /// DRAT proof clauses
     proof: Vec<Vec<i32>>,
+}
+
+struct ProofSolver {
+    num_vars: usize,
+    clauses: Vec<Box<[i32]>>,
+    assignment: Vec<u8>,
+    decision_level: Vec<usize>,
+    reason: Vec<usize>,
+    trail: Vec<i32>,
+    trail_limits: Vec<usize>,
+    branch_cursor: usize,
+    scratch_seen: Vec<u8>,
+    scratch_resolved: Vec<u8>,
+    scratch_learned: Vec<i32>,
+    proof: Vec<Vec<i32>>,
+}
+
+fn mark_clause_literals(
+    decision_level: &[usize],
+    clause: &[i32],
+    current_level: usize,
+    seen: &mut [u8],
+    resolved: &[u8],
+    learned: &mut Vec<i32>,
+    current_level_count: &mut usize,
+) {
+    for &lit in clause {
+        let var = lit.unsigned_abs() as usize;
+        if seen[var] != 0 || resolved[var] != 0 {
+            continue;
+        }
+
+        let level = decision_level[var];
+        if level == 0 {
+            continue;
+        }
+
+        seen[var] = 1;
+        if level == current_level {
+            *current_level_count += 1;
+        } else {
+            learned.push(lit);
+        }
+    }
 }
 
 impl Solver {
@@ -130,11 +175,12 @@ impl Solver {
     }
 
     fn solve(&mut self) -> bool {
-        if self.clauses.iter().any(|c| c.is_empty()) {
-            self.proof.push(vec![]);
-            return false;
+        if self.dpll() {
+            return true;
         }
-        self.dpll()
+
+        self.proof = generate_unsat_proof(self.num_vars, &self.clauses);
+        false
     }
 
     fn dpll(&mut self) -> bool {
@@ -178,6 +224,266 @@ impl Solver {
         }
         false
     }
+}
+
+impl ProofSolver {
+    fn new(num_vars: usize, clauses: &[Box<[i32]>]) -> Self {
+        ProofSolver {
+            num_vars,
+            clauses: clauses.to_vec(),
+            assignment: vec![UNASSIGNED; num_vars + 1],
+            decision_level: vec![0; num_vars + 1],
+            reason: vec![NO_REASON; num_vars + 1],
+            trail: Vec::with_capacity(num_vars),
+            trail_limits: Vec::new(),
+            branch_cursor: 1,
+            scratch_seen: vec![0; num_vars + 1],
+            scratch_resolved: vec![0; num_vars + 1],
+            scratch_learned: Vec::with_capacity(8),
+            proof: Vec::new(),
+        }
+    }
+
+    #[inline(always)]
+    fn current_level(&self) -> usize {
+        self.trail_limits.len()
+    }
+
+    #[inline(always)]
+    fn lit_value(&self, lit: i32) -> u8 {
+        let var = lit.unsigned_abs() as usize;
+        let val = self.assignment[var];
+        if val == UNASSIGNED {
+            return UNASSIGNED;
+        }
+        if (lit > 0) == (val == TRUE) {
+            TRUE
+        } else {
+            FALSE
+        }
+    }
+
+    #[inline(always)]
+    fn enqueue(&mut self, lit: i32, reason: usize) -> bool {
+        match self.lit_value(lit) {
+            TRUE => true,
+            FALSE => false,
+            UNASSIGNED => {
+                let var = lit.unsigned_abs() as usize;
+                self.assignment[var] = if lit > 0 { TRUE } else { FALSE };
+                self.decision_level[var] = self.current_level();
+                self.reason[var] = reason;
+                self.trail.push(lit);
+                true
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn propagate(&mut self) -> Option<usize> {
+        loop {
+            let trail_len_before = self.trail.len();
+            for clause_idx in 0..self.clauses.len() {
+                let mut implied_lit = 0i32;
+                let mut is_conflict = true;
+                let mut skip_clause = false;
+
+                {
+                    let clause = &self.clauses[clause_idx];
+                    for &lit in clause.iter() {
+                        let var = lit.unsigned_abs() as usize;
+                        let val = self.assignment[var];
+
+                        if val == UNASSIGNED {
+                            if implied_lit != 0 {
+                                skip_clause = true;
+                                break;
+                            }
+                            implied_lit = lit;
+                            is_conflict = false;
+                            continue;
+                        }
+
+                        if (lit > 0) == (val == TRUE) {
+                            skip_clause = true;
+                            break;
+                        }
+                    }
+                }
+
+                if skip_clause {
+                    continue;
+                }
+
+                if is_conflict {
+                    return Some(clause_idx);
+                }
+
+                if implied_lit != 0 && !self.enqueue(implied_lit, clause_idx) {
+                    return Some(clause_idx);
+                }
+            }
+
+            if self.trail.len() == trail_len_before {
+                return None;
+            }
+        }
+    }
+
+    fn decide(&mut self, lit: i32) {
+        self.trail_limits.push(self.trail.len());
+        let inserted = self.enqueue(lit, NO_REASON);
+        debug_assert!(inserted, "decision literal must be unassigned");
+    }
+
+    fn pick_branch_lit(&mut self) -> Option<i32> {
+        for var in self.branch_cursor..=self.num_vars {
+            if self.assignment[var] == UNASSIGNED {
+                self.branch_cursor = var;
+                return Some(var as i32);
+            }
+        }
+        self.branch_cursor = self.num_vars + 1;
+        None
+    }
+
+    fn backtrack(&mut self, target_level: usize) {
+        let new_trail_len = if target_level == 0 {
+            0
+        } else {
+            self.trail_limits[target_level - 1]
+        };
+        let mut min_unassigned_var = self.num_vars + 1;
+
+        while self.trail.len() > new_trail_len {
+            let lit = self.trail.pop().expect("trail underflow");
+            let var = lit.unsigned_abs() as usize;
+            min_unassigned_var = min_unassigned_var.min(var);
+            self.assignment[var] = UNASSIGNED;
+            self.decision_level[var] = 0;
+            self.reason[var] = NO_REASON;
+        }
+
+        self.trail_limits.truncate(target_level);
+        if min_unassigned_var <= self.num_vars {
+            self.branch_cursor = self.branch_cursor.min(min_unassigned_var);
+        }
+    }
+
+    fn add_clause(&mut self, clause: Vec<i32>) -> usize {
+        self.clauses.push(clause.into_boxed_slice());
+        self.clauses.len() - 1
+    }
+
+    fn analyze_conflict(&mut self, conflict_clause_idx: usize) -> (Vec<i32>, usize) {
+        let current_level = self.current_level();
+        let decision_level = &self.decision_level;
+        let clauses = &self.clauses;
+        let seen = &mut self.scratch_seen;
+        let resolved = &mut self.scratch_resolved;
+        let learned = &mut self.scratch_learned;
+
+        seen.fill(0);
+        resolved.fill(0);
+        learned.clear();
+
+        let mut current_level_count = 0usize;
+
+        mark_clause_literals(
+            decision_level,
+            &clauses[conflict_clause_idx],
+            current_level,
+            seen,
+            resolved,
+            learned,
+            &mut current_level_count,
+        );
+
+        debug_assert!(current_level_count > 0);
+
+        let mut trail_index = self.trail.len();
+        let uip_lit = loop {
+            trail_index -= 1;
+            let lit = self.trail[trail_index];
+            let var = lit.unsigned_abs() as usize;
+            if seen[var] == 0 {
+                continue;
+            }
+
+            seen[var] = 0;
+            resolved[var] = 1;
+            current_level_count -= 1;
+            if current_level_count == 0 {
+                break lit;
+            }
+
+            let reason_idx = self.reason[var];
+            if reason_idx != NO_REASON {
+                mark_clause_literals(
+                    decision_level,
+                    &clauses[reason_idx],
+                    current_level,
+                    seen,
+                    resolved,
+                    learned,
+                    &mut current_level_count,
+                );
+            }
+        };
+
+        let mut learned_clause = Vec::with_capacity(learned.len() + 1);
+        learned_clause.push(-uip_lit);
+        learned_clause.extend(learned.iter().copied());
+
+        let mut backtrack_level = 0usize;
+        for &lit in learned_clause.iter().skip(1) {
+            let var = lit.unsigned_abs() as usize;
+            backtrack_level = backtrack_level.max(self.decision_level[var]);
+        }
+
+        (learned_clause, backtrack_level)
+    }
+
+    fn solve(&mut self) -> bool {
+        let mut conflict = self.propagate();
+
+        loop {
+            match conflict {
+                Some(conflict_clause_idx) => {
+                    if self.current_level() == 0 {
+                        self.proof.push(vec![]);
+                        return false;
+                    }
+
+                    let (learned_clause, backtrack_level) =
+                        self.analyze_conflict(conflict_clause_idx);
+                    self.proof.push(learned_clause.clone());
+                    let asserting_lit = learned_clause[0];
+                    let learned_clause_idx = self.add_clause(learned_clause);
+
+                    self.backtrack(backtrack_level);
+                    let inserted = self.enqueue(asserting_lit, learned_clause_idx);
+                    debug_assert!(inserted, "learned clause must be asserting after backtrack");
+
+                    conflict = self.propagate();
+                }
+                None => match self.pick_branch_lit() {
+                    Some(lit) => {
+                        self.decide(lit);
+                        conflict = self.propagate();
+                    }
+                    None => return true,
+                },
+            }
+        }
+    }
+}
+
+fn generate_unsat_proof(num_vars: usize, clauses: &[Box<[i32]>]) -> Vec<Vec<i32>> {
+    let mut proof_solver = ProofSolver::new(num_vars, clauses);
+    let solved = proof_solver.solve();
+    debug_assert!(!solved, "proof generator must only run on UNSAT formulas");
+    proof_solver.proof
 }
 
 fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {

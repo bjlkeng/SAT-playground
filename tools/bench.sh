@@ -245,8 +245,12 @@ run_instance() {
         if [[ -f "$proof_dir/proof.out" ]]; then
             if [[ -n "$DRAT_TRIM" ]]; then
                 local checker_output=""
+                local checker_status=""
                 checker_output=$("$DRAT_TRIM" "$solver_input" "$proof_dir/proof.out" 2>&1) || true
-                if echo "$checker_output" | grep -qE "VERIFIED|ACCEPTED"; then
+                checker_status=$(printf '%s\n' "$checker_output" | tr -d '\r')
+                if echo "$checker_status" | grep -qx "s VERIFIED"; then
+                    verified="ok"
+                elif echo "$checker_status" | grep -qx "s ACCEPTED"; then
                     verified="ok"
                 else
                     verified="FAIL"

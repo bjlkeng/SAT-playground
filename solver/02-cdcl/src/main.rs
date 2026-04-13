@@ -300,6 +300,7 @@ impl Solver {
 
                     let (learned_clause, backtrack_level) =
                         self.analyze_conflict(conflict_clause_idx);
+                    self.proof.push(learned_clause.clone());
                     let asserting_lit = learned_clause[0];
                     let learned_clause_idx = self.add_clause(learned_clause);
 
