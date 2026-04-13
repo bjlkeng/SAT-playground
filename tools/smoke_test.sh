@@ -115,13 +115,15 @@ run_one_test() {
         if [[ -n "$DRAT_TRIM" ]]; then
             local checker_output=""
             local checker_exit=0
+            local checker_status=""
             checker_output=$("$DRAT_TRIM" "$cnf" "$proof_dir/proof.out" 2>&1) || checker_exit=$?
             echo "$checker_output" > "$test_dir/checker.log"
             echo "$checker_exit" > "$test_dir/checker_exit.log"
+            checker_status=$(printf '%s\n' "$checker_output" | tr -d '\r')
 
-            if echo "$checker_output" | grep -q "VERIFIED"; then
+            if echo "$checker_status" | grep -qx "s VERIFIED"; then
                 log "  PASS  $name (proof verified by drat-trim)"
-            elif echo "$checker_output" | grep -q "ACCEPTED"; then
+            elif echo "$checker_status" | grep -qx "s ACCEPTED"; then
                 log "  PASS  $name (proof accepted by drat-trim)"
             else
                 log "  FAIL  $name — drat-trim rejected proof"

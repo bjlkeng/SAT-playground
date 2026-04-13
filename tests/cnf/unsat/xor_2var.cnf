@@ -1,0 +1,7 @@
+c 2-variable XOR-style contradiction that requires clause learning
+c (x1 or x2) and (~x1 or x2) and (x1 or ~x2) and (~x1 or ~x2)
+p cnf 2 4
+1 2 0
+-1 2 0
+1 -2 0
+-1 -2 0
