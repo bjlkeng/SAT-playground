@@ -8,9 +8,16 @@ const TRUE: u8 = 1;
 const FALSE: u8 = 2;
 const NO_REASON: usize = usize::MAX;
 
+#[derive(Clone, Copy)]
+struct ClauseRef {
+    start: usize,
+    len: usize,
+}
+
 struct Solver {
     num_vars: usize,
-    clauses: Vec<Box<[i32]>>,
+    clauses: Vec<ClauseRef>,
+    clause_data: Vec<i32>,
     original_clause_count: usize,
     /// assignment[v] for variable v (1-based, index 0 unused)
     /// 0 = unassigned, 1 = true, 2 = false
@@ -29,8 +36,10 @@ struct Solver {
     scratch_seen: Vec<u8>,
     scratch_resolved: Vec<u8>,
     scratch_learned: Vec<i32>,
-    /// DRAT proof clauses
-    proof: Vec<Vec<i32>>,
+    /// learned clause indices in DRAT proof order
+    proof_clause_indices: Vec<usize>,
+    /// whether the proof terminates with the empty clause
+    proof_has_empty: bool,
 }
 
 fn mark_clause_literals(
@@ -64,11 +73,20 @@ fn mark_clause_literals(
 
 impl Solver {
     fn new(num_vars: usize, clauses: Vec<Vec<i32>>) -> Self {
-        let clauses: Vec<Box<[i32]>> = clauses.into_iter().map(|c| c.into_boxed_slice()).collect();
         let original_clause_count = clauses.len();
+        let total_literals = clauses.iter().map(|clause| clause.len()).sum();
+        let mut clause_refs = Vec::with_capacity(original_clause_count);
+        let mut clause_data = Vec::with_capacity(total_literals);
+        for clause in clauses {
+            let start = clause_data.len();
+            let len = clause.len();
+            clause_data.extend_from_slice(&clause);
+            clause_refs.push(ClauseRef { start, len });
+        }
         Solver {
             num_vars,
-            clauses,
+            clauses: clause_refs,
+            clause_data,
             original_clause_count,
             assignment: vec![UNASSIGNED; num_vars + 1],
             decision_level: vec![0; num_vars + 1],
@@ -78,8 +96,9 @@ impl Solver {
             branch_cursor: 1,
             scratch_seen: vec![0; num_vars + 1],
             scratch_resolved: vec![0; num_vars + 1],
-            scratch_learned: Vec::with_capacity(8),
-            proof: Vec::new(),
+            scratch_learned: Vec::with_capacity(16),
+            proof_clause_indices: Vec::new(),
+            proof_has_empty: false,
         }
     }
 
@@ -120,6 +139,7 @@ impl Solver {
     }
 
     fn propagate(&mut self) -> Option<usize> {
+        let assignment_ptr = self.assignment.as_ptr();
         loop {
             let trail_len_before = self.trail.len();
             for clause_idx in 0..self.clauses.len() {
@@ -128,10 +148,14 @@ impl Solver {
                 let mut skip_clause = false;
 
                 {
-                    let clause = &self.clauses[clause_idx];
-                    for &lit in clause.iter() {
+                    let clause = self.clauses[clause_idx];
+                    let mut lit_ptr = unsafe { self.clause_data.as_ptr().add(clause.start) };
+                    let lit_end = unsafe { lit_ptr.add(clause.len) };
+                    while lit_ptr != lit_end {
+                        let lit = unsafe { *lit_ptr };
+                        lit_ptr = unsafe { lit_ptr.add(1) };
                         let var = lit.unsigned_abs() as usize;
-                        let val = self.assignment[var];
+                        let val = unsafe { *assignment_ptr.add(var) };
 
                         if val == UNASSIGNED {
                             if implied_lit != 0 {
@@ -210,7 +234,10 @@ impl Solver {
     }
 
     fn add_clause(&mut self, clause: Vec<i32>) -> usize {
-        self.clauses.push(clause.into_boxed_slice());
+        let start = self.clause_data.len();
+        let len = clause.len();
+        self.clause_data.extend_from_slice(&clause);
+        self.clauses.push(ClauseRef { start, len });
         self.clauses.len() - 1
     }
 
@@ -230,7 +257,9 @@ impl Solver {
 
         mark_clause_literals(
             decision_level,
-            &clauses[conflict_clause_idx],
+            &self.clause_data
+                [clauses[conflict_clause_idx].start..clauses[conflict_clause_idx].start
+                    + clauses[conflict_clause_idx].len],
             current_level,
             seen,
             resolved,
@@ -260,7 +289,8 @@ impl Solver {
             if reason_idx != NO_REASON {
                 mark_clause_literals(
                     decision_level,
-                    &clauses[reason_idx],
+                    &self.clause_data
+                        [clauses[reason_idx].start..clauses[reason_idx].start + clauses[reason_idx].len],
                     current_level,
                     seen,
                     resolved,
@@ -294,15 +324,15 @@ impl Solver {
             match conflict {
                 Some(conflict_clause_idx) => {
                     if self.current_level() == 0 {
-                        self.proof.push(vec![]);
+                        self.proof_has_empty = true;
                         return false;
                     }
 
                     let (learned_clause, backtrack_level) =
                         self.analyze_conflict(conflict_clause_idx);
-                    self.proof.push(learned_clause.clone());
                     let asserting_lit = learned_clause[0];
                     let learned_clause_idx = self.add_clause(learned_clause);
+                    self.proof_clause_indices.push(learned_clause_idx);
 
                     self.backtrack(backtrack_level);
                     let inserted = self.enqueue(asserting_lit, learned_clause_idx);
@@ -369,20 +399,31 @@ fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
     (num_vars, clauses)
 }
 
-fn write_proof(output_dir: &str, proof: &[Vec<i32>]) {
+fn write_proof(
+    output_dir: &str,
+    clauses: &[ClauseRef],
+    clause_data: &[i32],
+    proof_clause_indices: &[usize],
+    proof_has_empty: bool,
+) {
     let proof_path = Path::new(output_dir).join("proof.out");
     let mut file = fs::File::create(&proof_path).unwrap_or_else(|e| {
         eprintln!("Error creating {}: {}", proof_path.display(), e);
         std::process::exit(1);
     });
 
-    for clause in proof {
-        let line: String = clause
+    for &clause_idx in proof_clause_indices {
+        let clause = clauses[clause_idx];
+        let line: String = clause_data[clause.start..clause.start + clause.len]
             .iter()
             .map(|lit| lit.to_string())
             .collect::<Vec<_>>()
             .join(" ");
         writeln!(file, "{} 0", line).expect("Failed to write proof");
+    }
+
+    if proof_has_empty {
+        writeln!(file, " 0").expect("Failed to write proof");
     }
 }
 
@@ -423,10 +464,13 @@ fn main() {
         print_assignment(&solver.assignment);
     } else {
         println!("s UNSATISFIABLE");
-        if solver.proof.is_empty() {
-            solver.proof.push(vec![]);
-        }
-        write_proof(output_dir, &solver.proof);
+        write_proof(
+            output_dir,
+            &solver.clauses,
+            &solver.clause_data,
+            &solver.proof_clause_indices,
+            solver.proof_has_empty,
+        );
     }
 }
 
@@ -537,12 +581,9 @@ mod tests {
         assert!(!s.solve());
         assert!(s.learned_clause_count() > 0);
         assert!(
-            s.proof.iter().any(|clause| !clause.is_empty()),
+            !s.proof_clause_indices.is_empty(),
             "expected proof to contain at least one learned clause before the empty clause",
         );
-        assert!(
-            matches!(s.proof.last(), Some(clause) if clause.is_empty()),
-            "expected proof to end with the empty clause",
-        );
+        assert!(s.proof_has_empty, "expected proof to end with the empty clause");
     }
 }

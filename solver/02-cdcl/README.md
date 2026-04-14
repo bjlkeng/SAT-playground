@@ -77,9 +77,9 @@ The outer interface is unchanged from `01`, so the shared tooling (`tools/smoke_
 
 Completed checks for this iteration:
 
-- `cargo test` — 9/9 unit tests passed
-- `bash tools/smoke_test.sh solver/02-cdcl` — 8/8 smoke tests passed
-- All 4 UNSAT smoke-test proofs verified with `drat-trim`
+- `cargo test` — 10/10 unit tests passed
+- `bash tools/smoke_test.sh solver/02-cdcl` — 9/9 smoke tests passed
+- All 5 UNSAT smoke-test proofs verified with `drat-trim`
 
 ## Code-Level Optimization Log
 
@@ -124,6 +124,35 @@ Additional attempts were benchmarked and reverted because they did not improve P
 - enlarging the learned-clause scratch buffer
 - forcing `mark_clause_literals()` inline
 
+Additional optimization round on 2026-04-13, starting from the existing optimized solver:
+
+- **Round baseline:** `375.663` PAR-2, `5/6` solved
+
+5. **Flat clause storage in one contiguous literal buffer**
+   Replaced `Vec<Box<[i32]>>` with lightweight clause refs into a shared `clause_data` buffer, reducing clause allocation overhead and improving scan locality.
+   PAR-2 improved from `375.663` to `370.471`.
+
+6. **Proof clause indices instead of cloned proof clauses**
+   Logged learned-clause indices plus an empty-clause flag for DRAT output so proof generation no longer clones learned clauses.
+   PAR-2 improved from `370.471` to `369.990`.
+
+7. **Raw-pointer assignment loads in `propagate()`**
+   Switched the propagation inner loop to read assignments through a cached raw pointer while walking clause literals with pointer arithmetic.
+   PAR-2 improved from `369.990` to `364.905`.
+
+8. **Larger reusable learned-clause scratch buffer**
+   Increased the reusable `scratch_learned` capacity from `8` to `16` to reduce capacity growth during conflict analysis.
+   PAR-2 improved from `364.905` to `364.794`.
+
+Additional attempts in this round were benchmarked and reverted because they did not improve PAR-2. Those included:
+
+- raw-pointer decision/reason loads in conflict analysis
+- raw-pointer backtrack clears
+- preallocating `trail_limits`
+- advancing the branch cursor past the chosen variable
+- forcing `mark_clause_literals()` inline
+- scanning `pick_branch_lit()` through a raw pointer
+
 ## Profiling Benchmark Results
 
 Environment:
@@ -138,13 +167,13 @@ Results:
 
 | Instance | Type | Result | Time |
 |----------|------|--------|------|
-| feistel_b64_k32_r12 | crypto | SAT | 3.957s |
-| feistel_b64_k32_r14 | crypto | SAT | 49.614s |
+| feistel_b64_k32_r12 | crypto | SAT | 3.879s |
+| feistel_b64_k32_r14 | crypto | SAT | 49.055s |
 | feistel_b64_k32_r16 | crypto | TIMEOUT | 120.000s |
-| random_v110_s1 | 3-SAT | UNSAT | 2.886s |
-| random_v130_s3 | 3-SAT | SAT | 20.908s |
-| random_v140_s1 | 3-SAT | UNSAT | 47.121s |
+| random_v110_s1 | 3-SAT | UNSAT | 2.922s |
+| random_v130_s3 | 3-SAT | SAT | 21.302s |
+| random_v140_s1 | 3-SAT | UNSAT | 47.636s |
 
-**PAR-2: 364.486 (5/6 solved)**
+**PAR-2: 364.794 (5/6 solved)**
 
-This is a `19.675` point PAR-2 improvement over the refreshed-suite baseline, about `5.1%` better without changing the algorithmic structure of the solver. The remaining work for later iterations should focus on reducing propagation cost further and improving branching quality.
+This is a `19.367` point PAR-2 improvement over the refreshed-suite baseline, about `5.0%` better without changing the algorithmic structure of the solver. The 2026-04-13 optimization round alone improved PAR-2 by `10.869` points from its measured starting point. The remaining work for later iterations should focus on reducing propagation cost further and improving branching quality.
