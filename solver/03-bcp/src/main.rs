@@ -22,7 +22,7 @@ struct Solver {
     /// watched literal positions within each clause
     watch_pos: Vec<[usize; 2]>,
     /// clauses currently watching each literal
-    watchers: Vec<Vec<usize>>,
+    watchers: Vec<Vec<u32>>,
     /// assignment[v] for variable v (1-based, index 0 unused)
     /// 0 = unassigned, 1 = true, 2 = false
     assignment: Vec<u8>,
@@ -81,6 +81,13 @@ fn mark_clause_literals(
     }
 }
 
+#[inline(always)]
+fn lit_to_index(lit: i32) -> usize {
+    let var = lit.unsigned_abs() as usize;
+    let base = (var - 1) * 2;
+    if lit > 0 { base } else { base + 1 }
+}
+
 impl Solver {
     fn new(num_vars: usize, clauses: Vec<Vec<i32>>) -> Self {
         let original_clause_count = clauses.len();
@@ -128,9 +135,7 @@ impl Solver {
 
     #[inline(always)]
     fn lit_index(&self, lit: i32) -> usize {
-        let var = lit.unsigned_abs() as usize;
-        let base = (var - 1) * 2;
-        if lit > 0 { base } else { base + 1 }
+        lit_to_index(lit)
     }
 
     fn attach_clause(&mut self, clause_idx: usize, track_root_unit: bool) {
@@ -143,7 +148,7 @@ impl Solver {
                 self.watch_pos[clause_idx] = [0, 0];
                 let lit = self.clause_data[clause.start];
                 let watch_idx = self.lit_index(lit);
-                self.watchers[watch_idx].push(clause_idx);
+                self.watchers[watch_idx].push(clause_idx as u32);
                 if track_root_unit {
                     self.root_unit_clauses.push(clause_idx);
                 }
@@ -154,8 +159,8 @@ impl Solver {
                 let second = self.clause_data[clause.start + 1];
                 let first_watch_idx = self.lit_index(first);
                 let second_watch_idx = self.lit_index(second);
-                self.watchers[first_watch_idx].push(clause_idx);
-                self.watchers[second_watch_idx].push(clause_idx);
+                self.watchers[first_watch_idx].push(clause_idx as u32);
+                self.watchers[second_watch_idx].push(clause_idx as u32);
             }
         }
     }
@@ -203,6 +208,8 @@ impl Solver {
     }
 
     fn propagate(&mut self) -> Option<usize> {
+        let assignment_ptr = self.assignment.as_ptr();
+
         while self.propagate_head < self.trail.len() {
             let false_lit = -self.trail[self.propagate_head];
             self.propagate_head += 1;
@@ -210,26 +217,27 @@ impl Solver {
             let mut pending = std::mem::take(&mut self.watchers[watch_idx]);
             let mut retained = Vec::with_capacity(pending.len());
 
-            while let Some(clause_idx) = pending.pop() {
+            while let Some(clause_idx_u32) = pending.pop() {
+                let clause_idx = clause_idx_u32 as usize;
                 let clause = self.clauses[clause_idx];
                 if clause.len == 1 {
                     let unit_lit = self.clause_data[clause.start];
                     match self.lit_value(unit_lit) {
-                        TRUE => retained.push(clause_idx),
+                        TRUE => retained.push(clause_idx_u32),
                         FALSE => {
-                            retained.push(clause_idx);
+                            retained.push(clause_idx_u32);
                             retained.extend(pending.into_iter());
                             self.watchers[watch_idx] = retained;
                             return Some(clause_idx);
                         }
                         UNASSIGNED => {
                             if !self.enqueue(unit_lit, clause_idx) {
-                                retained.push(clause_idx);
+                                retained.push(clause_idx_u32);
                                 retained.extend(pending.into_iter());
                                 self.watchers[watch_idx] = retained;
                                 return Some(clause_idx);
                             }
-                            retained.push(clause_idx);
+                            retained.push(clause_idx_u32);
                         }
                         _ => unreachable!(),
                     }
@@ -250,8 +258,10 @@ impl Solver {
 
                 let other_watch_pos = self.watch_pos[clause_idx][other_watch_slot];
                 let other_lit = self.clause_data[clause_start + other_watch_pos];
-                if self.lit_value(other_lit) == TRUE {
-                    retained.push(clause_idx);
+                let other_var = other_lit.unsigned_abs() as usize;
+                let other_val = unsafe { *assignment_ptr.add(other_var) };
+                if other_val != UNASSIGNED && ((other_lit > 0) == (other_val == TRUE)) {
+                    retained.push(clause_idx_u32);
                     continue;
                 }
 
@@ -261,10 +271,12 @@ impl Solver {
                         continue;
                     }
                     let candidate = self.clause_data[clause_start + lit_pos];
-                    if self.lit_value(candidate) != FALSE {
+                    let candidate_var = candidate.unsigned_abs() as usize;
+                    let candidate_val = unsafe { *assignment_ptr.add(candidate_var) };
+                    if candidate_val == UNASSIGNED || ((candidate > 0) == (candidate_val == TRUE)) {
                         self.watch_pos[clause_idx][false_watch_slot] = lit_pos;
                         let new_watch_idx = self.lit_index(candidate);
-                        self.watchers[new_watch_idx].push(clause_idx);
+                        self.watchers[new_watch_idx].push(clause_idx_u32);
                         moved_watch = true;
                         break;
                     }
@@ -274,14 +286,16 @@ impl Solver {
                     continue;
                 }
 
-                if self.lit_value(other_lit) == FALSE || !self.enqueue(other_lit, clause_idx) {
-                    retained.push(clause_idx);
+                if other_val != UNASSIGNED && ((other_lit > 0) != (other_val == TRUE))
+                    || !self.enqueue(other_lit, clause_idx)
+                {
+                    retained.push(clause_idx_u32);
                     retained.extend(pending.into_iter());
                     self.watchers[watch_idx] = retained;
                     return Some(clause_idx);
                 }
 
-                retained.push(clause_idx);
+                retained.push(clause_idx_u32);
             }
 
             self.watchers[watch_idx] = retained;
@@ -406,9 +420,19 @@ impl Solver {
         learned_clause.extend(learned.iter().copied());
 
         let mut backtrack_level = 0usize;
-        for &lit in learned_clause.iter().skip(1) {
+        let mut backtrack_pos = 1usize;
+        for pos in 1..learned_clause.len() {
+            let lit = learned_clause[pos];
             let var = lit.unsigned_abs() as usize;
-            backtrack_level = backtrack_level.max(self.decision_level[var]);
+            let level = self.decision_level[var];
+            if level > backtrack_level {
+                backtrack_level = level;
+                backtrack_pos = pos;
+            }
+        }
+
+        if learned_clause.len() > 2 && backtrack_pos != 1 {
+            learned_clause.swap(1, backtrack_pos);
         }
 
         (learned_clause, backtrack_level)

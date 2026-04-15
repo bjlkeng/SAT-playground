@@ -67,6 +67,39 @@ Completed checks for this first pass:
 - `bash tools/smoke_test.sh solver/03-bcp` — 9/9 smoke tests passed
 - All 5 UNSAT smoke-test proofs verified with `drat-trim`
 
+## Code-Level Optimization Log
+
+Baseline before code-level tuning on 2026-04-15:
+
+- **PAR-2:** `1440.000`
+- **Solved:** `0/6`
+
+Measurement note:
+
+- The optimization loop benchmarks in this round were run while a separate long-running `02-cdcl` medium benchmark was active on the machine, so very small sub-point deltas should be treated as approximate.
+
+Successful optimization attempts kept in the solver:
+
+1. **Place the backtrack-level literal in learned-clause slot `1`**
+   After conflict analysis, the highest-decision-level non-UIP literal is swapped into position `1`, so newly attached learned clauses start with the standard asserting watch pair.
+   PAR-2 improved from `1440.000` to `722.796`.
+
+2. **Raw-pointer assignment loads in `propagate()`**
+   The watched-literal propagation hot path now reads assignments through a cached raw pointer instead of repeatedly calling `lit_value()` for watched and candidate literals.
+   PAR-2 improved from `722.796` to `722.569`.
+
+3. **`u32` clause indices in watch lists**
+   Changed `watchers` from `Vec<Vec<usize>>` to `Vec<Vec<u32>>` to reduce watch-list footprint and improve cache density in propagation.
+   PAR-2 improved from `722.569` to `722.523`.
+
+Additional attempts were benchmarked and reverted because they did not improve PAR-2 or broke behavior:
+
+- in-place watch-list reuse/compaction during propagation
+- binary-clause fast path
+- circular replacement-watch scan from the current watch position
+- sorting the full learned-clause tail by decision level
+- preallocating initial watch-list capacities
+
 ## Profiling Benchmark Results
 
 Environment:
@@ -84,10 +117,16 @@ Results:
 | feistel_b64_k32_r12 | crypto | TIMEOUT | 120.000s |
 | feistel_b64_k32_r14 | crypto | TIMEOUT | 120.000s |
 | feistel_b64_k32_r16 | crypto | TIMEOUT | 120.000s |
-| random_v110_s1 | 3-SAT | TIMEOUT | 120.000s |
-| random_v130_s3 | 3-SAT | TIMEOUT | 120.000s |
-| random_v140_s1 | 3-SAT | TIMEOUT | 120.000s |
+| random_v110_s1 | 3-SAT | UNSAT | 0.198s |
+| random_v130_s3 | 3-SAT | SAT | 0.846s |
+| random_v140_s1 | 3-SAT | UNSAT | 1.479s |
 
-**PAR-2: 1440.000 (0/6 solved)**
+**PAR-2: 722.523 (3/6 solved)**
 
-This confirms that the first watched-literal BCP pass is a correctness baseline only. The current implementation regresses substantially against `02-cdcl` and needs targeted follow-up work on watcher handling, clause access, and propagation hot paths before it is competitive.
+This is a `717.477` point PAR-2 improvement over the unoptimized `03` baseline, about `49.8%` better on the profiling suite. The kept changes recover the random 3-SAT side of the benchmark, but the Feistel crypto instances still time out, so the remaining work is still concentrated in propagation cost and clause-handling efficiency on harder formulas.
+
+Historical note from the pre-optimization baseline:
+
+- **Command:** `bash tools/bench.sh -t 600 -d benchmarks/profiling solver/03-bcp`
+- **Result:** all 6 profiling instances timed out before the optimization round
+- **PAR-2:** `7200.000`
