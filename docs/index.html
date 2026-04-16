@@ -202,6 +202,52 @@
         color: var(--muted);
       }
 
+      .curve-grid {
+        display: grid;
+        gap: 12px;
+        margin-top: 18px;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      }
+
+      .curve-card {
+        padding: 16px;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.76);
+      }
+
+      .curve-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      .curve-line {
+        width: 26px;
+        height: 0;
+        border-top: 4px solid currentColor;
+        border-radius: 999px;
+        flex: 0 0 auto;
+      }
+
+      .curve-line.dashed {
+        border-top-style: dashed;
+      }
+
+      .curve-card h3 {
+        margin: 0;
+        font-size: 1rem;
+      }
+
+      .curve-meta {
+        display: grid;
+        gap: 6px;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.82rem;
+        color: var(--muted);
+      }
+
       .logs-grid {
         display: grid;
         gap: 14px;
@@ -279,9 +325,10 @@
           <h1>Iterative SAT solvers, benchmarked against real baselines.</h1>
           <p class="lead">
             This repository builds Boolean SAT solvers one iteration at a time in Rust, keeping each
-            solver self-contained and measurable. The chart below compares the latest available
+            solver self-contained and measurable. The main figure below uses the latest available
             <strong>SAT Competition 2025 Medium</strong> run for each in-repo solver that has one, alongside
-            reference solvers in a distinct color.
+            reference solvers in a distinct color, to show how quickly each solver accumulates solved
+            instances over time.
           </p>
           <div class="actions">
             <a class="button" href="https://github.com/bjlkeng/SAT-playground" target="_blank" rel="noreferrer">View Source</a>
@@ -294,22 +341,39 @@
       </section>
 
       <section class="panel">
-        <h2>Latest Medium PAR-2</h2>
+        <h2>Cumulative Solved vs Time</h2>
         <p>
-          Lower is better. The page is generated from the latest available 100-instance, 1800-second
-          medium-track runs per solver. Missing solver iterations are skipped automatically.
+          This follows the standard SAT competition style: each curve rises when a solver finishes an
+          instance. Higher and earlier is better.
         </p>
         <div class="legend">
-          <span class="legend-item"><span class="legend-swatch" style="background: var(--repo)"></span>Repo solver</span>
-          <span class="legend-item"><span class="legend-swatch" style="background: var(--reference)"></span>Reference solver</span>
+          <span class="legend-item"><span class="legend-swatch" style="background: var(--repo)"></span>Repo solver family</span>
+          <span class="legend-item"><span class="legend-swatch" style="background: var(--reference)"></span>Reference solver family</span>
+          <span class="legend-item"><span class="legend-swatch" style="background: var(--accent)"></span>Virtual best</span>
         </div>
         <div class="chart-wrap">
-          <svg id="chart" viewBox="0 0 980 420" preserveAspectRatio="xMidYMid meet" aria-labelledby="chart-title chart-desc">
-            <title id="chart-title">PAR-2 comparison chart</title>
-            <desc id="chart-desc">Latest available SAT Competition 2025 medium benchmark PAR-2 per solver.</desc>
+          <svg id="curve-chart" viewBox="0 0 980 460" preserveAspectRatio="xMidYMid meet" aria-labelledby="curve-chart-title curve-chart-desc">
+            <title id="curve-chart-title">Cumulative solved versus time chart</title>
+            <desc id="curve-chart-desc">Latest available SAT Competition 2025 medium benchmark cumulative solved instances over time per solver.</desc>
           </svg>
         </div>
-        <p class="notes" id="chart-notes"></p>
+        <div class="curve-grid" id="curve-legend"></div>
+        <p class="notes" id="curve-notes"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Latest Medium PAR-2</h2>
+        <p>
+          Lower is better. This keeps the aggregate PAR-2 comparison visible next to the more familiar
+          cumulative runtime plot.
+        </p>
+        <div class="chart-wrap">
+          <svg id="par2-chart" viewBox="0 0 980 420" preserveAspectRatio="xMidYMid meet" aria-labelledby="par2-chart-title par2-chart-desc">
+            <title id="par2-chart-title">PAR-2 comparison chart</title>
+            <desc id="par2-chart-desc">Latest available SAT Competition 2025 medium benchmark PAR-2 per solver.</desc>
+          </svg>
+        </div>
+        <p class="notes" id="par2-notes"></p>
       </section>
 
       <section class="panel" id="logs">
@@ -326,8 +390,14 @@
 
     <script>
       const CHART_URL = "./data/medium-par2.json";
-      const REPO_COLOR = "#1f5fbf";
-      const REFERENCE_COLOR = "#d06b24";
+      const LINE_COLORS = {
+        "01-naive-dpll": "#5f83ff",
+        "02-cdcl": "#163d8f",
+        minisat: "#ecab4e",
+        "kissat-sc2024": "#c7631f",
+        "kissat-latest": "#8d3613",
+        "virtual-best": "#0d8a72",
+      };
 
       function formatNumber(value) {
         return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
@@ -349,6 +419,48 @@
         return wrapper;
       }
 
+      function solverColor(entry) {
+        return LINE_COLORS[entry.slug] ?? (entry.family === "reference" ? "#d06b24" : "#1f5fbf");
+      }
+
+      function svgNode(parent, tag, attrs) {
+        const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+        for (const [key, value] of Object.entries(attrs)) {
+          node.setAttribute(key, String(value));
+        }
+        parent.appendChild(node);
+        return node;
+      }
+
+      function niceCeil(value, step) {
+        return Math.ceil(value / step) * step;
+      }
+
+      function nicePar2Max(value) {
+        const magnitude = 10 ** Math.floor(Math.log10(value));
+        for (const scale of [1, 2, 5, 10]) {
+          const candidate = scale * magnitude;
+          if (candidate >= value) {
+            return candidate;
+          }
+        }
+        return 10 * magnitude;
+      }
+
+      function curveMarkerPoint(curve, timeoutSeconds) {
+        const last = curve[curve.length - 1];
+        if (curve.length >= 2 && last.time === timeoutSeconds) {
+          return curve[curve.length - 2];
+        }
+        return last;
+      }
+
+      function buildLinePath(curve, xScale, yScale) {
+        return curve
+          .map((point, index) => `${index === 0 ? "M" : "L"} ${xScale(point.time).toFixed(2)} ${yScale(point.solved).toFixed(2)}`)
+          .join(" ");
+      }
+
       function renderHero(data) {
         const metrics = document.getElementById("hero-metrics");
         metrics.innerHTML = "";
@@ -362,12 +474,208 @@
           metricCard("Benchmark", data.benchmark.name),
           metricCard("Compared solvers", String(entries.length)),
           metricCard("Repo / reference", `${repoCount} / ${refCount}`),
-          metricCard("Current leader", `${best.label} · ${formatNumber(best.par2)}`),
+          metricCard("Best PAR-2", `${best.label} · ${formatNumber(best.par2)}`),
         );
+
+        if (data.virtualBest) {
+          metrics.append(metricCard("Virtual best", `${data.virtualBest.solved}/${data.virtualBest.instances} solved`));
+        }
       }
 
-      function renderChart(data) {
-        const svg = document.getElementById("chart");
+      function renderCurveChart(data) {
+        const svg = document.getElementById("curve-chart");
+        svg.replaceChildren();
+
+        const width = 980;
+        const height = 460;
+        const top = 24;
+        const left = 66;
+        const right = 24;
+        const bottom = 58;
+        const plotWidth = width - left - right;
+        const plotHeight = height - top - bottom;
+        const timeoutSeconds = data.benchmark.timeoutSeconds;
+        const curves = [...data.entries];
+
+        if (data.virtualBest) {
+          curves.push(data.virtualBest);
+        }
+
+        const maxSolved = Math.max(...curves.map((entry) => entry.solved));
+        const yStep = maxSolved <= 40 ? 5 : 10;
+        const yMax = Math.max(yStep, niceCeil(maxSolved, yStep));
+        const xScale = (time) => left + (time / timeoutSeconds) * plotWidth;
+        const yScale = (solved) => top + plotHeight - (solved / yMax) * plotHeight;
+
+        svgNode(svg, "rect", { x: 0, y: 0, width, height, fill: "transparent" });
+
+        for (let tick = 0; tick <= 6; tick += 1) {
+          const value = timeoutSeconds * (tick / 6);
+          const x = xScale(value);
+          svgNode(svg, "line", {
+            x1: x,
+            y1: top,
+            x2: x,
+            y2: top + plotHeight,
+            stroke: "rgba(30, 36, 48, 0.14)",
+            "stroke-width": 1,
+          });
+          const label = svgNode(svg, "text", {
+            x,
+            y: height - 20,
+            fill: "#59616f",
+            "font-size": 12,
+            "font-family": "IBM Plex Mono, SFMono-Regular, Consolas, monospace",
+            "text-anchor": tick === 0 ? "start" : tick === 6 ? "end" : "middle",
+          });
+          label.textContent = formatNumber(value);
+        }
+
+        for (let value = 0; value <= yMax; value += yStep) {
+          const y = yScale(value);
+          svgNode(svg, "line", {
+            x1: left,
+            y1: y,
+            x2: left + plotWidth,
+            y2: y,
+            stroke: "rgba(30, 36, 48, 0.14)",
+            "stroke-width": 1,
+          });
+          const label = svgNode(svg, "text", {
+            x: left - 12,
+            y: y + 4,
+            fill: "#59616f",
+            "font-size": 12,
+            "font-family": "IBM Plex Mono, SFMono-Regular, Consolas, monospace",
+            "text-anchor": "end",
+          });
+          label.textContent = String(value);
+        }
+
+        const xLabel = svgNode(svg, "text", {
+          x: left + plotWidth / 2,
+          y: height - 2,
+          fill: "#59616f",
+          "font-size": 12,
+          "font-family": "IBM Plex Mono, SFMono-Regular, Consolas, monospace",
+          "text-anchor": "middle",
+        });
+        xLabel.textContent = "Runtime (seconds)";
+
+        const yLabel = svgNode(svg, "text", {
+          x: 18,
+          y: top + plotHeight / 2,
+          fill: "#59616f",
+          "font-size": 12,
+          "font-family": "IBM Plex Mono, SFMono-Regular, Consolas, monospace",
+          transform: `rotate(-90 18 ${top + plotHeight / 2})`,
+          "text-anchor": "middle",
+        });
+        yLabel.textContent = "Solved instances";
+
+        const drawOrder = [...data.entries].sort((leftEntry, rightEntry) => {
+          if (leftEntry.solved !== rightEntry.solved) {
+            return leftEntry.solved - rightEntry.solved;
+          }
+          return rightEntry.par2 - leftEntry.par2;
+        });
+
+        drawOrder.forEach((entry) => {
+          const color = solverColor(entry);
+          svgNode(svg, "path", {
+            d: buildLinePath(entry.curve, xScale, yScale),
+            fill: "none",
+            stroke: color,
+            "stroke-width": 3,
+            "stroke-linejoin": "round",
+            "stroke-linecap": "round",
+          });
+
+          const marker = curveMarkerPoint(entry.curve, timeoutSeconds);
+          svgNode(svg, "circle", {
+            cx: xScale(marker.time),
+            cy: yScale(marker.solved),
+            r: 3.5,
+            fill: color,
+          });
+        });
+
+        if (data.virtualBest) {
+          const color = solverColor(data.virtualBest);
+          svgNode(svg, "path", {
+            d: buildLinePath(data.virtualBest.curve, xScale, yScale),
+            fill: "none",
+            stroke: color,
+            "stroke-width": 3.5,
+            "stroke-dasharray": "10 7",
+            "stroke-linejoin": "round",
+            "stroke-linecap": "round",
+          });
+
+          const marker = curveMarkerPoint(data.virtualBest.curve, timeoutSeconds);
+          svgNode(svg, "circle", {
+            cx: xScale(marker.time),
+            cy: yScale(marker.solved),
+            r: 4,
+            fill: color,
+          });
+        }
+      }
+
+      function renderCurveLegend(data) {
+        const container = document.getElementById("curve-legend");
+        container.innerHTML = "";
+
+        const cards = [...data.entries];
+        if (data.virtualBest) {
+          cards.unshift(data.virtualBest);
+        }
+
+        cards.forEach((entry) => {
+          const card = document.createElement("article");
+          card.className = "curve-card";
+
+          const head = document.createElement("div");
+          head.className = "curve-head";
+          head.style.color = solverColor(entry);
+
+          const line = document.createElement("span");
+          line.className = `curve-line${entry.family === "virtual-best" ? " dashed" : ""}`;
+
+          const title = document.createElement("h3");
+          title.textContent = entry.label;
+
+          head.append(line, title);
+
+          const meta = document.createElement("div");
+          meta.className = "curve-meta";
+          meta.append(
+            Object.assign(document.createElement("span"), {
+              textContent: `${entry.solved}/${entry.instances} solved`,
+            }),
+          );
+
+          if (entry.family === "virtual-best") {
+            meta.append(
+              Object.assign(document.createElement("span"), {
+                textContent: "Fastest solved time per instance across the plotted solvers",
+              }),
+            );
+          } else {
+            meta.append(
+              Object.assign(document.createElement("span"), {
+                textContent: `PAR-2 ${formatNumber(entry.par2)}`,
+              }),
+            );
+          }
+
+          card.append(head, meta);
+          container.append(card);
+        });
+      }
+
+      function renderPar2Chart(data) {
+        const svg = document.getElementById("par2-chart");
         svg.replaceChildren();
 
         const entries = data.entries;
@@ -380,25 +688,15 @@
         const plotWidth = width - left - right;
         const rowHeight = 56;
         const maxPar2 = Math.max(...entries.map((entry) => entry.par2));
-        const axisMax = Math.ceil(maxPar2 / 10000) * 10000;
+        const axisMax = nicePar2Max(maxPar2);
 
-        const ns = "http://www.w3.org/2000/svg";
-        const add = (tag, attrs) => {
-          const node = document.createElementNS(ns, tag);
-          for (const [key, value] of Object.entries(attrs)) {
-            node.setAttribute(key, String(value));
-          }
-          svg.appendChild(node);
-          return node;
-        };
-
-        add("rect", { x: 0, y: 0, width, height, fill: "transparent" });
+        svgNode(svg, "rect", { x: 0, y: 0, width, height, fill: "transparent" });
 
         const tickCount = 4;
         for (let index = 0; index <= tickCount; index += 1) {
           const value = axisMax * (index / tickCount);
           const x = left + plotWidth * (value / axisMax);
-          add("line", {
+          svgNode(svg, "line", {
             x1: x,
             y1: top,
             x2: x,
@@ -406,7 +704,7 @@
             stroke: "rgba(30, 36, 48, 0.14)",
             "stroke-width": 1,
           });
-          const label = add("text", {
+          const label = svgNode(svg, "text", {
             x,
             y: height - 20,
             fill: "#59616f",
@@ -417,7 +715,7 @@
           label.textContent = formatNumber(value);
         }
 
-        const axisLabel = add("text", {
+        const axisLabel = svgNode(svg, "text", {
           x: left + plotWidth / 2,
           y: height - 4,
           fill: "#59616f",
@@ -432,9 +730,9 @@
           const barY = y + 12;
           const barHeight = 28;
           const barWidth = Math.max(6, plotWidth * (entry.par2 / axisMax));
-          const color = entry.family === "reference" ? REFERENCE_COLOR : REPO_COLOR;
+          const color = solverColor(entry);
 
-          const label = add("text", {
+          const label = svgNode(svg, "text", {
             x: left - 18,
             y: y + 31,
             fill: "#1e2430",
@@ -444,7 +742,7 @@
           });
           label.textContent = entry.label;
 
-          add("rect", {
+          svgNode(svg, "rect", {
             x: left,
             y: barY,
             width: plotWidth,
@@ -453,7 +751,7 @@
             fill: "rgba(30, 36, 48, 0.05)",
           });
 
-          add("rect", {
+          svgNode(svg, "rect", {
             x: left,
             y: barY,
             width: barWidth,
@@ -462,22 +760,25 @@
             fill: color,
           });
 
-          const valueText = add("text", {
-            x: left + Math.min(barWidth + 12, plotWidth - 2),
+          const labelInside = barWidth > plotWidth - 160;
+          const valueText = svgNode(svg, "text", {
+            x: labelInside ? left + barWidth - 12 : left + Math.min(barWidth + 12, plotWidth - 2),
             y: y + 31,
-            fill: "#1e2430",
+            fill: labelInside ? "#fffdf7" : "#1e2430",
             "font-size": 13,
             "font-family": "IBM Plex Mono, SFMono-Regular, Consolas, monospace",
-            "text-anchor": "start",
+            "text-anchor": labelInside ? "end" : "start",
           });
           valueText.textContent = `${formatNumber(entry.par2)} · ${entry.solved}/${entry.instances} solved`;
         });
       }
 
       function renderNotes(data) {
-        const notes = document.getElementById("chart-notes");
-        const missing = data.missing.length ? ` Missing from the chart because no medium run is available yet: ${data.missing.join(", ")}.` : "";
-        notes.textContent = `${data.benchmark.note}${missing}`;
+        const missing = data.missing.length
+          ? ` Missing from the charts because no medium run is available yet: ${data.missing.join(", ")}.`
+          : "";
+        document.getElementById("curve-notes").textContent = `${data.benchmark.curveNote}${missing}`;
+        document.getElementById("par2-notes").textContent = `${data.benchmark.note}${missing}`;
       }
 
       function renderLogs(data) {
@@ -522,11 +823,14 @@
 
           const data = await response.json();
           renderHero(data);
-          renderChart(data);
+          renderCurveChart(data);
+          renderCurveLegend(data);
+          renderPar2Chart(data);
           renderNotes(data);
           renderLogs(data);
-          status.textContent = `Generated ${new Date(data.generatedAt).toLocaleString()} from the latest available medium benchmark logs.`;
+          status.textContent = `Loaded ${data.entries.length} solver runs from ${new Date(data.generatedAt).toLocaleString()}.`;
         } catch (error) {
+          console.error(error);
           status.textContent = `Unable to load benchmark data: ${error.message}`;
         }
       }

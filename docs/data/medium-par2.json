@@ -1,11 +1,12 @@
 {
-  "generatedAt": "2026-04-16T23:18:04.454941+00:00",
+  "generatedAt": "2026-04-16T23:30:23.715124+00:00",
   "benchmark": {
     "name": "SAT Competition 2025 Medium",
     "instances": 100,
     "timeoutSeconds": 1800,
     "metric": "PAR-2",
-    "note": "Latest available medium run per solver with 100 instances and a 1800s timeout."
+    "note": "Latest available medium run per solver with 100 instances and a 1800s timeout.",
+    "curveNote": "Curves show cumulative solved instances over runtime; the virtual best line uses the fastest solved time per instance across the plotted solvers."
   },
   "entries": [
     {
@@ -26,7 +27,657 @@
       "unsat": 36,
       "timeouts": 20,
       "unknown": 0,
-      "errors": 0
+      "errors": 0,
+      "curve": [
+        {
+          "time": 0.0,
+          "solved": 0
+        },
+        {
+          "time": 0.005,
+          "solved": 0
+        },
+        {
+          "time": 0.005,
+          "solved": 1
+        },
+        {
+          "time": 0.006,
+          "solved": 1
+        },
+        {
+          "time": 0.006,
+          "solved": 2
+        },
+        {
+          "time": 0.008,
+          "solved": 2
+        },
+        {
+          "time": 0.008,
+          "solved": 3
+        },
+        {
+          "time": 0.008,
+          "solved": 3
+        },
+        {
+          "time": 0.008,
+          "solved": 4
+        },
+        {
+          "time": 0.009,
+          "solved": 4
+        },
+        {
+          "time": 0.009,
+          "solved": 5
+        },
+        {
+          "time": 0.058,
+          "solved": 5
+        },
+        {
+          "time": 0.058,
+          "solved": 6
+        },
+        {
+          "time": 0.114,
+          "solved": 6
+        },
+        {
+          "time": 0.114,
+          "solved": 7
+        },
+        {
+          "time": 0.181,
+          "solved": 7
+        },
+        {
+          "time": 0.181,
+          "solved": 8
+        },
+        {
+          "time": 0.283,
+          "solved": 8
+        },
+        {
+          "time": 0.283,
+          "solved": 9
+        },
+        {
+          "time": 1.685,
+          "solved": 9
+        },
+        {
+          "time": 1.685,
+          "solved": 10
+        },
+        {
+          "time": 2.364,
+          "solved": 10
+        },
+        {
+          "time": 2.364,
+          "solved": 11
+        },
+        {
+          "time": 6.842,
+          "solved": 11
+        },
+        {
+          "time": 6.842,
+          "solved": 12
+        },
+        {
+          "time": 7.24,
+          "solved": 12
+        },
+        {
+          "time": 7.24,
+          "solved": 13
+        },
+        {
+          "time": 8.687,
+          "solved": 13
+        },
+        {
+          "time": 8.687,
+          "solved": 14
+        },
+        {
+          "time": 8.693,
+          "solved": 14
+        },
+        {
+          "time": 8.693,
+          "solved": 15
+        },
+        {
+          "time": 9.11,
+          "solved": 15
+        },
+        {
+          "time": 9.11,
+          "solved": 16
+        },
+        {
+          "time": 10.347,
+          "solved": 16
+        },
+        {
+          "time": 10.347,
+          "solved": 17
+        },
+        {
+          "time": 13.626,
+          "solved": 17
+        },
+        {
+          "time": 13.626,
+          "solved": 18
+        },
+        {
+          "time": 14.232,
+          "solved": 18
+        },
+        {
+          "time": 14.232,
+          "solved": 19
+        },
+        {
+          "time": 17.386,
+          "solved": 19
+        },
+        {
+          "time": 17.386,
+          "solved": 20
+        },
+        {
+          "time": 17.886,
+          "solved": 20
+        },
+        {
+          "time": 17.886,
+          "solved": 21
+        },
+        {
+          "time": 27.639,
+          "solved": 21
+        },
+        {
+          "time": 27.639,
+          "solved": 22
+        },
+        {
+          "time": 27.899,
+          "solved": 22
+        },
+        {
+          "time": 27.899,
+          "solved": 23
+        },
+        {
+          "time": 28.845,
+          "solved": 23
+        },
+        {
+          "time": 28.845,
+          "solved": 24
+        },
+        {
+          "time": 29.116,
+          "solved": 24
+        },
+        {
+          "time": 29.116,
+          "solved": 25
+        },
+        {
+          "time": 30.479,
+          "solved": 25
+        },
+        {
+          "time": 30.479,
+          "solved": 26
+        },
+        {
+          "time": 32.239,
+          "solved": 26
+        },
+        {
+          "time": 32.239,
+          "solved": 27
+        },
+        {
+          "time": 42.195,
+          "solved": 27
+        },
+        {
+          "time": 42.195,
+          "solved": 28
+        },
+        {
+          "time": 42.559,
+          "solved": 28
+        },
+        {
+          "time": 42.559,
+          "solved": 29
+        },
+        {
+          "time": 45.251,
+          "solved": 29
+        },
+        {
+          "time": 45.251,
+          "solved": 30
+        },
+        {
+          "time": 60.507,
+          "solved": 30
+        },
+        {
+          "time": 60.507,
+          "solved": 31
+        },
+        {
+          "time": 62.573,
+          "solved": 31
+        },
+        {
+          "time": 62.573,
+          "solved": 32
+        },
+        {
+          "time": 63.363,
+          "solved": 32
+        },
+        {
+          "time": 63.363,
+          "solved": 33
+        },
+        {
+          "time": 66.418,
+          "solved": 33
+        },
+        {
+          "time": 66.418,
+          "solved": 34
+        },
+        {
+          "time": 78.918,
+          "solved": 34
+        },
+        {
+          "time": 78.918,
+          "solved": 35
+        },
+        {
+          "time": 83.937,
+          "solved": 35
+        },
+        {
+          "time": 83.937,
+          "solved": 36
+        },
+        {
+          "time": 94.898,
+          "solved": 36
+        },
+        {
+          "time": 94.898,
+          "solved": 37
+        },
+        {
+          "time": 100.992,
+          "solved": 37
+        },
+        {
+          "time": 100.992,
+          "solved": 38
+        },
+        {
+          "time": 101.764,
+          "solved": 38
+        },
+        {
+          "time": 101.764,
+          "solved": 39
+        },
+        {
+          "time": 105.806,
+          "solved": 39
+        },
+        {
+          "time": 105.806,
+          "solved": 40
+        },
+        {
+          "time": 131.393,
+          "solved": 40
+        },
+        {
+          "time": 131.393,
+          "solved": 41
+        },
+        {
+          "time": 133.729,
+          "solved": 41
+        },
+        {
+          "time": 133.729,
+          "solved": 42
+        },
+        {
+          "time": 135.346,
+          "solved": 42
+        },
+        {
+          "time": 135.346,
+          "solved": 43
+        },
+        {
+          "time": 135.816,
+          "solved": 43
+        },
+        {
+          "time": 135.816,
+          "solved": 44
+        },
+        {
+          "time": 138.299,
+          "solved": 44
+        },
+        {
+          "time": 138.299,
+          "solved": 45
+        },
+        {
+          "time": 149.035,
+          "solved": 45
+        },
+        {
+          "time": 149.035,
+          "solved": 46
+        },
+        {
+          "time": 154.613,
+          "solved": 46
+        },
+        {
+          "time": 154.613,
+          "solved": 47
+        },
+        {
+          "time": 209.162,
+          "solved": 47
+        },
+        {
+          "time": 209.162,
+          "solved": 48
+        },
+        {
+          "time": 226.617,
+          "solved": 48
+        },
+        {
+          "time": 226.617,
+          "solved": 49
+        },
+        {
+          "time": 239.165,
+          "solved": 49
+        },
+        {
+          "time": 239.165,
+          "solved": 50
+        },
+        {
+          "time": 247.685,
+          "solved": 50
+        },
+        {
+          "time": 247.685,
+          "solved": 51
+        },
+        {
+          "time": 278.962,
+          "solved": 51
+        },
+        {
+          "time": 278.962,
+          "solved": 52
+        },
+        {
+          "time": 280.397,
+          "solved": 52
+        },
+        {
+          "time": 280.397,
+          "solved": 53
+        },
+        {
+          "time": 297.874,
+          "solved": 53
+        },
+        {
+          "time": 297.874,
+          "solved": 54
+        },
+        {
+          "time": 299.54,
+          "solved": 54
+        },
+        {
+          "time": 299.54,
+          "solved": 55
+        },
+        {
+          "time": 308.452,
+          "solved": 55
+        },
+        {
+          "time": 308.452,
+          "solved": 56
+        },
+        {
+          "time": 318.513,
+          "solved": 56
+        },
+        {
+          "time": 318.513,
+          "solved": 57
+        },
+        {
+          "time": 337.621,
+          "solved": 57
+        },
+        {
+          "time": 337.621,
+          "solved": 58
+        },
+        {
+          "time": 345.3,
+          "solved": 58
+        },
+        {
+          "time": 345.3,
+          "solved": 59
+        },
+        {
+          "time": 433.699,
+          "solved": 59
+        },
+        {
+          "time": 433.699,
+          "solved": 60
+        },
+        {
+          "time": 505.777,
+          "solved": 60
+        },
+        {
+          "time": 505.777,
+          "solved": 61
+        },
+        {
+          "time": 533.114,
+          "solved": 61
+        },
+        {
+          "time": 533.114,
+          "solved": 62
+        },
+        {
+          "time": 602.656,
+          "solved": 62
+        },
+        {
+          "time": 602.656,
+          "solved": 63
+        },
+        {
+          "time": 603.17,
+          "solved": 63
+        },
+        {
+          "time": 603.17,
+          "solved": 64
+        },
+        {
+          "time": 691.925,
+          "solved": 64
+        },
+        {
+          "time": 691.925,
+          "solved": 65
+        },
+        {
+          "time": 721.36,
+          "solved": 65
+        },
+        {
+          "time": 721.36,
+          "solved": 66
+        },
+        {
+          "time": 737.052,
+          "solved": 66
+        },
+        {
+          "time": 737.052,
+          "solved": 67
+        },
+        {
+          "time": 761.148,
+          "solved": 67
+        },
+        {
+          "time": 761.148,
+          "solved": 68
+        },
+        {
+          "time": 761.814,
+          "solved": 68
+        },
+        {
+          "time": 761.814,
+          "solved": 69
+        },
+        {
+          "time": 785.794,
+          "solved": 69
+        },
+        {
+          "time": 785.794,
+          "solved": 70
+        },
+        {
+          "time": 814.979,
+          "solved": 70
+        },
+        {
+          "time": 814.979,
+          "solved": 71
+        },
+        {
+          "time": 817.178,
+          "solved": 71
+        },
+        {
+          "time": 817.178,
+          "solved": 72
+        },
+        {
+          "time": 835.293,
+          "solved": 72
+        },
+        {
+          "time": 835.293,
+          "solved": 73
+        },
+        {
+          "time": 987.562,
+          "solved": 73
+        },
+        {
+          "time": 987.562,
+          "solved": 74
+        },
+        {
+          "time": 1038.677,
+          "solved": 74
+        },
+        {
+          "time": 1038.677,
+          "solved": 75
+        },
+        {
+          "time": 1177.96,
+          "solved": 75
+        },
+        {
+          "time": 1177.96,
+          "solved": 76
+        },
+        {
+          "time": 1263.557,
+          "solved": 76
+        },
+        {
+          "time": 1263.557,
+          "solved": 77
+        },
+        {
+          "time": 1294.338,
+          "solved": 77
+        },
+        {
+          "time": 1294.338,
+          "solved": 78
+        },
+        {
+          "time": 1529.359,
+          "solved": 78
+        },
+        {
+          "time": 1529.359,
+          "solved": 79
+        },
+        {
+          "time": 1639.119,
+          "solved": 79
+        },
+        {
+          "time": 1639.119,
+          "solved": 80
+        },
+        {
+          "time": 1800.0,
+          "solved": 80
+        }
+      ]
     },
     {
       "slug": "kissat-sc2024",
@@ -46,7 +697,641 @@
       "unsat": 36,
       "timeouts": 22,
       "unknown": 0,
-      "errors": 0
+      "errors": 0,
+      "curve": [
+        {
+          "time": 0.0,
+          "solved": 0
+        },
+        {
+          "time": 0.005,
+          "solved": 0
+        },
+        {
+          "time": 0.005,
+          "solved": 1
+        },
+        {
+          "time": 0.005,
+          "solved": 1
+        },
+        {
+          "time": 0.005,
+          "solved": 2
+        },
+        {
+          "time": 0.008,
+          "solved": 2
+        },
+        {
+          "time": 0.008,
+          "solved": 3
+        },
+        {
+          "time": 0.009,
+          "solved": 3
+        },
+        {
+          "time": 0.009,
+          "solved": 4
+        },
+        {
+          "time": 0.009,
+          "solved": 4
+        },
+        {
+          "time": 0.009,
+          "solved": 5
+        },
+        {
+          "time": 0.284,
+          "solved": 5
+        },
+        {
+          "time": 0.284,
+          "solved": 6
+        },
+        {
+          "time": 0.318,
+          "solved": 6
+        },
+        {
+          "time": 0.318,
+          "solved": 7
+        },
+        {
+          "time": 0.807,
+          "solved": 7
+        },
+        {
+          "time": 0.807,
+          "solved": 8
+        },
+        {
+          "time": 2.558,
+          "solved": 8
+        },
+        {
+          "time": 2.558,
+          "solved": 9
+        },
+        {
+          "time": 5.04,
+          "solved": 9
+        },
+        {
+          "time": 5.04,
+          "solved": 10
+        },
+        {
+          "time": 6.368,
+          "solved": 10
+        },
+        {
+          "time": 6.368,
+          "solved": 11
+        },
+        {
+          "time": 7.255,
+          "solved": 11
+        },
+        {
+          "time": 7.255,
+          "solved": 12
+        },
+        {
+          "time": 7.771,
+          "solved": 12
+        },
+        {
+          "time": 7.771,
+          "solved": 13
+        },
+        {
+          "time": 8.541,
+          "solved": 13
+        },
+        {
+          "time": 8.541,
+          "solved": 14
+        },
+        {
+          "time": 11.411,
+          "solved": 14
+        },
+        {
+          "time": 11.411,
+          "solved": 15
+        },
+        {
+          "time": 13.52,
+          "solved": 15
+        },
+        {
+          "time": 13.52,
+          "solved": 16
+        },
+        {
+          "time": 13.718,
+          "solved": 16
+        },
+        {
+          "time": 13.718,
+          "solved": 17
+        },
+        {
+          "time": 16.654,
+          "solved": 17
+        },
+        {
+          "time": 16.654,
+          "solved": 18
+        },
+        {
+          "time": 16.729,
+          "solved": 18
+        },
+        {
+          "time": 16.729,
+          "solved": 19
+        },
+        {
+          "time": 16.996,
+          "solved": 19
+        },
+        {
+          "time": 16.996,
+          "solved": 20
+        },
+        {
+          "time": 18.611,
+          "solved": 20
+        },
+        {
+          "time": 18.611,
+          "solved": 21
+        },
+        {
+          "time": 19.29,
+          "solved": 21
+        },
+        {
+          "time": 19.29,
+          "solved": 22
+        },
+        {
+          "time": 24.109,
+          "solved": 22
+        },
+        {
+          "time": 24.109,
+          "solved": 23
+        },
+        {
+          "time": 27.74,
+          "solved": 23
+        },
+        {
+          "time": 27.74,
+          "solved": 24
+        },
+        {
+          "time": 28.08,
+          "solved": 24
+        },
+        {
+          "time": 28.08,
+          "solved": 25
+        },
+        {
+          "time": 32.612,
+          "solved": 25
+        },
+        {
+          "time": 32.612,
+          "solved": 26
+        },
+        {
+          "time": 32.717,
+          "solved": 26
+        },
+        {
+          "time": 32.717,
+          "solved": 27
+        },
+        {
+          "time": 34.932,
+          "solved": 27
+        },
+        {
+          "time": 34.932,
+          "solved": 28
+        },
+        {
+          "time": 39.451,
+          "solved": 28
+        },
+        {
+          "time": 39.451,
+          "solved": 29
+        },
+        {
+          "time": 44.981,
+          "solved": 29
+        },
+        {
+          "time": 44.981,
+          "solved": 30
+        },
+        {
+          "time": 56.515,
+          "solved": 30
+        },
+        {
+          "time": 56.515,
+          "solved": 31
+        },
+        {
+          "time": 58.921,
+          "solved": 31
+        },
+        {
+          "time": 58.921,
+          "solved": 32
+        },
+        {
+          "time": 58.924,
+          "solved": 32
+        },
+        {
+          "time": 58.924,
+          "solved": 33
+        },
+        {
+          "time": 59.544,
+          "solved": 33
+        },
+        {
+          "time": 59.544,
+          "solved": 34
+        },
+        {
+          "time": 61.427,
+          "solved": 34
+        },
+        {
+          "time": 61.427,
+          "solved": 35
+        },
+        {
+          "time": 63.956,
+          "solved": 35
+        },
+        {
+          "time": 63.956,
+          "solved": 36
+        },
+        {
+          "time": 77.048,
+          "solved": 36
+        },
+        {
+          "time": 77.048,
+          "solved": 37
+        },
+        {
+          "time": 86.197,
+          "solved": 37
+        },
+        {
+          "time": 86.197,
+          "solved": 38
+        },
+        {
+          "time": 88.541,
+          "solved": 38
+        },
+        {
+          "time": 88.541,
+          "solved": 39
+        },
+        {
+          "time": 109.002,
+          "solved": 39
+        },
+        {
+          "time": 109.002,
+          "solved": 40
+        },
+        {
+          "time": 123.906,
+          "solved": 40
+        },
+        {
+          "time": 123.906,
+          "solved": 41
+        },
+        {
+          "time": 126.755,
+          "solved": 41
+        },
+        {
+          "time": 126.755,
+          "solved": 42
+        },
+        {
+          "time": 148.288,
+          "solved": 42
+        },
+        {
+          "time": 148.288,
+          "solved": 43
+        },
+        {
+          "time": 156.315,
+          "solved": 43
+        },
+        {
+          "time": 156.315,
+          "solved": 44
+        },
+        {
+          "time": 166.535,
+          "solved": 44
+        },
+        {
+          "time": 166.535,
+          "solved": 45
+        },
+        {
+          "time": 171.09,
+          "solved": 45
+        },
+        {
+          "time": 171.09,
+          "solved": 46
+        },
+        {
+          "time": 174.705,
+          "solved": 46
+        },
+        {
+          "time": 174.705,
+          "solved": 47
+        },
+        {
+          "time": 186.388,
+          "solved": 47
+        },
+        {
+          "time": 186.388,
+          "solved": 48
+        },
+        {
+          "time": 195.036,
+          "solved": 48
+        },
+        {
+          "time": 195.036,
+          "solved": 49
+        },
+        {
+          "time": 200.618,
+          "solved": 49
+        },
+        {
+          "time": 200.618,
+          "solved": 50
+        },
+        {
+          "time": 205.302,
+          "solved": 50
+        },
+        {
+          "time": 205.302,
+          "solved": 51
+        },
+        {
+          "time": 207.705,
+          "solved": 51
+        },
+        {
+          "time": 207.705,
+          "solved": 52
+        },
+        {
+          "time": 218.761,
+          "solved": 52
+        },
+        {
+          "time": 218.761,
+          "solved": 53
+        },
+        {
+          "time": 256.361,
+          "solved": 53
+        },
+        {
+          "time": 256.361,
+          "solved": 54
+        },
+        {
+          "time": 257.619,
+          "solved": 54
+        },
+        {
+          "time": 257.619,
+          "solved": 55
+        },
+        {
+          "time": 261.516,
+          "solved": 55
+        },
+        {
+          "time": 261.516,
+          "solved": 56
+        },
+        {
+          "time": 261.98,
+          "solved": 56
+        },
+        {
+          "time": 261.98,
+          "solved": 57
+        },
+        {
+          "time": 316.986,
+          "solved": 57
+        },
+        {
+          "time": 316.986,
+          "solved": 58
+        },
+        {
+          "time": 356.159,
+          "solved": 58
+        },
+        {
+          "time": 356.159,
+          "solved": 59
+        },
+        {
+          "time": 365.206,
+          "solved": 59
+        },
+        {
+          "time": 365.206,
+          "solved": 60
+        },
+        {
+          "time": 435.431,
+          "solved": 60
+        },
+        {
+          "time": 435.431,
+          "solved": 61
+        },
+        {
+          "time": 531.104,
+          "solved": 61
+        },
+        {
+          "time": 531.104,
+          "solved": 62
+        },
+        {
+          "time": 552.488,
+          "solved": 62
+        },
+        {
+          "time": 552.488,
+          "solved": 63
+        },
+        {
+          "time": 574.843,
+          "solved": 63
+        },
+        {
+          "time": 574.843,
+          "solved": 64
+        },
+        {
+          "time": 576.617,
+          "solved": 64
+        },
+        {
+          "time": 576.617,
+          "solved": 65
+        },
+        {
+          "time": 715.867,
+          "solved": 65
+        },
+        {
+          "time": 715.867,
+          "solved": 66
+        },
+        {
+          "time": 751.185,
+          "solved": 66
+        },
+        {
+          "time": 751.185,
+          "solved": 67
+        },
+        {
+          "time": 761.249,
+          "solved": 67
+        },
+        {
+          "time": 761.249,
+          "solved": 68
+        },
+        {
+          "time": 764.247,
+          "solved": 68
+        },
+        {
+          "time": 764.247,
+          "solved": 69
+        },
+        {
+          "time": 770.035,
+          "solved": 69
+        },
+        {
+          "time": 770.035,
+          "solved": 70
+        },
+        {
+          "time": 819.074,
+          "solved": 70
+        },
+        {
+          "time": 819.074,
+          "solved": 71
+        },
+        {
+          "time": 1003.502,
+          "solved": 71
+        },
+        {
+          "time": 1003.502,
+          "solved": 72
+        },
+        {
+          "time": 1048.417,
+          "solved": 72
+        },
+        {
+          "time": 1048.417,
+          "solved": 73
+        },
+        {
+          "time": 1248.75,
+          "solved": 73
+        },
+        {
+          "time": 1248.75,
+          "solved": 74
+        },
+        {
+          "time": 1310.983,
+          "solved": 74
+        },
+        {
+          "time": 1310.983,
+          "solved": 75
+        },
+        {
+          "time": 1529.784,
+          "solved": 75
+        },
+        {
+          "time": 1529.784,
+          "solved": 76
+        },
+        {
+          "time": 1591.887,
+          "solved": 76
+        },
+        {
+          "time": 1591.887,
+          "solved": 77
+        },
+        {
+          "time": 1596.136,
+          "solved": 77
+        },
+        {
+          "time": 1596.136,
+          "solved": 78
+        },
+        {
+          "time": 1800.0,
+          "solved": 78
+        }
+      ]
     },
     {
       "slug": "minisat",
@@ -66,7 +1351,417 @@
       "unsat": 19,
       "timeouts": 48,
       "unknown": 0,
-      "errors": 2
+      "errors": 2,
+      "curve": [
+        {
+          "time": 0.0,
+          "solved": 0
+        },
+        {
+          "time": 0.005,
+          "solved": 0
+        },
+        {
+          "time": 0.005,
+          "solved": 1
+        },
+        {
+          "time": 0.006,
+          "solved": 1
+        },
+        {
+          "time": 0.006,
+          "solved": 2
+        },
+        {
+          "time": 0.007,
+          "solved": 2
+        },
+        {
+          "time": 0.007,
+          "solved": 3
+        },
+        {
+          "time": 0.008,
+          "solved": 3
+        },
+        {
+          "time": 0.008,
+          "solved": 4
+        },
+        {
+          "time": 0.074,
+          "solved": 4
+        },
+        {
+          "time": 0.074,
+          "solved": 5
+        },
+        {
+          "time": 0.168,
+          "solved": 5
+        },
+        {
+          "time": 0.168,
+          "solved": 6
+        },
+        {
+          "time": 0.36,
+          "solved": 6
+        },
+        {
+          "time": 0.36,
+          "solved": 7
+        },
+        {
+          "time": 6.954,
+          "solved": 7
+        },
+        {
+          "time": 6.954,
+          "solved": 8
+        },
+        {
+          "time": 12.115,
+          "solved": 8
+        },
+        {
+          "time": 12.115,
+          "solved": 9
+        },
+        {
+          "time": 20.919,
+          "solved": 9
+        },
+        {
+          "time": 20.919,
+          "solved": 10
+        },
+        {
+          "time": 25.446,
+          "solved": 10
+        },
+        {
+          "time": 25.446,
+          "solved": 11
+        },
+        {
+          "time": 26.033,
+          "solved": 11
+        },
+        {
+          "time": 26.033,
+          "solved": 12
+        },
+        {
+          "time": 32.164,
+          "solved": 12
+        },
+        {
+          "time": 32.164,
+          "solved": 13
+        },
+        {
+          "time": 36.216,
+          "solved": 13
+        },
+        {
+          "time": 36.216,
+          "solved": 14
+        },
+        {
+          "time": 38.017,
+          "solved": 14
+        },
+        {
+          "time": 38.017,
+          "solved": 15
+        },
+        {
+          "time": 62.919,
+          "solved": 15
+        },
+        {
+          "time": 62.919,
+          "solved": 16
+        },
+        {
+          "time": 73.212,
+          "solved": 16
+        },
+        {
+          "time": 73.212,
+          "solved": 17
+        },
+        {
+          "time": 84.041,
+          "solved": 17
+        },
+        {
+          "time": 84.041,
+          "solved": 18
+        },
+        {
+          "time": 85.753,
+          "solved": 18
+        },
+        {
+          "time": 85.753,
+          "solved": 19
+        },
+        {
+          "time": 92.61,
+          "solved": 19
+        },
+        {
+          "time": 92.61,
+          "solved": 20
+        },
+        {
+          "time": 95.823,
+          "solved": 20
+        },
+        {
+          "time": 95.823,
+          "solved": 21
+        },
+        {
+          "time": 98.541,
+          "solved": 21
+        },
+        {
+          "time": 98.541,
+          "solved": 22
+        },
+        {
+          "time": 161.238,
+          "solved": 22
+        },
+        {
+          "time": 161.238,
+          "solved": 23
+        },
+        {
+          "time": 163.912,
+          "solved": 23
+        },
+        {
+          "time": 163.912,
+          "solved": 24
+        },
+        {
+          "time": 175.138,
+          "solved": 24
+        },
+        {
+          "time": 175.138,
+          "solved": 25
+        },
+        {
+          "time": 178.721,
+          "solved": 25
+        },
+        {
+          "time": 178.721,
+          "solved": 26
+        },
+        {
+          "time": 180.476,
+          "solved": 26
+        },
+        {
+          "time": 180.476,
+          "solved": 27
+        },
+        {
+          "time": 200.328,
+          "solved": 27
+        },
+        {
+          "time": 200.328,
+          "solved": 28
+        },
+        {
+          "time": 203.669,
+          "solved": 28
+        },
+        {
+          "time": 203.669,
+          "solved": 29
+        },
+        {
+          "time": 212.115,
+          "solved": 29
+        },
+        {
+          "time": 212.115,
+          "solved": 30
+        },
+        {
+          "time": 218.444,
+          "solved": 30
+        },
+        {
+          "time": 218.444,
+          "solved": 31
+        },
+        {
+          "time": 264.629,
+          "solved": 31
+        },
+        {
+          "time": 264.629,
+          "solved": 32
+        },
+        {
+          "time": 266.622,
+          "solved": 32
+        },
+        {
+          "time": 266.622,
+          "solved": 33
+        },
+        {
+          "time": 267.524,
+          "solved": 33
+        },
+        {
+          "time": 267.524,
+          "solved": 34
+        },
+        {
+          "time": 284.826,
+          "solved": 34
+        },
+        {
+          "time": 284.826,
+          "solved": 35
+        },
+        {
+          "time": 293.257,
+          "solved": 35
+        },
+        {
+          "time": 293.257,
+          "solved": 36
+        },
+        {
+          "time": 325.066,
+          "solved": 36
+        },
+        {
+          "time": 325.066,
+          "solved": 37
+        },
+        {
+          "time": 328.955,
+          "solved": 37
+        },
+        {
+          "time": 328.955,
+          "solved": 38
+        },
+        {
+          "time": 347.711,
+          "solved": 38
+        },
+        {
+          "time": 347.711,
+          "solved": 39
+        },
+        {
+          "time": 370.395,
+          "solved": 39
+        },
+        {
+          "time": 370.395,
+          "solved": 40
+        },
+        {
+          "time": 379.567,
+          "solved": 40
+        },
+        {
+          "time": 379.567,
+          "solved": 41
+        },
+        {
+          "time": 418.413,
+          "solved": 41
+        },
+        {
+          "time": 418.413,
+          "solved": 42
+        },
+        {
+          "time": 539.705,
+          "solved": 42
+        },
+        {
+          "time": 539.705,
+          "solved": 43
+        },
+        {
+          "time": 566.705,
+          "solved": 43
+        },
+        {
+          "time": 566.705,
+          "solved": 44
+        },
+        {
+          "time": 652.559,
+          "solved": 44
+        },
+        {
+          "time": 652.559,
+          "solved": 45
+        },
+        {
+          "time": 914.449,
+          "solved": 45
+        },
+        {
+          "time": 914.449,
+          "solved": 46
+        },
+        {
+          "time": 921.116,
+          "solved": 46
+        },
+        {
+          "time": 921.116,
+          "solved": 47
+        },
+        {
+          "time": 1039.08,
+          "solved": 47
+        },
+        {
+          "time": 1039.08,
+          "solved": 48
+        },
+        {
+          "time": 1369.702,
+          "solved": 48
+        },
+        {
+          "time": 1369.702,
+          "solved": 49
+        },
+        {
+          "time": 1717.611,
+          "solved": 49
+        },
+        {
+          "time": 1717.611,
+          "solved": 50
+        },
+        {
+          "time": 1800.0,
+          "solved": 50
+        }
+      ]
     },
     {
       "slug": "02-cdcl",
@@ -86,7 +1781,97 @@
       "unsat": 8,
       "timeouts": 90,
       "unknown": 0,
-      "errors": 0
+      "errors": 0,
+      "curve": [
+        {
+          "time": 0.0,
+          "solved": 0
+        },
+        {
+          "time": 0.008,
+          "solved": 0
+        },
+        {
+          "time": 0.008,
+          "solved": 1
+        },
+        {
+          "time": 0.009,
+          "solved": 1
+        },
+        {
+          "time": 0.009,
+          "solved": 2
+        },
+        {
+          "time": 0.009,
+          "solved": 2
+        },
+        {
+          "time": 0.009,
+          "solved": 3
+        },
+        {
+          "time": 0.01,
+          "solved": 3
+        },
+        {
+          "time": 0.01,
+          "solved": 4
+        },
+        {
+          "time": 0.014,
+          "solved": 4
+        },
+        {
+          "time": 0.014,
+          "solved": 5
+        },
+        {
+          "time": 0.833,
+          "solved": 5
+        },
+        {
+          "time": 0.833,
+          "solved": 6
+        },
+        {
+          "time": 1.289,
+          "solved": 6
+        },
+        {
+          "time": 1.289,
+          "solved": 7
+        },
+        {
+          "time": 46.451,
+          "solved": 7
+        },
+        {
+          "time": 46.451,
+          "solved": 8
+        },
+        {
+          "time": 159.471,
+          "solved": 8
+        },
+        {
+          "time": 159.471,
+          "solved": 9
+        },
+        {
+          "time": 268.934,
+          "solved": 9
+        },
+        {
+          "time": 268.934,
+          "solved": 10
+        },
+        {
+          "time": 1800.0,
+          "solved": 10
+        }
+      ]
     },
     {
       "slug": "01-naive-dpll",
@@ -106,8 +1891,756 @@
       "unsat": 6,
       "timeouts": 79,
       "unknown": 0,
-      "errors": 13
+      "errors": 13,
+      "curve": [
+        {
+          "time": 0.0,
+          "solved": 0
+        },
+        {
+          "time": 0.008,
+          "solved": 0
+        },
+        {
+          "time": 0.008,
+          "solved": 1
+        },
+        {
+          "time": 0.011,
+          "solved": 1
+        },
+        {
+          "time": 0.011,
+          "solved": 2
+        },
+        {
+          "time": 0.014,
+          "solved": 2
+        },
+        {
+          "time": 0.014,
+          "solved": 3
+        },
+        {
+          "time": 0.014,
+          "solved": 3
+        },
+        {
+          "time": 0.014,
+          "solved": 4
+        },
+        {
+          "time": 0.018,
+          "solved": 4
+        },
+        {
+          "time": 0.018,
+          "solved": 5
+        },
+        {
+          "time": 0.983,
+          "solved": 5
+        },
+        {
+          "time": 0.983,
+          "solved": 6
+        },
+        {
+          "time": 1.265,
+          "solved": 6
+        },
+        {
+          "time": 1.265,
+          "solved": 7
+        },
+        {
+          "time": 124.955,
+          "solved": 7
+        },
+        {
+          "time": 124.955,
+          "solved": 8
+        },
+        {
+          "time": 1800.0,
+          "solved": 8
+        }
+      ]
     }
   ],
-  "missing": []
+  "missing": [],
+  "virtualBest": {
+    "slug": "virtual-best",
+    "label": "Virtual Best Solver",
+    "family": "virtual-best",
+    "instances": 100,
+    "timeout_s": 1800,
+    "solved": 82,
+    "curve": [
+      {
+        "time": 0.0,
+        "solved": 0
+      },
+      {
+        "time": 0.005,
+        "solved": 0
+      },
+      {
+        "time": 0.005,
+        "solved": 1
+      },
+      {
+        "time": 0.005,
+        "solved": 1
+      },
+      {
+        "time": 0.005,
+        "solved": 2
+      },
+      {
+        "time": 0.007,
+        "solved": 2
+      },
+      {
+        "time": 0.007,
+        "solved": 3
+      },
+      {
+        "time": 0.008,
+        "solved": 3
+      },
+      {
+        "time": 0.008,
+        "solved": 4
+      },
+      {
+        "time": 0.008,
+        "solved": 4
+      },
+      {
+        "time": 0.008,
+        "solved": 5
+      },
+      {
+        "time": 0.058,
+        "solved": 5
+      },
+      {
+        "time": 0.058,
+        "solved": 6
+      },
+      {
+        "time": 0.074,
+        "solved": 6
+      },
+      {
+        "time": 0.074,
+        "solved": 7
+      },
+      {
+        "time": 0.181,
+        "solved": 7
+      },
+      {
+        "time": 0.181,
+        "solved": 8
+      },
+      {
+        "time": 0.283,
+        "solved": 8
+      },
+      {
+        "time": 0.283,
+        "solved": 9
+      },
+      {
+        "time": 1.685,
+        "solved": 9
+      },
+      {
+        "time": 1.685,
+        "solved": 10
+      },
+      {
+        "time": 2.364,
+        "solved": 10
+      },
+      {
+        "time": 2.364,
+        "solved": 11
+      },
+      {
+        "time": 6.368,
+        "solved": 11
+      },
+      {
+        "time": 6.368,
+        "solved": 12
+      },
+      {
+        "time": 6.842,
+        "solved": 12
+      },
+      {
+        "time": 6.842,
+        "solved": 13
+      },
+      {
+        "time": 6.954,
+        "solved": 13
+      },
+      {
+        "time": 6.954,
+        "solved": 14
+      },
+      {
+        "time": 7.24,
+        "solved": 14
+      },
+      {
+        "time": 7.24,
+        "solved": 15
+      },
+      {
+        "time": 8.541,
+        "solved": 15
+      },
+      {
+        "time": 8.541,
+        "solved": 16
+      },
+      {
+        "time": 8.687,
+        "solved": 16
+      },
+      {
+        "time": 8.687,
+        "solved": 17
+      },
+      {
+        "time": 9.11,
+        "solved": 17
+      },
+      {
+        "time": 9.11,
+        "solved": 18
+      },
+      {
+        "time": 10.347,
+        "solved": 18
+      },
+      {
+        "time": 10.347,
+        "solved": 19
+      },
+      {
+        "time": 13.52,
+        "solved": 19
+      },
+      {
+        "time": 13.52,
+        "solved": 20
+      },
+      {
+        "time": 13.718,
+        "solved": 20
+      },
+      {
+        "time": 13.718,
+        "solved": 21
+      },
+      {
+        "time": 14.232,
+        "solved": 21
+      },
+      {
+        "time": 14.232,
+        "solved": 22
+      },
+      {
+        "time": 16.654,
+        "solved": 22
+      },
+      {
+        "time": 16.654,
+        "solved": 23
+      },
+      {
+        "time": 16.729,
+        "solved": 23
+      },
+      {
+        "time": 16.729,
+        "solved": 24
+      },
+      {
+        "time": 16.996,
+        "solved": 24
+      },
+      {
+        "time": 16.996,
+        "solved": 25
+      },
+      {
+        "time": 19.29,
+        "solved": 25
+      },
+      {
+        "time": 19.29,
+        "solved": 26
+      },
+      {
+        "time": 25.446,
+        "solved": 26
+      },
+      {
+        "time": 25.446,
+        "solved": 27
+      },
+      {
+        "time": 27.639,
+        "solved": 27
+      },
+      {
+        "time": 27.639,
+        "solved": 28
+      },
+      {
+        "time": 28.08,
+        "solved": 28
+      },
+      {
+        "time": 28.08,
+        "solved": 29
+      },
+      {
+        "time": 32.239,
+        "solved": 29
+      },
+      {
+        "time": 32.239,
+        "solved": 30
+      },
+      {
+        "time": 32.717,
+        "solved": 30
+      },
+      {
+        "time": 32.717,
+        "solved": 31
+      },
+      {
+        "time": 34.932,
+        "solved": 31
+      },
+      {
+        "time": 34.932,
+        "solved": 32
+      },
+      {
+        "time": 39.451,
+        "solved": 32
+      },
+      {
+        "time": 39.451,
+        "solved": 33
+      },
+      {
+        "time": 42.195,
+        "solved": 33
+      },
+      {
+        "time": 42.195,
+        "solved": 34
+      },
+      {
+        "time": 44.981,
+        "solved": 34
+      },
+      {
+        "time": 44.981,
+        "solved": 35
+      },
+      {
+        "time": 58.924,
+        "solved": 35
+      },
+      {
+        "time": 58.924,
+        "solved": 36
+      },
+      {
+        "time": 61.427,
+        "solved": 36
+      },
+      {
+        "time": 61.427,
+        "solved": 37
+      },
+      {
+        "time": 62.573,
+        "solved": 37
+      },
+      {
+        "time": 62.573,
+        "solved": 38
+      },
+      {
+        "time": 63.956,
+        "solved": 38
+      },
+      {
+        "time": 63.956,
+        "solved": 39
+      },
+      {
+        "time": 83.937,
+        "solved": 39
+      },
+      {
+        "time": 83.937,
+        "solved": 40
+      },
+      {
+        "time": 86.197,
+        "solved": 40
+      },
+      {
+        "time": 86.197,
+        "solved": 41
+      },
+      {
+        "time": 88.541,
+        "solved": 41
+      },
+      {
+        "time": 88.541,
+        "solved": 42
+      },
+      {
+        "time": 92.61,
+        "solved": 42
+      },
+      {
+        "time": 92.61,
+        "solved": 43
+      },
+      {
+        "time": 94.898,
+        "solved": 43
+      },
+      {
+        "time": 94.898,
+        "solved": 44
+      },
+      {
+        "time": 100.992,
+        "solved": 44
+      },
+      {
+        "time": 100.992,
+        "solved": 45
+      },
+      {
+        "time": 105.806,
+        "solved": 45
+      },
+      {
+        "time": 105.806,
+        "solved": 46
+      },
+      {
+        "time": 123.906,
+        "solved": 46
+      },
+      {
+        "time": 123.906,
+        "solved": 47
+      },
+      {
+        "time": 131.393,
+        "solved": 47
+      },
+      {
+        "time": 131.393,
+        "solved": 48
+      },
+      {
+        "time": 135.346,
+        "solved": 48
+      },
+      {
+        "time": 135.346,
+        "solved": 49
+      },
+      {
+        "time": 149.035,
+        "solved": 49
+      },
+      {
+        "time": 149.035,
+        "solved": 50
+      },
+      {
+        "time": 154.613,
+        "solved": 50
+      },
+      {
+        "time": 154.613,
+        "solved": 51
+      },
+      {
+        "time": 159.471,
+        "solved": 51
+      },
+      {
+        "time": 159.471,
+        "solved": 52
+      },
+      {
+        "time": 171.09,
+        "solved": 52
+      },
+      {
+        "time": 171.09,
+        "solved": 53
+      },
+      {
+        "time": 174.705,
+        "solved": 53
+      },
+      {
+        "time": 174.705,
+        "solved": 54
+      },
+      {
+        "time": 178.721,
+        "solved": 54
+      },
+      {
+        "time": 178.721,
+        "solved": 55
+      },
+      {
+        "time": 195.036,
+        "solved": 55
+      },
+      {
+        "time": 195.036,
+        "solved": 56
+      },
+      {
+        "time": 207.705,
+        "solved": 56
+      },
+      {
+        "time": 207.705,
+        "solved": 57
+      },
+      {
+        "time": 256.361,
+        "solved": 57
+      },
+      {
+        "time": 256.361,
+        "solved": 58
+      },
+      {
+        "time": 261.516,
+        "solved": 58
+      },
+      {
+        "time": 261.516,
+        "solved": 59
+      },
+      {
+        "time": 268.934,
+        "solved": 59
+      },
+      {
+        "time": 268.934,
+        "solved": 60
+      },
+      {
+        "time": 280.397,
+        "solved": 60
+      },
+      {
+        "time": 280.397,
+        "solved": 61
+      },
+      {
+        "time": 293.257,
+        "solved": 61
+      },
+      {
+        "time": 293.257,
+        "solved": 62
+      },
+      {
+        "time": 308.452,
+        "solved": 62
+      },
+      {
+        "time": 308.452,
+        "solved": 63
+      },
+      {
+        "time": 318.513,
+        "solved": 63
+      },
+      {
+        "time": 318.513,
+        "solved": 64
+      },
+      {
+        "time": 345.3,
+        "solved": 64
+      },
+      {
+        "time": 345.3,
+        "solved": 65
+      },
+      {
+        "time": 356.159,
+        "solved": 65
+      },
+      {
+        "time": 356.159,
+        "solved": 66
+      },
+      {
+        "time": 365.206,
+        "solved": 66
+      },
+      {
+        "time": 365.206,
+        "solved": 67
+      },
+      {
+        "time": 433.699,
+        "solved": 67
+      },
+      {
+        "time": 433.699,
+        "solved": 68
+      },
+      {
+        "time": 435.431,
+        "solved": 68
+      },
+      {
+        "time": 435.431,
+        "solved": 69
+      },
+      {
+        "time": 531.104,
+        "solved": 69
+      },
+      {
+        "time": 531.104,
+        "solved": 70
+      },
+      {
+        "time": 539.705,
+        "solved": 70
+      },
+      {
+        "time": 539.705,
+        "solved": 71
+      },
+      {
+        "time": 715.867,
+        "solved": 71
+      },
+      {
+        "time": 715.867,
+        "solved": 72
+      },
+      {
+        "time": 721.36,
+        "solved": 72
+      },
+      {
+        "time": 721.36,
+        "solved": 73
+      },
+      {
+        "time": 751.185,
+        "solved": 73
+      },
+      {
+        "time": 751.185,
+        "solved": 74
+      },
+      {
+        "time": 764.247,
+        "solved": 74
+      },
+      {
+        "time": 764.247,
+        "solved": 75
+      },
+      {
+        "time": 814.979,
+        "solved": 75
+      },
+      {
+        "time": 814.979,
+        "solved": 76
+      },
+      {
+        "time": 835.293,
+        "solved": 76
+      },
+      {
+        "time": 835.293,
+        "solved": 77
+      },
+      {
+        "time": 987.562,
+        "solved": 77
+      },
+      {
+        "time": 987.562,
+        "solved": 78
+      },
+      {
+        "time": 1038.677,
+        "solved": 78
+      },
+      {
+        "time": 1038.677,
+        "solved": 79
+      },
+      {
+        "time": 1248.75,
+        "solved": 79
+      },
+      {
+        "time": 1248.75,
+        "solved": 80
+      },
+      {
+        "time": 1529.359,
+        "solved": 80
+      },
+      {
+        "time": 1529.359,
+        "solved": 81
+      },
+      {
+        "time": 1529.784,
+        "solved": 81
+      },
+      {
+        "time": 1529.784,
+        "solved": 82
+      },
+      {
+        "time": 1800.0,
+        "solved": 82
+      }
+    ]
+  }
 }

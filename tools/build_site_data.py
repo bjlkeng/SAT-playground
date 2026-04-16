@@ -59,6 +59,7 @@ SOLVERS = [
 
 
 DATE_RE = re.compile(r"^\s*Date:\s+(?P<value>.+?)\s*$")
+SOLVED_RESULTS = {"SAT", "UNSAT"}
 
 
 def repo_relative(path: Path) -> str:
@@ -77,29 +78,60 @@ def parse_summary_date(summary_path: Path) -> str | None:
     return None
 
 
-def parse_results(results_path: Path) -> dict[str, float | int]:
+def build_cumulative_curve(solved_times: list[float], timeout_s: int) -> list[dict[str, float | int]]:
+    points: list[dict[str, float | int]] = [{"time": 0.0, "solved": 0}]
+    solved = 0
+
+    for elapsed in sorted(solved_times):
+        rounded = round(elapsed, 3)
+        points.append({"time": rounded, "solved": solved})
+        solved += 1
+        points.append({"time": rounded, "solved": solved})
+
+    if points[-1]["time"] < timeout_s:
+        points.append({"time": float(timeout_s), "solved": solved})
+
+    return points
+
+
+def parse_results(results_path: Path) -> dict[str, float | int | list]:
     solved = sat = unsat = timeouts = unknown = errors = 0
     par2 = 0.0
     instances = 0
     timeout_s = None
+    rows = []
+    solved_times = []
 
     with results_path.open(newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
+            instance = row["instance"].strip()
             result = row["result"].strip()
             elapsed = float(row["time_s"])
             timeout_value = int(float(row["timeout"]))
             timeout_s = timeout_value if timeout_s is None else timeout_s
             instances += 1
+            solved_row = result in SOLVED_RESULTS
+
+            rows.append(
+                {
+                    "instance": instance,
+                    "result": result,
+                    "time": round(elapsed, 3),
+                    "solved": solved_row,
+                }
+            )
 
             if result == "SAT":
                 sat += 1
                 solved += 1
                 par2 += elapsed
+                solved_times.append(elapsed)
             elif result == "UNSAT":
                 unsat += 1
                 solved += 1
                 par2 += elapsed
+                solved_times.append(elapsed)
             elif result == "TIMEOUT":
                 timeouts += 1
                 par2 += 2 * timeout_value
@@ -123,6 +155,8 @@ def parse_results(results_path: Path) -> dict[str, float | int]:
         "timeouts": timeouts,
         "unknown": unknown,
         "errors": errors,
+        "curve": build_cumulative_curve(solved_times, timeout_s),
+        "rows": rows,
     }
 
 
@@ -178,18 +212,53 @@ def build_payload() -> dict:
             entries.append(entry)
 
     entries.sort(key=lambda item: (item["par2"], item["label"]))
+    timeout_s = entries[0]["timeout_s"] if entries else 1800
+    virtual_best = build_virtual_best(entries, timeout_s) if entries else None
 
-    return {
+    for entry in entries:
+        entry.pop("rows", None)
+
+    payload = {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "benchmark": {
             "name": "SAT Competition 2025 Medium",
             "instances": 100,
-            "timeoutSeconds": 1800,
+            "timeoutSeconds": timeout_s,
             "metric": "PAR-2",
             "note": "Latest available medium run per solver with 100 instances and a 1800s timeout.",
+            "curveNote": "Curves show cumulative solved instances over runtime; the virtual best line uses the fastest solved time per instance across the plotted solvers.",
         },
         "entries": entries,
         "missing": missing,
+    }
+    if virtual_best is not None:
+        payload["virtualBest"] = virtual_best
+    return payload
+
+
+def build_virtual_best(entries: list[dict], timeout_s: int) -> dict:
+    best_by_instance: dict[str, float] = {}
+
+    for entry in entries:
+        for row in entry["rows"]:
+            if not row["solved"]:
+                continue
+
+            instance = row["instance"]
+            time_value = row["time"]
+            best = best_by_instance.get(instance)
+            if best is None or time_value < best:
+                best_by_instance[instance] = time_value
+
+    solved_times = list(best_by_instance.values())
+    return {
+        "slug": "virtual-best",
+        "label": "Virtual Best Solver",
+        "family": "virtual-best",
+        "instances": entries[0]["instances"],
+        "timeout_s": timeout_s,
+        "solved": len(solved_times),
+        "curve": build_cumulative_curve(solved_times, timeout_s),
     }
 
 
