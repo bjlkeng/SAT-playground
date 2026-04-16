@@ -15,7 +15,6 @@ struct ClauseRef {
 }
 
 struct Solver {
-    num_vars: usize,
     clauses: Vec<ClauseRef>,
     clause_data: Vec<i32>,
     original_clause_count: usize,
@@ -34,11 +33,17 @@ struct Solver {
     reason: Vec<usize>,
     /// assigned literals in chronological order
     trail: Vec<i32>,
+    /// number of level-0 assignments that must survive backtrack(0)
+    root_trail_len: usize,
     /// trail index where each decision level starts
     trail_limits: Vec<usize>,
     /// next trail entry whose falsified literal still needs watcher processing
     propagate_head: usize,
-    /// lower bound for the next first-unassigned variable scan
+    /// static branch order sorted by descending literal occurrence count
+    branch_order: Vec<usize>,
+    /// reverse lookup from variable to its position in branch_order
+    branch_rank: Vec<usize>,
+    /// lower bound for the next first-unassigned scan in branch_order
     branch_cursor: usize,
     /// original unit clauses that must be enqueued at decision level 0
     root_unit_clauses: Vec<usize>,
@@ -93,6 +98,24 @@ fn lit_to_index(lit: i32) -> usize {
 impl Solver {
     fn new(num_vars: usize, clauses: Vec<Vec<i32>>) -> Self {
         let original_clause_count = clauses.len();
+        let mut occurrence_count = vec![0usize; num_vars + 1];
+        for clause in &clauses {
+            for &lit in clause {
+                let var = lit.unsigned_abs() as usize;
+                occurrence_count[var] += 1;
+            }
+        }
+        let mut branch_order: Vec<usize> = (1..=num_vars).collect();
+        branch_order.sort_unstable_by(|&lhs, &rhs| {
+            occurrence_count[rhs]
+                .cmp(&occurrence_count[lhs])
+                .then_with(|| lhs.cmp(&rhs))
+        });
+        let mut branch_rank = vec![0usize; num_vars + 1];
+        for (rank, &var) in branch_order.iter().enumerate() {
+            branch_rank[var] = rank;
+        }
+
         let total_literals = clauses.iter().map(|clause| clause.len()).sum();
         let mut clause_refs = Vec::with_capacity(original_clause_count);
         let mut clause_data = Vec::with_capacity(total_literals);
@@ -106,7 +129,6 @@ impl Solver {
             });
         }
         let mut solver = Solver {
-            num_vars,
             clauses: clause_refs,
             clause_data,
             original_clause_count,
@@ -117,9 +139,12 @@ impl Solver {
             decision_level: vec![0; num_vars + 1],
             reason: vec![NO_REASON; num_vars + 1],
             trail: Vec::with_capacity(num_vars),
+            root_trail_len: 0,
             trail_limits: Vec::new(),
             propagate_head: 0,
-            branch_cursor: 1,
+            branch_order,
+            branch_rank,
+            branch_cursor: 0,
             root_unit_clauses: Vec::new(),
             has_empty_clause: false,
             scratch_seen: vec![0; num_vars + 1],
@@ -195,6 +220,9 @@ impl Solver {
             self.decision_level[var] = self.current_level();
             self.reason[var] = reason;
             self.trail.push(lit);
+            if self.current_level() == 0 {
+                self.root_trail_len += 1;
+            }
             true
         } else {
             current == target_value
@@ -215,19 +243,21 @@ impl Solver {
     fn propagate(&mut self) -> Option<usize> {
         let assignment_ptr = self.assignment.as_ptr();
         let clause_data_ptr = self.clause_data.as_ptr();
-
         while self.propagate_head < self.trail.len() {
             let false_lit = -self.trail[self.propagate_head];
             self.propagate_head += 1;
             let watch_idx = self.lit_index(false_lit);
-            let mut pending = std::mem::take(&mut self.watchers[watch_idx]);
+            let pending = std::mem::take(&mut self.watchers[watch_idx]);
             let mut retained = std::mem::take(&mut self.watch_scratch);
             retained.clear();
             if retained.capacity() < pending.len() {
                 retained.reserve(pending.len() - retained.capacity());
             }
+            let mut pending_idx = 0usize;
 
-            while let Some(clause_idx_u32) = pending.pop() {
+            while pending_idx < pending.len() {
+                let clause_idx_u32 = pending[pending_idx];
+                pending_idx += 1;
                 let clause_idx = clause_idx_u32 as usize;
                 let clause = self.clauses[clause_idx];
                 if clause.len == 1 {
@@ -236,7 +266,7 @@ impl Solver {
                         TRUE => retained.push(clause_idx_u32),
                         FALSE => {
                             retained.push(clause_idx_u32);
-                            retained.append(&mut pending);
+                            retained.extend_from_slice(&pending[pending_idx..]);
                             self.watchers[watch_idx] = retained;
                             self.watch_scratch = pending;
                             self.watch_scratch.clear();
@@ -245,7 +275,7 @@ impl Solver {
                         UNASSIGNED => {
                             if !self.enqueue(unit_lit, clause_idx) {
                                 retained.push(clause_idx_u32);
-                                retained.append(&mut pending);
+                                retained.extend_from_slice(&pending[pending_idx..]);
                                 self.watchers[watch_idx] = retained;
                                 self.watch_scratch = pending;
                                 self.watch_scratch.clear();
@@ -283,26 +313,39 @@ impl Solver {
                 }
 
                 let mut moved_watch = false;
-                let mut lit_pos = 0usize;
-                let mut candidate_ptr = unsafe { clause_data_ptr.add(clause_start) };
-                while lit_pos < clause_len {
-                    if lit_pos == watch0 || lit_pos == watch1 {
-                        lit_pos += 1;
-                        candidate_ptr = unsafe { candidate_ptr.add(1) };
-                        continue;
-                    }
-                    let candidate = unsafe { *candidate_ptr };
+                if clause_len == 3 {
+                    let candidate_pos = 3usize - watch0 - watch1;
+                    let candidate = unsafe { *clause_data_ptr.add(clause_start + candidate_pos) };
                     let candidate_var = candidate.unsigned_abs() as usize;
                     let candidate_val = unsafe { *assignment_ptr.add(candidate_var) };
                     if candidate_val == UNASSIGNED || ((candidate > 0) == (candidate_val == TRUE)) {
-                        self.watch_pos[clause_idx][false_watch_slot] = lit_pos as u32;
+                        self.watch_pos[clause_idx][false_watch_slot] = candidate_pos as u32;
                         let new_watch_idx = self.lit_index(candidate);
                         self.watchers[new_watch_idx].push(clause_idx_u32);
                         moved_watch = true;
-                        break;
                     }
-                    lit_pos += 1;
-                    candidate_ptr = unsafe { candidate_ptr.add(1) };
+                } else {
+                    let mut lit_pos = 0usize;
+                    let mut candidate_ptr = unsafe { clause_data_ptr.add(clause_start) };
+                    while lit_pos < clause_len {
+                        if lit_pos == watch0 || lit_pos == watch1 {
+                            lit_pos += 1;
+                            candidate_ptr = unsafe { candidate_ptr.add(1) };
+                            continue;
+                        }
+                        let candidate = unsafe { *candidate_ptr };
+                        let candidate_var = candidate.unsigned_abs() as usize;
+                        let candidate_val = unsafe { *assignment_ptr.add(candidate_var) };
+                        if candidate_val == UNASSIGNED || ((candidate > 0) == (candidate_val == TRUE)) {
+                            self.watch_pos[clause_idx][false_watch_slot] = lit_pos as u32;
+                            let new_watch_idx = self.lit_index(candidate);
+                            self.watchers[new_watch_idx].push(clause_idx_u32);
+                            moved_watch = true;
+                            break;
+                        }
+                        lit_pos += 1;
+                        candidate_ptr = unsafe { candidate_ptr.add(1) };
+                    }
                 }
 
                 if moved_watch {
@@ -313,7 +356,7 @@ impl Solver {
                     || !self.enqueue(other_lit, clause_idx)
                 {
                     retained.push(clause_idx_u32);
-                    retained.append(&mut pending);
+                    retained.extend_from_slice(&pending[pending_idx..]);
                     self.watchers[watch_idx] = retained;
                     self.watch_scratch = pending;
                     self.watch_scratch.clear();
@@ -339,30 +382,31 @@ impl Solver {
 
     fn pick_branch_lit(&mut self) -> Option<i32> {
         let assignment_ptr = self.assignment.as_ptr();
-        let mut var = self.branch_cursor;
-        while var <= self.num_vars {
+        let mut rank = self.branch_cursor;
+        while rank < self.branch_order.len() {
+            let var = self.branch_order[rank];
             if unsafe { *assignment_ptr.add(var) } == UNASSIGNED {
-                self.branch_cursor = var;
+                self.branch_cursor = rank;
                 return Some(var as i32);
             }
-            var += 1;
+            rank += 1;
         }
-        self.branch_cursor = self.num_vars + 1;
+        self.branch_cursor = self.branch_order.len();
         None
     }
 
     fn backtrack(&mut self, target_level: usize) {
         let new_trail_len = if target_level == 0 {
-            0
+            self.root_trail_len
         } else {
             self.trail_limits[target_level - 1]
         };
-        let mut min_unassigned_var = self.num_vars + 1;
+        let mut min_unassigned_rank = self.branch_order.len();
 
         while self.trail.len() > new_trail_len {
             let lit = self.trail.pop().expect("trail underflow");
             let var = lit.unsigned_abs() as usize;
-            min_unassigned_var = min_unassigned_var.min(var);
+            min_unassigned_rank = min_unassigned_rank.min(self.branch_rank[var]);
             self.assignment[var] = UNASSIGNED;
             self.decision_level[var] = 0;
             self.reason[var] = NO_REASON;
@@ -370,8 +414,8 @@ impl Solver {
 
         self.trail_limits.truncate(target_level);
         self.propagate_head = self.propagate_head.min(new_trail_len);
-        if min_unassigned_var <= self.num_vars {
-            self.branch_cursor = self.branch_cursor.min(min_unassigned_var);
+        if min_unassigned_rank < self.branch_order.len() {
+            self.branch_cursor = self.branch_cursor.min(min_unassigned_rank);
         }
     }
 
@@ -772,4 +816,25 @@ mod tests {
         );
         assert!(s.proof_has_empty, "expected proof to end with the empty clause");
     }
+
+    #[test]
+    fn test_backtrack_to_zero_preserves_root_assignments() {
+        let mut s = make_solver(4, vec![vec![1], vec![-1, 2], vec![-2, 3]]);
+        assert!(s.enqueue_root_units());
+        assert_eq!(s.propagate(), None);
+        assert_eq!(s.root_trail_len, 3);
+        assert_eq!(s.assignment[1], TRUE);
+        assert_eq!(s.assignment[2], TRUE);
+        assert_eq!(s.assignment[3], TRUE);
+
+        s.decide(-4);
+        s.backtrack(0);
+
+        assert_eq!(s.trail.len(), 3);
+        assert_eq!(s.assignment[1], TRUE);
+        assert_eq!(s.assignment[2], TRUE);
+        assert_eq!(s.assignment[3], TRUE);
+        assert_eq!(s.assignment[4], UNASSIGNED);
+    }
+
 }
