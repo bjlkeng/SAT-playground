@@ -1,0 +1,12 @@
+=== Benchmark Results: 02-cdcl ===
+    Date:      Wed Apr 15 06:40:45 PM EDT 2026
+    Timeout:   1800s
+    Memory:    16384 MB
+
+    Instances: 100
+    Solved:    10 (2 SAT + 8 UNSAT)
+    Unsolved:  90 (90 timeout + 0 unknown + 0 error)
+
+    PAR-2:     324477.028
+
+    Results:   /home/bojji/code/SAT-playground/log/bench-02-cdcl-2026-04-13-21-31-01/results.csv

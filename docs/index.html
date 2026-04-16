@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SAT Playground Benchmarks</title>
+    <style>
+      :root {
+        --bg: #f4efe4;
+        --panel: rgba(255, 250, 240, 0.9);
+        --ink: #1e2430;
+        --muted: #59616f;
+        --line: rgba(30, 36, 48, 0.14);
+        --repo: #1f5fbf;
+        --repo-soft: #d9e5ff;
+        --reference: #d06b24;
+        --reference-soft: #ffe6d4;
+        --accent: #0d8a72;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(13, 138, 114, 0.1), transparent 30%),
+          linear-gradient(180deg, #f7f3ea 0%, var(--bg) 100%);
+        font-family: Charter, "Bitstream Charter", "Sitka Text", Cambria, serif;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .page {
+        width: min(1120px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 32px 0 64px;
+      }
+
+      .hero {
+        display: grid;
+        gap: 24px;
+        grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.85fr);
+        align-items: start;
+        margin-bottom: 28px;
+      }
+
+      .hero-copy,
+      .hero-side,
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        backdrop-filter: blur(10px);
+        box-shadow: 0 18px 44px rgba(37, 36, 31, 0.08);
+      }
+
+      .hero-copy {
+        padding: 32px;
+      }
+
+      .eyebrow {
+        margin: 0 0 14px;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 13px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--accent);
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(2.2rem, 5vw, 4.25rem);
+        line-height: 0.92;
+        letter-spacing: -0.05em;
+      }
+
+      .lead {
+        margin: 20px 0 0;
+        max-width: 44rem;
+        font-size: 1.08rem;
+        line-height: 1.65;
+        color: var(--muted);
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 28px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 16px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: #fffdf7;
+        text-decoration: none;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.9rem;
+        transition: transform 150ms ease, box-shadow 150ms ease;
+      }
+
+      .button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 12px 20px rgba(31, 95, 191, 0.1);
+      }
+
+      .hero-side {
+        padding: 24px;
+      }
+
+      .metric-grid {
+        display: grid;
+        gap: 14px;
+      }
+
+      .metric-card {
+        padding: 14px 16px;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.74);
+      }
+
+      .metric-label {
+        margin: 0 0 6px;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+      }
+
+      .metric-value {
+        margin: 0;
+        font-size: 1.5rem;
+        line-height: 1.1;
+      }
+
+      .panel {
+        padding: 26px;
+        margin-top: 24px;
+      }
+
+      .panel h2 {
+        margin: 0 0 8px;
+        font-size: 1.65rem;
+      }
+
+      .panel p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        margin-top: 18px;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.88rem;
+      }
+
+      .legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .legend-swatch {
+        width: 14px;
+        height: 14px;
+        border-radius: 4px;
+      }
+
+      .chart-wrap {
+        margin-top: 22px;
+        border-radius: 20px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.7);
+        padding: 14px 14px 8px;
+      }
+
+      svg {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+
+      .notes {
+        margin-top: 14px;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.84rem;
+        color: var(--muted);
+      }
+
+      .logs-grid {
+        display: grid;
+        gap: 14px;
+        margin-top: 20px;
+      }
+
+      .log-card {
+        padding: 18px;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.72);
+      }
+
+      .log-card h3 {
+        margin: 0 0 10px;
+        font-size: 1.08rem;
+      }
+
+      .log-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        margin-bottom: 10px;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.84rem;
+        color: var(--muted);
+      }
+
+      .log-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .log-links a {
+        text-decoration: none;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.86rem;
+        padding: 8px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.92);
+      }
+
+      .status {
+        margin-top: 14px;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.88rem;
+        color: var(--muted);
+      }
+
+      @media (max-width: 900px) {
+        .hero {
+          grid-template-columns: 1fr;
+        }
+
+        .page {
+          width: min(100vw - 20px, 1120px);
+          padding-top: 20px;
+        }
+
+        .hero-copy,
+        .hero-side,
+        .panel {
+          border-radius: 20px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">SAT Playground</p>
+          <h1>Iterative SAT solvers, benchmarked against real baselines.</h1>
+          <p class="lead">
+            This repository builds Boolean SAT solvers one iteration at a time in Rust, keeping each
+            solver self-contained and measurable. The chart below compares the latest available
+            <strong>SAT Competition 2025 Medium</strong> run for each in-repo solver that has one, alongside
+            reference solvers in a distinct color.
+          </p>
+          <div class="actions">
+            <a class="button" href="https://github.com/bjlkeng/SAT-playground" target="_blank" rel="noreferrer">View Source</a>
+            <a class="button" href="#logs">Benchmark Logs</a>
+          </div>
+        </div>
+        <aside class="hero-side">
+          <div class="metric-grid" id="hero-metrics"></div>
+        </aside>
+      </section>
+
+      <section class="panel">
+        <h2>Latest Medium PAR-2</h2>
+        <p>
+          Lower is better. The page is generated from the latest available 100-instance, 1800-second
+          medium-track runs per solver. Missing solver iterations are skipped automatically.
+        </p>
+        <div class="legend">
+          <span class="legend-item"><span class="legend-swatch" style="background: var(--repo)"></span>Repo solver</span>
+          <span class="legend-item"><span class="legend-swatch" style="background: var(--reference)"></span>Reference solver</span>
+        </div>
+        <div class="chart-wrap">
+          <svg id="chart" viewBox="0 0 980 420" preserveAspectRatio="xMidYMid meet" aria-labelledby="chart-title chart-desc">
+            <title id="chart-title">PAR-2 comparison chart</title>
+            <desc id="chart-desc">Latest available SAT Competition 2025 medium benchmark PAR-2 per solver.</desc>
+          </svg>
+        </div>
+        <p class="notes" id="chart-notes"></p>
+      </section>
+
+      <section class="panel" id="logs">
+        <h2>Benchmark Logs</h2>
+        <p>
+          These are the exact summary and results files used to generate the chart. Each entry links to
+          the tracked files in the repository.
+        </p>
+        <div class="logs-grid" id="logs-grid"></div>
+      </section>
+
+      <p class="status" id="status">Loading chart data…</p>
+    </main>
+
+    <script>
+      const CHART_URL = "./data/medium-par2.json";
+      const REPO_COLOR = "#1f5fbf";
+      const REFERENCE_COLOR = "#d06b24";
+
+      function formatNumber(value) {
+        return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
+      }
+
+      function metricCard(label, value) {
+        const wrapper = document.createElement("section");
+        wrapper.className = "metric-card";
+
+        const labelNode = document.createElement("p");
+        labelNode.className = "metric-label";
+        labelNode.textContent = label;
+
+        const valueNode = document.createElement("p");
+        valueNode.className = "metric-value";
+        valueNode.textContent = value;
+
+        wrapper.append(labelNode, valueNode);
+        return wrapper;
+      }
+
+      function renderHero(data) {
+        const metrics = document.getElementById("hero-metrics");
+        metrics.innerHTML = "";
+
+        const entries = data.entries;
+        const best = entries[0];
+        const repoCount = entries.filter((entry) => entry.family === "repo").length;
+        const refCount = entries.filter((entry) => entry.family === "reference").length;
+
+        metrics.append(
+          metricCard("Benchmark", data.benchmark.name),
+          metricCard("Compared solvers", String(entries.length)),
+          metricCard("Repo / reference", `${repoCount} / ${refCount}`),
+          metricCard("Current leader", `${best.label} · ${formatNumber(best.par2)}`),
+        );
+      }
+
+      function renderChart(data) {
+        const svg = document.getElementById("chart");
+        svg.replaceChildren();
+
+        const entries = data.entries;
+        const width = 980;
+        const height = 420;
+        const top = 34;
+        const left = 220;
+        const right = 90;
+        const bottom = 54;
+        const plotWidth = width - left - right;
+        const rowHeight = 56;
+        const maxPar2 = Math.max(...entries.map((entry) => entry.par2));
+        const axisMax = Math.ceil(maxPar2 / 10000) * 10000;
+
+        const ns = "http://www.w3.org/2000/svg";
+        const add = (tag, attrs) => {
+          const node = document.createElementNS(ns, tag);
+          for (const [key, value] of Object.entries(attrs)) {
+            node.setAttribute(key, String(value));
+          }
+          svg.appendChild(node);
+          return node;
+        };
+
+        add("rect", { x: 0, y: 0, width, height, fill: "transparent" });
+
+        const tickCount = 4;
+        for (let index = 0; index <= tickCount; index += 1) {
+          const value = axisMax * (index / tickCount);
+          const x = left + plotWidth * (value / axisMax);
+          add("line", {
+            x1: x,
+            y1: top,
+            x2: x,
+            y2: height - bottom,
+            stroke: "rgba(30, 36, 48, 0.14)",
+            "stroke-width": 1,
+          });
+          const label = add("text", {
+            x,
+            y: height - 20,
+            fill: "#59616f",
+            "font-size": 12,
+            "font-family": "IBM Plex Mono, SFMono-Regular, Consolas, monospace",
+            "text-anchor": index === 0 ? "start" : index === tickCount ? "end" : "middle",
+          });
+          label.textContent = formatNumber(value);
+        }
+
+        const axisLabel = add("text", {
+          x: left + plotWidth / 2,
+          y: height - 4,
+          fill: "#59616f",
+          "font-size": 12,
+          "font-family": "IBM Plex Mono, SFMono-Regular, Consolas, monospace",
+          "text-anchor": "middle",
+        });
+        axisLabel.textContent = "PAR-2 (lower is better)";
+
+        entries.forEach((entry, index) => {
+          const y = top + index * rowHeight;
+          const barY = y + 12;
+          const barHeight = 28;
+          const barWidth = Math.max(6, plotWidth * (entry.par2 / axisMax));
+          const color = entry.family === "reference" ? REFERENCE_COLOR : REPO_COLOR;
+
+          const label = add("text", {
+            x: left - 18,
+            y: y + 31,
+            fill: "#1e2430",
+            "font-size": 14,
+            "font-family": "IBM Plex Mono, SFMono-Regular, Consolas, monospace",
+            "text-anchor": "end",
+          });
+          label.textContent = entry.label;
+
+          add("rect", {
+            x: left,
+            y: barY,
+            width: plotWidth,
+            height: barHeight,
+            rx: 12,
+            fill: "rgba(30, 36, 48, 0.05)",
+          });
+
+          add("rect", {
+            x: left,
+            y: barY,
+            width: barWidth,
+            height: barHeight,
+            rx: 12,
+            fill: color,
+          });
+
+          const valueText = add("text", {
+            x: left + Math.min(barWidth + 12, plotWidth - 2),
+            y: y + 31,
+            fill: "#1e2430",
+            "font-size": 13,
+            "font-family": "IBM Plex Mono, SFMono-Regular, Consolas, monospace",
+            "text-anchor": "start",
+          });
+          valueText.textContent = `${formatNumber(entry.par2)} · ${entry.solved}/${entry.instances} solved`;
+        });
+      }
+
+      function renderNotes(data) {
+        const notes = document.getElementById("chart-notes");
+        const missing = data.missing.length ? ` Missing from the chart because no medium run is available yet: ${data.missing.join(", ")}.` : "";
+        notes.textContent = `${data.benchmark.note}${missing}`;
+      }
+
+      function renderLogs(data) {
+        const container = document.getElementById("logs-grid");
+        container.innerHTML = "";
+
+        data.entries.forEach((entry) => {
+          const card = document.createElement("article");
+          card.className = "log-card";
+
+          const title = document.createElement("h3");
+          title.textContent = entry.label;
+
+          const meta = document.createElement("div");
+          meta.className = "log-meta";
+          meta.innerHTML = `
+            <span>PAR-2 ${formatNumber(entry.par2)}</span>
+            <span>${entry.solved}/${entry.instances} solved</span>
+            <span>${entry.date ?? "date unavailable"}</span>
+          `;
+
+          const links = document.createElement("div");
+          links.className = "log-links";
+          links.innerHTML = `
+            <a href="${entry.sourceUrl}" target="_blank" rel="noreferrer">solver source</a>
+            <a href="${entry.summaryUrl}" target="_blank" rel="noreferrer">summary.log</a>
+            <a href="${entry.resultsUrl}" target="_blank" rel="noreferrer">results.csv</a>
+          `;
+
+          card.append(title, meta, links);
+          container.append(card);
+        });
+      }
+
+      async function main() {
+        const status = document.getElementById("status");
+        try {
+          const response = await fetch(CHART_URL);
+          if (!response.ok) {
+            throw new Error(`failed to load ${CHART_URL}`);
+          }
+
+          const data = await response.json();
+          renderHero(data);
+          renderChart(data);
+          renderNotes(data);
+          renderLogs(data);
+          status.textContent = `Generated ${new Date(data.generatedAt).toLocaleString()} from the latest available medium benchmark logs.`;
+        } catch (error) {
+          status.textContent = `Unable to load benchmark data: ${error.message}`;
+        }
+      }
+
+      main();
+    </script>
+  </body>
+</html>
