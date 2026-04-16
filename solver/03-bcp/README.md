@@ -69,7 +69,9 @@ Completed checks for this first pass:
 
 ## Code-Level Optimization Log
 
-Baseline before code-level tuning on 2026-04-15:
+### Round 1
+
+Baseline before the first code-level tuning round on 2026-04-15:
 
 - **PAR-2:** `1440.000`
 - **Solved:** `0/6`
@@ -100,6 +102,52 @@ Additional attempts were benchmarked and reverted because they did not improve P
 - sorting the full learned-clause tail by decision level
 - preallocating initial watch-list capacities
 
+### Round 2
+
+Baseline before the second code-level tuning round on 2026-04-15:
+
+- **PAR-2:** `722.501`
+- **Solved:** `3/6`
+
+Successful optimization attempts kept in the solver:
+
+1. **Reuse a scratch watch-list buffer inside `propagate()`**
+   Replaced per-literal `retained` allocations with a reusable `watch_scratch` buffer.
+   PAR-2 improved from `722.501` to `722.428`.
+
+2. **Pointer-based candidate scans in watched-clause propagation**
+   Replaced indexed clause scans with cached watch positions and raw-pointer traversal in the propagation hot path.
+   PAR-2 improved from `722.428` to `722.313`.
+
+3. **Direct assignment fast path in `enqueue()`**
+   `enqueue()` now checks and writes the assignment slot directly instead of routing through `lit_value()`.
+   PAR-2 improved from `722.313` to `722.239`.
+
+4. **Pointer-backed branch-variable scan**
+   `pick_branch_lit()` now uses a tight pointer loop over `assignment` rather than a range iterator.
+   PAR-2 improved from `722.239` to `722.212`.
+
+5. **Buffered proof streaming for UNSAT output**
+   `write_proof()` now streams literals through `BufWriter` instead of building joined strings per clause.
+   PAR-2 improved from `722.212` to `722.179`.
+
+6. **`u32` watch positions**
+   Shrinking `watch_pos` from `[usize; 2]` to `[u32; 2]` reduced clause-watch metadata in the now pointer-heavy propagation path.
+   PAR-2 improved from `722.179` to `722.143`.
+
+7. **`u32` clause metadata**
+   Shrinking `ClauseRef` fields from `usize` to `u32` trimmed clause metadata further.
+   PAR-2 improved from `722.143` to `722.137`.
+
+Additional attempts were benchmarked and reverted because they did not improve PAR-2:
+
+- early `u32` watch-position shrink on the pre-round-2 baseline
+- early `u32` `ClauseRef` conversion on the pre-round-2 baseline
+- reusable learned-clause buffer during conflict analysis
+- raw-pointer `mark_clause_literals()` traversal
+- `u32` reason vector
+- generation stamps for `seen` / `resolved`
+
 ## Profiling Benchmark Results
 
 Environment:
@@ -117,13 +165,13 @@ Results:
 | feistel_b64_k32_r12 | crypto | TIMEOUT | 120.000s |
 | feistel_b64_k32_r14 | crypto | TIMEOUT | 120.000s |
 | feistel_b64_k32_r16 | crypto | TIMEOUT | 120.000s |
-| random_v110_s1 | 3-SAT | UNSAT | 0.198s |
-| random_v130_s3 | 3-SAT | SAT | 0.846s |
-| random_v140_s1 | 3-SAT | UNSAT | 1.479s |
+| random_v110_s1 | 3-SAT | UNSAT | 0.150s |
+| random_v130_s3 | 3-SAT | SAT | 0.740s |
+| random_v140_s1 | 3-SAT | UNSAT | 1.247s |
 
-**PAR-2: 722.523 (3/6 solved)**
+**PAR-2: 722.137 (3/6 solved)**
 
-This is a `717.477` point PAR-2 improvement over the unoptimized `03` baseline, about `49.8%` better on the profiling suite. The kept changes recover the random 3-SAT side of the benchmark, but the Feistel crypto instances still time out, so the remaining work is still concentrated in propagation cost and clause-handling efficiency on harder formulas.
+This is a `0.364` point improvement over the start of the second tuning round (`722.501`), and a `717.863` point improvement over the original unoptimized `03` baseline (`1440.000`). The kept changes further reduced the random-instance overhead, but the Feistel crypto instances still time out, so additional improvement beyond this point likely needs solver-heuristic or broader algorithmic work rather than more micro-tuning.
 
 Historical note from the pre-optimization baseline:
 
