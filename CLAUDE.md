@@ -389,20 +389,20 @@ Run all 6 profiling instances with a single command:
 bash tools/bench.sh -t 120 -d benchmarks/profiling solver/NN-name
 ```
 
-The profiling suite was refreshed on 2026-04-17 so that every instance takes more than 5 seconds on `solver/03-bcp`. The current suite contents are:
+The profiling suite was refreshed on 2026-04-17 so that every instance takes more than 10 seconds on `solver/04-vsids`. The current suite contents are:
 
 | Instance | Type | Vars | Clauses |
 |----------|------|------|---------|
-| feistel_b64_k38_r14 | crypto | 1894 | 6848 |
-| feistel_b64_k32_r15 | crypto | 2016 | 7328 |
-| feistel_b64_k32_r16 | crypto | 2144 | 7808 |
-| random_v200_s4 | 3-SAT | 200 | 853 |
-| random_v211_s3 | 3-SAT | 211 | 900 |
-| random_v221_s2 | 3-SAT | 221 | 943 |
+| feistel_b64_k57_r14 | crypto | 1913 | 6848 |
+| feistel_b64_k49_r15 | crypto | 2033 | 7328 |
+| feistel_b64_k32_r17 | crypto | 2272 | 8288 |
+| random_v229_s2 | 3-SAT | 229 | 977 |
+| random_v240_s3 | 3-SAT | 240 | 1024 |
+| random_v241_s4 | 3-SAT | 241 | 1028 |
 
 Additional benchmark dirs:
-- `benchmarks/crypto/` — Feistel crypto instances, including the profiling replacements `feistel_b64_k38_r14` and `feistel_b64_k32_r15`
-- `benchmarks/random-3sat/` — random 3-SAT instances, including the profiling replacements `random_v200_s4`, `random_v211_s3`, and `random_v221_s2`
+- `benchmarks/crypto/` — Feistel crypto instances, including the profiling replacements `feistel_b64_k57_r14`, `feistel_b64_k49_r15`, and `feistel_b64_k32_r17`
+- `benchmarks/random-3sat/` — random 3-SAT instances, including the profiling replacements `random_v229_s2`, `random_v240_s3`, and `random_v241_s4`
 - `benchmarks/crypto-easy/` — easier crypto instances for quick testing
 
 ## Common Pitfalls
