@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-04-17T03:36:08.306200+00:00",
+  "generatedAt": "2026-04-17T03:57:34.643476+00:00",
   "benchmark": {
     "name": "SAT Competition 2025 Medium",
     "instances": 100,
@@ -1875,7 +1875,7 @@
       "label": "Kissat sc2024",
       "family": "reference",
       "sourceUrl": "https://github.com/bjlkeng/SAT-playground/tree/main/benchmarks/reference-solvers/kissat-sc2024",
-      "infoUrl": "https://github.com/bjlkeng/SAT-playground/tree/main/benchmarks/reference-solvers/kissat-sc2024",
+      "infoUrl": "https://satcompetition.github.io/2025/downloads.html",
       "summaryPath": "log/bench-kissat-sc2024-2026-04-11-22-21-01/summary.log",
       "resultsPath": "log/bench-kissat-sc2024-2026-04-11-22-21-01/results.csv",
       "summaryUrl": "https://github.com/bjlkeng/SAT-playground/blob/main/log/bench-kissat-sc2024-2026-04-11-22-21-01/summary.log",

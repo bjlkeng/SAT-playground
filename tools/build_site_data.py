@@ -67,7 +67,7 @@ SOLVERS = [
         label="Kissat sc2024",
         family="reference",
         source_url=f"{GITHUB_TREE_BASE}/benchmarks/reference-solvers/kissat-sc2024",
-        info_url=f"{GITHUB_TREE_BASE}/benchmarks/reference-solvers/kissat-sc2024",
+        info_url=BENCHMARK_URL,
     ),
     SolverSpec(
         slug="kissat-latest",
