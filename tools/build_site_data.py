@@ -100,7 +100,7 @@ def parse_results(results_path: Path) -> dict[str, float | int | list]:
     instances = 0
     timeout_s = None
     rows = []
-    solved_times = []
+    solved_events = []
 
     with results_path.open(newline="") as handle:
         reader = csv.DictReader(handle)
@@ -109,15 +109,18 @@ def parse_results(results_path: Path) -> dict[str, float | int | list]:
             result = row["result"].strip()
             elapsed = float(row["time_s"])
             timeout_value = int(float(row["timeout"]))
+            verified = row.get("verified", "skip").strip()
             timeout_s = timeout_value if timeout_s is None else timeout_s
             instances += 1
             solved_row = result in SOLVED_RESULTS
+            rounded = round(elapsed, 3)
 
             rows.append(
                 {
                     "instance": instance,
                     "result": result,
-                    "time": round(elapsed, 3),
+                    "time": rounded,
+                    "verified": verified,
                     "solved": solved_row,
                 }
             )
@@ -126,12 +129,26 @@ def parse_results(results_path: Path) -> dict[str, float | int | list]:
                 sat += 1
                 solved += 1
                 par2 += elapsed
-                solved_times.append(elapsed)
+                solved_events.append(
+                    {
+                        "instance": instance,
+                        "result": result,
+                        "time": rounded,
+                        "verified": verified,
+                    }
+                )
             elif result == "UNSAT":
                 unsat += 1
                 solved += 1
                 par2 += elapsed
-                solved_times.append(elapsed)
+                solved_events.append(
+                    {
+                        "instance": instance,
+                        "result": result,
+                        "time": rounded,
+                        "verified": verified,
+                    }
+                )
             elif result == "TIMEOUT":
                 timeouts += 1
                 par2 += 2 * timeout_value
@@ -145,6 +162,8 @@ def parse_results(results_path: Path) -> dict[str, float | int | list]:
     if timeout_s is None:
         raise ValueError(f"no rows found in {results_path}")
 
+    solved_events.sort(key=lambda item: (item["time"], item["instance"]))
+
     return {
         "instances": instances,
         "timeout_s": timeout_s,
@@ -155,7 +174,8 @@ def parse_results(results_path: Path) -> dict[str, float | int | list]:
         "timeouts": timeouts,
         "unknown": unknown,
         "errors": errors,
-        "curve": build_cumulative_curve(solved_times, timeout_s),
+        "curve": build_cumulative_curve([event["time"] for event in solved_events], timeout_s),
+        "events": solved_events,
         "rows": rows,
     }
 
@@ -215,9 +235,6 @@ def build_payload() -> dict:
     timeout_s = entries[0]["timeout_s"] if entries else 1800
     virtual_best = build_virtual_best(entries, timeout_s) if entries else None
 
-    for entry in entries:
-        entry.pop("rows", None)
-
     payload = {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "benchmark": {
@@ -237,7 +254,7 @@ def build_payload() -> dict:
 
 
 def build_virtual_best(entries: list[dict], timeout_s: int) -> dict:
-    best_by_instance: dict[str, float] = {}
+    best_by_instance: dict[str, dict] = {}
 
     for entry in entries:
         for row in entry["rows"]:
@@ -247,18 +264,26 @@ def build_virtual_best(entries: list[dict], timeout_s: int) -> dict:
             instance = row["instance"]
             time_value = row["time"]
             best = best_by_instance.get(instance)
-            if best is None or time_value < best:
-                best_by_instance[instance] = time_value
+            if best is None or time_value < best["time"]:
+                best_by_instance[instance] = {
+                    "instance": instance,
+                    "result": row["result"],
+                    "time": time_value,
+                    "verified": row["verified"],
+                    "solverSlug": entry["slug"],
+                    "solverLabel": entry["label"],
+                }
 
-    solved_times = list(best_by_instance.values())
+    events = sorted(best_by_instance.values(), key=lambda item: (item["time"], item["instance"]))
     return {
         "slug": "virtual-best",
         "label": "Virtual Best Solver",
         "family": "virtual-best",
         "instances": entries[0]["instances"],
         "timeout_s": timeout_s,
-        "solved": len(solved_times),
-        "curve": build_cumulative_curve(solved_times, timeout_s),
+        "solved": len(events),
+        "curve": build_cumulative_curve([event["time"] for event in events], timeout_s),
+        "events": events,
     }
 
 

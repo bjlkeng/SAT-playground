@@ -164,9 +164,17 @@
         display: flex;
         flex-wrap: wrap;
         gap: 16px;
-        margin-top: 18px;
         font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
         font-size: 0.88rem;
+      }
+
+      .legend-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        margin-top: 18px;
       }
 
       .legend-item {
@@ -182,11 +190,13 @@
       }
 
       .chart-wrap {
+        position: relative;
         margin-top: 22px;
         border-radius: 20px;
         border: 1px solid var(--line);
         background: rgba(255, 255, 255, 0.7);
         padding: 14px 14px 8px;
+        overflow: hidden;
       }
 
       svg {
@@ -195,11 +205,30 @@
         display: block;
       }
 
+      #curve-chart {
+        cursor: crosshair;
+      }
+
       .notes {
         margin-top: 14px;
         font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
         font-size: 0.84rem;
         color: var(--muted);
+      }
+
+      .clear-button {
+        padding: 10px 14px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.9);
+        color: var(--ink);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.82rem;
+        cursor: pointer;
+      }
+
+      .clear-button[hidden] {
+        display: none;
       }
 
       .curve-grid {
@@ -214,6 +243,8 @@
         border-radius: 18px;
         border: 1px solid var(--line);
         background: rgba(255, 255, 255, 0.76);
+        transition: transform 140ms ease, box-shadow 140ms ease, opacity 140ms ease, border-color 140ms ease;
+        cursor: pointer;
       }
 
       .curve-head {
@@ -245,6 +276,108 @@
         gap: 6px;
         font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
         font-size: 0.82rem;
+        color: var(--muted);
+      }
+
+      .curve-card:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 10px 20px rgba(31, 95, 191, 0.08);
+      }
+
+      .curve-card.is-selected {
+        border-color: rgba(13, 138, 114, 0.45);
+        box-shadow: 0 14px 26px rgba(13, 138, 114, 0.12);
+      }
+
+      .curve-card.is-dimmed {
+        opacity: 0.48;
+      }
+
+      .chart-tooltip {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: min(360px, calc(100% - 16px));
+        padding: 14px 16px;
+        border-radius: 18px;
+        border: 1px solid rgba(30, 36, 48, 0.16);
+        background: rgba(255, 252, 246, 0.96);
+        box-shadow: 0 18px 34px rgba(30, 36, 48, 0.16);
+        backdrop-filter: blur(10px);
+        pointer-events: none;
+        opacity: 0;
+        transform: translate(-9999px, -9999px);
+        transition: opacity 90ms ease;
+        z-index: 3;
+      }
+
+      .chart-tooltip.is-visible {
+        opacity: 1;
+      }
+
+      .tooltip-eyebrow,
+      .tooltip-meta,
+      .tooltip-row,
+      .tooltip-list {
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+      }
+
+      .tooltip-eyebrow {
+        margin: 0 0 8px;
+        font-size: 0.74rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--accent);
+      }
+
+      .tooltip-title {
+        margin: 0;
+        font-size: 1.02rem;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+      }
+
+      .tooltip-meta {
+        margin: 10px 0 0;
+        display: grid;
+        gap: 6px;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+
+      .tooltip-list {
+        margin: 12px 0 0;
+        display: grid;
+        gap: 8px;
+        font-size: 0.78rem;
+      }
+
+      .tooltip-row {
+        display: grid;
+        gap: 4px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(30, 36, 48, 0.09);
+      }
+
+      .tooltip-row.is-selected .tooltip-label {
+        color: var(--accent);
+      }
+
+      .tooltip-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--ink);
+      }
+
+      .tooltip-swatch {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        flex: 0 0 auto;
+      }
+
+      .tooltip-detail {
         color: var(--muted);
       }
 
@@ -344,18 +477,23 @@
         <h2>Cumulative Solved vs Time</h2>
         <p>
           This follows the standard SAT competition style: each curve rises when a solver finishes an
-          instance. Higher and earlier is better.
+          instance. Higher and earlier is better. Click a line or legend card to lock focus on that
+          solver, then move the mouse to inspect per-instance results.
         </p>
-        <div class="legend">
-          <span class="legend-item"><span class="legend-swatch" style="background: var(--repo)"></span>Repo solver family</span>
-          <span class="legend-item"><span class="legend-swatch" style="background: var(--reference)"></span>Reference solver family</span>
-          <span class="legend-item"><span class="legend-swatch" style="background: var(--accent)"></span>Virtual best</span>
+        <div class="legend-row">
+          <div class="legend">
+            <span class="legend-item"><span class="legend-swatch" style="background: var(--repo)"></span>Repo solver family</span>
+            <span class="legend-item"><span class="legend-swatch" style="background: var(--reference)"></span>Reference solver family</span>
+            <span class="legend-item"><span class="legend-swatch" style="background: var(--accent)"></span>Virtual best</span>
+          </div>
+          <button class="clear-button" id="clear-selection" type="button" hidden>Clear selection</button>
         </div>
-        <div class="chart-wrap">
+        <div class="chart-wrap" id="curve-chart-wrap">
           <svg id="curve-chart" viewBox="0 0 980 460" preserveAspectRatio="xMidYMid meet" aria-labelledby="curve-chart-title curve-chart-desc">
             <title id="curve-chart-title">Cumulative solved versus time chart</title>
             <desc id="curve-chart-desc">Latest available SAT Competition 2025 medium benchmark cumulative solved instances over time per solver.</desc>
           </svg>
+          <div class="chart-tooltip" id="curve-tooltip" hidden></div>
         </div>
         <div class="curve-grid" id="curve-legend"></div>
         <p class="notes" id="curve-notes"></p>
@@ -398,9 +536,29 @@
         "kissat-latest": "#8d3613",
         "virtual-best": "#0d8a72",
       };
+      const interactiveState = {
+        data: null,
+        selectedSlug: null,
+        lastPointer: null,
+        hoverLine: null,
+        curvePlot: null,
+      };
 
       function formatNumber(value) {
         return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
+      }
+
+      function formatElapsed(value) {
+        if (value >= 100) {
+          return `${formatNumber(Math.round(value))}s`;
+        }
+        if (value >= 10) {
+          return `${value.toFixed(1)}s`;
+        }
+        if (value >= 1) {
+          return `${value.toFixed(2)}s`;
+        }
+        return `${value.toFixed(3)}s`;
       }
 
       function metricCard(label, value) {
@@ -436,6 +594,15 @@
         return Math.ceil(value / step) * step;
       }
 
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
       function nicePar2Max(value) {
         const magnitude = 10 ** Math.floor(Math.log10(value));
         for (const scale of [1, 2, 5, 10]) {
@@ -455,10 +622,326 @@
         return last;
       }
 
+      function upperBound(values, target) {
+        let low = 0;
+        let high = values.length;
+
+        while (low < high) {
+          const middle = Math.floor((low + high) / 2);
+          if (values[middle] <= target) {
+            low = middle + 1;
+          } else {
+            high = middle;
+          }
+        }
+
+        return low;
+      }
+
+      function solvedCountByTime(entry, time) {
+        return upperBound(entry._eventTimes, time);
+      }
+
+      function nearestEvent(entry, time) {
+        if (!entry._events.length) {
+          return null;
+        }
+
+        const index = upperBound(entry._eventTimes, time);
+        const left = index > 0 ? entry._events[index - 1] : null;
+        const right = index < entry._events.length ? entry._events[index] : null;
+
+        if (!left) {
+          return right;
+        }
+        if (!right) {
+          return left;
+        }
+
+        return Math.abs(left.time - time) <= Math.abs(right.time - time) ? left : right;
+      }
+
       function buildLinePath(curve, xScale, yScale) {
         return curve
           .map((point, index) => `${index === 0 ? "M" : "L"} ${xScale(point.time).toFixed(2)} ${yScale(point.solved).toFixed(2)}`)
           .join(" ");
+      }
+
+      function prepareEntry(entry) {
+        const rows = entry.rows ?? [];
+        const events = entry.events ?? [];
+        entry._rowMap = new Map(rows.map((row) => [row.instance, row]));
+        entry._events = events;
+        entry._eventTimes = events.map((event) => event.time);
+        return entry;
+      }
+
+      function prepareData(data) {
+        data.entries.forEach(prepareEntry);
+        if (data.virtualBest) {
+          prepareEntry(data.virtualBest);
+        }
+
+        data._realEntries = data.entries;
+        data._interactiveEntries = data.virtualBest ? [data.virtualBest, ...data.entries] : [...data.entries];
+        data._entryBySlug = new Map(data._interactiveEntries.map((entry) => [entry.slug, entry]));
+        return data;
+      }
+
+      function rowForInstance(entry, instance) {
+        return entry._rowMap.get(instance) ?? null;
+      }
+
+      function comparisonRows(data, instance) {
+        return data.entries
+          .map((entry) => ({ entry, row: rowForInstance(entry, instance) }))
+          .sort((leftItem, rightItem) => {
+            const leftSolved = leftItem.row?.solved ? 0 : 1;
+            const rightSolved = rightItem.row?.solved ? 0 : 1;
+            if (leftSolved !== rightSolved) {
+              return leftSolved - rightSolved;
+            }
+
+            const leftTime = leftItem.row?.time ?? Number.POSITIVE_INFINITY;
+            const rightTime = rightItem.row?.time ?? Number.POSITIVE_INFINITY;
+            if (leftTime !== rightTime) {
+              return leftTime - rightTime;
+            }
+
+            return leftItem.entry.label.localeCompare(rightItem.entry.label);
+          });
+      }
+
+      function rankForInstance(data, instance, slug) {
+        const solvedRows = comparisonRows(data, instance).filter((item) => item.row?.solved);
+        const position = solvedRows.findIndex((item) => item.entry.slug === slug);
+
+        return {
+          position: position >= 0 ? position + 1 : null,
+          total: solvedRows.length,
+          fastest: solvedRows[0] ?? null,
+        };
+      }
+
+      function rowOutcomeSummary(row) {
+        if (!row) {
+          return "No recorded result";
+        }
+
+        let text = `${row.result} · ${formatElapsed(row.time)}`;
+        if (row.verified && row.verified !== "skip") {
+          text += ` · verify ${row.verified}`;
+        }
+        return text;
+      }
+
+      function tooltipRowHtml(entry, primary, secondary, selected = false) {
+        return `
+          <div class="tooltip-row${selected ? " is-selected" : ""}">
+            <div class="tooltip-label">
+              <span class="tooltip-swatch" style="background:${solverColor(entry)}"></span>
+              <strong>${escapeHtml(entry.label)}</strong>
+            </div>
+            <div class="tooltip-detail">${escapeHtml(primary)}</div>
+            <div class="tooltip-detail">${escapeHtml(secondary)}</div>
+          </div>
+        `;
+      }
+
+      function nearestOverviewFocus(data, time) {
+        let best = null;
+
+        data.entries.forEach((entry) => {
+          const event = nearestEvent(entry, time);
+          if (!event) {
+            return;
+          }
+
+          const distance = Math.abs(event.time - time);
+          if (
+            !best ||
+            distance < best.distance ||
+            (distance === best.distance && event.time < best.event.time)
+          ) {
+            best = { entry, event, distance };
+          }
+        });
+
+        return best;
+      }
+
+      function buildOverviewTooltip(data, hoverTime, focus) {
+        const rows = comparisonRows(data, focus.event.instance);
+        const list = rows
+          .map(({ entry, row }) => {
+            const solvedText = `${solvedCountByTime(entry, hoverTime)}/${entry.instances} solved by ${formatElapsed(hoverTime)}`;
+            return tooltipRowHtml(entry, solvedText, rowOutcomeSummary(row));
+          })
+          .join("");
+
+        return `
+          <p class="tooltip-eyebrow">All solvers · overview</p>
+          <h3 class="tooltip-title">${escapeHtml(focus.event.instance)}</h3>
+          <div class="tooltip-meta">
+            <span>Mouse time: ${escapeHtml(formatElapsed(hoverTime))}</span>
+            <span>Nearest solve event: ${escapeHtml(focus.entry.label)} · ${escapeHtml(focus.event.result)} · ${escapeHtml(formatElapsed(focus.event.time))}</span>
+          </div>
+          <div class="tooltip-list">${list}</div>
+        `;
+      }
+
+      function buildSelectedTooltip(data, hoverTime, selectedEntry, event) {
+        const rows = comparisonRows(data, event.instance);
+
+        if (selectedEntry.family === "virtual-best") {
+          const list = rows
+            .map(({ entry, row }) => {
+              const solvedText = `${solvedCountByTime(entry, hoverTime)}/${entry.instances} solved by ${formatElapsed(hoverTime)}`;
+              return tooltipRowHtml(entry, solvedText, rowOutcomeSummary(row), entry.slug === event.solverSlug);
+            })
+            .join("");
+
+          return `
+            <p class="tooltip-eyebrow">Focused view · virtual best</p>
+            <h3 class="tooltip-title">${escapeHtml(event.instance)}</h3>
+            <div class="tooltip-meta">
+              <span>Mouse time: ${escapeHtml(formatElapsed(hoverTime))}</span>
+              <span>Best plotted solver: ${escapeHtml(event.solverLabel)} · ${escapeHtml(event.result)} · ${escapeHtml(formatElapsed(event.time))}</span>
+              <span>${escapeHtml(`${solvedCountByTime(selectedEntry, hoverTime)}/${selectedEntry.instances} solved by this time`)}</span>
+            </div>
+            <div class="tooltip-list">${list}</div>
+          `;
+        }
+
+        const selectedRow = rowForInstance(selectedEntry, event.instance) ?? event;
+        const rank = rankForInstance(data, event.instance, selectedEntry.slug);
+        const list = rows
+          .map(({ entry, row }) => {
+            const solvedText = `${solvedCountByTime(entry, hoverTime)}/${entry.instances} solved by ${formatElapsed(hoverTime)}`;
+            return tooltipRowHtml(entry, solvedText, rowOutcomeSummary(row), entry.slug === selectedEntry.slug);
+          })
+          .join("");
+
+        const rankText = rank.position
+          ? `Rank on this instance: ${rank.position}/${rank.total} among plotted solvers that solved it`
+          : "This instance was not solved by the focused solver";
+
+        return `
+          <p class="tooltip-eyebrow">Focused view · ${escapeHtml(selectedEntry.label)}</p>
+          <h3 class="tooltip-title">${escapeHtml(event.instance)}</h3>
+          <div class="tooltip-meta">
+            <span>${escapeHtml(rowOutcomeSummary(selectedRow))}</span>
+            <span>${escapeHtml(`${solvedCountByTime(selectedEntry, hoverTime)}/${selectedEntry.instances} solved by ${formatElapsed(hoverTime)}`)}</span>
+            <span>${escapeHtml(rankText)}</span>
+          </div>
+          <div class="tooltip-list">${list}</div>
+        `;
+      }
+
+      function updateSelectionControl() {
+        const button = document.getElementById("clear-selection");
+        button.hidden = !interactiveState.selectedSlug;
+      }
+
+      function setHoverLinePosition(x) {
+        if (!interactiveState.hoverLine) {
+          return;
+        }
+
+        interactiveState.hoverLine.setAttribute("x1", String(x));
+        interactiveState.hoverLine.setAttribute("x2", String(x));
+        interactiveState.hoverLine.setAttribute("opacity", "1");
+      }
+
+      function hideTooltip() {
+        const tooltip = document.getElementById("curve-tooltip");
+        tooltip.hidden = true;
+        tooltip.classList.remove("is-visible");
+        tooltip.style.transform = "translate(-9999px, -9999px)";
+        interactiveState.lastPointer = null;
+
+        if (interactiveState.hoverLine) {
+          interactiveState.hoverLine.setAttribute("opacity", "0");
+        }
+      }
+
+      function showTooltip(html, clientX, clientY) {
+        const wrap = document.getElementById("curve-chart-wrap");
+        const tooltip = document.getElementById("curve-tooltip");
+        tooltip.innerHTML = html;
+        tooltip.hidden = false;
+        tooltip.classList.add("is-visible");
+
+        const wrapRect = wrap.getBoundingClientRect();
+        const tooltipRect = tooltip.getBoundingClientRect();
+        let left = clientX - wrapRect.left + 18;
+        let top = clientY - wrapRect.top + 18;
+
+        if (left + tooltipRect.width > wrapRect.width - 8) {
+          left = wrapRect.width - tooltipRect.width - 8;
+        }
+        if (top + tooltipRect.height > wrapRect.height - 8) {
+          top = clientY - wrapRect.top - tooltipRect.height - 18;
+        }
+
+        left = Math.max(8, left);
+        top = Math.max(8, top);
+        tooltip.style.transform = `translate(${left}px, ${top}px)`;
+      }
+
+      function hoverTimeFromClientX(clientX) {
+        const svg = document.getElementById("curve-chart");
+        const rect = svg.getBoundingClientRect();
+        const plot = interactiveState.curvePlot;
+        const xView = ((clientX - rect.left) / rect.width) * plot.width;
+        const clampedX = Math.max(plot.left, Math.min(plot.left + plot.plotWidth, xView));
+        const time = ((clampedX - plot.left) / plot.plotWidth) * plot.timeoutSeconds;
+        return { clampedX, time };
+      }
+
+      function refreshHover() {
+        if (!interactiveState.lastPointer || !interactiveState.data) {
+          return;
+        }
+
+        const { clientX, clientY } = interactiveState.lastPointer;
+        const { clampedX, time } = hoverTimeFromClientX(clientX);
+        setHoverLinePosition(clampedX);
+
+        const selectedEntry = interactiveState.selectedSlug
+          ? interactiveState.data._entryBySlug.get(interactiveState.selectedSlug)
+          : null;
+
+        if (selectedEntry) {
+          const event = nearestEvent(selectedEntry, time);
+          if (!event) {
+            hideTooltip();
+            return;
+          }
+
+          showTooltip(
+            buildSelectedTooltip(interactiveState.data, time, selectedEntry, event),
+            clientX,
+            clientY,
+          );
+          return;
+        }
+
+        const focus = nearestOverviewFocus(interactiveState.data, time);
+        if (!focus) {
+          hideTooltip();
+          return;
+        }
+
+        showTooltip(buildOverviewTooltip(interactiveState.data, time, focus), clientX, clientY);
+      }
+
+      function setSelection(slug) {
+        interactiveState.selectedSlug = interactiveState.selectedSlug === slug ? null : slug;
+        updateSelectionControl();
+        renderCurveChart(interactiveState.data);
+        renderCurveLegend(interactiveState.data);
+        refreshHover();
       }
 
       function renderHero(data) {
@@ -506,6 +989,7 @@
         const yMax = Math.max(yStep, niceCeil(maxSolved, yStep));
         const xScale = (time) => left + (time / timeoutSeconds) * plotWidth;
         const yScale = (solved) => top + plotHeight - (solved / yMax) * plotHeight;
+        interactiveState.curvePlot = { width, height, left, top, plotWidth, plotHeight, timeoutSeconds };
 
         svgNode(svg, "rect", { x: 0, y: 0, width, height, fill: "transparent" });
 
@@ -582,44 +1066,100 @@
 
         drawOrder.forEach((entry) => {
           const color = solverColor(entry);
+          const isSelected = interactiveState.selectedSlug === entry.slug;
+          const isDimmed = Boolean(interactiveState.selectedSlug && !isSelected);
           svgNode(svg, "path", {
             d: buildLinePath(entry.curve, xScale, yScale),
             fill: "none",
             stroke: color,
-            "stroke-width": 3,
+            "stroke-width": isSelected ? 4 : 3,
             "stroke-linejoin": "round",
             "stroke-linecap": "round",
+            opacity: isDimmed ? 0.24 : 0.96,
           });
 
           const marker = curveMarkerPoint(entry.curve, timeoutSeconds);
           svgNode(svg, "circle", {
             cx: xScale(marker.time),
             cy: yScale(marker.solved),
-            r: 3.5,
+            r: isSelected ? 4.5 : 3.5,
             fill: color,
+            opacity: isDimmed ? 0.24 : 1,
+          });
+
+          const hit = svgNode(svg, "path", {
+            d: buildLinePath(entry.curve, xScale, yScale),
+            fill: "none",
+            stroke: "transparent",
+            "stroke-width": 14,
+            "stroke-linejoin": "round",
+            "stroke-linecap": "round",
+            style: "cursor:pointer",
+          });
+          hit.addEventListener("click", (event) => {
+            interactiveState.lastPointer = { clientX: event.clientX, clientY: event.clientY };
+            setSelection(entry.slug);
           });
         });
 
         if (data.virtualBest) {
           const color = solverColor(data.virtualBest);
+          const isSelected = interactiveState.selectedSlug === data.virtualBest.slug;
+          const isDimmed = Boolean(interactiveState.selectedSlug && !isSelected);
           svgNode(svg, "path", {
             d: buildLinePath(data.virtualBest.curve, xScale, yScale),
             fill: "none",
             stroke: color,
-            "stroke-width": 3.5,
+            "stroke-width": isSelected ? 4.5 : 3.5,
             "stroke-dasharray": "10 7",
             "stroke-linejoin": "round",
             "stroke-linecap": "round",
+            opacity: isDimmed ? 0.24 : 0.98,
           });
 
           const marker = curveMarkerPoint(data.virtualBest.curve, timeoutSeconds);
           svgNode(svg, "circle", {
             cx: xScale(marker.time),
             cy: yScale(marker.solved),
-            r: 4,
+            r: isSelected ? 5 : 4,
             fill: color,
+            opacity: isDimmed ? 0.24 : 1,
+          });
+
+          const hit = svgNode(svg, "path", {
+            d: buildLinePath(data.virtualBest.curve, xScale, yScale),
+            fill: "none",
+            stroke: "transparent",
+            "stroke-width": 16,
+            "stroke-dasharray": "10 7",
+            "stroke-linejoin": "round",
+            "stroke-linecap": "round",
+            style: "cursor:pointer",
+          });
+          hit.addEventListener("click", (event) => {
+            interactiveState.lastPointer = { clientX: event.clientX, clientY: event.clientY };
+            setSelection(data.virtualBest.slug);
           });
         }
+
+        interactiveState.hoverLine = svgNode(svg, "line", {
+          x1: left,
+          y1: top,
+          x2: left,
+          y2: top + plotHeight,
+          stroke: "rgba(13, 138, 114, 0.58)",
+          "stroke-width": 1.5,
+          "stroke-dasharray": "6 6",
+          opacity: 0,
+        });
+
+        svg.onmousemove = (event) => {
+          interactiveState.lastPointer = { clientX: event.clientX, clientY: event.clientY };
+          refreshHover();
+        };
+        svg.onmouseleave = () => {
+          hideTooltip();
+        };
       }
 
       function renderCurveLegend(data) {
@@ -634,6 +1174,14 @@
         cards.forEach((entry) => {
           const card = document.createElement("article");
           card.className = "curve-card";
+          const isSelected = interactiveState.selectedSlug === entry.slug;
+          const isDimmed = Boolean(interactiveState.selectedSlug && !isSelected);
+          if (isSelected) {
+            card.classList.add("is-selected");
+          }
+          if (isDimmed) {
+            card.classList.add("is-dimmed");
+          }
 
           const head = document.createElement("div");
           head.className = "curve-head";
@@ -670,6 +1218,9 @@
           }
 
           card.append(head, meta);
+          card.addEventListener("click", () => {
+            setSelection(entry.slug);
+          });
           container.append(card);
         });
       }
@@ -821,13 +1372,22 @@
             throw new Error(`failed to load ${CHART_URL}`);
           }
 
-          const data = await response.json();
+          const data = prepareData(await response.json());
+          interactiveState.data = data;
+          document.getElementById("clear-selection").onclick = () => {
+            interactiveState.selectedSlug = null;
+            updateSelectionControl();
+            renderCurveChart(interactiveState.data);
+            renderCurveLegend(interactiveState.data);
+            hideTooltip();
+          };
           renderHero(data);
           renderCurveChart(data);
           renderCurveLegend(data);
           renderPar2Chart(data);
           renderNotes(data);
           renderLogs(data);
+          updateSelectionControl();
           status.textContent = `Loaded ${data.entries.length} solver runs from ${new Date(data.generatedAt).toLocaleString()}.`;
         } catch (error) {
           console.error(error);
