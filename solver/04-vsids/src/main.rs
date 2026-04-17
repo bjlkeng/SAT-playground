@@ -1,0 +1,913 @@
+use std::env;
+use std::fs;
+use std::io::{self, BufRead, Write};
+use std::path::Path;
+
+const UNASSIGNED: u8 = 0;
+const TRUE: u8 = 1;
+const FALSE: u8 = 2;
+const NO_REASON: usize = usize::MAX;
+
+#[derive(Clone, Copy)]
+struct ClauseRef {
+    start: u32,
+    len: u32,
+}
+
+struct Solver {
+    clauses: Vec<ClauseRef>,
+    clause_data: Vec<i32>,
+    original_clause_count: usize,
+    /// watched literal positions within each clause
+    watch_pos: Vec<[u32; 2]>,
+    /// clauses currently watching each literal
+    watchers: Vec<Vec<u32>>,
+    /// scratch buffer reused when rebuilding a watch list during propagation
+    watch_scratch: Vec<u32>,
+    /// assignment[v] for variable v (1-based, index 0 unused)
+    /// 0 = unassigned, 1 = true, 2 = false
+    assignment: Vec<u8>,
+    /// decision level of each variable assignment
+    decision_level: Vec<usize>,
+    /// reason clause index for each implied assignment; NO_REASON for decisions/root-unassigned vars
+    reason: Vec<usize>,
+    /// assigned literals in chronological order
+    trail: Vec<i32>,
+    /// number of level-0 assignments that must survive backtrack(0)
+    root_trail_len: usize,
+    /// trail index where each decision level starts
+    trail_limits: Vec<usize>,
+    /// next trail entry whose falsified literal still needs watcher processing
+    propagate_head: usize,
+    /// static branch order sorted by descending literal occurrence count
+    branch_order: Vec<usize>,
+    /// reverse lookup from variable to its position in branch_order
+    branch_rank: Vec<usize>,
+    /// lower bound for the next first-unassigned scan in branch_order
+    branch_cursor: usize,
+    /// EVSIDS-style variable activity
+    activity: Vec<f64>,
+    /// additive bump applied to variables participating in recent conflicts
+    activity_inc: f64,
+    /// multiplicative decay factor for older activity
+    activity_decay: f64,
+    /// original unit clauses that must be enqueued at decision level 0
+    root_unit_clauses: Vec<usize>,
+    /// whether the formula already contains an empty clause
+    has_empty_clause: bool,
+    /// scratch buffers reused during conflict analysis
+    scratch_seen: Vec<u8>,
+    scratch_resolved: Vec<u8>,
+    scratch_learned: Vec<i32>,
+    /// learned clause indices in DRAT proof order
+    proof_clause_indices: Vec<usize>,
+    /// whether the proof terminates with the empty clause
+    proof_has_empty: bool,
+}
+
+fn mark_clause_literals(
+    decision_level: &[usize],
+    clause: &[i32],
+    current_level: usize,
+    seen: &mut [u8],
+    resolved: &[u8],
+    learned: &mut Vec<i32>,
+    current_level_count: &mut usize,
+) {
+    for &lit in clause {
+        let var = lit.unsigned_abs() as usize;
+        if seen[var] != 0 || resolved[var] != 0 {
+            continue;
+        }
+
+        let level = decision_level[var];
+        if level == 0 {
+            continue;
+        }
+
+        seen[var] = 1;
+        if level == current_level {
+            *current_level_count += 1;
+        } else {
+            learned.push(lit);
+        }
+    }
+}
+
+#[inline(always)]
+fn lit_to_index(lit: i32) -> usize {
+    let var = lit.unsigned_abs() as usize;
+    let base = (var - 1) * 2;
+    if lit > 0 { base } else { base + 1 }
+}
+
+impl Solver {
+    fn new(num_vars: usize, clauses: Vec<Vec<i32>>) -> Self {
+        let original_clause_count = clauses.len();
+        let mut occurrence_count = vec![0usize; num_vars + 1];
+        for clause in &clauses {
+            for &lit in clause {
+                let var = lit.unsigned_abs() as usize;
+                occurrence_count[var] += 1;
+            }
+        }
+        let mut branch_order: Vec<usize> = (1..=num_vars).collect();
+        branch_order.sort_unstable_by(|&lhs, &rhs| {
+            occurrence_count[rhs]
+                .cmp(&occurrence_count[lhs])
+                .then_with(|| lhs.cmp(&rhs))
+        });
+        let mut branch_rank = vec![0usize; num_vars + 1];
+        for (rank, &var) in branch_order.iter().enumerate() {
+            branch_rank[var] = rank;
+        }
+
+        let total_literals = clauses.iter().map(|clause| clause.len()).sum();
+        let mut clause_refs = Vec::with_capacity(original_clause_count);
+        let mut clause_data = Vec::with_capacity(total_literals);
+        for clause in clauses {
+            let start = clause_data.len();
+            let len = clause.len();
+            clause_data.extend_from_slice(&clause);
+            clause_refs.push(ClauseRef {
+                start: start as u32,
+                len: len as u32,
+            });
+        }
+        let mut solver = Solver {
+            clauses: clause_refs,
+            clause_data,
+            original_clause_count,
+            watch_pos: vec![[0, 0]; original_clause_count],
+            watchers: vec![Vec::new(); num_vars.saturating_mul(2)],
+            watch_scratch: Vec::new(),
+            assignment: vec![UNASSIGNED; num_vars + 1],
+            decision_level: vec![0; num_vars + 1],
+            reason: vec![NO_REASON; num_vars + 1],
+            trail: Vec::with_capacity(num_vars),
+            root_trail_len: 0,
+            trail_limits: Vec::new(),
+            propagate_head: 0,
+            branch_order,
+            branch_rank,
+            branch_cursor: 0,
+            activity: vec![0.0; num_vars + 1],
+            activity_inc: 1.0,
+            activity_decay: 0.95,
+            root_unit_clauses: Vec::new(),
+            has_empty_clause: false,
+            scratch_seen: vec![0; num_vars + 1],
+            scratch_resolved: vec![0; num_vars + 1],
+            scratch_learned: Vec::with_capacity(16),
+            proof_clause_indices: Vec::new(),
+            proof_has_empty: false,
+        };
+        for clause_idx in 0..solver.clauses.len() {
+            solver.attach_clause(clause_idx, true);
+        }
+        solver
+    }
+
+    #[inline(always)]
+    fn current_level(&self) -> usize {
+        self.trail_limits.len()
+    }
+
+    #[inline(always)]
+    fn lit_index(&self, lit: i32) -> usize {
+        lit_to_index(lit)
+    }
+
+    fn attach_clause(&mut self, clause_idx: usize, track_root_unit: bool) {
+        let clause = self.clauses[clause_idx];
+        match clause.len {
+            0 => {
+                self.has_empty_clause = true;
+            }
+            1 => {
+                self.watch_pos[clause_idx] = [0, 0];
+                let lit = self.clause_data[clause.start as usize];
+                let watch_idx = self.lit_index(lit);
+                self.watchers[watch_idx].push(clause_idx as u32);
+                if track_root_unit {
+                    self.root_unit_clauses.push(clause_idx);
+                }
+            }
+            _ => {
+                self.watch_pos[clause_idx] = [0, 1];
+                let first = self.clause_data[clause.start as usize];
+                let second = self.clause_data[clause.start as usize + 1];
+                let first_watch_idx = self.lit_index(first);
+                let second_watch_idx = self.lit_index(second);
+                self.watchers[first_watch_idx].push(clause_idx as u32);
+                self.watchers[second_watch_idx].push(clause_idx as u32);
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn lit_value(&self, lit: i32) -> u8 {
+        let var = lit.unsigned_abs() as usize;
+        let val = self.assignment[var];
+        if val == UNASSIGNED {
+            return UNASSIGNED;
+        }
+        if (lit > 0) == (val == TRUE) {
+            TRUE
+        } else {
+            FALSE
+        }
+    }
+
+    #[inline(always)]
+    fn enqueue(&mut self, lit: i32, reason: usize) -> bool {
+        let var = lit.unsigned_abs() as usize;
+        let target_value = if lit > 0 { TRUE } else { FALSE };
+        let current = self.assignment[var];
+        if current == UNASSIGNED {
+            self.assignment[var] = target_value;
+            self.decision_level[var] = self.current_level();
+            self.reason[var] = reason;
+            self.trail.push(lit);
+            if self.current_level() == 0 {
+                self.root_trail_len += 1;
+            }
+            true
+        } else {
+            current == target_value
+        }
+    }
+
+    fn enqueue_root_units(&mut self) -> bool {
+        for idx in 0..self.root_unit_clauses.len() {
+            let clause_idx = self.root_unit_clauses[idx];
+            let lit = self.clause_data[self.clauses[clause_idx].start as usize];
+            if !self.enqueue(lit, clause_idx) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn propagate(&mut self) -> Option<usize> {
+        let assignment_ptr = self.assignment.as_ptr();
+        let clause_data_ptr = self.clause_data.as_ptr();
+        while self.propagate_head < self.trail.len() {
+            let false_lit = -self.trail[self.propagate_head];
+            self.propagate_head += 1;
+            let watch_idx = self.lit_index(false_lit);
+            let pending = std::mem::take(&mut self.watchers[watch_idx]);
+            let mut retained = std::mem::take(&mut self.watch_scratch);
+            retained.clear();
+            if retained.capacity() < pending.len() {
+                retained.reserve(pending.len() - retained.capacity());
+            }
+            let mut pending_idx = 0usize;
+
+            while pending_idx < pending.len() {
+                let clause_idx_u32 = pending[pending_idx];
+                pending_idx += 1;
+                let clause_idx = clause_idx_u32 as usize;
+                let clause = self.clauses[clause_idx];
+                if clause.len == 1 {
+                    let unit_lit = self.clause_data[clause.start as usize];
+                    match self.lit_value(unit_lit) {
+                        TRUE => retained.push(clause_idx_u32),
+                        FALSE => {
+                            retained.push(clause_idx_u32);
+                            retained.extend_from_slice(&pending[pending_idx..]);
+                            self.watchers[watch_idx] = retained;
+                            self.watch_scratch = pending;
+                            self.watch_scratch.clear();
+                            return Some(clause_idx);
+                        }
+                        UNASSIGNED => {
+                            if !self.enqueue(unit_lit, clause_idx) {
+                                retained.push(clause_idx_u32);
+                                retained.extend_from_slice(&pending[pending_idx..]);
+                                self.watchers[watch_idx] = retained;
+                                self.watch_scratch = pending;
+                                self.watch_scratch.clear();
+                                return Some(clause_idx);
+                            }
+                            retained.push(clause_idx_u32);
+                        }
+                        _ => unreachable!(),
+                    }
+                    continue;
+                }
+
+                let clause_start = clause.start as usize;
+                let clause_len = clause.len as usize;
+                let watch_pair = self.watch_pos[clause_idx];
+                let watch0 = watch_pair[0] as usize;
+                let watch1 = watch_pair[1] as usize;
+                let lit0 = unsafe { *clause_data_ptr.add(clause_start + watch0) };
+                let lit1 = unsafe { *clause_data_ptr.add(clause_start + watch1) };
+                let (false_watch_slot, other_watch_slot) = if lit0 == false_lit {
+                    (0usize, 1usize)
+                } else if lit1 == false_lit {
+                    (1usize, 0usize)
+                } else {
+                    continue;
+                };
+
+                let other_watch_pos = if other_watch_slot == 0 { watch0 } else { watch1 };
+                let other_lit = unsafe { *clause_data_ptr.add(clause_start + other_watch_pos) };
+                let other_var = other_lit.unsigned_abs() as usize;
+                let other_val = unsafe { *assignment_ptr.add(other_var) };
+                if other_val != UNASSIGNED && ((other_lit > 0) == (other_val == TRUE)) {
+                    retained.push(clause_idx_u32);
+                    continue;
+                }
+
+                let mut moved_watch = false;
+                if clause_len == 3 {
+                    let candidate_pos = 3usize - watch0 - watch1;
+                    let candidate = unsafe { *clause_data_ptr.add(clause_start + candidate_pos) };
+                    let candidate_var = candidate.unsigned_abs() as usize;
+                    let candidate_val = unsafe { *assignment_ptr.add(candidate_var) };
+                    if candidate_val == UNASSIGNED || ((candidate > 0) == (candidate_val == TRUE)) {
+                        self.watch_pos[clause_idx][false_watch_slot] = candidate_pos as u32;
+                        let new_watch_idx = self.lit_index(candidate);
+                        self.watchers[new_watch_idx].push(clause_idx_u32);
+                        moved_watch = true;
+                    }
+                } else {
+                    let mut lit_pos = 0usize;
+                    let mut candidate_ptr = unsafe { clause_data_ptr.add(clause_start) };
+                    while lit_pos < clause_len {
+                        if lit_pos == watch0 || lit_pos == watch1 {
+                            lit_pos += 1;
+                            candidate_ptr = unsafe { candidate_ptr.add(1) };
+                            continue;
+                        }
+                        let candidate = unsafe { *candidate_ptr };
+                        let candidate_var = candidate.unsigned_abs() as usize;
+                        let candidate_val = unsafe { *assignment_ptr.add(candidate_var) };
+                        if candidate_val == UNASSIGNED || ((candidate > 0) == (candidate_val == TRUE)) {
+                            self.watch_pos[clause_idx][false_watch_slot] = lit_pos as u32;
+                            let new_watch_idx = self.lit_index(candidate);
+                            self.watchers[new_watch_idx].push(clause_idx_u32);
+                            moved_watch = true;
+                            break;
+                        }
+                        lit_pos += 1;
+                        candidate_ptr = unsafe { candidate_ptr.add(1) };
+                    }
+                }
+
+                if moved_watch {
+                    continue;
+                }
+
+                if other_val != UNASSIGNED && ((other_lit > 0) != (other_val == TRUE))
+                    || !self.enqueue(other_lit, clause_idx)
+                {
+                    retained.push(clause_idx_u32);
+                    retained.extend_from_slice(&pending[pending_idx..]);
+                    self.watchers[watch_idx] = retained;
+                    self.watch_scratch = pending;
+                    self.watch_scratch.clear();
+                    return Some(clause_idx);
+                }
+
+                retained.push(clause_idx_u32);
+            }
+
+            self.watchers[watch_idx] = retained;
+            self.watch_scratch = pending;
+            self.watch_scratch.clear();
+        }
+
+        None
+    }
+
+    fn decide(&mut self, lit: i32) {
+        self.trail_limits.push(self.trail.len());
+        let inserted = self.enqueue(lit, NO_REASON);
+        debug_assert!(inserted, "decision literal must be unassigned");
+    }
+
+    fn bump_variable_activity(&mut self, var: usize) {
+        self.activity[var] += self.activity_inc;
+        if self.activity[var] > 1e100 {
+            for value in &mut self.activity[1..] {
+                *value *= 1e-100;
+            }
+            self.activity_inc *= 1e-100;
+        }
+    }
+
+    fn bump_clause_activity_by_index(&mut self, clause_idx: usize) {
+        let clause = self.clauses[clause_idx];
+        let start = clause.start as usize;
+        let end = start + clause.len as usize;
+        for idx in start..end {
+            let var = self.clause_data[idx].unsigned_abs() as usize;
+            self.bump_variable_activity(var);
+        }
+    }
+
+    fn bump_clause_activity(&mut self, clause: &[i32]) {
+        for &lit in clause {
+            self.bump_variable_activity(lit.unsigned_abs() as usize);
+        }
+    }
+
+    fn decay_variable_activity(&mut self) {
+        self.activity_inc /= self.activity_decay;
+    }
+
+    fn pick_branch_lit(&mut self) -> Option<i32> {
+        let assignment_ptr = self.assignment.as_ptr();
+        let mut best_var = None;
+        let mut best_activity = f64::NEG_INFINITY;
+
+        for &var in &self.branch_order {
+            if unsafe { *assignment_ptr.add(var) } == UNASSIGNED {
+                let activity = self.activity[var];
+                if activity > best_activity {
+                    best_activity = activity;
+                    best_var = Some(var as i32);
+                }
+            }
+        }
+
+        best_var
+    }
+
+    fn backtrack(&mut self, target_level: usize) {
+        let new_trail_len = if target_level == 0 {
+            self.root_trail_len
+        } else {
+            self.trail_limits[target_level - 1]
+        };
+        let mut min_unassigned_rank = self.branch_order.len();
+
+        while self.trail.len() > new_trail_len {
+            let lit = self.trail.pop().expect("trail underflow");
+            let var = lit.unsigned_abs() as usize;
+            min_unassigned_rank = min_unassigned_rank.min(self.branch_rank[var]);
+            self.assignment[var] = UNASSIGNED;
+            self.decision_level[var] = 0;
+            self.reason[var] = NO_REASON;
+        }
+
+        self.trail_limits.truncate(target_level);
+        self.propagate_head = self.propagate_head.min(new_trail_len);
+        if min_unassigned_rank < self.branch_order.len() {
+            self.branch_cursor = self.branch_cursor.min(min_unassigned_rank);
+        }
+    }
+
+    fn add_clause(&mut self, clause: Vec<i32>) -> usize {
+        let start = self.clause_data.len();
+        let len = clause.len();
+        self.clause_data.extend_from_slice(&clause);
+        self.clauses.push(ClauseRef {
+            start: start as u32,
+            len: len as u32,
+        });
+        self.watch_pos.push([0, 0]);
+        let clause_idx = self.clauses.len() - 1;
+        self.attach_clause(clause_idx, false);
+        clause_idx
+    }
+
+    fn analyze_conflict(&mut self, conflict_clause_idx: usize) -> (Vec<i32>, usize) {
+        let current_level = self.current_level();
+        let decision_level = &self.decision_level;
+        let clauses = &self.clauses;
+        let seen = &mut self.scratch_seen;
+        let resolved = &mut self.scratch_resolved;
+        let learned = &mut self.scratch_learned;
+        seen.fill(0);
+        resolved.fill(0);
+        learned.clear();
+
+        let mut current_level_count = 0usize;
+
+        mark_clause_literals(
+            decision_level,
+            &self.clause_data
+                [clauses[conflict_clause_idx].start as usize
+                    ..clauses[conflict_clause_idx].start as usize
+                        + clauses[conflict_clause_idx].len as usize],
+            current_level,
+            seen,
+            resolved,
+            learned,
+            &mut current_level_count,
+        );
+
+        debug_assert!(current_level_count > 0);
+
+        let mut trail_index = self.trail.len();
+        let uip_lit = loop {
+            trail_index -= 1;
+            let lit = self.trail[trail_index];
+            let var = lit.unsigned_abs() as usize;
+            if seen[var] == 0 {
+                continue;
+            }
+
+            seen[var] = 0;
+            resolved[var] = 1;
+            current_level_count -= 1;
+            if current_level_count == 0 {
+                break lit;
+            }
+
+            let reason_idx = self.reason[var];
+            if reason_idx != NO_REASON {
+                mark_clause_literals(
+                    decision_level,
+                    &self.clause_data
+                        [clauses[reason_idx].start as usize
+                            ..clauses[reason_idx].start as usize + clauses[reason_idx].len as usize],
+                    current_level,
+                    seen,
+                    resolved,
+                    learned,
+                    &mut current_level_count,
+                );
+            }
+        };
+
+        let mut learned_clause = Vec::with_capacity(learned.len() + 1);
+        learned_clause.push(-uip_lit);
+        learned_clause.extend(learned.iter().copied());
+
+        let mut backtrack_level = 0usize;
+        let mut backtrack_pos = 1usize;
+        for pos in 1..learned_clause.len() {
+            let lit = learned_clause[pos];
+            let var = lit.unsigned_abs() as usize;
+            let level = self.decision_level[var];
+            if level > backtrack_level {
+                backtrack_level = level;
+                backtrack_pos = pos;
+            }
+        }
+
+        if learned_clause.len() > 2 && backtrack_pos != 1 {
+            learned_clause.swap(1, backtrack_pos);
+        }
+
+        (learned_clause, backtrack_level)
+    }
+
+    fn learned_clause_count(&self) -> usize {
+        self.clauses.len() - self.original_clause_count
+    }
+
+    fn solve(&mut self) -> bool {
+        if self.has_empty_clause || !self.enqueue_root_units() {
+            self.proof_has_empty = true;
+            return false;
+        }
+
+        let mut conflict = self.propagate();
+
+        loop {
+            match conflict {
+                Some(conflict_clause_idx) => {
+                    if self.current_level() == 0 {
+                        self.proof_has_empty = true;
+                        return false;
+                    }
+
+                    let (learned_clause, backtrack_level) =
+                        self.analyze_conflict(conflict_clause_idx);
+                    self.bump_clause_activity_by_index(conflict_clause_idx);
+                    self.bump_clause_activity(&learned_clause);
+                    self.decay_variable_activity();
+                    let asserting_lit = learned_clause[0];
+                    let learned_clause_idx = self.add_clause(learned_clause);
+                    self.proof_clause_indices.push(learned_clause_idx);
+
+                    self.backtrack(backtrack_level);
+                    let inserted = self.enqueue(asserting_lit, learned_clause_idx);
+                    debug_assert!(inserted, "learned clause must be asserting after backtrack");
+
+                    conflict = self.propagate();
+                }
+                None => match self.pick_branch_lit() {
+                    Some(lit) => {
+                        self.decide(lit);
+                        conflict = self.propagate();
+                    }
+                    None => return true,
+                },
+            }
+        }
+    }
+}
+
+fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
+    let file = fs::File::open(path).unwrap_or_else(|e| {
+        eprintln!("Error opening {}: {}", path, e);
+        std::process::exit(1);
+    });
+    let reader = io::BufReader::new(file);
+
+    let mut num_vars = 0;
+    let mut clauses: Vec<Vec<i32>> = Vec::new();
+    let mut current_clause: Vec<i32> = Vec::new();
+
+    for line in reader.lines() {
+        let line = line.expect("Failed to read line");
+        let line = line.trim();
+
+        if line.is_empty() || line.starts_with('c') {
+            continue;
+        }
+
+        if line.starts_with('p') {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 4 && parts[1] == "cnf" {
+                num_vars = parts[2].parse().unwrap_or(0);
+            }
+            continue;
+        }
+
+        for token in line.split_whitespace() {
+            let lit: i32 = match token.parse() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if lit == 0 {
+                clauses.push(std::mem::take(&mut current_clause));
+            } else {
+                current_clause.push(lit);
+            }
+        }
+    }
+
+    if !current_clause.is_empty() {
+        clauses.push(current_clause);
+    }
+
+    (num_vars, clauses)
+}
+
+fn write_proof(
+    output_dir: &str,
+    clauses: &[ClauseRef],
+    clause_data: &[i32],
+    proof_clause_indices: &[usize],
+    proof_has_empty: bool,
+) {
+    let proof_path = Path::new(output_dir).join("proof.out");
+    let file = fs::File::create(&proof_path).unwrap_or_else(|e| {
+        eprintln!("Error creating {}: {}", proof_path.display(), e);
+        std::process::exit(1);
+    });
+    let mut writer = io::BufWriter::new(file);
+
+    for &clause_idx in proof_clause_indices {
+        let clause = clauses[clause_idx];
+        for &lit in &clause_data[clause.start as usize..clause.start as usize + clause.len as usize] {
+            write!(writer, "{} ", lit).expect("Failed to write proof");
+        }
+        writer.write_all(b"0\n").expect("Failed to write proof");
+    }
+
+    if proof_has_empty {
+        writer.write_all(b"0\n").expect("Failed to write proof");
+    }
+
+    writer.flush().expect("Failed to flush proof");
+}
+
+fn print_assignment(assignment: &[u8]) {
+    let mut line = String::from("v");
+    for var in 1..assignment.len() {
+        let lit = if assignment[var] == FALSE {
+            -(var as i32)
+        } else {
+            var as i32
+        };
+        let token = format!(" {}", lit);
+        if line.len() + token.len() > 4090 {
+            println!("{}", line);
+            line = String::from("v");
+        }
+        line.push_str(&token);
+    }
+    line.push_str(" 0");
+    println!("{}", line);
+}
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 3 {
+        eprintln!("Usage: sat-solver <cnf_path> <output_dir>");
+        std::process::exit(1);
+    }
+
+    let cnf_path = &args[1];
+    let output_dir = &args[2];
+
+    let (num_vars, clauses) = parse_cnf(cnf_path);
+    let mut solver = Solver::new(num_vars, clauses);
+
+    if solver.solve() {
+        println!("s SATISFIABLE");
+        print_assignment(&solver.assignment);
+    } else {
+        println!("s UNSATISFIABLE");
+        write_proof(
+            output_dir,
+            &solver.clauses,
+            &solver.clause_data,
+            &solver.proof_clause_indices,
+            solver.proof_has_empty,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_solver(num_vars: usize, clauses: Vec<Vec<i32>>) -> Solver {
+        Solver::new(num_vars, clauses)
+    }
+
+    #[test]
+    fn test_unit_clause_sat() {
+        let mut s = make_solver(1, vec![vec![1]]);
+        assert!(s.solve());
+        assert_eq!(s.assignment[1], TRUE);
+    }
+
+    #[test]
+    fn test_contradiction_unsat() {
+        let mut s = make_solver(1, vec![vec![1], vec![-1]]);
+        assert!(!s.solve());
+    }
+
+    #[test]
+    fn test_empty_clause_unsat() {
+        let mut s = make_solver(2, vec![vec![1, 2], vec![]]);
+        assert!(!s.solve());
+    }
+
+    #[test]
+    fn test_two_clause_sat() {
+        let mut s = make_solver(2, vec![vec![1], vec![2]]);
+        assert!(s.solve());
+        assert_eq!(s.assignment[1], TRUE);
+        assert_eq!(s.assignment[2], TRUE);
+    }
+
+    #[test]
+    fn test_chain_unsat() {
+        let mut s = make_solver(3, vec![vec![1], vec![-1, 2], vec![-2, 3], vec![-3]]);
+        assert!(!s.solve());
+    }
+
+    #[test]
+    fn test_three_sat_instance() {
+        let clauses = vec![
+            vec![1, 2, 3],
+            vec![-1, 2, 4],
+            vec![1, -3, 5],
+            vec![-2, 4, 5],
+            vec![-1, -4, -5],
+            vec![3, 4, -2],
+        ];
+        let mut s = make_solver(5, clauses.clone());
+        assert!(s.solve());
+        for clause in &clauses {
+            let sat = clause.iter().any(|&lit| s.lit_value(lit) == TRUE);
+            assert!(sat, "Clause {:?} not satisfied", clause);
+        }
+    }
+
+    #[test]
+    fn test_pigeonhole_3_2_unsat() {
+        let clauses = vec![
+            vec![1, 2],
+            vec![3, 4],
+            vec![5, 6],
+            vec![-1, -3],
+            vec![-1, -5],
+            vec![-3, -5],
+            vec![-2, -4],
+            vec![-2, -6],
+            vec![-4, -6],
+        ];
+        let mut s = make_solver(6, clauses);
+        assert!(!s.solve());
+    }
+
+    #[test]
+    fn test_no_clauses_sat() {
+        let mut s = make_solver(3, vec![]);
+        assert!(s.solve());
+    }
+
+    #[test]
+    fn test_bcp_moves_watch_and_then_implies_last_literal() {
+        let mut s = make_solver(3, vec![vec![1, 2, 3]]);
+
+        s.decide(-1);
+        assert_eq!(s.propagate(), None);
+
+        let clause_idx = 0;
+        let clause = s.clauses[clause_idx];
+        let watched = [
+            s.clause_data[clause.start as usize + s.watch_pos[clause_idx][0] as usize],
+            s.clause_data[clause.start as usize + s.watch_pos[clause_idx][1] as usize],
+        ];
+        assert!(watched.contains(&2));
+        assert!(watched.contains(&3));
+
+        s.decide(-2);
+        assert_eq!(s.propagate(), None);
+        assert_eq!(s.lit_value(3), TRUE);
+    }
+
+    #[test]
+    fn test_cdcl_learns_clause_on_unsat_instance() {
+        let clauses = vec![
+            vec![1, 2],
+            vec![-1, 2],
+            vec![1, -2],
+            vec![-1, -2],
+        ];
+        let mut s = make_solver(2, clauses);
+        assert!(!s.solve());
+        assert!(s.learned_clause_count() > 0);
+    }
+
+    #[test]
+    fn test_unsat_proof_logs_learned_clause_before_empty_clause() {
+        let clauses = vec![
+            vec![1, 2],
+            vec![-1, 2],
+            vec![1, -2],
+            vec![-1, -2],
+        ];
+        let mut s = make_solver(2, clauses);
+        assert!(!s.solve());
+        assert!(s.learned_clause_count() > 0);
+        assert!(
+            !s.proof_clause_indices.is_empty(),
+            "expected proof to contain at least one learned clause before the empty clause",
+        );
+        assert!(s.proof_has_empty, "expected proof to end with the empty clause");
+    }
+
+    #[test]
+    fn test_backtrack_to_zero_preserves_root_assignments() {
+        let mut s = make_solver(4, vec![vec![1], vec![-1, 2], vec![-2, 3]]);
+        assert!(s.enqueue_root_units());
+        assert_eq!(s.propagate(), None);
+        assert_eq!(s.root_trail_len, 3);
+        assert_eq!(s.assignment[1], TRUE);
+        assert_eq!(s.assignment[2], TRUE);
+        assert_eq!(s.assignment[3], TRUE);
+
+        s.decide(-4);
+        s.backtrack(0);
+
+        assert_eq!(s.trail.len(), 3);
+        assert_eq!(s.assignment[1], TRUE);
+        assert_eq!(s.assignment[2], TRUE);
+        assert_eq!(s.assignment[3], TRUE);
+        assert_eq!(s.assignment[4], UNASSIGNED);
+    }
+
+    #[test]
+    fn test_pick_branch_lit_prefers_highest_activity() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-1, 3]]);
+        s.activity[1] = 1.0;
+        s.activity[2] = 4.0;
+        s.activity[3] = 2.0;
+
+        assert_eq!(s.pick_branch_lit(), Some(2));
+
+        s.decide(2);
+        assert_eq!(s.pick_branch_lit(), Some(3));
+    }
+
+    #[test]
+    fn test_conflict_bumps_variable_activity() {
+        let clauses = vec![
+            vec![1, 2],
+            vec![-1, 2],
+            vec![1, -2],
+            vec![-1, -2],
+        ];
+        let mut s = make_solver(2, clauses);
+
+        assert!(!s.solve());
+        assert!(s.learned_clause_count() > 0);
+        assert!(s.activity[1] > 0.0);
+        assert!(s.activity[2] > 0.0);
+    }
+}
