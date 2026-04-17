@@ -17,6 +17,119 @@ bash run.sh path/to/instance.cnf /tmp/proof_dir
 bash tools/bench.sh solver/NN-name
 ```
 
+## Website / Docs Workflow
+
+The repo has a static benchmark site under `docs/`, deployed at:
+
+- **Live page:** `https://bjlkeng.io/SAT-playground/`
+- **Main page source:** `docs/index.html`
+- **Generated benchmark data:** `docs/data/medium-par2.json`
+- **Generated README chart asset:** `docs/assets/medium-cumulative.svg`
+- **Solver detail pages:** `docs/solvers/01-naive-dpll.html`, `docs/solvers/02-cdcl.html`
+- **Shared solver-page stylesheet:** `docs/solver-pages.css`
+
+### Current site conventions
+
+- The hero title is **“Fun with Boolean SAT”**
+- The intro paragraph should:
+  - include one sentence describing Boolean SAT with a link to the Wikipedia page
+  - say the goal is to understand SAT solvers more deeply
+  - mention that all code in the repo was generated with AI coding tools
+- The benchmark language on the site currently refers to:
+  - **100 randomly selected instances from the SAT Competition 2025 main-track benchmark set**
+  - local benchmark limits of **1800 seconds** and **16 GB RAM**
+  - SAT Competition 2025 output/proof format via the official output page
+- The main page theme is now light grey / white with blue and red accents
+- Fixed-width / monospace text is intentionally kept for labels, legends, and benchmark metadata
+- The main page section formerly called “Benchmark Logs” is now **“Solver Information”**
+- The small machine footnote currently describes this host:
+  - AMD Ryzen 5 5600 (6 cores / 12 threads)
+  - 62 GiB RAM reported by `free -h`
+
+### Site data generation
+
+Regenerate the site payload and README chart with:
+
+```bash
+python3 tools/build_site_data.py
+```
+
+That script is the canonical source for:
+
+- latest medium-run selection per solver
+- benchmark metadata shown in the site notes
+- `infoUrl` / `sourceUrl` used by the Solver Information cards
+- the static SVG chart embedded at the top of `README.md`
+
+### Current benchmark/site assumptions
+
+- The site uses the **latest available** run per solver matching:
+  - `100` instances
+  - `1800s` timeout
+- Repo solvers currently included in the site:
+  - `01-naive-dpll`
+  - `02-cdcl`
+- `03-bcp` is skipped automatically until a matching medium run exists
+- The cumulative chart is interactive:
+  - hover with no selection shows an all-solvers overview
+  - clicking a line or legend card locks focus to that solver
+  - solver-focused hover shows per-instance details and rank on that instance
+  - the tooltip disappears when the mouse leaves the chart area
+
+### Solver information links
+
+- Repo solvers (`01`, `02`) should link from the main page to the local detail pages under `docs/solvers/`
+- Reference solvers should link to their appropriate external or vendored source page via `infoUrl`
+- The `solver source` buttons in the cards should point to GitHub directory **tree** URLs, not `blob` URLs
+
+### Updating solver detail pages
+
+When adding or revising local solver pages:
+
+- Keep them as simple static HTML pages under `docs/solvers/`
+- Include:
+  - a brief description of the technique(s) implemented
+  - links to Wikipedia / papers where appropriate
+  - high-level pseudocode
+  - a short “code-level optimization diffs” section derived from the solver README
+- `01-naive-dpll` and `02-cdcl` already have pages and can be used as the style/template baseline
+
+### README integration
+
+`README.md` now links to the live site and embeds `docs/assets/medium-cumulative.svg` near the top.
+
+If the benchmark sample, chart styling, or site framing changes materially, update all three together:
+
+1. `docs/index.html`
+2. `tools/build_site_data.py`
+3. `README.md`
+
+### Verification for site changes
+
+At minimum:
+
+```bash
+python3 tools/build_site_data.py
+
+python3 - <<'PY'
+from pathlib import Path
+html = Path('docs/index.html').read_text()
+start = html.index('<script>') + len('<script>')
+end = html.index('</script>', start)
+Path('/tmp/sat-playground-site.js').write_text(html[start:end].strip() + '\n')
+PY
+node --check /tmp/sat-playground-site.js
+```
+
+### Tracking benchmark logs used by the site
+
+If the user wants the exact benchmark logs committed for the site:
+
+- track the exact `summary.log` and `results.csv` used to generate the charts
+- `log/` is ignored, so use `git add -f ...` for those files
+
+Those tracked log files are the provenance for the plotted solver runs.
+
 ## Solver Interface Contract (SAT Competition 2025)
 
 Every iteration MUST provide `build.sh` and `run.sh` at its top level:
@@ -176,6 +289,12 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
 ## Running Full/Medium SAT Competition 2025 Benchmarks
 
 When running benchmarks against `benchmarks/sat-comp-2025/` or `benchmarks/sat-comp-2025-medium/`, **always use a cron job** so the run survives if the Claude session ends. Use `tools/run_bench_reference.sh` as the wrapper (it logs output and manages sentinel files).
+
+Important distinction:
+
+- `tools/run_bench_reference.sh` / `tools/bench_reference.sh` are only for the reference solvers
+- For an in-repo solver such as `solver/03-bcp`, use the **same one-shot cron pattern** but invoke `tools/bench.sh` directly and create a custom running/done sentinel if needed
+- After the job starts, immediately remove the one-shot cron line so it cannot re-fire
 
 ### One-shot cron pattern (preserves existing crontab)
 
