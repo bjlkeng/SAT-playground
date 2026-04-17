@@ -1,6 +1,12 @@
 # SAT-playground
 
-Iterative Boolean SAT solver development, targeting the [SAT Competition 2025](https://satcompetition.github.io/2025/index.html) format and benchmarks.
+Fun with Boolean SAT.
+
+[Live benchmark page](https://bjlkeng.io/SAT-playground/)
+
+![SAT Playground cumulative solved vs time chart](docs/assets/medium-cumulative.svg)
+
+[Boolean SAT](https://en.wikipedia.org/wiki/Boolean_satisfiability_problem) asks whether there exists an assignment of true/false values that makes a Boolean formula evaluate to true. The goal of this repo is to understand SAT solvers more deeply by building them step by step in Rust, then benchmarking them on 100 randomly selected instances from the [SAT Competition 2025 main-track benchmark set](https://satcompetition.github.io/2025/downloads.html). All code in this repository was generated with AI coding tools and then iterated through benchmarking, debugging, and cleanup.
 
 Each solver iteration lives in its own directory, building on lessons from the previous one.
 

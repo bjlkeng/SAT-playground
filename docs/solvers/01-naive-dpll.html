@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>01 naive-dpll · SAT Playground</title>
+    <link rel="stylesheet" href="../solver-pages.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="panel">
+        <p class="eyebrow">SAT Playground · Solver 01</p>
+        <h1>01 naive-dpll</h1>
+        <p class="lead">
+          This is the first working baseline in the repo: a straightforward
+          <a href="https://en.wikipedia.org/wiki/DPLL_algorithm" target="_blank" rel="noreferrer">DPLL</a>
+          solver with unit propagation, recursive branching, backtracking, and DRAT proof output for UNSAT cases.
+          The point of this iteration is not to be fast; it is to make the core SAT search loop small enough to read end-to-end.
+        </p>
+        <div class="actions">
+          <a class="button" href="../index.html">Back To Main Page</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/tree/main/solver/01-naive-dpll" target="_blank" rel="noreferrer">Solver Source</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/blob/main/solver/01-naive-dpll/README.md" target="_blank" rel="noreferrer">Optimization Notes</a>
+        </div>
+        <div class="pill-row">
+          <span class="pill">Unit propagation to fixpoint</span>
+          <span class="pill">Recursive branch / backtrack</span>
+          <span class="pill">DRAT proof output</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>What It Implements</h2>
+        <ul>
+          <li>Repeatedly simplify the formula with unit clauses until either a conflict appears or no more forced assignments remain.</li>
+          <li>Pick the first unassigned variable and recurse on the positive branch, then the negative branch if needed.</li>
+          <li>Return a satisfying assignment when every clause is satisfied, or UNSAT when every branch conflicts.</li>
+          <li>Emit an empty-clause DRAT proof for UNSAT so the result still matches the SAT Competition interface.</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>High-Level Pseudocode</h2>
+        <pre><code>solve(formula, assignment):
+  propagate units until fixed point
+  if a clause becomes false:
+    return UNSAT
+
+  if every clause is satisfied:
+    return SAT with assignment
+
+  variable = first unassigned variable
+
+  if solve(formula, assignment ∪ {variable = true}) is SAT:
+    return SAT
+
+  return solve(formula, assignment ∪ {variable = false})</code></pre>
+      </section>
+
+      <section class="panel">
+        <h2>Code-Level Optimization Diffs</h2>
+        <p class="small">
+          The README for this solver has a longer benchmark log. These are the highest-signal optimizations that materially changed runtime without changing the algorithm.
+        </p>
+        <div class="diff-grid">
+          <article class="diff-card">
+            <h3>Hot Clause Scan</h3>
+            <p>
+              The biggest win was removing a heap allocation from the clause-state helper that ran millions of times in the inner loop.
+            </p>
+            <pre><code><span class="diff-del">- allocate a fresh Vec of unassigned literals on every clause scan</span>
+<span class="diff-del">- keep scanning even after discovering 2+ unassigned literals</span>
+<span class="diff-add">+ track only a counter and the first unassigned literal</span>
+<span class="diff-add">+ return early as soon as the clause is known to be non-unit</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Compact Assignment Representation</h3>
+            <p>
+              Assignment values moved from `Option&lt;bool&gt;` to a small `u8` encoding, paired with aggressive inlining in the hot path.
+            </p>
+            <pre><code><span class="diff-del">- Vec&lt;Option&lt;bool&gt;&gt; assignments with small helper calls</span>
+<span class="diff-add">+ Vec&lt;u8&gt; with UNASSIGNED / TRUE / FALSE constants</span>
+<span class="diff-add">+ inline hot literal-value and assignment helpers</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Less Allocation Around The Search</h3>
+            <p>
+              Clause and trail storage were tightened to avoid extra capacity fields and repeated reallocation during recursion.
+            </p>
+            <pre><code><span class="diff-del">- Vec&lt;Vec&lt;i32&gt;&gt; clauses and growth-by-use trail buffers</span>
+<span class="diff-add">+ Vec&lt;Box&lt;[i32]&gt;&gt; immutable clause storage</span>
+<span class="diff-add">+ preallocated trail and parser buffers reused instead of cloned</span></code></pre>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

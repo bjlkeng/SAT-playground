@@ -6,16 +6,16 @@
     <title>SAT Playground Benchmarks</title>
     <style>
       :root {
-        --bg: #f4efe4;
-        --panel: rgba(255, 250, 240, 0.9);
-        --ink: #1e2430;
-        --muted: #59616f;
-        --line: rgba(30, 36, 48, 0.14);
-        --repo: #1f5fbf;
-        --repo-soft: #d9e5ff;
-        --reference: #d06b24;
-        --reference-soft: #ffe6d4;
-        --accent: #0d8a72;
+        --bg: #edf1f6;
+        --panel: rgba(255, 255, 255, 0.96);
+        --ink: #16202b;
+        --muted: #5c6676;
+        --line: rgba(22, 32, 43, 0.12);
+        --repo: #1f5fff;
+        --repo-soft: #dbe7ff;
+        --reference: #d94d4d;
+        --reference-soft: #ffe1e1;
+        --accent: #0f7ad8;
       }
 
       * {
@@ -26,8 +26,9 @@
         margin: 0;
         color: var(--ink);
         background:
-          radial-gradient(circle at top left, rgba(13, 138, 114, 0.1), transparent 30%),
-          linear-gradient(180deg, #f7f3ea 0%, var(--bg) 100%);
+          radial-gradient(circle at top left, rgba(31, 95, 255, 0.12), transparent 34%),
+          radial-gradient(circle at top right, rgba(217, 77, 77, 0.10), transparent 30%),
+          linear-gradient(180deg, #f8fafc 0%, var(--bg) 100%);
         font-family: Charter, "Bitstream Charter", "Sitka Text", Cambria, serif;
       }
 
@@ -455,13 +456,14 @@
       <section class="hero">
         <div class="hero-copy">
           <p class="eyebrow">SAT Playground</p>
-          <h1>Iterative SAT solvers, benchmarked against real baselines.</h1>
+          <h1>Fun with Boolean SAT</h1>
           <p class="lead">
-            This repository builds Boolean SAT solvers one iteration at a time in Rust, keeping each
-            solver self-contained and measurable. The main figure below uses the latest available
-            <strong>SAT Competition 2025 Medium</strong> run for each in-repo solver that has one, alongside
-            reference solvers in a distinct color, to show how quickly each solver accumulates solved
-            instances over time.
+            <a href="https://en.wikipedia.org/wiki/Boolean_satisfiability_problem" target="_blank" rel="noreferrer">Boolean SAT</a>
+            asks whether there exists an assignment of true/false values that makes a Boolean formula evaluate to true.
+            The goal of this project is to understand SAT solvers more deeply by building them step by step in Rust, then
+            benchmarking them on 100 randomly selected instances from the
+            <a href="https://satcompetition.github.io/2025/downloads.html" target="_blank" rel="noreferrer">SAT Competition 2025 main-track benchmark set</a>.
+            All code in this repository was generated with AI coding tools and then iterated through benchmarking, debugging, and cleanup.
           </p>
           <div class="actions">
             <a class="button" href="https://github.com/bjlkeng/SAT-playground" target="_blank" rel="noreferrer">View Source</a>
@@ -515,15 +517,18 @@
       </section>
 
       <section class="panel" id="logs">
-        <h2>Benchmark Logs</h2>
+        <h2>Solver Information</h2>
         <p>
-          These are the exact summary and results files used to generate the chart. Each entry links to
-          the tracked files in the repository.
+          Brief notes, source links, and the exact benchmark artifacts used to generate the charts for each plotted solver.
         </p>
         <div class="logs-grid" id="logs-grid"></div>
       </section>
 
       <p class="status" id="status">Loading chart data…</p>
+      <p class="status">
+        Local benchmark host: AMD Ryzen 5 5600 (6 cores / 12 threads, 32 MiB L3) with 62 GiB RAM. These site plots use a 16 GB memory
+        limit per solver on this machine; SAT Competition 2025 uses different infrastructure and larger limits.
+      </p>
     </main>
 
     <script>
@@ -950,13 +955,11 @@
 
         const entries = data.entries;
         const best = entries[0];
-        const repoCount = entries.filter((entry) => entry.family === "repo").length;
-        const refCount = entries.filter((entry) => entry.family === "reference").length;
 
         metrics.append(
-          metricCard("Benchmark", data.benchmark.name),
+          metricCard("Benchmark", "100 random 2025 SAT Competition instances"),
           metricCard("Compared solvers", String(entries.length)),
-          metricCard("Repo / reference", `${repoCount} / ${refCount}`),
+          metricCard("Local limits", `${data.benchmark.timeoutSeconds}s / ${data.benchmark.memoryLimitGb} GB`),
           metricCard("Best PAR-2", `${best.label} · ${formatNumber(best.par2)}`),
         );
 
@@ -1328,8 +1331,19 @@
         const missing = data.missing.length
           ? ` Missing from the charts because no medium run is available yet: ${data.missing.join(", ")}.`
           : "";
-        document.getElementById("curve-notes").textContent = `${data.benchmark.curveNote}${missing}`;
-        document.getElementById("par2-notes").textContent = `${data.benchmark.note}${missing}`;
+        document.getElementById("curve-notes").innerHTML = `
+          ${escapeHtml(data.benchmark.curveNote)}
+          These runs use
+          <a href="${data.benchmark.benchmarkUrl}" target="_blank" rel="noreferrer">${escapeHtml(data.benchmark.sampleDescription)}</a>,
+          a ${escapeHtml(String(data.benchmark.timeoutSeconds))} second timeout, and a ${escapeHtml(String(data.benchmark.memoryLimitGb))} GB memory limit per solver.
+          Output and proof files follow the
+          <a href="${data.benchmark.outputUrl}" target="_blank" rel="noreferrer">SAT Competition 2025 output format</a>.${escapeHtml(missing)}
+        `;
+        document.getElementById("par2-notes").innerHTML = `
+          ${escapeHtml(data.benchmark.note)}
+          The official competition environment and limits are listed on the
+          <a href="${data.benchmark.competitionUrl}" target="_blank" rel="noreferrer">SAT Competition 2025 site</a>.${escapeHtml(missing)}
+        `;
       }
 
       function renderLogs(data) {
@@ -1341,7 +1355,7 @@
           card.className = "log-card";
 
           const title = document.createElement("h3");
-          title.textContent = entry.label;
+          title.innerHTML = `<a href="${entry.infoUrl}" ${entry.infoUrl.startsWith("http") ? 'target="_blank" rel="noreferrer"' : ""}>${escapeHtml(entry.label)}</a>`;
 
           const meta = document.createElement("div");
           meta.className = "log-meta";

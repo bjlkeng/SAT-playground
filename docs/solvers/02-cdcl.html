@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>02 cdcl · SAT Playground</title>
+    <link rel="stylesheet" href="../solver-pages.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="panel">
+        <p class="eyebrow">SAT Playground · Solver 02</p>
+        <h1>02 cdcl</h1>
+        <p class="lead">
+          This iteration switches from plain recursive DPLL to
+          <a href="https://en.wikipedia.org/wiki/Conflict-driven_clause_learning" target="_blank" rel="noreferrer">conflict-driven clause learning (CDCL)</a>.
+          Instead of blindly flipping the most recent decision, the solver analyzes conflicts, learns a clause, and jumps directly back to the most useful earlier decision level.
+        </p>
+        <div class="actions">
+          <a class="button" href="../index.html">Back To Main Page</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/tree/main/solver/02-cdcl" target="_blank" rel="noreferrer">Solver Source</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/blob/main/solver/02-cdcl/README.md" target="_blank" rel="noreferrer">Optimization Notes</a>
+        </div>
+        <div class="pill-row">
+          <span class="pill">Learned clauses</span>
+          <span class="pill">Decision levels + reason clauses</span>
+          <span class="pill">Non-chronological backtracking</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>What It Implements</h2>
+        <ul>
+          <li>Explicit trail-based state instead of recursive calls, with a decision level recorded for every assignment.</li>
+          <li>Full-clause-scan propagation to fixpoint, which keeps the control flow easy to follow before watched literals are introduced later.</li>
+          <li>Conflict analysis that resolves backward through implication reasons until a learned clause with one current-level literal remains.</li>
+          <li>Backjumping to the highest useful earlier decision level, then asserting the learned clause immediately.</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>High-Level Pseudocode</h2>
+        <pre><code>initialize original clause database
+decision_level = 0
+
+loop:
+  conflict = propagate_until_fixpoint()
+
+  if conflict exists:
+    if decision_level == 0:
+      return UNSAT
+
+    learned_clause, backjump_level = analyze_conflict(conflict)
+    add learned_clause to the database
+    backtrack(backjump_level)
+    enqueue asserting literal from learned_clause
+    continue
+
+  if every variable is assigned:
+    return SAT with assignment
+
+  variable = next branch variable
+  decision_level += 1
+  enqueue decision literal(variable)</code></pre>
+      </section>
+
+      <section class="panel">
+        <h2>Code-Level Optimization Diffs</h2>
+        <p class="small">
+          `02` was kept algorithmically simple on purpose. Most of the later speedup came from tightening the CDCL data path rather than changing the search strategy.
+        </p>
+        <div class="diff-grid">
+          <article class="diff-card">
+            <h3>Reason Tracking Without `Option`</h3>
+            <p>
+              The solver stopped wrapping every implication reason in `Option&lt;usize&gt;` and switched to a plain index plus a sentinel value for decisions.
+            </p>
+            <pre><code><span class="diff-del">- Option&lt;usize&gt; reason per variable</span>
+<span class="diff-add">+ usize reason index with a NO_REASON sentinel</span>
+<span class="diff-add">+ less branching and less per-assignment overhead in conflict analysis</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Reusable Scratch Buffers</h3>
+            <p>
+              Conflict analysis originally allocated temporary vectors for every learned clause. Those buffers were moved into the solver and reused.
+            </p>
+            <pre><code><span class="diff-del">- allocate seen / resolved / learned vectors on every conflict</span>
+<span class="diff-add">+ keep reusable scratch storage inside Solver</span>
+<span class="diff-add">+ reduce allocation churn during repeated backjumps</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Propagation Hot Path</h3>
+            <p>
+              The propagation loop dropped an extra `ClauseState` layer and scanned clauses directly, then later moved the clause database into a flatter layout for locality.
+            </p>
+            <pre><code><span class="diff-del">- indirect clause-state helper in the inner loop</span>
+<span class="diff-del">- boxed clause storage only</span>
+<span class="diff-add">+ direct literal scanning inside propagate()</span>
+<span class="diff-add">+ flat clause data buffer and lighter clause references</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Cheaper Branch Selection</h3>
+            <p>
+              `02` still branches on the first plausible unassigned variable, but it avoids restarting the scan from variable `1` after every decision.
+            </p>
+            <pre><code><span class="diff-del">- restart the branch scan from variable 1 every time</span>
+<span class="diff-add">+ keep a branch cursor and reset it only when backtracking requires it</span>
+<span class="diff-add">+ same heuristic, less repeated work</span></code></pre>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

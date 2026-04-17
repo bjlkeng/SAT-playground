@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import html
 import json
 import re
 from dataclasses import dataclass
@@ -13,7 +14,21 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = REPO_ROOT / "log"
 OUTPUT_PATH = REPO_ROOT / "docs" / "data" / "medium-par2.json"
+SVG_OUTPUT_PATH = REPO_ROOT / "docs" / "assets" / "medium-cumulative.svg"
 GITHUB_BLOB_BASE = "https://github.com/bjlkeng/SAT-playground/blob/main"
+GITHUB_TREE_BASE = "https://github.com/bjlkeng/SAT-playground/tree/main"
+COMPETITION_URL = "https://satcompetition.github.io/2025/"
+BENCHMARK_URL = "https://satcompetition.github.io/2025/downloads.html"
+OUTPUT_FORMAT_URL = "https://satcompetition.github.io/2025/output.html"
+SITE_URL = "https://bjlkeng.io/SAT-playground/"
+COLORS = {
+    "01-naive-dpll": "#5f83ff",
+    "02-cdcl": "#163d8f",
+    "minisat": "#ecab4e",
+    "kissat-sc2024": "#c7631f",
+    "kissat-latest": "#8d3613",
+    "virtual-best": "#0d8a72",
+}
 
 
 @dataclass(frozen=True)
@@ -22,6 +37,7 @@ class SolverSpec:
     label: str
     family: str
     source_url: str
+    info_url: str
 
 
 SOLVERS = [
@@ -29,31 +45,36 @@ SOLVERS = [
         slug="01-naive-dpll",
         label="01 naive-dpll",
         family="repo",
-        source_url=f"{GITHUB_BLOB_BASE}/solver/01-naive-dpll",
+        source_url=f"{GITHUB_TREE_BASE}/solver/01-naive-dpll",
+        info_url="./solvers/01-naive-dpll.html",
     ),
     SolverSpec(
         slug="02-cdcl",
         label="02 cdcl",
         family="repo",
-        source_url=f"{GITHUB_BLOB_BASE}/solver/02-cdcl",
+        source_url=f"{GITHUB_TREE_BASE}/solver/02-cdcl",
+        info_url="./solvers/02-cdcl.html",
     ),
     SolverSpec(
         slug="minisat",
         label="MiniSat",
         family="reference",
-        source_url=f"{GITHUB_BLOB_BASE}/benchmarks/reference-solvers/minisat",
+        source_url=f"{GITHUB_TREE_BASE}/benchmarks/reference-solvers/minisat",
+        info_url="https://minisat.se/",
     ),
     SolverSpec(
         slug="kissat-sc2024",
         label="Kissat sc2024",
         family="reference",
-        source_url=f"{GITHUB_BLOB_BASE}/benchmarks/reference-solvers/kissat-sc2024",
+        source_url=f"{GITHUB_TREE_BASE}/benchmarks/reference-solvers/kissat-sc2024",
+        info_url=f"{GITHUB_TREE_BASE}/benchmarks/reference-solvers/kissat-sc2024",
     ),
     SolverSpec(
         slug="kissat-latest",
         label="Kissat latest",
         family="reference",
-        source_url=f"{GITHUB_BLOB_BASE}/benchmarks/reference-solvers/kissat-latest",
+        source_url=f"{GITHUB_TREE_BASE}/benchmarks/reference-solvers/kissat-latest",
+        info_url="https://github.com/arminbiere/kissat",
     ),
 ]
 
@@ -210,6 +231,7 @@ def find_latest_medium_run(spec: SolverSpec) -> dict | None:
         "label": spec.label,
         "family": spec.family,
         "sourceUrl": spec.source_url,
+        "infoUrl": spec.info_url,
         "summaryPath": repo_relative(latest["summary_path"]),
         "resultsPath": repo_relative(latest["results_path"]),
         "summaryUrl": github_blob_url(latest["summary_path"]),
@@ -241,9 +263,15 @@ def build_payload() -> dict:
             "name": "SAT Competition 2025 Medium",
             "instances": 100,
             "timeoutSeconds": timeout_s,
+            "memoryLimitGb": 16,
             "metric": "PAR-2",
-            "note": "Latest available medium run per solver with 100 instances and a 1800s timeout.",
-            "curveNote": "Curves show cumulative solved instances over runtime; the virtual best line uses the fastest solved time per instance across the plotted solvers.",
+            "sampleDescription": "100 randomly selected instances from the SAT Competition 2025 main-track benchmark set.",
+            "competitionUrl": COMPETITION_URL,
+            "benchmarkUrl": BENCHMARK_URL,
+            "outputUrl": OUTPUT_FORMAT_URL,
+            "siteUrl": SITE_URL,
+            "note": "These local runs use 100 randomly selected SAT Competition 2025 main-track instances, a 1800-second timeout, and a 16 GB memory limit per solver.",
+            "curveNote": "Curves show cumulative solved instances over runtime. Output and proof handling follow the SAT Competition 2025 format; the virtual best line uses the fastest solved time per instance across the plotted solvers.",
         },
         "entries": entries,
         "missing": missing,
@@ -287,11 +315,112 @@ def build_virtual_best(entries: list[dict], timeout_s: int) -> dict:
     }
 
 
+def build_svg_chart(payload: dict) -> str:
+    width = 1080
+    height = 620
+    top = 88
+    left = 82
+    right = 30
+    bottom = 88
+    plot_width = width - left - right
+    plot_height = height - top - bottom
+    timeout_s = payload["benchmark"]["timeoutSeconds"]
+    entries = list(payload["entries"])
+    virtual_best = payload.get("virtualBest")
+    curves = entries + ([virtual_best] if virtual_best else [])
+    max_solved = max((entry["solved"] for entry in curves), default=10)
+    y_step = 5 if max_solved <= 40 else 10
+    y_max = max(y_step, ((max_solved + y_step - 1) // y_step) * y_step)
+
+    def x_scale(time_value: float) -> float:
+        return left + (time_value / timeout_s) * plot_width
+
+    def y_scale(solved: int) -> float:
+        return top + plot_height - (solved / y_max) * plot_height
+
+    def line_path(curve: list[dict]) -> str:
+        segments = []
+        for index, point in enumerate(curve):
+            cmd = "M" if index == 0 else "L"
+            segments.append(f"{cmd} {x_scale(point['time']):.2f} {y_scale(point['solved']):.2f}")
+        return " ".join(segments)
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" fill="none">',
+        '<rect width="100%" height="100%" fill="#f3f5f8"/>',
+        '<rect x="18" y="18" width="1044" height="584" rx="24" fill="#ffffff" stroke="rgba(22,32,43,0.10)"/>',
+        '<text x="42" y="56" fill="#16202b" font-family="IBM Plex Mono, monospace" font-size="14">SAT Playground · Cumulative Solved vs Time</text>',
+        f'<text x="42" y="78" fill="#5c6676" font-family="IBM Plex Mono, monospace" font-size="12">{html.escape(payload["benchmark"]["sampleDescription"])} 1800s · 16 GB</text>',
+    ]
+
+    for tick in range(7):
+        value = timeout_s * (tick / 6)
+        x = x_scale(value)
+        parts.append(f'<line x1="{x:.2f}" y1="{top}" x2="{x:.2f}" y2="{top + plot_height}" stroke="rgba(22,32,43,0.10)" stroke-width="1"/>')
+        anchor = "start" if tick == 0 else "end" if tick == 6 else "middle"
+        parts.append(
+            f'<text x="{x:.2f}" y="{height - 40}" fill="#5c6676" font-family="IBM Plex Mono, monospace" font-size="12" text-anchor="{anchor}">{int(value):,}</text>'
+        )
+
+    for value in range(0, y_max + y_step, y_step):
+        y = y_scale(value)
+        parts.append(f'<line x1="{left}" y1="{y:.2f}" x2="{left + plot_width}" y2="{y:.2f}" stroke="rgba(22,32,43,0.10)" stroke-width="1"/>')
+        parts.append(
+            f'<text x="{left - 12}" y="{y + 4:.2f}" fill="#5c6676" font-family="IBM Plex Mono, monospace" font-size="12" text-anchor="end">{value}</text>'
+        )
+
+    parts.append(
+        f'<text x="{left + plot_width / 2:.2f}" y="{height - 16}" fill="#5c6676" font-family="IBM Plex Mono, monospace" font-size="12" text-anchor="middle">Runtime (seconds)</text>'
+    )
+    parts.append(
+        f'<text x="22" y="{top + plot_height / 2:.2f}" fill="#5c6676" font-family="IBM Plex Mono, monospace" font-size="12" text-anchor="middle" transform="rotate(-90 22 {top + plot_height / 2:.2f})">Solved instances</text>'
+    )
+
+    for entry in entries:
+        color = COLORS[entry["slug"]]
+        marker = entry["curve"][-2] if len(entry["curve"]) >= 2 and entry["curve"][-1]["time"] == timeout_s else entry["curve"][-1]
+        parts.append(
+            f'<path d="{line_path(entry["curve"])}" stroke="{color}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>'
+        )
+        parts.append(
+            f'<circle cx="{x_scale(marker["time"]):.2f}" cy="{y_scale(marker["solved"]):.2f}" r="3.4" fill="{color}"/>'
+        )
+
+    if virtual_best is not None:
+        color = COLORS["virtual-best"]
+        marker = virtual_best["curve"][-2] if len(virtual_best["curve"]) >= 2 and virtual_best["curve"][-1]["time"] == timeout_s else virtual_best["curve"][-1]
+        parts.append(
+            f'<path d="{line_path(virtual_best["curve"])}" stroke="{color}" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="10 7"/>'
+        )
+        parts.append(
+            f'<circle cx="{x_scale(marker["time"]):.2f}" cy="{y_scale(marker["solved"]):.2f}" r="4" fill="{color}"/>'
+        )
+
+    legend_y = height - 56
+    legend_x = 48
+    for entry in ([virtual_best] if virtual_best else []) + entries:
+        color = COLORS[entry["slug"]]
+        dash = ' stroke-dasharray="10 7"' if entry["slug"] == "virtual-best" else ""
+        parts.append(
+            f'<line x1="{legend_x}" y1="{legend_y}" x2="{legend_x + 24}" y2="{legend_y}" stroke="{color}" stroke-width="4" stroke-linecap="round"{dash}/>'
+        )
+        parts.append(
+            f'<text x="{legend_x + 34}" y="{legend_y + 4}" fill="#16202b" font-family="IBM Plex Mono, monospace" font-size="12">{html.escape(entry["label"])}</text>'
+        )
+        legend_x += 34 + max(88, len(entry["label"]) * 8)
+
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
 def main() -> None:
     payload = build_payload()
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(json.dumps(payload, indent=2) + "\n")
+    SVG_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SVG_OUTPUT_PATH.write_text(build_svg_chart(payload) + "\n")
     print(f"Wrote {OUTPUT_PATH}")
+    print(f"Wrote {SVG_OUTPUT_PATH}")
 
 
 if __name__ == "__main__":
