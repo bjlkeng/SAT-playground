@@ -31,8 +31,10 @@ SAT-playground/
     ├── 03-bcp/
     ├── 04-vsids/
     ├── 05-restarts/
-    ├── 06-preprocessing/
-    ├── 07-proof-logging/
+    ├── 06-clause-db-mgmt/
+    ├── 07-preprocessing/
+    ├── 08-lrat-proofs/
+    ├── 09-inprocessing/
     └── ...
 ```
 
@@ -140,11 +142,10 @@ bash tools/bench.sh ./solver/01-naive-dpll/run.sh benchmarks/*.cnf
 | 03 | watched-literals   | Two-watched-literal BCP                         | Fast unit propagation             |
 | 04 | vsids              | VSIDS decision heuristic                        | Better branching                  |
 | 05 | restarts           | Luby restarts + phase saving                    | Recover quickly after restart     |
-| 06 | preprocessing      | BVE, self-subsumption, failed literals          | Simplify before solving           |
-| 07 | lrat-proofs        | LRAT proof trimming + verified checking         | Compact verified proofs           |
-| 08 | reserved           | Phase saving moved earlier into `05`            | Keep numbering stable             |
-| 09 | clause-db-mgmt     | Clause deletion, LBD scoring, tier system       | Control memory usage              |
-| 10 | inprocessing       | On-the-fly simplification during search         | Continuous formula reduction      |
+| 06 | clause-db-mgmt     | Clause deletion, LBD scoring, tier system       | Control memory usage              |
+| 07 | preprocessing      | BVE, self-subsumption, failed literals          | Simplify before solving           |
+| 08 | lrat-proofs        | LRAT proof trimming + verified checking         | Compact verified proofs           |
+| 09 | inprocessing       | On-the-fly simplification during search         | Continuous formula reduction      |
 
 ## References
 
