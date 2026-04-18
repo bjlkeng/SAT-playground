@@ -40,17 +40,17 @@ struct Solver {
     /// next trail entry whose falsified literal still needs watcher processing
     propagate_head: usize,
     /// static branch order sorted by descending literal occurrence count
-    branch_order: Vec<usize>,
+    branch_order: Vec<u32>,
     /// reverse lookup from variable to its position in branch_order
     branch_rank: Vec<usize>,
     /// lower bound for the next first-unassigned scan in branch_order
     branch_cursor: usize,
     /// EVSIDS-style variable activity
-    activity: Vec<f64>,
+    activity: Vec<f32>,
     /// additive bump applied to variables participating in recent conflicts
-    activity_inc: f64,
+    activity_inc: f32,
     /// multiplicative decay factor for older activity
-    activity_decay: f64,
+    activity_decay: f32,
     /// original unit clauses that must be enqueued at decision level 0
     root_unit_clauses: Vec<usize>,
     /// whether the formula already contains an empty clause
@@ -111,15 +111,15 @@ impl Solver {
                 occurrence_count[var] += 1;
             }
         }
-        let mut branch_order: Vec<usize> = (1..=num_vars).collect();
+        let mut branch_order: Vec<u32> = (1..=num_vars as u32).collect();
         branch_order.sort_unstable_by(|&lhs, &rhs| {
-            occurrence_count[rhs]
-                .cmp(&occurrence_count[lhs])
+            occurrence_count[rhs as usize]
+                .cmp(&occurrence_count[lhs as usize])
                 .then_with(|| lhs.cmp(&rhs))
         });
         let mut branch_rank = vec![0usize; num_vars + 1];
         for (rank, &var) in branch_order.iter().enumerate() {
-            branch_rank[var] = rank;
+            branch_rank[var as usize] = rank;
         }
 
         let total_literals = clauses.iter().map(|clause| clause.len()).sum();
@@ -391,11 +391,11 @@ impl Solver {
 
     fn bump_variable_activity(&mut self, var: usize) {
         self.activity[var] += self.activity_inc;
-        if self.activity[var] > 1e100 {
+        if self.activity[var] > 1e30 {
             for value in &mut self.activity[1..] {
-                *value *= 1e-100;
+                *value *= 1e-30;
             }
-            self.activity_inc *= 1e-100;
+            self.activity_inc *= 1e-30;
         }
     }
 
@@ -403,15 +403,22 @@ impl Solver {
         let clause = self.clauses[clause_idx];
         let start = clause.start as usize;
         let end = start + clause.len as usize;
-        for idx in start..end {
-            let var = self.clause_data[idx].unsigned_abs() as usize;
+        let clause_data_ptr = self.clause_data.as_ptr();
+        let mut idx = start;
+        while idx < end {
+            let var = unsafe { (*clause_data_ptr.add(idx)).unsigned_abs() as usize };
             self.bump_variable_activity(var);
+            idx += 1;
         }
     }
 
     fn bump_clause_activity(&mut self, clause: &[i32]) {
-        for &lit in clause {
+        let clause_ptr = clause.as_ptr();
+        let mut idx = 0usize;
+        while idx < clause.len() {
+            let lit = unsafe { *clause_ptr.add(idx) };
             self.bump_variable_activity(lit.unsigned_abs() as usize);
+            idx += 1;
         }
     }
 
@@ -421,12 +428,14 @@ impl Solver {
 
     fn pick_branch_lit(&mut self) -> Option<i32> {
         let assignment_ptr = self.assignment.as_ptr();
+        let activity_ptr = self.activity.as_ptr();
         let mut best_var = None;
-        let mut best_activity = f64::NEG_INFINITY;
+        let mut best_activity = f32::NEG_INFINITY;
 
-        for &var in &self.branch_order {
+        for &var_u32 in &self.branch_order {
+            let var = var_u32 as usize;
             if unsafe { *assignment_ptr.add(var) } == UNASSIGNED {
-                let activity = self.activity[var];
+                let activity = unsafe { *activity_ptr.add(var) };
                 if activity > best_activity {
                     best_activity = activity;
                     best_var = Some(var as i32);
