@@ -43,10 +43,6 @@ struct Solver {
     propagate_head: usize,
     /// static branch order sorted by descending literal occurrence count
     branch_order: Vec<u32>,
-    /// reverse lookup from variable to its position in branch_order
-    branch_rank: Vec<usize>,
-    /// lower bound for the next first-unassigned scan in branch_order
-    branch_cursor: usize,
     /// EVSIDS-style variable activity
     activity: Vec<f32>,
     /// additive bump applied to variables participating in recent conflicts
@@ -129,10 +125,6 @@ impl Solver {
                 .cmp(&occurrence_count[lhs as usize])
                 .then_with(|| lhs.cmp(&rhs))
         });
-        let mut branch_rank = vec![0usize; num_vars + 1];
-        for (rank, &var) in branch_order.iter().enumerate() {
-            branch_rank[var as usize] = rank;
-        }
 
         let total_literals = clauses.iter().map(|clause| clause.len()).sum();
         let mut clause_refs = Vec::with_capacity(original_clause_count);
@@ -162,8 +154,6 @@ impl Solver {
             trail_limits: Vec::new(),
             propagate_head: 0,
             branch_order,
-            branch_rank,
-            branch_cursor: 0,
             activity: vec![0.0; num_vars + 1],
             activity_inc: 1.0,
             activity_decay: 0.95,
@@ -243,12 +233,13 @@ impl Solver {
         let target_value = if lit > 0 { TRUE } else { FALSE };
         let current = self.assignment[var];
         if current == UNASSIGNED {
+            let current_level = self.current_level();
             self.assignment[var] = target_value;
             self.saved_phase[var] = target_value;
-            self.decision_level[var] = self.current_level();
+            self.decision_level[var] = current_level;
             self.reason[var] = reason;
             self.trail.push(lit);
-            if self.current_level() == 0 {
+            if current_level == 0 {
                 self.root_trail_len += 1;
             }
             true
@@ -471,7 +462,9 @@ impl Solver {
         self.restart_conflicts = 0;
         self.restart_pending = true;
         self.restart_luby_index += 1;
-        self.restart_conflict_limit = self.restart_unit * Self::luby_value(self.restart_luby_index);
+        self.restart_conflict_limit =
+            self.restart_unit
+                .saturating_mul(Self::luby_value(self.restart_luby_index));
     }
 
     fn pick_branch_lit(&mut self) -> Option<i32> {
@@ -505,12 +498,10 @@ impl Solver {
         } else {
             self.trail_limits[target_level - 1]
         };
-        let mut min_unassigned_rank = self.branch_order.len();
 
         while self.trail.len() > new_trail_len {
             let lit = self.trail.pop().expect("trail underflow");
             let var = lit.unsigned_abs() as usize;
-            min_unassigned_rank = min_unassigned_rank.min(self.branch_rank[var]);
             self.assignment[var] = UNASSIGNED;
             self.decision_level[var] = 0;
             self.reason[var] = NO_REASON;
@@ -518,9 +509,6 @@ impl Solver {
 
         self.trail_limits.truncate(target_level);
         self.propagate_head = self.propagate_head.min(new_trail_len);
-        if min_unassigned_rank < self.branch_order.len() {
-            self.branch_cursor = self.branch_cursor.min(min_unassigned_rank);
-        }
     }
 
     fn perform_restart_if_pending(&mut self) -> bool {
@@ -558,8 +546,10 @@ impl Solver {
         let seen = &mut self.scratch_seen;
         let resolved = &mut self.scratch_resolved;
         let learned = &mut self.scratch_learned;
-        seen.fill(0);
-        resolved.fill(0);
+        unsafe {
+            std::ptr::write_bytes(seen.as_mut_ptr(), 0, seen.len());
+            std::ptr::write_bytes(resolved.as_mut_ptr(), 0, resolved.len());
+        }
         learned.clear();
 
         let mut current_level_count = 0usize;
