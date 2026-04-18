@@ -24,6 +24,7 @@ SITE_URL = "https://bjlkeng.io/SAT-playground/"
 COLORS = {
     "01-naive-dpll": "#5f83ff",
     "02-cdcl": "#163d8f",
+    "03-bcp": "#cf4a3f",
     "minisat": "#ecab4e",
     "kissat-sc2024": "#c7631f",
     "kissat-latest": "#8d3613",
@@ -54,6 +55,13 @@ SOLVERS = [
         family="repo",
         source_url=f"{GITHUB_TREE_BASE}/solver/02-cdcl",
         info_url="./solvers/02-cdcl.html",
+    ),
+    SolverSpec(
+        slug="03-bcp",
+        label="03 bcp",
+        family="repo",
+        source_url=f"{GITHUB_TREE_BASE}/solver/03-bcp",
+        info_url="./solvers/03-bcp.html",
     ),
     SolverSpec(
         slug="minisat",

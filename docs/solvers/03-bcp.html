@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>03 bcp · SAT Playground</title>
+    <link rel="stylesheet" href="../solver-pages.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="panel">
+        <p class="eyebrow">SAT Playground · Solver 03</p>
+        <h1>03 bcp</h1>
+        <p class="lead">
+          This iteration keeps the same
+          <a href="https://en.wikipedia.org/wiki/Conflict-driven_clause_learning" target="_blank" rel="noreferrer">CDCL</a>
+          structure as <code>02</code>, but replaces full-clause-scan propagation with watched-literal
+          <a href="https://www.princeton.edu/~chaff/publication/DAC2001v56.pdf" target="_blank" rel="noreferrer">Boolean constraint propagation</a>.
+          The main idea is to revisit only clauses affected by newly falsified literals instead of rescanning the whole formula after every assignment.
+        </p>
+        <div class="actions">
+          <a class="button" href="../index.html">Back To Main Page</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/tree/main/solver/03-bcp" target="_blank" rel="noreferrer">Solver Source</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/blob/main/solver/03-bcp/README.md" target="_blank" rel="noreferrer">Optimization Notes</a>
+        </div>
+        <div class="pill-row">
+          <span class="pill">Two watched literals</span>
+          <span class="pill">Trail-head propagation</span>
+          <span class="pill">Incremental CDCL BCP</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>What It Implements</h2>
+        <ul>
+          <li>Two watched literals per non-unit clause, plus per-literal watch lists so propagation touches only relevant clauses.</li>
+          <li>A `propagate_head` over the trail, which means only newly assigned literals trigger watch-list processing.</li>
+          <li>The same learned-clause, reason-clause, and non-chronological backtracking machinery introduced in `02`.</li>
+          <li>Explicit handling for root-level unit clauses and empty clauses before the main search loop starts.</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>High-Level Pseudocode</h2>
+        <pre><code>initialize watch lists for all clauses
+enqueue any root-level unit clauses
+
+loop:
+  while propagate_head &lt; trail.len:
+    lit = trail[propagate_head]
+    propagate_head += 1
+
+    for clause watching the now-false literal:
+      if other watched literal satisfies clause:
+        keep watches
+      else if another non-false literal exists:
+        move the watch
+      else if other watched literal is unassigned:
+        enqueue implied literal
+      else:
+        return conflict
+
+  if conflict:
+    analyze, learn, backjump, assert learned literal
+  else if all variables assigned:
+    return SAT
+  else:
+    make next decision literal</code></pre>
+      </section>
+
+      <section class="panel">
+        <h2>Code-Level Optimization Diffs</h2>
+        <p class="small">
+          The README has the full tuning log. These are the changes that most materially altered `03` on the profiling suite.
+        </p>
+        <div class="diff-grid">
+          <article class="diff-card">
+            <h3>Watch-List Hot Path</h3>
+            <p>
+              Propagation moved away from repeated temporary allocations and toward a reusable scratch list plus pointer-based clause scans.
+            </p>
+            <pre><code><span class="diff-del">- fresh retained-watch vectors and indexed scans in propagate()</span>
+<span class="diff-add">+ reusable watch_scratch buffer</span>
+<span class="diff-add">+ pointer-backed watched-clause traversal in the inner loop</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Ternary-Clause Fast Path</h3>
+            <p>
+              The profiling suite is dominated by binary and ternary clauses, so `03` added a special-case path for length-3 clauses instead of falling through to the generic replacement-watch search every time.
+            </p>
+            <pre><code><span class="diff-del">- treat ternary clauses like the generic N-literal case</span>
+<span class="diff-add">+ dedicated len == 3 propagation path</span>
+<span class="diff-add">+ less branchy watch replacement on Feistel-heavy inputs</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Root-Level State Fix</h3>
+            <p>
+              The biggest win was fixing `backtrack(0)` so root-level assignments survive a jump back to decision level 0. On the crypto CNFs, clearing those assignments destroyed useful search state and caused repeated timeouts.
+            </p>
+            <pre><code><span class="diff-del">- backtrack(0) clears level-0 assignments along with decision assignments</span>
+<span class="diff-add">+ track root_trail_len separately</span>
+<span class="diff-add">+ preserve root implications when jumping back to level 0</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Phase-Saving Rollback</h3>
+            <p>
+              `03` briefly gained a polarity-memory heuristic, but the final tuned version removed it because the harder Feistel cases improved without the extra phase state.
+            </p>
+            <pre><code><span class="diff-del">- save and reuse the last seen polarity for each variable</span>
+<span class="diff-add">+ revert to simpler sign behavior in the tuned version</span>
+<span class="diff-add">+ lower overall PAR-2 on the profiling and crypto suites</span></code></pre>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

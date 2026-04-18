@@ -1,0 +1,13 @@
+=== Benchmark Results: 03-bcp ===
+    Date:      Sat Apr 18 03:45:15 PM EDT 2026
+    Timeout:   1800s
+    Memory:    16384 MB
+
+    Instances: 100
+    Solved:    13 (7 SAT + 6 UNSAT)
+    Unsolved:  87 (84 timeout + 0 unknown + 3 error)
+
+    PAR-2:     314428.593
+
+    Results:   /home/bojji/code/SAT-playground/log/bench-03-bcp-2026-04-16-20-12-01/results.csv
+    Errors:    /home/bojji/code/SAT-playground/log/bench-03-bcp-2026-04-16-20-12-01/errors.log
