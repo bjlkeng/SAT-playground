@@ -7,7 +7,7 @@ This version keeps the watched-literal CDCL core from `03`, but replaces the sta
 - each variable has a floating-point activity score
 - variables encountered during conflict analysis get bumped
 - the bump amount decays over time in EVSIDS style
-- the next decision comes from a heap-backed priority queue
+- the next decision comes from an indexed heap-backed priority queue
 - ties still fall back to the occurrence-based order inherited from `03`
 
 ## Scope of This First Pass
@@ -18,7 +18,7 @@ Included:
 - watched-literal BCP from `03`
 - CDCL learning and non-chronological backtracking from `03`
 - activity-based branching with analysis-time conflict bumps and decay
-- a heap-backed variable priority queue for branch selection
+- an indexed-heap variable priority queue for branch selection
 
 Not included yet:
 - restarts
@@ -51,7 +51,7 @@ On each conflict, the solver:
 3. bumps those variables once the learned clause is produced
 4. increases the future bump amount by the decay factor
 
-Decision selection then pops the best current candidate from a priority queue keyed by activity. The queue is refreshed incrementally on bumps and backtracks, while the original occurrence order is still used as the stable tie-break.
+Decision selection then pops the best current candidate from an indexed heap keyed by activity. The queue is refreshed incrementally on bumps and backtracks, while the original occurrence order is still used as the stable tie-break.
 
 ## Validation
 
@@ -70,7 +70,7 @@ The new unit tests added for `04` check that:
 
 ## Historical Note
 
-The code-level optimization log and profiling results below were recorded before the heap-backed queue and analysis-time activity-accounting update on this branch. They are kept as historical reference, but they should be rerun before treating them as the current performance state of `04`.
+The code-level optimization log below was recorded before the later switch to analysis-time activity accounting and heap-based branch selection. It is kept as historical reference, but it is not the current performance state of `04`.
 
 ## Code-Level Optimization Log
 
@@ -123,17 +123,21 @@ Environment:
 - **Benchmark suite:** `benchmarks/profiling`
 - **Command:** `bash tools/bench.sh -t 120 -d benchmarks/profiling solver/04-vsids`
 
-Final validation results for the kept code state:
+Current validation results for the indexed-heap code state:
 
 | Instance | Type | Result | Time |
 |----------|------|--------|------|
-| feistel_b64_k32_r17 | crypto | SAT | 7.98s |
-| feistel_b64_k49_r15 | crypto | SAT | 4.37s |
-| feistel_b64_k57_r14 | crypto | SAT | 23.24s |
-| random_v229_s2 | 3-SAT | UNSAT | 18.86s |
-| random_v240_s3 | 3-SAT | UNSAT | 22.56s |
-| random_v241_s4 | 3-SAT | UNSAT | 29.96s |
+| feistel_b64_k32_r17 | crypto | SAT | 0.08s |
+| feistel_b64_k49_r15 | crypto | SAT | 73.66s |
+| feistel_b64_k57_r14 | crypto | SAT | 39.53s |
+| random_v229_s2 | 3-SAT | UNSAT | 14.38s |
+| random_v240_s3 | 3-SAT | UNSAT | 15.30s |
+| random_v241_s4 | 3-SAT | UNSAT | 20.25s |
 
-**PAR-2: 106.974 (6/6 solved)**
+**PAR-2: 163.198 (6/6 solved)**
 
-Best observed PAR-2 during the tuning loop was `105.115`; the final revalidation landed at `106.974` under the same background machine load.
+For comparison during the `04` decisioning rework:
+
+- legacy scan-based `04` optimization state: final revalidation `106.974`
+- analysis-time bumps + first heap-backed queue pass: `158.852`
+- current indexed-heap implementation: `163.198`

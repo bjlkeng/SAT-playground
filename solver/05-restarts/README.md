@@ -2,7 +2,7 @@
 
 First restart iteration built on top of `04-vsids`.
 
-This version keeps the watched-literal CDCL core and VSIDS branching from `04`, then adds a simple Luby restart policy plus phase saving:
+This version keeps the watched-literal CDCL core and EVSIDS-style branching from `04`, then adds a simple Luby restart policy plus phase saving:
 
 - conflicts are counted globally within each restart window
 - after a fixed number of conflicts, the solver schedules a restart
@@ -16,7 +16,8 @@ This is a correctness-first restart iteration.
 
 Included:
 - watched-literal BCP from `03`
-- VSIDS branching from `04`
+- analysis-time EVSIDS variable bumps from `04`
+- an indexed-heap branch queue with occurrence-order tie-breaks
 - simple Luby restarts on top of the existing CDCL loop
 - saved variable polarities reused after backtrack and restart
 
@@ -27,7 +28,7 @@ The goal of `05` is to add a minimal standard restart policy without otherwise c
 
 ## Design Notes
 
-`05` keeps the same propagation, conflict analysis, proof logging, and VSIDS activity scheme as `04`.
+`05` keeps the same propagation, conflict analysis, proof logging, and EVSIDS accounting scheme as the current `04`.
 
 The search-loop changes are restart scheduling plus saved polarities:
 
@@ -43,6 +44,7 @@ This is deliberately simple:
 - root assignments are preserved by the existing `backtrack(0)` logic
 - saved polarity is updated whenever a variable is assigned
 - no clause-database policy is added yet
+- the current default restart base is `restart_unit = 100`
 
 The implementation is meant to isolate the effect of “try the search again from the top with the clauses you just learned” before adding more advanced restart machinery.
 
@@ -50,7 +52,7 @@ The implementation is meant to isolate the effect of “try the search again fro
 
 Completed checks for this first pass:
 
-- `cargo test` — 19/19 unit tests passed
+- `cargo test` — 21/21 unit tests passed
 - `bash tools/smoke_test.sh solver/05-restarts` — 9/9 smoke tests passed
 
 The new unit tests added for `05` check that:
@@ -58,10 +60,17 @@ The new unit tests added for `05` check that:
 - the Luby helper produces the expected `1, 1, 2, 1, 1, 2, 4, ...` sequence
 - hitting the restart conflict budget schedules a restart and advances the next Luby window
 - applying a pending restart backtracks to level 0 while preserving root assignments
+- branch selection prefers the highest-activity unassigned variable
 - branch selection reuses the saved polarity for the chosen variable
 - saved polarity survives backtrack and is reused on the next decision
+- backtracking requeues variables into the branch heap
+- conflict analysis tracks intermediate reason variables for EVSIDS accounting
 
 ## Code-Level Optimization Log
+
+Historical note:
+
+The tuning log and sweep below were recorded on the earlier scan-based `05` before the later port of `04`'s analysis-time activity accounting and indexed branch heap. They are kept as historical reference, but they are not the current performance state of `05`.
 
 Optimization pass run on 2026-04-18 against the current `benchmarks/profiling` suite for `05-restarts`.
 
@@ -103,7 +112,7 @@ Additional attempts were benchmarked and reverted because they did not improve P
 
 Follow-up tuning run on 2026-04-18 varied the base Luby restart unit after the code-level cleanup above.
 
-Results on `benchmarks/profiling`:
+Results on `benchmarks/profiling` for the earlier scan-based `05`:
 
 - `restart_unit = 8` -> `PAR-2 172.298`
 - `restart_unit = 16` -> `PAR-2 164.791`
@@ -112,9 +121,9 @@ Results on `benchmarks/profiling`:
 - `restart_unit = 128` -> `PAR-2 213.119`
 - `restart_unit = 1_000_000_000` -> `PAR-2 134.319`
 
-The best observed setting on the current profiling suite was an effectively disabled restart schedule (`restart_unit = 1_000_000_000`).
+The best observed setting on that earlier profiling sweep was an effectively disabled restart schedule (`restart_unit = 1_000_000_000`).
 
-For comparison against `04-vsids`, the solver was then reset to the original `restart_unit = 32` configuration before the latest validation run below.
+For comparison against `04-vsids`, that earlier solver was then reset to the original `restart_unit = 32` configuration before the historical validation run below.
 
 ## Profiling Benchmark Results
 
@@ -126,18 +135,18 @@ Environment:
 - **Benchmark suite:** `benchmarks/profiling`
 - **Command:** `bash tools/bench.sh -t 120 -d benchmarks/profiling solver/05-restarts`
 
-Current validation results for the restored restart + optimized phase-saving version:
+Current validation results for the indexed-heap + phase-saving version with `restart_unit = 100`:
 
 | Instance | Type | Result | Time |
 |----------|------|--------|------|
-| feistel_b64_k32_r17 | crypto | SAT | 1.25s |
-| feistel_b64_k49_r15 | crypto | SAT | 28.46s |
-| feistel_b64_k57_r14 | crypto | SAT | 1.23s |
-| random_v229_s2 | 3-SAT | UNSAT | 51.49s |
-| random_v240_s3 | 3-SAT | UNSAT | 39.03s |
-| random_v241_s4 | 3-SAT | UNSAT | 44.25s |
+| feistel_b64_k32_r17 | crypto | SAT | 1.13s |
+| feistel_b64_k49_r15 | crypto | SAT | 11.45s |
+| feistel_b64_k57_r14 | crypto | SAT | 2.45s |
+| random_v229_s2 | 3-SAT | UNSAT | 41.16s |
+| random_v240_s3 | 3-SAT | UNSAT | 24.02s |
+| random_v241_s4 | 3-SAT | UNSAT | 34.92s |
 
-**PAR-2: 165.717 (6/6 solved)**
+**PAR-2: 115.129 (6/6 solved)**
 
 For comparison during this iteration:
 
@@ -148,3 +157,5 @@ For comparison during this iteration:
 - tuned Luby + phase saving (`restart_unit = 64`): `PAR-2 151.453`
 - effectively disabled restarts (`restart_unit = 1_000_000_000`): best observed `PAR-2 134.319`, final revalidation `134.909`
 - restored original restart schedule (`restart_unit = 32`): final revalidation `165.717`
+- ported `04`-style EVSIDS accounting + indexed heap (`restart_unit = 32`): `134.724`
+- current tuned restart schedule (`restart_unit = 100`): `115.129`
