@@ -1,5 +1,3 @@
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -9,35 +7,12 @@ const UNASSIGNED: u8 = 0;
 const TRUE: u8 = 1;
 const FALSE: u8 = 2;
 const NO_REASON: usize = usize::MAX;
+const BRANCH_NOT_IN_HEAP: usize = usize::MAX;
 
 #[derive(Clone, Copy)]
 struct ClauseRef {
     start: u32,
     len: u32,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-struct BranchEntry {
-    activity: f32,
-    rank: usize,
-    var: u32,
-}
-
-impl Eq for BranchEntry {}
-
-impl Ord for BranchEntry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.activity
-            .total_cmp(&other.activity)
-            .then_with(|| other.rank.cmp(&self.rank))
-            .then_with(|| other.var.cmp(&self.var))
-    }
-}
-
-impl PartialOrd for BranchEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
 }
 
 struct Solver {
@@ -67,8 +42,10 @@ struct Solver {
     propagate_head: usize,
     /// static tie-break rank derived from descending literal occurrence count
     branch_rank: Vec<usize>,
-    /// priority queue of candidate branch variables ordered by current activity
-    branch_queue: BinaryHeap<BranchEntry>,
+    /// binary max-heap of candidate branch variables ordered by activity
+    branch_heap: Vec<u32>,
+    /// current heap index for each variable, or BRANCH_NOT_IN_HEAP
+    branch_pos: Vec<usize>,
     /// EVSIDS-style variable activity
     activity: Vec<f32>,
     /// additive bump applied to variables participating in recent conflicts
@@ -176,7 +153,8 @@ impl Solver {
             trail_limits: Vec::new(),
             propagate_head: 0,
             branch_rank,
-            branch_queue: BinaryHeap::with_capacity(num_vars),
+            branch_heap: Vec::with_capacity(num_vars),
+            branch_pos: vec![BRANCH_NOT_IN_HEAP; num_vars + 1],
             activity: vec![0.0; num_vars + 1],
             activity_inc: 1.0,
             activity_decay: 0.95,
@@ -209,22 +187,114 @@ impl Solver {
     }
 
     fn push_branch_var(&mut self, var: usize) {
-        if self.assignment[var] != UNASSIGNED {
+        if self.assignment[var] != UNASSIGNED || self.branch_pos[var] != BRANCH_NOT_IN_HEAP {
             return;
         }
 
-        self.branch_queue.push(BranchEntry {
-            activity: self.activity[var],
-            rank: self.branch_rank[var],
-            var: var as u32,
-        });
+        let idx = self.branch_heap.len();
+        self.branch_heap.push(var as u32);
+        self.branch_pos[var] = idx;
+        self.branch_heap_sift_up(idx);
     }
 
     fn rebuild_branch_queue(&mut self) {
-        self.branch_queue.clear();
+        self.branch_heap.clear();
+        self.branch_pos.fill(BRANCH_NOT_IN_HEAP);
         for var in 1..self.assignment.len() {
             self.push_branch_var(var);
         }
+    }
+
+    fn branch_var_better(&self, lhs: usize, rhs: usize) -> bool {
+        self.activity[lhs]
+            .total_cmp(&self.activity[rhs])
+            .then_with(|| self.branch_rank[rhs].cmp(&self.branch_rank[lhs]))
+            .is_gt()
+    }
+
+    fn branch_heap_swap(&mut self, lhs: usize, rhs: usize) {
+        self.branch_heap.swap(lhs, rhs);
+        let lhs_var = self.branch_heap[lhs] as usize;
+        let rhs_var = self.branch_heap[rhs] as usize;
+        self.branch_pos[lhs_var] = lhs;
+        self.branch_pos[rhs_var] = rhs;
+    }
+
+    fn branch_heap_sift_up(&mut self, mut idx: usize) {
+        while idx > 0 {
+            let parent = (idx - 1) / 2;
+            let var = self.branch_heap[idx] as usize;
+            let parent_var = self.branch_heap[parent] as usize;
+            if !self.branch_var_better(var, parent_var) {
+                break;
+            }
+
+            self.branch_heap_swap(idx, parent);
+            idx = parent;
+        }
+    }
+
+    fn branch_heap_sift_down(&mut self, mut idx: usize) {
+        let len = self.branch_heap.len();
+        loop {
+            let left = idx * 2 + 1;
+            let right = left + 1;
+            if left >= len {
+                break;
+            }
+
+            let mut best = left;
+            if right < len {
+                let left_var = self.branch_heap[left] as usize;
+                let right_var = self.branch_heap[right] as usize;
+                if self.branch_var_better(right_var, left_var) {
+                    best = right;
+                }
+            }
+
+            let var = self.branch_heap[idx] as usize;
+            let best_var = self.branch_heap[best] as usize;
+            if !self.branch_var_better(best_var, var) {
+                break;
+            }
+
+            self.branch_heap_swap(idx, best);
+            idx = best;
+        }
+    }
+
+    fn branch_heap_remove(&mut self, var: usize) {
+        let idx = self.branch_pos[var];
+        if idx == BRANCH_NOT_IN_HEAP {
+            return;
+        }
+
+        let last_var = self.branch_heap.pop().expect("heap underflow") as usize;
+        self.branch_pos[var] = BRANCH_NOT_IN_HEAP;
+        if idx == self.branch_heap.len() {
+            return;
+        }
+
+        self.branch_heap[idx] = last_var as u32;
+        self.branch_pos[last_var] = idx;
+        if idx > 0 {
+            let parent = (idx - 1) / 2;
+            let parent_var = self.branch_heap[parent] as usize;
+            if self.branch_var_better(last_var, parent_var) {
+                self.branch_heap_sift_up(idx);
+                return;
+            }
+        }
+        self.branch_heap_sift_down(idx);
+    }
+
+    fn branch_heap_pop_best(&mut self) -> Option<usize> {
+        if self.branch_heap.is_empty() {
+            return None;
+        }
+        let best_var = self.branch_heap[0] as usize;
+        self.branch_heap_remove(best_var);
+        Some(best_var)
     }
 
     fn attach_clause(&mut self, clause_idx: usize, track_root_unit: bool) {
@@ -274,6 +344,7 @@ impl Solver {
         let target_value = if lit > 0 { TRUE } else { FALSE };
         let current = self.assignment[var];
         if current == UNASSIGNED {
+            self.branch_heap_remove(var);
             self.assignment[var] = target_value;
             self.decision_level[var] = self.current_level();
             self.reason[var] = reason;
@@ -445,9 +516,10 @@ impl Solver {
                 *value *= 1e-30;
             }
             self.activity_inc *= 1e-30;
-            self.rebuild_branch_queue();
-        } else if self.assignment[var] == UNASSIGNED {
-            self.push_branch_var(var);
+        }
+        let idx = self.branch_pos[var];
+        if idx != BRANCH_NOT_IN_HEAP {
+            self.branch_heap_sift_up(idx);
         }
     }
 
@@ -465,19 +537,7 @@ impl Solver {
     }
 
     fn pick_branch_lit(&mut self) -> Option<i32> {
-        while let Some(entry) = self.branch_queue.pop() {
-            let var = entry.var as usize;
-            if self.assignment[var] != UNASSIGNED {
-                continue;
-            }
-            if entry.activity.to_bits() != self.activity[var].to_bits() {
-                continue;
-            }
-
-            return Some(var as i32);
-        }
-
-        None
+        self.branch_heap_pop_best().map(|var| var as i32)
     }
 
     fn backtrack(&mut self, target_level: usize) {
