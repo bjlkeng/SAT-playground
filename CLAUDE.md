@@ -321,7 +321,7 @@ wc -l log/bench-kissat-latest-*/results.csv
 
 ### Key flags for run_bench_reference.sh
 
-- `-t <seconds>` — per-instance timeout (default: 3600)
+- `-t <seconds>` — per-instance timeout (default: 1800)
 - `-m <MB>` — memory limit (default: 16384)
 - `-d <path>` — benchmark directory (default: benchmarks/sat-comp-2025)
 - Positional args: solver names (default: kissat-latest kissat-sc2024 minisat)

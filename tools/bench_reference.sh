@@ -7,7 +7,7 @@
 # If no solvers specified, runs all three: kissat-latest kissat-sc2024 minisat
 #
 # Options:
-#   -t, --timeout <seconds>   Per-instance time limit (default: 3600)
+#   -t, --timeout <seconds>   Per-instance time limit (default: 1800)
 #   -m, --memory  <MB>        Per-instance memory limit in MB (default: 16384 = 16 GB)
 #   -d, --benchdir <path>     Benchmark directory (default: benchmarks/sat-comp-2025)
 #   -h, --help                Show this help
