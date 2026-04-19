@@ -5,10 +5,10 @@ First VSIDS iteration built on top of `03-bcp`.
 This version keeps the watched-literal CDCL core from `03`, but replaces the static occurrence-order branch picker with a straightforward activity-based heuristic:
 
 - each variable has a floating-point activity score
-- variables from the current conflict clause and the learned clause get bumped
+- variables encountered during conflict analysis get bumped
 - the bump amount decays over time in EVSIDS style
-- the next decision picks the highest-activity unassigned variable
-- ties fall back to the occurrence-based order inherited from `03`
+- the next decision comes from a heap-backed priority queue
+- ties still fall back to the occurrence-based order inherited from `03`
 
 ## Scope of This First Pass
 
@@ -17,10 +17,10 @@ This is a correctness-first VSIDS iteration.
 Included:
 - watched-literal BCP from `03`
 - CDCL learning and non-chronological backtracking from `03`
-- simple activity-based branching with conflict bumps and decay
+- activity-based branching with analysis-time conflict bumps and decay
+- a heap-backed variable priority queue for branch selection
 
 Not included yet:
-- heap-backed activity queue
 - restarts
 - phase saving
 - clause deletion / database management
@@ -47,24 +47,30 @@ VSIDS adds:
 On each conflict, the solver:
 
 1. analyzes the conflict to produce a learned clause
-2. bumps variables appearing in the triggering conflict clause
-3. bumps variables appearing in the learned clause
+2. records every variable touched during the conflict-analysis walk
+3. bumps those variables once the learned clause is produced
 4. increases the future bump amount by the decay factor
 
-Decision selection then scans the unassigned variables and picks the highest-activity candidate.
+Decision selection then pops the best current candidate from a priority queue keyed by activity. The queue is refreshed incrementally on bumps and backtracks, while the original occurrence order is still used as the stable tie-break.
 
 ## Validation
 
 Completed checks for this first pass:
 
-- `cargo test` — 14/14 unit tests passed
+- `cargo test` — 16/16 unit tests passed
 - `bash tools/smoke_test.sh solver/04-vsids` — 9/9 smoke tests passed
 - All 5 UNSAT smoke-test proofs verified with `drat-trim`
 
 The new unit tests added for `04` check that:
 
 - branch selection prefers the highest-activity unassigned variable
+- backtracking requeues variables into the branch priority queue
+- conflict analysis tracks intermediate reason variables for activity accounting
 - solving a conflict-driven UNSAT instance actually bumps variable activity
+
+## Historical Note
+
+The code-level optimization log and profiling results below were recorded before the heap-backed queue and analysis-time activity-accounting update on this branch. They are kept as historical reference, but they should be rerun before treating them as the current performance state of `04`.
 
 ## Code-Level Optimization Log
 

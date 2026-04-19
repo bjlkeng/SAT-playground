@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -12,6 +14,30 @@ const NO_REASON: usize = usize::MAX;
 struct ClauseRef {
     start: u32,
     len: u32,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct BranchEntry {
+    activity: f32,
+    rank: usize,
+    var: u32,
+}
+
+impl Eq for BranchEntry {}
+
+impl Ord for BranchEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.activity
+            .total_cmp(&other.activity)
+            .then_with(|| other.rank.cmp(&self.rank))
+            .then_with(|| other.var.cmp(&self.var))
+    }
+}
+
+impl PartialOrd for BranchEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 struct Solver {
@@ -39,12 +65,10 @@ struct Solver {
     trail_limits: Vec<usize>,
     /// next trail entry whose falsified literal still needs watcher processing
     propagate_head: usize,
-    /// static branch order sorted by descending literal occurrence count
-    branch_order: Vec<u32>,
-    /// reverse lookup from variable to its position in branch_order
+    /// static tie-break rank derived from descending literal occurrence count
     branch_rank: Vec<usize>,
-    /// lower bound for the next first-unassigned scan in branch_order
-    branch_cursor: usize,
+    /// priority queue of candidate branch variables ordered by current activity
+    branch_queue: BinaryHeap<BranchEntry>,
     /// EVSIDS-style variable activity
     activity: Vec<f32>,
     /// additive bump applied to variables participating in recent conflicts
@@ -59,6 +83,7 @@ struct Solver {
     scratch_seen: Vec<u8>,
     scratch_resolved: Vec<u8>,
     scratch_learned: Vec<i32>,
+    scratch_bumped_vars: Vec<usize>,
     /// learned clause indices in DRAT proof order
     proof_clause_indices: Vec<usize>,
     /// whether the proof terminates with the empty clause
@@ -72,6 +97,7 @@ fn mark_clause_literals(
     seen: &mut [u8],
     resolved: &[u8],
     learned: &mut Vec<i32>,
+    bumped_vars: &mut Vec<usize>,
     current_level_count: &mut usize,
 ) {
     for &lit in clause {
@@ -86,6 +112,7 @@ fn mark_clause_literals(
         }
 
         seen[var] = 1;
+        bumped_vars.push(var);
         if level == current_level {
             *current_level_count += 1;
         } else {
@@ -148,9 +175,8 @@ impl Solver {
             root_trail_len: 0,
             trail_limits: Vec::new(),
             propagate_head: 0,
-            branch_order,
             branch_rank,
-            branch_cursor: 0,
+            branch_queue: BinaryHeap::with_capacity(num_vars),
             activity: vec![0.0; num_vars + 1],
             activity_inc: 1.0,
             activity_decay: 0.95,
@@ -159,11 +185,15 @@ impl Solver {
             scratch_seen: vec![0; num_vars + 1],
             scratch_resolved: vec![0; num_vars + 1],
             scratch_learned: Vec::with_capacity(16),
+            scratch_bumped_vars: Vec::with_capacity(16),
             proof_clause_indices: Vec::new(),
             proof_has_empty: false,
         };
         for clause_idx in 0..solver.clauses.len() {
             solver.attach_clause(clause_idx, true);
+        }
+        for &var in &branch_order {
+            solver.push_branch_var(var as usize);
         }
         solver
     }
@@ -176,6 +206,25 @@ impl Solver {
     #[inline(always)]
     fn lit_index(&self, lit: i32) -> usize {
         lit_to_index(lit)
+    }
+
+    fn push_branch_var(&mut self, var: usize) {
+        if self.assignment[var] != UNASSIGNED {
+            return;
+        }
+
+        self.branch_queue.push(BranchEntry {
+            activity: self.activity[var],
+            rank: self.branch_rank[var],
+            var: var as u32,
+        });
+    }
+
+    fn rebuild_branch_queue(&mut self) {
+        self.branch_queue.clear();
+        for var in 1..self.assignment.len() {
+            self.push_branch_var(var);
+        }
     }
 
     fn attach_clause(&mut self, clause_idx: usize, track_root_unit: bool) {
@@ -396,29 +445,9 @@ impl Solver {
                 *value *= 1e-30;
             }
             self.activity_inc *= 1e-30;
-        }
-    }
-
-    fn bump_clause_activity_by_index(&mut self, clause_idx: usize) {
-        let clause = self.clauses[clause_idx];
-        let start = clause.start as usize;
-        let end = start + clause.len as usize;
-        let clause_data_ptr = self.clause_data.as_ptr();
-        let mut idx = start;
-        while idx < end {
-            let var = unsafe { (*clause_data_ptr.add(idx)).unsigned_abs() as usize };
-            self.bump_variable_activity(var);
-            idx += 1;
-        }
-    }
-
-    fn bump_clause_activity(&mut self, clause: &[i32]) {
-        let clause_ptr = clause.as_ptr();
-        let mut idx = 0usize;
-        while idx < clause.len() {
-            let lit = unsafe { *clause_ptr.add(idx) };
-            self.bump_variable_activity(lit.unsigned_abs() as usize);
-            idx += 1;
+            self.rebuild_branch_queue();
+        } else if self.assignment[var] == UNASSIGNED {
+            self.push_branch_var(var);
         }
     }
 
@@ -426,24 +455,29 @@ impl Solver {
         self.activity_inc /= self.activity_decay;
     }
 
-    fn pick_branch_lit(&mut self) -> Option<i32> {
-        let assignment_ptr = self.assignment.as_ptr();
-        let activity_ptr = self.activity.as_ptr();
-        let mut best_var = None;
-        let mut best_activity = f32::NEG_INFINITY;
+    fn bump_analyzed_variable_activity(&mut self) {
+        let bumped_vars = std::mem::take(&mut self.scratch_bumped_vars);
+        for &var in &bumped_vars {
+            self.bump_variable_activity(var);
+        }
+        self.scratch_bumped_vars = bumped_vars;
+        self.scratch_bumped_vars.clear();
+    }
 
-        for &var_u32 in &self.branch_order {
-            let var = var_u32 as usize;
-            if unsafe { *assignment_ptr.add(var) } == UNASSIGNED {
-                let activity = unsafe { *activity_ptr.add(var) };
-                if activity > best_activity {
-                    best_activity = activity;
-                    best_var = Some(var as i32);
-                }
+    fn pick_branch_lit(&mut self) -> Option<i32> {
+        while let Some(entry) = self.branch_queue.pop() {
+            let var = entry.var as usize;
+            if self.assignment[var] != UNASSIGNED {
+                continue;
             }
+            if entry.activity.to_bits() != self.activity[var].to_bits() {
+                continue;
+            }
+
+            return Some(var as i32);
         }
 
-        best_var
+        None
     }
 
     fn backtrack(&mut self, target_level: usize) {
@@ -452,22 +486,18 @@ impl Solver {
         } else {
             self.trail_limits[target_level - 1]
         };
-        let mut min_unassigned_rank = self.branch_order.len();
 
         while self.trail.len() > new_trail_len {
             let lit = self.trail.pop().expect("trail underflow");
             let var = lit.unsigned_abs() as usize;
-            min_unassigned_rank = min_unassigned_rank.min(self.branch_rank[var]);
             self.assignment[var] = UNASSIGNED;
             self.decision_level[var] = 0;
             self.reason[var] = NO_REASON;
+            self.push_branch_var(var);
         }
 
         self.trail_limits.truncate(target_level);
         self.propagate_head = self.propagate_head.min(new_trail_len);
-        if min_unassigned_rank < self.branch_order.len() {
-            self.branch_cursor = self.branch_cursor.min(min_unassigned_rank);
-        }
     }
 
     fn add_clause(&mut self, clause: Vec<i32>) -> usize {
@@ -491,9 +521,11 @@ impl Solver {
         let seen = &mut self.scratch_seen;
         let resolved = &mut self.scratch_resolved;
         let learned = &mut self.scratch_learned;
+        let bumped_vars = &mut self.scratch_bumped_vars;
         seen.fill(0);
         resolved.fill(0);
         learned.clear();
+        bumped_vars.clear();
 
         let mut current_level_count = 0usize;
 
@@ -507,6 +539,7 @@ impl Solver {
             seen,
             resolved,
             learned,
+            bumped_vars,
             &mut current_level_count,
         );
 
@@ -539,6 +572,7 @@ impl Solver {
                     seen,
                     resolved,
                     learned,
+                    bumped_vars,
                     &mut current_level_count,
                 );
             }
@@ -589,8 +623,7 @@ impl Solver {
 
                     let (learned_clause, backtrack_level) =
                         self.analyze_conflict(conflict_clause_idx);
-                    self.bump_clause_activity_by_index(conflict_clause_idx);
-                    self.bump_clause_activity(&learned_clause);
+                    self.bump_analyzed_variable_activity();
                     self.decay_variable_activity();
                     let asserting_lit = learned_clause[0];
                     let learned_clause_idx = self.add_clause(learned_clause);
@@ -897,11 +930,52 @@ mod tests {
         s.activity[1] = 1.0;
         s.activity[2] = 4.0;
         s.activity[3] = 2.0;
+        s.rebuild_branch_queue();
 
         assert_eq!(s.pick_branch_lit(), Some(2));
 
         s.decide(2);
         assert_eq!(s.pick_branch_lit(), Some(3));
+    }
+
+    #[test]
+    fn test_backtrack_requeues_variable_into_branch_queue() {
+        let mut s = make_solver(2, vec![]);
+        s.activity[1] = 3.0;
+        s.activity[2] = 1.0;
+        s.rebuild_branch_queue();
+
+        assert_eq!(s.pick_branch_lit(), Some(1));
+
+        s.decide(1);
+        assert_eq!(s.pick_branch_lit(), Some(2));
+
+        s.backtrack(0);
+        assert_eq!(s.pick_branch_lit(), Some(1));
+    }
+
+    #[test]
+    fn test_conflict_analysis_tracks_intermediate_reason_variables_for_activity() {
+        let clauses = vec![
+            vec![-1, 5],
+            vec![-5, 4],
+            vec![-5, 6],
+            vec![-4, 2],
+            vec![-6, 3],
+            vec![-2, -3],
+        ];
+        let mut s = make_solver(6, clauses);
+
+        s.decide(1);
+        let conflict_clause_idx = s.propagate().expect("expected conflict after propagation");
+        let (learned_clause, backtrack_level) = s.analyze_conflict(conflict_clause_idx);
+
+        assert_eq!(learned_clause, vec![-5]);
+        assert_eq!(backtrack_level, 0);
+
+        let mut bumped_vars = s.scratch_bumped_vars.clone();
+        bumped_vars.sort_unstable();
+        assert_eq!(bumped_vars, vec![2, 3, 4, 5, 6]);
     }
 
     #[test]
