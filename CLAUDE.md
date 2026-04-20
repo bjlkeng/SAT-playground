@@ -354,56 +354,19 @@ When the user asks for status (e.g. "status?", "how's it going?", "what's runnin
    - Report how many instances are solved vs total, and current instance being worked on
    - Use `tail` on the log file or `wc -l` on `results.csv` to get progress counts
 
-## Current State
+## Finding Current State
 
-### Solver 01: naive-dpll (COMPLETE + OPTIMIZED)
+Do not treat this file as the source of truth for the repo's exact current solver lineup, benchmark
+state, or iteration status. Instead:
 
-`solver/01-naive-dpll/` — Working naive DPLL solver with:
-- Unit propagation to fixpoint, recursive branching with backtracking
-- DRAT proof output (empty clause) for UNSAT, verified by drat-trim
-- 8 Rust unit tests, all 8 smoke tests pass
-- No CDCL, no watched literals, no heuristics
-- **Code-level optimized**: PAR-2 796→539 (32% improvement, 4/6 solved). See `solver/01-naive-dpll/README.md` for full optimization log.
-
-### Proof Checker
-
-drat-trim is built at `tools/checkers/drat-trim/drat-trim` (run `bash tools/setup_checkers.sh` to rebuild). The smoke test and bench.sh both use it to verify UNSAT proofs.
-
-### Reference Solvers
-
-Located in `benchmarks/reference-solvers/`:
-- **MiniSat:** `benchmarks/reference-solvers/minisat/build/release/bin/minisat`
-- **Kissat (sc2024):** `benchmarks/reference-solvers/kissat-sc2024/`
-- **Kissat (latest):** `benchmarks/reference-solvers/kissat-latest/`
-
-### Benchmark Generators
-
-- **`tools/gen_crypto_bench/`** — Generates XOR-heavy Feistel cipher key recovery CNF instances (Tseitin encoding of AND/XOR gates). Scales via `--block-size`, `--key-size`, `--rounds`.
-- **`tools/gen_random_3sat/`** — Generates random 3-SAT at phase transition (ratio 4.267). Scales via `--vars`.
-
-### Profiling Benchmark Suite
-
-Run all 6 profiling instances with a single command:
-
-```bash
-bash tools/bench.sh -t 120 -d benchmarks/profiling solver/NN-name
-```
-
-The profiling suite was refreshed on 2026-04-17 so that every instance takes more than 10 seconds on `solver/04-vsids`. The current suite contents are:
-
-| Instance | Type | Vars | Clauses |
-|----------|------|------|---------|
-| feistel_b64_k57_r14 | crypto | 1913 | 6848 |
-| feistel_b64_k49_r15 | crypto | 2033 | 7328 |
-| feistel_b64_k32_r17 | crypto | 2272 | 8288 |
-| random_v229_s2 | 3-SAT | 229 | 977 |
-| random_v240_s3 | 3-SAT | 240 | 1024 |
-| random_v241_s4 | 3-SAT | 241 | 1028 |
-
-Additional benchmark dirs:
-- `benchmarks/crypto/` — Feistel crypto instances, including the profiling replacements `feistel_b64_k57_r14`, `feistel_b64_k49_r15`, and `feistel_b64_k32_r17`
-- `benchmarks/random-3sat/` — random 3-SAT instances, including the profiling replacements `random_v229_s2`, `random_v240_s3`, and `random_v241_s4`
-- `benchmarks/crypto-easy/` — easier crypto instances for quick testing
+- List the currently available solver iterations with `ls solver`
+- Read `solver/NN-name/README.md` for each iteration's actual scope, validation status, and latest recorded benchmark notes
+- Inspect `solver/NN-name/src/main.rs` and `Cargo.toml` for the real implementation and package identity
+- Use `git status --short` and `git log --oneline -- solver/NN-name` to see local changes and recent history for a solver
+- Check `benchmarks/reference-solvers/` for the current vendored reference solvers
+- Check `tools/checkers/` and `tools/setup_checkers.sh` for the currently configured proof checkers
+- Check `benchmarks/profiling/`, `benchmarks/crypto/`, `benchmarks/random-3sat/`, and the generator tools under `tools/` for the current benchmark inputs
+- Use `tools/bench.sh`, `tools/bench_reference.sh`, and the latest `log/bench-*` directories to see the current benchmark workflow and outputs
 
 ## Common Pitfalls
 
