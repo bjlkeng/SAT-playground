@@ -25,17 +25,13 @@ SAT-playground/
 ├── tools/                  # Shared scripts
 │   ├── smoke_test.sh       # Run smoke tests against a solver iteration
 │   └── bench.sh            # Run a solver against the full benchmark suite
-└── solver/                 # All solver iterations
+└── solver/                 # Current solver iterations
     ├── 01-naive-dpll/
     ├── 02-cdcl/
     ├── 03-bcp/
     ├── 04-vsids/
     ├── 05-restarts/
-    ├── 06-clause-storage-minimization/
-    ├── 07-preprocessing/
-    ├── 08-lrat-proofs/
-    ├── 09-inprocessing/
-    └── ...
+    └── 06-clause-storage-minimization/
 ```
 
 ### Iteration Directory Layout
@@ -126,26 +122,26 @@ cd solver/01-naive-dpll && bash build.sh
 # Run on a single instance
 bash run.sh ../../benchmarks/some_instance.cnf /tmp/proof_output
 
-# Run smoke tests (8 small SAT + UNSAT instances)
+# Run smoke tests (9 small SAT + UNSAT instances)
 bash tools/smoke_test.sh solver/01-naive-dpll
 
-# Run against all benchmarks with timing
-bash tools/bench.sh ./solver/01-naive-dpll/run.sh benchmarks/*.cnf
+# Run the profiling benchmark suite
+bash tools/bench.sh -t 120 -d benchmarks/profiling solver/01-naive-dpll
 ```
 
-## Iteration Roadmap
+## Current Iterations
 
-| #  | Name               | Key Technique                                    | Goal                              |
-|----|--------------------|-------------------------------------------------|-----------------------------------|
-| 01 | naive-dpll         | Basic DPLL with unit propagation + DRAT proofs  | Correct baseline                  |
-| 02 | cdcl               | Conflict-Driven Clause Learning                 | Solve medium instances            |
-| 03 | watched-literals   | Two-watched-literal BCP                         | Fast unit propagation             |
-| 04 | vsids              | VSIDS decision heuristic                        | Better branching                  |
-| 05 | restarts           | Luby restarts + phase saving                    | Recover quickly after restart     |
-| 06 | clause-db-mgmt     | Clause deletion, LBD scoring, tier system       | Control memory usage              |
-| 07 | preprocessing      | BVE, self-subsumption, failed literals          | Simplify before solving           |
-| 08 | lrat-proofs        | LRAT proof trimming + verified checking         | Compact verified proofs           |
-| 09 | inprocessing       | On-the-fly simplification during search         | Continuous formula reduction      |
+| #  | Name                         | Key Technique                                      | Current Focus |
+|----|------------------------------|----------------------------------------------------|---------------|
+| 01 | naive-dpll                   | Basic DPLL with unit propagation + DRAT proofs     | Correct baseline |
+| 02 | cdcl                         | First CDCL solver with conflict learning           | Non-chronological backtracking |
+| 03 | bcp                          | Two-watched-literal Boolean constraint propagation | Event-driven propagation |
+| 04 | vsids                        | EVSIDS-style variable activity + indexed heap      | Better branching |
+| 05 | restarts                     | Luby restarts + phase saving                       | Strong restart baseline |
+| 06 | clause-storage-minimization  | Reset `05` baseline for storage/minimization work  | MiniSat-style clause layout and clause minimization |
+
+Each iteration directory has its own `README.md` with the actual implementation notes, validation
+status, and benchmark history for that solver.
 
 ## References
 
