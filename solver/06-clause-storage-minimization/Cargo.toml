@@ -1,5 +1,5 @@
 [package]
-name = "sat-solver-06-clause-db-mgmt"
+name = "sat-solver-06-clause-storage-minimization"
 version = "0.1.0"
 edition = "2021"
 

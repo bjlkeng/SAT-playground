@@ -1,9 +1,9 @@
-# 06-clause-db-mgmt
+# 06-clause-storage-minimization
 
 This iteration has been reset to a clean `05-restarts` baseline.
 
 The previous clause-database-management experiment was removed so `06` can restart from the
-known-good `05` solver and shift focus to a different next step.
+known-good `05` solver and shift focus to clause storage and clause minimization first.
 
 ## Current Baseline
 
@@ -14,7 +14,7 @@ Right now `06` intentionally matches the `05` solver behavior:
 - indexed-heap branch queue with occurrence-order tie-breaks
 - Luby restarts with `restart_unit = 100`
 - phase saving across backtracks and restarts
-- no clause deletion / clause-database management yet
+- no new clause-storage changes yet
 - no MiniSat-style conflict-clause minimization yet
 
 This reset is deliberate. The goal is to preserve the strong `05` search behavior before changing
@@ -51,7 +51,28 @@ So the plan for `06` is:
 
 ## Validation
 
-After the reset, `06` should validate exactly like the copied `05` baseline:
+Current validation after the reset and rename:
 
-- `cargo test`
-- `bash tools/smoke_test.sh solver/06-clause-db-mgmt`
+- `cargo test` — 21/21 unit tests passed
+- `bash tools/smoke_test.sh solver/06-clause-storage-minimization` — 9/9 smoke tests passed
+
+## Profiling Benchmark Baseline
+
+Baseline run on 2026-04-20:
+
+- Command: `bash tools/bench.sh -t 120 -d benchmarks/profiling solver/06-clause-storage-minimization`
+- Result: `PAR-2 119.334`
+- Solved: `6/6`
+
+Per-instance baseline:
+
+| Instance | Type | Result | Time |
+|----------|------|--------|------|
+| feistel_b64_k32_r17 | crypto | SAT | 1.14s |
+| feistel_b64_k49_r15 | crypto | SAT | 11.43s |
+| feistel_b64_k57_r14 | crypto | SAT | 2.43s |
+| random_v229_s2 | 3-SAT | UNSAT | 40.61s |
+| random_v240_s3 | 3-SAT | UNSAT | 26.16s |
+| random_v241_s4 | 3-SAT | UNSAT | 37.57s |
+
+This is the baseline to compare against once the clause-storage and minimization work begins.

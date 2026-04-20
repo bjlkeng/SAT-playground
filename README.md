@@ -31,7 +31,7 @@ SAT-playground/
     ├── 03-bcp/
     ├── 04-vsids/
     ├── 05-restarts/
-    ├── 06-clause-db-mgmt/
+    ├── 06-clause-storage-minimization/
     ├── 07-preprocessing/
     ├── 08-lrat-proofs/
     ├── 09-inprocessing/
