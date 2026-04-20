@@ -7,6 +7,7 @@ const UNASSIGNED: u8 = 0;
 const TRUE: u8 = 1;
 const FALSE: u8 = 2;
 const NO_REASON: usize = usize::MAX;
+const BRANCH_NOT_IN_HEAP: usize = usize::MAX;
 
 #[derive(Clone, Copy)]
 struct ClauseRef {
@@ -14,20 +15,10 @@ struct ClauseRef {
     len: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ClauseTier {
-    Core,
-    Mid,
-    Local,
-}
-
 struct Solver {
     clauses: Vec<ClauseRef>,
     clause_data: Vec<i32>,
     original_clause_count: usize,
-    clause_lbd: Vec<u32>,
-    clause_tier: Vec<ClauseTier>,
-    clause_deleted: Vec<bool>,
     /// watched literal positions within each clause
     watch_pos: Vec<[u32; 2]>,
     /// clauses currently watching each literal
@@ -51,8 +42,12 @@ struct Solver {
     trail_limits: Vec<usize>,
     /// next trail entry whose falsified literal still needs watcher processing
     propagate_head: usize,
-    /// static branch order sorted by descending literal occurrence count
-    branch_order: Vec<u32>,
+    /// static tie-break rank derived from descending literal occurrence count
+    branch_rank: Vec<usize>,
+    /// binary max-heap of candidate branch variables ordered by activity
+    branch_heap: Vec<u32>,
+    /// current heap index for each variable, or BRANCH_NOT_IN_HEAP
+    branch_pos: Vec<usize>,
     /// EVSIDS-style variable activity
     activity: Vec<f32>,
     /// additive bump applied to variables participating in recent conflicts
@@ -69,10 +64,6 @@ struct Solver {
     restart_conflict_limit: usize,
     /// whether a restart should be applied before the next branch
     restart_pending: bool,
-    /// total learned-clause count threshold that triggers the next database reduction
-    next_clause_reduce_at: usize,
-    /// learned clauses added between reduction passes
-    clause_reduce_interval: usize,
     /// original unit clauses that must be enqueued at decision level 0
     root_unit_clauses: Vec<usize>,
     /// whether the formula already contains an empty clause
@@ -81,6 +72,7 @@ struct Solver {
     scratch_seen: Vec<u8>,
     scratch_resolved: Vec<u8>,
     scratch_learned: Vec<i32>,
+    scratch_bumped_vars: Vec<usize>,
     /// learned clause indices in DRAT proof order
     proof_clause_indices: Vec<usize>,
     /// whether the proof terminates with the empty clause
@@ -94,6 +86,7 @@ fn mark_clause_literals(
     seen: &mut [u8],
     resolved: &[u8],
     learned: &mut Vec<i32>,
+    bumped_vars: &mut Vec<usize>,
     current_level_count: &mut usize,
 ) {
     for &lit in clause {
@@ -108,6 +101,7 @@ fn mark_clause_literals(
         }
 
         seen[var] = 1;
+        bumped_vars.push(var);
         if level == current_level {
             *current_level_count += 1;
         } else {
@@ -139,6 +133,10 @@ impl Solver {
                 .cmp(&occurrence_count[lhs as usize])
                 .then_with(|| lhs.cmp(&rhs))
         });
+        let mut branch_rank = vec![0usize; num_vars + 1];
+        for (rank, &var) in branch_order.iter().enumerate() {
+            branch_rank[var as usize] = rank;
+        }
 
         let total_literals = clauses.iter().map(|clause| clause.len()).sum();
         let mut clause_refs = Vec::with_capacity(original_clause_count);
@@ -156,9 +154,6 @@ impl Solver {
             clauses: clause_refs,
             clause_data,
             original_clause_count,
-            clause_lbd: vec![0; original_clause_count],
-            clause_tier: vec![ClauseTier::Core; original_clause_count],
-            clause_deleted: vec![false; original_clause_count],
             watch_pos: vec![[0, 0]; original_clause_count],
             watchers: vec![Vec::new(); num_vars.saturating_mul(2)],
             watch_scratch: Vec::new(),
@@ -170,27 +165,31 @@ impl Solver {
             root_trail_len: 0,
             trail_limits: Vec::new(),
             propagate_head: 0,
-            branch_order,
+            branch_rank,
+            branch_heap: Vec::with_capacity(num_vars),
+            branch_pos: vec![BRANCH_NOT_IN_HEAP; num_vars + 1],
             activity: vec![0.0; num_vars + 1],
             activity_inc: 1.0,
             activity_decay: 0.95,
             restart_conflicts: 0,
-            restart_unit: 32,
+            restart_unit: 100,
             restart_luby_index: 1,
-            restart_conflict_limit: 32,
+            restart_conflict_limit: 100,
             restart_pending: false,
-            next_clause_reduce_at: 32,
-            clause_reduce_interval: 32,
             root_unit_clauses: Vec::new(),
             has_empty_clause: false,
             scratch_seen: vec![0; num_vars + 1],
             scratch_resolved: vec![0; num_vars + 1],
             scratch_learned: Vec::with_capacity(16),
+            scratch_bumped_vars: Vec::with_capacity(16),
             proof_clause_indices: Vec::new(),
             proof_has_empty: false,
         };
         for clause_idx in 0..solver.clauses.len() {
             solver.attach_clause(clause_idx, true);
+        }
+        for &var in &branch_order {
+            solver.push_branch_var(var as usize);
         }
         solver
     }
@@ -203,6 +202,117 @@ impl Solver {
     #[inline(always)]
     fn lit_index(&self, lit: i32) -> usize {
         lit_to_index(lit)
+    }
+
+    fn push_branch_var(&mut self, var: usize) {
+        if self.assignment[var] != UNASSIGNED || self.branch_pos[var] != BRANCH_NOT_IN_HEAP {
+            return;
+        }
+
+        let idx = self.branch_heap.len();
+        self.branch_heap.push(var as u32);
+        self.branch_pos[var] = idx;
+        self.branch_heap_sift_up(idx);
+    }
+
+    fn rebuild_branch_queue(&mut self) {
+        self.branch_heap.clear();
+        self.branch_pos.fill(BRANCH_NOT_IN_HEAP);
+        for var in 1..self.assignment.len() {
+            self.push_branch_var(var);
+        }
+    }
+
+    fn branch_var_better(&self, lhs: usize, rhs: usize) -> bool {
+        self.activity[lhs]
+            .total_cmp(&self.activity[rhs])
+            .then_with(|| self.branch_rank[rhs].cmp(&self.branch_rank[lhs]))
+            .is_gt()
+    }
+
+    fn branch_heap_swap(&mut self, lhs: usize, rhs: usize) {
+        self.branch_heap.swap(lhs, rhs);
+        let lhs_var = self.branch_heap[lhs] as usize;
+        let rhs_var = self.branch_heap[rhs] as usize;
+        self.branch_pos[lhs_var] = lhs;
+        self.branch_pos[rhs_var] = rhs;
+    }
+
+    fn branch_heap_sift_up(&mut self, mut idx: usize) {
+        while idx > 0 {
+            let parent = (idx - 1) / 2;
+            let var = self.branch_heap[idx] as usize;
+            let parent_var = self.branch_heap[parent] as usize;
+            if !self.branch_var_better(var, parent_var) {
+                break;
+            }
+
+            self.branch_heap_swap(idx, parent);
+            idx = parent;
+        }
+    }
+
+    fn branch_heap_sift_down(&mut self, mut idx: usize) {
+        let len = self.branch_heap.len();
+        loop {
+            let left = idx * 2 + 1;
+            let right = left + 1;
+            if left >= len {
+                break;
+            }
+
+            let mut best = left;
+            if right < len {
+                let left_var = self.branch_heap[left] as usize;
+                let right_var = self.branch_heap[right] as usize;
+                if self.branch_var_better(right_var, left_var) {
+                    best = right;
+                }
+            }
+
+            let var = self.branch_heap[idx] as usize;
+            let best_var = self.branch_heap[best] as usize;
+            if !self.branch_var_better(best_var, var) {
+                break;
+            }
+
+            self.branch_heap_swap(idx, best);
+            idx = best;
+        }
+    }
+
+    fn branch_heap_remove(&mut self, var: usize) {
+        let idx = self.branch_pos[var];
+        if idx == BRANCH_NOT_IN_HEAP {
+            return;
+        }
+
+        let last_var = self.branch_heap.pop().expect("heap underflow") as usize;
+        self.branch_pos[var] = BRANCH_NOT_IN_HEAP;
+        if idx == self.branch_heap.len() {
+            return;
+        }
+
+        self.branch_heap[idx] = last_var as u32;
+        self.branch_pos[last_var] = idx;
+        if idx > 0 {
+            let parent = (idx - 1) / 2;
+            let parent_var = self.branch_heap[parent] as usize;
+            if self.branch_var_better(last_var, parent_var) {
+                self.branch_heap_sift_up(idx);
+                return;
+            }
+        }
+        self.branch_heap_sift_down(idx);
+    }
+
+    fn branch_heap_pop_best(&mut self) -> Option<usize> {
+        if self.branch_heap.is_empty() {
+            return None;
+        }
+        let best_var = self.branch_heap[0] as usize;
+        self.branch_heap_remove(best_var);
+        Some(best_var)
     }
 
     fn attach_clause(&mut self, clause_idx: usize, track_root_unit: bool) {
@@ -253,6 +363,7 @@ impl Solver {
         let current = self.assignment[var];
         if current == UNASSIGNED {
             let current_level = self.current_level();
+            self.branch_heap_remove(var);
             self.assignment[var] = target_value;
             self.saved_phase[var] = target_value;
             self.decision_level[var] = current_level;
@@ -297,9 +408,6 @@ impl Solver {
                 let clause_idx_u32 = pending[pending_idx];
                 pending_idx += 1;
                 let clause_idx = clause_idx_u32 as usize;
-                if self.clause_deleted[clause_idx] {
-                    continue;
-                }
                 let clause = self.clauses[clause_idx];
                 if clause.len == 1 {
                     let unit_lit = self.clause_data[clause.start as usize];
@@ -429,33 +537,23 @@ impl Solver {
             }
             self.activity_inc *= 1e-30;
         }
-    }
-
-    fn bump_clause_activity_by_index(&mut self, clause_idx: usize) {
-        let clause = self.clauses[clause_idx];
-        let start = clause.start as usize;
-        let end = start + clause.len as usize;
-        let clause_data_ptr = self.clause_data.as_ptr();
-        let mut idx = start;
-        while idx < end {
-            let var = unsafe { (*clause_data_ptr.add(idx)).unsigned_abs() as usize };
-            self.bump_variable_activity(var);
-            idx += 1;
-        }
-    }
-
-    fn bump_clause_activity(&mut self, clause: &[i32]) {
-        let clause_ptr = clause.as_ptr();
-        let mut idx = 0usize;
-        while idx < clause.len() {
-            let lit = unsafe { *clause_ptr.add(idx) };
-            self.bump_variable_activity(lit.unsigned_abs() as usize);
-            idx += 1;
+        let idx = self.branch_pos[var];
+        if idx != BRANCH_NOT_IN_HEAP {
+            self.branch_heap_sift_up(idx);
         }
     }
 
     fn decay_variable_activity(&mut self) {
         self.activity_inc /= self.activity_decay;
+    }
+
+    fn bump_analyzed_variable_activity(&mut self) {
+        let bumped_vars = std::mem::take(&mut self.scratch_bumped_vars);
+        for &var in &bumped_vars {
+            self.bump_variable_activity(var);
+        }
+        self.scratch_bumped_vars = bumped_vars;
+        self.scratch_bumped_vars.clear();
     }
 
     fn luby_value(index: usize) -> usize {
@@ -490,28 +588,13 @@ impl Solver {
     }
 
     fn pick_branch_lit(&mut self) -> Option<i32> {
-        let assignment_ptr = self.assignment.as_ptr();
-        let activity_ptr = self.activity.as_ptr();
-        let mut best_var = None;
-        let mut best_activity = f32::NEG_INFINITY;
-
-        for &var_u32 in &self.branch_order {
-            let var = var_u32 as usize;
-            if unsafe { *assignment_ptr.add(var) } == UNASSIGNED {
-                let activity = unsafe { *activity_ptr.add(var) };
-                if activity > best_activity {
-                    best_activity = activity;
-                    let lit = if self.saved_phase[var] == FALSE {
-                        -(var as i32)
-                    } else {
-                        var as i32
-                    };
-                    best_var = Some(lit);
-                }
+        self.branch_heap_pop_best().map(|var| {
+            if self.saved_phase[var] == FALSE {
+                -(var as i32)
+            } else {
+                var as i32
             }
-        }
-
-        best_var
+        })
     }
 
     fn backtrack(&mut self, target_level: usize) {
@@ -527,6 +610,7 @@ impl Solver {
             self.assignment[var] = UNASSIGNED;
             self.decision_level[var] = 0;
             self.reason[var] = NO_REASON;
+            self.push_branch_var(var);
         }
 
         self.trail_limits.truncate(target_level);
@@ -547,60 +631,6 @@ impl Solver {
         true
     }
 
-    fn compute_lbd(&self, clause: &[i32]) -> u32 {
-        let mut seen_levels = Vec::with_capacity(clause.len());
-        for &lit in clause {
-            let level = self.decision_level[lit.unsigned_abs() as usize];
-            if level == 0 || seen_levels.contains(&level) {
-                continue;
-            }
-            seen_levels.push(level);
-        }
-        seen_levels.len() as u32
-    }
-
-    fn classify_learned_clause(clause: &[i32], lbd: u32) -> ClauseTier {
-        if clause.len() <= 2 || lbd <= 2 {
-            ClauseTier::Core
-        } else if lbd <= 6 {
-            ClauseTier::Mid
-        } else {
-            ClauseTier::Local
-        }
-    }
-
-    fn is_clause_locked(&self, clause_idx: usize) -> bool {
-        self.reason[1..].contains(&clause_idx)
-    }
-
-    fn reduce_clause_database(&mut self) -> usize {
-        let mut removed = 0usize;
-        for clause_idx in self.original_clause_count..self.clauses.len() {
-            if self.clause_deleted[clause_idx] {
-                continue;
-            }
-            if self.clause_tier[clause_idx] != ClauseTier::Local {
-                continue;
-            }
-            if self.is_clause_locked(clause_idx) {
-                continue;
-            }
-
-            self.clause_deleted[clause_idx] = true;
-            removed += 1;
-        }
-        removed
-    }
-
-    fn maybe_reduce_clause_database(&mut self) {
-        if self.learned_clause_count() < self.next_clause_reduce_at {
-            return;
-        }
-
-        self.reduce_clause_database();
-        self.next_clause_reduce_at += self.clause_reduce_interval;
-    }
-
     fn add_clause(&mut self, clause: Vec<i32>) -> usize {
         let start = self.clause_data.len();
         let len = clause.len();
@@ -609,9 +639,6 @@ impl Solver {
             start: start as u32,
             len: len as u32,
         });
-        self.clause_lbd.push(0);
-        self.clause_tier.push(ClauseTier::Local);
-        self.clause_deleted.push(false);
         self.watch_pos.push([0, 0]);
         let clause_idx = self.clauses.len() - 1;
         self.attach_clause(clause_idx, false);
@@ -622,27 +649,30 @@ impl Solver {
         let current_level = self.current_level();
         let decision_level = &self.decision_level;
         let clauses = &self.clauses;
-        let clause_data = &self.clause_data;
         let seen = &mut self.scratch_seen;
         let resolved = &mut self.scratch_resolved;
         let learned = &mut self.scratch_learned;
+        let bumped_vars = &mut self.scratch_bumped_vars;
         unsafe {
             std::ptr::write_bytes(seen.as_mut_ptr(), 0, seen.len());
             std::ptr::write_bytes(resolved.as_mut_ptr(), 0, resolved.len());
         }
         learned.clear();
+        bumped_vars.clear();
 
         let mut current_level_count = 0usize;
 
-        let conflict_clause = clauses[conflict_clause_idx];
         mark_clause_literals(
             decision_level,
-            &clause_data[conflict_clause.start as usize
-                ..conflict_clause.start as usize + conflict_clause.len as usize],
+            &self.clause_data
+                [clauses[conflict_clause_idx].start as usize
+                    ..clauses[conflict_clause_idx].start as usize
+                        + clauses[conflict_clause_idx].len as usize],
             current_level,
             seen,
             resolved,
             learned,
+            bumped_vars,
             &mut current_level_count,
         );
 
@@ -666,15 +696,16 @@ impl Solver {
 
             let reason_idx = self.reason[var];
             if reason_idx != NO_REASON {
-                let reason_clause = clauses[reason_idx];
                 mark_clause_literals(
                     decision_level,
-                    &clause_data[reason_clause.start as usize
-                        ..reason_clause.start as usize + reason_clause.len as usize],
+                    &self.clause_data
+                        [clauses[reason_idx].start as usize
+                            ..clauses[reason_idx].start as usize + clauses[reason_idx].len as usize],
                     current_level,
                     seen,
                     resolved,
                     learned,
+                    bumped_vars,
                     &mut current_level_count,
                 );
             }
@@ -725,22 +756,16 @@ impl Solver {
 
                     let (learned_clause, backtrack_level) =
                         self.analyze_conflict(conflict_clause_idx);
-                    let learned_lbd = self.compute_lbd(&learned_clause);
-                    let learned_tier = Self::classify_learned_clause(&learned_clause, learned_lbd);
-                    self.bump_clause_activity_by_index(conflict_clause_idx);
-                    self.bump_clause_activity(&learned_clause);
+                    self.bump_analyzed_variable_activity();
                     self.decay_variable_activity();
                     self.note_conflict();
                     let asserting_lit = learned_clause[0];
                     let learned_clause_idx = self.add_clause(learned_clause);
-                    self.clause_lbd[learned_clause_idx] = learned_lbd;
-                    self.clause_tier[learned_clause_idx] = learned_tier;
                     self.proof_clause_indices.push(learned_clause_idx);
 
                     self.backtrack(backtrack_level);
                     let inserted = self.enqueue(asserting_lit, learned_clause_idx);
                     debug_assert!(inserted, "learned clause must be asserting after backtrack");
-                    self.maybe_reduce_clause_database();
 
                     conflict = self.propagate();
                 }
@@ -1046,6 +1071,7 @@ mod tests {
         s.activity[1] = 1.0;
         s.activity[2] = 4.0;
         s.activity[3] = 2.0;
+        s.rebuild_branch_queue();
 
         assert_eq!(s.pick_branch_lit(), Some(2));
 
@@ -1059,10 +1085,12 @@ mod tests {
         s.activity[1] = 1.0;
         s.activity[2] = 4.0;
         s.activity[3] = 2.0;
+        s.rebuild_branch_queue();
 
         assert_eq!(s.pick_branch_lit(), Some(2));
 
         s.saved_phase[2] = FALSE;
+        s.rebuild_branch_queue();
         assert_eq!(s.pick_branch_lit(), Some(-2));
     }
 
@@ -1071,12 +1099,53 @@ mod tests {
         let mut s = make_solver(2, vec![]);
         s.activity[1] = 5.0;
         s.activity[2] = 1.0;
+        s.rebuild_branch_queue();
 
         s.decide(-1);
         s.backtrack(0);
 
         assert_eq!(s.assignment[1], UNASSIGNED);
         assert_eq!(s.pick_branch_lit(), Some(-1));
+    }
+
+    #[test]
+    fn test_backtrack_requeues_variable_into_branch_queue() {
+        let mut s = make_solver(2, vec![]);
+        s.activity[1] = 3.0;
+        s.activity[2] = 1.0;
+        s.rebuild_branch_queue();
+
+        assert_eq!(s.pick_branch_lit(), Some(1));
+
+        s.decide(1);
+        assert_eq!(s.pick_branch_lit(), Some(2));
+
+        s.backtrack(0);
+        assert_eq!(s.pick_branch_lit(), Some(1));
+    }
+
+    #[test]
+    fn test_conflict_analysis_tracks_intermediate_reason_variables_for_activity() {
+        let clauses = vec![
+            vec![-1, 5],
+            vec![-5, 4],
+            vec![-5, 6],
+            vec![-4, 2],
+            vec![-6, 3],
+            vec![-2, -3],
+        ];
+        let mut s = make_solver(6, clauses);
+
+        s.decide(1);
+        let conflict_clause_idx = s.propagate().expect("expected conflict after propagation");
+        let (learned_clause, backtrack_level) = s.analyze_conflict(conflict_clause_idx);
+
+        assert_eq!(learned_clause, vec![-5]);
+        assert_eq!(backtrack_level, 0);
+
+        let mut bumped_vars = s.scratch_bumped_vars.clone();
+        bumped_vars.sort_unstable();
+        assert_eq!(bumped_vars, vec![2, 3, 4, 5, 6]);
     }
 
     #[test]
@@ -1153,41 +1222,5 @@ mod tests {
         assert_eq!(s.assignment[3], UNASSIGNED);
         assert_eq!(s.assignment[4], UNASSIGNED);
         assert!(!s.restart_pending);
-    }
-
-    #[test]
-    fn test_compute_lbd_counts_distinct_non_root_decision_levels() {
-        let mut s = make_solver(4, vec![]);
-        s.decision_level[1] = 3;
-        s.decision_level[2] = 1;
-        s.decision_level[3] = 3;
-        s.decision_level[4] = 0;
-
-        assert_eq!(s.compute_lbd(&[1, -2, 3, -4]), 2);
-    }
-
-    #[test]
-    fn test_reduce_clause_database_keeps_core_and_locked_clauses() {
-        let mut s = make_solver(5, vec![vec![1, 2]]);
-
-        let core_idx = s.add_clause(vec![1, 3, 4]);
-        s.clause_lbd[core_idx] = 2;
-        s.clause_tier[core_idx] = ClauseTier::Core;
-
-        let locked_idx = s.add_clause(vec![-1, 4, 5]);
-        s.clause_lbd[locked_idx] = 7;
-        s.clause_tier[locked_idx] = ClauseTier::Local;
-        assert!(s.enqueue(4, locked_idx));
-
-        let local_idx = s.add_clause(vec![-2, -4, 5]);
-        s.clause_lbd[local_idx] = 8;
-        s.clause_tier[local_idx] = ClauseTier::Local;
-
-        let removed = s.reduce_clause_database();
-
-        assert_eq!(removed, 1);
-        assert!(!s.clause_deleted[core_idx]);
-        assert!(!s.clause_deleted[locked_idx]);
-        assert!(s.clause_deleted[local_idx]);
     }
 }

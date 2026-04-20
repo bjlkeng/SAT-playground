@@ -1,69 +1,57 @@
 # 06-clause-db-mgmt
 
-First clause-database-management iteration built on top of `05-restarts`.
+This iteration has been reset to a clean `05-restarts` baseline.
 
-This version keeps the watched-literal CDCL core, VSIDS branching, Luby restarts, and phase saving from `05`, then adds a basic learned-clause management policy driven by LBD scoring:
+The previous clause-database-management experiment was removed so `06` can restart from the
+known-good `05` solver and shift focus to a different next step.
 
-- each learned clause gets an `LBD` value when it is created
-- learned clauses are bucketed into `core`, `mid`, or `local` tiers
-- only `local` learned clauses are eligible for deletion
-- periodic reduction passes mark removable local clauses as deleted
-- clauses that are currently locking a trail assignment are never deleted
+## Current Baseline
 
-## Scope of This First Pass
+Right now `06` intentionally matches the `05` solver behavior:
 
-This is a correctness-first implementation of clause-database management.
+- watched-literal BCP from `03`
+- analysis-time EVSIDS variable bumps from `04`
+- indexed-heap branch queue with occurrence-order tie-breaks
+- Luby restarts with `restart_unit = 100`
+- phase saving across backtracks and restarts
+- no clause deletion / clause-database management yet
+- no MiniSat-style conflict-clause minimization yet
 
-Included:
+This reset is deliberate. The goal is to preserve the strong `05` search behavior before changing
+the internal representation and conflict-analysis details.
 
-- learned-clause `LBD` computation from distinct non-root decision levels
-- simple three-tier clause classification
-- a periodic learned-clause reduction pass
-- conservative protection for locked clauses that are still acting as reasons
+## New Focus for `06`
 
-Not included yet:
+The next `06` implementation pass will not be about learned-clause deletion policy first.
 
-- LBD refresh / promotion of older clauses
-- physical compaction of deleted clauses out of storage
-- watch-list cleanup during deletion
-- benchmark tuning of reduction thresholds or tier cutoffs
+Instead, the planned work is:
 
-The goal of `06` is to introduce the core policy decisions first: which learned clauses are considered important, and which ones can be dropped without breaking correctness.
+- more efficient clause storage, closer to MiniSat's clause arena / watcher-friendly layout
+- MiniSat-style conflict-clause minimization after first-UIP analysis
+- supporting data-structure changes needed to make the above efficient in Rust
 
-## Design Notes
+Clause-database reduction may still come later, but it is no longer the first target for this
+iteration.
 
-### LBD scoring
+## Design Intent
 
-For each learned clause, `06` counts how many distinct non-root decision levels appear among its literals at learning time.
+The reset is based on the debugging results from the earlier `06` experiments:
 
-- lower `LBD` clauses are treated as more reusable
-- binaries are kept as `core` automatically
-- current tier thresholds are:
-  - `core`: clause length `<= 2` or `LBD <= 2`
-  - `mid`: `LBD <= 6`
-  - `local`: everything else
+- simplify-style root cleanup did not appear to be the main regression source
+- learned-clause deletion policy was highly sensitive to clause quality and maintenance overhead
+- the current solver likely needs better learned clauses and cheaper clause handling before
+  aggressive database reduction is worth revisiting
 
-### Deletion policy
+So the plan for `06` is:
 
-The current reducer is intentionally simple:
-
-1. every learned clause starts active
-2. after every 32 learned clauses added, the solver runs a reduction pass
-3. the pass scans learned clauses and marks deletable `local` clauses inactive
-4. `core`, `mid`, original, and locked clauses are retained
-
-Deleted clauses are left in clause storage and proof history, but propagation skips them. That keeps the first implementation small and safe while still preventing inactive local clauses from participating in future search.
+1. keep the `05` search loop as the baseline
+2. improve clause representation and propagation-local storage
+3. add MiniSat-style learned-clause minimization
+4. only then revisit learned-clause deletion policy if it is still needed
 
 ## Validation
 
-Completed checks for this first pass:
+After the reset, `06` should validate exactly like the copied `05` baseline:
 
-- `cargo test` — 21/21 unit tests passed
-- `bash tools/smoke_test.sh solver/06-clause-db-mgmt` — 9/9 smoke tests passed
-
-The new unit tests added for `06` check that:
-
-- `LBD` counts distinct non-root decision levels rather than raw clause length
-- the reducer keeps `core` clauses
-- the reducer keeps locked `local` clauses that still justify a trail assignment
-- removable `local` clauses are marked deleted
+- `cargo test`
+- `bash tools/smoke_test.sh solver/06-clause-db-mgmt`
