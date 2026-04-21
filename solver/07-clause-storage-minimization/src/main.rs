@@ -24,7 +24,6 @@ struct ClauseRef {
     learnt: bool,
     mark: u8,
     activity: f32,
-    abstraction: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,14 +128,6 @@ fn mark_clause_literals(
             learned.push(lit);
         }
     }
-}
-
-fn calc_clause_abstraction(clause: &[i32]) -> u32 {
-    let mut abstraction = 0u32;
-    for &lit in clause {
-        abstraction |= 1u32 << ((lit.unsigned_abs() as usize) & 31);
-    }
-    abstraction
 }
 
 fn basic_lit_redundant(
@@ -290,7 +281,6 @@ impl Solver {
                 learnt: false,
                 mark: 0,
                 activity: 0.0,
-                abstraction: calc_clause_abstraction(&clause_data[start..start + len]),
             });
         }
         let mut solver = Solver {
@@ -778,7 +768,6 @@ impl Solver {
             learnt: true,
             mark: 0,
             activity: 0.0,
-            abstraction: 0,
         });
         let clause_idx = self.clauses.len() - 1;
         self.attach_clause(clause_idx, false);

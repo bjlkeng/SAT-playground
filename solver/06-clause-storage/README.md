@@ -25,6 +25,7 @@ The main storage changes are:
 - rewrote propagation around the standard MiniSat flow:
   blocker fast path, normalize false watch into slot `1`, scan from `2..`, then unit/conflict
 - switched proof logging to copy learned clauses on insertion because clause bodies now mutate
+- removed the unused clause-abstraction metadata carried over from the initial MiniSat-shaped port
 
 ## Validation
 
@@ -33,19 +34,19 @@ The main storage changes are:
 
 ## Profiling Benchmark Result
 
-Profiling run on 2026-04-20:
+Profiling run on 2026-04-21:
 
 - Command: `bash tools/bench.sh -t 120 -d benchmarks/profiling solver/06-clause-storage`
-- Result: `PAR-2 68.668`
+- Result: `PAR-2 58.282`
 - Solved: `6/6`
 
 | Instance | Type | Result | Time |
 |----------|------|--------|------|
-| feistel_b64_k32_r17 | crypto | SAT | 1.001s |
-| feistel_b64_k49_r15 | crypto | SAT | 13.331s |
-| feistel_b64_k57_r14 | crypto | SAT | 1.509s |
-| random_v229_s2 | 3-SAT | UNSAT | 10.682s |
-| random_v240_s3 | 3-SAT | UNSAT | 15.918s |
-| random_v241_s4 | 3-SAT | UNSAT | 26.227s |
+| feistel_b64_k32_r17 | crypto | SAT | 0.963s |
+| feistel_b64_k49_r15 | crypto | SAT | 11.822s |
+| feistel_b64_k57_r14 | crypto | SAT | 1.441s |
+| random_v229_s2 | 3-SAT | UNSAT | 9.340s |
+| random_v240_s3 | 3-SAT | UNSAT | 13.614s |
+| random_v241_s4 | 3-SAT | UNSAT | 21.102s |
 
 This is the storage-only baseline for comparing `07`.
