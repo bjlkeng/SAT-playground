@@ -1,78 +1,78 @@
 # 06-clause-storage-minimization
 
-This iteration has been reset to a clean `05-restarts` baseline.
+This iteration started from a clean `05-restarts` baseline, then rewired the hot clause and
+watcher path toward a MiniSat-style layout.
 
-The previous clause-database-management experiment was removed so `06` can restart from the
-known-good `05` solver and shift focus to clause storage and clause minimization first.
+## Current State
 
-## Current Baseline
-
-Right now `06` intentionally matches the `05` solver behavior:
+Right now `06` includes:
 
 - watched-literal BCP from `03`
 - analysis-time EVSIDS variable bumps from `04`
 - indexed-heap branch queue with occurrence-order tie-breaks
 - Luby restarts with `restart_unit = 100`
 - phase saving across backtracks and restarts
-- no new clause-storage changes yet
-- no MiniSat-style conflict-clause minimization yet
+- in-clause watched literals stored in clause slots `0` and `1`
+- watcher entries with MiniSat-style `{ clause, blocker }` metadata
+- clause metadata extended toward MiniSat-style headers
+- proof logging by copied learned clauses so in-place watcher swaps do not corrupt DRAT output
+- red/green tests for basic and deep clause minimization behavior
+- runtime default `ccmin_mode = none` for now
 
-This reset is deliberate. The goal is to preserve the strong `05` search behavior before changing
-the internal representation and conflict-analysis details.
+The runtime minimization modes are implemented and unit-tested, but they are not enabled by default
+yet because larger profiling proofs were not sound under the first pass. The safe end state of this
+round is “MiniSat-style watcher/storage changes landed, clause minimization code present, default
+runtime mode still disabled pending a soundness fix.”
 
-## New Focus for `06`
+## What Changed
 
-The next `06` implementation pass will not be about learned-clause deletion policy first.
+This pass focused on the MiniSat-like hot path, not clause-db reduction:
 
-Instead, the planned work is:
+- `watch_pos` was removed in favor of the MiniSat invariant that watched literals live in clause
+  positions `0` and `1`
+- propagation now uses blocker watchers and the usual MiniSat sequence:
+  blocker fast path, normalize false watch into slot `1`, scan from `2..`, then unit/conflict
+- clause metadata now carries enough structure to keep moving toward a MiniSat-like clause store
+- conflict analysis now has explicit `ccmin_mode = 0/1/2` support with tests for both direct and
+  recursive redundancy removal
+- proof logging was changed to copy learned clauses at insertion time because the clause bodies now
+  mutate during watch movement
 
-- more efficient clause storage, closer to MiniSat's clause arena / watcher-friendly layout
-- MiniSat-style conflict-clause minimization after first-UIP analysis
-- supporting data-structure changes needed to make the above efficient in Rust
-
-Clause-database reduction may still come later, but it is no longer the first target for this
-iteration.
-
-## Design Intent
-
-The reset is based on the debugging results from the earlier `06` experiments:
-
-- simplify-style root cleanup did not appear to be the main regression source
-- learned-clause deletion policy was highly sensitive to clause quality and maintenance overhead
-- the current solver likely needs better learned clauses and cheaper clause handling before
-  aggressive database reduction is worth revisiting
-
-So the plan for `06` is:
-
-1. keep the `05` search loop as the baseline
-2. improve clause representation and propagation-local storage
-3. add MiniSat-style learned-clause minimization
-4. only then revisit learned-clause deletion policy if it is still needed
+The main remaining gap is getting runtime clause minimization sound on larger proofs, then deciding
+whether `basic` or `deep` should become the default.
 
 ## Validation
 
-Current validation after the reset and rename:
+Current validation after the watcher/storage refactor:
 
-- `cargo test` — 21/21 unit tests passed
+- `cargo test` — 23/23 unit tests passed
 - `bash tools/smoke_test.sh solver/06-clause-storage-minimization` — 9/9 smoke tests passed
 
-## Profiling Benchmark Baseline
+## Profiling Benchmark Result
 
-Baseline run on 2026-04-20:
+Current safe runtime configuration:
+
+- `ccmin_mode = none`
+- MiniSat-style blocker watchers enabled
+- copied proof logging enabled
+
+Profiling run on 2026-04-20:
 
 - Command: `bash tools/bench.sh -t 120 -d benchmarks/profiling solver/06-clause-storage-minimization`
-- Result: `PAR-2 119.334`
+- Result: `PAR-2 65.395`
 - Solved: `6/6`
 
-Per-instance baseline:
+Per-instance result:
 
 | Instance | Type | Result | Time |
 |----------|------|--------|------|
-| feistel_b64_k32_r17 | crypto | SAT | 1.14s |
-| feistel_b64_k49_r15 | crypto | SAT | 11.43s |
-| feistel_b64_k57_r14 | crypto | SAT | 2.43s |
-| random_v229_s2 | 3-SAT | UNSAT | 40.61s |
-| random_v240_s3 | 3-SAT | UNSAT | 26.16s |
-| random_v241_s4 | 3-SAT | UNSAT | 37.57s |
+| feistel_b64_k32_r17 | crypto | SAT | 1.00s |
+| feistel_b64_k49_r15 | crypto | SAT | 13.15s |
+| feistel_b64_k57_r14 | crypto | SAT | 1.50s |
+| random_v229_s2 | 3-SAT | UNSAT | 10.06s |
+| random_v240_s3 | 3-SAT | UNSAT | 14.87s |
+| random_v241_s4 | 3-SAT | UNSAT | 24.81s |
 
-This is the baseline to compare against once the clause-storage and minimization work begins.
+Compared with the earlier reset baseline (`PAR-2 119.334`), this pass improved the profiling suite
+substantially through the watcher/storage rewrite alone, even with runtime clause minimization
+still disabled by default.
