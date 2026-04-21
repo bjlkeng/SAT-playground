@@ -31,7 +31,8 @@ SAT-playground/
     ├── 03-bcp/
     ├── 04-vsids/
     ├── 05-restarts/
-    └── 06-clause-storage-minimization/
+    ├── 06-clause-storage/
+    └── 07-clause-storage-minimization/
 ```
 
 ### Iteration Directory Layout
@@ -138,7 +139,8 @@ bash tools/bench.sh -t 120 -d benchmarks/profiling solver/01-naive-dpll
 | 03 | bcp                          | Two-watched-literal Boolean constraint propagation | Event-driven propagation |
 | 04 | vsids                        | EVSIDS-style variable activity + indexed heap      | Better branching |
 | 05 | restarts                     | Luby restarts + phase saving                       | Strong restart baseline |
-| 06 | clause-storage-minimization  | Reset `05` baseline for storage/minimization work  | MiniSat-style clause layout and clause minimization |
+| 06 | clause-storage               | MiniSat-style clause layout and blocker watchers   | Storage-only hot-path rewrite |
+| 07 | clause-storage-minimization  | Clause storage plus runtime clause minimization    | Safe conflict-clause shrinking on top of `06` |
 
 Each iteration directory has its own `README.md` with the actual implementation notes, validation
 status, and benchmark history for that solver.

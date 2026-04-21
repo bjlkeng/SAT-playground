@@ -8,13 +8,6 @@ const TRUE: u8 = 1;
 const FALSE: u8 = 2;
 const NO_REASON: usize = usize::MAX;
 const BRANCH_NOT_IN_HEAP: usize = usize::MAX;
-const CCMIN_NONE: u8 = 0;
-const CCMIN_BASIC: u8 = 1;
-const CCMIN_DEEP: u8 = 2;
-const REDUNDANT_UNDEF: u8 = 0;
-const REDUNDANT_SOURCE: u8 = 1;
-const REDUNDANT_REMOVABLE: u8 = 2;
-const REDUNDANT_FAILED: u8 = 3;
 
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
@@ -89,11 +82,6 @@ struct Solver {
     scratch_resolved: Vec<u8>,
     scratch_learned: Vec<i32>,
     scratch_bumped_vars: Vec<usize>,
-    scratch_redundant_state: Vec<u8>,
-    scratch_analyze_toclear: Vec<usize>,
-    scratch_analyze_stack: Vec<(usize, i32)>,
-    /// 0 = none, 1 = basic, 2 = deep
-    ccmin_mode: u8,
     /// learned clauses copied in DRAT proof order; clauses mutate in-place for watching
     proof_clauses: Vec<Vec<i32>>,
     /// whether the proof terminates with the empty clause
@@ -137,116 +125,6 @@ fn calc_clause_abstraction(clause: &[i32]) -> u32 {
         abstraction |= 1u32 << ((lit.unsigned_abs() as usize) & 31);
     }
     abstraction
-}
-
-fn basic_lit_redundant(
-    lit: i32,
-    clauses: &[ClauseRef],
-    clause_data: &[i32],
-    reason: &[usize],
-    decision_level: &[usize],
-    state: &[u8],
-) -> bool {
-    let var = lit.unsigned_abs() as usize;
-    let reason_idx = reason[var];
-    if reason_idx == NO_REASON {
-        return false;
-    }
-
-    let clause = clauses[reason_idx];
-    let start = clause.start as usize;
-    let end = start + clause.len as usize;
-    for &q in &clause_data[start..end] {
-        if q == lit {
-            continue;
-        }
-        let q_var = q.unsigned_abs() as usize;
-        if state[q_var] == REDUNDANT_UNDEF && decision_level[q_var] > 0 {
-            return false;
-        }
-    }
-
-    true
-}
-
-fn lit_redundant(
-    lit: i32,
-    clauses: &[ClauseRef],
-    clause_data: &[i32],
-    reason: &[usize],
-    decision_level: &[usize],
-    state: &mut [u8],
-    toclear: &mut Vec<usize>,
-    stack: &mut Vec<(usize, i32)>,
-) -> bool {
-    let mut lit = lit;
-    debug_assert!({
-        let var = lit.unsigned_abs() as usize;
-        state[var] == REDUNDANT_UNDEF || state[var] == REDUNDANT_SOURCE
-    });
-    debug_assert!(reason[lit.unsigned_abs() as usize] != NO_REASON);
-
-    stack.clear();
-    let mut clause_idx = reason[lit.unsigned_abs() as usize];
-    let mut lit_pos = 0usize;
-
-    loop {
-        let clause = clauses[clause_idx];
-        let start = clause.start as usize;
-        let end = start + clause.len as usize;
-        if start + lit_pos < end {
-            let parent = clause_data[start + lit_pos];
-            if parent == lit {
-                lit_pos += 1;
-                continue;
-            }
-            let parent_var = parent.unsigned_abs() as usize;
-            if decision_level[parent_var] == 0
-                || state[parent_var] == REDUNDANT_SOURCE
-                || state[parent_var] == REDUNDANT_REMOVABLE
-            {
-                lit_pos += 1;
-                continue;
-            }
-
-            if reason[parent_var] == NO_REASON || state[parent_var] == REDUNDANT_FAILED {
-                let lit_var = lit.unsigned_abs() as usize;
-                if state[lit_var] == REDUNDANT_UNDEF {
-                    state[lit_var] = REDUNDANT_FAILED;
-                    toclear.push(lit_var);
-                }
-                for &(_, stack_lit) in stack.iter() {
-                    let stack_var = stack_lit.unsigned_abs() as usize;
-                    if state[stack_var] == REDUNDANT_UNDEF {
-                        state[stack_var] = REDUNDANT_FAILED;
-                        toclear.push(stack_var);
-                    }
-                }
-                stack.clear();
-                return false;
-            }
-
-            stack.push((lit_pos, lit));
-            lit = parent;
-            clause_idx = reason[parent_var];
-            lit_pos = 0;
-            continue;
-        }
-
-        let lit_var = lit.unsigned_abs() as usize;
-        if state[lit_var] == REDUNDANT_UNDEF {
-            state[lit_var] = REDUNDANT_REMOVABLE;
-            toclear.push(lit_var);
-        }
-
-        if let Some((resume_pos, resume_lit)) = stack.pop() {
-            lit = resume_lit;
-            clause_idx = reason[lit.unsigned_abs() as usize];
-            lit_pos = resume_pos + 1;
-        } else {
-            return true;
-        }
-    }
 }
 
 #[inline(always)]
@@ -324,10 +202,6 @@ impl Solver {
             scratch_resolved: vec![0; num_vars + 1],
             scratch_learned: Vec::with_capacity(16),
             scratch_bumped_vars: Vec::with_capacity(16),
-            scratch_redundant_state: vec![0; num_vars + 1],
-            scratch_analyze_toclear: Vec::with_capacity(16),
-            scratch_analyze_stack: Vec::with_capacity(16),
-            ccmin_mode: CCMIN_NONE,
             proof_clauses: Vec::new(),
             proof_has_empty: false,
         };
@@ -785,63 +659,6 @@ impl Solver {
         clause_idx
     }
 
-    fn minimize_learned_clause(&mut self, learned_clause: &mut Vec<i32>) {
-        if self.ccmin_mode == CCMIN_NONE || learned_clause.len() <= 1 {
-            return;
-        }
-
-        let state = &mut self.scratch_redundant_state;
-        let toclear = &mut self.scratch_analyze_toclear;
-        let stack = &mut self.scratch_analyze_stack;
-        debug_assert!(toclear.is_empty());
-        debug_assert!(stack.is_empty());
-
-        for &lit in &learned_clause[1..] {
-            let var = lit.unsigned_abs() as usize;
-            if state[var] == REDUNDANT_UNDEF {
-                state[var] = REDUNDANT_SOURCE;
-                toclear.push(var);
-            }
-        }
-
-        let clauses = &self.clauses;
-        let clause_data = &self.clause_data;
-        let reason = &self.reason;
-        let decision_level = &self.decision_level;
-        let mut write = 1usize;
-        for read in 1..learned_clause.len() {
-            let lit = learned_clause[read];
-            let var = lit.unsigned_abs() as usize;
-            let keep = if reason[var] == NO_REASON {
-                true
-            } else if self.ccmin_mode == CCMIN_BASIC {
-                !basic_lit_redundant(lit, clauses, clause_data, reason, decision_level, state)
-            } else {
-                !lit_redundant(
-                    lit,
-                    clauses,
-                    clause_data,
-                    reason,
-                    decision_level,
-                    state,
-                    toclear,
-                    stack,
-                )
-            };
-            if keep {
-                learned_clause[write] = lit;
-                write += 1;
-            }
-        }
-        learned_clause.truncate(write);
-
-        for &var in toclear.iter() {
-            state[var] = REDUNDANT_UNDEF;
-        }
-        toclear.clear();
-        stack.clear();
-    }
-
     fn analyze_conflict(&mut self, conflict_clause_idx: usize) -> (Vec<i32>, usize) {
         let current_level = self.current_level();
         let decision_level = &self.decision_level;
@@ -910,7 +727,6 @@ impl Solver {
         let mut learned_clause = Vec::with_capacity(learned.len() + 1);
         learned_clause.push(-uip_lit);
         learned_clause.extend(learned.iter().copied());
-        self.minimize_learned_clause(&mut learned_clause);
 
         let mut backtrack_level = 0usize;
         let mut backtrack_pos = 1usize;
@@ -1121,39 +937,6 @@ mod tests {
         Some((s.clause_data[start], s.clause_data[start + 1]))
     }
 
-    fn install_manual_state(
-        s: &mut Solver,
-        trail: &[i32],
-        trail_limits: &[usize],
-        reason_overrides: &[(usize, usize)],
-    ) {
-        s.assignment.fill(UNASSIGNED);
-        s.decision_level.fill(0);
-        s.reason.fill(NO_REASON);
-        s.trail.clear();
-        s.trail.extend_from_slice(trail);
-        s.trail_limits = trail_limits.to_vec();
-        s.root_trail_len = 0;
-        s.propagate_head = s.trail.len();
-
-        let mut level = 0usize;
-        let mut next_limit_idx = 0usize;
-        for (trail_idx, &lit) in trail.iter().enumerate() {
-            while next_limit_idx < trail_limits.len() && trail_limits[next_limit_idx] == trail_idx {
-                level += 1;
-                next_limit_idx += 1;
-            }
-
-            let var = lit.unsigned_abs() as usize;
-            s.assignment[var] = if lit > 0 { TRUE } else { FALSE };
-            s.decision_level[var] = level;
-        }
-
-        for &(var, reason_idx) in reason_overrides {
-            s.reason[var] = reason_idx;
-        }
-    }
-
     #[test]
     fn test_unit_clause_sat() {
         let mut s = make_solver(1, vec![vec![1]]);
@@ -1262,60 +1045,6 @@ mod tests {
         s.decide(-2);
         assert_eq!(s.propagate(), None);
         assert_eq!(s.lit_value(3), TRUE);
-    }
-
-    #[test]
-    fn test_basic_clause_minimization_removes_direct_reason_literal() {
-        let clauses = vec![vec![5, 3, 4], vec![2, 1, 5], vec![6, 1, 3, 4], vec![2, 6]];
-        let mut s = make_solver(6, clauses);
-        install_manual_state(
-            &mut s,
-            &[3, 4, 5, 1, 2, 6],
-            &[0, 3],
-            &[(5, 0), (2, 1), (6, 2)],
-        );
-
-        s.ccmin_mode = CCMIN_NONE;
-        let (raw_learned, raw_backtrack) = s.analyze_conflict(3);
-        assert_eq!(raw_learned, vec![-1, 3, 4, 5]);
-        assert_eq!(raw_backtrack, 1);
-
-        s.ccmin_mode = CCMIN_BASIC;
-        let (basic_learned, basic_backtrack) = s.analyze_conflict(3);
-        assert_eq!(basic_learned, vec![-1, 3, 4]);
-        assert_eq!(basic_backtrack, 1);
-    }
-
-    #[test]
-    fn test_deep_clause_minimization_removes_recursive_reason_literal() {
-        let clauses = vec![
-            vec![5, 3, 4],
-            vec![7, 5, 6],
-            vec![2, 1, 7, 6],
-            vec![8, 1, 3, 4],
-            vec![2, 8],
-        ];
-        let mut s = make_solver(8, clauses);
-        install_manual_state(
-            &mut s,
-            &[3, 4, 6, 5, 7, 1, 2, 8],
-            &[0, 5],
-            &[(5, 0), (7, 1), (2, 2), (8, 3)],
-        );
-
-        s.ccmin_mode = CCMIN_NONE;
-        let (raw_learned, raw_backtrack) = s.analyze_conflict(4);
-        assert_eq!(raw_learned, vec![-1, 3, 4, 7, 6]);
-        assert_eq!(raw_backtrack, 1);
-
-        s.ccmin_mode = CCMIN_BASIC;
-        let (basic_learned, _) = s.analyze_conflict(4);
-        assert_eq!(basic_learned, vec![-1, 3, 4, 7, 6]);
-
-        s.ccmin_mode = CCMIN_DEEP;
-        let (deep_learned, deep_backtrack) = s.analyze_conflict(4);
-        assert_eq!(deep_learned, vec![-1, 3, 4, 6]);
-        assert_eq!(deep_backtrack, 1);
     }
 
     #[test]
