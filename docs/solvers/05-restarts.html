@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>05 restarts · SAT Playground</title>
+    <link rel="stylesheet" href="../solver-pages.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="panel">
+        <p class="eyebrow">SAT Playground · Solver 05</p>
+        <h1>05 restarts</h1>
+        <p class="lead">
+          This iteration layers a simple
+          <a href="https://en.wikipedia.org/wiki/Conflict-driven_clause_learning" target="_blank" rel="noreferrer">CDCL</a>
+          restart policy on top of <code>04</code>'s watched-literal + EVSIDS core.
+          Conflicts are grouped into Luby-sized windows, the solver periodically jumps back to level 0 while keeping learned clauses, and saved variable polarities are reused so the restarted search does not forget its recent bias completely.
+        </p>
+        <div class="actions">
+          <a class="button" href="../index.html">Back To Main Page</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/tree/main/solver/05-restarts" target="_blank" rel="noreferrer">Solver Source</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/blob/main/solver/05-restarts/README.md" target="_blank" rel="noreferrer">Optimization Notes</a>
+        </div>
+        <div class="pill-row">
+          <span class="pill">Luby restart schedule</span>
+          <span class="pill">Saved variable polarity</span>
+          <span class="pill">Root-level restart backtracking</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>What It Implements</h2>
+        <ul>
+          <li>The same watched-literal propagation, conflict analysis, learned clauses, and EVSIDS-driven branch queue from <code>04</code>.</li>
+          <li>A Luby restart schedule that counts conflicts inside a restart window and marks a pending restart once the current budget is exhausted.</li>
+          <li>Backtracking to decision level 0 on restart while keeping learned clauses and root-level implications intact.</li>
+          <li>Phase saving so each variable remembers its most recent polarity and reuses it the next time it is chosen as a branch variable.</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>High-Level Pseudocode</h2>
+        <pre><code>initialize watched-literal CDCL state
+initialize EVSIDS scores, branch heap, saved polarities
+restart_budget = luby(1) * restart_unit
+
+loop:
+  conflict = propagate_over_trail()
+
+  if conflict exists:
+    if decision_level == 0:
+      return UNSAT
+
+    learned_clause, backjump_level, analyzed_vars = analyze_conflict(conflict)
+    bump activity for analyzed_vars
+    add learned_clause to the database
+    backtrack(backjump_level)
+    enqueue asserting literal
+    conflicts_in_window += 1
+    if conflicts_in_window == restart_budget:
+      pending_restart = true
+    continue
+
+  if every variable is assigned:
+    return SAT
+
+  if pending_restart:
+    backtrack(0)
+    advance Luby window
+    pending_restart = false
+
+  variable = highest-activity unassigned variable from heap
+  decide using saved polarity(variable)</code></pre>
+      </section>
+
+      <section class="panel">
+        <h2>Code-Level Optimization Diffs</h2>
+        <p class="small">
+          The README has the longer history. These are the implementation changes that best capture how `05` differs from `04` in the current code.
+        </p>
+        <div class="diff-grid">
+          <article class="diff-card">
+            <h3>Pending-Restart Scheduler</h3>
+            <p>
+              Restarts are deliberately decoupled from the propagation path: conflicts mark a pending restart, and the actual jump to level 0 happens before the next decision.
+            </p>
+            <pre><code><span class="diff-del">- continue search from the current decision stack indefinitely</span>
+<span class="diff-add">+ count conflicts inside a Luby-sized restart window</span>
+<span class="diff-add">+ set a pending-restart flag and backtrack to level 0 before the next branch</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Saved Phase Reuse</h3>
+            <p>
+              Branch selection now carries a small amount of polarity memory across backtracks and restarts instead of always branching with the default sign.
+            </p>
+            <pre><code><span class="diff-del">- always branch with the same default literal polarity</span>
+<span class="diff-add">+ store the last assigned polarity for each variable</span>
+<span class="diff-add">+ reuse that saved phase when the variable is chosen again</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Hot-Path Cleanup Around Restarts</h3>
+            <p>
+              The retained tuning changes in the README focus on keeping the new restart machinery cheap enough not to erase the gains from `04`.
+            </p>
+            <pre><code><span class="diff-del">- repeated current-level reads and higher-overhead scratch clearing</span>
+<span class="diff-add">+ cache current_level() inside enqueue()</span>
+<span class="diff-add">+ clear analysis scratch arrays with write_bytes in the conflict path</span></code></pre>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

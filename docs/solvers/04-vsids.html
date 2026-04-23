@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>04 vsids · SAT Playground</title>
+    <link rel="stylesheet" href="../solver-pages.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="panel">
+        <p class="eyebrow">SAT Playground · Solver 04</p>
+        <h1>04 vsids</h1>
+        <p class="lead">
+          This iteration keeps the watched-literal
+          <a href="https://en.wikipedia.org/wiki/Conflict-driven_clause_learning" target="_blank" rel="noreferrer">CDCL</a>
+          core from <code>03</code>, but replaces the static branch order with a
+          conflict-driven activity heuristic in the style of
+          <a href="https://www.princeton.edu/~chaff/publication/DAC2001v56.pdf" target="_blank" rel="noreferrer">VSIDS / EVSIDS</a>.
+          Variables touched by conflict analysis get bumped, older conflicts decay away, and the next decision comes from a heap-backed priority queue instead of a linear first-fit scan.
+        </p>
+        <div class="actions">
+          <a class="button" href="../index.html">Back To Main Page</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/tree/main/solver/04-vsids" target="_blank" rel="noreferrer">Solver Source</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/blob/main/solver/04-vsids/README.md" target="_blank" rel="noreferrer">Optimization Notes</a>
+        </div>
+        <div class="pill-row">
+          <span class="pill">EVSIDS-style activity bumps</span>
+          <span class="pill">Indexed heap branch queue</span>
+          <span class="pill">Conflict-driven variable ordering</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>What It Implements</h2>
+        <ul>
+          <li>The same watched-literal propagation, reason clauses, learned clauses, and non-chronological backtracking already introduced in <code>03</code>.</li>
+          <li>A floating-point activity score for every variable, bumped when the variable appears in conflict analysis and decayed over time so recent conflicts matter more.</li>
+          <li>An indexed heap that always returns the highest-activity unassigned variable for the next branch decision.</li>
+          <li>A stable occurrence-order tie-break carried over from <code>03</code> so equal-activity variables still branch deterministically.</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>High-Level Pseudocode</h2>
+        <pre><code>initialize watched-literal CDCL state
+initialize activity scores and branch heap
+
+loop:
+  conflict = propagate_over_trail()
+
+  if conflict exists:
+    if decision_level == 0:
+      return UNSAT
+
+    learned_clause, backjump_level, analyzed_vars = analyze_conflict(conflict)
+    bump activity for analyzed_vars
+    decay future bump amount
+    add learned_clause to the database
+    backtrack(backjump_level)
+    enqueue asserting literal
+    continue
+
+  if every variable is assigned:
+    return SAT
+
+  variable = highest-activity unassigned variable from heap
+  enqueue decision literal(variable)</code></pre>
+      </section>
+
+      <section class="panel">
+        <h2>Code-Level Optimization Diffs</h2>
+        <p class="small">
+          The README contains the full tuning history. These are the implementation-level changes that most clearly define the current `04` branch-selection path.
+        </p>
+        <div class="diff-grid">
+          <article class="diff-card">
+            <h3>Heap-Backed Decisions</h3>
+            <p>
+              The key structural change was moving from a static branch scan to an indexed heap keyed by variable activity.
+            </p>
+            <pre><code><span class="diff-del">- walk a fixed branch-order array to find the next unassigned variable</span>
+<span class="diff-add">+ maintain an indexed heap of candidate variables</span>
+<span class="diff-add">+ pop the highest-activity unassigned variable at each decision</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Analysis-Time Activity Accounting</h3>
+            <p>
+              Conflict analysis now explicitly tracks the variables it touched so the EVSIDS updates happen once per analyzed variable, not via ad hoc rescans.
+            </p>
+            <pre><code><span class="diff-del">- static branching with no conflict-driven signal</span>
+<span class="diff-add">+ collect analyzed variables while walking reason clauses</span>
+<span class="diff-add">+ bump activity after learning, then decay the future bump amount</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Tighter Activity-State Footprint</h3>
+            <p>
+              The tuning log shows the activity path getting smaller and denser so the heuristic stays cheap enough to use on every conflict and decision.
+            </p>
+            <pre><code><span class="diff-del">- f64 activity values and wider branch-order storage</span>
+<span class="diff-add">+ f32 activity values for better cache density</span>
+<span class="diff-add">+ narrower branch-order bookkeeping and less hot-path memory traffic</span></code></pre>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
