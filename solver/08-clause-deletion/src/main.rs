@@ -322,7 +322,9 @@ impl Solver {
             activity_decay: 0.95,
             clause_activity_inc: 1.0,
             clause_activity_decay: 0.999,
-            max_learnts: ((original_clause_count.max(1) as f32) / 3.0).ceil() as usize,
+            // This solver's proof-sound minimization is weaker than MiniSat's,
+            // so it needs a much larger initial learned-clause budget.
+            max_learnts: original_clause_count.max(1).saturating_mul(8),
             learntsize_inc: 1.1,
             learntsize_adjust_inc: 1.5,
             learntsize_adjust_confl: 100.0,
@@ -347,6 +349,9 @@ impl Solver {
             proof_has_empty: false,
         };
         solver.max_learnts = solver.max_learnts.max(8);
+        if let Some(override_value) = env_usize("SAT_MAX_LEARNTS_OVERRIDE") {
+            solver.max_learnts = override_value.max(8);
+        }
         for clause_idx in 0..solver.clauses.len() {
             solver.attach_clause(clause_idx, true);
         }
@@ -537,33 +542,6 @@ impl Solver {
         }
     }
 
-    fn detach_clause(&mut self, clause_idx: usize) {
-        let clause = self.clauses[clause_idx];
-        if clause.mark == CLAUSE_DELETED {
-            return;
-        }
-
-        match clause.len {
-            0 => {}
-            1 => {
-                let lit = self.clause_data[clause.start as usize];
-                let watch_idx = self.lit_index(lit);
-                self.watchers[watch_idx].retain(|w| w.clause_idx as usize != clause_idx);
-            }
-            _ => {
-                let start = clause.start as usize;
-                let first = self.clause_data[start];
-                let second = self.clause_data[start + 1];
-                let first_watch_idx = self.lit_index(first);
-                let second_watch_idx = self.lit_index(second);
-                self.watchers[first_watch_idx].retain(|w| w.clause_idx as usize != clause_idx);
-                if second_watch_idx != first_watch_idx {
-                    self.watchers[second_watch_idx].retain(|w| w.clause_idx as usize != clause_idx);
-                }
-            }
-        }
-    }
-
     fn rebuild_watchers(&mut self) {
         self.watchers = vec![Vec::new(); (self.assignment.len() - 1).saturating_mul(2)];
         self.watch_scratch.clear();
@@ -584,7 +562,8 @@ impl Solver {
             "remove_clause called on locked clause {clause_idx}"
         );
 
-        self.detach_clause(clause_idx);
+        // Leave stale watcher entries in place and skip them during propagation.
+        // This avoids scanning two watch lists on every clause deletion.
         self.deleted_literals += self.clauses[clause_idx].len as usize;
         self.clauses[clause_idx].mark = CLAUSE_DELETED;
     }
@@ -1252,6 +1231,12 @@ fn parse_ccmin_mode() -> u8 {
     }
 }
 
+fn env_usize(name: &str) -> Option<usize> {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+}
+
 fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
     let file = fs::File::open(path).unwrap_or_else(|e| {
         eprintln!("Error opening {}: {}", path, e);
@@ -1884,5 +1869,28 @@ mod tests {
         assert_eq!(s.learnt_clause_indices.len(), 1);
         let remapped_idx = s.learnt_clause_indices[0];
         assert_eq!(s.clause_slice(remapped_idx), &[-1, -2, -3]);
+    }
+
+    #[test]
+    fn test_propagate_skips_deleted_clause_without_detach() {
+        let mut s = make_solver(2, vec![]);
+        let deleted_idx = s.add_clause(vec![1, 2]);
+        assert!(
+            s.watchers[s.lit_index(1)]
+                .iter()
+                .any(|watcher| watcher.clause_idx as usize == deleted_idx)
+        );
+
+        s.remove_clause(deleted_idx);
+        assert!(s.is_clause_deleted(deleted_idx));
+        assert!(
+            s.watchers[s.lit_index(1)]
+                .iter()
+                .any(|watcher| watcher.clause_idx as usize == deleted_idx)
+        );
+
+        s.decide(-1);
+        assert_eq!(s.propagate(), None);
+        assert_eq!(s.assignment[2], UNASSIGNED);
     }
 }
