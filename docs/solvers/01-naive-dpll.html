@@ -5,6 +5,412 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>01 naive-dpll · SAT Playground</title>
     <link rel="stylesheet" href="../solver-pages.css" />
+    <style>
+      .dpll-demo {
+        margin-top: 18px;
+        padding: 22px;
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        background:
+          radial-gradient(circle at top left, rgba(15, 122, 216, 0.08), transparent 38%),
+          linear-gradient(180deg, rgba(249, 251, 255, 0.98), rgba(255, 255, 255, 0.95));
+      }
+
+      .dpll-demo p {
+        margin: 0;
+      }
+
+      .dpll-demo-header {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 14px;
+        align-items: flex-start;
+      }
+
+      .dpll-demo-header h3 {
+        margin: 0 0 6px;
+        font-size: 1.08rem;
+      }
+
+      .dpll-demo-header p {
+        max-width: 44rem;
+        color: var(--muted);
+      }
+
+      .dpll-demo-step {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 12px;
+        border-radius: 999px;
+        border: 1px solid rgba(15, 122, 216, 0.18);
+        background: rgba(219, 231, 255, 0.76);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.8rem;
+        color: var(--accent);
+        white-space: nowrap;
+      }
+
+      .dpll-demo-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        margin-top: 18px;
+      }
+
+      .dpll-demo-button,
+      .dpll-demo-select {
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: #fff;
+        color: var(--ink);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.82rem;
+      }
+
+      .dpll-demo-button {
+        padding: 11px 14px;
+        cursor: pointer;
+      }
+
+      .dpll-demo-button:hover,
+      .dpll-demo-select:hover {
+        border-color: rgba(15, 122, 216, 0.32);
+      }
+
+      .dpll-demo-button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .dpll-demo-select {
+        padding: 10px 14px;
+      }
+
+      .dpll-demo-caption {
+        margin-top: 16px;
+        padding: 14px 16px;
+        border-radius: 18px;
+        border: 1px solid rgba(15, 122, 216, 0.14);
+        background: rgba(255, 255, 255, 0.84);
+      }
+
+      .dpll-demo-caption strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 0.94rem;
+      }
+
+      .dpll-demo-trail {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+      }
+
+      .dpll-demo-trail-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: #fff;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.78rem;
+      }
+
+      .dpll-demo-trail-chip .kind {
+        padding: 3px 6px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      .dpll-demo-grid {
+        display: grid;
+        gap: 18px;
+        margin-top: 18px;
+      }
+
+      .dpll-demo-panel {
+        padding: 18px;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.88);
+      }
+
+      .dpll-demo-panel h4 {
+        margin: 0 0 6px;
+        font-size: 0.98rem;
+      }
+
+      .dpll-demo-panel p {
+        color: var(--muted);
+      }
+
+      .dpll-demo-clauses {
+        display: grid;
+        gap: 12px;
+        margin-top: 16px;
+      }
+
+      .dpll-demo-clause {
+        padding: 14px;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: rgba(248, 250, 255, 0.95);
+        transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+      }
+
+      .dpll-demo-clause.is-focus {
+        transform: translateY(-1px);
+        border-color: rgba(15, 122, 216, 0.28);
+        box-shadow: 0 10px 22px rgba(15, 122, 216, 0.08);
+      }
+
+      .dpll-demo-clause.is-satisfied {
+        background: rgba(231, 245, 238, 0.9);
+        border-color: rgba(17, 102, 59, 0.18);
+      }
+
+      .dpll-demo-clause.is-unit {
+        background: rgba(255, 248, 222, 0.92);
+        border-color: rgba(185, 140, 15, 0.24);
+      }
+
+      .dpll-demo-clause.is-conflict {
+        background: rgba(253, 233, 233, 0.96);
+        border-color: rgba(176, 68, 68, 0.28);
+        box-shadow: 0 0 0 3px rgba(176, 68, 68, 0.08);
+      }
+
+      .dpll-demo-clause-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 10px;
+      }
+
+      .dpll-demo-clause-id {
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+
+      .dpll-demo-clause-state {
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.76rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .dpll-demo-literals {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .dpll-demo-literal {
+        padding: 8px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(22, 32, 43, 0.12);
+        background: #fff;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.82rem;
+      }
+
+      .dpll-demo-literal.is-true {
+        background: rgba(231, 245, 238, 0.95);
+        color: var(--diff-add-ink);
+        border-color: rgba(17, 102, 59, 0.24);
+      }
+
+      .dpll-demo-literal.is-false {
+        background: rgba(253, 233, 233, 0.95);
+        color: var(--diff-del-ink);
+        border-color: rgba(176, 68, 68, 0.2);
+        text-decoration: line-through;
+      }
+
+      .dpll-demo-literal.is-unit {
+        background: rgba(255, 244, 194, 0.98);
+        border-color: rgba(185, 140, 15, 0.3);
+        box-shadow: 0 0 0 4px rgba(255, 221, 87, 0.16);
+      }
+
+      .dpll-demo-literal.is-focus {
+        border-color: rgba(15, 122, 216, 0.4);
+      }
+
+      .dpll-demo-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 16px;
+      }
+
+      .dpll-demo-legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+
+      .dpll-demo-legend-swatch {
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+        border: 1px solid rgba(22, 32, 43, 0.12);
+      }
+
+      .dpll-demo-tree {
+        position: relative;
+        min-height: 460px;
+        margin-top: 16px;
+        border-radius: 18px;
+        border: 1px dashed rgba(22, 32, 43, 0.12);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(248, 250, 255, 0.88)),
+          radial-gradient(circle at top center, rgba(15, 122, 216, 0.08), transparent 40%);
+      }
+
+      .dpll-demo-tree svg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+
+      .dpll-demo-tree-line {
+        stroke: rgba(22, 32, 43, 0.14);
+        stroke-width: 1.5;
+      }
+
+      .dpll-demo-tree-line.active {
+        stroke: rgba(15, 122, 216, 0.55);
+        stroke-width: 2.2;
+      }
+
+      .dpll-demo-tree-line.failed {
+        stroke: rgba(176, 68, 68, 0.44);
+      }
+
+      .dpll-demo-tree-line.success {
+        stroke: rgba(17, 102, 59, 0.42);
+      }
+
+      .dpll-demo-node {
+        position: absolute;
+        min-width: 118px;
+        padding: 10px 12px;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.96);
+        transform: translate(-50%, -50%);
+        transition: opacity 180ms ease, transform 180ms ease, border-color 180ms ease, background 180ms ease;
+        box-shadow: 0 8px 18px rgba(30, 40, 55, 0.06);
+      }
+
+      .dpll-demo-node.hidden {
+        opacity: 0;
+        pointer-events: none;
+        transform: translate(-50%, -52%);
+      }
+
+      .dpll-demo-node .kind {
+        display: inline-block;
+        margin-bottom: 6px;
+        padding: 3px 7px;
+        border-radius: 999px;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.7rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+        background: rgba(22, 32, 43, 0.06);
+      }
+
+      .dpll-demo-node strong {
+        display: block;
+        font-size: 0.9rem;
+      }
+
+      .dpll-demo-node small {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 0.76rem;
+      }
+
+      .dpll-demo-node.is-active {
+        border-color: rgba(15, 122, 216, 0.32);
+        background: rgba(236, 244, 255, 0.98);
+        box-shadow: 0 12px 28px rgba(15, 122, 216, 0.14);
+      }
+
+      .dpll-demo-node.is-backtracked {
+        opacity: 0.55;
+        border-style: dashed;
+      }
+
+      .dpll-demo-node.is-failed {
+        border-color: rgba(176, 68, 68, 0.24);
+        background: rgba(253, 233, 233, 0.92);
+      }
+
+      .dpll-demo-node.is-success {
+        border-color: rgba(17, 102, 59, 0.24);
+        background: rgba(231, 245, 238, 0.94);
+      }
+
+      .dpll-demo-node.kind-conflict .kind,
+      .dpll-demo-node.is-failed .kind {
+        background: rgba(176, 68, 68, 0.12);
+        color: var(--diff-del-ink);
+      }
+
+      .dpll-demo-node.kind-sat .kind,
+      .dpll-demo-node.is-success .kind {
+        background: rgba(17, 102, 59, 0.12);
+        color: var(--diff-add-ink);
+      }
+
+      .dpll-demo-node.kind-decision .kind {
+        background: rgba(15, 122, 216, 0.12);
+        color: var(--accent);
+      }
+
+      .dpll-demo-node.kind-unit .kind {
+        background: rgba(255, 221, 87, 0.22);
+        color: #8c6500;
+      }
+
+      @media (min-width: 860px) {
+        .dpll-demo-grid {
+          grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
+        }
+      }
+
+      @media (max-width: 720px) {
+        .dpll-demo {
+          padding: 18px;
+        }
+
+        .dpll-demo-tree {
+          min-height: 420px;
+        }
+
+        .dpll-demo-node {
+          min-width: 102px;
+          padding: 9px 10px;
+        }
+      }
+    </style>
   </head>
   <body>
     <main class="page">
@@ -58,6 +464,72 @@
       </section>
 
       <section class="panel">
+        <h2>Walk Through DPLL</h2>
+        <div class="dpll-demo" id="dpll-demo">
+          <div class="dpll-demo-header">
+            <div>
+              <h3>Scripted Example SAT Trace</h3>
+              <p>
+                This uses one fixed CNF instance chosen to demonstrate the full rhythm of plain DPLL:
+                make a decision, trigger unit propagation, hit a conflict, backtrack, and then find a satisfying branch.
+              </p>
+            </div>
+            <div class="dpll-demo-step" id="dpll-demo-step-label">Step 1 / 11</div>
+          </div>
+
+          <div class="dpll-demo-controls">
+            <button class="dpll-demo-button" type="button" id="dpll-demo-back">Back</button>
+            <button class="dpll-demo-button" type="button" id="dpll-demo-play">Play</button>
+            <button class="dpll-demo-button" type="button" id="dpll-demo-step">Step</button>
+            <button class="dpll-demo-button" type="button" id="dpll-demo-reset">Reset</button>
+            <label class="dpll-demo-step" for="dpll-demo-speed">Speed</label>
+            <select class="dpll-demo-select" id="dpll-demo-speed">
+              <option value="2200">Slow</option>
+              <option value="1500" selected>Normal</option>
+              <option value="900">Fast</option>
+            </select>
+          </div>
+
+          <div class="dpll-demo-caption" id="dpll-demo-caption">
+            <strong>Start</strong>
+            <span>Start with the full formula and no assignments.</span>
+          </div>
+
+          <div class="dpll-demo-trail" id="dpll-demo-trail"></div>
+
+          <div class="dpll-demo-grid">
+            <div class="dpll-demo-panel">
+              <h4>Clause View</h4>
+              <p>
+                Green literals satisfy clauses, red literals are currently false, and yellow literals are the single
+                remaining choices in unit clauses.
+              </p>
+              <div class="dpll-demo-clauses" id="dpll-demo-clauses"></div>
+              <div class="dpll-demo-legend">
+                <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: rgba(231, 245, 238, 0.95); border-color: rgba(17, 102, 59, 0.24);"></span>Satisfied literal / clause</span>
+                <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: rgba(253, 233, 233, 0.95); border-color: rgba(176, 68, 68, 0.2);"></span>Falsified literal / conflict</span>
+                <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: rgba(255, 244, 194, 0.98); border-color: rgba(185, 140, 15, 0.3);"></span>Unit propagation target</span>
+              </div>
+            </div>
+
+            <div class="dpll-demo-panel">
+              <h4>Decision Tree</h4>
+              <p>
+                Solid blue nodes are explicit decisions, smaller yellow nodes are unit propagations, red shows the dead branch,
+                and green marks the branch that returns SAT.
+              </p>
+              <div class="dpll-demo-tree" id="dpll-demo-tree">
+                <svg viewBox="0 0 100 110" preserveAspectRatio="none" aria-hidden="true">
+                  <g id="dpll-demo-tree-lines"></g>
+                </svg>
+                <div id="dpll-demo-tree-nodes"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
         <h2>Code-Level Optimization Diffs</h2>
         <p class="small">
           The README for this solver has a longer benchmark log. These are the highest-signal optimizations that materially changed runtime without changing the algorithm.
@@ -96,5 +568,447 @@
         </div>
       </section>
     </main>
+    <script>
+      (() => {
+        const clauses = [
+          { id: "C1", literals: [1, 2] },
+          { id: "C2", literals: [-1, 3] },
+          { id: "C3", literals: [-3, 4] },
+          { id: "C4", literals: [-3, -4] },
+          { id: "C5", literals: [-2, 5] },
+        ];
+
+        const nodes = {
+          root: { id: "root", label: "start", subtitle: "no assignments", kind: "root", x: 50, y: 11, parent: null },
+          x1t: { id: "x1t", label: "x1 = true", subtitle: "decision", kind: "decision", x: 24, y: 28, parent: "root" },
+          x3t: { id: "x3t", label: "x3 = true", subtitle: "from C2", kind: "unit", x: 24, y: 45, parent: "x1t" },
+          x4t: { id: "x4t", label: "x4 = true", subtitle: "from C3", kind: "unit", x: 24, y: 62, parent: "x3t" },
+          conflict: { id: "conflict", label: "conflict", subtitle: "C4 is false", kind: "conflict", x: 24, y: 79, parent: "x4t" },
+          x1f: { id: "x1f", label: "x1 = false", subtitle: "decision", kind: "decision", x: 76, y: 28, parent: "root" },
+          x2t: { id: "x2t", label: "x2 = true", subtitle: "from C1", kind: "unit", x: 76, y: 45, parent: "x1f" },
+          x5t: { id: "x5t", label: "x5 = true", subtitle: "from C5", kind: "unit", x: 76, y: 62, parent: "x2t" },
+          x3f: { id: "x3f", label: "x3 = false", subtitle: "decision", kind: "decision", x: 76, y: 79, parent: "x5t" },
+          sat: { id: "sat", label: "SAT", subtitle: "all clauses hold", kind: "sat", x: 76, y: 96, parent: "x3f" },
+        };
+
+        const steps = [
+          {
+            title: "Start",
+            caption: "Start with the CNF formula and no assignments. DPLL first asks where to branch.",
+            assignment: {},
+            trail: [],
+            visible: ["root"],
+            activeNode: "root",
+            focusClauses: [],
+            failedNodes: [],
+            backtrackedNodes: [],
+            successNodes: [],
+          },
+          {
+            title: "Decision",
+            caption: "Decide x1 = true and descend into the left branch of the search tree.",
+            assignment: { 1: true },
+            trail: [{ literal: 1, kind: "decision" }],
+            visible: ["root", "x1t"],
+            activeNode: "x1t",
+            focusClauses: ["C2"],
+            failedNodes: [],
+            backtrackedNodes: [],
+            successNodes: [],
+          },
+          {
+            title: "Unit propagation",
+            caption: "Clause C2 = (¬x1 ∨ x3) becomes unit, so x3 = true is forced.",
+            assignment: { 1: true, 3: true },
+            trail: [
+              { literal: 1, kind: "decision" },
+              { literal: 3, kind: "unit" },
+            ],
+            visible: ["root", "x1t", "x3t"],
+            activeNode: "x3t",
+            focusClauses: ["C2"],
+            unitLiteral: 3,
+            failedNodes: [],
+            backtrackedNodes: [],
+            successNodes: [],
+          },
+          {
+            title: "Unit propagation",
+            caption: "Now C3 = (¬x3 ∨ x4) is unit, so x4 = true is forced as well.",
+            assignment: { 1: true, 3: true, 4: true },
+            trail: [
+              { literal: 1, kind: "decision" },
+              { literal: 3, kind: "unit" },
+              { literal: 4, kind: "unit" },
+            ],
+            visible: ["root", "x1t", "x3t", "x4t"],
+            activeNode: "x4t",
+            focusClauses: ["C3"],
+            unitLiteral: 4,
+            failedNodes: [],
+            backtrackedNodes: [],
+            successNodes: [],
+          },
+          {
+            title: "Conflict",
+            caption: "Clause C4 = (¬x3 ∨ ¬x4) is now false. This branch cannot produce a satisfying assignment.",
+            assignment: { 1: true, 3: true, 4: true },
+            trail: [
+              { literal: 1, kind: "decision" },
+              { literal: 3, kind: "unit" },
+              { literal: 4, kind: "unit" },
+            ],
+            visible: ["root", "x1t", "x3t", "x4t", "conflict"],
+            activeNode: "conflict",
+            focusClauses: ["C4"],
+            conflictClause: "C4",
+            failedNodes: ["x1t", "x3t", "x4t", "conflict"],
+            backtrackedNodes: [],
+            successNodes: [],
+          },
+          {
+            title: "Backtrack",
+            caption: "Backtrack to the last decision, undo the forced assignments, and flip x1 to explore the other branch.",
+            assignment: {},
+            trail: [],
+            visible: ["root", "x1t", "x3t", "x4t", "conflict"],
+            activeNode: "root",
+            focusClauses: [],
+            failedNodes: ["conflict"],
+            backtrackedNodes: ["x1t", "x3t", "x4t"],
+            successNodes: [],
+          },
+          {
+            title: "Decision",
+            caption: "Try the other branch: decide x1 = false.",
+            assignment: { 1: false },
+            trail: [{ literal: -1, kind: "decision" }],
+            visible: ["root", "x1t", "x3t", "x4t", "conflict", "x1f"],
+            activeNode: "x1f",
+            focusClauses: ["C1"],
+            failedNodes: ["conflict"],
+            backtrackedNodes: ["x1t", "x3t", "x4t"],
+            successNodes: [],
+          },
+          {
+            title: "Unit propagation",
+            caption: "Clause C1 = (x1 ∨ x2) is now unit, so x2 = true is forced.",
+            assignment: { 1: false, 2: true },
+            trail: [
+              { literal: -1, kind: "decision" },
+              { literal: 2, kind: "unit" },
+            ],
+            visible: ["root", "x1t", "x3t", "x4t", "conflict", "x1f", "x2t"],
+            activeNode: "x2t",
+            focusClauses: ["C1"],
+            unitLiteral: 2,
+            failedNodes: ["conflict"],
+            backtrackedNodes: ["x1t", "x3t", "x4t"],
+            successNodes: [],
+          },
+          {
+            title: "Unit propagation",
+            caption: "Clause C5 = (¬x2 ∨ x5) becomes unit, so x5 = true is forced.",
+            assignment: { 1: false, 2: true, 5: true },
+            trail: [
+              { literal: -1, kind: "decision" },
+              { literal: 2, kind: "unit" },
+              { literal: 5, kind: "unit" },
+            ],
+            visible: ["root", "x1t", "x3t", "x4t", "conflict", "x1f", "x2t", "x5t"],
+            activeNode: "x5t",
+            focusClauses: ["C5"],
+            unitLiteral: 5,
+            failedNodes: ["conflict"],
+            backtrackedNodes: ["x1t", "x3t", "x4t"],
+            successNodes: [],
+          },
+          {
+            title: "Decision",
+            caption: "No new unit clause remains, so DPLL makes another explicit decision: x3 = false.",
+            assignment: { 1: false, 2: true, 5: true, 3: false },
+            trail: [
+              { literal: -1, kind: "decision" },
+              { literal: 2, kind: "unit" },
+              { literal: 5, kind: "unit" },
+              { literal: -3, kind: "decision" },
+            ],
+            visible: ["root", "x1t", "x3t", "x4t", "conflict", "x1f", "x2t", "x5t", "x3f"],
+            activeNode: "x3f",
+            focusClauses: ["C3", "C4"],
+            failedNodes: ["conflict"],
+            backtrackedNodes: ["x1t", "x3t", "x4t"],
+            successNodes: [],
+          },
+          {
+            title: "SAT",
+            caption: "With x3 = false, clauses C3 and C4 are satisfied by ¬x3. Every clause now holds, so DPLL returns SAT on this branch.",
+            assignment: { 1: false, 2: true, 5: true, 3: false },
+            trail: [
+              { literal: -1, kind: "decision" },
+              { literal: 2, kind: "unit" },
+              { literal: 5, kind: "unit" },
+              { literal: -3, kind: "decision" },
+            ],
+            visible: ["root", "x1t", "x3t", "x4t", "conflict", "x1f", "x2t", "x5t", "x3f", "sat"],
+            activeNode: "sat",
+            focusClauses: ["C2", "C3", "C4"],
+            failedNodes: ["conflict"],
+            backtrackedNodes: ["x1t", "x3t", "x4t"],
+            successNodes: ["x1f", "x2t", "x5t", "x3f", "sat"],
+          },
+        ];
+
+        const clauseContainer = document.getElementById("dpll-demo-clauses");
+        const trailContainer = document.getElementById("dpll-demo-trail");
+        const captionContainer = document.getElementById("dpll-demo-caption");
+        const stepLabel = document.getElementById("dpll-demo-step-label");
+        const treeNodesContainer = document.getElementById("dpll-demo-tree-nodes");
+        const treeLinesContainer = document.getElementById("dpll-demo-tree-lines");
+        const playButton = document.getElementById("dpll-demo-play");
+        const backButton = document.getElementById("dpll-demo-back");
+        const stepButton = document.getElementById("dpll-demo-step");
+        const resetButton = document.getElementById("dpll-demo-reset");
+        const speedSelect = document.getElementById("dpll-demo-speed");
+
+        const clauseElements = new Map();
+        const nodeElements = new Map();
+        const lineElements = new Map();
+
+        let currentStep = 0;
+        let timer = null;
+
+        function literalText(literal) {
+          return literal > 0 ? `x${literal}` : `¬x${Math.abs(literal)}`;
+        }
+
+        function trailText(literal) {
+          return literal > 0 ? `x${literal} = true` : `x${Math.abs(literal)} = false`;
+        }
+
+        function clauseState(clause, assignment) {
+          let trueCount = 0;
+          let falseCount = 0;
+          let unassignedCount = 0;
+          let lastUnassigned = null;
+
+          for (const literal of clause.literals) {
+            const value = assignment[Math.abs(literal)];
+            if (value === undefined) {
+              unassignedCount += 1;
+              lastUnassigned = literal;
+              continue;
+            }
+            const literalTrue = (literal > 0 && value === true) || (literal < 0 && value === false);
+            if (literalTrue) {
+              trueCount += 1;
+            } else {
+              falseCount += 1;
+            }
+          }
+
+          if (trueCount > 0) {
+            return { kind: "satisfied", unitLiteral: null };
+          }
+          if (unassignedCount === 0) {
+            return { kind: "conflict", unitLiteral: null };
+          }
+          if (unassignedCount === 1 && falseCount === clause.literals.length - 1) {
+            return { kind: "unit", unitLiteral: lastUnassigned };
+          }
+          return { kind: "unresolved", unitLiteral: null };
+        }
+
+        function buildClauses() {
+          for (const clause of clauses) {
+            const clauseEl = document.createElement("article");
+            clauseEl.className = "dpll-demo-clause";
+            clauseEl.innerHTML = `
+              <div class="dpll-demo-clause-head">
+                <span class="dpll-demo-clause-id">${clause.id}</span>
+                <span class="dpll-demo-clause-state"></span>
+              </div>
+              <div class="dpll-demo-literals"></div>
+            `;
+
+            const literalsEl = clauseEl.querySelector(".dpll-demo-literals");
+            for (const literal of clause.literals) {
+              const literalEl = document.createElement("span");
+              literalEl.className = "dpll-demo-literal";
+              literalEl.dataset.literal = String(literal);
+              literalEl.textContent = literalText(literal);
+              literalsEl.appendChild(literalEl);
+            }
+
+            clauseContainer.appendChild(clauseEl);
+            clauseElements.set(clause.id, clauseEl);
+          }
+        }
+
+        function buildTree() {
+          Object.values(nodes).forEach((node) => {
+            if (node.parent) {
+              const parent = nodes[node.parent];
+              const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+              line.setAttribute("x1", parent.x);
+              line.setAttribute("y1", parent.y);
+              line.setAttribute("x2", node.x);
+              line.setAttribute("y2", node.y);
+              line.setAttribute("class", "dpll-demo-tree-line");
+              treeLinesContainer.appendChild(line);
+              lineElements.set(node.id, line);
+            }
+
+            const nodeEl = document.createElement("div");
+            nodeEl.className = `dpll-demo-node hidden kind-${node.kind}`;
+            nodeEl.style.left = `${node.x}%`;
+            nodeEl.style.top = `${node.y}%`;
+            nodeEl.innerHTML = `
+              <span class="kind">${node.kind}</span>
+              <strong>${node.label}</strong>
+              <small>${node.subtitle}</small>
+            `;
+            treeNodesContainer.appendChild(nodeEl);
+            nodeElements.set(node.id, nodeEl);
+          });
+        }
+
+        function stopPlayback() {
+          if (timer !== null) {
+            window.clearInterval(timer);
+            timer = null;
+          }
+          playButton.textContent = "Play";
+        }
+
+        function startPlayback() {
+          stopPlayback();
+          playButton.textContent = "Pause";
+          timer = window.setInterval(() => {
+            if (currentStep >= steps.length - 1) {
+              stopPlayback();
+              return;
+            }
+            currentStep += 1;
+            renderStep();
+          }, Number(speedSelect.value));
+        }
+
+        function renderTrail(step) {
+          trailContainer.innerHTML = "";
+          if (step.trail.length === 0) {
+            const empty = document.createElement("span");
+            empty.className = "dpll-demo-trail-chip";
+            empty.textContent = "Trail is empty";
+            trailContainer.appendChild(empty);
+            return;
+          }
+
+          for (const item of step.trail) {
+            const chip = document.createElement("span");
+            chip.className = "dpll-demo-trail-chip";
+            chip.innerHTML = `<span>${trailText(item.literal)}</span><span class="kind">${item.kind}</span>`;
+            trailContainer.appendChild(chip);
+          }
+        }
+
+        function renderClauses(step) {
+          for (const clause of clauses) {
+            const clauseEl = clauseElements.get(clause.id);
+            const stateEl = clauseEl.querySelector(".dpll-demo-clause-state");
+            const state = clauseState(clause, step.assignment);
+
+            clauseEl.classList.toggle("is-focus", step.focusClauses.includes(clause.id));
+            clauseEl.classList.toggle("is-satisfied", state.kind === "satisfied");
+            clauseEl.classList.toggle("is-unit", state.kind === "unit");
+            clauseEl.classList.toggle("is-conflict", step.conflictClause === clause.id || state.kind === "conflict");
+            stateEl.textContent = step.conflictClause === clause.id ? "conflict" : state.kind;
+
+            clauseEl.querySelectorAll(".dpll-demo-literal").forEach((literalEl) => {
+              const literal = Number(literalEl.dataset.literal);
+              const value = step.assignment[Math.abs(literal)];
+              const literalTrue = value !== undefined && ((literal > 0 && value === true) || (literal < 0 && value === false));
+              const literalFalse = value !== undefined && !literalTrue;
+
+              literalEl.classList.toggle("is-true", literalTrue);
+              literalEl.classList.toggle("is-false", literalFalse);
+              literalEl.classList.toggle("is-unit", state.kind === "unit" && literal === state.unitLiteral);
+              literalEl.classList.toggle("is-focus", literal === step.unitLiteral);
+            });
+          }
+        }
+
+        function renderTree(step) {
+          Object.values(nodes).forEach((node) => {
+            const nodeEl = nodeElements.get(node.id);
+            const isVisible = step.visible.includes(node.id);
+            nodeEl.classList.toggle("hidden", !isVisible);
+            nodeEl.classList.toggle("is-active", step.activeNode === node.id);
+            nodeEl.classList.toggle("is-failed", step.failedNodes.includes(node.id));
+            nodeEl.classList.toggle("is-backtracked", step.backtrackedNodes.includes(node.id));
+            nodeEl.classList.toggle("is-success", step.successNodes.includes(node.id));
+          });
+
+          lineElements.forEach((line, childId) => {
+            const visible = step.visible.includes(childId);
+            line.style.opacity = visible ? "1" : "0";
+            line.classList.toggle("active", step.activeNode === childId);
+            line.classList.toggle("failed", step.failedNodes.includes(childId) || step.backtrackedNodes.includes(childId));
+            line.classList.toggle("success", step.successNodes.includes(childId));
+          });
+        }
+
+        function renderStep() {
+          const step = steps[currentStep];
+          stepLabel.textContent = `Step ${currentStep + 1} / ${steps.length}`;
+          captionContainer.innerHTML = `<strong>${step.title}</strong><span>${step.caption}</span>`;
+          backButton.disabled = currentStep === 0;
+          stepButton.disabled = currentStep === steps.length - 1;
+          renderTrail(step);
+          renderClauses(step);
+          renderTree(step);
+        }
+
+        playButton.addEventListener("click", () => {
+          if (timer === null) {
+            startPlayback();
+          } else {
+            stopPlayback();
+          }
+        });
+
+        stepButton.addEventListener("click", () => {
+          stopPlayback();
+          if (currentStep < steps.length - 1) {
+            currentStep += 1;
+            renderStep();
+          }
+        });
+
+        backButton.addEventListener("click", () => {
+          stopPlayback();
+          if (currentStep > 0) {
+            currentStep -= 1;
+            renderStep();
+          }
+        });
+
+        resetButton.addEventListener("click", () => {
+          stopPlayback();
+          currentStep = 0;
+          renderStep();
+        });
+
+        speedSelect.addEventListener("change", () => {
+          if (timer !== null) {
+            startPlayback();
+          }
+        });
+
+        buildClauses();
+        buildTree();
+        renderStep();
+      })();
+    </script>
   </body>
 </html>
