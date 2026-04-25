@@ -1,7 +1,7 @@
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const UNASSIGNED: u8 = 0;
 const TRUE: u8 = 1;
@@ -15,6 +15,7 @@ const REDUNDANT_UNDEF: u8 = 0;
 const REDUNDANT_SOURCE: u8 = 1;
 const REDUNDANT_REMOVABLE: u8 = 2;
 const REDUNDANT_FAILED: u8 = 3;
+const PROOF_BUFFER_CAPACITY: usize = 16 * 1024 * 1024;
 
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
@@ -30,6 +31,116 @@ struct ClauseRef {
 struct Watcher {
     clause_idx: u32,
     blocker: i32,
+}
+
+enum ProofMode {
+    Disabled,
+    Stream(ProofStream),
+}
+
+struct ProofStream {
+    final_path: PathBuf,
+    temp_path: PathBuf,
+    file: fs::File,
+    buffer: Vec<u8>,
+    capacity: usize,
+}
+
+struct ProofLog {
+    mode: ProofMode,
+}
+
+impl ProofLog {
+    fn disabled() -> Self {
+        Self {
+            mode: ProofMode::Disabled,
+        }
+    }
+
+    fn new<P: AsRef<Path>>(output_dir: P, capacity: usize) -> Self {
+        let output_dir = output_dir.as_ref();
+        fs::create_dir_all(output_dir).unwrap_or_else(|e| {
+            eprintln!("Error creating {}: {}", output_dir.display(), e);
+            std::process::exit(1);
+        });
+
+        let temp_path = output_dir.join("proof.out.tmp");
+        let final_path = output_dir.join("proof.out");
+        let file = fs::File::create(&temp_path).unwrap_or_else(|e| {
+            eprintln!("Error creating {}: {}", temp_path.display(), e);
+            std::process::exit(1);
+        });
+
+        Self {
+            mode: ProofMode::Stream(ProofStream {
+                final_path,
+                temp_path,
+                file,
+                buffer: Vec::with_capacity(capacity),
+                capacity,
+            }),
+        }
+    }
+
+    fn record_clause(&mut self, clause: &[i32]) {
+        if let ProofMode::Stream(stream) = &mut self.mode {
+            for &lit in clause {
+                write!(&mut stream.buffer, "{} ", lit).expect("Failed to buffer proof literal");
+            }
+            stream
+                .buffer
+                .write_all(b"0\n")
+                .expect("Failed to buffer proof clause");
+            if stream.buffer.len() >= stream.capacity {
+                Self::flush_stream(stream);
+            }
+        }
+    }
+
+    fn finish_sat(&mut self) {
+        match std::mem::replace(&mut self.mode, ProofMode::Disabled) {
+            ProofMode::Disabled => {}
+            ProofMode::Stream(stream) => {
+                drop(stream.file);
+                let _ = fs::remove_file(&stream.temp_path);
+            }
+        }
+    }
+
+    fn finish_unsat(&mut self) {
+        match std::mem::replace(&mut self.mode, ProofMode::Disabled) {
+            ProofMode::Disabled => {}
+            ProofMode::Stream(mut stream) => {
+                stream
+                    .buffer
+                    .write_all(b"0\n")
+                    .expect("Failed to buffer empty proof clause");
+                Self::flush_stream(&mut stream);
+                stream.file.flush().expect("Failed to flush proof file");
+                drop(stream.file);
+                fs::rename(&stream.temp_path, &stream.final_path).unwrap_or_else(|e| {
+                    eprintln!(
+                        "Error renaming {} to {}: {}",
+                        stream.temp_path.display(),
+                        stream.final_path.display(),
+                        e
+                    );
+                    std::process::exit(1);
+                });
+            }
+        }
+    }
+
+    fn flush_stream(stream: &mut ProofStream) {
+        if stream.buffer.is_empty() {
+            return;
+        }
+        stream
+            .file
+            .write_all(&stream.buffer)
+            .expect("Failed to write proof buffer");
+        stream.buffer.clear();
+    }
 }
 
 struct Solver {
@@ -93,10 +204,6 @@ struct Solver {
     scratch_analyze_stack: Vec<(usize, i32)>,
     /// 0 = none, 1 = basic, 2 = deep
     ccmin_mode: u8,
-    /// learned clauses copied in DRAT proof order; clauses mutate in-place for watching
-    proof_clauses: Vec<Vec<i32>>,
-    /// whether the proof terminates with the empty clause
-    proof_has_empty: bool,
 }
 
 fn mark_clause_literals(
@@ -326,8 +433,6 @@ impl Solver {
             scratch_analyze_toclear: Vec::with_capacity(16),
             scratch_analyze_stack: Vec::with_capacity(16),
             ccmin_mode: CCMIN_DEEP,
-            proof_clauses: Vec::new(),
-            proof_has_empty: false,
         };
         for clause_idx in 0..solver.clauses.len() {
             solver.attach_clause(clause_idx, true);
@@ -1074,8 +1179,23 @@ impl Solver {
     }
 
     fn solve(&mut self) -> bool {
+        let mut proof_log = ProofLog::disabled();
+        self.solve_with_proof(&mut proof_log)
+    }
+
+    fn solve_to_output(&mut self, output_dir: &str) -> bool {
+        let mut proof_log = ProofLog::new(output_dir, PROOF_BUFFER_CAPACITY);
+        let sat = self.solve_with_proof(&mut proof_log);
+        if sat {
+            proof_log.finish_sat();
+        } else {
+            proof_log.finish_unsat();
+        }
+        sat
+    }
+
+    fn solve_with_proof(&mut self, proof_log: &mut ProofLog) -> bool {
         if self.has_empty_clause || !self.enqueue_root_units() {
-            self.proof_has_empty = true;
             return false;
         }
 
@@ -1085,7 +1205,6 @@ impl Solver {
             match conflict {
                 Some(conflict_clause_idx) => {
                     if self.current_level() == 0 {
-                        self.proof_has_empty = true;
                         return false;
                     }
 
@@ -1095,7 +1214,7 @@ impl Solver {
                     self.decay_variable_activity();
                     self.note_conflict();
                     let asserting_lit = learned_clause[0];
-                    self.proof_clauses.push(learned_clause.clone());
+                    proof_log.record_clause(&learned_clause);
                     let learned_clause_idx = self.add_clause(learned_clause);
 
                     self.backtrack(backtrack_level);
@@ -1191,32 +1310,6 @@ fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
     (num_vars, clauses)
 }
 
-fn write_proof(
-    output_dir: &str,
-    proof_clauses: &[Vec<i32>],
-    proof_has_empty: bool,
-) {
-    let proof_path = Path::new(output_dir).join("proof.out");
-    let file = fs::File::create(&proof_path).unwrap_or_else(|e| {
-        eprintln!("Error creating {}: {}", proof_path.display(), e);
-        std::process::exit(1);
-    });
-    let mut writer = io::BufWriter::new(file);
-
-    for clause in proof_clauses {
-        for &lit in clause {
-            write!(writer, "{} ", lit).expect("Failed to write proof");
-        }
-        writer.write_all(b"0\n").expect("Failed to write proof");
-    }
-
-    if proof_has_empty {
-        writer.write_all(b"0\n").expect("Failed to write proof");
-    }
-
-    writer.flush().expect("Failed to flush proof");
-}
-
 fn print_assignment(assignment: &[u8]) {
     let mut line = String::from("v");
     for var in 1..assignment.len() {
@@ -1250,25 +1343,35 @@ fn main() {
     let mut solver = Solver::new(num_vars, clauses);
     solver.ccmin_mode = parse_ccmin_mode();
 
-    if solver.solve() {
+    if solver.solve_to_output(output_dir) {
         println!("s SATISFIABLE");
         print_assignment(&solver.assignment);
     } else {
         println!("s UNSATISFIABLE");
-        write_proof(
-            output_dir,
-            &solver.proof_clauses,
-            solver.proof_has_empty,
-        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn make_solver(num_vars: usize, clauses: Vec<Vec<i32>>) -> Solver {
         Solver::new(num_vars, clauses)
+    }
+
+    fn make_temp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "sat-playground-{label}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("failed to create temp dir");
+        path
     }
 
     fn watched_literals(s: &Solver, clause_idx: usize) -> Option<(i32, i32)> {
@@ -1589,6 +1692,64 @@ mod tests {
     }
 
     #[test]
+    fn test_proof_log_flushes_temp_file_when_buffer_fills() {
+        let dir = make_temp_dir("proof-flush");
+        let temp_path = dir.join("proof.out.tmp");
+        let mut proof = ProofLog::new(&dir, 32);
+
+        for _ in 0..4 {
+            proof.record_clause(&[123456789, -123456789, 42]);
+        }
+
+        assert!(temp_path.exists(), "expected temp proof file to exist");
+        assert!(
+            fs::metadata(&temp_path)
+                .expect("failed to stat temp proof file")
+                .len()
+                > 0,
+            "expected proof buffer flush to write bytes before finalization"
+        );
+    }
+
+    #[test]
+    fn test_proof_log_finalizes_unsat_and_discards_sat_temp_file() {
+        let unsat_dir = make_temp_dir("proof-unsat");
+        let mut unsat_proof = ProofLog::new(&unsat_dir, 32);
+        unsat_proof.record_clause(&[1, -2]);
+        unsat_proof.finish_unsat();
+
+        let unsat_path = unsat_dir.join("proof.out");
+        assert!(unsat_path.exists(), "expected UNSAT proof file to exist");
+        assert!(
+            !unsat_dir.join("proof.out.tmp").exists(),
+            "expected temp proof file to be renamed away"
+        );
+        let unsat_text = fs::read_to_string(&unsat_path).expect("failed to read UNSAT proof");
+        assert!(
+            unsat_text.contains("1 -2 0\n"),
+            "expected learned clause to be serialized before finalization"
+        );
+        assert!(
+            unsat_text.ends_with("0\n"),
+            "expected UNSAT proof to end with the empty clause"
+        );
+
+        let sat_dir = make_temp_dir("proof-sat");
+        let mut sat_proof = ProofLog::new(&sat_dir, 32);
+        sat_proof.record_clause(&[1, 2, 3]);
+        sat_proof.finish_sat();
+
+        assert!(
+            !sat_dir.join("proof.out").exists(),
+            "did not expect SAT run to leave a final proof file behind"
+        );
+        assert!(
+            !sat_dir.join("proof.out.tmp").exists(),
+            "did not expect SAT run to leave a temp proof file behind"
+        );
+    }
+
+    #[test]
     fn test_unsat_proof_logs_learned_clause_before_empty_clause() {
         let clauses = vec![
             vec![1, 2],
@@ -1596,14 +1757,32 @@ mod tests {
             vec![1, -2],
             vec![-1, -2],
         ];
+        let proof_dir = make_temp_dir("solver-unsat-proof");
         let mut s = make_solver(2, clauses);
-        assert!(!s.solve());
-        assert!(s.learned_clause_count() > 0);
+        assert!(!s.solve_to_output(proof_dir.to_str().expect("utf8 temp dir")));
         assert!(
-            !s.proof_clauses.is_empty(),
+            s.learned_clause_count() > 0,
+            "expected solver to learn at least one clause on this UNSAT instance"
+        );
+
+        let proof_text = fs::read_to_string(proof_dir.join("proof.out"))
+            .expect("failed to read emitted proof");
+        let proof_lines: Vec<_> = proof_text.lines().collect();
+        assert!(
+            proof_lines.len() >= 2,
             "expected proof to contain at least one learned clause before the empty clause",
         );
-        assert!(s.proof_has_empty, "expected proof to end with the empty clause");
+        assert_eq!(
+            proof_lines.last().copied(),
+            Some("0"),
+            "expected proof to end with the empty clause"
+        );
+        assert!(
+            proof_lines[..proof_lines.len() - 1]
+                .iter()
+                .any(|line| *line != "0"),
+            "expected at least one non-empty learned clause before the final empty clause"
+        );
     }
 
     #[test]
