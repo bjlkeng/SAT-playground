@@ -134,23 +134,24 @@ fn basic_lit_redundant(
     lit: i32,
     clauses: &[ClauseRef],
     clause_data: &[i32],
+    decision_level: &[usize],
     reason: &[usize],
     state: &[u8],
 ) -> bool {
     let var = lit.unsigned_abs() as usize;
     let reason_idx = reason[var];
-    if reason_idx == NO_REASON || clauses[reason_idx].learnt {
+    if reason_idx == NO_REASON {
         return false;
     }
 
     let clause = clauses[reason_idx];
     let start = clause.start as usize;
     let end = start + clause.len as usize;
-    for &q in &clause_data[start..end] {
-        if q == lit {
+    for &q in &clause_data[start + 1..end] {
+        let q_var = q.unsigned_abs() as usize;
+        if decision_level[q_var] == 0 {
             continue;
         }
-        let q_var = q.unsigned_abs() as usize;
         if state[q_var] != REDUNDANT_SOURCE && state[q_var] != REDUNDANT_REMOVABLE {
             return false;
         }
@@ -163,6 +164,7 @@ fn lit_redundant(
     lit: i32,
     clauses: &[ClauseRef],
     clause_data: &[i32],
+    decision_level: &[usize],
     reason: &[usize],
     state: &mut [u8],
     toclear: &mut Vec<usize>,
@@ -177,7 +179,7 @@ fn lit_redundant(
 
     stack.clear();
     let mut clause_idx = reason[lit.unsigned_abs() as usize];
-    let mut lit_pos = 0usize;
+    let mut lit_pos = 1usize;
 
     loop {
         let clause = clauses[clause_idx];
@@ -197,10 +199,12 @@ fn lit_redundant(
                 continue;
             }
 
-            if reason[parent_var] == NO_REASON
-                || clauses[reason[parent_var]].learnt
-                || state[parent_var] == REDUNDANT_FAILED
-            {
+            if decision_level[parent_var] == 0 {
+                lit_pos += 1;
+                continue;
+            }
+
+            if reason[parent_var] == NO_REASON || state[parent_var] == REDUNDANT_FAILED {
                 let lit_var = lit.unsigned_abs() as usize;
                 if state[lit_var] == REDUNDANT_UNDEF {
                     state[lit_var] = REDUNDANT_FAILED;
@@ -218,9 +222,13 @@ fn lit_redundant(
             }
 
             stack.push((lit_pos, lit));
+            debug_assert!(
+                stack.len() <= reason.len(),
+                "redundancy DFS exceeded variable count while checking literal {lit}"
+            );
             lit = parent;
             clause_idx = reason[parent_var];
-            lit_pos = 0;
+            lit_pos = 1;
             continue;
         }
 
@@ -725,10 +733,16 @@ impl Solver {
     }
 
     fn backtrack(&mut self, target_level: usize) {
+        let current_level = self.current_level();
+        debug_assert!(target_level <= current_level);
+        if target_level == current_level {
+            return;
+        }
+
         let new_trail_len = if target_level == 0 {
             self.root_trail_len
         } else {
-            self.trail_limits[target_level - 1]
+            self.trail_limits[target_level]
         };
 
         while self.trail.len() > new_trail_len {
@@ -742,6 +756,22 @@ impl Solver {
 
         self.trail_limits.truncate(target_level);
         self.propagate_head = self.propagate_head.min(new_trail_len);
+    }
+
+    fn debug_assert_clause_asserting_after_backtrack(&self, learned_clause: &[i32], backtrack_level: usize) {
+        debug_assert_eq!(self.current_level(), backtrack_level);
+        debug_assert_eq!(
+            self.lit_value(learned_clause[0]),
+            UNASSIGNED,
+            "asserting literal must be unassigned after backtrack"
+        );
+        for &lit in &learned_clause[1..] {
+            debug_assert_eq!(
+                self.lit_value(lit),
+                FALSE,
+                "non-head learned literal {lit} must be false after backtrack"
+            );
+        }
     }
 
     fn perform_restart_if_pending(&mut self) -> bool {
@@ -795,6 +825,7 @@ impl Solver {
 
         let clauses = &self.clauses;
         let clause_data = &self.clause_data;
+        let decision_level = &self.decision_level;
         let reason = &self.reason;
         let mut write = 1usize;
         for read in 1..learned_clause.len() {
@@ -802,15 +833,14 @@ impl Solver {
             let var = lit.unsigned_abs() as usize;
             let keep = if reason[var] == NO_REASON {
                 true
-            } else if clauses[reason[var]].learnt {
-                true
             } else if self.ccmin_mode == CCMIN_BASIC {
-                !basic_lit_redundant(lit, clauses, clause_data, reason, state)
+                !basic_lit_redundant(lit, clauses, clause_data, decision_level, reason, state)
             } else {
                 !lit_redundant(
                     lit,
                     clauses,
                     clause_data,
+                    decision_level,
                     reason,
                     state,
                     toclear,
@@ -950,6 +980,10 @@ impl Solver {
                     let learned_clause_idx = self.add_clause(learned_clause);
 
                     self.backtrack(backtrack_level);
+                    self.debug_assert_clause_asserting_after_backtrack(
+                        self.clause_slice(learned_clause_idx),
+                        backtrack_level,
+                    );
                     let inserted = self.enqueue(asserting_lit, learned_clause_idx);
                     debug_assert!(inserted, "learned clause must be asserting after backtrack");
 
@@ -1326,11 +1360,45 @@ mod tests {
     }
 
     #[test]
+    fn test_deep_clause_minimization_recurses_through_learned_reasons() {
+        let mut s = make_solver(7, vec![vec![5, 3], vec![7, -5, 3]]);
+        s.clauses[1].learnt = true;
+        s.reason[5] = 0;
+        s.reason[7] = 1;
+
+        let mut learned_clause = vec![-1, 3, -7];
+        s.ccmin_mode = CCMIN_DEEP;
+        s.minimize_learned_clause(&mut learned_clause);
+
+        assert_eq!(learned_clause, vec![-1, 3]);
+    }
+
+    #[test]
+    fn test_clause_minimization_ignores_level_zero_parents() {
+        let mut s = make_solver(5, vec![vec![5, 3, 4]]);
+        s.decision_level[1] = 2;
+        s.decision_level[3] = 1;
+        s.decision_level[5] = 1;
+        s.reason[5] = 0;
+
+        let mut basic_clause = vec![-1, 3, 5];
+        s.ccmin_mode = CCMIN_BASIC;
+        s.minimize_learned_clause(&mut basic_clause);
+        assert_eq!(basic_clause, vec![-1, 3]);
+
+        let mut deep_clause = vec![-1, 3, 5];
+        s.ccmin_mode = CCMIN_DEEP;
+        s.minimize_learned_clause(&mut deep_clause);
+        assert_eq!(deep_clause, vec![-1, 3]);
+    }
+
+    #[test]
     fn test_clause_minimization_keeps_literal_with_non_source_root_parent() {
         let mut s = make_solver(6, vec![vec![-5, 3, 6]]);
         s.decision_level[1] = 2;
         s.decision_level[3] = 1;
         s.decision_level[5] = 1;
+        s.decision_level[6] = 1;
         s.reason[5] = 0;
 
         let mut learned_clause = vec![-1, 3, 5];
@@ -1393,6 +1461,22 @@ mod tests {
         assert_eq!(s.assignment[2], TRUE);
         assert_eq!(s.assignment[3], TRUE);
         assert_eq!(s.assignment[4], UNASSIGNED);
+    }
+
+    #[test]
+    fn test_backtrack_to_nonzero_preserves_target_level_assignments() {
+        let mut s = make_solver(3, vec![]);
+        s.decide(1);
+        s.decide(2);
+        s.decide(-3);
+
+        s.backtrack(2);
+
+        assert_eq!(s.trail, vec![1, 2]);
+        assert_eq!(s.assignment[1], TRUE);
+        assert_eq!(s.assignment[2], TRUE);
+        assert_eq!(s.assignment[3], UNASSIGNED);
+        assert_eq!(s.current_level(), 2);
     }
 
     #[test]
