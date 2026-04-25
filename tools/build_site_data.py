@@ -27,6 +27,7 @@ COLORS = {
     "03-bcp": "#cf4a3f",
     "04-vsids": "#198f78",
     "05-restarts": "#7a5bd6",
+    "06-clause-storage": "#aa4f8d",
     "minisat": "#ecab4e",
     "kissat-sc2024": "#c7631f",
     "kissat-latest": "#8d3613",
@@ -78,6 +79,13 @@ SOLVERS = [
         family="repo",
         source_url=f"{GITHUB_TREE_BASE}/solver/05-restarts",
         info_url="./solvers/05-restarts.html",
+    ),
+    SolverSpec(
+        slug="06-clause-storage",
+        label="06 clause-storage",
+        family="repo",
+        source_url=f"{GITHUB_TREE_BASE}/solver/06-clause-storage",
+        info_url="./solvers/06-clause-storage.html",
     ),
     SolverSpec(
         slug="minisat",

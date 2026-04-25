@@ -1,0 +1,13 @@
+=== Benchmark Results: 06-clause-storage ===
+    Date:      Sat Apr 25 11:29:35 AM EDT 2026
+    Timeout:   1800s
+    Memory:    16384 MB
+
+    Instances: 100
+    Solved:    27 (18 SAT + 9 UNSAT)
+    Unsolved:  73 (61 timeout + 0 unknown + 12 error)
+
+    PAR-2:     270822.411
+
+    Results:   /home/bojji/code/SAT-playground/log/bench-06-clause-storage-2026-04-23-23-03-01/results.csv
+    Errors:    /home/bojji/code/SAT-playground/log/bench-06-clause-storage-2026-04-23-23-03-01/errors.log

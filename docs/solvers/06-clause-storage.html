@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>06 clause-storage · SAT Playground</title>
+    <link rel="stylesheet" href="../solver-pages.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="panel">
+        <p class="eyebrow">SAT Playground · Solver 06</p>
+        <h1>06 clause-storage</h1>
+        <p class="lead">
+          This iteration keeps the
+          <a href="https://en.wikipedia.org/wiki/Conflict-driven_clause_learning" target="_blank" rel="noreferrer">CDCL</a>
+          + restart core from <code>05</code>, but rewrites clause storage and propagation around a
+          <a href="https://minisat.se/downloads/MiniSat.pdf" target="_blank" rel="noreferrer">MiniSat-style watcher layout</a>.
+          Watched literals now live directly in clause slots <code>0</code> and <code>1</code>,
+          watcher entries carry a cached blocker literal, and propagation runs the standard blocker
+          fast path plus in-place watch swapping. Because clause bodies mutate in place, learned
+          clauses are copied when they enter the proof log so DRAT output stays stable.
+        </p>
+        <div class="actions">
+          <a class="button" href="../index.html">Back To Main Page</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/tree/main/solver/06-clause-storage" target="_blank" rel="noreferrer">Solver Source</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/blob/main/solver/06-clause-storage/README.md" target="_blank" rel="noreferrer">Optimization Notes</a>
+        </div>
+        <div class="pill-row">
+          <span class="pill">Clause-body watched slots</span>
+          <span class="pill">Blocker watchers</span>
+          <span class="pill">Proof-safe clause mutation</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>What It Implements</h2>
+        <ul>
+          <li>The same CDCL conflict analysis, learned clauses, restarts, saved phases, and heap-based branch selection already introduced in <code>05</code>.</li>
+          <li>Watched literals stored directly inside each clause body, with the active watched pair normalized into slots <code>0</code> and <code>1</code>.</li>
+          <li>Watcher-list entries that store both the clause id and a blocker literal, so satisfied clauses can often skip the more expensive clause-body scan.</li>
+          <li>Copied proof logging for learned clauses so in-place watch swaps do not mutate previously emitted DRAT clauses.</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>High-Level Pseudocode</h2>
+        <pre><code>initialize CDCL state from solver 05
+store watched literals directly in clause slots 0 and 1
+store watcher entries as { clause_idx, blocker }
+
+loop over falsified trail literals:
+  for watcher in watchers[false_lit]:
+    if blocker is already satisfied:
+      keep watcher and continue
+
+    normalize the falsified watched literal into clause slot 1
+
+    if clause[0] is satisfied:
+      update blocker to clause[0]
+      keep watcher and continue
+
+    search clause[2..] for a replacement watched literal
+    if replacement exists:
+      swap it into slot 1
+      move the watcher to the replacement literal's watch list
+      continue
+
+    if clause[0] is unassigned:
+      enqueue clause[0] as a unit implication
+    else:
+      return conflict</code></pre>
+      </section>
+
+      <section class="panel">
+        <h2>Code-Level Optimization Diffs</h2>
+        <p class="small">
+          The README has the longer storage-rewrite notes. These are the implementation changes that best summarize how `06` differs from `05`.
+        </p>
+        <div class="diff-grid">
+          <article class="diff-card">
+            <h3>Clause-Body Watch Layout</h3>
+            <p>
+              The watched-literal state moved out of side metadata and into the clause body itself so the propagation path can treat slots <code>0</code> and <code>1</code> as the active watch pair.
+            </p>
+            <pre><code><span class="diff-del">- keep watch positions in a separate watch_pos structure</span>
+<span class="diff-add">+ store the watched literals directly in clause slots 0 and 1</span>
+<span class="diff-add">+ swap clause literals in place when a new watch is found</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Blocker-Based Propagation</h3>
+            <p>
+              Watcher lists now cache a blocker literal so satisfied clauses can exit early before touching most of the clause body.
+            </p>
+            <pre><code><span class="diff-del">- watcher lists store only bare clause ids</span>
+<span class="diff-add">+ watcher entries store { clause_idx, blocker }</span>
+<span class="diff-add">+ use the blocker fast path before scanning clause[2..]</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Proof Logging By Copy</h3>
+            <p>
+              Because watch maintenance mutates clause bodies in place, proof logging had to stop aliasing the live solver storage.
+            </p>
+            <pre><code><span class="diff-del">- reuse live learned-clause storage for proof output</span>
+<span class="diff-add">+ copy learned clauses into the proof log on insertion</span>
+<span class="diff-add">+ keep DRAT output stable even while watched literals move</span></code></pre>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
