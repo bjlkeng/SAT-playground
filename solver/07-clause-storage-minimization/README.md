@@ -156,6 +156,38 @@ of these approaches:
 
 Do not assume that a shorter solver clause is automatically a valid DRAT addition.
 
+### Gotcha 7: Stream proof output to disk once proof bookkeeping gets more complex
+
+If you keep the current in-memory `Vec<Vec<i32>>` proof buffer, a conservative `07` is still fine.
+But once you start experimenting with:
+
+- raw learned clause plus strengthened learned clause
+- helper clauses for strengthening chains
+- or any other more verbose proof encoding
+
+the proof buffer can become a large avoidable memory sink.
+
+The practical design is:
+
+1. open `<output_dir>/proof.out.tmp` when the solver starts
+2. write proof clauses incrementally through a large buffered writer
+3. if the run ends `SAT`, flush and delete `proof.out.tmp`
+4. if the run ends `UNSAT`, append the empty clause, flush, and rename the temp file to
+   `<output_dir>/proof.out`
+
+Implementation details:
+
+- keep the temp file in the same directory as the final proof so `rename()` stays cheap
+- do not `fsync()` during solving; sequential buffered writes are enough
+- if you want minimal overhead, serialize into a flat byte buffer or `BufWriter<File>` instead of
+  storing `Vec<Vec<i32>>`
+- proof lifetime and solver-clause lifetime should stay separate: once a clause is written to the
+  proof file, the solver does not need to keep it alive just for proof reconstruction
+
+This is not required just to enable learned-reason minimization, but it becomes the right
+infrastructure if you also decide to emit stronger proof-side derivations instead of keeping the
+proof conservative.
+
 ### Recommended implementation checklist
 
 1. Start from the existing `07` `basic_lit_redundant()`, `lit_redundant()`, and
@@ -169,7 +201,9 @@ Do not assume that a shorter solver clause is automatically a valid DRAT additio
    by `x`, and verify that minimization terminates and removes the literal when appropriate.
 7. Add a regression test that backtracking to a nonzero level keeps assignments at that level.
 8. In a debug build, assert that every learned clause is still asserting after backtrack.
-9. Only then benchmark.
+9. If the proof format becomes more verbose, stream proof clauses to `<output_dir>/proof.out.tmp`
+   instead of buffering everything in memory.
+10. Only then benchmark.
 
 ### Minimal regression tests worth keeping
 
