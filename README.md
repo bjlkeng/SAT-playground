@@ -32,7 +32,7 @@ SAT-playground/
     ├── 04-vsids/
     ├── 05-restarts/
     ├── 06-clause-storage/
-    └── 07-clause-storage-minimization/
+    └── 07-clause-minimization/
 ```
 
 ### Iteration Directory Layout

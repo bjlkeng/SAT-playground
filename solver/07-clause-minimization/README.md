@@ -1,4 +1,4 @@
-# 07-clause-storage-minimization
+# 07-clause-minimization
 
 This iteration takes the `06-clause-storage` watcher/layout rewrite and adds runtime conflict-clause
 minimization.
@@ -217,13 +217,13 @@ proof conservative.
 ## Validation
 
 - `cargo test` — `24/24`
-- `bash tools/smoke_test.sh solver/07-clause-storage-minimization` — `9/9`
+- `bash tools/smoke_test.sh solver/07-clause-minimization` — `9/9`
 
 ## Profiling Benchmark Result
 
 Profiling run on 2026-04-21:
 
-- Command: `bash tools/bench.sh -t 120 -d benchmarks/profiling solver/07-clause-storage-minimization`
+- Command: `bash tools/bench.sh -t 120 -d benchmarks/profiling solver/07-clause-minimization`
 - Result: `PAR-2 20.736`
 - Solved: `6/6`
 

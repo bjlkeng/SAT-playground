@@ -1,5 +1,5 @@
 [package]
-name = "sat-solver-08-clause-deletion"
+name = "sat-solver-07-clause-minimization"
 version = "0.1.0"
 edition = "2021"
 

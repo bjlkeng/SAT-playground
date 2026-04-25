@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "sat-solver-07-clause-storage-minimization"
+name = "sat-solver-07-clause-minimization"
 version = "0.1.0"

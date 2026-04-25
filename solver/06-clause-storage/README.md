@@ -14,7 +14,7 @@ storage and watcher rewrite.
 - the `05` restart/phase-saving/heap baseline otherwise unchanged
 
 This iteration intentionally stops before runtime clause minimization. The follow-on minimization
-work lives in `07-clause-storage-minimization`, and `06` no longer carries a runtime ccmin mode.
+work lives in `07-clause-minimization`, and `06` no longer carries a runtime ccmin mode.
 
 ## What Changed
 
