@@ -49,12 +49,14 @@ This first `08` step establishes the clause-db-management substrate:
   `proof.out.tmp` when full and finalizes to `proof.out` on UNSAT
 - added regression tests for periodic proof-buffer flush, UNSAT finalization, SAT temp-file
   cleanup, and end-to-end UNSAT proof emission
+- replaced per-literal `write!` formatting in proof logging with direct ASCII integer append into
+  the byte buffer
 - kept the solve path otherwise unchanged so the profiling baseline still reflects the inherited
   `07` behavior apart from proof-memory usage
 
 ## Validation
 
-- `cargo test` — `31/31`
+- `cargo test` — `32/32`
 - `bash tools/smoke_test.sh solver/08-clause-db-management` — `9/9`
 
 ## Profiling Benchmark Results
@@ -123,3 +125,23 @@ outcome here: proof memory no longer scales with the learned-clause history, and
 disk path did not introduce a visible regression on the profiling set. Like the other `08`
 profiling runs today, this benchmark shared the machine with the long `07` medium benchmark that
 was already running in the background.
+
+Post-integer-formatting micro-optimization run after replacing `write!` with direct ASCII append:
+
+- Date: `2026-04-25`
+- Result: `PAR-2 41.663`
+- Solved: `6/6`
+- Log: `log/bench-08-clause-db-management-2026-04-25-20-36-15/results.csv`
+
+| Instance | Type | Result | Time |
+|----------|------|--------|------|
+| feistel_b64_k32_r18 | crypto | SAT | 3.016s |
+| feistel_b64_k52_r15 | crypto | SAT | 2.128s |
+| feistel_b64_k57_r16 | crypto | SAT | 6.556s |
+| random_v255_s4 | 3-SAT | UNSAT | 10.558s |
+| random_v260_s3 | 3-SAT | UNSAT | 6.284s |
+| random_v265_s2 | 3-SAT | UNSAT | 13.121s |
+
+This is a small improvement over the earlier proof-buffer run (`41.784`), which is about what we
+would expect from removing formatting overhead from the proof fast path without changing the core
+search algorithm.

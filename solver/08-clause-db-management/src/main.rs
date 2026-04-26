@@ -50,6 +50,32 @@ struct ProofLog {
     mode: ProofMode,
 }
 
+fn append_u32_ascii(buffer: &mut Vec<u8>, mut value: u32) {
+    if value == 0 {
+        buffer.push(b'0');
+        return;
+    }
+
+    let mut digits = [0u8; 10];
+    let mut len = 0;
+    while value > 0 {
+        digits[len] = (value % 10) as u8;
+        value /= 10;
+        len += 1;
+    }
+
+    for idx in (0..len).rev() {
+        buffer.push(b'0' + digits[idx]);
+    }
+}
+
+fn append_i32_ascii(buffer: &mut Vec<u8>, value: i32) {
+    if value < 0 {
+        buffer.push(b'-');
+    }
+    append_u32_ascii(buffer, value.unsigned_abs());
+}
+
 impl ProofLog {
     fn disabled() -> Self {
         Self {
@@ -84,13 +110,12 @@ impl ProofLog {
 
     fn record_clause(&mut self, clause: &[i32]) {
         if let ProofMode::Stream(stream) = &mut self.mode {
+            stream.buffer.reserve(clause.len() * 12 + 2);
             for &lit in clause {
-                write!(&mut stream.buffer, "{} ", lit).expect("Failed to buffer proof literal");
+                append_i32_ascii(&mut stream.buffer, lit);
+                stream.buffer.push(b' ');
             }
-            stream
-                .buffer
-                .write_all(b"0\n")
-                .expect("Failed to buffer proof clause");
+            stream.buffer.extend_from_slice(b"0\n");
             if stream.buffer.len() >= stream.capacity {
                 Self::flush_stream(stream);
             }
@@ -1708,6 +1733,23 @@ mod tests {
                 .len()
                 > 0,
             "expected proof buffer flush to write bytes before finalization"
+        );
+    }
+
+    #[test]
+    fn test_append_i32_ascii_formats_signed_values() {
+        let mut buffer = Vec::new();
+        append_i32_ascii(&mut buffer, -2147483648);
+        buffer.push(b' ');
+        append_i32_ascii(&mut buffer, -17);
+        buffer.push(b' ');
+        append_i32_ascii(&mut buffer, 0);
+        buffer.push(b' ');
+        append_i32_ascii(&mut buffer, 42);
+
+        assert_eq!(
+            std::str::from_utf8(&buffer).expect("ascii digits"),
+            "-2147483648 -17 0 42"
         );
     }
 
