@@ -30,13 +30,14 @@ proof-friendly separation between the solver's internal clause store and proof o
 - live learned-clause counting, deletion, and database-reduction helpers
 - a dedicated live learned-clause index so `reduce_db()` no longer rescans the full clause table
 - O(1) locked-clause checks through the head literal's live `reason[var]`
+- MiniSat-style learned-clause activity bumps for the full analyzed reason chain
 - internal counters for conflicts, propagations, decisions, restarts, reductions, deletions, GCs,
   and learned clauses
 
 The automatic reducer now runs with MiniSat-style size thresholds and conflict-window growth.
-That fixes the earlier "disabled by default" gap, but it still regresses the profiling set versus
-the no-auto-reduce snapshot, so the remaining work is to improve clause-quality selection and
-overall search behavior rather than keep reducer overhead on the hot path.
+After adding MiniSat-style learned-clause activity bumps during conflict analysis, that reduction
+path now beats both the earlier `08` no-auto-reduce snapshots and the recorded `07` profile run on
+the current profiling set.
 
 ## Planned Focus
 
@@ -73,12 +74,15 @@ This `08` step extends the clause-db-management substrate into a safe first redu
 - replaced full clause-table scans inside `reduce_db()` with a dedicated live learned-clause list
   plus reverse positions
 - replaced the O(num_vars) locked-clause check with an O(1) head-literal `reason[var]` check
+- bumped learned-clause activity for the conflict clause and every learned reason clause visited
+  during conflict analysis, matching MiniSat more closely
 - added internal solver counters for search and clause-db events
 - added a regression test that catches stale learned-clause positions after `swap_remove()`
+- added a regression test that proves analyzed learned reason clauses get their activity bumped
 
 ## Validation
 
-- `cargo test` — `35/35`
+- `cargo test` — `36/36`
 - `bash tools/smoke_test.sh solver/08-clause-db-management` — `9/9`
 
 ## Profiling Benchmark Results
@@ -230,3 +234,25 @@ This improves slightly on the first MiniSat-style automatic-reduction run (`52.9
 most of the reducer's own bookkeeping overhead, but it is still materially worse than the
 no-auto-reduce run (`42.959`). That tells us the remaining gap is mostly search quality and clause
 selection, not the raw cost of scanning for clauses to delete.
+
+Post-MiniSat-style learned-clause activity-bump run after teaching conflict analysis to bump every
+learned clause on the analyzed reason chain:
+
+- Date: `2026-04-26`
+- Result: `PAR-2 32.596`
+- Solved: `6/6`
+- Log: `log/bench-08-clause-db-management-2026-04-26-01-28-18/results.csv`
+
+| Instance | Type | Result | Time |
+|----------|------|--------|------|
+| feistel_b64_k32_r18 | crypto | SAT | 2.105s |
+| feistel_b64_k52_r15 | crypto | SAT | 11.173s |
+| feistel_b64_k57_r16 | crypto | SAT | 3.852s |
+| random_v255_s4 | 3-SAT | UNSAT | 5.275s |
+| random_v260_s3 | 3-SAT | UNSAT | 4.325s |
+| random_v265_s2 | 3-SAT | UNSAT | 5.866s |
+
+This is a large improvement over the earlier automatic-reduction runs (`52.957` and `51.997`) and
+also beats the recorded `07` profile baseline (`40.878`). The main improvement came from making
+the reducer's clause-activity signal much closer to MiniSat's, so clause deletion no longer blows
+up the SAT crypto search while still keeping the UNSAT random gains from database reduction.

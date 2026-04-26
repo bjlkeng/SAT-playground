@@ -1323,34 +1323,50 @@ impl Solver {
         stack.clear();
     }
 
+    fn mark_clause_literals_for_analysis(
+        &mut self,
+        clause_idx: usize,
+        current_level: usize,
+        current_level_count: &mut usize,
+    ) {
+        if self.reduce_db_enabled() {
+            self.bump_clause_activity(clause_idx);
+        }
+
+        let clause = self.clauses[clause_idx];
+        let start = clause.start as usize;
+        let end = start + clause.len as usize;
+        let clause_lits = &self.clause_data[start..end];
+        mark_clause_literals(
+            &self.decision_level,
+            clause_lits,
+            current_level,
+            &mut self.scratch_seen,
+            &self.scratch_resolved,
+            &mut self.scratch_learned,
+            &mut self.scratch_bumped_vars,
+            current_level_count,
+        );
+    }
+
     fn analyze_conflict(&mut self, conflict_clause_idx: usize) -> (Vec<i32>, usize) {
         let current_level = self.current_level();
-        let decision_level = &self.decision_level;
-        let clauses = &self.clauses;
-        let clause_data = &self.clause_data;
-        let seen = &mut self.scratch_seen;
-        let resolved = &mut self.scratch_resolved;
-        let learned = &mut self.scratch_learned;
-        let bumped_vars = &mut self.scratch_bumped_vars;
         unsafe {
-            std::ptr::write_bytes(seen.as_mut_ptr(), 0, seen.len());
-            std::ptr::write_bytes(resolved.as_mut_ptr(), 0, resolved.len());
+            std::ptr::write_bytes(self.scratch_seen.as_mut_ptr(), 0, self.scratch_seen.len());
+            std::ptr::write_bytes(
+                self.scratch_resolved.as_mut_ptr(),
+                0,
+                self.scratch_resolved.len(),
+            );
         }
-        learned.clear();
-        bumped_vars.clear();
+        self.scratch_learned.clear();
+        self.scratch_bumped_vars.clear();
 
         let mut current_level_count = 0usize;
 
-        mark_clause_literals(
-            decision_level,
-            &clause_data[clauses[conflict_clause_idx].start as usize
-                ..clauses[conflict_clause_idx].start as usize
-                    + clauses[conflict_clause_idx].len as usize],
+        self.mark_clause_literals_for_analysis(
+            conflict_clause_idx,
             current_level,
-            seen,
-            resolved,
-            learned,
-            bumped_vars,
             &mut current_level_count,
         );
 
@@ -1361,36 +1377,30 @@ impl Solver {
             trail_index -= 1;
             let lit = self.trail[trail_index];
             let var = lit.unsigned_abs() as usize;
-            if seen[var] == 0 {
+            if self.scratch_seen[var] == 0 {
                 continue;
             }
 
-            seen[var] = 0;
-            resolved[var] = 1;
+            self.scratch_seen[var] = 0;
+            self.scratch_resolved[var] = 1;
             current_level_count -= 1;
             if current_level_count == 0 {
                 break lit;
             }
 
-                let reason_idx = self.reason[var];
-                if reason_idx != NO_REASON {
-                    mark_clause_literals(
-                        decision_level,
-                        &clause_data[clauses[reason_idx].start as usize
-                            ..clauses[reason_idx].start as usize + clauses[reason_idx].len as usize],
-                        current_level,
-                        seen,
-                        resolved,
-                        learned,
-                    bumped_vars,
+            let reason_idx = self.reason[var];
+            if reason_idx != NO_REASON {
+                self.mark_clause_literals_for_analysis(
+                    reason_idx,
+                    current_level,
                     &mut current_level_count,
                 );
             }
         };
 
-        let mut learned_clause = Vec::with_capacity(learned.len() + 1);
+        let mut learned_clause = Vec::with_capacity(self.scratch_learned.len() + 1);
         learned_clause.push(-uip_lit);
-        learned_clause.extend(learned.iter().copied());
+        learned_clause.extend(self.scratch_learned.iter().copied());
         self.minimize_learned_clause(&mut learned_clause);
 
         let mut backtrack_level = 0usize;
@@ -1447,9 +1457,6 @@ impl Solver {
                     }
 
                     self.stats.conflicts += 1;
-                    if self.reduce_db_enabled() {
-                        self.bump_clause_activity(conflict_clause_idx);
-                    }
                     let (learned_clause, backtrack_level) =
                         self.analyze_conflict(conflict_clause_idx);
                     self.bump_analyzed_variable_activity();
@@ -2291,6 +2298,24 @@ mod tests {
         let mut bumped_vars = s.scratch_bumped_vars.clone();
         bumped_vars.sort_unstable();
         assert_eq!(bumped_vars, vec![2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn test_conflict_analysis_bumps_learned_reason_clause_activity() {
+        let clauses = vec![vec![-1, 2], vec![-2, 3], vec![-2, -3]];
+        let mut s = make_solver(3, clauses);
+        s.clauses[1].learnt = true;
+        s.clauses[2].learnt = true;
+
+        s.decide(1);
+        let conflict_clause_idx = s.propagate().expect("expected conflict after propagation");
+        let (learned_clause, backtrack_level) = s.analyze_conflict(conflict_clause_idx);
+
+        assert_eq!(learned_clause, vec![-2]);
+        assert_eq!(backtrack_level, 0);
+        assert!(s.clauses[2].activity > 0.0);
+        assert!(s.clauses[1].activity > 0.0);
+        assert_eq!(s.clauses[0].activity, 0.0);
     }
 
     #[test]
