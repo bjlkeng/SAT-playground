@@ -14,6 +14,7 @@ proof-friendly separation between the solver's internal clause store and proof o
 - asserting-clause checks after conflict analysis backtrack
 - learned-clause delete bits plus a MiniSat-style bulk-fixup garbage-collection path
 - proof logging streamed through a fixed 16 MiB byte buffer into `proof.out.tmp`
+- MiniSat-style learned-clause reduction thresholds enabled by default
 
 `08` now has the first piece of clause-db management in place:
 
@@ -27,17 +28,22 @@ proof-friendly separation between the solver's internal clause store and proof o
 - stable watcher / reason fixup when clauses move during GC
 - proof output that no longer retains the full learned-clause history in RAM
 - live learned-clause counting, deletion, and database-reduction helpers
+- a dedicated live learned-clause index so `reduce_db()` no longer rescans the full clause table
+- O(1) locked-clause checks through the head literal's live `reason[var]`
+- internal counters for conflicts, propagations, decisions, restarts, reductions, deletions, GCs,
+  and learned clauses
 
-The automatic reducer is currently **disabled by default** in the solve loop. A first eager
-trigger regressed the profiling set, so the safe default for now is to keep the cleanup machinery
-available and tested while we develop a better clause-quality heuristic.
+The automatic reducer now runs with MiniSat-style size thresholds and conflict-window growth.
+That fixes the earlier "disabled by default" gap, but it still regresses the profiling set versus
+the no-auto-reduce snapshot, so the remaining work is to improve clause-quality selection and
+overall search behavior rather than keep reducer overhead on the hot path.
 
 ## Planned Focus
 
 The next set of changes in `08` will target:
 
 - a better learned-clause scoring policy so automatic reduction can be enabled by default
-- more MiniSat-like reduction thresholds and garbage-collection scheduling
+- more MiniSat-like reduction quality signals and garbage-collection scheduling
 - keeping the proof stream sound and low-overhead once internal clause cleanup is active
 
 ## What Changed
@@ -62,12 +68,17 @@ This `08` step extends the clause-db-management substrate into a safe first redu
 - added a first `reduce_db()` pass that skips locked and binary clauses and deletes low-priority
   unlocked learned clauses
 - added regression tests for immediate watcher detachment and locked/binary-clause preservation
-- left the automatic reducer disabled by default after a more eager trigger regressed the
-  profiling set
+- switched to MiniSat-style learned-clause budgets and conflict-window growth for automatic
+  reduction
+- replaced full clause-table scans inside `reduce_db()` with a dedicated live learned-clause list
+  plus reverse positions
+- replaced the O(num_vars) locked-clause check with an O(1) head-literal `reason[var]` check
+- added internal solver counters for search and clause-db events
+- added a regression test that catches stale learned-clause positions after `swap_remove()`
 
 ## Validation
 
-- `cargo test` — `34/34`
+- `cargo test` — `35/35`
 - `bash tools/smoke_test.sh solver/08-clause-db-management` — `9/9`
 
 ## Profiling Benchmark Results
@@ -177,3 +188,45 @@ This is slightly slower than the prior `08` snapshot (`41.663`), but it lands th
 detachment / GC plumbing cleanly without leaving the regressed eager reducer enabled in the
 default solve path. Like the other `08` profiling runs today, this benchmark shared the machine
 with the long `07` medium benchmark that was already running in the background.
+
+First MiniSat-style automatic-reduction run after enabling learned-clause cleanup by default:
+
+- Date: `2026-04-25`
+- Result: `PAR-2 52.957`
+- Solved: `6/6`
+- Log: `log/bench-08-clause-db-management-2026-04-25-22-16-18/results.csv`
+
+| Instance | Type | Result | Time |
+|----------|------|--------|------|
+| feistel_b64_k32_r18 | crypto | SAT | 2.404s |
+| feistel_b64_k52_r15 | crypto | SAT | 18.074s |
+| feistel_b64_k57_r16 | crypto | SAT | 9.646s |
+| random_v255_s4 | 3-SAT | UNSAT | 8.298s |
+| random_v260_s3 | 3-SAT | UNSAT | 5.215s |
+| random_v265_s2 | 3-SAT | UNSAT | 9.320s |
+
+This confirmed that simply turning on MiniSat-style thresholds was not enough on top of the
+current implementation: the search work dropped on some UNSAT random instances, but the reducer's
+own bookkeeping and the clause-selection quality were still too costly overall.
+
+Post-reduce-db-bookkeeping run after switching `reduce_db()` to a dedicated learned-clause list,
+O(1) locked-clause checks, and internal counters:
+
+- Date: `2026-04-25`
+- Result: `PAR-2 51.997`
+- Solved: `6/6`
+- Log: `log/bench-08-clause-db-management-2026-04-25-23-18-05/results.csv`
+
+| Instance | Type | Result | Time |
+|----------|------|--------|------|
+| feistel_b64_k32_r18 | crypto | SAT | 2.350s |
+| feistel_b64_k52_r15 | crypto | SAT | 17.734s |
+| feistel_b64_k57_r16 | crypto | SAT | 9.327s |
+| random_v255_s4 | 3-SAT | UNSAT | 8.242s |
+| random_v260_s3 | 3-SAT | UNSAT | 5.150s |
+| random_v265_s2 | 3-SAT | UNSAT | 9.194s |
+
+This improves slightly on the first MiniSat-style automatic-reduction run (`52.957`) by removing
+most of the reducer's own bookkeeping overhead, but it is still materially worse than the
+no-auto-reduce run (`42.959`). That tells us the remaining gap is mostly search quality and clause
+selection, not the raw cost of scanning for clauses to delete.
