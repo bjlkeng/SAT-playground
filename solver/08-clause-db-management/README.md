@@ -31,6 +31,7 @@ proof-friendly separation between the solver's internal clause store and proof o
 - a dedicated live learned-clause index so `reduce_db()` no longer rescans the full clause table
 - O(1) locked-clause checks through the head literal's live `reason[var]`
 - MiniSat-style learned-clause activity bumps for the full analyzed reason chain
+- a faster learned-budget growth interval (`50` conflicts instead of `100`)
 - internal counters for conflicts, propagations, decisions, restarts, reductions, deletions, GCs,
   and learned clauses
 
@@ -79,6 +80,8 @@ This `08` step extends the clause-db-management substrate into a safe first redu
 - added internal solver counters for search and clause-db events
 - added a regression test that catches stale learned-clause positions after `swap_remove()`
 - added a regression test that proves analyzed learned reason clauses get their activity bumped
+- tuned the learned-budget growth interval from `100` conflicts to `50` after profiling showed the
+  default reducer was still too aggressive for the crypto SAT cases
 
 ## Validation
 
@@ -256,3 +259,25 @@ This is a large improvement over the earlier automatic-reduction runs (`52.957` 
 also beats the recorded `07` profile baseline (`40.878`). The main improvement came from making
 the reducer's clause-activity signal much closer to MiniSat's, so clause deletion no longer blows
 up the SAT crypto search while still keeping the UNSAT random gains from database reduction.
+
+Post-budget-growth-tuning run after reducing the learned-budget adjust interval from `100` to `50`
+conflicts:
+
+- Date: `2026-04-26`
+- Result: `PAR-2 22.412`
+- Solved: `6/6`
+- Log: `log/bench-08-clause-db-management-2026-04-26-08-18-10/results.csv`
+
+| Instance | Type | Result | Time |
+|----------|------|--------|------|
+| feistel_b64_k32_r18 | crypto | SAT | 0.722s |
+| feistel_b64_k52_r15 | crypto | SAT | 1.673s |
+| feistel_b64_k57_r16 | crypto | SAT | 1.829s |
+| random_v255_s4 | 3-SAT | UNSAT | 6.686s |
+| random_v260_s3 | 3-SAT | UNSAT | 4.301s |
+| random_v265_s2 | 3-SAT | UNSAT | 7.201s |
+
+This is the first optimization-step keeper under the "must improve by more than 5%" rule. It beats
+the prior committed default (`32.596`) by `10.184` PAR-2, about `31.2%` faster overall. The win
+comes from letting the learned-clause budget relax sooner, which preserves the strong SAT crypto
+behavior without giving back too much on the UNSAT random side.

@@ -19,7 +19,7 @@ const REDUNDANT_FAILED: u8 = 3;
 const PROOF_BUFFER_CAPACITY: usize = 16 * 1024 * 1024;
 const LEARNTSIZE_FACTOR: f64 = 1.0 / 3.0;
 const LEARNTSIZE_INC: f64 = 1.1;
-const LEARNTSIZE_ADJUST_START_CONFL: usize = 100;
+const LEARNTSIZE_ADJUST_START_CONFL: usize = 50;
 const LEARNTSIZE_ADJUST_INC: f64 = 1.5;
 
 #[allow(dead_code)]
