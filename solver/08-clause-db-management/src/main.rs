@@ -16,8 +16,10 @@ const REDUNDANT_SOURCE: u8 = 1;
 const REDUNDANT_REMOVABLE: u8 = 2;
 const REDUNDANT_FAILED: u8 = 3;
 const PROOF_BUFFER_CAPACITY: usize = 16 * 1024 * 1024;
-const REDUCE_DB_DEFAULT_LIMIT: usize = usize::MAX;
-const REDUCE_DB_INTERVAL: usize = 5_000;
+const LEARNTSIZE_FACTOR: f64 = 1.0 / 3.0;
+const LEARNTSIZE_INC: f64 = 1.1;
+const LEARNTSIZE_ADJUST_START_CONFL: usize = 100;
+const LEARNTSIZE_ADJUST_INC: f64 = 1.5;
 
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
@@ -221,10 +223,12 @@ struct Solver {
     restart_conflict_limit: usize,
     /// whether a restart should be applied before the next branch
     restart_pending: bool,
-    /// learned-clause count threshold for running a database reduction pass
+    /// learned-clause budget threshold for running a database reduction pass
     reduce_db_limit: usize,
-    /// amount by which the next reduction threshold moves forward after each pass
-    reduce_db_interval: usize,
+    /// current conflict countdown until the next learned-budget adjustment
+    learntsize_adjust_cnt: usize,
+    /// floating-point copy of the current learned-budget adjustment window
+    learntsize_adjust_confl: f64,
     /// current number of non-deleted learned clauses
     live_learned_clause_count: usize,
     /// total number of literal slots currently wasted by tombstoned learned clauses
@@ -464,8 +468,9 @@ impl Solver {
             restart_luby_index: 1,
             restart_conflict_limit: 100,
             restart_pending: false,
-            reduce_db_limit: REDUCE_DB_DEFAULT_LIMIT,
-            reduce_db_interval: REDUCE_DB_INTERVAL,
+            reduce_db_limit: ((original_clause_count as f64) * LEARNTSIZE_FACTOR) as usize,
+            learntsize_adjust_cnt: LEARNTSIZE_ADJUST_START_CONFL,
+            learntsize_adjust_confl: LEARNTSIZE_ADJUST_START_CONFL as f64,
             live_learned_clause_count: 0,
             deleted_clause_literals: 0,
             root_unit_clauses: Vec::new(),
@@ -1011,6 +1016,18 @@ impl Solver {
         self.reduce_db_limit != usize::MAX
     }
 
+    fn note_learnt_budget_conflict(&mut self) {
+        if !self.reduce_db_enabled() || self.learntsize_adjust_cnt == 0 {
+            return;
+        }
+        self.learntsize_adjust_cnt -= 1;
+        if self.learntsize_adjust_cnt == 0 {
+            self.learntsize_adjust_confl *= LEARNTSIZE_ADJUST_INC;
+            self.learntsize_adjust_cnt = self.learntsize_adjust_confl as usize;
+            self.reduce_db_limit = ((self.reduce_db_limit as f64) * LEARNTSIZE_INC) as usize;
+        }
+    }
+
     fn delete_clause(&mut self, clause_idx: usize) {
         debug_assert!(clause_idx < self.clauses.len(), "invalid clause index {clause_idx}");
         debug_assert!(
@@ -1165,29 +1182,40 @@ impl Solver {
         let mut candidates = Vec::new();
         for clause_idx in self.original_clause_count..self.clauses.len() {
             let clause = self.clauses[clause_idx];
-            if clause.deleted || clause.len <= 2 || self.clause_locked(clause_idx) {
+            if clause.deleted {
                 continue;
             }
             candidates.push(clause_idx);
         }
 
         candidates.sort_unstable_by(|&lhs, &rhs| {
-            self.clauses[lhs]
-                .activity
-                .total_cmp(&self.clauses[rhs].activity)
-                .then_with(|| self.clauses[rhs].len.cmp(&self.clauses[lhs].len))
+            let lhs_clause = self.clauses[lhs];
+            let rhs_clause = self.clauses[rhs];
+            let lhs_short = lhs_clause.len <= 2;
+            let rhs_short = rhs_clause.len <= 2;
+            lhs_short
+                .cmp(&rhs_short)
+                .then_with(|| lhs_clause.activity.total_cmp(&rhs_clause.activity))
                 .then_with(|| lhs.cmp(&rhs))
         });
 
-        let delete_count = candidates.len().div_ceil(2);
-        for &clause_idx in candidates.iter().take(delete_count) {
-            self.delete_clause(clause_idx);
+        let extra_lim = if candidates.is_empty() {
+            0.0
+        } else {
+            self.clause_activity_inc / candidates.len() as f32
+        };
+        let half = candidates.len() / 2;
+        for (idx, &clause_idx) in candidates.iter().enumerate() {
+            let clause = self.clauses[clause_idx];
+            if clause.len > 2
+                && !self.clause_locked(clause_idx)
+                && (idx < half || clause.activity < extra_lim)
+            {
+                self.delete_clause(clause_idx);
+            }
         }
 
         self.maybe_garbage_collect();
-        self.reduce_db_limit = self
-            .live_learned_clause_count
-            .saturating_add(self.reduce_db_interval.max(1));
     }
 
     fn minimize_learned_clause(&mut self, learned_clause: &mut Vec<i32>) {
@@ -1379,6 +1407,7 @@ impl Solver {
                     self.decay_variable_activity();
                     if self.reduce_db_enabled() {
                         self.decay_clause_activity();
+                        self.note_learnt_budget_conflict();
                     }
                     self.note_conflict();
                     let asserting_lit = learned_clause[0];
@@ -1396,17 +1425,21 @@ impl Solver {
                     let inserted = self.enqueue(asserting_lit, learned_clause_idx);
                     debug_assert!(inserted, "learned clause must be asserting after backtrack");
 
-                    if self.reduce_db_enabled()
-                        && self.live_learned_clause_count >= self.reduce_db_limit
-                    {
-                        self.reduce_db();
-                    }
                     conflict = self.propagate();
                 }
                 None => {
                     if self.perform_restart_if_pending() {
                         conflict = self.propagate();
                         continue;
+                    }
+
+                    if self.reduce_db_enabled()
+                        && self
+                            .live_learned_clause_count
+                            .saturating_sub(self.trail.len())
+                            >= self.reduce_db_limit
+                    {
+                        self.reduce_db();
                     }
 
                     match self.pick_branch_lit() {
@@ -1436,6 +1469,19 @@ fn parse_ccmin_mode() -> u8 {
             }
         },
         Err(_) => CCMIN_DEEP,
+    }
+}
+
+fn parse_usize_env(name: &str, default: usize) -> usize {
+    match env::var(name) {
+        Ok(value) => match value.trim().parse::<usize>() {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                eprintln!("Invalid {name}={value:?}: {err}");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => default,
     }
 }
 
@@ -1518,6 +1564,10 @@ fn main() {
     let (num_vars, clauses) = parse_cnf(cnf_path);
     let mut solver = Solver::new(num_vars, clauses);
     solver.ccmin_mode = parse_ccmin_mode();
+    solver.reduce_db_limit = parse_usize_env("SAT_REDUCE_DB_INIT", solver.reduce_db_limit);
+    solver.learntsize_adjust_cnt =
+        parse_usize_env("SAT_REDUCE_DB_INTERVAL", solver.learntsize_adjust_cnt);
+    solver.learntsize_adjust_confl = solver.learntsize_adjust_cnt as f64;
 
     if solver.solve_to_output(output_dir) {
         println!("s SATISFIABLE");
