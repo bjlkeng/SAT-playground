@@ -18,26 +18,31 @@ proof-friendly separation between the solver's internal clause store and proof o
 `08` now has the first piece of clause-db management in place:
 
 - learned clauses can be marked deleted
+- learned clauses can be detached from watch lists before deletion
 - garbage collection compacts live clause storage into a new dense arena
 - watcher clause refs and live `reason[var]` refs are fixed up during GC
 
-The solver still does **not** have a deletion policy wired into the search loop yet. This
-iteration now has both halves of the substrate needed for that later work:
+`08` now has the first end-to-end learned-clause cleanup path in place:
 
 - stable watcher / reason fixup when clauses move during GC
 - proof output that no longer retains the full learned-clause history in RAM
+- live learned-clause counting, deletion, and database-reduction helpers
+
+The automatic reducer is currently **disabled by default** in the solve loop. A first eager
+trigger regressed the profiling set, so the safe default for now is to keep the cleanup machinery
+available and tested while we develop a better clause-quality heuristic.
 
 ## Planned Focus
 
 The next set of changes in `08` will target:
 
-- an actual learned-clause deletion policy and GC trigger
-- safe cleanup / compaction inside the live search loop
+- a better learned-clause scoring policy so automatic reduction can be enabled by default
+- more MiniSat-like reduction thresholds and garbage-collection scheduling
 - keeping the proof stream sound and low-overhead once internal clause cleanup is active
 
 ## What Changed
 
-This first `08` step establishes the clause-db-management substrate:
+This `08` step extends the clause-db-management substrate into a safe first reduction path:
 
 - copied `07-clause-minimization` to a new self-contained iteration directory
 - renamed the package / iteration metadata for `08-clause-db-management`
@@ -51,12 +56,18 @@ This first `08` step establishes the clause-db-management substrate:
   cleanup, and end-to-end UNSAT proof emission
 - replaced per-literal `write!` formatting in proof logging with direct ASCII integer append into
   the byte buffer
-- kept the solve path otherwise unchanged so the profiling baseline still reflects the inherited
-  `07` behavior apart from proof-memory usage
+- added watcher detachment for learned-clause deletion
+- added live learned-clause counting and wasted-literal tracking so GC decisions are O(1) on the
+  hot path
+- added a first `reduce_db()` pass that skips locked and binary clauses and deletes low-priority
+  unlocked learned clauses
+- added regression tests for immediate watcher detachment and locked/binary-clause preservation
+- left the automatic reducer disabled by default after a more eager trigger regressed the
+  profiling set
 
 ## Validation
 
-- `cargo test` — `32/32`
+- `cargo test` — `34/34`
 - `bash tools/smoke_test.sh solver/08-clause-db-management` — `9/9`
 
 ## Profiling Benchmark Results
@@ -145,3 +156,24 @@ Post-integer-formatting micro-optimization run after replacing `write!` with dir
 This is a small improvement over the earlier proof-buffer run (`41.784`), which is about what we
 would expect from removing formatting overhead from the proof fast path without changing the core
 search algorithm.
+
+Post-live-deletion/GC-plumbing run with automatic reduction disabled by default:
+
+- Date: `2026-04-25`
+- Result: `PAR-2 42.959`
+- Solved: `6/6`
+- Log: `log/bench-08-clause-db-management-2026-04-25-21-20-45/results.csv`
+
+| Instance | Type | Result | Time |
+|----------|------|--------|------|
+| feistel_b64_k32_r18 | crypto | SAT | 3.015s |
+| feistel_b64_k52_r15 | crypto | SAT | 2.174s |
+| feistel_b64_k57_r16 | crypto | SAT | 6.687s |
+| random_v255_s4 | 3-SAT | UNSAT | 10.829s |
+| random_v260_s3 | 3-SAT | UNSAT | 6.363s |
+| random_v265_s2 | 3-SAT | UNSAT | 13.891s |
+
+This is slightly slower than the prior `08` snapshot (`41.663`), but it lands the deletion /
+detachment / GC plumbing cleanly without leaving the regressed eager reducer enabled in the
+default solve path. Like the other `08` profiling runs today, this benchmark shared the machine
+with the long `07` medium benchmark that was already running in the background.

@@ -16,6 +16,8 @@ const REDUNDANT_SOURCE: u8 = 1;
 const REDUNDANT_REMOVABLE: u8 = 2;
 const REDUNDANT_FAILED: u8 = 3;
 const PROOF_BUFFER_CAPACITY: usize = 16 * 1024 * 1024;
+const REDUCE_DB_DEFAULT_LIMIT: usize = usize::MAX;
+const REDUCE_DB_INTERVAL: usize = 5_000;
 
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
@@ -205,6 +207,10 @@ struct Solver {
     activity_inc: f32,
     /// multiplicative decay factor for older activity
     activity_decay: f32,
+    /// additive bump applied to learned clauses participating in recent conflicts
+    clause_activity_inc: f32,
+    /// multiplicative decay factor for older learned-clause activity
+    clause_activity_decay: f32,
     /// number of conflicts seen since the last restart
     restart_conflicts: usize,
     /// base conflict budget multiplied by the current Luby term
@@ -215,6 +221,14 @@ struct Solver {
     restart_conflict_limit: usize,
     /// whether a restart should be applied before the next branch
     restart_pending: bool,
+    /// learned-clause count threshold for running a database reduction pass
+    reduce_db_limit: usize,
+    /// amount by which the next reduction threshold moves forward after each pass
+    reduce_db_interval: usize,
+    /// current number of non-deleted learned clauses
+    live_learned_clause_count: usize,
+    /// total number of literal slots currently wasted by tombstoned learned clauses
+    deleted_clause_literals: usize,
     /// original unit clauses that must be enqueued at decision level 0
     root_unit_clauses: Vec<usize>,
     /// whether the formula already contains an empty clause
@@ -443,11 +457,17 @@ impl Solver {
             activity: vec![0.0; num_vars + 1],
             activity_inc: 1.0,
             activity_decay: 0.95,
+            clause_activity_inc: 1.0,
+            clause_activity_decay: 0.999,
             restart_conflicts: 0,
             restart_unit: 100,
             restart_luby_index: 1,
             restart_conflict_limit: 100,
             restart_pending: false,
+            reduce_db_limit: REDUCE_DB_DEFAULT_LIMIT,
+            reduce_db_interval: REDUCE_DB_INTERVAL,
+            live_learned_clause_count: 0,
+            deleted_clause_literals: 0,
             root_unit_clauses: Vec::new(),
             has_empty_clause: false,
             scratch_seen: vec![0; num_vars + 1],
@@ -638,6 +658,30 @@ impl Solver {
         }
     }
 
+    fn remove_clause_watchers(watch_list: &mut Vec<Watcher>, clause_idx: usize) {
+        watch_list.retain(|watcher| watcher.clause_idx as usize != clause_idx);
+    }
+
+    fn detach_clause(&mut self, clause_idx: usize) {
+        let clause = self.clauses[clause_idx];
+        if clause.deleted || clause.len == 0 {
+            return;
+        }
+
+        let start = clause.start as usize;
+        let first_watch_idx = self.lit_index(self.clause_data[start]);
+        Self::remove_clause_watchers(&mut self.watchers[first_watch_idx], clause_idx);
+        if clause.len >= 2 {
+            let second_watch_idx = self.lit_index(self.clause_data[start + 1]);
+            if second_watch_idx != first_watch_idx {
+                Self::remove_clause_watchers(&mut self.watchers[second_watch_idx], clause_idx);
+            } else {
+                Self::remove_clause_watchers(&mut self.watchers[second_watch_idx], clause_idx);
+            }
+        }
+        Self::remove_clause_watchers(&mut self.watch_scratch, clause_idx);
+    }
+
     #[inline(always)]
     fn lit_value(&self, lit: i32) -> u8 {
         let var = lit.unsigned_abs() as usize;
@@ -814,6 +858,28 @@ impl Solver {
         self.activity_inc /= self.activity_decay;
     }
 
+    fn bump_clause_activity(&mut self, clause_idx: usize) {
+        if clause_idx >= self.clauses.len() {
+            return;
+        }
+        let clause = &mut self.clauses[clause_idx];
+        if !clause.learnt || clause.deleted {
+            return;
+        }
+
+        clause.activity += self.clause_activity_inc;
+        if clause.activity > 1e20 {
+            for learned in &mut self.clauses[self.original_clause_count..] {
+                learned.activity *= 1e-20;
+            }
+            self.clause_activity_inc *= 1e-20;
+        }
+    }
+
+    fn decay_clause_activity(&mut self) {
+        self.clause_activity_inc /= self.clause_activity_decay;
+    }
+
     fn bump_analyzed_variable_activity(&mut self) {
         let bumped_vars = std::mem::take(&mut self.scratch_bumped_vars);
         for &var in &bumped_vars {
@@ -932,8 +998,36 @@ impl Solver {
             activity: 0.0,
         });
         let clause_idx = self.clauses.len() - 1;
+        self.live_learned_clause_count += 1;
         self.attach_clause(clause_idx, false);
         clause_idx
+    }
+
+    fn clause_locked(&self, clause_idx: usize) -> bool {
+        self.reason.iter().any(|&reason_idx| reason_idx == clause_idx)
+    }
+
+    fn reduce_db_enabled(&self) -> bool {
+        self.reduce_db_limit != usize::MAX
+    }
+
+    fn delete_clause(&mut self, clause_idx: usize) {
+        debug_assert!(clause_idx < self.clauses.len(), "invalid clause index {clause_idx}");
+        debug_assert!(
+            self.clauses[clause_idx].learnt,
+            "only learned clauses may be deleted"
+        );
+        debug_assert!(
+            !self.clauses[clause_idx].deleted,
+            "clause {clause_idx} already deleted"
+        );
+        debug_assert!(
+            !self.clause_locked(clause_idx),
+            "cannot delete clause {clause_idx} while it is still a live reason"
+        );
+
+        self.detach_clause(clause_idx);
+        self.mark_clause_deleted(clause_idx);
     }
 
     fn mark_clause_deleted(&mut self, clause_idx: usize) {
@@ -950,7 +1044,19 @@ impl Solver {
             !self.reason.iter().any(|&reason_idx| reason_idx == clause_idx),
             "cannot delete clause {clause_idx} while it is still a live reason"
         );
+        self.live_learned_clause_count = self.live_learned_clause_count.saturating_sub(1);
+        self.deleted_clause_literals += self.clauses[clause_idx].len as usize;
         self.clauses[clause_idx].deleted = true;
+    }
+
+    fn maybe_garbage_collect(&mut self) {
+        if self.deleted_clause_literals == 0 {
+            return;
+        }
+        if self.deleted_clause_literals.saturating_mul(3) < self.clause_data.len() {
+            return;
+        }
+        self.garbage_collect();
     }
 
     fn garbage_collect(&mut self) {
@@ -1048,6 +1154,40 @@ impl Solver {
 
         self.clauses = new_clauses;
         self.clause_data = new_clause_data;
+        self.live_learned_clause_count = self.clauses[self.original_clause_count..]
+            .iter()
+            .filter(|clause| clause.learnt && !clause.deleted)
+            .count();
+        self.deleted_clause_literals = 0;
+    }
+
+    fn reduce_db(&mut self) {
+        let mut candidates = Vec::new();
+        for clause_idx in self.original_clause_count..self.clauses.len() {
+            let clause = self.clauses[clause_idx];
+            if clause.deleted || clause.len <= 2 || self.clause_locked(clause_idx) {
+                continue;
+            }
+            candidates.push(clause_idx);
+        }
+
+        candidates.sort_unstable_by(|&lhs, &rhs| {
+            self.clauses[lhs]
+                .activity
+                .total_cmp(&self.clauses[rhs].activity)
+                .then_with(|| self.clauses[rhs].len.cmp(&self.clauses[lhs].len))
+                .then_with(|| lhs.cmp(&rhs))
+        });
+
+        let delete_count = candidates.len().div_ceil(2);
+        for &clause_idx in candidates.iter().take(delete_count) {
+            self.delete_clause(clause_idx);
+        }
+
+        self.maybe_garbage_collect();
+        self.reduce_db_limit = self
+            .live_learned_clause_count
+            .saturating_add(self.reduce_db_interval.max(1));
     }
 
     fn minimize_learned_clause(&mut self, learned_clause: &mut Vec<i32>) {
@@ -1197,10 +1337,7 @@ impl Solver {
     }
 
     fn learned_clause_count(&self) -> usize {
-        self.clauses[self.original_clause_count..]
-            .iter()
-            .filter(|clause| !clause.deleted)
-            .count()
+        self.live_learned_clause_count
     }
 
     fn solve(&mut self) -> bool {
@@ -1233,14 +1370,23 @@ impl Solver {
                         return false;
                     }
 
+                    if self.reduce_db_enabled() {
+                        self.bump_clause_activity(conflict_clause_idx);
+                    }
                     let (learned_clause, backtrack_level) =
                         self.analyze_conflict(conflict_clause_idx);
                     self.bump_analyzed_variable_activity();
                     self.decay_variable_activity();
+                    if self.reduce_db_enabled() {
+                        self.decay_clause_activity();
+                    }
                     self.note_conflict();
                     let asserting_lit = learned_clause[0];
                     proof_log.record_clause(&learned_clause);
                     let learned_clause_idx = self.add_clause(learned_clause);
+                    if self.reduce_db_enabled() {
+                        self.bump_clause_activity(learned_clause_idx);
+                    }
 
                     self.backtrack(backtrack_level);
                     self.debug_assert_clause_asserting_after_backtrack(
@@ -1250,6 +1396,11 @@ impl Solver {
                     let inserted = self.enqueue(asserting_lit, learned_clause_idx);
                     debug_assert!(inserted, "learned clause must be asserting after backtrack");
 
+                    if self.reduce_db_enabled()
+                        && self.live_learned_clause_count >= self.reduce_db_limit
+                    {
+                        self.reduce_db();
+                    }
                     conflict = self.propagate();
                 }
                 None => {
@@ -1701,6 +1852,72 @@ mod tests {
 
         assert_eq!(s.reason[4], relocated_live);
         assert_eq!(s.clause_slice(s.reason[4]), &[3, 1]);
+    }
+
+    #[test]
+    fn test_delete_clause_detaches_watchers_immediately() {
+        let mut s = make_solver(3, vec![]);
+        let clause_idx = s.add_clause(vec![3, 1, 2]);
+
+        assert!(
+            s.watchers[s.lit_index(3)]
+                .iter()
+                .any(|watcher| watcher.clause_idx as usize == clause_idx)
+        );
+        assert!(
+            s.watchers[s.lit_index(1)]
+                .iter()
+                .any(|watcher| watcher.clause_idx as usize == clause_idx)
+        );
+
+        s.delete_clause(clause_idx);
+
+        assert!(s.clauses[clause_idx].deleted);
+        assert!(
+            s.watchers[s.lit_index(3)]
+                .iter()
+                .all(|watcher| watcher.clause_idx as usize != clause_idx)
+        );
+        assert!(
+            s.watchers[s.lit_index(1)]
+                .iter()
+                .all(|watcher| watcher.clause_idx as usize != clause_idx)
+        );
+    }
+
+    #[test]
+    fn test_reduce_db_keeps_locked_and_binary_learned_clauses() {
+        let mut s = make_solver(5, vec![]);
+        let removable = s.add_clause(vec![5, 1, 2]);
+        let binary = s.add_clause(vec![4, 1]);
+        let locked = s.add_clause(vec![3, 1, 2]);
+
+        s.clauses[removable].activity = 0.0;
+        s.clauses[binary].activity = 0.0;
+        s.clauses[locked].activity = 10.0;
+
+        s.assignment[3] = TRUE;
+        s.saved_phase[3] = TRUE;
+        s.decision_level[3] = 1;
+        s.reason[3] = locked;
+        s.trail.push(3);
+        s.trail_limits.push(0);
+        s.propagate_head = s.trail.len();
+
+        s.reduce_db();
+
+        assert_eq!(s.learned_clause_count(), 2);
+        assert_eq!(s.clause_slice(s.reason[3]), &[3, 1, 2]);
+        assert!(
+            s.watchers.iter().flatten().all(|watcher| {
+                !s.clauses[watcher.clause_idx as usize].deleted
+            }),
+            "watch lists should not keep deleted clauses after reduction"
+        );
+
+        s.decide(-1);
+        assert_eq!(s.propagate(), None);
+        assert_eq!(s.assignment[4], TRUE);
     }
 
     #[test]
