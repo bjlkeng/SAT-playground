@@ -177,6 +177,7 @@ Write DRAT proof to `<output_dir>/proof.out`. This is required from every iterat
 
 ## Development Rules
 
+- **Use red-green TDD for solver changes** — add or update a failing test first when practical, then implement until it passes before moving on.
 - **Run smoke tests after every change** to a solver: `bash tools/smoke_test.sh solver/NN-name`
 - **Only commit solver changes that pass the smoke test** (all 8 tests green). If a test fails, fix the solver before committing.
 - **Never modify `tools/smoke_test.sh`** unless the user explicitly asks for changes to it.
@@ -188,11 +189,12 @@ When creating a new iteration:
 
 1. Copy the previous iteration directory: `cp -r solver/NN-prev/ solver/MM-name/`
 2. Update `Cargo.toml` package name
-3. Implement the new technique
-4. Add unit tests for the new feature
-5. Run `bash tools/smoke_test.sh solver/MM-name` — all 8 tests must pass
-6. Run against benchmarks and record results in the iteration's `README.md`
-7. Ensure `build.sh` and `run.sh` still work
+3. Add or update tests first when practical so the change follows a red-green TDD loop
+4. Implement the new technique
+5. Add unit tests for the new feature
+6. Run `bash tools/smoke_test.sh solver/MM-name` — all 8 tests must pass
+7. Run against benchmarks and record results in the iteration's `README.md`
+8. Ensure `build.sh` and `run.sh` still work
 
 ## Testing
 

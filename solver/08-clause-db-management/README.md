@@ -8,19 +8,19 @@ proof-friendly separation between the solver's internal clause store and proof o
 
 `08` currently inherits the full `07` baseline:
 
-- the `06` MiniSat-style clause storage and blocker-watcher rewrite
+- the `06` blocker-watcher propagation rewrite
 - runtime conflict-clause minimization modes: `none`, `basic`, and `deep`
 - deep minimization through learned-clause reasons
 - asserting-clause checks after conflict analysis backtrack
-- learned-clause delete bits plus a MiniSat-style bulk-fixup garbage-collection path
 - proof logging streamed through a fixed 16 MiB byte buffer into `proof.out.tmp`
 - MiniSat-style learned-clause reduction thresholds enabled by default
 
-`08` now has the first piece of clause-db management in place:
+`08` now has a true MiniSat-style clause arena behind the clause-db-management path:
 
-- learned clauses can be marked deleted
-- learned clauses can be detached from watch lists before deletion
-- garbage collection compacts live clause storage into a new dense arena
+- clauses live in one packed word arena instead of split metadata / literal vectors
+- each clause ref is a stable arena offset used directly by watchers and `reason[var]`
+- the arena stores a packed header, inlined literals, and one extra word for learned activity
+- learned clauses can be detached, tombstoned, and later relocated during GC
 - watcher clause refs and live `reason[var]` refs are fixed up during GC
 
 `08` now has the first end-to-end learned-clause cleanup path in place:
@@ -28,7 +28,7 @@ proof-friendly separation between the solver's internal clause store and proof o
 - stable watcher / reason fixup when clauses move during GC
 - proof output that no longer retains the full learned-clause history in RAM
 - live learned-clause counting, deletion, and database-reduction helpers
-- a dedicated live learned-clause index so `reduce_db()` no longer rescans the full clause table
+- a dedicated live learned-clause list so `reduce_db()` no longer rescans the full clause table
 - O(1) locked-clause checks through the head literal's live `reason[var]`
 - MiniSat-style learned-clause activity bumps for the full analyzed reason chain
 - a faster learned-budget growth interval (`50` conflicts instead of `100`)
@@ -73,15 +73,23 @@ This `08` step extends the clause-db-management substrate into a safe first redu
 - switched to MiniSat-style learned-clause budgets and conflict-window growth for automatic
   reduction
 - replaced full clause-table scans inside `reduce_db()` with a dedicated live learned-clause list
-  plus reverse positions
 - replaced the O(num_vars) locked-clause check with an O(1) head-literal `reason[var]` check
 - bumped learned-clause activity for the conflict clause and every learned reason clause visited
   during conflict analysis, matching MiniSat more closely
 - added internal solver counters for search and clause-db events
-- added a regression test that catches stale learned-clause positions after `swap_remove()`
+- added a regression test that proves deleted learned clauses are removed from the live
+  learned-clause list immediately
 - added a regression test that proves analyzed learned reason clauses get their activity bumped
 - tuned the learned-budget growth interval from `100` conflicts to `50` after profiling showed the
   default reducer was still too aggressive for the crypto SAT cases
+- replaced the split `Vec<ClauseRef>` plus `Vec<i32>` storage with a true MiniSat-style packed
+  word arena
+- stored learned-clause activity inline in the arena as the clause's extra word instead of in a
+  side metadata table
+- switched original-clause / learned-clause bookkeeping and GC relocation over to arena offsets as
+  the stable clause refs used by watchers and `reason[var]`
+- updated the GC and minimization regression tests to exercise the arena-backed clause refs rather
+  than the old dense clause table indices
 
 ## Validation
 
@@ -281,3 +289,27 @@ This is the first optimization-step keeper under the "must improve by more than 
 the prior committed default (`32.596`) by `10.184` PAR-2, about `31.2%` faster overall. The win
 comes from letting the learned-clause budget relax sooner, which preserves the strong SAT crypto
 behavior without giving back too much on the UNSAT random side.
+
+Post-MiniSat-arena refactor run after replacing the split clause storage with a single packed word
+arena:
+
+- Date: `2026-04-26`
+- Prior committed baseline: `PAR-2 22.132`
+- Result: `PAR-2 22.001`
+- Solved: `6/6`
+- Log: `log/bench-08-clause-db-management-2026-04-26-21-15-13/results.csv`
+
+| Instance | Type | Result | Time |
+|----------|------|--------|------|
+| feistel_b64_k32_r18 | crypto | SAT | 0.665s |
+| feistel_b64_k52_r15 | crypto | SAT | 1.603s |
+| feistel_b64_k57_r16 | crypto | SAT | 1.773s |
+| random_v255_s4 | 3-SAT | UNSAT | 6.482s |
+| random_v260_s3 | 3-SAT | UNSAT | 4.245s |
+| random_v265_s2 | 3-SAT | UNSAT | 7.235s |
+
+This refactor keeps the tuned `08` behavior essentially intact while replacing the clause database
+with the data structure we actually wanted: one packed MiniSat-style arena with stable clause refs.
+The profiling gain is modest relative to the last committed `08` default (`22.132` to `22.001`,
+about `0.6%`), so the main value here is structural simplification and cache-friendlier clause
+storage rather than a dramatic benchmark jump.
