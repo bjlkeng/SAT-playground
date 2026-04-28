@@ -706,7 +706,9 @@ impl Solver {
                 self.delete_clause_for_simplify(clause_idx);
                 continue;
             }
-            self.trim_root_false_literals(clause_idx);
+            if !self.clause_is_learnt(clause_idx) {
+                self.trim_root_false_literals(clause_idx);
+            }
             kept.push(clause_idx);
         }
         kept
@@ -2269,7 +2271,7 @@ mod tests {
     }
 
     #[test]
-    fn test_top_level_simplify_removes_satisfied_clauses_and_trims_root_false_literals() {
+    fn test_top_level_simplify_removes_satisfied_clauses_and_trims_only_originals() {
         let mut s = make_solver(7, vec![vec![1], vec![1, 3], vec![4, -1, 5]]);
         let satisfied_learned = s.add_clause(vec![2, -1]);
         let _trimmed_learned = s.add_clause(vec![6, -1, 7]);
@@ -2300,7 +2302,7 @@ mod tests {
             .iter()
             .map(|&clause_idx| s.clause_slice(clause_idx).to_vec())
             .collect();
-        assert_eq!(learned_clauses, vec![vec![6, 7]]);
+        assert_eq!(learned_clauses, vec![vec![6, 7, -1]]);
 
         assert!(
             !s.learned_clause_ids.contains(&satisfied_learned),

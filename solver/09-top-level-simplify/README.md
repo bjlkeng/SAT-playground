@@ -21,7 +21,9 @@ On top of that, `09` now adds a top-level simplify pass:
 - re-propagates before simplifying and returns UNSAT immediately on a root conflict
 - deletes satisfied learned clauses
 - deletes satisfied original clauses too
-- trims literals falsified at level `0` from positions `2..` inside remaining clauses
+- trims literals falsified at level `0` from positions `2..` inside remaining original clauses
+- intentionally leaves unsatisfied learned clauses untrimmed, after profiling showed learned-clause
+  trimming perturbed CDCL search badly on the current crypto SAT cases
 - clears `reason[var]` if simplification deletes the clause that was justifying a root assignment
 - rebuilds the branch heap after simplification
 - uses a MiniSat-style gate so repeated level-0 visits do not rescan the database unless root
@@ -34,12 +36,16 @@ This `09` step adds the first MiniSat-style simplify path on top of `08`:
 - copied `08-clause-db-management` into a new self-contained iteration directory
 - renamed the package / iteration metadata for `09-top-level-simplify`
 - added `simplify()` to the level-0 search path
-- added in-place clause trimming for root-false literals while keeping the packed arena layout
+- added in-place original-clause trimming for root-false literals while keeping the packed arena
+  layout
 - generalized clause deletion during simplification so both original and learned clauses can be
   detached, tombstoned, and later reclaimed by GC
+- stopped trimming learned clauses at root after ablation showed that deleting satisfied learned
+  clauses was useful but strengthening unsatisfied learned clauses caused a large search regression
 - added regression tests for:
   - removing satisfied clauses at level `0`
-  - trimming root-false literals from surviving clauses
+  - trimming root-false literals from surviving original clauses while keeping surviving learned
+    clauses intact
   - treating a second simplify call as a no-op when no new root work has happened
 
 ## Validation
@@ -88,12 +94,39 @@ Post-change run after enabling the level-0 simplify pass:
 | random_v292_s4 | 3-SAT | UNSAT | 22.617s |
 | random_v355_s3 | crypto/random SAT | SAT | 11.104s |
 
-The net result is a regression on the current profiling set:
+The initial net result was a regression on the current profiling set:
 
 - `89.177` -> `108.066`
 - slower by `18.889` PAR-2
 - about `21.2%` worse overall
 
 The simplify pass helped `feistel_b64_k32_r22`, but it hurt the other two crypto SAT cases much
-more, especially `feistel_b64_k57_r18`. So the implementation is correct and validated, but it is
-not a performance win on the current profiling suite as-is.
+more, especially `feistel_b64_k57_r18`.
+
+Follow-up run after disabling root-level learned-clause trimming while keeping satisfied-clause
+deletion and original-clause trimming:
+
+- Date: `2026-04-28`
+- Result: `PAR-2 69.321`
+- Solved: `6/6`
+- Log: `log/bench-09-top-level-simplify-2026-04-28-11-38-35/results.csv`
+
+| Instance | Type | Result | Time |
+|----------|------|--------|------|
+| feistel_b64_k32_r22 | crypto | SAT | 10.960s |
+| feistel_b64_k52_r17 | crypto | SAT | 13.510s |
+| feistel_b64_k57_r18 | crypto | SAT | 0.817s |
+| random_v285_s2 | 3-SAT | UNSAT | 10.306s |
+| random_v292_s4 | 3-SAT | UNSAT | 22.558s |
+| random_v355_s3 | crypto/random SAT | SAT | 11.170s |
+
+Same profiling set comparison from the loaded-machine run:
+
+| Solver | PAR-2 | Solved | Log |
+|--------|------:|-------:|-----|
+| `09-top-level-simplify` | 69.321 | 6/6 | `log/bench-09-top-level-simplify-2026-04-28-11-38-35/results.csv` |
+| `08-clause-db-management` | 88.908 | 6/6 | `log/bench-08-clause-db-management-2026-04-28-11-46-08/results.csv` |
+| `minisat` | 111.928 | 6/6 | `log/bench-minisat-2026-04-28-11-53-52/results.csv` |
+
+These runs shared the host with an unrelated long-running `08` solver process, so use them as
+loaded-machine comparisons rather than isolated timing measurements.
