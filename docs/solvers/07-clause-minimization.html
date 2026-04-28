@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>07 clause-minimization · SAT Playground</title>
+    <link rel="stylesheet" href="../solver-pages.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="panel">
+        <p class="eyebrow">SAT Playground · Solver 07</p>
+        <h1>07 clause-minimization</h1>
+        <p class="lead">
+          This iteration keeps <code>06</code>'s MiniSat-style watched-clause layout and adds
+          runtime conflict-clause minimization during
+          <a href="https://en.wikipedia.org/wiki/Conflict-driven_clause_learning" target="_blank" rel="noreferrer">CDCL</a>
+          analysis. Learned clauses can now be shrunk in <code>basic</code> or <code>deep</code>
+          mode, redundant literals may be removed through recursive reason traversal, and the
+          solver preserves the learned clause's asserting property before enqueueing it after
+          backjumping.
+        </p>
+        <div class="actions">
+          <a class="button" href="../index.html">Back To Main Page</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/tree/main/solver/07-clause-minimization" target="_blank" rel="noreferrer">Solver Source</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/blob/main/solver/07-clause-minimization/README.md" target="_blank" rel="noreferrer">Optimization Notes</a>
+        </div>
+        <div class="pill-row">
+          <span class="pill">Basic + deep minimization</span>
+          <span class="pill">Learned-reason recursion</span>
+          <span class="pill">Asserting-clause backjump check</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>What It Implements</h2>
+        <ul>
+          <li>The same watched-clause propagation, blocker watchers, learned clauses, restarts, saved phases, and heap-based branch selection from <code>06</code>.</li>
+          <li>Two conflict-clause minimization modes: <code>basic</code>, which removes literals whose reason clauses depend only on already-kept sources, and <code>deep</code>, which recursively walks the reason DAG.</li>
+          <li>Learned-reason recursion during deep minimization, not just recursion through original clauses.</li>
+          <li>Conflict-analysis invariants that preserve an asserting learned clause after backtrack, including a debug check that the head literal is unassigned and the rest are false.</li>
+          <li>An environment override, <code>SAT_CCMIN_MODE=none|basic|deep</code>, for benchmarking and debugging.</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>High-Level Pseudocode</h2>
+        <pre><code>conflict = propagate()
+if conflict exists:
+  learned_clause, backjump_level = analyze_conflict(conflict)
+
+  if ccmin_mode == basic:
+    remove literals whose reason parents are all already sourced
+  else if ccmin_mode == deep:
+    recursively walk reason clauses and remove literals proven redundant
+
+  add learned_clause to the database
+  backtrack(backjump_level)
+  assert learned_clause is still asserting
+  enqueue learned_clause[0] with the learned clause as its reason</code></pre>
+      </section>
+
+      <section class="panel">
+        <h2>Code-Level Optimization Diffs</h2>
+        <p class="small">
+          The README has the full notes. These are the implementation changes that best summarize how <code>07</code> differs from <code>06</code>.
+        </p>
+        <div class="diff-grid">
+          <article class="diff-card">
+            <h3>Conflict-Clause Shrinking</h3>
+            <p>
+              Conflict analysis no longer emits the raw first-UIP clause unconditionally. It now runs an explicit redundancy pass before the learned clause enters the database.
+            </p>
+            <pre><code><span class="diff-del">- learn the raw first-UIP clause directly</span>
+<span class="diff-add">+ run basic or deep redundancy checks before adding the clause</span>
+<span class="diff-add">+ drop literals whose reasons are already covered by the learned source set</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Learned-Reason Recursion</h3>
+            <p>
+              Deep minimization can recurse through learned reasons as well as original ones, but it has to skip the reason-clause head by slot and ignore level-0 parents.
+            </p>
+            <pre><code><span class="diff-del">- stop deep minimization at learned-clause reasons</span>
+<span class="diff-add">+ recurse through learned reasons too</span>
+<span class="diff-add">+ skip reason_clause[0] and ignore decision-level-0 parents</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Asserting-Clause Preservation</h3>
+            <p>
+              Backtracking had to preserve the target level exactly so the minimized clause still becomes unit at the backjump destination.
+            </p>
+            <pre><code><span class="diff-del">- backtrack based only on the previous decision-level boundary</span>
+<span class="diff-add">+ preserve trail_limits[target_level] when backjumping</span>
+<span class="diff-add">+ debug-assert that the learned clause is still asserting after backtrack</span></code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Proof Caveat</h2>
+        <p>
+          The solver's runtime minimization is more aggressive than its proof bookkeeping. The DRAT
+          output still records only the minimized learned clause, not an explicit strengthening
+          chain, so <code>07</code> keeps the solver-side wins from clause minimization without yet
+          turning that proof path into a fully explicit proof-side minimizer.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>
