@@ -39,6 +39,7 @@ struct SolverStats {
     propagations: u64,
     decisions: u64,
     restarts: u64,
+    simplifications: u64,
     reduce_db_calls: u64,
     deleted_clauses: u64,
     garbage_collections: u64,
@@ -185,7 +186,6 @@ struct Solver {
     arena: Vec<u32>,
     /// references to original clauses inside `arena`
     original_clause_ids: Vec<usize>,
-    original_clause_count: usize,
     /// live learned-clause ids, mirroring MiniSat's dedicated `learnts` vector
     learned_clause_ids: Vec<usize>,
     /// clauses currently watching each literal, with blocker fast path
@@ -243,8 +243,12 @@ struct Solver {
     learntsize_adjust_confl: f64,
     /// current number of non-deleted learned clauses
     live_learned_clause_count: usize,
-    /// total number of arena words currently wasted by tombstoned learned clauses
+    /// total number of arena words currently wasted by deleted or shrunk clauses
     deleted_clause_words: usize,
+    /// number of root assignments after the last successful simplify pass
+    simplify_assigns: usize,
+    /// remaining propagation budget before the next simplify pass should do work again
+    simplify_props_remaining: i64,
     /// original unit clauses that must be enqueued at decision level 0
     root_unit_clauses: Vec<usize>,
     /// whether the formula already contains an empty clause
@@ -478,7 +482,6 @@ impl Solver {
         let mut solver = Solver {
             arena,
             original_clause_ids,
-            original_clause_count,
             learned_clause_ids: Vec::new(),
             watchers: vec![Vec::new(); num_vars.saturating_mul(2)],
             watch_scratch: Vec::new(),
@@ -508,6 +511,8 @@ impl Solver {
             learntsize_adjust_confl: LEARNTSIZE_ADJUST_START_CONFL as f64,
             live_learned_clause_count: 0,
             deleted_clause_words: 0,
+            simplify_assigns: 0,
+            simplify_props_remaining: 0,
             root_unit_clauses: Vec::new(),
             has_empty_clause: false,
             scratch_seen: vec![0; num_vars + 1],
@@ -624,6 +629,95 @@ impl Solver {
         let start = clause_idx + 1;
         let end = start + self.clause_len(clause_idx);
         unsafe { words_as_lits(&self.arena[start..end]) }
+    }
+
+    fn clause_satisfied(&self, clause_idx: usize) -> bool {
+        let clause_len = self.clause_len(clause_idx);
+        for lit_pos in 0..clause_len {
+            if self.lit_value(self.clause_lit(clause_idx, lit_pos)) == TRUE {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn trim_root_false_literals(&mut self, clause_idx: usize) {
+        let clause_len = self.clause_len(clause_idx);
+        if clause_len <= 2 {
+            return;
+        }
+
+        debug_assert_ne!(self.lit_value(self.clause_lit(clause_idx, 0)), FALSE);
+        debug_assert_ne!(self.lit_value(self.clause_lit(clause_idx, 1)), FALSE);
+
+        let mut write = 2usize;
+        for read in 2..clause_len {
+            let lit = self.clause_lit(clause_idx, read);
+            if self.lit_value(lit) == FALSE {
+                continue;
+            }
+            if write != read {
+                self.set_clause_lit(clause_idx, write, lit);
+            }
+            write += 1;
+        }
+
+        if write == clause_len {
+            return;
+        }
+
+        if self.clause_has_extra(clause_idx) {
+            let old_extra_idx = clause_idx + 1 + clause_len;
+            let new_extra_idx = clause_idx + 1 + write;
+            self.arena[new_extra_idx] = self.arena[old_extra_idx];
+        }
+
+        let header = self.clause_header(clause_idx);
+        self.arena[clause_idx] = clause_make_header(
+            write,
+            clause_header_learnt(header),
+            clause_header_has_extra(header),
+            clause_header_mark(header),
+            clause_header_reloced(header),
+        );
+        self.deleted_clause_words += clause_len - write;
+    }
+
+    fn delete_clause_for_simplify(&mut self, clause_idx: usize) {
+        if self.clause_locked(clause_idx) {
+            let implied_lit = self.clause_lit(clause_idx, 0);
+            let var = implied_lit.unsigned_abs() as usize;
+            self.reason[var] = NO_REASON;
+        }
+
+        self.detach_clause(clause_idx);
+        self.deleted_clause_words += self.clause_word_len(clause_idx);
+        self.clause_set_deleted(clause_idx, true);
+        self.stats.deleted_clauses += 1;
+    }
+
+    fn simplify_clause_list(&mut self, clause_ids: Vec<usize>) -> Vec<usize> {
+        let mut kept = Vec::with_capacity(clause_ids.len());
+        for clause_idx in clause_ids {
+            if self.clause_is_deleted(clause_idx) {
+                continue;
+            }
+            if self.clause_satisfied(clause_idx) {
+                self.delete_clause_for_simplify(clause_idx);
+                continue;
+            }
+            self.trim_root_false_literals(clause_idx);
+            kept.push(clause_idx);
+        }
+        kept
+    }
+
+    fn total_live_clause_literals(&self) -> usize {
+        self.original_clause_ids
+            .iter()
+            .chain(self.learned_clause_ids.iter())
+            .map(|&clause_idx| self.clause_len(clause_idx))
+            .sum()
     }
 
     fn push_branch_var(&mut self, var: usize) {
@@ -841,6 +935,7 @@ impl Solver {
     }
 
     fn propagate(&mut self) -> Option<usize> {
+        let start_head = self.propagate_head;
         while self.propagate_head < self.trail.len() {
             let false_lit = -self.trail[self.propagate_head];
             self.propagate_head += 1;
@@ -940,6 +1035,8 @@ impl Solver {
             self.watch_scratch = pending;
             self.watch_scratch.clear();
         }
+
+        self.simplify_props_remaining -= (self.propagate_head - start_head) as i64;
 
         None
     }
@@ -1101,6 +1198,32 @@ impl Solver {
         true
     }
 
+    fn simplify(&mut self) -> bool {
+        debug_assert_eq!(self.current_level(), 0);
+        self.stats.simplifications += 1;
+
+        if self.has_empty_clause || self.propagate().is_some() {
+            return false;
+        }
+
+        if self.root_trail_len == self.simplify_assigns || self.simplify_props_remaining > 0 {
+            return true;
+        }
+
+        let learned_clause_ids = std::mem::take(&mut self.learned_clause_ids);
+        self.learned_clause_ids = self.simplify_clause_list(learned_clause_ids);
+        self.live_learned_clause_count = self.learned_clause_ids.len();
+
+        let original_clause_ids = std::mem::take(&mut self.original_clause_ids);
+        self.original_clause_ids = self.simplify_clause_list(original_clause_ids);
+
+        self.maybe_garbage_collect();
+        self.rebuild_branch_queue();
+        self.simplify_assigns = self.root_trail_len;
+        self.simplify_props_remaining = self.total_live_clause_literals() as i64;
+        true
+    }
+
     fn add_clause(&mut self, clause: Vec<i32>) -> usize {
         let clause_idx = self.arena.len();
         self.arena
@@ -1208,7 +1331,10 @@ impl Solver {
         let mut new_arena = Vec::with_capacity(live_word_count);
         let mut new_original_clause_ids = Vec::with_capacity(self.original_clause_ids.len());
         let mut new_learned_clause_ids = Vec::with_capacity(self.learned_clause_ids.len());
-        debug_assert_eq!(live_clause_count, self.original_clause_count + self.learned_clause_ids.len());
+        debug_assert_eq!(
+            live_clause_count,
+            self.original_clause_ids.len() + self.learned_clause_ids.len()
+        );
 
         let copy_clause =
             |old_clause_idx: usize, arena: &[u32], new_arena: &mut Vec<u32>, reloc: &mut [usize]| {
@@ -1552,6 +1678,10 @@ impl Solver {
                     if self.perform_restart_if_pending() {
                         conflict = self.propagate();
                         continue;
+                    }
+
+                    if self.current_level() == 0 && !self.simplify() {
+                        return false;
                     }
 
                     if self.reduce_db_enabled()
@@ -2136,6 +2266,59 @@ mod tests {
         s.decide(-1);
         assert_eq!(s.propagate(), None);
         assert_eq!(s.assignment[4], TRUE);
+    }
+
+    #[test]
+    fn test_top_level_simplify_removes_satisfied_clauses_and_trims_root_false_literals() {
+        let mut s = make_solver(7, vec![vec![1], vec![1, 3], vec![4, -1, 5]]);
+        let satisfied_learned = s.add_clause(vec![2, -1]);
+        let _trimmed_learned = s.add_clause(vec![6, -1, 7]);
+
+        assert!(s.enqueue_root_units());
+        assert_eq!(s.propagate(), None);
+        assert_eq!(s.assignment[1], TRUE);
+        assert_eq!(s.assignment[2], TRUE);
+        assert_eq!(s.reason[2], satisfied_learned);
+
+        assert!(s.simplify());
+
+        assert_eq!(s.reason[2], NO_REASON);
+        assert_eq!(s.original_clause_ids.len(), 1);
+        assert_eq!(s.learned_clause_ids.len(), 1);
+        assert_eq!(s.live_learned_clause_count, 1);
+
+        let mut original_clauses: Vec<Vec<i32>> = s
+            .original_clause_ids
+            .iter()
+            .map(|&clause_idx| s.clause_slice(clause_idx).to_vec())
+            .collect();
+        original_clauses.sort();
+        assert_eq!(original_clauses, vec![vec![4, 5]]);
+
+        let learned_clauses: Vec<Vec<i32>> = s
+            .learned_clause_ids
+            .iter()
+            .map(|&clause_idx| s.clause_slice(clause_idx).to_vec())
+            .collect();
+        assert_eq!(learned_clauses, vec![vec![6, 7]]);
+
+        assert!(
+            !s.learned_clause_ids.contains(&satisfied_learned),
+            "satisfied learned clause should be removed from the live learned list"
+        );
+    }
+
+    #[test]
+    fn test_top_level_simplify_is_noop_without_new_root_assignments() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-1, 3]]);
+
+        assert!(s.simplify());
+        let original_ids = s.original_clause_ids.clone();
+        let deleted_words = s.deleted_clause_words;
+
+        assert!(s.simplify());
+        assert_eq!(s.original_clause_ids, original_ids);
+        assert_eq!(s.deleted_clause_words, deleted_words);
     }
 
     #[test]
