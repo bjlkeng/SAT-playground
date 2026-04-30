@@ -32,7 +32,9 @@ SAT-playground/
     ├── 04-vsids/
     ├── 05-restarts/
     ├── 06-clause-storage/
-    └── 07-clause-minimization/
+    ├── 07-clause-minimization/
+    ├── 08-clause-db-management/
+    └── 09-top-level-simplify/
 ```
 
 ### Iteration Directory Layout
@@ -141,9 +143,29 @@ bash tools/bench.sh -t 120 -d benchmarks/profiling solver/01-naive-dpll
 | 05 | restarts                     | Luby restarts + phase saving                       | Strong restart baseline |
 | 06 | clause-storage               | MiniSat-style clause layout and blocker watchers   | Storage-only hot-path rewrite |
 | 07 | clause-storage-minimization  | Clause storage plus runtime clause minimization    | Safe conflict-clause shrinking on top of `06` |
+| 08 | clause-db-management         | Learned-clause activity, reduction, and arena GC   | Managing learned database growth |
+| 09 | top-level-simplify           | Level-0 simplify pass on top of `08`               | Root simplification and medium-benchmark profiling |
 
 Each iteration directory has its own `README.md` with the actual implementation notes, validation
 status, and benchmark history for that solver.
+
+### Current 09 Profiling Notes
+
+Recent medium-benchmark profiling against MiniSat shows three recurring opportunities for
+`09-top-level-simplify`:
+
+- MiniSat's simplification frontend can dominate outcomes even when it is cheap. On
+  `sudoku-N30-12`, default MiniSat solved in about `183s`, while `minisat_core` and
+  `minisat -no-pre` both timed out at `400s`; the difference was a `3.1s` simplification pass
+  that roughly halved the active variable count.
+- Propagation remains the main hot path. On several sampled instances, `Solver::propagate` accounts
+  for roughly `80-92%` of `09` cycles. Binary-heavy formulas such as `sudoku-N30-12` suggest a
+  dedicated binary implication path may be a high-leverage next step.
+- Branch-heap and backtrack overhead is now visible after the latest hot-path cleanup. On
+  `sudoku-N30-12`, `push_branch_var`, `branch_var_better`, and heap sifting together accounted for
+  a meaningful secondary share of sampled cycles.
+
+The latest profiling logs are intentionally kept under `log/` and are not tracked by default.
 
 ## References
 
