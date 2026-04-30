@@ -863,6 +863,22 @@ impl Solver {
         Some(best_var)
     }
 
+    fn detach_clause_watcher(&mut self, lit: i32, clause_idx: usize) {
+        let watch_idx = self.lit_index(lit);
+        let watch_list = &mut self.watchers[watch_idx];
+        if let Some(pos) = watch_list
+            .iter()
+            .position(|watcher| watcher.clause_idx as usize == clause_idx)
+        {
+            watch_list.swap_remove(pos);
+        } else {
+            debug_assert!(
+                false,
+                "clause {clause_idx} missing watcher for literal {lit}"
+            );
+        }
+    }
+
     fn attach_clause(&mut self, clause_idx: usize, track_root_unit: bool) {
         debug_assert!(
             !self.clause_is_deleted(clause_idx),
@@ -905,6 +921,10 @@ impl Solver {
         if self.clause_is_deleted(clause_idx) || clause_len == 0 {
             return;
         }
+        self.detach_clause_watcher(self.clause_lit(clause_idx, 0), clause_idx);
+        if clause_len > 1 {
+            self.detach_clause_watcher(self.clause_lit(clause_idx, 1), clause_idx);
+        }
     }
 
     #[inline(always)]
@@ -928,7 +948,6 @@ impl Solver {
         let current = self.assignment[var];
         if current == UNASSIGNED {
             let current_level = self.current_level();
-            self.branch_heap_remove(var);
             self.assignment[var] = target_value;
             self.saved_phase[var] = target_value;
             self.decision_level[var] = current_level;
@@ -969,9 +988,10 @@ impl Solver {
                 let watcher = pending[read];
                 read += 1;
                 let clause_idx = watcher.clause_idx as usize;
-                if self.clause_is_deleted(clause_idx) {
-                    continue;
-                }
+                debug_assert!(
+                    !self.clause_is_deleted(clause_idx),
+                    "deleted clause {clause_idx} remained in a watch list"
+                );
                 let clause_len = self.clause_len(clause_idx);
                 if clause_len == 1 {
                     let unit_lit = self.clause_lit(clause_idx, 0);
@@ -1168,13 +1188,18 @@ impl Solver {
     }
 
     fn pick_branch_lit(&mut self) -> Option<i32> {
-        self.branch_heap_pop_best().map(|var| {
-            if self.saved_phase[var] == FALSE {
+        while let Some(var) = self.branch_heap_pop_best() {
+            if self.assignment[var] != UNASSIGNED {
+                continue;
+            }
+
+            return Some(if self.saved_phase[var] == FALSE {
                 -(var as i32)
             } else {
                 var as i32
-            }
-        })
+            });
+        }
+        None
     }
 
     fn backtrack(&mut self, target_level: usize) {
@@ -2268,7 +2293,7 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_clause_lazily_removes_watchers() {
+    fn test_delete_clause_eagerly_removes_watchers() {
         let mut s = make_solver(3, vec![]);
         let clause_idx = s.add_clause(vec![3, 1, 2]);
 
@@ -2292,18 +2317,8 @@ mod tests {
         assert!(
             s.watchers[s.lit_index(3)]
                 .iter()
-                .any(|watcher| watcher.clause_idx as usize == clause_idx)
-        );
-
-        s.decide(-3);
-        assert_eq!(s.propagate(), None);
-        assert!(
-            s.watchers[s.lit_index(3)]
-                .iter()
                 .all(|watcher| watcher.clause_idx as usize != clause_idx)
         );
-        s.decide(-1);
-        assert_eq!(s.propagate(), None);
         assert!(
             s.watchers[s.lit_index(1)]
                 .iter()
@@ -2332,6 +2347,23 @@ mod tests {
 
         assert_eq!(s.learned_clause_ids, vec![first]);
         assert!(s.clause_is_deleted(tail));
+    }
+
+    #[test]
+    fn test_enqueue_keeps_assigned_variable_in_branch_heap_for_lazy_skip() {
+        let mut s = make_solver(3, vec![]);
+
+        assert_ne!(s.branch_pos[1], BRANCH_NOT_IN_HEAP);
+        assert!(s.enqueue(1, NO_REASON));
+
+        assert_ne!(s.branch_pos[1], BRANCH_NOT_IN_HEAP);
+        for _ in 0..3 {
+            let Some(lit) = s.pick_branch_lit() else {
+                break;
+            };
+            assert_ne!(lit.unsigned_abs(), 1);
+        }
+        assert_eq!(s.branch_pos[1], BRANCH_NOT_IN_HEAP);
     }
 
     #[test]
