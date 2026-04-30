@@ -1618,14 +1618,6 @@ impl Solver {
 
     fn analyze_conflict_to_scratch(&mut self, conflict_clause_idx: usize) -> usize {
         let current_level = self.current_level();
-        unsafe {
-            std::ptr::write_bytes(self.scratch_seen.as_mut_ptr(), 0, self.scratch_seen.len());
-            std::ptr::write_bytes(
-                self.scratch_resolved.as_mut_ptr(),
-                0,
-                self.scratch_resolved.len(),
-            );
-        }
         self.scratch_learned.clear();
         self.scratch_bumped_vars.clear();
 
@@ -1688,6 +1680,10 @@ impl Solver {
         }
 
         self.scratch_conflict_clause = learned_clause;
+        for &var in &self.scratch_bumped_vars {
+            self.scratch_seen[var] = 0;
+            self.scratch_resolved[var] = 0;
+        }
         backtrack_level
     }
 
@@ -1743,20 +1739,31 @@ impl Solver {
                     let learned_clause = std::mem::take(&mut self.scratch_conflict_clause);
                     let asserting_lit = learned_clause[0];
                     proof_log.record_clause(&learned_clause);
-                    let learned_clause_idx = self.add_clause_from_slice(&learned_clause);
-                    self.scratch_conflict_clause = learned_clause;
-                    self.scratch_conflict_clause.clear();
-                    if self.reduce_db_enabled() {
-                        self.bump_clause_activity(learned_clause_idx);
-                    }
+                    if learned_clause.len() == 1 {
+                        debug_assert_eq!(backtrack_level, 0);
+                        self.backtrack(0);
+                        let inserted = self.enqueue(asserting_lit, NO_REASON);
+                        if !inserted {
+                            return false;
+                        }
+                        self.scratch_conflict_clause = learned_clause;
+                        self.scratch_conflict_clause.clear();
+                    } else {
+                        let learned_clause_idx = self.add_clause_from_slice(&learned_clause);
+                        self.scratch_conflict_clause = learned_clause;
+                        self.scratch_conflict_clause.clear();
+                        if self.reduce_db_enabled() {
+                            self.bump_clause_activity(learned_clause_idx);
+                        }
 
-                    self.backtrack(backtrack_level);
-                    self.debug_assert_clause_asserting_after_backtrack(
-                        self.clause_slice(learned_clause_idx),
-                        backtrack_level,
-                    );
-                    let inserted = self.enqueue(asserting_lit, learned_clause_idx);
-                    debug_assert!(inserted, "learned clause must be asserting after backtrack");
+                        self.backtrack(backtrack_level);
+                        self.debug_assert_clause_asserting_after_backtrack(
+                            self.clause_slice(learned_clause_idx),
+                            backtrack_level,
+                        );
+                        let inserted = self.enqueue(asserting_lit, learned_clause_idx);
+                        debug_assert!(inserted, "learned clause must be asserting after backtrack");
+                    }
 
                     conflict = self.propagate();
                 }
@@ -2421,7 +2428,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cdcl_learns_clause_on_unsat_instance() {
+    fn test_cdcl_solves_unsat_with_learned_unit_shortcut() {
         let clauses = vec![
             vec![1, 2],
             vec![-1, 2],
@@ -2430,7 +2437,12 @@ mod tests {
         ];
         let mut s = make_solver(2, clauses);
         assert!(!s.solve());
-        assert!(s.learned_clause_count() > 0);
+        assert_eq!(
+            s.learned_clause_count(),
+            0,
+            "unit learned clauses should be enqueued at root without storing watched clauses"
+        );
+        assert!(s.stats.conflicts > 0);
     }
 
     #[test]
@@ -2519,10 +2531,6 @@ mod tests {
         let proof_dir = make_temp_dir("solver-unsat-proof");
         let mut s = make_solver(2, clauses);
         assert!(!s.solve_to_output(proof_dir.to_str().expect("utf8 temp dir")));
-        assert!(
-            s.learned_clause_count() > 0,
-            "expected solver to learn at least one clause on this UNSAT instance"
-        );
 
         let proof_text = fs::read_to_string(proof_dir.join("proof.out"))
             .expect("failed to read emitted proof");
@@ -2691,7 +2699,6 @@ mod tests {
         let mut s = make_solver(2, clauses);
 
         assert!(!s.solve());
-        assert!(s.learned_clause_count() > 0);
         assert!(s.activity[1] > 0.0);
         assert!(s.activity[2] > 0.0);
     }
