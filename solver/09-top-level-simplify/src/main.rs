@@ -243,6 +243,10 @@ struct Solver {
     learntsize_adjust_confl: f64,
     /// current number of non-deleted learned clauses
     live_learned_clause_count: usize,
+    /// live literal count in original clauses, maintained incrementally for simplify gating
+    original_literals: usize,
+    /// live literal count in learned clauses, maintained incrementally for simplify gating
+    learned_literals: usize,
     /// total number of arena words currently wasted by deleted or shrunk clauses
     deleted_clause_words: usize,
     /// number of root assignments after the last successful simplify pass
@@ -257,6 +261,7 @@ struct Solver {
     scratch_seen: Vec<u8>,
     scratch_resolved: Vec<u8>,
     scratch_learned: Vec<i32>,
+    scratch_conflict_clause: Vec<i32>,
     scratch_bumped_vars: Vec<usize>,
     scratch_redundant_state: Vec<u8>,
     scratch_analyze_toclear: Vec<usize>,
@@ -319,6 +324,13 @@ unsafe fn words_as_lits(words: &[u32]) -> &[i32] {
 #[inline(always)]
 fn clause_len_in_arena(arena: &[u32], clause_idx: usize) -> usize {
     clause_header_size(arena[clause_idx])
+}
+
+#[inline(always)]
+fn clause_activity_in_arena(arena: &[u32], clause_idx: usize) -> f32 {
+    debug_assert!(clause_header_has_extra(arena[clause_idx]));
+    let extra_idx = clause_idx + 1 + clause_len_in_arena(arena, clause_idx);
+    f32::from_bits(arena[extra_idx])
 }
 
 #[inline(always)]
@@ -468,6 +480,7 @@ impl Solver {
             branch_rank[var as usize] = rank;
         }
 
+        let original_literals: usize = clauses.iter().map(|clause| clause.len()).sum();
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
         let mut arena = Vec::with_capacity(total_words);
         let mut original_clause_ids = Vec::with_capacity(original_clause_count);
@@ -510,6 +523,8 @@ impl Solver {
             learntsize_adjust_cnt: LEARNTSIZE_ADJUST_START_CONFL,
             learntsize_adjust_confl: LEARNTSIZE_ADJUST_START_CONFL as f64,
             live_learned_clause_count: 0,
+            original_literals,
+            learned_literals: 0,
             deleted_clause_words: 0,
             simplify_assigns: 0,
             simplify_props_remaining: 0,
@@ -518,6 +533,7 @@ impl Solver {
             scratch_seen: vec![0; num_vars + 1],
             scratch_resolved: vec![0; num_vars + 1],
             scratch_learned: Vec::with_capacity(16),
+            scratch_conflict_clause: Vec::with_capacity(16),
             scratch_bumped_vars: Vec::with_capacity(16),
             scratch_redundant_state: vec![0; num_vars + 1],
             scratch_analyze_toclear: Vec::with_capacity(16),
@@ -680,7 +696,13 @@ impl Solver {
             clause_header_mark(header),
             clause_header_reloced(header),
         );
-        self.deleted_clause_words += clause_len - write;
+        let removed = clause_len - write;
+        if self.clause_is_learnt(clause_idx) {
+            self.learned_literals -= removed;
+        } else {
+            self.original_literals -= removed;
+        }
+        self.deleted_clause_words += removed;
     }
 
     fn delete_clause_for_simplify(&mut self, clause_idx: usize) {
@@ -690,7 +712,13 @@ impl Solver {
             self.reason[var] = NO_REASON;
         }
 
+        let clause_len = self.clause_len(clause_idx);
         self.detach_clause(clause_idx);
+        if self.clause_is_learnt(clause_idx) {
+            self.learned_literals -= clause_len;
+        } else {
+            self.original_literals -= clause_len;
+        }
         self.deleted_clause_words += self.clause_word_len(clause_idx);
         self.clause_set_deleted(clause_idx, true);
         self.stats.deleted_clauses += 1;
@@ -715,11 +743,7 @@ impl Solver {
     }
 
     fn total_live_clause_literals(&self) -> usize {
-        self.original_clause_ids
-            .iter()
-            .chain(self.learned_clause_ids.iter())
-            .map(|&clause_idx| self.clause_len(clause_idx))
-            .sum()
+        self.original_literals + self.learned_literals
     }
 
     fn push_branch_var(&mut self, var: usize) {
@@ -737,7 +761,13 @@ impl Solver {
         self.branch_heap.clear();
         self.branch_pos.fill(BRANCH_NOT_IN_HEAP);
         for var in 1..self.assignment.len() {
-            self.push_branch_var(var);
+            if self.assignment[var] == UNASSIGNED {
+                self.branch_pos[var] = self.branch_heap.len();
+                self.branch_heap.push(var as u32);
+            }
+        }
+        for idx in (0..(self.branch_heap.len() / 2)).rev() {
+            self.branch_heap_sift_down(idx);
         }
     }
 
@@ -870,23 +900,11 @@ impl Solver {
         }
     }
 
-    fn remove_clause_watchers(watch_list: &mut Vec<Watcher>, clause_idx: usize) {
-        watch_list.retain(|watcher| watcher.clause_idx as usize != clause_idx);
-    }
-
     fn detach_clause(&mut self, clause_idx: usize) {
         let clause_len = self.clause_len(clause_idx);
         if self.clause_is_deleted(clause_idx) || clause_len == 0 {
             return;
         }
-
-        let first_watch_idx = self.lit_index(self.clause_lit(clause_idx, 0));
-        Self::remove_clause_watchers(&mut self.watchers[first_watch_idx], clause_idx);
-        if clause_len >= 2 {
-            let second_watch_idx = self.lit_index(self.clause_lit(clause_idx, 1));
-            Self::remove_clause_watchers(&mut self.watchers[second_watch_idx], clause_idx);
-        }
-        Self::remove_clause_watchers(&mut self.watch_scratch, clause_idx);
     }
 
     #[inline(always)]
@@ -943,41 +961,52 @@ impl Solver {
             self.propagate_head += 1;
             self.stats.propagations += 1;
             let watch_idx = self.lit_index(false_lit);
-            let pending = std::mem::take(&mut self.watchers[watch_idx]);
-            let mut retained = std::mem::take(&mut self.watch_scratch);
-            retained.clear();
-            if retained.capacity() < pending.len() {
-                retained.reserve(pending.len() - retained.capacity());
-            }
-            let mut pending_idx = 0usize;
+            let mut pending = std::mem::take(&mut self.watchers[watch_idx]);
+            let mut read = 0usize;
+            let mut write = 0usize;
 
-            while pending_idx < pending.len() {
-                let watcher = pending[pending_idx];
-                pending_idx += 1;
+            while read < pending.len() {
+                let watcher = pending[read];
+                read += 1;
                 let clause_idx = watcher.clause_idx as usize;
+                if self.clause_is_deleted(clause_idx) {
+                    continue;
+                }
                 let clause_len = self.clause_len(clause_idx);
                 if clause_len == 1 {
                     let unit_lit = self.clause_lit(clause_idx, 0);
                     match self.lit_value(unit_lit) {
-                        TRUE => retained.push(watcher),
+                        TRUE => {
+                            pending[write] = watcher;
+                            write += 1;
+                        }
                         FALSE => {
-                            retained.push(watcher);
-                            retained.extend_from_slice(&pending[pending_idx..]);
-                            self.watchers[watch_idx] = retained;
-                            self.watch_scratch = pending;
-                            self.watch_scratch.clear();
+                            pending[write] = watcher;
+                            write += 1;
+                            while read < pending.len() {
+                                pending[write] = pending[read];
+                                write += 1;
+                                read += 1;
+                            }
+                            pending.truncate(write);
+                            self.watchers[watch_idx] = pending;
                             return Some(clause_idx);
                         }
                         UNASSIGNED => {
                             if !self.enqueue(unit_lit, clause_idx) {
-                                retained.push(watcher);
-                                retained.extend_from_slice(&pending[pending_idx..]);
-                                self.watchers[watch_idx] = retained;
-                                self.watch_scratch = pending;
-                                self.watch_scratch.clear();
+                                pending[write] = watcher;
+                                write += 1;
+                                while read < pending.len() {
+                                    pending[write] = pending[read];
+                                    write += 1;
+                                    read += 1;
+                                }
+                                pending.truncate(write);
+                                self.watchers[watch_idx] = pending;
                                 return Some(clause_idx);
                             }
-                            retained.push(watcher);
+                            pending[write] = watcher;
+                            write += 1;
                         }
                         _ => unreachable!(),
                     }
@@ -985,7 +1014,8 @@ impl Solver {
                 }
 
                 if self.lit_value(watcher.blocker) == TRUE {
-                    retained.push(watcher);
+                    pending[write] = watcher;
+                    write += 1;
                     continue;
                 }
 
@@ -1002,7 +1032,8 @@ impl Solver {
                     blocker: first,
                 };
                 if first != watcher.blocker && self.lit_value(first) == TRUE {
-                    retained.push(updated_watcher);
+                    pending[write] = updated_watcher;
+                    write += 1;
                     continue;
                 }
 
@@ -1023,19 +1054,22 @@ impl Solver {
                     continue;
                 }
 
-                retained.push(updated_watcher);
+                pending[write] = updated_watcher;
+                write += 1;
                 if self.lit_value(first) == FALSE || !self.enqueue(first, clause_idx) {
-                    retained.extend_from_slice(&pending[pending_idx..]);
-                    self.watchers[watch_idx] = retained;
-                    self.watch_scratch = pending;
-                    self.watch_scratch.clear();
+                    while read < pending.len() {
+                        pending[write] = pending[read];
+                        write += 1;
+                        read += 1;
+                    }
+                    pending.truncate(write);
+                    self.watchers[watch_idx] = pending;
                     return Some(clause_idx);
                 }
             }
 
-            self.watchers[watch_idx] = retained;
-            self.watch_scratch = pending;
-            self.watch_scratch.clear();
+            pending.truncate(write);
+            self.watchers[watch_idx] = pending;
         }
 
         self.simplify_props_remaining -= (self.propagate_head - start_head) as i64;
@@ -1227,13 +1261,19 @@ impl Solver {
     }
 
     fn add_clause(&mut self, clause: Vec<i32>) -> usize {
+        self.add_clause_from_slice(&clause)
+    }
+
+    fn add_clause_from_slice(&mut self, clause: &[i32]) -> usize {
         let clause_idx = self.arena.len();
+        let clause_len = clause.len();
         self.arena
-            .push(clause_make_header(clause.len(), true, true, 0, false));
-        self.arena.extend(clause.into_iter().map(lit_to_word));
+            .push(clause_make_header(clause_len, true, true, 0, false));
+        self.arena.extend(clause.iter().copied().map(lit_to_word));
         self.arena.push(0.0f32.to_bits());
         self.learned_clause_ids.push(clause_idx);
         self.live_learned_clause_count += 1;
+        self.learned_literals += clause_len;
         self.stats.learned_clauses += 1;
         self.attach_clause(clause_idx, false);
         clause_idx
@@ -1304,6 +1344,28 @@ impl Solver {
             .expect("deleted learned clause missing from learned-clause list");
         self.learned_clause_ids.swap_remove(learned_pos);
         self.live_learned_clause_count = self.live_learned_clause_count.saturating_sub(1);
+        self.learned_literals -= self.clause_len(clause_idx);
+        self.deleted_clause_words += self.clause_word_len(clause_idx);
+        self.clause_set_deleted(clause_idx, true);
+        self.stats.deleted_clauses += 1;
+    }
+
+    fn mark_clause_deleted_already_unlinked(&mut self, clause_idx: usize) {
+        debug_assert!(clause_idx < self.arena.len(), "invalid clause index {clause_idx}");
+        debug_assert!(
+            self.clause_is_learnt(clause_idx),
+            "only learned clauses may be deleted"
+        );
+        debug_assert!(
+            !self.clause_is_deleted(clause_idx),
+            "clause {clause_idx} already deleted"
+        );
+        debug_assert!(
+            !self.reason.iter().any(|&reason_idx| reason_idx == clause_idx),
+            "cannot delete clause {clause_idx} while it is still a live reason"
+        );
+        self.live_learned_clause_count = self.live_learned_clause_count.saturating_sub(1);
+        self.learned_literals -= self.clause_len(clause_idx);
         self.deleted_clause_words += self.clause_word_len(clause_idx);
         self.clause_set_deleted(clause_idx, true);
         self.stats.deleted_clauses += 1;
@@ -1425,31 +1487,43 @@ impl Solver {
 
     fn reduce_db(&mut self) {
         self.stats.reduce_db_calls += 1;
-        let mut candidates = self.learned_clause_ids.clone();
 
-        candidates.sort_unstable_by(|&lhs, &rhs| {
-            let lhs_short = self.clause_len(lhs) <= 2;
-            let rhs_short = self.clause_len(rhs) <= 2;
+        let arena = &self.arena;
+        self.learned_clause_ids.sort_unstable_by(|&lhs, &rhs| {
+            let lhs_short = clause_len_in_arena(arena, lhs) <= 2;
+            let rhs_short = clause_len_in_arena(arena, rhs) <= 2;
             lhs_short
                 .cmp(&rhs_short)
-                .then_with(|| self.clause_activity(lhs).total_cmp(&self.clause_activity(rhs)))
+                .then_with(|| {
+                    clause_activity_in_arena(arena, lhs)
+                        .total_cmp(&clause_activity_in_arena(arena, rhs))
+                })
                 .then_with(|| lhs.cmp(&rhs))
         });
 
-        let extra_lim = if candidates.is_empty() {
+        let candidate_count = self.learned_clause_ids.len();
+        let extra_lim = if candidate_count == 0 {
             0.0
         } else {
-            self.clause_activity_inc / candidates.len() as f32
+            self.clause_activity_inc / candidate_count as f32
         };
-        let half = candidates.len() / 2;
-        for (idx, &clause_idx) in candidates.iter().enumerate() {
+        let half = candidate_count / 2;
+        let mut write = 0usize;
+        for idx in 0..candidate_count {
+            let clause_idx = self.learned_clause_ids[idx];
             if self.clause_len(clause_idx) > 2
                 && !self.clause_locked(clause_idx)
                 && (idx < half || self.clause_activity(clause_idx) < extra_lim)
             {
-                self.delete_clause(clause_idx);
+                self.detach_clause(clause_idx);
+                self.mark_clause_deleted_already_unlinked(clause_idx);
+            } else {
+                self.learned_clause_ids[write] = clause_idx;
+                write += 1;
             }
         }
+        self.learned_clause_ids.truncate(write);
+        self.live_learned_clause_count = self.learned_clause_ids.len();
 
         self.maybe_garbage_collect();
     }
@@ -1542,7 +1616,7 @@ impl Solver {
         }
     }
 
-    fn analyze_conflict(&mut self, conflict_clause_idx: usize) -> (Vec<i32>, usize) {
+    fn analyze_conflict_to_scratch(&mut self, conflict_clause_idx: usize) -> usize {
         let current_level = self.current_level();
         unsafe {
             std::ptr::write_bytes(self.scratch_seen.as_mut_ptr(), 0, self.scratch_seen.len());
@@ -1591,7 +1665,8 @@ impl Solver {
             }
         };
 
-        let mut learned_clause = Vec::with_capacity(self.scratch_learned.len() + 1);
+        let mut learned_clause = std::mem::take(&mut self.scratch_conflict_clause);
+        learned_clause.clear();
         learned_clause.push(-uip_lit);
         learned_clause.extend(self.scratch_learned.iter().copied());
         self.minimize_learned_clause(&mut learned_clause);
@@ -1612,6 +1687,13 @@ impl Solver {
             learned_clause.swap(1, backtrack_pos);
         }
 
+        self.scratch_conflict_clause = learned_clause;
+        backtrack_level
+    }
+
+    fn analyze_conflict(&mut self, conflict_clause_idx: usize) -> (Vec<i32>, usize) {
+        let backtrack_level = self.analyze_conflict_to_scratch(conflict_clause_idx);
+        let learned_clause = self.scratch_conflict_clause.clone();
         (learned_clause, backtrack_level)
     }
 
@@ -1650,8 +1732,7 @@ impl Solver {
                     }
 
                     self.stats.conflicts += 1;
-                    let (learned_clause, backtrack_level) =
-                        self.analyze_conflict(conflict_clause_idx);
+                    let backtrack_level = self.analyze_conflict_to_scratch(conflict_clause_idx);
                     self.bump_analyzed_variable_activity();
                     self.decay_variable_activity();
                     if self.reduce_db_enabled() {
@@ -1659,9 +1740,12 @@ impl Solver {
                         self.note_learnt_budget_conflict();
                     }
                     self.note_conflict();
+                    let learned_clause = std::mem::take(&mut self.scratch_conflict_clause);
                     let asserting_lit = learned_clause[0];
                     proof_log.record_clause(&learned_clause);
-                    let learned_clause_idx = self.add_clause(learned_clause);
+                    let learned_clause_idx = self.add_clause_from_slice(&learned_clause);
+                    self.scratch_conflict_clause = learned_clause;
+                    self.scratch_conflict_clause.clear();
                     if self.reduce_db_enabled() {
                         self.bump_clause_activity(learned_clause_idx);
                     }
@@ -2177,7 +2261,7 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_clause_detaches_watchers_immediately() {
+    fn test_delete_clause_lazily_removes_watchers() {
         let mut s = make_solver(3, vec![]);
         let clause_idx = s.add_clause(vec![3, 1, 2]);
 
@@ -2201,8 +2285,18 @@ mod tests {
         assert!(
             s.watchers[s.lit_index(3)]
                 .iter()
+                .any(|watcher| watcher.clause_idx as usize == clause_idx)
+        );
+
+        s.decide(-3);
+        assert_eq!(s.propagate(), None);
+        assert!(
+            s.watchers[s.lit_index(3)]
+                .iter()
                 .all(|watcher| watcher.clause_idx as usize != clause_idx)
         );
+        s.decide(-1);
+        assert_eq!(s.propagate(), None);
         assert!(
             s.watchers[s.lit_index(1)]
                 .iter()
@@ -2258,16 +2352,16 @@ mod tests {
         assert_eq!(s.stats.reduce_db_calls, 1);
         assert_eq!(s.stats.deleted_clauses, 1);
         assert_eq!(s.clause_slice(s.reason[3]), &[3, 1, 2]);
-        assert!(
-            s.watchers.iter().flatten().all(|watcher| {
-                !s.clause_is_deleted(watcher.clause_idx as usize)
-            }),
-            "watch lists should not keep deleted clauses after reduction"
-        );
 
         s.decide(-1);
         assert_eq!(s.propagate(), None);
         assert_eq!(s.assignment[4], TRUE);
+        assert!(
+            s.watchers[s.lit_index(1)]
+                .iter()
+                .all(|watcher| !s.clause_is_deleted(watcher.clause_idx as usize)),
+            "propagation should drop tombstoned watchers from scanned lists"
+        );
     }
 
     #[test]
@@ -2288,6 +2382,9 @@ mod tests {
         assert_eq!(s.original_clause_ids.len(), 1);
         assert_eq!(s.learned_clause_ids.len(), 1);
         assert_eq!(s.live_learned_clause_count, 1);
+        assert_eq!(s.original_literals, 2);
+        assert_eq!(s.learned_literals, 3);
+        assert_eq!(s.total_live_clause_literals(), 5);
 
         let mut original_clauses: Vec<Vec<i32>> = s
             .original_clause_ids
