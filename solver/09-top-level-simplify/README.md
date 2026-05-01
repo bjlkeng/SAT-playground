@@ -48,6 +48,91 @@ This `09` step adds the first MiniSat-style simplify path on top of `08`:
     clauses intact
   - treating a second simplify call as a no-op when no new root work has happened
 
+## Deep Diff vs `08`
+
+The source delta from `08-clause-db-management` is concentrated in `src/main.rs`. `Cargo.toml` and
+`Cargo.lock` only rename the package from `sat-solver-08-clause-db-management` to
+`sat-solver-09-top-level-simplify`; `build.sh` and `run.sh` are unchanged.
+
+At the data-model level, `09` changes the solver state so original clauses are no longer assumed to
+be permanently live:
+
+- removes the fixed `original_clause_count` field and uses `original_clause_ids.len()` when checking
+  the live arena during garbage collection
+- adds `original_literals` and `learned_literals`, maintained incrementally as clauses are added,
+  shortened, deleted, or collected
+- adds `simplify_assigns` and `simplify_props_remaining` as the MiniSat-style gate for avoiding
+  repeated full database scans at level `0`
+- adds `stats.simplifications` so simplify calls can be measured separately from conflicts,
+  propagations, reductions, and GC
+- adds `scratch_conflict_clause`, a reusable conflict-clause buffer used by the optimized conflict
+  analysis path
+
+The new top-level simplification path is implemented through a small group of helpers:
+
+- `clause_satisfied(clause_idx)` scans a clause under the current root assignment and identifies
+  clauses that can be removed permanently
+- `trim_root_false_literals(clause_idx)` removes literals falsified at level `0` from positions
+  `2..` of surviving original clauses; it preserves the two watched positions, rewrites the packed
+  clause header size, moves the extra activity word if present, updates live literal counts, and
+  counts the removed arena words as reclaimable garbage
+- `delete_clause_for_simplify(clause_idx)` handles satisfied original or learned clauses; if the
+  clause is a root-level reason, it clears the affected variable's `reason` entry before detaching
+  and tombstoning the clause
+- `simplify_clause_list(clause_ids)` rebuilds the original and learned clause vectors by deleting
+  satisfied clauses and trimming only original clauses that survive
+- `simplify()` runs only at decision level `0`, first calls `propagate()` to catch root conflicts,
+  skips the scan if no new root assignments or propagation budget justify it, simplifies learned
+  clauses and then original clauses, optionally garbage-collects, rebuilds the branch heap, and
+  resets the simplify gate
+
+The learned-clause behavior is intentionally asymmetric. `09` deletes satisfied learned clauses, but
+does not trim root-false literals from unsatisfied learned clauses. A previous ablation showed that
+strengthening learned clauses at root could perturb the CDCL search order enough to lose far more
+time than it saved on the current crypto SAT profiling cases.
+
+Several hot-path changes landed alongside the simplify work because profiling made their overhead
+visible:
+
+- `enqueue()` no longer removes the assigned variable from the branch heap immediately; instead,
+  `pick_branch_lit()` lazily pops and skips assigned variables. This avoids heap mutation on every
+  propagation and confines cleanup to branching.
+- `rebuild_branch_queue()` now bulk-loads unassigned variables and heapifies bottom-up instead of
+  repeatedly calling `push_branch_var()` and sifting each insertion.
+- `detach_clause()` now removes watchers with `swap_remove` from the two watched literal lists via
+  `detach_clause_watcher()`. `08` used `retain()` and also scanned `watch_scratch`; `09` keeps
+  detachment narrower and cheaper.
+- `propagate()` now compacts the current watch list in place with read/write indices. `08` moved
+  watchers into a separate retained vector and shuffled `watch_scratch` on every scanned watch list.
+  The new path keeps the same watched-literal semantics while reducing vector traffic.
+- `propagate()` also decrements `simplify_props_remaining` by the number of processed trail entries,
+  which gives `simplify()` a cheap budget signal without another counter.
+- `reduce_db()` sorts `learned_clause_ids` in place, uses arena-only helpers for clause length and
+  activity during sorting, and writes survivors back into the same vector. `08` cloned the learned
+  list into `candidates` and deleted clauses one-by-one with a list search inside `mark_clause_deleted`.
+- `mark_clause_deleted_already_unlinked()` supports that in-place reduction path by tombstoning a
+  learned clause after `reduce_db()` has already decided not to keep it in `learned_clause_ids`.
+- conflict analysis now has `analyze_conflict_to_scratch()`, which writes the learned clause into
+  `scratch_conflict_clause`, clears only variables touched during analysis, and lets the main solve
+  loop move the learned clause out without allocating a fresh `Vec` for every conflict.
+- the solve loop special-cases unit learned clauses: it records the DRAT clause, backtracks to root,
+  enqueues the asserting literal with `NO_REASON`, and avoids storing a watched learned unit clause.
+
+The important behavioral integration point is in the no-conflict branch of `solve_with_proof()`:
+after pending restarts are handled and before learned-clause reduction or branching, `09` calls
+`simplify()` whenever the solver is at decision level `0`. A root conflict from that pass returns
+UNSAT immediately; otherwise the search continues with the simplified database.
+
+The regression tests added or changed for the diff cover:
+
+- lazy branch-heap skipping of variables assigned by `enqueue()`
+- propagation dropping tombstoned watchers when a reduced database leaves deleted learned clauses
+  behind
+- deletion of satisfied root clauses plus original-only trimming of root-false literals
+- no-op repeated simplification when no new root assignments or propagation budget exist
+- the learned-unit shortcut, where an UNSAT example now records conflicts but does not retain a
+  learned unit clause in the clause database
+
 ## Validation
 
 - `cargo test` — `38/38`
