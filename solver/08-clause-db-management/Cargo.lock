@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "sat-solver-08-clause-db-management"
+name = "sat-solver-09-top-level-simplify"
 version = "0.1.0"
