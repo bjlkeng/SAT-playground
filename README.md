@@ -34,7 +34,8 @@ SAT-playground/
     ├── 06-clause-storage/
     ├── 07-clause-minimization/
     ├── 08-clause-db-management/
-    └── 09-root-simp-opts/
+    ├── 09-root-simp-opts/
+    └── 10-simp-foundation/
 ```
 
 ### Iteration Directory Layout
@@ -145,6 +146,7 @@ bash tools/bench.sh -t 120 -d benchmarks/profiling solver/01-naive-dpll
 | 07 | clause-storage-minimization  | Clause storage plus runtime clause minimization    | Safe conflict-clause shrinking on top of `06` |
 | 08 | clause-db-management         | Learned-clause activity, reduction, and arena GC   | Managing learned database growth |
 | 09 | root-simp-opts               | Root-level simplify pass plus hot-path cleanup     | Top-level simplification and propagation/DB optimization |
+| 10 | simp-foundation              | Direct copy of `09` for simplification experiments | Baseline for MiniSat-style preprocessing work |
 
 Each iteration directory has its own `README.md` with the actual implementation notes, validation
 status, and benchmark history for that solver.
