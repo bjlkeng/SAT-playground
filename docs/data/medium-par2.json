@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-05-02T16:01:17.147569+00:00",
+  "generatedAt": "2026-05-02T23:09:06.729204+00:00",
   "benchmark": {
     "name": "SAT Competition 2025 Medium",
     "instances": 100,
@@ -3315,6 +3315,1385 @@
           "result": "UNSAT",
           "time": 0.076,
           "verified": "skip",
+          "solved": true
+        }
+      ]
+    },
+    {
+      "slug": "09-root-simp-opts",
+      "label": "09 root-simp-opts",
+      "family": "repo",
+      "sourceUrl": "https://github.com/bjlkeng/SAT-playground/tree/main/solver/09-root-simp-opts",
+      "infoUrl": "./solvers/09-root-simp-opts.html",
+      "summaryPath": "log/bench-09-top-level-simplify-2026-04-30-20-00-01/summary.log",
+      "resultsPath": "log/bench-09-top-level-simplify-2026-04-30-20-00-01/results.csv",
+      "summaryUrl": "https://github.com/bjlkeng/SAT-playground/blob/main/log/bench-09-top-level-simplify-2026-04-30-20-00-01/summary.log",
+      "resultsUrl": "https://github.com/bjlkeng/SAT-playground/blob/main/log/bench-09-top-level-simplify-2026-04-30-20-00-01/results.csv",
+      "date": "Sat May  2 12:08:01 PM EDT 2026",
+      "instances": 100,
+      "timeout_s": 1800,
+      "par2": 208534.668,
+      "solved": 46,
+      "sat": 29,
+      "unsat": 17,
+      "timeouts": 54,
+      "unknown": 0,
+      "errors": 0,
+      "curve": [
+        {
+          "time": 0.0,
+          "solved": 0
+        },
+        {
+          "time": 0.007,
+          "solved": 0
+        },
+        {
+          "time": 0.007,
+          "solved": 1
+        },
+        {
+          "time": 0.009,
+          "solved": 1
+        },
+        {
+          "time": 0.009,
+          "solved": 2
+        },
+        {
+          "time": 0.011,
+          "solved": 2
+        },
+        {
+          "time": 0.011,
+          "solved": 3
+        },
+        {
+          "time": 0.011,
+          "solved": 3
+        },
+        {
+          "time": 0.011,
+          "solved": 4
+        },
+        {
+          "time": 0.014,
+          "solved": 4
+        },
+        {
+          "time": 0.014,
+          "solved": 5
+        },
+        {
+          "time": 0.051,
+          "solved": 5
+        },
+        {
+          "time": 0.051,
+          "solved": 6
+        },
+        {
+          "time": 0.467,
+          "solved": 6
+        },
+        {
+          "time": 0.467,
+          "solved": 7
+        },
+        {
+          "time": 1.166,
+          "solved": 7
+        },
+        {
+          "time": 1.166,
+          "solved": 8
+        },
+        {
+          "time": 5.836,
+          "solved": 8
+        },
+        {
+          "time": 5.836,
+          "solved": 9
+        },
+        {
+          "time": 12.71,
+          "solved": 9
+        },
+        {
+          "time": 12.71,
+          "solved": 10
+        },
+        {
+          "time": 16.785,
+          "solved": 10
+        },
+        {
+          "time": 16.785,
+          "solved": 11
+        },
+        {
+          "time": 27.308,
+          "solved": 11
+        },
+        {
+          "time": 27.308,
+          "solved": 12
+        },
+        {
+          "time": 33.652,
+          "solved": 12
+        },
+        {
+          "time": 33.652,
+          "solved": 13
+        },
+        {
+          "time": 35.204,
+          "solved": 13
+        },
+        {
+          "time": 35.204,
+          "solved": 14
+        },
+        {
+          "time": 38.791,
+          "solved": 14
+        },
+        {
+          "time": 38.791,
+          "solved": 15
+        },
+        {
+          "time": 39.372,
+          "solved": 15
+        },
+        {
+          "time": 39.372,
+          "solved": 16
+        },
+        {
+          "time": 47.114,
+          "solved": 16
+        },
+        {
+          "time": 47.114,
+          "solved": 17
+        },
+        {
+          "time": 48.494,
+          "solved": 17
+        },
+        {
+          "time": 48.494,
+          "solved": 18
+        },
+        {
+          "time": 66.629,
+          "solved": 18
+        },
+        {
+          "time": 66.629,
+          "solved": 19
+        },
+        {
+          "time": 72.819,
+          "solved": 19
+        },
+        {
+          "time": 72.819,
+          "solved": 20
+        },
+        {
+          "time": 81.913,
+          "solved": 20
+        },
+        {
+          "time": 81.913,
+          "solved": 21
+        },
+        {
+          "time": 105.535,
+          "solved": 21
+        },
+        {
+          "time": 105.535,
+          "solved": 22
+        },
+        {
+          "time": 166.003,
+          "solved": 22
+        },
+        {
+          "time": 166.003,
+          "solved": 23
+        },
+        {
+          "time": 169.469,
+          "solved": 23
+        },
+        {
+          "time": 169.469,
+          "solved": 24
+        },
+        {
+          "time": 170.859,
+          "solved": 24
+        },
+        {
+          "time": 170.859,
+          "solved": 25
+        },
+        {
+          "time": 204.773,
+          "solved": 25
+        },
+        {
+          "time": 204.773,
+          "solved": 26
+        },
+        {
+          "time": 215.087,
+          "solved": 26
+        },
+        {
+          "time": 215.087,
+          "solved": 27
+        },
+        {
+          "time": 221.106,
+          "solved": 27
+        },
+        {
+          "time": 221.106,
+          "solved": 28
+        },
+        {
+          "time": 240.312,
+          "solved": 28
+        },
+        {
+          "time": 240.312,
+          "solved": 29
+        },
+        {
+          "time": 240.624,
+          "solved": 29
+        },
+        {
+          "time": 240.624,
+          "solved": 30
+        },
+        {
+          "time": 270.84,
+          "solved": 30
+        },
+        {
+          "time": 270.84,
+          "solved": 31
+        },
+        {
+          "time": 362.647,
+          "solved": 31
+        },
+        {
+          "time": 362.647,
+          "solved": 32
+        },
+        {
+          "time": 381.702,
+          "solved": 32
+        },
+        {
+          "time": 381.702,
+          "solved": 33
+        },
+        {
+          "time": 422.679,
+          "solved": 33
+        },
+        {
+          "time": 422.679,
+          "solved": 34
+        },
+        {
+          "time": 453.743,
+          "solved": 34
+        },
+        {
+          "time": 453.743,
+          "solved": 35
+        },
+        {
+          "time": 463.98,
+          "solved": 35
+        },
+        {
+          "time": 463.98,
+          "solved": 36
+        },
+        {
+          "time": 479.865,
+          "solved": 36
+        },
+        {
+          "time": 479.865,
+          "solved": 37
+        },
+        {
+          "time": 546.995,
+          "solved": 37
+        },
+        {
+          "time": 546.995,
+          "solved": 38
+        },
+        {
+          "time": 657.863,
+          "solved": 38
+        },
+        {
+          "time": 657.863,
+          "solved": 39
+        },
+        {
+          "time": 677.201,
+          "solved": 39
+        },
+        {
+          "time": 677.201,
+          "solved": 40
+        },
+        {
+          "time": 772.838,
+          "solved": 40
+        },
+        {
+          "time": 772.838,
+          "solved": 41
+        },
+        {
+          "time": 902.393,
+          "solved": 41
+        },
+        {
+          "time": 902.393,
+          "solved": 42
+        },
+        {
+          "time": 909.764,
+          "solved": 42
+        },
+        {
+          "time": 909.764,
+          "solved": 43
+        },
+        {
+          "time": 1245.872,
+          "solved": 43
+        },
+        {
+          "time": 1245.872,
+          "solved": 44
+        },
+        {
+          "time": 1562.923,
+          "solved": 44
+        },
+        {
+          "time": 1562.923,
+          "solved": 45
+        },
+        {
+          "time": 1761.232,
+          "solved": 45
+        },
+        {
+          "time": 1761.232,
+          "solved": 46
+        },
+        {
+          "time": 1800.0,
+          "solved": 46
+        }
+      ],
+      "events": [
+        {
+          "instance": "2412325e3c099453b99c87864477363c-arles_thres20_p10_r7340",
+          "result": "UNSAT",
+          "time": 0.007,
+          "verified": "ok"
+        },
+        {
+          "instance": "d971241ca861121371d20be1d61c15a3-arles_thres20_p10_r7532",
+          "result": "UNSAT",
+          "time": 0.009,
+          "verified": "ok"
+        },
+        {
+          "instance": "8a05f9b6bf49285e40d0a197967ea5d3-arles_thres10_p10_r7466",
+          "result": "UNSAT",
+          "time": 0.011,
+          "verified": "ok"
+        },
+        {
+          "instance": "9f38c92ba81c754103444edc15c1f44b-simon-r21-1.sanitized",
+          "result": "SAT",
+          "time": 0.011,
+          "verified": "ok"
+        },
+        {
+          "instance": "abadaf0ee0e21ff1a4b0e294f13ab5ab-arles_thres10_p20_r4305",
+          "result": "UNSAT",
+          "time": 0.014,
+          "verified": "ok"
+        },
+        {
+          "instance": "a497d784c61c330f012dcd80d44dcd43-x9-06099.sat.sanitized",
+          "result": "SAT",
+          "time": 0.051,
+          "verified": "ok"
+        },
+        {
+          "instance": "fbdca334e6985cd2de8718b60695b5f6-gm16sparrc",
+          "result": "UNSAT",
+          "time": 0.467,
+          "verified": "ok"
+        },
+        {
+          "instance": "54d496c14fd2461642ef6be5341b297b-hwmcc17miters-xits-iso-6s163.sanitized",
+          "result": "UNSAT",
+          "time": 1.166,
+          "verified": "ok"
+        },
+        {
+          "instance": "8f391f2bf8167f1b96467f3479b33dc5-oddball_20_5_ttf.normalised",
+          "result": "UNSAT",
+          "time": 5.836,
+          "verified": "ok"
+        },
+        {
+          "instance": "663bb5659e42c2c75f74354f48895302-SCPC-500-13",
+          "result": "UNSAT",
+          "time": 12.71,
+          "verified": "ok"
+        },
+        {
+          "instance": "d89fc3e9c24e0383e940464f4704657e-SC25_Timetable_C_395_E_47_Cl_27_D_7_T_50.normalised",
+          "result": "SAT",
+          "time": 16.785,
+          "verified": "ok"
+        },
+        {
+          "instance": "6415a71364351c0a521fdee510bc2589-18.normalised",
+          "result": "SAT",
+          "time": 27.308,
+          "verified": "ok"
+        },
+        {
+          "instance": "3746303c659ef65aaa78f3b52cd5de49-6s299b685_Iter30",
+          "result": "SAT",
+          "time": 33.652,
+          "verified": "ok"
+        },
+        {
+          "instance": "2241a1fb5bdbac0c1a3c1980ed8b332d-crusti_g2io_225_0.1_31_25.normalised",
+          "result": "SAT",
+          "time": 35.204,
+          "verified": "ok"
+        },
+        {
+          "instance": "8733dfd02c923d69720500c9ec8ce36a-reconf10_70_queen14_2",
+          "result": "SAT",
+          "time": 38.791,
+          "verified": "ok"
+        },
+        {
+          "instance": "75cc1f02ed4b8c06553ef579b163e1be-SCPC-500-14",
+          "result": "UNSAT",
+          "time": 39.372,
+          "verified": "ok"
+        },
+        {
+          "instance": "8e62c5d47920ffe36052f86177403e70-SC25_Timetable_C_393_E_45_Cl_26_D_7_T_50.normalised",
+          "result": "SAT",
+          "time": 47.114,
+          "verified": "ok"
+        },
+        {
+          "instance": "00fd8ac9acd186a7a78a2c4d92f90de1-2.normalised",
+          "result": "SAT",
+          "time": 48.494,
+          "verified": "ok"
+        },
+        {
+          "instance": "83aa254f7d17e1df7bee19322ac4752b-1.normalised",
+          "result": "SAT",
+          "time": 66.629,
+          "verified": "ok"
+        },
+        {
+          "instance": "1d18837c0ced5c18a3a4693993e61728-SC25_Timetable_C_392_E_45_Cl_25_D_7_T_50.normalised",
+          "result": "SAT",
+          "time": 72.819,
+          "verified": "ok"
+        },
+        {
+          "instance": "85ba26d796de9ad740ce5a6813488fbc-sted2_0x1e3-216",
+          "result": "SAT",
+          "time": 81.913,
+          "verified": "ok"
+        },
+        {
+          "instance": "e318e2ac78b473091c3c2197afd7fc98-544707209399nw.shuffled-as.sat03-1671",
+          "result": "SAT",
+          "time": 105.535,
+          "verified": "ok"
+        },
+        {
+          "instance": "ee5fb3e181571740adb8444bd052dbdc-11.normalised",
+          "result": "SAT",
+          "time": 166.003,
+          "verified": "ok"
+        },
+        {
+          "instance": "ed6d842f96d10f3400bce251f9e95bfb-battleship-16-31-sat",
+          "result": "SAT",
+          "time": 169.469,
+          "verified": "ok"
+        },
+        {
+          "instance": "67aa1a256f92020dccdf66b235de3986-jkkk-one-one-10-34-sat",
+          "result": "SAT",
+          "time": 170.859,
+          "verified": "ok"
+        },
+        {
+          "instance": "6832fe907740af686fde98518067ea3f-velev-pipe-sat-1.0-b7",
+          "result": "SAT",
+          "time": 204.773,
+          "verified": "ok"
+        },
+        {
+          "instance": "fab2022deb130fe3ad1136a5c71b4109-case9",
+          "result": "SAT",
+          "time": 215.087,
+          "verified": "ok"
+        },
+        {
+          "instance": "d2af3fde615d7c4d4a4574fc8839970e-lockchart-group1-L190-K276-p8d4j1.normalised",
+          "result": "SAT",
+          "time": 221.106,
+          "verified": "ok"
+        },
+        {
+          "instance": "95abe8aeebbe88fcb0503b13109593b3-reconf10_68_queen14_1",
+          "result": "SAT",
+          "time": 240.312,
+          "verified": "ok"
+        },
+        {
+          "instance": "5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7",
+          "result": "SAT",
+          "time": 240.624,
+          "verified": "ok"
+        },
+        {
+          "instance": "918d9e7c2e197312517736421d728958-SCPC-500-1",
+          "result": "UNSAT",
+          "time": 270.84,
+          "verified": "ok"
+        },
+        {
+          "instance": "931621d9964e9d0cd1c4001822015c92-DLTM_twitter845_79_19",
+          "result": "SAT",
+          "time": 362.647,
+          "verified": "ok"
+        },
+        {
+          "instance": "16c999d046885c8e51f196e60c34d966-aaai10-planning-ipc5-pathways-17-step20",
+          "result": "UNSAT",
+          "time": 381.702,
+          "verified": "ok"
+        },
+        {
+          "instance": "0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12",
+          "result": "UNSAT",
+          "time": 422.679,
+          "verified": "ok"
+        },
+        {
+          "instance": "b655faa69774192a80d9e2a2bc602ce4-Kakuro-easy-115-ext.xml.hg_5",
+          "result": "SAT",
+          "time": 453.743,
+          "verified": "ok"
+        },
+        {
+          "instance": "31e843c53a76ff3961935ad55b953298-sqrt-mitern171",
+          "result": "UNSAT",
+          "time": 463.98,
+          "verified": "ok"
+        },
+        {
+          "instance": "9af7646fc4a32c6f2744ddc0c4b654b7-brocard_problem_large",
+          "result": "UNSAT",
+          "time": 479.865,
+          "verified": "ok"
+        },
+        {
+          "instance": "1e0d58c7e52319b3b17e343ec7ca6de5-QG7-gensys-icl006.sat05-3132.reshuffled-07",
+          "result": "UNSAT",
+          "time": 546.995,
+          "verified": "ok"
+        },
+        {
+          "instance": "f0bafebdcce23ccfbaf6c27a7522069b-div-mitern172",
+          "result": "UNSAT",
+          "time": 657.863,
+          "verified": "ok"
+        },
+        {
+          "instance": "57b478982ee9aba245ba792452b18fe3-VanDerWaerden_pd_2-3-22_462",
+          "result": "SAT",
+          "time": 677.201,
+          "verified": "ok"
+        },
+        {
+          "instance": "f17dfbed8c18716a41b231702e127524-SC25_Timetable_C_406_E_45_Cl_26_D_7_T_50.normalised",
+          "result": "SAT",
+          "time": 772.838,
+          "verified": "ok"
+        },
+        {
+          "instance": "2925ee90763e08b2f7e79c7c713c86b9-at-least-two-ibm-2004-23-k100",
+          "result": "SAT",
+          "time": 902.393,
+          "verified": "ok"
+        },
+        {
+          "instance": "5c8f4e54e195d46053b04e232a5661c4-case7.normalised",
+          "result": "SAT",
+          "time": 909.764,
+          "verified": "ok"
+        },
+        {
+          "instance": "b3d3680b3287a989ce61a6db1054efd2-case20.normalised",
+          "result": "SAT",
+          "time": 1245.872,
+          "verified": "ok"
+        },
+        {
+          "instance": "29b7d5a498eff7a98fcd03a273eaeba3-Kakuro-easy-132-ext.xml.hg_8",
+          "result": "SAT",
+          "time": 1562.923,
+          "verified": "ok"
+        },
+        {
+          "instance": "16ff47a05b769ed6a04c7175cfc6da55-sqrt-mitern170",
+          "result": "UNSAT",
+          "time": 1761.232,
+          "verified": "ok"
+        }
+      ],
+      "rows": [
+        {
+          "instance": "00fd8ac9acd186a7a78a2c4d92f90de1-2.normalised",
+          "result": "SAT",
+          "time": 48.494,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "0205e2dffaef93a90c239df31755f2e1-bp4_CSO_AM_IXA_LP.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "04648cef5bed430ab6429991fa9e107d-ramsey_3_6_19.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12",
+          "result": "UNSAT",
+          "time": 422.679,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "0f269188707a1b2f309dd1c70bfe22b0-bp4_BC012_CSO_AM_IXA.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "16c999d046885c8e51f196e60c34d966-aaai10-planning-ipc5-pathways-17-step20",
+          "result": "UNSAT",
+          "time": 381.702,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "16ff47a05b769ed6a04c7175cfc6da55-sqrt-mitern170",
+          "result": "UNSAT",
+          "time": 1761.232,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "19951d43eff5fc4ef6fd07d7a5324fa0-oddball_80_5_tto_zp.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "1b84df53843ecd90ec8c3c7a01cada6c-ramsey_4_4_18.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "1d18837c0ced5c18a3a4693993e61728-SC25_Timetable_C_392_E_45_Cl_25_D_7_T_50.normalised",
+          "result": "SAT",
+          "time": 72.819,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "1e0d58c7e52319b3b17e343ec7ca6de5-QG7-gensys-icl006.sat05-3132.reshuffled-07",
+          "result": "UNSAT",
+          "time": 546.995,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "21415e807689ea75536e846a24623de1-clqcl_50_6_5.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "2241a1fb5bdbac0c1a3c1980ed8b332d-crusti_g2io_225_0.1_31_25.normalised",
+          "result": "SAT",
+          "time": 35.204,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "22c8d6aa86d51e15ef5ab37479eda22b-xor_op_n40_d3",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "2412325e3c099453b99c87864477363c-arles_thres20_p10_r7340",
+          "result": "UNSAT",
+          "time": 0.007,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "28eeb2beac7005a9afa98e4d3aaca621-oski15a01b40s_opt",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "2925ee90763e08b2f7e79c7c713c86b9-at-least-two-ibm-2004-23-k100",
+          "result": "SAT",
+          "time": 902.393,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "296fd43ed40e242875984420f29be73f-oddball_24_5_ttf.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "29b7d5a498eff7a98fcd03a273eaeba3-Kakuro-easy-132-ext.xml.hg_8",
+          "result": "SAT",
+          "time": 1562.923,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "31e843c53a76ff3961935ad55b953298-sqrt-mitern171",
+          "result": "UNSAT",
+          "time": 463.98,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "35b9091b90bd28a492c9556d6fc4348d-bp4_TCO_CSO_ZR.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "3746303c659ef65aaa78f3b52cd5de49-6s299b685_Iter30",
+          "result": "SAT",
+          "time": 33.652,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "389bb0a8f3568f4bd0e71771df9093c5-BubbleVsPancakeSort_7_6",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "42f1311ce504db8cc0cb590a568da20a-tseitin_n188_d3",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "465795fa2641c616ce76de8501672a19-VanDerWaerden_pd_2-3-27_663",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "4e3195a382f5af213444736fcc8b364f-case1.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "4f4d22ce7643079412975a662e9363fd-xor_op_n38_d3",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "54d496c14fd2461642ef6be5341b297b-hwmcc17miters-xits-iso-6s163.sanitized",
+          "result": "UNSAT",
+          "time": 1.166,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "557d7d4db5399188f62bc39598c6d868-mp1-Nb7T46",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "57b478982ee9aba245ba792452b18fe3-VanDerWaerden_pd_2-3-22_462",
+          "result": "SAT",
+          "time": 677.201,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "5c47810953b22baa5f6f45585430fc77-oski15a01b20s_opt",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "5c8f4e54e195d46053b04e232a5661c4-case7.normalised",
+          "result": "SAT",
+          "time": 909.764,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "5dbe7b31f9b8d8e56045493439adb949-bp4_CSO_IXA_ZR.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7",
+          "result": "SAT",
+          "time": 240.624,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "6415a71364351c0a521fdee510bc2589-18.normalised",
+          "result": "SAT",
+          "time": 27.308,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "65f7145996bbec02b90bd0fa64a20502-test_v7_r12_vr10_c1_s18160.smt2-stp212",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "663bb5659e42c2c75f74354f48895302-SCPC-500-13",
+          "result": "UNSAT",
+          "time": 12.71,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "67aa1a256f92020dccdf66b235de3986-jkkk-one-one-10-34-sat",
+          "result": "SAT",
+          "time": 170.859,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "6832fe907740af686fde98518067ea3f-velev-pipe-sat-1.0-b7",
+          "result": "SAT",
+          "time": 204.773,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "6cb995b1c550beb579c53e27f6ca881a-RoundRobin_n16_d13",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "72cec28d6e34efe366150066b71edc33-bp4_LPI_FPBEQ_ZR.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "75cc1f02ed4b8c06553ef579b163e1be-SCPC-500-14",
+          "result": "UNSAT",
+          "time": 39.372,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "77a0d54f2fb3740a9a321623c0c10f3e-tseitin_grid_n12_m12",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "780b0c9b5aed38a127f61c6aae7287aa-rbsat-v1375c111739gyes10",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "818c585e5986431917605fca8d775034-g2-hwmcc15deep-oski15a10b10s-k20",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "83aa254f7d17e1df7bee19322ac4752b-1.normalised",
+          "result": "SAT",
+          "time": 66.629,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "849950561ddce887c78fef773dccfa80-circuit_48in64out_with_800gates_4in4out_dist128_seed3.sanitized",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "85ba26d796de9ad740ce5a6813488fbc-sted2_0x1e3-216",
+          "result": "SAT",
+          "time": 81.913,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "8707ef793f0443b5804c56c2ffca322e-clqcl_40_6_5.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "8733dfd02c923d69720500c9ec8ce36a-reconf10_70_queen14_2",
+          "result": "SAT",
+          "time": 38.791,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "8a05f9b6bf49285e40d0a197967ea5d3-arles_thres10_p10_r7466",
+          "result": "UNSAT",
+          "time": 0.011,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "8b22396ef06770c7dfa7552a610fc911-PancakeVsSelectionSort_6_7",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "8e62c5d47920ffe36052f86177403e70-SC25_Timetable_C_393_E_45_Cl_26_D_7_T_50.normalised",
+          "result": "SAT",
+          "time": 47.114,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "8f391f2bf8167f1b96467f3479b33dc5-oddball_20_5_ttf.normalised",
+          "result": "UNSAT",
+          "time": 5.836,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "901fa244999d250bc8d8cce19cabc114-SC25_Timetable_C_492_E_48_Cl_33_D_7_T_58.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "918d9e7c2e197312517736421d728958-SCPC-500-1",
+          "result": "UNSAT",
+          "time": 270.84,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "91c429adc2dc8430461b6d87a9aef335-16_16_booth_wallace_mapped_and_and_wallace_origin_bit28",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "9277f5d1bc65276294617e672c4f2443-bp4_BC012_CSO_FPBEQ_FPBLE_ZR.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "931621d9964e9d0cd1c4001822015c92-DLTM_twitter845_79_19",
+          "result": "SAT",
+          "time": 362.647,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "95931bb010dba306e24c79c120044ff9-SC25_Timetable_C_496_E_48_Cl_33_D_7_T_50.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "95abe8aeebbe88fcb0503b13109593b3-reconf10_68_queen14_1",
+          "result": "SAT",
+          "time": 240.312,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "96977e8e00a3728097861502a449e343-lockchart-group3-L13-K26-p4d3j1.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "98a991c902324b02349e766ad357cdc6-16_16_booth_dadda_origin_and_and_dadda_mapped_bit28",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "98e8aa2ace21d3362ef51524ad546764-bp4_TCO_CSO_IXA_LP_ZR.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "9af7646fc4a32c6f2744ddc0c4b654b7-brocard_problem_large",
+          "result": "UNSAT",
+          "time": 479.865,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "9f1cb42232335f84435126b5ae0fb701-SC25_Timetable_C_495_E_48_Cl_33_D_7_T_50.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "9f38c92ba81c754103444edc15c1f44b-simon-r21-1.sanitized",
+          "result": "SAT",
+          "time": 0.011,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "a28f59752c160af22b6d04cb89ddf802-pj2008_k200",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "a497d784c61c330f012dcd80d44dcd43-x9-06099.sat.sanitized",
+          "result": "SAT",
+          "time": 0.051,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "a8608545f9ae0462c7426e71a0e3e634-rbsat-v945c61409g3",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "abadaf0ee0e21ff1a4b0e294f13ab5ab-arles_thres10_p20_r4305",
+          "result": "UNSAT",
+          "time": 0.014,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "b3d3680b3287a989ce61a6db1054efd2-case20.normalised",
+          "result": "SAT",
+          "time": 1245.872,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "b628043a07c5576dd6cd21c9d73a69e0-fixedbandwidth-eq-37_shuffled",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "b655faa69774192a80d9e2a2bc602ce4-Kakuro-easy-115-ext.xml.hg_5",
+          "result": "SAT",
+          "time": 453.743,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "bea83d274b1c57b2171b380e34fd645d-xor_op_n36_d3",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "c0074020a48535e6062421cea2850dd0-st_659_37_25_686.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "c05d4d3ecd06a2e3942fea09159dd27b-MVRoundRobin_n16_d10_v2",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "c0bd86bd7ca2c65e44311de374168150-goldcrest-and-14",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "c8cde50f32ca3f78a4c74a173c63449b-bp5_CSO.normalised",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "cb950b9accfb53eb98f77b0f995ac0ae-rphp5_050_shuffled",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "d2af3fde615d7c4d4a4574fc8839970e-lockchart-group1-L190-K276-p8d4j1.normalised",
+          "result": "SAT",
+          "time": 221.106,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "d5b11b0b73eb4ecebdbf6ee8143da689-oisc-subrv-and-nested-11",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "d89fc3e9c24e0383e940464f4704657e-SC25_Timetable_C_395_E_47_Cl_27_D_7_T_50.normalised",
+          "result": "SAT",
+          "time": 16.785,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "d971241ca861121371d20be1d61c15a3-arles_thres20_p10_r7532",
+          "result": "UNSAT",
+          "time": 0.009,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "de8c42d50f1dbf43a731f1916dc6bf01-16_16_booth_dadda_mapped_and_and_wallace_origin_bit28",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "e12874b16df577b301608d03731595d8-rphp5_085_shuffled",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "e2d2b011b0805782df6adba648db92e8-59-129706",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "e318e2ac78b473091c3c2197afd7fc98-544707209399nw.shuffled-as.sat03-1671",
+          "result": "SAT",
+          "time": 105.535,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "ebbda8d90dfd9b6500bf932f952907a6-2018D_VexRiscv-regch0-20-p1_step",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "ed6d842f96d10f3400bce251f9e95bfb-battleship-16-31-sat",
+          "result": "SAT",
+          "time": 169.469,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "ee5fb3e181571740adb8444bd052dbdc-11.normalised",
+          "result": "SAT",
+          "time": 166.003,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "f0bafebdcce23ccfbaf6c27a7522069b-div-mitern172",
+          "result": "UNSAT",
+          "time": 657.863,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "f17dfbed8c18716a41b231702e127524-SC25_Timetable_C_406_E_45_Cl_26_D_7_T_50.normalised",
+          "result": "SAT",
+          "time": 772.838,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "f1973c0a4e960a914ff12aa7e4e9293c-lockchart-group2-rnd0.3-L19-K38-P8D4J1_4",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "f25a1df88f89c6bcbe2602fa7f6e816b-1-TC-256-K-63.sanitized",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "f3abc375afaf48c7eae21500b773bd21-tseitin_grid_n400_m400",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "f4ca5fca83e870d2ed56f2b00b074ed4-TT7F-33-24B",
+          "result": "TIMEOUT",
+          "time": 1800.0,
+          "verified": "skip",
+          "solved": false
+        },
+        {
+          "instance": "fab2022deb130fe3ad1136a5c71b4109-case9",
+          "result": "SAT",
+          "time": 215.087,
+          "verified": "ok",
+          "solved": true
+        },
+        {
+          "instance": "fbdca334e6985cd2de8718b60695b5f6-gm16sparrc",
+          "result": "UNSAT",
+          "time": 0.467,
+          "verified": "ok",
           "solved": true
         }
       ]
@@ -11982,179 +13361,179 @@
         "solved": 31
       },
       {
-        "time": 40.227,
+        "time": 38.791,
         "solved": 31
       },
       {
+        "time": 38.791,
+        "solved": 32
+      },
+      {
         "time": 40.227,
         "solved": 32
       },
       {
-        "time": 42.195,
-        "solved": 32
+        "time": 40.227,
+        "solved": 33
       },
       {
         "time": 42.195,
         "solved": 33
       },
       {
-        "time": 42.559,
-        "solved": 33
+        "time": 42.195,
+        "solved": 34
       },
       {
         "time": 42.559,
         "solved": 34
       },
       {
-        "time": 60.507,
-        "solved": 34
+        "time": 42.559,
+        "solved": 35
       },
       {
         "time": 60.507,
         "solved": 35
       },
       {
-        "time": 62.573,
-        "solved": 35
+        "time": 60.507,
+        "solved": 36
       },
       {
         "time": 62.573,
         "solved": 36
       },
       {
-        "time": 63.363,
-        "solved": 36
+        "time": 62.573,
+        "solved": 37
       },
       {
         "time": 63.363,
         "solved": 37
       },
       {
-        "time": 73.913,
-        "solved": 37
+        "time": 63.363,
+        "solved": 38
       },
       {
         "time": 73.913,
         "solved": 38
       },
       {
-        "time": 76.855,
-        "solved": 38
+        "time": 73.913,
+        "solved": 39
       },
       {
         "time": 76.855,
         "solved": 39
       },
       {
-        "time": 78.918,
-        "solved": 39
+        "time": 76.855,
+        "solved": 40
       },
       {
         "time": 78.918,
         "solved": 40
       },
       {
-        "time": 83.937,
-        "solved": 40
-      },
-      {
-        "time": 83.937,
+        "time": 78.918,
         "solved": 41
       },
       {
-        "time": 100.992,
+        "time": 81.913,
         "solved": 41
       },
       {
+        "time": 81.913,
+        "solved": 42
+      },
+      {
+        "time": 83.937,
+        "solved": 42
+      },
+      {
+        "time": 83.937,
+        "solved": 43
+      },
+      {
         "time": 100.992,
-        "solved": 42
-      },
-      {
-        "time": 101.764,
-        "solved": 42
-      },
-      {
-        "time": 101.764,
         "solved": 43
       },
       {
-        "time": 105.806,
-        "solved": 43
-      },
-      {
-        "time": 105.806,
+        "time": 100.992,
         "solved": 44
       },
       {
-        "time": 131.393,
+        "time": 101.764,
         "solved": 44
       },
       {
-        "time": 131.393,
+        "time": 101.764,
         "solved": 45
       },
       {
-        "time": 133.729,
+        "time": 105.806,
         "solved": 45
+      },
+      {
+        "time": 105.806,
+        "solved": 46
       },
       {
         "time": 133.729,
         "solved": 46
       },
       {
-        "time": 135.346,
-        "solved": 46
+        "time": 133.729,
+        "solved": 47
       },
       {
         "time": 135.346,
         "solved": 47
       },
       {
-        "time": 135.816,
-        "solved": 47
+        "time": 135.346,
+        "solved": 48
       },
       {
         "time": 135.816,
         "solved": 48
       },
       {
-        "time": 138.299,
-        "solved": 48
+        "time": 135.816,
+        "solved": 49
       },
       {
         "time": 138.299,
         "solved": 49
       },
       {
-        "time": 149.035,
-        "solved": 49
+        "time": 138.299,
+        "solved": 50
       },
       {
         "time": 149.035,
         "solved": 50
       },
       {
-        "time": 154.613,
-        "solved": 50
+        "time": 149.035,
+        "solved": 51
       },
       {
         "time": 154.613,
         "solved": 51
       },
       {
-        "time": 190.083,
-        "solved": 51
+        "time": 154.613,
+        "solved": 52
       },
       {
         "time": 190.083,
         "solved": 52
       },
       {
-        "time": 193.031,
-        "solved": 52
-      },
-      {
-        "time": 193.031,
+        "time": 190.083,
         "solved": 53
       },
       {
@@ -12636,6 +14015,14 @@
         "solverLabel": "Kissat latest"
       },
       {
+        "instance": "8733dfd02c923d69720500c9ec8ce36a-reconf10_70_queen14_2",
+        "result": "SAT",
+        "time": 38.791,
+        "verified": "ok",
+        "solverSlug": "09-root-simp-opts",
+        "solverLabel": "09 root-simp-opts"
+      },
+      {
         "instance": "6cb995b1c550beb579c53e27f6ca881a-RoundRobin_n16_d13",
         "result": "UNSAT",
         "time": 40.227,
@@ -12708,6 +14095,14 @@
         "solverLabel": "Kissat latest"
       },
       {
+        "instance": "85ba26d796de9ad740ce5a6813488fbc-sted2_0x1e3-216",
+        "result": "SAT",
+        "time": 81.913,
+        "verified": "ok",
+        "solverSlug": "09-root-simp-opts",
+        "solverLabel": "09 root-simp-opts"
+      },
+      {
         "instance": "0205e2dffaef93a90c239df31755f2e1-bp4_CSO_AM_IXA_LP.normalised",
         "result": "UNSAT",
         "time": 83.937,
@@ -12735,14 +14130,6 @@
         "instance": "b3d3680b3287a989ce61a6db1054efd2-case20.normalised",
         "result": "SAT",
         "time": 105.806,
-        "verified": "skip",
-        "solverSlug": "kissat-latest",
-        "solverLabel": "Kissat latest"
-      },
-      {
-        "instance": "8733dfd02c923d69720500c9ec8ce36a-reconf10_70_queen14_2",
-        "result": "SAT",
-        "time": 131.393,
         "verified": "skip",
         "solverSlug": "kissat-latest",
         "solverLabel": "Kissat latest"
@@ -12799,14 +14186,6 @@
         "instance": "0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12",
         "result": "UNSAT",
         "time": 190.083,
-        "verified": "skip",
-        "solverSlug": "minisat",
-        "solverLabel": "MiniSat (simp)"
-      },
-      {
-        "instance": "85ba26d796de9ad740ce5a6813488fbc-sted2_0x1e3-216",
-        "result": "SAT",
-        "time": 193.031,
         "verified": "skip",
         "solverSlug": "minisat",
         "solverLabel": "MiniSat (simp)"

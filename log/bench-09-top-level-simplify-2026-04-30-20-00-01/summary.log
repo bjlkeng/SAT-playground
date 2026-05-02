@@ -1,0 +1,12 @@
+=== Benchmark Results: 09-top-level-simplify ===
+    Date:      Sat May  2 12:08:01 PM EDT 2026
+    Timeout:   1800s
+    Memory:    16384 MB
+
+    Instances: 100
+    Solved:    46 (29 SAT + 17 UNSAT)
+    Unsolved:  54 (54 timeout + 0 unknown + 0 error)
+
+    PAR-2:     208534.668
+
+    Results:   /home/bojji/code/SAT-playground/log/bench-09-top-level-simplify-2026-04-30-20-00-01/results.csv

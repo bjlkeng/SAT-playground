@@ -1,7 +1,7 @@
-# 09-top-level-simplify
+# 09-root-simp-opts
 
-This iteration starts as a direct copy of `08-clause-db-management` and adds a MiniSat-style
-level-0 `simplify()` pass.
+This iteration starts as a direct copy of `08-clause-db-management` and adds MiniSat-style
+root-level simplification plus a set of profiled hot-path optimizations.
 
 ## Current State
 
@@ -15,7 +15,7 @@ level-0 `simplify()` pass.
 - a MiniSat-style packed clause arena with stable clause refs and relocating GC
 - streamed proof logging through a fixed 16 MiB byte buffer into `proof.out.tmp`
 
-On top of that, `09` now adds a top-level simplify pass:
+On top of that, `09` now adds a root-level simplify pass:
 
 - runs only at decision level `0`
 - re-propagates before simplifying and returns UNSAT immediately on a root conflict
@@ -29,12 +29,23 @@ On top of that, `09` now adds a top-level simplify pass:
 - uses a MiniSat-style gate so repeated level-0 visits do not rescan the database unless root
   assignments changed or enough propagation work has happened since the last pass
 
+The same source delta also includes several code-level optimizations that profiling made visible:
+
+- lazy branch-heap cleanup instead of removing every assigned variable during propagation
+- bottom-up branch-heap rebuilds after root simplification
+- narrower watcher detachment with `swap_remove`
+- in-place watcher-list compaction during propagation
+- in-place learned-clause reduction without cloning the learned list
+- scratch-buffer conflict analysis to avoid a fresh learned-clause allocation per conflict
+- a learned-unit shortcut that records the DRAT clause and enqueues the root literal without storing
+  a watched learned unit
+
 ## What Changed
 
-This `09` step adds the first MiniSat-style simplify path on top of `08`:
+This `09` step adds root simplification and hot-path cleanup on top of `08`:
 
 - copied `08-clause-db-management` into a new self-contained iteration directory
-- renamed the package / iteration metadata for `09-top-level-simplify`
+- renamed the package / iteration metadata for `09-root-simp-opts`
 - added `simplify()` to the level-0 search path
 - added in-place original-clause trimming for root-false literals while keeping the packed arena
   layout
@@ -47,12 +58,14 @@ This `09` step adds the first MiniSat-style simplify path on top of `08`:
   - trimming root-false literals from surviving original clauses while keeping surviving learned
     clauses intact
   - treating a second simplify call as a no-op when no new root work has happened
+  - lazy branch-heap skipping
+  - learned-unit shortcut behavior
 
 ## Deep Diff vs `08`
 
 The source delta from `08-clause-db-management` is concentrated in `src/main.rs`. `Cargo.toml` and
 `Cargo.lock` only rename the package from `sat-solver-08-clause-db-management` to
-`sat-solver-09-top-level-simplify`; `build.sh` and `run.sh` are unchanged.
+`sat-solver-09-root-simp-opts`; `build.sh` and `run.sh` are unchanged.
 
 At the data-model level, `09` changes the solver state so original clauses are no longer assumed to
 be permanently live:
@@ -135,8 +148,8 @@ The regression tests added or changed for the diff cover:
 
 ## Validation
 
-- `cargo test` — `38/38`
-- `bash tools/smoke_test.sh solver/09-top-level-simplify` — `9/9`
+- `cargo test` — `39/39`
+- `bash tools/smoke_test.sh solver/09-root-simp-opts` — `9/9`
 
 `AGENTS.md` already contained the required red-green TDD and post-change smoke-test rules, so no
 instruction-file change was needed for this step.
@@ -145,7 +158,10 @@ instruction-file change was needed for this step.
 
 Current profiling command:
 
-- `bash tools/bench.sh -t 120 -d benchmarks/profiling solver/09-top-level-simplify`
+- `bash tools/bench.sh -t 120 -d benchmarks/profiling solver/09-root-simp-opts`
+
+The historical benchmark logs below were produced before the directory was renamed from
+`09-top-level-simplify` to `09-root-simp-opts`, so their log paths retain the old slug.
 
 Baseline run on the unchanged `08` copy, before adding `simplify()`:
 
@@ -209,9 +225,23 @@ Same profiling set comparison from the loaded-machine run:
 
 | Solver | PAR-2 | Solved | Log |
 |--------|------:|-------:|-----|
-| `09-top-level-simplify` | 69.321 | 6/6 | `log/bench-09-top-level-simplify-2026-04-28-11-38-35/results.csv` |
+| `09-root-simp-opts` | 69.321 | 6/6 | `log/bench-09-top-level-simplify-2026-04-28-11-38-35/results.csv` |
 | `08-clause-db-management` | 88.908 | 6/6 | `log/bench-08-clause-db-management-2026-04-28-11-46-08/results.csv` |
 | `minisat` | 111.928 | 6/6 | `log/bench-minisat-2026-04-28-11-53-52/results.csv` |
 
 These runs shared the host with an unrelated long-running `08` solver process, so use them as
 loaded-machine comparisons rather than isolated timing measurements.
+
+## Medium Benchmark Result
+
+Latest medium run used by the static site:
+
+- Date: `2026-05-02`
+- Command: `bash tools/bench.sh -t 1800 -m 16384 -d benchmarks/sat-comp-2025-medium solver/09-top-level-simplify`
+- Result: `PAR-2 208534.668`
+- Solved: `46/100` (`29 SAT + 17 UNSAT`)
+- Unsolved: `54` timeouts, `0` unknown, `0` errors
+- Log: `log/bench-09-top-level-simplify-2026-04-30-20-00-01/results.csv`
+
+That run also predates the directory rename; it is still the current benchmark result for the code
+now named `09-root-simp-opts`.

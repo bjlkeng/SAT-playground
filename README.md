@@ -34,7 +34,7 @@ SAT-playground/
     ├── 06-clause-storage/
     ├── 07-clause-minimization/
     ├── 08-clause-db-management/
-    └── 09-top-level-simplify/
+    └── 09-root-simp-opts/
 ```
 
 ### Iteration Directory Layout
@@ -144,7 +144,7 @@ bash tools/bench.sh -t 120 -d benchmarks/profiling solver/01-naive-dpll
 | 06 | clause-storage               | MiniSat-style clause layout and blocker watchers   | Storage-only hot-path rewrite |
 | 07 | clause-storage-minimization  | Clause storage plus runtime clause minimization    | Safe conflict-clause shrinking on top of `06` |
 | 08 | clause-db-management         | Learned-clause activity, reduction, and arena GC   | Managing learned database growth |
-| 09 | top-level-simplify           | Level-0 simplify pass on top of `08`               | Root simplification and medium-benchmark profiling |
+| 09 | root-simp-opts               | Root-level simplify pass plus hot-path cleanup     | Top-level simplification and propagation/DB optimization |
 
 Each iteration directory has its own `README.md` with the actual implementation notes, validation
 status, and benchmark history for that solver.
@@ -152,7 +152,7 @@ status, and benchmark history for that solver.
 ### Current 09 Profiling Notes
 
 Recent medium-benchmark profiling against MiniSat shows three recurring opportunities for
-`09-top-level-simplify`:
+`09-root-simp-opts`:
 
 - MiniSat's simplification frontend can dominate outcomes even when it is cheap. On
   `sudoku-N30-12`, default MiniSat solved in about `183s`, while `minisat_core` and

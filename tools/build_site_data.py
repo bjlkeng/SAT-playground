@@ -30,6 +30,7 @@ COLORS = {
     "06-clause-storage": "#aa4f8d",
     "07-clause-minimization": "#b54b3a",
     "08-clause-db-management": "#23657a",
+    "09-root-simp-opts": "#5b6f1f",
     "minisat": "#ecab4e",
     "kissat-latest": "#8d3613",
     "virtual-best": "#0d8a72",
@@ -43,6 +44,7 @@ class SolverSpec:
     family: str
     source_url: str
     info_url: str
+    log_aliases: tuple[str, ...] = ()
 
 
 SOLVERS = [
@@ -103,6 +105,14 @@ SOLVERS = [
         info_url="./solvers/08-clause-db-management.html",
     ),
     SolverSpec(
+        slug="09-root-simp-opts",
+        label="09 root-simp-opts",
+        family="repo",
+        source_url=f"{GITHUB_TREE_BASE}/solver/09-root-simp-opts",
+        info_url="./solvers/09-root-simp-opts.html",
+        log_aliases=("09-top-level-simplify",),
+    ),
+    SolverSpec(
         slug="minisat",
         label="MiniSat (simp)",
         family="reference",
@@ -120,6 +130,7 @@ SOLVERS = [
 
 
 DATE_RE = re.compile(r"^\s*Date:\s+(?P<value>.+?)\s*$")
+RUN_STAMP_RE = re.compile(r"(?P<stamp>\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})$")
 SOLVED_RESULTS = {"SAT", "UNSAT"}
 
 
@@ -243,29 +254,32 @@ def parse_results(results_path: Path) -> dict[str, float | int | list]:
 
 def find_latest_medium_run(spec: SolverSpec) -> dict | None:
     candidates = []
-    pattern = f"bench-{spec.slug}-*/summary.log"
-    for summary_path in LOG_DIR.glob(pattern):
-        results_path = summary_path.parent / "results.csv"
-        if not results_path.exists():
-            continue
+    for log_slug in (spec.slug, *spec.log_aliases):
+        pattern = f"bench-{log_slug}-*/summary.log"
+        for summary_path in LOG_DIR.glob(pattern):
+            results_path = summary_path.parent / "results.csv"
+            if not results_path.exists():
+                continue
 
-        metrics = parse_results(results_path)
-        if metrics["instances"] != 100 or metrics["timeout_s"] != 1800:
-            continue
+            metrics = parse_results(results_path)
+            if metrics["instances"] != 100 or metrics["timeout_s"] != 1800:
+                continue
 
-        candidates.append(
-            {
-                "summary_path": summary_path,
-                "results_path": results_path,
-                "metrics": metrics,
-                "date": parse_summary_date(summary_path),
-            }
-        )
+            run_stamp_match = RUN_STAMP_RE.search(summary_path.parent.name)
+            candidates.append(
+                {
+                    "summary_path": summary_path,
+                    "results_path": results_path,
+                    "metrics": metrics,
+                    "date": parse_summary_date(summary_path),
+                    "run_stamp": run_stamp_match.group("stamp") if run_stamp_match else "",
+                }
+            )
 
     if not candidates:
         return None
 
-    latest = max(candidates, key=lambda item: item["summary_path"].parent.name)
+    latest = max(candidates, key=lambda item: item["run_stamp"])
     entry = {
         "slug": spec.slug,
         "label": spec.label,

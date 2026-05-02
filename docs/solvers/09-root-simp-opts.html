@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>09 root-simp-opts · SAT Playground</title>
+    <link rel="stylesheet" href="../solver-pages.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="panel">
+        <p class="eyebrow">SAT Playground · Solver 09</p>
+        <h1>09 root-simp-opts</h1>
+        <p class="lead">
+          This iteration keeps <code>08</code>'s packed clause arena, learned-clause reduction, and
+          relocating garbage collector, then adds a MiniSat-style root-level <code>simplify()</code>
+          pass. The same step also cleans up several measured hot paths: branch-heap maintenance,
+          watcher-list propagation, learned-clause reduction, and conflict-clause allocation.
+        </p>
+        <div class="actions">
+          <a class="button" href="../index.html">Back To Main Page</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/tree/main/solver/09-root-simp-opts" target="_blank" rel="noreferrer">Solver Source</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/blob/main/solver/09-root-simp-opts/README.md" target="_blank" rel="noreferrer">Optimization Notes</a>
+        </div>
+        <div class="pill-row">
+          <span class="pill">Root simplification</span>
+          <span class="pill">Hot-path optimization</span>
+          <span class="pill">Learned-unit shortcut</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>What It Implements</h2>
+        <ul>
+          <li>The same watched-literal propagation, restarts, saved phases, EVSIDS branching, clause minimization, packed arena, proof streaming, learned-clause activity, and database reduction from <code>08</code>.</li>
+          <li>A root-only simplification pass that propagates at decision level <code>0</code>, detects root conflicts, removes satisfied original and learned clauses, and trims root-false literals from surviving original clauses.</li>
+          <li>A MiniSat-style simplification gate that skips full database scans unless root assignments changed or enough propagation work has happened since the previous pass.</li>
+          <li>An asymmetric learned-clause policy: satisfied learned clauses are deleted, but unsatisfied learned clauses are not strengthened by trimming root-false literals because profiling showed that change disrupted search quality.</li>
+          <li>Hot-path reductions in allocation and vector traffic across propagation, branch-heap cleanup, learned-clause reduction, and conflict analysis.</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>High-Level Pseudocode</h2>
+        <pre><code>initialize solver 08 state with packed clauses, watches, learned database, and proof stream
+track live original and learned literal counts for simplify gating
+
+loop:
+  conflict = propagate()
+
+  if conflict exists:
+    if decision_level == 0:
+      finalize UNSAT proof and return UNSAT
+
+    learned_clause, backjump_level = analyze_conflict_into_reused_buffer(conflict)
+    record learned_clause in the DRAT proof
+
+    if learned_clause has one literal:
+      backtrack to level 0
+      enqueue the asserting literal without storing a watched learned unit
+    else:
+      add learned_clause to the arena and live learned list
+      backtrack(backjump_level)
+      enqueue learned_clause[0] with the new clause as reason
+    continue
+
+  if decision_level == 0:
+    if simplify() finds a root conflict:
+      finalize UNSAT proof and return UNSAT
+
+  if learned database exceeds its budget:
+    reduce learned clauses in place and collect arena garbage when waste is high
+
+  if all variables are assigned:
+    discard temporary proof output and return SAT
+
+  branch on the highest-activity unassigned variable</code></pre>
+      </section>
+
+      <section class="panel">
+        <h2>Code-Level Optimization Diffs</h2>
+        <p class="small">
+          The README has the full benchmark notes and the deeper diff against <code>08</code>. These are the highest-signal implementation changes.
+        </p>
+        <div class="diff-grid">
+          <article class="diff-card">
+            <h3>Root Simplification</h3>
+            <p>
+              The solver now revisits the clause database at decision level <code>0</code> to remove
+              clauses already satisfied by root assignments and shrink original clauses that contain
+              root-false literals.
+            </p>
+            <pre><code><span class="diff-del">- keep original clauses permanently live after parsing</span>
+<span class="diff-add">+ delete satisfied original and learned clauses at root</span>
+<span class="diff-add">+ trim root-false literals from surviving original clauses</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Branch Heap Cleanup</h3>
+            <p>
+              Assignments no longer mutate the branch heap immediately. Branch selection lazily
+              skips assigned variables, and a root simplify pass rebuilds the heap with a bottom-up
+              heapify.
+            </p>
+            <pre><code><span class="diff-del">- remove every assigned variable from the heap during enqueue</span>
+<span class="diff-add">+ leave assigned variables in place and skip them when branching</span>
+<span class="diff-add">+ rebuild the heap in one bottom-up pass after simplification</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Watcher Traffic</h3>
+            <p>
+              Propagation now compacts a scanned watch list in place, while clause detachment removes
+              only the two watched entries with <code>swap_remove</code>.
+            </p>
+            <pre><code><span class="diff-del">- move watchers through a separate retained vector and scratch buffer</span>
+<span class="diff-add">+ compact the current watch list with read/write indices</span>
+<span class="diff-add">+ detach deleted clauses from exactly their watched literals</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Learned Clause Hot Paths</h3>
+            <p>
+              Learned-clause reduction sorts and filters the live learned list in place, and conflict
+              analysis writes into a reusable scratch clause buffer.
+            </p>
+            <pre><code><span class="diff-del">- clone learned-clause candidates during reduce_db()</span>
+<span class="diff-del">- allocate a fresh learned-clause Vec per conflict</span>
+<span class="diff-add">+ retain surviving learned clauses in place</span>
+<span class="diff-add">+ move learned clauses through scratch_conflict_clause</span></code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Benchmark Role</h2>
+        <p>
+          Solver <code>09</code> is the first local iteration on the site that combines an explicit
+          root simplification pass with post-<code>08</code> implementation cleanup. Its medium run was
+          produced before the directory was renamed, so the benchmark artifact paths still contain
+          the older <code>09-top-level-simplify</code> slug while the source links point at
+          <code>09-root-simp-opts</code>.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>
