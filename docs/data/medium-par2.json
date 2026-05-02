@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-05-02T15:05:46.759952+00:00",
+  "generatedAt": "2026-05-02T16:01:17.147569+00:00",
   "benchmark": {
     "name": "SAT Competition 2025 Medium",
     "instances": 100,
@@ -1872,7 +1872,7 @@
     },
     {
       "slug": "minisat",
-      "label": "MiniSat",
+      "label": "MiniSat (simp)",
       "family": "reference",
       "sourceUrl": "https://github.com/bjlkeng/SAT-playground/tree/main/benchmarks/reference-solvers/minisat",
       "infoUrl": "https://minisat.se/",
@@ -12401,7 +12401,7 @@
         "time": 0.006,
         "verified": "skip",
         "solverSlug": "minisat",
-        "solverLabel": "MiniSat"
+        "solverLabel": "MiniSat (simp)"
       },
       {
         "instance": "d971241ca861121371d20be1d61c15a3-arles_thres20_p10_r7532",
@@ -12425,7 +12425,7 @@
         "time": 0.008,
         "verified": "skip",
         "solverSlug": "minisat",
-        "solverLabel": "MiniSat"
+        "solverLabel": "MiniSat (simp)"
       },
       {
         "instance": "a497d784c61c330f012dcd80d44dcd43-x9-06099.sat.sanitized",
@@ -12441,7 +12441,7 @@
         "time": 0.076,
         "verified": "skip",
         "solverSlug": "minisat",
-        "solverLabel": "MiniSat"
+        "solverLabel": "MiniSat (simp)"
       },
       {
         "instance": "ed6d842f96d10f3400bce251f9e95bfb-battleship-16-31-sat",
@@ -12489,7 +12489,7 @@
         "time": 7.079,
         "verified": "skip",
         "solverSlug": "minisat",
-        "solverLabel": "MiniSat"
+        "solverLabel": "MiniSat (simp)"
       },
       {
         "instance": "849950561ddce887c78fef773dccfa80-circuit_48in64out_with_800gates_4in4out_dist128_seed3.sanitized",
@@ -12569,7 +12569,7 @@
         "time": 21.214,
         "verified": "skip",
         "solverSlug": "minisat",
-        "solverLabel": "MiniSat"
+        "solverLabel": "MiniSat (simp)"
       },
       {
         "instance": "3746303c659ef65aaa78f3b52cd5de49-6s299b685_Iter30",
@@ -12577,7 +12577,7 @@
         "time": 21.967,
         "verified": "skip",
         "solverSlug": "minisat",
-        "solverLabel": "MiniSat"
+        "solverLabel": "MiniSat (simp)"
       },
       {
         "instance": "f17dfbed8c18716a41b231702e127524-SC25_Timetable_C_406_E_45_Cl_26_D_7_T_50.normalised",
@@ -12697,7 +12697,7 @@
         "time": 76.855,
         "verified": "skip",
         "solverSlug": "minisat",
-        "solverLabel": "MiniSat"
+        "solverLabel": "MiniSat (simp)"
       },
       {
         "instance": "fab2022deb130fe3ad1136a5c71b4109-case9",
@@ -12801,7 +12801,7 @@
         "time": 190.083,
         "verified": "skip",
         "solverSlug": "minisat",
-        "solverLabel": "MiniSat"
+        "solverLabel": "MiniSat (simp)"
       },
       {
         "instance": "85ba26d796de9ad740ce5a6813488fbc-sted2_0x1e3-216",
@@ -12809,7 +12809,7 @@
         "time": 193.031,
         "verified": "skip",
         "solverSlug": "minisat",
-        "solverLabel": "MiniSat"
+        "solverLabel": "MiniSat (simp)"
       },
       {
         "instance": "95abe8aeebbe88fcb0503b13109593b3-reconf10_68_queen14_1",
@@ -12817,7 +12817,7 @@
         "time": 202.633,
         "verified": "skip",
         "solverSlug": "minisat",
-        "solverLabel": "MiniSat"
+        "solverLabel": "MiniSat (simp)"
       },
       {
         "instance": "389bb0a8f3568f4bd0e71771df9093c5-BubbleVsPancakeSort_7_6",
@@ -12849,7 +12849,7 @@
         "time": 262.601,
         "verified": "skip",
         "solverSlug": "minisat",
-        "solverLabel": "MiniSat"
+        "solverLabel": "MiniSat (simp)"
       },
       {
         "instance": "b628043a07c5576dd6cd21c9d73a69e0-fixedbandwidth-eq-37_shuffled",
@@ -12929,7 +12929,7 @@
         "time": 548.602,
         "verified": "skip",
         "solverSlug": "minisat",
-        "solverLabel": "MiniSat"
+        "solverLabel": "MiniSat (simp)"
       },
       {
         "instance": "4e3195a382f5af213444736fcc8b364f-case1.normalised",

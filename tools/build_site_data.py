@@ -104,7 +104,7 @@ SOLVERS = [
     ),
     SolverSpec(
         slug="minisat",
-        label="MiniSat",
+        label="MiniSat (simp)",
         family="reference",
         source_url=f"{GITHUB_TREE_BASE}/benchmarks/reference-solvers/minisat",
         info_url="https://minisat.se/",

@@ -80,9 +80,12 @@ for s in "${SOLVERS[@]}"; do
         minisat)
             bin="$REF_DIR/minisat/build/release/bin/minisat"
             ;;
+        minisat-core)
+            bin="$REF_DIR/minisat/build/release/bin/minisat_core"
+            ;;
         *)
             echo "ERROR: unknown reference solver: $s" >&2
-            echo "Available: kissat-latest, kissat-sc2024, minisat" >&2
+            echo "Available: kissat-latest, kissat-sc2024, minisat, minisat-core" >&2
             exit 1
             ;;
     esac

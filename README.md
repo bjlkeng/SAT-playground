@@ -172,6 +172,6 @@ The latest profiling logs are intentionally kept under `log/` and are not tracke
 - [SAT Competition 2025](https://satcompetition.github.io/2025/index.html)
 - [DIMACS CNF Format](https://satcompetition.github.io/2025/benchmarks.html)
 - [Handbook of Satisfiability](https://ebooks.iospress.nl/volume/handbook-of-satisfiability-second-edition) — Biere, Heule, van Maaren, Walsh
-- [MiniSat](http://minisat.se/) — reference CDCL implementation
+- [MiniSat (simp)](http://minisat.se/) — reference CDCL implementation with simplification enabled
 - [CaDiCaL](https://github.com/arminbiere/cadical) — state-of-the-art solver
 - [Kissat](https://github.com/arminbiere/kissat) — competition winner lineage
