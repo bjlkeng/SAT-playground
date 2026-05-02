@@ -90,6 +90,7 @@ fn append_i32_ascii(buffer: &mut Vec<u8>, value: i32) {
 }
 
 impl ProofLog {
+    #[cfg(test)]
     fn disabled() -> Self {
         Self {
             mode: ProofMode::Disabled,
@@ -190,8 +191,6 @@ struct Solver {
     learned_clause_ids: Vec<usize>,
     /// clauses currently watching each literal, with blocker fast path
     watchers: Vec<Vec<Watcher>>,
-    /// scratch buffer reused when rebuilding a watch list during propagation
-    watch_scratch: Vec<Watcher>,
     /// assignment[v] for variable v (1-based, index 0 unused)
     /// 0 = unassigned, 1 = true, 2 = false
     assignment: Vec<u8>,
@@ -497,7 +496,6 @@ impl Solver {
             original_clause_ids,
             learned_clause_ids: Vec::new(),
             watchers: vec![Vec::new(); num_vars.saturating_mul(2)],
-            watch_scratch: Vec::new(),
             assignment: vec![UNASSIGNED; num_vars + 1],
             saved_phase: vec![TRUE; num_vars + 1],
             decision_level: vec![0; num_vars + 1],
@@ -973,6 +971,16 @@ impl Solver {
         true
     }
 
+    #[inline(always)]
+    fn restore_unscanned_watch_tail(pending: &mut Vec<Watcher>, read: usize, write: usize) {
+        if read == write {
+            return;
+        }
+        let tail_len = pending.len() - read;
+        pending.copy_within(read.., write);
+        pending.truncate(write + tail_len);
+    }
+
     fn propagate(&mut self) -> Option<usize> {
         let start_head = self.propagate_head;
         while self.propagate_head < self.trail.len() {
@@ -1003,12 +1011,7 @@ impl Solver {
                         FALSE => {
                             pending[write] = watcher;
                             write += 1;
-                            while read < pending.len() {
-                                pending[write] = pending[read];
-                                write += 1;
-                                read += 1;
-                            }
-                            pending.truncate(write);
+                            Self::restore_unscanned_watch_tail(&mut pending, read, write);
                             self.watchers[watch_idx] = pending;
                             return Some(clause_idx);
                         }
@@ -1016,12 +1019,7 @@ impl Solver {
                             if !self.enqueue(unit_lit, clause_idx) {
                                 pending[write] = watcher;
                                 write += 1;
-                                while read < pending.len() {
-                                    pending[write] = pending[read];
-                                    write += 1;
-                                    read += 1;
-                                }
-                                pending.truncate(write);
+                                Self::restore_unscanned_watch_tail(&mut pending, read, write);
                                 self.watchers[watch_idx] = pending;
                                 return Some(clause_idx);
                             }
@@ -1077,12 +1075,7 @@ impl Solver {
                 pending[write] = updated_watcher;
                 write += 1;
                 if self.lit_value(first) == FALSE || !self.enqueue(first, clause_idx) {
-                    while read < pending.len() {
-                        pending[write] = pending[read];
-                        write += 1;
-                        read += 1;
-                    }
-                    pending.truncate(write);
+                    Self::restore_unscanned_watch_tail(&mut pending, read, write);
                     self.watchers[watch_idx] = pending;
                     return Some(clause_idx);
                 }
@@ -1285,6 +1278,7 @@ impl Solver {
         true
     }
 
+    #[cfg(test)]
     fn add_clause(&mut self, clause: Vec<i32>) -> usize {
         self.add_clause_from_slice(&clause)
     }
@@ -1329,6 +1323,7 @@ impl Solver {
         }
     }
 
+    #[cfg(test)]
     fn delete_clause(&mut self, clause_idx: usize) {
         debug_assert!(clause_idx < self.arena.len(), "invalid clause index {clause_idx}");
         debug_assert!(
@@ -1348,6 +1343,7 @@ impl Solver {
         self.mark_clause_deleted(clause_idx);
     }
 
+    #[cfg(test)]
     fn mark_clause_deleted(&mut self, clause_idx: usize) {
         debug_assert!(clause_idx < self.arena.len(), "invalid clause index {clause_idx}");
         debug_assert!(
@@ -1466,19 +1462,6 @@ impl Solver {
             }
             watch_list.truncate(write);
         }
-
-        let mut watch_scratch_write = 0usize;
-        for read in 0..self.watch_scratch.len() {
-            let mut watcher = self.watch_scratch[read];
-            let new_idx = reloc[watcher.clause_idx as usize];
-            if new_idx == NO_REASON {
-                continue;
-            }
-            watcher.clause_idx = new_idx as u32;
-            self.watch_scratch[watch_scratch_write] = watcher;
-            watch_scratch_write += 1;
-        }
-        self.watch_scratch.truncate(watch_scratch_write);
 
         for reason_idx in &mut self.reason {
             if *reason_idx == NO_REASON {
@@ -1712,16 +1695,19 @@ impl Solver {
         backtrack_level
     }
 
+    #[cfg(test)]
     fn analyze_conflict(&mut self, conflict_clause_idx: usize) -> (Vec<i32>, usize) {
         let backtrack_level = self.analyze_conflict_to_scratch(conflict_clause_idx);
         let learned_clause = self.scratch_conflict_clause.clone();
         (learned_clause, backtrack_level)
     }
 
+    #[cfg(test)]
     fn learned_clause_count(&self) -> usize {
         self.learned_clause_ids.len()
     }
 
+    #[cfg(test)]
     fn solve(&mut self) -> bool {
         let mut proof_log = ProofLog::disabled();
         self.solve_with_proof(&mut proof_log)
@@ -2117,6 +2103,33 @@ mod tests {
         s.decide(-2);
         assert_eq!(s.propagate(), None);
         assert_eq!(s.lit_value(3), TRUE);
+    }
+
+    #[test]
+    fn test_propagate_conflict_preserves_unscanned_watch_tail_after_moved_watch() {
+        let mut s = make_solver(4, vec![vec![-1, 2, 3], vec![-1], vec![-1, 4]]);
+        let moved_clause = s.original_clause_ids[0];
+        let unit_conflict = s.original_clause_ids[1];
+        let unscanned_tail = s.original_clause_ids[2];
+
+        s.decide(1);
+        assert_eq!(s.propagate(), Some(unit_conflict));
+
+        let false_lit_watchers: Vec<_> = s.watchers[s.lit_index(-1)]
+            .iter()
+            .map(|watcher| watcher.clause_idx as usize)
+            .collect();
+        assert_eq!(false_lit_watchers, vec![unit_conflict, unscanned_tail]);
+        assert!(
+            !false_lit_watchers.contains(&moved_clause),
+            "moved watcher should not remain in the old watch list"
+        );
+        assert!(
+            s.watchers[s.lit_index(3)]
+                .iter()
+                .any(|watcher| watcher.clause_idx as usize == moved_clause),
+            "moved watcher should be installed on the replacement literal"
+        );
     }
 
     #[test]
