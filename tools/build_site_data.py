@@ -31,7 +31,6 @@ COLORS = {
     "07-clause-minimization": "#b54b3a",
     "08-clause-db-management": "#23657a",
     "minisat": "#ecab4e",
-    "kissat-sc2024": "#c7631f",
     "kissat-latest": "#8d3613",
     "virtual-best": "#0d8a72",
 }
@@ -109,13 +108,6 @@ SOLVERS = [
         family="reference",
         source_url=f"{GITHUB_TREE_BASE}/benchmarks/reference-solvers/minisat",
         info_url="https://minisat.se/",
-    ),
-    SolverSpec(
-        slug="kissat-sc2024",
-        label="Kissat sc2024",
-        family="reference",
-        source_url=f"{GITHUB_TREE_BASE}/benchmarks/reference-solvers/kissat-sc2024",
-        info_url=BENCHMARK_URL,
     ),
     SolverSpec(
         slug="kissat-latest",
