@@ -1,0 +1,13 @@
+=== Benchmark Results: 08-clause-db-management ===
+    Date:      Wed Apr 29 12:12:45 PM EDT 2026
+    Timeout:   1800s
+    Memory:    16384 MB
+
+    Instances: 100
+    Solved:    39 (24 SAT + 15 UNSAT)
+    Unsolved:  61 (49 timeout + 0 unknown + 12 error)
+
+    PAR-2:     230662.838
+
+    Results:   /home/bojji/code/SAT-playground/log/bench-08-clause-db-management-2026-04-27-21-38-01/results.csv
+    Errors:    /home/bojji/code/SAT-playground/log/bench-08-clause-db-management-2026-04-27-21-38-01/errors.log

@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>08 clause-db-management · SAT Playground</title>
+    <link rel="stylesheet" href="../solver-pages.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="panel">
+        <p class="eyebrow">SAT Playground · Solver 08</p>
+        <h1>08 clause-db-management</h1>
+        <p class="lead">
+          This iteration keeps <code>07</code>'s conflict-clause minimization and turns the learned-clause
+          store into a managed MiniSat-style database. Clauses now live in one packed arena with
+          stable offset references, learned clauses carry activity scores, database reduction can
+          detach and tombstone low-value learned clauses, and garbage collection relocates live
+          clauses while fixing up watchers and reasons.
+        </p>
+        <div class="actions">
+          <a class="button" href="../index.html">Back To Main Page</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/tree/main/solver/08-clause-db-management" target="_blank" rel="noreferrer">Solver Source</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/blob/main/solver/08-clause-db-management/README.md" target="_blank" rel="noreferrer">Optimization Notes</a>
+        </div>
+        <div class="pill-row">
+          <span class="pill">Packed clause arena</span>
+          <span class="pill">Learned-clause reduction</span>
+          <span class="pill">Watcher and reason GC fixup</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>What It Implements</h2>
+        <ul>
+          <li>The same watched-clause propagation, restarts, saved phases, EVSIDS branching, and conflict-clause minimization from <code>07</code>.</li>
+          <li>A packed word arena for original and learned clauses, with each clause reference represented as a stable arena offset instead of a dense vector index.</li>
+          <li>Inline learned-clause activity storage so the database reducer can keep recently useful clauses and delete low-priority unlocked clauses.</li>
+          <li>MiniSat-style learned-clause reduction thresholds, a dedicated live learned-clause list, and O(1) locked-clause checks through the head literal's reason slot.</li>
+          <li>Garbage collection that compacts live clauses and rewrites watcher entries plus live <code>reason[var]</code> references after relocation.</li>
+          <li>A streamed proof writer that buffers DRAT output to <code>proof.out.tmp</code> before finalizing <code>proof.out</code> on UNSAT.</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>High-Level Pseudocode</h2>
+        <pre><code>store clauses in a packed arena and use arena offsets as clause refs
+initialize watched literals, reasons, learned list, proof stream, and reduction budget
+
+loop:
+  conflict = propagate()
+
+  if conflict exists:
+    if decision_level == 0:
+      finalize UNSAT proof and return UNSAT
+
+    learned_clause, backjump_level, reason_chain = analyze_conflict(conflict)
+    minimize learned_clause using solver 07's redundancy checks
+    bump activity for learned clauses on the analyzed reason chain
+    add learned_clause to the arena and live learned list
+    backtrack(backjump_level)
+    enqueue learned_clause[0] with the new clause as reason
+
+    if learned database exceeds its conflict-window budget:
+      sort learned clauses by activity and size
+      detach and tombstone unlocked low-priority learned clauses
+      compact arena and fix watcher / reason references when waste is high
+    continue
+
+  if all variables are assigned:
+    discard temporary proof output and return SAT
+
+  branch on the highest-activity unassigned variable</code></pre>
+      </section>
+
+      <section class="panel">
+        <h2>Code-Level Optimization Diffs</h2>
+        <p class="small">
+          The README has the full benchmark history. These are the implementation changes that best summarize how <code>08</code> differs from <code>07</code>.
+        </p>
+        <div class="diff-grid">
+          <article class="diff-card">
+            <h3>Packed Clause Arena</h3>
+            <p>
+              Clause storage moved from split metadata and literal vectors into one arena where the header, literals, and learned activity live together.
+            </p>
+            <pre><code><span class="diff-del">- store clause refs as dense table indices into separate clause vectors</span>
+<span class="diff-add">+ store clause refs as stable offsets into a packed word arena</span>
+<span class="diff-add">+ keep learned activity inline as the clause's extra arena word</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Learned-Clause Cleanup</h3>
+            <p>
+              The solver now has a real deletion path: learned clauses can be detached from watcher lists, removed from the live learned list, and skipped after tombstoning.
+            </p>
+            <pre><code><span class="diff-del">- keep every learned clause for the lifetime of the solve</span>
+<span class="diff-add">+ reduce the learned database with MiniSat-style size thresholds</span>
+<span class="diff-add">+ skip locked and binary clauses while deleting low-activity learned clauses</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Relocation-Safe References</h3>
+            <p>
+              Once deleted clauses create enough arena waste, garbage collection relocates live clauses and rewrites every reference that can still point at them.
+            </p>
+            <pre><code><span class="diff-del">- assume clause storage never moves after insertion</span>
+<span class="diff-add">+ compact live clauses during arena GC</span>
+<span class="diff-add">+ rewrite watcher clause refs and live reason[var] refs after relocation</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Proof Streaming</h3>
+            <p>
+              DRAT output no longer keeps the full learned-clause proof history in memory while the internal solver is free to delete and compact learned clauses.
+            </p>
+            <pre><code><span class="diff-del">- retain proof clauses in memory until the solve finishes</span>
+<span class="diff-add">+ stream proof literals through a fixed 16 MiB byte buffer</span>
+<span class="diff-add">+ write proof.out.tmp during search and finalize proof.out only on UNSAT</span></code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Benchmark Role</h2>
+        <p>
+          On the current medium benchmark data used by the site, <code>08</code> is the first iteration
+          where learned-clause database management is active end to end. Its profiling wins came
+          mostly from matching MiniSat's learned-clause activity signal more closely, then tuning
+          how quickly the learned-clause budget grows.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

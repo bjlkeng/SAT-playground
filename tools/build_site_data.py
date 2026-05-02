@@ -29,6 +29,7 @@ COLORS = {
     "05-restarts": "#7a5bd6",
     "06-clause-storage": "#aa4f8d",
     "07-clause-minimization": "#b54b3a",
+    "08-clause-db-management": "#23657a",
     "minisat": "#ecab4e",
     "kissat-sc2024": "#c7631f",
     "kissat-latest": "#8d3613",
@@ -94,6 +95,13 @@ SOLVERS = [
         family="repo",
         source_url=f"{GITHUB_TREE_BASE}/solver/07-clause-minimization",
         info_url="./solvers/07-clause-minimization.html",
+    ),
+    SolverSpec(
+        slug="08-clause-db-management",
+        label="08 clause-db-management",
+        family="repo",
+        source_url=f"{GITHUB_TREE_BASE}/solver/08-clause-db-management",
+        info_url="./solvers/08-clause-db-management.html",
     ),
     SolverSpec(
         slug="minisat",
@@ -357,17 +365,40 @@ def build_virtual_best(entries: list[dict], timeout_s: int) -> dict:
 
 def build_svg_chart(payload: dict) -> str:
     width = 1080
-    height = 620
     top = 88
     left = 82
     right = 30
-    bottom = 88
-    plot_width = width - left - right
-    plot_height = height - top - bottom
     timeout_s = payload["benchmark"]["timeoutSeconds"]
     entries = list(payload["entries"])
     virtual_best = payload.get("virtualBest")
     curves = entries + ([virtual_best] if virtual_best else [])
+    legend_entries = ([virtual_best] if virtual_best else []) + entries
+
+    def legend_item_width(entry: dict) -> int:
+        return 34 + max(88, len(entry["label"]) * 8)
+
+    legend_rows: list[list[dict]] = []
+    current_row: list[dict] = []
+    current_width = 0
+    max_legend_width = width - 96
+    for entry in legend_entries:
+        item_width = legend_item_width(entry)
+        if current_row and current_width + item_width > max_legend_width:
+            legend_rows.append(current_row)
+            current_row = []
+            current_width = 0
+        current_row.append(entry)
+        current_width += item_width
+    if current_row:
+        legend_rows.append(current_row)
+
+    plot_width = width - left - right
+    plot_height = 420
+    axis_tick_y = top + plot_height + 34
+    axis_title_y = top + plot_height + 60
+    legend_start_y = top + plot_height + 96
+    legend_row_gap = 24
+    height = legend_start_y + max(0, len(legend_rows) - 1) * legend_row_gap + 34
     max_solved = max((entry["solved"] for entry in curves), default=10)
     y_step = 5 if max_solved <= 40 else 10
     y_max = max(y_step, ((max_solved + y_step - 1) // y_step) * y_step)
@@ -399,7 +430,7 @@ def build_svg_chart(payload: dict) -> str:
         parts.append(f'<line x1="{x:.2f}" y1="{top}" x2="{x:.2f}" y2="{top + plot_height}" stroke="rgba(22,32,43,0.10)" stroke-width="1"/>')
         anchor = "start" if tick == 0 else "end" if tick == 6 else "middle"
         parts.append(
-            f'<text x="{x:.2f}" y="{height - 40}" fill="#5c6676" font-family="IBM Plex Mono, monospace" font-size="12" text-anchor="{anchor}">{int(value):,}</text>'
+            f'<text x="{x:.2f}" y="{axis_tick_y}" fill="#5c6676" font-family="IBM Plex Mono, monospace" font-size="12" text-anchor="{anchor}">{int(value):,}</text>'
         )
 
     for value in range(0, y_max + y_step, y_step):
@@ -410,7 +441,7 @@ def build_svg_chart(payload: dict) -> str:
         )
 
     parts.append(
-        f'<text x="{left + plot_width / 2:.2f}" y="{height - 16}" fill="#5c6676" font-family="IBM Plex Mono, monospace" font-size="12" text-anchor="middle">Runtime (seconds)</text>'
+        f'<text x="{left + plot_width / 2:.2f}" y="{axis_title_y}" fill="#5c6676" font-family="IBM Plex Mono, monospace" font-size="12" text-anchor="middle">Runtime (seconds)</text>'
     )
     parts.append(
         f'<text x="22" y="{top + plot_height / 2:.2f}" fill="#5c6676" font-family="IBM Plex Mono, monospace" font-size="12" text-anchor="middle" transform="rotate(-90 22 {top + plot_height / 2:.2f})">Solved instances</text>'
@@ -436,18 +467,19 @@ def build_svg_chart(payload: dict) -> str:
             f'<circle cx="{x_scale(marker["time"]):.2f}" cy="{y_scale(marker["solved"]):.2f}" r="4" fill="{color}"/>'
         )
 
-    legend_y = height - 56
-    legend_x = 48
-    for entry in ([virtual_best] if virtual_best else []) + entries:
-        color = COLORS[entry["slug"]]
-        dash = ' stroke-dasharray="10 7"' if entry["slug"] == "virtual-best" else ""
-        parts.append(
-            f'<line x1="{legend_x}" y1="{legend_y}" x2="{legend_x + 24}" y2="{legend_y}" stroke="{color}" stroke-width="4" stroke-linecap="round"{dash}/>'
-        )
-        parts.append(
-            f'<text x="{legend_x + 34}" y="{legend_y + 4}" fill="#16202b" font-family="IBM Plex Mono, monospace" font-size="12">{html.escape(entry["label"])}</text>'
-        )
-        legend_x += 34 + max(88, len(entry["label"]) * 8)
+    for row_index, row in enumerate(legend_rows):
+        legend_y = legend_start_y + row_index * legend_row_gap
+        legend_x = 48
+        for entry in row:
+            color = COLORS[entry["slug"]]
+            dash = ' stroke-dasharray="10 7"' if entry["slug"] == "virtual-best" else ""
+            parts.append(
+                f'<line x1="{legend_x}" y1="{legend_y}" x2="{legend_x + 24}" y2="{legend_y}" stroke="{color}" stroke-width="4" stroke-linecap="round"{dash}/>'
+            )
+            parts.append(
+                f'<text x="{legend_x + 34}" y="{legend_y + 4}" fill="#16202b" font-family="IBM Plex Mono, monospace" font-size="12">{html.escape(entry["label"])}</text>'
+            )
+            legend_x += legend_item_width(entry)
 
     parts.append("</svg>")
     return "\n".join(parts)
