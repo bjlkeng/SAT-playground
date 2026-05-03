@@ -1,5 +1,5 @@
 [package]
-name = "sat-solver-10-simp-foundation"
+name = "sat-solver-10-bve-preprocess"
 version = "0.1.0"
 edition = "2021"
 

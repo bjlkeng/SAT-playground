@@ -1,7 +1,8 @@
-# 10-simp-foundation
+# 10-bve-preprocess
 
-This iteration starts from `09-root-simp-opts` and adds the first profiled propagation and
-MiniSat-style preprocessing line of work.
+This iteration starts from `09-root-simp-opts` and adds a benchmark-tuned MiniSat-style
+preprocessing layer centered on duplicate removal, root-unit cleanup, pure-literal cleanup, and
+bounded variable elimination.
 
 ## Current State
 
@@ -34,7 +35,8 @@ MiniSat-style preprocessing line of work.
 ## What Changed
 
 - copied `09-root-simp-opts` into a new self-contained iteration directory
-- renamed the package / iteration metadata for `10-simp-foundation`
+- renamed the package / iteration metadata to `10-bve-preprocess` after the simplification baseline
+  became a BVE-focused preprocessing iteration
 - added a binary-clause branch in propagation so two-literal clauses directly test/enqueue the
   other watched literal instead of falling through the long-clause replacement loop
 - added MiniSat-simp-inspired duplicate-clause filtering before the arena is built
@@ -65,11 +67,14 @@ Candidate directions:
 ## Validation
 
 - `cargo test` — `45/45`
-- `bash tools/smoke_test.sh solver/10-simp-foundation` — `9/9`
+- `bash tools/smoke_test.sh solver/10-bve-preprocess` — `9/9`
 
 ## Targeted Optimization Log
 
 Machine: AMD Ryzen 5 5600, 62 GiB RAM.
+
+Historical benchmark log directories in this section use the solver slug that existed when each
+run was produced. Runs before the final rename are therefore under `bench-10-simp-foundation-*`.
 
 Target instance:
 `5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7.cnf.xz` from
@@ -78,7 +83,7 @@ Target instance:
 Baseline command:
 
 ```bash
-bash tools/bench.sh -t 500 -m 16384 -d /tmp/sat-opt-kakuro-one solver/10-simp-foundation
+bash tools/bench.sh -t 500 -m 16384 -d /tmp/sat-opt-kakuro-one solver/10-bve-preprocess
 ```
 
 Baseline result before changes:
