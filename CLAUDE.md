@@ -260,14 +260,18 @@ Competition scoring is PAR-2: sum of runtimes for solved instances + 2 × 5000s 
 
 **Only run this when the user explicitly asks for it.** Do not automatically optimize after implementing a solver.
 
-After implementing a new solver iteration, this optimization loop squeezes out code-level performance. These are non-algorithmic changes only.
+After implementing a new solver iteration, this optimization loop squeezes out performance. Most
+passes should be non-algorithmic, but if the user explicitly asks to optimize using a named solver
+idea or benchmark gap, it is acceptable to test that focused feature as part of the loop.
 
 ### Procedure
 
-1. **Baseline**: Run `bash tools/bench.sh -t 120 -d benchmarks/profiling solver/NN-name` and record PAR-2
-2. **Iterate** (at least 10 attempts): Make one change at a time, benchmark, keep improvements, revert regressions
-3. **Smoke test**: Verify all 8 tests pass after every change
-4. **Record**: Document every *successful* improvement and its PAR-2 impact in the solver's `README.md`, including machine environment metadata
+1. **Baseline**: Run `bash tools/bench.sh -t 120 -d benchmarks/profiling solver/NN-name` and record PAR-2. If the user names a specific competition instance, also create a one-instance benchmark target from that instance and record that baseline separately.
+2. **Profile first**: Use a profiler such as `perf stat` / `perf record` / `perf report` on the target instance before changing code. Use the profile to choose the next implementation slice.
+3. **Iterate** (at least 10 attempts unless the user asked for a narrower experiment): Make one change at a time, benchmark it against the baseline, and keep it only if it improves the target metric by more than `3%`. Revert changes that improve by `3%` or less, regress, fail correctness checks, or only shift time into a slow new implementation.
+4. **Optimize the new feature if needed**: If a feature is conceptually promising but too slow, profile the modified solver and iterate on that feature's implementation. Keep it only after the optimized version clears the `>3%` improvement threshold.
+5. **Smoke test**: Verify the full smoke suite passes after every kept solver change.
+6. **Record**: Document every *successful* improvement and its PAR-2 or target-instance runtime impact in the solver's `README.md`, including machine environment metadata and the profiler evidence that motivated it.
 
 ### Standard Optimizations (apply to every solver)
 

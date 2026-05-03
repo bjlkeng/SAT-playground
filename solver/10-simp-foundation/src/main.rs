@@ -1033,6 +1033,57 @@ impl Solver {
                     continue;
                 }
 
+                if clause_len == 2 {
+                    if self.clause_lit(clause_idx, 0) == false_lit {
+                        self.swap_clause_lits(clause_idx, 0, 1);
+                    }
+                    if self.clause_lit(clause_idx, 1) != false_lit {
+                        continue;
+                    }
+
+                    let implied_lit = self.clause_lit(clause_idx, 0);
+                    let updated_watcher = Watcher {
+                        clause_idx: watcher.clause_idx,
+                        blocker: implied_lit,
+                    };
+                    match self.lit_value(implied_lit) {
+                        TRUE => {
+                            pending[write] = updated_watcher;
+                            write += 1;
+                        }
+                        FALSE => {
+                            pending[write] = updated_watcher;
+                            write += 1;
+                            while read < pending.len() {
+                                pending[write] = pending[read];
+                                write += 1;
+                                read += 1;
+                            }
+                            pending.truncate(write);
+                            self.watchers[watch_idx] = pending;
+                            return Some(clause_idx);
+                        }
+                        UNASSIGNED => {
+                            if !self.enqueue(implied_lit, clause_idx) {
+                                pending[write] = updated_watcher;
+                                write += 1;
+                                while read < pending.len() {
+                                    pending[write] = pending[read];
+                                    write += 1;
+                                    read += 1;
+                                }
+                                pending.truncate(write);
+                                self.watchers[watch_idx] = pending;
+                                return Some(clause_idx);
+                            }
+                            pending[write] = updated_watcher;
+                            write += 1;
+                        }
+                        _ => unreachable!(),
+                    }
+                    continue;
+                }
+
                 if self.lit_value(watcher.blocker) == TRUE {
                     pending[write] = watcher;
                     write += 1;
@@ -2081,6 +2132,18 @@ mod tests {
     fn test_no_clauses_sat() {
         let mut s = make_solver(3, vec![]);
         assert!(s.solve());
+    }
+
+    #[test]
+    fn test_binary_bcp_enqueues_blocker_as_reason_head() {
+        let mut s = make_solver(2, vec![vec![1, 2]]);
+
+        s.decide(-1);
+        assert_eq!(s.propagate(), None);
+
+        assert_eq!(s.lit_value(2), TRUE);
+        assert_eq!(s.reason[2], 0);
+        assert_eq!(watched_literals(&s, 0), Some((2, 1)));
     }
 
     #[test]
