@@ -182,6 +182,8 @@ Write DRAT proof to `<output_dir>/proof.out`. This is required from every iterat
 - **Only commit solver changes that pass the smoke test** (all 8 tests green). If a test fails, fix the solver before committing.
 - **Never modify `tools/smoke_test.sh`** unless the user explicitly asks for changes to it.
 - **Always commit and push** when the user asks — don't skip the push step.
+- **Discord automatic task notices:** For future background ACP/subagent tasks in Discord, suppress automatic `Background task done/failed` channel notices by setting the task notify policy to `silent` once the run/task id exists.
+- **Discord notifications:** When reporting background task completion or failures in Discord, @mention bjlkeng as `<@817490773179760662>` so Discord shows a badge notification.
 
 ## Iteration Workflow
 

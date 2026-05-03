@@ -9,8 +9,10 @@ MiniSat-style preprocessing line of work.
 
 - parse-time duplicate-clause filtering using a sorted literal key while preserving the first
   occurrence's original literal order
-- limited bounded variable elimination for large formulas, capped at `25,000` eliminated variables,
-  with DRAT resolvent additions and SAT model reconstruction for eliminated variables
+- parse-time pure-literal cleanup for formulas with at least `100,000` clauses
+- limited bounded variable elimination, capped at `5,000` eliminated variables for medium formulas
+  and `25,000` for large formulas, with DRAT resolvent additions and SAT model reconstruction for
+  eliminated variables
 - watched-literal BCP with blocker fast paths
 - a binary-clause propagation fast path that avoids the general long-clause scan while preserving
   the reason-clause invariant that the implied literal is stored at position 0
@@ -35,6 +37,8 @@ MiniSat-style preprocessing line of work.
 - added MiniSat-simp-inspired duplicate-clause filtering before the arena is built
 - added a conservative bounded variable elimination pass for low-occurrence variables
 - tuned BVE to stop before it starts damaging the CDCL search path on the target instance
+- lowered the BVE activation threshold for medium formulas and added pure-literal cleanup after
+  measuring MiniSat-faster timetable instances
 
 ## Intended Focus
 
@@ -53,7 +57,7 @@ Candidate directions:
 
 ## Validation
 
-- `cargo test` — `43/43`
+- `cargo test` — `44/44`
 - `bash tools/smoke_test.sh solver/10-simp-foundation` — `9/9`
 
 ## Targeted Optimization Log
@@ -147,6 +151,44 @@ Kept improvement 5:
   propagation was `77.75%`, hash helpers were down to about `5.60%`, and the remaining
   parse-time duplicate filter was `0.61%`
 
+MiniSat-faster sample:
+
+- selected three SAT Competition 2025 instances where historical MiniSat `simp` beat `09` and both
+  solvers finished within `180s`
+- target directory: `/tmp/sat-minisat-faster-three`
+- pre-change solver `10` result: `224.272s` total
+- fresh MiniSat `simp` result on the same three: `117.956s` total
+
+Kept improvement 6:
+
+- lowered BVE activation from `1,000,000` clauses to `100,000` clauses, while using a smaller
+  `5,000` eliminated-variable cap for medium formulas and retaining `25,000` for large formulas
+- result on the MiniSat-faster three-instance target: `183.302s`, SAT verified, PAR-2 `183.302`
+- improvement: `18.3%` faster than previous solver `10` on that target set
+- log: `log/bench-10-simp-foundation-2026-05-03-08-37-17`
+- six-instance guard sample result: `272.069s`, improved from `309.151s`
+- profile data with symbols on the strongest win:
+  `log/profile-10-c392-medium-bve-cap5k/perf.data`; propagation was `47.25%`, with branch
+  selection and heap maintenance becoming visible after the simplification win
+
+Kept improvement 7:
+
+- added one parse-time pure-literal cleanup pass before BVE, storing removed clauses so SAT models
+  can be extended back to the original variables
+- opportunity check on `SC25_Timetable_C_392` found `12,089` pure variables after dedup, removing
+  `35,782` clauses and `96,385` literals in one pass
+- result on the MiniSat-faster three-instance target: `144.567s`, SAT verified, PAR-2 `144.567`
+- improvement: `21.1%` faster than adaptive medium BVE alone and `35.5%` faster than previous
+  solver `10` on that target set
+- six-instance guard sample result: `232.762s`, improved from `272.069s`
+- Kakuro guard result: `32.758s`, improved from `78.931s`
+- logs: `log/bench-10-simp-foundation-2026-05-03-08-53-49`,
+  `log/bench-10-simp-foundation-2026-05-03-08-56-27`,
+  `log/bench-10-simp-foundation-2026-05-03-09-01-40`
+- profile data with symbols on `SC25_Timetable_C_393`:
+  `log/profile-10-c393-pure-medium-bve/perf.data`; propagation was `56.44%`, branch selection was
+  `10.46%`, and parse-time preprocessing was below the main search costs
+
 Rejected attempts:
 
 - parse-time clause normalization: unit-clean, but exceeded the `238.7s` keep threshold before
@@ -155,8 +197,6 @@ Rejected attempts:
   watcher blockers and skipped the reason-head invariant; fixed before keeping the final version
 - encoded binary marker in `Watcher`: unit-clean, but exceeded the incremental `180.4s` keep
   threshold before completing, so it was reverted
-- pure-literal cleanup was skipped after analysis because only `1,134` pure literals affected about
-  `2,106` clauses on this instance, far below the observed duplicate-clause opportunity
 - binary-clause subsumption and binary self-subsuming-resolution analysis found zero opportunities
   on the target formula, so no solver change was made
 - dynamic BVE candidate requeueing with the same conservative candidate limits reached `110.641s`,
@@ -168,3 +208,5 @@ Rejected attempts:
 - raising the no-post-dedup BVE cap to `30,000` reached `127.683s`, so it was reverted
 - a blocker-only binary propagation fast path exceeded the cutoff before completing, so it was
   reverted
+- lowering the medium-formula BVE cap to `1,000` exceeded the three-instance keep cutoff before
+  finishing the first instance, so it was reverted

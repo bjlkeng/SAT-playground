@@ -22,8 +22,11 @@ const LEARNTSIZE_INC: f64 = 1.1;
 const LEARNTSIZE_ADJUST_START_CONFL: usize = 50;
 const LEARNTSIZE_ADJUST_INC: f64 = 1.5;
 const SHORT_CLAUSE_KEY_LEN: usize = 5;
-const BVE_MIN_CLAUSES: usize = 1_000_000;
-const BVE_MAX_ELIMINATED_VARS: usize = 25_000;
+const PURE_MIN_CLAUSES: usize = 100_000;
+const BVE_MIN_CLAUSES: usize = 100_000;
+const BVE_LARGE_FORMULA_CLAUSES: usize = 1_000_000;
+const BVE_MAX_ELIMINATED_VARS_MEDIUM: usize = 5_000;
+const BVE_MAX_ELIMINATED_VARS_LARGE: usize = 25_000;
 const BVE_CLAUSE_LIMIT: usize = 20;
 const BVE_GROW: usize = 0;
 const CLAUSE_MARK_MASK: u32 = 0b11;
@@ -2080,6 +2083,59 @@ fn merge_resolvent(lhs: &[i32], rhs: &[i32], eliminated_var: usize) -> Option<Ve
     Some(merged)
 }
 
+fn pure_literal_eliminate(
+    num_vars: usize,
+    clauses: Vec<Vec<i32>>,
+) -> (Vec<Vec<i32>>, Vec<EliminatedVar>) {
+    let mut pos_seen = vec![false; num_vars + 1];
+    let mut neg_seen = vec![false; num_vars + 1];
+    for clause in &clauses {
+        for &lit in clause {
+            let var = lit.unsigned_abs() as usize;
+            if lit > 0 {
+                pos_seen[var] = true;
+            } else {
+                neg_seen[var] = true;
+            }
+        }
+    }
+
+    let mut pure_value = vec![UNASSIGNED; num_vars + 1];
+    for var in 1..=num_vars {
+        pure_value[var] = match (pos_seen[var], neg_seen[var]) {
+            (true, false) => TRUE,
+            (false, true) => FALSE,
+            _ => UNASSIGNED,
+        };
+    }
+
+    let mut kept = Vec::with_capacity(clauses.len());
+    let mut eliminated_by_var = vec![Vec::<Vec<i32>>::new(); num_vars + 1];
+    for clause in clauses {
+        let pure_lit = clause.iter().copied().find(|&lit| {
+            let var = lit.unsigned_abs() as usize;
+            let value = pure_value[var];
+            value != UNASSIGNED && ((lit > 0) == (value == TRUE))
+        });
+
+        if let Some(lit) = pure_lit {
+            eliminated_by_var[lit.unsigned_abs() as usize].push(clause);
+        } else {
+            kept.push(clause);
+        }
+    }
+
+    let mut eliminated_vars = Vec::new();
+    for (var, clauses) in eliminated_by_var.into_iter().enumerate().skip(1) {
+        if clauses.is_empty() {
+            continue;
+        }
+        eliminated_vars.push(EliminatedVar { var, clauses });
+    }
+
+    (kept, eliminated_vars)
+}
+
 fn bounded_variable_eliminate(
     num_vars: usize,
     clauses: Vec<Vec<i32>>,
@@ -2087,6 +2143,12 @@ fn bounded_variable_eliminate(
     if clauses.len() < BVE_MIN_CLAUSES {
         return (clauses, Vec::new(), Vec::new());
     }
+
+    let max_eliminated_vars = if clauses.len() >= BVE_LARGE_FORMULA_CLAUSES {
+        BVE_MAX_ELIMINATED_VARS_LARGE
+    } else {
+        BVE_MAX_ELIMINATED_VARS_MEDIUM
+    };
 
     let mut clauses = clauses;
     let mut active = vec![true; clauses.len()];
@@ -2122,7 +2184,7 @@ fn bounded_variable_eliminate(
     let mut eliminated_vars = Vec::new();
 
     for &(_, _, var) in &candidates {
-        if eliminated_vars.len() >= BVE_MAX_ELIMINATED_VARS {
+        if eliminated_vars.len() >= max_eliminated_vars {
             break;
         }
 
@@ -2252,8 +2314,14 @@ fn parse_cnf(path: &str) -> ParsedCnf {
     }
 
     let clauses = deduplicate_clauses(clauses);
-    let (clauses, preprocessing_proof_clauses, eliminated_vars) =
+    let (clauses, mut eliminated_vars) = if clauses.len() >= PURE_MIN_CLAUSES {
+        pure_literal_eliminate(num_vars, clauses)
+    } else {
+        (clauses, Vec::new())
+    };
+    let (clauses, preprocessing_proof_clauses, bve_eliminated_vars) =
         bounded_variable_eliminate(num_vars, clauses);
+    eliminated_vars.extend(bve_eliminated_vars);
 
     ParsedCnf {
         num_vars,
@@ -2464,6 +2532,20 @@ mod tests {
     fn test_merge_resolvent_drops_eliminated_variable_and_tautologies() {
         assert_eq!(merge_resolvent(&[1, 2], &[-1, 3], 1), Some(vec![2, 3]));
         assert_eq!(merge_resolvent(&[1, 2], &[-1, -2], 1), None);
+    }
+
+    #[test]
+    fn test_pure_literal_eliminate_removes_clauses_and_extends_model() {
+        let clauses = vec![vec![1, 2], vec![1, 3], vec![-2, 3], vec![2, -3]];
+        let (kept, eliminated_vars) = pure_literal_eliminate(3, clauses);
+
+        assert_eq!(kept, vec![vec![-2, 3], vec![2, -3]]);
+        assert_eq!(eliminated_vars.len(), 1);
+        assert_eq!(eliminated_vars[0].var, 1);
+
+        let mut s = Solver::new_with_preprocessing(3, kept, Vec::new(), eliminated_vars);
+        assert!(s.solve());
+        assert_eq!(s.assignment[1], TRUE);
     }
 
     #[test]
