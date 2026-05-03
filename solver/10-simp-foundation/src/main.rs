@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -20,6 +21,7 @@ const LEARNTSIZE_FACTOR: f64 = 1.0 / 3.0;
 const LEARNTSIZE_INC: f64 = 1.1;
 const LEARNTSIZE_ADJUST_START_CONFL: usize = 50;
 const LEARNTSIZE_ADJUST_INC: f64 = 1.5;
+const SHORT_CLAUSE_KEY_LEN: usize = 5;
 const CLAUSE_MARK_MASK: u32 = 0b11;
 const CLAUSE_LEARNT_BIT: u32 = 1 << 2;
 const CLAUSE_HAS_EXTRA_BIT: u32 = 1 << 3;
@@ -1905,6 +1907,53 @@ fn parse_usize_env(name: &str, default: usize) -> usize {
     }
 }
 
+#[inline(always)]
+fn clause_key_lit(lit: i32) -> u32 {
+    (lit.unsigned_abs() << 1) | u32::from(lit < 0)
+}
+
+fn short_clause_key(clause: &[i32]) -> Option<[u32; SHORT_CLAUSE_KEY_LEN]> {
+    if clause.len() >= SHORT_CLAUSE_KEY_LEN {
+        return None;
+    }
+
+    let mut key = [0; SHORT_CLAUSE_KEY_LEN];
+    key[0] = clause.len() as u32;
+    for (idx, &lit) in clause.iter().enumerate() {
+        key[idx + 1] = clause_key_lit(lit);
+    }
+    key[1..=clause.len()].sort_unstable();
+    Some(key)
+}
+
+fn sorted_clause_key(clause: &[i32]) -> Vec<i32> {
+    let mut key = clause.to_vec();
+    key.sort_unstable_by_key(|&lit| clause_key_lit(lit));
+    key
+}
+
+fn deduplicate_clauses(clauses: Vec<Vec<i32>>) -> Vec<Vec<i32>> {
+    let mut short_seen: HashSet<[u32; SHORT_CLAUSE_KEY_LEN]> =
+        HashSet::with_capacity(clauses.len());
+    let mut long_seen: HashSet<Vec<i32>> = HashSet::new();
+    let mut unique = Vec::with_capacity(clauses.len());
+
+    for clause in clauses {
+        if let Some(key) = short_clause_key(&clause) {
+            if short_seen.insert(key) {
+                unique.push(clause);
+            }
+        } else {
+            let key = sorted_clause_key(&clause);
+            if long_seen.insert(key) {
+                unique.push(clause);
+            }
+        }
+    }
+
+    unique
+}
+
 fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
     let file = fs::File::open(path).unwrap_or_else(|e| {
         eprintln!("Error opening {}: {}", path, e);
@@ -1949,7 +1998,7 @@ fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
         clauses.push(current_clause);
     }
 
-    (num_vars, clauses)
+    (num_vars, deduplicate_clauses(clauses))
 }
 
 fn print_assignment(assignment: &[u8]) {
@@ -2132,6 +2181,16 @@ mod tests {
     fn test_no_clauses_sat() {
         let mut s = make_solver(3, vec![]);
         assert!(s.solve());
+    }
+
+    #[test]
+    fn test_deduplicate_clauses_removes_permuted_duplicates() {
+        let clauses = vec![vec![1, -2, 3], vec![3, 1, -2], vec![4, 5], vec![5, 4]];
+
+        assert_eq!(
+            deduplicate_clauses(clauses),
+            vec![vec![1, -2, 3], vec![4, 5]]
+        );
     }
 
     #[test]

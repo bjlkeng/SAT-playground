@@ -7,6 +7,8 @@ the next simplification/preprocessing line of work.
 
 `10` inherits:
 
+- parse-time duplicate-clause filtering using a sorted literal key while preserving the first
+  occurrence's original literal order
 - watched-literal BCP with blocker fast paths
 - a binary-clause propagation fast path that avoids the general long-clause scan while preserving
   the reason-clause invariant that the implied literal is stored at position 0
@@ -28,6 +30,7 @@ the next simplification/preprocessing line of work.
 - renamed the package / iteration metadata for `10-simp-foundation`
 - added a binary-clause branch in propagation so two-literal clauses directly test/enqueue the
   other watched literal instead of falling through the long-clause replacement loop
+- added MiniSat-simp-inspired duplicate-clause filtering before the arena is built
 
 ## Intended Focus
 
@@ -45,7 +48,7 @@ Candidate directions:
 
 ## Validation
 
-- `cargo test` — `40/40`
+- `cargo test` — `41/41`
 - `bash tools/smoke_test.sh solver/10-simp-foundation` — `9/9`
 
 ## Targeted Optimization Log
@@ -75,12 +78,31 @@ Profiler evidence:
   at `91.10%`, so future work should keep focusing on watcher/propagation costs
 - post-change profile data: `log/profile-10-kakuro-binary-bcp/perf.data`
 
-Kept improvement:
+Kept improvement 1:
 
 - binary-clause propagation fast path
 - result: `185.972s`, SAT verified, PAR-2 `185.972`
 - improvement: `24.4%` faster than the `246.104s` baseline
 - log: `log/bench-10-simp-foundation-2026-05-02-22-32-16`
+
+MiniSat simplification comparison:
+
+- `minisat -no-pre`: `152.331s` CPU, `19619849` clauses, `69507454` literals at search
+- `minisat -no-elim`: `123.699s` CPU, `14751209` clauses, `52814974` literals at search
+- `minisat` with full `simp`: `85.263s` CPU, `142307` active vars, `14742137` clauses,
+  `52871496` literals at search
+- occurrence analysis of the input found `4,868,640` permutation-equivalent duplicate clauses,
+  which explains nearly all of the `-no-elim` clause reduction
+
+Kept improvement 2:
+
+- parse-time duplicate-clause filtering using sorted literal keys
+- result: `115.040s`, SAT verified, PAR-2 `115.040`
+- improvement: `38.1%` faster than binary propagation alone, and `53.3%` faster than the original
+  `10` baseline before optimization
+- log: `log/bench-10-simp-foundation-2026-05-02-23-28-19`
+- post-change profile data: `log/profile-10-kakuro-dedup/perf.data`; propagation remains the main
+  hotspot at `86.99%`, while duplicate filtering itself accounts for `2.37%`
 
 Rejected attempts:
 
@@ -90,3 +112,5 @@ Rejected attempts:
   watcher blockers and skipped the reason-head invariant; fixed before keeping the final version
 - encoded binary marker in `Watcher`: unit-clean, but exceeded the incremental `180.4s` keep
   threshold before completing, so it was reverted
+- pure-literal cleanup was skipped after analysis because only `1,134` pure literals affected about
+  `2,106` clauses on this instance, far below the observed duplicate-clause opportunity
