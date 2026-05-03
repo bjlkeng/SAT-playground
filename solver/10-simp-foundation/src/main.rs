@@ -23,6 +23,7 @@ const LEARNTSIZE_ADJUST_START_CONFL: usize = 50;
 const LEARNTSIZE_ADJUST_INC: f64 = 1.5;
 const SHORT_CLAUSE_KEY_LEN: usize = 5;
 const PURE_MIN_CLAUSES: usize = 100_000;
+const ROOT_UNIT_SIMPLIFY_MAX_CLAUSES: usize = 100_000;
 const BVE_MIN_CLAUSES: usize = 100_000;
 const BVE_LARGE_FORMULA_CLAUSES: usize = 1_000_000;
 const BVE_MAX_ELIMINATED_VARS_MEDIUM: usize = 5_000;
@@ -813,10 +814,13 @@ impl Solver {
     }
 
     fn branch_var_better(&self, lhs: usize, rhs: usize) -> bool {
-        self.activity[lhs]
-            .total_cmp(&self.activity[rhs])
-            .then_with(|| self.branch_rank[rhs].cmp(&self.branch_rank[lhs]))
-            .is_gt()
+        let lhs_activity = self.activity[lhs];
+        let rhs_activity = self.activity[rhs];
+        if lhs_activity != rhs_activity {
+            lhs_activity > rhs_activity
+        } else {
+            self.branch_rank[lhs] < self.branch_rank[rhs]
+        }
     }
 
     fn branch_heap_swap(&mut self, lhs: usize, rhs: usize) {
@@ -2136,6 +2140,64 @@ fn pure_literal_eliminate(
     (kept, eliminated_vars)
 }
 
+fn root_unit_simplify(num_vars: usize, clauses: Vec<Vec<i32>>) -> (Vec<Vec<i32>>, Vec<Vec<i32>>) {
+    if clauses.len() >= ROOT_UNIT_SIMPLIFY_MAX_CLAUSES {
+        return (clauses, Vec::new());
+    }
+
+    let mut root_value = vec![UNASSIGNED; num_vars + 1];
+    for clause in &clauses {
+        if clause.len() != 1 {
+            continue;
+        }
+        let lit = clause[0];
+        let var = lit.unsigned_abs() as usize;
+        let value = if lit > 0 { TRUE } else { FALSE };
+        if root_value[var] != UNASSIGNED && root_value[var] != value {
+            return (clauses, Vec::new());
+        }
+        root_value[var] = value;
+    }
+
+    if root_value.iter().all(|&value| value == UNASSIGNED) {
+        return (clauses, Vec::new());
+    }
+
+    let mut simplified = Vec::with_capacity(clauses.len());
+    let mut proof_clauses = Vec::new();
+    for clause in clauses {
+        if clause.len() == 1 {
+            simplified.push(clause);
+            continue;
+        }
+
+        let mut satisfied = false;
+        let mut shortened = Vec::with_capacity(clause.len());
+        for &lit in &clause {
+            let var = lit.unsigned_abs() as usize;
+            let value = root_value[var];
+            if value == UNASSIGNED {
+                shortened.push(lit);
+            } else if (lit > 0) == (value == TRUE) {
+                satisfied = true;
+                break;
+            }
+        }
+
+        if satisfied {
+            continue;
+        }
+        if shortened.len() < clause.len() {
+            proof_clauses.push(shortened.clone());
+            simplified.push(shortened);
+        } else {
+            simplified.push(clause);
+        }
+    }
+
+    (simplified, proof_clauses)
+}
+
 fn bounded_variable_eliminate(
     num_vars: usize,
     clauses: Vec<Vec<i32>>,
@@ -2314,19 +2376,21 @@ fn parse_cnf(path: &str) -> ParsedCnf {
     }
 
     let clauses = deduplicate_clauses(clauses);
+    let (clauses, mut root_unit_proof_clauses) = root_unit_simplify(num_vars, clauses);
     let (clauses, mut eliminated_vars) = if clauses.len() >= PURE_MIN_CLAUSES {
         pure_literal_eliminate(num_vars, clauses)
     } else {
         (clauses, Vec::new())
     };
-    let (clauses, preprocessing_proof_clauses, bve_eliminated_vars) =
+    let (clauses, bve_proof_clauses, bve_eliminated_vars) =
         bounded_variable_eliminate(num_vars, clauses);
+    root_unit_proof_clauses.extend(bve_proof_clauses);
     eliminated_vars.extend(bve_eliminated_vars);
 
     ParsedCnf {
         num_vars,
         clauses,
-        preprocessing_proof_clauses,
+        preprocessing_proof_clauses: root_unit_proof_clauses,
         eliminated_vars,
     }
 }
@@ -2546,6 +2610,16 @@ mod tests {
         let mut s = Solver::new_with_preprocessing(3, kept, Vec::new(), eliminated_vars);
         assert!(s.solve());
         assert_eq!(s.assignment[1], TRUE);
+    }
+
+    #[test]
+    fn test_root_unit_simplify_removes_satisfied_and_strengthens_false_literals() {
+        let clauses = vec![vec![1], vec![-1, 2, 3], vec![1, 4], vec![-2, 3]];
+
+        let (simplified, proof_clauses) = root_unit_simplify(4, clauses);
+
+        assert_eq!(simplified, vec![vec![1], vec![2, 3], vec![-2, 3]]);
+        assert_eq!(proof_clauses, vec![vec![2, 3]]);
     }
 
     #[test]

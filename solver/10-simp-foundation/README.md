@@ -9,6 +9,8 @@ MiniSat-style preprocessing line of work.
 
 - parse-time duplicate-clause filtering using a sorted literal key while preserving the first
   occurrence's original literal order
+- parse-time root-unit cleanup for formulas under `100,000` clauses, removing satisfied clauses and
+  emitting proof additions for clauses strengthened by false root literals
 - parse-time pure-literal cleanup for formulas with at least `100,000` clauses
 - limited bounded variable elimination, capped at `5,000` eliminated variables for medium formulas
   and `25,000` for large formulas, with DRAT resolvent additions and SAT model reconstruction for
@@ -39,6 +41,8 @@ MiniSat-style preprocessing line of work.
 - tuned BVE to stop before it starts damaging the CDCL search path on the target instance
 - lowered the BVE activation threshold for medium formulas and added pure-literal cleanup after
   measuring MiniSat-faster timetable instances
+- added a small-formula root-unit simplification pass and cheaper finite-activity branch comparison
+  after profiling the remaining MiniSat gap on the e318 target instance
 
 ## Intended Focus
 
@@ -189,6 +193,26 @@ Kept improvement 7:
   `log/profile-10-c393-pure-medium-bve/perf.data`; propagation was `56.44%`, branch selection was
   `10.46%`, and parse-time preprocessing was below the main search costs
 
+Kept improvement 8:
+
+- added a parse-time root-unit cleanup pass for formulas under `100,000` clauses
+- clauses satisfied by root units are removed before watches are built; clauses containing false
+  root literals are strengthened and emitted as preprocessing proof additions
+- replaced `f32::total_cmp` in branch selection with a direct finite-activity comparison plus the
+  existing static-rank tie breaker
+- opportunity check on `e318e2...544707209399nw` found `59` root units; one cleanup pass removed
+  `177` clauses and strengthened `118` ternaries into binaries
+- result on the MiniSat-faster three-instance target: `134.179s`, SAT verified, PAR-2 `134.179`
+- improvement: `7.2%` faster than pure cleanup plus adaptive BVE
+- six-instance guard sample result: `224.263s`, improved from `232.762s`
+- Kakuro guard result: `31.376s`, improved from `32.758s`
+- logs: `log/bench-10-simp-foundation-2026-05-03-10-00-46`,
+  `log/bench-10-simp-foundation-2026-05-03-10-03-10`,
+  `log/bench-10-simp-foundation-2026-05-03-10-08-17`
+- profile data with symbols on `e318e2...544707209399nw`:
+  `log/profile-10-e318-root-unit-cleanup/perf.data`; propagation remained the main hotspot at
+  `57.73%`, followed by branch-heap sift-up at `14.64%`
+
 Rejected attempts:
 
 - parse-time clause normalization: unit-clean, but exceeded the `238.7s` keep threshold before
@@ -210,3 +234,12 @@ Rejected attempts:
   reverted
 - lowering the medium-formula BVE cap to `1,000` exceeded the three-instance keep cutoff before
   finishing the first instance, so it was reverted
+- binary self-subsuming resolution had about `47k` apparent timetable opportunities, but applying
+  it before BVE slowed C392 from `34.675s` to `59.358s`, and applying it after BVE also exceeded the
+  per-instance cutoff signal, so both placements were reverted
+- direct root removal in `branch_heap_pop_best` regressed the three-instance target to `142.017s`,
+  so it was reverted
+- force-inlining the branch comparator regressed the three-instance target to `141.708s`, so it was
+  reverted
+- bulk branch-heap rebuild on large backtracks hurt C392 when enabled globally and regressed e318 to
+  `102.00s` when gated to small formulas, so both versions were reverted
