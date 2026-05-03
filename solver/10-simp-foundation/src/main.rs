@@ -22,6 +22,10 @@ const LEARNTSIZE_INC: f64 = 1.1;
 const LEARNTSIZE_ADJUST_START_CONFL: usize = 50;
 const LEARNTSIZE_ADJUST_INC: f64 = 1.5;
 const SHORT_CLAUSE_KEY_LEN: usize = 5;
+const BVE_MIN_CLAUSES: usize = 1_000_000;
+const BVE_MAX_ELIMINATED_VARS: usize = 25_000;
+const BVE_CLAUSE_LIMIT: usize = 20;
+const BVE_GROW: usize = 0;
 const CLAUSE_MARK_MASK: u32 = 0b11;
 const CLAUSE_LEARNT_BIT: u32 = 1 << 2;
 const CLAUSE_HAS_EXTRA_BIT: u32 = 1 << 3;
@@ -33,6 +37,18 @@ const CLAUSE_DELETED_MARK: u32 = 1;
 struct Watcher {
     clause_idx: u32,
     blocker: i32,
+}
+
+struct EliminatedVar {
+    var: usize,
+    clauses: Vec<Vec<i32>>,
+}
+
+struct ParsedCnf {
+    num_vars: usize,
+    clauses: Vec<Vec<i32>>,
+    preprocessing_proof_clauses: Vec<Vec<i32>>,
+    eliminated_vars: Vec<EliminatedVar>,
 }
 
 #[derive(Clone, Default)]
@@ -259,6 +275,10 @@ struct Solver {
     root_unit_clauses: Vec<usize>,
     /// whether the formula already contains an empty clause
     has_empty_clause: bool,
+    /// DRAT additions produced by preprocessing before search starts
+    preprocessing_proof_clauses: Vec<Vec<i32>>,
+    /// eliminated variable clauses used to extend SAT models back to the original formula
+    eliminated_vars: Vec<EliminatedVar>,
     /// scratch buffers reused during conflict analysis
     scratch_seen: Vec<u8>,
     scratch_resolved: Vec<u8>,
@@ -275,7 +295,10 @@ struct Solver {
 
 #[inline(always)]
 fn clause_make_header(size: usize, learnt: bool, has_extra: bool, mark: u32, reloced: bool) -> u32 {
-    debug_assert!(size < (1usize << 27), "clause too large for packed header: {size}");
+    debug_assert!(
+        size < (1usize << 27),
+        "clause too large for packed header: {size}"
+    );
     (mark & CLAUSE_MARK_MASK)
         | ((learnt as u32) << 2)
         | ((has_extra as u32) << 3)
@@ -398,9 +421,7 @@ fn lit_redundant(
                 continue;
             }
             let parent_var = parent.unsigned_abs() as usize;
-            if state[parent_var] == REDUNDANT_SOURCE
-                || state[parent_var] == REDUNDANT_REMOVABLE
-            {
+            if state[parent_var] == REDUNDANT_SOURCE || state[parent_var] == REDUNDANT_REMOVABLE {
                 lit_pos += 1;
                 continue;
             }
@@ -458,11 +479,24 @@ fn lit_redundant(
 fn lit_to_index(lit: i32) -> usize {
     let var = lit.unsigned_abs() as usize;
     let base = (var - 1) * 2;
-    if lit > 0 { base } else { base + 1 }
+    if lit > 0 {
+        base
+    } else {
+        base + 1
+    }
 }
 
 impl Solver {
     fn new(num_vars: usize, clauses: Vec<Vec<i32>>) -> Self {
+        Self::new_with_preprocessing(num_vars, clauses, Vec::new(), Vec::new())
+    }
+
+    fn new_with_preprocessing(
+        num_vars: usize,
+        clauses: Vec<Vec<i32>>,
+        preprocessing_proof_clauses: Vec<Vec<i32>>,
+        eliminated_vars: Vec<EliminatedVar>,
+    ) -> Self {
         let original_clause_count = clauses.len();
         let mut occurrence_count = vec![0usize; num_vars + 1];
         for clause in &clauses {
@@ -532,6 +566,8 @@ impl Solver {
             simplify_props_remaining: 0,
             root_unit_clauses: Vec::new(),
             has_empty_clause: false,
+            preprocessing_proof_clauses,
+            eliminated_vars,
             scratch_seen: vec![0; num_vars + 1],
             scratch_resolved: vec![0; num_vars + 1],
             scratch_learned: Vec::with_capacity(16),
@@ -1235,9 +1271,9 @@ impl Solver {
         self.restart_conflicts = 0;
         self.restart_pending = true;
         self.restart_luby_index += 1;
-        self.restart_conflict_limit =
-            self.restart_unit
-                .saturating_mul(Self::luby_value(self.restart_luby_index));
+        self.restart_conflict_limit = self
+            .restart_unit
+            .saturating_mul(Self::luby_value(self.restart_luby_index));
     }
 
     fn pick_branch_lit(&mut self) -> Option<i32> {
@@ -1281,7 +1317,11 @@ impl Solver {
         self.propagate_head = self.propagate_head.min(new_trail_len);
     }
 
-    fn debug_assert_clause_asserting_after_backtrack(&self, learned_clause: &[i32], backtrack_level: usize) {
+    fn debug_assert_clause_asserting_after_backtrack(
+        &self,
+        learned_clause: &[i32],
+        backtrack_level: usize,
+    ) {
         debug_assert_eq!(self.current_level(), backtrack_level);
         debug_assert_eq!(
             self.lit_value(learned_clause[0]),
@@ -1383,7 +1423,10 @@ impl Solver {
     }
 
     fn delete_clause(&mut self, clause_idx: usize) {
-        debug_assert!(clause_idx < self.arena.len(), "invalid clause index {clause_idx}");
+        debug_assert!(
+            clause_idx < self.arena.len(),
+            "invalid clause index {clause_idx}"
+        );
         debug_assert!(
             self.clause_is_learnt(clause_idx),
             "only learned clauses may be deleted"
@@ -1402,7 +1445,10 @@ impl Solver {
     }
 
     fn mark_clause_deleted(&mut self, clause_idx: usize) {
-        debug_assert!(clause_idx < self.arena.len(), "invalid clause index {clause_idx}");
+        debug_assert!(
+            clause_idx < self.arena.len(),
+            "invalid clause index {clause_idx}"
+        );
         debug_assert!(
             self.clause_is_learnt(clause_idx),
             "only learned clauses may be deleted"
@@ -1412,7 +1458,10 @@ impl Solver {
             "clause {clause_idx} already deleted"
         );
         debug_assert!(
-            !self.reason.iter().any(|&reason_idx| reason_idx == clause_idx),
+            !self
+                .reason
+                .iter()
+                .any(|&reason_idx| reason_idx == clause_idx),
             "cannot delete clause {clause_idx} while it is still a live reason"
         );
         let learned_pos = self
@@ -1429,7 +1478,10 @@ impl Solver {
     }
 
     fn mark_clause_deleted_already_unlinked(&mut self, clause_idx: usize) {
-        debug_assert!(clause_idx < self.arena.len(), "invalid clause index {clause_idx}");
+        debug_assert!(
+            clause_idx < self.arena.len(),
+            "invalid clause index {clause_idx}"
+        );
         debug_assert!(
             self.clause_is_learnt(clause_idx),
             "only learned clauses may be deleted"
@@ -1439,7 +1491,10 @@ impl Solver {
             "clause {clause_idx} already deleted"
         );
         debug_assert!(
-            !self.reason.iter().any(|&reason_idx| reason_idx == clause_idx),
+            !self
+                .reason
+                .iter()
+                .any(|&reason_idx| reason_idx == clause_idx),
             "cannot delete clause {clause_idx} while it is still a live reason"
         );
         self.live_learned_clause_count = self.live_learned_clause_count.saturating_sub(1);
@@ -1478,22 +1533,27 @@ impl Solver {
             self.original_clause_ids.len() + self.learned_clause_ids.len()
         );
 
-        let copy_clause =
-            |old_clause_idx: usize, arena: &[u32], new_arena: &mut Vec<u32>, reloc: &mut [usize]| {
-                let new_clause_idx = new_arena.len();
-                let old_end = old_clause_idx + clause_len_in_arena(arena, old_clause_idx) + 1
-                    + clause_header_has_extra(arena[old_clause_idx]) as usize;
-                reloc[old_clause_idx] = new_clause_idx;
-                new_arena.extend_from_slice(&arena[old_clause_idx..old_end]);
-                new_clause_idx
-            };
+        let copy_clause = |old_clause_idx: usize,
+                           arena: &[u32],
+                           new_arena: &mut Vec<u32>,
+                           reloc: &mut [usize]| {
+            let new_clause_idx = new_arena.len();
+            let old_end = old_clause_idx
+                + clause_len_in_arena(arena, old_clause_idx)
+                + 1
+                + clause_header_has_extra(arena[old_clause_idx]) as usize;
+            reloc[old_clause_idx] = new_clause_idx;
+            new_arena.extend_from_slice(&arena[old_clause_idx..old_end]);
+            new_clause_idx
+        };
 
         for &old_clause_idx in &self.original_clause_ids {
             debug_assert!(
                 !self.clause_is_deleted(old_clause_idx),
                 "original clauses must stay live across garbage collection"
             );
-            let new_clause_idx = copy_clause(old_clause_idx, &self.arena, &mut new_arena, &mut reloc);
+            let new_clause_idx =
+                copy_clause(old_clause_idx, &self.arena, &mut new_arena, &mut reloc);
             new_original_clause_ids.push(new_clause_idx);
         }
         for &old_clause_idx in &self.learned_clause_ids {
@@ -1501,7 +1561,8 @@ impl Solver {
                 !self.clause_is_deleted(old_clause_idx),
                 "live learned clauses must stay live across garbage collection"
             );
-            let new_clause_idx = copy_clause(old_clause_idx, &self.arena, &mut new_arena, &mut reloc);
+            let new_clause_idx =
+                copy_clause(old_clause_idx, &self.arena, &mut new_arena, &mut reloc);
             new_learned_clause_ids.push(new_clause_idx);
         }
 
@@ -1637,15 +1698,7 @@ impl Solver {
             } else if self.ccmin_mode == CCMIN_BASIC {
                 !basic_lit_redundant(lit, arena, decision_level, reason, state)
             } else {
-                !lit_redundant(
-                    lit,
-                    arena,
-                    decision_level,
-                    reason,
-                    state,
-                    toclear,
-                    stack,
-                )
+                !lit_redundant(lit, arena, decision_level, reason, state, toclear, stack)
             };
             if keep {
                 learned_clause[write] = lit;
@@ -1780,6 +1833,52 @@ impl Solver {
         self.solve_with_proof(&mut proof_log)
     }
 
+    fn emit_preprocessing_proof(&self, proof_log: &mut ProofLog) {
+        for clause in &self.preprocessing_proof_clauses {
+            proof_log.record_clause(clause);
+        }
+    }
+
+    fn extend_eliminated_model(&mut self) {
+        for eliminated in self.eliminated_vars.iter().rev() {
+            let mut required_value = UNASSIGNED;
+            for clause in &eliminated.clauses {
+                let mut current_lit = 0;
+                let mut satisfied_without_current = false;
+                for &lit in clause {
+                    if lit.unsigned_abs() as usize == eliminated.var {
+                        current_lit = lit;
+                    } else if self.lit_value(lit) == TRUE {
+                        satisfied_without_current = true;
+                        break;
+                    }
+                }
+
+                if satisfied_without_current {
+                    continue;
+                }
+
+                debug_assert_ne!(current_lit, 0, "eliminated clause missing variable");
+                let value = if current_lit > 0 { TRUE } else { FALSE };
+                debug_assert!(
+                    required_value == UNASSIGNED || required_value == value,
+                    "inconsistent eliminated variable reconstruction"
+                );
+                required_value = value;
+            }
+
+            let value = if required_value == UNASSIGNED {
+                self.saved_phase[eliminated.var]
+            } else {
+                required_value
+            };
+            self.assignment[eliminated.var] = value;
+            self.saved_phase[eliminated.var] = value;
+            self.decision_level[eliminated.var] = 0;
+            self.reason[eliminated.var] = NO_REASON;
+        }
+    }
+
     fn solve_to_output(&mut self, output_dir: &str) -> bool {
         let mut proof_log = ProofLog::new(output_dir, PROOF_BUFFER_CAPACITY);
         let sat = self.solve_with_proof(&mut proof_log);
@@ -1792,6 +1891,8 @@ impl Solver {
     }
 
     fn solve_with_proof(&mut self, proof_log: &mut ProofLog) -> bool {
+        self.emit_preprocessing_proof(proof_log);
+
         if self.has_empty_clause || !self.enqueue_root_units() {
             return false;
         }
@@ -1869,7 +1970,10 @@ impl Solver {
                             self.decide(lit);
                             conflict = self.propagate();
                         }
-                        None => return true,
+                        None => {
+                            self.extend_eliminated_model();
+                            return true;
+                        }
                     }
                 }
             }
@@ -1884,9 +1988,7 @@ fn parse_ccmin_mode() -> u8 {
             "1" | "basic" => CCMIN_BASIC,
             "2" | "deep" => CCMIN_DEEP,
             other => {
-                eprintln!(
-                    "Invalid SAT_CCMIN_MODE={other}; expected none/basic/deep or 0/1/2"
-                );
+                eprintln!("Invalid SAT_CCMIN_MODE={other}; expected none/basic/deep or 0/1/2");
                 std::process::exit(2);
             }
         },
@@ -1954,7 +2056,158 @@ fn deduplicate_clauses(clauses: Vec<Vec<i32>>) -> Vec<Vec<i32>> {
     unique
 }
 
-fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
+fn merge_resolvent(lhs: &[i32], rhs: &[i32], eliminated_var: usize) -> Option<Vec<i32>> {
+    let mut merged = Vec::with_capacity(lhs.len() + rhs.len());
+
+    for clause in [lhs, rhs] {
+        'lits: for &lit in clause {
+            if lit.unsigned_abs() as usize == eliminated_var {
+                continue;
+            }
+            for &existing in &merged {
+                if existing == lit {
+                    continue 'lits;
+                }
+                if existing == -lit {
+                    return None;
+                }
+            }
+            merged.push(lit);
+        }
+    }
+
+    merged.sort_unstable_by_key(|&lit| clause_key_lit(lit));
+    Some(merged)
+}
+
+fn bounded_variable_eliminate(
+    num_vars: usize,
+    clauses: Vec<Vec<i32>>,
+) -> (Vec<Vec<i32>>, Vec<Vec<i32>>, Vec<EliminatedVar>) {
+    if clauses.len() < BVE_MIN_CLAUSES {
+        return (clauses, Vec::new(), Vec::new());
+    }
+
+    let mut clauses = clauses;
+    let mut active = vec![true; clauses.len()];
+    let mut occurs_pos = vec![Vec::<usize>::new(); num_vars + 1];
+    let mut occurs_neg = vec![Vec::<usize>::new(); num_vars + 1];
+    for (idx, clause) in clauses.iter().enumerate() {
+        for &lit in clause {
+            let var = lit.unsigned_abs() as usize;
+            if lit > 0 {
+                occurs_pos[var].push(idx);
+            } else {
+                occurs_neg[var].push(idx);
+            }
+        }
+    }
+
+    let mut candidates = Vec::new();
+    for var in 1..=num_vars {
+        let pos = occurs_pos[var].len();
+        let neg = occurs_neg[var].len();
+        if pos == 0 || neg == 0 {
+            continue;
+        }
+        let product = pos.saturating_mul(neg);
+        let occurrences = pos + neg;
+        if occurrences <= 80 && product <= occurrences + BVE_GROW + 8 {
+            candidates.push((product, occurrences, var));
+        }
+    }
+    candidates.sort_unstable();
+
+    let mut proof_clauses = Vec::new();
+    let mut eliminated_vars = Vec::new();
+
+    for &(_, _, var) in &candidates {
+        if eliminated_vars.len() >= BVE_MAX_ELIMINATED_VARS {
+            break;
+        }
+
+        let pos: Vec<usize> = occurs_pos[var]
+            .iter()
+            .copied()
+            .filter(|&idx| active[idx])
+            .collect();
+        let neg: Vec<usize> = occurs_neg[var]
+            .iter()
+            .copied()
+            .filter(|&idx| active[idx])
+            .collect();
+        if pos.is_empty() || neg.is_empty() {
+            continue;
+        }
+
+        let occurrence_count = pos.len() + neg.len();
+        if occurrence_count > 80
+            || pos.len().saturating_mul(neg.len()) > occurrence_count + BVE_GROW + 8
+        {
+            continue;
+        }
+
+        let mut resolvents = Vec::new();
+        let mut can_eliminate = true;
+        'pairs: for &pos_idx in &pos {
+            for &neg_idx in &neg {
+                if let Some(resolvent) = merge_resolvent(&clauses[pos_idx], &clauses[neg_idx], var)
+                {
+                    if resolvent.len() > BVE_CLAUSE_LIMIT {
+                        can_eliminate = false;
+                        break 'pairs;
+                    }
+                    resolvents.push(resolvent);
+                    if resolvents.len() > occurrence_count + BVE_GROW {
+                        can_eliminate = false;
+                        break 'pairs;
+                    }
+                }
+            }
+        }
+        if !can_eliminate {
+            continue;
+        }
+
+        let mut eliminated_clauses = Vec::with_capacity(occurrence_count);
+        for &idx in pos.iter().chain(neg.iter()) {
+            if active[idx] {
+                eliminated_clauses.push(clauses[idx].clone());
+                active[idx] = false;
+            }
+        }
+
+        for resolvent in resolvents {
+            let idx = clauses.len();
+            for &lit in &resolvent {
+                let lit_var = lit.unsigned_abs() as usize;
+                if lit > 0 {
+                    occurs_pos[lit_var].push(idx);
+                } else {
+                    occurs_neg[lit_var].push(idx);
+                }
+            }
+            proof_clauses.push(resolvent.clone());
+            clauses.push(resolvent);
+            active.push(true);
+        }
+
+        eliminated_vars.push(EliminatedVar {
+            var,
+            clauses: eliminated_clauses,
+        });
+    }
+
+    let reduced = clauses
+        .into_iter()
+        .zip(active)
+        .filter_map(|(clause, is_active)| is_active.then_some(clause))
+        .collect();
+
+    (reduced, proof_clauses, eliminated_vars)
+}
+
+fn parse_cnf(path: &str) -> ParsedCnf {
     let file = fs::File::open(path).unwrap_or_else(|e| {
         eprintln!("Error opening {}: {}", path, e);
         std::process::exit(1);
@@ -1998,7 +2251,16 @@ fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
         clauses.push(current_clause);
     }
 
-    (num_vars, deduplicate_clauses(clauses))
+    let clauses = deduplicate_clauses(clauses);
+    let (clauses, preprocessing_proof_clauses, eliminated_vars) =
+        bounded_variable_eliminate(num_vars, clauses);
+
+    ParsedCnf {
+        num_vars,
+        clauses,
+        preprocessing_proof_clauses,
+        eliminated_vars,
+    }
 }
 
 fn print_assignment(assignment: &[u8]) {
@@ -2030,8 +2292,13 @@ fn main() {
     let cnf_path = &args[1];
     let output_dir = &args[2];
 
-    let (num_vars, clauses) = parse_cnf(cnf_path);
-    let mut solver = Solver::new(num_vars, clauses);
+    let parsed = parse_cnf(cnf_path);
+    let mut solver = Solver::new_with_preprocessing(
+        parsed.num_vars,
+        parsed.clauses,
+        parsed.preprocessing_proof_clauses,
+        parsed.eliminated_vars,
+    );
     solver.ccmin_mode = parse_ccmin_mode();
     solver.reduce_db_limit = parse_usize_env("SAT_REDUCE_DB_INIT", solver.reduce_db_limit);
     solver.learntsize_adjust_cnt =
@@ -2191,6 +2458,29 @@ mod tests {
             deduplicate_clauses(clauses),
             vec![vec![1, -2, 3], vec![4, 5]]
         );
+    }
+
+    #[test]
+    fn test_merge_resolvent_drops_eliminated_variable_and_tautologies() {
+        assert_eq!(merge_resolvent(&[1, 2], &[-1, 3], 1), Some(vec![2, 3]));
+        assert_eq!(merge_resolvent(&[1, 2], &[-1, -2], 1), None);
+    }
+
+    #[test]
+    fn test_eliminated_model_extension_sets_required_value() {
+        let mut s = Solver::new_with_preprocessing(
+            2,
+            vec![vec![2]],
+            Vec::new(),
+            vec![EliminatedVar {
+                var: 1,
+                clauses: vec![vec![1, -2]],
+            }],
+        );
+
+        assert!(s.solve());
+        assert_eq!(s.assignment[1], TRUE);
+        assert_eq!(s.assignment[2], TRUE);
     }
 
     #[test]
@@ -2419,16 +2709,12 @@ mod tests {
         let mut s = make_solver(3, vec![]);
         let clause_idx = s.add_clause(vec![3, 1, 2]);
 
-        assert!(
-            s.watchers[s.lit_index(3)]
-                .iter()
-                .any(|watcher| watcher.clause_idx as usize == clause_idx)
-        );
-        assert!(
-            s.watchers[s.lit_index(1)]
-                .iter()
-                .any(|watcher| watcher.clause_idx as usize == clause_idx)
-        );
+        assert!(s.watchers[s.lit_index(3)]
+            .iter()
+            .any(|watcher| watcher.clause_idx as usize == clause_idx));
+        assert!(s.watchers[s.lit_index(1)]
+            .iter()
+            .any(|watcher| watcher.clause_idx as usize == clause_idx));
 
         s.delete_clause(clause_idx);
 
@@ -2436,16 +2722,12 @@ mod tests {
         assert_eq!(s.learned_clause_count(), 0);
         assert!(s.learned_clause_ids.is_empty());
         assert_eq!(s.stats.deleted_clauses, 1);
-        assert!(
-            s.watchers[s.lit_index(3)]
-                .iter()
-                .all(|watcher| watcher.clause_idx as usize != clause_idx)
-        );
-        assert!(
-            s.watchers[s.lit_index(1)]
-                .iter()
-                .all(|watcher| watcher.clause_idx as usize != clause_idx)
-        );
+        assert!(s.watchers[s.lit_index(3)]
+            .iter()
+            .all(|watcher| watcher.clause_idx as usize != clause_idx));
+        assert!(s.watchers[s.lit_index(1)]
+            .iter()
+            .all(|watcher| watcher.clause_idx as usize != clause_idx));
     }
 
     #[test]
@@ -2583,12 +2865,7 @@ mod tests {
 
     #[test]
     fn test_cdcl_solves_unsat_with_learned_unit_shortcut() {
-        let clauses = vec![
-            vec![1, 2],
-            vec![-1, 2],
-            vec![1, -2],
-            vec![-1, -2],
-        ];
+        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
         let mut s = make_solver(2, clauses);
         assert!(!s.solve());
         assert_eq!(
@@ -2676,18 +2953,13 @@ mod tests {
 
     #[test]
     fn test_unsat_proof_logs_learned_clause_before_empty_clause() {
-        let clauses = vec![
-            vec![1, 2],
-            vec![-1, 2],
-            vec![1, -2],
-            vec![-1, -2],
-        ];
+        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
         let proof_dir = make_temp_dir("solver-unsat-proof");
         let mut s = make_solver(2, clauses);
         assert!(!s.solve_to_output(proof_dir.to_str().expect("utf8 temp dir")));
 
-        let proof_text = fs::read_to_string(proof_dir.join("proof.out"))
-            .expect("failed to read emitted proof");
+        let proof_text =
+            fs::read_to_string(proof_dir.join("proof.out")).expect("failed to read emitted proof");
         let proof_lines: Vec<_> = proof_text.lines().collect();
         assert!(
             proof_lines.len() >= 2,
@@ -2844,12 +3116,7 @@ mod tests {
 
     #[test]
     fn test_conflict_bumps_variable_activity() {
-        let clauses = vec![
-            vec![1, 2],
-            vec![-1, 2],
-            vec![1, -2],
-            vec![-1, -2],
-        ];
+        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
         let mut s = make_solver(2, clauses);
 
         assert!(!s.solve());

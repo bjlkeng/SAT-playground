@@ -1,7 +1,7 @@
 # 10-simp-foundation
 
-This iteration starts from `09-root-simp-opts` and adds the first profiled propagation cleanup for
-the next simplification/preprocessing line of work.
+This iteration starts from `09-root-simp-opts` and adds the first profiled propagation and
+MiniSat-style preprocessing line of work.
 
 ## Current State
 
@@ -9,6 +9,8 @@ the next simplification/preprocessing line of work.
 
 - parse-time duplicate-clause filtering using a sorted literal key while preserving the first
   occurrence's original literal order
+- limited bounded variable elimination for large formulas, capped at `25,000` eliminated variables,
+  with DRAT resolvent additions and SAT model reconstruction for eliminated variables
 - watched-literal BCP with blocker fast paths
 - a binary-clause propagation fast path that avoids the general long-clause scan while preserving
   the reason-clause invariant that the implied literal is stored at position 0
@@ -31,24 +33,27 @@ the next simplification/preprocessing line of work.
 - added a binary-clause branch in propagation so two-literal clauses directly test/enqueue the
   other watched literal instead of falling through the long-clause replacement loop
 - added MiniSat-simp-inspired duplicate-clause filtering before the arena is built
+- added a conservative bounded variable elimination pass for low-occurrence variables
+- tuned BVE to stop before it starts damaging the CDCL search path on the target instance
 
 ## Intended Focus
 
-The next useful work is still to close selected gaps between `09` and MiniSat `simp`, starting with
-small, measurable simplification passes before attempting full bounded variable elimination.
+The next useful work is still to close selected gaps between `09` and MiniSat `simp`, but the target
+instance now shows that more simplification is not automatically better. BVE needs cost controls that
+track downstream search impact, not just formula size.
 
 Candidate directions:
 
 - maintain occurrence lists for original clauses
 - add backward subsumption and simple self-subsuming resolution
-- add bounded variable elimination for low-cost variables
+- broaden bounded variable elimination only with a better cost model or per-instance cutoff
 - normalize clauses during parsing before the arena is built
 - add benchmark instrumentation for simplification impact on active variables, clauses, literals,
   and propagation rate
 
 ## Validation
 
-- `cargo test` — `41/41`
+- `cargo test` — `43/43`
 - `bash tools/smoke_test.sh solver/10-simp-foundation` — `9/9`
 
 ## Targeted Optimization Log
@@ -104,6 +109,44 @@ Kept improvement 2:
 - post-change profile data: `log/profile-10-kakuro-dedup/perf.data`; propagation remains the main
   hotspot at `86.99%`, while duplicate filtering itself accounts for `2.37%`
 
+Kept improvement 3:
+
+- limited bounded variable elimination for low-occurrence variables on large formulas
+- generated resolvents are emitted before search as proof additions; eliminated clauses are stored
+  so SAT assignments can be extended back to the original variables
+- result: `107.276s`, SAT verified, PAR-2 `107.276`
+- improvement: `6.8%` faster than duplicate filtering alone, and `56.4%` faster than the original
+  `10` baseline before optimization
+- log: `log/bench-10-simp-foundation-2026-05-03-00-23-08`
+- post-change profile data: `log/profile-10-kakuro-bve/perf.data`; propagation remains the main
+  hotspot at `83.43%`, while BVE itself accounts for `0.20%`
+
+Kept improvement 4:
+
+- retuned the BVE cap from `50,000` to `25,000` eliminated variables
+- result: `84.070s`, SAT verified, PAR-2 `84.070`
+- improvement: `21.6%` faster than the `50,000` cap BVE result, `26.9%` faster than duplicate
+  filtering alone, and `65.8%` faster than the original `10` baseline before optimization
+- log: `log/bench-10-simp-foundation-2026-05-03-00-57-59`
+- profile data with symbols: `log/profile-10-kakuro-bve-cap25-symbols/perf.data`; propagation was
+  `72.55%`, while the two duplicate-filtering hash helpers together were about `10.62%`
+
+Kept improvement 5:
+
+- removed the second duplicate filter after BVE, while keeping parse-time duplicate filtering
+- this was only a `2.0%` improvement with the earlier `50,000` BVE cap, but became worthwhile after
+  the cap was tuned to `25,000`
+- result: `78.931s`, SAT verified, PAR-2 `78.931`
+- improvement: `6.1%` faster than `25,000`-cap BVE with the post-BVE duplicate filter, `31.4%`
+  faster than duplicate filtering alone, and `67.9%` faster than the original `10` baseline before
+  optimization
+- this is `7.4%` faster than the measured MiniSat `simp` CPU time of `85.263s` on the same target
+  instance
+- log: `log/bench-10-simp-foundation-2026-05-03-01-08-02`
+- profile data with symbols: `log/profile-10-kakuro-bve-cap25-no-post-dedup/perf.data`;
+  propagation was `77.75%`, hash helpers were down to about `5.60%`, and the remaining
+  parse-time duplicate filter was `0.61%`
+
 Rejected attempts:
 
 - parse-time clause normalization: unit-clean, but exceeded the `238.7s` keep threshold before
@@ -114,3 +157,14 @@ Rejected attempts:
   threshold before completing, so it was reverted
 - pure-literal cleanup was skipped after analysis because only `1,134` pure literals affected about
   `2,106` clauses on this instance, far below the observed duplicate-clause opportunity
+- binary-clause subsumption and binary self-subsuming-resolution analysis found zero opportunities
+  on the target formula, so no solver change was made
+- dynamic BVE candidate requeueing with the same conservative candidate limits reached `110.641s`,
+  slower than the accepted `50,000` cap BVE baseline, so it was reverted
+- a broader BVE threshold attempt exceeded the cutoff before completing and was reverted
+- raising the BVE cap to `75,000` with the same candidate thresholds reached `133.949s`, so it was
+  reverted
+- lowering the BVE cap to `20,000` reached `132.102s`, so it was reverted
+- raising the no-post-dedup BVE cap to `30,000` reached `127.683s`, so it was reverted
+- a blocker-only binary propagation fast path exceeded the cutoff before completing, so it was
+  reverted
