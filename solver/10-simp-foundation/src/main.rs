@@ -2237,7 +2237,8 @@ fn bounded_variable_eliminate(
         let product = pos.saturating_mul(neg);
         let occurrences = pos + neg;
         if occurrences <= 80 && product <= occurrences + BVE_GROW + 8 {
-            candidates.push((product, occurrences, var));
+            let growth = product as isize - occurrences as isize;
+            candidates.push((growth, product, occurrences, var));
         }
     }
     candidates.sort_unstable();
@@ -2245,7 +2246,7 @@ fn bounded_variable_eliminate(
     let mut proof_clauses = Vec::new();
     let mut eliminated_vars = Vec::new();
 
-    for &(_, _, var) in &candidates {
+    for &(_, _, _, var) in &candidates {
         if eliminated_vars.len() >= max_eliminated_vars {
             break;
         }

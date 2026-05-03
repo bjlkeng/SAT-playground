@@ -14,7 +14,8 @@ MiniSat-style preprocessing line of work.
 - parse-time pure-literal cleanup for formulas with at least `100,000` clauses
 - limited bounded variable elimination, capped at `5,000` eliminated variables for medium formulas
   and `25,000` for large formulas, with DRAT resolvent additions and SAT model reconstruction for
-  eliminated variables
+  eliminated variables; BVE candidates are ordered by net clause growth before raw occurrence
+  product, matching MiniSat's elimination-cost intuition more closely
 - watched-literal BCP with blocker fast paths
 - a binary-clause propagation fast path that avoids the general long-clause scan while preserving
   the reason-clause invariant that the implied literal is stored at position 0
@@ -43,6 +44,8 @@ MiniSat-style preprocessing line of work.
   measuring MiniSat-faster timetable instances
 - added a small-formula root-unit simplification pass and cheaper finite-activity branch comparison
   after profiling the remaining MiniSat gap on the e318 target instance
+- retuned BVE candidate ordering to prefer lower net clause growth before raw product, while keeping
+  the previously accepted growth slack and eliminated-variable caps
 
 ## Intended Focus
 
@@ -61,7 +64,7 @@ Candidate directions:
 
 ## Validation
 
-- `cargo test` — `44/44`
+- `cargo test` — `45/45`
 - `bash tools/smoke_test.sh solver/10-simp-foundation` — `9/9`
 
 ## Targeted Optimization Log
@@ -213,6 +216,23 @@ Kept improvement 8:
   `log/profile-10-e318-root-unit-cleanup/perf.data`; propagation remained the main hotspot at
   `57.73%`, followed by branch-heap sift-up at `14.64%`
 
+Kept improvement 9:
+
+- changed BVE candidate ordering from raw `pos * neg` product first to net growth
+  `pos * neg - (pos + neg)` first, then product and occurrence count
+- this keeps the existing `+8` growth slack and `5,000` medium-formula cap, but makes the first
+  eliminated variables closer to MiniSat's elimination heap cost model
+- result on the MiniSat-faster three-instance target: `129.803s`, SAT verified, PAR-2 `129.803`
+- improvement: `3.3%` faster than root-unit cleanup plus adaptive BVE
+- six-instance guard sample result: `215.325s`, improved from `224.263s`
+- Kakuro guard result: `31.255s`, roughly neutral against `31.376s`
+- logs: `log/bench-10-simp-foundation-2026-05-03-11-02-37`,
+  `log/bench-10-simp-foundation-2026-05-03-11-04-57`,
+  `log/bench-10-simp-foundation-2026-05-03-11-09-50`
+- profile data with symbols on `SC25_Timetable_C_392`:
+  `log/profile-10-c392-bve-growth-order/perf.data`; propagation remained the main hotspot at
+  `72.72%`, followed by branch-heap maintenance
+
 Rejected attempts:
 
 - parse-time clause normalization: unit-clean, but exceeded the `238.7s` keep threshold before
@@ -243,3 +263,14 @@ Rejected attempts:
   reverted
 - bulk branch-heap rebuild on large backtracks hurt C392 when enabled globally and regressed e318 to
   `102.00s` when gated to small formulas, so both versions were reverted
+- medium-formula root-unit fixpoint cleanup found extra root assignments on timetable instances but
+  regressed C392 to `51.491s`, so it was reverted
+- post-BVE pure-literal cleanup removed about `7.6k` additional timetable clauses but regressed C392
+  to `46.849s`, so it was reverted
+- small-formula binary subsumption removed e318 ternaries subsumed by derived binaries but regressed
+  e318 to `115.99s` and the three-instance target to `161.117s`, so it was reverted
+- strict MiniSat-style `grow = 0` BVE without the accepted `+8` slack was close but failed the
+  `>3%` threshold: the best run was `130.251s`, with a clean rerun at `131.139s`
+- strict BVE with a `10,000` medium cap regressed C392 to `35.353s`; strict BVE with a `4,000` cap
+  made C392 very fast at `6.707s` but regressed C393 to `129.132s`; a `4,500` cap exceeded the
+  C392 cutoff before completing
