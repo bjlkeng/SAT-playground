@@ -365,6 +365,7 @@ When the user asks for status (e.g. "status?", "how's it going?", "what's runnin
    - Check `log/bench_reference_RUNNING` for reference solver runs
    - Find the latest `log/bench-*` or `log/bench_reference_*` directory/file
    - Report how many instances are solved vs total, and current instance being worked on
+   - Always include a detailed completed-result breakdown for running benchmarks: SAT count, UNSAT count, timeout count, error count, and any other result statuses present in `results.csv`
    - Use `tail` on the log file or `wc -l` on `results.csv` to get progress counts
 
 ## Finding Current State
