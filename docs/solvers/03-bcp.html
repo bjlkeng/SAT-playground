@@ -5,6 +5,36 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>03 bcp · SAT Playground</title>
     <link rel="stylesheet" href="../solver-pages.css" />
+    <style>
+      .solver-demo{margin-top:18px;padding:22px;border:1px solid var(--line);border-radius:22px;background:linear-gradient(180deg,rgba(249,251,255,.98),rgba(255,255,255,.95))}
+      .solver-demo-header{display:flex;flex-wrap:wrap;justify-content:space-between;gap:14px;align-items:flex-start}
+      .solver-demo-header h3{margin:0 0 6px;font-size:1.08rem}
+      .solver-demo-header p,.solver-demo-caption p,.solver-demo-panel p{margin:0;color:var(--muted)}
+      .solver-demo-step,.solver-demo-button{border-radius:999px;border:1px solid var(--line);background:#fff;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.8rem}
+      .solver-demo-step{padding:9px 12px;color:var(--accent);background:var(--accent-soft);white-space:nowrap}
+      .solver-demo-controls{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
+      .solver-demo-button{padding:10px 13px;color:var(--ink);cursor:pointer}
+      .solver-demo-button:disabled{opacity:.5;cursor:not-allowed}
+      .solver-demo-caption{margin-top:16px;padding:14px 16px;border-radius:18px;border:1px solid rgba(15,122,216,.14);background:rgba(255,255,255,.88)}
+      .solver-demo-caption strong{display:block;margin-bottom:4px}
+      .solver-demo-grid{display:grid;gap:16px;margin-top:18px}
+      .solver-demo-panel{min-height:260px;padding:16px;border-radius:18px;border:1px solid var(--line);background:rgba(255,255,255,.9)}
+      .solver-demo-panel h4{margin:0 0 10px;font-size:.98rem}
+      .solver-demo-row,.solver-demo-chip-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+      .solver-demo-chip{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.78rem}
+      .solver-demo-chip.good{color:var(--diff-add-ink);background:var(--diff-add);border-color:rgba(17,102,59,.22)}
+      .solver-demo-chip.bad{color:var(--diff-del-ink);background:var(--diff-del);border-color:rgba(176,68,68,.22)}
+      .solver-demo-chip.warn{color:#7a5600;background:#fff4c2;border-color:rgba(185,140,15,.28)}
+      .solver-demo-chip.active{color:var(--accent);background:var(--accent-soft);border-color:rgba(15,122,216,.28)}
+      .solver-demo-card{margin-top:10px;padding:12px;border-radius:16px;border:1px solid var(--line);background:#f9fbff}
+      .solver-demo-card strong{display:block;margin-bottom:6px}
+      .solver-demo-arrow{color:var(--muted);font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace}
+      .solver-demo-bars{display:grid;gap:10px;margin-top:12px}
+      .solver-demo-bar{display:grid;grid-template-columns:52px minmax(0,1fr) 48px;gap:10px;align-items:center;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.78rem}
+      .solver-demo-track{height:12px;border-radius:999px;background:rgba(22,32,43,.08);overflow:hidden}
+      .solver-demo-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),#e05a47)}
+      @media (min-width:820px){.solver-demo-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
+    </style>
   </head>
   <body>
     <main class="page">
@@ -69,6 +99,42 @@ loop:
       </section>
 
       <section class="panel">
+        <h2>Visual Walkthrough</h2>
+        <div class="solver-demo" id="bcp-demo">
+          <div class="solver-demo-header">
+            <div>
+              <h3>Two Watched Literals</h3>
+              <p>
+                One clause is enough to show the key win: propagation only revisits clauses
+                watching a literal that just became false.
+              </p>
+            </div>
+            <div class="solver-demo-step" data-demo-step>Step 1 / 5</div>
+          </div>
+          <div class="solver-demo-controls">
+            <button class="solver-demo-button" type="button" data-demo-action="back">Back</button>
+            <button class="solver-demo-button" type="button" data-demo-action="play">Play</button>
+            <button class="solver-demo-button" type="button" data-demo-action="next">Step</button>
+            <button class="solver-demo-button" type="button" data-demo-action="reset">Reset</button>
+          </div>
+          <div class="solver-demo-caption">
+            <strong data-demo-title></strong>
+            <p data-demo-caption></p>
+          </div>
+          <div class="solver-demo-grid">
+            <div class="solver-demo-panel">
+              <h4>Clause Body</h4>
+              <div data-demo-pane="left"></div>
+            </div>
+            <div class="solver-demo-panel">
+              <h4>Watch Lists And Trail Head</h4>
+              <div data-demo-pane="right"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
         <h2>Code-Level Optimization Diffs</h2>
         <p class="small">
           The README has the full tuning log. These are the changes that most materially altered `03` on the profiling suite.
@@ -116,5 +182,57 @@ loop:
         </div>
       </section>
     </main>
+    <script>
+      (() => {
+        const root = document.getElementById("bcp-demo");
+        if (!root) return;
+        const steps = [
+          {
+            title: "Initialize watches",
+            caption: "For C1 = (x1 or x2 or x3), the solver watches x1 and x2. The third literal is not inspected unless a watch needs to move.",
+            left: `<div class="solver-demo-card"><strong>C1 = (x1 or x2 or x3)</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip active">watch x1</span><span class="solver-demo-chip active">watch x2</span><span class="solver-demo-chip">x3 spare</span></div></div>`,
+            right: `<div class="solver-demo-card"><strong>Watch lists</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip active">watchers[x1]: C1</span><span class="solver-demo-chip active">watchers[x2]: C1</span><span class="solver-demo-chip">propagate_head = 0</span></div></div>`,
+          },
+          {
+            title: "x1 becomes false",
+            caption: "Only watchers[x1] is scanned. The solver does not rescan every clause in the formula.",
+            left: `<div class="solver-demo-card"><strong>C1 after x1=false</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip bad">x1 false</span><span class="solver-demo-chip active">watch x2</span><span class="solver-demo-chip">x3 spare</span></div></div>`,
+            right: `<div class="solver-demo-card"><strong>Triggered list</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip warn">scan watchers[x1]</span><span class="solver-demo-chip">other watch x2 is not false</span></div></div>`,
+          },
+          {
+            title: "Move the falsified watch",
+            caption: "Because x3 is not false, C1 moves its watch from x1 to x3 and remains unresolved.",
+            left: `<div class="solver-demo-card"><strong>C1 watch pair changes</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip bad">x1 false</span><span class="solver-demo-chip active">watch x2</span><span class="solver-demo-chip good">watch x3</span></div></div>`,
+            right: `<div class="solver-demo-card"><strong>Watch lists after move</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip">watchers[x1]: empty</span><span class="solver-demo-chip active">watchers[x2]: C1</span><span class="solver-demo-chip good">watchers[x3]: C1</span></div></div>`,
+          },
+          {
+            title: "x2 becomes false",
+            caption: "Now watchers[x2] is scanned. No replacement literal remains, and the other watch x3 is unassigned, so C1 is unit.",
+            left: `<div class="solver-demo-card"><strong>C1 after x2=false</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip bad">x1 false</span><span class="solver-demo-chip bad">x2 false</span><span class="solver-demo-chip warn">x3 only open literal</span></div></div>`,
+            right: `<div class="solver-demo-card"><strong>Propagation result</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip warn">scan watchers[x2]</span><span class="solver-demo-chip good">enqueue x3=true</span><span class="solver-demo-chip active">advance propagate_head</span></div></div>`,
+          },
+          {
+            title: "Conflict if the other watch is false",
+            caption: "If another reason had already made x3 false, the same watched-literal check would report C1 as a conflict.",
+            left: `<div class="solver-demo-card"><strong>C1 conflict case</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip bad">x1 false</span><span class="solver-demo-chip bad">x2 false</span><span class="solver-demo-chip bad">x3 false</span></div></div>`,
+            right: `<div class="solver-demo-card"><strong>Why this is faster than 02</strong><p>The solver reaches unit or conflict by following the trail and touched watch lists, not by scanning every clause to a fixed point.</p></div>`,
+          },
+        ];
+        let current = 0;
+        let timer = null;
+        const title = root.querySelector("[data-demo-title]");
+        const caption = root.querySelector("[data-demo-caption]");
+        const stepLabel = root.querySelector("[data-demo-step]");
+        const left = root.querySelector('[data-demo-pane="left"]');
+        const right = root.querySelector('[data-demo-pane="right"]');
+        const back = root.querySelector('[data-demo-action="back"]');
+        const next = root.querySelector('[data-demo-action="next"]');
+        const play = root.querySelector('[data-demo-action="play"]');
+        function stop(){if(timer!==null)window.clearInterval(timer);timer=null;play.textContent="Play";}
+        function render(){const step=steps[current];title.textContent=step.title;caption.textContent=step.caption;stepLabel.textContent=`Step ${current+1} / ${steps.length}`;left.innerHTML=step.left;right.innerHTML=step.right;back.disabled=current===0;next.disabled=current===steps.length-1;}
+        root.addEventListener("click",(event)=>{const action=event.target.dataset.demoAction;if(!action)return;if(action==="back")current=Math.max(0,current-1);if(action==="next")current=Math.min(steps.length-1,current+1);if(action==="reset"){stop();current=0;}if(action==="play"){if(timer===null){play.textContent="Pause";timer=window.setInterval(()=>{if(current===steps.length-1){stop();return;}current+=1;render();},1600);}else{stop();}}render();});
+        render();
+      })();
+    </script>
   </body>
 </html>

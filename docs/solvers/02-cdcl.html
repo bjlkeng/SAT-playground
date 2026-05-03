@@ -5,6 +5,197 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>02 cdcl · SAT Playground</title>
     <link rel="stylesheet" href="../solver-pages.css" />
+    <style>
+      .solver-demo {
+        margin-top: 18px;
+        padding: 22px;
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        background: linear-gradient(180deg, rgba(249, 251, 255, 0.98), rgba(255, 255, 255, 0.95));
+      }
+
+      .solver-demo-header {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 14px;
+        align-items: flex-start;
+      }
+
+      .solver-demo-header h3 {
+        margin: 0 0 6px;
+        font-size: 1.08rem;
+      }
+
+      .solver-demo-header p,
+      .solver-demo-caption p,
+      .solver-demo-panel p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      .solver-demo-step,
+      .solver-demo-button {
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: #fff;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.8rem;
+      }
+
+      .solver-demo-step {
+        padding: 9px 12px;
+        color: var(--accent);
+        background: var(--accent-soft);
+        white-space: nowrap;
+      }
+
+      .solver-demo-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 18px;
+      }
+
+      .solver-demo-button {
+        padding: 10px 13px;
+        color: var(--ink);
+        cursor: pointer;
+      }
+
+      .solver-demo-button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .solver-demo-caption {
+        margin-top: 16px;
+        padding: 14px 16px;
+        border-radius: 18px;
+        border: 1px solid rgba(15, 122, 216, 0.14);
+        background: rgba(255, 255, 255, 0.88);
+      }
+
+      .solver-demo-caption strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      .solver-demo-grid {
+        display: grid;
+        gap: 16px;
+        margin-top: 18px;
+      }
+
+      .solver-demo-panel {
+        min-height: 260px;
+        padding: 16px;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.9);
+      }
+
+      .solver-demo-panel h4 {
+        margin: 0 0 10px;
+        font-size: 0.98rem;
+      }
+
+      .solver-demo-row,
+      .solver-demo-chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .solver-demo-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: #fff;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.78rem;
+      }
+
+      .solver-demo-chip.good {
+        color: var(--diff-add-ink);
+        background: var(--diff-add);
+        border-color: rgba(17, 102, 59, 0.22);
+      }
+
+      .solver-demo-chip.bad {
+        color: var(--diff-del-ink);
+        background: var(--diff-del);
+        border-color: rgba(176, 68, 68, 0.22);
+      }
+
+      .solver-demo-chip.warn {
+        color: #7a5600;
+        background: #fff4c2;
+        border-color: rgba(185, 140, 15, 0.28);
+      }
+
+      .solver-demo-chip.active {
+        color: var(--accent);
+        background: var(--accent-soft);
+        border-color: rgba(15, 122, 216, 0.28);
+      }
+
+      .solver-demo-card {
+        margin-top: 10px;
+        padding: 12px;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: #f9fbff;
+      }
+
+      .solver-demo-card strong {
+        display: block;
+        margin-bottom: 6px;
+      }
+
+      .solver-demo-arrow {
+        color: var(--muted);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+      }
+
+      .solver-demo-bars {
+        display: grid;
+        gap: 10px;
+        margin-top: 12px;
+      }
+
+      .solver-demo-bar {
+        display: grid;
+        grid-template-columns: 52px minmax(0, 1fr) 48px;
+        gap: 10px;
+        align-items: center;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.78rem;
+      }
+
+      .solver-demo-track {
+        height: 12px;
+        border-radius: 999px;
+        background: rgba(22, 32, 43, 0.08);
+        overflow: hidden;
+      }
+
+      .solver-demo-fill {
+        height: 100%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, var(--accent), #e05a47);
+      }
+
+      @media (min-width: 820px) {
+        .solver-demo-grid {
+          grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        }
+      }
+    </style>
   </head>
   <body>
     <main class="page">
@@ -65,6 +256,42 @@ loop:
       </section>
 
       <section class="panel">
+        <h2>Visual Walkthrough</h2>
+        <div class="solver-demo" id="cdcl-demo">
+          <div class="solver-demo-header">
+            <div>
+              <h3>Conflict Analysis And Backjumping</h3>
+              <p>
+                A small implication graph shows why CDCL learns a clause instead of only flipping
+                the most recent decision.
+              </p>
+            </div>
+            <div class="solver-demo-step" data-demo-step>Step 1 / 6</div>
+          </div>
+          <div class="solver-demo-controls">
+            <button class="solver-demo-button" type="button" data-demo-action="back">Back</button>
+            <button class="solver-demo-button" type="button" data-demo-action="play">Play</button>
+            <button class="solver-demo-button" type="button" data-demo-action="next">Step</button>
+            <button class="solver-demo-button" type="button" data-demo-action="reset">Reset</button>
+          </div>
+          <div class="solver-demo-caption">
+            <strong data-demo-title></strong>
+            <p data-demo-caption></p>
+          </div>
+          <div class="solver-demo-grid">
+            <div class="solver-demo-panel">
+              <h4>Implication Graph</h4>
+              <div data-demo-pane="left"></div>
+            </div>
+            <div class="solver-demo-panel">
+              <h4>Learned Clause State</h4>
+              <div data-demo-pane="right"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
         <h2>Code-Level Optimization Diffs</h2>
         <p class="small">
           `02` was kept algorithmically simple on purpose. Most of the later speedup came from tightening the CDCL data path rather than changing the search strategy.
@@ -113,5 +340,215 @@ loop:
         </div>
       </section>
     </main>
+    <script>
+      (() => {
+        const root = document.getElementById("cdcl-demo");
+        if (!root) return;
+
+        const steps = [
+          {
+            title: "Two decisions create two levels",
+            caption: "The trail records decisions and implications with the level that produced each assignment.",
+            left: `
+              <div class="solver-demo-card"><strong>Trail</strong>
+                <div class="solver-demo-chip-row">
+                  <span class="solver-demo-chip active">L1: x1 = true decision</span>
+                  <span class="solver-demo-chip active">L2: x2 = true decision</span>
+                </div>
+              </div>
+              <div class="solver-demo-card"><strong>Reason clauses waiting to fire</strong>
+                <div class="solver-demo-row">
+                  <span class="solver-demo-chip">C1: -x1 or x3</span>
+                  <span class="solver-demo-chip">C2: -x2 or x4</span>
+                  <span class="solver-demo-chip">C3: -x3 or -x4</span>
+                </div>
+              </div>`,
+            right: `
+              <div class="solver-demo-card"><strong>No conflict yet</strong>
+                <p>Plain DPLL would keep descending the current branch. CDCL keeps enough reason data to explain any later conflict.</p>
+              </div>`,
+          },
+          {
+            title: "Propagation adds reason edges",
+            caption: "C1 implies x3 from x1, and C2 implies x4 from x2. Each propagated assignment stores the clause that forced it.",
+            left: `
+              <div class="solver-demo-card"><strong>Implications</strong>
+                <div class="solver-demo-chip-row">
+                  <span class="solver-demo-chip active">x1=true</span>
+                  <span class="solver-demo-arrow">-&gt; C1 -&gt;</span>
+                  <span class="solver-demo-chip good">x3=true</span>
+                </div>
+                <div class="solver-demo-chip-row">
+                  <span class="solver-demo-chip active">x2=true</span>
+                  <span class="solver-demo-arrow">-&gt; C2 -&gt;</span>
+                  <span class="solver-demo-chip good">x4=true</span>
+                </div>
+              </div>
+              <div class="solver-demo-card"><strong>Trail</strong>
+                <div class="solver-demo-chip-row">
+                  <span class="solver-demo-chip active">L1 x1 decision</span>
+                  <span class="solver-demo-chip good">L1 x3 reason C1</span>
+                  <span class="solver-demo-chip active">L2 x2 decision</span>
+                  <span class="solver-demo-chip good">L2 x4 reason C2</span>
+                </div>
+              </div>`,
+            right: `
+              <div class="solver-demo-card"><strong>Reason table</strong>
+                <div class="solver-demo-row">
+                  <span class="solver-demo-chip">reason[x3] = C1</span>
+                  <span class="solver-demo-chip">reason[x4] = C2</span>
+                  <span class="solver-demo-chip">reason[x1], reason[x2] = decision</span>
+                </div>
+              </div>`,
+          },
+          {
+            title: "A clause goes false",
+            caption: "C3 = (-x3 or -x4) is false because both x3 and x4 are true. This is the conflict clause.",
+            left: `
+              <div class="solver-demo-card"><strong>Conflict edge</strong>
+                <div class="solver-demo-chip-row">
+                  <span class="solver-demo-chip good">x3=true</span>
+                  <span class="solver-demo-chip good">x4=true</span>
+                  <span class="solver-demo-arrow">make</span>
+                  <span class="solver-demo-chip bad">C3 false</span>
+                </div>
+              </div>`,
+            right: `
+              <div class="solver-demo-card"><strong>Current conflict clause</strong>
+                <div class="solver-demo-chip-row">
+                  <span class="solver-demo-chip bad">-x3</span>
+                  <span class="solver-demo-chip bad">-x4</span>
+                </div>
+                <p>There is one current-level literal here, -x4, after x4's reason is considered.</p>
+              </div>`,
+          },
+          {
+            title: "Resolve through reasons",
+            caption: "Conflict analysis replaces implied literals with their reasons until the learned clause explains the bad decision combination.",
+            left: `
+              <div class="solver-demo-card"><strong>Resolution walk</strong>
+                <div class="solver-demo-chip-row">
+                  <span class="solver-demo-chip bad">(-x3 or -x4)</span>
+                  <span class="solver-demo-arrow">resolve x4 using C2</span>
+                  <span class="solver-demo-chip warn">(-x3 or -x2)</span>
+                </div>
+                <div class="solver-demo-chip-row">
+                  <span class="solver-demo-chip warn">(-x3 or -x2)</span>
+                  <span class="solver-demo-arrow">resolve x3 using C1</span>
+                  <span class="solver-demo-chip good">(-x1 or -x2)</span>
+                </div>
+              </div>`,
+            right: `
+              <div class="solver-demo-card"><strong>Learned clause</strong>
+                <div class="solver-demo-chip-row">
+                  <span class="solver-demo-chip good">-x1</span>
+                  <span class="solver-demo-chip good">-x2</span>
+                </div>
+                <p>The clause says x1=true and x2=true cannot appear together again.</p>
+              </div>`,
+          },
+          {
+            title: "Backjump to the useful level",
+            caption: "The learned clause contains only one literal from level 2, so the solver jumps back to level 1 instead of undoing one step at a time.",
+            left: `
+              <div class="solver-demo-card"><strong>Before</strong>
+                <div class="solver-demo-chip-row">
+                  <span class="solver-demo-chip active">L1 x1=true</span>
+                  <span class="solver-demo-chip good">L1 x3=true</span>
+                  <span class="solver-demo-chip bad">L2 x2=true</span>
+                  <span class="solver-demo-chip bad">L2 x4=true</span>
+                </div>
+              </div>
+              <div class="solver-demo-card"><strong>After backjump</strong>
+                <div class="solver-demo-chip-row">
+                  <span class="solver-demo-chip active">L1 x1=true</span>
+                  <span class="solver-demo-chip good">L1 x3=true</span>
+                </div>
+              </div>`,
+            right: `
+              <div class="solver-demo-card"><strong>Asserting after the jump</strong>
+                <p>At level 1, -x1 is false, so the learned clause (-x1 or -x2) becomes unit and forces x2=false.</p>
+                <div class="solver-demo-chip-row">
+                  <span class="solver-demo-chip bad">-x1 is false</span>
+                  <span class="solver-demo-chip good">-x2 is forced</span>
+                </div>
+              </div>`,
+          },
+          {
+            title: "The learned clause prunes future search",
+            caption: "If the search ever reaches x1=true again, the learned clause blocks x2=true immediately.",
+            left: `
+              <div class="solver-demo-card"><strong>New trail prefix</strong>
+                <div class="solver-demo-chip-row">
+                  <span class="solver-demo-chip active">L1 x1=true</span>
+                  <span class="solver-demo-chip good">L1 x3=true</span>
+                  <span class="solver-demo-chip warn">L1 x2=false from learned clause</span>
+                </div>
+              </div>`,
+            right: `
+              <div class="solver-demo-card"><strong>CDCL advantage</strong>
+                <p>The solver learned a reusable reason for the conflict and skipped directly to the level where that reason becomes useful.</p>
+              </div>`,
+          },
+        ];
+
+        let current = 0;
+        let timer = null;
+        const title = root.querySelector("[data-demo-title]");
+        const caption = root.querySelector("[data-demo-caption]");
+        const stepLabel = root.querySelector("[data-demo-step]");
+        const left = root.querySelector('[data-demo-pane="left"]');
+        const right = root.querySelector('[data-demo-pane="right"]');
+        const back = root.querySelector('[data-demo-action="back"]');
+        const next = root.querySelector('[data-demo-action="next"]');
+        const play = root.querySelector('[data-demo-action="play"]');
+
+        function stop() {
+          if (timer !== null) window.clearInterval(timer);
+          timer = null;
+          play.textContent = "Play";
+        }
+
+        function render() {
+          const step = steps[current];
+          title.textContent = step.title;
+          caption.textContent = step.caption;
+          stepLabel.textContent = `Step ${current + 1} / ${steps.length}`;
+          left.innerHTML = step.left;
+          right.innerHTML = step.right;
+          back.disabled = current === 0;
+          next.disabled = current === steps.length - 1;
+        }
+
+        root.addEventListener("click", (event) => {
+          const action = event.target.dataset.demoAction;
+          if (!action) return;
+          if (action === "back") current = Math.max(0, current - 1);
+          if (action === "next") current = Math.min(steps.length - 1, current + 1);
+          if (action === "reset") {
+            stop();
+            current = 0;
+          }
+          if (action === "play") {
+            if (timer === null) {
+              play.textContent = "Pause";
+              timer = window.setInterval(() => {
+                if (current === steps.length - 1) {
+                  stop();
+                  return;
+                }
+                current += 1;
+                render();
+              }, 1600);
+            } else {
+              stop();
+            }
+          }
+          render();
+        });
+
+        render();
+      })();
+    </script>
   </body>
 </html>

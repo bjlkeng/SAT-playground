@@ -5,6 +5,36 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>08 clause-db-management · SAT Playground</title>
     <link rel="stylesheet" href="../solver-pages.css" />
+    <style>
+      .solver-demo{margin-top:18px;padding:22px;border:1px solid var(--line);border-radius:22px;background:linear-gradient(180deg,rgba(249,251,255,.98),rgba(255,255,255,.95))}
+      .solver-demo-header{display:flex;flex-wrap:wrap;justify-content:space-between;gap:14px;align-items:flex-start}
+      .solver-demo-header h3{margin:0 0 6px;font-size:1.08rem}
+      .solver-demo-header p,.solver-demo-caption p,.solver-demo-panel p{margin:0;color:var(--muted)}
+      .solver-demo-step,.solver-demo-button{border-radius:999px;border:1px solid var(--line);background:#fff;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.8rem}
+      .solver-demo-step{padding:9px 12px;color:var(--accent);background:var(--accent-soft);white-space:nowrap}
+      .solver-demo-controls{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
+      .solver-demo-button{padding:10px 13px;color:var(--ink);cursor:pointer}
+      .solver-demo-button:disabled{opacity:.5;cursor:not-allowed}
+      .solver-demo-caption{margin-top:16px;padding:14px 16px;border-radius:18px;border:1px solid rgba(15,122,216,.14);background:rgba(255,255,255,.88)}
+      .solver-demo-caption strong{display:block;margin-bottom:4px}
+      .solver-demo-grid{display:grid;gap:16px;margin-top:18px}
+      .solver-demo-panel{min-height:260px;padding:16px;border-radius:18px;border:1px solid var(--line);background:rgba(255,255,255,.9)}
+      .solver-demo-panel h4{margin:0 0 10px;font-size:.98rem}
+      .solver-demo-row,.solver-demo-chip-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+      .solver-demo-chip{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.78rem}
+      .solver-demo-chip.good{color:var(--diff-add-ink);background:var(--diff-add);border-color:rgba(17,102,59,.22)}
+      .solver-demo-chip.bad{color:var(--diff-del-ink);background:var(--diff-del);border-color:rgba(176,68,68,.22)}
+      .solver-demo-chip.warn{color:#7a5600;background:#fff4c2;border-color:rgba(185,140,15,.28)}
+      .solver-demo-chip.active{color:var(--accent);background:var(--accent-soft);border-color:rgba(15,122,216,.28)}
+      .solver-demo-card{margin-top:10px;padding:12px;border-radius:16px;border:1px solid var(--line);background:#f9fbff}
+      .solver-demo-card strong{display:block;margin-bottom:6px}
+      .solver-demo-arrow{color:var(--muted);font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace}
+      .solver-demo-bars{display:grid;gap:10px;margin-top:12px}
+      .solver-demo-bar{display:grid;grid-template-columns:52px minmax(0,1fr) 48px;gap:10px;align-items:center;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.78rem}
+      .solver-demo-track{height:12px;border-radius:999px;background:rgba(22,32,43,.08);overflow:hidden}
+      .solver-demo-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),#e05a47)}
+      @media (min-width:820px){.solver-demo-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
+    </style>
   </head>
   <body>
     <main class="page">
@@ -74,6 +104,42 @@ loop:
       </section>
 
       <section class="panel">
+        <h2>Visual Walkthrough</h2>
+        <div class="solver-demo" id="db-demo">
+          <div class="solver-demo-header">
+            <div>
+              <h3>Learned Clause Reduction And Arena GC</h3>
+              <p>
+                Solver 08 can delete low-value learned clauses, detach their watchers, and later
+                compact the packed arena while fixing references.
+              </p>
+            </div>
+            <div class="solver-demo-step" data-demo-step>Step 1 / 6</div>
+          </div>
+          <div class="solver-demo-controls">
+            <button class="solver-demo-button" type="button" data-demo-action="back">Back</button>
+            <button class="solver-demo-button" type="button" data-demo-action="play">Play</button>
+            <button class="solver-demo-button" type="button" data-demo-action="next">Step</button>
+            <button class="solver-demo-button" type="button" data-demo-action="reset">Reset</button>
+          </div>
+          <div class="solver-demo-caption">
+            <strong data-demo-title></strong>
+            <p data-demo-caption></p>
+          </div>
+          <div class="solver-demo-grid">
+            <div class="solver-demo-panel">
+              <h4>Learned Database</h4>
+              <div data-demo-pane="left"></div>
+            </div>
+            <div class="solver-demo-panel">
+              <h4>Arena And References</h4>
+              <div data-demo-pane="right"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
         <h2>Code-Level Optimization Diffs</h2>
         <p class="small">
           The README has the full benchmark history. These are the implementation changes that best summarize how <code>08</code> differs from <code>07</code>.
@@ -131,5 +197,56 @@ loop:
         </p>
       </section>
     </main>
+    <script>
+      (() => {
+        const root = document.getElementById("db-demo");
+        if (!root) return;
+        const chips = (items) => `<div class="solver-demo-chip-row">${items.map(([text,cls]) => `<span class="solver-demo-chip ${cls}">${text}</span>`).join("")}</div>`;
+        const steps = [
+          {
+            title: "Learned clauses accumulate",
+            caption: "Every conflict can add a learned clause. Activity and size become signals for which clauses are worth keeping.",
+            left: `<div class="solver-demo-card"><strong>Live learned list</strong>${chips([["L18 activity 5.2","good"],["L21 activity 0.2",""],["L25 binary","active"],["L30 locked","warn"],["L34 activity 0.1",""]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>Packed arena</strong>${chips([["offset 120: L18","good"],["offset 188: L21",""],["offset 244: L25","active"],["offset 300: L30","warn"],["offset 364: L34",""]])}</div>`,
+          },
+          {
+            title: "Reduction budget is exceeded",
+            caption: "MiniSat-style thresholds decide when to reduce. The candidates are sorted by quality, but protected clauses are skipped.",
+            left: `<div class="solver-demo-card"><strong>Reduction candidates</strong>${chips([["L21 low activity","bad"],["L34 low activity","bad"],["L25 binary skip","good"],["L30 locked skip","good"],["L18 active keep","good"]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>Protected means useful right now</strong><p>Binary clauses are cheap and locked clauses currently justify an assignment, so both survive this pass.</p></div>`,
+          },
+          {
+            title: "Deleted clauses are detached",
+            caption: "Deleting a learned clause removes its watcher entries and tombstones the arena record. The proof stream is already independent.",
+            left: `<div class="solver-demo-card"><strong>After reduce_db</strong>${chips([["L21 deleted","bad"],["L34 deleted","bad"],["L18 live","good"],["L25 live","good"],["L30 live","good"]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>References cleaned</strong>${chips([["watchers detached","good"],["tombstone set","warn"],["proof output unaffected","good"]])}</div>`,
+          },
+          {
+            title: "Arena waste builds up",
+            caption: "Tombstoned clauses leave holes. GC waits until the wasted-literal counter says compaction is worth the cost.",
+            left: `<div class="solver-demo-card"><strong>Waste accounting</strong>${chips([["live literals 4200","active"],["wasted literals 1100","warn"],["GC threshold reached","warn"]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>Arena before GC</strong>${chips([["L18 live","good"],["hole L21","bad"],["L25 live","good"],["L30 live","good"],["hole L34","bad"]])}</div>`,
+          },
+          {
+            title: "Compaction relocates live clauses",
+            caption: "Live clauses are copied into a dense arena, and every watcher and reason reference that points at a moved clause is rewritten.",
+            left: `<div class="solver-demo-card"><strong>Relocation map</strong>${chips([["120 -> 80","active"],["244 -> 138","active"],["300 -> 170","active"]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>Fixups</strong>${chips([["watcher refs updated","good"],["reason[var] refs updated","good"],["deleted refs gone","good"]])}</div>`,
+          },
+          {
+            title: "A smaller database remains",
+            caption: "The solver keeps high-value learned clauses and removes stale ones so propagation and memory use stay bounded.",
+            left: `<div class="solver-demo-card"><strong>Live learned list after GC</strong>${chips([["L18 active","good"],["L25 binary","good"],["L30 locked","good"]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>Search effect</strong>${chips([["fewer stale watchers","good"],["compact arena locality","good"],["proof still streamed","good"]])}</div>`,
+          },
+        ];
+        let current=0,timer=null;
+        const title=root.querySelector("[data-demo-title]"),caption=root.querySelector("[data-demo-caption]"),stepLabel=root.querySelector("[data-demo-step]"),left=root.querySelector('[data-demo-pane="left"]'),right=root.querySelector('[data-demo-pane="right"]'),back=root.querySelector('[data-demo-action="back"]'),next=root.querySelector('[data-demo-action="next"]'),play=root.querySelector('[data-demo-action="play"]');
+        function stop(){if(timer!==null)window.clearInterval(timer);timer=null;play.textContent="Play";}
+        function render(){const step=steps[current];title.textContent=step.title;caption.textContent=step.caption;stepLabel.textContent=`Step ${current+1} / ${steps.length}`;left.innerHTML=step.left;right.innerHTML=step.right;back.disabled=current===0;next.disabled=current===steps.length-1;}
+        root.addEventListener("click",(event)=>{const action=event.target.dataset.demoAction;if(!action)return;if(action==="back")current=Math.max(0,current-1);if(action==="next")current=Math.min(steps.length-1,current+1);if(action==="reset"){stop();current=0;}if(action==="play"){if(timer===null){play.textContent="Pause";timer=window.setInterval(()=>{if(current===steps.length-1){stop();return;}current+=1;render();},1600);}else stop();}render();});
+        render();
+      })();
+    </script>
   </body>
 </html>
