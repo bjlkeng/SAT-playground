@@ -12,6 +12,9 @@ bounded variable elimination.
   occurrence's original literal order
 - parse-time root-unit cleanup for formulas under `100,000` clauses, removing satisfied clauses and
   emitting proof additions for clauses strengthened by false root literals
+- a bounded backward-subsumption / clause-strengthening pass for mid-sized formulas, capped to
+  `20,000..250,000` clauses and short source/target clauses so it captures MiniSat-simp-style
+  redundancy on circuit-like instances without touching the largest guard formulas
 - parse-time pure-literal cleanup for formulas with at least `100,000` clauses
 - limited bounded variable elimination, capped at `5,000` eliminated variables for medium formulas
   and `25,000` for large formulas, with DRAT resolvent additions and SAT model reconstruction for
@@ -48,6 +51,8 @@ bounded variable elimination.
   after profiling the remaining MiniSat gap on the e318 target instance
 - retuned BVE candidate ordering to prefer lower net clause growth before raw product, while keeping
   the previously accepted growth slack and eliminated-variable caps
+- added a bounded backward-subsumption / clause-strengthening prepass after root-unit cleanup,
+  targeting the remaining MiniSat `simp` win on the `circuit_48in64out...` instance
 
 ## Intended Focus
 
@@ -57,8 +62,8 @@ track downstream search impact, not just formula size.
 
 Candidate directions:
 
-- maintain occurrence lists for original clauses
-- add backward subsumption and simple self-subsuming resolution
+- maintain richer occurrence data for original clauses so the new bounded clause-rewriting pass can
+  be broadened more selectively
 - broaden bounded variable elimination only with a better cost model or per-instance cutoff
 - normalize clauses during parsing before the arena is built
 - add benchmark instrumentation for simplification impact on active variables, clauses, literals,
@@ -66,7 +71,7 @@ Candidate directions:
 
 ## Validation
 
-- `cargo test` — `45/45`
+- `cargo test` — `47/47`
 - `bash tools/smoke_test.sh solver/10-bve-preprocess` — `9/9`
 
 ## Targeted Optimization Log
@@ -237,6 +242,30 @@ Kept improvement 9:
 - profile data with symbols on `SC25_Timetable_C_392`:
   `log/profile-10-c392-bve-growth-order/perf.data`; propagation remained the main hotspot at
   `72.72%`, followed by branch-heap maintenance
+
+Kept improvement 10:
+
+- added a bounded backward-subsumption / clause-strengthening pass before pure-literal elimination
+- profiler evidence on the original `circuit_48in64out_with_800gates_4in4out_dist128_seed3`
+  target still showed `sat_solver::Solver::propagate` dominating on the unsimplified formula:
+  `log/profile-10-circuit/perf.data`
+- MiniSat `simp -no-solve -no-elim` reduced that target from `192000` clauses to about `58448`,
+  which pointed to clause rewriting rather than elimination as the missing behavior
+- opportunity check with `SAT_TRACE_PREPROCESS=1` on solver `10` after this change reported
+  `subsumed=130999`, `strengthened=640775`, `live_clauses=61065`, closely matching MiniSat's
+  structural effect on the same instance
+- direct target result: original solver `10` timed out at `90s` on `/tmp/circuit.cnf`, while the
+  new pass solved it in `62.16s`
+- non-target checks:
+  - `/tmp/mp1.cnf`: no rewrites (`subsumed=0`, `strengthened=0`) and still timed out at `90s`,
+    confirming this gap needs stronger elimination rather than clause rewriting
+  - `/tmp/velev.cnf`: `5.55s`
+  - `/tmp/kakuro112.cnf`: `34.39s`
+  - `/tmp/jkkk.cnf`: only `347` subsumptions and `281` strengthenings, then still timed out at
+    `60s`
+- the pass is deliberately capped to avoid touching the largest guard formulas; `velev` and
+  `Kakuro-112` stayed on the existing simplification path because their clause counts exceed the
+  new gate
 
 Rejected attempts:
 

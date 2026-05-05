@@ -24,6 +24,11 @@ const LEARNTSIZE_ADJUST_INC: f64 = 1.5;
 const SHORT_CLAUSE_KEY_LEN: usize = 5;
 const PURE_MIN_CLAUSES: usize = 100_000;
 const ROOT_UNIT_SIMPLIFY_MAX_CLAUSES: usize = 100_000;
+const BWD_SUB_MAX_CLAUSES: usize = 250_000;
+const BWD_SUB_MIN_CLAUSES: usize = 20_000;
+const BWD_SUB_SOURCE_MAX_LEN: usize = 8;
+const BWD_SUB_TARGET_MAX_LEN: usize = 32;
+const BWD_SUB_MAX_ROUNDS: usize = 2;
 const BVE_MIN_CLAUSES: usize = 100_000;
 const BVE_LARGE_FORMULA_CLAUSES: usize = 1_000_000;
 const BVE_MAX_ELIMINATED_VARS_MEDIUM: usize = 5_000;
@@ -2041,6 +2046,13 @@ fn sorted_clause_key(clause: &[i32]) -> Vec<i32> {
     key
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClauseRewrite {
+    None,
+    Subsumed,
+    Strengthen(i32),
+}
+
 fn deduplicate_clauses(clauses: Vec<Vec<i32>>) -> Vec<Vec<i32>> {
     let mut short_seen: HashSet<[u32; SHORT_CLAUSE_KEY_LEN]> =
         HashSet::with_capacity(clauses.len());
@@ -2195,6 +2207,154 @@ fn root_unit_simplify(num_vars: usize, clauses: Vec<Vec<i32>>) -> (Vec<Vec<i32>>
         }
     }
 
+    (simplified, proof_clauses)
+}
+
+fn classify_subsumption(source: &[i32], target: &[i32]) -> ClauseRewrite {
+    if source.len() > target.len() || source.is_empty() {
+        return ClauseRewrite::None;
+    }
+
+    let mut src_idx = 0usize;
+    let mut tgt_idx = 0usize;
+    let mut removable = None;
+    while src_idx < source.len() && tgt_idx < target.len() {
+        let src_lit = source[src_idx];
+        let tgt_lit = target[tgt_idx];
+        if src_lit == tgt_lit {
+            src_idx += 1;
+            tgt_idx += 1;
+            continue;
+        }
+        if src_lit == -tgt_lit {
+            if removable.is_some() {
+                return ClauseRewrite::None;
+            }
+            removable = Some(tgt_lit);
+            src_idx += 1;
+            tgt_idx += 1;
+            continue;
+        }
+        let src_key = clause_key_lit(src_lit);
+        let tgt_key = clause_key_lit(tgt_lit);
+        if src_key < tgt_key {
+            return ClauseRewrite::None;
+        }
+        tgt_idx += 1;
+    }
+
+    if src_idx != source.len() {
+        return ClauseRewrite::None;
+    }
+
+    match removable {
+        Some(lit) => ClauseRewrite::Strengthen(lit),
+        None => ClauseRewrite::Subsumed,
+    }
+}
+
+fn backward_subsumption_strengthen(
+    num_vars: usize,
+    clauses: Vec<Vec<i32>>,
+) -> (Vec<Vec<i32>>, Vec<Vec<i32>>) {
+    if clauses.len() < BWD_SUB_MIN_CLAUSES || clauses.len() > BWD_SUB_MAX_CLAUSES {
+        return (clauses, Vec::new());
+    }
+
+    let trace = env::var("SAT_TRACE_PREPROCESS").is_ok();
+    let mut active: Vec<Option<Vec<i32>>> = clauses
+        .into_iter()
+        .map(|mut clause| {
+            clause.sort_unstable_by_key(|&lit| clause_key_lit(lit));
+            Some(clause)
+        })
+        .collect();
+    let mut proof_clauses = Vec::new();
+    let mut total_subsumed = 0usize;
+    let mut total_strengthened = 0usize;
+
+    for _round in 0..BWD_SUB_MAX_ROUNDS {
+        let mut occurs = vec![Vec::<usize>::new(); num_vars + 1];
+        for (clause_idx, clause) in active.iter().enumerate() {
+            let Some(clause) = clause else {
+                continue;
+            };
+            for &lit in clause {
+                occurs[lit.unsigned_abs() as usize].push(clause_idx);
+            }
+        }
+
+        let mut changed = false;
+        for clause_idx in 0..active.len() {
+            let Some(source_clause) = active[clause_idx].clone() else {
+                continue;
+            };
+            if source_clause.len() > BWD_SUB_SOURCE_MAX_LEN {
+                continue;
+            }
+
+            let mut best_var = source_clause[0].unsigned_abs() as usize;
+            let mut best_count = occurs[best_var].len();
+            for &lit in source_clause.iter().skip(1) {
+                let var = lit.unsigned_abs() as usize;
+                let count = occurs[var].len();
+                if count < best_count {
+                    best_var = var;
+                    best_count = count;
+                }
+            }
+
+            for &target_idx in &occurs[best_var] {
+                if target_idx == clause_idx {
+                    continue;
+                }
+                let Some(target_clause) = active[target_idx].as_ref() else {
+                    continue;
+                };
+                if target_clause.len() > BWD_SUB_TARGET_MAX_LEN {
+                    continue;
+                }
+
+                match classify_subsumption(&source_clause, target_clause) {
+                    ClauseRewrite::None => {}
+                    ClauseRewrite::Subsumed => {
+                        active[target_idx] = None;
+                        total_subsumed += 1;
+                        changed = true;
+                    }
+                    ClauseRewrite::Strengthen(remove_lit) => {
+                        let mut strengthened = Vec::with_capacity(target_clause.len() - 1);
+                        for &lit in target_clause {
+                            if lit != remove_lit {
+                                strengthened.push(lit);
+                            }
+                        }
+                        if strengthened.len() < target_clause.len() {
+                            proof_clauses.push(strengthened.clone());
+                            active[target_idx] = Some(strengthened);
+                            total_strengthened += 1;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+
+    if trace {
+        eprintln!(
+            "c bwd-sub: subsumed={} strengthened={} live_clauses={}",
+            total_subsumed,
+            total_strengthened,
+            active.iter().filter(|clause| clause.is_some()).count()
+        );
+    }
+
+    let simplified = active.into_iter().flatten().collect();
     (simplified, proof_clauses)
 }
 
@@ -2378,6 +2538,7 @@ fn parse_cnf(path: &str) -> ParsedCnf {
 
     let clauses = deduplicate_clauses(clauses);
     let (clauses, mut root_unit_proof_clauses) = root_unit_simplify(num_vars, clauses);
+    let (clauses, mut bwd_sub_proof_clauses) = backward_subsumption_strengthen(num_vars, clauses);
     let (clauses, mut eliminated_vars) = if clauses.len() >= PURE_MIN_CLAUSES {
         pure_literal_eliminate(num_vars, clauses)
     } else {
@@ -2385,6 +2546,7 @@ fn parse_cnf(path: &str) -> ParsedCnf {
     };
     let (clauses, bve_proof_clauses, bve_eliminated_vars) =
         bounded_variable_eliminate(num_vars, clauses);
+    root_unit_proof_clauses.append(&mut bwd_sub_proof_clauses);
     root_unit_proof_clauses.extend(bve_proof_clauses);
     eliminated_vars.extend(bve_eliminated_vars);
 
@@ -2621,6 +2783,37 @@ mod tests {
 
         assert_eq!(simplified, vec![vec![1], vec![2, 3], vec![-2, 3]]);
         assert_eq!(proof_clauses, vec![vec![2, 3]]);
+    }
+
+    #[test]
+    fn test_classify_subsumption_detects_subsumed_and_strengthened_targets() {
+        assert_eq!(
+            classify_subsumption(&[1, 2], &[1, 2, 3]),
+            ClauseRewrite::Subsumed
+        );
+        assert_eq!(
+            classify_subsumption(&[1, 2], &[1, -2, 3]),
+            ClauseRewrite::Strengthen(-2)
+        );
+        assert_eq!(
+            classify_subsumption(&[1, 2], &[1, -2, -3]),
+            ClauseRewrite::Strengthen(-2)
+        );
+    }
+
+    #[test]
+    fn test_backward_subsumption_strengthen_rewrites_candidate_clauses() {
+        let mut clauses = vec![vec![1, 2], vec![1, 2, 3], vec![1, -2, 4]];
+        while clauses.len() < BWD_SUB_MIN_CLAUSES {
+            clauses.push(vec![10, 11, 12, 13, 14, 15, 16, 17, clauses.len() as i32 + 20]);
+        }
+
+        let (simplified, proof_clauses) = backward_subsumption_strengthen(100_000, clauses);
+
+        assert!(simplified.contains(&vec![1, 2]));
+        assert!(!simplified.contains(&vec![1, 2, 3]));
+        assert!(simplified.contains(&vec![1, 4]));
+        assert!(proof_clauses.contains(&vec![1, 4]));
     }
 
     #[test]
