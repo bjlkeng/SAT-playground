@@ -35,6 +35,12 @@ const BVE_MAX_ELIMINATED_VARS_MEDIUM: usize = 5_000;
 const BVE_MAX_ELIMINATED_VARS_LARGE: usize = 25_000;
 const BVE_CLAUSE_LIMIT: usize = 20;
 const BVE_GROW: usize = 0;
+const BVE_LOCAL_SUB_MIN_CLAUSES: usize = 150_000;
+const BVE_LOCAL_SUB_MAX_CLAUSES: usize = 1_500_000;
+const BVE_LOCAL_SUB_BATCH_SIZE: usize = 256;
+const BVE_LOCAL_SUB_SOURCE_MAX_LEN: usize = 3;
+const BVE_LOCAL_SUB_TARGET_MAX_LEN: usize = 8;
+const BVE_LOCAL_SUB_MAX_SOURCES: usize = 20_000;
 const CLAUSE_MARK_MASK: u32 = 0b11;
 const CLAUSE_LEARNT_BIT: u32 = 1 << 2;
 const CLAUSE_HAS_EXTRA_BIT: u32 = 1 << 3;
@@ -2358,6 +2364,278 @@ fn backward_subsumption_strengthen(
     (simplified, proof_clauses)
 }
 
+fn collect_bve_candidates(
+    num_vars: usize,
+    occurs_pos: &[Vec<usize>],
+    occurs_neg: &[Vec<usize>],
+) -> Vec<(isize, usize, usize, usize)> {
+    let mut candidates = Vec::new();
+    for var in 1..=num_vars {
+        let pos = occurs_pos[var].len();
+        let neg = occurs_neg[var].len();
+        if pos == 0 || neg == 0 {
+            continue;
+        }
+        let product = pos.saturating_mul(neg);
+        let occurrences = pos + neg;
+        if occurrences <= 80 && product <= occurrences + BVE_GROW + 8 {
+            let growth = product as isize - occurrences as isize;
+            candidates.push((growth, product, occurrences, var));
+        }
+    }
+    candidates.sort_unstable();
+    candidates
+}
+
+fn batch_local_subsumption_strengthen(
+    num_vars: usize,
+    clauses: Vec<Vec<i32>>,
+    touched_vars: &[bool],
+) -> (Vec<Vec<i32>>, Vec<Vec<i32>>, usize, usize) {
+    let mut active: Vec<Option<Vec<i32>>> = clauses
+        .into_iter()
+        .map(|mut clause| {
+            clause.sort_unstable_by_key(|&lit| clause_key_lit(lit));
+            Some(clause)
+        })
+        .collect();
+    let mut occurs = vec![Vec::<usize>::new(); num_vars + 1];
+    for (clause_idx, clause) in active.iter().enumerate() {
+        let Some(clause) = clause else {
+            continue;
+        };
+        for &lit in clause {
+            occurs[lit.unsigned_abs() as usize].push(clause_idx);
+        }
+    }
+
+    let mut source_indices = Vec::new();
+    for (clause_idx, clause) in active.iter().enumerate() {
+        let Some(clause) = clause else {
+            continue;
+        };
+        if clause.len() > BVE_LOCAL_SUB_SOURCE_MAX_LEN {
+            continue;
+        }
+        if !clause
+            .iter()
+            .any(|&lit| touched_vars[lit.unsigned_abs() as usize])
+        {
+            continue;
+        }
+        source_indices.push(clause_idx);
+        if source_indices.len() >= BVE_LOCAL_SUB_MAX_SOURCES {
+            break;
+        }
+    }
+
+    let mut proof_clauses = Vec::new();
+    let mut total_subsumed = 0usize;
+    let mut total_strengthened = 0usize;
+    for clause_idx in source_indices {
+        let Some(source_clause) = active[clause_idx].clone() else {
+            continue;
+        };
+
+        let mut best_var = source_clause[0].unsigned_abs() as usize;
+        let mut best_count = occurs[best_var].len();
+        for &lit in source_clause.iter().skip(1) {
+            let var = lit.unsigned_abs() as usize;
+            let count = occurs[var].len();
+            if count < best_count {
+                best_var = var;
+                best_count = count;
+            }
+        }
+
+        for &target_idx in &occurs[best_var] {
+            if target_idx == clause_idx {
+                continue;
+            }
+            let Some(target_clause) = active[target_idx].as_ref() else {
+                continue;
+            };
+            if target_clause.len() > BVE_LOCAL_SUB_TARGET_MAX_LEN {
+                continue;
+            }
+
+            match classify_subsumption(&source_clause, target_clause) {
+                ClauseRewrite::None => {}
+                ClauseRewrite::Subsumed => {
+                    active[target_idx] = None;
+                    total_subsumed += 1;
+                }
+                ClauseRewrite::Strengthen(remove_lit) => {
+                    let mut strengthened = Vec::with_capacity(target_clause.len() - 1);
+                    for &lit in target_clause {
+                        if lit != remove_lit {
+                            strengthened.push(lit);
+                        }
+                    }
+                    if strengthened.len() < target_clause.len() {
+                        proof_clauses.push(strengthened.clone());
+                        active[target_idx] = Some(strengthened);
+                        total_strengthened += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    let simplified = active.into_iter().flatten().collect();
+    (
+        simplified,
+        proof_clauses,
+        total_subsumed,
+        total_strengthened,
+    )
+}
+
+fn bounded_variable_eliminate_with_local_sub(
+    num_vars: usize,
+    clauses: Vec<Vec<i32>>,
+) -> (Vec<Vec<i32>>, Vec<Vec<i32>>, Vec<EliminatedVar>) {
+    if clauses.len() < BVE_MIN_CLAUSES {
+        return (clauses, Vec::new(), Vec::new());
+    }
+
+    let max_eliminated_vars = if clauses.len() >= BVE_LARGE_FORMULA_CLAUSES {
+        BVE_MAX_ELIMINATED_VARS_LARGE
+    } else {
+        BVE_MAX_ELIMINATED_VARS_MEDIUM
+    };
+    let trace = env::var("SAT_TRACE_PREPROCESS").is_ok();
+    let mut current_clauses = clauses;
+    let mut proof_clauses = Vec::new();
+    let mut eliminated_vars = Vec::new();
+
+    while eliminated_vars.len() < max_eliminated_vars {
+        let mut active = vec![true; current_clauses.len()];
+        let mut occurs_pos = vec![Vec::<usize>::new(); num_vars + 1];
+        let mut occurs_neg = vec![Vec::<usize>::new(); num_vars + 1];
+        for (idx, clause) in current_clauses.iter().enumerate() {
+            for &lit in clause {
+                let var = lit.unsigned_abs() as usize;
+                if lit > 0 {
+                    occurs_pos[var].push(idx);
+                } else {
+                    occurs_neg[var].push(idx);
+                }
+            }
+        }
+
+        let candidates = collect_bve_candidates(num_vars, &occurs_pos, &occurs_neg);
+        if candidates.is_empty() {
+            break;
+        }
+
+        let mut batch_eliminated = 0usize;
+        let mut touched_vars = vec![false; num_vars + 1];
+        for &(_, _, _, var) in &candidates {
+            if eliminated_vars.len() >= max_eliminated_vars
+                || batch_eliminated >= BVE_LOCAL_SUB_BATCH_SIZE
+            {
+                break;
+            }
+
+            let pos: Vec<usize> = occurs_pos[var]
+                .iter()
+                .copied()
+                .filter(|&idx| active[idx])
+                .collect();
+            let neg: Vec<usize> = occurs_neg[var]
+                .iter()
+                .copied()
+                .filter(|&idx| active[idx])
+                .collect();
+            if pos.is_empty() || neg.is_empty() {
+                continue;
+            }
+
+            let occurrence_count = pos.len() + neg.len();
+            if occurrence_count > 80
+                || pos.len().saturating_mul(neg.len()) > occurrence_count + BVE_GROW + 8
+            {
+                continue;
+            }
+
+            let mut resolvents = Vec::new();
+            let mut can_eliminate = true;
+            'pairs: for &pos_idx in &pos {
+                for &neg_idx in &neg {
+                    if let Some(resolvent) =
+                        merge_resolvent(&current_clauses[pos_idx], &current_clauses[neg_idx], var)
+                    {
+                        if resolvent.len() > BVE_CLAUSE_LIMIT {
+                            can_eliminate = false;
+                            break 'pairs;
+                        }
+                        resolvents.push(resolvent);
+                        if resolvents.len() > occurrence_count + BVE_GROW {
+                            can_eliminate = false;
+                            break 'pairs;
+                        }
+                    }
+                }
+            }
+            if !can_eliminate {
+                continue;
+            }
+
+            let mut eliminated_clauses = Vec::with_capacity(occurrence_count);
+            for &idx in pos.iter().chain(neg.iter()) {
+                if active[idx] {
+                    for &lit in &current_clauses[idx] {
+                        touched_vars[lit.unsigned_abs() as usize] = true;
+                    }
+                    eliminated_clauses.push(current_clauses[idx].clone());
+                    active[idx] = false;
+                }
+            }
+
+            for resolvent in resolvents {
+                for &lit in &resolvent {
+                    touched_vars[lit.unsigned_abs() as usize] = true;
+                }
+                proof_clauses.push(resolvent.clone());
+                current_clauses.push(resolvent);
+                active.push(true);
+            }
+
+            eliminated_vars.push(EliminatedVar {
+                var,
+                clauses: eliminated_clauses,
+            });
+            batch_eliminated += 1;
+        }
+
+        if batch_eliminated == 0 {
+            break;
+        }
+
+        let reduced: Vec<Vec<i32>> = current_clauses
+            .into_iter()
+            .zip(active)
+            .filter_map(|(clause, is_active)| is_active.then_some(clause))
+            .collect();
+        let (rewritten, local_proof, subsumed, strengthened) =
+            batch_local_subsumption_strengthen(num_vars, reduced, &touched_vars);
+        if trace {
+            eprintln!(
+                "c bve-local-sub: batch_elims={} subsumed={} strengthened={} live_clauses={}",
+                batch_eliminated,
+                subsumed,
+                strengthened,
+                rewritten.len()
+            );
+        }
+        proof_clauses.extend(local_proof);
+        current_clauses = rewritten;
+    }
+
+    (current_clauses, proof_clauses, eliminated_vars)
+}
+
 fn bounded_variable_eliminate(
     num_vars: usize,
     clauses: Vec<Vec<i32>>,
@@ -2387,21 +2665,7 @@ fn bounded_variable_eliminate(
         }
     }
 
-    let mut candidates = Vec::new();
-    for var in 1..=num_vars {
-        let pos = occurs_pos[var].len();
-        let neg = occurs_neg[var].len();
-        if pos == 0 || neg == 0 {
-            continue;
-        }
-        let product = pos.saturating_mul(neg);
-        let occurrences = pos + neg;
-        if occurrences <= 80 && product <= occurrences + BVE_GROW + 8 {
-            let growth = product as isize - occurrences as isize;
-            candidates.push((growth, product, occurrences, var));
-        }
-    }
-    candidates.sort_unstable();
+    let candidates = collect_bve_candidates(num_vars, &occurs_pos, &occurs_neg);
 
     let mut proof_clauses = Vec::new();
     let mut eliminated_vars = Vec::new();
@@ -2492,6 +2756,16 @@ fn bounded_variable_eliminate(
     (reduced, proof_clauses, eliminated_vars)
 }
 
+fn should_use_bve_local_sub(clause_count: usize) -> bool {
+    if env::var("SAT_DISABLE_BVE_LOCAL_SUB").is_ok() {
+        return false;
+    }
+    if env::var("SAT_BVE_LOCAL_SUB").is_ok() {
+        return true;
+    }
+    (BVE_LOCAL_SUB_MIN_CLAUSES..=BVE_LOCAL_SUB_MAX_CLAUSES).contains(&clause_count)
+}
+
 fn parse_cnf(path: &str) -> ParsedCnf {
     let file = fs::File::open(path).unwrap_or_else(|e| {
         eprintln!("Error opening {}: {}", path, e);
@@ -2545,7 +2819,11 @@ fn parse_cnf(path: &str) -> ParsedCnf {
         (clauses, Vec::new())
     };
     let (clauses, bve_proof_clauses, bve_eliminated_vars) =
-        bounded_variable_eliminate(num_vars, clauses);
+        if should_use_bve_local_sub(clauses.len()) {
+            bounded_variable_eliminate_with_local_sub(num_vars, clauses)
+        } else {
+            bounded_variable_eliminate(num_vars, clauses)
+        };
     root_unit_proof_clauses.append(&mut bwd_sub_proof_clauses);
     root_unit_proof_clauses.extend(bve_proof_clauses);
     eliminated_vars.extend(bve_eliminated_vars);
@@ -2814,6 +3092,23 @@ mod tests {
         assert!(!simplified.contains(&vec![1, 2, 3]));
         assert!(simplified.contains(&vec![1, 4]));
         assert!(proof_clauses.contains(&vec![1, 4]));
+    }
+
+    #[test]
+    fn test_batch_local_subsumption_strengthen_only_uses_touched_sources() {
+        let clauses = vec![vec![1, 2], vec![1, 2, 3], vec![4, 5], vec![4, 5, 6]];
+        let mut touched = vec![false; 7];
+        touched[1] = true;
+
+        let (simplified, proof_clauses, subsumed, strengthened) =
+            batch_local_subsumption_strengthen(6, clauses, &touched);
+
+        assert!(simplified.contains(&vec![1, 2]));
+        assert!(!simplified.contains(&vec![1, 2, 3]));
+        assert!(simplified.contains(&vec![4, 5, 6]));
+        assert_eq!(subsumed, 1);
+        assert_eq!(strengthened, 0);
+        assert!(proof_clauses.is_empty());
     }
 
     #[test]

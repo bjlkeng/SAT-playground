@@ -267,6 +267,31 @@ Kept improvement 10:
   `Kakuro-112` stayed on the existing simplification path because their clause counts exceed the
   new gate
 
+Kept improvement 11:
+
+- added a phased MiniSat-inspired BVE path that eliminates variables in small batches, compacts the
+  active formula, then runs a local clause-strengthening/subsumption refresh on clauses touched by
+  that batch before continuing elimination
+- this is the first solver `10` experiment that materially closes the remaining MiniSat simp gap on
+  timetable-style formulas without reintroducing the earlier C392/C393 instability
+- the path is now enabled automatically only for medium-to-large formulas with clause counts in the
+  range `150,000..=1,500,000`; `SAT_BVE_LOCAL_SUB=1` forces it on, and
+  `SAT_DISABLE_BVE_LOCAL_SUB=1` disables it
+- focused validation results with the default path after the gate:
+  - `/tmp/timetable393.cnf`: `3.48s`, improved from the earlier `9.416s` baseline
+  - `/tmp/circuit.cnf`: `59.51s`, improved from `62.16s`
+  - `/tmp/kakuro112.cnf`: `29.73s`, with the gate correctly skipping the new path on this
+    `19.6M`-clause guard formula
+- larger 2025-medium timetable targets where the baseline timed out at `120s`:
+  - `SC25_Timetable_C_492...`: solved in `81.73s`
+  - `SC25_Timetable_C_495...`: solved in `19.42s`
+  - `SC25_Timetable_C_496...`: solved in `13.79s`
+- direct forced-on guard check before adding the clause-count gate:
+  - `/tmp/kakuro112.cnf`: timed out at `60s`, which is why the automatic gate is now required
+- validation:
+  - `cargo test`: `48/48`
+  - `bash tools/smoke_test.sh solver/10-bve-preprocess`: `9/9`
+
 Rejected attempts:
 
 - parse-time clause normalization: unit-clean, but exceeded the `238.7s` keep threshold before
