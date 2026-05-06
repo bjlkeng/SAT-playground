@@ -2268,6 +2268,19 @@ fn classify_subsumption(source: &[i32], target: &[i32]) -> ClauseRewrite {
     }
 }
 
+fn strengthen_clause_once(target: &[i32], remove_lit: i32) -> Vec<i32> {
+    let mut strengthened = Vec::with_capacity(target.len().saturating_sub(1));
+    let mut removed = false;
+    for &lit in target {
+        if !removed && lit == remove_lit {
+            removed = true;
+            continue;
+        }
+        strengthened.push(lit);
+    }
+    strengthened
+}
+
 fn backward_subsumption_strengthen(
     num_vars: usize,
     clauses: Vec<Vec<i32>>,
@@ -2338,12 +2351,7 @@ fn backward_subsumption_strengthen(
                         changed = true;
                     }
                     ClauseRewrite::Strengthen(remove_lit) => {
-                        let mut strengthened = Vec::with_capacity(target_clause.len() - 1);
-                        for &lit in target_clause {
-                            if lit != remove_lit {
-                                strengthened.push(lit);
-                            }
-                        }
+                        let strengthened = strengthen_clause_once(target_clause, remove_lit);
                         if strengthened.len() < target_clause.len() {
                             proof_clauses.push(strengthened.clone());
                             active[target_idx] = Some(strengthened);
@@ -2475,12 +2483,7 @@ fn batch_local_subsumption_strengthen(
                     total_subsumed += 1;
                 }
                 ClauseRewrite::Strengthen(remove_lit) => {
-                    let mut strengthened = Vec::with_capacity(target_clause.len() - 1);
-                    for &lit in target_clause {
-                        if lit != remove_lit {
-                            strengthened.push(lit);
-                        }
-                    }
+                    let strengthened = strengthen_clause_once(target_clause, remove_lit);
                     if strengthened.len() < target_clause.len() {
                         proof_clauses.push(strengthened.clone());
                         active[target_idx] = Some(strengthened);
@@ -2603,8 +2606,15 @@ fn bounded_variable_eliminate_with_local_sub(
             }
 
             for resolvent in resolvents {
+                let idx = current_clauses.len();
                 for &lit in &resolvent {
-                    touched_vars[lit.unsigned_abs() as usize] = true;
+                    let lit_var = lit.unsigned_abs() as usize;
+                    touched_vars[lit_var] = true;
+                    if lit > 0 {
+                        occurs_pos[lit_var].push(idx);
+                    } else {
+                        occurs_neg[lit_var].push(idx);
+                    }
                 }
                 proof_clauses.push(resolvent.clone());
                 current_clauses.push(resolvent);
@@ -3104,6 +3114,11 @@ mod tests {
     }
 
     #[test]
+    fn test_strengthen_clause_once_removes_only_first_duplicate_literal() {
+        assert_eq!(strengthen_clause_once(&[1, -2, -2, 4], -2), vec![1, -2, 4]);
+    }
+
+    #[test]
     fn test_batch_local_subsumption_strengthen_only_uses_touched_sources() {
         let clauses = vec![vec![1, 2], vec![1, 2, 3], vec![4, 5], vec![4, 5, 6]];
         let mut touched = vec![false; 7];
@@ -3118,6 +3133,25 @@ mod tests {
         assert_eq!(subsumed, 1);
         assert_eq!(strengthened, 0);
         assert!(proof_clauses.is_empty());
+    }
+
+    #[test]
+    fn test_bve_local_sub_tracks_new_resolvents_for_later_eliminations() {
+        let mut clauses = vec![vec![1, 2], vec![-1, 3], vec![2, 4], vec![-2, 5]];
+        while clauses.len() < BVE_MIN_CLAUSES {
+            clauses.push(vec![6, 7]);
+        }
+
+        let (reduced, _proof_clauses, eliminated_vars) =
+            bounded_variable_eliminate_with_local_sub(7, clauses);
+
+        assert!(eliminated_vars.iter().any(|eliminated| eliminated.var == 1));
+        assert!(eliminated_vars.iter().any(|eliminated| eliminated.var == 2));
+        assert!(
+            reduced
+                .iter()
+                .all(|clause| clause.iter().all(|&lit| lit.unsigned_abs() as usize != 2))
+        );
     }
 
     #[test]
