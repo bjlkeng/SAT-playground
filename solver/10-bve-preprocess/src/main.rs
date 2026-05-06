@@ -36,7 +36,6 @@ const BVE_MAX_ELIMINATED_VARS_LARGE: usize = 25_000;
 const BVE_CLAUSE_LIMIT: usize = 20;
 const BVE_GROW: usize = 0;
 const BVE_LOCAL_SUB_MIN_CLAUSES: usize = 150_000;
-const BVE_LOCAL_SUB_MAX_CLAUSES: usize = 1_500_000;
 const BVE_LOCAL_SUB_BATCH_SIZE: usize = 256;
 const BVE_LOCAL_SUB_SOURCE_MAX_LEN: usize = 3;
 const BVE_LOCAL_SUB_TARGET_MAX_LEN: usize = 8;
@@ -94,6 +93,16 @@ struct ProofStream {
 
 struct ProofLog {
     mode: ProofMode,
+}
+
+fn env_usize(key: &str) -> Option<usize> {
+    env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+}
+
+fn bwd_sub_max_clauses() -> usize {
+    env_usize("SAT_BWD_SUB_MAX_CLAUSES").unwrap_or(BWD_SUB_MAX_CLAUSES)
 }
 
 fn append_u32_ascii(buffer: &mut Vec<u8>, mut value: u32) {
@@ -2263,7 +2272,7 @@ fn backward_subsumption_strengthen(
     num_vars: usize,
     clauses: Vec<Vec<i32>>,
 ) -> (Vec<Vec<i32>>, Vec<Vec<i32>>) {
-    if clauses.len() < BWD_SUB_MIN_CLAUSES || clauses.len() > BWD_SUB_MAX_CLAUSES {
+    if clauses.len() < BWD_SUB_MIN_CLAUSES || clauses.len() > bwd_sub_max_clauses() {
         return (clauses, Vec::new());
     }
 
@@ -2763,7 +2772,7 @@ fn should_use_bve_local_sub(clause_count: usize) -> bool {
     if env::var("SAT_BVE_LOCAL_SUB").is_ok() {
         return true;
     }
-    (BVE_LOCAL_SUB_MIN_CLAUSES..=BVE_LOCAL_SUB_MAX_CLAUSES).contains(&clause_count)
+    clause_count >= BVE_LOCAL_SUB_MIN_CLAUSES
 }
 
 fn parse_cnf(path: &str) -> ParsedCnf {
