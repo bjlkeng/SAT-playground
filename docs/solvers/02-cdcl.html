@@ -385,6 +385,11 @@
         font-weight: 700;
       }
 
+      .solver-demo-neg-name {
+        text-decoration-line: overline;
+        text-decoration-thickness: 1.5px;
+      }
+
       .solver-demo-footnote {
         margin-top: 12px;
         font-size: 0.82rem;
@@ -516,7 +521,6 @@ loop:
               <div class="solver-demo-clause-box">
                 <div class="solver-demo-sidebar-head">
                   <h4>Clause Box</h4>
-                  <span class="solver-demo-chip warn">strike-through = false now</span>
                 </div>
                 <div class="solver-demo-clause-list" data-demo-clauses></div>
               </div>
@@ -593,6 +597,7 @@ loop:
           { data: { id: "c2", source: "x2", target: "x4", label: "C2" } },
           { data: { id: "c3a", source: "x3", target: "conflict", label: "C3" } },
           { data: { id: "c3b", source: "x4", target: "conflict", label: "C3" } },
+          { data: { id: "learned", source: "x3", target: "x2", label: "L" } },
         ];
 
         const cy = cytoscape({
@@ -743,6 +748,15 @@ loop:
               },
             },
             {
+              selector: "edge.learned",
+              style: {
+                "line-color": "#1c8d55",
+                "target-arrow-color": "#1c8d55",
+                "line-style": "dashed",
+                "line-dash-pattern": [10, 7],
+              },
+            },
+            {
               selector: ".dim",
               style: { opacity: 0.18 },
             },
@@ -750,7 +764,7 @@ loop:
         });
 
         const RAW_CUT = "M 332 36 C 300 92 300 230 332 286";
-        const UIP_CUT = "M 274 42 C 332 92 332 222 274 280";
+        const UIP_CUT = "M 286 36 L 286 284";
 
         const steps = [
           {
@@ -775,6 +789,7 @@ loop:
               c2: ["dim"],
               c3a: ["dim"],
               c3b: ["dim"],
+              learned: ["dim"],
             },
             trail: [
               {
@@ -838,6 +853,7 @@ loop:
               c2: ["active", "level2"],
               c3a: ["dim"],
               c3b: ["dim"],
+              learned: ["dim"],
             },
             trail: [
               {
@@ -901,6 +917,7 @@ loop:
               c2: ["active", "level2"],
               c3a: ["active", "conflict-edge", "cut"],
               c3b: ["active", "conflict-edge", "cut"],
+              learned: ["dim"],
             },
             trail: [
               {
@@ -964,6 +981,7 @@ loop:
               c2: ["active", "level2", "cut"],
               c3a: ["active", "conflict-edge", "cut"],
               c3b: ["active", "conflict-edge"],
+              learned: ["dim"],
             },
             trail: [
               {
@@ -1022,8 +1040,8 @@ loop:
               "Everything above level 1 is removed. x4 disappears with the old level-2 branch, and the learned clause immediately asserts x2 = false.",
             uip:
               "The 1-UIP clause is useful exactly at the backjump level because every literal except the asserting one is already fixed there.",
-            cutLabel: "same 1-UIP clause, now asserting",
-            cutPath: UIP_CUT,
+            cutLabel: "learned clause is now asserting",
+            cutPath: null,
             nodes: {
               x1: { label: "x1 = true", classes: ["decision", "level1"] },
               x3: { label: "x3 = true", classes: ["implied", "level1"] },
@@ -1036,6 +1054,7 @@ loop:
               c2: ["dim"],
               c3a: ["dim"],
               c3b: ["dim"],
+              learned: ["active", "learned"],
             },
             trail: [
               {
@@ -1091,7 +1110,7 @@ loop:
             uip:
               "The 1-UIP clause is short, asserting, and reusable. That is why modern CDCL solvers center conflict analysis around this cut.",
             cutLabel: "learned clause remains in the database",
-            cutPath: UIP_CUT,
+            cutPath: null,
             nodes: {
               x1: { label: "x1 = true", classes: ["decision", "level1"] },
               x3: { label: "x3 = true", classes: ["implied", "level1"] },
@@ -1104,6 +1123,7 @@ loop:
               c2: ["dim"],
               c3a: ["dim"],
               c3b: ["dim"],
+              learned: ["active", "learned"],
             },
             trail: [
               {
@@ -1173,8 +1193,23 @@ loop:
         const cut = root.querySelector("[data-demo-cut]");
         const cutLabel = root.querySelector("[data-demo-cut-label]");
 
+        function escapeHtml(text) {
+          return text
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;");
+        }
+
+        function overlinePlain(name) {
+          return Array.from(name).map((char) => `${char}\u0305`).join("");
+        }
+
         function formatLiteralText(text) {
-          return text.replace(/-x(\d+)/g, (_, digits) => `x\u0304${digits}`);
+          return text.replace(/-x(\d+)/g, (_, digits) => overlinePlain(`x${digits}`));
+        }
+
+        function formatLiteralHtml(text) {
+          return escapeHtml(text).replace(/-x(\d+)/g, (_, digits) => `<span class="solver-demo-neg-name">x${digits}</span>`);
         }
 
         function stop() {
@@ -1194,7 +1229,7 @@ loop:
             for (const [text, cls] of block.chips) {
               const chip = document.createElement("span");
               chip.className = `solver-demo-chip ${cls}`.trim();
-              chip.textContent = formatLiteralText(text);
+              chip.innerHTML = formatLiteralHtml(text);
               row.appendChild(chip);
             }
             element.appendChild(row);
@@ -1209,13 +1244,13 @@ loop:
             clauseEl.className = `solver-demo-clause ${clause.className}`.trim();
 
             const literalsHtml = clause.literals
-              .map(([text, cls]) => `<span class="solver-demo-literal ${cls}">${formatLiteralText(text)}</span>`)
+              .map(([text, cls]) => `<span class="solver-demo-literal ${cls}">${formatLiteralHtml(text)}</span>`)
               .join("");
 
             clauseEl.innerHTML = `
               <div class="solver-demo-clause-header">
-                <span><strong>${formatLiteralText(clause.id)}</strong></span>
-                <span class="solver-demo-clause-status">${formatLiteralText(clause.status)}</span>
+                <span><strong>${formatLiteralHtml(clause.id)}</strong></span>
+                <span class="solver-demo-clause-status">${formatLiteralHtml(clause.status)}</span>
               </div>
               <div class="solver-demo-literals">${literalsHtml}</div>
             `;
@@ -1249,12 +1284,12 @@ loop:
 
         function render() {
           const step = steps[current];
-          title.textContent = formatLiteralText(step.title);
-          caption.textContent = formatLiteralText(step.caption);
+          title.innerHTML = formatLiteralHtml(step.title);
+          caption.innerHTML = formatLiteralHtml(step.caption);
           stepLabel.textContent = `Step ${current + 1} / ${steps.length}`;
-          analysisTitle.textContent = formatLiteralText(step.analysisTitle);
-          analysis.textContent = formatLiteralText(step.analysis);
-          uip.textContent = formatLiteralText(step.uip);
+          analysisTitle.innerHTML = formatLiteralHtml(step.analysisTitle);
+          analysis.innerHTML = formatLiteralHtml(step.analysis);
+          uip.innerHTML = formatLiteralHtml(step.uip);
           renderGraph(step);
           renderTrail(step.trail);
           renderClauses(step.clauses);
