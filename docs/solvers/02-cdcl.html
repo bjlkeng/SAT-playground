@@ -1173,6 +1173,10 @@ loop:
         const cut = root.querySelector("[data-demo-cut]");
         const cutLabel = root.querySelector("[data-demo-cut-label]");
 
+        function formatLiteralText(text) {
+          return text.replace(/-x(\d+)/g, (_, digits) => `x\u0304${digits}`);
+        }
+
         function stop() {
           if (timer !== null) window.clearInterval(timer);
           timer = null;
@@ -1190,7 +1194,7 @@ loop:
             for (const [text, cls] of block.chips) {
               const chip = document.createElement("span");
               chip.className = `solver-demo-chip ${cls}`.trim();
-              chip.textContent = text;
+              chip.textContent = formatLiteralText(text);
               row.appendChild(chip);
             }
             element.appendChild(row);
@@ -1205,13 +1209,13 @@ loop:
             clauseEl.className = `solver-demo-clause ${clause.className}`.trim();
 
             const literalsHtml = clause.literals
-              .map(([text, cls]) => `<span class="solver-demo-literal ${cls}">${text}</span>`)
+              .map(([text, cls]) => `<span class="solver-demo-literal ${cls}">${formatLiteralText(text)}</span>`)
               .join("");
 
             clauseEl.innerHTML = `
               <div class="solver-demo-clause-header">
-                <span><strong>${clause.id}</strong></span>
-                <span class="solver-demo-clause-status">${clause.status}</span>
+                <span><strong>${formatLiteralText(clause.id)}</strong></span>
+                <span class="solver-demo-clause-status">${formatLiteralText(clause.status)}</span>
               </div>
               <div class="solver-demo-literals">${literalsHtml}</div>
             `;
@@ -1223,7 +1227,7 @@ loop:
         function renderGraph(step) {
           for (const node of cy.nodes()) {
             const state = step.nodes[node.id()];
-            node.data("label", state.label);
+            node.data("label", formatLiteralText(state.label));
             node.classes(state.classes.join(" "));
           }
 
@@ -1240,17 +1244,17 @@ loop:
             cut.classList.remove("visible");
           }
 
-          cutLabel.textContent = step.cutLabel;
+          cutLabel.textContent = formatLiteralText(step.cutLabel);
         }
 
         function render() {
           const step = steps[current];
-          title.textContent = step.title;
-          caption.textContent = step.caption;
+          title.textContent = formatLiteralText(step.title);
+          caption.textContent = formatLiteralText(step.caption);
           stepLabel.textContent = `Step ${current + 1} / ${steps.length}`;
-          analysisTitle.textContent = step.analysisTitle;
-          analysis.textContent = step.analysis;
-          uip.textContent = step.uip;
+          analysisTitle.textContent = formatLiteralText(step.analysisTitle);
+          analysis.textContent = formatLiteralText(step.analysis);
+          uip.textContent = formatLiteralText(step.uip);
           renderGraph(step);
           renderTrail(step.trail);
           renderClauses(step.clauses);
