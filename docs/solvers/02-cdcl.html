@@ -10,8 +10,10 @@
         margin-top: 18px;
         padding: 22px;
         border: 1px solid var(--line);
-        border-radius: 22px;
-        background: linear-gradient(180deg, rgba(249, 251, 255, 0.98), rgba(255, 255, 255, 0.95));
+        border-radius: 24px;
+        background:
+          linear-gradient(180deg, rgba(244, 248, 255, 0.98), rgba(255, 255, 255, 0.96)),
+          radial-gradient(circle at top left, rgba(15, 122, 216, 0.08), transparent 42%);
       }
 
       .solver-demo-header {
@@ -29,16 +31,18 @@
 
       .solver-demo-header p,
       .solver-demo-caption p,
-      .solver-demo-panel p {
+      .solver-demo-panel p,
+      .solver-demo-sidebar p {
         margin: 0;
         color: var(--muted);
       }
 
       .solver-demo-step,
-      .solver-demo-button {
+      .solver-demo-button,
+      .solver-demo-level-tag,
+      .solver-demo-cut-tag {
         border-radius: 999px;
         border: 1px solid var(--line);
-        background: #fff;
         font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
         font-size: 0.8rem;
       }
@@ -60,6 +64,7 @@
       .solver-demo-button {
         padding: 10px 13px;
         color: var(--ink);
+        background: #fff;
         cursor: pointer;
       }
 
@@ -73,7 +78,7 @@
         padding: 14px 16px;
         border-radius: 18px;
         border: 1px solid rgba(15, 122, 216, 0.14);
-        background: rgba(255, 255, 255, 0.88);
+        background: rgba(255, 255, 255, 0.92);
       }
 
       .solver-demo-caption strong {
@@ -81,31 +86,149 @@
         margin-bottom: 4px;
       }
 
-      .solver-demo-grid {
+      .solver-demo-layout {
         display: grid;
         gap: 16px;
         margin-top: 18px;
       }
 
-      .solver-demo-panel {
-        min-height: 260px;
+      .solver-demo-panel,
+      .solver-demo-sidebar {
+        min-width: 0;
         padding: 16px;
-        border-radius: 18px;
+        border-radius: 20px;
         border: 1px solid var(--line);
         background: rgba(255, 255, 255, 0.9);
       }
 
-      .solver-demo-panel h4 {
-        margin: 0 0 10px;
+      .solver-demo-panel h4,
+      .solver-demo-sidebar h4 {
+        margin: 0;
         font-size: 0.98rem;
       }
 
-      .solver-demo-row,
-      .solver-demo-chip-row {
+      .solver-demo-panel-head,
+      .solver-demo-sidebar-head {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .solver-demo-graph-shell {
+        position: relative;
+        margin-top: 14px;
+        min-height: 340px;
+        border-radius: 20px;
+        border: 1px solid rgba(22, 32, 43, 0.08);
+        background:
+          linear-gradient(180deg, rgba(11, 20, 40, 0.045), rgba(11, 20, 40, 0.018)),
+          radial-gradient(circle at 14% 18%, rgba(15, 122, 216, 0.1), transparent 26%),
+          radial-gradient(circle at 88% 28%, rgba(224, 90, 71, 0.08), transparent 24%),
+          #ffffff;
+        overflow: hidden;
+      }
+
+      .solver-demo-graph {
+        position: relative;
+        z-index: 1;
+        height: 340px;
+      }
+
+      .solver-demo-overlay {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+
+      .solver-demo-cut-path {
+        fill: none;
+        stroke: #dd7a17;
+        stroke-width: 4;
+        stroke-linecap: round;
+        stroke-dasharray: 10 8;
+        opacity: 0;
+        transition: opacity 180ms ease;
+      }
+
+      .solver-demo-cut-path.visible {
+        opacity: 0.95;
+      }
+
+      .solver-demo-graph-badges {
+        position: absolute;
+        inset: 14px 14px auto 14px;
+        z-index: 3;
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
-        margin-top: 10px;
+        align-items: flex-start;
+        pointer-events: none;
+      }
+
+      .solver-demo-level-tag,
+      .solver-demo-cut-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 10px;
+        background: rgba(255, 255, 255, 0.92);
+        color: var(--ink);
+        box-shadow: 0 8px 20px rgba(20, 30, 60, 0.08);
+      }
+
+      .solver-demo-level-tag::before {
+        content: "";
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: var(--tag-color, var(--accent));
+      }
+
+      .solver-demo-level-tag.level-1 {
+        --tag-color: #1f78c8;
+      }
+
+      .solver-demo-level-tag.level-2 {
+        --tag-color: #d6503f;
+      }
+
+      .solver-demo-cut-tag {
+        color: #91530a;
+        background: rgba(255, 248, 227, 0.96);
+        border-color: rgba(145, 83, 10, 0.18);
+      }
+
+      .solver-demo-trail {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .solver-demo-trail-block {
+        min-width: 0;
+        flex: 1 1 180px;
+        padding: 12px;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: #f9fbff;
+      }
+
+      .solver-demo-trail-block strong {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 0.84rem;
+      }
+
+      .solver-demo-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
       }
 
       .solver-demo-chip {
@@ -144,55 +267,133 @@
         border-color: rgba(15, 122, 216, 0.28);
       }
 
-      .solver-demo-card {
-        margin-top: 10px;
-        padding: 12px;
+      .solver-demo-chip.dim {
+        opacity: 0.55;
+      }
+
+      .solver-demo-sidebar {
+        display: grid;
+        gap: 14px;
+        align-content: start;
+      }
+
+      .solver-demo-note-card,
+      .solver-demo-clause-box {
+        padding: 14px;
         border-radius: 16px;
         border: 1px solid var(--line);
         background: #f9fbff;
       }
 
-      .solver-demo-card strong {
+      .solver-demo-note-card strong,
+      .solver-demo-clause-box strong {
         display: block;
         margin-bottom: 6px;
       }
 
-      .solver-demo-arrow {
-        color: var(--muted);
-        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+      .solver-demo-note-card p + p {
+        margin-top: 8px;
       }
 
-      .solver-demo-bars {
+      .solver-demo-clause-list {
         display: grid;
         gap: 10px;
-        margin-top: 12px;
+        margin-top: 10px;
       }
 
-      .solver-demo-bar {
-        display: grid;
-        grid-template-columns: 52px minmax(0, 1fr) 48px;
+      .solver-demo-clause {
+        padding: 12px;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: #fff;
+      }
+
+      .solver-demo-clause.active {
+        border-color: rgba(15, 122, 216, 0.25);
+        box-shadow: 0 0 0 1px rgba(15, 122, 216, 0.08);
+      }
+
+      .solver-demo-clause.conflict {
+        border-color: rgba(176, 68, 68, 0.25);
+        background: #fff8f8;
+      }
+
+      .solver-demo-clause.learned {
+        border-color: rgba(17, 102, 59, 0.25);
+        background: #f3fbf6;
+      }
+
+      .solver-demo-clause-header {
+        display: flex;
+        justify-content: space-between;
         gap: 10px;
         align-items: center;
+        margin-bottom: 8px;
         font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-        font-size: 0.78rem;
+        font-size: 0.76rem;
       }
 
-      .solver-demo-track {
-        height: 12px;
+      .solver-demo-clause-status {
+        color: var(--muted);
+      }
+
+      .solver-demo-literals {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .solver-demo-literal {
+        display: inline-flex;
+        align-items: center;
+        padding: 5px 8px;
         border-radius: 999px;
-        background: rgba(22, 32, 43, 0.08);
-        overflow: hidden;
+        border: 1px solid rgba(22, 32, 43, 0.12);
+        background: #fff;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.76rem;
       }
 
-      .solver-demo-fill {
-        height: 100%;
-        border-radius: 999px;
-        background: linear-gradient(90deg, var(--accent), #e05a47);
+      .solver-demo-literal.sat {
+        color: var(--diff-add-ink);
+        background: var(--diff-add);
+        border-color: rgba(17, 102, 59, 0.2);
       }
 
-      @media (min-width: 820px) {
-        .solver-demo-grid {
-          grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      .solver-demo-literal.false {
+        color: var(--diff-del-ink);
+        background: var(--diff-del);
+        border-color: rgba(176, 68, 68, 0.2);
+        text-decoration: line-through;
+      }
+
+      .solver-demo-literal.unit {
+        color: #7a5600;
+        background: #fff4c2;
+        border-color: rgba(185, 140, 15, 0.28);
+        font-weight: 700;
+      }
+
+      .solver-demo-literal.focus {
+        box-shadow: inset 0 0 0 1px rgba(15, 122, 216, 0.2);
+      }
+
+      .solver-demo-literal.learned-head {
+        color: var(--accent);
+        background: var(--accent-soft);
+        border-color: rgba(15, 122, 216, 0.22);
+        font-weight: 700;
+      }
+
+      .solver-demo-footnote {
+        margin-top: 12px;
+        font-size: 0.82rem;
+        color: var(--muted);
+      }
+
+      @media (min-width: 920px) {
+        .solver-demo-layout {
+          grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.95fr);
         }
       }
     </style>
@@ -224,7 +425,7 @@
         <ul>
           <li>Explicit trail-based state instead of recursive calls, with a decision level recorded for every assignment.</li>
           <li>Full-clause-scan propagation to fixpoint, which keeps the control flow easy to follow before watched literals are introduced later.</li>
-          <li>Conflict analysis that resolves backward through implication reasons until a learned clause with one current-level literal remains.</li>
+          <li>Conflict analysis that resolves backward through implication reasons until the first UIP cut leaves exactly one current-level literal.</li>
           <li>Backjumping to the highest useful earlier decision level, then asserting the learned clause immediately.</li>
         </ul>
       </section>
@@ -260,10 +461,10 @@ loop:
         <div class="solver-demo" id="cdcl-demo">
           <div class="solver-demo-header">
             <div>
-              <h3>Conflict Analysis And Backjumping</h3>
+              <h3>Persistent Implication Graph And 1-UIP Cut</h3>
               <p>
-                A small implication graph shows why CDCL learns a clause instead of only flipping
-                the most recent decision.
+                The graph stays fixed while the highlighting changes. Decisions, implications,
+                the conflict, and the learned clause all refer back to the same nodes and edges.
               </p>
             </div>
             <div class="solver-demo-step" data-demo-step>Step 1 / 6</div>
@@ -278,14 +479,47 @@ loop:
             <strong data-demo-title></strong>
             <p data-demo-caption></p>
           </div>
-          <div class="solver-demo-grid">
+          <div class="solver-demo-layout">
             <div class="solver-demo-panel">
-              <h4>Implication Graph</h4>
-              <div data-demo-pane="left"></div>
+              <div class="solver-demo-panel-head">
+                <h4>Implication / Conflict Graph</h4>
+                <span class="solver-demo-chip active">fixed structure, changing emphasis</span>
+              </div>
+              <div class="solver-demo-graph-shell">
+                <div class="solver-demo-graph" data-demo-graph></div>
+                <svg class="solver-demo-overlay" viewBox="0 0 520 320" aria-hidden="true">
+                  <path class="solver-demo-cut-path" data-demo-cut></path>
+                </svg>
+                <div class="solver-demo-graph-badges">
+                  <span class="solver-demo-level-tag level-1">decision level 1</span>
+                  <span class="solver-demo-level-tag level-2">decision level 2</span>
+                  <span class="solver-demo-cut-tag" data-demo-cut-label>no cut yet</span>
+                </div>
+              </div>
+              <div class="solver-demo-trail" data-demo-trail></div>
+              <p class="solver-demo-footnote">
+                Trail blocks show the same assignments in trail order. The 1-UIP cut is the dashed
+                line across the graph: once only one current-level assignment remains on the conflict
+                side, the learned clause is ready.
+              </p>
             </div>
-            <div class="solver-demo-panel">
-              <h4>Learned Clause State</h4>
-              <div data-demo-pane="right"></div>
+
+            <div class="solver-demo-sidebar">
+              <div class="solver-demo-note-card">
+                <strong data-demo-analysis-title></strong>
+                <p data-demo-analysis></p>
+              </div>
+              <div class="solver-demo-note-card">
+                <strong>Why the solver stops here</strong>
+                <p data-demo-uip></p>
+              </div>
+              <div class="solver-demo-clause-box">
+                <div class="solver-demo-sidebar-head">
+                  <h4>Clause Box</h4>
+                  <span class="solver-demo-chip warn">strike-through = false now</span>
+                </div>
+                <div class="solver-demo-clause-list" data-demo-clauses></div>
+              </div>
             </div>
           </div>
         </div>
@@ -340,168 +574,604 @@ loop:
         </div>
       </section>
     </main>
+    <script src="../vendor/cytoscape.min.js"></script>
     <script>
       (() => {
         const root = document.getElementById("cdcl-demo");
-        if (!root) return;
+        if (!root || typeof cytoscape === "undefined") return;
+
+        const nodes = [
+          { data: { id: "x1", baseLabel: "x1" }, position: { x: 92, y: 76 } },
+          { data: { id: "x3", baseLabel: "x3" }, position: { x: 245, y: 76 } },
+          { data: { id: "x2", baseLabel: "x2" }, position: { x: 92, y: 236 } },
+          { data: { id: "x4", baseLabel: "x4" }, position: { x: 245, y: 236 } },
+          { data: { id: "conflict", baseLabel: "conflict" }, position: { x: 418, y: 156 } },
+        ];
+
+        const edges = [
+          { data: { id: "c1", source: "x1", target: "x3", label: "C1" } },
+          { data: { id: "c2", source: "x2", target: "x4", label: "C2" } },
+          { data: { id: "c3a", source: "x3", target: "conflict", label: "C3" } },
+          { data: { id: "c3b", source: "x4", target: "conflict", label: "C3" } },
+        ];
+
+        const cy = cytoscape({
+          container: root.querySelector("[data-demo-graph]"),
+          elements: { nodes, edges },
+          layout: { name: "preset" },
+          userZoomingEnabled: false,
+          userPanningEnabled: false,
+          boxSelectionEnabled: false,
+          autoungrabify: true,
+          style: [
+            {
+              selector: "node",
+              style: {
+                label: "data(label)",
+                width: 86,
+                height: 86,
+                "text-wrap": "wrap",
+                "text-max-width": 80,
+                "text-valign": "center",
+                "text-halign": "center",
+                "font-family": "\"IBM Plex Mono\", \"SFMono-Regular\", Consolas, monospace",
+                "font-size": 12,
+                "font-weight": 600,
+                color: "#142131",
+                "border-width": 2,
+                "border-color": "#8aa0b9",
+                "background-color": "#ffffff",
+                "overlay-opacity": 0,
+                "transition-property": "background-color border-color opacity width height",
+                "transition-duration": "160ms",
+              },
+            },
+            {
+              selector: "node.decision",
+              style: { shape: "diamond" },
+            },
+            {
+              selector: "node.implied",
+              style: { shape: "ellipse" },
+            },
+            {
+              selector: "node.conflict",
+              style: {
+                shape: "round-hexagon",
+                "background-color": "#fff0ef",
+                "border-color": "#d6503f",
+                color: "#9b3427",
+              },
+            },
+            {
+              selector: "node.level1",
+              style: {
+                "background-color": "#ebf5ff",
+                "border-color": "#1f78c8",
+              },
+            },
+            {
+              selector: "node.level2",
+              style: {
+                "background-color": "#fff1ef",
+                "border-color": "#d6503f",
+              },
+            },
+            {
+              selector: "node.focus",
+              style: {
+                width: 94,
+                height: 94,
+                "border-width": 4,
+              },
+            },
+            {
+              selector: "node.uip",
+              style: {
+                "background-color": "#fff4c2",
+                "border-color": "#dd7a17",
+              },
+            },
+            {
+              selector: "node.reverted",
+              style: {
+                opacity: 0.42,
+              },
+            },
+            {
+              selector: "node.forced",
+              style: {
+                "background-color": "#f3fbf6",
+                "border-color": "#1c8d55",
+              },
+            },
+            {
+              selector: "edge",
+              style: {
+                label: "data(label)",
+                width: 3,
+                "curve-style": "bezier",
+                "target-arrow-shape": "triangle",
+                "arrow-scale": 1.1,
+                "font-family": "\"IBM Plex Mono\", \"SFMono-Regular\", Consolas, monospace",
+                "font-size": 11,
+                color: "#5c6676",
+                "text-background-color": "#ffffff",
+                "text-background-opacity": 0.9,
+                "text-background-padding": 3,
+                "text-margin-y": -10,
+                "line-color": "#8ea2b8",
+                "target-arrow-color": "#8ea2b8",
+                opacity: 0.35,
+                "overlay-opacity": 0,
+                "transition-property": "line-color target-arrow-color opacity width",
+                "transition-duration": "160ms",
+              },
+            },
+            {
+              selector: "edge.active",
+              style: {
+                opacity: 0.95,
+                width: 4,
+                "line-color": "#2e5c90",
+                "target-arrow-color": "#2e5c90",
+              },
+            },
+            {
+              selector: "edge.level2",
+              style: {
+                "line-color": "#b94b3d",
+                "target-arrow-color": "#b94b3d",
+              },
+            },
+            {
+              selector: "edge.conflict-edge",
+              style: {
+                "line-color": "#d6503f",
+                "target-arrow-color": "#d6503f",
+              },
+            },
+            {
+              selector: "edge.cut",
+              style: {
+                width: 5,
+                "line-style": "dashed",
+                "line-dash-pattern": [8, 6],
+                "line-color": "#dd7a17",
+                "target-arrow-color": "#dd7a17",
+                opacity: 1,
+              },
+            },
+            {
+              selector: ".dim",
+              style: { opacity: 0.18 },
+            },
+          ],
+        });
+
+        const RAW_CUT = "M 332 36 C 300 92 300 230 332 286";
+        const UIP_CUT = "M 274 42 C 332 92 332 222 274 280";
 
         const steps = [
           {
-            title: "Two decisions create two levels",
-            caption: "The trail records decisions and implications with the level that produced each assignment.",
-            left: `
-              <div class="solver-demo-card"><strong>Trail</strong>
-                <div class="solver-demo-chip-row">
-                  <span class="solver-demo-chip active">L1: x1 = true decision</span>
-                  <span class="solver-demo-chip active">L2: x2 = true decision</span>
-                </div>
-              </div>
-              <div class="solver-demo-card"><strong>Reason clauses waiting to fire</strong>
-                <div class="solver-demo-row">
-                  <span class="solver-demo-chip">C1: -x1 or x3</span>
-                  <span class="solver-demo-chip">C2: -x2 or x4</span>
-                  <span class="solver-demo-chip">C3: -x3 or -x4</span>
-                </div>
-              </div>`,
-            right: `
-              <div class="solver-demo-card"><strong>No conflict yet</strong>
-                <p>Plain DPLL would keep descending the current branch. CDCL keeps enough reason data to explain any later conflict.</p>
-              </div>`,
+            title: "Two decision levels are created",
+            caption: "CDCL starts from the same branching idea as DPLL, but it records decision levels and keeps the implication graph structure ready for any later explanation.",
+            analysisTitle: "State on the graph",
+            analysis:
+              "Only the decision nodes are active. x1 = true is the level-1 decision, and x2 = true is the level-2 decision.",
+            uip:
+              "There is no 1-UIP cut yet because no conflict has been reached. The solver is only laying down decision points.",
+            cutLabel: "no cut yet",
+            cutPath: null,
+            nodes: {
+              x1: { label: "x1 = true", classes: ["decision", "level1", "focus"] },
+              x3: { label: "x3", classes: ["implied", "dim"] },
+              x2: { label: "x2 = true", classes: ["decision", "level2", "focus"] },
+              x4: { label: "x4", classes: ["implied", "dim"] },
+              conflict: { label: "conflict", classes: ["conflict", "dim"] },
+            },
+            edges: {
+              c1: ["dim"],
+              c2: ["dim"],
+              c3a: ["dim"],
+              c3b: ["dim"],
+            },
+            trail: [
+              {
+                title: "decision level 1",
+                chips: [["x1 = true", "active"], ["decision", ""]],
+              },
+              {
+                title: "decision level 2",
+                chips: [["x2 = true", "bad"], ["decision", ""]],
+              },
+            ],
+            clauses: [
+              {
+                id: "C1",
+                status: "waiting for x1",
+                className: "",
+                literals: [
+                  ["-x1", "false"],
+                  ["x3", ""],
+                ],
+              },
+              {
+                id: "C2",
+                status: "waiting for x2",
+                className: "",
+                literals: [
+                  ["-x2", "false"],
+                  ["x4", ""],
+                ],
+              },
+              {
+                id: "C3",
+                status: "not visited yet",
+                className: "",
+                literals: [
+                  ["-x3", ""],
+                  ["-x4", ""],
+                ],
+              },
+            ],
           },
           {
             title: "Propagation adds reason edges",
-            caption: "C1 implies x3 from x1, and C2 implies x4 from x2. Each propagated assignment stores the clause that forced it.",
-            left: `
-              <div class="solver-demo-card"><strong>Implications</strong>
-                <div class="solver-demo-chip-row">
-                  <span class="solver-demo-chip active">x1=true</span>
-                  <span class="solver-demo-arrow">-&gt; C1 -&gt;</span>
-                  <span class="solver-demo-chip good">x3=true</span>
-                </div>
-                <div class="solver-demo-chip-row">
-                  <span class="solver-demo-chip active">x2=true</span>
-                  <span class="solver-demo-arrow">-&gt; C2 -&gt;</span>
-                  <span class="solver-demo-chip good">x4=true</span>
-                </div>
-              </div>
-              <div class="solver-demo-card"><strong>Trail</strong>
-                <div class="solver-demo-chip-row">
-                  <span class="solver-demo-chip active">L1 x1 decision</span>
-                  <span class="solver-demo-chip good">L1 x3 reason C1</span>
-                  <span class="solver-demo-chip active">L2 x2 decision</span>
-                  <span class="solver-demo-chip good">L2 x4 reason C2</span>
-                </div>
-              </div>`,
-            right: `
-              <div class="solver-demo-card"><strong>Reason table</strong>
-                <div class="solver-demo-row">
-                  <span class="solver-demo-chip">reason[x3] = C1</span>
-                  <span class="solver-demo-chip">reason[x4] = C2</span>
-                  <span class="solver-demo-chip">reason[x1], reason[x2] = decision</span>
-                </div>
-              </div>`,
+            caption: "Clause C1 forces x3 = true from x1 = true, and C2 forces x4 = true from x2 = true. Those reason edges are now part of the graph.",
+            analysisTitle: "Reason clauses",
+            analysis:
+              "Both implied assignments are attached to their forcing clauses. The trail now alternates between decisions and implications.",
+            uip:
+              "Still no 1-UIP cut. The important change is that x3 and x4 now carry reasons, which makes resolution possible later.",
+            cutLabel: "reason edges only",
+            cutPath: null,
+            nodes: {
+              x1: { label: "x1 = true", classes: ["decision", "level1"] },
+              x3: { label: "x3 = true", classes: ["implied", "level1", "focus"] },
+              x2: { label: "x2 = true", classes: ["decision", "level2"] },
+              x4: { label: "x4 = true", classes: ["implied", "level2", "focus"] },
+              conflict: { label: "conflict", classes: ["conflict", "dim"] },
+            },
+            edges: {
+              c1: ["active"],
+              c2: ["active", "level2"],
+              c3a: ["dim"],
+              c3b: ["dim"],
+            },
+            trail: [
+              {
+                title: "decision level 1",
+                chips: [["x1 = true", "active"], ["x3 = true by C1", "good"]],
+              },
+              {
+                title: "decision level 2",
+                chips: [["x2 = true", "bad"], ["x4 = true by C2", "warn"]],
+              },
+            ],
+            clauses: [
+              {
+                id: "C1",
+                status: "unit, then satisfied",
+                className: "active",
+                literals: [
+                  ["-x1", "false focus"],
+                  ["x3", "sat focus"],
+                ],
+              },
+              {
+                id: "C2",
+                status: "unit, then satisfied",
+                className: "active",
+                literals: [
+                  ["-x2", "false focus"],
+                  ["x4", "sat focus"],
+                ],
+              },
+              {
+                id: "C3",
+                status: "now dangerous",
+                className: "",
+                literals: [
+                  ["-x3", "false"],
+                  ["-x4", "false"],
+                ],
+              },
+            ],
           },
           {
-            title: "A clause goes false",
-            caption: "C3 = (-x3 or -x4) is false because both x3 and x4 are true. This is the conflict clause.",
-            left: `
-              <div class="solver-demo-card"><strong>Conflict edge</strong>
-                <div class="solver-demo-chip-row">
-                  <span class="solver-demo-chip good">x3=true</span>
-                  <span class="solver-demo-chip good">x4=true</span>
-                  <span class="solver-demo-arrow">make</span>
-                  <span class="solver-demo-chip bad">C3 false</span>
-                </div>
-              </div>`,
-            right: `
-              <div class="solver-demo-card"><strong>Current conflict clause</strong>
-                <div class="solver-demo-chip-row">
-                  <span class="solver-demo-chip bad">-x3</span>
-                  <span class="solver-demo-chip bad">-x4</span>
-                </div>
-                <p>There is one current-level literal here, -x4, after x4's reason is considered.</p>
-              </div>`,
+            title: "Conflict clause becomes false",
+            caption: "With x3 = true and x4 = true, clause C3 = (-x3 or -x4) is falsified. The graph now includes the conflict node and the raw conflict cut.",
+            analysisTitle: "Raw conflict",
+            analysis:
+              "The conflict side currently contains only the conflict node, so the cut crosses the two literals of C3: -x3 and -x4.",
+            uip:
+              "This is not the 1-UIP clause yet. The current-level side still reaches the conflict through x4, so the solver resolves through x4's reason next.",
+            cutLabel: "raw conflict clause cut",
+            cutPath: RAW_CUT,
+            nodes: {
+              x1: { label: "x1 = true", classes: ["decision", "level1"] },
+              x3: { label: "x3 = true", classes: ["implied", "level1"] },
+              x2: { label: "x2 = true", classes: ["decision", "level2"] },
+              x4: { label: "x4 = true", classes: ["implied", "level2"] },
+              conflict: { label: "C3 false", classes: ["conflict", "focus"] },
+            },
+            edges: {
+              c1: ["active"],
+              c2: ["active", "level2"],
+              c3a: ["active", "conflict-edge", "cut"],
+              c3b: ["active", "conflict-edge", "cut"],
+            },
+            trail: [
+              {
+                title: "decision level 1",
+                chips: [["x1 = true", "active"], ["x3 = true by C1", "good"]],
+              },
+              {
+                title: "decision level 2",
+                chips: [["x2 = true", "bad"], ["x4 = true by C2", "warn"], ["conflict at C3", "bad"]],
+              },
+            ],
+            clauses: [
+              {
+                id: "C1",
+                status: "supports x3",
+                className: "",
+                literals: [
+                  ["-x1", "false"],
+                  ["x3", "sat"],
+                ],
+              },
+              {
+                id: "C2",
+                status: "supports x4",
+                className: "",
+                literals: [
+                  ["-x2", "false"],
+                  ["x4", "sat"],
+                ],
+              },
+              {
+                id: "C3",
+                status: "conflict clause",
+                className: "conflict",
+                literals: [
+                  ["-x3", "false focus"],
+                  ["-x4", "false focus"],
+                ],
+              },
+            ],
           },
           {
-            title: "Resolve through reasons",
-            caption: "Conflict analysis replaces implied literals with their reasons until the learned clause explains the bad decision combination.",
-            left: `
-              <div class="solver-demo-card"><strong>Resolution walk</strong>
-                <div class="solver-demo-chip-row">
-                  <span class="solver-demo-chip bad">(-x3 or -x4)</span>
-                  <span class="solver-demo-arrow">resolve x4 using C2</span>
-                  <span class="solver-demo-chip warn">(-x3 or -x2)</span>
-                </div>
-                <div class="solver-demo-chip-row">
-                  <span class="solver-demo-chip warn">(-x3 or -x2)</span>
-                  <span class="solver-demo-arrow">resolve x3 using C1</span>
-                  <span class="solver-demo-chip good">(-x1 or -x2)</span>
-                </div>
-              </div>`,
-            right: `
-              <div class="solver-demo-card"><strong>Learned clause</strong>
-                <div class="solver-demo-chip-row">
-                  <span class="solver-demo-chip good">-x1</span>
-                  <span class="solver-demo-chip good">-x2</span>
-                </div>
-                <p>The clause says x1=true and x2=true cannot appear together again.</p>
-              </div>`,
+            title: "Resolve once to reach the first UIP",
+            caption: "Resolving C3 with x4's reason C2 removes x4 and produces (-x3 or -x2). Now only one level-2 literal remains: x2, the first unique implication point.",
+            analysisTitle: "1-UIP cut",
+            analysis:
+              "The dashed cut moves left so it crosses x3 -> conflict and x2 -> x4. Those crossed edges spell out the learned clause (-x3 or -x2).",
+            uip:
+              "x2 is the first UIP because every path from the level-2 decision to the conflict now goes through x2, and it is the first such node encountered walking backward from the conflict.",
+            cutLabel: "1-UIP cut gives (-x3 or -x2)",
+            cutPath: UIP_CUT,
+            nodes: {
+              x1: { label: "x1 = true", classes: ["decision", "level1"] },
+              x3: { label: "x3 = true", classes: ["implied", "level1", "focus"] },
+              x2: { label: "x2 = true", classes: ["decision", "level2", "uip", "focus"] },
+              x4: { label: "x4 = true", classes: ["implied", "level2"] },
+              conflict: { label: "C3 false", classes: ["conflict"] },
+            },
+            edges: {
+              c1: ["active"],
+              c2: ["active", "level2", "cut"],
+              c3a: ["active", "conflict-edge", "cut"],
+              c3b: ["active", "conflict-edge"],
+            },
+            trail: [
+              {
+                title: "decision level 1",
+                chips: [["x1 = true", "active"], ["x3 = true by C1", "good"]],
+              },
+              {
+                title: "decision level 2",
+                chips: [["x2 = true", "warn"], ["x4 resolved away", "dim"], ["1-UIP = x2", "active"]],
+              },
+            ],
+            clauses: [
+              {
+                id: "C1",
+                status: "parent of x3",
+                className: "",
+                literals: [
+                  ["-x1", "false"],
+                  ["x3", "sat"],
+                ],
+              },
+              {
+                id: "C2",
+                status: "used in resolution",
+                className: "active",
+                literals: [
+                  ["-x2", "false focus"],
+                  ["x4", "sat focus"],
+                ],
+              },
+              {
+                id: "C3",
+                status: "starting conflict clause",
+                className: "",
+                literals: [
+                  ["-x3", "false focus"],
+                  ["-x4", "false focus"],
+                ],
+              },
+              {
+                id: "L",
+                status: "learned at 1-UIP",
+                className: "learned",
+                literals: [
+                  ["-x3", "focus"],
+                  ["-x2", "learned-head focus"],
+                ],
+              },
+            ],
           },
           {
-            title: "Backjump to the useful level",
-            caption: "The learned clause contains only one literal from level 2, so the solver jumps back to level 1 instead of undoing one step at a time.",
-            left: `
-              <div class="solver-demo-card"><strong>Before</strong>
-                <div class="solver-demo-chip-row">
-                  <span class="solver-demo-chip active">L1 x1=true</span>
-                  <span class="solver-demo-chip good">L1 x3=true</span>
-                  <span class="solver-demo-chip bad">L2 x2=true</span>
-                  <span class="solver-demo-chip bad">L2 x4=true</span>
-                </div>
-              </div>
-              <div class="solver-demo-card"><strong>After backjump</strong>
-                <div class="solver-demo-chip-row">
-                  <span class="solver-demo-chip active">L1 x1=true</span>
-                  <span class="solver-demo-chip good">L1 x3=true</span>
-                </div>
-              </div>`,
-            right: `
-              <div class="solver-demo-card"><strong>Asserting after the jump</strong>
-                <p>At level 1, -x1 is false, so the learned clause (-x1 or -x2) becomes unit and forces x2=false.</p>
-                <div class="solver-demo-chip-row">
-                  <span class="solver-demo-chip bad">-x1 is false</span>
-                  <span class="solver-demo-chip good">-x2 is forced</span>
-                </div>
-              </div>`,
+            title: "Backjump to level 1 and assert",
+            caption: "The learned clause still contains x3 from level 1, so the solver backjumps to level 1. There, -x3 is false, which makes (-x3 or -x2) unit and forces x2 = false.",
+            analysisTitle: "Backjump target",
+            analysis:
+              "Everything above level 1 is removed. x4 disappears with the old level-2 branch, and the learned clause immediately asserts x2 = false.",
+            uip:
+              "The 1-UIP clause is useful exactly at the backjump level because every literal except the asserting one is already fixed there.",
+            cutLabel: "same 1-UIP clause, now asserting",
+            cutPath: UIP_CUT,
+            nodes: {
+              x1: { label: "x1 = true", classes: ["decision", "level1"] },
+              x3: { label: "x3 = true", classes: ["implied", "level1"] },
+              x2: { label: "x2 = false", classes: ["implied", "level1", "forced", "focus"] },
+              x4: { label: "x4 (removed)", classes: ["implied", "level2", "reverted"] },
+              conflict: { label: "old conflict", classes: ["conflict", "dim"] },
+            },
+            edges: {
+              c1: ["active"],
+              c2: ["dim"],
+              c3a: ["dim"],
+              c3b: ["dim"],
+            },
+            trail: [
+              {
+                title: "decision level 1",
+                chips: [["x1 = true", "active"], ["x3 = true by C1", "good"], ["x2 = false by learned clause", "good"]],
+              },
+            ],
+            clauses: [
+              {
+                id: "C1",
+                status: "still explains x3",
+                className: "",
+                literals: [
+                  ["-x1", "false"],
+                  ["x3", "sat"],
+                ],
+              },
+              {
+                id: "C2",
+                status: "inactive after backjump",
+                className: "",
+                literals: [
+                  ["-x2", "sat"],
+                  ["x4", ""],
+                ],
+              },
+              {
+                id: "C3",
+                status: "no longer active",
+                className: "",
+                literals: [
+                  ["-x3", "false"],
+                  ["-x4", ""],
+                ],
+              },
+              {
+                id: "L",
+                status: "unit at level 1",
+                className: "learned active",
+                literals: [
+                  ["-x3", "false focus"],
+                  ["-x2", "unit learned-head focus"],
+                ],
+              },
+            ],
           },
           {
             title: "The learned clause prunes future search",
-            caption: "If the search ever reaches x1=true again, the learned clause blocks x2=true immediately.",
-            left: `
-              <div class="solver-demo-card"><strong>New trail prefix</strong>
-                <div class="solver-demo-chip-row">
-                  <span class="solver-demo-chip active">L1 x1=true</span>
-                  <span class="solver-demo-chip good">L1 x3=true</span>
-                  <span class="solver-demo-chip warn">L1 x2=false from learned clause</span>
-                </div>
-              </div>`,
-            right: `
-              <div class="solver-demo-card"><strong>CDCL advantage</strong>
-                <p>The solver learned a reusable reason for the conflict and skipped directly to the level where that reason becomes useful.</p>
-              </div>`,
+            caption: "The graph structure is unchanged, but the clause database is stronger. Whenever the search rebuilds x1 = true and x3 = true, the learned clause prevents x2 = true from repeating the same bad branch.",
+            analysisTitle: "What was gained",
+            analysis:
+              "CDCL did not merely flip the latest choice. It extracted a reusable explanation for the conflict and stored it as a clause that will fire earlier next time.",
+            uip:
+              "The 1-UIP clause is short, asserting, and reusable. That is why modern CDCL solvers center conflict analysis around this cut.",
+            cutLabel: "learned clause remains in the database",
+            cutPath: UIP_CUT,
+            nodes: {
+              x1: { label: "x1 = true", classes: ["decision", "level1"] },
+              x3: { label: "x3 = true", classes: ["implied", "level1"] },
+              x2: { label: "x2 = false", classes: ["implied", "level1", "forced"] },
+              x4: { label: "x4", classes: ["implied", "dim"] },
+              conflict: { label: "conflict avoided", classes: ["conflict", "dim"] },
+            },
+            edges: {
+              c1: ["active"],
+              c2: ["dim"],
+              c3a: ["dim"],
+              c3b: ["dim"],
+            },
+            trail: [
+              {
+                title: "current prefix",
+                chips: [["x1 = true", "active"], ["x3 = true by C1", "good"], ["x2 = false by learned clause", "good"]],
+              },
+              {
+                title: "effect",
+                chips: [["x2 = true branch blocked early", "warn"]],
+              },
+            ],
+            clauses: [
+              {
+                id: "C1",
+                status: "satisfied",
+                className: "",
+                literals: [
+                  ["-x1", "false"],
+                  ["x3", "sat"],
+                ],
+              },
+              {
+                id: "C2",
+                status: "would no longer force x4 here",
+                className: "",
+                literals: [
+                  ["-x2", "sat"],
+                  ["x4", ""],
+                ],
+              },
+              {
+                id: "C3",
+                status: "avoided by earlier pruning",
+                className: "",
+                literals: [
+                  ["-x3", "false"],
+                  ["-x4", ""],
+                ],
+              },
+              {
+                id: "L",
+                status: "reusable learned clause",
+                className: "learned",
+                literals: [
+                  ["-x3", "false"],
+                  ["-x2", "sat learned-head"],
+                ],
+              },
+            ],
           },
         ];
 
         let current = 0;
         let timer = null;
+
         const title = root.querySelector("[data-demo-title]");
         const caption = root.querySelector("[data-demo-caption]");
         const stepLabel = root.querySelector("[data-demo-step]");
-        const left = root.querySelector('[data-demo-pane="left"]');
-        const right = root.querySelector('[data-demo-pane="right"]');
         const back = root.querySelector('[data-demo-action="back"]');
         const next = root.querySelector('[data-demo-action="next"]');
         const play = root.querySelector('[data-demo-action="play"]');
+        const trailContainer = root.querySelector("[data-demo-trail]");
+        const clausesContainer = root.querySelector("[data-demo-clauses]");
+        const analysisTitle = root.querySelector("[data-demo-analysis-title]");
+        const analysis = root.querySelector("[data-demo-analysis]");
+        const uip = root.querySelector("[data-demo-uip]");
+        const cut = root.querySelector("[data-demo-cut]");
+        const cutLabel = root.querySelector("[data-demo-cut-label]");
 
         function stop() {
           if (timer !== null) window.clearInterval(timer);
@@ -509,13 +1179,81 @@ loop:
           play.textContent = "Play";
         }
 
+        function renderTrail(blocks) {
+          trailContainer.innerHTML = "";
+          for (const block of blocks) {
+            const element = document.createElement("div");
+            element.className = "solver-demo-trail-block";
+            element.innerHTML = `<strong>${block.title}</strong>`;
+            const row = document.createElement("div");
+            row.className = "solver-demo-row";
+            for (const [text, cls] of block.chips) {
+              const chip = document.createElement("span");
+              chip.className = `solver-demo-chip ${cls}`.trim();
+              chip.textContent = text;
+              row.appendChild(chip);
+            }
+            element.appendChild(row);
+            trailContainer.appendChild(element);
+          }
+        }
+
+        function renderClauses(clauses) {
+          clausesContainer.innerHTML = "";
+          for (const clause of clauses) {
+            const clauseEl = document.createElement("article");
+            clauseEl.className = `solver-demo-clause ${clause.className}`.trim();
+
+            const literalsHtml = clause.literals
+              .map(([text, cls]) => `<span class="solver-demo-literal ${cls}">${text}</span>`)
+              .join("");
+
+            clauseEl.innerHTML = `
+              <div class="solver-demo-clause-header">
+                <span><strong>${clause.id}</strong></span>
+                <span class="solver-demo-clause-status">${clause.status}</span>
+              </div>
+              <div class="solver-demo-literals">${literalsHtml}</div>
+            `;
+
+            clausesContainer.appendChild(clauseEl);
+          }
+        }
+
+        function renderGraph(step) {
+          for (const node of cy.nodes()) {
+            const state = step.nodes[node.id()];
+            node.data("label", state.label);
+            node.classes(state.classes.join(" "));
+          }
+
+          for (const edge of cy.edges()) {
+            const classes = step.edges[edge.id()] || [];
+            edge.classes(classes.join(" "));
+          }
+
+          if (step.cutPath) {
+            cut.setAttribute("d", step.cutPath);
+            cut.classList.add("visible");
+          } else {
+            cut.removeAttribute("d");
+            cut.classList.remove("visible");
+          }
+
+          cutLabel.textContent = step.cutLabel;
+        }
+
         function render() {
           const step = steps[current];
           title.textContent = step.title;
           caption.textContent = step.caption;
           stepLabel.textContent = `Step ${current + 1} / ${steps.length}`;
-          left.innerHTML = step.left;
-          right.innerHTML = step.right;
+          analysisTitle.textContent = step.analysisTitle;
+          analysis.textContent = step.analysis;
+          uip.textContent = step.uip;
+          renderGraph(step);
+          renderTrail(step.trail);
+          renderClauses(step.clauses);
           back.disabled = current === 0;
           next.disabled = current === steps.length - 1;
         }
@@ -523,6 +1261,7 @@ loop:
         root.addEventListener("click", (event) => {
           const action = event.target.dataset.demoAction;
           if (!action) return;
+
           if (action === "back") current = Math.max(0, current - 1);
           if (action === "next") current = Math.min(steps.length - 1, current + 1);
           if (action === "reset") {
@@ -539,11 +1278,12 @@ loop:
                 }
                 current += 1;
                 render();
-              }, 1600);
+              }, 1900);
             } else {
               stop();
             }
           }
+
           render();
         });
 
