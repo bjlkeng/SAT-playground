@@ -147,7 +147,7 @@
 
       .solver-demo-cut-path {
         fill: none;
-        stroke: #dd7a17;
+        stroke: #1c8d55;
         stroke-width: 4;
         stroke-linecap: round;
         stroke-dasharray: 10 8;
@@ -198,9 +198,9 @@
       }
 
       .solver-demo-cut-tag {
-        color: #91530a;
-        background: rgba(255, 248, 227, 0.96);
-        border-color: rgba(145, 83, 10, 0.18);
+        color: #11663b;
+        background: rgba(243, 251, 246, 0.96);
+        border-color: rgba(17, 102, 59, 0.18);
       }
 
       .solver-demo-trail {
@@ -515,7 +515,7 @@ loop:
                 <p data-demo-analysis></p>
               </div>
               <div class="solver-demo-note-card">
-                <strong>Why the solver stops here</strong>
+                <strong>What to notice</strong>
                 <p data-demo-uip></p>
               </div>
               <div class="solver-demo-clause-box">
@@ -673,8 +673,8 @@ loop:
             {
               selector: "node.uip",
               style: {
-                "background-color": "#fff4c2",
-                "border-color": "#dd7a17",
+                "background-color": "#f3fbf6",
+                "border-color": "#1c8d55",
               },
             },
             {
@@ -742,8 +742,8 @@ loop:
                 width: 5,
                 "line-style": "dashed",
                 "line-dash-pattern": [8, 6],
-                "line-color": "#dd7a17",
-                "target-arrow-color": "#dd7a17",
+                "line-color": "#1c8d55",
+                "target-arrow-color": "#1c8d55",
                 opacity: 1,
               },
             },
@@ -764,7 +764,7 @@ loop:
         });
 
         const RAW_CUT = "M 332 36 C 300 92 300 230 332 286";
-        const UIP_CUT = "M 286 36 L 286 284";
+        const DERIVED_CUT = "M 176 280 L 350 92";
 
         const steps = [
           {
@@ -886,7 +886,7 @@ loop:
               },
               {
                 id: "C3",
-                status: "now dangerous",
+                status: "falsified",
                 className: "",
                 literals: [
                   ["-x3", "false"],
@@ -897,14 +897,14 @@ loop:
           },
           {
             title: "Conflict clause becomes false",
-            caption: "With x3 = true and x4 = true, clause C3 = (-x3 or -x4) is falsified. The graph now includes the conflict node and the raw conflict cut.",
+            caption: "With x3 = true and x4 = true, clause C3 = (-x3 or -x4) is falsified. The graph now shows the conflict, and the solver is about to start conflict analysis.",
             analysisTitle: "Raw conflict",
             analysis:
-              "The conflict side currently contains only the conflict node, so the cut crosses the two literals of C3: -x3 and -x4.",
+              "This panel only marks the conflict. No learned-clause cut is drawn yet; the next step shows the cut used in this walkthrough to derive the learned clause.",
             uip:
-              "This is not the 1-UIP clause yet. The current-level side still reaches the conflict through x4, so the solver resolves through x4's reason next.",
-            cutLabel: "raw conflict clause cut",
-            cutPath: RAW_CUT,
+              "The important change here is that the solver has switched from propagation to conflict analysis. The derived cut is shown next.",
+            cutLabel: "conflict detected",
+            cutPath: null,
             nodes: {
               x1: { label: "x1 = true", classes: ["decision", "level1"] },
               x3: { label: "x3 = true", classes: ["implied", "level1"] },
@@ -915,8 +915,8 @@ loop:
             edges: {
               c1: ["active"],
               c2: ["active", "level2"],
-              c3a: ["active", "conflict-edge", "cut"],
-              c3b: ["active", "conflict-edge", "cut"],
+              c3a: ["active", "conflict-edge"],
+              c3b: ["active", "conflict-edge"],
               learned: ["dim"],
             },
             trail: [
@@ -960,15 +960,15 @@ loop:
             ],
           },
           {
-            title: "Resolve once to reach the first UIP",
-            caption: "Resolving C3 with x4's reason C2 removes x4 and produces (-x3 or -x2). Now only one level-2 literal remains: x2, the first unique implication point.",
-            analysisTitle: "1-UIP cut",
+            title: "Resolve once to derive the learned clause",
+            caption: "Resolving C3 with x4's reason C2 removes x4 and produces (-x3 or -x2). The green cut and the learned-clause box are the same object shown in two views.",
+            analysisTitle: "Derived learned-clause cut",
             analysis:
-              "The dashed cut moves left so it crosses x3 -> conflict and x2 -> x4. Those crossed edges spell out the learned clause (-x3 or -x2).",
+              "The diagonal cut crosses x3 -> conflict and x2 -> x4. Those crossed edges spell out the learned clause (-x3 or -x2).",
             uip:
-              "x2 is the first UIP because every path from the level-2 decision to the conflict now goes through x2, and it is the first such node encountered walking backward from the conflict.",
-            cutLabel: "1-UIP cut gives (-x3 or -x2)",
-            cutPath: UIP_CUT,
+              "The cut uses the same green as the learned-clause box to show that the crossed edges are exactly how this walkthrough derives the learned clause.",
+            cutLabel: "learned clause: (-x3 or -x2)",
+            cutPath: DERIVED_CUT,
             nodes: {
               x1: { label: "x1 = true", classes: ["decision", "level1"] },
               x3: { label: "x3 = true", classes: ["implied", "level1", "focus"] },
@@ -990,7 +990,7 @@ loop:
               },
               {
                 title: "decision level 2",
-                chips: [["x2 = true", "warn"], ["x4 resolved away", "dim"], ["1-UIP = x2", "active"]],
+                chips: [["x2 = true", "warn"], ["x4 resolved away", "dim"], ["learned clause derived", "good"]],
               },
             ],
             clauses: [
@@ -1023,7 +1023,7 @@ loop:
               },
               {
                 id: "L",
-                status: "learned at 1-UIP",
+                status: "derived learned clause",
                 className: "learned",
                 literals: [
                   ["-x3", "focus"],
@@ -1039,7 +1039,7 @@ loop:
             analysis:
               "Everything above level 1 is removed. x4 disappears with the old level-2 branch, and the learned clause immediately asserts x2 = false.",
             uip:
-              "The 1-UIP clause is useful exactly at the backjump level because every literal except the asserting one is already fixed there.",
+              "After the backjump, the learned clause becomes unit and immediately forces x2 = false. The graph now shows that implication directly with the learned edge.",
             cutLabel: "learned clause is now asserting",
             cutPath: null,
             nodes: {
