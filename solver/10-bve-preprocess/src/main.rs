@@ -3,6 +3,8 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
+mod simp;
+
 const UNASSIGNED: u8 = 0;
 const TRUE: u8 = 1;
 const FALSE: u8 = 2;
@@ -26,11 +28,21 @@ const CLAUSE_HAS_EXTRA_BIT: u32 = 1 << 3;
 const CLAUSE_RELOCED_BIT: u32 = 1 << 4;
 const CLAUSE_SIZE_SHIFT: u32 = 5;
 const CLAUSE_DELETED_MARK: u32 = 1;
+const DEFAULT_BVE_GROW: isize = 0;
+const DEFAULT_BVE_CLAUSE_LIMIT: isize = 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Watcher {
     clause_idx: u32,
     blocker: i32,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum OriginalClauseInsertResult {
+    Allocated(usize),
+    Unit,
+    Skipped,
+    Unsat,
 }
 
 #[derive(Clone, Default)]
@@ -215,6 +227,8 @@ struct Solver {
     branch_heap: Vec<u32>,
     /// current heap index for each variable, or BRANCH_NOT_IN_HEAP
     branch_pos: Vec<usize>,
+    /// variables eligible for search branching; eliminated variables stay permanently false here
+    decision_var: Vec<bool>,
     /// EVSIDS-style variable activity
     activity: Vec<f32>,
     /// additive bump applied to variables participating in recent conflicts
@@ -257,6 +271,32 @@ struct Solver {
     root_unit_clauses: Vec<usize>,
     /// whether the formula already contains an empty clause
     has_empty_clause: bool,
+    /// persistent solver consistency bit used by preprocessing insertions
+    solver_ok: bool,
+    /// MiniSat-simp preprocessing is available until the one-shot cleanup path turns it off
+    use_simplification: bool,
+    /// run bounded variable elimination during the one-shot preprocessing phase
+    use_elim: bool,
+    /// allowed clause-count growth for one variable-elimination step
+    bve_grow: isize,
+    /// maximum resolvent size allowed during variable elimination; negative means unlimited
+    bve_clause_limit: isize,
+    /// variables protected from elimination
+    frozen: Vec<bool>,
+    /// variables already eliminated from the live formula
+    eliminated: Vec<bool>,
+    /// lazy-cleaned occurrence lists for live original/preprocessed clauses, keyed by variable
+    occurs: Vec<Vec<usize>>,
+    /// dirty bits for occurrence lists after clause deletion
+    occurs_dirty: Vec<bool>,
+    /// literal occurrence counts for elimination cost, indexed by `lit_to_index`
+    n_occ: Vec<usize>,
+    /// packed MiniSat-style model-extension clauses
+    elim_clauses: Vec<i32>,
+    /// final SAT model snapshot, including assignments reconstructed for eliminated variables
+    sat_model: Option<Vec<u8>>,
+    /// scratch buffer for preprocessing-generated clauses
+    scratch_preprocess_clause: Vec<i32>,
     /// scratch buffers reused during conflict analysis
     scratch_seen: Vec<u8>,
     scratch_resolved: Vec<u8>,
@@ -273,7 +313,10 @@ struct Solver {
 
 #[inline(always)]
 fn clause_make_header(size: usize, learnt: bool, has_extra: bool, mark: u32, reloced: bool) -> u32 {
-    debug_assert!(size < (1usize << 27), "clause too large for packed header: {size}");
+    debug_assert!(
+        size < (1usize << 27),
+        "clause too large for packed header: {size}"
+    );
     (mark & CLAUSE_MARK_MASK)
         | ((learnt as u32) << 2)
         | ((has_extra as u32) << 3)
@@ -396,9 +439,7 @@ fn lit_redundant(
                 continue;
             }
             let parent_var = parent.unsigned_abs() as usize;
-            if state[parent_var] == REDUNDANT_SOURCE
-                || state[parent_var] == REDUNDANT_REMOVABLE
-            {
+            if state[parent_var] == REDUNDANT_SOURCE || state[parent_var] == REDUNDANT_REMOVABLE {
                 lit_pos += 1;
                 continue;
             }
@@ -456,7 +497,11 @@ fn lit_redundant(
 fn lit_to_index(lit: i32) -> usize {
     let var = lit.unsigned_abs() as usize;
     let base = (var - 1) * 2;
-    if lit > 0 { base } else { base + 1 }
+    if lit > 0 {
+        base
+    } else {
+        base + 1
+    }
 }
 
 impl Solver {
@@ -509,6 +554,7 @@ impl Solver {
             branch_rank,
             branch_heap: Vec::with_capacity(num_vars),
             branch_pos: vec![BRANCH_NOT_IN_HEAP; num_vars + 1],
+            decision_var: vec![true; num_vars + 1],
             activity: vec![0.0; num_vars + 1],
             activity_inc: 1.0,
             activity_decay: 0.95,
@@ -530,6 +576,19 @@ impl Solver {
             simplify_props_remaining: 0,
             root_unit_clauses: Vec::new(),
             has_empty_clause: false,
+            solver_ok: true,
+            use_simplification: true,
+            use_elim: true,
+            bve_grow: DEFAULT_BVE_GROW,
+            bve_clause_limit: DEFAULT_BVE_CLAUSE_LIMIT,
+            frozen: vec![false; num_vars + 1],
+            eliminated: vec![false; num_vars + 1],
+            occurs: vec![Vec::new(); num_vars + 1],
+            occurs_dirty: vec![false; num_vars + 1],
+            n_occ: vec![0; num_vars.saturating_mul(2)],
+            elim_clauses: Vec::new(),
+            sat_model: None,
+            scratch_preprocess_clause: Vec::with_capacity(16),
             scratch_seen: vec![0; num_vars + 1],
             scratch_resolved: vec![0; num_vars + 1],
             scratch_learned: Vec::with_capacity(16),
@@ -747,7 +806,10 @@ impl Solver {
     }
 
     fn push_branch_var(&mut self, var: usize) {
-        if self.assignment[var] != UNASSIGNED || self.branch_pos[var] != BRANCH_NOT_IN_HEAP {
+        if !self.decision_var[var]
+            || self.assignment[var] != UNASSIGNED
+            || self.branch_pos[var] != BRANCH_NOT_IN_HEAP
+        {
             return;
         }
 
@@ -761,7 +823,7 @@ impl Solver {
         self.branch_heap.clear();
         self.branch_pos.fill(BRANCH_NOT_IN_HEAP);
         for var in 1..self.assignment.len() {
-            if self.assignment[var] == UNASSIGNED {
+            if self.decision_var[var] && self.assignment[var] == UNASSIGNED {
                 self.branch_pos[var] = self.branch_heap.len();
                 self.branch_heap.push(var as u32);
             }
@@ -1182,14 +1244,14 @@ impl Solver {
         self.restart_conflicts = 0;
         self.restart_pending = true;
         self.restart_luby_index += 1;
-        self.restart_conflict_limit =
-            self.restart_unit
-                .saturating_mul(Self::luby_value(self.restart_luby_index));
+        self.restart_conflict_limit = self
+            .restart_unit
+            .saturating_mul(Self::luby_value(self.restart_luby_index));
     }
 
     fn pick_branch_lit(&mut self) -> Option<i32> {
         while let Some(var) = self.branch_heap_pop_best() {
-            if self.assignment[var] != UNASSIGNED {
+            if !self.decision_var[var] || self.assignment[var] != UNASSIGNED {
                 continue;
             }
 
@@ -1228,7 +1290,11 @@ impl Solver {
         self.propagate_head = self.propagate_head.min(new_trail_len);
     }
 
-    fn debug_assert_clause_asserting_after_backtrack(&self, learned_clause: &[i32], backtrack_level: usize) {
+    fn debug_assert_clause_asserting_after_backtrack(
+        &self,
+        learned_clause: &[i32],
+        backtrack_level: usize,
+    ) {
         debug_assert_eq!(self.current_level(), backtrack_level);
         debug_assert_eq!(
             self.lit_value(learned_clause[0]),
@@ -1330,7 +1396,10 @@ impl Solver {
     }
 
     fn delete_clause(&mut self, clause_idx: usize) {
-        debug_assert!(clause_idx < self.arena.len(), "invalid clause index {clause_idx}");
+        debug_assert!(
+            clause_idx < self.arena.len(),
+            "invalid clause index {clause_idx}"
+        );
         debug_assert!(
             self.clause_is_learnt(clause_idx),
             "only learned clauses may be deleted"
@@ -1349,7 +1418,10 @@ impl Solver {
     }
 
     fn mark_clause_deleted(&mut self, clause_idx: usize) {
-        debug_assert!(clause_idx < self.arena.len(), "invalid clause index {clause_idx}");
+        debug_assert!(
+            clause_idx < self.arena.len(),
+            "invalid clause index {clause_idx}"
+        );
         debug_assert!(
             self.clause_is_learnt(clause_idx),
             "only learned clauses may be deleted"
@@ -1359,7 +1431,10 @@ impl Solver {
             "clause {clause_idx} already deleted"
         );
         debug_assert!(
-            !self.reason.iter().any(|&reason_idx| reason_idx == clause_idx),
+            !self
+                .reason
+                .iter()
+                .any(|&reason_idx| reason_idx == clause_idx),
             "cannot delete clause {clause_idx} while it is still a live reason"
         );
         let learned_pos = self
@@ -1376,7 +1451,10 @@ impl Solver {
     }
 
     fn mark_clause_deleted_already_unlinked(&mut self, clause_idx: usize) {
-        debug_assert!(clause_idx < self.arena.len(), "invalid clause index {clause_idx}");
+        debug_assert!(
+            clause_idx < self.arena.len(),
+            "invalid clause index {clause_idx}"
+        );
         debug_assert!(
             self.clause_is_learnt(clause_idx),
             "only learned clauses may be deleted"
@@ -1386,7 +1464,10 @@ impl Solver {
             "clause {clause_idx} already deleted"
         );
         debug_assert!(
-            !self.reason.iter().any(|&reason_idx| reason_idx == clause_idx),
+            !self
+                .reason
+                .iter()
+                .any(|&reason_idx| reason_idx == clause_idx),
             "cannot delete clause {clause_idx} while it is still a live reason"
         );
         self.live_learned_clause_count = self.live_learned_clause_count.saturating_sub(1);
@@ -1425,22 +1506,27 @@ impl Solver {
             self.original_clause_ids.len() + self.learned_clause_ids.len()
         );
 
-        let copy_clause =
-            |old_clause_idx: usize, arena: &[u32], new_arena: &mut Vec<u32>, reloc: &mut [usize]| {
-                let new_clause_idx = new_arena.len();
-                let old_end = old_clause_idx + clause_len_in_arena(arena, old_clause_idx) + 1
-                    + clause_header_has_extra(arena[old_clause_idx]) as usize;
-                reloc[old_clause_idx] = new_clause_idx;
-                new_arena.extend_from_slice(&arena[old_clause_idx..old_end]);
-                new_clause_idx
-            };
+        let copy_clause = |old_clause_idx: usize,
+                           arena: &[u32],
+                           new_arena: &mut Vec<u32>,
+                           reloc: &mut [usize]| {
+            let new_clause_idx = new_arena.len();
+            let old_end = old_clause_idx
+                + clause_len_in_arena(arena, old_clause_idx)
+                + 1
+                + clause_header_has_extra(arena[old_clause_idx]) as usize;
+            reloc[old_clause_idx] = new_clause_idx;
+            new_arena.extend_from_slice(&arena[old_clause_idx..old_end]);
+            new_clause_idx
+        };
 
         for &old_clause_idx in &self.original_clause_ids {
             debug_assert!(
                 !self.clause_is_deleted(old_clause_idx),
                 "original clauses must stay live across garbage collection"
             );
-            let new_clause_idx = copy_clause(old_clause_idx, &self.arena, &mut new_arena, &mut reloc);
+            let new_clause_idx =
+                copy_clause(old_clause_idx, &self.arena, &mut new_arena, &mut reloc);
             new_original_clause_ids.push(new_clause_idx);
         }
         for &old_clause_idx in &self.learned_clause_ids {
@@ -1448,7 +1534,8 @@ impl Solver {
                 !self.clause_is_deleted(old_clause_idx),
                 "live learned clauses must stay live across garbage collection"
             );
-            let new_clause_idx = copy_clause(old_clause_idx, &self.arena, &mut new_arena, &mut reloc);
+            let new_clause_idx =
+                copy_clause(old_clause_idx, &self.arena, &mut new_arena, &mut reloc);
             new_learned_clause_ids.push(new_clause_idx);
         }
 
@@ -1584,15 +1671,7 @@ impl Solver {
             } else if self.ccmin_mode == CCMIN_BASIC {
                 !basic_lit_redundant(lit, arena, decision_level, reason, state)
             } else {
-                !lit_redundant(
-                    lit,
-                    arena,
-                    decision_level,
-                    reason,
-                    state,
-                    toclear,
-                    stack,
-                )
+                !lit_redundant(lit, arena, decision_level, reason, state, toclear, stack)
             };
             if keep {
                 learned_clause[write] = lit;
@@ -1739,7 +1818,15 @@ impl Solver {
     }
 
     fn solve_with_proof(&mut self, proof_log: &mut ProofLog) -> bool {
-        if self.has_empty_clause || !self.enqueue_root_units() {
+        if !self.solver_ok || self.has_empty_clause || !self.enqueue_root_units() {
+            return false;
+        }
+
+        if self.propagate().is_some() {
+            return false;
+        }
+
+        if !self.eliminate(true, proof_log) {
             return false;
         }
 
@@ -1816,7 +1903,10 @@ impl Solver {
                             self.decide(lit);
                             conflict = self.propagate();
                         }
-                        None => return true,
+                        None => {
+                            self.capture_sat_model();
+                            return true;
+                        }
                     }
                 }
             }
@@ -1831,9 +1921,7 @@ fn parse_ccmin_mode() -> u8 {
             "1" | "basic" => CCMIN_BASIC,
             "2" | "deep" => CCMIN_DEEP,
             other => {
-                eprintln!(
-                    "Invalid SAT_CCMIN_MODE={other}; expected none/basic/deep or 0/1/2"
-                );
+                eprintln!("Invalid SAT_CCMIN_MODE={other}; expected none/basic/deep or 0/1/2");
                 std::process::exit(2);
             }
         },
@@ -1904,6 +1992,10 @@ fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
 fn print_assignment(assignment: &[u8]) {
     let mut line = String::from("v");
     for var in 1..assignment.len() {
+        assert_ne!(
+            assignment[var], UNASSIGNED,
+            "SAT model snapshot left variable {var} unassigned"
+        );
         let lit = if assignment[var] == FALSE {
             -(var as i32)
         } else {
@@ -1940,7 +2032,11 @@ fn main() {
 
     if solver.solve_to_output(output_dir) {
         println!("s SATISFIABLE");
-        print_assignment(&solver.assignment);
+        let model = solver
+            .sat_model
+            .as_ref()
+            .expect("SAT solver returned without a model snapshot");
+        print_assignment(model);
     } else {
         println!("s UNSATISFIABLE");
     }
@@ -2297,16 +2393,12 @@ mod tests {
         let mut s = make_solver(3, vec![]);
         let clause_idx = s.add_clause(vec![3, 1, 2]);
 
-        assert!(
-            s.watchers[s.lit_index(3)]
-                .iter()
-                .any(|watcher| watcher.clause_idx as usize == clause_idx)
-        );
-        assert!(
-            s.watchers[s.lit_index(1)]
-                .iter()
-                .any(|watcher| watcher.clause_idx as usize == clause_idx)
-        );
+        assert!(s.watchers[s.lit_index(3)]
+            .iter()
+            .any(|watcher| watcher.clause_idx as usize == clause_idx));
+        assert!(s.watchers[s.lit_index(1)]
+            .iter()
+            .any(|watcher| watcher.clause_idx as usize == clause_idx));
 
         s.delete_clause(clause_idx);
 
@@ -2314,16 +2406,12 @@ mod tests {
         assert_eq!(s.learned_clause_count(), 0);
         assert!(s.learned_clause_ids.is_empty());
         assert_eq!(s.stats.deleted_clauses, 1);
-        assert!(
-            s.watchers[s.lit_index(3)]
-                .iter()
-                .all(|watcher| watcher.clause_idx as usize != clause_idx)
-        );
-        assert!(
-            s.watchers[s.lit_index(1)]
-                .iter()
-                .all(|watcher| watcher.clause_idx as usize != clause_idx)
-        );
+        assert!(s.watchers[s.lit_index(3)]
+            .iter()
+            .all(|watcher| watcher.clause_idx as usize != clause_idx));
+        assert!(s.watchers[s.lit_index(1)]
+            .iter()
+            .all(|watcher| watcher.clause_idx as usize != clause_idx));
     }
 
     #[test]
@@ -2461,13 +2549,9 @@ mod tests {
 
     #[test]
     fn test_cdcl_solves_unsat_with_learned_unit_shortcut() {
-        let clauses = vec![
-            vec![1, 2],
-            vec![-1, 2],
-            vec![1, -2],
-            vec![-1, -2],
-        ];
+        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
         let mut s = make_solver(2, clauses);
+        s.use_elim = false;
         assert!(!s.solve());
         assert_eq!(
             s.learned_clause_count(),
@@ -2475,6 +2559,51 @@ mod tests {
             "unit learned clauses should be enqueued at root without storing watched clauses"
         );
         assert!(s.stats.conflicts > 0);
+    }
+
+    #[test]
+    fn test_bve_eliminates_variable_and_extends_sat_model() {
+        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2]];
+        let mut s = make_solver(2, clauses.clone());
+
+        assert!(s.solve());
+        assert!(s.eliminated[1], "expected BVE to eliminate x1");
+        assert!(
+            !s.decision_var[1],
+            "eliminated variable must not remain branchable"
+        );
+
+        let model = s.sat_model.as_ref().expect("missing SAT model snapshot");
+        assert_ne!(model[1], UNASSIGNED);
+        assert_ne!(model[2], UNASSIGNED);
+        for clause in &clauses {
+            let sat = clause.iter().any(|&lit| {
+                let var = lit.unsigned_abs() as usize;
+                (lit > 0 && model[var] == TRUE) || (lit < 0 && model[var] == FALSE)
+            });
+            assert!(sat, "extended model does not satisfy {clause:?}");
+        }
+    }
+
+    #[test]
+    fn test_bve_can_detect_xor_unsat_before_cdcl_conflicts() {
+        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
+        let mut s = make_solver(2, clauses);
+
+        assert!(!s.solve());
+        assert_eq!(
+            s.stats.conflicts, 0,
+            "bounded elimination should derive the contradictory units before CDCL search"
+        );
+    }
+
+    #[test]
+    fn test_sat_model_snapshot_assigns_unconstrained_variables() {
+        let mut s = make_solver(3, vec![]);
+
+        assert!(s.solve());
+        let model = s.sat_model.as_ref().expect("missing SAT model snapshot");
+        assert_eq!(&model[1..], &[TRUE, TRUE, TRUE]);
     }
 
     #[test]
@@ -2554,18 +2683,13 @@ mod tests {
 
     #[test]
     fn test_unsat_proof_logs_learned_clause_before_empty_clause() {
-        let clauses = vec![
-            vec![1, 2],
-            vec![-1, 2],
-            vec![1, -2],
-            vec![-1, -2],
-        ];
+        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
         let proof_dir = make_temp_dir("solver-unsat-proof");
         let mut s = make_solver(2, clauses);
         assert!(!s.solve_to_output(proof_dir.to_str().expect("utf8 temp dir")));
 
-        let proof_text = fs::read_to_string(proof_dir.join("proof.out"))
-            .expect("failed to read emitted proof");
+        let proof_text =
+            fs::read_to_string(proof_dir.join("proof.out")).expect("failed to read emitted proof");
         let proof_lines: Vec<_> = proof_text.lines().collect();
         assert!(
             proof_lines.len() >= 2,
@@ -2722,13 +2846,9 @@ mod tests {
 
     #[test]
     fn test_conflict_bumps_variable_activity() {
-        let clauses = vec![
-            vec![1, 2],
-            vec![-1, 2],
-            vec![1, -2],
-            vec![-1, -2],
-        ];
+        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
         let mut s = make_solver(2, clauses);
+        s.use_elim = false;
 
         assert!(!s.solve());
         assert!(s.activity[1] > 0.0);

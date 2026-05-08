@@ -1,74 +1,85 @@
 # 10-bve-preprocess
 
-This iteration is intended to become the MiniSat `simp`-style preprocessing solver on top of
-`09-root-simp-opts`. The code in `src/main.rs` is currently still the `09` root-level
-simplification baseline plus its profiling-driven micro-optimizations, so `10` should be treated as
-the staging area for the next faithful preprocessing port rather than as a completed BVE solver.
+MiniSat `simp`-style bounded variable elimination on top of `09-root-simp-opts`.
+
+This iteration keeps the `09` CDCL core and adds a one-shot preprocessing phase before search. The
+preprocessor is intentionally isolated in `src/simp.rs` so it can keep evolving toward the full
+MiniSat `SimpSolver` design described in
+[MINISAT_SIMP_PORT.md](/home/bojji/code/SAT-playground/solver/10-bve-preprocess/MINISAT_SIMP_PORT.md).
 
 ## Current State
 
-What is already present in the current `10` tree:
+What is present:
 
-- the full `09` CDCL baseline with watched-literal BCP, EVSIDS, saved phase, Luby restarts,
-  learned-clause minimization, learned-clause reduction, arena-based clause storage, and streamed
-  DRAT output
-- MiniSat-style level-0 `simplify()` gating through `simplify_assigns` and
-  `simplify_props_remaining`
-- deletion of satisfied learned and original clauses at root
-- trimming of root-false literals from surviving original clauses only
-- garbage collection and branch-heap rebuild after simplification
+- original-clause occurrence lists and literal occurrence counts during preprocessing
+- a separate decision-variable flag so eliminated variables do not re-enter the branch heap
+- bounded variable elimination with MiniSat-style `grow = 0` and `clause_lim = 20`
+- resolvent insertion through a preprocessing original-clause path
+- DRAT logging for preprocessing-generated resolvents/units
+- MiniSat-style elimination stack entries and SAT model extension
+- SAT output from a complete model snapshot instead of the mutable live assignment vector
+- one-shot cleanup after preprocessing: drop occurrence metadata, rebuild branch heap, and force GC
 
-What is not present yet:
+Still not present:
 
-- occurrence lists for original clauses
-- MiniSat's backward subsumption / backward subsumption resolution queue
+- MiniSat's backward subsumption / backward-subsumption-resolution queue
 - asymmetric branching clause strengthening
-- bounded variable elimination with resolvent growth and clause-size caps
-- model extension for eliminated variables
-- a separate SAT model snapshot path; current output still prints the live search assignment
-- freeze / eliminated-variable bookkeeping
-- canonical MiniSat-style original-clause insertion; current parse/build still bulk-loads raw
-  clauses and enqueues root units later
-- `turn_off_elim` cleanup semantics from `SimpSolver::eliminate(true)`
+- `use_rcheck` implied-clause checks
+- parse-time canonical original-clause insertion for every input clause
+- a fully faithful `SimpSolver::eliminate()` work loop with touched-clause scheduling
 
-The stale README copied from `09` has been replaced, but the implementation is still the `09`
-baseline and should be treated that way until the preprocessing port lands.
+So this is now a working BVE preprocessing iteration, but it is not yet a complete MiniSat `simp`
+port.
 
-## Design Doc
+## Validation
 
-The implementation design and step-by-step port plan are in
-[MINISAT_SIMP_PORT.md](/home/bojji/code/SAT-playground/solver/10-bve-preprocess/MINISAT_SIMP_PORT.md).
+Run on 2026-05-08:
 
-That document is the source of truth for:
+```bash
+cargo test
+bash tools/smoke_test.sh solver/10-bve-preprocess
+```
 
-- what MiniSat `SimpSolver` actually does
-- the exact gap between the current Rust baseline and the target solver
-- the data-structure changes needed for a faithful port
-- the recommended implementation order, with test checkpoints
+Results:
 
-## Recommended Scope
+- `cargo test` in `solver/10-bve-preprocess`: 42 passed
+- smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
+- smoke log: `log/2026-05-08-13-26-40`
 
-The next implementation should aim to match the core MiniSat `simp` pipeline, not just "some BVE":
+## MiniSat-Simp Five-Instance Benchmark
 
-1. preserve the current `09` search behavior when simplification features are disabled
-2. add MiniSat-style occurrence and touched-clause infrastructure for original clauses
-3. add backward subsumption / strengthening at decision level `0`
-4. add bounded variable elimination with faithful cost checks and resolvent generation
-5. add elimination-stack model extension so SAT output still reconstructs eliminated assignments
-6. add the one-shot `turn_off_elim` cleanup path used before search
+Command:
 
-## Validation Expectations For The Port
+```bash
+bash tools/bench.sh -t 600 -m 16384 -d benchmarks/profiling/minisat-simp-five solver/10-bve-preprocess
+```
 
-When implementation starts, follow the repo rules from `AGENTS.md`:
+Result log:
 
-- add failing tests first when practical
-- run `cargo test` in `solver/10-bve-preprocess`
-- run `bash tools/smoke_test.sh solver/10-bve-preprocess`
-- only treat the iteration as ready once the full smoke suite passes
+- `log/bench-10-bve-preprocess-2026-05-08-13-08-41/results.csv`
 
-## Historical Note
+Summary:
 
-`git log -- solver/10-bve-preprocess` shows earlier local BVE experiments, but the current tree was
-reset to the `09` baseline in commit `aa525b3` (`Reset solver 10 to solver 09 baseline`). The new
-design doc therefore plans the MiniSat-faithful port from the actual current code, not from those
-discarded intermediate attempts.
+- 5 instances
+- 4 solved: 3 SAT, 1 UNSAT
+- 1 timeout
+- PAR-2: `1532.975`
+
+Comparison against matching harness runs:
+
+| Solver | Solved | SAT | UNSAT | Timeouts | PAR-2 | Results |
+|---|---:|---:|---:|---:|---:|---|
+| `09-root-simp-opts` | 3/5 | 2 | 1 | 2 | `3195.921` | `log/bench-09-root-simp-opts-2026-05-08-09-58-03/results.csv` |
+| `10-bve-preprocess` | 4/5 | 3 | 1 | 1 | `1532.975` | `log/bench-10-bve-preprocess-2026-05-08-13-08-41/results.csv` |
+| `minisat` | 5/5 | 3 | 2 | 0 | `453.343` | `log/bench-minisat-2026-05-08-09-58-03/results.csv` |
+
+Per-instance notes versus `09`:
+
+- `sudoku-N30-12`: improved from `507.092s` to `181.810s`
+- `SC25_Timetable...`: regressed from `80.349s` to `89.000s`
+- `REGRandom-K4...`: still timed out
+- `mp1-Nb7T46`: improved from timeout to `43.275s`
+- `Kakuro...`: improved from `208.480s` to `18.890s`
+
+The remaining gap to MiniSat is concentrated in the random K4 UNSAT instance and the absence of the
+full backward-subsumption/asymmetric-strengthening pipeline.
