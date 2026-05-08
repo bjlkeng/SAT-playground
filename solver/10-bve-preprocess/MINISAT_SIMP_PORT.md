@@ -392,6 +392,28 @@ Repo-specific transition note:
 - either keep `root_unit_clauses` as a pure parse/bootstrap mechanism with well-defined ownership,
   or retire it in favor of direct root enqueue during original-clause insertion
 
+### H. Keep root reason bookkeeping coherent during preprocessing
+
+MiniSat's core `removeClause()` clears the reason of a locked clause before freeing it. That matters
+for this port because preprocessing operates at decision level `0`, where original clauses can be
+the active reasons for root assignments.
+
+In the current Rust solver:
+
+- root propagation stores clause ids in `reason[var]`
+- `simplify()` already clears a locked reason before deleting a satisfied clause
+- strengthening can turn a binary or longer original clause into a unit and thereby change the root
+  reason source for an assignment
+
+The port should therefore treat root-reason maintenance as a first-class requirement:
+
+- deleting a locked original clause must clear or replace the affected `reason[var]`
+- strengthening that preserves implication must leave the surviving clause/reason relation valid
+- turning a clause into a unit must not leave stale reason refs to a deleted clause id
+
+Without this, preprocessing can silently corrupt later conflict analysis even if propagation itself
+still appears to work.
+
 ## Core Algorithms To Port
 
 ### 1. `implied(clause)`
@@ -412,6 +434,14 @@ Implementation note:
 
 - the current solver lacks a temporary "push root assumptions and cancel" helper
 - add one reusable helper for temporary root-probe propagation
+
+State-restoration note:
+
+- the helper must restore not just `assignment`, but also `trail`, `propagate_head`,
+  `root_trail_len`, per-variable `reason`, and any branch-heap effects introduced by temporary
+  assignments
+- it must not perturb `simplify_assigns` / `simplify_props_remaining`, which describe committed
+  root-state progress rather than scratch probing work
 
 ### 2. `gather_touched_clauses()`
 
@@ -646,6 +676,7 @@ across:
 - clause deletion
 - garbage collection
 - unit creation by strengthening
+- root-reason rewrites when the backing clause for an implied root unit changes or disappears
 
 ### Garbage collection and relocation
 
@@ -744,6 +775,8 @@ Tests first:
 - deleting an original clause updates occurrence counts and touched state
 - strengthening a non-binary clause preserves watcher correctness
 - strengthening a binary clause yields a unit and propagates it
+- deleting or strengthening a locked root reason leaves `reason[var]` pointing at a valid live
+  clause or `NO_REASON` as appropriate
 
 ### Phase 3: touched-clause and backward-subsumption pipeline
 
@@ -768,6 +801,7 @@ Tests first:
 
 - implied clause is skipped when `use_rcheck` is enabled
 - asymmetric branching removes the target literal on a crafted instance
+- temporary root probes restore `trail`, `propagate_head`, `root_trail_len`, and root reasons
 
 ### Phase 5: elimination heap and bounded variable elimination
 
@@ -884,7 +918,7 @@ patch is likely to fail. The phases above should be kept separate.
 
 If implementation starts immediately, the highest-value first patch is:
 
-1. fix solver 10 metadata drift
+1. add baseline tests for current simplify / SAT-output behavior
 2. add preprocessing state fields
 3. split original vs learned clause insertion
 4. build occurrence lists and literal counts at parse time
