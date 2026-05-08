@@ -281,6 +281,17 @@ Reason:
 - MiniSat updates occurrence metadata only for problem clauses and preprocessing-generated
   resolvents, not for learned clauses
 
+Important API design note:
+
+- original-clause insertion should not just return `usize`, because MiniSat-style insertion has
+  multiple semantically distinct outcomes:
+  - clause rejected as already satisfied / tautological / implied no-op
+  - clause normalized into a root unit and propagated without allocating a persistent clause
+  - clause allocated as a live non-unit original clause and indexed for preprocessing
+  - clause caused immediate UNSAT
+- the Rust API should represent those outcomes explicitly so callers do not accidentally assume
+  every successful insertion produced a live clause id
+
 ### C. Add preprocessing-only state to `Solver`
 
 Add fields corresponding to MiniSat's preprocessing subsystem:
@@ -384,6 +395,9 @@ Capture-timing requirement:
   assignment, before any future cleanup/backtrack path can erase non-root assignments
 - once the snapshot path exists, stdout formatting and SAT-side tests should consume only that
   snapshot, not the mutable live assignment vector
+- printing should assert that the post-extension snapshot contains no `UNASSIGNED` values for any
+  original variable, because the current fallback of treating non-`FALSE` as positive would silently
+  emit bogus SAT assignments if extension/model capture is incomplete
 
 ### G. Make preprocessing a distinct top-level phase
 
@@ -794,6 +808,8 @@ Tests first:
 - non-unit original clauses are the only clauses that enter occurrence/subsumption indexing when
   following MiniSat semantics
 - preprocessing insertion rejects clauses that still contain eliminated variables
+- original-clause insertion reports whether it allocated a clause, produced a unit, became a no-op,
+  or detected UNSAT
 - SAT output uses a model snapshot path that can tolerate eliminated variables later
 
 ### Phase 2: preprocessing-aware deletion and strengthening primitives
@@ -866,6 +882,7 @@ Tests first:
 
 - SAT model assigns eliminated variables consistently with the extension stack
 - printed assignment still satisfies the original CNF
+- the final printed SAT snapshot contains no unassigned original variables
 
 ### Phase 7: one-shot preprocessing entry point
 
@@ -919,6 +936,7 @@ Add targeted unit tests for:
   branch heap
 - model extension after SAT
 - SAT output printing from the extended model snapshot
+- SAT output rejects or asserts on any remaining unassigned original variable after extension
 - preprocessing cleanup after `eliminate(true)`
 - occurrence/subsumption metadata relocation across GC
 - preprocessing-detected UNSAT proof path
