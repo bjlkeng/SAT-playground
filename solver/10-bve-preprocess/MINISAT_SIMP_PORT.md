@@ -327,6 +327,14 @@ Important representation choice:
   so the backward-subsumption pipeline cannot accidentally treat scratch work as a relocatable
   arena clause
 
+Important invariant to keep:
+
+- once a variable is marked eliminated, future original-clause insertion should reject any clause
+  that still mentions it
+- this should be enforced both for resolvent insertion and with debug assertions on generic
+  preprocessing insertion paths, matching MiniSat's `addClause_()` expectation that eliminated vars
+  never reappear in new problem clauses
+
 ### D. Separate "deleted in arena" from "present in occurrence list"
 
 Occurrence lists should be lazy-cleaned, as in MiniSat's `OccLists`:
@@ -369,6 +377,13 @@ Repo-specific consequence:
 - once eliminated variables exist, SAT output should no longer depend on the live trail state alone
 - prefer taking an explicit model snapshot at SAT, extending that snapshot, and printing from it
   rather than mutating search bookkeeping purely for output formatting
+
+Capture-timing requirement:
+
+- the SAT snapshot must be taken at the moment the solver has found a complete satisfying
+  assignment, before any future cleanup/backtrack path can erase non-root assignments
+- once the snapshot path exists, stdout formatting and SAT-side tests should consume only that
+  snapshot, not the mutable live assignment vector
 
 ### G. Make preprocessing a distinct top-level phase
 
@@ -442,6 +457,8 @@ State-restoration note:
   assignments
 - it must not perturb `simplify_assigns` / `simplify_props_remaining`, which describe committed
   root-state progress rather than scratch probing work
+- it must also respect decision eligibility when unwinding temporary assignments so cancelled probes
+  do not reinsert eliminated or otherwise non-branchable variables into the heap
 
 ### 2. `gather_touched_clauses()`
 
@@ -692,6 +709,13 @@ port needs to extend that relocation surface to every simplification-owned refer
 MiniSat handles this explicitly in `SimpSolver::relocAll()`. The Rust plan should do the same
 rather than assuming the existing learned/original clause-id relocation logic is sufficient.
 
+Allocator-layout cleanup note:
+
+- if simplification temporarily enables extra per-clause metadata for original clauses, the
+  `turn_off_elim` cleanup must ensure the post-preprocessing arena layout no longer depends on it
+- forcing a full GC after disabling simplification should be treated as the mechanism that
+  canonicalizes the final clause layout back to the lean search-only form
+
 ### Branching heap
 
 MiniSat disables eliminated variables as decision variables. In the current Rust solver that should
@@ -703,6 +727,14 @@ mean:
 
 This likely requires a new `decision_var: Vec<bool>` or equivalent flag rather than relying only on
 assignment state.
+
+Current-Rust-specific consequence:
+
+- the current `backtrack(0)` / `push_branch_var()` path reinserts every unassigned variable
+- `rebuild_branch_queue()` also currently repopulates from all unassigned variables
+- the port must gate both paths on decision eligibility, otherwise eliminated/frozen-out variables
+  will silently re-enter the branch heap after backtrack, restart, GC rebuild, or temporary probe
+  cancellation
 
 ### Assumptions
 
@@ -761,6 +793,7 @@ Tests first:
 - unit original clauses propagate immediately through the canonical insertion path
 - non-unit original clauses are the only clauses that enter occurrence/subsumption indexing when
   following MiniSat semantics
+- preprocessing insertion rejects clauses that still contain eliminated variables
 - SAT output uses a model snapshot path that can tolerate eliminated variables later
 
 ### Phase 2: preprocessing-aware deletion and strengthening primitives
@@ -821,6 +854,7 @@ Tests first:
 - variable not eliminated when a resolvent exceeds `clause_lim`
 - successful elimination deletes old clauses and inserts expected resolvents
 - eliminated variable never appears in the branch heap
+- eliminated or otherwise non-decision variables are not reinserted by backtrack/restart/heap rebuild
 
 ### Phase 6: model extension
 
@@ -881,6 +915,8 @@ Add targeted unit tests for:
 - elimination rejection by `clause_lim`
 - successful elimination with expected resolvents
 - eliminated variable removed from branching
+- backtrack / restart / temporary-probe cancellation do not reinsert eliminated variables into the
+  branch heap
 - model extension after SAT
 - SAT output printing from the extended model snapshot
 - preprocessing cleanup after `eliminate(true)`
