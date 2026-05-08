@@ -5,6 +5,37 @@
 Implement MiniSat's `SimpSolver` preprocessing pipeline in `solver/10-bve-preprocess` faithfully
 on top of the current `09-root-simp-opts` Rust baseline.
 
+## Restart Constraints
+
+The next implementation pass should follow these constraints explicitly:
+
+- start from scratch from the current workspace state; do not reuse or port from previous local
+  experimental commits
+- keep `solver/10-bve-preprocess/src/main.rs` as close to the plain `09-root-simp-opts` baseline
+  as practical until the new simplification code is ready
+- put the new implementation primarily in a new `src/simp.rs` file so the MiniSat-`simp` work is
+  isolated and reviewable
+
+## Benchmarking Approach
+
+The main success criterion is not "some preprocessing improvement"; it is matching the practical
+ability of MiniSat `simp` on selected benchmark instances.
+
+Use this exact workflow:
+
+- keep the current five-instance benchmark set in
+  `benchmarks/profiling/minisat-simp-five/`
+- compare `solver/09-root-simp-opts`, `solver/10-bve-preprocess`, and reference `minisat` with the
+  benchmark harness, not ad hoc `run.sh` timings
+- run with a 10 minute timeout and 16 GB memory limit:
+  - `bash tools/bench.sh -t 600 -m 16384 -d benchmarks/profiling/minisat-simp-five solver/09-root-simp-opts`
+  - `bash tools/bench.sh -t 600 -m 16384 -d benchmarks/profiling/minisat-simp-five solver/10-bve-preprocess`
+  - `bash tools/bench_reference.sh -t 600 -m 16384 -d benchmarks/profiling/minisat-simp-five minisat`
+- use the harness `results.csv` outputs as the source of truth for timing comparisons
+- require SAT verification to pass; a faster SAT result with `verified=FAIL` does not count
+- treat MiniSat `simp` parity as the target, with solver `09` serving only as the baseline being
+  improved upon
+
 In this context, "faithfully" means:
 
 - keep the current CDCL search core as the post-preprocessing engine
