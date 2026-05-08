@@ -508,6 +508,8 @@ Rust design:
 - when queue empty but new root assignment exists, synthesize a size-1 scratch clause
 - choose the smallest occurrence variable from the driver clause
 - scan that variable's occurrence list
+- skip candidate clauses whose size is at or above `subsumption_lim` when that limit is enabled,
+  matching MiniSat's guard against expensive large-clause scans
 - classify candidate relation:
   - `subsumed`
   - `strengthen by removing lit`
@@ -873,6 +875,7 @@ Tests first:
 - clause A subsumes clause B and B is removed
 - clause A backward-subsumes clause B up to one literal and B is strengthened
 - new root assignments feed the subsumption queue through the scratch unit path
+- `subsumption_lim` prevents scans/strengthening against oversized candidate clauses
 
 ### Phase 4: implied-clause checking and optional asymmetric branching
 
@@ -962,6 +965,7 @@ Add targeted unit tests for:
 - queue-dedup state stays correct when clauses are deleted, relocated, or replaced by strengthening
 - backward subsumption delete case
 - backward subsumption strengthen case
+- backward subsumption respects `subsumption_lim`
 - asymmetric branching strengthen case
 - elimination rejection by `grow`
 - elimination rejection by `clause_lim`
