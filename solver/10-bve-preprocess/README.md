@@ -25,7 +25,10 @@ What is not present yet:
 - asymmetric branching clause strengthening
 - bounded variable elimination with resolvent growth and clause-size caps
 - model extension for eliminated variables
+- a separate SAT model snapshot path; current output still prints the live search assignment
 - freeze / eliminated-variable bookkeeping
+- canonical MiniSat-style original-clause insertion; current parse/build still bulk-loads raw
+  clauses and enqueues root units later
 - `turn_off_elim` cleanup semantics from `SimpSolver::eliminate(true)`
 
 The stale README copied from `09` has been replaced, but the implementation is still the `09`

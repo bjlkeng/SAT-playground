@@ -299,6 +299,7 @@ Add fields corresponding to MiniSat's preprocessing subsystem:
 - `bwdsub_assigns: usize`
 - `bwdsub_tmpunit`: represent as a tiny scratch clause rather than a real arena clause
 - `elim_clauses: Vec<u32>` for model extension
+- `model: Vec<u8>` or equivalent SAT-output snapshot separate from the live search assignment
 - preprocessing options:
   - `use_asymm`
   - `use_rcheck`
@@ -314,6 +315,14 @@ Important design choice:
 - do not index learned clauses in `occurs`
 
 That matches MiniSat and avoids polluting elimination costs with learned clauses.
+
+Important representation choice:
+
+- if `bwdsub_tmpunit` is not stored as a real clause in the arena, the subsumption queue cannot be
+  just "clause ids plus one magic usize" hidden convention
+- prefer an explicit queue item type such as `enum SubsumptionCandidate { Clause(usize), RootUnit(i32) }`
+  so the backward-subsumption pipeline cannot accidentally treat scratch work as a relocatable
+  arena clause
 
 ### D. Separate "deleted in arena" from "present in occurrence list"
 
@@ -351,6 +360,13 @@ Implement MiniSat-style extension logging:
 
 This must integrate with the current SAT output path before any elimination is enabled.
 
+Repo-specific consequence:
+
+- the current solver prints `solver.assignment` directly after `solve_to_output()`
+- once eliminated variables exist, SAT output should no longer depend on the live trail state alone
+- prefer taking an explicit model snapshot at SAT, extending that snapshot, and printing from it
+  rather than mutating search bookkeeping purely for output formatting
+
 ### G. Make preprocessing a distinct top-level phase
 
 Mirror MiniSat's operational flow:
@@ -363,6 +379,15 @@ Mirror MiniSat's operational flow:
 6. if SAT, run `extend_model()` before printing the assignment
 
 This is better than trying to interleave full BVE inside the current solve loop.
+
+Repo-specific transition note:
+
+- today `Solver::new()` bulk-loads clauses, stores unit originals in `root_unit_clauses`, and
+  `solve_with_proof()` calls `enqueue_root_units()` once before search
+- once original-clause insertion becomes canonical and unit insertion propagates immediately, this
+  bootstrap path needs to be revisited so units are not effectively handled in two different ways
+- either keep `root_unit_clauses` as a pure parse/bootstrap mechanism with well-defined ownership,
+  or retire it in favor of direct root enqueue during original-clause insertion
 
 ## Core Algorithms To Port
 
@@ -421,6 +446,21 @@ Key implementation constraint:
 - the current solver has no clause abstraction bitsets like MiniSat's `Clause::subsumes()` path
 - first faithful version should still add a clause-abstraction cache or temporary bitset check,
   otherwise subsumption scans will be too slow and too unlike MiniSat's behavior
+
+Storage constraint:
+
+- MiniSat gets clause abstractions from its temporary `extra_clause_field` support during
+  simplification
+- the current Rust arena already uses per-clause extra words for learned-clause activity and gives
+  original clauses no extra word at all
+- the port therefore needs an explicit abstraction-storage decision for original clauses during
+  preprocessing, such as:
+  - temporary sidecar storage keyed by clause id
+  - optional extra-word support for original clauses while simplification is enabled
+  - or recomputation on demand if the measured cost is acceptable
+
+This should be decided before implementing backward subsumption so the clause layout does not churn
+mid-port.
 
 ### 4. `strengthen_clause()`
 
@@ -563,6 +603,13 @@ Recommended approach:
 This is the single biggest place where "faithful to MiniSat simp" and "faithful to repo proof
 requirements" may diverge.
 
+Specific repo risk to remember:
+
+- if preprocessing derives UNSAT before the CDCL loop, the current solver would still need to emit
+  a proof acceptable to this repo's checker flow
+- that case is operationally different from "CDCL learned the empty clause", so it deserves its
+  own acceptance test once preprocessing proof support exists
+
 ### Clause normalization and solver-status handling
 
 MiniSat's preprocessing entry points rely on core `addClause_()` semantics, not on raw clause
@@ -622,6 +669,20 @@ yet, but the design should still leave room for them:
 - add `freeze_var()` / `thaw()` helpers now
 - even if assumptions are not used yet, this avoids painting the solver into a corner
 
+### Variable lifecycle and reuse
+
+MiniSat's core solver has `newVar()`, `releaseVar()`, `free_vars`, and decision-variable toggles as
+part of the same lifecycle. The current Rust solver allocates all vectors up front from the parsed
+header and never reuses variables.
+
+For solver 10, the important point is not to fully port variable recycling on day one, but to keep
+the preprocessing design compatible with it:
+
+- decision eligibility should be tracked separately from assignment state
+- eliminated variables must be permanently non-branchable
+- any future support for assumptions or released variables should not require rewriting the
+  preprocessing data-structure layout
+
 ## Recommended Implementation Order
 
 The order below is chosen to preserve correctness and keep regressions local.
@@ -646,6 +707,7 @@ Exit criteria:
 5. Add lazy-clean helpers for occurrence lists and queue-dedup state.
 6. Make initial parse/build use the same original-clause canonicalization path intended for
    preprocessing insertions.
+7. Decide where clause abstractions for original clauses live during simplification.
 
 Tests first:
 
@@ -654,6 +716,7 @@ Tests first:
 - deleted original clauses disappear after `clean_occurs(var)`
 - duplicate literals are removed and tautological original clauses are skipped before indexing
 - unit original clauses propagate immediately through the canonical insertion path
+- SAT output uses a model snapshot path that can tolerate eliminated variables later
 
 ### Phase 2: preprocessing-aware deletion and strengthening primitives
 
@@ -731,12 +794,14 @@ Tests first:
    - disable preprocessing-only paths
    - rebuild branch heap
    - force full GC
+4. Make the root-unit bootstrap consistent with the new original-clause insertion semantics.
 
 Tests first:
 
 - preprocessing-only structures are empty/disabled after `eliminate(true)`
 - search still works after preprocessing cleanup
 - a formula solved during preprocessing returns UNSAT before entering CDCL
+- unit clauses are not double-enqueued across preprocessing startup
 
 ### Phase 8: proof and benchmark hardening
 
@@ -744,6 +809,7 @@ Tests first:
 2. Re-run unit tests, smoke tests, and targeted benchmarks.
 3. Compare against MiniSat `-pre`/`-no-pre` behavior on a small regression set.
 4. Verify that preprocessing-owned metadata survives arena relocation across forced GC.
+5. Add an acceptance check for proofs produced when preprocessing alone detects UNSAT.
 
 Tests and checks:
 
@@ -758,6 +824,7 @@ Add targeted unit tests for:
 
 - occurrence-list construction and lazy cleanup
 - original-clause canonicalization parity with MiniSat-style `addClause_()`
+- clause-abstraction storage / lookup correctness for backward-subsumption candidates
 - touched-clause queue dedup
 - backward subsumption delete case
 - backward subsumption strengthen case
@@ -767,8 +834,10 @@ Add targeted unit tests for:
 - successful elimination with expected resolvents
 - eliminated variable removed from branching
 - model extension after SAT
+- SAT output printing from the extended model snapshot
 - preprocessing cleanup after `eliminate(true)`
 - occurrence/subsumption metadata relocation across GC
+- preprocessing-detected UNSAT proof path
 
 Keep the existing smoke suite as the final guardrail.
 
