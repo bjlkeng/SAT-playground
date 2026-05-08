@@ -296,6 +296,8 @@ Important API design note:
 
 Add fields corresponding to MiniSat's preprocessing subsystem:
 
+- `ok: bool` or `solver_consistent: bool` as the persistent equivalent of MiniSat's core `ok`
+  state
 - `use_simplification: bool`
 - `remove_satisfied_originals: bool`
 - `frozen: Vec<bool>`
@@ -329,6 +331,16 @@ Important design choice:
 - do not index learned clauses in `occurs`
 
 That matches MiniSat and avoids polluting elimination costs with learned clauses.
+
+Important state-model choice:
+
+- do not try to encode all permanent UNSAT/preprocessing failure states indirectly through
+  `has_empty_clause`, failed root enqueue calls, or one-off return values
+- MiniSat's simplification pipeline relies on a persistent `ok` bit that every clause insertion and
+  simplification step can poison
+- the Rust port should add the equivalent explicitly so parse-time clause normalization,
+  preprocessing-generated units, backward-subsumption strengthening, and elimination-time resolvent
+  insertion all have one shared way to record "the solver is already inconsistent"
 
 Important representation choice:
 
@@ -844,6 +856,8 @@ Tests first:
 - preprocessing insertion rejects clauses that still contain eliminated variables
 - original-clause insertion reports whether it allocated a clause, produced a unit, became a no-op,
   or detected UNSAT
+- preprocessing-time UNSAT poisons the persistent solver-consistency flag, not just the immediate
+  caller's return path
 - SAT output uses a model snapshot path that can tolerate eliminated variables later
 
 ### Phase 2: preprocessing-aware deletion and strengthening primitives
@@ -979,6 +993,7 @@ Add targeted unit tests for:
 - preprocessing cleanup after `eliminate(true)`
 - occurrence/subsumption metadata relocation across GC
 - preprocessing-detected UNSAT proof path
+- persistent solver-consistency flag stays poisoned across later preprocessing/search entry points
 
 Keep the existing smoke suite as the final guardrail.
 
