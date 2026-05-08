@@ -140,6 +140,9 @@ Important semantic gap:
   drops root-false literals, treats tautological / already-satisfied clauses as no-ops, turns
   units into immediate root assignments plus propagation, and reports UNSAT through the solver
   state.
+- MiniSat only indexes clauses that survive this normalization as non-unit allocated problem
+  clauses. Empty, satisfied, tautological, and unit inputs do not become persistent entries in
+  `occurs`, `subsumption_queue`, or the problem-clause vector.
 - the current Rust `parse_cnf()` + `Solver::new()` path bulk-loads raw clauses directly into the
   arena and only later enqueues root units, so parse-time and preprocessing-time clause insertion
   do not currently share MiniSat-like semantics
@@ -628,8 +631,17 @@ differences between "clauses from the parser" and "clauses created during simpli
 ### Watchers and root units
 
 Current solver 10 stores unit clauses in the watcher structure and tracks original root units in
-`root_unit_clauses`. That is compatible with preprocessing, but strengthening/elimination must keep
-this list valid across:
+`root_unit_clauses`. MiniSat's `addClause_()` does not allocate persistent clause objects for unit
+clauses at all; it only enqueues them at decision level `0`. The Rust port therefore needs one
+explicit representation decision early:
+
+- either keep repo-specific persistent unit-clause refs for bootstrap/proof purposes and treat them
+  as an intentional divergence from MiniSat's internal storage model
+- or move units to pure root-assignment semantics and ensure no preprocessing structure expects a
+  clause id for them
+
+If the first option is chosen, strengthening/elimination must keep the unit-clause bookkeeping valid
+across:
 
 - clause deletion
 - garbage collection
@@ -689,7 +701,7 @@ The order below is chosen to preserve correctness and keep regressions local.
 
 ### Phase 0: metadata and baseline cleanup
 
-1. Rename `Cargo.toml` package metadata from `09` to `10`.
+1. Re-audit solver-10 metadata and docs so the plan matches the current tree exactly.
 2. Keep current solver behavior unchanged.
 3. Add tests that pin the current root simplify behavior and current SAT output shape.
 
@@ -716,6 +728,8 @@ Tests first:
 - deleted original clauses disappear after `clean_occurs(var)`
 - duplicate literals are removed and tautological original clauses are skipped before indexing
 - unit original clauses propagate immediately through the canonical insertion path
+- non-unit original clauses are the only clauses that enter occurrence/subsumption indexing when
+  following MiniSat semantics
 - SAT output uses a model snapshot path that can tolerate eliminated variables later
 
 ### Phase 2: preprocessing-aware deletion and strengthening primitives
