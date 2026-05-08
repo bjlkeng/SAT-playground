@@ -1,335 +1,247 @@
-# 10-bve-preprocess
+# 09-root-simp-opts
 
-This iteration starts from `09-root-simp-opts` and adds a benchmark-tuned MiniSat-style
-preprocessing layer centered on duplicate removal, root-unit cleanup, pure-literal cleanup, and
-bounded variable elimination.
+This iteration starts as a direct copy of `08-clause-db-management` and adds MiniSat-style
+root-level simplification plus a set of profiled hot-path optimizations.
 
 ## Current State
 
-`10` inherits:
+`09` currently inherits the full `08` baseline:
 
-- parse-time duplicate-clause filtering using a sorted literal key while preserving the first
-  occurrence's original literal order
-- parse-time root-unit cleanup for formulas under `100,000` clauses, removing satisfied clauses and
-  emitting proof additions for clauses strengthened by false root literals
-- a bounded backward-subsumption / clause-strengthening pass for mid-sized formulas, capped to
-  `20,000..250,000` clauses and short source/target clauses so it captures MiniSat-simp-style
-  redundancy on circuit-like instances without touching the largest guard formulas
-- parse-time pure-literal cleanup for formulas with at least `100,000` clauses
-- limited bounded variable elimination, capped at `5,000` eliminated variables for medium formulas
-  and `25,000` for large formulas, with DRAT resolvent additions and SAT model reconstruction for
-  eliminated variables; BVE candidates are ordered by net clause growth before raw occurrence
-  product, matching MiniSat's elimination-cost intuition more closely
 - watched-literal BCP with blocker fast paths
-- a binary-clause propagation fast path that avoids the general long-clause scan while preserving
-  the reason-clause invariant that the implied literal is stored at position 0
 - EVSIDS-style variable activity and saved-phase branching
 - conflict-clause minimization modes: `none`, `basic`, and `deep`
 - deep minimization through learned-clause reasons
 - MiniSat-style learned-clause activity bumps and learned-clause reduction thresholds
 - a MiniSat-style packed clause arena with stable clause refs and relocating GC
 - streamed proof logging through a fixed 16 MiB byte buffer into `proof.out.tmp`
-- root-level `simplify()` that deletes satisfied clauses and trims root-false literals from
-  surviving original clauses
-- the profiled `09` hot-path cleanup: lazy branch-heap cleanup, bottom-up heap rebuilds, in-place
-  watcher compaction, in-place learned-clause reduction, scratch-buffer conflict analysis, and the
-  learned-unit shortcut
+
+On top of that, `09` now adds a root-level simplify pass:
+
+- runs only at decision level `0`
+- re-propagates before simplifying and returns UNSAT immediately on a root conflict
+- deletes satisfied learned clauses
+- deletes satisfied original clauses too
+- trims literals falsified at level `0` from positions `2..` inside remaining original clauses
+- intentionally leaves unsatisfied learned clauses untrimmed, after profiling showed learned-clause
+  trimming perturbed CDCL search badly on the current crypto SAT cases
+- clears `reason[var]` if simplification deletes the clause that was justifying a root assignment
+- rebuilds the branch heap after simplification
+- uses a MiniSat-style gate so repeated level-0 visits do not rescan the database unless root
+  assignments changed or enough propagation work has happened since the last pass
+
+The same source delta also includes several code-level optimizations that profiling made visible:
+
+- lazy branch-heap cleanup instead of removing every assigned variable during propagation
+- bottom-up branch-heap rebuilds after root simplification
+- narrower watcher detachment with `swap_remove`
+- in-place watcher-list compaction during propagation
+- in-place learned-clause reduction without cloning the learned list
+- scratch-buffer conflict analysis to avoid a fresh learned-clause allocation per conflict
+- a learned-unit shortcut that records the DRAT clause and enqueues the root literal without storing
+  a watched learned unit
 
 ## What Changed
 
-- copied `09-root-simp-opts` into a new self-contained iteration directory
-- renamed the package / iteration metadata to `10-bve-preprocess` after the simplification baseline
-  became a BVE-focused preprocessing iteration
-- added a binary-clause branch in propagation so two-literal clauses directly test/enqueue the
-  other watched literal instead of falling through the long-clause replacement loop
-- added MiniSat-simp-inspired duplicate-clause filtering before the arena is built
-- added a conservative bounded variable elimination pass for low-occurrence variables
-- tuned BVE to stop before it starts damaging the CDCL search path on the target instance
-- lowered the BVE activation threshold for medium formulas and added pure-literal cleanup after
-  measuring MiniSat-faster timetable instances
-- added a small-formula root-unit simplification pass and cheaper finite-activity branch comparison
-  after profiling the remaining MiniSat gap on the e318 target instance
-- retuned BVE candidate ordering to prefer lower net clause growth before raw product, while keeping
-  the previously accepted growth slack and eliminated-variable caps
-- added a bounded backward-subsumption / clause-strengthening prepass after root-unit cleanup,
-  targeting the remaining MiniSat `simp` win on the `circuit_48in64out...` instance
+This `09` step adds root simplification and hot-path cleanup on top of `08`:
 
-## Intended Focus
+- copied `08-clause-db-management` into a new self-contained iteration directory
+- renamed the package / iteration metadata for `09-root-simp-opts`
+- added `simplify()` to the level-0 search path
+- added in-place original-clause trimming for root-false literals while keeping the packed arena
+  layout
+- generalized clause deletion during simplification so both original and learned clauses can be
+  detached, tombstoned, and later reclaimed by GC
+- stopped trimming learned clauses at root after ablation showed that deleting satisfied learned
+  clauses was useful but strengthening unsatisfied learned clauses caused a large search regression
+- added regression tests for:
+  - removing satisfied clauses at level `0`
+  - trimming root-false literals from surviving original clauses while keeping surviving learned
+    clauses intact
+  - treating a second simplify call as a no-op when no new root work has happened
+  - lazy branch-heap skipping
+  - learned-unit shortcut behavior
 
-The next useful work is still to close selected gaps between `09` and MiniSat `simp`, but the target
-instance now shows that more simplification is not automatically better. BVE needs cost controls that
-track downstream search impact, not just formula size.
+## Deep Diff vs `08`
 
-Candidate directions:
+The source delta from `08-clause-db-management` is concentrated in `src/main.rs`. `Cargo.toml` and
+`Cargo.lock` only rename the package from `sat-solver-08-clause-db-management` to
+`sat-solver-09-root-simp-opts`; `build.sh` and `run.sh` are unchanged.
 
-- maintain richer occurrence data for original clauses so the new bounded clause-rewriting pass can
-  be broadened more selectively
-- broaden bounded variable elimination only with a better cost model or per-instance cutoff
-- normalize clauses during parsing before the arena is built
-- add benchmark instrumentation for simplification impact on active variables, clauses, literals,
-  and propagation rate
+At the data-model level, `09` changes the solver state so original clauses are no longer assumed to
+be permanently live:
+
+- removes the fixed `original_clause_count` field and uses `original_clause_ids.len()` when checking
+  the live arena during garbage collection
+- adds `original_literals` and `learned_literals`, maintained incrementally as clauses are added,
+  shortened, deleted, or collected
+- adds `simplify_assigns` and `simplify_props_remaining` as the MiniSat-style gate for avoiding
+  repeated full database scans at level `0`
+- adds `stats.simplifications` so simplify calls can be measured separately from conflicts,
+  propagations, reductions, and GC
+- adds `scratch_conflict_clause`, a reusable conflict-clause buffer used by the optimized conflict
+  analysis path
+
+The new top-level simplification path is implemented through a small group of helpers:
+
+- `clause_satisfied(clause_idx)` scans a clause under the current root assignment and identifies
+  clauses that can be removed permanently
+- `trim_root_false_literals(clause_idx)` removes literals falsified at level `0` from positions
+  `2..` of surviving original clauses; it preserves the two watched positions, rewrites the packed
+  clause header size, moves the extra activity word if present, updates live literal counts, and
+  counts the removed arena words as reclaimable garbage
+- `delete_clause_for_simplify(clause_idx)` handles satisfied original or learned clauses; if the
+  clause is a root-level reason, it clears the affected variable's `reason` entry before detaching
+  and tombstoning the clause
+- `simplify_clause_list(clause_ids)` rebuilds the original and learned clause vectors by deleting
+  satisfied clauses and trimming only original clauses that survive
+- `simplify()` runs only at decision level `0`, first calls `propagate()` to catch root conflicts,
+  skips the scan if no new root assignments or propagation budget justify it, simplifies learned
+  clauses and then original clauses, optionally garbage-collects, rebuilds the branch heap, and
+  resets the simplify gate
+
+The learned-clause behavior is intentionally asymmetric. `09` deletes satisfied learned clauses, but
+does not trim root-false literals from unsatisfied learned clauses. A previous ablation showed that
+strengthening learned clauses at root could perturb the CDCL search order enough to lose far more
+time than it saved on the current crypto SAT profiling cases.
+
+Several hot-path changes landed alongside the simplify work because profiling made their overhead
+visible:
+
+- `enqueue()` no longer removes the assigned variable from the branch heap immediately; instead,
+  `pick_branch_lit()` lazily pops and skips assigned variables. This avoids heap mutation on every
+  propagation and confines cleanup to branching.
+- `rebuild_branch_queue()` now bulk-loads unassigned variables and heapifies bottom-up instead of
+  repeatedly calling `push_branch_var()` and sifting each insertion.
+- `detach_clause()` now removes watchers with `swap_remove` from the two watched literal lists via
+  `detach_clause_watcher()`. `08` used `retain()` and also scanned `watch_scratch`; `09` keeps
+  detachment narrower and cheaper.
+- `propagate()` now compacts the current watch list in place with read/write indices. `08` moved
+  watchers into a separate retained vector and shuffled `watch_scratch` on every scanned watch list.
+  The new path keeps the same watched-literal semantics while reducing vector traffic.
+- `propagate()` also decrements `simplify_props_remaining` by the number of processed trail entries,
+  which gives `simplify()` a cheap budget signal without another counter.
+- `reduce_db()` sorts `learned_clause_ids` in place, uses arena-only helpers for clause length and
+  activity during sorting, and writes survivors back into the same vector. `08` cloned the learned
+  list into `candidates` and deleted clauses one-by-one with a list search inside `mark_clause_deleted`.
+- `mark_clause_deleted_already_unlinked()` supports that in-place reduction path by tombstoning a
+  learned clause after `reduce_db()` has already decided not to keep it in `learned_clause_ids`.
+- conflict analysis now has `analyze_conflict_to_scratch()`, which writes the learned clause into
+  `scratch_conflict_clause`, clears only variables touched during analysis, and lets the main solve
+  loop move the learned clause out without allocating a fresh `Vec` for every conflict.
+- the solve loop special-cases unit learned clauses: it records the DRAT clause, backtracks to root,
+  enqueues the asserting literal with `NO_REASON`, and avoids storing a watched learned unit clause.
+
+The important behavioral integration point is in the no-conflict branch of `solve_with_proof()`:
+after pending restarts are handled and before learned-clause reduction or branching, `09` calls
+`simplify()` whenever the solver is at decision level `0`. A root conflict from that pass returns
+UNSAT immediately; otherwise the search continues with the simplified database.
+
+The regression tests added or changed for the diff cover:
+
+- lazy branch-heap skipping of variables assigned by `enqueue()`
+- propagation dropping tombstoned watchers when a reduced database leaves deleted learned clauses
+  behind
+- deletion of satisfied root clauses plus original-only trimming of root-false literals
+- no-op repeated simplification when no new root assignments or propagation budget exist
+- the learned-unit shortcut, where an UNSAT example now records conflicts but does not retain a
+  learned unit clause in the clause database
 
 ## Validation
 
-- `cargo test` — `47/47`
-- `bash tools/smoke_test.sh solver/10-bve-preprocess` — `9/9`
+- `cargo test` — `39/39`
+- `bash tools/smoke_test.sh solver/09-root-simp-opts` — `9/9`
 
-## Targeted Optimization Log
+`AGENTS.md` already contained the required red-green TDD and post-change smoke-test rules, so no
+instruction-file change was needed for this step.
 
-Machine: AMD Ryzen 5 5600, 62 GiB RAM.
+## Profiling Benchmark Results
 
-Historical benchmark log directories in this section use the solver slug that existed when each
-run was produced. Runs before the final rename are therefore under `bench-10-simp-foundation-*`.
+Current profiling command:
 
-Target instance:
-`5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7.cnf.xz` from
-`benchmarks/sat-comp-2025-medium`.
+- `bash tools/bench.sh -t 120 -d benchmarks/profiling solver/09-root-simp-opts`
 
-Baseline command:
+The historical benchmark logs below were produced before the directory was renamed from
+`09-top-level-simplify` to `09-root-simp-opts`, so their log paths retain the old slug.
 
-```bash
-bash tools/bench.sh -t 500 -m 16384 -d /tmp/sat-opt-kakuro-one solver/10-bve-preprocess
-```
+Baseline run on the unchanged `08` copy, before adding `simplify()`:
 
-Baseline result before changes:
+- Date: `2026-04-28`
+- Result: `PAR-2 89.177`
+- Solved: `6/6`
+- Log: `log/bench-09-top-level-simplify-2026-04-28-10-35-51/results.csv`
 
-- `246.104s`, SAT verified, PAR-2 `246.104`
-- log: `log/bench-10-simp-foundation-2026-05-02-19-42-43`
+| Instance | Type | Result | Time |
+|----------|------|--------|------|
+| feistel_b64_k32_r22 | crypto | SAT | 15.324s |
+| feistel_b64_k52_r17 | crypto | SAT | 17.019s |
+| feistel_b64_k57_r18 | crypto | SAT | 12.974s |
+| random_v285_s2 | 3-SAT | UNSAT | 10.253s |
+| random_v292_s4 | 3-SAT | UNSAT | 22.530s |
+| random_v355_s3 | 3-SAT | SAT | 11.077s |
 
-Profiler evidence:
+Post-change run after enabling the level-0 simplify pass:
 
-- baseline `perf record -F 99 -g -e cycles:u` for 120 seconds showed
-  `sat_solver::Solver::propagate` at `92.44%` self time
-- after the kept change, the same 120 second sample still showed propagation as the main hotspot
-  at `91.10%`, so future work should keep focusing on watcher/propagation costs
-- post-change profile data: `log/profile-10-kakuro-binary-bcp/perf.data`
+- Date: `2026-04-28`
+- Result: `PAR-2 108.066`
+- Solved: `6/6`
+- Log: `log/bench-09-top-level-simplify-2026-04-28-10-48-32/results.csv`
 
-Kept improvement 1:
+| Instance | Type | Result | Time |
+|----------|------|--------|------|
+| feistel_b64_k32_r22 | crypto | SAT | 10.915s |
+| feistel_b64_k52_r17 | crypto | SAT | 23.464s |
+| feistel_b64_k57_r18 | crypto | SAT | 29.641s |
+| random_v285_s2 | 3-SAT | UNSAT | 10.325s |
+| random_v292_s4 | 3-SAT | UNSAT | 22.617s |
+| random_v355_s3 | crypto/random SAT | SAT | 11.104s |
 
-- binary-clause propagation fast path
-- result: `185.972s`, SAT verified, PAR-2 `185.972`
-- improvement: `24.4%` faster than the `246.104s` baseline
-- log: `log/bench-10-simp-foundation-2026-05-02-22-32-16`
+The initial net result was a regression on the current profiling set:
 
-MiniSat simplification comparison:
+- `89.177` -> `108.066`
+- slower by `18.889` PAR-2
+- about `21.2%` worse overall
 
-- `minisat -no-pre`: `152.331s` CPU, `19619849` clauses, `69507454` literals at search
-- `minisat -no-elim`: `123.699s` CPU, `14751209` clauses, `52814974` literals at search
-- `minisat` with full `simp`: `85.263s` CPU, `142307` active vars, `14742137` clauses,
-  `52871496` literals at search
-- occurrence analysis of the input found `4,868,640` permutation-equivalent duplicate clauses,
-  which explains nearly all of the `-no-elim` clause reduction
+The simplify pass helped `feistel_b64_k32_r22`, but it hurt the other two crypto SAT cases much
+more, especially `feistel_b64_k57_r18`.
 
-Kept improvement 2:
+Follow-up run after disabling root-level learned-clause trimming while keeping satisfied-clause
+deletion and original-clause trimming:
 
-- parse-time duplicate-clause filtering using sorted literal keys
-- result: `115.040s`, SAT verified, PAR-2 `115.040`
-- improvement: `38.1%` faster than binary propagation alone, and `53.3%` faster than the original
-  `10` baseline before optimization
-- log: `log/bench-10-simp-foundation-2026-05-02-23-28-19`
-- post-change profile data: `log/profile-10-kakuro-dedup/perf.data`; propagation remains the main
-  hotspot at `86.99%`, while duplicate filtering itself accounts for `2.37%`
+- Date: `2026-04-28`
+- Result: `PAR-2 69.321`
+- Solved: `6/6`
+- Log: `log/bench-09-top-level-simplify-2026-04-28-11-38-35/results.csv`
 
-Kept improvement 3:
+| Instance | Type | Result | Time |
+|----------|------|--------|------|
+| feistel_b64_k32_r22 | crypto | SAT | 10.960s |
+| feistel_b64_k52_r17 | crypto | SAT | 13.510s |
+| feistel_b64_k57_r18 | crypto | SAT | 0.817s |
+| random_v285_s2 | 3-SAT | UNSAT | 10.306s |
+| random_v292_s4 | 3-SAT | UNSAT | 22.558s |
+| random_v355_s3 | crypto/random SAT | SAT | 11.170s |
 
-- limited bounded variable elimination for low-occurrence variables on large formulas
-- generated resolvents are emitted before search as proof additions; eliminated clauses are stored
-  so SAT assignments can be extended back to the original variables
-- result: `107.276s`, SAT verified, PAR-2 `107.276`
-- improvement: `6.8%` faster than duplicate filtering alone, and `56.4%` faster than the original
-  `10` baseline before optimization
-- log: `log/bench-10-simp-foundation-2026-05-03-00-23-08`
-- post-change profile data: `log/profile-10-kakuro-bve/perf.data`; propagation remains the main
-  hotspot at `83.43%`, while BVE itself accounts for `0.20%`
+Same profiling set comparison from the loaded-machine run:
 
-Kept improvement 4:
+| Solver | PAR-2 | Solved | Log |
+|--------|------:|-------:|-----|
+| `09-root-simp-opts` | 69.321 | 6/6 | `log/bench-09-top-level-simplify-2026-04-28-11-38-35/results.csv` |
+| `08-clause-db-management` | 88.908 | 6/6 | `log/bench-08-clause-db-management-2026-04-28-11-46-08/results.csv` |
+| `minisat` | 111.928 | 6/6 | `log/bench-minisat-2026-04-28-11-53-52/results.csv` |
 
-- retuned the BVE cap from `50,000` to `25,000` eliminated variables
-- result: `84.070s`, SAT verified, PAR-2 `84.070`
-- improvement: `21.6%` faster than the `50,000` cap BVE result, `26.9%` faster than duplicate
-  filtering alone, and `65.8%` faster than the original `10` baseline before optimization
-- log: `log/bench-10-simp-foundation-2026-05-03-00-57-59`
-- profile data with symbols: `log/profile-10-kakuro-bve-cap25-symbols/perf.data`; propagation was
-  `72.55%`, while the two duplicate-filtering hash helpers together were about `10.62%`
+These runs shared the host with an unrelated long-running `08` solver process, so use them as
+loaded-machine comparisons rather than isolated timing measurements.
 
-Kept improvement 5:
+## Medium Benchmark Result
 
-- removed the second duplicate filter after BVE, while keeping parse-time duplicate filtering
-- this was only a `2.0%` improvement with the earlier `50,000` BVE cap, but became worthwhile after
-  the cap was tuned to `25,000`
-- result: `78.931s`, SAT verified, PAR-2 `78.931`
-- improvement: `6.1%` faster than `25,000`-cap BVE with the post-BVE duplicate filter, `31.4%`
-  faster than duplicate filtering alone, and `67.9%` faster than the original `10` baseline before
-  optimization
-- this is `7.4%` faster than the measured MiniSat `simp` CPU time of `85.263s` on the same target
-  instance
-- log: `log/bench-10-simp-foundation-2026-05-03-01-08-02`
-- profile data with symbols: `log/profile-10-kakuro-bve-cap25-no-post-dedup/perf.data`;
-  propagation was `77.75%`, hash helpers were down to about `5.60%`, and the remaining
-  parse-time duplicate filter was `0.61%`
+Latest medium run used by the static site:
 
-MiniSat-faster sample:
+- Date: `2026-05-02`
+- Command: `bash tools/bench.sh -t 1800 -m 16384 -d benchmarks/sat-comp-2025-medium solver/09-top-level-simplify`
+- Result: `PAR-2 208534.668`
+- Solved: `46/100` (`29 SAT + 17 UNSAT`)
+- Unsolved: `54` timeouts, `0` unknown, `0` errors
+- Log: `log/bench-09-top-level-simplify-2026-04-30-20-00-01/results.csv`
 
-- selected three SAT Competition 2025 instances where historical MiniSat `simp` beat `09` and both
-  solvers finished within `180s`
-- target directory: `/tmp/sat-minisat-faster-three`
-- pre-change solver `10` result: `224.272s` total
-- fresh MiniSat `simp` result on the same three: `117.956s` total
-
-Kept improvement 6:
-
-- lowered BVE activation from `1,000,000` clauses to `100,000` clauses, while using a smaller
-  `5,000` eliminated-variable cap for medium formulas and retaining `25,000` for large formulas
-- result on the MiniSat-faster three-instance target: `183.302s`, SAT verified, PAR-2 `183.302`
-- improvement: `18.3%` faster than previous solver `10` on that target set
-- log: `log/bench-10-simp-foundation-2026-05-03-08-37-17`
-- six-instance guard sample result: `272.069s`, improved from `309.151s`
-- profile data with symbols on the strongest win:
-  `log/profile-10-c392-medium-bve-cap5k/perf.data`; propagation was `47.25%`, with branch
-  selection and heap maintenance becoming visible after the simplification win
-
-Kept improvement 7:
-
-- added one parse-time pure-literal cleanup pass before BVE, storing removed clauses so SAT models
-  can be extended back to the original variables
-- opportunity check on `SC25_Timetable_C_392` found `12,089` pure variables after dedup, removing
-  `35,782` clauses and `96,385` literals in one pass
-- result on the MiniSat-faster three-instance target: `144.567s`, SAT verified, PAR-2 `144.567`
-- improvement: `21.1%` faster than adaptive medium BVE alone and `35.5%` faster than previous
-  solver `10` on that target set
-- six-instance guard sample result: `232.762s`, improved from `272.069s`
-- Kakuro guard result: `32.758s`, improved from `78.931s`
-- logs: `log/bench-10-simp-foundation-2026-05-03-08-53-49`,
-  `log/bench-10-simp-foundation-2026-05-03-08-56-27`,
-  `log/bench-10-simp-foundation-2026-05-03-09-01-40`
-- profile data with symbols on `SC25_Timetable_C_393`:
-  `log/profile-10-c393-pure-medium-bve/perf.data`; propagation was `56.44%`, branch selection was
-  `10.46%`, and parse-time preprocessing was below the main search costs
-
-Kept improvement 8:
-
-- added a parse-time root-unit cleanup pass for formulas under `100,000` clauses
-- clauses satisfied by root units are removed before watches are built; clauses containing false
-  root literals are strengthened and emitted as preprocessing proof additions
-- replaced `f32::total_cmp` in branch selection with a direct finite-activity comparison plus the
-  existing static-rank tie breaker
-- opportunity check on `e318e2...544707209399nw` found `59` root units; one cleanup pass removed
-  `177` clauses and strengthened `118` ternaries into binaries
-- result on the MiniSat-faster three-instance target: `134.179s`, SAT verified, PAR-2 `134.179`
-- improvement: `7.2%` faster than pure cleanup plus adaptive BVE
-- six-instance guard sample result: `224.263s`, improved from `232.762s`
-- Kakuro guard result: `31.376s`, improved from `32.758s`
-- logs: `log/bench-10-simp-foundation-2026-05-03-10-00-46`,
-  `log/bench-10-simp-foundation-2026-05-03-10-03-10`,
-  `log/bench-10-simp-foundation-2026-05-03-10-08-17`
-- profile data with symbols on `e318e2...544707209399nw`:
-  `log/profile-10-e318-root-unit-cleanup/perf.data`; propagation remained the main hotspot at
-  `57.73%`, followed by branch-heap sift-up at `14.64%`
-
-Kept improvement 9:
-
-- changed BVE candidate ordering from raw `pos * neg` product first to net growth
-  `pos * neg - (pos + neg)` first, then product and occurrence count
-- this keeps the existing `+8` growth slack and `5,000` medium-formula cap, but makes the first
-  eliminated variables closer to MiniSat's elimination heap cost model
-- result on the MiniSat-faster three-instance target: `129.803s`, SAT verified, PAR-2 `129.803`
-- improvement: `3.3%` faster than root-unit cleanup plus adaptive BVE
-- six-instance guard sample result: `215.325s`, improved from `224.263s`
-- Kakuro guard result: `31.255s`, roughly neutral against `31.376s`
-- logs: `log/bench-10-simp-foundation-2026-05-03-11-02-37`,
-  `log/bench-10-simp-foundation-2026-05-03-11-04-57`,
-  `log/bench-10-simp-foundation-2026-05-03-11-09-50`
-- profile data with symbols on `SC25_Timetable_C_392`:
-  `log/profile-10-c392-bve-growth-order/perf.data`; propagation remained the main hotspot at
-  `72.72%`, followed by branch-heap maintenance
-
-Kept improvement 10:
-
-- added a bounded backward-subsumption / clause-strengthening pass before pure-literal elimination
-- profiler evidence on the original `circuit_48in64out_with_800gates_4in4out_dist128_seed3`
-  target still showed `sat_solver::Solver::propagate` dominating on the unsimplified formula:
-  `log/profile-10-circuit/perf.data`
-- MiniSat `simp -no-solve -no-elim` reduced that target from `192000` clauses to about `58448`,
-  which pointed to clause rewriting rather than elimination as the missing behavior
-- opportunity check with `SAT_TRACE_PREPROCESS=1` on solver `10` after this change reported
-  `subsumed=130999`, `strengthened=640775`, `live_clauses=61065`, closely matching MiniSat's
-  structural effect on the same instance
-- direct target result: original solver `10` timed out at `90s` on `/tmp/circuit.cnf`, while the
-  new pass solved it in `62.16s`
-- non-target checks:
-  - `/tmp/mp1.cnf`: no rewrites (`subsumed=0`, `strengthened=0`) and still timed out at `90s`,
-    confirming this gap needs stronger elimination rather than clause rewriting
-  - `/tmp/velev.cnf`: `5.55s`
-  - `/tmp/kakuro112.cnf`: `34.39s`
-  - `/tmp/jkkk.cnf`: only `347` subsumptions and `281` strengthenings, then still timed out at
-    `60s`
-- the pass is deliberately capped to avoid touching the largest guard formulas; `velev` and
-  `Kakuro-112` stayed on the existing simplification path because their clause counts exceed the
-  new gate
-
-Kept improvement 11:
-
-- added a phased MiniSat-inspired BVE path that eliminates variables in small batches, compacts the
-  active formula, then runs a local clause-strengthening/subsumption refresh on clauses touched by
-  that batch before continuing elimination
-- this is the first solver `10` experiment that materially closes the remaining MiniSat simp gap on
-  timetable-style formulas without reintroducing the earlier C392/C393 instability
-- the path is now enabled automatically only for medium-to-large formulas with clause counts in the
-  range `150,000..=1,500,000`; `SAT_BVE_LOCAL_SUB=1` forces it on, and
-  `SAT_DISABLE_BVE_LOCAL_SUB=1` disables it
-- focused validation results with the default path after the gate:
-  - `/tmp/timetable393.cnf`: `3.48s`, improved from the earlier `9.416s` baseline
-  - `/tmp/circuit.cnf`: `59.51s`, improved from `62.16s`
-  - `/tmp/kakuro112.cnf`: `29.73s`, with the gate correctly skipping the new path on this
-    `19.6M`-clause guard formula
-- larger 2025-medium timetable targets where the baseline timed out at `120s`:
-  - `SC25_Timetable_C_492...`: solved in `81.73s`
-  - `SC25_Timetable_C_495...`: solved in `19.42s`
-  - `SC25_Timetable_C_496...`: solved in `13.79s`
-- direct forced-on guard check before adding the clause-count gate:
-  - `/tmp/kakuro112.cnf`: timed out at `60s`, which is why the automatic gate is now required
-- validation:
-  - `cargo test`: `48/48`
-  - `bash tools/smoke_test.sh solver/10-bve-preprocess`: `9/9`
-
-Rejected attempts:
-
-- parse-time clause normalization: unit-clean, but exceeded the `238.7s` keep threshold before
-  completing the target run, so it was reverted
-- first binary shortcut implementation: produced an invalid UNSAT proof because it trusted stale
-  watcher blockers and skipped the reason-head invariant; fixed before keeping the final version
-- encoded binary marker in `Watcher`: unit-clean, but exceeded the incremental `180.4s` keep
-  threshold before completing, so it was reverted
-- binary-clause subsumption and binary self-subsuming-resolution analysis found zero opportunities
-  on the target formula, so no solver change was made
-- dynamic BVE candidate requeueing with the same conservative candidate limits reached `110.641s`,
-  slower than the accepted `50,000` cap BVE baseline, so it was reverted
-- a broader BVE threshold attempt exceeded the cutoff before completing and was reverted
-- raising the BVE cap to `75,000` with the same candidate thresholds reached `133.949s`, so it was
-  reverted
-- lowering the BVE cap to `20,000` reached `132.102s`, so it was reverted
-- raising the no-post-dedup BVE cap to `30,000` reached `127.683s`, so it was reverted
-- a blocker-only binary propagation fast path exceeded the cutoff before completing, so it was
-  reverted
-- lowering the medium-formula BVE cap to `1,000` exceeded the three-instance keep cutoff before
-  finishing the first instance, so it was reverted
-- binary self-subsuming resolution had about `47k` apparent timetable opportunities, but applying
-  it before BVE slowed C392 from `34.675s` to `59.358s`, and applying it after BVE also exceeded the
-  per-instance cutoff signal, so both placements were reverted
-- direct root removal in `branch_heap_pop_best` regressed the three-instance target to `142.017s`,
-  so it was reverted
-- force-inlining the branch comparator regressed the three-instance target to `141.708s`, so it was
-  reverted
-- bulk branch-heap rebuild on large backtracks hurt C392 when enabled globally and regressed e318 to
-  `102.00s` when gated to small formulas, so both versions were reverted
-- medium-formula root-unit fixpoint cleanup found extra root assignments on timetable instances but
-  regressed C392 to `51.491s`, so it was reverted
-- post-BVE pure-literal cleanup removed about `7.6k` additional timetable clauses but regressed C392
-  to `46.849s`, so it was reverted
-- small-formula binary subsumption removed e318 ternaries subsumed by derived binaries but regressed
-  e318 to `115.99s` and the three-instance target to `161.117s`, so it was reverted
-- strict MiniSat-style `grow = 0` BVE without the accepted `+8` slack was close but failed the
-  `>3%` threshold: the best run was `130.251s`, with a clean rerun at `131.139s`
-- strict BVE with a `10,000` medium cap regressed C392 to `35.353s`; strict BVE with a `4,000` cap
-  made C392 very fast at `6.707s` but regressed C393 to `129.132s`; a `4,500` cap exceeded the
-  C392 cutoff before completing
+That run also predates the directory rename; it is still the current benchmark result for the code
+now named `09-root-simp-opts`.

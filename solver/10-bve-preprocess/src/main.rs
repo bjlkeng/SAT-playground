@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -21,25 +20,6 @@ const LEARNTSIZE_FACTOR: f64 = 1.0 / 3.0;
 const LEARNTSIZE_INC: f64 = 1.1;
 const LEARNTSIZE_ADJUST_START_CONFL: usize = 50;
 const LEARNTSIZE_ADJUST_INC: f64 = 1.5;
-const SHORT_CLAUSE_KEY_LEN: usize = 5;
-const PURE_MIN_CLAUSES: usize = 100_000;
-const ROOT_UNIT_SIMPLIFY_MAX_CLAUSES: usize = 100_000;
-const BWD_SUB_MAX_CLAUSES: usize = 250_000;
-const BWD_SUB_MIN_CLAUSES: usize = 20_000;
-const BWD_SUB_SOURCE_MAX_LEN: usize = 8;
-const BWD_SUB_TARGET_MAX_LEN: usize = 32;
-const BWD_SUB_MAX_ROUNDS: usize = 2;
-const BVE_MIN_CLAUSES: usize = 100_000;
-const BVE_LARGE_FORMULA_CLAUSES: usize = 1_000_000;
-const BVE_MAX_ELIMINATED_VARS_MEDIUM: usize = 5_000;
-const BVE_MAX_ELIMINATED_VARS_LARGE: usize = 25_000;
-const BVE_CLAUSE_LIMIT: usize = 20;
-const BVE_GROW: usize = 0;
-const BVE_LOCAL_SUB_MIN_CLAUSES: usize = 150_000;
-const BVE_LOCAL_SUB_BATCH_SIZE: usize = 256;
-const BVE_LOCAL_SUB_SOURCE_MAX_LEN: usize = 3;
-const BVE_LOCAL_SUB_TARGET_MAX_LEN: usize = 8;
-const BVE_LOCAL_SUB_MAX_SOURCES: usize = 20_000;
 const CLAUSE_MARK_MASK: u32 = 0b11;
 const CLAUSE_LEARNT_BIT: u32 = 1 << 2;
 const CLAUSE_HAS_EXTRA_BIT: u32 = 1 << 3;
@@ -51,18 +31,6 @@ const CLAUSE_DELETED_MARK: u32 = 1;
 struct Watcher {
     clause_idx: u32,
     blocker: i32,
-}
-
-struct EliminatedVar {
-    var: usize,
-    clauses: Vec<Vec<i32>>,
-}
-
-struct ParsedCnf {
-    num_vars: usize,
-    clauses: Vec<Vec<i32>>,
-    preprocessing_proof_clauses: Vec<Vec<i32>>,
-    eliminated_vars: Vec<EliminatedVar>,
 }
 
 #[derive(Clone, Default)]
@@ -93,16 +61,6 @@ struct ProofStream {
 
 struct ProofLog {
     mode: ProofMode,
-}
-
-fn env_usize(key: &str) -> Option<usize> {
-    env::var(key)
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-}
-
-fn bwd_sub_max_clauses() -> usize {
-    env_usize("SAT_BWD_SUB_MAX_CLAUSES").unwrap_or(BWD_SUB_MAX_CLAUSES)
 }
 
 fn append_u32_ascii(buffer: &mut Vec<u8>, mut value: u32) {
@@ -299,10 +257,6 @@ struct Solver {
     root_unit_clauses: Vec<usize>,
     /// whether the formula already contains an empty clause
     has_empty_clause: bool,
-    /// DRAT additions produced by preprocessing before search starts
-    preprocessing_proof_clauses: Vec<Vec<i32>>,
-    /// eliminated variable clauses used to extend SAT models back to the original formula
-    eliminated_vars: Vec<EliminatedVar>,
     /// scratch buffers reused during conflict analysis
     scratch_seen: Vec<u8>,
     scratch_resolved: Vec<u8>,
@@ -319,10 +273,7 @@ struct Solver {
 
 #[inline(always)]
 fn clause_make_header(size: usize, learnt: bool, has_extra: bool, mark: u32, reloced: bool) -> u32 {
-    debug_assert!(
-        size < (1usize << 27),
-        "clause too large for packed header: {size}"
-    );
+    debug_assert!(size < (1usize << 27), "clause too large for packed header: {size}");
     (mark & CLAUSE_MARK_MASK)
         | ((learnt as u32) << 2)
         | ((has_extra as u32) << 3)
@@ -445,7 +396,9 @@ fn lit_redundant(
                 continue;
             }
             let parent_var = parent.unsigned_abs() as usize;
-            if state[parent_var] == REDUNDANT_SOURCE || state[parent_var] == REDUNDANT_REMOVABLE {
+            if state[parent_var] == REDUNDANT_SOURCE
+                || state[parent_var] == REDUNDANT_REMOVABLE
+            {
                 lit_pos += 1;
                 continue;
             }
@@ -503,24 +456,11 @@ fn lit_redundant(
 fn lit_to_index(lit: i32) -> usize {
     let var = lit.unsigned_abs() as usize;
     let base = (var - 1) * 2;
-    if lit > 0 {
-        base
-    } else {
-        base + 1
-    }
+    if lit > 0 { base } else { base + 1 }
 }
 
 impl Solver {
     fn new(num_vars: usize, clauses: Vec<Vec<i32>>) -> Self {
-        Self::new_with_preprocessing(num_vars, clauses, Vec::new(), Vec::new())
-    }
-
-    fn new_with_preprocessing(
-        num_vars: usize,
-        clauses: Vec<Vec<i32>>,
-        preprocessing_proof_clauses: Vec<Vec<i32>>,
-        eliminated_vars: Vec<EliminatedVar>,
-    ) -> Self {
         let original_clause_count = clauses.len();
         let mut occurrence_count = vec![0usize; num_vars + 1];
         for clause in &clauses {
@@ -590,8 +530,6 @@ impl Solver {
             simplify_props_remaining: 0,
             root_unit_clauses: Vec::new(),
             has_empty_clause: false,
-            preprocessing_proof_clauses,
-            eliminated_vars,
             scratch_seen: vec![0; num_vars + 1],
             scratch_resolved: vec![0; num_vars + 1],
             scratch_learned: Vec::with_capacity(16),
@@ -834,13 +772,10 @@ impl Solver {
     }
 
     fn branch_var_better(&self, lhs: usize, rhs: usize) -> bool {
-        let lhs_activity = self.activity[lhs];
-        let rhs_activity = self.activity[rhs];
-        if lhs_activity != rhs_activity {
-            lhs_activity > rhs_activity
-        } else {
-            self.branch_rank[lhs] < self.branch_rank[rhs]
-        }
+        self.activity[lhs]
+            .total_cmp(&self.activity[rhs])
+            .then_with(|| self.branch_rank[rhs].cmp(&self.branch_rank[lhs]))
+            .is_gt()
     }
 
     fn branch_heap_swap(&mut self, lhs: usize, rhs: usize) {
@@ -1098,57 +1033,6 @@ impl Solver {
                     continue;
                 }
 
-                if clause_len == 2 {
-                    if self.clause_lit(clause_idx, 0) == false_lit {
-                        self.swap_clause_lits(clause_idx, 0, 1);
-                    }
-                    if self.clause_lit(clause_idx, 1) != false_lit {
-                        continue;
-                    }
-
-                    let implied_lit = self.clause_lit(clause_idx, 0);
-                    let updated_watcher = Watcher {
-                        clause_idx: watcher.clause_idx,
-                        blocker: implied_lit,
-                    };
-                    match self.lit_value(implied_lit) {
-                        TRUE => {
-                            pending[write] = updated_watcher;
-                            write += 1;
-                        }
-                        FALSE => {
-                            pending[write] = updated_watcher;
-                            write += 1;
-                            while read < pending.len() {
-                                pending[write] = pending[read];
-                                write += 1;
-                                read += 1;
-                            }
-                            pending.truncate(write);
-                            self.watchers[watch_idx] = pending;
-                            return Some(clause_idx);
-                        }
-                        UNASSIGNED => {
-                            if !self.enqueue(implied_lit, clause_idx) {
-                                pending[write] = updated_watcher;
-                                write += 1;
-                                while read < pending.len() {
-                                    pending[write] = pending[read];
-                                    write += 1;
-                                    read += 1;
-                                }
-                                pending.truncate(write);
-                                self.watchers[watch_idx] = pending;
-                                return Some(clause_idx);
-                            }
-                            pending[write] = updated_watcher;
-                            write += 1;
-                        }
-                        _ => unreachable!(),
-                    }
-                    continue;
-                }
-
                 if self.lit_value(watcher.blocker) == TRUE {
                     pending[write] = watcher;
                     write += 1;
@@ -1298,9 +1182,9 @@ impl Solver {
         self.restart_conflicts = 0;
         self.restart_pending = true;
         self.restart_luby_index += 1;
-        self.restart_conflict_limit = self
-            .restart_unit
-            .saturating_mul(Self::luby_value(self.restart_luby_index));
+        self.restart_conflict_limit =
+            self.restart_unit
+                .saturating_mul(Self::luby_value(self.restart_luby_index));
     }
 
     fn pick_branch_lit(&mut self) -> Option<i32> {
@@ -1344,11 +1228,7 @@ impl Solver {
         self.propagate_head = self.propagate_head.min(new_trail_len);
     }
 
-    fn debug_assert_clause_asserting_after_backtrack(
-        &self,
-        learned_clause: &[i32],
-        backtrack_level: usize,
-    ) {
+    fn debug_assert_clause_asserting_after_backtrack(&self, learned_clause: &[i32], backtrack_level: usize) {
         debug_assert_eq!(self.current_level(), backtrack_level);
         debug_assert_eq!(
             self.lit_value(learned_clause[0]),
@@ -1450,10 +1330,7 @@ impl Solver {
     }
 
     fn delete_clause(&mut self, clause_idx: usize) {
-        debug_assert!(
-            clause_idx < self.arena.len(),
-            "invalid clause index {clause_idx}"
-        );
+        debug_assert!(clause_idx < self.arena.len(), "invalid clause index {clause_idx}");
         debug_assert!(
             self.clause_is_learnt(clause_idx),
             "only learned clauses may be deleted"
@@ -1472,10 +1349,7 @@ impl Solver {
     }
 
     fn mark_clause_deleted(&mut self, clause_idx: usize) {
-        debug_assert!(
-            clause_idx < self.arena.len(),
-            "invalid clause index {clause_idx}"
-        );
+        debug_assert!(clause_idx < self.arena.len(), "invalid clause index {clause_idx}");
         debug_assert!(
             self.clause_is_learnt(clause_idx),
             "only learned clauses may be deleted"
@@ -1485,10 +1359,7 @@ impl Solver {
             "clause {clause_idx} already deleted"
         );
         debug_assert!(
-            !self
-                .reason
-                .iter()
-                .any(|&reason_idx| reason_idx == clause_idx),
+            !self.reason.iter().any(|&reason_idx| reason_idx == clause_idx),
             "cannot delete clause {clause_idx} while it is still a live reason"
         );
         let learned_pos = self
@@ -1505,10 +1376,7 @@ impl Solver {
     }
 
     fn mark_clause_deleted_already_unlinked(&mut self, clause_idx: usize) {
-        debug_assert!(
-            clause_idx < self.arena.len(),
-            "invalid clause index {clause_idx}"
-        );
+        debug_assert!(clause_idx < self.arena.len(), "invalid clause index {clause_idx}");
         debug_assert!(
             self.clause_is_learnt(clause_idx),
             "only learned clauses may be deleted"
@@ -1518,10 +1386,7 @@ impl Solver {
             "clause {clause_idx} already deleted"
         );
         debug_assert!(
-            !self
-                .reason
-                .iter()
-                .any(|&reason_idx| reason_idx == clause_idx),
+            !self.reason.iter().any(|&reason_idx| reason_idx == clause_idx),
             "cannot delete clause {clause_idx} while it is still a live reason"
         );
         self.live_learned_clause_count = self.live_learned_clause_count.saturating_sub(1);
@@ -1560,27 +1425,22 @@ impl Solver {
             self.original_clause_ids.len() + self.learned_clause_ids.len()
         );
 
-        let copy_clause = |old_clause_idx: usize,
-                           arena: &[u32],
-                           new_arena: &mut Vec<u32>,
-                           reloc: &mut [usize]| {
-            let new_clause_idx = new_arena.len();
-            let old_end = old_clause_idx
-                + clause_len_in_arena(arena, old_clause_idx)
-                + 1
-                + clause_header_has_extra(arena[old_clause_idx]) as usize;
-            reloc[old_clause_idx] = new_clause_idx;
-            new_arena.extend_from_slice(&arena[old_clause_idx..old_end]);
-            new_clause_idx
-        };
+        let copy_clause =
+            |old_clause_idx: usize, arena: &[u32], new_arena: &mut Vec<u32>, reloc: &mut [usize]| {
+                let new_clause_idx = new_arena.len();
+                let old_end = old_clause_idx + clause_len_in_arena(arena, old_clause_idx) + 1
+                    + clause_header_has_extra(arena[old_clause_idx]) as usize;
+                reloc[old_clause_idx] = new_clause_idx;
+                new_arena.extend_from_slice(&arena[old_clause_idx..old_end]);
+                new_clause_idx
+            };
 
         for &old_clause_idx in &self.original_clause_ids {
             debug_assert!(
                 !self.clause_is_deleted(old_clause_idx),
                 "original clauses must stay live across garbage collection"
             );
-            let new_clause_idx =
-                copy_clause(old_clause_idx, &self.arena, &mut new_arena, &mut reloc);
+            let new_clause_idx = copy_clause(old_clause_idx, &self.arena, &mut new_arena, &mut reloc);
             new_original_clause_ids.push(new_clause_idx);
         }
         for &old_clause_idx in &self.learned_clause_ids {
@@ -1588,8 +1448,7 @@ impl Solver {
                 !self.clause_is_deleted(old_clause_idx),
                 "live learned clauses must stay live across garbage collection"
             );
-            let new_clause_idx =
-                copy_clause(old_clause_idx, &self.arena, &mut new_arena, &mut reloc);
+            let new_clause_idx = copy_clause(old_clause_idx, &self.arena, &mut new_arena, &mut reloc);
             new_learned_clause_ids.push(new_clause_idx);
         }
 
@@ -1725,7 +1584,15 @@ impl Solver {
             } else if self.ccmin_mode == CCMIN_BASIC {
                 !basic_lit_redundant(lit, arena, decision_level, reason, state)
             } else {
-                !lit_redundant(lit, arena, decision_level, reason, state, toclear, stack)
+                !lit_redundant(
+                    lit,
+                    arena,
+                    decision_level,
+                    reason,
+                    state,
+                    toclear,
+                    stack,
+                )
             };
             if keep {
                 learned_clause[write] = lit;
@@ -1860,52 +1727,6 @@ impl Solver {
         self.solve_with_proof(&mut proof_log)
     }
 
-    fn emit_preprocessing_proof(&self, proof_log: &mut ProofLog) {
-        for clause in &self.preprocessing_proof_clauses {
-            proof_log.record_clause(clause);
-        }
-    }
-
-    fn extend_eliminated_model(&mut self) {
-        for eliminated in self.eliminated_vars.iter().rev() {
-            let mut required_value = UNASSIGNED;
-            for clause in &eliminated.clauses {
-                let mut current_lit = 0;
-                let mut satisfied_without_current = false;
-                for &lit in clause {
-                    if lit.unsigned_abs() as usize == eliminated.var {
-                        current_lit = lit;
-                    } else if self.lit_value(lit) == TRUE {
-                        satisfied_without_current = true;
-                        break;
-                    }
-                }
-
-                if satisfied_without_current {
-                    continue;
-                }
-
-                debug_assert_ne!(current_lit, 0, "eliminated clause missing variable");
-                let value = if current_lit > 0 { TRUE } else { FALSE };
-                debug_assert!(
-                    required_value == UNASSIGNED || required_value == value,
-                    "inconsistent eliminated variable reconstruction"
-                );
-                required_value = value;
-            }
-
-            let value = if required_value == UNASSIGNED {
-                self.saved_phase[eliminated.var]
-            } else {
-                required_value
-            };
-            self.assignment[eliminated.var] = value;
-            self.saved_phase[eliminated.var] = value;
-            self.decision_level[eliminated.var] = 0;
-            self.reason[eliminated.var] = NO_REASON;
-        }
-    }
-
     fn solve_to_output(&mut self, output_dir: &str) -> bool {
         let mut proof_log = ProofLog::new(output_dir, PROOF_BUFFER_CAPACITY);
         let sat = self.solve_with_proof(&mut proof_log);
@@ -1918,8 +1739,6 @@ impl Solver {
     }
 
     fn solve_with_proof(&mut self, proof_log: &mut ProofLog) -> bool {
-        self.emit_preprocessing_proof(proof_log);
-
         if self.has_empty_clause || !self.enqueue_root_units() {
             return false;
         }
@@ -1997,10 +1816,7 @@ impl Solver {
                             self.decide(lit);
                             conflict = self.propagate();
                         }
-                        None => {
-                            self.extend_eliminated_model();
-                            return true;
-                        }
+                        None => return true,
                     }
                 }
             }
@@ -2015,7 +1831,9 @@ fn parse_ccmin_mode() -> u8 {
             "1" | "basic" => CCMIN_BASIC,
             "2" | "deep" => CCMIN_DEEP,
             other => {
-                eprintln!("Invalid SAT_CCMIN_MODE={other}; expected none/basic/deep or 0/1/2");
+                eprintln!(
+                    "Invalid SAT_CCMIN_MODE={other}; expected none/basic/deep or 0/1/2"
+                );
                 std::process::exit(2);
             }
         },
@@ -2036,756 +1854,7 @@ fn parse_usize_env(name: &str, default: usize) -> usize {
     }
 }
 
-#[inline(always)]
-fn clause_key_lit(lit: i32) -> u32 {
-    (lit.unsigned_abs() << 1) | u32::from(lit < 0)
-}
-
-fn short_clause_key(clause: &[i32]) -> Option<[u32; SHORT_CLAUSE_KEY_LEN]> {
-    if clause.len() >= SHORT_CLAUSE_KEY_LEN {
-        return None;
-    }
-
-    let mut key = [0; SHORT_CLAUSE_KEY_LEN];
-    key[0] = clause.len() as u32;
-    for (idx, &lit) in clause.iter().enumerate() {
-        key[idx + 1] = clause_key_lit(lit);
-    }
-    key[1..=clause.len()].sort_unstable();
-    Some(key)
-}
-
-fn sorted_clause_key(clause: &[i32]) -> Vec<i32> {
-    let mut key = clause.to_vec();
-    key.sort_unstable_by_key(|&lit| clause_key_lit(lit));
-    key
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ClauseRewrite {
-    None,
-    Subsumed,
-    Strengthen(i32),
-}
-
-fn deduplicate_clauses(clauses: Vec<Vec<i32>>) -> Vec<Vec<i32>> {
-    let mut short_seen: HashSet<[u32; SHORT_CLAUSE_KEY_LEN]> =
-        HashSet::with_capacity(clauses.len());
-    let mut long_seen: HashSet<Vec<i32>> = HashSet::new();
-    let mut unique = Vec::with_capacity(clauses.len());
-
-    for clause in clauses {
-        if let Some(key) = short_clause_key(&clause) {
-            if short_seen.insert(key) {
-                unique.push(clause);
-            }
-        } else {
-            let key = sorted_clause_key(&clause);
-            if long_seen.insert(key) {
-                unique.push(clause);
-            }
-        }
-    }
-
-    unique
-}
-
-fn merge_resolvent(lhs: &[i32], rhs: &[i32], eliminated_var: usize) -> Option<Vec<i32>> {
-    let mut merged = Vec::with_capacity(lhs.len() + rhs.len());
-
-    for clause in [lhs, rhs] {
-        'lits: for &lit in clause {
-            if lit.unsigned_abs() as usize == eliminated_var {
-                continue;
-            }
-            for &existing in &merged {
-                if existing == lit {
-                    continue 'lits;
-                }
-                if existing == -lit {
-                    return None;
-                }
-            }
-            merged.push(lit);
-        }
-    }
-
-    merged.sort_unstable_by_key(|&lit| clause_key_lit(lit));
-    Some(merged)
-}
-
-fn pure_literal_eliminate(
-    num_vars: usize,
-    clauses: Vec<Vec<i32>>,
-) -> (Vec<Vec<i32>>, Vec<EliminatedVar>) {
-    let mut pos_seen = vec![false; num_vars + 1];
-    let mut neg_seen = vec![false; num_vars + 1];
-    for clause in &clauses {
-        for &lit in clause {
-            let var = lit.unsigned_abs() as usize;
-            if lit > 0 {
-                pos_seen[var] = true;
-            } else {
-                neg_seen[var] = true;
-            }
-        }
-    }
-
-    let mut pure_value = vec![UNASSIGNED; num_vars + 1];
-    for var in 1..=num_vars {
-        pure_value[var] = match (pos_seen[var], neg_seen[var]) {
-            (true, false) => TRUE,
-            (false, true) => FALSE,
-            _ => UNASSIGNED,
-        };
-    }
-
-    let mut kept = Vec::with_capacity(clauses.len());
-    let mut eliminated_by_var = vec![Vec::<Vec<i32>>::new(); num_vars + 1];
-    for clause in clauses {
-        let pure_lit = clause.iter().copied().find(|&lit| {
-            let var = lit.unsigned_abs() as usize;
-            let value = pure_value[var];
-            value != UNASSIGNED && ((lit > 0) == (value == TRUE))
-        });
-
-        if let Some(lit) = pure_lit {
-            eliminated_by_var[lit.unsigned_abs() as usize].push(clause);
-        } else {
-            kept.push(clause);
-        }
-    }
-
-    let mut eliminated_vars = Vec::new();
-    for (var, clauses) in eliminated_by_var.into_iter().enumerate().skip(1) {
-        if clauses.is_empty() {
-            continue;
-        }
-        eliminated_vars.push(EliminatedVar { var, clauses });
-    }
-
-    (kept, eliminated_vars)
-}
-
-fn root_unit_simplify(num_vars: usize, clauses: Vec<Vec<i32>>) -> (Vec<Vec<i32>>, Vec<Vec<i32>>) {
-    if clauses.len() >= ROOT_UNIT_SIMPLIFY_MAX_CLAUSES {
-        return (clauses, Vec::new());
-    }
-
-    let mut root_value = vec![UNASSIGNED; num_vars + 1];
-    for clause in &clauses {
-        if clause.len() != 1 {
-            continue;
-        }
-        let lit = clause[0];
-        let var = lit.unsigned_abs() as usize;
-        let value = if lit > 0 { TRUE } else { FALSE };
-        if root_value[var] != UNASSIGNED && root_value[var] != value {
-            return (clauses, Vec::new());
-        }
-        root_value[var] = value;
-    }
-
-    if root_value.iter().all(|&value| value == UNASSIGNED) {
-        return (clauses, Vec::new());
-    }
-
-    let mut simplified = Vec::with_capacity(clauses.len());
-    let mut proof_clauses = Vec::new();
-    for clause in clauses {
-        if clause.len() == 1 {
-            simplified.push(clause);
-            continue;
-        }
-
-        let mut satisfied = false;
-        let mut shortened = Vec::with_capacity(clause.len());
-        for &lit in &clause {
-            let var = lit.unsigned_abs() as usize;
-            let value = root_value[var];
-            if value == UNASSIGNED {
-                shortened.push(lit);
-            } else if (lit > 0) == (value == TRUE) {
-                satisfied = true;
-                break;
-            }
-        }
-
-        if satisfied {
-            continue;
-        }
-        if shortened.len() < clause.len() {
-            proof_clauses.push(shortened.clone());
-            simplified.push(shortened);
-        } else {
-            simplified.push(clause);
-        }
-    }
-
-    (simplified, proof_clauses)
-}
-
-fn classify_subsumption(source: &[i32], target: &[i32]) -> ClauseRewrite {
-    if source.len() > target.len() || source.is_empty() {
-        return ClauseRewrite::None;
-    }
-
-    let mut src_idx = 0usize;
-    let mut tgt_idx = 0usize;
-    let mut removable = None;
-    while src_idx < source.len() && tgt_idx < target.len() {
-        let src_lit = source[src_idx];
-        let tgt_lit = target[tgt_idx];
-        if src_lit == tgt_lit {
-            src_idx += 1;
-            tgt_idx += 1;
-            continue;
-        }
-        if src_lit == -tgt_lit {
-            if removable.is_some() {
-                return ClauseRewrite::None;
-            }
-            removable = Some(tgt_lit);
-            src_idx += 1;
-            tgt_idx += 1;
-            continue;
-        }
-        let src_key = clause_key_lit(src_lit);
-        let tgt_key = clause_key_lit(tgt_lit);
-        if src_key < tgt_key {
-            return ClauseRewrite::None;
-        }
-        tgt_idx += 1;
-    }
-
-    if src_idx != source.len() {
-        return ClauseRewrite::None;
-    }
-
-    match removable {
-        Some(lit) => ClauseRewrite::Strengthen(lit),
-        None => ClauseRewrite::Subsumed,
-    }
-}
-
-fn strengthen_clause_once(target: &[i32], remove_lit: i32) -> Vec<i32> {
-    let mut strengthened = Vec::with_capacity(target.len().saturating_sub(1));
-    let mut removed = false;
-    for &lit in target {
-        if !removed && lit == remove_lit {
-            removed = true;
-            continue;
-        }
-        strengthened.push(lit);
-    }
-    strengthened
-}
-
-fn backward_subsumption_strengthen(
-    num_vars: usize,
-    clauses: Vec<Vec<i32>>,
-) -> (Vec<Vec<i32>>, Vec<Vec<i32>>) {
-    if clauses.len() < BWD_SUB_MIN_CLAUSES || clauses.len() > bwd_sub_max_clauses() {
-        return (clauses, Vec::new());
-    }
-
-    let trace = env::var("SAT_TRACE_PREPROCESS").is_ok();
-    let mut active: Vec<Option<Vec<i32>>> = clauses
-        .into_iter()
-        .map(|mut clause| {
-            clause.sort_unstable_by_key(|&lit| clause_key_lit(lit));
-            Some(clause)
-        })
-        .collect();
-    let mut proof_clauses = Vec::new();
-    let mut total_subsumed = 0usize;
-    let mut total_strengthened = 0usize;
-
-    for _round in 0..BWD_SUB_MAX_ROUNDS {
-        let mut occurs = vec![Vec::<usize>::new(); num_vars + 1];
-        for (clause_idx, clause) in active.iter().enumerate() {
-            let Some(clause) = clause else {
-                continue;
-            };
-            for &lit in clause {
-                occurs[lit.unsigned_abs() as usize].push(clause_idx);
-            }
-        }
-
-        let mut changed = false;
-        for clause_idx in 0..active.len() {
-            let Some(source_clause) = active[clause_idx].clone() else {
-                continue;
-            };
-            if source_clause.len() > BWD_SUB_SOURCE_MAX_LEN {
-                continue;
-            }
-
-            let mut best_var = source_clause[0].unsigned_abs() as usize;
-            let mut best_count = occurs[best_var].len();
-            for &lit in source_clause.iter().skip(1) {
-                let var = lit.unsigned_abs() as usize;
-                let count = occurs[var].len();
-                if count < best_count {
-                    best_var = var;
-                    best_count = count;
-                }
-            }
-
-            for &target_idx in &occurs[best_var] {
-                if target_idx == clause_idx {
-                    continue;
-                }
-                let Some(target_clause) = active[target_idx].as_ref() else {
-                    continue;
-                };
-                if target_clause.len() > BWD_SUB_TARGET_MAX_LEN {
-                    continue;
-                }
-
-                match classify_subsumption(&source_clause, target_clause) {
-                    ClauseRewrite::None => {}
-                    ClauseRewrite::Subsumed => {
-                        active[target_idx] = None;
-                        total_subsumed += 1;
-                        changed = true;
-                    }
-                    ClauseRewrite::Strengthen(remove_lit) => {
-                        let strengthened = strengthen_clause_once(target_clause, remove_lit);
-                        if strengthened.len() < target_clause.len() {
-                            proof_clauses.push(strengthened.clone());
-                            active[target_idx] = Some(strengthened);
-                            total_strengthened += 1;
-                            changed = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        if !changed {
-            break;
-        }
-    }
-
-    if trace {
-        eprintln!(
-            "c bwd-sub: subsumed={} strengthened={} live_clauses={}",
-            total_subsumed,
-            total_strengthened,
-            active.iter().filter(|clause| clause.is_some()).count()
-        );
-    }
-
-    let simplified = active.into_iter().flatten().collect();
-    (simplified, proof_clauses)
-}
-
-fn collect_bve_candidates(
-    num_vars: usize,
-    occurs_pos: &[Vec<usize>],
-    occurs_neg: &[Vec<usize>],
-) -> Vec<(isize, usize, usize, usize)> {
-    let mut candidates = Vec::new();
-    for var in 1..=num_vars {
-        let pos = occurs_pos[var].len();
-        let neg = occurs_neg[var].len();
-        if pos == 0 || neg == 0 {
-            continue;
-        }
-        let product = pos.saturating_mul(neg);
-        let occurrences = pos + neg;
-        if occurrences <= 80 && product <= occurrences + BVE_GROW + 8 {
-            let growth = product as isize - occurrences as isize;
-            candidates.push((growth, product, occurrences, var));
-        }
-    }
-    candidates.sort_unstable();
-    candidates
-}
-
-fn batch_local_subsumption_strengthen(
-    num_vars: usize,
-    clauses: Vec<Vec<i32>>,
-    touched_vars: &[bool],
-) -> (Vec<Vec<i32>>, Vec<Vec<i32>>, usize, usize) {
-    let mut active: Vec<Option<Vec<i32>>> = clauses
-        .into_iter()
-        .map(|mut clause| {
-            clause.sort_unstable_by_key(|&lit| clause_key_lit(lit));
-            Some(clause)
-        })
-        .collect();
-    let mut occurs = vec![Vec::<usize>::new(); num_vars + 1];
-    for (clause_idx, clause) in active.iter().enumerate() {
-        let Some(clause) = clause else {
-            continue;
-        };
-        for &lit in clause {
-            occurs[lit.unsigned_abs() as usize].push(clause_idx);
-        }
-    }
-
-    let mut source_indices = Vec::new();
-    for (clause_idx, clause) in active.iter().enumerate() {
-        let Some(clause) = clause else {
-            continue;
-        };
-        if clause.len() > BVE_LOCAL_SUB_SOURCE_MAX_LEN {
-            continue;
-        }
-        if !clause
-            .iter()
-            .any(|&lit| touched_vars[lit.unsigned_abs() as usize])
-        {
-            continue;
-        }
-        source_indices.push(clause_idx);
-        if source_indices.len() >= BVE_LOCAL_SUB_MAX_SOURCES {
-            break;
-        }
-    }
-
-    let mut proof_clauses = Vec::new();
-    let mut total_subsumed = 0usize;
-    let mut total_strengthened = 0usize;
-    for clause_idx in source_indices {
-        let Some(source_clause) = active[clause_idx].clone() else {
-            continue;
-        };
-
-        let mut best_var = source_clause[0].unsigned_abs() as usize;
-        let mut best_count = occurs[best_var].len();
-        for &lit in source_clause.iter().skip(1) {
-            let var = lit.unsigned_abs() as usize;
-            let count = occurs[var].len();
-            if count < best_count {
-                best_var = var;
-                best_count = count;
-            }
-        }
-
-        for &target_idx in &occurs[best_var] {
-            if target_idx == clause_idx {
-                continue;
-            }
-            let Some(target_clause) = active[target_idx].as_ref() else {
-                continue;
-            };
-            if target_clause.len() > BVE_LOCAL_SUB_TARGET_MAX_LEN {
-                continue;
-            }
-
-            match classify_subsumption(&source_clause, target_clause) {
-                ClauseRewrite::None => {}
-                ClauseRewrite::Subsumed => {
-                    active[target_idx] = None;
-                    total_subsumed += 1;
-                }
-                ClauseRewrite::Strengthen(remove_lit) => {
-                    let strengthened = strengthen_clause_once(target_clause, remove_lit);
-                    if strengthened.len() < target_clause.len() {
-                        proof_clauses.push(strengthened.clone());
-                        active[target_idx] = Some(strengthened);
-                        total_strengthened += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    let simplified = active.into_iter().flatten().collect();
-    (
-        simplified,
-        proof_clauses,
-        total_subsumed,
-        total_strengthened,
-    )
-}
-
-fn bounded_variable_eliminate_with_local_sub(
-    num_vars: usize,
-    clauses: Vec<Vec<i32>>,
-) -> (Vec<Vec<i32>>, Vec<Vec<i32>>, Vec<EliminatedVar>) {
-    if clauses.len() < BVE_MIN_CLAUSES {
-        return (clauses, Vec::new(), Vec::new());
-    }
-
-    let max_eliminated_vars = if clauses.len() >= BVE_LARGE_FORMULA_CLAUSES {
-        BVE_MAX_ELIMINATED_VARS_LARGE
-    } else {
-        BVE_MAX_ELIMINATED_VARS_MEDIUM
-    };
-    let trace = env::var("SAT_TRACE_PREPROCESS").is_ok();
-    let mut current_clauses = clauses;
-    let mut proof_clauses = Vec::new();
-    let mut eliminated_vars = Vec::new();
-
-    while eliminated_vars.len() < max_eliminated_vars {
-        let mut active = vec![true; current_clauses.len()];
-        let mut occurs_pos = vec![Vec::<usize>::new(); num_vars + 1];
-        let mut occurs_neg = vec![Vec::<usize>::new(); num_vars + 1];
-        for (idx, clause) in current_clauses.iter().enumerate() {
-            for &lit in clause {
-                let var = lit.unsigned_abs() as usize;
-                if lit > 0 {
-                    occurs_pos[var].push(idx);
-                } else {
-                    occurs_neg[var].push(idx);
-                }
-            }
-        }
-
-        let candidates = collect_bve_candidates(num_vars, &occurs_pos, &occurs_neg);
-        if candidates.is_empty() {
-            break;
-        }
-
-        let mut batch_eliminated = 0usize;
-        let mut touched_vars = vec![false; num_vars + 1];
-        for &(_, _, _, var) in &candidates {
-            if eliminated_vars.len() >= max_eliminated_vars
-                || batch_eliminated >= BVE_LOCAL_SUB_BATCH_SIZE
-            {
-                break;
-            }
-
-            let pos: Vec<usize> = occurs_pos[var]
-                .iter()
-                .copied()
-                .filter(|&idx| active[idx])
-                .collect();
-            let neg: Vec<usize> = occurs_neg[var]
-                .iter()
-                .copied()
-                .filter(|&idx| active[idx])
-                .collect();
-            if pos.is_empty() || neg.is_empty() {
-                continue;
-            }
-
-            let occurrence_count = pos.len() + neg.len();
-            if occurrence_count > 80
-                || pos.len().saturating_mul(neg.len()) > occurrence_count + BVE_GROW + 8
-            {
-                continue;
-            }
-
-            let mut resolvents = Vec::new();
-            let mut can_eliminate = true;
-            'pairs: for &pos_idx in &pos {
-                for &neg_idx in &neg {
-                    if let Some(resolvent) =
-                        merge_resolvent(&current_clauses[pos_idx], &current_clauses[neg_idx], var)
-                    {
-                        if resolvent.len() > BVE_CLAUSE_LIMIT {
-                            can_eliminate = false;
-                            break 'pairs;
-                        }
-                        resolvents.push(resolvent);
-                        if resolvents.len() > occurrence_count + BVE_GROW {
-                            can_eliminate = false;
-                            break 'pairs;
-                        }
-                    }
-                }
-            }
-            if !can_eliminate {
-                continue;
-            }
-
-            let mut eliminated_clauses = Vec::with_capacity(occurrence_count);
-            for &idx in pos.iter().chain(neg.iter()) {
-                if active[idx] {
-                    for &lit in &current_clauses[idx] {
-                        touched_vars[lit.unsigned_abs() as usize] = true;
-                    }
-                    eliminated_clauses.push(current_clauses[idx].clone());
-                    active[idx] = false;
-                }
-            }
-
-            for resolvent in resolvents {
-                let idx = current_clauses.len();
-                for &lit in &resolvent {
-                    let lit_var = lit.unsigned_abs() as usize;
-                    touched_vars[lit_var] = true;
-                    if lit > 0 {
-                        occurs_pos[lit_var].push(idx);
-                    } else {
-                        occurs_neg[lit_var].push(idx);
-                    }
-                }
-                proof_clauses.push(resolvent.clone());
-                current_clauses.push(resolvent);
-                active.push(true);
-            }
-
-            eliminated_vars.push(EliminatedVar {
-                var,
-                clauses: eliminated_clauses,
-            });
-            batch_eliminated += 1;
-        }
-
-        if batch_eliminated == 0 {
-            break;
-        }
-
-        let reduced: Vec<Vec<i32>> = current_clauses
-            .into_iter()
-            .zip(active)
-            .filter_map(|(clause, is_active)| is_active.then_some(clause))
-            .collect();
-        let (rewritten, local_proof, subsumed, strengthened) =
-            batch_local_subsumption_strengthen(num_vars, reduced, &touched_vars);
-        if trace {
-            eprintln!(
-                "c bve-local-sub: batch_elims={} subsumed={} strengthened={} live_clauses={}",
-                batch_eliminated,
-                subsumed,
-                strengthened,
-                rewritten.len()
-            );
-        }
-        proof_clauses.extend(local_proof);
-        current_clauses = rewritten;
-    }
-
-    (current_clauses, proof_clauses, eliminated_vars)
-}
-
-fn bounded_variable_eliminate(
-    num_vars: usize,
-    clauses: Vec<Vec<i32>>,
-) -> (Vec<Vec<i32>>, Vec<Vec<i32>>, Vec<EliminatedVar>) {
-    if clauses.len() < BVE_MIN_CLAUSES {
-        return (clauses, Vec::new(), Vec::new());
-    }
-
-    let max_eliminated_vars = if clauses.len() >= BVE_LARGE_FORMULA_CLAUSES {
-        BVE_MAX_ELIMINATED_VARS_LARGE
-    } else {
-        BVE_MAX_ELIMINATED_VARS_MEDIUM
-    };
-
-    let mut clauses = clauses;
-    let mut active = vec![true; clauses.len()];
-    let mut occurs_pos = vec![Vec::<usize>::new(); num_vars + 1];
-    let mut occurs_neg = vec![Vec::<usize>::new(); num_vars + 1];
-    for (idx, clause) in clauses.iter().enumerate() {
-        for &lit in clause {
-            let var = lit.unsigned_abs() as usize;
-            if lit > 0 {
-                occurs_pos[var].push(idx);
-            } else {
-                occurs_neg[var].push(idx);
-            }
-        }
-    }
-
-    let candidates = collect_bve_candidates(num_vars, &occurs_pos, &occurs_neg);
-
-    let mut proof_clauses = Vec::new();
-    let mut eliminated_vars = Vec::new();
-
-    for &(_, _, _, var) in &candidates {
-        if eliminated_vars.len() >= max_eliminated_vars {
-            break;
-        }
-
-        let pos: Vec<usize> = occurs_pos[var]
-            .iter()
-            .copied()
-            .filter(|&idx| active[idx])
-            .collect();
-        let neg: Vec<usize> = occurs_neg[var]
-            .iter()
-            .copied()
-            .filter(|&idx| active[idx])
-            .collect();
-        if pos.is_empty() || neg.is_empty() {
-            continue;
-        }
-
-        let occurrence_count = pos.len() + neg.len();
-        if occurrence_count > 80
-            || pos.len().saturating_mul(neg.len()) > occurrence_count + BVE_GROW + 8
-        {
-            continue;
-        }
-
-        let mut resolvents = Vec::new();
-        let mut can_eliminate = true;
-        'pairs: for &pos_idx in &pos {
-            for &neg_idx in &neg {
-                if let Some(resolvent) = merge_resolvent(&clauses[pos_idx], &clauses[neg_idx], var)
-                {
-                    if resolvent.len() > BVE_CLAUSE_LIMIT {
-                        can_eliminate = false;
-                        break 'pairs;
-                    }
-                    resolvents.push(resolvent);
-                    if resolvents.len() > occurrence_count + BVE_GROW {
-                        can_eliminate = false;
-                        break 'pairs;
-                    }
-                }
-            }
-        }
-        if !can_eliminate {
-            continue;
-        }
-
-        let mut eliminated_clauses = Vec::with_capacity(occurrence_count);
-        for &idx in pos.iter().chain(neg.iter()) {
-            if active[idx] {
-                eliminated_clauses.push(clauses[idx].clone());
-                active[idx] = false;
-            }
-        }
-
-        for resolvent in resolvents {
-            let idx = clauses.len();
-            for &lit in &resolvent {
-                let lit_var = lit.unsigned_abs() as usize;
-                if lit > 0 {
-                    occurs_pos[lit_var].push(idx);
-                } else {
-                    occurs_neg[lit_var].push(idx);
-                }
-            }
-            proof_clauses.push(resolvent.clone());
-            clauses.push(resolvent);
-            active.push(true);
-        }
-
-        eliminated_vars.push(EliminatedVar {
-            var,
-            clauses: eliminated_clauses,
-        });
-    }
-
-    let reduced = clauses
-        .into_iter()
-        .zip(active)
-        .filter_map(|(clause, is_active)| is_active.then_some(clause))
-        .collect();
-
-    (reduced, proof_clauses, eliminated_vars)
-}
-
-fn should_use_bve_local_sub(clause_count: usize) -> bool {
-    if env::var("SAT_DISABLE_BVE_LOCAL_SUB").is_ok() {
-        return false;
-    }
-    if env::var("SAT_BVE_LOCAL_SUB").is_ok() {
-        return true;
-    }
-    clause_count >= BVE_LOCAL_SUB_MIN_CLAUSES
-}
-
-fn parse_cnf(path: &str) -> ParsedCnf {
+fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
     let file = fs::File::open(path).unwrap_or_else(|e| {
         eprintln!("Error opening {}: {}", path, e);
         std::process::exit(1);
@@ -2829,30 +1898,7 @@ fn parse_cnf(path: &str) -> ParsedCnf {
         clauses.push(current_clause);
     }
 
-    let clauses = deduplicate_clauses(clauses);
-    let (clauses, mut root_unit_proof_clauses) = root_unit_simplify(num_vars, clauses);
-    let (clauses, mut bwd_sub_proof_clauses) = backward_subsumption_strengthen(num_vars, clauses);
-    let (clauses, mut eliminated_vars) = if clauses.len() >= PURE_MIN_CLAUSES {
-        pure_literal_eliminate(num_vars, clauses)
-    } else {
-        (clauses, Vec::new())
-    };
-    let (clauses, bve_proof_clauses, bve_eliminated_vars) =
-        if should_use_bve_local_sub(clauses.len()) {
-            bounded_variable_eliminate_with_local_sub(num_vars, clauses)
-        } else {
-            bounded_variable_eliminate(num_vars, clauses)
-        };
-    root_unit_proof_clauses.append(&mut bwd_sub_proof_clauses);
-    root_unit_proof_clauses.extend(bve_proof_clauses);
-    eliminated_vars.extend(bve_eliminated_vars);
-
-    ParsedCnf {
-        num_vars,
-        clauses,
-        preprocessing_proof_clauses: root_unit_proof_clauses,
-        eliminated_vars,
-    }
+    (num_vars, clauses)
 }
 
 fn print_assignment(assignment: &[u8]) {
@@ -2884,13 +1930,8 @@ fn main() {
     let cnf_path = &args[1];
     let output_dir = &args[2];
 
-    let parsed = parse_cnf(cnf_path);
-    let mut solver = Solver::new_with_preprocessing(
-        parsed.num_vars,
-        parsed.clauses,
-        parsed.preprocessing_proof_clauses,
-        parsed.eliminated_vars,
-    );
+    let (num_vars, clauses) = parse_cnf(cnf_path);
+    let mut solver = Solver::new(num_vars, clauses);
     solver.ccmin_mode = parse_ccmin_mode();
     solver.reduce_db_limit = parse_usize_env("SAT_REDUCE_DB_INIT", solver.reduce_db_limit);
     solver.learntsize_adjust_cnt =
@@ -3040,147 +2081,6 @@ mod tests {
     fn test_no_clauses_sat() {
         let mut s = make_solver(3, vec![]);
         assert!(s.solve());
-    }
-
-    #[test]
-    fn test_deduplicate_clauses_removes_permuted_duplicates() {
-        let clauses = vec![vec![1, -2, 3], vec![3, 1, -2], vec![4, 5], vec![5, 4]];
-
-        assert_eq!(
-            deduplicate_clauses(clauses),
-            vec![vec![1, -2, 3], vec![4, 5]]
-        );
-    }
-
-    #[test]
-    fn test_merge_resolvent_drops_eliminated_variable_and_tautologies() {
-        assert_eq!(merge_resolvent(&[1, 2], &[-1, 3], 1), Some(vec![2, 3]));
-        assert_eq!(merge_resolvent(&[1, 2], &[-1, -2], 1), None);
-    }
-
-    #[test]
-    fn test_pure_literal_eliminate_removes_clauses_and_extends_model() {
-        let clauses = vec![vec![1, 2], vec![1, 3], vec![-2, 3], vec![2, -3]];
-        let (kept, eliminated_vars) = pure_literal_eliminate(3, clauses);
-
-        assert_eq!(kept, vec![vec![-2, 3], vec![2, -3]]);
-        assert_eq!(eliminated_vars.len(), 1);
-        assert_eq!(eliminated_vars[0].var, 1);
-
-        let mut s = Solver::new_with_preprocessing(3, kept, Vec::new(), eliminated_vars);
-        assert!(s.solve());
-        assert_eq!(s.assignment[1], TRUE);
-    }
-
-    #[test]
-    fn test_root_unit_simplify_removes_satisfied_and_strengthens_false_literals() {
-        let clauses = vec![vec![1], vec![-1, 2, 3], vec![1, 4], vec![-2, 3]];
-
-        let (simplified, proof_clauses) = root_unit_simplify(4, clauses);
-
-        assert_eq!(simplified, vec![vec![1], vec![2, 3], vec![-2, 3]]);
-        assert_eq!(proof_clauses, vec![vec![2, 3]]);
-    }
-
-    #[test]
-    fn test_classify_subsumption_detects_subsumed_and_strengthened_targets() {
-        assert_eq!(
-            classify_subsumption(&[1, 2], &[1, 2, 3]),
-            ClauseRewrite::Subsumed
-        );
-        assert_eq!(
-            classify_subsumption(&[1, 2], &[1, -2, 3]),
-            ClauseRewrite::Strengthen(-2)
-        );
-        assert_eq!(
-            classify_subsumption(&[1, 2], &[1, -2, -3]),
-            ClauseRewrite::Strengthen(-2)
-        );
-    }
-
-    #[test]
-    fn test_backward_subsumption_strengthen_rewrites_candidate_clauses() {
-        let mut clauses = vec![vec![1, 2], vec![1, 2, 3], vec![1, -2, 4]];
-        while clauses.len() < BWD_SUB_MIN_CLAUSES {
-            clauses.push(vec![10, 11, 12, 13, 14, 15, 16, 17, clauses.len() as i32 + 20]);
-        }
-
-        let (simplified, proof_clauses) = backward_subsumption_strengthen(100_000, clauses);
-
-        assert!(simplified.contains(&vec![1, 2]));
-        assert!(!simplified.contains(&vec![1, 2, 3]));
-        assert!(simplified.contains(&vec![1, 4]));
-        assert!(proof_clauses.contains(&vec![1, 4]));
-    }
-
-    #[test]
-    fn test_strengthen_clause_once_removes_only_first_duplicate_literal() {
-        assert_eq!(strengthen_clause_once(&[1, -2, -2, 4], -2), vec![1, -2, 4]);
-    }
-
-    #[test]
-    fn test_batch_local_subsumption_strengthen_only_uses_touched_sources() {
-        let clauses = vec![vec![1, 2], vec![1, 2, 3], vec![4, 5], vec![4, 5, 6]];
-        let mut touched = vec![false; 7];
-        touched[1] = true;
-
-        let (simplified, proof_clauses, subsumed, strengthened) =
-            batch_local_subsumption_strengthen(6, clauses, &touched);
-
-        assert!(simplified.contains(&vec![1, 2]));
-        assert!(!simplified.contains(&vec![1, 2, 3]));
-        assert!(simplified.contains(&vec![4, 5, 6]));
-        assert_eq!(subsumed, 1);
-        assert_eq!(strengthened, 0);
-        assert!(proof_clauses.is_empty());
-    }
-
-    #[test]
-    fn test_bve_local_sub_tracks_new_resolvents_for_later_eliminations() {
-        let mut clauses = vec![vec![1, 2], vec![-1, 3], vec![2, 4], vec![-2, 5]];
-        while clauses.len() < BVE_MIN_CLAUSES {
-            clauses.push(vec![6, 7]);
-        }
-
-        let (reduced, _proof_clauses, eliminated_vars) =
-            bounded_variable_eliminate_with_local_sub(7, clauses);
-
-        assert!(eliminated_vars.iter().any(|eliminated| eliminated.var == 1));
-        assert!(eliminated_vars.iter().any(|eliminated| eliminated.var == 2));
-        assert!(
-            reduced
-                .iter()
-                .all(|clause| clause.iter().all(|&lit| lit.unsigned_abs() as usize != 2))
-        );
-    }
-
-    #[test]
-    fn test_eliminated_model_extension_sets_required_value() {
-        let mut s = Solver::new_with_preprocessing(
-            2,
-            vec![vec![2]],
-            Vec::new(),
-            vec![EliminatedVar {
-                var: 1,
-                clauses: vec![vec![1, -2]],
-            }],
-        );
-
-        assert!(s.solve());
-        assert_eq!(s.assignment[1], TRUE);
-        assert_eq!(s.assignment[2], TRUE);
-    }
-
-    #[test]
-    fn test_binary_bcp_enqueues_blocker_as_reason_head() {
-        let mut s = make_solver(2, vec![vec![1, 2]]);
-
-        s.decide(-1);
-        assert_eq!(s.propagate(), None);
-
-        assert_eq!(s.lit_value(2), TRUE);
-        assert_eq!(s.reason[2], 0);
-        assert_eq!(watched_literals(&s, 0), Some((2, 1)));
     }
 
     #[test]
@@ -3397,12 +2297,16 @@ mod tests {
         let mut s = make_solver(3, vec![]);
         let clause_idx = s.add_clause(vec![3, 1, 2]);
 
-        assert!(s.watchers[s.lit_index(3)]
-            .iter()
-            .any(|watcher| watcher.clause_idx as usize == clause_idx));
-        assert!(s.watchers[s.lit_index(1)]
-            .iter()
-            .any(|watcher| watcher.clause_idx as usize == clause_idx));
+        assert!(
+            s.watchers[s.lit_index(3)]
+                .iter()
+                .any(|watcher| watcher.clause_idx as usize == clause_idx)
+        );
+        assert!(
+            s.watchers[s.lit_index(1)]
+                .iter()
+                .any(|watcher| watcher.clause_idx as usize == clause_idx)
+        );
 
         s.delete_clause(clause_idx);
 
@@ -3410,12 +2314,16 @@ mod tests {
         assert_eq!(s.learned_clause_count(), 0);
         assert!(s.learned_clause_ids.is_empty());
         assert_eq!(s.stats.deleted_clauses, 1);
-        assert!(s.watchers[s.lit_index(3)]
-            .iter()
-            .all(|watcher| watcher.clause_idx as usize != clause_idx));
-        assert!(s.watchers[s.lit_index(1)]
-            .iter()
-            .all(|watcher| watcher.clause_idx as usize != clause_idx));
+        assert!(
+            s.watchers[s.lit_index(3)]
+                .iter()
+                .all(|watcher| watcher.clause_idx as usize != clause_idx)
+        );
+        assert!(
+            s.watchers[s.lit_index(1)]
+                .iter()
+                .all(|watcher| watcher.clause_idx as usize != clause_idx)
+        );
     }
 
     #[test]
@@ -3553,7 +2461,12 @@ mod tests {
 
     #[test]
     fn test_cdcl_solves_unsat_with_learned_unit_shortcut() {
-        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
+        let clauses = vec![
+            vec![1, 2],
+            vec![-1, 2],
+            vec![1, -2],
+            vec![-1, -2],
+        ];
         let mut s = make_solver(2, clauses);
         assert!(!s.solve());
         assert_eq!(
@@ -3641,13 +2554,18 @@ mod tests {
 
     #[test]
     fn test_unsat_proof_logs_learned_clause_before_empty_clause() {
-        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
+        let clauses = vec![
+            vec![1, 2],
+            vec![-1, 2],
+            vec![1, -2],
+            vec![-1, -2],
+        ];
         let proof_dir = make_temp_dir("solver-unsat-proof");
         let mut s = make_solver(2, clauses);
         assert!(!s.solve_to_output(proof_dir.to_str().expect("utf8 temp dir")));
 
-        let proof_text =
-            fs::read_to_string(proof_dir.join("proof.out")).expect("failed to read emitted proof");
+        let proof_text = fs::read_to_string(proof_dir.join("proof.out"))
+            .expect("failed to read emitted proof");
         let proof_lines: Vec<_> = proof_text.lines().collect();
         assert!(
             proof_lines.len() >= 2,
@@ -3804,7 +2722,12 @@ mod tests {
 
     #[test]
     fn test_conflict_bumps_variable_activity() {
-        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
+        let clauses = vec![
+            vec![1, 2],
+            vec![-1, 2],
+            vec![1, -2],
+            vec![-1, -2],
+        ];
         let mut s = make_solver(2, clauses);
 
         assert!(!s.solve());
