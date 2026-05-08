@@ -346,6 +346,15 @@ Important invariant to keep:
   preprocessing insertion paths, matching MiniSat's `addClause_()` expectation that eliminated vars
   never reappear in new problem clauses
 
+Important identity rule:
+
+- preprocessing helpers must define clearly whether an operation preserves a clause id or replaces
+  it with a new semantic object
+- this matters most for strengthening, where a clause can shrink, become a unit, or be deleted
+- any id-preserving path must keep watcher state, occurrence membership, queue-dedup state, and
+  root-reason references coherent for that same id
+- any id-replacing path must clear all old references before exposing the replacement object
+
 ### D. Separate "deleted in arena" from "present in occurrence list"
 
 Occurrence lists should be lazy-cleaned, as in MiniSat's `OccLists`:
@@ -550,6 +559,19 @@ Important mismatch to resolve:
 - add a generic "remove literal from clause and restore watched invariant" helper rather than
   reusing `trim_root_false_literals()`
 
+Binary-to-unit design note:
+
+- MiniSat's `strengthenClause()` can conceptually turn a binary clause into a unit while reusing the
+  underlying clause storage, but the current Rust arena/update model may make that awkward
+- the Rust port should choose one explicit strategy:
+  - preserve the same clause id as a live unit representation, or
+  - delete the binary clause and create/update a separate unit representation
+- whichever strategy is chosen, it must also update:
+  - root-unit bookkeeping
+  - root reasons
+  - occurrence membership / dirty bits
+  - queued-for-subsumption state for the old and new representations
+
 ### 5. `asymm()` / `asymm_var()`
 
 Purpose:
@@ -673,6 +695,16 @@ Specific repo risk to remember:
   a proof acceptable to this repo's checker flow
 - that case is operationally different from "CDCL learned the empty clause", so it deserves its
   own acceptance test once preprocessing proof support exists
+
+Queue/dedup bookkeeping risk to remember:
+
+- MiniSat uses clause mark bits while gathering touched clauses to avoid duplicate work in the
+  subsumption queue
+- the Rust plan currently prefers explicit queue-dedup state keyed by clause id
+- if a clause is deleted, relocated, or replaced during strengthening, that dedup state must be
+  cleared or migrated in lockstep
+- otherwise the solver can end up permanently skipping needed backward-subsumption work or
+  resurrecting stale queue entries
 
 ### Clause normalization and solver-status handling
 
@@ -826,6 +858,8 @@ Tests first:
 - strengthening a binary clause yields a unit and propagates it
 - deleting or strengthening a locked root reason leaves `reason[var]` pointing at a valid live
   clause or `NO_REASON` as appropriate
+- strengthening that replaces a clause representation clears or remaps any queued/dedup state tied
+  to the old clause id
 
 ### Phase 3: touched-clause and backward-subsumption pipeline
 
@@ -925,6 +959,7 @@ Add targeted unit tests for:
 - original-clause canonicalization parity with MiniSat-style `addClause_()`
 - clause-abstraction storage / lookup correctness for backward-subsumption candidates
 - touched-clause queue dedup
+- queue-dedup state stays correct when clauses are deleted, relocated, or replaced by strengthening
 - backward subsumption delete case
 - backward subsumption strengthen case
 - asymmetric branching strengthen case
