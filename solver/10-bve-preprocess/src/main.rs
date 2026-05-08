@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 mod simp;
 
@@ -30,6 +31,7 @@ const CLAUSE_SIZE_SHIFT: u32 = 5;
 const CLAUSE_DELETED_MARK: u32 = 1;
 const DEFAULT_BVE_GROW: isize = 0;
 const DEFAULT_BVE_CLAUSE_LIMIT: isize = 20;
+const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Watcher {
@@ -56,6 +58,10 @@ struct SolverStats {
     deleted_clauses: u64,
     garbage_collections: u64,
     learned_clauses: u64,
+    preprocess_eliminated_vars: u64,
+    preprocess_resolvents: u64,
+    preprocess_subsumed_clauses: u64,
+    preprocess_strengthened_clauses: u64,
 }
 
 enum ProofMode {
@@ -198,6 +204,8 @@ struct Solver {
     arena: Vec<u32>,
     /// references to original clauses inside `arena`
     original_clause_ids: Vec<usize>,
+    /// MiniSat-style variable abstraction for original clauses, indexed by arena clause offset.
+    clause_abstraction: Vec<u64>,
     /// live learned-clause ids, mirroring MiniSat's dedicated `learnts` vector
     learned_clause_ids: Vec<usize>,
     /// clauses currently watching each literal, with blocker fast path
@@ -281,6 +289,10 @@ struct Solver {
     bve_grow: isize,
     /// maximum resolvent size allowed during variable elimination; negative means unlimited
     bve_clause_limit: isize,
+    /// maximum candidate clause size checked during backward subsumption; negative means unlimited
+    subsumption_lim: isize,
+    /// number of root assignments already fed through backward subsumption
+    bwdsub_assigns: usize,
     /// variables protected from elimination
     frozen: Vec<bool>,
     /// variables already eliminated from the live formula
@@ -357,6 +369,15 @@ fn lit_to_word(lit: i32) -> u32 {
 #[inline(always)]
 fn word_to_lit(word: u32) -> i32 {
     word as i32
+}
+
+#[inline(always)]
+fn clause_abstraction_from_lits(lits: &[i32]) -> u64 {
+    let mut abstraction = 0u64;
+    for &lit in lits {
+        abstraction |= 1u64 << (lit.unsigned_abs() & 63);
+    }
+    abstraction
 }
 
 #[inline(always)]
@@ -540,6 +561,7 @@ impl Solver {
         let mut solver = Solver {
             arena,
             original_clause_ids,
+            clause_abstraction: Vec::new(),
             learned_clause_ids: Vec::new(),
             watchers: vec![Vec::new(); num_vars.saturating_mul(2)],
             watch_scratch: Vec::new(),
@@ -581,6 +603,8 @@ impl Solver {
             use_elim: true,
             bve_grow: DEFAULT_BVE_GROW,
             bve_clause_limit: DEFAULT_BVE_CLAUSE_LIMIT,
+            subsumption_lim: DEFAULT_SUBSUMPTION_LIMIT,
+            bwdsub_assigns: 0,
             frozen: vec![false; num_vars + 1],
             eliminated: vec![false; num_vars + 1],
             occurs: vec![Vec::new(); num_vars + 1],
@@ -704,6 +728,37 @@ impl Solver {
         let start = clause_idx + 1;
         let end = start + self.clause_len(clause_idx);
         unsafe { words_as_lits(&self.arena[start..end]) }
+    }
+
+    #[inline(always)]
+    fn original_clause_abstraction(&self, clause_idx: usize) -> u64 {
+        self.clause_abstraction
+            .get(clause_idx)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn set_original_clause_abstraction(&mut self, clause_idx: usize, abstraction: u64) {
+        if self.clause_abstraction.len() <= clause_idx {
+            self.clause_abstraction
+                .resize(self.arena.len().max(clause_idx + 1), 0);
+        }
+        self.clause_abstraction[clause_idx] = abstraction;
+    }
+
+    fn ensure_original_clause_abstractions(&mut self) {
+        if self.clause_abstraction.len() >= self.arena.len() {
+            return;
+        }
+        self.clause_abstraction.clear();
+        self.clause_abstraction.resize(self.arena.len(), 0);
+        let original_clause_ids = self.original_clause_ids.clone();
+        for clause_idx in original_clause_ids {
+            if clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx) {
+                self.clause_abstraction[clause_idx] =
+                    clause_abstraction_from_lits(self.clause_slice(clause_idx));
+            }
+        }
     }
 
     fn clause_satisfied(&self, clause_idx: usize) -> bool {
@@ -1593,6 +1648,15 @@ impl Solver {
         self.arena = new_arena;
         self.original_clause_ids = new_original_clause_ids;
         self.learned_clause_ids = new_learned_clause_ids;
+        if !self.clause_abstraction.is_empty() {
+            self.clause_abstraction.clear();
+            self.clause_abstraction.resize(self.arena.len(), 0);
+            let original_clause_ids = self.original_clause_ids.clone();
+            for clause_idx in original_clause_ids {
+                self.clause_abstraction[clause_idx] =
+                    clause_abstraction_from_lits(self.clause_slice(clause_idx));
+            }
+        }
         self.live_learned_clause_count = self.learned_clause_ids.len();
         self.deleted_clause_words = 0;
     }
@@ -1826,8 +1890,23 @@ impl Solver {
             return false;
         }
 
+        let preprocess_start = Instant::now();
         if !self.eliminate(true, proof_log) {
             return false;
+        }
+        if env::var_os("SAT_TRACE_PREPROCESS").is_some() {
+            eprintln!(
+                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_clauses={} original_literals={} root_assigns={} deleted_clauses={}",
+                preprocess_start.elapsed().as_secs_f64(),
+                self.stats.preprocess_eliminated_vars,
+                self.stats.preprocess_resolvents,
+                self.stats.preprocess_subsumed_clauses,
+                self.stats.preprocess_strengthened_clauses,
+                self.original_clause_ids.len(),
+                self.original_literals,
+                self.trail.len(),
+                self.stats.deleted_clauses,
+            );
         }
 
         let mut conflict = self.propagate();
@@ -2563,8 +2642,11 @@ mod tests {
 
     #[test]
     fn test_bve_eliminates_variable_and_extends_sat_model() {
-        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2]];
-        let mut s = make_solver(2, clauses.clone());
+        let clauses = vec![vec![1, 2, 3], vec![-1, 2, 4]];
+        let mut s = make_solver(4, clauses.clone());
+        s.frozen[2] = true;
+        s.frozen[3] = true;
+        s.frozen[4] = true;
 
         assert!(s.solve());
         assert!(s.eliminated[1], "expected BVE to eliminate x1");
@@ -2576,6 +2658,8 @@ mod tests {
         let model = s.sat_model.as_ref().expect("missing SAT model snapshot");
         assert_ne!(model[1], UNASSIGNED);
         assert_ne!(model[2], UNASSIGNED);
+        assert_ne!(model[3], UNASSIGNED);
+        assert_ne!(model[4], UNASSIGNED);
         for clause in &clauses {
             let sat = clause.iter().any(|&lit| {
                 let var = lit.unsigned_abs() as usize;

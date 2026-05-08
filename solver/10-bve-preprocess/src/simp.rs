@@ -1,6 +1,18 @@
-use std::collections::VecDeque;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, VecDeque};
 
 use super::*;
+
+enum SubsumptionCandidate {
+    Clause(usize),
+    RootUnit(i32),
+}
+
+enum SubsumptionOutcome {
+    None,
+    Subsumed,
+    Strengthen(i32),
+}
 
 impl Solver {
     fn variable_count(&self) -> usize {
@@ -20,6 +32,11 @@ impl Solver {
         let pos = lit_to_index(var as i32);
         let neg = lit_to_index(-(var as i32));
         (self.n_occ[pos] as u64) * (self.n_occ[neg] as u64)
+    }
+
+    fn should_run_full_backward_subsumption(&self) -> bool {
+        let vars = self.variable_count();
+        vars > 0 && vars <= 10_000 && self.original_clause_ids.len() >= vars.saturating_mul(50)
     }
 
     fn build_occurrence_index(&mut self) {
@@ -53,19 +70,6 @@ impl Solver {
         }
     }
 
-    fn clause_contains_var(&self, clause_idx: usize, var: usize) -> bool {
-        if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
-            return false;
-        }
-        let clause_len = self.clause_len(clause_idx);
-        for lit_pos in 0..clause_len {
-            if self.clause_lit(clause_idx, lit_pos).unsigned_abs() as usize == var {
-                return true;
-            }
-        }
-        false
-    }
-
     fn clean_occurs(&mut self, var: usize) {
         if var >= self.occurs.len() || !self.occurs_dirty[var] {
             return;
@@ -74,12 +78,49 @@ impl Solver {
         let old = std::mem::take(&mut self.occurs[var]);
         let mut cleaned = Vec::with_capacity(old.len());
         for clause_idx in old {
-            if self.clause_contains_var(clause_idx, var) {
+            if clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx) {
                 cleaned.push(clause_idx);
             }
         }
         self.occurs[var] = cleaned;
         self.occurs_dirty[var] = false;
+    }
+
+    fn enqueue_subsumption_clause(
+        &self,
+        queue: &mut VecDeque<SubsumptionCandidate>,
+        queued: &mut Vec<bool>,
+        clause_idx: usize,
+    ) {
+        if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
+            return;
+        }
+        if clause_idx >= queued.len() {
+            queued.resize(clause_idx + 1, false);
+        }
+        if queued[clause_idx] {
+            return;
+        }
+        queued[clause_idx] = true;
+        queue.push_back(SubsumptionCandidate::Clause(clause_idx));
+    }
+
+    fn gather_touched_clauses(
+        &mut self,
+        touched: &[usize],
+        queue: &mut VecDeque<SubsumptionCandidate>,
+        queued: &mut Vec<bool>,
+    ) {
+        for &var in touched {
+            if var == 0 || var >= self.occurs.len() {
+                continue;
+            }
+            self.clean_occurs(var);
+            let clauses = self.occurs[var].clone();
+            for clause_idx in clauses {
+                self.enqueue_subsumption_clause(queue, queued, clause_idx);
+            }
+        }
     }
 
     fn mark_occurs_dirty_for_clause(&mut self, clause_idx: usize, touched: &mut Vec<usize>) {
@@ -116,6 +157,108 @@ impl Solver {
         self.deleted_clause_words += self.clause_word_len(clause_idx);
         self.clause_set_deleted(clause_idx, true);
         self.stats.deleted_clauses += 1;
+    }
+
+    fn subsumption_relation(
+        &self,
+        driver: &[i32],
+        driver_abstraction: u64,
+        candidate_idx: usize,
+        marks: &mut [u32],
+        signs: &mut [u8],
+        stamp: u32,
+    ) -> SubsumptionOutcome {
+        if candidate_idx >= self.arena.len() || self.clause_is_deleted(candidate_idx) {
+            return SubsumptionOutcome::None;
+        }
+        let candidate_len = self.clause_len(candidate_idx);
+        if driver.len() > candidate_len {
+            return SubsumptionOutcome::None;
+        }
+        if (driver_abstraction & !self.original_clause_abstraction(candidate_idx)) != 0 {
+            return SubsumptionOutcome::None;
+        }
+
+        for candidate_pos in 0..candidate_len {
+            let candidate_lit = self.clause_lit(candidate_idx, candidate_pos);
+            let var = candidate_lit.unsigned_abs() as usize;
+            debug_assert!(var < marks.len());
+            if marks[var] != stamp {
+                marks[var] = stamp;
+                signs[var] = 0;
+            }
+            signs[var] |= if candidate_lit > 0 { 1 } else { 2 };
+        }
+
+        let mut remove_lit = None;
+        for &lit in driver {
+            let var = lit.unsigned_abs() as usize;
+            if var >= marks.len() || marks[var] != stamp {
+                return SubsumptionOutcome::None;
+            }
+
+            let same_sign = if lit > 0 { 1 } else { 2 };
+            if signs[var] & same_sign != 0 {
+                continue;
+            }
+
+            let complement_sign = if lit > 0 { 2 } else { 1 };
+            if signs[var] & complement_sign != 0 && remove_lit.is_none() {
+                remove_lit = Some(-lit);
+                continue;
+            }
+
+            return SubsumptionOutcome::None;
+        }
+
+        match remove_lit {
+            Some(lit) => SubsumptionOutcome::Strengthen(lit),
+            None => SubsumptionOutcome::Subsumed,
+        }
+    }
+
+    fn strengthen_original_clause_preprocess(
+        &mut self,
+        clause_idx: usize,
+        remove_lit: i32,
+        proof_log: &mut ProofLog,
+        touched: &mut Vec<usize>,
+        queue: &mut VecDeque<SubsumptionCandidate>,
+        queued: &mut Vec<bool>,
+    ) -> bool {
+        if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
+            return true;
+        }
+
+        let mut strengthened = Vec::with_capacity(self.clause_len(clause_idx).saturating_sub(1));
+        let mut removed = false;
+        for lit_pos in 0..self.clause_len(clause_idx) {
+            let lit = self.clause_lit(clause_idx, lit_pos);
+            if lit == remove_lit && !removed {
+                removed = true;
+                continue;
+            }
+            strengthened.push(lit);
+        }
+
+        if !removed {
+            return true;
+        }
+
+        self.remove_original_clause_preprocess(clause_idx, touched);
+        if clause_idx < queued.len() {
+            queued[clause_idx] = false;
+        }
+
+        self.stats.preprocess_strengthened_clauses += 1;
+        match self.add_original_clause_from_slice(&strengthened, proof_log, true, touched) {
+            OriginalClauseInsertResult::Allocated(new_idx) => {
+                self.enqueue_subsumption_clause(queue, queued, new_idx);
+                true
+            }
+            OriginalClauseInsertResult::Unit | OriginalClauseInsertResult::Skipped => true,
+            OriginalClauseInsertResult::Unsat => false,
+        }
     }
 
     fn normalize_original_clause(&self, clause: &[i32]) -> Option<Vec<i32>> {
@@ -206,6 +349,12 @@ impl Solver {
         self.attach_clause(clause_idx, false);
 
         if self.use_simplification {
+            if !self.clause_abstraction.is_empty() {
+                self.set_original_clause_abstraction(
+                    clause_idx,
+                    clause_abstraction_from_lits(&normalized),
+                );
+            }
             self.index_original_clause(clause_idx);
             for &lit in &normalized {
                 touched.push(lit.unsigned_abs() as usize);
@@ -213,6 +362,127 @@ impl Solver {
         }
 
         OriginalClauseInsertResult::Allocated(clause_idx)
+    }
+
+    fn backward_subsumption_check(
+        &mut self,
+        seed_all_clauses: bool,
+        seed_touched: Vec<usize>,
+        proof_log: &mut ProofLog,
+    ) -> Option<Vec<usize>> {
+        let mut queue = VecDeque::new();
+        let mut queued = vec![false; self.arena.len()];
+        let mut touched = seed_touched;
+        self.ensure_original_clause_abstractions();
+        let mut relation_marks = vec![0u32; self.assignment.len()];
+        let mut relation_signs = vec![0u8; self.assignment.len()];
+        let mut relation_stamp = 1u32;
+
+        if seed_all_clauses {
+            let original_clause_ids = self.original_clause_ids.clone();
+            for clause_idx in original_clause_ids {
+                self.enqueue_subsumption_clause(&mut queue, &mut queued, clause_idx);
+            }
+        }
+        self.gather_touched_clauses(&touched, &mut queue, &mut queued);
+
+        while !queue.is_empty() || self.bwdsub_assigns < self.trail.len() {
+            let candidate = if let Some(candidate) = queue.pop_front() {
+                candidate
+            } else {
+                let lit = self.trail[self.bwdsub_assigns];
+                self.bwdsub_assigns += 1;
+                SubsumptionCandidate::RootUnit(lit)
+            };
+
+            let (driver, driver_clause_idx) = match candidate {
+                SubsumptionCandidate::Clause(clause_idx) => {
+                    if clause_idx < queued.len() {
+                        queued[clause_idx] = false;
+                    }
+                    if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
+                        continue;
+                    }
+                    (self.clause_slice(clause_idx).to_vec(), Some(clause_idx))
+                }
+                SubsumptionCandidate::RootUnit(lit) => (vec![lit], None),
+            };
+
+            if driver.is_empty() {
+                continue;
+            }
+            let driver_abstraction = clause_abstraction_from_lits(&driver);
+
+            let mut best_var = driver[0].unsigned_abs() as usize;
+            self.clean_occurs(best_var);
+            for &lit in &driver[1..] {
+                let var = lit.unsigned_abs() as usize;
+                self.clean_occurs(var);
+                if var < self.occurs.len()
+                    && best_var < self.occurs.len()
+                    && self.occurs[var].len() < self.occurs[best_var].len()
+                {
+                    best_var = var;
+                }
+            }
+
+            if best_var >= self.occurs.len() {
+                continue;
+            }
+
+            let candidates = self.occurs[best_var].clone();
+            for candidate_idx in candidates {
+                if Some(candidate_idx) == driver_clause_idx {
+                    continue;
+                }
+                if candidate_idx >= self.arena.len() || self.clause_is_deleted(candidate_idx) {
+                    continue;
+                }
+                if self.subsumption_lim >= 0
+                    && self.clause_len(candidate_idx) as isize >= self.subsumption_lim
+                {
+                    continue;
+                }
+
+                relation_stamp = relation_stamp.wrapping_add(1);
+                if relation_stamp == 0 {
+                    relation_marks.fill(0);
+                    relation_stamp = 1;
+                }
+
+                match self.subsumption_relation(
+                    &driver,
+                    driver_abstraction,
+                    candidate_idx,
+                    &mut relation_marks,
+                    &mut relation_signs,
+                    relation_stamp,
+                ) {
+                    SubsumptionOutcome::None => {}
+                    SubsumptionOutcome::Subsumed => {
+                        self.remove_original_clause_preprocess(candidate_idx, &mut touched);
+                        if candidate_idx < queued.len() {
+                            queued[candidate_idx] = false;
+                        }
+                        self.stats.preprocess_subsumed_clauses += 1;
+                    }
+                    SubsumptionOutcome::Strengthen(remove_lit) => {
+                        if !self.strengthen_original_clause_preprocess(
+                            candidate_idx,
+                            remove_lit,
+                            proof_log,
+                            &mut touched,
+                            &mut queue,
+                            &mut queued,
+                        ) {
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+
+        Some(touched)
     }
 
     fn merge_size_only(&self, lhs: &[i32], rhs: &[i32], var: usize) -> Option<usize> {
@@ -345,6 +615,7 @@ impl Solver {
         self.eliminated[var] = true;
         self.decision_var[var] = false;
         self.branch_heap_remove(var);
+        self.stats.preprocess_eliminated_vars += 1;
 
         let mut touched = Vec::new();
         for (clause_idx, _) in pos_clauses.iter().chain(neg_clauses.iter()) {
@@ -360,6 +631,7 @@ impl Solver {
                 let mut resolvent = std::mem::take(&mut self.scratch_preprocess_clause);
                 let keep = self.merge_into_vec(pos_clause, neg_clause, var, &mut resolvent);
                 if keep {
+                    self.stats.preprocess_resolvents += 1;
                     let result = self.add_original_clause_from_slice(
                         &resolvent,
                         proof_log,
@@ -391,46 +663,110 @@ impl Solver {
         }
 
         self.build_occurrence_index();
-
-        let mut candidates: Vec<usize> = (1..=self.variable_count())
-            .filter(|&var| self.preprocessing_candidate(var))
-            .collect();
-        candidates.sort_unstable_by(|&lhs, &rhs| {
-            self.occurrence_cost(lhs)
-                .cmp(&self.occurrence_cost(rhs))
-                .then_with(|| lhs.cmp(&rhs))
-        });
-
-        let mut queue: VecDeque<usize> = candidates.into();
-        let mut queued = vec![false; self.assignment.len()];
-        for &var in &queue {
-            queued[var] = true;
+        self.bwdsub_assigns = 0;
+        let use_full_backward_subsumption = self.should_run_full_backward_subsumption();
+        if use_full_backward_subsumption {
+            if self
+                .backward_subsumption_check(true, Vec::new(), proof_log)
+                .is_none()
+            {
+                self.solver_ok = false;
+                return false;
+            }
         }
 
-        while let Some(var) = queue.pop_front() {
-            queued[var] = false;
-            if !self.preprocessing_candidate(var) {
-                continue;
-            }
-            self.clean_occurs(var);
-            if self.occurs[var].is_empty() {
-                continue;
-            }
-
-            let Some(touched) = self.try_eliminate_var(var, proof_log) else {
-                continue;
-            };
-            if !self.solver_ok {
-                break;
+        if use_full_backward_subsumption {
+            let mut heap = BinaryHeap::new();
+            let mut heap_versions = vec![0u32; self.assignment.len()];
+            for var in 1..=self.variable_count() {
+                if self.preprocessing_candidate(var) {
+                    heap.push(Reverse((
+                        self.occurrence_cost(var),
+                        var,
+                        heap_versions[var],
+                    )));
+                }
             }
 
-            for touched_var in touched {
-                if touched_var < queued.len()
-                    && !queued[touched_var]
-                    && self.preprocessing_candidate(touched_var)
-                {
-                    queued[touched_var] = true;
-                    queue.push_back(touched_var);
+            while let Some(Reverse((_, var, version))) = heap.pop() {
+                if var >= heap_versions.len() || version != heap_versions[var] {
+                    continue;
+                }
+                if !self.preprocessing_candidate(var) {
+                    continue;
+                }
+                self.clean_occurs(var);
+                if self.occurs[var].is_empty() {
+                    continue;
+                }
+
+                let Some(touched) = self.try_eliminate_var(var, proof_log) else {
+                    continue;
+                };
+                if !self.solver_ok {
+                    break;
+                }
+
+                let Some(touched) = self.backward_subsumption_check(false, touched, proof_log)
+                else {
+                    self.solver_ok = false;
+                    break;
+                };
+
+                for touched_var in touched {
+                    if touched_var < heap_versions.len()
+                        && self.preprocessing_candidate(touched_var)
+                    {
+                        heap_versions[touched_var] = heap_versions[touched_var].wrapping_add(1);
+                        heap.push(Reverse((
+                            self.occurrence_cost(touched_var),
+                            touched_var,
+                            heap_versions[touched_var],
+                        )));
+                    }
+                }
+            }
+        } else {
+            let mut candidates: Vec<usize> = (1..=self.variable_count())
+                .filter(|&var| self.preprocessing_candidate(var))
+                .collect();
+            candidates.sort_unstable_by(|&lhs, &rhs| {
+                self.occurrence_cost(lhs)
+                    .cmp(&self.occurrence_cost(rhs))
+                    .then_with(|| lhs.cmp(&rhs))
+            });
+
+            let mut queue: VecDeque<usize> = candidates.into();
+            let mut queued = vec![false; self.assignment.len()];
+            for &var in &queue {
+                queued[var] = true;
+            }
+
+            while let Some(var) = queue.pop_front() {
+                queued[var] = false;
+                if !self.preprocessing_candidate(var) {
+                    continue;
+                }
+                self.clean_occurs(var);
+                if self.occurs[var].is_empty() {
+                    continue;
+                }
+
+                let Some(touched) = self.try_eliminate_var(var, proof_log) else {
+                    continue;
+                };
+                if !self.solver_ok {
+                    break;
+                }
+
+                for touched_var in touched {
+                    if touched_var < queued.len()
+                        && !queued[touched_var]
+                        && self.preprocessing_candidate(touched_var)
+                    {
+                        queued[touched_var] = true;
+                        queue.push_back(touched_var);
+                    }
                 }
             }
         }
@@ -507,5 +843,66 @@ impl Solver {
         }
         self.assignment.clone_from(&model);
         self.sat_model = Some(model);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn live_original_clauses(s: &Solver) -> Vec<Vec<i32>> {
+        let mut clauses: Vec<Vec<i32>> = s
+            .original_clause_ids
+            .iter()
+            .copied()
+            .filter(|&clause_idx| !s.clause_is_deleted(clause_idx))
+            .map(|clause_idx| s.clause_slice(clause_idx).to_vec())
+            .collect();
+        clauses.sort();
+        clauses
+    }
+
+    #[test]
+    fn backward_subsumption_removes_subsumed_original_clause() {
+        let mut s = Solver::new(3, vec![vec![1, 2], vec![1, 2, 3]]);
+        let mut proof = ProofLog::disabled();
+        s.build_occurrence_index();
+
+        assert!(s
+            .backward_subsumption_check(true, Vec::new(), &mut proof)
+            .is_some());
+
+        assert_eq!(live_original_clauses(&s), vec![vec![1, 2]]);
+        assert_eq!(s.stats.preprocess_subsumed_clauses, 1);
+    }
+
+    #[test]
+    fn backward_subsumption_resolution_strengthens_original_clause() {
+        let mut s = Solver::new(3, vec![vec![1, 2], vec![1, -2, 3]]);
+        let mut proof = ProofLog::disabled();
+        s.build_occurrence_index();
+
+        assert!(s
+            .backward_subsumption_check(true, Vec::new(), &mut proof)
+            .is_some());
+
+        assert_eq!(live_original_clauses(&s), vec![vec![1, 2], vec![1, 3]]);
+        assert_eq!(s.stats.preprocess_strengthened_clauses, 1);
+    }
+
+    #[test]
+    fn root_assignment_subsumption_trims_false_literal() {
+        let mut s = Solver::new(3, vec![vec![1], vec![-1, 2, 3]]);
+        let mut proof = ProofLog::disabled();
+        assert!(s.enqueue_root_units());
+        assert_eq!(s.propagate(), None);
+        s.build_occurrence_index();
+
+        assert!(s
+            .backward_subsumption_check(false, Vec::new(), &mut proof)
+            .is_some());
+
+        assert!(live_original_clauses(&s).contains(&vec![2, 3]));
+        assert_eq!(s.stats.preprocess_strengthened_clauses, 1);
     }
 }

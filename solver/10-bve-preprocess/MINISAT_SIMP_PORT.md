@@ -36,6 +36,125 @@ Use this exact workflow:
 - treat MiniSat `simp` parity as the target, with solver `09` serving only as the baseline being
   improved upon
 
+## Current Performance Gap Hypotheses
+
+Status after commit `967a312` (`Implement solver 10 BVE preprocessing`):
+
+| Solver | Solved | SAT | UNSAT | Timeouts | PAR-2 | Results |
+|---|---:|---:|---:|---:|---:|---|
+| `09-root-simp-opts` | 3/5 | 2 | 1 | 2 | `3195.921` | `log/bench-09-root-simp-opts-2026-05-08-09-58-03/results.csv` |
+| `10-bve-preprocess` | 4/5 | 3 | 1 | 1 | `1532.975` | `log/bench-10-bve-preprocess-2026-05-08-13-08-41/results.csv` |
+| `minisat` | 5/5 | 3 | 2 | 0 | `453.343` | `log/bench-minisat-2026-05-08-09-58-03/results.csv` |
+
+Per-instance gap:
+
+- `sudoku-N30-12`: `10` improves over `09` (`507.092s -> 181.810s`) and is slightly faster than
+  MiniSat in some runs.
+- `SC25_Timetable...`: `10` regresses slightly versus `09` (`80.349s -> 89.000s`) and is far
+  slower than MiniSat (`18.545s`).
+- `REGRandom-K4...`: `10` still times out at `600s`; MiniSat solves UNSAT in about `65s`.
+- `mp1-Nb7T46`: `10` improves from timeout to `43.275s`, faster than MiniSat's `75.054s`.
+- `Kakuro...`: `10` improves from `208.480s` to `18.890s`, faster than MiniSat's `80.111s`.
+
+The reference harness invokes the `minisat` binary, which uses `SimpSolver` with default
+`pre=true`, `asymm=false`, `rcheck=false`, and `elim=true`. Therefore the current measured gap is
+more likely from MiniSat's default backward-subsumption / BSR / elimination scheduling pipeline than
+from optional asymmetric branching or implied-clause checks.
+
+Ordered hypotheses to test:
+
+1. **Backward subsumption and backward-subsumption resolution are the largest missing default
+   MiniSat behavior.** MiniSat runs the subsumption queue before and during elimination, deletes
+   subsumed clauses, and strengthens clauses by removing one literal. Solver `10` currently runs BVE
+   against a much staler formula.
+2. **Root assignments generated during preprocessing need to drive subsumption.** MiniSat feeds new
+   root assignments through `bwdsub_tmpunit`; solver `10` propagates units but does not use them to
+   sweep occurrence lists before search.
+3. **Elimination order is too stale.** MiniSat uses an elimination heap whose costs are updated as
+   clauses are inserted/deleted. Solver `10` uses one initial sort plus FIFO requeueing of touched
+   variables.
+4. **Generated resolvents need immediate cleanup.** MiniSat pushes new clauses into the subsumption
+   queue. Solver `10` inserts resolvents and updates occurrences, but does not immediately run
+   forward/backward subsumption on them.
+5. **Some SAT-case gap is probably CDCL-core behavior, not preprocessing.** The timetable instance
+   indicates MiniSat's search core, phase/branching details, allocator locality, and learned-clause
+   database policy may dominate after preprocessing.
+6. **Proof logging adds repo-specific overhead.** Solver `10` logs preprocessing resolvents for DRAT
+   correctness; the MiniSat reference run does not produce/check DRAT.
+
+Work queue:
+
+1. Implement and measure backward subsumption + BSR around the existing BVE pass.
+2. Add root-assignment-driven subsumption work and verify it changes the random K4 residual formula.
+3. Replace FIFO touched-variable requeueing with a dynamic elimination heap.
+4. Add counters for eliminated vars, resolvents, subsumed clauses, strengthened literals, root units,
+   preprocessing time, and residual live clauses/literals so regressions can be diagnosed without
+   guessing.
+5. Only after default MiniSat behavior is closer, test optional `asymm` and `rcheck`.
+
+### 2026-05-08 BSR / Heap Experiment Log
+
+Accepted result:
+
+| Variant | Solved | SAT | UNSAT | Timeouts | PAR-2 | Results |
+|---|---:|---:|---:|---:|---:|---|
+| baseline `10` after commit `967a312` | 4/5 | 3 | 1 | 1 | `1532.975` | `log/bench-10-bve-preprocess-2026-05-08-13-08-41/results.csv` |
+| gated full BSR + FIFO non-BSR path | 5/5 | 3 | 2 | 0 | `540.550` | `log/bench-10-bve-preprocess-2026-05-08-15-56-37/results.csv` |
+| `minisat` | 5/5 | 3 | 2 | 0 | `453.343` | `log/bench-minisat-2026-05-08-09-58-03/results.csv` |
+
+Per-instance accepted timings:
+
+- `sudoku-N30-12`: `184.240s` (`10` baseline: `181.810s`, MiniSat: around the same range in the
+  five-instance harness)
+- `SC25_Timetable...`: `89.200s` (`10` baseline: `89.000s`, MiniSat: `18.545s`)
+- `REGRandom-K4...`: `205.600s` (`10` baseline: timeout at `600s`, MiniSat: `65.075s` in the
+  harness and `61.263s` in a direct verbose run)
+- `mp1-Nb7T46`: `43.110s` (`10` baseline: `43.275s`, MiniSat: `75.054s`)
+- `Kakuro...`: `18.400s` (`10` baseline: `18.890s`, MiniSat: `80.111s`)
+
+Key diagnosis:
+
+- Full BSR is required for the K4 residual formula. Without BSR, solver `10` eliminates `512`
+  variables but grows K4 to `3,100,416` live original literals. MiniSat's verbose run reports the
+  same `512` eliminated variables and `825,216` residual clauses but only `2,752,256` literals.
+- Gated full BSR reaches that same K4 residual: `512` eliminated variables, `8,192` resolvents,
+  `348,160` strengthened clauses/literals, `825,216` residual original clauses, and `2,752,256`
+  residual original literals.
+- The K4 gap after residual parity is speed: MiniSat reports `39.65s` simplification and `61.26s`
+  total CPU time; the gated solver trace spent about `117.05s` in preprocessing and solves the
+  instance in `205.600s` in the latest five-instance run.
+- After the lazy abstraction resize fix, a single-instance K4 rerun solved in `184.756s`
+  (`log/bench-10-bve-preprocess-2026-05-08-16-08-42/results.csv`); rerun the full five-instance
+  set if this targeted number needs to replace the aggregate table.
+
+Rejected or constrained attempts:
+
+- **Unconditional full BSR:** solved K4, but overprocessed other formulas. Five-instance PAR-2 was
+  `1708.286`, with major regressions on Sudoku (`585.35s`), Timetable (`320.44s`), and Kakuro
+  (`578.79s`). Keep full BSR gated.
+- **Dynamic elimination heap everywhere:** with BSR gated but heap enabled globally, five-instance
+  PAR-2 improved to `693.341` but Timetable regressed to `254.25s`. Keep the heap only on the
+  full-BSR-gated path; use the previous FIFO touched-variable queue elsewhere.
+- **Occurrence cleanup with clause-membership scans:** profile showed most BSR time in
+  `clean_occurs()` and `clause_contains_var()`. Removing the membership scan is correct for the
+  current delete/reinsert strengthening model and moved the hotspot into actual BSR relation checks.
+- **Post-BVE/root-only scoped BSR:** correctness passed, but K4 still timed out at `180s`; it did
+  not delete enough literals to match MiniSat's residual.
+- **In-place strengthening:** intended to mimic MiniSat more closely, but no K4 preprocessing trace
+  appeared within `150s`, worse than the delete/reinsert path. The likely issue is increased
+  occurrence/queue revisit work in this arena implementation. Rejected for now.
+- **Raw-slice / branch-based literal hot path:** changed BSR relation internals but regressed K4
+  preprocessing from about `117.05s` to `128.54s`. Rejected.
+
+Next hypotheses:
+
+1. Reduce the remaining `117s -> 40s` K4 preprocessing gap by profiling BSR candidate volume and
+   queue churn, not by changing residual semantics.
+2. Investigate Timetable separately as a CDCL/search-core gap: preprocessing parity work does not
+   explain MiniSat's `18.545s` versus solver `10`'s `89.200s`.
+3. Revisit in-place strengthening only with a MiniSat-like occurrence vector removal strategy and
+   clause-mark queue deduplication; the naive arena mutation was slower.
+
 In this context, "faithfully" means:
 
 - keep the current CDCL search core as the post-preprocessing engine
