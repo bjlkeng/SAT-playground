@@ -134,6 +134,20 @@ construction in `new()`. A faithful port needs a split between:
 - original-clause insertion used during parse and preprocessing
 - learned-clause insertion used during CDCL conflict analysis
 
+Important semantic gap:
+
+- MiniSat `addClause_()` does not just append a raw clause. It sorts literals, removes duplicates,
+  drops root-false literals, treats tautological / already-satisfied clauses as no-ops, turns
+  units into immediate root assignments plus propagation, and reports UNSAT through the solver
+  state.
+- the current Rust `parse_cnf()` + `Solver::new()` path bulk-loads raw clauses directly into the
+  arena and only later enqueues root units, so parse-time and preprocessing-time clause insertion
+  do not currently share MiniSat-like semantics
+
+The port should therefore route both initial problem construction and preprocessing-generated
+resolvent insertion through one canonical original-clause insertion path rather than keeping
+`Solver::new()` as a special raw-loader.
+
 ### 3. Clause deletion semantics
 
 MiniSat uses one `removeClause()` path that:
@@ -549,6 +563,21 @@ Recommended approach:
 This is the single biggest place where "faithful to MiniSat simp" and "faithful to repo proof
 requirements" may diverge.
 
+### Clause normalization and solver-status handling
+
+MiniSat's preprocessing entry points rely on core `addClause_()` semantics, not on raw clause
+storage. For this repo that means the implementation should decide up front how to represent the
+equivalent of MiniSat's persistent `ok` state:
+
+- empty clause insertion must poison the solver immediately
+- unit clauses created during parse, strengthening, or resolvent insertion must enqueue and
+  propagate at decision level `0`
+- tautological or already-satisfied clauses must not enter occurrence lists, watcher state, or the
+  subsumption queue
+
+If this is not made explicit in the Rust API, later preprocessing phases will inherit subtle
+differences between "clauses from the parser" and "clauses created during simplification".
+
 ### Watchers and root units
 
 Current solver 10 stores unit clauses in the watcher structure and tracks original root units in
@@ -558,6 +587,20 @@ this list valid across:
 - clause deletion
 - garbage collection
 - unit creation by strengthening
+
+### Garbage collection and relocation
+
+The current Rust arena already supports relocating clause references during GC. The preprocessing
+port needs to extend that relocation surface to every simplification-owned reference container:
+
+- occurrence lists
+- subsumption queue
+- any queued/dedup markers keyed by clause id
+- the scratch unit representation, if it becomes a real arena clause instead of a pure scratch
+  object
+
+MiniSat handles this explicitly in `SimpSolver::relocAll()`. The Rust plan should do the same
+rather than assuming the existing learned/original clause-id relocation logic is sufficient.
 
 ### Branching heap
 
@@ -601,12 +644,16 @@ Exit criteria:
 3. Split original-clause insertion from learned-clause insertion.
 4. Build occurrence lists and literal counts during initial parse.
 5. Add lazy-clean helpers for occurrence lists and queue-dedup state.
+6. Make initial parse/build use the same original-clause canonicalization path intended for
+   preprocessing insertions.
 
 Tests first:
 
 - occurrence lists built correctly from parsed clauses
 - literal counts update on insertion
 - deleted original clauses disappear after `clean_occurs(var)`
+- duplicate literals are removed and tautological original clauses are skipped before indexing
+- unit original clauses propagate immediately through the canonical insertion path
 
 ### Phase 2: preprocessing-aware deletion and strengthening primitives
 
@@ -696,6 +743,7 @@ Tests first:
 1. Decide and implement proof logging policy for preprocessing transforms.
 2. Re-run unit tests, smoke tests, and targeted benchmarks.
 3. Compare against MiniSat `-pre`/`-no-pre` behavior on a small regression set.
+4. Verify that preprocessing-owned metadata survives arena relocation across forced GC.
 
 Tests and checks:
 
@@ -709,6 +757,7 @@ Tests and checks:
 Add targeted unit tests for:
 
 - occurrence-list construction and lazy cleanup
+- original-clause canonicalization parity with MiniSat-style `addClause_()`
 - touched-clause queue dedup
 - backward subsumption delete case
 - backward subsumption strengthen case
@@ -719,6 +768,7 @@ Add targeted unit tests for:
 - eliminated variable removed from branching
 - model extension after SAT
 - preprocessing cleanup after `eliminate(true)`
+- occurrence/subsumption metadata relocation across GC
 
 Keep the existing smoke suite as the final guardrail.
 
