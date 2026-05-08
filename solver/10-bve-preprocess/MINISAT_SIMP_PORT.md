@@ -155,6 +155,65 @@ Next hypotheses:
 3. Revisit in-place strengthening only with a MiniSat-like occurrence vector removal strategy and
    clause-mark queue deduplication; the naive arena mutation was slower.
 
+### 2026-05-08 Fresh 600s MiniSat-Gap Rerun
+
+After the gated-BSR improvement, five more candidate MiniSat-favorable instances were selected from
+the 100-instance medium overlap and then rerun from scratch with a `600s` timeout and `16384 MB`
+memory cap. These numbers are fresh harness runs, not reused medium-run timings.
+
+Fresh logs:
+
+- `10-bve-preprocess`: `log/bench-10-bve-preprocess-2026-05-08-17-46-01/results.csv`
+- `09-root-simp-opts`: `log/bench-09-root-simp-opts-2026-05-08-18-16-07/results.csv`
+- `minisat`: `log/bench-minisat-2026-05-08-19-05-28/results.csv`
+
+Summary:
+
+| Solver | Solved | SAT | UNSAT | Timeouts | PAR-2 |
+|---|---:|---:|---:|---:|---:|
+| `09-root-simp-opts` | 1/5 | 0 | 1 | 4 | `5281.200` |
+| `10-bve-preprocess` current gated BSR | 3/5 | 2 | 1 | 2 | `2986.963` |
+| `minisat` | 5/5 | 4 | 1 | 0 | `533.762` |
+
+Per-instance fresh results:
+
+| Instance | `10-bve-preprocess` | `09-root-simp-opts` | `minisat` | Notes |
+|---|---:|---:|---:|---|
+| `849950...circuit_48in64out_with_800gates_4in4out_dist128_seed3` | SAT `49.372s` | TIMEOUT | SAT `86.095s` | Candidate did not hold; current `10` beats MiniSat. |
+| `98e8...bp4_TCO_CSO_IXA_LP_ZR` | TIMEOUT | TIMEOUT | SAT `245.131s` | Real MiniSat-over-`10` gap. |
+| `9af7...brocard_problem_large` | UNSAT `163.160s` | UNSAT `481.200s` | UNSAT `6.897s` | Real gap; likely preprocessing/search-core efficiency. |
+| `f17d...SC25_Timetable_C_406_E_45_Cl_26_D_7_T_50` | TIMEOUT | TIMEOUT | SAT `33.251s` | Real gap; reinforces timetable/search-core hypothesis. |
+| `f25a...1-TC-256-K-63` | SAT `374.431s` | TIMEOUT | SAT `162.388s` | Real gap, but current `10` is already much better than `09`. |
+
+Progress so far:
+
+- Solver `10` now clearly improves on `09` on the targeted MiniSat-simp work: the original
+  five-instance set moved from `09` PAR-2 `3195.921` to current `10` PAR-2 `540.550`, close to
+  MiniSat's `453.343`.
+- Gated full BSR is the major accepted improvement. It converted the K4 target from timeout to
+  solved and matched MiniSat's residual literal count on that formula.
+- Current `10` also improves substantially over `09` on the fresh gap rerun: `2986.963` PAR-2
+  versus `5281.200`, with two extra SAT solves and a much faster brocard UNSAT solve.
+- MiniSat still has a large advantage on several SAT-heavy or search-sensitive formulas. The fresh
+  rerun gives four concrete next targets where MiniSat is still better than current `10`.
+
+Next-session pickup list:
+
+1. Use `98e8...bp4_TCO_CSO_IXA_LP_ZR`, `f17d...SC25_Timetable...`, and
+   `f25a...1-TC-256-K-63` as the next SAT-side gap targets. Start with `SAT_TRACE_PREPROCESS=1`
+   on current `10` and MiniSat verbose/preprocessing variants if available.
+2. For `9af7...brocard_problem_large`, separate preprocessing time from search time. Current `10`
+   solves it but is `~24x` slower than MiniSat (`163.160s` vs `6.897s`), so the next question is
+   whether MiniSat gets a smaller residual or simply searches it much faster.
+3. Do not spend time optimizing the circuit instance as a MiniSat gap; current `10` already wins
+   there (`49.372s` vs `86.095s`).
+4. Profile before coding. For simplification ideas, first measure opportunity size: subsumption
+   hits, BSR strengthens, eliminated variables, resolvents, residual live clauses/literals, and
+   preprocessing wall time.
+5. Keep the acceptance rule from the optimization workflow: one change at a time, keep only if it
+   improves the selected target by more than `3%`, and rerun smoke/cargo tests after kept solver
+   logic changes.
+
 In this context, "faithfully" means:
 
 - keep the current CDCL search core as the post-preprocessing engine
