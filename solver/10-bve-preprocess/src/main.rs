@@ -21,8 +21,9 @@ const REDUNDANT_FAILED: u8 = 3;
 const PROOF_BUFFER_CAPACITY: usize = 16 * 1024 * 1024;
 const LEARNTSIZE_FACTOR: f64 = 1.0 / 3.0;
 const LEARNTSIZE_INC: f64 = 1.1;
-const LEARNTSIZE_ADJUST_START_CONFL: usize = 50;
+const LEARNTSIZE_ADJUST_START_CONFL: usize = 100;
 const LEARNTSIZE_ADJUST_INC: f64 = 1.5;
+const CLAUSE_ACTIVITY_WORDS: usize = 2;
 const CLAUSE_MARK_MASK: u32 = 0b11;
 const CLAUSE_LEARNT_BIT: u32 = 1 << 2;
 const CLAUSE_HAS_EXTRA_BIT: u32 = 1 << 3;
@@ -52,6 +53,12 @@ enum InitialClauseMode {
     CanonicalSorted,
     CanonicalInputOrder,
     Raw,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BranchMode {
+    Minisat,
+    Occurrence,
 }
 
 #[derive(Clone, Default)]
@@ -236,7 +243,7 @@ struct Solver {
     trail_limits: Vec<usize>,
     /// next trail entry whose falsified literal still needs watcher processing
     propagate_head: usize,
-    /// static tie-break rank derived from descending literal occurrence count
+    /// static tie-break rank used when activity ties
     branch_rank: Vec<usize>,
     /// binary max-heap of candidate branch variables ordered by activity
     branch_heap: Vec<u32>,
@@ -245,15 +252,15 @@ struct Solver {
     /// variables eligible for search branching; eliminated variables stay permanently false here
     decision_var: Vec<bool>,
     /// EVSIDS-style variable activity
-    activity: Vec<f32>,
+    activity: Vec<f64>,
     /// additive bump applied to variables participating in recent conflicts
-    activity_inc: f32,
+    activity_inc: f64,
     /// multiplicative decay factor for older activity
-    activity_decay: f32,
+    activity_decay: f64,
     /// additive bump applied to learned clauses participating in recent conflicts
-    clause_activity_inc: f32,
+    clause_activity_inc: f64,
     /// multiplicative decay factor for older learned-clause activity
-    clause_activity_decay: f32,
+    clause_activity_decay: f64,
     /// number of conflicts seen since the last restart
     restart_conflicts: usize,
     /// base conflict budget multiplied by the current Luby term
@@ -266,6 +273,8 @@ struct Solver {
     restart_pending: bool,
     /// learned-clause budget threshold for running a database reduction pass
     reduce_db_limit: usize,
+    /// resize learned-clause budget after preprocessing, matching MiniSat's solve-time setup
+    reset_reduce_db_after_preprocess: bool,
     /// current conflict countdown until the next learned-budget adjustment
     learntsize_adjust_cnt: usize,
     /// floating-point copy of the current learned-budget adjustment window
@@ -327,6 +336,8 @@ struct Solver {
     scratch_analyze_stack: Vec<(usize, i32)>,
     /// 0 = none, 1 = basic, 2 = deep
     ccmin_mode: u8,
+    /// compatibility fallback for the older solver-10 conflict analyzer
+    use_resolved_conflict_analysis: bool,
     stats: SolverStats,
 }
 
@@ -364,6 +375,15 @@ fn clause_header_reloced(header: u32) -> bool {
 }
 
 #[inline(always)]
+fn clause_header_extra_words(header: u32) -> usize {
+    if clause_header_has_extra(header) {
+        CLAUSE_ACTIVITY_WORDS
+    } else {
+        0
+    }
+}
+
+#[inline(always)]
 fn clause_header_size(header: u32) -> usize {
     (header >> CLAUSE_SIZE_SHIFT) as usize
 }
@@ -398,10 +418,11 @@ fn clause_len_in_arena(arena: &[u32], clause_idx: usize) -> usize {
 }
 
 #[inline(always)]
-fn clause_activity_in_arena(arena: &[u32], clause_idx: usize) -> f32 {
+fn clause_activity_in_arena(arena: &[u32], clause_idx: usize) -> f64 {
     debug_assert!(clause_header_has_extra(arena[clause_idx]));
     let extra_idx = clause_idx + 1 + clause_len_in_arena(arena, clause_idx);
-    f32::from_bits(arena[extra_idx])
+    let bits = (arena[extra_idx] as u64) | ((arena[extra_idx + 1] as u64) << 32);
+    f64::from_bits(bits)
 }
 
 #[inline(always)]
@@ -535,6 +556,7 @@ fn lit_to_index(lit: i32) -> usize {
 impl Solver {
     fn new(num_vars: usize, clauses: Vec<Vec<i32>>) -> Self {
         let original_clause_count = clauses.len();
+        let branch_mode = parse_branch_mode();
         let mut occurrence_count = vec![0usize; num_vars + 1];
         for clause in &clauses {
             for &lit in clause {
@@ -543,15 +565,21 @@ impl Solver {
             }
         }
         let mut branch_order: Vec<u32> = (1..=num_vars as u32).collect();
-        branch_order.sort_unstable_by(|&lhs, &rhs| {
-            occurrence_count[rhs as usize]
-                .cmp(&occurrence_count[lhs as usize])
-                .then_with(|| lhs.cmp(&rhs))
-        });
+        if branch_mode == BranchMode::Occurrence {
+            branch_order.sort_unstable_by(|&lhs, &rhs| {
+                occurrence_count[rhs as usize]
+                    .cmp(&occurrence_count[lhs as usize])
+                    .then_with(|| lhs.cmp(&rhs))
+            });
+        }
         let mut branch_rank = vec![0usize; num_vars + 1];
         for (rank, &var) in branch_order.iter().enumerate() {
             branch_rank[var as usize] = rank;
         }
+        let default_phase = match branch_mode {
+            BranchMode::Minisat => FALSE,
+            BranchMode::Occurrence => TRUE,
+        };
 
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
         let arena = Vec::with_capacity(total_words);
@@ -564,7 +592,7 @@ impl Solver {
             watchers: vec![Vec::new(); num_vars.saturating_mul(2)],
             watch_scratch: Vec::new(),
             assignment: vec![UNASSIGNED; num_vars + 1],
-            saved_phase: vec![TRUE; num_vars + 1],
+            saved_phase: vec![default_phase; num_vars + 1],
             decision_level: vec![0; num_vars + 1],
             reason: vec![NO_REASON; num_vars + 1],
             trail: Vec::with_capacity(num_vars),
@@ -586,6 +614,7 @@ impl Solver {
             restart_conflict_limit: 100,
             restart_pending: false,
             reduce_db_limit: ((original_clause_count as f64) * LEARNTSIZE_FACTOR) as usize,
+            reset_reduce_db_after_preprocess: true,
             learntsize_adjust_cnt: LEARNTSIZE_ADJUST_START_CONFL,
             learntsize_adjust_confl: LEARNTSIZE_ADJUST_START_CONFL as f64,
             live_learned_clause_count: 0,
@@ -620,6 +649,7 @@ impl Solver {
             scratch_analyze_toclear: Vec::with_capacity(16),
             scratch_analyze_stack: Vec::with_capacity(16),
             ccmin_mode: CCMIN_DEEP,
+            use_resolved_conflict_analysis: false,
             stats: SolverStats::default(),
         };
         match parse_initial_clause_mode() {
@@ -689,7 +719,7 @@ impl Solver {
 
     #[inline(always)]
     fn clause_word_len(&self, clause_idx: usize) -> usize {
-        1 + self.clause_len(clause_idx) + self.clause_has_extra(clause_idx) as usize
+        1 + self.clause_len(clause_idx) + clause_header_extra_words(self.clause_header(clause_idx))
     }
 
     #[inline(always)]
@@ -706,16 +736,20 @@ impl Solver {
     }
 
     #[inline(always)]
-    fn clause_activity(&self, clause_idx: usize) -> f32 {
+    fn clause_activity(&self, clause_idx: usize) -> f64 {
         debug_assert!(self.clause_has_extra(clause_idx));
-        f32::from_bits(self.arena[clause_idx + 1 + self.clause_len(clause_idx)])
+        let extra_idx = clause_idx + 1 + self.clause_len(clause_idx);
+        let bits = (self.arena[extra_idx] as u64) | ((self.arena[extra_idx + 1] as u64) << 32);
+        f64::from_bits(bits)
     }
 
     #[inline(always)]
-    fn set_clause_activity(&mut self, clause_idx: usize, activity: f32) {
+    fn set_clause_activity(&mut self, clause_idx: usize, activity: f64) {
         debug_assert!(self.clause_has_extra(clause_idx));
         let extra_idx = clause_idx + 1 + self.clause_len(clause_idx);
-        self.arena[extra_idx] = activity.to_bits();
+        let bits = activity.to_bits();
+        self.arena[extra_idx] = bits as u32;
+        self.arena[extra_idx + 1] = (bits >> 32) as u32;
     }
 
     #[inline(always)]
@@ -817,7 +851,9 @@ impl Solver {
         if self.clause_has_extra(clause_idx) {
             let old_extra_idx = clause_idx + 1 + clause_len;
             let new_extra_idx = clause_idx + 1 + write;
-            self.arena[new_extra_idx] = self.arena[old_extra_idx];
+            for offset in 0..CLAUSE_ACTIVITY_WORDS {
+                self.arena[new_extra_idx + offset] = self.arena[old_extra_idx + offset];
+            }
         }
 
         let header = self.clause_header(clause_idx);
@@ -1241,11 +1277,11 @@ impl Solver {
 
     fn bump_variable_activity(&mut self, var: usize) {
         self.activity[var] += self.activity_inc;
-        if self.activity[var] > 1e30 {
+        if self.activity[var] > 1e100 {
             for value in &mut self.activity[1..] {
-                *value *= 1e-30;
+                *value *= 1e-100;
             }
-            self.activity_inc *= 1e-30;
+            self.activity_inc *= 1e-100;
         }
         let idx = self.branch_pos[var];
         if idx != BRANCH_NOT_IN_HEAP {
@@ -1434,7 +1470,9 @@ impl Solver {
         self.arena
             .push(clause_make_header(clause_len, true, true, 0, false));
         self.arena.extend(clause.iter().copied().map(lit_to_word));
-        self.arena.push(0.0f32.to_bits());
+        let activity_bits = 0.0f64.to_bits();
+        self.arena.push(activity_bits as u32);
+        self.arena.push((activity_bits >> 32) as u32);
         self.learned_clause_ids.push(clause_idx);
         self.live_learned_clause_count += 1;
         self.learned_literals += clause_len;
@@ -1454,6 +1492,17 @@ impl Solver {
 
     fn reduce_db_enabled(&self) -> bool {
         self.reduce_db_limit != usize::MAX
+    }
+
+    fn reset_learned_budget_after_preprocess(&mut self) {
+        if !self.reset_reduce_db_after_preprocess || !self.reduce_db_enabled() {
+            return;
+        }
+
+        self.reduce_db_limit =
+            ((self.original_clause_ids.len() as f64) * LEARNTSIZE_FACTOR) as usize;
+        self.learntsize_adjust_cnt = LEARNTSIZE_ADJUST_START_CONFL;
+        self.learntsize_adjust_confl = LEARNTSIZE_ADJUST_START_CONFL as f64;
     }
 
     fn note_learnt_budget_conflict(&mut self) {
@@ -1587,7 +1636,7 @@ impl Solver {
             let old_end = old_clause_idx
                 + clause_len_in_arena(arena, old_clause_idx)
                 + 1
-                + clause_header_has_extra(arena[old_clause_idx]) as usize;
+                + clause_header_extra_words(arena[old_clause_idx]);
             reloc[old_clause_idx] = new_clause_idx;
             new_arena.extend_from_slice(&arena[old_clause_idx..old_end]);
             new_clause_idx
@@ -1699,7 +1748,7 @@ impl Solver {
         let extra_lim = if candidate_count == 0 {
             0.0
         } else {
-            self.clause_activity_inc / candidate_count as f32
+            self.clause_activity_inc / candidate_count as f64
         };
         let half = candidate_count / 2;
         let mut write = 0usize;
@@ -1772,6 +1821,7 @@ impl Solver {
     fn mark_clause_literals_for_analysis(
         &mut self,
         clause_idx: usize,
+        start_lit_pos: usize,
         current_level: usize,
         current_level_count: &mut usize,
     ) {
@@ -1780,10 +1830,12 @@ impl Solver {
         }
 
         let clause_len = self.clause_len(clause_idx);
-        for lit_pos in 0..clause_len {
+        for lit_pos in start_lit_pos..clause_len {
             let lit = self.clause_lit(clause_idx, lit_pos);
             let var = lit.unsigned_abs() as usize;
-            if self.scratch_seen[var] != 0 || self.scratch_resolved[var] != 0 {
+            if self.scratch_seen[var] != 0
+                || (self.use_resolved_conflict_analysis && self.scratch_resolved[var] != 0)
+            {
                 continue;
             }
 
@@ -1811,6 +1863,7 @@ impl Solver {
 
         self.mark_clause_literals_for_analysis(
             conflict_clause_idx,
+            0,
             current_level,
             &mut current_level_count,
         );
@@ -1827,7 +1880,9 @@ impl Solver {
             }
 
             self.scratch_seen[var] = 0;
-            self.scratch_resolved[var] = 1;
+            if self.use_resolved_conflict_analysis {
+                self.scratch_resolved[var] = 1;
+            }
             current_level_count -= 1;
             if current_level_count == 0 {
                 break lit;
@@ -1835,8 +1890,14 @@ impl Solver {
 
             let reason_idx = self.reason[var];
             if reason_idx != NO_REASON {
+                let start_lit_pos = if self.use_resolved_conflict_analysis {
+                    0
+                } else {
+                    1
+                };
                 self.mark_clause_literals_for_analysis(
                     reason_idx,
+                    start_lit_pos,
                     current_level,
                     &mut current_level_count,
                 );
@@ -1907,7 +1968,11 @@ impl Solver {
     }
 
     fn solve_to_output(&mut self, output_dir: &str) -> bool {
-        let mut proof_log = ProofLog::new(output_dir, PROOF_BUFFER_CAPACITY);
+        let mut proof_log = if parse_bool_env("SAT_PROOF", true) {
+            ProofLog::new(output_dir, PROOF_BUFFER_CAPACITY)
+        } else {
+            ProofLog::disabled()
+        };
         let sat = self.solve_with_proof(&mut proof_log);
         if sat {
             proof_log.finish_sat();
@@ -1930,9 +1995,10 @@ impl Solver {
         if !self.eliminate(true, proof_log) {
             return false;
         }
+        self.reset_learned_budget_after_preprocess();
         if env::var_os("SAT_TRACE_PREPROCESS").is_some() {
             eprintln!(
-                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} root_assigns={} deleted_clauses={}",
+                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} root_assigns={} deleted_clauses={} reduce_db_limit={}",
                 preprocess_start.elapsed().as_secs_f64(),
                 self.stats.preprocess_eliminated_vars,
                 self.stats.preprocess_resolvents,
@@ -1943,6 +2009,7 @@ impl Solver {
                 self.original_literals,
                 self.trail.len(),
                 self.stats.deleted_clauses,
+                self.reduce_db_limit,
             );
         }
 
@@ -2110,6 +2177,48 @@ fn parse_initial_clause_mode() -> InitialClauseMode {
     }
 }
 
+fn parse_branch_mode() -> BranchMode {
+    match env::var("SAT_BRANCH_MODE") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "minisat" | "mini" | "var-order" | "var_order" | "var" => BranchMode::Minisat,
+            "occurrence" | "occ" | "legacy" | "solver10" => BranchMode::Occurrence,
+            other => {
+                eprintln!("Invalid SAT_BRANCH_MODE={other}; expected minisat/occurrence");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => BranchMode::Minisat,
+    }
+}
+
+fn parse_bool_env(name: &str, default: bool) -> bool {
+    match env::var(name) {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" | "enabled" => true,
+            "0" | "false" | "no" | "off" | "disabled" => false,
+            other => {
+                eprintln!("Invalid {name}={other}; expected boolean");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => default,
+    }
+}
+
+fn parse_use_resolved_conflict_analysis() -> bool {
+    match env::var("SAT_CONFLICT_ANALYSIS_MODE") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "minisat" | "mini" | "seen" => false,
+            "resolved" | "solver10" | "legacy" => true,
+            other => {
+                eprintln!("Invalid SAT_CONFLICT_ANALYSIS_MODE={other}; expected minisat/resolved");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => false,
+    }
+}
+
 fn parse_usize_env(name: &str, default: usize) -> usize {
     match env::var(name) {
         Ok(value) => match value.trim().parse::<usize>() {
@@ -2219,7 +2328,14 @@ fn main() {
     let (num_vars, clauses) = parse_cnf(cnf_path);
     let mut solver = Solver::new(num_vars, clauses);
     solver.ccmin_mode = parse_ccmin_mode();
+    solver.use_resolved_conflict_analysis = parse_use_resolved_conflict_analysis();
+    let reduce_db_limit_overridden = env::var_os("SAT_REDUCE_DB_INIT").is_some();
+    let reduce_db_interval_overridden = env::var_os("SAT_REDUCE_DB_INTERVAL").is_some();
     solver.reduce_db_limit = parse_usize_env("SAT_REDUCE_DB_INIT", solver.reduce_db_limit);
+    solver.reset_reduce_db_after_preprocess = parse_bool_env(
+        "SAT_POST_PREPROCESS_REDUCE_DB_RESET",
+        !(reduce_db_limit_overridden || reduce_db_interval_overridden),
+    );
     if let Ok(value) = env::var("SAT_SUBSUMPTION_LIMIT") {
         solver.subsumption_lim = match value.trim().parse::<isize>() {
             Ok(parsed) => parsed,
@@ -2285,6 +2401,13 @@ mod tests {
             .collect();
         clauses.sort();
         clauses
+    }
+
+    fn rewrite_clause_for_test(s: &mut Solver, clause_idx: usize, lits: &[i32]) {
+        assert_eq!(s.clause_len(clause_idx), lits.len());
+        for (lit_pos, &lit) in lits.iter().enumerate() {
+            s.set_clause_lit(clause_idx, lit_pos, lit);
+        }
     }
 
     fn install_manual_state(
@@ -2466,6 +2589,10 @@ mod tests {
             s.original_clause_ids[2],
             s.original_clause_ids[3],
         ];
+        rewrite_clause_for_test(&mut s, reason_clause_ids[0], &[5, 3, 4]);
+        rewrite_clause_for_test(&mut s, reason_clause_ids[1], &[2, 1, 5]);
+        rewrite_clause_for_test(&mut s, reason_clause_ids[2], &[6, 1, 3, 4]);
+        rewrite_clause_for_test(&mut s, reason_clause_ids[3], &[2, 6]);
         install_manual_state(
             &mut s,
             &[3, 4, 5, 1, 2, 6],
@@ -2505,6 +2632,11 @@ mod tests {
             s.original_clause_ids[3],
             s.original_clause_ids[4],
         ];
+        rewrite_clause_for_test(&mut s, reason_clause_ids[0], &[5, 3, 4]);
+        rewrite_clause_for_test(&mut s, reason_clause_ids[1], &[7, 5, 6]);
+        rewrite_clause_for_test(&mut s, reason_clause_ids[2], &[2, 1, 7, 6]);
+        rewrite_clause_for_test(&mut s, reason_clause_ids[3], &[8, 1, 3, 4]);
+        rewrite_clause_for_test(&mut s, reason_clause_ids[4], &[2, 8]);
         install_manual_state(
             &mut s,
             &[3, 4, 6, 5, 7, 1, 2, 8],
@@ -2519,12 +2651,12 @@ mod tests {
 
         s.ccmin_mode = CCMIN_NONE;
         let (raw_learned, raw_backtrack) = s.analyze_conflict(reason_clause_ids[4]);
-        assert_eq!(raw_learned, vec![-1, 3, 4, 6, 7]);
+        assert_eq!(raw_learned, vec![-1, 3, 4, 7, 6]);
         assert_eq!(raw_backtrack, 1);
 
         s.ccmin_mode = CCMIN_BASIC;
         let (basic_learned, _) = s.analyze_conflict(reason_clause_ids[4]);
-        assert_eq!(basic_learned, vec![-1, 3, 4, 6]);
+        assert_eq!(basic_learned, vec![-1, 3, 4, 7, 6]);
 
         s.ccmin_mode = CCMIN_DEEP;
         let (deep_learned, deep_backtrack) = s.analyze_conflict(reason_clause_ids[4]);
@@ -2849,7 +2981,7 @@ mod tests {
 
         assert!(s.solve());
         let model = s.sat_model.as_ref().expect("missing SAT model snapshot");
-        assert_eq!(&model[1..], &[TRUE, TRUE, TRUE]);
+        assert_eq!(&model[1..], &[FALSE, FALSE, FALSE]);
     }
 
     #[test]
@@ -2998,10 +3130,10 @@ mod tests {
         s.activity[3] = 2.0;
         s.rebuild_branch_queue();
 
-        assert_eq!(s.pick_branch_lit(), Some(2));
+        assert_eq!(s.pick_branch_lit(), Some(-2));
 
-        s.decide(2);
-        assert_eq!(s.pick_branch_lit(), Some(3));
+        s.decide(-2);
+        assert_eq!(s.pick_branch_lit(), Some(-3));
     }
 
     #[test]
@@ -3012,11 +3144,11 @@ mod tests {
         s.activity[3] = 2.0;
         s.rebuild_branch_queue();
 
-        assert_eq!(s.pick_branch_lit(), Some(2));
-
-        s.saved_phase[2] = FALSE;
-        s.rebuild_branch_queue();
         assert_eq!(s.pick_branch_lit(), Some(-2));
+
+        s.saved_phase[2] = TRUE;
+        s.rebuild_branch_queue();
+        assert_eq!(s.pick_branch_lit(), Some(2));
     }
 
     #[test]
@@ -3040,13 +3172,13 @@ mod tests {
         s.activity[2] = 1.0;
         s.rebuild_branch_queue();
 
-        assert_eq!(s.pick_branch_lit(), Some(1));
+        assert_eq!(s.pick_branch_lit(), Some(-1));
 
-        s.decide(1);
-        assert_eq!(s.pick_branch_lit(), Some(2));
+        s.decide(-1);
+        assert_eq!(s.pick_branch_lit(), Some(-2));
 
         s.backtrack(0);
-        assert_eq!(s.pick_branch_lit(), Some(1));
+        assert_eq!(s.pick_branch_lit(), Some(-1));
     }
 
     #[test]

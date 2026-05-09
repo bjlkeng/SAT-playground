@@ -211,3 +211,77 @@ regression is a compound search-path sensitivity: full BSR/work-loop policy is t
 and sorted canonical literal order adds another large slowdown. Canonical semantics that preserve
 input literal order recover the old fast behavior when full BSR is disabled, so duplicate removal,
 tautology skipping, and immediate root units are not the observed Kakuro problem by themselves.
+
+## MiniSat CDCL Compatibility Follow-up
+
+On 2026-05-09, the CDCL core was moved closer to MiniSat in five targeted areas:
+
+- learned-clause budget adjustment now starts at 100 conflicts and is reset after preprocessing
+  from the residual original-clause count unless `SAT_REDUCE_DB_INIT`,
+  `SAT_REDUCE_DB_INTERVAL`, or `SAT_POST_PREPROCESS_REDUCE_DB_RESET` override it
+- conflict analysis defaults to MiniSat's `seen`-only behavior and skips literal position 0 in
+  reason clauses; the older solver-10 `scratch_resolved` behavior remains available with
+  `SAT_CONFLICT_ANALYSIS_MODE=resolved`
+- variable and learned-clause activities now use `f64`; learned-clause activity uses two arena
+  words
+- proof generation remains enabled by default, with `SAT_PROOF=off` available only as a diagnostic
+  mode
+- branch defaults are MiniSat-like: variable-order tie-breaking and negative initial polarity;
+  the previous occurrence-count ordering is available with `SAT_BRANCH_MODE=occurrence`
+
+Validation:
+
+- `cargo test` in `solver/10-bve-preprocess`: 48 passed
+- smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
+- smoke log: `log/2026-05-09-10-42-44`
+
+Benchmark command:
+
+```bash
+bash tools/bench.sh -t 600 -m 16384 -d benchmarks/profiling/minisat-simp-five solver/10-bve-preprocess
+```
+
+Before/after logs:
+
+- before: `log/bench-10-bve-preprocess-2026-05-09-10-19-52/results.csv`
+- after: `log/bench-10-bve-preprocess-2026-05-09-10-43-00/results.csv`
+
+| Instance | Before | After | Delta |
+|---|---:|---:|---:|
+| `sudoku-N30-12` | `340.515s` | `353.204s` | `+12.689s` |
+| `SC25_Timetable...392...` | `53.842s` | `32.634s` | `-21.208s` |
+| `REGRandom-K4...` | `204.339s` | `226.317s` | `+21.978s` |
+| `mp1-Nb7T46` | `44.788s` | `46.763s` | `+1.975s` |
+| `Kakuro...112...` | `303.744s` | `288.306s` | `-15.438s` |
+| **PAR-2** | **`947.228`** | **`947.224`** | **`-0.004`** |
+
+Timetable trace stats, with default proof generation:
+
+| Metric | Before | After |
+|---|---:|---:|
+| Preprocess time | `4.656s` | `4.665s` |
+| Eliminated vars | `106138` | `106138` |
+| Resolvents | `334136` | `334136` |
+| Subsumed clauses | `57400` | `57400` |
+| Strengthened clauses | `126577` | `126577` |
+| Search time | `49.085s` | `27.818s` |
+| Conflicts | `412742` | `292899` |
+| Decisions | `8314512` | `5734322` |
+| Propagations | `140891805` | `92303633` |
+| Restarts | `1017` | `700` |
+
+The Timetable improvement is therefore search-path driven: preprocessing produced identical counts,
+but the MiniSat-like CDCL defaults reduced conflicts by about 29% and decisions by about 31%.
+The aggregate five-instance score is effectively flat because the same search-path changes regress
+the two UNSAT instances and slightly regress `mp1`.
+
+Proof-off diagnostic on Timetable:
+
+- command added `SAT_PROOF=off` with the same trace settings
+- elapsed time changed from `32.731s` to `32.096s`
+- search time changed from `27.818s` to `27.243s`
+- conflicts/decisions/propagations were unchanged
+- no `proof.out` or `proof.out.tmp` was written
+
+Conclusion: proof streaming has measurable but small SAT-side overhead on this target. The larger
+effect is the CDCL search trajectory change from MiniSat-compatible analysis/branching defaults.
