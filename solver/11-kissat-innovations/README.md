@@ -16,6 +16,8 @@ What is present at the fork point:
 - SAT Competition 2025 `build.sh` / `run.sh` interface compatibility
 - release-profile and `target-cpu=native` build settings used by previous iterations
 - unit and smoke-test coverage inherited from solver `10`
+- Phase 0 Kissat-roadmap observability: extended counters, trace output, proof byte/clause metrics,
+  GC/deletion timing, and optional `SAT_CHECK_INVARIANTS=1` consistency checks
 
 What is intentionally not present yet:
 
@@ -53,3 +55,23 @@ Results:
 - `cargo test` in `solver/11-kissat-innovations`: 48 passed
 - smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
 - smoke log: `log/2026-05-09-17-09-03`
+
+Phase 0 observability validation on 2026-05-09:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_CHECK_INVARIANTS=1 bash tools/smoke_test.sh solver/11-kissat-innovations
+bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 50 passed
+- normal smoke suite: 9/9 passed, log `log/2026-05-09-17-54-43`
+- invariant smoke suite: 9/9 passed, log `log/2026-05-09-17-54-52`
+- profiling baseline before instrumentation: PAR-2 `1100.087`, solved 7/11, log
+  `log/bench-11-kissat-innovations-2026-05-09-17-38-22`
+- profiling after instrumentation: PAR-2 `1098.830`, solved 7/11, log
+  `log/bench-11-kissat-innovations-2026-05-09-17-55-01`
+- same solved/timeout split; measured runtime difference was within normal run-to-run noise

@@ -205,6 +205,7 @@ impl Solver {
         self.detach_clause_strict(clause_idx);
         self.original_literals = self.original_literals.saturating_sub(clause_len);
         self.deleted_clause_words += self.clause_word_len(clause_idx);
+        self.stats.deleted_words += self.clause_word_len(clause_idx) as u64;
         self.clause_set_deleted(clause_idx, true);
         self.stats.deleted_clauses += 1;
     }

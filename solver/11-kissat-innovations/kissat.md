@@ -1058,6 +1058,23 @@ Unlocks:
 
 - Safe measurement for every later phase.
 
+Status:
+
+- Implemented on 2026-05-09.
+- Added behavior-preserving counters for learned clause size distribution, deletion/shrink words,
+  GC copied/reclaimed words and time, simplify/reduce timing, preprocessing/search timing, and proof
+  clause/byte counts.
+- Added `SAT_CHECK_INVARIANTS=1` for expensive consistency checks over trail/reasons, live clause
+  lists, watchers, branch heap positions, occurrence lists when present, clause abstractions, and
+  model-extension stack shape.
+- Extended `SAT_TRACE_PREPROCESS` and `SAT_TRACE_SEARCH_INTERVAL` output with the new counters.
+- Validation: `cargo test` passed 50 tests; normal smoke passed 9/9; invariant smoke with
+  `SAT_CHECK_INVARIANTS=1` passed 9/9.
+- Profiling overhead check on `benchmarks/profiling`, timeout 120s, memory 16 GB:
+  baseline log `log/bench-11-kissat-innovations-2026-05-09-17-38-22`, PAR-2 `1100.087`, solved
+  7/11; instrumented log `log/bench-11-kissat-innovations-2026-05-09-17-55-01`, PAR-2 `1098.830`,
+  solved 7/11. Same solved/timeout split; runtime delta is within normal benchmark noise.
+
 ### Phase 1. Clause metadata and tagged reasons
 
 Primary roadmap items:

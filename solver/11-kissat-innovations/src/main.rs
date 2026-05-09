@@ -72,10 +72,24 @@ struct SolverStats {
     deleted_clauses: u64,
     garbage_collections: u64,
     learned_clauses: u64,
+    learned_clause_literals: u64,
+    learned_clause_max_len: usize,
+    learned_unit_clauses: u64,
+    learned_binary_clauses: u64,
+    learned_long_clauses: u64,
+    deleted_words: u64,
+    shrunk_words: u64,
+    gc_copied_words: u64,
+    gc_reclaimed_words: u64,
+    gc_time_ns: u64,
+    reduce_db_time_ns: u64,
+    simplify_time_ns: u64,
     preprocess_eliminated_vars: u64,
     preprocess_resolvents: u64,
     preprocess_subsumed_clauses: u64,
     preprocess_strengthened_clauses: u64,
+    preprocess_time_ns: u64,
+    search_time_ns: u64,
 }
 
 enum ProofMode {
@@ -93,6 +107,9 @@ struct ProofStream {
 
 struct ProofLog {
     mode: ProofMode,
+    recorded_clauses: u64,
+    recorded_literals: u64,
+    recorded_bytes: u64,
 }
 
 fn append_u32_ascii(buffer: &mut Vec<u8>, mut value: u32) {
@@ -121,10 +138,28 @@ fn append_i32_ascii(buffer: &mut Vec<u8>, value: i32) {
     append_u32_ascii(buffer, value.unsigned_abs());
 }
 
+fn ascii_i32_len(value: i32) -> usize {
+    let mut len = if value < 0 { 1 } else { 0 };
+    let mut value = value.unsigned_abs();
+    len += 1;
+    while value >= 10 {
+        value /= 10;
+        len += 1;
+    }
+    len
+}
+
+fn elapsed_ns(start: Instant) -> u64 {
+    start.elapsed().as_nanos().min(u64::MAX as u128) as u64
+}
+
 impl ProofLog {
     fn disabled() -> Self {
         Self {
             mode: ProofMode::Disabled,
+            recorded_clauses: 0,
+            recorded_literals: 0,
+            recorded_bytes: 0,
         }
     }
 
@@ -150,10 +185,20 @@ impl ProofLog {
                 buffer: Vec::with_capacity(capacity),
                 capacity,
             }),
+            recorded_clauses: 0,
+            recorded_literals: 0,
+            recorded_bytes: 0,
         }
     }
 
     fn record_clause(&mut self, clause: &[i32]) {
+        self.recorded_clauses += 1;
+        self.recorded_literals += clause.len() as u64;
+        self.recorded_bytes += clause
+            .iter()
+            .map(|&lit| ascii_i32_len(lit) as u64 + 1)
+            .sum::<u64>()
+            + 2;
         if let ProofMode::Stream(stream) = &mut self.mode {
             stream.buffer.reserve(clause.len() * 12 + 2);
             for &lit in clause {
@@ -181,6 +226,8 @@ impl ProofLog {
         match std::mem::replace(&mut self.mode, ProofMode::Disabled) {
             ProofMode::Disabled => {}
             ProofMode::Stream(mut stream) => {
+                self.recorded_clauses += 1;
+                self.recorded_bytes += 2;
                 stream
                     .buffer
                     .write_all(b"0\n")
@@ -338,6 +385,8 @@ struct Solver {
     ccmin_mode: u8,
     /// compatibility fallback for the older solver-10 conflict analyzer
     use_resolved_conflict_analysis: bool,
+    /// expensive solver consistency checks, enabled with SAT_CHECK_INVARIANTS
+    check_invariants: bool,
     stats: SolverStats,
 }
 
@@ -553,6 +602,15 @@ fn lit_to_index(lit: i32) -> usize {
     }
 }
 
+fn index_to_lit(index: usize) -> i32 {
+    let var = (index / 2 + 1) as i32;
+    if index % 2 == 0 {
+        var
+    } else {
+        -var
+    }
+}
+
 impl Solver {
     fn new(num_vars: usize, clauses: Vec<Vec<i32>>) -> Self {
         let original_clause_count = clauses.len();
@@ -650,6 +708,7 @@ impl Solver {
             scratch_analyze_stack: Vec::with_capacity(16),
             ccmin_mode: CCMIN_DEEP,
             use_resolved_conflict_analysis: false,
+            check_invariants: parse_bool_env("SAT_CHECK_INVARIANTS", false),
             stats: SolverStats::default(),
         };
         match parse_initial_clause_mode() {
@@ -666,6 +725,7 @@ impl Solver {
         for &var in &branch_order {
             solver.push_branch_var(var as usize);
         }
+        solver.maybe_check_invariants("new");
         solver
     }
 
@@ -871,6 +931,7 @@ impl Solver {
             self.original_literals -= removed;
         }
         self.deleted_clause_words += removed;
+        self.stats.shrunk_words += removed as u64;
     }
 
     fn delete_clause_for_simplify(&mut self, clause_idx: usize) {
@@ -888,6 +949,7 @@ impl Solver {
             self.original_literals -= clause_len;
         }
         self.deleted_clause_words += self.clause_word_len(clause_idx);
+        self.stats.deleted_words += self.clause_word_len(clause_idx) as u64;
         self.clause_set_deleted(clause_idx, true);
         self.stats.deleted_clauses += 1;
     }
@@ -912,6 +974,384 @@ impl Solver {
 
     fn total_live_clause_literals(&self) -> usize {
         self.original_literals + self.learned_literals
+    }
+
+    fn maybe_check_invariants(&self, context: &str) {
+        if self.check_invariants {
+            self.check_invariants(context);
+        }
+    }
+
+    fn check_invariants(&self, context: &str) {
+        let num_vars = self.assignment.len().saturating_sub(1);
+        assert_eq!(
+            self.saved_phase.len(),
+            self.assignment.len(),
+            "{context}: saved phase length mismatch"
+        );
+        assert_eq!(
+            self.decision_level.len(),
+            self.assignment.len(),
+            "{context}: decision level length mismatch"
+        );
+        assert_eq!(
+            self.reason.len(),
+            self.assignment.len(),
+            "{context}: reason length mismatch"
+        );
+        assert_eq!(
+            self.decision_var.len(),
+            self.assignment.len(),
+            "{context}: decision-var length mismatch"
+        );
+        assert_eq!(
+            self.eliminated.len(),
+            self.assignment.len(),
+            "{context}: eliminated length mismatch"
+        );
+        assert!(
+            self.root_trail_len <= self.trail.len(),
+            "{context}: root trail length exceeds trail length"
+        );
+        assert!(
+            self.propagate_head <= self.trail.len(),
+            "{context}: propagation head exceeds trail length"
+        );
+
+        let current_level = self.current_level();
+        let mut previous_limit = self.root_trail_len;
+        for (level, &limit) in self.trail_limits.iter().enumerate() {
+            assert!(
+                limit >= self.root_trail_len && limit <= self.trail.len(),
+                "{context}: decision level {} starts outside the trail",
+                level + 1
+            );
+            assert!(
+                limit >= previous_limit,
+                "{context}: trail limits are not monotonic"
+            );
+            previous_limit = limit;
+            if limit < self.trail.len() {
+                let decision_var = self.trail[limit].unsigned_abs() as usize;
+                assert_eq!(
+                    self.reason[decision_var],
+                    NO_REASON,
+                    "{context}: decision literal at level {} has a reason",
+                    level + 1
+                );
+            }
+        }
+
+        let mut seen_on_trail = vec![false; self.assignment.len()];
+        for (trail_pos, &lit) in self.trail.iter().enumerate() {
+            let var = lit.unsigned_abs() as usize;
+            assert!(
+                (1..=num_vars).contains(&var),
+                "{context}: trail literal {lit} has invalid variable"
+            );
+            assert!(
+                !seen_on_trail[var],
+                "{context}: variable {var} appears twice on the trail"
+            );
+            seen_on_trail[var] = true;
+            assert_eq!(
+                self.lit_value(lit),
+                TRUE,
+                "{context}: trail literal {lit} is not true"
+            );
+            let level = self.decision_level[var];
+            assert!(
+                level <= current_level,
+                "{context}: variable {var} has invalid decision level {level}"
+            );
+            if trail_pos < self.root_trail_len {
+                assert_eq!(
+                    level, 0,
+                    "{context}: root trail literal {lit} has non-root level"
+                );
+            }
+        }
+
+        for var in 1..=num_vars {
+            if self.assignment[var] == UNASSIGNED {
+                assert_eq!(
+                    self.decision_level[var], 0,
+                    "{context}: unassigned variable {var} has a decision level"
+                );
+                assert_eq!(
+                    self.reason[var], NO_REASON,
+                    "{context}: unassigned variable {var} has a reason"
+                );
+                continue;
+            }
+
+            assert!(
+                seen_on_trail[var],
+                "{context}: assigned variable {var} is missing from the trail"
+            );
+            let reason_idx = self.reason[var];
+            if reason_idx == NO_REASON {
+                continue;
+            }
+            assert!(
+                reason_idx < self.arena.len(),
+                "{context}: variable {var} has out-of-range reason {reason_idx}"
+            );
+            assert!(
+                !self.clause_is_deleted(reason_idx),
+                "{context}: variable {var} uses deleted reason clause {reason_idx}"
+            );
+            let assigned_lit = if self.assignment[var] == TRUE {
+                var as i32
+            } else {
+                -(var as i32)
+            };
+            assert!(
+                self.clause_slice(reason_idx).contains(&assigned_lit),
+                "{context}: reason clause {reason_idx} does not contain assigned literal {assigned_lit}"
+            );
+        }
+
+        let mut live_original_literals = 0usize;
+        let mut live_learned_literals = 0usize;
+        let mut seen_clause_ids = vec![false; self.arena.len()];
+        for &clause_idx in &self.original_clause_ids {
+            self.check_live_clause_id(context, clause_idx, false, &mut seen_clause_ids);
+            live_original_literals += self.clause_len(clause_idx);
+        }
+        for &clause_idx in &self.learned_clause_ids {
+            self.check_live_clause_id(context, clause_idx, true, &mut seen_clause_ids);
+            live_learned_literals += self.clause_len(clause_idx);
+        }
+        assert_eq!(
+            live_original_literals, self.original_literals,
+            "{context}: original literal count mismatch"
+        );
+        assert_eq!(
+            live_learned_literals, self.learned_literals,
+            "{context}: learned literal count mismatch"
+        );
+        assert_eq!(
+            self.live_learned_clause_count,
+            self.learned_clause_ids.len(),
+            "{context}: live learned clause count mismatch"
+        );
+
+        for (watch_index, watch_list) in self.watchers.iter().enumerate() {
+            let watched_lit = index_to_lit(watch_index);
+            for watcher in watch_list {
+                let clause_idx = watcher.clause_idx as usize;
+                assert!(
+                    clause_idx < self.arena.len(),
+                    "{context}: watcher references out-of-range clause {clause_idx}"
+                );
+                if self.clause_is_deleted(clause_idx) {
+                    continue;
+                }
+                let clause_len = self.clause_len(clause_idx);
+                assert!(clause_len > 0, "{context}: watcher on empty clause");
+                let first = self.clause_lit(clause_idx, 0);
+                if clause_len == 1 {
+                    assert_eq!(
+                        watched_lit, first,
+                        "{context}: unit clause {clause_idx} is watched by wrong literal"
+                    );
+                    continue;
+                }
+                let second = self.clause_lit(clause_idx, 1);
+                assert!(
+                    watched_lit == first || watched_lit == second,
+                    "{context}: watcher literal {watched_lit} is not watched by clause {clause_idx}"
+                );
+                assert!(
+                    self.clause_slice(clause_idx).contains(&watcher.blocker),
+                    "{context}: blocker {} is not in clause {}",
+                    watcher.blocker,
+                    clause_idx
+                );
+            }
+        }
+
+        for &clause_idx in self
+            .original_clause_ids
+            .iter()
+            .chain(self.learned_clause_ids.iter())
+        {
+            let clause_len = self.clause_len(clause_idx);
+            if clause_len == 0 {
+                continue;
+            }
+            let first = self.clause_lit(clause_idx, 0);
+            let first_watch_count = self.live_watch_count(first, clause_idx);
+            if clause_len == 1 {
+                assert_eq!(
+                    first_watch_count, 1,
+                    "{context}: unit clause {clause_idx} does not have exactly one live watch"
+                );
+            } else {
+                let second = self.clause_lit(clause_idx, 1);
+                let second_watch_count = self.live_watch_count(second, clause_idx);
+                if first == second {
+                    assert_eq!(
+                        first_watch_count, 2,
+                        "{context}: duplicate-watch clause {clause_idx} watch count mismatch"
+                    );
+                } else {
+                    assert_eq!(
+                        first_watch_count, 1,
+                        "{context}: clause {clause_idx} first watch count mismatch"
+                    );
+                    assert_eq!(
+                        second_watch_count, 1,
+                        "{context}: clause {clause_idx} second watch count mismatch"
+                    );
+                }
+            }
+        }
+
+        let mut seen_heap_vars = vec![false; self.assignment.len()];
+        for (heap_idx, &var_u32) in self.branch_heap.iter().enumerate() {
+            let var = var_u32 as usize;
+            assert!(
+                (1..=num_vars).contains(&var),
+                "{context}: branch heap contains invalid variable {var}"
+            );
+            assert!(
+                !seen_heap_vars[var],
+                "{context}: branch heap contains duplicate variable {var}"
+            );
+            seen_heap_vars[var] = true;
+            assert_eq!(
+                self.branch_pos[var], heap_idx,
+                "{context}: branch heap position mismatch for variable {var}"
+            );
+            assert!(
+                self.decision_var[var],
+                "{context}: branch heap contains non-decision variable {var}"
+            );
+        }
+        for var in 1..=num_vars {
+            if self.branch_pos[var] == BRANCH_NOT_IN_HEAP {
+                assert!(
+                    !self.decision_var[var] || self.assignment[var] != UNASSIGNED,
+                    "{context}: branchable unassigned variable {var} is missing from the heap"
+                );
+            } else {
+                assert!(
+                    seen_heap_vars[var],
+                    "{context}: branch position set for variable {var} not in heap"
+                );
+            }
+        }
+
+        for &clause_idx in &self.root_unit_clauses {
+            assert!(
+                clause_idx < self.arena.len(),
+                "{context}: root unit clause id out of range"
+            );
+            if !self.clause_is_deleted(clause_idx) {
+                assert_eq!(
+                    self.clause_len(clause_idx),
+                    1,
+                    "{context}: root unit clause list contains non-unit clause"
+                );
+            }
+        }
+
+        if !self.clause_abstraction.is_empty() {
+            assert!(
+                self.clause_abstraction.len() >= self.arena.len(),
+                "{context}: clause abstraction vector is too short"
+            );
+            for &clause_idx in &self.original_clause_ids {
+                assert_eq!(
+                    self.clause_abstraction[clause_idx],
+                    clause_abstraction_from_lits(self.clause_slice(clause_idx)),
+                    "{context}: original clause abstraction mismatch"
+                );
+            }
+        }
+
+        if !self.occurs.is_empty() {
+            for var in 1..self.occurs.len().min(self.assignment.len()) {
+                for &clause_idx in &self.occurs[var] {
+                    assert!(
+                        clause_idx < self.arena.len(),
+                        "{context}: occurrence list references out-of-range clause"
+                    );
+                    if self.clause_is_deleted(clause_idx) {
+                        continue;
+                    }
+                    assert!(
+                        self.clause_slice(clause_idx)
+                            .iter()
+                            .any(|&lit| lit.unsigned_abs() as usize == var),
+                        "{context}: occurrence list for variable {var} contains unrelated clause {clause_idx}"
+                    );
+                }
+            }
+        }
+
+        self.check_elim_clause_stack(context);
+    }
+
+    fn check_live_clause_id(
+        &self,
+        context: &str,
+        clause_idx: usize,
+        learnt: bool,
+        seen_clause_ids: &mut [bool],
+    ) {
+        assert!(
+            clause_idx < self.arena.len(),
+            "{context}: live clause id {clause_idx} is out of range"
+        );
+        assert!(
+            !self.clause_is_deleted(clause_idx),
+            "{context}: live clause list contains deleted clause {clause_idx}"
+        );
+        assert_eq!(
+            self.clause_is_learnt(clause_idx),
+            learnt,
+            "{context}: clause {clause_idx} is in the wrong live list"
+        );
+        assert!(
+            !seen_clause_ids[clause_idx],
+            "{context}: duplicate live clause id {clause_idx}"
+        );
+        seen_clause_ids[clause_idx] = true;
+    }
+
+    fn live_watch_count(&self, lit: i32, clause_idx: usize) -> usize {
+        self.watchers[self.lit_index(lit)]
+            .iter()
+            .filter(|watcher| {
+                watcher.clause_idx as usize == clause_idx
+                    && !self.clause_is_deleted(watcher.clause_idx as usize)
+            })
+            .count()
+    }
+
+    fn check_elim_clause_stack(&self, context: &str) {
+        let mut end = self.elim_clauses.len();
+        while end > 0 {
+            let len = self.elim_clauses[end - 1];
+            assert!(len > 0, "{context}: zero-length model-extension clause");
+            let len = len as usize;
+            assert!(
+                len < end,
+                "{context}: malformed model-extension clause length {len}"
+            );
+            let start = end - 1 - len;
+            for &lit in &self.elim_clauses[start..end - 1] {
+                let var = lit.unsigned_abs() as usize;
+                assert!(
+                    var > 0 && var < self.assignment.len(),
+                    "{context}: model-extension literal {lit} has invalid variable"
+                );
+            }
+            end = start;
+        }
     }
 
     fn push_branch_var(&mut self, var: usize) {
@@ -1438,6 +1878,14 @@ impl Solver {
     }
 
     fn simplify(&mut self) -> bool {
+        let simplify_start = Instant::now();
+        let result = self.simplify_inner();
+        self.stats.simplify_time_ns += elapsed_ns(simplify_start);
+        self.maybe_check_invariants("simplify");
+        result
+    }
+
+    fn simplify_inner(&mut self) -> bool {
         debug_assert_eq!(self.current_level(), 0);
         self.stats.simplifications += 1;
 
@@ -1480,6 +1928,13 @@ impl Solver {
         self.live_learned_clause_count += 1;
         self.learned_literals += clause_len;
         self.stats.learned_clauses += 1;
+        self.stats.learned_clause_literals += clause_len as u64;
+        self.stats.learned_clause_max_len = self.stats.learned_clause_max_len.max(clause_len);
+        match clause_len {
+            0 | 1 => self.stats.learned_unit_clauses += 1,
+            2 => self.stats.learned_binary_clauses += 1,
+            _ => self.stats.learned_long_clauses += 1,
+        }
         self.attach_clause(clause_idx, false);
         clause_idx
     }
@@ -1571,6 +2026,7 @@ impl Solver {
         self.live_learned_clause_count = self.live_learned_clause_count.saturating_sub(1);
         self.learned_literals -= self.clause_len(clause_idx);
         self.deleted_clause_words += self.clause_word_len(clause_idx);
+        self.stats.deleted_words += self.clause_word_len(clause_idx) as u64;
         self.clause_set_deleted(clause_idx, true);
         self.stats.deleted_clauses += 1;
     }
@@ -1598,6 +2054,7 @@ impl Solver {
         self.live_learned_clause_count = self.live_learned_clause_count.saturating_sub(1);
         self.learned_literals -= self.clause_len(clause_idx);
         self.deleted_clause_words += self.clause_word_len(clause_idx);
+        self.stats.deleted_words += self.clause_word_len(clause_idx) as u64;
         self.clause_set_deleted(clause_idx, true);
         self.stats.deleted_clauses += 1;
     }
@@ -1613,6 +2070,8 @@ impl Solver {
     }
 
     fn garbage_collect(&mut self) {
+        let gc_start = Instant::now();
+        let old_word_count = self.arena.len();
         self.stats.garbage_collections += 1;
         let mut reloc = vec![NO_REASON; self.arena.len()];
         let live_clause_count = self.original_clause_ids.len() + self.learned_clause_ids.len();
@@ -1729,9 +2188,14 @@ impl Solver {
         }
         self.live_learned_clause_count = self.learned_clause_ids.len();
         self.deleted_clause_words = 0;
+        self.stats.gc_copied_words += live_word_count as u64;
+        self.stats.gc_reclaimed_words += old_word_count.saturating_sub(live_word_count) as u64;
+        self.stats.gc_time_ns += elapsed_ns(gc_start);
+        self.maybe_check_invariants("garbage_collect");
     }
 
     fn reduce_db(&mut self) {
+        let reduce_start = Instant::now();
         self.stats.reduce_db_calls += 1;
 
         let arena = &self.arena;
@@ -1772,6 +2236,8 @@ impl Solver {
         self.live_learned_clause_count = self.learned_clause_ids.len();
 
         self.maybe_garbage_collect();
+        self.stats.reduce_db_time_ns += elapsed_ns(reduce_start);
+        self.maybe_check_invariants("reduce_db");
     }
 
     fn minimize_learned_clause(&mut self, learned_clause: &mut Vec<i32>) {
@@ -1993,16 +2459,20 @@ impl Solver {
         if self.propagate().is_some() {
             return false;
         }
+        self.maybe_check_invariants("root_propagate");
 
         let preprocess_start = Instant::now();
         if !self.eliminate(true, proof_log) {
             return false;
         }
+        let preprocess_ns = elapsed_ns(preprocess_start);
+        self.stats.preprocess_time_ns += preprocess_ns;
         self.reset_learned_budget_after_preprocess();
+        self.maybe_check_invariants("preprocess");
         if env::var_os("SAT_TRACE_PREPROCESS").is_some() {
             eprintln!(
-                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} root_assigns={} deleted_clauses={} reduce_db_limit={}",
-                preprocess_start.elapsed().as_secs_f64(),
+                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} root_assigns={} deleted_clauses={} deleted_words={} shrunk_words={} gc={} gc_copied_words={} gc_reclaimed_words={} gc_ms={:.3} proof_clauses={} proof_bytes={} reduce_db_limit={}",
+                preprocess_ns as f64 / 1e9,
                 self.stats.preprocess_eliminated_vars,
                 self.stats.preprocess_resolvents,
                 self.stats.preprocess_subsumed_clauses,
@@ -2012,6 +2482,14 @@ impl Solver {
                 self.original_literals,
                 self.trail.len(),
                 self.stats.deleted_clauses,
+                self.stats.deleted_words,
+                self.stats.shrunk_words,
+                self.stats.garbage_collections,
+                self.stats.gc_copied_words,
+                self.stats.gc_reclaimed_words,
+                self.stats.gc_time_ns as f64 / 1e6,
+                proof_log.recorded_clauses,
+                proof_log.recorded_bytes,
                 self.reduce_db_limit,
             );
         }
@@ -2025,16 +2503,27 @@ impl Solver {
             match conflict {
                 Some(conflict_clause_idx) => {
                     if self.current_level() == 0 {
+                        self.stats.search_time_ns += elapsed_ns(search_start);
                         if trace_search_interval > 0 {
                             eprintln!(
-                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} reduce_db={}",
-                                search_start.elapsed().as_secs_f64(),
+                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} deleted_clauses={} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} proof_clauses={} proof_bytes={}",
+                                self.stats.search_time_ns as f64 / 1e9,
                                 self.stats.conflicts,
                                 self.stats.decisions,
                                 self.stats.propagations,
                                 self.stats.restarts,
                                 self.live_learned_clause_count,
+                                self.stats.learned_clause_literals,
+                                self.stats.learned_clause_max_len,
+                                self.stats.deleted_clauses,
+                                self.stats.deleted_words,
+                                self.stats.garbage_collections,
+                                self.stats.gc_time_ns as f64 / 1e6,
+                                self.stats.simplify_time_ns as f64 / 1e6,
                                 self.stats.reduce_db_calls,
+                                self.stats.reduce_db_time_ns as f64 / 1e6,
+                                proof_log.recorded_clauses,
+                                proof_log.recorded_bytes,
                             );
                         }
                         return false;
@@ -2043,7 +2532,7 @@ impl Solver {
                     self.stats.conflicts += 1;
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
-                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} level={} trail={} learned={} reduce_db={} orig_clauses={} orig_literals={}",
+                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} reduce_db={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
                             search_start.elapsed().as_secs_f64(),
                             self.stats.conflicts,
                             self.stats.decisions,
@@ -2052,9 +2541,16 @@ impl Solver {
                             self.current_level(),
                             self.trail.len(),
                             self.live_learned_clause_count,
+                            self.stats.learned_unit_clauses,
+                            self.stats.learned_binary_clauses,
+                            self.stats.learned_long_clauses,
+                            self.stats.learned_clause_max_len,
                             self.stats.reduce_db_calls,
                             self.original_clause_ids.len(),
                             self.original_literals,
+                            self.stats.deleted_words,
+                            self.stats.garbage_collections,
+                            proof_log.recorded_bytes,
                         );
                         next_search_trace = next_search_trace.saturating_add(trace_search_interval);
                     }
@@ -2070,6 +2566,11 @@ impl Solver {
                     let asserting_lit = learned_clause[0];
                     proof_log.record_clause(&learned_clause);
                     if learned_clause.len() == 1 {
+                        self.stats.learned_clauses += 1;
+                        self.stats.learned_clause_literals += 1;
+                        self.stats.learned_clause_max_len =
+                            self.stats.learned_clause_max_len.max(1);
+                        self.stats.learned_unit_clauses += 1;
                         debug_assert_eq!(backtrack_level, 0);
                         self.backtrack(0);
                         let inserted = self.enqueue(asserting_lit, NO_REASON);
@@ -2094,6 +2595,7 @@ impl Solver {
                         let inserted = self.enqueue(asserting_lit, learned_clause_idx);
                         debug_assert!(inserted, "learned clause must be asserting after backtrack");
                     }
+                    self.maybe_check_invariants("conflict");
 
                     conflict = self.propagate();
                 }
@@ -2123,16 +2625,27 @@ impl Solver {
                         }
                         None => {
                             self.capture_sat_model();
+                            self.stats.search_time_ns += elapsed_ns(search_start);
                             if trace_search_interval > 0 {
                                 eprintln!(
-                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} reduce_db={}",
-                                    search_start.elapsed().as_secs_f64(),
+                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} deleted_clauses={} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} proof_clauses={} proof_bytes={}",
+                                    self.stats.search_time_ns as f64 / 1e9,
                                     self.stats.conflicts,
                                     self.stats.decisions,
                                     self.stats.propagations,
                                     self.stats.restarts,
                                     self.live_learned_clause_count,
+                                    self.stats.learned_clause_literals,
+                                    self.stats.learned_clause_max_len,
+                                    self.stats.deleted_clauses,
+                                    self.stats.deleted_words,
+                                    self.stats.garbage_collections,
+                                    self.stats.gc_time_ns as f64 / 1e6,
+                                    self.stats.simplify_time_ns as f64 / 1e6,
                                     self.stats.reduce_db_calls,
+                                    self.stats.reduce_db_time_ns as f64 / 1e6,
+                                    proof_log.recorded_clauses,
+                                    proof_log.recorded_bytes,
                                 );
                             }
                             return true;
@@ -2518,6 +3031,18 @@ mod tests {
     fn test_no_clauses_sat() {
         let mut s = make_solver(3, vec![]);
         assert!(s.solve());
+    }
+
+    #[test]
+    fn test_invariant_check_accepts_normal_search_state() {
+        let mut s = make_solver(4, vec![vec![1, 2, 3], vec![-1, 2], vec![-2, 4]]);
+        s.check_invariants = true;
+
+        assert!(s.enqueue_root_units());
+        assert_eq!(s.propagate(), None);
+        s.decide(-1);
+        assert_eq!(s.propagate(), None);
+        s.check_invariants("unit-test");
     }
 
     #[test]
@@ -3017,6 +3542,19 @@ mod tests {
                 > 0,
             "expected proof buffer flush to write bytes before finalization"
         );
+    }
+
+    #[test]
+    fn test_proof_log_tracks_recorded_clause_metrics() {
+        let dir = make_temp_dir("proof-metrics");
+        let mut proof = ProofLog::new(&dir, 64);
+
+        proof.record_clause(&[12, -3]);
+        proof.record_clause(&[]);
+
+        assert_eq!(proof.recorded_clauses, 2);
+        assert_eq!(proof.recorded_literals, 2);
+        assert_eq!(proof.recorded_bytes, 10);
     }
 
     #[test]
