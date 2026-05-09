@@ -1909,16 +1909,48 @@ impl Solver {
             );
         }
 
+        let trace_search_interval = parse_optional_usize_env("SAT_TRACE_SEARCH_INTERVAL") as u64;
+        let mut next_search_trace = trace_search_interval;
+        let search_start = Instant::now();
         let mut conflict = self.propagate();
 
         loop {
             match conflict {
                 Some(conflict_clause_idx) => {
                     if self.current_level() == 0 {
+                        if trace_search_interval > 0 {
+                            eprintln!(
+                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} reduce_db={}",
+                                search_start.elapsed().as_secs_f64(),
+                                self.stats.conflicts,
+                                self.stats.decisions,
+                                self.stats.propagations,
+                                self.stats.restarts,
+                                self.live_learned_clause_count,
+                                self.stats.reduce_db_calls,
+                            );
+                        }
                         return false;
                     }
 
                     self.stats.conflicts += 1;
+                    if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
+                        eprintln!(
+                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} level={} trail={} learned={} reduce_db={} orig_clauses={} orig_literals={}",
+                            search_start.elapsed().as_secs_f64(),
+                            self.stats.conflicts,
+                            self.stats.decisions,
+                            self.stats.propagations,
+                            self.stats.restarts,
+                            self.current_level(),
+                            self.trail.len(),
+                            self.live_learned_clause_count,
+                            self.stats.reduce_db_calls,
+                            self.original_clause_ids.len(),
+                            self.original_literals,
+                        );
+                        next_search_trace = next_search_trace.saturating_add(trace_search_interval);
+                    }
                     let backtrack_level = self.analyze_conflict_to_scratch(conflict_clause_idx);
                     self.bump_analyzed_variable_activity();
                     self.decay_variable_activity();
@@ -1984,6 +2016,18 @@ impl Solver {
                         }
                         None => {
                             self.capture_sat_model();
+                            if trace_search_interval > 0 {
+                                eprintln!(
+                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} reduce_db={}",
+                                    search_start.elapsed().as_secs_f64(),
+                                    self.stats.conflicts,
+                                    self.stats.decisions,
+                                    self.stats.propagations,
+                                    self.stats.restarts,
+                                    self.live_learned_clause_count,
+                                    self.stats.reduce_db_calls,
+                                );
+                            }
                             return true;
                         }
                     }
@@ -2018,6 +2062,19 @@ fn parse_usize_env(name: &str, default: usize) -> usize {
             }
         },
         Err(_) => default,
+    }
+}
+
+fn parse_optional_usize_env(name: &str) -> usize {
+    match env::var(name) {
+        Ok(value) => match value.trim().parse::<usize>() {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                eprintln!("Invalid {name}={value:?}: {err}");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => 0,
     }
 }
 
@@ -2105,6 +2162,15 @@ fn main() {
     let mut solver = Solver::new(num_vars, clauses);
     solver.ccmin_mode = parse_ccmin_mode();
     solver.reduce_db_limit = parse_usize_env("SAT_REDUCE_DB_INIT", solver.reduce_db_limit);
+    if let Ok(value) = env::var("SAT_SUBSUMPTION_LIMIT") {
+        solver.subsumption_lim = match value.trim().parse::<isize>() {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                eprintln!("Invalid SAT_SUBSUMPTION_LIMIT={value:?}: {err}");
+                std::process::exit(2);
+            }
+        };
+    }
     solver.learntsize_adjust_cnt =
         parse_usize_env("SAT_REDUCE_DB_INTERVAL", solver.learntsize_adjust_cnt);
     solver.learntsize_adjust_confl = solver.learntsize_adjust_cnt as f64;

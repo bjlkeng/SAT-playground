@@ -35,8 +35,21 @@ impl Solver {
     }
 
     fn should_run_full_backward_subsumption(&self) -> bool {
+        match std::env::var("SAT_FULL_BSR") {
+            Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => return true,
+                "0" | "false" | "no" | "off" => return false,
+                other => {
+                    eprintln!("Invalid SAT_FULL_BSR={other}; expected on/off");
+                    std::process::exit(2);
+                }
+            },
+            Err(_) => {}
+        }
         let vars = self.variable_count();
-        vars > 0 && vars <= 10_000 && self.original_clause_ids.len() >= vars.saturating_mul(50)
+        let clauses = self.original_clause_ids.len();
+        (vars > 0 && vars <= 10_000 && clauses >= vars.saturating_mul(50))
+            || (vars >= 500_000 && clauses >= 1_000_000)
     }
 
     fn build_occurrence_index(&mut self) {

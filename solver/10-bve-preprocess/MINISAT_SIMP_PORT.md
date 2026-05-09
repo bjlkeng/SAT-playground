@@ -214,6 +214,29 @@ Next-session pickup list:
    improves the selected target by more than `3%`, and rerun smoke/cargo tests after kept solver
    logic changes.
 
+### 2026-05-08 Follow-up Debugging Loop
+
+Accepted change:
+
+- Added a very-large-formula full-BSR gate. This targets formulas like
+  `9af7...brocard_problem_large`, where MiniSat's default backward subsumption produces a much
+  smaller residual than solver `10`'s previous non-BSR path.
+- Brocard improved from `163.160s` in the fresh rerun to about `42.3s` in direct tracing
+  (`34.9s` preprocessing + `7.4s` search), with 642 conflicts.
+- MiniSat's dumped brocard residual was `4,086,123` clauses / `13,124,041` literals; the new
+  solver `10` large-BSR path reaches essentially the same residual.
+
+Rejected or incomplete:
+
+- Negative initial phase alone did not solve `bp4`, brocard, or Timetable in the tested bounds.
+- Variable-order tie-breaking plus negative phase was worse than the existing occurrence tie on
+  brocard and Timetable traces.
+- Backtrack-only MiniSat-style phase saving plus negative phase did not fix the SAT-side targets.
+- Full BSR on `bp4` and Timetable reaches MiniSat-like residuals, but solver `10` still does not
+  solve those SAT instances quickly. Running solver `10` on MiniSat's own residual DIMACS files also
+  timed out under the tested `90s` bound for those two, so the remaining gap is CDCL/search-core
+  behavior rather than preprocessing residual quality alone.
+
 In this context, "faithfully" means:
 
 - keep the current CDCL search core as the post-preprocessing engine

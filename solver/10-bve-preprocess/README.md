@@ -14,7 +14,8 @@ What is present:
 - original-clause occurrence lists and literal occurrence counts during preprocessing
 - a separate decision-variable flag so eliminated variables do not re-enter the branch heap
 - bounded variable elimination with MiniSat-style `grow = 0` and `clause_lim = 20`
-- gated backward subsumption / BSR for small, dense formulas where the extra sweep pays off
+- gated backward subsumption / BSR for small dense formulas and very large formulas where residual
+  parity with MiniSat pays off
 - 64-bit clause abstraction prefiltering for preprocessing subsumption checks
 - dynamic elimination heap on the gated full-BSR path
 - resolvent insertion through a preprocessing original-clause path
@@ -48,6 +49,12 @@ Results:
 - `cargo test` in `solver/10-bve-preprocess`: 45 passed
 - smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
 - smoke log: `log/2026-05-08-16-08-17`
+
+Rerun after the large-formula BSR gate on 2026-05-08:
+
+- `cargo test` in `solver/10-bve-preprocess`: 45 passed
+- smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
+- smoke log: `log/2026-05-08-20-35-04`
 
 ## MiniSat-Simp Five-Instance Benchmark
 
@@ -89,3 +96,27 @@ The remaining gap to MiniSat is now mostly preprocessing speed on K4 and CDCL/se
 Timetable SAT instance. A direct MiniSat K4 run reported `39.65s` simplification and `61.26s` total
 CPU time; gated solver `10` reaches the same K4 residual formula but spent about `117.05s` in
 preprocessing during trace runs.
+
+## Fresh MiniSat-Gap Debugging Notes
+
+The 2026-05-08 fresh five-instance rerun showed solver `10` solving 3/5 while MiniSat solved all 5.
+The accepted change from the follow-up debugging loop is a larger-formula full-BSR gate:
+
+- `9af7...brocard_problem_large`: baseline solver `10` solved UNSAT in `163.160s`; with full BSR
+  enabled by the new large-formula gate it solved in about `42.3s` (`34.9s` preprocessing +
+  `7.4s` search).
+- MiniSat's dumped residual for brocard had `4,086,123` clauses and `13,124,041` literals. The new
+  large-formula BSR path produces essentially the same residual before search.
+- Running solver `10` directly on MiniSat's brocard residual solved in `9.7s`, confirming the
+  brocard gap was mostly preprocessing residual quality rather than CDCL search.
+
+Rejected or incomplete hypotheses from that loop:
+
+- Initial negative branching phase did not solve `bp4`, brocard, or Timetable within the tested
+  bounds.
+- MiniSat-style variable-order activity tie-breaking plus negative phase was worse on brocard and
+  Timetable than the existing occurrence tie.
+- MiniSat-style backtrack-only phase saving plus negative phase did not fix the SAT-side gaps.
+- Forced full BSR matches MiniSat-like residuals on `bp4` and Timetable, but it does not make solver
+  `10` solve those SAT targets quickly; running solver `10` on MiniSat's own residual formulas still
+  timed out under the tested `90s` bound. Those remain CDCL/search-core gaps.
