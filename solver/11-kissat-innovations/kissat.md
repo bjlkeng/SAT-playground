@@ -1017,15 +1017,362 @@ Implementation items:
 - Revisit after dense mode, proof logging for substitutions, and gate-aware simplification exist.
 - Benchmark only on formulas where Kissat's structural simplification visibly beats solver 11.
 
-## Suggested First Experiments
+## Infrastructure-First Implementation Order
 
-1. Add glue/LBD metadata and diagnostics without changing behavior.
-2. Add the no-all-negative/no-all-positive lucky shortcut and warmup phase seeding behind separate
-   flags. These are small enough to evaluate before the larger propagation refactor.
-3. Implement a glue-tiered reducer behind `SAT_REDUCE_MODE=glue-tiered` and compare it against the
-   current reducer on the existing five-instance MiniSat-gap set plus a Kissat-gap target.
-4. Implement focused decision queue behind `SAT_SEARCH_MODE=focused` and test it independently of
-   mode switching.
+The first implementation pass should not chase the easiest visible features. Lucky assignment,
+warmup, and stable-only reordering are attractive because they are small, but they do not create the
+foundation needed by most Kissat-style changes. The central dependencies are:
 
-These build the minimum infrastructure for later Kissat features while keeping each experiment
-small enough to measure and revert cleanly.
+- richer clause/reason metadata for glue, tiers, binary reasons, and proof-safe modification;
+- a real binary implication representation;
+- a root-level maintenance scheduler;
+- explicit search-mode and simplification-mode transitions;
+- a reusable occurrence-list/dense view for repeated formula rewriting.
+
+The order below prioritizes infrastructure that other features will build on. Each phase should land
+with behavior either unchanged or guarded by an environment flag, plus unit tests and the solver 11
+smoke suite.
+
+### Phase 0. Baseline observability and invariants
+
+Primary roadmap items:
+
+- A. Kissat-facing diagnostics
+- W. Clause-GC instrumentation
+
+Build first:
+
+- Add counters for learned clause size, glue placeholder, backtrack level, propagation throughput,
+  live/deleted clauses, deleted words, copied GC words, proof bytes, preprocessing time, and search
+  maintenance time.
+- Add internal consistency checks that can be enabled in tests: watcher consistency, reason
+  consistency, learned/original clause lists, and proof/model-extension stack shape.
+- Keep the solver behavior unchanged.
+
+Why first:
+
+- The following phases are representation-heavy. Without counters and invariants, it will be too
+  easy to mistake a search-path change for an implementation win or miss a slow proof/GC regression.
+
+Unlocks:
+
+- Safe measurement for every later phase.
+
+### Phase 1. Clause metadata and tagged reasons
+
+Primary roadmap items:
+
+- B. Glue/LBD and used counters
+- L. Formula representation follow-ups
+- Q. On-the-fly strengthening diagnostics only
+
+Build first:
+
+- Add explicit accessor functions for clause metadata instead of scattering packed-word layout
+  knowledge.
+- Add learned-clause fields for `glue`, `used`, `tier`, `searched`, `reason`, and `shrunken` where
+  practical, even if some are initially diagnostics-only.
+- Replace raw optional clause ids in assignments with a tagged reason type:
+  `Decision`, `Unit`, `Clause(id)`, and eventually `Binary(lit)`.
+- Compute glue/LBD during analysis and record it, but keep the existing reducer and restart policy
+  until later phases.
+- Add diagnostics for on-the-fly strengthening opportunities without modifying clauses.
+
+Why before binary watches:
+
+- Binary clauses need a different reason representation. Doing tagged reasons first reduces the
+  blast radius of the binary propagation refactor.
+
+Unlocks:
+
+- C. Glue-tiered reduction
+- F. Glue EMA restarts
+- T. Vivification tiering
+- Q. Actual on-the-fly strengthening
+- D. Binary reason support
+
+### Phase 2. Binary implication watches and propagation split
+
+Primary roadmap item:
+
+- D. Split binary clauses into a fast implication path
+
+Build first:
+
+- Store binary clauses as direct implication watches and keep large clauses in the arena.
+- Propagate binary implications before large watched clauses.
+- Teach analysis, reason lookup, proof emission, model checking, clause iteration, and deletion
+  accounting about binary reasons.
+- Preserve a full iterator over all logical clauses, including binary clauses, for validation and
+  proof/model logic.
+
+Why this early:
+
+- This is the most fundamental Kissat representation gap. It is also the prerequisite for probing,
+  transitive reduction, binary equivalence detection, duplicate-binary cleanup, and faster BVE
+  special cases.
+
+Unlocks:
+
+- M. Full lucky probing
+- P. Binary transitive reduction
+- R. Duplicate binary cleanup and binary-large strengthening
+- S. Fast binary-heavy elimination
+- U. Binary equivalence detection
+
+### Phase 3. Root-level maintenance scheduler and state transitions
+
+Primary roadmap items:
+
+- J. Reintroduce inprocessing after search starts
+- O. Root-level reordering hook
+- G. Rephase hook
+
+Build first:
+
+- Add a central maintenance scheduler with conflict/tick limits for reduce, restart, reorder,
+  rephase, probe, and eliminate.
+- Add a reliable `return_to_root_for_maintenance` path: backtrack, propagate root units, handle
+  inconsistency, run one scheduled action, then resume search.
+- Initially wire most actions as no-ops or diagnostics-only events.
+- Keep the existing Luby restart and one-shot preprocessing behavior until the new hooks are proven.
+
+Why before inprocessing:
+
+- Kissat-style simplification is scheduled work. Adding individual root passes without a scheduler
+  will create one-off paths that later need to be removed.
+
+Unlocks:
+
+- O. Clause-weight reordering
+- G. Rephase schedule
+- J. Repeated BVE/BSR
+- P. Transitive reduction
+- T. Vivification
+- U. Equivalence substitution
+
+### Phase 4. Dense/sparse simplification mode and rewrite boundary
+
+Primary roadmap item:
+
+- V. Explicit dense/sparse representation transitions
+
+Build first:
+
+- Add `enter_simplification_mode` and `resume_search_mode` boundaries.
+- Build reusable occurrence lists once per simplification window.
+- Define the legal operations while in dense mode: root propagation, clause deletion, clause
+  strengthening, unit enqueue, variable elimination, substitution, and proof logging.
+- Generalize solver 10's model-extension stack so repeated simplification can extend models in the
+  right order.
+- Reconnect watchers and reset propagation state when returning to sparse search mode.
+
+Why before more simplifiers:
+
+- Forward subsumption, fast BVE, vivification candidate selection, gates, congruence, and
+  substitution all need occurrence data. They should share one lifecycle rather than rebuilding
+  incompatible ad hoc structures.
+
+Unlocks:
+
+- R. Forward subsumption
+- S. Fast BVE
+- T. Vivification candidate scheduling and propagation
+- U. Gate/equivalence substitution
+- X. Later factorization/BVA
+
+### Phase 5. Learned-clause lifecycle policy
+
+Primary roadmap items:
+
+- C. Glue-tiered reduction
+- I. Eager subsumption of recent learned clauses
+- Q. On-the-fly strengthening implementation, after diagnostics
+
+Build first:
+
+- Replace the activity-only reducer with a glue/used/tier reducer behind `SAT_REDUCE_MODE`.
+- Promote/recompute glue when reason clauses are used.
+- Add eager subsumption over the last few learned clauses.
+- Implement on-the-fly strengthening only after proof additions/deletions for modified clauses are
+  covered by tests.
+- Use the Phase 0 GC counters to decide whether sparse collection needs to move earlier.
+
+Why after metadata and scheduler:
+
+- Reduction depends on Phase 1 metadata, and repeated reduce events should run through the Phase 3
+  scheduler.
+
+Unlocks:
+
+- F. Glue-based restarts
+- T. Learned-clause vivification
+- More accurate clause database pressure for inprocessing limits
+
+### Phase 6. Search-mode abstraction and decision infrastructure
+
+Primary roadmap items:
+
+- E. Focused mode decision queue
+- O. Focused integration for clause-weight reordering
+- K. Search-relevant BVE scoring
+
+Build first:
+
+- Add `SearchMode::{Stable, Focused}` and isolate decision selection behind a mode-aware API.
+- Keep the existing heap as stable mode.
+- Add focused queue links/stamps and analyzed-variable move-to-front behavior.
+- Add a mode-independent way to ask for variable search relevance: stable score or focused queue
+  stamp.
+- Test stable and focused modes independently before adding automatic switching.
+
+Why after reasons and scheduler:
+
+- Focused mode changes analysis bumping, decision order, restart behavior, and BVE scoring. It needs
+  clear assignment/reason metadata and a scheduler for later mode switches.
+
+Unlocks:
+
+- F. Focused restart/trail reuse
+- K. Kissat-like BVE scoring
+- O. Focused reorder
+- Mode switching
+
+### Phase 7. Restart, backtracking, and phase system
+
+Primary roadmap items:
+
+- F. Glue EMA restart policy and trail reuse
+- G. Target/best phases and rephase schedule
+- H. Chronological backtracking and reason-side bumping
+- N. Warmup phase seeding
+
+Build first:
+
+- Add fast/slow glue EMAs using Phase 1 glue data.
+- Add stable reluctant restart and focused glue-EMA restart behind `SAT_RESTART_MODE`.
+- Add target and best phase arrays, then rephase scheduling through the Phase 3 scheduler.
+- Add warmup as a phase-seeding pass once phase arrays exist.
+- Add chronological backtracking and reason-side bumping after restart and mode behavior are
+  measurable.
+
+Why after search modes:
+
+- Kissat's restart and rephase logic is mode-sensitive. Implementing it before focused/stable
+  abstractions would hard-code the current MiniSat-like path and make mode switching harder.
+
+Unlocks:
+
+- More faithful Kissat search behavior before adding expensive inprocessing.
+
+### Phase 8. First simplification features on the new infrastructure
+
+Primary roadmap items:
+
+- M. Lucky SAT shortcut and bounded lucky probing
+- O. Clause-weight reordering
+- K. BVE scoring alignment
+- R. Bounded forward subsumption
+- S. Fast BVE
+
+Build first:
+
+- Add no-all-positive/no-all-negative lucky shortcut first; add full four-pass lucky probing only
+  after binary propagation is stable.
+- Add stable-mode clause-weight reordering, then focused-mode reordering.
+- Update BVE scoring to use capped occurrence product plus search relevance.
+- Add fast BVE and bounded forward subsumption in dense mode.
+
+Why here:
+
+- These are the first visible algorithmic wins that use the major foundations without requiring full
+  vivification, congruence, or gate substitution.
+
+Unlocks:
+
+- A measured simplification/search baseline before adding deeper probing passes.
+
+### Phase 9. Probing and structural inprocessing
+
+Primary roadmap items:
+
+- P. Binary transitive reduction
+- T. Vivification scheduling and then vivification
+- U. Binary equivalence substitution
+
+Build first:
+
+- Add candidate-only vivification scheduling and report counts/ticks before mutating clauses.
+- Add binary transitive reduction with strict tick limits and proof deletion tests.
+- Add binary equivalence detection/substitution as the first structural substitution pass.
+- Add irredundant-only vivification before learned-clause vivification.
+
+Why after Phases 2-8:
+
+- These passes combine binary implication traversal, dense occurrence data, root scheduling, proof
+  mutation, and glue tiers. They should not be first-wave changes.
+
+Unlocks:
+
+- Gate-aware simplification and broader Kissat-style probing.
+
+### Phase 10. Heavy structural simplification
+
+Primary roadmap items:
+
+- U. Full gate extraction, congruence, and substitution
+- X. Factorization / bounded variable addition
+
+Build first:
+
+- Extend binary equivalence substitution into AND/ITE/definition gate extraction.
+- Add congruence closure only after substitution proof/model-extension behavior is routine.
+- Consider factorization/BVA only for benchmark families where Kissat's structural passes show a
+  clear gap and the earlier infrastructure is stable.
+
+Why last:
+
+- These features have the highest proof/model-extension complexity and are least useful without the
+  dense/sparse mode, scheduler, binary graph, and rewrite boundary.
+
+## Roadmap Item Placement
+
+| Item | Primary phase | Notes |
+| --- | --- | --- |
+| A diagnostics | 0 | First non-behavioral baseline. |
+| B glue/LBD/used | 1 | Store metadata before changing policies. |
+| C glue-tiered reduce | 5 | Needs metadata and scheduled reduction. |
+| D binary implication path | 2 | Core representation dependency. |
+| E focused queue | 6 | Needs decision API isolation. |
+| F glue restarts/trail reuse | 7 | Needs glue, modes, scheduler. |
+| G target/best/rephase | 7 | Needs scheduler and phase arrays. |
+| H chronological backtracking/reason bump | 7 | Best measured after restart changes. |
+| I eager subsumption | 5 | Learned-clause lifecycle feature. |
+| J inprocessing scheduler | 3, 8, 9 | Scheduler first, actual passes later. |
+| K BVE scoring | 8 | Needs search relevance from Phase 6. |
+| L representation follow-ups | 1, 5 | Accessors early; sparse layout only if needed. |
+| M lucky | 8 | Simple shortcut can be earlier, full probing needs Phase 2. |
+| N warmup | 7 | More coherent after phase arrays exist. |
+| O reorder | 3, 6, 8 | Hook in scheduler, then stable/focused implementations. |
+| P transitive reduction | 9 | Needs binary graph and scheduler. |
+| Q on-the-fly strengthening | 1, 5 | Diagnostics early, mutation later. |
+| R forward subsumption | 8 | Needs dense occurrence lifecycle. |
+| S fast BVE | 8 | Needs dense mode and binary special cases. |
+| T vivification | 9 | Needs glue tiers, scheduler, dense mode. |
+| U gates/congruence/equivalence | 9, 10 | Binary equivalence first; gates/congruence later. |
+| V dense/sparse mode | 4 | Foundational for repeated simplification. |
+| W GC instrumentation | 0, 5 | Measure early; optimize after reduction pressure is real. |
+| X factorization/BVA | 10 | Late-stage structural feature. |
+
+## First Concrete Milestones
+
+1. Land Phase 0 and Phase 1 together if the patch remains manageable: diagnostics, metadata
+   accessors, tagged reasons, glue computation, and no policy changes.
+2. Land Phase 2 as a standalone propagation refactor: binary implication watches plus proof/model
+   iteration support. This should get the heaviest unit-test coverage.
+3. Land Phase 3 and Phase 4 as infrastructure with no major new algorithms: scheduler hooks,
+   root-maintenance transition, dense/sparse mode, reusable occurrence lists.
+4. Land Phase 5 and Phase 6 behind flags: glue-tiered reduction and focused queue, still without
+   automatic mode switching.
+5. Only then start Phase 8 visible algorithmic work: lucky shortcut/probing, clause-weight reorder,
+   Kissat-style BVE scoring, fast BVE, and bounded forward subsumption.
