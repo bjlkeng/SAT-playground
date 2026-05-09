@@ -47,6 +47,13 @@ enum OriginalClauseInsertResult {
     Unsat,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InitialClauseMode {
+    CanonicalSorted,
+    CanonicalInputOrder,
+    Raw,
+}
+
 #[derive(Clone, Default)]
 struct SolverStats {
     conflicts: u64,
@@ -546,18 +553,9 @@ impl Solver {
             branch_rank[var as usize] = rank;
         }
 
-        let original_literals: usize = clauses.iter().map(|clause| clause.len()).sum();
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
-        let mut arena = Vec::with_capacity(total_words);
-        let mut original_clause_ids = Vec::with_capacity(original_clause_count);
-        for clause in clauses {
-            let cref = arena.len();
-            original_clause_ids.push(cref);
-            arena.push(clause_make_header(clause.len(), false, false, 0, false));
-            for lit in clause {
-                arena.push(lit_to_word(lit));
-            }
-        }
+        let arena = Vec::with_capacity(total_words);
+        let original_clause_ids = Vec::with_capacity(original_clause_count);
         let mut solver = Solver {
             arena,
             original_clause_ids,
@@ -591,7 +589,7 @@ impl Solver {
             learntsize_adjust_cnt: LEARNTSIZE_ADJUST_START_CONFL,
             learntsize_adjust_confl: LEARNTSIZE_ADJUST_START_CONFL as f64,
             live_learned_clause_count: 0,
-            original_literals,
+            original_literals: 0,
             learned_literals: 0,
             deleted_clause_words: 0,
             simplify_assigns: 0,
@@ -624,14 +622,34 @@ impl Solver {
             ccmin_mode: CCMIN_DEEP,
             stats: SolverStats::default(),
         };
-        for idx in 0..solver.original_clause_ids.len() {
-            let clause_idx = solver.original_clause_ids[idx];
-            solver.attach_clause(clause_idx, true);
+        match parse_initial_clause_mode() {
+            InitialClauseMode::CanonicalSorted => {
+                solver.add_initial_original_clauses(clauses, true);
+            }
+            InitialClauseMode::CanonicalInputOrder => {
+                solver.add_initial_original_clauses(clauses, false);
+            }
+            InitialClauseMode::Raw => {
+                solver.add_raw_initial_original_clauses(clauses);
+            }
         }
         for &var in &branch_order {
             solver.push_branch_var(var as usize);
         }
         solver
+    }
+
+    fn add_raw_initial_original_clauses(&mut self, clauses: Vec<Vec<i32>>) {
+        for clause in clauses {
+            let clause_idx = self.arena.len();
+            let clause_len = clause.len();
+            self.arena
+                .push(clause_make_header(clause_len, false, false, 0, false));
+            self.arena.extend(clause.iter().copied().map(lit_to_word));
+            self.original_clause_ids.push(clause_idx);
+            self.original_literals += clause_len;
+            self.attach_clause(clause_idx, true);
+        }
     }
 
     #[inline(always)]
@@ -2071,6 +2089,27 @@ fn parse_ccmin_mode() -> u8 {
     }
 }
 
+fn parse_initial_clause_mode() -> InitialClauseMode {
+    match env::var("SAT_INITIAL_CLAUSE_MODE") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "canonical" | "canonical-sorted" | "sorted" | "1" | "true" | "on" => {
+                InitialClauseMode::CanonicalSorted
+            }
+            "input-order" | "canonical-input-order" | "preserve-order" => {
+                InitialClauseMode::CanonicalInputOrder
+            }
+            "raw" | "off" | "0" | "false" => InitialClauseMode::Raw,
+            other => {
+                eprintln!(
+                    "Invalid SAT_INITIAL_CLAUSE_MODE={other}; expected canonical-sorted/input-order/raw"
+                );
+                std::process::exit(2);
+            }
+        },
+        Err(_) => InitialClauseMode::CanonicalSorted,
+    }
+}
+
 fn parse_usize_env(name: &str, default: usize) -> usize {
     match env::var(name) {
         Ok(value) => match value.trim().parse::<usize>() {
@@ -2236,6 +2275,18 @@ mod tests {
         Some((s.clause_lit(clause_idx, 0), s.clause_lit(clause_idx, 1)))
     }
 
+    fn live_original_clauses(s: &Solver) -> Vec<Vec<i32>> {
+        let mut clauses: Vec<Vec<i32>> = s
+            .original_clause_ids
+            .iter()
+            .copied()
+            .filter(|&clause_idx| !s.clause_is_deleted(clause_idx))
+            .map(|clause_idx| s.clause_slice(clause_idx).to_vec())
+            .collect();
+        clauses.sort();
+        clauses
+    }
+
     fn install_manual_state(
         s: &mut Solver,
         trail: &[i32],
@@ -2344,6 +2395,32 @@ mod tests {
     }
 
     #[test]
+    fn test_constructor_canonicalizes_original_clauses() {
+        let s = make_solver(3, vec![vec![2, 1, 2], vec![1, -1, 3], vec![-3, 2, 1]]);
+
+        assert_eq!(live_original_clauses(&s), vec![vec![1, 2], vec![1, 2, -3]]);
+        assert_eq!(s.original_literals, 5);
+    }
+
+    #[test]
+    fn test_constructor_turns_units_into_root_assignments() {
+        let s = make_solver(3, vec![vec![1], vec![-1, 2, 3], vec![2, -2, 3]]);
+
+        assert_eq!(s.assignment[1], TRUE);
+        assert_eq!(s.root_trail_len, 1);
+        assert!(s.root_unit_clauses.is_empty());
+        assert_eq!(live_original_clauses(&s), vec![vec![2, 3]]);
+    }
+
+    #[test]
+    fn test_constructor_detects_contradictory_units() {
+        let s = make_solver(1, vec![vec![1], vec![-1]]);
+
+        assert!(!s.solver_ok);
+        assert!(s.has_empty_clause);
+    }
+
+    #[test]
     fn test_bcp_moves_watch_and_then_implies_last_literal() {
         let mut s = make_solver(3, vec![vec![1, 2, 3]]);
 
@@ -2442,12 +2519,12 @@ mod tests {
 
         s.ccmin_mode = CCMIN_NONE;
         let (raw_learned, raw_backtrack) = s.analyze_conflict(reason_clause_ids[4]);
-        assert_eq!(raw_learned, vec![-1, 3, 4, 7, 6]);
+        assert_eq!(raw_learned, vec![-1, 3, 4, 6, 7]);
         assert_eq!(raw_backtrack, 1);
 
         s.ccmin_mode = CCMIN_BASIC;
         let (basic_learned, _) = s.analyze_conflict(reason_clause_ids[4]);
-        assert_eq!(basic_learned, vec![-1, 3, 4, 7, 6]);
+        assert_eq!(basic_learned, vec![-1, 3, 4, 6]);
 
         s.ccmin_mode = CCMIN_DEEP;
         let (deep_learned, deep_backtrack) = s.analyze_conflict(reason_clause_ids[4]);
@@ -2657,11 +2734,11 @@ mod tests {
 
     #[test]
     fn test_top_level_simplify_removes_satisfied_clauses_and_trims_only_originals() {
-        let mut s = make_solver(7, vec![vec![1], vec![1, 3], vec![4, -1, 5]]);
+        let mut s = make_solver(7, vec![vec![1, 3], vec![4, -1, 5]]);
         let satisfied_learned = s.add_clause(vec![2, -1]);
         let _trimmed_learned = s.add_clause(vec![6, -1, 7]);
 
-        assert!(s.enqueue_root_units());
+        assert!(s.enqueue(1, NO_REASON));
         assert_eq!(s.propagate(), None);
         assert_eq!(s.assignment[1], TRUE);
         assert_eq!(s.assignment[2], TRUE);

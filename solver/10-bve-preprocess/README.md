@@ -22,6 +22,11 @@ What is present:
   clauses, and a dynamic elimination heap
 - resolvent insertion through a preprocessing original-clause path, with generated clauses queued
   for immediate subsumption work
+- parse-time canonical original-clause insertion for input clauses: duplicate literals are removed,
+  tautologies / already-satisfied clauses are skipped, root units are enqueued immediately, and
+  surviving clauses use the same normalized representation as preprocessing-generated clauses
+- diagnostic `SAT_INITIAL_CLAUSE_MODE` switch for initial clause loading experiments:
+  `canonical-sorted` (default), `input-order`, or `raw`
 - DRAT logging for preprocessing-generated resolvents/units
 - MiniSat-style elimination stack entries and SAT model extension
 - SAT output from a complete model snapshot instead of the mutable live assignment vector
@@ -31,7 +36,6 @@ Still incomplete:
 
 - asymmetric branching clause strengthening
 - `use_rcheck` implied-clause checks
-- parse-time canonical original-clause insertion for every input clause
 - MiniSat's CDCL implementation details; this solver still keeps the repo's `09` search core
 
 So this is now a working BVE preprocessing iteration, but it is not yet a complete MiniSat `simp`
@@ -165,3 +169,45 @@ Matching harness rerun:
 Compared with the previous gated-BSR run on this same set, the refactor improves Brocard
 dramatically (`163.160s -> 16.277s`) but regresses the overall benchmark (`3/5`, PAR-2
 `2986.963` -> `2/5`, PAR-2 `3823.879`) because circuit slows down and `1-TC` becomes a timeout.
+
+## Parse-Time Canonical Insertion Follow-up
+
+On 2026-05-09, initial parsed clauses were routed through the same MiniSat-style original-clause
+normalization path used by preprocessing-generated resolvents. Validation:
+
+- `cargo test` in `solver/10-bve-preprocess`: 48 passed
+- smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
+- smoke log: `log/2026-05-09-07-33-09`
+
+Benchmark rerun:
+
+- `log/bench-10-bve-preprocess-2026-05-09-00-21-53/results.csv`
+- 5/5 solved, PAR-2 `946.556`
+
+Diff versus the previous accepted `minisat-simp-five` run
+(`log/bench-10-bve-preprocess-2026-05-08-15-56-37/results.csv`):
+
+| Instance | Before | After | Delta |
+|---|---:|---:|---:|
+| `sudoku-N30-12` | `184.240s` | `357.536s` | `+173.296s` |
+| `SC25_Timetable...392...` | `89.198s` | `29.561s` | `-59.637s` |
+| `REGRandom-K4...` | `205.602s` | `201.044s` | `-4.558s` |
+| `mp1-Nb7T46` | `43.106s` | `45.757s` | `+2.651s` |
+| `Kakuro...` | `18.404s` | `312.658s` | `+294.254s` |
+
+Follow-up Kakuro isolation runs:
+
+| Mode | Full BSR | Time | Results |
+|---|---:|---:|---|
+| `canonical-sorted` | on | `312.658s` | `log/bench-10-bve-preprocess-2026-05-09-00-21-53/results.csv` |
+| `raw` | on | `454.667s` | `log/bench-10-bve-preprocess-2026-05-09-07-20-27/results.csv` |
+| `canonical-sorted` | off | `95.817s` | `log/bench-10-bve-preprocess-2026-05-09-07-28-51/results.csv` |
+| `raw` | off | `19.140s` | `log/bench-10-bve-preprocess-2026-05-09-07-31-04/results.csv` |
+| `input-order` | off | `19.508s` | `log/bench-10-bve-preprocess-2026-05-09-07-32-00/results.csv` |
+
+Conclusion: parse-time canonical insertion closes a real MiniSat `addClause_()` semantic gap and
+keeps correctness intact, but it should not be considered a default performance win yet. The Kakuro
+regression is a compound search-path sensitivity: full BSR/work-loop policy is the largest factor,
+and sorted canonical literal order adds another large slowdown. Canonical semantics that preserve
+input literal order recover the old fast behavior when full BSR is disabled, so duplicate removal,
+tautology skipping, and immediate root units are not the observed Kakuro problem by themselves.

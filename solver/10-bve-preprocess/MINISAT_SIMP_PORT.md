@@ -383,6 +383,59 @@ Use this as the current working checklist for future parity/debugging passes.
   throughput but does not explain the full SAT-side gap because the timeout persists even on
   MiniSat's simplified residual formulas.
 
+### 2026-05-09 Parse-Time Canonical Insertion
+
+Implemented the current checklist item to route initial parsed clauses through the same canonical
+original-clause insertion semantics used for preprocessing resolvents:
+
+- duplicate literals are removed and clauses are sorted into the normalized internal order
+- tautological or already-satisfied clauses are skipped instead of allocated
+- root units are enqueued immediately instead of stored as persistent original unit clauses
+- contradictory root units poison the persistent solver status during construction
+- diagnostic `SAT_INITIAL_CLAUSE_MODE` is available for sensitivity checks:
+  `canonical-sorted` (default), `input-order`, or `raw`
+
+Validation:
+
+- `cargo test`: 48 passed
+- `bash tools/smoke_test.sh solver/10-bve-preprocess`: 9/9 passed
+- smoke log: `log/2026-05-09-07-33-09`
+
+Benchmark rerun on `benchmarks/profiling/minisat-simp-five` with `600s` timeout and `16384 MB`:
+
+| Solver/run | Solved | SAT | UNSAT | Timeouts | PAR-2 | Results |
+|---|---:|---:|---:|---:|---:|---|
+| previous accepted `10` | 5/5 | 3 | 2 | 0 | `540.550` | `log/bench-10-bve-preprocess-2026-05-08-15-56-37/results.csv` |
+| parse-canonical `10` | 5/5 | 3 | 2 | 0 | `946.556` | `log/bench-10-bve-preprocess-2026-05-09-00-21-53/results.csv` |
+| `minisat` | 5/5 | 3 | 2 | 0 | `453.343` | `log/bench-minisat-2026-05-08-09-58-03/results.csv` |
+
+Per-instance diff:
+
+| Instance | Previous `10` | Parse-canonical `10` | Delta | MiniSat |
+|---|---:|---:|---:|---:|
+| `sudoku-N30-12` | `184.240s` | `357.536s` | `+173.296s` | `214.501s` |
+| `SC25_Timetable...392...` | `89.198s` | `29.561s` | `-59.637s` | `18.545s` |
+| `REGRandom-K4...` | `205.602s` | `201.044s` | `-4.558s` | `65.132s` |
+| `mp1-Nb7T46` | `43.106s` | `45.757s` | `+2.651s` | `75.054s` |
+| `Kakuro...` | `18.404s` | `312.658s` | `+294.254s` | `80.111s` |
+
+Kakuro isolation runs:
+
+| Initial mode | Full BSR | Time | Results |
+|---|---:|---:|---|
+| `canonical-sorted` | on | `312.658s` | `log/bench-10-bve-preprocess-2026-05-09-00-21-53/results.csv` |
+| `raw` | on | `454.667s` | `log/bench-10-bve-preprocess-2026-05-09-07-20-27/results.csv` |
+| `canonical-sorted` | off | `95.817s` | `log/bench-10-bve-preprocess-2026-05-09-07-28-51/results.csv` |
+| `raw` | off | `19.140s` | `log/bench-10-bve-preprocess-2026-05-09-07-31-04/results.csv` |
+| `input-order` | off | `19.508s` | `log/bench-10-bve-preprocess-2026-05-09-07-32-00/results.csv` |
+
+Updated conclusion: canonical parse insertion is semantically implemented, but the earlier
+"literal/order changes" explanation was too broad. On Kakuro, full BSR/work-loop policy is the
+largest confirmed regression driver; parse canonicalization contributes mainly through sorted
+literal order. Canonical semantics that preserve input literal order match the raw fast path when
+full BSR is disabled, so duplicate removal, tautology skipping, and immediate root units are not the
+observed issue on that instance.
+
 Primary MiniSat references:
 
 - `benchmarks/reference-solvers/minisat/minisat/simp/SimpSolver.h`

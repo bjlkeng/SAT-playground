@@ -404,23 +404,43 @@ impl Solver {
         Some(normalized)
     }
 
-    fn add_original_clause_from_slice(
+    fn normalize_original_clause_input_order(&self, clause: &[i32]) -> Option<Vec<i32>> {
+        let mut normalized = Vec::with_capacity(clause.len());
+        'lits: for &lit in clause {
+            let var = lit.unsigned_abs() as usize;
+            if var == 0 || var >= self.assignment.len() || self.eliminated[var] {
+                return Some(Vec::new());
+            }
+
+            match self.lit_value(lit) {
+                TRUE => return None,
+                FALSE => continue,
+                UNASSIGNED => {}
+                _ => unreachable!(),
+            }
+
+            for &existing in &normalized {
+                if existing == lit {
+                    continue 'lits;
+                }
+                if existing == -lit {
+                    return None;
+                }
+            }
+            normalized.push(lit);
+        }
+        Some(normalized)
+    }
+
+    fn add_normalized_original_clause(
         &mut self,
-        clause: &[i32],
+        normalized: Vec<i32>,
         proof_log: &mut ProofLog,
         log_proof: bool,
         touched: &mut Vec<usize>,
         touched_flags: &mut Vec<bool>,
         mut subsumption_work: Option<(&mut VecDeque<SubsumptionCandidate>, &mut Vec<bool>)>,
     ) -> OriginalClauseInsertResult {
-        if !self.solver_ok {
-            return OriginalClauseInsertResult::Unsat;
-        }
-
-        let Some(normalized) = self.normalize_original_clause(clause) else {
-            return OriginalClauseInsertResult::Skipped;
-        };
-
         if normalized.is_empty() {
             if log_proof {
                 proof_log.record_clause(&[]);
@@ -469,6 +489,63 @@ impl Solver {
         }
 
         OriginalClauseInsertResult::Allocated(clause_idx)
+    }
+
+    fn add_original_clause_from_slice(
+        &mut self,
+        clause: &[i32],
+        proof_log: &mut ProofLog,
+        log_proof: bool,
+        touched: &mut Vec<usize>,
+        touched_flags: &mut Vec<bool>,
+        subsumption_work: Option<(&mut VecDeque<SubsumptionCandidate>, &mut Vec<bool>)>,
+    ) -> OriginalClauseInsertResult {
+        if !self.solver_ok {
+            return OriginalClauseInsertResult::Unsat;
+        }
+
+        let Some(normalized) = self.normalize_original_clause(clause) else {
+            return OriginalClauseInsertResult::Skipped;
+        };
+
+        self.add_normalized_original_clause(
+            normalized,
+            proof_log,
+            log_proof,
+            touched,
+            touched_flags,
+            subsumption_work,
+        )
+    }
+
+    pub(super) fn add_initial_original_clauses(&mut self, clauses: Vec<Vec<i32>>, sort: bool) {
+        let mut proof_log = ProofLog::disabled();
+        let mut touched = Vec::new();
+        let mut touched_flags = Vec::new();
+        let use_simplification = self.use_simplification;
+        self.use_simplification = false;
+        for clause in clauses {
+            if !self.solver_ok {
+                break;
+            }
+            let normalized = if sort {
+                self.normalize_original_clause(&clause)
+            } else {
+                self.normalize_original_clause_input_order(&clause)
+            };
+            let Some(normalized) = normalized else {
+                continue;
+            };
+            let _ = self.add_normalized_original_clause(
+                normalized,
+                &mut proof_log,
+                false,
+                &mut touched,
+                &mut touched_flags,
+                None,
+            );
+        }
+        self.use_simplification = use_simplification;
     }
 
     fn backward_subsumption_check(
@@ -1007,9 +1084,9 @@ mod tests {
 
     #[test]
     fn root_assignment_subsumption_trims_false_literal() {
-        let mut s = Solver::new(3, vec![vec![1], vec![-1, 2, 3]]);
+        let mut s = Solver::new(3, vec![vec![-1, 2, 3]]);
         let mut proof = ProofLog::disabled();
-        assert!(s.enqueue_root_units());
+        assert!(s.enqueue(1, NO_REASON));
         assert_eq!(s.propagate(), None);
         s.build_occurrence_index();
 
