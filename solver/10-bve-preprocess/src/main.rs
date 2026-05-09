@@ -1865,6 +1865,24 @@ impl Solver {
         self.learned_clause_ids.len()
     }
 
+    fn live_original_variable_count(&self) -> usize {
+        let mut seen = vec![false; self.assignment.len()];
+        let mut count = 0usize;
+        for &clause_idx in &self.original_clause_ids {
+            if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
+                continue;
+            }
+            for lit_pos in 0..self.clause_len(clause_idx) {
+                let var = self.clause_lit(clause_idx, lit_pos).unsigned_abs() as usize;
+                if var < seen.len() && !seen[var] {
+                    seen[var] = true;
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
     fn solve(&mut self) -> bool {
         let mut proof_log = ProofLog::disabled();
         self.solve_with_proof(&mut proof_log)
@@ -1896,12 +1914,13 @@ impl Solver {
         }
         if env::var_os("SAT_TRACE_PREPROCESS").is_some() {
             eprintln!(
-                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_clauses={} original_literals={} root_assigns={} deleted_clauses={}",
+                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} root_assigns={} deleted_clauses={}",
                 preprocess_start.elapsed().as_secs_f64(),
                 self.stats.preprocess_eliminated_vars,
                 self.stats.preprocess_resolvents,
                 self.stats.preprocess_subsumed_clauses,
                 self.stats.preprocess_strengthened_clauses,
+                self.live_original_variable_count(),
                 self.original_clause_ids.len(),
                 self.original_literals,
                 self.trail.len(),

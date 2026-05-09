@@ -245,6 +245,144 @@ In this context, "faithfully" means:
 - preserve SAT model correctness by reconstructing eliminated variables
 - preserve UNSAT behavior and proof logging expectations already present in this repo
 
+### 2026-05-08 MiniSat Work-Loop Refactor
+
+Implemented parity items from the current-differences checklist:
+
+- removed the formula-size gate from full backward subsumption / BSR; `SAT_FULL_BSR=off` remains
+  only as a diagnostic override
+- replaced the split full-BSR/FIFO preprocessing flow with a persistent MiniSat-style loop over
+  touched variables, root assignments, queued subsumption clauses, and dynamic elimination-heap
+  variables
+- changed BSR strengthening to mutate original clauses in place instead of deleting and reinserting
+  them
+- updated elimination-heap entries broadly when clauses are added, deleted, strengthened, or
+  touched through occurrence lists
+- queued generated resolvents immediately for subsumption work and used touched variables to keep
+  forward/backward subsumption active continuously
+
+Direct `600s` checks after this refactor:
+
+| Instance | Result | Interpretation |
+|---|---:|---|
+| `849950...circuit_48in64out_with_800gates_4in4out_dist128_seed3` | SAT `208.1s` | Regresses versus the previous gated path (`49.4s`), but still solves. |
+| `98e8...bp4_TCO_CSO_IXA_LP_ZR` | TIMEOUT | Preprocessing now finishes in `7.0s`; search remains the blocker. |
+| `9af7...brocard_problem_large` | UNSAT `~15.3s` | Improves strongly; preprocessing `7.2s`, search `8.1s`. |
+| `f17d...SC25_Timetable_C_406_E_45_Cl_26_D_7_T_50` | TIMEOUT | Preprocessing now finishes in `5.3s`; search remains the blocker. |
+| `f25a...1-TC-256-K-63` | TIMEOUT | With `SAT_FULL_BSR=off`, the refactored code still solves in `375.4s`; MiniSat-like preprocessing exposes a search-core gap. |
+
+MiniSat's own `1-TC` run enters search with the same residual size that solver `10` now reports
+after preprocessing (`422669` clauses / `930421` literals) and solves in `162.8s`. That makes the
+remaining `1-TC` gap a CDCL/search behavior gap, not a missing work-loop simplification item.
+
+Harness rerun on the same five instances:
+
+| Solver | Solved | SAT | UNSAT | Timeouts | PAR-2 | Results |
+|---|---:|---:|---:|---:|---:|---|
+| `09-root-simp-opts` | 1/5 | 0 | 1 | 4 | `5281.200` | `log/bench-09-root-simp-opts-2026-05-08-18-16-07/results.csv` |
+| `10-bve-preprocess` before this refactor | 3/5 | 2 | 1 | 2 | `2986.963` | `log/bench-10-bve-preprocess-2026-05-08-17-46-01/results.csv` |
+| `10-bve-preprocess` MiniSat work-loop refactor | 2/5 | 1 | 1 | 3 | `3823.879` | `log/bench-10-bve-preprocess-2026-05-08-22-51-56/results.csv` |
+| `minisat` | 5/5 | 4 | 1 | 0 | `533.762` | `log/bench-minisat-2026-05-08-19-05-28/results.csv` |
+
+Per-instance harness result:
+
+| Instance | Before refactor | After refactor | MiniSat |
+|---|---:|---:|---:|
+| `849950...circuit_48in64out...` | SAT `49.372s` | SAT `207.602s` | SAT `86.095s` |
+| `98e8...bp4_TCO_CSO_IXA_LP_ZR` | TIMEOUT | TIMEOUT | SAT `245.131s` |
+| `9af7...brocard_problem_large` | UNSAT `163.160s` | UNSAT `16.277s` | UNSAT `6.897s` |
+| `f17d...SC25_Timetable...` | TIMEOUT | TIMEOUT | SAT `33.251s` |
+| `f25a...1-TC-256-K-63` | SAT `374.431s` | TIMEOUT | SAT `162.388s` |
+
+Conclusion: the requested preprocessing parity changes are not a good default policy yet. They close
+most of the Brocard preprocessing gap but regress SAT-heavy formulas by changing the post-preprocess
+search trajectory. Keeping these mechanics requires either a smarter activation policy or a deeper
+CDCL/search-core parity pass.
+
+Post-simplification residual-size comparison:
+
+| Instance | `10` vars | MiniSat vars | Delta | `10` clauses | MiniSat clauses | Delta | `10` literals | MiniSat literals | Delta |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `849950...circuit_48in64out...` | `3,095` | `3,101` | `-6` | `58,231` | `58,367` | `-136` | `227,354` | `227,904` | `-550` |
+| `98e8...bp4_TCO_CSO_IXA_LP_ZR` | `41,630` | `41,628` | `+2` | `486,653` | `486,584` | `+69` | `1,151,466` | `1,151,259` | `+207` |
+| `9af7...brocard_problem_large` | `710,180` | `710,178` | `+2` | `4,086,121` | `4,086,123` | `-2` | `13,124,033` | `13,124,041` | `-8` |
+| `f17d...SC25_Timetable...` | `104,728` | `111,547` | `-6,819` | `526,408` | `532,998` | `-6,590` | `1,758,006` | `1,745,331` | `+12,675` |
+| `f25a...1-TC-256-K-63` | `12,661` | `12,661` | `0` | `422,669` | `422,669` | `0` | `930,421` | `930,421` | `0` |
+
+Interpretation: four of the five residuals are essentially the same size as MiniSat's. The exact
+`1-TC` residual-size match is especially important because solver `10` still times out there while
+MiniSat solves it, which isolates that gap to CDCL/search behavior. Timetable is the outlier:
+solver `10` removes more variables and clauses but leaves more total literals, creating a denser
+residual formula that may be harder for the current search core despite being smaller by clause
+count.
+
+Most likely remaining gap driver:
+
+1. **Learned-clause quality and CDCL trajectory.** This is the leading hypothesis. On `1-TC`, the
+   residual formula is exactly the same size after preprocessing (`12,661` variables, `422,669`
+   clauses, `930,421` literals), but MiniSat solves in `162.8s` at `820,550` conflicts while solver
+   `10` timed out at `600s` after passing `1.1M` conflicts in direct tracing. The likely cause is
+   different conflict analysis/minimization output, reason/literal order, variable activity, and
+   learned-clause retention, not missing simplification.
+2. **Watcher and clause/literal ordering.** Even when residual sizes match, the two solvers may not
+   have identical clause order, literal order, watch placement, or propagation reason selection.
+   Those differences feed directly into different conflicts and learned clauses.
+3. **Propagation throughput and allocator/cache behavior.** MiniSat reports about `4.9M`
+   propagations/sec on `1-TC`; solver `10` traces are closer to roughly `2.2M` propagations/sec.
+   This matters for wall time, but it does not fully explain the timeout because solver `10` also
+   follows a worse conflict trajectory.
+4. **Branch tie-breaking and phase behavior.** These remain plausible path-dependence sources, but
+   negative initial phase, MiniSat-style occurrence tie-breaking, and backtrack-only phase saving
+   were already tested as standalone changes and did not close the gap.
+5. **Learned database timing.** MiniSat's exact `max_learnts` adjustment and `reduceDB` schedule can
+   still interact with learned-clause quality, but it is less likely to be the primary independent
+   cause.
+6. **Proof logging.** Solver `10` pays SAT-side DRAT logging overhead that MiniSat does not, but the
+   identical-residual timeout behavior means this is not the main cause.
+
+Next diagnostic: instrument the first `10k` conflicts on `1-TC` in both solvers and compare learned
+clause sizes, backtrack levels, propagations per conflict, decision variables, and top activity-bumped
+variables. That should expose whether the divergence starts in conflict analysis, propagation reason
+ordering, or learned-clause database retention.
+
+## Current Differences vs MiniSat `simp`
+
+Use this as the current working checklist for future parity/debugging passes.
+
+### Preprocessing Differences
+
+- **Default `simp` work loop is now much closer.** Full BSR is on by default, the loop drains
+  touched variables/root assignments/subsumption clauses/heap variables, strengthening is in-place,
+  generated resolvents are queued immediately, and the elimination heap is updated from touched
+  clause changes.
+- **Exact MiniSat data-structure behavior can still differ.** The Rust implementation uses arena
+  indexes, `VecDeque`, and lazy occurrence cleanup rather than MiniSat's exact `ClauseAllocator`,
+  `Queue`, `Heap`, and `vec<CRef>` mutation patterns. Residual sizes can match while search
+  trajectories still diverge.
+- **Optional MiniSat simp features are still missing.** Solver `10` does not implement asymmetric
+  branching (`asymm`) or implied-clause checks (`rcheck`). These are off by default in the MiniSat
+  reference runs, so they are not the primary measured gap yet.
+- **Proof logging remains repo-specific.** Solver `10` emits DRAT additions for preprocessing
+  transformations; the MiniSat reference timing here does not include SAT-side proof I/O.
+
+### CDCL/Search Differences
+
+- **Solver `10` is not MiniSat's CDCL core.** The remaining `bp4`, Timetable, and `1-TC` gaps
+  persist after the requested `simp` work-loop differences are implemented. `bp4` and Timetable
+  also timed out when solver `10` was run directly on MiniSat's simplified residual DIMACS files.
+- **SAT-side search trajectory differs.** Solver `10` can process hundreds of thousands to millions
+  of conflicts on those MiniSat residuals without finding SAT, while MiniSat finds SAT much earlier.
+- **Phase and branching experiments did not close the gap.** Negative initial phase, MiniSat-style
+  variable-order tie-breaking, and backtrack-only full phase saving were tested and rejected as
+  standalone fixes.
+- **Likely remaining search-core causes:** exact conflict-analysis/minimization behavior, learned
+  clause ordering and deletion interactions, watcher/literal ordering effects during propagation,
+  restart/search-budget interactions, and subtle phase-saving path dependence.
+- **Proof logging may add overhead.** Solver `10` logs DRAT clauses during SAT runs and deletes the
+  proof file if SAT; MiniSat reference runs do not pay that SAT-side proof I/O cost. This can hurt
+  throughput but does not explain the full SAT-side gap because the timeout persists even on
+  MiniSat's simplified residual formulas.
+
 Primary MiniSat references:
 
 - `benchmarks/reference-solvers/minisat/minisat/simp/SimpSolver.h`

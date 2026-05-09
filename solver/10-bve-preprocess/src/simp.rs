@@ -46,10 +46,7 @@ impl Solver {
             },
             Err(_) => {}
         }
-        let vars = self.variable_count();
-        let clauses = self.original_clause_ids.len();
-        (vars > 0 && vars <= 10_000 && clauses >= vars.saturating_mul(50))
-            || (vars >= 500_000 && clauses >= 1_000_000)
+        true
     }
 
     fn build_occurrence_index(&mut self) {
@@ -118,13 +115,34 @@ impl Solver {
         queue.push_back(SubsumptionCandidate::Clause(clause_idx));
     }
 
+    fn touch_preprocess_var(touched: &mut Vec<usize>, touched_flags: &mut Vec<bool>, var: usize) {
+        if var == 0 {
+            return;
+        }
+        if var >= touched_flags.len() {
+            touched_flags.resize(var + 1, false);
+        }
+        if touched_flags[var] {
+            return;
+        }
+        touched_flags[var] = true;
+        touched.push(var);
+    }
+
     fn gather_touched_clauses(
         &mut self,
-        touched: &[usize],
+        touched: &mut Vec<usize>,
+        touched_flags: &mut [bool],
         queue: &mut VecDeque<SubsumptionCandidate>,
         queued: &mut Vec<bool>,
+        heap: &mut BinaryHeap<Reverse<(u64, usize, u32)>>,
+        heap_versions: &mut [u32],
     ) {
-        for &var in touched {
+        let vars = std::mem::take(touched);
+        for var in vars {
+            if var < touched_flags.len() {
+                touched_flags[var] = false;
+            }
             if var == 0 || var >= self.occurs.len() {
                 continue;
             }
@@ -133,10 +151,23 @@ impl Solver {
             for clause_idx in clauses {
                 self.enqueue_subsumption_clause(queue, queued, clause_idx);
             }
+            if var < heap_versions.len() && self.preprocessing_candidate(var) {
+                heap_versions[var] = heap_versions[var].wrapping_add(1);
+                heap.push(Reverse((
+                    self.occurrence_cost(var),
+                    var,
+                    heap_versions[var],
+                )));
+            }
         }
     }
 
-    fn mark_occurs_dirty_for_clause(&mut self, clause_idx: usize, touched: &mut Vec<usize>) {
+    fn mark_occurs_dirty_for_clause(
+        &mut self,
+        clause_idx: usize,
+        touched: &mut Vec<usize>,
+        touched_flags: &mut Vec<bool>,
+    ) {
         let clause_len = self.clause_len(clause_idx);
         for lit_pos in 0..clause_len {
             let lit = self.clause_lit(clause_idx, lit_pos);
@@ -147,11 +178,16 @@ impl Solver {
             let lit_idx = lit_to_index(lit);
             self.n_occ[lit_idx] = self.n_occ[lit_idx].saturating_sub(1);
             self.occurs_dirty[var] = true;
-            touched.push(var);
+            Self::touch_preprocess_var(touched, touched_flags, var);
         }
     }
 
-    fn remove_original_clause_preprocess(&mut self, clause_idx: usize, touched: &mut Vec<usize>) {
+    fn remove_original_clause_preprocess(
+        &mut self,
+        clause_idx: usize,
+        touched: &mut Vec<usize>,
+        touched_flags: &mut Vec<bool>,
+    ) {
         if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
             return;
         }
@@ -163,7 +199,7 @@ impl Solver {
             self.reason[var] = NO_REASON;
         }
 
-        self.mark_occurs_dirty_for_clause(clause_idx, touched);
+        self.mark_occurs_dirty_for_clause(clause_idx, touched, touched_flags);
         let clause_len = self.clause_len(clause_idx);
         self.detach_clause(clause_idx);
         self.original_literals = self.original_literals.saturating_sub(clause_len);
@@ -236,6 +272,7 @@ impl Solver {
         remove_lit: i32,
         proof_log: &mut ProofLog,
         touched: &mut Vec<usize>,
+        touched_flags: &mut Vec<bool>,
         queue: &mut VecDeque<SubsumptionCandidate>,
         queued: &mut Vec<bool>,
     ) -> bool {
@@ -243,35 +280,86 @@ impl Solver {
             return true;
         }
 
-        let mut strengthened = Vec::with_capacity(self.clause_len(clause_idx).saturating_sub(1));
-        let mut removed = false;
-        for lit_pos in 0..self.clause_len(clause_idx) {
+        let clause_len = self.clause_len(clause_idx);
+        let mut remove_pos = None;
+        let mut strengthened = Vec::with_capacity(clause_len.saturating_sub(1));
+        for lit_pos in 0..clause_len {
             let lit = self.clause_lit(clause_idx, lit_pos);
-            if lit == remove_lit && !removed {
-                removed = true;
+            if lit == remove_lit && remove_pos.is_none() {
+                remove_pos = Some(lit_pos);
                 continue;
             }
             strengthened.push(lit);
         }
 
-        if !removed {
+        let Some(remove_pos) = remove_pos else {
             return true;
-        }
+        };
 
-        self.remove_original_clause_preprocess(clause_idx, touched);
-        if clause_idx < queued.len() {
-            queued[clause_idx] = false;
-        }
-
+        proof_log.record_clause(&strengthened);
         self.stats.preprocess_strengthened_clauses += 1;
-        match self.add_original_clause_from_slice(&strengthened, proof_log, true, touched) {
-            OriginalClauseInsertResult::Allocated(new_idx) => {
-                self.enqueue_subsumption_clause(queue, queued, new_idx);
-                true
+
+        let remove_var = remove_lit.unsigned_abs() as usize;
+        if remove_var < self.occurs.len() {
+            if let Some(pos) = self.occurs[remove_var]
+                .iter()
+                .position(|&idx| idx == clause_idx)
+            {
+                self.occurs[remove_var].swap_remove(pos);
             }
-            OriginalClauseInsertResult::Unit | OriginalClauseInsertResult::Skipped => true,
-            OriginalClauseInsertResult::Unsat => false,
         }
+        if remove_lit != 0 && !self.n_occ.is_empty() {
+            let lit_idx = lit_to_index(remove_lit);
+            self.n_occ[lit_idx] = self.n_occ[lit_idx].saturating_sub(1);
+        }
+        Self::touch_preprocess_var(touched, touched_flags, remove_var);
+
+        let locked_lit = if self.clause_locked(clause_idx) {
+            Some(self.clause_lit(clause_idx, 0))
+        } else {
+            None
+        };
+        self.detach_clause(clause_idx);
+
+        for pos in remove_pos..(clause_len - 1) {
+            let next_lit = self.clause_lit(clause_idx, pos + 1);
+            self.set_clause_lit(clause_idx, pos, next_lit);
+        }
+
+        let header = self.clause_header(clause_idx);
+        self.arena[clause_idx] = clause_make_header(
+            clause_len - 1,
+            clause_header_learnt(header),
+            clause_header_has_extra(header),
+            clause_header_mark(header),
+            clause_header_reloced(header),
+        );
+        self.original_literals = self.original_literals.saturating_sub(1);
+        self.deleted_clause_words += 1;
+        self.set_original_clause_abstraction(
+            clause_idx,
+            clause_abstraction_from_lits(self.clause_slice(clause_idx)),
+        );
+
+        if let Some(lit) = locked_lit {
+            if lit == remove_lit {
+                let var = lit.unsigned_abs() as usize;
+                self.reason[var] = NO_REASON;
+            }
+        }
+
+        self.attach_clause(clause_idx, false);
+        self.enqueue_subsumption_clause(queue, queued, clause_idx);
+
+        if clause_len == 2 {
+            let unit_lit = self.clause_lit(clause_idx, 0);
+            if !self.enqueue(unit_lit, clause_idx) || self.propagate().is_some() {
+                self.solver_ok = false;
+                return false;
+            }
+        }
+
+        true
     }
 
     fn normalize_original_clause(&self, clause: &[i32]) -> Option<Vec<i32>> {
@@ -322,6 +410,8 @@ impl Solver {
         proof_log: &mut ProofLog,
         log_proof: bool,
         touched: &mut Vec<usize>,
+        touched_flags: &mut Vec<bool>,
+        mut subsumption_work: Option<(&mut VecDeque<SubsumptionCandidate>, &mut Vec<bool>)>,
     ) -> OriginalClauseInsertResult {
         if !self.solver_ok {
             return OriginalClauseInsertResult::Unsat;
@@ -370,8 +460,12 @@ impl Solver {
             }
             self.index_original_clause(clause_idx);
             for &lit in &normalized {
-                touched.push(lit.unsigned_abs() as usize);
+                Self::touch_preprocess_var(touched, touched_flags, lit.unsigned_abs() as usize);
             }
+        }
+
+        if let Some((queue, queued)) = subsumption_work.as_mut() {
+            self.enqueue_subsumption_clause(queue, queued, clause_idx);
         }
 
         OriginalClauseInsertResult::Allocated(clause_idx)
@@ -380,12 +474,12 @@ impl Solver {
     fn backward_subsumption_check(
         &mut self,
         seed_all_clauses: bool,
-        seed_touched: Vec<usize>,
+        queue: &mut VecDeque<SubsumptionCandidate>,
+        queued: &mut Vec<bool>,
+        touched: &mut Vec<usize>,
+        touched_flags: &mut Vec<bool>,
         proof_log: &mut ProofLog,
-    ) -> Option<Vec<usize>> {
-        let mut queue = VecDeque::new();
-        let mut queued = vec![false; self.arena.len()];
-        let mut touched = seed_touched;
+    ) -> bool {
         self.ensure_original_clause_abstractions();
         let mut relation_marks = vec![0u32; self.assignment.len()];
         let mut relation_signs = vec![0u8; self.assignment.len()];
@@ -394,10 +488,9 @@ impl Solver {
         if seed_all_clauses {
             let original_clause_ids = self.original_clause_ids.clone();
             for clause_idx in original_clause_ids {
-                self.enqueue_subsumption_clause(&mut queue, &mut queued, clause_idx);
+                self.enqueue_subsumption_clause(queue, queued, clause_idx);
             }
         }
-        self.gather_touched_clauses(&touched, &mut queue, &mut queued);
 
         while !queue.is_empty() || self.bwdsub_assigns < self.trail.len() {
             let candidate = if let Some(candidate) = queue.pop_front() {
@@ -473,7 +566,11 @@ impl Solver {
                 ) {
                     SubsumptionOutcome::None => {}
                     SubsumptionOutcome::Subsumed => {
-                        self.remove_original_clause_preprocess(candidate_idx, &mut touched);
+                        self.remove_original_clause_preprocess(
+                            candidate_idx,
+                            touched,
+                            touched_flags,
+                        );
                         if candidate_idx < queued.len() {
                             queued[candidate_idx] = false;
                         }
@@ -484,18 +581,19 @@ impl Solver {
                             candidate_idx,
                             remove_lit,
                             proof_log,
-                            &mut touched,
-                            &mut queue,
-                            &mut queued,
+                            touched,
+                            touched_flags,
+                            queue,
+                            queued,
                         ) {
-                            return None;
+                            return false;
                         }
                     }
                 }
             }
         }
 
-        Some(touched)
+        true
     }
 
     fn merge_size_only(&self, lhs: &[i32], rhs: &[i32], var: usize) -> Option<usize> {
@@ -570,11 +668,21 @@ impl Solver {
         self.elim_clauses.push(clause.len() as i32);
     }
 
-    fn try_eliminate_var(&mut self, var: usize, proof_log: &mut ProofLog) -> Option<Vec<usize>> {
+    fn try_eliminate_var(
+        &mut self,
+        var: usize,
+        proof_log: &mut ProofLog,
+        queue: &mut VecDeque<SubsumptionCandidate>,
+        queued: &mut Vec<bool>,
+        touched: &mut Vec<usize>,
+        touched_flags: &mut Vec<bool>,
+    ) -> bool {
         self.clean_occurs(var);
-        let occurrence_ids = self.occurs.get(var)?.clone();
+        let Some(occurrence_ids) = self.occurs.get(var).cloned() else {
+            return false;
+        };
         if occurrence_ids.is_empty() {
-            return None;
+            return false;
         }
 
         let mut pos_clauses = Vec::new();
@@ -594,7 +702,7 @@ impl Solver {
 
         let occurrence_count = pos_clauses.len() + neg_clauses.len();
         if occurrence_count == 0 {
-            return None;
+            return false;
         }
 
         let mut resolvent_count = 0isize;
@@ -605,10 +713,10 @@ impl Solver {
                 };
                 resolvent_count += 1;
                 if resolvent_count > occurrence_count as isize + self.bve_grow {
-                    return None;
+                    return false;
                 }
                 if self.bve_clause_limit >= 0 && size as isize > self.bve_clause_limit {
-                    return None;
+                    return false;
                 }
             }
         }
@@ -630,9 +738,8 @@ impl Solver {
         self.branch_heap_remove(var);
         self.stats.preprocess_eliminated_vars += 1;
 
-        let mut touched = Vec::new();
         for (clause_idx, _) in pos_clauses.iter().chain(neg_clauses.iter()) {
-            self.remove_original_clause_preprocess(*clause_idx, &mut touched);
+            self.remove_original_clause_preprocess(*clause_idx, touched, touched_flags);
         }
         if var < self.occurs.len() {
             self.occurs[var].clear();
@@ -649,18 +756,20 @@ impl Solver {
                         &resolvent,
                         proof_log,
                         true,
-                        &mut touched,
+                        touched,
+                        touched_flags,
+                        Some((queue, queued)),
                     );
                     if result == OriginalClauseInsertResult::Unsat {
                         self.scratch_preprocess_clause = resolvent;
-                        return Some(touched);
+                        return true;
                     }
                 }
                 self.scratch_preprocess_clause = resolvent;
             }
         }
 
-        Some(touched)
+        true
     }
 
     pub(super) fn eliminate(&mut self, turn_off_elim: bool, proof_log: &mut ProofLog) -> bool {
@@ -677,110 +786,92 @@ impl Solver {
 
         self.build_occurrence_index();
         self.bwdsub_assigns = 0;
-        let use_full_backward_subsumption = self.should_run_full_backward_subsumption();
-        if use_full_backward_subsumption {
-            if self
-                .backward_subsumption_check(true, Vec::new(), proof_log)
-                .is_none()
-            {
-                self.solver_ok = false;
-                return false;
+        let run_full_backward_subsumption = self.should_run_full_backward_subsumption();
+        let mut queue = VecDeque::new();
+        let mut queued = vec![false; self.arena.len()];
+        let mut touched = Vec::new();
+        let mut touched_flags = vec![false; self.assignment.len()];
+        let mut heap = BinaryHeap::new();
+        let mut heap_versions = vec![0u32; self.assignment.len()];
+
+        for var in 1..=self.variable_count() {
+            if self.preprocessing_candidate(var) {
+                heap.push(Reverse((
+                    self.occurrence_cost(var),
+                    var,
+                    heap_versions[var],
+                )));
             }
         }
 
-        if use_full_backward_subsumption {
-            let mut heap = BinaryHeap::new();
-            let mut heap_versions = vec![0u32; self.assignment.len()];
-            for var in 1..=self.variable_count() {
-                if self.preprocessing_candidate(var) {
-                    heap.push(Reverse((
-                        self.occurrence_cost(var),
-                        var,
-                        heap_versions[var],
-                    )));
-                }
+        if run_full_backward_subsumption
+            && !self.backward_subsumption_check(
+                true,
+                &mut queue,
+                &mut queued,
+                &mut touched,
+                &mut touched_flags,
+                proof_log,
+            )
+        {
+            self.solver_ok = false;
+            return false;
+        }
+
+        while self.solver_ok {
+            if !touched.is_empty() {
+                self.gather_touched_clauses(
+                    &mut touched,
+                    &mut touched_flags,
+                    &mut queue,
+                    &mut queued,
+                    &mut heap,
+                    &mut heap_versions,
+                );
+                continue;
             }
 
-            while let Some(Reverse((_, var, version))) = heap.pop() {
-                if var >= heap_versions.len() || version != heap_versions[var] {
-                    continue;
-                }
-                if !self.preprocessing_candidate(var) {
-                    continue;
-                }
-                self.clean_occurs(var);
-                if self.occurs[var].is_empty() {
-                    continue;
-                }
-
-                let Some(touched) = self.try_eliminate_var(var, proof_log) else {
-                    continue;
-                };
-                if !self.solver_ok {
-                    break;
-                }
-
-                let Some(touched) = self.backward_subsumption_check(false, touched, proof_log)
-                else {
+            if run_full_backward_subsumption
+                && (!queue.is_empty() || self.bwdsub_assigns < self.trail.len())
+            {
+                if !self.backward_subsumption_check(
+                    false,
+                    &mut queue,
+                    &mut queued,
+                    &mut touched,
+                    &mut touched_flags,
+                    proof_log,
+                ) {
                     self.solver_ok = false;
                     break;
-                };
-
-                for touched_var in touched {
-                    if touched_var < heap_versions.len()
-                        && self.preprocessing_candidate(touched_var)
-                    {
-                        heap_versions[touched_var] = heap_versions[touched_var].wrapping_add(1);
-                        heap.push(Reverse((
-                            self.occurrence_cost(touched_var),
-                            touched_var,
-                            heap_versions[touched_var],
-                        )));
-                    }
                 }
-            }
-        } else {
-            let mut candidates: Vec<usize> = (1..=self.variable_count())
-                .filter(|&var| self.preprocessing_candidate(var))
-                .collect();
-            candidates.sort_unstable_by(|&lhs, &rhs| {
-                self.occurrence_cost(lhs)
-                    .cmp(&self.occurrence_cost(rhs))
-                    .then_with(|| lhs.cmp(&rhs))
-            });
-
-            let mut queue: VecDeque<usize> = candidates.into();
-            let mut queued = vec![false; self.assignment.len()];
-            for &var in &queue {
-                queued[var] = true;
+                continue;
             }
 
-            while let Some(var) = queue.pop_front() {
-                queued[var] = false;
-                if !self.preprocessing_candidate(var) {
-                    continue;
-                }
-                self.clean_occurs(var);
-                if self.occurs[var].is_empty() {
-                    continue;
-                }
+            let Some(Reverse((_, var, version))) = heap.pop() else {
+                break;
+            };
+            if var >= heap_versions.len() || version != heap_versions[var] {
+                continue;
+            }
+            if !self.preprocessing_candidate(var) {
+                continue;
+            }
+            self.clean_occurs(var);
+            if self.occurs[var].is_empty() {
+                continue;
+            }
 
-                let Some(touched) = self.try_eliminate_var(var, proof_log) else {
-                    continue;
-                };
-                if !self.solver_ok {
-                    break;
-                }
-
-                for touched_var in touched {
-                    if touched_var < queued.len()
-                        && !queued[touched_var]
-                        && self.preprocessing_candidate(touched_var)
-                    {
-                        queued[touched_var] = true;
-                        queue.push_back(touched_var);
-                    }
-                }
+            let eliminated = self.try_eliminate_var(
+                var,
+                proof_log,
+                &mut queue,
+                &mut queued,
+                &mut touched,
+                &mut touched_flags,
+            );
+            if !eliminated {
+                continue;
             }
         }
 
@@ -875,15 +966,28 @@ mod tests {
         clauses
     }
 
+    fn run_backward_subsumption(s: &mut Solver, seed_all: bool, proof: &mut ProofLog) -> bool {
+        let mut queue = VecDeque::new();
+        let mut queued = vec![false; s.arena.len()];
+        let mut touched = Vec::new();
+        let mut touched_flags = vec![false; s.assignment.len()];
+        s.backward_subsumption_check(
+            seed_all,
+            &mut queue,
+            &mut queued,
+            &mut touched,
+            &mut touched_flags,
+            proof,
+        )
+    }
+
     #[test]
     fn backward_subsumption_removes_subsumed_original_clause() {
         let mut s = Solver::new(3, vec![vec![1, 2], vec![1, 2, 3]]);
         let mut proof = ProofLog::disabled();
         s.build_occurrence_index();
 
-        assert!(s
-            .backward_subsumption_check(true, Vec::new(), &mut proof)
-            .is_some());
+        assert!(run_backward_subsumption(&mut s, true, &mut proof));
 
         assert_eq!(live_original_clauses(&s), vec![vec![1, 2]]);
         assert_eq!(s.stats.preprocess_subsumed_clauses, 1);
@@ -895,9 +999,7 @@ mod tests {
         let mut proof = ProofLog::disabled();
         s.build_occurrence_index();
 
-        assert!(s
-            .backward_subsumption_check(true, Vec::new(), &mut proof)
-            .is_some());
+        assert!(run_backward_subsumption(&mut s, true, &mut proof));
 
         assert_eq!(live_original_clauses(&s), vec![vec![1, 2], vec![1, 3]]);
         assert_eq!(s.stats.preprocess_strengthened_clauses, 1);
@@ -911,9 +1013,7 @@ mod tests {
         assert_eq!(s.propagate(), None);
         s.build_occurrence_index();
 
-        assert!(s
-            .backward_subsumption_check(false, Vec::new(), &mut proof)
-            .is_some());
+        assert!(run_backward_subsumption(&mut s, false, &mut proof));
 
         assert!(live_original_clauses(&s).contains(&vec![2, 3]));
         assert_eq!(s.stats.preprocess_strengthened_clauses, 1);

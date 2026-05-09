@@ -14,11 +14,14 @@ What is present:
 - original-clause occurrence lists and literal occurrence counts during preprocessing
 - a separate decision-variable flag so eliminated variables do not re-enter the branch heap
 - bounded variable elimination with MiniSat-style `grow = 0` and `clause_lim = 20`
-- gated backward subsumption / BSR for small dense formulas and very large formulas where residual
-  parity with MiniSat pays off
+- MiniSat-style backward subsumption / BSR enabled by default, with `SAT_FULL_BSR=off` retained as
+  a diagnostic override
 - 64-bit clause abstraction prefiltering for preprocessing subsumption checks
-- dynamic elimination heap on the gated full-BSR path
-- resolvent insertion through a preprocessing original-clause path
+- in-place original-clause strengthening during BSR
+- a persistent preprocessing loop over touched variables, root assignments, queued subsumption
+  clauses, and a dynamic elimination heap
+- resolvent insertion through a preprocessing original-clause path, with generated clauses queued
+  for immediate subsumption work
 - DRAT logging for preprocessing-generated resolvents/units
 - MiniSat-style elimination stack entries and SAT model extension
 - SAT output from a complete model snapshot instead of the mutable live assignment vector
@@ -26,11 +29,10 @@ What is present:
 
 Still incomplete:
 
-- full MiniSat-style BSR as an unconditional default; it regresses broad SAT-heavy cases here
 - asymmetric branching clause strengthening
 - `use_rcheck` implied-clause checks
 - parse-time canonical original-clause insertion for every input clause
-- a fully faithful `SimpSolver::eliminate()` work loop for all formula shapes
+- MiniSat's CDCL implementation details; this solver still keeps the repo's `09` search core
 
 So this is now a working BVE preprocessing iteration, but it is not yet a complete MiniSat `simp`
 port.
@@ -55,6 +57,12 @@ Rerun after the large-formula BSR gate on 2026-05-08:
 - `cargo test` in `solver/10-bve-preprocess`: 45 passed
 - smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
 - smoke log: `log/2026-05-08-20-35-04`
+
+Rerun after the MiniSat-style persistent preprocessing loop on 2026-05-08:
+
+- `cargo test` in `solver/10-bve-preprocess`: 45 passed
+- smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
+- smoke log: `log/2026-05-08-23-35-41`
 
 ## MiniSat-Simp Five-Instance Benchmark
 
@@ -120,3 +128,40 @@ Rejected or incomplete hypotheses from that loop:
 - Forced full BSR matches MiniSat-like residuals on `bp4` and Timetable, but it does not make solver
   `10` solve those SAT targets quickly; running solver `10` on MiniSat's own residual formulas still
   timed out under the tested `90s` bound. Those remain CDCL/search-core gaps.
+
+## MiniSat-Loop Refactor Follow-up
+
+The next refactor implemented the remaining MiniSat `simp` work-loop differences:
+
+- full BSR now runs by default instead of using the earlier formula-size gate
+- preprocessing now loops over touched variables, root assignments, queued subsumption clauses, and
+  elimination-heap variables until all work is drained
+- BSR strengthens original clauses in place
+- variable occurrence-cost updates feed a dynamic elimination heap broadly after clause
+  add/delete/strengthen events
+- generated resolvents are queued immediately for subsumption, and touched variables continuously
+  enqueue their occurrence clauses
+
+Direct `600s` checks on the fresh MiniSat-gap instances after this refactor:
+
+| Instance | Result | Notes |
+|---|---:|---|
+| `849950...circuit_48in64out...` | SAT `208.1s` | Slower than the previous gated path (`49.4s`). |
+| `98e8...bp4_TCO_CSO_IXA_LP_ZR` | TIMEOUT | Preprocessing `7.0s`; search still did not find SAT. |
+| `9af7...brocard_problem_large` | UNSAT `~15.3s` | Improved from `42.3s` after the large-formula gate and `163.2s` before it. |
+| `f17d...SC25_Timetable...` | TIMEOUT | Preprocessing `5.3s`; search still did not find SAT. |
+| `f25a...1-TC-256-K-63` | TIMEOUT | With `SAT_FULL_BSR=off`, the same code still solves in `375.4s`; full MiniSat-like preprocessing changes the search trajectory. |
+
+MiniSat enters search on `1-TC` with the same residual size (`422669` clauses / `930421` literals)
+and solves in `162.8s`, so the remaining `1-TC`, `bp4`, and Timetable gap is no longer explained
+by these `simp` work-loop differences alone.
+
+Matching harness rerun:
+
+- `10-bve-preprocess`: `log/bench-10-bve-preprocess-2026-05-08-22-51-56/results.csv`
+- solved `2/5` (`1 SAT`, `1 UNSAT`, `3` timeouts)
+- PAR-2: `3823.879`
+
+Compared with the previous gated-BSR run on this same set, the refactor improves Brocard
+dramatically (`163.160s -> 16.277s`) but regresses the overall benchmark (`3/5`, PAR-2
+`2986.963` -> `2/5`, PAR-2 `3823.879`) because circuit slows down and `1-TC` becomes a timeout.
