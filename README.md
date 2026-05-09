@@ -146,7 +146,7 @@ bash tools/bench.sh -t 120 -d benchmarks/profiling solver/01-naive-dpll
 | 07 | clause-storage-minimization  | Clause storage plus runtime clause minimization    | Safe conflict-clause shrinking on top of `06` |
 | 08 | clause-db-management         | Learned-clause activity, reduction, and arena GC   | Managing learned database growth |
 | 09 | root-simp-opts               | Root-level simplify pass plus hot-path cleanup     | Top-level simplification and propagation/DB optimization |
-| 10 | bve-preprocess              | MiniSat-style preprocessing: dedup, root units, pure literals, and bounded variable elimination | Benchmark-tuned simplification with proof/model preservation |
+| 10 | bve-preprocess              | MiniSat-style preprocessing: dedup, root units, BVE, BSR, and lazy watcher cleanup | Benchmark-tuned simplification/CDCL compatibility with proof/model preservation |
 
 Each iteration directory has its own `README.md` with the actual implementation notes, validation
 status, and benchmark history for that solver.

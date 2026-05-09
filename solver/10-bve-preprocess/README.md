@@ -31,6 +31,8 @@ What is present:
 - MiniSat-style elimination stack entries and SAT model extension
 - SAT output from a complete model snapshot instead of the mutable live assignment vector
 - one-shot cleanup after preprocessing: drop occurrence metadata, rebuild branch heap, and force GC
+- lazy deleted-clause watcher cleanup during propagation, with strict detach retained where
+  preprocessing removes an original clause before tombstoning it
 
 Still incomplete:
 
@@ -67,6 +69,12 @@ Rerun after the MiniSat-style persistent preprocessing loop on 2026-05-08:
 - `cargo test` in `solver/10-bve-preprocess`: 45 passed
 - smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
 - smoke log: `log/2026-05-08-23-35-41`
+
+Latest rerun after the lazy deleted-clause watcher cleanup on 2026-05-09:
+
+- `cargo test` in `solver/10-bve-preprocess`: 48 passed
+- smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
+- smoke log: `log/2026-05-09-15-38-19`
 
 ## MiniSat-Simp Five-Instance Benchmark
 
@@ -285,3 +293,55 @@ Proof-off diagnostic on Timetable:
 
 Conclusion: proof streaming has measurable but small SAT-side overhead on this target. The larger
 effect is the CDCL search trajectory change from MiniSat-compatible analysis/branching defaults.
+
+## Lazy Deleted-Clause Watcher Follow-up
+
+On 2026-05-09, five smaller CDCL/code-level changes from the MiniSat comparison were tested one at
+a time against the current solver-10 baseline. The three-instance diagnostic set was Timetable,
+K4, and `mp1`, using `SAT_TRACE_PREPROCESS=1`, a very high search trace interval, and a `600s`
+per-instance cap.
+
+Diagnostic logs:
+
+- individual-change matrix: `log/diagnostics/individual-2026-05-09/summary.tsv`
+- lazy-detach Sudoku/Kakuro validation: `log/diagnostics/individual-2026-05-09/candidate_remaining.tsv`
+
+Three-instance totals:
+
+| Change | Elapsed delta | Search delta | Outcome |
+|---|---:|---:|---|
+| Trim root-false literals from learned clauses | `-1.326s` | `-0.110s` | Same search counters; noise. |
+| Store learned-clause activity as `f32` | `-1.070s` | `+0.132s` | Same search counters; noise. |
+| Lazy detach deleted watchers | `-15.821s` | `-15.015s` | Only clear isolated win. |
+| MiniSat positive-before-negative literal tie sort | `+8.058s` | `+0.024s` | Worse preprocessing on K4. |
+| Attach learned clause after backtrack | `-1.330s` | `+0.304s` | Same search counters; noise. |
+
+The kept change is lazy deleted-clause watcher cleanup:
+
+- ordinary `detach_clause()` is now lazy; deleted or stale watchers are skipped and compacted out
+  when the relevant watch list is scanned during propagation
+- `detach_clause_strict()` remains available for places that still need eager unlinking
+- preprocessing original-clause removal uses strict detach before marking the clause deleted
+- propagation tolerates watcher entries whose clause was deleted or whose watched literal moved
+  during in-place strengthening
+
+Full five-instance trace validation for the kept change:
+
+| Instance | Baseline elapsed | Lazy detach elapsed | Search delta | Counter movement |
+|---|---:|---:|---:|---|
+| `sudoku-N30-12` | `359.334s` | `317.959s` | `-41.524s` | conflicts `-16.4%`, decisions `-18.6%`, propagations `-7.7%` |
+| `SC25_Timetable...392...` | `32.762s` | `21.599s` | `-11.080s` | conflicts `-28.8%`, decisions `-23.6%`, propagations `-24.5%` |
+| `REGRandom-K4...` | `227.351s` | `225.398s` | `-1.244s` | conflicts `+5.9%`, decisions `+5.6%`, propagations `+3.7%` |
+| `mp1-Nb7T46` | `46.989s` | `44.284s` | `-2.691s` | same conflicts/decisions/propagations; faster throughput |
+| `Kakuro...112...` | `289.194s` | `352.258s` | `+61.406s` | conflicts `+66.0%`, decisions `+49.2%`, propagations `+64.0%` |
+
+Aggregate trace totals:
+
+- elapsed: `955.630s -> 961.498s` (`+5.868s`, `+0.6%`)
+- search: `477.397s -> 482.264s` (`+4.867s`, `+1.0%`)
+
+Conclusion: lazy detach is a useful implementation simplification and a real win on Sudoku,
+Timetable, and `mp1`, but it is still a search-path tradeoff rather than an aggregate
+five-instance performance win. The large `mp1` regression seen in the combined experimental patch
+did not reproduce for any single change, so it was an interaction effect and the other four changes
+were not kept.
