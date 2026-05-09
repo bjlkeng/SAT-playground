@@ -202,7 +202,7 @@ impl Solver {
 
         self.mark_occurs_dirty_for_clause(clause_idx, touched, touched_flags);
         let clause_len = self.clause_len(clause_idx);
-        self.detach_clause(clause_idx);
+        self.detach_clause_strict(clause_idx);
         self.original_literals = self.original_literals.saturating_sub(clause_len);
         self.deleted_clause_words += self.clause_word_len(clause_idx);
         self.clause_set_deleted(clause_idx, true);

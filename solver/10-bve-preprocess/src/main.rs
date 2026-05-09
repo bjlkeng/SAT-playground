@@ -1034,7 +1034,7 @@ impl Solver {
         Some(best_var)
     }
 
-    fn detach_clause_watcher(&mut self, lit: i32, clause_idx: usize) {
+    fn detach_clause_watcher_strict(&mut self, lit: i32, clause_idx: usize) {
         let watch_idx = self.lit_index(lit);
         let watch_list = &mut self.watchers[watch_idx];
         if let Some(pos) = watch_list
@@ -1047,6 +1047,17 @@ impl Solver {
                 false,
                 "clause {clause_idx} missing watcher for literal {lit}"
             );
+        }
+    }
+
+    fn detach_clause_strict(&mut self, clause_idx: usize) {
+        let clause_len = self.clause_len(clause_idx);
+        if self.clause_is_deleted(clause_idx) || clause_len == 0 {
+            return;
+        }
+        self.detach_clause_watcher_strict(self.clause_lit(clause_idx, 0), clause_idx);
+        if clause_len > 1 {
+            self.detach_clause_watcher_strict(self.clause_lit(clause_idx, 1), clause_idx);
         }
     }
 
@@ -1087,15 +1098,8 @@ impl Solver {
         }
     }
 
-    fn detach_clause(&mut self, clause_idx: usize) {
-        let clause_len = self.clause_len(clause_idx);
-        if self.clause_is_deleted(clause_idx) || clause_len == 0 {
-            return;
-        }
-        self.detach_clause_watcher(self.clause_lit(clause_idx, 0), clause_idx);
-        if clause_len > 1 {
-            self.detach_clause_watcher(self.clause_lit(clause_idx, 1), clause_idx);
-        }
+    fn detach_clause(&mut self, _clause_idx: usize) {
+        // Lazy detach: deleted clauses are compacted out of watch lists during propagation or GC.
     }
 
     #[inline(always)]
@@ -1159,10 +1163,9 @@ impl Solver {
                 let watcher = pending[read];
                 read += 1;
                 let clause_idx = watcher.clause_idx as usize;
-                debug_assert!(
-                    !self.clause_is_deleted(clause_idx),
-                    "deleted clause {clause_idx} remained in a watch list"
-                );
+                if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
+                    continue;
+                }
                 let clause_len = self.clause_len(clause_idx);
                 if clause_len == 1 {
                     let unit_lit = self.clause_lit(clause_idx, 0);
@@ -2762,7 +2765,7 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_clause_eagerly_removes_watchers() {
+    fn test_delete_clause_lazily_removes_watchers_during_propagation() {
         let mut s = make_solver(3, vec![]);
         let clause_idx = s.add_clause(vec![3, 1, 2]);
 
@@ -2781,7 +2784,19 @@ mod tests {
         assert_eq!(s.stats.deleted_clauses, 1);
         assert!(s.watchers[s.lit_index(3)]
             .iter()
+            .any(|watcher| watcher.clause_idx as usize == clause_idx));
+        assert!(s.watchers[s.lit_index(1)]
+            .iter()
+            .any(|watcher| watcher.clause_idx as usize == clause_idx));
+
+        s.decide(-3);
+        assert_eq!(s.propagate(), None);
+        assert!(s.watchers[s.lit_index(3)]
+            .iter()
             .all(|watcher| watcher.clause_idx as usize != clause_idx));
+
+        s.decide(-1);
+        assert_eq!(s.propagate(), None);
         assert!(s.watchers[s.lit_index(1)]
             .iter()
             .all(|watcher| watcher.clause_idx as usize != clause_idx));
