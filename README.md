@@ -35,7 +35,8 @@ SAT-playground/
     ├── 07-clause-minimization/
     ├── 08-clause-db-management/
     ├── 09-root-simp-opts/
-    └── 10-bve-preprocess/
+    ├── 10-bve-preprocess/
+    └── 11-kissat-innovations/
 ```
 
 ### Iteration Directory Layout
@@ -147,6 +148,7 @@ bash tools/bench.sh -t 120 -d benchmarks/profiling solver/01-naive-dpll
 | 08 | clause-db-management         | Learned-clause activity, reduction, and arena GC   | Managing learned database growth |
 | 09 | root-simp-opts               | Root-level simplify pass plus hot-path cleanup     | Top-level simplification and propagation/DB optimization |
 | 10 | bve-preprocess              | MiniSat-style preprocessing: dedup, root units, BVE, BSR, and lazy watcher cleanup | Benchmark-tuned simplification/CDCL compatibility with proof/model preservation |
+| 11 | kissat-innovations          | Solver-10 fork for measured Kissat-inspired search, restart, clause, and propagation experiments | New branch point; no Kissat-specific changes added yet |
 
 Each iteration directory has its own `README.md` with the actual implementation notes, validation
 status, and benchmark history for that solver.
