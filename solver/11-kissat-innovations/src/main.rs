@@ -50,6 +50,9 @@ const NO_BINARY_CLAUSE: u32 = u32::MAX;
 const DEFAULT_BVE_GROW: isize = 0;
 const DEFAULT_BVE_CLAUSE_LIMIT: isize = 20;
 const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
+const STATIC_BINARY_MIN_ORIGINAL_BINARIES: usize = 64;
+const STATIC_BINARY_MIN_ORIGINAL_BINARY_PERCENT: usize = 20;
+const STATIC_BINARY_ALWAYS_ORIGINAL_BINARIES: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Watcher {
@@ -103,6 +106,13 @@ enum BinaryPropagationMode {
     Generic,
     WatcherFast,
     Aggressive,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StaticBinaryMode {
+    Off,
+    Auto,
+    On,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1289,14 +1299,43 @@ impl Solver {
         }
     }
 
-    fn enable_static_binary_implications_if_requested(&mut self) {
-        if self.binary_propagation_mode != BinaryPropagationMode::Aggressive
-            || !parse_bool_env("SAT_BINARY_STATIC_SEGMENTS", false)
-        {
+    fn configure_static_binary_implications(&mut self) {
+        if self.binary_propagation_mode != BinaryPropagationMode::Aggressive {
+            self.disable_static_binary_implications();
             return;
         }
-        self.static_binary_implications_enabled = true;
-        self.rebuild_static_binary_implications();
+
+        let enabled = match parse_static_binary_mode() {
+            StaticBinaryMode::Off => false,
+            StaticBinaryMode::On => self.original_binary_ids.len() > 0,
+            StaticBinaryMode::Auto => self.should_enable_static_binary_implications(),
+        };
+
+        if enabled {
+            self.static_binary_implications_enabled = true;
+            self.rebuild_static_binary_implications();
+        } else {
+            self.disable_static_binary_implications();
+        }
+    }
+
+    fn should_enable_static_binary_implications(&self) -> bool {
+        let original_binary_count = self.original_binary_ids.len();
+        if original_binary_count < STATIC_BINARY_MIN_ORIGINAL_BINARIES {
+            return false;
+        }
+        if original_binary_count >= STATIC_BINARY_ALWAYS_ORIGINAL_BINARIES {
+            return true;
+        }
+        let original_clause_count = self.original_clause_ids.len().max(1);
+        original_binary_count * 100
+            >= original_clause_count * STATIC_BINARY_MIN_ORIGINAL_BINARY_PERCENT
+    }
+
+    fn disable_static_binary_implications(&mut self) {
+        self.static_binary_implications_enabled = false;
+        self.static_binary_implications.clear();
+        self.static_binary_implication_offsets.fill(0);
     }
 
     fn rebuild_static_binary_implications(&mut self) {
@@ -3523,10 +3562,10 @@ impl Solver {
         self.reset_learned_budget_after_preprocess();
         self.maybe_check_invariants("preprocess");
         self.eager_detach_watchers = parse_bool_env("SAT_EAGER_DETACH_WATCHERS", false);
-        self.enable_static_binary_implications_if_requested();
+        self.configure_static_binary_implications();
         if env::var_os("SAT_TRACE_PREPROCESS").is_some() {
             eprintln!(
-                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} root_assigns={} deleted_clauses={} deleted_words={} shrunk_words={} gc={} gc_copied_words={} gc_reclaimed_words={} gc_ms={:.3} proof_clauses={} proof_bytes={} reduce_db_limit={}",
+                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} original_binary={} learned_binary={} static_binary={} static_implications={} root_assigns={} deleted_clauses={} deleted_words={} shrunk_words={} gc={} gc_copied_words={} gc_reclaimed_words={} gc_ms={:.3} proof_clauses={} proof_bytes={} reduce_db_limit={}",
                 preprocess_ns as f64 / 1e9,
                 self.stats.preprocess_eliminated_vars,
                 self.stats.preprocess_resolvents,
@@ -3535,6 +3574,10 @@ impl Solver {
                 self.live_original_variable_count(),
                 self.original_clause_ids.len(),
                 self.original_literals,
+                self.original_binary_ids.len(),
+                self.learned_binary_ids.len(),
+                self.static_binary_implications_enabled,
+                self.static_binary_implications.len(),
                 self.trail.len(),
                 self.stats.deleted_clauses,
                 self.stats.deleted_words,
@@ -3797,6 +3840,21 @@ fn parse_binary_propagation_mode() -> BinaryPropagationMode {
                 BinaryPropagationMode::Aggressive
             }
         }
+    }
+}
+
+fn parse_static_binary_mode() -> StaticBinaryMode {
+    match env::var("SAT_BINARY_STATIC_SEGMENTS") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "auto" | "default" => StaticBinaryMode::Auto,
+            "1" | "true" | "yes" | "on" | "enabled" | "force" | "forced" => StaticBinaryMode::On,
+            "0" | "false" | "no" | "off" | "disabled" => StaticBinaryMode::Off,
+            other => {
+                eprintln!("Invalid SAT_BINARY_STATIC_SEGMENTS={other}; expected auto/on/off");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => StaticBinaryMode::Auto,
     }
 }
 

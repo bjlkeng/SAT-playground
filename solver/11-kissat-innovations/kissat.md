@@ -1319,6 +1319,30 @@ Status:
   no-binary circuit and 700k in `21.306s` on 60e396. This confirms deleted watcher tombstones hurt
   locality, but the simple cleanup policies are below the normal keep threshold. Revisit with a more
   structural watcher layout change rather than eager detach as-is.
+- Production static-binary implementation on 2026-05-10: `SAT_BINARY_STATIC_SEGMENTS` now defaults
+  to `auto`, with explicit `on`/`off` overrides. Auto mode enables only in aggressive propagation
+  when the post-preprocessing formula has at least `64` live original binary clauses and either at
+  least `20%` original-binary density or at least `4096` live original binaries. Static segments
+  are rebuilt from live original binaries after preprocessing/simplification; learned binaries stay
+  in the existing dynamic lists. The trace line now reports `original_binary`, `learned_binary`,
+  `static_binary`, and `static_implications`.
+- Production before/after fixed-window checks used the default solver before this change and the new
+  auto mode after it. Velev enabled static segments (`261940` original binaries, `523880` static
+  implications) and preserved the exact search trace: 200k conflicts moved from `10.690s` to
+  `9.793s`; search-window counters moved from `127.65B` instructions / `3.467B` L1 misses /
+  `626.8M` dTLB misses / `2.677B` cache misses to `134.48B` instructions / `3.340B` L1 misses /
+  `637.3M` dTLB misses / `2.522B` cache misses. Cache profile
+  `/tmp/sat-aggressive-analysis/perf-cache-prod-after-velev.data` shows the dynamic binary
+  implication cache-miss subpath gone; the static binary path is only about `3.8%` combined sampled
+  cache-miss weight, versus `12.4%` for the old dynamic path in
+  `/tmp/sat-aggressive-analysis/perf-cache-baseline-velev.data`.
+- Guard checks stayed disabled as intended: 60e396 had only `653` live original binaries after
+  preprocessing and `static_binary=false`, reaching the same 700k-conflict trace in `21.168s` vs
+  `21.295s` before, with mixed counters; the no-binary circuit acquired only `378` original binaries
+  after preprocessing and also stayed disabled, reaching 250k conflicts in `16.108s` vs `16.181s`
+  before. Validation: `cargo test` passed 61 tests and smoke passed 9/9 with DRAT checking, log
+  `log/2026-05-10-16-04-06`; forced static segments with `SAT_CHECK_INVARIANTS=1` also passed
+  smoke 9/9, log `log/2026-05-10-16-05-06`.
 
 Unlocks:
 
