@@ -297,16 +297,22 @@ debug pass before changing more code:
    `branches`, `branch-misses`, `L1-dcache-loads`, `L1-dcache-load-misses`, `dTLB-loads`,
    `dTLB-load-misses`, `cache-references`, and `cache-misses`. Normalize misses by propagations
    or conflicts from trace output; otherwise search-path differences can hide the real cost.
-4. **Sample the suspected event**: Use `perf record -e cache-misses -g --call-graph dwarf` and
+4. **Prefer lower-noise signals before drawing conclusions**: Do not over-index on PAR-2, solved
+   count, or one/few instance outcomes when search behavior can be randomized or highly
+   path-sensitive. Use more robust signals first: propagation throughput, conflicts per second,
+   decisions, propagation count, clause inspections, cache/TLB misses normalized by work, and
+   fixed-time trace deltas. Treat instance-level solve/timeout changes as supporting evidence until
+   the low-level counters and search statistics explain them.
+5. **Sample the suspected event**: Use `perf record -e cache-misses -g --call-graph dwarf` and
    inspect with `perf report --stdio --no-children --sort symbol`. Use `perf annotate --stdio
    --source --symbol '<symbol>'` when the hot function is known. Record exact profile paths.
-5. **Check opportunity shape**: For representation changes, count formula features such as binary
+6. **Check opportunity shape**: For representation changes, count formula features such as binary
    clause percentage, per-literal binary degree distribution, and max degree. High degree or sparse
    occurrence patterns often explain TLB/cache behavior better than aggregate clause counts.
-6. **Explain search-path effects separately**: If conflict count, learned glue, learned binary/long
+7. **Explain search-path effects separately**: If conflict count, learned glue, learned binary/long
    mix, or root-unit learning diverge, state that separately from microarchitectural overhead. A
    faster local primitive can still lose by producing a worse CDCL trajectory.
-7. **Turn the finding into a code hypothesis**: Tie every proposed fix to a measured hot source line
+8. **Turn the finding into a code hypothesis**: Tie every proposed fix to a measured hot source line
    or data access pattern, such as "avoid arena header loads in the binary implication loop" rather
    than a generic "improve cache locality" note.
 

@@ -1242,6 +1242,33 @@ Status:
   instance. Conclusion: keep aggressive as the default for this development branch, but treat it as
   an unfinished foundation. The next work needs ordering/search-path compatibility before direct
   binary-first propagation should be considered a performance improvement.
+- Fresh low-noise aggressive-path pass on 2026-05-10: fixed-time `perf stat` runs compared clean
+  `HEAD` against a count-array experiment on identical search traces with `SAT_PROOF=0` and
+  `SAT_BINARY_PROP_MODE=aggressive`. The profiler showed the direct binary path still paying a
+  random outer-`Vec` metadata load for every propagated literal; on 60e396 the pre-change
+  `/tmp/sat-aggressive-analysis/perf-cache-aggressive.data` cache sample put `5.92%` local
+  cache-miss weight on the binary implication `Vec::len`/empty test. Adding a contiguous
+  `binary_implication_counts: Vec<u32>` makes the empty-list test a dense array load and only
+  touches the per-literal `Vec` for non-empty lists.
+- Count-array result on 60e396, same 700k-conflict trace and same 20s perf window after a 2s delay:
+  baseline clean worktree `167.22B` instructions / `30.85B` branches / `74.86B` L1 loads /
+  `4.088B` L1 misses / `5.38M` dTLB misses / `1.878B` cache misses; count-array build `166.13B`
+  instructions / `30.65B` branches / `73.27B` L1 loads / `4.051B` L1 misses / `4.56M` dTLB
+  misses / `1.823B` cache misses. This is a low-noise improvement in the target access pattern,
+  not a claim about the instance solve trajectory.
+- Count-array result on `velev-pipe-o-uns-1.1-6`, same 300k-conflict trace and same 20s search-only
+  perf window after a 9s delay: baseline `155.12B` instructions / `29.09B` branches / `57.88B`
+  L1 loads / `4.188B` L1 misses / `3.204B` cache misses; count-array build `146.89B`
+  instructions / `27.64B` branches / `53.65B` L1 loads / `3.962B` L1 misses / `3.127B` cache
+  misses. dTLB misses were essentially unchanged on this larger instance (`749.37M` -> `749.93M`).
+- Rejected in the same pass: skipping normal watcher `mem::take` for empty watcher lists was mixed
+  and moved dTLB/instruction counters the wrong way; moving `clause_idx` out of `BinaryImplication`
+  shrank implication entries but worsened instructions/branches/L1/cache counters, likely because
+  the larger `BinaryClause` table and changed codegen outweighed the stride reduction; replacing
+  the binary id bounds check with unchecked indexing also worsened the robust counters. Next
+  promising non-search direction is a larger representation change that removes the per-literal
+  `Vec<Vec<_>>` metadata/allocation pattern entirely, such as a flat static implication segment for
+  original binaries plus a tiny dynamic side structure for rare learned binary clauses.
 
 Unlocks:
 

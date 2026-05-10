@@ -394,6 +394,8 @@ struct Solver {
     binary_clauses: Vec<BinaryClause>,
     /// direct binary implication watches keyed by the falsified literal
     binary_implications: Vec<Vec<BinaryImplication>>,
+    /// cached direct binary implication list lengths, stored contiguously for the empty-list fast path
+    binary_implication_counts: Vec<u32>,
     /// live original binary clause ids in `binary_clauses`
     original_binary_ids: Vec<u32>,
     /// live learned binary clause ids in `binary_clauses`
@@ -850,6 +852,7 @@ impl Solver {
             watch_scratch: Vec::new(),
             binary_clauses: Vec::new(),
             binary_implications: vec![Vec::new(); num_vars.saturating_mul(2)],
+            binary_implication_counts: vec![0; num_vars.saturating_mul(2)],
             original_binary_ids: Vec::new(),
             learned_binary_ids: Vec::new(),
             binary_clause_id_by_arena: Vec::new(),
@@ -1198,11 +1201,13 @@ impl Solver {
             clause_idx,
             binary_id,
         });
+        self.binary_implication_counts[lit0_idx] += 1;
         self.binary_implications[lit1_idx].push(BinaryImplication {
             implied_lit: lit0,
             clause_idx,
             binary_id,
         });
+        self.binary_implication_counts[lit1_idx] += 1;
     }
 
     fn remove_binary_clause_for_arena(&mut self, clause_idx: usize) {
@@ -1236,6 +1241,7 @@ impl Solver {
         for implications in &mut self.binary_implications {
             implications.clear();
         }
+        self.binary_implication_counts.fill(0);
         self.original_binary_ids.clear();
         self.learned_binary_ids.clear();
         self.binary_clause_id_by_arena.clear();
@@ -2222,9 +2228,16 @@ impl Solver {
 
     fn propagate_binary_implications(&mut self, false_lit: i32) -> Option<usize> {
         let watch_idx = self.lit_index(false_lit);
-        let implication_count = self.binary_implications[watch_idx].len();
+        let implication_count = self.binary_implication_counts[watch_idx] as usize;
+        if implication_count == 0 {
+            return None;
+        }
+        debug_assert_eq!(implication_count, self.binary_implications[watch_idx].len());
+        let implications = self.binary_implications[watch_idx].as_ptr();
         for idx in 0..implication_count {
-            let implication = self.binary_implications[watch_idx][idx];
+            // The raw pointer is stable during this loop: propagation can enqueue literals but does
+            // not attach or rebuild binary implication lists.
+            let implication = unsafe { *implications.add(idx) };
             let binary_id = implication.binary_id as usize;
             if binary_id >= self.binary_clauses.len() {
                 continue;
@@ -3906,6 +3919,7 @@ mod tests {
 
     #[test]
     fn test_binary_clause_representation_is_compact() {
+        assert_eq!(std::mem::size_of::<BinaryImplication>(), 12);
         assert_eq!(std::mem::size_of::<BinaryClause>(), 12);
     }
 
