@@ -25,6 +25,9 @@ What is present:
 - Phase 3 root-maintenance scaffolding: a central scheduler, a proof-safe
   `return_to_root_for_maintenance` transition, and diagnostic no-op hooks for future reorder,
   rephase, probe, and eliminate passes
+- Phase 4 dense/sparse simplification boundary around the existing upfront MiniSat-style
+  simplifier: explicit `enter_simplification_mode` / `resume_search_mode_after_simplification`
+  hooks, dense occurrence-view lifetime counters, and sparse-search cleanup
 
 What is intentionally not present yet:
 
@@ -119,3 +122,24 @@ Results:
 - post-change profiling run: solved 5/11, PAR-2 `1559.767`, log
   `log/bench-11-kissat-innovations-2026-05-10-17-20-43`
 - same solved/timeout split; per-instance deltas were small and consistent with run-to-run noise
+
+Dense/sparse simplification boundary validation on 2026-05-10:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_CHECK_INVARIANTS=1 bash tools/smoke_test.sh solver/11-kissat-innovations
+bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 67 passed
+- smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
+- smoke log: `log/2026-05-10-18-34-16`
+- invariant smoke suite: 9/9 passed, log `log/2026-05-10-18-53-12`
+- fresh pre-change profiling baseline: solved 5/11, PAR-2 `1559.776`, log
+  `log/bench-11-kissat-innovations-2026-05-10-18-15-21`
+- post-change profiling run: solved 5/11, PAR-2 `1559.650`, log
+  `log/bench-11-kissat-innovations-2026-05-10-18-34-31`
+- same solved/timeout split; all non-timeout per-instance deltas were under `0.1s`

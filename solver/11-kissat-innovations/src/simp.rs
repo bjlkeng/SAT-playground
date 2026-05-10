@@ -50,6 +50,35 @@ impl Solver {
         true
     }
 
+    pub(super) fn enter_simplification_mode(&mut self) {
+        debug_assert_eq!(self.current_level(), 0);
+        debug_assert_eq!(self.formula_mode, FormulaMode::SparseSearch);
+        self.stats.simplification_mode_entries += 1;
+        self.formula_mode = FormulaMode::DenseSimplification;
+        let occurrence_start = std::time::Instant::now();
+        self.build_occurrence_index();
+        self.stats.simplification_mode_occurrence_time_ns += elapsed_ns(occurrence_start);
+        self.maybe_check_invariants("enter_simplification_mode");
+    }
+
+    pub(super) fn resume_search_mode_after_simplification(&mut self, turn_off_elim: bool) {
+        debug_assert_eq!(self.current_level(), 0);
+        debug_assert_eq!(self.formula_mode, FormulaMode::DenseSimplification);
+        let resume_start = std::time::Instant::now();
+        self.stats.simplification_mode_resumes += 1;
+        self.occurs.clear();
+        self.occurs_dirty.clear();
+        self.n_occ.clear();
+        if turn_off_elim {
+            self.use_simplification = false;
+        }
+        self.formula_mode = FormulaMode::SparseSearch;
+        self.rebuild_branch_queue();
+        self.garbage_collect();
+        self.stats.simplification_mode_resume_time_ns += elapsed_ns(resume_start);
+        self.maybe_check_invariants("resume_search_mode_after_simplification");
+    }
+
     fn build_occurrence_index(&mut self) {
         let num_vars = self.variable_count();
         self.occurs.clear();
@@ -931,7 +960,7 @@ impl Solver {
             return false;
         }
 
-        self.build_occurrence_index();
+        self.enter_simplification_mode();
         self.bwdsub_assigns = 0;
         let run_full_backward_subsumption = self.should_run_full_backward_subsumption();
         let mut queue = VecDeque::new();
@@ -1026,12 +1055,7 @@ impl Solver {
             .collect();
 
         if turn_off_elim {
-            self.occurs.clear();
-            self.occurs_dirty.clear();
-            self.n_occ.clear();
-            self.use_simplification = false;
-            self.rebuild_branch_queue();
-            self.garbage_collect();
+            self.resume_search_mode_after_simplification(true);
         }
 
         self.solver_ok

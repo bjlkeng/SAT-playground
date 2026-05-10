@@ -116,6 +116,12 @@ enum StaticBinaryMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FormulaMode {
+    SparseSearch,
+    DenseSimplification,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MaintenanceAction {
     Restart,
     RootSimplify,
@@ -324,6 +330,10 @@ struct SolverStats {
     maintenance_root_backtracks: u64,
     maintenance_root_conflicts: u64,
     maintenance_time_ns: u64,
+    simplification_mode_entries: u64,
+    simplification_mode_resumes: u64,
+    simplification_mode_occurrence_time_ns: u64,
+    simplification_mode_resume_time_ns: u64,
     preprocess_eliminated_vars: u64,
     preprocess_resolvents: u64,
     preprocess_subsumed_clauses: u64,
@@ -525,6 +535,8 @@ struct Solver {
     static_binary_implication_offsets: Vec<u32>,
     /// whether propagation should read original binary implications from the flat static segments
     static_binary_implications_enabled: bool,
+    /// current formula representation phase: sparse watched search or dense simplification view
+    formula_mode: FormulaMode,
     /// live original binary clause ids in `binary_clauses`
     original_binary_ids: Vec<u32>,
     /// live learned binary clause ids in `binary_clauses`
@@ -991,6 +1003,7 @@ impl Solver {
             static_binary_implications: Vec::new(),
             static_binary_implication_offsets: vec![0; num_vars.saturating_mul(2) + 1],
             static_binary_implications_enabled: false,
+            formula_mode: FormulaMode::SparseSearch,
             original_binary_ids: Vec::new(),
             learned_binary_ids: Vec::new(),
             binary_clause_id_by_arena: Vec::new(),
@@ -3777,7 +3790,7 @@ impl Solver {
         self.configure_static_binary_implications();
         if env::var_os("SAT_TRACE_PREPROCESS").is_some() {
             eprintln!(
-                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} original_binary={} learned_binary={} static_binary={} static_implications={} root_assigns={} deleted_clauses={} deleted_words={} shrunk_words={} gc={} gc_copied_words={} gc_reclaimed_words={} gc_ms={:.3} proof_clauses={} proof_bytes={} reduce_db_limit={}",
+                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} original_binary={} learned_binary={} static_binary={} static_implications={} dense_entries={} dense_resumes={} dense_occurrence_ms={:.3} dense_resume_ms={:.3} root_assigns={} deleted_clauses={} deleted_words={} shrunk_words={} gc={} gc_copied_words={} gc_reclaimed_words={} gc_ms={:.3} proof_clauses={} proof_bytes={} reduce_db_limit={}",
                 preprocess_ns as f64 / 1e9,
                 self.stats.preprocess_eliminated_vars,
                 self.stats.preprocess_resolvents,
@@ -3790,6 +3803,10 @@ impl Solver {
                 self.learned_binary_ids.len(),
                 self.static_binary_implications_enabled,
                 self.static_binary_implications.len(),
+                self.stats.simplification_mode_entries,
+                self.stats.simplification_mode_resumes,
+                self.stats.simplification_mode_occurrence_time_ns as f64 / 1e6,
+                self.stats.simplification_mode_resume_time_ns as f64 / 1e6,
                 self.trail.len(),
                 self.stats.deleted_clauses,
                 self.stats.deleted_words,
@@ -5507,5 +5524,52 @@ mod tests {
         assert_eq!(s.stats.maintenance_checks, 1);
         assert_eq!(s.stats.maintenance_root_simplifies, 1);
         assert_eq!(s.stats.simplifications, 1);
+    }
+
+    #[test]
+    fn test_enter_simplification_mode_builds_dense_occurrence_view() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-1, 3]]);
+        assert_eq!(s.formula_mode, FormulaMode::SparseSearch);
+        assert!(s.occurs.iter().all(Vec::is_empty));
+        assert!(s.n_occ.iter().all(|&count| count == 0));
+
+        s.enter_simplification_mode();
+
+        assert_eq!(s.formula_mode, FormulaMode::DenseSimplification);
+        assert_eq!(s.stats.simplification_mode_entries, 1);
+        assert!(!s.occurs.is_empty());
+        assert_eq!(s.n_occ[s.lit_index(1)], 1);
+        assert_eq!(s.n_occ[s.lit_index(-1)], 1);
+        assert_eq!(s.n_occ[s.lit_index(2)], 1);
+        assert_eq!(s.n_occ[s.lit_index(3)], 1);
+    }
+
+    #[test]
+    fn test_resume_search_mode_clears_dense_view_and_turns_off_one_shot_simplification() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-1, 3]]);
+        s.enter_simplification_mode();
+
+        s.resume_search_mode_after_simplification(true);
+
+        assert_eq!(s.formula_mode, FormulaMode::SparseSearch);
+        assert_eq!(s.stats.simplification_mode_resumes, 1);
+        assert!(s.occurs.is_empty());
+        assert!(s.occurs_dirty.is_empty());
+        assert!(s.n_occ.is_empty());
+        assert!(!s.use_simplification);
+    }
+
+    #[test]
+    fn test_eliminate_wraps_existing_preprocess_in_dense_sparse_boundary() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-1, 3]]);
+        let mut proof = ProofLog::disabled();
+
+        assert!(s.eliminate(true, &mut proof));
+
+        assert_eq!(s.formula_mode, FormulaMode::SparseSearch);
+        assert_eq!(s.stats.simplification_mode_entries, 1);
+        assert_eq!(s.stats.simplification_mode_resumes, 1);
+        assert!(s.occurs.is_empty());
+        assert!(!s.use_simplification);
     }
 }

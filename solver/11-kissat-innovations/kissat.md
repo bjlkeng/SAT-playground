@@ -1432,6 +1432,28 @@ Unlocks:
 - U. Gate/equivalence substitution
 - X. Later factorization/BVA
 
+Status:
+
+- Initial boundary landed on 2026-05-10 as a wrapper around the existing upfront MiniSat-style
+  `eliminate(true, proof_log)` path, not as a replacement for it.
+- Added `FormulaMode::{SparseSearch, DenseSimplification}` and explicit
+  `enter_simplification_mode` / `resume_search_mode_after_simplification` hooks.
+- `enter_simplification_mode` now owns occurrence-list construction for the simplification window.
+  `resume_search_mode_after_simplification` clears occurrence metadata, optionally turns off the
+  one-shot simplifier, rebuilds the branch queue, and runs the same post-preprocessing GC path as
+  before.
+- Added dense-boundary counters and `SAT_TRACE_PREPROCESS` fields for dense entries, resumes,
+  occurrence-build time, and resume time.
+- No repeated inprocessing action is enabled yet; this only names and tests the representation
+  transition that future scheduled passes will use.
+- Validation: `cargo test` passed 67 tests; normal smoke passed 9/9 with DRAT checking, log
+  `log/2026-05-10-18-34-16`; invariant smoke with `SAT_CHECK_INVARIANTS=1` passed 9/9, log
+  `log/2026-05-10-18-53-12`.
+- Fresh behavior check on `benchmarks/profiling`, timeout 120s, memory 16 GB: pre-change baseline
+  `log/bench-11-kissat-innovations-2026-05-10-18-15-21` solved 5/11 with PAR-2 `1559.776`;
+  post-change `log/bench-11-kissat-innovations-2026-05-10-18-34-31` solved 5/11 with PAR-2
+  `1559.650`. Same solved/timeout split; all solved-instance timing deltas were below `0.1s`.
+
 ### Phase 5. Learned-clause lifecycle policy
 
 Primary roadmap items:
