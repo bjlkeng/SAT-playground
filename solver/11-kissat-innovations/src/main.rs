@@ -24,12 +24,26 @@ const LEARNTSIZE_INC: f64 = 1.1;
 const LEARNTSIZE_ADJUST_START_CONFL: usize = 100;
 const LEARNTSIZE_ADJUST_INC: f64 = 1.5;
 const CLAUSE_ACTIVITY_WORDS: usize = 2;
+const CLAUSE_METADATA_WORDS: usize = 1;
+const CLAUSE_EXTRA_WORDS: usize = CLAUSE_ACTIVITY_WORDS + CLAUSE_METADATA_WORDS;
 const CLAUSE_MARK_MASK: u32 = 0b11;
 const CLAUSE_LEARNT_BIT: u32 = 1 << 2;
 const CLAUSE_HAS_EXTRA_BIT: u32 = 1 << 3;
 const CLAUSE_RELOCED_BIT: u32 = 1 << 4;
 const CLAUSE_SIZE_SHIFT: u32 = 5;
 const CLAUSE_DELETED_MARK: u32 = 1;
+const CLAUSE_GLUE_MASK: u32 = 0xffff;
+const CLAUSE_USED_SHIFT: u32 = 16;
+const CLAUSE_USED_MASK: u32 = 0xff << CLAUSE_USED_SHIFT;
+const CLAUSE_TIER_SHIFT: u32 = 24;
+const CLAUSE_TIER_MASK: u32 = 0b11 << CLAUSE_TIER_SHIFT;
+const CLAUSE_REASON_FLAG: u32 = 1 << 26;
+const CLAUSE_SHRUNKEN_FLAG: u32 = 1 << 27;
+const CLAUSE_VIVIFY_FLAG: u32 = 1 << 28;
+const CLAUSE_MAX_USED: u8 = u8::MAX;
+const GLUE_TIER1_LIMIT: u16 = 2;
+const GLUE_TIER2_LIMIT: u16 = 6;
+const GLUE_HISTOGRAM_BUCKETS: usize = 8;
 const DEFAULT_BVE_GROW: isize = 0;
 const DEFAULT_BVE_CLAUSE_LIMIT: isize = 20;
 const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
@@ -152,6 +166,10 @@ struct SolverStats {
     learned_unit_clauses: u64,
     learned_binary_clauses: u64,
     learned_long_clauses: u64,
+    learned_clause_glue_total: u64,
+    learned_clause_glue_max: u16,
+    last_learned_clause_glue: u16,
+    learned_clause_glue_histogram: [u64; GLUE_HISTOGRAM_BUCKETS],
     deleted_words: u64,
     shrunk_words: u64,
     gc_copied_words: u64,
@@ -456,6 +474,8 @@ struct Solver {
     scratch_redundant_state: Vec<u8>,
     scratch_analyze_toclear: Vec<usize>,
     scratch_analyze_stack: Vec<(usize, i32)>,
+    scratch_glue_seen: Vec<u32>,
+    scratch_glue_stamp: u32,
     /// 0 = none, 1 = basic, 2 = deep
     ccmin_mode: u8,
     /// compatibility fallback for the older solver-10 conflict analyzer
@@ -501,7 +521,7 @@ fn clause_header_reloced(header: u32) -> bool {
 #[inline(always)]
 fn clause_header_extra_words(header: u32) -> usize {
     if clause_header_has_extra(header) {
-        CLAUSE_ACTIVITY_WORDS
+        CLAUSE_EXTRA_WORDS
     } else {
         0
     }
@@ -529,6 +549,38 @@ fn clause_abstraction_from_lits(lits: &[i32]) -> u64 {
         abstraction |= 1u64 << (lit.unsigned_abs() & 63);
     }
     abstraction
+}
+
+#[inline(always)]
+fn glue_tier(glue: u16) -> u8 {
+    if glue <= GLUE_TIER1_LIMIT {
+        1
+    } else if glue <= GLUE_TIER2_LIMIT {
+        2
+    } else {
+        3
+    }
+}
+
+#[inline(always)]
+fn pack_clause_metadata(glue: u16, used: u8, tier: u8) -> u32 {
+    (glue as u32)
+        | ((used as u32) << CLAUSE_USED_SHIFT)
+        | (((tier as u32) & 0b11) << CLAUSE_TIER_SHIFT)
+}
+
+#[inline(always)]
+fn glue_histogram_bucket(glue: u16) -> usize {
+    match glue {
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        3 | 4 => 3,
+        5 | 6 => 4,
+        7..=10 => 5,
+        11..=20 => 6,
+        _ => 7,
+    }
 }
 
 #[inline(always)]
@@ -781,6 +833,8 @@ impl Solver {
             scratch_redundant_state: vec![0; num_vars + 1],
             scratch_analyze_toclear: Vec::with_capacity(16),
             scratch_analyze_stack: Vec::with_capacity(16),
+            scratch_glue_seen: vec![0; num_vars + 1],
+            scratch_glue_stamp: 0,
             ccmin_mode: CCMIN_DEEP,
             use_resolved_conflict_analysis: false,
             check_invariants: parse_bool_env("SAT_CHECK_INVARIANTS", false),
@@ -888,6 +942,108 @@ impl Solver {
     }
 
     #[inline(always)]
+    fn clause_metadata_idx(&self, clause_idx: usize) -> usize {
+        debug_assert!(self.clause_has_extra(clause_idx));
+        clause_idx + 1 + self.clause_len(clause_idx) + CLAUSE_ACTIVITY_WORDS
+    }
+
+    #[inline(always)]
+    fn clause_metadata(&self, clause_idx: usize) -> u32 {
+        self.arena[self.clause_metadata_idx(clause_idx)]
+    }
+
+    #[inline(always)]
+    fn set_clause_metadata(&mut self, clause_idx: usize, metadata: u32) {
+        let metadata_idx = self.clause_metadata_idx(clause_idx);
+        self.arena[metadata_idx] = metadata;
+    }
+
+    #[inline(always)]
+    fn clause_glue(&self, clause_idx: usize) -> u16 {
+        (self.clause_metadata(clause_idx) & CLAUSE_GLUE_MASK) as u16
+    }
+
+    #[inline(always)]
+    fn set_clause_glue(&mut self, clause_idx: usize, glue: u16) {
+        let metadata = self.clause_metadata(clause_idx);
+        self.set_clause_metadata(clause_idx, (metadata & !CLAUSE_GLUE_MASK) | glue as u32);
+    }
+
+    #[inline(always)]
+    fn clause_used(&self, clause_idx: usize) -> u8 {
+        ((self.clause_metadata(clause_idx) & CLAUSE_USED_MASK) >> CLAUSE_USED_SHIFT) as u8
+    }
+
+    #[inline(always)]
+    fn set_clause_used(&mut self, clause_idx: usize, used: u8) {
+        let metadata = self.clause_metadata(clause_idx);
+        self.set_clause_metadata(
+            clause_idx,
+            (metadata & !CLAUSE_USED_MASK) | ((used as u32) << CLAUSE_USED_SHIFT),
+        );
+    }
+
+    #[inline(always)]
+    fn clause_tier(&self, clause_idx: usize) -> u8 {
+        ((self.clause_metadata(clause_idx) & CLAUSE_TIER_MASK) >> CLAUSE_TIER_SHIFT) as u8
+    }
+
+    #[inline(always)]
+    fn set_clause_tier(&mut self, clause_idx: usize, tier: u8) {
+        let metadata = self.clause_metadata(clause_idx);
+        self.set_clause_metadata(
+            clause_idx,
+            (metadata & !CLAUSE_TIER_MASK) | (((tier as u32) & 0b11) << CLAUSE_TIER_SHIFT),
+        );
+    }
+
+    #[inline(always)]
+    fn clause_flag(&self, clause_idx: usize, flag: u32) -> bool {
+        (self.clause_metadata(clause_idx) & flag) != 0
+    }
+
+    #[inline(always)]
+    fn set_clause_flag(&mut self, clause_idx: usize, flag: u32, enabled: bool) {
+        let metadata = self.clause_metadata(clause_idx);
+        let metadata = if enabled {
+            metadata | flag
+        } else {
+            metadata & !flag
+        };
+        self.set_clause_metadata(clause_idx, metadata);
+    }
+
+    #[inline(always)]
+    fn clause_reason_flag(&self, clause_idx: usize) -> bool {
+        self.clause_flag(clause_idx, CLAUSE_REASON_FLAG)
+    }
+
+    #[inline(always)]
+    fn set_clause_reason_flag(&mut self, clause_idx: usize, enabled: bool) {
+        self.set_clause_flag(clause_idx, CLAUSE_REASON_FLAG, enabled);
+    }
+
+    #[inline(always)]
+    fn clause_shrunken_flag(&self, clause_idx: usize) -> bool {
+        self.clause_flag(clause_idx, CLAUSE_SHRUNKEN_FLAG)
+    }
+
+    #[inline(always)]
+    fn set_clause_shrunken_flag(&mut self, clause_idx: usize, enabled: bool) {
+        self.set_clause_flag(clause_idx, CLAUSE_SHRUNKEN_FLAG, enabled);
+    }
+
+    #[inline(always)]
+    fn clause_vivify_flag(&self, clause_idx: usize) -> bool {
+        self.clause_flag(clause_idx, CLAUSE_VIVIFY_FLAG)
+    }
+
+    #[inline(always)]
+    fn set_clause_vivify_flag(&mut self, clause_idx: usize, enabled: bool) {
+        self.set_clause_flag(clause_idx, CLAUSE_VIVIFY_FLAG, enabled);
+    }
+
+    #[inline(always)]
     fn clause_lit(&self, clause_idx: usize, lit_pos: usize) -> i32 {
         debug_assert!(lit_pos < self.clause_len(clause_idx));
         word_to_lit(self.arena[clause_idx + 1 + lit_pos])
@@ -986,7 +1142,7 @@ impl Solver {
         if self.clause_has_extra(clause_idx) {
             let old_extra_idx = clause_idx + 1 + clause_len;
             let new_extra_idx = clause_idx + 1 + write;
-            for offset in 0..CLAUSE_ACTIVITY_WORDS {
+            for offset in 0..clause_header_extra_words(self.clause_header(clause_idx)) {
                 self.arena[new_extra_idx + offset] = self.arena[old_extra_idx + offset];
             }
         }
@@ -1395,6 +1551,27 @@ impl Solver {
             learnt,
             "{context}: clause {clause_idx} is in the wrong live list"
         );
+        if learnt {
+            assert!(
+                self.clause_has_extra(clause_idx),
+                "{context}: learned clause {clause_idx} is missing metadata"
+            );
+            let tier = self.clause_tier(clause_idx);
+            assert!(
+                tier <= 3,
+                "{context}: learned clause {clause_idx} has invalid tier {tier}"
+            );
+            assert_eq!(
+                tier,
+                glue_tier(self.clause_glue(clause_idx)),
+                "{context}: learned clause {clause_idx} tier does not match glue"
+            );
+        } else {
+            assert!(
+                !self.clause_has_extra(clause_idx),
+                "{context}: original clause {clause_idx} unexpectedly has metadata"
+            );
+        }
         assert!(
             !seen_clause_ids[clause_idx],
             "{context}: duplicate live clause id {clause_idx}"
@@ -1998,6 +2175,11 @@ impl Solver {
     }
 
     fn add_clause_from_slice(&mut self, clause: &[i32]) -> usize {
+        let glue = self.compute_clause_glue(clause);
+        self.add_clause_from_slice_with_glue(clause, glue)
+    }
+
+    fn add_clause_from_slice_with_glue(&mut self, clause: &[i32], glue: u16) -> usize {
         let clause_idx = self.arena.len();
         let clause_len = clause.len();
         self.arena
@@ -2006,9 +2188,17 @@ impl Solver {
         let activity_bits = 0.0f64.to_bits();
         self.arena.push(activity_bits as u32);
         self.arena.push((activity_bits >> 32) as u32);
+        self.arena
+            .push(pack_clause_metadata(glue, CLAUSE_MAX_USED, glue_tier(glue)));
         self.learned_clause_ids.push(clause_idx);
         self.live_learned_clause_count += 1;
         self.learned_literals += clause_len;
+        self.record_learned_clause_stats(clause_len, glue);
+        self.attach_clause(clause_idx, false);
+        clause_idx
+    }
+
+    fn record_learned_clause_stats(&mut self, clause_len: usize, glue: u16) {
         self.stats.learned_clauses += 1;
         self.stats.learned_clause_literals += clause_len as u64;
         self.stats.learned_clause_max_len = self.stats.learned_clause_max_len.max(clause_len);
@@ -2017,8 +2207,47 @@ impl Solver {
             2 => self.stats.learned_binary_clauses += 1,
             _ => self.stats.learned_long_clauses += 1,
         }
-        self.attach_clause(clause_idx, false);
-        clause_idx
+        self.stats.last_learned_clause_glue = glue;
+        self.stats.learned_clause_glue_total += glue as u64;
+        self.stats.learned_clause_glue_max = self.stats.learned_clause_glue_max.max(glue);
+        self.stats.learned_clause_glue_histogram[glue_histogram_bucket(glue)] += 1;
+    }
+
+    fn average_learned_glue(&self) -> f64 {
+        if self.stats.learned_clauses == 0 {
+            0.0
+        } else {
+            self.stats.learned_clause_glue_total as f64 / self.stats.learned_clauses as f64
+        }
+    }
+
+    fn compute_clause_glue(&mut self, clause: &[i32]) -> u16 {
+        if clause.is_empty() {
+            return 0;
+        }
+        self.scratch_glue_stamp = self.scratch_glue_stamp.wrapping_add(1);
+        if self.scratch_glue_stamp == 0 {
+            self.scratch_glue_seen.fill(0);
+            self.scratch_glue_stamp = 1;
+        }
+
+        let mut glue = 0u16;
+        for &lit in clause {
+            let var = lit.unsigned_abs() as usize;
+            let level = self.decision_level[var];
+            if level == 0 {
+                continue;
+            }
+            if level >= self.scratch_glue_seen.len() {
+                continue;
+            }
+            if self.scratch_glue_seen[level] == self.scratch_glue_stamp {
+                continue;
+            }
+            self.scratch_glue_seen[level] = self.scratch_glue_stamp;
+            glue = glue.saturating_add(1);
+        }
+        glue
     }
 
     fn clause_locked(&self, clause_idx: usize) -> bool {
@@ -2588,7 +2817,7 @@ impl Solver {
                         self.stats.search_time_ns += elapsed_ns(search_start);
                         if trace_search_interval > 0 {
                             eprintln!(
-                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} deleted_clauses={} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} proof_clauses={} proof_bytes={}",
+                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} deleted_clauses={} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} proof_clauses={} proof_bytes={}",
                                 self.stats.search_time_ns as f64 / 1e9,
                                 self.stats.conflicts,
                                 self.stats.decisions,
@@ -2597,6 +2826,9 @@ impl Solver {
                                 self.live_learned_clause_count,
                                 self.stats.learned_clause_literals,
                                 self.stats.learned_clause_max_len,
+                                self.average_learned_glue(),
+                                self.stats.learned_clause_glue_max,
+                                self.stats.last_learned_clause_glue,
                                 self.stats.deleted_clauses,
                                 self.stats.deleted_words,
                                 self.stats.garbage_collections,
@@ -2614,7 +2846,7 @@ impl Solver {
                     self.stats.conflicts += 1;
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
-                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} reduce_db={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
+                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} reduce_db={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
                             search_start.elapsed().as_secs_f64(),
                             self.stats.conflicts,
                             self.stats.decisions,
@@ -2627,6 +2859,9 @@ impl Solver {
                             self.stats.learned_binary_clauses,
                             self.stats.learned_long_clauses,
                             self.stats.learned_clause_max_len,
+                            self.average_learned_glue(),
+                            self.stats.learned_clause_glue_max,
+                            self.stats.last_learned_clause_glue,
                             self.stats.reduce_db_calls,
                             self.original_clause_ids.len(),
                             self.original_literals,
@@ -2646,13 +2881,10 @@ impl Solver {
                     self.note_conflict();
                     let learned_clause = std::mem::take(&mut self.scratch_conflict_clause);
                     let asserting_lit = learned_clause[0];
+                    let learned_glue = self.compute_clause_glue(&learned_clause);
                     proof_log.record_clause(&learned_clause);
                     if learned_clause.len() == 1 {
-                        self.stats.learned_clauses += 1;
-                        self.stats.learned_clause_literals += 1;
-                        self.stats.learned_clause_max_len =
-                            self.stats.learned_clause_max_len.max(1);
-                        self.stats.learned_unit_clauses += 1;
+                        self.record_learned_clause_stats(1, learned_glue);
                         debug_assert_eq!(backtrack_level, 0);
                         self.backtrack(0);
                         let inserted = self.enqueue(asserting_lit, NO_REASON);
@@ -2662,7 +2894,8 @@ impl Solver {
                         self.scratch_conflict_clause = learned_clause;
                         self.scratch_conflict_clause.clear();
                     } else {
-                        let learned_clause_idx = self.add_clause_from_slice(&learned_clause);
+                        let learned_clause_idx =
+                            self.add_clause_from_slice_with_glue(&learned_clause, learned_glue);
                         self.scratch_conflict_clause = learned_clause;
                         self.scratch_conflict_clause.clear();
                         if self.reduce_db_enabled() {
@@ -2711,7 +2944,7 @@ impl Solver {
                             self.stats.search_time_ns += elapsed_ns(search_start);
                             if trace_search_interval > 0 {
                                 eprintln!(
-                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} deleted_clauses={} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} proof_clauses={} proof_bytes={}",
+                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} deleted_clauses={} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} proof_clauses={} proof_bytes={}",
                                     self.stats.search_time_ns as f64 / 1e9,
                                     self.stats.conflicts,
                                     self.stats.decisions,
@@ -2720,6 +2953,9 @@ impl Solver {
                                     self.live_learned_clause_count,
                                     self.stats.learned_clause_literals,
                                     self.stats.learned_clause_max_len,
+                                    self.average_learned_glue(),
+                                    self.stats.learned_clause_glue_max,
+                                    self.stats.last_learned_clause_glue,
                                     self.stats.deleted_clauses,
                                     self.stats.deleted_words,
                                     self.stats.garbage_collections,
@@ -3133,6 +3369,61 @@ mod tests {
         let binary = ReasonRef::binary(-17);
         assert_eq!(binary.as_binary(), Some(-17));
         assert_eq!(binary.as_clause(), None);
+    }
+
+    #[test]
+    fn test_learned_clause_metadata_stores_glue_used_tier_and_flags() {
+        let mut s = make_solver(3, vec![]);
+        s.decision_level[1] = 1;
+        s.decision_level[2] = 2;
+        s.decision_level[3] = 1;
+
+        let clause_idx = s.add_clause(vec![1, -2, 3]);
+
+        assert_eq!(s.clause_glue(clause_idx), 2);
+        assert_eq!(s.clause_used(clause_idx), CLAUSE_MAX_USED);
+        assert_eq!(s.clause_tier(clause_idx), 1);
+        assert_eq!(s.stats.last_learned_clause_glue, 2);
+        assert_eq!(s.stats.learned_clause_glue_total, 2);
+        assert_eq!(s.stats.learned_clause_glue_max, 2);
+        assert_eq!(s.stats.learned_clause_glue_histogram[2], 1);
+        assert!(!s.clause_reason_flag(clause_idx));
+        assert!(!s.clause_shrunken_flag(clause_idx));
+        assert!(!s.clause_vivify_flag(clause_idx));
+
+        s.set_clause_glue(clause_idx, 7);
+        s.set_clause_used(clause_idx, 42);
+        s.set_clause_tier(clause_idx, 3);
+        s.set_clause_reason_flag(clause_idx, true);
+        s.set_clause_shrunken_flag(clause_idx, true);
+        s.set_clause_vivify_flag(clause_idx, true);
+
+        assert_eq!(s.clause_glue(clause_idx), 7);
+        assert_eq!(s.clause_used(clause_idx), 42);
+        assert_eq!(s.clause_tier(clause_idx), 3);
+        assert!(s.clause_reason_flag(clause_idx));
+        assert!(s.clause_shrunken_flag(clause_idx));
+        assert!(s.clause_vivify_flag(clause_idx));
+    }
+
+    #[test]
+    fn test_learned_clause_metadata_survives_garbage_collection() {
+        let mut s = make_solver(3, vec![]);
+        let dead = s.add_clause_from_slice_with_glue(&[1, 2], 3);
+        let live = s.add_clause_from_slice_with_glue(&[3, 1], 5);
+        s.set_clause_used(live, 17);
+        s.set_clause_tier(live, glue_tier(5));
+        s.set_clause_shrunken_flag(live, true);
+
+        s.mark_clause_deleted(dead);
+        s.garbage_collect();
+
+        let relocated_live = s.learned_clause_ids[0];
+        assert_eq!(s.clause_slice(relocated_live), &[3, 1]);
+        assert_eq!(s.clause_glue(relocated_live), 5);
+        assert_eq!(s.clause_used(relocated_live), 17);
+        assert_eq!(s.clause_tier(relocated_live), 2);
+        assert!(s.clause_shrunken_flag(relocated_live));
     }
 
     #[test]

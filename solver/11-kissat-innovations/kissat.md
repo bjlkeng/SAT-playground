@@ -634,13 +634,23 @@ Implementation items:
   compute glue/LBD.
 - Extend the learned-clause extra data to store glue and `used`, while preserving clause activity
   until the old reducer is replaced.
-- Initialize binary learned clauses with glue `1`; initialize longer learned clauses with computed
-  glue and `used = MAX_USED`.
+- Initialize learned clauses with computed glue/LBD and `used = MAX_USED`; binary learned clauses
+  use the same distinct-decision-level LBD calculation instead of a separate hard-coded value.
 - Add unit tests that build known implication graphs and assert learned clause glue.
 
 Notes:
 
 - This should come before changing restart or reduce policy.
+- Implementation status: landed for diagnostics/future policy use. Learned clauses now carry one
+  extra packed metadata word after activity containing glue, used, tier, and spare lifecycle flags.
+  Existing activity-based reduction and restart behavior are unchanged.
+- Validation: `cargo test` passed 53 tests; normal smoke passed 9/9; invariant smoke with
+  `SAT_CHECK_INVARIANTS=1` passed 9/9.
+- Profiling overhead check on `benchmarks/profiling`, timeout 120s, memory 16 GB:
+  pre-metadata log `log/bench-11-kissat-innovations-2026-05-09-21-09-49`, PAR-2 `1104.865`,
+  solved 7/11; metadata log `log/bench-11-kissat-innovations-2026-05-09-21-26-34`, PAR-2
+  `1104.276`, solved 7/11. Same solved/timeout split; runtime delta is within normal benchmark
+  noise.
 
 ### C. Replace activity-based learned reduction with tiered glue reduction
 
