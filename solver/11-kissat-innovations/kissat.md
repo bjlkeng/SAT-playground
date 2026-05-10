@@ -1269,6 +1269,56 @@ Status:
   promising non-search direction is a larger representation change that removes the per-literal
   `Vec<Vec<_>>` metadata/allocation pattern entirely, such as a flat static implication segment for
   original binaries plus a tiny dynamic side structure for rare learned binary clauses.
+- Second low-noise aggressive-path pass on 2026-05-10 found no additional small default change worth
+  keeping. Current `HEAD` on 60e396, same fixed 700k-conflict trace and 20s perf window after a 2s
+  delay, measured `165.43B` instructions / `30.53B` branches / `73.23B` L1 loads / `4.044B` L1
+  misses / `4.67M` dTLB misses / `1.801B` cache misses. Cache sampling
+  `/tmp/sat-aggressive-analysis/perf-cache-current-60e.data` still put most cache misses in the
+  normal watcher scan (`Solver::propagate` `83.95%`, deleted-clause arena header checks `16.80%`);
+  the direct binary implication loop was only `4.72%` of sampled cache misses.
+- Rejected in that pass: removing the release deleted-binary check from direct implications and
+  shrinking implications to two words helped high-binary Velev cache/TLB counters but worsened 60e
+  instruction/branch/dTLB counters (`167.89B` instructions, `31.82B` branches, `5.29M` dTLB
+  misses). Keeping the 12-byte implication shape while skipping the release deleted check was also
+  worse on 60e (`168.70B` instructions, `31.94B` branches, `4.160B` L1 misses). A dense
+  `watch_counts` array for normal watcher-list emptiness was clearly bad on 60e (`174.14B`
+  instructions, `4.264B` L1 misses, `5.65M` dTLB misses). Reordering the watcher-fast binary branch
+  to check `clause_len == 2` first reduced some miss counts but reached fewer conflicts in the same
+  window and raised instruction/L1-load counts.
+- Takeaway: after the count-array improvement, the aggressive direct-binary path is not the main
+  cache-miss source on the sampled circuit target. The next worthwhile non-search work is not
+  another small hot-loop tweak; it is either a flat static binary-implication representation tested
+  across a broader binary-density sample, or a normal watcher data-structure cleanup aimed at arena
+  header locality and deleted-watcher churn.
+- Deeper representation experiment on 2026-05-10 split those two directions. Clause mixes used:
+  60e396 has `45.7%` binary clauses after input parsing, Velev `velev-pipe-o-uns-1.1-6` has
+  `88.3%` binary clauses, and `circuit_48in64out_with_800gates...` has no binary clauses and is a
+  cleaner normal-watcher target. A prototype `SAT_BINARY_STATIC_SEGMENTS=1` builds flat original
+  binary implication segments after preprocessing and keeps learned binaries in the existing dynamic
+  per-literal lists. It preserves the exact search trace on the measured targets. On Velev it reached
+  200k conflicts in `9.791s` vs baseline `10.529s` (`~7.0%` faster) while search-window counters
+  moved from `126.83B` instructions / `3.409B` L1 misses / `624.9M` dTLB misses /
+  `2.647B` cache misses to `135.64B` instructions / `3.348B` L1 misses / `579.0M` dTLB misses /
+  `2.472B` cache misses. Cache profiles show the dynamic binary implication loop dropping from
+  `12.4%` of sampled cache misses to roughly `3.7%` in the static path
+  (`/tmp/sat-aggressive-analysis/perf-cache-baseline-velev.data` and
+  `/tmp/sat-aggressive-analysis/perf-cache-static-velev.data`).
+- Static binary segments were mildly positive but less decisive on mixed/no-binary circuits: 60e396
+  reached the same 700k-conflict trace in `20.927s` vs `21.527s` baseline, but with higher
+  instruction/branch/L1-load counts; the no-binary circuit reached 250k conflicts in `16.199s` vs
+  `16.404s`, also with mixed cache counters. Interpretation: flat static original binaries are
+  worth implementing as a real default or auto-enabled feature, but the implementation should avoid
+  extra empty-segment work on formulas with few or no original binaries and should be validated on a
+  broader binary-density sample.
+- Watcher-storage cleanup was less convincing. Stable eager detach after preprocessing preserved
+  60e396's search trace but only improved 700k-conflict time from `21.527s` to `21.258s` while
+  increasing instruction/branch/cache-reference counts. On the no-binary circuit it improved 250k
+  conflicts from `16.404s` to `16.072s` and cut dTLB misses from `120.7M` to `62.5M`, but total
+  cache misses were roughly flat. A bulk `SAT_COMPACT_WATCHERS_AFTER_REDUCE=1` pass preserved the
+  search trace and avoided per-clause `Vec::remove`; it reached 250k conflicts in `16.151s` on the
+  no-binary circuit and 700k in `21.306s` on 60e396. This confirms deleted watcher tombstones hurt
+  locality, but the simple cleanup policies are below the normal keep threshold. Revisit with a more
+  structural watcher layout change rather than eager detach as-is.
 
 Unlocks:
 

@@ -64,6 +64,12 @@ struct BinaryImplication {
     binary_id: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct StaticBinaryImplication {
+    implied_lit: i32,
+    clause_idx: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BinaryClause {
     lit0: i32,
@@ -396,6 +402,12 @@ struct Solver {
     binary_implications: Vec<Vec<BinaryImplication>>,
     /// cached direct binary implication list lengths, stored contiguously for the empty-list fast path
     binary_implication_counts: Vec<u32>,
+    /// flat original binary implication segments, keyed by literal offsets
+    static_binary_implications: Vec<StaticBinaryImplication>,
+    /// start offsets into `static_binary_implications` for each literal plus a sentinel
+    static_binary_implication_offsets: Vec<u32>,
+    /// whether propagation should read original binary implications from the flat static segments
+    static_binary_implications_enabled: bool,
     /// live original binary clause ids in `binary_clauses`
     original_binary_ids: Vec<u32>,
     /// live learned binary clause ids in `binary_clauses`
@@ -518,6 +530,10 @@ struct Solver {
     use_resolved_conflict_analysis: bool,
     /// binary propagation representation; direct implication mode remains experimental
     binary_propagation_mode: BinaryPropagationMode,
+    /// remove watchers immediately when learned clauses are deleted instead of relying on lazy cleanup
+    eager_detach_watchers: bool,
+    /// compact deleted watcher tombstones in bulk after learned-clause reduction
+    compact_watchers_after_reduce: bool,
     /// expensive solver consistency checks, enabled with SAT_CHECK_INVARIANTS
     check_invariants: bool,
     stats: SolverStats,
@@ -853,6 +869,9 @@ impl Solver {
             binary_clauses: Vec::new(),
             binary_implications: vec![Vec::new(); num_vars.saturating_mul(2)],
             binary_implication_counts: vec![0; num_vars.saturating_mul(2)],
+            static_binary_implications: Vec::new(),
+            static_binary_implication_offsets: vec![0; num_vars.saturating_mul(2) + 1],
+            static_binary_implications_enabled: false,
             original_binary_ids: Vec::new(),
             learned_binary_ids: Vec::new(),
             binary_clause_id_by_arena: Vec::new(),
@@ -918,6 +937,11 @@ impl Solver {
             ccmin_mode: CCMIN_DEEP,
             use_resolved_conflict_analysis: false,
             binary_propagation_mode,
+            eager_detach_watchers: false,
+            compact_watchers_after_reduce: parse_bool_env(
+                "SAT_COMPACT_WATCHERS_AFTER_REDUCE",
+                false,
+            ),
             check_invariants: parse_bool_env("SAT_CHECK_INVARIANTS", false),
             stats: SolverStats::default(),
         };
@@ -1181,7 +1205,9 @@ impl Solver {
             lit1,
             metadata,
         });
-        self.attach_binary_implications(clause_idx, binary_id);
+        if !self.static_binary_implications_enabled || self.clause_is_learnt(clause_idx) {
+            self.attach_binary_implications(clause_idx, binary_id);
+        }
         if self.clause_is_learnt(clause_idx) {
             self.learned_binary_ids.push(binary_id);
         } else {
@@ -1242,6 +1268,8 @@ impl Solver {
             implications.clear();
         }
         self.binary_implication_counts.fill(0);
+        self.static_binary_implications.clear();
+        self.static_binary_implication_offsets.fill(0);
         self.original_binary_ids.clear();
         self.learned_binary_ids.clear();
         self.binary_clause_id_by_arena.clear();
@@ -1255,6 +1283,103 @@ impl Solver {
         let learned_clause_ids = self.learned_clause_ids.clone();
         for clause_idx in learned_clause_ids {
             self.register_binary_clause_if_needed(clause_idx);
+        }
+        if self.static_binary_implications_enabled {
+            self.rebuild_static_binary_implications();
+        }
+    }
+
+    fn enable_static_binary_implications_if_requested(&mut self) {
+        if self.binary_propagation_mode != BinaryPropagationMode::Aggressive
+            || !parse_bool_env("SAT_BINARY_STATIC_SEGMENTS", false)
+        {
+            return;
+        }
+        self.static_binary_implications_enabled = true;
+        self.rebuild_static_binary_implications();
+    }
+
+    fn rebuild_static_binary_implications(&mut self) {
+        debug_assert_eq!(
+            self.binary_propagation_mode,
+            BinaryPropagationMode::Aggressive
+        );
+        let lit_count = self.watchers.len();
+        if self.static_binary_implication_offsets.len() != lit_count + 1 {
+            self.static_binary_implication_offsets
+                .resize(lit_count + 1, 0);
+        }
+        self.static_binary_implication_offsets.fill(0);
+
+        for &clause_idx in &self.original_clause_ids {
+            if clause_idx >= self.arena.len()
+                || self.clause_is_deleted(clause_idx)
+                || self.clause_len(clause_idx) != 2
+            {
+                continue;
+            }
+            let lit0_idx = self.lit_index(self.clause_lit(clause_idx, 0));
+            let lit1_idx = self.lit_index(self.clause_lit(clause_idx, 1));
+            self.static_binary_implication_offsets[lit0_idx + 1] += 1;
+            self.static_binary_implication_offsets[lit1_idx + 1] += 1;
+        }
+
+        for idx in 1..self.static_binary_implication_offsets.len() {
+            let previous = self.static_binary_implication_offsets[idx - 1];
+            self.static_binary_implication_offsets[idx] += previous;
+        }
+
+        let implication_count = self
+            .static_binary_implication_offsets
+            .last()
+            .copied()
+            .unwrap_or(0) as usize;
+        self.static_binary_implications
+            .resize(implication_count, StaticBinaryImplication::default());
+        let mut next = self.static_binary_implication_offsets.clone();
+
+        for &clause_idx in &self.original_clause_ids {
+            if clause_idx >= self.arena.len()
+                || self.clause_is_deleted(clause_idx)
+                || self.clause_len(clause_idx) != 2
+            {
+                continue;
+            }
+            let lit0 = self.clause_lit(clause_idx, 0);
+            let lit1 = self.clause_lit(clause_idx, 1);
+            let lit0_idx = self.lit_index(lit0);
+            let lit1_idx = self.lit_index(lit1);
+            let write0 = next[lit0_idx] as usize;
+            self.static_binary_implications[write0] = StaticBinaryImplication {
+                implied_lit: lit1,
+                clause_idx: clause_idx as u32,
+            };
+            next[lit0_idx] += 1;
+            let write1 = next[lit1_idx] as usize;
+            self.static_binary_implications[write1] = StaticBinaryImplication {
+                implied_lit: lit0,
+                clause_idx: clause_idx as u32,
+            };
+            next[lit1_idx] += 1;
+        }
+
+        for implications in &mut self.binary_implications {
+            implications.clear();
+        }
+        self.binary_implication_counts.fill(0);
+        let learned_clause_ids = self.learned_clause_ids.clone();
+        for clause_idx in learned_clause_ids {
+            if clause_idx < self.arena.len()
+                && !self.clause_is_deleted(clause_idx)
+                && self.clause_len(clause_idx) == 2
+            {
+                let binary_id = self
+                    .binary_clause_id_for_arena(clause_idx)
+                    .unwrap_or(NO_BINARY_CLAUSE);
+                if binary_id != NO_BINARY_CLAUSE {
+                    self.attach_binary_implications(clause_idx, binary_id);
+                }
+            }
         }
     }
 
@@ -1831,7 +1956,8 @@ impl Solver {
         implied_lit: i32,
         clause_idx: usize,
     ) -> usize {
-        self.binary_implications[self.lit_index(false_lit)]
+        let watch_idx = self.lit_index(false_lit);
+        let dynamic_count = self.binary_implications[watch_idx]
             .iter()
             .filter(|implication| {
                 let implication_clause_idx = implication.clause_idx as usize;
@@ -1841,7 +1967,24 @@ impl Solver {
                     && !self.clause_is_deleted(implication_clause_idx)
                     && self.clause_len(implication_clause_idx) == 2
             })
-            .count()
+            .count();
+        if !self.static_binary_implications_enabled {
+            return dynamic_count;
+        }
+        let start = self.static_binary_implication_offsets[watch_idx] as usize;
+        let end = self.static_binary_implication_offsets[watch_idx + 1] as usize;
+        dynamic_count
+            + self.static_binary_implications[start..end]
+                .iter()
+                .filter(|implication| {
+                    let implication_clause_idx = implication.clause_idx as usize;
+                    implication_clause_idx == clause_idx
+                        && implication.implied_lit == implied_lit
+                        && implication_clause_idx < self.arena.len()
+                        && !self.clause_is_deleted(implication_clause_idx)
+                        && self.clause_len(implication_clause_idx) == 2
+                })
+                .count()
     }
 
     fn binary_clause_matches_arena(&self, binary: BinaryClause, clause_idx: usize) -> bool {
@@ -2118,6 +2261,36 @@ impl Solver {
         }
     }
 
+    fn detach_clause_watcher_stable(&mut self, lit: i32, clause_idx: usize) {
+        let watch_idx = self.lit_index(lit);
+        let watch_list = &mut self.watchers[watch_idx];
+        if let Some(pos) = watch_list
+            .iter()
+            .position(|watcher| watcher.clause_idx as usize == clause_idx)
+        {
+            watch_list.remove(pos);
+        } else {
+            debug_assert!(
+                false,
+                "clause {clause_idx} missing watcher for literal {lit}"
+            );
+        }
+    }
+
+    fn detach_clause_stable(&mut self, clause_idx: usize) {
+        let clause_len = self.clause_len(clause_idx);
+        if self.clause_is_deleted(clause_idx) || clause_len == 0 {
+            return;
+        }
+        if self.binary_propagation_mode == BinaryPropagationMode::Aggressive && clause_len == 2 {
+            return;
+        }
+        self.detach_clause_watcher_stable(self.clause_lit(clause_idx, 0), clause_idx);
+        if clause_len > 1 {
+            self.detach_clause_watcher_stable(self.clause_lit(clause_idx, 1), clause_idx);
+        }
+    }
+
     fn attach_binary_watchers(&mut self, clause_idx: usize) {
         let first = self.clause_lit(clause_idx, 0);
         let second = self.clause_lit(clause_idx, 1);
@@ -2176,8 +2349,31 @@ impl Solver {
         }
     }
 
-    fn detach_clause(&mut self, _clause_idx: usize) {
-        // Lazy detach: deleted clauses are compacted out of watch lists during propagation or GC.
+    fn detach_clause(&mut self, clause_idx: usize) {
+        if self.eager_detach_watchers {
+            self.detach_clause_stable(clause_idx);
+        }
+        // Otherwise, lazy detach: deleted clauses are compacted out of watch lists during
+        // propagation or GC.
+    }
+
+    fn compact_deleted_watchers(&mut self) {
+        let arena = &self.arena;
+        for watch_list in &mut self.watchers {
+            let mut write = 0usize;
+            for read in 0..watch_list.len() {
+                let watcher = watch_list[read];
+                let clause_idx = watcher.clause_idx as usize;
+                if clause_idx >= arena.len()
+                    || clause_header_mark(arena[clause_idx]) == CLAUSE_DELETED_MARK
+                {
+                    continue;
+                }
+                watch_list[write] = watcher;
+                write += 1;
+            }
+            watch_list.truncate(write);
+        }
     }
 
     #[inline(always)]
@@ -2273,6 +2469,36 @@ impl Solver {
         None
     }
 
+    fn propagate_static_binary_implications(&mut self, false_lit: i32) -> Option<usize> {
+        let watch_idx = self.lit_index(false_lit);
+        let start = self.static_binary_implication_offsets[watch_idx] as usize;
+        let end = self.static_binary_implication_offsets[watch_idx + 1] as usize;
+        if start == end {
+            return None;
+        }
+        let implications = self.static_binary_implications.as_ptr();
+        for idx in start..end {
+            let implication = unsafe { *implications.add(idx) };
+            debug_assert!(
+                (implication.clause_idx as usize) < self.arena.len()
+                    && !self.clause_is_deleted(implication.clause_idx as usize)
+                    && self.clause_len(implication.clause_idx as usize) == 2,
+                "static binary implication list contains stale arena mapping"
+            );
+            match self.lit_value(implication.implied_lit) {
+                TRUE => {}
+                FALSE => return Some(implication.clause_idx as usize),
+                UNASSIGNED => {
+                    if !self.enqueue(implication.implied_lit, ReasonRef::binary(false_lit)) {
+                        return Some(implication.clause_idx as usize);
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+        None
+    }
+
     fn propagate(&mut self) -> Option<usize> {
         let start_head = self.propagate_head;
         while self.propagate_head < self.trail.len() {
@@ -2280,6 +2506,11 @@ impl Solver {
             self.propagate_head += 1;
             self.stats.propagations += 1;
             if self.binary_propagation_mode == BinaryPropagationMode::Aggressive {
+                if self.static_binary_implications_enabled {
+                    if let Some(conflict) = self.propagate_static_binary_implications(false_lit) {
+                        return Some(conflict);
+                    }
+                }
                 if let Some(conflict) = self.propagate_binary_implications(false_lit) {
                     return Some(conflict);
                 }
@@ -3036,6 +3267,9 @@ impl Solver {
         self.learned_clause_ids.truncate(write);
         self.live_learned_clause_count = self.learned_clause_ids.len();
 
+        if self.compact_watchers_after_reduce {
+            self.compact_deleted_watchers();
+        }
         self.maybe_garbage_collect();
         self.stats.reduce_db_time_ns += elapsed_ns(reduce_start);
         self.maybe_check_invariants("reduce_db");
@@ -3288,6 +3522,8 @@ impl Solver {
         self.stats.preprocess_time_ns += preprocess_ns;
         self.reset_learned_budget_after_preprocess();
         self.maybe_check_invariants("preprocess");
+        self.eager_detach_watchers = parse_bool_env("SAT_EAGER_DETACH_WATCHERS", false);
+        self.enable_static_binary_implications_if_requested();
         if env::var_os("SAT_TRACE_PREPROCESS").is_some() {
             eprintln!(
                 "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} root_assigns={} deleted_clauses={} deleted_words={} shrunk_words={} gc={} gc_copied_words={} gc_reclaimed_words={} gc_ms={:.3} proof_clauses={} proof_bytes={} reduce_db_limit={}",
