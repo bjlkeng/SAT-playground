@@ -1139,6 +1139,22 @@ Why this early:
   transitive reduction, binary equivalence detection, duplicate-binary cleanup, and faster BVE
   special cases.
 
+Status:
+
+- Representation setup landed as the first slice: solver 11 now keeps a compact binary-clause
+  mirror table with `lit0`, `lit1`, and packed metadata, plus live original/learned binary id
+  lists and an arena-offset bridge. Existing arena clauses and generic watchers still drive
+  propagation.
+- Direct per-literal binary implication lists were intentionally left for the propagation split.
+  An earlier trial maintained unused implication lists and showed avoidable overhead on the profile
+  bench.
+- Validation: `cargo test` passed 56 tests; normal smoke passed 9/9; invariant smoke with
+  `SAT_CHECK_INVARIANTS=1` passed 9/9.
+- Profiling overhead check on `benchmarks/profiling`, timeout 120s, memory 16 GB:
+  pre-change log `log/bench-11-kissat-innovations-2026-05-09-22-21-25`, PAR-2 `1101.501`,
+  solved 7/11; representation log `log/bench-11-kissat-innovations-2026-05-09-22-56-02`, PAR-2
+  `1101.544`, solved 7/11. Same solved/timeout split; PAR-2 delta was `+0.043s`.
+
 Unlocks:
 
 - M. Full lucky probing

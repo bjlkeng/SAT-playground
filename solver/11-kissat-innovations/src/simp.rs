@@ -203,6 +203,7 @@ impl Solver {
         self.mark_occurs_dirty_for_clause(clause_idx, touched, touched_flags);
         let clause_len = self.clause_len(clause_idx);
         self.detach_clause_strict(clause_idx);
+        self.remove_binary_clause_for_arena(clause_idx);
         self.original_literals = self.original_literals.saturating_sub(clause_len);
         self.deleted_clause_words += self.clause_word_len(clause_idx);
         self.stats.deleted_words += self.clause_word_len(clause_idx) as u64;
@@ -362,6 +363,7 @@ impl Solver {
         }
 
         self.attach_clause(clause_idx, false);
+        self.register_binary_clause_if_needed(clause_idx);
         self.enqueue_subsumption_clause(queue, clause_idx);
 
         true
@@ -475,6 +477,7 @@ impl Solver {
         self.original_clause_ids.push(clause_idx);
         self.original_literals += normalized.len();
         self.attach_clause(clause_idx, false);
+        self.register_binary_clause_if_needed(clause_idx);
 
         if self.use_simplification {
             if !self.clause_abstraction.is_empty() {

@@ -40,10 +40,13 @@ const CLAUSE_TIER_MASK: u32 = 0b11 << CLAUSE_TIER_SHIFT;
 const CLAUSE_REASON_FLAG: u32 = 1 << 26;
 const CLAUSE_SHRUNKEN_FLAG: u32 = 1 << 27;
 const CLAUSE_VIVIFY_FLAG: u32 = 1 << 28;
+const BINARY_LEARNT_FLAG: u32 = 1 << 29;
+const BINARY_DELETED_FLAG: u32 = 1 << 30;
 const CLAUSE_MAX_USED: u8 = u8::MAX;
 const GLUE_TIER1_LIMIT: u16 = 2;
 const GLUE_TIER2_LIMIT: u16 = 6;
 const GLUE_HISTOGRAM_BUCKETS: usize = 8;
+const NO_BINARY_CLAUSE: u32 = u32::MAX;
 const DEFAULT_BVE_GROW: isize = 0;
 const DEFAULT_BVE_CLAUSE_LIMIT: isize = 20;
 const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
@@ -52,6 +55,13 @@ const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
 struct Watcher {
     clause_idx: u32,
     blocker: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BinaryClause {
+    lit0: i32,
+    lit1: i32,
+    metadata: u32,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -366,6 +376,14 @@ struct Solver {
     watchers: Vec<Vec<Watcher>>,
     /// scratch buffer reused when rebuilding a watch list during propagation
     watch_scratch: Vec<Watcher>,
+    /// compact mirror of live binary clauses; propagation still uses generic watchers for now
+    binary_clauses: Vec<BinaryClause>,
+    /// live original binary clause ids in `binary_clauses`
+    original_binary_ids: Vec<u32>,
+    /// live learned binary clause ids in `binary_clauses`
+    learned_binary_ids: Vec<u32>,
+    /// arena clause offset to binary-clause id bridge while binary clauses are mirrored in the arena
+    binary_clause_id_by_arena: Vec<u32>,
     /// assignment[v] for variable v (1-based, index 0 unused)
     /// 0 = unassigned, 1 = true, 2 = false
     assignment: Vec<u8>,
@@ -567,6 +585,16 @@ fn pack_clause_metadata(glue: u16, used: u8, tier: u8) -> u32 {
     (glue as u32)
         | ((used as u32) << CLAUSE_USED_SHIFT)
         | (((tier as u32) & 0b11) << CLAUSE_TIER_SHIFT)
+}
+
+#[inline(always)]
+fn binary_metadata_learnt(metadata: u32) -> bool {
+    (metadata & BINARY_LEARNT_FLAG) != 0
+}
+
+#[inline(always)]
+fn binary_metadata_deleted(metadata: u32) -> bool {
+    (metadata & BINARY_DELETED_FLAG) != 0
 }
 
 #[inline(always)]
@@ -776,6 +804,10 @@ impl Solver {
             learned_clause_ids: Vec::new(),
             watchers: vec![Vec::new(); num_vars.saturating_mul(2)],
             watch_scratch: Vec::new(),
+            binary_clauses: Vec::new(),
+            original_binary_ids: Vec::new(),
+            learned_binary_ids: Vec::new(),
+            binary_clause_id_by_arena: Vec::new(),
             assignment: vec![UNASSIGNED; num_vars + 1],
             saved_phase: vec![default_phase; num_vars + 1],
             decision_level: vec![0; num_vars + 1],
@@ -868,6 +900,7 @@ impl Solver {
             self.original_clause_ids.push(clause_idx);
             self.original_literals += clause_len;
             self.attach_clause(clause_idx, true);
+            self.register_binary_clause_if_needed(clause_idx);
         }
     }
 
@@ -956,6 +989,7 @@ impl Solver {
     fn set_clause_metadata(&mut self, clause_idx: usize, metadata: u32) {
         let metadata_idx = self.clause_metadata_idx(clause_idx);
         self.arena[metadata_idx] = metadata;
+        self.sync_binary_clause_metadata(clause_idx);
     }
 
     #[inline(always)]
@@ -1041,6 +1075,109 @@ impl Solver {
     #[inline(always)]
     fn set_clause_vivify_flag(&mut self, clause_idx: usize, enabled: bool) {
         self.set_clause_flag(clause_idx, CLAUSE_VIVIFY_FLAG, enabled);
+    }
+
+    #[inline(always)]
+    fn binary_clause_id_for_arena(&self, clause_idx: usize) -> Option<u32> {
+        self.binary_clause_id_by_arena
+            .get(clause_idx)
+            .copied()
+            .filter(|&binary_id| binary_id != NO_BINARY_CLAUSE)
+    }
+
+    #[inline(always)]
+    fn binary_clause_metadata_for_arena(&self, clause_idx: usize) -> u32 {
+        if self.clause_is_learnt(clause_idx) {
+            self.clause_metadata(clause_idx) | BINARY_LEARNT_FLAG
+        } else {
+            0
+        }
+    }
+
+    #[inline(always)]
+    fn ensure_binary_clause_arena_map_len(&mut self, clause_idx: usize) {
+        if self.binary_clause_id_by_arena.len() <= clause_idx {
+            self.binary_clause_id_by_arena
+                .resize(clause_idx + 1, NO_BINARY_CLAUSE);
+        }
+    }
+
+    fn register_binary_clause_if_needed(&mut self, clause_idx: usize) {
+        if clause_idx >= self.arena.len()
+            || self.clause_is_deleted(clause_idx)
+            || self.clause_len(clause_idx) != 2
+        {
+            return;
+        }
+
+        self.ensure_binary_clause_arena_map_len(clause_idx);
+        let lit0 = self.clause_lit(clause_idx, 0);
+        let lit1 = self.clause_lit(clause_idx, 1);
+        let metadata = self.binary_clause_metadata_for_arena(clause_idx);
+        if let Some(binary_id) = self.binary_clause_id_for_arena(clause_idx) {
+            let binary = &mut self.binary_clauses[binary_id as usize];
+            binary.lit0 = lit0;
+            binary.lit1 = lit1;
+            binary.metadata = metadata;
+            return;
+        }
+
+        let binary_id = self.binary_clauses.len() as u32;
+        self.binary_clause_id_by_arena[clause_idx] = binary_id;
+        self.binary_clauses.push(BinaryClause {
+            lit0,
+            lit1,
+            metadata,
+        });
+        if self.clause_is_learnt(clause_idx) {
+            self.learned_binary_ids.push(binary_id);
+        } else {
+            self.original_binary_ids.push(binary_id);
+        }
+    }
+
+    fn remove_binary_clause_for_arena(&mut self, clause_idx: usize) {
+        let Some(binary_id) = self.binary_clause_id_for_arena(clause_idx) else {
+            return;
+        };
+        self.binary_clause_id_by_arena[clause_idx] = NO_BINARY_CLAUSE;
+        let binary = &mut self.binary_clauses[binary_id as usize];
+        binary.metadata |= BINARY_DELETED_FLAG;
+        let ids = if binary_metadata_learnt(binary.metadata) {
+            &mut self.learned_binary_ids
+        } else {
+            &mut self.original_binary_ids
+        };
+        if let Some(pos) = ids.iter().position(|&id| id == binary_id) {
+            ids.swap_remove(pos);
+        }
+    }
+
+    fn sync_binary_clause_metadata(&mut self, clause_idx: usize) {
+        let Some(binary_id) = self.binary_clause_id_for_arena(clause_idx) else {
+            return;
+        };
+        let metadata = self.binary_clause_metadata_for_arena(clause_idx);
+        let binary = &mut self.binary_clauses[binary_id as usize];
+        binary.metadata = metadata;
+    }
+
+    fn rebuild_binary_representation(&mut self) {
+        self.binary_clauses.clear();
+        self.original_binary_ids.clear();
+        self.learned_binary_ids.clear();
+        self.binary_clause_id_by_arena.clear();
+        self.binary_clause_id_by_arena
+            .resize(self.arena.len(), NO_BINARY_CLAUSE);
+
+        let original_clause_ids = self.original_clause_ids.clone();
+        for clause_idx in original_clause_ids {
+            self.register_binary_clause_if_needed(clause_idx);
+        }
+        let learned_clause_ids = self.learned_clause_ids.clone();
+        for clause_idx in learned_clause_ids {
+            self.register_binary_clause_if_needed(clause_idx);
+        }
     }
 
     #[inline(always)]
@@ -1174,6 +1311,7 @@ impl Solver {
 
         let clause_len = self.clause_len(clause_idx);
         self.detach_clause(clause_idx);
+        self.remove_binary_clause_for_arena(clause_idx);
         if self.clause_is_learnt(clause_idx) {
             self.learned_literals -= clause_len;
         } else {
@@ -1372,6 +1510,7 @@ impl Solver {
             self.learned_clause_ids.len(),
             "{context}: live learned clause count mismatch"
         );
+        self.check_binary_representation(context);
 
         for (watch_index, watch_list) in self.watchers.iter().enumerate() {
             let watched_lit = index_to_lit(watch_index);
@@ -1587,6 +1726,98 @@ impl Solver {
                     && !self.clause_is_deleted(watcher.clause_idx as usize)
             })
             .count()
+    }
+
+    fn binary_clause_matches_arena(&self, binary: BinaryClause, clause_idx: usize) -> bool {
+        let arena0 = self.clause_lit(clause_idx, 0);
+        let arena1 = self.clause_lit(clause_idx, 1);
+        (binary.lit0 == arena0 && binary.lit1 == arena1)
+            || (binary.lit0 == arena1 && binary.lit1 == arena0)
+    }
+
+    fn check_binary_representation(&self, context: &str) {
+        let mut expected_original_binary_count = 0usize;
+        let mut expected_learned_binary_count = 0usize;
+        let mut seen_binary_ids = vec![false; self.binary_clauses.len()];
+        for (&clause_idx, learnt) in self
+            .original_clause_ids
+            .iter()
+            .map(|idx| (idx, false))
+            .chain(self.learned_clause_ids.iter().map(|idx| (idx, true)))
+        {
+            let mapped = self.binary_clause_id_for_arena(clause_idx);
+            if self.clause_len(clause_idx) != 2 {
+                assert!(
+                    mapped.is_none(),
+                    "{context}: non-binary arena clause {clause_idx} has a binary id"
+                );
+                continue;
+            }
+
+            if learnt {
+                expected_learned_binary_count += 1;
+            } else {
+                expected_original_binary_count += 1;
+            }
+            let binary_id = mapped
+                .unwrap_or_else(|| panic!("{context}: binary clause {clause_idx} is unmapped"));
+            let binary = self.binary_clauses[binary_id as usize];
+            assert!(
+                !binary_metadata_deleted(binary.metadata),
+                "{context}: live binary id {binary_id} is marked deleted"
+            );
+            assert_eq!(
+                binary_metadata_learnt(binary.metadata),
+                learnt,
+                "{context}: binary id {binary_id} learnt flag mismatch"
+            );
+            assert!(
+                self.binary_clause_matches_arena(binary, clause_idx),
+                "{context}: binary id {binary_id} literal pair does not match arena clause {clause_idx}"
+            );
+            if learnt {
+                assert_eq!(
+                    binary.metadata & !BINARY_LEARNT_FLAG,
+                    self.clause_metadata(clause_idx),
+                    "{context}: binary id {binary_id} learned metadata is stale"
+                );
+            }
+            seen_binary_ids[binary_id as usize] = true;
+        }
+
+        assert_eq!(
+            self.original_binary_ids.len(),
+            expected_original_binary_count,
+            "{context}: original binary id count mismatch"
+        );
+        assert_eq!(
+            self.learned_binary_ids.len(),
+            expected_learned_binary_count,
+            "{context}: learned binary id count mismatch"
+        );
+
+        for &binary_id in &self.original_binary_ids {
+            let binary = self.binary_clauses[binary_id as usize];
+            assert!(
+                seen_binary_ids[binary_id as usize],
+                "{context}: original binary id {binary_id} is not mapped from a live clause"
+            );
+            assert!(
+                !binary_metadata_learnt(binary.metadata),
+                "{context}: original binary id {binary_id} is marked learned"
+            );
+        }
+        for &binary_id in &self.learned_binary_ids {
+            let binary = self.binary_clauses[binary_id as usize];
+            assert!(
+                seen_binary_ids[binary_id as usize],
+                "{context}: learned binary id {binary_id} is not mapped from a live clause"
+            );
+            assert!(
+                binary_metadata_learnt(binary.metadata),
+                "{context}: learned binary id {binary_id} is not marked learned"
+            );
+        }
     }
 
     fn check_elim_clause_stack(&self, context: &str) {
@@ -2163,6 +2394,7 @@ impl Solver {
         let original_clause_ids = std::mem::take(&mut self.original_clause_ids);
         self.original_clause_ids = self.simplify_clause_list(original_clause_ids);
 
+        self.rebuild_binary_representation();
         self.maybe_garbage_collect();
         self.rebuild_branch_queue();
         self.simplify_assigns = self.root_trail_len;
@@ -2195,6 +2427,7 @@ impl Solver {
         self.learned_literals += clause_len;
         self.record_learned_clause_stats(clause_len, glue);
         self.attach_clause(clause_idx, false);
+        self.register_binary_clause_if_needed(clause_idx);
         clause_idx
     }
 
@@ -2334,6 +2567,7 @@ impl Solver {
             .position(|&learned_clause_idx| learned_clause_idx == clause_idx)
             .expect("deleted learned clause missing from learned-clause list");
         self.learned_clause_ids.swap_remove(learned_pos);
+        self.remove_binary_clause_for_arena(clause_idx);
         self.live_learned_clause_count = self.live_learned_clause_count.saturating_sub(1);
         self.learned_literals -= self.clause_len(clause_idx);
         self.deleted_clause_words += self.clause_word_len(clause_idx);
@@ -2362,6 +2596,7 @@ impl Solver {
                 .any(|&reason| reason.as_clause() == Some(clause_idx)),
             "cannot delete clause {clause_idx} while it is still a live reason"
         );
+        self.remove_binary_clause_for_arena(clause_idx);
         self.live_learned_clause_count = self.live_learned_clause_count.saturating_sub(1);
         self.learned_literals -= self.clause_len(clause_idx);
         self.deleted_clause_words += self.clause_word_len(clause_idx);
@@ -2488,6 +2723,7 @@ impl Solver {
         self.arena = new_arena;
         self.original_clause_ids = new_original_clause_ids;
         self.learned_clause_ids = new_learned_clause_ids;
+        self.rebuild_binary_representation();
         if !self.clause_abstraction.is_empty() {
             self.clause_abstraction.clear();
             self.clause_abstraction.resize(self.arena.len(), 0);
@@ -3369,6 +3605,62 @@ mod tests {
         let binary = ReasonRef::binary(-17);
         assert_eq!(binary.as_binary(), Some(-17));
         assert_eq!(binary.as_clause(), None);
+    }
+
+    #[test]
+    fn test_binary_clause_representation_is_compact() {
+        assert_eq!(std::mem::size_of::<BinaryClause>(), 12);
+    }
+
+    #[test]
+    fn test_binary_representation_tracks_original_and_learned_clauses() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-1, 2, 3]]);
+
+        assert_eq!(s.original_binary_ids.len(), 1);
+        let original_binary_id = s.original_binary_ids[0];
+        let original_binary = s.binary_clauses[original_binary_id as usize];
+        assert_eq!((original_binary.lit0, original_binary.lit1), (1, 2));
+        assert!(!binary_metadata_learnt(original_binary.metadata));
+        assert!(!binary_metadata_deleted(original_binary.metadata));
+
+        let learned_idx = s.add_clause_from_slice_with_glue(&[-2, 3], 2);
+        let learned_binary_id = s.binary_clause_id_for_arena(learned_idx).unwrap();
+        let learned_binary = s.binary_clauses[learned_binary_id as usize];
+        assert_eq!((learned_binary.lit0, learned_binary.lit1), (-2, 3));
+        assert!(binary_metadata_learnt(learned_binary.metadata));
+        assert_eq!(learned_binary.metadata & CLAUSE_GLUE_MASK, 2);
+        assert_eq!(s.learned_binary_ids, vec![learned_binary_id]);
+
+        s.check_binary_representation("test");
+    }
+
+    #[test]
+    fn test_binary_representation_removes_deleted_binary_and_rebuilds_after_gc() {
+        let mut s = make_solver(3, vec![]);
+        let dead = s.add_clause_from_slice_with_glue(&[1, 2], 3);
+        let live = s.add_clause_from_slice_with_glue(&[3, 1], 5);
+        let dead_binary_id = s.binary_clause_id_for_arena(dead).unwrap();
+
+        s.mark_clause_deleted(dead);
+
+        assert!(s.binary_clause_id_for_arena(dead).is_none());
+        assert!(binary_metadata_deleted(
+            s.binary_clauses[dead_binary_id as usize].metadata
+        ));
+        assert_eq!(s.learned_binary_ids.len(), 1);
+
+        s.garbage_collect();
+
+        let relocated_live = s.learned_clause_ids[0];
+        let live_binary_id = s.binary_clause_id_for_arena(relocated_live).unwrap();
+        let live_binary = s.binary_clauses[live_binary_id as usize];
+        assert_eq!(s.clause_slice(relocated_live), &[3, 1]);
+        assert_eq!((live_binary.lit0, live_binary.lit1), (3, 1));
+        assert!(binary_metadata_learnt(live_binary.metadata));
+        assert!(!binary_metadata_deleted(live_binary.metadata));
+        assert_eq!(s.learned_binary_ids, vec![live_binary_id]);
+        assert_ne!(live, relocated_live);
+        s.check_binary_representation("test");
     }
 
     #[test]
