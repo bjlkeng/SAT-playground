@@ -116,6 +116,103 @@ enum StaticBinaryMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MaintenanceAction {
+    Restart,
+    RootSimplify,
+    ReduceDb,
+    Reorder,
+    Rephase,
+    Probe,
+    Eliminate,
+}
+
+impl MaintenanceAction {
+    fn name(self) -> &'static str {
+        match self {
+            MaintenanceAction::Restart => "restart",
+            MaintenanceAction::RootSimplify => "root-simplify",
+            MaintenanceAction::ReduceDb => "reduce-db",
+            MaintenanceAction::Reorder => "reorder",
+            MaintenanceAction::Rephase => "rephase",
+            MaintenanceAction::Probe => "probe",
+            MaintenanceAction::Eliminate => "eliminate",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MaintenanceOutcome {
+    Continue,
+    Propagate,
+    Unsat,
+}
+
+#[derive(Clone, Debug)]
+struct MaintenanceScheduler {
+    reorder_interval: u64,
+    rephase_interval: u64,
+    probe_interval: u64,
+    eliminate_interval: u64,
+    next_reorder: u64,
+    next_rephase: u64,
+    next_probe: u64,
+    next_eliminate: u64,
+}
+
+impl MaintenanceScheduler {
+    fn from_env() -> Self {
+        let reorder_interval = parse_optional_usize_env("SAT_MAINT_REORDER_INTERVAL") as u64;
+        let rephase_interval = parse_optional_usize_env("SAT_MAINT_REPHASE_INTERVAL") as u64;
+        let probe_interval = parse_optional_usize_env("SAT_MAINT_PROBE_INTERVAL") as u64;
+        let eliminate_interval = parse_optional_usize_env("SAT_MAINT_ELIMINATE_INTERVAL") as u64;
+        Self {
+            reorder_interval,
+            rephase_interval,
+            probe_interval,
+            eliminate_interval,
+            next_reorder: reorder_interval,
+            next_rephase: rephase_interval,
+            next_probe: probe_interval,
+            next_eliminate: eliminate_interval,
+        }
+    }
+
+    fn next_root_action(&self, conflicts: u64) -> Option<MaintenanceAction> {
+        if self.reorder_interval > 0 && conflicts >= self.next_reorder {
+            Some(MaintenanceAction::Reorder)
+        } else if self.rephase_interval > 0 && conflicts >= self.next_rephase {
+            Some(MaintenanceAction::Rephase)
+        } else if self.probe_interval > 0 && conflicts >= self.next_probe {
+            Some(MaintenanceAction::Probe)
+        } else if self.eliminate_interval > 0 && conflicts >= self.next_eliminate {
+            Some(MaintenanceAction::Eliminate)
+        } else {
+            None
+        }
+    }
+
+    fn mark_root_action(&mut self, action: MaintenanceAction, conflicts: u64) {
+        match action {
+            MaintenanceAction::Reorder => {
+                self.next_reorder = conflicts.saturating_add(self.reorder_interval.max(1));
+            }
+            MaintenanceAction::Rephase => {
+                self.next_rephase = conflicts.saturating_add(self.rephase_interval.max(1));
+            }
+            MaintenanceAction::Probe => {
+                self.next_probe = conflicts.saturating_add(self.probe_interval.max(1));
+            }
+            MaintenanceAction::Eliminate => {
+                self.next_eliminate = conflicts.saturating_add(self.eliminate_interval.max(1));
+            }
+            MaintenanceAction::Restart
+            | MaintenanceAction::RootSimplify
+            | MaintenanceAction::ReduceDb => {}
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ReasonRef(usize);
 
 const REASON_TAG_BITS: usize = 2;
@@ -217,6 +314,16 @@ struct SolverStats {
     gc_time_ns: u64,
     reduce_db_time_ns: u64,
     simplify_time_ns: u64,
+    maintenance_checks: u64,
+    maintenance_actions: u64,
+    maintenance_restarts: u64,
+    maintenance_root_simplifies: u64,
+    maintenance_reductions: u64,
+    maintenance_noops: u64,
+    maintenance_root_entries: u64,
+    maintenance_root_backtracks: u64,
+    maintenance_root_conflicts: u64,
+    maintenance_time_ns: u64,
     preprocess_eliminated_vars: u64,
     preprocess_resolvents: u64,
     preprocess_subsumed_clauses: u64,
@@ -469,6 +576,8 @@ struct Solver {
     restart_conflict_limit: usize,
     /// whether a restart should be applied before the next branch
     restart_pending: bool,
+    /// central maintenance scheduler for root-only Kissat-style hooks
+    maintenance_scheduler: MaintenanceScheduler,
     /// learned-clause budget threshold for running a database reduction pass
     reduce_db_limit: usize,
     /// resize learned-clause budget after preprocessing, matching MiniSat's solve-time setup
@@ -907,6 +1016,7 @@ impl Solver {
             restart_luby_index: 1,
             restart_conflict_limit: 100,
             restart_pending: false,
+            maintenance_scheduler: MaintenanceScheduler::from_env(),
             reduce_db_limit: ((original_clause_count as f64) * LEARNTSIZE_FACTOR) as usize,
             reset_reduce_db_after_preprocess: true,
             learntsize_adjust_cnt: LEARNTSIZE_ADJUST_START_CONFL,
@@ -2816,6 +2926,108 @@ impl Solver {
             .saturating_mul(Self::luby_value(self.restart_luby_index));
     }
 
+    fn record_maintenance_action(&mut self, action: MaintenanceAction) {
+        self.stats.maintenance_actions += 1;
+        match action {
+            MaintenanceAction::Restart => self.stats.maintenance_restarts += 1,
+            MaintenanceAction::RootSimplify => self.stats.maintenance_root_simplifies += 1,
+            MaintenanceAction::ReduceDb => self.stats.maintenance_reductions += 1,
+            MaintenanceAction::Reorder
+            | MaintenanceAction::Rephase
+            | MaintenanceAction::Probe
+            | MaintenanceAction::Eliminate => self.stats.maintenance_noops += 1,
+        }
+    }
+
+    fn should_reduce_db_now(&self) -> bool {
+        self.reduce_db_enabled()
+            && self
+                .live_learned_clause_count
+                .saturating_sub(self.trail.len())
+                >= self.reduce_db_limit
+    }
+
+    fn return_to_root_for_maintenance<F>(
+        &mut self,
+        action: MaintenanceAction,
+        run_action: F,
+    ) -> MaintenanceOutcome
+    where
+        F: FnOnce(&mut Self) -> bool,
+    {
+        self.stats.maintenance_root_entries += 1;
+        if self.current_level() > 0 {
+            self.stats.maintenance_root_backtracks += 1;
+            self.backtrack(0);
+        }
+
+        if self.propagate().is_some() {
+            self.stats.maintenance_root_conflicts += 1;
+            return MaintenanceOutcome::Unsat;
+        }
+
+        let ok = run_action(self);
+        self.maybe_check_invariants(action.name());
+        if ok {
+            MaintenanceOutcome::Continue
+        } else {
+            MaintenanceOutcome::Unsat
+        }
+    }
+
+    fn run_root_noop_maintenance(&mut self, _action: MaintenanceAction) -> bool {
+        true
+    }
+
+    fn run_search_maintenance(&mut self) -> MaintenanceOutcome {
+        let maintenance_start = Instant::now();
+        self.stats.maintenance_checks += 1;
+
+        if self.restart_pending {
+            self.record_maintenance_action(MaintenanceAction::Restart);
+            if self.perform_restart_if_pending() {
+                self.stats.maintenance_time_ns += elapsed_ns(maintenance_start);
+                return MaintenanceOutcome::Propagate;
+            }
+        }
+
+        if self.current_level() == 0 {
+            self.record_maintenance_action(MaintenanceAction::RootSimplify);
+            let outcome = self
+                .return_to_root_for_maintenance(MaintenanceAction::RootSimplify, |solver| {
+                    solver.simplify()
+                });
+            if outcome == MaintenanceOutcome::Unsat {
+                self.stats.maintenance_time_ns += elapsed_ns(maintenance_start);
+                return outcome;
+            }
+        }
+
+        if self.should_reduce_db_now() {
+            self.record_maintenance_action(MaintenanceAction::ReduceDb);
+            self.reduce_db();
+        }
+
+        if let Some(action) = self
+            .maintenance_scheduler
+            .next_root_action(self.stats.conflicts)
+        {
+            self.record_maintenance_action(action);
+            let outcome = self.return_to_root_for_maintenance(action, |solver| {
+                solver.run_root_noop_maintenance(action)
+            });
+            self.maintenance_scheduler
+                .mark_root_action(action, self.stats.conflicts);
+            if outcome == MaintenanceOutcome::Unsat {
+                self.stats.maintenance_time_ns += elapsed_ns(maintenance_start);
+                return outcome;
+            }
+        }
+
+        self.stats.maintenance_time_ns += elapsed_ns(maintenance_start);
+        MaintenanceOutcome::Continue
+    }
+
     fn pick_branch_lit(&mut self) -> Option<i32> {
         while let Some(var) = self.branch_heap_pop_best() {
             if !self.decision_var[var] || self.assignment[var] != UNASSIGNED {
@@ -3604,7 +3816,7 @@ impl Solver {
                         self.stats.search_time_ns += elapsed_ns(search_start);
                         if trace_search_interval > 0 {
                             eprintln!(
-                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} deleted_clauses={} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} proof_clauses={} proof_bytes={}",
+                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} deleted_clauses={} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                 self.stats.search_time_ns as f64 / 1e9,
                                 self.stats.conflicts,
                                 self.stats.decisions,
@@ -3623,6 +3835,8 @@ impl Solver {
                                 self.stats.simplify_time_ns as f64 / 1e6,
                                 self.stats.reduce_db_calls,
                                 self.stats.reduce_db_time_ns as f64 / 1e6,
+                                self.stats.maintenance_actions,
+                                self.stats.maintenance_time_ns as f64 / 1e6,
                                 proof_log.recorded_clauses,
                                 proof_log.recorded_bytes,
                             );
@@ -3633,7 +3847,7 @@ impl Solver {
                     self.stats.conflicts += 1;
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
-                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} reduce_db={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
+                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} reduce_db={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
                             search_start.elapsed().as_secs_f64(),
                             self.stats.conflicts,
                             self.stats.decisions,
@@ -3650,6 +3864,7 @@ impl Solver {
                             self.stats.learned_clause_glue_max,
                             self.stats.last_learned_clause_glue,
                             self.stats.reduce_db_calls,
+                            self.stats.maintenance_actions,
                             self.original_clause_ids.len(),
                             self.original_literals,
                             self.stats.deleted_words,
@@ -3703,22 +3918,13 @@ impl Solver {
                     conflict = self.propagate();
                 }
                 None => {
-                    if self.perform_restart_if_pending() {
-                        conflict = self.propagate();
-                        continue;
-                    }
-
-                    if self.current_level() == 0 && !self.simplify() {
-                        return false;
-                    }
-
-                    if self.reduce_db_enabled()
-                        && self
-                            .live_learned_clause_count
-                            .saturating_sub(self.trail.len())
-                            >= self.reduce_db_limit
-                    {
-                        self.reduce_db();
+                    match self.run_search_maintenance() {
+                        MaintenanceOutcome::Continue => {}
+                        MaintenanceOutcome::Propagate => {
+                            conflict = self.propagate();
+                            continue;
+                        }
+                        MaintenanceOutcome::Unsat => return false,
                     }
 
                     match self.pick_branch_lit() {
@@ -3731,7 +3937,7 @@ impl Solver {
                             self.stats.search_time_ns += elapsed_ns(search_start);
                             if trace_search_interval > 0 {
                                 eprintln!(
-                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} deleted_clauses={} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} proof_clauses={} proof_bytes={}",
+                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} deleted_clauses={} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                     self.stats.search_time_ns as f64 / 1e9,
                                     self.stats.conflicts,
                                     self.stats.decisions,
@@ -3750,6 +3956,8 @@ impl Solver {
                                     self.stats.simplify_time_ns as f64 / 1e6,
                                     self.stats.reduce_db_calls,
                                     self.stats.reduce_db_time_ns as f64 / 1e6,
+                                    self.stats.maintenance_actions,
+                                    self.stats.maintenance_time_ns as f64 / 1e6,
                                     proof_log.recorded_clauses,
                                     proof_log.recorded_bytes,
                                 );
@@ -5250,5 +5458,54 @@ mod tests {
         assert_eq!(s.assignment[3], UNASSIGNED);
         assert_eq!(s.assignment[4], UNASSIGNED);
         assert!(!s.restart_pending);
+    }
+
+    #[test]
+    fn test_root_maintenance_backtracks_and_preserves_root_assignments() {
+        let mut s = make_solver(2, vec![vec![1]]);
+        assert_eq!(s.assignment[1], TRUE);
+        assert_eq!(s.root_trail_len, 1);
+
+        s.decide(-2);
+        assert_eq!(s.current_level(), 1);
+        assert_eq!(s.assignment[2], FALSE);
+
+        let outcome = s.return_to_root_for_maintenance(MaintenanceAction::Probe, |_solver| true);
+
+        assert_eq!(outcome, MaintenanceOutcome::Continue);
+        assert_eq!(s.current_level(), 0);
+        assert_eq!(s.assignment[1], TRUE);
+        assert_eq!(s.assignment[2], UNASSIGNED);
+        assert_eq!(s.root_trail_len, 1);
+        assert_eq!(s.stats.maintenance_root_entries, 1);
+        assert_eq!(s.stats.maintenance_root_backtracks, 1);
+    }
+
+    #[test]
+    fn test_search_maintenance_applies_restart_before_root_actions() {
+        let mut s = make_solver(2, vec![vec![1, 2]]);
+        s.decide(1);
+        s.restart_pending = true;
+
+        let outcome = s.run_search_maintenance();
+
+        assert_eq!(outcome, MaintenanceOutcome::Propagate);
+        assert_eq!(s.current_level(), 0);
+        assert!(!s.restart_pending);
+        assert_eq!(s.stats.restarts, 1);
+        assert_eq!(s.stats.maintenance_restarts, 1);
+        assert_eq!(s.stats.maintenance_root_simplifies, 0);
+    }
+
+    #[test]
+    fn test_search_maintenance_runs_root_simplify_when_at_root() {
+        let mut s = make_solver(2, vec![vec![1, 2]]);
+
+        let outcome = s.run_search_maintenance();
+
+        assert_eq!(outcome, MaintenanceOutcome::Continue);
+        assert_eq!(s.stats.maintenance_checks, 1);
+        assert_eq!(s.stats.maintenance_root_simplifies, 1);
+        assert_eq!(s.stats.simplifications, 1);
     }
 }

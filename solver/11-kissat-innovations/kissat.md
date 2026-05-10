@@ -1383,6 +1383,25 @@ Unlocks:
 - T. Vivification
 - U. Equivalence substitution
 
+Status:
+
+- Initial scaffolding landed on 2026-05-10 without enabling any real new inprocessing action.
+- The no-conflict search branch now goes through `run_search_maintenance`, preserving the existing
+  order: pending Luby restart, root simplify, learned-clause reduction, then decision.
+- Added `return_to_root_for_maintenance` for future root-only actions. It backtracks to level 0,
+  propagates root assignments, detects root inconsistency, runs one action, and resumes search.
+- Added disabled-by-default diagnostic intervals for root-level reorder, rephase, probe, and
+  eliminate hooks (`SAT_MAINT_REORDER_INTERVAL`, `SAT_MAINT_REPHASE_INTERVAL`,
+  `SAT_MAINT_PROBE_INTERVAL`, `SAT_MAINT_ELIMINATE_INTERVAL`). These hooks are currently no-ops and
+  exist to validate the scheduler/transition path before real algorithms are attached.
+- Added maintenance counters and trace fields for action counts and elapsed maintenance time.
+- Validation: `cargo test` passed 64 tests; smoke passed 9/9 with DRAT checking, log
+  `log/2026-05-10-17-20-27`.
+- Fresh behavior check on `benchmarks/profiling`, timeout 120s, memory 16 GB: pre-change baseline
+  `log/bench-11-kissat-innovations-2026-05-10-17-01-46` solved 5/11 with PAR-2 `1561.642`;
+  post-change `log/bench-11-kissat-innovations-2026-05-10-17-20-43` solved 5/11 with PAR-2
+  `1559.767`. Same solved/timeout split; the measured delta is noise-level.
+
 ### Phase 4. Dense/sparse simplification mode and rewrite boundary
 
 Primary roadmap item:

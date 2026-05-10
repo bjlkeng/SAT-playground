@@ -22,10 +22,13 @@ What is present:
 - aggressive binary-first propagation, with arena binary clauses kept for proof/conflict material
 - production auto-enabled static original-binary implication segments for binary-heavy formulas;
   use `SAT_BINARY_STATIC_SEGMENTS=off` to disable or `on` to force them
+- Phase 3 root-maintenance scaffolding: a central scheduler, a proof-safe
+  `return_to_root_for_maintenance` transition, and diagnostic no-op hooks for future reorder,
+  rephase, probe, and eliminate passes
 
 What is intentionally not present yet:
 
-- no full Kissat search policy, inprocessing scheduler, probing, or rephasing yet
+- no full Kissat search policy, real mid-search inprocessing pass, probing, or rephasing yet
 - no separate MiniSat `simp` port design document is copied forward
 
 ## Direction
@@ -97,3 +100,22 @@ Results:
 - fixed-window perf checks are recorded in `kissat.md`; high-binary Velev enabled static segments
   automatically and reached the same 200k-conflict trace about 8% faster, while mixed/no-binary
   guard instances stayed disabled
+
+Root-maintenance scheduler validation on 2026-05-10:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 64 passed
+- smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
+- smoke log: `log/2026-05-10-17-20-27`
+- fresh pre-change profiling baseline: solved 5/11, PAR-2 `1561.642`, log
+  `log/bench-11-kissat-innovations-2026-05-10-17-01-46`
+- post-change profiling run: solved 5/11, PAR-2 `1559.767`, log
+  `log/bench-11-kissat-innovations-2026-05-10-17-20-43`
+- same solved/timeout split; per-instance deltas were small and consistent with run-to-run noise
