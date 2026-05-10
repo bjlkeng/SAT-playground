@@ -363,7 +363,6 @@ impl Solver {
         }
 
         self.attach_clause(clause_idx, false);
-        self.register_binary_clause_if_needed(clause_idx);
         self.enqueue_subsumption_clause(queue, clause_idx);
 
         true
@@ -477,7 +476,6 @@ impl Solver {
         self.original_clause_ids.push(clause_idx);
         self.original_literals += normalized.len();
         self.attach_clause(clause_idx, false);
-        self.register_binary_clause_if_needed(clause_idx);
 
         if self.use_simplification {
             if !self.clause_abstraction.is_empty() {

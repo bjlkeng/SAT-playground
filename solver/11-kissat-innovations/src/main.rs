@@ -58,6 +58,13 @@ struct Watcher {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BinaryImplication {
+    implied_lit: i32,
+    clause_idx: u32,
+    binary_id: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BinaryClause {
     lit0: i32,
     lit1: i32,
@@ -83,6 +90,13 @@ enum InitialClauseMode {
 enum BranchMode {
     Minisat,
     Occurrence,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BinaryPropagationMode {
+    Generic,
+    WatcherFast,
+    Aggressive,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -376,8 +390,10 @@ struct Solver {
     watchers: Vec<Vec<Watcher>>,
     /// scratch buffer reused when rebuilding a watch list during propagation
     watch_scratch: Vec<Watcher>,
-    /// compact mirror of live binary clauses; propagation still uses generic watchers for now
+    /// compact mirror of live binary clauses; arena clauses remain the proof/reason source
     binary_clauses: Vec<BinaryClause>,
+    /// direct binary implication watches keyed by the falsified literal
+    binary_implications: Vec<Vec<BinaryImplication>>,
     /// live original binary clause ids in `binary_clauses`
     original_binary_ids: Vec<u32>,
     /// live learned binary clause ids in `binary_clauses`
@@ -498,6 +514,8 @@ struct Solver {
     ccmin_mode: u8,
     /// compatibility fallback for the older solver-10 conflict analyzer
     use_resolved_conflict_analysis: bool,
+    /// binary propagation representation; direct implication mode remains experimental
+    binary_propagation_mode: BinaryPropagationMode,
     /// expensive solver consistency checks, enabled with SAT_CHECK_INVARIANTS
     check_invariants: bool,
     stats: SolverStats,
@@ -646,8 +664,14 @@ fn basic_lit_redundant(
     if reason[var].is_none() {
         return false;
     }
-    let reason_idx = reason[var].clause_idx();
+    if let Some(q) = reason[var].as_binary() {
+        let q_var = q.unsigned_abs() as usize;
+        return decision_level[q_var] == 0
+            || state[q_var] == REDUNDANT_SOURCE
+            || state[q_var] == REDUNDANT_REMOVABLE;
+    }
 
+    let reason_idx = reason[var].clause_idx();
     let clause_len = clause_len_in_arena(arena, reason_idx);
     for lit_pos in 1..clause_len {
         let q = clause_lit_in_arena(arena, reason_idx, lit_pos);
@@ -680,13 +704,27 @@ fn lit_redundant(
     debug_assert!(!reason[lit.unsigned_abs() as usize].is_none());
 
     stack.clear();
-    let mut clause_idx = reason[lit.unsigned_abs() as usize].clause_idx();
     let mut lit_pos = 1usize;
 
     loop {
-        let clause_len = clause_len_in_arena(arena, clause_idx);
-        if lit_pos < clause_len {
-            let parent = clause_lit_in_arena(arena, clause_idx, lit_pos);
+        let reason_ref = reason[lit.unsigned_abs() as usize];
+        let parent = if let Some(binary_lit) = reason_ref.as_binary() {
+            if lit_pos < 2 {
+                Some(binary_lit)
+            } else {
+                None
+            }
+        } else {
+            let clause_idx = reason_ref.clause_idx();
+            let clause_len = clause_len_in_arena(arena, clause_idx);
+            if lit_pos < clause_len {
+                Some(clause_lit_in_arena(arena, clause_idx, lit_pos))
+            } else {
+                None
+            }
+        };
+
+        if let Some(parent) = parent {
             if parent == lit {
                 lit_pos += 1;
                 continue;
@@ -725,7 +763,6 @@ fn lit_redundant(
                 "redundancy DFS exceeded variable count while checking literal {lit}"
             );
             lit = parent;
-            clause_idx = reason[parent_var].clause_idx();
             lit_pos = 1;
             continue;
         }
@@ -738,7 +775,6 @@ fn lit_redundant(
 
         if let Some((resume_pos, resume_lit)) = stack.pop() {
             lit = resume_lit;
-            clause_idx = reason[lit.unsigned_abs() as usize].clause_idx();
             lit_pos = resume_pos + 1;
         } else {
             return true;
@@ -768,6 +804,14 @@ fn index_to_lit(index: usize) -> i32 {
 
 impl Solver {
     fn new(num_vars: usize, clauses: Vec<Vec<i32>>) -> Self {
+        Self::new_with_binary_propagation_mode(num_vars, clauses, parse_binary_propagation_mode())
+    }
+
+    fn new_with_binary_propagation_mode(
+        num_vars: usize,
+        clauses: Vec<Vec<i32>>,
+        binary_propagation_mode: BinaryPropagationMode,
+    ) -> Self {
         let original_clause_count = clauses.len();
         let branch_mode = parse_branch_mode();
         let mut occurrence_count = vec![0usize; num_vars + 1];
@@ -805,6 +849,7 @@ impl Solver {
             watchers: vec![Vec::new(); num_vars.saturating_mul(2)],
             watch_scratch: Vec::new(),
             binary_clauses: Vec::new(),
+            binary_implications: vec![Vec::new(); num_vars.saturating_mul(2)],
             original_binary_ids: Vec::new(),
             learned_binary_ids: Vec::new(),
             binary_clause_id_by_arena: Vec::new(),
@@ -869,6 +914,7 @@ impl Solver {
             scratch_glue_stamp: 0,
             ccmin_mode: CCMIN_DEEP,
             use_resolved_conflict_analysis: false,
+            binary_propagation_mode,
             check_invariants: parse_bool_env("SAT_CHECK_INVARIANTS", false),
             stats: SolverStats::default(),
         };
@@ -900,7 +946,6 @@ impl Solver {
             self.original_clause_ids.push(clause_idx);
             self.original_literals += clause_len;
             self.attach_clause(clause_idx, true);
-            self.register_binary_clause_if_needed(clause_idx);
         }
     }
 
@@ -1115,6 +1160,10 @@ impl Solver {
         let lit1 = self.clause_lit(clause_idx, 1);
         let metadata = self.binary_clause_metadata_for_arena(clause_idx);
         if let Some(binary_id) = self.binary_clause_id_for_arena(clause_idx) {
+            debug_assert!(
+                self.binary_clause_matches_arena(self.binary_clauses[binary_id as usize], clause_idx),
+                "registered binary clause {clause_idx} changed literals without rebuilding implications"
+            );
             let binary = &mut self.binary_clauses[binary_id as usize];
             binary.lit0 = lit0;
             binary.lit1 = lit1;
@@ -1129,11 +1178,31 @@ impl Solver {
             lit1,
             metadata,
         });
+        self.attach_binary_implications(clause_idx, binary_id);
         if self.clause_is_learnt(clause_idx) {
             self.learned_binary_ids.push(binary_id);
         } else {
             self.original_binary_ids.push(binary_id);
         }
+    }
+
+    fn attach_binary_implications(&mut self, clause_idx: usize, binary_id: u32) {
+        debug_assert_eq!(self.clause_len(clause_idx), 2);
+        let lit0 = self.clause_lit(clause_idx, 0);
+        let lit1 = self.clause_lit(clause_idx, 1);
+        let clause_idx = clause_idx as u32;
+        let lit0_idx = self.lit_index(lit0);
+        let lit1_idx = self.lit_index(lit1);
+        self.binary_implications[lit0_idx].push(BinaryImplication {
+            implied_lit: lit1,
+            clause_idx,
+            binary_id,
+        });
+        self.binary_implications[lit1_idx].push(BinaryImplication {
+            implied_lit: lit0,
+            clause_idx,
+            binary_id,
+        });
     }
 
     fn remove_binary_clause_for_arena(&mut self, clause_idx: usize) {
@@ -1164,6 +1233,9 @@ impl Solver {
 
     fn rebuild_binary_representation(&mut self) {
         self.binary_clauses.clear();
+        for implications in &mut self.binary_implications {
+            implications.clear();
+        }
         self.original_binary_ids.clear();
         self.learned_binary_ids.clear();
         self.binary_clause_id_by_arena.clear();
@@ -1462,10 +1534,23 @@ impl Solver {
             if reason_ref.is_none() || reason_ref.is_unit() {
                 continue;
             }
-            assert!(
-                reason_ref.as_binary().is_none(),
-                "{context}: binary reason appeared before binary reason support"
-            );
+            let assigned_lit = if self.assignment[var] == TRUE {
+                var as i32
+            } else {
+                -(var as i32)
+            };
+            if let Some(binary_lit) = reason_ref.as_binary() {
+                assert_ne!(
+                    assigned_lit, binary_lit,
+                    "{context}: binary reason for {assigned_lit} repeats assigned literal"
+                );
+                assert_eq!(
+                    self.lit_value(binary_lit),
+                    FALSE,
+                    "{context}: binary reason literal {binary_lit} for {assigned_lit} is not false"
+                );
+                continue;
+            }
             let reason_idx = reason_ref.clause_idx();
             assert!(
                 reason_idx < self.arena.len(),
@@ -1475,11 +1560,6 @@ impl Solver {
                 !self.clause_is_deleted(reason_idx),
                 "{context}: variable {var} uses deleted reason clause {reason_idx}"
             );
-            let assigned_lit = if self.assignment[var] == TRUE {
-                var as i32
-            } else {
-                -(var as i32)
-            };
             assert!(
                 self.clause_slice(reason_idx).contains(&assigned_lit),
                 "{context}: reason clause {reason_idx} does not contain assigned literal {assigned_lit}"
@@ -1566,7 +1646,18 @@ impl Solver {
             } else {
                 let second = self.clause_lit(clause_idx, 1);
                 let second_watch_count = self.live_watch_count(second, clause_idx);
-                if first == second {
+                if self.binary_propagation_mode == BinaryPropagationMode::Aggressive
+                    && clause_len == 2
+                {
+                    assert_eq!(
+                        first_watch_count, 0,
+                        "{context}: aggressive binary clause {clause_idx} has a normal first watch"
+                    );
+                    assert_eq!(
+                        second_watch_count, 0,
+                        "{context}: aggressive binary clause {clause_idx} has a normal second watch"
+                    );
+                } else if first == second {
                     assert_eq!(
                         first_watch_count, 2,
                         "{context}: duplicate-watch clause {clause_idx} watch count mismatch"
@@ -1728,6 +1819,25 @@ impl Solver {
             .count()
     }
 
+    fn live_binary_implication_count(
+        &self,
+        false_lit: i32,
+        implied_lit: i32,
+        clause_idx: usize,
+    ) -> usize {
+        self.binary_implications[self.lit_index(false_lit)]
+            .iter()
+            .filter(|implication| {
+                let implication_clause_idx = implication.clause_idx as usize;
+                implication_clause_idx == clause_idx
+                    && implication.implied_lit == implied_lit
+                    && implication_clause_idx < self.arena.len()
+                    && !self.clause_is_deleted(implication_clause_idx)
+                    && self.clause_len(implication_clause_idx) == 2
+            })
+            .count()
+    }
+
     fn binary_clause_matches_arena(&self, binary: BinaryClause, clause_idx: usize) -> bool {
         let arena0 = self.clause_lit(clause_idx, 0);
         let arena1 = self.clause_lit(clause_idx, 1);
@@ -1774,6 +1884,16 @@ impl Solver {
             assert!(
                 self.binary_clause_matches_arena(binary, clause_idx),
                 "{context}: binary id {binary_id} literal pair does not match arena clause {clause_idx}"
+            );
+            assert_eq!(
+                self.live_binary_implication_count(binary.lit0, binary.lit1, clause_idx),
+                1,
+                "{context}: binary clause {clause_idx} has wrong implication count for first literal"
+            );
+            assert_eq!(
+                self.live_binary_implication_count(binary.lit1, binary.lit0, clause_idx),
+                1,
+                "{context}: binary clause {clause_idx} has wrong implication count for second literal"
             );
             if learnt {
                 assert_eq!(
@@ -1983,10 +2103,28 @@ impl Solver {
         if self.clause_is_deleted(clause_idx) || clause_len == 0 {
             return;
         }
+        if self.binary_propagation_mode == BinaryPropagationMode::Aggressive && clause_len == 2 {
+            return;
+        }
         self.detach_clause_watcher_strict(self.clause_lit(clause_idx, 0), clause_idx);
         if clause_len > 1 {
             self.detach_clause_watcher_strict(self.clause_lit(clause_idx, 1), clause_idx);
         }
+    }
+
+    fn attach_binary_watchers(&mut self, clause_idx: usize) {
+        let first = self.clause_lit(clause_idx, 0);
+        let second = self.clause_lit(clause_idx, 1);
+        let first_watch_idx = self.lit_index(first);
+        let second_watch_idx = self.lit_index(second);
+        self.watchers[first_watch_idx].push(Watcher {
+            clause_idx: clause_idx as u32,
+            blocker: second,
+        });
+        self.watchers[second_watch_idx].push(Watcher {
+            clause_idx: clause_idx as u32,
+            blocker: first,
+        });
     }
 
     fn attach_clause(&mut self, clause_idx: usize, track_root_unit: bool) {
@@ -2007,6 +2145,12 @@ impl Solver {
                 });
                 if track_root_unit {
                     self.root_unit_clauses.push(clause_idx);
+                }
+            }
+            2 => {
+                self.register_binary_clause_if_needed(clause_idx);
+                if self.binary_propagation_mode != BinaryPropagationMode::Aggressive {
+                    self.attach_binary_watchers(clause_idx);
                 }
             }
             _ => {
@@ -2076,12 +2220,57 @@ impl Solver {
         true
     }
 
+    fn propagate_binary_implications(&mut self, false_lit: i32) -> Option<usize> {
+        let watch_idx = self.lit_index(false_lit);
+        let implication_count = self.binary_implications[watch_idx].len();
+        for idx in 0..implication_count {
+            let implication = self.binary_implications[watch_idx][idx];
+            let binary_id = implication.binary_id as usize;
+            if binary_id >= self.binary_clauses.len() {
+                continue;
+            }
+            let binary = self.binary_clauses[binary_id];
+            if binary_metadata_deleted(binary.metadata) {
+                continue;
+            }
+            debug_assert!(
+                (binary.lit0 == false_lit && binary.lit1 == implication.implied_lit)
+                    || (binary.lit1 == false_lit && binary.lit0 == implication.implied_lit),
+                "binary implication list contains stale falsified literal"
+            );
+            debug_assert!(
+                (implication.clause_idx as usize) < self.arena.len()
+                    && !self.clause_is_deleted(implication.clause_idx as usize)
+                    && self.clause_len(implication.clause_idx as usize) == 2
+                    && self.binary_clause_matches_arena(binary, implication.clause_idx as usize),
+                "binary implication list contains stale arena mapping"
+            );
+
+            match self.lit_value(implication.implied_lit) {
+                TRUE => {}
+                FALSE => return Some(implication.clause_idx as usize),
+                UNASSIGNED => {
+                    if !self.enqueue(implication.implied_lit, ReasonRef::binary(false_lit)) {
+                        return Some(implication.clause_idx as usize);
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+        None
+    }
+
     fn propagate(&mut self) -> Option<usize> {
         let start_head = self.propagate_head;
         while self.propagate_head < self.trail.len() {
             let false_lit = -self.trail[self.propagate_head];
             self.propagate_head += 1;
             self.stats.propagations += 1;
+            if self.binary_propagation_mode == BinaryPropagationMode::Aggressive {
+                if let Some(conflict) = self.propagate_binary_implications(false_lit) {
+                    return Some(conflict);
+                }
+            }
             let watch_idx = self.lit_index(false_lit);
             let mut pending = std::mem::take(&mut self.watchers[watch_idx]);
             let mut read = 0usize;
@@ -2128,6 +2317,59 @@ impl Solver {
                                 return Some(clause_idx);
                             }
                             pending[write] = watcher;
+                            write += 1;
+                        }
+                        _ => unreachable!(),
+                    }
+                    continue;
+                }
+
+                if self.binary_propagation_mode == BinaryPropagationMode::WatcherFast
+                    && clause_len == 2
+                {
+                    if self.clause_lit(clause_idx, 0) == false_lit {
+                        self.swap_clause_lits(clause_idx, 0, 1);
+                    }
+                    if self.clause_lit(clause_idx, 1) != false_lit {
+                        continue;
+                    }
+
+                    let implied_lit = self.clause_lit(clause_idx, 0);
+                    let updated_watcher = Watcher {
+                        clause_idx: watcher.clause_idx,
+                        blocker: implied_lit,
+                    };
+                    match self.lit_value(implied_lit) {
+                        TRUE => {
+                            pending[write] = updated_watcher;
+                            write += 1;
+                        }
+                        FALSE => {
+                            pending[write] = updated_watcher;
+                            write += 1;
+                            while read < pending.len() {
+                                pending[write] = pending[read];
+                                write += 1;
+                                read += 1;
+                            }
+                            pending.truncate(write);
+                            self.watchers[watch_idx] = pending;
+                            return Some(clause_idx);
+                        }
+                        UNASSIGNED => {
+                            if !self.enqueue(implied_lit, ReasonRef::clause(clause_idx)) {
+                                pending[write] = updated_watcher;
+                                write += 1;
+                                while read < pending.len() {
+                                    pending[write] = pending[read];
+                                    write += 1;
+                                    read += 1;
+                                }
+                                pending.truncate(write);
+                                self.watchers[watch_idx] = pending;
+                                return Some(clause_idx);
+                            }
+                            pending[write] = updated_watcher;
                             write += 1;
                         }
                         _ => unreachable!(),
@@ -2427,7 +2669,6 @@ impl Solver {
         self.learned_literals += clause_len;
         self.record_learned_clause_stats(clause_len, glue);
         self.attach_clause(clause_idx, false);
-        self.register_binary_clause_if_needed(clause_idx);
         clause_idx
     }
 
@@ -2848,25 +3089,34 @@ impl Solver {
         let clause_len = self.clause_len(clause_idx);
         for lit_pos in start_lit_pos..clause_len {
             let lit = self.clause_lit(clause_idx, lit_pos);
-            let var = lit.unsigned_abs() as usize;
-            if self.scratch_seen[var] != 0
-                || (self.use_resolved_conflict_analysis && self.scratch_resolved[var] != 0)
-            {
-                continue;
-            }
+            self.mark_literal_for_analysis(lit, current_level, current_level_count);
+        }
+    }
 
-            let level = self.decision_level[var];
-            if level == 0 {
-                continue;
-            }
+    fn mark_literal_for_analysis(
+        &mut self,
+        lit: i32,
+        current_level: usize,
+        current_level_count: &mut usize,
+    ) {
+        let var = lit.unsigned_abs() as usize;
+        if self.scratch_seen[var] != 0
+            || (self.use_resolved_conflict_analysis && self.scratch_resolved[var] != 0)
+        {
+            return;
+        }
 
-            self.scratch_seen[var] = 1;
-            self.scratch_bumped_vars.push(var);
-            if level == current_level {
-                *current_level_count += 1;
-            } else {
-                self.scratch_learned.push(lit);
-            }
+        let level = self.decision_level[var];
+        if level == 0 {
+            return;
+        }
+
+        self.scratch_seen[var] = 1;
+        self.scratch_bumped_vars.push(var);
+        if level == current_level {
+            *current_level_count += 1;
+        } else {
+            self.scratch_learned.push(lit);
         }
     }
 
@@ -2905,18 +3155,27 @@ impl Solver {
             }
 
             if !self.reason[var].is_none() {
-                let reason_idx = self.reason[var].clause_idx();
-                let start_lit_pos = if self.use_resolved_conflict_analysis {
-                    0
+                let reason_ref = self.reason[var];
+                if let Some(binary_lit) = reason_ref.as_binary() {
+                    self.mark_literal_for_analysis(
+                        binary_lit,
+                        current_level,
+                        &mut current_level_count,
+                    );
                 } else {
-                    1
-                };
-                self.mark_clause_literals_for_analysis(
-                    reason_idx,
-                    start_lit_pos,
-                    current_level,
-                    &mut current_level_count,
-                );
+                    let reason_idx = reason_ref.clause_idx();
+                    let start_lit_pos = if self.use_resolved_conflict_analysis {
+                        0
+                    } else {
+                        1
+                    };
+                    self.mark_clause_literals_for_analysis(
+                        reason_idx,
+                        start_lit_pos,
+                        current_level,
+                        &mut current_level_count,
+                    );
+                }
             }
         };
 
@@ -3262,6 +3521,36 @@ fn parse_branch_mode() -> BranchMode {
     }
 }
 
+fn parse_binary_propagation_mode() -> BinaryPropagationMode {
+    match env::var("SAT_BINARY_PROP_MODE") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "aggressive" | "binary-first" | "binary_first" | "direct" | "direct-first"
+            | "direct_first" | "2" => BinaryPropagationMode::Aggressive,
+            "watcher" | "watcher-fast" | "watcher_fast" | "fast" | "1" | "true" | "on" => {
+                BinaryPropagationMode::WatcherFast
+            }
+            "generic" | "off" | "0" | "false" => BinaryPropagationMode::Generic,
+            other => {
+                eprintln!(
+                    "Invalid SAT_BINARY_PROP_MODE={other}; expected aggressive/watcher/generic"
+                );
+                std::process::exit(2);
+            }
+        },
+        Err(_) => {
+            if env::var_os("SAT_BINARY_FAST_PATH").is_some() {
+                if parse_bool_env("SAT_BINARY_FAST_PATH", true) {
+                    BinaryPropagationMode::WatcherFast
+                } else {
+                    BinaryPropagationMode::Generic
+                }
+            } else {
+                BinaryPropagationMode::Aggressive
+            }
+        }
+    }
+}
+
 fn parse_bool_env(name: &str, default: bool) -> bool {
     match env::var(name) {
         Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
@@ -3439,7 +3728,15 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn make_solver(num_vars: usize, clauses: Vec<Vec<i32>>) -> Solver {
-        Solver::new(num_vars, clauses)
+        make_solver_with_binary_mode(num_vars, clauses, BinaryPropagationMode::WatcherFast)
+    }
+
+    fn make_solver_with_binary_mode(
+        num_vars: usize,
+        clauses: Vec<Vec<i32>>,
+        binary_propagation_mode: BinaryPropagationMode,
+    ) -> Solver {
+        Solver::new_with_binary_propagation_mode(num_vars, clauses, binary_propagation_mode)
     }
 
     fn make_temp_dir(label: &str) -> PathBuf {
@@ -3614,7 +3911,11 @@ mod tests {
 
     #[test]
     fn test_binary_representation_tracks_original_and_learned_clauses() {
-        let mut s = make_solver(3, vec![vec![1, 2], vec![-1, 2, 3]]);
+        let mut s = make_solver_with_binary_mode(
+            3,
+            vec![vec![1, 2], vec![-1, 2, 3]],
+            BinaryPropagationMode::Aggressive,
+        );
 
         assert_eq!(s.original_binary_ids.len(), 1);
         let original_binary_id = s.original_binary_ids[0];
@@ -3622,6 +3923,25 @@ mod tests {
         assert_eq!((original_binary.lit0, original_binary.lit1), (1, 2));
         assert!(!binary_metadata_learnt(original_binary.metadata));
         assert!(!binary_metadata_deleted(original_binary.metadata));
+        let original_clause_idx = s.original_clause_ids[0];
+        assert_eq!(s.live_watch_count(1, original_clause_idx), 0);
+        assert_eq!(s.live_watch_count(2, original_clause_idx), 0);
+        assert_eq!(
+            s.binary_implications[s.lit_index(1)],
+            vec![BinaryImplication {
+                implied_lit: 2,
+                clause_idx: original_clause_idx as u32,
+                binary_id: original_binary_id,
+            }]
+        );
+        assert_eq!(
+            s.binary_implications[s.lit_index(2)],
+            vec![BinaryImplication {
+                implied_lit: 1,
+                clause_idx: original_clause_idx as u32,
+                binary_id: original_binary_id,
+            }]
+        );
 
         let learned_idx = s.add_clause_from_slice_with_glue(&[-2, 3], 2);
         let learned_binary_id = s.binary_clause_id_for_arena(learned_idx).unwrap();
@@ -3661,6 +3981,100 @@ mod tests {
         assert_eq!(s.learned_binary_ids, vec![live_binary_id]);
         assert_ne!(live, relocated_live);
         s.check_binary_representation("test");
+    }
+
+    #[test]
+    fn test_binary_fast_path_propagates_from_watcher_schedule() {
+        let mut s = make_solver(2, vec![vec![1, 2]]);
+        let clause_idx = s.original_clause_ids[0];
+        assert!(s.binary_clause_id_for_arena(clause_idx).is_some());
+        assert_eq!(s.live_watch_count(1, clause_idx), 1);
+        assert_eq!(s.live_watch_count(2, clause_idx), 1);
+
+        assert_eq!(
+            s.watchers[s.lit_index(1)],
+            vec![Watcher {
+                clause_idx: clause_idx as u32,
+                blocker: 2,
+            }]
+        );
+        assert_eq!(
+            s.watchers[s.lit_index(2)],
+            vec![Watcher {
+                clause_idx: clause_idx as u32,
+                blocker: 1,
+            }]
+        );
+
+        s.decide(-1);
+        assert_eq!(s.propagate(), None);
+
+        assert_eq!(s.assignment[2], TRUE);
+        assert_eq!(s.reason[2].as_clause(), Some(clause_idx));
+        assert_eq!(s.clause_slice(clause_idx), &[2, 1]);
+    }
+
+    #[test]
+    fn test_binary_fast_path_conflict_returns_arena_clause() {
+        let mut s = make_solver(2, vec![vec![1, 2]]);
+        let clause_idx = s.original_clause_ids[0];
+        assert_eq!(s.live_watch_count(1, clause_idx), 1);
+        assert_eq!(s.live_watch_count(2, clause_idx), 1);
+
+        s.decide(-1);
+        s.decide(-2);
+
+        assert_eq!(s.propagate(), Some(clause_idx));
+    }
+
+    #[test]
+    fn test_aggressive_binary_first_propagates_from_implication_list() {
+        let mut s =
+            make_solver_with_binary_mode(2, vec![vec![1, 2]], BinaryPropagationMode::Aggressive);
+        let clause_idx = s.original_clause_ids[0];
+        assert_eq!(s.live_watch_count(1, clause_idx), 0);
+        assert_eq!(s.live_watch_count(2, clause_idx), 0);
+
+        s.decide(-1);
+        assert_eq!(s.propagate(), None);
+
+        assert_eq!(s.assignment[2], TRUE);
+        assert_eq!(s.reason[2].as_binary(), Some(1));
+        assert_eq!(s.clause_slice(clause_idx), &[1, 2]);
+    }
+
+    #[test]
+    fn test_aggressive_binary_first_conflict_returns_arena_clause() {
+        let mut s =
+            make_solver_with_binary_mode(2, vec![vec![1, 2]], BinaryPropagationMode::Aggressive);
+        let clause_idx = s.original_clause_ids[0];
+        assert_eq!(s.live_watch_count(1, clause_idx), 0);
+        assert_eq!(s.live_watch_count(2, clause_idx), 0);
+
+        s.decide(-1);
+        s.decide(-2);
+
+        assert_eq!(s.propagate(), Some(clause_idx));
+    }
+
+    #[test]
+    fn test_conflict_analysis_resolves_binary_reason_without_arena_reason() {
+        let mut s = make_solver_with_binary_mode(
+            3,
+            vec![vec![1, 2], vec![-2, 1, 3]],
+            BinaryPropagationMode::Aggressive,
+        );
+        let conflict_clause = s.original_clause_ids[1];
+
+        s.decide(-3);
+        s.decide(-1);
+        assert_eq!(s.propagate(), Some(conflict_clause));
+        assert_eq!(s.assignment[2], TRUE);
+        assert_eq!(s.reason[2].as_binary(), Some(1));
+
+        let backtrack_level = s.analyze_conflict_to_scratch(conflict_clause);
+        assert_eq!(s.scratch_conflict_clause, vec![1, 3]);
+        assert_eq!(backtrack_level, 1);
     }
 
     #[test]
@@ -3931,25 +4345,24 @@ mod tests {
     }
 
     #[test]
-    fn test_clause_gc_relocates_watchers_for_live_learned_clause() {
-        let mut s = make_solver(3, vec![]);
+    fn test_clause_gc_relocates_binary_implications_for_live_learned_clause() {
+        let mut s = make_solver_with_binary_mode(3, vec![], BinaryPropagationMode::Aggressive);
         let dead = s.add_clause(vec![2, 1]);
         let _live = s.add_clause(vec![3, 1]);
 
         s.mark_clause_deleted(dead);
         s.garbage_collect();
         let relocated_live = s.learned_clause_ids[0];
-
-        let watch_clause_ids: Vec<_> = s.watchers[s.lit_index(1)]
-            .iter()
-            .map(|watcher| watcher.clause_idx)
-            .collect();
-        assert_eq!(watch_clause_ids, vec![relocated_live as u32]);
+        assert!(s.binary_clause_id_for_arena(relocated_live).is_some());
+        assert_eq!(s.live_watch_count(3, relocated_live), 0);
+        assert_eq!(s.live_watch_count(1, relocated_live), 0);
+        assert_eq!(s.live_binary_implication_count(3, 1, relocated_live), 1);
+        assert_eq!(s.live_binary_implication_count(1, 3, relocated_live), 1);
 
         s.decide(-1);
         assert_eq!(s.propagate(), None);
         assert_eq!(s.assignment[3], TRUE);
-        assert_eq!(s.reason[3].as_clause(), Some(relocated_live));
+        assert_eq!(s.reason[3].as_binary(), Some(1));
         assert_eq!(s.clause_slice(relocated_live), &[3, 1]);
     }
 

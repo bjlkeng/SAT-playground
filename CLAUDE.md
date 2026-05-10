@@ -281,6 +281,35 @@ idea or benchmark gap, it is acceptable to test that focused feature as part of 
 11. **Correctness checks**: Add or update focused tests when practical before changing solver behavior. Run `cargo test` and the full smoke suite after every kept solver change, and rerun them after reverting failed experiments if the revert touched solver logic.
 12. **Record**: Document every *successful* improvement and its PAR-2 or target-instance runtime impact in the solver's `README.md`, including machine environment metadata, benchmark log paths, profile paths, and the profiler evidence that motivated it. Also document important rejected attempts with their measured runtime or reason for skipping so future loops do not repeat them blindly.
 
+### Debugging Optimization Regressions
+
+When a targeted optimization regresses or gives contradictory benchmark results, run a focused
+debug pass before changing more code:
+
+1. **Compare modes on the same fixed-time target**: Use identical timeout, proof setting, seed/order
+   knobs, and instance file. Capture `SAT_TRACE_PREPROCESS=1` and `SAT_TRACE_SEARCH_INTERVAL=<N>`
+   so preprocessing work, conflicts, decisions, propagations, restarts, learned-clause mix, glue,
+   reductions, and deleted/gc counters can be compared at similar conflict counts.
+2. **Separate preprocessing from search**: If preprocessing is substantial, first confirm both modes
+   report identical preprocessing stats. Then use `perf stat -D <milliseconds>` with a delay just
+   past preprocessing to collect search-only counters.
+3. **Use hardware counters, not just wall time**: At minimum compare `cycles`, `instructions`,
+   `branches`, `branch-misses`, `L1-dcache-loads`, `L1-dcache-load-misses`, `dTLB-loads`,
+   `dTLB-load-misses`, `cache-references`, and `cache-misses`. Normalize misses by propagations
+   or conflicts from trace output; otherwise search-path differences can hide the real cost.
+4. **Sample the suspected event**: Use `perf record -e cache-misses -g --call-graph dwarf` and
+   inspect with `perf report --stdio --no-children --sort symbol`. Use `perf annotate --stdio
+   --source --symbol '<symbol>'` when the hot function is known. Record exact profile paths.
+5. **Check opportunity shape**: For representation changes, count formula features such as binary
+   clause percentage, per-literal binary degree distribution, and max degree. High degree or sparse
+   occurrence patterns often explain TLB/cache behavior better than aggregate clause counts.
+6. **Explain search-path effects separately**: If conflict count, learned glue, learned binary/long
+   mix, or root-unit learning diverge, state that separately from microarchitectural overhead. A
+   faster local primitive can still lose by producing a worse CDCL trajectory.
+7. **Turn the finding into a code hypothesis**: Tie every proposed fix to a measured hot source line
+   or data access pattern, such as "avoid arena header loads in the binary implication loop" rather
+   than a generic "improve cache locality" note.
+
 ### Standard Optimizations (apply to every solver)
 
 **Cargo.toml release profile** (always include):

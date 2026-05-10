@@ -1148,12 +1148,100 @@ Status:
 - Direct per-literal binary implication lists were intentionally left for the propagation split.
   An earlier trial maintained unused implication lists and showed avoidable overhead on the profile
   bench.
-- Validation: `cargo test` passed 56 tests; normal smoke passed 9/9; invariant smoke with
-  `SAT_CHECK_INVARIANTS=1` passed 9/9.
+- Propagation split first slice landed on 2026-05-10. Binary clauses still remain in the arena and
+  still have normal watchers, so proof logging, clause iteration, conflict analysis, and reason
+  references continue to use `ReasonRef::Clause(arena_idx)`. The new fast path recognizes binary
+  clauses inside the existing watcher schedule and handles the implication/conflict case without
+  running the long-clause replacement scan. `SAT_BINARY_FAST_PATH=0` disables this for comparison.
+- A more aggressive direct binary-first queue is implemented as the default experiment. It keeps arena
+  binary clauses as proof/reason sources, builds per-literal binary implication lists keyed by the
+  falsified literal, and processes those lists before scanning the normal watcher list. After the
+  2026-05-10 fix, aggressive mode no longer attaches live binary clauses to normal watcher lists;
+  this removed the duplicate representation that made direct-first do binary work twice.
+- Aggressive mode is the default again for this development branch. It is still high-risk because
+  direct-first changes propagation/conflict ordering enough to hurt the standard profile bench, but
+  keeping it default forces follow-up work to fix the direct implication path instead of leaving it
+  as a side experiment. Use `SAT_BINARY_PROP_MODE=generic`, `watcher`, or `aggressive` to compare
+  modes; the older `SAT_BINARY_FAST_PATH=0/1` still maps to `generic`/`watcher` when
+  `SAT_BINARY_PROP_MODE` is unset.
+- Representation validation: `cargo test` passed 56 tests; normal smoke passed 9/9; invariant
+  smoke with `SAT_CHECK_INVARIANTS=1` passed 9/9.
 - Profiling overhead check on `benchmarks/profiling`, timeout 120s, memory 16 GB:
   pre-change log `log/bench-11-kissat-innovations-2026-05-09-22-21-25`, PAR-2 `1101.501`,
   solved 7/11; representation log `log/bench-11-kissat-innovations-2026-05-09-22-56-02`, PAR-2
   `1101.544`, solved 7/11. Same solved/timeout split; PAR-2 delta was `+0.043s`.
+- Propagation fast-path benchmark on `benchmarks/profiling`, timeout 120s, memory 16 GB:
+  pre-change log `log/bench-11-kissat-innovations-2026-05-09-23-46-49`, PAR-2 `1099.164`, solved
+  7/11; fast-path log `log/bench-11-kissat-innovations-2026-05-10-00-53-26`, PAR-2 `1098.463`,
+  solved 7/11. Same solved/timeout split; PAR-2 delta was `-0.701s`. A disabled-fast-path
+  comparison log `log/bench-11-kissat-innovations-2026-05-10-00-36-51` scored PAR-2 `1109.380`,
+  which appears to be benchmark/search noise rather than a structural change because the enabled
+  fast path preserved the same solved set and was closer to the pre-change aggregate.
+- Fast-path validation: `cargo test` passed 58 tests; normal smoke passed 9/9; invariant smoke with
+  `SAT_CHECK_INVARIANTS=1` passed 9/9.
+- Direct-first representation validation after the duplicate-watch fix: `cargo test` passed 60
+  tests; normal smoke passed 9/9; invariant smoke with `SAT_CHECK_INVARIANTS=1` passed 9/9.
+- Circuit-focused aggressive check on 2026-05-10: a binary-heavy pair
+  (`multiplier_16bits__miter_22`, 66.8% binary clauses; `velev-pipe-o-uns-1.1-6`, 88.3% binary)
+  timed out in both previous generic/watcher runs and the new aggressive run. Aggressive log
+  `log/bench-11-kissat-innovations-2026-05-10-08-41-35`, timeout 120s, solved 0/2, PAR-2
+  `480.000`.
+- Smaller circuit check on 2026-05-10: three 36-46% binary hardware/sqrt instances timed out in
+  previous generic/watcher runs and in the aggressive run. Aggressive log
+  `log/bench-11-kissat-innovations-2026-05-10-08-45-39`, timeout 60s, solved 0/3, PAR-2 `360.000`.
+  Initial fixed-time traces showed the aggressive path did less work because binary clauses were
+  represented in both direct implication lists and normal watcher lists. After removing the normal
+  binary watchers in aggressive mode, the smaller 60e396 circuit improved from about `750k`
+  conflicts in 25s to `800k`, closer to watcher mode at `810k` and generic mode at `820k`.
+- Post-fix perf counters on the 60e396 circuit, 20s wall clock with `SAT_PROOF=0`, show the
+  duplicate work is gone at the instruction level: generic `168.2B` instructions / `32.17B`
+  branches, watcher `167.2B` / `32.03B`, aggressive `165.3B` / `31.52B`. Aggressive still has
+  worse cache behavior (`30.32%` cache-miss rate versus watcher `28.48%`), and sampled profile
+  `/tmp/perf-post-60e-aggressive.report` still has `Solver::propagate` as the dominant cost
+  (`73.16%` cycles) with direct binary implication work only visible as an inlined subpath.
+- Post-fix fixed-time traces on `velev-pipe-o-uns-1.1-6` show the remaining issue is search-path
+  sensitivity, not duplicate watcher work: generic/watcher reached `415k` conflicts by about
+  `26.9s` search time and learned one root unit, while aggressive reached `380k` conflicts, learned
+  no root unit, and had much worse learned-clause glue (`51.79` average versus `38.49`).
+- Standard profile bench after the duplicate-watch fix but with aggressive as the default regressed
+  badly: log `log/bench-11-kissat-innovations-2026-05-10-09-15-37`, timeout 120s, memory 16 GB,
+  solved 6/11, PAR-2 `1379.890`. The profile run lost `mp1-Nb7T46` to timeout and regressed
+  `feistel_b64_k32_r22` from the older watcher-fast `15.386s` to `92.276s`.
+- Restoring watcher-fast in a diagnostic run recovered the profile bench: log
+  `log/bench-11-kissat-innovations-2026-05-10-09-37-56`, timeout 120s, memory 16 GB, solved 7/11,
+  PAR-2 `1093.005`, versus the previous watcher-fast log
+  `log/bench-11-kissat-innovations-2026-05-10-00-53-26`, solved 7/11, PAR-2 `1098.463`.
+  This confirmed the regression comes from aggressive direct-first propagation rather than the
+  binary representation setup itself. The temporary watcher-fast restore validated with `cargo
+  test`, normal smoke, and invariant smoke before aggressive was made default again.
+- The debug workflow that found the cache issue is now captured in `CLAUDE.md` under
+  "Debugging Optimization Regressions": compare fixed-time mode traces, separate preprocessing from
+  search with delayed `perf stat`, normalize cache/TLB counters by propagation or conflict count,
+  sample the suspected event with `perf record -e cache-misses`, inspect source with
+  `perf annotate`, and record both microarchitectural effects and CDCL search-path changes.
+- Follow-up cache fix on 2026-05-10: aggressive direct binary implications now carry compact
+  binary ids and successful implications use `ReasonRef::binary(false_lit)`, so the common
+  non-conflicting binary implication path checks compact binary metadata instead of reading arena
+  headers/literals and rotating the arena reason clause. Conflict analysis, deep/basic
+  minimization, and invariants now understand binary reasons directly; arena binary clauses remain
+  available for proof/conflict materialization and clause iteration.
+- Local cache/TLB result: on 60e396, aggressive dTLB misses dropped from `6.61M` to `5.16M` and
+  L1-dcache-load misses from `4.14B` to `4.08B` over the same 20s wall-clock perf run. On
+  `velev-pipe-o-uns-1.1-6`, search-only delayed perf counters improved from `208.98B`
+  instructions / `40.36B` branches / `5.50B` L1 misses / `1.25B` dTLB misses to `194.86B` /
+  `36.50B` / `5.16B` / `1.04B`. The source-level cache-miss sample
+  `/tmp/perf-cachemiss-60e-aggressive-binaryreason.report` no longer attributes
+  `clause_is_deleted` misses to `propagate_binary_implications`; remaining arena header misses come
+  from the normal watcher scan.
+- Macro result: the cache fix is not enough to make aggressive mode a performance win yet.
+  Aggressive profile log
+  `log/bench-11-kissat-innovations-2026-05-10-10-39-25`, timeout 120s, memory 16 GB, solved 5/11,
+  PAR-2 `1562.713`. It improved some instances (`feistel_b64_k52_r17` `18.404s` -> `11.559s`,
+  `feistel_b64_k57_r18` `6.229s` -> `1.774s`, `random_v292_s4` `17.688s` -> `8.936s`) but kept
+  the severe `feistel_b64_k32_r22` regression (`92.355s`) and newly timed out the timetable
+  instance. Conclusion: keep aggressive as the default for this development branch, but treat it as
+  an unfinished foundation. The next work needs ordering/search-path compatibility before direct
+  binary-first propagation should be considered a performance improvement.
 
 Unlocks:
 
