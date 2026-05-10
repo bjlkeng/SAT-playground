@@ -9,7 +9,7 @@ mod simp;
 const UNASSIGNED: u8 = 0;
 const TRUE: u8 = 1;
 const FALSE: u8 = 2;
-const NO_REASON: usize = usize::MAX;
+const NO_RELOC: usize = usize::MAX;
 const BRANCH_NOT_IN_HEAP: usize = usize::MAX;
 const CCMIN_NONE: u8 = 0;
 const CCMIN_BASIC: u8 = 1;
@@ -59,6 +59,81 @@ enum InitialClauseMode {
 enum BranchMode {
     Minisat,
     Occurrence,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReasonRef(usize);
+
+const REASON_TAG_BITS: usize = 2;
+const REASON_TAG_MASK: usize = (1 << REASON_TAG_BITS) - 1;
+const REASON_NONE_TAG: usize = 0;
+const REASON_UNIT_TAG: usize = 1;
+const REASON_CLAUSE_TAG: usize = 2;
+const REASON_BINARY_TAG: usize = 3;
+const NO_REASON: ReasonRef = ReasonRef::none();
+
+impl ReasonRef {
+    #[inline(always)]
+    const fn none() -> Self {
+        Self(REASON_NONE_TAG)
+    }
+
+    #[inline(always)]
+    const fn unit() -> Self {
+        Self(REASON_UNIT_TAG)
+    }
+
+    #[inline(always)]
+    fn clause(clause_idx: usize) -> Self {
+        debug_assert!(clause_idx <= (usize::MAX >> REASON_TAG_BITS));
+        Self((clause_idx << REASON_TAG_BITS) | REASON_CLAUSE_TAG)
+    }
+
+    #[inline(always)]
+    fn binary(lit: i32) -> Self {
+        let lit_idx = lit_to_index(lit);
+        debug_assert!(lit_idx <= (usize::MAX >> REASON_TAG_BITS));
+        Self((lit_idx << REASON_TAG_BITS) | REASON_BINARY_TAG)
+    }
+
+    #[inline(always)]
+    fn is_none(self) -> bool {
+        self.0 == REASON_NONE_TAG
+    }
+
+    #[inline(always)]
+    fn is_unit(self) -> bool {
+        self.0 == REASON_UNIT_TAG
+    }
+
+    #[inline(always)]
+    fn is_clause(self) -> bool {
+        self.0 & REASON_TAG_MASK == REASON_CLAUSE_TAG
+    }
+
+    #[inline(always)]
+    fn as_clause(self) -> Option<usize> {
+        if self.is_clause() {
+            Some(self.0 >> REASON_TAG_BITS)
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn as_binary(self) -> Option<i32> {
+        if self.0 & REASON_TAG_MASK == REASON_BINARY_TAG {
+            Some(index_to_lit(self.0 >> REASON_TAG_BITS))
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn clause_idx(self) -> usize {
+        debug_assert!(self.is_clause(), "reason is not an arena clause");
+        self.0 >> REASON_TAG_BITS
+    }
 }
 
 #[derive(Clone, Default)]
@@ -280,8 +355,8 @@ struct Solver {
     saved_phase: Vec<u8>,
     /// decision level of each variable assignment
     decision_level: Vec<usize>,
-    /// reason clause index for each implied assignment; NO_REASON for decisions/root-unassigned vars
-    reason: Vec<usize>,
+    /// compact reason reference for each implied assignment; NO_REASON for decisions/root-unassigned vars
+    reason: Vec<ReasonRef>,
     /// assigned literals in chronological order
     trail: Vec<i32>,
     /// number of level-0 assignments that must survive backtrack(0)
@@ -484,14 +559,14 @@ fn basic_lit_redundant(
     lit: i32,
     arena: &[u32],
     decision_level: &[usize],
-    reason: &[usize],
+    reason: &[ReasonRef],
     state: &[u8],
 ) -> bool {
     let var = lit.unsigned_abs() as usize;
-    let reason_idx = reason[var];
-    if reason_idx == NO_REASON {
+    if reason[var].is_none() {
         return false;
     }
+    let reason_idx = reason[var].clause_idx();
 
     let clause_len = clause_len_in_arena(arena, reason_idx);
     for lit_pos in 1..clause_len {
@@ -512,7 +587,7 @@ fn lit_redundant(
     lit: i32,
     arena: &[u32],
     decision_level: &[usize],
-    reason: &[usize],
+    reason: &[ReasonRef],
     state: &mut [u8],
     toclear: &mut Vec<usize>,
     stack: &mut Vec<(usize, i32)>,
@@ -522,10 +597,10 @@ fn lit_redundant(
         let var = lit.unsigned_abs() as usize;
         state[var] == REDUNDANT_UNDEF || state[var] == REDUNDANT_SOURCE
     });
-    debug_assert!(reason[lit.unsigned_abs() as usize] != NO_REASON);
+    debug_assert!(!reason[lit.unsigned_abs() as usize].is_none());
 
     stack.clear();
-    let mut clause_idx = reason[lit.unsigned_abs() as usize];
+    let mut clause_idx = reason[lit.unsigned_abs() as usize].clause_idx();
     let mut lit_pos = 1usize;
 
     loop {
@@ -547,7 +622,7 @@ fn lit_redundant(
                 continue;
             }
 
-            if reason[parent_var] == NO_REASON || state[parent_var] == REDUNDANT_FAILED {
+            if reason[parent_var].is_none() || state[parent_var] == REDUNDANT_FAILED {
                 let lit_var = lit.unsigned_abs() as usize;
                 if state[lit_var] == REDUNDANT_UNDEF {
                     state[lit_var] = REDUNDANT_FAILED;
@@ -570,7 +645,7 @@ fn lit_redundant(
                 "redundancy DFS exceeded variable count while checking literal {lit}"
             );
             lit = parent;
-            clause_idx = reason[parent_var];
+            clause_idx = reason[parent_var].clause_idx();
             lit_pos = 1;
             continue;
         }
@@ -583,7 +658,7 @@ fn lit_redundant(
 
         if let Some((resume_pos, resume_lit)) = stack.pop() {
             lit = resume_lit;
-            clause_idx = reason[lit.unsigned_abs() as usize];
+            clause_idx = reason[lit.unsigned_abs() as usize].clause_idx();
             lit_pos = resume_pos + 1;
         } else {
             return true;
@@ -1089,10 +1164,15 @@ impl Solver {
                 seen_on_trail[var],
                 "{context}: assigned variable {var} is missing from the trail"
             );
-            let reason_idx = self.reason[var];
-            if reason_idx == NO_REASON {
+            let reason_ref = self.reason[var];
+            if reason_ref.is_none() || reason_ref.is_unit() {
                 continue;
             }
+            assert!(
+                reason_ref.as_binary().is_none(),
+                "{context}: binary reason appeared before binary reason support"
+            );
+            let reason_idx = reason_ref.clause_idx();
             assert!(
                 reason_idx < self.arena.len(),
                 "{context}: variable {var} has out-of-range reason {reason_idx}"
@@ -1557,7 +1637,7 @@ impl Solver {
     }
 
     #[inline(always)]
-    fn enqueue(&mut self, lit: i32, reason: usize) -> bool {
+    fn enqueue(&mut self, lit: i32, reason: ReasonRef) -> bool {
         let var = lit.unsigned_abs() as usize;
         let target_value = if lit > 0 { TRUE } else { FALSE };
         let current = self.assignment[var];
@@ -1581,7 +1661,7 @@ impl Solver {
         for idx in 0..self.root_unit_clauses.len() {
             let clause_idx = self.root_unit_clauses[idx];
             let lit = self.clause_slice(clause_idx)[0];
-            if !self.enqueue(lit, clause_idx) {
+            if !self.enqueue(lit, ReasonRef::clause(clause_idx)) {
                 return false;
             }
         }
@@ -1627,7 +1707,7 @@ impl Solver {
                             return Some(clause_idx);
                         }
                         UNASSIGNED => {
-                            if !self.enqueue(unit_lit, clause_idx) {
+                            if !self.enqueue(unit_lit, ReasonRef::clause(clause_idx)) {
                                 pending[write] = watcher;
                                 write += 1;
                                 while read < pending.len() {
@@ -1690,7 +1770,9 @@ impl Solver {
 
                 pending[write] = updated_watcher;
                 write += 1;
-                if self.lit_value(first) == FALSE || !self.enqueue(first, clause_idx) {
+                if self.lit_value(first) == FALSE
+                    || !self.enqueue(first, ReasonRef::clause(clause_idx))
+                {
                     while read < pending.len() {
                         pending[write] = pending[read];
                         write += 1;
@@ -1945,7 +2027,7 @@ impl Solver {
         }
         let implied_lit = self.clause_lit(clause_idx, 0);
         let var = implied_lit.unsigned_abs() as usize;
-        self.lit_value(implied_lit) == TRUE && self.reason[var] == clause_idx
+        self.lit_value(implied_lit) == TRUE && self.reason[var].as_clause() == Some(clause_idx)
     }
 
     fn reduce_db_enabled(&self) -> bool {
@@ -2014,7 +2096,7 @@ impl Solver {
             !self
                 .reason
                 .iter()
-                .any(|&reason_idx| reason_idx == clause_idx),
+                .any(|&reason| reason.as_clause() == Some(clause_idx)),
             "cannot delete clause {clause_idx} while it is still a live reason"
         );
         let learned_pos = self
@@ -2048,7 +2130,7 @@ impl Solver {
             !self
                 .reason
                 .iter()
-                .any(|&reason_idx| reason_idx == clause_idx),
+                .any(|&reason| reason.as_clause() == Some(clause_idx)),
             "cannot delete clause {clause_idx} while it is still a live reason"
         );
         self.live_learned_clause_count = self.live_learned_clause_count.saturating_sub(1);
@@ -2073,7 +2155,7 @@ impl Solver {
         let gc_start = Instant::now();
         let old_word_count = self.arena.len();
         self.stats.garbage_collections += 1;
-        let mut reloc = vec![NO_REASON; self.arena.len()];
+        let mut reloc = vec![NO_RELOC; self.arena.len()];
         let live_clause_count = self.original_clause_ids.len() + self.learned_clause_ids.len();
         let live_word_count: usize = self
             .original_clause_ids
@@ -2128,7 +2210,7 @@ impl Solver {
             for read in 0..watch_list.len() {
                 let mut watcher = watch_list[read];
                 let new_idx = reloc[watcher.clause_idx as usize];
-                if new_idx == NO_REASON {
+                if new_idx == NO_RELOC {
                     continue;
                 }
                 watcher.clause_idx = new_idx as u32;
@@ -2142,7 +2224,7 @@ impl Solver {
         for read in 0..self.watch_scratch.len() {
             let mut watcher = self.watch_scratch[read];
             let new_idx = reloc[watcher.clause_idx as usize];
-            if new_idx == NO_REASON {
+            if new_idx == NO_RELOC {
                 continue;
             }
             watcher.clause_idx = new_idx as u32;
@@ -2151,22 +2233,22 @@ impl Solver {
         }
         self.watch_scratch.truncate(watch_scratch_write);
 
-        for reason_idx in &mut self.reason {
-            if *reason_idx == NO_REASON {
+        for reason in &mut self.reason {
+            let Some(old_idx) = reason.as_clause() else {
                 continue;
-            }
-            let new_idx = reloc[*reason_idx];
+            };
+            let new_idx = reloc[old_idx];
             debug_assert_ne!(
-                new_idx, NO_REASON,
+                new_idx, NO_RELOC,
                 "garbage collection removed a clause that is still a live reason"
             );
-            *reason_idx = new_idx;
+            *reason = ReasonRef::clause(new_idx);
         }
 
         let mut root_write = 0usize;
         for read in 0..self.root_unit_clauses.len() {
             let new_idx = reloc[self.root_unit_clauses[read]];
-            if new_idx == NO_REASON {
+            if new_idx == NO_RELOC {
                 continue;
             }
             self.root_unit_clauses[root_write] = new_idx;
@@ -2266,7 +2348,7 @@ impl Solver {
         for read in 1..learned_clause.len() {
             let lit = learned_clause[read];
             let var = lit.unsigned_abs() as usize;
-            let keep = if reason[var] == NO_REASON {
+            let keep = if reason[var].is_none() {
                 true
             } else if self.ccmin_mode == CCMIN_BASIC {
                 !basic_lit_redundant(lit, arena, decision_level, reason, state)
@@ -2357,8 +2439,8 @@ impl Solver {
                 break lit;
             }
 
-            let reason_idx = self.reason[var];
-            if reason_idx != NO_REASON {
+            if !self.reason[var].is_none() {
+                let reason_idx = self.reason[var].clause_idx();
                 let start_lit_pos = if self.use_resolved_conflict_analysis {
                     0
                 } else {
@@ -2592,7 +2674,8 @@ impl Solver {
                             self.clause_slice(learned_clause_idx),
                             backtrack_level,
                         );
-                        let inserted = self.enqueue(asserting_lit, learned_clause_idx);
+                        let inserted =
+                            self.enqueue(asserting_lit, ReasonRef::clause(learned_clause_idx));
                         debug_assert!(inserted, "learned clause must be asserting after backtrack");
                     }
                     self.maybe_check_invariants("conflict");
@@ -2955,7 +3038,7 @@ mod tests {
         }
 
         for &(var, reason_idx) in reason_overrides {
-            s.reason[var] = reason_idx;
+            s.reason[var] = ReasonRef::clause(reason_idx);
         }
     }
 
@@ -3031,6 +3114,25 @@ mod tests {
     fn test_no_clauses_sat() {
         let mut s = make_solver(3, vec![]);
         assert!(s.solve());
+    }
+
+    #[test]
+    fn test_reason_ref_is_one_word_and_decodes_tags() {
+        assert_eq!(
+            std::mem::size_of::<ReasonRef>(),
+            std::mem::size_of::<usize>()
+        );
+
+        assert!(ReasonRef::none().is_none());
+        assert!(ReasonRef::unit().is_unit());
+
+        let clause = ReasonRef::clause(12345);
+        assert_eq!(clause.as_clause(), Some(12345));
+        assert_eq!(clause.as_binary(), None);
+
+        let binary = ReasonRef::binary(-17);
+        assert_eq!(binary.as_binary(), Some(-17));
+        assert_eq!(binary.as_clause(), None);
     }
 
     #[test]
@@ -3196,8 +3298,8 @@ mod tests {
     fn test_deep_clause_minimization_recurses_through_learned_reasons() {
         let mut s = make_solver(7, vec![vec![5, 3]]);
         let learned_reason = s.add_clause(vec![7, -5, 3]);
-        s.reason[5] = 0;
-        s.reason[7] = learned_reason;
+        s.reason[5] = ReasonRef::clause(0);
+        s.reason[7] = ReasonRef::clause(learned_reason);
 
         let mut learned_clause = vec![-1, 3, -7];
         s.ccmin_mode = CCMIN_DEEP;
@@ -3212,7 +3314,7 @@ mod tests {
         s.decision_level[1] = 2;
         s.decision_level[3] = 1;
         s.decision_level[5] = 1;
-        s.reason[5] = 0;
+        s.reason[5] = ReasonRef::clause(0);
 
         let mut basic_clause = vec![-1, 3, 5];
         s.ccmin_mode = CCMIN_BASIC;
@@ -3232,7 +3334,7 @@ mod tests {
         s.decision_level[3] = 1;
         s.decision_level[5] = 1;
         s.decision_level[6] = 1;
-        s.reason[5] = 0;
+        s.reason[5] = ReasonRef::clause(0);
 
         let mut learned_clause = vec![-1, 3, 5];
 
@@ -3264,7 +3366,7 @@ mod tests {
         s.decide(-1);
         assert_eq!(s.propagate(), None);
         assert_eq!(s.assignment[3], TRUE);
-        assert_eq!(s.reason[3], relocated_live);
+        assert_eq!(s.reason[3].as_clause(), Some(relocated_live));
         assert_eq!(s.clause_slice(relocated_live), &[3, 1]);
     }
 
@@ -3277,7 +3379,7 @@ mod tests {
         s.assignment[4] = TRUE;
         s.saved_phase[4] = TRUE;
         s.decision_level[4] = 1;
-        s.reason[4] = live;
+        s.reason[4] = ReasonRef::clause(live);
         s.trail.push(4);
         s.trail_limits.push(0);
 
@@ -3285,8 +3387,8 @@ mod tests {
         s.garbage_collect();
         let relocated_live = s.learned_clause_ids[0];
 
-        assert_eq!(s.reason[4], relocated_live);
-        assert_eq!(s.clause_slice(s.reason[4]), &[3, 1]);
+        assert_eq!(s.reason[4].as_clause(), Some(relocated_live));
+        assert_eq!(s.clause_slice(s.reason[4].clause_idx()), &[3, 1]);
     }
 
     #[test]
@@ -3381,7 +3483,7 @@ mod tests {
         s.assignment[3] = TRUE;
         s.saved_phase[3] = TRUE;
         s.decision_level[3] = 1;
-        s.reason[3] = locked;
+        s.reason[3] = ReasonRef::clause(locked);
         s.trail.push(3);
         s.trail_limits.push(0);
         s.propagate_head = s.trail.len();
@@ -3391,7 +3493,7 @@ mod tests {
         assert_eq!(s.learned_clause_count(), 2);
         assert_eq!(s.stats.reduce_db_calls, 1);
         assert_eq!(s.stats.deleted_clauses, 1);
-        assert_eq!(s.clause_slice(s.reason[3]), &[3, 1, 2]);
+        assert_eq!(s.clause_slice(s.reason[3].clause_idx()), &[3, 1, 2]);
 
         s.decide(-1);
         assert_eq!(s.propagate(), None);
@@ -3414,7 +3516,7 @@ mod tests {
         assert_eq!(s.propagate(), None);
         assert_eq!(s.assignment[1], TRUE);
         assert_eq!(s.assignment[2], TRUE);
-        assert_eq!(s.reason[2], satisfied_learned);
+        assert_eq!(s.reason[2].as_clause(), Some(satisfied_learned));
 
         assert!(s.simplify());
 
