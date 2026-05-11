@@ -108,6 +108,12 @@ enum ReduceMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SearchMode {
+    Stable,
+    Focused,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BinaryPropagationMode {
     Generic,
     WatcherFast,
@@ -575,6 +581,16 @@ struct Solver {
     branch_heap: Vec<u32>,
     /// current heap index for each variable, or BRANCH_NOT_IN_HEAP
     branch_pos: Vec<usize>,
+    /// focused-mode next links, indexed by variable; 0 means no neighbor
+    focused_next: Vec<usize>,
+    /// focused-mode previous links, indexed by variable; 0 means no neighbor
+    focused_prev: Vec<usize>,
+    /// whether a variable is currently in the focused decision queue
+    focused_queued: Vec<bool>,
+    /// head of the focused decision queue, or 0 when empty
+    focused_head: usize,
+    /// tail of the focused decision queue, or 0 when empty
+    focused_tail: usize,
     /// variables eligible for search branching; eliminated variables stay permanently false here
     decision_var: Vec<bool>,
     /// EVSIDS-style variable activity
@@ -603,6 +619,8 @@ struct Solver {
     reduce_db_limit: usize,
     /// learned-clause reduction policy
     reduce_mode: ReduceMode,
+    /// stable heap search or focused recent-conflict queue search
+    search_mode: SearchMode,
     /// resize learned-clause budget after preprocessing, matching MiniSat's solve-time setup
     reset_reduce_db_after_preprocess: bool,
     /// current conflict countdown until the next learned-budget adjustment
@@ -1029,6 +1047,11 @@ impl Solver {
             branch_rank,
             branch_heap: Vec::with_capacity(num_vars),
             branch_pos: vec![BRANCH_NOT_IN_HEAP; num_vars + 1],
+            focused_next: vec![0; num_vars + 1],
+            focused_prev: vec![0; num_vars + 1],
+            focused_queued: vec![false; num_vars + 1],
+            focused_head: 0,
+            focused_tail: 0,
             decision_var: vec![true; num_vars + 1],
             activity: vec![0.0; num_vars + 1],
             activity_inc: 1.0,
@@ -1043,6 +1066,7 @@ impl Solver {
             maintenance_scheduler: MaintenanceScheduler::from_env(),
             reduce_db_limit: ((original_clause_count as f64) * LEARNTSIZE_FACTOR) as usize,
             reduce_mode: parse_reduce_mode(),
+            search_mode: parse_search_mode(),
             reset_reduce_db_after_preprocess: true,
             learntsize_adjust_cnt: LEARNTSIZE_ADJUST_START_CONFL,
             learntsize_adjust_confl: LEARNTSIZE_ADJUST_START_CONFL as f64,
@@ -1102,7 +1126,7 @@ impl Solver {
             }
         }
         for &var in &branch_order {
-            solver.push_branch_var(var as usize);
+            solver.push_initial_branch_var(var as usize);
         }
         solver.maybe_check_invariants("new");
         solver
@@ -2015,6 +2039,53 @@ impl Solver {
             }
         }
 
+        if self.search_mode == SearchMode::Focused {
+            let mut seen_focused_vars = vec![false; self.assignment.len()];
+            let mut prev = 0usize;
+            let mut cursor = self.focused_head;
+            while cursor != 0 {
+                assert!(
+                    (1..=num_vars).contains(&cursor),
+                    "{context}: focused queue contains invalid variable {cursor}"
+                );
+                assert!(
+                    !seen_focused_vars[cursor],
+                    "{context}: focused queue contains duplicate variable {cursor}"
+                );
+                assert!(
+                    self.focused_queued[cursor],
+                    "{context}: focused queue variable {cursor} missing queued flag"
+                );
+                assert_eq!(
+                    self.focused_prev[cursor], prev,
+                    "{context}: focused queue previous-link mismatch for variable {cursor}"
+                );
+                assert!(
+                    self.decision_var[cursor],
+                    "{context}: focused queue contains non-decision variable {cursor}"
+                );
+                seen_focused_vars[cursor] = true;
+                prev = cursor;
+                cursor = self.focused_next[cursor];
+            }
+            assert_eq!(
+                self.focused_tail, prev,
+                "{context}: focused queue tail mismatch"
+            );
+            for var in 1..=num_vars {
+                assert_eq!(
+                    self.focused_queued[var], seen_focused_vars[var],
+                    "{context}: focused queued flag mismatch for variable {var}"
+                );
+                if self.decision_var[var] && self.assignment[var] == UNASSIGNED {
+                    assert!(
+                        seen_focused_vars[var],
+                        "{context}: branchable unassigned variable {var} is missing from focused queue"
+                    );
+                }
+            }
+        }
+
         for &clause_idx in &self.root_unit_clauses {
             assert!(
                 clause_idx < self.arena.len(),
@@ -2285,27 +2356,121 @@ impl Solver {
         }
     }
 
-    fn push_branch_var(&mut self, var: usize) {
-        if !self.decision_var[var]
-            || self.assignment[var] != UNASSIGNED
-            || self.branch_pos[var] != BRANCH_NOT_IN_HEAP
-        {
+    fn focused_queue_clear(&mut self) {
+        self.focused_next.fill(0);
+        self.focused_prev.fill(0);
+        self.focused_queued.fill(false);
+        self.focused_head = 0;
+        self.focused_tail = 0;
+    }
+
+    fn focused_queue_unlink(&mut self, var: usize) {
+        if !self.focused_queued[var] {
             return;
         }
 
-        let idx = self.branch_heap.len();
-        self.branch_heap.push(var as u32);
-        self.branch_pos[var] = idx;
-        self.branch_heap_sift_up(idx);
+        let prev = self.focused_prev[var];
+        let next = self.focused_next[var];
+        if prev == 0 {
+            self.focused_head = next;
+        } else {
+            self.focused_next[prev] = next;
+        }
+        if next == 0 {
+            self.focused_tail = prev;
+        } else {
+            self.focused_prev[next] = prev;
+        }
+        self.focused_prev[var] = 0;
+        self.focused_next[var] = 0;
+        self.focused_queued[var] = false;
+    }
+
+    fn focused_queue_push_front(&mut self, var: usize) {
+        if !self.decision_var[var] {
+            return;
+        }
+        if self.focused_queued[var] {
+            self.focused_queue_unlink(var);
+        }
+
+        self.focused_queued[var] = true;
+        self.focused_prev[var] = 0;
+        self.focused_next[var] = self.focused_head;
+        if self.focused_head == 0 {
+            self.focused_tail = var;
+        } else {
+            self.focused_prev[self.focused_head] = var;
+        }
+        self.focused_head = var;
+    }
+
+    fn focused_queue_push_back(&mut self, var: usize) {
+        if !self.decision_var[var] || self.focused_queued[var] {
+            return;
+        }
+
+        self.focused_queued[var] = true;
+        self.focused_next[var] = 0;
+        self.focused_prev[var] = self.focused_tail;
+        if self.focused_tail == 0 {
+            self.focused_head = var;
+        } else {
+            self.focused_next[self.focused_tail] = var;
+        }
+        self.focused_tail = var;
+    }
+
+    fn focused_queue_pop_front(&mut self) -> Option<usize> {
+        while self.focused_head != 0 {
+            let var = self.focused_head;
+            self.focused_queue_unlink(var);
+            if self.decision_var[var] && self.assignment[var] == UNASSIGNED {
+                return Some(var);
+            }
+        }
+        None
+    }
+
+    fn insert_branch_var(&mut self, var: usize, focused_front: bool) {
+        if !self.decision_var[var] || self.assignment[var] != UNASSIGNED {
+            return;
+        }
+
+        if self.branch_pos[var] == BRANCH_NOT_IN_HEAP {
+            let idx = self.branch_heap.len();
+            self.branch_heap.push(var as u32);
+            self.branch_pos[var] = idx;
+            self.branch_heap_sift_up(idx);
+        }
+        if self.search_mode == SearchMode::Focused {
+            if focused_front && !self.focused_queued[var] {
+                self.focused_queue_push_front(var);
+            } else {
+                self.focused_queue_push_back(var);
+            }
+        }
+    }
+
+    fn push_initial_branch_var(&mut self, var: usize) {
+        self.insert_branch_var(var, false);
+    }
+
+    fn push_branch_var(&mut self, var: usize) {
+        self.insert_branch_var(var, true);
     }
 
     fn rebuild_branch_queue(&mut self) {
         self.branch_heap.clear();
         self.branch_pos.fill(BRANCH_NOT_IN_HEAP);
+        self.focused_queue_clear();
         for var in 1..self.assignment.len() {
             if self.decision_var[var] && self.assignment[var] == UNASSIGNED {
                 self.branch_pos[var] = self.branch_heap.len();
                 self.branch_heap.push(var as u32);
+                if self.search_mode == SearchMode::Focused {
+                    self.focused_queue_push_back(var);
+                }
             }
         }
         for idx in (0..(self.branch_heap.len() / 2)).rev() {
@@ -2920,6 +3085,27 @@ impl Solver {
         self.scratch_bumped_vars.clear();
     }
 
+    fn move_analyzed_variables_to_focused_front(&mut self) {
+        let bumped_vars = std::mem::take(&mut self.scratch_bumped_vars);
+        for &var in &bumped_vars {
+            self.focused_queue_push_front(var);
+        }
+        self.scratch_bumped_vars = bumped_vars;
+        self.scratch_bumped_vars.clear();
+    }
+
+    fn apply_analyzed_variable_search_updates(&mut self) {
+        match self.search_mode {
+            SearchMode::Stable => {
+                self.bump_analyzed_variable_activity();
+                self.decay_variable_activity();
+            }
+            SearchMode::Focused => {
+                self.move_analyzed_variables_to_focused_front();
+            }
+        }
+    }
+
     fn luby_value(index: usize) -> usize {
         let mut power = 1usize;
         while (1usize << power) - 1 < index {
@@ -3054,8 +3240,17 @@ impl Solver {
     }
 
     fn pick_branch_lit(&mut self) -> Option<i32> {
-        while let Some(var) = self.branch_heap_pop_best() {
+        let next_var = match self.search_mode {
+            SearchMode::Stable => self.branch_heap_pop_best(),
+            SearchMode::Focused => self.focused_queue_pop_front(),
+        };
+        let mut next_var = next_var;
+        while let Some(var) = next_var {
             if !self.decision_var[var] || self.assignment[var] != UNASSIGNED {
+                next_var = match self.search_mode {
+                    SearchMode::Stable => self.branch_heap_pop_best(),
+                    SearchMode::Focused => self.focused_queue_pop_front(),
+                };
                 continue;
             }
 
@@ -3996,8 +4191,7 @@ impl Solver {
                         next_search_trace = next_search_trace.saturating_add(trace_search_interval);
                     }
                     let backtrack_level = self.analyze_conflict_to_scratch(conflict_clause_idx);
-                    self.bump_analyzed_variable_activity();
-                    self.decay_variable_activity();
+                    self.apply_analyzed_variable_search_updates();
                     if self.reduce_db_enabled() {
                         self.decay_clause_activity();
                         self.note_learnt_budget_conflict();
@@ -4155,6 +4349,20 @@ fn parse_reduce_mode() -> ReduceMode {
             }
         },
         Err(_) => ReduceMode::GlueTiered,
+    }
+}
+
+fn parse_search_mode() -> SearchMode {
+    match env::var("SAT_SEARCH_MODE") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "stable" | "activity" | "heap" => SearchMode::Stable,
+            "focused" | "focus" | "queue" => SearchMode::Focused,
+            other => {
+                eprintln!("Invalid SAT_SEARCH_MODE={other}; expected stable/focused");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => SearchMode::Stable,
     }
 }
 
@@ -5585,6 +5793,46 @@ mod tests {
 
         s.backtrack(0);
         assert_eq!(s.pick_branch_lit(), Some(-1));
+    }
+
+    #[test]
+    fn test_focused_pick_uses_recent_queue_over_activity() {
+        let mut s = make_solver(3, vec![]);
+        s.search_mode = SearchMode::Focused;
+        s.activity[1] = 100.0;
+        s.activity[2] = 50.0;
+        s.activity[3] = 1.0;
+        s.rebuild_branch_queue();
+
+        s.focused_queue_push_front(3);
+
+        assert_eq!(s.pick_branch_lit(), Some(-3));
+    }
+
+    #[test]
+    fn test_focused_backtrack_requeues_popped_decision_variable() {
+        let mut s = make_solver(2, vec![]);
+        s.search_mode = SearchMode::Focused;
+        s.rebuild_branch_queue();
+
+        assert_eq!(s.pick_branch_lit(), Some(-1));
+        s.decide(-1);
+        s.backtrack(0);
+
+        assert_eq!(s.pick_branch_lit(), Some(-1));
+    }
+
+    #[test]
+    fn test_focused_analysis_moves_bumped_variables_to_front() {
+        let mut s = make_solver(4, vec![]);
+        s.search_mode = SearchMode::Focused;
+        s.rebuild_branch_queue();
+        s.scratch_bumped_vars.extend([2, 4]);
+
+        s.apply_analyzed_variable_search_updates();
+
+        assert_eq!(s.pick_branch_lit(), Some(-4));
+        assert_eq!(s.pick_branch_lit(), Some(-2));
     }
 
     #[test]

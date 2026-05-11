@@ -30,10 +30,13 @@ What is present:
   hooks, dense occurrence-view lifetime counters, and sparse-search cleanup
 - Phase 5 learned-clause lifecycle policy: glue/tier/used-based reduction is the default; use
   `SAT_REDUCE_MODE=activity` for the previous activity-based reducer fallback
+- Phase 6 search-mode infrastructure: stable heap search remains the default, while
+  `SAT_SEARCH_MODE=focused` enables a focused recent-conflict decision queue for measurement
 
 What is intentionally not present yet:
 
-- no full Kissat search policy, real mid-search inprocessing pass, probing, or rephasing yet
+- no automatic Kissat search-mode switching, glue-EMA restart policy, real mid-search inprocessing
+  pass, probing, or rephasing yet
 - no separate MiniSat `simp` port design document is copied forward
 
 ## Direction
@@ -187,3 +190,38 @@ Important rejected/adjusted attempt:
   pressure candidates. The focused trace after that change solved `random_v292_s4` in `19.066s`
   with `3261` reductions. That is still a search-path regression on this instance, but avoids the
   pathological reducer churn and the full profiling set improves materially.
+
+Focused search-mode infrastructure validation on 2026-05-10:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_SEARCH_MODE=focused SAT_CHECK_INVARIANTS=1 bash tools/smoke_test.sh solver/11-kissat-innovations
+bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_SEARCH_MODE=focused bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 73 passed
+- default stable smoke suite: 9/9 passed, log `log/2026-05-10-21-31-59`
+- focused invariant smoke suite: 9/9 passed, log `log/2026-05-10-21-32-04`
+- default stable profiling run: solved 6/11, PAR-2 `1329.605`, log
+  `log/bench-11-kissat-innovations-2026-05-10-21-32-20`
+- focused profiling run: solved 2/11, PAR-2 `2288.046`, log
+  `log/bench-11-kissat-innovations-2026-05-10-21-52-31`
+- stable default stayed in line with the previous glue-default profile, so the focused queue
+  infrastructure did not show an obvious default hot-path regression
+
+Focused-mode analysis:
+
+- Focused-only is not ready as a default policy. It timed out on `feistel_b64_k32_r22`,
+  `feistel_b64_k52_r17`, `random_v285_s2`, and `random_v292_s4`, all solved by stable mode.
+- On `feistel_b64_k57_r18`, direct no-proof trace shows stable solved in `3.992s` with `243188`
+  conflicts, `304380` decisions, `18090356` propagations, `90` reduce passes, and `112.844ms`
+  reduction time.
+- The same direct trace in focused mode solved in `61.275s` with `933578` conflicts, `1062833`
+  decisions, `81748523` propagations, `191417` reduce passes, and `32077.625ms` reduction time.
+- That points to a search trajectory and learned-DB pressure problem, not just local queue overhead.
+  The next focused-related work should be glue-EMA restarts/trail reuse or a reduction throttle
+  before considering focused mode as anything other than an opt-in experiment.

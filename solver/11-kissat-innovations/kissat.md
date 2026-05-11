@@ -753,6 +753,41 @@ Notes:
 - This can be introduced as `SAT_SEARCH_MODE=stable|focused`.
 - Do not add mode switching until each single mode is correct and measured.
 
+Implementation status:
+
+- Landed as an opt-in mode behind `SAT_SEARCH_MODE=focused`; default remains stable heap search.
+- The stable hot path still uses the existing activity heap, variable activity bumps, and decay.
+- Focused mode maintains a linked recent-conflict decision queue. Branching pops the queue front,
+  analyzed variables are moved to the front instead of score-bumped, and backtracked variables are
+  restored to the focused queue without rebuilding the heap.
+- The normal branch heap remains populated in focused mode for invariants and future mode-switching
+  work, but focused decisions read from the focused queue.
+- No automatic mode switching, focused restart policy, or trail reuse is implemented yet.
+
+Validation:
+
+- `cargo test`: 73 passed.
+- Default stable smoke: 9/9 passed, log `log/2026-05-10-21-31-59`.
+- Focused invariant smoke: 9/9 passed, log `log/2026-05-10-21-32-04`.
+- Default stable profiling: 6/11 solved, PAR-2 `1329.605`, log
+  `log/bench-11-kissat-innovations-2026-05-10-21-32-20`.
+- Focused profiling: 2/11 solved, PAR-2 `2288.046`, log
+  `log/bench-11-kissat-innovations-2026-05-10-21-52-31`.
+- Stable default stayed aligned with the previous glue-default profile, so the infrastructure did
+  not show an obvious default hot-path regression.
+
+Analysis:
+
+- Focused-only is a negative result at this stage. It lost several stable solves, including
+  `feistel_b64_k32_r22`, `feistel_b64_k52_r17`, `random_v285_s2`, and `random_v292_s4`.
+- Direct no-proof trace on `feistel_b64_k57_r18`: stable solved in `3.992s` with `243188`
+  conflicts, `304380` decisions, `18090356` propagations, `90` reduce passes, and `112.844ms`
+  reduction time.
+- The same instance in focused mode solved in `61.275s` with `933578` conflicts, `1062833`
+  decisions, `81748523` propagations, `191417` reduce passes, and `32077.625ms` reduction time.
+- The immediate issue is search trajectory plus learned-DB pressure. Focused mode should remain an
+  explicit experiment until glue-EMA restarts/trail reuse or a reduction throttle exists.
+
 ### F. Add glue EMA restart policy and trail reuse
 
 Goal:
@@ -1537,6 +1572,14 @@ Build first:
 - Add a mode-independent way to ask for variable search relevance: stable score or focused queue
   stamp.
 - Test stable and focused modes independently before adding automatic switching.
+
+Status:
+
+- The basic stable/focused decision abstraction is implemented and tested.
+- Focused-only currently performs much worse than stable on the profiling set, mainly due to a worse
+  search trajectory and excessive reduce-DB pressure. Keep stable as default.
+- The search-relevance API for BVE/reorder is not implemented yet; focused queue stamps/recency can
+  be exposed when those features are built.
 
 Why after reasons and scheduler:
 
