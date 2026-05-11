@@ -50,6 +50,10 @@ const NO_BINARY_CLAUSE: u32 = u32::MAX;
 const DEFAULT_BVE_GROW: isize = 0;
 const DEFAULT_BVE_CLAUSE_LIMIT: isize = 20;
 const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
+const DEFAULT_RESTART_GLUE_FAST_ALPHA: f64 = 0.03;
+const DEFAULT_RESTART_GLUE_SLOW_ALPHA: f64 = 0.0005;
+const DEFAULT_RESTART_GLUE_MARGIN: f64 = 1.25;
+const DEFAULT_REDUCE_LOW_YIELD_MIN_DELETIONS: usize = 16;
 const STATIC_BINARY_MIN_ORIGINAL_BINARIES: usize = 64;
 const STATIC_BINARY_MIN_ORIGINAL_BINARY_PERCENT: usize = 20;
 const STATIC_BINARY_ALWAYS_ORIGINAL_BINARIES: usize = 4096;
@@ -111,6 +115,12 @@ enum ReduceMode {
 enum SearchMode {
     Stable,
     Focused,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RestartMode {
+    Luby,
+    GlueEma,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -316,6 +326,17 @@ struct SolverStats {
     reduce_deleted_clauses: u64,
     reduce_activity_deleted_clauses: u64,
     reduce_glue_tiered_deleted_clauses: u64,
+    reduce_primary_candidate_clauses: u64,
+    reduce_pressure_candidate_clauses: u64,
+    reduce_low_yield_passes: u64,
+    reduce_still_over_budget_passes: u64,
+    reduce_cooldown_skips: u64,
+    reduce_last_live_before: usize,
+    reduce_last_live_after: usize,
+    reduce_last_target_live: usize,
+    reduce_last_deleted_clauses: usize,
+    reduce_last_primary_candidates: usize,
+    reduce_last_pressure_candidates: usize,
     deleted_clauses: u64,
     garbage_collections: u64,
     learned_clauses: u64,
@@ -338,6 +359,7 @@ struct SolverStats {
     maintenance_checks: u64,
     maintenance_actions: u64,
     maintenance_restarts: u64,
+    restart_glue_ema_triggers: u64,
     maintenance_root_simplifies: u64,
     maintenance_reductions: u64,
     maintenance_noops: u64,
@@ -603,6 +625,8 @@ struct Solver {
     clause_activity_inc: f64,
     /// multiplicative decay factor for older learned-clause activity
     clause_activity_decay: f64,
+    /// restart policy selected for search
+    restart_mode: RestartMode,
     /// number of conflicts seen since the last restart
     restart_conflicts: usize,
     /// base conflict budget multiplied by the current Luby term
@@ -613,6 +637,18 @@ struct Solver {
     restart_conflict_limit: usize,
     /// whether a restart should be applied before the next branch
     restart_pending: bool,
+    /// fast moving average of learned-clause glue for glue-EMA restarts
+    restart_glue_fast_ema: f64,
+    /// slow moving average of learned-clause glue for glue-EMA restarts
+    restart_glue_slow_ema: f64,
+    /// whether the glue EMAs have seen their first learned clause
+    restart_glue_ema_initialized: bool,
+    /// fast EMA update factor for glue restart mode
+    restart_glue_fast_alpha: f64,
+    /// slow EMA update factor for glue restart mode
+    restart_glue_slow_alpha: f64,
+    /// restart threshold: fast glue must exceed slow glue by this multiplier
+    restart_glue_margin: f64,
     /// central maintenance scheduler for root-only Kissat-style hooks
     maintenance_scheduler: MaintenanceScheduler,
     /// learned-clause budget threshold for running a database reduction pass
@@ -629,6 +665,12 @@ struct Solver {
     learntsize_adjust_confl: f64,
     /// current number of non-deleted learned clauses
     live_learned_clause_count: usize,
+    /// conflict number before which a poor-yield reducer pass suppresses another reduce attempt
+    reduce_cooldown_until_conflict: u64,
+    /// deletion count below which a reduce pass is considered low yield for diagnostics/cooldown
+    reduce_low_yield_min_deletions: usize,
+    /// opt-in number of conflicts to wait after a low-yield reduce pass
+    reduce_low_yield_cooldown_conflicts: u64,
     /// live literal count in original clauses, maintained incrementally for simplify gating
     original_literals: usize,
     /// live literal count in learned clauses, maintained incrementally for simplify gating
@@ -1058,11 +1100,27 @@ impl Solver {
             activity_decay: 0.95,
             clause_activity_inc: 1.0,
             clause_activity_decay: 0.999,
+            restart_mode: parse_restart_mode(),
             restart_conflicts: 0,
             restart_unit: 100,
             restart_luby_index: 1,
             restart_conflict_limit: 100,
             restart_pending: false,
+            restart_glue_fast_ema: 0.0,
+            restart_glue_slow_ema: 0.0,
+            restart_glue_ema_initialized: false,
+            restart_glue_fast_alpha: parse_f64_env(
+                "SAT_RESTART_GLUE_FAST_ALPHA",
+                DEFAULT_RESTART_GLUE_FAST_ALPHA,
+            ),
+            restart_glue_slow_alpha: parse_f64_env(
+                "SAT_RESTART_GLUE_SLOW_ALPHA",
+                DEFAULT_RESTART_GLUE_SLOW_ALPHA,
+            ),
+            restart_glue_margin: parse_f64_env(
+                "SAT_RESTART_GLUE_MARGIN",
+                DEFAULT_RESTART_GLUE_MARGIN,
+            ),
             maintenance_scheduler: MaintenanceScheduler::from_env(),
             reduce_db_limit: ((original_clause_count as f64) * LEARNTSIZE_FACTOR) as usize,
             reduce_mode: parse_reduce_mode(),
@@ -1073,6 +1131,13 @@ impl Solver {
             live_learned_clause_count: 0,
             original_literals: 0,
             learned_literals: 0,
+            reduce_cooldown_until_conflict: 0,
+            reduce_low_yield_min_deletions: parse_usize_env(
+                "SAT_REDUCE_LOW_YIELD_MIN",
+                DEFAULT_REDUCE_LOW_YIELD_MIN_DELETIONS,
+            ),
+            reduce_low_yield_cooldown_conflicts: parse_usize_env("SAT_REDUCE_LOW_YIELD_COOLDOWN", 0)
+                as u64,
             deleted_clause_words: 0,
             simplify_assigns: 0,
             simplify_props_remaining: 0,
@@ -3119,7 +3184,14 @@ impl Solver {
         Self::luby_value(index - (1usize << (power - 1)) + 1)
     }
 
-    fn note_conflict(&mut self) {
+    fn note_conflict(&mut self, learned_glue: u16) {
+        match self.restart_mode {
+            RestartMode::Luby => self.note_luby_conflict(),
+            RestartMode::GlueEma => self.note_glue_ema_conflict(learned_glue),
+        }
+    }
+
+    fn note_luby_conflict(&mut self) {
         if self.restart_pending {
             return;
         }
@@ -3137,6 +3209,35 @@ impl Solver {
             .saturating_mul(Self::luby_value(self.restart_luby_index));
     }
 
+    fn note_glue_ema_conflict(&mut self, learned_glue: u16) {
+        if !self.restart_glue_ema_initialized {
+            self.restart_glue_fast_ema = learned_glue as f64;
+            self.restart_glue_slow_ema = learned_glue as f64;
+            self.restart_glue_ema_initialized = true;
+        } else {
+            let glue = learned_glue as f64;
+            self.restart_glue_fast_ema +=
+                self.restart_glue_fast_alpha * (glue - self.restart_glue_fast_ema);
+            self.restart_glue_slow_ema +=
+                self.restart_glue_slow_alpha * (glue - self.restart_glue_slow_ema);
+        }
+
+        if self.restart_pending {
+            return;
+        }
+
+        self.restart_conflicts += 1;
+        if self.restart_conflicts < self.restart_conflict_limit {
+            return;
+        }
+
+        self.restart_conflicts = 0;
+        if self.restart_glue_fast_ema >= self.restart_glue_slow_ema * self.restart_glue_margin {
+            self.restart_pending = true;
+            self.stats.restart_glue_ema_triggers += 1;
+        }
+    }
+
     fn record_maintenance_action(&mut self, action: MaintenanceAction) {
         self.stats.maintenance_actions += 1;
         match action {
@@ -3151,11 +3252,21 @@ impl Solver {
     }
 
     fn should_reduce_db_now(&self) -> bool {
+        self.reduce_db_budget_pressure()
+            && self.stats.conflicts >= self.reduce_cooldown_until_conflict
+    }
+
+    fn reduce_db_budget_pressure(&self) -> bool {
         self.reduce_db_enabled()
             && self
                 .live_learned_clause_count
                 .saturating_sub(self.trail.len())
                 >= self.reduce_db_limit
+    }
+
+    fn reduce_db_in_cooldown(&self) -> bool {
+        self.reduce_db_budget_pressure()
+            && self.stats.conflicts < self.reduce_cooldown_until_conflict
     }
 
     fn return_to_root_for_maintenance<F>(
@@ -3214,7 +3325,10 @@ impl Solver {
             }
         }
 
-        if self.should_reduce_db_now() {
+        let reduce_db_budget_pressure = self.reduce_db_budget_pressure();
+        if reduce_db_budget_pressure && self.stats.conflicts < self.reduce_cooldown_until_conflict {
+            self.stats.reduce_cooldown_skips += 1;
+        } else if reduce_db_budget_pressure {
             self.record_maintenance_action(MaintenanceAction::ReduceDb);
             self.reduce_db();
         }
@@ -3720,7 +3834,42 @@ impl Solver {
         self.maybe_check_invariants("reduce_db");
     }
 
+    fn record_reduce_pressure(
+        &mut self,
+        live_before: usize,
+        target_live: usize,
+        primary_candidates: usize,
+        pressure_candidates: usize,
+        deleted_count: usize,
+    ) {
+        let live_after = self.learned_clause_ids.len();
+        self.stats.reduce_primary_candidate_clauses += primary_candidates as u64;
+        self.stats.reduce_pressure_candidate_clauses += pressure_candidates as u64;
+        self.stats.reduce_last_live_before = live_before;
+        self.stats.reduce_last_live_after = live_after;
+        self.stats.reduce_last_target_live = target_live;
+        self.stats.reduce_last_deleted_clauses = deleted_count;
+        self.stats.reduce_last_primary_candidates = primary_candidates;
+        self.stats.reduce_last_pressure_candidates = pressure_candidates;
+
+        if deleted_count < self.reduce_low_yield_min_deletions {
+            self.stats.reduce_low_yield_passes += 1;
+            if self.reduce_low_yield_cooldown_conflicts > 0 {
+                self.reduce_cooldown_until_conflict = self
+                    .stats
+                    .conflicts
+                    .saturating_add(self.reduce_low_yield_cooldown_conflicts);
+            }
+        }
+
+        if self.reduce_db_budget_pressure() {
+            self.stats.reduce_still_over_budget_passes += 1;
+        }
+    }
+
     fn reduce_db_activity(&mut self) {
+        let live_before = self.learned_clause_ids.len();
+        let target_live = self.reduce_db_limit.saturating_mul(3) / 4;
         let arena = &self.arena;
         self.learned_clause_ids.sort_unstable_by(|&lhs, &rhs| {
             let lhs_short = clause_len_in_arena(arena, lhs) <= 2;
@@ -3741,6 +3890,7 @@ impl Solver {
             self.clause_activity_inc / candidate_count as f64
         };
         let half = candidate_count / 2;
+        let mut deleted_count = 0usize;
         let mut write = 0usize;
         for idx in 0..candidate_count {
             let clause_idx = self.learned_clause_ids[idx];
@@ -3752,6 +3902,7 @@ impl Solver {
                 self.mark_clause_deleted_already_unlinked(clause_idx);
                 self.stats.reduce_deleted_clauses += 1;
                 self.stats.reduce_activity_deleted_clauses += 1;
+                deleted_count += 1;
             } else {
                 self.age_kept_learned_clause(clause_idx);
                 self.learned_clause_ids[write] = clause_idx;
@@ -3760,6 +3911,7 @@ impl Solver {
         }
         self.learned_clause_ids.truncate(write);
         self.live_learned_clause_count = self.learned_clause_ids.len();
+        self.record_reduce_pressure(live_before, target_live, candidate_count, 0, deleted_count);
     }
 
     fn glue_tiered_reduce_candidate(&self, clause_idx: usize) -> bool {
@@ -3794,12 +3946,14 @@ impl Solver {
     }
 
     fn reduce_db_glue_tiered(&mut self) {
+        let live_before = self.learned_clause_ids.len();
         let mut candidates = Vec::new();
         for &clause_idx in &self.learned_clause_ids {
             if self.glue_tiered_reduce_candidate(clause_idx) {
                 candidates.push(clause_idx);
             }
         }
+        let primary_candidate_count = candidates.len();
         candidates.sort_unstable_by(|&lhs, &rhs| self.glue_tiered_reduce_order(lhs, rhs));
         let candidate_delete_count = (candidates.len() + 1) / 2;
         let target_live = self.reduce_db_limit.saturating_mul(3) / 4;
@@ -3812,6 +3966,7 @@ impl Solver {
             }
             candidates.sort_unstable_by(|&lhs, &rhs| self.glue_tiered_reduce_order(lhs, rhs));
         }
+        let pressure_candidate_count = candidates.len().saturating_sub(primary_candidate_count);
         let delete_count = candidates
             .len()
             .min(candidate_delete_count.max(budget_delete_count));
@@ -3835,6 +3990,13 @@ impl Solver {
         }
         self.learned_clause_ids.truncate(write);
         self.live_learned_clause_count = self.learned_clause_ids.len();
+        self.record_reduce_pressure(
+            live_before,
+            target_live,
+            primary_candidate_count,
+            pressure_candidate_count,
+            delete_count,
+        );
     }
 
     fn minimize_learned_clause(&mut self, learned_clause: &mut Vec<i32>) {
@@ -4131,7 +4293,7 @@ impl Solver {
                         self.stats.search_time_ns += elapsed_ns(search_start);
                         if trace_search_interval > 0 {
                             eprintln!(
-                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} deleted_clauses={} reduce_deleted={} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                 self.stats.search_time_ns as f64 / 1e9,
                                 self.stats.conflicts,
                                 self.stats.decisions,
@@ -4143,8 +4305,20 @@ impl Solver {
                                 self.average_learned_glue(),
                                 self.stats.learned_clause_glue_max,
                                 self.stats.last_learned_clause_glue,
+                                self.restart_glue_fast_ema,
+                                self.restart_glue_slow_ema,
+                                self.stats.restart_glue_ema_triggers,
                                 self.stats.deleted_clauses,
                                 self.stats.reduce_deleted_clauses,
+                                self.stats.reduce_low_yield_passes,
+                                self.stats.reduce_still_over_budget_passes,
+                                self.stats.reduce_cooldown_skips,
+                                self.stats.reduce_last_live_before,
+                                self.stats.reduce_last_live_after,
+                                self.stats.reduce_last_target_live,
+                                self.stats.reduce_last_deleted_clauses,
+                                self.stats.reduce_last_primary_candidates,
+                                self.stats.reduce_last_pressure_candidates,
                                 self.stats.deleted_words,
                                 self.stats.garbage_collections,
                                 self.stats.gc_time_ns as f64 / 1e6,
@@ -4163,7 +4337,7 @@ impl Solver {
                     self.stats.conflicts += 1;
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
-                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} reduce_db={} reduce_deleted={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
+                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
                             search_start.elapsed().as_secs_f64(),
                             self.stats.conflicts,
                             self.stats.decisions,
@@ -4179,8 +4353,14 @@ impl Solver {
                             self.average_learned_glue(),
                             self.stats.learned_clause_glue_max,
                             self.stats.last_learned_clause_glue,
+                            self.restart_glue_fast_ema,
+                            self.restart_glue_slow_ema,
+                            self.stats.restart_glue_ema_triggers,
                             self.stats.reduce_db_calls,
                             self.stats.reduce_deleted_clauses,
+                            self.stats.reduce_low_yield_passes,
+                            self.stats.reduce_still_over_budget_passes,
+                            self.stats.reduce_cooldown_skips,
                             self.stats.maintenance_actions,
                             self.original_clause_ids.len(),
                             self.original_literals,
@@ -4196,10 +4376,10 @@ impl Solver {
                         self.decay_clause_activity();
                         self.note_learnt_budget_conflict();
                     }
-                    self.note_conflict();
                     let learned_clause = std::mem::take(&mut self.scratch_conflict_clause);
                     let asserting_lit = learned_clause[0];
                     let learned_glue = self.compute_clause_glue(&learned_clause);
+                    self.note_conflict(learned_glue);
                     proof_log.record_clause(&learned_clause);
                     if learned_clause.len() == 1 {
                         self.record_learned_clause_stats(1, learned_glue);
@@ -4253,7 +4433,7 @@ impl Solver {
                             self.stats.search_time_ns += elapsed_ns(search_start);
                             if trace_search_interval > 0 {
                                 eprintln!(
-                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} deleted_clauses={} reduce_deleted={} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                     self.stats.search_time_ns as f64 / 1e9,
                                     self.stats.conflicts,
                                     self.stats.decisions,
@@ -4265,8 +4445,20 @@ impl Solver {
                                     self.average_learned_glue(),
                                     self.stats.learned_clause_glue_max,
                                     self.stats.last_learned_clause_glue,
+                                    self.restart_glue_fast_ema,
+                                    self.restart_glue_slow_ema,
+                                    self.stats.restart_glue_ema_triggers,
                                     self.stats.deleted_clauses,
                                     self.stats.reduce_deleted_clauses,
+                                    self.stats.reduce_low_yield_passes,
+                                    self.stats.reduce_still_over_budget_passes,
+                                    self.stats.reduce_cooldown_skips,
+                                    self.stats.reduce_last_live_before,
+                                    self.stats.reduce_last_live_after,
+                                    self.stats.reduce_last_target_live,
+                                    self.stats.reduce_last_deleted_clauses,
+                                    self.stats.reduce_last_primary_candidates,
+                                    self.stats.reduce_last_pressure_candidates,
                                     self.stats.deleted_words,
                                     self.stats.garbage_collections,
                                     self.stats.gc_time_ns as f64 / 1e6,
@@ -4366,6 +4558,20 @@ fn parse_search_mode() -> SearchMode {
     }
 }
 
+fn parse_restart_mode() -> RestartMode {
+    match env::var("SAT_RESTART_MODE") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "luby" | "default" => RestartMode::Luby,
+            "glue-ema" | "glue_ema" | "glue" | "ema" => RestartMode::GlueEma,
+            other => {
+                eprintln!("Invalid SAT_RESTART_MODE={other}; expected luby/glue-ema");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => RestartMode::Luby,
+    }
+}
+
 fn parse_binary_propagation_mode() -> BinaryPropagationMode {
     match env::var("SAT_BINARY_PROP_MODE") {
         Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
@@ -4443,6 +4649,23 @@ fn parse_usize_env(name: &str, default: usize) -> usize {
     match env::var(name) {
         Ok(value) => match value.trim().parse::<usize>() {
             Ok(parsed) => parsed,
+            Err(err) => {
+                eprintln!("Invalid {name}={value:?}: {err}");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => default,
+    }
+}
+
+fn parse_f64_env(name: &str, default: f64) -> f64 {
+    match env::var(name) {
+        Ok(value) => match value.trim().parse::<f64>() {
+            Ok(parsed) if parsed.is_finite() => parsed,
+            Ok(_) => {
+                eprintln!("Invalid {name}={value:?}: expected finite number");
+                std::process::exit(2);
+            }
             Err(err) => {
                 eprintln!("Invalid {name}={value:?}: {err}");
                 std::process::exit(2);
@@ -5466,6 +5689,41 @@ mod tests {
     }
 
     #[test]
+    fn test_reduce_pressure_records_low_yield_and_optional_cooldown() {
+        let mut s = make_solver(8, vec![]);
+        s.reduce_mode = ReduceMode::GlueTiered;
+        s.reduce_db_limit = 2;
+        s.reduce_low_yield_min_deletions = 2;
+        s.reduce_low_yield_cooldown_conflicts = 5;
+        let protected_a = s.add_clause_from_slice_with_glue(&[1, 2, 3], 2);
+        let protected_b = s.add_clause_from_slice_with_glue(&[4, 5, 6], 2);
+        let removable = s.add_clause_from_slice_with_glue(&[7, 1, 2], 20);
+        s.set_clause_used(protected_a, 0);
+        s.set_clause_used(protected_b, 0);
+        s.set_clause_used(removable, 0);
+        s.stats.conflicts = 10;
+
+        assert!(s.should_reduce_db_now());
+        s.reduce_db();
+
+        assert!(!s.learned_clause_ids.contains(&removable));
+        assert_eq!(s.stats.reduce_low_yield_passes, 1);
+        assert_eq!(s.stats.reduce_still_over_budget_passes, 1);
+        assert_eq!(s.stats.reduce_last_live_before, 3);
+        assert_eq!(s.stats.reduce_last_live_after, 2);
+        assert_eq!(s.stats.reduce_last_deleted_clauses, 1);
+        assert_eq!(s.reduce_cooldown_until_conflict, 15);
+        assert!(s.reduce_db_in_cooldown());
+        assert!(!s.should_reduce_db_now());
+
+        let outcome = s.run_search_maintenance();
+
+        assert_eq!(outcome, MaintenanceOutcome::Continue);
+        assert_eq!(s.stats.reduce_cooldown_skips, 1);
+        assert_eq!(s.stats.reduce_db_calls, 1);
+    }
+
+    #[test]
     fn test_top_level_simplify_removes_satisfied_clauses_and_trims_only_originals() {
         let mut s = make_solver(7, vec![vec![1, 3], vec![4, -1, 5]]);
         let satisfied_learned = s.add_clause(vec![2, -1]);
@@ -5905,23 +6163,64 @@ mod tests {
         s.restart_luby_index = 1;
         s.restart_conflict_limit = 2;
 
-        s.note_conflict();
+        s.note_conflict(2);
         assert_eq!(s.restart_conflicts, 1);
         assert!(!s.restart_pending);
         assert_eq!(s.restart_conflict_limit, 2);
 
-        s.note_conflict();
+        s.note_conflict(2);
         assert_eq!(s.restart_conflicts, 0);
         assert!(s.restart_pending);
         assert_eq!(s.restart_luby_index, 2);
         assert_eq!(s.restart_conflict_limit, 2);
 
         s.restart_pending = false;
-        s.note_conflict();
-        s.note_conflict();
+        s.note_conflict(2);
+        s.note_conflict(2);
         assert!(s.restart_pending);
         assert_eq!(s.restart_luby_index, 3);
         assert_eq!(s.restart_conflict_limit, 4);
+    }
+
+    #[test]
+    fn test_glue_ema_restart_triggers_when_fast_glue_exceeds_slow_average() {
+        let mut s = make_solver(2, vec![vec![1, 2], vec![-1, -2]]);
+        s.restart_mode = RestartMode::GlueEma;
+        s.restart_conflict_limit = 2;
+        s.restart_glue_fast_alpha = 1.0;
+        s.restart_glue_slow_alpha = 0.0;
+        s.restart_glue_margin = 1.25;
+
+        s.note_conflict(2);
+        assert_eq!(s.restart_conflicts, 1);
+        assert!(!s.restart_pending);
+        assert_eq!(s.restart_glue_fast_ema, 2.0);
+        assert_eq!(s.restart_glue_slow_ema, 2.0);
+
+        s.note_conflict(10);
+        assert_eq!(s.restart_conflicts, 0);
+        assert!(s.restart_pending);
+        assert_eq!(s.stats.restart_glue_ema_triggers, 1);
+        assert_eq!(s.restart_glue_fast_ema, 10.0);
+        assert_eq!(s.restart_glue_slow_ema, 2.0);
+    }
+
+    #[test]
+    fn test_glue_ema_restart_does_not_advance_luby_window() {
+        let mut s = make_solver(2, vec![vec![1, 2], vec![-1, -2]]);
+        s.restart_mode = RestartMode::GlueEma;
+        s.restart_conflict_limit = 2;
+        s.restart_glue_fast_alpha = 1.0;
+        s.restart_glue_slow_alpha = 0.0;
+        s.restart_glue_margin = 100.0;
+
+        s.note_conflict(2);
+        s.note_conflict(10);
+
+        assert!(!s.restart_pending);
+        assert_eq!(s.restart_conflicts, 0);
+        assert_eq!(s.restart_luby_index, 1);
+        assert_eq!(s.stats.restart_glue_ema_triggers, 0);
     }
 
     #[test]

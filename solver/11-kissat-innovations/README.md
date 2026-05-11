@@ -32,11 +32,14 @@ What is present:
   `SAT_REDUCE_MODE=activity` for the previous activity-based reducer fallback
 - Phase 6 search-mode infrastructure: stable heap search remains the default, while
   `SAT_SEARCH_MODE=focused` enables a focused recent-conflict decision queue for measurement
+- Phase 7 restart/reduction-pressure scaffold: `SAT_RESTART_MODE=glue-ema` enables a fast/slow
+  learned-glue EMA restart trigger, and `SAT_REDUCE_LOW_YIELD_COOLDOWN=<conflicts>` enables an
+  opt-in cooldown after low-yield learned-clause reduction passes; stable/Luby remains the default
 
 What is intentionally not present yet:
 
-- no automatic Kissat search-mode switching, glue-EMA restart policy, real mid-search inprocessing
-  pass, probing, or rephasing yet
+- no automatic Kissat search-mode switching, restart trail reuse, real mid-search inprocessing pass,
+  probing, or rephasing yet
 - no separate MiniSat `simp` port design document is copied forward
 
 ## Direction
@@ -225,3 +228,49 @@ Focused-mode analysis:
 - That points to a search trajectory and learned-DB pressure problem, not just local queue overhead.
   The next focused-related work should be glue-EMA restarts/trail reuse or a reduction throttle
   before considering focused mode as anything other than an opt-in experiment.
+
+Glue-EMA restart and reduction-pressure scaffold validation on 2026-05-10:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_SEARCH_MODE=focused SAT_RESTART_MODE=glue-ema SAT_REDUCE_LOW_YIELD_COOLDOWN=100 \
+  SAT_CHECK_INVARIANTS=1 bash tools/smoke_test.sh solver/11-kissat-innovations
+bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_SEARCH_MODE=focused SAT_RESTART_MODE=glue-ema SAT_REDUCE_LOW_YIELD_COOLDOWN=100 \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 76 passed
+- default stable smoke suite: 9/9 passed, log `log/2026-05-10-23-55-40`
+- focused glue-EMA invariant smoke suite: 9/9 passed, log `log/2026-05-10-23-55-49`
+- default stable profiling run: solved 6/11, PAR-2 `1328.185`, log
+  `log/bench-11-kissat-innovations-2026-05-10-23-11-30`
+- focused glue-EMA plus low-yield cooldown profiling run: solved 2/11, PAR-2 `2185.711`, log
+  `log/bench-11-kissat-innovations-2026-05-10-23-32-47`
+- default stable remains in line with the previous stable run (`1329.605`), so the additional
+  counters and default-off restart/cooldown hooks did not show an obvious stable hot-path
+  regression
+
+Focused glue-EMA analysis:
+
+- The focused stack improved versus the previous focused-only profile (`2288.046` -> `2185.711`
+  PAR-2) but did not improve solved count. It still timed out on `feistel_b64_k32_r22`,
+  `feistel_b64_k52_r17`, `random_v285_s2`, and `random_v292_s4`, all of which stable solved.
+- It materially improved the two focused-solved instances: `feistel_b64_k57_r18` `61.879s` ->
+  `9.344s`, and `random_v355_s3` `66.167s` -> `16.367s`.
+- Direct trace on `feistel_b64_k57_r18`:
+  - stable default: `4.034s`, `243188` conflicts, `304380` decisions, `18090356` propagations,
+    `90` reduce passes, `113.286ms` reduction time
+  - focused Luby plus cooldown only: `28.092s`, `881956` conflicts, `1006564` decisions,
+    `75918462` propagations, `2987` reduce passes, `1008.760ms` reduction time
+  - focused glue-EMA without cooldown: `13.519s`, `363740` conflicts, `408549` decisions,
+    `31012613` propagations, `33768` reduce passes, `4135.205ms` reduction time
+  - focused glue-EMA plus cooldown: `9.355s`, `349623` conflicts, `392584` decisions,
+    `30174167` propagations, `551` reduce passes, `224.440ms` reduction time
+- Interpretation: glue-EMA restarts fix a substantial part of focused mode's search trajectory on
+  at least one Feistel case, and the cooldown fixes the reduction churn exposed by that better
+  trajectory. The remaining gap to stable is still search quality: focused does more conflicts,
+  decisions, and propagations even when reduction overhead is controlled.

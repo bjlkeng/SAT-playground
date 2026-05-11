@@ -68,10 +68,12 @@ Why this matters:
 
 Solver 11:
 
-- Uses a fixed Luby restart budget with `restart_unit = 100`.
+- Uses a fixed Luby restart budget with `restart_unit = 100` by default.
+- Has an opt-in focused-style glue restart scaffold via `SAT_RESTART_MODE=glue-ema`, using fast and
+  slow learned-clause glue EMAs. It does not change the default stable/Luby path.
 - Restarts always backtrack to level 0.
-- Relevant code: `src/main.rs:264`, `src/main.rs:1333`, `src/main.rs:1346`,
-  `src/main.rs:1425`.
+- Relevant code: `src/main.rs:121`, `src/main.rs:3189`, `src/main.rs:3207`,
+  `src/main.rs:3377`.
 
 Kissat:
 
@@ -82,19 +84,22 @@ Kissat:
 
 Why this matters:
 
-- Solver 11 does not compute glue/LBD, so it cannot currently implement Kissat's restart trigger.
-- Always backtracking to level 0 also throws away useful trail prefixes that Kissat intentionally
-  preserves.
+- Solver 11 now computes learned-clause glue and can test a Kissat-like focused restart signal, but
+  it still lacks stable reluctant restarting, mode switching, and trail reuse.
+- Always backtracking to level 0 throws away useful trail prefixes that Kissat intentionally
+  preserves, and focused mode still loses to stable on most profile cases without mode switching.
 
 ### 4. Learned-clause metadata and reduction
 
 Solver 11:
 
-- Learned clauses have floating clause activity but no glue/LBD, used counter, tier, reason bit, or
-  searched literal position.
-- Reduction sorts by binary status and clause activity, deletes about half of non-binary unlocked
-  clauses plus low-activity clauses.
-- Relevant code: `src/main.rs:260`, `src/main.rs:1470`, `src/main.rs:1734`.
+- Learned clauses now store glue/LBD, a small used counter, a tier, and reserved reason/shrunken/
+  vivify flags alongside the existing floating clause activity. They still do not store a searched
+  literal position.
+- Glue/tier/used-based reduction is the default, with the old activity reducer available through
+  `SAT_REDUCE_MODE=activity`. Reduction-pressure counters record low-yield passes, still-over-budget
+  passes, and optional cooldown skips.
+- Relevant code: `src/main.rs:34`, `src/main.rs:780`, `src/main.rs:3868`, `src/main.rs:3943`.
 
 Kissat:
 
@@ -109,8 +114,9 @@ Kissat:
 
 Why this matters:
 
-- Kissat's reduce/restart/rephase/vivify machinery all depends on glue and tier metadata that solver
-  11 does not store.
+- The core glue/tier metadata is now present, which is why glue-tiered reduction and glue-EMA
+  restart experiments can be measured. Remaining Kissat features still need searched-position
+  metadata, reason-side bumping, trail reuse, and mode-aware scheduling.
 
 ### 5. Propagation and binary clauses
 
@@ -1620,6 +1626,24 @@ Unlocks:
 
 - More faithful Kissat search behavior before adding expensive inprocessing.
 
+Status:
+
+- The first Phase 7 slice landed on 2026-05-10 behind explicit environment flags. Solver 11 now has
+  `SAT_RESTART_MODE=glue-ema` with fast/slow learned-glue EMAs and trace counters for
+  `glue_fast`, `glue_slow`, and `glue_restarts`.
+- The same slice added reduction-pressure observability and an opt-in low-yield reduction throttle
+  via `SAT_REDUCE_LOW_YIELD_COOLDOWN=<conflicts>`. This records low-yield reduce passes,
+  still-over-budget passes, cooldown skips, and the last reduce pass's live/candidate/delete counts.
+- Validation: `cargo test` passed 76 tests, default smoke passed 9/9, focused glue-EMA invariant
+  smoke passed 9/9, default profiling solved 6/11 with PAR-2 `1328.185`, and focused glue-EMA plus
+  cooldown solved 2/11 with PAR-2 `2185.711`.
+- Direct ablation on `feistel_b64_k57_r18`: focused Luby plus cooldown solved in `28.092s`,
+  focused glue-EMA without cooldown solved in `13.519s`, and focused glue-EMA plus cooldown solved
+  in `9.355s`. Stable default still solved faster at `4.034s`.
+- Interpretation: glue-EMA restarts and reducer throttling help focused mode substantially on some
+  trajectories, but they are not sufficient to make focused mode a default. The remaining Phase 7
+  work is trail reuse, stable reluctant restarting, and eventually mode switching/rephase support.
+
 ### Phase 8. First simplification features on the new infrastructure
 
 Primary roadmap items:
@@ -1699,7 +1723,7 @@ Why last:
 | C glue-tiered reduce | 5 | Needs metadata and scheduled reduction. |
 | D binary implication path | 2 | Core representation dependency. |
 | E focused queue | 6 | Needs decision API isolation. |
-| F glue restarts/trail reuse | 7 | Needs glue, modes, scheduler. |
+| F glue restarts/trail reuse | 7 | Glue-EMA scaffold landed; trail reuse and stable reluctant restarts remain. |
 | G target/best/rephase | 7 | Needs scheduler and phase arrays. |
 | H chronological backtracking/reason bump | 7 | Best measured after restart changes. |
 | I eager subsumption | 5 | Learned-clause lifecycle feature. |
@@ -1729,5 +1753,7 @@ Why last:
    root-maintenance transition, dense/sparse mode, reusable occurrence lists.
 4. Land Phase 5 and Phase 6 incrementally: glue-tiered reduction as the default with activity
    fallback, and focused queue behind a flag, still without automatic mode switching.
-5. Only then start Phase 8 visible algorithmic work: lucky shortcut/probing, clause-weight reorder,
+5. Finish the remaining Phase 7 restart pieces before defaulting focused behavior: restart trail
+   reuse, stable reluctant restarting, and mode switching/rephase hooks.
+6. Only then start Phase 8 visible algorithmic work: lucky shortcut/probing, clause-weight reorder,
    Kissat-style BVE scoring, fast BVE, and bounded forward subsumption.
