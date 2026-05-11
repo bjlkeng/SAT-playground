@@ -34,12 +34,14 @@ What is present:
   `SAT_SEARCH_MODE=focused` enables a focused recent-conflict decision queue for measurement
 - Phase 7 restart/reduction-pressure scaffold: `SAT_RESTART_MODE=glue-ema` enables a fast/slow
   learned-glue EMA restart trigger, and `SAT_REDUCE_LOW_YIELD_COOLDOWN=<conflicts>` enables an
-  opt-in cooldown after low-yield learned-clause reduction passes; stable/Luby remains the default
+  opt-in cooldown after low-yield learned-clause reduction passes; Kissat-style restart trail reuse
+  is now the default with the measured `SAT_RESTART_REUSE_CAP=8` setting; use
+  `SAT_RESTART_REUSE=off` for ablations, or `SAT_RESTART_REUSE_CAP=0` for uncapped reuse
 
 What is intentionally not present yet:
 
-- no automatic Kissat search-mode switching, restart trail reuse, real mid-search inprocessing pass,
-  probing, or rephasing yet
+- no automatic Kissat search-mode switching, stable reluctant restart schedule, real mid-search
+  inprocessing pass, probing, or rephasing yet
 - no separate MiniSat `simp` port design document is copied forward
 
 ## Direction
@@ -274,3 +276,92 @@ Focused glue-EMA analysis:
   at least one Feistel case, and the cooldown fixes the reduction churn exposed by that better
   trajectory. The remaining gap to stable is still search quality: focused does more conflicts,
   decisions, and propagations even when reduction overhead is controlled.
+
+Restart trail-reuse validation on 2026-05-11:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_RESTART_REUSE=kissat SAT_RESTART_REUSE_CAP=8 SAT_CHECK_INVARIANTS=1 \
+  bash tools/smoke_test.sh solver/11-kissat-innovations
+bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_RESTART_REUSE=kissat bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling \
+  solver/11-kissat-innovations
+SAT_RESTART_REUSE=kissat SAT_RESTART_REUSE_CAP=8 bash tools/bench.sh -t 120 -m 16384 \
+  -d benchmarks/profiling solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 79 passed
+- default stable smoke suite: 9/9 passed, log `log/2026-05-11-01-49-19`
+- capped trail-reuse invariant smoke suite: 9/9 passed, log `log/2026-05-11-01-49-35`
+- reuse-off profiling baseline after the code change: solved 6/11, PAR-2 `1332.547`, log
+  `log/bench-11-kissat-innovations-2026-05-11-00-25-31`
+- uncapped stable Kissat-reuse profiling run: solved 6/11, PAR-2 `1301.718`, log
+  `log/bench-11-kissat-innovations-2026-05-11-00-46-24`
+- capped stable Kissat-reuse profiling run (`SAT_RESTART_REUSE_CAP=8`): solved 6/11, PAR-2
+  `1246.545`, log `log/bench-11-kissat-innovations-2026-05-11-01-24-01`
+
+Key profiling deltas, capped reuse versus the reuse-off baseline:
+
+- `feistel_b64_k32_r22`: SAT `27.60s` -> `0.59s`
+- `feistel_b64_k52_r17`: SAT `18.42s` -> `4.28s`
+- `feistel_b64_k57_r18`: SAT `4.85s` -> `2.43s`
+- `SC25_Timetable...`: TIMEOUT -> SAT `15.58s`
+- `random_v292_s4`: UNSAT `19.56s` -> `14.94s`
+- regression: `random_v355_s3` SAT `53.35s` -> TIMEOUT
+
+Heuristic sweep notes:
+
+- The Kissat-like rule keeps a prefix while kept decision variables are better than the next
+  decision candidate. In stable mode "better" means activity; in focused mode it means focused
+  recency stamp.
+- The now-removed `half`, `quarter`, and fixed-level reuse policies were rejected on
+  `feistel_b64_k57_r18`: they reused far more levels and created large search regressions. For
+  example stable `quarter` took `57.124s` and stable `half` took `53.417s`, versus `4.452s` with
+  reuse off and `1.599s` with uncapped Kissat reuse.
+- Uncapped Kissat reuse was useful but too volatile: it solved the timetable case but timed out on
+  `random_v355_s3`. Caps were then swept on the sensitive cases. `CAP=8` was the best profile-set
+  compromise: it retained the timetable win and Feistel wins, while the smaller `CAP=4` preserved
+  `random_v355_s3` but lost the timetable win.
+- The stable selector was optimized after the first sweep so it does not scan the whole heap on each
+  restart. It now reuses the solver's existing lazy heap cleanup pattern, popping assigned heap roots
+  until the best unassigned variable is available. Post-optimization target checks reproduced the
+  same search counters on the key cap-8 cases.
+
+Interpretation:
+
+- Kissat-style reuse is now the default, using the measured cap-8 setting (`-86.002` PAR-2 versus
+  the reuse-off post-change run). `SAT_RESTART_REUSE=off` remains for controlled comparisons, and
+  `SAT_RESTART_REUSE_CAP=0` restores the uncapped Kissat selector.
+- The setting is still path-sensitive: the cap-8 profile loses a previously solved random SAT
+  instance to timeout while gaining large Feistel and timetable wins.
+- The next restart-related step should be either mode switching/rephase support to recover from the
+  `random_v355_s3` trajectory, or a conditional reuse guard that disables reuse when restart reuse
+  is increasing conflicts/restarts without improving glue or propagation progress.
+
+Default-reuse cleanup validation on 2026-05-11:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_RESTART_REUSE=off SAT_CHECK_INVARIANTS=1 \
+  bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_CHECK_INVARIANTS=1 bash tools/smoke_test.sh solver/11-kissat-innovations
+bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 79 passed
+- default smoke suite with Kissat reuse and cap 8: 9/9 passed, log `log/2026-05-11-07-33-13`
+- reuse-off invariant smoke suite: 9/9 passed, log `log/2026-05-11-07-33-29`
+- default invariant smoke suite: 9/9 passed, log `log/2026-05-11-07-33-36`
+- default profiling run with Kissat reuse and cap 8: solved 6/11, PAR-2 `1247.040`, log
+  `log/bench-11-kissat-innovations-2026-05-11-07-33-52`
+
+The fresh default benchmark reproduced the earlier cap-8 profile within normal run noise:
+`feistel_b64_k32_r22` `0.58s`, `feistel_b64_k52_r17` `4.24s`,
+`feistel_b64_k57_r18` `2.43s`, timetable `16.48s`, `random_v285_s2` `8.62s`,
+`random_v292_s4` `14.69s`, and the known `random_v355_s3` timeout.

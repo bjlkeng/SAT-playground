@@ -71,9 +71,12 @@ Solver 11:
 - Uses a fixed Luby restart budget with `restart_unit = 100` by default.
 - Has an opt-in focused-style glue restart scaffold via `SAT_RESTART_MODE=glue-ema`, using fast and
   slow learned-clause glue EMAs. It does not change the default stable/Luby path.
-- Restarts always backtrack to level 0.
-- Relevant code: `src/main.rs:121`, `src/main.rs:3189`, `src/main.rs:3207`,
-  `src/main.rs:3377`.
+- Restarts use Kissat-style trail reuse by default, keeping the prefix selected by activity in
+  stable mode or focused recency stamp in focused mode. The default cap is
+  `SAT_RESTART_REUSE_CAP=8`; use `SAT_RESTART_REUSE=off` to disable reuse or
+  `SAT_RESTART_REUSE_CAP=0` for uncapped reuse.
+- Relevant code: `src/main.rs:121`, `src/main.rs:3189`, `src/main.rs:3242`,
+  `src/main.rs:3487`.
 
 Kissat:
 
@@ -84,10 +87,11 @@ Kissat:
 
 Why this matters:
 
-- Solver 11 now computes learned-clause glue and can test a Kissat-like focused restart signal, but
-  it still lacks stable reluctant restarting, mode switching, and trail reuse.
-- Always backtracking to level 0 throws away useful trail prefixes that Kissat intentionally
-  preserves, and focused mode still loses to stable on most profile cases without mode switching.
+- Solver 11 now computes learned-clause glue and can test Kissat-like focused restart and trail
+  reuse signals, but it still lacks stable reluctant restarting, mode switching, and rephase support.
+- Always backtracking to level 0 can throw away useful trail prefixes, but reuse is also
+  path-sensitive: capped stable reuse improves the profile set, while uncapped/coarse reuse can
+  regress badly.
 
 ### 4. Learned-clause metadata and reduction
 
@@ -768,7 +772,8 @@ Implementation status:
   restored to the focused queue without rebuilding the heap.
 - The normal branch heap remains populated in focused mode for invariants and future mode-switching
   work, but focused decisions read from the focused queue.
-- No automatic mode switching, focused restart policy, or trail reuse is implemented yet.
+- No automatic mode switching is implemented yet. Focused restart policy and trail reuse are covered
+  by the later Phase 7 status notes.
 
 Validation:
 
@@ -1611,7 +1616,9 @@ Primary roadmap items:
 Build first:
 
 - Add fast/slow glue EMAs using Phase 1 glue data.
-- Add stable reluctant restart and focused glue-EMA restart behind `SAT_RESTART_MODE`.
+- Add focused glue-EMA restart behind `SAT_RESTART_MODE` and Kissat-style trail reuse behind
+  `SAT_RESTART_REUSE`.
+- Add stable reluctant restart after trail reuse behavior is understood.
 - Add target and best phase arrays, then rephase scheduling through the Phase 3 scheduler.
 - Add warmup as a phase-seeding pass once phase arrays exist.
 - Add chronological backtracking and reason-side bumping after restart and mode behavior are
@@ -1641,8 +1648,25 @@ Status:
   focused glue-EMA without cooldown solved in `13.519s`, and focused glue-EMA plus cooldown solved
   in `9.355s`. Stable default still solved faster at `4.034s`.
 - Interpretation: glue-EMA restarts and reducer throttling help focused mode substantially on some
-  trajectories, but they are not sufficient to make focused mode a default. The remaining Phase 7
-  work is trail reuse, stable reluctant restarting, and eventually mode switching/rephase support.
+  trajectories, but they are not sufficient to make focused mode a default.
+- Restart trail reuse landed on 2026-05-11 and is now the default. The implemented mode mirrors
+  Kissat's decision-prefix rule: keep decision levels while each kept decision variable has a better
+  activity score (stable mode) or recency stamp (focused mode) than the next decision candidate.
+- The coarse reuse policies were rejected and removed: stable `quarter` took `57.124s` and stable
+  `half` took `53.417s` on `feistel_b64_k57_r18`, versus `4.452s` with reuse off and `1.599s` with
+  uncapped Kissat reuse.
+- Full profiling: reuse off after the code change solved 6/11 with PAR-2 `1332.547`; uncapped
+  stable Kissat reuse solved 6/11 with PAR-2 `1301.718`; capped stable reuse with
+  `SAT_RESTART_REUSE_CAP=8` solved 6/11 with PAR-2 `1246.545`.
+- The cap-8 profile improved `feistel_b64_k32_r22` (`27.60s` -> `0.59s`),
+  `feistel_b64_k52_r17` (`18.42s` -> `4.28s`), `feistel_b64_k57_r18` (`4.85s` -> `2.43s`), and
+  solved the timetable instance (`TIMEOUT` -> `15.58s`), but regressed `random_v355_s3`
+  (`53.35s` -> `TIMEOUT`). This tradeoff is accepted for the default because the profile-set PAR-2
+  improved materially; mode switching/rephase or a reuse guard should address the path sensitivity.
+- Follow-up cleanup removed the rejected coarse modes and made capped Kissat reuse the default.
+  Fresh validation: `cargo test` passed 79 tests, default smoke passed 9/9, reuse-off invariant
+  smoke passed 9/9, default invariant smoke passed 9/9, and the default profiling run solved 6/11
+  with PAR-2 `1247.040` (`log/bench-11-kissat-innovations-2026-05-11-07-33-52`).
 
 ### Phase 8. First simplification features on the new infrastructure
 
@@ -1723,7 +1747,7 @@ Why last:
 | C glue-tiered reduce | 5 | Needs metadata and scheduled reduction. |
 | D binary implication path | 2 | Core representation dependency. |
 | E focused queue | 6 | Needs decision API isolation. |
-| F glue restarts/trail reuse | 7 | Glue-EMA scaffold landed; trail reuse and stable reluctant restarts remain. |
+| F glue restarts/trail reuse | 7 | Glue-EMA landed; capped Kissat-style trail reuse is default; stable reluctant restarts remain. |
 | G target/best/rephase | 7 | Needs scheduler and phase arrays. |
 | H chronological backtracking/reason bump | 7 | Best measured after restart changes. |
 | I eager subsumption | 5 | Learned-clause lifecycle feature. |
@@ -1753,7 +1777,7 @@ Why last:
    root-maintenance transition, dense/sparse mode, reusable occurrence lists.
 4. Land Phase 5 and Phase 6 incrementally: glue-tiered reduction as the default with activity
    fallback, and focused queue behind a flag, still without automatic mode switching.
-5. Finish the remaining Phase 7 restart pieces before defaulting focused behavior: restart trail
-   reuse, stable reluctant restarting, and mode switching/rephase hooks.
+5. Finish the remaining Phase 7 restart pieces before defaulting focused behavior: stable reluctant
+   restarting, mode switching/rephase hooks, and a guard for harmful restart reuse.
 6. Only then start Phase 8 visible algorithmic work: lucky shortcut/probing, clause-weight reorder,
    Kissat-style BVE scoring, fast BVE, and bounded forward subsumption.

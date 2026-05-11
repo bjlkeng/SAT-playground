@@ -124,6 +124,12 @@ enum RestartMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RestartReuseMode {
+    Off,
+    Kissat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BinaryPropagationMode {
     Generic,
     WatcherFast,
@@ -360,6 +366,10 @@ struct SolverStats {
     maintenance_actions: u64,
     maintenance_restarts: u64,
     restart_glue_ema_triggers: u64,
+    restart_reused_trails: u64,
+    restart_reused_levels: u64,
+    restart_reused_assignments: u64,
+    restart_reuse_max_level: usize,
     maintenance_root_simplifies: u64,
     maintenance_reductions: u64,
     maintenance_noops: u64,
@@ -607,6 +617,10 @@ struct Solver {
     focused_next: Vec<usize>,
     /// focused-mode previous links, indexed by variable; 0 means no neighbor
     focused_prev: Vec<usize>,
+    /// monotonically increasing focused recency stamp; higher means closer to the recent conflict
+    focused_stamp: Vec<u64>,
+    /// next focused recency stamp assigned by a front move
+    focused_next_stamp: u64,
     /// whether a variable is currently in the focused decision queue
     focused_queued: Vec<bool>,
     /// head of the focused decision queue, or 0 when empty
@@ -637,6 +651,10 @@ struct Solver {
     restart_conflict_limit: usize,
     /// whether a restart should be applied before the next branch
     restart_pending: bool,
+    /// restart trail-reuse policy selected for restart backtracking
+    restart_reuse_mode: RestartReuseMode,
+    /// maximum reusable decision level; 0 means unlimited
+    restart_reuse_cap: usize,
     /// fast moving average of learned-clause glue for glue-EMA restarts
     restart_glue_fast_ema: f64,
     /// slow moving average of learned-clause glue for glue-EMA restarts
@@ -1091,6 +1109,8 @@ impl Solver {
             branch_pos: vec![BRANCH_NOT_IN_HEAP; num_vars + 1],
             focused_next: vec![0; num_vars + 1],
             focused_prev: vec![0; num_vars + 1],
+            focused_stamp: vec![0; num_vars + 1],
+            focused_next_stamp: 1,
             focused_queued: vec![false; num_vars + 1],
             focused_head: 0,
             focused_tail: 0,
@@ -1106,6 +1126,8 @@ impl Solver {
             restart_luby_index: 1,
             restart_conflict_limit: 100,
             restart_pending: false,
+            restart_reuse_mode: parse_restart_reuse_mode(),
+            restart_reuse_cap: parse_usize_env("SAT_RESTART_REUSE_CAP", 8),
             restart_glue_fast_ema: 0.0,
             restart_glue_slow_ema: 0.0,
             restart_glue_ema_initialized: false,
@@ -2424,6 +2446,8 @@ impl Solver {
     fn focused_queue_clear(&mut self) {
         self.focused_next.fill(0);
         self.focused_prev.fill(0);
+        self.focused_stamp.fill(0);
+        self.focused_next_stamp = 1;
         self.focused_queued.fill(false);
         self.focused_head = 0;
         self.focused_tail = 0;
@@ -2459,6 +2483,8 @@ impl Solver {
             self.focused_queue_unlink(var);
         }
 
+        self.focused_stamp[var] = self.focused_next_stamp;
+        self.focused_next_stamp = self.focused_next_stamp.saturating_add(1);
         self.focused_queued[var] = true;
         self.focused_prev[var] = 0;
         self.focused_next[var] = self.focused_head;
@@ -3238,6 +3264,84 @@ impl Solver {
         }
     }
 
+    fn decision_var_at_level(&self, level: usize) -> usize {
+        debug_assert!(level >= 1 && level <= self.current_level());
+        let trail_idx = self.trail_limits[level - 1];
+        self.trail[trail_idx].unsigned_abs() as usize
+    }
+
+    fn next_stable_decision_score(&mut self) -> Option<f64> {
+        while let Some(&var_u32) = self.branch_heap.first() {
+            let var = var_u32 as usize;
+            if self.decision_var[var] && self.assignment[var] == UNASSIGNED {
+                return Some(self.activity[var]);
+            }
+            self.branch_heap_remove(var);
+        }
+        None
+    }
+
+    fn next_focused_decision_stamp(&self) -> Option<u64> {
+        let mut cursor = self.focused_head;
+        while cursor != 0 {
+            if self.decision_var[cursor] && self.assignment[cursor] == UNASSIGNED {
+                return Some(self.focused_stamp[cursor]);
+            }
+            cursor = self.focused_next[cursor];
+        }
+        None
+    }
+
+    fn kissat_stable_reuse_level(&mut self) -> usize {
+        let Some(limit) = self.next_stable_decision_score() else {
+            return 0;
+        };
+        let mut reusable = 0usize;
+        while reusable < self.current_level() {
+            let var = self.decision_var_at_level(reusable + 1);
+            if self.activity[var] <= limit {
+                break;
+            }
+            reusable += 1;
+        }
+        reusable
+    }
+
+    fn kissat_focused_reuse_level(&self) -> usize {
+        let Some(limit) = self.next_focused_decision_stamp() else {
+            return 0;
+        };
+        let mut reusable = 0usize;
+        while reusable < self.current_level() {
+            let var = self.decision_var_at_level(reusable + 1);
+            if self.focused_stamp[var] <= limit {
+                break;
+            }
+            reusable += 1;
+        }
+        reusable
+    }
+
+    fn apply_restart_reuse_cap(&self, level: usize) -> usize {
+        if self.restart_reuse_cap == 0 {
+            level
+        } else {
+            level.min(self.restart_reuse_cap)
+        }
+    }
+
+    fn restart_reuse_level(&mut self) -> usize {
+        let current_level = self.current_level();
+        let level = match self.restart_reuse_mode {
+            RestartReuseMode::Off => 0,
+            RestartReuseMode::Kissat => match self.search_mode {
+                SearchMode::Stable => self.kissat_stable_reuse_level(),
+                SearchMode::Focused => self.kissat_focused_reuse_level(),
+            },
+        };
+        self.apply_restart_reuse_cap(level.min(current_level))
+    }
+
     fn record_maintenance_action(&mut self, action: MaintenanceAction) {
         self.stats.maintenance_actions += 1;
         match action {
@@ -3433,8 +3537,20 @@ impl Solver {
             return false;
         }
 
+        let reuse_level = self.restart_reuse_level();
         self.stats.restarts += 1;
-        self.backtrack(0);
+        if reuse_level > 0 {
+            self.stats.restart_reused_trails += 1;
+            self.stats.restart_reused_levels += reuse_level as u64;
+            self.stats.restart_reuse_max_level =
+                self.stats.restart_reuse_max_level.max(reuse_level);
+        }
+
+        self.backtrack(reuse_level);
+        if reuse_level > 0 {
+            self.stats.restart_reused_assignments +=
+                self.trail.len().saturating_sub(self.root_trail_len) as u64;
+        }
         true
     }
 
@@ -4293,12 +4409,16 @@ impl Solver {
                         self.stats.search_time_ns += elapsed_ns(search_start);
                         if trace_search_interval > 0 {
                             eprintln!(
-                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} restart_reused={}/{}/{} restart_reuse_max={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                 self.stats.search_time_ns as f64 / 1e9,
                                 self.stats.conflicts,
                                 self.stats.decisions,
                                 self.stats.propagations,
                                 self.stats.restarts,
+                                self.stats.restart_reused_trails,
+                                self.stats.restart_reused_levels,
+                                self.stats.restart_reused_assignments,
+                                self.stats.restart_reuse_max_level,
                                 self.live_learned_clause_count,
                                 self.stats.learned_clause_literals,
                                 self.stats.learned_clause_max_len,
@@ -4337,12 +4457,16 @@ impl Solver {
                     self.stats.conflicts += 1;
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
-                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
+                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} restart_reused={}/{}/{} restart_reuse_max={} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
                             search_start.elapsed().as_secs_f64(),
                             self.stats.conflicts,
                             self.stats.decisions,
                             self.stats.propagations,
                             self.stats.restarts,
+                            self.stats.restart_reused_trails,
+                            self.stats.restart_reused_levels,
+                            self.stats.restart_reused_assignments,
+                            self.stats.restart_reuse_max_level,
                             self.current_level(),
                             self.trail.len(),
                             self.live_learned_clause_count,
@@ -4433,12 +4557,16 @@ impl Solver {
                             self.stats.search_time_ns += elapsed_ns(search_start);
                             if trace_search_interval > 0 {
                                 eprintln!(
-                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} restart_reused={}/{}/{} restart_reuse_max={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                     self.stats.search_time_ns as f64 / 1e9,
                                     self.stats.conflicts,
                                     self.stats.decisions,
                                     self.stats.propagations,
                                     self.stats.restarts,
+                                    self.stats.restart_reused_trails,
+                                    self.stats.restart_reused_levels,
+                                    self.stats.restart_reused_assignments,
+                                    self.stats.restart_reuse_max_level,
                                     self.live_learned_clause_count,
                                     self.stats.learned_clause_literals,
                                     self.stats.learned_clause_max_len,
@@ -4569,6 +4697,20 @@ fn parse_restart_mode() -> RestartMode {
             }
         },
         Err(_) => RestartMode::Luby,
+    }
+}
+
+fn parse_restart_reuse_mode() -> RestartReuseMode {
+    match env::var("SAT_RESTART_REUSE") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "0" | "false" | "no" | "off" | "disabled" => RestartReuseMode::Off,
+            "1" | "true" | "yes" | "on" | "enabled" | "kissat" => RestartReuseMode::Kissat,
+            other => {
+                eprintln!("Invalid SAT_RESTART_REUSE={other}; expected off/kissat");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => RestartReuseMode::Kissat,
     }
 }
 
@@ -6221,6 +6363,75 @@ mod tests {
         assert_eq!(s.restart_conflicts, 0);
         assert_eq!(s.restart_luby_index, 1);
         assert_eq!(s.stats.restart_glue_ema_triggers, 0);
+    }
+
+    #[test]
+    fn test_kissat_stable_restart_reuse_keeps_better_activity_prefix() {
+        let mut s = make_solver(5, vec![]);
+        s.decide(1);
+        s.decide(2);
+        s.decide(3);
+        s.activity[1] = 10.0;
+        s.activity[2] = 7.0;
+        s.activity[3] = 5.0;
+        s.activity[4] = 6.0;
+        s.activity[5] = 1.0;
+        s.restart_reuse_mode = RestartReuseMode::Kissat;
+
+        assert_eq!(s.restart_reuse_level(), 2);
+
+        s.restart_reuse_cap = 1;
+        assert_eq!(s.restart_reuse_level(), 1);
+    }
+
+    #[test]
+    fn test_kissat_focused_restart_reuse_keeps_better_recency_prefix() {
+        let mut s = make_solver(5, vec![]);
+        s.search_mode = SearchMode::Focused;
+        s.rebuild_branch_queue();
+        s.decide(1);
+        s.decide(2);
+        s.decide(3);
+        s.focused_stamp[1] = 10;
+        s.focused_stamp[2] = 7;
+        s.focused_stamp[3] = 5;
+        s.focused_stamp[4] = 6;
+        s.focused_stamp[5] = 1;
+        s.restart_reuse_mode = RestartReuseMode::Kissat;
+
+        assert_eq!(s.restart_reuse_level(), 2);
+    }
+
+    #[test]
+    fn test_restart_reuse_backtracks_to_selected_nonzero_level() {
+        let mut s = make_solver(5, vec![vec![-2, 4]]);
+        s.restart_reuse_mode = RestartReuseMode::Kissat;
+
+        s.decide(1);
+        s.decide(2);
+        assert_eq!(s.propagate(), None);
+        assert_eq!(s.assignment[4], TRUE);
+        s.decide(3);
+        assert_eq!(s.current_level(), 3);
+        s.activity[1] = 10.0;
+        s.activity[2] = 9.0;
+        s.activity[3] = 1.0;
+        s.activity[5] = 5.0;
+
+        s.restart_pending = true;
+        assert!(s.perform_restart_if_pending());
+
+        assert_eq!(s.current_level(), 2);
+        assert_eq!(s.assignment[1], TRUE);
+        assert_eq!(s.assignment[2], TRUE);
+        assert_eq!(s.assignment[3], UNASSIGNED);
+        assert_eq!(s.assignment[4], TRUE);
+        assert_eq!(s.reason[4].as_clause(), Some(s.original_clause_ids[0]));
+        assert_eq!(s.stats.restarts, 1);
+        assert_eq!(s.stats.restart_reused_trails, 1);
+        assert_eq!(s.stats.restart_reused_levels, 2);
+        assert_eq!(s.stats.restart_reuse_max_level, 2);
+        assert_eq!(s.stats.restart_reused_assignments, 3);
     }
 
     #[test]
