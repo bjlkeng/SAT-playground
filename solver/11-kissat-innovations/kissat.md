@@ -178,11 +178,15 @@ Why this matters:
 
 Solver 11:
 
-- Stores only one `saved_phase` vector.
-- Saved phase is updated on every enqueue, and decisions use saved phase directly.
-- There is no target phase, best phase, periodic rephase, inverted/original schedule, or local-search
-  phase source.
-- Relevant code: `src/main.rs:232`, `src/main.rs:1120`, `src/main.rs:1364`.
+- Stores `saved_phase`, `target_phase`, and `best_phase` vectors.
+- Saved phase is updated on every enqueue. Stable decisions prefer target phase when set, then saved
+  phase; focused decisions still follow the existing saved-phase behavior.
+- Stable-mode backtracking records the deepest assignment snapshot as best phase while rephase is
+  enabled. Periodic root rephase is on by default with `SAT_REPHASE_INTERVAL=10000` and cycles
+  through best, inverted initial phase, and original initial phase. Use `SAT_REPHASE_INTERVAL=0` to
+  disable it. There is no local-search walking phase source yet.
+- Relevant code: `src/main.rs:133`, `src/main.rs:202`, `src/main.rs:646`,
+  `src/main.rs:3421`, `src/main.rs:3602`.
 
 Kissat:
 
@@ -195,8 +199,9 @@ Kissat:
 
 Why this matters:
 
-- Solver 11 can get stuck in one saved-phase trajectory. Kissat deliberately perturbs phases and
-  preserves promising partial assignments.
+- Solver 11 now uses Kissat-style polarity perturbation by default. The first measured interval
+  rescues the known `random_v355_s3` restart-reuse regression, but it also makes one UNSAT proof
+  much harder to check, so disabling rephase remains an important ablation.
 
 ### 8. Inprocessing and preprocessing
 
@@ -1667,6 +1672,24 @@ Status:
   Fresh validation: `cargo test` passed 79 tests, default smoke passed 9/9, reuse-off invariant
   smoke passed 9/9, default invariant smoke passed 9/9, and the default profiling run solved 6/11
   with PAR-2 `1247.040` (`log/bench-11-kissat-innovations-2026-05-11-07-33-52`).
+- Target/best phase tracking and rephase scheduling landed on 2026-05-11. Rephase is stable-mode
+  only and defaults to `SAT_REPHASE_INTERVAL=10000`; `SAT_MAINT_REPHASE_INTERVAL=<conflicts>` is
+  accepted as an alias and `SAT_REPHASE_INTERVAL=0` disables it. Decisions prefer active target
+  phase over saved phase; best phase is a deepest-trail snapshot used as one rephase source.
+- Validation: `cargo test` passed 84 tests, default smoke with rephase interval 10000 passed 9/9,
+  smoke with rephase interval 50000 passed 9/9 before the later default-policy change, and
+  `SAT_REPHASE_INTERVAL=0 SAT_CHECK_INVARIANTS=1` smoke passed 9/9.
+- Default no-rephase profiling after the implementation solved 6/11 with PAR-2 `1246.720`, matching
+  the previous default cap-8 profile and showing no obvious default hot-path regression.
+- `SAT_REPHASE_INTERVAL=10000` is now the aggressive default. In the targeted interval sweep it
+  solved the rescued random instance but substantially regressed two Feistel paths, so this should
+  be treated as an intentional policy step rather than a fully tuned value.
+- `SAT_REPHASE_INTERVAL=50000` solved 7/11 by runtime with PAR-2 `1018.540`, rescuing
+  `random_v355_s3` (`TIMEOUT` -> `1.17s`) while keeping the Feistel wins close to baseline.
+  However, it regressed `random_v292_s4` (`14.85s` -> `26.85s`) and its DRAT proof check did not
+  finish after 14 minutes, so the full-profile log has a verification failure for that row caused by
+  manually stopping the checker. Proof and search side effects still need a guard or a better
+  walking/source schedule.
 
 ### Phase 8. First simplification features on the new infrastructure
 
@@ -1748,7 +1771,7 @@ Why last:
 | D binary implication path | 2 | Core representation dependency. |
 | E focused queue | 6 | Needs decision API isolation. |
 | F glue restarts/trail reuse | 7 | Glue-EMA landed; capped Kissat-style trail reuse is default; stable reluctant restarts remain. |
-| G target/best/rephase | 7 | Needs scheduler and phase arrays. |
+| G target/best/rephase | 7 | Opt-in target/best rephase landed; walking source and default policy remain. |
 | H chronological backtracking/reason bump | 7 | Best measured after restart changes. |
 | I eager subsumption | 5 | Learned-clause lifecycle feature. |
 | J inprocessing scheduler | 3, 8, 9 | Scheduler first, actual passes later. |
@@ -1778,6 +1801,7 @@ Why last:
 4. Land Phase 5 and Phase 6 incrementally: glue-tiered reduction as the default with activity
    fallback, and focused queue behind a flag, still without automatic mode switching.
 5. Finish the remaining Phase 7 restart pieces before defaulting focused behavior: stable reluctant
-   restarting, mode switching/rephase hooks, and a guard for harmful restart reuse.
+   restarting, mode switching hooks, walking rephase source, and guards for harmful restart reuse or
+   proof-heavy rephase paths.
 6. Only then start Phase 8 visible algorithmic work: lucky shortcut/probing, clause-weight reorder,
    Kissat-style BVE scoring, fast BVE, and bounded forward subsumption.

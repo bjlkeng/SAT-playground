@@ -54,6 +54,7 @@ const DEFAULT_RESTART_GLUE_FAST_ALPHA: f64 = 0.03;
 const DEFAULT_RESTART_GLUE_SLOW_ALPHA: f64 = 0.0005;
 const DEFAULT_RESTART_GLUE_MARGIN: f64 = 1.25;
 const DEFAULT_REDUCE_LOW_YIELD_MIN_DELETIONS: usize = 16;
+const DEFAULT_REPHASE_INTERVAL: usize = 10_000;
 const STATIC_BINARY_MIN_ORIGINAL_BINARIES: usize = 64;
 const STATIC_BINARY_MIN_ORIGINAL_BINARY_PERCENT: usize = 20;
 const STATIC_BINARY_ALWAYS_ORIGINAL_BINARIES: usize = 4096;
@@ -130,6 +131,23 @@ enum RestartReuseMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RephaseKind {
+    Best,
+    Inverted,
+    Original,
+}
+
+impl RephaseKind {
+    fn from_count(count: u64) -> Self {
+        match count % 3 {
+            0 => RephaseKind::Best,
+            1 => RephaseKind::Inverted,
+            _ => RephaseKind::Original,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BinaryPropagationMode {
     Generic,
     WatcherFast,
@@ -191,12 +209,13 @@ struct MaintenanceScheduler {
     next_rephase: u64,
     next_probe: u64,
     next_eliminate: u64,
+    rephase_count: u64,
 }
 
 impl MaintenanceScheduler {
     fn from_env() -> Self {
         let reorder_interval = parse_optional_usize_env("SAT_MAINT_REORDER_INTERVAL") as u64;
-        let rephase_interval = parse_optional_usize_env("SAT_MAINT_REPHASE_INTERVAL") as u64;
+        let rephase_interval = parse_rephase_interval_env() as u64;
         let probe_interval = parse_optional_usize_env("SAT_MAINT_PROBE_INTERVAL") as u64;
         let eliminate_interval = parse_optional_usize_env("SAT_MAINT_ELIMINATE_INTERVAL") as u64;
         Self {
@@ -208,7 +227,22 @@ impl MaintenanceScheduler {
             next_rephase: rephase_interval,
             next_probe: probe_interval,
             next_eliminate: eliminate_interval,
+            rephase_count: 0,
         }
+    }
+
+    fn rephase_enabled(&self) -> bool {
+        self.rephase_interval > 0
+    }
+
+    fn scaled_rephase_interval(base: u64, count: u64) -> u64 {
+        if base == 0 {
+            return 0;
+        }
+        let count = count.max(1);
+        let log = ((count + 9) as f64).log10();
+        let scaled = (base as f64) * (count as f64) * log * log * log;
+        scaled.ceil().max(1.0) as u64
     }
 
     fn next_root_action(&self, conflicts: u64) -> Option<MaintenanceAction> {
@@ -231,7 +265,10 @@ impl MaintenanceScheduler {
                 self.next_reorder = conflicts.saturating_add(self.reorder_interval.max(1));
             }
             MaintenanceAction::Rephase => {
-                self.next_rephase = conflicts.saturating_add(self.rephase_interval.max(1));
+                self.rephase_count = self.rephase_count.saturating_add(1);
+                let interval =
+                    Self::scaled_rephase_interval(self.rephase_interval, self.rephase_count);
+                self.next_rephase = conflicts.saturating_add(interval);
             }
             MaintenanceAction::Probe => {
                 self.next_probe = conflicts.saturating_add(self.probe_interval.max(1));
@@ -365,11 +402,20 @@ struct SolverStats {
     maintenance_checks: u64,
     maintenance_actions: u64,
     maintenance_restarts: u64,
+    maintenance_rephases: u64,
     restart_glue_ema_triggers: u64,
     restart_reused_trails: u64,
     restart_reused_levels: u64,
     restart_reused_assignments: u64,
     restart_reuse_max_level: usize,
+    rephases: u64,
+    rephase_best: u64,
+    rephase_inverted: u64,
+    rephase_original: u64,
+    target_phase_saved: u64,
+    best_phase_saved: u64,
+    target_phase_decisions: u64,
+    saved_phase_decisions: u64,
     maintenance_root_simplifies: u64,
     maintenance_reductions: u64,
     maintenance_noops: u64,
@@ -593,8 +639,20 @@ struct Solver {
     /// assignment[v] for variable v (1-based, index 0 unused)
     /// 0 = unassigned, 1 = true, 2 = false
     assignment: Vec<u8>,
+    /// initial branch phase used for original/inverted rephase events
+    initial_phase: u8,
     /// last assigned polarity for each variable, reused when branching after backtrack/restart
     saved_phase: Vec<u8>,
+    /// active rephase target polarity; UNASSIGNED means fall back to saved phase
+    target_phase: Vec<u8>,
+    /// deepest stable-search assignment snapshot retained for future rephase events
+    best_phase: Vec<u8>,
+    /// whether `target_phase` should be considered for stable decisions
+    target_phase_active: bool,
+    /// deepest trail height copied into the active target phase since the last rephase
+    target_phase_assigned: usize,
+    /// deepest trail height copied into best_phase since the last best rephase
+    best_phase_assigned: usize,
     /// decision level of each variable assignment
     decision_level: Vec<usize>,
     /// compact reason reference for each implied assignment; NO_REASON for decisions/root-unassigned vars
@@ -1097,7 +1155,13 @@ impl Solver {
             learned_binary_ids: Vec::new(),
             binary_clause_id_by_arena: Vec::new(),
             assignment: vec![UNASSIGNED; num_vars + 1],
+            initial_phase: default_phase,
             saved_phase: vec![default_phase; num_vars + 1],
+            target_phase: vec![UNASSIGNED; num_vars + 1],
+            best_phase: vec![UNASSIGNED; num_vars + 1],
+            target_phase_active: false,
+            target_phase_assigned: 0,
+            best_phase_assigned: 0,
             decision_level: vec![0; num_vars + 1],
             reason: vec![NO_REASON; num_vars + 1],
             trail: Vec::with_capacity(num_vars),
@@ -3342,14 +3406,85 @@ impl Solver {
         self.apply_restart_reuse_cap(level.min(current_level))
     }
 
+    fn phase_tracking_enabled(&self) -> bool {
+        self.search_mode == SearchMode::Stable && self.maintenance_scheduler.rephase_enabled()
+    }
+
+    fn save_assignment_phases(assignment: &[u8], phases: &mut [u8]) {
+        for var in 1..assignment.len() {
+            let value = assignment[var];
+            if value != UNASSIGNED {
+                phases[var] = value;
+            }
+        }
+    }
+
+    fn update_target_and_best_phases(&mut self) {
+        if !self.phase_tracking_enabled() {
+            return;
+        }
+
+        let assigned = self.trail.len();
+        if self.target_phase_active && self.target_phase_assigned < assigned {
+            self.target_phase_assigned = assigned;
+            Self::save_assignment_phases(&self.assignment, &mut self.target_phase);
+            self.stats.target_phase_saved += 1;
+        }
+
+        if self.best_phase_assigned < assigned {
+            self.best_phase_assigned = assigned;
+            Self::save_assignment_phases(&self.assignment, &mut self.best_phase);
+            self.stats.best_phase_saved += 1;
+        }
+    }
+
+    fn set_target_phase_to_initial(&mut self, phase: u8) {
+        self.target_phase[0] = UNASSIGNED;
+        self.target_phase[1..].fill(phase);
+        self.target_phase_active = true;
+        self.target_phase_assigned = 0;
+    }
+
+    fn run_rephase(&mut self) -> bool {
+        if self.search_mode != SearchMode::Stable {
+            return true;
+        }
+
+        let kind = RephaseKind::from_count(self.stats.rephases);
+        self.stats.rephases += 1;
+        match kind {
+            RephaseKind::Best => {
+                self.target_phase.copy_from_slice(&self.best_phase);
+                self.target_phase_active = true;
+                self.target_phase_assigned = 0;
+                self.best_phase_assigned = 0;
+                self.stats.rephase_best += 1;
+            }
+            RephaseKind::Inverted => {
+                let inverted = if self.initial_phase == TRUE {
+                    FALSE
+                } else {
+                    TRUE
+                };
+                self.set_target_phase_to_initial(inverted);
+                self.stats.rephase_inverted += 1;
+            }
+            RephaseKind::Original => {
+                self.set_target_phase_to_initial(self.initial_phase);
+                self.stats.rephase_original += 1;
+            }
+        }
+        true
+    }
+
     fn record_maintenance_action(&mut self, action: MaintenanceAction) {
         self.stats.maintenance_actions += 1;
         match action {
             MaintenanceAction::Restart => self.stats.maintenance_restarts += 1,
+            MaintenanceAction::Rephase => self.stats.maintenance_rephases += 1,
             MaintenanceAction::RootSimplify => self.stats.maintenance_root_simplifies += 1,
             MaintenanceAction::ReduceDb => self.stats.maintenance_reductions += 1,
             MaintenanceAction::Reorder
-            | MaintenanceAction::Rephase
             | MaintenanceAction::Probe
             | MaintenanceAction::Eliminate => self.stats.maintenance_noops += 1,
         }
@@ -3401,8 +3536,16 @@ impl Solver {
         }
     }
 
-    fn run_root_noop_maintenance(&mut self, _action: MaintenanceAction) -> bool {
-        true
+    fn run_root_maintenance_action(&mut self, action: MaintenanceAction) -> bool {
+        match action {
+            MaintenanceAction::Rephase => self.run_rephase(),
+            MaintenanceAction::Reorder
+            | MaintenanceAction::Probe
+            | MaintenanceAction::Eliminate => true,
+            MaintenanceAction::Restart
+            | MaintenanceAction::RootSimplify
+            | MaintenanceAction::ReduceDb => true,
+        }
     }
 
     fn run_search_maintenance(&mut self) -> MaintenanceOutcome {
@@ -3443,7 +3586,7 @@ impl Solver {
         {
             self.record_maintenance_action(action);
             let outcome = self.return_to_root_for_maintenance(action, |solver| {
-                solver.run_root_noop_maintenance(action)
+                solver.run_root_maintenance_action(action)
             });
             self.maintenance_scheduler
                 .mark_root_action(action, self.stats.conflicts);
@@ -3455,6 +3598,24 @@ impl Solver {
 
         self.stats.maintenance_time_ns += elapsed_ns(maintenance_start);
         MaintenanceOutcome::Continue
+    }
+
+    fn decision_phase(&mut self, var: usize) -> u8 {
+        if self.search_mode == SearchMode::Stable
+            && self.target_phase_active
+            && self.target_phase[var] != UNASSIGNED
+        {
+            self.stats.target_phase_decisions += 1;
+            self.target_phase[var]
+        } else {
+            self.stats.saved_phase_decisions += 1;
+            let saved = self.saved_phase[var];
+            if saved == UNASSIGNED {
+                self.initial_phase
+            } else {
+                saved
+            }
+        }
     }
 
     fn pick_branch_lit(&mut self) -> Option<i32> {
@@ -3472,7 +3633,8 @@ impl Solver {
                 continue;
             }
 
-            return Some(if self.saved_phase[var] == FALSE {
+            let phase = self.decision_phase(var);
+            return Some(if phase == FALSE {
                 -(var as i32)
             } else {
                 var as i32
@@ -3488,6 +3650,7 @@ impl Solver {
             return;
         }
 
+        self.update_target_and_best_phases();
         let new_trail_len = if target_level == 0 {
             self.root_trail_len
         } else {
@@ -4409,7 +4572,7 @@ impl Solver {
                         self.stats.search_time_ns += elapsed_ns(search_start);
                         if trace_search_interval > 0 {
                             eprintln!(
-                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} restart_reused={}/{}/{} restart_reuse_max={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                 self.stats.search_time_ns as f64 / 1e9,
                                 self.stats.conflicts,
                                 self.stats.decisions,
@@ -4419,6 +4582,14 @@ impl Solver {
                                 self.stats.restart_reused_levels,
                                 self.stats.restart_reused_assignments,
                                 self.stats.restart_reuse_max_level,
+                                self.stats.rephases,
+                                self.stats.target_phase_saved,
+                                self.stats.best_phase_saved,
+                                self.stats.target_phase_decisions,
+                                self.stats.saved_phase_decisions,
+                                self.stats.rephase_best,
+                                self.stats.rephase_inverted,
+                                self.stats.rephase_original,
                                 self.live_learned_clause_count,
                                 self.stats.learned_clause_literals,
                                 self.stats.learned_clause_max_len,
@@ -4457,7 +4628,7 @@ impl Solver {
                     self.stats.conflicts += 1;
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
-                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} restart_reused={}/{}/{} restart_reuse_max={} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
+                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
                             search_start.elapsed().as_secs_f64(),
                             self.stats.conflicts,
                             self.stats.decisions,
@@ -4467,6 +4638,14 @@ impl Solver {
                             self.stats.restart_reused_levels,
                             self.stats.restart_reused_assignments,
                             self.stats.restart_reuse_max_level,
+                            self.stats.rephases,
+                            self.stats.target_phase_saved,
+                            self.stats.best_phase_saved,
+                            self.stats.target_phase_decisions,
+                            self.stats.saved_phase_decisions,
+                            self.stats.rephase_best,
+                            self.stats.rephase_inverted,
+                            self.stats.rephase_original,
                             self.current_level(),
                             self.trail.len(),
                             self.live_learned_clause_count,
@@ -4557,7 +4736,7 @@ impl Solver {
                             self.stats.search_time_ns += elapsed_ns(search_start);
                             if trace_search_interval > 0 {
                                 eprintln!(
-                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} restart_reused={}/{}/{} restart_reuse_max={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                     self.stats.search_time_ns as f64 / 1e9,
                                     self.stats.conflicts,
                                     self.stats.decisions,
@@ -4567,6 +4746,14 @@ impl Solver {
                                     self.stats.restart_reused_levels,
                                     self.stats.restart_reused_assignments,
                                     self.stats.restart_reuse_max_level,
+                                    self.stats.rephases,
+                                    self.stats.target_phase_saved,
+                                    self.stats.best_phase_saved,
+                                    self.stats.target_phase_decisions,
+                                    self.stats.saved_phase_decisions,
+                                    self.stats.rephase_best,
+                                    self.stats.rephase_inverted,
+                                    self.stats.rephase_original,
                                     self.live_learned_clause_count,
                                     self.stats.learned_clause_literals,
                                     self.stats.learned_clause_max_len,
@@ -4827,6 +5014,16 @@ fn parse_optional_usize_env(name: &str) -> usize {
             }
         },
         Err(_) => 0,
+    }
+}
+
+fn parse_rephase_interval_env() -> usize {
+    if env::var("SAT_REPHASE_INTERVAL").is_ok() {
+        parse_usize_env("SAT_REPHASE_INTERVAL", 0)
+    } else if env::var("SAT_MAINT_REPHASE_INTERVAL").is_ok() {
+        parse_usize_env("SAT_MAINT_REPHASE_INTERVAL", 0)
+    } else {
+        DEFAULT_REPHASE_INTERVAL
     }
 }
 
@@ -6166,6 +6363,22 @@ mod tests {
     }
 
     #[test]
+    fn test_pick_branch_lit_uses_target_phase_before_saved_phase() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-1, 3]]);
+        s.activity[1] = 1.0;
+        s.activity[2] = 4.0;
+        s.activity[3] = 2.0;
+        s.saved_phase[2] = TRUE;
+        s.target_phase[2] = FALSE;
+        s.target_phase_active = true;
+        s.rebuild_branch_queue();
+
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+        assert_eq!(s.stats.target_phase_decisions, 1);
+        assert_eq!(s.stats.saved_phase_decisions, 0);
+    }
+
+    #[test]
     fn test_saved_phase_survives_backtrack() {
         let mut s = make_solver(2, vec![]);
         s.activity[1] = 5.0;
@@ -6177,6 +6390,78 @@ mod tests {
 
         assert_eq!(s.assignment[1], UNASSIGNED);
         assert_eq!(s.pick_branch_lit(), Some(-1));
+    }
+
+    #[test]
+    fn test_backtrack_saves_best_phase_when_rephase_enabled() {
+        let mut s = make_solver(3, vec![]);
+        s.maintenance_scheduler.rephase_interval = 10;
+        s.maintenance_scheduler.next_rephase = 10;
+
+        s.decide(1);
+        s.decide(-2);
+        s.backtrack(0);
+
+        assert_eq!(s.best_phase[1], TRUE);
+        assert_eq!(s.best_phase[2], FALSE);
+        assert_eq!(s.best_phase_assigned, 2);
+        assert_eq!(s.stats.best_phase_saved, 1);
+        assert_eq!(s.stats.target_phase_saved, 0);
+    }
+
+    #[test]
+    fn test_rephase_best_copies_best_phase_to_target_phase() {
+        let mut s = make_solver(3, vec![]);
+        s.best_phase[1] = TRUE;
+        s.best_phase[2] = FALSE;
+        s.best_phase_assigned = 2;
+
+        assert!(s.run_rephase());
+
+        assert_eq!(s.target_phase[1], TRUE);
+        assert_eq!(s.target_phase[2], FALSE);
+        assert!(s.target_phase_active);
+        assert_eq!(s.best_phase_assigned, 0);
+        assert_eq!(s.stats.rephases, 1);
+        assert_eq!(s.stats.rephase_best, 1);
+    }
+
+    #[test]
+    fn test_rephase_inverted_and_original_use_initial_phase_not_best_phase() {
+        let mut s = make_solver(2, vec![]);
+        s.initial_phase = FALSE;
+        s.best_phase[1] = TRUE;
+        s.best_phase[2] = FALSE;
+
+        s.stats.rephases = 1;
+        assert!(s.run_rephase());
+        assert_eq!(s.target_phase[1], TRUE);
+        assert_eq!(s.target_phase[2], TRUE);
+        assert_eq!(s.stats.rephase_inverted, 1);
+
+        s.stats.rephases = 2;
+        assert!(s.run_rephase());
+        assert_eq!(s.target_phase[1], FALSE);
+        assert_eq!(s.target_phase[2], FALSE);
+        assert_eq!(s.stats.rephase_original, 1);
+    }
+
+    #[test]
+    fn test_search_maintenance_runs_rephase_action() {
+        let mut s = make_solver(2, vec![]);
+        s.maintenance_scheduler.rephase_interval = 10;
+        s.maintenance_scheduler.next_rephase = 10;
+        s.stats.conflicts = 10;
+        s.decide(1);
+
+        let outcome = s.run_search_maintenance();
+
+        assert_eq!(outcome, MaintenanceOutcome::Continue);
+        assert_eq!(s.current_level(), 0);
+        assert_eq!(s.stats.maintenance_rephases, 1);
+        assert_eq!(s.stats.rephases, 1);
+        assert!(s.target_phase_active);
+        assert!(s.maintenance_scheduler.next_rephase > 10);
     }
 
     #[test]

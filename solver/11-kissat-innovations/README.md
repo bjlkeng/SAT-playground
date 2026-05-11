@@ -37,11 +37,14 @@ What is present:
   opt-in cooldown after low-yield learned-clause reduction passes; Kissat-style restart trail reuse
   is now the default with the measured `SAT_RESTART_REUSE_CAP=8` setting; use
   `SAT_RESTART_REUSE=off` for ablations, or `SAT_RESTART_REUSE_CAP=0` for uncapped reuse
+- Phase 7 phase-system scaffold: stable search can track `best_phase` and `target_phase` snapshots
+  and runs a best/inverted/original rephase cycle by default with `SAT_REPHASE_INTERVAL=10000`; use
+  `SAT_REPHASE_INTERVAL=0` to disable while comparing proof/search side effects
 
 What is intentionally not present yet:
 
 - no automatic Kissat search-mode switching, stable reluctant restart schedule, real mid-search
-  inprocessing pass, probing, or rephasing yet
+  inprocessing pass, probing, or local-search walking rephase source yet
 - no separate MiniSat `simp` port design document is copied forward
 
 ## Direction
@@ -365,3 +368,69 @@ The fresh default benchmark reproduced the earlier cap-8 profile within normal r
 `feistel_b64_k32_r22` `0.58s`, `feistel_b64_k52_r17` `4.24s`,
 `feistel_b64_k57_r18` `2.43s`, timetable `16.48s`, `random_v285_s2` `8.62s`,
 `random_v292_s4` `14.69s`, and the known `random_v355_s3` timeout.
+
+Target/best rephase validation on 2026-05-11:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_REPHASE_INTERVAL=1 SAT_CHECK_INVARIANTS=1 \
+  bash tools/smoke_test.sh solver/11-kissat-innovations
+bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_REPHASE_INTERVAL=50000 bash tools/bench.sh -t 120 -m 16384 \
+  -d benchmarks/profiling solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 84 passed
+- default smoke suite after the 10000 default-policy change: 9/9 passed, log
+  `log/2026-05-11-12-53-25`
+- default smoke suite with rephase interval 50000 before the later 10000 default-policy change:
+  9/9 passed, log `log/2026-05-11-12-47-54`
+- rephase-off invariant smoke suite: 9/9 passed, log `log/2026-05-11-12-48-06`
+- default no-rephase profiling run after the implementation: solved 6/11, PAR-2 `1246.720`, log
+  `log/bench-11-kissat-innovations-2026-05-11-09-15-19`
+- full profiling run with `SAT_REPHASE_INTERVAL=50000`: solved 7/11 by runtime with PAR-2
+  `1018.540`, log `log/bench-11-kissat-innovations-2026-05-11-08-48-45`
+
+Implementation notes:
+
+- `best_phase` records the deepest stable-search assignment snapshot seen before a backtrack.
+- `target_phase` is the active decision-phase source; stable decisions prefer target phase, then
+  saved phase. Focused mode still uses the existing saved-phase behavior.
+- Rephase events are stable-mode only and run at root through the maintenance scheduler. The cycle is
+  `best -> inverted initial phase -> original initial phase`; the local-search walking source is not
+  implemented yet.
+- `SAT_REPHASE_INTERVAL=<N>` and the existing `SAT_MAINT_REPHASE_INTERVAL=<N>` both enable rephase.
+  Intervals grow using a Kissat-like `N * count * log10(count + 9)^3` schedule.
+- `SAT_REPHASE_INTERVAL=0` disables rephase for ablations.
+
+Targeted interval sweep:
+
+- Baseline target set, no rephase: solved 5/6, PAR-2 `278.816`, log
+  `log/bench-11-kissat-innovations-2026-05-11-08-13-36`; `random_v355_s3` timed out.
+- `SAT_REPHASE_INTERVAL=10000`: solved 6/6, PAR-2 `165.791`, log
+  `log/bench-11-kissat-innovations-2026-05-11-08-22-07`; it rescued `random_v355_s3` in `0.50s`
+  but regressed `feistel_b64_k32_r22` to `45.49s` and `feistel_b64_k52_r17` to `83.93s`.
+- `SAT_REPHASE_INTERVAL=50000`: runtime solved 6/6, PAR-2 `48.226`, log
+  `log/bench-11-kissat-innovations-2026-05-11-08-35-06`; it kept the Feistel wins
+  (`0.59s`, `4.50s`, `1.22s`), solved `random_v355_s3` in `1.16s`, and solved timetable in
+  `13.92s`.
+- `40000` and `100000` both timed out `feistel_b64_k52_r17`; `60000` solved the SAT target slice
+  but was slower than `50000` on every comparable SAT target.
+
+Analysis:
+
+- The machinery itself is safe for the default path: no-rephase full profiling stayed at 6/11 and
+  PAR-2 `1246.720`, matching the previous default cap-8 profile.
+- `SAT_REPHASE_INTERVAL=10000` is now the default runtime setting. The targeted sweep showed this
+  aggressive interval rescued `random_v355_s3` but substantially perturbed Feistel search paths, so
+  future rephase work should add walking/source guards before treating this as fully tuned.
+- `SAT_REPHASE_INTERVAL=50000` remains the best measured full-profile interval so far: it improved
+  by about `228` PAR-2 and gained `random_v355_s3` (`TIMEOUT` -> `1.17s`).
+- On `random_v292_s4`, solver time regressed from `14.85s` to `26.85s`, and the DRAT checker did
+  not finish after 14 minutes, so that benchmark row is not verification-complete in the `50000`
+  full-profile log. A pre-existing unrelated long-running `drat-trim` process was also using one CPU
+  during these experiments, but the proof-checking regression is large enough that
+  `SAT_REPHASE_INTERVAL=0` should remain part of future ablations.
