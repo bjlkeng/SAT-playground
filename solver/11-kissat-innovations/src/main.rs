@@ -102,6 +102,12 @@ enum BranchMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReduceMode {
+    Activity,
+    GlueTiered,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BinaryPropagationMode {
     Generic,
     WatcherFast,
@@ -301,6 +307,9 @@ struct SolverStats {
     restarts: u64,
     simplifications: u64,
     reduce_db_calls: u64,
+    reduce_deleted_clauses: u64,
+    reduce_activity_deleted_clauses: u64,
+    reduce_glue_tiered_deleted_clauses: u64,
     deleted_clauses: u64,
     garbage_collections: u64,
     learned_clauses: u64,
@@ -592,6 +601,8 @@ struct Solver {
     maintenance_scheduler: MaintenanceScheduler,
     /// learned-clause budget threshold for running a database reduction pass
     reduce_db_limit: usize,
+    /// learned-clause reduction policy
+    reduce_mode: ReduceMode,
     /// resize learned-clause budget after preprocessing, matching MiniSat's solve-time setup
     reset_reduce_db_after_preprocess: bool,
     /// current conflict countdown until the next learned-budget adjustment
@@ -1031,6 +1042,7 @@ impl Solver {
             restart_pending: false,
             maintenance_scheduler: MaintenanceScheduler::from_env(),
             reduce_db_limit: ((original_clause_count as f64) * LEARNTSIZE_FACTOR) as usize,
+            reduce_mode: parse_reduce_mode(),
             reset_reduce_db_after_preprocess: true,
             learntsize_adjust_cnt: LEARNTSIZE_ADJUST_START_CONFL,
             learntsize_adjust_confl: LEARNTSIZE_ADJUST_START_CONFL as f64,
@@ -3241,6 +3253,13 @@ impl Solver {
         self.lit_value(implied_lit) == TRUE && self.reason[var].as_clause() == Some(clause_idx)
     }
 
+    fn age_kept_learned_clause(&mut self, clause_idx: usize) {
+        let used = self.clause_used(clause_idx);
+        if used > 0 {
+            self.set_clause_used(clause_idx, used - 1);
+        }
+    }
+
     fn reduce_db_enabled(&self) -> bool {
         self.reduce_db_limit != usize::MAX
     }
@@ -3493,7 +3512,20 @@ impl Solver {
     fn reduce_db(&mut self) {
         let reduce_start = Instant::now();
         self.stats.reduce_db_calls += 1;
+        match self.reduce_mode {
+            ReduceMode::Activity => self.reduce_db_activity(),
+            ReduceMode::GlueTiered => self.reduce_db_glue_tiered(),
+        }
 
+        if self.compact_watchers_after_reduce {
+            self.compact_deleted_watchers();
+        }
+        self.maybe_garbage_collect();
+        self.stats.reduce_db_time_ns += elapsed_ns(reduce_start);
+        self.maybe_check_invariants("reduce_db");
+    }
+
+    fn reduce_db_activity(&mut self) {
         let arena = &self.arena;
         self.learned_clause_ids.sort_unstable_by(|&lhs, &rhs| {
             let lhs_short = clause_len_in_arena(arena, lhs) <= 2;
@@ -3523,20 +3555,91 @@ impl Solver {
             {
                 self.detach_clause(clause_idx);
                 self.mark_clause_deleted_already_unlinked(clause_idx);
+                self.stats.reduce_deleted_clauses += 1;
+                self.stats.reduce_activity_deleted_clauses += 1;
             } else {
+                self.age_kept_learned_clause(clause_idx);
                 self.learned_clause_ids[write] = clause_idx;
                 write += 1;
             }
         }
         self.learned_clause_ids.truncate(write);
         self.live_learned_clause_count = self.learned_clause_ids.len();
+    }
 
-        if self.compact_watchers_after_reduce {
-            self.compact_deleted_watchers();
+    fn glue_tiered_reduce_candidate(&self, clause_idx: usize) -> bool {
+        if self.clause_len(clause_idx) <= 2 || self.clause_locked(clause_idx) {
+            return false;
         }
-        self.maybe_garbage_collect();
-        self.stats.reduce_db_time_ns += elapsed_ns(reduce_start);
-        self.maybe_check_invariants("reduce_db");
+        let tier = self.clause_tier(clause_idx);
+        if tier <= 1 {
+            return false;
+        }
+        tier >= 3 || self.clause_used(clause_idx) == 0
+    }
+
+    fn glue_tiered_pressure_candidate(&self, clause_idx: usize) -> bool {
+        if self.clause_len(clause_idx) <= 2 || self.clause_locked(clause_idx) {
+            return false;
+        }
+        self.clause_tier(clause_idx) == 2 && self.clause_used(clause_idx) > 0
+    }
+
+    fn glue_tiered_reduce_order(&self, lhs: usize, rhs: usize) -> std::cmp::Ordering {
+        self.clause_tier(rhs)
+            .cmp(&self.clause_tier(lhs))
+            .then_with(|| self.clause_glue(rhs).cmp(&self.clause_glue(lhs)))
+            .then_with(|| self.clause_used(lhs).cmp(&self.clause_used(rhs)))
+            .then_with(|| self.clause_len(rhs).cmp(&self.clause_len(lhs)))
+            .then_with(|| {
+                self.clause_activity(lhs)
+                    .total_cmp(&self.clause_activity(rhs))
+            })
+            .then_with(|| lhs.cmp(&rhs))
+    }
+
+    fn reduce_db_glue_tiered(&mut self) {
+        let mut candidates = Vec::new();
+        for &clause_idx in &self.learned_clause_ids {
+            if self.glue_tiered_reduce_candidate(clause_idx) {
+                candidates.push(clause_idx);
+            }
+        }
+        candidates.sort_unstable_by(|&lhs, &rhs| self.glue_tiered_reduce_order(lhs, rhs));
+        let candidate_delete_count = (candidates.len() + 1) / 2;
+        let target_live = self.reduce_db_limit.saturating_mul(3) / 4;
+        let budget_delete_count = self.learned_clause_ids.len().saturating_sub(target_live);
+        if candidates.len() < budget_delete_count {
+            for &clause_idx in &self.learned_clause_ids {
+                if self.glue_tiered_pressure_candidate(clause_idx) {
+                    candidates.push(clause_idx);
+                }
+            }
+            candidates.sort_unstable_by(|&lhs, &rhs| self.glue_tiered_reduce_order(lhs, rhs));
+        }
+        let delete_count = candidates
+            .len()
+            .min(candidate_delete_count.max(budget_delete_count));
+        let mut delete_ids = candidates[..delete_count].to_vec();
+        delete_ids.sort_unstable();
+
+        let candidate_count = self.learned_clause_ids.len();
+        let mut write = 0usize;
+        for idx in 0..candidate_count {
+            let clause_idx = self.learned_clause_ids[idx];
+            if delete_ids.binary_search(&clause_idx).is_ok() {
+                self.detach_clause(clause_idx);
+                self.mark_clause_deleted_already_unlinked(clause_idx);
+                self.stats.reduce_deleted_clauses += 1;
+                self.stats.reduce_glue_tiered_deleted_clauses += 1;
+            } else {
+                self.age_kept_learned_clause(clause_idx);
+                self.learned_clause_ids[write] = clause_idx;
+                write += 1;
+            }
+        }
+        self.learned_clause_ids.truncate(write);
+        self.live_learned_clause_count = self.learned_clause_ids.len();
     }
 
     fn minimize_learned_clause(&mut self, learned_clause: &mut Vec<i32>) {
@@ -3833,7 +3936,7 @@ impl Solver {
                         self.stats.search_time_ns += elapsed_ns(search_start);
                         if trace_search_interval > 0 {
                             eprintln!(
-                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} deleted_clauses={} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} deleted_clauses={} reduce_deleted={} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                 self.stats.search_time_ns as f64 / 1e9,
                                 self.stats.conflicts,
                                 self.stats.decisions,
@@ -3846,6 +3949,7 @@ impl Solver {
                                 self.stats.learned_clause_glue_max,
                                 self.stats.last_learned_clause_glue,
                                 self.stats.deleted_clauses,
+                                self.stats.reduce_deleted_clauses,
                                 self.stats.deleted_words,
                                 self.stats.garbage_collections,
                                 self.stats.gc_time_ns as f64 / 1e6,
@@ -3864,7 +3968,7 @@ impl Solver {
                     self.stats.conflicts += 1;
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
-                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} reduce_db={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
+                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} reduce_db={} reduce_deleted={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
                             search_start.elapsed().as_secs_f64(),
                             self.stats.conflicts,
                             self.stats.decisions,
@@ -3881,6 +3985,7 @@ impl Solver {
                             self.stats.learned_clause_glue_max,
                             self.stats.last_learned_clause_glue,
                             self.stats.reduce_db_calls,
+                            self.stats.reduce_deleted_clauses,
                             self.stats.maintenance_actions,
                             self.original_clause_ids.len(),
                             self.original_literals,
@@ -3954,7 +4059,7 @@ impl Solver {
                             self.stats.search_time_ns += elapsed_ns(search_start);
                             if trace_search_interval > 0 {
                                 eprintln!(
-                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} deleted_clauses={} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} deleted_clauses={} reduce_deleted={} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                     self.stats.search_time_ns as f64 / 1e9,
                                     self.stats.conflicts,
                                     self.stats.decisions,
@@ -3967,6 +4072,7 @@ impl Solver {
                                     self.stats.learned_clause_glue_max,
                                     self.stats.last_learned_clause_glue,
                                     self.stats.deleted_clauses,
+                                    self.stats.reduce_deleted_clauses,
                                     self.stats.deleted_words,
                                     self.stats.garbage_collections,
                                     self.stats.gc_time_ns as f64 / 1e6,
@@ -4035,6 +4141,20 @@ fn parse_branch_mode() -> BranchMode {
             }
         },
         Err(_) => BranchMode::Minisat,
+    }
+}
+
+fn parse_reduce_mode() -> ReduceMode {
+    match env::var("SAT_REDUCE_MODE") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "activity" | "legacy" | "solver10" => ReduceMode::Activity,
+            "glue-tiered" | "glue_tiered" | "glue" | "tiered" => ReduceMode::GlueTiered,
+            other => {
+                eprintln!("Invalid SAT_REDUCE_MODE={other}; expected activity/glue-tiered");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => ReduceMode::GlueTiered,
     }
 }
 
@@ -5001,6 +5121,7 @@ mod tests {
     #[test]
     fn test_reduce_db_keeps_locked_and_binary_learned_clauses() {
         let mut s = make_solver(5, vec![]);
+        s.reduce_mode = ReduceMode::Activity;
         let removable = s.add_clause(vec![5, 1, 2]);
         let binary = s.add_clause(vec![4, 1]);
         let locked = s.add_clause(vec![3, 1, 2]);
@@ -5033,6 +5154,107 @@ mod tests {
                 .all(|watcher| !s.clause_is_deleted(watcher.clause_idx as usize)),
             "propagation should drop tombstoned watchers from scanned lists"
         );
+    }
+
+    #[test]
+    fn test_glue_tiered_reduce_keeps_protected_clauses_and_deletes_worst_glue() {
+        let mut s = make_solver(9, vec![]);
+        s.reduce_mode = ReduceMode::GlueTiered;
+        s.reduce_db_limit = 10;
+
+        let tier1 = s.add_clause_from_slice_with_glue(&[5, 1, 2], 2);
+        let tier2_used = s.add_clause_from_slice_with_glue(&[6, 1, 2], 5);
+        let tier2_unused = s.add_clause_from_slice_with_glue(&[7, 1, 2], 5);
+        let high_glue = s.add_clause_from_slice_with_glue(&[8, 1, 2, 3], 20);
+        let medium_glue = s.add_clause_from_slice_with_glue(&[9, 1, 2], 10);
+        let binary = s.add_clause_from_slice_with_glue(&[4, 1], 20);
+        let locked = s.add_clause_from_slice_with_glue(&[3, 1, 2], 20);
+
+        s.set_clause_used(tier1, 0);
+        s.set_clause_used(tier2_used, 1);
+        s.set_clause_used(tier2_unused, 0);
+        s.set_clause_used(high_glue, 0);
+        s.set_clause_used(medium_glue, 0);
+        s.set_clause_used(binary, 0);
+        s.set_clause_used(locked, 0);
+
+        s.assignment[3] = TRUE;
+        s.saved_phase[3] = TRUE;
+        s.decision_level[3] = 1;
+        s.reason[3] = ReasonRef::clause(locked);
+        s.trail.push(3);
+        s.trail_limits.push(0);
+        s.propagate_head = s.trail.len();
+
+        s.reduce_db();
+
+        assert!(!s.clause_is_deleted(tier1));
+        assert!(!s.clause_is_deleted(tier2_used));
+        assert!(!s.clause_is_deleted(binary));
+        assert!(!s.clause_is_deleted(locked));
+        assert!(s.clause_is_deleted(high_glue));
+        assert!(s.clause_is_deleted(medium_glue));
+        assert!(!s.clause_is_deleted(tier2_unused));
+        assert_eq!(s.clause_used(tier2_used), 0);
+        assert_eq!(s.stats.reduce_glue_tiered_deleted_clauses, 2);
+        assert_eq!(s.stats.reduce_deleted_clauses, 2);
+    }
+
+    #[test]
+    fn test_glue_tiered_reduce_deletes_unused_tier2_when_no_worse_candidates() {
+        let mut s = make_solver(5, vec![]);
+        s.reduce_mode = ReduceMode::GlueTiered;
+        s.reduce_db_limit = 10;
+
+        let tier1 = s.add_clause_from_slice_with_glue(&[3, 1, 2], 2);
+        let tier2_used = s.add_clause_from_slice_with_glue(&[4, 1, 2], 5);
+        let tier2_unused = s.add_clause_from_slice_with_glue(&[5, 1, 2], 5);
+        let filler = s.add_clause_from_slice_with_glue(&[1, 2, 3, 4, 5], 2);
+        s.set_clause_used(tier1, 0);
+        s.set_clause_used(tier2_used, 1);
+        s.set_clause_used(tier2_unused, 0);
+        s.set_clause_used(filler, 0);
+
+        s.reduce_db();
+
+        assert!(!s.clause_is_deleted(tier1));
+        assert!(!s.clause_is_deleted(tier2_used));
+        assert!(!s.clause_is_deleted(filler));
+        assert!(s.clause_is_deleted(tier2_unused));
+        assert_eq!(s.clause_used(tier2_used), 0);
+    }
+
+    #[test]
+    fn test_glue_tiered_reduce_uses_tier2_grace_only_when_budget_allows() {
+        let mut s = make_solver(20, vec![]);
+        s.reduce_mode = ReduceMode::GlueTiered;
+        s.reduce_db_limit = 4;
+
+        let tier1 = s.add_clause_from_slice_with_glue(&[3, 1, 2], 2);
+        let tier2_used = s.add_clause_from_slice_with_glue(&[4, 1, 2], 5);
+        let tier2_unused = s.add_clause_from_slice_with_glue(&[5, 1, 2], 5);
+        let protected_a = s.add_clause_from_slice_with_glue(&[6, 1, 2], 2);
+        let protected_b = s.add_clause_from_slice_with_glue(&[7, 1, 2], 2);
+        let protected_c = s.add_clause_from_slice_with_glue(&[8, 1, 2], 2);
+        let filler = s.add_clause_from_slice_with_glue(&[9, 10, 11, 12, 13, 14, 15], 2);
+
+        s.set_clause_used(tier1, 0);
+        s.set_clause_used(tier2_used, 1);
+        s.set_clause_used(tier2_unused, 0);
+        s.set_clause_used(protected_a, 0);
+        s.set_clause_used(protected_b, 0);
+        s.set_clause_used(protected_c, 0);
+        s.set_clause_used(filler, 0);
+
+        s.reduce_db();
+
+        assert!(!s.clause_is_deleted(tier1));
+        assert!(!s.clause_is_deleted(protected_a));
+        assert!(!s.clause_is_deleted(protected_b));
+        assert!(!s.clause_is_deleted(protected_c));
+        assert!(!s.clause_is_deleted(filler));
+        assert!(s.clause_is_deleted(tier2_unused));
+        assert!(s.clause_is_deleted(tier2_used));
     }
 
     #[test]

@@ -28,6 +28,8 @@ What is present:
 - Phase 4 dense/sparse simplification boundary around the existing upfront MiniSat-style
   simplifier: explicit `enter_simplification_mode` / `resume_search_mode_after_simplification`
   hooks, dense occurrence-view lifetime counters, and sparse-search cleanup
+- Phase 5 learned-clause lifecycle policy: glue/tier/used-based reduction is the default; use
+  `SAT_REDUCE_MODE=activity` for the previous activity-based reducer fallback
 
 What is intentionally not present yet:
 
@@ -143,3 +145,45 @@ Results:
 - post-change profiling run: solved 5/11, PAR-2 `1559.650`, log
   `log/bench-11-kissat-innovations-2026-05-10-18-34-31`
 - same solved/timeout split; all non-timeout per-instance deltas were under `0.1s`
+
+Glue-tiered learned reduction validation on 2026-05-10:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_REDUCE_MODE=activity bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_REDUCE_MODE=activity bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_REDUCE_MODE=glue-tiered bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 70 passed
+- default glue-tiered smoke suite: 9/9 passed, log `log/2026-05-10-21-08-46`
+- activity fallback smoke suite: 9/9 passed, log `log/2026-05-10-21-08-55`
+- glue-tiered invariant smoke suite: 9/9 passed, log `log/2026-05-10-20-41-12`
+- activity fallback profiling run: solved 5/11, PAR-2 `1559.855`, log
+  `log/bench-11-kissat-innovations-2026-05-10-19-29-34`
+- glue-tiered/default profiling run: solved 6/11, PAR-2 `1328.592`, log
+  `log/bench-11-kissat-innovations-2026-05-10-20-17-39`
+- net profile-set improvement: `-231.263` PAR-2 and one extra solved instance
+
+Key per-instance deltas versus activity fallback mode:
+
+- `feistel_b64_k32_r22`: SAT `90.071s` -> `27.015s`
+- `random_v355_s3`: TIMEOUT -> SAT `53.410s`
+- regressions: `feistel_b64_k52_r17` `+4.290s`, `feistel_b64_k57_r18` `+2.314s`,
+  `random_v285_s2` `+0.746s`, `random_v292_s4` `+11.033s`
+- timeout-heavy structured instances stayed timeouts under both modes
+
+Important rejected/adjusted attempt:
+
+- The first glue-tiered cut deleted only half of the immediately eligible clauses. On
+  `random_v292_s4`, direct trace showed reduction churn: activity mode used `991` reduce passes
+  and solved in `8.557s`, while the primary-only glue cut used about `75k` reduce passes and took
+  over `21s`.
+- The kept version uses budget pressure: primary reducibles are still tier `>= 3` or unused tier-2
+  clauses, but if they cannot bring the learned DB back toward budget, used tier-2 clauses become
+  pressure candidates. The focused trace after that change solved `random_v292_s4` in `19.066s`
+  with `3261` reductions. That is still a search-path regression on this instance, but avoids the
+  pathological reducer churn and the full profiling set improves materially.

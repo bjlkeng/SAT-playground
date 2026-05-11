@@ -671,8 +671,46 @@ Implementation items:
 
 Risk:
 
-- This can regress before branch modes and restart policy are updated, so gate it with an env flag
-  such as `SAT_REDUCE_MODE=activity|glue-tiered`.
+- This can regress before branch modes and restart policy are updated, so keep
+  `SAT_REDUCE_MODE=activity` as an explicit fallback while glue-tiered reduction is the default.
+
+Implementation status:
+
+- Landed as the solver-11 default. Use `SAT_REDUCE_MODE=activity` to run the previous activity
+  reducer.
+- Learned clauses are classified by the stored glue metadata: tier 1 is glue `<= 2`, tier 2 is glue
+  `<= 6`, and tier 3 is everything higher.
+- Binary learned clauses, locked clauses, and tier-1 clauses are protected.
+- Normal glue-mode reducibles are non-binary unlocked clauses with tier `>= 3` or `used == 0`.
+- Reducibles are ordered worst first by higher tier, higher glue, lower used count, larger size,
+  lower activity, then lower arena id.
+- A reduction deletes at least half of normal reducibles, but also respects budget pressure: it aims
+  the live learned DB back toward `3/4 * reduce_db_limit`. If normal reducibles cannot reach that
+  target, used tier-2 clauses become pressure candidates. Kept learned clauses have `used`
+  decremented by one, so the grace is temporary.
+
+Validation:
+
+- `cargo test`: 70 passed.
+- Default glue-tiered smoke: 9/9 passed, log `log/2026-05-10-21-08-46`.
+- Activity fallback smoke: 9/9 passed, log `log/2026-05-10-21-08-55`.
+- Glue-tiered invariant smoke: 9/9 passed, log `log/2026-05-10-20-41-12`.
+- Profiling activity fallback: 5/11 solved, PAR-2 `1559.855`, log
+  `log/bench-11-kissat-innovations-2026-05-10-19-29-34`.
+- Profiling glue-tiered/default: 6/11 solved, PAR-2 `1328.592`, log
+  `log/bench-11-kissat-innovations-2026-05-10-20-17-39`.
+- Main wins: `feistel_b64_k32_r22` improved from `90.071s` to `27.015s`, and
+  `random_v355_s3` changed from timeout to SAT in `53.410s`.
+- Main regression: `random_v292_s4` slowed from `8.776s` to `19.809s`; focused trace shows this is
+  a search-path regression, not just local reducer overhead.
+
+Rejected/adjusted variant:
+
+- A primary-only glue reducer that deleted half of the immediately eligible clauses caused repeated
+  over-budget reductions. On `random_v292_s4`, activity mode solved in `8.557s` with `991`
+  reductions, while the first glue cut took over `21s` with about `75k` reductions.
+- The retained budget-pressure variant reduced that churn to `3261` reductions in a direct trace,
+  while keeping the full profiling-set PAR-2 gain.
 
 ### D. Split binary clauses into a fast implication path
 
@@ -1464,7 +1502,8 @@ Primary roadmap items:
 
 Build first:
 
-- Replace the activity-only reducer with a glue/used/tier reducer behind `SAT_REDUCE_MODE`.
+- Replace the activity-only reducer with a default glue/used/tier reducer and keep the activity
+  reducer available via `SAT_REDUCE_MODE=activity`.
 - Promote/recompute glue when reason clauses are used.
 - Add eager subsumption over the last few learned clauses.
 - Implement on-the-fly strengthening only after proof additions/deletions for modified clauses are
@@ -1645,7 +1684,7 @@ Why last:
    iteration support. This should get the heaviest unit-test coverage.
 3. Land Phase 3 and Phase 4 as infrastructure with no major new algorithms: scheduler hooks,
    root-maintenance transition, dense/sparse mode, reusable occurrence lists.
-4. Land Phase 5 and Phase 6 behind flags: glue-tiered reduction and focused queue, still without
-   automatic mode switching.
+4. Land Phase 5 and Phase 6 incrementally: glue-tiered reduction as the default with activity
+   fallback, and focused queue behind a flag, still without automatic mode switching.
 5. Only then start Phase 8 visible algorithmic work: lucky shortcut/probing, clause-weight reorder,
    Kissat-style BVE scoring, fast BVE, and bounded forward subsumption.
