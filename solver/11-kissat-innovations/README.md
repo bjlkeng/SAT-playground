@@ -40,11 +40,16 @@ What is present:
 - Phase 7 phase-system scaffold: stable search can track `best_phase` and `target_phase` snapshots
   and runs a best/inverted/original rephase cycle by default with `SAT_REPHASE_INTERVAL=10000`; use
   `SAT_REPHASE_INTERVAL=0` to disable while comparing proof/search side effects
+- Phase 7 search-control scaffold: `SAT_RESTART_MODE=reluctant` enables stable-mode reluctant
+  doubling restarts, falling back to glue-EMA behavior in focused mode; `SAT_MODE_SWITCH_INTERVAL`
+  or `SAT_MAINT_MODE_SWITCH_INTERVAL` enables root-safe stable/focused mode switching for
+  measurement
 
 What is intentionally not present yet:
 
-- no automatic Kissat search-mode switching, stable reluctant restart schedule, real mid-search
-  inprocessing pass, probing, or local-search walking rephase source yet
+- no default-on automatic Kissat search-mode switching, real mid-search inprocessing pass, probing,
+  local-search walking rephase source, stable reluctant default policy, or tuned mode-switch guard
+  yet
 - no separate MiniSat `simp` port design document is copied forward
 
 ## Direction
@@ -434,3 +439,70 @@ Analysis:
   full-profile log. A pre-existing unrelated long-running `drat-trim` process was also using one CPU
   during these experiments, but the proof-checking regression is large enough that
   `SAT_REPHASE_INTERVAL=0` should remain part of future ablations.
+
+Reluctant restart and mode-switch validation on 2026-05-12:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_RESTART_MODE=reluctant SAT_MODE_SWITCH_INTERVAL=1 SAT_CHECK_INVARIANTS=1 \
+  bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_SEARCH_MODE=focused SAT_RESTART_MODE=reluctant SAT_MODE_SWITCH_INTERVAL=1 \
+  SAT_CHECK_INVARIANTS=1 bash tools/smoke_test.sh solver/11-kissat-innovations
+bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_RESTART_MODE=reluctant bash tools/bench.sh -t 120 -m 16384 \
+  -d benchmarks/profiling solver/11-kissat-innovations
+SAT_RESTART_MODE=reluctant SAT_MODE_SWITCH_INTERVAL=1000 bash tools/bench.sh -t 120 \
+  -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_RESTART_MODE=reluctant SAT_MODE_SWITCH_INTERVAL=50000 bash tools/bench.sh -t 120 \
+  -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 88 passed.
+- default smoke suite: 9/9 passed, log `log/2026-05-12-07-23-42`.
+- reluctant restart plus aggressive mode-switch invariant smoke: 9/9 passed, log
+  `log/2026-05-12-07-23-56`.
+- focused-start reluctant restart plus aggressive mode-switch invariant smoke: 9/9 passed, log
+  `log/2026-05-12-07-24-04`.
+- default profiling after the implementation: solved 8/11, PAR-2 `898.091`, log
+  `log/bench-11-kissat-innovations-2026-05-12-07-24-48`.
+- `SAT_RESTART_MODE=reluctant`: solved 8/11, PAR-2 `872.650`, log
+  `log/bench-11-kissat-innovations-2026-05-12-07-44-59`.
+- `SAT_RESTART_MODE=reluctant SAT_MODE_SWITCH_INTERVAL=1000`: solved 4/11, PAR-2 `1736.112`, log
+  `log/bench-11-kissat-innovations-2026-05-12-07-59-37`.
+- `SAT_RESTART_MODE=reluctant SAT_MODE_SWITCH_INTERVAL=50000`: runtime solved 8/11, PAR-2
+  `998.225`, log `log/bench-11-kissat-innovations-2026-05-12-08-14-53`; `random_v292_s4`
+  verification was manually stopped after about 14 minutes of `drat-trim`, so the row is not
+  verification-complete.
+
+Implementation notes:
+
+- `SAT_RESTART_MODE=reluctant` uses a Kissat-style reluctant doubling sequence in stable mode with
+  `SAT_RELUCTANT_INTERVAL=1024` and `SAT_RELUCTANT_LIMIT=1048576` defaults.
+- In focused mode, the same restart mode uses the existing glue-EMA restart signal so mode switching
+  has a coherent focused restart policy.
+- `SAT_MODE_SWITCH_INTERVAL=<N>` schedules root-safe stable/focused mode switches through the
+  maintenance scheduler. Intervals grow as `N * count * log10(count + 9)^4`; the default remains
+  disabled.
+- Mode switches backtrack to root, rebuild the stable heap/focused queue for the new mode, clear a
+  pending restart, and reset the reluctant schedule when returning to stable mode.
+
+Analysis:
+
+- Reluctant-only is a small positive ablation but not enough to become the default under the usual
+  `>3%` keep threshold: it improved PAR-2 by `25.441` seconds versus the fresh default
+  (`898.091 -> 872.650`, about `2.8%`) with the same solved/timeout split.
+- The main reluctant-only win was `feistel_b64_k52_r17` (`82.612s -> 24.079s`). Main regressions
+  were `feistel_b64_k32_r22` (`44.988s -> 69.005s`), Timetable (`10.780s -> 20.833s`), and `mp1`
+  (`5.019s -> 8.076s`).
+- Frequent mode switching is clearly harmful with the current focused queue: interval `1000` timed
+  out `feistel_b64_k52_r17`, `mp1`, `random_v285_s2`, and `random_v292_s4`, dropping to 4/11
+  solved.
+- Rare mode switching is still not ready: interval `50000` improved `feistel_b64_k52_r17` further
+  (`11.965s`) but badly regressed Timetable (`109.144s`), slowed both random UNSAT rows, and
+  produced another long `random_v292_s4` proof-check failure.
+- Keep both features as opt-in infrastructure. The next search-control work should add a guard that
+  switches only when stable search is demonstrably stale, or improve focused queue/reduction
+  behavior before attempting a default mode-switch policy.

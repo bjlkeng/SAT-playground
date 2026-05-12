@@ -55,6 +55,8 @@ const DEFAULT_RESTART_GLUE_SLOW_ALPHA: f64 = 0.0005;
 const DEFAULT_RESTART_GLUE_MARGIN: f64 = 1.25;
 const DEFAULT_REDUCE_LOW_YIELD_MIN_DELETIONS: usize = 16;
 const DEFAULT_REPHASE_INTERVAL: usize = 10_000;
+const DEFAULT_RELUCTANT_INTERVAL: u64 = 1 << 10;
+const DEFAULT_RELUCTANT_LIMIT: u64 = 1 << 20;
 const STATIC_BINARY_MIN_ORIGINAL_BINARIES: usize = 64;
 const STATIC_BINARY_MIN_ORIGINAL_BINARY_PERCENT: usize = 20;
 const STATIC_BINARY_ALWAYS_ORIGINAL_BINARIES: usize = 4096;
@@ -118,10 +120,20 @@ enum SearchMode {
     Focused,
 }
 
+impl SearchMode {
+    fn name(self) -> &'static str {
+        match self {
+            SearchMode::Stable => "stable",
+            SearchMode::Focused => "focused",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RestartMode {
     Luby,
     GlueEma,
+    Reluctant,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,6 +184,7 @@ enum MaintenanceAction {
     Restart,
     RootSimplify,
     ReduceDb,
+    SwitchMode,
     Reorder,
     Rephase,
     Probe,
@@ -184,6 +197,7 @@ impl MaintenanceAction {
             MaintenanceAction::Restart => "restart",
             MaintenanceAction::RootSimplify => "root-simplify",
             MaintenanceAction::ReduceDb => "reduce-db",
+            MaintenanceAction::SwitchMode => "switch-mode",
             MaintenanceAction::Reorder => "reorder",
             MaintenanceAction::Rephase => "rephase",
             MaintenanceAction::Probe => "probe",
@@ -201,32 +215,39 @@ enum MaintenanceOutcome {
 
 #[derive(Clone, Debug)]
 struct MaintenanceScheduler {
+    mode_switch_interval: u64,
     reorder_interval: u64,
     rephase_interval: u64,
     probe_interval: u64,
     eliminate_interval: u64,
+    next_mode_switch: u64,
     next_reorder: u64,
     next_rephase: u64,
     next_probe: u64,
     next_eliminate: u64,
+    mode_switch_count: u64,
     rephase_count: u64,
 }
 
 impl MaintenanceScheduler {
     fn from_env() -> Self {
+        let mode_switch_interval = parse_mode_switch_interval_env() as u64;
         let reorder_interval = parse_optional_usize_env("SAT_MAINT_REORDER_INTERVAL") as u64;
         let rephase_interval = parse_rephase_interval_env() as u64;
         let probe_interval = parse_optional_usize_env("SAT_MAINT_PROBE_INTERVAL") as u64;
         let eliminate_interval = parse_optional_usize_env("SAT_MAINT_ELIMINATE_INTERVAL") as u64;
         Self {
+            mode_switch_interval,
             reorder_interval,
             rephase_interval,
             probe_interval,
             eliminate_interval,
+            next_mode_switch: mode_switch_interval,
             next_reorder: reorder_interval,
             next_rephase: rephase_interval,
             next_probe: probe_interval,
             next_eliminate: eliminate_interval,
+            mode_switch_count: 0,
             rephase_count: 0,
         }
     }
@@ -245,8 +266,20 @@ impl MaintenanceScheduler {
         scaled.ceil().max(1.0) as u64
     }
 
+    fn scaled_mode_switch_interval(base: u64, count: u64) -> u64 {
+        if base == 0 {
+            return 0;
+        }
+        let count = count.max(1);
+        let log = ((count + 9) as f64).log10();
+        let scaled = (base as f64) * (count as f64) * log * log * log * log;
+        scaled.ceil().max(1.0) as u64
+    }
+
     fn next_root_action(&self, conflicts: u64) -> Option<MaintenanceAction> {
-        if self.reorder_interval > 0 && conflicts >= self.next_reorder {
+        if self.mode_switch_interval > 0 && conflicts >= self.next_mode_switch {
+            Some(MaintenanceAction::SwitchMode)
+        } else if self.reorder_interval > 0 && conflicts >= self.next_reorder {
             Some(MaintenanceAction::Reorder)
         } else if self.rephase_interval > 0 && conflicts >= self.next_rephase {
             Some(MaintenanceAction::Rephase)
@@ -261,6 +294,14 @@ impl MaintenanceScheduler {
 
     fn mark_root_action(&mut self, action: MaintenanceAction, conflicts: u64) {
         match action {
+            MaintenanceAction::SwitchMode => {
+                self.mode_switch_count = self.mode_switch_count.saturating_add(1);
+                let interval = Self::scaled_mode_switch_interval(
+                    self.mode_switch_interval,
+                    self.mode_switch_count,
+                );
+                self.next_mode_switch = conflicts.saturating_add(interval);
+            }
             MaintenanceAction::Reorder => {
                 self.next_reorder = conflicts.saturating_add(self.reorder_interval.max(1));
             }
@@ -280,6 +321,82 @@ impl MaintenanceScheduler {
             | MaintenanceAction::RootSimplify
             | MaintenanceAction::ReduceDb => {}
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ReluctantRestart {
+    limited: bool,
+    trigger: bool,
+    period: u64,
+    wait: u64,
+    u: u64,
+    v: u64,
+    limit: u64,
+}
+
+impl ReluctantRestart {
+    fn new(period: u64, limit: u64) -> Self {
+        let mut reluctant = Self {
+            limited: false,
+            trigger: false,
+            period: 0,
+            wait: 0,
+            u: 1,
+            v: 1,
+            limit,
+        };
+        reluctant.enable(period, limit);
+        reluctant
+    }
+
+    fn enable(&mut self, mut period: u64, limit: u64) {
+        if limit > 0 && period > limit {
+            period = limit;
+        }
+        self.limited = limit > 0;
+        self.trigger = false;
+        self.period = period;
+        self.wait = period;
+        self.u = 1;
+        self.v = 1;
+        self.limit = limit;
+    }
+
+    fn tick(&mut self) {
+        if self.period == 0 || self.trigger {
+            return;
+        }
+        debug_assert!(self.wait > 0);
+        self.wait -= 1;
+        if self.wait > 0 {
+            return;
+        }
+
+        if (self.u & self.u.wrapping_neg()) == self.v {
+            self.u = self.u.saturating_add(1);
+            self.v = 1;
+        } else {
+            self.v = self.v.saturating_mul(2);
+        }
+
+        let mut wait = self.v.saturating_mul(self.period);
+        if self.limited && wait > self.limit {
+            self.u = 1;
+            self.v = 1;
+            wait = self.period;
+        }
+
+        self.trigger = true;
+        self.wait = wait.max(1);
+    }
+
+    fn triggered(&mut self) -> bool {
+        if !self.trigger {
+            return false;
+        }
+        self.trigger = false;
+        true
     }
 }
 
@@ -402,12 +519,17 @@ struct SolverStats {
     maintenance_checks: u64,
     maintenance_actions: u64,
     maintenance_restarts: u64,
+    maintenance_mode_switches: u64,
     maintenance_rephases: u64,
     restart_glue_ema_triggers: u64,
+    restart_reluctant_triggers: u64,
     restart_reused_trails: u64,
     restart_reused_levels: u64,
     restart_reused_assignments: u64,
     restart_reuse_max_level: usize,
+    mode_switches: u64,
+    mode_switch_to_stable: u64,
+    mode_switch_to_focused: u64,
     rephases: u64,
     rephase_best: u64,
     rephase_inverted: u64,
@@ -725,6 +847,8 @@ struct Solver {
     restart_glue_slow_alpha: f64,
     /// restart threshold: fast glue must exceed slow glue by this multiplier
     restart_glue_margin: f64,
+    /// stable-mode reluctant doubling restart state
+    reluctant_restart: ReluctantRestart,
     /// central maintenance scheduler for root-only Kissat-style hooks
     maintenance_scheduler: MaintenanceScheduler,
     /// learned-clause budget threshold for running a database reduction pass
@@ -1206,6 +1330,10 @@ impl Solver {
             restart_glue_margin: parse_f64_env(
                 "SAT_RESTART_GLUE_MARGIN",
                 DEFAULT_RESTART_GLUE_MARGIN,
+            ),
+            reluctant_restart: ReluctantRestart::new(
+                parse_u64_env("SAT_RELUCTANT_INTERVAL", DEFAULT_RELUCTANT_INTERVAL),
+                parse_u64_env("SAT_RELUCTANT_LIMIT", DEFAULT_RELUCTANT_LIMIT),
             ),
             maintenance_scheduler: MaintenanceScheduler::from_env(),
             reduce_db_limit: ((original_clause_count as f64) * LEARNTSIZE_FACTOR) as usize,
@@ -3278,6 +3406,13 @@ impl Solver {
         match self.restart_mode {
             RestartMode::Luby => self.note_luby_conflict(),
             RestartMode::GlueEma => self.note_glue_ema_conflict(learned_glue),
+            RestartMode::Reluctant => {
+                if self.search_mode == SearchMode::Stable {
+                    self.note_reluctant_conflict();
+                } else {
+                    self.note_glue_ema_conflict(learned_glue);
+                }
+            }
         }
     }
 
@@ -3326,6 +3461,26 @@ impl Solver {
             self.restart_pending = true;
             self.stats.restart_glue_ema_triggers += 1;
         }
+    }
+
+    fn note_reluctant_conflict(&mut self) {
+        if self.restart_pending {
+            return;
+        }
+
+        self.restart_conflicts += 1;
+        self.reluctant_restart.tick();
+        if self.reluctant_restart.triggered() {
+            self.restart_conflicts = 0;
+            self.restart_pending = true;
+            self.stats.restart_reluctant_triggers += 1;
+        }
+    }
+
+    fn reset_reluctant_restart_schedule(&mut self) {
+        let period = self.reluctant_restart.period;
+        let limit = self.reluctant_restart.limit;
+        self.reluctant_restart.enable(period, limit);
     }
 
     fn decision_var_at_level(&self, level: usize) -> usize {
@@ -3477,10 +3632,32 @@ impl Solver {
         true
     }
 
+    fn switch_search_mode(&mut self) -> bool {
+        self.search_mode = match self.search_mode {
+            SearchMode::Stable => {
+                self.stats.mode_switch_to_focused += 1;
+                SearchMode::Focused
+            }
+            SearchMode::Focused => {
+                self.stats.mode_switch_to_stable += 1;
+                if self.restart_mode == RestartMode::Reluctant {
+                    self.reset_reluctant_restart_schedule();
+                }
+                SearchMode::Stable
+            }
+        };
+        self.stats.mode_switches += 1;
+        self.restart_conflicts = 0;
+        self.restart_pending = false;
+        self.rebuild_branch_queue();
+        true
+    }
+
     fn record_maintenance_action(&mut self, action: MaintenanceAction) {
         self.stats.maintenance_actions += 1;
         match action {
             MaintenanceAction::Restart => self.stats.maintenance_restarts += 1,
+            MaintenanceAction::SwitchMode => self.stats.maintenance_mode_switches += 1,
             MaintenanceAction::Rephase => self.stats.maintenance_rephases += 1,
             MaintenanceAction::RootSimplify => self.stats.maintenance_root_simplifies += 1,
             MaintenanceAction::ReduceDb => self.stats.maintenance_reductions += 1,
@@ -3538,6 +3715,7 @@ impl Solver {
 
     fn run_root_maintenance_action(&mut self, action: MaintenanceAction) -> bool {
         match action {
+            MaintenanceAction::SwitchMode => self.switch_search_mode(),
             MaintenanceAction::Rephase => self.run_rephase(),
             MaintenanceAction::Reorder
             | MaintenanceAction::Probe
@@ -4572,12 +4750,16 @@ impl Solver {
                         self.stats.search_time_ns += elapsed_ns(search_start);
                         if trace_search_interval > 0 {
                             eprintln!(
-                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                 self.stats.search_time_ns as f64 / 1e9,
                                 self.stats.conflicts,
                                 self.stats.decisions,
                                 self.stats.propagations,
                                 self.stats.restarts,
+                                self.search_mode.name(),
+                                self.stats.mode_switches,
+                                self.stats.mode_switch_to_stable,
+                                self.stats.mode_switch_to_focused,
                                 self.stats.restart_reused_trails,
                                 self.stats.restart_reused_levels,
                                 self.stats.restart_reused_assignments,
@@ -4599,6 +4781,7 @@ impl Solver {
                                 self.restart_glue_fast_ema,
                                 self.restart_glue_slow_ema,
                                 self.stats.restart_glue_ema_triggers,
+                                self.stats.restart_reluctant_triggers,
                                 self.stats.deleted_clauses,
                                 self.stats.reduce_deleted_clauses,
                                 self.stats.reduce_low_yield_passes,
@@ -4628,12 +4811,16 @@ impl Solver {
                     self.stats.conflicts += 1;
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
-                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
+                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
                             search_start.elapsed().as_secs_f64(),
                             self.stats.conflicts,
                             self.stats.decisions,
                             self.stats.propagations,
                             self.stats.restarts,
+                            self.search_mode.name(),
+                            self.stats.mode_switches,
+                            self.stats.mode_switch_to_stable,
+                            self.stats.mode_switch_to_focused,
                             self.stats.restart_reused_trails,
                             self.stats.restart_reused_levels,
                             self.stats.restart_reused_assignments,
@@ -4659,6 +4846,7 @@ impl Solver {
                             self.restart_glue_fast_ema,
                             self.restart_glue_slow_ema,
                             self.stats.restart_glue_ema_triggers,
+                            self.stats.restart_reluctant_triggers,
                             self.stats.reduce_db_calls,
                             self.stats.reduce_deleted_clauses,
                             self.stats.reduce_low_yield_passes,
@@ -4736,12 +4924,16 @@ impl Solver {
                             self.stats.search_time_ns += elapsed_ns(search_start);
                             if trace_search_interval > 0 {
                                 eprintln!(
-                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                     self.stats.search_time_ns as f64 / 1e9,
                                     self.stats.conflicts,
                                     self.stats.decisions,
                                     self.stats.propagations,
                                     self.stats.restarts,
+                                    self.search_mode.name(),
+                                    self.stats.mode_switches,
+                                    self.stats.mode_switch_to_stable,
+                                    self.stats.mode_switch_to_focused,
                                     self.stats.restart_reused_trails,
                                     self.stats.restart_reused_levels,
                                     self.stats.restart_reused_assignments,
@@ -4763,6 +4955,7 @@ impl Solver {
                                     self.restart_glue_fast_ema,
                                     self.restart_glue_slow_ema,
                                     self.stats.restart_glue_ema_triggers,
+                                    self.stats.restart_reluctant_triggers,
                                     self.stats.deleted_clauses,
                                     self.stats.reduce_deleted_clauses,
                                     self.stats.reduce_low_yield_passes,
@@ -4878,8 +5071,11 @@ fn parse_restart_mode() -> RestartMode {
         Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
             "luby" | "default" => RestartMode::Luby,
             "glue-ema" | "glue_ema" | "glue" | "ema" => RestartMode::GlueEma,
+            "reluctant" | "reluctant-doubling" | "reluctant_doubling" | "kissat" => {
+                RestartMode::Reluctant
+            }
             other => {
-                eprintln!("Invalid SAT_RESTART_MODE={other}; expected luby/glue-ema");
+                eprintln!("Invalid SAT_RESTART_MODE={other}; expected luby/glue-ema/reluctant");
                 std::process::exit(2);
             }
         },
@@ -4987,6 +5183,19 @@ fn parse_usize_env(name: &str, default: usize) -> usize {
     }
 }
 
+fn parse_u64_env(name: &str, default: u64) -> u64 {
+    match env::var(name) {
+        Ok(value) => match value.trim().parse::<u64>() {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                eprintln!("Invalid {name}={value:?}: {err}");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => default,
+    }
+}
+
 fn parse_f64_env(name: &str, default: f64) -> f64 {
     match env::var(name) {
         Ok(value) => match value.trim().parse::<f64>() {
@@ -5024,6 +5233,16 @@ fn parse_rephase_interval_env() -> usize {
         parse_usize_env("SAT_MAINT_REPHASE_INTERVAL", 0)
     } else {
         DEFAULT_REPHASE_INTERVAL
+    }
+}
+
+fn parse_mode_switch_interval_env() -> usize {
+    if env::var("SAT_MODE_SWITCH_INTERVAL").is_ok() {
+        parse_usize_env("SAT_MODE_SWITCH_INTERVAL", 0)
+    } else if env::var("SAT_MAINT_MODE_SWITCH_INTERVAL").is_ok() {
+        parse_usize_env("SAT_MAINT_MODE_SWITCH_INTERVAL", 0)
+    } else {
+        0
     }
 }
 
@@ -6465,6 +6684,49 @@ mod tests {
     }
 
     #[test]
+    fn test_search_maintenance_switches_mode_at_root() {
+        let mut s = make_solver(3, vec![]);
+        s.maintenance_scheduler.mode_switch_interval = 10;
+        s.maintenance_scheduler.next_mode_switch = 10;
+        s.stats.conflicts = 10;
+        s.activity[2] = 10.0;
+        s.decide(1);
+
+        let outcome = s.run_search_maintenance();
+
+        assert_eq!(outcome, MaintenanceOutcome::Continue);
+        assert_eq!(s.current_level(), 0);
+        assert_eq!(s.search_mode, SearchMode::Focused);
+        assert_eq!(s.stats.mode_switches, 1);
+        assert_eq!(s.stats.mode_switch_to_focused, 1);
+        assert_eq!(s.stats.maintenance_mode_switches, 1);
+        assert_eq!(s.pick_branch_lit(), Some(1));
+        assert!(s.maintenance_scheduler.next_mode_switch > 10);
+    }
+
+    #[test]
+    fn test_mode_switch_to_stable_rebuilds_heap_and_resets_reluctant_schedule() {
+        let mut s = make_solver(3, vec![]);
+        s.search_mode = SearchMode::Focused;
+        s.restart_mode = RestartMode::Reluctant;
+        s.rebuild_branch_queue();
+        s.reluctant_restart.wait = 1;
+        s.reluctant_restart.u = 7;
+        s.reluctant_restart.v = 4;
+        s.activity[2] = 10.0;
+
+        assert!(s.switch_search_mode());
+
+        assert_eq!(s.search_mode, SearchMode::Stable);
+        assert_eq!(s.stats.mode_switches, 1);
+        assert_eq!(s.stats.mode_switch_to_stable, 1);
+        assert_eq!(s.reluctant_restart.wait, s.reluctant_restart.period);
+        assert_eq!(s.reluctant_restart.u, 1);
+        assert_eq!(s.reluctant_restart.v, 1);
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+    }
+
+    #[test]
     fn test_backtrack_requeues_variable_into_branch_queue() {
         let mut s = make_solver(2, vec![]);
         s.activity[1] = 3.0;
@@ -6648,6 +6910,53 @@ mod tests {
         assert_eq!(s.restart_conflicts, 0);
         assert_eq!(s.restart_luby_index, 1);
         assert_eq!(s.stats.restart_glue_ema_triggers, 0);
+    }
+
+    #[test]
+    fn test_reluctant_restart_sequence_uses_doubling_windows() {
+        let mut s = make_solver(2, vec![]);
+        s.restart_mode = RestartMode::Reluctant;
+        s.reluctant_restart.enable(2, 0);
+
+        s.note_conflict(2);
+        assert!(!s.restart_pending);
+        s.note_conflict(2);
+        assert!(s.restart_pending);
+        assert_eq!(s.stats.restart_reluctant_triggers, 1);
+        s.restart_pending = false;
+
+        s.note_conflict(2);
+        assert!(!s.restart_pending);
+        s.note_conflict(2);
+        assert!(s.restart_pending);
+        assert_eq!(s.stats.restart_reluctant_triggers, 2);
+        s.restart_pending = false;
+
+        s.note_conflict(2);
+        s.note_conflict(2);
+        s.note_conflict(2);
+        assert!(!s.restart_pending);
+        s.note_conflict(2);
+        assert!(s.restart_pending);
+        assert_eq!(s.stats.restart_reluctant_triggers, 3);
+    }
+
+    #[test]
+    fn test_reluctant_restart_mode_uses_glue_ema_in_focused_mode() {
+        let mut s = make_solver(2, vec![]);
+        s.search_mode = SearchMode::Focused;
+        s.restart_mode = RestartMode::Reluctant;
+        s.restart_conflict_limit = 2;
+        s.restart_glue_fast_alpha = 1.0;
+        s.restart_glue_slow_alpha = 0.0;
+        s.restart_glue_margin = 1.25;
+
+        s.note_conflict(2);
+        s.note_conflict(10);
+
+        assert!(s.restart_pending);
+        assert_eq!(s.stats.restart_glue_ema_triggers, 1);
+        assert_eq!(s.stats.restart_reluctant_triggers, 0);
     }
 
     #[test]
