@@ -59,6 +59,7 @@ const DEFAULT_RELUCTANT_INTERVAL: u64 = 1 << 10;
 const DEFAULT_RELUCTANT_LIMIT: u64 = 1 << 20;
 const DEFAULT_FOCUSED_REDUCE_LOW_YIELD_COOLDOWN: usize = 100;
 const DEFAULT_FOCUSED_MODE_CONFLICT_CAP: u64 = 1_000;
+const DEFAULT_MODE_SWITCH_INTERVAL: usize = 50_000;
 const STATIC_BINARY_MIN_ORIGINAL_BINARIES: usize = 64;
 const STATIC_BINARY_MIN_ORIGINAL_BINARY_PERCENT: usize = 20;
 const STATIC_BINARY_ALWAYS_ORIGINAL_BINARIES: usize = 4096;
@@ -5215,22 +5216,24 @@ fn parse_mode_switch_policy() -> ModeSwitchPolicy {
     match env::var("SAT_MODE_SWITCH_POLICY") {
         Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
             "interval" | "raw" | "always" => ModeSwitchPolicy::Interval,
-            "stale-stable" | "stale_stable" | "stale" | "guarded" => ModeSwitchPolicy::StaleStable,
+            "default" | "stale-stable" | "stale_stable" | "stale" | "guarded" => {
+                ModeSwitchPolicy::StaleStable
+            }
             other => {
                 eprintln!("Invalid SAT_MODE_SWITCH_POLICY={other}; expected interval/stale-stable");
                 std::process::exit(2);
             }
         },
-        Err(_) => ModeSwitchPolicy::Interval,
+        Err(_) => ModeSwitchPolicy::StaleStable,
     }
 }
 
 fn parse_restart_mode() -> RestartMode {
     match env::var("SAT_RESTART_MODE") {
         Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-            "luby" | "default" => RestartMode::Luby,
+            "luby" => RestartMode::Luby,
             "glue-ema" | "glue_ema" | "glue" | "ema" => RestartMode::GlueEma,
-            "reluctant" | "reluctant-doubling" | "reluctant_doubling" | "kissat" => {
+            "default" | "reluctant" | "reluctant-doubling" | "reluctant_doubling" | "kissat" => {
                 RestartMode::Reluctant
             }
             other => {
@@ -5238,7 +5241,7 @@ fn parse_restart_mode() -> RestartMode {
                 std::process::exit(2);
             }
         },
-        Err(_) => RestartMode::Luby,
+        Err(_) => RestartMode::Reluctant,
     }
 }
 
@@ -5401,7 +5404,7 @@ fn parse_mode_switch_interval_env() -> usize {
     } else if env::var("SAT_MAINT_MODE_SWITCH_INTERVAL").is_ok() {
         parse_usize_env("SAT_MAINT_MODE_SWITCH_INTERVAL", 0)
     } else {
-        0
+        DEFAULT_MODE_SWITCH_INTERVAL
     }
 }
 
@@ -7079,6 +7082,7 @@ mod tests {
     #[test]
     fn test_conflict_budget_schedules_restart_and_advances_luby_window() {
         let mut s = make_solver(2, vec![vec![1, 2], vec![-1, -2]]);
+        s.restart_mode = RestartMode::Luby;
         s.restart_unit = 2;
         s.restart_luby_index = 1;
         s.restart_conflict_limit = 2;

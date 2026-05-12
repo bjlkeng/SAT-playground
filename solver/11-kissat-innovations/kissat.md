@@ -22,8 +22,8 @@ Solver 11:
 
 - Runs root propagation, then one-shot `eliminate(true, proof_log)`, then disables simplification.
 - Main loop order is conflict analysis, pending restart, root simplify, reduce DB, decide.
-- It has a central maintenance scheduler with real rephase support and opt-in root-safe
-  stable/focused switching through `SAT_MODE_SWITCH_INTERVAL`. The opt-in
+- It has a central maintenance scheduler with real rephase support and default root-safe guarded
+  stable/focused switching through `SAT_MODE_SWITCH_INTERVAL=50000`. The
   `SAT_MODE_SWITCH_POLICY=stale-stable` guard only enters focused mode after stable search stops
   reaching deeper trails, and focused mode now has a short dwell cap before returning to stable.
   Reorder, probing, and inprocessing elimination hooks are still no-ops.
@@ -51,7 +51,7 @@ Solver 11:
 - Uses stable heap search by default.
 - Has an opt-in focused recent-conflict queue through `SAT_SEARCH_MODE=focused`; analyzed variables
   move to the queue front in focused mode instead of being activity-bumped.
-- Has opt-in root-safe stable/focused switching through `SAT_MODE_SWITCH_INTERVAL`, with a
+- Has default root-safe stable/focused switching through `SAT_MODE_SWITCH_INTERVAL=50000`, with a
   progress-sensitive `stale-stable` guard and a bounded focused dwell cap.
 - Stable decisions can use target/best rephase state; focused decisions still use saved phase.
 - Relevant code: `src/main.rs:248`, `src/main.rs:1281`, `src/main.rs:1364`.
@@ -75,12 +75,13 @@ Why this matters:
 
 Solver 11:
 
-- Uses a fixed Luby restart budget with `restart_unit = 100` by default.
+- Still supports the older fixed Luby restart budget with `SAT_RESTART_MODE=luby` and
+  `restart_unit = 100`.
 - Has an opt-in focused-style glue restart scaffold via `SAT_RESTART_MODE=glue-ema`, using fast and
-  slow learned-clause glue EMAs. It does not change the default stable/Luby path.
-- Has opt-in stable reluctant doubling restarts via `SAT_RESTART_MODE=reluctant`; in focused mode
-  this policy uses the existing glue-EMA restart signal.
-- Guarded mode switching combines with reluctant restarts as an opt-in policy; the measured
+  slow learned-clause glue EMAs.
+- Uses stable reluctant doubling restarts by default; in focused mode this policy uses the existing
+  glue-EMA restart signal. Use `SAT_RESTART_MODE=luby` for the previous Luby restart ablation.
+- Guarded mode switching now combines with reluctant restarts as the default policy. The measured
   configuration uses `SAT_RESTART_MODE=reluctant`, `SAT_MODE_SWITCH_POLICY=stale-stable`, and
   `SAT_MODE_SWITCH_INTERVAL=50000`.
 - Restarts use Kissat-style trail reuse by default, keeping the prefix selected by activity in
@@ -99,9 +100,9 @@ Kissat:
 
 Why this matters:
 
-- Solver 11 now computes learned-clause glue and can test Kissat-like focused restart, stable
-  reluctant restart, trail reuse, root rephase, and opt-in mode-switch signals, but the default path
-  still uses Luby restarts and no automatic mode switching.
+- Solver 11 now computes learned-clause glue and uses Kissat-like stable reluctant restart, trail
+  reuse, root rephase, and guarded mode-switch signals by default, while focused-specific behavior
+  remains bounded because focused mode is still path-sensitive.
 - Always backtracking to level 0 can throw away useful trail prefixes, but reuse is also
   path-sensitive: capped stable reuse improves the profile set, while uncapped/coarse reuse can
   regress badly.
@@ -783,15 +784,15 @@ Notes:
 
 Implementation status:
 
-- Landed as an opt-in mode behind `SAT_SEARCH_MODE=focused`; default remains stable heap search.
+- Landed as an opt-in mode behind `SAT_SEARCH_MODE=focused`; default search still starts in stable
+  heap mode.
 - The stable hot path still uses the existing activity heap, variable activity bumps, and decay.
 - Focused mode maintains a linked recent-conflict decision queue. Branching pops the queue front,
   analyzed variables are moved to the front instead of score-bumped, and backtracked variables are
   restored to the focused queue without rebuilding the heap.
 - The normal branch heap remains populated in focused mode for invariants and future mode-switching
   work, but focused decisions read from the focused queue.
-- No automatic mode switching is implemented yet. Focused restart policy and trail reuse are covered
-  by the later Phase 7 status notes.
+- Automatic guarded mode switching is covered by the later Phase 7 status notes.
 
 Validation:
 
@@ -1606,9 +1607,11 @@ Status:
 
 - The basic stable/focused decision abstraction is implemented and tested.
 - Focused-only currently performs much worse than stable on the profiling set, mainly due to a worse
-  search trajectory and excessive reduce-DB pressure. Keep stable as default.
-- Root-safe mode switching is implemented behind `SAT_MODE_SWITCH_INTERVAL` /
-  `SAT_MAINT_MODE_SWITCH_INTERVAL`, but tested switch intervals are rejected as default policies.
+  search trajectory and excessive reduce-DB pressure. The default policy starts in stable mode and
+  only enters focused mode through a guarded, bounded root-safe switch.
+- Root-safe mode switching is now enabled by default through `SAT_MODE_SWITCH_INTERVAL=50000` /
+  `SAT_MAINT_MODE_SWITCH_INTERVAL`, with `SAT_MODE_SWITCH_INTERVAL=0` available to disable it for
+  ablations.
 - The search-relevance API for BVE/reorder is not implemented yet; focused queue stamps/recency can
   be exposed when those features are built.
 
@@ -1722,16 +1725,20 @@ Status:
   the usual default-policy keep threshold. Main win: `feistel_b64_k52_r17` `82.612s -> 24.079s`.
   Main regressions: `feistel_b64_k32_r22` `44.988s -> 69.005s`, Timetable `10.780s -> 20.833s`,
   and `mp1` `5.019s -> 8.076s`.
-- Mode-switch experiments are rejected as default policies. `SAT_RESTART_MODE=reluctant
+- Initial raw mode-switch experiments were rejected as default policies. `SAT_RESTART_MODE=reluctant
   SAT_MODE_SWITCH_INTERVAL=1000` solved only 4/11 with PAR-2 `1736.112`
   (`log/bench-11-kissat-innovations-2026-05-12-07-59-37`). `SAT_MODE_SWITCH_INTERVAL=50000` solved
   8/11 by runtime with PAR-2 `998.225`
   (`log/bench-11-kissat-innovations-2026-05-12-08-14-53`) but regressed Timetable to `109.144s`,
   slowed both random UNSAT rows, and required manually stopping `drat-trim` after about 14 minutes
   on `random_v292_s4`.
-- Conclusion: keep reluctant restarts and mode switching as opt-in infrastructure. The next
-  search-control work should either guard mode switches based on stale stable progress or improve
-  focused queue/reduction behavior before any automatic switching default is considered.
+- Follow-up guarded mode switching added `SAT_MODE_SWITCH_POLICY=stale-stable`, focused dwell caps,
+  and focused-only low-yield reducer cooldown. The measured default policy now uses reluctant
+  restarts with stale-stable mode switching at interval `50000`; it solved 8/11 with PAR-2
+  `849.514` on the same profiling set
+  (`log/bench-11-kissat-innovations-2026-05-12-11-10-40`), improving the same-turn default anchor
+  by about `6.1%`. Use `SAT_RESTART_MODE=luby SAT_MODE_SWITCH_INTERVAL=0` for the previous
+  default-search ablation.
 
 ### Phase 8. First simplification features on the new infrastructure
 
@@ -1812,7 +1819,7 @@ Why last:
 | C glue-tiered reduce | 5 | Needs metadata and scheduled reduction. |
 | D binary implication path | 2 | Core representation dependency. |
 | E focused queue | 6 | Needs decision API isolation. |
-| F glue restarts/trail reuse | 7 | Glue-EMA, capped Kissat-style trail reuse, opt-in stable reluctant restarts, and guarded mode-switch experiments landed; reluctant/mode switching remain non-default. |
+| F glue restarts/trail reuse | 7 | Glue-EMA, capped Kissat-style trail reuse, stable reluctant restarts, and guarded mode switching landed; reluctant/mode switching are now default. |
 | G target/best/rephase | 7 | Target/best rephase is default at interval 10000; walking source and guard policy remain. |
 | H chronological backtracking/reason bump | 7 | Best measured after restart changes. |
 | I eager subsumption | 5 | Learned-clause lifecycle feature. |
@@ -1841,10 +1848,10 @@ Why last:
 3. Land Phase 3 and Phase 4 as infrastructure with no major new algorithms: scheduler hooks,
    root-maintenance transition, dense/sparse mode, reusable occurrence lists.
 4. Land Phase 5 and Phase 6 incrementally: glue-tiered reduction as the default with activity
-   fallback, and focused queue behind a flag, still without automatic mode switching.
-5. Finish the remaining Phase 7 policy pieces before defaulting focused behavior: walking rephase
+   fallback, and focused queue behind a flag before automatic mode switching.
+5. Finish the remaining Phase 7 policy pieces before expanding focused behavior: walking rephase
    source and guards for harmful restart reuse or proof-heavy rephase paths. Stable reluctant
-   restarting, root-safe mode-switch hooks, and the progress-sensitive mode-switch guard now exist
-   as opt-in infrastructure.
+   restarting, root-safe mode-switch hooks, and the progress-sensitive mode-switch guard are now the
+   default search-control stack.
 6. Only then start Phase 8 visible algorithmic work: lucky shortcut/probing, clause-weight reorder,
    Kissat-style BVE scoring, fast BVE, and bounded forward subsumption.

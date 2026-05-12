@@ -30,7 +30,7 @@ What is present:
   hooks, dense occurrence-view lifetime counters, and sparse-search cleanup
 - Phase 5 learned-clause lifecycle policy: glue/tier/used-based reduction is the default; use
   `SAT_REDUCE_MODE=activity` for the previous activity-based reducer fallback
-- Phase 6 search-mode infrastructure: stable heap search remains the default, while
+- Phase 6 search-mode infrastructure: stable heap search remains the starting mode, while
   `SAT_SEARCH_MODE=focused` enables a focused recent-conflict decision queue for measurement
 - Phase 7 restart/reduction-pressure scaffold: `SAT_RESTART_MODE=glue-ema` enables a fast/slow
   learned-glue EMA restart trigger, and `SAT_REDUCE_LOW_YIELD_COOLDOWN=<conflicts>` enables an
@@ -40,17 +40,17 @@ What is present:
 - Phase 7 phase-system scaffold: stable search can track `best_phase` and `target_phase` snapshots
   and runs a best/inverted/original rephase cycle by default with `SAT_REPHASE_INTERVAL=10000`; use
   `SAT_REPHASE_INTERVAL=0` to disable while comparing proof/search side effects
-- Phase 7 search-control scaffold: `SAT_RESTART_MODE=reluctant` enables stable-mode reluctant
-  doubling restarts, falling back to glue-EMA behavior in focused mode; `SAT_MODE_SWITCH_INTERVAL`
-  or `SAT_MAINT_MODE_SWITCH_INTERVAL` enables root-safe stable/focused mode switching for
-  measurement. `SAT_MODE_SWITCH_POLICY=stale-stable` guards stable-to-focused switches until stable
-  search has stopped finding deeper trails, and focused phases return to stable after a short
-  dwell cap (`SAT_MODE_SWITCH_FOCUSED_CONFLICTS`, automatic default cap `1000`)
+- Phase 7 search-control scaffold: stable-mode reluctant doubling restarts are now the default,
+  falling back to glue-EMA behavior in focused mode. Root-safe guarded stable/focused switching is
+  also enabled by default with `SAT_MODE_SWITCH_INTERVAL=50000` and
+  `SAT_MODE_SWITCH_POLICY=stale-stable`; set `SAT_RESTART_MODE=luby` and
+  `SAT_MODE_SWITCH_INTERVAL=0` for the previous default-search ablation. Focused phases return to
+  stable after a short dwell cap (`SAT_MODE_SWITCH_FOCUSED_CONFLICTS`, automatic default cap
+  `1000`)
 
 What is intentionally not present yet:
 
-- no default-on automatic Kissat search-mode switching, real mid-search inprocessing pass, probing,
-  local-search walking rephase source, or stable reluctant default policy yet
+- no real mid-search inprocessing pass, probing, or local-search walking rephase source yet
 - no separate MiniSat `simp` port design document is copied forward
 
 ## Direction
@@ -504,9 +504,10 @@ Analysis:
 - Rare mode switching is still not ready: interval `50000` improved `feistel_b64_k52_r17` further
   (`11.965s`) but badly regressed Timetable (`109.144s`), slowed both random UNSAT rows, and
   produced another long `random_v292_s4` proof-check failure.
-- Keep both features as opt-in infrastructure. The next search-control work should add a guard that
-  switches only when stable search is demonstrably stale, or improve focused queue/reduction
-  behavior before attempting a default mode-switch policy.
+- This raw-switch conclusion was superseded by the guarded mode-switch work below: the default now
+  uses reluctant restarts plus stale-stable switching at interval `50000`, while
+  `SAT_RESTART_MODE=luby SAT_MODE_SWITCH_INTERVAL=0` preserves the previous default-search
+  ablation.
 
 Guarded mode-switch validation on 2026-05-12:
 
@@ -555,7 +556,7 @@ Implementation notes:
 
 Analysis:
 
-- The accepted opt-in profile (`reluctant + stale-stable interval 50000`) improved PAR-2 by
+- The now-default profile (`reluctant + stale-stable interval 50000`) improved PAR-2 by
   `55.508` versus the same-turn default anchor (`905.022 -> 849.514`, about `6.1%`) with the same
   solved/timeout split.
 - Main wins versus the same-turn default anchor: `feistel_b64_k52_r17` `88.979s -> 15.059s`,
@@ -574,9 +575,20 @@ Analysis:
   core throughout these measurements, so the numbers should be treated as directional rather than
   final medium-run evidence.
 
-Recommendation:
+Default policy:
 
-- Keep guarded mode switching opt-in for now. The 50k guarded policy clears the local `>3%`
-  profiling threshold, but the regression shape shows focused mode is still path-sensitive and the
-  default solver path should not change until the focused queue or phase/restart interaction is
-  better controlled.
+- The 50k guarded policy is now the built-in default after the 2026-05-12 follow-up request. It
+  clears the local `>3%` profiling threshold, but the regression shape shows focused mode is still
+  path-sensitive. Keep `SAT_RESTART_MODE=luby SAT_MODE_SWITCH_INTERVAL=0` available for ablations
+  against the previous default-search behavior.
+
+Default-policy flip validation on 2026-05-12:
+
+- Built-in defaults now match the measured guarded policy:
+  `SAT_RESTART_MODE=reluctant`, `SAT_MODE_SWITCH_POLICY=stale-stable`, and
+  `SAT_MODE_SWITCH_INTERVAL=50000`.
+- `cargo test`: 92 passed.
+- default smoke suite: 9/9 passed, log `log/2026-05-12-11-57-53`.
+- previous default-search ablation smoke
+  (`SAT_RESTART_MODE=luby SAT_MODE_SWITCH_INTERVAL=0`): 9/9 passed, log
+  `log/2026-05-12-11-59-13`.
