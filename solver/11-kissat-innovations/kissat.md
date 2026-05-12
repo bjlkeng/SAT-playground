@@ -168,8 +168,10 @@ Solver 11:
 - Implements first-UIP analysis, skips reason literal position 0 in the MiniSat-compatible mode, and
   does basic/deep clause minimization.
 - Always jumps to the highest non-current decision level in the learned clause.
-- Does not compute glue/LBD, chronological backtracking, failed-literal special handling, shrink,
-  eager subsumption of recent learned clauses, or reason-side bumping.
+- Computes glue/LBD for learned-clause policy, has global chronological backtracking
+  (`SAT_CHRONO_LEVELS`, default `100`), and defaults to one-hop unlimited reason-side bumping
+  (`SAT_REASON_SIDE_BUMP_MODE=one-hop SAT_REASON_SIDE_BUMP_LIMIT=unlimited`). It still lacks
+  failed-literal special handling, shrink, and eager subsumption of recent learned clauses.
 - Relevant code: `src/main.rs:1824`, `src/main.rs:1860`, `src/main.rs:1910`,
   `src/main.rs:1928`, `src/main.rs:2089`.
 
@@ -864,12 +866,29 @@ Goal:
 
 - Match two smaller but search-path-relevant Kissat behaviors in conflict handling.
 
+Status on 2026-05-12:
+
+- Implemented chronological backtracking as a global `SAT_CHRONO_LEVELS=<levels>` threshold,
+  defaulting to Kissat's `100`; `SAT_CHRONO_LEVELS=off` disables it for ablations.
+- Implemented reason-side bump modes via `SAT_REASON_SIDE_BUMP_MODE=off|traversal|one-hop`.
+  Learned-clause variables remain bumped even when extra reason-side bumping is off.
+- Current default after the 2026-05-12 follow-up request:
+  `SAT_REASON_SIDE_BUMP_MODE=one-hop SAT_REASON_SIDE_BUMP_LIMIT=unlimited`. The previous
+  no-extra-reason-side default is available with `SAT_REASON_SIDE_BUMP_MODE=off`, and the old
+  full-UIP-traversal behavior remains available with
+  `SAT_REASON_SIDE_BUMP_MODE=traversal SAT_REASON_SIDE_BUMP_LIMIT=unlimited`.
+- `SAT_CHRONO_LEVELS=100` was neutral on top of the accepted reason-side cap, while aggressive
+  thresholds regressed the profile set. It is now the built-in global default after the follow-up
+  request to match Kissat's default threshold.
+
 Implementation items:
 
 - Add a `chronolevels` threshold. If the jump would skip more than that many levels, backtrack only
-  one level chronologically.
+  one level chronologically. Done as `SAT_CHRONO_LEVELS`.
 - Add optional reason-side bumping with a measured limit, guarded by decision-rate style counters.
-- Add tests for chronological backtracking threshold behavior.
+  Done as `SAT_REASON_SIDE_BUMP_MODE`, `SAT_REASON_SIDE_BUMP_LIMIT`, and `reason_side` trace
+  counters. The one-hop mode inspects only immediate reasons of final learned-clause literals.
+- Add tests for chronological backtracking threshold behavior. Done.
 
 Dependencies:
 
@@ -1645,7 +1664,8 @@ Build first:
 - Add target and best phase arrays, then rephase scheduling through the Phase 3 scheduler.
 - Add warmup as a phase-seeding pass once phase arrays exist.
 - Add chronological backtracking and reason-side bumping after restart and mode behavior are
-  measurable.
+  measurable. Done as guarded controls; the current default is one-hop unlimited reason-side
+  bumping after follow-up validation.
 
 Why after search modes:
 
@@ -1739,6 +1759,39 @@ Status:
   (`log/bench-11-kissat-innovations-2026-05-12-11-10-40`), improving the same-turn default anchor
   by about `6.1%`. Use `SAT_RESTART_MODE=luby SAT_MODE_SWITCH_INTERVAL=0` for the previous
   default-search ablation.
+- Chronological backtracking and reason-side bump controls landed on 2026-05-12. Chronological
+  backtracking now defaults globally to `SAT_CHRONO_LEVELS=100`; aggressive thresholds regressed,
+  and `SAT_CHRONO_LEVELS=off` remains available for ablations. The first accepted reason-side
+  policy was `SAT_REASON_SIDE_BUMP_LIMIT=0`, which preserved learned-clause variable bumping while
+  suppressing extra reason-side bump flooding. The final no-proof profiling confirmation before
+  the chrono default flip solved 8/11 with PAR-2 `817.875`
+  (`log/bench-11-kissat-innovations-2026-05-12-13-38-18`), versus the no-proof legacy/unlimited
+  baseline PAR-2 `848.544`.
+- Follow-up validation after enabling global `SAT_CHRONO_LEVELS=100`: `cargo test` passed 95 tests,
+  default smoke passed 9/9 (`log/2026-05-12-14-30-26`), invariant smoke passed 9/9
+  (`log/2026-05-12-14-30-39`), and the no-proof profiling confirmation solved 8/11 with PAR-2
+  `816.106` (`log/bench-11-kissat-innovations-2026-05-12-14-30-48`).
+- Follow-up one-hop reason-side bump mode landed on 2026-05-12. It is enabled with
+  `SAT_REASON_SIDE_BUMP_MODE=one-hop` and uses `SAT_REASON_SIDE_BUMP_LIMIT` as an absolute
+  per-conflict side-variable cap. It now defaults to unlimited one-hop bumping. Validation:
+  `cargo test` passed 96 tests, default smoke passed 9/9 (`log/2026-05-12-14-57-14`), one-hop
+  cap `10` invariant smoke passed 9/9 (`log/2026-05-12-14-57-28`), and legacy traversal invariant
+  smoke passed 9/9 (`log/2026-05-12-14-57-36`).
+- Bounded one-hop caps were rejected as defaults. Cap `10` regressed the first three Feistel
+  profile rows (`42.431s`, `14.987s`, `2.242s`) versus the prior default (`27.78s`, `11.67s`,
+  `0.44s`); cap `1` improved `feistel_b64_k52_r17` (`0.964s`) but regressed
+  `feistel_b64_k32_r22` (`51.903s`) and `feistel_b64_k57_r18` (`29.504s`). Keep bounded caps as
+  targeted experiment knobs.
+- One-hop unlimited was run to completion after a follow-up request. It solved 8/11 with PAR-2
+  `794.645` (`log/bench-11-kissat-innovations-2026-05-12-15-41-28`) versus the post-change default
+  anchor PAR-2 `816.217`. This is a real but sub-threshold `2.6%` profile-set improvement; it is
+  now the default per follow-up request. Main wins: `feistel_b64_k32_r22`, `feistel_b64_k52_r17`,
+  `mp1-Nb7T46`, `random_v285_s2`, and `random_v292_s4`; main regressions: `feistel_b64_k57_r18`,
+  Timetable, and `random_v355_s3`.
+- Final no-env validation after making one-hop unlimited the built-in default: `cargo test` passed
+  96 tests, default smoke passed 9/9 (`log/2026-05-12-16-02-25`), invariant smoke passed 9/9
+  (`log/2026-05-12-16-02-34`), and the no-proof profiling confirmation solved 8/11 with PAR-2
+  `794.641` (`log/bench-11-kissat-innovations-2026-05-12-16-02-42`).
 
 ### Phase 8. First simplification features on the new infrastructure
 

@@ -47,6 +47,16 @@ What is present:
   `SAT_MODE_SWITCH_INTERVAL=0` for the previous default-search ablation. Focused phases return to
   stable after a short dwell cap (`SAT_MODE_SWITCH_FOCUSED_CONFLICTS`, automatic default cap
   `1000`)
+- Phase 7 conflict-analysis controls: chronological backtracking is enabled globally by default
+  with `SAT_CHRONO_LEVELS=100`; use `SAT_CHRONO_LEVELS=off` to disable it for ablations. Extra
+  reason-side variable bumping is controlled by
+  `SAT_REASON_SIDE_BUMP_MODE=off|traversal|one-hop`, defaulting to one-hop with unlimited
+  immediate reason-side variables after the 2026-05-12 follow-up request. Learned-clause variables
+  are still bumped when extra reason-side bumping is off. Use
+  `SAT_REASON_SIDE_BUMP_MODE=traversal SAT_REASON_SIDE_BUMP_LIMIT=unlimited` to restore the
+  previous full-UIP-traversal analyzed-variable bumping behavior, or
+  `SAT_REASON_SIDE_BUMP_MODE=off` to return to the capped/no-extra-reason-side default-search
+  ablation.
 
 What is intentionally not present yet:
 
@@ -592,3 +602,171 @@ Default-policy flip validation on 2026-05-12:
 - previous default-search ablation smoke
   (`SAT_RESTART_MODE=luby SAT_MODE_SWITCH_INTERVAL=0`): 9/9 passed, log
   `log/2026-05-12-11-59-13`.
+
+Chronological backtracking and reason-side bump limit validation on 2026-05-12:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_CHRONO_LEVELS=2 SAT_REASON_SIDE_BUMP_LIMIT=2 SAT_CHECK_INVARIANTS=1 \
+  bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_CHRONO_LEVELS=0 SAT_REASON_SIDE_BUMP_LIMIT=0 SAT_CHECK_INVARIANTS=1 \
+  bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_PROOF=0 bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling \
+  solver/11-kissat-innovations
+SAT_PROOF=0 SAT_CHRONO_LEVELS=100 bash tools/bench.sh -t 120 -m 16384 \
+  -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_REASON_SIDE_BUMP_LIMIT=0 bash tools/bench.sh -t 120 -m 16384 \
+  -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_REASON_SIDE_BUMP_LIMIT=0 SAT_CHRONO_LEVELS=100 \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling \
+  solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 95 passed.
+- default smoke suite before the default flip: 9/9 passed, log `log/2026-05-12-12-23-27`.
+- opt-in chrono/reason smoke (`SAT_CHRONO_LEVELS=2 SAT_REASON_SIDE_BUMP_LIMIT=2` with
+  invariants): 9/9 passed, log `log/2026-05-12-12-23-39`.
+- aggressive knob smoke (`SAT_CHRONO_LEVELS=0 SAT_REASON_SIDE_BUMP_LIMIT=0` with invariants):
+  9/9 passed, log `log/2026-05-12-12-23-46`.
+- no-proof default profiling baseline: solved 8/11, PAR-2 `848.544`, log
+  `log/bench-11-kissat-innovations-2026-05-12-12-46-12`.
+- no-proof conservative chrono-only (`SAT_CHRONO_LEVELS=100`): solved 8/11, PAR-2 `848.613`,
+  log `log/bench-11-kissat-innovations-2026-05-12-12-56-42`.
+- no-proof accepted reason-side cap (`SAT_REASON_SIDE_BUMP_LIMIT=0`): solved 8/11, PAR-2
+  `817.695`, log `log/bench-11-kissat-innovations-2026-05-12-13-05-06`.
+- no-proof reason cap plus conservative chrono (`SAT_REASON_SIDE_BUMP_LIMIT=0
+  SAT_CHRONO_LEVELS=100`), now the default policy after the follow-up chrono request: solved 8/11,
+  PAR-2 `817.653`, log
+  `log/bench-11-kissat-innovations-2026-05-12-13-17-51`.
+- final built-in default after the reason-side cap flip: solved 8/11, PAR-2 `817.875`, log
+  `log/bench-11-kissat-innovations-2026-05-12-13-38-18`.
+- final default smoke suite after the cap flip: 9/9 passed, log `log/2026-05-12-13-37-52`.
+- final default invariant smoke suite after the cap flip: 9/9 passed, log
+  `log/2026-05-12-13-38-05`.
+- follow-up built-in default after enabling global `SAT_CHRONO_LEVELS=100`: solved 8/11, PAR-2
+  `816.106`, log `log/bench-11-kissat-innovations-2026-05-12-14-30-48`.
+- follow-up default smoke after enabling global chrono: 9/9 passed, log
+  `log/2026-05-12-14-30-26`.
+- follow-up invariant smoke after enabling global chrono: 9/9 passed, log
+  `log/2026-05-12-14-30-39`.
+
+Important rejected attempts:
+
+- `SAT_CHRONO_LEVELS=2` with unlimited reason-side bumping was stopped early after
+  `feistel_b64_k32_r22` regressed from `31.33s` to `63.39s`.
+- `SAT_REASON_SIDE_BUMP_LIMIT=4` was stopped early after timing out
+  `feistel_b64_k52_r17` and slowing `feistel_b64_k57_r18` to `23.45s`.
+- `SAT_REASON_SIDE_BUMP_LIMIT=0 SAT_CHRONO_LEVELS=2` completed but regressed badly: solved 8/11,
+  PAR-2 `921.638`, log `log/bench-11-kissat-innovations-2026-05-12-13-25-44`.
+
+Analysis:
+
+- The accepted change is the reason-side cap, not chronological backtracking. Limiting extra
+  reason-side bumps to zero improved the no-proof profiling PAR-2 by `30.669` to `30.849` seconds
+  depending on same-turn rerun (`848.544 -> 817.875` built-in default, `848.544 -> 817.695`
+  opt-in cap), about `3.6%` with the same solved/timeout split.
+- Main wins versus the no-proof baseline: `feistel_b64_k32_r22` `31.33s -> 27.63s`,
+  `feistel_b64_k52_r17` `15.12s -> 11.68s`, `feistel_b64_k57_r18` `1.59s -> 0.44s`,
+  Timetable `15.05s -> 10.25s`, `mp1-Nb7T46` `21.69s -> 16.50s`, `random_v285_s2`
+  `13.14s -> 8.56s`, and `random_v292_s4` `30.10s -> 15.14s`.
+- The main regression was `random_v355_s3` (`0.52s -> 7.49s`), which is a search-path sensitivity
+  warning but not enough to erase the profile-set gain.
+- Direct no-proof trace on `random_v292_s4` explains the main random-UNSAT win: the accepted
+  default solved in `15.256s` with `1816741` conflicts, `2268059` decisions, `84916180`
+  propagations, `589` restarts, and `2692` reduce-DB calls. The legacy
+  `SAT_REASON_SIDE_BUMP_LIMIT=unlimited` mode took `30.215s` with `3310953` conflicts,
+  `3957454` decisions, `154902824` propagations, `960` restarts, and `4496` reduce-DB calls.
+- Direct no-proof trace on the `random_v355_s3` regression shows the tradeoff: the accepted default
+  took `7.475s` with `840045` conflicts and `46920823` propagations, while the legacy unlimited
+  mode solved in `0.514s` with `63957` conflicts and `3585194` propagations. The cap improves the
+  aggregate profile set but can still damage individual SAT trajectories.
+- Conservative chronological backtracking (`SAT_CHRONO_LEVELS=100`) was neutral on top of the
+  accepted reason-side cap, but it now matches Kissat's global default threshold and remains
+  ablatable with `SAT_CHRONO_LEVELS=off`. The follow-up default profiling confirmation was slightly
+  better than the previous cap-only default (`817.875 -> 816.106` PAR-2), but this is still best
+  treated as neutral/noise rather than a separate chrono win.
+- These profiling runs used `SAT_PROOF=0` so the timings isolate solver search from the long
+  `drat-trim` tail observed on `random_v292_s4`. Proof correctness remains covered by the smoke
+  suite; the no-proof benchmark rows intentionally report UNSAT rows as `[no proof]`.
+
+One-hop reason-side bump validation on 2026-05-12:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_REASON_SIDE_BUMP_MODE=one-hop SAT_REASON_SIDE_BUMP_LIMIT=10 SAT_CHECK_INVARIANTS=1 \
+  bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_REASON_SIDE_BUMP_MODE=traversal SAT_REASON_SIDE_BUMP_LIMIT=unlimited \
+  SAT_CHECK_INVARIANTS=1 bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_PROOF=0 bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling \
+  solver/11-kissat-innovations
+SAT_PROOF=0 SAT_REASON_SIDE_BUMP_MODE=off \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling \
+  solver/11-kissat-innovations
+SAT_PROOF=0 SAT_REASON_SIDE_BUMP_MODE=one-hop SAT_REASON_SIDE_BUMP_LIMIT=10 \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling \
+  solver/11-kissat-innovations
+SAT_PROOF=0 SAT_REASON_SIDE_BUMP_MODE=one-hop SAT_REASON_SIDE_BUMP_LIMIT=1 \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling \
+  solver/11-kissat-innovations
+SAT_PROOF=0 SAT_REASON_SIDE_BUMP_MODE=one-hop SAT_REASON_SIDE_BUMP_LIMIT=unlimited \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling \
+  solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 96 passed.
+- default smoke suite: 9/9 passed, log `log/2026-05-12-14-57-14`.
+- one-hop cap `10` invariant smoke: 9/9 passed, log `log/2026-05-12-14-57-28`.
+- legacy traversal invariant smoke: 9/9 passed, log `log/2026-05-12-14-57-36`.
+- post-change no-proof prior-default anchor, reproducible now with `SAT_REASON_SIDE_BUMP_MODE=off`:
+  solved 8/11, PAR-2 `816.217`, log
+  `log/bench-11-kissat-innovations-2026-05-12-14-57-59`.
+- bounded one-hop cap `10` experiment (`SAT_REASON_SIDE_BUMP_MODE=one-hop
+  SAT_REASON_SIDE_BUMP_LIMIT=10`, implicit before the final default-limit change) was stopped
+  early:
+  first three Feistel rows were `42.431s`, `14.987s`, and `2.242s`, versus default `27.78s`,
+  `11.67s`, and `0.44s`; partial log
+  `log/bench-11-kissat-innovations-2026-05-12-15-05-55`.
+- one-hop minimal cap (`SAT_REASON_SIDE_BUMP_MODE=one-hop SAT_REASON_SIDE_BUMP_LIMIT=1`) was also
+  stopped early: it improved `feistel_b64_k52_r17` (`11.67s -> 0.964s`) but regressed
+  `feistel_b64_k32_r22` (`27.78s -> 51.903s`) and `feistel_b64_k57_r18` (`0.44s -> 29.504s`);
+  partial log `log/bench-11-kissat-innovations-2026-05-12-15-07-48`.
+- one-hop unlimited completed per follow-up request: solved 8/11, PAR-2 `794.645`, log
+  `log/bench-11-kissat-innovations-2026-05-12-15-41-28`.
+- final built-in default after flipping one-hop unlimited on by default: `cargo test` passed 96
+  tests, default smoke passed 9/9 (`log/2026-05-12-16-02-25`), invariant smoke passed 9/9
+  (`log/2026-05-12-16-02-34`), and the no-proof profiling confirmation solved 8/11 with PAR-2
+  `794.641` (`log/bench-11-kissat-innovations-2026-05-12-16-02-42`).
+
+Analysis:
+
+- The implemented one-hop pass is not recursive: after the final learned clause is known, it
+  inspects only each learned literal's immediate binary or long-clause reason and bumps side
+  variables up to `SAT_REASON_SIDE_BUMP_LIMIT`.
+- One-hop unlimited is now the default after the follow-up request. The completed unlimited run
+  improved the no-proof profile PAR-2 by `21.572` seconds (`816.217 -> 794.645`, about `2.6%`) with
+  the same solved/timeout split. This is below the usual `>3%` threshold, but it is intentionally
+  kept as the default to match the requested policy.
+- The final no-env default confirmation reproduced that result after the code default changed:
+  PAR-2 `794.641`, solved 8/11, same timeout split.
+- One-hop unlimited wins: `feistel_b64_k32_r22` `27.78s -> 7.01s`,
+  `feistel_b64_k52_r17` `11.67s -> 5.12s`, `mp1-Nb7T46` `12.32s -> 3.63s`,
+  `random_v285_s2` `8.53s -> 3.57s`, and `random_v292_s4` `15.18s -> 7.76s`.
+- One-hop unlimited regressions: `feistel_b64_k57_r18` `0.44s -> 2.18s`, Timetable
+  `12.83s -> 28.84s`, and `random_v355_s3` `7.47s -> 16.53s`.
+- Direct traces show this is a search-trajectory effect, not local overhead. On
+  `feistel_b64_k52_r17`, one-hop cap `1` solved in `0.940s` with `63241` conflicts and `5196216`
+  propagations, versus default `11.573s`, `530808` conflicts, and `52921576` propagations. On
+  `feistel_b64_k32_r22`, the same cap regressed to `51.661s`, `1200333` conflicts, and
+  `213032231` propagations, versus default `27.728s`, `677717` conflicts, and `112518055`
+  propagations.
+- Direct traces for one-hop unlimited show the same trajectory tradeoff. On `random_v292_s4`, it
+  solved in `7.768s` with `948357` conflicts and `43605767` propagations, versus default
+  `15.125s`, `1816741` conflicts, and `84916180` propagations. On the Timetable regression, it
+  took `19.543s` with `906640` conflicts and `51525605` propagations on a decompressed direct trace,
+  versus default `4.475s`, `169292` conflicts, and `22497680` propagations on the same file.

@@ -60,6 +60,7 @@ const DEFAULT_RELUCTANT_LIMIT: u64 = 1 << 20;
 const DEFAULT_FOCUSED_REDUCE_LOW_YIELD_COOLDOWN: usize = 100;
 const DEFAULT_FOCUSED_MODE_CONFLICT_CAP: u64 = 1_000;
 const DEFAULT_MODE_SWITCH_INTERVAL: usize = 50_000;
+const DEFAULT_CHRONO_LEVELS: usize = 100;
 const STATIC_BINARY_MIN_ORIGINAL_BINARIES: usize = 64;
 const STATIC_BINARY_MIN_ORIGINAL_BINARY_PERCENT: usize = 20;
 const STATIC_BINARY_ALWAYS_ORIGINAL_BINARIES: usize = 4096;
@@ -149,6 +150,13 @@ enum ModeSwitchPolicy {
 enum RestartReuseMode {
     Off,
     Kissat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReasonSideBumpMode {
+    Off,
+    Traversal,
+    OneHop,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -536,6 +544,13 @@ struct SolverStats {
     restart_reused_levels: u64,
     restart_reused_assignments: u64,
     restart_reuse_max_level: usize,
+    chrono_backtrack_attempts: u64,
+    chrono_backtracks: u64,
+    chrono_backtrack_preserved_levels: u64,
+    chrono_backtrack_max_preserved: usize,
+    reason_side_bump_candidates: u64,
+    reason_side_bumped_vars: u64,
+    reason_side_bump_limit_hits: u64,
     mode_switches: u64,
     mode_switch_to_stable: u64,
     mode_switch_to_focused: u64,
@@ -847,6 +862,14 @@ struct Solver {
     restart_reuse_mode: RestartReuseMode,
     /// maximum reusable decision level; 0 means unlimited
     restart_reuse_cap: usize,
+    /// optional chronological backtracking threshold; when enabled, preserve the previous
+    /// decision level if the normal non-chronological jump would skip more than this many levels
+    chrono_levels: Option<usize>,
+    /// reason-side variable bump policy selected for conflict analysis
+    reason_side_bump_mode: ReasonSideBumpMode,
+    /// maximum extra reason-side variables to bump per conflict; learned-clause variables are
+    /// still bumped even when this cap is zero
+    reason_side_bump_limit: usize,
     /// fast moving average of learned-clause glue for glue-EMA restarts
     restart_glue_fast_ema: f64,
     /// slow moving average of learned-clause glue for glue-EMA restarts
@@ -945,6 +968,8 @@ struct Solver {
     scratch_learned: Vec<i32>,
     scratch_conflict_clause: Vec<i32>,
     scratch_bumped_vars: Vec<usize>,
+    scratch_bump_seen: Vec<u8>,
+    scratch_seen_vars: Vec<usize>,
     scratch_redundant_state: Vec<u8>,
     scratch_analyze_toclear: Vec<usize>,
     scratch_analyze_stack: Vec<(usize, i32)>,
@@ -1281,6 +1306,7 @@ impl Solver {
             BranchMode::Minisat => FALSE,
             BranchMode::Occurrence => TRUE,
         };
+        let (reason_side_bump_mode, reason_side_bump_limit) = parse_reason_side_bump_config();
 
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
         let arena = Vec::with_capacity(total_words);
@@ -1340,6 +1366,9 @@ impl Solver {
             restart_pending: false,
             restart_reuse_mode: parse_restart_reuse_mode(),
             restart_reuse_cap: parse_usize_env("SAT_RESTART_REUSE_CAP", 8),
+            chrono_levels: parse_chrono_levels_env(),
+            reason_side_bump_mode,
+            reason_side_bump_limit,
             restart_glue_fast_ema: 0.0,
             restart_glue_slow_ema: 0.0,
             restart_glue_ema_initialized: false,
@@ -1410,6 +1439,8 @@ impl Solver {
             scratch_learned: Vec::with_capacity(16),
             scratch_conflict_clause: Vec::with_capacity(16),
             scratch_bumped_vars: Vec::with_capacity(16),
+            scratch_bump_seen: vec![0; num_vars + 1],
+            scratch_seen_vars: Vec::with_capacity(16),
             scratch_redundant_state: vec![0; num_vars + 1],
             scratch_analyze_toclear: Vec::with_capacity(16),
             scratch_analyze_stack: Vec::with_capacity(16),
@@ -3985,6 +4016,43 @@ impl Solver {
         self.propagate_head = self.propagate_head.min(new_trail_len);
     }
 
+    fn select_conflict_backtrack_level(
+        &mut self,
+        learned_clause: &[i32],
+        standard_backtrack_level: usize,
+    ) -> usize {
+        let Some(chrono_levels) = self.chrono_levels else {
+            return standard_backtrack_level;
+        };
+        if learned_clause.len() <= 1 {
+            return standard_backtrack_level;
+        }
+
+        let current_level = self.current_level();
+        if current_level == 0 {
+            return standard_backtrack_level;
+        }
+        let chrono_level = current_level - 1;
+        if standard_backtrack_level >= chrono_level {
+            return standard_backtrack_level;
+        }
+
+        self.stats.chrono_backtrack_attempts += 1;
+        let skipped_levels = current_level - standard_backtrack_level;
+        if skipped_levels <= chrono_levels {
+            return standard_backtrack_level;
+        }
+
+        let preserved_levels = chrono_level - standard_backtrack_level;
+        self.stats.chrono_backtracks += 1;
+        self.stats.chrono_backtrack_preserved_levels += preserved_levels as u64;
+        self.stats.chrono_backtrack_max_preserved = self
+            .stats
+            .chrono_backtrack_max_preserved
+            .max(preserved_levels);
+        chrono_level
+    }
+
     fn debug_assert_clause_asserting_after_backtrack(
         &self,
         learned_clause: &[i32],
@@ -4645,6 +4713,8 @@ impl Solver {
         start_lit_pos: usize,
         current_level: usize,
         current_level_count: &mut usize,
+        reason_side: bool,
+        reason_side_bumped: &mut usize,
     ) {
         if self.reduce_db_enabled() {
             self.bump_clause_activity(clause_idx);
@@ -4653,7 +4723,13 @@ impl Solver {
         let clause_len = self.clause_len(clause_idx);
         for lit_pos in start_lit_pos..clause_len {
             let lit = self.clause_lit(clause_idx, lit_pos);
-            self.mark_literal_for_analysis(lit, current_level, current_level_count);
+            self.mark_literal_for_analysis(
+                lit,
+                current_level,
+                current_level_count,
+                reason_side,
+                reason_side_bumped,
+            );
         }
     }
 
@@ -4662,6 +4738,8 @@ impl Solver {
         lit: i32,
         current_level: usize,
         current_level_count: &mut usize,
+        reason_side: bool,
+        reason_side_bumped: &mut usize,
     ) {
         let var = lit.unsigned_abs() as usize;
         if self.scratch_seen[var] != 0
@@ -4676,7 +4754,10 @@ impl Solver {
         }
 
         self.scratch_seen[var] = 1;
-        self.scratch_bumped_vars.push(var);
+        self.scratch_seen_vars.push(var);
+        if self.should_bump_analysis_var(var, reason_side, reason_side_bumped) {
+            self.mark_analysis_var_for_bump(var);
+        }
         if level == current_level {
             *current_level_count += 1;
         } else {
@@ -4684,18 +4765,119 @@ impl Solver {
         }
     }
 
+    fn should_bump_analysis_var(
+        &mut self,
+        _var: usize,
+        reason_side: bool,
+        reason_side_bumped: &mut usize,
+    ) -> bool {
+        if !reason_side {
+            return true;
+        }
+        if self.reason_side_bump_mode != ReasonSideBumpMode::Traversal {
+            return false;
+        }
+
+        self.stats.reason_side_bump_candidates += 1;
+        if *reason_side_bumped < self.reason_side_bump_limit {
+            *reason_side_bumped += 1;
+            self.stats.reason_side_bumped_vars += 1;
+            true
+        } else {
+            self.stats.reason_side_bump_limit_hits += 1;
+            false
+        }
+    }
+
+    fn bump_reason_side_var(&mut self, var: usize, reason_side_bumped: &mut usize) {
+        if self.decision_level[var] == 0 || self.scratch_bump_seen[var] != 0 {
+            return;
+        }
+
+        self.stats.reason_side_bump_candidates += 1;
+        if *reason_side_bumped < self.reason_side_bump_limit {
+            *reason_side_bumped += 1;
+            self.stats.reason_side_bumped_vars += 1;
+            self.mark_analysis_var_for_bump(var);
+        } else {
+            self.stats.reason_side_bump_limit_hits += 1;
+        }
+    }
+
+    fn mark_analysis_var_for_bump(&mut self, var: usize) {
+        if self.scratch_bump_seen[var] == 0 {
+            self.scratch_bump_seen[var] = 1;
+            self.scratch_bumped_vars.push(var);
+        }
+    }
+
+    fn mark_learned_clause_vars_for_bump(&mut self, learned_clause: &[i32]) {
+        for &lit in learned_clause {
+            let var = lit.unsigned_abs() as usize;
+            if self.decision_level[var] > 0 {
+                self.mark_analysis_var_for_bump(var);
+            }
+        }
+    }
+
+    fn bump_one_hop_reason_side_literals(
+        &mut self,
+        learned_clause: &[i32],
+        reason_side_bumped: &mut usize,
+    ) {
+        if self.reason_side_bump_mode != ReasonSideBumpMode::OneHop {
+            return;
+        }
+
+        for &lit in learned_clause {
+            let var = lit.unsigned_abs() as usize;
+            let reason_ref = self.reason[var];
+            if reason_ref.is_none() || reason_ref.is_unit() {
+                continue;
+            }
+
+            if let Some(binary_lit) = reason_ref.as_binary() {
+                let binary_var = binary_lit.unsigned_abs() as usize;
+                self.bump_reason_side_var(binary_var, reason_side_bumped);
+            } else {
+                let assigned_lit = -lit;
+                let reason_idx = reason_ref.clause_idx();
+                let clause_len = self.clause_len(reason_idx);
+                for lit_pos in 0..clause_len {
+                    let other = self.clause_lit(reason_idx, lit_pos);
+                    if other == assigned_lit {
+                        continue;
+                    }
+                    let other_var = other.unsigned_abs() as usize;
+                    self.bump_reason_side_var(other_var, reason_side_bumped);
+                    if *reason_side_bumped >= self.reason_side_bump_limit {
+                        break;
+                    }
+                }
+            }
+
+            if *reason_side_bumped >= self.reason_side_bump_limit {
+                break;
+            }
+        }
+    }
+
     fn analyze_conflict_to_scratch(&mut self, conflict_clause_idx: usize) -> usize {
         let current_level = self.current_level();
         self.scratch_learned.clear();
         self.scratch_bumped_vars.clear();
+        self.scratch_seen_vars.clear();
 
         let mut current_level_count = 0usize;
+        let mut reason_side_bumped = 0usize;
 
         self.mark_clause_literals_for_analysis(
             conflict_clause_idx,
             0,
             current_level,
             &mut current_level_count,
+            false,
+            &mut reason_side_bumped,
         );
 
         debug_assert!(current_level_count > 0);
@@ -4725,6 +4907,8 @@ impl Solver {
                         binary_lit,
                         current_level,
                         &mut current_level_count,
+                        true,
+                        &mut reason_side_bumped,
                     );
                 } else {
                     let reason_idx = reason_ref.clause_idx();
@@ -4738,6 +4922,8 @@ impl Solver {
                         start_lit_pos,
                         current_level,
                         &mut current_level_count,
+                        true,
+                        &mut reason_side_bumped,
                     );
                 }
             }
@@ -4748,6 +4934,8 @@ impl Solver {
         learned_clause.push(-uip_lit);
         learned_clause.extend(self.scratch_learned.iter().copied());
         self.minimize_learned_clause(&mut learned_clause);
+        self.mark_learned_clause_vars_for_bump(&learned_clause);
+        self.bump_one_hop_reason_side_literals(&learned_clause, &mut reason_side_bumped);
 
         let mut backtrack_level = 0usize;
         let mut backtrack_pos = 1usize;
@@ -4766,10 +4954,14 @@ impl Solver {
         }
 
         self.scratch_conflict_clause = learned_clause;
-        for &var in &self.scratch_bumped_vars {
+        for &var in &self.scratch_seen_vars {
             self.scratch_seen[var] = 0;
             self.scratch_resolved[var] = 0;
         }
+        for &var in &self.scratch_bumped_vars {
+            self.scratch_bump_seen[var] = 0;
+        }
+        self.scratch_seen_vars.clear();
         backtrack_level
     }
 
@@ -4886,7 +5078,7 @@ impl Solver {
                         self.stats.search_time_ns += elapsed_ns(search_start);
                         if trace_search_interval > 0 {
                             eprintln!(
-                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                 self.stats.search_time_ns as f64 / 1e9,
                                 self.stats.conflicts,
                                 self.stats.decisions,
@@ -4903,6 +5095,13 @@ impl Solver {
                                 self.stats.restart_reused_levels,
                                 self.stats.restart_reused_assignments,
                                 self.stats.restart_reuse_max_level,
+                                self.stats.chrono_backtrack_attempts,
+                                self.stats.chrono_backtracks,
+                                self.stats.chrono_backtrack_preserved_levels,
+                                self.stats.chrono_backtrack_max_preserved,
+                                self.stats.reason_side_bump_candidates,
+                                self.stats.reason_side_bumped_vars,
+                                self.stats.reason_side_bump_limit_hits,
                                 self.stats.rephases,
                                 self.stats.target_phase_saved,
                                 self.stats.best_phase_saved,
@@ -4951,7 +5150,7 @@ impl Solver {
                     self.note_mode_progress_at_conflict();
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
-                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
+                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
                             search_start.elapsed().as_secs_f64(),
                             self.stats.conflicts,
                             self.stats.decisions,
@@ -4968,6 +5167,13 @@ impl Solver {
                             self.stats.restart_reused_levels,
                             self.stats.restart_reused_assignments,
                             self.stats.restart_reuse_max_level,
+                            self.stats.chrono_backtrack_attempts,
+                            self.stats.chrono_backtracks,
+                            self.stats.chrono_backtrack_preserved_levels,
+                            self.stats.chrono_backtrack_max_preserved,
+                            self.stats.reason_side_bump_candidates,
+                            self.stats.reason_side_bumped_vars,
+                            self.stats.reason_side_bump_limit_hits,
                             self.stats.rephases,
                             self.stats.target_phase_saved,
                             self.stats.best_phase_saved,
@@ -5004,7 +5210,8 @@ impl Solver {
                         );
                         next_search_trace = next_search_trace.saturating_add(trace_search_interval);
                     }
-                    let backtrack_level = self.analyze_conflict_to_scratch(conflict_clause_idx);
+                    let standard_backtrack_level =
+                        self.analyze_conflict_to_scratch(conflict_clause_idx);
                     self.apply_analyzed_variable_search_updates();
                     if self.reduce_db_enabled() {
                         self.decay_clause_activity();
@@ -5013,10 +5220,13 @@ impl Solver {
                     let learned_clause = std::mem::take(&mut self.scratch_conflict_clause);
                     let asserting_lit = learned_clause[0];
                     let learned_glue = self.compute_clause_glue(&learned_clause);
+                    let backtrack_level = self
+                        .select_conflict_backtrack_level(&learned_clause, standard_backtrack_level);
                     self.note_conflict(learned_glue);
                     proof_log.record_clause(&learned_clause);
                     if learned_clause.len() == 1 {
                         self.record_learned_clause_stats(1, learned_glue);
+                        debug_assert_eq!(standard_backtrack_level, 0);
                         debug_assert_eq!(backtrack_level, 0);
                         self.backtrack(0);
                         let inserted = self.enqueue(asserting_lit, NO_REASON);
@@ -5067,7 +5277,7 @@ impl Solver {
                             self.stats.search_time_ns += elapsed_ns(search_start);
                             if trace_search_interval > 0 {
                                 eprintln!(
-                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                     self.stats.search_time_ns as f64 / 1e9,
                                     self.stats.conflicts,
                                     self.stats.decisions,
@@ -5084,6 +5294,13 @@ impl Solver {
                                     self.stats.restart_reused_levels,
                                     self.stats.restart_reused_assignments,
                                     self.stats.restart_reuse_max_level,
+                                    self.stats.chrono_backtrack_attempts,
+                                    self.stats.chrono_backtracks,
+                                    self.stats.chrono_backtrack_preserved_levels,
+                                    self.stats.chrono_backtrack_max_preserved,
+                                    self.stats.reason_side_bump_candidates,
+                                    self.stats.reason_side_bumped_vars,
+                                    self.stats.reason_side_bump_limit_hits,
                                     self.stats.rephases,
                                     self.stats.target_phase_saved,
                                     self.stats.best_phase_saved,
@@ -5329,6 +5546,90 @@ fn parse_use_resolved_conflict_analysis() -> bool {
             }
         },
         Err(_) => false,
+    }
+}
+
+fn parse_chrono_levels_env() -> Option<usize> {
+    match env::var("SAT_CHRONO_LEVELS") {
+        Ok(value) => {
+            let trimmed = value.trim();
+            match trimmed.to_ascii_lowercase().as_str() {
+                "off" | "false" | "no" | "disabled" | "none" => None,
+                other => match other.parse::<usize>() {
+                    Ok(parsed) => Some(parsed),
+                    Err(err) => {
+                        eprintln!("Invalid SAT_CHRONO_LEVELS={value:?}: {err}");
+                        std::process::exit(2);
+                    }
+                },
+            }
+        }
+        Err(_) => Some(DEFAULT_CHRONO_LEVELS),
+    }
+}
+
+fn parse_reason_side_bump_limit_value(value: &str, default: usize) -> usize {
+    let trimmed = value.trim();
+    match trimmed.to_ascii_lowercase().as_str() {
+        "default" => default,
+        "unlimited" | "all" => usize::MAX,
+        "off" | "false" | "no" | "disabled" | "none" => 0,
+        other => match other.parse::<usize>() {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                eprintln!("Invalid SAT_REASON_SIDE_BUMP_LIMIT={value:?}: {err}");
+                std::process::exit(2);
+            }
+        },
+    }
+}
+
+fn parse_reason_side_bump_mode_value(value: &str) -> ReasonSideBumpMode {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "0" | "off" | "false" | "no" | "disabled" | "none" => ReasonSideBumpMode::Off,
+        "traversal" | "uip" | "analysis" | "legacy" => ReasonSideBumpMode::Traversal,
+        "one-hop" | "one_hop" | "onehop" | "kissat" => ReasonSideBumpMode::OneHop,
+        other => {
+            eprintln!("Invalid SAT_REASON_SIDE_BUMP_MODE={other}; expected off/traversal/one-hop");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn parse_reason_side_bump_config() -> (ReasonSideBumpMode, usize) {
+    let mode = match env::var("SAT_REASON_SIDE_BUMP_MODE") {
+        Ok(value) => {
+            let mode = parse_reason_side_bump_mode_value(&value);
+            if mode == ReasonSideBumpMode::Off {
+                return (mode, 0);
+            }
+            mode
+        }
+        Err(_) => match env::var("SAT_REASON_SIDE_BUMP_LIMIT") {
+            Ok(value) => {
+                let limit = parse_reason_side_bump_limit_value(&value, 0);
+                if limit == 0 {
+                    return (ReasonSideBumpMode::Off, 0);
+                }
+                return (ReasonSideBumpMode::Traversal, limit);
+            }
+            Err(_) => ReasonSideBumpMode::OneHop,
+        },
+    };
+
+    let default_limit = match mode {
+        ReasonSideBumpMode::Off => 0,
+        ReasonSideBumpMode::Traversal => usize::MAX,
+        ReasonSideBumpMode::OneHop => usize::MAX,
+    };
+    let limit = match env::var("SAT_REASON_SIDE_BUMP_LIMIT") {
+        Ok(value) => parse_reason_side_bump_limit_value(&value, default_limit),
+        Err(_) => default_limit,
+    };
+    if limit == 0 {
+        (ReasonSideBumpMode::Off, 0)
+    } else {
+        (mode, limit)
     }
 }
 
@@ -7027,6 +7328,8 @@ mod tests {
             vec![-2, -3],
         ];
         let mut s = make_solver(6, clauses);
+        s.reason_side_bump_mode = ReasonSideBumpMode::Traversal;
+        s.reason_side_bump_limit = usize::MAX;
 
         s.decide(1);
         let conflict_clause_idx = s.propagate().expect("expected conflict after propagation");
@@ -7038,6 +7341,100 @@ mod tests {
         let mut bumped_vars = s.scratch_bumped_vars.clone();
         bumped_vars.sort_unstable();
         assert_eq!(bumped_vars, vec![2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn test_reason_side_bump_limit_keeps_learned_clause_variables() {
+        let clauses = vec![
+            vec![-1, 5],
+            vec![-5, 4],
+            vec![-5, 6],
+            vec![-4, 2],
+            vec![-6, 3],
+            vec![-2, -3],
+        ];
+        let mut s = make_solver(6, clauses);
+        s.reason_side_bump_mode = ReasonSideBumpMode::Traversal;
+        s.reason_side_bump_limit = 0;
+
+        s.decide(1);
+        let conflict_clause_idx = s.propagate().expect("expected conflict after propagation");
+        let (learned_clause, backtrack_level) = s.analyze_conflict(conflict_clause_idx);
+
+        assert_eq!(learned_clause, vec![-5]);
+        assert_eq!(backtrack_level, 0);
+
+        let mut bumped_vars = s.scratch_bumped_vars.clone();
+        bumped_vars.sort_unstable();
+        assert_eq!(bumped_vars, vec![2, 3, 5]);
+        assert!(s.stats.reason_side_bump_candidates > 0);
+        assert_eq!(s.stats.reason_side_bumped_vars, 0);
+        assert_eq!(
+            s.stats.reason_side_bump_candidates,
+            s.stats.reason_side_bump_limit_hits
+        );
+    }
+
+    #[test]
+    fn test_one_hop_reason_side_bump_does_not_follow_nested_reasons() {
+        let mut s = make_solver(4, vec![]);
+        let reason_for_two = s.add_clause(vec![2, 3]);
+        let reason_for_three = s.add_clause(vec![-3, 4]);
+        install_manual_state(
+            &mut s,
+            &[1, 2, -3, 4],
+            &[0, 1, 2, 3],
+            &[(2, reason_for_two), (3, reason_for_three)],
+        );
+        s.reason_side_bump_mode = ReasonSideBumpMode::OneHop;
+        s.reason_side_bump_limit = usize::MAX;
+
+        let learned_clause = vec![-2];
+        s.mark_learned_clause_vars_for_bump(&learned_clause);
+        let mut reason_side_bumped = 0;
+        s.bump_one_hop_reason_side_literals(&learned_clause, &mut reason_side_bumped);
+
+        let mut bumped_vars = s.scratch_bumped_vars.clone();
+        bumped_vars.sort_unstable();
+        assert_eq!(bumped_vars, vec![2, 3]);
+        assert_eq!(reason_side_bumped, 1);
+        assert_eq!(s.stats.reason_side_bump_candidates, 1);
+        assert_eq!(s.stats.reason_side_bumped_vars, 1);
+        assert_eq!(s.stats.reason_side_bump_limit_hits, 0);
+    }
+
+    #[test]
+    fn test_chronological_backtrack_threshold_preserves_previous_level() {
+        let mut s = make_solver(4, vec![]);
+        install_manual_state(&mut s, &[1, 2, 3, 4], &[0, 1, 2, 3], &[]);
+        s.chrono_levels = Some(2);
+
+        let learned_clause = vec![-4, -1];
+        let selected_level = s.select_conflict_backtrack_level(&learned_clause, 1);
+
+        assert_eq!(selected_level, 3);
+        assert_eq!(s.stats.chrono_backtrack_attempts, 1);
+        assert_eq!(s.stats.chrono_backtracks, 1);
+        assert_eq!(s.stats.chrono_backtrack_preserved_levels, 2);
+        assert_eq!(s.stats.chrono_backtrack_max_preserved, 2);
+
+        s.backtrack(selected_level);
+        assert_eq!(s.lit_value(learned_clause[0]), UNASSIGNED);
+        assert_eq!(s.lit_value(learned_clause[1]), FALSE);
+    }
+
+    #[test]
+    fn test_chronological_backtrack_threshold_keeps_standard_jump_under_limit() {
+        let mut s = make_solver(4, vec![]);
+        install_manual_state(&mut s, &[1, 2, 3, 4], &[0, 1, 2, 3], &[]);
+        s.chrono_levels = Some(3);
+
+        let learned_clause = vec![-4, -1];
+        let selected_level = s.select_conflict_backtrack_level(&learned_clause, 1);
+
+        assert_eq!(selected_level, 1);
+        assert_eq!(s.stats.chrono_backtrack_attempts, 1);
+        assert_eq!(s.stats.chrono_backtracks, 0);
     }
 
     #[test]
