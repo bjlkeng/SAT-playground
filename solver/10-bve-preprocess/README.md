@@ -14,8 +14,8 @@ What is present:
 - original-clause occurrence lists and literal occurrence counts during preprocessing
 - a separate decision-variable flag so eliminated variables do not re-enter the branch heap
 - bounded variable elimination with MiniSat-style `grow = 0` and `clause_lim = 20`
-- MiniSat-style backward subsumption / BSR enabled by default, with `SAT_FULL_BSR=off` retained as
-  a diagnostic override
+- MiniSat-style backward subsumption / BSR available with `SAT_FULL_BSR=on`; it is off by default
+  after medium-benchmark search-regression checks
 - 64-bit clause abstraction prefiltering for preprocessing subsumption checks
 - in-place original-clause strengthening during BSR
 - a persistent preprocessing loop over touched variables, root assignments, queued subsumption
@@ -145,7 +145,8 @@ Rejected or incomplete hypotheses from that loop:
 
 The next refactor implemented the remaining MiniSat `simp` work-loop differences:
 
-- full BSR now runs by default instead of using the earlier formula-size gate
+- full BSR became force-runnable instead of using the earlier formula-size gate; current default is
+  off, with `SAT_FULL_BSR=on` retained for targeted comparison runs
 - preprocessing now loops over touched variables, root assignments, queued subsumption clauses, and
   elimination-heap variables until all work is drained
 - BSR strengthens original clauses in place

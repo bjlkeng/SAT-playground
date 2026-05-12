@@ -47,7 +47,7 @@ impl Solver {
             },
             Err(_) => {}
         }
-        true
+        false
     }
 
     fn build_occurrence_index(&mut self) {
