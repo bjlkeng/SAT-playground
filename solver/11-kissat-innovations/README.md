@@ -43,13 +43,14 @@ What is present:
 - Phase 7 search-control scaffold: `SAT_RESTART_MODE=reluctant` enables stable-mode reluctant
   doubling restarts, falling back to glue-EMA behavior in focused mode; `SAT_MODE_SWITCH_INTERVAL`
   or `SAT_MAINT_MODE_SWITCH_INTERVAL` enables root-safe stable/focused mode switching for
-  measurement
+  measurement. `SAT_MODE_SWITCH_POLICY=stale-stable` guards stable-to-focused switches until stable
+  search has stopped finding deeper trails, and focused phases return to stable after a short
+  dwell cap (`SAT_MODE_SWITCH_FOCUSED_CONFLICTS`, automatic default cap `1000`)
 
 What is intentionally not present yet:
 
 - no default-on automatic Kissat search-mode switching, real mid-search inprocessing pass, probing,
-  local-search walking rephase source, stable reluctant default policy, or tuned mode-switch guard
-  yet
+  local-search walking rephase source, or stable reluctant default policy yet
 - no separate MiniSat `simp` port design document is copied forward
 
 ## Direction
@@ -506,3 +507,76 @@ Analysis:
 - Keep both features as opt-in infrastructure. The next search-control work should add a guard that
   switches only when stable search is demonstrably stale, or improve focused queue/reduction
   behavior before attempting a default mode-switch policy.
+
+Guarded mode-switch validation on 2026-05-12:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_RESTART_MODE=reluctant SAT_MODE_SWITCH_INTERVAL=10 SAT_MODE_SWITCH_POLICY=stale-stable \
+  SAT_MODE_SWITCH_STALE_CONFLICTS=5 SAT_MODE_SWITCH_FOCUSED_CONFLICTS=5 \
+  bash tools/smoke_test.sh solver/11-kissat-innovations
+bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_RESTART_MODE=reluctant SAT_MODE_SWITCH_INTERVAL=1000 SAT_MODE_SWITCH_POLICY=stale-stable \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_RESTART_MODE=reluctant SAT_MODE_SWITCH_INTERVAL=50000 SAT_MODE_SWITCH_POLICY=stale-stable \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 92 passed.
+- default smoke suite: 9/9 passed, log `log/2026-05-12-11-10-08`.
+- guarded-switch smoke suite with aggressive test intervals: 9/9 passed, log
+  `log/2026-05-12-11-10-28`.
+- same-turn default profiling anchor: solved 8/11, PAR-2 `905.022`, log
+  `log/bench-11-kissat-innovations-2026-05-12-09-59-14`.
+- guarded stale-stable interval `1000` before the focused dwell cap was rejected: solved 6/11,
+  PAR-2 `1316.666`, log `log/bench-11-kissat-innovations-2026-05-12-10-20-13`.
+- guarded stale-stable interval `50000` with the final default focused dwell cap (`1000` conflicts):
+  solved 8/11, PAR-2 `849.514`, log
+  `log/bench-11-kissat-innovations-2026-05-12-11-10-40`.
+
+Implementation notes:
+
+- `SAT_MODE_SWITCH_POLICY=stale-stable` keeps scheduled mode-switch actions root-safe but refuses
+  stable-to-focused transitions while stable mode is still reaching deeper trails. The stale window
+  defaults to the mode-switch interval and can be overridden with
+  `SAT_MODE_SWITCH_STALE_CONFLICTS=<conflicts>`.
+- Focused mode is now a bounded escape phase rather than a one-way trajectory change. When mode
+  switching is enabled, focused search returns to stable after
+  `SAT_MODE_SWITCH_FOCUSED_CONFLICTS`; the automatic default is
+  `min(SAT_MODE_SWITCH_INTERVAL, 1000)`.
+- Focused-mode low-yield reduction cooldown is applied automatically with default
+  `SAT_FOCUSED_REDUCE_LOW_YIELD_COOLDOWN=100`, while the old global
+  `SAT_REDUCE_LOW_YIELD_COOLDOWN` remains available for explicit stable-mode ablations.
+- Search traces now report `mode_switch_attempts`, `mode_switch_skipped`, and
+  `mode_switch_stale` alongside the existing mode-switch counts.
+
+Analysis:
+
+- The accepted opt-in profile (`reluctant + stale-stable interval 50000`) improved PAR-2 by
+  `55.508` versus the same-turn default anchor (`905.022 -> 849.514`, about `6.1%`) with the same
+  solved/timeout split.
+- Main wins versus the same-turn default anchor: `feistel_b64_k52_r17` `88.979s -> 15.059s`,
+  `feistel_b64_k32_r22` `45.531s -> 31.229s`, and `feistel_b64_k57_r18` `2.924s -> 1.594s`.
+- Main regressions: `mp1-Nb7T46` `5.067s -> 22.274s`, Timetable `11.023s -> 15.432s`,
+  `random_v285_s2` `9.552s -> 13.194s`, and `random_v292_s4` `21.434s -> 30.216s`.
+- The focused dwell cap was required. A trace on `mp1-Nb7T46` showed the no-cap guarded policy
+  switched into focused mode once and was still focused at `315000` conflicts after `27.214s`;
+  default stable solved the same decompressed instance after `44025` conflicts and `2.639s` of
+  search. With the dwell cap, the guarded policy returned to stable and solved; the `1000` conflict
+  cap trace solved in `20.375s` of search.
+- The `random_v292_s4` solver result is not proof-verification complete in the profiling logs where
+  noted `[VERIFY FAIL]`; in those runs the solver produced UNSAT and `drat-trim` was manually
+  stopped after several minutes of verification tail to keep the experiment loop moving. A
+  pre-existing unrelated long `drat-trim` process from a solver-10 benchmark was also consuming one
+  core throughout these measurements, so the numbers should be treated as directional rather than
+  final medium-run evidence.
+
+Recommendation:
+
+- Keep guarded mode switching opt-in for now. The 50k guarded policy clears the local `>3%`
+  profiling threshold, but the regression shape shows focused mode is still path-sensitive and the
+  default solver path should not change until the focused queue or phase/restart interaction is
+  better controlled.

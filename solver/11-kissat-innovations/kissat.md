@@ -23,8 +23,10 @@ Solver 11:
 - Runs root propagation, then one-shot `eliminate(true, proof_log)`, then disables simplification.
 - Main loop order is conflict analysis, pending restart, root simplify, reduce DB, decide.
 - It has a central maintenance scheduler with real rephase support and opt-in root-safe
-  stable/focused switching through `SAT_MODE_SWITCH_INTERVAL`. Reorder, probing, and inprocessing
-  elimination hooks are still no-ops.
+  stable/focused switching through `SAT_MODE_SWITCH_INTERVAL`. The opt-in
+  `SAT_MODE_SWITCH_POLICY=stale-stable` guard only enters focused mode after stable search stops
+  reaching deeper trails, and focused mode now has a short dwell cap before returning to stable.
+  Reorder, probing, and inprocessing elimination hooks are still no-ops.
 - Relevant code: `src/main.rs:1988`, `src/main.rs:2024`, `src/main.rs:2100`.
 
 Kissat:
@@ -46,9 +48,12 @@ Why this matters:
 
 Solver 11:
 
-- Uses one global EVSIDS-like variable heap for all decisions.
-- Every analyzed variable is bumped in that heap.
-- Branch phase is only saved phase, initialized by `SAT_BRANCH_MODE`.
+- Uses stable heap search by default.
+- Has an opt-in focused recent-conflict queue through `SAT_SEARCH_MODE=focused`; analyzed variables
+  move to the queue front in focused mode instead of being activity-bumped.
+- Has opt-in root-safe stable/focused switching through `SAT_MODE_SWITCH_INTERVAL`, with a
+  progress-sensitive `stale-stable` guard and a bounded focused dwell cap.
+- Stable decisions can use target/best rephase state; focused decisions still use saved phase.
 - Relevant code: `src/main.rs:248`, `src/main.rs:1281`, `src/main.rs:1364`.
 
 Kissat:
@@ -62,8 +67,9 @@ Kissat:
 
 Why this matters:
 
-- Solver 11 is closer to MiniSat than Kissat here. Kissat's focused mode is a fundamentally different
-  branching policy, not just different decay constants.
+- Solver 11 can now test Kissat-like search-mode transitions, but the measurements show focused
+  mode remains path-sensitive. Guarded 50k switching improved the local profiling set, while more
+  frequent or unbounded focused phases caused large regressions.
 
 ### 3. Restart policy
 
@@ -74,6 +80,9 @@ Solver 11:
   slow learned-clause glue EMAs. It does not change the default stable/Luby path.
 - Has opt-in stable reluctant doubling restarts via `SAT_RESTART_MODE=reluctant`; in focused mode
   this policy uses the existing glue-EMA restart signal.
+- Guarded mode switching combines with reluctant restarts as an opt-in policy; the measured
+  configuration uses `SAT_RESTART_MODE=reluctant`, `SAT_MODE_SWITCH_POLICY=stale-stable`, and
+  `SAT_MODE_SWITCH_INTERVAL=50000`.
 - Restarts use Kissat-style trail reuse by default, keeping the prefix selected by activity in
   stable mode or focused recency stamp in focused mode. The default cap is
   `SAT_RESTART_REUSE_CAP=8`; use `SAT_RESTART_REUSE=off` to disable reuse or
@@ -1803,7 +1812,7 @@ Why last:
 | C glue-tiered reduce | 5 | Needs metadata and scheduled reduction. |
 | D binary implication path | 2 | Core representation dependency. |
 | E focused queue | 6 | Needs decision API isolation. |
-| F glue restarts/trail reuse | 7 | Glue-EMA, capped Kissat-style trail reuse, and opt-in stable reluctant restarts landed; reluctant remains non-default. |
+| F glue restarts/trail reuse | 7 | Glue-EMA, capped Kissat-style trail reuse, opt-in stable reluctant restarts, and guarded mode-switch experiments landed; reluctant/mode switching remain non-default. |
 | G target/best/rephase | 7 | Target/best rephase is default at interval 10000; walking source and guard policy remain. |
 | H chronological backtracking/reason bump | 7 | Best measured after restart changes. |
 | I eager subsumption | 5 | Learned-clause lifecycle feature. |
@@ -1834,8 +1843,8 @@ Why last:
 4. Land Phase 5 and Phase 6 incrementally: glue-tiered reduction as the default with activity
    fallback, and focused queue behind a flag, still without automatic mode switching.
 5. Finish the remaining Phase 7 policy pieces before defaulting focused behavior: walking rephase
-   source, guards for harmful restart reuse or proof-heavy rephase paths, and a progress-sensitive
-   mode-switch guard. Stable reluctant restarting and root-safe mode-switch hooks now exist as
-   opt-in infrastructure.
+   source and guards for harmful restart reuse or proof-heavy rephase paths. Stable reluctant
+   restarting, root-safe mode-switch hooks, and the progress-sensitive mode-switch guard now exist
+   as opt-in infrastructure.
 6. Only then start Phase 8 visible algorithmic work: lucky shortcut/probing, clause-weight reorder,
    Kissat-style BVE scoring, fast BVE, and bounded forward subsumption.

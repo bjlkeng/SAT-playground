@@ -57,6 +57,8 @@ const DEFAULT_REDUCE_LOW_YIELD_MIN_DELETIONS: usize = 16;
 const DEFAULT_REPHASE_INTERVAL: usize = 10_000;
 const DEFAULT_RELUCTANT_INTERVAL: u64 = 1 << 10;
 const DEFAULT_RELUCTANT_LIMIT: u64 = 1 << 20;
+const DEFAULT_FOCUSED_REDUCE_LOW_YIELD_COOLDOWN: usize = 100;
+const DEFAULT_FOCUSED_MODE_CONFLICT_CAP: u64 = 1_000;
 const STATIC_BINARY_MIN_ORIGINAL_BINARIES: usize = 64;
 const STATIC_BINARY_MIN_ORIGINAL_BINARY_PERCENT: usize = 20;
 const STATIC_BINARY_ALWAYS_ORIGINAL_BINARIES: usize = 4096;
@@ -134,6 +136,12 @@ enum RestartMode {
     Luby,
     GlueEma,
     Reluctant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModeSwitchPolicy {
+    Interval,
+    StaleStable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -530,6 +538,9 @@ struct SolverStats {
     mode_switches: u64,
     mode_switch_to_stable: u64,
     mode_switch_to_focused: u64,
+    mode_switch_attempts: u64,
+    mode_switch_skipped: u64,
+    mode_switch_stale_stable: u64,
     rephases: u64,
     rephase_best: u64,
     rephase_inverted: u64,
@@ -857,6 +868,16 @@ struct Solver {
     reduce_mode: ReduceMode,
     /// stable heap search or focused recent-conflict queue search
     search_mode: SearchMode,
+    /// policy for deciding whether a scheduled mode-switch action should actually switch modes
+    mode_switch_policy: ModeSwitchPolicy,
+    /// stable-mode conflicts without a deeper trail before stale-stable may enter focused mode
+    mode_switch_stale_conflicts: u64,
+    /// maximum conflicts to remain in focused mode before returning to stable mode; 0 means auto
+    mode_switch_focused_conflicts: u64,
+    /// deepest stable trail height seen since the current mode/progress window began
+    mode_progress_best_trail: usize,
+    /// last conflict at which stable mode found a deeper trail than its current progress baseline
+    mode_progress_last_conflict: u64,
     /// resize learned-clause budget after preprocessing, matching MiniSat's solve-time setup
     reset_reduce_db_after_preprocess: bool,
     /// current conflict countdown until the next learned-budget adjustment
@@ -871,6 +892,8 @@ struct Solver {
     reduce_low_yield_min_deletions: usize,
     /// opt-in number of conflicts to wait after a low-yield reduce pass
     reduce_low_yield_cooldown_conflicts: u64,
+    /// focused-mode low-yield reducer cooldown used to avoid repeated poor-yield reductions
+    focused_reduce_low_yield_cooldown_conflicts: u64,
     /// live literal count in original clauses, maintained incrementally for simplify gating
     original_literals: usize,
     /// live literal count in learned clauses, maintained incrementally for simplify gating
@@ -1339,6 +1362,11 @@ impl Solver {
             reduce_db_limit: ((original_clause_count as f64) * LEARNTSIZE_FACTOR) as usize,
             reduce_mode: parse_reduce_mode(),
             search_mode: parse_search_mode(),
+            mode_switch_policy: parse_mode_switch_policy(),
+            mode_switch_stale_conflicts: parse_u64_env("SAT_MODE_SWITCH_STALE_CONFLICTS", 0),
+            mode_switch_focused_conflicts: parse_u64_env("SAT_MODE_SWITCH_FOCUSED_CONFLICTS", 0),
+            mode_progress_best_trail: 0,
+            mode_progress_last_conflict: 0,
             reset_reduce_db_after_preprocess: true,
             learntsize_adjust_cnt: LEARNTSIZE_ADJUST_START_CONFL,
             learntsize_adjust_confl: LEARNTSIZE_ADJUST_START_CONFL as f64,
@@ -1352,6 +1380,10 @@ impl Solver {
             ),
             reduce_low_yield_cooldown_conflicts: parse_usize_env("SAT_REDUCE_LOW_YIELD_COOLDOWN", 0)
                 as u64,
+            focused_reduce_low_yield_cooldown_conflicts: parse_usize_env(
+                "SAT_FOCUSED_REDUCE_LOW_YIELD_COOLDOWN",
+                DEFAULT_FOCUSED_REDUCE_LOW_YIELD_COOLDOWN,
+            ) as u64,
             deleted_clause_words: 0,
             simplify_assigns: 0,
             simplify_props_remaining: 0,
@@ -3632,6 +3664,86 @@ impl Solver {
         true
     }
 
+    fn reset_mode_progress_window(&mut self) {
+        self.mode_progress_best_trail = self.trail.len();
+        self.mode_progress_last_conflict = self.stats.conflicts;
+    }
+
+    fn note_mode_progress_at_conflict(&mut self) {
+        if self.search_mode != SearchMode::Stable {
+            return;
+        }
+
+        let assigned = self.trail.len();
+        if assigned > self.mode_progress_best_trail {
+            self.mode_progress_best_trail = assigned;
+            self.mode_progress_last_conflict = self.stats.conflicts;
+        }
+    }
+
+    fn effective_mode_switch_stale_conflicts(&self) -> u64 {
+        if self.mode_switch_stale_conflicts > 0 {
+            self.mode_switch_stale_conflicts
+        } else {
+            self.maintenance_scheduler.mode_switch_interval.max(1)
+        }
+    }
+
+    fn stable_mode_is_stale(&self) -> bool {
+        self.stats
+            .conflicts
+            .saturating_sub(self.mode_progress_last_conflict)
+            >= self.effective_mode_switch_stale_conflicts()
+    }
+
+    fn effective_mode_switch_focused_conflicts(&self) -> u64 {
+        if self.mode_switch_focused_conflicts > 0 {
+            self.mode_switch_focused_conflicts
+        } else {
+            self.maintenance_scheduler
+                .mode_switch_interval
+                .min(DEFAULT_FOCUSED_MODE_CONFLICT_CAP)
+                .max(1)
+        }
+    }
+
+    fn focused_mode_return_due(&self) -> bool {
+        self.search_mode == SearchMode::Focused
+            && self.maintenance_scheduler.mode_switch_interval > 0
+            && self
+                .stats
+                .conflicts
+                .saturating_sub(self.mode_progress_last_conflict)
+                >= self.effective_mode_switch_focused_conflicts()
+    }
+
+    fn should_switch_search_mode(&mut self) -> bool {
+        self.stats.mode_switch_attempts += 1;
+        match self.mode_switch_policy {
+            ModeSwitchPolicy::Interval => true,
+            ModeSwitchPolicy::StaleStable => match self.search_mode {
+                SearchMode::Stable => {
+                    if self.stable_mode_is_stale() {
+                        self.stats.mode_switch_stale_stable += 1;
+                        true
+                    } else {
+                        self.stats.mode_switch_skipped += 1;
+                        false
+                    }
+                }
+                SearchMode::Focused => true,
+            },
+        }
+    }
+
+    fn maybe_switch_search_mode(&mut self) -> bool {
+        if self.should_switch_search_mode() {
+            self.switch_search_mode()
+        } else {
+            true
+        }
+    }
+
     fn switch_search_mode(&mut self) -> bool {
         self.search_mode = match self.search_mode {
             SearchMode::Stable => {
@@ -3649,6 +3761,7 @@ impl Solver {
         self.stats.mode_switches += 1;
         self.restart_conflicts = 0;
         self.restart_pending = false;
+        self.reset_mode_progress_window();
         self.rebuild_branch_queue();
         true
     }
@@ -3685,6 +3798,15 @@ impl Solver {
             && self.stats.conflicts < self.reduce_cooldown_until_conflict
     }
 
+    fn active_reduce_low_yield_cooldown_conflicts(&self) -> u64 {
+        if self.search_mode == SearchMode::Focused {
+            self.reduce_low_yield_cooldown_conflicts
+                .max(self.focused_reduce_low_yield_cooldown_conflicts)
+        } else {
+            self.reduce_low_yield_cooldown_conflicts
+        }
+    }
+
     fn return_to_root_for_maintenance<F>(
         &mut self,
         action: MaintenanceAction,
@@ -3715,7 +3837,7 @@ impl Solver {
 
     fn run_root_maintenance_action(&mut self, action: MaintenanceAction) -> bool {
         match action {
-            MaintenanceAction::SwitchMode => self.switch_search_mode(),
+            MaintenanceAction::SwitchMode => self.maybe_switch_search_mode(),
             MaintenanceAction::Rephase => self.run_rephase(),
             MaintenanceAction::Reorder
             | MaintenanceAction::Probe
@@ -3756,6 +3878,20 @@ impl Solver {
         } else if reduce_db_budget_pressure {
             self.record_maintenance_action(MaintenanceAction::ReduceDb);
             self.reduce_db();
+        }
+
+        if self.focused_mode_return_due() {
+            let action = MaintenanceAction::SwitchMode;
+            self.record_maintenance_action(action);
+            let outcome = self.return_to_root_for_maintenance(action, |solver| {
+                solver.run_root_maintenance_action(action)
+            });
+            self.maintenance_scheduler
+                .mark_root_action(action, self.stats.conflicts);
+            if outcome == MaintenanceOutcome::Unsat {
+                self.stats.maintenance_time_ns += elapsed_ns(maintenance_start);
+                return outcome;
+            }
         }
 
         if let Some(action) = self
@@ -4311,11 +4447,10 @@ impl Solver {
 
         if deleted_count < self.reduce_low_yield_min_deletions {
             self.stats.reduce_low_yield_passes += 1;
-            if self.reduce_low_yield_cooldown_conflicts > 0 {
-                self.reduce_cooldown_until_conflict = self
-                    .stats
-                    .conflicts
-                    .saturating_add(self.reduce_low_yield_cooldown_conflicts);
+            let cooldown_conflicts = self.active_reduce_low_yield_cooldown_conflicts();
+            if cooldown_conflicts > 0 {
+                self.reduce_cooldown_until_conflict =
+                    self.stats.conflicts.saturating_add(cooldown_conflicts);
             }
         }
 
@@ -4750,7 +4885,7 @@ impl Solver {
                         self.stats.search_time_ns += elapsed_ns(search_start);
                         if trace_search_interval > 0 {
                             eprintln!(
-                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                 self.stats.search_time_ns as f64 / 1e9,
                                 self.stats.conflicts,
                                 self.stats.decisions,
@@ -4760,6 +4895,9 @@ impl Solver {
                                 self.stats.mode_switches,
                                 self.stats.mode_switch_to_stable,
                                 self.stats.mode_switch_to_focused,
+                                self.stats.mode_switch_attempts,
+                                self.stats.mode_switch_skipped,
+                                self.stats.mode_switch_stale_stable,
                                 self.stats.restart_reused_trails,
                                 self.stats.restart_reused_levels,
                                 self.stats.restart_reused_assignments,
@@ -4809,9 +4947,10 @@ impl Solver {
                     }
 
                     self.stats.conflicts += 1;
+                    self.note_mode_progress_at_conflict();
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
-                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
+                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
                             search_start.elapsed().as_secs_f64(),
                             self.stats.conflicts,
                             self.stats.decisions,
@@ -4821,6 +4960,9 @@ impl Solver {
                             self.stats.mode_switches,
                             self.stats.mode_switch_to_stable,
                             self.stats.mode_switch_to_focused,
+                            self.stats.mode_switch_attempts,
+                            self.stats.mode_switch_skipped,
+                            self.stats.mode_switch_stale_stable,
                             self.stats.restart_reused_trails,
                             self.stats.restart_reused_levels,
                             self.stats.restart_reused_assignments,
@@ -4924,7 +5066,7 @@ impl Solver {
                             self.stats.search_time_ns += elapsed_ns(search_start);
                             if trace_search_interval > 0 {
                                 eprintln!(
-                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                     self.stats.search_time_ns as f64 / 1e9,
                                     self.stats.conflicts,
                                     self.stats.decisions,
@@ -4934,6 +5076,9 @@ impl Solver {
                                     self.stats.mode_switches,
                                     self.stats.mode_switch_to_stable,
                                     self.stats.mode_switch_to_focused,
+                                    self.stats.mode_switch_attempts,
+                                    self.stats.mode_switch_skipped,
+                                    self.stats.mode_switch_stale_stable,
                                     self.stats.restart_reused_trails,
                                     self.stats.restart_reused_levels,
                                     self.stats.restart_reused_assignments,
@@ -5063,6 +5208,20 @@ fn parse_search_mode() -> SearchMode {
             }
         },
         Err(_) => SearchMode::Stable,
+    }
+}
+
+fn parse_mode_switch_policy() -> ModeSwitchPolicy {
+    match env::var("SAT_MODE_SWITCH_POLICY") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "interval" | "raw" | "always" => ModeSwitchPolicy::Interval,
+            "stale-stable" | "stale_stable" | "stale" | "guarded" => ModeSwitchPolicy::StaleStable,
+            other => {
+                eprintln!("Invalid SAT_MODE_SWITCH_POLICY={other}; expected interval/stale-stable");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => ModeSwitchPolicy::Interval,
     }
 }
 
@@ -6282,6 +6441,21 @@ mod tests {
     }
 
     #[test]
+    fn test_focused_mode_applies_focused_low_yield_reduce_cooldown() {
+        let mut s = make_solver(3, vec![]);
+        s.search_mode = SearchMode::Focused;
+        s.reduce_low_yield_min_deletions = 2;
+        s.reduce_low_yield_cooldown_conflicts = 0;
+        s.focused_reduce_low_yield_cooldown_conflicts = 7;
+        s.stats.conflicts = 20;
+
+        s.record_reduce_pressure(3, 2, 1, 0, 1);
+
+        assert_eq!(s.stats.reduce_low_yield_passes, 1);
+        assert_eq!(s.reduce_cooldown_until_conflict, 27);
+    }
+
+    #[test]
     fn test_top_level_simplify_removes_satisfied_clauses_and_trims_only_originals() {
         let mut s = make_solver(7, vec![vec![1, 3], vec![4, -1, 5]]);
         let satisfied_learned = s.add_clause(vec![2, -1]);
@@ -6705,6 +6879,40 @@ mod tests {
     }
 
     #[test]
+    fn test_stale_stable_mode_switch_skips_when_stable_recently_progressed() {
+        let mut s = make_solver(3, vec![]);
+        s.mode_switch_policy = ModeSwitchPolicy::StaleStable;
+        s.mode_switch_stale_conflicts = 5;
+        s.stats.conflicts = 10;
+        s.mode_progress_last_conflict = 8;
+
+        assert!(s.maybe_switch_search_mode());
+
+        assert_eq!(s.search_mode, SearchMode::Stable);
+        assert_eq!(s.stats.mode_switch_attempts, 1);
+        assert_eq!(s.stats.mode_switch_skipped, 1);
+        assert_eq!(s.stats.mode_switches, 0);
+    }
+
+    #[test]
+    fn test_stale_stable_mode_switch_enters_focused_after_stale_window() {
+        let mut s = make_solver(3, vec![]);
+        s.mode_switch_policy = ModeSwitchPolicy::StaleStable;
+        s.mode_switch_stale_conflicts = 5;
+        s.stats.conflicts = 10;
+        s.mode_progress_last_conflict = 4;
+
+        assert!(s.maybe_switch_search_mode());
+
+        assert_eq!(s.search_mode, SearchMode::Focused);
+        assert_eq!(s.stats.mode_switch_attempts, 1);
+        assert_eq!(s.stats.mode_switch_stale_stable, 1);
+        assert_eq!(s.stats.mode_switches, 1);
+        assert_eq!(s.stats.mode_switch_to_focused, 1);
+        assert_eq!(s.mode_progress_last_conflict, 10);
+    }
+
+    #[test]
     fn test_mode_switch_to_stable_rebuilds_heap_and_resets_reluctant_schedule() {
         let mut s = make_solver(3, vec![]);
         s.search_mode = SearchMode::Focused;
@@ -6723,6 +6931,29 @@ mod tests {
         assert_eq!(s.reluctant_restart.wait, s.reluctant_restart.period);
         assert_eq!(s.reluctant_restart.u, 1);
         assert_eq!(s.reluctant_restart.v, 1);
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+    }
+
+    #[test]
+    fn test_focused_mode_returns_to_stable_after_focused_conflict_cap() {
+        let mut s = make_solver(3, vec![]);
+        s.search_mode = SearchMode::Focused;
+        s.maintenance_scheduler.mode_switch_interval = 1000;
+        s.maintenance_scheduler.next_mode_switch = 10_000;
+        s.mode_switch_focused_conflicts = 5;
+        s.mode_progress_last_conflict = 10;
+        s.stats.conflicts = 15;
+        s.activity[2] = 10.0;
+        s.rebuild_branch_queue();
+        s.decide(1);
+
+        let outcome = s.run_search_maintenance();
+
+        assert_eq!(outcome, MaintenanceOutcome::Continue);
+        assert_eq!(s.search_mode, SearchMode::Stable);
+        assert_eq!(s.stats.mode_switch_attempts, 1);
+        assert_eq!(s.stats.mode_switches, 1);
+        assert_eq!(s.stats.mode_switch_to_stable, 1);
         assert_eq!(s.pick_branch_lit(), Some(-2));
     }
 
