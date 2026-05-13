@@ -65,13 +65,20 @@ What is present:
   `SAT_REORDER_INTERVAL` windows, rescales stable scores before adding weights, and reorders the
   focused queue by weight plus existing recency. Use `SAT_REORDER=off` for the no-reorder
   ablation or `SAT_REORDER=stable-weight` for the pre-search stable-heap experiment.
+- Phase 7 phase-source defaults: bounded pre-search warmup and scheduled local-search walking are
+  now enabled by default after the 2026-05-13 follow-up confirmation run. Warmup makes ordinary
+  decisions, propagates, saves phases through the normal enqueue path, then backtracks without
+  updating target/best snapshots. Scheduled walking uses the Kissat-style
+  `best -> walk -> inverted -> best -> walk -> original` stable rephase source cycle with
+  `SAT_WALK_STEPS=100` and `SAT_WALK_RANDOM_PERCENT=0`. Use `SAT_WARMUP=off` or `SAT_WALK=off`
+  for ablations. `SAT_WALK_INITIAL=1` remains opt-in and runs the same local-search phase source
+  once before CDCL search.
 - Full backward-subsumption / self-subsuming-resolution sweep is off by default after the same
   follow-up request; use `SAT_FULL_BSR=on` to restore the previous full-BSR preprocessing behavior.
 
 What is intentionally not present yet:
 
-- no full lucky probing, real mid-search inprocessing pass, probing, or local-search walking
-  rephase source yet
+- no full lucky probing, real mid-search inprocessing pass, or probing yet
 - no separate MiniSat `simp` port design document is copied forward
 
 ## Direction
@@ -967,3 +974,95 @@ Analysis:
   2026-05-12 follow-up request, full BSR is now default-off and the delayed `SAT_REORDER=kissat`
   policy is now the default; the stronger pre-search `stable-weight` combination remains an
   explicit experiment to validate on a larger benchmark slice.
+
+Warmup and local-search phase source validation on 2026-05-13:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_WARMUP=1 SAT_WARMUP_DECISIONS=32 SAT_WALK_INITIAL=1 SAT_WALK=1 \
+  SAT_CHECK_INVARIANTS=1 \
+  bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_PROOF=0 bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling \
+  solver/11-kissat-innovations
+SAT_PROOF=0 SAT_WARMUP=1 bash tools/bench.sh -t 120 -m 16384 \
+  -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_WALK_INITIAL=1 bash tools/bench.sh -t 120 -m 16384 \
+  -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_WALK=1 bash tools/bench.sh -t 120 -m 16384 \
+  -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_WARMUP=1 SAT_WALK=1 bash tools/bench.sh -t 120 -m 16384 \
+  -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_WALK=1 SAT_WALK_STEPS=100 SAT_WALK_RANDOM_PERCENT=0 \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_WALK=1 SAT_WALK_STEPS=100 bash tools/bench.sh -t 120 -m 16384 \
+  -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_WALK=1 SAT_TRACE_PREPROCESS=1 SAT_TRACE_SEARCH_INTERVAL=1000000000 \
+  solver/11-kissat-innovations/target/release/sat-solver /tmp/sat-playground-timetable.cnf \
+  /tmp/sat-trace-walk > /tmp/sat-trace-walk.stdout
+SAT_PROOF=0 SAT_TRACE_PREPROCESS=1 SAT_TRACE_SEARCH_INTERVAL=1000000000 \
+  solver/11-kissat-innovations/target/release/sat-solver /tmp/sat-playground-timetable.cnf \
+  /tmp/sat-trace-baseline > /tmp/sat-trace-baseline.stdout
+```
+
+Results:
+
+- `cargo test`: 113 passed.
+- default smoke suite: 9/9 passed, log `log/2026-05-13-00-55-02`.
+- all-new-flags invariant smoke suite: 9/9 passed, log `log/2026-05-13-00-55-10`.
+- no-new-flag no-proof baseline: solved 9/11, PAR-2 `793.182`, log
+  `log/bench-11-kissat-innovations-2026-05-12-23-36-05`.
+- `SAT_WARMUP=1`: solved 9/11, PAR-2 `795.985`, log
+  `log/bench-11-kissat-innovations-2026-05-12-23-45-58`.
+- `SAT_WALK_INITIAL=1`: solved 8/11, PAR-2 `962.377`, log
+  `log/bench-11-kissat-innovations-2026-05-12-23-55-52`.
+- pre-tuning `SAT_WALK=1` with variable-scaled walk steps: solved 9/11, PAR-2 `846.795`, log
+  `log/bench-11-kissat-innovations-2026-05-13-00-04-47`.
+- tuned `SAT_WALK=1 SAT_WALK_STEPS=100 SAT_WALK_RANDOM_PERCENT=0`: solved 9/11, PAR-2
+  `662.263`, log `log/bench-11-kissat-innovations-2026-05-13-00-15-41`.
+- same 100-step cap with the old 1% random setting: solved 9/11, PAR-2 `727.151`, log
+  `log/bench-11-kissat-innovations-2026-05-13-00-23-24`.
+- final `SAT_WALK=1` after changing walk defaults to 100 deterministic steps: solved 9/11,
+  PAR-2 `667.472`, log `log/bench-11-kissat-innovations-2026-05-13-00-32-50`.
+- final `SAT_WARMUP=1 SAT_WALK=1`: solved 9/11, PAR-2 `665.956`, log
+  `log/bench-11-kissat-innovations-2026-05-13-00-40-36`.
+- follow-up confirmation before the default flip with the same settings: solved 9/11, PAR-2
+  `667.671`, log `log/bench-11-kissat-innovations-2026-05-13-10-52-55`.
+- default-policy confirmation after making warmup plus scheduled walking default-on: solved 9/11,
+  PAR-2 `665.670`, log `log/bench-11-kissat-innovations-2026-05-13-11-14-32`.
+- default-policy validation after the flip: `cargo test` passed 113 tests, and the smoke suite
+  passed 9/9 with UNSAT proofs verified, log `log/2026-05-13-11-14-17`.
+
+Analysis:
+
+- The implementation is proof-safe because warmup and walk only change phase arrays and never add or
+  delete clauses. Warmup backtracks through a no-phase-snapshot path so the pass leaves saved
+  phases but does not pollute best/target snapshots; it also stops immediately after a
+  decision-level warmup conflict.
+- Warmup alone is neutral-to-slightly-negative on this slice: it preserved solved count but moved
+  PAR-2 from `793.182` to `795.985`. It remains separately ablatable with `SAT_WARMUP=off`.
+- Initial walking is rejected. It helped `feistel_b64_k52_r17`, `mp1`, and `random_v355_s3`, but
+  slowed `k32`, `k57`, and Kakuro, lost the timetable solve, and added a third timeout.
+- Scheduled rephase walking is useful only with a small deterministic cap. The original
+  variable-scaled step budget improved `k52` and timetable but over-walked other instances,
+  regressing PAR-2 to `846.795`.
+- The accepted walking policy is `SAT_WALK=1` with default `SAT_WALK_STEPS=100` and
+  `SAT_WALK_RANDOM_PERCENT=0`. The final walk-only confirmation improved PAR-2 by `125.710s`
+  (`15.9%`) over the no-walk baseline. Main deltas: `k32` `29.707s -> 15.620s`, `k52`
+  `114.906s -> 79.411s`, `k57` `2.641s -> 0.881s`, timetable `87.846s -> 12.804s`, Kakuro
+  `48.496s -> 40.278s`, with regressions on `mp1` `10.487s -> 19.355s` and `random_v355_s3`
+  `7.403s -> 7.891s`.
+- Keeping the old 1% random flip rate with the 100-step cap still improved baseline but was worse
+  than deterministic walking (`727.151` versus `662.263` in the tuning run), so the default random
+  rate is now zero.
+- Warmup plus accepted rephase walking was only `1.516s` better than walk-only on the final
+  confirmation, far below the local 3% keep threshold. After the follow-up request and rerun, this
+  warmup-plus-walk policy is the built-in default because it reproduced the same 9/11 solved split
+  and PAR-2 within normal run-to-run noise, including a no-env default run at `665.670`.
+- Direct timetable traces used identical preprocessing stats: `105987` eliminated variables,
+  `334841` resolvents, `567515` live original clauses, `1966590` original literals, `3992` root
+  assignments, and about `3.1s` preprocessing. Search changed from `81.655s`, `2661411`
+  conflicts, `6200853` decisions, `244378607` propagations, `747` restarts, `16` rephases, and no
+  walks to `9.832s`, `542423` conflicts, `1348218` decisions, `38983177` propagations, `183`
+  restarts, `8` rephases, and `3` successful walks (`300` total steps, best unsat
+  `616 -> 529`). This is a search-trajectory win, not a preprocessing difference.

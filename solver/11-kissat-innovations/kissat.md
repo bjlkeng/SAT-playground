@@ -198,11 +198,13 @@ Solver 11:
 - Saved phase is updated on every enqueue. Stable decisions prefer target phase when set, then saved
   phase; focused decisions still follow the existing saved-phase behavior.
 - Stable-mode backtracking records the deepest assignment snapshot as best phase while rephase is
-  enabled. Periodic root rephase is on by default with `SAT_REPHASE_INTERVAL=10000` and cycles
-  through best, inverted initial phase, and original initial phase. Use `SAT_REPHASE_INTERVAL=0` to
-  disable it. There is no local-search walking phase source yet.
-- Relevant code: `src/main.rs:133`, `src/main.rs:202`, `src/main.rs:646`,
-  `src/main.rs:3421`, `src/main.rs:3602`.
+  enabled. Periodic root rephase is on by default with `SAT_REPHASE_INTERVAL=10000`, and scheduled
+  local-search walking is also enabled by default after the 2026-05-13 follow-up confirmation. The
+  active source cycle is best, walk, inverted, best, walk, original. Use `SAT_REPHASE_INTERVAL=0`
+  to disable scheduled rephase, or `SAT_WALK=off` to keep rephase while disabling the walking
+  source.
+- Relevant code: `src/main.rs` phase vectors, `run_rephase`, `run_walk_phase`, and
+  `decision_phase`.
 
 Kissat:
 
@@ -218,6 +220,9 @@ Why this matters:
 - Solver 11 now uses Kissat-style polarity perturbation by default. The first measured interval
   rescues the known `random_v355_s3` restart-reuse regression, but it also makes one UNSAT proof
   much harder to check, so disabling rephase remains an important ablation.
+- The walking source is implemented and now default-on with the measured deterministic cap
+  (`SAT_WALK_STEPS=100`, `SAT_WALK_RANDOM_PERCENT=0`). Larger or random walks were too
+  path-sensitive, and `SAT_WALK_INITIAL=1` remains opt-in.
 
 ### 8. Inprocessing and preprocessing
 
@@ -334,8 +339,11 @@ Why this matters:
 
 Solver 11:
 
-- Initializes phases from `SAT_BRANCH_MODE` and then relies entirely on phase saving during real
-  search.
+- Initializes phases from `SAT_BRANCH_MODE` and normally relies on phase saving during real search.
+- A root-only warmup pass now runs by default after preprocessing. It makes bounded decisions with
+  the current branching heuristic, propagates, saves phases through normal enqueue, then backtracks
+  to root without updating target/best phase snapshots. Use `SAT_WARMUP=off` to disable it.
+- The pass is bounded by `SAT_WARMUP_DECISIONS`, defaulting to the variable count when warmup is on.
 
 Kissat:
 
@@ -344,12 +352,14 @@ Kissat:
 - It then backtracks to level 0 without updating phases, leaving only the seeded saved phases.
 - Relevant code: `walk.c:961`, `warmup.c:9`.
 
-Implementation idea for solver 11:
+Implementation status for solver 11:
 
-- Add `SAT_WARMUP=1` as a root-only pass after preprocessing and root propagation.
-- Run decisions using the current heuristic, propagate, ignore learned clauses at first, save phases,
-  and backtrack without overwriting those phases.
-- Measure separately because warmup can either help phase selection or waste time on formulas where
+- Implemented with counters for warmups, warmup decisions, conflicts, assignments, and elapsed
+  time. It is default-on after the 2026-05-13 follow-up confirmation run.
+- Current warmup uses the normal propagator repeatedly and stops after the first decision-level
+  conflict; it does not yet fully match Kissat's `propagate_beyond_conflicts` behavior of
+  continuing every remaining watch after a conflict on the same literal.
+- Measured separately because warmup can either help phase selection or waste time on formulas where
   preprocessing already gives good phases.
 
 Why this matters:
@@ -855,8 +865,8 @@ Implementation items:
   new high-water mark.
 - Decision phase order: target, then saved, then initial phase.
 - Add rephase events in stable mode using this schedule: best, walk, inverted, best, walk, original.
-- Start without full local search: implement best, inverted, and original first; make walk a no-op or
-  disabled placeholder until a local-search implementation exists.
+- Default uses the full best, walk, inverted, best, walk, original schedule after the 2026-05-13
+  follow-up confirmation. The walking source can still be disabled with `SAT_WALK=off`.
 
 Dependencies:
 
@@ -992,12 +1002,13 @@ Goal:
 
 - Seed `saved_phase` before real search begins.
 
-Implementation items:
+Implementation status:
 
-- Add a root-only warmup pass behind `SAT_WARMUP=1`.
+- Root-only warmup is implemented and default-on; use `SAT_WARMUP=off` for ablations.
 - Decide and propagate using the current heuristic, save phases, then backtrack without overwriting
   them.
-- Track warmup decisions, propagations, and elapsed time.
+- Track warmup decisions, conflicts, assigned trail size, and elapsed time. Propagations are still
+  counted in the solver-wide propagation counter.
 
 ### O. Add root-level clause-weight decision reordering
 
@@ -1855,6 +1866,31 @@ Status:
   96 tests, default smoke passed 9/9 (`log/2026-05-12-16-02-25`), invariant smoke passed 9/9
   (`log/2026-05-12-16-02-34`), and the no-proof profiling confirmation solved 8/11 with PAR-2
   `794.641` (`log/bench-11-kissat-innovations-2026-05-12-16-02-42`).
+- Warmup and walking phase sources landed on 2026-05-13. `SAT_WARMUP` now defaults on and performs
+  bounded pre-search phase seeding before backtracking through a no-target/best-snapshot path.
+  `SAT_WALK` now defaults on and enables a bounded WalkSAT-style source for stable rephases.
+  `SAT_WALK_INITIAL=1` remains opt-in and runs the same source once before CDCL search. The
+  measured walking defaults are `SAT_WALK_STEPS=100` and `SAT_WALK_RANDOM_PERCENT=0`.
+- Validation after the conflict-stop fix and walk tuning: `cargo test` passed 113 tests; default
+  smoke passed 9/9 (`log/2026-05-13-00-55-02`); smoke with
+  `SAT_WARMUP=1 SAT_WARMUP_DECISIONS=32 SAT_WALK_INITIAL=1 SAT_WALK=1
+  SAT_CHECK_INVARIANTS=1` passed 9/9 (`log/2026-05-13-00-55-10`).
+- No-new-flag no-proof profiling before the default flip solved 9/11 with PAR-2 `793.182`
+  (`log/bench-11-kissat-innovations-2026-05-12-23-36-05`). Warmup alone was neutral/slightly
+  negative at PAR-2 `795.985`. Final `SAT_WALK=1` solved 9/11 with PAR-2 `667.472`
+  (`log/bench-11-kissat-innovations-2026-05-13-00-32-50`), a `15.9%` improvement from search-path
+  changes. Combined `SAT_WARMUP=1 SAT_WALK=1` was only `1.516s` better than walk-only and below the
+  3% keep threshold. A follow-up rerun of the combined policy solved 9/11 with PAR-2 `667.671`
+  (`log/bench-11-kissat-innovations-2026-05-13-10-52-55`), confirming the number before making the
+  policy default. The no-env default-policy confirmation after the flip solved 9/11 with PAR-2
+  `665.670` (`log/bench-11-kissat-innovations-2026-05-13-11-14-32`).
+- Default-policy validation after the flip passed 113 unit tests and the 9/9 smoke suite with UNSAT
+  proofs verified (`log/2026-05-13-11-14-17`).
+- Important tuning rejects: `SAT_WALK_INITIAL=1` lost the timetable solve, added a third timeout,
+  and ended at PAR-2 `962.377`; the pre-tuning variable-scaled rephase walk regressed to PAR-2
+  `846.795`; keeping the old 1% random rate with the 100-step cap was worse than deterministic
+  walking (`727.151` versus `662.263` in the tuning run). Warmup remains separately ablatable, but
+  the confirmed warmup-plus-walk interaction is now the default.
 
 ### Phase 8. First simplification features on the new infrastructure
 
@@ -1958,14 +1994,14 @@ Why last:
 | D binary implication path | 2 | Core representation dependency. |
 | E focused queue | 6 | Needs decision API isolation. |
 | F glue restarts/trail reuse | 7 | Glue-EMA, capped Kissat-style trail reuse, stable reluctant restarts, and guarded mode switching landed; reluctant/mode switching are now default. |
-| G target/best/rephase | 7 | Target/best rephase is default at interval 10000; walking source and guard policy remain. |
+| G target/best/rephase | 7 | Target/best rephase is default at interval 10000; walking source is default-on with tuned defaults. |
 | H chronological backtracking/reason bump | 7 | Best measured after restart changes. |
 | I eager subsumption | 5 | Learned-clause lifecycle feature. |
 | J inprocessing scheduler | 3, 8, 9 | Scheduler first, actual passes later. |
 | K BVE scoring | 8 | Needs search relevance from Phase 6. |
 | L representation follow-ups | 1, 5 | Accessors early; sparse layout only if needed. |
 | M lucky | 8 | Simple shortcut can be earlier, full probing needs Phase 2. |
-| N warmup | 7 | More coherent after phase arrays exist. |
+| N warmup | 7 | Implemented and default-on after the warmup+walk follow-up confirmation. |
 | O reorder | 3, 6, 8 | Hook in scheduler, then stable/focused implementations. Root-safe mode-switch hook landed separately. |
 | P transitive reduction | 9 | Needs binary graph and scheduler. |
 | Q on-the-fly strengthening | 1, 5 | Diagnostics early, mutation later. |
@@ -1987,9 +2023,9 @@ Why last:
    root-maintenance transition, dense/sparse mode, reusable occurrence lists.
 4. Land Phase 5 and Phase 6 incrementally: glue-tiered reduction as the default with activity
    fallback, and focused queue behind a flag before automatic mode switching.
-5. Finish the remaining Phase 7 policy pieces before expanding focused behavior: walking rephase
-   source and guards for harmful restart reuse or proof-heavy rephase paths. Stable reluctant
-   restarting, root-safe mode-switch hooks, and the progress-sensitive mode-switch guard are now the
-   default search-control stack.
+5. Finish the remaining Phase 7 policy pieces before expanding focused behavior: guards for harmful
+   restart reuse or proof-heavy rephase paths. Stable reluctant restarting, root-safe mode-switch
+   hooks, the progress-sensitive mode-switch guard, warmup, and walking phase sources are now
+   implemented; warmup plus deterministic scheduled walking is now the default policy.
 6. Only then start Phase 8 visible algorithmic work: lucky shortcut/probing, clause-weight reorder,
    Kissat-style BVE scoring, fast BVE, and bounded forward subsumption.

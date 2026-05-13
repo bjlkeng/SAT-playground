@@ -11,6 +11,7 @@ const TRUE: u8 = 1;
 const FALSE: u8 = 2;
 const NO_RELOC: usize = usize::MAX;
 const BRANCH_NOT_IN_HEAP: usize = usize::MAX;
+const WALK_NOT_IN_UNSAT: usize = usize::MAX;
 const CCMIN_NONE: u8 = 0;
 const CCMIN_BASIC: u8 = 1;
 const CCMIN_DEEP: u8 = 2;
@@ -57,6 +58,8 @@ const DEFAULT_REDUCE_LOW_YIELD_MIN_DELETIONS: usize = 16;
 const DEFAULT_REPHASE_INTERVAL: usize = 10_000;
 const DEFAULT_REORDER_INTERVAL: usize = 10_000;
 const DEFAULT_REORDER_MAX_CLAUSE_SIZE: usize = 100;
+const DEFAULT_WALK_STEPS: usize = 100;
+const DEFAULT_WALK_RANDOM_PERCENT: usize = 0;
 const DEFAULT_RELUCTANT_INTERVAL: u64 = 1 << 10;
 const DEFAULT_RELUCTANT_LIMIT: u64 = 1 << 20;
 const DEFAULT_FOCUSED_REDUCE_LOW_YIELD_COOLDOWN: usize = 100;
@@ -191,12 +194,21 @@ struct ReorderWeightStats {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RephaseKind {
     Best,
+    Walk,
     Inverted,
     Original,
 }
 
 impl RephaseKind {
-    fn from_count(count: u64) -> Self {
+    fn from_count(count: u64, walk_enabled: bool) -> Self {
+        if walk_enabled {
+            return match count % 6 {
+                0 | 3 => RephaseKind::Best,
+                1 | 4 => RephaseKind::Walk,
+                2 => RephaseKind::Inverted,
+                _ => RephaseKind::Original,
+            };
+        }
         match count % 3 {
             0 => RephaseKind::Best,
             1 => RephaseKind::Inverted,
@@ -615,8 +627,23 @@ struct SolverStats {
     mode_switch_attempts: u64,
     mode_switch_skipped: u64,
     mode_switch_stale_stable: u64,
+    warmups: u64,
+    warmup_decisions: u64,
+    warmup_conflicts: u64,
+    warmup_assigned: u64,
+    warmup_time_ns: u64,
+    walks: u64,
+    walk_steps: u64,
+    walk_flips: u64,
+    walk_improved: u64,
+    walk_initial_unsat: u64,
+    walk_best_unsat: u64,
+    walk_last_initial_unsat: usize,
+    walk_last_best_unsat: usize,
+    walk_time_ns: u64,
     rephases: u64,
     rephase_best: u64,
+    rephase_walking: u64,
     rephase_inverted: u64,
     rephase_original: u64,
     target_phase_saved: u64,
@@ -701,6 +728,72 @@ fn ascii_i32_len(value: i32) -> usize {
 
 fn elapsed_ns(start: Instant) -> u64 {
     start.elapsed().as_nanos().min(u64::MAX as u128) as u64
+}
+
+fn default_walk_steps(_num_vars: usize) -> usize {
+    DEFAULT_WALK_STEPS
+}
+
+fn xorshift64(state: &mut u64) -> u64 {
+    if *state == 0 {
+        *state = 0x9e37_79b9_7f4a_7c15;
+    }
+    let mut value = *state;
+    value ^= value << 13;
+    value ^= value >> 7;
+    value ^= value << 17;
+    *state = value;
+    value
+}
+
+fn random_below(state: &mut u64, limit: usize) -> usize {
+    debug_assert!(limit > 0);
+    (xorshift64(state) as usize) % limit
+}
+
+fn opposite_phase(phase: u8) -> u8 {
+    if phase == TRUE {
+        FALSE
+    } else {
+        TRUE
+    }
+}
+
+fn lit_value_in_phases(phases: &[u8], lit: i32) -> u8 {
+    let var = lit.unsigned_abs() as usize;
+    let val = phases[var];
+    debug_assert_ne!(val, UNASSIGNED, "walk phase left variable {var} unset");
+    if (lit > 0) == (val == TRUE) {
+        TRUE
+    } else {
+        FALSE
+    }
+}
+
+fn set_walk_clause_unsat(
+    clause_pos: usize,
+    is_unsat: bool,
+    unsat_clauses: &mut Vec<usize>,
+    unsat_pos: &mut [usize],
+) {
+    if is_unsat {
+        if unsat_pos[clause_pos] == WALK_NOT_IN_UNSAT {
+            unsat_pos[clause_pos] = unsat_clauses.len();
+            unsat_clauses.push(clause_pos);
+        }
+        return;
+    }
+
+    let pos = unsat_pos[clause_pos];
+    if pos == WALK_NOT_IN_UNSAT {
+        return;
+    }
+    let last = unsat_clauses.pop().expect("unsat clause list underflow");
+    if pos < unsat_clauses.len() {
+        unsat_clauses[pos] = last;
+        unsat_pos[last] = pos;
+    }
+    unsat_pos[clause_pos] = WALK_NOT_IN_UNSAT;
 }
 
 impl ProofLog {
@@ -930,6 +1023,20 @@ struct Solver {
     reason_side_bump_limit: usize,
     /// cheap pre-search SAT shortcut policy
     lucky_mode: LuckyMode,
+    /// Kissat-style pre-search phase warmup; default-on and ablatable with SAT_WARMUP=off
+    warmup_enabled: bool,
+    /// maximum warmup decisions; zero skips the pass even when enabled
+    warmup_decision_limit: usize,
+    /// local-search phase source for stable-mode rephases; default-on and ablatable with SAT_WALK=off
+    walk_rephase_enabled: bool,
+    /// opt-in one-shot local-search phase source before CDCL search
+    walk_initial_enabled: bool,
+    /// maximum local-search flips per walk invocation
+    walk_steps_limit: usize,
+    /// random-walk percentage for selecting a non-greedy flip
+    walk_random_percent: usize,
+    /// deterministic pseudo-random state for local search
+    walk_seed: u64,
     /// optional root-level clause-weight decision reordering for stable search
     reorder_mode: ReorderMode,
     /// maximum effective irredundant clause size considered for Kissat-style reordering
@@ -1375,6 +1482,16 @@ impl Solver {
         };
         let (reason_side_bump_mode, reason_side_bump_limit) = parse_reason_side_bump_config();
         let lucky_mode = parse_lucky_mode();
+        let warmup_enabled = parse_bool_env("SAT_WARMUP", true);
+        let warmup_decision_limit = parse_usize_env("SAT_WARMUP_DECISIONS", num_vars);
+        let walk_rephase_enabled =
+            parse_bool_env("SAT_WALK", true) || parse_bool_env("SAT_REPHASE_WALK", false);
+        let walk_initial_enabled =
+            parse_bool_env("SAT_WALK_INITIAL", false) || parse_bool_env("SAT_WALK_INIT", false);
+        let walk_steps_limit = parse_usize_env("SAT_WALK_STEPS", default_walk_steps(num_vars));
+        let walk_random_percent =
+            parse_usize_env("SAT_WALK_RANDOM_PERCENT", DEFAULT_WALK_RANDOM_PERCENT).min(100);
+        let walk_seed = parse_u64_env("SAT_WALK_SEED", 0x9e37_79b9_7f4a_7c15);
         let reorder_mode = parse_reorder_mode();
 
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
@@ -1439,6 +1556,13 @@ impl Solver {
             reason_side_bump_mode,
             reason_side_bump_limit,
             lucky_mode,
+            warmup_enabled,
+            warmup_decision_limit,
+            walk_rephase_enabled,
+            walk_initial_enabled,
+            walk_steps_limit,
+            walk_random_percent,
+            walk_seed,
             reorder_mode,
             reorder_max_clause_size: parse_reorder_max_clause_size_env(),
             restart_glue_fast_ema: 0.0,
@@ -3973,7 +4097,7 @@ impl Solver {
             return true;
         }
 
-        let kind = RephaseKind::from_count(self.stats.rephases);
+        let kind = RephaseKind::from_count(self.stats.rephases, self.walk_rephase_enabled);
         self.stats.rephases += 1;
         match kind {
             RephaseKind::Best => {
@@ -3982,6 +4106,13 @@ impl Solver {
                 self.target_phase_assigned = 0;
                 self.best_phase_assigned = 0;
                 self.stats.rephase_best += 1;
+            }
+            RephaseKind::Walk => {
+                self.run_walk_phase();
+                self.target_phase.copy_from_slice(&self.saved_phase);
+                self.target_phase_active = true;
+                self.target_phase_assigned = 0;
+                self.stats.rephase_walking += 1;
             }
             RephaseKind::Inverted => {
                 let inverted = if self.initial_phase == TRUE {
@@ -3998,6 +4129,198 @@ impl Solver {
             }
         }
         true
+    }
+
+    fn initialize_walk_phases(&self) -> Vec<u8> {
+        let mut phases = vec![UNASSIGNED; self.assignment.len()];
+        for var in 1..self.assignment.len() {
+            phases[var] = if self.assignment[var] != UNASSIGNED {
+                self.assignment[var]
+            } else {
+                self.decision_phase_value(var)
+            };
+        }
+        phases
+    }
+
+    fn walk_lit_is_true(phase: u8, positive: bool) -> bool {
+        (positive && phase == TRUE) || (!positive && phase == FALSE)
+    }
+
+    fn run_initial_walk_phase(&mut self) {
+        if !self.walk_initial_enabled {
+            return;
+        }
+        if self.run_walk_phase() {
+            self.target_phase.copy_from_slice(&self.saved_phase);
+            self.target_phase_active = true;
+            self.target_phase_assigned = 0;
+        }
+    }
+
+    fn run_walk_phase(&mut self) -> bool {
+        if self.walk_steps_limit == 0 || self.original_clause_ids.is_empty() {
+            return false;
+        }
+
+        let walk_start = Instant::now();
+        self.stats.walks += 1;
+
+        let mut phases = self.initialize_walk_phases();
+        let mut clause_ids = Vec::with_capacity(self.original_clause_ids.len());
+        let mut occurrences: Vec<Vec<(usize, bool)>> = vec![Vec::new(); self.assignment.len()];
+        let mut sat_counts: Vec<usize> = Vec::with_capacity(self.original_clause_ids.len());
+        let mut unsat_clauses: Vec<usize> = Vec::new();
+        let mut unsat_pos: Vec<usize> = Vec::new();
+
+        for &clause_idx in &self.original_clause_ids {
+            if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
+                continue;
+            }
+
+            let walk_clause_pos = clause_ids.len();
+            clause_ids.push(clause_idx);
+            let mut satisfied = 0usize;
+            for lit_pos in 0..self.clause_len(clause_idx) {
+                let lit = self.clause_lit(clause_idx, lit_pos);
+                let var = lit.unsigned_abs() as usize;
+                let positive = lit > 0;
+                occurrences[var].push((walk_clause_pos, positive));
+                if lit_value_in_phases(&phases, lit) == TRUE {
+                    satisfied += 1;
+                }
+            }
+            sat_counts.push(satisfied);
+            unsat_pos.push(WALK_NOT_IN_UNSAT);
+            if satisfied == 0 {
+                set_walk_clause_unsat(walk_clause_pos, true, &mut unsat_clauses, &mut unsat_pos);
+            }
+        }
+
+        let initial_unsat = unsat_clauses.len();
+        let mut best_unsat = initial_unsat;
+        let mut best_phases = phases.clone();
+        let mut candidate_vars = Vec::with_capacity(16);
+        let mut steps = 0u64;
+        let mut flips = 0u64;
+        let mut rng = self
+            .walk_seed
+            .wrapping_add(self.stats.walks.rotate_left(17))
+            .wrapping_add((self.stats.conflicts + 1).rotate_left(31));
+
+        for _ in 0..self.walk_steps_limit {
+            if unsat_clauses.is_empty() {
+                break;
+            }
+            steps += 1;
+
+            let unsat_idx = random_below(&mut rng, unsat_clauses.len());
+            let walk_clause_pos = unsat_clauses[unsat_idx];
+            let clause_idx = clause_ids[walk_clause_pos];
+            candidate_vars.clear();
+            for lit_pos in 0..self.clause_len(clause_idx) {
+                let lit = self.clause_lit(clause_idx, lit_pos);
+                let var = lit.unsigned_abs() as usize;
+                if self.decision_var[var] && self.assignment[var] == UNASSIGNED {
+                    candidate_vars.push(var);
+                }
+            }
+            if candidate_vars.is_empty() {
+                break;
+            }
+
+            let choose_random = self.walk_random_percent > 0
+                && random_below(&mut rng, 100) < self.walk_random_percent;
+            let flip_var = if choose_random {
+                candidate_vars[random_below(&mut rng, candidate_vars.len())]
+            } else {
+                let mut best_var = candidate_vars[0];
+                let mut best_break = usize::MAX;
+                let mut best_make = 0usize;
+                for &var in &candidate_vars {
+                    let phase = phases[var];
+                    let mut break_count = 0usize;
+                    let mut make_count = 0usize;
+                    for &(other_clause_pos, positive) in &occurrences[var] {
+                        let lit_true = Self::walk_lit_is_true(phase, positive);
+                        if lit_true {
+                            if sat_counts[other_clause_pos] == 1 {
+                                break_count += 1;
+                            }
+                        } else if sat_counts[other_clause_pos] == 0 {
+                            make_count += 1;
+                        }
+                    }
+
+                    if break_count < best_break
+                        || (break_count == best_break && (make_count > best_make || var < best_var))
+                    {
+                        best_var = var;
+                        best_break = break_count;
+                        best_make = make_count;
+                    }
+                }
+                best_var
+            };
+
+            let old_phase = phases[flip_var];
+            let new_phase = opposite_phase(old_phase);
+            phases[flip_var] = new_phase;
+            flips += 1;
+            for &(other_clause_pos, positive) in &occurrences[flip_var] {
+                let was_true = Self::walk_lit_is_true(old_phase, positive);
+                let is_true = Self::walk_lit_is_true(new_phase, positive);
+                if was_true == is_true {
+                    continue;
+                }
+
+                let before = sat_counts[other_clause_pos];
+                let after = if was_true { before - 1 } else { before + 1 };
+                sat_counts[other_clause_pos] = after;
+                if before == 0 && after > 0 {
+                    set_walk_clause_unsat(
+                        other_clause_pos,
+                        false,
+                        &mut unsat_clauses,
+                        &mut unsat_pos,
+                    );
+                } else if before > 0 && after == 0 {
+                    set_walk_clause_unsat(
+                        other_clause_pos,
+                        true,
+                        &mut unsat_clauses,
+                        &mut unsat_pos,
+                    );
+                }
+            }
+
+            if unsat_clauses.len() < best_unsat {
+                best_unsat = unsat_clauses.len();
+                best_phases.copy_from_slice(&phases);
+                if best_unsat == 0 {
+                    break;
+                }
+            }
+        }
+
+        self.walk_seed = rng;
+        self.stats.walk_steps += steps;
+        self.stats.walk_flips += flips;
+        self.stats.walk_initial_unsat += initial_unsat as u64;
+        self.stats.walk_best_unsat += best_unsat as u64;
+        self.stats.walk_last_initial_unsat = initial_unsat;
+        self.stats.walk_last_best_unsat = best_unsat;
+        let improved = best_unsat < initial_unsat;
+        if improved {
+            self.stats.walk_improved += 1;
+            for var in 1..best_phases.len() {
+                if self.decision_var[var] && best_phases[var] != UNASSIGNED {
+                    self.saved_phase[var] = best_phases[var];
+                }
+            }
+        }
+        self.stats.walk_time_ns += elapsed_ns(walk_start);
+        improved
     }
 
     fn reset_mode_progress_window(&mut self) {
@@ -4250,15 +4573,13 @@ impl Solver {
         MaintenanceOutcome::Continue
     }
 
-    fn decision_phase(&mut self, var: usize) -> u8 {
+    fn decision_phase_value(&self, var: usize) -> u8 {
         if self.search_mode == SearchMode::Stable
             && self.target_phase_active
             && self.target_phase[var] != UNASSIGNED
         {
-            self.stats.target_phase_decisions += 1;
             self.target_phase[var]
         } else {
-            self.stats.saved_phase_decisions += 1;
             let saved = self.saved_phase[var];
             if saved == UNASSIGNED {
                 self.initial_phase
@@ -4266,6 +4587,18 @@ impl Solver {
                 saved
             }
         }
+    }
+
+    fn decision_phase(&mut self, var: usize) -> u8 {
+        if self.search_mode == SearchMode::Stable
+            && self.target_phase_active
+            && self.target_phase[var] != UNASSIGNED
+        {
+            self.stats.target_phase_decisions += 1;
+        } else {
+            self.stats.saved_phase_decisions += 1;
+        }
+        self.decision_phase_value(var)
     }
 
     fn pick_branch_lit(&mut self) -> Option<i32> {
@@ -4293,14 +4626,77 @@ impl Solver {
         None
     }
 
+    fn pick_warmup_branch_lit(&mut self) -> Option<i32> {
+        let mut next_var = self.branch_heap_pop_best();
+        while let Some(var) = next_var {
+            if !self.decision_var[var] || self.assignment[var] != UNASSIGNED {
+                next_var = self.branch_heap_pop_best();
+                continue;
+            }
+
+            let phase = self.decision_phase_value(var);
+            return Some(if phase == FALSE {
+                -(var as i32)
+            } else {
+                var as i32
+            });
+        }
+        None
+    }
+
+    fn decide_warmup(&mut self, lit: i32) {
+        self.stats.warmup_decisions += 1;
+        self.trail_limits.push(self.trail.len());
+        let inserted = self.enqueue(lit, NO_REASON);
+        debug_assert!(inserted, "warmup decision literal must be unassigned");
+    }
+
+    fn run_warmup(&mut self) -> bool {
+        if !self.warmup_enabled || self.warmup_decision_limit == 0 {
+            return true;
+        }
+
+        debug_assert_eq!(self.current_level(), 0, "warmup must start at root level");
+        let warmup_start = Instant::now();
+        self.stats.warmups += 1;
+        let mut decisions = 0usize;
+        while decisions < self.warmup_decision_limit {
+            let Some(lit) = self.pick_warmup_branch_lit() else {
+                break;
+            };
+            self.decide_warmup(lit);
+            decisions += 1;
+            if self.propagate().is_some() {
+                self.stats.warmup_conflicts += 1;
+                break;
+            }
+        }
+
+        self.stats.warmup_assigned += self.trail.len().saturating_sub(self.root_trail_len) as u64;
+        self.backtrack_without_phase_update(0);
+        self.rebuild_branch_queue();
+        self.stats.warmup_time_ns += elapsed_ns(warmup_start);
+        self.maybe_check_invariants("warmup");
+        true
+    }
+
     fn backtrack(&mut self, target_level: usize) {
         let current_level = self.current_level();
         debug_assert!(target_level <= current_level);
         if target_level == current_level {
             return;
         }
-
         self.update_target_and_best_phases();
+        self.backtrack_without_phase_update(target_level);
+    }
+
+    fn backtrack_without_phase_update(&mut self, target_level: usize) {
+        let current_level = self.current_level();
+        debug_assert!(target_level <= current_level);
+        if target_level == current_level {
+            return;
+        }
+
         let new_trail_len = if target_level == 0 {
             self.root_trail_len
         } else {
@@ -5424,12 +5820,18 @@ impl Solver {
         self.eager_detach_watchers = parse_bool_env("SAT_EAGER_DETACH_WATCHERS", false);
         self.configure_static_binary_implications();
         let lucky_sat = self.try_lucky_shortcut();
-        if !lucky_sat && !self.run_presearch_clause_weight_reorder() {
-            return false;
+        if !lucky_sat {
+            if !self.run_warmup() {
+                return false;
+            }
+            self.run_initial_walk_phase();
+            if !self.run_presearch_clause_weight_reorder() {
+                return false;
+            }
         }
         if env::var_os("SAT_TRACE_PREPROCESS").is_some() {
             eprintln!(
-                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} original_binary={} learned_binary={} static_binary={} static_implications={} dense_entries={} dense_resumes={} dense_occurrence_ms={:.3} dense_resume_ms={:.3} root_assigns={} lucky={}/{}/{}/{} lucky_checked={}/{} lucky_ms={:.3} reorder={}/{}/{} reorder_scanned={}/{}/{} reorder_ms={:.3} deleted_clauses={} deleted_words={} shrunk_words={} gc={} gc_copied_words={} gc_reclaimed_words={} gc_ms={:.3} proof_clauses={} proof_bytes={} reduce_db_limit={}",
+                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} original_binary={} learned_binary={} static_binary={} static_implications={} dense_entries={} dense_resumes={} dense_occurrence_ms={:.3} dense_resume_ms={:.3} root_assigns={} lucky={}/{}/{}/{} lucky_checked={}/{} lucky_ms={:.3} warmup={}/{}/{} warmup_ms={:.3} walk={}/{}/{} walk_unsat={}/{} walk_ms={:.3} reorder={}/{}/{} reorder_scanned={}/{}/{} reorder_ms={:.3} deleted_clauses={} deleted_words={} shrunk_words={} gc={} gc_copied_words={} gc_reclaimed_words={} gc_ms={:.3} proof_clauses={} proof_bytes={} reduce_db_limit={}",
                 preprocess_ns as f64 / 1e9,
                 self.stats.preprocess_eliminated_vars,
                 self.stats.preprocess_resolvents,
@@ -5454,6 +5856,16 @@ impl Solver {
                 self.stats.lucky_checked_clauses,
                 self.stats.lucky_checked_literals,
                 self.stats.lucky_time_ns as f64 / 1e6,
+                self.stats.warmups,
+                self.stats.warmup_decisions,
+                self.stats.warmup_conflicts,
+                self.stats.warmup_time_ns as f64 / 1e6,
+                self.stats.walks,
+                self.stats.walk_improved,
+                self.stats.walk_steps,
+                self.stats.walk_last_initial_unsat,
+                self.stats.walk_last_best_unsat,
+                self.stats.walk_time_ns as f64 / 1e6,
                 self.stats.reorder_calls,
                 self.stats.reorder_applied,
                 self.stats.reorder_skipped,
@@ -5489,7 +5901,7 @@ impl Solver {
                         self.stats.search_time_ns += elapsed_ns(search_start);
                         if trace_search_interval > 0 {
                             eprintln!(
-                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                 self.stats.search_time_ns as f64 / 1e9,
                                 self.stats.conflicts,
                                 self.stats.decisions,
@@ -5519,8 +5931,14 @@ impl Solver {
                                 self.stats.target_phase_decisions,
                                 self.stats.saved_phase_decisions,
                                 self.stats.rephase_best,
+                                self.stats.rephase_walking,
                                 self.stats.rephase_inverted,
                                 self.stats.rephase_original,
+                                self.stats.walks,
+                                self.stats.walk_improved,
+                                self.stats.walk_steps,
+                                self.stats.walk_last_initial_unsat,
+                                self.stats.walk_last_best_unsat,
                                 self.live_learned_clause_count,
                                 self.stats.learned_clause_literals,
                                 self.stats.learned_clause_max_len,
@@ -5561,7 +5979,7 @@ impl Solver {
                     self.note_mode_progress_at_conflict();
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
-                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
+                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
                             search_start.elapsed().as_secs_f64(),
                             self.stats.conflicts,
                             self.stats.decisions,
@@ -5591,8 +6009,14 @@ impl Solver {
                             self.stats.target_phase_decisions,
                             self.stats.saved_phase_decisions,
                             self.stats.rephase_best,
+                            self.stats.rephase_walking,
                             self.stats.rephase_inverted,
                             self.stats.rephase_original,
+                            self.stats.walks,
+                            self.stats.walk_improved,
+                            self.stats.walk_steps,
+                            self.stats.walk_last_initial_unsat,
+                            self.stats.walk_last_best_unsat,
                             self.current_level(),
                             self.trail.len(),
                             self.live_learned_clause_count,
@@ -5688,7 +6112,7 @@ impl Solver {
                             self.stats.search_time_ns += elapsed_ns(search_start);
                             if trace_search_interval > 0 {
                                 eprintln!(
-                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                     self.stats.search_time_ns as f64 / 1e9,
                                     self.stats.conflicts,
                                     self.stats.decisions,
@@ -5718,8 +6142,14 @@ impl Solver {
                                     self.stats.target_phase_decisions,
                                     self.stats.saved_phase_decisions,
                                     self.stats.rephase_best,
+                                    self.stats.rephase_walking,
                                     self.stats.rephase_inverted,
                                     self.stats.rephase_original,
+                                    self.stats.walks,
+                                    self.stats.walk_improved,
+                                    self.stats.walk_steps,
+                                    self.stats.walk_last_initial_unsat,
+                                    self.stats.walk_last_best_unsat,
                                     self.live_learned_clause_count,
                                     self.stats.learned_clause_literals,
                                     self.stats.learned_clause_max_len,
@@ -7648,6 +8078,86 @@ mod tests {
     }
 
     #[test]
+    fn test_warmup_updates_saved_phase_without_best_phase_snapshot() {
+        let mut s = make_solver(2, vec![vec![-1, 2]]);
+        s.warmup_enabled = true;
+        s.warmup_decision_limit = 1;
+        s.maintenance_scheduler.rephase_interval = 10;
+        s.activity[1] = 10.0;
+        s.activity[2] = 1.0;
+        s.saved_phase[1] = TRUE;
+        s.saved_phase[2] = FALSE;
+        s.rebuild_branch_queue();
+
+        assert!(s.run_warmup());
+
+        assert_eq!(s.current_level(), 0);
+        assert_eq!(s.assignment[1], UNASSIGNED);
+        assert_eq!(s.assignment[2], UNASSIGNED);
+        assert_eq!(s.saved_phase[1], TRUE);
+        assert_eq!(s.saved_phase[2], TRUE);
+        assert_eq!(s.best_phase_assigned, 0);
+        assert_eq!(s.stats.best_phase_saved, 0);
+        assert_eq!(s.stats.warmups, 1);
+        assert_eq!(s.stats.warmup_decisions, 1);
+        assert_eq!(s.stats.warmup_assigned, 2);
+    }
+
+    #[test]
+    fn test_warmup_stops_after_decision_level_conflict() {
+        let mut s = make_solver(2, vec![vec![-1, 2], vec![-1, -2]]);
+        s.warmup_enabled = true;
+        s.warmup_decision_limit = 3;
+        s.activity[1] = 10.0;
+        s.activity[2] = 1.0;
+        s.saved_phase[1] = TRUE;
+        s.rebuild_branch_queue();
+
+        assert!(s.run_warmup());
+
+        assert_eq!(s.current_level(), 0);
+        assert_eq!(s.assignment[1], UNASSIGNED);
+        assert_eq!(s.assignment[2], UNASSIGNED);
+        assert_eq!(s.stats.warmup_decisions, 1);
+        assert_eq!(s.stats.warmup_conflicts, 1);
+    }
+
+    #[test]
+    fn test_walk_phase_saves_improved_assignment() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![1, 3], vec![2, 3]]);
+        s.walk_steps_limit = 1;
+        s.walk_random_percent = 0;
+        s.initial_phase = FALSE;
+        s.saved_phase[1..].fill(FALSE);
+
+        assert!(s.run_walk_phase());
+
+        assert_eq!(s.saved_phase[1], TRUE);
+        assert_eq!(s.stats.walks, 1);
+        assert_eq!(s.stats.walk_improved, 1);
+        assert_eq!(s.stats.walk_last_initial_unsat, 3);
+        assert_eq!(s.stats.walk_last_best_unsat, 1);
+    }
+
+    #[test]
+    fn test_rephase_walk_copies_walk_source_to_target_phase() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![1, 3], vec![2, 3]]);
+        s.walk_rephase_enabled = true;
+        s.walk_steps_limit = 1;
+        s.walk_random_percent = 0;
+        s.initial_phase = FALSE;
+        s.saved_phase[1..].fill(FALSE);
+        s.stats.rephases = 1;
+
+        assert!(s.run_rephase());
+
+        assert_eq!(s.stats.rephases, 2);
+        assert_eq!(s.stats.rephase_walking, 1);
+        assert_eq!(s.target_phase[1], TRUE);
+        assert!(s.target_phase_active);
+    }
+
+    #[test]
     fn test_stable_clause_weight_reorder_prioritizes_short_clause_variables() {
         let mut s = make_solver(6, vec![vec![1, 4, 5, 6], vec![2, 3], vec![-2, 4, 5, 6]]);
         s.reorder_mode = ReorderMode::StableWeight;
@@ -7843,6 +8353,7 @@ mod tests {
     #[test]
     fn test_rephase_inverted_and_original_use_initial_phase_not_best_phase() {
         let mut s = make_solver(2, vec![]);
+        s.walk_rephase_enabled = false;
         s.initial_phase = FALSE;
         s.best_phase[1] = TRUE;
         s.best_phase[2] = FALSE;
