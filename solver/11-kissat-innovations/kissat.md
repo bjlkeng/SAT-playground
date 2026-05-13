@@ -300,8 +300,9 @@ watches, and richer clause metadata.
 
 Solver 11:
 
-- Goes straight into root propagation, one-shot simplification, and normal CDCL search.
-- Does not try all-true/all-false shortcuts or ordered failed-literal probing before search.
+- Runs a basic all-true/all-false lucky SAT shortcut after root propagation and one-shot
+  preprocessing.
+- Does not yet try ordered failed-literal probing before search.
 
 Kissat:
 
@@ -317,7 +318,8 @@ Kissat:
 Implementation idea for solver 11:
 
 - Add a very small first experiment for no-all-negative/no-all-positive on the active simplified
-  formula. This is low risk and can be tested without changing the CDCL core.
+  formula. Done as `SAT_LUCKY=shortcut`, default on, implemented by checking the complete
+  all-true/all-false candidate model against live clauses after preprocessing.
 - After binary implication watches exist, add bounded lucky probing with an effort cap and counters
   for SAT shortcut, units learned, conflicts, and time.
 - Ensure a lucky SAT after preprocessing still runs the existing model-extension path for eliminated
@@ -1819,6 +1821,22 @@ Why here:
 Unlocks:
 
 - A measured simplification/search baseline before adding deeper probing passes.
+
+Status on 2026-05-12:
+
+- Basic lucky SAT shortcut landed as `SAT_LUCKY=shortcut`, default on. `SAT_LUCKY=off` disables it
+  for ablations.
+- The shortcut runs after root propagation and one-shot preprocessing, before CDCL search. It checks
+  all-true and then all-false candidate models against all live original and learned clauses, then
+  routes SAT through the existing model-extension snapshot path.
+- Validation: `cargo test` passed 100 tests, default smoke passed 9/9
+  (`log/2026-05-12-16-36-04`), invariant smoke passed 9/9 (`log/2026-05-12-16-36-13`), and a
+  traced all-positive smoke instance reported `lucky=1/1/1/0` and returned model `1 2 3` before
+  CDCL decisions.
+- Profiling: default shortcut solved 8/11 with PAR-2 `794.191`
+  (`log/bench-11-kissat-innovations-2026-05-12-16-36-29`); `SAT_LUCKY=off` solved 8/11 with PAR-2
+  `793.828` (`log/bench-11-kissat-innovations-2026-05-12-16-44-02`). The `0.363s` delta is noise,
+  so this is kept as a low-risk foundation for later probing rather than a profile-set speed win.
 
 ### Phase 9. Probing and structural inprocessing
 

@@ -1098,21 +1098,25 @@ impl Solver {
         }
     }
 
-    pub(super) fn capture_sat_model(&mut self) {
+    pub(super) fn capture_sat_model_with_default(&mut self, default_value: u8) {
         let mut model = self.assignment.clone();
         for var in 1..model.len() {
             if model[var] == UNASSIGNED && !self.eliminated[var] {
-                model[var] = TRUE;
+                model[var] = default_value;
             }
         }
         self.extend_model_snapshot(&mut model);
         for var in 1..model.len() {
             if model[var] == UNASSIGNED {
-                model[var] = TRUE;
+                model[var] = default_value;
             }
         }
         self.assignment.clone_from(&model);
         self.sat_model = Some(model);
+    }
+
+    pub(super) fn capture_sat_model(&mut self) {
+        self.capture_sat_model_with_default(TRUE);
     }
 }
 

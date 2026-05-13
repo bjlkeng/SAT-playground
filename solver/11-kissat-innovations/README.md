@@ -57,10 +57,13 @@ What is present:
   previous full-UIP-traversal analyzed-variable bumping behavior, or
   `SAT_REASON_SIDE_BUMP_MODE=off` to return to the capped/no-extra-reason-side default-search
   ablation.
+- Phase 8 lucky SAT shortcut: `SAT_LUCKY=shortcut` is the default and checks all-true/all-false
+  candidate models after preprocessing but before CDCL search. Use `SAT_LUCKY=off` for ablations.
 
 What is intentionally not present yet:
 
-- no real mid-search inprocessing pass, probing, or local-search walking rephase source yet
+- no full lucky probing, real mid-search inprocessing pass, probing, or local-search walking
+  rephase source yet
 - no separate MiniSat `simp` port design document is copied forward
 
 ## Direction
@@ -770,3 +773,41 @@ Analysis:
   `15.125s`, `1816741` conflicts, and `84916180` propagations. On the Timetable regression, it
   took `19.543s` with `906640` conflicts and `51525605` propagations on a decompressed direct trace,
   versus default `4.475s`, `169292` conflicts, and `22497680` propagations on the same file.
+
+Lucky SAT shortcut validation on 2026-05-12:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_CHECK_INVARIANTS=1 bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_TRACE_PREPROCESS=1 SAT_PROOF=0 \
+  bash solver/11-kissat-innovations/run.sh tests/cnf/sat/all_positive.cnf \
+  /tmp/sat-lucky-all-positive
+SAT_PROOF=0 bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling \
+  solver/11-kissat-innovations
+SAT_PROOF=0 SAT_LUCKY=off bash tools/bench.sh -t 120 -m 16384 \
+  -d benchmarks/profiling solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 100 passed.
+- default smoke suite: 9/9 passed, log `log/2026-05-12-16-36-04`.
+- invariant smoke suite: 9/9 passed, log `log/2026-05-12-16-36-13`.
+- traced all-positive smoke instance returned SAT before CDCL decisions with
+  `lucky=1/1/1/0` and model `1 2 3`.
+- no-proof default shortcut profiling: solved 8/11, PAR-2 `794.191`, log
+  `log/bench-11-kissat-innovations-2026-05-12-16-36-29`.
+- no-proof `SAT_LUCKY=off` ablation: solved 8/11, PAR-2 `793.828`, log
+  `log/bench-11-kissat-innovations-2026-05-12-16-44-02`.
+
+Analysis:
+
+- The shortcut validates the actual full candidate assignment against all live original and learned
+  clauses after preprocessing. This is slightly more general than a raw sign-only check, because it
+  respects root assignments and clauses already removed or trimmed by simplification.
+- The profiling set showed no meaningful shortcut opportunity. The `SAT_LUCKY=off` ablation was
+  `0.363s` faster in PAR-2, about `0.05%`, which is timing noise on this 11-instance sample.
+- The feature is kept as a default foundational shortcut rather than as a measured profiling-set
+  speed win. It creates a safe pre-CDCL SAT return path with model extension, counters, and an
+  ablation knob for the later four-pass lucky probing work.

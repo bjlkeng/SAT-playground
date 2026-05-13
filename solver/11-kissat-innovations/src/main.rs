@@ -160,6 +160,12 @@ enum ReasonSideBumpMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LuckyMode {
+    Off,
+    Shortcut,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RephaseKind {
     Best,
     Inverted,
@@ -551,6 +557,13 @@ struct SolverStats {
     reason_side_bump_candidates: u64,
     reason_side_bumped_vars: u64,
     reason_side_bump_limit_hits: u64,
+    lucky_checks: u64,
+    lucky_sat: u64,
+    lucky_all_true: u64,
+    lucky_all_false: u64,
+    lucky_checked_clauses: u64,
+    lucky_checked_literals: u64,
+    lucky_time_ns: u64,
     mode_switches: u64,
     mode_switch_to_stable: u64,
     mode_switch_to_focused: u64,
@@ -870,6 +883,8 @@ struct Solver {
     /// maximum extra reason-side variables to bump per conflict; learned-clause variables are
     /// still bumped even when this cap is zero
     reason_side_bump_limit: usize,
+    /// cheap pre-search SAT shortcut policy
+    lucky_mode: LuckyMode,
     /// fast moving average of learned-clause glue for glue-EMA restarts
     restart_glue_fast_ema: f64,
     /// slow moving average of learned-clause glue for glue-EMA restarts
@@ -1307,6 +1322,7 @@ impl Solver {
             BranchMode::Occurrence => TRUE,
         };
         let (reason_side_bump_mode, reason_side_bump_limit) = parse_reason_side_bump_config();
+        let lucky_mode = parse_lucky_mode();
 
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
         let arena = Vec::with_capacity(total_words);
@@ -1369,6 +1385,7 @@ impl Solver {
             chrono_levels: parse_chrono_levels_env(),
             reason_side_bump_mode,
             reason_side_bump_limit,
+            lucky_mode,
             restart_glue_fast_ema: 0.0,
             restart_glue_slow_ema: 0.0,
             restart_glue_ema_initialized: false,
@@ -4993,6 +5010,92 @@ impl Solver {
         count
     }
 
+    fn lit_value_with_default(&self, lit: i32, default_value: u8) -> u8 {
+        let var = lit.unsigned_abs() as usize;
+        let mut val = self.assignment[var];
+        if val == UNASSIGNED {
+            val = default_value;
+        }
+        if (lit > 0) == (val == TRUE) {
+            TRUE
+        } else {
+            FALSE
+        }
+    }
+
+    fn lucky_assignment_satisfies_clause(
+        &self,
+        clause_idx: usize,
+        default_value: u8,
+    ) -> (bool, u64) {
+        let clause_len = self.clause_len(clause_idx);
+        for lit_pos in 0..clause_len {
+            let lit = self.clause_lit(clause_idx, lit_pos);
+            if self.lit_value_with_default(lit, default_value) == TRUE {
+                return (true, (lit_pos + 1) as u64);
+            }
+        }
+        (false, clause_len as u64)
+    }
+
+    fn lucky_assignment_satisfies_formula(&self, default_value: u8) -> (bool, u64, u64) {
+        let mut checked_clauses = 0u64;
+        let mut checked_literals = 0u64;
+        for &clause_idx in self
+            .original_clause_ids
+            .iter()
+            .chain(self.learned_clause_ids.iter())
+        {
+            if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
+                continue;
+            }
+            checked_clauses += 1;
+            let (satisfied, checked) =
+                self.lucky_assignment_satisfies_clause(clause_idx, default_value);
+            checked_literals += checked;
+            if !satisfied {
+                return (false, checked_clauses, checked_literals);
+            }
+        }
+        (true, checked_clauses, checked_literals)
+    }
+
+    fn try_lucky_shortcut(&mut self) -> bool {
+        if self.lucky_mode == LuckyMode::Off {
+            return false;
+        }
+
+        let lucky_start = Instant::now();
+        self.stats.lucky_checks += 1;
+
+        let (all_true_sat, checked_clauses, checked_literals) =
+            self.lucky_assignment_satisfies_formula(TRUE);
+        self.stats.lucky_checked_clauses += checked_clauses;
+        self.stats.lucky_checked_literals += checked_literals;
+        if all_true_sat {
+            self.stats.lucky_sat += 1;
+            self.stats.lucky_all_true += 1;
+            self.capture_sat_model_with_default(TRUE);
+            self.stats.lucky_time_ns += elapsed_ns(lucky_start);
+            return true;
+        }
+
+        let (all_false_sat, checked_clauses, checked_literals) =
+            self.lucky_assignment_satisfies_formula(FALSE);
+        self.stats.lucky_checked_clauses += checked_clauses;
+        self.stats.lucky_checked_literals += checked_literals;
+        if all_false_sat {
+            self.stats.lucky_sat += 1;
+            self.stats.lucky_all_false += 1;
+            self.capture_sat_model_with_default(FALSE);
+            self.stats.lucky_time_ns += elapsed_ns(lucky_start);
+            return true;
+        }
+
+        self.stats.lucky_time_ns += elapsed_ns(lucky_start);
+        false
+    }
+
     fn solve(&mut self) -> bool {
         let mut proof_log = ProofLog::disabled();
         self.solve_with_proof(&mut proof_log)
@@ -5033,9 +5136,10 @@ impl Solver {
         self.maybe_check_invariants("preprocess");
         self.eager_detach_watchers = parse_bool_env("SAT_EAGER_DETACH_WATCHERS", false);
         self.configure_static_binary_implications();
+        let lucky_sat = self.try_lucky_shortcut();
         if env::var_os("SAT_TRACE_PREPROCESS").is_some() {
             eprintln!(
-                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} original_binary={} learned_binary={} static_binary={} static_implications={} dense_entries={} dense_resumes={} dense_occurrence_ms={:.3} dense_resume_ms={:.3} root_assigns={} deleted_clauses={} deleted_words={} shrunk_words={} gc={} gc_copied_words={} gc_reclaimed_words={} gc_ms={:.3} proof_clauses={} proof_bytes={} reduce_db_limit={}",
+                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} original_binary={} learned_binary={} static_binary={} static_implications={} dense_entries={} dense_resumes={} dense_occurrence_ms={:.3} dense_resume_ms={:.3} root_assigns={} lucky={}/{}/{}/{} lucky_checked={}/{} lucky_ms={:.3} deleted_clauses={} deleted_words={} shrunk_words={} gc={} gc_copied_words={} gc_reclaimed_words={} gc_ms={:.3} proof_clauses={} proof_bytes={} reduce_db_limit={}",
                 preprocess_ns as f64 / 1e9,
                 self.stats.preprocess_eliminated_vars,
                 self.stats.preprocess_resolvents,
@@ -5053,6 +5157,13 @@ impl Solver {
                 self.stats.simplification_mode_occurrence_time_ns as f64 / 1e6,
                 self.stats.simplification_mode_resume_time_ns as f64 / 1e6,
                 self.trail.len(),
+                self.stats.lucky_checks,
+                self.stats.lucky_sat,
+                self.stats.lucky_all_true,
+                self.stats.lucky_all_false,
+                self.stats.lucky_checked_clauses,
+                self.stats.lucky_checked_literals,
+                self.stats.lucky_time_ns as f64 / 1e6,
                 self.stats.deleted_clauses,
                 self.stats.deleted_words,
                 self.stats.shrunk_words,
@@ -5064,6 +5175,9 @@ impl Solver {
                 proof_log.recorded_bytes,
                 self.reduce_db_limit,
             );
+        }
+        if lucky_sat {
+            return true;
         }
 
         let trace_search_interval = parse_optional_usize_env("SAT_TRACE_SEARCH_INTERVAL") as u64;
@@ -5630,6 +5744,20 @@ fn parse_reason_side_bump_config() -> (ReasonSideBumpMode, usize) {
         (ReasonSideBumpMode::Off, 0)
     } else {
         (mode, limit)
+    }
+}
+
+fn parse_lucky_mode() -> LuckyMode {
+    match env::var("SAT_LUCKY") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "0" | "off" | "false" | "no" | "disabled" | "none" => LuckyMode::Off,
+            "1" | "on" | "true" | "yes" | "shortcut" | "shortcuts" => LuckyMode::Shortcut,
+            other => {
+                eprintln!("Invalid SAT_LUCKY={other}; expected off/shortcut");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => LuckyMode::Shortcut,
     }
 }
 
@@ -6859,6 +6987,100 @@ mod tests {
     }
 
     #[test]
+    fn test_lucky_all_true_shortcut_captures_sat_model_before_search() {
+        let clauses = vec![vec![1, -2], vec![2, 3], vec![-1, 3]];
+        let mut s = make_solver(3, clauses.clone());
+        s.use_elim = false;
+        s.lucky_mode = LuckyMode::Shortcut;
+
+        assert!(s.solve());
+        assert_eq!(s.stats.lucky_checks, 1);
+        assert_eq!(s.stats.lucky_sat, 1);
+        assert_eq!(s.stats.lucky_all_true, 1);
+        assert_eq!(s.stats.lucky_all_false, 0);
+        assert_eq!(s.stats.decisions, 0);
+        assert_eq!(s.stats.conflicts, 0);
+
+        let model = s.sat_model.as_ref().expect("missing SAT model snapshot");
+        assert_eq!(&model[1..], &[TRUE, TRUE, TRUE]);
+        for clause in &clauses {
+            assert!(
+                clause.iter().any(|&lit| {
+                    let var = lit.unsigned_abs() as usize;
+                    (lit > 0 && model[var] == TRUE) || (lit < 0 && model[var] == FALSE)
+                }),
+                "lucky all-true model does not satisfy {clause:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_lucky_all_false_shortcut_captures_sat_model_before_search() {
+        let clauses = vec![vec![-1, 2], vec![-2, -3], vec![1, -3]];
+        let mut s = make_solver(3, clauses.clone());
+        s.use_elim = false;
+        s.lucky_mode = LuckyMode::Shortcut;
+
+        assert!(s.solve());
+        assert_eq!(s.stats.lucky_checks, 1);
+        assert_eq!(s.stats.lucky_sat, 1);
+        assert_eq!(s.stats.lucky_all_true, 0);
+        assert_eq!(s.stats.lucky_all_false, 1);
+        assert_eq!(s.stats.decisions, 0);
+        assert_eq!(s.stats.conflicts, 0);
+
+        let model = s.sat_model.as_ref().expect("missing SAT model snapshot");
+        assert_eq!(&model[1..], &[FALSE, FALSE, FALSE]);
+        for clause in &clauses {
+            assert!(
+                clause.iter().any(|&lit| {
+                    let var = lit.unsigned_abs() as usize;
+                    (lit > 0 && model[var] == TRUE) || (lit < 0 && model[var] == FALSE)
+                }),
+                "lucky all-false model does not satisfy {clause:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_lucky_shortcut_can_be_disabled() {
+        let clauses = vec![vec![1, -2], vec![2, 3], vec![-1, 3]];
+        let mut s = make_solver(3, clauses);
+        s.use_elim = false;
+        s.lucky_mode = LuckyMode::Off;
+
+        assert!(s.solve());
+        assert_eq!(s.stats.lucky_checks, 0);
+        assert_eq!(s.stats.lucky_sat, 0);
+    }
+
+    #[test]
+    fn test_lucky_shortcut_extends_eliminated_variable_model() {
+        let clauses = vec![vec![1, 2, 3], vec![-1, 2, 4]];
+        let mut s = make_solver(4, clauses.clone());
+        s.frozen[2] = true;
+        s.frozen[3] = true;
+        s.frozen[4] = true;
+        s.lucky_mode = LuckyMode::Shortcut;
+
+        assert!(s.solve());
+        assert!(s.eliminated[1], "expected BVE to eliminate x1");
+        assert_eq!(s.stats.lucky_sat, 1);
+
+        let model = s.sat_model.as_ref().expect("missing SAT model snapshot");
+        assert_ne!(model[1], UNASSIGNED);
+        for clause in &clauses {
+            assert!(
+                clause.iter().any(|&lit| {
+                    let var = lit.unsigned_abs() as usize;
+                    (lit > 0 && model[var] == TRUE) || (lit < 0 && model[var] == FALSE)
+                }),
+                "extended lucky model does not satisfy {clause:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_bve_can_detect_xor_unsat_before_cdcl_conflicts() {
         let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
         let mut s = make_solver(2, clauses);
@@ -6873,6 +7095,7 @@ mod tests {
     #[test]
     fn test_sat_model_snapshot_assigns_unconstrained_variables() {
         let mut s = make_solver(3, vec![]);
+        s.lucky_mode = LuckyMode::Off;
 
         assert!(s.solve());
         let model = s.sat_model.as_ref().expect("missing SAT model snapshot");
