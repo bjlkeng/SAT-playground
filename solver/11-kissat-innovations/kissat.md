@@ -1993,7 +1993,7 @@ Why last:
 | C glue-tiered reduce | 5 | Needs metadata and scheduled reduction. |
 | D binary implication path | 2 | Core representation dependency. |
 | E focused queue | 6 | Needs decision API isolation. |
-| F glue restarts/trail reuse | 7 | Glue-EMA, capped Kissat-style trail reuse, stable reluctant restarts, and guarded mode switching landed; reluctant/mode switching are now default. |
+| F glue restarts/trail reuse | 7 | Glue-EMA, capped Kissat-style trail reuse, dynamic reuse-progress guard, stable reluctant restarts, and guarded mode switching landed; reluctant/mode switching are now default. |
 | G target/best/rephase | 7 | Target/best rephase is default at interval 10000; walking source is default-on with tuned defaults. |
 | H chronological backtracking/reason bump | 7 | Best measured after restart changes. |
 | I eager subsumption | 5 | Learned-clause lifecycle feature. |
@@ -2012,6 +2012,49 @@ Why last:
 | V dense/sparse mode | 4 | Foundational for repeated simplification. |
 | W GC instrumentation | 0, 5 | Measure early; optimize after reduction pressure is real. |
 | X factorization/BVA | 10 | Late-stage structural feature. |
+
+## Remaining Non-Inprocessing Search Gaps
+
+Before adding more formula-modifying simplification, the remaining Kissat gaps are mostly search
+policy and trajectory controls:
+
+1. Dynamic restart-reuse guard: capped trail reuse helps the profiling set, but it is still
+   path-sensitive. Add a guard that temporarily disables reuse when a reused-restart window is short
+   and learned-clause glue gets worse, then validate against the default and reuse-disabled
+   ablations.
+2. More Kissat-exact focused decisions: focused mode has the queue and guarded dwell cap, but
+   focused-only remains weak. Missing pieces include focused-specific phase overrides and better
+   coupling between queue order, reduction pressure, and restart timing.
+3. More faithful warmup: solver 11 stops warmup at the first decision-level conflict, while Kissat
+   can propagate beyond conflicts to seed more phases.
+4. Rephase/restart guards: scheduled rephase and walking are default-on, but they still need guards
+   for proof-heavy UNSAT paths and cases where rephase increases conflicts/restarts.
+5. Search-path conflict-analysis details: failed-literal handling at decision level 1 and
+   special handling for conflict clauses with one current-level literal remain missing. Clause
+   shrinking and eager learned subsumption are also related, but cross into formula modification and
+   should wait until this search-control pass is measured.
+
+Status on 2026-05-13:
+
+- Item 1 landed as `SAT_RESTART_REUSE_GUARD=progress`, default-on. The guard observes each restart
+  window's learned-clause average glue. If the previous restart reused a nonzero trail prefix, the
+  next restart arrives within `SAT_RESTART_REUSE_GUARD_MIN_CONFLICTS` conflicts, and the window's
+  average glue worsened by `SAT_RESTART_REUSE_GUARD_GLUE_MARGIN`, reuse is disabled until
+  `SAT_RESTART_REUSE_GUARD_COOLDOWN` more conflicts have passed. The defaults are `128`
+  conflicts, `1024` cooldown conflicts, and a `1.05` glue margin.
+- Validation: `cargo test` passed 116 tests, and the default smoke suite passed 9/9 with UNSAT
+  proof checking (`log/2026-05-13-18-42-51`).
+- No-proof profiling on `benchmarks/profiling`, 120s timeout and 16 GB memory: default guard-on
+  solved 9/11 with PAR-2 `629.226`
+  (`log/bench-11-kissat-innovations-2026-05-13-18-15-12`); the same code with
+  `SAT_RESTART_REUSE_GUARD=off` solved 9/11 with PAR-2 `669.566`
+  (`log/bench-11-kissat-innovations-2026-05-13-18-22-21`); and `SAT_RESTART_REUSE=off` solved 9/11
+  with PAR-2 `722.942` (`log/bench-11-kissat-innovations-2026-05-13-18-33-10`). The guard improved
+  the local profile by `40.340s` versus guard-off reuse, mostly by moving `feistel_b64_k52_r17`
+  from `80.721s` to `40.977s`; reuse plus the guard improved by `93.716s` versus no reuse.
+- A traced default `feistel_b64_k52_r17` run reported `restart_reuse_guard=436/2/1`, so the guard
+  did fire on the instance that carries the win: 436 guard checks, 2 skipped reuse attempts, and 1
+  cooldown window.
 
 ## First Concrete Milestones
 

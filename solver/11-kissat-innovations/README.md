@@ -36,7 +36,10 @@ What is present:
   learned-glue EMA restart trigger, and `SAT_REDUCE_LOW_YIELD_COOLDOWN=<conflicts>` enables an
   opt-in cooldown after low-yield learned-clause reduction passes; Kissat-style restart trail reuse
   is now the default with the measured `SAT_RESTART_REUSE_CAP=8` setting; use
-  `SAT_RESTART_REUSE=off` for ablations, or `SAT_RESTART_REUSE_CAP=0` for uncapped reuse
+  `SAT_RESTART_REUSE=off` for ablations, or `SAT_RESTART_REUSE_CAP=0` for uncapped reuse. Dynamic
+  restart-reuse guarding is also default-on as `SAT_RESTART_REUSE_GUARD=progress`; it disables
+  reuse briefly when a reused restart window is short and learned-clause glue worsens. Use
+  `SAT_RESTART_REUSE_GUARD=off` for guard-only ablations.
 - Phase 7 phase-system scaffold: stable search can track `best_phase` and `target_phase` snapshots
   and runs a best/inverted/original rephase cycle by default with `SAT_REPHASE_INTERVAL=10000`; use
   `SAT_REPHASE_INTERVAL=0` to disable while comparing proof/search side effects
@@ -1066,3 +1069,48 @@ Analysis:
   walks to `9.832s`, `542423` conflicts, `1348218` decisions, `38983177` propagations, `183`
   restarts, `8` rephases, and `3` successful walks (`300` total steps, best unsat
   `616 -> 529`). This is a search-trajectory win, not a preprocessing difference.
+
+Dynamic restart-reuse guard validation on 2026-05-13:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_PROOF=0 bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling \
+  solver/11-kissat-innovations
+SAT_PROOF=0 SAT_RESTART_REUSE_GUARD=off bash tools/bench.sh -t 120 -m 16384 \
+  -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_RESTART_REUSE=off bash tools/bench.sh -t 120 -m 16384 \
+  -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_TRACE_SEARCH_INTERVAL=1000000000 \
+  bash solver/11-kissat-innovations/run.sh benchmarks/profiling/feistel_b64_k52_r17.cnf \
+  /tmp/sat-rrg-k52
+```
+
+Results:
+
+- `cargo test`: 116 passed.
+- default smoke suite: 9/9 passed, including UNSAT proof checking, log
+  `log/2026-05-13-18-42-51`.
+- default no-proof profiling with the guard on: solved 9/11, PAR-2 `629.226`, log
+  `log/bench-11-kissat-innovations-2026-05-13-18-15-12`.
+- guard-off ablation: solved 9/11, PAR-2 `669.566`, log
+  `log/bench-11-kissat-innovations-2026-05-13-18-22-21`.
+- reuse-off ablation: solved 9/11, PAR-2 `722.942`, log
+  `log/bench-11-kissat-innovations-2026-05-13-18-33-10`.
+- traced default `feistel_b64_k52_r17`: SAT in `41.024s`, with
+  `restart_reuse_guard=436/2/1`.
+
+Analysis:
+
+- The accepted guard watches restart windows after reused restarts. If the next restart arrives
+  within `SAT_RESTART_REUSE_GUARD_MIN_CONFLICTS=128` conflicts and the learned-clause average glue
+  is at least `1.05x` worse than the prior restart window, it skips reuse until
+  `SAT_RESTART_REUSE_GUARD_COOLDOWN=1024` more conflicts pass.
+- The profiling-set gain is `40.340s` PAR-2 versus the guard-off ablation with the same solved
+  split. The main movement is `feistel_b64_k52_r17`, which changed from `80.721s` guard-off to
+  `40.977s` guard-on. Other solved instances were within small timing noise.
+- Reuse remains valuable with the guard: default guard-on is `93.716s` PAR-2 faster than
+  `SAT_RESTART_REUSE=off`. No-reuse happened to solve `k52` faster (`32.533s` versus `40.977s`),
+  but lost more time on `k32`, timetable, Kakuro, and the random UNSAT rows.
+- The traced `k52` run confirms the guard is not dead code: it checked 436 restart windows, skipped
+  reuse twice, and entered cooldown once on the winning trajectory.
