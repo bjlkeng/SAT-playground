@@ -59,6 +59,14 @@ What is present:
   ablation.
 - Phase 8 lucky SAT shortcut: `SAT_LUCKY=shortcut` is the default and checks all-true/all-false
   candidate models after preprocessing but before CDCL search. Use `SAT_LUCKY=off` for ablations.
+- Phase 8 clause-weight reorder default: `SAT_REORDER=kissat` is now the default delayed
+  mode-aware variant after the 2026-05-12 follow-up request. It starts at `SAT_REORDER_INIT`
+  conflicts, repeats with linearly growing
+  `SAT_REORDER_INTERVAL` windows, rescales stable scores before adding weights, and reorders the
+  focused queue by weight plus existing recency. Use `SAT_REORDER=off` for the no-reorder
+  ablation or `SAT_REORDER=stable-weight` for the pre-search stable-heap experiment.
+- Full backward-subsumption / self-subsuming-resolution sweep is off by default after the same
+  follow-up request; use `SAT_FULL_BSR=on` to restore the previous full-BSR preprocessing behavior.
 
 What is intentionally not present yet:
 
@@ -811,3 +819,151 @@ Analysis:
 - The feature is kept as a default foundational shortcut rather than as a measured profiling-set
   speed win. It creates a safe pre-CDCL SAT return path with model extension, counters, and an
   ablation knob for the later four-pass lucky probing work.
+
+Stable clause-weight reorder validation on 2026-05-12:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_CHECK_INVARIANTS=1 bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_REORDER=stable-weight SAT_CHECK_INVARIANTS=1 \
+  bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_TRACE_PREPROCESS=1 SAT_PROOF=0 SAT_REORDER=stable-weight \
+  bash solver/11-kissat-innovations/run.sh benchmarks/profiling/feistel_b64_k32_r22.cnf \
+  /tmp/sat-reorder-feistel-k32
+SAT_TRACE_PREPROCESS=1 SAT_PROOF=0 SAT_SEARCH_MODE=focused SAT_REORDER=stable-weight \
+  timeout 5s bash solver/11-kissat-innovations/run.sh \
+  benchmarks/profiling/feistel_b64_k32_r22.cnf /tmp/sat-reorder-focused-k32
+SAT_PROOF=0 SAT_REORDER=stable-weight bash tools/bench.sh -t 120 -m 16384 \
+  -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling \
+  solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 104 passed.
+- default smoke suite: 9/9 passed, log `log/2026-05-12-20-38-11`.
+- default invariant smoke suite: 9/9 passed, log `log/2026-05-12-20-38-22`.
+- opt-in reorder invariant smoke suite: 9/9 passed, log `log/2026-05-12-20-51-26`.
+- traced `feistel_b64_k32_r22` preprocessing with `SAT_REORDER=stable-weight`: scanned `8111`
+  live clauses and `29701` literals, boosted `1200` variables, and spent `0.088ms` in reorder.
+- default-off profiling confirmation after the implementation: solved 8/11, PAR-2 `794.914`, log
+  `log/bench-11-kissat-innovations-2026-05-12-20-41-47`.
+- full opt-in reorder profiling: solved 8/11, PAR-2 `940.312`, log
+  `log/bench-11-kissat-innovations-2026-05-12-21-07-19`. Solved count was unchanged, but PAR-2
+  worsened by `145.398s`: `feistel_b64_k32_r22` `7.137s -> 20.349s`,
+  `feistel_b64_k52_r17` `5.210s -> 51.128s`, `feistel_b64_k57_r18`
+  `2.212s -> 42.423s`, timetable `28.566s -> 48.914s`, and `mp1`
+  `3.529s -> 27.559s`. The only wins were small: `random_v285_s2`
+  `3.609s -> 3.431s` and `random_v355_s3` `16.799s -> 14.538s`.
+- focused-mode opt-in trace confirmed the pass is skipped outside stable search:
+  `reorder=1/0/1`, `reorder_scanned=0/0/0`.
+
+Analysis:
+
+- The implementation is cheap locally but harmful as a search policy on the profiling set. The
+  direct `feistel_b64_k32_r22` trace with `SAT_REORDER=off` solved in `6.997s` with `187452`
+  conflicts, `209944` decisions, and `32638486` propagations. The stable-weight run took
+  `20.434s` with `506505` conflicts, `561757` decisions, and `94834877` propagations.
+- Keep `SAT_REORDER=stable-weight` as an opt-in foundation and maintenance-hook implementation, but
+  do not make it the default. It should not affect focused mode in the current implementation:
+  focused search uses a different queue policy, and the stable-weight hook intentionally skips when
+  `search_mode != Stable`. A focused reorder would need a separate queue/stamp policy and separate
+  validation rather than reusing this stable heap activity boost.
+
+Delayed Kissat-style reorder validation on 2026-05-12:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_CHECK_INVARIANTS=1 bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_REORDER=kissat SAT_REORDER_INIT=0 SAT_REORDER_INTERVAL=1 SAT_CHECK_INVARIANTS=1 \
+  bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_PROOF=0 SAT_REORDER=kissat bash tools/bench.sh -t 120 -m 16384 \
+  -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_REORDER=kissat SAT_TRACE_REORDER=1 SAT_TRACE_SEARCH_INTERVAL=1000000000 \
+  bash solver/11-kissat-innovations/run.sh benchmarks/profiling/feistel_b64_k32_r22.cnf \
+  /tmp/sat-reorder-kissat-delayed-k32
+```
+
+Results:
+
+- `cargo test`: 109 passed.
+- default smoke suite: 9/9 passed, log `log/2026-05-12-22-26-19`.
+- default invariant smoke suite: 9/9 passed, log `log/2026-05-12-22-26-23`.
+- forced delayed reorder invariant smoke suite: 9/9 passed, log `log/2026-05-12-22-26-31`.
+- full `SAT_REORDER=kissat` profiling: solved 8/11, PAR-2 `917.395`, log
+  `log/bench-11-kissat-innovations-2026-05-12-22-11-59`. This improves on the rejected
+  pre-search `stable-weight` PAR-2 `940.312`, but still regresses badly against default-off
+  `794.914`.
+- Against default-off, the largest regressions were `feistel_b64_k32_r22`
+  `7.137s -> 22.147s`, `feistel_b64_k52_r17` `5.210s -> 48.971s`,
+  `feistel_b64_k57_r18` `2.212s -> 15.443s`, timetable `28.566s -> 79.095s`,
+  and `mp1` `3.529s -> 12.617s`. Wins were limited to `random_v292_s4`
+  `7.852s -> 7.011s` and `random_v355_s3` `16.799s -> 7.416s`.
+- `feistel_b64_k32_r22` trace: 11 stable-mode reorder applications fired at roughly
+  `10k, 20k, 40k, 70k, 110k, 160k, 220k, 290k, 370k, 460k, 560k` conflicts. Most changed the
+  front branch variable; each pass scanned `8111` clauses and `29701` literals, boosted `1200`
+  variables, and cost about `0.16ms`. Final search grew to `616120` conflicts, `698970`
+  decisions, and `107241644` propagations.
+- One-instance `k32` sensitivity checks did not rescue the policy: `SAT_REORDER_INIT=50000`
+  / `SAT_REORDER_INTERVAL=50000` took `56.30s`; `100000/100000` took `26.91s`; starting in
+  focused mode with `SAT_REORDER=kissat` took `103.17s`.
+
+Analysis:
+
+- The smarter integration reduced some of the cold pre-search damage, but the structural signal is
+  still not aligned with solver 11's current search dynamics. The pass remains cheap; the loss is
+  search-path quality.
+- Keep both reorder modes opt-in for diagnostics. The next foundational work should move away from
+  clause-weight decision reordering and toward a precursor that changes the formula/search
+  substrate, such as binary transitive reduction or scheduled probing, before trying reorder again.
+
+Full-BSR-off reorder interaction experiment on 2026-05-12:
+
+```bash
+SAT_FULL_BSR=off SAT_PROOF=0 \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_FULL_BSR=off SAT_PROOF=0 SAT_REORDER=stable-weight \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_FULL_BSR=off SAT_PROOF=0 SAT_REORDER=kissat \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_FULL_BSR=off SAT_PROOF=0 SAT_REORDER=stable-weight SAT_TRACE_PREPROCESS=1 \
+  SAT_TRACE_SEARCH_INTERVAL=1000000000 \
+  bash solver/11-kissat-innovations/run.sh benchmarks/profiling/feistel_b64_k52_r17.cnf \
+  /tmp/sat-fullbsr-off-stable-k52
+```
+
+Results:
+
+- `SAT_FULL_BSR=off`, no reorder: solved 7/11, PAR-2 `1072.183`, log
+  `log/bench-11-kissat-innovations-2026-05-12-22-33-58`.
+- `SAT_FULL_BSR=off SAT_REORDER=stable-weight`: solved 9/11, PAR-2 `614.511`, log
+  `log/bench-11-kissat-innovations-2026-05-12-22-44-31`.
+- `SAT_FULL_BSR=off SAT_REORDER=kissat`: solved 9/11, PAR-2 `797.994`, log
+  `log/bench-11-kissat-innovations-2026-05-12-22-51-24`.
+- The pre-search `stable-weight` reorder recovered large no-full-BSR losses:
+  `feistel_b64_k52_r17` `TIMEOUT -> 2.205s`, `feistel_b64_k57_r18`
+  `30.130s -> 15.215s`, timetable `TIMEOUT -> 10.333s`, and Kakuro
+  `26.927s -> 22.725s`. It regressed `mp1` from `1.925s` to `28.296s`
+  and `random_v292_s4` from `7.761s` to `11.992s`.
+- The delayed `kissat` mode also improved over the no-reorder baseline, but less strongly:
+  `feistel_b64_k57_r18` `30.130s -> 2.637s`, timetable `TIMEOUT -> 87.020s`,
+  `random_v355_s3` `16.475s -> 7.368s`, while `k52` barely solved at `114.849s`.
+- The traced no-full-BSR `stable-weight` `k52` run showed preprocessing with no full BSR left
+  `6464` live original clauses and `23808` literals. Reorder scanned them in `0.114ms`, boosted
+  `948` variables, and the solver finished in `2.180s` with `108475` conflicts and `11207334`
+  propagations.
+
+Analysis:
+
+- Turning off full BSR changes the role of reorder completely. With full BSR on, clause-weight
+  reorder fights the simplified search trajectory. With full BSR off, the pre-search structural
+  ordering replaces some of the guidance that full BSR had been providing and wins decisively on
+  this 11-instance profiling set.
+- `SAT_FULL_BSR=off SAT_REORDER=stable-weight` is the best profiling-set result so far, but it
+  wins by trading a simplification policy for a search-path heuristic and may be brittle. Per the
+  2026-05-12 follow-up request, full BSR is now default-off and the delayed `SAT_REORDER=kissat`
+  policy is now the default; the stronger pre-search `stable-weight` combination remains an
+  explicit experiment to validate on a larger benchmark slice.

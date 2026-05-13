@@ -47,7 +47,7 @@ impl Solver {
             },
             Err(_) => {}
         }
-        true
+        false
     }
 
     pub(super) fn enter_simplification_mode(&mut self) {

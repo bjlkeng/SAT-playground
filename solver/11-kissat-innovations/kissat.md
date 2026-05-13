@@ -1016,6 +1016,67 @@ Dependencies:
 - Stable-only version can happen early.
 - Focused integration depends on item E.
 
+Status on 2026-05-12:
+
+- Stable-only implementation landed behind `SAT_REORDER=stable-weight`; default remains off.
+- The pass scans live original clauses after preprocessing, computes polarity-aware literal weights
+  with binary clauses at `1` and each larger clause halved per extra literal, then adds
+  `max(pos, neg) + 2*min(pos, neg)` into stable heap activity. It rebuilds the stable branch heap
+  and is wired into the existing root `Reorder` maintenance hook. This legacy pre-search mode still
+  skips focused-mode queue ordering.
+- Delayed mode-aware implementation landed as `SAT_REORDER=kissat`; after the 2026-05-12 follow-up
+  request this is now the default. It skips pre-search reorder, starts at `SAT_REORDER_INIT`
+  conflicts, repeats with linearly growing `SAT_REORDER_INTERVAL` windows, skips satisfied clauses,
+  caps effective clause size with `SAT_REORDER_MAX_CLAUSE_SIZE`, rescales stable heap scores before
+  adding raw weights, and reorders the focused queue by weight with existing recency as the
+  tie-breaker.
+- Validation: `cargo test` passed 104 tests, default smoke passed 9/9
+  (`log/2026-05-12-20-38-11`), default invariant smoke passed 9/9
+  (`log/2026-05-12-20-38-22`), and opt-in reorder invariant smoke passed 9/9
+  (`log/2026-05-12-20-51-26`).
+- Default-off profiling after the implementation solved 8/11 with PAR-2 `794.914`
+  (`log/bench-11-kissat-innovations-2026-05-12-20-41-47`), consistent with the existing default
+  profile envelope.
+- Full opt-in profiling rejected this as a default policy: `SAT_REORDER=stable-weight` solved the
+  same 8/11 but worsened PAR-2 to `940.312`
+  (`log/bench-11-kissat-innovations-2026-05-12-21-07-19`). Major regressions were
+  `feistel_b64_k32_r22` `7.137s -> 20.349s`, `feistel_b64_k52_r17` `5.210s -> 51.128s`,
+  `feistel_b64_k57_r18` `2.212s -> 42.423s`, timetable `28.566s -> 48.914s`, and `mp1`
+  `3.529s -> 27.559s`; only `random_v285_s2` and `random_v355_s3` improved slightly. Direct `k32`
+  traces showed the pass itself was cheap (`0.088ms` for `8111` clauses / `29701` literals /
+  `1200` boosted variables), but the search path worsened from `187452` conflicts and `32638486`
+  propagations to `506505` conflicts and `94834877` propagations.
+- Focused mode should not be affected by this implementation. The hook intentionally skips when
+  `search_mode != Stable`; a focused opt-in trace showed `reorder=1/0/1` and scanned no clauses.
+  A useful focused reorder would need a separate focused-queue/stamp policy and its own validation.
+- Delayed `SAT_REORDER=kissat` validation passed 109 unit tests, default smoke
+  (`log/2026-05-12-22-26-19`), default invariant smoke (`log/2026-05-12-22-26-23`), and forced
+  delayed reorder invariant smoke (`log/2026-05-12-22-26-31`). Full profiling solved 8/11 but
+  regressed PAR-2 to `917.395` (`log/bench-11-kissat-innovations-2026-05-12-22-11-59`). This was
+  better than pre-search `stable-weight` at `940.312`, but still much worse than default-off
+  `794.914`. A traced `k32` run fired 11 stable reorder passes, each around `0.16ms`, and still
+  grew to `616120` conflicts / `107241644` propagations. Less frequent `k32` schedules
+  (`50000/50000`, `100000/100000`) and focused-start reorder (`SAT_SEARCH_MODE=focused`) remained
+  bad at `56.30s`, `26.91s`, and `103.17s` respectively.
+- Conclusion: clause-weight reorder is implemented as a useful opt-in diagnostic foundation, but is
+  rejected as a default and should not be the next optimization target until more structural
+  inprocessing, such as binary transitive reduction or scheduled probing, changes the search
+  substrate.
+- Follow-up with `SAT_FULL_BSR=off` changed that conclusion for the profiling set. No-reorder with
+  full BSR disabled solved only 7/11 with PAR-2 `1072.183`
+  (`log/bench-11-kissat-innovations-2026-05-12-22-33-58`). The pre-search
+  `SAT_REORDER=stable-weight` mode solved 9/11 with PAR-2 `614.511`
+  (`log/bench-11-kissat-innovations-2026-05-12-22-44-31`), recovering `k52`
+  (`TIMEOUT -> 2.205s`) and timetable (`TIMEOUT -> 10.333s`) at the cost of a large `mp1`
+  regression (`1.925s -> 28.296s`). Delayed `SAT_REORDER=kissat` solved 9/11 with PAR-2
+  `797.994` (`log/bench-11-kissat-innovations-2026-05-12-22-51-24`). A traced
+  no-full-BSR `stable-weight` `k52` run showed reorder cost only `0.114ms`, then solved in
+  `2.180s` with `108475` conflicts. This means reorder is harmful after full BSR but can substitute
+  for some missing structural guidance when full BSR is off. Do not default this from the small
+  profiling set alone; validate on a larger slice first. Per the 2026-05-12 follow-up request,
+  full BSR is now default-off and delayed `SAT_REORDER=kissat` is now the default; pre-search
+  `stable-weight` remains an explicit experiment.
+
 ### P. Add binary transitive reduction
 
 Goal:
@@ -1837,6 +1898,12 @@ Status on 2026-05-12:
   (`log/bench-11-kissat-innovations-2026-05-12-16-36-29`); `SAT_LUCKY=off` solved 8/11 with PAR-2
   `793.828` (`log/bench-11-kissat-innovations-2026-05-12-16-44-02`). The `0.363s` delta is noise,
   so this is kept as a low-risk foundation for later probing rather than a profile-set speed win.
+- Clause-weight reordering landed as a foundation. Full-BSR-on profiling rejected both the
+  pre-search stable mode (`SAT_REORDER=stable-weight`) and delayed mode-aware mode
+  (`SAT_REORDER=kissat`) as defaults, but the no-full-BSR follow-up changed the requested default:
+  full BSR is now off by default and `SAT_REORDER=kissat` is now default-on. The stronger
+  `SAT_FULL_BSR=off SAT_REORDER=stable-weight` combination remains an explicit larger-benchmark
+  validation candidate.
 
 ### Phase 9. Probing and structural inprocessing
 

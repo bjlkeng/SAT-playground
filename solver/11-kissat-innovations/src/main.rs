@@ -55,6 +55,8 @@ const DEFAULT_RESTART_GLUE_SLOW_ALPHA: f64 = 0.0005;
 const DEFAULT_RESTART_GLUE_MARGIN: f64 = 1.25;
 const DEFAULT_REDUCE_LOW_YIELD_MIN_DELETIONS: usize = 16;
 const DEFAULT_REPHASE_INTERVAL: usize = 10_000;
+const DEFAULT_REORDER_INTERVAL: usize = 10_000;
+const DEFAULT_REORDER_MAX_CLAUSE_SIZE: usize = 100;
 const DEFAULT_RELUCTANT_INTERVAL: u64 = 1 << 10;
 const DEFAULT_RELUCTANT_LIMIT: u64 = 1 << 20;
 const DEFAULT_FOCUSED_REDUCE_LOW_YIELD_COOLDOWN: usize = 100;
@@ -166,6 +168,27 @@ enum LuckyMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReorderMode {
+    Off,
+    StableWeight,
+    Kissat,
+}
+
+impl ReorderMode {
+    fn presearch_enabled(self) -> bool {
+        self == ReorderMode::StableWeight
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ReorderWeightStats {
+    scanned_clauses: u64,
+    scanned_literals: u64,
+    satisfied_skipped: u64,
+    boosted_vars: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RephaseKind {
     Best,
     Inverted,
@@ -249,13 +272,15 @@ struct MaintenanceScheduler {
     next_probe: u64,
     next_eliminate: u64,
     mode_switch_count: u64,
+    reorder_count: u64,
     rephase_count: u64,
 }
 
 impl MaintenanceScheduler {
-    fn from_env() -> Self {
+    fn from_env(reorder_mode: ReorderMode) -> Self {
         let mode_switch_interval = parse_mode_switch_interval_env() as u64;
-        let reorder_interval = parse_optional_usize_env("SAT_MAINT_REORDER_INTERVAL") as u64;
+        let reorder_initial = parse_reorder_initial_interval_env(reorder_mode) as u64;
+        let reorder_interval = parse_reorder_interval_env(reorder_mode) as u64;
         let rephase_interval = parse_rephase_interval_env() as u64;
         let probe_interval = parse_optional_usize_env("SAT_MAINT_PROBE_INTERVAL") as u64;
         let eliminate_interval = parse_optional_usize_env("SAT_MAINT_ELIMINATE_INTERVAL") as u64;
@@ -266,11 +291,12 @@ impl MaintenanceScheduler {
             probe_interval,
             eliminate_interval,
             next_mode_switch: mode_switch_interval,
-            next_reorder: reorder_interval,
+            next_reorder: reorder_initial,
             next_rephase: rephase_interval,
             next_probe: probe_interval,
             next_eliminate: eliminate_interval,
             mode_switch_count: 0,
+            reorder_count: 0,
             rephase_count: 0,
         }
     }
@@ -297,6 +323,10 @@ impl MaintenanceScheduler {
         let log = ((count + 9) as f64).log10();
         let scaled = (base as f64) * (count as f64) * log * log * log * log;
         scaled.ceil().max(1.0) as u64
+    }
+
+    fn scaled_reorder_interval(base: u64, count: u64) -> u64 {
+        base.saturating_mul(count.max(1)).max(1)
     }
 
     fn next_root_action(&self, conflicts: u64) -> Option<MaintenanceAction> {
@@ -326,7 +356,10 @@ impl MaintenanceScheduler {
                 self.next_mode_switch = conflicts.saturating_add(interval);
             }
             MaintenanceAction::Reorder => {
-                self.next_reorder = conflicts.saturating_add(self.reorder_interval.max(1));
+                self.reorder_count = self.reorder_count.saturating_add(1);
+                let interval =
+                    Self::scaled_reorder_interval(self.reorder_interval, self.reorder_count);
+                self.next_reorder = conflicts.saturating_add(interval);
             }
             MaintenanceAction::Rephase => {
                 self.rephase_count = self.rephase_count.saturating_add(1);
@@ -544,6 +577,7 @@ struct SolverStats {
     maintenance_restarts: u64,
     maintenance_mode_switches: u64,
     maintenance_rephases: u64,
+    maintenance_reorders: u64,
     restart_glue_ema_triggers: u64,
     restart_reluctant_triggers: u64,
     restart_reused_trails: u64,
@@ -564,6 +598,17 @@ struct SolverStats {
     lucky_checked_clauses: u64,
     lucky_checked_literals: u64,
     lucky_time_ns: u64,
+    reorder_calls: u64,
+    reorder_applied: u64,
+    reorder_stable_applied: u64,
+    reorder_focused_applied: u64,
+    reorder_skipped: u64,
+    reorder_scanned_clauses: u64,
+    reorder_scanned_literals: u64,
+    reorder_satisfied_skipped: u64,
+    reorder_boosted_vars: u64,
+    reorder_front_changes: u64,
+    reorder_time_ns: u64,
     mode_switches: u64,
     mode_switch_to_stable: u64,
     mode_switch_to_focused: u64,
@@ -885,6 +930,10 @@ struct Solver {
     reason_side_bump_limit: usize,
     /// cheap pre-search SAT shortcut policy
     lucky_mode: LuckyMode,
+    /// optional root-level clause-weight decision reordering for stable search
+    reorder_mode: ReorderMode,
+    /// maximum effective irredundant clause size considered for Kissat-style reordering
+    reorder_max_clause_size: usize,
     /// fast moving average of learned-clause glue for glue-EMA restarts
     restart_glue_fast_ema: f64,
     /// slow moving average of learned-clause glue for glue-EMA restarts
@@ -990,6 +1039,9 @@ struct Solver {
     scratch_analyze_stack: Vec<(usize, i32)>,
     scratch_glue_seen: Vec<u32>,
     scratch_glue_stamp: u32,
+    scratch_reorder_weights: Vec<f64>,
+    scratch_reorder_pos_weights: Vec<f64>,
+    scratch_reorder_neg_weights: Vec<f64>,
     /// 0 = none, 1 = basic, 2 = deep
     ccmin_mode: u8,
     /// compatibility fallback for the older solver-10 conflict analyzer
@@ -1323,6 +1375,7 @@ impl Solver {
         };
         let (reason_side_bump_mode, reason_side_bump_limit) = parse_reason_side_bump_config();
         let lucky_mode = parse_lucky_mode();
+        let reorder_mode = parse_reorder_mode();
 
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
         let arena = Vec::with_capacity(total_words);
@@ -1386,6 +1439,8 @@ impl Solver {
             reason_side_bump_mode,
             reason_side_bump_limit,
             lucky_mode,
+            reorder_mode,
+            reorder_max_clause_size: parse_reorder_max_clause_size_env(),
             restart_glue_fast_ema: 0.0,
             restart_glue_slow_ema: 0.0,
             restart_glue_ema_initialized: false,
@@ -1405,7 +1460,7 @@ impl Solver {
                 parse_u64_env("SAT_RELUCTANT_INTERVAL", DEFAULT_RELUCTANT_INTERVAL),
                 parse_u64_env("SAT_RELUCTANT_LIMIT", DEFAULT_RELUCTANT_LIMIT),
             ),
-            maintenance_scheduler: MaintenanceScheduler::from_env(),
+            maintenance_scheduler: MaintenanceScheduler::from_env(reorder_mode),
             reduce_db_limit: ((original_clause_count as f64) * LEARNTSIZE_FACTOR) as usize,
             reduce_mode: parse_reduce_mode(),
             search_mode: parse_search_mode(),
@@ -1463,6 +1518,9 @@ impl Solver {
             scratch_analyze_stack: Vec::with_capacity(16),
             scratch_glue_seen: vec![0; num_vars + 1],
             scratch_glue_stamp: 0,
+            scratch_reorder_weights: vec![0.0; num_vars + 1],
+            scratch_reorder_pos_weights: vec![0.0; num_vars + 1],
+            scratch_reorder_neg_weights: vec![0.0; num_vars + 1],
             ccmin_mode: CCMIN_DEEP,
             use_resolved_conflict_analysis: false,
             binary_propagation_mode,
@@ -2842,6 +2900,235 @@ impl Solver {
         }
     }
 
+    fn reorder_clause_weight(clause_len: usize, max_clause_size: usize) -> f64 {
+        if clause_len == 0 {
+            return 0.0;
+        }
+        if clause_len <= 2 {
+            return 1.0;
+        }
+        let capped_len = clause_len.min(max_clause_size.max(2));
+        2.0f64.powi(-((capped_len - 2).min(30) as i32))
+    }
+
+    fn compute_clause_weight_reorder_weights(&mut self) -> ReorderWeightStats {
+        self.scratch_reorder_weights.fill(0.0);
+        self.scratch_reorder_pos_weights.fill(0.0);
+        self.scratch_reorder_neg_weights.fill(0.0);
+        let mut scan = ReorderWeightStats::default();
+        let max_clause_size = self.reorder_max_clause_size.max(2);
+        for idx in 0..self.original_clause_ids.len() {
+            let clause_idx = self.original_clause_ids[idx];
+            if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
+                continue;
+            }
+
+            let clause_len = self.clause_len(clause_idx);
+            if clause_len == 0 {
+                continue;
+            }
+
+            let mut active_len = 0usize;
+            let mut satisfied = false;
+            for lit_pos in 0..clause_len {
+                let lit = self.clause_lit(clause_idx, lit_pos);
+                match self.lit_value(lit) {
+                    TRUE => {
+                        satisfied = true;
+                        break;
+                    }
+                    UNASSIGNED => {
+                        let var = lit.unsigned_abs() as usize;
+                        if self.decision_var[var] && active_len < max_clause_size {
+                            active_len += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if satisfied {
+                scan.satisfied_skipped += 1;
+                continue;
+            }
+            if active_len == 0 {
+                continue;
+            }
+
+            let weight = Self::reorder_clause_weight(active_len, max_clause_size);
+            if weight == 0.0 {
+                continue;
+            }
+
+            scan.scanned_clauses += 1;
+            scan.scanned_literals += clause_len as u64;
+            for lit_pos in 0..clause_len {
+                let lit = self.clause_lit(clause_idx, lit_pos);
+                let var = lit.unsigned_abs() as usize;
+                if self.decision_var[var] && self.assignment[var] == UNASSIGNED {
+                    if lit > 0 {
+                        self.scratch_reorder_pos_weights[var] += weight;
+                    } else {
+                        self.scratch_reorder_neg_weights[var] += weight;
+                    }
+                }
+            }
+        }
+
+        let mut boosted_vars = 0u64;
+        for var in 1..self.assignment.len() {
+            let pos_weight = self.scratch_reorder_pos_weights[var];
+            let neg_weight = self.scratch_reorder_neg_weights[var];
+            let weight = pos_weight.max(neg_weight) + 2.0 * pos_weight.min(neg_weight);
+            self.scratch_reorder_weights[var] = weight;
+            if weight > 0.0 {
+                boosted_vars += 1;
+            }
+        }
+        scan.boosted_vars = boosted_vars;
+        scan
+    }
+
+    fn current_reorder_front_var(&self) -> Option<usize> {
+        match self.search_mode {
+            SearchMode::Stable => self
+                .branch_heap
+                .iter()
+                .map(|&var| var as usize)
+                .find(|&var| self.decision_var[var] && self.assignment[var] == UNASSIGNED),
+            SearchMode::Focused => {
+                let mut cursor = self.focused_head;
+                while cursor != 0 {
+                    if self.decision_var[cursor] && self.assignment[cursor] == UNASSIGNED {
+                        return Some(cursor);
+                    }
+                    cursor = self.focused_next[cursor];
+                }
+                None
+            }
+        }
+    }
+
+    fn rescale_variable_activity_for_reorder(&mut self) {
+        let max_activity = self
+            .branch_heap
+            .iter()
+            .map(|&var| self.activity[var as usize])
+            .fold(0.0, f64::max);
+        let rescale = max_activity.max(self.activity_inc);
+        if rescale <= 0.0 || !rescale.is_finite() {
+            return;
+        }
+        let factor = 1.0 / rescale;
+        for value in &mut self.activity[1..] {
+            *value *= factor;
+        }
+        self.activity_inc *= factor;
+    }
+
+    fn apply_stable_clause_weight_reorder(&mut self, scale_by_activity_inc: bool) {
+        if !scale_by_activity_inc {
+            self.rescale_variable_activity_for_reorder();
+        }
+        for var in 1..self.assignment.len() {
+            let weight = self.scratch_reorder_weights[var];
+            if weight > 0.0 {
+                let boost = if scale_by_activity_inc {
+                    weight * self.activity_inc
+                } else {
+                    weight
+                };
+                self.activity[var] += boost;
+            }
+        }
+        self.rebuild_branch_queue();
+        self.stats.reorder_stable_applied += 1;
+    }
+
+    fn apply_focused_clause_weight_reorder(&mut self) {
+        let mut sorted = Vec::with_capacity(self.assignment.len().saturating_sub(1));
+        for var in 1..self.assignment.len() {
+            if self.decision_var[var] && self.assignment[var] == UNASSIGNED {
+                sorted.push(var);
+            }
+        }
+        sorted.sort_unstable_by(|&lhs, &rhs| {
+            self.scratch_reorder_weights[lhs]
+                .total_cmp(&self.scratch_reorder_weights[rhs])
+                .then_with(|| self.focused_stamp[lhs].cmp(&self.focused_stamp[rhs]))
+                .then_with(|| rhs.cmp(&lhs))
+        });
+        self.focused_queue_clear();
+        for var in sorted {
+            self.focused_queue_push_front(var);
+        }
+        self.stats.reorder_focused_applied += 1;
+    }
+
+    fn run_presearch_clause_weight_reorder(&mut self) -> bool {
+        if self.reorder_mode.presearch_enabled() {
+            self.run_clause_weight_reorder()
+        } else {
+            true
+        }
+    }
+
+    fn run_clause_weight_reorder(&mut self) -> bool {
+        if self.reorder_mode == ReorderMode::Off {
+            return true;
+        }
+
+        let reorder_start = Instant::now();
+        self.stats.reorder_calls += 1;
+        if self.reorder_mode == ReorderMode::StableWeight && self.search_mode != SearchMode::Stable
+        {
+            self.stats.reorder_skipped += 1;
+            self.stats.reorder_time_ns += elapsed_ns(reorder_start);
+            return true;
+        }
+
+        let before_front = self.current_reorder_front_var();
+        let scan = self.compute_clause_weight_reorder_weights();
+        match self.search_mode {
+            SearchMode::Stable => {
+                self.apply_stable_clause_weight_reorder(
+                    self.reorder_mode == ReorderMode::StableWeight,
+                );
+            }
+            SearchMode::Focused => {
+                self.apply_focused_clause_weight_reorder();
+            }
+        }
+        let after_front = self.current_reorder_front_var();
+        if before_front != after_front {
+            self.stats.reorder_front_changes += 1;
+        }
+
+        self.stats.reorder_applied += 1;
+        self.stats.reorder_scanned_clauses += scan.scanned_clauses;
+        self.stats.reorder_scanned_literals += scan.scanned_literals;
+        self.stats.reorder_satisfied_skipped += scan.satisfied_skipped;
+        self.stats.reorder_boosted_vars += scan.boosted_vars;
+        let elapsed_ns = elapsed_ns(reorder_start);
+        self.stats.reorder_time_ns += elapsed_ns;
+        if env::var_os("SAT_TRACE_REORDER").is_some() {
+            eprintln!(
+                "c reorder mode={:?} search_mode={} conflicts={} front={:?}->{:?} scanned={}/{}/{} satisfied_skip={} boosted={} ms={:.3}",
+                self.reorder_mode,
+                self.search_mode.name(),
+                self.stats.conflicts,
+                before_front,
+                after_front,
+                scan.scanned_clauses,
+                scan.scanned_literals,
+                scan.boosted_vars,
+                scan.satisfied_skipped,
+                scan.boosted_vars,
+                elapsed_ns as f64 / 1e6,
+            );
+        }
+        true
+    }
+
     fn branch_var_better(&self, lhs: usize, rhs: usize) -> bool {
         self.activity[lhs]
             .total_cmp(&self.activity[rhs])
@@ -3821,11 +4108,12 @@ impl Solver {
             MaintenanceAction::Restart => self.stats.maintenance_restarts += 1,
             MaintenanceAction::SwitchMode => self.stats.maintenance_mode_switches += 1,
             MaintenanceAction::Rephase => self.stats.maintenance_rephases += 1,
+            MaintenanceAction::Reorder => self.stats.maintenance_reorders += 1,
             MaintenanceAction::RootSimplify => self.stats.maintenance_root_simplifies += 1,
             MaintenanceAction::ReduceDb => self.stats.maintenance_reductions += 1,
-            MaintenanceAction::Reorder
-            | MaintenanceAction::Probe
-            | MaintenanceAction::Eliminate => self.stats.maintenance_noops += 1,
+            MaintenanceAction::Probe | MaintenanceAction::Eliminate => {
+                self.stats.maintenance_noops += 1
+            }
         }
     }
 
@@ -3888,9 +4176,8 @@ impl Solver {
         match action {
             MaintenanceAction::SwitchMode => self.maybe_switch_search_mode(),
             MaintenanceAction::Rephase => self.run_rephase(),
-            MaintenanceAction::Reorder
-            | MaintenanceAction::Probe
-            | MaintenanceAction::Eliminate => true,
+            MaintenanceAction::Reorder => self.run_clause_weight_reorder(),
+            MaintenanceAction::Probe | MaintenanceAction::Eliminate => true,
             MaintenanceAction::Restart
             | MaintenanceAction::RootSimplify
             | MaintenanceAction::ReduceDb => true,
@@ -5137,9 +5424,12 @@ impl Solver {
         self.eager_detach_watchers = parse_bool_env("SAT_EAGER_DETACH_WATCHERS", false);
         self.configure_static_binary_implications();
         let lucky_sat = self.try_lucky_shortcut();
+        if !lucky_sat && !self.run_presearch_clause_weight_reorder() {
+            return false;
+        }
         if env::var_os("SAT_TRACE_PREPROCESS").is_some() {
             eprintln!(
-                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} original_binary={} learned_binary={} static_binary={} static_implications={} dense_entries={} dense_resumes={} dense_occurrence_ms={:.3} dense_resume_ms={:.3} root_assigns={} lucky={}/{}/{}/{} lucky_checked={}/{} lucky_ms={:.3} deleted_clauses={} deleted_words={} shrunk_words={} gc={} gc_copied_words={} gc_reclaimed_words={} gc_ms={:.3} proof_clauses={} proof_bytes={} reduce_db_limit={}",
+                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} original_binary={} learned_binary={} static_binary={} static_implications={} dense_entries={} dense_resumes={} dense_occurrence_ms={:.3} dense_resume_ms={:.3} root_assigns={} lucky={}/{}/{}/{} lucky_checked={}/{} lucky_ms={:.3} reorder={}/{}/{} reorder_scanned={}/{}/{} reorder_ms={:.3} deleted_clauses={} deleted_words={} shrunk_words={} gc={} gc_copied_words={} gc_reclaimed_words={} gc_ms={:.3} proof_clauses={} proof_bytes={} reduce_db_limit={}",
                 preprocess_ns as f64 / 1e9,
                 self.stats.preprocess_eliminated_vars,
                 self.stats.preprocess_resolvents,
@@ -5164,6 +5454,13 @@ impl Solver {
                 self.stats.lucky_checked_clauses,
                 self.stats.lucky_checked_literals,
                 self.stats.lucky_time_ns as f64 / 1e6,
+                self.stats.reorder_calls,
+                self.stats.reorder_applied,
+                self.stats.reorder_skipped,
+                self.stats.reorder_scanned_clauses,
+                self.stats.reorder_scanned_literals,
+                self.stats.reorder_boosted_vars,
+                self.stats.reorder_time_ns as f64 / 1e6,
                 self.stats.deleted_clauses,
                 self.stats.deleted_words,
                 self.stats.shrunk_words,
@@ -5759,6 +6056,58 @@ fn parse_lucky_mode() -> LuckyMode {
         },
         Err(_) => LuckyMode::Shortcut,
     }
+}
+
+fn parse_reorder_mode() -> ReorderMode {
+    match env::var("SAT_REORDER") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "0" | "off" | "false" | "no" | "disabled" | "none" => ReorderMode::Off,
+            "1" | "on" | "true" | "yes" | "stable" | "weight" | "stable-weight"
+            | "stable_weight" | "clause-weight" | "clause_weight" => ReorderMode::StableWeight,
+            "kissat" | "delayed" | "scheduled" | "smart" | "mode-aware" | "mode_aware" => {
+                ReorderMode::Kissat
+            }
+            other => {
+                eprintln!("Invalid SAT_REORDER={other}; expected off/stable-weight/kissat");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => ReorderMode::Kissat,
+    }
+}
+
+fn parse_reorder_initial_interval_env(mode: ReorderMode) -> usize {
+    if env::var("SAT_REORDER_INIT").is_ok() {
+        parse_usize_env("SAT_REORDER_INIT", 0)
+    } else if env::var("SAT_MAINT_REORDER_INIT").is_ok() {
+        parse_usize_env("SAT_MAINT_REORDER_INIT", 0)
+    } else if env::var("SAT_MAINT_REORDER_INTERVAL").is_ok() {
+        parse_usize_env("SAT_MAINT_REORDER_INTERVAL", 0)
+    } else if mode == ReorderMode::Kissat {
+        DEFAULT_REORDER_INTERVAL
+    } else {
+        0
+    }
+}
+
+fn parse_reorder_interval_env(mode: ReorderMode) -> usize {
+    if env::var("SAT_REORDER_INTERVAL").is_ok() {
+        parse_usize_env("SAT_REORDER_INTERVAL", 0)
+    } else if env::var("SAT_MAINT_REORDER_INTERVAL").is_ok() {
+        parse_usize_env("SAT_MAINT_REORDER_INTERVAL", 0)
+    } else if mode == ReorderMode::Kissat {
+        DEFAULT_REORDER_INTERVAL
+    } else {
+        0
+    }
+}
+
+fn parse_reorder_max_clause_size_env() -> usize {
+    parse_usize_env(
+        "SAT_REORDER_MAX_CLAUSE_SIZE",
+        DEFAULT_REORDER_MAX_CLAUSE_SIZE,
+    )
+    .max(2)
 }
 
 fn parse_usize_env(name: &str, default: usize) -> usize {
@@ -7296,6 +7645,151 @@ mod tests {
         assert_eq!(s.pick_branch_lit(), Some(-2));
         assert_eq!(s.stats.target_phase_decisions, 1);
         assert_eq!(s.stats.saved_phase_decisions, 0);
+    }
+
+    #[test]
+    fn test_stable_clause_weight_reorder_prioritizes_short_clause_variables() {
+        let mut s = make_solver(6, vec![vec![1, 4, 5, 6], vec![2, 3], vec![-2, 4, 5, 6]]);
+        s.reorder_mode = ReorderMode::StableWeight;
+
+        assert!(s.run_clause_weight_reorder());
+
+        assert_eq!(s.stats.reorder_calls, 1);
+        assert_eq!(s.stats.reorder_applied, 1);
+        assert_eq!(s.stats.reorder_scanned_clauses, 3);
+        assert_eq!(s.stats.reorder_scanned_literals, 10);
+        assert_eq!(s.stats.reorder_boosted_vars, 6);
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+    }
+
+    #[test]
+    fn test_clause_weight_reorder_ignores_deleted_and_nondecision_variables() {
+        let mut s = make_solver(4, vec![vec![1, 2], vec![3, 4]]);
+        s.reorder_mode = ReorderMode::StableWeight;
+        let first_clause = s.original_clause_ids[0];
+        s.delete_clause_for_simplify(first_clause);
+        s.decision_var[3] = false;
+        s.branch_heap_remove(3);
+
+        assert!(s.run_clause_weight_reorder());
+
+        assert_eq!(s.stats.reorder_scanned_clauses, 1);
+        assert_eq!(s.stats.reorder_scanned_literals, 2);
+        assert_eq!(s.stats.reorder_boosted_vars, 1);
+        assert_eq!(s.activity[1], 0.0);
+        assert_eq!(s.activity[2], 0.0);
+        assert_eq!(s.activity[3], 0.0);
+        assert!(s.activity[4] > 0.0);
+        assert_eq!(s.pick_branch_lit(), Some(-4));
+    }
+
+    #[test]
+    fn test_clause_weight_reorder_can_be_disabled() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![2, 3]]);
+        s.reorder_mode = ReorderMode::Off;
+
+        assert!(s.run_clause_weight_reorder());
+
+        assert_eq!(s.stats.reorder_calls, 0);
+        assert_eq!(s.stats.reorder_applied, 0);
+        assert_eq!(s.activity[1], 0.0);
+        assert_eq!(s.activity[2], 0.0);
+        assert_eq!(s.activity[3], 0.0);
+    }
+
+    #[test]
+    fn test_kissat_reorder_does_not_run_before_search() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![2, 3]]);
+        s.reorder_mode = ReorderMode::Kissat;
+
+        assert!(s.run_presearch_clause_weight_reorder());
+
+        assert_eq!(s.stats.reorder_calls, 0);
+        assert_eq!(s.activity[1], 0.0);
+        assert_eq!(s.activity[2], 0.0);
+        assert_eq!(s.activity[3], 0.0);
+    }
+
+    #[test]
+    fn test_kissat_stable_reorder_skips_satisfied_clauses_and_rescales() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![2, 3]]);
+        s.reorder_mode = ReorderMode::Kissat;
+        s.activity[1] = 100.0;
+        s.activity_inc = 100.0;
+        assert!(s.enqueue(1, NO_REASON));
+
+        assert!(s.run_clause_weight_reorder());
+
+        assert_eq!(s.stats.reorder_calls, 1);
+        assert_eq!(s.stats.reorder_applied, 1);
+        assert_eq!(s.stats.reorder_stable_applied, 1);
+        assert_eq!(s.stats.reorder_satisfied_skipped, 1);
+        assert_eq!(s.stats.reorder_scanned_clauses, 1);
+        assert_eq!(s.stats.reorder_scanned_literals, 2);
+        assert_eq!(s.stats.reorder_boosted_vars, 2);
+        assert!(s.activity_inc <= 1.0);
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+    }
+
+    #[test]
+    fn test_kissat_focused_reorder_prioritizes_weighted_variables() {
+        let mut s = make_solver(4, vec![vec![2, 3], vec![-2, 4]]);
+        s.reorder_mode = ReorderMode::Kissat;
+        s.search_mode = SearchMode::Focused;
+        s.rebuild_branch_queue();
+
+        assert!(s.run_clause_weight_reorder());
+
+        assert_eq!(s.stats.reorder_calls, 1);
+        assert_eq!(s.stats.reorder_applied, 1);
+        assert_eq!(s.stats.reorder_focused_applied, 1);
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+    }
+
+    #[test]
+    fn test_kissat_focused_reorder_preserves_recency_ties() {
+        let mut s = make_solver(3, vec![]);
+        s.reorder_mode = ReorderMode::Kissat;
+        s.search_mode = SearchMode::Focused;
+        s.focused_queue_clear();
+        s.focused_queue_push_front(1);
+        s.focused_queue_push_front(2);
+        s.focused_queue_push_front(3);
+
+        assert!(s.run_clause_weight_reorder());
+
+        assert_eq!(s.stats.reorder_focused_applied, 1);
+        assert_eq!(s.pick_branch_lit(), Some(-3));
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+        assert_eq!(s.pick_branch_lit(), Some(-1));
+    }
+
+    #[test]
+    fn test_root_maintenance_reorder_runs_clause_weight_hook() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![2, 3]]);
+        s.reorder_mode = ReorderMode::StableWeight;
+
+        assert!(s.run_root_maintenance_action(MaintenanceAction::Reorder));
+
+        assert_eq!(s.stats.reorder_calls, 1);
+        assert_eq!(s.stats.reorder_applied, 1);
+        assert!(s.activity[2] > s.activity[1]);
+        assert!(s.activity[2] > s.activity[3]);
+    }
+
+    #[test]
+    fn test_root_maintenance_reorder_runs_kissat_focused_hook() {
+        let mut s = make_solver(4, vec![vec![2, 3], vec![-2, 4]]);
+        s.reorder_mode = ReorderMode::Kissat;
+        s.search_mode = SearchMode::Focused;
+        s.rebuild_branch_queue();
+
+        assert!(s.run_root_maintenance_action(MaintenanceAction::Reorder));
+
+        assert_eq!(s.stats.reorder_calls, 1);
+        assert_eq!(s.stats.reorder_applied, 1);
+        assert_eq!(s.stats.reorder_focused_applied, 1);
+        assert_eq!(s.pick_branch_lit(), Some(-2));
     }
 
     #[test]
