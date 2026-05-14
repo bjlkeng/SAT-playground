@@ -75,7 +75,10 @@ What is present:
 - Phase 7 phase-source defaults: bounded pre-search warmup and scheduled local-search walking are
   now enabled by default after the 2026-05-13 follow-up confirmation run. Warmup makes ordinary
   decisions, propagates, saves phases through the normal enqueue path, then backtracks without
-  updating target/best snapshots. Scheduled walking uses the Kissat-style
+  updating target/best snapshots. By default warmup still stops after the first conflict;
+  `SAT_WARMUP_BEYOND_CONFLICTS=on` enables the Kissat-style propagation-beyond-conflicts variant,
+  but it is rejected as the built-in default on the profiling set. Scheduled walking uses the
+  Kissat-style
   `best -> walk -> inverted -> best -> walk -> original` stable rephase source cycle with
   `SAT_WALK_STEPS=100` and `SAT_WALK_RANDOM_PERCENT=0`. Use `SAT_WARMUP=off` or `SAT_WALK=off`
   for ablations. `SAT_WALK_INITIAL=1` remains opt-in and runs the same local-search phase source
@@ -1044,8 +1047,9 @@ Analysis:
 
 - The implementation is proof-safe because warmup and walk only change phase arrays and never add or
   delete clauses. Warmup backtracks through a no-phase-snapshot path so the pass leaves saved
-  phases but does not pollute best/target snapshots; it also stops immediately after a
-  decision-level warmup conflict.
+  phases but does not pollute best/target snapshots. The built-in default stops immediately after a
+  decision-level warmup conflict; the opt-in `SAT_WARMUP_BEYOND_CONFLICTS=on` mode measured below
+  continues propagation after conflict events.
 - Warmup alone is neutral-to-slightly-negative on this slice: it preserved solved count but moved
   PAR-2 from `793.182` to `795.985`. It remains separately ablatable with `SAT_WARMUP=off`.
 - Initial walking is rejected. It helped `feistel_b64_k52_r17`, `mp1`, and `random_v355_s3`, but
@@ -1173,3 +1177,51 @@ Analysis:
   `SAT_FOCUSED_DECISION=pop-front SAT_FOCUSED_PHASE=saved`. The final no-env confirmation
   reproduced the accepted 9/11 solved split with PAR-2 `622.999`; the small improvement over the
   previous `629.226` guard-on run is treated as run-to-run noise, not a new default win.
+
+Warmup propagation-beyond-conflicts validation on 2026-05-13:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_WARMUP=1 SAT_WARMUP_DECISIONS=32 SAT_CHECK_INVARIANTS=1 \
+  bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_PROOF=0 SAT_WARMUP_BEYOND_CONFLICTS=on \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_WARMUP_BEYOND_CONFLICTS=off \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 122 passed.
+- default smoke suite: 9/9 passed, including UNSAT proof checking, log
+  `log/2026-05-13-21-01-19`.
+- warmup/invariant smoke suite: 9/9 passed, including UNSAT proof checking, log
+  `log/2026-05-13-21-01-30`.
+- opt-in propagation-beyond-conflicts profiling: solved 8/11, PAR-2 `919.719`, log
+  `log/bench-11-kissat-innovations-2026-05-13-21-01-46`.
+- legacy stop-at-first-conflict ablation: solved 9/11, PAR-2 `626.349`, log
+  `log/bench-11-kissat-innovations-2026-05-13-21-11-43`.
+
+Analysis:
+
+- The implemented opt-in mode adds `SAT_WARMUP_BEYOND_CONFLICTS=on`. It keeps normal CDCL
+  propagation unchanged, but warmup uses a separate propagation path that scans remaining binary
+  implications and watchers after conflict events, counts those events in `warmup_conflicts`, and
+  still saves successful implied phases through the normal enqueue path.
+- Correctness checks cover both watcher-fast and aggressive-binary propagation modes, plus the
+  legacy ablation path. The invariant smoke run validates that the temporary inconsistent warmup
+  trail is fully unwound and leaves the solver in a normal root state before search.
+- The feature is rejected as the default policy. Compared with the legacy ablation, PAR-2 regressed
+  by `293.370s`, and solved count fell from 9/11 to 8/11 because `mp1-Nb7T46` changed from
+  `18.843s` SAT to a timeout. The three Feistel rows also got much worse: `k32`
+  `15.338s -> 33.568s`, `k52` `40.416s -> 65.361s`, and `k57` `0.892s -> 33.282s`.
+- There were small improvements on timetable (`13.636s -> 12.266s`), Kakuro
+  (`38.173s -> 36.963s`), and `random_v355_s3` (`7.885s -> 6.530s`), but they are too small to
+  offset the Feistel and `mp1` trajectory losses.
+- A direct `SAT_TRACE_PREPROCESS=1` check on `feistel_b64_k57_r18` showed the same preprocessing
+  shape and the same `49` warmup decisions. The legacy path reported `warmup=1/49/1`; the
+  beyond-conflicts path reported `warmup=1/49/68`, confirming that the regression is from much
+  heavier phase seeding rather than different simplification.
+- The accepted built-in default is therefore `SAT_WARMUP_BEYOND_CONFLICTS=off`, while the
+  Kissat-faithful behavior remains available for targeted experiments.

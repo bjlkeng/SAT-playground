@@ -356,9 +356,10 @@ Implementation status for solver 11:
 
 - Implemented with counters for warmups, warmup decisions, conflicts, assignments, and elapsed
   time. It is default-on after the 2026-05-13 follow-up confirmation run.
-- Current warmup uses the normal propagator repeatedly and stops after the first decision-level
-  conflict; it does not yet fully match Kissat's `propagate_beyond_conflicts` behavior of
-  continuing every remaining watch after a conflict on the same literal.
+- Current default warmup uses the normal propagator repeatedly and stops after the first
+  decision-level conflict. `SAT_WARMUP_BEYOND_CONFLICTS=on` enables a Kissat-faithful warmup
+  propagator that continues binary implication and watcher scans after conflict events, but the
+  2026-05-13 profiling run rejected it as the default.
 - Measured separately because warmup can either help phase selection or waste time on formulas where
   preprocessing already gives good phases.
 
@@ -1007,6 +1008,9 @@ Implementation status:
 - Root-only warmup is implemented and default-on; use `SAT_WARMUP=off` for ablations.
 - Decide and propagate using the current heuristic, save phases, then backtrack without overwriting
   them.
+- Kissat-style propagation beyond conflicts is implemented behind
+  `SAT_WARMUP_BEYOND_CONFLICTS=on`; the built-in default remains off because it regressed the
+  profiling set from 9/11, PAR-2 `626.349`, to 8/11, PAR-2 `919.719`.
 - Track warmup decisions, conflicts, assigned trail size, and elapsed time. Propagations are still
   counted in the solver-wide propagation counter.
 
@@ -2025,8 +2029,10 @@ policy and trajectory controls:
 2. More Kissat-exact focused decisions: focused mode has the queue and guarded dwell cap, but
    focused-only remains weak. Missing pieces include focused-specific phase overrides and better
    coupling between queue order, reduction pressure, and restart timing.
-3. More faithful warmup: solver 11 stops warmup at the first decision-level conflict, while Kissat
-   can propagate beyond conflicts to seed more phases.
+3. Better warmup guards: Kissat-style propagation beyond conflicts is implemented as
+   `SAT_WARMUP_BEYOND_CONFLICTS=on`, but it is not the default because it regressed the profiling
+   set. A future guard would need to predict when the extra phase seeding is worth the search-path
+   disruption.
 4. Rephase/restart guards: scheduled rephase and walking are default-on, but they still need guards
    for proof-heavy UNSAT paths and cases where rephase increases conflicts/restarts.
 5. Search-path conflict-analysis details: failed-literal handling at decision level 1 and

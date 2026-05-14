@@ -1076,6 +1076,9 @@ struct Solver {
     warmup_enabled: bool,
     /// maximum warmup decisions; zero skips the pass even when enabled
     warmup_decision_limit: usize,
+    /// whether warmup continues scanning implications after conflicts, matching Kissat's
+    /// propagate-beyond-conflicts phase seeding
+    warmup_beyond_conflicts: bool,
     /// local-search phase source for stable-mode rephases; default-on and ablatable with SAT_WALK=off
     walk_rephase_enabled: bool,
     /// opt-in one-shot local-search phase source before CDCL search
@@ -1537,6 +1540,7 @@ impl Solver {
         let lucky_mode = parse_lucky_mode();
         let warmup_enabled = parse_bool_env("SAT_WARMUP", true);
         let warmup_decision_limit = parse_usize_env("SAT_WARMUP_DECISIONS", num_vars);
+        let warmup_beyond_conflicts = parse_bool_env("SAT_WARMUP_BEYOND_CONFLICTS", false);
         let walk_rephase_enabled =
             parse_bool_env("SAT_WALK", true) || parse_bool_env("SAT_REPHASE_WALK", false);
         let walk_initial_enabled =
@@ -1631,6 +1635,7 @@ impl Solver {
             lucky_mode,
             warmup_enabled,
             warmup_decision_limit,
+            warmup_beyond_conflicts,
             walk_rephase_enabled,
             walk_initial_enabled,
             walk_steps_limit,
@@ -3783,6 +3788,83 @@ impl Solver {
         None
     }
 
+    fn propagate_binary_implications_beyond_conflicts(&mut self, false_lit: i32) -> u64 {
+        let watch_idx = self.lit_index(false_lit);
+        let implication_count = self.binary_implication_counts[watch_idx] as usize;
+        if implication_count == 0 {
+            return 0;
+        }
+        debug_assert_eq!(implication_count, self.binary_implications[watch_idx].len());
+        let mut conflicts = 0;
+        let implications = self.binary_implications[watch_idx].as_ptr();
+        for idx in 0..implication_count {
+            let implication = unsafe { *implications.add(idx) };
+            let binary_id = implication.binary_id as usize;
+            if binary_id >= self.binary_clauses.len() {
+                continue;
+            }
+            let binary = self.binary_clauses[binary_id];
+            if binary_metadata_deleted(binary.metadata) {
+                continue;
+            }
+            debug_assert!(
+                (binary.lit0 == false_lit && binary.lit1 == implication.implied_lit)
+                    || (binary.lit1 == false_lit && binary.lit0 == implication.implied_lit),
+                "binary implication list contains stale falsified literal"
+            );
+            debug_assert!(
+                (implication.clause_idx as usize) < self.arena.len()
+                    && !self.clause_is_deleted(implication.clause_idx as usize)
+                    && self.clause_len(implication.clause_idx as usize) == 2
+                    && self.binary_clause_matches_arena(binary, implication.clause_idx as usize),
+                "binary implication list contains stale arena mapping"
+            );
+
+            match self.lit_value(implication.implied_lit) {
+                TRUE => {}
+                FALSE => conflicts += 1,
+                UNASSIGNED => {
+                    if !self.enqueue(implication.implied_lit, ReasonRef::binary(false_lit)) {
+                        conflicts += 1;
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+        conflicts
+    }
+
+    fn propagate_static_binary_implications_beyond_conflicts(&mut self, false_lit: i32) -> u64 {
+        let watch_idx = self.lit_index(false_lit);
+        let start = self.static_binary_implication_offsets[watch_idx] as usize;
+        let end = self.static_binary_implication_offsets[watch_idx + 1] as usize;
+        if start == end {
+            return 0;
+        }
+        let mut conflicts = 0;
+        let implications = self.static_binary_implications.as_ptr();
+        for idx in start..end {
+            let implication = unsafe { *implications.add(idx) };
+            debug_assert!(
+                (implication.clause_idx as usize) < self.arena.len()
+                    && !self.clause_is_deleted(implication.clause_idx as usize)
+                    && self.clause_len(implication.clause_idx as usize) == 2,
+                "static binary implication list contains stale arena mapping"
+            );
+            match self.lit_value(implication.implied_lit) {
+                TRUE => {}
+                FALSE => conflicts += 1,
+                UNASSIGNED => {
+                    if !self.enqueue(implication.implied_lit, ReasonRef::binary(false_lit)) {
+                        conflicts += 1;
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+        conflicts
+    }
+
     fn propagate(&mut self) -> Option<usize> {
         let start_head = self.propagate_head;
         while self.propagate_head < self.trail.len() {
@@ -3969,6 +4051,153 @@ impl Solver {
         self.simplify_props_remaining -= (self.propagate_head - start_head) as i64;
 
         None
+    }
+
+    fn propagate_beyond_conflicts(&mut self) -> u64 {
+        let start_head = self.propagate_head;
+        let mut conflicts = 0;
+        while self.propagate_head < self.trail.len() {
+            let false_lit = -self.trail[self.propagate_head];
+            self.propagate_head += 1;
+            self.stats.propagations += 1;
+            if self.binary_propagation_mode == BinaryPropagationMode::Aggressive {
+                if self.static_binary_implications_enabled {
+                    conflicts +=
+                        self.propagate_static_binary_implications_beyond_conflicts(false_lit);
+                }
+                conflicts += self.propagate_binary_implications_beyond_conflicts(false_lit);
+            }
+            let watch_idx = self.lit_index(false_lit);
+            let mut pending = std::mem::take(&mut self.watchers[watch_idx]);
+            let mut read = 0usize;
+            let mut write = 0usize;
+
+            while read < pending.len() {
+                let watcher = pending[read];
+                read += 1;
+                let clause_idx = watcher.clause_idx as usize;
+                if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
+                    continue;
+                }
+                let clause_len = self.clause_len(clause_idx);
+                if clause_len == 1 {
+                    let unit_lit = self.clause_lit(clause_idx, 0);
+                    match self.lit_value(unit_lit) {
+                        TRUE => {
+                            pending[write] = watcher;
+                            write += 1;
+                        }
+                        FALSE => {
+                            pending[write] = watcher;
+                            write += 1;
+                            conflicts += 1;
+                        }
+                        UNASSIGNED => {
+                            if !self.enqueue(unit_lit, ReasonRef::clause(clause_idx)) {
+                                conflicts += 1;
+                            }
+                            pending[write] = watcher;
+                            write += 1;
+                        }
+                        _ => unreachable!(),
+                    }
+                    continue;
+                }
+
+                if self.binary_propagation_mode == BinaryPropagationMode::WatcherFast
+                    && clause_len == 2
+                {
+                    if self.clause_lit(clause_idx, 0) == false_lit {
+                        self.swap_clause_lits(clause_idx, 0, 1);
+                    }
+                    if self.clause_lit(clause_idx, 1) != false_lit {
+                        continue;
+                    }
+
+                    let implied_lit = self.clause_lit(clause_idx, 0);
+                    let updated_watcher = Watcher {
+                        clause_idx: watcher.clause_idx,
+                        blocker: implied_lit,
+                    };
+                    match self.lit_value(implied_lit) {
+                        TRUE => {
+                            pending[write] = updated_watcher;
+                            write += 1;
+                        }
+                        FALSE => {
+                            pending[write] = updated_watcher;
+                            write += 1;
+                            conflicts += 1;
+                        }
+                        UNASSIGNED => {
+                            if !self.enqueue(implied_lit, ReasonRef::clause(clause_idx)) {
+                                conflicts += 1;
+                            }
+                            pending[write] = updated_watcher;
+                            write += 1;
+                        }
+                        _ => unreachable!(),
+                    }
+                    continue;
+                }
+
+                if self.lit_value(watcher.blocker) == TRUE {
+                    pending[write] = watcher;
+                    write += 1;
+                    continue;
+                }
+
+                if self.clause_lit(clause_idx, 0) == false_lit {
+                    self.swap_clause_lits(clause_idx, 0, 1);
+                }
+                if self.clause_lit(clause_idx, 1) != false_lit {
+                    continue;
+                }
+
+                let first = self.clause_lit(clause_idx, 0);
+                let updated_watcher = Watcher {
+                    clause_idx: watcher.clause_idx,
+                    blocker: first,
+                };
+                if first != watcher.blocker && self.lit_value(first) == TRUE {
+                    pending[write] = updated_watcher;
+                    write += 1;
+                    continue;
+                }
+
+                let mut moved_watch = false;
+                for lit_pos in 2..clause_len {
+                    let candidate = self.clause_lit(clause_idx, lit_pos);
+                    if self.lit_value(candidate) != FALSE {
+                        self.set_clause_lit(clause_idx, 1, candidate);
+                        self.set_clause_lit(clause_idx, lit_pos, false_lit);
+                        let new_watch_idx = self.lit_index(candidate);
+                        self.watchers[new_watch_idx].push(updated_watcher);
+                        moved_watch = true;
+                        break;
+                    }
+                }
+
+                if moved_watch {
+                    continue;
+                }
+
+                pending[write] = updated_watcher;
+                write += 1;
+                if self.lit_value(first) == FALSE
+                    || !self.enqueue(first, ReasonRef::clause(clause_idx))
+                {
+                    conflicts += 1;
+                }
+            }
+
+            pending.truncate(write);
+            self.watchers[watch_idx] = pending;
+        }
+
+        self.simplify_props_remaining -= (self.propagate_head - start_head) as i64;
+
+        conflicts
     }
 
     fn decide(&mut self, lit: i32) {
@@ -4948,7 +5177,9 @@ impl Solver {
             };
             self.decide_warmup(lit);
             decisions += 1;
-            if self.propagate().is_some() {
+            if self.warmup_beyond_conflicts {
+                self.stats.warmup_conflicts += self.propagate_beyond_conflicts();
+            } else if self.propagate().is_some() {
                 self.stats.warmup_conflicts += 1;
                 break;
             }
@@ -8495,14 +8726,21 @@ mod tests {
         assert_eq!(s.stats.warmup_assigned, 2);
     }
 
-    #[test]
-    fn test_warmup_stops_after_decision_level_conflict() {
-        let mut s = make_solver(2, vec![vec![-1, 2], vec![-1, -2]]);
+    fn assert_warmup_propagates_beyond_conflicts(binary_mode: BinaryPropagationMode) {
+        let mut s = make_solver_with_binary_mode(
+            3,
+            vec![vec![-1, 2], vec![-1, -2], vec![-1, 3]],
+            binary_mode,
+        );
         s.warmup_enabled = true;
-        s.warmup_decision_limit = 3;
+        s.warmup_beyond_conflicts = true;
+        s.warmup_decision_limit = 1;
         s.activity[1] = 10.0;
         s.activity[2] = 1.0;
+        s.activity[3] = 1.0;
         s.saved_phase[1] = TRUE;
+        s.saved_phase[2] = FALSE;
+        s.saved_phase[3] = FALSE;
         s.rebuild_branch_queue();
 
         assert!(s.run_warmup());
@@ -8510,6 +8748,41 @@ mod tests {
         assert_eq!(s.current_level(), 0);
         assert_eq!(s.assignment[1], UNASSIGNED);
         assert_eq!(s.assignment[2], UNASSIGNED);
+        assert_eq!(s.assignment[3], UNASSIGNED);
+        assert_eq!(s.saved_phase[2], TRUE);
+        assert_eq!(s.saved_phase[3], TRUE);
+        assert_eq!(s.stats.warmup_decisions, 1);
+        assert!(s.stats.warmup_conflicts >= 1);
+    }
+
+    #[test]
+    fn test_warmup_propagates_beyond_watcher_conflict() {
+        assert_warmup_propagates_beyond_conflicts(BinaryPropagationMode::WatcherFast);
+    }
+
+    #[test]
+    fn test_warmup_propagates_beyond_aggressive_binary_conflict() {
+        assert_warmup_propagates_beyond_conflicts(BinaryPropagationMode::Aggressive);
+    }
+
+    #[test]
+    fn test_warmup_legacy_conflict_stop_ablation() {
+        let mut s = make_solver(3, vec![vec![-1, 2], vec![-1, -2], vec![-1, 3]]);
+        s.warmup_enabled = true;
+        s.warmup_beyond_conflicts = false;
+        s.warmup_decision_limit = 1;
+        s.activity[1] = 10.0;
+        s.activity[2] = 1.0;
+        s.activity[3] = 1.0;
+        s.saved_phase[1] = TRUE;
+        s.saved_phase[2] = FALSE;
+        s.saved_phase[3] = FALSE;
+        s.rebuild_branch_queue();
+
+        assert!(s.run_warmup());
+
+        assert_eq!(s.saved_phase[2], TRUE);
+        assert_eq!(s.saved_phase[3], FALSE);
         assert_eq!(s.stats.warmup_decisions, 1);
         assert_eq!(s.stats.warmup_conflicts, 1);
     }
