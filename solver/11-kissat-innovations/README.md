@@ -69,6 +69,12 @@ What is present:
   ablation. Kissat-style level-1 failed-literal analysis is available as
   `SAT_FAILED_LITERAL_ANALYSIS=on`; it learns root units directly from failed decision paths but is
   not the default after the 2026-05-14 profiling rejection.
+- Random decision bursts are implemented as an opt-in search perturbation with
+  `SAT_RANDOM_DECISIONS=on`. The Kissat-shaped defaults when enabled are focused-only bursts,
+  `SAT_RANDOM_DECISION_INIT=500`, `SAT_RANDOM_DECISION_INTERVAL=500`,
+  `SAT_RANDOM_DECISION_LENGTH=10`, and `SAT_RANDOM_DECISION_SEED` falling back to `SAT_SEED`.
+  `SAT_RANDOM_DECISIONS_STABLE=on` also allows bursts in stable mode. This is not the built-in
+  default after the 2026-05-14 profiling rejection.
 - Phase 8 lucky SAT shortcut: `SAT_LUCKY=shortcut` is the default and checks all-true/all-false
   candidate models after preprocessing but before CDCL search. Use `SAT_LUCKY=off` for ablations.
 - Phase 8 clause-weight reorder default: `SAT_REORDER=kissat` is now the default delayed
@@ -1322,3 +1328,52 @@ Analysis:
   rows reported `0/0`.
 - The accepted built-in default is therefore `SAT_FAILED_LITERAL_ANALYSIS=off`, while the mode
   remains available for targeted conflict-analysis sensitivity tests.
+
+Random decision-burst validation on 2026-05-14:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_SEARCH_MODE=focused SAT_MODE_SWITCH_INTERVAL=0 SAT_RANDOM_DECISIONS=on \
+  SAT_RANDOM_DECISION_INIT=0 SAT_RANDOM_DECISION_LENGTH=1 SAT_RANDOM_DECISIONS_FOCUSED=on \
+  SAT_CHECK_INVARIANTS=1 bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_RANDOM_DECISIONS=on \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_RANDOM_DECISIONS=off \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_RANDOM_DECISIONS=on SAT_RANDOM_DECISIONS_STABLE=on \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 131 passed.
+- default smoke suite: 9/9 passed, including UNSAT proof checking, log
+  `log/2026-05-14-09-23-45`.
+- forced focused-random invariant smoke suite: 9/9 passed, including UNSAT proof checking, log
+  `log/2026-05-14-09-23-53`.
+- focused-only random bursts enabled: solved 9/11, PAR-2 `711.489`, log
+  `log/bench-11-kissat-innovations-2026-05-14-08-57-02`.
+- random bursts disabled, which is the accepted default after this slice: solved 9/11, PAR-2
+  `622.272`, log `log/bench-11-kissat-innovations-2026-05-14-09-06-51`.
+- stable plus focused random bursts were stopped after three Feistel rows because they were already
+  rejected by the keep threshold: `k32` `110.308s`, `k52` `52.151s`, and `k57` `24.223s`, partial
+  log `log/bench-11-kissat-innovations-2026-05-14-09-15-30`.
+
+Analysis:
+
+- The implementation starts a random burst only at a root-level decision once the conflict limit is
+  reached, or immediately after a mode switch into an enabled mode. A burst then lasts for a number
+  of conflicts, matching Kissat's `randec` shape. Trace output now reports
+  `random=sequences/decisions/remaining`.
+- Focused-only random bursts help a few rows but are a clear net regression. Main losses versus
+  disabled are `feistel_b64_k32_r22` (`15.376s -> 76.019s`) and Timetable
+  (`12.768s -> 60.583s`). Main wins are `feistel_b64_k52_r17` (`40.495s -> 22.558s`),
+  `random_v292_s4` (`6.867s -> 5.941s`), and `random_v355_s3` (`7.997s -> 6.950s`).
+- A traced `random_v292_s4` run confirms the mechanism is active and can improve a local
+  trajectory: enabled solved in `5.778s` with `719204` conflicts, `925416` decisions, and
+  `random=2/118/0`; disabled solved in `6.678s` with `820425` conflicts, `1057249` decisions, and
+  `random=0/0/0`.
+- Stable-mode random bursts are too disruptive on this profile and were stopped early. The accepted
+  built-in default is `SAT_RANDOM_DECISIONS=off`; the feature remains available for targeted
+  search-path sensitivity tests.

@@ -2119,6 +2119,17 @@ Status on 2026-05-13:
 - Conclusion: failed-literal analysis is proof-safe and useful as sensitivity instrumentation, but
   it does not clear the keep threshold. The accepted built-in default remains
   `SAT_FAILED_LITERAL_ANALYSIS=off`.
+- Fresh decision-path follow-up: random decision bursts are now implemented as an opt-in mode with
+  `SAT_RANDOM_DECISIONS=on`. The implementation starts bursts at root-level decisions once
+  `SAT_RANDOM_DECISION_INIT` / `SAT_RANDOM_DECISION_INTERVAL` conflict limits are reached, starts a
+  burst immediately after switching into an enabled mode, and counts burst length down by conflicts.
+  Focused-only bursts solved 9/11 with PAR-2 `711.489`
+  (`log/bench-11-kissat-innovations-2026-05-14-08-57-02`) versus the accepted disabled/default path
+  at 9/11 PAR-2 `622.272` (`log/bench-11-kissat-innovations-2026-05-14-09-06-51`). Stable plus
+  focused random bursts were stopped after the first three rows (`k32` `110.308s`, `k52`
+  `52.151s`, `k57` `24.223s`). A traced `random_v292_s4` run showed the mechanism did fire and can
+  improve a local path (`random=2/118/0`, `5.778s` enabled versus `6.678s` disabled), but the global
+  profiling loss is too large. Accepted default: `SAT_RANDOM_DECISIONS=off`.
 
 ## First Concrete Milestones
 

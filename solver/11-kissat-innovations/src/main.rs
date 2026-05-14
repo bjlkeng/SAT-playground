@@ -58,6 +58,9 @@ const DEFAULT_REDUCE_LOW_YIELD_MIN_DELETIONS: usize = 16;
 const DEFAULT_REPHASE_INTERVAL: usize = 10_000;
 const DEFAULT_REORDER_INTERVAL: usize = 10_000;
 const DEFAULT_REORDER_MAX_CLAUSE_SIZE: usize = 100;
+const DEFAULT_RANDOM_DECISION_INIT: u64 = 500;
+const DEFAULT_RANDOM_DECISION_INTERVAL: u64 = 500;
+const DEFAULT_RANDOM_DECISION_LENGTH: u64 = 10;
 const DEFAULT_WALK_STEPS: usize = 100;
 const DEFAULT_WALK_RANDOM_PERCENT: usize = 0;
 const DEFAULT_RESTART_REUSE_GUARD_MIN_CONFLICTS: u64 = 128;
@@ -644,6 +647,8 @@ struct SolverStats {
     reason_side_bump_limit_hits: u64,
     failed_literal_analyses: u64,
     failed_literal_units: u64,
+    random_decision_sequences: u64,
+    random_decisions: u64,
     lucky_checks: u64,
     lucky_sat: u64,
     lucky_all_true: u64,
@@ -1140,6 +1145,22 @@ struct Solver {
     reorder_max_clause_size: usize,
     /// Kissat-style level-1 failed-literal analysis learns root units directly
     failed_literal_analysis_enabled: bool,
+    /// scheduled random decision bursts, matching Kissat's `randec` search perturbation
+    random_decisions_enabled: bool,
+    /// whether random decision bursts are allowed in focused mode
+    random_decisions_focused: bool,
+    /// whether random decision bursts are allowed in stable mode
+    random_decisions_stable: bool,
+    /// conflict limit for starting the next random decision burst
+    random_decision_conflict_limit: u64,
+    /// base conflict interval between random decision bursts
+    random_decision_interval: u64,
+    /// base active-conflict length of each random decision burst
+    random_decision_length: u64,
+    /// active random decision burst length, counted down by conflicts
+    random_decision_remaining_conflicts: u64,
+    /// deterministic pseudo-random state for CDCL random decisions
+    random_decision_seed: u64,
     /// fast moving average of learned-clause glue for glue-EMA restarts
     restart_glue_fast_ema: f64,
     /// slow moving average of learned-clause glue for glue-EMA restarts
@@ -1597,6 +1618,19 @@ impl Solver {
             parse_usize_env("SAT_WALK_RANDOM_PERCENT", DEFAULT_WALK_RANDOM_PERCENT).min(100);
         let walk_seed = parse_u64_env("SAT_WALK_SEED", 0x9e37_79b9_7f4a_7c15);
         let reorder_mode = parse_reorder_mode();
+        let random_decision_init =
+            parse_u64_env("SAT_RANDOM_DECISION_INIT", DEFAULT_RANDOM_DECISION_INIT);
+        let random_decision_interval = parse_u64_env(
+            "SAT_RANDOM_DECISION_INTERVAL",
+            DEFAULT_RANDOM_DECISION_INTERVAL,
+        );
+        let random_decision_length =
+            parse_u64_env("SAT_RANDOM_DECISION_LENGTH", DEFAULT_RANDOM_DECISION_LENGTH).max(1);
+        let random_decision_seed = if env::var_os("SAT_RANDOM_DECISION_SEED").is_some() {
+            parse_u64_env("SAT_RANDOM_DECISION_SEED", 0)
+        } else {
+            parse_u64_env("SAT_SEED", 0)
+        };
 
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
         let arena = Vec::with_capacity(total_words);
@@ -1717,6 +1751,14 @@ impl Solver {
             reorder_mode,
             reorder_max_clause_size: parse_reorder_max_clause_size_env(),
             failed_literal_analysis_enabled: parse_bool_env("SAT_FAILED_LITERAL_ANALYSIS", false),
+            random_decisions_enabled: parse_bool_env("SAT_RANDOM_DECISIONS", false),
+            random_decisions_focused: parse_bool_env("SAT_RANDOM_DECISIONS_FOCUSED", true),
+            random_decisions_stable: parse_bool_env("SAT_RANDOM_DECISIONS_STABLE", false),
+            random_decision_conflict_limit: random_decision_init,
+            random_decision_interval,
+            random_decision_length,
+            random_decision_remaining_conflicts: 0,
+            random_decision_seed,
             restart_glue_fast_ema: 0.0,
             restart_glue_slow_ema: 0.0,
             restart_glue_ema_initialized: false,
@@ -4448,6 +4490,87 @@ impl Solver {
         self.reluctant_restart.enable(period, limit);
     }
 
+    fn random_decision_allowed_in_current_mode(&self) -> bool {
+        self.random_decisions_enabled
+            && match self.search_mode {
+                SearchMode::Stable => self.random_decisions_stable,
+                SearchMode::Focused => self.random_decisions_focused,
+            }
+    }
+
+    fn random_decision_logn(count: u64) -> f64 {
+        ((count.saturating_add(9)) as f64).log10().max(1.0)
+    }
+
+    fn scaled_random_decision_delta(base: u64, count: u64) -> u64 {
+        if base == 0 {
+            return 0;
+        }
+
+        ((base as f64) * Self::random_decision_logn(count)).min(u64::MAX as f64) as u64
+    }
+
+    fn update_random_decision_limit(&mut self) {
+        let count = self.stats.random_decision_sequences.max(1);
+        let delta = Self::scaled_random_decision_delta(self.random_decision_interval, count);
+        self.random_decision_conflict_limit = self.stats.conflicts.saturating_add(delta);
+    }
+
+    fn start_random_decision_sequence(&mut self) {
+        if !self.random_decision_allowed_in_current_mode()
+            || self.random_decision_remaining_conflicts > 0
+        {
+            return;
+        }
+
+        self.stats.random_decision_sequences += 1;
+        let count = self.stats.random_decision_sequences;
+        self.random_decision_remaining_conflicts =
+            Self::scaled_random_decision_delta(self.random_decision_length, count).max(1);
+        self.update_random_decision_limit();
+    }
+
+    fn note_random_decision_conflict(&mut self) {
+        if self.random_decision_remaining_conflicts > 0 {
+            self.random_decision_remaining_conflicts -= 1;
+        }
+    }
+
+    fn pick_random_decision_var(&mut self) -> Option<usize> {
+        if !self.random_decision_allowed_in_current_mode() {
+            return None;
+        }
+
+        if self.random_decision_remaining_conflicts == 0 {
+            if self.current_level() != 0
+                || self.stats.conflicts < self.random_decision_conflict_limit
+            {
+                return None;
+            }
+            self.start_random_decision_sequence();
+        }
+
+        if self.random_decision_remaining_conflicts == 0 {
+            return None;
+        }
+
+        let variables = self.assignment.len().saturating_sub(1);
+        if variables == 0 {
+            return None;
+        }
+
+        let start = random_below(&mut self.random_decision_seed, variables) + 1;
+        for offset in 0..variables {
+            let var = ((start - 1 + offset) % variables) + 1;
+            if self.decision_var[var] && self.assignment[var] == UNASSIGNED {
+                self.stats.random_decisions += 1;
+                return Some(var);
+            }
+        }
+
+        None
+    }
+
     fn decision_var_at_level(&self, level: usize) -> usize {
         debug_assert!(level >= 1 && level <= self.current_level());
         let trail_idx = self.trail_limits[level - 1];
@@ -5099,6 +5222,7 @@ impl Solver {
         self.restart_pending = false;
         self.reset_mode_progress_window();
         self.rebuild_branch_queue();
+        self.start_random_decision_sequence();
         true
     }
 
@@ -5326,10 +5450,12 @@ impl Solver {
     }
 
     fn pick_branch_lit(&mut self) -> Option<i32> {
-        let next_var = match self.search_mode {
-            SearchMode::Stable => self.branch_heap_pop_best(),
-            SearchMode::Focused => self.focused_queue_pick(),
-        };
+        let next_var = self
+            .pick_random_decision_var()
+            .or_else(|| match self.search_mode {
+                SearchMode::Stable => self.branch_heap_pop_best(),
+                SearchMode::Focused => self.focused_queue_pick(),
+            });
         let mut next_var = next_var;
         while let Some(var) = next_var {
             if !self.decision_var[var] || self.assignment[var] != UNASSIGNED {
@@ -6793,10 +6919,13 @@ impl Solver {
                         self.stats.search_time_ns += elapsed_ns(search_start);
                         if trace_search_interval > 0 {
                             eprintln!(
-                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} failed_literal={}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} rephase_guard={}/{}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} random={}/{}/{} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} failed_literal={}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} rephase_guard={}/{}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                 self.stats.search_time_ns as f64 / 1e9,
                                 self.stats.conflicts,
                                 self.stats.decisions,
+                                self.stats.random_decision_sequences,
+                                self.stats.random_decisions,
+                                self.random_decision_remaining_conflicts,
                                 self.stats.propagations,
                                 self.stats.restarts,
                                 self.search_mode.name(),
@@ -6881,13 +7010,17 @@ impl Solver {
                     }
 
                     self.stats.conflicts += 1;
+                    self.note_random_decision_conflict();
                     self.note_mode_progress_at_conflict();
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
-                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} failed_literal={}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} rephase_guard={}/{}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
+                            "c search seconds={:.3} conflicts={} decisions={} random={}/{}/{} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} failed_literal={}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} rephase_guard={}/{}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
                             search_start.elapsed().as_secs_f64(),
                             self.stats.conflicts,
                             self.stats.decisions,
+                            self.stats.random_decision_sequences,
+                            self.stats.random_decisions,
+                            self.random_decision_remaining_conflicts,
                             self.stats.propagations,
                             self.stats.restarts,
                             self.search_mode.name(),
@@ -7061,10 +7194,13 @@ impl Solver {
                             self.stats.search_time_ns += elapsed_ns(search_start);
                             if trace_search_interval > 0 {
                                 eprintln!(
-                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} failed_literal={}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} rephase_guard={}/{}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} random={}/{}/{} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} failed_literal={}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} rephase_guard={}/{}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                     self.stats.search_time_ns as f64 / 1e9,
                                     self.stats.conflicts,
                                     self.stats.decisions,
+                                    self.stats.random_decision_sequences,
+                                    self.stats.random_decisions,
+                                    self.random_decision_remaining_conflicts,
                                     self.stats.propagations,
                                     self.stats.restarts,
                                     self.search_mode.name(),
@@ -7783,6 +7919,17 @@ mod tests {
         ));
         fs::create_dir_all(&path).expect("failed to create temp dir");
         path
+    }
+
+    fn random_seed_for_start_not(excluded: usize, variables: usize) -> (u64, usize) {
+        for seed in 1..10_000 {
+            let mut state = seed;
+            let var = random_below(&mut state, variables) + 1;
+            if var != excluded {
+                return (seed, var);
+            }
+        }
+        panic!("could not find random seed that avoids variable {excluded}");
     }
 
     fn watched_literals(s: &Solver, clause_idx: usize) -> Option<(i32, i32)> {
@@ -9097,6 +9244,84 @@ mod tests {
         assert_eq!(s.pick_branch_lit(), Some(-2));
         assert_eq!(s.stats.target_phase_decisions, 1);
         assert_eq!(s.stats.saved_phase_decisions, 0);
+    }
+
+    #[test]
+    fn test_random_decision_burst_overrides_stable_activity_at_root_limit() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-1, 3]]);
+        s.search_mode = SearchMode::Stable;
+        s.random_decisions_enabled = true;
+        s.random_decisions_stable = true;
+        s.random_decisions_focused = false;
+        s.random_decision_conflict_limit = 0;
+        s.random_decision_interval = 500;
+        s.random_decision_length = 10;
+        s.activity[1] = 100.0;
+        s.activity[2] = 1.0;
+        s.activity[3] = 0.0;
+        let (seed, expected_var) = random_seed_for_start_not(1, 3);
+        s.random_decision_seed = seed;
+        s.rebuild_branch_queue();
+
+        let lit = s.pick_branch_lit().expect("expected random branch");
+
+        assert_eq!(lit.unsigned_abs() as usize, expected_var);
+        assert_ne!(expected_var, 1, "random decision should bypass heap best");
+        assert_eq!(s.stats.random_decision_sequences, 1);
+        assert_eq!(s.stats.random_decisions, 1);
+        assert_eq!(s.random_decision_remaining_conflicts, 10);
+    }
+
+    #[test]
+    fn test_random_decision_burst_does_not_start_above_root_level() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-1, 3]]);
+        s.search_mode = SearchMode::Stable;
+        s.random_decisions_enabled = true;
+        s.random_decisions_stable = true;
+        s.random_decision_conflict_limit = 0;
+        s.activity[1] = 100.0;
+        s.activity[2] = 1.0;
+        s.activity[3] = 0.0;
+        let (seed, _) = random_seed_for_start_not(1, 3);
+        s.random_decision_seed = seed;
+        s.rebuild_branch_queue();
+
+        s.decide(-1);
+
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+        assert_eq!(s.stats.random_decision_sequences, 0);
+        assert_eq!(s.stats.random_decisions, 0);
+    }
+
+    #[test]
+    fn test_random_decision_burst_counts_down_by_conflicts() {
+        let mut s = make_solver(2, vec![]);
+        s.random_decision_remaining_conflicts = 2;
+
+        s.note_random_decision_conflict();
+        assert_eq!(s.random_decision_remaining_conflicts, 1);
+
+        s.note_random_decision_conflict();
+        assert_eq!(s.random_decision_remaining_conflicts, 0);
+
+        s.note_random_decision_conflict();
+        assert_eq!(s.random_decision_remaining_conflicts, 0);
+    }
+
+    #[test]
+    fn test_mode_switch_starts_focused_random_decision_burst() {
+        let mut s = make_solver(3, vec![]);
+        s.search_mode = SearchMode::Stable;
+        s.random_decisions_enabled = true;
+        s.random_decisions_stable = false;
+        s.random_decisions_focused = true;
+        s.random_decision_length = 10;
+
+        assert!(s.switch_search_mode());
+
+        assert_eq!(s.search_mode, SearchMode::Focused);
+        assert_eq!(s.stats.random_decision_sequences, 1);
+        assert_eq!(s.random_decision_remaining_conflicts, 10);
     }
 
     #[test]
