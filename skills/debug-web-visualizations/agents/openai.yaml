@@ -1,0 +1,4 @@
+interface:
+  display_name: "Debug Web Visualizations"
+  short_description: "Review interactive web visualizations with browser automation."
+  default_prompt: "Use this skill to inspect an interactive web page, click through controls, compare visual state with supporting text, and report or fix issues."
