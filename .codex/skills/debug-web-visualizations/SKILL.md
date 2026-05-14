@@ -36,7 +36,7 @@ description: Review, debug, and fix interactive web visualizations or static HTM
 Run from the repo root:
 
 ```bash
-python3 skills/debug-web-visualizations/scripts/browser_walkthrough.py \
+python3 .codex/skills/debug-web-visualizations/scripts/browser_walkthrough.py \
   --file docs/solvers/02-cdcl.html \
   --root '#cdcl-demo' \
   --steps 6 \
