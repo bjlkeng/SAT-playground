@@ -2033,8 +2033,9 @@ policy and trajectory controls:
    `SAT_WARMUP_BEYOND_CONFLICTS=on`, but it is not the default because it regressed the profiling
    set. A future guard would need to predict when the extra phase seeding is worth the search-path
    disruption.
-4. Rephase/restart guards: scheduled rephase and walking are default-on, but they still need guards
-   for proof-heavy UNSAT paths and cases where rephase increases conflicts/restarts.
+4. Rephase/restart guards: `SAT_REPHASE_GUARD=progress` now implements a conflict/glue/proof-byte
+   guard for scheduled rephase and is the conservative default. Future work is proof-heavy
+   UNSAT-specific tuning, not the basic guard mechanism.
 5. Search-path conflict-analysis details: failed-literal handling at decision level 1 and
    special handling for conflict clauses with one current-level literal remain missing. Clause
    shrinking and eager learned subsumption are also related, but cross into formula modification and
@@ -2081,6 +2082,22 @@ Status on 2026-05-13:
   `k32`, `k52`, and timetable. The accepted built-in defaults remain
   `SAT_FOCUSED_DECISION=pop-front` and `SAT_FOCUSED_PHASE=saved`; exact focused behavior is kept
   only for future sensitivity tests.
+- Item 4 now has a default-on conservative implementation as `SAT_REPHASE_GUARD=progress`. The
+  guard records each rephase boundary, then evaluates the next restart/conflict window using
+  conflict distance, learned-clause average glue, and proof bytes per learned clause. Bad short
+  windows start a cooldown that skips scheduled rephases.
+- Validation after the rephase guard slice: `cargo test` passed 125 tests; default smoke passed 9/9
+  with proof checking (`log/2026-05-13-23-40-52`); frequent-rephase invariant smoke passed 9/9
+  with proof checking (`log/2026-05-13-23-41-08`).
+- No-proof profiling on `benchmarks/profiling`, 120s timeout and 16 GB memory: conservative guard
+  solved 9/11 with PAR-2 `625.660`
+  (`log/bench-11-kissat-innovations-2026-05-13-23-20-51`), while guard-off solved 9/11 with PAR-2
+  `626.436` (`log/bench-11-kissat-innovations-2026-05-13-23-27-55`). A `100k` cooldown improved
+  `feistel_b64_k52_r17` but regressed `k32` and `k57`, so it was stopped after three rows.
+- Conclusion: the guard mechanism works, and traces show `rephase_guard` cooldowns and skips under
+  tuning. The conservative `20k` cooldown mode is now the accepted built-in default; guard-off
+  remains available as `SAT_REPHASE_GUARD=off`, and the more aggressive `100k` cooldown remains
+  rejected because it regressed `k32` and `k57`.
 
 ## First Concrete Milestones
 

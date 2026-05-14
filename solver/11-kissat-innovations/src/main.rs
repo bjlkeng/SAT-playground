@@ -63,6 +63,10 @@ const DEFAULT_WALK_RANDOM_PERCENT: usize = 0;
 const DEFAULT_RESTART_REUSE_GUARD_MIN_CONFLICTS: u64 = 128;
 const DEFAULT_RESTART_REUSE_GUARD_COOLDOWN: u64 = 1024;
 const DEFAULT_RESTART_REUSE_GUARD_GLUE_MARGIN: f64 = 1.05;
+const DEFAULT_REPHASE_GUARD_MIN_CONFLICTS: u64 = 512;
+const DEFAULT_REPHASE_GUARD_COOLDOWN: u64 = 20_000;
+const DEFAULT_REPHASE_GUARD_GLUE_MARGIN: f64 = 1.05;
+const DEFAULT_REPHASE_GUARD_PROOF_MARGIN: f64 = 1.25;
 const DEFAULT_RELUCTANT_INTERVAL: u64 = 1 << 10;
 const DEFAULT_RELUCTANT_LIMIT: u64 = 1 << 20;
 const DEFAULT_FOCUSED_REDUCE_LOW_YIELD_COOLDOWN: usize = 100;
@@ -174,6 +178,12 @@ enum RestartReuseMode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RestartReuseGuardMode {
+    Off,
+    Progress,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RephaseGuardMode {
     Off,
     Progress,
 }
@@ -620,6 +630,11 @@ struct SolverStats {
     restart_reuse_guard_checks: u64,
     restart_reuse_guard_skips: u64,
     restart_reuse_guard_cooldowns: u64,
+    rephase_guard_checks: u64,
+    rephase_guard_skips: u64,
+    rephase_guard_cooldowns: u64,
+    rephase_guard_glue_rejects: u64,
+    rephase_guard_proof_rejects: u64,
     chrono_backtrack_attempts: u64,
     chrono_backtracks: u64,
     chrono_backtrack_preserved_levels: u64,
@@ -1062,6 +1077,34 @@ struct Solver {
     restart_reuse_guard_last_glue_total: u64,
     /// previous restart-window average glue, if any
     restart_reuse_guard_prev_avg_glue: f64,
+    /// dynamic guard for skipping rephases after short, low-quality restart windows
+    rephase_guard_mode: RephaseGuardMode,
+    /// conflict-window size below which a post-rephase restart is considered churn
+    rephase_guard_min_conflicts: u64,
+    /// conflict cooldown applied after the guard rejects a rephase trajectory
+    rephase_guard_cooldown_conflicts: u64,
+    /// glue margin used to decide whether the post-rephase window worsened learned-clause quality
+    rephase_guard_glue_margin: f64,
+    /// proof-byte margin used to approximate proof-check pressure after a rephase
+    rephase_guard_proof_margin: f64,
+    /// conflict count until which scheduled rephases should be skipped
+    rephase_guard_cooldown_until: u64,
+    /// whether a rephase window is waiting to be evaluated
+    rephase_guard_pending: bool,
+    /// conflict count at the guarded rephase boundary
+    rephase_guard_last_conflict: u64,
+    /// restart count at the guarded rephase boundary
+    rephase_guard_last_restart: u64,
+    /// learned clause count at the guarded rephase boundary
+    rephase_guard_last_learned: u64,
+    /// learned glue total at the guarded rephase boundary
+    rephase_guard_last_glue_total: u64,
+    /// proof bytes at the guarded rephase boundary
+    rephase_guard_last_proof_bytes: u64,
+    /// average glue before the guarded rephase, if any
+    rephase_guard_prev_avg_glue: f64,
+    /// proof bytes per learned clause before the guarded rephase, if any
+    rephase_guard_prev_proof_bytes_per_learned: f64,
     /// optional chronological backtracking threshold; when enabled, preserve the previous
     /// decision level if the normal non-chronological jump would skip more than this many levels
     chrono_levels: Option<usize>,
@@ -1629,6 +1672,32 @@ impl Solver {
             restart_reuse_guard_last_learned: 0,
             restart_reuse_guard_last_glue_total: 0,
             restart_reuse_guard_prev_avg_glue: 0.0,
+            rephase_guard_mode: parse_rephase_guard_mode(),
+            rephase_guard_min_conflicts: parse_u64_env(
+                "SAT_REPHASE_GUARD_MIN_CONFLICTS",
+                DEFAULT_REPHASE_GUARD_MIN_CONFLICTS,
+            ),
+            rephase_guard_cooldown_conflicts: parse_u64_env(
+                "SAT_REPHASE_GUARD_COOLDOWN",
+                DEFAULT_REPHASE_GUARD_COOLDOWN,
+            ),
+            rephase_guard_glue_margin: parse_f64_env(
+                "SAT_REPHASE_GUARD_GLUE_MARGIN",
+                DEFAULT_REPHASE_GUARD_GLUE_MARGIN,
+            ),
+            rephase_guard_proof_margin: parse_f64_env(
+                "SAT_REPHASE_GUARD_PROOF_MARGIN",
+                DEFAULT_REPHASE_GUARD_PROOF_MARGIN,
+            ),
+            rephase_guard_cooldown_until: 0,
+            rephase_guard_pending: false,
+            rephase_guard_last_conflict: 0,
+            rephase_guard_last_restart: 0,
+            rephase_guard_last_learned: 0,
+            rephase_guard_last_glue_total: 0,
+            rephase_guard_last_proof_bytes: 0,
+            rephase_guard_prev_avg_glue: 0.0,
+            rephase_guard_prev_proof_bytes_per_learned: 0.0,
             chrono_levels: parse_chrono_levels_env(),
             reason_side_bump_mode,
             reason_side_bump_limit,
@@ -4515,6 +4584,121 @@ impl Solver {
         self.restart_reuse_guard_last_glue_total = self.stats.learned_clause_glue_total;
     }
 
+    fn rephase_guard_enabled(&self) -> bool {
+        self.rephase_guard_mode != RephaseGuardMode::Off
+            && self.maintenance_scheduler.rephase_enabled()
+    }
+
+    fn proof_bytes_per_learned(proof_bytes: u64, learned: u64) -> f64 {
+        if learned == 0 {
+            0.0
+        } else {
+            proof_bytes as f64 / learned as f64
+        }
+    }
+
+    fn rephase_guard_window_avg_glue(&self) -> Option<f64> {
+        let learned = self
+            .stats
+            .learned_clauses
+            .saturating_sub(self.rephase_guard_last_learned);
+        if learned == 0 {
+            return None;
+        }
+        let glue_total = self
+            .stats
+            .learned_clause_glue_total
+            .saturating_sub(self.rephase_guard_last_glue_total);
+        Some(glue_total as f64 / learned as f64)
+    }
+
+    fn rephase_guard_window_proof_bytes_per_learned(&self, proof_bytes: u64) -> Option<f64> {
+        let learned = self
+            .stats
+            .learned_clauses
+            .saturating_sub(self.rephase_guard_last_learned);
+        if learned == 0 {
+            return None;
+        }
+        let proof_delta = proof_bytes.saturating_sub(self.rephase_guard_last_proof_bytes);
+        Some(proof_delta as f64 / learned as f64)
+    }
+
+    fn note_rephase_guard_after_rephase(&mut self, proof_bytes: u64) {
+        if !self.rephase_guard_enabled() {
+            return;
+        }
+        self.rephase_guard_pending = true;
+        self.rephase_guard_last_conflict = self.stats.conflicts;
+        self.rephase_guard_last_restart = self.stats.restarts;
+        self.rephase_guard_last_learned = self.stats.learned_clauses;
+        self.rephase_guard_last_glue_total = self.stats.learned_clause_glue_total;
+        self.rephase_guard_last_proof_bytes = proof_bytes;
+        self.rephase_guard_prev_avg_glue = self.average_learned_glue();
+        self.rephase_guard_prev_proof_bytes_per_learned =
+            Self::proof_bytes_per_learned(proof_bytes, self.stats.learned_clauses);
+    }
+
+    fn update_rephase_guard_after_window(&mut self, proof_bytes: u64) {
+        if !self.rephase_guard_enabled() || !self.rephase_guard_pending {
+            return;
+        }
+
+        let window_conflicts = self
+            .stats
+            .conflicts
+            .saturating_sub(self.rephase_guard_last_conflict);
+        let restarted = self.stats.restarts > self.rephase_guard_last_restart;
+        if !restarted && window_conflicts < self.rephase_guard_min_conflicts {
+            return;
+        }
+
+        let avg_glue = self.rephase_guard_window_avg_glue();
+        let proof_bytes_per_learned =
+            self.rephase_guard_window_proof_bytes_per_learned(proof_bytes);
+        if avg_glue.is_some() || proof_bytes_per_learned.is_some() {
+            self.stats.rephase_guard_checks += 1;
+        }
+
+        let glue_worse = avg_glue.is_some_and(|avg| {
+            self.rephase_guard_prev_avg_glue > 0.0
+                && avg >= self.rephase_guard_prev_avg_glue * self.rephase_guard_glue_margin
+        });
+        let proof_worse = proof_bytes_per_learned.is_some_and(|bytes_per_learned| {
+            self.rephase_guard_prev_proof_bytes_per_learned > 0.0
+                && bytes_per_learned
+                    >= self.rephase_guard_prev_proof_bytes_per_learned
+                        * self.rephase_guard_proof_margin
+        });
+        let restart_churn = restarted && window_conflicts <= self.rephase_guard_min_conflicts;
+
+        if restart_churn && (glue_worse || proof_worse) {
+            self.rephase_guard_cooldown_until = self
+                .stats
+                .conflicts
+                .saturating_add(self.rephase_guard_cooldown_conflicts);
+            self.stats.rephase_guard_cooldowns += 1;
+            if glue_worse {
+                self.stats.rephase_guard_glue_rejects += 1;
+            }
+            if proof_worse {
+                self.stats.rephase_guard_proof_rejects += 1;
+            }
+        }
+
+        self.rephase_guard_pending = false;
+    }
+
+    fn rephase_guard_blocks_rephase(&mut self) -> bool {
+        if self.rephase_guard_enabled() && self.stats.conflicts < self.rephase_guard_cooldown_until
+        {
+            self.stats.rephase_guard_skips += 1;
+            true
+        } else {
+            false
+        }
+    }
+
     fn restart_reuse_level(&mut self) -> usize {
         self.update_restart_reuse_guard_before_restart();
         if self.restart_reuse_guard_blocks_reuse() {
@@ -4570,8 +4754,13 @@ impl Solver {
         self.target_phase_assigned = 0;
     }
 
-    fn run_rephase(&mut self) -> bool {
+    fn run_rephase_with_proof_bytes(&mut self, proof_bytes: u64) -> bool {
         if self.search_mode != SearchMode::Stable {
+            return true;
+        }
+
+        self.update_rephase_guard_after_window(proof_bytes);
+        if self.rephase_guard_blocks_rephase() {
             return true;
         }
 
@@ -4606,7 +4795,12 @@ impl Solver {
                 self.stats.rephase_original += 1;
             }
         }
+        self.note_rephase_guard_after_rephase(proof_bytes);
         true
+    }
+
+    fn run_rephase(&mut self) -> bool {
+        self.run_rephase_with_proof_bytes(0)
     }
 
     fn initialize_walk_phases(&self) -> Vec<u8> {
@@ -4974,9 +5168,17 @@ impl Solver {
     }
 
     fn run_root_maintenance_action(&mut self, action: MaintenanceAction) -> bool {
+        self.run_root_maintenance_action_with_proof_bytes(action, 0)
+    }
+
+    fn run_root_maintenance_action_with_proof_bytes(
+        &mut self,
+        action: MaintenanceAction,
+        proof_bytes: u64,
+    ) -> bool {
         match action {
             MaintenanceAction::SwitchMode => self.maybe_switch_search_mode(),
-            MaintenanceAction::Rephase => self.run_rephase(),
+            MaintenanceAction::Rephase => self.run_rephase_with_proof_bytes(proof_bytes),
             MaintenanceAction::Reorder => self.run_clause_weight_reorder(),
             MaintenanceAction::Probe | MaintenanceAction::Eliminate => true,
             MaintenanceAction::Restart
@@ -4986,12 +5188,18 @@ impl Solver {
     }
 
     fn run_search_maintenance(&mut self) -> MaintenanceOutcome {
+        self.run_search_maintenance_with_proof_bytes(0)
+    }
+
+    fn run_search_maintenance_with_proof_bytes(&mut self, proof_bytes: u64) -> MaintenanceOutcome {
         let maintenance_start = Instant::now();
         self.stats.maintenance_checks += 1;
+        self.update_rephase_guard_after_window(proof_bytes);
 
         if self.restart_pending {
             self.record_maintenance_action(MaintenanceAction::Restart);
             if self.perform_restart_if_pending() {
+                self.update_rephase_guard_after_window(proof_bytes);
                 self.stats.maintenance_time_ns += elapsed_ns(maintenance_start);
                 return MaintenanceOutcome::Propagate;
             }
@@ -5021,7 +5229,7 @@ impl Solver {
             let action = MaintenanceAction::SwitchMode;
             self.record_maintenance_action(action);
             let outcome = self.return_to_root_for_maintenance(action, |solver| {
-                solver.run_root_maintenance_action(action)
+                solver.run_root_maintenance_action_with_proof_bytes(action, proof_bytes)
             });
             self.maintenance_scheduler
                 .mark_root_action(action, self.stats.conflicts);
@@ -5037,7 +5245,7 @@ impl Solver {
         {
             self.record_maintenance_action(action);
             let outcome = self.return_to_root_for_maintenance(action, |solver| {
-                solver.run_root_maintenance_action(action)
+                solver.run_root_maintenance_action_with_proof_bytes(action, proof_bytes)
             });
             self.maintenance_scheduler
                 .mark_root_action(action, self.stats.conflicts);
@@ -6415,7 +6623,7 @@ impl Solver {
                         self.stats.search_time_ns += elapsed_ns(search_start);
                         if trace_search_interval > 0 {
                             eprintln!(
-                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} rephase_guard={}/{}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                 self.stats.search_time_ns as f64 / 1e9,
                                 self.stats.conflicts,
                                 self.stats.decisions,
@@ -6454,6 +6662,11 @@ impl Solver {
                                 self.stats.rephase_walking,
                                 self.stats.rephase_inverted,
                                 self.stats.rephase_original,
+                                self.stats.rephase_guard_checks,
+                                self.stats.rephase_guard_skips,
+                                self.stats.rephase_guard_cooldowns,
+                                self.stats.rephase_guard_glue_rejects,
+                                self.stats.rephase_guard_proof_rejects,
                                 self.stats.walks,
                                 self.stats.walk_improved,
                                 self.stats.walk_steps,
@@ -6499,7 +6712,7 @@ impl Solver {
                     self.note_mode_progress_at_conflict();
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
-                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
+                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} rephase_guard={}/{}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
                             search_start.elapsed().as_secs_f64(),
                             self.stats.conflicts,
                             self.stats.decisions,
@@ -6538,6 +6751,11 @@ impl Solver {
                             self.stats.rephase_walking,
                             self.stats.rephase_inverted,
                             self.stats.rephase_original,
+                            self.stats.rephase_guard_checks,
+                            self.stats.rephase_guard_skips,
+                            self.stats.rephase_guard_cooldowns,
+                            self.stats.rephase_guard_glue_rejects,
+                            self.stats.rephase_guard_proof_rejects,
                             self.stats.walks,
                             self.stats.walk_improved,
                             self.stats.walk_steps,
@@ -6619,7 +6837,7 @@ impl Solver {
                     conflict = self.propagate();
                 }
                 None => {
-                    match self.run_search_maintenance() {
+                    match self.run_search_maintenance_with_proof_bytes(proof_log.recorded_bytes) {
                         MaintenanceOutcome::Continue => {}
                         MaintenanceOutcome::Propagate => {
                             conflict = self.propagate();
@@ -6638,7 +6856,7 @@ impl Solver {
                             self.stats.search_time_ns += elapsed_ns(search_start);
                             if trace_search_interval > 0 {
                                 eprintln!(
-                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} rephase_guard={}/{}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                     self.stats.search_time_ns as f64 / 1e9,
                                     self.stats.conflicts,
                                     self.stats.decisions,
@@ -6677,6 +6895,11 @@ impl Solver {
                                     self.stats.rephase_walking,
                                     self.stats.rephase_inverted,
                                     self.stats.rephase_original,
+                                    self.stats.rephase_guard_checks,
+                                    self.stats.rephase_guard_skips,
+                                    self.stats.rephase_guard_cooldowns,
+                                    self.stats.rephase_guard_glue_rejects,
+                                    self.stats.rephase_guard_proof_rejects,
                                     self.stats.walks,
                                     self.stats.walk_improved,
                                     self.stats.walk_steps,
@@ -6892,6 +7115,20 @@ fn parse_restart_reuse_guard_mode() -> RestartReuseGuardMode {
             }
         },
         Err(_) => RestartReuseGuardMode::Progress,
+    }
+}
+
+fn parse_rephase_guard_mode() -> RephaseGuardMode {
+    match env::var("SAT_REPHASE_GUARD") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "0" | "false" | "no" | "off" | "disabled" => RephaseGuardMode::Off,
+            "1" | "true" | "yes" | "on" | "enabled" | "progress" => RephaseGuardMode::Progress,
+            other => {
+                eprintln!("Invalid SAT_REPHASE_GUARD={other}; expected off/progress");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => RephaseGuardMode::Progress,
     }
 }
 
@@ -9036,6 +9273,73 @@ mod tests {
         assert_eq!(s.target_phase[1], FALSE);
         assert_eq!(s.target_phase[2], FALSE);
         assert_eq!(s.stats.rephase_original, 1);
+    }
+
+    #[test]
+    fn test_rephase_guard_skips_during_cooldown() {
+        let mut s = make_solver(2, vec![]);
+        s.rephase_guard_mode = RephaseGuardMode::Progress;
+        s.rephase_guard_cooldown_until = 100;
+        s.stats.conflicts = 50;
+
+        assert!(s.run_rephase_with_proof_bytes(0));
+
+        assert_eq!(s.stats.rephases, 0);
+        assert_eq!(s.stats.rephase_guard_skips, 1);
+        assert!(!s.target_phase_active);
+    }
+
+    #[test]
+    fn test_rephase_guard_enters_cooldown_after_short_glue_worse_restart_window() {
+        let mut s = make_solver(2, vec![]);
+        s.rephase_guard_mode = RephaseGuardMode::Progress;
+        s.rephase_guard_min_conflicts = 10;
+        s.rephase_guard_cooldown_conflicts = 50;
+        s.rephase_guard_glue_margin = 1.0;
+        s.rephase_guard_proof_margin = 1.1;
+        s.stats.conflicts = 100;
+        s.stats.restarts = 5;
+        s.stats.learned_clauses = 10;
+        s.stats.learned_clause_glue_total = 20;
+
+        s.note_rephase_guard_after_rephase(1000);
+        s.stats.conflicts = 105;
+        s.stats.restarts = 6;
+        s.stats.learned_clauses = 12;
+        s.stats.learned_clause_glue_total = 26;
+        s.update_rephase_guard_after_window(1300);
+
+        assert_eq!(s.rephase_guard_cooldown_until, 155);
+        assert_eq!(s.stats.rephase_guard_checks, 1);
+        assert_eq!(s.stats.rephase_guard_cooldowns, 1);
+        assert_eq!(s.stats.rephase_guard_glue_rejects, 1);
+        assert_eq!(s.stats.rephase_guard_proof_rejects, 1);
+    }
+
+    #[test]
+    fn test_rephase_guard_allows_productive_restart_window() {
+        let mut s = make_solver(2, vec![]);
+        s.rephase_guard_mode = RephaseGuardMode::Progress;
+        s.rephase_guard_min_conflicts = 10;
+        s.rephase_guard_glue_margin = 1.0;
+        s.rephase_guard_proof_margin = 1.1;
+        s.stats.conflicts = 100;
+        s.stats.restarts = 5;
+        s.stats.learned_clauses = 10;
+        s.stats.learned_clause_glue_total = 20;
+
+        s.note_rephase_guard_after_rephase(1000);
+        s.stats.conflicts = 120;
+        s.stats.restarts = 6;
+        s.stats.learned_clauses = 12;
+        s.stats.learned_clause_glue_total = 26;
+        s.update_rephase_guard_after_window(1300);
+
+        assert_eq!(s.rephase_guard_cooldown_until, 0);
+        assert_eq!(s.stats.rephase_guard_checks, 1);
+        assert_eq!(s.stats.rephase_guard_cooldowns, 0);
+        assert_eq!(s.stats.rephase_guard_glue_rejects, 0);
+        assert_eq!(s.stats.rephase_guard_proof_rejects, 0);
     }
 
     #[test]

@@ -46,7 +46,10 @@ What is present:
   `SAT_RESTART_REUSE_GUARD=off` for guard-only ablations.
 - Phase 7 phase-system scaffold: stable search can track `best_phase` and `target_phase` snapshots
   and runs a best/inverted/original rephase cycle by default with `SAT_REPHASE_INTERVAL=10000`; use
-  `SAT_REPHASE_INTERVAL=0` to disable while comparing proof/search side effects
+  `SAT_REPHASE_INTERVAL=0` to disable while comparing proof/search side effects.
+  `SAT_REPHASE_GUARD=progress` is now the conservative default guard. It watches short
+  post-rephase restart windows, average learned-clause glue, and proof-byte rate; use
+  `SAT_REPHASE_GUARD=off` for guard-off ablations.
 - Phase 7 search-control scaffold: stable-mode reluctant doubling restarts are now the default,
   falling back to glue-EMA behavior in focused mode. Root-safe guarded stable/focused switching is
   also enabled by default with `SAT_MODE_SWITCH_INTERVAL=50000` and
@@ -1225,3 +1228,52 @@ Analysis:
   heavier phase seeding rather than different simplification.
 - The accepted built-in default is therefore `SAT_WARMUP_BEYOND_CONFLICTS=off`, while the
   Kissat-faithful behavior remains available for targeted experiments.
+
+Rephase conflict/glue/proof guard validation on 2026-05-13:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_REPHASE_INTERVAL=1 SAT_CHECK_INVARIANTS=1 \
+  bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_PROOF=0 SAT_REPHASE_GUARD=progress \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_REPHASE_GUARD=off \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_REPHASE_GUARD=progress SAT_REPHASE_GUARD_COOLDOWN=100000 \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 125 passed.
+- default smoke suite: 9/9 passed, including UNSAT proof checking, log
+  `log/2026-05-13-23-40-52`.
+- frequent-rephase invariant smoke suite: 9/9 passed, including UNSAT proof checking, log
+  `log/2026-05-13-23-41-08`.
+- candidate guard, default `20k` cooldown: solved 9/11, PAR-2 `625.660`, log
+  `log/bench-11-kissat-innovations-2026-05-13-23-20-51`.
+- guard-off ablation: solved 9/11, PAR-2 `626.436`, log
+  `log/bench-11-kissat-innovations-2026-05-13-23-27-55`.
+- `100k` cooldown tuning run was stopped after three Feistel rows because it regressed the profile
+  shape: `k32` `15.458s -> 35.671s`, `k52` `40.518s -> 32.070s`, and `k57`
+  `0.883s -> 5.149s`, partial log `log/bench-11-kissat-innovations-2026-05-13-23-37-17`.
+
+Analysis:
+
+- The implemented guard is default-on as `SAT_REPHASE_GUARD=progress`. After each real rephase, it
+  records the conflict count, restart count, learned count, glue total, and proof-byte proxy. If a
+  restart arrives within `SAT_REPHASE_GUARD_MIN_CONFLICTS` and the post-rephase window worsens
+  average glue or proof bytes per learned clause, it starts a rephase cooldown.
+- Trace output now reports `rephase_guard=checks/skips/cooldowns/glue_rejects/proof_rejects`.
+- With the conservative `20k` cooldown, the guard is neutral on the profiling set. A traced
+  `feistel_b64_k52_r17` run solved in `40.761s` and reported `rephase_guard=12/0/2/2/0`: it
+  detected two glue-worse short restart windows, but the cooldown expired before the next scheduled
+  rephase, so no rephase was skipped.
+- A longer `100k` cooldown made the guard active on `k52` (`rephase_guard=8/3/3/3/0`) and improved
+  that target to `32.113s`, with fewer conflicts, decisions, propagations, proof bytes, and
+  restarts. It is still rejected because it severely regressed `k32` and `k57`.
+- The conservative `20k` cooldown guard is now the accepted built-in default. It narrowly beat the
+  guard-off ablation on this profile without changing the solved/timeout split, while the more
+  aggressive `100k` cooldown remains rejected because it regressed `k32` and `k57`. Future work is
+  proof-heavy UNSAT guard tuning.
