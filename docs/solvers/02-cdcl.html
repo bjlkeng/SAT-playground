@@ -130,6 +130,14 @@
         overflow: hidden;
       }
 
+      .solver-demo-graph-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: flex-start;
+        margin-top: 12px;
+      }
+
       .solver-demo-graph {
         position: relative;
         z-index: 1;
@@ -157,17 +165,6 @@
 
       .solver-demo-cut-path.visible {
         opacity: 0.95;
-      }
-
-      .solver-demo-graph-badges {
-        position: absolute;
-        inset: 14px 14px auto 14px;
-        z-index: 3;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        align-items: flex-start;
-        pointer-events: none;
       }
 
       .solver-demo-level-tag,
@@ -396,6 +393,34 @@
         color: var(--muted);
       }
 
+      @media (max-width: 640px) {
+        .solver-demo {
+          padding: 16px;
+          border-radius: 20px;
+        }
+
+        .solver-demo-panel,
+        .solver-demo-sidebar {
+          padding: 14px;
+          border-radius: 16px;
+        }
+
+        .solver-demo-graph {
+          height: 330px;
+        }
+
+        .solver-demo-graph-shell {
+          min-height: 330px;
+        }
+
+        .solver-demo-button,
+        .solver-demo-chip,
+        .solver-demo-level-tag,
+        .solver-demo-cut-tag {
+          font-size: 0.74rem;
+        }
+      }
+
       @media (min-width: 920px) {
         .solver-demo-layout {
           grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.95fr);
@@ -495,17 +520,17 @@ loop:
                 <svg class="solver-demo-overlay" viewBox="0 0 560 390" aria-hidden="true">
                   <path class="solver-demo-cut-path" data-demo-cut></path>
                 </svg>
-                <div class="solver-demo-graph-badges">
-                  <span class="solver-demo-level-tag level-1">decision level 1</span>
-                  <span class="solver-demo-level-tag level-2">decision level 2</span>
-                  <span class="solver-demo-cut-tag" data-demo-cut-label>no cut yet</span>
-                </div>
+              </div>
+              <div class="solver-demo-graph-badges">
+                <span class="solver-demo-level-tag level-1">decision level 1</span>
+                <span class="solver-demo-level-tag level-2">decision level 2</span>
+                <span class="solver-demo-cut-tag" data-demo-cut-label>no cut yet</span>
               </div>
               <div class="solver-demo-trail" data-demo-trail></div>
               <p class="solver-demo-footnote">
-                Trail blocks show the same assignments in trail order. When the dashed cut appears,
-                it marks the learned-clause boundary in the implication graph: once only one
-                current-level assignment remains on the conflict side, the learned clause is ready.
+                Trail blocks show the same assignments in trail order. When the cut appears, it
+                marks the learned-clause boundary in the implication graph: once the boundary
+                contains exactly one current-level literal, the learned clause is asserting.
               </p>
             </div>
 
@@ -736,8 +761,8 @@ loop:
             title: "Propagation builds a wider level-2 cone",
             caption: "Clause C1 forces x3 = true from x1 = true. At level 2, x2 = true forces both x4 = true through C2 and x5 = true through C3.",
             analysisTitle: "Reason clauses",
-            analysis: "The conflict-side fan-in is now larger: two level-2 implications can both reach the conflict, which means the raw conflict is not yet at the first UIP.",
-            uip: "Still no 1-UIP cut. The important change is that x4 and x5 both depend on the level-2 decision, so the solver will need to push the cut backward through more than one reason.",
+            analysis: "The implication fan-out is now larger. C4 has not been reported as the conflict yet, but two current-level implications are ready to feed it when the scan reaches that clause.",
+            uip: "Still no 1-UIP cut. The important change is that x4 and x5 both depend on the level-2 decision, so once C4 is detected the solver will need to push the cut backward through more than one reason.",
             cutLabel: "reason edges only",
             cutPath: null,
             nodes: {
@@ -757,7 +782,7 @@ loop:
               { id: "C1", status: "unit, then satisfied", className: "active", literals: [["-x1", "false focus"], ["x3", "sat focus"]] },
               { id: "C2", status: "unit, then satisfied", className: "active", literals: [["-x2", "false focus"], ["x4", "sat focus"]] },
               { id: "C3", status: "unit, then satisfied", className: "active", literals: [["-x2", "false focus"], ["x5", "sat focus"]] },
-              { id: "C4", status: "falsified", className: "", literals: [["-x3", "false"], ["-x4", "false"], ["-x5", "false"]] },
+              { id: "C4", status: "will conflict when scanned", className: "", literals: [["-x3", "false"], ["-x4", "false"], ["-x5", "false"]] },
             ],
           },
           {
@@ -792,7 +817,7 @@ loop:
             title: "Push the cut back to the first UIP",
             caption: "Conflict analysis resolves x5 away using C3, giving (-x3 or -x4 or -x2), then resolves x4 away using C2, leaving (-x3 or -x2). That final clause has exactly one level-2 literal.",
             analysisTitle: "1-UIP cut after two pushes",
-            analysis: "The diagonal cut is the final 1-UIP boundary. It crosses only edges, not nodes: x3 -> conflict and x2 -> x4. Those crossed edges spell out the final learned clause (-x3 or -x2).",
+            analysis: "The highlighted boundary is the final 1-UIP cut. Its boundary literals are x3 from the earlier level and x2 from the current level, spelling out the final learned clause (-x3 or -x2).",
             uip: "x2 is the first UIP: every remaining path from the level-2 decision to the conflict must pass through x2, and it is the first such node encountered when the cut has been pushed back far enough.",
             cutLabel: "1-UIP learned clause: (-x3 or -x2)",
             cutPath: UIP_CUT,
@@ -804,7 +829,7 @@ loop:
               x5: { label: "x5 = true", classes: ["implied", "level2", "dim"] },
               conflict: { label: "C4 false", classes: ["conflict"] },
             },
-            edges: { c1: ["active"], c2: ["active", "level2", "cut"], c3: ["active", "level2", "dim"], c4a: ["active", "conflict-edge", "cut"], c4b: ["active", "conflict-edge"], c4c: ["active", "conflict-edge", "dim"], learned: ["dim"] },
+            edges: { c1: ["active"], c2: ["active", "level2"], c3: ["active", "level2", "dim"], c4a: ["active", "conflict-edge"], c4b: ["active", "conflict-edge"], c4c: ["active", "conflict-edge", "dim"], learned: ["dim"] },
             trail: [
               { title: "decision level 1", chips: [["x1 = true", "active"], ["x3 = true by C1", "good"]] },
               { title: "decision level 2", chips: [["x2 = true", "warn"], ["x5 resolved away by C3", "dim"], ["x4 resolved away by C2", "dim"], ["1-UIP = x2", "active"]] },
@@ -986,28 +1011,42 @@ loop:
           renderClauses(step.clauses);
           back.disabled = current === 0;
           next.disabled = current === steps.length - 1;
+          play.disabled = current === steps.length - 1 && timer === null;
         }
 
         root.addEventListener("click", (event) => {
           const action = event.target.dataset.demoAction;
           if (!action) return;
 
-          if (action === "back") current = Math.max(0, current - 1);
-          if (action === "next") current = Math.min(steps.length - 1, current + 1);
+          if (action === "back") {
+            stop();
+            current = Math.max(0, current - 1);
+          }
+          if (action === "next") {
+            stop();
+            current = Math.min(steps.length - 1, current + 1);
+          }
           if (action === "reset") {
             stop();
             current = 0;
           }
           if (action === "play") {
+            if (current === steps.length - 1) return;
             if (timer === null) {
               play.textContent = "Pause";
+              play.disabled = false;
               timer = window.setInterval(() => {
                 if (current === steps.length - 1) {
                   stop();
+                  render();
                   return;
                 }
                 current += 1;
                 render();
+                if (current === steps.length - 1) {
+                  stop();
+                  render();
+                }
               }, 2100);
             } else {
               stop();

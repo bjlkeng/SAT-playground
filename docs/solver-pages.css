@@ -120,6 +120,7 @@ ul {
 }
 
 pre {
+  max-width: 100%;
   overflow-x: auto;
   margin: 16px 0 0;
   padding: 18px;
@@ -141,6 +142,7 @@ pre {
 }
 
 .diff-card {
+  min-width: 0;
   padding: 18px;
   border-radius: 18px;
   border: 1px solid var(--line);
