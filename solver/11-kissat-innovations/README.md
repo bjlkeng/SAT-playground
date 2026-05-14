@@ -31,7 +31,11 @@ What is present:
 - Phase 5 learned-clause lifecycle policy: glue/tier/used-based reduction is the default; use
   `SAT_REDUCE_MODE=activity` for the previous activity-based reducer fallback
 - Phase 6 search-mode infrastructure: stable heap search remains the starting mode, while
-  `SAT_SEARCH_MODE=focused` enables a focused recent-conflict decision queue for measurement
+  `SAT_SEARCH_MODE=focused` enables a focused recent-conflict decision queue for measurement.
+  Kissat-exact focused queue-cursor and focused phase-override experiments are available as
+  `SAT_FOCUSED_DECISION=kissat` and `SAT_FOCUSED_PHASE=kissat`, but both are non-default after the
+  2026-05-13 profiling rejection; the accepted defaults are `SAT_FOCUSED_DECISION=pop-front` and
+  `SAT_FOCUSED_PHASE=saved`.
 - Phase 7 restart/reduction-pressure scaffold: `SAT_RESTART_MODE=glue-ema` enables a fast/slow
   learned-glue EMA restart trigger, and `SAT_REDUCE_LOW_YIELD_COOLDOWN=<conflicts>` enables an
   opt-in cooldown after low-yield learned-clause reduction passes; Kissat-style restart trail reuse
@@ -1114,3 +1118,58 @@ Analysis:
   but lost more time on `k32`, timetable, Kakuro, and the random UNSAT rows.
 - The traced `k52` run confirms the guard is not dead code: it checked 436 restart windows, skipped
   reuse twice, and entered cooldown once on the winning trajectory.
+
+Focused queue and phase exactness validation on 2026-05-13:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_SEARCH_MODE=focused SAT_FOCUSED_DECISION=kissat SAT_FOCUSED_PHASE=kissat \
+  SAT_CHECK_INVARIANTS=1 bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_PROOF=0 bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling \
+  solver/11-kissat-innovations
+SAT_PROOF=0 SAT_FOCUSED_DECISION=kissat SAT_FOCUSED_PHASE=kissat \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_FOCUSED_DECISION=pop-front SAT_FOCUSED_PHASE=saved \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_FOCUSED_DECISION=pop-front \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_FOCUSED_PHASE=saved \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 120 passed.
+- default smoke suite: 9/9 passed, including UNSAT proof checking, log
+  `log/2026-05-13-20-06-16`.
+- opt-in exact focused invariant smoke suite: 9/9 passed, including UNSAT proof checking, log
+  `log/2026-05-13-19-57-08`.
+- final no-env default profiling confirmation: solved 9/11, PAR-2 `622.999`, log
+  `log/bench-11-kissat-innovations-2026-05-13-19-57-15`.
+- exact focused queue plus exact focused phase: solved 9/11, PAR-2 `699.284`, log
+  `log/bench-11-kissat-innovations-2026-05-13-19-23-21`.
+- legacy focused queue plus saved focused phase: solved 9/11, PAR-2 `622.784`, log
+  `log/bench-11-kissat-innovations-2026-05-13-19-31-41`.
+- exact focused phase only (`SAT_FOCUSED_DECISION=pop-front`): solved 8/11, PAR-2 `868.899`, log
+  `log/bench-11-kissat-innovations-2026-05-13-19-38-46`.
+- exact focused queue only (`SAT_FOCUSED_PHASE=saved`): solved 9/11, PAR-2 `714.800`, log
+  `log/bench-11-kissat-innovations-2026-05-13-19-47-52`.
+
+Analysis:
+
+- The implemented exact queue cursor mirrors Kissat's focused decision path more closely: focused
+  decisions keep variables in the queue and advance a search cursor over assigned entries instead of
+  popping variables out. Backtracking only updates the cursor when a newly unassigned variable has a
+  newer focused stamp. It is available with `SAT_FOCUSED_DECISION=kissat`.
+- The implemented exact focused phase override mirrors Kissat's focused `decide_phase` pattern:
+  selected focused-mode switch windows force the initial or inverted initial phase before falling
+  back to saved phases. It is available with `SAT_FOCUSED_PHASE=kissat`.
+- Both exact pieces are rejected as default policies on this profiling set. The phase override is
+  the larger isolated regression: it lost the `feistel_b64_k52_r17` solve and moved PAR-2 to
+  `868.899`. The exact queue cursor alone kept the solved split but regressed PAR-2 to `714.800`,
+  mainly by slowing `k32`, `k52`, and timetable.
+- The accepted built-in default remains the previous focused behavior:
+  `SAT_FOCUSED_DECISION=pop-front SAT_FOCUSED_PHASE=saved`. The final no-env confirmation
+  reproduced the accepted 9/11 solved split with PAR-2 `622.999`; the small improvement over the
+  previous `629.226` guard-on run is treated as run-to-run noise, not a new default win.

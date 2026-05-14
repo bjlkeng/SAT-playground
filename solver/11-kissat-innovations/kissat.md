@@ -2055,6 +2055,26 @@ Status on 2026-05-13:
 - A traced default `feistel_b64_k52_r17` run reported `restart_reuse_guard=436/2/1`, so the guard
   did fire on the instance that carries the win: 436 guard checks, 2 skipped reuse attempts, and 1
   cooldown window.
+- Item 2 also landed as opt-in instrumentation, but was rejected as a default policy. The
+  implementation adds `SAT_FOCUSED_DECISION=kissat`, which keeps focused decisions queued and uses a
+  Kissat-style search cursor, plus `SAT_FOCUSED_PHASE=kissat`, which applies Kissat's focused
+  initial/inverted phase override schedule before saved phases.
+- Validation after the focused exactness slice: `cargo test` passed 120 tests; default smoke passed
+  9/9 with proof checking (`log/2026-05-13-20-06-16`); exact-focused invariant smoke passed 9/9
+  with proof checking (`log/2026-05-13-19-57-08`).
+- No-proof profiling on `benchmarks/profiling`, 120s timeout and 16 GB memory: final no-env default
+  solved 9/11 with PAR-2 `622.999`
+  (`log/bench-11-kissat-innovations-2026-05-13-19-57-15`); exact queue plus exact phase solved 9/11
+  with PAR-2 `699.284` (`log/bench-11-kissat-innovations-2026-05-13-19-23-21`); legacy queue plus
+  saved focused phase solved 9/11 with PAR-2 `622.784`
+  (`log/bench-11-kissat-innovations-2026-05-13-19-31-41`); exact phase only solved 8/11 with PAR-2
+  `868.899` (`log/bench-11-kissat-innovations-2026-05-13-19-38-46`); exact queue only solved 9/11
+  with PAR-2 `714.800` (`log/bench-11-kissat-innovations-2026-05-13-19-47-52`).
+- Conclusion: both exact focused pieces are path-harmful on this slice. The focused phase override
+  is the larger problem because it loses `feistel_b64_k52_r17`; the exact queue cursor also slows
+  `k32`, `k52`, and timetable. The accepted built-in defaults remain
+  `SAT_FOCUSED_DECISION=pop-front` and `SAT_FOCUSED_PHASE=saved`; exact focused behavior is kept
+  only for future sensitivity tests.
 
 ## First Concrete Milestones
 

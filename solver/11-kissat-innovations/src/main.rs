@@ -155,6 +155,18 @@ enum ModeSwitchPolicy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FocusedDecisionMode {
+    PopFront,
+    KissatQueue,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FocusedPhaseMode {
+    Saved,
+    Kissat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RestartReuseMode {
     Off,
     Kissat,
@@ -662,6 +674,9 @@ struct SolverStats {
     best_phase_saved: u64,
     target_phase_decisions: u64,
     saved_phase_decisions: u64,
+    initial_phase_decisions: u64,
+    focused_initial_phase_decisions: u64,
+    focused_inverted_phase_decisions: u64,
     maintenance_root_simplifies: u64,
     maintenance_reductions: u64,
     maintenance_noops: u64,
@@ -997,6 +1012,8 @@ struct Solver {
     focused_head: usize,
     /// tail of the focused decision queue, or 0 when empty
     focused_tail: usize,
+    /// Kissat-style focused queue search cursor, or 0 when no cursor is cached
+    focused_search: usize,
     /// variables eligible for search branching; eliminated variables stay permanently false here
     decision_var: Vec<bool>,
     /// EVSIDS-style variable activity
@@ -1095,6 +1112,10 @@ struct Solver {
     reduce_mode: ReduceMode,
     /// stable heap search or focused recent-conflict queue search
     search_mode: SearchMode,
+    /// focused-mode decision queue semantics
+    focused_decision_mode: FocusedDecisionMode,
+    /// focused-mode polarity override policy
+    focused_phase_mode: FocusedPhaseMode,
     /// policy for deciding whether a scheduled mode-switch action should actually switch modes
     mode_switch_policy: ModeSwitchPolicy,
     /// stable-mode conflicts without a deeper trail before stale-stable may enter focused mode
@@ -1570,6 +1591,7 @@ impl Solver {
             focused_queued: vec![false; num_vars + 1],
             focused_head: 0,
             focused_tail: 0,
+            focused_search: 0,
             decision_var: vec![true; num_vars + 1],
             activity: vec![0.0; num_vars + 1],
             activity_inc: 1.0,
@@ -1639,6 +1661,8 @@ impl Solver {
             reduce_db_limit: ((original_clause_count as f64) * LEARNTSIZE_FACTOR) as usize,
             reduce_mode: parse_reduce_mode(),
             search_mode: parse_search_mode(),
+            focused_decision_mode: parse_focused_decision_mode(),
+            focused_phase_mode: parse_focused_phase_mode(),
             mode_switch_policy: parse_mode_switch_policy(),
             mode_switch_stale_conflicts: parse_u64_env("SAT_MODE_SWITCH_STALE_CONFLICTS", 0),
             mode_switch_focused_conflicts: parse_u64_env("SAT_MODE_SWITCH_FOCUSED_CONFLICTS", 0),
@@ -2665,6 +2689,19 @@ impl Solver {
                 self.focused_tail, prev,
                 "{context}: focused queue tail mismatch"
             );
+            if self.focused_decision_mode == FocusedDecisionMode::KissatQueue
+                && self.focused_search != 0
+            {
+                assert!(
+                    self.focused_search <= num_vars,
+                    "{context}: focused search cursor has invalid variable {}",
+                    self.focused_search
+                );
+                assert!(
+                    seen_focused_vars[self.focused_search],
+                    "{context}: focused search cursor is not in queue"
+                );
+            }
             for var in 1..=num_vars {
                 assert_eq!(
                     self.focused_queued[var], seen_focused_vars[var],
@@ -2957,6 +2994,7 @@ impl Solver {
         self.focused_queued.fill(false);
         self.focused_head = 0;
         self.focused_tail = 0;
+        self.focused_search = 0;
     }
 
     fn focused_queue_unlink(&mut self, var: usize) {
@@ -2976,19 +3014,35 @@ impl Solver {
         } else {
             self.focused_prev[next] = prev;
         }
+        if self.focused_search == var {
+            self.focused_search = if prev != 0 { prev } else { next };
+        }
         self.focused_prev[var] = 0;
         self.focused_next[var] = 0;
         self.focused_queued[var] = false;
     }
 
-    fn focused_queue_push_front(&mut self, var: usize) {
-        if !self.decision_var[var] {
-            return;
+    fn focused_queue_append_tail(&mut self, var: usize, update_search: bool) {
+        self.focused_queued[var] = true;
+        self.focused_next[var] = 0;
+        self.focused_prev[var] = self.focused_tail;
+        if self.focused_tail == 0 {
+            self.focused_head = var;
+        } else {
+            self.focused_next[self.focused_tail] = var;
         }
-        if self.focused_queued[var] {
-            self.focused_queue_unlink(var);
-        }
+        self.focused_tail = var;
 
+        if self.focused_decision_mode == FocusedDecisionMode::KissatQueue {
+            self.focused_stamp[var] = self.focused_next_stamp;
+            self.focused_next_stamp = self.focused_next_stamp.saturating_add(1);
+            if update_search && self.assignment[var] == UNASSIGNED {
+                self.focused_search = var;
+            }
+        }
+    }
+
+    fn focused_queue_prepend_head(&mut self, var: usize) {
         self.focused_stamp[var] = self.focused_next_stamp;
         self.focused_next_stamp = self.focused_next_stamp.saturating_add(1);
         self.focused_queued[var] = true;
@@ -3002,20 +3056,27 @@ impl Solver {
         self.focused_head = var;
     }
 
+    fn focused_queue_push_front(&mut self, var: usize) {
+        if !self.decision_var[var] {
+            return;
+        }
+        if self.focused_queued[var] {
+            self.focused_queue_unlink(var);
+        }
+
+        if self.focused_decision_mode == FocusedDecisionMode::KissatQueue {
+            self.focused_queue_append_tail(var, true);
+        } else {
+            self.focused_queue_prepend_head(var);
+        }
+    }
+
     fn focused_queue_push_back(&mut self, var: usize) {
         if !self.decision_var[var] || self.focused_queued[var] {
             return;
         }
 
-        self.focused_queued[var] = true;
-        self.focused_next[var] = 0;
-        self.focused_prev[var] = self.focused_tail;
-        if self.focused_tail == 0 {
-            self.focused_head = var;
-        } else {
-            self.focused_next[self.focused_tail] = var;
-        }
-        self.focused_tail = var;
+        self.focused_queue_append_tail(var, true);
     }
 
     fn focused_queue_pop_front(&mut self) -> Option<usize> {
@@ -3027,6 +3088,44 @@ impl Solver {
             }
         }
         None
+    }
+
+    fn focused_queue_note_unassigned(&mut self, var: usize) {
+        if self.focused_decision_mode != FocusedDecisionMode::KissatQueue
+            || !self.focused_queued[var]
+            || self.assignment[var] != UNASSIGNED
+        {
+            return;
+        }
+
+        if self.focused_search == 0
+            || self.focused_stamp[var] > self.focused_stamp[self.focused_search]
+        {
+            self.focused_search = var;
+        }
+    }
+
+    fn focused_queue_pick_kissat(&mut self) -> Option<usize> {
+        if self.focused_search == 0 {
+            self.focused_search = self.focused_tail;
+        }
+
+        let mut cursor = self.focused_search;
+        while cursor != 0 {
+            if self.decision_var[cursor] && self.assignment[cursor] == UNASSIGNED {
+                self.focused_search = cursor;
+                return Some(cursor);
+            }
+            cursor = self.focused_prev[cursor];
+        }
+        None
+    }
+
+    fn focused_queue_pick(&mut self) -> Option<usize> {
+        match self.focused_decision_mode {
+            FocusedDecisionMode::PopFront => self.focused_queue_pop_front(),
+            FocusedDecisionMode::KissatQueue => self.focused_queue_pick_kissat(),
+        }
     }
 
     fn insert_branch_var(&mut self, var: usize, focused_front: bool) {
@@ -3041,7 +3140,13 @@ impl Solver {
             self.branch_heap_sift_up(idx);
         }
         if self.search_mode == SearchMode::Focused {
-            if focused_front && !self.focused_queued[var] {
+            if self.focused_decision_mode == FocusedDecisionMode::KissatQueue {
+                if self.focused_queued[var] {
+                    self.focused_queue_note_unassigned(var);
+                } else {
+                    self.focused_queue_push_back(var);
+                }
+            } else if focused_front && !self.focused_queued[var] {
                 self.focused_queue_push_front(var);
             } else {
                 self.focused_queue_push_back(var);
@@ -3171,12 +3276,26 @@ impl Solver {
                 .map(|&var| var as usize)
                 .find(|&var| self.decision_var[var] && self.assignment[var] == UNASSIGNED),
             SearchMode::Focused => {
-                let mut cursor = self.focused_head;
-                while cursor != 0 {
-                    if self.decision_var[cursor] && self.assignment[cursor] == UNASSIGNED {
-                        return Some(cursor);
+                if self.focused_decision_mode == FocusedDecisionMode::KissatQueue {
+                    let mut cursor = if self.focused_search != 0 {
+                        self.focused_search
+                    } else {
+                        self.focused_tail
+                    };
+                    while cursor != 0 {
+                        if self.decision_var[cursor] && self.assignment[cursor] == UNASSIGNED {
+                            return Some(cursor);
+                        }
+                        cursor = self.focused_prev[cursor];
                     }
-                    cursor = self.focused_next[cursor];
+                } else {
+                    let mut cursor = self.focused_head;
+                    while cursor != 0 {
+                        if self.decision_var[cursor] && self.assignment[cursor] == UNASSIGNED {
+                            return Some(cursor);
+                        }
+                        cursor = self.focused_next[cursor];
+                    }
                 }
                 None
             }
@@ -4043,7 +4162,13 @@ impl Solver {
         None
     }
 
-    fn next_focused_decision_stamp(&self) -> Option<u64> {
+    fn next_focused_decision_stamp(&mut self) -> Option<u64> {
+        if self.focused_decision_mode == FocusedDecisionMode::KissatQueue {
+            return self
+                .focused_queue_pick_kissat()
+                .map(|var| self.focused_stamp[var]);
+        }
+
         let mut cursor = self.focused_head;
         while cursor != 0 {
             if self.decision_var[cursor] && self.assignment[cursor] == UNASSIGNED {
@@ -4069,7 +4194,7 @@ impl Solver {
         reusable
     }
 
-    fn kissat_focused_reuse_level(&self) -> usize {
+    fn kissat_focused_reuse_level(&mut self) -> usize {
         let Some(limit) = self.next_focused_decision_stamp() else {
             return 0;
         };
@@ -4697,45 +4822,78 @@ impl Solver {
         MaintenanceOutcome::Continue
     }
 
+    fn focused_phase_override(&self) -> Option<u8> {
+        if self.search_mode != SearchMode::Focused
+            || self.focused_phase_mode != FocusedPhaseMode::Kissat
+        {
+            return None;
+        }
+
+        match (self.stats.mode_switches >> 1) & 7 {
+            1 => Some(self.initial_phase),
+            3 => Some(opposite_phase(self.initial_phase)),
+            _ => None,
+        }
+    }
+
+    fn saved_or_initial_phase_value(&self, var: usize) -> u8 {
+        let saved = self.saved_phase[var];
+        if saved == UNASSIGNED {
+            self.initial_phase
+        } else {
+            saved
+        }
+    }
+
     fn decision_phase_value(&self, var: usize) -> u8 {
-        if self.search_mode == SearchMode::Stable
+        if let Some(phase) = self.focused_phase_override() {
+            phase
+        } else if self.search_mode == SearchMode::Stable
             && self.target_phase_active
             && self.target_phase[var] != UNASSIGNED
         {
             self.target_phase[var]
         } else {
-            let saved = self.saved_phase[var];
-            if saved == UNASSIGNED {
-                self.initial_phase
-            } else {
-                saved
-            }
+            self.saved_or_initial_phase_value(var)
         }
     }
 
     fn decision_phase(&mut self, var: usize) -> u8 {
+        if let Some(phase) = self.focused_phase_override() {
+            if phase == self.initial_phase {
+                self.stats.focused_initial_phase_decisions += 1;
+            } else {
+                self.stats.focused_inverted_phase_decisions += 1;
+            }
+            return phase;
+        }
+
         if self.search_mode == SearchMode::Stable
             && self.target_phase_active
             && self.target_phase[var] != UNASSIGNED
         {
             self.stats.target_phase_decisions += 1;
-        } else {
+            self.target_phase[var]
+        } else if self.saved_phase[var] != UNASSIGNED {
             self.stats.saved_phase_decisions += 1;
+            self.saved_phase[var]
+        } else {
+            self.stats.initial_phase_decisions += 1;
+            self.initial_phase
         }
-        self.decision_phase_value(var)
     }
 
     fn pick_branch_lit(&mut self) -> Option<i32> {
         let next_var = match self.search_mode {
             SearchMode::Stable => self.branch_heap_pop_best(),
-            SearchMode::Focused => self.focused_queue_pop_front(),
+            SearchMode::Focused => self.focused_queue_pick(),
         };
         let mut next_var = next_var;
         while let Some(var) = next_var {
             if !self.decision_var[var] || self.assignment[var] != UNASSIGNED {
                 next_var = match self.search_mode {
                     SearchMode::Stable => self.branch_heap_pop_best(),
-                    SearchMode::Focused => self.focused_queue_pop_front(),
+                    SearchMode::Focused => self.focused_queue_pick(),
                 };
                 continue;
             }
@@ -6026,7 +6184,7 @@ impl Solver {
                         self.stats.search_time_ns += elapsed_ns(search_start);
                         if trace_search_interval > 0 {
                             eprintln!(
-                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                 self.stats.search_time_ns as f64 / 1e9,
                                 self.stats.conflicts,
                                 self.stats.decisions,
@@ -6058,6 +6216,9 @@ impl Solver {
                                 self.stats.best_phase_saved,
                                 self.stats.target_phase_decisions,
                                 self.stats.saved_phase_decisions,
+                                self.stats.initial_phase_decisions,
+                                self.stats.focused_initial_phase_decisions,
+                                self.stats.focused_inverted_phase_decisions,
                                 self.stats.rephase_best,
                                 self.stats.rephase_walking,
                                 self.stats.rephase_inverted,
@@ -6107,7 +6268,7 @@ impl Solver {
                     self.note_mode_progress_at_conflict();
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
-                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
+                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
                             search_start.elapsed().as_secs_f64(),
                             self.stats.conflicts,
                             self.stats.decisions,
@@ -6139,6 +6300,9 @@ impl Solver {
                             self.stats.best_phase_saved,
                             self.stats.target_phase_decisions,
                             self.stats.saved_phase_decisions,
+                            self.stats.initial_phase_decisions,
+                            self.stats.focused_initial_phase_decisions,
+                            self.stats.focused_inverted_phase_decisions,
                             self.stats.rephase_best,
                             self.stats.rephase_walking,
                             self.stats.rephase_inverted,
@@ -6243,7 +6407,7 @@ impl Solver {
                             self.stats.search_time_ns += elapsed_ns(search_start);
                             if trace_search_interval > 0 {
                                 eprintln!(
-                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{} rephase_modes={}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                     self.stats.search_time_ns as f64 / 1e9,
                                     self.stats.conflicts,
                                     self.stats.decisions,
@@ -6275,6 +6439,9 @@ impl Solver {
                                     self.stats.best_phase_saved,
                                     self.stats.target_phase_decisions,
                                     self.stats.saved_phase_decisions,
+                                    self.stats.initial_phase_decisions,
+                                    self.stats.focused_initial_phase_decisions,
+                                    self.stats.focused_inverted_phase_decisions,
                                     self.stats.rephase_best,
                                     self.stats.rephase_walking,
                                     self.stats.rephase_inverted,
@@ -6401,6 +6568,38 @@ fn parse_search_mode() -> SearchMode {
             }
         },
         Err(_) => SearchMode::Stable,
+    }
+}
+
+fn parse_focused_decision_mode() -> FocusedDecisionMode {
+    match env::var("SAT_FOCUSED_DECISION") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "default" | "pop-front" | "pop_front" | "front" | "legacy" | "old" => {
+                FocusedDecisionMode::PopFront
+            }
+            "kissat" | "queue" | "search" | "cursor" => FocusedDecisionMode::KissatQueue,
+            other => {
+                eprintln!("Invalid SAT_FOCUSED_DECISION={other}; expected pop-front/kissat");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => FocusedDecisionMode::PopFront,
+    }
+}
+
+fn parse_focused_phase_mode() -> FocusedPhaseMode {
+    match env::var("SAT_FOCUSED_PHASE") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "default" | "saved" | "phase-saving" | "phase_saving" | "legacy" | "old" | "off" => {
+                FocusedPhaseMode::Saved
+            }
+            "kissat" | "focus" | "focused" | "on" => FocusedPhaseMode::Kissat,
+            other => {
+                eprintln!("Invalid SAT_FOCUSED_PHASE={other}; expected saved/kissat");
+                std::process::exit(2);
+            }
+        },
+        Err(_) => FocusedPhaseMode::Saved,
     }
 }
 
@@ -8226,6 +8425,51 @@ mod tests {
     }
 
     #[test]
+    fn test_focused_kissat_phase_override_uses_initial_phase() {
+        let mut s = make_solver(2, vec![]);
+        s.search_mode = SearchMode::Focused;
+        s.focused_phase_mode = FocusedPhaseMode::Kissat;
+        s.initial_phase = FALSE;
+        s.saved_phase[2] = TRUE;
+        s.stats.mode_switches = 3;
+
+        assert_eq!(s.decision_phase(2), FALSE);
+        assert_eq!(s.stats.focused_initial_phase_decisions, 1);
+        assert_eq!(s.stats.focused_inverted_phase_decisions, 0);
+        assert_eq!(s.stats.saved_phase_decisions, 0);
+    }
+
+    #[test]
+    fn test_focused_kissat_phase_override_uses_inverted_phase() {
+        let mut s = make_solver(2, vec![]);
+        s.search_mode = SearchMode::Focused;
+        s.focused_phase_mode = FocusedPhaseMode::Kissat;
+        s.initial_phase = FALSE;
+        s.saved_phase[2] = FALSE;
+        s.stats.mode_switches = 7;
+
+        assert_eq!(s.decision_phase(2), TRUE);
+        assert_eq!(s.stats.focused_initial_phase_decisions, 0);
+        assert_eq!(s.stats.focused_inverted_phase_decisions, 1);
+        assert_eq!(s.stats.saved_phase_decisions, 0);
+    }
+
+    #[test]
+    fn test_focused_saved_phase_mode_keeps_previous_behavior() {
+        let mut s = make_solver(2, vec![]);
+        s.search_mode = SearchMode::Focused;
+        s.focused_phase_mode = FocusedPhaseMode::Saved;
+        s.initial_phase = FALSE;
+        s.saved_phase[2] = TRUE;
+        s.stats.mode_switches = 7;
+
+        assert_eq!(s.decision_phase(2), TRUE);
+        assert_eq!(s.stats.focused_initial_phase_decisions, 0);
+        assert_eq!(s.stats.focused_inverted_phase_decisions, 0);
+        assert_eq!(s.stats.saved_phase_decisions, 1);
+    }
+
+    #[test]
     fn test_warmup_updates_saved_phase_without_best_phase_snapshot() {
         let mut s = make_solver(2, vec![vec![-1, 2]]);
         s.warmup_enabled = true;
@@ -8418,7 +8662,9 @@ mod tests {
 
         assert_eq!(s.stats.reorder_focused_applied, 1);
         assert_eq!(s.pick_branch_lit(), Some(-3));
+        s.decide(-3);
         assert_eq!(s.pick_branch_lit(), Some(-2));
+        s.decide(-2);
         assert_eq!(s.pick_branch_lit(), Some(-1));
     }
 
@@ -8681,6 +8927,21 @@ mod tests {
     }
 
     #[test]
+    fn test_focused_kissat_queue_keeps_decisions_queued_and_uses_search_cursor() {
+        let mut s = make_solver(2, vec![]);
+        s.search_mode = SearchMode::Focused;
+        s.focused_decision_mode = FocusedDecisionMode::KissatQueue;
+        s.rebuild_branch_queue();
+
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+        assert!(s.focused_queued[2]);
+        s.decide(-2);
+        s.backtrack(0);
+
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+    }
+
+    #[test]
     fn test_focused_analysis_moves_bumped_variables_to_front() {
         let mut s = make_solver(4, vec![]);
         s.search_mode = SearchMode::Focused;
@@ -8690,6 +8951,7 @@ mod tests {
         s.apply_analyzed_variable_search_updates();
 
         assert_eq!(s.pick_branch_lit(), Some(-4));
+        s.decide(-4);
         assert_eq!(s.pick_branch_lit(), Some(-2));
     }
 
@@ -8999,6 +9261,7 @@ mod tests {
         s.focused_stamp[3] = 5;
         s.focused_stamp[4] = 6;
         s.focused_stamp[5] = 1;
+        s.focused_search = 4;
         s.restart_reuse_mode = RestartReuseMode::Kissat;
 
         assert_eq!(s.restart_reuse_level(), 2);
