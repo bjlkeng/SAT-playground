@@ -66,7 +66,9 @@ What is present:
   `SAT_REASON_SIDE_BUMP_MODE=traversal SAT_REASON_SIDE_BUMP_LIMIT=unlimited` to restore the
   previous full-UIP-traversal analyzed-variable bumping behavior, or
   `SAT_REASON_SIDE_BUMP_MODE=off` to return to the capped/no-extra-reason-side default-search
-  ablation.
+  ablation. Kissat-style level-1 failed-literal analysis is available as
+  `SAT_FAILED_LITERAL_ANALYSIS=on`; it learns root units directly from failed decision paths but is
+  not the default after the 2026-05-14 profiling rejection.
 - Phase 8 lucky SAT shortcut: `SAT_LUCKY=shortcut` is the default and checks all-true/all-false
   candidate models after preprocessing but before CDCL search. Use `SAT_LUCKY=off` for ablations.
 - Phase 8 clause-weight reorder default: `SAT_REORDER=kissat` is now the default delayed
@@ -1277,3 +1279,46 @@ Analysis:
   guard-off ablation on this profile without changing the solved/timeout split, while the more
   aggressive `100k` cooldown remains rejected because it regressed `k32` and `k57`. Future work is
   proof-heavy UNSAT guard tuning.
+
+Failed-literal conflict-analysis validation on 2026-05-14:
+
+```bash
+cd solver/11-kissat-innovations && cargo test
+bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_CHECK_INVARIANTS=1 bash tools/smoke_test.sh solver/11-kissat-innovations
+SAT_PROOF=0 SAT_FAILED_LITERAL_ANALYSIS=on \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+SAT_PROOF=0 SAT_FAILED_LITERAL_ANALYSIS=off \
+  bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/11-kissat-innovations
+```
+
+Results:
+
+- `cargo test`: 127 passed.
+- default smoke suite: 9/9 passed, including UNSAT proof checking, log
+  `log/2026-05-14-00-17-48`.
+- opt-in invariant smoke suite: 9/9 passed, including UNSAT proof checking, log
+  `log/2026-05-14-00-18-01`.
+- failed-literal analysis enabled: solved 9/11, PAR-2 `626.582`, log
+  `log/bench-11-kissat-innovations-2026-05-14-00-01-53`.
+- failed-literal analysis disabled: solved 9/11, PAR-2 `625.058`, log
+  `log/bench-11-kissat-innovations-2026-05-14-00-08-59`.
+
+Analysis:
+
+- The implemented opt-in mode adds `SAT_FAILED_LITERAL_ANALYSIS=on`. When a conflict is reached at
+  decision level 1, it treats the level-1 decision as a failed literal, traverses the level-1
+  implication graph backward, records each discovered root unit in the DRAT stream, backtracks to
+  root without updating target/best phase snapshots, and enqueues those units at root.
+- The mode can learn more than the normal asserting unit. A focused regression test covers the
+  chain `1 -> 2 -> 3 -> conflict`, where the failed-literal path learns `-3`, `-2`, and `-1`.
+- On the profiling set it is a small regression, not a default-policy improvement. The largest row
+  losses versus disabled are Kakuro (`38.191s -> 39.257s`), `mp1-Nb7T46`
+  (`18.519s -> 18.893s`), and timetable (`12.905s -> 13.322s`); `random_v292_s4` improves
+  (`6.795s -> 6.308s`) but not enough to offset the SAT losses.
+- Follow-up traced probes with `SAT_TRACE_SEARCH_INTERVAL=1000000000` confirmed the successful
+  trigger surface is narrow on this profiling set: `random_v285_s2` reported
+  `failed_literal=10/10` and `random_v292_s4` reported `failed_literal=9/9`, while the solved SAT
+  rows reported `0/0`.
+- The accepted built-in default is therefore `SAT_FAILED_LITERAL_ANALYSIS=off`, while the mode
+  remains available for targeted conflict-analysis sensitivity tests.

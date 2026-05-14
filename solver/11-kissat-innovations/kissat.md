@@ -170,8 +170,9 @@ Solver 11:
 - Always jumps to the highest non-current decision level in the learned clause.
 - Computes glue/LBD for learned-clause policy, has global chronological backtracking
   (`SAT_CHRONO_LEVELS`, default `100`), and defaults to one-hop unlimited reason-side bumping
-  (`SAT_REASON_SIDE_BUMP_MODE=one-hop SAT_REASON_SIDE_BUMP_LIMIT=unlimited`). It still lacks
-  failed-literal special handling, shrink, and eager subsumption of recent learned clauses.
+  (`SAT_REASON_SIDE_BUMP_MODE=one-hop SAT_REASON_SIDE_BUMP_LIMIT=unlimited`). It now has opt-in
+  level-1 failed-literal analysis through `SAT_FAILED_LITERAL_ANALYSIS=on`, but still lacks shrink
+  and eager subsumption of recent learned clauses.
 - Relevant code: `src/main.rs:1824`, `src/main.rs:1860`, `src/main.rs:1910`,
   `src/main.rs:1928`, `src/main.rs:2089`.
 
@@ -2036,10 +2037,11 @@ policy and trajectory controls:
 4. Rephase/restart guards: `SAT_REPHASE_GUARD=progress` now implements a conflict/glue/proof-byte
    guard for scheduled rephase and is the conservative default. Future work is proof-heavy
    UNSAT-specific tuning, not the basic guard mechanism.
-5. Search-path conflict-analysis details: failed-literal handling at decision level 1 and
-   special handling for conflict clauses with one current-level literal remain missing. Clause
-   shrinking and eager learned subsumption are also related, but cross into formula modification and
-   should wait until this search-control pass is measured.
+5. Search-path conflict-analysis details: failed-literal handling at decision level 1 is now
+   implemented as an opt-in mode. Special handling for conflict clauses with one current-level
+   literal remains only partially covered by the normal asserting-clause path. Clause shrinking and
+   eager learned subsumption are also related, but cross into formula modification and should wait
+   until this search-control pass is measured.
 
 Status on 2026-05-13:
 
@@ -2098,6 +2100,25 @@ Status on 2026-05-13:
   tuning. The conservative `20k` cooldown mode is now the accepted built-in default; guard-off
   remains available as `SAT_REPHASE_GUARD=off`, and the more aggressive `100k` cooldown remains
   rejected because it regressed `k32` and `k57`.
+- Item 5 now has an opt-in implementation as `SAT_FAILED_LITERAL_ANALYSIS=on`. At decision level 1,
+  the analyzer treats the decision as a failed literal, walks the level-1 implication graph, records
+  each discovered root unit in the DRAT stream, backtracks to root without updating target/best
+  phase snapshots, and enqueues those units. The focused unit test covers a chain that learns
+  `-3`, `-2`, and `-1` from one level-1 conflict.
+- Validation after the failed-literal slice: `cargo test` passed 127 tests; default smoke passed 9/9
+  with proof checking (`log/2026-05-14-00-17-48`); opt-in invariant smoke passed 9/9 with proof
+  checking (`log/2026-05-14-00-18-01`).
+- No-proof profiling on `benchmarks/profiling`, 120s timeout and 16 GB memory:
+  `SAT_FAILED_LITERAL_ANALYSIS=on` solved 9/11 with PAR-2 `626.582`
+  (`log/bench-11-kissat-innovations-2026-05-14-00-01-53`), while
+  `SAT_FAILED_LITERAL_ANALYSIS=off` solved 9/11 with PAR-2 `625.058`
+  (`log/bench-11-kissat-innovations-2026-05-14-00-08-59`).
+- Follow-up traced probes showed successful failed-literal learning only on the two solved random
+  UNSAT rows: `random_v285_s2` reported `failed_literal=10/10`, and `random_v292_s4` reported
+  `failed_literal=9/9`. The solved SAT profiling rows reported `0/0`.
+- Conclusion: failed-literal analysis is proof-safe and useful as sensitivity instrumentation, but
+  it does not clear the keep threshold. The accepted built-in default remains
+  `SAT_FAILED_LITERAL_ANALYSIS=off`.
 
 ## First Concrete Milestones
 

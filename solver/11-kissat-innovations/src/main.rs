@@ -642,6 +642,8 @@ struct SolverStats {
     reason_side_bump_candidates: u64,
     reason_side_bumped_vars: u64,
     reason_side_bump_limit_hits: u64,
+    failed_literal_analyses: u64,
+    failed_literal_units: u64,
     lucky_checks: u64,
     lucky_sat: u64,
     lucky_all_true: u64,
@@ -1136,6 +1138,8 @@ struct Solver {
     reorder_mode: ReorderMode,
     /// maximum effective irredundant clause size considered for Kissat-style reordering
     reorder_max_clause_size: usize,
+    /// Kissat-style level-1 failed-literal analysis learns root units directly
+    failed_literal_analysis_enabled: bool,
     /// fast moving average of learned-clause glue for glue-EMA restarts
     restart_glue_fast_ema: f64,
     /// slow moving average of learned-clause glue for glue-EMA restarts
@@ -1712,6 +1716,7 @@ impl Solver {
             walk_seed,
             reorder_mode,
             reorder_max_clause_size: parse_reorder_max_clause_size_env(),
+            failed_literal_analysis_enabled: parse_bool_env("SAT_FAILED_LITERAL_ANALYSIS", false),
             restart_glue_fast_ema: 0.0,
             restart_glue_slow_ema: 0.0,
             restart_glue_ema_initialized: false,
@@ -6233,6 +6238,17 @@ impl Solver {
         }
     }
 
+    fn clear_analysis_marks(&mut self) {
+        for &var in &self.scratch_seen_vars {
+            self.scratch_seen[var] = 0;
+            self.scratch_resolved[var] = 0;
+        }
+        for &var in &self.scratch_bumped_vars {
+            self.scratch_bump_seen[var] = 0;
+        }
+        self.scratch_seen_vars.clear();
+    }
+
     fn mark_learned_clause_vars_for_bump(&mut self, learned_clause: &[i32]) {
         for &lit in learned_clause {
             let var = lit.unsigned_abs() as usize;
@@ -6282,6 +6298,167 @@ impl Solver {
                 break;
             }
         }
+    }
+
+    fn mark_failed_literal_var_for_analysis(&mut self, var: usize) -> bool {
+        if self.scratch_seen[var] != 0 {
+            return false;
+        }
+        if self.decision_level[var] != 1 {
+            return false;
+        }
+        self.scratch_seen[var] = 1;
+        self.scratch_seen_vars.push(var);
+        self.mark_analysis_var_for_bump(var);
+        true
+    }
+
+    fn note_failed_literal_unit(&mut self, unit: i32) {
+        if !self.scratch_conflict_clause.contains(&unit) {
+            self.scratch_conflict_clause.push(unit);
+        }
+    }
+
+    fn reset_failed_literal_analysis_scratch(&mut self) {
+        self.clear_analysis_marks();
+        self.scratch_bumped_vars.clear();
+        self.scratch_conflict_clause.clear();
+    }
+
+    fn analyze_failed_literal_to_scratch(&mut self, conflict_clause_idx: usize) -> bool {
+        if !self.failed_literal_analysis_enabled || self.current_level() != 1 {
+            return false;
+        }
+
+        self.scratch_learned.clear();
+        self.scratch_bumped_vars.clear();
+        self.scratch_seen_vars.clear();
+        self.scratch_conflict_clause.clear();
+
+        if self.reduce_db_enabled() {
+            self.bump_clause_activity(conflict_clause_idx);
+        }
+
+        let failed_lit = self.trail[self.trail_limits[0]];
+        let not_failed = -failed_lit;
+        let mut unresolved = 0usize;
+        let mut stop_at_failed_negation = false;
+
+        let conflict_len = self.clause_len(conflict_clause_idx);
+        for lit_pos in 0..conflict_len {
+            let lit = self.clause_lit(conflict_clause_idx, lit_pos);
+            if lit == failed_lit {
+                self.reset_failed_literal_analysis_scratch();
+                return false;
+            }
+            if lit == not_failed {
+                stop_at_failed_negation = true;
+                break;
+            }
+            let var = lit.unsigned_abs() as usize;
+            let level = self.decision_level[var];
+            if level == 0 {
+                continue;
+            }
+            if level != 1 {
+                self.reset_failed_literal_analysis_scratch();
+                return false;
+            }
+            if self.mark_failed_literal_var_for_analysis(var) {
+                unresolved += 1;
+            }
+        }
+
+        let mut trail_index = self.trail.len();
+        let mut unit = 0i32;
+        while !stop_at_failed_negation {
+            let lit = loop {
+                if trail_index == 0 {
+                    self.reset_failed_literal_analysis_scratch();
+                    return false;
+                }
+                trail_index -= 1;
+                let lit = self.trail[trail_index];
+                let var = lit.unsigned_abs() as usize;
+                if self.scratch_seen[var] != 0 {
+                    break lit;
+                }
+            };
+            debug_assert!(unresolved > 0);
+
+            if unresolved == 1 {
+                unit = -lit;
+                self.note_failed_literal_unit(unit);
+            }
+
+            let var = lit.unsigned_abs() as usize;
+            let reason_ref = self.reason[var];
+            if let Some(other) = reason_ref.as_binary() {
+                if other == failed_lit {
+                    self.reset_failed_literal_analysis_scratch();
+                    return false;
+                }
+                if other == not_failed {
+                    stop_at_failed_negation = true;
+                } else if other != unit {
+                    let other_var = other.unsigned_abs() as usize;
+                    let level = self.decision_level[other_var];
+                    if level == 0 {
+                        // Root literals do not contribute to the failed-literal frontier.
+                    } else if level == 1 {
+                        if self.mark_failed_literal_var_for_analysis(other_var) {
+                            unresolved += 1;
+                        }
+                    } else {
+                        self.reset_failed_literal_analysis_scratch();
+                        return false;
+                    }
+                }
+            } else if reason_ref.is_clause() {
+                let reason_idx = reason_ref.clause_idx();
+                if self.reduce_db_enabled() {
+                    self.bump_clause_activity(reason_idx);
+                }
+                let reason_len = self.clause_len(reason_idx);
+                for lit_pos in 0..reason_len {
+                    let other = self.clause_lit(reason_idx, lit_pos);
+                    if other == lit || other == unit {
+                        continue;
+                    }
+                    if other == failed_lit {
+                        self.reset_failed_literal_analysis_scratch();
+                        return false;
+                    }
+                    if other == not_failed {
+                        stop_at_failed_negation = true;
+                        break;
+                    }
+                    let other_var = other.unsigned_abs() as usize;
+                    let level = self.decision_level[other_var];
+                    if level == 0 {
+                        continue;
+                    }
+                    if level != 1 {
+                        self.reset_failed_literal_analysis_scratch();
+                        return false;
+                    }
+                    if self.mark_failed_literal_var_for_analysis(other_var) {
+                        unresolved += 1;
+                    }
+                }
+            } else {
+                self.reset_failed_literal_analysis_scratch();
+                return false;
+            }
+
+            unresolved -= 1;
+        }
+
+        let failed_var = failed_lit.unsigned_abs() as usize;
+        self.mark_analysis_var_for_bump(failed_var);
+        self.note_failed_literal_unit(not_failed);
+        self.clear_analysis_marks();
+        true
     }
 
     fn analyze_conflict_to_scratch(&mut self, conflict_clause_idx: usize) -> usize {
@@ -6376,14 +6553,7 @@ impl Solver {
         }
 
         self.scratch_conflict_clause = learned_clause;
-        for &var in &self.scratch_seen_vars {
-            self.scratch_seen[var] = 0;
-            self.scratch_resolved[var] = 0;
-        }
-        for &var in &self.scratch_bumped_vars {
-            self.scratch_bump_seen[var] = 0;
-        }
-        self.scratch_seen_vars.clear();
+        self.clear_analysis_marks();
         backtrack_level
     }
 
@@ -6623,7 +6793,7 @@ impl Solver {
                         self.stats.search_time_ns += elapsed_ns(search_start);
                         if trace_search_interval > 0 {
                             eprintln!(
-                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} rephase_guard={}/{}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} failed_literal={}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} rephase_guard={}/{}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                 self.stats.search_time_ns as f64 / 1e9,
                                 self.stats.conflicts,
                                 self.stats.decisions,
@@ -6650,6 +6820,8 @@ impl Solver {
                                 self.stats.reason_side_bump_candidates,
                                 self.stats.reason_side_bumped_vars,
                                 self.stats.reason_side_bump_limit_hits,
+                                self.stats.failed_literal_analyses,
+                                self.stats.failed_literal_units,
                                 self.stats.rephases,
                                 self.stats.target_phase_saved,
                                 self.stats.best_phase_saved,
@@ -6712,7 +6884,7 @@ impl Solver {
                     self.note_mode_progress_at_conflict();
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
-                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} rephase_guard={}/{}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
+                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} failed_literal={}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} rephase_guard={}/{}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} level={} trail={} learned={} learned_units={} learned_binary={} learned_long={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} reduce_db={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} maintenance={} orig_clauses={} orig_literals={} deleted_words={} gc={} proof_bytes={}",
                             search_start.elapsed().as_secs_f64(),
                             self.stats.conflicts,
                             self.stats.decisions,
@@ -6739,6 +6911,8 @@ impl Solver {
                             self.stats.reason_side_bump_candidates,
                             self.stats.reason_side_bumped_vars,
                             self.stats.reason_side_bump_limit_hits,
+                            self.stats.failed_literal_analyses,
+                            self.stats.failed_literal_units,
                             self.stats.rephases,
                             self.stats.target_phase_saved,
                             self.stats.best_phase_saved,
@@ -6789,48 +6963,79 @@ impl Solver {
                         );
                         next_search_trace = next_search_trace.saturating_add(trace_search_interval);
                     }
-                    let standard_backtrack_level =
-                        self.analyze_conflict_to_scratch(conflict_clause_idx);
-                    self.apply_analyzed_variable_search_updates();
-                    if self.reduce_db_enabled() {
-                        self.decay_clause_activity();
-                        self.note_learnt_budget_conflict();
-                    }
-                    let learned_clause = std::mem::take(&mut self.scratch_conflict_clause);
-                    let asserting_lit = learned_clause[0];
-                    let learned_glue = self.compute_clause_glue(&learned_clause);
-                    let backtrack_level = self
-                        .select_conflict_backtrack_level(&learned_clause, standard_backtrack_level);
-                    self.note_conflict(learned_glue);
-                    proof_log.record_clause(&learned_clause);
-                    if learned_clause.len() == 1 {
-                        self.record_learned_clause_stats(1, learned_glue);
-                        debug_assert_eq!(standard_backtrack_level, 0);
-                        debug_assert_eq!(backtrack_level, 0);
-                        self.backtrack(0);
-                        let inserted = self.enqueue(asserting_lit, NO_REASON);
-                        if !inserted {
-                            return false;
+                    if self.analyze_failed_literal_to_scratch(conflict_clause_idx) {
+                        self.apply_analyzed_variable_search_updates();
+                        if self.reduce_db_enabled() {
+                            self.decay_clause_activity();
+                            self.note_learnt_budget_conflict();
                         }
-                        self.scratch_conflict_clause = learned_clause;
+                        let failed_units = std::mem::take(&mut self.scratch_conflict_clause);
+                        self.stats.failed_literal_analyses += 1;
+                        self.stats.failed_literal_units += failed_units.len() as u64;
+                        self.note_conflict(1);
+                        for &unit in &failed_units {
+                            proof_log.record_clause(&[unit]);
+                            self.record_learned_clause_stats(1, 1);
+                        }
+                        self.backtrack_without_phase_update(0);
+                        for &unit in &failed_units {
+                            if !self.enqueue(unit, NO_REASON) {
+                                self.scratch_conflict_clause = failed_units;
+                                self.scratch_conflict_clause.clear();
+                                return false;
+                            }
+                        }
+                        self.scratch_conflict_clause = failed_units;
                         self.scratch_conflict_clause.clear();
                     } else {
-                        let learned_clause_idx =
-                            self.add_clause_from_slice_with_glue(&learned_clause, learned_glue);
-                        self.scratch_conflict_clause = learned_clause;
-                        self.scratch_conflict_clause.clear();
+                        let standard_backtrack_level =
+                            self.analyze_conflict_to_scratch(conflict_clause_idx);
+                        self.apply_analyzed_variable_search_updates();
                         if self.reduce_db_enabled() {
-                            self.bump_clause_activity(learned_clause_idx);
+                            self.decay_clause_activity();
+                            self.note_learnt_budget_conflict();
                         }
-
-                        self.backtrack(backtrack_level);
-                        self.debug_assert_clause_asserting_after_backtrack(
-                            self.clause_slice(learned_clause_idx),
-                            backtrack_level,
+                        let learned_clause = std::mem::take(&mut self.scratch_conflict_clause);
+                        let asserting_lit = learned_clause[0];
+                        let learned_glue = self.compute_clause_glue(&learned_clause);
+                        let backtrack_level = self.select_conflict_backtrack_level(
+                            &learned_clause,
+                            standard_backtrack_level,
                         );
-                        let inserted =
-                            self.enqueue(asserting_lit, ReasonRef::clause(learned_clause_idx));
-                        debug_assert!(inserted, "learned clause must be asserting after backtrack");
+                        self.note_conflict(learned_glue);
+                        proof_log.record_clause(&learned_clause);
+                        if learned_clause.len() == 1 {
+                            self.record_learned_clause_stats(1, learned_glue);
+                            debug_assert_eq!(standard_backtrack_level, 0);
+                            debug_assert_eq!(backtrack_level, 0);
+                            self.backtrack(0);
+                            let inserted = self.enqueue(asserting_lit, NO_REASON);
+                            if !inserted {
+                                return false;
+                            }
+                            self.scratch_conflict_clause = learned_clause;
+                            self.scratch_conflict_clause.clear();
+                        } else {
+                            let learned_clause_idx =
+                                self.add_clause_from_slice_with_glue(&learned_clause, learned_glue);
+                            self.scratch_conflict_clause = learned_clause;
+                            self.scratch_conflict_clause.clear();
+                            if self.reduce_db_enabled() {
+                                self.bump_clause_activity(learned_clause_idx);
+                            }
+
+                            self.backtrack(backtrack_level);
+                            self.debug_assert_clause_asserting_after_backtrack(
+                                self.clause_slice(learned_clause_idx),
+                                backtrack_level,
+                            );
+                            let inserted =
+                                self.enqueue(asserting_lit, ReasonRef::clause(learned_clause_idx));
+                            debug_assert!(
+                                inserted,
+                                "learned clause must be asserting after backtrack"
+                            );
+                        }
                     }
                     self.maybe_check_invariants("conflict");
 
@@ -6856,7 +7061,7 @@ impl Solver {
                             self.stats.search_time_ns += elapsed_ns(search_start);
                             if trace_search_interval > 0 {
                                 eprintln!(
-                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} rephase_guard={}/{}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
+                                    "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} mode={} mode_switches={}/{}/{} mode_switch_attempts={} mode_switch_skipped={} mode_switch_stale={} restart_reused={}/{}/{} restart_reuse_max={} restart_reuse_guard={}/{}/{} chrono={}/{}/{} chrono_max={} reason_side={}/{}/{} failed_literal={}/{} rephases={} phase_saved={}/{} phase_decisions={}/{}/{}/{}/{} rephase_modes={}/{}/{}/{} rephase_guard={}/{}/{}/{}/{} walk={}/{}/{} walk_unsat={}/{} learned={} learned_lits={} learned_max={} glue_avg={:.2} glue_max={} glue_last={} glue_fast={:.2} glue_slow={:.2} glue_restarts={} reluctant_restarts={} deleted_clauses={} reduce_deleted={} reduce_low_yield={} reduce_still_over={} reduce_cooldown_skips={} reduce_last_live={}/{} reduce_last_target={} reduce_last_deleted={} reduce_last_candidates={}/{} deleted_words={} gc={} gc_ms={:.3} simplify_ms={:.3} reduce_db={} reduce_ms={:.3} maintenance={} maintenance_ms={:.3} proof_clauses={} proof_bytes={}",
                                     self.stats.search_time_ns as f64 / 1e9,
                                     self.stats.conflicts,
                                     self.stats.decisions,
@@ -6883,6 +7088,8 @@ impl Solver {
                                     self.stats.reason_side_bump_candidates,
                                     self.stats.reason_side_bumped_vars,
                                     self.stats.reason_side_bump_limit_hits,
+                                    self.stats.failed_literal_analyses,
+                                    self.stats.failed_literal_units,
                                     self.stats.rephases,
                                     self.stats.target_phase_saved,
                                     self.stats.best_phase_saved,
@@ -9667,6 +9874,45 @@ mod tests {
         assert_eq!(backtrack_level, 0);
         assert!(s.clause_activity(learned_conflict) > 0.0);
         assert!(s.clause_activity(learned_reason) > 0.0);
+    }
+
+    #[test]
+    fn test_failed_literal_analysis_learns_chain_units() {
+        let mut s = make_solver(3, vec![]);
+        s.failed_literal_analysis_enabled = true;
+        let first_reason = s.add_clause(vec![-1, 2]);
+        let second_reason = s.add_clause(vec![-2, 3]);
+        let conflict = s.add_clause(vec![-3]);
+        install_manual_state(
+            &mut s,
+            &[1, 2, 3],
+            &[0],
+            &[(2, first_reason), (3, second_reason)],
+        );
+
+        assert!(s.analyze_failed_literal_to_scratch(conflict));
+
+        assert_eq!(s.scratch_conflict_clause, vec![-3, -2, -1]);
+        assert_eq!(s.scratch_seen[2], 0);
+        assert_eq!(s.scratch_seen[3], 0);
+        assert_eq!(s.scratch_bump_seen[2], 0);
+        assert_eq!(s.scratch_bump_seen[3], 0);
+        assert_eq!(s.scratch_bumped_vars, vec![3, 2, 1]);
+    }
+
+    #[test]
+    fn test_failed_literal_analysis_disabled_uses_normal_uip_path() {
+        let mut s = make_solver(2, vec![]);
+        let reason = s.add_clause(vec![-1, 2]);
+        let conflict = s.add_clause(vec![-2]);
+        install_manual_state(&mut s, &[1, 2], &[0], &[(2, reason)]);
+        s.failed_literal_analysis_enabled = false;
+
+        assert!(!s.analyze_failed_literal_to_scratch(conflict));
+
+        let (learned_clause, backtrack_level) = s.analyze_conflict(conflict);
+        assert_eq!(learned_clause, vec![-2]);
+        assert_eq!(backtrack_level, 0);
     }
 
     #[test]
