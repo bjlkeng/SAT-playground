@@ -13,9 +13,11 @@ What is present:
 
 - original-clause occurrence lists and literal occurrence counts during preprocessing
 - a separate decision-variable flag so eliminated variables do not re-enter the branch heap
-- bounded variable elimination with MiniSat-style `grow = 0` and `clause_lim = 20`
-- MiniSat-style backward subsumption / BSR available with `SAT_FULL_BSR=on`; it is off by default
-  after medium-benchmark search-regression checks
+- bounded variable elimination with MiniSat-style `grow = 0` and `clause_lim = 20`, enabled by
+  default and disabled with `SAT_BVE=off`
+- MiniSat-style backward subsumption / BSR, enabled by default and disabled with
+  `SAT_FULL_BSR=off`
+- preprocessing can be bypassed for comparison runs with `SAT_SIMPLIFICATION=off`
 - 64-bit clause abstraction prefiltering for preprocessing subsumption checks
 - in-place original-clause strengthening during BSR
 - a persistent preprocessing loop over touched variables, root assignments, queued subsumption
@@ -346,3 +348,66 @@ Timetable, and `mp1`, but it is still a search-path tradeoff rather than an aggr
 five-instance performance win. The large `mp1` regression seen in the combined experimental patch
 did not reproduce for any single change, so it was an interaction effect and the other four changes
 were not kept.
+
+## Full-BSR Code-Level Optimization Pass
+
+On 2026-05-15, a focused code-level pass targeted the full-BSR preprocessing gap on the current
+`benchmarks/profiling` set. The main target was
+`46355...REGRandom-K4-L1-Seed40`, where profiling showed almost all proof-off preprocessing time in
+`backward_subsumption_check`, especially `subsumption_relation`.
+
+Accepted changes:
+
+- mark each driver clause once per BSR driver instead of rebuilding candidate-side marks for every
+  candidate relation check
+- pass the already-known driver length into `subsumption_relation`
+- scan candidate clauses through `clause_slice()` after length and abstraction filters pass
+
+K4 proof-off preprocessing trace, with identical residual stats
+(`eliminated=512`, `resolvents=8192`, `strengthened=348160`):
+
+| Step | Time | Log |
+|---|---:|---|
+| Baseline | `116.316s` | `log/opt-10-simp-baseline-2026-05-14-22-26-45` |
+| Prepared driver marks | `104.752s` | `log/opt-10-simp-prepared-driver-2026-05-14-22-48-48` |
+| Candidate slice scan | `94.317s` | `log/opt-10-simp-clause-slice-2026-05-14-22-54-51` |
+| Delayed slice creation | `91.222s` | `log/opt-10-simp-delayed-slice-2026-05-14-23-02-40` |
+
+The final proof-on K4 trace still needs about `95.060s` preprocessing plus `64.068s` search
+(`log/opt-10-simp-k4-proof-on-current-2026-05-15-00-16-06`), so K4 remains outside a `120s`
+profile-bench cap even after the preprocessing speedup.
+
+Final profile benchmark:
+
+```bash
+bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/10-bve-preprocess
+```
+
+- `10-bve-preprocess`: 7/11 solved, PAR-2 `1093.858`
+- results: `log/bench-10-bve-preprocess-2026-05-15-00-25-35/results.csv`
+- comparison MiniSat run: 10/11 solved, PAR-2 `559.646`
+  (`log/bench-minisat-2026-05-14-13-31-31/results.csv`)
+
+Rejected code-level attempts from this pass:
+
+- sorted original clauses plus two-pointer relation: K4 regressed to `116.874s`
+- candidate metadata hoisting: K4 regressed to `99.654s`
+- removing duplicate live-candidate checks: K4 regressed to `95.931s`
+- direct abstraction indexing: K4 regressed to `98.516s`
+- unchecked candidate scanning: K4 regressed to `100.302s`
+- early relation exit: K4 improved only to `90.752s`, below the 3% keep threshold
+- occurrence-count best-variable cleanup: Kakuro improved from `166.964s` to `135.785s`, but K4
+  regressed to `102.500s`
+- manual occurrence-list compaction: K4 regressed to `95.788s`; Kakuro regressed to `170.497s`
+- gated/const-generic occurrence cleanup: still regressed or timed out on K4
+- direct driver-slice marking: K4 regressed to `93.521s`
+- branchless relation-sign encoding: K4 regressed to `98.359s`
+- custom literal-variable helper: K4 regressed to `99.772s`
+- driver-clause sentinel instead of enum equality: K4 improved only to `90.455s`, below the 3%
+  keep threshold
+
+Validation for the accepted changes:
+
+- `cargo test` in `solver/10-bve-preprocess`: 48 passed
+- smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
+- smoke log: `log/2026-05-15-00-25-25`

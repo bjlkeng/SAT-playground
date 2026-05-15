@@ -2331,6 +2331,8 @@ fn main() {
     let (num_vars, clauses) = parse_cnf(cnf_path);
     let mut solver = Solver::new(num_vars, clauses);
     solver.ccmin_mode = parse_ccmin_mode();
+    solver.use_simplification = parse_bool_env("SAT_SIMPLIFICATION", solver.use_simplification);
+    solver.use_elim = parse_bool_env("SAT_BVE", solver.use_elim);
     solver.use_resolved_conflict_analysis = parse_use_resolved_conflict_analysis();
     let reduce_db_limit_overridden = env::var_os("SAT_REDUCE_DB_INIT").is_some();
     let reduce_db_interval_overridden = env::var_os("SAT_REDUCE_DB_INTERVAL").is_some();

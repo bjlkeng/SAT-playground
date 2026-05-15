@@ -15,6 +15,9 @@ enum SubsumptionOutcome {
     Strengthen(i32),
 }
 
+const SUBSUMPTION_POS_SIGN: u8 = 1;
+const SUBSUMPTION_NEG_SIGN: u8 = 2;
+
 impl Solver {
     fn variable_count(&self) -> usize {
         self.assignment.len().saturating_sub(1)
@@ -47,7 +50,7 @@ impl Solver {
             },
             Err(_) => {}
         }
-        false
+        true
     }
 
     fn build_occurrence_index(&mut self) {
@@ -211,7 +214,7 @@ impl Solver {
 
     fn subsumption_relation(
         &self,
-        driver: SubsumptionCandidate,
+        driver_len: usize,
         driver_abstraction: u64,
         candidate_idx: usize,
         marks: &mut [u32],
@@ -221,7 +224,6 @@ impl Solver {
         if candidate_idx >= self.arena.len() || self.clause_is_deleted(candidate_idx) {
             return SubsumptionOutcome::None;
         }
-        let driver_len = self.subsumption_driver_len(driver);
         let candidate_len = self.clause_len(candidate_idx);
         if driver_len > candidate_len {
             return SubsumptionOutcome::None;
@@ -229,43 +231,41 @@ impl Solver {
         if (driver_abstraction & !self.original_clause_abstraction(candidate_idx)) != 0 {
             return SubsumptionOutcome::None;
         }
+        let candidate_lits = self.clause_slice(candidate_idx);
 
-        for candidate_pos in 0..candidate_len {
-            let candidate_lit = self.clause_lit(candidate_idx, candidate_pos);
+        let mut same = 0usize;
+        let mut complements = 0usize;
+        let mut remove_lit = 0i32;
+        for &candidate_lit in candidate_lits {
             let var = candidate_lit.unsigned_abs() as usize;
             debug_assert!(var < marks.len());
             if marks[var] != stamp {
-                marks[var] = stamp;
-                signs[var] = 0;
+                continue;
             }
-            signs[var] |= if candidate_lit > 0 { 1 } else { 2 };
+
+            let candidate_sign = if candidate_lit > 0 {
+                SUBSUMPTION_POS_SIGN
+            } else {
+                SUBSUMPTION_NEG_SIGN
+            };
+            if signs[var] & candidate_sign != 0 {
+                same += 1;
+            } else {
+                complements += 1;
+                if complements > 1 {
+                    return SubsumptionOutcome::None;
+                }
+                remove_lit = candidate_lit;
+            }
         }
 
-        let mut remove_lit = None;
-        for driver_pos in 0..driver_len {
-            let lit = self.subsumption_driver_lit(driver, driver_pos);
-            let var = lit.unsigned_abs() as usize;
-            if var >= marks.len() || marks[var] != stamp {
-                return SubsumptionOutcome::None;
-            }
-
-            let same_sign = if lit > 0 { 1 } else { 2 };
-            if signs[var] & same_sign != 0 {
-                continue;
-            }
-
-            let complement_sign = if lit > 0 { 2 } else { 1 };
-            if signs[var] & complement_sign != 0 && remove_lit.is_none() {
-                remove_lit = Some(-lit);
-                continue;
-            }
-
+        if same + complements != driver_len {
             return SubsumptionOutcome::None;
         }
-
-        match remove_lit {
-            Some(lit) => SubsumptionOutcome::Strengthen(lit),
-            None => SubsumptionOutcome::Subsumed,
+        if complements == 0 {
+            SubsumptionOutcome::Subsumed
+        } else {
+            SubsumptionOutcome::Strengthen(remove_lit)
         }
     }
 
@@ -633,6 +633,22 @@ impl Solver {
                 continue;
             }
             let driver_abstraction = self.subsumption_driver_abstraction(driver);
+            relation_stamp = relation_stamp.wrapping_add(1);
+            if relation_stamp == 0 {
+                relation_marks.fill(0);
+                relation_stamp = 1;
+            }
+            for driver_pos in 0..driver_len {
+                let lit = self.subsumption_driver_lit(driver, driver_pos);
+                let var = lit.unsigned_abs() as usize;
+                debug_assert!(var < relation_marks.len());
+                relation_marks[var] = relation_stamp;
+                relation_signs[var] = if lit > 0 {
+                    SUBSUMPTION_POS_SIGN
+                } else {
+                    SUBSUMPTION_NEG_SIGN
+                };
+            }
 
             let mut best_var = self.subsumption_driver_lit(driver, 0).unsigned_abs() as usize;
             self.clean_occurs(best_var);
@@ -669,14 +685,8 @@ impl Solver {
                     continue;
                 }
 
-                relation_stamp = relation_stamp.wrapping_add(1);
-                if relation_stamp == 0 {
-                    relation_marks.fill(0);
-                    relation_stamp = 1;
-                }
-
                 match self.subsumption_relation(
-                    driver,
+                    driver_len,
                     driver_abstraction,
                     candidate_idx,
                     &mut relation_marks,
