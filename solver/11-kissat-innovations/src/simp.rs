@@ -952,7 +952,10 @@ impl Solver {
         if !self.solver_ok {
             return false;
         }
-        if !self.use_simplification || !self.use_elim {
+        if !self.use_simplification {
+            return true;
+        }
+        if !self.use_elim {
             return self.simplify();
         }
         if !self.simplify() {

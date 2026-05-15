@@ -7858,6 +7858,8 @@ fn main() {
     let mut solver = Solver::new(num_vars, clauses);
     solver.ccmin_mode = parse_ccmin_mode();
     solver.use_resolved_conflict_analysis = parse_use_resolved_conflict_analysis();
+    solver.use_simplification = parse_bool_env("SAT_SIMPLIFY", true);
+    solver.use_elim = parse_bool_env("SAT_BVE", true);
     let reduce_db_limit_overridden = env::var_os("SAT_REDUCE_DB_INIT").is_some();
     let reduce_db_interval_overridden = env::var_os("SAT_REDUCE_DB_INTERVAL").is_some();
     solver.reduce_db_limit = parse_usize_env("SAT_REDUCE_DB_INIT", solver.reduce_db_limit);
@@ -10541,5 +10543,31 @@ mod tests {
         assert_eq!(s.stats.simplification_mode_resumes, 1);
         assert!(s.occurs.is_empty());
         assert!(!s.use_simplification);
+    }
+
+    #[test]
+    fn test_eliminate_skips_simplification_when_disabled() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-1, 2], vec![2, 3]]);
+        let mut proof = ProofLog::disabled();
+        s.use_simplification = false;
+
+        assert!(s.eliminate(true, &mut proof));
+
+        assert_eq!(s.stats.simplifications, 0);
+        assert_eq!(s.stats.simplification_mode_entries, 0);
+        assert_eq!(s.original_clause_ids.len(), 3);
+    }
+
+    #[test]
+    fn test_eliminate_runs_root_simplify_without_bve() {
+        let mut s = make_solver(3, vec![vec![1], vec![-1, 2], vec![2, 3]]);
+        let mut proof = ProofLog::disabled();
+        s.use_elim = false;
+
+        assert!(s.eliminate(true, &mut proof));
+
+        assert_eq!(s.stats.simplifications, 1);
+        assert_eq!(s.stats.simplification_mode_entries, 0);
+        assert!(s.original_clause_ids.len() < 3);
     }
 }
