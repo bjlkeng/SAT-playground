@@ -33,6 +33,9 @@ const CLAUSE_DELETED_MARK: u32 = 1;
 const DEFAULT_BVE_GROW: isize = 0;
 const DEFAULT_BVE_CLAUSE_LIMIT: isize = 20;
 const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
+const INLINE_ABSTRACTION_CLAUSE_THRESHOLD: usize = 750_000;
+const LAZY_DETACH_SMALL_CLAUSE_THRESHOLD: usize = 50_000;
+const SORTED_SUBSUMPTION_MIN_LEN: usize = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Watcher {
@@ -220,6 +223,10 @@ struct Solver {
     original_clause_ids: Vec<usize>,
     /// MiniSat-style variable abstraction for original clauses, indexed by arena clause offset.
     clause_abstraction: Vec<u64>,
+    /// Store original-clause abstractions inline during large preprocessing passes.
+    inline_original_abstractions: bool,
+    /// All original/preprocessing clauses keep MiniSat-style variable/sign order.
+    clauses_sorted_by_var: bool,
     /// live learned-clause ids, mirroring MiniSat's dedicated `learnts` vector
     learned_clause_ids: Vec<usize>,
     /// clauses currently watching each literal, with blocker fast path
@@ -314,9 +321,11 @@ struct Solver {
     /// variables already eliminated from the live formula
     eliminated: Vec<bool>,
     /// lazy-cleaned occurrence lists for live original/preprocessed clauses, keyed by variable
-    occurs: Vec<Vec<usize>>,
+    occurs: Vec<Vec<u32>>,
     /// dirty bits for occurrence lists after clause deletion
     occurs_dirty: Vec<bool>,
+    /// dirty bits for occurrence lists after a clause is strengthened and loses a variable
+    occurs_membership_dirty: Vec<bool>,
     /// literal occurrence counts for elimination cost, indexed by `lit_to_index`
     n_occ: Vec<usize>,
     /// packed MiniSat-style model-extension clauses
@@ -429,6 +438,17 @@ fn clause_activity_in_arena(arena: &[u32], clause_idx: usize) -> f64 {
 fn clause_lit_in_arena(arena: &[u32], clause_idx: usize, lit_pos: usize) -> i32 {
     debug_assert!(lit_pos < clause_len_in_arena(arena, clause_idx));
     word_to_lit(arena[clause_idx + 1 + lit_pos])
+}
+
+#[inline(always)]
+fn clause_contains_var_in_arena(arena: &[u32], clause_idx: usize, var: usize) -> bool {
+    let clause_len = clause_len_in_arena(arena, clause_idx);
+    for lit_pos in 0..clause_len {
+        if clause_lit_in_arena(arena, clause_idx, lit_pos).unsigned_abs() as usize == var {
+            return true;
+        }
+    }
+    false
 }
 
 fn basic_lit_redundant(
@@ -584,10 +604,13 @@ impl Solver {
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
         let arena = Vec::with_capacity(total_words);
         let original_clause_ids = Vec::with_capacity(original_clause_count);
+        let initial_clause_mode = parse_initial_clause_mode();
         let mut solver = Solver {
             arena,
             original_clause_ids,
             clause_abstraction: Vec::new(),
+            inline_original_abstractions: false,
+            clauses_sorted_by_var: initial_clause_mode == InitialClauseMode::CanonicalSorted,
             learned_clause_ids: Vec::new(),
             watchers: vec![Vec::new(); num_vars.saturating_mul(2)],
             watch_scratch: Vec::new(),
@@ -636,6 +659,7 @@ impl Solver {
             eliminated: vec![false; num_vars + 1],
             occurs: vec![Vec::new(); num_vars + 1],
             occurs_dirty: vec![false; num_vars + 1],
+            occurs_membership_dirty: vec![false; num_vars + 1],
             n_occ: vec![0; num_vars.saturating_mul(2)],
             elim_clauses: Vec::new(),
             sat_model: None,
@@ -652,7 +676,7 @@ impl Solver {
             use_resolved_conflict_analysis: false,
             stats: SolverStats::default(),
         };
-        match parse_initial_clause_mode() {
+        match initial_clause_mode {
             InitialClauseMode::CanonicalSorted => {
                 solver.add_initial_original_clauses(clauses, true);
             }
@@ -753,6 +777,11 @@ impl Solver {
     }
 
     #[inline(always)]
+    fn clause_extra_idx(&self, clause_idx: usize) -> usize {
+        clause_idx + 1 + self.clause_len(clause_idx)
+    }
+
+    #[inline(always)]
     fn clause_lit(&self, clause_idx: usize, lit_pos: usize) -> i32 {
         debug_assert!(lit_pos < self.clause_len(clause_idx));
         word_to_lit(self.arena[clause_idx + 1 + lit_pos])
@@ -784,6 +813,12 @@ impl Solver {
 
     #[inline(always)]
     fn original_clause_abstraction(&self, clause_idx: usize) -> u64 {
+        debug_assert!(!self.clause_is_learnt(clause_idx));
+        let header = self.arena[clause_idx];
+        if clause_header_has_extra(header) {
+            let extra_idx = clause_idx + 1 + clause_header_size(header);
+            return (self.arena[extra_idx] as u64) | ((self.arena[extra_idx + 1] as u64) << 32);
+        }
         self.clause_abstraction
             .get(clause_idx)
             .copied()
@@ -791,26 +826,196 @@ impl Solver {
     }
 
     fn set_original_clause_abstraction(&mut self, clause_idx: usize, abstraction: u64) {
+        debug_assert!(!self.clause_is_learnt(clause_idx));
+        if self.inline_original_abstractions
+            && clause_idx < self.arena.len()
+            && self.clause_has_extra(clause_idx)
+        {
+            let extra_idx = self.clause_extra_idx(clause_idx);
+            self.arena[extra_idx] = abstraction as u32;
+            self.arena[extra_idx + 1] = (abstraction >> 32) as u32;
+            return;
+        }
         if self.clause_abstraction.len() <= clause_idx {
-            self.clause_abstraction
-                .resize(self.arena.len().max(clause_idx + 1), 0);
+            self.clause_abstraction.resize(clause_idx + 1, 0);
         }
         self.clause_abstraction[clause_idx] = abstraction;
     }
 
+    fn should_inline_original_abstractions(&self) -> bool {
+        self.original_clause_ids.len() >= INLINE_ABSTRACTION_CLAUSE_THRESHOLD
+    }
+
+    fn should_lazy_detach_preprocess_originals(&self) -> bool {
+        self.inline_original_abstractions
+            || self.original_clause_ids.len() < LAZY_DETACH_SMALL_CLAUSE_THRESHOLD
+    }
+
     fn ensure_original_clause_abstractions(&mut self) {
-        if self.clause_abstraction.len() >= self.arena.len() {
+        if !self.should_inline_original_abstractions() {
+            self.inline_original_abstractions = false;
+            self.clause_abstraction.clear();
+            self.clause_abstraction.resize(self.arena.len(), 0);
+            let original_clause_ids = self.original_clause_ids.clone();
+            for clause_idx in original_clause_ids {
+                if clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx) {
+                    self.clause_abstraction[clause_idx] =
+                        clause_abstraction_from_lits(self.clause_slice(clause_idx));
+                }
+            }
             return;
         }
-        self.clause_abstraction.clear();
-        self.clause_abstraction.resize(self.arena.len(), 0);
-        let original_clause_ids = self.original_clause_ids.clone();
-        for clause_idx in original_clause_ids {
-            if clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx) {
-                self.clause_abstraction[clause_idx] =
-                    clause_abstraction_from_lits(self.clause_slice(clause_idx));
-            }
+
+        self.inline_original_abstractions = true;
+        let needs_inline_abstraction = self.original_clause_ids.iter().any(|&clause_idx| {
+            clause_idx < self.arena.len()
+                && !self.clause_is_deleted(clause_idx)
+                && !self.clause_has_extra(clause_idx)
+        });
+        if !needs_inline_abstraction {
+            self.clause_abstraction.clear();
+            return;
         }
+
+        let mut reloc = vec![NO_REASON; self.arena.len()];
+        let original_live_word_count: usize = self
+            .original_clause_ids
+            .iter()
+            .filter(|&&clause_idx| {
+                clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx)
+            })
+            .map(|&clause_idx| {
+                self.clause_word_len(clause_idx)
+                    + if self.clause_has_extra(clause_idx) {
+                        0
+                    } else {
+                        CLAUSE_ACTIVITY_WORDS
+                    }
+            })
+            .sum();
+        let learned_live_word_count: usize = self
+            .learned_clause_ids
+            .iter()
+            .filter(|&&clause_idx| {
+                clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx)
+            })
+            .map(|&clause_idx| self.clause_word_len(clause_idx))
+            .sum();
+        let mut new_arena = Vec::with_capacity(original_live_word_count + learned_live_word_count);
+        let mut new_original_clause_ids = Vec::with_capacity(self.original_clause_ids.len());
+        let mut new_learned_clause_ids = Vec::with_capacity(self.learned_clause_ids.len());
+
+        for &old_clause_idx in &self.original_clause_ids {
+            if old_clause_idx >= self.arena.len() || self.clause_is_deleted(old_clause_idx) {
+                continue;
+            }
+            let header = self.clause_header(old_clause_idx);
+            let clause_len = clause_header_size(header);
+            let new_clause_idx = new_arena.len();
+            reloc[old_clause_idx] = new_clause_idx;
+            new_arena.push(clause_make_header(
+                clause_len,
+                false,
+                true,
+                clause_header_mark(header),
+                clause_header_reloced(header),
+            ));
+            let lits_start = old_clause_idx + 1;
+            let lits_end = lits_start + clause_len;
+            new_arena.extend_from_slice(&self.arena[lits_start..lits_end]);
+            let abstraction = if clause_header_has_extra(header) {
+                let extra_idx = lits_end;
+                (self.arena[extra_idx] as u64) | ((self.arena[extra_idx + 1] as u64) << 32)
+            } else {
+                clause_abstraction_from_lits(unsafe {
+                    words_as_lits(&self.arena[lits_start..lits_end])
+                })
+            };
+            new_arena.push(abstraction as u32);
+            new_arena.push((abstraction >> 32) as u32);
+            new_original_clause_ids.push(new_clause_idx);
+        }
+
+        for &old_clause_idx in &self.learned_clause_ids {
+            if old_clause_idx >= self.arena.len() || self.clause_is_deleted(old_clause_idx) {
+                continue;
+            }
+            let new_clause_idx = new_arena.len();
+            let old_end = old_clause_idx + self.clause_word_len(old_clause_idx);
+            reloc[old_clause_idx] = new_clause_idx;
+            new_arena.extend_from_slice(&self.arena[old_clause_idx..old_end]);
+            new_learned_clause_ids.push(new_clause_idx);
+        }
+
+        for watch_list in &mut self.watchers {
+            let mut write = 0usize;
+            for read in 0..watch_list.len() {
+                let mut watcher = watch_list[read];
+                let old_idx = watcher.clause_idx as usize;
+                if old_idx >= reloc.len() {
+                    continue;
+                }
+                let new_idx = reloc[old_idx];
+                if new_idx == NO_REASON {
+                    continue;
+                }
+                watcher.clause_idx = new_idx as u32;
+                watch_list[write] = watcher;
+                write += 1;
+            }
+            watch_list.truncate(write);
+        }
+
+        let mut watch_scratch_write = 0usize;
+        for read in 0..self.watch_scratch.len() {
+            let mut watcher = self.watch_scratch[read];
+            let old_idx = watcher.clause_idx as usize;
+            if old_idx >= reloc.len() {
+                continue;
+            }
+            let new_idx = reloc[old_idx];
+            if new_idx == NO_REASON {
+                continue;
+            }
+            watcher.clause_idx = new_idx as u32;
+            self.watch_scratch[watch_scratch_write] = watcher;
+            watch_scratch_write += 1;
+        }
+        self.watch_scratch.truncate(watch_scratch_write);
+
+        for reason_idx in &mut self.reason {
+            if *reason_idx == NO_REASON {
+                continue;
+            }
+            let new_idx = reloc[*reason_idx];
+            debug_assert_ne!(
+                new_idx, NO_REASON,
+                "inline abstraction migration removed a live reason clause"
+            );
+            *reason_idx = new_idx;
+        }
+
+        let mut root_write = 0usize;
+        for read in 0..self.root_unit_clauses.len() {
+            let old_idx = self.root_unit_clauses[read];
+            if old_idx >= reloc.len() {
+                continue;
+            }
+            let new_idx = reloc[old_idx];
+            if new_idx == NO_REASON {
+                continue;
+            }
+            self.root_unit_clauses[root_write] = new_idx;
+            root_write += 1;
+        }
+        self.root_unit_clauses.truncate(root_write);
+
+        self.arena = new_arena;
+        self.original_clause_ids = new_original_clause_ids;
+        self.learned_clause_ids = new_learned_clause_ids;
+        self.live_learned_clause_count = self.learned_clause_ids.len();
+        self.deleted_clause_words = 0;
+        self.clause_abstraction.clear();
     }
 
     fn clause_satisfied(&self, clause_idx: usize) -> bool {
@@ -1163,7 +1368,15 @@ impl Solver {
                 let watcher = pending[read];
                 read += 1;
                 let clause_idx = watcher.clause_idx as usize;
-                if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
+                if clause_idx >= self.arena.len() {
+                    continue;
+                }
+                if self.lit_value(watcher.blocker) == TRUE {
+                    pending[write] = watcher;
+                    write += 1;
+                    continue;
+                }
+                if self.clause_is_deleted(clause_idx) {
                     continue;
                 }
                 let clause_len = self.clause_len(clause_idx);
@@ -1204,12 +1417,6 @@ impl Solver {
                         }
                         _ => unreachable!(),
                     }
-                    continue;
-                }
-
-                if self.lit_value(watcher.blocker) == TRUE {
-                    pending[write] = watcher;
-                    write += 1;
                     continue;
                 }
 
@@ -1614,14 +1821,27 @@ impl Solver {
 
     fn garbage_collect(&mut self) {
         self.stats.garbage_collections += 1;
+        let strip_original_extra = !self.use_simplification;
         let mut reloc = vec![NO_REASON; self.arena.len()];
         let live_clause_count = self.original_clause_ids.len() + self.learned_clause_ids.len();
-        let live_word_count: usize = self
+        let original_live_word_count: usize = self
             .original_clause_ids
             .iter()
-            .chain(self.learned_clause_ids.iter())
+            .map(|&clause_idx| {
+                let word_len = self.clause_word_len(clause_idx);
+                if strip_original_extra && self.clause_has_extra(clause_idx) {
+                    word_len - CLAUSE_ACTIVITY_WORDS
+                } else {
+                    word_len
+                }
+            })
+            .sum();
+        let learned_live_word_count: usize = self
+            .learned_clause_ids
+            .iter()
             .map(|&clause_idx| self.clause_word_len(clause_idx))
             .sum();
+        let live_word_count = original_live_word_count + learned_live_word_count;
 
         let mut new_arena = Vec::with_capacity(live_word_count);
         let mut new_original_clause_ids = Vec::with_capacity(self.original_clause_ids.len());
@@ -1634,14 +1854,27 @@ impl Solver {
         let copy_clause = |old_clause_idx: usize,
                            arena: &[u32],
                            new_arena: &mut Vec<u32>,
-                           reloc: &mut [usize]| {
+                           reloc: &mut [usize],
+                           strip_extra: bool| {
             let new_clause_idx = new_arena.len();
-            let old_end = old_clause_idx
-                + clause_len_in_arena(arena, old_clause_idx)
-                + 1
-                + clause_header_extra_words(arena[old_clause_idx]);
             reloc[old_clause_idx] = new_clause_idx;
-            new_arena.extend_from_slice(&arena[old_clause_idx..old_end]);
+            let header = arena[old_clause_idx];
+            let clause_len = clause_header_size(header);
+            let has_extra = clause_header_has_extra(header) && !strip_extra;
+            new_arena.push(clause_make_header(
+                clause_len,
+                clause_header_learnt(header),
+                has_extra,
+                clause_header_mark(header),
+                clause_header_reloced(header),
+            ));
+            let lits_start = old_clause_idx + 1;
+            let lits_end = lits_start + clause_len;
+            new_arena.extend_from_slice(&arena[lits_start..lits_end]);
+            if has_extra {
+                let extra_end = lits_end + CLAUSE_ACTIVITY_WORDS;
+                new_arena.extend_from_slice(&arena[lits_end..extra_end]);
+            }
             new_clause_idx
         };
 
@@ -1650,8 +1883,13 @@ impl Solver {
                 !self.clause_is_deleted(old_clause_idx),
                 "original clauses must stay live across garbage collection"
             );
-            let new_clause_idx =
-                copy_clause(old_clause_idx, &self.arena, &mut new_arena, &mut reloc);
+            let new_clause_idx = copy_clause(
+                old_clause_idx,
+                &self.arena,
+                &mut new_arena,
+                &mut reloc,
+                strip_original_extra,
+            );
             new_original_clause_ids.push(new_clause_idx);
         }
         for &old_clause_idx in &self.learned_clause_ids {
@@ -1659,8 +1897,13 @@ impl Solver {
                 !self.clause_is_deleted(old_clause_idx),
                 "live learned clauses must stay live across garbage collection"
             );
-            let new_clause_idx =
-                copy_clause(old_clause_idx, &self.arena, &mut new_arena, &mut reloc);
+            let new_clause_idx = copy_clause(
+                old_clause_idx,
+                &self.arena,
+                &mut new_arena,
+                &mut reloc,
+                false,
+            );
             new_learned_clause_ids.push(new_clause_idx);
         }
 
@@ -1720,11 +1963,13 @@ impl Solver {
         self.learned_clause_ids = new_learned_clause_ids;
         if !self.clause_abstraction.is_empty() {
             self.clause_abstraction.clear();
-            self.clause_abstraction.resize(self.arena.len(), 0);
-            let original_clause_ids = self.original_clause_ids.clone();
-            for clause_idx in original_clause_ids {
-                self.clause_abstraction[clause_idx] =
-                    clause_abstraction_from_lits(self.clause_slice(clause_idx));
+            if self.use_simplification {
+                self.clause_abstraction.resize(self.arena.len(), 0);
+                let original_clause_ids = self.original_clause_ids.clone();
+                for clause_idx in original_clause_ids {
+                    self.clause_abstraction[clause_idx] =
+                        clause_abstraction_from_lits(self.clause_slice(clause_idx));
+                }
             }
         }
         self.live_learned_clause_count = self.learned_clause_ids.len();

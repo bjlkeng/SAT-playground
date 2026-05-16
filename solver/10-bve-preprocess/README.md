@@ -19,7 +19,13 @@ What is present:
   `SAT_FULL_BSR=off`
 - preprocessing can be bypassed for comparison runs with `SAT_SIMPLIFICATION=off`
 - 64-bit clause abstraction prefiltering for preprocessing subsumption checks
+- large-formula preprocessing stores original-clause abstractions inline to avoid sparse arena-indexed
+  side-table loads in hot BSR scans
+- sorted-clause subsumption relation for long clauses on large canonical formulas
 - in-place original-clause strengthening during BSR
+- one-pass strengthened-clause compaction/proof logging metadata updates
+- lazy occurrence-list membership cleanup for large formulas after clause strengthening
+- lazy preprocessing watcher detach on small formulas and the large inline-preprocessing path
 - a persistent preprocessing loop over touched variables, root assignments, queued subsumption
   clauses, and a dynamic elimination heap
 - resolvent insertion through a preprocessing original-clause path, with generated clauses queued
@@ -77,6 +83,91 @@ Latest rerun after the lazy deleted-clause watcher cleanup on 2026-05-09:
 - `cargo test` in `solver/10-bve-preprocess`: 48 passed
 - smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
 - smoke log: `log/2026-05-09-15-38-19`
+
+Latest rerun after the 2026-05-15 simplification data-layout pass:
+
+- `cargo test` in `solver/10-bve-preprocess`: 48 passed
+- smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
+- smoke log: `log/2026-05-15-21-45-47`
+
+## 2026-05-15 Profile Simplification Optimization Pass
+
+Target: close the solver-10 preprocessing gap to MiniSat `simp` on `benchmarks/profiling` while
+keeping the search algorithm unchanged.
+
+Accepted code-level changes:
+
+- changed simplification occurrence refs from `usize` to `u32` and manually compact dirty
+  occurrence lists
+- moved propagation's blocker-satisfied fast path before deleted-clause/header checks
+- for large formulas, store original-clause abstractions inline with original clauses during
+  preprocessing, then strip the preprocessing-only words before search GC
+- gate inline abstractions to formulas with at least `750000` original clauses so small/medium
+  solved instances keep their previous search trajectory
+- use a sorted subsumption relation for short clauses (`len >= 2`) only when clauses are known to be
+  canonical-sorted and inline abstractions are active
+- match MiniSat's removal scheduling more closely by smudging occurrence lists on deleted clauses
+  without treating every removed-clause variable as a backward-subsumption touch
+- read inline original-clause abstractions from one loaded header in the subsumption hot path
+- reuse the preprocessing scratch buffer for strengthened clauses, compute the strengthened
+  abstraction during that same scan, and compact the arena clause in one pass
+- replace per-strengthen occurrence-list `position()` removal with lazy membership cleaning on the
+  large inline path only
+- use lazy preprocessing watcher detach on small formulas and the large inline path; keep strict
+  detach for mid-sized formulas where lazy detach perturbed the search path
+
+Key focused K4 movement:
+
+| Build | Preprocess | Total | Notes |
+|---|---:|---:|---|
+| previous accepted | `103.796s` | `159.31s` | `log/diagnostics/current-best-k4-2026-05-15-21-25/k4.stderr` |
+| inline abstractions only | `97.181s` | `158.96s` | `log/diagnostics/simp-inline-strip-2026-05-15-19-42-00/k4.stderr` |
+| gated inline + sorted relation | `77.708s` | `132.38s` | `log/diagnostics/simp-inline-gated-sorted9-2026-05-15-20-03-00/k4.stderr` |
+| one-pass strengthen updates | `67.996s` | `122.68s` | `log/diagnostics/simp-strength-onepass-compact-2026-05-15-20-50-00/k4.stderr` |
+| lazy occurrence membership cleanup | `53.524s` | `108.40s` | `log/diagnostics/simp-lazy-occ-membership-2026-05-15-20-56-00/k4.stderr` |
+
+The final profile bench solves K4 in `95.300s` including proof verification. A follow-up MiniSat
+parity pass found that solver 10 was incorrectly using clause deletion as a backward-subsumption
+touch source; after matching MiniSat's removal scheduling, focused Kakuro preprocessing improved
+from `99.419s` to `71.201s` (`SAT_TRACE_PREPROCESS=1`, `/tmp/kakuro-112.cnf`, 2026-05-15).
+MiniSat's verbose run on the same decompressed input reports `28.09s` simplification, so the
+remaining gap is now about `2.5x` on preprocessing rather than `3.4x`.
+
+Full `benchmarks/profiling` result:
+
+```bash
+bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/10-bve-preprocess
+```
+
+| Solver/run | Solved | SAT | UNSAT | Timeouts | PAR-2 | Results |
+|---|---:|---:|---:|---:|---:|---|
+| solver 10 previous accepted | 7/11 | 5 | 2 | 4 | `1087.869` | `log/bench-10-bve-preprocess-2026-05-15-18-39-10/results.csv` |
+| solver 10 after this pass | 9/11 | 6 | 3 | 2 | `679.222` | `log/bench-10-bve-preprocess-2026-05-15-21-32-49/results.csv` |
+| MiniSat `simp` | 10/11 | 6 | 4 | 1 | `559.646` | `log/bench-minisat-2026-05-14-13-31-31/results.csv` |
+
+The accepted pass flips `REGRandom-K4` from timeout to verified UNSAT (`95.300s`) and `random_v355`
+from timeout to SAT (`21.270s`) while preserving `mp1`. Remaining non-search gap is still visible on
+Kakuro (`71s` focused preprocessing versus MiniSat's `28.09s` simplification).
+
+Rejected experiments from this pass:
+
+- all-formula inline abstractions: K4 preprocessing improved, but Feistel search roughly doubled
+  because the migration perturbed small-instance search paths
+- direct inline abstraction loads: K4 preprocessing regressed (`79.259s` versus `77.708s`)
+- sorted-relation threshold `5`: tied threshold `9` on K4 and was not worth extra risk
+- cleaning every driver occurrence list on large formulas: exceeded the prior Kakuro preprocessing
+  time before producing a trace line
+- ungated lazy occurrence-membership cleanup: solved K4, but regressed Timetable; gating it to the
+  large inline path kept K4 and restored Timetable
+- globally lazy preprocessing watcher detach: improved K4/Kakuro and made `random_v355` solve, but
+  moved `mp1` to timeout; the accepted policy applies it only to small formulas and the large inline
+  path
+- side-table abstractions on Kakuro: regressed focused preprocessing to `121.529s`; inline
+  abstractions remain faster despite the header arithmetic
+- specialized split subsumption hot loop: regressed focused Kakuro preprocessing to `112.626s`
+- MiniSat-style contiguous `Vec` subsumption queue: regressed focused Kakuro preprocessing to
+  `80.179s`
+- MiniSat-style gather-time queue marking: regressed focused Kakuro preprocessing to `72.853s`
 
 ## MiniSat-Simp Five-Instance Benchmark
 

@@ -15,9 +15,6 @@ enum SubsumptionOutcome {
     Strengthen(i32),
 }
 
-const SUBSUMPTION_POS_SIGN: u8 = 1;
-const SUBSUMPTION_NEG_SIGN: u8 = 2;
-
 impl Solver {
     fn variable_count(&self) -> usize {
         self.assignment.len().saturating_sub(1)
@@ -54,11 +51,14 @@ impl Solver {
     }
 
     fn build_occurrence_index(&mut self) {
+        self.ensure_original_clause_abstractions();
         let num_vars = self.variable_count();
         self.occurs.clear();
         self.occurs.resize_with(num_vars + 1, Vec::new);
         self.occurs_dirty.clear();
         self.occurs_dirty.resize(num_vars + 1, false);
+        self.occurs_membership_dirty.clear();
+        self.occurs_membership_dirty.resize(num_vars + 1, false);
         self.n_occ.clear();
         self.n_occ.resize(num_vars.saturating_mul(2), 0);
 
@@ -79,21 +79,35 @@ impl Solver {
             if var == 0 || var >= self.occurs.len() {
                 continue;
             }
-            self.occurs[var].push(clause_idx);
+            self.occurs[var].push(clause_idx as u32);
             self.n_occ[lit_to_index(lit)] += 1;
         }
     }
 
     fn clean_occurs(&mut self, var: usize) {
-        if var >= self.occurs.len() || !self.occurs_dirty[var] {
+        if var >= self.occurs.len()
+            || (!self.occurs_dirty[var] && !self.occurs_membership_dirty[var])
+        {
             return;
         }
 
         let arena = &self.arena;
-        self.occurs[var].retain(|&clause_idx| {
-            clause_idx < arena.len() && clause_header_mark(arena[clause_idx]) != CLAUSE_DELETED_MARK
-        });
+        let check_membership = self.occurs_membership_dirty[var];
+        let occurs = &mut self.occurs[var];
+        let mut write = 0usize;
+        for read in 0..occurs.len() {
+            let clause_idx = occurs[read] as usize;
+            if clause_idx < arena.len()
+                && clause_header_mark(arena[clause_idx]) != CLAUSE_DELETED_MARK
+                && (!check_membership || clause_contains_var_in_arena(arena, clause_idx, var))
+            {
+                occurs[write] = clause_idx as u32;
+                write += 1;
+            }
+        }
+        occurs.truncate(write);
         self.occurs_dirty[var] = false;
+        self.occurs_membership_dirty[var] = false;
     }
 
     fn enqueue_subsumption_clause(
@@ -151,7 +165,7 @@ impl Solver {
             self.clean_occurs(var);
             let mut scan_pos = 0usize;
             while scan_pos < self.occurs[var].len() {
-                let clause_idx = self.occurs[var][scan_pos];
+                let clause_idx = self.occurs[var][scan_pos] as usize;
                 scan_pos += 1;
                 self.enqueue_subsumption_clause(queue, clause_idx);
             }
@@ -169,8 +183,8 @@ impl Solver {
     fn mark_occurs_dirty_for_clause(
         &mut self,
         clause_idx: usize,
-        touched: &mut Vec<usize>,
-        touched_flags: &mut Vec<bool>,
+        _touched: &mut Vec<usize>,
+        _touched_flags: &mut Vec<bool>,
     ) {
         let clause_len = self.clause_len(clause_idx);
         for lit_pos in 0..clause_len {
@@ -182,7 +196,6 @@ impl Solver {
             let lit_idx = lit_to_index(lit);
             self.n_occ[lit_idx] = self.n_occ[lit_idx].saturating_sub(1);
             self.occurs_dirty[var] = true;
-            Self::touch_preprocess_var(touched, touched_flags, var);
         }
     }
 
@@ -205,7 +218,11 @@ impl Solver {
 
         self.mark_occurs_dirty_for_clause(clause_idx, touched, touched_flags);
         let clause_len = self.clause_len(clause_idx);
-        self.detach_clause_strict(clause_idx);
+        if self.should_lazy_detach_preprocess_originals() {
+            self.detach_clause(clause_idx);
+        } else {
+            self.detach_clause_strict(clause_idx);
+        }
         self.original_literals = self.original_literals.saturating_sub(clause_len);
         self.deleted_clause_words += self.clause_word_len(clause_idx);
         self.clause_set_deleted(clause_idx, true);
@@ -214,12 +231,10 @@ impl Solver {
 
     fn subsumption_relation(
         &self,
+        driver: SubsumptionCandidate,
         driver_len: usize,
         driver_abstraction: u64,
         candidate_idx: usize,
-        marks: &mut [u32],
-        signs: &mut [u8],
-        stamp: u32,
     ) -> SubsumptionOutcome {
         if candidate_idx >= self.arena.len() || self.clause_is_deleted(candidate_idx) {
             return SubsumptionOutcome::None;
@@ -231,38 +246,87 @@ impl Solver {
         if (driver_abstraction & !self.original_clause_abstraction(candidate_idx)) != 0 {
             return SubsumptionOutcome::None;
         }
+
+        if self.clauses_sorted_by_var
+            && self.inline_original_abstractions
+            && driver_len >= SORTED_SUBSUMPTION_MIN_LEN
+        {
+            return self.sorted_subsumption_relation(driver, driver_len, candidate_idx);
+        }
+
         let candidate_lits = self.clause_slice(candidate_idx);
 
-        let mut same = 0usize;
-        let mut complements = 0usize;
         let mut remove_lit = 0i32;
-        for &candidate_lit in candidate_lits {
-            let var = candidate_lit.unsigned_abs() as usize;
-            debug_assert!(var < marks.len());
-            if marks[var] != stamp {
-                continue;
+        for driver_pos in 0..driver_len {
+            let driver_lit = self.subsumption_driver_lit(driver, driver_pos);
+            let mut found = false;
+            for &candidate_lit in candidate_lits {
+                if driver_lit == candidate_lit {
+                    found = true;
+                    break;
+                }
+                if remove_lit == 0 && driver_lit == -candidate_lit {
+                    remove_lit = candidate_lit;
+                    found = true;
+                    break;
+                }
             }
+            if !found {
+                return SubsumptionOutcome::None;
+            }
+        }
 
-            let candidate_sign = if candidate_lit > 0 {
-                SUBSUMPTION_POS_SIGN
-            } else {
-                SUBSUMPTION_NEG_SIGN
-            };
-            if signs[var] & candidate_sign != 0 {
-                same += 1;
-            } else {
-                complements += 1;
-                if complements > 1 {
+        if remove_lit == 0 {
+            SubsumptionOutcome::Subsumed
+        } else {
+            SubsumptionOutcome::Strengthen(remove_lit)
+        }
+    }
+
+    fn sorted_subsumption_relation(
+        &self,
+        driver: SubsumptionCandidate,
+        driver_len: usize,
+        candidate_idx: usize,
+    ) -> SubsumptionOutcome {
+        let candidate_lits = self.clause_slice(candidate_idx);
+        let mut candidate_pos = 0usize;
+        let mut remove_lit = 0i32;
+
+        for driver_pos in 0..driver_len {
+            let driver_lit = self.subsumption_driver_lit(driver, driver_pos);
+            let driver_var = driver_lit.unsigned_abs();
+            let mut found = false;
+
+            while candidate_pos < candidate_lits.len() {
+                let candidate_lit = candidate_lits[candidate_pos];
+                let candidate_var = candidate_lit.unsigned_abs();
+                if candidate_var < driver_var {
+                    candidate_pos += 1;
+                    continue;
+                }
+                if candidate_var > driver_var {
                     return SubsumptionOutcome::None;
                 }
-                remove_lit = candidate_lit;
+                candidate_pos += 1;
+                if candidate_lit == driver_lit {
+                    found = true;
+                    break;
+                }
+                if remove_lit == 0 && candidate_lit == -driver_lit {
+                    remove_lit = candidate_lit;
+                    found = true;
+                    break;
+                }
+                return SubsumptionOutcome::None;
+            }
+
+            if !found {
+                return SubsumptionOutcome::None;
             }
         }
 
-        if same + complements != driver_len {
-            return SubsumptionOutcome::None;
-        }
-        if complements == 0 {
+        if remove_lit == 0 {
             SubsumptionOutcome::Subsumed
         } else {
             SubsumptionOutcome::Strengthen(remove_lit)
@@ -283,8 +347,17 @@ impl Solver {
         }
 
         let clause_len = self.clause_len(clause_idx);
+        let locked_lit = if self.clause_locked(clause_idx) {
+            Some(self.clause_lit(clause_idx, 0))
+        } else {
+            None
+        };
         let mut remove_pos = None;
-        let mut strengthened = Vec::with_capacity(clause_len.saturating_sub(1));
+        let mut write_pos = 0usize;
+        let mut strengthened = std::mem::take(&mut self.scratch_preprocess_clause);
+        strengthened.clear();
+        strengthened.reserve(clause_len.saturating_sub(1));
+        let mut strengthened_abstraction = 0u64;
         for lit_pos in 0..clause_len {
             let lit = self.clause_lit(clause_idx, lit_pos);
             if lit == remove_lit && remove_pos.is_none() {
@@ -292,9 +365,15 @@ impl Solver {
                 continue;
             }
             strengthened.push(lit);
+            strengthened_abstraction |= 1u64 << (lit.unsigned_abs() & 63);
+            if clause_len > 2 && remove_pos.is_some() && write_pos != lit_pos {
+                self.set_clause_lit(clause_idx, write_pos, lit);
+            }
+            write_pos += 1;
         }
 
-        let Some(remove_pos) = remove_pos else {
+        let Some(_remove_pos) = remove_pos else {
+            self.scratch_preprocess_clause = strengthened;
             return true;
         };
 
@@ -303,6 +382,7 @@ impl Solver {
 
         if clause_len == 2 {
             let unit_lit = strengthened[0];
+            self.scratch_preprocess_clause = strengthened;
             self.remove_original_clause_preprocess(clause_idx, touched, touched_flags);
             if !self.enqueue(unit_lit, NO_REASON) || self.propagate().is_some() {
                 self.solver_ok = false;
@@ -312,10 +392,12 @@ impl Solver {
         }
 
         let remove_var = remove_lit.unsigned_abs() as usize;
-        if remove_var < self.occurs.len() {
+        if self.inline_original_abstractions && remove_var < self.occurs_membership_dirty.len() {
+            self.occurs_membership_dirty[remove_var] = true;
+        } else if remove_var < self.occurs.len() {
             if let Some(pos) = self.occurs[remove_var]
                 .iter()
-                .position(|&idx| idx == clause_idx)
+                .position(|&idx| idx as usize == clause_idx)
             {
                 self.occurs[remove_var].swap_remove(pos);
             }
@@ -326,17 +408,7 @@ impl Solver {
         }
         Self::touch_preprocess_var(touched, touched_flags, remove_var);
 
-        let locked_lit = if self.clause_locked(clause_idx) {
-            Some(self.clause_lit(clause_idx, 0))
-        } else {
-            None
-        };
         self.detach_clause(clause_idx);
-
-        for pos in remove_pos..(clause_len - 1) {
-            let next_lit = self.clause_lit(clause_idx, pos + 1);
-            self.set_clause_lit(clause_idx, pos, next_lit);
-        }
 
         let header = self.clause_header(clause_idx);
         self.arena[clause_idx] = clause_make_header(
@@ -348,10 +420,8 @@ impl Solver {
         );
         self.original_literals = self.original_literals.saturating_sub(1);
         self.deleted_clause_words += 1;
-        self.set_original_clause_abstraction(
-            clause_idx,
-            clause_abstraction_from_lits(self.clause_slice(clause_idx)),
-        );
+        self.set_original_clause_abstraction(clause_idx, strengthened_abstraction);
+        self.scratch_preprocess_clause = strengthened;
 
         if let Some(lit) = locked_lit {
             if lit == remove_lit {
@@ -467,16 +537,27 @@ impl Solver {
         }
 
         let clause_idx = self.arena.len();
-        self.arena
-            .push(clause_make_header(normalized.len(), false, false, 0, false));
+        let store_abstraction_inline = self.use_simplification && self.inline_original_abstractions;
+        self.arena.push(clause_make_header(
+            normalized.len(),
+            false,
+            store_abstraction_inline,
+            0,
+            false,
+        ));
         self.arena
             .extend(normalized.iter().copied().map(lit_to_word));
+        if store_abstraction_inline {
+            let abstraction = clause_abstraction_from_lits(&normalized);
+            self.arena.push(abstraction as u32);
+            self.arena.push((abstraction >> 32) as u32);
+        }
         self.original_clause_ids.push(clause_idx);
         self.original_literals += normalized.len();
         self.attach_clause(clause_idx, false);
 
         if self.use_simplification {
-            if !self.clause_abstraction.is_empty() {
+            if !store_abstraction_inline && !self.clause_abstraction.is_empty() {
                 self.set_original_clause_abstraction(
                     clause_idx,
                     clause_abstraction_from_lits(&normalized),
@@ -589,11 +670,6 @@ impl Solver {
         touched_flags: &mut Vec<bool>,
         proof_log: &mut ProofLog,
     ) -> bool {
-        self.ensure_original_clause_abstractions();
-        let mut relation_marks = vec![0u32; self.assignment.len()];
-        let mut relation_signs = vec![0u8; self.assignment.len()];
-        let mut relation_stamp = 1u32;
-
         if seed_all_clauses {
             let original_clause_ids = self.original_clause_ids.clone();
             for clause_idx in original_clause_ids {
@@ -633,30 +709,12 @@ impl Solver {
                 continue;
             }
             let driver_abstraction = self.subsumption_driver_abstraction(driver);
-            relation_stamp = relation_stamp.wrapping_add(1);
-            if relation_stamp == 0 {
-                relation_marks.fill(0);
-                relation_stamp = 1;
-            }
-            for driver_pos in 0..driver_len {
-                let lit = self.subsumption_driver_lit(driver, driver_pos);
-                let var = lit.unsigned_abs() as usize;
-                debug_assert!(var < relation_marks.len());
-                relation_marks[var] = relation_stamp;
-                relation_signs[var] = if lit > 0 {
-                    SUBSUMPTION_POS_SIGN
-                } else {
-                    SUBSUMPTION_NEG_SIGN
-                };
-            }
 
             let mut best_var = self.subsumption_driver_lit(driver, 0).unsigned_abs() as usize;
-            self.clean_occurs(best_var);
             for driver_pos in 1..driver_len {
                 let var = self
                     .subsumption_driver_lit(driver, driver_pos)
                     .unsigned_abs() as usize;
-                self.clean_occurs(var);
                 if var < self.occurs.len()
                     && best_var < self.occurs.len()
                     && self.occurs[var].len() < self.occurs[best_var].len()
@@ -668,10 +726,11 @@ impl Solver {
             if best_var >= self.occurs.len() {
                 continue;
             }
+            self.clean_occurs(best_var);
 
             let mut scan_pos = 0usize;
             while scan_pos < self.occurs[best_var].len() {
-                let candidate_idx = self.occurs[best_var][scan_pos];
+                let candidate_idx = self.occurs[best_var][scan_pos] as usize;
                 scan_pos += 1;
                 if driver == SubsumptionCandidate::Clause(candidate_idx) {
                     continue;
@@ -686,12 +745,10 @@ impl Solver {
                 }
 
                 match self.subsumption_relation(
+                    driver,
                     driver_len,
                     driver_abstraction,
                     candidate_idx,
-                    &mut relation_marks,
-                    &mut relation_signs,
-                    relation_stamp,
                 ) {
                     SubsumptionOutcome::None => {}
                     SubsumptionOutcome::Subsumed => {
@@ -833,7 +890,8 @@ impl Solver {
 
         let mut pos_clauses = Vec::new();
         let mut neg_clauses = Vec::new();
-        for clause_idx in occurrence_ids {
+        for clause_ref in occurrence_ids {
+            let clause_idx = clause_ref as usize;
             if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
                 continue;
             }
@@ -939,9 +997,9 @@ impl Solver {
             return false;
         }
 
+        let run_full_backward_subsumption = self.should_run_full_backward_subsumption();
         self.build_occurrence_index();
         self.bwdsub_assigns = 0;
-        let run_full_backward_subsumption = self.should_run_full_backward_subsumption();
         let mut queue = VecDeque::new();
         let mut touched = Vec::new();
         let mut touched_flags = vec![false; self.assignment.len()];
@@ -1036,8 +1094,10 @@ impl Solver {
         if turn_off_elim {
             self.occurs.clear();
             self.occurs_dirty.clear();
+            self.occurs_membership_dirty.clear();
             self.n_occ.clear();
             self.use_simplification = false;
+            self.inline_original_abstractions = false;
             self.rebuild_branch_queue();
             self.garbage_collect();
         }
