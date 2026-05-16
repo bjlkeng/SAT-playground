@@ -270,7 +270,7 @@
 
       .dpll-demo-tree {
         position: relative;
-        min-height: 460px;
+        min-height: 560px;
         margin-top: 16px;
         border-radius: 18px;
         border: 1px dashed rgba(22, 32, 43, 0.12);
@@ -284,6 +284,7 @@
         inset: 0;
         width: 100%;
         height: 100%;
+        overflow: visible;
       }
 
       .dpll-demo-tree-line {
@@ -314,6 +315,12 @@
         transform: translate(-50%, -50%);
         transition: opacity 180ms ease, transform 180ms ease, border-color 180ms ease, background 180ms ease;
         box-shadow: 0 8px 18px rgba(30, 40, 55, 0.06);
+        cursor: grab;
+        user-select: none;
+      }
+
+      .dpll-demo-node:active {
+        cursor: grabbing;
       }
 
       .dpll-demo-node.hidden {
@@ -766,6 +773,7 @@
         const stepLabel = document.getElementById("dpll-demo-step-label");
         const treeNodesContainer = document.getElementById("dpll-demo-tree-nodes");
         const treeLinesContainer = document.getElementById("dpll-demo-tree-lines");
+        const treeBox = document.getElementById("dpll-demo-tree");
         const playButton = document.getElementById("dpll-demo-play");
         const backButton = document.getElementById("dpll-demo-back");
         const stepButton = document.getElementById("dpll-demo-step");
@@ -775,6 +783,9 @@
         const clauseElements = new Map();
         const nodeElements = new Map();
         const lineElements = new Map();
+        let treeSimulation = null;
+        let treeNodeSelection = null;
+        let treeLineSelection = null;
 
         let currentStep = 0;
         let timer = null;
@@ -851,32 +862,39 @@
         }
 
         function buildTree() {
-          const nodeList = Object.values(nodes);
+          const nodeList = Object.values(nodes).map((node) => ({
+            ...node,
+            targetX: node.x,
+            targetY: node.y,
+            x: node.x,
+            y: node.y,
+          }));
+          const nodeById = new Map(nodeList.map((node) => [node.id, node]));
           const edgeList = nodeList
             .filter((node) => node.parent)
-            .map((node) => ({ child: node, parent: nodes[node.parent] }));
+            .map((node) => ({ id: node.id, source: nodeById.get(node.parent), target: node }));
 
-          d3.select(treeLinesContainer)
+          treeLineSelection = d3.select(treeLinesContainer)
             .selectAll("line")
-            .data(edgeList, (edge) => edge.child.id)
+            .data(edgeList, (edge) => edge.id)
             .join("line")
-            .attr("x1", (edge) => edge.parent.x)
-            .attr("y1", (edge) => edge.parent.y)
-            .attr("x2", (edge) => edge.child.x)
-            .attr("y2", (edge) => edge.child.y)
             .attr("class", "dpll-demo-tree-line")
             .each(function(edge) {
-              lineElements.set(edge.child.id, this);
+              lineElements.set(edge.id, this);
             });
 
-          const nodeSelection = d3.select(treeNodesContainer)
+          treeNodeSelection = d3.select(treeNodesContainer)
             .selectAll(".dpll-demo-node")
             .data(nodeList, (node) => node.id)
             .join((enter) => {
               const item = enter.append("div")
                 .attr("class", (node) => `dpll-demo-node hidden kind-${node.kind}`)
                 .style("left", (node) => `${node.x}%`)
-                .style("top", (node) => `${node.y}%`);
+                .style("top", (node) => `${node.y}%`)
+                .call(d3.drag()
+                  .on("start", treeDragStarted)
+                  .on("drag", treeDragged)
+                  .on("end", treeDragEnded));
               item.append("span")
                 .attr("class", "kind")
                 .text((node) => node.kind);
@@ -887,9 +905,54 @@
               return item;
             });
 
-          nodeSelection.each(function(node) {
+          treeNodeSelection.each(function(node) {
             nodeElements.set(node.id, this);
           });
+
+          treeSimulation = d3.forceSimulation(nodeList)
+            .force("link", d3.forceLink(edgeList).id((node) => node.id).distance(24).strength(0.18))
+            .force("charge", d3.forceManyBody().strength(-55))
+            .force("x", d3.forceX((node) => node.targetX).strength(0.45))
+            .force("y", d3.forceY((node) => node.targetY).strength(0.45))
+            .force("collide", d3.forceCollide(16))
+            .alphaDecay(0.10)
+            .on("tick", tickTree);
+
+          treeSimulation.tick(24);
+          tickTree();
+        }
+
+        function tickTree() {
+          if (!treeNodeSelection || !treeLineSelection) return;
+
+          treeLineSelection
+            .attr("x1", (edge) => edge.source.x)
+            .attr("y1", (edge) => edge.source.y)
+            .attr("x2", (edge) => edge.target.x)
+            .attr("y2", (edge) => edge.target.y);
+
+          treeNodeSelection
+            .style("left", (node) => `${node.x}%`)
+            .style("top", (node) => `${node.y}%`);
+        }
+
+        function treeDragStarted(event, node) {
+          stopPlayback();
+          if (!event.active) treeSimulation.alphaTarget(0.28).restart();
+          node.fx = node.x;
+          node.fy = node.y;
+        }
+
+        function treeDragged(event, node) {
+          const rect = treeBox.getBoundingClientRect();
+          node.fx = Math.max(6, Math.min(94, (event.x / rect.width) * 100));
+          node.fy = Math.max(7, Math.min(103, (event.y / rect.height) * 110));
+        }
+
+        function treeDragEnded(event, node) {
+          if (!event.active) treeSimulation.alphaTarget(0);
+          node.fx = null;
+          node.fy = null;
         }
 
         function stopPlayback() {

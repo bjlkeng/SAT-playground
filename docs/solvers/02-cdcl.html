@@ -144,6 +144,106 @@
         height: 390px;
       }
 
+      .solver-demo-force-svg {
+        width: 100%;
+        height: 100%;
+        display: block;
+        cursor: grab;
+      }
+
+      .solver-demo-force-svg:active {
+        cursor: grabbing;
+      }
+
+      .solver-demo-force-link {
+        fill: none;
+        stroke: #8ea2b8;
+        stroke-width: 3;
+        opacity: 0.35;
+        transition: opacity 160ms ease, stroke 160ms ease, stroke-width 160ms ease;
+      }
+
+      .solver-demo-force-link.active {
+        stroke: #2e5c90;
+        stroke-width: 4;
+        opacity: 0.95;
+      }
+
+      .solver-demo-force-link.level2 {
+        stroke: #b94b3d;
+      }
+
+      .solver-demo-force-link.conflict-edge {
+        stroke: #d6503f;
+      }
+
+      .solver-demo-force-link.learned {
+        stroke: #1c8d55;
+        stroke-dasharray: 10 7;
+      }
+
+      .solver-demo-force-link.dim {
+        opacity: 0.16;
+      }
+
+      .solver-demo-force-label {
+        fill: #5c6676;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 11px;
+        paint-order: stroke;
+        stroke: rgba(255, 255, 255, 0.9);
+        stroke-width: 5px;
+        stroke-linejoin: round;
+        pointer-events: none;
+      }
+
+      .solver-demo-force-node path {
+        fill: #ffffff;
+        stroke: #8aa0b9;
+        stroke-width: 2;
+        transition: fill 160ms ease, stroke 160ms ease, stroke-width 160ms ease, opacity 160ms ease;
+      }
+
+      .solver-demo-force-node text {
+        fill: #142131;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 12px;
+        font-weight: 700;
+        text-anchor: middle;
+        dominant-baseline: middle;
+        pointer-events: none;
+      }
+
+      .solver-demo-force-node.level1 path {
+        fill: #ebf5ff;
+        stroke: #1f78c8;
+      }
+
+      .solver-demo-force-node.level2 path {
+        fill: #fff1ef;
+        stroke: #d6503f;
+      }
+
+      .solver-demo-force-node.conflict path {
+        fill: #fff0ef;
+        stroke: #d6503f;
+      }
+
+      .solver-demo-force-node.uip path,
+      .solver-demo-force-node.forced path {
+        fill: #f3fbf6;
+        stroke: #1c8d55;
+      }
+
+      .solver-demo-force-node.focus path {
+        stroke-width: 4;
+      }
+
+      .solver-demo-force-node.dim,
+      .solver-demo-force-node.reverted {
+        opacity: 0.35;
+      }
+
       .solver-demo-overlay {
         position: absolute;
         inset: 0;
@@ -603,131 +703,98 @@ loop:
         </div>
       </section>
     </main>
-    <script src="../vendor/cytoscape.min.js"></script>
     <script src="../vendor/d3.v7.min.js"></script>
     <script>
       (() => {
         const root = document.getElementById("cdcl-demo");
-        if (!root || typeof cytoscape === "undefined") return;
+        if (!root || typeof d3 === "undefined") return;
 
-        const nodes = [
-          { data: { id: "x1" }, position: { x: 88, y: 82 } },
-          { data: { id: "x3" }, position: { x: 236, y: 82 } },
-          { data: { id: "x2" }, position: { x: 88, y: 250 } },
-          { data: { id: "x4" }, position: { x: 236, y: 182 } },
-          { data: { id: "x5" }, position: { x: 236, y: 320 } },
-          { data: { id: "conflict" }, position: { x: 440, y: 208 } },
-        ];
+        const graphWidth = 560;
+        const graphHeight = 390;
+        const graphNodes = [
+          { id: "x1", baseX: 88, baseY: 82 },
+          { id: "x3", baseX: 236, baseY: 82 },
+          { id: "x2", baseX: 88, baseY: 250 },
+          { id: "x4", baseX: 236, baseY: 182 },
+          { id: "x5", baseX: 236, baseY: 320 },
+          { id: "conflict", baseX: 440, baseY: 208 },
+        ].map((node) => ({ ...node, x: node.baseX, y: node.baseY, label: node.id, classes: [] }));
+        const graphNodeById = new Map(graphNodes.map((node) => [node.id, node]));
+        const cut = root.querySelector("[data-demo-cut]");
+        const cutLabel = root.querySelector("[data-demo-cut-label]");
+        const UIP_CUT = "dynamic-force-cut";
+        const graphLinks = [
+          { id: "c1", source: "x1", target: "x3", label: "C1" },
+          { id: "c2", source: "x2", target: "x4", label: "C2" },
+          { id: "c3", source: "x2", target: "x5", label: "C3" },
+          { id: "c4a", source: "x3", target: "conflict", label: "C4" },
+          { id: "c4b", source: "x4", target: "conflict", label: "C4" },
+          { id: "c4c", source: "x5", target: "conflict", label: "C4" },
+          { id: "learned", source: "x3", target: "x2", label: "L" },
+        ].map((link) => ({
+          ...link,
+          source: graphNodeById.get(link.source),
+          target: graphNodeById.get(link.target),
+          classes: [],
+        }));
 
-        const edges = [
-          { data: { id: "c1", source: "x1", target: "x3", label: "C1" } },
-          { data: { id: "c2", source: "x2", target: "x4", label: "C2" } },
-          { data: { id: "c3", source: "x2", target: "x5", label: "C3" } },
-          { data: { id: "c4a", source: "x3", target: "conflict", label: "C4" } },
-          { data: { id: "c4b", source: "x4", target: "conflict", label: "C4" } },
-          { data: { id: "c4c", source: "x5", target: "conflict", label: "C4" } },
-          { data: { id: "learned", source: "x3", target: "x2", label: "L" } },
-        ];
+        const graphSvg = d3.select(root.querySelector("[data-demo-graph]"))
+          .append("svg")
+          .attr("class", "solver-demo-force-svg")
+          .attr("viewBox", `0 0 ${graphWidth} ${graphHeight}`)
+          .attr("aria-hidden", "true");
 
-        const cy = cytoscape({
-          container: root.querySelector("[data-demo-graph]"),
-          elements: { nodes, edges },
-          layout: { name: "preset" },
-          userZoomingEnabled: false,
-          userPanningEnabled: false,
-          boxSelectionEnabled: false,
-          autoungrabify: true,
-          style: [
-            {
-              selector: "node",
-              style: {
-                label: "data(label)",
-                width: 86,
-                height: 86,
-                "text-wrap": "wrap",
-                "text-max-width": 82,
-                "text-valign": "center",
-                "text-halign": "center",
-                "font-family": "\"IBM Plex Mono\", \"SFMono-Regular\", Consolas, monospace",
-                "font-size": 12,
-                "font-weight": 600,
-                color: "#142131",
-                "border-width": 2,
-                "border-color": "#8aa0b9",
-                "background-color": "#ffffff",
-                "overlay-opacity": 0,
-                "transition-property": "background-color border-color opacity width height",
-                "transition-duration": "160ms",
-              },
-            },
-            { selector: "node.decision", style: { shape: "diamond" } },
-            { selector: "node.implied", style: { shape: "ellipse" } },
-            {
-              selector: "node.conflict",
-              style: {
-                shape: "round-hexagon",
-                "background-color": "#fff0ef",
-                "border-color": "#d6503f",
-                color: "#9b3427",
-              },
-            },
-            { selector: "node.level1", style: { "background-color": "#ebf5ff", "border-color": "#1f78c8" } },
-            { selector: "node.level2", style: { "background-color": "#fff1ef", "border-color": "#d6503f" } },
-            { selector: "node.focus", style: { width: 94, height: 94, "border-width": 4 } },
-            { selector: "node.uip", style: { "background-color": "#f3fbf6", "border-color": "#1c8d55" } },
-            { selector: "node.reverted", style: { opacity: 0.42 } },
-            { selector: "node.forced", style: { "background-color": "#f3fbf6", "border-color": "#1c8d55" } },
-            {
-              selector: "edge",
-              style: {
-                label: "data(label)",
-                width: 3,
-                "curve-style": "bezier",
-                "target-arrow-shape": "triangle",
-                "arrow-scale": 1.1,
-                "font-family": "\"IBM Plex Mono\", \"SFMono-Regular\", Consolas, monospace",
-                "font-size": 11,
-                color: "#5c6676",
-                "text-background-color": "#ffffff",
-                "text-background-opacity": 0.9,
-                "text-background-padding": 3,
-                "text-margin-y": -10,
-                "line-color": "#8ea2b8",
-                "target-arrow-color": "#8ea2b8",
-                opacity: 0.35,
-                "overlay-opacity": 0,
-                "transition-property": "line-color target-arrow-color opacity width",
-                "transition-duration": "160ms",
-              },
-            },
-            { selector: "edge.active", style: { opacity: 0.95, width: 4, "line-color": "#2e5c90", "target-arrow-color": "#2e5c90" } },
-            { selector: "edge.level2", style: { "line-color": "#b94b3d", "target-arrow-color": "#b94b3d" } },
-            { selector: "edge.conflict-edge", style: { "line-color": "#d6503f", "target-arrow-color": "#d6503f" } },
-            {
-              selector: "edge.cut",
-              style: {
-                width: 5,
-                "line-style": "dashed",
-                "line-dash-pattern": [8, 6],
-                "line-color": "#1c8d55",
-                "target-arrow-color": "#1c8d55",
-                opacity: 1,
-              },
-            },
-            {
-              selector: "edge.learned",
-              style: {
-                "line-color": "#1c8d55",
-                "target-arrow-color": "#1c8d55",
-                "line-style": "dashed",
-                "line-dash-pattern": [10, 7],
-              },
-            },
-            { selector: ".dim", style: { opacity: 0.18 } },
-          ],
-        });
+        graphSvg.append("defs")
+          .selectAll("marker")
+          .data(["arrow"])
+          .join("marker")
+          .attr("id", "cdcl-force-arrow")
+          .attr("viewBox", "0 -5 10 10")
+          .attr("refX", 36)
+          .attr("refY", 0)
+          .attr("markerWidth", 6)
+          .attr("markerHeight", 6)
+          .attr("orient", "auto")
+          .append("path")
+          .attr("d", "M0,-5L10,0L0,5")
+          .attr("fill", "#8ea2b8");
 
-        const UIP_CUT = "M 146 124 L 336 144 L 324 228 L 180 308 L 220 356";
+        const linkSelection = graphSvg.append("g")
+          .selectAll("path")
+          .data(graphLinks, (link) => link.id)
+          .join("path")
+          .attr("marker-end", "url(#cdcl-force-arrow)");
+
+        const edgeLabelSelection = graphSvg.append("g")
+          .selectAll("text")
+          .data(graphLinks, (link) => link.id)
+          .join("text")
+          .attr("class", "solver-demo-force-label")
+          .text((link) => link.label);
+
+        const nodeSelection = graphSvg.append("g")
+          .selectAll("g")
+          .data(graphNodes, (node) => node.id)
+          .join((enter) => {
+            const node = enter.append("g")
+              .call(d3.drag()
+                .on("start", graphDragStarted)
+                .on("drag", graphDragged)
+                .on("end", graphDragEnded));
+            node.append("path");
+            node.append("text");
+            return node;
+          });
+
+        let graphCutVisible = false;
+        const graphSimulation = d3.forceSimulation(graphNodes)
+          .force("link", d3.forceLink(graphLinks).id((node) => node.id).distance(132).strength(0.46))
+          .force("charge", d3.forceManyBody().strength(-560))
+          .force("x", d3.forceX((node) => node.baseX).strength(0.18))
+          .force("y", d3.forceY((node) => node.baseY).strength(0.20))
+          .force("collide", d3.forceCollide(56))
+          .alphaDecay(0.055)
+          .on("tick", tickGraph);
 
         const steps = [
           {
@@ -916,8 +983,6 @@ loop:
         const analysisTitle = root.querySelector("[data-demo-analysis-title]");
         const analysis = root.querySelector("[data-demo-analysis]");
         const uip = root.querySelector("[data-demo-uip]");
-        const cut = root.querySelector("[data-demo-cut]");
-        const cutLabel = root.querySelector("[data-demo-cut-label]");
 
         function escapeHtml(text) {
           return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -933,6 +998,83 @@ loop:
 
         function formatLiteralHtml(text) {
           return escapeHtml(text).replace(/-x(\d+)/g, (_, digits) => `<span class="solver-demo-neg-name">x${digits}</span>`);
+        }
+
+        function nodePath(node) {
+          const size = node.classes.includes("focus") ? 50 : 45;
+          if (node.classes.includes("decision")) {
+            return `M 0 ${-size} L ${size} 0 L 0 ${size} L ${-size} 0 Z`;
+          }
+          if (node.classes.includes("conflict")) {
+            const x = size * 0.82;
+            const y = size * 0.55;
+            return `M ${-x} ${-size * 0.36} L ${-size * 0.35} ${-size} L ${size * 0.35} ${-size} L ${x} ${-size * 0.36} L ${x} ${size * 0.36} L ${size * 0.35} ${size} L ${-size * 0.35} ${size} L ${-x} ${size * 0.36} Z`;
+          }
+          return d3.symbol().type(d3.symbolCircle).size(size * size * 2.7)();
+        }
+
+        function splitNodeLabel(label) {
+          return label.includes(" = ") ? label.split(" = ") : [label];
+        }
+
+        function linkPath(link) {
+          const dx = link.target.x - link.source.x;
+          const dy = link.target.y - link.source.y;
+          const distance = Math.max(1, Math.hypot(dx, dy));
+          const offset = link.id === "learned" ? -42 : 18;
+          const mx = (link.source.x + link.target.x) / 2 - (dy / distance) * offset;
+          const my = (link.source.y + link.target.y) / 2 + (dx / distance) * offset;
+          return `M ${link.source.x} ${link.source.y} Q ${mx} ${my} ${link.target.x} ${link.target.y}`;
+        }
+
+        function updateCutPath(show) {
+          if (!show) {
+            d3.select(cut).classed("visible", false).attr("d", null);
+            return;
+          }
+
+          const x3 = graphNodeById.get("x3");
+          const x2 = graphNodeById.get("x2");
+          const x4 = graphNodeById.get("x4");
+          const conflict = graphNodeById.get("conflict");
+          const path = [
+            `M ${x3.x - 68} ${x3.y + 46}`,
+            `C ${x3.x + 2} ${x3.y + 76}, ${x4.x + 30} ${x4.y + 44}, ${conflict.x - 56} ${conflict.y - 38}`,
+            `C ${conflict.x - 90} ${conflict.y + 34}, ${x4.x - 16} ${x4.y + 84}, ${x2.x + 66} ${x2.y + 48}`,
+          ].join(" ");
+          d3.select(cut).classed("visible", true).attr("d", path);
+        }
+
+        function tickGraph() {
+          graphNodes.forEach((node) => {
+            node.x = Math.max(58, Math.min(graphWidth - 58, node.x));
+            node.y = Math.max(58, Math.min(graphHeight - 58, node.y));
+          });
+
+          linkSelection.attr("d", linkPath);
+          edgeLabelSelection
+            .attr("x", (link) => (link.source.x + link.target.x) / 2)
+            .attr("y", (link) => (link.source.y + link.target.y) / 2 - 10);
+          nodeSelection.attr("transform", (node) => `translate(${node.x} ${node.y})`);
+          updateCutPath(graphCutVisible);
+        }
+
+        function graphDragStarted(event, node) {
+          stop();
+          if (!event.active) graphSimulation.alphaTarget(0.3).restart();
+          node.fx = node.x;
+          node.fy = node.y;
+        }
+
+        function graphDragged(event, node) {
+          node.fx = Math.max(58, Math.min(graphWidth - 58, event.x));
+          node.fy = Math.max(58, Math.min(graphHeight - 58, event.y));
+        }
+
+        function graphDragEnded(event, node) {
+          if (!event.active) graphSimulation.alphaTarget(0);
+          node.fx = null;
+          node.fy = null;
         }
 
         function stop() {
@@ -995,19 +1137,35 @@ loop:
         }
 
         function renderGraph(step) {
-          for (const node of cy.nodes()) {
-            const state = step.nodes[node.id()];
-            node.data("label", formatLiteralText(state.label));
-            node.classes(state.classes.join(" "));
-          }
+          graphNodes.forEach((node) => {
+            const state = step.nodes[node.id];
+            node.label = formatLiteralText(state.label);
+            node.classes = state.classes;
+          });
 
-          for (const edge of cy.edges()) {
-            edge.classes((step.edges[edge.id()] || []).join(" "));
-          }
+          graphLinks.forEach((link) => {
+            link.classes = step.edges[link.id] || [];
+          });
 
-          d3.select(cut)
-            .classed("visible", Boolean(step.cutPath))
-            .attr("d", step.cutPath || null);
+          linkSelection
+            .attr("class", (link) => `solver-demo-force-link ${link.classes.join(" ")}`.trim());
+          edgeLabelSelection
+            .style("opacity", (link) => link.classes.includes("dim") ? 0.22 : 1);
+          nodeSelection
+            .attr("class", (node) => `solver-demo-force-node ${node.classes.join(" ")}`.trim());
+          nodeSelection.select("path")
+            .attr("d", nodePath);
+          nodeSelection.select("text")
+            .selectAll("tspan")
+            .data((node) => splitNodeLabel(node.label))
+            .join("tspan")
+            .attr("x", 0)
+            .attr("dy", (_part, index) => index === 0 ? "-0.35em" : "1.25em")
+            .text((part) => part);
+
+          graphCutVisible = Boolean(step.cutPath);
+          updateCutPath(graphCutVisible);
+          graphSimulation.alpha(0.38).restart();
 
           d3.select(cutLabel).text(formatLiteralText(step.cutLabel));
         }
