@@ -57,20 +57,99 @@
       .solver-demo-controls {
         display: flex;
         flex-wrap: wrap;
+        align-items: center;
         gap: 10px;
-        margin-top: 18px;
+        margin-top: 16px;
+      }
+
+      .solver-demo-button-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
       }
 
       .solver-demo-button {
-        padding: 10px 13px;
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        padding: 0;
         color: var(--ink);
         background: #fff;
         cursor: pointer;
       }
 
+      .solver-demo-button:hover {
+        border-color: rgba(15, 122, 216, 0.32);
+      }
+
       .solver-demo-button:disabled {
-        opacity: 0.5;
+        opacity: 0.45;
         cursor: not-allowed;
+      }
+
+      .solver-demo-button::before,
+      .solver-demo-button::after {
+        content: "";
+        display: block;
+        box-sizing: border-box;
+      }
+
+      .solver-demo-button[data-demo-action="back"]::before {
+        width: 9px;
+        height: 9px;
+        border-left: 2px solid currentColor;
+        border-bottom: 2px solid currentColor;
+        transform: translateX(2px) rotate(45deg);
+      }
+
+      .solver-demo-button[data-demo-action="next"]::before {
+        width: 9px;
+        height: 9px;
+        border-right: 2px solid currentColor;
+        border-top: 2px solid currentColor;
+        transform: translateX(-2px) rotate(45deg);
+      }
+
+      .solver-demo-button[data-demo-action="play"]::before {
+        width: 0;
+        height: 0;
+        margin-left: 2px;
+        border-top: 6px solid transparent;
+        border-bottom: 6px solid transparent;
+        border-left: 10px solid currentColor;
+      }
+
+      .solver-demo-button[data-demo-action="play"].is-playing::before {
+        width: 12px;
+        height: 13px;
+        margin-left: 0;
+        border: 0;
+        border-left: 4px solid currentColor;
+        border-right: 4px solid currentColor;
+      }
+
+      .solver-demo-button[data-demo-action="reset"]::before {
+        width: 15px;
+        height: 15px;
+        border: 2px solid currentColor;
+        border-right-color: transparent;
+        border-radius: 999px;
+        transform: rotate(-35deg);
+      }
+
+      .solver-demo-button[data-demo-action="reset"]::after {
+        position: absolute;
+        right: 8px;
+        top: 9px;
+        width: 0;
+        height: 0;
+        border-left: 5px solid currentColor;
+        border-top: 3px solid transparent;
+        border-bottom: 3px solid transparent;
+        transform: rotate(20deg);
       }
 
       .solver-demo-caption {
@@ -89,7 +168,7 @@
       .solver-demo-layout {
         display: grid;
         gap: 16px;
-        margin-top: 18px;
+        margin-top: 16px;
       }
 
       .solver-demo-panel,
@@ -119,7 +198,7 @@
       .solver-demo-graph-shell {
         position: relative;
         margin-top: 14px;
-        min-height: 390px;
+        min-height: 420px;
         border-radius: 20px;
         border: 1px solid rgba(22, 32, 43, 0.08);
         background:
@@ -141,7 +220,7 @@
       .solver-demo-graph {
         position: relative;
         z-index: 1;
-        height: 390px;
+        height: 420px;
       }
 
       .solver-demo-force-svg {
@@ -242,6 +321,53 @@
       .solver-demo-force-node.dim,
       .solver-demo-force-node.reverted {
         opacity: 0.35;
+      }
+
+      .solver-demo-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.74rem;
+        color: var(--muted);
+      }
+
+      .solver-demo-legend span {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 8px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: #fff;
+      }
+
+      .solver-demo-legend i {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(22, 32, 43, 0.14);
+      }
+
+      .solver-demo-legend .level1 i {
+        background: #ebf5ff;
+        border-color: #1f78c8;
+      }
+
+      .solver-demo-legend .level2 i {
+        background: #fff1ef;
+        border-color: #d6503f;
+      }
+
+      .solver-demo-legend .sat i {
+        background: var(--diff-add);
+        border-color: rgba(17, 102, 59, 0.25);
+      }
+
+      .solver-demo-legend .conflict i {
+        background: var(--diff-del);
+        border-color: rgba(176, 68, 68, 0.25);
       }
 
       .solver-demo-overlay {
@@ -350,6 +476,7 @@
         color: var(--diff-del-ink);
         background: var(--diff-del);
         border-color: rgba(176, 68, 68, 0.22);
+        text-decoration: line-through;
       }
 
       .solver-demo-chip.warn {
@@ -506,11 +633,11 @@
         }
 
         .solver-demo-graph {
-          height: 330px;
+          height: 350px;
         }
 
         .solver-demo-graph-shell {
-          min-height: 330px;
+          min-height: 350px;
         }
 
         .solver-demo-button,
@@ -597,41 +724,33 @@ loop:
                 the conflict, and the learned clause all refer back to the same nodes and edges.
               </p>
             </div>
-            <div class="solver-demo-step" data-demo-step>Step 1 / 6</div>
           </div>
-          <div class="solver-demo-controls">
-            <button class="solver-demo-button" type="button" data-demo-action="back">Back</button>
-            <button class="solver-demo-button" type="button" data-demo-action="play">Play</button>
-            <button class="solver-demo-button" type="button" data-demo-action="next">Step</button>
-            <button class="solver-demo-button" type="button" data-demo-action="reset">Reset</button>
-          </div>
-          <div class="solver-demo-caption">
-            <strong data-demo-title></strong>
-            <p data-demo-caption></p>
+          <div class="solver-demo-legend" aria-label="Legend">
+            <span class="level1"><i></i>DL1</span>
+            <span class="level2"><i></i>DL2</span>
+            <span class="sat"><i></i>green = learned / SAT</span>
+            <span class="conflict"><i></i>red = 0 / conflict</span>
+            <span>D = decision</span>
+            <span>U = implied</span>
           </div>
           <div class="solver-demo-layout">
             <div class="solver-demo-panel">
               <div class="solver-demo-panel-head">
                 <h4>Implication / Conflict Graph</h4>
-                <span class="solver-demo-chip active">fixed structure, changing emphasis</span>
+                <span class="solver-demo-chip active">fixed graph</span>
               </div>
               <div class="solver-demo-graph-shell">
                 <div class="solver-demo-graph" data-demo-graph></div>
-                <svg class="solver-demo-overlay" viewBox="0 0 560 390" aria-hidden="true">
+                <svg class="solver-demo-overlay" viewBox="0 0 620 420" aria-hidden="true">
                   <path class="solver-demo-cut-path" data-demo-cut></path>
                 </svg>
               </div>
               <div class="solver-demo-graph-badges">
-                <span class="solver-demo-level-tag level-1">decision level 1</span>
-                <span class="solver-demo-level-tag level-2">decision level 2</span>
+                <span class="solver-demo-level-tag level-1">DL1</span>
+                <span class="solver-demo-level-tag level-2">DL2</span>
                 <span class="solver-demo-cut-tag" data-demo-cut-label>no cut yet</span>
               </div>
               <div class="solver-demo-trail" data-demo-trail></div>
-              <p class="solver-demo-footnote">
-                Trail blocks show the same assignments in trail order. When the cut appears, it
-                marks the learned-clause boundary in the implication graph: once the boundary
-                contains exactly one current-level literal, the learned clause is asserting.
-              </p>
             </div>
 
             <div class="solver-demo-sidebar">
@@ -650,6 +769,19 @@ loop:
                 <div class="solver-demo-clause-list" data-demo-clauses></div>
               </div>
             </div>
+          </div>
+          <div class="solver-demo-controls">
+            <div class="solver-demo-button-group" aria-label="Walkthrough controls">
+              <button class="solver-demo-button" type="button" data-demo-action="back" aria-label="Back" title="Back"></button>
+              <button class="solver-demo-button" type="button" data-demo-action="play" aria-label="Play" title="Play"></button>
+              <button class="solver-demo-button" type="button" data-demo-action="next" aria-label="Next step" title="Next step"></button>
+              <button class="solver-demo-button" type="button" data-demo-action="reset" aria-label="Reset" title="Reset"></button>
+            </div>
+            <div class="solver-demo-step" data-demo-step>Step 1 / 6</div>
+          </div>
+          <div class="solver-demo-caption">
+            <strong data-demo-title></strong>
+            <p data-demo-caption></p>
           </div>
         </div>
       </section>
@@ -709,15 +841,15 @@ loop:
         const root = document.getElementById("cdcl-demo");
         if (!root || typeof d3 === "undefined") return;
 
-        const graphWidth = 560;
-        const graphHeight = 390;
+        const graphWidth = 620;
+        const graphHeight = 420;
         const graphNodes = [
-          { id: "x1", baseX: 88, baseY: 82 },
-          { id: "x3", baseX: 236, baseY: 82 },
-          { id: "x2", baseX: 88, baseY: 250 },
-          { id: "x4", baseX: 236, baseY: 182 },
-          { id: "x5", baseX: 236, baseY: 320 },
-          { id: "conflict", baseX: 440, baseY: 208 },
+          { id: "x1", baseX: 105, baseY: 82 },
+          { id: "x3", baseX: 305, baseY: 82 },
+          { id: "x2", baseX: 105, baseY: 318 },
+          { id: "x4", baseX: 305, baseY: 214 },
+          { id: "x5", baseX: 305, baseY: 360 },
+          { id: "conflict", baseX: 520, baseY: 242 },
         ].map((node) => ({ ...node, x: node.baseX, y: node.baseY, label: node.id, classes: [] }));
         const graphNodeById = new Map(graphNodes.map((node) => [node.id, node]));
         const cut = root.querySelector("[data-demo-cut]");
@@ -788,12 +920,12 @@ loop:
 
         let graphCutVisible = false;
         const graphSimulation = d3.forceSimulation(graphNodes)
-          .force("link", d3.forceLink(graphLinks).id((node) => node.id).distance(132).strength(0.46))
-          .force("charge", d3.forceManyBody().strength(-560))
-          .force("x", d3.forceX((node) => node.baseX).strength(0.18))
-          .force("y", d3.forceY((node) => node.baseY).strength(0.20))
-          .force("collide", d3.forceCollide(56))
-          .alphaDecay(0.055)
+          .force("link", d3.forceLink(graphLinks).id((node) => node.id).distance(155).strength(0.9))
+          .force("charge", d3.forceManyBody().strength(-760))
+          .force("x", d3.forceX((node) => node.baseX).strength(0.62))
+          .force("y", d3.forceY((node) => node.baseY).strength(0.64))
+          .force("collide", d3.forceCollide(61))
+          .alphaDecay(0.075)
           .on("tick", tickGraph);
 
         const steps = [
@@ -988,33 +1120,35 @@ loop:
           return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
         }
 
+        function compactBoolText(text) {
+          return text
+            .replace(/\btrue\b/g, "1")
+            .replace(/\bfalse\b/g, "0")
+            .replace(/\s+=\s+/g, "=")
+            .replace(/\bdecision level\s+(\d+)/g, "DL$1")
+            .replace(/^decision$/, "D")
+            .replace(/\bby learned clause\b/g, "by L");
+        }
+
         function overlinePlain(name) {
           return Array.from(name).map((char) => `${char}\u0305`).join("");
         }
 
         function formatLiteralText(text) {
-          return text.replace(/-x(\d+)/g, (_, digits) => overlinePlain(`x${digits}`));
+          return compactBoolText(text).replace(/-x(\d+)/g, (_, digits) => overlinePlain(`x${digits}`));
         }
 
         function formatLiteralHtml(text) {
-          return escapeHtml(text).replace(/-x(\d+)/g, (_, digits) => `<span class="solver-demo-neg-name">x${digits}</span>`);
+          return escapeHtml(compactBoolText(text)).replace(/-x(\d+)/g, (_, digits) => `<span class="solver-demo-neg-name">x${digits}</span>`);
         }
 
         function nodePath(node) {
-          const size = node.classes.includes("focus") ? 50 : 45;
-          if (node.classes.includes("decision")) {
-            return `M 0 ${-size} L ${size} 0 L 0 ${size} L ${-size} 0 Z`;
-          }
-          if (node.classes.includes("conflict")) {
-            const x = size * 0.82;
-            const y = size * 0.55;
-            return `M ${-x} ${-size * 0.36} L ${-size * 0.35} ${-size} L ${size * 0.35} ${-size} L ${x} ${-size * 0.36} L ${x} ${size * 0.36} L ${size * 0.35} ${size} L ${-size * 0.35} ${size} L ${-x} ${size * 0.36} Z`;
-          }
-          return d3.symbol().type(d3.symbolCircle).size(size * size * 2.7)();
+          const size = node.classes.includes("focus") ? 52 : 46;
+          return d3.symbol().type(d3.symbolCircle).size(size * size * 2.9)();
         }
 
         function splitNodeLabel(label) {
-          return label.includes(" = ") ? label.split(" = ") : [label];
+          return label.includes("=") ? label.split("=") : [label];
         }
 
         function linkPath(link) {
@@ -1061,14 +1195,16 @@ loop:
 
         function graphDragStarted(event, node) {
           stop();
-          if (!event.active) graphSimulation.alphaTarget(0.3).restart();
+          if (!event.active) graphSimulation.alphaTarget(0.12).restart();
           node.fx = node.x;
           node.fy = node.y;
         }
 
         function graphDragged(event, node) {
-          node.fx = Math.max(58, Math.min(graphWidth - 58, event.x));
-          node.fy = Math.max(58, Math.min(graphHeight - 58, event.y));
+          const x = Math.max(58, Math.min(graphWidth - 58, event.x));
+          const y = Math.max(58, Math.min(graphHeight - 58, event.y));
+          node.fx = node.baseX + Math.max(-42, Math.min(42, x - node.baseX));
+          node.fy = node.baseY + Math.max(-42, Math.min(42, y - node.baseY));
         }
 
         function graphDragEnded(event, node) {
@@ -1080,7 +1216,9 @@ loop:
         function stop() {
           if (timer !== null) window.clearInterval(timer);
           timer = null;
-          play.textContent = "Play";
+          play.classList.remove("is-playing");
+          play.setAttribute("aria-label", "Play");
+          play.title = "Play";
         }
 
         function renderTrail(blocks) {
@@ -1097,7 +1235,7 @@ loop:
             });
 
           blockSelection.select("strong")
-            .text((block) => block.title);
+            .text((block) => compactBoolText(block.title));
 
           blockSelection.select(".solver-demo-row")
             .selectAll(".solver-demo-chip")
@@ -1187,8 +1325,9 @@ loop:
         }
 
         root.addEventListener("click", (event) => {
-          const action = event.target.dataset.demoAction;
-          if (!action) return;
+          const button = event.target.closest("[data-demo-action]");
+          if (!button || !root.contains(button)) return;
+          const action = button.dataset.demoAction;
 
           if (action === "back") {
             stop();
@@ -1205,7 +1344,9 @@ loop:
           if (action === "play") {
             if (current === steps.length - 1) return;
             if (timer === null) {
-              play.textContent = "Pause";
+              play.classList.add("is-playing");
+              play.setAttribute("aria-label", "Pause");
+              play.title = "Pause";
               play.disabled = false;
               timer = window.setInterval(() => {
                 if (current === steps.length - 1) {

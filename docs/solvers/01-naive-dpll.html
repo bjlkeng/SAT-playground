@@ -57,7 +57,13 @@
         flex-wrap: wrap;
         gap: 10px;
         align-items: center;
-        margin-top: 18px;
+        margin-top: 16px;
+      }
+
+      .dpll-demo-button-group {
+        display: flex;
+        gap: 8px;
+        align-items: center;
       }
 
       .dpll-demo-button,
@@ -71,8 +77,76 @@
       }
 
       .dpll-demo-button {
-        padding: 11px 14px;
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        padding: 0;
         cursor: pointer;
+      }
+
+      .dpll-demo-button::before,
+      .dpll-demo-button::after {
+        content: "";
+        display: block;
+        box-sizing: border-box;
+      }
+
+      .dpll-demo-button[data-icon="back"]::before {
+        width: 9px;
+        height: 9px;
+        border-left: 2px solid currentColor;
+        border-bottom: 2px solid currentColor;
+        transform: translateX(2px) rotate(45deg);
+      }
+
+      .dpll-demo-button[data-icon="next"]::before {
+        width: 9px;
+        height: 9px;
+        border-right: 2px solid currentColor;
+        border-top: 2px solid currentColor;
+        transform: translateX(-2px) rotate(45deg);
+      }
+
+      .dpll-demo-button[data-icon="play"]::before {
+        width: 0;
+        height: 0;
+        margin-left: 2px;
+        border-top: 6px solid transparent;
+        border-bottom: 6px solid transparent;
+        border-left: 10px solid currentColor;
+      }
+
+      .dpll-demo-button[data-icon="play"].is-playing::before {
+        width: 12px;
+        height: 13px;
+        margin-left: 0;
+        border: 0;
+        border-left: 4px solid currentColor;
+        border-right: 4px solid currentColor;
+      }
+
+      .dpll-demo-button[data-icon="reset"]::before {
+        width: 15px;
+        height: 15px;
+        border: 2px solid currentColor;
+        border-right-color: transparent;
+        border-radius: 999px;
+        transform: rotate(-35deg);
+      }
+
+      .dpll-demo-button[data-icon="reset"]::after {
+        position: absolute;
+        right: 8px;
+        top: 9px;
+        width: 0;
+        height: 0;
+        border-left: 5px solid currentColor;
+        border-top: 3px solid transparent;
+        border-bottom: 3px solid transparent;
+        transform: rotate(20deg);
       }
 
       .dpll-demo-button:hover,
@@ -249,15 +323,20 @@
       .dpll-demo-legend {
         display: flex;
         flex-wrap: wrap;
-        gap: 10px;
-        margin-top: 16px;
+        gap: 8px;
+        margin-top: 14px;
       }
 
       .dpll-demo-legend-item {
         display: inline-flex;
         align-items: center;
-        gap: 8px;
-        font-size: 0.8rem;
+        gap: 6px;
+        padding: 5px 8px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: #fff;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.74rem;
         color: var(--muted);
       }
 
@@ -307,9 +386,10 @@
 
       .dpll-demo-node {
         position: absolute;
-        min-width: 118px;
-        padding: 10px 12px;
-        border-radius: 16px;
+        width: 74px;
+        height: 74px;
+        padding: 8px;
+        border-radius: 999px;
         border: 1px solid var(--line);
         background: rgba(255, 255, 255, 0.96);
         transform: translate(-50%, -50%);
@@ -317,6 +397,11 @@
         box-shadow: 0 8px 18px rgba(30, 40, 55, 0.06);
         cursor: grab;
         user-select: none;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
       }
 
       .dpll-demo-node:active {
@@ -331,11 +416,11 @@
 
       .dpll-demo-node .kind {
         display: inline-block;
-        margin-bottom: 6px;
-        padding: 3px 7px;
+        margin-bottom: 3px;
+        padding: 2px 6px;
         border-radius: 999px;
         font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-        font-size: 0.7rem;
+        font-size: 0.62rem;
         letter-spacing: 0.04em;
         text-transform: uppercase;
         color: var(--muted);
@@ -344,14 +429,17 @@
 
       .dpll-demo-node strong {
         display: block;
-        font-size: 0.9rem;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.78rem;
+        line-height: 1.05;
       }
 
       .dpll-demo-node small {
         display: block;
-        margin-top: 4px;
+        margin-top: 3px;
         color: var(--muted);
-        font-size: 0.76rem;
+        font-size: 0.66rem;
+        line-height: 1.05;
       }
 
       .dpll-demo-node.is-active {
@@ -413,8 +501,9 @@
         }
 
         .dpll-demo-node {
-          min-width: 102px;
-          padding: 9px 10px;
+          width: 66px;
+          height: 66px;
+          padding: 7px;
         }
       }
     </style>
@@ -481,14 +570,43 @@
                 make a decision, trigger unit propagation, hit a conflict, backtrack, and then find a satisfying branch.
               </p>
             </div>
-            <div class="dpll-demo-step" id="dpll-demo-step-label">Step 1 / 11</div>
+          </div>
+          <div class="dpll-demo-legend" aria-label="Legend">
+            <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: rgba(231, 245, 238, 0.95); border-color: rgba(17, 102, 59, 0.24);"></span>green = SAT</span>
+            <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: rgba(253, 233, 233, 0.95); border-color: rgba(176, 68, 68, 0.2);"></span>red = 0 / UNSAT</span>
+            <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: rgba(255, 244, 194, 0.98); border-color: rgba(185, 140, 15, 0.3);"></span>yellow = U</span>
+            <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: var(--accent-soft); border-color: rgba(15, 122, 216, 0.3);"></span>blue = D</span>
+            <span class="dpll-demo-legend-item">D = decision</span>
+            <span class="dpll-demo-legend-item">U = unit</span>
+          </div>
+
+          <div class="dpll-demo-trail" id="dpll-demo-trail"></div>
+
+          <div class="dpll-demo-grid">
+            <div class="dpll-demo-panel">
+              <h4>Clause View</h4>
+              <div class="dpll-demo-clauses" id="dpll-demo-clauses"></div>
+            </div>
+
+            <div class="dpll-demo-panel">
+              <h4>Decision Tree</h4>
+              <div class="dpll-demo-tree" id="dpll-demo-tree">
+                <svg viewBox="0 0 100 110" preserveAspectRatio="none" aria-hidden="true">
+                  <g id="dpll-demo-tree-lines"></g>
+                </svg>
+                <div id="dpll-demo-tree-nodes"></div>
+              </div>
+            </div>
           </div>
 
           <div class="dpll-demo-controls">
-            <button class="dpll-demo-button" type="button" id="dpll-demo-back">Back</button>
-            <button class="dpll-demo-button" type="button" id="dpll-demo-play">Play</button>
-            <button class="dpll-demo-button" type="button" id="dpll-demo-step">Step</button>
-            <button class="dpll-demo-button" type="button" id="dpll-demo-reset">Reset</button>
+            <div class="dpll-demo-button-group" aria-label="Walkthrough controls">
+              <button class="dpll-demo-button" type="button" id="dpll-demo-back" data-icon="back" aria-label="Back" title="Back"></button>
+              <button class="dpll-demo-button" type="button" id="dpll-demo-play" data-icon="play" aria-label="Play" title="Play"></button>
+              <button class="dpll-demo-button" type="button" id="dpll-demo-step" data-icon="next" aria-label="Next step" title="Next step"></button>
+              <button class="dpll-demo-button" type="button" id="dpll-demo-reset" data-icon="reset" aria-label="Reset" title="Reset"></button>
+            </div>
+            <div class="dpll-demo-step" id="dpll-demo-step-label">Step 1 / 11</div>
             <label class="dpll-demo-step" for="dpll-demo-speed">Speed</label>
             <select class="dpll-demo-select" id="dpll-demo-speed">
               <option value="2200">Slow</option>
@@ -500,38 +618,6 @@
           <div class="dpll-demo-caption" id="dpll-demo-caption">
             <strong>Start</strong>
             <span>Start with the full formula and no assignments.</span>
-          </div>
-
-          <div class="dpll-demo-trail" id="dpll-demo-trail"></div>
-
-          <div class="dpll-demo-grid">
-            <div class="dpll-demo-panel">
-              <h4>Clause View</h4>
-              <p>
-                Green literals satisfy clauses, red literals are currently false, and yellow literals are the single
-                remaining choices in unit clauses.
-              </p>
-              <div class="dpll-demo-clauses" id="dpll-demo-clauses"></div>
-              <div class="dpll-demo-legend">
-                <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: rgba(231, 245, 238, 0.95); border-color: rgba(17, 102, 59, 0.24);"></span>Satisfied literal / clause</span>
-                <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: rgba(253, 233, 233, 0.95); border-color: rgba(176, 68, 68, 0.2);"></span>Falsified literal / conflict</span>
-                <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: rgba(255, 244, 194, 0.98); border-color: rgba(185, 140, 15, 0.3);"></span>Unit propagation target</span>
-              </div>
-            </div>
-
-            <div class="dpll-demo-panel">
-              <h4>Decision Tree</h4>
-              <p>
-                Solid blue nodes are explicit decisions, smaller yellow nodes are unit propagations, red shows the dead branch,
-                and green marks the branch that returns SAT.
-              </p>
-              <div class="dpll-demo-tree" id="dpll-demo-tree">
-                <svg viewBox="0 0 100 110" preserveAspectRatio="none" aria-hidden="true">
-                  <g id="dpll-demo-tree-lines"></g>
-                </svg>
-                <div id="dpll-demo-tree-nodes"></div>
-              </div>
-            </div>
           </div>
         </div>
       </section>
@@ -587,16 +673,16 @@
         ];
 
         const nodes = {
-          root: { id: "root", label: "start", subtitle: "no assignments", kind: "root", x: 50, y: 11, parent: null },
-          x1t: { id: "x1t", label: "x1 = true", subtitle: "decision", kind: "decision", x: 24, y: 28, parent: "root" },
-          x3t: { id: "x3t", label: "x3 = true", subtitle: "from C2", kind: "unit", x: 24, y: 45, parent: "x1t" },
-          x4t: { id: "x4t", label: "x4 = true", subtitle: "from C3", kind: "unit", x: 24, y: 62, parent: "x3t" },
-          conflict: { id: "conflict", label: "conflict", subtitle: "C4 is false", kind: "conflict", x: 24, y: 79, parent: "x4t" },
-          x1f: { id: "x1f", label: "x1 = false", subtitle: "decision", kind: "decision", x: 76, y: 28, parent: "root" },
-          x2t: { id: "x2t", label: "x2 = true", subtitle: "from C1", kind: "unit", x: 76, y: 45, parent: "x1f" },
-          x5t: { id: "x5t", label: "x5 = true", subtitle: "from C5", kind: "unit", x: 76, y: 62, parent: "x2t" },
-          x3f: { id: "x3f", label: "x3 = false", subtitle: "decision", kind: "decision", x: 76, y: 79, parent: "x5t" },
-          sat: { id: "sat", label: "SAT", subtitle: "all clauses hold", kind: "sat", x: 76, y: 96, parent: "x3f" },
+          root: { id: "root", label: "start", subtitle: "root", kind: "root", x: 50, y: 10, parent: null },
+          x1t: { id: "x1t", label: "x1 = true", subtitle: "D", kind: "decision", x: 23, y: 26, parent: "root" },
+          x3t: { id: "x3t", label: "x3 = true", subtitle: "C2", kind: "unit", x: 23, y: 44, parent: "x1t" },
+          x4t: { id: "x4t", label: "x4 = true", subtitle: "C3", kind: "unit", x: 23, y: 62, parent: "x3t" },
+          conflict: { id: "conflict", label: "C4", subtitle: "UNSAT", kind: "conflict", x: 23, y: 80, parent: "x4t" },
+          x1f: { id: "x1f", label: "x1 = false", subtitle: "D", kind: "decision", x: 77, y: 26, parent: "root" },
+          x2t: { id: "x2t", label: "x2 = true", subtitle: "C1", kind: "unit", x: 77, y: 44, parent: "x1f" },
+          x5t: { id: "x5t", label: "x5 = true", subtitle: "C5", kind: "unit", x: 77, y: 62, parent: "x2t" },
+          x3f: { id: "x3f", label: "x3 = false", subtitle: "D", kind: "decision", x: 77, y: 80, parent: "x5t" },
+          sat: { id: "sat", label: "SAT", subtitle: "done", kind: "sat", x: 77, y: 96, parent: "x3f" },
         };
 
         const steps = [
@@ -794,8 +880,12 @@
           return literal > 0 ? `x${literal}` : `¬x${Math.abs(literal)}`;
         }
 
+        function compactBoolText(text) {
+          return text.replace(/\btrue\b/g, "1").replace(/\bfalse\b/g, "0");
+        }
+
         function trailText(literal) {
-          return literal > 0 ? `x${literal} = true` : `x${Math.abs(literal)} = false`;
+          return literal > 0 ? `x${literal}=1` : `x${Math.abs(literal)}=0`;
         }
 
         function clauseState(clause, assignment) {
@@ -897,9 +987,15 @@
                   .on("end", treeDragEnded));
               item.append("span")
                 .attr("class", "kind")
-                .text((node) => node.kind);
+                .text((node) => {
+                  if (node.kind === "decision") return "D";
+                  if (node.kind === "unit") return "U";
+                  if (node.kind === "conflict") return "UNSAT";
+                  if (node.kind === "sat") return "SAT";
+                  return "root";
+                });
               item.append("strong")
-                .text((node) => node.label);
+                .text((node) => compactBoolText(node.label).replace(/\s+=\s+/g, "="));
               item.append("small")
                 .text((node) => node.subtitle);
               return item;
@@ -910,12 +1006,12 @@
           });
 
           treeSimulation = d3.forceSimulation(nodeList)
-            .force("link", d3.forceLink(edgeList).id((node) => node.id).distance(24).strength(0.18))
-            .force("charge", d3.forceManyBody().strength(-55))
-            .force("x", d3.forceX((node) => node.targetX).strength(0.45))
-            .force("y", d3.forceY((node) => node.targetY).strength(0.45))
-            .force("collide", d3.forceCollide(16))
-            .alphaDecay(0.10)
+            .force("link", d3.forceLink(edgeList).id((node) => node.id).distance(17).strength(0.88))
+            .force("charge", d3.forceManyBody().strength(-120))
+            .force("x", d3.forceX((node) => node.targetX).strength(0.82))
+            .force("y", d3.forceY((node) => node.targetY).strength(0.82))
+            .force("collide", d3.forceCollide(8.6))
+            .alphaDecay(0.12)
             .on("tick", tickTree);
 
           treeSimulation.tick(24);
@@ -938,15 +1034,17 @@
 
         function treeDragStarted(event, node) {
           stopPlayback();
-          if (!event.active) treeSimulation.alphaTarget(0.28).restart();
+          if (!event.active) treeSimulation.alphaTarget(0.12).restart();
           node.fx = node.x;
           node.fy = node.y;
         }
 
         function treeDragged(event, node) {
           const rect = treeBox.getBoundingClientRect();
-          node.fx = Math.max(6, Math.min(94, (event.x / rect.width) * 100));
-          node.fy = Math.max(7, Math.min(103, (event.y / rect.height) * 110));
+          const rawX = Math.max(6, Math.min(94, (event.x / rect.width) * 100));
+          const rawY = Math.max(7, Math.min(103, (event.y / rect.height) * 110));
+          node.fx = node.targetX + Math.max(-10, Math.min(10, rawX - node.targetX));
+          node.fy = node.targetY + Math.max(-12, Math.min(12, rawY - node.targetY));
         }
 
         function treeDragEnded(event, node) {
@@ -960,18 +1058,26 @@
             window.clearInterval(timer);
             timer = null;
           }
-          playButton.textContent = "Play";
+          playButton.classList.remove("is-playing");
+          playButton.setAttribute("aria-label", "Play");
+          playButton.title = "Play";
         }
 
         function startPlayback() {
           stopPlayback();
-          playButton.textContent = "Pause";
+          playButton.classList.add("is-playing");
+          playButton.setAttribute("aria-label", "Pause");
+          playButton.title = "Pause";
           timer = window.setInterval(() => {
             if (currentStep >= steps.length - 1) {
               stopPlayback();
+              renderStep();
               return;
             }
             currentStep += 1;
+            if (currentStep >= steps.length - 1) {
+              stopPlayback();
+            }
             renderStep();
           }, Number(speedSelect.value));
         }
@@ -993,7 +1099,7 @@
           chips.filter((item) => item.literal !== null)
             .append("span")
             .attr("class", "kind")
-            .text((item) => item.kind);
+            .text((item) => item.kind === "decision" ? "D" : "U");
         }
 
         function renderClauses(step) {
@@ -1006,7 +1112,9 @@
             clauseEl.classList.toggle("is-satisfied", state.kind === "satisfied");
             clauseEl.classList.toggle("is-unit", state.kind === "unit");
             clauseEl.classList.toggle("is-conflict", step.conflictClause === clause.id || state.kind === "conflict");
-            stateEl.textContent = step.conflictClause === clause.id ? "conflict" : state.kind;
+            stateEl.textContent = step.conflictClause === clause.id
+              ? "UNSAT"
+              : ({ satisfied: "SAT", conflict: "UNSAT", unit: "U", unresolved: "open" }[state.kind] || state.kind);
 
             clauseEl.querySelectorAll(".dpll-demo-literal").forEach((literalEl) => {
               const literal = Number(literalEl.dataset.literal);
@@ -1048,9 +1156,10 @@
           const caption = d3.select(captionContainer);
           caption.selectAll("*").remove();
           caption.append("strong").text(step.title);
-          caption.append("span").text(step.caption);
+          caption.append("span").text(compactBoolText(step.caption));
           backButton.disabled = currentStep === 0;
           stepButton.disabled = currentStep === steps.length - 1;
+          playButton.disabled = currentStep === steps.length - 1 && timer === null;
           renderTrail(step);
           renderClauses(step);
           renderTree(step);

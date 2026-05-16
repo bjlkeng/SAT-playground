@@ -7,33 +7,49 @@
     <link rel="stylesheet" href="../solver-pages.css" />
     <style>
       .solver-demo{margin-top:18px;padding:22px;border:1px solid var(--line);border-radius:22px;background:linear-gradient(180deg,rgba(249,251,255,.98),rgba(255,255,255,.95))}
-      .solver-demo-header{display:flex;flex-wrap:wrap;justify-content:space-between;gap:14px;align-items:flex-start}
       .solver-demo-header h3{margin:0 0 6px;font-size:1.08rem}
       .solver-demo-header p,.solver-demo-caption p,.solver-demo-panel p{margin:0;color:var(--muted)}
-      .solver-demo-step,.solver-demo-button{border-radius:999px;border:1px solid var(--line);background:#fff;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.8rem}
-      .solver-demo-step{padding:9px 12px;color:var(--accent);background:var(--accent-soft);white-space:nowrap}
-      .solver-demo-controls{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
-      .solver-demo-button{padding:10px 13px;color:var(--ink);cursor:pointer}
-      .solver-demo-button:disabled{opacity:.5;cursor:not-allowed}
-      .solver-demo-caption{margin-top:16px;padding:14px 16px;border-radius:18px;border:1px solid rgba(15,122,216,.14);background:rgba(255,255,255,.88)}
+      .solver-demo-step,.solver-demo-button{border-radius:999px;border:1px solid var(--line);background:#fff;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.78rem}
+      .solver-demo-step{padding:8px 11px;color:var(--accent);background:var(--accent-soft);white-space:nowrap}
+      .solver-demo-controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:16px}
+      .solver-demo-button-group{display:flex;gap:8px;align-items:center}
+      .solver-demo-button{position:relative;display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;color:var(--ink);cursor:pointer}
+      .solver-demo-button:hover{border-color:rgba(15,122,216,.32)}
+      .solver-demo-button:disabled{opacity:.45;cursor:not-allowed}
+      .solver-demo-button::before,.solver-demo-button::after{content:"";display:block;box-sizing:border-box}
+      .solver-demo-button[data-demo-action="back"]::before{width:9px;height:9px;border-left:2px solid currentColor;border-bottom:2px solid currentColor;transform:translateX(2px) rotate(45deg)}
+      .solver-demo-button[data-demo-action="next"]::before{width:9px;height:9px;border-right:2px solid currentColor;border-top:2px solid currentColor;transform:translateX(-2px) rotate(45deg)}
+      .solver-demo-button[data-demo-action="play"]::before{width:0;height:0;margin-left:2px;border-top:6px solid transparent;border-bottom:6px solid transparent;border-left:10px solid currentColor}
+      .solver-demo-button[data-demo-action="play"].is-playing::before{width:12px;height:13px;margin-left:0;border:0;border-left:4px solid currentColor;border-right:4px solid currentColor}
+      .solver-demo-button[data-demo-action="reset"]::before{width:15px;height:15px;border:2px solid currentColor;border-right-color:transparent;border-radius:999px;transform:rotate(-35deg)}
+      .solver-demo-button[data-demo-action="reset"]::after{position:absolute;right:8px;top:9px;width:0;height:0;border-left:5px solid currentColor;border-top:3px solid transparent;border-bottom:3px solid transparent;transform:rotate(20deg)}
+      .solver-demo-caption{margin-top:14px;padding:14px 16px;border-radius:18px;border:1px solid rgba(15,122,216,.14);background:rgba(255,255,255,.88)}
       .solver-demo-caption strong{display:block;margin-bottom:4px}
-      .solver-demo-grid{display:grid;gap:16px;margin-top:18px}
+      .solver-demo-legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.74rem;color:var(--muted)}
+      .solver-demo-legend span{display:inline-flex;align-items:center;gap:6px;padding:5px 8px;border:1px solid var(--line);border-radius:999px;background:#fff}
+      .solver-demo-legend i{width:10px;height:10px;border-radius:999px;border:1px solid rgba(22,32,43,.14)}
+      .solver-demo-legend .good i{background:var(--diff-add);border-color:rgba(17,102,59,.25)}
+      .solver-demo-legend .bad i{background:var(--diff-del);border-color:rgba(176,68,68,.25)}
+      .solver-demo-legend .warn i{background:#fff4c2;border-color:rgba(185,140,15,.3)}
+      .solver-demo-legend .active i{background:var(--accent-soft);border-color:rgba(15,122,216,.3)}
+      .solver-demo-grid{display:grid;gap:16px;margin-top:16px}
       .solver-demo-panel{min-height:260px;padding:16px;border-radius:18px;border:1px solid var(--line);background:rgba(255,255,255,.9)}
       .solver-demo-panel h4{margin:0 0 10px;font-size:.98rem}
       .solver-demo-row,.solver-demo-chip-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
-      .solver-demo-chip{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.78rem}
+      .solver-demo-chip{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;min-height:32px;border-radius:999px;border:1px solid var(--line);background:#fff;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.76rem}
       .solver-demo-chip.good{color:var(--diff-add-ink);background:var(--diff-add);border-color:rgba(17,102,59,.22)}
-      .solver-demo-chip.bad{color:var(--diff-del-ink);background:var(--diff-del);border-color:rgba(176,68,68,.22)}
+      .solver-demo-chip.bad{color:var(--diff-del-ink);background:var(--diff-del);border-color:rgba(176,68,68,.22);text-decoration:line-through}
       .solver-demo-chip.warn{color:#7a5600;background:#fff4c2;border-color:rgba(185,140,15,.28)}
       .solver-demo-chip.active{color:var(--accent);background:var(--accent-soft);border-color:rgba(15,122,216,.28)}
       .solver-demo-card{margin-top:10px;padding:12px;border-radius:16px;border:1px solid var(--line);background:#f9fbff}
       .solver-demo-card strong{display:block;margin-bottom:6px}
       .solver-demo-arrow{color:var(--muted);font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace}
       .solver-demo-bars{display:grid;gap:10px;margin-top:12px}
-      .solver-demo-bar{display:grid;grid-template-columns:52px minmax(0,1fr) 48px;gap:10px;align-items:center;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.78rem}
+      .solver-demo-bar{display:grid;grid-template-columns:52px minmax(0,1fr) 48px;gap:10px;align-items:center;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.76rem}
       .solver-demo-track{height:12px;border-radius:999px;background:rgba(22,32,43,.08);overflow:hidden}
       .solver-demo-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),#e05a47)}
       @media (min-width:820px){.solver-demo-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
+      @media (max-width:620px){.solver-demo{padding:18px}.solver-demo-controls{gap:8px}.solver-demo-button{width:34px;height:34px}.solver-demo-step{font-size:.72rem}}
     </style>
   </head>
   <body>
@@ -106,20 +122,17 @@ loop:
               <h3>Two Watched Literals</h3>
               <p>
                 One clause is enough to show the key win: propagation only revisits clauses
-                watching a literal that just became false.
+                watching a literal that just became 0.
               </p>
             </div>
-            <div class="solver-demo-step" data-demo-step>Step 1 / 5</div>
           </div>
-          <div class="solver-demo-controls">
-            <button class="solver-demo-button" type="button" data-demo-action="back">Back</button>
-            <button class="solver-demo-button" type="button" data-demo-action="play">Play</button>
-            <button class="solver-demo-button" type="button" data-demo-action="next">Step</button>
-            <button class="solver-demo-button" type="button" data-demo-action="reset">Reset</button>
-          </div>
-          <div class="solver-demo-caption">
-            <strong data-demo-title></strong>
-            <p data-demo-caption></p>
+          <div class="solver-demo-legend" aria-label="Legend">
+            <span class="good"><i></i>green = SAT / kept</span>
+            <span class="bad"><i></i>red = UNSAT / removed</span>
+            <span class="warn"><i></i>yellow = unit / pending</span>
+            <span class="active"><i></i>blue = focus</span>
+            <span>D = decision</span>
+            <span>U = unit / reason</span>
           </div>
           <div class="solver-demo-grid">
             <div class="solver-demo-panel">
@@ -130,6 +143,19 @@ loop:
               <h4>Watch Lists And Trail Head</h4>
               <div data-demo-pane="right"></div>
             </div>
+          </div>
+          <div class="solver-demo-controls">
+            <div class="solver-demo-button-group" aria-label="Walkthrough controls">
+              <button class="solver-demo-button" type="button" data-demo-action="back" aria-label="Back" title="Back"></button>
+              <button class="solver-demo-button" type="button" data-demo-action="play" aria-label="Play" title="Play"></button>
+              <button class="solver-demo-button" type="button" data-demo-action="next" aria-label="Next step" title="Next step"></button>
+              <button class="solver-demo-button" type="button" data-demo-action="reset" aria-label="Reset" title="Reset"></button>
+            </div>
+            <div class="solver-demo-step" data-demo-step>Step 1 / 1</div>
+          </div>
+          <div class="solver-demo-caption">
+            <strong data-demo-title></strong>
+            <p data-demo-caption></p>
           </div>
         </div>
       </section>
@@ -229,9 +255,10 @@ loop:
         const back = root.querySelector('[data-demo-action="back"]');
         const next = root.querySelector('[data-demo-action="next"]');
         const play = root.querySelector('[data-demo-action="play"]');
-        function stop(){if(timer!==null)window.clearInterval(timer);timer=null;play.textContent="Play";}
-        function render(){const step=steps[current];title.textContent=step.title;caption.textContent=step.caption;stepLabel.textContent=`Step ${current+1} / ${steps.length}`;d3.select(left).html(step.left);d3.select(right).html(step.right);back.disabled=current===0;next.disabled=current===steps.length-1;}
-        root.addEventListener("click",(event)=>{const action=event.target.dataset.demoAction;if(!action)return;if(action==="back")current=Math.max(0,current-1);if(action==="next")current=Math.min(steps.length-1,current+1);if(action==="reset"){stop();current=0;}if(action==="play"){if(timer===null){play.textContent="Pause";timer=window.setInterval(()=>{if(current===steps.length-1){stop();return;}current+=1;render();},1600);}else{stop();}}render();});
+        function compactDemoText(value){return value.replace(/\btrue\b/g,"1").replace(/\bfalse\b/g,"0").replace(/\s+=\s+/g,"=").replace(/\bdecision level\s+(\d+)/g,"DL$1");}
+        function stop(){if(timer!==null)window.clearInterval(timer);timer=null;play.classList.remove("is-playing");play.setAttribute("aria-label","Play");play.title="Play";}
+        function render(){const step=steps[current];title.textContent=compactDemoText(step.title);caption.textContent=compactDemoText(step.caption);stepLabel.textContent=`Step ${current+1} / ${steps.length}`;d3.select(left).html(compactDemoText(step.left));d3.select(right).html(compactDemoText(step.right));back.disabled=current===0;next.disabled=current===steps.length-1;play.disabled=current===steps.length-1&&timer===null;}
+        root.addEventListener("click",(event)=>{const button=event.target.closest("[data-demo-action]");if(!button||!root.contains(button))return;const action=button.dataset.demoAction;if(action==="back")current=Math.max(0,current-1);if(action==="next")current=Math.min(steps.length-1,current+1);if(action==="reset"){stop();current=0;}if(action==="play"){if(timer===null){play.classList.add("is-playing");play.setAttribute("aria-label","Pause");play.title="Pause";timer=window.setInterval(()=>{if(current===steps.length-1){stop();render();return;}current+=1;if(current===steps.length-1)stop();render();},1600);}else{stop();}}render();});
         render();
       })();
     </script>
