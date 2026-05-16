@@ -84,16 +84,29 @@ impl Solver {
         }
     }
 
-    fn clean_occurs(&mut self, var: usize) {
+    fn clean_occurs<const TRACE: bool>(&mut self, var: usize) {
+        if TRACE {
+            self.stats.occurs_clean_calls += 1;
+        }
         if var >= self.occurs.len()
             || (!self.occurs_dirty[var] && !self.occurs_membership_dirty[var])
         {
             return;
         }
 
+        if TRACE {
+            self.stats.occurs_clean_dirty_calls += 1;
+        }
         let arena = &self.arena;
         let check_membership = self.occurs_membership_dirty[var];
+        if TRACE && check_membership {
+            self.stats.occurs_clean_membership_calls += 1;
+        }
         let occurs = &mut self.occurs[var];
+        let old_len = occurs.len();
+        if TRACE {
+            self.stats.occurs_clean_entries_scanned += old_len as u64;
+        }
         let mut write = 0usize;
         for read in 0..occurs.len() {
             let clause_idx = occurs[read] as usize;
@@ -106,8 +119,19 @@ impl Solver {
             }
         }
         occurs.truncate(write);
+        if TRACE {
+            self.stats.occurs_clean_entries_removed += old_len.saturating_sub(write) as u64;
+        }
         self.occurs_dirty[var] = false;
         self.occurs_membership_dirty[var] = false;
+    }
+
+    fn clean_occurs_dynamic(&mut self, var: usize) {
+        if self.trace_preprocess_details {
+            self.clean_occurs::<true>(var);
+        } else {
+            self.clean_occurs::<false>(var);
+        }
     }
 
     fn enqueue_subsumption_clause(
@@ -162,7 +186,7 @@ impl Solver {
             if var == 0 || var >= self.occurs.len() {
                 continue;
             }
-            self.clean_occurs(var);
+            self.clean_occurs_dynamic(var);
             let mut scan_pos = 0usize;
             while scan_pos < self.occurs[var].len() {
                 let clause_idx = self.occurs[var][scan_pos] as usize;
@@ -229,8 +253,8 @@ impl Solver {
         self.stats.deleted_clauses += 1;
     }
 
-    fn subsumption_relation(
-        &self,
+    fn subsumption_relation<const TRACE: bool>(
+        &mut self,
         driver: SubsumptionCandidate,
         driver_len: usize,
         driver_abstraction: u64,
@@ -239,11 +263,20 @@ impl Solver {
         if candidate_idx >= self.arena.len() || self.clause_is_deleted(candidate_idx) {
             return SubsumptionOutcome::None;
         }
+        if TRACE {
+            self.stats.bsr_relation_calls += 1;
+        }
         let candidate_len = self.clause_len(candidate_idx);
         if driver_len > candidate_len {
+            if TRACE {
+                self.stats.bsr_relation_len_reject += 1;
+            }
             return SubsumptionOutcome::None;
         }
         if (driver_abstraction & !self.original_clause_abstraction(candidate_idx)) != 0 {
+            if TRACE {
+                self.stats.bsr_relation_abstraction_reject += 1;
+            }
             return SubsumptionOutcome::None;
         }
 
@@ -251,9 +284,15 @@ impl Solver {
             && self.inline_original_abstractions
             && driver_len >= SORTED_SUBSUMPTION_MIN_LEN
         {
-            return self.sorted_subsumption_relation(driver, driver_len, candidate_idx);
+            if TRACE {
+                self.stats.bsr_relation_sorted_calls += 1;
+            }
+            return self.sorted_subsumption_relation::<TRACE>(driver, driver_len, candidate_idx);
         }
 
+        if TRACE {
+            self.stats.bsr_relation_nested_calls += 1;
+        }
         let candidate_lits = self.clause_slice(candidate_idx);
 
         let mut remove_lit = 0i32;
@@ -277,14 +316,20 @@ impl Solver {
         }
 
         if remove_lit == 0 {
+            if TRACE {
+                self.stats.bsr_relation_subsumed += 1;
+            }
             SubsumptionOutcome::Subsumed
         } else {
+            if TRACE {
+                self.stats.bsr_relation_strengthen += 1;
+            }
             SubsumptionOutcome::Strengthen(remove_lit)
         }
     }
 
-    fn sorted_subsumption_relation(
-        &self,
+    fn sorted_subsumption_relation<const TRACE: bool>(
+        &mut self,
         driver: SubsumptionCandidate,
         driver_len: usize,
         candidate_idx: usize,
@@ -327,8 +372,14 @@ impl Solver {
         }
 
         if remove_lit == 0 {
+            if TRACE {
+                self.stats.bsr_relation_subsumed += 1;
+            }
             SubsumptionOutcome::Subsumed
         } else {
+            if TRACE {
+                self.stats.bsr_relation_strengthen += 1;
+            }
             SubsumptionOutcome::Strengthen(remove_lit)
         }
     }
@@ -661,7 +712,7 @@ impl Solver {
         }
     }
 
-    fn backward_subsumption_check(
+    fn backward_subsumption_check<const TRACE: bool>(
         &mut self,
         seed_all_clauses: bool,
         queue: &mut VecDeque<SubsumptionCandidate>,
@@ -669,10 +720,16 @@ impl Solver {
         touched_flags: &mut Vec<bool>,
         proof_log: &mut ProofLog,
     ) -> bool {
+        if TRACE {
+            self.stats.bsr_runs += 1;
+        }
         if seed_all_clauses {
             let original_clause_ids = self.original_clause_ids.clone();
             for clause_idx in original_clause_ids {
                 self.enqueue_subsumption_clause(queue, clause_idx);
+                if TRACE {
+                    self.stats.bsr_seeded_clauses += 1;
+                }
             }
         }
 
@@ -707,6 +764,14 @@ impl Solver {
             if driver_len == 0 {
                 continue;
             }
+            if TRACE {
+                self.stats.bsr_drivers += 1;
+                self.stats.bsr_driver_lits += driver_len as u64;
+                match driver {
+                    SubsumptionCandidate::Clause(_) => self.stats.bsr_clause_drivers += 1,
+                    SubsumptionCandidate::RootUnit(_) => self.stats.bsr_root_drivers += 1,
+                }
+            }
             let driver_abstraction = self.subsumption_driver_abstraction(driver);
 
             let mut best_var = self.subsumption_driver_lit(driver, 0).unsigned_abs() as usize;
@@ -725,25 +790,43 @@ impl Solver {
             if best_var >= self.occurs.len() {
                 continue;
             }
-            self.clean_occurs(best_var);
+            self.clean_occurs::<TRACE>(best_var);
+            if TRACE {
+                let best_occurs_len = self.occurs[best_var].len() as u64;
+                self.stats.bsr_best_occurs_sum += best_occurs_len;
+                self.stats.bsr_best_occurs_max =
+                    self.stats.bsr_best_occurs_max.max(best_occurs_len);
+            }
 
             let mut scan_pos = 0usize;
             while scan_pos < self.occurs[best_var].len() {
                 let candidate_idx = self.occurs[best_var][scan_pos] as usize;
                 scan_pos += 1;
+                if TRACE {
+                    self.stats.bsr_candidates_seen += 1;
+                }
                 if driver == SubsumptionCandidate::Clause(candidate_idx) {
+                    if TRACE {
+                        self.stats.bsr_skip_self += 1;
+                    }
                     continue;
                 }
                 if candidate_idx >= self.arena.len() || self.clause_is_deleted(candidate_idx) {
+                    if TRACE {
+                        self.stats.bsr_skip_deleted += 1;
+                    }
                     continue;
                 }
                 if self.subsumption_lim >= 0
                     && self.clause_len(candidate_idx) as isize >= self.subsumption_lim
                 {
+                    if TRACE {
+                        self.stats.bsr_skip_limit += 1;
+                    }
                     continue;
                 }
 
-                match self.subsumption_relation(
+                match self.subsumption_relation::<TRACE>(
                     driver,
                     driver_len,
                     driver_abstraction,
@@ -778,6 +861,33 @@ impl Solver {
         }
 
         true
+    }
+
+    fn backward_subsumption_check_dynamic(
+        &mut self,
+        seed_all_clauses: bool,
+        queue: &mut VecDeque<SubsumptionCandidate>,
+        touched: &mut Vec<usize>,
+        touched_flags: &mut Vec<bool>,
+        proof_log: &mut ProofLog,
+    ) -> bool {
+        if self.trace_preprocess_details {
+            self.backward_subsumption_check::<true>(
+                seed_all_clauses,
+                queue,
+                touched,
+                touched_flags,
+                proof_log,
+            )
+        } else {
+            self.backward_subsumption_check::<false>(
+                seed_all_clauses,
+                queue,
+                touched,
+                touched_flags,
+                proof_log,
+            )
+        }
     }
 
     fn merge_size_only(&self, lhs_idx: usize, rhs_idx: usize, var: usize) -> Option<usize> {
@@ -879,7 +989,7 @@ impl Solver {
         touched: &mut Vec<usize>,
         touched_flags: &mut Vec<bool>,
     ) -> bool {
-        self.clean_occurs(var);
+        self.clean_occurs_dynamic(var);
         let Some(occurrence_ids) = self.occurs.get(var).cloned() else {
             return false;
         };
@@ -1016,7 +1126,7 @@ impl Solver {
         }
 
         if run_full_backward_subsumption
-            && !self.backward_subsumption_check(
+            && !self.backward_subsumption_check_dynamic(
                 true,
                 &mut queue,
                 &mut touched,
@@ -1028,7 +1138,12 @@ impl Solver {
             return false;
         }
 
-        while self.solver_ok {
+        while self.solver_ok
+            && (!touched.is_empty()
+                || !queue.is_empty()
+                || self.bwdsub_assigns < self.trail.len()
+                || !heap.is_empty())
+        {
             if !touched.is_empty() {
                 self.gather_touched_clauses(
                     &mut touched,
@@ -1042,43 +1157,54 @@ impl Solver {
 
             if run_full_backward_subsumption
                 && (!queue.is_empty() || self.bwdsub_assigns < self.trail.len())
-            {
-                if !self.backward_subsumption_check(
+                && !self.backward_subsumption_check_dynamic(
                     false,
                     &mut queue,
                     &mut touched,
                     &mut touched_flags,
                     proof_log,
-                ) {
+                )
+            {
+                self.solver_ok = false;
+                break;
+            }
+
+            while let Some(Reverse((_, var, version))) = heap.pop() {
+                if var >= heap_versions.len() || version != heap_versions[var] {
+                    continue;
+                }
+                if !self.preprocessing_candidate(var) {
+                    continue;
+                }
+                self.clean_occurs_dynamic(var);
+                if self.occurs[var].is_empty() {
+                    continue;
+                }
+
+                let eliminated = self.try_eliminate_var(
+                    var,
+                    proof_log,
+                    &mut queue,
+                    &mut touched,
+                    &mut touched_flags,
+                );
+                if !eliminated {
+                    continue;
+                }
+
+                if run_full_backward_subsumption
+                    && (!queue.is_empty() || self.bwdsub_assigns < self.trail.len())
+                    && !self.backward_subsumption_check_dynamic(
+                        false,
+                        &mut queue,
+                        &mut touched,
+                        &mut touched_flags,
+                        proof_log,
+                    )
+                {
                     self.solver_ok = false;
                     break;
                 }
-                continue;
-            }
-
-            let Some(Reverse((_, var, version))) = heap.pop() else {
-                break;
-            };
-            if var >= heap_versions.len() || version != heap_versions[var] {
-                continue;
-            }
-            if !self.preprocessing_candidate(var) {
-                continue;
-            }
-            self.clean_occurs(var);
-            if self.occurs[var].is_empty() {
-                continue;
-            }
-
-            let eliminated = self.try_eliminate_var(
-                var,
-                proof_log,
-                &mut queue,
-                &mut touched,
-                &mut touched_flags,
-            );
-            if !eliminated {
-                continue;
             }
         }
 
@@ -1179,7 +1305,7 @@ mod tests {
         let mut queue = VecDeque::new();
         let mut touched = Vec::new();
         let mut touched_flags = vec![false; s.assignment.len()];
-        s.backward_subsumption_check(
+        s.backward_subsumption_check_dynamic(
             seed_all,
             &mut queue,
             &mut touched,

@@ -80,6 +80,30 @@ struct SolverStats {
     preprocess_resolvents: u64,
     preprocess_subsumed_clauses: u64,
     preprocess_strengthened_clauses: u64,
+    bsr_runs: u64,
+    bsr_seeded_clauses: u64,
+    bsr_drivers: u64,
+    bsr_clause_drivers: u64,
+    bsr_root_drivers: u64,
+    bsr_driver_lits: u64,
+    bsr_best_occurs_sum: u64,
+    bsr_best_occurs_max: u64,
+    bsr_candidates_seen: u64,
+    bsr_skip_self: u64,
+    bsr_skip_deleted: u64,
+    bsr_skip_limit: u64,
+    bsr_relation_calls: u64,
+    bsr_relation_len_reject: u64,
+    bsr_relation_abstraction_reject: u64,
+    bsr_relation_sorted_calls: u64,
+    bsr_relation_nested_calls: u64,
+    bsr_relation_subsumed: u64,
+    bsr_relation_strengthen: u64,
+    occurs_clean_calls: u64,
+    occurs_clean_dirty_calls: u64,
+    occurs_clean_membership_calls: u64,
+    occurs_clean_entries_scanned: u64,
+    occurs_clean_entries_removed: u64,
 }
 
 enum ProofMode {
@@ -307,6 +331,8 @@ struct Solver {
     solver_ok: bool,
     /// MiniSat-simp preprocessing is available until the one-shot cleanup path turns it off
     use_simplification: bool,
+    /// emit detailed preprocessing counters when SAT_TRACE_PREPROCESS_DETAILS is set
+    trace_preprocess_details: bool,
     /// run bounded variable elimination during the one-shot preprocessing phase
     use_elim: bool,
     /// allowed clause-count growth for one variable-elimination step
@@ -653,6 +679,7 @@ impl Solver {
             has_empty_clause: false,
             solver_ok: true,
             use_simplification: true,
+            trace_preprocess_details: env::var_os("SAT_TRACE_PREPROCESS_DETAILS").is_some(),
             use_elim: true,
             bve_grow: DEFAULT_BVE_GROW,
             bve_clause_limit: DEFAULT_BVE_CLAUSE_LIMIT,
@@ -2260,6 +2287,40 @@ impl Solver {
                 self.trail.len(),
                 self.stats.deleted_clauses,
                 self.reduce_db_limit,
+            );
+        }
+        if self.trace_preprocess_details {
+            let avg_best_occurs = if self.stats.bsr_drivers == 0 {
+                0.0
+            } else {
+                self.stats.bsr_best_occurs_sum as f64 / self.stats.bsr_drivers as f64
+            };
+            eprintln!(
+                "c preprocess_detail bsr_runs={} seeded={} drivers={} clause_drivers={} root_drivers={} driver_lits={} candidates={} skip_self={} skip_deleted={} skip_limit={} relation_calls={} len_reject={} abstraction_reject={} sorted_calls={} nested_calls={} relation_subsumed={} relation_strengthen={} avg_best_occurs={:.3} max_best_occurs={} clean_calls={} clean_dirty={} clean_membership={} clean_scanned={} clean_removed={}",
+                self.stats.bsr_runs,
+                self.stats.bsr_seeded_clauses,
+                self.stats.bsr_drivers,
+                self.stats.bsr_clause_drivers,
+                self.stats.bsr_root_drivers,
+                self.stats.bsr_driver_lits,
+                self.stats.bsr_candidates_seen,
+                self.stats.bsr_skip_self,
+                self.stats.bsr_skip_deleted,
+                self.stats.bsr_skip_limit,
+                self.stats.bsr_relation_calls,
+                self.stats.bsr_relation_len_reject,
+                self.stats.bsr_relation_abstraction_reject,
+                self.stats.bsr_relation_sorted_calls,
+                self.stats.bsr_relation_nested_calls,
+                self.stats.bsr_relation_subsumed,
+                self.stats.bsr_relation_strengthen,
+                avg_best_occurs,
+                self.stats.bsr_best_occurs_max,
+                self.stats.occurs_clean_calls,
+                self.stats.occurs_clean_dirty_calls,
+                self.stats.occurs_clean_membership_calls,
+                self.stats.occurs_clean_entries_scanned,
+                self.stats.occurs_clean_entries_removed,
             );
         }
 
