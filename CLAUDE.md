@@ -316,6 +316,59 @@ debug pass before changing more code:
    or data access pattern, such as "avoid arena header loads in the binary implication loop" rather
    than a generic "improve cache locality" note.
 
+### Reference Solver Gap-Closing Strategy
+
+Use this when the user asks to make one solver match or beat a reference solver on a named feature,
+such as MiniSat-style simplification. The goal is to explain and reduce the measured work gap, not
+just chase one wall-time number.
+
+1. **Measure both implementations on the same inputs first**: Run the repo solver and the reference
+   with the same instance set, timeout, memory limit, proof setting, and decompression path. Keep
+   the exact `results.csv` paths. Compare solved count, PAR-2, per-instance time, and which
+   instances changed when the timeout changes.
+2. **Separate feature time from whole-solver time**: If the target is preprocessing, simplification,
+   propagation, conflict analysis, or another phase, add phase timing to both implementations when
+   possible. Do not assume a full-solve timeout is caused by the phase under investigation; confirm
+   whether preprocessing, search trajectory, or proof/checking time is responsible.
+3. **Instrument matching work counters in both implementations**: Add comparable counters on each
+   side before optimizing. For simplification, useful counters include BSR runs, queue drivers,
+   root-unit drivers, driver literals, candidate scans, self/deleted/limit skips, relation calls,
+   length rejects, abstraction rejects, subsumed clauses, strengthened literals, occurrence-clean
+   calls, occurrence entries scanned/removed, eliminated variables, resolvents, root assignments,
+   and post-preprocessing variable/clause/literal counts.
+4. **Compare work shape before micro-optimizing**: Large gaps in counters usually indicate a
+   semantic, scheduling, data-structure, or ordering mismatch. In the solver 10 vs MiniSat simp
+   pass, Rust initially did about `54.0M` BSR drivers and `21.6B` candidates while MiniSat did about
+   `17.8M` drivers and `9.8B` candidates. That pointed to wrong work scheduling, not just slow Rust
+   inner loops.
+5. **Read the reference control flow literally**: Check when the reference queues work, drains work,
+   updates heaps, clears marks, and returns to outer loops. Match important scheduling boundaries
+   before changing algorithms. The solver 10 fix came from noticing that MiniSat gathers touched
+   clauses at the outer simplification-loop boundary, then drains the elimination heap while only
+   running BSR on immediate queue/trail work; Rust was gathering touched clauses after every
+   eliminated variable, causing repeated extra BSR work.
+6. **Test structural parity experiments even if they are not kept**: Try changes that isolate one
+   suspected mismatch, such as touched-variable order, heap tie-breaking, update mechanics, or queue
+   marking. Keep exact stats for rejected attempts. A MiniSat-style indexed heap reduced solver 10
+   work but was slower than the lazy heap, so it was rejected while the loop-structure fix was kept.
+7. **Accept fixes by both work counters and wall time**: A strong parity fix should move counters
+   toward the reference and improve runtime. After the solver 10 loop fix, BSR drivers moved from
+   `54.0M` to `18.3M`, candidate scans from `21.6B` to `9.9B`, and Kakuro preprocessing dropped from
+   about `67.5s` to `37.9s` before further cleanup.
+8. **Remove diagnostic overhead from normal runs**: Debug counters in hot loops can dominate the
+   remaining gap. Keep diagnostics available, but compile or route them out of the normal hot path
+   using const generics, feature flags, or separate traced helper variants. In solver 10, disabled
+   trace branches left in BSR hot loops accounted for several seconds; compiling them out reduced
+   Kakuro preprocessing to about MiniSat's preprocessing time.
+9. **Re-run the full target set after each accepted phase fix**: A phase-level win can expose a
+   different whole-solver gap. Solver 10 matched MiniSat on Kakuro preprocessing after the loop and
+   trace fixes, but the 120s full-solve run still timed out on Kakuro because the remaining problem
+   was search, not preprocessing.
+10. **Report the residual gap by cause**: End with a table or concise summary that separates phase
+    parity from full-solver behavior. Include instances where the repo solver is faster, where the
+    reference is faster, timeout-only differences, and the one or two instances that dominate PAR-2.
+    This prevents repeating preprocessing work when the next gap is actually search-path sensitivity.
+
 ### Standard Optimizations (apply to every solver)
 
 **Cargo.toml release profile** (always include):
