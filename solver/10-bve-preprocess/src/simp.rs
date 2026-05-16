@@ -365,7 +365,7 @@ impl Solver {
                 continue;
             }
             strengthened.push(lit);
-            strengthened_abstraction |= 1u64 << (lit.unsigned_abs() & 63);
+            strengthened_abstraction |= 1u64 << ((lit.unsigned_abs() - 1) & 31);
             if clause_len > 2 && remove_pos.is_some() && write_pos != lit_pos {
                 self.set_clause_lit(clause_idx, write_pos, lit);
             }
@@ -550,7 +550,6 @@ impl Solver {
         if store_abstraction_inline {
             let abstraction = clause_abstraction_from_lits(&normalized);
             self.arena.push(abstraction as u32);
-            self.arena.push((abstraction >> 32) as u32);
         }
         self.original_clause_ids.push(clause_idx);
         self.original_literals += normalized.len();
@@ -658,7 +657,7 @@ impl Solver {
             SubsumptionCandidate::Clause(clause_idx) => {
                 self.original_clause_abstraction(clause_idx)
             }
-            SubsumptionCandidate::RootUnit(lit) => 1u64 << (lit.unsigned_abs() & 63),
+            SubsumptionCandidate::RootUnit(lit) => 1u64 << ((lit.unsigned_abs() - 1) & 31),
         }
     }
 

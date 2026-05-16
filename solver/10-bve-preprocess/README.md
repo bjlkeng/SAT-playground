@@ -502,3 +502,53 @@ Validation for the accepted changes:
 - `cargo test` in `solver/10-bve-preprocess`: 48 passed
 - smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
 - smoke log: `log/2026-05-15-00-25-25`
+
+## Kakuro MiniSat-Simp Parity Pass
+
+On 2026-05-15, a focused MiniSat comparison pass targeted
+`5e933a...Kakuro-easy-112-ext.xml.hg_7.cnf.xz`, where MiniSat full simplification finishes in
+about `28.09s` and solver 10 was still spending `71.201s` in preprocessing.
+
+Accepted change:
+
+- Store inline original-clause abstractions as one 32-bit word, matching MiniSat's non-learnt
+  clause `abst` field, while keeping learned clauses on two activity words. This removes one
+  arena word per live original clause and turns the abstraction filter into the same 32-bit
+  variable mask shape MiniSat uses.
+
+Kakuro focused trace:
+
+| Step | Preprocess Time | Notes |
+|---|---:|---|
+| Previous solver 10 baseline | `71.201s` | pushed baseline from `130ed5c` |
+| 32-bit inline original abstraction word | `67.529s` | `eliminated=56052`, `subsumed=4868640`, same residual formula stats |
+| MiniSat simp reference | `28.09s` | verbose MiniSat simplification time on the same decompressed input |
+
+The accepted change closes about `5.2%` of the Kakuro preprocessing runtime versus the previous
+solver 10 baseline, but the remaining gap is still about `2.4x` versus MiniSat on this instance.
+
+Fresh profile after the accepted change:
+
+- `log/diagnostics/kakuro-abs32-symbols-perf/perf.data`
+- `backward_subsumption_check`: about `79%` of sampled cycles
+- `original_clause_abstraction` under `subsumption_relation`: about `15%`
+- `clean_occurs`: about `7%`
+
+Rejected fresh-pass attempts:
+
+- unmarked initial BSR seeding: `71.806s`, worse than the previous baseline
+- delayed heap-update parity: `71.905s`, worse despite MiniSat-like heap stats
+- direct short-clause sorted relation: `71.224s`, effectively tied and below the keep threshold
+- candidate length/abstraction hoisting: `72.303s`, branch/register pressure regressed
+- no-clone BSR seed loop: `71.423s`, below the keep threshold
+- end-to-end `u32` abstraction plumbing: `68.645s`, worse than the accepted `67.529s`
+- preallocating the BSR queue: `66.846s`, only about `1.0%` faster than the accepted baseline,
+  below the 3% keep threshold
+- direct inline abstraction loads in the candidate loop: `68.004s`, worse than the helper path
+- raw-pointer occurrence scanning: did not finish preprocessing within the `110s` cap
+
+Validation after the accepted change:
+
+- `cargo test` in `solver/10-bve-preprocess`: 48 passed
+- smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
+- smoke log: `log/2026-05-15-23-40-34`

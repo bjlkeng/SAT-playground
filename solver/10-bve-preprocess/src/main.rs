@@ -24,6 +24,7 @@ const LEARNTSIZE_INC: f64 = 1.1;
 const LEARNTSIZE_ADJUST_START_CONFL: usize = 100;
 const LEARNTSIZE_ADJUST_INC: f64 = 1.5;
 const CLAUSE_ACTIVITY_WORDS: usize = 2;
+const ORIGINAL_ABSTRACTION_WORDS: usize = 1;
 const CLAUSE_MARK_MASK: u32 = 0b11;
 const CLAUSE_LEARNT_BIT: u32 = 1 << 2;
 const CLAUSE_HAS_EXTRA_BIT: u32 = 1 << 3;
@@ -385,10 +386,12 @@ fn clause_header_reloced(header: u32) -> bool {
 
 #[inline(always)]
 fn clause_header_extra_words(header: u32) -> usize {
-    if clause_header_has_extra(header) {
+    if !clause_header_has_extra(header) {
+        0
+    } else if clause_header_learnt(header) {
         CLAUSE_ACTIVITY_WORDS
     } else {
-        0
+        ORIGINAL_ABSTRACTION_WORDS
     }
 }
 
@@ -411,7 +414,7 @@ fn word_to_lit(word: u32) -> i32 {
 fn clause_abstraction_from_lits(lits: &[i32]) -> u64 {
     let mut abstraction = 0u64;
     for &lit in lits {
-        abstraction |= 1u64 << (lit.unsigned_abs() & 63);
+        abstraction |= 1u64 << ((lit.unsigned_abs() - 1) & 31);
     }
     abstraction
 }
@@ -817,7 +820,7 @@ impl Solver {
         let header = self.arena[clause_idx];
         if clause_header_has_extra(header) {
             let extra_idx = clause_idx + 1 + clause_header_size(header);
-            return (self.arena[extra_idx] as u64) | ((self.arena[extra_idx + 1] as u64) << 32);
+            return self.arena[extra_idx] as u64;
         }
         self.clause_abstraction
             .get(clause_idx)
@@ -833,7 +836,6 @@ impl Solver {
         {
             let extra_idx = self.clause_extra_idx(clause_idx);
             self.arena[extra_idx] = abstraction as u32;
-            self.arena[extra_idx + 1] = (abstraction >> 32) as u32;
             return;
         }
         if self.clause_abstraction.len() <= clause_idx {
@@ -889,7 +891,7 @@ impl Solver {
                     + if self.clause_has_extra(clause_idx) {
                         0
                     } else {
-                        CLAUSE_ACTIVITY_WORDS
+                        ORIGINAL_ABSTRACTION_WORDS
                     }
             })
             .sum();
@@ -925,14 +927,13 @@ impl Solver {
             new_arena.extend_from_slice(&self.arena[lits_start..lits_end]);
             let abstraction = if clause_header_has_extra(header) {
                 let extra_idx = lits_end;
-                (self.arena[extra_idx] as u64) | ((self.arena[extra_idx + 1] as u64) << 32)
+                self.arena[extra_idx] as u64
             } else {
                 clause_abstraction_from_lits(unsafe {
                     words_as_lits(&self.arena[lits_start..lits_end])
                 })
             };
             new_arena.push(abstraction as u32);
-            new_arena.push((abstraction >> 32) as u32);
             new_original_clause_ids.push(new_clause_idx);
         }
 
@@ -1056,7 +1057,8 @@ impl Solver {
         if self.clause_has_extra(clause_idx) {
             let old_extra_idx = clause_idx + 1 + clause_len;
             let new_extra_idx = clause_idx + 1 + write;
-            for offset in 0..CLAUSE_ACTIVITY_WORDS {
+            let extra_words = clause_header_extra_words(self.clause_header(clause_idx));
+            for offset in 0..extra_words {
                 self.arena[new_extra_idx + offset] = self.arena[old_extra_idx + offset];
             }
         }
@@ -1830,7 +1832,7 @@ impl Solver {
             .map(|&clause_idx| {
                 let word_len = self.clause_word_len(clause_idx);
                 if strip_original_extra && self.clause_has_extra(clause_idx) {
-                    word_len - CLAUSE_ACTIVITY_WORDS
+                    word_len - ORIGINAL_ABSTRACTION_WORDS
                 } else {
                     word_len
                 }
@@ -1872,7 +1874,7 @@ impl Solver {
             let lits_end = lits_start + clause_len;
             new_arena.extend_from_slice(&arena[lits_start..lits_end]);
             if has_extra {
-                let extra_end = lits_end + CLAUSE_ACTIVITY_WORDS;
+                let extra_end = lits_end + clause_header_extra_words(header);
                 new_arena.extend_from_slice(&arena[lits_end..extra_end]);
             }
             new_clause_idx
