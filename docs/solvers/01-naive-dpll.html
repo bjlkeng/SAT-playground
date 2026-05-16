@@ -568,6 +568,7 @@
         </div>
       </section>
     </main>
+    <script src="../vendor/d3.v7.min.js"></script>
     <script>
       (() => {
         const clauses = [
@@ -820,56 +821,74 @@
         }
 
         function buildClauses() {
-          for (const clause of clauses) {
-            const clauseEl = document.createElement("article");
-            clauseEl.className = "dpll-demo-clause";
-            clauseEl.innerHTML = `
-              <div class="dpll-demo-clause-head">
-                <span class="dpll-demo-clause-id">${clause.id}</span>
-                <span class="dpll-demo-clause-state"></span>
-              </div>
-              <div class="dpll-demo-literals"></div>
-            `;
+          const clauseSelection = d3.select(clauseContainer)
+            .selectAll("article")
+            .data(clauses, (clause) => clause.id)
+            .join((enter) => {
+              const article = enter.append("article")
+                .attr("class", "dpll-demo-clause");
+              const head = article.append("div")
+                .attr("class", "dpll-demo-clause-head");
+              head.append("span")
+                .attr("class", "dpll-demo-clause-id")
+                .text((clause) => clause.id);
+              head.append("span")
+                .attr("class", "dpll-demo-clause-state");
+              article.append("div")
+                .attr("class", "dpll-demo-literals")
+                .selectAll("span")
+                .data((clause) => clause.literals)
+                .join("span")
+                .attr("class", "dpll-demo-literal")
+                .attr("data-literal", String)
+                .text(literalText);
+              return article;
+            });
 
-            const literalsEl = clauseEl.querySelector(".dpll-demo-literals");
-            for (const literal of clause.literals) {
-              const literalEl = document.createElement("span");
-              literalEl.className = "dpll-demo-literal";
-              literalEl.dataset.literal = String(literal);
-              literalEl.textContent = literalText(literal);
-              literalsEl.appendChild(literalEl);
-            }
-
-            clauseContainer.appendChild(clauseEl);
-            clauseElements.set(clause.id, clauseEl);
-          }
+          clauseSelection.each(function(clause) {
+            clauseElements.set(clause.id, this);
+          });
         }
 
         function buildTree() {
-          Object.values(nodes).forEach((node) => {
-            if (node.parent) {
-              const parent = nodes[node.parent];
-              const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-              line.setAttribute("x1", parent.x);
-              line.setAttribute("y1", parent.y);
-              line.setAttribute("x2", node.x);
-              line.setAttribute("y2", node.y);
-              line.setAttribute("class", "dpll-demo-tree-line");
-              treeLinesContainer.appendChild(line);
-              lineElements.set(node.id, line);
-            }
+          const nodeList = Object.values(nodes);
+          const edgeList = nodeList
+            .filter((node) => node.parent)
+            .map((node) => ({ child: node, parent: nodes[node.parent] }));
 
-            const nodeEl = document.createElement("div");
-            nodeEl.className = `dpll-demo-node hidden kind-${node.kind}`;
-            nodeEl.style.left = `${node.x}%`;
-            nodeEl.style.top = `${node.y}%`;
-            nodeEl.innerHTML = `
-              <span class="kind">${node.kind}</span>
-              <strong>${node.label}</strong>
-              <small>${node.subtitle}</small>
-            `;
-            treeNodesContainer.appendChild(nodeEl);
-            nodeElements.set(node.id, nodeEl);
+          d3.select(treeLinesContainer)
+            .selectAll("line")
+            .data(edgeList, (edge) => edge.child.id)
+            .join("line")
+            .attr("x1", (edge) => edge.parent.x)
+            .attr("y1", (edge) => edge.parent.y)
+            .attr("x2", (edge) => edge.child.x)
+            .attr("y2", (edge) => edge.child.y)
+            .attr("class", "dpll-demo-tree-line")
+            .each(function(edge) {
+              lineElements.set(edge.child.id, this);
+            });
+
+          const nodeSelection = d3.select(treeNodesContainer)
+            .selectAll(".dpll-demo-node")
+            .data(nodeList, (node) => node.id)
+            .join((enter) => {
+              const item = enter.append("div")
+                .attr("class", (node) => `dpll-demo-node hidden kind-${node.kind}`)
+                .style("left", (node) => `${node.x}%`)
+                .style("top", (node) => `${node.y}%`);
+              item.append("span")
+                .attr("class", "kind")
+                .text((node) => node.kind);
+              item.append("strong")
+                .text((node) => node.label);
+              item.append("small")
+                .text((node) => node.subtitle);
+              return item;
+            });
+
+          nodeSelection.each(function(node) {
+            nodeElements.set(node.id, this);
           });
         }
 
@@ -895,21 +914,23 @@
         }
 
         function renderTrail(step) {
-          trailContainer.innerHTML = "";
-          if (step.trail.length === 0) {
-            const empty = document.createElement("span");
-            empty.className = "dpll-demo-trail-chip";
-            empty.textContent = "Trail is empty";
-            trailContainer.appendChild(empty);
-            return;
-          }
+          const trailItems = step.trail.length
+            ? step.trail
+            : [{ literal: null, kind: "Trail is empty" }];
 
-          for (const item of step.trail) {
-            const chip = document.createElement("span");
-            chip.className = "dpll-demo-trail-chip";
-            chip.innerHTML = `<span>${trailText(item.literal)}</span><span class="kind">${item.kind}</span>`;
-            trailContainer.appendChild(chip);
-          }
+          const chips = d3.select(trailContainer)
+            .selectAll(".dpll-demo-trail-chip")
+            .data(trailItems, (_item, index) => index)
+            .join("span")
+            .attr("class", "dpll-demo-trail-chip");
+
+          chips.selectAll("*").remove();
+          chips.append("span")
+            .text((item) => item.literal === null ? item.kind : trailText(item.literal));
+          chips.filter((item) => item.literal !== null)
+            .append("span")
+            .attr("class", "kind")
+            .text((item) => item.kind);
         }
 
         function renderClauses(step) {
@@ -961,7 +982,10 @@
         function renderStep() {
           const step = steps[currentStep];
           stepLabel.textContent = `Step ${currentStep + 1} / ${steps.length}`;
-          captionContainer.innerHTML = `<strong>${step.title}</strong><span>${step.caption}</span>`;
+          const caption = d3.select(captionContainer);
+          caption.selectAll("*").remove();
+          caption.append("strong").text(step.title);
+          caption.append("span").text(step.caption);
           backButton.disabled = currentStep === 0;
           stepButton.disabled = currentStep === steps.length - 1;
           renderTrail(step);

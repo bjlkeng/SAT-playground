@@ -182,6 +182,7 @@ loop:
         </div>
       </section>
     </main>
+    <script src="../vendor/d3.v7.min.js"></script>
     <script>
       (() => {
         const root = document.getElementById("bcp-demo");
@@ -229,7 +230,7 @@ loop:
         const next = root.querySelector('[data-demo-action="next"]');
         const play = root.querySelector('[data-demo-action="play"]');
         function stop(){if(timer!==null)window.clearInterval(timer);timer=null;play.textContent="Play";}
-        function render(){const step=steps[current];title.textContent=step.title;caption.textContent=step.caption;stepLabel.textContent=`Step ${current+1} / ${steps.length}`;left.innerHTML=step.left;right.innerHTML=step.right;back.disabled=current===0;next.disabled=current===steps.length-1;}
+        function render(){const step=steps[current];title.textContent=step.title;caption.textContent=step.caption;stepLabel.textContent=`Step ${current+1} / ${steps.length}`;d3.select(left).html(step.left);d3.select(right).html(step.right);back.disabled=current===0;next.disabled=current===steps.length-1;}
         root.addEventListener("click",(event)=>{const action=event.target.dataset.demoAction;if(!action)return;if(action==="back")current=Math.max(0,current-1);if(action==="next")current=Math.min(steps.length-1,current+1);if(action==="reset"){stop();current=0;}if(action==="play"){if(timer===null){play.textContent="Pause";timer=window.setInterval(()=>{if(current===steps.length-1){stop();return;}current+=1;render();},1600);}else{stop();}}render();});
         render();
       })();

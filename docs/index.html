@@ -531,7 +531,6 @@
       </p>
     </main>
 
-    <script src="./vendor/d3.v7.min.js"></script>
     <script>
       const CHART_URL = "./data/medium-par2.json";
       const LINE_COLORS = {
@@ -543,9 +542,7 @@
         "06-clause-storage": "#aa4f8d",
         "07-clause-minimization": "#b54b3a",
         "08-clause-db-management": "#23657a",
-        "09-root-simp-opts": "#5b6f1f",
         minisat: "#ecab4e",
-        "minisat-core": "#8f7a27",
         "kissat-latest": "#8d3613",
         "virtual-best": "#0d8a72",
       };
@@ -592,6 +589,15 @@
 
       function solverColor(entry) {
         return LINE_COLORS[entry.slug] ?? (entry.family === "reference" ? "#d06b24" : "#1f5fbf");
+      }
+
+      function svgNode(parent, tag, attrs) {
+        const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+        for (const [key, value] of Object.entries(attrs)) {
+          node.setAttribute(key, String(value));
+        }
+        parent.appendChild(node);
+        return node;
       }
 
       function niceCeil(value, step) {
@@ -663,6 +669,12 @@
         }
 
         return Math.abs(left.time - time) <= Math.abs(right.time - time) ? left : right;
+      }
+
+      function buildLinePath(curve, xScale, yScale) {
+        return curve
+          .map((point, index) => `${index === 0 ? "M" : "L"} ${xScale(point.time).toFixed(2)} ${yScale(point.solved).toFixed(2)}`)
+          .join(" ");
       }
 
       function prepareEntry(entry) {
@@ -893,7 +905,7 @@
         const plot = interactiveState.curvePlot;
         const xView = ((clientX - rect.left) / rect.width) * plot.width;
         const clampedX = Math.max(plot.left, Math.min(plot.left + plot.plotWidth, xView));
-        const time = plot.xScale.invert(clampedX);
+        const time = ((clampedX - plot.left) / plot.plotWidth) * plot.timeoutSeconds;
         return { clampedX, time };
       }
 
@@ -962,6 +974,9 @@
       }
 
       function renderCurveChart(data) {
+        const svg = document.getElementById("curve-chart");
+        svg.replaceChildren();
+
         const width = 980;
         const height = 460;
         const top = 24;
@@ -980,97 +995,75 @@
         const maxSolved = Math.max(...curves.map((entry) => entry.solved));
         const yStep = maxSolved <= 40 ? 5 : 10;
         const yMax = Math.max(yStep, niceCeil(maxSolved, yStep));
-        const xScale = d3.scaleLinear().domain([0, timeoutSeconds]).range([left, left + plotWidth]);
-        const yScale = d3.scaleLinear().domain([0, yMax]).range([top + plotHeight, top]);
-        const line = d3.line()
-          .x((point) => xScale(point.time))
-          .y((point) => yScale(point.solved));
-        interactiveState.curvePlot = { width, height, left, top, plotWidth, plotHeight, timeoutSeconds, xScale };
+        const xScale = (time) => left + (time / timeoutSeconds) * plotWidth;
+        const yScale = (solved) => top + plotHeight - (solved / yMax) * plotHeight;
+        interactiveState.curvePlot = { width, height, left, top, plotWidth, plotHeight, timeoutSeconds };
 
-        const svg = d3.select("#curve-chart")
-          .attr("viewBox", `0 0 ${width} ${height}`);
-        svg.selectAll("*").remove();
-        svg.append("title")
-          .attr("id", "curve-chart-title")
-          .text("Cumulative solved versus time chart");
-        svg.append("desc")
-          .attr("id", "curve-chart-desc")
-          .text("Latest available SAT Competition 2025 medium benchmark cumulative solved instances over time per solver.");
-        svg.append("rect")
-          .attr("x", 0)
-          .attr("y", 0)
-          .attr("width", width)
-          .attr("height", height)
-          .attr("fill", "transparent");
+        svgNode(svg, "rect", { x: 0, y: 0, width, height, fill: "transparent" });
 
-        const xTicks = d3.range(0, 7).map((tick) => timeoutSeconds * (tick / 6));
-        const yTicks = d3.range(0, yMax + yStep, yStep);
+        for (let tick = 0; tick <= 6; tick += 1) {
+          const value = timeoutSeconds * (tick / 6);
+          const x = xScale(value);
+          svgNode(svg, "line", {
+            x1: x,
+            y1: top,
+            x2: x,
+            y2: top + plotHeight,
+            stroke: "rgba(30, 36, 48, 0.14)",
+            "stroke-width": 1,
+          });
+          const label = svgNode(svg, "text", {
+            x,
+            y: height - 20,
+            fill: "#59616f",
+            "font-size": 12,
+            "font-family": "IBM Plex Mono, SFMono-Regular, Consolas, monospace",
+            "text-anchor": tick === 0 ? "start" : tick === 6 ? "end" : "middle",
+          });
+          label.textContent = formatNumber(value);
+        }
 
-        svg.append("g")
-          .selectAll("line")
-          .data(xTicks)
-          .join("line")
-          .attr("x1", xScale)
-          .attr("y1", top)
-          .attr("x2", xScale)
-          .attr("y2", top + plotHeight)
-          .attr("stroke", "rgba(30, 36, 48, 0.14)")
-          .attr("stroke-width", 1);
+        for (let value = 0; value <= yMax; value += yStep) {
+          const y = yScale(value);
+          svgNode(svg, "line", {
+            x1: left,
+            y1: y,
+            x2: left + plotWidth,
+            y2: y,
+            stroke: "rgba(30, 36, 48, 0.14)",
+            "stroke-width": 1,
+          });
+          const label = svgNode(svg, "text", {
+            x: left - 12,
+            y: y + 4,
+            fill: "#59616f",
+            "font-size": 12,
+            "font-family": "IBM Plex Mono, SFMono-Regular, Consolas, monospace",
+            "text-anchor": "end",
+          });
+          label.textContent = String(value);
+        }
 
-        svg.append("g")
-          .selectAll("line")
-          .data(yTicks)
-          .join("line")
-          .attr("x1", left)
-          .attr("y1", yScale)
-          .attr("x2", left + plotWidth)
-          .attr("y2", yScale)
-          .attr("stroke", "rgba(30, 36, 48, 0.14)")
-          .attr("stroke-width", 1);
+        const xLabel = svgNode(svg, "text", {
+          x: left + plotWidth / 2,
+          y: height - 2,
+          fill: "#59616f",
+          "font-size": 12,
+          "font-family": "IBM Plex Mono, SFMono-Regular, Consolas, monospace",
+          "text-anchor": "middle",
+        });
+        xLabel.textContent = "Runtime (seconds)";
 
-        svg.append("g")
-          .attr("transform", `translate(0 ${height - 20})`)
-          .attr("font-family", "IBM Plex Mono, SFMono-Regular, Consolas, monospace")
-          .attr("font-size", 12)
-          .attr("fill", "#59616f")
-          .selectAll("text")
-          .data(xTicks)
-          .join("text")
-          .attr("x", xScale)
-          .attr("y", 0)
-          .attr("text-anchor", (_value, index) => index === 0 ? "start" : index === xTicks.length - 1 ? "end" : "middle")
-          .text((value) => formatNumber(value));
-
-        svg.append("g")
-          .attr("font-family", "IBM Plex Mono, SFMono-Regular, Consolas, monospace")
-          .attr("font-size", 12)
-          .attr("fill", "#59616f")
-          .selectAll("text")
-          .data(yTicks)
-          .join("text")
-          .attr("x", left - 12)
-          .attr("y", (value) => yScale(value) + 4)
-          .attr("text-anchor", "end")
-          .text(String);
-
-        svg.append("text")
-          .attr("x", left + plotWidth / 2)
-          .attr("y", height - 2)
-          .attr("fill", "#59616f")
-          .attr("font-size", 12)
-          .attr("font-family", "IBM Plex Mono, SFMono-Regular, Consolas, monospace")
-          .attr("text-anchor", "middle")
-          .text("Runtime (seconds)");
-
-        svg.append("text")
-          .attr("x", 18)
-          .attr("y", top + plotHeight / 2)
-          .attr("fill", "#59616f")
-          .attr("font-size", 12)
-          .attr("font-family", "IBM Plex Mono, SFMono-Regular, Consolas, monospace")
-          .attr("transform", `rotate(-90 18 ${top + plotHeight / 2})`)
-          .attr("text-anchor", "middle")
-          .text("Solved instances");
+        const yLabel = svgNode(svg, "text", {
+          x: 18,
+          y: top + plotHeight / 2,
+          fill: "#59616f",
+          "font-size": 12,
+          "font-family": "IBM Plex Mono, SFMono-Regular, Consolas, monospace",
+          transform: `rotate(-90 18 ${top + plotHeight / 2})`,
+          "text-anchor": "middle",
+        });
+        yLabel.textContent = "Solved instances";
 
         const drawOrder = [...data.entries].sort((leftEntry, rightEntry) => {
           if (leftEntry.solved !== rightEntry.solved) {
@@ -1083,34 +1076,35 @@
           const color = solverColor(entry);
           const isSelected = interactiveState.selectedSlug === entry.slug;
           const isDimmed = Boolean(interactiveState.selectedSlug && !isSelected);
-          svg.append("path")
-            .datum(entry.curve)
-            .attr("d", line)
-            .attr("fill", "none")
-            .attr("stroke", color)
-            .attr("stroke-width", isSelected ? 4 : 3)
-            .attr("stroke-linejoin", "round")
-            .attr("stroke-linecap", "round")
-            .attr("opacity", isDimmed ? 0.24 : 0.96);
+          svgNode(svg, "path", {
+            d: buildLinePath(entry.curve, xScale, yScale),
+            fill: "none",
+            stroke: color,
+            "stroke-width": isSelected ? 4 : 3,
+            "stroke-linejoin": "round",
+            "stroke-linecap": "round",
+            opacity: isDimmed ? 0.24 : 0.96,
+          });
 
           const marker = curveMarkerPoint(entry.curve, timeoutSeconds);
-          svg.append("circle")
-            .attr("cx", xScale(marker.time))
-            .attr("cy", yScale(marker.solved))
-            .attr("r", isSelected ? 4.5 : 3.5)
-            .attr("fill", color)
-            .attr("opacity", isDimmed ? 0.24 : 1);
+          svgNode(svg, "circle", {
+            cx: xScale(marker.time),
+            cy: yScale(marker.solved),
+            r: isSelected ? 4.5 : 3.5,
+            fill: color,
+            opacity: isDimmed ? 0.24 : 1,
+          });
 
-          svg.append("path")
-            .datum(entry.curve)
-            .attr("d", line)
-            .attr("fill", "none")
-            .attr("stroke", "transparent")
-            .attr("stroke-width", 14)
-            .attr("stroke-linejoin", "round")
-            .attr("stroke-linecap", "round")
-            .style("cursor", "pointer")
-            .on("click", (event) => {
+          const hit = svgNode(svg, "path", {
+            d: buildLinePath(entry.curve, xScale, yScale),
+            fill: "none",
+            stroke: "transparent",
+            "stroke-width": 14,
+            "stroke-linejoin": "round",
+            "stroke-linecap": "round",
+            style: "cursor:pointer",
+          });
+          hit.addEventListener("click", (event) => {
             interactiveState.lastPointer = { clientX: event.clientX, clientY: event.clientY };
             setSelection(entry.slug);
           });
@@ -1120,60 +1114,60 @@
           const color = solverColor(data.virtualBest);
           const isSelected = interactiveState.selectedSlug === data.virtualBest.slug;
           const isDimmed = Boolean(interactiveState.selectedSlug && !isSelected);
-          svg.append("path")
-            .datum(data.virtualBest.curve)
-            .attr("d", line)
-            .attr("fill", "none")
-            .attr("stroke", color)
-            .attr("stroke-width", isSelected ? 4.5 : 3.5)
-            .attr("stroke-dasharray", "10 7")
-            .attr("stroke-linejoin", "round")
-            .attr("stroke-linecap", "round")
-            .attr("opacity", isDimmed ? 0.24 : 0.98);
+          svgNode(svg, "path", {
+            d: buildLinePath(data.virtualBest.curve, xScale, yScale),
+            fill: "none",
+            stroke: color,
+            "stroke-width": isSelected ? 4.5 : 3.5,
+            "stroke-dasharray": "10 7",
+            "stroke-linejoin": "round",
+            "stroke-linecap": "round",
+            opacity: isDimmed ? 0.24 : 0.98,
+          });
 
           const marker = curveMarkerPoint(data.virtualBest.curve, timeoutSeconds);
-          svg.append("circle")
-            .attr("cx", xScale(marker.time))
-            .attr("cy", yScale(marker.solved))
-            .attr("r", isSelected ? 5 : 4)
-            .attr("fill", color)
-            .attr("opacity", isDimmed ? 0.24 : 1);
+          svgNode(svg, "circle", {
+            cx: xScale(marker.time),
+            cy: yScale(marker.solved),
+            r: isSelected ? 5 : 4,
+            fill: color,
+            opacity: isDimmed ? 0.24 : 1,
+          });
 
-          svg.append("path")
-            .datum(data.virtualBest.curve)
-            .attr("d", line)
-            .attr("fill", "none")
-            .attr("stroke", "transparent")
-            .attr("stroke-width", 16)
-            .attr("stroke-dasharray", "10 7")
-            .attr("stroke-linejoin", "round")
-            .attr("stroke-linecap", "round")
-            .style("cursor", "pointer")
-            .on("click", (event) => {
+          const hit = svgNode(svg, "path", {
+            d: buildLinePath(data.virtualBest.curve, xScale, yScale),
+            fill: "none",
+            stroke: "transparent",
+            "stroke-width": 16,
+            "stroke-dasharray": "10 7",
+            "stroke-linejoin": "round",
+            "stroke-linecap": "round",
+            style: "cursor:pointer",
+          });
+          hit.addEventListener("click", (event) => {
             interactiveState.lastPointer = { clientX: event.clientX, clientY: event.clientY };
             setSelection(data.virtualBest.slug);
           });
         }
 
-        interactiveState.hoverLine = svg.append("line")
-          .attr("x1", left)
-          .attr("y1", top)
-          .attr("x2", left)
-          .attr("y2", top + plotHeight)
-          .attr("stroke", "rgba(13, 138, 114, 0.58)")
-          .attr("stroke-width", 1.5)
-          .attr("stroke-dasharray", "6 6")
-          .attr("opacity", 0)
-          .node();
+        interactiveState.hoverLine = svgNode(svg, "line", {
+          x1: left,
+          y1: top,
+          x2: left,
+          y2: top + plotHeight,
+          stroke: "rgba(13, 138, 114, 0.58)",
+          "stroke-width": 1.5,
+          "stroke-dasharray": "6 6",
+          opacity: 0,
+        });
 
-        svg
-          .on("mousemove", (event) => {
-            interactiveState.lastPointer = { clientX: event.clientX, clientY: event.clientY };
-            refreshHover();
-          })
-          .on("mouseleave", () => {
-            hideTooltip();
-          });
+        svg.onmousemove = (event) => {
+          interactiveState.lastPointer = { clientX: event.clientX, clientY: event.clientY };
+          refreshHover();
+        };
+        svg.onmouseleave = () => {
+          hideTooltip();
+        };
       }
 
       function renderCurveLegend(data) {
@@ -1240,121 +1234,102 @@
       }
 
       function renderPar2Chart(data) {
+        const svg = document.getElementById("par2-chart");
+        svg.replaceChildren();
+
         const entries = data.entries;
         const width = 980;
-        const rowHeight = 40;
+        const height = 420;
         const top = 34;
         const left = 220;
         const right = 90;
         const bottom = 54;
-        const height = top + bottom + entries.length * rowHeight;
         const plotWidth = width - left - right;
+        const rowHeight = 56;
         const maxPar2 = Math.max(...entries.map((entry) => entry.par2));
         const axisMax = nicePar2Max(maxPar2);
-        const xScale = d3.scaleLinear().domain([0, axisMax]).range([left, left + plotWidth]);
 
-        const svg = d3.select("#par2-chart")
-          .attr("viewBox", `0 0 ${width} ${height}`);
-        svg.selectAll("*").remove();
-        svg.append("title")
-          .attr("id", "par2-chart-title")
-          .text("PAR-2 comparison chart");
-        svg.append("desc")
-          .attr("id", "par2-chart-desc")
-          .text("Latest available SAT Competition 2025 medium benchmark PAR-2 per solver.");
-        svg.append("rect")
-          .attr("x", 0)
-          .attr("y", 0)
-          .attr("width", width)
-          .attr("height", height)
-          .attr("fill", "transparent");
+        svgNode(svg, "rect", { x: 0, y: 0, width, height, fill: "transparent" });
 
         const tickCount = 4;
-        const ticks = d3.range(0, tickCount + 1).map((index) => axisMax * (index / tickCount));
+        for (let index = 0; index <= tickCount; index += 1) {
+          const value = axisMax * (index / tickCount);
+          const x = left + plotWidth * (value / axisMax);
+          svgNode(svg, "line", {
+            x1: x,
+            y1: top,
+            x2: x,
+            y2: height - bottom,
+            stroke: "rgba(30, 36, 48, 0.14)",
+            "stroke-width": 1,
+          });
+          const label = svgNode(svg, "text", {
+            x,
+            y: height - 20,
+            fill: "#59616f",
+            "font-size": 12,
+            "font-family": "IBM Plex Mono, SFMono-Regular, Consolas, monospace",
+            "text-anchor": index === 0 ? "start" : index === tickCount ? "end" : "middle",
+          });
+          label.textContent = formatNumber(value);
+        }
 
-        svg.append("g")
-          .selectAll("line")
-          .data(ticks)
-          .join("line")
-          .attr("x1", xScale)
-          .attr("y1", top)
-          .attr("x2", xScale)
-          .attr("y2", height - bottom)
-          .attr("stroke", "rgba(30, 36, 48, 0.14)")
-          .attr("stroke-width", 1);
+        const axisLabel = svgNode(svg, "text", {
+          x: left + plotWidth / 2,
+          y: height - 4,
+          fill: "#59616f",
+          "font-size": 12,
+          "font-family": "IBM Plex Mono, SFMono-Regular, Consolas, monospace",
+          "text-anchor": "middle",
+        });
+        axisLabel.textContent = "PAR-2 (lower is better)";
 
-        svg.append("g")
-          .attr("transform", `translate(0 ${height - 20})`)
-          .attr("font-family", "IBM Plex Mono, SFMono-Regular, Consolas, monospace")
-          .attr("font-size", 12)
-          .attr("fill", "#59616f")
-          .selectAll("text")
-          .data(ticks)
-          .join("text")
-          .attr("x", xScale)
-          .attr("y", 0)
-          .attr("text-anchor", (_value, index) => index === 0 ? "start" : index === tickCount ? "end" : "middle")
-          .text((value) => formatNumber(value));
+        entries.forEach((entry, index) => {
+          const y = top + index * rowHeight;
+          const barY = y + 12;
+          const barHeight = 28;
+          const barWidth = Math.max(6, plotWidth * (entry.par2 / axisMax));
+          const color = solverColor(entry);
 
-        svg.append("text")
-          .attr("x", left + plotWidth / 2)
-          .attr("y", height - 4)
-          .attr("fill", "#59616f")
-          .attr("font-size", 12)
-          .attr("font-family", "IBM Plex Mono, SFMono-Regular, Consolas, monospace")
-          .attr("text-anchor", "middle")
-          .text("PAR-2 (lower is better)");
+          const label = svgNode(svg, "text", {
+            x: left - 18,
+            y: y + 31,
+            fill: "#1e2430",
+            "font-size": 14,
+            "font-family": "IBM Plex Mono, SFMono-Regular, Consolas, monospace",
+            "text-anchor": "end",
+          });
+          label.textContent = entry.label;
 
-        const rows = svg.append("g")
-          .selectAll("g")
-          .data(entries)
-          .join("g")
-          .attr("transform", (_entry, index) => `translate(0 ${top + index * rowHeight})`);
+          svgNode(svg, "rect", {
+            x: left,
+            y: barY,
+            width: plotWidth,
+            height: barHeight,
+            rx: 12,
+            fill: "rgba(30, 36, 48, 0.05)",
+          });
 
-        rows.append("text")
-          .attr("x", left - 18)
-          .attr("y", 26)
-          .attr("fill", "#1e2430")
-          .attr("font-size", 13)
-          .attr("font-family", "IBM Plex Mono, SFMono-Regular, Consolas, monospace")
-          .attr("text-anchor", "end")
-          .text((entry) => entry.label);
+          svgNode(svg, "rect", {
+            x: left,
+            y: barY,
+            width: barWidth,
+            height: barHeight,
+            rx: 12,
+            fill: color,
+          });
 
-        rows.append("rect")
-          .attr("x", left)
-          .attr("y", 7)
-          .attr("width", plotWidth)
-          .attr("height", 26)
-          .attr("rx", 10)
-          .attr("fill", "rgba(30, 36, 48, 0.05)");
-
-        rows.append("rect")
-          .attr("x", left)
-          .attr("y", 7)
-          .attr("width", (entry) => Math.max(6, xScale(entry.par2) - left))
-          .attr("height", 26)
-          .attr("rx", 10)
-          .attr("fill", solverColor);
-
-        rows.append("text")
-          .attr("x", (entry) => {
-            const barWidth = Math.max(6, xScale(entry.par2) - left);
-            return barWidth > plotWidth - 160
-              ? left + barWidth - 12
-              : left + Math.min(barWidth + 12, plotWidth - 2);
-          })
-          .attr("y", 25)
-          .attr("fill", (entry) => {
-            const barWidth = Math.max(6, xScale(entry.par2) - left);
-            return barWidth > plotWidth - 160 ? "#fffdf7" : "#1e2430";
-          })
-          .attr("font-size", 13)
-          .attr("font-family", "IBM Plex Mono, SFMono-Regular, Consolas, monospace")
-          .attr("text-anchor", (entry) => {
-            const barWidth = Math.max(6, xScale(entry.par2) - left);
-            return barWidth > plotWidth - 160 ? "end" : "start";
-          })
-          .text((entry) => `${formatNumber(entry.par2)} · ${entry.solved}/${entry.instances} solved`);
+          const labelInside = barWidth > plotWidth - 160;
+          const valueText = svgNode(svg, "text", {
+            x: labelInside ? left + barWidth - 12 : left + Math.min(barWidth + 12, plotWidth - 2),
+            y: y + 31,
+            fill: labelInside ? "#fffdf7" : "#1e2430",
+            "font-size": 13,
+            "font-family": "IBM Plex Mono, SFMono-Regular, Consolas, monospace",
+            "text-anchor": labelInside ? "end" : "start",
+          });
+          valueText.textContent = `${formatNumber(entry.par2)} · ${entry.solved}/${entry.instances} solved`;
+        });
       }
 
       function renderNotes(data) {

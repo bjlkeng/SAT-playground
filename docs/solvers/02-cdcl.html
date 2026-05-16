@@ -604,6 +604,7 @@ loop:
       </section>
     </main>
     <script src="../vendor/cytoscape.min.js"></script>
+    <script src="../vendor/d3.v7.min.js"></script>
     <script>
       (() => {
         const root = document.getElementById("cdcl-demo");
@@ -941,39 +942,56 @@ loop:
         }
 
         function renderTrail(blocks) {
-          trailContainer.innerHTML = "";
-          for (const block of blocks) {
-            const element = document.createElement("div");
-            element.className = "solver-demo-trail-block";
-            element.innerHTML = `<strong>${block.title}</strong>`;
-            const row = document.createElement("div");
-            row.className = "solver-demo-row";
-            for (const [text, cls] of block.chips) {
-              const chip = document.createElement("span");
-              chip.className = `solver-demo-chip ${cls}`.trim();
-              chip.innerHTML = formatLiteralHtml(text);
-              row.appendChild(chip);
-            }
-            element.appendChild(row);
-            trailContainer.appendChild(element);
-          }
+          const blockSelection = d3.select(trailContainer)
+            .selectAll(".solver-demo-trail-block")
+            .data(blocks, (block) => block.title)
+            .join((enter) => {
+              const block = enter.append("div")
+                .attr("class", "solver-demo-trail-block");
+              block.append("strong");
+              block.append("div")
+                .attr("class", "solver-demo-row");
+              return block;
+            });
+
+          blockSelection.select("strong")
+            .text((block) => block.title);
+
+          blockSelection.select(".solver-demo-row")
+            .selectAll(".solver-demo-chip")
+            .data((block) => block.chips)
+            .join("span")
+            .attr("class", ([, cls]) => `solver-demo-chip ${cls}`.trim())
+            .html(([text]) => formatLiteralHtml(text));
         }
 
         function renderClauses(clauses) {
-          clausesContainer.innerHTML = "";
-          for (const clause of clauses) {
-            const clauseEl = document.createElement("article");
-            clauseEl.className = `solver-demo-clause ${clause.className}`.trim();
-            const literalsHtml = clause.literals.map(([text, cls]) => `<span class="solver-demo-literal ${cls}">${formatLiteralHtml(text)}</span>`).join("");
-            clauseEl.innerHTML = `
-              <div class="solver-demo-clause-header">
-                <span><strong>${formatLiteralHtml(clause.id)}</strong></span>
-                <span class="solver-demo-clause-status">${formatLiteralHtml(clause.status)}</span>
-              </div>
-              <div class="solver-demo-literals">${literalsHtml}</div>
-            `;
-            clausesContainer.appendChild(clauseEl);
-          }
+          const clauseSelection = d3.select(clausesContainer)
+            .selectAll(".solver-demo-clause")
+            .data(clauses, (clause) => clause.id)
+            .join((enter) => {
+              const clause = enter.append("article");
+              const header = clause.append("div")
+                .attr("class", "solver-demo-clause-header");
+              header.append("span").append("strong");
+              header.append("span")
+                .attr("class", "solver-demo-clause-status");
+              clause.append("div")
+                .attr("class", "solver-demo-literals");
+              return clause;
+            })
+            .attr("class", (clause) => `solver-demo-clause ${clause.className}`.trim());
+
+          clauseSelection.select(".solver-demo-clause-header strong")
+            .html((clause) => formatLiteralHtml(clause.id));
+          clauseSelection.select(".solver-demo-clause-status")
+            .html((clause) => formatLiteralHtml(clause.status));
+          clauseSelection.select(".solver-demo-literals")
+            .selectAll(".solver-demo-literal")
+            .data((clause) => clause.literals)
+            .join("span")
+            .attr("class", ([, cls]) => `solver-demo-literal ${cls}`.trim())
+            .html(([text]) => formatLiteralHtml(text));
         }
 
         function renderGraph(step) {
@@ -987,25 +1005,21 @@ loop:
             edge.classes((step.edges[edge.id()] || []).join(" "));
           }
 
-          if (step.cutPath) {
-            cut.setAttribute("d", step.cutPath);
-            cut.classList.add("visible");
-          } else {
-            cut.removeAttribute("d");
-            cut.classList.remove("visible");
-          }
+          d3.select(cut)
+            .classed("visible", Boolean(step.cutPath))
+            .attr("d", step.cutPath || null);
 
-          cutLabel.textContent = formatLiteralText(step.cutLabel);
+          d3.select(cutLabel).text(formatLiteralText(step.cutLabel));
         }
 
         function render() {
           const step = steps[current];
-          title.innerHTML = formatLiteralHtml(step.title);
-          caption.innerHTML = formatLiteralHtml(step.caption);
+          d3.select(title).html(formatLiteralHtml(step.title));
+          d3.select(caption).html(formatLiteralHtml(step.caption));
           stepLabel.textContent = `Step ${current + 1} / ${steps.length}`;
-          analysisTitle.innerHTML = formatLiteralHtml(step.analysisTitle);
-          analysis.innerHTML = formatLiteralHtml(step.analysis);
-          uip.innerHTML = formatLiteralHtml(step.uip);
+          d3.select(analysisTitle).html(formatLiteralHtml(step.analysisTitle));
+          d3.select(analysis).html(formatLiteralHtml(step.analysis));
+          d3.select(uip).html(formatLiteralHtml(step.uip));
           renderGraph(step);
           renderTrail(step.trail);
           renderClauses(step.clauses);
