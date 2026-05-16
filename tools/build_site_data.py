@@ -32,6 +32,7 @@ COLORS = {
     "08-clause-db-management": "#23657a",
     "09-root-simp-opts": "#5b6f1f",
     "minisat": "#ecab4e",
+    "minisat-core": "#8f7a27",
     "kissat-latest": "#8d3613",
     "virtual-best": "#0d8a72",
 }
@@ -115,6 +116,13 @@ SOLVERS = [
     SolverSpec(
         slug="minisat",
         label="MiniSat (simp)",
+        family="reference",
+        source_url=f"{GITHUB_TREE_BASE}/benchmarks/reference-solvers/minisat",
+        info_url="https://minisat.se/",
+    ),
+    SolverSpec(
+        slug="minisat-core",
+        label="MiniSat (core)",
         family="reference",
         source_url=f"{GITHUB_TREE_BASE}/benchmarks/reference-solvers/minisat",
         info_url="https://minisat.se/",
@@ -257,6 +265,14 @@ def find_latest_medium_run(spec: SolverSpec) -> dict | None:
     for log_slug in (spec.slug, *spec.log_aliases):
         pattern = f"bench-{log_slug}-*/summary.log"
         for summary_path in LOG_DIR.glob(pattern):
+            run_stamp_match = RUN_STAMP_RE.search(summary_path.parent.name)
+            if not run_stamp_match:
+                continue
+
+            expected_name = f"bench-{log_slug}-{run_stamp_match.group('stamp')}"
+            if summary_path.parent.name != expected_name:
+                continue
+
             results_path = summary_path.parent / "results.csv"
             if not results_path.exists():
                 continue
@@ -265,14 +281,13 @@ def find_latest_medium_run(spec: SolverSpec) -> dict | None:
             if metrics["instances"] != 100 or metrics["timeout_s"] != 1800:
                 continue
 
-            run_stamp_match = RUN_STAMP_RE.search(summary_path.parent.name)
             candidates.append(
                 {
                     "summary_path": summary_path,
                     "results_path": results_path,
                     "metrics": metrics,
                     "date": parse_summary_date(summary_path),
-                    "run_stamp": run_stamp_match.group("stamp") if run_stamp_match else "",
+                    "run_stamp": run_stamp_match.group("stamp"),
                 }
             )
 

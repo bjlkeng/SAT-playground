@@ -1,0 +1,12 @@
+=== Benchmark Results: minisat-core ===
+    Date:      Sun May  3 11:42:47 PM EDT 2026
+    Timeout:   1800s
+    Memory:    16384 MB
+
+    Instances: 100
+    Solved:    42 (25 SAT + 17 UNSAT)
+    Unsolved:  58 (57 timeout + 0 unknown + 1 error)
+
+    PAR-2:     224137.062
+
+    Results:   /home/bojji/code/SAT-playground/log/bench-minisat-core-2026-05-02-14-41-01/results.csv
