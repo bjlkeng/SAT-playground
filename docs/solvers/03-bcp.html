@@ -44,6 +44,34 @@
       .solver-demo-var sub{font-size:.68em;line-height:0}.solver-demo-neg-name{text-decoration-line:overline;text-decoration-thickness:1.5px}
       .solver-demo-card{margin-top:10px;padding:12px;border-radius:16px;border:1px solid var(--line);background:#f9fbff}
       .solver-demo-card strong{display:block;margin-bottom:6px}
+      .solver-demo-clause-list{display:grid;gap:10px;margin-top:10px}
+      .solver-demo-clause{padding:12px;border-radius:16px;border:1px solid var(--line);background:#fff}
+      .solver-demo-clause.active{border-color:rgba(15,122,216,.25);box-shadow:0 0 0 1px rgba(15,122,216,.08)}
+      .solver-demo-clause.conflict{border-color:rgba(176,68,68,.25);background:#fff8f8}
+      .solver-demo-clause.good{border-color:rgba(17,102,59,.25);background:#f3fbf6}
+      .solver-demo-clause-header{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:8px;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.76rem}
+      .solver-demo-clause-status{color:var(--muted)}
+      .solver-demo-literals{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start}
+      .solver-demo-literal{position:relative;display:inline-flex;align-items:center;padding:6px 9px;border-radius:999px;border:1px solid rgba(22,32,43,.12);background:#fff;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.78rem}
+      .solver-demo-literal.is-watched{margin-bottom:24px;border-color:rgba(15,122,216,.34);box-shadow:inset 0 0 0 1px rgba(15,122,216,.08)}
+      .solver-demo-literal.sat{color:var(--diff-add-ink);background:var(--diff-add);border-color:rgba(17,102,59,.2)}
+      .solver-demo-literal.lit-zero{color:var(--diff-del-ink);background:var(--diff-del);border-color:rgba(176,68,68,.2)}
+      .solver-demo-literal.lit-zero .solver-demo-var{text-decoration-line:line-through}
+      .solver-demo-literal.lit-zero .solver-demo-neg-name{text-decoration-line:overline line-through}
+      .solver-demo-literal.unit{color:#7a5600;background:#fff4c2;border-color:rgba(185,140,15,.28);font-weight:700}
+      .solver-demo-literal.focus{box-shadow:inset 0 0 0 1px rgba(15,122,216,.2)}
+      .solver-demo-or{align-self:center;color:var(--muted);font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.74rem}
+      .solver-demo-watch-marker{position:absolute;left:7px;top:calc(100% + 2px);display:grid;justify-items:center;gap:0;color:var(--accent);font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.58rem;font-weight:700;line-height:1;text-decoration:none;white-space:nowrap}
+      .solver-demo-watch-marker::before{content:"↑";font-size:.9rem;line-height:.72}
+      .solver-demo-watch-marker::after{content:"watch"}
+      .solver-demo-watch-list{display:grid;gap:8px;margin-top:10px}
+      .solver-demo-watch-row{display:grid;grid-template-columns:minmax(118px,max-content) minmax(0,1fr);gap:10px;align-items:center;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.76rem}
+      .solver-demo-watch-label{color:var(--muted);white-space:nowrap}
+      .solver-demo-watch-clauses{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
+      .solver-demo-watch-clause{display:inline-flex;align-items:center;min-height:28px;padding:5px 8px;border-radius:8px;border:1px solid rgba(15,122,216,.24);background:var(--accent-soft);color:var(--accent)}
+      .solver-demo-watch-row.warn .solver-demo-watch-clause{border-color:rgba(185,140,15,.3);background:#fff4c2;color:#7a5600}
+      .solver-demo-watch-row.good .solver-demo-watch-clause{border-color:rgba(17,102,59,.22);background:var(--diff-add);color:var(--diff-add-ink)}
+      .solver-demo-watch-empty{color:var(--muted)}
       .solver-demo-arrow{color:var(--muted);font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace}
       .solver-demo-bars{display:grid;gap:10px;margin-top:12px}
       .solver-demo-bar{display:grid;grid-template-columns:52px minmax(0,1fr) 48px;gap:10px;align-items:center;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.76rem}
@@ -135,7 +163,7 @@ loop:
           </div>
           <div class="solver-demo-grid">
             <div class="solver-demo-panel">
-              <h4>Clause Body</h4>
+              <h4>Clause List</h4>
               <div data-demo-pane="left"></div>
             </div>
             <div class="solver-demo-panel">
@@ -212,36 +240,55 @@ loop:
       (() => {
         const root = document.getElementById("bcp-demo");
         if (!root) return;
+        const literal = (text, cls = "", watched = false) => `<span class="solver-demo-literal ${cls}${watched ? " is-watched" : ""}">${watched ? '<span class="solver-demo-watch-marker" aria-label="watch"></span>' : ""}<span class="solver-demo-literal-text">${text}</span></span>`;
+        const clauseList = (clauses) => `<div class="solver-demo-clause-list">${clauses.map(({ id, status, className = "", literals }) => `<div class="solver-demo-clause ${className}"><div class="solver-demo-clause-header"><strong>${id}</strong><span class="solver-demo-clause-status">${status}</span></div><div class="solver-demo-literals">${literals.map(([text, cls, watched], index) => `${index ? '<span class="solver-demo-or">or</span>' : ""}${literal(text, cls, watched)}`).join("")}</div></div>`).join("")}</div>`;
+        const watchList = (rows) => `<div class="solver-demo-card"><strong>Watch lists</strong><div class="solver-demo-watch-list">${rows.map(([label, clauses, cls = ""]) => `<div class="solver-demo-watch-row ${cls}"><span class="solver-demo-watch-label">watchers[${label}]:</span><span class="solver-demo-watch-clauses">${clauses.length ? clauses.map((clause) => `<span class="solver-demo-watch-clause">${clause}</span>`).join("") : '<span class="solver-demo-watch-empty">empty</span>'}</span></div>`).join("")}</div></div>`;
+        const trailHead = (items) => `<div class="solver-demo-card"><strong>Trail head</strong><div class="solver-demo-chip-row">${items.map(([text, cls]) => `<span class="solver-demo-chip ${cls}">${text}</span>`).join("")}</div></div>`;
         const steps = [
           {
             title: "Initialize watches",
-            caption: "For C1 = (x1 or x2 or x3), the solver watches x1 and x2. The third literal is not inspected unless a watch needs to move.",
-            left: `<div class="solver-demo-card"><strong>C1 = (x1 or x2 or x3)</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip active">watch x1</span><span class="solver-demo-chip active">watch x2</span><span class="solver-demo-chip">x3 spare</span></div></div>`,
-            right: `<div class="solver-demo-card"><strong>Watch lists</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip active">watchers[x1]: C1</span><span class="solver-demo-chip active">watchers[x2]: C1</span><span class="solver-demo-chip">propagate_head = 0</span></div></div>`,
+            caption: "C1 and C2 each keep two watch pointers. The solver can find affected clauses from the watch lists instead of rescanning the whole formula.",
+            left: clauseList([
+              { id: "C1", status: "watch pair active", literals: [["x1", "active", true], ["x2", "active", true], ["x3", "", false]] },
+              { id: "C2", status: "watch pair active", literals: [["x2", "active", true], ["-x3", "active", true]] },
+            ]),
+            right: `${watchList([["x1", ["C1"], "active"], ["x2", ["C1", "C2"], "active"], ["x3", []], ["-x3", ["C2"], "active"]])}${trailHead([["propagate_head=0", "active"]])}`,
           },
           {
             title: "x1 becomes false",
-            caption: "Only watchers[x1] is scanned. The solver does not rescan every clause in the formula.",
-            left: `<div class="solver-demo-card"><strong>C1 after x1=false</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip bad">x1 false</span><span class="solver-demo-chip active">watch x2</span><span class="solver-demo-chip">x3 spare</span></div></div>`,
-            right: `<div class="solver-demo-card"><strong>Triggered list</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip warn">scan watchers[x1]</span><span class="solver-demo-chip">other watch x2 is not false</span></div></div>`,
+            caption: "Only watchers[x1] is scanned. C2 is untouched because it is not watching the falsified literal.",
+            left: clauseList([
+              { id: "C1", status: "scanned from watchers[x1]", className: "active", literals: [["x1", "lit-zero", true], ["x2", "active", true], ["x3", "", false]] },
+              { id: "C2", status: "not scanned", literals: [["x2", "active", true], ["-x3", "active", true]] },
+            ]),
+            right: `${watchList([["x1", ["C1"], "warn"], ["x2", ["C1", "C2"], "active"], ["x3", []], ["-x3", ["C2"], "active"]])}${trailHead([["scan watchers[x1]", "warn"], ["other watch x2 open", "active"]])}`,
           },
           {
             title: "Move the falsified watch",
-            caption: "Because x3 is not false, C1 moves its watch from x1 to x3 and remains unresolved.",
-            left: `<div class="solver-demo-card"><strong>C1 watch pair changes</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip bad">x1 false</span><span class="solver-demo-chip active">watch x2</span><span class="solver-demo-chip good">watch x3</span></div></div>`,
-            right: `<div class="solver-demo-card"><strong>Watch lists after move</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip">watchers[x1]: empty</span><span class="solver-demo-chip active">watchers[x2]: C1</span><span class="solver-demo-chip good">watchers[x3]: C1</span></div></div>`,
+            caption: "Because x3 is not false, C1 moves the watch from x1 to x3 and leaves watchers[x1] empty.",
+            left: clauseList([
+              { id: "C1", status: "watch moved", className: "good", literals: [["x1", "lit-zero", false], ["x2", "active", true], ["x3", "active", true]] },
+              { id: "C2", status: "unchanged", literals: [["x2", "active", true], ["-x3", "active", true]] },
+            ]),
+            right: `${watchList([["x1", []], ["x2", ["C1", "C2"], "active"], ["x3", ["C1"], "good"], ["-x3", ["C2"], "active"]])}${trailHead([["watch moved x1 → x3", "good"]])}`,
           },
           {
             title: "x2 becomes false",
-            caption: "Now watchers[x2] is scanned. No replacement literal remains, and the other watch x3 is unassigned, so C1 is unit.",
-            left: `<div class="solver-demo-card"><strong>C1 after x2=false</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip bad">x1 false</span><span class="solver-demo-chip bad">x2 false</span><span class="solver-demo-chip warn">x3 only open literal</span></div></div>`,
-            right: `<div class="solver-demo-card"><strong>Propagation result</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip warn">scan watchers[x2]</span><span class="solver-demo-chip good">enqueue x3=true</span><span class="solver-demo-chip active">advance propagate_head</span></div></div>`,
+            caption: "Now watchers[x2] contains both clauses. C1 is unit on x3, and C2 is still waiting in the same watch-list scan.",
+            left: clauseList([
+              { id: "C1", status: "unit", className: "active", literals: [["x1", "lit-zero", false], ["x2", "lit-zero", true], ["x3", "unit", true]] },
+              { id: "C2", status: "queued by watchers[x2]", className: "active", literals: [["x2", "lit-zero", true], ["-x3", "active", true]] },
+            ]),
+            right: `${watchList([["x1", []], ["x2", ["C1", "C2"], "warn"], ["x3", ["C1"], "good"], ["-x3", ["C2"], "active"]])}${trailHead([["scan watchers[x2]", "warn"], ["enqueue x3=1", "good"]])}`,
           },
           {
-            title: "Conflict if the other watch is false",
-            caption: "If another reason had already made x3 false, the same watched-literal check would report C1 as a conflict.",
-            left: `<div class="solver-demo-card"><strong>C1 conflict case</strong><div class="solver-demo-chip-row"><span class="solver-demo-chip bad">x1 false</span><span class="solver-demo-chip bad">x2 false</span><span class="solver-demo-chip bad">x3 false</span></div></div>`,
-            right: `<div class="solver-demo-card"><strong>Why this is faster than 02</strong><p>The solver reaches unit or conflict by following the trail and touched watch lists, not by scanning every clause to a fixed point.</p></div>`,
+            title: "C2 reports the conflict",
+            caption: "After x3=1 is enqueued by C1, C2 = (x2 or -x3) has both watched literals false, so the same touched watch-list scan returns a conflict.",
+            left: clauseList([
+              { id: "C1", status: "satisfied by x3", className: "good", literals: [["x1", "lit-zero", false], ["x2", "lit-zero", true], ["x3", "sat", true]] },
+              { id: "C2", status: "conflict", className: "conflict", literals: [["x2", "lit-zero", true], ["-x3", "lit-zero", true]] },
+            ]),
+            right: `${watchList([["x1", []], ["x2", ["C1", "C2"], "warn"], ["x3", ["C1"], "good"], ["-x3", ["C2"], "warn"]])}${trailHead([["x3=1 by C1", "good"], ["C2=0", "bad"]])}`,
           },
         ];
         let current = 0;
