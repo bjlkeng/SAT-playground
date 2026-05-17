@@ -27,7 +27,7 @@
       .solver-demo-caption strong{display:block;margin-bottom:4px}
       .solver-demo-legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.74rem;color:var(--muted)}
       .solver-demo-legend span{display:inline-flex;align-items:center;gap:6px;padding:5px 8px;border:1px solid var(--line);border-radius:999px;background:#fff}
-      .solver-demo-legend i{width:10px;height:10px;border-radius:999px;border:1px solid rgba(22,32,43,.14)}
+      .solver-demo-legend i{width:18px;height:18px;border-radius:999px;border:1px solid rgba(22,32,43,.14);display:inline-flex;align-items:center;justify-content:center;font-style:normal;font-weight:700;font-size:.62rem;color:var(--ink);line-height:1}
       .solver-demo-legend .good i{background:var(--diff-add);border-color:rgba(17,102,59,.25)}
       .solver-demo-legend .bad i{background:var(--diff-del);border-color:rgba(176,68,68,.25)}
       .solver-demo-legend .warn i{background:#fff4c2;border-color:rgba(185,140,15,.3)}
@@ -134,12 +134,10 @@ loop:
             </div>
           </div>
           <div class="solver-demo-legend" aria-label="Legend">
-            <span class="good"><i></i>SAT / kept</span>
-            <span class="bad"><i></i>UNSAT / removed</span>
-            <span class="warn"><i></i>unit / pending</span>
-            <span class="active"><i></i>focus</span>
-            <span>D = decision</span>
-            <span>U = unit / reason</span>
+            <span class="good"><i>1</i>kept / SAT</span>
+            <span class="bad"><i>0</i>removed / conflict</span>
+            <span class="warn"><i>U</i>unit / pending</span>
+            <span class="active"><i>F</i>focus</span>
           </div>
           <div class="solver-demo-grid">
             <div class="solver-demo-panel">
@@ -245,7 +243,7 @@ loop:
         ];
         let current=0,timer=null;
         const title=root.querySelector("[data-demo-title]"),caption=root.querySelector("[data-demo-caption]"),stepLabel=root.querySelector("[data-demo-step]"),left=root.querySelector('[data-demo-pane="left"]'),right=root.querySelector('[data-demo-pane="right"]'),back=root.querySelector('[data-demo-action="back"]'),next=root.querySelector('[data-demo-action="next"]'),play=root.querySelector('[data-demo-action="play"]');
-        function compactDemoText(value){return value.replace(/\btrue\b/g,"1").replace(/\bfalse\b/g,"0").replace(/\s+=\s+/g,"=").replace(/\bdecision level\s+(\d+)/g,"DL$1");}
+        function compactDemoText(value){return value.replace(/\s*->\s*/g," → ").replace(/\b(x\d+)\s*=\s*true\b/g,"$1=1").replace(/\b(x\d+)\s*=\s*false\b/g,"$1=0").replace(/\b(x\d+)\s+true\b/g,"$1=1").replace(/\b(x\d+)\s+false\b/g,"$1=0").replace(/\btrue\b/g,"1").replace(/\bfalse\b/g,"0").replace(/\s+=\s+/g,"=").replace(/\bdecision level\s+(\d+)/g,"DL$1");}
         function formatDemoHtml(value){return compactDemoText(value).replace(/-?x(\d+)/g,(match,digits)=>`<span class="solver-demo-var${match.startsWith("-")?" solver-demo-neg-name":""}">x<sub>${digits}</sub></span>`);}
         function stop(){if(timer!==null)window.clearInterval(timer);timer=null;play.classList.remove("is-playing");play.setAttribute("aria-label","Play");play.title="Play";}
         function render(){const step=steps[current];d3.select(title).html(formatDemoHtml(step.title));d3.select(caption).html(formatDemoHtml(step.caption));stepLabel.textContent=`Step ${current+1} / ${steps.length}`;d3.select(left).html(formatDemoHtml(step.left));d3.select(right).html(formatDemoHtml(step.right));back.disabled=current===0;next.disabled=current===steps.length-1;play.disabled=current===steps.length-1&&timer===null;}
