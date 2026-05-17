@@ -57,7 +57,7 @@
       .solver-demo-literal.sat{color:var(--diff-add-ink);background:var(--diff-add);border-color:rgba(17,102,59,.2)}
       .solver-demo-literal.lit-zero{color:var(--diff-del-ink);background:var(--diff-del);border-color:rgba(176,68,68,.2)}
       .solver-demo-literal.lit-zero .solver-demo-var{text-decoration-line:line-through}
-      .solver-demo-literal.lit-zero .solver-demo-neg-name{text-decoration-line:overline line-through}
+      .solver-demo-literal.lit-zero .solver-demo-neg-name{text-decoration-line:overline}
       .solver-demo-literal.unit{color:#7a5600;background:#fff4c2;border-color:rgba(185,140,15,.28);font-weight:700}
       .solver-demo-literal.focus{box-shadow:inset 0 0 0 1px rgba(15,122,216,.2)}
       .solver-demo-or{align-self:center;color:var(--muted);font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.74rem}
@@ -257,7 +257,7 @@ loop:
           },
           {
             title: "x1 becomes false",
-            caption: "Only watchers[x1] is scanned. Clauses watching -x1 are already satisfied by this assignment and do not need to move.",
+            caption: "The watch lists are keyed by the literal stored in the clause. When the trail adds -x1, propagation scans watchers[x1]; clauses watching -x1 are satisfied but not explicitly traversed.",
             left: clauseList([
               { id: "C1", status: "scanned from watchers[x1]", className: "active", literals: [["x1", "lit-zero", true], ["x2", "active", true], ["x3", "", false]] },
               { id: "C2", status: "not scanned", literals: [["x2", "active", true], ["-x3", "active", true]] },
@@ -268,7 +268,7 @@ loop:
           },
           {
             title: "Move the falsified watch",
-            caption: "C1 and C3 can both move their falsified x1 watch to x3, leaving watchers[x1] empty.",
+            caption: "C1 and C3 can both move their falsified x1 watch to x3, leaving watchers[x1] empty. C4 stays under watchers[-x1] because it is already satisfied.",
             left: clauseList([
               { id: "C1", status: "watch moved", className: "good", literals: [["x1", "lit-zero", false], ["x2", "active", true], ["x3", "active", true]] },
               { id: "C2", status: "unchanged", literals: [["x2", "active", true], ["-x3", "active", true]] },
@@ -279,7 +279,7 @@ loop:
           },
           {
             title: "x2 becomes false and x3 is implied",
-            caption: "watchers[x2] contains C1, C2, and C4. C1 becomes unit on x3, C4 is already satisfied by -x1, and C3 is satisfied by -x2.",
+            caption: "When the trail adds -x2, propagation scans watchers[x2]. C1 becomes unit on x3; C3 and C4 are satisfied by watched negative literals and are not explicitly traversed.",
             left: clauseList([
               { id: "C1", status: "unit", className: "active", literals: [["x1", "lit-zero", false], ["x2", "lit-zero", true], ["x3", "unit", true]] },
               { id: "C2", status: "queued by watchers[x2]", className: "active", literals: [["x2", "lit-zero", true], ["-x3", "active", true]] },
@@ -290,7 +290,7 @@ loop:
           },
           {
             title: "x3 triggers the conflict",
-            caption: "Processing the implied x3 makes -x3 false. C2 = (x2 or -x3) has both watched literals false, so BCP reports a conflict.",
+            caption: "Processing the implied x3 scans watchers[-x3]. C2 = (x2 or -x3) has both watched literals false, so BCP reports a conflict.",
             left: clauseList([
               { id: "C1", status: "satisfied by x3", className: "good", literals: [["x1", "lit-zero", false], ["x2", "lit-zero", true], ["x3", "sat", true]] },
               { id: "C2", status: "conflict", className: "conflict", literals: [["x2", "lit-zero", true], ["-x3", "lit-zero", true]] },
@@ -311,7 +311,7 @@ loop:
         const next = root.querySelector('[data-demo-action="next"]');
         const play = root.querySelector('[data-demo-action="play"]');
         function compactDemoText(value){return value.replace(/\s*->\s*/g," → ").replace(/\b(x\d+)\s*=\s*true\b/g,"$1=1").replace(/\b(x\d+)\s*=\s*false\b/g,"$1=0").replace(/\b(x\d+)\s+true\b/g,"$1=1").replace(/\b(x\d+)\s+false\b/g,"$1=0").replace(/\btrue\b/g,"1").replace(/\bfalse\b/g,"0").replace(/\s+=\s+/g,"=").replace(/\bdecision level\s+(\d+)/g,"DL$1");}
-        function formatDemoHtml(value){return compactDemoText(value).replace(/-?x(\d+)/g,(match,digits)=>`<span class="solver-demo-var${match.startsWith("-")?" solver-demo-neg-name":""}">x<sub>${digits}</sub></span>`);}
+        function formatDemoHtml(value){return compactDemoText(value).replace(/-?x(\d+)/g,(match,digits)=>match.startsWith("-")?`<span class="solver-demo-var"><span class="solver-demo-neg-name">x</span><sub>${digits}</sub></span>`:`<span class="solver-demo-var">x<sub>${digits}</sub></span>`);}
         function stop(){if(timer!==null)window.clearInterval(timer);timer=null;play.classList.remove("is-playing");play.setAttribute("aria-label","Play");play.title="Play";}
         function render(){const step=steps[current];d3.select(title).html(formatDemoHtml(step.title));d3.select(caption).html(formatDemoHtml(step.caption));stepLabel.textContent=`Step ${current+1} / ${steps.length}`;d3.select(left).html(formatDemoHtml(step.left));d3.select(right).html(formatDemoHtml(step.right));back.disabled=current===0;next.disabled=current===steps.length-1;play.disabled=current===steps.length-1&&timer===null;}
         root.addEventListener("click",(event)=>{const button=event.target.closest("[data-demo-action]");if(!button||!root.contains(button))return;const action=button.dataset.demoAction;if(action==="back")current=Math.max(0,current-1);if(action==="next")current=Math.min(steps.length-1,current+1);if(action==="reset"){stop();current=0;}if(action==="play"){if(timer===null){play.classList.add("is-playing");play.setAttribute("aria-label","Pause");play.title="Pause";timer=window.setInterval(()=>{if(current===steps.length-1){stop();render();return;}current+=1;if(current===steps.length-1)stop();render();},1600);}else{stop();}}render();});
