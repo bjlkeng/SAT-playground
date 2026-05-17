@@ -319,6 +319,16 @@
         border-color: rgba(15, 122, 216, 0.4);
       }
 
+      .dpll-demo-var sub {
+        font-size: 0.68em;
+        line-height: 0;
+      }
+
+      .dpll-demo-neg-name {
+        text-decoration-line: overline;
+        text-decoration-thickness: 1.5px;
+      }
+
       .dpll-demo-legend {
         display: flex;
         flex-wrap: wrap;
@@ -857,8 +867,38 @@
         let currentStep = 0;
         let timer = null;
 
+        const subscriptMap = new Map([["0", "₀"], ["1", "₁"], ["2", "₂"], ["3", "₃"], ["4", "₄"], ["5", "₅"], ["6", "₆"], ["7", "₇"], ["8", "₈"], ["9", "₉"]]);
+
+        function subscriptDigits(digits) {
+          return String(digits).replace(/[0-9]/g, (digit) => subscriptMap.get(digit));
+        }
+
+        function overlinePlain(name) {
+          return Array.from(name).map((char) => `${char}\u0305`).join("");
+        }
+
         function literalText(literal) {
-          return literal > 0 ? `x${literal}` : `¬x${Math.abs(literal)}`;
+          const variable = `x${subscriptDigits(Math.abs(literal))}`;
+          return literal > 0 ? variable : overlinePlain(variable);
+        }
+
+        function literalHtml(literal) {
+          const negClass = literal < 0 ? " dpll-demo-neg-name" : "";
+          return `<span class="dpll-demo-var${negClass}">x<sub>${Math.abs(literal)}</sub></span>`;
+        }
+
+        function formatMathText(text) {
+          return text.replace(/(?:¬|-)?x(\d+)/g, (match, digits) => {
+            const variable = `x${subscriptDigits(digits)}`;
+            return match.startsWith("¬") || match.startsWith("-") ? overlinePlain(variable) : variable;
+          });
+        }
+
+        function formatMathHtml(text) {
+          return text.replace(/(?:¬|-)?x(\d+)/g, (match, digits) => {
+            const negClass = match.startsWith("¬") || match.startsWith("-") ? " dpll-demo-neg-name" : "";
+            return `<span class="dpll-demo-var${negClass}">x<sub>${digits}</sub></span>`;
+          });
         }
 
         function compactBoolText(text) {
@@ -866,7 +906,7 @@
         }
 
         function trailText(literal) {
-          return literal > 0 ? `x${literal}=1` : `x${Math.abs(literal)}=0`;
+          return literal > 0 ? `x${subscriptDigits(literal)}=1` : `x${subscriptDigits(Math.abs(literal))}=0`;
         }
 
         function clauseState(clause, assignment) {
@@ -923,7 +963,7 @@
                 .join("span")
                 .attr("class", "dpll-demo-literal")
                 .attr("data-literal", String)
-                .text(literalText);
+                .html(literalHtml);
               return article;
             });
 
@@ -976,7 +1016,7 @@
                   return "root";
                 });
               item.append("strong")
-                .text((node) => compactBoolText(node.label).replace(/\s+=\s+/g, "="));
+                .html((node) => formatMathHtml(compactBoolText(node.label).replace(/\s+=\s+/g, "=")));
               item.append("small")
                 .text((node) => node.subtitle);
               return item;
@@ -1140,7 +1180,7 @@
           const caption = d3.select(captionContainer);
           caption.selectAll("*").remove();
           caption.append("strong").text(step.title);
-          caption.append("span").text(compactBoolText(step.caption));
+          caption.append("span").html(formatMathHtml(compactBoolText(step.caption)));
           backButton.disabled = currentStep === 0;
           stepButton.disabled = currentStep === steps.length - 1;
           playButton.disabled = currentStep === steps.length - 1 && timer === null;

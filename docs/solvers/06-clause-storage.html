@@ -41,6 +41,7 @@
       .solver-demo-chip.bad{color:var(--diff-del-ink);background:var(--diff-del);border-color:rgba(176,68,68,.22);text-decoration:line-through}
       .solver-demo-chip.warn{color:#7a5600;background:#fff4c2;border-color:rgba(185,140,15,.28)}
       .solver-demo-chip.active{color:var(--accent);background:var(--accent-soft);border-color:rgba(15,122,216,.28)}
+      .solver-demo-var sub{font-size:.68em;line-height:0}.solver-demo-neg-name{text-decoration-line:overline;text-decoration-thickness:1.5px}
       .solver-demo-card{margin-top:10px;padding:12px;border-radius:16px;border:1px solid var(--line);background:#f9fbff}
       .solver-demo-card strong{display:block;margin-bottom:6px}
       .solver-demo-arrow{color:var(--muted);font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace}
@@ -131,10 +132,10 @@ loop over falsified trail literals:
             </div>
           </div>
           <div class="solver-demo-legend" aria-label="Legend">
-            <span class="good"><i></i>green = SAT / kept</span>
-            <span class="bad"><i></i>red = UNSAT / removed</span>
-            <span class="warn"><i></i>yellow = unit / pending</span>
-            <span class="active"><i></i>blue = focus</span>
+            <span class="good"><i></i>SAT / kept</span>
+            <span class="bad"><i></i>UNSAT / removed</span>
+            <span class="warn"><i></i>unit / pending</span>
+            <span class="active"><i></i>focus</span>
             <span>D = decision</span>
             <span>U = unit / reason</span>
           </div>
@@ -243,8 +244,9 @@ loop over falsified trail literals:
         let current=0,timer=null;
         const title=root.querySelector("[data-demo-title]"),caption=root.querySelector("[data-demo-caption]"),stepLabel=root.querySelector("[data-demo-step]"),left=root.querySelector('[data-demo-pane="left"]'),right=root.querySelector('[data-demo-pane="right"]'),back=root.querySelector('[data-demo-action="back"]'),next=root.querySelector('[data-demo-action="next"]'),play=root.querySelector('[data-demo-action="play"]');
         function compactDemoText(value){return value.replace(/\btrue\b/g,"1").replace(/\bfalse\b/g,"0").replace(/\s+=\s+/g,"=").replace(/\bdecision level\s+(\d+)/g,"DL$1");}
+        function formatDemoHtml(value){return compactDemoText(value).replace(/-?x(\d+)/g,(match,digits)=>`<span class="solver-demo-var${match.startsWith("-")?" solver-demo-neg-name":""}">x<sub>${digits}</sub></span>`);}
         function stop(){if(timer!==null)window.clearInterval(timer);timer=null;play.classList.remove("is-playing");play.setAttribute("aria-label","Play");play.title="Play";}
-        function render(){const step=steps[current];title.textContent=compactDemoText(step.title);caption.textContent=compactDemoText(step.caption);stepLabel.textContent=`Step ${current+1} / ${steps.length}`;d3.select(left).html(compactDemoText(step.left));d3.select(right).html(compactDemoText(step.right));back.disabled=current===0;next.disabled=current===steps.length-1;play.disabled=current===steps.length-1&&timer===null;}
+        function render(){const step=steps[current];d3.select(title).html(formatDemoHtml(step.title));d3.select(caption).html(formatDemoHtml(step.caption));stepLabel.textContent=`Step ${current+1} / ${steps.length}`;d3.select(left).html(formatDemoHtml(step.left));d3.select(right).html(formatDemoHtml(step.right));back.disabled=current===0;next.disabled=current===steps.length-1;play.disabled=current===steps.length-1&&timer===null;}
         root.addEventListener("click",(event)=>{const button=event.target.closest("[data-demo-action]");if(!button||!root.contains(button))return;const action=button.dataset.demoAction;if(action==="back")current=Math.max(0,current-1);if(action==="next")current=Math.min(steps.length-1,current+1);if(action==="reset"){stop();current=0;}if(action==="play"){if(timer===null){play.classList.add("is-playing");play.setAttribute("aria-label","Pause");play.title="Pause";timer=window.setInterval(()=>{if(current===steps.length-1){stop();render();return;}current+=1;if(current===steps.length-1)stop();render();},1600);}else stop();}render();});
         render();
       })();

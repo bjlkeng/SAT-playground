@@ -248,8 +248,12 @@
         opacity: 0.95;
       }
 
+      .solver-demo-force-link.level1 {
+        stroke: #1f78c8;
+      }
+
       .solver-demo-force-link.level2 {
-        stroke: #b94b3d;
+        stroke: #4f8fd9;
       }
 
       .solver-demo-force-link.conflict-edge {
@@ -263,6 +267,16 @@
 
       .solver-demo-force-link.dim {
         opacity: 0.16;
+      }
+
+      .solver-demo-cut-edge {
+        fill: none;
+        stroke: #16263d;
+        stroke-width: 5;
+        stroke-linecap: round;
+        stroke-dasharray: 3 9;
+        opacity: 0.92;
+        pointer-events: none;
       }
 
       .solver-demo-force-label {
@@ -299,8 +313,8 @@
       }
 
       .solver-demo-force-node.level2 path {
-        fill: #fff1ef;
-        stroke: #d6503f;
+        fill: #eef6ff;
+        stroke: #4f8fd9;
       }
 
       .solver-demo-force-node.conflict path {
@@ -308,7 +322,6 @@
         stroke: #d6503f;
       }
 
-      .solver-demo-force-node.uip path,
       .solver-demo-force-node.forced path {
         fill: #f3fbf6;
         stroke: #1c8d55;
@@ -356,8 +369,8 @@
       }
 
       .solver-demo-legend .level2 i {
-        background: #fff1ef;
-        border-color: #d6503f;
+        background: #eef6ff;
+        border-color: #4f8fd9;
       }
 
       .solver-demo-legend .sat i {
@@ -368,29 +381,6 @@
       .solver-demo-legend .conflict i {
         background: var(--diff-del);
         border-color: rgba(176, 68, 68, 0.25);
-      }
-
-      .solver-demo-overlay {
-        position: absolute;
-        inset: 0;
-        z-index: 2;
-        width: 100%;
-        height: 100%;
-        pointer-events: none;
-      }
-
-      .solver-demo-cut-path {
-        fill: none;
-        stroke: #1c8d55;
-        stroke-width: 4;
-        stroke-linecap: round;
-        stroke-dasharray: 10 8;
-        opacity: 0;
-        transition: opacity 180ms ease;
-      }
-
-      .solver-demo-cut-path.visible {
-        opacity: 0.95;
       }
 
       .solver-demo-level-tag,
@@ -417,7 +407,7 @@
       }
 
       .solver-demo-level-tag.level-2 {
-        --tag-color: #d6503f;
+        --tag-color: #4f8fd9;
       }
 
       .solver-demo-cut-tag {
@@ -446,6 +436,10 @@
         display: block;
         margin-bottom: 8px;
         font-size: 0.84rem;
+      }
+
+      .solver-demo-trail-sequence {
+        flex-basis: 100%;
       }
 
       .solver-demo-row {
@@ -614,6 +608,11 @@
         text-decoration-thickness: 1.5px;
       }
 
+      .solver-demo-var sub {
+        font-size: 0.68em;
+        line-height: 0;
+      }
+
       .solver-demo-footnote {
         margin-top: 12px;
         font-size: 0.82rem;
@@ -726,10 +725,10 @@ loop:
             </div>
           </div>
           <div class="solver-demo-legend" aria-label="Legend">
-            <span class="level1"><i></i>DL1</span>
-            <span class="level2"><i></i>DL2</span>
-            <span class="sat"><i></i>green = learned / SAT</span>
-            <span class="conflict"><i></i>red = 0 / conflict</span>
+            <span class="level1"><i></i>DL1 = Decision Level 1</span>
+            <span class="level2"><i></i>DL2 = Decision Level 2</span>
+            <span class="sat"><i></i>learned / SAT</span>
+            <span class="conflict"><i></i>0 / conflict</span>
             <span>D = decision</span>
             <span>U = implied</span>
           </div>
@@ -737,31 +736,14 @@ loop:
             <div class="solver-demo-panel">
               <div class="solver-demo-panel-head">
                 <h4>Implication / Conflict Graph</h4>
-                <span class="solver-demo-chip active">fixed graph</span>
               </div>
               <div class="solver-demo-graph-shell">
                 <div class="solver-demo-graph" data-demo-graph></div>
-                <svg class="solver-demo-overlay" viewBox="0 0 620 420" aria-hidden="true">
-                  <path class="solver-demo-cut-path" data-demo-cut></path>
-                </svg>
-              </div>
-              <div class="solver-demo-graph-badges">
-                <span class="solver-demo-level-tag level-1">DL1</span>
-                <span class="solver-demo-level-tag level-2">DL2</span>
-                <span class="solver-demo-cut-tag" data-demo-cut-label>no cut yet</span>
               </div>
               <div class="solver-demo-trail" data-demo-trail></div>
             </div>
 
             <div class="solver-demo-sidebar">
-              <div class="solver-demo-note-card">
-                <strong data-demo-analysis-title></strong>
-                <p data-demo-analysis></p>
-              </div>
-              <div class="solver-demo-note-card">
-                <strong>What to notice</strong>
-                <p data-demo-uip></p>
-              </div>
               <div class="solver-demo-clause-box">
                 <div class="solver-demo-sidebar-head">
                   <h4>Clause Box</h4>
@@ -852,9 +834,6 @@ loop:
           { id: "conflict", baseX: 520, baseY: 242 },
         ].map((node) => ({ ...node, x: node.baseX, y: node.baseY, label: node.id, classes: [] }));
         const graphNodeById = new Map(graphNodes.map((node) => [node.id, node]));
-        const cut = root.querySelector("[data-demo-cut]");
-        const cutLabel = root.querySelector("[data-demo-cut-label]");
-        const UIP_CUT = "dynamic-force-cut";
         const graphLinks = [
           { id: "c1", source: "x1", target: "x3", label: "C1" },
           { id: "c2", source: "x2", target: "x4", label: "C2" },
@@ -888,14 +867,20 @@ loop:
           .attr("markerHeight", 6)
           .attr("orient", "auto")
           .append("path")
-          .attr("d", "M0,-5L10,0L0,5")
-          .attr("fill", "#8ea2b8");
+          .attr("d", "M0,-4L8,0L0,4")
+          .attr("fill", "none")
+          .attr("stroke", "context-stroke")
+          .attr("stroke-width", 1.8)
+          .attr("stroke-linecap", "round")
+          .attr("stroke-linejoin", "round");
 
         const linkSelection = graphSvg.append("g")
           .selectAll("path")
           .data(graphLinks, (link) => link.id)
           .join("path")
           .attr("marker-end", "url(#cdcl-force-arrow)");
+
+        const cutLayer = graphSvg.append("g");
 
         const edgeLabelSelection = graphSvg.append("g")
           .selectAll("text")
@@ -918,7 +903,6 @@ loop:
             return node;
           });
 
-        let graphCutVisible = false;
         const graphSimulation = d3.forceSimulation(graphNodes)
           .force("link", d3.forceLink(graphLinks).id((node) => node.id).distance(155).strength(0.9))
           .force("charge", d3.forceManyBody().strength(-760))
@@ -931,25 +915,18 @@ loop:
         const steps = [
           {
             title: "Two decision levels are created",
-            caption: "CDCL starts from the same branching idea as DPLL, but it records decision levels and keeps the implication graph structure ready for any later explanation.",
-            analysisTitle: "State on the graph",
-            analysis: "Only the decision nodes are active. x1 = true is the level-1 decision, and x2 = true is the level-2 decision.",
-            uip: "There is no 1-UIP cut yet because no conflict has been reached. The solver is only laying down decision points.",
-            cutLabel: "no cut yet",
-            cutPath: null,
+            caption: "CDCL starts like DPLL, but every assignment is recorded on a trail with a decision level and, for propagated assignments, a reason clause. The trail already shows the future implications faded out so the chronology stays fixed.",
+            cutEdges: [],
             nodes: {
-              x1: { label: "x1 = true", classes: ["decision", "level1", "focus"] },
-              x3: { label: "x3", classes: ["implied", "dim"] },
-              x2: { label: "x2 = true", classes: ["decision", "level2", "focus"] },
-              x4: { label: "x4", classes: ["implied", "dim"] },
-              x5: { label: "x5", classes: ["implied", "dim"] },
-              conflict: { label: "conflict", classes: ["conflict", "dim"] },
+              x1: { label: "x1=1", classes: ["decision", "level1", "focus"] },
+              x3: { label: "x3=1", classes: ["implied", "level1", "dim"] },
+              x2: { label: "x2=1", classes: ["decision", "level2", "focus"] },
+              x4: { label: "x4=1", classes: ["implied", "level2", "dim"] },
+              x5: { label: "x5=1", classes: ["implied", "level2", "dim"] },
+              conflict: { label: "C4=0", classes: ["conflict", "dim"] },
             },
             edges: { c1: ["dim"], c2: ["dim"], c3: ["dim"], c4a: ["dim"], c4b: ["dim"], c4c: ["dim"], learned: ["dim"] },
-            trail: [
-              { title: "decision level 1", chips: [["x1 = true", "active"], ["decision", ""]] },
-              { title: "decision level 2", chips: [["x2 = true", "bad"], ["decision", ""]] },
-            ],
+            trail: [["x1=1 D", "active"], ["x2=1 D", "active"], ["x3=1 by C1", "dim"], ["x4=1 by C2", "dim"], ["x5=1 by C3", "dim"], ["C4=0", "dim"]],
             clauses: [
               { id: "C1", status: "waiting for x1", className: "", literals: [["-x1", "false"], ["x3", ""]] },
               { id: "C2", status: "waiting for x2", className: "", literals: [["-x2", "false"], ["x4", ""]] },
@@ -958,26 +935,19 @@ loop:
             ],
           },
           {
-            title: "Propagation builds a wider level-2 cone",
-            caption: "Clause C1 forces x3 = true from x1 = true. At level 2, x2 = true forces both x4 = true through C2 and x5 = true through C3.",
-            analysisTitle: "Reason clauses",
-            analysis: "The implication fan-out is now larger. C4 has not been reported as the conflict yet, but two current-level implications are ready to feed it when the scan reaches that clause.",
-            uip: "Still no 1-UIP cut. The important change is that x4 and x5 both depend on the level-2 decision, so once C4 is detected the solver will need to push the cut backward through more than one reason.",
-            cutLabel: "reason edges only",
-            cutPath: null,
+            title: "Propagation builds the implication cone",
+            caption: "C1 implies x3=1 from x1=1. At decision level 2, x2=1 implies x4=1 through C2 and x5=1 through C3, so those propagated trail entries become active.",
+            cutEdges: [],
             nodes: {
-              x1: { label: "x1 = true", classes: ["decision", "level1"] },
-              x3: { label: "x3 = true", classes: ["implied", "level1", "focus"] },
-              x2: { label: "x2 = true", classes: ["decision", "level2"] },
-              x4: { label: "x4 = true", classes: ["implied", "level2", "focus"] },
-              x5: { label: "x5 = true", classes: ["implied", "level2", "focus"] },
-              conflict: { label: "conflict", classes: ["conflict", "dim"] },
+              x1: { label: "x1=1", classes: ["decision", "level1"] },
+              x3: { label: "x3=1", classes: ["implied", "level1", "focus"] },
+              x2: { label: "x2=1", classes: ["decision", "level2"] },
+              x4: { label: "x4=1", classes: ["implied", "level2", "focus"] },
+              x5: { label: "x5=1", classes: ["implied", "level2", "focus"] },
+              conflict: { label: "C4=0", classes: ["conflict", "dim"] },
             },
-            edges: { c1: ["active"], c2: ["active", "level2"], c3: ["active", "level2"], c4a: ["dim"], c4b: ["dim"], c4c: ["dim"], learned: ["dim"] },
-            trail: [
-              { title: "decision level 1", chips: [["x1 = true", "active"], ["x3 = true by C1", "good"]] },
-              { title: "decision level 2", chips: [["x2 = true", "bad"], ["x4 = true by C2", "warn"], ["x5 = true by C3", "warn"]] },
-            ],
+            edges: { c1: ["active", "level1"], c2: ["active", "level2"], c3: ["active", "level2"], c4a: ["dim"], c4b: ["dim"], c4c: ["dim"], learned: ["dim"] },
+            trail: [["x1=1 D", "active"], ["x2=1 D", "active"], ["x3=1 by C1 U", "good"], ["x4=1 by C2 U", "warn"], ["x5=1 by C3 U", "warn"], ["C4=0", "dim"]],
             clauses: [
               { id: "C1", status: "unit, then satisfied", className: "active", literals: [["-x1", "false focus"], ["x3", "sat focus"]] },
               { id: "C2", status: "unit, then satisfied", className: "active", literals: [["-x2", "false focus"], ["x4", "sat focus"]] },
@@ -986,26 +956,19 @@ loop:
             ],
           },
           {
-            title: "The raw conflict still has two level-2 literals",
-            caption: "Clause C4 = (-x3 or -x4 or -x5) is falsified. Because both x4 and x5 sit at level 2, the raw conflict is not yet a 1-UIP clause.",
-            analysisTitle: "Raw conflict",
-            analysis: "The conflict node is reached from x3, x4, and x5. The current-level literals in the raw conflict are x4 and x5, so the cut still needs to move backward through at least one reason.",
-            uip: "CDCL has switched from propagation to conflict analysis. The next step pushes the cut back twice: first across C3, then across C2, to reach the first UIP.",
-            cutLabel: "raw conflict: (-x3 or -x4 or -x5)",
-            cutPath: null,
+            title: "The conflict clause is falsified",
+            caption: "C4 = (-x3 or -x4 or -x5) is now 0. The raw conflict contains two decision-level-2 literals, x4 and x5, so conflict analysis must move the cut backward before it has a 1-UIP clause.",
+            cutEdges: [],
             nodes: {
-              x1: { label: "x1 = true", classes: ["decision", "level1"] },
-              x3: { label: "x3 = true", classes: ["implied", "level1"] },
-              x2: { label: "x2 = true", classes: ["decision", "level2"] },
-              x4: { label: "x4 = true", classes: ["implied", "level2"] },
-              x5: { label: "x5 = true", classes: ["implied", "level2"] },
-              conflict: { label: "C4 false", classes: ["conflict", "focus"] },
+              x1: { label: "x1=1", classes: ["decision", "level1"] },
+              x3: { label: "x3=1", classes: ["implied", "level1"] },
+              x2: { label: "x2=1", classes: ["decision", "level2"] },
+              x4: { label: "x4=1", classes: ["implied", "level2"] },
+              x5: { label: "x5=1", classes: ["implied", "level2"] },
+              conflict: { label: "C4=0", classes: ["conflict", "focus"] },
             },
-            edges: { c1: ["active"], c2: ["active", "level2"], c3: ["active", "level2"], c4a: ["active", "conflict-edge"], c4b: ["active", "conflict-edge"], c4c: ["active", "conflict-edge"], learned: ["dim"] },
-            trail: [
-              { title: "decision level 1", chips: [["x1 = true", "active"], ["x3 = true by C1", "good"]] },
-              { title: "decision level 2", chips: [["x2 = true", "bad"], ["x4 = true by C2", "warn"], ["x5 = true by C3", "warn"], ["conflict at C4", "bad"]] },
-            ],
+            edges: { c1: ["active", "level1"], c2: ["active", "level2"], c3: ["active", "level2"], c4a: ["active", "conflict-edge"], c4b: ["active", "conflict-edge"], c4c: ["active", "conflict-edge"], learned: ["dim"] },
+            trail: [["x1=1 D", "active"], ["x2=1 D", "active"], ["x3=1 by C1 U", "good"], ["x4=1 by C2 U", "warn"], ["x5=1 by C3 U", "warn"], ["C4=0", "bad"]],
             clauses: [
               { id: "C1", status: "supports x3", className: "", literals: [["-x1", "false"], ["x3", "sat"]] },
               { id: "C2", status: "supports x4", className: "", literals: [["-x2", "false"], ["x4", "sat"]] },
@@ -1014,89 +977,77 @@ loop:
             ],
           },
           {
-            title: "Push the cut back to the first UIP",
-            caption: "Conflict analysis resolves x5 away using C3, giving (-x3 or -x4 or -x2), then resolves x4 away using C2, leaving (-x3 or -x2). That final clause has exactly one level-2 literal.",
-            analysisTitle: "1-UIP cut after two pushes",
-            analysis: "The highlighted boundary is the final 1-UIP cut. Its boundary literals are x3 from the earlier level and x2 from the current level, spelling out the final learned clause (-x3 or -x2).",
-            uip: "x2 is the first UIP: every remaining path from the level-2 decision to the conflict must pass through x2, and it is the first such node encountered when the cut has been pushed back far enough.",
-            cutLabel: "1-UIP learned clause: (-x3 or -x2)",
-            cutPath: UIP_CUT,
+            title: "Start with the raw conflict cut",
+            caption: "The first dotted cut crosses the three edges into the falsified clause C4: x3->C4, x4->C4, and x5->C4. That boundary corresponds to the raw conflict clause (-x3 or -x4 or -x5).",
+            cutEdges: ["c4a", "c4b", "c4c"],
             nodes: {
-              x1: { label: "x1 = true", classes: ["decision", "level1"] },
-              x3: { label: "x3 = true", classes: ["implied", "level1", "focus"] },
-              x2: { label: "x2 = true", classes: ["decision", "level2", "uip", "focus"] },
-              x4: { label: "x4 = true", classes: ["implied", "level2"] },
-              x5: { label: "x5 = true", classes: ["implied", "level2", "dim"] },
-              conflict: { label: "C4 false", classes: ["conflict"] },
+              x1: { label: "x1=1", classes: ["decision", "level1"] },
+              x3: { label: "x3=1", classes: ["implied", "level1", "focus"] },
+              x2: { label: "x2=1", classes: ["decision", "level2"] },
+              x4: { label: "x4=1", classes: ["implied", "level2", "focus"] },
+              x5: { label: "x5=1", classes: ["implied", "level2", "focus"] },
+              conflict: { label: "C4=0", classes: ["conflict", "focus"] },
             },
-            edges: { c1: ["active"], c2: ["active", "level2"], c3: ["active", "level2", "dim"], c4a: ["active", "conflict-edge"], c4b: ["active", "conflict-edge"], c4c: ["active", "conflict-edge", "dim"], learned: ["dim"] },
-            trail: [
-              { title: "decision level 1", chips: [["x1 = true", "active"], ["x3 = true by C1", "good"]] },
-              { title: "decision level 2", chips: [["x2 = true", "warn"], ["x5 resolved away by C3", "dim"], ["x4 resolved away by C2", "dim"], ["1-UIP = x2", "active"]] },
-            ],
+            edges: { c1: ["active", "level1"], c2: ["active", "level2"], c3: ["active", "level2"], c4a: ["active", "conflict-edge"], c4b: ["active", "conflict-edge"], c4c: ["active", "conflict-edge"], learned: ["dim"] },
+            trail: [["x1=1 D", "active"], ["x2=1 D", "active"], ["x3=1 by C1 U", "good"], ["x4=1 by C2 U", "warn"], ["x5=1 by C3 U", "warn"], ["C4=0", "bad"]],
             clauses: [
-              { id: "C1", status: "parent of x3", className: "", literals: [["-x1", "false"], ["x3", "sat"]] },
-              { id: "C2", status: "used in second resolution", className: "active", literals: [["-x2", "false focus"], ["x4", "sat focus"]] },
-              { id: "C3", status: "used in first resolution", className: "", literals: [["-x2", "false focus"], ["x5", "sat focus"]] },
-              { id: "C4", status: "starting conflict clause", className: "", literals: [["-x3", "false focus"], ["-x4", "false focus"], ["-x5", "false focus"]] },
-              { id: "L", status: "final 1-UIP clause after resolving x5 then x4", className: "learned", literals: [["-x3", "focus"], ["-x2", "learned-head focus"]] },
+              { id: "C4", status: "raw cut", className: "conflict", literals: [["-x3", "false focus"], ["-x4", "false focus"], ["-x5", "false focus"]] },
             ],
           },
           {
-            title: "Backjump to level 1 and assert",
-            caption: "The learned clause still contains x3 from level 1, so the solver backjumps to level 1. There, -x3 is false, which makes (-x3 or -x2) unit and forces x2 = false.",
-            analysisTitle: "Backjump target",
-            analysis: "Everything below level 1 from the old branch is removed. x4 and x5 disappear with the abandoned level-2 search, and only the new learned implication into x2 remains.",
-            uip: "After the backjump, the learned clause becomes unit and immediately forces x2 = false. The graph now shows that implication directly with the learned edge.",
-            cutLabel: "learned clause is now asserting",
-            cutPath: null,
+            title: "Resolve through the reason for x5",
+            caption: "Move the cut backward through the reason edge x2->x5. The boundary is now x3->C4, x4->C4, and x2->x5, which corresponds to (-x3 or -x4 or -x2).",
+            cutEdges: ["c4a", "c4b", "c3"],
             nodes: {
-              x1: { label: "x1 = true", classes: ["decision", "level1"] },
-              x3: { label: "x3 = true", classes: ["implied", "level1"] },
-              x2: { label: "x2 = false", classes: ["implied", "level1", "forced", "focus"] },
-              x4: { label: "x4 (removed)", classes: ["implied", "level2", "reverted"] },
-              x5: { label: "x5 (removed)", classes: ["implied", "level2", "reverted"] },
-              conflict: { label: "old conflict", classes: ["conflict", "dim"] },
+              x1: { label: "x1=1", classes: ["decision", "level1"] },
+              x3: { label: "x3=1", classes: ["implied", "level1", "focus"] },
+              x2: { label: "x2=1", classes: ["decision", "level2", "focus"] },
+              x4: { label: "x4=1", classes: ["implied", "level2", "focus"] },
+              x5: { label: "x5=1", classes: ["implied", "level2", "dim"] },
+              conflict: { label: "C4=0", classes: ["conflict", "focus"] },
             },
-            edges: { c1: ["active"], c2: ["dim"], c3: ["dim"], c4a: ["dim"], c4b: ["dim"], c4c: ["dim"], learned: ["active", "learned"] },
-            trail: [
-              { title: "decision level 1", chips: [["x1 = true", "active"], ["x3 = true by C1", "good"], ["x2 = false by learned clause", "good"]] },
-            ],
+            edges: { c1: ["active", "level1"], c2: ["active", "level2"], c3: ["active", "level2"], c4a: ["active", "conflict-edge"], c4b: ["active", "conflict-edge"], c4c: ["active", "conflict-edge", "dim"], learned: ["dim"] },
+            trail: [["x1=1 D", "active"], ["x2=1 D", "active"], ["x3=1 by C1 U", "good"], ["x4=1 by C2 U", "warn"], ["x5=1 by C3 U", "dim"], ["C4=0", "bad"]],
             clauses: [
-              { id: "C1", status: "still explains x3", className: "", literals: [["-x1", "false"], ["x3", "sat"]] },
-              { id: "C2", status: "inactive after backjump", className: "", literals: [["-x2", "sat"], ["x4", ""]] },
-              { id: "C3", status: "inactive after backjump", className: "", literals: [["-x2", "sat"], ["x5", ""]] },
-              { id: "C4", status: "no longer active", className: "", literals: [["-x3", "false"], ["-x4", ""], ["-x5", ""]] },
-              { id: "L", status: "unit at level 1", className: "learned active", literals: [["-x3", "false focus"], ["-x2", "unit learned-head focus"]] },
+              { id: "C3", status: "reason for x5", className: "active", literals: [["-x2", "false focus"], ["x5", "sat focus"]] },
+              { id: "cut", status: "after resolving x5", className: "learned", literals: [["-x3", "focus"], ["-x4", "focus"], ["-x2", "learned-head focus"]] },
             ],
           },
           {
-            title: "The learned clause prunes future search",
-            caption: "The graph structure is unchanged, but the clause database is stronger. Whenever the search rebuilds x1 = true and x3 = true, the learned clause prevents the old level-2 cone from reappearing.",
-            analysisTitle: "What was gained",
-            analysis: "CDCL did not merely flip the latest choice. It extracted a reusable explanation for the conflict and stored it as a clause that fires before x4 and x5 can both be rebuilt.",
-            uip: "The 1-UIP clause is short, asserting, and reusable. That is why modern CDCL solvers center conflict analysis around this cut.",
-            cutLabel: "learned clause remains in the database",
-            cutPath: null,
+            title: "Resolve through the reason for x4",
+            caption: "Move the cut backward again through x2->x4. The boundary is x2->x4, x2->x5, and x3->C4. Since both level-2 cut edges now leave x2, the current-level side has one unique variable left.",
+            cutEdges: ["c2", "c3", "c4a"],
             nodes: {
-              x1: { label: "x1 = true", classes: ["decision", "level1"] },
-              x3: { label: "x3 = true", classes: ["implied", "level1"] },
-              x2: { label: "x2 = false", classes: ["implied", "level1", "forced"] },
-              x4: { label: "x4", classes: ["implied", "dim"] },
-              x5: { label: "x5", classes: ["implied", "dim"] },
-              conflict: { label: "conflict avoided", classes: ["conflict", "dim"] },
+              x1: { label: "x1=1", classes: ["decision", "level1"] },
+              x3: { label: "x3=1", classes: ["implied", "level1", "focus"] },
+              x2: { label: "x2=1", classes: ["decision", "level2", "uip", "focus"] },
+              x4: { label: "x4=1", classes: ["implied", "level2", "dim"] },
+              x5: { label: "x5=1", classes: ["implied", "level2", "dim"] },
+              conflict: { label: "C4=0", classes: ["conflict", "focus"] },
             },
-            edges: { c1: ["active"], c2: ["dim"], c3: ["dim"], c4a: ["dim"], c4b: ["dim"], c4c: ["dim"], learned: ["active", "learned"] },
-            trail: [
-              { title: "current prefix", chips: [["x1 = true", "active"], ["x3 = true by C1", "good"], ["x2 = false by learned clause", "good"]] },
-              { title: "effect", chips: [["x2 = true branch blocked early", "warn"]] },
-            ],
+            edges: { c1: ["active", "level1"], c2: ["active", "level2"], c3: ["active", "level2"], c4a: ["active", "conflict-edge"], c4b: ["active", "conflict-edge", "dim"], c4c: ["active", "conflict-edge", "dim"], learned: ["dim"] },
+            trail: [["x1=1 D", "active"], ["x2=1 D", "active"], ["x3=1 by C1 U", "good"], ["x4=1 by C2 U", "dim"], ["x5=1 by C3 U", "dim"], ["C4=0", "bad"]],
             clauses: [
-              { id: "C1", status: "satisfied", className: "", literals: [["-x1", "false"], ["x3", "sat"]] },
-              { id: "C2", status: "would no longer force x4 here", className: "", literals: [["-x2", "sat"], ["x4", ""]] },
-              { id: "C3", status: "would no longer force x5 here", className: "", literals: [["-x2", "sat"], ["x5", ""]] },
-              { id: "C4", status: "avoided by earlier pruning", className: "", literals: [["-x3", "false"], ["-x4", ""], ["-x5", ""]] },
-              { id: "L", status: "reusable learned clause", className: "learned", literals: [["-x3", "false"], ["-x2", "sat learned-head"]] },
+              { id: "C2", status: "reason for x4", className: "active", literals: [["-x2", "false focus"], ["x4", "sat focus"]] },
+              { id: "cut", status: "after resolving x4", className: "learned", literals: [["-x3", "focus"], ["-x2", "learned-head focus"]] },
+            ],
+          },
+          {
+            title: "The cut is now 1-UIP",
+            caption: "A first-UIP cut has exactly one current-level variable on the conflict side. Here that variable is x2, so CDCL learns (-x2 or -x3). Because -x3 is already false at decision level 1, this learned clause will force the solver to backtrack and then assert -x2.",
+            cutEdges: ["c2", "c3", "c4a"],
+            nodes: {
+              x1: { label: "x1=1", classes: ["decision", "level1"] },
+              x3: { label: "x3=1", classes: ["implied", "level1", "focus"] },
+              x2: { label: "x2=1", classes: ["decision", "level2", "uip", "focus"] },
+              x4: { label: "x4=1", classes: ["implied", "level2", "dim"] },
+              x5: { label: "x5=1", classes: ["implied", "level2", "dim"] },
+              conflict: { label: "C4=0", classes: ["conflict", "focus"] },
+            },
+            edges: { c1: ["active", "level1"], c2: ["active", "level2"], c3: ["active", "level2"], c4a: ["active", "conflict-edge"], c4b: ["active", "conflict-edge", "dim"], c4c: ["active", "conflict-edge", "dim"], learned: ["active", "learned"] },
+            trail: [["x1=1 D", "active"], ["x2=1 D", "active"], ["x3=1 by C1 U", "good"], ["x4=1 by C2 U", "dim"], ["x5=1 by C3 U", "dim"], ["C4=0", "bad"]],
+            clauses: [
+              { id: "L", status: "1-UIP learned clause", className: "learned active", literals: [["-x2", "learned-head focus"], ["-x3", "focus"]] },
             ],
           },
         ];
@@ -1112,9 +1063,6 @@ loop:
         const play = root.querySelector('[data-demo-action="play"]');
         const trailContainer = root.querySelector("[data-demo-trail]");
         const clausesContainer = root.querySelector("[data-demo-clauses]");
-        const analysisTitle = root.querySelector("[data-demo-analysis-title]");
-        const analysis = root.querySelector("[data-demo-analysis]");
-        const uip = root.querySelector("[data-demo-uip]");
 
         function escapeHtml(text) {
           return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -1130,16 +1078,28 @@ loop:
             .replace(/\bby learned clause\b/g, "by L");
         }
 
+        const subscriptMap = new Map([["0", "₀"], ["1", "₁"], ["2", "₂"], ["3", "₃"], ["4", "₄"], ["5", "₅"], ["6", "₆"], ["7", "₇"], ["8", "₈"], ["9", "₉"]]);
+
+        function subscriptDigits(digits) {
+          return digits.replace(/[0-9]/g, (digit) => subscriptMap.get(digit));
+        }
+
         function overlinePlain(name) {
           return Array.from(name).map((char) => `${char}\u0305`).join("");
         }
 
         function formatLiteralText(text) {
-          return compactBoolText(text).replace(/-x(\d+)/g, (_, digits) => overlinePlain(`x${digits}`));
+          return compactBoolText(text).replace(/-?x(\d+)/g, (match, digits) => {
+            const variable = `x${subscriptDigits(digits)}`;
+            return match.startsWith("-") ? overlinePlain(variable) : variable;
+          });
         }
 
         function formatLiteralHtml(text) {
-          return escapeHtml(compactBoolText(text)).replace(/-x(\d+)/g, (_, digits) => `<span class="solver-demo-neg-name">x${digits}</span>`);
+          return escapeHtml(compactBoolText(text)).replace(/-?x(\d+)/g, (match, digits) => {
+            const negClass = match.startsWith("-") ? " solver-demo-neg-name" : "";
+            return `<span class="solver-demo-var${negClass}">x<sub>${digits}</sub></span>`;
+          });
         }
 
         function nodePath(node) {
@@ -1148,7 +1108,7 @@ loop:
         }
 
         function splitNodeLabel(label) {
-          return label.includes("=") ? label.split("=") : [label];
+          return [label];
         }
 
         function linkPath(link) {
@@ -1161,22 +1121,19 @@ loop:
           return `M ${link.source.x} ${link.source.y} Q ${mx} ${my} ${link.target.x} ${link.target.y}`;
         }
 
-        function updateCutPath(show) {
-          if (!show) {
-            d3.select(cut).classed("visible", false).attr("d", null);
-            return;
-          }
-
-          const x3 = graphNodeById.get("x3");
-          const x2 = graphNodeById.get("x2");
-          const x4 = graphNodeById.get("x4");
-          const conflict = graphNodeById.get("conflict");
-          const path = [
-            `M ${x3.x - 68} ${x3.y + 46}`,
-            `C ${x3.x + 2} ${x3.y + 76}, ${x4.x + 30} ${x4.y + 44}, ${conflict.x - 56} ${conflict.y - 38}`,
-            `C ${conflict.x - 90} ${conflict.y + 34}, ${x4.x - 16} ${x4.y + 84}, ${x2.x + 66} ${x2.y + 48}`,
-          ].join(" ");
-          d3.select(cut).classed("visible", true).attr("d", path);
+        function updateCutEdges(ids) {
+          const activeSet = new Set(ids || []);
+          cutLayer.selectAll(".solver-demo-cut-edge")
+            .data(graphLinks.filter((link) => activeSet.has(link.id)), (link) => link.id)
+            .join(
+              (enter) => enter.append("path")
+                .attr("class", "solver-demo-cut-edge")
+                .attr("d", linkPath)
+                .style("opacity", 0)
+                .call((selection) => selection.transition().duration(180).style("opacity", 0.92)),
+              (update) => update.call((selection) => selection.transition().duration(180).attr("d", linkPath).style("opacity", 0.92)),
+              (exit) => exit.call((selection) => selection.transition().duration(120).style("opacity", 0).remove()),
+            );
         }
 
         function tickGraph() {
@@ -1186,11 +1143,11 @@ loop:
           });
 
           linkSelection.attr("d", linkPath);
+          cutLayer.selectAll(".solver-demo-cut-edge").attr("d", linkPath);
           edgeLabelSelection
             .attr("x", (link) => (link.source.x + link.target.x) / 2)
             .attr("y", (link) => (link.source.y + link.target.y) / 2 - 10);
           nodeSelection.attr("transform", (node) => `translate(${node.x} ${node.y})`);
-          updateCutPath(graphCutVisible);
         }
 
         function graphDragStarted(event, node) {
@@ -1221,13 +1178,13 @@ loop:
           play.title = "Play";
         }
 
-        function renderTrail(blocks) {
+        function renderTrail(items) {
           const blockSelection = d3.select(trailContainer)
             .selectAll(".solver-demo-trail-block")
-            .data(blocks, (block) => block.title)
+            .data([items])
             .join((enter) => {
               const block = enter.append("div")
-                .attr("class", "solver-demo-trail-block");
+                .attr("class", "solver-demo-trail-block solver-demo-trail-sequence");
               block.append("strong");
               block.append("div")
                 .attr("class", "solver-demo-row");
@@ -1235,11 +1192,11 @@ loop:
             });
 
           blockSelection.select("strong")
-            .text((block) => compactBoolText(block.title));
+            .text("Trail");
 
           blockSelection.select(".solver-demo-row")
             .selectAll(".solver-demo-chip")
-            .data((block) => block.chips)
+            .data((block) => block)
             .join("span")
             .attr("class", ([, cls]) => `solver-demo-chip ${cls}`.trim())
             .html(([text]) => formatLiteralHtml(text));
@@ -1298,14 +1255,11 @@ loop:
             .data((node) => splitNodeLabel(node.label))
             .join("tspan")
             .attr("x", 0)
-            .attr("dy", (_part, index) => index === 0 ? "-0.35em" : "1.25em")
+            .attr("dy", "0.35em")
             .text((part) => part);
 
-          graphCutVisible = Boolean(step.cutPath);
-          updateCutPath(graphCutVisible);
+          updateCutEdges(step.cutEdges);
           graphSimulation.alpha(0.38).restart();
-
-          d3.select(cutLabel).text(formatLiteralText(step.cutLabel));
         }
 
         function render() {
@@ -1313,9 +1267,6 @@ loop:
           d3.select(title).html(formatLiteralHtml(step.title));
           d3.select(caption).html(formatLiteralHtml(step.caption));
           stepLabel.textContent = `Step ${current + 1} / ${steps.length}`;
-          d3.select(analysisTitle).html(formatLiteralHtml(step.analysisTitle));
-          d3.select(analysis).html(formatLiteralHtml(step.analysis));
-          d3.select(uip).html(formatLiteralHtml(step.uip));
           renderGraph(step);
           renderTrail(step.trail);
           renderClauses(step.clauses);
