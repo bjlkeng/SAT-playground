@@ -310,7 +310,7 @@
       .solver-demo-force-node text {
         fill: #142131;
         font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-        font-size: 18px;
+        font-size: 24px;
         font-weight: 700;
         text-anchor: middle;
         dominant-baseline: middle;
@@ -855,6 +855,7 @@ loop:
 
         const graphWidth = 620;
         const graphHeight = 500;
+        const nodeLabelFontSize = 24;
         const graphNodes = [
           { id: "x1", baseX: 74, baseY: 82 },
           { id: "x3", baseX: 310, baseY: 62 },
@@ -1098,7 +1099,7 @@ loop:
           },
           {
             title: "The learned clause asserts x2=0",
-            caption: "Because x3 is already 0 at DL1, this learned clause asserts x2=0.",
+            caption: "Because x3=1 at DL1, this learned clause asserts x2=0.",
             cutEdges: [],
             nodes: {
               x1: { label: "x1=1", classes: ["decision", "level1"] },
@@ -1112,10 +1113,10 @@ loop:
             trail: [["x1=1 D", "active"], ["x3=1 by C1 U", "warn"], ["x2=0 by L U", "warn"]],
             clauses: [
               { id: "C1", status: "supports x3", className: "", literals: [["-x1", "false"], ["x3", "sat"]] },
-              { id: "C2", status: "reason hidden", className: "", literals: [["-x2", "false"], ["x4", "sat"]] },
-              { id: "C3", status: "reason hidden", className: "", literals: [["-x2", "false"], ["x5", "sat"]] },
-              { id: "C4", status: "conflict hidden", className: "conflict", literals: [["-x3", "false"], ["-x4", "false"], ["-x5", "false"]] },
-              { id: "L", status: "1-UIP learned clause", className: "learned active", literals: [["-x2", "learned-head focus"], ["-x3", "focus"]] },
+              { id: "C2", status: "satisfied by -x2", className: "", literals: [["-x2", "sat focus"], ["x4", ""]] },
+              { id: "C3", status: "satisfied by -x2", className: "", literals: [["-x2", "sat focus"], ["x5", ""]] },
+              { id: "C4", status: "waiting on x4/x5", className: "", literals: [["-x3", "false focus"], ["-x4", ""], ["-x5", ""]] },
+              { id: "L", status: "1-UIP learned clause", className: "learned active", literals: [["-x2", "sat focus"], ["-x3", "false focus"]] },
             ],
           },
         ];
@@ -1408,12 +1409,17 @@ loop:
             .attr("class", (node) => `solver-demo-force-node ${node.classes.join(" ")}`.trim());
           nodeSelection.select("path")
             .attr("d", nodePath);
-          nodeSelection.select("text")
+          const nodeTextSelection = nodeSelection.select("text")
+            .attr("font-size", nodeLabelFontSize)
+            .style("font-size", `${nodeLabelFontSize}px`);
+          nodeTextSelection
             .selectAll("tspan")
             .data((node) => splitNodeLabel(node.label))
             .join("tspan")
             .attr("x", 0)
             .attr("dy", "0.35em")
+            .attr("font-size", nodeLabelFontSize)
+            .style("font-size", `${nodeLabelFontSize}px`)
             .text((part) => part);
 
           updateCutEdges(step.cutEdges);
