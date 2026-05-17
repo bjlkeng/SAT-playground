@@ -278,7 +278,6 @@
       .dpll-demo-clause-state {
         font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
         font-size: 0.76rem;
-        text-transform: uppercase;
         letter-spacing: 0.08em;
       }
 
@@ -356,6 +355,8 @@
         background:
           linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(248, 250, 255, 0.88)),
           radial-gradient(circle at top center, rgba(15, 122, 216, 0.08), transparent 40%);
+        overflow: hidden;
+        touch-action: none;
       }
 
       .dpll-demo-tree svg {
@@ -363,7 +364,7 @@
         inset: 0;
         width: 100%;
         height: 100%;
-        overflow: visible;
+        overflow: hidden;
       }
 
       .dpll-demo-tree-line {
@@ -572,12 +573,10 @@
             </div>
           </div>
           <div class="dpll-demo-legend" aria-label="Legend">
-            <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: rgba(231, 245, 238, 0.95); border-color: rgba(17, 102, 59, 0.24);"></span>green = SAT</span>
-            <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: rgba(253, 233, 233, 0.95); border-color: rgba(176, 68, 68, 0.2);"></span>red = 0 / UNSAT</span>
-            <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: rgba(255, 244, 194, 0.98); border-color: rgba(185, 140, 15, 0.3);"></span>yellow = U</span>
-            <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: var(--accent-soft); border-color: rgba(15, 122, 216, 0.3);"></span>blue = D</span>
-            <span class="dpll-demo-legend-item">D = decision</span>
-            <span class="dpll-demo-legend-item">U = unit</span>
+            <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: rgba(231, 245, 238, 0.95); border-color: rgba(17, 102, 59, 0.24);"></span>SAT</span>
+            <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: rgba(253, 233, 233, 0.95); border-color: rgba(176, 68, 68, 0.2);"></span>0 / UNSAT</span>
+            <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: rgba(255, 244, 194, 0.98); border-color: rgba(185, 140, 15, 0.3);"></span>U = unit</span>
+            <span class="dpll-demo-legend-item"><span class="dpll-demo-legend-swatch" style="background: var(--accent-soft); border-color: rgba(15, 122, 216, 0.3);"></span>D = decision</span>
           </div>
 
           <div class="dpll-demo-trail" id="dpll-demo-trail"></div>
@@ -591,7 +590,7 @@
             <div class="dpll-demo-panel">
               <h4>Decision Tree</h4>
               <div class="dpll-demo-tree" id="dpll-demo-tree">
-                <svg viewBox="0 0 100 110" preserveAspectRatio="none" aria-hidden="true">
+                <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
                   <g id="dpll-demo-tree-lines"></g>
                 </svg>
                 <div id="dpll-demo-tree-nodes"></div>
@@ -606,7 +605,7 @@
               <button class="dpll-demo-button" type="button" id="dpll-demo-step" data-icon="next" aria-label="Next step" title="Next step"></button>
               <button class="dpll-demo-button" type="button" id="dpll-demo-reset" data-icon="reset" aria-label="Reset" title="Reset"></button>
             </div>
-            <div class="dpll-demo-step" id="dpll-demo-step-label">Step 1 / 11</div>
+            <div class="dpll-demo-step" id="dpll-demo-step-label">Step 1 / 10</div>
             <label class="dpll-demo-step" for="dpll-demo-speed">Speed</label>
             <select class="dpll-demo-select" id="dpll-demo-speed">
               <option value="2200">Slow</option>
@@ -673,16 +672,15 @@
         ];
 
         const nodes = {
-          root: { id: "root", label: "start", subtitle: "root", kind: "root", x: 50, y: 10, parent: null },
-          x1t: { id: "x1t", label: "x1 = true", subtitle: "D", kind: "decision", x: 23, y: 26, parent: "root" },
-          x3t: { id: "x3t", label: "x3 = true", subtitle: "C2", kind: "unit", x: 23, y: 44, parent: "x1t" },
-          x4t: { id: "x4t", label: "x4 = true", subtitle: "C3", kind: "unit", x: 23, y: 62, parent: "x3t" },
-          conflict: { id: "conflict", label: "C4", subtitle: "UNSAT", kind: "conflict", x: 23, y: 80, parent: "x4t" },
-          x1f: { id: "x1f", label: "x1 = false", subtitle: "D", kind: "decision", x: 77, y: 26, parent: "root" },
-          x2t: { id: "x2t", label: "x2 = true", subtitle: "C1", kind: "unit", x: 77, y: 44, parent: "x1f" },
-          x5t: { id: "x5t", label: "x5 = true", subtitle: "C5", kind: "unit", x: 77, y: 62, parent: "x2t" },
-          x3f: { id: "x3f", label: "x3 = false", subtitle: "D", kind: "decision", x: 77, y: 80, parent: "x5t" },
-          sat: { id: "sat", label: "SAT", subtitle: "done", kind: "sat", x: 77, y: 96, parent: "x3f" },
+          root: { id: "root", label: "start", subtitle: "root", kind: "root", x: 50, y: 14, parent: null },
+          x1t: { id: "x1t", label: "x1 = true", subtitle: "D", kind: "decision", x: 24, y: 30, parent: "root" },
+          x3t: { id: "x3t", label: "x3 = true", subtitle: "C2", kind: "unit", x: 24, y: 48, parent: "x1t" },
+          x4t: { id: "x4t", label: "x4 = true", subtitle: "C3", kind: "unit", x: 24, y: 66, parent: "x3t" },
+          conflict: { id: "conflict", label: "C4", subtitle: "UNSAT", kind: "conflict", x: 24, y: 84, parent: "x4t" },
+          x1f: { id: "x1f", label: "x1 = false", subtitle: "D", kind: "decision", x: 76, y: 30, parent: "root" },
+          x2t: { id: "x2t", label: "x2 = true", subtitle: "C1", kind: "unit", x: 76, y: 48, parent: "x1f" },
+          x5t: { id: "x5t", label: "x5 = true", subtitle: "C5", kind: "unit", x: 76, y: 66, parent: "x2t" },
+          x3f: { id: "x3f", label: "x3 = false", subtitle: "SAT", kind: "sat", x: 76, y: 84, parent: "x5t" },
         };
 
         const steps = [
@@ -818,8 +816,8 @@
             successNodes: [],
           },
           {
-            title: "Decision",
-            caption: "No new unit clause remains, so DPLL makes another explicit decision: x3 = false.",
+            title: "SAT branch",
+            caption: "No new unit clause remains, so DPLL decides x3 = 0. That satisfies the remaining clauses, so this branch returns SAT.",
             assignment: { 1: false, 2: true, 5: true, 3: false },
             trail: [
               { literal: -1, kind: "decision" },
@@ -832,24 +830,7 @@
             focusClauses: ["C3", "C4"],
             failedNodes: ["conflict"],
             backtrackedNodes: ["x1t", "x3t", "x4t"],
-            successNodes: [],
-          },
-          {
-            title: "SAT",
-            caption: "With x3 = false, clauses C3 and C4 are satisfied by ¬x3. Every clause now holds, so DPLL returns SAT on this branch.",
-            assignment: { 1: false, 2: true, 5: true, 3: false },
-            trail: [
-              { literal: -1, kind: "decision" },
-              { literal: 2, kind: "unit" },
-              { literal: 5, kind: "unit" },
-              { literal: -3, kind: "decision" },
-            ],
-            visible: ["root", "x1t", "x3t", "x4t", "conflict", "x1f", "x2t", "x5t", "x3f", "sat"],
-            activeNode: "sat",
-            focusClauses: ["C2", "C3", "C4"],
-            failedNodes: ["conflict"],
-            backtrackedNodes: ["x1t", "x3t", "x4t"],
-            successNodes: ["x1f", "x2t", "x5t", "x3f", "sat"],
+            successNodes: ["x1f", "x2t", "x5t", "x3f"],
           },
         ];
 
@@ -1021,6 +1002,11 @@
         function tickTree() {
           if (!treeNodeSelection || !treeLineSelection) return;
 
+          treeNodeSelection.each((node) => {
+            node.x = Math.max(10, Math.min(90, node.x));
+            node.y = Math.max(9, Math.min(91, node.y));
+          });
+
           treeLineSelection
             .attr("x1", (edge) => edge.source.x)
             .attr("y1", (edge) => edge.source.y)
@@ -1041,10 +1027,8 @@
 
         function treeDragged(event, node) {
           const rect = treeBox.getBoundingClientRect();
-          const rawX = Math.max(6, Math.min(94, (event.x / rect.width) * 100));
-          const rawY = Math.max(7, Math.min(103, (event.y / rect.height) * 110));
-          node.fx = node.targetX + Math.max(-10, Math.min(10, rawX - node.targetX));
-          node.fy = node.targetY + Math.max(-12, Math.min(12, rawY - node.targetY));
+          node.fx = Math.max(10, Math.min(90, (event.x / rect.width) * 100));
+          node.fy = Math.max(9, Math.min(91, (event.y / rect.height) * 100));
         }
 
         function treeDragEnded(event, node) {
@@ -1114,7 +1098,7 @@
             clauseEl.classList.toggle("is-conflict", step.conflictClause === clause.id || state.kind === "conflict");
             stateEl.textContent = step.conflictClause === clause.id
               ? "UNSAT"
-              : ({ satisfied: "SAT", conflict: "UNSAT", unit: "U", unresolved: "open" }[state.kind] || state.kind);
+              : ({ satisfied: "SAT", conflict: "UNSAT", unit: "Unit", unresolved: "Open" }[state.kind] || state.kind);
 
             clauseEl.querySelectorAll(".dpll-demo-literal").forEach((literalEl) => {
               const literal = Number(literalEl.dataset.literal);
