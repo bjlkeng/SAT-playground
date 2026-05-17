@@ -167,7 +167,6 @@ loop:
               <div data-demo-pane="left"></div>
             </div>
             <div class="solver-demo-panel">
-              <h4>Watch Lists And Trail Head</h4>
               <div data-demo-pane="right"></div>
             </div>
           </div>
@@ -243,52 +242,62 @@ loop:
         const literal = (text, cls = "", watched = false) => `<span class="solver-demo-literal ${cls}${watched ? " is-watched" : ""}">${watched ? '<span class="solver-demo-watch-marker" aria-label="watch"></span>' : ""}<span class="solver-demo-literal-text">${text}</span></span>`;
         const clauseList = (clauses) => `<div class="solver-demo-clause-list">${clauses.map(({ id, status, className = "", literals }) => `<div class="solver-demo-clause ${className}"><div class="solver-demo-clause-header"><strong>${id}</strong><span class="solver-demo-clause-status">${status}</span></div><div class="solver-demo-literals">${literals.map(([text, cls, watched], index) => `${index ? '<span class="solver-demo-or">or</span>' : ""}${literal(text, cls, watched)}`).join("")}</div></div>`).join("")}</div>`;
         const watchList = (rows) => `<div class="solver-demo-card"><strong>Watch lists</strong><div class="solver-demo-watch-list">${rows.map(([label, clauses, cls = ""]) => `<div class="solver-demo-watch-row ${cls}"><span class="solver-demo-watch-label">watchers[${label}]:</span><span class="solver-demo-watch-clauses">${clauses.length ? clauses.map((clause) => `<span class="solver-demo-watch-clause">${clause}</span>`).join("") : '<span class="solver-demo-watch-empty">empty</span>'}</span></div>`).join("")}</div></div>`;
-        const trailHead = (items) => `<div class="solver-demo-card"><strong>Trail head</strong><div class="solver-demo-chip-row">${items.map(([text, cls]) => `<span class="solver-demo-chip ${cls}">${text}</span>`).join("")}</div></div>`;
+        const trail = (items) => `<div class="solver-demo-card"><strong>Trail</strong><div class="solver-demo-chip-row">${items.length ? items.map(([text, cls]) => `<span class="solver-demo-chip ${cls}">${text}</span>`).join("") : '<span class="solver-demo-watch-empty">empty</span>'}</div></div>`;
         const steps = [
           {
             title: "Initialize watches",
-            caption: "C1 and C2 each keep two watch pointers. The solver can find affected clauses from the watch lists instead of rescanning the whole formula.",
+            caption: "Every clause keeps two watch pointers. The solver can find affected clauses from the watch lists instead of rescanning the whole formula.",
             left: clauseList([
               { id: "C1", status: "watch pair active", literals: [["x1", "active", true], ["x2", "active", true], ["x3", "", false]] },
               { id: "C2", status: "watch pair active", literals: [["x2", "active", true], ["-x3", "active", true]] },
+              { id: "C3", status: "watch pair active", literals: [["x1", "active", true], ["-x2", "active", true], ["x3", "", false]] },
+              { id: "C4", status: "watch pair active", literals: [["x2", "active", true], ["-x1", "active", true]] },
             ]),
-            right: `${watchList([["x1", ["C1"], "active"], ["x2", ["C1", "C2"], "active"], ["x3", []], ["-x3", ["C2"], "active"]])}${trailHead([["propagate_head=0", "active"]])}`,
+            right: `${watchList([["x1", ["C1", "C3"], "active"], ["-x1", ["C4"], "active"], ["x2", ["C1", "C2", "C4"], "active"], ["-x2", ["C3"], "active"], ["x3", []], ["-x3", ["C2"], "active"]])}${trail([])}`,
           },
           {
             title: "x1 becomes false",
-            caption: "Only watchers[x1] is scanned. C2 is untouched because it is not watching the falsified literal.",
+            caption: "Only watchers[x1] is scanned. Clauses watching -x1 are already satisfied by this assignment and do not need to move.",
             left: clauseList([
               { id: "C1", status: "scanned from watchers[x1]", className: "active", literals: [["x1", "lit-zero", true], ["x2", "active", true], ["x3", "", false]] },
               { id: "C2", status: "not scanned", literals: [["x2", "active", true], ["-x3", "active", true]] },
+              { id: "C3", status: "scanned from watchers[x1]", className: "active", literals: [["x1", "lit-zero", true], ["-x2", "active", true], ["x3", "", false]] },
+              { id: "C4", status: "satisfied by -x1", className: "good", literals: [["x2", "active", true], ["-x1", "sat", true]] },
             ]),
-            right: `${watchList([["x1", ["C1"], "warn"], ["x2", ["C1", "C2"], "active"], ["x3", []], ["-x3", ["C2"], "active"]])}${trailHead([["scan watchers[x1]", "warn"], ["other watch x2 open", "active"]])}`,
+            right: `${watchList([["x1", ["C1", "C3"], "warn"], ["-x1", ["C4"], "good"], ["x2", ["C1", "C2", "C4"], "active"], ["-x2", ["C3"], "active"], ["x3", []], ["-x3", ["C2"], "active"]])}${trail([["-x1", "active"]])}`,
           },
           {
             title: "Move the falsified watch",
-            caption: "Because x3 is not false, C1 moves the watch from x1 to x3 and leaves watchers[x1] empty.",
+            caption: "C1 and C3 can both move their falsified x1 watch to x3, leaving watchers[x1] empty.",
             left: clauseList([
               { id: "C1", status: "watch moved", className: "good", literals: [["x1", "lit-zero", false], ["x2", "active", true], ["x3", "active", true]] },
               { id: "C2", status: "unchanged", literals: [["x2", "active", true], ["-x3", "active", true]] },
+              { id: "C3", status: "watch moved", className: "good", literals: [["x1", "lit-zero", false], ["-x2", "active", true], ["x3", "active", true]] },
+              { id: "C4", status: "satisfied by -x1", className: "good", literals: [["x2", "active", true], ["-x1", "sat", true]] },
             ]),
-            right: `${watchList([["x1", []], ["x2", ["C1", "C2"], "active"], ["x3", ["C1"], "good"], ["-x3", ["C2"], "active"]])}${trailHead([["watch moved x1 → x3", "good"]])}`,
+            right: `${watchList([["x1", []], ["-x1", ["C4"], "good"], ["x2", ["C1", "C2", "C4"], "active"], ["-x2", ["C3"], "active"], ["x3", ["C1", "C3"], "good"], ["-x3", ["C2"], "active"]])}${trail([["-x1", "active"]])}`,
           },
           {
-            title: "x2 becomes false",
-            caption: "Now watchers[x2] contains both clauses. C1 is unit on x3, and C2 is still waiting in the same watch-list scan.",
+            title: "x2 becomes false and x3 is implied",
+            caption: "watchers[x2] contains C1, C2, and C4. C1 becomes unit on x3, C4 is already satisfied by -x1, and C3 is satisfied by -x2.",
             left: clauseList([
               { id: "C1", status: "unit", className: "active", literals: [["x1", "lit-zero", false], ["x2", "lit-zero", true], ["x3", "unit", true]] },
               { id: "C2", status: "queued by watchers[x2]", className: "active", literals: [["x2", "lit-zero", true], ["-x3", "active", true]] },
+              { id: "C3", status: "satisfied by -x2", className: "good", literals: [["x1", "lit-zero", false], ["-x2", "sat", true], ["x3", "active", true]] },
+              { id: "C4", status: "satisfied by -x1", className: "good", literals: [["x2", "lit-zero", true], ["-x1", "sat", true]] },
             ]),
-            right: `${watchList([["x1", []], ["x2", ["C1", "C2"], "warn"], ["x3", ["C1"], "good"], ["-x3", ["C2"], "active"]])}${trailHead([["scan watchers[x2]", "warn"], ["enqueue x3=1", "good"]])}`,
+            right: `${watchList([["x1", []], ["-x1", ["C4"], "good"], ["x2", ["C1", "C2", "C4"], "warn"], ["-x2", ["C3"], "good"], ["x3", ["C1", "C3"], "good"], ["-x3", ["C2"], "active"]])}${trail([["-x1", "active"], ["-x2", "active"], ["x3 by C1", "good"]])}`,
           },
           {
-            title: "C2 reports the conflict",
-            caption: "After x3=1 is enqueued by C1, C2 = (x2 or -x3) has both watched literals false, so the same touched watch-list scan returns a conflict.",
+            title: "x3 triggers the conflict",
+            caption: "Processing the implied x3 makes -x3 false. C2 = (x2 or -x3) has both watched literals false, so BCP reports a conflict.",
             left: clauseList([
               { id: "C1", status: "satisfied by x3", className: "good", literals: [["x1", "lit-zero", false], ["x2", "lit-zero", true], ["x3", "sat", true]] },
               { id: "C2", status: "conflict", className: "conflict", literals: [["x2", "lit-zero", true], ["-x3", "lit-zero", true]] },
+              { id: "C3", status: "satisfied", className: "good", literals: [["x1", "lit-zero", false], ["-x2", "sat", true], ["x3", "sat", true]] },
+              { id: "C4", status: "satisfied by -x1", className: "good", literals: [["x2", "lit-zero", true], ["-x1", "sat", true]] },
             ]),
-            right: `${watchList([["x1", []], ["x2", ["C1", "C2"], "warn"], ["x3", ["C1"], "good"], ["-x3", ["C2"], "warn"]])}${trailHead([["x3=1 by C1", "good"], ["C2=0", "bad"]])}`,
+            right: `${watchList([["x1", []], ["-x1", ["C4"], "good"], ["x2", ["C1", "C2", "C4"], "warn"], ["-x2", ["C3"], "good"], ["x3", ["C1", "C3"], "good"], ["-x3", ["C2"], "warn"]])}${trail([["-x1", "active"], ["-x2", "active"], ["x3 by C1", "good"]])}`,
           },
         ];
         let current = 0;
