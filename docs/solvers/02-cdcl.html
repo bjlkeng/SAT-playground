@@ -220,7 +220,7 @@
       .solver-demo-graph {
         position: relative;
         z-index: 1;
-        height: 460px;
+        height: 500px;
       }
 
       .solver-demo-force-svg {
@@ -310,7 +310,7 @@
       .solver-demo-force-node text {
         fill: #142131;
         font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-        font-size: 16px;
+        font-size: 18px;
         font-weight: 700;
         text-anchor: middle;
         dominant-baseline: middle;
@@ -662,11 +662,11 @@
         }
 
         .solver-demo-graph {
-          height: 380px;
+          height: 400px;
         }
 
         .solver-demo-graph-shell {
-          min-height: 380px;
+          min-height: 400px;
         }
 
         .solver-demo-button,
@@ -854,14 +854,14 @@ loop:
         if (!root || typeof d3 === "undefined") return;
 
         const graphWidth = 620;
-        const graphHeight = 460;
+        const graphHeight = 500;
         const graphNodes = [
-          { id: "x1", baseX: 96, baseY: 82 },
-          { id: "x3", baseX: 315, baseY: 68 },
-          { id: "x2", baseX: 96, baseY: 352 },
-          { id: "x4", baseX: 390, baseY: 230 },
-          { id: "x5", baseX: 315, baseY: 392 },
-          { id: "conflict", baseX: 540, baseY: 248 },
+          { id: "x1", baseX: 74, baseY: 82 },
+          { id: "x3", baseX: 310, baseY: 62 },
+          { id: "x2", baseX: 74, baseY: 390 },
+          { id: "x4", baseX: 420, baseY: 248 },
+          { id: "x5", baseX: 310, baseY: 438 },
+          { id: "conflict", baseX: 562, baseY: 268 },
         ].map((node) => ({ ...node, x: node.baseX, y: node.baseY, label: node.id, classes: [] }));
         const graphNodeById = new Map(graphNodes.map((node) => [node.id, node]));
         const graphLinks = [
@@ -936,11 +936,11 @@ loop:
           });
 
         const graphSimulation = d3.forceSimulation(graphNodes)
-          .force("link", d3.forceLink(graphLinks).id((node) => node.id).distance(175).strength(0.9))
-          .force("charge", d3.forceManyBody().strength(-900))
+          .force("link", d3.forceLink(graphLinks).id((node) => node.id).distance(195).strength(0.9))
+          .force("charge", d3.forceManyBody().strength(-1060))
           .force("x", d3.forceX((node) => node.baseX).strength(0.62))
           .force("y", d3.forceY((node) => node.baseY).strength(0.64))
-          .force("collide", d3.forceCollide(68))
+          .force("collide", d3.forceCollide(74))
           .alphaDecay(0.075)
           .on("tick", tickGraph);
 
@@ -951,10 +951,10 @@ loop:
             cutEdges: [],
             nodes: {
               x1: { label: "x1=1", classes: ["decision", "level1", "focus"] },
-              x3: { label: "x3=1", classes: ["implied", "level1", "dim"] },
+              x3: { label: "x3=1", classes: ["implied", "level1", "dim", "trail-implied"] },
               x2: { label: "x2=1", classes: ["decision", "level2", "focus"] },
-              x4: { label: "x4=1", classes: ["implied", "level2", "dim"] },
-              x5: { label: "x5=1", classes: ["implied", "level2", "dim"] },
+              x4: { label: "x4=1", classes: ["implied", "level2", "dim", "trail-implied"] },
+              x5: { label: "x5=1", classes: ["implied", "level2", "dim", "trail-implied"] },
               conflict: { label: "C4=0", classes: ["conflict", "dim"] },
             },
             edges: { c1: ["dim"], c2: ["dim"], c3: ["dim"], c4a: ["dim"], c4b: ["dim"], c4c: ["dim"], learned: ["dim"] },
@@ -1026,7 +1026,8 @@ loop:
               { id: "C1", status: "supports x3", className: "", literals: [["-x1", "false"], ["x3", "sat"]] },
               { id: "C2", status: "supports x4", className: "", literals: [["-x2", "false"], ["x4", "sat"]] },
               { id: "C3", status: "supports x5", className: "", literals: [["-x2", "false"], ["x5", "sat"]] },
-              { id: "C4", status: "raw cut", className: "conflict", literals: [["-x3", "false focus"], ["-x4", "false focus"], ["-x5", "false focus"]] },
+              { id: "C4", status: "conflict clause", className: "conflict", literals: [["-x3", "false focus"], ["-x4", "false focus"], ["-x5", "false focus"]] },
+              { id: "cut", status: "raw cut", className: "cut", literals: [["-x3", "focus"], ["-x4", "focus"], ["-x5", "focus"]] },
             ],
           },
           {
@@ -1057,10 +1058,10 @@ loop:
             cutEdges: ["c4a", "c2", "c3"],
             nodes: {
               x1: { label: "x1=1", classes: ["decision", "level1"] },
-              x3: { label: "x3=1", classes: ["implied", "level1", "focus"] },
+              x3: { label: "x3=1", classes: ["implied", "level1", "focus", "trail-implied"] },
               x2: { label: "x2=1", classes: ["decision", "level2", "uip", "focus"] },
-              x4: { label: "x4=1", classes: ["implied", "level2", "dim"] },
-              x5: { label: "x5=1", classes: ["implied", "level2", "dim"] },
+              x4: { label: "x4=1", classes: ["implied", "level2", "dim", "trail-implied"] },
+              x5: { label: "x5=1", classes: ["implied", "level2", "dim", "trail-implied"] },
               conflict: { label: "C4=0", classes: ["conflict", "focus"] },
             },
             edges: { c1: ["active", "level1"], c2: ["active", "level2"], c3: ["active", "level2"], c4a: ["active", "conflict-edge"], c4b: ["active", "conflict-edge", "dim"], c4c: ["active", "conflict-edge", "dim"], learned: ["dim"] },
@@ -1075,14 +1076,36 @@ loop:
           },
           {
             title: "The cut is now 1-UIP",
-            caption: "A first-UIP cut has exactly one current-level variable on the conflict side. Here that variable is x2, so CDCL learns (-x2 or -x3). Because -x3 is already false at decision level 1, this learned clause asserts x2=0.",
+            caption: "A first-UIP cut has exactly one current-level variable on the conflict side. Here that variable is x2, so CDCL learns (-x2 or -x3).",
+            cutEdges: ["c4a", "c2", "c3"],
+            nodes: {
+              x1: { label: "x1=1", classes: ["decision", "level1"] },
+              x3: { label: "x3=1", classes: ["implied", "level1", "focus", "trail-implied"] },
+              x2: { label: "x2=1", classes: ["decision", "level2", "uip", "focus"] },
+              x4: { label: "x4=1", classes: ["implied", "level2", "dim", "trail-implied"] },
+              x5: { label: "x5=1", classes: ["implied", "level2", "dim", "trail-implied"] },
+              conflict: { label: "C4=0", classes: ["conflict", "focus"] },
+            },
+            edges: { c1: ["active", "level1"], c2: ["active", "level2"], c3: ["active", "level2"], c4a: ["active", "conflict-edge"], c4b: ["active", "conflict-edge", "dim"], c4c: ["active", "conflict-edge", "dim"], learned: ["dim"] },
+            trail: [["x1=1 D", "active"], ["x2=1 D", "active"], ["x3=1 by C1 U", "warn"], ["x4=1 by C2 U", "dim"], ["x5=1 by C3 U", "dim"], ["C4=0", "bad"]],
+            clauses: [
+              { id: "C1", status: "supports x3", className: "", literals: [["-x1", "false"], ["x3", "sat"]] },
+              { id: "C2", status: "reason for x4", className: "active", literals: [["-x2", "false focus"], ["x4", "sat focus"]] },
+              { id: "C3", status: "reason for x5", className: "", literals: [["-x2", "false"], ["x5", "sat"]] },
+              { id: "C4", status: "conflict clause", className: "conflict", literals: [["-x3", "false focus"], ["-x4", "false"], ["-x5", "false"]] },
+              { id: "L", status: "1-UIP learned clause", className: "learned active", literals: [["-x3", "focus"], ["-x2", "learned-head focus"]] },
+            ],
+          },
+          {
+            title: "The learned clause asserts x2=0",
+            caption: "Because x3 is already 0 at DL1, this learned clause asserts x2=0.",
             cutEdges: [],
             nodes: {
               x1: { label: "x1=1", classes: ["decision", "level1"] },
               x3: { label: "x3=1", classes: ["implied", "level1", "focus", "trail-implied"] },
               x2: { label: "x2=0", classes: ["implied", "level1", "uip", "focus", "trail-implied"] },
-              x4: { label: "x4=1", classes: ["implied", "level2", "dim"] },
-              x5: { label: "x5=1", classes: ["implied", "level2", "dim"] },
+              x4: { label: "x4=1", classes: ["implied", "level2", "dim", "trail-implied"] },
+              x5: { label: "x5=1", classes: ["implied", "level2", "dim", "trail-implied"] },
               conflict: { label: "C4=0", classes: ["conflict", "dim"] },
             },
             edges: { c1: ["active", "level1"], c2: ["hidden-edge"], c3: ["hidden-edge"], c4a: ["hidden-edge"], c4b: ["hidden-edge"], c4c: ["hidden-edge"], learned: ["active", "learned"] },
