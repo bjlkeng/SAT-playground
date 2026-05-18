@@ -25,13 +25,6 @@
       .solver-demo-button[data-demo-action="reset"]::after{position:absolute;right:8px;top:9px;width:0;height:0;border-left:5px solid currentColor;border-top:3px solid transparent;border-bottom:3px solid transparent;transform:rotate(20deg)}
       .solver-demo-caption{margin-top:14px;padding:14px 16px;border-radius:18px;border:1px solid rgba(15,122,216,.14);background:rgba(255,255,255,.88)}
       .solver-demo-caption strong{display:block;margin-bottom:4px}
-      .solver-demo-legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.74rem;color:var(--muted)}
-      .solver-demo-legend span{display:inline-flex;align-items:center;gap:6px;padding:5px 8px;border:1px solid var(--line);border-radius:999px;background:#fff}
-      .solver-demo-legend i{width:18px;height:18px;border-radius:999px;border:1px solid rgba(22,32,43,.14);display:inline-flex;align-items:center;justify-content:center;font-style:normal;font-weight:700;font-size:.62rem;color:var(--ink);line-height:1}
-      .solver-demo-legend .good i{background:var(--diff-add);border-color:rgba(17,102,59,.25)}
-      .solver-demo-legend .bad i{background:var(--diff-del);border-color:rgba(176,68,68,.25)}
-      .solver-demo-legend .warn i{background:#fff4c2;border-color:rgba(185,140,15,.3)}
-      .solver-demo-legend .active i{background:var(--accent-soft);border-color:rgba(15,122,216,.3)}
       .solver-demo-grid{display:grid;gap:16px;margin-top:16px}
       .solver-demo-panel{min-height:260px;padding:16px;border-radius:18px;border:1px solid var(--line);background:rgba(255,255,255,.9)}
       .solver-demo-panel h4{margin:0 0 10px;font-size:.98rem}
@@ -138,12 +131,6 @@ loop:
                 activity, then the heap picks the highest-activity unassigned variable.
               </p>
             </div>
-          </div>
-          <div class="solver-demo-legend" aria-label="Legend">
-            <span class="good"><i>1</i>kept / SAT</span>
-            <span class="bad"><i>0</i>removed / conflict</span>
-            <span class="warn"><i>U</i>unit / pending</span>
-            <span class="active"><i>F</i>focus</span>
           </div>
           <div class="solver-demo-grid">
             <div class="solver-demo-panel">
