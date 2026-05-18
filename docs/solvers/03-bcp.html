@@ -270,9 +270,9 @@ loop:
             title: "Move the falsified watch",
             caption: "C1 and C3 can both move their falsified x1 watch to x3, leaving watchers[x1] empty. C4 stays under watchers[-x1] because it is already satisfied.",
             left: clauseList([
-              { id: "C1", status: "watch moved", className: "good", literals: [["x1", "lit-zero", false], ["x2", "active", true], ["x3", "active", true]] },
+              { id: "C1", status: "watch moved", className: "active", literals: [["x1", "lit-zero", false], ["x2", "active", true], ["x3", "active", true]] },
               { id: "C2", status: "unchanged", literals: [["x2", "active", true], ["-x3", "active", true]] },
-              { id: "C3", status: "watch moved", className: "good", literals: [["x1", "lit-zero", false], ["-x2", "active", true], ["x3", "active", true]] },
+              { id: "C3", status: "watch moved", className: "active", literals: [["x1", "lit-zero", false], ["-x2", "active", true], ["x3", "active", true]] },
               { id: "C4", status: "satisfied by -x1", className: "good", literals: [["x2", "active", true], ["-x1", "sat", true]] },
             ]),
             right: `${watchList([["x1", []], ["-x1", ["C4"], "good"], ["x2", ["C1", "C2", "C4"], "active"], ["-x2", ["C3"], "active"], ["x3", ["C1", "C3"], "good"], ["-x3", ["C2"], "active"]])}${trail([["-x1", "active"]])}`,
