@@ -33,8 +33,3 @@ benchmarks/sat-comp-2025-medium/*
 !benchmarks/sat-comp-2025-medium/MANIFEST.txt
 benchmarks/reference-solvers/*
 !benchmarks/reference-solvers/.gitkeep
-
-# Beads / Dolt files (added by bd init)
-.dolt/
-*.db
-.beads-credential-key

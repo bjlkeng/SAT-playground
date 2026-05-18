@@ -1,7 +1,0 @@
-{
-  "database": "dolt",
-  "backend": "dolt",
-  "dolt_mode": "embedded",
-  "dolt_database": "SAT_playground",
-  "project_id": "df472d39-f67b-4d2a-a506-a01fd4b7c532"
-}
