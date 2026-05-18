@@ -495,6 +495,26 @@ bd close <id>           # Complete work
 bd prime                # Refresh Beads context
 ```
 
+### Beads Viewer (`bv`)
+
+`bv` is installed at `~/.local/bin/bv` as a terminal sidecar for browsing and analyzing Beads. It reads `.beads/beads.jsonl`, so refresh that export after changing beads:
+
+```bash
+bd export -o .beads/beads.jsonl
+```
+
+For agent/automation use, do **not** run bare `bv` because it opens the interactive TUI. Use robot commands instead:
+
+```bash
+bv --robot-help       # list robot commands and contracts
+bv --robot-triage     # full triage JSON with top picks, blockers, health
+bv --robot-next       # single highest-priority recommendation
+bv --robot-plan       # dependency-respecting execution tracks
+bv --robot-insights   # graph metrics, bottlenecks, cycles, critical paths
+```
+
+Use `bd` as the source of truth for creating, updating, closing, and linking beads. Use `bv` for read-only triage, graph insight, and planning output. Do not hand-edit `.beads/beads.jsonl`; regenerate it with `bd export` when needed.
+
 ### Rules
 
 - Use `bd` for all task tracking; do not create markdown TODO lists.
