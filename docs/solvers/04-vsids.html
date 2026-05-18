@@ -248,9 +248,9 @@ loop:
             bumped: ["x2", "x4"],
             conflict: {
               title: "Conflict C17",
-              literals: ["-x2", "x4", "x1"],
+              literals: ["-x2", "x4", "x6"],
               bumped: ["x2", "x4"],
-              note: "Variables x2 and x4 are touched by analysis, so their bars grow and move to the top of the heap order.",
+              note: "x6 is in the conflicting clause, but this trace treats it as a root-level fixed literal outside the branch heap. Solver 04 skips level-0 variables when collecting activity bumps, so only x2 and x4 grow and move to the top.",
             },
           },
           {
@@ -268,23 +268,23 @@ loop:
           {
             title: "Conflict 3 keeps recent variables hot",
             caption: "Repeated conflict participation keeps activity high, so the heap order follows the latest failing region.",
-            scores: { x1: 1.0, x2: 6.4, x3: 4.4, x4: 6.6, x5: 7.0 },
-            bumped: ["x2", "x5"],
+            scores: { x1: 1.0, x2: 6.4, x3: 5.8, x4: 6.6, x5: 7.0 },
+            bumped: ["x2", "x3", "x5"],
             conflict: {
               title: "Conflict C31",
-              literals: ["x2", "-x5", "-x1"],
-              bumped: ["x2", "x5"],
-              note: "x5 becomes the top candidate and x2 climbs again, while x1 stays low because it has not been analyzed recently.",
+              literals: ["x2", "-x5", "-x3"],
+              bumped: ["x2", "x3", "x5"],
+              note: "The third literal is x3 from another non-root decision level, not the root literal from C17. x5 becomes the top candidate while x2 and x3 climb again.",
             },
           },
           {
             title: "Multiplicative decay",
-            caption: "This step shows the usual VSIDS decay intuition: old scores shrink so future bumps matter more. In the current implementation the equivalent effect normally appears after a larger conflict-count trigger, so it can take longer before the visible rescale happens.",
-            scores: { x1: 0.6, x2: 3.8, x3: 2.6, x4: 4.0, x5: 4.2 },
+            caption: "This visual example multiplies every activity by 0.60: x5 7.0→4.2, x4 6.6→4.0, x2 6.4→3.8, x3 5.8→3.5, and x1 1.0→0.6. Repeating that multiplication is exponential decay. The exact factor is illustrative; the point is that old scores compress so the next bump has more relative weight.",
+            scores: { x1: 0.6, x2: 3.8, x3: 3.5, x4: 4.0, x5: 4.2 },
             bumped: [],
             conflict: {
               title: "Decay step",
-              note: "Scores keep the same relative history but compress downward, increasing the impact of the next conflict bump.",
+              note: "Example factor: activity = activity × 0.60. Applying this repeatedly is equivalent to exponential decay. Solver implementations often encode the same idea by increasing future bump size, but the visible effect here is shown as a direct score shrink.",
             },
           },
           {
