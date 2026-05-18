@@ -404,7 +404,6 @@ impl Solver {
             None
         };
         let mut remove_pos = None;
-        let mut write_pos = 0usize;
         let mut strengthened = std::mem::take(&mut self.scratch_preprocess_clause);
         strengthened.clear();
         strengthened.reserve(clause_len.saturating_sub(1));
@@ -417,10 +416,6 @@ impl Solver {
             }
             strengthened.push(lit);
             strengthened_abstraction |= 1u64 << ((lit.unsigned_abs() - 1) & 31);
-            if clause_len > 2 && remove_pos.is_some() && write_pos != lit_pos {
-                self.set_clause_lit(clause_idx, write_pos, lit);
-            }
-            write_pos += 1;
         }
 
         let Some(_remove_pos) = remove_pos else {
@@ -429,6 +424,7 @@ impl Solver {
         };
 
         proof_log.record_clause(&strengthened);
+        proof_log.record_deletion(self.clause_slice(clause_idx));
         self.stats.preprocess_strengthened_clauses += 1;
 
         if clause_len == 2 {
@@ -460,6 +456,9 @@ impl Solver {
         Self::touch_preprocess_var(touched, touched_flags, remove_var);
 
         self.detach_clause(clause_idx);
+        for (lit_pos, &lit) in strengthened.iter().enumerate() {
+            self.set_clause_lit(clause_idx, lit_pos, lit);
+        }
 
         let header = self.clause_header(clause_idx);
         self.arena[clause_idx] = clause_make_header(
@@ -834,6 +833,7 @@ impl Solver {
                 ) {
                     SubsumptionOutcome::None => {}
                     SubsumptionOutcome::Subsumed => {
+                        proof_log.record_deletion(self.clause_slice(candidate_idx));
                         self.remove_original_clause_preprocess(
                             candidate_idx,
                             touched,
@@ -1060,7 +1060,9 @@ impl Solver {
         self.branch_heap_remove(var);
         self.stats.preprocess_eliminated_vars += 1;
 
+        let mut proof_deletions = Vec::with_capacity(pos_clauses.len() + neg_clauses.len());
         for &clause_idx in pos_clauses.iter().chain(neg_clauses.iter()) {
+            proof_deletions.push(self.clause_slice(clause_idx).to_vec());
             self.remove_original_clause_preprocess(clause_idx, touched, touched_flags);
         }
         if var < self.occurs.len() {
@@ -1089,6 +1091,10 @@ impl Solver {
                 }
                 self.scratch_preprocess_clause = resolvent;
             }
+        }
+
+        for clause in &proof_deletions {
+            proof_log.record_deletion(clause);
         }
 
         true

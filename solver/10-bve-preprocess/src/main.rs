@@ -116,7 +116,16 @@ struct ProofStream {
     temp_path: PathBuf,
     file: fs::File,
     buffer: Vec<u8>,
+    scratch: Vec<i32>,
     capacity: usize,
+    trace: bool,
+    clause_count: u64,
+    literal_count: u64,
+    deletion_count: u64,
+    deletion_literal_count: u64,
+    max_clause_len: usize,
+    bytes_written: u64,
+    flush_count: u64,
 }
 
 struct ProofLog {
@@ -176,22 +185,56 @@ impl ProofLog {
                 temp_path,
                 file,
                 buffer: Vec::with_capacity(capacity),
+                scratch: Vec::new(),
                 capacity,
+                trace: env::var_os("SAT_TRACE_PROOF").is_some(),
+                clause_count: 0,
+                literal_count: 0,
+                deletion_count: 0,
+                deletion_literal_count: 0,
+                max_clause_len: 0,
+                bytes_written: 0,
+                flush_count: 0,
             }),
         }
     }
 
     fn record_clause(&mut self, clause: &[i32]) {
         if let ProofMode::Stream(stream) = &mut self.mode {
-            stream.buffer.reserve(clause.len() * 12 + 2);
-            for &lit in clause {
-                append_i32_ascii(&mut stream.buffer, lit);
-                stream.buffer.push(b' ');
-            }
-            stream.buffer.extend_from_slice(b"0\n");
-            if stream.buffer.len() >= stream.capacity {
-                Self::flush_stream(stream);
-            }
+            stream.clause_count += 1;
+            stream.literal_count += clause.len() as u64;
+            stream.max_clause_len = stream.max_clause_len.max(clause.len());
+            Self::write_clause_line(stream, b"", clause);
+        }
+    }
+
+    fn record_deletion(&mut self, clause: &[i32]) {
+        if let ProofMode::Stream(stream) = &mut self.mode {
+            stream.deletion_count += 1;
+            stream.deletion_literal_count += clause.len() as u64;
+            stream.max_clause_len = stream.max_clause_len.max(clause.len());
+            Self::write_clause_line(stream, b"d ", clause);
+        }
+    }
+
+    fn write_clause_line(stream: &mut ProofStream, prefix: &[u8], clause: &[i32]) {
+        stream.scratch.clear();
+        stream.scratch.extend_from_slice(clause);
+        stream.scratch.sort_unstable_by(|&lhs, &rhs| {
+            lhs.unsigned_abs()
+                .cmp(&rhs.unsigned_abs())
+                .then_with(|| lhs.cmp(&rhs))
+        });
+
+        stream.buffer.reserve(prefix.len() + clause.len() * 12 + 2);
+        stream.buffer.extend_from_slice(prefix);
+        for idx in 0..stream.scratch.len() {
+            append_i32_ascii(&mut stream.buffer, stream.scratch[idx]);
+            stream.buffer.push(b' ');
+        }
+        stream.buffer.extend_from_slice(b"0\n");
+        if stream.buffer.len() >= stream.capacity {
+            Self::flush_stream(stream);
         }
     }
 
@@ -209,6 +252,7 @@ impl ProofLog {
         match std::mem::replace(&mut self.mode, ProofMode::Disabled) {
             ProofMode::Disabled => {}
             ProofMode::Stream(mut stream) => {
+                stream.clause_count += 1;
                 stream
                     .buffer
                     .write_all(b"0\n")
@@ -225,6 +269,22 @@ impl ProofLog {
                     );
                     std::process::exit(1);
                 });
+                if stream.trace {
+                    let proof_bytes = fs::metadata(&stream.final_path)
+                        .map(|metadata| metadata.len())
+                        .unwrap_or(stream.bytes_written);
+                    eprintln!(
+                        "c proof_detail additions={} addition_literals={} deletions={} deletion_literals={} max_clause_lits={} bytes={} flushes={} path={}",
+                        stream.clause_count,
+                        stream.literal_count,
+                        stream.deletion_count,
+                        stream.deletion_literal_count,
+                        stream.max_clause_len,
+                        proof_bytes,
+                        stream.flush_count,
+                        stream.final_path.display(),
+                    );
+                }
             }
         }
     }
@@ -237,6 +297,8 @@ impl ProofLog {
             .file
             .write_all(&stream.buffer)
             .expect("Failed to write proof buffer");
+        stream.bytes_written += stream.buffer.len() as u64;
+        stream.flush_count += 1;
         stream.buffer.clear();
     }
 }
@@ -2006,6 +2068,11 @@ impl Solver {
     }
 
     fn reduce_db(&mut self) {
+        let mut proof_log = ProofLog::disabled();
+        self.reduce_db_with_proof(&mut proof_log);
+    }
+
+    fn reduce_db_with_proof(&mut self, proof_log: &mut ProofLog) {
         self.stats.reduce_db_calls += 1;
 
         let arena = &self.arena;
@@ -2035,6 +2102,7 @@ impl Solver {
                 && !self.clause_locked(clause_idx)
                 && (idx < half || self.clause_activity(clause_idx) < extra_lim)
             {
+                proof_log.record_deletion(self.clause_slice(clause_idx));
                 self.detach_clause(clause_idx);
                 self.mark_clause_deleted_already_unlinked(clause_idx);
             } else {
@@ -2421,7 +2489,7 @@ impl Solver {
                             .saturating_sub(self.trail.len())
                             >= self.reduce_db_limit
                     {
-                        self.reduce_db();
+                        self.reduce_db_with_proof(proof_log);
                     }
 
                     match self.pick_branch_lit() {
@@ -3351,6 +3419,7 @@ mod tests {
         let unsat_dir = make_temp_dir("proof-unsat");
         let mut unsat_proof = ProofLog::new(&unsat_dir, 32);
         unsat_proof.record_clause(&[1, -2]);
+        unsat_proof.record_deletion(&[3, -4]);
         unsat_proof.finish_unsat();
 
         let unsat_path = unsat_dir.join("proof.out");
@@ -3363,6 +3432,10 @@ mod tests {
         assert!(
             unsat_text.contains("1 -2 0\n"),
             "expected learned clause to be serialized before finalization"
+        );
+        assert!(
+            unsat_text.contains("d 3 -4 0\n"),
+            "expected deleted clause to be serialized in DRAT deletion format"
         );
         assert!(
             unsat_text.ends_with("0\n"),
