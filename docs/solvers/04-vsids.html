@@ -45,10 +45,22 @@
       .solver-demo-card{margin-top:10px;padding:12px;border-radius:16px;border:1px solid var(--line);background:#f9fbff}
       .solver-demo-card strong{display:block;margin-bottom:6px}
       .solver-demo-arrow{color:var(--muted);font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace}
-      .solver-demo-bars{display:grid;gap:10px;margin-top:12px}
-      .solver-demo-bar{display:grid;grid-template-columns:52px minmax(0,1fr) 48px;gap:10px;align-items:center;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.76rem}
+      .solver-demo-rank-note{margin:0 0 8px;color:var(--muted);font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.72rem}
+      .solver-demo-bars{position:relative;display:block;margin-top:12px;min-height:228px}
+      .solver-demo-bar{position:absolute;left:0;right:0;display:grid;grid-template-columns:52px minmax(0,1fr) 48px;gap:10px;align-items:center;height:36px;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.76rem;will-change:transform,opacity}
+      .solver-demo-var-label,.solver-demo-score{white-space:nowrap}
+      .solver-demo-bar.top .solver-demo-var-label{color:var(--accent);font-weight:700}
+      .solver-demo-bar.bumped .solver-demo-var-label,.solver-demo-bar.bumped .solver-demo-score{color:#7a5600;font-weight:700}
       .solver-demo-track{height:12px;border-radius:999px;background:rgba(22,32,43,.08);overflow:hidden}
-      .solver-demo-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),#e05a47)}
+      .solver-demo-fill{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),#e05a47)}
+      .solver-demo-clause-card{margin-top:10px;padding:12px;border-radius:16px;border:1px solid rgba(176,68,68,.25);background:#fff8f8}
+      .solver-demo-clause-card.neutral{border-color:var(--line);background:#f9fbff}
+      .solver-demo-clause-card strong{display:block;margin-bottom:6px}
+      .solver-demo-clause-card p{margin-top:10px}
+      .solver-demo-literals{display:flex;flex-wrap:wrap;gap:7px;align-items:center;margin-top:10px}
+      .solver-demo-literal{display:inline-flex;align-items:center;min-height:30px;padding:6px 9px;border-radius:999px;border:1px solid rgba(176,68,68,.22);background:var(--diff-del);color:var(--diff-del-ink);font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.76rem}
+      .solver-demo-literal.bump{color:#7a5600;background:#fff4c2;border-color:rgba(185,140,15,.28);font-weight:700}
+      .solver-demo-or{color:var(--muted);font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.72rem}
       @media (min-width:820px){.solver-demo-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
       @media (max-width:620px){.solver-demo{padding:18px}.solver-demo-controls{gap:8px}.solver-demo-button{width:34px;height:34px}.solver-demo-step{font-size:.72rem}}
     </style>
@@ -139,7 +151,7 @@ loop:
               <div data-demo-pane="left"></div>
             </div>
             <div class="solver-demo-panel">
-              <h4>Heap Decision View</h4>
+              <h4>Conflict Clause</h4>
               <div data-demo-pane="right"></div>
             </div>
           </div>
@@ -202,46 +214,118 @@ loop:
       (() => {
         const root = document.getElementById("vsids-demo");
         if (!root) return;
-        const bars = (scores) => `<div class="solver-demo-bars">${scores.map(([name,value]) => `<div class="solver-demo-bar"><span>${name}</span><span class="solver-demo-track"><span class="solver-demo-fill" style="width:${value}%"></span></span><span>${(value/20).toFixed(1)}</span></div>`).join("")}</div>`;
-        const heap = (items) => `<div class="solver-demo-chip-row">${items.map(([name,cls]) => `<span class="solver-demo-chip ${cls}">${name}</span>`).join("")}</div>`;
+        const variables = ["x1", "x2", "x3", "x4", "x5"];
+        const rowHeight = 42;
+        const transitionMs = 220;
+        const activityColor = d3.scaleLinear().domain([1, 14]).range(["#7aa7df", "#e05a47"]);
+        const literalName = (literal) => literal.replace("-", "");
+        const conflictCard = (config) => {
+          if (!config.literals) {
+            return `<div class="solver-demo-clause-card neutral"><strong>${config.title}</strong><p>${config.note}</p></div>`;
+          }
+          const literals = config.literals.map((literal, index) => {
+            const cls = config.bumped.includes(literalName(literal)) ? "solver-demo-literal bump" : "solver-demo-literal";
+            const spacer = index === 0 ? "" : `<span class="solver-demo-or">or</span>`;
+            return `${spacer}<span class="${cls}">${literal}</span>`;
+          }).join("");
+          return `<div class="solver-demo-clause-card"><strong>${config.title}</strong><div class="solver-demo-literals">${literals}</div><p>${config.note}</p></div>`;
+        };
         const steps = [
           {
             title: "Before the first conflict",
-            caption: "The inherited occurrence-order tie-break still exists, but all dynamic activity is flat.",
-            left: bars([["x1",20],["x2",20],["x3",20],["x4",20],["x5",20]]),
-            right: `<div class="solver-demo-card"><strong>Branch queue</strong>${heap([["x1 tie-break","active"],["x2 tie-break",""],["x3 tie-break",""],["x4 tie-break",""],["x5 tie-break",""]])}</div>`,
+            caption: "The inherited occurrence-order tie-break still exists, but dynamic activity is flat.",
+            scores: { x1: 1.0, x2: 1.0, x3: 1.0, x4: 1.0, x5: 1.0 },
+            bumped: [],
+            conflict: {
+              title: "No conflict yet",
+              note: "The left pane is already sorted by heap order. Equal scores fall back to the stable variable order.",
+            },
           },
           {
-            title: "Conflict analysis touches variables",
-            caption: "The conflict walk records variables from the conflict clause and its reason chain.",
-            left: bars([["x1",20],["x2",55],["x3",20],["x4",55],["x5",20]]),
-            right: `<div class="solver-demo-card"><strong>Analyzed variables</strong>${heap([["x2 bumped","warn"],["x4 bumped","warn"],["others unchanged",""]])}</div>`,
+            title: "Conflict 1 bumps the touched variables",
+            caption: "The conflict walk records variables from the clause and its reason chain, then bumps their activity.",
+            scores: { x1: 1.0, x2: 3.8, x3: 1.0, x4: 3.8, x5: 1.0 },
+            bumped: ["x2", "x4"],
+            conflict: {
+              title: "Conflict C17",
+              literals: ["-x2", "x4", "x1"],
+              bumped: ["x2", "x4"],
+              note: "Variables x2 and x4 are touched by analysis, so their bars grow and move to the top of the heap order.",
+            },
           },
           {
-            title: "Heap reorders candidates",
-            caption: "After the bump, x2 and x4 rise above the flat variables. The stable tie-break decides between equal activity.",
-            left: bars([["x1",20],["x2",55],["x3",20],["x4",55],["x5",20]]),
-            right: `<div class="solver-demo-card"><strong>Next branch candidates</strong>${heap([["x4 highest active","active"],["x2 same score","active"],["x1 lower",""],["x3 lower",""],["x5 lower",""]])}</div>`,
+            title: "Conflict 2 shifts the top of the heap",
+            caption: "A second conflict bumps a different neighborhood. The list re-sorts as the score bars change.",
+            scores: { x1: 1.0, x2: 3.8, x3: 4.4, x4: 6.6, x5: 4.4 },
+            bumped: ["x3", "x4", "x5"],
+            conflict: {
+              title: "Conflict C23",
+              literals: ["x3", "-x4", "x5"],
+              bumped: ["x3", "x4", "x5"],
+              note: "x4 appears in another conflict and separates from the pack; x3 and x5 now outrank the untouched variable.",
+            },
           },
           {
-            title: "Recent conflicts matter more",
-            caption: "EVSIDS-style decay makes future bumps larger relative to old activity, so search follows the newest conflict region.",
-            left: bars([["x1",19],["x2",52],["x3",68],["x4",89],["x5",68]]),
-            right: `<div class="solver-demo-card"><strong>Second conflict</strong>${heap([["x3 bumped","warn"],["x4 bumped again","active"],["x5 bumped","warn"]])}<p>x4 now clearly dominates because it appeared in both recent conflicts.</p></div>`,
+            title: "Conflict 3 keeps recent variables hot",
+            caption: "Repeated conflict participation keeps activity high, so the heap order follows the latest failing region.",
+            scores: { x1: 1.0, x2: 6.4, x3: 4.4, x4: 6.6, x5: 7.0 },
+            bumped: ["x2", "x5"],
+            conflict: {
+              title: "Conflict C31",
+              literals: ["x2", "-x5", "-x1"],
+              bumped: ["x2", "x5"],
+              note: "x5 becomes the top candidate and x2 climbs again, while x1 stays low because it has not been analyzed recently.",
+            },
           },
           {
-            title: "Decision comes from activity",
-            caption: "The solver pops assigned or stale heap entries until it finds the best unassigned variable.",
-            left: bars([["x1",19],["x2",52],["x3",68],["x4",89],["x5",68]]),
-            right: `<div class="solver-demo-card"><strong>Decision</strong>${heap([["pop x4","good"],["branch on saved/default phase","active"]])}<p>This is the main change from 03: conflicts steer the next branch instead of a fixed static order.</p></div>`,
+            title: "Multiplicative decay",
+            caption: "This step shows the usual VSIDS decay intuition: old scores shrink so future bumps matter more. In the current implementation the equivalent effect normally appears after a larger conflict-count trigger, so it can take longer before the visible rescale happens.",
+            scores: { x1: 0.6, x2: 3.8, x3: 2.6, x4: 4.0, x5: 4.2 },
+            bumped: [],
+            conflict: {
+              title: "Decay step",
+              note: "Scores keep the same relative history but compress downward, increasing the impact of the next conflict bump.",
+            },
+          },
+          {
+            title: "A cold variable can jump after decay",
+            caption: "After the decay, a variable that was previously low can move sharply when the next conflict touches it.",
+            scores: { x1: 8.8, x2: 3.8, x3: 6.6, x4: 4.0, x5: 4.2 },
+            bumped: ["x1", "x3"],
+            conflict: {
+              title: "Conflict C42",
+              literals: ["-x1", "x3", "-x2"],
+              bumped: ["x1", "x3"],
+              note: "x1 was near the bottom before decay, but the larger post-decay bump moves it to the top of the heap order.",
+            },
           },
         ];
         let current=0,timer=null;
         const title=root.querySelector("[data-demo-title]"),caption=root.querySelector("[data-demo-caption]"),stepLabel=root.querySelector("[data-demo-step]"),left=root.querySelector('[data-demo-pane="left"]'),right=root.querySelector('[data-demo-pane="right"]'),back=root.querySelector('[data-demo-action="back"]'),next=root.querySelector('[data-demo-action="next"]'),play=root.querySelector('[data-demo-action="play"]');
         function compactDemoText(value){return value.replace(/\s*->\s*/g," → ").replace(/\b(x\d+)\s*=\s*true\b/g,"$1=1").replace(/\b(x\d+)\s*=\s*false\b/g,"$1=0").replace(/\b(x\d+)\s+true\b/g,"$1=1").replace(/\b(x\d+)\s+false\b/g,"$1=0").replace(/\btrue\b/g,"1").replace(/\bfalse\b/g,"0").replace(/\s+=\s+/g,"=").replace(/\bdecision level\s+(\d+)/g,"DL$1");}
         function formatDemoHtml(value){return compactDemoText(value).replace(/-?x(\d+)/g,(match,digits)=>`<span class="solver-demo-var${match.startsWith("-")?" solver-demo-neg-name":""}">x<sub>${digits}</sub></span>`);}
+        function sortedScores(step){return variables.map((name,index)=>({name,index,value:step.scores[name]})).sort((a,b)=>b.value-a.value||a.index-b.index);}
+        function renderActivity(step){
+          const data=sortedScores(step);
+          const maxScore=Math.max(1,...data.map((item)=>item.value));
+          const host=d3.select(left);
+          host.selectAll(".solver-demo-rank-note").data([0]).join("div").attr("class","solver-demo-rank-note").text("Sorted by heap score");
+          const rowsHost=host.selectAll(".solver-demo-bars").data([0]).join("div").attr("class","solver-demo-bars").style("height",`${data.length*rowHeight}px`);
+          const rows=rowsHost.selectAll(".solver-demo-bar").data(data,(item)=>item.name);
+          const enter=rows.enter().append("div").attr("class","solver-demo-bar").style("opacity",0).style("transform",(item,index)=>`translateY(${index*rowHeight}px)`);
+          enter.append("span").attr("class","solver-demo-var-label");
+          enter.append("span").attr("class","solver-demo-track").append("span").attr("class","solver-demo-fill").style("width","0%");
+          enter.append("span").attr("class","solver-demo-score");
+          const merged=enter.merge(rows);
+          merged.attr("class",(item,index)=>`solver-demo-bar${index===0?" top":""}${step.bumped.includes(item.name)?" bumped":""}`);
+          merged.select(".solver-demo-var-label").html((item)=>formatDemoHtml(item.name));
+          merged.select(".solver-demo-score").text((item)=>item.value.toFixed(1));
+          merged.transition().duration(transitionMs).style("opacity",1).style("transform",(item,index)=>`translateY(${index*rowHeight}px)`);
+          merged.select(".solver-demo-fill").transition().duration(transitionMs).style("width",(item)=>`${Math.max(7,(item.value/maxScore)*100)}%`).style("background",(item)=>activityColor(item.value));
+          rows.exit().transition().duration(160).style("opacity",0).remove();
+        }
         function stop(){if(timer!==null)window.clearInterval(timer);timer=null;play.classList.remove("is-playing");play.setAttribute("aria-label","Play");play.title="Play";}
-        function render(){const step=steps[current];d3.select(title).html(formatDemoHtml(step.title));d3.select(caption).html(formatDemoHtml(step.caption));stepLabel.textContent=`Step ${current+1} / ${steps.length}`;d3.select(left).html(formatDemoHtml(step.left));d3.select(right).html(formatDemoHtml(step.right));back.disabled=current===0;next.disabled=current===steps.length-1;play.disabled=current===steps.length-1&&timer===null;}
+        function render(){const step=steps[current];d3.select(title).html(formatDemoHtml(step.title));d3.select(caption).html(formatDemoHtml(step.caption));stepLabel.textContent=`Step ${current+1} / ${steps.length}`;renderActivity(step);d3.select(right).html(formatDemoHtml(conflictCard(step.conflict)));back.disabled=current===0;next.disabled=current===steps.length-1;play.disabled=current===steps.length-1&&timer===null;}
         root.addEventListener("click",(event)=>{const button=event.target.closest("[data-demo-action]");if(!button||!root.contains(button))return;const action=button.dataset.demoAction;if(action==="back")current=Math.max(0,current-1);if(action==="next")current=Math.min(steps.length-1,current+1);if(action==="reset"){stop();current=0;}if(action==="play"){if(timer===null){play.classList.add("is-playing");play.setAttribute("aria-label","Pause");play.title="Pause";timer=window.setInterval(()=>{if(current===steps.length-1){stop();render();return;}current+=1;if(current===steps.length-1)stop();render();},1600);}else stop();}render();});
         render();
       })();
