@@ -1118,31 +1118,31 @@ impl Solver {
         false
     }
 
-    fn trim_root_false_literals(&mut self, clause_idx: usize) {
+    fn trim_root_false_literals_with_proof(
+        &mut self,
+        clause_idx: usize,
+        proof_log: &mut ProofLog,
+    ) {
         let clause_len = self.clause_len(clause_idx);
         if clause_len <= 2 {
             return;
         }
 
-        debug_assert_ne!(self.lit_value(self.clause_lit(clause_idx, 0)), FALSE);
-        debug_assert_ne!(self.lit_value(self.clause_lit(clause_idx, 1)), FALSE);
-
-        let mut write = 2usize;
-        for read in 2..clause_len {
+        let mut trimmed = Vec::with_capacity(clause_len);
+        for read in 0..clause_len {
             let lit = self.clause_lit(clause_idx, read);
             if self.lit_value(lit) == FALSE {
                 continue;
             }
-            if write != read {
-                self.set_clause_lit(clause_idx, write, lit);
-            }
-            write += 1;
+            trimmed.push(lit);
         }
 
+        let write = trimmed.len();
         if write == clause_len {
             return;
         }
 
+        proof_log.record_clause(&trimmed);
         if self.clause_has_extra(clause_idx) {
             let old_extra_idx = clause_idx + 1 + clause_len;
             let new_extra_idx = clause_idx + 1 + write;
@@ -1150,6 +1150,10 @@ impl Solver {
             for offset in 0..extra_words {
                 self.arena[new_extra_idx + offset] = self.arena[old_extra_idx + offset];
             }
+        }
+
+        for (lit_pos, lit) in trimmed.into_iter().enumerate() {
+            self.set_clause_lit(clause_idx, lit_pos, lit);
         }
 
         let header = self.clause_header(clause_idx);
@@ -1188,7 +1192,11 @@ impl Solver {
         self.stats.deleted_clauses += 1;
     }
 
-    fn simplify_clause_list(&mut self, clause_ids: Vec<usize>) -> Vec<usize> {
+    fn simplify_clause_list(
+        &mut self,
+        clause_ids: Vec<usize>,
+        proof_log: &mut ProofLog,
+    ) -> Vec<usize> {
         let mut kept = Vec::with_capacity(clause_ids.len());
         for clause_idx in clause_ids {
             if self.clause_is_deleted(clause_idx) {
@@ -1199,7 +1207,7 @@ impl Solver {
                 continue;
             }
             if !self.clause_is_learnt(clause_idx) {
-                self.trim_root_false_literals(clause_idx);
+                self.trim_root_false_literals_with_proof(clause_idx, proof_log);
             }
             kept.push(clause_idx);
         }
@@ -1736,6 +1744,11 @@ impl Solver {
     }
 
     fn simplify(&mut self) -> bool {
+        let mut proof_log = ProofLog::disabled();
+        self.simplify_with_proof(&mut proof_log)
+    }
+
+    fn simplify_with_proof(&mut self, proof_log: &mut ProofLog) -> bool {
         debug_assert_eq!(self.current_level(), 0);
         self.stats.simplifications += 1;
 
@@ -1748,11 +1761,11 @@ impl Solver {
         }
 
         let learned_clause_ids = std::mem::take(&mut self.learned_clause_ids);
-        self.learned_clause_ids = self.simplify_clause_list(learned_clause_ids);
+        self.learned_clause_ids = self.simplify_clause_list(learned_clause_ids, proof_log);
         self.live_learned_clause_count = self.learned_clause_ids.len();
 
         let original_clause_ids = std::mem::take(&mut self.original_clause_ids);
-        self.original_clause_ids = self.simplify_clause_list(original_clause_ids);
+        self.original_clause_ids = self.simplify_clause_list(original_clause_ids, proof_log);
 
         self.maybe_garbage_collect();
         self.rebuild_branch_queue();
@@ -2307,6 +2320,14 @@ impl Solver {
         count
     }
 
+    fn record_live_original_clauses_for_proof(&self, proof_log: &mut ProofLog) {
+        for &clause_idx in &self.original_clause_ids {
+            if clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx) {
+                proof_log.record_clause(self.clause_slice(clause_idx));
+            }
+        }
+    }
+
     fn solve(&mut self) -> bool {
         let mut proof_log = ProofLog::disabled();
         self.solve_with_proof(&mut proof_log)
@@ -2335,6 +2356,8 @@ impl Solver {
         if self.propagate().is_some() {
             return false;
         }
+
+        self.record_live_original_clauses_for_proof(proof_log);
 
         let preprocess_start = Instant::now();
         if !self.eliminate(true, proof_log) {
@@ -2479,7 +2502,7 @@ impl Solver {
                         continue;
                     }
 
-                    if self.current_level() == 0 && !self.simplify() {
+                    if self.current_level() == 0 && !self.simplify_with_proof(proof_log) {
                         return false;
                     }
 

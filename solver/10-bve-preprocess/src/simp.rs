@@ -1105,9 +1105,9 @@ impl Solver {
             return false;
         }
         if !self.use_simplification || !self.use_elim {
-            return self.simplify();
+            return self.simplify_with_proof(proof_log);
         }
-        if !self.simplify() {
+        if !self.simplify_with_proof(proof_log) {
             self.solver_ok = false;
             return false;
         }
