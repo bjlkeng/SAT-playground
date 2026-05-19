@@ -49,12 +49,12 @@ impl SolveStatus {
         }
     }
 
-    fn termination_reason(self) -> &'static str {
+    pub(crate) fn termination_reason(self) -> &'static str {
         match self {
-            Self::Sat => "satisfiable",
-            Self::Unsat => "unsatisfiable",
-            Self::Unknown => "unknown",
-            Self::ParseError => "parse_error",
+            Self::Sat => "sat",
+            Self::Unsat => "unsat",
+            Self::Unknown => "internal-error",
+            Self::ParseError => "parse-error",
         }
     }
 }
@@ -68,12 +68,38 @@ pub(crate) enum ProofCompleteness {
 }
 
 impl ProofCompleteness {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Complete => "complete",
             Self::NotRequested => "not_requested",
             Self::NotApplicable => "not_applicable",
             Self::None => "none",
+        }
+    }
+}
+
+pub(crate) struct ResultContractFields<'a> {
+    pub(crate) unknown_reason: Option<&'a str>,
+    pub(crate) input_sha256: Option<&'a str>,
+    pub(crate) model_check_result: &'a str,
+    pub(crate) proof_check_result: &'a str,
+    pub(crate) output_contract_state: &'a str,
+}
+
+impl<'a> ResultContractFields<'a> {
+    pub(crate) fn new(
+        unknown_reason: Option<&'a str>,
+        input_sha256: Option<&'a str>,
+        model_check_result: &'a str,
+        proof_check_result: &'a str,
+        output_contract_state: &'a str,
+    ) -> Self {
+        Self {
+            unknown_reason,
+            input_sha256,
+            model_check_result,
+            proof_check_result,
+            output_contract_state,
         }
     }
 }
@@ -150,7 +176,7 @@ pub(crate) fn write_result_contract(
     output_dir: &Path,
     status: SolveStatus,
     config: &SolverConfig,
-    unknown_reason: Option<&str>,
+    fields: &ResultContractFields<'_>,
     model_file: Option<&Path>,
     proof_completeness: ProofCompleteness,
 ) {
@@ -189,27 +215,37 @@ pub(crate) fn write_result_contract(
             "  \"model_file\": {},\n",
             "  \"proof_file\": {},\n",
             "  \"proof_completeness\": \"{}\",\n",
-            "  \"model_check_result\": \"not_checked\",\n",
-            "  \"proof_check_result\": \"not_checked\",\n",
+            "  \"model_check_result\": \"{}\",\n",
+            "  \"proof_check_result\": \"{}\",\n",
             "  \"config_hash\": \"{}\",\n",
+            "  \"input_sha256\": {},\n",
             "  \"profile\": \"{}\",\n",
             "  \"proof_policy\": \"{}\",\n",
+            "  \"output_contract_state\": \"{}\",\n",
             "  \"stats_json_seen\": {}\n",
             "}}\n"
         ),
         status.as_str(),
         status.exit_code(),
         status.termination_reason(),
-        unknown_reason
+        fields
+            .unknown_reason
             .map(json_string)
             .unwrap_or_else(|| "null".to_string()),
         json_string(&status_file.display().to_string()),
         model_file_json,
         proof_file_json,
         proof_completeness.as_str(),
+        fields.model_check_result,
+        fields.proof_check_result,
         config.config_hash(),
+        fields
+            .input_sha256
+            .map(json_string)
+            .unwrap_or_else(|| "null".to_string()),
         config.profile_name(),
         config.proof_policy_name(),
+        fields.output_contract_state,
         if config.stats_json { "true" } else { "false" },
     );
     let result_path = output_dir.join(RESULT_JSON);

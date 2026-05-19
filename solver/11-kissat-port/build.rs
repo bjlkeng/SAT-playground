@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const CONFIG_SCHEMA: &str = "CONFIG_SCHEMA.csv";
 const FEATURES: &str = "FEATURES.csv";
@@ -8,6 +9,7 @@ const FEATURES: &str = "FEATURES.csv";
 fn main() {
     println!("cargo:rerun-if-changed={CONFIG_SCHEMA}");
     println!("cargo:rerun-if-changed={FEATURES}");
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let target_generated = manifest_dir.join("target/generated");
@@ -25,10 +27,30 @@ fn main() {
         readme_config_table(&schema),
     )
     .expect("write generated README table");
+
+    println!(
+        "cargo:rustc-env=SOLVER_GIT_SHA={}",
+        command_output("git", &["rev-parse", "HEAD"])
+    );
+    println!(
+        "cargo:rustc-env=SOLVER_RUSTC_VERSION={}",
+        command_output("rustc", &["--version"])
+    );
 }
 
 fn read(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()))
+}
+
+fn command_output(program: &str, args: &[&str]) -> String {
+    Command::new(program)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn validate_schema(schema: &str) {

@@ -36,8 +36,10 @@ REQUIRED_RESULT_JSON = {
     "model_check_result",
     "proof_check_result",
     "config_hash",
+    "input_sha256",
     "profile",
     "proof_policy",
+    "output_contract_state",
     "stats_json_seen",
 }
 
@@ -222,6 +224,11 @@ def validate(args: argparse.Namespace) -> None:
     has_model = bool(v_lines or assignment)
 
     if status == "SAT":
+        if result_payload.get("model_check_result") != "pass":
+            raise ValueError(
+                f"{status_source}: SAT result requires model_check_result=pass, got "
+                f"{result_payload.get('model_check_result')!r}"
+            )
         if not stdout_path.exists():
             raise FileNotFoundError("SAT validation requires stdout.log with v-lines")
         model_file = result_payload.get("model_file")

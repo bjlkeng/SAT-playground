@@ -16,9 +16,12 @@ use config::{BranchMode, ClauseMinMode, InitialClauseMode, ProofPolicy, SolverCo
 use lit::{lit_to_index, lit_to_word, word_to_lit};
 use output::{
     prepare_output_contract_dir, print_assignment, write_model_file, write_result_contract,
-    ProofCompleteness, SolveStatus,
+    ProofCompleteness, ResultContractFields, SolveStatus,
 };
-use stats::SolverStats;
+use stats::{
+    json_stats_line, max_rss_mb, trace_full_line, FormulaStats, InputIdentity, ProofStats,
+    RunTimings, SolverStats, StatsJsonContext,
+};
 
 const UNASSIGNED: u8 = 0;
 const TRUE: u8 = 1;
@@ -90,6 +93,7 @@ struct ProofStream {
 
 struct ProofLog {
     mode: ProofMode,
+    stats: ProofStats,
 }
 
 fn append_u32_ascii(buffer: &mut Vec<u8>, mut value: u32) {
@@ -122,6 +126,10 @@ impl ProofLog {
     fn disabled() -> Self {
         Self {
             mode: ProofMode::Disabled,
+            stats: ProofStats {
+                state: "disabled",
+                ..ProofStats::default()
+            },
         }
     }
 
@@ -156,6 +164,11 @@ impl ProofLog {
                 bytes_written: 0,
                 flush_count: 0,
             }),
+            stats: ProofStats {
+                temp_created: true,
+                state: "streaming",
+                ..ProofStats::default()
+            },
         }
     }
 
@@ -202,8 +215,9 @@ impl ProofLog {
         match std::mem::replace(&mut self.mode, ProofMode::Disabled) {
             ProofMode::Disabled => {}
             ProofMode::Stream(stream) => {
+                self.stats = proof_stats_from_stream(&stream, "discarded");
                 drop(stream.file);
-                let _ = fs::remove_file(&stream.temp_path);
+                self.stats.temp_deleted = fs::remove_file(&stream.temp_path).is_ok();
             }
         }
     }
@@ -219,6 +233,8 @@ impl ProofLog {
                     .expect("Failed to buffer empty proof clause");
                 Self::flush_stream(&mut stream);
                 stream.file.flush().expect("Failed to flush proof file");
+                let mut stats = proof_stats_from_stream(&stream, "finalized");
+                stats.finalized = true;
                 drop(stream.file);
                 fs::rename(&stream.temp_path, &stream.final_path).unwrap_or_else(|e| {
                     eprintln!(
@@ -229,6 +245,7 @@ impl ProofLog {
                     );
                     std::process::exit(1);
                 });
+                self.stats = stats;
                 if stream.trace {
                     let proof_bytes = fs::metadata(&stream.final_path)
                         .map(|metadata| metadata.len())
@@ -260,6 +277,25 @@ impl ProofLog {
         stream.bytes_written += stream.buffer.len() as u64;
         stream.flush_count += 1;
         stream.buffer.clear();
+    }
+
+    fn snapshot(&self) -> ProofStats {
+        self.stats.clone()
+    }
+}
+
+fn proof_stats_from_stream(stream: &ProofStream, state: &'static str) -> ProofStats {
+    ProofStats {
+        added_clauses: stream.clause_count,
+        deleted_clauses: stream.deletion_count,
+        added_literals: stream.literal_count,
+        deleted_literals: stream.deletion_literal_count,
+        flushes: stream.flush_count,
+        bytes_written: stream.bytes_written,
+        max_clause_len: stream.max_clause_len as u64,
+        temp_created: true,
+        state,
+        ..ProofStats::default()
     }
 }
 
@@ -1252,6 +1288,7 @@ impl Solver {
 
         let idx = self.branch_heap.len();
         self.branch_heap.push(var as u32);
+        self.stats.decision_heap_inserts += 1;
         self.branch_pos[var] = idx;
         self.branch_heap_sift_up(idx);
     }
@@ -1359,6 +1396,7 @@ impl Solver {
         }
         let best_var = self.branch_heap[0] as usize;
         self.branch_heap_remove(best_var);
+        self.stats.decision_heap_pops += 1;
         Some(best_var)
     }
 
@@ -1490,18 +1528,23 @@ impl Solver {
             while read < pending.len() {
                 let watcher = pending[read];
                 read += 1;
+                self.stats.watch_scans += 1;
                 let clause_idx = watcher.clause_idx as usize;
                 if clause_idx >= self.arena.len() {
+                    self.stats.watch_stale_skips += 1;
                     continue;
                 }
                 if self.lit_value(watcher.blocker) == TRUE {
+                    self.stats.watch_blocker_hits += 1;
                     pending[write] = watcher;
                     write += 1;
                     continue;
                 }
                 if self.clause_is_deleted(clause_idx) {
+                    self.stats.watch_stale_skips += 1;
                     continue;
                 }
+                self.stats.watch_clause_loads += 1;
                 let clause_len = self.clause_len(clause_idx);
                 if clause_len == 1 {
                     let unit_lit = self.clause_lit(clause_idx, 0);
@@ -1590,6 +1633,11 @@ impl Solver {
                     self.watchers[watch_idx] = pending;
                     return Some(clause_idx);
                 }
+                if clause_len == 2 {
+                    self.stats.binary_props += 1;
+                } else {
+                    self.stats.long_props += 1;
+                }
             }
 
             pending.truncate(write);
@@ -1603,6 +1651,10 @@ impl Solver {
 
     fn decide(&mut self, lit: i32) {
         self.stats.decisions += 1;
+        let level = self.current_level() as u64 + 1;
+        self.stats.avg_decision_level_sum += level;
+        self.stats.max_decision_level = self.stats.max_decision_level.max(level);
+        self.stats.phase_initial_used += 1;
         self.trail_limits.push(self.trail.len());
         let inserted = self.enqueue(lit, NO_REASON);
         debug_assert!(inserted, "decision literal must be unassigned");
@@ -1686,6 +1738,7 @@ impl Solver {
         self.restart_conflicts = 0;
         self.restart_pending = true;
         self.restart_luby_index += 1;
+        self.stats.luby_restarts += 1;
         self.restart_conflict_limit = self
             .restart_unit
             .saturating_mul(Self::luby_value(self.restart_luby_index));
@@ -1694,6 +1747,7 @@ impl Solver {
     fn pick_branch_lit(&mut self) -> Option<i32> {
         while let Some(var) = self.branch_heap_pop_best() {
             if !self.decision_var[var] || self.assignment[var] != UNASSIGNED {
+                self.stats.decision_heap_stale_pops += 1;
                 continue;
             }
 
@@ -1815,12 +1869,11 @@ impl Solver {
         self.live_learned_clause_count += 1;
         self.learned_literals += clause_len;
         self.stats.learned_clauses += 1;
+        self.stats.record_learned_size(clause_len);
         if self.use_lbd {
             let lbd = compute_lbd_from_lits(clause, &self.decision_level);
             self.set_learned_clause_lbd(clause_idx, lbd);
-            self.stats.lbd_computed += 1;
-            self.stats.lbd_sum += lbd as u64;
-            self.stats.lbd_max = self.stats.lbd_max.max(lbd);
+            self.stats.record_lbd(lbd);
         }
         self.attach_clause(clause_idx, false);
         clause_idx
@@ -2335,6 +2388,51 @@ impl Solver {
         self.learned_clause_ids.len()
     }
 
+    fn live_original_clause_count(&self) -> usize {
+        self.original_clause_ids
+            .iter()
+            .copied()
+            .filter(|&clause_idx| {
+                clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx)
+            })
+            .count()
+    }
+
+    fn binary_clause_count_final(&self) -> usize {
+        self.original_clause_ids
+            .iter()
+            .chain(self.learned_clause_ids.iter())
+            .copied()
+            .filter(|&clause_idx| {
+                clause_idx < self.arena.len()
+                    && !self.clause_is_deleted(clause_idx)
+                    && self.clause_len(clause_idx) == 2
+            })
+            .count()
+    }
+
+    fn formula_stats_snapshot(
+        &self,
+        vars: usize,
+        original_clauses_initial: usize,
+        original_lits_initial: u64,
+    ) -> FormulaStats {
+        let binary_clauses_final = self.binary_clause_count_final() as u64;
+        FormulaStats {
+            vars: vars as u64,
+            original_clauses_initial: original_clauses_initial as u64,
+            original_lits_initial,
+            original_clauses_after_preprocess: self.live_original_clause_count() as u64,
+            original_lits_after_preprocess: self.original_literals as u64,
+            learned_clauses_final: self.live_learned_clause_count as u64,
+            learned_lits_final: self.learned_literals as u64,
+            deleted_words: self.deleted_clause_words as u64,
+            binary_clauses_final,
+            binary_implication_edges_final: binary_clauses_final.saturating_mul(2),
+            max_clause_buffer_len: self.scratch_conflict_clause.len() as u64,
+        }
+    }
+
     fn live_original_variable_count(&self) -> usize {
         let mut seen = vec![false; self.assignment.len()];
         let mut count = 0usize;
@@ -2367,7 +2465,7 @@ impl Solver {
         self.solve_with_proof(&mut proof_log, &config)
     }
 
-    fn solve_to_output(&mut self, output_dir: &str, config: &SolverConfig) -> bool {
+    fn solve_to_output(&mut self, output_dir: &str, config: &SolverConfig) -> (bool, ProofStats) {
         let mut proof_log = match config.proof_policy {
             ProofPolicy::Off => ProofLog::disabled(),
             ProofPolicy::Drat => {
@@ -2379,12 +2477,14 @@ impl Solver {
             }
         };
         let sat = self.solve_with_proof(&mut proof_log, config);
+        let proof_start = Instant::now();
         if sat {
             proof_log.finish_sat();
         } else {
             proof_log.finish_unsat();
         }
-        sat
+        self.stats.proof_sec = proof_start.elapsed().as_secs_f64();
+        (sat, proof_log.snapshot())
     }
 
     fn solve_with_proof(&mut self, proof_log: &mut ProofLog, config: &SolverConfig) -> bool {
@@ -2400,8 +2500,10 @@ impl Solver {
 
         let preprocess_start = Instant::now();
         if !self.eliminate(true, proof_log) {
+            self.stats.preprocess_sec = preprocess_start.elapsed().as_secs_f64();
             return false;
         }
+        self.stats.preprocess_sec = preprocess_start.elapsed().as_secs_f64();
         self.reset_learned_budget_after_preprocess();
         if config.trace_preprocess {
             eprintln!(
@@ -2463,6 +2565,7 @@ impl Solver {
             match conflict {
                 Some(conflict_clause_idx) => {
                     if self.current_level() == 0 {
+                        self.stats.search_sec = search_start.elapsed().as_secs_f64();
                         if trace_search_interval > 0 {
                             eprintln!(
                                 "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} reduce_db={}",
@@ -2561,6 +2664,7 @@ impl Solver {
                         }
                         None => {
                             self.capture_sat_model();
+                            self.stats.search_sec = search_start.elapsed().as_secs_f64();
                             if trace_search_interval > 0 {
                                 eprintln!(
                                     "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} reduce_db={}",
@@ -2631,7 +2735,39 @@ fn parse_cnf(path: &str) -> Result<(usize, Vec<Vec<i32>>), String> {
     Ok((num_vars, clauses))
 }
 
+fn initial_lit_count(clauses: &[Vec<i32>]) -> u64 {
+    clauses.iter().map(|clause| clause.len() as u64).sum()
+}
+
+fn verify_model_against_clauses(clauses: &[Vec<i32>], assignment: &[u8]) -> bool {
+    for clause in clauses {
+        let mut satisfied = false;
+        for &lit in clause {
+            let var = lit.unsigned_abs() as usize;
+            let Some(&value) = assignment.get(var) else {
+                return false;
+            };
+            if (lit > 0 && value == TRUE) || (lit < 0 && value == FALSE) {
+                satisfied = true;
+                break;
+            }
+        }
+        if !satisfied {
+            return false;
+        }
+    }
+    true
+}
+
+fn verify_model_against_cnf_path(path: &str, assignment: &[u8]) -> bool {
+    let Ok((_, clauses)) = parse_cnf(path) else {
+        return false;
+    };
+    verify_model_against_clauses(&clauses, assignment)
+}
+
 fn main() {
+    let run_start = Instant::now();
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
         eprintln!("Usage: sat-solver <cnf_path> <output_dir>");
@@ -2644,26 +2780,72 @@ fn main() {
 
     let config = SolverConfig::from_env();
     config.emit_requested_outputs();
+    let input_identity = InputIdentity::from_path(Path::new(cnf_path));
     prepare_output_contract_dir(output_path);
+    let parse_start = Instant::now();
     let (num_vars, clauses) = match parse_cnf(cnf_path) {
         Ok(parsed) => parsed,
         Err(message) => {
+            let parse_sec = parse_start.elapsed().as_secs_f64();
             eprintln!("{message}");
+            let fields = ResultContractFields::new(
+                Some(&message),
+                input_identity.sha256.as_deref(),
+                "not_applicable",
+                "not_applicable",
+                "complete",
+            );
             write_result_contract(
                 output_path,
                 SolveStatus::ParseError,
                 &config,
-                Some(&message),
+                &fields,
                 None,
                 ProofCompleteness::None,
             );
+            if config.stats_json {
+                let timings = RunTimings {
+                    elapsed_sec: run_start.elapsed().as_secs_f64(),
+                    parse_sec,
+                    ..RunTimings::default()
+                };
+                let formula = FormulaStats::default();
+                let stats = SolverStats::default();
+                let proof = ProofStats {
+                    state: "not-created",
+                    ..ProofStats::default()
+                };
+                let ctx = StatsJsonContext {
+                    config: &config,
+                    stats: &stats,
+                    proof: &proof,
+                    input: &input_identity,
+                    formula: &formula,
+                    timings: &timings,
+                    status: SolveStatus::ParseError,
+                    exit_code: SolveStatus::ParseError.exit_code(),
+                    status_file_status: Some(SolveStatus::ParseError.as_str()),
+                    termination_reason: SolveStatus::ParseError.termination_reason(),
+                    unknown_reason: Some(&message),
+                    parse_error_kind: Some("dimacs-parse-error"),
+                    model_check_result: "not_applicable",
+                    proof_check_result: "not_applicable",
+                    proof_completeness: ProofCompleteness::None,
+                    output_contract_state: "complete",
+                    max_rss_mb: max_rss_mb(),
+                };
+                eprintln!("{}", json_stats_line(&ctx));
+            }
             println!("{}", SolveStatus::ParseError.s_line());
             std::process::exit(SolveStatus::ParseError.exit_code());
         }
     };
+    let parse_sec = parse_start.elapsed().as_secs_f64();
+    let original_clause_count = clauses.len();
+    let original_lits_initial = initial_lit_count(&clauses);
     let mut solver = Solver::new_with_config(num_vars, clauses, &config);
 
-    let sat = solver.solve_to_output(output_dir, &config);
+    let (sat, proof_stats) = solver.solve_to_output(output_dir, &config);
     let status = if sat {
         SolveStatus::Sat
     } else {
@@ -2678,22 +2860,76 @@ fn main() {
     } else {
         None
     };
+    let model_check_result = if sat {
+        let model = solver
+            .sat_model
+            .as_ref()
+            .expect("SAT solver returned without a model snapshot");
+        if verify_model_against_cnf_path(cnf_path, model) {
+            "pass"
+        } else {
+            "fail"
+        }
+    } else {
+        "not_applicable"
+    };
+    if model_check_result == "fail" {
+        eprintln!("internal model check failed for {}", cnf_path);
+    }
     let proof_completeness = match (status, config.proof_policy) {
         (SolveStatus::Unsat, ProofPolicy::Drat) => ProofCompleteness::Complete,
         (SolveStatus::Unsat, ProofPolicy::Off) => ProofCompleteness::NotRequested,
         (SolveStatus::Sat, _) => ProofCompleteness::NotApplicable,
         _ => ProofCompleteness::None,
     };
+    let fields = ResultContractFields::new(
+        None,
+        input_identity.sha256.as_deref(),
+        model_check_result,
+        "not_checked",
+        "complete",
+    );
     write_result_contract(
         output_path,
         status,
         &config,
-        None,
+        &fields,
         model_path.as_deref(),
         proof_completeness,
     );
+    let timings = RunTimings {
+        elapsed_sec: run_start.elapsed().as_secs_f64(),
+        parse_sec,
+        preprocess_sec: solver.stats.preprocess_sec,
+        search_sec: solver.stats.search_sec,
+        proof_sec: solver.stats.proof_sec,
+    };
+    let formula =
+        solver.formula_stats_snapshot(num_vars, original_clause_count, original_lits_initial);
     if config.stats_json {
-        eprintln!("{}", config.json_stats_line(status.as_str()));
+        let ctx = StatsJsonContext {
+            config: &config,
+            stats: &solver.stats,
+            proof: &proof_stats,
+            input: &input_identity,
+            formula: &formula,
+            timings: &timings,
+            status,
+            exit_code: status.exit_code(),
+            status_file_status: Some(status.as_str()),
+            termination_reason: status.termination_reason(),
+            unknown_reason: None,
+            parse_error_kind: None,
+            model_check_result,
+            proof_check_result: "not_checked",
+            proof_completeness,
+            output_contract_state: "complete",
+            max_rss_mb: max_rss_mb(),
+        };
+        eprintln!("{}", json_stats_line(&ctx));
+    }
+    if config.trace_full {
+        eprintln!("{}", trace_full_line(&solver.stats, &timings));
     }
     if solver.use_lbd {
         println!(
@@ -3505,7 +3741,10 @@ mod tests {
         let proof_dir = make_temp_dir("solver-unsat-proof");
         let mut s = make_solver(2, clauses);
         let config = SolverConfig::default();
-        assert!(!s.solve_to_output(proof_dir.to_str().expect("utf8 temp dir"), &config));
+        assert!(
+            !s.solve_to_output(proof_dir.to_str().expect("utf8 temp dir"), &config)
+                .0
+        );
 
         let proof_text =
             fs::read_to_string(proof_dir.join("proof.out")).expect("failed to read emitted proof");
@@ -3691,17 +3930,20 @@ mod tests {
         s.restart_unit = 2;
         s.restart_luby_index = 1;
         s.restart_conflict_limit = 2;
+        assert_eq!(s.stats.luby_restarts, 0);
 
         s.note_conflict();
         assert_eq!(s.restart_conflicts, 1);
         assert!(!s.restart_pending);
         assert_eq!(s.restart_conflict_limit, 2);
+        assert_eq!(s.stats.luby_restarts, 0);
 
         s.note_conflict();
         assert_eq!(s.restart_conflicts, 0);
         assert!(s.restart_pending);
         assert_eq!(s.restart_luby_index, 2);
         assert_eq!(s.restart_conflict_limit, 2);
+        assert_eq!(s.stats.luby_restarts, 1);
 
         s.restart_pending = false;
         s.note_conflict();
@@ -3709,6 +3951,7 @@ mod tests {
         assert!(s.restart_pending);
         assert_eq!(s.restart_luby_index, 3);
         assert_eq!(s.restart_conflict_limit, 4);
+        assert_eq!(s.stats.luby_restarts, 2);
     }
 
     #[test]

@@ -174,6 +174,8 @@ TOTAL_TIME=0
 # --- error log (only errors get logged) ---
 ERRORS_LOG="$LOG_DIR/errors.log"
 : > "$ERRORS_LOG"
+WARNINGS_LOG="$LOG_DIR/warnings.log"
+: > "$WARNINGS_LOG"
 
 # --- run each instance ---
 run_instance() {
@@ -229,11 +231,34 @@ run_instance() {
         result="TIMEOUT"
     elif [[ -f "$result_json" ]]; then
         local status_file=""
-        read -r result status_file < <(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["status"], p["status_file"])' "$result_json" 2>>"$ERRORS_LOG") || result="ERROR"
+        local model_check_result=""
+        local termination_reason=""
+        local input_sha256=""
+        local config_hash=""
+        local output_contract_state=""
+        IFS=$'\t' read -r result status_file model_check_result termination_reason input_sha256 config_hash output_contract_state < <(
+            python3 -c 'import json,sys
+p=json.load(open(sys.argv[1]))
+def f(name):
+    v=p.get(name,"")
+    return "" if v is None else str(v)
+print(f("status"), f("status_file"), f("model_check_result"), f("termination_reason"), f("input_sha256"), f("config_hash"), f("output_contract_state"), sep="\t")' "$result_json" 2>>"$ERRORS_LOG"
+        ) || result="ERROR"
         case "$result" in
             SAT|UNSAT|UNKNOWN|PARSE_ERROR) ;;
             *) result="ERROR" ;;
         esac
+        for required_field in termination_reason input_sha256 config_hash output_contract_state; do
+            case "$required_field" in
+                termination_reason) field_value="$termination_reason" ;;
+                input_sha256) field_value="$input_sha256" ;;
+                config_hash) field_value="$config_hash" ;;
+                output_contract_state) field_value="$output_contract_state" ;;
+            esac
+            if [[ -z "$field_value" ]]; then
+                echo "$name: result.json missing $required_field" >> "$WARNINGS_LOG"
+            fi
+        done
         if [[ "$result" != "ERROR" && ! -f "$status_file" ]]; then
             result="ERROR"
         elif [[ "$result" != "ERROR" ]]; then
@@ -245,6 +270,9 @@ run_instance() {
         fi
         if [[ "$result" == "SAT" && "$s_line" != "s SATISFIABLE" ]]; then
             result="ERROR"
+        elif [[ "$result" == "SAT" && "$model_check_result" != "pass" ]]; then
+            result="ERROR"
+            echo "$name: SAT result requires model_check_result=pass, got ${model_check_result:-missing}" >> "$ERRORS_LOG"
         elif [[ "$result" == "UNSAT" && "$s_line" != "s UNSATISFIABLE" ]]; then
             result="ERROR"
         elif [[ "$result" == "UNKNOWN" && "$s_line" != "s UNKNOWN" ]]; then
@@ -425,6 +453,9 @@ SUMMARY="$LOG_DIR/summary.log"
     echo "    Results:   $RESULTS_CSV"
     if [[ -s "$ERRORS_LOG" ]]; then
         echo "    Errors:    $ERRORS_LOG"
+    fi
+    if [[ -s "$WARNINGS_LOG" ]]; then
+        echo "    Warnings:  $WARNINGS_LOG"
     fi
 } | tee "$SUMMARY"
 

@@ -110,16 +110,22 @@ the output directory passed as the second `run.sh` argument:
 ```text
 schema_version, status, exit_code, termination_reason, unknown_reason,
 status_file, model_file, proof_file, proof_completeness,
-model_check_result, proof_check_result, config_hash, profile, proof_policy,
-stats_json_seen
+model_check_result, proof_check_result, config_hash, input_sha256, profile,
+proof_policy, output_contract_state, stats_json_seen
 ```
 
 The solver keeps SAT Competition stdout compatibility: exactly one `s` line is
 printed, and `v` lines are printed only for SAT. `PARSE_ERROR` is represented as
 `s UNKNOWN` on stdout with `status=PARSE_ERROR` in `result.json`. `SAT`,
 `UNSAT`, and `UNKNOWN` currently exit `0`; `PARSE_ERROR` exits `2`. When
-`SAT_STATS_JSON=on`, the `c JSON_STATS ...` record is emitted on stderr and
-`result.json` records `stats_json_seen=true`.
+`SAT_STATS_JSON=on`, the final `c JSON_STATS {...}` record is emitted on stderr
+and `result.json` records `stats_json_seen=true`. The JSON stats line includes
+config identity, input and binary hashes, result/status fields, timing buckets,
+formula sizes, CDCL/preprocessing/watch/LBD/proof counters, output-contract
+state, and explicit zero/null placeholders for planned Phase 1/2 counters that
+are not implemented yet. `SAT_TRACE_FULL=on` emits an additional human-readable
+`c trace_full ...` line with glue, restart, phase, inprocess, learned-clause,
+and branch-heap counters.
 
 ## Validation
 

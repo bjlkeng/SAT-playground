@@ -17,7 +17,7 @@ Known source files:
 | `src/main.rs` | Clause arena helpers, watcher attachment/propagation, conflict analysis, restarts, learned-clause reduction, top-level simplify/search loop, DRAT stream implementation, DIMACS parsing, process entry point. |
 | `src/simp.rs` | Occurrence lists, backward subsumption/subsumption resolution, BVE, preprocessing model extension. |
 | `src/config.rs` | SolverConfig, profile/axis defaults, strict SAT_* parsing, config dump/replay/hash, feature maturity records, and legacy env compatibility. |
-| `src/stats.rs` | Existing solver counters. |
+| `src/stats.rs` | Solver counters, run/proof/input/formula snapshots, local JSON writer, streaming SHA-256 helper, JSON_STATS line emission, and SAT_TRACE_FULL summary formatting. |
 | `src/lit.rs` | Raw `i32` literal word conversion and literal-index mapping. |
 | `src/limits.rs` | Placeholder boundary for future limit checks. |
 | `src/output.rs` | SAT Competition model line formatting, SolveStatus, model.txt writing, status.txt/result.json contract emission, and JSON escaping. |
@@ -27,25 +27,25 @@ Audited entry points:
 
 | Entry point | File:line | Notes |
 | --- | --- | --- |
-| `Solver::new` | `src/main.rs:636` | Builds branch ordering, root assignments, original clause arena, watchers, occurrence/BVE state, and default solver-10-compatible policy fields. |
-| `Solver::solve_to_output` | `src/main.rs:2370` | Creates proof log according to `SAT_PROOF`, runs preprocessing/search, finalizes or discards proof output. |
-| `Solver::solve_with_proof` | `src/main.rs:2390` | Runs root propagation, optional BVE/simplification, search loop, trace comments, SAT model snapshot, and proof finalization. |
-| `Solver::propagate` | `src/main.rs:1479` | Watched-literal BCP over long clauses and units; returns conflicting clause arena offset. |
-| `Solver::analyze_conflict_to_scratch` | `src/main.rs:2248` | Learned clause construction, UIP backtrack target, minimization, and conflict activity updates. |
-| `Solver::reduce_db` | `src/main.rs:2116` | Learned-clause reduction by activity with locked/binary preservation and DRAT deletion recording. |
+| `Solver::new` | `src/main.rs:672` | Builds branch ordering, root assignments, original clause arena, watchers, occurrence/BVE state, and default solver-10-compatible policy fields. |
+| `Solver::solve_to_output` | `src/main.rs:2468` | Creates proof log according to `SAT_PROOF`, runs preprocessing/search, finalizes or discards proof output, and returns proof stats. |
+| `Solver::solve_with_proof` | `src/main.rs:2490` | Runs root propagation, optional BVE/simplification, search loop, trace comments, SAT model snapshot, and proof finalization. |
+| `Solver::propagate` | `src/main.rs:1517` | Watched-literal BCP over long clauses and units; returns conflicting clause arena offset and updates watch/propagation stats. |
+| `Solver::analyze_conflict_to_scratch` | `src/main.rs:2301` | Learned clause construction, UIP backtrack target, minimization, and conflict activity updates. |
+| `Solver::reduce_db` | `src/main.rs:2169` | Learned-clause reduction by activity with locked/binary preservation and DRAT deletion recording. |
 | `Solver::eliminate` | `src/simp.rs:1092` | Preprocessing BVE/BSR driver; owns occurrence cleanup, resolvent generation, proof logging, and extension entries. |
 
 Related implementation anchors:
 
 | Anchor | File:line | Notes |
 | --- | --- | --- |
-| `ProofLog` | `src/main.rs:91` | DRAT buffering and temp/final proof path lifecycle; planned for `proof.rs`/`output.rs` split later. |
-| `Solver` | `src/main.rs:266` | Current monolithic state owner; future tasks introduce capability wrappers incrementally. |
-| `Solver::attach_clause` | `src/main.rs:1392` | Watcher attachment and empty/unit handling. |
-| `Solver::simplify_with_proof` | `src/main.rs:1775` | Top-level simplification and learned/original clause cleanup. |
-| `Solver::garbage_collect` | `src/main.rs:1957` | Arena compaction and reference rewriting for current side structures. |
-| `parse_cnf` | `src/main.rs:2585` | DIMACS parser used by `main`; returns parse errors so main can emit result.json with PARSE_ERROR. |
-| `main` | `src/main.rs:2634` | CLI/run.sh entry point, config parsing/output before CNF parsing, solver construction, result.json/status/model contract emission, JSON_STATS stderr emission, and SAT Competition stdout. |
+| `ProofLog` | `src/main.rs:94` | DRAT buffering, temp/final proof path lifecycle, and proof stats snapshot; planned for `proof.rs`/`output.rs` split later. |
+| `Solver` | `src/main.rs:302` | Current monolithic state owner; future tasks introduce capability wrappers incrementally. |
+| `Solver::attach_clause` | `src/main.rs:1430` | Watcher attachment and empty/unit handling. |
+| `Solver::simplify_with_proof` | `src/main.rs:1829` | Top-level simplification and learned/original clause cleanup. |
+| `Solver::garbage_collect` | `src/main.rs:2010` | Arena compaction and reference rewriting for current side structures. |
+| `parse_cnf` | `src/main.rs:2689` | DIMACS parser used by `main`; returns parse errors so main can emit result.json with PARSE_ERROR. |
+| `main` | `src/main.rs:2769` | CLI/run.sh entry point, config parsing/output before CNF parsing, solver construction, result.json/status/model contract emission, JSON_STATS/trace_full stderr emission, internal SAT model check, and SAT Competition stdout. |
 
 Known missing or incomplete feature families at this baseline:
 
@@ -71,7 +71,7 @@ These modules are present before Phase 1 algorithmic work:
 | Module | Owns now | Future growth |
 | --- | --- | --- |
 | `src/config.rs` | SolverConfig, schema-backed env parsing, replay/dump/hash, feature maturity records, profile/axis selection, and fail-fast validation. | Later tasks add implementation support for currently parked feature flags and lift validator rejections when behavior lands. |
-| `src/stats.rs` | Existing `SolverStats` counters. | JSON stats, timers, trace output, feature maturity records. |
+| `src/stats.rs` | `SolverStats`, proof/input/formula/timing snapshot types, streaming SHA-256, local JSON writer, JSON_STATS line builder, and SAT_TRACE_FULL line builder. | Later tasks populate currently-zero future counters as features land. |
 | `src/lit.rs` | Literal-to-index and raw arena word conversion helpers. | Typed literal/newtype helpers if later tasks need them. |
 | `src/limits.rs` | Documented limit-check boundary. | Conflict, propagation, tick, wall-clock, RSS, learned-lit, binary, extension, and proof byte limits. |
 | `src/output.rs` | SAT Competition assignment-line formatting and minimal 0.3a status/model/result contract helpers. | Fuller OutputContract checks in 0.8 may add proof/model finalization validation without changing status strings. |
