@@ -4,6 +4,66 @@ Task 0.1 establishes the architecture boundary map for `solver/11-kissat-port`.
 This file is durable handoff state for future agents; keep it current when a
 task moves code, introduces a capability, or changes ownership of an invariant.
 
+## Baseline Source Map
+
+Audited for task 0.2 after commit `1c692eb` and before Phase 1 feature work.
+Line numbers are intentionally recorded so later agents can detect drift before
+editing the solver.
+
+Known source files:
+
+| File | Current ownership |
+| --- | --- |
+| `src/main.rs` | Clause arena helpers, watcher attachment/propagation, conflict analysis, restarts, learned-clause reduction, top-level simplify/search loop, DRAT stream implementation, DIMACS parsing, process entry point. |
+| `src/simp.rs` | Occurrence lists, backward subsumption/subsumption resolution, BVE, preprocessing model extension. |
+| `src/config.rs` | Existing environment helper parsing until full `SolverConfig` lands in 0.3. |
+| `src/stats.rs` | Existing solver counters. |
+| `src/lit.rs` | Raw `i32` literal word conversion and literal-index mapping. |
+| `src/limits.rs` | Placeholder boundary for future limit checks. |
+| `src/output.rs` | SAT Competition model line formatting. |
+| `src/check.rs` | Debug generation-handle scaffold and tests. |
+
+Audited entry points:
+
+| Entry point | File:line | Notes |
+| --- | --- | --- |
+| `Solver::new` | `src/main.rs:637` | Builds branch ordering, root assignments, original clause arena, watchers, occurrence/BVE state, and default solver-10-compatible policy fields. |
+| `Solver::solve_to_output` | `src/main.rs:2349` | Creates proof log according to `SAT_PROOF`, runs preprocessing/search, finalizes or discards proof output. |
+| `Solver::solve_with_proof` | `src/main.rs:2364` | Runs root propagation, optional BVE/simplification, search loop, trace comments, SAT model snapshot, and proof finalization. |
+| `Solver::propagate` | `src/main.rs:1459` | Watched-literal BCP over long clauses and units; returns conflicting clause arena offset. |
+| `Solver::analyze_conflict_to_scratch` | `src/main.rs:2228` | Learned clause construction, UIP backtrack target, minimization, and conflict activity updates. |
+| `Solver::reduce_db` | `src/main.rs:2096` | Learned-clause reduction by activity with locked/binary preservation and DRAT deletion recording. |
+| `Solver::eliminate` | `src/simp.rs:1092` | Preprocessing BVE/BSR driver; owns occurrence cleanup, resolvent generation, proof logging, and extension entries. |
+
+Related implementation anchors:
+
+| Anchor | File:line | Notes |
+| --- | --- | --- |
+| `ProofLog` | `src/main.rs:103` | DRAT buffering and temp/final proof path lifecycle; planned for `proof.rs`/`output.rs` split later. |
+| `Solver` | `src/main.rs:278` | Current monolithic state owner; future tasks introduce capability wrappers incrementally. |
+| `Solver::attach_clause` | `src/main.rs:1372` | Watcher attachment and empty/unit handling. |
+| `Solver::simplify_with_proof` | `src/main.rs:1755` | Top-level simplification and learned/original clause cleanup. |
+| `Solver::garbage_collect` | `src/main.rs:1937` | Arena compaction and reference rewriting for current side structures. |
+| `parse_cnf` | `src/main.rs:2609` | DIMACS parser used by `main`. |
+| `main` | `src/main.rs:2656` | CLI/run.sh entry point and legacy env override application. |
+
+Known missing or incomplete feature families at this baseline:
+
+- Full glue/LBD policy: 0.0b added a default-off LBD counter/side-table slice, but no learned-clause reduction policy or reason-LBD update behavior uses it yet.
+- Chronological backtracking.
+- Best/target phase policies.
+- Focused/stable mode switching.
+- VMTF queue.
+- Rephasing.
+- Vivification.
+- Failed literal probing.
+- Hyper-binary resolution.
+- Equivalent literal substitution.
+- Transitive reduction.
+- Gate extraction.
+- Walking local search.
+- DRAT deletion coverage for future binary-clause and formula-edit transaction paths beyond the existing learned/original simplification deletions.
+
 ## Stage A Modules
 
 These modules are present before Phase 1 algorithmic work:

@@ -33,6 +33,23 @@ PUBLIC_RETURNS_MUT_SOLVER_RE = re.compile(
     re.DOTALL,
 )
 
+SOURCE_ANCHORS = {
+    "Solver::new": ("src/main.rs", "fn new("),
+    "Solver::solve_to_output": ("src/main.rs", "fn solve_to_output("),
+    "Solver::solve_with_proof": ("src/main.rs", "fn solve_with_proof("),
+    "Solver::propagate": ("src/main.rs", "fn propagate("),
+    "Solver::analyze_conflict_to_scratch": ("src/main.rs", "fn analyze_conflict_to_scratch("),
+    "Solver::reduce_db": ("src/main.rs", "fn reduce_db("),
+    "Solver::eliminate": ("src/simp.rs", "fn eliminate("),
+    "ProofLog": ("src/main.rs", "struct ProofLog"),
+    "Solver": ("src/main.rs", "struct Solver"),
+    "Solver::attach_clause": ("src/main.rs", "fn attach_clause("),
+    "Solver::simplify_with_proof": ("src/main.rs", "fn simplify_with_proof("),
+    "Solver::garbage_collect": ("src/main.rs", "fn garbage_collect("),
+    "parse_cnf": ("src/main.rs", "fn parse_cnf("),
+    "main": ("src/main.rs", "fn main("),
+}
+
 
 def fail(errors: list[str], message: str) -> None:
     errors.append(message)
@@ -46,6 +63,7 @@ def validate_state_file(solver_dir: Path, errors: list[str]) -> None:
 
     text = state_path.read_text()
     for required in [
+        "Baseline Source Map",
         "Stage A Modules",
         "Stage B Map",
         "Capability-Based Mutation Rule",
@@ -54,6 +72,42 @@ def validate_state_file(solver_dir: Path, errors: list[str]) -> None:
     ]:
         if required not in text:
             fail(errors, f"{state_path}: missing section {required!r}")
+    validate_source_anchors(solver_dir, state_path, text, errors)
+
+
+def validate_source_anchors(
+    solver_dir: Path, state_path: Path, state_text: str, errors: list[str]
+) -> None:
+    for symbol, (expected_file, expected_needle) in SOURCE_ANCHORS.items():
+        row_re = re.compile(
+            r"\|\s*`" + re.escape(symbol) + r"`\s*\|\s*`([^`]+):([0-9]+)`\s*\|"
+        )
+        match = row_re.search(state_text)
+        if not match:
+            fail(errors, f"{state_path}: missing audited source-map row for {symbol}")
+            continue
+        actual_file, line_text = match.groups()
+        if actual_file != expected_file:
+            fail(
+                errors,
+                f"{state_path}: {symbol} points at {actual_file}, expected {expected_file}",
+            )
+            continue
+        line_no = int(line_text)
+        source_path = solver_dir / actual_file
+        if not source_path.exists():
+            fail(errors, f"{state_path}: {symbol} points at missing {source_path}")
+            continue
+        source_lines = source_path.read_text().splitlines()
+        if line_no < 1 or line_no > len(source_lines):
+            fail(errors, f"{state_path}: {symbol} line {line_no} outside {source_path}")
+            continue
+        source_line = source_lines[line_no - 1]
+        if expected_needle not in source_line:
+            fail(
+                errors,
+                f"{state_path}: {symbol} line {line_no} does not contain {expected_needle!r}",
+            )
 
 
 def validate_stage_a_modules(src_dir: Path, errors: list[str]) -> None:
