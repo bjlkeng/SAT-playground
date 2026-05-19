@@ -239,12 +239,19 @@ def validate(args: argparse.Namespace) -> tuple[str, dict]:
         if has_model:
             raise ValueError("UNSAT result must not contain v-lines")
         if args.proof_policy == "drat":
+            if result_payload.get("proof_completeness") != "complete":
+                raise ValueError(
+                    f"{status_source}: UNSAT with proof-policy=drat requires "
+                    "proof_completeness=complete"
+                )
             proof_file = result_payload.get("proof_file")
             proof_for_check = Path(proof_file) if isinstance(proof_file, str) else proof_path
             if not proof_for_check.exists():
                 raise FileNotFoundError(f"UNSAT result missing {proof_for_check}")
             verify_drat(cnf, proof_for_check)
     elif status in {"UNKNOWN", "PARSE_ERROR"}:
+        if result_payload.get("proof_completeness") == "complete":
+            raise ValueError(f"{status} result must not claim proof_completeness=complete")
         if proof_path.exists() or temp_proof_path.exists():
             raise ValueError(f"{status} result must not leave finalized or temp proof files")
         if has_model:

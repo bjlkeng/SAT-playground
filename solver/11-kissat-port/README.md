@@ -89,10 +89,10 @@ runtime overrides (`SAT_CONFIG_OUT`, `SAT_RUN_LABEL`, `SAT_STATS_JSON`,
 
 New Phase 1 and Phase 2 feature flags default off. Flags whose implementation
 bead has not landed are represented in the schema but fail fast if enabled, so
-benchmark artifacts cannot accidentally record no-op feature claims. `lrat` and
-`SAT_LIMIT_*` values are parsed into the config contract but currently fail fast
-until a dedicated limit-enforcement task wires them to structured `UNKNOWN`
-outcomes.
+benchmark artifacts cannot accidentally record no-op feature claims. `lrat`
+still fails fast. `SAT_LIMIT_*` values are parsed into the config contract and
+solve-ending limit hits now return structured `UNKNOWN` results while deleting
+any temporary proof artifact.
 
 ## Solver 11 Result Contract
 

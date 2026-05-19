@@ -1,0 +1,4 @@
+c tiny satisfiable golden case
+p cnf 2 2
+1 0
+-1 2 0

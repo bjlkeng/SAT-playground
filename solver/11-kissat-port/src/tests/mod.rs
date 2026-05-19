@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod bruteforce;
 mod formula_edit_replay;
 mod metamorphic;
+mod output_contract;
 mod parser_normalization;
 
 pub(super) type Cnf = Vec<Vec<i32>>;

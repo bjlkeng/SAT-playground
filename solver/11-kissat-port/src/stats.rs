@@ -177,6 +177,7 @@ pub(crate) struct StatsJsonContext<'a> {
     pub(crate) status_file_status: Option<&'a str>,
     pub(crate) termination_reason: &'a str,
     pub(crate) unknown_reason: Option<&'a str>,
+    pub(crate) limit_hit: bool,
     pub(crate) parse_error_kind: Option<&'a str>,
     pub(crate) model_check_result: &'a str,
     pub(crate) proof_check_result: &'a str,
@@ -241,7 +242,7 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.string_opt("status_file_status", ctx.status_file_status);
     json.string("termination_reason", ctx.termination_reason);
     json.string_opt("unknown_reason", ctx.unknown_reason);
-    json.bool("limit_hit", false);
+    json.bool("limit_hit", ctx.limit_hit);
     json.string_opt("parse_error_kind", ctx.parse_error_kind);
     json.string("model_check_result", ctx.model_check_result);
     json.string("proof_check_result", ctx.proof_check_result);

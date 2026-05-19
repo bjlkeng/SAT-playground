@@ -620,7 +620,7 @@ impl SolverConfig {
         Self::from_env_map(&env_map)
     }
 
-    fn from_env_map(env_map: &BTreeMap<String, String>) -> Self {
+    pub(crate) fn from_env_map(env_map: &BTreeMap<String, String>) -> Self {
         validate_removed_and_parked_vars(env_map);
         let strict_config = parse_bool_map(env_map, "SAT_STRICT_CONFIG", false);
         if strict_config {
@@ -1073,23 +1073,6 @@ impl SolverConfig {
         if self.search_mode_policy != SearchModePolicy::Single {
             fail_config("SAT_SEARCH_MODE=focused-stable is not implemented yet");
         }
-        if self.any_runtime_limit_set() {
-            fail_config(
-                "SAT_LIMIT_* values are parsed into SolverConfig but require the 0.3a SolveStatus/result contract before use",
-            );
-        }
-    }
-
-    fn any_runtime_limit_set(&self) -> bool {
-        self.conflict_limit.is_some()
-            || self.propagation_limit.is_some()
-            || self.tick_limit.is_some()
-            || self.wall_limit_sec.is_some()
-            || self.rss_limit_mb.is_some()
-            || self.learned_lit_limit.is_some()
-            || self.binary_clause_limit.is_some()
-            || self.extension_bytes_limit.is_some()
-            || self.proof_bytes_limit.is_some()
     }
 
     pub(crate) fn emit_requested_outputs(&self) {

@@ -19,7 +19,6 @@ pub(crate) const PROOF_OUT: &str = "proof.out";
 pub(crate) enum SolveStatus {
     Sat,
     Unsat,
-    #[allow(dead_code)]
     Unknown,
     ParseError,
 }
@@ -53,7 +52,7 @@ impl SolveStatus {
         match self {
             Self::Sat => "sat",
             Self::Unsat => "unsat",
-            Self::Unknown => "internal-error",
+            Self::Unknown => "unknown",
             Self::ParseError => "parse-error",
         }
     }
@@ -63,7 +62,7 @@ impl SolveStatus {
 pub(crate) enum ProofCompleteness {
     Complete,
     NotRequested,
-    NotApplicable,
+    Incomplete,
     None,
 }
 
@@ -72,14 +71,105 @@ impl ProofCompleteness {
         match self {
             Self::Complete => "complete",
             Self::NotRequested => "not_requested",
-            Self::NotApplicable => "not_applicable",
+            Self::Incomplete => "incomplete",
             Self::None => "none",
         }
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OutputContractState {
+    Complete,
+    #[allow(dead_code)]
+    Rejected,
+}
+
+impl OutputContractState {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OutputContract {
+    pub(crate) status: SolveStatus,
+    pub(crate) proof_completeness: ProofCompleteness,
+    pub(crate) model_written: bool,
+    pub(crate) proof_written: bool,
+    pub(crate) stats_written: bool,
+    pub(crate) result_json_written: bool,
+    pub(crate) output_contract_state: OutputContractState,
+}
+
+impl OutputContract {
+    pub(crate) fn validate(self) -> Result<(), &'static str> {
+        let _stats_written = self.stats_written;
+        if !self.result_json_written {
+            return Err("result_json_missing");
+        }
+        if self.output_contract_state != OutputContractState::Complete {
+            return Err("output_contract_incomplete");
+        }
+        match self.status {
+            SolveStatus::Sat => {
+                if !self.model_written {
+                    return Err("sat_model_missing");
+                }
+                if self.proof_written {
+                    return Err("sat_proof_forbidden");
+                }
+                if matches!(self.proof_completeness, ProofCompleteness::Complete) {
+                    return Err("sat_proof_complete_forbidden");
+                }
+            }
+            SolveStatus::Unsat => {
+                if self.model_written {
+                    return Err("unsat_model_forbidden");
+                }
+                match self.proof_completeness {
+                    ProofCompleteness::Complete => {
+                        if !self.proof_written {
+                            return Err("unsat_complete_proof_missing");
+                        }
+                    }
+                    ProofCompleteness::NotRequested => {
+                        if self.proof_written {
+                            return Err("unsat_unrequested_proof_present");
+                        }
+                    }
+                    _ => return Err("unsat_proof_incomplete"),
+                }
+            }
+            SolveStatus::Unknown => {
+                if self.model_written {
+                    return Err("unknown_model_forbidden");
+                }
+                if self.proof_written {
+                    return Err("unknown_proof_forbidden");
+                }
+                if self.proof_completeness == ProofCompleteness::Complete {
+                    return Err("unknown_complete_proof_forbidden");
+                }
+            }
+            SolveStatus::ParseError => {
+                if self.model_written {
+                    return Err("parse_error_model_forbidden");
+                }
+                if self.proof_written {
+                    return Err("parse_error_proof_forbidden");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 pub(crate) struct ResultContractFields<'a> {
     pub(crate) unknown_reason: Option<&'a str>,
+    pub(crate) termination_reason: Option<&'a str>,
     pub(crate) input_sha256: Option<&'a str>,
     pub(crate) model_check_result: &'a str,
     pub(crate) proof_check_result: &'a str,
@@ -96,11 +186,17 @@ impl<'a> ResultContractFields<'a> {
     ) -> Self {
         Self {
             unknown_reason,
+            termination_reason: None,
             input_sha256,
             model_check_result,
             proof_check_result,
             output_contract_state,
         }
+    }
+
+    pub(crate) fn with_termination_reason(mut self, termination_reason: &'a str) -> Self {
+        self.termination_reason = Some(termination_reason);
+        self
     }
 }
 
@@ -227,7 +323,9 @@ pub(crate) fn write_result_contract(
         ),
         status.as_str(),
         status.exit_code(),
-        status.termination_reason(),
+        fields
+            .termination_reason
+            .unwrap_or_else(|| status.termination_reason()),
         fields
             .unknown_reason
             .map(json_string)

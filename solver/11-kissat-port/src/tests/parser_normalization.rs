@@ -11,8 +11,6 @@ fn parser_normalization_differentials_preserve_status_and_mapped_models() {
             "duplicate-zero-empty-clause",
             "p cnf 3 3\n1 0\n0\n2 3 0 0\n",
         ),
-        ("missing-terminal-zero", "p cnf 3 1\n1\t -2   3\n"),
-        ("empty-file-currently-empty-formula", ""),
     ];
     let config = SolverConfig::default();
 
@@ -104,14 +102,27 @@ fn parser_fuzz_variants_are_classified_before_solver_execution() {
         remove_temp(&path);
     }
 
-    let (num_vars, clauses, out_of_range) =
-        parse_temp_cnf("out-of-range-var-id", "p cnf 2 1\n3 0\n");
-    assert_eq!(num_vars, 2);
-    assert!(
-        !formula_within_declared_vars(num_vars, &clauses),
-        "harness must classify out-of-range literals before constructing Solver"
-    );
-    remove_temp(&out_of_range);
+    for (label, body, needle) in [
+        (
+            "out-of-range-var-id",
+            "p cnf 2 1\n3 0\n",
+            "beyond declared bound",
+        ),
+        (
+            "missing-terminal-zero",
+            "p cnf 3 1\n1\t -2   3\n",
+            "missing terminal 0",
+        ),
+        ("empty-file", "", "missing problem line"),
+    ] {
+        let path = write_temp_cnf(label, body);
+        let err = parse_cnf(path.to_str().expect("path utf8")).expect_err("expected parse error");
+        assert!(
+            err.contains(needle),
+            "{label}: expected parse error containing {needle:?}, got {err:?}"
+        );
+        remove_temp(&path);
+    }
 }
 
 #[test]

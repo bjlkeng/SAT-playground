@@ -17,10 +17,12 @@ mod stats;
 mod oracle_tests;
 
 use config::{BranchMode, ClauseMinMode, InitialClauseMode, ProofPolicy, SolverConfig};
+use limits::LimitHit;
 use lit::{lit_to_index, lit_to_word, word_to_lit};
 use output::{
     prepare_output_contract_dir, print_assignment, write_model_file, write_result_contract,
-    ProofCompleteness, ResultContractFields, SolveStatus,
+    OutputContract, OutputContractState, ProofCompleteness, ResultContractFields, SolveStatus,
+    PROOF_OUT,
 };
 use stats::{
     json_stats_line, max_rss_mb, trace_full_line, FormulaStats, InputIdentity, ProofStats,
@@ -226,6 +228,18 @@ impl ProofLog {
         }
     }
 
+    fn finish_unknown(&mut self) {
+        match std::mem::replace(&mut self.mode, ProofMode::Disabled) {
+            ProofMode::Disabled => {}
+            ProofMode::Stream(stream) => {
+                self.stats = proof_stats_from_stream(&stream, "discarded-incomplete");
+                self.stats.incomplete = true;
+                drop(stream.file);
+                self.stats.temp_deleted = fs::remove_file(&stream.temp_path).is_ok();
+            }
+        }
+    }
+
     fn finish_unsat(&mut self) {
         match std::mem::replace(&mut self.mode, ProofMode::Disabled) {
             ProofMode::Disabled => {}
@@ -285,6 +299,15 @@ impl ProofLog {
 
     fn snapshot(&self) -> ProofStats {
         self.stats.clone()
+    }
+
+    fn bytes_written_estimate(&self) -> u64 {
+        match &self.mode {
+            ProofMode::Disabled => self.stats.bytes_written,
+            ProofMode::Stream(stream) => stream
+                .bytes_written
+                .saturating_add(stream.buffer.len() as u64),
+        }
     }
 }
 
@@ -443,6 +466,40 @@ struct Solver {
     /// early Section 0 LBD instrumentation slice; default off and policy-neutral
     use_lbd: bool,
     stats: SolverStats,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SolveOutcome {
+    status: SolveStatus,
+    unknown_reason: Option<&'static str>,
+}
+
+impl SolveOutcome {
+    fn sat() -> Self {
+        Self {
+            status: SolveStatus::Sat,
+            unknown_reason: None,
+        }
+    }
+
+    fn unsat() -> Self {
+        Self {
+            status: SolveStatus::Unsat,
+            unknown_reason: None,
+        }
+    }
+
+    fn unknown(reason: &'static str) -> Self {
+        Self {
+            status: SolveStatus::Unknown,
+            unknown_reason: Some(reason),
+        }
+    }
+
+    fn termination_reason(self) -> &'static str {
+        self.unknown_reason
+            .unwrap_or_else(|| self.status.termination_reason())
+    }
 }
 
 #[inline(always)]
@@ -2469,7 +2526,11 @@ impl Solver {
         self.solve_with_proof(&mut proof_log, &config)
     }
 
-    fn solve_to_output(&mut self, output_dir: &str, config: &SolverConfig) -> (bool, ProofStats) {
+    fn solve_to_output(
+        &mut self,
+        output_dir: &str,
+        config: &SolverConfig,
+    ) -> (SolveOutcome, ProofStats) {
         let mut proof_log = match config.proof_policy {
             ProofPolicy::Off => ProofLog::disabled(),
             ProofPolicy::Drat => {
@@ -2480,34 +2541,112 @@ impl Solver {
                 std::process::exit(2);
             }
         };
-        let sat = self.solve_with_proof(&mut proof_log, config);
+        let outcome = self.solve_status_with_proof(&mut proof_log, config);
         let proof_start = Instant::now();
-        if sat {
-            proof_log.finish_sat();
-        } else {
-            proof_log.finish_unsat();
+        match outcome.status {
+            SolveStatus::Sat => proof_log.finish_sat(),
+            SolveStatus::Unsat => proof_log.finish_unsat(),
+            SolveStatus::Unknown => proof_log.finish_unknown(),
+            SolveStatus::ParseError => unreachable!("parse errors do not enter solve_to_output"),
         }
         self.stats.proof_sec = proof_start.elapsed().as_secs_f64();
-        (sat, proof_log.snapshot())
+        (outcome, proof_log.snapshot())
     }
 
     fn solve_with_proof(&mut self, proof_log: &mut ProofLog, config: &SolverConfig) -> bool {
+        self.solve_status_with_proof(proof_log, config).status == SolveStatus::Sat
+    }
+
+    fn limit_hit(
+        &self,
+        config: &SolverConfig,
+        solve_start: Instant,
+        proof_log: &ProofLog,
+    ) -> Option<LimitHit> {
+        if let Some(limit) = config.conflict_limit {
+            if self.stats.conflicts > limit {
+                return Some(LimitHit::solve("conflict-limit"));
+            }
+        }
+        if let Some(limit) = config.propagation_limit {
+            if self.stats.propagations > limit {
+                return Some(LimitHit::solve("propagation-limit"));
+            }
+        }
+        if let Some(limit) = config.tick_limit {
+            let ticks = self
+                .stats
+                .conflicts
+                .saturating_add(self.stats.decisions)
+                .saturating_add(self.stats.propagations);
+            if ticks > limit {
+                return Some(LimitHit::solve("tick-limit"));
+            }
+        }
+        if let Some(limit) = config.wall_limit_sec {
+            if solve_start.elapsed().as_secs_f64() >= limit {
+                return Some(LimitHit::solve("wall-clock-limit"));
+            }
+        }
+        if let Some(limit) = config.rss_limit_mb {
+            if max_rss_mb().is_some_and(|rss| rss >= limit) {
+                return Some(LimitHit::emergency_memory("rss-limit"));
+            }
+        }
+        if let Some(limit) = config.learned_lit_limit {
+            if (self.learned_literals as u64) > limit {
+                return Some(LimitHit::solve("learned-literal-limit"));
+            }
+        }
+        if let Some(limit) = config.binary_clause_limit {
+            if (self.binary_clause_count_final() as u64) > limit {
+                return Some(LimitHit::solve("binary-clause-limit"));
+            }
+        }
+        if let Some(limit) = config.extension_bytes_limit {
+            let extension_bytes = (self.elim_clauses.len() as u64).saturating_mul(4);
+            if extension_bytes > limit {
+                return Some(LimitHit::solve("extension-bytes-limit"));
+            }
+        }
+        if let Some(limit) = config.proof_bytes_limit {
+            if proof_log.bytes_written_estimate() > limit {
+                return Some(LimitHit::solve("proof-bytes-limit"));
+            }
+        }
+        None
+    }
+
+    fn solve_status_with_proof(
+        &mut self,
+        proof_log: &mut ProofLog,
+        config: &SolverConfig,
+    ) -> SolveOutcome {
+        let solve_start = Instant::now();
         if !self.solver_ok || self.has_empty_clause || !self.enqueue_root_units() {
-            return false;
+            return SolveOutcome::unsat();
         }
 
         if self.propagate().is_some() {
-            return false;
+            return SolveOutcome::unsat();
         }
 
         self.record_live_original_clauses_for_proof(proof_log);
+        if let Some(limit) = self.limit_hit(config, solve_start, proof_log) {
+            let _class = limit.class.as_str();
+            return SolveOutcome::unknown(limit.reason);
+        }
 
         let preprocess_start = Instant::now();
         if !self.eliminate(true, proof_log) {
             self.stats.preprocess_sec = preprocess_start.elapsed().as_secs_f64();
-            return false;
+            return SolveOutcome::unsat();
         }
         self.stats.preprocess_sec = preprocess_start.elapsed().as_secs_f64();
+        if let Some(limit) = self.limit_hit(config, solve_start, proof_log) {
+            let _class = limit.class.as_str();
+            return SolveOutcome::unknown(limit.reason);
+        }
         self.reset_learned_budget_after_preprocess();
         if config.trace_preprocess {
             eprintln!(
@@ -2582,10 +2721,15 @@ impl Solver {
                                 self.stats.reduce_db_calls,
                             );
                         }
-                        return false;
+                        return SolveOutcome::unsat();
                     }
 
                     self.stats.conflicts += 1;
+                    if let Some(limit) = self.limit_hit(config, solve_start, proof_log) {
+                        self.stats.search_sec = search_start.elapsed().as_secs_f64();
+                        let _class = limit.class.as_str();
+                        return SolveOutcome::unknown(limit.reason);
+                    }
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
                             "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} level={} trail={} learned={} reduce_db={} orig_clauses={} orig_literals={}",
@@ -2619,7 +2763,7 @@ impl Solver {
                         self.backtrack(0);
                         let inserted = self.enqueue(asserting_lit, NO_REASON);
                         if !inserted {
-                            return false;
+                            return SolveOutcome::unsat();
                         }
                         self.scratch_conflict_clause = learned_clause;
                         self.scratch_conflict_clause.clear();
@@ -2641,6 +2785,11 @@ impl Solver {
                     }
 
                     conflict = self.propagate();
+                    if let Some(limit) = self.limit_hit(config, solve_start, proof_log) {
+                        self.stats.search_sec = search_start.elapsed().as_secs_f64();
+                        let _class = limit.class.as_str();
+                        return SolveOutcome::unknown(limit.reason);
+                    }
                 }
                 None => {
                     if self.perform_restart_if_pending() {
@@ -2649,7 +2798,7 @@ impl Solver {
                     }
 
                     if self.current_level() == 0 && !self.simplify_with_proof(proof_log) {
-                        return false;
+                        return SolveOutcome::unsat();
                     }
 
                     if self.reduce_db_enabled()
@@ -2661,10 +2810,21 @@ impl Solver {
                         self.reduce_db_with_proof(proof_log);
                     }
 
+                    if let Some(limit) = self.limit_hit(config, solve_start, proof_log) {
+                        self.stats.search_sec = search_start.elapsed().as_secs_f64();
+                        let _class = limit.class.as_str();
+                        return SolveOutcome::unknown(limit.reason);
+                    }
+
                     match self.pick_branch_lit() {
                         Some(lit) => {
                             self.decide(lit);
                             conflict = self.propagate();
+                            if let Some(limit) = self.limit_hit(config, solve_start, proof_log) {
+                                self.stats.search_sec = search_start.elapsed().as_secs_f64();
+                                let _class = limit.class.as_str();
+                                return SolveOutcome::unknown(limit.reason);
+                            }
                         }
                         None => {
                             self.capture_sat_model();
@@ -2681,7 +2841,7 @@ impl Solver {
                                     self.stats.reduce_db_calls,
                                 );
                             }
-                            return true;
+                            return SolveOutcome::sat();
                         }
                     }
                 }
@@ -2694,7 +2854,7 @@ fn parse_cnf(path: &str) -> Result<(usize, Vec<Vec<i32>>), String> {
     let file = fs::File::open(path).map_err(|e| format!("Error opening {path}: {e}"))?;
     let reader = io::BufReader::new(file);
 
-    let mut num_vars = 0;
+    let mut num_vars: Option<usize> = None;
     let mut clauses: Vec<Vec<i32>> = Vec::new();
     let mut current_clause: Vec<i32> = Vec::new();
 
@@ -2707,18 +2867,40 @@ fn parse_cnf(path: &str) -> Result<(usize, Vec<Vec<i32>>), String> {
         }
 
         if line.starts_with('p') {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 4 && parts[1] == "cnf" {
-                num_vars = parts[2].parse().map_err(|e| {
-                    format!(
-                        "{path}:{}: invalid variable count {:?}: {e}",
-                        line_idx + 1,
-                        parts[2]
-                    )
-                })?;
+            if num_vars.is_some() {
+                return Err(format!("{path}:{}: duplicate problem line", line_idx + 1));
             }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() != 4 || parts[0] != "p" || parts[1] != "cnf" {
+                return Err(format!(
+                    "{path}:{}: malformed problem line, expected 'p cnf <vars> <clauses>'",
+                    line_idx + 1
+                ));
+            }
+            let parsed_vars = parts[2].parse().map_err(|e| {
+                format!(
+                    "{path}:{}: invalid variable count {:?}: {e}",
+                    line_idx + 1,
+                    parts[2]
+                )
+            })?;
+            let _declared_clauses: usize = parts[3].parse().map_err(|e| {
+                format!(
+                    "{path}:{}: invalid clause count {:?}: {e}",
+                    line_idx + 1,
+                    parts[3]
+                )
+            })?;
+            num_vars = Some(parsed_vars);
             continue;
         }
+
+        let Some(declared_vars) = num_vars else {
+            return Err(format!(
+                "{path}:{}: literal data before problem line",
+                line_idx + 1
+            ));
+        };
 
         for token in line.split_whitespace() {
             let lit: i32 = token
@@ -2727,14 +2909,25 @@ fn parse_cnf(path: &str) -> Result<(usize, Vec<Vec<i32>>), String> {
             if lit == 0 {
                 clauses.push(std::mem::take(&mut current_clause));
             } else {
+                let var = lit.unsigned_abs() as usize;
+                if var == 0 || var > declared_vars {
+                    return Err(format!(
+                        "{path}:{}: literal {lit} uses variable {var}, beyond declared bound {declared_vars}",
+                        line_idx + 1
+                    ));
+                }
                 current_clause.push(lit);
             }
         }
     }
 
     if !current_clause.is_empty() {
-        clauses.push(current_clause);
+        return Err(format!("{path}: missing terminal 0 for final clause"));
     }
+
+    let Some(num_vars) = num_vars else {
+        return Err(format!("{path}: missing problem line"));
+    };
 
     Ok((num_vars, clauses))
 }
@@ -2792,12 +2985,25 @@ fn main() {
         Err(message) => {
             let parse_sec = parse_start.elapsed().as_secs_f64();
             eprintln!("{message}");
+            let output_contract = OutputContract {
+                status: SolveStatus::ParseError,
+                proof_completeness: ProofCompleteness::None,
+                model_written: false,
+                proof_written: output_path.join(PROOF_OUT).exists(),
+                stats_written: config.stats_json,
+                result_json_written: true,
+                output_contract_state: OutputContractState::Complete,
+            };
+            if let Err(reason) = output_contract.validate() {
+                eprintln!("internal output contract validation failed: {reason}");
+                std::process::exit(2);
+            }
             let fields = ResultContractFields::new(
                 Some(&message),
                 input_identity.sha256.as_deref(),
                 "not_applicable",
                 "not_applicable",
-                "complete",
+                output_contract.output_contract_state.as_str(),
             );
             write_result_contract(
                 output_path,
@@ -2831,6 +3037,7 @@ fn main() {
                     status_file_status: Some(SolveStatus::ParseError.as_str()),
                     termination_reason: SolveStatus::ParseError.termination_reason(),
                     unknown_reason: Some(&message),
+                    limit_hit: false,
                     parse_error_kind: Some("dimacs-parse-error"),
                     model_check_result: "not_applicable",
                     proof_check_result: "not_applicable",
@@ -2849,13 +3056,9 @@ fn main() {
     let original_lits_initial = initial_lit_count(&clauses);
     let mut solver = Solver::new_with_config(num_vars, clauses, &config);
 
-    let (sat, proof_stats) = solver.solve_to_output(output_dir, &config);
-    let status = if sat {
-        SolveStatus::Sat
-    } else {
-        SolveStatus::Unsat
-    };
-    let model_path = if sat {
+    let (outcome, proof_stats) = solver.solve_to_output(output_dir, &config);
+    let status = outcome.status;
+    let model_path = if status == SolveStatus::Sat {
         let model = solver
             .sat_model
             .as_ref()
@@ -2864,7 +3067,7 @@ fn main() {
     } else {
         None
     };
-    let model_check_result = if sat {
+    let model_check_result = if status == SolveStatus::Sat {
         let model = solver
             .sat_model
             .as_ref()
@@ -2883,16 +3086,33 @@ fn main() {
     let proof_completeness = match (status, config.proof_policy) {
         (SolveStatus::Unsat, ProofPolicy::Drat) => ProofCompleteness::Complete,
         (SolveStatus::Unsat, ProofPolicy::Off) => ProofCompleteness::NotRequested,
-        (SolveStatus::Sat, _) => ProofCompleteness::NotApplicable,
+        (SolveStatus::Sat, ProofPolicy::Drat) => ProofCompleteness::Incomplete,
+        (SolveStatus::Sat, ProofPolicy::Off) => ProofCompleteness::NotRequested,
+        (SolveStatus::Unknown, ProofPolicy::Drat) => ProofCompleteness::Incomplete,
+        (SolveStatus::Unknown, ProofPolicy::Off) => ProofCompleteness::NotRequested,
         _ => ProofCompleteness::None,
     };
+    let output_contract = OutputContract {
+        status,
+        proof_completeness,
+        model_written: model_path.is_some(),
+        proof_written: output_path.join(PROOF_OUT).exists(),
+        stats_written: config.stats_json,
+        result_json_written: true,
+        output_contract_state: OutputContractState::Complete,
+    };
+    if let Err(reason) = output_contract.validate() {
+        eprintln!("internal output contract validation failed: {reason}");
+        std::process::exit(2);
+    }
     let fields = ResultContractFields::new(
-        None,
+        outcome.unknown_reason,
         input_identity.sha256.as_deref(),
         model_check_result,
         "not_checked",
-        "complete",
-    );
+        output_contract.output_contract_state.as_str(),
+    )
+    .with_termination_reason(outcome.termination_reason());
     write_result_contract(
         output_path,
         status,
@@ -2921,8 +3141,9 @@ fn main() {
             status,
             exit_code: status.exit_code(),
             status_file_status: Some(status.as_str()),
-            termination_reason: status.termination_reason(),
-            unknown_reason: None,
+            termination_reason: outcome.termination_reason(),
+            unknown_reason: outcome.unknown_reason,
+            limit_hit: status == SolveStatus::Unknown && outcome.unknown_reason.is_some(),
             parse_error_kind: None,
             model_check_result,
             proof_check_result: "not_checked",
@@ -2941,7 +3162,7 @@ fn main() {
             solver.stats.lbd_computed, solver.stats.lbd_sum, solver.stats.lbd_max
         );
     }
-    if sat {
+    if status == SolveStatus::Sat {
         println!("{}", status.s_line());
         let model = solver
             .sat_model
@@ -3745,9 +3966,11 @@ mod tests {
         let proof_dir = make_temp_dir("solver-unsat-proof");
         let mut s = make_solver(2, clauses);
         let config = SolverConfig::default();
-        assert!(
-            !s.solve_to_output(proof_dir.to_str().expect("utf8 temp dir"), &config)
+        assert_eq!(
+            s.solve_to_output(proof_dir.to_str().expect("utf8 temp dir"), &config)
                 .0
+                .status,
+            SolveStatus::Unsat
         );
 
         let proof_text =
