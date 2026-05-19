@@ -76,7 +76,7 @@ for cnf in "$INSTANCE_DIR"/*; do
         gzip -dkc "$cnf" > "$solver_input"
     fi
     SAT_USE_LBD=on bash "$SOLVER11/run.sh" "$solver_input" "$out_dir" > "$out_dir/stdout.log" 2> "$out_dir/stderr.log"
-    grep '^s ' "$out_dir/stdout.log" | head -1 > "$out_dir/status.txt"
+    grep '^s ' "$out_dir/stdout.log" | head -1 > "$out_dir/stdout-status.txt"
     line="$(grep '^c lbd ' "$out_dir/stdout.log" | tail -1 || true)"
     computed="$(printf '%s\n' "$line" | sed -n 's/.*computed=\([0-9][0-9]*\).*/\1/p')"
     max_seen="$(printf '%s\n' "$line" | sed -n 's/.*max=\([0-9][0-9]*\).*/\1/p')"

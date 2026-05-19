@@ -20,14 +20,25 @@ STATUS_FROM_S_LINE = {
     "s UNSATISFIABLE": "UNSAT",
     "s UNKNOWN": "UNKNOWN",
 }
+RESULT_JSON = "result.json"
 FINAL_PROOF = "proof.out"
 TEMP_PROOF = "proof.out.tmp"
-REQUIRED_JSON_STATS = {
-    "result",
-    "conflicts",
-    "decisions",
-    "propagations",
-    "restarts",
+REQUIRED_RESULT_JSON = {
+    "schema_version",
+    "status",
+    "exit_code",
+    "termination_reason",
+    "unknown_reason",
+    "status_file",
+    "model_file",
+    "proof_file",
+    "proof_completeness",
+    "model_check_result",
+    "proof_check_result",
+    "config_hash",
+    "profile",
+    "proof_policy",
+    "stats_json_seen",
 }
 
 
@@ -82,30 +93,29 @@ def parse_stdout(stdout_path: Path) -> tuple[str, list[int], list[str]]:
     return STATUS_FROM_S_LINE[s_lines[0]], assignment, v_lines
 
 
-def read_status_source(out_dir: Path) -> tuple[str, Path]:
-    status_json = out_dir / "status.json"
-    if status_json.exists():
-        payload = json.loads(status_json.read_text())
-        status = payload.get("status") or payload.get("result")
-        if not isinstance(status, str):
-            raise ValueError(f"{status_json}: missing string status/result")
-        return normalize_status(status), status_json
-
-    status_txt = out_dir / "status.txt"
-    if status_txt.exists():
-        first = status_txt.read_text().strip().splitlines()
-        if not first:
-            raise ValueError(f"{status_txt}: empty status file")
-        return normalize_status(first[0].strip()), status_txt
-
-    stdout_log = out_dir / "stdout.log"
-    if stdout_log.exists():
-        status, _, _ = parse_stdout(stdout_log)
-        return status, stdout_log
-
-    raise FileNotFoundError(
-        f"{out_dir}: expected status.json, status.txt, or stdout.log as status source"
-    )
+def read_result_json(out_dir: Path) -> tuple[str, Path, dict]:
+    result_path = out_dir / RESULT_JSON
+    if not result_path.exists():
+        raise FileNotFoundError(f"{result_path}: mandatory solver result contract is missing")
+    payload = json.loads(result_path.read_text())
+    missing = sorted(REQUIRED_RESULT_JSON.difference(payload))
+    if missing:
+        raise ValueError(f"{result_path}: missing required fields {missing}")
+    status = payload.get("status")
+    if not isinstance(status, str):
+        raise ValueError(f"{result_path}: missing string status")
+    status_file = payload.get("status_file")
+    if not isinstance(status_file, str):
+        raise ValueError(f"{result_path}: missing string status_file")
+    status_path = Path(status_file)
+    if not status_path.exists():
+        raise FileNotFoundError(f"{result_path}: status_file does not exist: {status_path}")
+    status_text = status_path.read_text().strip()
+    if normalize_status(status_text) != normalize_status(status):
+        raise ValueError(
+            f"{result_path}: status_file says {status_text!r}, result.json says {status!r}"
+        )
+    return normalize_status(status), result_path, payload
 
 
 def normalize_status(status: str) -> str:
@@ -180,14 +190,9 @@ def verify_drat(cnf: Path, proof: Path) -> None:
         raise ValueError(f"drat-trim rejected proof {proof}:\n{tail}")
 
 
-def check_json_stats(out_dir: Path) -> None:
-    stats_path = out_dir / "stats.json"
-    if not stats_path.exists():
-        raise FileNotFoundError(f"{stats_path}: required by --require-json-stats on")
-    payload = json.loads(stats_path.read_text())
-    missing = sorted(REQUIRED_JSON_STATS.difference(payload))
-    if missing:
-        raise ValueError(f"{stats_path}: missing required JSON_STATS fields {missing}")
+def check_json_stats(out_dir: Path, payload: dict) -> None:
+    if not payload.get("stats_json_seen"):
+        raise ValueError(f"{out_dir / RESULT_JSON}: stats_json_seen is false")
 
 
 def validate(args: argparse.Namespace) -> None:
@@ -198,7 +203,7 @@ def validate(args: argparse.Namespace) -> None:
     if not out_dir.is_dir():
         raise FileNotFoundError(f"output directory not found: {out_dir}")
 
-    status, status_source = read_status_source(out_dir)
+    status, status_source, result_payload = read_result_json(out_dir)
     expected = normalize_status(args.expected_status)
     if expected != "ANY" and status != expected:
         raise ValueError(f"expected {expected}, got {status} from {status_source}")
@@ -208,7 +213,8 @@ def validate(args: argparse.Namespace) -> None:
     v_lines: list[str] = []
     if stdout_path.exists():
         stdout_status, assignment, v_lines = parse_stdout(stdout_path)
-        if stdout_status != status:
+        expected_stdout_status = "UNKNOWN" if status == "PARSE_ERROR" else status
+        if stdout_status != expected_stdout_status:
             raise ValueError(f"status source says {status}, stdout says {stdout_status}")
 
     proof_path = out_dir / FINAL_PROOF
@@ -218,14 +224,19 @@ def validate(args: argparse.Namespace) -> None:
     if status == "SAT":
         if not stdout_path.exists():
             raise FileNotFoundError("SAT validation requires stdout.log with v-lines")
+        model_file = result_payload.get("model_file")
+        if not isinstance(model_file, str) or not Path(model_file).exists():
+            raise FileNotFoundError(f"SAT result missing model_file from {status_source}")
         verify_assignment(parse_cnf(cnf), assignment)
     elif status == "UNSAT":
         if has_model:
             raise ValueError("UNSAT result must not contain v-lines")
         if args.proof_policy == "drat":
-            if not proof_path.exists():
-                raise FileNotFoundError(f"UNSAT result missing {proof_path}")
-            verify_drat(cnf, proof_path)
+            proof_file = result_payload.get("proof_file")
+            proof_for_check = Path(proof_file) if isinstance(proof_file, str) else proof_path
+            if not proof_for_check.exists():
+                raise FileNotFoundError(f"UNSAT result missing {proof_for_check}")
+            verify_drat(cnf, proof_for_check)
     elif status in {"UNKNOWN", "PARSE_ERROR"}:
         if proof_path.exists() or temp_proof_path.exists():
             raise ValueError(f"{status} result must not leave finalized or temp proof files")
@@ -235,7 +246,7 @@ def validate(args: argparse.Namespace) -> None:
         raise ValueError(f"unsupported normalized status: {status}")
 
     if args.require_json_stats == "on":
-        check_json_stats(out_dir)
+        check_json_stats(out_dir, result_payload)
 
     print(f"VALIDATED status={status} source={status_source} out_dir={out_dir}")
 

@@ -104,6 +104,10 @@ fi
 # --- set up log directory ---
 TIMESTAMP=$(date +%Y-%m-%d-%H-%M-%S)
 SOLVER_NAME=$(basename "$SOLVER_DIR")
+REQUIRE_RESULT_JSON=0
+if [[ "$SOLVER_NAME" == "11-kissat-port" ]]; then
+    REQUIRE_RESULT_JSON=1
+fi
 if [[ -n "$LOG_DIR_OVERRIDE" ]]; then
     if [[ "$LOG_DIR_OVERRIDE" = /* ]]; then
         LOG_DIR="$LOG_DIR_OVERRIDE"
@@ -215,21 +219,47 @@ run_instance() {
         elapsed=$(perl -e "printf '%.3f', $end_time - $start_time")
     fi
 
-    # Extract result
+    # Extract result from the solver-owned result.json contract.
     local s_line result
     s_line=$(echo "$output" | grep '^s ' | head -1) || true
+    local result_json="$proof_dir/result.json"
 
     # exit code 124 = timeout (coreutils timeout)
     if [[ $exit_code -eq 124 ]]; then
         result="TIMEOUT"
-    elif [[ -z "$s_line" ]]; then
+    elif [[ -f "$result_json" ]]; then
+        local status_file=""
+        read -r result status_file < <(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["status"], p["status_file"])' "$result_json" 2>>"$ERRORS_LOG") || result="ERROR"
+        case "$result" in
+            SAT|UNSAT|UNKNOWN|PARSE_ERROR) ;;
+            *) result="ERROR" ;;
+        esac
+        if [[ "$result" != "ERROR" && ! -f "$status_file" ]]; then
+            result="ERROR"
+        elif [[ "$result" != "ERROR" ]]; then
+            local status_file_text
+            status_file_text=$(tr -d '\r\n' < "$status_file")
+            if [[ "$status_file_text" != "$result" ]]; then
+                result="ERROR"
+            fi
+        fi
+        if [[ "$result" == "SAT" && "$s_line" != "s SATISFIABLE" ]]; then
+            result="ERROR"
+        elif [[ "$result" == "UNSAT" && "$s_line" != "s UNSATISFIABLE" ]]; then
+            result="ERROR"
+        elif [[ "$result" == "UNKNOWN" && "$s_line" != "s UNKNOWN" ]]; then
+            result="ERROR"
+        elif [[ "$result" == "PARSE_ERROR" && "$s_line" != "s UNKNOWN" ]]; then
+            result="ERROR"
+        fi
+    elif [[ $REQUIRE_RESULT_JSON -eq 1 ]]; then
         result="ERROR"
     else
         case "$s_line" in
-            "s SATISFIABLE")   result="SAT" ;;
+            "s SATISFIABLE") result="SAT" ;;
             "s UNSATISFIABLE") result="UNSAT" ;;
-            "s UNKNOWN")       result="UNKNOWN" ;;
-            *)                 result="ERROR" ;;
+            "s UNKNOWN") result="UNKNOWN" ;;
+            *) result="ERROR" ;;
         esac
     fi
 
@@ -291,6 +321,12 @@ run_instance() {
     if [[ "$result" == "ERROR" ]]; then
         {
             echo "--- $name (exit=$exit_code) ---"
+            if [[ ! -f "$result_json" ]]; then
+                echo "missing solver result contract: $result_json"
+            fi
+            if [[ -n "$s_line" ]]; then
+                echo "stdout s-line: $s_line"
+            fi
             cat "$stderr_output"
             echo ""
         } >> "$ERRORS_LOG"
@@ -310,6 +346,7 @@ run_instance() {
         SAT)     status_icon="SAT    " ;;
         UNSAT)   status_icon="UNSAT  " ;;
         UNKNOWN) status_icon="UNKNOWN" ;;
+        PARSE_ERROR) status_icon="PARSE " ;;
         TIMEOUT) status_icon="TIMEOUT" ;;
         ERROR)   status_icon="ERROR  " ;;
     esac
@@ -357,6 +394,10 @@ echo "=== Computing PAR-2 score ==="
                 TOTAL_TIME=$(perl -e "printf '%.3f', $TOTAL_TIME + 2 * $timeout_val")
                 ;;
             ERROR)
+                ERROR_COUNT=$((ERROR_COUNT + 1))
+                TOTAL_TIME=$(perl -e "printf '%.3f', $TOTAL_TIME + 2 * $timeout_val")
+                ;;
+            PARSE_ERROR)
                 ERROR_COUNT=$((ERROR_COUNT + 1))
                 TOTAL_TIME=$(perl -e "printf '%.3f', $TOTAL_TIME + 2 * $timeout_val")
                 ;;

@@ -39,7 +39,7 @@ run_and_validate() {
     local exit_code=0
     bash "$SOLVER11/run.sh" "$cnf" "$out_dir" > "$out_dir/stdout.log" 2> "$out_dir/stderr.log" || exit_code=$?
     echo "$exit_code" > "$out_dir/exit_code.log"
-    grep '^s ' "$out_dir/stdout.log" | head -1 > "$out_dir/status.txt" || true
+    grep '^s ' "$out_dir/stdout.log" | head -1 > "$out_dir/stdout-status.txt" || true
 
     local proof_policy="off"
     if [[ "$expected" == "UNSAT" ]]; then

@@ -281,6 +281,41 @@ def validate_env_boundary(src_dir: Path, errors: list[str]) -> None:
             fail(errors, f"{path}: env config read outside src/config.rs at line {line}")
 
 
+def validate_result_contract(repo_root: Path, solver_dir: Path, errors: list[str]) -> None:
+    output_rs = solver_dir / "src" / "output.rs"
+    smoke = repo_root / "tools" / "smoke_test.sh"
+    bench = repo_root / "tools" / "bench.sh"
+    validator = repo_root / "tools" / "validate_solver_result.py"
+    readme = solver_dir / "README.md"
+
+    required_by_file = {
+        output_rs: [
+            "pub(crate) enum SolveStatus",
+            "pub(crate) const RESULT_JSON",
+            "write_result_contract",
+            "\\\"status\\\":",
+            "\\\"config_hash\\\":",
+        ],
+        smoke: ["result.json", "status_file", "model.txt"],
+        bench: ["result.json", "status_file", "PARSE_ERROR"],
+        validator: ["RESULT_JSON = \"result.json\"", "REQUIRED_RESULT_JSON", "read_result_json"],
+        readme: ["Solver 11 Result Contract", "result.json", "PARSE_ERROR"],
+    }
+    for path, needles in required_by_file.items():
+        if not path.exists():
+            fail(errors, f"missing {path}")
+            continue
+        text = path.read_text()
+        for needle in needles:
+            if needle not in text:
+                fail(errors, f"{path}: missing result-contract text {needle!r}")
+
+    validator_text = validator.read_text() if validator.exists() else ""
+    for forbidden in ["status.json", "status.txt, or stdout.log"]:
+        if forbidden in validator_text:
+            fail(errors, f"{validator}: legacy status fallback still present: {forbidden!r}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -305,6 +340,7 @@ def main() -> int:
         validate_public_mut_solver(src_dir, errors)
         validate_env_boundary(src_dir, errors)
         validate_config_artifacts(solver_dir, errors)
+        validate_result_contract(Path.cwd(), solver_dir, errors)
     validate_state_file(solver_dir, errors)
 
     if errors:

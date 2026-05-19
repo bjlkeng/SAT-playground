@@ -91,8 +91,35 @@ New Phase 1 and Phase 2 feature flags default off. Flags whose implementation
 bead has not landed are represented in the schema but fail fast if enabled, so
 benchmark artifacts cannot accidentally record no-op feature claims. `lrat` and
 `SAT_LIMIT_*` values are parsed into the config contract but currently fail fast
-until the status/result contract in 0.3a can return structured `UNKNOWN`
+until a dedicated limit-enforcement task wires them to structured `UNKNOWN`
 outcomes.
+
+## Solver 11 Result Contract
+
+Every normally exited solver 11 run writes the minimal 0.3a output contract into
+the output directory passed as the second `run.sh` argument:
+
+- `result.json`: mandatory machine-readable result contract
+- `status.txt`: exact status string, one of `SAT`, `UNSAT`, `UNKNOWN`, or
+  `PARSE_ERROR`
+- `model.txt`: emitted for `SAT`
+- `proof.out`: emitted for `UNSAT` when `SAT_PROOF=drat`
+
+`result.json` includes:
+
+```text
+schema_version, status, exit_code, termination_reason, unknown_reason,
+status_file, model_file, proof_file, proof_completeness,
+model_check_result, proof_check_result, config_hash, profile, proof_policy,
+stats_json_seen
+```
+
+The solver keeps SAT Competition stdout compatibility: exactly one `s` line is
+printed, and `v` lines are printed only for SAT. `PARSE_ERROR` is represented as
+`s UNKNOWN` on stdout with `status=PARSE_ERROR` in `result.json`. `SAT`,
+`UNSAT`, and `UNKNOWN` currently exit `0`; `PARSE_ERROR` exits `2`. When
+`SAT_STATS_JSON=on`, the `c JSON_STATS ...` record is emitted on stderr and
+`result.json` records `stats_json_seen=true`.
 
 ## Validation
 

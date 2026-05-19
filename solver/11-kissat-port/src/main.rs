@@ -14,7 +14,10 @@ mod stats;
 
 use config::{BranchMode, ClauseMinMode, InitialClauseMode, ProofPolicy, SolverConfig};
 use lit::{lit_to_index, lit_to_word, word_to_lit};
-use output::print_assignment;
+use output::{
+    prepare_output_contract_dir, print_assignment, write_model_file, write_result_contract,
+    ProofCompleteness, SolveStatus,
+};
 use stats::SolverStats;
 
 const UNASSIGNED: u8 = 0;
@@ -2579,19 +2582,16 @@ impl Solver {
     }
 }
 
-fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
-    let file = fs::File::open(path).unwrap_or_else(|e| {
-        eprintln!("Error opening {}: {}", path, e);
-        std::process::exit(1);
-    });
+fn parse_cnf(path: &str) -> Result<(usize, Vec<Vec<i32>>), String> {
+    let file = fs::File::open(path).map_err(|e| format!("Error opening {path}: {e}"))?;
     let reader = io::BufReader::new(file);
 
     let mut num_vars = 0;
     let mut clauses: Vec<Vec<i32>> = Vec::new();
     let mut current_clause: Vec<i32> = Vec::new();
 
-    for line in reader.lines() {
-        let line = line.expect("Failed to read line");
+    for (line_idx, line) in reader.lines().enumerate() {
+        let line = line.map_err(|e| format!("{path}:{}: read error: {e}", line_idx + 1))?;
         let line = line.trim();
 
         if line.is_empty() || line.starts_with('c') {
@@ -2601,16 +2601,21 @@ fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
         if line.starts_with('p') {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 4 && parts[1] == "cnf" {
-                num_vars = parts[2].parse().unwrap_or(0);
+                num_vars = parts[2].parse().map_err(|e| {
+                    format!(
+                        "{path}:{}: invalid variable count {:?}: {e}",
+                        line_idx + 1,
+                        parts[2]
+                    )
+                })?;
             }
             continue;
         }
 
         for token in line.split_whitespace() {
-            let lit: i32 = match token.parse() {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
+            let lit: i32 = token
+                .parse()
+                .map_err(|e| format!("{path}:{}: invalid literal {token:?}: {e}", line_idx + 1))?;
             if lit == 0 {
                 clauses.push(std::mem::take(&mut current_clause));
             } else {
@@ -2623,7 +2628,7 @@ fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
         clauses.push(current_clause);
     }
 
-    (num_vars, clauses)
+    Ok((num_vars, clauses))
 }
 
 fn main() {
@@ -2635,18 +2640,60 @@ fn main() {
 
     let cnf_path = &args[1];
     let output_dir = &args[2];
+    let output_path = Path::new(output_dir);
 
     let config = SolverConfig::from_env();
     config.emit_requested_outputs();
-    let (num_vars, clauses) = parse_cnf(cnf_path);
+    prepare_output_contract_dir(output_path);
+    let (num_vars, clauses) = match parse_cnf(cnf_path) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("{message}");
+            write_result_contract(
+                output_path,
+                SolveStatus::ParseError,
+                &config,
+                Some(&message),
+                None,
+                ProofCompleteness::None,
+            );
+            println!("{}", SolveStatus::ParseError.s_line());
+            std::process::exit(SolveStatus::ParseError.exit_code());
+        }
+    };
     let mut solver = Solver::new_with_config(num_vars, clauses, &config);
 
     let sat = solver.solve_to_output(output_dir, &config);
+    let status = if sat {
+        SolveStatus::Sat
+    } else {
+        SolveStatus::Unsat
+    };
+    let model_path = if sat {
+        let model = solver
+            .sat_model
+            .as_ref()
+            .expect("SAT solver returned without a model snapshot");
+        Some(write_model_file(output_path, model))
+    } else {
+        None
+    };
+    let proof_completeness = match (status, config.proof_policy) {
+        (SolveStatus::Unsat, ProofPolicy::Drat) => ProofCompleteness::Complete,
+        (SolveStatus::Unsat, ProofPolicy::Off) => ProofCompleteness::NotRequested,
+        (SolveStatus::Sat, _) => ProofCompleteness::NotApplicable,
+        _ => ProofCompleteness::None,
+    };
+    write_result_contract(
+        output_path,
+        status,
+        &config,
+        None,
+        model_path.as_deref(),
+        proof_completeness,
+    );
     if config.stats_json {
-        println!(
-            "{}",
-            config.json_stats_line(if sat { "SAT" } else { "UNSAT" })
-        );
+        eprintln!("{}", config.json_stats_line(status.as_str()));
     }
     if solver.use_lbd {
         println!(
@@ -2655,15 +2702,16 @@ fn main() {
         );
     }
     if sat {
-        println!("s SATISFIABLE");
+        println!("{}", status.s_line());
         let model = solver
             .sat_model
             .as_ref()
             .expect("SAT solver returned without a model snapshot");
         print_assignment(model);
     } else {
-        println!("s UNSATISFIABLE");
+        println!("{}", status.s_line());
     }
+    std::process::exit(status.exit_code());
 }
 
 #[cfg(test)]

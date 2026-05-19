@@ -5,7 +5,8 @@
 #
 # Runs all tests in tests/cnf/sat/ and tests/cnf/unsat/ against the solver.
 # Checks:
-#   - SAT instances: correct s-line + assignment satisfies every clause
+#   - result.json status contract is present and matches the expected status
+#   - SAT instances: correct s-line + assignment satisfies every clause + model.txt exists
 #   - UNSAT instances: correct s-line + proof.out exists (and runs checker if available)
 #
 # All outputs are logged to log/<timestamp>/ for debugging.
@@ -58,16 +59,57 @@ run_one_test() {
     local test_dir="$LOG_DIR/$name"
     mkdir -p "$test_dir"
 
-    # Create a proof output dir for this test
-    local proof_dir="$test_dir/proof"
-    mkdir -p "$proof_dir"
-
     # Run solver, capture stdout and stderr
     local output=""
     local exit_code=0
-    output=$(bash "$RUN_SH" "$cnf" "$proof_dir" 2>"$test_dir/stderr.log") || exit_code=$?
+    output=$(bash "$RUN_SH" "$cnf" "$test_dir" 2>"$test_dir/stderr.log") || exit_code=$?
     echo "$output" > "$test_dir/stdout.log"
     echo "$exit_code" > "$test_dir/exit_code.log"
+
+    local result_json="$test_dir/result.json"
+    if [[ ! -f "$result_json" ]]; then
+        log "  FAIL  $name — missing result.json"
+        echo "REASON: result.json not found in $test_dir" > "$test_dir/failure.log"
+        FAIL=$((FAIL + 1))
+        return
+    fi
+
+    local result_status status_file
+    read -r result_status status_file < <(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["status"], p["status_file"])' "$result_json" 2>"$test_dir/result_parse.err") || {
+        log "  FAIL  $name — malformed result.json"
+        echo "REASON: could not parse result.json" > "$test_dir/failure.log"
+        FAIL=$((FAIL + 1))
+        return
+    }
+    if [[ ! -f "$status_file" ]]; then
+        log "  FAIL  $name — result.json points at missing status file"
+        echo "REASON: status file not found: $status_file" > "$test_dir/failure.log"
+        FAIL=$((FAIL + 1))
+        return
+    fi
+    local status_file_text
+    status_file_text=$(tr -d '\r\n' < "$status_file")
+    if [[ "$status_file_text" != "$result_status" ]]; then
+        log "  FAIL  $name — status file disagrees with result.json"
+        echo "REASON: status file says $status_file_text, result.json says $result_status" > "$test_dir/failure.log"
+        FAIL=$((FAIL + 1))
+        return
+    fi
+
+    local expected_status
+    case "$expected" in
+        SATISFIABLE) expected_status="SAT" ;;
+        UNSATISFIABLE) expected_status="UNSAT" ;;
+        UNKNOWN) expected_status="UNKNOWN" ;;
+        *) expected_status="$expected" ;;
+    esac
+
+    if [[ "$result_status" != "$expected_status" ]]; then
+        log "  FAIL  $name — expected result status '$expected_status', got '$result_status'"
+        echo "REASON: wrong result.json status: expected $expected_status, got $result_status" > "$test_dir/failure.log"
+        FAIL=$((FAIL + 1))
+        return
+    fi
 
     # Extract s-line
     local s_line
@@ -89,6 +131,12 @@ run_one_test() {
 
     # --- SAT-specific checks: verify assignment ---
     if [[ "$expected" == "SATISFIABLE" ]]; then
+        if [[ ! -f "$test_dir/model.txt" ]]; then
+            log "  FAIL  $name — SAT result missing model.txt"
+            echo "REASON: model.txt not found in $test_dir" > "$test_dir/failure.log"
+            FAIL=$((FAIL + 1))
+            return
+        fi
         local verify_result
         verify_result=$(verify_assignment "$cnf" "$output" 2>&1) || {
             log "  FAIL  $name — $verify_result"
@@ -100,23 +148,22 @@ run_one_test() {
 
     # --- UNSAT-specific checks: proof.out + drat-trim verification ---
     if [[ "$expected" == "UNSATISFIABLE" ]]; then
-        if [[ ! -f "$proof_dir/proof.out" ]]; then
+        if [[ ! -f "$test_dir/proof.out" ]]; then
             log "  FAIL  $name — no proof.out generated"
-            echo "REASON: proof.out not found in $proof_dir" > "$test_dir/failure.log"
+            echo "REASON: proof.out not found in $test_dir" > "$test_dir/failure.log"
             FAIL=$((FAIL + 1))
             return
         fi
 
         # Log proof file info
-        ls -la "$proof_dir/proof.out" > "$test_dir/proof_info.log" 2>&1
-        cp "$proof_dir/proof.out" "$test_dir/proof.out"
+        ls -la "$test_dir/proof.out" > "$test_dir/proof_info.log" 2>&1
 
         # Run drat-trim
         if [[ -n "$DRAT_TRIM" ]]; then
             local checker_output=""
             local checker_exit=0
             local checker_status=""
-            checker_output=$("$DRAT_TRIM" "$cnf" "$proof_dir/proof.out" 2>&1) || checker_exit=$?
+            checker_output=$("$DRAT_TRIM" "$cnf" "$test_dir/proof.out" 2>&1) || checker_exit=$?
             echo "$checker_output" > "$test_dir/checker.log"
             echo "$checker_exit" > "$test_dir/checker_exit.log"
             checker_status=$(printf '%s\n' "$checker_output" | tr -d '\r')

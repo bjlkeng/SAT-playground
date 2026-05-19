@@ -1126,6 +1126,14 @@ impl SolverConfig {
         format!("{hash:016x}")
     }
 
+    pub(crate) fn profile_name(&self) -> &'static str {
+        self.profile.as_str()
+    }
+
+    pub(crate) fn proof_policy_name(&self) -> &'static str {
+        self.proof_policy.as_str()
+    }
+
     pub(crate) fn config_replay_text(&self) -> String {
         let mut body = self.stable_config_body(true);
         body.push_str("config_hash=");
