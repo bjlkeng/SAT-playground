@@ -1135,8 +1135,8 @@ impl Solver {
 
         while self.solver_ok
             && (!touched.is_empty()
-                || !queue.is_empty()
-                || self.bwdsub_assigns < self.trail.len()
+                || (run_full_backward_subsumption
+                    && (!queue.is_empty() || self.bwdsub_assigns < self.trail.len()))
                 || !heap.is_empty())
         {
             if !touched.is_empty() {

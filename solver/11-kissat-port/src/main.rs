@@ -12,6 +12,10 @@ mod output;
 mod simp;
 mod stats;
 
+#[cfg(test)]
+#[path = "tests/mod.rs"]
+mod oracle_tests;
+
 use config::{BranchMode, ClauseMinMode, InitialClauseMode, ProofPolicy, SolverConfig};
 use lit::{lit_to_index, lit_to_word, word_to_lit};
 use output::{
