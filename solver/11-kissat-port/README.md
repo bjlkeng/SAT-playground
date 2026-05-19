@@ -76,6 +76,7 @@ SAT_CONFIG_OUT=log/solver11.config
 SAT_CONFIG_REPLAY=log/solver11.config
 SAT_STRICT_CONFIG=on
 SAT_STATS_JSON=on
+SAT_STATS_HOT=on
 SAT_USE_LBD=on
 ```
 
@@ -84,7 +85,9 @@ effective profile/axes, proof policy, every config field, feature maturity
 records, legacy aliases used, and a stable `config_hash`. `SAT_CONFIG_REPLAY`
 loads that file before CNF parsing. By default replay allows only the documented
 runtime overrides (`SAT_CONFIG_OUT`, `SAT_RUN_LABEL`, `SAT_STATS_JSON`,
-`SAT_TRACE_FULL`, `SAT_LIMIT_WALL_SEC`, `SAT_LIMIT_RSS_MB`); set
+`SAT_STATS_HOT`, `SAT_TRACE_FULL`, `SAT_TRACE_PROOF`, `SAT_TRACE_PREPROCESS`,
+`SAT_TRACE_PREPROCESS_DETAILS`, `SAT_TRACE_SEARCH_INTERVAL`,
+`SAT_LIMIT_WALL_SEC`, `SAT_LIMIT_RSS_MB`); set
 `SAT_CONFIG_REPLAY_ALLOW_OVERRIDES=on` only for explicit experiments.
 
 New Phase 1 and Phase 2 feature flags default off. Flags whose implementation
@@ -123,9 +126,17 @@ and `result.json` records `stats_json_seen=true`. The JSON stats line includes
 config identity, input and binary hashes, result/status fields, timing buckets,
 formula sizes, CDCL/preprocessing/watch/LBD/proof counters, output-contract
 state, and explicit zero/null placeholders for planned Phase 1/2 counters that
-are not implemented yet. `SAT_TRACE_FULL=on` emits an additional human-readable
-`c trace_full ...` line with glue, restart, phase, inprocess, learned-clause,
-and branch-heap counters.
+are not implemented yet. High-frequency watcher diagnostics (`watch_scans`,
+`watch_blocker_hits`, `watch_clause_loads`, `watch_stale_skips`,
+`binary_props`, and `long_props`) default to zero to keep the release hot path
+solver-10-equivalent; set `SAT_STATS_HOT=on` for profiling runs that need those
+counters. The JSON line records `hot_diagnostics_enabled` so artifacts are
+explicit about this choice. `SAT_TRACE_FULL=on` emits an additional
+human-readable `c trace_full ...` line with glue, restart, phase, inprocess,
+learned-clause, and branch-heap counters.
+Lower-level diagnostics can be enabled independently with `SAT_TRACE_PROOF=on`,
+`SAT_TRACE_PREPROCESS=on`, `SAT_TRACE_PREPROCESS_DETAILS=on`, and
+`SAT_TRACE_SEARCH_INTERVAL=N` for periodic and final `c search ...` counters.
 
 ## Validation
 

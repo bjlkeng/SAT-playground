@@ -30,7 +30,12 @@ const REPLAY_DEFAULT_ALLOWED_OVERRIDES: &[&str] = &[
     "SAT_CONFIG_OUT",
     "SAT_RUN_LABEL",
     "SAT_STATS_JSON",
+    "SAT_STATS_HOT",
     "SAT_TRACE_FULL",
+    "SAT_TRACE_PROOF",
+    "SAT_TRACE_PREPROCESS",
+    "SAT_TRACE_PREPROCESS_DETAILS",
+    "SAT_TRACE_SEARCH_INTERVAL",
     "SAT_LIMIT_WALL_SEC",
     "SAT_LIMIT_RSS_MB",
 ];
@@ -450,6 +455,7 @@ pub(crate) struct SolverConfig {
     pub(crate) run_label: Option<String>,
 
     pub(crate) stats_json: bool,
+    pub(crate) hot_stats: bool,
     pub(crate) trace_full: bool,
     pub(crate) trace_proof: bool,
     pub(crate) trace_preprocess: bool,
@@ -537,6 +543,7 @@ impl Default for SolverConfig {
             run_label: None,
 
             stats_json: false,
+            hot_stats: false,
             trace_full: false,
             trace_proof: false,
             trace_preprocess: false,
@@ -721,7 +728,28 @@ impl SolverConfig {
             parse_string_selected(env_map, &key_set, "SAT_RUN_LABEL", self.run_label.take());
 
         self.stats_json = parse_bool_selected(env_map, &key_set, "SAT_STATS_JSON", self.stats_json);
+        self.hot_stats = parse_bool_selected(env_map, &key_set, "SAT_STATS_HOT", self.hot_stats);
         self.trace_full = parse_bool_selected(env_map, &key_set, "SAT_TRACE_FULL", self.trace_full);
+        self.trace_proof =
+            parse_bool_selected(env_map, &key_set, "SAT_TRACE_PROOF", self.trace_proof);
+        self.trace_preprocess = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_TRACE_PREPROCESS",
+            self.trace_preprocess,
+        );
+        self.trace_preprocess_details = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_TRACE_PREPROCESS_DETAILS",
+            self.trace_preprocess_details,
+        );
+        self.trace_search_interval = parse_usize_selected(
+            env_map,
+            &key_set,
+            "SAT_TRACE_SEARCH_INTERVAL",
+            self.trace_search_interval,
+        );
         self.check_invariants = parse_bool_selected(
             env_map,
             &key_set,
@@ -1149,6 +1177,7 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "strict_config", self.strict_config);
         push_kv_option_string(&mut lines, "run_label", self.run_label.as_deref());
         push_kv_bool(&mut lines, "stats_json", self.stats_json);
+        push_kv_bool(&mut lines, "hot_stats", self.hot_stats);
         push_kv_bool(&mut lines, "trace_full", self.trace_full);
         push_kv_bool(&mut lines, "trace_proof", self.trace_proof);
         push_kv_bool(&mut lines, "trace_preprocess", self.trace_preprocess);
@@ -1718,6 +1747,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "strict_config" => Some("SAT_STRICT_CONFIG"),
         "run_label" => Some("SAT_RUN_LABEL"),
         "stats_json" => Some("SAT_STATS_JSON"),
+        "hot_stats" => Some("SAT_STATS_HOT"),
         "trace_full" => Some("SAT_TRACE_FULL"),
         "trace_proof" => Some("SAT_TRACE_PROOF"),
         "trace_preprocess" => Some("SAT_TRACE_PREPROCESS"),
@@ -1874,6 +1904,7 @@ fn replay_override_env(env_map: &BTreeMap<String, String>, allow_overrides: bool
 fn allowed_env_vars() -> Vec<&'static str> {
     vec![
         "SAT_STATS_JSON",
+        "SAT_STATS_HOT",
         "SAT_TRACE_FULL",
         "SAT_TRACE_PROOF",
         "SAT_TRACE_PREPROCESS",
@@ -2454,16 +2485,91 @@ mod tests {
             ("SAT_CONFIG_REPLAY", path.to_str().expect("utf8 temp path")),
             ("SAT_RUN_LABEL", "rerun"),
             ("SAT_STATS_JSON", "on"),
+            ("SAT_STATS_HOT", "on"),
+            ("SAT_TRACE_PROOF", "on"),
+            ("SAT_TRACE_SEARCH_INTERVAL", "1000"),
         ]));
 
         assert_eq!(replayed.run_label.as_deref(), Some("rerun"));
         assert!(replayed.stats_json);
+        assert!(replayed.hot_stats);
+        assert!(replayed.trace_proof);
+        assert_eq!(replayed.trace_search_interval, 1000);
         assert!(replayed.replay_overridden);
         assert_eq!(
             replayed.replay_override_env,
-            vec!["SAT_RUN_LABEL", "SAT_STATS_JSON"]
+            vec![
+                "SAT_RUN_LABEL",
+                "SAT_STATS_HOT",
+                "SAT_STATS_JSON",
+                "SAT_TRACE_PROOF",
+                "SAT_TRACE_SEARCH_INTERVAL"
+            ]
         );
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_hot_stats_are_explicit_and_replayable() {
+        let default_config = SolverConfig::default();
+        assert!(!default_config.hot_stats);
+
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_STATS_JSON", "on"),
+            ("SAT_STATS_HOT", "on"),
+        ]));
+        assert!(config.stats_json);
+        assert!(config.hot_stats);
+
+        let replay = config.config_replay_text();
+        assert!(replay.contains("hot_stats=true"));
+
+        let replayed = SolverConfig::from_replay_text(&replay, Path::new("<hot-stats-test>"));
+        assert!(replayed.hot_stats);
+        assert_eq!(replayed.config_hash(), config.config_hash());
+    }
+
+    #[test]
+    fn test_individual_trace_flags_are_parsed_and_replayable() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_TRACE_PROOF", "on"),
+            ("SAT_TRACE_PREPROCESS", "on"),
+            ("SAT_TRACE_PREPROCESS_DETAILS", "on"),
+            ("SAT_TRACE_SEARCH_INTERVAL", "12345"),
+        ]));
+
+        assert!(!config.trace_full);
+        assert!(config.trace_proof);
+        assert!(config.trace_preprocess);
+        assert!(config.trace_preprocess_details);
+        assert_eq!(config.trace_search_interval, 12345);
+
+        let replay = config.config_replay_text();
+        assert!(replay.contains("trace_proof=true"));
+        assert!(replay.contains("trace_preprocess=true"));
+        assert!(replay.contains("trace_preprocess_details=true"));
+        assert!(replay.contains("trace_search_interval=12345"));
+
+        let replayed = SolverConfig::from_replay_text(&replay, Path::new("<trace-test>"));
+        assert_eq!(replayed.trace_proof, config.trace_proof);
+        assert_eq!(replayed.trace_preprocess, config.trace_preprocess);
+        assert_eq!(
+            replayed.trace_preprocess_details,
+            config.trace_preprocess_details
+        );
+        assert_eq!(replayed.trace_search_interval, config.trace_search_interval);
+        assert_eq!(replayed.config_hash(), config.config_hash());
+    }
+
+    #[test]
+    fn test_trace_full_still_implies_preprocess_detail_tracing() {
+        let config = SolverConfig::from_env_map(&env_map(&[("SAT_TRACE_FULL", "on")]));
+
+        assert!(config.trace_full);
+        assert!(config.trace_preprocess);
+        assert!(config.trace_preprocess_details);
+        assert!(!config.trace_proof);
+        assert_eq!(config.trace_search_interval, 0);
     }
 
     #[test]

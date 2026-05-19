@@ -17,7 +17,7 @@ mod stats;
 mod oracle_tests;
 
 use config::{BranchMode, ClauseMinMode, InitialClauseMode, ProofPolicy, SolverConfig};
-use limits::LimitHit;
+use limits::{LimitHit, RuntimeLimits};
 use lit::{lit_to_index, lit_to_word, word_to_lit};
 use output::{
     prepare_output_contract_dir, print_assignment, write_model_file, write_result_contract,
@@ -465,6 +465,8 @@ struct Solver {
     use_resolved_conflict_analysis: bool,
     /// early Section 0 LBD instrumentation slice; default off and policy-neutral
     use_lbd: bool,
+    /// opt-in hot-path watcher diagnostics; default off for solver-10 parity
+    hot_stats: bool,
     stats: SolverStats,
 }
 
@@ -840,6 +842,7 @@ impl Solver {
             ccmin_mode: ccmin_mode_from_config(config.clause_min_mode),
             use_resolved_conflict_analysis: config.use_resolved_conflict_analysis,
             use_lbd: config.use_lbd,
+            hot_stats: config.hot_stats,
             stats: SolverStats::default(),
         };
         let reduce_db_limit_overridden = config.reduce_db_init.is_some();
@@ -1578,6 +1581,14 @@ impl Solver {
     }
 
     fn propagate(&mut self) -> Option<usize> {
+        if self.hot_stats {
+            self.propagate_impl::<true>()
+        } else {
+            self.propagate_impl::<false>()
+        }
+    }
+
+    fn propagate_impl<const HOT_STATS: bool>(&mut self) -> Option<usize> {
         let start_head = self.propagate_head;
         while self.propagate_head < self.trail.len() {
             let false_lit = -self.trail[self.propagate_head];
@@ -1591,23 +1602,33 @@ impl Solver {
             while read < pending.len() {
                 let watcher = pending[read];
                 read += 1;
-                self.stats.watch_scans += 1;
+                if HOT_STATS {
+                    self.stats.watch_scans += 1;
+                }
                 let clause_idx = watcher.clause_idx as usize;
                 if clause_idx >= self.arena.len() {
-                    self.stats.watch_stale_skips += 1;
+                    if HOT_STATS {
+                        self.stats.watch_stale_skips += 1;
+                    }
                     continue;
                 }
                 if self.lit_value(watcher.blocker) == TRUE {
-                    self.stats.watch_blocker_hits += 1;
+                    if HOT_STATS {
+                        self.stats.watch_blocker_hits += 1;
+                    }
                     pending[write] = watcher;
                     write += 1;
                     continue;
                 }
                 if self.clause_is_deleted(clause_idx) {
-                    self.stats.watch_stale_skips += 1;
+                    if HOT_STATS {
+                        self.stats.watch_stale_skips += 1;
+                    }
                     continue;
                 }
-                self.stats.watch_clause_loads += 1;
+                if HOT_STATS {
+                    self.stats.watch_clause_loads += 1;
+                }
                 let clause_len = self.clause_len(clause_idx);
                 if clause_len == 1 {
                     let unit_lit = self.clause_lit(clause_idx, 0);
@@ -1697,9 +1718,13 @@ impl Solver {
                     return Some(clause_idx);
                 }
                 if clause_len == 2 {
-                    self.stats.binary_props += 1;
+                    if HOT_STATS {
+                        self.stats.binary_props += 1;
+                    }
                 } else {
-                    self.stats.long_props += 1;
+                    if HOT_STATS {
+                        self.stats.long_props += 1;
+                    }
                 }
             }
 
@@ -2563,21 +2588,21 @@ impl Solver {
 
     fn limit_hit(
         &self,
-        config: &SolverConfig,
+        limits: &RuntimeLimits,
         solve_start: Instant,
         proof_log: &ProofLog,
     ) -> Option<LimitHit> {
-        if let Some(limit) = config.conflict_limit {
+        if let Some(limit) = limits.conflict_limit {
             if self.stats.conflicts > limit {
                 return Some(LimitHit::solve("conflict-limit"));
             }
         }
-        if let Some(limit) = config.propagation_limit {
+        if let Some(limit) = limits.propagation_limit {
             if self.stats.propagations > limit {
                 return Some(LimitHit::solve("propagation-limit"));
             }
         }
-        if let Some(limit) = config.tick_limit {
+        if let Some(limit) = limits.tick_limit {
             let ticks = self
                 .stats
                 .conflicts
@@ -2587,33 +2612,33 @@ impl Solver {
                 return Some(LimitHit::solve("tick-limit"));
             }
         }
-        if let Some(limit) = config.wall_limit_sec {
+        if let Some(limit) = limits.wall_limit_sec {
             if solve_start.elapsed().as_secs_f64() >= limit {
                 return Some(LimitHit::solve("wall-clock-limit"));
             }
         }
-        if let Some(limit) = config.rss_limit_mb {
+        if let Some(limit) = limits.rss_limit_mb {
             if max_rss_mb().is_some_and(|rss| rss >= limit) {
                 return Some(LimitHit::emergency_memory("rss-limit"));
             }
         }
-        if let Some(limit) = config.learned_lit_limit {
+        if let Some(limit) = limits.learned_lit_limit {
             if (self.learned_literals as u64) > limit {
                 return Some(LimitHit::solve("learned-literal-limit"));
             }
         }
-        if let Some(limit) = config.binary_clause_limit {
+        if let Some(limit) = limits.binary_clause_limit {
             if (self.binary_clause_count_final() as u64) > limit {
                 return Some(LimitHit::solve("binary-clause-limit"));
             }
         }
-        if let Some(limit) = config.extension_bytes_limit {
+        if let Some(limit) = limits.extension_bytes_limit {
             let extension_bytes = (self.elim_clauses.len() as u64).saturating_mul(4);
             if extension_bytes > limit {
                 return Some(LimitHit::solve("extension-bytes-limit"));
             }
         }
-        if let Some(limit) = config.proof_bytes_limit {
+        if let Some(limit) = limits.proof_bytes_limit {
             if proof_log.bytes_written_estimate() > limit {
                 return Some(LimitHit::solve("proof-bytes-limit"));
             }
@@ -2627,6 +2652,8 @@ impl Solver {
         config: &SolverConfig,
     ) -> SolveOutcome {
         let solve_start = Instant::now();
+        let runtime_limits = RuntimeLimits::from_config(config);
+        let limits_active = runtime_limits.is_active();
         if !self.solver_ok || self.has_empty_clause || !self.enqueue_root_units() {
             return SolveOutcome::unsat();
         }
@@ -2636,9 +2663,11 @@ impl Solver {
         }
 
         self.record_live_original_clauses_for_proof(proof_log);
-        if let Some(limit) = self.limit_hit(config, solve_start, proof_log) {
-            let _class = limit.class.as_str();
-            return SolveOutcome::unknown(limit.reason);
+        if limits_active {
+            if let Some(limit) = self.limit_hit(&runtime_limits, solve_start, proof_log) {
+                let _class = limit.class.as_str();
+                return SolveOutcome::unknown(limit.reason);
+            }
         }
 
         let preprocess_start = Instant::now();
@@ -2647,9 +2676,11 @@ impl Solver {
             return SolveOutcome::unsat();
         }
         self.stats.preprocess_sec = preprocess_start.elapsed().as_secs_f64();
-        if let Some(limit) = self.limit_hit(config, solve_start, proof_log) {
-            let _class = limit.class.as_str();
-            return SolveOutcome::unknown(limit.reason);
+        if limits_active {
+            if let Some(limit) = self.limit_hit(&runtime_limits, solve_start, proof_log) {
+                let _class = limit.class.as_str();
+                return SolveOutcome::unknown(limit.reason);
+            }
         }
         self.reset_learned_budget_after_preprocess();
         if config.trace_preprocess {
@@ -2729,10 +2760,13 @@ impl Solver {
                     }
 
                     self.stats.conflicts += 1;
-                    if let Some(limit) = self.limit_hit(config, solve_start, proof_log) {
-                        self.stats.search_sec = search_start.elapsed().as_secs_f64();
-                        let _class = limit.class.as_str();
-                        return SolveOutcome::unknown(limit.reason);
+                    if limits_active {
+                        if let Some(limit) = self.limit_hit(&runtime_limits, solve_start, proof_log)
+                        {
+                            self.stats.search_sec = search_start.elapsed().as_secs_f64();
+                            let _class = limit.class.as_str();
+                            return SolveOutcome::unknown(limit.reason);
+                        }
                     }
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
@@ -2789,10 +2823,13 @@ impl Solver {
                     }
 
                     conflict = self.propagate();
-                    if let Some(limit) = self.limit_hit(config, solve_start, proof_log) {
-                        self.stats.search_sec = search_start.elapsed().as_secs_f64();
-                        let _class = limit.class.as_str();
-                        return SolveOutcome::unknown(limit.reason);
+                    if limits_active {
+                        if let Some(limit) = self.limit_hit(&runtime_limits, solve_start, proof_log)
+                        {
+                            self.stats.search_sec = search_start.elapsed().as_secs_f64();
+                            let _class = limit.class.as_str();
+                            return SolveOutcome::unknown(limit.reason);
+                        }
                     }
                 }
                 None => {
@@ -2814,20 +2851,27 @@ impl Solver {
                         self.reduce_db_with_proof(proof_log);
                     }
 
-                    if let Some(limit) = self.limit_hit(config, solve_start, proof_log) {
-                        self.stats.search_sec = search_start.elapsed().as_secs_f64();
-                        let _class = limit.class.as_str();
-                        return SolveOutcome::unknown(limit.reason);
+                    if limits_active {
+                        if let Some(limit) = self.limit_hit(&runtime_limits, solve_start, proof_log)
+                        {
+                            self.stats.search_sec = search_start.elapsed().as_secs_f64();
+                            let _class = limit.class.as_str();
+                            return SolveOutcome::unknown(limit.reason);
+                        }
                     }
 
                     match self.pick_branch_lit() {
                         Some(lit) => {
                             self.decide(lit);
                             conflict = self.propagate();
-                            if let Some(limit) = self.limit_hit(config, solve_start, proof_log) {
-                                self.stats.search_sec = search_start.elapsed().as_secs_f64();
-                                let _class = limit.class.as_str();
-                                return SolveOutcome::unknown(limit.reason);
+                            if limits_active {
+                                if let Some(limit) =
+                                    self.limit_hit(&runtime_limits, solve_start, proof_log)
+                                {
+                                    self.stats.search_sec = search_start.elapsed().as_secs_f64();
+                                    let _class = limit.class.as_str();
+                                    return SolveOutcome::unknown(limit.reason);
+                                }
                             }
                         }
                         None => {
@@ -3189,6 +3233,14 @@ mod tests {
         Solver::new(num_vars, clauses)
     }
 
+    fn make_solver_with_config(
+        num_vars: usize,
+        clauses: Vec<Vec<i32>>,
+        config: &SolverConfig,
+    ) -> Solver {
+        Solver::new_with_config(num_vars, clauses, config)
+    }
+
     fn make_temp_dir(label: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -3465,6 +3517,33 @@ mod tests {
         s.decide(-2);
         assert_eq!(s.propagate(), None);
         assert_eq!(s.lit_value(3), TRUE);
+    }
+
+    #[test]
+    fn test_hot_watch_stats_are_opt_in() {
+        let clauses = vec![vec![1, 2]];
+        let mut default_solver = make_solver(2, clauses.clone());
+        default_solver.decide(-1);
+        assert_eq!(default_solver.propagate(), None);
+        assert_eq!(default_solver.stats.propagations, 2);
+        assert_eq!(default_solver.stats.watch_scans, 0);
+        assert_eq!(default_solver.stats.watch_clause_loads, 0);
+        assert_eq!(default_solver.stats.binary_props, 0);
+
+        let config = SolverConfig {
+            hot_stats: true,
+            ..SolverConfig::default()
+        };
+        let mut diagnostic_solver = make_solver_with_config(2, clauses, &config);
+        diagnostic_solver.decide(-1);
+        assert_eq!(diagnostic_solver.propagate(), None);
+        assert_eq!(
+            diagnostic_solver.stats.propagations,
+            default_solver.stats.propagations
+        );
+        assert!(diagnostic_solver.stats.watch_scans > 0);
+        assert!(diagnostic_solver.stats.watch_clause_loads > 0);
+        assert!(diagnostic_solver.stats.binary_props > 0);
     }
 
     #[test]

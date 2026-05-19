@@ -228,6 +228,7 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.null("manifest_expected_status");
     json.string("profile", ctx.config.profile_name());
     json.string("proof_policy", ctx.config.proof_policy_name());
+    json.bool("hot_diagnostics_enabled", ctx.config.hot_stats);
     json.string("config_hash", &ctx.config.config_hash());
     json.bool("replay_overridden", ctx.config.replay_overridden);
     json.string_array("replay_override_vars", &ctx.config.replay_override_env);

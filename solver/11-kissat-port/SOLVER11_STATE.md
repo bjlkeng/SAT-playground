@@ -27,12 +27,12 @@ Audited entry points:
 
 | Entry point | File:line | Notes |
 | --- | --- | --- |
-| `Solver::new` | `src/main.rs:734` | Builds branch ordering, root assignments, original clause arena, watchers, occurrence/BVE state, and default solver-10-compatible policy fields. |
-| `Solver::solve_to_output` | `src/main.rs:2532` | Creates proof log according to `SAT_PROOF`, runs preprocessing/search, finalizes or discards proof output, and returns proof stats. |
-| `Solver::solve_with_proof` | `src/main.rs:2560` | Runs root propagation, optional BVE/simplification, search loop, trace comments, SAT model snapshot, and proof finalization. |
-| `Solver::propagate` | `src/main.rs:1580` | Watched-literal BCP over long clauses and units; returns conflicting clause arena offset and updates watch/propagation stats. |
-| `Solver::analyze_conflict_to_scratch` | `src/main.rs:2363` | Learned clause construction, UIP backtrack target, minimization, and conflict activity updates. |
-| `Solver::reduce_db` | `src/main.rs:2231` | Learned-clause reduction by activity with locked/binary preservation and DRAT deletion recording. |
+| `Solver::new` | `src/main.rs:736` | Builds branch ordering, root assignments, original clause arena, watchers, occurrence/BVE state, and default solver-10-compatible policy fields. |
+| `Solver::solve_to_output` | `src/main.rs:2557` | Creates proof log according to `SAT_PROOF`, runs preprocessing/search, finalizes or discards proof output, and returns proof stats. |
+| `Solver::solve_with_proof` | `src/main.rs:2585` | Runs root propagation, optional BVE/simplification, search loop, trace comments, SAT model snapshot, and proof finalization. |
+| `Solver::propagate` | `src/main.rs:1583` | Watched-literal BCP over long clauses and units; returns conflicting clause arena offset, always updates propagation count, and updates watcher diagnostics only when `SAT_STATS_HOT=on`. |
+| `Solver::analyze_conflict_to_scratch` | `src/main.rs:2388` | Learned clause construction, UIP backtrack target, minimization, and conflict activity updates. |
+| `Solver::reduce_db` | `src/main.rs:2256` | Learned-clause reduction by activity with locked/binary preservation and DRAT deletion recording. |
 | `Solver::eliminate` | `src/simp.rs:1092` | Preprocessing BVE/BSR driver; owns occurrence cleanup, resolvent generation, proof logging, and extension entries. |
 
 Related implementation anchors:
@@ -41,11 +41,11 @@ Related implementation anchors:
 | --- | --- | --- |
 | `ProofLog` | `src/main.rs:100` | DRAT buffering, temp/final proof path lifecycle, and proof stats snapshot; planned for `proof.rs`/`output.rs` split later. |
 | `Solver` | `src/main.rs:329` | Current monolithic state owner; future tasks introduce capability wrappers incrementally. |
-| `Solver::attach_clause` | `src/main.rs:1493` | Watcher attachment and empty/unit handling. |
-| `Solver::simplify_with_proof` | `src/main.rs:1893` | Top-level simplification and learned/original clause cleanup. |
-| `Solver::garbage_collect` | `src/main.rs:2071` | Arena compaction and reference rewriting for current side structures. |
-| `parse_cnf` | `src/main.rs:2857` | DIMACS parser used by `main`; returns parse errors so main can emit result.json with PARSE_ERROR. |
-| `main` | `src/main.rs:2970` | CLI/run.sh entry point, config parsing/output before CNF parsing, solver construction, result.json/status/model contract emission, JSON_STATS/trace_full stderr emission, internal SAT model check, and SAT Competition stdout. |
+| `Solver::attach_clause` | `src/main.rs:1496` | Watcher attachment and empty/unit handling. |
+| `Solver::simplify_with_proof` | `src/main.rs:1918` | Top-level simplification and learned/original clause cleanup. |
+| `Solver::garbage_collect` | `src/main.rs:2096` | Arena compaction and reference rewriting for current side structures. |
+| `parse_cnf` | `src/main.rs:2901` | DIMACS parser used by `main`; returns parse errors so main can emit result.json with PARSE_ERROR. |
+| `main` | `src/main.rs:3014` | CLI/run.sh entry point, config parsing/output before CNF parsing, solver construction, result.json/status/model contract emission, JSON_STATS/trace_full stderr emission, internal SAT model check, and SAT Competition stdout. |
 
 Known missing or incomplete feature families at this baseline:
 

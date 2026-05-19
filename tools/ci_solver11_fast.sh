@@ -22,6 +22,7 @@ python3 -m py_compile \
     tools/select_iter_bench.py \
     tools/compare_bench.py \
     tools/extract_hot_instances.py \
+    tools/ci_solver11_overhead.py \
     tools/validate_solver11_plan.py
 
 cargo run --manifest-path tools/sat-bench/Cargo.toml --release -- \

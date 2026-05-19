@@ -1,10 +1,11 @@
 env_var,config_field,type,allowed_values,baseline_default,default_default,fast_default,is_feature_flag,is_limit,is_legacy_alias,conflicts_with,requires,introduced_task,documented_in_readme
 SAT_STATS_JSON,stats_json,bool,on|off,false,false,false,false,false,false,,,0.3,yes
+SAT_STATS_HOT,hot_stats,bool,on|off,false,false,false,false,false,false,,,0.10,yes
 SAT_TRACE_FULL,trace_full,bool,on|off,false,false,false,false,false,false,,,0.3,yes
-SAT_TRACE_PROOF,trace_proof,bool,on|off,false,false,false,false,false,false,,,0.3,internal
-SAT_TRACE_PREPROCESS,trace_preprocess,bool,on|off,false,false,false,false,false,false,,,0.3,internal
-SAT_TRACE_PREPROCESS_DETAILS,trace_preprocess_details,bool,on|off,false,false,false,false,false,false,,,0.3,internal
-SAT_TRACE_SEARCH_INTERVAL,trace_search_interval,usize,nonnegative,0,0,0,false,false,false,,,0.3,internal
+SAT_TRACE_PROOF,trace_proof,bool,on|off,false,false,false,false,false,false,,,0.3,yes
+SAT_TRACE_PREPROCESS,trace_preprocess,bool,on|off,false,false,false,false,false,false,,,0.3,yes
+SAT_TRACE_PREPROCESS_DETAILS,trace_preprocess_details,bool,on|off,false,false,false,false,false,false,,,0.3,yes
+SAT_TRACE_SEARCH_INTERVAL,trace_search_interval,usize,nonnegative,0,0,0,false,false,false,,,0.3,yes
 SAT_CHECK_INVARIANTS,check_invariants,bool,on|off,false,false,false,false,false,false,,,0.3,yes
 SAT_SEED,deterministic_seed,u64,nonnegative,0,0,0,false,false,false,,,0.3,yes
 SAT_PROFILE,profile,enum,baseline|default|fast|experimental,baseline,default,fast,false,false,false,,,0.3,yes
