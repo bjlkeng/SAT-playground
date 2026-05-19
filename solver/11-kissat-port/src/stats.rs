@@ -11,6 +11,28 @@ use std::path::Path;
 use crate::config::{FeatureMaturity, SolverConfig};
 use crate::output::{ProofCompleteness, SolveStatus};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum GcReason {
+    #[default]
+    None,
+    LearnedReduction,
+    ArenaFragmentation,
+    WatcherStaleness,
+    EmergencyMemory,
+}
+
+impl GcReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::LearnedReduction => "learned-reduction",
+            Self::ArenaFragmentation => "arena-fragmentation",
+            Self::WatcherStaleness => "watcher-staleness",
+            Self::EmergencyMemory => "emergency-memory",
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct SolverStats {
     pub(crate) conflicts: u64,
@@ -21,6 +43,9 @@ pub(crate) struct SolverStats {
     pub(crate) reduce_db_calls: u64,
     pub(crate) deleted_clauses: u64,
     pub(crate) garbage_collections: u64,
+    pub(crate) gc_last_reason: GcReason,
+    pub(crate) gc_words_reclaimed: u64,
+    pub(crate) gc_refs_rewritten: u64,
     pub(crate) learned_clauses: u64,
     pub(crate) learned_kept_tier1: u64,
     pub(crate) learned_kept_tier2: u64,
@@ -155,6 +180,13 @@ pub(crate) struct FormulaStats {
     pub(crate) original_lits_after_preprocess: u64,
     pub(crate) learned_clauses_final: u64,
     pub(crate) learned_lits_final: u64,
+    pub(crate) arena_words_live: u64,
+    pub(crate) arena_words_garbage: u64,
+    pub(crate) arena_garbage_ratio: f64,
+    pub(crate) learned_words_live: u64,
+    pub(crate) original_words_live: u64,
+    pub(crate) watchers_live: u64,
+    pub(crate) watchers_stale: u64,
     pub(crate) deleted_words: u64,
     pub(crate) binary_clauses_final: u64,
     pub(crate) binary_implication_edges_final: u64,
@@ -283,8 +315,18 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("restarts", ctx.stats.restarts);
     json.u64("reductions", ctx.stats.reduce_db_calls);
     json.u64("gc_count", ctx.stats.garbage_collections);
+    json.string("gc_reason", ctx.stats.gc_last_reason.as_str());
+    json.u64("gc_words_reclaimed", ctx.stats.gc_words_reclaimed);
+    json.u64("gc_refs_rewritten", ctx.stats.gc_refs_rewritten);
     json.u64("deleted_clauses", ctx.stats.deleted_clauses);
     json.u64("deleted_words", ctx.formula.deleted_words);
+    json.u64("arena_words_live", ctx.formula.arena_words_live);
+    json.u64("arena_words_garbage", ctx.formula.arena_words_garbage);
+    json.f64("arena_garbage_ratio", ctx.formula.arena_garbage_ratio);
+    json.u64("learned_words_live", ctx.formula.learned_words_live);
+    json.u64("original_words_live", ctx.formula.original_words_live);
+    json.u64("watchers_live", ctx.formula.watchers_live);
+    json.u64("watchers_stale", ctx.formula.watchers_stale);
     json.u64("learned_kept_tier1", ctx.stats.learned_kept_tier1);
     json.u64("learned_kept_tier2", ctx.stats.learned_kept_tier2);
     json.u64("learned_kept_tier3", ctx.stats.learned_kept_tier3);
@@ -406,6 +448,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
             "decisions_focused=0 decisions_stable={} ",
             "mode_switches=0 seconds_focused=0.000000 seconds_stable={:.6} ",
             "learned_kept_tier1={} learned_kept_tier2={} learned_kept_tier3={} learned_collected={} ",
+            "gc_reason={} gc_words_reclaimed={} gc_refs_rewritten={} ",
             "decision_heap_pops={} decision_heap_stale_pops={} decision_heap_inserts={}"
         ),
         stats.lbd_sum,
@@ -420,6 +463,9 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
         stats.learned_kept_tier2,
         stats.learned_kept_tier3,
         stats.learned_collected,
+        stats.gc_last_reason.as_str(),
+        stats.gc_words_reclaimed,
+        stats.gc_refs_rewritten,
         stats.decision_heap_pops,
         stats.decision_heap_stale_pops,
         stats.decision_heap_inserts,

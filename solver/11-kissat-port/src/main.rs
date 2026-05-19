@@ -27,8 +27,8 @@ use output::{
     PROOF_OUT,
 };
 use stats::{
-    json_stats_line, max_rss_mb, trace_full_line, FormulaStats, InputIdentity, ProofStats,
-    RunTimings, SolverStats, StatsJsonContext,
+    json_stats_line, max_rss_mb, trace_full_line, FormulaStats, GcReason, InputIdentity,
+    ProofStats, RunTimings, SolverStats, StatsJsonContext,
 };
 
 const UNASSIGNED: u8 = 0;
@@ -67,6 +67,11 @@ const MAX_USED_RECENTLY: u8 = 3;
 const LEARNED_LIT_BUDGET_BASE: usize = 2_000;
 const LEARNED_LIT_BUDGET_FACTOR: usize = 300;
 const EMERGENCY_TIER1_MIN_AGE_CONFLICTS: u64 = 1_000;
+const GC_GARBAGE_RATIO_NUMERATOR: usize = 1;
+const GC_GARBAGE_RATIO_DENOMINATOR: usize = 3;
+const GC_WATCHER_STALE_MIN: usize = 1_024;
+const GC_WATCHER_STALE_RATIO_NUMERATOR: usize = 1;
+const GC_WATCHER_STALE_RATIO_DENOMINATOR: usize = 10;
 
 type ClauseRef = usize;
 
@@ -298,6 +303,29 @@ struct ReduceCand {
     size: usize,
     used_recently: u8,
     activity_rank: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct ClauseDbMeasurement {
+    arena_words_live: usize,
+    arena_words_garbage: usize,
+    learned_words_live: usize,
+    original_words_live: usize,
+    watchers_live: usize,
+    watchers_stale: usize,
+}
+
+impl ClauseDbMeasurement {
+    fn arena_garbage_ratio(self) -> f64 {
+        let total = self
+            .arena_words_live
+            .saturating_add(self.arena_words_garbage);
+        if total == 0 {
+            0.0
+        } else {
+            self.arena_words_garbage as f64 / total as f64
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -807,6 +835,8 @@ struct Solver {
     lbd_hist_6_10: u64,
     lbd_hist_gt_10: u64,
     reason_pin_generation: u64,
+    gc_pending_reason: GcReason,
+    track_gc_detail_stats: bool,
     /// opt-in hot-path watcher diagnostics; default off for solver-10 parity
     hot_stats: bool,
     stats: SolverStats,
@@ -1245,6 +1275,8 @@ impl Solver {
             lbd_hist_6_10: 0,
             lbd_hist_gt_10: 0,
             reason_pin_generation: 0,
+            gc_pending_reason: GcReason::None,
+            track_gc_detail_stats: config.stats_json || config.trace_full,
             hot_stats: config.hot_stats,
             stats: SolverStats::default(),
         };
@@ -1583,10 +1615,16 @@ impl Solver {
         }
     }
 
-    fn remap_learned_metadata_clause_refs(&mut self, reloc: &[usize], new_arena_len: usize) {
+    fn remap_learned_metadata_clause_refs(
+        &mut self,
+        reloc: &[usize],
+        new_arena_len: usize,
+        count_rewrites: bool,
+    ) -> u64 {
         if self.learned_clause_by_id.is_empty() {
-            return;
+            return 0;
         }
+        let mut refs_rewritten = 0u64;
         self.learned_id_by_clause.clear();
         self.learned_id_by_clause.resize(new_arena_len, 0);
         for id_idx in 0..self.learned_clause_by_id.len() {
@@ -1597,6 +1635,9 @@ impl Solver {
             }
             let new_clause_idx = reloc[old_clause_idx];
             if new_clause_idx != NO_CLAUSE_REF {
+                if count_rewrites && new_clause_idx != old_clause_idx {
+                    refs_rewritten += 1;
+                }
                 self.learned_clause_by_id[id_idx] = new_clause_idx;
                 self.learned_id_by_clause[new_clause_idx] =
                     u32::try_from(id_idx + 1).expect("too many learned ids for metadata map");
@@ -1604,6 +1645,7 @@ impl Solver {
                 self.learned_clause_by_id[id_idx] = NO_CLAUSE_REF;
             }
         }
+        refs_rewritten
     }
 
     #[inline(always)]
@@ -1831,7 +1873,7 @@ impl Solver {
         self.root_unit_clauses.truncate(root_write);
 
         let new_arena_len = new_arena.len();
-        self.remap_learned_metadata_clause_refs(&reloc, new_arena_len);
+        let _ = self.remap_learned_metadata_clause_refs(&reloc, new_arena_len, false);
         self.arena = new_arena;
         self.original_clause_ids = new_original_clause_ids;
         self.learned_clause_ids = new_learned_clause_ids;
@@ -2681,7 +2723,7 @@ impl Solver {
         let original_clause_ids = std::mem::take(&mut self.original_clause_ids);
         self.original_clause_ids = self.simplify_clause_list(original_clause_ids, proof_log);
 
-        self.maybe_garbage_collect();
+        self.maybe_garbage_collect(GcReason::ArenaFragmentation);
         self.rebuild_branch_queue();
         self.simplify_assigns = self.root_trail_len;
         self.simplify_props_remaining = self.total_live_clause_literals() as i64;
@@ -2896,18 +2938,177 @@ impl Solver {
         self.stats.deleted_clauses += 1;
     }
 
-    fn maybe_garbage_collect(&mut self) {
-        if self.deleted_clause_words == 0 {
+    fn live_clause_word_len_for_gc(&self, clause_idx: ClauseRef, strip_extra: bool) -> usize {
+        let word_len = self.clause_word_len(clause_idx);
+        if strip_extra && self.clause_has_extra(clause_idx) {
+            word_len - ORIGINAL_ABSTRACTION_WORDS
+        } else {
+            word_len
+        }
+    }
+
+    fn watcher_liveness_counts(&self) -> (usize, usize) {
+        let mut live = 0usize;
+        let mut stale = 0usize;
+        for watch_list in &self.watchers {
+            for watcher in watch_list {
+                let clause_idx = watcher.clause_idx as usize;
+                if clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx) {
+                    live += 1;
+                } else {
+                    stale += 1;
+                }
+            }
+        }
+        (live, stale)
+    }
+
+    fn clause_db_measurement(&self) -> ClauseDbMeasurement {
+        let strip_original_extra = !self.use_simplification;
+        let original_words_live: usize = self
+            .original_clause_ids
+            .iter()
+            .copied()
+            .filter(|&clause_idx| {
+                clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx)
+            })
+            .map(|clause_idx| self.live_clause_word_len_for_gc(clause_idx, strip_original_extra))
+            .sum();
+        let learned_words_live: usize = self
+            .learned_clause_ids
+            .iter()
+            .copied()
+            .filter(|&clause_idx| {
+                clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx)
+            })
+            .map(|clause_idx| self.clause_word_len(clause_idx))
+            .sum();
+        let (watchers_live, watchers_stale) = self.watcher_liveness_counts();
+        let arena_words_live = original_words_live.saturating_add(learned_words_live);
+        ClauseDbMeasurement {
+            arena_words_live,
+            arena_words_garbage: self.arena.len().saturating_sub(arena_words_live),
+            learned_words_live,
+            original_words_live,
+            watchers_live,
+            watchers_stale,
+        }
+    }
+
+    fn has_gc_fragmentation_pressure_words(
+        arena_words_garbage: usize,
+        arena_words_total: usize,
+    ) -> bool {
+        arena_words_garbage > 0
+            && arena_words_garbage.saturating_mul(GC_GARBAGE_RATIO_DENOMINATOR)
+                >= arena_words_total.saturating_mul(GC_GARBAGE_RATIO_NUMERATOR)
+    }
+
+    fn has_gc_watcher_staleness_pressure_counts(
+        watchers_live: usize,
+        watchers_stale: usize,
+    ) -> bool {
+        let watchers_total = watchers_live.saturating_add(watchers_stale);
+        watchers_stale >= GC_WATCHER_STALE_MIN
+            && watchers_stale.saturating_mul(GC_WATCHER_STALE_RATIO_DENOMINATOR)
+                >= watchers_total.saturating_mul(GC_WATCHER_STALE_RATIO_NUMERATOR)
+    }
+
+    fn prune_stale_watchers(&mut self) -> usize {
+        let arena = &self.arena;
+        let mut pruned = 0usize;
+        for watch_list in &mut self.watchers {
+            let mut write = 0usize;
+            for read in 0..watch_list.len() {
+                let watcher = watch_list[read];
+                let clause_idx = watcher.clause_idx as usize;
+                if clause_idx < arena.len()
+                    && clause_header_mark(arena[clause_idx]) != CLAUSE_DELETED_MARK
+                {
+                    watch_list[write] = watcher;
+                    write += 1;
+                } else {
+                    pruned += 1;
+                }
+            }
+            watch_list.truncate(write);
+        }
+        pruned
+    }
+
+    fn remember_gc_pending(&mut self, reason: GcReason) {
+        if reason == GcReason::None {
             return;
         }
-        if self.deleted_clause_words.saturating_mul(3) < self.arena.len() {
-            return;
+        self.gc_pending_reason = match (self.gc_pending_reason, reason) {
+            (GcReason::EmergencyMemory, _) | (_, GcReason::EmergencyMemory) => {
+                GcReason::EmergencyMemory
+            }
+            (GcReason::WatcherStaleness, _) | (_, GcReason::WatcherStaleness) => {
+                GcReason::WatcherStaleness
+            }
+            (GcReason::LearnedReduction, _) | (_, GcReason::LearnedReduction) => {
+                GcReason::LearnedReduction
+            }
+            _ => GcReason::ArenaFragmentation,
+        };
+    }
+
+    fn maybe_garbage_collect(&mut self, requested_reason: GcReason) -> bool {
+        let requested_reason = if self.gc_pending_reason != GcReason::None {
+            self.gc_pending_reason
+        } else {
+            requested_reason
+        };
+        let fragmentation =
+            Self::has_gc_fragmentation_pressure_words(self.deleted_clause_words, self.arena.len());
+        let watcher_staleness_candidate =
+            self.stats.watch_stale_skips >= GC_WATCHER_STALE_MIN as u64;
+        if self.current_level() > 0 {
+            if fragmentation || watcher_staleness_candidate {
+                self.prune_stale_watchers();
+                self.remember_gc_pending(requested_reason);
+            }
+            return false;
         }
-        self.garbage_collect();
+        let watcher_staleness = if watcher_staleness_candidate {
+            let (watchers_live, watchers_stale) = self.watcher_liveness_counts();
+            Self::has_gc_watcher_staleness_pressure_counts(watchers_live, watchers_stale)
+        } else {
+            false
+        };
+        let reason = if watcher_staleness {
+            GcReason::WatcherStaleness
+        } else if fragmentation && requested_reason == GcReason::EmergencyMemory {
+            GcReason::EmergencyMemory
+        } else if fragmentation && requested_reason == GcReason::LearnedReduction {
+            GcReason::LearnedReduction
+        } else if fragmentation {
+            GcReason::ArenaFragmentation
+        } else {
+            GcReason::None
+        };
+        if reason == GcReason::None {
+            if !fragmentation && !watcher_staleness_candidate {
+                self.gc_pending_reason = GcReason::None;
+            }
+            return false;
+        }
+        self.gc_pending_reason = GcReason::None;
+        self.garbage_collect_with_reason(reason);
+        true
     }
 
     fn garbage_collect(&mut self) {
+        self.garbage_collect_with_reason(GcReason::ArenaFragmentation);
+    }
+
+    fn garbage_collect_with_reason(&mut self, reason: GcReason) {
         self.stats.garbage_collections += 1;
+        self.stats.gc_last_reason = reason;
+        let old_arena_words = self.arena.len();
+        let track_gc_detail_stats = self.track_gc_detail_stats;
+        let mut refs_rewritten = 0u64;
         let pins = self.rebuild_reason_pinset();
         let strip_original_extra = !self.use_simplification;
         let mut reloc = vec![NO_CLAUSE_REF; self.arena.len()];
@@ -2999,9 +3200,16 @@ impl Solver {
             let mut write = 0usize;
             for read in 0..watch_list.len() {
                 let mut watcher = watch_list[read];
-                let new_idx = reloc[watcher.clause_idx as usize];
+                let old_idx = watcher.clause_idx as usize;
+                if old_idx >= reloc.len() {
+                    continue;
+                }
+                let new_idx = reloc[old_idx];
                 if new_idx == NO_CLAUSE_REF {
                     continue;
+                }
+                if track_gc_detail_stats && new_idx != old_idx {
+                    refs_rewritten += 1;
                 }
                 watcher.clause_idx = new_idx as u32;
                 watch_list[write] = watcher;
@@ -3013,9 +3221,16 @@ impl Solver {
         let mut watch_scratch_write = 0usize;
         for read in 0..self.watch_scratch.len() {
             let mut watcher = self.watch_scratch[read];
-            let new_idx = reloc[watcher.clause_idx as usize];
+            let old_idx = watcher.clause_idx as usize;
+            if old_idx >= reloc.len() {
+                continue;
+            }
+            let new_idx = reloc[old_idx];
             if new_idx == NO_CLAUSE_REF {
                 continue;
+            }
+            if track_gc_detail_stats && new_idx != old_idx {
+                refs_rewritten += 1;
             }
             watcher.clause_idx = new_idx as u32;
             self.watch_scratch[watch_scratch_write] = watcher;
@@ -3024,12 +3239,21 @@ impl Solver {
         self.watch_scratch.truncate(watch_scratch_write);
 
         for reason_code in &mut self.reason {
-            *reason_code = rewrite_reason_ref(
-                reason_code.as_ref_unchecked(),
+            let old_reason = reason_code.as_ref_unchecked();
+            let new_code = rewrite_reason_ref(
+                old_reason,
                 &reloc,
                 "garbage collection removed a clause that is still a live reason",
             )
             .expect("reason rewrite failed during garbage collection");
+            if let (ReasonRef::Clause(old_idx), ReasonRef::Clause(new_idx)) =
+                (old_reason, new_code.as_ref_unchecked())
+            {
+                if track_gc_detail_stats && old_idx != new_idx {
+                    refs_rewritten += 1;
+                }
+            }
+            *reason_code = new_code;
         }
         for &pinned_clause in &pins.pinned_clauses {
             debug_assert!(
@@ -3040,9 +3264,16 @@ impl Solver {
 
         let mut root_write = 0usize;
         for read in 0..self.root_unit_clauses.len() {
-            let new_idx = reloc[self.root_unit_clauses[read]];
+            let old_idx = self.root_unit_clauses[read];
+            if old_idx >= reloc.len() {
+                continue;
+            }
+            let new_idx = reloc[old_idx];
             if new_idx == NO_CLAUSE_REF {
                 continue;
+            }
+            if track_gc_detail_stats && new_idx != old_idx {
+                refs_rewritten += 1;
             }
             self.root_unit_clauses[root_write] = new_idx;
             root_write += 1;
@@ -3050,7 +3281,11 @@ impl Solver {
         self.root_unit_clauses.truncate(root_write);
 
         let new_arena_len = new_arena.len();
-        self.remap_learned_metadata_clause_refs(&reloc, new_arena_len);
+        refs_rewritten += self.remap_learned_metadata_clause_refs(
+            &reloc,
+            new_arena_len,
+            self.track_gc_detail_stats,
+        );
         self.arena = new_arena;
         self.original_clause_ids = new_original_clause_ids;
         self.learned_clause_ids = new_learned_clause_ids;
@@ -3067,6 +3302,9 @@ impl Solver {
         }
         self.live_learned_clause_count = self.learned_clause_ids.len();
         self.deleted_clause_words = 0;
+        self.gc_pending_reason = GcReason::None;
+        self.stats.gc_words_reclaimed += old_arena_words.saturating_sub(new_arena_len) as u64;
+        self.stats.gc_refs_rewritten += refs_rewritten;
     }
 
     #[cfg(test)]
@@ -3125,7 +3363,7 @@ impl Solver {
         self.learned_clause_ids.truncate(write);
         self.live_learned_clause_count = self.learned_clause_ids.len();
 
-        self.maybe_garbage_collect();
+        self.maybe_garbage_collect(GcReason::LearnedReduction);
     }
 
     fn reduce_candidate_activity_rank(&self, clause_idx: ClauseRef) -> u32 {
@@ -3235,7 +3473,12 @@ impl Solver {
         }
         self.live_learned_clause_count = self.learned_clause_ids.len();
 
-        self.maybe_garbage_collect();
+        let gc_reason = if emergency {
+            GcReason::EmergencyMemory
+        } else {
+            GcReason::LearnedReduction
+        };
+        self.maybe_garbage_collect(gc_reason);
     }
 
     fn record_lbd_tier_kept(&mut self, clause_idx: ClauseRef, pins: &ReasonPinSet) {
@@ -3586,6 +3829,7 @@ impl Solver {
         original_lits_initial: u64,
     ) -> FormulaStats {
         let binary_clauses_final = self.binary_clause_count_final() as u64;
+        let clause_db = self.clause_db_measurement();
         FormulaStats {
             vars: vars as u64,
             original_clauses_initial: original_clauses_initial as u64,
@@ -3594,6 +3838,13 @@ impl Solver {
             original_lits_after_preprocess: self.original_literals as u64,
             learned_clauses_final: self.live_learned_clause_count as u64,
             learned_lits_final: self.learned_literals as u64,
+            arena_words_live: clause_db.arena_words_live as u64,
+            arena_words_garbage: clause_db.arena_words_garbage as u64,
+            arena_garbage_ratio: clause_db.arena_garbage_ratio(),
+            learned_words_live: clause_db.learned_words_live as u64,
+            original_words_live: clause_db.original_words_live as u64,
+            watchers_live: clause_db.watchers_live as u64,
+            watchers_stale: clause_db.watchers_stale as u64,
             deleted_words: self.deleted_clause_words as u64,
             binary_clauses_final,
             binary_implication_edges_final: binary_clauses_final.saturating_mul(2),
@@ -3923,8 +4174,13 @@ impl Solver {
                         continue;
                     }
 
-                    if self.current_level() == 0 && !self.simplify_with_proof(proof_log) {
-                        return SolveOutcome::unsat();
+                    if self.current_level() == 0 {
+                        if self.gc_pending_reason != GcReason::None {
+                            self.maybe_garbage_collect(GcReason::ArenaFragmentation);
+                        }
+                        if !self.simplify_with_proof(proof_log) {
+                            return SolveOutcome::unsat();
+                        }
                     }
 
                     if self.reduce_db_enabled() && self.should_reduce_db() {
@@ -4256,9 +4512,9 @@ fn main() {
         search_sec: solver.stats.search_sec,
         proof_sec: solver.stats.proof_sec,
     };
-    let formula =
-        solver.formula_stats_snapshot(num_vars, original_clause_count, original_lits_initial);
     if config.stats_json {
+        let formula =
+            solver.formula_stats_snapshot(num_vars, original_clause_count, original_lits_initial);
         let ctx = StatsJsonContext {
             config: &config,
             stats: &solver.stats,
@@ -4532,6 +4788,155 @@ mod tests {
         let relocated_live = s.learned_clause_ids[0];
         assert_eq!(s.reason_ref(3), ReasonRef::Clause(relocated_live));
         assert_eq!(s.clause_slice(s.reason_clause_for_test(3)), &[3, 1]);
+    }
+
+    #[test]
+    fn test_gc_not_run_above_root_level() {
+        let mut s = make_solver(6, vec![]);
+        let dead = s.add_clause(vec![1, 2, 3, 4, 5]);
+        let live = s.add_clause(vec![1, 2]);
+        s.mark_clause_deleted(dead);
+        s.decide(6);
+
+        let arena_words_before = s.arena.len();
+        let deleted_words_before = s.deleted_clause_words;
+
+        assert!(!s.maybe_garbage_collect(GcReason::LearnedReduction));
+        assert_eq!(s.stats.garbage_collections, 0);
+        assert_eq!(s.arena.len(), arena_words_before);
+        assert_eq!(s.deleted_clause_words, deleted_words_before);
+        assert_eq!(s.learned_clause_ids, vec![live]);
+        assert_eq!(s.gc_pending_reason, GcReason::LearnedReduction);
+    }
+
+    #[test]
+    fn test_gc_deferred_above_root_runs_at_next_root_safe_point() {
+        let mut s = make_solver(6, vec![]);
+        let dead = s.add_clause(vec![1, 2, 3, 4, 5]);
+        let live = s.add_clause(vec![1, 2]);
+        s.mark_clause_deleted(dead);
+        s.decide(6);
+
+        assert!(!s.maybe_garbage_collect(GcReason::LearnedReduction));
+        s.backtrack(0);
+
+        assert!(s.maybe_garbage_collect(GcReason::ArenaFragmentation));
+        assert_eq!(s.stats.gc_last_reason, GcReason::LearnedReduction);
+        assert_eq!(s.gc_pending_reason, GcReason::None);
+        assert_eq!(s.deleted_clause_words, 0);
+        assert_eq!(s.clause_slice(s.learned_clause_ids[0]), &[1, 2]);
+        assert_ne!(s.learned_clause_ids[0], live);
+    }
+
+    #[test]
+    fn test_gc_reclaims_deleted_learned_words() {
+        let mut s = make_solver(6, vec![]);
+        let dead = s.add_clause(vec![1, 2, 3, 4, 5]);
+        let live = s.add_clause(vec![1, 2]);
+        let dead_words = s.clause_word_len(dead);
+        s.mark_clause_deleted(dead);
+
+        let arena_words_before = s.arena.len();
+
+        assert!(s.maybe_garbage_collect(GcReason::LearnedReduction));
+        assert!(s.arena.len() < arena_words_before);
+        assert_eq!(s.deleted_clause_words, 0);
+        assert_eq!(s.learned_clause_ids.len(), 1);
+        assert_eq!(s.clause_slice(s.learned_clause_ids[0]), &[1, 2]);
+        assert!(s.stats.gc_words_reclaimed >= dead_words as u64);
+        assert_eq!(s.stats.gc_last_reason, GcReason::LearnedReduction);
+        assert_eq!(s.live_learned_clause_count, 1);
+        assert_eq!(s.learned_literals, s.clause_len(s.learned_clause_ids[0]));
+        assert_ne!(s.learned_clause_ids[0], live);
+    }
+
+    #[test]
+    fn test_gc_rewrites_all_registered_refs() {
+        let mut s = make_solver(4, vec![]);
+        s.track_gc_detail_stats = true;
+        enable_lbd_tiered_for_test(&mut s, 16);
+        let dead = s.add_clause(vec![4, 1, 2]);
+        s.add_raw_initial_original_clauses(vec![vec![1], vec![2, 3]]);
+        let live = s.add_clause(vec![4, 2, 3]);
+        set_lbd_meta_for_test(&mut s, live, 4, 1);
+
+        s.set_reason_ref(4, ReasonRef::Clause(live));
+        s.assignment[4] = TRUE;
+        s.mark_clause_deleted(dead);
+
+        let old_reason = s.reason_ref(4);
+        let old_root = s.root_unit_clauses[0];
+
+        s.garbage_collect();
+
+        let relocated_live = s.learned_clause_ids[0];
+        let relocated_root = s.root_unit_clauses[0];
+        assert_ne!(s.reason_ref(4), old_reason);
+        assert_eq!(s.reason_ref(4), ReasonRef::Clause(relocated_live));
+        assert_ne!(relocated_root, old_root);
+        assert_eq!(s.clause_slice(relocated_root), &[1]);
+        assert_eq!(s.learnt_lbd(relocated_live), 4);
+        assert_eq!(s.learnt_used_recently(relocated_live), 1);
+        for watch_list in &s.watchers {
+            for watcher in watch_list {
+                let clause_idx = watcher.clause_idx as usize;
+                assert!(clause_idx < s.arena.len());
+                assert!(!s.clause_is_deleted(clause_idx));
+            }
+        }
+        assert!(s.stats.gc_refs_rewritten >= 3);
+    }
+
+    #[test]
+    fn test_gc_preserves_original_clause_model_check_refs() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-1, 3]]);
+        let dead = s.add_clause(vec![1, 2, 3]);
+        s.mark_clause_deleted(dead);
+
+        s.garbage_collect();
+
+        let original_clauses = live_original_clauses(&s);
+        let mut model = vec![UNASSIGNED; 4];
+        model[1] = TRUE;
+        model[2] = TRUE;
+        model[3] = TRUE;
+
+        assert_eq!(original_clauses, vec![vec![-1, 3], vec![1, 2]]);
+        assert!(verify_model_against_clauses(&original_clauses, &model));
+    }
+
+    #[test]
+    fn test_gc_reason_recorded_in_stats() {
+        let mut s = make_solver(6, vec![]);
+        let dead = s.add_clause(vec![1, 2, 3, 4, 5]);
+        let dead_words = s.clause_word_len(dead);
+        let _live = s.add_clause(vec![1, 2]);
+        s.mark_clause_deleted(dead);
+
+        assert!(s.maybe_garbage_collect(GcReason::EmergencyMemory));
+        assert_eq!(s.stats.garbage_collections, 1);
+        assert_eq!(s.stats.gc_last_reason, GcReason::EmergencyMemory);
+        assert!(s.stats.gc_words_reclaimed >= dead_words as u64);
+    }
+
+    #[test]
+    fn test_gc_watcher_staleness_reason_after_skip_pressure() {
+        let mut s = make_solver(1, vec![]);
+        let watch_idx = s.lit_index(1);
+        s.watchers[watch_idx].resize(
+            GC_WATCHER_STALE_MIN,
+            Watcher {
+                clause_idx: u32::MAX,
+                blocker: 1,
+            },
+        );
+        s.stats.watch_stale_skips = GC_WATCHER_STALE_MIN as u64;
+
+        assert!(s.maybe_garbage_collect(GcReason::LearnedReduction));
+
+        assert_eq!(s.stats.gc_last_reason, GcReason::WatcherStaleness);
+        assert_eq!(s.stats.garbage_collections, 1);
+        assert!(s.watchers[watch_idx].is_empty());
     }
 
     #[test]

@@ -124,16 +124,16 @@ printed, and `v` lines are printed only for SAT. `PARSE_ERROR` is represented as
 `SAT_STATS_JSON=on`, the final `c JSON_STATS {...}` record is emitted on stderr
 and `result.json` records `stats_json_seen=true`. The JSON stats line includes
 config identity, input and binary hashes, result/status fields, timing buckets,
-formula sizes, CDCL/preprocessing/watch/LBD/proof counters, output-contract
-state, and explicit zero/null placeholders for planned Phase 1/2 counters that
-are not implemented yet. High-frequency watcher diagnostics (`watch_scans`,
+formula sizes, clause-database/GC budget counters, CDCL/preprocessing/watch/LBD/proof
+counters, output-contract state, and explicit zero/null placeholders for planned
+Phase 1/2 counters that are not implemented yet. High-frequency watcher diagnostics (`watch_scans`,
 `watch_blocker_hits`, `watch_clause_loads`, `watch_stale_skips`,
 `binary_props`, and `long_props`) default to zero to keep the release hot path
 solver-10-equivalent; set `SAT_STATS_HOT=on` for profiling runs that need those
 counters. The JSON line records `hot_diagnostics_enabled` so artifacts are
 explicit about this choice. `SAT_TRACE_FULL=on` emits an additional
 human-readable `c trace_full ...` line with glue, restart, phase, inprocess,
-learned-clause, and branch-heap counters.
+learned-clause, GC, and branch-heap counters.
 Lower-level diagnostics can be enabled independently with `SAT_TRACE_PROOF=on`,
 `SAT_TRACE_PREPROCESS=on`, `SAT_TRACE_PREPROCESS_DETAILS=on`, and
 `SAT_TRACE_SEARCH_INTERVAL=N` for periodic and final `c search ...` counters.
