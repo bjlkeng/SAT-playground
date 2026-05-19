@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 from collections import defaultdict
+from collections import Counter
 from pathlib import Path
 
 
@@ -73,6 +74,17 @@ def read_baseline(path: Path | None) -> dict[str, dict[str, str]]:
             for candidate in candidates:
                 aliases.setdefault(candidate, normalized)
         return aliases
+
+
+def baseline_row_for(baseline: dict[str, dict[str, str]], instance: str) -> dict[str, str]:
+    direct = baseline.get(instance) or baseline.get(strip_cnf_suffix(instance))
+    if direct is not None:
+        return direct
+    # Baseline rows often use logical names while bench.sh rows keep SAT Comp hash prefixes.
+    for key in sorted(baseline, key=len, reverse=True):
+        if key and key in instance:
+            return baseline[key]
+    return {}
 
 
 def read_validation(results_csv: Path, rows: dict[str, dict[str, str]]) -> tuple[dict[str, dict], list[str]]:
@@ -144,7 +156,7 @@ def correctness_failures(
 ) -> list[str]:
     failures: list[str] = []
     for name, row in sorted(rows.items()):
-        base = baseline.get(name) or baseline.get(strip_cnf_suffix(name)) or {}
+        base = baseline_row_for(baseline, name)
         expected = base.get("expected_status", "")
         if expected and expected != "UNKNOWN" and row["result"] in SOLVED and row["result"] != expected:
             failures.append(f"{name}: result {row['result']} differs from expected {expected}")
@@ -177,8 +189,41 @@ def is_status_regression(before_result: str, after_result: str) -> bool:
 
 
 def category_for(baseline: dict[str, dict[str, str]], instance: str) -> str:
-    row = baseline.get(instance) or baseline.get(strip_cnf_suffix(instance)) or {}
-    return row.get("category", "uncategorized")
+    return baseline_row_for(baseline, instance).get("category", "uncategorized")
+
+
+def result_counts(rows: dict[str, dict[str, str]]) -> dict[str, int]:
+    return dict(sorted(Counter(row["result"] for row in rows.values()).items()))
+
+
+def parse_raw_counts(raw_path: Path) -> tuple[dict[str, int] | None, dict[str, int] | None, dict[str, str]]:
+    if not raw_path.exists():
+        return None, None, {}
+    metadata: dict[str, str] = {}
+    before_counts = after_counts = None
+    for raw in raw_path.read_text().splitlines():
+        if "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        metadata[key] = value
+        if key in {"before_counts", "after_counts"}:
+            try:
+                parsed = json.loads(value.replace("'", '"'))
+            except json.JSONDecodeError:
+                continue
+            if key == "before_counts":
+                before_counts = {str(k): int(v) for k, v in parsed.items()}
+            else:
+                after_counts = {str(k): int(v) for k, v in parsed.items()}
+    return before_counts, after_counts, metadata
+
+
+def baseline_lock_raw_path(args: argparse.Namespace) -> Path | None:
+    before_s = args.before.as_posix()
+    after_s = args.after.as_posix()
+    if "log/baseline-lock/solver10/results.csv" in before_s and "log/baseline-lock/solver11/results.csv" in after_s:
+        return Path("solver/11-kissat-port/BASELINE_LOCK.raw.txt")
+    return None
 
 
 def per_category_par2(
@@ -257,6 +302,19 @@ def compare(args: argparse.Namespace) -> int:
         change for change in status_changes if is_status_regression(change[1], change[2])
     ]
     correctness = correctness_failures(after, baseline, after_validation)
+    raw_path = baseline_lock_raw_path(args)
+    raw_before_counts = raw_after_counts = None
+    raw_metadata: dict[str, str] = {}
+    if raw_path is not None:
+        raw_before_counts, raw_after_counts, raw_metadata = parse_raw_counts(raw_path)
+        if raw_before_counts is not None and raw_before_counts != result_counts(before):
+            correctness.append(
+                f"{raw_path}: before_counts {raw_before_counts} differ from rich counts {result_counts(before)}"
+            )
+        if raw_after_counts is not None and raw_after_counts != result_counts(after):
+            correctness.append(
+                f"{raw_path}: after_counts {raw_after_counts} differ from rich counts {result_counts(after)}"
+            )
 
     deltas = []
     for name in common:
@@ -285,6 +343,9 @@ def compare(args: argparse.Namespace) -> int:
     print("status_changes=" + json.dumps(status_changes))
     print("status_regressions=" + json.dumps(status_regressions))
     print("validation_warnings=" + json.dumps(validation_warnings))
+    print("raw_status_counts_match=" + json.dumps(not any("before_counts" in item or "after_counts" in item for item in correctness)))
+    if raw_metadata:
+        print("raw_lock_metadata=" + json.dumps(raw_metadata, sort_keys=True))
     print(f"PAR2_before={par2_before:.3f}")
     print(f"PAR2_after={par2_after:.3f}")
     print(f"PAR2_delta={total_delta:.3f}")
