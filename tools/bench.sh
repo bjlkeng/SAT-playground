@@ -5,10 +5,11 @@
 #   bash tools/bench.sh [OPTIONS] <solver_dir>
 #
 # Options:
-#   -t, --timeout <seconds>   Per-instance time limit (default: 5000)
-#   -m, --memory  <MB>        Per-instance memory limit in MB (default: 30720 = 30 GB)
-#   -d, --benchdir <path>     Benchmark directory (default: benchmarks/cnf)
+#   -t, --timeout <seconds>   Per-instance time limit (default: 1800)
+#   -m, --memory  <MB>        Per-instance memory limit in MB (default: 16384 = 16 GB)
+#   -d, --benchdir <path>     Benchmark directory (default: benchmarks/sat-comp-2025)
 #   -j, --jobs <N>            Parallel jobs (default: 1, sequential)
+#   --log-dir <path>          Write logs to this directory instead of log/bench-<solver>-<timestamp>
 #   -h, --help                Show this help
 #
 # SAT Competition 2025 scoring:
@@ -29,6 +30,7 @@ MEMLIMIT_MB=16384
 BENCH_DIR=""
 JOBS=1
 SOLVER_REL=""
+LOG_DIR_OVERRIDE=""
 
 usage() {
     sed -n '2,/^$/s/^# \?//p' "$0"
@@ -42,6 +44,7 @@ while [[ $# -gt 0 ]]; do
         -m|--memory)  MEMLIMIT_MB="$2"; shift 2 ;;
         -d|--benchdir) BENCH_DIR="$2"; shift 2 ;;
         -j|--jobs)    JOBS="$2"; shift 2 ;;
+        --log-dir)    LOG_DIR_OVERRIDE="$2"; shift 2 ;;
         -h|--help)    usage ;;
         -*)           echo "Unknown option: $1" >&2; exit 1 ;;
         *)            SOLVER_REL="$1"; shift ;;
@@ -101,7 +104,15 @@ fi
 # --- set up log directory ---
 TIMESTAMP=$(date +%Y-%m-%d-%H-%M-%S)
 SOLVER_NAME=$(basename "$SOLVER_DIR")
-LOG_DIR="$REPO_ROOT/log/bench-${SOLVER_NAME}-${TIMESTAMP}"
+if [[ -n "$LOG_DIR_OVERRIDE" ]]; then
+    if [[ "$LOG_DIR_OVERRIDE" = /* ]]; then
+        LOG_DIR="$LOG_DIR_OVERRIDE"
+    else
+        LOG_DIR="$REPO_ROOT/$LOG_DIR_OVERRIDE"
+    fi
+else
+    LOG_DIR="$REPO_ROOT/log/bench-${SOLVER_NAME}-${TIMESTAMP}"
+fi
 mkdir -p "$LOG_DIR"
 
 # --- memory limit (KB for ulimit -v) ---
