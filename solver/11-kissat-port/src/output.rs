@@ -209,12 +209,12 @@ pub(crate) fn print_assignment(assignment: &[u8]) {
 pub(crate) fn assignment_lines(assignment: &[u8]) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::from("v");
-    for var in 1..assignment.len() {
+    for (var, &value) in assignment.iter().enumerate().skip(1) {
         assert_ne!(
-            assignment[var], UNASSIGNED,
+            value, UNASSIGNED,
             "SAT model snapshot left variable {var} unassigned"
         );
-        let lit = if assignment[var] == FALSE {
+        let lit = if value == FALSE {
             -(var as i32)
         } else {
             var as i32

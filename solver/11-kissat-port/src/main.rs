@@ -730,6 +730,7 @@ fn ccmin_mode_from_config(mode: ClauseMinMode) -> u8 {
 }
 
 impl Solver {
+    #[cfg(test)]
     fn new(num_vars: usize, clauses: Vec<Vec<i32>>) -> Self {
         let config = SolverConfig::default();
         Self::new_with_config(num_vars, clauses, &config)
@@ -968,6 +969,7 @@ impl Solver {
         self.learned_lbd[clause_idx] = lbd.saturating_add(1);
     }
 
+    #[cfg(test)]
     fn learned_clause_lbd(&self, clause_idx: usize) -> Option<u32> {
         self.learned_lbd
             .get(clause_idx)
@@ -1882,6 +1884,7 @@ impl Solver {
         true
     }
 
+    #[cfg(test)]
     fn simplify(&mut self) -> bool {
         let mut proof_log = ProofLog::disabled();
         self.simplify_with_proof(&mut proof_log)
@@ -1913,6 +1916,7 @@ impl Solver {
         true
     }
 
+    #[cfg(test)]
     fn add_clause(&mut self, clause: Vec<i32>) -> usize {
         self.add_clause_from_slice(&clause)
     }
@@ -1976,6 +1980,7 @@ impl Solver {
         }
     }
 
+    #[cfg(test)]
     fn delete_clause(&mut self, clause_idx: usize) {
         debug_assert!(
             clause_idx < self.arena.len(),
@@ -1998,6 +2003,7 @@ impl Solver {
         self.mark_clause_deleted(clause_idx);
     }
 
+    #[cfg(test)]
     fn mark_clause_deleted(&mut self, clause_idx: usize) {
         debug_assert!(
             clause_idx < self.arena.len(),
@@ -2012,10 +2018,7 @@ impl Solver {
             "clause {clause_idx} already deleted"
         );
         debug_assert!(
-            !self
-                .reason
-                .iter()
-                .any(|&reason_idx| reason_idx == clause_idx),
+            !self.reason.contains(&clause_idx),
             "cannot delete clause {clause_idx} while it is still a live reason"
         );
         let learned_pos = self
@@ -2045,10 +2048,7 @@ impl Solver {
             "clause {clause_idx} already deleted"
         );
         debug_assert!(
-            !self
-                .reason
-                .iter()
-                .any(|&reason_idx| reason_idx == clause_idx),
+            !self.reason.contains(&clause_idx),
             "cannot delete clause {clause_idx} while it is still a live reason"
         );
         self.live_learned_clause_count = self.live_learned_clause_count.saturating_sub(1);
@@ -2227,6 +2227,7 @@ impl Solver {
         self.deleted_clause_words = 0;
     }
 
+    #[cfg(test)]
     fn reduce_db(&mut self) {
         let mut proof_log = ProofLog::disabled();
         self.reduce_db_with_proof(&mut proof_log);
@@ -2417,8 +2418,7 @@ impl Solver {
 
         let mut backtrack_level = 0usize;
         let mut backtrack_pos = 1usize;
-        for pos in 1..learned_clause.len() {
-            let lit = learned_clause[pos];
+        for (pos, &lit) in learned_clause.iter().enumerate().skip(1) {
             let var = lit.unsigned_abs() as usize;
             let level = self.decision_level[var];
             if level > backtrack_level {
@@ -2439,12 +2439,14 @@ impl Solver {
         backtrack_level
     }
 
+    #[cfg(test)]
     fn analyze_conflict(&mut self, conflict_clause_idx: usize) -> (Vec<i32>, usize) {
         let backtrack_level = self.analyze_conflict_to_scratch(conflict_clause_idx);
         let learned_clause = self.scratch_conflict_clause.clone();
         (learned_clause, backtrack_level)
     }
 
+    #[cfg(test)]
     fn learned_clause_count(&self) -> usize {
         self.learned_clause_ids.len()
     }
@@ -2520,6 +2522,7 @@ impl Solver {
         }
     }
 
+    #[cfg(test)]
     fn solve(&mut self) -> bool {
         let mut proof_log = ProofLog::disabled();
         let config = SolverConfig::default();
@@ -2553,6 +2556,7 @@ impl Solver {
         (outcome, proof_log.snapshot())
     }
 
+    #[cfg(test)]
     fn solve_with_proof(&mut self, proof_log: &mut ProofLog, config: &SolverConfig) -> bool {
         self.solve_status_with_proof(proof_log, config).status == SolveStatus::Sat
     }

@@ -1110,13 +1110,14 @@ impl Solver {
         let mut heap = BinaryHeap::new();
         let mut heap_versions = vec![0u32; self.assignment.len()];
 
-        for var in 1..=self.variable_count() {
+        for (var, &version) in heap_versions
+            .iter()
+            .enumerate()
+            .take(self.variable_count() + 1)
+            .skip(1)
+        {
             if self.preprocessing_candidate(var) {
-                heap.push(Reverse((
-                    self.occurrence_cost(var),
-                    var,
-                    heap_versions[var],
-                )));
+                heap.push(Reverse((self.occurrence_cost(var), var, version)));
             }
         }
 
@@ -1264,15 +1265,15 @@ impl Solver {
 
     pub(super) fn capture_sat_model(&mut self) {
         let mut model = self.assignment.clone();
-        for var in 1..model.len() {
-            if model[var] == UNASSIGNED && !self.eliminated[var] {
-                model[var] = TRUE;
+        for (var, value) in model.iter_mut().enumerate().skip(1) {
+            if *value == UNASSIGNED && !self.eliminated[var] {
+                *value = TRUE;
             }
         }
         self.extend_model_snapshot(&mut model);
-        for var in 1..model.len() {
-            if model[var] == UNASSIGNED {
-                model[var] = TRUE;
+        for value in model.iter_mut().skip(1) {
+            if *value == UNASSIGNED {
+                *value = TRUE;
             }
         }
         self.assignment.clone_from(&model);

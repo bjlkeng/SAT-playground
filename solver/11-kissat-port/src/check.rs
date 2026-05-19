@@ -4,6 +4,8 @@
 //! This debug-only table is the 0.1 scaffold for rejecting stale handles after
 //! GC/rebuild style moves without wiring those handles into hot release paths.
 
+#![allow(dead_code)]
+
 #[cfg(any(test, debug_assertions))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DebugClauseRef {

@@ -137,6 +137,21 @@ REQUIRED_FEATURE_FLAGS = {
 }
 
 PARKING_LOT_DENYLIST = {"SAT_WALK", "SAT_SWEEP", "SAT_ELS", "SAT_BCE"}
+PLAN_ENV_REFERENCE_EXEMPTIONS = {
+    # Documentation-only shorthands or explicitly rejected legacy aliases.
+    "SAT_CONFIG",
+    "SAT_ELIMINATE_INPROCESS",
+    "SAT_LIMIT_",
+}
+OPTIONAL_DAG_TASK_IDS = {
+    # These headings intentionally document templates or parked/reserved features
+    # and are not executable nodes in the dependency-respecting implementation DAG.
+    "0.7",
+    "2.7",
+    "2.13",
+}
+TASK_ID_RE = re.compile(r"(?<![A-Za-z0-9])(?:[0-9]+\.[0-9]+[a-z]?|[A-Z]\.[0-9]+[a-z]?)(?![A-Za-z0-9])")
+TASK_HEADING_RE = re.compile(r"^##\s+([0-9]+\.[0-9]+[a-z]?)\b", re.MULTILINE)
 
 
 def fail(errors: list[str], message: str) -> None:
@@ -270,6 +285,128 @@ def validate_config_artifacts(solver_dir: Path, errors: list[str]) -> None:
             fail(errors, f"{config_rs_path}: missing config contract text {required_text!r}")
 
 
+def task_region(plan_text: str) -> str:
+    start = plan_text.find("## 0.0 Fork")
+    end = plan_text.find("# 6. Milestones")
+    if start == -1:
+        return ""
+    if end == -1 or end <= start:
+        end = len(plan_text)
+    return plan_text[start:end]
+
+
+def validate_plan_dag(plan_path: Path, solver_dir: Path, errors: list[str]) -> None:
+    if not plan_path.exists():
+        fail(errors, f"missing plan file {plan_path}")
+        return
+
+    plan_text = plan_path.read_text()
+    region = task_region(plan_text)
+    if not region:
+        fail(errors, f"{plan_path}: missing task region starting at '## 0.0 Fork'")
+        return
+
+    task_ids = TASK_HEADING_RE.findall(region)
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for task_id in task_ids:
+        if task_id in seen:
+            duplicates.add(task_id)
+        seen.add(task_id)
+    if duplicates:
+        fail(errors, f"{plan_path}: duplicate task IDs {sorted(duplicates)}")
+
+    task_id_set = set(task_ids)
+    dag_marker = "# 7. Dependency-respecting DAG summary"
+    dag_start = plan_text.find(dag_marker)
+    if dag_start == -1:
+        fail(errors, f"{plan_path}: missing dependency-respecting DAG summary")
+        dag_text = ""
+    else:
+        code_start = plan_text.find("```text", dag_start)
+        code_end = plan_text.find("```", code_start + 1)
+        dag_text = plan_text[code_start:code_end] if code_start != -1 and code_end != -1 else ""
+        if not dag_text:
+            fail(errors, f"{plan_path}: DAG summary is missing its text code block")
+
+    dag_ids = set(TASK_ID_RE.findall(dag_text))
+    for task_id in sorted(task_id_set - dag_ids - OPTIONAL_DAG_TASK_IDS):
+        fail(errors, f"{plan_path}: task {task_id} missing from DAG summary")
+    for dag_id in sorted(dag_ids - task_id_set):
+        if not dag_id.startswith("A."):
+            fail(errors, f"{plan_path}: DAG summary references unknown task {dag_id}")
+
+    dag_positions = {task_id: dag_text.find(task_id) for task_id in dag_ids}
+
+    if "0.5a profiling" in dag_text and "0.0a rich baseline" in dag_text:
+        if dag_text.find("0.0a rich baseline") < dag_text.find("0.5a profiling"):
+            fail(errors, f"{plan_path}: DAG appears lexically ordered; 0.0a must remain after 0.5a")
+
+    sections = re.split(r"^##\s+", region, flags=re.MULTILINE)
+    for raw_section in sections[1:]:
+        heading, _, body = raw_section.partition("\n")
+        match = re.match(r"([0-9]+\.[0-9]+[a-z]?)\b", heading)
+        if not match:
+            continue
+        task_id = match.group(1)
+        dep_match = re.search(
+            r"### Dependenc(?:y|ies)\s*\n\n(?P<body>.*?)(?=\n### |\n## |\n# |\n---\n|\Z)",
+            body,
+            re.DOTALL,
+        )
+        if not dep_match:
+            continue
+        dep_text = dep_match.group("body")
+        for dep_id in TASK_ID_RE.findall(dep_text):
+            if dep_id == task_id or ".." in dep_text[max(0, dep_text.find(dep_id) - 2): dep_text.find(dep_id) + len(dep_id) + 2]:
+                continue
+            if dep_id not in task_id_set and not dep_id.startswith("A."):
+                fail(errors, f"{plan_path}: task {task_id} has unknown dependency {dep_id}")
+                continue
+            if dep_id in OPTIONAL_DAG_TASK_IDS or task_id in OPTIONAL_DAG_TASK_IDS:
+                continue
+            dep_position = dag_positions.get(dep_id)
+            task_position = dag_positions.get(task_id)
+            if dep_position is None or task_position is None:
+                continue
+            if dep_position > task_position:
+                fail(
+                    errors,
+                    f"{plan_path}: dependency {dep_id} appears after dependent task {task_id} in DAG summary",
+                )
+
+    validate_sat_env_cross_references(plan_path, plan_text, solver_dir, errors)
+
+
+def validate_sat_env_cross_references(
+    plan_path: Path, plan_text: str, solver_dir: Path, errors: list[str]
+) -> None:
+    schema_rows = read_csv_rows(solver_dir / "CONFIG_SCHEMA.csv", errors)
+    schema_envs = {row.get("env_var", "") for row in schema_rows}
+    readme_path = solver_dir / "README.md"
+    readme_text = readme_path.read_text() if readme_path.exists() else ""
+    mentioned = set(re.findall(r"\bSAT_[A-Z0-9_]+\b", plan_text + "\n" + readme_text))
+    missing = sorted(
+        env
+        for env in mentioned - schema_envs
+        if env not in PARKING_LOT_DENYLIST and env not in PLAN_ENV_REFERENCE_EXEMPTIONS
+    )
+    if missing:
+        fail(errors, f"{plan_path}/{readme_path}: SAT_* variables missing from CONFIG_SCHEMA.csv {missing}")
+
+    if readme_text and "SAT_PROFILE=baseline|default|fast|experimental" not in readme_text:
+        fail(errors, f"{readme_path}: README profile example drifted from documented profile set")
+
+    generated_schema = solver_dir / "target" / "generated" / "CONFIG_SCHEMA.csv"
+    generated_features = solver_dir / "target" / "generated" / "FEATURES.csv"
+    for checked_in, generated in [
+        (solver_dir / "CONFIG_SCHEMA.csv", generated_schema),
+        (solver_dir / "FEATURES.csv", generated_features),
+    ]:
+        if generated.exists() and checked_in.read_text() != generated.read_text():
+            fail(errors, f"{checked_in}: checked-in CSV differs from {generated}")
+
+
 def validate_env_boundary(src_dir: Path, errors: list[str]) -> None:
     env_read_re = re.compile(r"\benv::vars?\b|\benv::var_os\b|\bstd::env::vars?\b|\bstd::env::var_os\b")
     for path in sorted(src_dir.glob("*.rs")):
@@ -319,15 +456,25 @@ def validate_result_contract(repo_root: Path, solver_dir: Path, errors: list[str
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "solver_dir",
+        "path",
         nargs="?",
         type=Path,
         default=Path("solver/11-kissat-port"),
-        help="Path to solver/11-kissat-port",
+        help="Path to solver/11-kissat-port or plan/solver-11-plan.md",
     )
     args = parser.parse_args()
 
-    solver_dir = args.solver_dir
+    plan_path = Path("plan/solver-11-plan.md")
+    solver_dir = args.path
+    repo_root = Path.cwd()
+    if args.path.is_file():
+        plan_path = args.path.resolve()
+        repo_root = plan_path.parent.parent
+        solver_dir = repo_root / "solver" / "11-kissat-port"
+    else:
+        solver_dir = args.path.resolve()
+        if solver_dir.name == "11-kissat-port" and solver_dir.parent.name == "solver":
+            repo_root = solver_dir.parent.parent
     src_dir = solver_dir / "src"
     errors: list[str] = []
 
@@ -340,7 +487,8 @@ def main() -> int:
         validate_public_mut_solver(src_dir, errors)
         validate_env_boundary(src_dir, errors)
         validate_config_artifacts(solver_dir, errors)
-        validate_result_contract(Path.cwd(), solver_dir, errors)
+        validate_result_contract(repo_root, solver_dir, errors)
+        validate_plan_dag(plan_path, solver_dir, errors)
     validate_state_file(solver_dir, errors)
 
     if errors:

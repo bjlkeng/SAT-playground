@@ -595,6 +595,7 @@ fn sha256_file(path: &Path) -> Option<String> {
     Some(state.finish_hex())
 }
 
+#[cfg(test)]
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut state = Sha256::new();
     state.update(bytes);

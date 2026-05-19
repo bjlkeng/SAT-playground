@@ -1382,6 +1382,7 @@ impl SolverConfig {
         config
     }
 
+    #[cfg(test)]
     pub(crate) fn json_stats_line(&self, status: &str) -> String {
         let mut features = String::new();
         features.push('[');
@@ -2279,6 +2280,7 @@ fn format_f64(value: f64) -> String {
     text
 }
 
+#[cfg(test)]
 fn push_json_field(out: &mut String, key: &str, value: &str, comma: bool) {
     out.push('"');
     out.push_str(key);
@@ -2290,6 +2292,7 @@ fn push_json_field(out: &mut String, key: &str, value: &str, comma: bool) {
     }
 }
 
+#[cfg(test)]
 fn push_json_bool_field(out: &mut String, key: &str, value: bool, comma: bool) {
     out.push('"');
     out.push_str(key);
@@ -2300,6 +2303,7 @@ fn push_json_bool_field(out: &mut String, key: &str, value: bool, comma: bool) {
     }
 }
 
+#[cfg(test)]
 fn push_json_number_field(out: &mut String, key: &str, value: u64, comma: bool) {
     out.push('"');
     out.push_str(key);
@@ -2310,6 +2314,7 @@ fn push_json_number_field(out: &mut String, key: &str, value: u64, comma: bool) 
     }
 }
 
+#[cfg(test)]
 fn push_json_string_array_field(out: &mut String, key: &str, values: &[String], comma: bool) {
     out.push('"');
     out.push_str(key);
@@ -2328,6 +2333,7 @@ fn push_json_string_array_field(out: &mut String, key: &str, values: &[String], 
     }
 }
 
+#[cfg(test)]
 fn json_escape(value: &str) -> String {
     let mut out = String::new();
     for ch in value.chars() {
