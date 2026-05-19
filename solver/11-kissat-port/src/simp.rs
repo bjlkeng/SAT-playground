@@ -36,18 +36,7 @@ impl Solver {
     }
 
     fn should_run_full_backward_subsumption(&self) -> bool {
-        match std::env::var("SAT_FULL_BSR") {
-            Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-                "1" | "true" | "yes" | "on" => return true,
-                "0" | "false" | "no" | "off" => return false,
-                other => {
-                    eprintln!("Invalid SAT_FULL_BSR={other}; expected on/off");
-                    std::process::exit(2);
-                }
-            },
-            Err(_) => {}
-        }
-        true
+        crate::config::parse_bool_env("SAT_FULL_BSR", true)
     }
 
     fn build_occurrence_index(&mut self) {

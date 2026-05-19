@@ -4,7 +4,20 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+mod check;
+mod config;
+mod limits;
+mod lit;
+mod output;
 mod simp;
+mod stats;
+
+use config::{
+    parse_bool_env, parse_optional_usize_env, parse_use_resolved_conflict_analysis, parse_usize_env,
+};
+use lit::{lit_to_index, lit_to_word, word_to_lit};
+use output::print_assignment;
+use stats::SolverStats;
 
 const UNASSIGNED: u8 = 0;
 const TRUE: u8 = 1;
@@ -63,50 +76,6 @@ enum InitialClauseMode {
 enum BranchMode {
     Minisat,
     Occurrence,
-}
-
-#[derive(Clone, Default)]
-struct SolverStats {
-    conflicts: u64,
-    propagations: u64,
-    decisions: u64,
-    restarts: u64,
-    simplifications: u64,
-    reduce_db_calls: u64,
-    deleted_clauses: u64,
-    garbage_collections: u64,
-    learned_clauses: u64,
-    lbd_computed: u64,
-    lbd_sum: u64,
-    lbd_max: u32,
-    preprocess_eliminated_vars: u64,
-    preprocess_resolvents: u64,
-    preprocess_subsumed_clauses: u64,
-    preprocess_strengthened_clauses: u64,
-    bsr_runs: u64,
-    bsr_seeded_clauses: u64,
-    bsr_drivers: u64,
-    bsr_clause_drivers: u64,
-    bsr_root_drivers: u64,
-    bsr_driver_lits: u64,
-    bsr_best_occurs_sum: u64,
-    bsr_best_occurs_max: u64,
-    bsr_candidates_seen: u64,
-    bsr_skip_self: u64,
-    bsr_skip_deleted: u64,
-    bsr_skip_limit: u64,
-    bsr_relation_calls: u64,
-    bsr_relation_len_reject: u64,
-    bsr_relation_abstraction_reject: u64,
-    bsr_relation_sorted_calls: u64,
-    bsr_relation_nested_calls: u64,
-    bsr_relation_subsumed: u64,
-    bsr_relation_strengthen: u64,
-    occurs_clean_calls: u64,
-    occurs_clean_dirty_calls: u64,
-    occurs_clean_membership_calls: u64,
-    occurs_clean_entries_scanned: u64,
-    occurs_clean_entries_removed: u64,
 }
 
 enum ProofMode {
@@ -496,16 +465,6 @@ fn clause_header_size(header: u32) -> usize {
 }
 
 #[inline(always)]
-fn lit_to_word(lit: i32) -> u32 {
-    lit as u32
-}
-
-#[inline(always)]
-fn word_to_lit(word: u32) -> i32 {
-    word as i32
-}
-
-#[inline(always)]
 fn clause_abstraction_from_lits(lits: &[i32]) -> u64 {
     let mut abstraction = 0u64;
     for &lit in lits {
@@ -657,17 +616,6 @@ fn lit_redundant(
         } else {
             return true;
         }
-    }
-}
-
-#[inline(always)]
-fn lit_to_index(lit: i32) -> usize {
-    let var = lit.unsigned_abs() as usize;
-    let base = (var - 1) * 2;
-    if lit > 0 {
-        base
-    } else {
-        base + 1
     }
 }
 
@@ -2658,60 +2606,6 @@ fn parse_branch_mode() -> BranchMode {
     }
 }
 
-fn parse_bool_env(name: &str, default: bool) -> bool {
-    match env::var(name) {
-        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" | "enabled" => true,
-            "0" | "false" | "no" | "off" | "disabled" => false,
-            other => {
-                eprintln!("Invalid {name}={other}; expected boolean");
-                std::process::exit(2);
-            }
-        },
-        Err(_) => default,
-    }
-}
-
-fn parse_use_resolved_conflict_analysis() -> bool {
-    match env::var("SAT_CONFLICT_ANALYSIS_MODE") {
-        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-            "minisat" | "mini" | "seen" => false,
-            "resolved" | "solver10" | "legacy" => true,
-            other => {
-                eprintln!("Invalid SAT_CONFLICT_ANALYSIS_MODE={other}; expected minisat/resolved");
-                std::process::exit(2);
-            }
-        },
-        Err(_) => false,
-    }
-}
-
-fn parse_usize_env(name: &str, default: usize) -> usize {
-    match env::var(name) {
-        Ok(value) => match value.trim().parse::<usize>() {
-            Ok(parsed) => parsed,
-            Err(err) => {
-                eprintln!("Invalid {name}={value:?}: {err}");
-                std::process::exit(2);
-            }
-        },
-        Err(_) => default,
-    }
-}
-
-fn parse_optional_usize_env(name: &str) -> usize {
-    match env::var(name) {
-        Ok(value) => match value.trim().parse::<usize>() {
-            Ok(parsed) => parsed,
-            Err(err) => {
-                eprintln!("Invalid {name}={value:?}: {err}");
-                std::process::exit(2);
-            }
-        },
-        Err(_) => 0,
-    }
-}
-
 fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
     let file = fs::File::open(path).unwrap_or_else(|e| {
         eprintln!("Error opening {}: {}", path, e);
@@ -2757,29 +2651,6 @@ fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
     }
 
     (num_vars, clauses)
-}
-
-fn print_assignment(assignment: &[u8]) {
-    let mut line = String::from("v");
-    for var in 1..assignment.len() {
-        assert_ne!(
-            assignment[var], UNASSIGNED,
-            "SAT model snapshot left variable {var} unassigned"
-        );
-        let lit = if assignment[var] == FALSE {
-            -(var as i32)
-        } else {
-            var as i32
-        };
-        let token = format!(" {}", lit);
-        if line.len() + token.len() > 4090 {
-            println!("{}", line);
-            line = String::from("v");
-        }
-        line.push_str(&token);
-    }
-    line.push_str(" 0");
-    println!("{}", line);
 }
 
 fn main() {
