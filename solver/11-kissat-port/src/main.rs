@@ -76,6 +76,9 @@ struct SolverStats {
     deleted_clauses: u64,
     garbage_collections: u64,
     learned_clauses: u64,
+    lbd_computed: u64,
+    lbd_sum: u64,
+    lbd_max: u32,
     preprocess_eliminated_vars: u64,
     preprocess_resolvents: u64,
     preprocess_subsumed_clauses: u64,
@@ -316,6 +319,8 @@ struct Solver {
     clauses_sorted_by_var: bool,
     /// live learned-clause ids, mirroring MiniSat's dedicated `learnts` vector
     learned_clause_ids: Vec<usize>,
+    /// thin-slice LBD side table keyed by arena clause offset; stores LBD + 1 so 0 means absent
+    learned_lbd: Vec<u32>,
     /// clauses currently watching each literal, with blocker fast path
     watchers: Vec<Vec<Watcher>>,
     /// scratch buffer reused when rebuilding a watch list during propagation
@@ -436,6 +441,8 @@ struct Solver {
     ccmin_mode: u8,
     /// compatibility fallback for the older solver-10 conflict analyzer
     use_resolved_conflict_analysis: bool,
+    /// early Section 0 LBD instrumentation slice; default off and policy-neutral
+    use_lbd: bool,
     stats: SolverStats,
 }
 
@@ -664,6 +671,20 @@ fn lit_to_index(lit: i32) -> usize {
     }
 }
 
+fn compute_lbd_from_lits(clause: &[i32], decision_level: &[usize]) -> u32 {
+    if clause.is_empty() {
+        return 0;
+    }
+    let mut levels = Vec::with_capacity(clause.len());
+    for &lit in clause {
+        let var = lit.unsigned_abs() as usize;
+        levels.push(decision_level.get(var).copied().unwrap_or(0));
+    }
+    levels.sort_unstable();
+    levels.dedup();
+    levels.len() as u32
+}
+
 impl Solver {
     fn new(num_vars: usize, clauses: Vec<Vec<i32>>) -> Self {
         let original_clause_count = clauses.len();
@@ -703,6 +724,7 @@ impl Solver {
             inline_original_abstractions: false,
             clauses_sorted_by_var: initial_clause_mode == InitialClauseMode::CanonicalSorted,
             learned_clause_ids: Vec::new(),
+            learned_lbd: Vec::new(),
             watchers: vec![Vec::new(); num_vars.saturating_mul(2)],
             watch_scratch: Vec::new(),
             assignment: vec![UNASSIGNED; num_vars + 1],
@@ -766,6 +788,7 @@ impl Solver {
             scratch_analyze_stack: Vec::with_capacity(16),
             ccmin_mode: CCMIN_DEEP,
             use_resolved_conflict_analysis: false,
+            use_lbd: false,
             stats: SolverStats::default(),
         };
         match initial_clause_mode {
@@ -871,6 +894,41 @@ impl Solver {
     #[inline(always)]
     fn clause_extra_idx(&self, clause_idx: usize) -> usize {
         clause_idx + 1 + self.clause_len(clause_idx)
+    }
+
+    fn set_learned_clause_lbd(&mut self, clause_idx: usize, lbd: u32) {
+        if self.learned_lbd.len() <= clause_idx {
+            self.learned_lbd.resize(clause_idx + 1, 0);
+        }
+        self.learned_lbd[clause_idx] = lbd.saturating_add(1);
+    }
+
+    fn learned_clause_lbd(&self, clause_idx: usize) -> Option<u32> {
+        self.learned_lbd
+            .get(clause_idx)
+            .copied()
+            .filter(|&stored_lbd| stored_lbd != 0)
+            .map(|stored_lbd| stored_lbd - 1)
+    }
+
+    fn remap_learned_lbd_side_table(&mut self, reloc: &[usize], new_arena_len: usize) {
+        if self.learned_lbd.is_empty() {
+            return;
+        }
+        let old_lbd = std::mem::take(&mut self.learned_lbd);
+        self.learned_lbd.resize(new_arena_len, 0);
+        for (old_clause_idx, lbd) in old_lbd.into_iter().enumerate() {
+            if lbd == 0 || old_clause_idx >= reloc.len() {
+                continue;
+            }
+            let new_clause_idx = reloc[old_clause_idx];
+            if new_clause_idx != NO_REASON {
+                if self.learned_lbd.len() <= new_clause_idx {
+                    self.learned_lbd.resize(new_clause_idx + 1, 0);
+                }
+                self.learned_lbd[new_clause_idx] = lbd;
+            }
+        }
     }
 
     #[inline(always)]
@@ -1100,6 +1158,8 @@ impl Solver {
         }
         self.root_unit_clauses.truncate(root_write);
 
+        let new_arena_len = new_arena.len();
+        self.remap_learned_lbd_side_table(&reloc, new_arena_len);
         self.arena = new_arena;
         self.original_clause_ids = new_original_clause_ids;
         self.learned_clause_ids = new_learned_clause_ids;
@@ -1118,11 +1178,7 @@ impl Solver {
         false
     }
 
-    fn trim_root_false_literals_with_proof(
-        &mut self,
-        clause_idx: usize,
-        proof_log: &mut ProofLog,
-    ) {
+    fn trim_root_false_literals_with_proof(&mut self, clause_idx: usize, proof_log: &mut ProofLog) {
         let clause_len = self.clause_len(clause_idx);
         if clause_len <= 2 {
             return;
@@ -1791,6 +1847,13 @@ impl Solver {
         self.live_learned_clause_count += 1;
         self.learned_literals += clause_len;
         self.stats.learned_clauses += 1;
+        if self.use_lbd {
+            let lbd = compute_lbd_from_lits(clause, &self.decision_level);
+            self.set_learned_clause_lbd(clause_idx, lbd);
+            self.stats.lbd_computed += 1;
+            self.stats.lbd_sum += lbd as u64;
+            self.stats.lbd_max = self.stats.lbd_max.max(lbd);
+        }
         self.attach_clause(clause_idx, false);
         clause_idx
     }
@@ -2062,6 +2125,8 @@ impl Solver {
         }
         self.root_unit_clauses.truncate(root_write);
 
+        let new_arena_len = new_arena.len();
+        self.remap_learned_lbd_side_table(&reloc, new_arena_len);
         self.arena = new_arena;
         self.original_clause_ids = new_original_clause_ids;
         self.learned_clause_ids = new_learned_clause_ids;
@@ -2733,6 +2798,7 @@ fn main() {
     solver.use_simplification = parse_bool_env("SAT_SIMPLIFICATION", solver.use_simplification);
     solver.use_elim = parse_bool_env("SAT_BVE", solver.use_elim);
     solver.use_resolved_conflict_analysis = parse_use_resolved_conflict_analysis();
+    solver.use_lbd = parse_bool_env("SAT_USE_LBD", solver.use_lbd);
     let reduce_db_limit_overridden = env::var_os("SAT_REDUCE_DB_INIT").is_some();
     let reduce_db_interval_overridden = env::var_os("SAT_REDUCE_DB_INTERVAL").is_some();
     solver.reduce_db_limit = parse_usize_env("SAT_REDUCE_DB_INIT", solver.reduce_db_limit);
@@ -2753,7 +2819,14 @@ fn main() {
         parse_usize_env("SAT_REDUCE_DB_INTERVAL", solver.learntsize_adjust_cnt);
     solver.learntsize_adjust_confl = solver.learntsize_adjust_cnt as f64;
 
-    if solver.solve_to_output(output_dir) {
+    let sat = solver.solve_to_output(output_dir);
+    if solver.use_lbd {
+        println!(
+            "c lbd computed={} sum={} max={}",
+            solver.stats.lbd_computed, solver.stats.lbd_sum, solver.stats.lbd_max
+        );
+    }
+    if sat {
         println!("s SATISFIABLE");
         let model = solver
             .sat_model
@@ -2845,6 +2918,76 @@ mod tests {
         for &(var, reason_idx) in reason_overrides {
             s.reason[var] = reason_idx;
         }
+    }
+
+    #[test]
+    fn test_compute_lbd_from_lits_counts_unique_decision_levels() {
+        let mut decision_level = vec![0; 8];
+        decision_level[1] = 1;
+        decision_level[2] = 1;
+        decision_level[3] = 2;
+        decision_level[4] = 0;
+        decision_level[5] = 3;
+
+        assert_eq!(compute_lbd_from_lits(&[], &decision_level), 0);
+        assert_eq!(compute_lbd_from_lits(&[1], &decision_level), 1);
+        assert_eq!(compute_lbd_from_lits(&[1, -2], &decision_level), 1);
+        assert_eq!(compute_lbd_from_lits(&[1, -3], &decision_level), 2);
+        assert_eq!(
+            compute_lbd_from_lits(&[1, -2, 3, -4, 5], &decision_level),
+            4
+        );
+    }
+
+    #[test]
+    fn test_lbd_side_table_records_learned_clause_metadata() {
+        let mut s = Solver::new(5, vec![]);
+        s.use_lbd = true;
+        s.decision_level[1] = 1;
+        s.decision_level[2] = 1;
+        s.decision_level[3] = 2;
+        s.decision_level[4] = 2;
+        s.decision_level[5] = 3;
+
+        let clause_idx = s.add_clause(vec![1, -2, 3, -4, 5]);
+
+        assert_eq!(s.learned_clause_lbd(clause_idx), Some(3));
+        assert_eq!(s.stats.lbd_computed, 1);
+        assert_eq!(s.stats.lbd_sum, 3);
+        assert_eq!(s.stats.lbd_max, 3);
+    }
+
+    #[test]
+    fn test_lbd_side_table_records_empty_learned_clause_metadata() {
+        let mut s = Solver::new(1, vec![]);
+        s.use_lbd = true;
+
+        let clause_idx = s.add_clause(vec![]);
+
+        assert_eq!(s.learned_clause_lbd(clause_idx), Some(0));
+        assert_eq!(s.stats.lbd_computed, 1);
+        assert_eq!(s.stats.lbd_sum, 0);
+        assert_eq!(s.stats.lbd_max, 0);
+    }
+
+    #[test]
+    fn test_lbd_side_table_remaps_across_garbage_collection() {
+        let mut s = Solver::new(5, vec![]);
+        s.use_lbd = true;
+        s.decision_level[1] = 1;
+        s.decision_level[2] = 2;
+        s.decision_level[3] = 3;
+        let dead = s.add_clause(vec![1, 2]);
+        let live = s.add_clause(vec![-1, 2, 3]);
+
+        assert_eq!(s.learned_clause_lbd(dead), Some(2));
+        assert_eq!(s.learned_clause_lbd(live), Some(3));
+
+        s.mark_clause_deleted(dead);
+        s.garbage_collect();
+
+        let relocated_live = s.learned_clause_ids[0];
+        assert_eq!(s.learned_clause_lbd(relocated_live), Some(3));
     }
 
     #[test]
