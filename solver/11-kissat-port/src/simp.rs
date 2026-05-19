@@ -36,7 +36,7 @@ impl Solver {
     }
 
     fn should_run_full_backward_subsumption(&self) -> bool {
-        crate::config::parse_bool_env("SAT_FULL_BSR", true)
+        self.full_bsr
     }
 
     fn build_occurrence_index(&mut self) {

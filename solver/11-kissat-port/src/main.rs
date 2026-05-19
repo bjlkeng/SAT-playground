@@ -12,9 +12,7 @@ mod output;
 mod simp;
 mod stats;
 
-use config::{
-    parse_bool_env, parse_optional_usize_env, parse_use_resolved_conflict_analysis, parse_usize_env,
-};
+use config::{BranchMode, ClauseMinMode, InitialClauseMode, ProofPolicy, SolverConfig};
 use lit::{lit_to_index, lit_to_word, word_to_lit};
 use output::print_assignment;
 use stats::SolverStats;
@@ -63,19 +61,6 @@ enum OriginalClauseInsertResult {
     Unit,
     Skipped,
     Unsat,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum InitialClauseMode {
-    CanonicalSorted,
-    CanonicalInputOrder,
-    Raw,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BranchMode {
-    Minisat,
-    Occurrence,
 }
 
 enum ProofMode {
@@ -137,7 +122,7 @@ impl ProofLog {
         }
     }
 
-    fn new<P: AsRef<Path>>(output_dir: P, capacity: usize) -> Self {
+    fn new<P: AsRef<Path>>(output_dir: P, capacity: usize, trace: bool) -> Self {
         let output_dir = output_dir.as_ref();
         fs::create_dir_all(output_dir).unwrap_or_else(|e| {
             eprintln!("Error creating {}: {}", output_dir.display(), e);
@@ -159,7 +144,7 @@ impl ProofLog {
                 buffer: Vec::with_capacity(capacity),
                 scratch: Vec::new(),
                 capacity,
-                trace: env::var_os("SAT_TRACE_PROOF").is_some(),
+                trace,
                 clause_count: 0,
                 literal_count: 0,
                 deletion_count: 0,
@@ -371,6 +356,8 @@ struct Solver {
     trace_preprocess_details: bool,
     /// run bounded variable elimination during the one-shot preprocessing phase
     use_elim: bool,
+    /// run full backward subsumption rather than queue-only root/touched work
+    full_bsr: bool,
     /// allowed clause-count growth for one variable-elimination step
     bve_grow: isize,
     /// maximum resolvent size allowed during variable elimination; negative means unlimited
@@ -633,10 +620,24 @@ fn compute_lbd_from_lits(clause: &[i32], decision_level: &[usize]) -> u32 {
     levels.len() as u32
 }
 
+fn ccmin_mode_from_config(mode: ClauseMinMode) -> u8 {
+    match mode {
+        ClauseMinMode::Off => CCMIN_NONE,
+        ClauseMinMode::Basic => CCMIN_BASIC,
+        ClauseMinMode::RecursiveLimited => CCMIN_DEEP,
+        ClauseMinMode::InBlockShrink => CCMIN_DEEP,
+    }
+}
+
 impl Solver {
     fn new(num_vars: usize, clauses: Vec<Vec<i32>>) -> Self {
+        let config = SolverConfig::default();
+        Self::new_with_config(num_vars, clauses, &config)
+    }
+
+    fn new_with_config(num_vars: usize, clauses: Vec<Vec<i32>>, config: &SolverConfig) -> Self {
         let original_clause_count = clauses.len();
-        let branch_mode = parse_branch_mode();
+        let branch_mode = config.branch_mode;
         let mut occurrence_count = vec![0usize; num_vars + 1];
         for clause in &clauses {
             for &lit in clause {
@@ -664,7 +665,7 @@ impl Solver {
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
         let arena = Vec::with_capacity(total_words);
         let original_clause_ids = Vec::with_capacity(original_clause_count);
-        let initial_clause_mode = parse_initial_clause_mode();
+        let initial_clause_mode = config.initial_clause_mode;
         let mut solver = Solver {
             arena,
             original_clause_ids,
@@ -710,9 +711,10 @@ impl Solver {
             root_unit_clauses: Vec::new(),
             has_empty_clause: false,
             solver_ok: true,
-            use_simplification: true,
-            trace_preprocess_details: env::var_os("SAT_TRACE_PREPROCESS_DETAILS").is_some(),
-            use_elim: true,
+            use_simplification: config.simplification,
+            trace_preprocess_details: config.trace_preprocess_details,
+            use_elim: config.bve,
+            full_bsr: config.full_bsr,
             bve_grow: DEFAULT_BVE_GROW,
             bve_clause_limit: DEFAULT_BVE_CLAUSE_LIMIT,
             subsumption_lim: DEFAULT_SUBSUMPTION_LIMIT,
@@ -734,11 +736,26 @@ impl Solver {
             scratch_redundant_state: vec![0; num_vars + 1],
             scratch_analyze_toclear: Vec::with_capacity(16),
             scratch_analyze_stack: Vec::with_capacity(16),
-            ccmin_mode: CCMIN_DEEP,
-            use_resolved_conflict_analysis: false,
-            use_lbd: false,
+            ccmin_mode: ccmin_mode_from_config(config.clause_min_mode),
+            use_resolved_conflict_analysis: config.use_resolved_conflict_analysis,
+            use_lbd: config.use_lbd,
             stats: SolverStats::default(),
         };
+        let reduce_db_limit_overridden = config.reduce_db_init.is_some();
+        let reduce_db_interval_overridden = config.reduce_db_interval.is_some();
+        if let Some(limit) = config.reduce_db_init {
+            solver.reduce_db_limit = limit;
+        }
+        solver.reset_reduce_db_after_preprocess = config
+            .post_preprocess_reduce_db_reset
+            .unwrap_or(!(reduce_db_limit_overridden || reduce_db_interval_overridden));
+        if let Some(interval) = config.reduce_db_interval {
+            solver.learntsize_adjust_cnt = interval;
+            solver.learntsize_adjust_confl = interval as f64;
+        }
+        if let Some(limit) = config.subsumption_limit {
+            solver.subsumption_lim = limit;
+        }
         match initial_clause_mode {
             InitialClauseMode::CanonicalSorted => {
                 solver.add_initial_original_clauses(clauses, true);
@@ -2343,16 +2360,22 @@ impl Solver {
 
     fn solve(&mut self) -> bool {
         let mut proof_log = ProofLog::disabled();
-        self.solve_with_proof(&mut proof_log)
+        let config = SolverConfig::default();
+        self.solve_with_proof(&mut proof_log, &config)
     }
 
-    fn solve_to_output(&mut self, output_dir: &str) -> bool {
-        let mut proof_log = if parse_bool_env("SAT_PROOF", true) {
-            ProofLog::new(output_dir, PROOF_BUFFER_CAPACITY)
-        } else {
-            ProofLog::disabled()
+    fn solve_to_output(&mut self, output_dir: &str, config: &SolverConfig) -> bool {
+        let mut proof_log = match config.proof_policy {
+            ProofPolicy::Off => ProofLog::disabled(),
+            ProofPolicy::Drat => {
+                ProofLog::new(output_dir, PROOF_BUFFER_CAPACITY, config.trace_proof)
+            }
+            ProofPolicy::Lrat => {
+                eprintln!("SAT_PROOF=lrat is not implemented yet");
+                std::process::exit(2);
+            }
         };
-        let sat = self.solve_with_proof(&mut proof_log);
+        let sat = self.solve_with_proof(&mut proof_log, config);
         if sat {
             proof_log.finish_sat();
         } else {
@@ -2361,7 +2384,7 @@ impl Solver {
         sat
     }
 
-    fn solve_with_proof(&mut self, proof_log: &mut ProofLog) -> bool {
+    fn solve_with_proof(&mut self, proof_log: &mut ProofLog, config: &SolverConfig) -> bool {
         if !self.solver_ok || self.has_empty_clause || !self.enqueue_root_units() {
             return false;
         }
@@ -2377,7 +2400,7 @@ impl Solver {
             return false;
         }
         self.reset_learned_budget_after_preprocess();
-        if env::var_os("SAT_TRACE_PREPROCESS").is_some() {
+        if config.trace_preprocess {
             eprintln!(
                 "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} root_assigns={} deleted_clauses={} reduce_db_limit={}",
                 preprocess_start.elapsed().as_secs_f64(),
@@ -2428,7 +2451,7 @@ impl Solver {
             );
         }
 
-        let trace_search_interval = parse_optional_usize_env("SAT_TRACE_SEARCH_INTERVAL") as u64;
+        let trace_search_interval = config.trace_search_interval as u64;
         let mut next_search_trace = trace_search_interval;
         let search_start = Instant::now();
         let mut conflict = self.propagate();
@@ -2556,56 +2579,6 @@ impl Solver {
     }
 }
 
-fn parse_ccmin_mode() -> u8 {
-    match env::var("SAT_CCMIN_MODE") {
-        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-            "0" | "none" => CCMIN_NONE,
-            "1" | "basic" => CCMIN_BASIC,
-            "2" | "deep" => CCMIN_DEEP,
-            other => {
-                eprintln!("Invalid SAT_CCMIN_MODE={other}; expected none/basic/deep or 0/1/2");
-                std::process::exit(2);
-            }
-        },
-        Err(_) => CCMIN_DEEP,
-    }
-}
-
-fn parse_initial_clause_mode() -> InitialClauseMode {
-    match env::var("SAT_INITIAL_CLAUSE_MODE") {
-        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-            "canonical" | "canonical-sorted" | "sorted" | "1" | "true" | "on" => {
-                InitialClauseMode::CanonicalSorted
-            }
-            "input-order" | "canonical-input-order" | "preserve-order" => {
-                InitialClauseMode::CanonicalInputOrder
-            }
-            "raw" | "off" | "0" | "false" => InitialClauseMode::Raw,
-            other => {
-                eprintln!(
-                    "Invalid SAT_INITIAL_CLAUSE_MODE={other}; expected canonical-sorted/input-order/raw"
-                );
-                std::process::exit(2);
-            }
-        },
-        Err(_) => InitialClauseMode::CanonicalSorted,
-    }
-}
-
-fn parse_branch_mode() -> BranchMode {
-    match env::var("SAT_BRANCH_MODE") {
-        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-            "minisat" | "mini" | "var-order" | "var_order" | "var" => BranchMode::Minisat,
-            "occurrence" | "occ" | "legacy" | "solver10" => BranchMode::Occurrence,
-            other => {
-                eprintln!("Invalid SAT_BRANCH_MODE={other}; expected minisat/occurrence");
-                std::process::exit(2);
-            }
-        },
-        Err(_) => BranchMode::Minisat,
-    }
-}
-
 fn parse_cnf(path: &str) -> (usize, Vec<Vec<i32>>) {
     let file = fs::File::open(path).unwrap_or_else(|e| {
         eprintln!("Error opening {}: {}", path, e);
@@ -2663,34 +2636,18 @@ fn main() {
     let cnf_path = &args[1];
     let output_dir = &args[2];
 
+    let config = SolverConfig::from_env();
+    config.emit_requested_outputs();
     let (num_vars, clauses) = parse_cnf(cnf_path);
-    let mut solver = Solver::new(num_vars, clauses);
-    solver.ccmin_mode = parse_ccmin_mode();
-    solver.use_simplification = parse_bool_env("SAT_SIMPLIFICATION", solver.use_simplification);
-    solver.use_elim = parse_bool_env("SAT_BVE", solver.use_elim);
-    solver.use_resolved_conflict_analysis = parse_use_resolved_conflict_analysis();
-    solver.use_lbd = parse_bool_env("SAT_USE_LBD", solver.use_lbd);
-    let reduce_db_limit_overridden = env::var_os("SAT_REDUCE_DB_INIT").is_some();
-    let reduce_db_interval_overridden = env::var_os("SAT_REDUCE_DB_INTERVAL").is_some();
-    solver.reduce_db_limit = parse_usize_env("SAT_REDUCE_DB_INIT", solver.reduce_db_limit);
-    solver.reset_reduce_db_after_preprocess = parse_bool_env(
-        "SAT_POST_PREPROCESS_REDUCE_DB_RESET",
-        !(reduce_db_limit_overridden || reduce_db_interval_overridden),
-    );
-    if let Ok(value) = env::var("SAT_SUBSUMPTION_LIMIT") {
-        solver.subsumption_lim = match value.trim().parse::<isize>() {
-            Ok(parsed) => parsed,
-            Err(err) => {
-                eprintln!("Invalid SAT_SUBSUMPTION_LIMIT={value:?}: {err}");
-                std::process::exit(2);
-            }
-        };
-    }
-    solver.learntsize_adjust_cnt =
-        parse_usize_env("SAT_REDUCE_DB_INTERVAL", solver.learntsize_adjust_cnt);
-    solver.learntsize_adjust_confl = solver.learntsize_adjust_cnt as f64;
+    let mut solver = Solver::new_with_config(num_vars, clauses, &config);
 
-    let sat = solver.solve_to_output(output_dir);
+    let sat = solver.solve_to_output(output_dir, &config);
+    if config.stats_json {
+        println!(
+            "{}",
+            config.json_stats_line(if sat { "SAT" } else { "UNSAT" })
+        );
+    }
     if solver.use_lbd {
         println!(
             "c lbd computed={} sum={} max={}",
@@ -3418,7 +3375,7 @@ mod tests {
     fn test_proof_log_flushes_temp_file_when_buffer_fills() {
         let dir = make_temp_dir("proof-flush");
         let temp_path = dir.join("proof.out.tmp");
-        let mut proof = ProofLog::new(&dir, 32);
+        let mut proof = ProofLog::new(&dir, 32, false);
 
         for _ in 0..4 {
             proof.record_clause(&[123456789, -123456789, 42]);
@@ -3454,7 +3411,7 @@ mod tests {
     #[test]
     fn test_proof_log_finalizes_unsat_and_discards_sat_temp_file() {
         let unsat_dir = make_temp_dir("proof-unsat");
-        let mut unsat_proof = ProofLog::new(&unsat_dir, 32);
+        let mut unsat_proof = ProofLog::new(&unsat_dir, 32, false);
         unsat_proof.record_clause(&[1, -2]);
         unsat_proof.record_deletion(&[3, -4]);
         unsat_proof.finish_unsat();
@@ -3480,7 +3437,7 @@ mod tests {
         );
 
         let sat_dir = make_temp_dir("proof-sat");
-        let mut sat_proof = ProofLog::new(&sat_dir, 32);
+        let mut sat_proof = ProofLog::new(&sat_dir, 32, false);
         sat_proof.record_clause(&[1, 2, 3]);
         sat_proof.finish_sat();
 
@@ -3499,7 +3456,8 @@ mod tests {
         let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
         let proof_dir = make_temp_dir("solver-unsat-proof");
         let mut s = make_solver(2, clauses);
-        assert!(!s.solve_to_output(proof_dir.to_str().expect("utf8 temp dir")));
+        let config = SolverConfig::default();
+        assert!(!s.solve_to_output(proof_dir.to_str().expect("utf8 temp dir"), &config));
 
         let proof_text =
             fs::read_to_string(proof_dir.join("proof.out")).expect("failed to read emitted proof");

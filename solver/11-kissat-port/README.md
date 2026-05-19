@@ -51,6 +51,49 @@ Still incomplete:
 So this is now a working BVE preprocessing iteration, but it is not yet a complete MiniSat `simp`
 port.
 
+## Solver 11 Configuration Contract
+
+Solver 11 now parses all `SAT_*` runtime controls through one `SolverConfig`
+object before reading the CNF. Search, propagation, simplification, and proof
+code should not call `std::env::var` directly. The checked-in schema and
+feature ledger are:
+
+- `CONFIG_SCHEMA.csv`: environment variable, config field, type, defaults,
+  feature/limit/legacy classification, conflicts, requirements, and task owner
+- `FEATURES.csv`: machine-readable feature maturity, validation state, promoted
+  profiles, validation artifact, risk IDs, and last task that changed the row
+- `FEATURES.md`: human-readable notes for the same feature maturity records
+
+Important config controls:
+
+```bash
+SAT_PROFILE=baseline|default|fast|experimental
+SAT_SEARCH_AXIS=safe|validated|strong
+SAT_PREPROCESS_AXIS=off|conservative|gate-aware
+SAT_PROOF=off|drat|lrat
+SAT_CONFIG_DUMP=on
+SAT_CONFIG_OUT=log/solver11.config
+SAT_CONFIG_REPLAY=log/solver11.config
+SAT_STRICT_CONFIG=on
+SAT_STATS_JSON=on
+SAT_USE_LBD=on
+```
+
+`SAT_CONFIG_OUT` writes a deterministic replay file with `schema_version`,
+effective profile/axes, proof policy, every config field, feature maturity
+records, legacy aliases used, and a stable `config_hash`. `SAT_CONFIG_REPLAY`
+loads that file before CNF parsing. By default replay allows only the documented
+runtime overrides (`SAT_CONFIG_OUT`, `SAT_RUN_LABEL`, `SAT_STATS_JSON`,
+`SAT_TRACE_FULL`, `SAT_LIMIT_WALL_SEC`, `SAT_LIMIT_RSS_MB`); set
+`SAT_CONFIG_REPLAY_ALLOW_OVERRIDES=on` only for explicit experiments.
+
+New Phase 1 and Phase 2 feature flags default off. Flags whose implementation
+bead has not landed are represented in the schema but fail fast if enabled, so
+benchmark artifacts cannot accidentally record no-op feature claims. `lrat` and
+`SAT_LIMIT_*` values are parsed into the config contract but currently fail fast
+until the status/result contract in 0.3a can return structured `UNKNOWN`
+outcomes.
+
 ## Validation
 
 Run on 2026-05-08:

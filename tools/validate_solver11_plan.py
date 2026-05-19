@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import re
 import sys
 from pathlib import Path
@@ -49,6 +50,93 @@ SOURCE_ANCHORS = {
     "parse_cnf": ("src/main.rs", "fn parse_cnf("),
     "main": ("src/main.rs", "fn main("),
 }
+
+REQUIRED_CONFIG_ENVS = {
+    "SAT_STATS_JSON",
+    "SAT_TRACE_FULL",
+    "SAT_CHECK_INVARIANTS",
+    "SAT_SEED",
+    "SAT_PROFILE",
+    "SAT_SEARCH_AXIS",
+    "SAT_PREPROCESS_AXIS",
+    "SAT_PROOF",
+    "SAT_CONFIG_DUMP",
+    "SAT_CONFIG_OUT",
+    "SAT_CONFIG_REPLAY",
+    "SAT_CONFIG_REPLAY_ALLOW_OVERRIDES",
+    "SAT_STRICT_CONFIG",
+    "SAT_RUN_LABEL",
+    "SAT_LIMIT_CONFLICTS",
+    "SAT_LIMIT_PROPAGATIONS",
+    "SAT_LIMIT_TICKS",
+    "SAT_LIMIT_WALL_SEC",
+    "SAT_LIMIT_RSS_MB",
+    "SAT_LIMIT_LEARNED_LITS",
+    "SAT_LIMIT_BINARY_CLAUSES",
+    "SAT_LIMIT_EXTENSION_BYTES",
+    "SAT_LIMIT_PROOF_BYTES",
+    "SAT_USE_LBD",
+    "SAT_LBD_UPDATE_REASONS",
+    "SAT_RESTART",
+    "SAT_REDUCE",
+    "SAT_PHASE",
+    "SAT_SEARCH_MODE",
+    "SAT_CHRONO",
+    "SAT_BINARY_FAST",
+    "SAT_CLAUSE_MIN",
+    "SAT_VMTF",
+    "SAT_REPHASE",
+    "SAT_MINIMIZE_DEPTH_LIMIT",
+    "SAT_CHRONO_MAX_DELTA",
+    "SAT_MODE_INIT_CONFLICTS",
+    "SAT_MODE_INTERVAL_SCALE",
+    "SAT_REPHASE_INIT_CONFLICTS",
+    "SAT_SIMPLIFICATION",
+    "SAT_BVE",
+    "SAT_FULL_BSR",
+    "SAT_INPROCESS",
+    "SAT_VIVIFY",
+    "SAT_PROBE",
+    "SAT_HBR",
+    "SAT_TRANSITIVE",
+    "SAT_FORWARD_SUBSUME",
+    "SAT_GATE_EXTRACT",
+    "SAT_GATE_BVE",
+    "SAT_RCHECK",
+    "SAT_INPROCESS_INTERVAL_CONFLICTS",
+    "SAT_INPROCESS_MAX_ROUNDS",
+    "SAT_VIVIFY_TICKS",
+    "SAT_VIVIFY_MAX_CLAUSE_LEN",
+    "SAT_PROBE_TICKS",
+    "SAT_ELIMINATE_TICKS",
+    "SAT_TRANSITIVE_MAX_DEPTH",
+    "SAT_TRANSITIVE_TICKS_PER_SOURCE",
+    "SAT_TRANSITIVE_MAX_REMOVED_PER_ROUND",
+    "SAT_RCHECK_TICKS",
+}
+
+REQUIRED_FEATURE_FLAGS = {
+    "SAT_USE_LBD",
+    "SAT_LBD_UPDATE_REASONS",
+    "SAT_CHRONO",
+    "SAT_BINARY_FAST",
+    "SAT_VMTF",
+    "SAT_REPHASE",
+    "SAT_SIMPLIFICATION",
+    "SAT_BVE",
+    "SAT_FULL_BSR",
+    "SAT_INPROCESS",
+    "SAT_VIVIFY",
+    "SAT_PROBE",
+    "SAT_HBR",
+    "SAT_TRANSITIVE",
+    "SAT_FORWARD_SUBSUME",
+    "SAT_GATE_EXTRACT",
+    "SAT_GATE_BVE",
+    "SAT_RCHECK",
+}
+
+PARKING_LOT_DENYLIST = {"SAT_WALK", "SAT_SWEEP", "SAT_ELS", "SAT_BCE"}
 
 
 def fail(errors: list[str], message: str) -> None:
@@ -129,6 +217,70 @@ def validate_public_mut_solver(src_dir: Path, errors: list[str]) -> None:
             fail(errors, f"{path}: public function returns &mut Solver at line {line}")
 
 
+def read_csv_rows(path: Path, errors: list[str]) -> list[dict[str, str]]:
+    if not path.exists():
+        fail(errors, f"missing {path}")
+        return []
+    try:
+        with path.open(newline="") as handle:
+            return list(csv.DictReader(handle))
+    except csv.Error as exc:
+        fail(errors, f"{path}: invalid CSV: {exc}")
+        return []
+
+
+def validate_config_artifacts(solver_dir: Path, errors: list[str]) -> None:
+    schema_path = solver_dir / "CONFIG_SCHEMA.csv"
+    features_path = solver_dir / "FEATURES.csv"
+    features_md_path = solver_dir / "FEATURES.md"
+    config_rs_path = solver_dir / "src" / "config.rs"
+
+    schema_rows = read_csv_rows(schema_path, errors)
+    feature_rows = read_csv_rows(features_path, errors)
+    if not features_md_path.exists():
+        fail(errors, f"missing {features_md_path}")
+    if not config_rs_path.exists():
+        fail(errors, f"missing {config_rs_path}")
+        config_text = ""
+    else:
+        config_text = config_rs_path.read_text()
+
+    schema_envs = {row.get("env_var", "") for row in schema_rows}
+    missing_envs = sorted(REQUIRED_CONFIG_ENVS - schema_envs)
+    if missing_envs:
+        fail(errors, f"{schema_path}: missing required env rows {missing_envs}")
+
+    feature_flags = {row.get("feature_flag", "") for row in feature_rows}
+    missing_features = sorted(REQUIRED_FEATURE_FLAGS - feature_flags)
+    if missing_features:
+        fail(errors, f"{features_path}: missing required feature rows {missing_features}")
+
+    for denied in sorted(PARKING_LOT_DENYLIST):
+        if denied in schema_envs:
+            fail(errors, f"{schema_path}: parked flag {denied} must not be an active schema row")
+
+    for required_text in [
+        "pub(crate) struct SolverConfig",
+        "fn validate_runtime_support",
+        "fn replay_override_env",
+        "pub(crate) fn config_hash",
+        "pub(crate) fn json_stats_line",
+    ]:
+        if required_text not in config_text:
+            fail(errors, f"{config_rs_path}: missing config contract text {required_text!r}")
+
+
+def validate_env_boundary(src_dir: Path, errors: list[str]) -> None:
+    env_read_re = re.compile(r"\benv::vars?\b|\benv::var_os\b|\bstd::env::vars?\b|\bstd::env::var_os\b")
+    for path in sorted(src_dir.glob("*.rs")):
+        if path.name == "config.rs":
+            continue
+        text = path.read_text()
+        for match in env_read_re.finditer(text):
+            line = text.count("\n", 0, match.start()) + 1
+            fail(errors, f"{path}: env config read outside src/config.rs at line {line}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -151,6 +303,8 @@ def main() -> int:
     else:
         validate_stage_a_modules(src_dir, errors)
         validate_public_mut_solver(src_dir, errors)
+        validate_env_boundary(src_dir, errors)
+        validate_config_artifacts(solver_dir, errors)
     validate_state_file(solver_dir, errors)
 
     if errors:
