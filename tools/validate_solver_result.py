@@ -197,7 +197,7 @@ def check_json_stats(out_dir: Path, payload: dict) -> None:
         raise ValueError(f"{out_dir / RESULT_JSON}: stats_json_seen is false")
 
 
-def validate(args: argparse.Namespace) -> None:
+def validate(args: argparse.Namespace) -> tuple[str, dict]:
     cnf = args.cnf
     out_dir = args.out_dir
     if not cnf.exists():
@@ -256,6 +256,40 @@ def validate(args: argparse.Namespace) -> None:
         check_json_stats(out_dir, result_payload)
 
     print(f"VALIDATED status={status} source={status_source} out_dir={out_dir}")
+    return status, result_payload
+
+
+def append_validation_summary(
+    path: Path,
+    args: argparse.Namespace,
+    status: str,
+    payload: dict | None,
+    error: str,
+) -> None:
+    record = {
+        "instance": str(args.cnf) if args.cnf is not None else "",
+        "out_dir": str(args.out_dir) if args.out_dir is not None else "",
+        "status": status,
+        "expected_status": normalize_status(args.expected_status),
+        "model_check_result": "",
+        "proof_check_result": "",
+        "proof_checker": "",
+        "proof_checker_exit_status": "",
+        "output_contract_state": "",
+        "validation_error": error,
+    }
+    if payload is not None:
+        record.update(
+            {
+                "model_check_result": payload.get("model_check_result", ""),
+                "proof_check_result": payload.get("proof_check_result", ""),
+                "proof_checker": payload.get("proof_checker", ""),
+                "proof_checker_exit_status": payload.get("proof_checker_exit_status", ""),
+                "output_contract_state": payload.get("output_contract_state", ""),
+            }
+        )
+    with path.open("a") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
 def self_test() -> None:
@@ -284,6 +318,7 @@ def main() -> int:
     )
     parser.add_argument("--proof-policy", choices=["off", "drat"], default="off")
     parser.add_argument("--require-json-stats", choices=["on", "off"], default="off")
+    parser.add_argument("--validation-jsonl", type=Path)
     args = parser.parse_args()
 
     try:
@@ -292,9 +327,16 @@ def main() -> int:
             return 0
         if args.cnf is None or args.out_dir is None:
             parser.error("--cnf and --out-dir are required unless --self-test is used")
-        validate(args)
+        status, payload = validate(args)
+        if args.validation_jsonl is not None:
+            append_validation_summary(args.validation_jsonl, args, status, payload, "")
         return 0
     except Exception as exc:
+        if "args" in locals() and getattr(args, "validation_jsonl", None) is not None:
+            try:
+                append_validation_summary(args.validation_jsonl, args, "VALIDATION_ERROR", None, str(exc))
+            except Exception:
+                pass
         print(f"VALIDATION FAIL: {exc}", file=sys.stderr)
         return 1
 

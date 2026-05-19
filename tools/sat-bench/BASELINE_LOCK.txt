@@ -1,0 +1,7 @@
+tool=sat-bench
+version=0.1.0
+build_command=cargo build --manifest-path tools/sat-bench/Cargo.toml --release
+rustc=rustc 1.94.1 (e408947bf 2026-03-25)
+binary_path=tools/sat-bench/target/release/sat-bench
+binary_sha256=de2f747cb81e46bfc0f22156b75262423cd2c918c15d09179ab6d768b59c41fa
+transition_policy=Phase 1 facade delegates to existing Python tools while preserving stable sat-bench subcommands.
