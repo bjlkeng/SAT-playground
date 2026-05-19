@@ -7,8 +7,8 @@ prints the same maturity records in `SAT_CONFIG_DUMP`, writes them into
 
 | Feature flag | Config field | Current maturity | Enabled profiles | Validation artifact | Notes |
 |---|---|---|---|---|---|
-| `SAT_USE_LBD` | `use_lbd` | SmokeSafe | none | `log/0.0b/findings.md` | Thin-slice LBD side-table and counters only; full LBD policy remains future work. |
-| `SAT_LBD_UPDATE_REASONS` | `update_reason_lbd` | ParkingLot | none |  | Config-reserved until reason-LBD updates land. |
+| `SAT_USE_LBD` | `use_lbd` | SmokeSafe | none | `log/0.0b/findings.md` | Stable learned-clause metadata records true LBD/glue while policy defaults remain unchanged. |
+| `SAT_LBD_UPDATE_REASONS` | `update_reason_lbd` | SmokeSafe | none | `log/1.2/lbd-reason-update.md` | Optional reason-side LBD improvement; requires `SAT_USE_LBD=on` and remains default-off. |
 | `SAT_CHRONO` | `chrono_backtrack` | ParkingLot | none |  | Config-reserved until chronological backtracking lands. |
 | `SAT_BINARY_FAST` | `binary_fast_path` | ParkingLot | none |  | Config-reserved until binary implication fast path lands. |
 | `SAT_VMTF` | `vmtf` | ParkingLot | none |  | Config-reserved until the decision-heap cleanup and VMTF work land. |

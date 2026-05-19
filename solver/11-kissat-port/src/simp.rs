@@ -226,7 +226,7 @@ impl Solver {
         if self.clause_locked(clause_idx) {
             let implied_lit = self.clause_lit(clause_idx, 0);
             let var = implied_lit.unsigned_abs() as usize;
-            self.reason[var] = NO_REASON;
+            self.set_reason_ref(var, ReasonRef::None);
         }
 
         self.mark_occurs_dirty_for_clause(clause_idx, touched, touched_flags);
@@ -420,7 +420,7 @@ impl Solver {
             let unit_lit = strengthened[0];
             self.scratch_preprocess_clause = strengthened;
             self.remove_original_clause_preprocess(clause_idx, touched, touched_flags);
-            if !self.enqueue(unit_lit, NO_REASON) || self.propagate().is_some() {
+            if !self.enqueue(unit_lit, ReasonRef::None) || self.propagate().is_some() {
                 self.solver_ok = false;
                 return false;
             }
@@ -465,7 +465,7 @@ impl Solver {
         if let Some(lit) = locked_lit {
             if lit == remove_lit {
                 let var = lit.unsigned_abs() as usize;
-                self.reason[var] = NO_REASON;
+                self.set_reason_ref(var, ReasonRef::None);
             }
         }
 
@@ -568,7 +568,7 @@ impl Solver {
         }
 
         if normalized.len() == 1 {
-            if !self.enqueue(normalized[0], NO_REASON) || self.propagate().is_some() {
+            if !self.enqueue(normalized[0], ReasonRef::None) || self.propagate().is_some() {
                 self.solver_ok = false;
                 return OriginalClauseInsertResult::Unsat;
             }
@@ -1338,7 +1338,7 @@ mod tests {
     fn root_assignment_subsumption_trims_false_literal() {
         let mut s = Solver::new(3, vec![vec![-1, 2, 3]]);
         let mut proof = ProofLog::disabled();
-        assert!(s.enqueue(1, NO_REASON));
+        assert!(s.enqueue(1, ReasonRef::None));
         assert_eq!(s.propagate(), None);
         s.build_occurrence_index();
 

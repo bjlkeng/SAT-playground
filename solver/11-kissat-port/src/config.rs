@@ -1054,6 +1054,9 @@ impl SolverConfig {
         if self.reduce_policy == ReducePolicy::LbdTiered && !self.use_lbd {
             fail_config("Invalid config: SAT_REDUCE=lbd-tiered requires SAT_USE_LBD=on");
         }
+        if self.update_reason_lbd && !self.use_lbd {
+            fail_config("Invalid config: SAT_LBD_UPDATE_REASONS=on requires SAT_USE_LBD=on");
+        }
         if self.restart_policy == RestartPolicy::KissatEma && !self.use_lbd {
             fail_config("Invalid config: SAT_RESTART=kissat-ema requires SAT_USE_LBD=on");
         }
@@ -1067,7 +1070,6 @@ impl SolverConfig {
             fail_config("Invalid config: SAT_GATE_BVE=on requires SAT_GATE_EXTRACT=on");
         }
         let unsupported = [
-            (self.update_reason_lbd, "SAT_LBD_UPDATE_REASONS"),
             (self.chrono_backtrack, "SAT_CHRONO"),
             (self.binary_fast_path, "SAT_BINARY_FAST"),
             (self.vmtf, "SAT_VMTF"),
@@ -1092,8 +1094,8 @@ impl SolverConfig {
         if self.restart_policy != RestartPolicy::LegacyLuby {
             fail_config("SAT_RESTART values other than legacy-luby are not implemented yet");
         }
-        if self.reduce_policy != ReducePolicy::LegacyActivity {
-            fail_config("SAT_REDUCE values other than legacy are not implemented yet");
+        if self.reduce_policy == ReducePolicy::Activity {
+            fail_config("SAT_REDUCE=activity is not implemented yet; use legacy or lbd-tiered");
         }
         if self.phase_policy != PhasePolicy::Legacy {
             fail_config("SAT_PHASE values other than legacy are not implemented yet");
@@ -1505,11 +1507,11 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
         feature(
             "SAT_LBD_UPDATE_REASONS",
             config.update_reason_lbd,
-            FeatureMaturity::ParkingLot,
+            FeatureMaturity::SmokeSafe,
+            true,
+            true,
             false,
-            false,
-            false,
-            "",
+            "log/1.2/lbd-reason-update.md",
         ),
         feature(
             "SAT_CHRONO",
@@ -2452,6 +2454,19 @@ mod tests {
         let on = SolverConfig::from_env_map(&env_map(&[("SAT_USE_LBD", "on")]));
 
         assert_ne!(off.config_hash(), on.config_hash());
+    }
+
+    #[test]
+    fn test_lbd_reason_update_and_tiered_reduce_are_runtime_supported() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_USE_LBD", "on"),
+            ("SAT_LBD_UPDATE_REASONS", "on"),
+            ("SAT_REDUCE", "lbd-tiered"),
+        ]));
+
+        assert!(config.use_lbd);
+        assert!(config.update_reason_lbd);
+        assert_eq!(config.reduce_policy, ReducePolicy::LbdTiered);
     }
 
     #[test]

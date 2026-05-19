@@ -16,7 +16,9 @@ mod stats;
 #[path = "tests/mod.rs"]
 mod oracle_tests;
 
-use config::{BranchMode, ClauseMinMode, InitialClauseMode, ProofPolicy, SolverConfig};
+use config::{
+    BranchMode, ClauseMinMode, InitialClauseMode, ProofPolicy, ReducePolicy, SolverConfig,
+};
 use limits::{LimitHit, RuntimeLimits};
 use lit::{lit_to_index, lit_to_word, word_to_lit};
 use output::{
@@ -32,7 +34,6 @@ use stats::{
 const UNASSIGNED: u8 = 0;
 const TRUE: u8 = 1;
 const FALSE: u8 = 2;
-const NO_REASON: usize = usize::MAX;
 const BRANCH_NOT_IN_HEAP: usize = usize::MAX;
 const CCMIN_NONE: u8 = 0;
 const CCMIN_BASIC: u8 = 1;
@@ -60,6 +61,317 @@ const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
 const INLINE_ABSTRACTION_CLAUSE_THRESHOLD: usize = 750_000;
 const LAZY_DETACH_SMALL_CLAUSE_THRESHOLD: usize = 50_000;
 const SORTED_SUBSUMPTION_MIN_LEN: usize = 2;
+const TIER1_MAX_GLUE: u16 = 2;
+const TIER2_MAX_GLUE: u16 = 6;
+const MAX_USED_RECENTLY: u8 = 3;
+const LEARNED_LIT_BUDGET_BASE: usize = 2_000;
+const LEARNED_LIT_BUDGET_FACTOR: usize = 300;
+const EMERGENCY_TIER1_MIN_AGE_CONFLICTS: u64 = 1_000;
+
+type ClauseRef = usize;
+
+const NO_CLAUSE_REF: ClauseRef = usize::MAX;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BinaryClauseId(u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReasonRef {
+    None,
+    Clause(ClauseRef),
+    Binary(BinaryClauseId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+enum Conflict {
+    Clause(ClauseRef),
+    Binary(BinaryClauseId),
+    RootUnit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+enum SearchAccountingMode {
+    NormalSearch,
+    TemporaryAssumption {
+        update_phase: bool,
+        update_branch_stats: bool,
+        update_restart_stats: bool,
+        count_as_decision: bool,
+    },
+}
+
+#[allow(dead_code)]
+impl SearchAccountingMode {
+    fn from_temporary_options(opts: TemporaryAssumptionOptions) -> Self {
+        Self::TemporaryAssumption {
+            update_phase: opts.update_phase,
+            update_branch_stats: opts.update_branch_stats,
+            update_restart_stats: opts.update_restart_stats,
+            count_as_decision: opts.count_as_decision,
+        }
+    }
+
+    fn is_temporary(self) -> bool {
+        matches!(self, Self::TemporaryAssumption { .. })
+    }
+
+    fn update_phase(self) -> bool {
+        match self {
+            Self::NormalSearch => true,
+            Self::TemporaryAssumption { update_phase, .. } => update_phase,
+        }
+    }
+
+    fn update_branch_stats(self) -> bool {
+        match self {
+            Self::NormalSearch => true,
+            Self::TemporaryAssumption {
+                update_branch_stats,
+                ..
+            } => update_branch_stats,
+        }
+    }
+
+    fn update_restart_stats(self) -> bool {
+        match self {
+            Self::NormalSearch => true,
+            Self::TemporaryAssumption {
+                update_restart_stats,
+                ..
+            } => update_restart_stats,
+        }
+    }
+
+    fn count_as_decision(self) -> bool {
+        match self {
+            Self::NormalSearch => true,
+            Self::TemporaryAssumption {
+                count_as_decision, ..
+            } => count_as_decision,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[allow(dead_code)]
+struct TemporaryAssumptionOptions {
+    update_phase: bool,
+    update_branch_stats: bool,
+    update_restart_stats: bool,
+    count_as_decision: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TemporaryAssumptionStats {
+    enqueues: u64,
+    propagations: u64,
+    conflicts: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+struct TemporaryAssumptionGuard {
+    start_trail: usize,
+    start_level: usize,
+    start_root_trail_len: usize,
+    start_propagate_head: usize,
+    saved_accounting_mode: SearchAccountingMode,
+}
+
+#[allow(dead_code)]
+struct TemporaryAssumptionCtx<'a> {
+    solver: &'a mut Solver,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+enum EnqueueResult {
+    Enqueued,
+    AlreadyAssigned,
+    Conflict,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+struct Budget {
+    remaining: Option<u64>,
+}
+
+#[allow(dead_code)]
+impl Budget {
+    fn from_ticks(ticks: u64) -> Self {
+        Self {
+            remaining: Some(ticks),
+        }
+    }
+
+    fn exhausted(self) -> bool {
+        self.remaining == Some(0)
+    }
+
+    fn consume(&mut self, ticks: u64) {
+        if let Some(remaining) = &mut self.remaining {
+            *remaining = remaining.saturating_sub(ticks);
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl<'a> TemporaryAssumptionCtx<'a> {
+    fn enqueue(&mut self, lit: i32) -> EnqueueResult {
+        let var = lit.unsigned_abs() as usize;
+        let target_value = if lit > 0 { TRUE } else { FALSE };
+        match self.solver.assignment[var] {
+            UNASSIGNED => {
+                if self.solver.accounting_mode.count_as_decision() {
+                    self.solver.stats.decisions += 1;
+                }
+                let inserted = self.solver.enqueue(lit, ReasonRef::None);
+                debug_assert!(inserted, "temporary literal was checked as unassigned");
+                self.solver.temporary_stats.enqueues += 1;
+                EnqueueResult::Enqueued
+            }
+            current if current == target_value => EnqueueResult::AlreadyAssigned,
+            _ => EnqueueResult::Conflict,
+        }
+    }
+
+    fn propagate_budgeted(&mut self, budget: &mut Budget) -> Option<Conflict> {
+        if budget.exhausted() {
+            return None;
+        }
+        let before = self.solver.temporary_stats.propagations;
+        let conflict = self.solver.propagate();
+        let spent = self
+            .solver
+            .temporary_stats
+            .propagations
+            .saturating_sub(before);
+        budget.consume(spent);
+        if conflict.is_some() {
+            self.solver.temporary_stats.conflicts += 1;
+        }
+        conflict
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LearnedId(u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LearnedMeta {
+    lbd: u16,
+    tier: u8,
+    used_recently: u8,
+    removable: bool,
+    vivified: bool,
+    created_at_conflict: u64,
+}
+
+impl Default for LearnedMeta {
+    fn default() -> Self {
+        Self {
+            lbd: u16::MAX,
+            tier: 2,
+            used_recently: 0,
+            removable: true,
+            vivified: false,
+            created_at_conflict: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct ReasonPinSet {
+    pinned_clauses: Vec<ClauseRef>,
+    pinned_binaries: Vec<BinaryClauseId>,
+    generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReduceCand {
+    clause_idx: ClauseRef,
+    lbd: u16,
+    size: usize,
+    used_recently: u8,
+    activity_rank: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReasonCodeError {
+    InvalidTag,
+    ClauseOverflow,
+    BinaryOverflow,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReasonCode(usize);
+
+impl ReasonCode {
+    const TAG_SHIFT: usize = usize::BITS as usize - 2;
+    const TAG_MASK: usize = 0b11usize << Self::TAG_SHIFT;
+    const PAYLOAD_MASK: usize = !Self::TAG_MASK;
+    const CLAUSE_TAG: usize = 0usize << Self::TAG_SHIFT;
+    const BINARY_TAG: usize = 1usize << Self::TAG_SHIFT;
+    #[cfg(test)]
+    const INVALID_TAG: usize = 2usize << Self::TAG_SHIFT;
+    const NONE: Self = Self(usize::MAX);
+
+    fn from_ref(reason: ReasonRef) -> Result<Self, ReasonCodeError> {
+        match reason {
+            ReasonRef::None => Ok(Self::NONE),
+            ReasonRef::Clause(clause_idx) => {
+                if clause_idx > Self::PAYLOAD_MASK {
+                    Err(ReasonCodeError::ClauseOverflow)
+                } else {
+                    Ok(Self(Self::CLAUSE_TAG | clause_idx))
+                }
+            }
+            ReasonRef::Binary(binary_id) => {
+                let payload = binary_id.0 as usize;
+                if payload > Self::PAYLOAD_MASK {
+                    Err(ReasonCodeError::BinaryOverflow)
+                } else {
+                    Ok(Self(Self::BINARY_TAG | payload))
+                }
+            }
+        }
+    }
+
+    fn as_ref(self) -> Result<ReasonRef, ReasonCodeError> {
+        if self == Self::NONE {
+            return Ok(ReasonRef::None);
+        }
+        let payload = self.0 & Self::PAYLOAD_MASK;
+        match self.0 & Self::TAG_MASK {
+            Self::CLAUSE_TAG => Ok(ReasonRef::Clause(payload)),
+            Self::BINARY_TAG => {
+                let payload =
+                    u32::try_from(payload).map_err(|_| ReasonCodeError::BinaryOverflow)?;
+                Ok(ReasonRef::Binary(BinaryClauseId(payload)))
+            }
+            _ => Err(ReasonCodeError::InvalidTag),
+        }
+    }
+
+    fn as_ref_unchecked(self) -> ReasonRef {
+        self.as_ref().expect("invalid encoded reason")
+    }
+
+    fn is_none(self) -> bool {
+        self == Self::NONE
+    }
+
+    #[cfg(test)]
+    fn from_raw(raw: usize) -> Self {
+        Self(raw)
+    }
+}
+
+const NO_REASON: ReasonCode = ReasonCode::NONE;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Watcher {
@@ -339,8 +651,6 @@ struct Solver {
     clauses_sorted_by_var: bool,
     /// live learned-clause ids, mirroring MiniSat's dedicated `learnts` vector
     learned_clause_ids: Vec<usize>,
-    /// thin-slice LBD side table keyed by arena clause offset; stores LBD + 1 so 0 means absent
-    learned_lbd: Vec<u32>,
     /// clauses currently watching each literal, with blocker fast path
     watchers: Vec<Vec<Watcher>>,
     /// scratch buffer reused when rebuilding a watch list during propagation
@@ -352,8 +662,14 @@ struct Solver {
     saved_phase: Vec<u8>,
     /// decision level of each variable assignment
     decision_level: Vec<usize>,
-    /// reason clause index for each implied assignment; NO_REASON for decisions/root-unassigned vars
-    reason: Vec<usize>,
+    /// encoded reason for each implied assignment; NONE for decisions/root-unassigned vars
+    reason: Vec<ReasonCode>,
+    /// binary reason literals used by the future binary implication fast path
+    binary_reason_lits: Vec<[i32; 2]>,
+    /// controls whether the current propagation/accounting path mutates normal search counters
+    accounting_mode: SearchAccountingMode,
+    /// counters for temporary assumptions, kept separate from normal search stats
+    temporary_stats: TemporaryAssumptionStats,
     /// assigned literals in chronological order
     trail: Vec<i32>,
     /// number of level-0 assignments that must survive backtrack(0)
@@ -392,6 +708,10 @@ struct Solver {
     restart_pending: bool,
     /// learned-clause budget threshold for running a database reduction pass
     reduce_db_limit: usize,
+    /// target learned-literal budget for LBD-tiered reduction
+    learned_lit_budget: usize,
+    /// hard learned-literal budget that allows emergency low-LBD demotion
+    hard_learned_lit_budget: usize,
     /// resize learned-clause budget after preprocessing, matching MiniSat's solve-time setup
     reset_reduce_db_after_preprocess: bool,
     /// current conflict countdown until the next learned-budget adjustment
@@ -465,6 +785,28 @@ struct Solver {
     use_resolved_conflict_analysis: bool,
     /// early Section 0 LBD instrumentation slice; default off and policy-neutral
     use_lbd: bool,
+    /// opt-in reason-side LBD improvement; default off until LBD-tiered reduction is stable
+    update_reason_lbd: bool,
+    /// learned-clause reduction policy selected by validated configuration
+    reduce_policy: ReducePolicy,
+    /// stable learned-clause metadata, keyed by LearnedId rather than moving arena offsets
+    learned_meta: Vec<LearnedMeta>,
+    /// current arena clause reference for each stable learned id
+    learned_clause_by_id: Vec<ClauseRef>,
+    /// arena-offset to stable LearnedId map; stores id + 1 so 0 means absent
+    learned_id_by_clause: Vec<u32>,
+    /// scratch stamps used for allocation-free LBD/glue computation
+    lbd_seen: Vec<u32>,
+    lbd_stamp: u32,
+    last_conflict_lbd: u16,
+    sum_lbd: u64,
+    num_lbd: u64,
+    lbd_hist_1: u64,
+    lbd_hist_2: u64,
+    lbd_hist_3_5: u64,
+    lbd_hist_6_10: u64,
+    lbd_hist_gt_10: u64,
+    reason_pin_generation: u64,
     /// opt-in hot-path watcher diagnostics; default off for solver-10 parity
     hot_stats: bool,
     stats: SolverStats,
@@ -597,22 +939,77 @@ fn clause_contains_var_in_arena(arena: &[u32], clause_idx: usize, var: usize) ->
     false
 }
 
+#[derive(Clone, Copy)]
+struct ReasonExpansionContext<'a> {
+    arena: &'a [u32],
+    binary_reasons: &'a [[i32; 2]],
+}
+
+fn reason_len_in_arena(reasons: ReasonExpansionContext<'_>, reason_ref: ReasonRef) -> usize {
+    match reason_ref {
+        ReasonRef::None => 0,
+        ReasonRef::Clause(clause_idx) => clause_len_in_arena(reasons.arena, clause_idx),
+        ReasonRef::Binary(binary_id) => {
+            debug_assert!(
+                (binary_id.0 as usize) < reasons.binary_reasons.len(),
+                "invalid binary reason id {:?}",
+                binary_id
+            );
+            2
+        }
+    }
+}
+
+fn reason_lit_in_arena(
+    reasons: ReasonExpansionContext<'_>,
+    reason_ref: ReasonRef,
+    lit_pos: usize,
+) -> i32 {
+    match reason_ref {
+        ReasonRef::None => panic!("attempted to read literal from empty reason"),
+        ReasonRef::Clause(clause_idx) => clause_lit_in_arena(reasons.arena, clause_idx, lit_pos),
+        ReasonRef::Binary(binary_id) => {
+            let lits = reasons
+                .binary_reasons
+                .get(binary_id.0 as usize)
+                .expect("invalid binary reason id");
+            lits[lit_pos]
+        }
+    }
+}
+
+fn rewrite_reason_ref(
+    reason_ref: ReasonRef,
+    reloc: &[ClauseRef],
+    removed_clause_message: &str,
+) -> Result<ReasonCode, ReasonCodeError> {
+    match reason_ref {
+        ReasonRef::None => ReasonCode::from_ref(ReasonRef::None),
+        ReasonRef::Clause(clause_idx) => {
+            let new_idx = reloc.get(clause_idx).copied().unwrap_or(NO_CLAUSE_REF);
+            debug_assert_ne!(new_idx, NO_CLAUSE_REF, "{removed_clause_message}");
+            ReasonCode::from_ref(ReasonRef::Clause(new_idx))
+        }
+        ReasonRef::Binary(binary_id) => ReasonCode::from_ref(ReasonRef::Binary(binary_id)),
+    }
+}
+
 fn basic_lit_redundant(
     lit: i32,
-    arena: &[u32],
+    reasons: ReasonExpansionContext<'_>,
     decision_level: &[usize],
-    reason: &[usize],
+    reason: &[ReasonCode],
     state: &[u8],
 ) -> bool {
     let var = lit.unsigned_abs() as usize;
-    let reason_idx = reason[var];
-    if reason_idx == NO_REASON {
+    let reason_ref = reason[var].as_ref_unchecked();
+    let (ReasonRef::Clause(_) | ReasonRef::Binary(_)) = reason_ref else {
         return false;
-    }
+    };
 
-    let clause_len = clause_len_in_arena(arena, reason_idx);
+    let clause_len = reason_len_in_arena(reasons, reason_ref);
     for lit_pos in 1..clause_len {
-        let q = clause_lit_in_arena(arena, reason_idx, lit_pos);
+        let q = reason_lit_in_arena(reasons, reason_ref, lit_pos);
         let q_var = q.unsigned_abs() as usize;
         if decision_level[q_var] == 0 {
             continue;
@@ -627,9 +1024,9 @@ fn basic_lit_redundant(
 
 fn lit_redundant(
     lit: i32,
-    arena: &[u32],
+    reasons: ReasonExpansionContext<'_>,
     decision_level: &[usize],
-    reason: &[usize],
+    reason: &[ReasonCode],
     state: &mut [u8],
     toclear: &mut Vec<usize>,
     stack: &mut Vec<(usize, i32)>,
@@ -639,16 +1036,16 @@ fn lit_redundant(
         let var = lit.unsigned_abs() as usize;
         state[var] == REDUNDANT_UNDEF || state[var] == REDUNDANT_SOURCE
     });
-    debug_assert!(reason[lit.unsigned_abs() as usize] != NO_REASON);
+    debug_assert!(!reason[lit.unsigned_abs() as usize].is_none());
 
     stack.clear();
-    let mut clause_idx = reason[lit.unsigned_abs() as usize];
+    let mut reason_ref = reason[lit.unsigned_abs() as usize].as_ref_unchecked();
     let mut lit_pos = 1usize;
 
     loop {
-        let clause_len = clause_len_in_arena(arena, clause_idx);
+        let clause_len = reason_len_in_arena(reasons, reason_ref);
         if lit_pos < clause_len {
-            let parent = clause_lit_in_arena(arena, clause_idx, lit_pos);
+            let parent = reason_lit_in_arena(reasons, reason_ref, lit_pos);
             if parent == lit {
                 lit_pos += 1;
                 continue;
@@ -664,7 +1061,7 @@ fn lit_redundant(
                 continue;
             }
 
-            if reason[parent_var] == NO_REASON || state[parent_var] == REDUNDANT_FAILED {
+            if reason[parent_var].is_none() || state[parent_var] == REDUNDANT_FAILED {
                 let lit_var = lit.unsigned_abs() as usize;
                 if state[lit_var] == REDUNDANT_UNDEF {
                     state[lit_var] = REDUNDANT_FAILED;
@@ -687,7 +1084,7 @@ fn lit_redundant(
                 "redundancy DFS exceeded variable count while checking literal {lit}"
             );
             lit = parent;
-            clause_idx = reason[parent_var];
+            reason_ref = reason[parent_var].as_ref_unchecked();
             lit_pos = 1;
             continue;
         }
@@ -700,26 +1097,12 @@ fn lit_redundant(
 
         if let Some((resume_pos, resume_lit)) = stack.pop() {
             lit = resume_lit;
-            clause_idx = reason[lit.unsigned_abs() as usize];
+            reason_ref = reason[lit.unsigned_abs() as usize].as_ref_unchecked();
             lit_pos = resume_pos + 1;
         } else {
             return true;
         }
     }
-}
-
-fn compute_lbd_from_lits(clause: &[i32], decision_level: &[usize]) -> u32 {
-    if clause.is_empty() {
-        return 0;
-    }
-    let mut levels = Vec::with_capacity(clause.len());
-    for &lit in clause {
-        let var = lit.unsigned_abs() as usize;
-        levels.push(decision_level.get(var).copied().unwrap_or(0));
-    }
-    levels.sort_unstable();
-    levels.dedup();
-    levels.len() as u32
 }
 
 fn ccmin_mode_from_config(mode: ClauseMinMode) -> u8 {
@@ -776,13 +1159,18 @@ impl Solver {
             inline_original_abstractions: false,
             clauses_sorted_by_var: initial_clause_mode == InitialClauseMode::CanonicalSorted,
             learned_clause_ids: Vec::new(),
-            learned_lbd: Vec::new(),
+            learned_meta: Vec::new(),
+            learned_clause_by_id: Vec::new(),
+            learned_id_by_clause: Vec::new(),
             watchers: vec![Vec::new(); num_vars.saturating_mul(2)],
             watch_scratch: Vec::new(),
             assignment: vec![UNASSIGNED; num_vars + 1],
             saved_phase: vec![default_phase; num_vars + 1],
             decision_level: vec![0; num_vars + 1],
             reason: vec![NO_REASON; num_vars + 1],
+            binary_reason_lits: Vec::new(),
+            accounting_mode: SearchAccountingMode::NormalSearch,
+            temporary_stats: TemporaryAssumptionStats::default(),
             trail: Vec::with_capacity(num_vars),
             root_trail_len: 0,
             trail_limits: Vec::new(),
@@ -802,6 +1190,8 @@ impl Solver {
             restart_conflict_limit: 100,
             restart_pending: false,
             reduce_db_limit: ((original_clause_count as f64) * LEARNTSIZE_FACTOR) as usize,
+            learned_lit_budget: LEARNED_LIT_BUDGET_BASE,
+            hard_learned_lit_budget: LEARNED_LIT_BUDGET_BASE.saturating_mul(2),
             reset_reduce_db_after_preprocess: true,
             learntsize_adjust_cnt: LEARNTSIZE_ADJUST_START_CONFL,
             learntsize_adjust_confl: LEARNTSIZE_ADJUST_START_CONFL as f64,
@@ -842,6 +1232,19 @@ impl Solver {
             ccmin_mode: ccmin_mode_from_config(config.clause_min_mode),
             use_resolved_conflict_analysis: config.use_resolved_conflict_analysis,
             use_lbd: config.use_lbd,
+            update_reason_lbd: config.update_reason_lbd,
+            reduce_policy: config.reduce_policy,
+            lbd_seen: vec![0; num_vars + 1],
+            lbd_stamp: 0,
+            last_conflict_lbd: 0,
+            sum_lbd: 0,
+            num_lbd: 0,
+            lbd_hist_1: 0,
+            lbd_hist_2: 0,
+            lbd_hist_3_5: 0,
+            lbd_hist_6_10: 0,
+            lbd_hist_gt_10: 0,
+            reason_pin_generation: 0,
             hot_stats: config.hot_stats,
             stats: SolverStats::default(),
         };
@@ -857,6 +1260,7 @@ impl Solver {
             solver.learntsize_adjust_cnt = interval;
             solver.learntsize_adjust_confl = interval as f64;
         }
+        solver.refresh_learned_lit_budgets();
         if let Some(limit) = config.subsumption_limit {
             solver.subsumption_lim = limit;
         }
@@ -965,38 +1369,239 @@ impl Solver {
         clause_idx + 1 + self.clause_len(clause_idx)
     }
 
-    fn set_learned_clause_lbd(&mut self, clause_idx: usize, lbd: u32) {
-        if self.learned_lbd.len() <= clause_idx {
-            self.learned_lbd.resize(clause_idx + 1, 0);
+    #[inline]
+    fn compute_lbd_from_lits(&mut self, lits: &[i32]) -> u16 {
+        if lits.is_empty() {
+            return 0;
         }
-        self.learned_lbd[clause_idx] = lbd.saturating_add(1);
+
+        self.lbd_stamp = self.lbd_stamp.wrapping_add(1);
+        if self.lbd_stamp == 0 {
+            self.lbd_seen.fill(0);
+            self.lbd_stamp = 1;
+        }
+
+        let mut count = 0u32;
+        for &lit in lits {
+            let var = lit.unsigned_abs() as usize;
+            let level = self.decision_level.get(var).copied().unwrap_or(0);
+            if level >= self.lbd_seen.len() {
+                self.lbd_seen.resize(level + 1, 0);
+            }
+            if self.lbd_seen[level] != self.lbd_stamp {
+                self.lbd_seen[level] = self.lbd_stamp;
+                count += 1;
+            }
+        }
+        count.min(u16::MAX as u32) as u16
+    }
+
+    fn record_lbd_measurement(&mut self, lbd: u16) {
+        self.sum_lbd += u64::from(lbd);
+        self.num_lbd += 1;
+        match lbd {
+            1 => self.lbd_hist_1 += 1,
+            2 => self.lbd_hist_2 += 1,
+            3..=5 => self.lbd_hist_3_5 += 1,
+            6..=10 => self.lbd_hist_6_10 += 1,
+            _ => self.lbd_hist_gt_10 += 1,
+        }
+        self.stats.record_lbd(u32::from(lbd));
+    }
+
+    fn compute_lbd_for_clause(&mut self, clause_idx: ClauseRef) -> u16 {
+        let lits = self.clause_slice(clause_idx).to_vec();
+        self.compute_lbd_from_lits(&lits)
+    }
+
+    fn ensure_learned_id_map_len(&mut self, clause_idx: ClauseRef) {
+        if self.learned_id_by_clause.len() <= clause_idx {
+            self.learned_id_by_clause.resize(clause_idx + 1, 0);
+        }
+    }
+
+    fn allocate_learned_id(&mut self, clause_idx: ClauseRef) -> LearnedId {
+        let id = LearnedId(
+            self.learned_meta
+                .len()
+                .try_into()
+                .expect("too many learned clauses for stable LearnedId"),
+        );
+        self.learned_meta.push(LearnedMeta::default());
+        self.learned_clause_by_id.push(clause_idx);
+        self.ensure_learned_id_map_len(clause_idx);
+        self.learned_id_by_clause[clause_idx] = id.0.saturating_add(1);
+        id
+    }
+
+    fn try_learned_id_for_clause(&self, clause_idx: ClauseRef) -> Option<LearnedId> {
+        let encoded = self.learned_id_by_clause.get(clause_idx).copied()?;
+        if encoded == 0 {
+            return None;
+        }
+        Some(LearnedId(encoded - 1))
+    }
+
+    fn learned_id_for_clause(&self, clause_idx: ClauseRef) -> LearnedId {
+        self.try_learned_id_for_clause(clause_idx)
+            .expect("learned clause is missing stable metadata id")
+    }
+
+    fn learned_meta(&self, clause_idx: ClauseRef) -> Option<LearnedMeta> {
+        let id = self.try_learned_id_for_clause(clause_idx)?;
+        self.learned_meta.get(id.0 as usize).copied()
+    }
+
+    fn learned_meta_mut_by_id(&mut self, id: LearnedId) -> &mut LearnedMeta {
+        &mut self.learned_meta[id.0 as usize]
+    }
+
+    fn set_learnt_lbd(&mut self, clause_idx: ClauseRef, lbd: u16) {
+        let id = self.learned_id_for_clause(clause_idx);
+        self.learned_meta_mut_by_id(id).lbd = lbd;
+    }
+
+    fn initialize_learnt_lbd(&mut self, clause_idx: ClauseRef, lbd: u16) {
+        self.set_learnt_lbd(clause_idx, lbd);
+        self.classify_learnt_clause(clause_idx);
+        let used_recently = if lbd <= TIER2_MAX_GLUE {
+            MAX_USED_RECENTLY
+        } else {
+            1
+        };
+        self.set_learnt_used_recently(clause_idx, used_recently);
+        let id = self.learned_id_for_clause(clause_idx);
+        self.learned_meta_mut_by_id(id).created_at_conflict = self.stats.conflicts;
+    }
+
+    fn learnt_lbd(&self, clause_idx: ClauseRef) -> u16 {
+        self.learned_meta(clause_idx)
+            .map(|meta| meta.lbd)
+            .expect("learned clause is missing LBD metadata")
+    }
+
+    fn maybe_improve_lbd(&mut self, clause_idx: ClauseRef, new_lbd: u16) {
+        if !self.use_lbd || clause_idx >= self.arena.len() {
+            return;
+        }
+        if !self.clause_is_learnt(clause_idx) || self.clause_is_deleted(clause_idx) {
+            return;
+        }
+        let old_lbd = self.learnt_lbd(clause_idx);
+        if new_lbd < old_lbd {
+            self.set_learnt_lbd(clause_idx, new_lbd);
+            self.classify_learnt_clause(clause_idx);
+            self.stats.lbd_improved += 1;
+        }
     }
 
     #[cfg(test)]
-    fn learned_clause_lbd(&self, clause_idx: usize) -> Option<u32> {
-        self.learned_lbd
-            .get(clause_idx)
-            .copied()
-            .filter(|&stored_lbd| stored_lbd != 0)
-            .map(|stored_lbd| stored_lbd - 1)
+    fn learned_clause_lbd(&self, clause_idx: ClauseRef) -> Option<u16> {
+        self.learned_meta(clause_idx).map(|meta| meta.lbd)
     }
 
-    fn remap_learned_lbd_side_table(&mut self, reloc: &[usize], new_arena_len: usize) {
-        if self.learned_lbd.is_empty() {
+    fn set_learnt_tier(&mut self, clause_idx: ClauseRef, tier: u8) {
+        let id = self.learned_id_for_clause(clause_idx);
+        self.learned_meta_mut_by_id(id).tier = tier;
+    }
+
+    fn classify_learnt_clause(&mut self, clause_idx: ClauseRef) {
+        let lbd = self.learnt_lbd(clause_idx);
+        let tier = if lbd <= TIER1_MAX_GLUE {
+            0
+        } else if lbd <= TIER2_MAX_GLUE {
+            1
+        } else {
+            2
+        };
+        self.set_learnt_tier(clause_idx, tier);
+    }
+
+    fn learnt_used_recently(&self, clause_idx: ClauseRef) -> u8 {
+        self.learned_meta(clause_idx)
+            .map(|meta| meta.used_recently)
+            .expect("learned clause is missing used_recently metadata")
+    }
+
+    fn set_learnt_used_recently(&mut self, clause_idx: ClauseRef, value: u8) {
+        let id = self.learned_id_for_clause(clause_idx);
+        self.learned_meta_mut_by_id(id).used_recently = value;
+    }
+
+    fn mark_learned_clause_recent(&mut self, clause_idx: ClauseRef) {
+        if !self.use_lbd
+            || clause_idx >= self.arena.len()
+            || !self.clause_is_learnt(clause_idx)
+            || self.clause_is_deleted(clause_idx)
+        {
             return;
         }
-        let old_lbd = std::mem::take(&mut self.learned_lbd);
-        self.learned_lbd.resize(new_arena_len, 0);
-        for (old_clause_idx, lbd) in old_lbd.into_iter().enumerate() {
-            if lbd == 0 || old_clause_idx >= reloc.len() {
+        let recent = self.learnt_used_recently(clause_idx).max(1);
+        self.set_learnt_used_recently(clause_idx, recent);
+    }
+
+    fn rebuild_reason_pinset(&mut self) -> ReasonPinSet {
+        self.reason_pin_generation = self.reason_pin_generation.wrapping_add(1).max(1);
+        let mut pinned_clauses = Vec::new();
+        let mut pinned_binaries = Vec::new();
+        for &reason in &self.reason {
+            match reason.as_ref_unchecked() {
+                ReasonRef::Clause(clause_idx) => pinned_clauses.push(clause_idx),
+                ReasonRef::Binary(binary_id) => pinned_binaries.push(binary_id),
+                ReasonRef::None => {}
+            }
+        }
+        pinned_clauses.sort_unstable();
+        pinned_clauses.dedup();
+        pinned_binaries.sort_unstable_by_key(|binary_id| binary_id.0);
+        pinned_binaries.dedup_by_key(|binary_id| binary_id.0);
+        ReasonPinSet {
+            pinned_clauses,
+            pinned_binaries,
+            generation: self.reason_pin_generation,
+        }
+    }
+
+    fn clause_is_reason_pinned(&self, pins: &ReasonPinSet, clause_idx: ClauseRef) -> bool {
+        pins.pinned_clauses.binary_search(&clause_idx).is_ok()
+    }
+
+    #[allow(dead_code)]
+    fn binary_is_reason_pinned(&self, pins: &ReasonPinSet, binary_id: BinaryClauseId) -> bool {
+        pins.pinned_binaries
+            .binary_search_by_key(&binary_id.0, |pinned| pinned.0)
+            .is_ok()
+    }
+
+    fn clear_learned_clause_metadata_ref(&mut self, clause_idx: ClauseRef) {
+        let Some(id) = self.try_learned_id_for_clause(clause_idx) else {
+            return;
+        };
+        self.learned_clause_by_id[id.0 as usize] = NO_CLAUSE_REF;
+        if clause_idx < self.learned_id_by_clause.len() {
+            self.learned_id_by_clause[clause_idx] = 0;
+        }
+    }
+
+    fn remap_learned_metadata_clause_refs(&mut self, reloc: &[usize], new_arena_len: usize) {
+        if self.learned_clause_by_id.is_empty() {
+            return;
+        }
+        self.learned_id_by_clause.clear();
+        self.learned_id_by_clause.resize(new_arena_len, 0);
+        for id_idx in 0..self.learned_clause_by_id.len() {
+            let old_clause_idx = self.learned_clause_by_id[id_idx];
+            if old_clause_idx == NO_CLAUSE_REF || old_clause_idx >= reloc.len() {
+                self.learned_clause_by_id[id_idx] = NO_CLAUSE_REF;
                 continue;
             }
             let new_clause_idx = reloc[old_clause_idx];
-            if new_clause_idx != NO_REASON {
-                if self.learned_lbd.len() <= new_clause_idx {
-                    self.learned_lbd.resize(new_clause_idx + 1, 0);
-                }
-                self.learned_lbd[new_clause_idx] = lbd;
+            if new_clause_idx != NO_CLAUSE_REF {
+                self.learned_clause_by_id[id_idx] = new_clause_idx;
+                self.learned_id_by_clause[new_clause_idx] =
+                    u32::try_from(id_idx + 1).expect("too many learned ids for metadata map");
+            } else {
+                self.learned_clause_by_id[id_idx] = NO_CLAUSE_REF;
             }
         }
     }
@@ -1096,7 +1701,7 @@ impl Solver {
             return;
         }
 
-        let mut reloc = vec![NO_REASON; self.arena.len()];
+        let mut reloc = vec![NO_CLAUSE_REF; self.arena.len()];
         let original_live_word_count: usize = self
             .original_clause_ids
             .iter()
@@ -1174,7 +1779,7 @@ impl Solver {
                     continue;
                 }
                 let new_idx = reloc[old_idx];
-                if new_idx == NO_REASON {
+                if new_idx == NO_CLAUSE_REF {
                     continue;
                 }
                 watcher.clause_idx = new_idx as u32;
@@ -1192,7 +1797,7 @@ impl Solver {
                 continue;
             }
             let new_idx = reloc[old_idx];
-            if new_idx == NO_REASON {
+            if new_idx == NO_CLAUSE_REF {
                 continue;
             }
             watcher.clause_idx = new_idx as u32;
@@ -1201,16 +1806,13 @@ impl Solver {
         }
         self.watch_scratch.truncate(watch_scratch_write);
 
-        for reason_idx in &mut self.reason {
-            if *reason_idx == NO_REASON {
-                continue;
-            }
-            let new_idx = reloc[*reason_idx];
-            debug_assert_ne!(
-                new_idx, NO_REASON,
-                "inline abstraction migration removed a live reason clause"
-            );
-            *reason_idx = new_idx;
+        for reason_code in &mut self.reason {
+            *reason_code = rewrite_reason_ref(
+                reason_code.as_ref_unchecked(),
+                &reloc,
+                "inline abstraction migration removed a live reason clause",
+            )
+            .expect("reason rewrite failed during inline abstraction migration");
         }
 
         let mut root_write = 0usize;
@@ -1220,7 +1822,7 @@ impl Solver {
                 continue;
             }
             let new_idx = reloc[old_idx];
-            if new_idx == NO_REASON {
+            if new_idx == NO_CLAUSE_REF {
                 continue;
             }
             self.root_unit_clauses[root_write] = new_idx;
@@ -1229,7 +1831,7 @@ impl Solver {
         self.root_unit_clauses.truncate(root_write);
 
         let new_arena_len = new_arena.len();
-        self.remap_learned_lbd_side_table(&reloc, new_arena_len);
+        self.remap_learned_metadata_clause_refs(&reloc, new_arena_len);
         self.arena = new_arena;
         self.original_clause_ids = new_original_clause_ids;
         self.learned_clause_ids = new_learned_clause_ids;
@@ -1303,12 +1905,13 @@ impl Solver {
         if self.clause_locked(clause_idx) {
             let implied_lit = self.clause_lit(clause_idx, 0);
             let var = implied_lit.unsigned_abs() as usize;
-            self.reason[var] = NO_REASON;
+            self.set_reason_ref(var, ReasonRef::None);
         }
 
         let clause_len = self.clause_len(clause_idx);
         self.detach_clause(clause_idx);
         if self.clause_is_learnt(clause_idx) {
+            self.clear_learned_clause_metadata_ref(clause_idx);
             self.learned_literals -= clause_len;
         } else {
             self.original_literals -= clause_len;
@@ -1354,7 +1957,9 @@ impl Solver {
 
         let idx = self.branch_heap.len();
         self.branch_heap.push(var as u32);
-        self.stats.decision_heap_inserts += 1;
+        if self.accounting_mode.update_branch_stats() {
+            self.stats.decision_heap_inserts += 1;
+        }
         self.branch_pos[var] = idx;
         self.branch_heap_sift_up(idx);
     }
@@ -1462,7 +2067,9 @@ impl Solver {
         }
         let best_var = self.branch_heap[0] as usize;
         self.branch_heap_remove(best_var);
-        self.stats.decision_heap_pops += 1;
+        if self.accounting_mode.update_branch_stats() {
+            self.stats.decision_heap_pops += 1;
+        }
         Some(best_var)
     }
 
@@ -1549,18 +2156,138 @@ impl Solver {
     }
 
     #[inline(always)]
-    fn enqueue(&mut self, lit: i32, reason: usize) -> bool {
+    fn reason_ref(&self, var: usize) -> ReasonRef {
+        self.reason[var].as_ref_unchecked()
+    }
+
+    #[inline(always)]
+    fn set_reason_ref(&mut self, var: usize, reason: ReasonRef) {
+        self.reason[var] = ReasonCode::from_ref(reason).expect("reason encoding failed");
+    }
+
+    fn clause_used_as_reason(&self, clause_idx: ClauseRef) -> bool {
+        self.reason
+            .iter()
+            .any(|&reason| reason.as_ref_unchecked() == ReasonRef::Clause(clause_idx))
+    }
+
+    #[allow(dead_code)]
+    fn begin_temporary_assumptions(
+        &mut self,
+        opts: TemporaryAssumptionOptions,
+    ) -> TemporaryAssumptionGuard {
+        assert_eq!(
+            self.current_level(),
+            0,
+            "temporary assumptions must start at root level"
+        );
+        let guard = TemporaryAssumptionGuard {
+            start_trail: self.trail.len(),
+            start_level: self.current_level(),
+            start_root_trail_len: self.root_trail_len,
+            start_propagate_head: self.propagate_head,
+            saved_accounting_mode: self.accounting_mode,
+        };
+        self.accounting_mode = SearchAccountingMode::from_temporary_options(opts);
+        guard
+    }
+
+    #[allow(dead_code)]
+    fn end_temporary_assumptions(&mut self, guard: TemporaryAssumptionGuard) {
+        while self.trail.len() > guard.start_trail {
+            let lit = self.trail.pop().expect("temporary trail underflow");
+            let var = lit.unsigned_abs() as usize;
+            self.assignment[var] = UNASSIGNED;
+            self.decision_level[var] = 0;
+            self.set_reason_ref(var, ReasonRef::None);
+            self.push_branch_var(var);
+        }
+        self.trail_limits.truncate(guard.start_level);
+        self.root_trail_len = guard.start_root_trail_len;
+        self.propagate_head = guard.start_propagate_head;
+        self.accounting_mode = guard.saved_accounting_mode;
+        debug_assert_eq!(self.current_level(), guard.start_level);
+        debug_assert_eq!(self.trail.len(), guard.start_trail);
+        debug_assert_eq!(self.root_trail_len, guard.start_root_trail_len);
+        debug_assert_eq!(self.propagate_head, guard.start_propagate_head);
+    }
+
+    #[allow(dead_code)]
+    fn with_temporary_assumptions<R>(
+        &mut self,
+        opts: TemporaryAssumptionOptions,
+        f: impl FnOnce(&mut TemporaryAssumptionCtx<'_>) -> R,
+    ) -> R {
+        let guard = self.begin_temporary_assumptions(opts);
+        let result = {
+            let mut ctx = TemporaryAssumptionCtx { solver: self };
+            f(&mut ctx)
+        };
+        self.end_temporary_assumptions(guard);
+        result
+    }
+
+    #[cfg(test)]
+    fn reason_clause_for_test(&self, var: usize) -> ClauseRef {
+        match self.reason_ref(var) {
+            ReasonRef::Clause(clause_idx) => clause_idx,
+            other => panic!("expected clause reason for var {var}, got {other:?}"),
+        }
+    }
+
+    #[cfg(test)]
+    fn add_binary_reason_for_test(&mut self, lits: [i32; 2]) -> BinaryClauseId {
+        let id = BinaryClauseId(
+            self.binary_reason_lits
+                .len()
+                .try_into()
+                .expect("too many test binary reasons"),
+        );
+        self.binary_reason_lits.push(lits);
+        id
+    }
+
+    #[cfg(test)]
+    fn reason_lits_for_test(&self, reason: ReasonRef) -> Vec<i32> {
+        match reason {
+            ReasonRef::None => Vec::new(),
+            ReasonRef::Clause(clause_idx) => self.clause_slice(clause_idx).to_vec(),
+            ReasonRef::Binary(binary_id) => self.binary_reason_lits[binary_id.0 as usize].to_vec(),
+        }
+    }
+
+    #[cfg(test)]
+    fn conflict_lits_for_test(&self, conflict: Conflict) -> Vec<i32> {
+        match conflict {
+            Conflict::Clause(clause_idx) => self.clause_slice(clause_idx).to_vec(),
+            Conflict::Binary(binary_id) => self.binary_reason_lits[binary_id.0 as usize].to_vec(),
+            Conflict::RootUnit => Vec::new(),
+        }
+    }
+
+    fn record_propagation_accounting(&mut self) {
+        if self.accounting_mode.is_temporary() {
+            self.temporary_stats.propagations += 1;
+        } else {
+            self.stats.propagations += 1;
+        }
+    }
+
+    #[inline(always)]
+    fn enqueue(&mut self, lit: i32, reason: ReasonRef) -> bool {
         let var = lit.unsigned_abs() as usize;
         let target_value = if lit > 0 { TRUE } else { FALSE };
         let current = self.assignment[var];
         if current == UNASSIGNED {
             let current_level = self.current_level();
             self.assignment[var] = target_value;
-            self.saved_phase[var] = target_value;
+            if self.accounting_mode.update_phase() {
+                self.saved_phase[var] = target_value;
+            }
             self.decision_level[var] = current_level;
-            self.reason[var] = reason;
+            self.set_reason_ref(var, reason);
             self.trail.push(lit);
-            if current_level == 0 {
+            if current_level == 0 && !self.accounting_mode.is_temporary() {
                 self.root_trail_len += 1;
             }
             true
@@ -1573,14 +2300,14 @@ impl Solver {
         for idx in 0..self.root_unit_clauses.len() {
             let clause_idx = self.root_unit_clauses[idx];
             let lit = self.clause_slice(clause_idx)[0];
-            if !self.enqueue(lit, clause_idx) {
+            if !self.enqueue(lit, ReasonRef::Clause(clause_idx)) {
                 return false;
             }
         }
         true
     }
 
-    fn propagate(&mut self) -> Option<usize> {
+    fn propagate(&mut self) -> Option<Conflict> {
         if self.hot_stats {
             self.propagate_impl::<true>()
         } else {
@@ -1588,12 +2315,13 @@ impl Solver {
         }
     }
 
-    fn propagate_impl<const HOT_STATS: bool>(&mut self) -> Option<usize> {
+    fn propagate_impl<const HOT_STATS: bool>(&mut self) -> Option<Conflict> {
         let start_head = self.propagate_head;
+        let normal_search_accounting = !self.accounting_mode.is_temporary();
         while self.propagate_head < self.trail.len() {
             let false_lit = -self.trail[self.propagate_head];
             self.propagate_head += 1;
-            self.stats.propagations += 1;
+            self.record_propagation_accounting();
             let watch_idx = self.lit_index(false_lit);
             let mut pending = std::mem::take(&mut self.watchers[watch_idx]);
             let mut read = 0usize;
@@ -1602,18 +2330,18 @@ impl Solver {
             while read < pending.len() {
                 let watcher = pending[read];
                 read += 1;
-                if HOT_STATS {
+                if HOT_STATS && normal_search_accounting {
                     self.stats.watch_scans += 1;
                 }
                 let clause_idx = watcher.clause_idx as usize;
                 if clause_idx >= self.arena.len() {
-                    if HOT_STATS {
+                    if HOT_STATS && normal_search_accounting {
                         self.stats.watch_stale_skips += 1;
                     }
                     continue;
                 }
                 if self.lit_value(watcher.blocker) == TRUE {
-                    if HOT_STATS {
+                    if HOT_STATS && normal_search_accounting {
                         self.stats.watch_blocker_hits += 1;
                     }
                     pending[write] = watcher;
@@ -1621,12 +2349,12 @@ impl Solver {
                     continue;
                 }
                 if self.clause_is_deleted(clause_idx) {
-                    if HOT_STATS {
+                    if HOT_STATS && normal_search_accounting {
                         self.stats.watch_stale_skips += 1;
                     }
                     continue;
                 }
-                if HOT_STATS {
+                if HOT_STATS && normal_search_accounting {
                     self.stats.watch_clause_loads += 1;
                 }
                 let clause_len = self.clause_len(clause_idx);
@@ -1647,10 +2375,10 @@ impl Solver {
                             }
                             pending.truncate(write);
                             self.watchers[watch_idx] = pending;
-                            return Some(clause_idx);
+                            return Some(Conflict::Clause(clause_idx));
                         }
                         UNASSIGNED => {
-                            if !self.enqueue(unit_lit, clause_idx) {
+                            if !self.enqueue(unit_lit, ReasonRef::Clause(clause_idx)) {
                                 pending[write] = watcher;
                                 write += 1;
                                 while read < pending.len() {
@@ -1660,7 +2388,7 @@ impl Solver {
                                 }
                                 pending.truncate(write);
                                 self.watchers[watch_idx] = pending;
-                                return Some(clause_idx);
+                                return Some(Conflict::Clause(clause_idx));
                             }
                             pending[write] = watcher;
                             write += 1;
@@ -1707,7 +2435,7 @@ impl Solver {
 
                 pending[write] = updated_watcher;
                 write += 1;
-                if self.lit_value(first) == FALSE || !self.enqueue(first, clause_idx) {
+                if self.lit_value(first) == FALSE {
                     while read < pending.len() {
                         pending[write] = pending[read];
                         write += 1;
@@ -1715,14 +2443,24 @@ impl Solver {
                     }
                     pending.truncate(write);
                     self.watchers[watch_idx] = pending;
-                    return Some(clause_idx);
+                    return Some(Conflict::Clause(clause_idx));
+                }
+                if !self.enqueue(first, ReasonRef::Clause(clause_idx)) {
+                    while read < pending.len() {
+                        pending[write] = pending[read];
+                        write += 1;
+                        read += 1;
+                    }
+                    pending.truncate(write);
+                    self.watchers[watch_idx] = pending;
+                    return Some(Conflict::Clause(clause_idx));
                 }
                 if clause_len == 2 {
-                    if HOT_STATS {
+                    if HOT_STATS && normal_search_accounting {
                         self.stats.binary_props += 1;
                     }
                 } else {
-                    if HOT_STATS {
+                    if HOT_STATS && normal_search_accounting {
                         self.stats.long_props += 1;
                     }
                 }
@@ -1732,7 +2470,9 @@ impl Solver {
             self.watchers[watch_idx] = pending;
         }
 
-        self.simplify_props_remaining -= (self.propagate_head - start_head) as i64;
+        if normal_search_accounting {
+            self.simplify_props_remaining -= (self.propagate_head - start_head) as i64;
+        }
 
         None
     }
@@ -1744,7 +2484,7 @@ impl Solver {
         self.stats.max_decision_level = self.stats.max_decision_level.max(level);
         self.stats.phase_initial_used += 1;
         self.trail_limits.push(self.trail.len());
-        let inserted = self.enqueue(lit, NO_REASON);
+        let inserted = self.enqueue(lit, ReasonRef::None);
         debug_assert!(inserted, "decision literal must be unassigned");
     }
 
@@ -1814,6 +2554,9 @@ impl Solver {
     }
 
     fn note_conflict(&mut self) {
+        if !self.accounting_mode.update_restart_stats() {
+            return;
+        }
         if self.restart_pending {
             return;
         }
@@ -1835,7 +2578,9 @@ impl Solver {
     fn pick_branch_lit(&mut self) -> Option<i32> {
         while let Some(var) = self.branch_heap_pop_best() {
             if !self.decision_var[var] || self.assignment[var] != UNASSIGNED {
-                self.stats.decision_heap_stale_pops += 1;
+                if self.accounting_mode.update_branch_stats() {
+                    self.stats.decision_heap_stale_pops += 1;
+                }
                 continue;
             }
 
@@ -1866,7 +2611,7 @@ impl Solver {
             let var = lit.unsigned_abs() as usize;
             self.assignment[var] = UNASSIGNED;
             self.decision_level[var] = 0;
-            self.reason[var] = NO_REASON;
+            self.set_reason_ref(var, ReasonRef::None);
             self.push_branch_var(var);
         }
 
@@ -1904,7 +2649,9 @@ impl Solver {
             return false;
         }
 
-        self.stats.restarts += 1;
+        if self.accounting_mode.update_restart_stats() {
+            self.stats.restarts += 1;
+        }
         self.backtrack(0);
         true
     }
@@ -1946,7 +2693,24 @@ impl Solver {
         self.add_clause_from_slice(&clause)
     }
 
+    #[allow(dead_code)]
     fn add_clause_from_slice(&mut self, clause: &[i32]) -> usize {
+        if !self.use_lbd {
+            return self.add_clause_from_slice_plain(clause);
+        }
+        let lbd = self.compute_lbd_from_lits(clause);
+        self.record_lbd_measurement(lbd);
+        self.add_clause_from_slice_with_lbd(clause, lbd)
+    }
+
+    fn add_analyzed_clause_from_slice(&mut self, clause: &[i32]) -> usize {
+        if !self.use_lbd {
+            return self.add_clause_from_slice_plain(clause);
+        }
+        self.add_clause_from_slice_with_lbd(clause, self.last_conflict_lbd)
+    }
+
+    fn add_clause_from_slice_plain(&mut self, clause: &[i32]) -> usize {
         let clause_idx = self.arena.len();
         let clause_len = clause.len();
         self.arena
@@ -1960,11 +2724,26 @@ impl Solver {
         self.learned_literals += clause_len;
         self.stats.learned_clauses += 1;
         self.stats.record_learned_size(clause_len);
-        if self.use_lbd {
-            let lbd = compute_lbd_from_lits(clause, &self.decision_level);
-            self.set_learned_clause_lbd(clause_idx, lbd);
-            self.stats.record_lbd(lbd);
-        }
+        self.attach_clause(clause_idx, false);
+        clause_idx
+    }
+
+    fn add_clause_from_slice_with_lbd(&mut self, clause: &[i32], lbd: u16) -> usize {
+        let clause_idx = self.arena.len();
+        let clause_len = clause.len();
+        self.arena
+            .push(clause_make_header(clause_len, true, true, 0, false));
+        self.arena.extend(clause.iter().copied().map(lit_to_word));
+        let activity_bits = 0.0f64.to_bits();
+        self.arena.push(activity_bits as u32);
+        self.arena.push((activity_bits >> 32) as u32);
+        self.allocate_learned_id(clause_idx);
+        self.learned_clause_ids.push(clause_idx);
+        self.live_learned_clause_count += 1;
+        self.learned_literals += clause_len;
+        self.stats.learned_clauses += 1;
+        self.stats.record_learned_size(clause_len);
+        self.initialize_learnt_lbd(clause_idx, lbd);
         self.attach_clause(clause_idx, false);
         clause_idx
     }
@@ -1975,11 +2754,41 @@ impl Solver {
         }
         let implied_lit = self.clause_lit(clause_idx, 0);
         let var = implied_lit.unsigned_abs() as usize;
-        self.lit_value(implied_lit) == TRUE && self.reason[var] == clause_idx
+        self.lit_value(implied_lit) == TRUE && self.reason_ref(var) == ReasonRef::Clause(clause_idx)
     }
 
     fn reduce_db_enabled(&self) -> bool {
         self.reduce_db_limit != usize::MAX
+    }
+
+    fn should_reduce_db(&self) -> bool {
+        if !self.reduce_db_enabled() {
+            return false;
+        }
+        let learned_clause_pressure = self
+            .live_learned_clause_count
+            .saturating_sub(self.trail.len())
+            >= self.reduce_db_limit;
+        if self.reduce_policy == ReducePolicy::LbdTiered {
+            learned_clause_pressure || self.learned_literals > self.learned_lit_budget
+        } else {
+            learned_clause_pressure
+        }
+    }
+
+    fn refresh_learned_lit_budgets(&mut self) {
+        if !self.reduce_db_enabled() {
+            self.learned_lit_budget = usize::MAX;
+            self.hard_learned_lit_budget = usize::MAX;
+            return;
+        }
+        let reduction_count = self.stats.reduce_db_calls as usize;
+        let schedule_budget = LEARNED_LIT_BUDGET_BASE.saturating_add(
+            LEARNED_LIT_BUDGET_FACTOR.saturating_mul((reduction_count as f64).sqrt() as usize),
+        );
+        let clause_budget = self.reduce_db_limit.max(1).saturating_mul(8);
+        self.learned_lit_budget = schedule_budget.max(clause_budget);
+        self.hard_learned_lit_budget = self.learned_lit_budget.saturating_mul(2);
     }
 
     fn reset_learned_budget_after_preprocess(&mut self) {
@@ -1991,6 +2800,7 @@ impl Solver {
             ((self.original_clause_ids.len() as f64) * LEARNTSIZE_FACTOR) as usize;
         self.learntsize_adjust_cnt = LEARNTSIZE_ADJUST_START_CONFL;
         self.learntsize_adjust_confl = LEARNTSIZE_ADJUST_START_CONFL as f64;
+        self.refresh_learned_lit_budgets();
     }
 
     fn note_learnt_budget_conflict(&mut self) {
@@ -2002,6 +2812,7 @@ impl Solver {
             self.learntsize_adjust_confl *= LEARNTSIZE_ADJUST_INC;
             self.learntsize_adjust_cnt = self.learntsize_adjust_confl as usize;
             self.reduce_db_limit = ((self.reduce_db_limit as f64) * LEARNTSIZE_INC) as usize;
+            self.refresh_learned_lit_budgets();
         }
     }
 
@@ -2043,7 +2854,7 @@ impl Solver {
             "clause {clause_idx} already deleted"
         );
         debug_assert!(
-            !self.reason.contains(&clause_idx),
+            !self.clause_used_as_reason(clause_idx),
             "cannot delete clause {clause_idx} while it is still a live reason"
         );
         let learned_pos = self
@@ -2055,6 +2866,7 @@ impl Solver {
         self.live_learned_clause_count = self.live_learned_clause_count.saturating_sub(1);
         self.learned_literals -= self.clause_len(clause_idx);
         self.deleted_clause_words += self.clause_word_len(clause_idx);
+        self.clear_learned_clause_metadata_ref(clause_idx);
         self.clause_set_deleted(clause_idx, true);
         self.stats.deleted_clauses += 1;
     }
@@ -2073,12 +2885,13 @@ impl Solver {
             "clause {clause_idx} already deleted"
         );
         debug_assert!(
-            !self.reason.contains(&clause_idx),
+            !self.clause_used_as_reason(clause_idx),
             "cannot delete clause {clause_idx} while it is still a live reason"
         );
         self.live_learned_clause_count = self.live_learned_clause_count.saturating_sub(1);
         self.learned_literals -= self.clause_len(clause_idx);
         self.deleted_clause_words += self.clause_word_len(clause_idx);
+        self.clear_learned_clause_metadata_ref(clause_idx);
         self.clause_set_deleted(clause_idx, true);
         self.stats.deleted_clauses += 1;
     }
@@ -2095,8 +2908,9 @@ impl Solver {
 
     fn garbage_collect(&mut self) {
         self.stats.garbage_collections += 1;
+        let pins = self.rebuild_reason_pinset();
         let strip_original_extra = !self.use_simplification;
-        let mut reloc = vec![NO_REASON; self.arena.len()];
+        let mut reloc = vec![NO_CLAUSE_REF; self.arena.len()];
         let live_clause_count = self.original_clause_ids.len() + self.learned_clause_ids.len();
         let original_live_word_count: usize = self
             .original_clause_ids
@@ -2186,7 +3000,7 @@ impl Solver {
             for read in 0..watch_list.len() {
                 let mut watcher = watch_list[read];
                 let new_idx = reloc[watcher.clause_idx as usize];
-                if new_idx == NO_REASON {
+                if new_idx == NO_CLAUSE_REF {
                     continue;
                 }
                 watcher.clause_idx = new_idx as u32;
@@ -2200,7 +3014,7 @@ impl Solver {
         for read in 0..self.watch_scratch.len() {
             let mut watcher = self.watch_scratch[read];
             let new_idx = reloc[watcher.clause_idx as usize];
-            if new_idx == NO_REASON {
+            if new_idx == NO_CLAUSE_REF {
                 continue;
             }
             watcher.clause_idx = new_idx as u32;
@@ -2209,22 +3023,25 @@ impl Solver {
         }
         self.watch_scratch.truncate(watch_scratch_write);
 
-        for reason_idx in &mut self.reason {
-            if *reason_idx == NO_REASON {
-                continue;
-            }
-            let new_idx = reloc[*reason_idx];
-            debug_assert_ne!(
-                new_idx, NO_REASON,
-                "garbage collection removed a clause that is still a live reason"
+        for reason_code in &mut self.reason {
+            *reason_code = rewrite_reason_ref(
+                reason_code.as_ref_unchecked(),
+                &reloc,
+                "garbage collection removed a clause that is still a live reason",
+            )
+            .expect("reason rewrite failed during garbage collection");
+        }
+        for &pinned_clause in &pins.pinned_clauses {
+            debug_assert!(
+                pinned_clause < reloc.len() && reloc[pinned_clause] != NO_CLAUSE_REF,
+                "garbage collection removed a reason-pinned clause"
             );
-            *reason_idx = new_idx;
         }
 
         let mut root_write = 0usize;
         for read in 0..self.root_unit_clauses.len() {
             let new_idx = reloc[self.root_unit_clauses[read]];
-            if new_idx == NO_REASON {
+            if new_idx == NO_CLAUSE_REF {
                 continue;
             }
             self.root_unit_clauses[root_write] = new_idx;
@@ -2233,7 +3050,7 @@ impl Solver {
         self.root_unit_clauses.truncate(root_write);
 
         let new_arena_len = new_arena.len();
-        self.remap_learned_lbd_side_table(&reloc, new_arena_len);
+        self.remap_learned_metadata_clause_refs(&reloc, new_arena_len);
         self.arena = new_arena;
         self.original_clause_ids = new_original_clause_ids;
         self.learned_clause_ids = new_learned_clause_ids;
@@ -2260,7 +3077,16 @@ impl Solver {
 
     fn reduce_db_with_proof(&mut self, proof_log: &mut ProofLog) {
         self.stats.reduce_db_calls += 1;
+        match self.reduce_policy {
+            ReducePolicy::LbdTiered => self.reduce_db_lbd_tiered(proof_log),
+            ReducePolicy::LegacyActivity | ReducePolicy::Activity => {
+                self.reduce_db_legacy_activity(proof_log)
+            }
+        }
+        self.refresh_learned_lit_budgets();
+    }
 
+    fn reduce_db_legacy_activity(&mut self, proof_log: &mut ProofLog) {
         let arena = &self.arena;
         self.learned_clause_ids.sort_unstable_by(|&lhs, &rhs| {
             let lhs_short = clause_len_in_arena(arena, lhs) <= 2;
@@ -2302,6 +3128,140 @@ impl Solver {
         self.maybe_garbage_collect();
     }
 
+    fn reduce_candidate_activity_rank(&self, clause_idx: ClauseRef) -> u32 {
+        (self.clause_activity(clause_idx).to_bits() >> 32) as u32
+    }
+
+    fn is_old_enough_for_emergency_demote(&self, meta: LearnedMeta) -> bool {
+        self.stats
+            .conflicts
+            .saturating_sub(meta.created_at_conflict)
+            >= EMERGENCY_TIER1_MIN_AGE_CONFLICTS
+    }
+
+    fn reduce_candidate(
+        &self,
+        clause_idx: ClauseRef,
+        pins: &ReasonPinSet,
+        emergency: bool,
+    ) -> Option<ReduceCand> {
+        if clause_idx >= self.arena.len()
+            || self.clause_is_deleted(clause_idx)
+            || !self.clause_is_learnt(clause_idx)
+            || self.clause_len(clause_idx) <= 2
+            || self.clause_locked(clause_idx)
+            || self.clause_is_reason_pinned(pins, clause_idx)
+        {
+            return None;
+        }
+
+        let meta = self.learned_meta(clause_idx)?;
+        if !meta.removable {
+            return None;
+        }
+
+        let over_budget = self.learned_literals > self.learned_lit_budget;
+        match meta.tier {
+            0 => {
+                if !emergency
+                    || meta.used_recently > 0
+                    || !self.is_old_enough_for_emergency_demote(meta)
+                {
+                    return None;
+                }
+            }
+            1 => {
+                if !over_budget || meta.used_recently > 0 {
+                    return None;
+                }
+            }
+            _ => {
+                if !over_budget || meta.used_recently > 0 {
+                    return None;
+                }
+            }
+        }
+
+        Some(ReduceCand {
+            clause_idx,
+            lbd: meta.lbd,
+            size: self.clause_len(clause_idx),
+            used_recently: meta.used_recently,
+            activity_rank: self.reduce_candidate_activity_rank(clause_idx),
+        })
+    }
+
+    fn reduce_db_lbd_tiered(&mut self, proof_log: &mut ProofLog) {
+        let pins = self.rebuild_reason_pinset();
+        debug_assert!(pins.generation > 0);
+        let emergency = self.learned_literals > self.hard_learned_lit_budget;
+        let mut candidates: Vec<_> = self
+            .learned_clause_ids
+            .iter()
+            .copied()
+            .filter_map(|clause_idx| self.reduce_candidate(clause_idx, &pins, emergency))
+            .collect();
+
+        candidates.sort_unstable_by(|lhs, rhs| {
+            rhs.lbd
+                .cmp(&lhs.lbd)
+                .then_with(|| rhs.size.cmp(&lhs.size))
+                .then_with(|| lhs.used_recently.cmp(&rhs.used_recently))
+                .then_with(|| lhs.activity_rank.cmp(&rhs.activity_rank))
+                .then_with(|| lhs.clause_idx.cmp(&rhs.clause_idx))
+        });
+
+        let mut projected_lits = self.learned_literals;
+        let mut delete_clause = vec![false; self.arena.len()];
+        for cand in candidates {
+            if projected_lits <= self.learned_lit_budget {
+                break;
+            }
+            delete_clause[cand.clause_idx] = true;
+            projected_lits = projected_lits.saturating_sub(cand.size);
+        }
+
+        let learned_clause_ids = std::mem::take(&mut self.learned_clause_ids);
+        for clause_idx in learned_clause_ids {
+            if clause_idx < delete_clause.len() && delete_clause[clause_idx] {
+                proof_log.record_deletion(self.clause_slice(clause_idx));
+                self.detach_clause(clause_idx);
+                self.mark_clause_deleted_already_unlinked(clause_idx);
+                self.stats.learned_collected += 1;
+            } else {
+                self.record_lbd_tier_kept(clause_idx, &pins);
+                self.learned_clause_ids.push(clause_idx);
+            }
+        }
+        self.live_learned_clause_count = self.learned_clause_ids.len();
+
+        self.maybe_garbage_collect();
+    }
+
+    fn record_lbd_tier_kept(&mut self, clause_idx: ClauseRef, pins: &ReasonPinSet) {
+        if clause_idx >= self.arena.len()
+            || self.clause_is_deleted(clause_idx)
+            || !self.clause_is_learnt(clause_idx)
+        {
+            return;
+        }
+        let Some(meta) = self.learned_meta(clause_idx) else {
+            return;
+        };
+        match meta.tier {
+            0 => self.stats.learned_kept_tier1 += 1,
+            1 => self.stats.learned_kept_tier2 += 1,
+            _ => self.stats.learned_kept_tier3 += 1,
+        }
+        if meta.tier >= 1
+            && meta.used_recently > 0
+            && !self.clause_locked(clause_idx)
+            && !self.clause_is_reason_pinned(pins, clause_idx)
+        {
+            self.set_learnt_used_recently(clause_idx, meta.used_recently - 1);
+        }
+    }
+
     fn minimize_learned_clause(&mut self, learned_clause: &mut Vec<i32>) {
         if self.ccmin_mode == CCMIN_NONE || learned_clause.len() <= 1 {
             return;
@@ -2324,16 +3284,28 @@ impl Solver {
         let arena = &self.arena;
         let decision_level = &self.decision_level;
         let reason = &self.reason;
+        let reason_context = ReasonExpansionContext {
+            arena,
+            binary_reasons: &self.binary_reason_lits,
+        };
         let mut write = 1usize;
         for read in 1..learned_clause.len() {
             let lit = learned_clause[read];
             let var = lit.unsigned_abs() as usize;
-            let keep = if reason[var] == NO_REASON {
+            let keep = if reason[var].is_none() {
                 true
             } else if self.ccmin_mode == CCMIN_BASIC {
-                !basic_lit_redundant(lit, arena, decision_level, reason, state)
+                !basic_lit_redundant(lit, reason_context, decision_level, reason, state)
             } else {
-                !lit_redundant(lit, arena, decision_level, reason, state, toclear, stack)
+                !lit_redundant(
+                    lit,
+                    reason_context,
+                    decision_level,
+                    reason,
+                    state,
+                    toclear,
+                    stack,
+                )
             };
             if keep {
                 learned_clause[write] = lit;
@@ -2385,19 +3357,120 @@ impl Solver {
         }
     }
 
-    fn analyze_conflict_to_scratch(&mut self, conflict_clause_idx: usize) -> usize {
+    fn mark_binary_literals_for_analysis(
+        &mut self,
+        binary_id: BinaryClauseId,
+        start_lit_pos: usize,
+        current_level: usize,
+        current_level_count: &mut usize,
+    ) {
+        let lits = *self
+            .binary_reason_lits
+            .get(binary_id.0 as usize)
+            .expect("invalid binary reason id");
+        for &lit in lits.iter().skip(start_lit_pos) {
+            let var = lit.unsigned_abs() as usize;
+            if self.scratch_seen[var] != 0
+                || (self.use_resolved_conflict_analysis && self.scratch_resolved[var] != 0)
+            {
+                continue;
+            }
+
+            let level = self.decision_level[var];
+            if level == 0 {
+                continue;
+            }
+
+            self.scratch_seen[var] = 1;
+            self.scratch_bumped_vars.push(var);
+            if level == current_level {
+                *current_level_count += 1;
+            } else {
+                self.scratch_learned.push(lit);
+            }
+        }
+    }
+
+    fn mark_reason_literals_for_analysis<const LBD_META: bool>(
+        &mut self,
+        reason_ref: ReasonRef,
+        start_lit_pos: usize,
+        current_level: usize,
+        current_level_count: &mut usize,
+    ) {
+        match reason_ref {
+            ReasonRef::None => {}
+            ReasonRef::Clause(clause_idx) => {
+                if LBD_META && self.reduce_policy == ReducePolicy::LbdTiered {
+                    self.mark_learned_clause_recent(clause_idx);
+                }
+                if LBD_META
+                    && self.update_reason_lbd
+                    && clause_idx < self.arena.len()
+                    && self.clause_is_learnt(clause_idx)
+                    && !self.clause_is_deleted(clause_idx)
+                {
+                    let lbd = self.compute_lbd_for_clause(clause_idx);
+                    self.maybe_improve_lbd(clause_idx, lbd);
+                }
+                self.mark_clause_literals_for_analysis(
+                    clause_idx,
+                    start_lit_pos,
+                    current_level,
+                    current_level_count,
+                );
+            }
+            ReasonRef::Binary(binary_id) => self.mark_binary_literals_for_analysis(
+                binary_id,
+                start_lit_pos,
+                current_level,
+                current_level_count,
+            ),
+        }
+    }
+
+    fn mark_conflict_literals_for_analysis(
+        &mut self,
+        conflict: Conflict,
+        current_level: usize,
+        current_level_count: &mut usize,
+    ) {
+        match conflict {
+            Conflict::Clause(clause_idx) => self.mark_clause_literals_for_analysis(
+                clause_idx,
+                0,
+                current_level,
+                current_level_count,
+            ),
+            Conflict::Binary(binary_id) => self.mark_binary_literals_for_analysis(
+                binary_id,
+                0,
+                current_level,
+                current_level_count,
+            ),
+            Conflict::RootUnit => {}
+        }
+    }
+
+    fn analyze_conflict_to_scratch(&mut self, conflict: Conflict) -> usize {
+        if self.use_lbd {
+            self.analyze_conflict_to_scratch_impl::<true>(conflict)
+        } else {
+            self.analyze_conflict_to_scratch_impl::<false>(conflict)
+        }
+    }
+
+    fn analyze_conflict_to_scratch_impl<const LBD_META: bool>(
+        &mut self,
+        conflict: Conflict,
+    ) -> usize {
         let current_level = self.current_level();
         self.scratch_learned.clear();
         self.scratch_bumped_vars.clear();
 
         let mut current_level_count = 0usize;
 
-        self.mark_clause_literals_for_analysis(
-            conflict_clause_idx,
-            0,
-            current_level,
-            &mut current_level_count,
-        );
+        self.mark_conflict_literals_for_analysis(conflict, current_level, &mut current_level_count);
 
         debug_assert!(current_level_count > 0);
 
@@ -2419,15 +3492,15 @@ impl Solver {
                 break lit;
             }
 
-            let reason_idx = self.reason[var];
-            if reason_idx != NO_REASON {
+            let reason_ref = self.reason[var].as_ref_unchecked();
+            if reason_ref != ReasonRef::None {
                 let start_lit_pos = if self.use_resolved_conflict_analysis {
                     0
                 } else {
                     1
                 };
-                self.mark_clause_literals_for_analysis(
-                    reason_idx,
+                self.mark_reason_literals_for_analysis::<LBD_META>(
+                    reason_ref,
                     start_lit_pos,
                     current_level,
                     &mut current_level_count,
@@ -2440,6 +3513,13 @@ impl Solver {
         learned_clause.push(-uip_lit);
         learned_clause.extend(self.scratch_learned.iter().copied());
         self.minimize_learned_clause(&mut learned_clause);
+        if LBD_META {
+            let lbd = self.compute_lbd_from_lits(&learned_clause);
+            self.last_conflict_lbd = lbd;
+            self.record_lbd_measurement(lbd);
+        } else {
+            self.last_conflict_lbd = 0;
+        }
 
         let mut backtrack_level = 0usize;
         let mut backtrack_pos = 1usize;
@@ -2465,8 +3545,8 @@ impl Solver {
     }
 
     #[cfg(test)]
-    fn analyze_conflict(&mut self, conflict_clause_idx: usize) -> (Vec<i32>, usize) {
-        let backtrack_level = self.analyze_conflict_to_scratch(conflict_clause_idx);
+    fn analyze_conflict(&mut self, conflict: Conflict) -> (Vec<i32>, usize) {
+        let backtrack_level = self.analyze_conflict_to_scratch(conflict);
         let learned_clause = self.scratch_conflict_clause.clone();
         (learned_clause, backtrack_level)
     }
@@ -2741,7 +3821,7 @@ impl Solver {
 
         loop {
             match conflict {
-                Some(conflict_clause_idx) => {
+                Some(conflict_event) => {
                     if self.current_level() == 0 {
                         self.stats.search_sec = search_start.elapsed().as_secs_f64();
                         if trace_search_interval > 0 {
@@ -2785,7 +3865,7 @@ impl Solver {
                         );
                         next_search_trace = next_search_trace.saturating_add(trace_search_interval);
                     }
-                    let backtrack_level = self.analyze_conflict_to_scratch(conflict_clause_idx);
+                    let backtrack_level = self.analyze_conflict_to_scratch(conflict_event);
                     self.bump_analyzed_variable_activity();
                     self.decay_variable_activity();
                     if self.reduce_db_enabled() {
@@ -2799,14 +3879,15 @@ impl Solver {
                     if learned_clause.len() == 1 {
                         debug_assert_eq!(backtrack_level, 0);
                         self.backtrack(0);
-                        let inserted = self.enqueue(asserting_lit, NO_REASON);
+                        let inserted = self.enqueue(asserting_lit, ReasonRef::None);
                         if !inserted {
                             return SolveOutcome::unsat();
                         }
                         self.scratch_conflict_clause = learned_clause;
                         self.scratch_conflict_clause.clear();
                     } else {
-                        let learned_clause_idx = self.add_clause_from_slice(&learned_clause);
+                        let learned_clause_idx =
+                            self.add_analyzed_clause_from_slice(&learned_clause);
                         self.scratch_conflict_clause = learned_clause;
                         self.scratch_conflict_clause.clear();
                         if self.reduce_db_enabled() {
@@ -2818,8 +3899,12 @@ impl Solver {
                             self.clause_slice(learned_clause_idx),
                             backtrack_level,
                         );
-                        let inserted = self.enqueue(asserting_lit, learned_clause_idx);
+                        let inserted =
+                            self.enqueue(asserting_lit, ReasonRef::Clause(learned_clause_idx));
                         debug_assert!(inserted, "learned clause must be asserting after backtrack");
+                        if self.reduce_policy == ReducePolicy::LbdTiered {
+                            self.mark_learned_clause_recent(learned_clause_idx);
+                        }
                     }
 
                     conflict = self.propagate();
@@ -2842,12 +3927,7 @@ impl Solver {
                         return SolveOutcome::unsat();
                     }
 
-                    if self.reduce_db_enabled()
-                        && self
-                            .live_learned_clause_count
-                            .saturating_sub(self.trail.len())
-                            >= self.reduce_db_limit
-                    {
+                    if self.reduce_db_enabled() && self.should_reduce_db() {
                         self.reduce_db_with_proof(proof_log);
                     }
 
@@ -3309,31 +4389,286 @@ mod tests {
         }
 
         for &(var, reason_idx) in reason_overrides {
-            s.reason[var] = reason_idx;
+            s.set_reason_ref(var, ReasonRef::Clause(reason_idx));
         }
     }
 
     #[test]
-    fn test_compute_lbd_from_lits_counts_unique_decision_levels() {
-        let mut decision_level = vec![0; 8];
-        decision_level[1] = 1;
-        decision_level[2] = 1;
-        decision_level[3] = 2;
-        decision_level[4] = 0;
-        decision_level[5] = 3;
+    fn test_lbd_single_level_clause_is_1() {
+        let mut s = make_solver(2, vec![]);
+        s.decision_level[1] = 4;
+        s.decision_level[2] = 4;
 
-        assert_eq!(compute_lbd_from_lits(&[], &decision_level), 0);
-        assert_eq!(compute_lbd_from_lits(&[1], &decision_level), 1);
-        assert_eq!(compute_lbd_from_lits(&[1, -2], &decision_level), 1);
-        assert_eq!(compute_lbd_from_lits(&[1, -3], &decision_level), 2);
+        assert_eq!(s.compute_lbd_from_lits(&[1, -2]), 1);
+    }
+
+    #[test]
+    fn test_lbd_binary_across_two_levels_is_2() {
+        let mut s = make_solver(2, vec![]);
+        s.decision_level[1] = 1;
+        s.decision_level[2] = 2;
+
+        assert_eq!(s.compute_lbd_from_lits(&[1, -2]), 2);
+    }
+
+    #[test]
+    fn test_lbd_ignores_duplicate_decision_levels() {
+        let mut s = make_solver(5, vec![]);
+        s.decision_level[1] = 1;
+        s.decision_level[2] = 1;
+        s.decision_level[3] = 2;
+        s.decision_level[4] = 0;
+        s.decision_level[5] = 3;
+
+        assert_eq!(s.compute_lbd_from_lits(&[]), 0);
+        assert_eq!(s.compute_lbd_from_lits(&[1, -2, 3, -4, 5]), 4);
+    }
+
+    #[test]
+    fn test_lbd_stamp_wrap_clears_seen() {
+        let mut s = make_solver(2, vec![]);
+        s.decision_level[1] = 1;
+        s.decision_level[2] = 2;
+        s.lbd_seen[1] = u32::MAX;
+        s.lbd_stamp = u32::MAX;
+
+        assert_eq!(s.compute_lbd_from_lits(&[1, 2]), 2);
+        assert_eq!(s.lbd_stamp, 1);
+        assert_eq!(s.lbd_seen[1], 1);
+        assert_eq!(s.lbd_seen[2], 1);
+    }
+
+    #[test]
+    fn test_reason_none_for_decision() {
+        let mut s = make_solver(2, vec![]);
+
+        s.decide(1);
+
+        assert_eq!(s.reason_ref(1), ReasonRef::None);
+    }
+
+    #[test]
+    fn test_reason_clause_expands_lits() {
+        let mut s = make_solver(3, vec![]);
+        let clause_idx = s.add_clause(vec![2, -1, 3]);
+
         assert_eq!(
-            compute_lbd_from_lits(&[1, -2, 3, -4, 5], &decision_level),
-            4
+            s.reason_lits_for_test(ReasonRef::Clause(clause_idx)),
+            vec![2, -1, 3]
         );
     }
 
     #[test]
-    fn test_lbd_side_table_records_learned_clause_metadata() {
+    fn test_reason_binary_expands_lits() {
+        let mut s = make_solver(3, vec![]);
+        let binary_id = s.add_binary_reason_for_test([2, -1]);
+
+        assert_eq!(
+            s.reason_lits_for_test(ReasonRef::Binary(binary_id)),
+            vec![2, -1]
+        );
+    }
+
+    #[test]
+    fn test_conflict_binary_expands_lits() {
+        let mut s = make_solver(3, vec![]);
+        let binary_id = s.add_binary_reason_for_test([-2, -1]);
+
+        assert_eq!(
+            s.conflict_lits_for_test(Conflict::Binary(binary_id)),
+            vec![-2, -1]
+        );
+    }
+
+    #[test]
+    fn test_reason_code_roundtrip_clause() {
+        let code = ReasonCode::from_ref(ReasonRef::Clause(123)).expect("valid clause reason");
+
+        assert_eq!(code.as_ref(), Ok(ReasonRef::Clause(123)));
+    }
+
+    #[test]
+    fn test_reason_code_roundtrip_binary() {
+        let binary_id = BinaryClauseId(7);
+        let code = ReasonCode::from_ref(ReasonRef::Binary(binary_id)).expect("valid binary reason");
+
+        assert_eq!(code.as_ref(), Ok(ReasonRef::Binary(binary_id)));
+    }
+
+    #[test]
+    fn test_reason_code_rejects_invalid_tag_or_overflow() {
+        let invalid_tag = ReasonCode::from_raw(ReasonCode::INVALID_TAG | 17);
+        assert_eq!(invalid_tag.as_ref(), Err(ReasonCodeError::InvalidTag));
+        assert_eq!(
+            ReasonCode::from_ref(ReasonRef::Clause(ReasonCode::PAYLOAD_MASK + 1)),
+            Err(ReasonCodeError::ClauseOverflow)
+        );
+        if usize::BITS > u32::BITS {
+            let too_large_binary =
+                ReasonCode::from_raw(ReasonCode::BINARY_TAG | ((u32::MAX as usize) + 1));
+            assert_eq!(
+                too_large_binary.as_ref(),
+                Err(ReasonCodeError::BinaryOverflow)
+            );
+        }
+    }
+
+    #[test]
+    fn test_gc_rewrites_reason_ref() {
+        let mut s = make_solver(4, vec![]);
+        let dead = s.add_clause(vec![4, 1]);
+        let live = s.add_clause(vec![3, 1]);
+
+        s.assignment[3] = TRUE;
+        s.saved_phase[3] = TRUE;
+        s.decision_level[3] = 1;
+        s.set_reason_ref(3, ReasonRef::Clause(live));
+        s.trail.push(3);
+        s.trail_limits.push(0);
+
+        s.mark_clause_deleted(dead);
+        s.garbage_collect();
+
+        let relocated_live = s.learned_clause_ids[0];
+        assert_eq!(s.reason_ref(3), ReasonRef::Clause(relocated_live));
+        assert_eq!(s.clause_slice(s.reason_clause_for_test(3)), &[3, 1]);
+    }
+
+    #[test]
+    fn test_legacy_reason_path_unchanged_when_binary_fast_off() {
+        let mut s = make_solver(2, vec![vec![2, 1]]);
+
+        s.decide(-1);
+        assert_eq!(s.propagate(), None);
+
+        let clause_idx = s.original_clause_ids[0];
+        assert_eq!(s.reason_ref(2), ReasonRef::Clause(clause_idx));
+        assert!(s.binary_reason_lits.is_empty());
+        assert_eq!(s.reason_lits_for_test(s.reason_ref(2)), vec![2, 1]);
+    }
+
+    #[test]
+    fn test_temp_assumption_guard_restores_root() {
+        let mut s = make_solver(2, vec![]);
+        let start_trail = s.trail.len();
+        let start_root = s.root_trail_len;
+
+        s.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
+            assert_eq!(ctx.enqueue(1), EnqueueResult::Enqueued);
+            assert_eq!(ctx.solver.assignment[1], TRUE);
+            assert_eq!(ctx.solver.root_trail_len, start_root);
+        });
+
+        assert_eq!(s.current_level(), 0);
+        assert_eq!(s.trail.len(), start_trail);
+        assert_eq!(s.root_trail_len, start_root);
+        assert_eq!(s.assignment[1], UNASSIGNED);
+        assert_eq!(s.reason_ref(1), ReasonRef::None);
+    }
+
+    #[test]
+    fn test_temp_assumption_does_not_update_saved_phase() {
+        let mut s = make_solver(1, vec![]);
+        s.saved_phase[1] = TRUE;
+
+        s.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
+            assert_eq!(ctx.enqueue(-1), EnqueueResult::Enqueued);
+            assert_eq!(ctx.solver.assignment[1], FALSE);
+            assert_eq!(ctx.solver.saved_phase[1], TRUE);
+        });
+
+        assert_eq!(s.saved_phase[1], TRUE);
+        assert_eq!(s.assignment[1], UNASSIGNED);
+    }
+
+    #[test]
+    fn test_temp_assumption_does_not_update_target_or_best_phase() {
+        let mut s = make_solver(1, vec![]);
+        let phase_initial = s.stats.phase_initial_used;
+        let saved_phase = s.saved_phase[1];
+
+        s.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
+            assert_eq!(ctx.enqueue(-1), EnqueueResult::Enqueued);
+        });
+
+        assert_eq!(s.stats.phase_initial_used, phase_initial);
+        assert_eq!(s.saved_phase[1], saved_phase);
+    }
+
+    #[test]
+    fn test_temp_assumption_does_not_bump_vmtf_or_heap_stats() {
+        let mut s = make_solver(2, vec![]);
+        let heap_inserts = s.stats.decision_heap_inserts;
+        let heap_pops = s.stats.decision_heap_pops;
+        let heap_stale = s.stats.decision_heap_stale_pops;
+
+        s.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
+            assert_eq!(ctx.enqueue(1), EnqueueResult::Enqueued);
+        });
+
+        assert_eq!(s.stats.decision_heap_inserts, heap_inserts);
+        assert_eq!(s.stats.decision_heap_pops, heap_pops);
+        assert_eq!(s.stats.decision_heap_stale_pops, heap_stale);
+    }
+
+    #[test]
+    fn test_temp_assumption_does_not_update_restart_ema() {
+        let mut s = make_solver(2, vec![]);
+        let restart_conflicts = s.restart_conflicts;
+        let restart_limit = s.restart_conflict_limit;
+        let restarts = s.stats.restarts;
+        let luby_restarts = s.stats.luby_restarts;
+
+        s.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
+            assert_eq!(ctx.enqueue(1), EnqueueResult::Enqueued);
+        });
+
+        assert_eq!(s.restart_conflicts, restart_conflicts);
+        assert_eq!(s.restart_conflict_limit, restart_limit);
+        assert_eq!(s.stats.restarts, restarts);
+        assert_eq!(s.stats.luby_restarts, luby_restarts);
+    }
+
+    #[test]
+    fn test_temp_assumption_conflict_restores_propagate_head() {
+        let mut s = make_solver(2, vec![vec![2, 1], vec![-2, 1]]);
+        let start_head = s.propagate_head;
+        let start_normal_props = s.stats.propagations;
+        let mut saw_conflict = false;
+
+        s.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
+            assert_eq!(ctx.enqueue(-1), EnqueueResult::Enqueued);
+            let mut budget = Budget::from_ticks(10);
+            saw_conflict = ctx.propagate_budgeted(&mut budget).is_some();
+            assert!(saw_conflict);
+        });
+
+        assert_eq!(s.propagate_head, start_head);
+        assert_eq!(s.stats.propagations, start_normal_props);
+        assert_eq!(s.temporary_stats.conflicts, 1);
+        assert_eq!(s.assignment[1], UNASSIGNED);
+        assert_eq!(s.assignment[2], UNASSIGNED);
+    }
+
+    #[test]
+    fn test_temp_assumption_closure_restores_on_early_return() {
+        let mut s = make_solver(2, vec![]);
+        let start_head = s.propagate_head;
+
+        let result = s.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
+            assert_eq!(ctx.enqueue(1), EnqueueResult::Enqueued);
+            "early-return-value"
+        });
+
+        assert_eq!(result, "early-return-value");
+        assert_eq!(s.trail.len(), 0);
+        assert_eq!(s.propagate_head, start_head);
+        assert_eq!(s.accounting_mode, SearchAccountingMode::NormalSearch);
+        assert_eq!(s.assignment[1], UNASSIGNED);
+    }
+
+    #[test]
+    fn test_lbd_stored_and_read_from_learned_clause() {
         let mut s = Solver::new(5, vec![]);
         s.use_lbd = true;
         s.decision_level[1] = 1;
@@ -3348,6 +4683,9 @@ mod tests {
         assert_eq!(s.stats.lbd_computed, 1);
         assert_eq!(s.stats.lbd_sum, 3);
         assert_eq!(s.stats.lbd_max, 3);
+        assert_eq!(s.sum_lbd, 3);
+        assert_eq!(s.num_lbd, 1);
+        assert_eq!(s.lbd_hist_3_5, 1);
     }
 
     #[test]
@@ -3361,6 +4699,24 @@ mod tests {
         assert_eq!(s.stats.lbd_computed, 1);
         assert_eq!(s.stats.lbd_sum, 0);
         assert_eq!(s.stats.lbd_max, 0);
+    }
+
+    #[test]
+    fn test_lbd_metadata_does_not_touch_original_clause_layout() {
+        let mut s = Solver::new(2, vec![vec![1, 2]]);
+        let original_idx = s.original_clause_ids[0];
+        let original_header = s.clause_header(original_idx);
+        let original_word_len = s.clause_word_len(original_idx);
+        s.use_lbd = true;
+        s.decision_level[1] = 1;
+        s.decision_level[2] = 2;
+
+        let learned_idx = s.add_clause(vec![1, -2]);
+
+        assert_eq!(s.clause_header(original_idx), original_header);
+        assert_eq!(s.clause_word_len(original_idx), original_word_len);
+        assert!(s.try_learned_id_for_clause(original_idx).is_none());
+        assert_eq!(s.learned_clause_lbd(learned_idx), Some(2));
     }
 
     #[test]
@@ -3381,6 +4737,358 @@ mod tests {
 
         let relocated_live = s.learned_clause_ids[0];
         assert_eq!(s.learned_clause_lbd(relocated_live), Some(3));
+        assert_eq!(
+            s.learned_clause_by_id[s.learned_id_for_clause(relocated_live).0 as usize],
+            relocated_live
+        );
+    }
+
+    #[test]
+    fn test_lbd_improvement_only_lowers() {
+        let mut s = Solver::new(3, vec![]);
+        s.use_lbd = true;
+        let clause_idx = s.add_clause(vec![1, 2, 3]);
+        s.set_learnt_lbd(clause_idx, 4);
+
+        s.maybe_improve_lbd(clause_idx, 5);
+        assert_eq!(s.learnt_lbd(clause_idx), 4);
+        assert_eq!(s.stats.lbd_improved, 0);
+
+        s.maybe_improve_lbd(clause_idx, 2);
+        assert_eq!(s.learnt_lbd(clause_idx), 2);
+        assert_eq!(s.stats.lbd_improved, 1);
+    }
+
+    #[test]
+    fn test_original_clause_lbd_not_touched() {
+        let mut s = Solver::new(2, vec![vec![1, 2]]);
+        s.use_lbd = true;
+        let original_idx = s.original_clause_ids[0];
+
+        s.maybe_improve_lbd(original_idx, 1);
+
+        assert!(s.try_learned_id_for_clause(original_idx).is_none());
+        assert_eq!(s.stats.lbd_improved, 0);
+    }
+
+    #[test]
+    fn test_reason_clause_lbd_update_preserves_activity() {
+        let mut s = Solver::new(3, vec![]);
+        s.use_lbd = true;
+        let clause_idx = s.add_clause(vec![1, 2, 3]);
+        s.set_learnt_lbd(clause_idx, 4);
+        s.set_clause_activity(clause_idx, 123.5);
+
+        s.maybe_improve_lbd(clause_idx, 2);
+
+        assert_eq!(s.learnt_lbd(clause_idx), 2);
+        assert_eq!(s.clause_activity(clause_idx), 123.5);
+    }
+
+    #[test]
+    fn test_analyze_stores_last_conflict_lbd() {
+        let mut s = make_solver(2, vec![vec![2, 1], vec![-2, 1]]);
+        s.use_lbd = true;
+
+        s.decide(-1);
+        let conflict = s.propagate().expect("expected conflict");
+        let (learned, backtrack_level) = s.analyze_conflict(conflict);
+
+        assert_eq!(learned, vec![1]);
+        assert_eq!(backtrack_level, 0);
+        assert_eq!(s.last_conflict_lbd, 1);
+        assert_eq!(s.stats.lbd_computed, 1);
+        assert_eq!(s.num_lbd, 1);
+    }
+
+    fn enable_lbd_tiered_for_test(s: &mut Solver, learned_lit_budget: usize) {
+        s.use_lbd = true;
+        s.reduce_policy = ReducePolicy::LbdTiered;
+        s.learned_lit_budget = learned_lit_budget;
+        s.hard_learned_lit_budget = learned_lit_budget.saturating_mul(2);
+    }
+
+    fn set_lbd_meta_for_test(s: &mut Solver, clause_idx: ClauseRef, lbd: u16, used_recently: u8) {
+        s.set_learnt_lbd(clause_idx, lbd);
+        s.classify_learnt_clause(clause_idx);
+        s.set_learnt_used_recently(clause_idx, used_recently);
+    }
+
+    #[test]
+    fn test_reason_pinset_contains_all_clause_reasons() {
+        let mut s = make_solver(3, vec![]);
+        let reason_clause = s.add_clause(vec![2, 1, 3]);
+        s.assignment[1] = TRUE;
+        s.set_reason_ref(1, ReasonRef::Clause(reason_clause));
+
+        let pins = s.rebuild_reason_pinset();
+
+        assert!(s.clause_is_reason_pinned(&pins, reason_clause));
+    }
+
+    #[test]
+    fn test_reason_pinset_contains_all_binary_reasons() {
+        let mut s = make_solver(3, vec![]);
+        let binary_id = s.add_binary_reason_for_test([2, -1]);
+        s.assignment[2] = TRUE;
+        s.set_reason_ref(2, ReasonRef::Binary(binary_id));
+
+        let pins = s.rebuild_reason_pinset();
+
+        assert!(s.binary_is_reason_pinned(&pins, binary_id));
+    }
+
+    #[test]
+    fn test_reduce_db_consults_reason_pinset() {
+        let mut s = Solver::new(4, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 0);
+        let pinned = s.add_clause(vec![4, 1, 2, 3]);
+        set_lbd_meta_for_test(&mut s, pinned, 12, 0);
+        s.assignment[1] = TRUE;
+        s.set_reason_ref(1, ReasonRef::Clause(pinned));
+
+        s.reduce_db();
+
+        assert!(!s.clause_is_deleted(pinned));
+    }
+
+    #[test]
+    fn test_gc_preserves_reason_pinned_clauses() {
+        let mut s = Solver::new(4, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 0);
+        let dead = s.add_clause(vec![4, 1, 2]);
+        let pinned = s.add_clause(vec![3, 1, 2]);
+        s.assignment[1] = TRUE;
+        s.set_reason_ref(1, ReasonRef::Clause(pinned));
+        s.mark_clause_deleted(dead);
+
+        s.garbage_collect();
+
+        let relocated = s.reason_clause_for_test(1);
+        assert_eq!(s.clause_slice(relocated), &[3, 1, 2]);
+        assert!(!s.clause_is_deleted(relocated));
+    }
+
+    #[test]
+    fn test_reduce_never_deletes_binary() {
+        let mut s = Solver::new(2, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 0);
+        let binary = s.add_clause(vec![1, 2]);
+        set_lbd_meta_for_test(&mut s, binary, 20, 0);
+
+        s.reduce_db();
+
+        assert!(!s.clause_is_deleted(binary));
+    }
+
+    #[test]
+    fn test_reduce_never_deletes_unit() {
+        let mut s = Solver::new(1, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 0);
+        let unit = s.add_clause(vec![1]);
+        set_lbd_meta_for_test(&mut s, unit, 20, 0);
+
+        s.reduce_db();
+
+        assert!(!s.clause_is_deleted(unit));
+    }
+
+    #[test]
+    fn test_reduce_never_deletes_reason_clause() {
+        let mut s = Solver::new(4, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 0);
+        let reason = s.add_clause(vec![4, 1, 2, 3]);
+        set_lbd_meta_for_test(&mut s, reason, 20, 0);
+        s.assignment[4] = TRUE;
+        s.set_reason_ref(4, ReasonRef::Clause(reason));
+
+        s.reduce_db();
+
+        assert!(!s.clause_is_deleted(reason));
+    }
+
+    #[test]
+    fn test_reduce_db_protects_glue_one_clauses() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 0);
+        let glue_one = s.add_clause(vec![1, 2, 3]);
+        set_lbd_meta_for_test(&mut s, glue_one, 1, 0);
+
+        s.reduce_db();
+
+        assert!(!s.clause_is_deleted(glue_one));
+    }
+
+    #[test]
+    fn test_reduce_db_protects_tier2_with_used_recently() {
+        let mut s = Solver::new(4, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 0);
+        let tier2 = s.add_clause(vec![1, 2, 3, 4]);
+        set_lbd_meta_for_test(&mut s, tier2, 4, 1);
+
+        s.reduce_db();
+
+        assert!(!s.clause_is_deleted(tier2));
+        assert_eq!(s.learnt_used_recently(tier2), 0);
+    }
+
+    #[test]
+    fn test_reduce_db_protects_tier3_with_used_recently() {
+        let mut s = Solver::new(4, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 0);
+        let tier3 = s.add_clause(vec![1, 2, 3, 4]);
+        set_lbd_meta_for_test(&mut s, tier3, 9, 1);
+
+        s.reduce_db();
+
+        assert!(!s.clause_is_deleted(tier3));
+        assert_eq!(s.learnt_used_recently(tier3), 0);
+    }
+
+    #[test]
+    fn test_reduce_db_drops_high_glue_unused_large_clauses_first() {
+        let mut s = Solver::new(5, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 3);
+        let better = s.add_clause(vec![1, 2, 3]);
+        let worse = s.add_clause(vec![1, 2, 3, 4]);
+        set_lbd_meta_for_test(&mut s, better, 7, 0);
+        set_lbd_meta_for_test(&mut s, worse, 12, 0);
+
+        s.reduce_db();
+
+        assert_eq!(s.learned_clause_ids.len(), 1);
+        assert_eq!(s.clause_slice(s.learned_clause_ids[0]), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn test_reduce_updates_live_learned_counts() {
+        let mut s = Solver::new(4, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 0);
+        let delete_me = s.add_clause(vec![1, 2, 3, 4]);
+        set_lbd_meta_for_test(&mut s, delete_me, 12, 0);
+
+        s.reduce_db();
+
+        assert_eq!(s.live_learned_clause_count, 0);
+        assert_eq!(s.learned_clause_ids.len(), 0);
+        assert_eq!(s.learned_literals, 0);
+        assert_eq!(s.stats.learned_collected, 1);
+    }
+
+    #[test]
+    fn test_reduce_deleted_watchers_are_skipped_by_propagation() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 0);
+        let delete_me = s.add_clause(vec![2, 1, 3]);
+        set_lbd_meta_for_test(&mut s, delete_me, 12, 0);
+        s.reduce_db();
+
+        s.decide(-1);
+
+        assert_eq!(s.propagate(), None);
+        assert_eq!(s.assignment[2], UNASSIGNED);
+    }
+
+    #[test]
+    fn test_reason_use_marks_learned_clause_recent() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        let reason = s.add_clause(vec![2, 1, 3]);
+        set_lbd_meta_for_test(&mut s, reason, 9, 0);
+
+        let mut current_level_count = 0;
+        s.decision_level[1] = 1;
+        s.decision_level[2] = 1;
+        s.mark_reason_literals_for_analysis::<true>(
+            ReasonRef::Clause(reason),
+            1,
+            1,
+            &mut current_level_count,
+        );
+
+        assert_eq!(s.learnt_used_recently(reason), 1);
+    }
+
+    #[test]
+    fn test_lbd_improvement_reclassifies_clause_tier() {
+        let mut s = Solver::new(3, vec![]);
+        s.use_lbd = true;
+        let clause_idx = s.add_clause(vec![1, 2, 3]);
+        set_lbd_meta_for_test(&mut s, clause_idx, 8, 0);
+
+        s.maybe_improve_lbd(clause_idx, 2);
+
+        assert_eq!(s.learnt_lbd(clause_idx), 2);
+        assert_eq!(s.learned_meta(clause_idx).unwrap().tier, 0);
+    }
+
+    #[test]
+    fn test_reduce_respects_learned_lit_budget() {
+        let mut s = Solver::new(6, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 4);
+        let first = s.add_clause(vec![1, 2, 3]);
+        let second = s.add_clause(vec![1, 2, 3, 4]);
+        set_lbd_meta_for_test(&mut s, first, 8, 0);
+        set_lbd_meta_for_test(&mut s, second, 9, 0);
+
+        s.reduce_db();
+
+        assert!(s.learned_literals <= 4);
+    }
+
+    #[test]
+    fn test_reduce_emergency_can_demote_old_unused_tier1() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 0);
+        s.hard_learned_lit_budget = 0;
+        s.stats.conflicts = EMERGENCY_TIER1_MIN_AGE_CONFLICTS + 1;
+        let tier1 = s.add_clause(vec![1, 2, 3]);
+        set_lbd_meta_for_test(&mut s, tier1, 1, 0);
+        s.learned_meta_mut_by_id(s.learned_id_for_clause(tier1))
+            .created_at_conflict = 0;
+
+        s.reduce_db();
+
+        assert!(s.learned_clause_ids.is_empty());
+    }
+
+    #[test]
+    fn test_reduce_emergency_never_deletes_locked_binary_or_unit() {
+        let mut s = Solver::new(4, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 0);
+        s.hard_learned_lit_budget = 0;
+        s.stats.conflicts = EMERGENCY_TIER1_MIN_AGE_CONFLICTS + 1;
+        let unit = s.add_clause(vec![1]);
+        let binary = s.add_clause(vec![2, 3]);
+        let locked = s.add_clause(vec![4, 1, 2]);
+        set_lbd_meta_for_test(&mut s, unit, 1, 0);
+        set_lbd_meta_for_test(&mut s, binary, 1, 0);
+        set_lbd_meta_for_test(&mut s, locked, 1, 0);
+        s.assignment[4] = TRUE;
+        s.set_reason_ref(4, ReasonRef::Clause(locked));
+
+        s.reduce_db();
+
+        assert!(!s.clause_is_deleted(unit));
+        assert!(!s.clause_is_deleted(binary));
+        assert!(!s.clause_is_deleted(locked));
+    }
+
+    #[test]
+    fn test_gc_preserves_learned_meta_after_reduction() {
+        let mut s = Solver::new(5, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 3);
+        let live = s.add_clause(vec![1, 2, 3]);
+        let deleted = s.add_clause(vec![1, 2, 3, 4]);
+        set_lbd_meta_for_test(&mut s, live, 4, 1);
+        set_lbd_meta_for_test(&mut s, deleted, 12, 0);
+
+        s.reduce_db();
+        s.garbage_collect();
+
+        let relocated_live = s.learned_clause_ids[0];
+        assert_eq!(s.learnt_lbd(relocated_live), 4);
+        assert_eq!(s.learnt_used_recently(relocated_live), 0);
     }
 
     #[test]
@@ -3572,12 +5280,14 @@ mod tests {
         );
 
         s.ccmin_mode = CCMIN_NONE;
-        let (raw_learned, raw_backtrack) = s.analyze_conflict(reason_clause_ids[3]);
+        let (raw_learned, raw_backtrack) =
+            s.analyze_conflict(Conflict::Clause(reason_clause_ids[3]));
         assert_eq!(raw_learned, vec![-1, 3, 4, 5]);
         assert_eq!(raw_backtrack, 1);
 
         s.ccmin_mode = CCMIN_BASIC;
-        let (basic_learned, basic_backtrack) = s.analyze_conflict(reason_clause_ids[3]);
+        let (basic_learned, basic_backtrack) =
+            s.analyze_conflict(Conflict::Clause(reason_clause_ids[3]));
         assert_eq!(basic_learned, vec![-1, 3, 4]);
         assert_eq!(basic_backtrack, 1);
     }
@@ -3617,16 +5327,18 @@ mod tests {
         );
 
         s.ccmin_mode = CCMIN_NONE;
-        let (raw_learned, raw_backtrack) = s.analyze_conflict(reason_clause_ids[4]);
+        let (raw_learned, raw_backtrack) =
+            s.analyze_conflict(Conflict::Clause(reason_clause_ids[4]));
         assert_eq!(raw_learned, vec![-1, 3, 4, 7, 6]);
         assert_eq!(raw_backtrack, 1);
 
         s.ccmin_mode = CCMIN_BASIC;
-        let (basic_learned, _) = s.analyze_conflict(reason_clause_ids[4]);
+        let (basic_learned, _) = s.analyze_conflict(Conflict::Clause(reason_clause_ids[4]));
         assert_eq!(basic_learned, vec![-1, 3, 4, 7, 6]);
 
         s.ccmin_mode = CCMIN_DEEP;
-        let (deep_learned, deep_backtrack) = s.analyze_conflict(reason_clause_ids[4]);
+        let (deep_learned, deep_backtrack) =
+            s.analyze_conflict(Conflict::Clause(reason_clause_ids[4]));
         assert_eq!(deep_learned, vec![-1, 3, 4, 6]);
         assert_eq!(deep_backtrack, 1);
     }
@@ -3635,8 +5347,8 @@ mod tests {
     fn test_deep_clause_minimization_recurses_through_learned_reasons() {
         let mut s = make_solver(7, vec![vec![5, 3]]);
         let learned_reason = s.add_clause(vec![7, -5, 3]);
-        s.reason[5] = 0;
-        s.reason[7] = learned_reason;
+        s.set_reason_ref(5, ReasonRef::Clause(0));
+        s.set_reason_ref(7, ReasonRef::Clause(learned_reason));
 
         let mut learned_clause = vec![-1, 3, -7];
         s.ccmin_mode = CCMIN_DEEP;
@@ -3651,7 +5363,7 @@ mod tests {
         s.decision_level[1] = 2;
         s.decision_level[3] = 1;
         s.decision_level[5] = 1;
-        s.reason[5] = 0;
+        s.set_reason_ref(5, ReasonRef::Clause(0));
 
         let mut basic_clause = vec![-1, 3, 5];
         s.ccmin_mode = CCMIN_BASIC;
@@ -3671,7 +5383,7 @@ mod tests {
         s.decision_level[3] = 1;
         s.decision_level[5] = 1;
         s.decision_level[6] = 1;
-        s.reason[5] = 0;
+        s.set_reason_ref(5, ReasonRef::Clause(0));
 
         let mut learned_clause = vec![-1, 3, 5];
 
@@ -3703,7 +5415,7 @@ mod tests {
         s.decide(-1);
         assert_eq!(s.propagate(), None);
         assert_eq!(s.assignment[3], TRUE);
-        assert_eq!(s.reason[3], relocated_live);
+        assert_eq!(s.reason_ref(3), ReasonRef::Clause(relocated_live));
         assert_eq!(s.clause_slice(relocated_live), &[3, 1]);
     }
 
@@ -3716,7 +5428,7 @@ mod tests {
         s.assignment[4] = TRUE;
         s.saved_phase[4] = TRUE;
         s.decision_level[4] = 1;
-        s.reason[4] = live;
+        s.set_reason_ref(4, ReasonRef::Clause(live));
         s.trail.push(4);
         s.trail_limits.push(0);
 
@@ -3724,8 +5436,8 @@ mod tests {
         s.garbage_collect();
         let relocated_live = s.learned_clause_ids[0];
 
-        assert_eq!(s.reason[4], relocated_live);
-        assert_eq!(s.clause_slice(s.reason[4]), &[3, 1]);
+        assert_eq!(s.reason_ref(4), ReasonRef::Clause(relocated_live));
+        assert_eq!(s.clause_slice(s.reason_clause_for_test(4)), &[3, 1]);
     }
 
     #[test]
@@ -3794,7 +5506,7 @@ mod tests {
         let mut s = make_solver(3, vec![]);
 
         assert_ne!(s.branch_pos[1], BRANCH_NOT_IN_HEAP);
-        assert!(s.enqueue(1, NO_REASON));
+        assert!(s.enqueue(1, ReasonRef::None));
 
         assert_ne!(s.branch_pos[1], BRANCH_NOT_IN_HEAP);
         for _ in 0..3 {
@@ -3820,7 +5532,7 @@ mod tests {
         s.assignment[3] = TRUE;
         s.saved_phase[3] = TRUE;
         s.decision_level[3] = 1;
-        s.reason[3] = locked;
+        s.set_reason_ref(3, ReasonRef::Clause(locked));
         s.trail.push(3);
         s.trail_limits.push(0);
         s.propagate_head = s.trail.len();
@@ -3830,7 +5542,7 @@ mod tests {
         assert_eq!(s.learned_clause_count(), 2);
         assert_eq!(s.stats.reduce_db_calls, 1);
         assert_eq!(s.stats.deleted_clauses, 1);
-        assert_eq!(s.clause_slice(s.reason[3]), &[3, 1, 2]);
+        assert_eq!(s.clause_slice(s.reason_clause_for_test(3)), &[3, 1, 2]);
 
         s.decide(-1);
         assert_eq!(s.propagate(), None);
@@ -3849,15 +5561,15 @@ mod tests {
         let satisfied_learned = s.add_clause(vec![2, -1]);
         let _trimmed_learned = s.add_clause(vec![6, -1, 7]);
 
-        assert!(s.enqueue(1, NO_REASON));
+        assert!(s.enqueue(1, ReasonRef::None));
         assert_eq!(s.propagate(), None);
         assert_eq!(s.assignment[1], TRUE);
         assert_eq!(s.assignment[2], TRUE);
-        assert_eq!(s.reason[2], satisfied_learned);
+        assert_eq!(s.reason_ref(2), ReasonRef::Clause(satisfied_learned));
 
         assert!(s.simplify());
 
-        assert_eq!(s.reason[2], NO_REASON);
+        assert_eq!(s.reason_ref(2), ReasonRef::None);
         assert_eq!(s.original_clause_ids.len(), 1);
         assert_eq!(s.learned_clause_ids.len(), 1);
         assert_eq!(s.live_learned_clause_count, 1);
@@ -4184,8 +5896,8 @@ mod tests {
         let mut s = make_solver(6, clauses);
 
         s.decide(1);
-        let conflict_clause_idx = s.propagate().expect("expected conflict after propagation");
-        let (learned_clause, backtrack_level) = s.analyze_conflict(conflict_clause_idx);
+        let conflict = s.propagate().expect("expected conflict after propagation");
+        let (learned_clause, backtrack_level) = s.analyze_conflict(conflict);
 
         assert_eq!(learned_clause, vec![-5]);
         assert_eq!(backtrack_level, 0);
@@ -4202,9 +5914,9 @@ mod tests {
         let learned_conflict = s.add_clause(vec![-2, -3]);
 
         s.decide(1);
-        let conflict_clause_idx = s.propagate().expect("expected conflict after propagation");
-        assert_eq!(conflict_clause_idx, learned_conflict);
-        let (learned_clause, backtrack_level) = s.analyze_conflict(conflict_clause_idx);
+        let conflict = s.propagate().expect("expected conflict after propagation");
+        assert_eq!(conflict, Conflict::Clause(learned_conflict));
+        let (learned_clause, backtrack_level) = s.analyze_conflict(conflict);
 
         assert_eq!(learned_clause, vec![-2]);
         assert_eq!(backtrack_level, 0);

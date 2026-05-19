@@ -22,6 +22,10 @@ pub(crate) struct SolverStats {
     pub(crate) deleted_clauses: u64,
     pub(crate) garbage_collections: u64,
     pub(crate) learned_clauses: u64,
+    pub(crate) learned_kept_tier1: u64,
+    pub(crate) learned_kept_tier2: u64,
+    pub(crate) learned_kept_tier3: u64,
+    pub(crate) learned_collected: u64,
     pub(crate) lbd_computed: u64,
     pub(crate) lbd_sum: u64,
     pub(crate) lbd_max: u32,
@@ -30,6 +34,7 @@ pub(crate) struct SolverStats {
     pub(crate) lbd_3_5: u64,
     pub(crate) lbd_6_10: u64,
     pub(crate) lbd_gt_10: u64,
+    pub(crate) lbd_improved: u64,
     pub(crate) learned_size_sum: u64,
     pub(crate) learned_size_max: u64,
     pub(crate) luby_restarts: u64,
@@ -280,6 +285,10 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("gc_count", ctx.stats.garbage_collections);
     json.u64("deleted_clauses", ctx.stats.deleted_clauses);
     json.u64("deleted_words", ctx.formula.deleted_words);
+    json.u64("learned_kept_tier1", ctx.stats.learned_kept_tier1);
+    json.u64("learned_kept_tier2", ctx.stats.learned_kept_tier2);
+    json.u64("learned_kept_tier3", ctx.stats.learned_kept_tier3);
+    json.u64("learned_collected", ctx.stats.learned_collected);
 
     json.f64("avg_decision_level", average_decision_level(ctx.stats));
     json.u64("max_decision_level", ctx.stats.max_decision_level);
@@ -289,6 +298,7 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("lbd_3_5", ctx.stats.lbd_3_5);
     json.u64("lbd_6_10", ctx.stats.lbd_6_10);
     json.u64("lbd_gt_10", ctx.stats.lbd_gt_10);
+    json.u64("lbd_improved", ctx.stats.lbd_improved);
 
     json.u64("binary_props", ctx.stats.binary_props);
     json.u64("long_props", ctx.stats.long_props);
@@ -395,7 +405,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
             "phase_save_target=0 phase_save_best=0 rephases=0 ",
             "decisions_focused=0 decisions_stable={} ",
             "mode_switches=0 seconds_focused=0.000000 seconds_stable={:.6} ",
-            "learned_kept_tier1=0 learned_kept_tier2=0 learned_kept_tier3={} learned_collected={} ",
+            "learned_kept_tier1={} learned_kept_tier2={} learned_kept_tier3={} learned_collected={} ",
             "decision_heap_pops={} decision_heap_stale_pops={} decision_heap_inserts={}"
         ),
         stats.lbd_sum,
@@ -406,8 +416,10 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
         stats.luby_restarts,
         stats.decisions,
         timings.search_sec,
-        stats.learned_clauses,
-        stats.deleted_clauses,
+        stats.learned_kept_tier1,
+        stats.learned_kept_tier2,
+        stats.learned_kept_tier3,
+        stats.learned_collected,
         stats.decision_heap_pops,
         stats.decision_heap_stale_pops,
         stats.decision_heap_inserts,
