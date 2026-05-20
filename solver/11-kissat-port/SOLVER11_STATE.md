@@ -49,7 +49,9 @@ Related implementation anchors:
 
 Known missing or incomplete feature families at this baseline:
 
-- Full glue/LBD policy: 0.0b added a default-off LBD counter/side-table slice, but no learned-clause reduction policy or reason-LBD update behavior uses it yet.
+- Full glue/LBD search policy: LBD metadata, reason-LBD update, LBD-tiered reduction, and the
+  opt-in Kissat/Glucose-style EMA restart policy are present behind explicit flags, but they are
+  not promoted as default-profile behavior yet.
 - Chronological backtracking.
 - Best/target phase policies.
 - Focused/stable mode switching.

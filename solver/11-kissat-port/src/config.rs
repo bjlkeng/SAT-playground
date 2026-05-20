@@ -1091,8 +1091,8 @@ impl SolverConfig {
                 ));
             }
         }
-        if self.restart_policy != RestartPolicy::LegacyLuby {
-            fail_config("SAT_RESTART values other than legacy-luby are not implemented yet");
+        if self.restart_policy == RestartPolicy::Reluctant {
+            fail_config("SAT_RESTART=reluctant is not implemented yet");
         }
         if self.reduce_policy == ReducePolicy::Activity {
             fail_config("SAT_REDUCE=activity is not implemented yet; use legacy or lbd-tiered");
@@ -2467,6 +2467,17 @@ mod tests {
         assert!(config.use_lbd);
         assert!(config.update_reason_lbd);
         assert_eq!(config.reduce_policy, ReducePolicy::LbdTiered);
+    }
+
+    #[test]
+    fn test_kissat_ema_restart_is_runtime_supported_with_lbd() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_USE_LBD", "on"),
+            ("SAT_RESTART", "kissat-ema"),
+        ]));
+
+        assert!(config.use_lbd);
+        assert_eq!(config.restart_policy, RestartPolicy::KissatEma);
     }
 
     #[test]

@@ -41,6 +41,8 @@ What is present:
 - one-shot cleanup after preprocessing: drop occurrence metadata, rebuild branch heap, and force GC
 - lazy deleted-clause watcher cleanup during propagation, with strict detach retained where
   preprocessing removes an original clause before tombstoning it
+- an opt-in LBD EMA restart policy (`SAT_USE_LBD=on SAT_RESTART=kissat-ema`) for Phase 1
+  search experiments; legacy Luby restarts remain the default for solver-10 parity
 
 Still incomplete:
 
@@ -78,6 +80,8 @@ SAT_STRICT_CONFIG=on
 SAT_STATS_JSON=on
 SAT_STATS_HOT=on
 SAT_USE_LBD=on
+SAT_RESTART=legacy-luby|kissat-ema
+SAT_REDUCE=legacy|lbd-tiered
 ```
 
 `SAT_CONFIG_OUT` writes a deterministic replay file with `schema_version`,

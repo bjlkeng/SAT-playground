@@ -17,7 +17,8 @@ mod stats;
 mod oracle_tests;
 
 use config::{
-    BranchMode, ClauseMinMode, InitialClauseMode, ProofPolicy, ReducePolicy, SolverConfig,
+    BranchMode, ClauseMinMode, InitialClauseMode, ProofPolicy, ReducePolicy, RestartPolicy,
+    SolverConfig,
 };
 use limits::{effective_memory_limit_bytes, LimitHit, RuntimeLimits};
 use lit::{lit_to_index, lit_to_word, word_to_lit};
@@ -67,6 +68,10 @@ const MAX_USED_RECENTLY: u8 = 3;
 const LEARNED_LIT_BUDGET_BASE: usize = 2_000;
 const LEARNED_LIT_BUDGET_FACTOR: usize = 300;
 const EMERGENCY_TIER1_MIN_AGE_CONFLICTS: u64 = 1_000;
+const RESTART_FAST_ALPHA: f64 = 1.0 / 32.0;
+const RESTART_SLOW_ALPHA: f64 = 1.0 / 4096.0;
+const KISSAT_EMA_RESTART_MIN_CONFLICTS: u64 = 50;
+const KISSAT_EMA_RESTART_MARGIN: f64 = 1.20;
 const GC_GARBAGE_RATIO_NUMERATOR: usize = 1;
 const GC_GARBAGE_RATIO_DENOMINATOR: usize = 3;
 const GC_WATCHER_STALE_MIN: usize = 1_024;
@@ -284,6 +289,32 @@ impl Default for LearnedMeta {
             removable: true,
             vivified: false,
             created_at_conflict: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct MovingAverage {
+    value: f64,
+    initialized: bool,
+    alpha: f64,
+}
+
+impl MovingAverage {
+    fn new(alpha: f64) -> Self {
+        Self {
+            value: 0.0,
+            initialized: false,
+            alpha,
+        }
+    }
+
+    fn update(&mut self, x: f64) {
+        if !self.initialized {
+            self.value = x;
+            self.initialized = true;
+        } else {
+            self.value += self.alpha * (x - self.value);
         }
     }
 }
@@ -724,6 +755,8 @@ struct Solver {
     clause_activity_inc: f64,
     /// multiplicative decay factor for older learned-clause activity
     clause_activity_decay: f64,
+    /// selected restart policy; legacy Luby remains the default for solver-10 parity
+    restart_policy: RestartPolicy,
     /// number of conflicts seen since the last restart
     restart_conflicts: usize,
     /// base conflict budget multiplied by the current Luby term
@@ -734,6 +767,22 @@ struct Solver {
     restart_conflict_limit: usize,
     /// whether a restart should be applied before the next branch
     restart_pending: bool,
+    /// fast EMA of recent learned-clause LBD values for Kissat/Glucose-style restarts
+    restart_fast_lbd: MovingAverage,
+    /// slow EMA of learned-clause LBD values for restart baseline
+    restart_slow_lbd: MovingAverage,
+    /// fast EMA of conflict decision levels, exposed for diagnostics and future policies
+    restart_fast_level: MovingAverage,
+    /// slow EMA of conflict decision levels, exposed for diagnostics and future policies
+    restart_slow_level: MovingAverage,
+    /// minimum conflicts between EMA restarts
+    restart_min_conflicts: u64,
+    /// next global conflict count where EMA restart conditions are checked
+    restart_next_check_conflict: u64,
+    /// threshold multiplier for fast LBD EMA over slow LBD EMA
+    restart_margin: f64,
+    /// conflicts since the last EMA restart
+    restart_conflicts_since_last: u64,
     /// learned-clause budget threshold for running a database reduction pass
     reduce_db_limit: usize,
     /// target learned-literal budget for LBD-tiered reduction
@@ -1214,11 +1263,20 @@ impl Solver {
             activity_decay: 0.95,
             clause_activity_inc: 1.0,
             clause_activity_decay: 0.999,
+            restart_policy: config.restart_policy,
             restart_conflicts: 0,
             restart_unit: 100,
             restart_luby_index: 1,
             restart_conflict_limit: 100,
             restart_pending: false,
+            restart_fast_lbd: MovingAverage::new(RESTART_FAST_ALPHA),
+            restart_slow_lbd: MovingAverage::new(RESTART_SLOW_ALPHA),
+            restart_fast_level: MovingAverage::new(RESTART_FAST_ALPHA),
+            restart_slow_level: MovingAverage::new(RESTART_SLOW_ALPHA),
+            restart_min_conflicts: KISSAT_EMA_RESTART_MIN_CONFLICTS,
+            restart_next_check_conflict: 0,
+            restart_margin: KISSAT_EMA_RESTART_MARGIN,
+            restart_conflicts_since_last: 0,
             reduce_db_limit: ((original_clause_count as f64) * LEARNTSIZE_FACTOR) as usize,
             learned_lit_budget: LEARNED_LIT_BUDGET_BASE,
             hard_learned_lit_budget: LEARNED_LIT_BUDGET_BASE.saturating_mul(2),
@@ -2637,16 +2695,13 @@ impl Solver {
         Self::luby_value(index - (1usize << (power - 1)) + 1)
     }
 
-    fn note_conflict(&mut self) {
-        if !self.accounting_mode.update_restart_stats() {
-            return;
-        }
-        if self.restart_pending {
-            return;
-        }
+    fn legacy_luby_restart_due(&self) -> bool {
+        self.restart_conflicts >= self.restart_conflict_limit
+    }
 
+    fn note_legacy_luby_conflict(&mut self) {
         self.restart_conflicts += 1;
-        if self.restart_conflicts < self.restart_conflict_limit {
+        if !self.legacy_luby_restart_due() {
             return;
         }
 
@@ -2657,6 +2712,69 @@ impl Solver {
         self.restart_conflict_limit = self
             .restart_unit
             .saturating_mul(Self::luby_value(self.restart_luby_index));
+    }
+
+    fn update_restart_ema(&mut self) {
+        let lbd = if self.last_conflict_lbd == 0 {
+            1.0
+        } else {
+            f64::from(self.last_conflict_lbd)
+        };
+        let level = self.current_level().max(1) as f64;
+        self.restart_fast_lbd.update(lbd);
+        self.restart_slow_lbd.update(lbd);
+        self.restart_fast_level.update(level);
+        self.restart_slow_level.update(level);
+    }
+
+    fn should_restart(&self) -> bool {
+        match self.restart_policy {
+            RestartPolicy::LegacyLuby => self.legacy_luby_restart_due(),
+            RestartPolicy::KissatEma => {
+                if self.current_level() == 0 {
+                    return false;
+                }
+                if self.restart_conflicts_since_last < self.restart_min_conflicts {
+                    return false;
+                }
+                if self.stats.conflicts < self.restart_next_check_conflict {
+                    return false;
+                }
+                self.restart_fast_lbd.initialized
+                    && self.restart_slow_lbd.initialized
+                    && self.restart_fast_lbd.value
+                        > self.restart_slow_lbd.value * self.restart_margin
+            }
+            RestartPolicy::Reluctant => false,
+        }
+    }
+
+    fn note_kissat_ema_conflict(&mut self) {
+        self.update_restart_ema();
+        self.restart_conflicts_since_last = self.restart_conflicts_since_last.saturating_add(1);
+        if !self.should_restart() {
+            return;
+        }
+
+        self.restart_pending = true;
+        self.restart_conflicts_since_last = 0;
+        self.restart_next_check_conflict = self.stats.conflicts.saturating_add(1);
+        self.stats.glucose_restarts += 1;
+    }
+
+    fn note_conflict(&mut self) {
+        if !self.accounting_mode.update_restart_stats() {
+            return;
+        }
+        if self.restart_pending {
+            return;
+        }
+
+        match self.restart_policy {
+            RestartPolicy::LegacyLuby => self.note_legacy_luby_conflict(),
+            RestartPolicy::KissatEma => self.note_kissat_ema_conflict(),
+            RestartPolicy::Reluctant => {}
+        }
     }
 
     fn pick_branch_lit(&mut self) -> Option<i32> {
@@ -5298,20 +5416,35 @@ mod tests {
 
     #[test]
     fn test_temp_assumption_does_not_update_restart_ema() {
-        let mut s = make_solver(2, vec![]);
+        let config = SolverConfig {
+            use_lbd: true,
+            restart_policy: RestartPolicy::KissatEma,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(2, vec![], &config);
         let restart_conflicts = s.restart_conflicts;
         let restart_limit = s.restart_conflict_limit;
+        let restart_conflicts_since_last = s.restart_conflicts_since_last;
+        let fast_lbd = s.restart_fast_lbd.value;
+        let slow_lbd = s.restart_slow_lbd.value;
         let restarts = s.stats.restarts;
         let luby_restarts = s.stats.luby_restarts;
+        let glucose_restarts = s.stats.glucose_restarts;
 
         s.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
             assert_eq!(ctx.enqueue(1), EnqueueResult::Enqueued);
+            ctx.solver.last_conflict_lbd = 4;
+            ctx.solver.note_conflict();
         });
 
         assert_eq!(s.restart_conflicts, restart_conflicts);
         assert_eq!(s.restart_conflict_limit, restart_limit);
+        assert_eq!(s.restart_conflicts_since_last, restart_conflicts_since_last);
+        assert_eq!(s.restart_fast_lbd.value, fast_lbd);
+        assert_eq!(s.restart_slow_lbd.value, slow_lbd);
         assert_eq!(s.stats.restarts, restarts);
         assert_eq!(s.stats.luby_restarts, luby_restarts);
+        assert_eq!(s.stats.glucose_restarts, glucose_restarts);
     }
 
     #[test]
@@ -6788,6 +6921,100 @@ mod tests {
     }
 
     #[test]
+    fn test_no_restart_at_level_zero() {
+        let config = SolverConfig {
+            use_lbd: true,
+            restart_policy: RestartPolicy::KissatEma,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        s.restart_conflicts_since_last = s.restart_min_conflicts;
+        s.restart_fast_lbd.update(10.0);
+        s.restart_slow_lbd.update(1.0);
+
+        assert_eq!(s.current_level(), 0);
+        assert!(!s.should_restart());
+    }
+
+    #[test]
+    fn test_lbd_ema_fast_reacts_faster_than_slow() {
+        let mut fast = MovingAverage::new(RESTART_FAST_ALPHA);
+        let mut slow = MovingAverage::new(RESTART_SLOW_ALPHA);
+
+        fast.update(4.0);
+        slow.update(4.0);
+        fast.update(20.0);
+        slow.update(20.0);
+
+        assert!(fast.value > slow.value);
+        assert!((fast.value - 4.0) > (slow.value - 4.0));
+    }
+
+    #[test]
+    fn test_restart_triggers_when_fast_exceeds_slow_by_margin() {
+        let config = SolverConfig {
+            use_lbd: true,
+            restart_policy: RestartPolicy::KissatEma,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        s.decide(1);
+        s.restart_fast_lbd.update(13.0);
+        s.restart_slow_lbd.update(10.0);
+        s.restart_conflicts_since_last = s.restart_min_conflicts - 1;
+        s.stats.conflicts = 100;
+        s.last_conflict_lbd = 13;
+
+        s.note_conflict();
+
+        assert!(s.restart_pending);
+        assert_eq!(s.restart_conflicts_since_last, 0);
+        assert_eq!(s.stats.glucose_restarts, 1);
+    }
+
+    #[test]
+    fn test_restart_blocked_during_min_interval() {
+        let config = SolverConfig {
+            use_lbd: true,
+            restart_policy: RestartPolicy::KissatEma,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        s.decide(1);
+        s.restart_fast_lbd.update(13.0);
+        s.restart_slow_lbd.update(10.0);
+        s.restart_conflicts_since_last = s.restart_min_conflicts - 2;
+        s.stats.conflicts = 100;
+        s.last_conflict_lbd = 13;
+
+        s.note_conflict();
+
+        assert!(!s.restart_pending);
+        assert_eq!(s.restart_conflicts_since_last, s.restart_min_conflicts - 1);
+        assert_eq!(s.stats.glucose_restarts, 0);
+    }
+
+    #[test]
+    fn test_restart_policy_legacy_unchanged_when_selected() {
+        let mut s = make_solver(2, vec![vec![1, 2], vec![-1, -2]]);
+        s.restart_min_conflicts = 50;
+        s.restart_unit = 2;
+        s.restart_luby_index = 1;
+        s.restart_conflict_limit = 2;
+
+        s.note_conflict();
+        assert_eq!(s.restart_conflicts, 1);
+        assert!(!s.restart_pending);
+
+        s.note_conflict();
+        assert_eq!(s.restart_conflicts, 0);
+        assert!(s.restart_pending);
+        assert_eq!(s.restart_luby_index, 2);
+        assert_eq!(s.stats.luby_restarts, 1);
+        assert_eq!(s.stats.glucose_restarts, 0);
+    }
+
+    #[test]
     fn test_conflict_budget_schedules_restart_and_advances_luby_window() {
         let mut s = make_solver(2, vec![vec![1, 2], vec![-1, -2]]);
         s.restart_unit = 2;
@@ -6818,7 +7045,7 @@ mod tests {
     }
 
     #[test]
-    fn test_restart_backtracks_to_root_but_keeps_root_assignments() {
+    fn test_restart_backtracks_and_preserves_root_units() {
         let mut s = make_solver(4, vec![vec![1], vec![-1, 2], vec![3, 4]]);
         assert!(s.enqueue_root_units());
         assert_eq!(s.propagate(), None);

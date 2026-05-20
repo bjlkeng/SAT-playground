@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "status": "UNKNOWN",
+  "exit_code": 0,
+  "termination_reason": "wall-clock-limit",
+  "unknown_reason": "wall-clock-limit",
+  "status_file": "log/1.4/manual-stats-544/proof/status.txt",
+  "model_file": null,
+  "proof_file": null,
+  "proof_completeness": "incomplete",
+  "model_check_result": "not_applicable",
+  "proof_check_result": "not_checked",
+  "config_hash": "14c133f90e04491a",
+  "input_sha256": "67560c0b8902706c8e24568d849111f7b85e01bed9f82884d4c79486409255c8",
+  "profile": "default",
+  "proof_policy": "drat",
+  "output_contract_state": "complete",
+  "stats_json_seen": true
+}

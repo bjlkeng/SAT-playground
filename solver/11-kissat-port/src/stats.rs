@@ -63,6 +63,7 @@ pub(crate) struct SolverStats {
     pub(crate) learned_size_sum: u64,
     pub(crate) learned_size_max: u64,
     pub(crate) luby_restarts: u64,
+    pub(crate) glucose_restarts: u64,
     pub(crate) binary_props: u64,
     pub(crate) long_props: u64,
     pub(crate) watch_scans: u64,
@@ -331,6 +332,9 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("learned_kept_tier2", ctx.stats.learned_kept_tier2);
     json.u64("learned_kept_tier3", ctx.stats.learned_kept_tier3);
     json.u64("learned_collected", ctx.stats.learned_collected);
+    json.u64("luby_restarts", ctx.stats.luby_restarts);
+    json.u64("glucose_restarts", ctx.stats.glucose_restarts);
+    json.u64("reluctant_restarts", 0);
 
     json.f64("avg_decision_level", average_decision_level(ctx.stats));
     json.u64("max_decision_level", ctx.stats.max_decision_level);
@@ -438,7 +442,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
             "c trace_full ",
             "glue_sum={} glue_max={} glue_count={} ",
             "learned_size_sum={} learned_size_max={} ",
-            "glucose_restarts=0 luby_restarts={} reluctant_restarts=0 ",
+            "glucose_restarts={} luby_restarts={} reluctant_restarts=0 ",
             "chrono_backtracks=0 non_chrono_backtracks=0 chrono_skipped_levels=0 ",
             "vivified_clauses=0 vivified_strengthened=0 vivified_subsumed=0 vivified_ticks=0 ",
             "probe_failed_lits=0 probe_units=0 probe_ticks=0 ",
@@ -456,6 +460,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
         stats.lbd_computed,
         stats.learned_size_sum,
         stats.learned_size_max,
+        stats.glucose_restarts,
         stats.luby_restarts,
         stats.decisions,
         timings.search_sec,
