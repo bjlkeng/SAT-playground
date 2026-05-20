@@ -31,6 +31,7 @@ COLORS = {
     "07-clause-minimization": "#b54b3a",
     "08-clause-db-management": "#23657a",
     "09-root-simp-opts": "#5b6f1f",
+    "10-bve-preprocess": "#9a5b20",
     "minisat": "#ecab4e",
     "minisat-core": "#8f7a27",
     "kissat-latest": "#8d3613",
@@ -112,6 +113,13 @@ SOLVERS = [
         source_url=f"{GITHUB_TREE_BASE}/solver/09-root-simp-opts",
         info_url="./solvers/09-root-simp-opts.html",
         log_aliases=("09-top-level-simplify",),
+    ),
+    SolverSpec(
+        slug="10-bve-preprocess",
+        label="10 bve-preprocess",
+        family="repo",
+        source_url=f"{GITHUB_TREE_BASE}/solver/10-bve-preprocess",
+        info_url="./solvers/10-bve-preprocess.html",
     ),
     SolverSpec(
         slug="minisat",

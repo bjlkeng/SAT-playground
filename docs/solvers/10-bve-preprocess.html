@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>10 bve-preprocess · SAT Playground</title>
+    <link rel="stylesheet" href="../solver-pages.css" />
+    <style>
+      .solver-demo{margin-top:18px;padding:22px;border:1px solid var(--line);border-radius:22px;background:linear-gradient(180deg,rgba(249,251,255,.98),rgba(255,255,255,.95))}
+      .solver-demo-header h3{margin:0 0 6px;font-size:1.08rem}
+      .solver-demo-header p,.solver-demo-caption p,.solver-demo-panel p{margin:0;color:var(--muted)}
+      .solver-demo-step,.solver-demo-button{border-radius:999px;border:1px solid var(--line);background:#fff;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.78rem}
+      .solver-demo-step{padding:8px 11px;color:var(--accent);background:var(--accent-soft);white-space:nowrap}
+      .solver-demo-controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:16px}
+      .solver-demo-button-group{display:flex;gap:8px;align-items:center}
+      .solver-demo-button{position:relative;display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;color:var(--ink);cursor:pointer}
+      .solver-demo-button:hover{border-color:rgba(15,122,216,.32)}
+      .solver-demo-button:disabled{opacity:.45;cursor:not-allowed}
+      .solver-demo-button::before,.solver-demo-button::after{content:"";display:block;box-sizing:border-box}
+      .solver-demo-button[data-demo-action="back"]::before{width:9px;height:9px;border-left:2px solid currentColor;border-bottom:2px solid currentColor;transform:translateX(2px) rotate(45deg)}
+      .solver-demo-button[data-demo-action="next"]::before{width:9px;height:9px;border-right:2px solid currentColor;border-top:2px solid currentColor;transform:translateX(-2px) rotate(45deg)}
+      .solver-demo-button[data-demo-action="play"]::before{width:0;height:0;margin-left:2px;border-top:6px solid transparent;border-bottom:6px solid transparent;border-left:10px solid currentColor}
+      .solver-demo-button[data-demo-action="play"].is-playing::before{width:12px;height:13px;margin-left:0;border:0;border-left:4px solid currentColor;border-right:4px solid currentColor}
+      .solver-demo-button[data-demo-action="reset"]::before{width:15px;height:15px;border:2px solid currentColor;border-right-color:transparent;border-radius:999px;transform:rotate(-35deg)}
+      .solver-demo-button[data-demo-action="reset"]::after{position:absolute;right:8px;top:9px;width:0;height:0;border-left:5px solid currentColor;border-top:3px solid transparent;border-bottom:3px solid transparent;transform:rotate(20deg)}
+      .solver-demo-caption{margin-top:14px;padding:14px 16px;border-radius:18px;border:1px solid rgba(15,122,216,.14);background:rgba(255,255,255,.88)}
+      .solver-demo-caption strong{display:block;margin-bottom:4px}
+      .solver-demo-legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.74rem;color:var(--muted)}
+      .solver-demo-legend span{display:inline-flex;align-items:center;gap:6px;padding:5px 8px;border:1px solid var(--line);border-radius:999px;background:#fff}
+      .solver-demo-legend i{width:18px;height:18px;border-radius:999px;border:1px solid rgba(22,32,43,.14);display:inline-flex;align-items:center;justify-content:center;font-style:normal;font-weight:700;font-size:.62rem;color:var(--ink);line-height:1}
+      .solver-demo-legend .good i{background:var(--diff-add);border-color:rgba(17,102,59,.25)}
+      .solver-demo-legend .bad i{background:var(--diff-del);border-color:rgba(176,68,68,.25)}
+      .solver-demo-legend .warn i{background:#fff4c2;border-color:rgba(185,140,15,.3)}
+      .solver-demo-legend .active i{background:var(--accent-soft);border-color:rgba(15,122,216,.3)}
+      .solver-demo-grid{display:grid;gap:16px;margin-top:16px}
+      .solver-demo-panel{min-height:260px;padding:16px;border-radius:18px;border:1px solid var(--line);background:rgba(255,255,255,.9)}
+      .solver-demo-panel h4{margin:0 0 10px;font-size:.98rem}
+      .solver-demo-chip-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+      .solver-demo-chip{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;min-height:32px;border-radius:999px;border:1px solid var(--line);background:#fff;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.76rem}
+      .solver-demo-chip.good{color:var(--diff-add-ink);background:var(--diff-add);border-color:rgba(17,102,59,.22)}
+      .solver-demo-chip.bad{color:var(--diff-del-ink);background:var(--diff-del);border-color:rgba(176,68,68,.22);text-decoration:line-through}
+      .solver-demo-chip.warn{color:#7a5600;background:#fff4c2;border-color:rgba(185,140,15,.28)}
+      .solver-demo-chip.active{color:var(--accent);background:var(--accent-soft);border-color:rgba(15,122,216,.28)}
+      .solver-demo-var sub{font-size:.68em;line-height:0}.solver-demo-neg-name{text-decoration-line:overline;text-decoration-thickness:1.5px}
+      .solver-demo-card{margin-top:10px;padding:12px;border-radius:16px;border:1px solid var(--line);background:#f9fbff}
+      .solver-demo-card strong{display:block;margin-bottom:6px}
+      @media (min-width:820px){.solver-demo-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
+      @media (max-width:620px){.solver-demo{padding:18px}.solver-demo-controls{gap:8px}.solver-demo-button{width:34px;height:34px}.solver-demo-step{font-size:.72rem}}
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="panel">
+        <p class="eyebrow">SAT Playground · Solver 10</p>
+        <h1>10 bve-preprocess</h1>
+        <p class="lead">
+          This iteration keeps <code>09</code>'s optimized CDCL core and adds a MiniSat
+          <code>SimpSolver</code>-style preprocessing front end. Solver <code>10</code> canonicalizes
+          input clauses, performs backward subsumption and bounded variable elimination before
+          search, logs preprocessing proof steps, and extends SAT models back through eliminated
+          variables.
+        </p>
+        <div class="actions">
+          <a class="button" href="../index.html">Back To Main Page</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/tree/main/solver/10-bve-preprocess" target="_blank" rel="noreferrer">Solver Source</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/blob/main/solver/10-bve-preprocess/README.md" target="_blank" rel="noreferrer">Optimization Notes</a>
+        </div>
+        <div class="pill-row">
+          <span class="pill">Bounded variable elimination</span>
+          <span class="pill">Backward subsumption</span>
+          <span class="pill">Model extension</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>What It Implements</h2>
+        <ul>
+          <li>The same watched-literal propagation, EVSIDS branching, restarts, learned-clause reduction, root simplification, proof streaming, and optimized hot paths from <code>09</code>.</li>
+          <li>Parse-time clause normalization that removes duplicate literals, skips tautologies and already-satisfied clauses, enqueues root units immediately, and feeds surviving clauses through the same path used by preprocessing-generated clauses.</li>
+          <li>MiniSat-style preprocessing state: original-clause occurrence lists, literal occurrence counts, a separate decision-variable flag, touched-variable queues, subsumption queues, and a dynamic elimination heap.</li>
+          <li>Backward subsumption and self-subsuming resolution over original clauses, including in-place strengthening and proof metadata updates for strengthened clauses.</li>
+          <li>Bounded variable elimination with <code>grow = 0</code> and <code>clause_lim = 20</code>, plus resolvent insertion through the original-clause path so new resolvents can immediately participate in more subsumption work.</li>
+          <li>A MiniSat-style elimination stack and SAT model-extension pass, so removed variables are reconstructed before emitting a complete model.</li>
+          <li>Large-formula preprocessing optimizations, including inline original-clause abstractions, lazy occurrence-list cleanup, sorted-clause relation checks where safe, and targeted watcher-detach policies.</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>High-Level Pseudocode</h2>
+        <pre><code>parse clauses through the preprocessing original-clause path
+enqueue root units, skip tautologies, and build occurrence lists
+
+if simplification is enabled:
+  initialize touched variables, subsumption queue, and elimination heap
+
+  while preprocessing work remains:
+    propagate root assignments
+    run backward subsumption on queued clauses
+    strengthen original clauses when self-subsuming resolution applies
+    pick a low-cost variable from the elimination heap
+    if all resolvents fit the bounded-elimination budget:
+      delete clauses containing the variable
+      add resolvents and proof steps
+      push an elimination-stack entry for model reconstruction
+    update occurrence costs and enqueue newly touched clauses
+
+  drop preprocessing metadata, rebuild the branch heap, and compact the arena
+
+run the solver 09 CDCL search core on the residual formula
+
+if SAT:
+  extend the model through the elimination stack
+  print the completed model
+if UNSAT:
+  finalize the combined preprocessing and search proof</code></pre>
+      </section>
+
+      <section class="panel">
+        <h2>Visual Walkthrough</h2>
+        <div class="solver-demo" id="bve-demo">
+          <div class="solver-demo-header">
+            <div>
+              <h3>MiniSat-Style Preprocessing Loop</h3>
+              <p>
+                This visualization follows one simplified preprocessing round: normalize clauses,
+                strengthen with backward subsumption, eliminate a bounded variable, then hand the
+                residual formula to CDCL search.
+              </p>
+            </div>
+          </div>
+          <div class="solver-demo-legend" aria-label="Legend">
+            <span class="good"><i>1</i>kept / accepted</span>
+            <span class="bad"><i>0</i>removed / blocked</span>
+            <span class="warn"><i>U</i>queued / pending</span>
+            <span class="active"><i>F</i>focus</span>
+          </div>
+          <div class="solver-demo-grid">
+            <div class="solver-demo-panel">
+              <h4>Preprocessing State</h4>
+              <div data-demo-pane="left"></div>
+            </div>
+            <div class="solver-demo-panel">
+              <h4>Formula Effect</h4>
+              <div data-demo-pane="right"></div>
+            </div>
+          </div>
+          <div class="solver-demo-controls">
+            <div class="solver-demo-button-group" aria-label="Walkthrough controls">
+              <button class="solver-demo-button" type="button" data-demo-action="back" aria-label="Back" title="Back"></button>
+              <button class="solver-demo-button" type="button" data-demo-action="play" aria-label="Play" title="Play"></button>
+              <button class="solver-demo-button" type="button" data-demo-action="next" aria-label="Next step" title="Next step"></button>
+              <button class="solver-demo-button" type="button" data-demo-action="reset" aria-label="Reset" title="Reset"></button>
+            </div>
+            <div class="solver-demo-step" data-demo-step>Step 1 / 1</div>
+          </div>
+          <div class="solver-demo-caption">
+            <strong data-demo-title></strong>
+            <p data-demo-caption></p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Code-Level Optimization Diffs</h2>
+        <p class="small">
+          The README and MiniSat port notes have the full benchmark history. These are the changes
+          that best explain how <code>10</code> differs from <code>09</code>.
+        </p>
+        <div class="diff-grid">
+          <article class="diff-card">
+            <h3>Preprocessing Metadata</h3>
+            <p>
+              Solver <code>09</code> searched the parsed formula directly. Solver <code>10</code>
+              builds temporary occurrence metadata so it can run simplification before search and
+              then discard that state.
+            </p>
+            <pre><code><span class="diff-del">- enter CDCL search immediately after root simplify</span>
+<span class="diff-add">+ build occurrence lists, occurrence counts, and elimination heap</span>
+<span class="diff-add">+ drop preprocessing metadata before the residual CDCL solve</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Backward Subsumption</h3>
+            <p>
+              Backward subsumption deletes clauses made redundant by smaller clauses and strengthens
+              originals when self-subsuming resolution can remove a literal.
+            </p>
+            <pre><code><span class="diff-del">- keep every surviving original clause unchanged before search</span>
+<span class="diff-add">+ queue original clauses for backward subsumption checks</span>
+<span class="diff-add">+ strengthen clauses in place and update proof metadata</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Bounded Variable Elimination</h3>
+            <p>
+              Variables are eliminated only when the generated resolvents fit MiniSat's bounded
+              growth policy. This can shrink the residual formula without exploding clause count.
+            </p>
+            <pre><code><span class="diff-del">- every parsed variable remains a CDCL decision candidate</span>
+<span class="diff-add">+ mark eliminated variables as non-decision variables</span>
+<span class="diff-add">+ insert resolvents and push model-extension stack entries</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Large-Formula BSR Hot Path</h3>
+            <p>
+              Later optimization passes kept the algorithm but changed the data path: abstractions
+              live inline with original clauses, strengthening is compacted in one pass, and dirty
+              occurrence lists are cleaned lazily.
+            </p>
+            <pre><code><span class="diff-del">- scan large formulas through sparse side-table metadata</span>
+<span class="diff-add">+ store original-clause abstractions inline during preprocessing</span>
+<span class="diff-add">+ reuse scratch buffers and lazily clean occurrence membership</span></code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Benchmark Role</h2>
+        <p>
+          Solver <code>10</code> is the first repo solver that seriously targets MiniSat
+          <code>simp</code>-style preprocessing rather than only CDCL search mechanics. On the
+          MiniSat-simp five-instance set, the accepted gated-BSR run solved all five formulas and
+          moved PAR-2 from solver <code>09</code>'s <code>3195.921</code> to <code>540.550</code>,
+          close to MiniSat <code>simp</code>'s <code>453.343</code> on that same harness.
+        </p>
+        <p>
+          On the 100-instance SAT Competition 2025 medium site run, the latest available solver
+          <code>10</code> artifact solves <code>47/100</code> with PAR-2 <code>204961.832</code>,
+          compared with solver <code>09</code>'s <code>46/100</code> and PAR-2
+          <code>208534.668</code>. That run still records four memory-abort errors, so its role is
+          best read as an improved but not fully hardened medium benchmark baseline.
+        </p>
+      </section>
+    </main>
+    <script src="../vendor/d3.v7.min.js"></script>
+    <script>
+      (() => {
+        const root = document.getElementById("bve-demo");
+        if (!root) return;
+        const chips = (items) => `<div class="solver-demo-chip-row">${items.map(([text,cls]) => `<span class="solver-demo-chip ${cls}">${text}</span>`).join("")}</div>`;
+        const steps = [
+          {
+            title: "Clauses enter a normalized preprocessing path",
+            caption: "Duplicate literals and tautologies are handled before search, and root units are enqueued immediately.",
+            left: `<div class="solver-demo-card"><strong>Parser output</strong>${chips([["C1: x1 or x2 or x2","warn"],["C2: x3 or -x3","bad"],["C3: x4","active"]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>Canonical clauses</strong>${chips([["C1: x1 or x2","good"],["C2 skipped","bad"],["x4 root unit","active"]])}</div>`,
+          },
+          {
+            title: "Backward subsumption queues candidate clauses",
+            caption: "Occurrence lists point from each literal to original clauses that may be removed or strengthened.",
+            left: `<div class="solver-demo-card"><strong>Occurrence state</strong>${chips([["x1 -> C1,C8","active"],["-x2 -> C4,C8","active"],["subsumption queue","warn"]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>Candidate pair</strong>${chips([["C1: x1 or x2","good"],["C8: x1 or x2 or -x5","warn"],["C1 subsumes C8","active"]])}</div>`,
+          },
+          {
+            title: "Self-subsuming resolution strengthens originals",
+            caption: "When a clause pair differs by one complementary literal, solver 10 can remove that literal and keep a smaller original clause.",
+            left: `<div class="solver-demo-card"><strong>Before BSR</strong>${chips([["D: x6 or x7","good"],["E: -x6 or x7 or x8","warn"]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>After BSR</strong>${chips([["E loses -x6","bad"],["E: x7 or x8","good"],["proof deletion/addition logged","active"]])}</div>`,
+          },
+          {
+            title: "Bounded variable elimination checks resolvent growth",
+            caption: "A variable is eliminated only when the resolvents do not grow the formula beyond the configured bound.",
+            left: `<div class="solver-demo-card"><strong>Elimination heap</strong>${chips([["x9 low occurrence","active"],["grow=0","good"],["clause_lim=20","good"]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>Budget test</strong>${chips([["delete 4 clauses","bad"],["add 3 resolvents","good"],["accept elimination","active"]])}</div>`,
+          },
+          {
+            title: "Eliminated variables leave the decision heap",
+            caption: "The residual CDCL formula is smaller, but a SAT result still needs a complete assignment for every original variable.",
+            left: `<div class="solver-demo-card"><strong>After elimination</strong>${chips([["x9 non-decision","bad"],["resolvents queued","warn"],["stack entry saved","active"]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>Search handoff</strong>${chips([["drop occurrences","good"],["rebuild branch heap","good"],["force arena GC","active"]])}</div>`,
+          },
+          {
+            title: "SAT models are extended after search",
+            caption: "If the residual formula is SAT, solver 10 replays the elimination stack to assign removed variables before printing the model.",
+            left: `<div class="solver-demo-card"><strong>Residual model</strong>${chips([["x1=1","good"],["x2=0","good"],["x9 missing","warn"]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>Completed output</strong>${chips([["replay stack","active"],["x9 assigned","good"],["full model emitted","good"]])}</div>`,
+          },
+        ];
+        let current=0,timer=null;
+        const title=root.querySelector("[data-demo-title]"),caption=root.querySelector("[data-demo-caption]"),stepLabel=root.querySelector("[data-demo-step]"),left=root.querySelector('[data-demo-pane="left"]'),right=root.querySelector('[data-demo-pane="right"]'),back=root.querySelector('[data-demo-action="back"]'),next=root.querySelector('[data-demo-action="next"]'),play=root.querySelector('[data-demo-action="play"]');
+        function compactDemoText(value){return value.replace(/\s*->\s*/g," -> ").replace(/\b(x\d+)\s*=\s*true\b/g,"$1=1").replace(/\b(x\d+)\s*=\s*false\b/g,"$1=0").replace(/\btrue\b/g,"1").replace(/\bfalse\b/g,"0").replace(/\s+=\s+/g,"=").replace(/\bdecision level\s+(\d+)/g,"DL$1");}
+        function formatDemoHtml(value){return compactDemoText(value).replace(/-?x(\d+)/g,(match,digits)=>`<span class="solver-demo-var${match.startsWith("-")?" solver-demo-neg-name":""}">x<sub>${digits}</sub></span>`);}
+        function stop(){if(timer!==null)window.clearInterval(timer);timer=null;play.classList.remove("is-playing");play.setAttribute("aria-label","Play");play.title="Play";}
+        function render(){const step=steps[current];d3.select(title).html(formatDemoHtml(step.title));d3.select(caption).html(formatDemoHtml(step.caption));stepLabel.textContent=`Step ${current+1} / ${steps.length}`;d3.select(left).html(formatDemoHtml(step.left));d3.select(right).html(formatDemoHtml(step.right));back.disabled=current===0;next.disabled=current===steps.length-1;play.disabled=current===steps.length-1&&timer===null;}
+        root.addEventListener("click",(event)=>{const button=event.target.closest("[data-demo-action]");if(!button||!root.contains(button))return;const action=button.dataset.demoAction;if(action==="back")current=Math.max(0,current-1);if(action==="next")current=Math.min(steps.length-1,current+1);if(action==="reset"){stop();current=0;}if(action==="play"){if(timer===null){play.classList.add("is-playing");play.setAttribute("aria-label","Pause");play.title="Pause";timer=window.setInterval(()=>{if(current===steps.length-1){stop();render();return;}current+=1;if(current===steps.length-1)stop();render();},1600);}else stop();}render();});
+        render();
+      })();
+    </script>
+  </body>
+</html>

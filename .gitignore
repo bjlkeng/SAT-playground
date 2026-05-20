@@ -22,6 +22,10 @@ target
 
 # Smoke test logs and generated benchmark/profile artifacts
 log/*
+!log/bench-10-bve-preprocess-2026-05-18-16-04-01/
+log/bench-10-bve-preprocess-2026-05-18-16-04-01/*
+!log/bench-10-bve-preprocess-2026-05-18-16-04-01/results.csv
+!log/bench-10-bve-preprocess-2026-05-18-16-04-01/summary.log
 !log/profiles/
 log/profiles/*
 !log/profiles/README.md
