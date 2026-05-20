@@ -70,6 +70,9 @@ pub(crate) struct SolverStats {
     pub(crate) watch_stale_skips: u64,
     pub(crate) watch_blocker_hits: u64,
     pub(crate) watch_clause_loads: u64,
+    pub(crate) phase_saved_used: u64,
+    pub(crate) phase_target_used: u64,
+    pub(crate) phase_best_used: u64,
     pub(crate) phase_initial_used: u64,
     pub(crate) decision_heap_pops: u64,
     pub(crate) decision_heap_stale_pops: u64,
@@ -353,9 +356,9 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("watch_blocker_hits", ctx.stats.watch_blocker_hits);
     json.u64("watch_clause_loads", ctx.stats.watch_clause_loads);
 
-    json.u64("phase_saved_used", 0);
-    json.u64("phase_target_used", 0);
-    json.u64("phase_best_used", 0);
+    json.u64("phase_saved_used", ctx.stats.phase_saved_used);
+    json.u64("phase_target_used", ctx.stats.phase_target_used);
+    json.u64("phase_best_used", ctx.stats.phase_best_used);
     json.u64("phase_initial_used", ctx.stats.phase_initial_used);
     json.u64("random_decisions", 0);
 
@@ -448,6 +451,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
             "probe_failed_lits=0 probe_units=0 probe_ticks=0 ",
             "transitive_removed=0 gate_equivs_found=0 appendix_equiv_substitutions=0 ",
             "inprocess_runs=0 inprocess_ticks=0 ",
+            "phase_saved_used={} phase_target_used={} phase_best_used={} phase_initial_used={} ",
             "phase_save_target=0 phase_save_best=0 rephases=0 ",
             "decisions_focused=0 decisions_stable={} ",
             "mode_switches=0 seconds_focused=0.000000 seconds_stable={:.6} ",
@@ -462,6 +466,10 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
         stats.learned_size_max,
         stats.glucose_restarts,
         stats.luby_restarts,
+        stats.phase_saved_used,
+        stats.phase_target_used,
+        stats.phase_best_used,
+        stats.phase_initial_used,
         stats.decisions,
         timings.search_sec,
         stats.learned_kept_tier1,

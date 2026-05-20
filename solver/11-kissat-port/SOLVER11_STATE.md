@@ -53,7 +53,8 @@ Known missing or incomplete feature families at this baseline:
   opt-in Kissat/Glucose-style EMA restart policy are present behind explicit flags, but they are
   not promoted as default-profile behavior yet.
 - Chronological backtracking.
-- Best/target phase policies.
+- Saved/target/best phase policies are present behind `SAT_PHASE`, but they are not promoted as
+  default-profile behavior yet.
 - Focused/stable mode switching.
 - VMTF queue.
 - Rephasing.

@@ -17,8 +17,8 @@ mod stats;
 mod oracle_tests;
 
 use config::{
-    BranchMode, ClauseMinMode, InitialClauseMode, ProofPolicy, ReducePolicy, RestartPolicy,
-    SolverConfig,
+    BranchMode, ClauseMinMode, InitialClauseMode, PhasePolicy, ProofPolicy, ReducePolicy,
+    RestartPolicy, SolverConfig,
 };
 use limits::{effective_memory_limit_bytes, LimitHit, RuntimeLimits};
 use lit::{lit_to_index, lit_to_word, word_to_lit};
@@ -719,6 +719,20 @@ struct Solver {
     assignment: Vec<u8>,
     /// last assigned polarity for each variable, reused when branching after backtrack/restart
     saved_phase: Vec<u8>,
+    /// per-restart target assignment polarity captured from the deepest unconflicted prefix
+    target_phase: Vec<u8>,
+    /// best full-solve assignment polarity captured from the deepest unconflicted prefix
+    best_phase: Vec<u8>,
+    /// initial polarity used when no saved/target/best phase is available
+    original_phase: Vec<u8>,
+    /// deepest unconflicted trail length captured for target phase in the current restart window
+    target_assigned: usize,
+    /// deepest unconflicted trail length captured for best phase over the whole solve
+    best_assigned: usize,
+    /// monotonic phase-capture counter used by tests and future rephase scheduling
+    phase_ticks: u64,
+    /// selected phase policy; legacy preserves solver-10-compatible saved-phase branching
+    phase_policy: PhasePolicy,
     /// decision level of each variable assignment
     decision_level: Vec<usize>,
     /// encoded reason for each implied assignment; NONE for decisions/root-unassigned vars
@@ -1226,6 +1240,13 @@ impl Solver {
             BranchMode::Minisat => FALSE,
             BranchMode::Occurrence => TRUE,
         };
+        let phase_policy = config.phase_policy;
+        let phase_buffers_enabled = phase_policy != PhasePolicy::Legacy;
+        let initial_saved_phase = if phase_buffers_enabled {
+            UNASSIGNED
+        } else {
+            default_phase
+        };
 
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
         let arena = Vec::with_capacity(total_words);
@@ -1244,7 +1265,26 @@ impl Solver {
             watchers: vec![Vec::new(); num_vars.saturating_mul(2)],
             watch_scratch: Vec::new(),
             assignment: vec![UNASSIGNED; num_vars + 1],
-            saved_phase: vec![default_phase; num_vars + 1],
+            saved_phase: vec![initial_saved_phase; num_vars + 1],
+            target_phase: if phase_buffers_enabled {
+                vec![UNASSIGNED; num_vars + 1]
+            } else {
+                Vec::new()
+            },
+            best_phase: if phase_buffers_enabled {
+                vec![UNASSIGNED; num_vars + 1]
+            } else {
+                Vec::new()
+            },
+            original_phase: if phase_buffers_enabled {
+                vec![default_phase; num_vars + 1]
+            } else {
+                Vec::new()
+            },
+            target_assigned: 0,
+            best_assigned: 0,
+            phase_ticks: 0,
+            phase_policy,
             decision_level: vec![0; num_vars + 1],
             reason: vec![NO_REASON; num_vars + 1],
             binary_reason_lits: Vec::new(),
@@ -2622,7 +2662,6 @@ impl Solver {
         let level = self.current_level() as u64 + 1;
         self.stats.avg_decision_level_sum += level;
         self.stats.max_decision_level = self.stats.max_decision_level.max(level);
-        self.stats.phase_initial_used += 1;
         self.trail_limits.push(self.trail.len());
         let inserted = self.enqueue(lit, ReasonRef::None);
         debug_assert!(inserted, "decision literal must be unassigned");
@@ -2777,16 +2816,119 @@ impl Solver {
         }
     }
 
+    fn initial_phase(&self, var: usize) -> u8 {
+        self.original_phase.get(var).copied().unwrap_or(FALSE)
+    }
+
+    fn saved_or_initial_phase(&mut self, var: usize) -> u8 {
+        let saved = self.saved_phase[var];
+        if saved != UNASSIGNED {
+            self.stats.phase_saved_used += 1;
+            saved
+        } else {
+            self.stats.phase_initial_used += 1;
+            self.initial_phase(var)
+        }
+    }
+
+    #[inline]
+    fn pick_branch_phase(&mut self, var: usize) -> bool {
+        let phase = match self.phase_policy {
+            PhasePolicy::Legacy => {
+                self.stats.phase_initial_used += 1;
+                self.saved_phase[var]
+            }
+            PhasePolicy::Saved => self.saved_or_initial_phase(var),
+            PhasePolicy::TargetThenSaved => {
+                let target = self.target_phase[var];
+                if target != UNASSIGNED {
+                    self.stats.phase_target_used += 1;
+                    target
+                } else {
+                    self.saved_or_initial_phase(var)
+                }
+            }
+            PhasePolicy::BestThenTargetThenSaved => {
+                let best = self.best_phase[var];
+                if best != UNASSIGNED {
+                    self.stats.phase_best_used += 1;
+                    best
+                } else {
+                    let target = self.target_phase[var];
+                    if target != UNASSIGNED {
+                        self.stats.phase_target_used += 1;
+                        target
+                    } else {
+                        self.saved_or_initial_phase(var)
+                    }
+                }
+            }
+        };
+        phase == TRUE
+    }
+
     fn pick_branch_lit(&mut self) -> Option<i32> {
         self.heap_remove_assigned_top();
         let var = self.branch_heap_pop_best()?;
         debug_assert!(self.unassigned_decision_candidate(var));
 
-        Some(if self.saved_phase[var] == FALSE {
-            -(var as i32)
-        } else {
+        Some(if self.pick_branch_phase(var) {
             var as i32
+        } else {
+            -(var as i32)
         })
+    }
+
+    fn reset_target_phase(&mut self) {
+        if self.target_phase.is_empty() {
+            return;
+        }
+        self.target_phase.fill(UNASSIGNED);
+        self.target_assigned = 0;
+    }
+
+    fn capture_target_phase(&mut self, assigned: usize) {
+        for &lit in &self.trail {
+            let var = lit.unsigned_abs() as usize;
+            let value = self.assignment[var];
+            if value != UNASSIGNED {
+                self.target_phase[var] = value;
+            }
+        }
+        self.target_assigned = assigned;
+        self.phase_ticks = self.phase_ticks.saturating_add(1);
+    }
+
+    fn capture_best_phase(&mut self, assigned: usize) {
+        for &lit in &self.trail {
+            let var = lit.unsigned_abs() as usize;
+            let value = self.assignment[var];
+            if value != UNASSIGNED {
+                self.best_phase[var] = value;
+            }
+        }
+        self.best_assigned = assigned;
+        self.phase_ticks = self.phase_ticks.saturating_add(1);
+    }
+
+    fn maybe_capture_phase_prefix(&mut self) {
+        if self.accounting_mode.is_temporary() {
+            return;
+        }
+        match self.phase_policy {
+            PhasePolicy::TargetThenSaved | PhasePolicy::BestThenTargetThenSaved => {}
+            PhasePolicy::Legacy | PhasePolicy::Saved => return,
+        }
+
+        let assigned = self.trail.len();
+        if assigned > self.target_assigned {
+            self.capture_target_phase(assigned);
+        }
+        if self.phase_policy == PhasePolicy::BestThenTargetThenSaved
+            && assigned > self.best_assigned
+        {
+            self.capture_best_phase(assigned);
+        }
     }
 
     fn backtrack(&mut self, target_level: usize) {
@@ -2841,6 +2983,7 @@ impl Solver {
         }
 
         self.restart_pending = false;
+        self.reset_target_phase();
         if self.current_level() == 0 {
             return false;
         }
@@ -4328,6 +4471,8 @@ impl Solver {
                         continue;
                     }
 
+                    self.maybe_capture_phase_prefix();
+
                     if self.current_level() == 0 {
                         if self.gc_pending_reason != GcReason::None {
                             self.maybe_garbage_collect(GcReason::ArenaFragmentation);
@@ -5386,16 +5531,31 @@ mod tests {
 
     #[test]
     fn test_temp_assumption_does_not_update_target_or_best_phase() {
-        let mut s = make_solver(1, vec![]);
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::BestThenTargetThenSaved,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(1, vec![], &config);
         let phase_initial = s.stats.phase_initial_used;
         let saved_phase = s.saved_phase[1];
+        let target_phase = s.target_phase[1];
+        let best_phase = s.best_phase[1];
+        let target_assigned = s.target_assigned;
+        let best_assigned = s.best_assigned;
+        let phase_ticks = s.phase_ticks;
 
         s.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
             assert_eq!(ctx.enqueue(-1), EnqueueResult::Enqueued);
+            ctx.solver.maybe_capture_phase_prefix();
         });
 
         assert_eq!(s.stats.phase_initial_used, phase_initial);
         assert_eq!(s.saved_phase[1], saved_phase);
+        assert_eq!(s.target_phase[1], target_phase);
+        assert_eq!(s.best_phase[1], best_phase);
+        assert_eq!(s.target_assigned, target_assigned);
+        assert_eq!(s.best_assigned, best_assigned);
+        assert_eq!(s.phase_ticks, phase_ticks);
     }
 
     #[test]
@@ -6839,6 +6999,180 @@ mod tests {
 
         assert_eq!(s.assignment[1], UNASSIGNED);
         assert_eq!(s.pick_branch_lit(), Some(-1));
+    }
+
+    #[test]
+    fn test_phase_falls_back_to_initial() {
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::Saved,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(1, vec![], &config);
+
+        assert_eq!(s.saved_phase[1], UNASSIGNED);
+        assert_eq!(s.pick_branch_lit(), Some(-1));
+        assert_eq!(s.stats.phase_initial_used, 1);
+        assert_eq!(s.stats.phase_saved_used, 0);
+    }
+
+    #[test]
+    fn test_saved_phase_used_when_no_target() {
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::TargetThenSaved,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(1, vec![], &config);
+        s.saved_phase[1] = TRUE;
+
+        assert_eq!(s.pick_branch_lit(), Some(1));
+        assert_eq!(s.stats.phase_saved_used, 1);
+        assert_eq!(s.stats.phase_target_used, 0);
+    }
+
+    #[test]
+    fn test_target_phase_precedes_saved() {
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::TargetThenSaved,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(1, vec![], &config);
+        s.saved_phase[1] = TRUE;
+        s.target_phase[1] = FALSE;
+
+        assert_eq!(s.pick_branch_lit(), Some(-1));
+        assert_eq!(s.stats.phase_target_used, 1);
+        assert_eq!(s.stats.phase_saved_used, 0);
+    }
+
+    #[test]
+    fn test_best_phase_precedes_target_when_policy_selected() {
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::BestThenTargetThenSaved,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(1, vec![], &config);
+        s.saved_phase[1] = FALSE;
+        s.target_phase[1] = FALSE;
+        s.best_phase[1] = TRUE;
+
+        assert_eq!(s.pick_branch_lit(), Some(1));
+        assert_eq!(s.stats.phase_best_used, 1);
+        assert_eq!(s.stats.phase_target_used, 0);
+        assert_eq!(s.stats.phase_saved_used, 0);
+    }
+
+    #[test]
+    fn test_target_phase_captured_at_new_deep_prefix() {
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::TargetThenSaved,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(3, vec![], &config);
+
+        s.decide(1);
+        s.maybe_capture_phase_prefix();
+        assert_eq!(s.target_assigned, 1);
+        assert_eq!(s.target_phase[1], TRUE);
+        assert_eq!(s.phase_ticks, 1);
+
+        s.backtrack(0);
+        s.decide(-2);
+        s.maybe_capture_phase_prefix();
+        assert_eq!(s.target_assigned, 1);
+        assert_eq!(
+            s.target_phase[2], UNASSIGNED,
+            "equal-depth prefixes should not replace the captured target"
+        );
+
+        s.decide(3);
+        s.maybe_capture_phase_prefix();
+        assert_eq!(s.target_assigned, 2);
+        assert_eq!(s.target_phase[2], FALSE);
+        assert_eq!(s.target_phase[3], TRUE);
+        assert_eq!(s.phase_ticks, 2);
+    }
+
+    #[test]
+    fn test_target_phase_reset_on_restart() {
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::TargetThenSaved,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(2, vec![], &config);
+
+        s.decide(1);
+        s.maybe_capture_phase_prefix();
+        assert_eq!(s.target_phase[1], TRUE);
+        assert_eq!(s.target_assigned, 1);
+
+        s.restart_pending = true;
+        assert!(s.perform_restart_if_pending());
+
+        assert_eq!(s.target_assigned, 0);
+        assert_eq!(s.target_phase[1], UNASSIGNED);
+        assert_eq!(s.current_level(), 0);
+    }
+
+    #[test]
+    fn test_target_phase_reset_when_pending_restart_already_at_root() {
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::TargetThenSaved,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(1, vec![], &config);
+        s.target_phase[1] = TRUE;
+        s.target_assigned = 1;
+        s.restart_pending = true;
+
+        assert!(!s.perform_restart_if_pending());
+
+        assert!(!s.restart_pending);
+        assert_eq!(s.target_assigned, 0);
+        assert_eq!(s.target_phase[1], UNASSIGNED);
+        assert_eq!(s.stats.restarts, 0);
+    }
+
+    #[test]
+    fn test_best_phase_only_grows_monotonically() {
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::BestThenTargetThenSaved,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(3, vec![], &config);
+
+        s.decide(1);
+        s.maybe_capture_phase_prefix();
+        assert_eq!(s.best_assigned, 1);
+        assert_eq!(s.best_phase[1], TRUE);
+
+        s.backtrack(0);
+        s.decide(-2);
+        s.maybe_capture_phase_prefix();
+        assert_eq!(s.best_assigned, 1);
+        assert_eq!(s.best_phase[2], UNASSIGNED);
+
+        s.decide(3);
+        s.maybe_capture_phase_prefix();
+        assert_eq!(s.best_assigned, 2);
+        assert_eq!(s.best_phase[2], FALSE);
+        assert_eq!(s.best_phase[3], TRUE);
+    }
+
+    #[test]
+    fn test_phase_saving_survives_backtrack() {
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::Saved,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(1, vec![], &config);
+
+        s.decide(-1);
+        s.backtrack(0);
+
+        assert_eq!(s.assignment[1], UNASSIGNED);
+        assert_eq!(s.saved_phase[1], FALSE);
+        assert_eq!(s.pick_branch_lit(), Some(-1));
+        assert_eq!(s.stats.phase_saved_used, 1);
     }
 
     #[test]

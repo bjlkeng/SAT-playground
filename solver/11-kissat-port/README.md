@@ -43,6 +43,8 @@ What is present:
   preprocessing removes an original clause before tombstoning it
 - an opt-in LBD EMA restart policy (`SAT_USE_LBD=on SAT_RESTART=kissat-ema`) for Phase 1
   search experiments; legacy Luby restarts remain the default for solver-10 parity
+- opt-in saved/target/best phase selection policies via `SAT_PHASE`, with legacy saved-phase
+  branching kept as the default for solver-10 parity
 
 Still incomplete:
 
@@ -82,6 +84,7 @@ SAT_STATS_HOT=on
 SAT_USE_LBD=on
 SAT_RESTART=legacy-luby|kissat-ema
 SAT_REDUCE=legacy|lbd-tiered
+SAT_PHASE=legacy|saved|target-then-saved|best-then-target-then-saved
 ```
 
 `SAT_CONFIG_OUT` writes a deterministic replay file with `schema_version`,

@@ -1097,9 +1097,6 @@ impl SolverConfig {
         if self.reduce_policy == ReducePolicy::Activity {
             fail_config("SAT_REDUCE=activity is not implemented yet; use legacy or lbd-tiered");
         }
-        if self.phase_policy != PhasePolicy::Legacy {
-            fail_config("SAT_PHASE values other than legacy are not implemented yet");
-        }
         if self.search_mode_policy != SearchModePolicy::Single {
             fail_config("SAT_SEARCH_MODE=focused-stable is not implemented yet");
         }
@@ -2478,6 +2475,18 @@ mod tests {
 
         assert!(config.use_lbd);
         assert_eq!(config.restart_policy, RestartPolicy::KissatEma);
+    }
+
+    #[test]
+    fn test_phase_policies_are_runtime_supported() {
+        let saved = SolverConfig::from_env_map(&env_map(&[("SAT_PHASE", "saved")]));
+        let target = SolverConfig::from_env_map(&env_map(&[("SAT_PHASE", "target-then-saved")]));
+        let best =
+            SolverConfig::from_env_map(&env_map(&[("SAT_PHASE", "best-then-target-then-saved")]));
+
+        assert_eq!(saved.phase_policy, PhasePolicy::Saved);
+        assert_eq!(target.phase_policy, PhasePolicy::TargetThenSaved);
+        assert_eq!(best.phase_policy, PhasePolicy::BestThenTargetThenSaved);
     }
 
     #[test]
