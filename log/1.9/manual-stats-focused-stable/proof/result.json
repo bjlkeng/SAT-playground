@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "status": "SAT",
+  "exit_code": 0,
+  "termination_reason": "sat",
+  "unknown_reason": null,
+  "status_file": "log/1.9/manual-stats-focused-stable/proof/status.txt",
+  "model_file": "log/1.9/manual-stats-focused-stable/proof/model.txt",
+  "proof_file": null,
+  "proof_completeness": "incomplete",
+  "model_check_result": "pass",
+  "proof_check_result": "not_checked",
+  "config_hash": "16662bc044a46874",
+  "input_sha256": "67560c0b8902706c8e24568d849111f7b85e01bed9f82884d4c79486409255c8",
+  "profile": "default",
+  "proof_policy": "drat",
+  "output_contract_state": "complete",
+  "stats_json_seen": true
+}

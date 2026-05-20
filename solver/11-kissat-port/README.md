@@ -45,6 +45,9 @@ What is present:
   search experiments; legacy Luby restarts remain the default for solver-10 parity
 - opt-in saved/target/best phase selection policies via `SAT_PHASE`, with legacy saved-phase
   branching kept as the default for solver-10 parity
+- opt-in focused/stable search-mode scaffolding (`SAT_USE_LBD=on
+  SAT_SEARCH_MODE=focused-stable`) with focused EMA restarts and stable reluctant restarts;
+  single-mode search remains the default for solver-10 parity
 
 Still incomplete:
 
@@ -82,9 +85,10 @@ SAT_STRICT_CONFIG=on
 SAT_STATS_JSON=on
 SAT_STATS_HOT=on
 SAT_USE_LBD=on
-SAT_RESTART=legacy-luby|kissat-ema
+SAT_RESTART=legacy-luby|kissat-ema|reluctant
 SAT_REDUCE=legacy|lbd-tiered
 SAT_PHASE=legacy|saved|target-then-saved|best-then-target-then-saved
+SAT_SEARCH_MODE=single|focused-stable
 ```
 
 `SAT_CONFIG_OUT` writes a deterministic replay file with `schema_version`,

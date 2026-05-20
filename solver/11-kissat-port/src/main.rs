@@ -18,7 +18,7 @@ mod oracle_tests;
 
 use config::{
     BranchMode, ClauseMinMode, InitialClauseMode, PhasePolicy, ProofPolicy, ReducePolicy,
-    RestartPolicy, SolverConfig,
+    RestartPolicy, SearchModePolicy, SolverConfig,
 };
 use limits::{effective_memory_limit_bytes, LimitHit, RuntimeLimits};
 use lit::{lit_to_index, lit_to_word, word_to_lit};
@@ -316,6 +316,33 @@ impl MovingAverage {
         } else {
             self.value += self.alpha * (x - self.value);
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SearchMode {
+    Focused,
+    Stable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Reluctant {
+    u: u64,
+    v: u64,
+}
+
+impl Reluctant {
+    fn new() -> Self {
+        Self { u: 1, v: 1 }
+    }
+
+    fn current(self) -> u64 {
+        self.v.max(1)
+    }
+
+    fn advance(&mut self) {
+        self.u = self.u.saturating_add(1);
+        self.v = Solver::luby_value_u64(self.u);
     }
 }
 
@@ -797,6 +824,26 @@ struct Solver {
     restart_margin: f64,
     /// conflicts since the last EMA restart
     restart_conflicts_since_last: u64,
+    /// current high-level search mode for focused/stable experiments
+    search_mode: SearchMode,
+    /// selected search-mode policy; single keeps solver-10-compatible behavior
+    search_mode_policy: SearchModePolicy,
+    /// conflict count when the current search mode started
+    mode_start_conflicts: u64,
+    /// decision count when the current search mode started
+    mode_start_decisions: u64,
+    /// number of focused/stable mode switches performed
+    mode_switches: u64,
+    /// absolute conflict count at which the next mode switch should happen
+    mode_switch_at_conflicts: u64,
+    /// base focused/stable interval before sqrt scaling
+    mode_init_conflicts: u64,
+    /// current conflict interval between focused/stable switches
+    mode_interval: u64,
+    /// multiplier applied to sqrt-scaled mode intervals
+    mode_interval_scale: f64,
+    /// state for reluctant restart scheduling
+    reluctant: Reluctant,
     /// learned-clause budget threshold for running a database reduction pass
     reduce_db_limit: usize,
     /// target learned-literal budget for LBD-tiered reduction
@@ -1241,11 +1288,24 @@ impl Solver {
             BranchMode::Occurrence => TRUE,
         };
         let phase_policy = config.phase_policy;
-        let phase_buffers_enabled = phase_policy != PhasePolicy::Legacy;
+        let search_mode_policy = config.search_mode_policy;
+        let focused_stable_mode = search_mode_policy == SearchModePolicy::FocusedStable;
+        let phase_buffers_enabled = phase_policy != PhasePolicy::Legacy || focused_stable_mode;
         let initial_saved_phase = if phase_buffers_enabled {
             UNASSIGNED
         } else {
             default_phase
+        };
+        let search_mode = if focused_stable_mode {
+            SearchMode::Focused
+        } else {
+            SearchMode::Stable
+        };
+        let mode_interval = config.mode_init_conflicts.max(1);
+        let mode_switch_at_conflicts = if focused_stable_mode {
+            mode_interval
+        } else {
+            u64::MAX
         };
 
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
@@ -1317,6 +1377,16 @@ impl Solver {
             restart_next_check_conflict: 0,
             restart_margin: KISSAT_EMA_RESTART_MARGIN,
             restart_conflicts_since_last: 0,
+            search_mode,
+            search_mode_policy,
+            mode_start_conflicts: 0,
+            mode_start_decisions: 0,
+            mode_switches: 0,
+            mode_switch_at_conflicts,
+            mode_init_conflicts: mode_interval,
+            mode_interval,
+            mode_interval_scale: config.mode_interval_scale,
+            reluctant: Reluctant::new(),
             reduce_db_limit: ((original_clause_count as f64) * LEARNTSIZE_FACTOR) as usize,
             learned_lit_budget: LEARNED_LIT_BUDGET_BASE,
             hard_learned_lit_budget: LEARNED_LIT_BUDGET_BASE.saturating_mul(2),
@@ -2659,6 +2729,10 @@ impl Solver {
 
     fn decide(&mut self, lit: i32) {
         self.stats.decisions += 1;
+        match self.search_mode {
+            SearchMode::Focused => self.stats.decisions_focused += 1,
+            SearchMode::Stable => self.stats.decisions_stable += 1,
+        }
         let level = self.current_level() as u64 + 1;
         self.stats.avg_decision_level_sum += level;
         self.stats.max_decision_level = self.stats.max_decision_level.max(level);
@@ -2734,6 +2808,78 @@ impl Solver {
         Self::luby_value(index - (1usize << (power - 1)) + 1)
     }
 
+    fn luby_value_u64(index: u64) -> u64 {
+        let index = usize::try_from(index).unwrap_or(usize::MAX);
+        Self::luby_value(index.max(1)) as u64
+    }
+
+    fn mode_switching_enabled(&self) -> bool {
+        self.search_mode_policy == SearchModePolicy::FocusedStable
+            && !self.accounting_mode.is_temporary()
+    }
+
+    fn effective_restart_policy(&self) -> RestartPolicy {
+        if self.search_mode_policy == SearchModePolicy::FocusedStable {
+            match self.search_mode {
+                SearchMode::Focused => RestartPolicy::KissatEma,
+                SearchMode::Stable => RestartPolicy::Reluctant,
+            }
+        } else {
+            self.restart_policy
+        }
+    }
+
+    fn effective_phase_policy(&self) -> PhasePolicy {
+        if self.search_mode_policy == SearchModePolicy::FocusedStable {
+            match self.search_mode {
+                SearchMode::Focused => match self.phase_policy {
+                    PhasePolicy::Legacy | PhasePolicy::Saved => PhasePolicy::Saved,
+                    PhasePolicy::TargetThenSaved | PhasePolicy::BestThenTargetThenSaved => {
+                        PhasePolicy::TargetThenSaved
+                    }
+                },
+                SearchMode::Stable => PhasePolicy::BestThenTargetThenSaved,
+            }
+        } else {
+            self.phase_policy
+        }
+    }
+
+    fn next_mode_interval(&self) -> u64 {
+        let scaled = (self.mode_switches.saturating_add(1) as f64).sqrt()
+            * self.mode_interval_scale
+            * self.mode_init_conflicts.max(1) as f64;
+        if !scaled.is_finite() || scaled < 1.0 {
+            1
+        } else if scaled > u64::MAX as f64 {
+            u64::MAX
+        } else {
+            scaled.round() as u64
+        }
+    }
+
+    fn maybe_switch_search_mode(&mut self) {
+        if !self.mode_switching_enabled() || self.stats.conflicts < self.mode_switch_at_conflicts {
+            return;
+        }
+
+        self.search_mode = match self.search_mode {
+            SearchMode::Focused => SearchMode::Stable,
+            SearchMode::Stable => SearchMode::Focused,
+        };
+        self.mode_switches = self.mode_switches.saturating_add(1);
+        self.stats.mode_switches = self.mode_switches;
+        self.mode_start_conflicts = self.stats.conflicts;
+        self.mode_start_decisions = self.stats.decisions;
+        self.mode_interval = self.next_mode_interval();
+        self.mode_switch_at_conflicts = self.stats.conflicts.saturating_add(self.mode_interval);
+        self.restart_pending = false;
+        self.restart_conflicts = 0;
+        self.restart_conflicts_since_last = 0;
+        self.restart_next_check_conflict = self.stats.conflicts.saturating_add(1);
+        self.reset_target_phase();
+    }
+
     fn legacy_luby_restart_due(&self) -> bool {
         self.restart_conflicts >= self.restart_conflict_limit
     }
@@ -2753,6 +2899,22 @@ impl Solver {
             .saturating_mul(Self::luby_value(self.restart_luby_index));
     }
 
+    fn reluctant_restart_due(&self) -> bool {
+        self.current_level() > 0 && self.restart_conflicts_since_last >= self.reluctant.current()
+    }
+
+    fn note_reluctant_conflict(&mut self) {
+        self.restart_conflicts_since_last = self.restart_conflicts_since_last.saturating_add(1);
+        if !self.reluctant_restart_due() {
+            return;
+        }
+
+        self.restart_pending = true;
+        self.restart_conflicts_since_last = 0;
+        self.reluctant.advance();
+        self.stats.reluctant_restarts += 1;
+    }
+
     fn update_restart_ema(&mut self) {
         let lbd = if self.last_conflict_lbd == 0 {
             1.0
@@ -2767,7 +2929,7 @@ impl Solver {
     }
 
     fn should_restart(&self) -> bool {
-        match self.restart_policy {
+        match self.effective_restart_policy() {
             RestartPolicy::LegacyLuby => self.legacy_luby_restart_due(),
             RestartPolicy::KissatEma => {
                 if self.current_level() == 0 {
@@ -2784,7 +2946,7 @@ impl Solver {
                     && self.restart_fast_lbd.value
                         > self.restart_slow_lbd.value * self.restart_margin
             }
-            RestartPolicy::Reluctant => false,
+            RestartPolicy::Reluctant => self.reluctant_restart_due(),
         }
     }
 
@@ -2809,10 +2971,10 @@ impl Solver {
             return;
         }
 
-        match self.restart_policy {
+        match self.effective_restart_policy() {
             RestartPolicy::LegacyLuby => self.note_legacy_luby_conflict(),
             RestartPolicy::KissatEma => self.note_kissat_ema_conflict(),
-            RestartPolicy::Reluctant => {}
+            RestartPolicy::Reluctant => self.note_reluctant_conflict(),
         }
     }
 
@@ -2833,7 +2995,7 @@ impl Solver {
 
     #[inline]
     fn pick_branch_phase(&mut self, var: usize) -> bool {
-        let phase = match self.phase_policy {
+        let phase = match self.effective_phase_policy() {
             PhasePolicy::Legacy => {
                 self.stats.phase_initial_used += 1;
                 self.saved_phase[var]
@@ -2915,18 +3077,21 @@ impl Solver {
         if self.accounting_mode.is_temporary() {
             return;
         }
-        match self.phase_policy {
-            PhasePolicy::TargetThenSaved | PhasePolicy::BestThenTargetThenSaved => {}
-            PhasePolicy::Legacy | PhasePolicy::Saved => return,
-        }
 
+        let capture_best = if self.search_mode_policy == SearchModePolicy::FocusedStable {
+            true
+        } else {
+            match self.effective_phase_policy() {
+                PhasePolicy::BestThenTargetThenSaved => true,
+                PhasePolicy::TargetThenSaved => false,
+                PhasePolicy::Legacy | PhasePolicy::Saved => return,
+            }
+        };
         let assigned = self.trail.len();
         if assigned > self.target_assigned {
             self.capture_target_phase(assigned);
         }
-        if self.phase_policy == PhasePolicy::BestThenTargetThenSaved
-            && assigned > self.best_assigned
-        {
+        if capture_best && assigned > self.best_assigned {
             self.capture_best_phase(assigned);
         }
     }
@@ -4421,6 +4586,7 @@ impl Solver {
                         self.note_learnt_budget_conflict();
                     }
                     self.note_conflict();
+                    self.maybe_switch_search_mode();
                     let learned_clause = std::mem::take(&mut self.scratch_conflict_clause);
                     let asserting_lit = learned_clause[0];
                     proof_log.record_clause(&learned_clause);
@@ -7252,6 +7418,142 @@ mod tests {
         assert_eq!(Solver::luby_value(5), 1);
         assert_eq!(Solver::luby_value(6), 2);
         assert_eq!(Solver::luby_value(7), 4);
+    }
+
+    #[test]
+    fn test_reluctant_sequence_matches_expected_prefix() {
+        let mut reluctant = Reluctant::new();
+        let mut values = Vec::new();
+        for _ in 0..7 {
+            values.push(reluctant.current());
+            reluctant.advance();
+        }
+
+        assert_eq!(values, vec![1, 1, 2, 1, 1, 2, 4]);
+    }
+
+    #[test]
+    fn test_reluctant_restart_policy_schedules_restart() {
+        let config = SolverConfig {
+            restart_policy: RestartPolicy::Reluctant,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        s.decide(1);
+
+        s.note_conflict();
+
+        assert!(s.restart_pending);
+        assert_eq!(s.stats.reluctant_restarts, 1);
+        assert_eq!(s.restart_conflicts_since_last, 0);
+        assert_eq!(s.reluctant.current(), 1);
+    }
+
+    fn focused_stable_config() -> SolverConfig {
+        SolverConfig {
+            use_lbd: true,
+            search_mode_policy: SearchModePolicy::FocusedStable,
+            mode_init_conflicts: 2,
+            mode_interval_scale: 1.0,
+            ..SolverConfig::default()
+        }
+    }
+
+    #[test]
+    fn test_mode_starts_focused_default() {
+        let config = focused_stable_config();
+        let s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+
+        assert_eq!(s.search_mode, SearchMode::Focused);
+        assert_eq!(s.mode_start_conflicts, 0);
+        assert_eq!(s.mode_start_decisions, 0);
+        assert_eq!(s.mode_interval, 2);
+        assert_eq!(s.mode_switch_at_conflicts, 2);
+        assert_eq!(s.effective_restart_policy(), RestartPolicy::KissatEma);
+        assert_eq!(s.effective_phase_policy(), PhasePolicy::Saved);
+    }
+
+    #[test]
+    fn test_mode_switch_after_budget() {
+        let config = focused_stable_config();
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+
+        s.stats.conflicts = 1;
+        s.maybe_switch_search_mode();
+        assert_eq!(s.search_mode, SearchMode::Focused);
+
+        s.stats.conflicts = 2;
+        s.maybe_switch_search_mode();
+
+        assert_eq!(s.search_mode, SearchMode::Stable);
+        assert_eq!(s.mode_switches, 1);
+        assert_eq!(s.stats.mode_switches, 1);
+        assert_eq!(s.mode_start_conflicts, 2);
+        assert!(s.mode_switch_at_conflicts > 2);
+        assert_eq!(s.effective_restart_policy(), RestartPolicy::Reluctant);
+        assert_eq!(
+            s.effective_phase_policy(),
+            PhasePolicy::BestThenTargetThenSaved
+        );
+    }
+
+    #[test]
+    fn test_mode_switch_back_preserves_heap() {
+        let config = focused_stable_config();
+        let mut s = make_solver_with_config(3, vec![], &config);
+        s.activity[1] = 3.0;
+        s.activity[2] = 2.0;
+        s.rebuild_branch_queue();
+        let heap_before = s.branch_heap.clone();
+        let pos_before = s.branch_pos.clone();
+
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+
+        assert_eq!(s.search_mode, SearchMode::Focused);
+        assert_eq!(s.branch_heap, heap_before);
+        assert_eq!(s.branch_pos, pos_before);
+    }
+
+    #[test]
+    fn test_mode_switch_resets_restart_pending() {
+        let config = focused_stable_config();
+        let mut s = make_solver_with_config(2, vec![], &config);
+        s.restart_pending = true;
+        s.restart_conflicts = 7;
+        s.restart_conflicts_since_last = 9;
+        s.target_phase[1] = TRUE;
+        s.target_assigned = 1;
+
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+
+        assert!(!s.restart_pending);
+        assert_eq!(s.restart_conflicts, 0);
+        assert_eq!(s.restart_conflicts_since_last, 0);
+        assert_eq!(s.target_assigned, 0);
+        assert_eq!(s.target_phase[1], UNASSIGNED);
+    }
+
+    #[test]
+    fn test_mode_stats_count_switches() {
+        let config = focused_stable_config();
+        let mut s = make_solver_with_config(3, vec![], &config);
+
+        s.decide(1);
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+        s.decide(2);
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+
+        assert_eq!(s.mode_switches, 2);
+        assert_eq!(s.stats.mode_switches, 2);
+        assert_eq!(s.stats.decisions_focused, 1);
+        assert_eq!(s.stats.decisions_stable, 1);
+        assert_eq!(s.mode_start_decisions, 2);
     }
 
     #[test]

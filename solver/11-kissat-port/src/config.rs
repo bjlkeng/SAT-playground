@@ -13,7 +13,7 @@ const CONFIG_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_DETERMINISTIC_SEED: u64 = 0;
 const DEFAULT_MINIMIZE_DEPTH_LIMIT: u32 = 100;
 const DEFAULT_CHRONO_MAX_DELTA: usize = 100;
-const DEFAULT_MODE_INIT_CONFLICTS: u64 = 1000;
+const DEFAULT_MODE_INIT_CONFLICTS: u64 = 2000;
 const DEFAULT_MODE_INTERVAL_SCALE: f64 = 1.5;
 const DEFAULT_REPHASE_INIT_CONFLICTS: u64 = 1000;
 
@@ -1091,14 +1091,11 @@ impl SolverConfig {
                 ));
             }
         }
-        if self.restart_policy == RestartPolicy::Reluctant {
-            fail_config("SAT_RESTART=reluctant is not implemented yet");
-        }
         if self.reduce_policy == ReducePolicy::Activity {
             fail_config("SAT_REDUCE=activity is not implemented yet; use legacy or lbd-tiered");
         }
-        if self.search_mode_policy != SearchModePolicy::Single {
-            fail_config("SAT_SEARCH_MODE=focused-stable is not implemented yet");
+        if self.search_mode_policy == SearchModePolicy::FocusedStable && !self.use_lbd {
+            fail_config("Invalid config: SAT_SEARCH_MODE=focused-stable requires SAT_USE_LBD=on");
         }
     }
 
@@ -2475,6 +2472,24 @@ mod tests {
 
         assert!(config.use_lbd);
         assert_eq!(config.restart_policy, RestartPolicy::KissatEma);
+    }
+
+    #[test]
+    fn test_reluctant_restart_is_runtime_supported() {
+        let config = SolverConfig::from_env_map(&env_map(&[("SAT_RESTART", "reluctant")]));
+
+        assert_eq!(config.restart_policy, RestartPolicy::Reluctant);
+    }
+
+    #[test]
+    fn test_focused_stable_search_mode_is_runtime_supported_with_lbd() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_USE_LBD", "on"),
+            ("SAT_SEARCH_MODE", "focused-stable"),
+        ]));
+
+        assert!(config.use_lbd);
+        assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
     }
 
     #[test]

@@ -64,6 +64,10 @@ pub(crate) struct SolverStats {
     pub(crate) learned_size_max: u64,
     pub(crate) luby_restarts: u64,
     pub(crate) glucose_restarts: u64,
+    pub(crate) reluctant_restarts: u64,
+    pub(crate) mode_switches: u64,
+    pub(crate) decisions_focused: u64,
+    pub(crate) decisions_stable: u64,
     pub(crate) binary_props: u64,
     pub(crate) long_props: u64,
     pub(crate) watch_scans: u64,
@@ -337,7 +341,10 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("learned_collected", ctx.stats.learned_collected);
     json.u64("luby_restarts", ctx.stats.luby_restarts);
     json.u64("glucose_restarts", ctx.stats.glucose_restarts);
-    json.u64("reluctant_restarts", 0);
+    json.u64("reluctant_restarts", ctx.stats.reluctant_restarts);
+    json.u64("mode_switches", ctx.stats.mode_switches);
+    json.u64("decisions_focused", ctx.stats.decisions_focused);
+    json.u64("decisions_stable", ctx.stats.decisions_stable);
 
     json.f64("avg_decision_level", average_decision_level(ctx.stats));
     json.u64("max_decision_level", ctx.stats.max_decision_level);
@@ -445,7 +452,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
             "c trace_full ",
             "glue_sum={} glue_max={} glue_count={} ",
             "learned_size_sum={} learned_size_max={} ",
-            "glucose_restarts={} luby_restarts={} reluctant_restarts=0 ",
+            "glucose_restarts={} luby_restarts={} reluctant_restarts={} ",
             "chrono_backtracks=0 non_chrono_backtracks=0 chrono_skipped_levels=0 ",
             "vivified_clauses=0 vivified_strengthened=0 vivified_subsumed=0 vivified_ticks=0 ",
             "probe_failed_lits=0 probe_units=0 probe_ticks=0 ",
@@ -453,8 +460,8 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
             "inprocess_runs=0 inprocess_ticks=0 ",
             "phase_saved_used={} phase_target_used={} phase_best_used={} phase_initial_used={} ",
             "phase_save_target=0 phase_save_best=0 rephases=0 ",
-            "decisions_focused=0 decisions_stable={} ",
-            "mode_switches=0 seconds_focused=0.000000 seconds_stable={:.6} ",
+            "decisions_focused={} decisions_stable={} ",
+            "mode_switches={} seconds_focused=0.000000 seconds_stable={:.6} ",
             "learned_kept_tier1={} learned_kept_tier2={} learned_kept_tier3={} learned_collected={} ",
             "gc_reason={} gc_words_reclaimed={} gc_refs_rewritten={} ",
             "decision_heap_pops={} decision_heap_stale_pops={} decision_heap_inserts={}"
@@ -466,11 +473,14 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
         stats.learned_size_max,
         stats.glucose_restarts,
         stats.luby_restarts,
+        stats.reluctant_restarts,
         stats.phase_saved_used,
         stats.phase_target_used,
         stats.phase_best_used,
         stats.phase_initial_used,
-        stats.decisions,
+        stats.decisions_focused,
+        stats.decisions_stable,
+        stats.mode_switches,
         timings.search_sec,
         stats.learned_kept_tier1,
         stats.learned_kept_tier2,
