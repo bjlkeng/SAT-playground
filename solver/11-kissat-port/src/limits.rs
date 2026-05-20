@@ -7,6 +7,8 @@
 
 use crate::config::SolverConfig;
 
+const BYTES_PER_MB: u64 = 1024 * 1024;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
 pub(crate) enum BudgetClass {
@@ -46,6 +48,37 @@ impl LimitHit {
             class: BudgetClass::EmergencyMemoryLimit,
             reason,
         }
+    }
+}
+
+pub(crate) fn process_address_space_limit_bytes() -> Option<u64> {
+    let limits = std::fs::read_to_string("/proc/self/limits").ok()?;
+    process_address_space_limit_bytes_from_text(&limits)
+}
+
+pub(crate) fn process_address_space_limit_bytes_from_text(limits: &str) -> Option<u64> {
+    for line in limits.lines() {
+        let Some(rest) = line.strip_prefix("Max address space") else {
+            continue;
+        };
+        let mut fields = rest.split_whitespace();
+        let soft = fields.next()?;
+        if soft == "unlimited" {
+            return None;
+        }
+        return soft.parse::<u64>().ok();
+    }
+    None
+}
+
+pub(crate) fn effective_memory_limit_bytes(config: &SolverConfig) -> Option<u64> {
+    let config_limit = config
+        .rss_limit_mb
+        .map(|mb| mb.saturating_mul(BYTES_PER_MB));
+    match (config_limit, process_address_space_limit_bytes()) {
+        (Some(lhs), Some(rhs)) => Some(lhs.min(rhs)),
+        (Some(limit), None) | (None, Some(limit)) => Some(limit),
+        (None, None) => None,
     }
 }
 
@@ -139,5 +172,29 @@ mod tests {
         assert_active!(binary_clause_limit, 0);
         assert_active!(extension_bytes_limit, 0);
         assert_active!(proof_bytes_limit, 0);
+    }
+
+    #[test]
+    fn address_space_limit_parser_reads_byte_limit() {
+        let text = "\
+Limit                     Soft Limit           Hard Limit           Units
+Max cpu time              unlimited            unlimited            seconds
+Max address space         17179869184          17179869184          bytes
+";
+
+        assert_eq!(
+            process_address_space_limit_bytes_from_text(text),
+            Some(17_179_869_184)
+        );
+    }
+
+    #[test]
+    fn address_space_limit_parser_treats_unlimited_as_absent() {
+        let text = "\
+Limit                     Soft Limit           Hard Limit           Units
+Max address space         unlimited            unlimited            bytes
+";
+
+        assert_eq!(process_address_space_limit_bytes_from_text(text), None);
     }
 }

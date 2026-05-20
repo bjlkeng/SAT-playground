@@ -209,3 +209,41 @@ Decision: keep the implemented `1.1` through `1.3a` work as infrastructure and o
    Reason: it is ready, on the Phase 1 path, reduces decision-selection risk, unlocks phase/VMTF work, and is a safer next feature slice than jumping directly into a large binary implication rewrite.
 
 After those, `SAT-playground-5b2.2.9` (`1.6` Binary implication fast path) is the highest direct performance-leverage bead because M.2 still shows search-throughput and propagation-sensitive normalised failures.
+
+## Follow-Up: `SAT-playground-bs6`
+
+Date: 2026-05-20
+
+`SAT-playground-bs6` was resolved by adding a pre-solve memory admission guard to
+solver 11. The guard uses `SAT_LIMIT_RSS_MB` when present and otherwise reads the
+process address-space cap from `/proc/self/limits`, which captures the standard
+`tools/bench.sh -m 16384` ulimit. It estimates the mandatory dense solver state
+and one-shot preprocessing peak before `Solver::new_with_config`; if the
+estimated peak reaches 90% of the effective cap, solver 11 writes a complete
+`UNKNOWN` contract with `unknown_reason=memory-preflight-limit`.
+
+Final-code evidence:
+
+| Instance | Before | After |
+|---|---|---|
+| `83aa254f-1.normalised` | `ERROR`, exit 134, missing `result.json`, allocation of 128 bytes failed (`log/bs6/repro-83aa-before/results.csv`) | `UNKNOWN`, no harness error, 14.29s (`log/bs6/repro-83aa-after2/results.csv`) |
+| `ee5fb3e-11.normalised` | `ERROR`, exit 134, missing `result.json`, allocation of 2589149280 bytes failed (`log/bs6/repro-ee5-before/results.csv`) | `UNKNOWN`, no harness error, 26.91s (`log/bs6/repro-ee5-after2/results.csv`) |
+
+The allocation phase is now classified separately:
+
+- `ee5` failed immediately on dense watcher header allocation:
+  `2 * 53940610 * size_of::<Vec<Watcher>>() = 2589149280` bytes.
+- `83aa` failed during later predictable preprocessing peak allocation, so the
+  final guard also accounts for watcher entries, occurrence entries, and
+  inline-abstraction arena/relocation peak memory.
+
+Profile no-regression evidence:
+
+| Before | After | Solved | PAR-2 before | PAR-2 after | Delta | Verdict |
+|---|---|---:|---:|---:|---:|---|
+| `log/profile-compare-solver11-2026-05-19-1647/results.csv` | `log/bs6/profile-after/results.csv` | 9/11 both | 710.454 | 712.548 | +2.094 | PASS, no status changes |
+
+Decision: memory aborts under the standard 16 GB gate are no longer unexplained
+missing-result-contract failures. They are clean `UNKNOWN` results and should not
+block Phase 1 promotion on output-contract reliability grounds, though they still
+count as unsolved rows in performance gates.

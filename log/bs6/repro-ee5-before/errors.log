@@ -1,0 +1,6 @@
+--- ee5fb3e181571740adb8444bd052dbdc-11.normalised (exit=134) ---
+missing solver result contract: /tmp/tmp.vq6j9bGxm6/proof/result.json
+memory allocation of 2589149280 bytes failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+timeout: the monitored command dumped core
+

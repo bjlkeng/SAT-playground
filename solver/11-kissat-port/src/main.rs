@@ -19,7 +19,7 @@ mod oracle_tests;
 use config::{
     BranchMode, ClauseMinMode, InitialClauseMode, ProofPolicy, ReducePolicy, SolverConfig,
 };
-use limits::{LimitHit, RuntimeLimits};
+use limits::{effective_memory_limit_bytes, LimitHit, RuntimeLimits};
 use lit::{lit_to_index, lit_to_word, word_to_lit};
 use output::{
     prepare_output_contract_dir, print_assignment, write_model_file, write_result_contract,
@@ -4320,6 +4320,122 @@ fn initial_lit_count(clauses: &[Vec<i32>]) -> u64 {
     clauses.iter().map(|clause| clause.len() as u64).sum()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MemoryPreflight {
+    estimated_peak_bytes: u64,
+    limit_bytes: u64,
+    threshold_bytes: u64,
+}
+
+fn bytes_for_elems(count: u64, elem_size: usize) -> u64 {
+    count.saturating_mul(elem_size as u64)
+}
+
+fn solver_construction_extra_bytes(num_vars: usize, clauses: &[Vec<i32>]) -> u64 {
+    let vars = num_vars as u64;
+    let vars_with_zero = vars.saturating_add(1);
+    let lits = initial_lit_count(clauses);
+    let clause_count = clauses.len() as u64;
+    let literal_slots = lits.saturating_add(clause_count);
+
+    let mut bytes = 0u64;
+    bytes = bytes.saturating_add(bytes_for_elems(
+        vars_with_zero,
+        std::mem::size_of::<usize>(),
+    )); // occurrence_count
+    bytes = bytes.saturating_add(bytes_for_elems(vars, std::mem::size_of::<u32>())); // branch_order
+    bytes = bytes.saturating_add(bytes_for_elems(
+        vars_with_zero,
+        std::mem::size_of::<usize>(),
+    )); // branch_rank
+    bytes = bytes.saturating_add(bytes_for_elems(literal_slots, std::mem::size_of::<u32>())); // arena
+    bytes = bytes.saturating_add(bytes_for_elems(clause_count, std::mem::size_of::<usize>())); // original_clause_ids
+    bytes = bytes.saturating_add(bytes_for_elems(
+        vars.saturating_mul(2),
+        std::mem::size_of::<Vec<Watcher>>(),
+    )); // watchers
+    bytes = bytes.saturating_add(bytes_for_elems(
+        clause_count.saturating_mul(2),
+        std::mem::size_of::<Watcher>(),
+    )); // watcher entries
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u8>())); // assignment
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u8>())); // saved_phase
+    bytes = bytes.saturating_add(bytes_for_elems(
+        vars_with_zero,
+        std::mem::size_of::<usize>(),
+    )); // decision_level
+    bytes = bytes.saturating_add(bytes_for_elems(
+        vars_with_zero,
+        std::mem::size_of::<ReasonCode>(),
+    )); // reason
+    bytes = bytes.saturating_add(bytes_for_elems(vars, std::mem::size_of::<i32>())); // trail
+    bytes = bytes.saturating_add(bytes_for_elems(vars, std::mem::size_of::<u32>())); // branch_heap
+    bytes = bytes.saturating_add(bytes_for_elems(
+        vars_with_zero,
+        std::mem::size_of::<usize>(),
+    )); // branch_pos
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<bool>())); // decision_var
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<f64>())); // activity
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<bool>())); // frozen
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<bool>())); // eliminated
+    bytes = bytes.saturating_add(bytes_for_elems(
+        vars_with_zero,
+        std::mem::size_of::<Vec<u32>>(),
+    )); // occurs
+    bytes = bytes.saturating_add(bytes_for_elems(lits, std::mem::size_of::<u32>())); // occurs entries
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<bool>())); // occurs_dirty
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<bool>())); // occurs_membership_dirty
+    bytes = bytes.saturating_add(bytes_for_elems(
+        vars.saturating_mul(2),
+        std::mem::size_of::<usize>(),
+    )); // n_occ
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u8>())); // scratch_seen
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u8>())); // scratch_resolved
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u8>())); // scratch_redundant_state
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u32>())); // lbd_seen
+    if clause_count >= INLINE_ABSTRACTION_CLAUSE_THRESHOLD as u64 {
+        bytes = bytes.saturating_add(bytes_for_elems(literal_slots, std::mem::size_of::<usize>())); // inline-abstraction reloc
+        bytes = bytes.saturating_add(bytes_for_elems(
+            literal_slots.saturating_add(clause_count),
+            std::mem::size_of::<u32>(),
+        )); // inline-abstraction rebuilt arena
+    }
+    bytes
+}
+
+fn memory_preflight(
+    num_vars: usize,
+    clauses: &[Vec<i32>],
+    config: &SolverConfig,
+) -> Option<MemoryPreflight> {
+    let limit_bytes = effective_memory_limit_bytes(config)?;
+    let current_rss_bytes = max_rss_mb()
+        .unwrap_or(0)
+        .saturating_mul(1024)
+        .saturating_mul(1024);
+    memory_preflight_with_limit(num_vars, clauses, limit_bytes, current_rss_bytes)
+}
+
+fn memory_preflight_with_limit(
+    num_vars: usize,
+    clauses: &[Vec<i32>],
+    limit_bytes: u64,
+    current_rss_bytes: u64,
+) -> Option<MemoryPreflight> {
+    let estimated_peak_bytes =
+        current_rss_bytes.saturating_add(solver_construction_extra_bytes(num_vars, clauses));
+    let threshold_bytes = limit_bytes.saturating_mul(9) / 10;
+    (estimated_peak_bytes >= threshold_bytes).then_some(MemoryPreflight {
+        estimated_peak_bytes,
+        limit_bytes,
+        threshold_bytes,
+    })
+}
+
+fn mb_ceil(bytes: u64) -> u64 {
+    bytes.div_ceil(1024 * 1024)
+}
+
 fn verify_model_against_clauses(clauses: &[Vec<i32>], assignment: &[u8]) -> bool {
     for clause in clauses {
         let mut satisfied = false;
@@ -4438,6 +4554,91 @@ fn main() {
     let parse_sec = parse_start.elapsed().as_secs_f64();
     let original_clause_count = clauses.len();
     let original_lits_initial = initial_lit_count(&clauses);
+    if let Some(preflight) = memory_preflight(num_vars, &clauses, &config) {
+        eprintln!(
+            "c memory_preflight result=UNKNOWN reason=memory-preflight-limit vars={} clauses={} literals={} estimated_peak_mb={} limit_mb={} threshold_mb={}",
+            num_vars,
+            original_clause_count,
+            original_lits_initial,
+            mb_ceil(preflight.estimated_peak_bytes),
+            mb_ceil(preflight.limit_bytes),
+            mb_ceil(preflight.threshold_bytes),
+        );
+        let proof_completeness = match config.proof_policy {
+            ProofPolicy::Off => ProofCompleteness::NotRequested,
+            ProofPolicy::Drat | ProofPolicy::Lrat => ProofCompleteness::Incomplete,
+        };
+        let output_contract = OutputContract {
+            status: SolveStatus::Unknown,
+            proof_completeness,
+            model_written: false,
+            proof_written: output_path.join(PROOF_OUT).exists(),
+            stats_written: config.stats_json,
+            result_json_written: true,
+            output_contract_state: OutputContractState::Complete,
+        };
+        if let Err(reason) = output_contract.validate() {
+            eprintln!("internal output contract validation failed: {reason}");
+            std::process::exit(2);
+        }
+        let fields = ResultContractFields::new(
+            Some("memory-preflight-limit"),
+            input_identity.sha256.as_deref(),
+            "not_applicable",
+            "not_applicable",
+            output_contract.output_contract_state.as_str(),
+        )
+        .with_termination_reason(SolveStatus::Unknown.termination_reason());
+        write_result_contract(
+            output_path,
+            SolveStatus::Unknown,
+            &config,
+            &fields,
+            None,
+            proof_completeness,
+        );
+        if config.stats_json {
+            let timings = RunTimings {
+                elapsed_sec: run_start.elapsed().as_secs_f64(),
+                parse_sec,
+                ..RunTimings::default()
+            };
+            let formula = FormulaStats {
+                vars: num_vars as u64,
+                original_clauses_initial: original_clause_count as u64,
+                original_lits_initial,
+                ..FormulaStats::default()
+            };
+            let stats = SolverStats::default();
+            let proof = ProofStats {
+                state: "not-created",
+                ..ProofStats::default()
+            };
+            let ctx = StatsJsonContext {
+                config: &config,
+                stats: &stats,
+                proof: &proof,
+                input: &input_identity,
+                formula: &formula,
+                timings: &timings,
+                status: SolveStatus::Unknown,
+                exit_code: SolveStatus::Unknown.exit_code(),
+                status_file_status: Some(SolveStatus::Unknown.as_str()),
+                termination_reason: SolveStatus::Unknown.termination_reason(),
+                unknown_reason: Some("memory-preflight-limit"),
+                limit_hit: true,
+                parse_error_kind: None,
+                model_check_result: "not_applicable",
+                proof_check_result: "not_applicable",
+                proof_completeness,
+                output_contract_state: "complete",
+                max_rss_mb: max_rss_mb(),
+            };
+            eprintln!("{}", json_stats_line(&ctx));
+        }
+        println!("{}", SolveStatus::Unknown.s_line());
+        std::process::exit(SolveStatus::Unknown.exit_code());
+    }
     let mut solver = Solver::new_with_config(num_vars, clauses, &config);
 
     let (outcome, proof_stats) = solver.solve_to_output(output_dir, &config);
@@ -4588,6 +4789,37 @@ mod tests {
         ));
         fs::create_dir_all(&path).expect("failed to create temp dir");
         path
+    }
+
+    #[test]
+    fn memory_preflight_accounts_for_dense_watchers() {
+        let clauses = vec![vec![1, 2], vec![-1, 3]];
+        let estimated = solver_construction_extra_bytes(10, &clauses);
+        let watcher_headers = bytes_for_elems(20, std::mem::size_of::<Vec<Watcher>>());
+
+        assert!(estimated >= watcher_headers);
+    }
+
+    #[test]
+    fn memory_preflight_trips_before_dense_allocation_exceeds_limit() {
+        let clauses = vec![vec![1, -2, 3]; 100];
+        let extra = solver_construction_extra_bytes(10_000, &clauses);
+        let current = 64 * 1024 * 1024;
+        let limit = current + extra;
+
+        let preflight = memory_preflight_with_limit(10_000, &clauses, limit, current)
+            .expect("90% threshold should trip before allocation reaches the cap");
+
+        assert_eq!(preflight.limit_bytes, limit);
+        assert!(preflight.estimated_peak_bytes >= preflight.threshold_bytes);
+    }
+
+    #[test]
+    fn memory_preflight_allows_small_instance_under_limit() {
+        let clauses = vec![vec![1, -2, 3]; 10];
+        let limit = 1024 * 1024 * 1024;
+
+        assert!(memory_preflight_with_limit(10, &clauses, limit, 0).is_none());
     }
 
     fn watched_literals(s: &Solver, clause_idx: usize) -> Option<(i32, i32)> {
