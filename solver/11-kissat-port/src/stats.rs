@@ -69,6 +69,7 @@ pub(crate) struct SolverStats {
     pub(crate) decisions_focused: u64,
     pub(crate) decisions_stable: u64,
     pub(crate) binary_props: u64,
+    pub(crate) binary_stale_skips: u64,
     pub(crate) long_props: u64,
     pub(crate) watch_scans: u64,
     pub(crate) watch_stale_skips: u64,
@@ -357,6 +358,7 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("lbd_improved", ctx.stats.lbd_improved);
 
     json.u64("binary_props", ctx.stats.binary_props);
+    json.u64("binary_stale_skips", ctx.stats.binary_stale_skips);
     json.u64("long_props", ctx.stats.long_props);
     json.u64("watch_scans", ctx.stats.watch_scans);
     json.u64("watch_stale_skips", ctx.stats.watch_stale_skips);

@@ -86,6 +86,120 @@ const NO_CLAUSE_REF: ClauseRef = usize::MAX;
 struct BinaryClauseId(u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BinaryEdge {
+    implied: i32,
+    clause_id: BinaryClauseId,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+enum BinaryOrigin {
+    Original,
+    LearnedConflict,
+    Hbr,
+    Transitive,
+    Gate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+struct BinaryClause {
+    clause_ref: ClauseRef,
+    a: i32,
+    b: i32,
+    redundant: bool,
+    deleted: bool,
+    proof_logged: bool,
+    origin: BinaryOrigin,
+    used_count: u32,
+    last_used_conflict: u64,
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+enum BinaryImplications {
+    Nested(Vec<Vec<BinaryEdge>>),
+    Flat {
+        edges: Vec<BinaryEdge>,
+        offsets: Vec<u32>,
+        dirty: bool,
+    },
+}
+
+impl BinaryImplications {
+    fn nested(lit_count: usize) -> Self {
+        Self::Nested(vec![Vec::new(); lit_count])
+    }
+
+    fn lit_index(lit: i32) -> usize {
+        lit_to_index(lit)
+    }
+
+    #[allow(dead_code)]
+    fn edges_for(&self, lit: i32) -> &[BinaryEdge] {
+        let idx = Self::lit_index(lit);
+        match self {
+            Self::Nested(edges) => edges.get(idx).map(Vec::as_slice).unwrap_or(&[]),
+            Self::Flat { edges, offsets, .. } => {
+                let Some(&start) = offsets.get(idx) else {
+                    return &[];
+                };
+                let end = offsets.get(idx + 1).copied().unwrap_or(edges.len() as u32);
+                &edges[start as usize..end as usize]
+            }
+        }
+    }
+
+    fn len_for(&self, lit: i32) -> usize {
+        self.edges_for(lit).len()
+    }
+
+    fn edge_for(&self, lit: i32, idx: usize) -> BinaryEdge {
+        self.edges_for(lit)[idx]
+    }
+
+    fn add_edge(&mut self, antecedent: i32, edge: BinaryEdge) {
+        let idx = Self::lit_index(antecedent);
+        match self {
+            Self::Nested(edges) => {
+                if let Some(list) = edges.get_mut(idx) {
+                    list.push(edge);
+                }
+            }
+            Self::Flat {
+                edges,
+                offsets,
+                dirty,
+            } => {
+                let insert_at = offsets
+                    .get(idx + 1)
+                    .copied()
+                    .map(|offset| offset as usize)
+                    .unwrap_or(edges.len());
+                edges.insert(insert_at, edge);
+                for offset in offsets.iter_mut().skip(idx + 1) {
+                    *offset = offset.saturating_add(1);
+                }
+                *dirty = true;
+            }
+        }
+    }
+
+    fn mark_deleted(&mut self, _id: BinaryClauseId) {
+        if let Self::Flat { dirty, .. } = self {
+            *dirty = true;
+        }
+    }
+
+    #[allow(dead_code)]
+    fn rebuild_flat_if_needed(&mut self) {
+        if let Self::Flat { dirty, .. } = self {
+            *dirty = false;
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReasonRef {
     None,
     Clause(ClauseRef),
@@ -764,8 +878,21 @@ struct Solver {
     decision_level: Vec<usize>,
     /// encoded reason for each implied assignment; NONE for decisions/root-unassigned vars
     reason: Vec<ReasonCode>,
-    /// binary reason literals used by the future binary implication fast path
+    /// binary reason literals, indexed by stable BinaryClauseId
     binary_reason_lits: Vec<[i32; 2]>,
+    /// stable binary-clause metadata and proof/model/debug traceability
+    binary_clauses: Vec<BinaryClause>,
+    /// binary implication adjacency indexed by the assigned-true antecedent literal
+    binary_implications: BinaryImplications,
+    /// arena clause offset to stable BinaryClauseId + 1; 0 means not represented as binary
+    binary_id_by_clause: Vec<u32>,
+    /// scratch stamps reserved for generated binary deduplication in later HBR/transitive passes
+    #[allow(dead_code)]
+    binary_dedup_seen: Vec<u32>,
+    #[allow(dead_code)]
+    binary_dedup_stamp: u32,
+    /// opt-in switch for binary implication propagation; default off for solver-10 parity
+    binary_fast_path: bool,
     /// controls whether the current propagation/accounting path mutates normal search counters
     accounting_mode: SearchAccountingMode,
     /// counters for temporary assumptions, kept separate from normal search stats
@@ -1148,9 +1275,12 @@ fn basic_lit_redundant(
     };
 
     let clause_len = reason_len_in_arena(reasons, reason_ref);
-    for lit_pos in 1..clause_len {
+    for lit_pos in 0..clause_len {
         let q = reason_lit_in_arena(reasons, reason_ref, lit_pos);
         let q_var = q.unsigned_abs() as usize;
+        if q_var == var {
+            continue;
+        }
         if decision_level[q_var] == 0 {
             continue;
         }
@@ -1180,17 +1310,17 @@ fn lit_redundant(
 
     stack.clear();
     let mut reason_ref = reason[lit.unsigned_abs() as usize].as_ref_unchecked();
-    let mut lit_pos = 1usize;
+    let mut lit_pos = 0usize;
 
     loop {
         let clause_len = reason_len_in_arena(reasons, reason_ref);
         if lit_pos < clause_len {
             let parent = reason_lit_in_arena(reasons, reason_ref, lit_pos);
-            if parent == lit {
+            let parent_var = parent.unsigned_abs() as usize;
+            if parent_var == lit.unsigned_abs() as usize {
                 lit_pos += 1;
                 continue;
             }
-            let parent_var = parent.unsigned_abs() as usize;
             if state[parent_var] == REDUNDANT_SOURCE || state[parent_var] == REDUNDANT_REMOVABLE {
                 lit_pos += 1;
                 continue;
@@ -1307,6 +1437,15 @@ impl Solver {
         } else {
             u64::MAX
         };
+        let ccmin_mode = if config.binary_fast_path {
+            // Current minimization assumes clause reasons store the implied literal
+            // first. Binary reasons preserve original clause order for traceability;
+            // keep the opt-in fast path proof-safe until task 1.11 makes
+            // minimization fully binary-reason aware.
+            CCMIN_NONE
+        } else {
+            ccmin_mode_from_config(config.clause_min_mode)
+        };
 
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
         let arena = Vec::with_capacity(total_words);
@@ -1348,6 +1487,12 @@ impl Solver {
             decision_level: vec![0; num_vars + 1],
             reason: vec![NO_REASON; num_vars + 1],
             binary_reason_lits: Vec::new(),
+            binary_clauses: Vec::new(),
+            binary_implications: BinaryImplications::nested(num_vars.saturating_mul(2)),
+            binary_id_by_clause: Vec::new(),
+            binary_dedup_seen: vec![0; num_vars.saturating_mul(2)],
+            binary_dedup_stamp: 0,
+            binary_fast_path: config.binary_fast_path,
             accounting_mode: SearchAccountingMode::NormalSearch,
             temporary_stats: TemporaryAssumptionStats::default(),
             trail: Vec::with_capacity(num_vars),
@@ -1427,7 +1572,7 @@ impl Solver {
             scratch_redundant_state: vec![0; num_vars + 1],
             scratch_analyze_toclear: Vec::with_capacity(16),
             scratch_analyze_stack: Vec::with_capacity(16),
-            ccmin_mode: ccmin_mode_from_config(config.clause_min_mode),
+            ccmin_mode,
             use_resolved_conflict_analysis: config.use_resolved_conflict_analysis,
             use_lbd: config.use_lbd,
             update_reason_lbd: config.update_reason_lbd,
@@ -1545,6 +1690,9 @@ impl Solver {
             mark,
             clause_header_reloced(header),
         );
+        if deleted {
+            self.mark_binary_clause_deleted_for_clause(clause_idx);
+        }
     }
 
     #[inline(always)]
@@ -1567,6 +1715,132 @@ impl Solver {
     #[inline(always)]
     fn clause_extra_idx(&self, clause_idx: usize) -> usize {
         clause_idx + 1 + self.clause_len(clause_idx)
+    }
+
+    fn ensure_binary_id_map_len(&mut self, clause_idx: ClauseRef) {
+        if self.binary_id_by_clause.len() <= clause_idx {
+            self.binary_id_by_clause.resize(clause_idx + 1, 0);
+        }
+    }
+
+    fn try_binary_id_for_clause(&self, clause_idx: ClauseRef) -> Option<BinaryClauseId> {
+        let encoded = self.binary_id_by_clause.get(clause_idx).copied()?;
+        if encoded == 0 {
+            return None;
+        }
+        Some(BinaryClauseId(encoded - 1))
+    }
+
+    #[cfg(test)]
+    fn binary_id_for_clause(&self, clause_idx: ClauseRef) -> BinaryClauseId {
+        self.try_binary_id_for_clause(clause_idx)
+            .expect("binary clause is missing stable BinaryClauseId")
+    }
+
+    fn register_binary_clause(&mut self, clause_idx: ClauseRef) -> BinaryClauseId {
+        debug_assert!(self.binary_fast_path);
+        debug_assert_eq!(self.clause_len(clause_idx), 2);
+        if let Some(id) = self.try_binary_id_for_clause(clause_idx) {
+            return id;
+        }
+
+        let a = self.clause_lit(clause_idx, 0);
+        let b = self.clause_lit(clause_idx, 1);
+        let id = BinaryClauseId(
+            self.binary_clauses
+                .len()
+                .try_into()
+                .expect("too many binary clauses for stable BinaryClauseId"),
+        );
+        let origin = if self.clause_is_learnt(clause_idx) {
+            BinaryOrigin::LearnedConflict
+        } else {
+            BinaryOrigin::Original
+        };
+        self.binary_reason_lits.push([a, b]);
+        self.binary_clauses.push(BinaryClause {
+            clause_ref: clause_idx,
+            a,
+            b,
+            redundant: self.clause_is_learnt(clause_idx),
+            deleted: false,
+            proof_logged: self.clause_is_learnt(clause_idx),
+            origin,
+            used_count: 0,
+            last_used_conflict: 0,
+        });
+        self.ensure_binary_id_map_len(clause_idx);
+        self.binary_id_by_clause[clause_idx] = id.0.saturating_add(1);
+        self.binary_implications.add_edge(
+            -a,
+            BinaryEdge {
+                implied: b,
+                clause_id: id,
+            },
+        );
+        self.binary_implications.add_edge(
+            -b,
+            BinaryEdge {
+                implied: a,
+                clause_id: id,
+            },
+        );
+        id
+    }
+
+    fn mark_binary_clause_deleted_for_clause(&mut self, clause_idx: ClauseRef) {
+        let Some(id) = self.try_binary_id_for_clause(clause_idx) else {
+            return;
+        };
+        if let Some(binary) = self.binary_clauses.get_mut(id.0 as usize) {
+            binary.deleted = true;
+        }
+        self.binary_implications.mark_deleted(id);
+        if clause_idx < self.binary_id_by_clause.len() {
+            self.binary_id_by_clause[clause_idx] = 0;
+        }
+    }
+
+    fn mark_binary_clause_used(&mut self, binary_id: BinaryClauseId) {
+        if let Some(binary) = self.binary_clauses.get_mut(binary_id.0 as usize) {
+            binary.used_count = binary.used_count.saturating_add(1);
+            binary.last_used_conflict = self.stats.conflicts;
+        }
+    }
+
+    fn binary_clause_is_deleted(&self, binary_id: BinaryClauseId) -> bool {
+        self.binary_clauses
+            .get(binary_id.0 as usize)
+            .map(|binary| binary.deleted)
+            .unwrap_or(true)
+    }
+
+    fn reason_ref_for_clause(&self, clause_idx: ClauseRef) -> ReasonRef {
+        if self.binary_fast_path && self.clause_len(clause_idx) == 2 {
+            if let Some(binary_id) = self.try_binary_id_for_clause(clause_idx) {
+                return ReasonRef::Binary(binary_id);
+            }
+        }
+        ReasonRef::Clause(clause_idx)
+    }
+
+    #[cfg(test)]
+    fn binary_clause_lits_for_test(&self, binary_id: BinaryClauseId) -> [i32; 2] {
+        self.binary_reason_lits[binary_id.0 as usize]
+    }
+
+    #[cfg(test)]
+    fn generated_binary_pair_is_duplicate_for_test(&self, a: i32, b: i32) -> bool {
+        let mut needle = [a, b];
+        needle.sort_unstable();
+        self.binary_clauses.iter().enumerate().any(|(idx, binary)| {
+            if binary.deleted {
+                return false;
+            }
+            let mut existing = self.binary_reason_lits[idx];
+            existing.sort_unstable();
+            existing == needle
+        })
     }
 
     #[inline]
@@ -1812,6 +2086,43 @@ impl Solver {
             } else {
                 self.learned_clause_by_id[id_idx] = NO_CLAUSE_REF;
             }
+        }
+        refs_rewritten
+    }
+
+    fn remap_binary_clause_refs(
+        &mut self,
+        reloc: &[usize],
+        new_arena_len: usize,
+        count_rewrites: bool,
+    ) -> u64 {
+        if self.binary_clauses.is_empty() {
+            self.binary_id_by_clause.clear();
+            return 0;
+        }
+        let mut refs_rewritten = 0u64;
+        self.binary_id_by_clause.clear();
+        self.binary_id_by_clause.resize(new_arena_len, 0);
+        for id_idx in 0..self.binary_clauses.len() {
+            if self.binary_clauses[id_idx].deleted {
+                continue;
+            }
+            let old_clause_idx = self.binary_clauses[id_idx].clause_ref;
+            if old_clause_idx >= reloc.len() {
+                self.binary_clauses[id_idx].deleted = true;
+                continue;
+            }
+            let new_clause_idx = reloc[old_clause_idx];
+            if new_clause_idx == NO_CLAUSE_REF {
+                self.binary_clauses[id_idx].deleted = true;
+                continue;
+            }
+            if count_rewrites && new_clause_idx != old_clause_idx {
+                refs_rewritten += 1;
+            }
+            self.binary_clauses[id_idx].clause_ref = new_clause_idx;
+            self.binary_id_by_clause[new_clause_idx] =
+                u32::try_from(id_idx + 1).expect("too many binary ids for metadata map");
         }
         refs_rewritten
     }
@@ -2113,9 +2424,7 @@ impl Solver {
 
     fn delete_clause_for_simplify(&mut self, clause_idx: usize) {
         if self.clause_locked(clause_idx) {
-            let implied_lit = self.clause_lit(clause_idx, 0);
-            let var = implied_lit.unsigned_abs() as usize;
-            self.set_reason_ref(var, ReasonRef::None);
+            self.clear_reason_for_locked_clause(clause_idx);
         }
 
         let clause_len = self.clause_len(clause_idx);
@@ -2370,6 +2679,9 @@ impl Solver {
                     self.root_unit_clauses.push(clause_idx);
                 }
             }
+            2 if self.binary_fast_path => {
+                self.register_binary_clause(clause_idx);
+            }
             _ => {
                 let first = self.clause_lit(clause_idx, 0);
                 let second = self.clause_lit(clause_idx, 1);
@@ -2416,9 +2728,16 @@ impl Solver {
     }
 
     fn clause_used_as_reason(&self, clause_idx: ClauseRef) -> bool {
+        let binary_id = self.try_binary_id_for_clause(clause_idx);
         self.reason
             .iter()
-            .any(|&reason| reason.as_ref_unchecked() == ReasonRef::Clause(clause_idx))
+            .any(|&reason| match reason.as_ref_unchecked() {
+                ReasonRef::Clause(reason_clause_idx) => reason_clause_idx == clause_idx,
+                ReasonRef::Binary(reason_binary_id) => {
+                    binary_id.map(|id| id == reason_binary_id).unwrap_or(false)
+                }
+                ReasonRef::None => false,
+            })
     }
 
     #[allow(dead_code)]
@@ -2565,13 +2884,58 @@ impl Solver {
         }
     }
 
+    fn propagate_binary_implications<const HOT_STATS: bool>(
+        &mut self,
+        lit: i32,
+        normal_search_accounting: bool,
+    ) -> Option<Conflict> {
+        if !self.binary_fast_path {
+            return None;
+        }
+
+        let edge_count = self.binary_implications.len_for(lit);
+        for edge_idx in 0..edge_count {
+            let edge = self.binary_implications.edge_for(lit, edge_idx);
+            if self.binary_clause_is_deleted(edge.clause_id) {
+                if HOT_STATS && normal_search_accounting {
+                    self.stats.binary_stale_skips += 1;
+                }
+                continue;
+            }
+            match self.lit_value(edge.implied) {
+                TRUE => {}
+                FALSE => {
+                    self.mark_binary_clause_used(edge.clause_id);
+                    return Some(Conflict::Binary(edge.clause_id));
+                }
+                UNASSIGNED => {
+                    self.mark_binary_clause_used(edge.clause_id);
+                    if !self.enqueue(edge.implied, ReasonRef::Binary(edge.clause_id)) {
+                        return Some(Conflict::Binary(edge.clause_id));
+                    }
+                    if HOT_STATS && normal_search_accounting {
+                        self.stats.binary_props += 1;
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+        None
+    }
+
     fn propagate_impl<const HOT_STATS: bool>(&mut self) -> Option<Conflict> {
         let start_head = self.propagate_head;
         let normal_search_accounting = !self.accounting_mode.is_temporary();
         while self.propagate_head < self.trail.len() {
-            let false_lit = -self.trail[self.propagate_head];
+            let trail_lit = self.trail[self.propagate_head];
+            let false_lit = -trail_lit;
             self.propagate_head += 1;
             self.record_propagation_accounting();
+            if let Some(conflict) =
+                self.propagate_binary_implications::<HOT_STATS>(trail_lit, normal_search_accounting)
+            {
+                return Some(conflict);
+            }
             let watch_idx = self.lit_index(false_lit);
             let mut pending = std::mem::take(&mut self.watchers[watch_idx]);
             let mut read = 0usize;
@@ -3256,9 +3620,41 @@ impl Solver {
         if self.clause_is_deleted(clause_idx) || self.clause_len(clause_idx) == 0 {
             return false;
         }
+        if let Some(binary_id) = self.try_binary_id_for_clause(clause_idx) {
+            let check_len = self.clause_len(clause_idx).min(2);
+            for lit_pos in 0..check_len {
+                let lit = self.clause_lit(clause_idx, lit_pos);
+                let var = lit.unsigned_abs() as usize;
+                if self.lit_value(lit) == TRUE
+                    && self.reason_ref(var) == ReasonRef::Binary(binary_id)
+                {
+                    return true;
+                }
+            }
+        }
         let implied_lit = self.clause_lit(clause_idx, 0);
         let var = implied_lit.unsigned_abs() as usize;
         self.lit_value(implied_lit) == TRUE && self.reason_ref(var) == ReasonRef::Clause(clause_idx)
+    }
+
+    fn clear_reason_for_locked_clause(&mut self, clause_idx: usize) {
+        if self.clause_is_deleted(clause_idx) || self.clause_len(clause_idx) == 0 {
+            return;
+        }
+        let binary_id = self.try_binary_id_for_clause(clause_idx);
+        let check_len = self.clause_len(clause_idx).min(2);
+        for lit_pos in 0..check_len {
+            let lit = self.clause_lit(clause_idx, lit_pos);
+            let var = lit.unsigned_abs() as usize;
+            let reason = self.reason_ref(var);
+            if reason == ReasonRef::Clause(clause_idx)
+                || binary_id
+                    .map(|id| reason == ReasonRef::Binary(id))
+                    .unwrap_or(false)
+            {
+                self.set_reason_ref(var, ReasonRef::None);
+            }
+        }
     }
 
     fn reduce_db_enabled(&self) -> bool {
@@ -3748,6 +4144,8 @@ impl Solver {
             new_arena_len,
             self.track_gc_detail_stats,
         );
+        refs_rewritten +=
+            self.remap_binary_clause_refs(&reloc, new_arena_len, self.track_gc_detail_stats);
         self.arena = new_arena;
         self.original_clause_ids = new_original_clause_ids;
         self.learned_clause_ids = new_learned_clause_ids;
@@ -4065,16 +4463,20 @@ impl Solver {
     fn mark_binary_literals_for_analysis(
         &mut self,
         binary_id: BinaryClauseId,
-        start_lit_pos: usize,
+        skip_var: Option<usize>,
         current_level: usize,
         current_level_count: &mut usize,
     ) {
+        self.mark_binary_clause_used(binary_id);
         let lits = *self
             .binary_reason_lits
             .get(binary_id.0 as usize)
             .expect("invalid binary reason id");
-        for &lit in lits.iter().skip(start_lit_pos) {
+        for &lit in &lits {
             let var = lit.unsigned_abs() as usize;
+            if skip_var == Some(var) {
+                continue;
+            }
             if self.scratch_seen[var] != 0
                 || (self.use_resolved_conflict_analysis && self.scratch_resolved[var] != 0)
             {
@@ -4099,6 +4501,7 @@ impl Solver {
     fn mark_reason_literals_for_analysis<const LBD_META: bool>(
         &mut self,
         reason_ref: ReasonRef,
+        resolved_var: usize,
         start_lit_pos: usize,
         current_level: usize,
         current_level_count: &mut usize,
@@ -4127,7 +4530,7 @@ impl Solver {
             }
             ReasonRef::Binary(binary_id) => self.mark_binary_literals_for_analysis(
                 binary_id,
-                start_lit_pos,
+                Some(resolved_var),
                 current_level,
                 current_level_count,
             ),
@@ -4149,11 +4552,36 @@ impl Solver {
             ),
             Conflict::Binary(binary_id) => self.mark_binary_literals_for_analysis(
                 binary_id,
-                0,
+                None,
                 current_level,
                 current_level_count,
             ),
             Conflict::RootUnit => {}
+        }
+    }
+
+    fn conflict_max_decision_level(&self, conflict: Conflict) -> usize {
+        match conflict {
+            Conflict::Clause(clause_idx) => {
+                let clause_len = self.clause_len(clause_idx);
+                let mut max_level = 0usize;
+                for lit_pos in 0..clause_len {
+                    let var = self.clause_lit(clause_idx, lit_pos).unsigned_abs() as usize;
+                    max_level = max_level.max(self.decision_level[var]);
+                }
+                max_level
+            }
+            Conflict::Binary(binary_id) => self
+                .binary_reason_lits
+                .get(binary_id.0 as usize)
+                .map(|lits| {
+                    lits.iter()
+                        .map(|lit| self.decision_level[lit.unsigned_abs() as usize])
+                        .max()
+                        .unwrap_or(0)
+                })
+                .unwrap_or(0),
+            Conflict::RootUnit => 0,
         }
     }
 
@@ -4206,6 +4634,7 @@ impl Solver {
                 };
                 self.mark_reason_literals_for_analysis::<LBD_META>(
                     reason_ref,
+                    var,
                     start_lit_pos,
                     current_level,
                     &mut current_level_count,
@@ -4272,6 +4701,13 @@ impl Solver {
     }
 
     fn binary_clause_count_final(&self) -> usize {
+        if self.binary_fast_path {
+            return self
+                .binary_clauses
+                .iter()
+                .filter(|binary| !binary.deleted)
+                .count();
+        }
         self.original_clause_ids
             .iter()
             .chain(self.learned_clause_ids.iter())
@@ -4282,6 +4718,18 @@ impl Solver {
                     && self.clause_len(clause_idx) == 2
             })
             .count()
+    }
+
+    fn binary_implication_edge_count_final(&self) -> usize {
+        if self.binary_fast_path {
+            self.binary_clauses
+                .iter()
+                .filter(|binary| !binary.deleted)
+                .count()
+                .saturating_mul(2)
+        } else {
+            self.binary_clause_count_final().saturating_mul(2)
+        }
     }
 
     fn formula_stats_snapshot(
@@ -4309,7 +4757,7 @@ impl Solver {
             watchers_stale: clause_db.watchers_stale as u64,
             deleted_words: self.deleted_clause_words as u64,
             binary_clauses_final,
-            binary_implication_edges_final: binary_clauses_final.saturating_mul(2),
+            binary_implication_edges_final: self.binary_implication_edge_count_final() as u64,
             max_clause_buffer_len: self.scratch_conflict_clause.len() as u64,
         }
     }
@@ -4551,6 +4999,18 @@ impl Solver {
                         }
                         return SolveOutcome::unsat();
                     }
+                    if self.binary_fast_path {
+                        let conflict_level = self.conflict_max_decision_level(conflict_event);
+                        if conflict_level == 0 {
+                            self.stats.search_sec = search_start.elapsed().as_secs_f64();
+                            return SolveOutcome::unsat();
+                        }
+                        if conflict_level < self.current_level() {
+                            self.backtrack(conflict_level);
+                            conflict = Some(conflict_event);
+                            continue;
+                        }
+                    }
 
                     self.stats.conflicts += 1;
                     if limits_active {
@@ -4613,8 +5073,10 @@ impl Solver {
                             self.clause_slice(learned_clause_idx),
                             backtrack_level,
                         );
-                        let inserted =
-                            self.enqueue(asserting_lit, ReasonRef::Clause(learned_clause_idx));
+                        let inserted = self.enqueue(
+                            asserting_lit,
+                            self.reason_ref_for_clause(learned_clause_idx),
+                        );
                         debug_assert!(inserted, "learned clause must be asserting after backtrack");
                         if self.reduce_policy == ReducePolicy::LbdTiered {
                             self.mark_learned_clause_recent(learned_clause_idx);
@@ -5243,6 +5705,41 @@ mod tests {
         Solver::new_with_config(num_vars, clauses, config)
     }
 
+    fn binary_fast_config() -> SolverConfig {
+        SolverConfig {
+            binary_fast_path: true,
+            ..Default::default()
+        }
+    }
+
+    fn binary_fast_hot_stats_config() -> SolverConfig {
+        SolverConfig {
+            binary_fast_path: true,
+            hot_stats: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_binary_fast_path_disables_clause_minimization_until_binary_reasons_are_safe() {
+        let fast_config = SolverConfig {
+            binary_fast_path: true,
+            clause_min_mode: ClauseMinMode::RecursiveLimited,
+            ..Default::default()
+        };
+        let fast = make_solver_with_config(2, vec![vec![1, 2]], &fast_config);
+
+        assert_eq!(fast.ccmin_mode, CCMIN_NONE);
+
+        let legacy_config = SolverConfig {
+            clause_min_mode: ClauseMinMode::Basic,
+            ..Default::default()
+        };
+        let legacy = make_solver_with_config(2, vec![vec![1, 2]], &legacy_config);
+
+        assert_eq!(legacy.ccmin_mode, CCMIN_BASIC);
+    }
+
     fn make_temp_dir(label: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -5443,6 +5940,225 @@ mod tests {
             s.conflict_lits_for_test(Conflict::Binary(binary_id)),
             vec![-2, -1]
         );
+    }
+
+    #[test]
+    fn test_binary_implication_flat_add_edge_preserves_edge() {
+        let mut implications = BinaryImplications::Flat {
+            edges: Vec::new(),
+            offsets: vec![0; 5],
+            dirty: false,
+        };
+        let first = BinaryEdge {
+            implied: 2,
+            clause_id: BinaryClauseId(0),
+        };
+        let second = BinaryEdge {
+            implied: -2,
+            clause_id: BinaryClauseId(1),
+        };
+
+        implications.add_edge(1, first);
+        implications.add_edge(-1, second);
+
+        assert_eq!(implications.edges_for(1), &[first]);
+        assert_eq!(implications.edges_for(-1), &[second]);
+        assert!(matches!(
+            implications,
+            BinaryImplications::Flat { dirty: true, .. }
+        ));
+    }
+
+    #[test]
+    fn test_binary_propagates_implied_literal() {
+        let config = binary_fast_hot_stats_config();
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        let clause_idx = s.original_clause_ids[0];
+        let binary_id = s.binary_id_for_clause(clause_idx);
+
+        assert_eq!(s.binary_implications.len_for(-1), 1);
+        assert!(s.enqueue(-1, ReasonRef::None));
+        assert!(s.propagate().is_none());
+
+        assert_eq!(s.assignment[2], TRUE);
+        assert_eq!(s.reason_ref(2), ReasonRef::Binary(binary_id));
+        assert_eq!(s.stats.binary_props, 1);
+    }
+
+    #[test]
+    fn test_binary_conflict_detected() {
+        let config = binary_fast_config();
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        let clause_idx = s.original_clause_ids[0];
+        let binary_id = s.binary_id_for_clause(clause_idx);
+
+        assert!(s.enqueue(-1, ReasonRef::None));
+        assert!(s.enqueue(-2, ReasonRef::None));
+
+        assert_eq!(s.propagate(), Some(Conflict::Binary(binary_id)));
+    }
+
+    #[test]
+    fn test_binary_conflict_level_uses_reason_literals() {
+        let config = binary_fast_config();
+        let mut s = make_solver_with_config(3, vec![vec![1, 2]], &config);
+        let binary_id = s.binary_id_for_clause(s.original_clause_ids[0]);
+
+        assert!(s.enqueue(-1, ReasonRef::None));
+        assert!(s.enqueue(-2, ReasonRef::None));
+        s.decide(3);
+
+        assert_eq!(s.current_level(), 1);
+        assert_eq!(
+            s.conflict_max_decision_level(Conflict::Binary(binary_id)),
+            0
+        );
+        s.backtrack(0);
+        assert_eq!(s.current_level(), 0);
+    }
+
+    #[test]
+    fn test_binary_reason_expands_in_analyze() {
+        let config = binary_fast_config();
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        let binary_id = s.binary_id_for_clause(s.original_clause_ids[0]);
+        assert!(s.enqueue(-1, ReasonRef::None));
+        s.decide(-2);
+
+        let (learned, backtrack_level) = s.analyze_conflict(Conflict::Binary(binary_id));
+
+        assert_eq!(learned, vec![2]);
+        assert_eq!(backtrack_level, 0);
+        assert!(s.binary_clauses[binary_id.0 as usize].used_count > 0);
+    }
+
+    #[test]
+    fn test_binary_reason_analysis_skips_resolved_variable_by_identity() {
+        let config = binary_fast_config();
+        let mut s = make_solver_with_config(3, vec![vec![1, 2], vec![1, 3], vec![-2, -3]], &config);
+
+        s.decide(-1);
+        let conflict = s.propagate().expect("expected binary conflict");
+        let (learned, backtrack_level) = s.analyze_conflict(conflict);
+
+        assert_eq!(learned, vec![1]);
+        assert_eq!(backtrack_level, 0);
+    }
+
+    #[test]
+    fn test_binary_original_clause_preserved_for_model_check() {
+        let config = binary_fast_config();
+        let s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        let clause_idx = s.original_clause_ids[0];
+
+        assert_eq!(s.clause_slice(clause_idx), &[1, 2]);
+        assert_eq!(
+            s.binary_clause_lits_for_test(s.binary_id_for_clause(clause_idx)),
+            [1, 2]
+        );
+    }
+
+    #[test]
+    fn test_binary_fast_and_legacy_same_result_on_small_oracle() {
+        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
+        let mut legacy = make_solver(2, clauses.clone());
+        let config = binary_fast_config();
+        let mut fast = make_solver_with_config(2, clauses, &config);
+
+        assert_eq!(legacy.solve(), fast.solve());
+    }
+
+    #[test]
+    fn test_binary_fast_path_sets_assignment() {
+        let config = binary_fast_config();
+        let mut s = make_solver_with_config(2, vec![vec![-1, 2]], &config);
+
+        assert!(s.enqueue(1, ReasonRef::None));
+        assert!(s.propagate().is_none());
+
+        assert_eq!(s.assignment[2], TRUE);
+    }
+
+    #[test]
+    fn test_binary_generated_clause_has_proof_id() {
+        let config = binary_fast_config();
+        let mut s = make_solver_with_config(2, vec![], &config);
+        let clause_idx = s.add_clause(vec![1, 2]);
+        let binary_id = s.binary_id_for_clause(clause_idx);
+        let binary = &s.binary_clauses[binary_id.0 as usize];
+
+        assert_eq!(binary.origin, BinaryOrigin::LearnedConflict);
+        assert!(binary.redundant);
+        assert!(binary.proof_logged);
+    }
+
+    #[test]
+    fn test_binary_delete_marks_edge_stale_until_rebuild() {
+        let config = binary_fast_hot_stats_config();
+        let mut s = make_solver_with_config(2, vec![], &config);
+        let clause_idx = s.add_clause(vec![1, 2]);
+        let binary_id = s.binary_id_for_clause(clause_idx);
+
+        s.delete_clause(clause_idx);
+        assert!(s.binary_clause_is_deleted(binary_id));
+        assert_eq!(s.binary_implications.len_for(-1), 1);
+
+        assert!(s.enqueue(-1, ReasonRef::None));
+        assert!(s.propagate().is_none());
+        assert_eq!(s.assignment[2], UNASSIGNED);
+        assert_eq!(s.stats.binary_stale_skips, 1);
+    }
+
+    #[test]
+    fn test_binary_dedup_prevents_duplicate_hbr_edge() {
+        let config = binary_fast_config();
+        let mut s = make_solver_with_config(2, vec![], &config);
+        let _first = s.add_clause(vec![1, 2]);
+        let before_edges = s.binary_implications.len_for(-1);
+
+        assert!(s.generated_binary_pair_is_duplicate_for_test(2, 1));
+        if !s.generated_binary_pair_is_duplicate_for_test(2, 1) {
+            s.add_clause(vec![2, 1]);
+        }
+        assert_eq!(s.binary_implications.len_for(-1), before_edges);
+    }
+
+    #[test]
+    fn test_generated_redundant_binary_deleted_through_formula_edit() {
+        let config = binary_fast_config();
+        let mut s = make_solver_with_config(2, vec![], &config);
+        let clause_idx = s.add_clause(vec![1, 2]);
+        let binary_id = s.binary_id_for_clause(clause_idx);
+
+        s.delete_clause(clause_idx);
+
+        assert!(s.binary_clauses[binary_id.0 as usize].deleted);
+        assert!(s.clause_is_deleted(clause_idx));
+    }
+
+    #[test]
+    fn test_original_binary_not_deleted_by_binary_budget() {
+        let config = binary_fast_config();
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        let clause_idx = s.original_clause_ids[0];
+
+        s.reduce_db();
+
+        assert!(!s.clause_is_deleted(clause_idx));
+        assert!(!s.binary_clause_is_deleted(s.binary_id_for_clause(clause_idx)));
+    }
+
+    #[test]
+    fn test_binary_usage_counter_updates_on_reason() {
+        let config = binary_fast_config();
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        let binary_id = s.binary_id_for_clause(s.original_clause_ids[0]);
+
+        assert!(s.enqueue(-1, ReasonRef::None));
+        assert!(s.propagate().is_none());
+
+        assert_eq!(s.binary_clauses[binary_id.0 as usize].used_count, 1);
+        assert_eq!(s.binary_clauses[binary_id.0 as usize].last_used_conflict, 0);
     }
 
     #[test]
@@ -6145,6 +6861,7 @@ mod tests {
         s.decision_level[2] = 1;
         s.mark_reason_literals_for_analysis::<true>(
             ReasonRef::Clause(reason),
+            2,
             1,
             1,
             &mut current_level_count,
@@ -6538,6 +7255,26 @@ mod tests {
         s.ccmin_mode = CCMIN_DEEP;
         s.minimize_learned_clause(&mut learned_clause);
         assert_eq!(learned_clause, vec![-1, 3, 5]);
+    }
+
+    #[test]
+    fn test_clause_minimization_binary_reason_skips_resolved_variable_by_identity() {
+        let mut s = make_solver(5, vec![]);
+        let binary_id = s.add_binary_reason_for_test([3, 5]);
+        s.decision_level[1] = 2;
+        s.decision_level[3] = 1;
+        s.decision_level[5] = 1;
+        s.set_reason_ref(5, ReasonRef::Binary(binary_id));
+
+        let mut basic_clause = vec![-1, -5];
+        s.ccmin_mode = CCMIN_BASIC;
+        s.minimize_learned_clause(&mut basic_clause);
+        assert_eq!(basic_clause, vec![-1, -5]);
+
+        let mut deep_clause = vec![-1, -5];
+        s.ccmin_mode = CCMIN_DEEP;
+        s.minimize_learned_clause(&mut deep_clause);
+        assert_eq!(deep_clause, vec![-1, -5]);
     }
 
     #[test]

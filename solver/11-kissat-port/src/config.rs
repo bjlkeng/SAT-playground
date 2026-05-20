@@ -1071,7 +1071,6 @@ impl SolverConfig {
         }
         let unsupported = [
             (self.chrono_backtrack, "SAT_CHRONO"),
-            (self.binary_fast_path, "SAT_BINARY_FAST"),
             (self.vmtf, "SAT_VMTF"),
             (self.rephase, "SAT_REPHASE"),
             (self.inprocess, "SAT_INPROCESS"),
@@ -1519,11 +1518,11 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
         feature(
             "SAT_BINARY_FAST",
             config.binary_fast_path,
-            FeatureMaturity::ParkingLot,
+            FeatureMaturity::SmokeSafe,
+            true,
+            true,
             false,
-            false,
-            false,
-            "",
+            "log/1.6/summary.md",
         ),
         feature(
             "SAT_VMTF",
@@ -2490,6 +2489,13 @@ mod tests {
 
         assert!(config.use_lbd);
         assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
+    }
+
+    #[test]
+    fn test_binary_fast_path_is_runtime_supported() {
+        let config = SolverConfig::from_env_map(&env_map(&[("SAT_BINARY_FAST", "on")]));
+
+        assert!(config.binary_fast_path);
     }
 
     #[test]

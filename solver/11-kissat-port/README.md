@@ -48,6 +48,10 @@ What is present:
 - opt-in focused/stable search-mode scaffolding (`SAT_USE_LBD=on
   SAT_SEARCH_MODE=focused-stable`) with focused EMA restarts and stable reluctant restarts;
   single-mode search remains the default for solver-10 parity
+- opt-in binary implication fast path (`SAT_BINARY_FAST=on`) that keeps binary clauses in the arena
+  for proof/model/debug traceability while propagating them through stable binary IDs and implication
+  edges; default propagation remains the legacy watched-clause path. While this flag is enabled,
+  clause minimization is disabled until the Phase 1.11 binary-reason minimization work lands.
 
 Still incomplete:
 
@@ -89,6 +93,7 @@ SAT_RESTART=legacy-luby|kissat-ema|reluctant
 SAT_REDUCE=legacy|lbd-tiered
 SAT_PHASE=legacy|saved|target-then-saved|best-then-target-then-saved
 SAT_SEARCH_MODE=single|focused-stable
+SAT_BINARY_FAST=on
 ```
 
 `SAT_CONFIG_OUT` writes a deterministic replay file with `schema_version`,

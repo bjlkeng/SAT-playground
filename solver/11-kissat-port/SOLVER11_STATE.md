@@ -57,6 +57,10 @@ Known missing or incomplete feature families at this baseline:
   default-profile behavior yet.
 - Focused/stable mode switching and reluctant restarts are present behind `SAT_USE_LBD=on
   SAT_SEARCH_MODE=focused-stable`, but they are not promoted as default-profile behavior yet.
+- Binary implication propagation is present behind `SAT_BINARY_FAST=on`; binary clauses keep arena
+  representation for proof/model/debug paths while propagation uses stable `BinaryClauseId` reasons.
+  The opt-in fast path currently disables clause minimization until Phase 1.11 makes minimization
+  binary-reason aware.
 - VMTF queue.
 - Rephasing.
 - Vivification.

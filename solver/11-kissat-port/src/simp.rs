@@ -224,9 +224,7 @@ impl Solver {
         debug_assert!(!self.clause_is_learnt(clause_idx));
 
         if self.clause_locked(clause_idx) {
-            let implied_lit = self.clause_lit(clause_idx, 0);
-            let var = implied_lit.unsigned_abs() as usize;
-            self.set_reason_ref(var, ReasonRef::None);
+            self.clear_reason_for_locked_clause(clause_idx);
         }
 
         self.mark_occurs_dirty_for_clause(clause_idx, touched, touched_flags);
@@ -387,11 +385,7 @@ impl Solver {
         }
 
         let clause_len = self.clause_len(clause_idx);
-        let locked_lit = if self.clause_locked(clause_idx) {
-            Some(self.clause_lit(clause_idx, 0))
-        } else {
-            None
-        };
+        let was_locked = self.clause_locked(clause_idx);
         let mut remove_pos = None;
         let mut strengthened = std::mem::take(&mut self.scratch_preprocess_clause);
         strengthened.clear();
@@ -462,11 +456,8 @@ impl Solver {
         self.set_original_clause_abstraction(clause_idx, strengthened_abstraction);
         self.scratch_preprocess_clause = strengthened;
 
-        if let Some(lit) = locked_lit {
-            if lit == remove_lit {
-                let var = lit.unsigned_abs() as usize;
-                self.set_reason_ref(var, ReasonRef::None);
-            }
+        if was_locked {
+            self.clear_reason_for_locked_clause(clause_idx);
         }
 
         self.attach_clause(clause_idx, false);
