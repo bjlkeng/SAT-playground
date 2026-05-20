@@ -1989,11 +1989,30 @@ impl Solver {
         self.original_literals + self.learned_literals
     }
 
-    fn push_branch_var(&mut self, var: usize) {
-        if !self.decision_var[var]
-            || self.assignment[var] != UNASSIGNED
-            || self.branch_pos[var] != BRANCH_NOT_IN_HEAP
-        {
+    fn heap_contains_var(&self, var: usize) -> bool {
+        if var == 0 || var >= self.branch_pos.len() {
+            return false;
+        }
+        let idx = self.branch_pos[var];
+        idx != BRANCH_NOT_IN_HEAP
+            && idx < self.branch_heap.len()
+            && self.branch_heap[idx] as usize == var
+    }
+
+    fn unassigned_decision_candidate(&self, var: usize) -> bool {
+        var > 0
+            && var < self.assignment.len()
+            && self.decision_var[var]
+            && !self.eliminated[var]
+            && self.assignment[var] == UNASSIGNED
+    }
+
+    fn push_branch_var_if_decision(&mut self, var: usize) {
+        if !self.unassigned_decision_candidate(var) {
+            return;
+        }
+        if self.branch_pos[var] != BRANCH_NOT_IN_HEAP {
+            debug_assert!(self.heap_contains_var(var));
             return;
         }
 
@@ -2006,11 +2025,32 @@ impl Solver {
         self.branch_heap_sift_up(idx);
     }
 
+    fn push_branch_var(&mut self, var: usize) {
+        self.push_branch_var_if_decision(var);
+    }
+
+    fn heap_reinsert_unassigned_decision_var(&mut self, var: usize) {
+        self.push_branch_var_if_decision(var);
+    }
+
+    fn heap_remove_assigned_top(&mut self) {
+        while let Some(&var_word) = self.branch_heap.first() {
+            let var = var_word as usize;
+            if self.unassigned_decision_candidate(var) {
+                break;
+            }
+            let _ = self.branch_heap_pop_best();
+            if self.accounting_mode.update_branch_stats() {
+                self.stats.decision_heap_stale_pops += 1;
+            }
+        }
+    }
+
     fn rebuild_branch_queue(&mut self) {
         self.branch_heap.clear();
         self.branch_pos.fill(BRANCH_NOT_IN_HEAP);
         for var in 1..self.assignment.len() {
-            if self.decision_var[var] && self.assignment[var] == UNASSIGNED {
+            if self.unassigned_decision_candidate(var) {
                 self.branch_pos[var] = self.branch_heap.len();
                 self.branch_heap.push(var as u32);
             }
@@ -2541,6 +2581,8 @@ impl Solver {
         let idx = self.branch_pos[var];
         if idx != BRANCH_NOT_IN_HEAP {
             self.branch_heap_sift_up(idx);
+        } else {
+            self.push_branch_var_if_decision(var);
         }
     }
 
@@ -2618,21 +2660,15 @@ impl Solver {
     }
 
     fn pick_branch_lit(&mut self) -> Option<i32> {
-        while let Some(var) = self.branch_heap_pop_best() {
-            if !self.decision_var[var] || self.assignment[var] != UNASSIGNED {
-                if self.accounting_mode.update_branch_stats() {
-                    self.stats.decision_heap_stale_pops += 1;
-                }
-                continue;
-            }
+        self.heap_remove_assigned_top();
+        let var = self.branch_heap_pop_best()?;
+        debug_assert!(self.unassigned_decision_candidate(var));
 
-            return Some(if self.saved_phase[var] == FALSE {
-                -(var as i32)
-            } else {
-                var as i32
-            });
-        }
-        None
+        Some(if self.saved_phase[var] == FALSE {
+            -(var as i32)
+        } else {
+            var as i32
+        })
     }
 
     fn backtrack(&mut self, target_level: usize) {
@@ -2654,7 +2690,7 @@ impl Solver {
             self.assignment[var] = UNASSIGNED;
             self.decision_level[var] = 0;
             self.set_reason_ref(var, ReasonRef::None);
-            self.push_branch_var(var);
+            self.heap_reinsert_unassigned_decision_var(var);
         }
 
         self.trail_limits.truncate(target_level);
@@ -4791,6 +4827,18 @@ mod tests {
         path
     }
 
+    fn decision_prefix(mut solver: Solver, limit: usize) -> Vec<i32> {
+        let mut prefix = Vec::new();
+        for _ in 0..limit {
+            let Some(lit) = solver.pick_branch_lit() else {
+                break;
+            };
+            prefix.push(lit);
+            solver.decide(lit);
+        }
+        prefix
+    }
+
     #[test]
     fn memory_preflight_accounts_for_dense_watchers() {
         let clauses = vec![vec![1, 2], vec![-1, 3]];
@@ -6153,6 +6201,162 @@ mod tests {
             assert_ne!(lit.unsigned_abs(), 1);
         }
         assert_eq!(s.branch_pos[1], BRANCH_NOT_IN_HEAP);
+    }
+
+    #[test]
+    fn test_eliminated_var_not_reinserted() {
+        let mut s = make_solver(2, vec![]);
+
+        assert!(s.heap_contains_var(1));
+        s.branch_heap_remove(1);
+        s.eliminated[1] = true;
+        s.decision_var[1] = false;
+
+        s.heap_reinsert_unassigned_decision_var(1);
+
+        assert!(!s.heap_contains_var(1));
+        assert_eq!(s.branch_pos[1], BRANCH_NOT_IN_HEAP);
+    }
+
+    #[test]
+    fn test_assigned_heap_top_skipped() {
+        let mut s = make_solver(3, vec![]);
+        s.activity[1] = 10.0;
+        s.activity[2] = 2.0;
+        s.activity[3] = 1.0;
+        s.rebuild_branch_queue();
+        assert_eq!(s.branch_heap[0] as usize, 1);
+
+        s.assignment[1] = TRUE;
+        s.stats.decision_heap_pops = 0;
+        s.stats.decision_heap_stale_pops = 0;
+
+        s.heap_remove_assigned_top();
+
+        assert!(!s.heap_contains_var(1));
+        assert_eq!(s.branch_heap[0] as usize, 2);
+        assert_eq!(s.stats.decision_heap_pops, 1);
+        assert_eq!(s.stats.decision_heap_stale_pops, 1);
+    }
+
+    #[test]
+    fn test_backtrack_reinserts_unassigned_decision_var() {
+        let mut s = make_solver(2, vec![]);
+        s.activity[1] = 3.0;
+        s.activity[2] = 1.0;
+        s.rebuild_branch_queue();
+
+        let lit = s.pick_branch_lit().expect("expected branch literal");
+        assert_eq!(lit.unsigned_abs(), 1);
+        s.decide(lit);
+        assert!(!s.heap_contains_var(1));
+
+        s.backtrack(0);
+
+        assert_eq!(s.assignment[1], UNASSIGNED);
+        assert!(s.heap_contains_var(1));
+    }
+
+    #[test]
+    fn test_activity_bump_percolates() {
+        let mut s = make_solver(3, vec![]);
+        s.activity[1] = 1.0;
+        s.activity[2] = 2.0;
+        s.activity[3] = 3.0;
+        s.activity_inc = 4.0;
+        s.rebuild_branch_queue();
+        assert_eq!(s.branch_heap[0] as usize, 3);
+
+        s.bump_variable_activity(1);
+
+        assert_eq!(s.branch_heap[0] as usize, 1);
+    }
+
+    #[test]
+    fn test_heap_push_respects_decision_var() {
+        let mut s = make_solver(1, vec![]);
+        s.branch_heap_remove(1);
+
+        s.decision_var[1] = false;
+        s.push_branch_var_if_decision(1);
+        assert!(!s.heap_contains_var(1));
+
+        s.decision_var[1] = true;
+        s.eliminated[1] = true;
+        s.push_branch_var_if_decision(1);
+        assert!(!s.heap_contains_var(1));
+
+        s.frozen[1] = true;
+        s.eliminated[1] = false;
+        s.decision_var[1] = false;
+        s.push_branch_var_if_decision(1);
+        assert!(!s.heap_contains_var(1));
+
+        s.decision_var[1] = true;
+        s.frozen[1] = false;
+        s.push_branch_var_if_decision(1);
+        assert!(s.heap_contains_var(1));
+    }
+
+    #[test]
+    fn test_heap_tie_break_is_deterministic() {
+        let mut s = make_solver(3, vec![]);
+        s.activity[1] = 1.0;
+        s.activity[2] = 1.0;
+        s.activity[3] = 1.0;
+        s.rebuild_branch_queue();
+
+        assert_eq!(s.pick_branch_lit(), Some(-1));
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+        assert_eq!(s.pick_branch_lit(), Some(-3));
+    }
+
+    #[test]
+    fn test_activity_rescale_preserves_order() {
+        let mut s = make_solver(3, vec![]);
+        s.activity[1] = 6.0e99;
+        s.activity[2] = 3.0e99;
+        s.activity[3] = 1.0e99;
+        s.activity_inc = 6.0e99;
+        s.rebuild_branch_queue();
+
+        s.bump_variable_activity(1);
+
+        assert_eq!(s.pick_branch_lit(), Some(-1));
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+        assert_eq!(s.pick_branch_lit(), Some(-3));
+    }
+
+    #[test]
+    fn test_same_seed_reproduces_decision_prefix_on_small_formula() {
+        let config = SolverConfig {
+            deterministic_seed: 17,
+            ..SolverConfig::default()
+        };
+        let clauses = vec![vec![1, 2], vec![-1, 3], vec![4, -2]];
+
+        let first = make_solver_with_config(4, clauses.clone(), &config);
+        let second = make_solver_with_config(4, clauses, &config);
+
+        assert_eq!(decision_prefix(first, 4), decision_prefix(second, 4));
+    }
+
+    #[test]
+    fn test_different_seed_changes_only_randomized_policy() {
+        let clauses = vec![vec![1, 2], vec![-1, 3], vec![4, -2]];
+        let first_config = SolverConfig {
+            deterministic_seed: 11,
+            ..SolverConfig::default()
+        };
+        let second_config = SolverConfig {
+            deterministic_seed: 29,
+            ..SolverConfig::default()
+        };
+
+        let first = make_solver_with_config(4, clauses.clone(), &first_config);
+        let second = make_solver_with_config(4, clauses, &second_config);
+
+        assert_eq!(decision_prefix(first, 4), decision_prefix(second, 4));
     }
 
     #[test]
