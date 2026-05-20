@@ -1,0 +1,41 @@
+before=log/1.5/search-core-saved/results.csv
+after=log/1.8/search-core-conservative/results.csv
+baseline=none
+timeout_s=120
+correctness_failures=[]
+status_changes=[["SC25_Timetable_C_392", "SAT", "TIMEOUT"], ["SC25_Timetable_C_406", "SAT", "TIMEOUT"], ["battleship-16-31-sat", "SAT", "TIMEOUT"], ["mp1-Nb7T46", "SAT", "TIMEOUT"]]
+status_regressions=[["SC25_Timetable_C_392", "SAT", "TIMEOUT"], ["SC25_Timetable_C_406", "SAT", "TIMEOUT"], ["battleship-16-31-sat", "SAT", "TIMEOUT"], ["mp1-Nb7T46", "SAT", "TIMEOUT"]]
+validation_warnings=["log/1.5/search-core-saved/validation.jsonl: validation summary missing", "log/1.8/search-core-conservative/validation.jsonl: validation summary missing"]
+raw_status_counts_match=true
+PAR2_before=1188.569
+PAR2_after=1960.600
+PAR2_delta=772.031
+solved_before=5
+solved_after=1
+newly_solved=[]
+new_timeouts=["SC25_Timetable_C_392", "SC25_Timetable_C_406", "battleship-16-31-sat", "mp1-Nb7T46"]
+missing_after=[]
+extra_after=[]
+per_category_PAR2_before={"uncategorized": 1188.569}
+per_category_PAR2_after={"uncategorized": 1960.6}
+paired_speedup_median=0.9901
+bootstrap_ci_PAR2_delta=not_computed_single_run
+seed_vs_binary_variance=not_available
+counter_deltas=not_available_without_JSON_STATS_join
+proof_throughput_deltas=not_available_without_proof_validation_join
+machine_environment={"SAT_SEED": "unset", "binary_sha256": "not_available_from_results_csv", "command_line": "tools/compare_bench.py --before log/1.5/search-core-saved/results.csv --after log/1.8/search-core-conservative/results.csv --timeout 120", "config_hash": "not_available_without_JSON_STATS", "core_count": "12", "cpu_model": "AMD Ryzen 5 5600 6-Core Processor", "governor": "schedutil", "memory_limit": "not_available_from_results_csv", "os": "Linux-6.8.0-111-generic-x86_64-with-glibc2.35", "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)", "timeout": "120"}
+top_10_wins=[["544707209399nw.shuffled-as.sat03-1671", -40.03], ["1-TC-256-K-63", 0.0], ["DLTM_twitter845_79_19", 0.0], ["case9", 0.0], ["83aa254f-1.normalised", 0.146], ["SC25_Timetable_C_406", 39.54], ["mp1-Nb7T46", 78.737], ["battleship-16-31-sat", 97.61], ["SC25_Timetable_C_392", 116.174]]
+top_10_regressions=[["SC25_Timetable_C_392", 116.174], ["battleship-16-31-sat", 97.61], ["mp1-Nb7T46", 78.737], ["SC25_Timetable_C_406", 39.54], ["83aa254f-1.normalised", 0.146], ["1-TC-256-K-63", 0.0], ["DLTM_twitter845_79_19", 0.0], ["case9", 0.0], ["544707209399nw.shuffled-as.sat03-1671", -40.03]]
+instances_requiring_manual_review=["SC25_Timetable_C_392", "SC25_Timetable_C_406", "battleship-16-31-sat", "mp1-Nb7T46"]
+instance,before_result,after_result,before_time_s,after_time_s,delta_s,category
+1-TC-256-K-63,TIMEOUT,TIMEOUT,120.000,120.000,0.000,uncategorized
+544707209399nw.shuffled-as.sat03-1671,SAT,SAT,80.630,40.600,-40.030,uncategorized
+83aa254f-1.normalised,UNKNOWN,UNKNOWN,14.570,14.716,0.146,uncategorized
+DLTM_twitter845_79_19,TIMEOUT,TIMEOUT,120.000,120.000,0.000,uncategorized
+SC25_Timetable_C_392,SAT,TIMEOUT,3.826,120.000,116.174,uncategorized
+SC25_Timetable_C_406,SAT,TIMEOUT,80.460,120.000,39.540,uncategorized
+battleship-16-31-sat,SAT,TIMEOUT,22.390,120.000,97.610,uncategorized
+case9,TIMEOUT,TIMEOUT,120.000,120.000,0.000,uncategorized
+mp1-Nb7T46,SAT,TIMEOUT,41.263,120.000,78.737,uncategorized
+promotion_verdict=significant_regression
+verdict=FAIL

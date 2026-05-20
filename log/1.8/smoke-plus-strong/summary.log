@@ -1,0 +1,12 @@
+=== Benchmark Results: 11-kissat-port ===
+    Date:      Wed May 20 18:27:39 EDT 2026
+    Timeout:   120s
+    Memory:    16384 MB
+
+    Instances: 9
+    Solved:    9 (4 SAT + 5 UNSAT)
+    Unsolved:  0 (0 timeout + 0 unknown + 0 error)
+
+    PAR-2:     0.059
+
+    Results:   /home/bojji/code/SAT-playground/log/1.8/smoke-plus-strong/results.csv

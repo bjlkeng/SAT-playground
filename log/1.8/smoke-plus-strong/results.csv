@@ -1,0 +1,10 @@
+instance,result,verified,time_s,timeout,exit_code
+smoke_sat_all_positive,SAT,ok,0.006,120,0
+smoke_sat_three_sat,SAT,ok,0.006,120,0
+smoke_sat_two_clause,SAT,ok,0.006,120,0
+smoke_sat_unit,SAT,ok,0.007,120,0
+smoke_unsat_chain,UNSAT,ok,0.007,120,0
+smoke_unsat_contradiction,UNSAT,ok,0.007,120,0
+smoke_unsat_empty_clause,UNSAT,ok,0.007,120,0
+smoke_unsat_pigeonhole,UNSAT,ok,0.006,120,0
+smoke_unsat_xor_2var,UNSAT,ok,0.007,120,0

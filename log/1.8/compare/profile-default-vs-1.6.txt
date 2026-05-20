@@ -1,0 +1,43 @@
+before=log/1.6/profile-after-final/results.csv
+after=log/1.8/profile-default-final/results.csv
+baseline=none
+timeout_s=120
+correctness_failures=[]
+status_changes=[]
+status_regressions=[]
+validation_warnings=["log/1.6/profile-after-final/validation.jsonl: validation summary missing", "log/1.8/profile-default-final/validation.jsonl: validation summary missing"]
+raw_status_counts_match=true
+PAR2_before=711.619
+PAR2_after=711.492
+PAR2_delta=-0.127
+solved_before=9
+solved_after=9
+newly_solved=[]
+new_timeouts=[]
+missing_after=[]
+extra_after=[]
+per_category_PAR2_before={"uncategorized": 711.619}
+per_category_PAR2_after={"uncategorized": 711.4920000000001}
+paired_speedup_median=1.0000
+bootstrap_ci_PAR2_delta=not_computed_single_run
+seed_vs_binary_variance=not_available
+counter_deltas=not_available_without_JSON_STATS_join
+proof_throughput_deltas=not_available_without_proof_validation_join
+machine_environment={"SAT_SEED": "unset", "binary_sha256": "not_available_from_results_csv", "command_line": "tools/compare_bench.py --before log/1.6/profile-after-final/results.csv --after log/1.8/profile-default-final/results.csv --timeout 120", "config_hash": "not_available_without_JSON_STATS", "core_count": "12", "cpu_model": "AMD Ryzen 5 5600 6-Core Processor", "governor": "schedutil", "memory_limit": "not_available_from_results_csv", "os": "Linux-6.8.0-111-generic-x86_64-with-glibc2.35", "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)", "timeout": "120"}
+top_10_wins=[["feistel_b64_k32_r22", -0.099], ["feistel_b64_k52_r17", -0.073], ["557d7d4db5399188f62bc39598c6d868-mp1-Nb7T46", -0.06], ["random_v355_s3", -0.049], ["random_v285_s2", -0.014], ["0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12", 0.0], ["5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7", 0.0], ["1d18837c0ced5c18a3a4693993e61728-SC25_Timetable_C_392_E_45_Cl_25_D_7_T_50.normalised", 0.017], ["random_v292_s4", 0.026], ["feistel_b64_k57_r18", 0.042]]
+top_10_regressions=[["46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized", 0.083], ["feistel_b64_k57_r18", 0.042], ["random_v292_s4", 0.026], ["1d18837c0ced5c18a3a4693993e61728-SC25_Timetable_C_392_E_45_Cl_25_D_7_T_50.normalised", 0.017], ["0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12", 0.0], ["5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7", 0.0], ["random_v285_s2", -0.014], ["random_v355_s3", -0.049], ["557d7d4db5399188f62bc39598c6d868-mp1-Nb7T46", -0.06], ["feistel_b64_k52_r17", -0.073]]
+instances_requiring_manual_review=[]
+instance,before_result,after_result,before_time_s,after_time_s,delta_s,category
+0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12,TIMEOUT,TIMEOUT,120.000,120.000,0.000,uncategorized
+1d18837c0ced5c18a3a4693993e61728-SC25_Timetable_C_392_E_45_Cl_25_D_7_T_50.normalised,SAT,SAT,3.866,3.883,0.017,uncategorized
+46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized,UNSAT,UNSAT,56.080,56.163,0.083,uncategorized
+557d7d4db5399188f62bc39598c6d868-mp1-Nb7T46,SAT,SAT,41.827,41.767,-0.060,uncategorized
+5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7,TIMEOUT,TIMEOUT,120.000,120.000,0.000,uncategorized
+feistel_b64_k32_r22,SAT,SAT,51.725,51.626,-0.099,uncategorized
+feistel_b64_k52_r17,SAT,SAT,23.249,23.176,-0.073,uncategorized
+feistel_b64_k57_r18,SAT,SAT,8.705,8.747,0.042,uncategorized
+random_v285_s2,UNSAT,UNSAT,8.738,8.724,-0.014,uncategorized
+random_v292_s4,UNSAT,UNSAT,14.108,14.134,0.026,uncategorized
+random_v355_s3,SAT,SAT,23.321,23.272,-0.049,uncategorized
+promotion_verdict=indeterminate
+verdict=PASS
