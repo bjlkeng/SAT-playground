@@ -41,6 +41,7 @@ const BRANCH_NOT_IN_HEAP: usize = usize::MAX;
 const CCMIN_NONE: u8 = 0;
 const CCMIN_BASIC: u8 = 1;
 const CCMIN_DEEP: u8 = 2;
+const CCMIN_INBLOCK: u8 = 3;
 const REDUNDANT_UNDEF: u8 = 0;
 const REDUNDANT_SOURCE: u8 = 1;
 const REDUNDANT_REMOVABLE: u8 = 2;
@@ -1047,9 +1048,10 @@ struct Solver {
     scratch_bumped_vars: Vec<usize>,
     scratch_redundant_state: Vec<u8>,
     scratch_analyze_toclear: Vec<usize>,
-    scratch_analyze_stack: Vec<(usize, i32)>,
-    /// 0 = none, 1 = basic, 2 = deep
+    scratch_analyze_stack: Vec<(usize, i32, u32)>,
+    /// 0 = none, 1 = basic, 2 = deep, 3 = in-block shrink
     ccmin_mode: u8,
+    minimize_depth_limit: u32,
     /// compatibility fallback for the older solver-10 conflict analyzer
     use_resolved_conflict_analysis: bool,
     /// early Section 0 LBD instrumentation slice; default off and policy-neutral
@@ -1216,6 +1218,15 @@ struct ReasonExpansionContext<'a> {
     binary_reasons: &'a [[i32; 2]],
 }
 
+#[derive(Clone, Copy)]
+struct RedundancyCheckContext<'a> {
+    reasons: ReasonExpansionContext<'a>,
+    decision_level: &'a [usize],
+    reason: &'a [ReasonCode],
+    max_depth: u32,
+    same_level_only: bool,
+}
+
 fn reason_len_in_arena(reasons: ReasonExpansionContext<'_>, reason_ref: ReasonRef) -> usize {
     match reason_ref {
         ReasonRef::None => 0,
@@ -1298,28 +1309,28 @@ fn basic_lit_redundant(
 
 fn lit_redundant(
     lit: i32,
-    reasons: ReasonExpansionContext<'_>,
-    decision_level: &[usize],
-    reason: &[ReasonCode],
+    context: RedundancyCheckContext<'_>,
     state: &mut [u8],
     toclear: &mut Vec<usize>,
-    stack: &mut Vec<(usize, i32)>,
+    stack: &mut Vec<(usize, i32, u32)>,
 ) -> bool {
     let mut lit = lit;
     debug_assert!({
         let var = lit.unsigned_abs() as usize;
         state[var] == REDUNDANT_UNDEF || state[var] == REDUNDANT_SOURCE
     });
-    debug_assert!(!reason[lit.unsigned_abs() as usize].is_none());
+    debug_assert!(!context.reason[lit.unsigned_abs() as usize].is_none());
 
     stack.clear();
-    let mut reason_ref = reason[lit.unsigned_abs() as usize].as_ref_unchecked();
+    let mut reason_ref = context.reason[lit.unsigned_abs() as usize].as_ref_unchecked();
     let mut lit_pos = 0usize;
+    let target_level = context.decision_level[lit.unsigned_abs() as usize];
+    let mut depth = 0u32;
 
     loop {
-        let clause_len = reason_len_in_arena(reasons, reason_ref);
+        let clause_len = reason_len_in_arena(context.reasons, reason_ref);
         if lit_pos < clause_len {
-            let parent = reason_lit_in_arena(reasons, reason_ref, lit_pos);
+            let parent = reason_lit_in_arena(context.reasons, reason_ref, lit_pos);
             let parent_var = parent.unsigned_abs() as usize;
             if parent_var == lit.unsigned_abs() as usize {
                 lit_pos += 1;
@@ -1330,18 +1341,22 @@ fn lit_redundant(
                 continue;
             }
 
-            if decision_level[parent_var] == 0 {
+            if context.decision_level[parent_var] == 0 {
                 lit_pos += 1;
                 continue;
             }
 
-            if reason[parent_var].is_none() || state[parent_var] == REDUNDANT_FAILED {
+            if (context.same_level_only && context.decision_level[parent_var] != target_level)
+                || depth >= context.max_depth
+                || context.reason[parent_var].is_none()
+                || state[parent_var] == REDUNDANT_FAILED
+            {
                 let lit_var = lit.unsigned_abs() as usize;
                 if state[lit_var] == REDUNDANT_UNDEF {
                     state[lit_var] = REDUNDANT_FAILED;
                     toclear.push(lit_var);
                 }
-                for &(_, stack_lit) in stack.iter() {
+                for &(_, stack_lit, _) in stack.iter() {
                     let stack_var = stack_lit.unsigned_abs() as usize;
                     if state[stack_var] == REDUNDANT_UNDEF {
                         state[stack_var] = REDUNDANT_FAILED;
@@ -1352,14 +1367,18 @@ fn lit_redundant(
                 return false;
             }
 
-            stack.push((lit_pos, lit));
+            stack.push((lit_pos, lit, depth));
             debug_assert!(
-                stack.len() <= reason.len(),
+                stack.len() <= context.reason.len(),
                 "redundancy DFS exceeded variable count while checking literal {lit}"
             );
             lit = parent;
-            reason_ref = reason[parent_var].as_ref_unchecked();
-            lit_pos = 1;
+            reason_ref = context.reason[parent_var].as_ref_unchecked();
+            lit_pos = match reason_ref {
+                ReasonRef::Binary(_) => 0,
+                ReasonRef::Clause(_) | ReasonRef::None => 1,
+            };
+            depth += 1;
             continue;
         }
 
@@ -1369,10 +1388,11 @@ fn lit_redundant(
             toclear.push(lit_var);
         }
 
-        if let Some((resume_pos, resume_lit)) = stack.pop() {
+        if let Some((resume_pos, resume_lit, resume_depth)) = stack.pop() {
             lit = resume_lit;
-            reason_ref = reason[lit.unsigned_abs() as usize].as_ref_unchecked();
+            reason_ref = context.reason[lit.unsigned_abs() as usize].as_ref_unchecked();
             lit_pos = resume_pos + 1;
+            depth = resume_depth;
         } else {
             return true;
         }
@@ -1384,7 +1404,7 @@ fn ccmin_mode_from_config(mode: ClauseMinMode) -> u8 {
         ClauseMinMode::Off => CCMIN_NONE,
         ClauseMinMode::Basic => CCMIN_BASIC,
         ClauseMinMode::RecursiveLimited => CCMIN_DEEP,
-        ClauseMinMode::InBlockShrink => CCMIN_DEEP,
+        ClauseMinMode::InBlockShrink => CCMIN_INBLOCK,
     }
 }
 
@@ -1441,15 +1461,7 @@ impl Solver {
         } else {
             u64::MAX
         };
-        let ccmin_mode = if config.binary_fast_path {
-            // Current minimization assumes clause reasons store the implied literal
-            // first. Binary reasons preserve original clause order for traceability;
-            // keep the opt-in fast path proof-safe until task 1.11 makes
-            // minimization fully binary-reason aware.
-            CCMIN_NONE
-        } else {
-            ccmin_mode_from_config(config.clause_min_mode)
-        };
+        let ccmin_mode = ccmin_mode_from_config(config.clause_min_mode);
         let vmtf_queue = config.vmtf.then(|| VmtfQueue::new(num_vars, &branch_order));
 
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
@@ -1579,6 +1591,7 @@ impl Solver {
             scratch_analyze_toclear: Vec::with_capacity(16),
             scratch_analyze_stack: Vec::with_capacity(16),
             ccmin_mode,
+            minimize_depth_limit: config.minimize_depth_limit,
             use_resolved_conflict_analysis: config.use_resolved_conflict_analysis,
             use_lbd: config.use_lbd,
             update_reason_lbd: config.update_reason_lbd,
@@ -4475,6 +4488,13 @@ impl Solver {
             arena,
             binary_reasons: &self.binary_reason_lits,
         };
+        let redundancy_context = RedundancyCheckContext {
+            reasons: reason_context,
+            decision_level,
+            reason,
+            max_depth: self.minimize_depth_limit,
+            same_level_only: self.ccmin_mode == CCMIN_INBLOCK,
+        };
         let mut write = 1usize;
         for read in 1..learned_clause.len() {
             let lit = learned_clause[read];
@@ -4484,15 +4504,7 @@ impl Solver {
             } else if self.ccmin_mode == CCMIN_BASIC {
                 !basic_lit_redundant(lit, reason_context, decision_level, reason, state)
             } else {
-                !lit_redundant(
-                    lit,
-                    reason_context,
-                    decision_level,
-                    reason,
-                    state,
-                    toclear,
-                    stack,
-                )
+                !lit_redundant(lit, redundancy_context, state, toclear, stack)
             };
             if keep {
                 learned_clause[write] = lit;
@@ -5805,7 +5817,7 @@ mod tests {
     }
 
     #[test]
-    fn test_binary_fast_path_disables_clause_minimization_until_binary_reasons_are_safe() {
+    fn test_binary_fast_path_keeps_configured_clause_minimization() {
         let fast_config = SolverConfig {
             binary_fast_path: true,
             clause_min_mode: ClauseMinMode::RecursiveLimited,
@@ -5813,7 +5825,7 @@ mod tests {
         };
         let fast = make_solver_with_config(2, vec![vec![1, 2]], &fast_config);
 
-        assert_eq!(fast.ccmin_mode, CCMIN_NONE);
+        assert_eq!(fast.ccmin_mode, CCMIN_DEEP);
 
         let legacy_config = SolverConfig {
             clause_min_mode: ClauseMinMode::Basic,
@@ -7364,6 +7376,146 @@ mod tests {
         s.ccmin_mode = CCMIN_DEEP;
         s.minimize_learned_clause(&mut deep_clause);
         assert_eq!(deep_clause, vec![-1, -5]);
+    }
+
+    #[test]
+    fn test_binary_fast_clause_minimization_handles_binary_reason_order() {
+        let config = SolverConfig {
+            binary_fast_path: true,
+            clause_min_mode: ClauseMinMode::Basic,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(5, vec![], &config);
+        let binary_id = s.add_binary_reason_for_test([3, 5]);
+        s.decision_level[1] = 2;
+        s.decision_level[3] = 1;
+        s.decision_level[5] = 1;
+        s.set_reason_ref(5, ReasonRef::Binary(binary_id));
+
+        let mut learned_clause = vec![-1, 3, -5];
+        s.minimize_learned_clause(&mut learned_clause);
+
+        assert_eq!(learned_clause, vec![-1, 3]);
+    }
+
+    #[test]
+    fn test_recursive_minimization_descends_into_binary_reason_by_identity() {
+        let mut s = make_solver(7, vec![vec![7, 5]]);
+        let binary_id = s.add_binary_reason_for_test([3, 5]);
+        s.decision_level[1] = 2;
+        s.decision_level[3] = 1;
+        s.decision_level[5] = 1;
+        s.decision_level[7] = 1;
+        s.set_reason_ref(5, ReasonRef::Binary(binary_id));
+        s.set_reason_ref(7, ReasonRef::Clause(0));
+
+        let mut learned_clause = vec![-1, 7];
+        s.ccmin_mode = CCMIN_DEEP;
+        s.minimize_learned_clause(&mut learned_clause);
+
+        assert_eq!(learned_clause, vec![-1, 7]);
+    }
+
+    #[test]
+    fn test_minimization_does_not_remove_decision_literal() {
+        let mut s = make_solver(5, vec![]);
+        s.decision_level[1] = 2;
+        s.decision_level[5] = 1;
+
+        let mut learned_clause = vec![-1, 5];
+        s.ccmin_mode = CCMIN_DEEP;
+        s.minimize_learned_clause(&mut learned_clause);
+
+        assert_eq!(learned_clause, vec![-1, 5]);
+    }
+
+    #[test]
+    fn test_recursive_limit_prevents_unbounded_walk() {
+        let mut s = make_solver(7, vec![vec![5, 3], vec![7, 5]]);
+        let first = s.original_clause_ids[0];
+        let second = s.original_clause_ids[1];
+        s.decision_level[1] = 2;
+        s.decision_level[3] = 1;
+        s.decision_level[5] = 1;
+        s.decision_level[7] = 1;
+        s.set_reason_ref(5, ReasonRef::Clause(first));
+        s.set_reason_ref(7, ReasonRef::Clause(second));
+
+        let mut limited_clause = vec![-1, 3, 7];
+        s.ccmin_mode = CCMIN_DEEP;
+        s.minimize_depth_limit = 0;
+        s.minimize_learned_clause(&mut limited_clause);
+        assert_eq!(limited_clause, vec![-1, 3, 7]);
+
+        let mut recursive_clause = vec![-1, 3, 7];
+        s.minimize_depth_limit = 2;
+        s.minimize_learned_clause(&mut recursive_clause);
+        assert_eq!(recursive_clause, vec![-1, 3]);
+    }
+
+    #[test]
+    fn test_minimized_clause_still_asserting() {
+        let mut s = make_solver(5, vec![vec![3, 4]]);
+        s.decision_level[1] = 2;
+        s.decision_level[3] = 1;
+        s.decision_level[4] = 1;
+        s.set_reason_ref(3, ReasonRef::Clause(0));
+
+        let mut learned_clause = vec![-1, 4, 3];
+        s.ccmin_mode = CCMIN_BASIC;
+        s.minimize_learned_clause(&mut learned_clause);
+
+        assert_eq!(learned_clause[0], -1);
+        assert_eq!(learned_clause, vec![-1, 4]);
+    }
+
+    #[test]
+    fn test_shrink_removes_block_covered_literal() {
+        let mut s = make_solver(5, vec![vec![5, 3]]);
+        s.decision_level[1] = 2;
+        s.decision_level[3] = 1;
+        s.decision_level[5] = 1;
+        s.set_reason_ref(5, ReasonRef::Clause(0));
+
+        let mut learned_clause = vec![-1, 3, 5];
+        s.ccmin_mode = CCMIN_INBLOCK;
+        s.minimize_learned_clause(&mut learned_clause);
+
+        assert_eq!(learned_clause, vec![-1, 3]);
+    }
+
+    #[test]
+    fn test_shrink_does_not_cross_decision_level_blocks() {
+        let mut s = make_solver(7, vec![vec![5, 3], vec![7, 5]]);
+        let first = s.original_clause_ids[0];
+        let second = s.original_clause_ids[1];
+        s.decision_level[1] = 3;
+        s.decision_level[3] = 1;
+        s.decision_level[5] = 1;
+        s.decision_level[7] = 2;
+        s.set_reason_ref(5, ReasonRef::Clause(first));
+        s.set_reason_ref(7, ReasonRef::Clause(second));
+
+        let mut learned_clause = vec![-1, 3, 7];
+        s.ccmin_mode = CCMIN_INBLOCK;
+        s.minimize_learned_clause(&mut learned_clause);
+
+        assert_eq!(learned_clause, vec![-1, 3, 7]);
+    }
+
+    #[test]
+    fn test_shrink_leaves_uip_at_pos_zero() {
+        let mut s = make_solver(5, vec![vec![5, 3]]);
+        s.decision_level[1] = 2;
+        s.decision_level[3] = 1;
+        s.decision_level[5] = 1;
+        s.set_reason_ref(5, ReasonRef::Clause(0));
+
+        let mut learned_clause = vec![-1, 3, 5];
+        s.ccmin_mode = CCMIN_INBLOCK;
+        s.minimize_learned_clause(&mut learned_clause);
+
+        assert_eq!(learned_clause.first().copied(), Some(-1));
     }
 
     #[test]

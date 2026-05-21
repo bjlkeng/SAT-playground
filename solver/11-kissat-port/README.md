@@ -53,8 +53,10 @@ What is present:
   VSIDS heap
 - opt-in binary implication fast path (`SAT_BINARY_FAST=on`) that keeps binary clauses in the arena
   for proof/model/debug traceability while propagating them through stable binary IDs and implication
-  edges; default propagation remains the legacy watched-clause path. While this flag is enabled,
-  clause minimization is disabled until the Phase 1.11 binary-reason minimization work lands.
+  edges; default propagation remains the legacy watched-clause path. Clause minimization is
+  binary-reason aware and remains controlled separately by `SAT_CLAUSE_MIN`; binary-fast env runs
+  keep minimization off unless `SAT_CLAUSE_MIN` is explicit because the search-core gate does not
+  justify promoting recursive minimization on that path yet.
 
 Still incomplete:
 
@@ -94,6 +96,8 @@ SAT_STATS_HOT=on
 SAT_USE_LBD=on
 SAT_RESTART=legacy-luby|kissat-ema|reluctant
 SAT_REDUCE=legacy|lbd-tiered
+SAT_CLAUSE_MIN=off|basic|recursive-limited|inblock
+SAT_MINIMIZE_DEPTH_LIMIT=<u32>
 SAT_PHASE=legacy|saved|target-then-saved|best-then-target-then-saved
 SAT_SEARCH_MODE=single|focused-stable
 SAT_VMTF=on

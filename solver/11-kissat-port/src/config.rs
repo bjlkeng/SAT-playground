@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 const CONFIG_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_DETERMINISTIC_SEED: u64 = 0;
-const DEFAULT_MINIMIZE_DEPTH_LIMIT: u32 = 100;
+const DEFAULT_MINIMIZE_DEPTH_LIMIT: u32 = 1_000_000;
 const DEFAULT_CHRONO_MAX_DELTA: usize = 100;
 const DEFAULT_MODE_INIT_CONFLICTS: u64 = 2000;
 const DEFAULT_MODE_INTERVAL_SCALE: f64 = 1.5;
@@ -841,6 +841,8 @@ impl SolverConfig {
             parse_bool_selected(env_map, &key_set, "SAT_CHRONO", self.chrono_backtrack);
         self.binary_fast_path =
             parse_bool_selected(env_map, &key_set, "SAT_BINARY_FAST", self.binary_fast_path);
+        let clause_min_explicit = get_selected(env_map, &key_set, "SAT_CLAUSE_MIN").is_some()
+            || get_selected(env_map, &key_set, "SAT_CCMIN_MODE").is_some();
         self.clause_min_mode = parse_enum_selected(
             env_map,
             &key_set,
@@ -911,6 +913,9 @@ impl SolverConfig {
                 get_selected(env_map, &key_set, "SAT_CCMIN_MODE").unwrap(),
                 "SAT_CCMIN_MODE",
             );
+        }
+        if self.binary_fast_path && !clause_min_explicit {
+            self.clause_min_mode = ClauseMinMode::Off;
         }
         self.reduce_db_init = parse_option_usize_selected(
             env_map,
@@ -1045,11 +1050,6 @@ impl SolverConfig {
     fn validate_runtime_support(&self) {
         if self.proof_policy == ProofPolicy::Lrat {
             fail_config("Invalid SAT_PROOF=lrat: LRAT output is not implemented yet");
-        }
-        if self.clause_min_mode == ClauseMinMode::InBlockShrink {
-            fail_config(
-                "Invalid SAT_CLAUSE_MIN=inblock: in-block shrinking is not implemented yet",
-            );
         }
         if self.reduce_policy == ReducePolicy::LbdTiered && !self.use_lbd {
             fail_config("Invalid config: SAT_REDUCE=lbd-tiered requires SAT_USE_LBD=on");
@@ -2507,6 +2507,25 @@ mod tests {
         let config = SolverConfig::from_env_map(&env_map(&[("SAT_BINARY_FAST", "on")]));
 
         assert!(config.binary_fast_path);
+        assert_eq!(config.clause_min_mode, ClauseMinMode::Off);
+    }
+
+    #[test]
+    fn test_binary_fast_path_honors_explicit_clause_minimization() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_BINARY_FAST", "on"),
+            ("SAT_CLAUSE_MIN", "recursive-limited"),
+        ]));
+
+        assert!(config.binary_fast_path);
+        assert_eq!(config.clause_min_mode, ClauseMinMode::RecursiveLimited);
+    }
+
+    #[test]
+    fn test_inblock_clause_minimization_is_runtime_supported() {
+        let config = SolverConfig::from_env_map(&env_map(&[("SAT_CLAUSE_MIN", "inblock")]));
+
+        assert_eq!(config.clause_min_mode, ClauseMinMode::InBlockShrink);
     }
 
     #[test]

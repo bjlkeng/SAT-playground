@@ -63,8 +63,10 @@ Known missing or incomplete feature families at this baseline:
   promoted as default-profile behavior yet.
 - Binary implication propagation is present behind `SAT_BINARY_FAST=on`; binary clauses keep arena
   representation for proof/model/debug paths while propagation uses stable `BinaryClauseId` reasons.
-  The opt-in fast path currently disables clause minimization until Phase 1.11 makes minimization
-  binary-reason aware.
+- Clause minimization is binary-reason aware as of 1.11, so explicit `SAT_CLAUSE_MIN` settings are
+  honored with `SAT_BINARY_FAST=on`. Binary-fast env runs keep minimization off unless
+  `SAT_CLAUSE_MIN` is explicit because the search-core gate does not justify promoting recursive
+  minimization on that path yet.
 - Rephasing.
 - Vivification.
 - Failed literal probing.
