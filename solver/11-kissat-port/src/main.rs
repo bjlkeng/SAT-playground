@@ -4,6 +4,7 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+mod branch;
 mod check;
 mod config;
 mod limits;
@@ -16,6 +17,7 @@ mod stats;
 #[path = "tests/mod.rs"]
 mod oracle_tests;
 
+use branch::VmtfQueue;
 use config::{
     BranchMode, ClauseMinMode, InitialClauseMode, PhasePolicy, ProofPolicy, ReducePolicy,
     RestartPolicy, SearchModePolicy, SolverConfig,
@@ -911,6 +913,8 @@ struct Solver {
     branch_heap: Vec<u32>,
     /// current heap index for each variable, or BRANCH_NOT_IN_HEAP
     branch_pos: Vec<usize>,
+    /// focused-mode VMTF queue used only when SAT_VMTF=on
+    vmtf_queue: Option<VmtfQueue>,
     /// variables eligible for search branching; eliminated variables stay permanently false here
     decision_var: Vec<bool>,
     /// EVSIDS-style variable activity
@@ -1446,6 +1450,7 @@ impl Solver {
         } else {
             ccmin_mode_from_config(config.clause_min_mode)
         };
+        let vmtf_queue = config.vmtf.then(|| VmtfQueue::new(num_vars, &branch_order));
 
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
         let arena = Vec::with_capacity(total_words);
@@ -1502,6 +1507,7 @@ impl Solver {
             branch_rank,
             branch_heap: Vec::with_capacity(num_vars),
             branch_pos: vec![BRANCH_NOT_IN_HEAP; num_vars + 1],
+            vmtf_queue,
             decision_var: vec![true; num_vars + 1],
             activity: vec![0.0; num_vars + 1],
             activity_inc: 1.0,
@@ -2510,6 +2516,15 @@ impl Solver {
         self.push_branch_var_if_decision(var);
     }
 
+    fn vmtf_note_unassigned_decision_var(&mut self, var: usize) {
+        if !self.unassigned_decision_candidate(var) {
+            return;
+        }
+        if let Some(queue) = self.vmtf_queue.as_mut() {
+            queue.note_unassigned(var);
+        }
+    }
+
     fn heap_remove_assigned_top(&mut self) {
         while let Some(&var_word) = self.branch_heap.first() {
             let var = var_word as usize;
@@ -2542,6 +2557,59 @@ impl Solver {
             .total_cmp(&self.activity[rhs])
             .then_with(|| self.branch_rank[rhs].cmp(&self.branch_rank[lhs]))
             .is_gt()
+    }
+
+    fn vmtf_branching_active(&self) -> bool {
+        self.vmtf_queue.is_some()
+            && self.search_mode_policy == SearchModePolicy::FocusedStable
+            && self.search_mode == SearchMode::Focused
+    }
+
+    fn vmtf_stamp_analyzed_var(&mut self, var: usize) {
+        if var == 0
+            || var >= self.decision_var.len()
+            || !self.decision_var[var]
+            || self.eliminated[var]
+        {
+            return;
+        }
+
+        let unassigned_candidate = self.unassigned_decision_candidate(var);
+        if let Some(queue) = self.vmtf_queue.as_mut() {
+            queue.stamp_and_move_to_front(var);
+            if unassigned_candidate {
+                queue.note_unassigned(var);
+            }
+        }
+    }
+
+    fn pick_vmtf_branch_var(&mut self) -> Option<usize> {
+        let assignment = &self.assignment;
+        let decision_var = &self.decision_var;
+        let eliminated = &self.eliminated;
+        let queue = self.vmtf_queue.as_mut()?;
+        let mut picked = queue.pick(|var| {
+            var > 0
+                && var < assignment.len()
+                && decision_var[var]
+                && !eliminated[var]
+                && assignment[var] == UNASSIGNED
+        });
+        if picked.is_none() {
+            queue.reset_search_to_head();
+            picked = queue.pick(|var| {
+                var > 0
+                    && var < assignment.len()
+                    && decision_var[var]
+                    && !eliminated[var]
+                    && assignment[var] == UNASSIGNED
+            });
+        }
+
+        if let Some(var) = picked {
+            self.branch_heap_remove(var);
+        }
+        picked
     }
 
     fn branch_heap_swap(&mut self, lhs: usize, rhs: usize) {
@@ -3153,6 +3221,9 @@ impl Solver {
     fn bump_analyzed_variable_activity(&mut self) {
         let bumped_vars = std::mem::take(&mut self.scratch_bumped_vars);
         for &var in &bumped_vars {
+            if !self.accounting_mode.is_temporary() && self.search_mode == SearchMode::Focused {
+                self.vmtf_stamp_analyzed_var(var);
+            }
             self.bump_variable_activity(var);
         }
         self.scratch_bumped_vars = bumped_vars;
@@ -3242,6 +3313,11 @@ impl Solver {
         self.restart_conflicts_since_last = 0;
         self.restart_next_check_conflict = self.stats.conflicts.saturating_add(1);
         self.reset_target_phase();
+        if self.search_mode == SearchMode::Focused {
+            if let Some(queue) = self.vmtf_queue.as_mut() {
+                queue.reset_search_to_head();
+            }
+        }
     }
 
     fn legacy_luby_restart_due(&self) -> bool {
@@ -3394,8 +3470,15 @@ impl Solver {
     }
 
     fn pick_branch_lit(&mut self) -> Option<i32> {
-        self.heap_remove_assigned_top();
-        let var = self.branch_heap_pop_best()?;
+        let var = if self.vmtf_branching_active() {
+            self.pick_vmtf_branch_var().or_else(|| {
+                self.heap_remove_assigned_top();
+                self.branch_heap_pop_best()
+            })?
+        } else {
+            self.heap_remove_assigned_top();
+            self.branch_heap_pop_best()?
+        };
         debug_assert!(self.unassigned_decision_candidate(var));
 
         Some(if self.pick_branch_phase(var) {
@@ -3480,6 +3563,7 @@ impl Solver {
             self.decision_level[var] = 0;
             self.set_reason_ref(var, ReasonRef::None);
             self.heap_reinsert_unassigned_decision_var(var);
+            self.vmtf_note_unassigned_decision_var(var);
         }
 
         self.trail_limits.truncate(target_level);
@@ -6442,18 +6526,23 @@ mod tests {
 
     #[test]
     fn test_temp_assumption_does_not_bump_vmtf_or_heap_stats() {
-        let mut s = make_solver(2, vec![]);
+        let config = focused_stable_vmtf_config();
+        let mut s = make_solver_with_config(2, vec![], &config);
         let heap_inserts = s.stats.decision_heap_inserts;
         let heap_pops = s.stats.decision_heap_pops;
         let heap_stale = s.stats.decision_heap_stale_pops;
+        let vmtf_stamp = s.vmtf_queue.as_ref().unwrap().stamp_for_test(1);
 
         s.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
             assert_eq!(ctx.enqueue(1), EnqueueResult::Enqueued);
+            ctx.solver.scratch_bumped_vars.push(1);
+            ctx.solver.bump_analyzed_variable_activity();
         });
 
         assert_eq!(s.stats.decision_heap_inserts, heap_inserts);
         assert_eq!(s.stats.decision_heap_pops, heap_pops);
         assert_eq!(s.stats.decision_heap_stale_pops, heap_stale);
+        assert_eq!(s.vmtf_queue.as_ref().unwrap().stamp_for_test(1), vmtf_stamp);
     }
 
     #[test]
@@ -8194,6 +8283,85 @@ mod tests {
             mode_interval_scale: 1.0,
             ..SolverConfig::default()
         }
+    }
+
+    fn focused_stable_vmtf_config() -> SolverConfig {
+        SolverConfig {
+            vmtf: true,
+            ..focused_stable_config()
+        }
+    }
+
+    #[test]
+    fn test_vmtf_recently_analyzed_variable_pops_first() {
+        let config = focused_stable_vmtf_config();
+        let mut s = make_solver_with_config(4, vec![], &config);
+
+        s.vmtf_stamp_analyzed_var(2);
+
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+    }
+
+    #[test]
+    fn test_vmtf_search_pointer_resets_on_relevant_backtrack() {
+        let config = focused_stable_vmtf_config();
+        let mut s = make_solver_with_config(4, vec![], &config);
+
+        s.vmtf_stamp_analyzed_var(2);
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+        s.decide(-2);
+        s.decide(-3);
+        s.vmtf_stamp_analyzed_var(3);
+        assert_ne!(s.vmtf_queue.as_ref().unwrap().search_for_test(), 3);
+
+        s.backtrack(1);
+
+        assert_eq!(s.vmtf_queue.as_ref().unwrap().search_for_test(), 3);
+        assert_eq!(s.pick_branch_lit(), Some(-3));
+    }
+
+    #[test]
+    fn test_vmtf_does_not_pick_assigned_variables() {
+        let config = focused_stable_vmtf_config();
+        let mut s = make_solver_with_config(3, vec![], &config);
+
+        assert!(s.enqueue(-3, ReasonRef::None));
+
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+    }
+
+    #[test]
+    fn test_vmtf_does_not_pick_eliminated_variables() {
+        let config = focused_stable_vmtf_config();
+        let mut s = make_solver_with_config(3, vec![], &config);
+
+        s.eliminated[3] = true;
+        s.decision_var[3] = false;
+
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+    }
+
+    #[test]
+    fn test_vmtf_tie_break_is_deterministic() {
+        let config = focused_stable_vmtf_config();
+        let first = decision_prefix(make_solver_with_config(4, vec![], &config), 4);
+        let second = decision_prefix(make_solver_with_config(4, vec![], &config), 4);
+
+        assert_eq!(first, second);
+        assert_eq!(first, vec![-4, -3, -2, -1]);
+    }
+
+    #[test]
+    fn test_vmtf_keeps_stable_mode_on_vsids_heap() {
+        let config = focused_stable_vmtf_config();
+        let mut s = make_solver_with_config(3, vec![], &config);
+        s.search_mode = SearchMode::Stable;
+        s.activity[1] = 10.0;
+        s.activity[2] = 1.0;
+        s.activity[3] = 0.5;
+        s.rebuild_branch_queue();
+
+        assert_eq!(s.pick_branch_lit(), Some(-1));
     }
 
     #[test]

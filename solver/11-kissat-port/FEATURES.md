@@ -11,7 +11,7 @@ prints the same maturity records in `SAT_CONFIG_DUMP`, writes them into
 | `SAT_LBD_UPDATE_REASONS` | `update_reason_lbd` | SmokeSafe | none | `log/1.2/lbd-reason-update.md` | Optional reason-side LBD improvement; requires `SAT_USE_LBD=on` and remains default-off. |
 | `SAT_CHRONO` | `chrono_backtrack` | ParkingLot | none |  | Config-reserved until chronological backtracking lands. |
 | `SAT_BINARY_FAST` | `binary_fast_path` | SmokeSafe | none | `log/1.6/summary.md` | Opt-in stable binary-clause IDs and implication edges; disables clause minimization until Phase 1.11 makes minimization binary-reason aware; default remains off until benchmark promotion. |
-| `SAT_VMTF` | `vmtf` | ParkingLot | none |  | Config-reserved until the decision-heap cleanup and VMTF work land. |
+| `SAT_VMTF` | `vmtf` | SmokeSafe | none | `log/1.10/summary.md` | Optional focused-mode Variable-Move-To-Front branch queue. Requires `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable`; stable mode continues to use the VSIDS heap. |
 | `SAT_REPHASE` | `rephase` | ParkingLot | none |  | Config-reserved until rephase policy lands. |
 | `SAT_SIMPLIFICATION` | `simplification` | SmokeSafe | default, fast | `solver/11-kissat-port/BASELINE_LOCK.raw.txt` | Legacy solver-10 preprocessing umbrella retained for compatibility. |
 | `SAT_BVE` | `bve` | SmokeSafe | default, fast | `solver/11-kissat-port/BASELINE_LOCK.raw.txt` | Existing bounded variable elimination switch. |

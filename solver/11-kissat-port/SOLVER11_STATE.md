@@ -19,6 +19,7 @@ Known source files:
 | `src/config.rs` | SolverConfig, profile/axis defaults, strict SAT_* parsing, config dump/replay/hash, feature maturity records, and legacy env compatibility. |
 | `src/stats.rs` | Solver counters, run/proof/input/formula snapshots, local JSON writer, streaming SHA-256 helper, JSON_STATS line emission, and SAT_TRACE_FULL summary formatting. |
 | `src/lit.rs` | Raw `i32` literal word conversion and literal-index mapping. |
+| `src/branch.rs` | Focused-mode VMTF queue state and cursor updates; existing VSIDS heap logic still lives in `src/main.rs`. |
 | `src/limits.rs` | Placeholder boundary for future limit checks. |
 | `src/output.rs` | SAT Competition model line formatting, SolveStatus, model.txt writing, status.txt/result.json contract emission, and JSON escaping. |
 | `src/check.rs` | Debug generation-handle scaffold and tests. |
@@ -57,11 +58,13 @@ Known missing or incomplete feature families at this baseline:
   default-profile behavior yet.
 - Focused/stable mode switching and reluctant restarts are present behind `SAT_USE_LBD=on
   SAT_SEARCH_MODE=focused-stable`, but they are not promoted as default-profile behavior yet.
+- VMTF focused-mode branching is present behind `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable
+  SAT_VMTF=on`; focused mode uses the VMTF queue and stable mode keeps the VSIDS heap. It is not
+  promoted as default-profile behavior yet.
 - Binary implication propagation is present behind `SAT_BINARY_FAST=on`; binary clauses keep arena
   representation for proof/model/debug paths while propagation uses stable `BinaryClauseId` reasons.
   The opt-in fast path currently disables clause minimization until Phase 1.11 makes minimization
   binary-reason aware.
-- VMTF queue.
 - Rephasing.
 - Vivification.
 - Failed literal probing.
@@ -81,6 +84,7 @@ These modules are present before Phase 1 algorithmic work:
 | `src/config.rs` | SolverConfig, schema-backed env parsing, replay/dump/hash, feature maturity records, profile/axis selection, and fail-fast validation. | Later tasks add implementation support for currently parked feature flags and lift validator rejections when behavior lands. |
 | `src/stats.rs` | `SolverStats`, proof/input/formula/timing snapshot types, streaming SHA-256, local JSON writer, JSON_STATS line builder, and SAT_TRACE_FULL line builder. | Later tasks populate currently-zero future counters as features land. |
 | `src/lit.rs` | Literal-to-index and raw arena word conversion helpers. | Typed literal/newtype helpers if later tasks need them. |
+| `src/branch.rs` | `VmtfQueue` linked-list stamps and focused-mode search cursor. | Later branch tasks can migrate the existing VSIDS heap, phase selection, and rephase state here. |
 | `src/limits.rs` | Documented limit-check boundary. | Conflict, propagation, tick, wall-clock, RSS, learned-lit, binary, extension, and proof byte limits. |
 | `src/output.rs` | SAT Competition assignment-line formatting and minimal 0.3a status/model/result contract helpers. | Fuller OutputContract checks in 0.8 may add proof/model finalization validation without changing status strings. |
 | `src/check.rs` | Debug generation-handle scaffold and tests. | Runtime invariant checks for typed clause, binary, reason, trail, and watch handles. |

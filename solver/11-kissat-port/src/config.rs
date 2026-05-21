@@ -1071,7 +1071,6 @@ impl SolverConfig {
         }
         let unsupported = [
             (self.chrono_backtrack, "SAT_CHRONO"),
-            (self.vmtf, "SAT_VMTF"),
             (self.rephase, "SAT_REPHASE"),
             (self.inprocess, "SAT_INPROCESS"),
             (self.vivify, "SAT_VIVIFY"),
@@ -1527,11 +1526,11 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
         feature(
             "SAT_VMTF",
             config.vmtf,
-            FeatureMaturity::ParkingLot,
+            FeatureMaturity::SmokeSafe,
+            true,
+            true,
             false,
-            false,
-            false,
-            "",
+            "log/1.10/summary.md",
         ),
         feature(
             "SAT_REPHASE",
@@ -2488,6 +2487,18 @@ mod tests {
         ]));
 
         assert!(config.use_lbd);
+        assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
+    }
+
+    #[test]
+    fn test_vmtf_is_runtime_supported_with_focused_stable_mode() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_USE_LBD", "on"),
+            ("SAT_SEARCH_MODE", "focused-stable"),
+            ("SAT_VMTF", "on"),
+        ]));
+
+        assert!(config.vmtf);
         assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
     }
 

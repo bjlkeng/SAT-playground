@@ -3,7 +3,7 @@ SAT_USE_LBD,use_lbd,SmokeSafe,true,true,false,none,log/0.0b/findings.md,search-m
 SAT_LBD_UPDATE_REASONS,update_reason_lbd,SmokeSafe,true,true,false,none,log/1.2/lbd-reason-update.md,reason-metadata,1.2
 SAT_CHRONO,chrono_backtrack,ParkingLot,false,false,false,none,,backtracking,0.3
 SAT_BINARY_FAST,binary_fast_path,SmokeSafe,true,true,false,none,log/1.6/summary.md,propagation,1.6
-SAT_VMTF,vmtf,ParkingLot,false,false,false,none,,branching,0.3
+SAT_VMTF,vmtf,SmokeSafe,true,true,false,none,log/1.10/summary.md,branching,1.10
 SAT_REPHASE,rephase,ParkingLot,false,false,false,none,,phase-selection,0.3
 SAT_SIMPLIFICATION,simplification,SmokeSafe,true,true,false,default|fast,solver/11-kissat-port/BASELINE_LOCK.raw.txt,preprocess,0.3
 SAT_BVE,bve,SmokeSafe,true,true,false,default|fast,solver/11-kissat-port/BASELINE_LOCK.raw.txt,preprocess-bve,0.3

@@ -48,6 +48,9 @@ What is present:
 - opt-in focused/stable search-mode scaffolding (`SAT_USE_LBD=on
   SAT_SEARCH_MODE=focused-stable`) with focused EMA restarts and stable reluctant restarts;
   single-mode search remains the default for solver-10 parity
+- opt-in focused-mode Variable-Move-To-Front branching (`SAT_USE_LBD=on
+  SAT_SEARCH_MODE=focused-stable SAT_VMTF=on`) while stable mode continues to use the existing
+  VSIDS heap
 - opt-in binary implication fast path (`SAT_BINARY_FAST=on`) that keeps binary clauses in the arena
   for proof/model/debug traceability while propagating them through stable binary IDs and implication
   edges; default propagation remains the legacy watched-clause path. While this flag is enabled,
@@ -93,6 +96,7 @@ SAT_RESTART=legacy-luby|kissat-ema|reluctant
 SAT_REDUCE=legacy|lbd-tiered
 SAT_PHASE=legacy|saved|target-then-saved|best-then-target-then-saved
 SAT_SEARCH_MODE=single|focused-stable
+SAT_VMTF=on
 SAT_BINARY_FAST=on
 ```
 
