@@ -443,3 +443,32 @@ Interpretation:
 The default profile remains correctness-clean and solved-count stable. The small PAR-2 movement is
 single-run timing noise on the long Sudoku/Kakuro rows; the changed code is only reachable when
 `SAT_BINARY_FAST=on`, which is not part of the default profile.
+
+### 600s Smoke Timeout and REGRandom Rerun
+
+Follow-up on 2026-05-21:
+
+- `tools/smoke_test.sh` now wraps each solver invocation with a `600s` timeout by default.
+- The default can be overridden with `SAT_SMOKE_TIMEOUT=<seconds>`.
+- Smoke logs now print the active timeout.
+
+Validation:
+
+- `bash -n tools/smoke_test.sh`: pass
+- `bash tools/smoke_test.sh solver/11-kissat-port`: `9 passed, 0 failed`, timeout `600s`
+- `SAT_CHECK_INVARIANTS=on bash tools/smoke_test.sh solver/11-kissat-port`: `9 passed, 0 failed`,
+  timeout `600s`
+
+REGRandom 600s reruns:
+
+| Config | Artifact | Result |
+|---|---|---|
+| Focused/VMTF original advanced config | `log/1.12a/fix-regrandom-focused-vmtf-600/results.csv` | clean `TIMEOUT` at `600s`, no model error |
+| Minimized `SAT_BINARY_FAST=on` correctness guard | `log/1.12a/fix-regrandom-binary-fast-only-600/results.csv` | `UNSAT`, verified, `28.581s` |
+
+Interpretation:
+
+The 600s rerun confirms the binary-fast correctness bug remains fixed. It also confirms that the
+full focused/VMTF advanced stack still has a performance/trajectory problem on REGRandom; the
+longer timeout prevents premature smoke-test failure but does not make that rejected advanced
+configuration solve this instance.

@@ -20,9 +20,21 @@ SOLVER_DIR="$(cd "$REPO_ROOT/$SOLVER_REL" 2>/dev/null && pwd)" || {
     exit 1
 }
 RUN_SH="$SOLVER_DIR/run.sh"
+SMOKE_TIMEOUT="${SAT_SMOKE_TIMEOUT:-600}"
 
 if [[ ! -f "$RUN_SH" ]]; then
     echo "ERROR: $RUN_SH not found" >&2
+    exit 1
+fi
+
+# --- locate timeout command ---
+TIMEOUT_CMD=""
+if command -v gtimeout &>/dev/null; then
+    TIMEOUT_CMD="gtimeout"
+elif command -v timeout &>/dev/null; then
+    TIMEOUT_CMD="timeout"
+else
+    echo "ERROR: neither 'timeout' nor 'gtimeout' found" >&2
     exit 1
 fi
 
@@ -62,9 +74,16 @@ run_one_test() {
     # Run solver, capture stdout and stderr
     local output=""
     local exit_code=0
-    output=$(bash "$RUN_SH" "$cnf" "$test_dir" 2>"$test_dir/stderr.log") || exit_code=$?
+    output=$("$TIMEOUT_CMD" "$SMOKE_TIMEOUT" bash "$RUN_SH" "$cnf" "$test_dir" 2>"$test_dir/stderr.log") || exit_code=$?
     echo "$output" > "$test_dir/stdout.log"
     echo "$exit_code" > "$test_dir/exit_code.log"
+
+    if [[ $exit_code -eq 124 ]]; then
+        log "  FAIL  $name — timed out after ${SMOKE_TIMEOUT}s"
+        echo "REASON: solver timed out after ${SMOKE_TIMEOUT}s" > "$test_dir/failure.log"
+        FAIL=$((FAIL + 1))
+        return
+    fi
 
     local result_json="$test_dir/result.json"
     if [[ ! -f "$result_json" ]]; then
@@ -263,6 +282,7 @@ verify_assignment() {
 log "=== Smoke test: $(basename "$SOLVER_DIR") ==="
 log "    Date: $(date)"
 log "    Log:  $LOG_DIR"
+log "    Timeout: ${SMOKE_TIMEOUT}s"
 if [[ -n "$DRAT_TRIM" ]]; then
     log "    Proof checker: $DRAT_TRIM"
 else
