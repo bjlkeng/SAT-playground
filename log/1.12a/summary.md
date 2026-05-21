@@ -173,3 +173,56 @@ Profile no-regression benchmark:
 
 The default profile remains non-regressing. The rejected advanced candidates remain opt-in and are
 not promoted into the default profile.
+
+## Reopened 300s Profile Reevaluation
+
+Reopened on 2026-05-21 at user request after changing the profiling-suite default timeout from
+120s to 300s.
+
+Fresh command:
+
+```bash
+bash tools/bench.sh -m 16384 -d benchmarks/profiling \
+  --log-dir log/1.12a/profile-after-300-reopen \
+  solver/11-kissat-port
+```
+
+This intentionally omits `-t` so `tools/bench.sh` must apply the new `benchmarks/profiling`
+default timeout. The harness printed `Timeout: 300s`.
+
+Result:
+
+- Current run: `log/1.12a/profile-after-300-reopen/results.csv`
+- Timeout: 300s
+- Solved: 11/11 (7 SAT, 4 UNSAT)
+- Unsolved: 0
+- PAR-2: 624.808
+- Correctness failures: none
+
+Comparison against the earlier 120s bead profile (`log/1.12a/profile-after/results.csv`) with
+`compare_bench.py --timeout 300`:
+
+- Before: 9/11 solved, PAR-2 713.322
+- After: 11/11 solved, PAR-2 624.808
+- Delta: -88.514 PAR-2
+- Status regressions: none
+- Newly solved:
+  - `0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12`: TIMEOUT -> UNSAT in 180.975s
+  - `5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7`: TIMEOUT -> SAT in 210.712s
+- Compare verdict: PASS
+
+Comparison against the earlier 300s default run
+(`log/profile-default-300-solver11-2026-05-21/results.csv`):
+
+- Before: 11/11 solved, PAR-2 627.579
+- After: 11/11 solved, PAR-2 624.808
+- Delta: -2.771 PAR-2
+- Status regressions: none
+- Compare verdict: PASS
+
+Interpretation:
+
+The 300s profile reevaluation confirms the current default-profile solver completes both rows that
+were previously capped at 120s. This improves the profiling-suite solved count from 9/11 to 11/11
+under the new default timeout. This does not change the 1.12a advanced-search candidate promotion
+decision: the candidate search-core configurations still regress solved rows and remain rejected.
