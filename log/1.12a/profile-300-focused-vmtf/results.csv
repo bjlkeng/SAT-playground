@@ -1,0 +1,12 @@
+instance,result,verified,time_s,timeout,exit_code
+feistel_b64_k32_r22,TIMEOUT,skip,300.000,300,124
+feistel_b64_k52_r17,TIMEOUT,skip,300.000,300,124
+feistel_b64_k57_r18,SAT,ok,28.394,300,0
+0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12,TIMEOUT,skip,300.000,300,124
+1d18837c0ced5c18a3a4693993e61728-SC25_Timetable_C_392_E_45_Cl_25_D_7_T_50.normalised,SAT,ok,133.546,300,0
+46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized,ERROR,skip,9.535,300,0
+557d7d4db5399188f62bc39598c6d868-mp1-Nb7T46,TIMEOUT,skip,300.000,300,124
+5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7,ERROR,skip,47.321,300,0
+random_v285_s2,TIMEOUT,skip,300.000,300,124
+random_v292_s4,TIMEOUT,skip,300.000,300,124
+random_v355_s3,SAT,ok,134.389,300,0

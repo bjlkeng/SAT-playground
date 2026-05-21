@@ -1,0 +1,11 @@
+46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized: SAT result requires model_check_result=pass, got fail
+--- 46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized (exit=0) ---
+missing solver result contract: /tmp/tmp.V0GYhCOREC/proof/result.json
+stdout s-line: s SATISFIABLE
+internal model check failed for /tmp/tmp.V0GYhCOREC/46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized.cnf
+
+5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7: SAT result requires model_check_result=pass, got fail
+--- 5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7 (exit=0) ---
+missing solver result contract: /tmp/tmp.V0GYhCOREC/proof/result.json
+stdout s-line: s SATISFIABLE
+internal model check failed for /tmp/tmp.V0GYhCOREC/5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7.cnf

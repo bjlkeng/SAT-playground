@@ -226,3 +226,93 @@ The 300s profile reevaluation confirms the current default-profile solver comple
 were previously capped at 120s. This improves the profiling-suite solved count from 9/11 to 11/11
 under the new default timeout. This does not change the 1.12a advanced-search candidate promotion
 decision: the candidate search-core configurations still regress solved rows and remain rejected.
+
+## All-Settings 300s Retest
+
+Reopened again on 2026-05-21 to retest every 1.12a candidate setting under the 300s profiling
+timeout and to use same-timeout evidence for the search-core gate.
+
+### Search-Core Matrix
+
+All rows used `benchmarks/iteration/search-core`, timeout `300s`, memory `16384 MB`, `SAT_SEED=0`,
+and `SAT_PROOF=drat`.
+
+| Setting | Artifact | Solved | Unsolved | PAR-2 | Verdict |
+|---|---|---:|---:|---:|---|
+| Saved-phase baseline | `log/1.12a/retest-300-phase-saved/results.csv` | 7/9 | 1 timeout, 1 unknown | 1743.239 | reference |
+| Focused/VMTF | `log/1.12a/retest-300-focused-vmtf/results.csv` | 2/9 | 6 timeout, 1 unknown | 4321.673 | fail |
+| Stable-SAT, rephase off | `log/1.12a/retest-300-stable-rephase-off/results.csv` | 5/9 | 3 timeout, 1 unknown | 3004.366 | fail |
+| Stable-SAT, rephase on | `log/1.12a/retest-300-stable-rephase-on/results.csv` | 3/9 | 5 timeout, 1 unknown | 4024.283 | fail |
+
+Search-core comparisons against the 300s saved-phase baseline:
+
+- Focused/VMTF: `verdict=FAIL`, `promotion_verdict=significant_regression`,
+  PAR-2 delta `+2578.434`, lost solved rows `1-TC-256-K-63`,
+  `544707209399nw.shuffled-as.sat03-1671`, `SC25_Timetable_C_406`, `case9`, and `mp1-Nb7T46`.
+- Stable-SAT, rephase off: `verdict=FAIL`, `promotion_verdict=significant_regression`,
+  PAR-2 delta `+1261.127`, newly solved `DLTM_twitter845_79_19`, but lost solved rows
+  `1-TC-256-K-63`, `case9`, and `mp1-Nb7T46`.
+- Stable-SAT, rephase on: `verdict=FAIL`, `promotion_verdict=significant_regression`,
+  PAR-2 delta `+2281.044`, lost solved rows `1-TC-256-K-63`,
+  `544707209399nw.shuffled-as.sat03-1671`, `case9`, and `mp1-Nb7T46`.
+- Rephase A/B: `log/1.12a/retest-300-stable-rephase-on` regressed against
+  `log/1.12a/retest-300-stable-rephase-off` by `+1019.917` PAR-2 and lost the
+  `544707209399nw.shuffled-as.sat03-1671` and `DLTM_twitter845_79_19` solves.
+
+No advanced candidate clears the first search-core gate. Downstream promotion suites
+(`benchmarks/discriminating`, `benchmarks/iteration/regression-guards`, and holdout) were not rerun
+for these candidates because the bead promotion rule requires passing search-core before those
+suite-level promotion checks are meaningful.
+
+### Profile Matrix
+
+All profile rows used `benchmarks/profiling`, timeout `300s`, memory `16384 MB`, and DRAT proof
+checking through `tools/bench.sh`.
+
+| Setting | Artifact | Solved | Unsolved | PAR-2 | Correctness |
+|---|---|---:|---:|---:|---|
+| Default baseline | `log/1.12a/profile-after-300-reopen/results.csv` | 11/11 | 0 | 624.808 | pass |
+| Saved phase | `log/1.12a/profile-300-phase-saved/results.csv` | 11/11 | 0 | 629.340 | pass |
+| Focused/VMTF | `log/1.12a/profile-300-focused-vmtf/results.csv` | 3/11 | 6 timeout, 2 error | 5096.329 | fail |
+| Stable-SAT, rephase off | `log/1.12a/profile-300-stable-rephase-off/results.csv` | 4/11 | 5 timeout, 2 error | 4520.623 | fail |
+| Stable-SAT, rephase on | `log/1.12a/profile-300-stable-rephase-on/results.csv` | 2/11 | 7 timeout, 2 error | 5610.295 | fail |
+
+Profile comparisons against the default 300s baseline:
+
+- Saved phase remains effectively neutral: 11/11 solved, no status regressions, PAR-2 delta
+  `+4.532`, compare verdict PASS.
+- Focused/VMTF has correctness failures and major performance regression: 3/11 solved,
+  PAR-2 delta `+4471.521`, compare verdict FAIL.
+- Stable-SAT, rephase off has correctness failures and major performance regression: 4/11 solved,
+  PAR-2 delta `+3895.815`, compare verdict FAIL.
+- Stable-SAT, rephase on has correctness failures and major performance regression: 2/11 solved,
+  PAR-2 delta `+4985.487`, compare verdict FAIL.
+- Profile rephase A/B confirms rephase-on is worse for the current advanced stack:
+  `+1089.672` PAR-2 versus rephase-off, with new timeouts on `feistel_b64_k32_r22` and
+  `random_v355_s3`.
+
+The advanced profile settings all produced SAT model-check failures on the same two instances:
+
+- `46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized`
+- `5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7`
+
+The harness error is: the solver printed `s SATISFIABLE`, but the internal SAT model checker
+reported `model_check_result=fail`. Logs:
+
+- `log/1.12a/profile-300-focused-vmtf/errors.log`
+- `log/1.12a/profile-300-stable-rephase-off/errors.log`
+- `log/1.12a/profile-300-stable-rephase-on/errors.log`
+
+Follow-up bead created: `SAT-playground-5b2.2.20` - "Fix advanced search SAT model-check failures".
+
+### Retest Decision
+
+The all-settings retest strengthens the original rejection:
+
+- The default 300s profile is healthy and remains the only supported profile behavior from this
+  bead's evidence.
+- `SAT_PHASE=saved` remains an opt-in diagnostic setting with neutral profile behavior, but it is
+  not promoted by this bead.
+- Focused/VMTF, Stable-SAT rephase-off, and Stable-SAT rephase-on remain rejected for promotion.
+- Advanced settings must not be promoted or used as acceptance baselines until the model-check
+  failures are fixed and the profile/search-core regressions are re-evaluated.
