@@ -1,0 +1,12 @@
+=== Benchmark Results: 11-kissat-port ===
+    Date:      Thu May 21 16:41:23 EDT 2026
+    Timeout:   120s
+    Memory:    16384 MB
+
+    Instances: 1
+    Solved:    1 (1 SAT + 0 UNSAT)
+    Unsolved:  0 (0 timeout + 0 unknown + 0 error)
+
+    PAR-2:     59.220
+
+    Results:   /home/bojji/code/SAT-playground/log/1.12a/fix-kakuro-focused-vmtf-120/results.csv

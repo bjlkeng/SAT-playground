@@ -1,0 +1,12 @@
+=== Benchmark Results: 11-kissat-port ===
+    Date:      Thu May 21 16:44:41 EDT 2026
+    Timeout:   120s
+    Memory:    16384 MB
+
+    Instances: 1
+    Solved:    1 (1 SAT + 0 UNSAT)
+    Unsolved:  0 (0 timeout + 0 unknown + 0 error)
+
+    PAR-2:     66.586
+
+    Results:   /home/bojji/code/SAT-playground/log/1.12a/fix-kakuro-stable-rephase-on-120/results.csv

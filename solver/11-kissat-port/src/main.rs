@@ -2391,6 +2391,7 @@ impl Solver {
 
         let new_arena_len = new_arena.len();
         let _ = self.remap_learned_metadata_clause_refs(&reloc, new_arena_len, false);
+        let _ = self.remap_binary_clause_refs(&reloc, new_arena_len, false);
         self.arena = new_arena;
         self.original_clause_ids = new_original_clause_ids;
         self.learned_clause_ids = new_learned_clause_ids;
@@ -6254,6 +6255,34 @@ mod tests {
             s.binary_clause_lits_for_test(s.binary_id_for_clause(clause_idx)),
             [1, 2]
         );
+    }
+
+    #[test]
+    fn test_binary_refs_survive_inline_abstraction_migration_and_gc() {
+        let config = binary_fast_config();
+        let mut s = make_solver_with_config(5, vec![vec![3, 4, 5], vec![1, 2]], &config);
+        let old_binary_clause_idx = s.original_clause_ids[1];
+        let binary_id = s.binary_id_for_clause(old_binary_clause_idx);
+
+        // Force the large-formula inline-abstraction migration without constructing
+        // a huge distinct formula.
+        s.original_clause_ids
+            .resize(INLINE_ABSTRACTION_CLAUSE_THRESHOLD, old_binary_clause_idx);
+        s.ensure_original_clause_abstractions();
+
+        let migrated_clause_idx = s.binary_clauses[binary_id.0 as usize].clause_ref;
+        assert_ne!(migrated_clause_idx, old_binary_clause_idx);
+        assert_eq!(
+            s.try_binary_id_for_clause(migrated_clause_idx),
+            Some(binary_id)
+        );
+
+        s.garbage_collect();
+
+        assert!(!s.binary_clause_is_deleted(binary_id));
+        assert!(s.enqueue(-1, ReasonRef::None));
+        assert!(s.propagate().is_none());
+        assert_eq!(s.assignment[2], TRUE);
     }
 
     #[test]

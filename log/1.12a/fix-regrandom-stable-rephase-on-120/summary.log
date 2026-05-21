@@ -1,0 +1,12 @@
+=== Benchmark Results: 11-kissat-port ===
+    Date:      Thu May 21 16:39:13 EDT 2026
+    Timeout:   120s
+    Memory:    16384 MB
+
+    Instances: 1
+    Solved:    0 (0 SAT + 0 UNSAT)
+    Unsolved:  1 (1 timeout + 0 unknown + 0 error)
+
+    PAR-2:     240.000
+
+    Results:   /home/bojji/code/SAT-playground/log/1.12a/fix-regrandom-stable-rephase-on-120/results.csv

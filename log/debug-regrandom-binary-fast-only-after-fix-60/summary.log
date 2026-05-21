@@ -1,0 +1,12 @@
+=== Benchmark Results: 11-kissat-port ===
+    Date:      Thu May 21 16:32:37 EDT 2026
+    Timeout:   60s
+    Memory:    16384 MB
+
+    Instances: 1
+    Solved:    1 (0 SAT + 1 UNSAT)
+    Unsolved:  0 (0 timeout + 0 unknown + 0 error)
+
+    PAR-2:     28.710
+
+    Results:   /home/bojji/code/SAT-playground/log/debug-regrandom-binary-fast-only-after-fix-60/results.csv

@@ -316,3 +316,130 @@ The all-settings retest strengthens the original rejection:
 - Focused/VMTF, Stable-SAT rephase-off, and Stable-SAT rephase-on remain rejected for promotion.
 - Advanced settings must not be promoted or used as acceptance baselines until the model-check
   failures are fixed and the profile/search-core regressions are re-evaluated.
+
+## Binary-Fast Model-Check Fix
+
+Reopened on 2026-05-21 under blocker bead `SAT-playground-5b2.2.21` after the all-settings retest
+found advanced-search SAT model-check failures on REGRandom and Kakuro.
+
+### Reproduction and Minimization
+
+Fast reproducer:
+
+```bash
+SAT_PROFILE=experimental SAT_PROOF=drat SAT_SEED=0 \
+SAT_USE_LBD=on SAT_LBD_UPDATE_REASONS=on SAT_RESTART=kissat-ema \
+SAT_REDUCE=lbd-tiered SAT_PHASE=target-then-saved SAT_BINARY_FAST=on \
+SAT_SEARCH_MODE=focused-stable SAT_CLAUSE_MIN=basic SAT_VMTF=on \
+SAT_REPHASE=off SAT_CHRONO=off \
+bash tools/bench.sh -t 60 -m 16384 -d /tmp/s11-regrandom-bench \
+  --log-dir log/debug-regrandom-focused-vmtf-60 solver/11-kissat-port
+```
+
+Result before the fix:
+
+- `46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized`: `ERROR` in `9.531s`
+- Failure: solver printed `s SATISFIABLE`, `result.json` had `model_check_result=fail`
+- Retained direct-run model violated original binary clause `(-13 -73)`
+
+Config minimization:
+
+- `SAT_BINARY_FAST=on` alone reproduced the invalid SAT result in `9.68s`.
+- Omitting `SAT_BINARY_FAST` under otherwise focused/VMTF advanced settings produced a clean
+  `60s` timeout.
+- Focused/stable mode, VMTF, rephase, and clause minimization were therefore not required for the
+  soundness failure.
+
+### Root Cause
+
+`ensure_original_clause_abstractions` migrates large formulas to inline original-clause abstraction
+storage by rebuilding the arena and remapping clause references. It remapped watchers, reasons, root
+unit clauses, and learned-clause metadata, but it did not remap the `SAT_BINARY_FAST=on` metadata:
+
+- `binary_clauses[*].clause_ref`
+- `binary_id_by_clause`
+
+After this migration, a later garbage collection used stale binary clause references. Live binary
+clauses could be treated as missing/deleted, so binary implication propagation skipped required
+original binary clauses. On REGRandom this allowed a SAT assignment that violated the original
+binary clause `(-13 -73)`.
+
+Fix:
+
+- Call `remap_binary_clause_refs` during inline original-abstraction migration.
+- Add regression test
+  `test_binary_refs_survive_inline_abstraction_migration_and_gc`, which forces the inline migration,
+  runs GC, and verifies the original binary implication still propagates.
+
+### Correctness Validation
+
+Focused unit guard:
+
+- `cargo test test_binary_refs_survive_inline_abstraction_migration_and_gc -- --nocapture`: pass
+
+Full checks:
+
+- `cargo fmt --check`: pass
+- `cargo test -- --nocapture`: `240 passed`
+- `cargo clippy --all-targets -- -D warnings`: pass
+- `bash tools/smoke_test.sh solver/11-kissat-port`: `9 passed, 0 failed`
+- `SAT_CHECK_INVARIANTS=on bash tools/smoke_test.sh solver/11-kissat-port`: `9 passed, 0 failed`
+
+REGRandom post-fix validation:
+
+| Config | Artifact | Result |
+|---|---|---|
+| `SAT_BINARY_FAST=on` minimized reproducer | `log/debug-regrandom-binary-fast-only-after-fix-60/results.csv` | `UNSAT`, verified, `28.710s` |
+| Focused/VMTF original failure config | `log/1.12a/fix-regrandom-focused-vmtf-120/results.csv` | clean `TIMEOUT`, no model error |
+| Stable-SAT rephase off original failure config | `log/1.12a/fix-regrandom-stable-rephase-off-120/results.csv` | clean `TIMEOUT`, no model error |
+| Stable-SAT rephase on original failure config | `log/1.12a/fix-regrandom-stable-rephase-on-120/results.csv` | clean `TIMEOUT`, no model error |
+
+Kakuro cross-check:
+
+| Config | Artifact | Result |
+|---|---|---|
+| Focused/VMTF original failure config | `log/1.12a/fix-kakuro-focused-vmtf-120/results.csv` | `SAT`, verified, `59.220s` |
+| Stable-SAT rephase off original failure config | `log/1.12a/fix-kakuro-stable-rephase-off-120/results.csv` | `SAT`, verified, `61.993s` |
+| Stable-SAT rephase on original failure config | `log/1.12a/fix-kakuro-stable-rephase-on-120/results.csv` | `SAT`, verified, `66.586s` |
+
+### Default Profile No-Regression Gate
+
+Command:
+
+```bash
+bash tools/bench.sh -m 16384 -d benchmarks/profiling \
+  --log-dir log/1.12a/profile-after-binary-remap-fix-300 \
+  solver/11-kissat-port
+```
+
+This intentionally omitted `-t`; the harness printed `Timeout: 300s`.
+
+Result:
+
+- `log/1.12a/profile-after-binary-remap-fix-300/results.csv`
+- Solved: `11/11` (`7 SAT`, `4 UNSAT`)
+- Unsolved: `0`
+- Correctness failures: none
+- PAR-2: `631.032`
+
+Comparison against `log/1.12a/profile-after-300-reopen/results.csv`:
+
+- Before: `11/11`, PAR-2 `624.808`
+- After: `11/11`, PAR-2 `631.032`
+- Delta: `+6.224`
+- Status regressions: none
+- Verdict: `PASS`
+
+Comparison against `log/profile-default-300-solver11-2026-05-21/results.csv`:
+
+- Before: `11/11`, PAR-2 `627.579`
+- After: `11/11`, PAR-2 `631.032`
+- Delta: `+3.453`
+- Status regressions: none
+- Verdict: `PASS`
+
+Interpretation:
+
+The default profile remains correctness-clean and solved-count stable. The small PAR-2 movement is
+single-run timing noise on the long Sudoku/Kakuro rows; the changed code is only reachable when
+`SAT_BINARY_FAST=on`, which is not part of the default profile.

@@ -1,0 +1,5 @@
+46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized: SAT result requires model_check_result=pass, got fail
+--- 46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized (exit=0) ---
+missing solver result contract: /tmp/tmp.yggA66lmAH/proof/result.json
+stdout s-line: s SATISFIABLE
+internal model check failed for /tmp/tmp.yggA66lmAH/46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized.cnf
