@@ -5,7 +5,7 @@
 #   bash tools/bench.sh [OPTIONS] <solver_dir>
 #
 # Options:
-#   -t, --timeout <seconds>   Per-instance time limit (default: 1800)
+#   -t, --timeout <seconds>   Per-instance time limit (default: 1800; profiling default: 300)
 #   -m, --memory  <MB>        Per-instance memory limit in MB (default: 16384 = 16 GB)
 #   -d, --benchdir <path>     Benchmark directory (default: benchmarks/sat-comp-2025)
 #   -j, --jobs <N>            Parallel jobs (default: 1, sequential)
@@ -24,8 +24,11 @@ if [[ -f "$HOME/.cargo/env" ]]; then
     source "$HOME/.cargo/env"
 fi
 
-# --- defaults (SAT Competition 2025 Main Track) ---
-TIMEOUT=1800
+# --- defaults (SAT Competition 2025 Main Track, with a shorter profiling-suite default) ---
+DEFAULT_TIMEOUT=1800
+PROFILE_BENCH_TIMEOUT=300
+TIMEOUT="$DEFAULT_TIMEOUT"
+TIMEOUT_EXPLICIT=0
 MEMLIMIT_MB=16384
 BENCH_DIR=""
 JOBS=1
@@ -40,7 +43,7 @@ usage() {
 # --- parse arguments ---
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -t|--timeout) TIMEOUT="$2"; shift 2 ;;
+        -t|--timeout) TIMEOUT="$2"; TIMEOUT_EXPLICIT=1; shift 2 ;;
         -m|--memory)  MEMLIMIT_MB="$2"; shift 2 ;;
         -d|--benchdir) BENCH_DIR="$2"; shift 2 ;;
         -j|--jobs)    JOBS="$2"; shift 2 ;;
@@ -78,6 +81,17 @@ if [[ ! -d "$BENCH_DIR" ]]; then
     echo "ERROR: benchmark directory not found: $BENCH_DIR" >&2
     echo "Download benchmarks first — see benchmarks/README.md or CLAUDE.md" >&2
     exit 1
+fi
+
+if [[ $TIMEOUT_EXPLICIT -eq 0 ]]; then
+    BENCH_DIR_REAL="$(cd "$BENCH_DIR" && pwd -P)"
+    PROFILE_BENCH_DIR_REAL=""
+    if [[ -d "$REPO_ROOT/benchmarks/profiling" ]]; then
+        PROFILE_BENCH_DIR_REAL="$(cd "$REPO_ROOT/benchmarks/profiling" && pwd -P)"
+    fi
+    if [[ -n "$PROFILE_BENCH_DIR_REAL" && "$BENCH_DIR_REAL" == "$PROFILE_BENCH_DIR_REAL" ]]; then
+        TIMEOUT="$PROFILE_BENCH_TIMEOUT"
+    fi
 fi
 
 # --- locate verification tools ---

@@ -131,7 +131,7 @@ bash run.sh ../../benchmarks/some_instance.cnf /tmp/proof_output
 bash tools/smoke_test.sh solver/01-naive-dpll
 
 # Run the profiling benchmark suite
-bash tools/bench.sh -t 120 -d benchmarks/profiling solver/01-naive-dpll
+bash tools/bench.sh -d benchmarks/profiling solver/01-naive-dpll
 ```
 
 ## Current Iterations

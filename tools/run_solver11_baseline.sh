@@ -6,6 +6,7 @@ cd "$REPO_ROOT"
 
 SOLVER10="solver/10-bve-preprocess"
 SOLVER11="solver/11-kissat-port"
+PROFILE_BENCH_TIMEOUT="${PROFILE_BENCH_TIMEOUT:-300}"
 LOCK_DIR="log/baseline-lock"
 SMOKE_VALIDATE_DIR="$LOCK_DIR/solver11-smoke-validation"
 RAW_LOCK="$SOLVER11/BASELINE_LOCK.raw.txt"
@@ -63,11 +64,11 @@ for cnf in tests/cnf/unsat/*.cnf; do
 done
 
 echo "=== Profiling baseline comparison ==="
-bash tools/bench.sh -t 120 -m 16384 \
+bash tools/bench.sh -t "$PROFILE_BENCH_TIMEOUT" -m 16384 \
     -d benchmarks/profiling "$SOLVER10" \
     --log-dir "$LOCK_DIR/solver10"
 
-bash tools/bench.sh -t 120 -m 16384 \
+bash tools/bench.sh -t "$PROFILE_BENCH_TIMEOUT" -m 16384 \
     -d benchmarks/profiling "$SOLVER11" \
     --log-dir "$LOCK_DIR/solver11"
 
@@ -79,6 +80,7 @@ python3 tools/status_compare.py \
 {
     echo "solver10_dir=$SOLVER10"
     echo "solver11_dir=$SOLVER11"
+    echo "profile_bench_timeout=$PROFILE_BENCH_TIMEOUT"
     echo "date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "rustc=$(rustc --version 2>/dev/null || true)"
     echo "cargo=$(cargo --version 2>/dev/null || true)"
