@@ -79,6 +79,9 @@ pub(crate) struct SolverStats {
     pub(crate) phase_target_used: u64,
     pub(crate) phase_best_used: u64,
     pub(crate) phase_initial_used: u64,
+    pub(crate) phase_save_target: u64,
+    pub(crate) phase_save_best: u64,
+    pub(crate) rephases: u64,
     pub(crate) decision_heap_pops: u64,
     pub(crate) decision_heap_stale_pops: u64,
     pub(crate) decision_heap_inserts: u64,
@@ -369,6 +372,9 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("phase_target_used", ctx.stats.phase_target_used);
     json.u64("phase_best_used", ctx.stats.phase_best_used);
     json.u64("phase_initial_used", ctx.stats.phase_initial_used);
+    json.u64("phase_save_target", ctx.stats.phase_save_target);
+    json.u64("phase_save_best", ctx.stats.phase_save_best);
+    json.u64("rephases", ctx.stats.rephases);
     json.u64("random_decisions", 0);
 
     json.u64(
@@ -461,7 +467,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
             "transitive_removed=0 gate_equivs_found=0 appendix_equiv_substitutions=0 ",
             "inprocess_runs=0 inprocess_ticks=0 ",
             "phase_saved_used={} phase_target_used={} phase_best_used={} phase_initial_used={} ",
-            "phase_save_target=0 phase_save_best=0 rephases=0 ",
+            "phase_save_target={} phase_save_best={} rephases={} ",
             "decisions_focused={} decisions_stable={} ",
             "mode_switches={} seconds_focused=0.000000 seconds_stable={:.6} ",
             "learned_kept_tier1={} learned_kept_tier2={} learned_kept_tier3={} learned_collected={} ",
@@ -480,6 +486,9 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
         stats.phase_target_used,
         stats.phase_best_used,
         stats.phase_initial_used,
+        stats.phase_save_target,
+        stats.phase_save_best,
+        stats.rephases,
         stats.decisions_focused,
         stats.decisions_stable,
         stats.mode_switches,

@@ -877,6 +877,14 @@ struct Solver {
     phase_ticks: u64,
     /// selected phase policy; legacy preserves solver-10-compatible saved-phase branching
     phase_policy: PhasePolicy,
+    /// opt-in stable-mode rephase hook for focused/stable search experiments
+    rephase_enabled: bool,
+    /// current step in the default best -> inverted -> original rephase cycle
+    rephase_index: u8,
+    /// global conflict count at which the next stable-mode restart may rephase
+    rephase_at_conflicts: u64,
+    /// conflict interval between scheduled rephase opportunities
+    rephase_conflicts: u64,
     /// decision level of each variable assignment
     decision_level: Vec<usize>,
     /// encoded reason for each implied assignment; NONE for decisions/root-unassigned vars
@@ -1444,7 +1452,8 @@ impl Solver {
         let phase_policy = config.phase_policy;
         let search_mode_policy = config.search_mode_policy;
         let focused_stable_mode = search_mode_policy == SearchModePolicy::FocusedStable;
-        let phase_buffers_enabled = phase_policy != PhasePolicy::Legacy || focused_stable_mode;
+        let phase_buffers_enabled =
+            phase_policy != PhasePolicy::Legacy || focused_stable_mode || config.rephase;
         let initial_saved_phase = if phase_buffers_enabled {
             UNASSIGNED
         } else {
@@ -1463,6 +1472,12 @@ impl Solver {
         };
         let ccmin_mode = ccmin_mode_from_config(config.clause_min_mode);
         let vmtf_queue = config.vmtf.then(|| VmtfQueue::new(num_vars, &branch_order));
+        let rephase_conflicts = config.rephase_init_conflicts.max(1);
+        let rephase_at_conflicts = if config.rephase {
+            rephase_conflicts
+        } else {
+            u64::MAX
+        };
 
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
         let arena = Vec::with_capacity(total_words);
@@ -1501,6 +1516,10 @@ impl Solver {
             best_assigned: 0,
             phase_ticks: 0,
             phase_policy,
+            rephase_enabled: config.rephase,
+            rephase_index: 0,
+            rephase_at_conflicts,
+            rephase_conflicts,
             decision_level: vec![0; num_vars + 1],
             reason: vec![NO_REASON; num_vars + 1],
             binary_reason_lits: Vec::new(),
@@ -3519,6 +3538,7 @@ impl Solver {
         }
         self.target_assigned = assigned;
         self.phase_ticks = self.phase_ticks.saturating_add(1);
+        self.stats.phase_save_target = self.stats.phase_save_target.saturating_add(1);
     }
 
     fn capture_best_phase(&mut self, assigned: usize) {
@@ -3531,6 +3551,7 @@ impl Solver {
         }
         self.best_assigned = assigned;
         self.phase_ticks = self.phase_ticks.saturating_add(1);
+        self.stats.phase_save_best = self.stats.phase_save_best.saturating_add(1);
     }
 
     fn maybe_capture_phase_prefix(&mut self) {
@@ -3553,6 +3574,86 @@ impl Solver {
         }
         if capture_best && assigned > self.best_assigned {
             self.capture_best_phase(assigned);
+        }
+    }
+
+    fn rephase_due_on_stable_restart(&self) -> bool {
+        self.rephase_enabled
+            && !self.accounting_mode.is_temporary()
+            && self.search_mode_policy == SearchModePolicy::FocusedStable
+            && self.search_mode == SearchMode::Stable
+            && self.stats.conflicts >= self.rephase_at_conflicts
+    }
+
+    fn saved_phase_value_for_rephase(&self, var: usize) -> u8 {
+        match self.saved_phase[var] {
+            TRUE | FALSE => self.saved_phase[var],
+            UNASSIGNED => self.initial_phase(var),
+            _ => unreachable!("invalid saved phase value"),
+        }
+    }
+
+    fn invert_phase(value: u8) -> u8 {
+        match value {
+            TRUE => FALSE,
+            FALSE => TRUE,
+            UNASSIGNED => UNASSIGNED,
+            _ => unreachable!("invalid phase value"),
+        }
+    }
+
+    fn rephase_to_best(&mut self) {
+        if self.saved_phase.is_empty() {
+            return;
+        }
+        for var in 1..self.saved_phase.len() {
+            let best = self.best_phase.get(var).copied().unwrap_or(UNASSIGNED);
+            self.saved_phase[var] = if best == UNASSIGNED {
+                self.initial_phase(var)
+            } else {
+                best
+            };
+        }
+    }
+
+    fn rephase_to_inverted(&mut self) {
+        if self.saved_phase.is_empty() {
+            return;
+        }
+        for var in 1..self.saved_phase.len() {
+            let phase = self.saved_phase_value_for_rephase(var);
+            self.saved_phase[var] = Self::invert_phase(phase);
+        }
+    }
+
+    fn rephase_to_original(&mut self) {
+        if self.saved_phase.is_empty() {
+            return;
+        }
+        for var in 1..self.saved_phase.len() {
+            self.saved_phase[var] = self.initial_phase(var);
+        }
+    }
+
+    fn apply_rephase(&mut self) {
+        match self.rephase_index % 3 {
+            0 => self.rephase_to_best(),
+            1 => self.rephase_to_inverted(),
+            2 => self.rephase_to_original(),
+            _ => unreachable!(),
+        }
+        self.rephase_index = (self.rephase_index + 1) % 3;
+        self.rephase_at_conflicts = self
+            .stats
+            .conflicts
+            .saturating_add(self.rephase_conflicts.max(1));
+        self.phase_ticks = self.phase_ticks.saturating_add(1);
+        self.stats.rephases = self.stats.rephases.saturating_add(1);
+    }
+
+    fn maybe_rephase_on_stable_restart(&mut self) {
+        if self.rephase_due_on_stable_restart() {
+            self.apply_rephase();
         }
     }
 
@@ -3617,6 +3718,7 @@ impl Solver {
         if self.accounting_mode.update_restart_stats() {
             self.stats.restarts += 1;
         }
+        self.maybe_rephase_on_stable_restart();
         self.backtrack(0);
         true
     }
@@ -8300,6 +8402,152 @@ mod tests {
         assert_eq!(s.best_assigned, 2);
         assert_eq!(s.best_phase[2], FALSE);
         assert_eq!(s.best_phase[3], TRUE);
+    }
+
+    #[test]
+    fn test_rephase_best_writes_best_phase_into_saved() {
+        let config = SolverConfig {
+            rephase: true,
+            ..focused_stable_config()
+        };
+        let mut s = make_solver_with_config(3, vec![], &config);
+        s.best_phase[1] = TRUE;
+        s.best_phase[2] = FALSE;
+        s.saved_phase[3] = TRUE;
+
+        s.apply_rephase();
+
+        assert_eq!(s.saved_phase[1], TRUE);
+        assert_eq!(s.saved_phase[2], FALSE);
+        assert_eq!(
+            s.saved_phase[3], FALSE,
+            "variables outside the best prefix fall back to the original phase"
+        );
+        assert_eq!(s.rephase_index, 1);
+        assert_eq!(s.stats.rephases, 1);
+    }
+
+    #[test]
+    fn test_rephase_inverted_flips_all_saved_phases() {
+        let config = SolverConfig {
+            rephase: true,
+            ..focused_stable_config()
+        };
+        let mut s = make_solver_with_config(3, vec![], &config);
+        s.rephase_index = 1;
+        s.saved_phase[1] = TRUE;
+        s.saved_phase[2] = FALSE;
+        s.saved_phase[3] = UNASSIGNED;
+
+        s.apply_rephase();
+
+        assert_eq!(s.saved_phase[1], FALSE);
+        assert_eq!(s.saved_phase[2], TRUE);
+        assert_eq!(
+            s.saved_phase[3], TRUE,
+            "unassigned saved phases invert from the original phase"
+        );
+        assert_eq!(s.rephase_index, 2);
+    }
+
+    #[test]
+    fn test_rephase_original_restores_original_phase() {
+        let config = SolverConfig {
+            rephase: true,
+            ..focused_stable_config()
+        };
+        let mut s = make_solver_with_config(3, vec![], &config);
+        s.rephase_index = 2;
+        s.saved_phase[1] = TRUE;
+        s.saved_phase[2] = TRUE;
+        s.saved_phase[3] = FALSE;
+
+        s.apply_rephase();
+
+        assert_eq!(s.saved_phase[1], FALSE);
+        assert_eq!(s.saved_phase[2], FALSE);
+        assert_eq!(s.saved_phase[3], FALSE);
+        assert_eq!(s.rephase_index, 0);
+    }
+
+    #[test]
+    fn test_rephase_advances_index_on_each_call() {
+        let config = SolverConfig {
+            rephase: true,
+            ..focused_stable_config()
+        };
+        let mut s = make_solver_with_config(1, vec![], &config);
+
+        s.apply_rephase();
+        assert_eq!(s.rephase_index, 1);
+        s.apply_rephase();
+        assert_eq!(s.rephase_index, 2);
+        s.apply_rephase();
+        assert_eq!(s.rephase_index, 0);
+        assert_eq!(s.stats.rephases, 3);
+    }
+
+    #[test]
+    fn test_rephase_cycle_excludes_walk_by_default() {
+        let config = SolverConfig {
+            rephase: true,
+            ..focused_stable_config()
+        };
+        let mut s = make_solver_with_config(2, vec![], &config);
+        s.best_phase[1] = TRUE;
+        s.best_phase[2] = FALSE;
+
+        s.apply_rephase();
+        s.apply_rephase();
+        s.apply_rephase();
+        s.saved_phase[1] = FALSE;
+        s.saved_phase[2] = TRUE;
+        s.apply_rephase();
+
+        assert_eq!(s.saved_phase[1], TRUE);
+        assert_eq!(s.saved_phase[2], FALSE);
+        assert_eq!(s.rephase_index, 1);
+        assert_eq!(s.stats.rephases, 4);
+    }
+
+    #[test]
+    fn test_rephase_only_runs_on_due_stable_restart() {
+        let config = SolverConfig {
+            rephase: true,
+            rephase_init_conflicts: 3,
+            ..focused_stable_config()
+        };
+        let mut s = make_solver_with_config(2, vec![], &config);
+        s.best_phase[1] = TRUE;
+        s.stats.conflicts = 3;
+        s.decide(1);
+        s.restart_pending = true;
+
+        assert!(s.perform_restart_if_pending());
+        assert_eq!(
+            s.stats.rephases, 0,
+            "focused-mode restarts must not rephase"
+        );
+
+        s.search_mode = SearchMode::Stable;
+        s.stats.conflicts = 2;
+        s.decide(1);
+        s.restart_pending = true;
+        assert!(s.perform_restart_if_pending());
+        assert_eq!(
+            s.stats.rephases, 0,
+            "stable restarts before the schedule must not rephase"
+        );
+
+        s.stats.conflicts = 3;
+        s.decide(1);
+        s.restart_pending = true;
+        assert!(s.perform_restart_if_pending());
+
+        assert_eq!(s.stats.rephases, 1);
+        assert_eq!(s.saved_phase[1], TRUE);
+        assert_eq!(s.rephase_index, 1);
+        assert_eq!(s.rephase_at_conflicts, 6);
     }
 
     #[test]

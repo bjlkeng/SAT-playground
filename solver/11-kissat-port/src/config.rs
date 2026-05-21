@@ -1063,6 +1063,9 @@ impl SolverConfig {
         if self.vmtf && self.search_mode_policy == SearchModePolicy::Single {
             fail_config("Invalid config: SAT_VMTF=on requires SAT_SEARCH_MODE=focused-stable");
         }
+        if self.rephase && self.search_mode_policy == SearchModePolicy::Single {
+            fail_config("Invalid config: SAT_REPHASE=on requires SAT_SEARCH_MODE=focused-stable");
+        }
         if self.hbr && !self.probe {
             fail_config("Invalid config: SAT_HBR=on requires SAT_PROBE=on");
         }
@@ -1071,7 +1074,6 @@ impl SolverConfig {
         }
         let unsupported = [
             (self.chrono_backtrack, "SAT_CHRONO"),
-            (self.rephase, "SAT_REPHASE"),
             (self.inprocess, "SAT_INPROCESS"),
             (self.vivify, "SAT_VIVIFY"),
             (self.probe, "SAT_PROBE"),
@@ -1535,11 +1537,11 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
         feature(
             "SAT_REPHASE",
             config.rephase,
-            FeatureMaturity::ParkingLot,
+            FeatureMaturity::SmokeSafe,
+            true,
+            true,
             false,
-            false,
-            false,
-            "",
+            "log/1.12/summary.md",
         ),
         feature(
             "SAT_SIMPLIFICATION",
@@ -2500,6 +2502,20 @@ mod tests {
 
         assert!(config.vmtf);
         assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
+    }
+
+    #[test]
+    fn test_rephase_is_runtime_supported_with_focused_stable_mode() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_USE_LBD", "on"),
+            ("SAT_SEARCH_MODE", "focused-stable"),
+            ("SAT_REPHASE", "on"),
+            ("SAT_REPHASE_INIT_CONFLICTS", "17"),
+        ]));
+
+        assert!(config.rephase);
+        assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
+        assert_eq!(config.rephase_init_conflicts, 17);
     }
 
     #[test]

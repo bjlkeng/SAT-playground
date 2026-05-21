@@ -51,6 +51,9 @@ What is present:
 - opt-in focused-mode Variable-Move-To-Front branching (`SAT_USE_LBD=on
   SAT_SEARCH_MODE=focused-stable SAT_VMTF=on`) while stable mode continues to use the existing
   VSIDS heap
+- opt-in focused/stable rephasing (`SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable
+  SAT_REPHASE=on`) that runs only on scheduled stable-mode restarts and cycles saved phases through
+  best, inverted, and original polarity sources
 - opt-in binary implication fast path (`SAT_BINARY_FAST=on`) that keeps binary clauses in the arena
   for proof/model/debug traceability while propagating them through stable binary IDs and implication
   edges; default propagation remains the legacy watched-clause path. Clause minimization is
@@ -101,6 +104,7 @@ SAT_MINIMIZE_DEPTH_LIMIT=<u32>
 SAT_PHASE=legacy|saved|target-then-saved|best-then-target-then-saved
 SAT_SEARCH_MODE=single|focused-stable
 SAT_VMTF=on
+SAT_REPHASE=on
 SAT_BINARY_FAST=on
 ```
 

@@ -61,13 +61,15 @@ Known missing or incomplete feature families at this baseline:
 - VMTF focused-mode branching is present behind `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable
   SAT_VMTF=on`; focused mode uses the VMTF queue and stable mode keeps the VSIDS heap. It is not
   promoted as default-profile behavior yet.
+- Rephasing is present behind `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_REPHASE=on`;
+  it runs only on scheduled stable-mode restarts and cycles saved phase data through best, inverted,
+  and original polarity sources. It is not promoted as default-profile behavior yet.
 - Binary implication propagation is present behind `SAT_BINARY_FAST=on`; binary clauses keep arena
   representation for proof/model/debug paths while propagation uses stable `BinaryClauseId` reasons.
 - Clause minimization is binary-reason aware as of 1.11, so explicit `SAT_CLAUSE_MIN` settings are
   honored with `SAT_BINARY_FAST=on`. Binary-fast env runs keep minimization off unless
   `SAT_CLAUSE_MIN` is explicit because the search-core gate does not justify promoting recursive
   minimization on that path yet.
-- Rephasing.
 - Vivification.
 - Failed literal probing.
 - Hyper-binary resolution.
