@@ -1068,6 +1068,10 @@ struct Solver {
     update_reason_lbd: bool,
     /// learned-clause reduction policy selected by validated configuration
     reduce_policy: ReducePolicy,
+    /// opt-in guarded chronological backtracking; default off for solver-10 parity
+    chrono_backtrack: bool,
+    /// maximum current/assertion-level gap where chronological backtracking is considered
+    chrono_max_delta: usize,
     /// stable learned-clause metadata, keyed by LearnedId rather than moving arena offsets
     learned_meta: Vec<LearnedMeta>,
     /// current arena clause reference for each stable learned id
@@ -1615,6 +1619,8 @@ impl Solver {
             use_lbd: config.use_lbd,
             update_reason_lbd: config.update_reason_lbd,
             reduce_policy: config.reduce_policy,
+            chrono_backtrack: config.chrono_backtrack,
+            chrono_max_delta: config.chrono_max_delta,
             lbd_seen: vec![0; num_vars + 1],
             lbd_stamp: 0,
             last_conflict_lbd: 0,
@@ -3685,6 +3691,60 @@ impl Solver {
         self.propagate_head = self.propagate_head.min(new_trail_len);
     }
 
+    fn learned_clause_asserts_at_level(&self, learned_clause: &[i32], target_level: usize) -> bool {
+        if learned_clause.is_empty() {
+            return false;
+        }
+
+        let mut unassigned_after_backtrack = 0usize;
+        for &lit in learned_clause {
+            let var = lit.unsigned_abs() as usize;
+            if self.decision_level[var] > target_level {
+                unassigned_after_backtrack += 1;
+                if unassigned_after_backtrack > 1 {
+                    return false;
+                }
+            } else if self.lit_value(lit) != FALSE {
+                return false;
+            }
+        }
+
+        unassigned_after_backtrack == 1
+    }
+
+    fn choose_backtrack_level(&mut self, assertion_level: usize, learned_clause: &[i32]) -> usize {
+        if !self.chrono_backtrack {
+            return assertion_level;
+        }
+
+        let current_level = self.current_level();
+        if current_level == 0 {
+            return 0;
+        }
+        if assertion_level >= current_level {
+            return assertion_level;
+        }
+
+        self.stats.chrono_attempts += 1;
+        let delta = current_level - assertion_level;
+        if delta > self.chrono_max_delta {
+            self.stats.chrono_rejected_delta_too_large += 1;
+            return assertion_level;
+        }
+
+        let chrono_level = current_level - 1;
+        if !self.learned_clause_asserts_at_level(learned_clause, chrono_level) {
+            self.stats.chrono_rejected_not_asserting += 1;
+            return assertion_level;
+        }
+
+        if chrono_level > assertion_level {
+            self.stats.chrono_used += 1;
+            self.stats.chrono_skipped_levels += (chrono_level - assertion_level) as u64;
+        }
+        chrono_level
+    }
+
     fn debug_assert_clause_asserting_after_backtrack(
         &self,
         learned_clause: &[i32],
@@ -5237,7 +5297,7 @@ impl Solver {
                         );
                         next_search_trace = next_search_trace.saturating_add(trace_search_interval);
                     }
-                    let backtrack_level = self.analyze_conflict_to_scratch(conflict_event);
+                    let assertion_level = self.analyze_conflict_to_scratch(conflict_event);
                     self.bump_analyzed_variable_activity();
                     self.decay_variable_activity();
                     if self.reduce_db_enabled() {
@@ -5250,7 +5310,7 @@ impl Solver {
                     let asserting_lit = learned_clause[0];
                     proof_log.record_clause(&learned_clause);
                     if learned_clause.len() == 1 {
-                        debug_assert_eq!(backtrack_level, 0);
+                        debug_assert_eq!(assertion_level, 0);
                         self.backtrack(0);
                         let inserted = self.enqueue(asserting_lit, ReasonRef::None);
                         if !inserted {
@@ -5259,6 +5319,11 @@ impl Solver {
                         self.scratch_conflict_clause = learned_clause;
                         self.scratch_conflict_clause.clear();
                     } else {
+                        let backtrack_level = if self.chrono_backtrack {
+                            self.choose_backtrack_level(assertion_level, &learned_clause)
+                        } else {
+                            assertion_level
+                        };
                         let learned_clause_idx =
                             self.add_analyzed_clause_from_slice(&learned_clause);
                         self.scratch_conflict_clause = learned_clause;
@@ -5915,6 +5980,14 @@ mod tests {
         SolverConfig {
             binary_fast_path: true,
             hot_stats: true,
+            ..Default::default()
+        }
+    }
+
+    fn chrono_config(max_delta: usize) -> SolverConfig {
+        SolverConfig {
+            chrono_backtrack: true,
+            chrono_max_delta: max_delta,
             ..Default::default()
         }
     }
@@ -8231,6 +8304,132 @@ mod tests {
         assert_eq!(s.assignment[2], TRUE);
         assert_eq!(s.assignment[3], UNASSIGNED);
         assert_eq!(s.current_level(), 2);
+    }
+
+    #[test]
+    fn test_chrono_off_uses_assertion_level() {
+        let mut s = make_solver(2, vec![]);
+        s.decide(1);
+        s.decide(2);
+
+        let chosen = s.choose_backtrack_level(0, &[-2, -1]);
+
+        assert_eq!(chosen, 0);
+        assert_eq!(s.stats.chrono_attempts, 0);
+        assert_eq!(s.stats.chrono_used, 0);
+    }
+
+    #[test]
+    fn test_chrono_rejects_large_delta() {
+        let config = chrono_config(1);
+        let mut s = make_solver_with_config(3, vec![], &config);
+        s.decide(1);
+        s.decide(2);
+        s.decide(3);
+
+        let chosen = s.choose_backtrack_level(0, &[-3, -1]);
+
+        assert_eq!(chosen, 0);
+        assert_eq!(s.stats.chrono_attempts, 1);
+        assert_eq!(s.stats.chrono_used, 0);
+        assert_eq!(s.stats.chrono_rejected_delta_too_large, 1);
+    }
+
+    #[test]
+    fn test_chrono_allows_small_delta_when_asserting() {
+        let config = chrono_config(3);
+        let mut s = make_solver_with_config(3, vec![], &config);
+        s.decide(1);
+        s.decide(2);
+        s.decide(3);
+
+        let chosen = s.choose_backtrack_level(0, &[-3, -1]);
+
+        assert_eq!(chosen, 2);
+        assert_eq!(s.stats.chrono_attempts, 1);
+        assert_eq!(s.stats.chrono_used, 1);
+        assert_eq!(s.stats.chrono_skipped_levels, 2);
+    }
+
+    #[test]
+    fn test_chrono_rejects_non_asserting_level() {
+        let config = chrono_config(3);
+        let mut s = make_solver_with_config(4, vec![], &config);
+        s.decide(1);
+        s.decide(2);
+        s.decide(3);
+        assert!(s.enqueue(4, ReasonRef::None));
+
+        let chosen = s.choose_backtrack_level(0, &[-3, -4, -1]);
+
+        assert_eq!(chosen, 0);
+        assert_eq!(s.stats.chrono_attempts, 1);
+        assert_eq!(s.stats.chrono_used, 0);
+        assert_eq!(s.stats.chrono_rejected_not_asserting, 1);
+    }
+
+    #[test]
+    fn test_chrono_backtrack_preserves_reason_invariant() {
+        let config = chrono_config(3);
+        let mut s = make_solver_with_config(3, vec![], &config);
+        s.decide(1);
+        s.decide(2);
+        s.decide(3);
+        let learned_clause = vec![-3, -2, -1];
+        let backtrack_level = s.choose_backtrack_level(1, &learned_clause);
+        assert_eq!(backtrack_level, 2);
+
+        let learned_clause_idx = s.add_analyzed_clause_from_slice(&learned_clause);
+        s.backtrack(backtrack_level);
+        s.debug_assert_clause_asserting_after_backtrack(
+            s.clause_slice(learned_clause_idx),
+            backtrack_level,
+        );
+        assert!(s.enqueue(-3, s.reason_ref_for_clause(learned_clause_idx)));
+
+        assert_eq!(s.current_level(), 2);
+        assert_eq!(s.assignment[1], TRUE);
+        assert_eq!(s.assignment[2], TRUE);
+        assert_eq!(s.assignment[3], FALSE);
+        assert_eq!(s.decision_level[3], 2);
+        assert_eq!(s.reason_ref(3), ReasonRef::Clause(learned_clause_idx));
+        assert_eq!(s.lit_value(-1), FALSE);
+        assert_eq!(s.lit_value(-2), FALSE);
+        assert_eq!(s.lit_value(-3), TRUE);
+    }
+
+    #[test]
+    fn test_chrono_root_conflict_unchanged() {
+        let config = chrono_config(3);
+        let mut s = make_solver_with_config(1, vec![], &config);
+
+        let chosen = s.choose_backtrack_level(0, &[1]);
+
+        assert_eq!(chosen, 0);
+        assert_eq!(s.stats.chrono_attempts, 0);
+        assert_eq!(s.stats.chrono_used, 0);
+    }
+
+    #[test]
+    fn test_chrono_does_not_break_smoke_unsat_proof() {
+        let config = chrono_config(100);
+        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
+        let proof_dir = make_temp_dir("chrono-unsat-proof");
+        let mut s = make_solver_with_config(2, clauses, &config);
+
+        assert_eq!(
+            s.solve_to_output(proof_dir.to_str().expect("utf8 temp dir"), &config)
+                .0
+                .status,
+            SolveStatus::Unsat
+        );
+
+        let proof_text =
+            fs::read_to_string(proof_dir.join("proof.out")).expect("failed to read emitted proof");
+        assert!(
+            proof_text.ends_with("0\n"),
+            "expected chrono-enabled UNSAT proof to end with the empty clause"
+        );
     }
 
     #[test]

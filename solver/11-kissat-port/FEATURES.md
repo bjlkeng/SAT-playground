@@ -9,7 +9,7 @@ prints the same maturity records in `SAT_CONFIG_DUMP`, writes them into
 |---|---|---|---|---|---|
 | `SAT_USE_LBD` | `use_lbd` | SmokeSafe | none | `log/0.0b/findings.md` | Stable learned-clause metadata records true LBD/glue while policy defaults remain unchanged. |
 | `SAT_LBD_UPDATE_REASONS` | `update_reason_lbd` | SmokeSafe | none | `log/1.2/lbd-reason-update.md` | Optional reason-side LBD improvement; requires `SAT_USE_LBD=on` and remains default-off. |
-| `SAT_CHRONO` | `chrono_backtrack` | ParkingLot | none |  | Config-reserved until chronological backtracking lands. |
+| `SAT_CHRONO` | `chrono_backtrack` | SmokeSafe | none | `log/1.13/summary.md` | Optional guarded chronological backtracking. It only keeps one level (`current - 1`) when the learned clause is still asserting there and falls back to the normal assertion level otherwise. |
 | `SAT_BINARY_FAST` | `binary_fast_path` | SmokeSafe | none | `log/1.6/summary.md`, `log/1.11/summary.md` | Opt-in stable binary-clause IDs and implication edges; default remains off until benchmark promotion. Phase 1.11 made clause minimization binary-reason aware; binary-fast env runs keep minimization off unless `SAT_CLAUSE_MIN` is explicit. |
 | `SAT_VMTF` | `vmtf` | SmokeSafe | none | `log/1.10/summary.md` | Optional focused-mode Variable-Move-To-Front branch queue. Requires `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable`; stable mode continues to use the VSIDS heap. |
 | `SAT_REPHASE` | `rephase` | SmokeSafe | none | `log/1.12/summary.md` | Opt-in stable-mode rephase hook for focused/stable search experiments. Requires `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable`; it cycles saved phase data through best, inverted, and original phases on scheduled stable-mode restarts. |

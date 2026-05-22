@@ -54,6 +54,10 @@ What is present:
 - opt-in focused/stable rephasing (`SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable
   SAT_REPHASE=on`) that runs only on scheduled stable-mode restarts and cycles saved phases through
   best, inverted, and original polarity sources
+- opt-in guarded chronological backtracking (`SAT_CHRONO=on`) that keeps only `current - 1`
+  instead of the normal assertion level when the learned clause remains asserting there; it falls
+  back to ordinary non-chronological backtracking when the level gap exceeds
+  `SAT_CHRONO_MAX_DELTA` or the learned clause would stop being unit
 - opt-in binary implication fast path (`SAT_BINARY_FAST=on`) that keeps binary clauses in the arena
   for proof/model/debug traceability while propagating them through stable binary IDs and implication
   edges; default propagation remains the legacy watched-clause path. Clause minimization is
@@ -103,6 +107,8 @@ SAT_CLAUSE_MIN=off|basic|recursive-limited|inblock
 SAT_MINIMIZE_DEPTH_LIMIT=<u32>
 SAT_PHASE=legacy|saved|target-then-saved|best-then-target-then-saved
 SAT_SEARCH_MODE=single|focused-stable
+SAT_CHRONO=on
+SAT_CHRONO_MAX_DELTA=<usize>
 SAT_VMTF=on
 SAT_REPHASE=on
 SAT_BINARY_FAST=on

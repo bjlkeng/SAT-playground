@@ -1073,7 +1073,6 @@ impl SolverConfig {
             fail_config("Invalid config: SAT_GATE_BVE=on requires SAT_GATE_EXTRACT=on");
         }
         let unsupported = [
-            (self.chrono_backtrack, "SAT_CHRONO"),
             (self.inprocess, "SAT_INPROCESS"),
             (self.vivify, "SAT_VIVIFY"),
             (self.probe, "SAT_PROBE"),
@@ -1510,11 +1509,11 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
         feature(
             "SAT_CHRONO",
             config.chrono_backtrack,
-            FeatureMaturity::ParkingLot,
+            FeatureMaturity::SmokeSafe,
+            true,
+            true,
             false,
-            false,
-            false,
-            "",
+            "log/1.13/summary.md",
         ),
         feature(
             "SAT_BINARY_FAST",
@@ -2516,6 +2515,17 @@ mod tests {
         assert!(config.rephase);
         assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
         assert_eq!(config.rephase_init_conflicts, 17);
+    }
+
+    #[test]
+    fn test_chrono_backtrack_is_runtime_supported() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_CHRONO", "on"),
+            ("SAT_CHRONO_MAX_DELTA", "7"),
+        ]));
+
+        assert!(config.chrono_backtrack);
+        assert_eq!(config.chrono_max_delta, 7);
     }
 
     #[test]

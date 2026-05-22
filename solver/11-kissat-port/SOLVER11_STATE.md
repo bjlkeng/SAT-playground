@@ -48,12 +48,14 @@ Related implementation anchors:
 | `parse_cnf` | `src/main.rs:2901` | DIMACS parser used by `main`; returns parse errors so main can emit result.json with PARSE_ERROR. |
 | `main` | `src/main.rs:3014` | CLI/run.sh entry point, config parsing/output before CNF parsing, solver construction, result.json/status/model contract emission, JSON_STATS/trace_full stderr emission, internal SAT model check, and SAT Competition stdout. |
 
-Known missing or incomplete feature families at this baseline:
+Known unpromoted or incomplete feature families at this baseline:
 
 - Full glue/LBD search policy: LBD metadata, reason-LBD update, LBD-tiered reduction, and the
   opt-in Kissat/Glucose-style EMA restart policy are present behind explicit flags, but they are
   not promoted as default-profile behavior yet.
-- Chronological backtracking.
+- Chronological backtracking is present behind `SAT_CHRONO=on`. It is deliberately guarded: it
+  only chooses `current - 1` when the learned clause remains asserting at that level and otherwise
+  uses the normal assertion level.
 - Saved/target/best phase policies are present behind `SAT_PHASE`, but they are not promoted as
   default-profile behavior yet.
 - Focused/stable mode switching and reluctant restarts are present behind `SAT_USE_LBD=on
