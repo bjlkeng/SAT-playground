@@ -44,6 +44,12 @@ What is present:
 - opt-in LBD metadata and LBD-tiered reduction state. Newly learned clauses initialize their
   `used_recently` counter to the solver's maximum for every LBD tier, matching Kissat's
   maximum initial learned-clause retention semantics before reduce-DB aging decides eviction.
+  The LBD-tiered reducer now computes focused-mode and stable-mode tier thresholds from recent
+  glue-use histograms at the start of each LBD reduction pass: tier 1 covers the first 50% of
+  recently used learned-clause glue counts, tier 2 covers the first 90%, and both thresholds keep
+  the original `2/6` constants as minimum floors. The same pass reclassifies live learned clauses
+  under the current mode's thresholds and ages `used_recently` for every scanned kept learned
+  clause, so clauses are protected for the current pass but do not stay protected indefinitely.
   `SAT_REDUCE=lbd-tiered` uses a Kissat-style conflict-count reduction schedule: the first
   reduction is scheduled at `SAT_REDUCE_DB_INIT` or 1,000 conflicts, later reductions are scheduled
   at the current conflict count plus `sqrt(reduce_db_calls) * SAT_REDUCE_DB_INTERVAL`, and the hard

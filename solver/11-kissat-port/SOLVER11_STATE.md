@@ -58,11 +58,14 @@ Known unpromoted or incomplete feature families at this baseline:
   immediately. The blocker is default-off (`0`) after profile testing showed the `1.4` margin
   regressed the current profile suite. Learned clauses now start with the maximum
   `used_recently` value for every LBD tier; later reduce-DB passes age that counter down before
-  high-LBD clauses become eviction candidates. The LBD-tiered reducer uses a conflict-count
-  schedule rather than the legacy learned-clause-count pressure trigger: first reduce at
-  `SAT_REDUCE_DB_INIT` or 1,000 conflicts, then reschedule at current conflicts plus
-  `sqrt(reduce_db_calls) * SAT_REDUCE_DB_INTERVAL`; the hard learned-literal budget remains an
-  emergency trigger.
+  high-LBD clauses become eviction candidates. The LBD-tiered reducer computes current focused and
+  stable tier thresholds from recent glue-use histograms at each reduction pass, using 50% and 90%
+  cumulative-use cutoffs with `2/6` as minimum floors, then reclassifies live learned clauses before
+  collecting candidates. It also ages `used_recently` on every scanned kept learned clause rather
+  than only on protected tier2/tier3 clauses. The reducer uses a conflict-count schedule rather than
+  the legacy learned-clause-count pressure trigger: first reduce at `SAT_REDUCE_DB_INIT` or 1,000
+  conflicts, then reschedule at current conflicts plus `sqrt(reduce_db_calls) *
+  SAT_REDUCE_DB_INTERVAL`; the hard learned-literal budget remains an emergency trigger.
 - Chronological backtracking is present behind `SAT_CHRONO=on`. It is deliberately guarded: it
   only chooses `current - 1` when the learned clause remains asserting at that level and otherwise
   uses the normal assertion level.

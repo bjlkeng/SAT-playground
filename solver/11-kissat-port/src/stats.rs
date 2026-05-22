@@ -52,6 +52,12 @@ pub(crate) struct SolverStats {
     pub(crate) learned_kept_tier2: u64,
     pub(crate) learned_kept_tier3: u64,
     pub(crate) learned_collected: u64,
+    pub(crate) focused_tier1_glue_limit: u64,
+    pub(crate) focused_tier2_glue_limit: u64,
+    pub(crate) stable_tier1_glue_limit: u64,
+    pub(crate) stable_tier2_glue_limit: u64,
+    pub(crate) focused_glue_used: Vec<u64>,
+    pub(crate) stable_glue_used: Vec<u64>,
     pub(crate) lbd_computed: u64,
     pub(crate) lbd_sum: u64,
     pub(crate) lbd_max: u32,
@@ -351,6 +357,18 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("learned_kept_tier2", ctx.stats.learned_kept_tier2);
     json.u64("learned_kept_tier3", ctx.stats.learned_kept_tier3);
     json.u64("learned_collected", ctx.stats.learned_collected);
+    json.u64(
+        "focused_tier1_glue_limit",
+        ctx.stats.focused_tier1_glue_limit,
+    );
+    json.u64(
+        "focused_tier2_glue_limit",
+        ctx.stats.focused_tier2_glue_limit,
+    );
+    json.u64("stable_tier1_glue_limit", ctx.stats.stable_tier1_glue_limit);
+    json.u64("stable_tier2_glue_limit", ctx.stats.stable_tier2_glue_limit);
+    json.u64_array("focused_glue_used", &ctx.stats.focused_glue_used);
+    json.u64_array("stable_glue_used", &ctx.stats.stable_glue_used);
     json.u64("luby_restarts", ctx.stats.luby_restarts);
     json.u64("glucose_restarts", ctx.stats.glucose_restarts);
     json.u64("reluctant_restarts", ctx.stats.reluctant_restarts);
@@ -495,6 +513,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
             "decisions_focused={} decisions_stable={} ",
             "mode_switches={} seconds_focused=0.000000 seconds_stable={:.6} ",
             "learned_kept_tier1={} learned_kept_tier2={} learned_kept_tier3={} learned_collected={} ",
+            "focused_tier1_glue_limit={} focused_tier2_glue_limit={} stable_tier1_glue_limit={} stable_tier2_glue_limit={} ",
             "gc_reason={} gc_words_reclaimed={} gc_refs_rewritten={} ",
             "decision_heap_pops={} decision_heap_stale_pops={} decision_heap_inserts={}"
         ),
@@ -529,6 +548,10 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
         stats.learned_kept_tier2,
         stats.learned_kept_tier3,
         stats.learned_collected,
+        stats.focused_tier1_glue_limit,
+        stats.focused_tier2_glue_limit,
+        stats.stable_tier1_glue_limit,
+        stats.stable_tier2_glue_limit,
         stats.gc_last_reason.as_str(),
         stats.gc_words_reclaimed,
         stats.gc_refs_rewritten,
@@ -644,6 +667,18 @@ impl JsonObject {
             self.out.push('"');
             self.out.push_str(&json_escape(value));
             self.out.push('"');
+        }
+        self.out.push(']');
+    }
+
+    fn u64_array(&mut self, key: &str, values: &[u64]) {
+        self.key(key);
+        self.out.push('[');
+        for (idx, value) in values.iter().enumerate() {
+            if idx > 0 {
+                self.out.push(',');
+            }
+            self.out.push_str(&value.to_string());
         }
         self.out.push(']');
     }

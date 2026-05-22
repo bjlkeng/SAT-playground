@@ -69,6 +69,10 @@ const LAZY_DETACH_SMALL_CLAUSE_THRESHOLD: usize = 50_000;
 const SORTED_SUBSUMPTION_MIN_LEN: usize = 2;
 const TIER1_MAX_GLUE: u16 = 2;
 const TIER2_MAX_GLUE: u16 = 6;
+const TIER1_RELATIVE_NUMERATOR: u64 = 1;
+const TIER1_RELATIVE_DENOMINATOR: u64 = 2;
+const TIER2_RELATIVE_NUMERATOR: u64 = 9;
+const TIER2_RELATIVE_DENOMINATOR: u64 = 10;
 const MAX_USED_RECENTLY: u8 = 3;
 const LEARNED_LIT_BUDGET_BASE: usize = 2_000;
 const LEARNED_LIT_BUDGET_FACTOR: usize = 300;
@@ -487,6 +491,21 @@ struct ReduceCand {
     size: usize,
     used_recently: u8,
     activity_rank: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TierLimits {
+    tier1_max_glue: u16,
+    tier2_max_glue: u16,
+}
+
+impl TierLimits {
+    const fn static_defaults() -> Self {
+        Self {
+            tier1_max_glue: TIER1_MAX_GLUE,
+            tier2_max_glue: TIER2_MAX_GLUE,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -979,6 +998,14 @@ struct Solver {
     search_mode: SearchMode,
     /// selected search-mode policy; single keeps solver-10-compatible behavior
     search_mode_policy: SearchModePolicy,
+    /// dynamic focused-mode glue thresholds computed from recent clause-use histograms
+    focused_tier_limits: TierLimits,
+    /// dynamic stable-mode glue thresholds computed from recent clause-use histograms
+    stable_tier_limits: TierLimits,
+    /// focused-mode clause-use histogram since the last focused retier pass
+    focused_glue_recent: Vec<u64>,
+    /// stable-mode clause-use histogram since the last stable retier pass
+    stable_glue_recent: Vec<u64>,
     /// opt-in Kissat-style stable-mode gate based on propagation search ticks
     mode_use_ticks: bool,
     /// conflict count when the current search mode started
@@ -1584,6 +1611,10 @@ impl Solver {
             restart_conflicts_since_last: 0,
             search_mode,
             search_mode_policy,
+            focused_tier_limits: TierLimits::static_defaults(),
+            stable_tier_limits: TierLimits::static_defaults(),
+            focused_glue_recent: Vec::new(),
+            stable_glue_recent: Vec::new(),
             mode_use_ticks,
             mode_start_conflicts: 0,
             mode_start_ticks: 0,
@@ -1659,6 +1690,7 @@ impl Solver {
             hot_stats: config.hot_stats,
             stats: SolverStats::default(),
         };
+        solver.sync_tier_limit_stats();
         let reduce_db_limit_overridden = config.reduce_db_init.is_some();
         let reduce_db_interval_overridden = config.reduce_db_interval.is_some();
         if solver.reduce_policy == ReducePolicy::LbdTiered {
@@ -2054,11 +2086,26 @@ impl Solver {
         self.learned_meta_mut_by_id(id).tier = tier;
     }
 
+    fn current_tier_limits(&self) -> TierLimits {
+        match self.search_mode {
+            SearchMode::Focused => self.focused_tier_limits,
+            SearchMode::Stable => self.stable_tier_limits,
+        }
+    }
+
+    fn sync_tier_limit_stats(&mut self) {
+        self.stats.focused_tier1_glue_limit = self.focused_tier_limits.tier1_max_glue as u64;
+        self.stats.focused_tier2_glue_limit = self.focused_tier_limits.tier2_max_glue as u64;
+        self.stats.stable_tier1_glue_limit = self.stable_tier_limits.tier1_max_glue as u64;
+        self.stats.stable_tier2_glue_limit = self.stable_tier_limits.tier2_max_glue as u64;
+    }
+
     fn classify_learnt_clause(&mut self, clause_idx: ClauseRef) {
         let lbd = self.learnt_lbd(clause_idx);
-        let tier = if lbd <= TIER1_MAX_GLUE {
+        let limits = self.current_tier_limits();
+        let tier = if lbd <= limits.tier1_max_glue {
             0
-        } else if lbd <= TIER2_MAX_GLUE {
+        } else if lbd <= limits.tier2_max_glue {
             1
         } else {
             2
@@ -2085,8 +2132,33 @@ impl Solver {
         {
             return;
         }
+        self.record_current_mode_glue_use(self.learnt_lbd(clause_idx));
         let recent = self.learnt_used_recently(clause_idx).max(1);
         self.set_learnt_used_recently(clause_idx, recent);
+    }
+
+    fn increment_glue_histogram(hist: &mut Vec<u64>, glue: u16) {
+        let idx = glue as usize;
+        if idx >= hist.len() {
+            hist.resize(idx + 1, 0);
+        }
+        hist[idx] = hist[idx].saturating_add(1);
+    }
+
+    fn record_current_mode_glue_use(&mut self, glue: u16) {
+        if !self.use_lbd {
+            return;
+        }
+        match self.search_mode {
+            SearchMode::Focused => {
+                Self::increment_glue_histogram(&mut self.focused_glue_recent, glue);
+                Self::increment_glue_histogram(&mut self.stats.focused_glue_used, glue);
+            }
+            SearchMode::Stable => {
+                Self::increment_glue_histogram(&mut self.stable_glue_recent, glue);
+                Self::increment_glue_histogram(&mut self.stats.stable_glue_used, glue);
+            }
+        }
     }
 
     fn rebuild_reason_pinset(&mut self) -> ReasonPinSet {
@@ -3970,7 +4042,9 @@ impl Solver {
         if !self.use_lbd {
             return self.add_clause_from_slice_plain(clause);
         }
-        self.add_clause_from_slice_with_lbd(clause, self.last_conflict_lbd)
+        let lbd = self.last_conflict_lbd;
+        self.record_current_mode_glue_use(lbd);
+        self.add_clause_from_slice_with_lbd(clause, lbd)
     }
 
     fn add_clause_from_slice_plain(&mut self, clause: &[i32]) -> usize {
@@ -4671,6 +4745,89 @@ impl Solver {
         (self.clause_activity(clause_idx).to_bits() >> 32) as u32
     }
 
+    fn glue_limit_for_target(hist: &[u64], target: u64, fallback: u16) -> u16 {
+        if target == 0 {
+            return fallback;
+        }
+        let mut cumulative = 0u64;
+        let mut last_seen = fallback;
+        for (glue, &count) in hist.iter().enumerate() {
+            if count == 0 {
+                continue;
+            }
+            last_seen = (glue.min(u16::MAX as usize)) as u16;
+            cumulative = cumulative.saturating_add(count);
+            if cumulative >= target {
+                return last_seen;
+            }
+        }
+        last_seen
+    }
+
+    fn relative_target(total: u64, numerator: u64, denominator: u64) -> u64 {
+        debug_assert!(denominator > 0);
+        let scaled = (total as u128).saturating_mul(numerator as u128);
+        scaled
+            .saturating_add(denominator.saturating_sub(1) as u128)
+            .saturating_div(denominator as u128) as u64
+    }
+
+    fn compute_tier_limits_from_histogram(hist: &[u64], fallback: TierLimits) -> TierLimits {
+        let total = hist.iter().copied().fold(0u64, u64::saturating_add);
+        if total == 0 {
+            return fallback;
+        }
+        let tier1_target =
+            Self::relative_target(total, TIER1_RELATIVE_NUMERATOR, TIER1_RELATIVE_DENOMINATOR);
+        let tier2_target =
+            Self::relative_target(total, TIER2_RELATIVE_NUMERATOR, TIER2_RELATIVE_DENOMINATOR);
+        let tier1 = Self::glue_limit_for_target(hist, tier1_target, fallback.tier1_max_glue)
+            .max(TIER1_MAX_GLUE);
+        let tier2 = Self::glue_limit_for_target(hist, tier2_target, fallback.tier2_max_glue)
+            .max(TIER2_MAX_GLUE)
+            .max(tier1);
+        TierLimits {
+            tier1_max_glue: tier1,
+            tier2_max_glue: tier2,
+        }
+    }
+
+    fn retier_current_mode_from_glue_histogram(&mut self) {
+        match self.search_mode {
+            SearchMode::Focused => {
+                let limits = Self::compute_tier_limits_from_histogram(
+                    &self.focused_glue_recent,
+                    self.focused_tier_limits,
+                );
+                self.focused_tier_limits = limits;
+                self.focused_glue_recent.clear();
+            }
+            SearchMode::Stable => {
+                let limits = Self::compute_tier_limits_from_histogram(
+                    &self.stable_glue_recent,
+                    self.stable_tier_limits,
+                );
+                self.stable_tier_limits = limits;
+                self.stable_glue_recent.clear();
+            }
+        }
+        self.sync_tier_limit_stats();
+        self.reclassify_live_learned_clause_tiers();
+    }
+
+    fn reclassify_live_learned_clause_tiers(&mut self) {
+        for idx in 0..self.learned_clause_ids.len() {
+            let clause_idx = self.learned_clause_ids[idx];
+            if clause_idx < self.arena.len()
+                && !self.clause_is_deleted(clause_idx)
+                && self.clause_is_learnt(clause_idx)
+                && self.learned_meta(clause_idx).is_some()
+            {
+                self.classify_learnt_clause(clause_idx);
+            }
+        }
+    }
+
     fn is_old_enough_for_emergency_demote(&self, meta: LearnedMeta) -> bool {
         self.stats
             .conflicts
@@ -4731,6 +4888,7 @@ impl Solver {
     }
 
     fn reduce_db_lbd_tiered(&mut self, proof_log: &mut ProofLog) {
+        self.retier_current_mode_from_glue_histogram();
         let pins = self.rebuild_reason_pinset();
         debug_assert!(pins.generation > 0);
         let emergency = self.learned_literals > self.hard_learned_lit_budget;
@@ -4768,7 +4926,8 @@ impl Solver {
                 self.mark_clause_deleted_already_unlinked(clause_idx);
                 self.stats.learned_collected += 1;
             } else {
-                self.record_lbd_tier_kept(clause_idx, &pins);
+                self.record_lbd_tier_kept(clause_idx);
+                self.age_learned_clause_on_reduce(clause_idx);
                 self.learned_clause_ids.push(clause_idx);
             }
         }
@@ -4782,7 +4941,7 @@ impl Solver {
         self.maybe_garbage_collect(gc_reason);
     }
 
-    fn record_lbd_tier_kept(&mut self, clause_idx: ClauseRef, pins: &ReasonPinSet) {
+    fn record_lbd_tier_kept(&mut self, clause_idx: ClauseRef) {
         if clause_idx >= self.arena.len()
             || self.clause_is_deleted(clause_idx)
             || !self.clause_is_learnt(clause_idx)
@@ -4797,11 +4956,20 @@ impl Solver {
             1 => self.stats.learned_kept_tier2 += 1,
             _ => self.stats.learned_kept_tier3 += 1,
         }
-        if meta.tier >= 1
-            && meta.used_recently > 0
-            && !self.clause_locked(clause_idx)
-            && !self.clause_is_reason_pinned(pins, clause_idx)
+    }
+
+    fn age_learned_clause_on_reduce(&mut self, clause_idx: ClauseRef) {
+        if clause_idx >= self.arena.len()
+            || self.clause_is_deleted(clause_idx)
+            || !self.clause_is_learnt(clause_idx)
+            || self.clause_len(clause_idx) <= 2
         {
+            return;
+        }
+        let Some(meta) = self.learned_meta(clause_idx) else {
+            return;
+        };
+        if meta.removable && meta.used_recently > 0 {
             self.set_learnt_used_recently(clause_idx, meta.used_recently - 1);
         }
     }
@@ -7182,6 +7350,116 @@ mod tests {
         s.set_learnt_lbd(clause_idx, lbd);
         s.classify_learnt_clause(clause_idx);
         s.set_learnt_used_recently(clause_idx, used_recently);
+    }
+
+    fn record_glue_uses_for_test(s: &mut Solver, glue: u16, count: usize) {
+        for _ in 0..count {
+            s.record_current_mode_glue_use(glue);
+        }
+    }
+
+    #[test]
+    fn test_glue_histogram_records_learned_and_reason_uses_by_mode() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.search_mode = SearchMode::Focused;
+        s.last_conflict_lbd = 8;
+
+        let learned = s.add_analyzed_clause_from_slice(&[1, 2, 3]);
+        s.mark_learned_clause_recent(learned);
+
+        assert_eq!(s.stats.focused_glue_used[8], 2);
+        assert!(s.stats.stable_glue_used.is_empty());
+
+        s.search_mode = SearchMode::Stable;
+        s.mark_learned_clause_recent(learned);
+
+        assert_eq!(s.stats.focused_glue_used[8], 2);
+        assert_eq!(s.stats.stable_glue_used[8], 1);
+    }
+
+    #[test]
+    fn test_dynamic_tier_limits_use_current_mode_histogram() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.search_mode = SearchMode::Stable;
+        record_glue_uses_for_test(&mut s, 4, 5);
+        record_glue_uses_for_test(&mut s, 8, 4);
+        record_glue_uses_for_test(&mut s, 20, 1);
+
+        s.retier_current_mode_from_glue_histogram();
+
+        assert_eq!(
+            s.stable_tier_limits,
+            TierLimits {
+                tier1_max_glue: 4,
+                tier2_max_glue: 8,
+            }
+        );
+        assert_eq!(s.stats.stable_tier1_glue_limit, 4);
+        assert_eq!(s.stats.stable_tier2_glue_limit, 8);
+        assert!(s.stable_glue_recent.is_empty());
+        assert_eq!(s.stats.stable_glue_used[4], 5);
+        assert_eq!(s.stats.stable_glue_used[8], 4);
+        assert_eq!(s.stats.stable_glue_used[20], 1);
+    }
+
+    #[test]
+    fn test_dynamic_tier_limits_reclassify_live_learned_clauses() {
+        let mut s = Solver::new(6, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.search_mode = SearchMode::Stable;
+        let glue4 = s.add_clause(vec![1, 2, 3]);
+        let glue8 = s.add_clause(vec![1, 2, 3, 4]);
+        let glue20 = s.add_clause(vec![1, 2, 3, 4, 5]);
+        set_lbd_meta_for_test(&mut s, glue4, 4, 0);
+        set_lbd_meta_for_test(&mut s, glue8, 8, 0);
+        set_lbd_meta_for_test(&mut s, glue20, 20, 0);
+        assert_eq!(s.learned_meta(glue4).unwrap().tier, 1);
+        assert_eq!(s.learned_meta(glue8).unwrap().tier, 2);
+
+        record_glue_uses_for_test(&mut s, 4, 5);
+        record_glue_uses_for_test(&mut s, 8, 4);
+        record_glue_uses_for_test(&mut s, 20, 1);
+        s.retier_current_mode_from_glue_histogram();
+
+        assert_eq!(s.learned_meta(glue4).unwrap().tier, 0);
+        assert_eq!(s.learned_meta(glue8).unwrap().tier, 1);
+        assert_eq!(s.learned_meta(glue20).unwrap().tier, 2);
+    }
+
+    #[test]
+    fn test_reduce_db_ages_all_scanned_learned_clauses_after_protecting_this_pass() {
+        let mut s = Solver::new(6, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 0);
+        s.hard_learned_lit_budget = 0;
+        let tier1 = s.add_clause(vec![1, 2, 3]);
+        let tier2 = s.add_clause(vec![1, 2, 3, 4]);
+        let tier3 = s.add_clause(vec![1, 2, 3, 4, 5]);
+        set_lbd_meta_for_test(&mut s, tier1, 1, 2);
+        set_lbd_meta_for_test(&mut s, tier2, 4, 2);
+        set_lbd_meta_for_test(&mut s, tier3, 9, 2);
+
+        s.reduce_db();
+
+        assert!(!s.clause_is_deleted(tier1));
+        assert!(!s.clause_is_deleted(tier2));
+        assert!(!s.clause_is_deleted(tier3));
+        assert_eq!(s.learnt_used_recently(tier1), 1);
+        assert_eq!(s.learnt_used_recently(tier2), 1);
+        assert_eq!(s.learnt_used_recently(tier3), 1);
+    }
+
+    #[test]
+    fn test_reduce_candidate_activity_rank_is_integer_monotonic_for_positive_activity() {
+        let mut s = Solver::new(4, vec![]);
+        s.use_lbd = true;
+        let older = s.add_clause(vec![1, 2, 3]);
+        let newer = s.add_clause(vec![1, 2, 4]);
+        s.set_clause_activity(older, 1.0);
+        s.set_clause_activity(newer, 2.0);
+
+        assert!(s.reduce_candidate_activity_rank(older) < s.reduce_candidate_activity_rank(newer));
     }
 
     #[test]
