@@ -1987,12 +1987,7 @@ impl Solver {
     fn initialize_learnt_lbd(&mut self, clause_idx: ClauseRef, lbd: u16) {
         self.set_learnt_lbd(clause_idx, lbd);
         self.classify_learnt_clause(clause_idx);
-        let used_recently = if lbd <= TIER2_MAX_GLUE {
-            MAX_USED_RECENTLY
-        } else {
-            1
-        };
-        self.set_learnt_used_recently(clause_idx, used_recently);
+        self.set_learnt_used_recently(clause_idx, MAX_USED_RECENTLY);
         let id = self.learned_id_for_clause(clause_idx);
         self.learned_meta_mut_by_id(id).created_at_conflict = self.stats.conflicts;
     }
@@ -6857,6 +6852,26 @@ mod tests {
         assert_eq!(s.sum_lbd, 3);
         assert_eq!(s.num_lbd, 1);
         assert_eq!(s.lbd_hist_3_5, 1);
+    }
+
+    #[test]
+    fn test_learned_clause_initial_used_recently_is_max_for_all_lbd_tiers() {
+        let mut s = Solver::new(9, vec![]);
+        s.use_lbd = true;
+        for var in 1..=9 {
+            s.decision_level[var] = var;
+        }
+
+        let tier1 = s.add_clause(vec![1, 2]);
+        let tier2 = s.add_clause(vec![1, 2, 3, 4]);
+        let tier3 = s.add_clause(vec![1, 2, 3, 4, 5, 6, 7]);
+
+        assert_eq!(s.learned_meta(tier1).unwrap().tier, 0);
+        assert_eq!(s.learned_meta(tier2).unwrap().tier, 1);
+        assert_eq!(s.learned_meta(tier3).unwrap().tier, 2);
+        assert_eq!(s.learnt_used_recently(tier1), MAX_USED_RECENTLY);
+        assert_eq!(s.learnt_used_recently(tier2), MAX_USED_RECENTLY);
+        assert_eq!(s.learnt_used_recently(tier3), MAX_USED_RECENTLY);
     }
 
     #[test]

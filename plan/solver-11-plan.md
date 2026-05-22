@@ -2871,7 +2871,8 @@ Clause lifecycle:
 On learned:
   - compute LBD
   - classify tier
-  - initialize used_recently = MAX_USED_RECENTLY for tier1/tier2, else 1
+  - initialize used_recently = MAX_USED_RECENTLY for every tier, matching Kissat's
+    maximum initial learned-clause retention before reduce-DB aging
   - initialize activity using current conflict activity scheme
 
 On clause used as propagation reason:
@@ -6220,4 +6221,3 @@ Required when deviating:
 ```
 
 End of synthesized plan.
-

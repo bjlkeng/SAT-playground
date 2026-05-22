@@ -41,6 +41,9 @@ What is present:
 - one-shot cleanup after preprocessing: drop occurrence metadata, rebuild branch heap, and force GC
 - lazy deleted-clause watcher cleanup during propagation, with strict detach retained where
   preprocessing removes an original clause before tombstoning it
+- opt-in LBD metadata and LBD-tiered reduction state. Newly learned clauses initialize their
+  `used_recently` counter to the solver's maximum for every LBD tier, matching Kissat's
+  maximum initial learned-clause retention semantics before reduce-DB aging decides eviction.
 - an opt-in LBD EMA restart policy (`SAT_USE_LBD=on SAT_RESTART=kissat-ema`) for Phase 1
   search experiments; legacy Luby restarts remain the default for solver-10 parity
 - opt-in saved/target/best phase selection policies via `SAT_PHASE`, with legacy saved-phase

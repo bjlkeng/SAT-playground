@@ -52,7 +52,9 @@ Known unpromoted or incomplete feature families at this baseline:
 
 - Full glue/LBD search policy: LBD metadata, reason-LBD update, LBD-tiered reduction, and the
   opt-in Kissat/Glucose-style EMA restart policy are present behind explicit flags, but they are
-  not promoted as default-profile behavior yet.
+  not promoted as default-profile behavior yet. Learned clauses now start with the maximum
+  `used_recently` value for every LBD tier; later reduce-DB passes age that counter down before
+  high-LBD clauses become eviction candidates.
 - Chronological backtracking is present behind `SAT_CHRONO=on`. It is deliberately guarded: it
   only chooses `current - 1` when the learned clause remains asserting at that level and otherwise
   uses the normal assertion level.
