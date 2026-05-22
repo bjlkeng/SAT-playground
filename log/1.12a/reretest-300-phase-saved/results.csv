@@ -1,0 +1,10 @@
+instance,result,verified,time_s,timeout,exit_code
+1-TC-256-K-63,SAT,ok,186.080,300,0
+544707209399nw.shuffled-as.sat03-1671,SAT,ok,81.305,300,0
+83aa254f-1.normalised,UNKNOWN,skip,14.487,300,0
+DLTM_twitter845_79_19,TIMEOUT,skip,300.000,300,124
+SC25_Timetable_C_392,SAT,ok,3.921,300,0
+SC25_Timetable_C_406,SAT,ok,82.851,300,0
+battleship-16-31-sat,SAT,ok,22.995,300,0
+case9,SAT,ok,125.701,300,0
+mp1-Nb7T46,SAT,ok,42.028,300,0

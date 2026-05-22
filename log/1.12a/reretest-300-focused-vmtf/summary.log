@@ -1,0 +1,12 @@
+=== Benchmark Results: 11-kissat-port ===
+    Date:      Thu May 21 18:15:09 EDT 2026
+    Timeout:   300s
+    Memory:    16384 MB
+
+    Instances: 9
+    Solved:    2 (2 SAT + 0 UNSAT)
+    Unsolved:  7 (6 timeout + 1 unknown + 0 error)
+
+    PAR-2:     4316.538
+
+    Results:   /home/bojji/code/SAT-playground/log/1.12a/reretest-300-focused-vmtf/results.csv

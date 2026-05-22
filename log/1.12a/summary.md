@@ -472,3 +472,100 @@ The 600s rerun confirms the binary-fast correctness bug remains fixed. It also c
 full focused/VMTF advanced stack still has a performance/trajectory problem on REGRandom; the
 longer timeout prevents premature smoke-test failure but does not make that rejected advanced
 configuration solve this instance.
+
+## Full 1.12a Variation Rerun After Binary-Fast Fix
+
+Rerun date: 2026-05-21.
+
+Purpose:
+
+- Retest every `SAT-playground-5b2.2.16` candidate variation under the current implementation after
+  the binary-fast clause-reference remap fix.
+- Use the current `300s` profiling timeout consistently.
+- Confirm whether the advanced candidate rejection was only caused by the earlier correctness bug
+  or remains a real performance/search-trajectory failure.
+
+All new rerun `errors.log` files are empty:
+
+- `log/1.12a/reretest-300-phase-saved/errors.log`
+- `log/1.12a/reretest-300-focused-vmtf/errors.log`
+- `log/1.12a/reretest-300-stable-rephase-off/errors.log`
+- `log/1.12a/reretest-300-stable-rephase-on/errors.log`
+- `log/1.12a/reretest-profile-300-default/errors.log`
+- `log/1.12a/reretest-profile-300-phase-saved/errors.log`
+- `log/1.12a/reretest-profile-300-focused-vmtf/errors.log`
+- `log/1.12a/reretest-profile-300-stable-rephase-off/errors.log`
+- `log/1.12a/reretest-profile-300-stable-rephase-on/errors.log`
+
+### Search-Core Rerun Matrix
+
+Benchmark:
+
+```bash
+bash tools/bench.sh -t 300 -m 16384 -d benchmarks/iteration/search-core \
+  --log-dir <artifact> solver/11-kissat-port
+```
+
+| Variation | Artifact | Solved | Unsolved | PAR-2 | Verdict vs saved-phase |
+|---|---|---:|---:|---:|---|
+| Saved phase baseline | `log/1.12a/reretest-300-phase-saved/results.csv` | `7/9` | `1 timeout`, `1 unknown` | `1744.881` | Baseline |
+| Focused/VMTF | `log/1.12a/reretest-300-focused-vmtf/results.csv` | `2/9` | `6 timeout`, `1 unknown` | `4316.538` | Fail: `+2571.657` PAR-2, 5 new timeouts |
+| Stable-SAT, rephase off | `log/1.12a/reretest-300-stable-rephase-off/results.csv` | `5/9` | `3 timeout`, `1 unknown` | `2986.432` | Fail: `+1241.551` PAR-2, 3 new timeouts |
+| Stable-SAT, rephase on | `log/1.12a/reretest-300-stable-rephase-on/results.csv` | `3/9` | `5 timeout`, `1 unknown` | `4007.975` | Fail: `+2263.094` PAR-2, 4 new timeouts |
+
+Search-core detail:
+
+- Focused/VMTF gained `battleship-16-31-sat` (`22.995s` -> `0.778s`) but regressed five saved
+  baseline SAT solves to timeout: `1-TC-256-K-63`, `544707209399nw.shuffled-as.sat03-1671`,
+  `SC25_Timetable_C_406`, `case9`, and `mp1-Nb7T46`.
+- Stable-SAT rephase off newly solved `DLTM_twitter845_79_19` (`TIMEOUT` -> `118.900s`) and sped up
+  `battleship-16-31-sat`, but regressed `1-TC-256-K-63`, `case9`, and `mp1-Nb7T46` to timeout.
+- Stable-SAT rephase on had no newly solved search-core instances and regressed
+  `1-TC-256-K-63`, `544707209399nw.shuffled-as.sat03-1671`, `case9`, and `mp1-Nb7T46` to timeout.
+
+### Profile Rerun Matrix
+
+Benchmark:
+
+```bash
+bash tools/bench.sh -t 300 -m 16384 -d benchmarks/profiling \
+  --log-dir <artifact> solver/11-kissat-port
+```
+
+| Variation | Artifact | Solved | Unsolved | PAR-2 | Verdict vs default |
+|---|---|---:|---:|---:|---|
+| Default | `log/1.12a/reretest-profile-300-default/results.csv` | `11/11` | `0` | `628.815` | Baseline |
+| Saved phase | `log/1.12a/reretest-profile-300-phase-saved/results.csv` | `11/11` | `0` | `629.709` | Pass: no status regressions, `+0.894` PAR-2 |
+| Focused/VMTF | `log/1.12a/reretest-profile-300-focused-vmtf/results.csv` | `4/11` | `7 timeout` | `4532.312` | Fail: `+3903.497` PAR-2, 7 new timeouts |
+| Stable-SAT, rephase off | `log/1.12a/reretest-profile-300-stable-rephase-off/results.csv` | `5/11` | `6 timeout` | `3972.872` | Fail: `+3344.057` PAR-2, 6 new timeouts |
+| Stable-SAT, rephase on | `log/1.12a/reretest-profile-300-stable-rephase-on/results.csv` | `3/11` | `8 timeout` | `5065.088` | Fail: `+4436.273` PAR-2, 8 new timeouts |
+
+Profile detail:
+
+- Saved phase remains essentially identical to default on profiling: `11/11` solved in both modes,
+  no status regressions, and PAR-2 movement under one second.
+- All three advanced profiles are correctness-clean but fail performance promotion because they
+  introduce many timeouts against the default `11/11` baseline.
+- The advanced modes consistently improve Kakuro:
+  - Default: `209.421s`
+  - Focused/VMTF: `58.863s`
+  - Stable-SAT rephase off: `61.638s`
+  - Stable-SAT rephase on: `66.392s`
+- Stable-SAT rephase off also improves `feistel_b64_k32_r22` (`52.123s` -> `28.409s`).
+- Those local wins are outweighed by broad regressions on Feistel, Sudoku, REGRandom, mp1, and
+  random UNSAT/SAT rows. For example, Focused/VMTF turns default solves into timeouts on Sudoku,
+  REGRandom, `mp1`, `feistel_b64_k32_r22`, `feistel_b64_k52_r17`, `random_v285_s2`, and
+  `random_v292_s4`.
+
+### Promotion Decision
+
+The binary-fast correctness fix removed the previous model/proof failure class from these reruns:
+all new error logs are empty. The advanced search bundles are still rejected because they fail the
+performance gate on both search-core and profiling:
+
+- Saved/default configurations remain the only safe general-purpose baseline.
+- Focused/VMTF, Stable-SAT rephase off, and Stable-SAT rephase on should stay opt-in.
+- The Kakuro and `feistel_b64_k32_r22` wins are real enough to justify later tuning or
+  instance-sensitive selection work, but not enough to promote the current bundles.
+- Rephase-on remains worse than rephase-off in both search-core and profiling and should not be the
+  next tuning baseline.
