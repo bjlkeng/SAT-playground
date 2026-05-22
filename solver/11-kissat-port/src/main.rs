@@ -51,6 +51,8 @@ const LEARNTSIZE_FACTOR: f64 = 1.0 / 3.0;
 const LEARNTSIZE_INC: f64 = 1.1;
 const LEARNTSIZE_ADJUST_START_CONFL: usize = 100;
 const LEARNTSIZE_ADJUST_INC: f64 = 1.5;
+const LBD_REDUCE_DB_INIT_CONFLICTS: usize = 1_000;
+const LBD_REDUCE_DB_INTERVAL_CONFLICTS: usize = 1_000;
 const CLAUSE_ACTIVITY_WORDS: usize = 2;
 const ORIGINAL_ABSTRACTION_WORDS: usize = 1;
 const CLAUSE_MARK_MASK: u32 = 0b11;
@@ -70,6 +72,8 @@ const TIER2_MAX_GLUE: u16 = 6;
 const MAX_USED_RECENTLY: u8 = 3;
 const LEARNED_LIT_BUDGET_BASE: usize = 2_000;
 const LEARNED_LIT_BUDGET_FACTOR: usize = 300;
+const LBD_HARD_LEARNED_LIT_BUDGET_FACTOR: usize = 64;
+const LBD_HARD_LEARNED_LIT_FORMULA_FACTOR: usize = 64;
 const EMERGENCY_TIER1_MIN_AGE_CONFLICTS: u64 = 1_000;
 const RESTART_FAST_ALPHA: f64 = 1.0 / 32.0;
 const RESTART_SLOW_ALPHA: f64 = 1.0 / 4096.0;
@@ -1644,15 +1648,28 @@ impl Solver {
         };
         let reduce_db_limit_overridden = config.reduce_db_init.is_some();
         let reduce_db_interval_overridden = config.reduce_db_interval.is_some();
-        if let Some(limit) = config.reduce_db_init {
-            solver.reduce_db_limit = limit;
-        }
-        solver.reset_reduce_db_after_preprocess = config
-            .post_preprocess_reduce_db_reset
-            .unwrap_or(!(reduce_db_limit_overridden || reduce_db_interval_overridden));
-        if let Some(interval) = config.reduce_db_interval {
-            solver.learntsize_adjust_cnt = interval;
-            solver.learntsize_adjust_confl = interval as f64;
+        if solver.reduce_policy == ReducePolicy::LbdTiered {
+            solver.reduce_db_limit = config
+                .reduce_db_init
+                .unwrap_or(LBD_REDUCE_DB_INIT_CONFLICTS);
+            let interval = config
+                .reduce_db_interval
+                .unwrap_or(LBD_REDUCE_DB_INTERVAL_CONFLICTS);
+            solver.learntsize_adjust_cnt = interval.max(1);
+            solver.learntsize_adjust_confl = interval.max(1) as f64;
+            solver.reset_reduce_db_after_preprocess =
+                config.post_preprocess_reduce_db_reset.unwrap_or(false);
+        } else {
+            if let Some(limit) = config.reduce_db_init {
+                solver.reduce_db_limit = limit;
+            }
+            solver.reset_reduce_db_after_preprocess = config
+                .post_preprocess_reduce_db_reset
+                .unwrap_or(!(reduce_db_limit_overridden || reduce_db_interval_overridden));
+            if let Some(interval) = config.reduce_db_interval {
+                solver.learntsize_adjust_cnt = interval;
+                solver.learntsize_adjust_confl = interval as f64;
+            }
         }
         solver.refresh_learned_lit_budgets();
         if let Some(limit) = config.subsumption_limit {
@@ -1672,6 +1689,7 @@ impl Solver {
         for &var in &branch_order {
             solver.push_branch_var(var as usize);
         }
+        solver.refresh_learned_lit_budgets();
         solver
     }
 
@@ -3935,15 +3953,15 @@ impl Solver {
         if !self.reduce_db_enabled() {
             return false;
         }
+        if self.reduce_policy == ReducePolicy::LbdTiered {
+            return self.stats.conflicts >= self.reduce_db_limit as u64
+                || self.learned_literals > self.hard_learned_lit_budget;
+        }
         let learned_clause_pressure = self
             .live_learned_clause_count
             .saturating_sub(self.trail.len())
             >= self.reduce_db_limit;
-        if self.reduce_policy == ReducePolicy::LbdTiered {
-            learned_clause_pressure || self.learned_literals > self.learned_lit_budget
-        } else {
-            learned_clause_pressure
-        }
+        learned_clause_pressure
     }
 
     fn refresh_learned_lit_budgets(&mut self) {
@@ -3956,13 +3974,32 @@ impl Solver {
         let schedule_budget = LEARNED_LIT_BUDGET_BASE.saturating_add(
             LEARNED_LIT_BUDGET_FACTOR.saturating_mul((reduction_count as f64).sqrt() as usize),
         );
+        if self.reduce_policy == ReducePolicy::LbdTiered {
+            self.learned_lit_budget = schedule_budget;
+            self.hard_learned_lit_budget =
+                self.lbd_hard_learned_lit_budget(self.learned_lit_budget);
+            return;
+        }
         let clause_budget = self.reduce_db_limit.max(1).saturating_mul(8);
         self.learned_lit_budget = schedule_budget.max(clause_budget);
         self.hard_learned_lit_budget = self.learned_lit_budget.saturating_mul(2);
     }
 
     fn reset_learned_budget_after_preprocess(&mut self) {
-        if !self.reset_reduce_db_after_preprocess || !self.reduce_db_enabled() {
+        if !self.reduce_db_enabled() {
+            return;
+        }
+
+        if self.reduce_policy == ReducePolicy::LbdTiered {
+            if self.reset_reduce_db_after_preprocess {
+                self.reduce_db_limit =
+                    (self.stats.conflicts as usize).saturating_add(self.reduce_db_limit);
+            }
+            self.refresh_learned_lit_budgets();
+            return;
+        }
+
+        if !self.reset_reduce_db_after_preprocess {
             return;
         }
 
@@ -3973,8 +4010,32 @@ impl Solver {
         self.refresh_learned_lit_budgets();
     }
 
+    fn lbd_hard_learned_lit_budget(&self, learned_lit_budget: usize) -> usize {
+        let soft_guard = learned_lit_budget.saturating_mul(LBD_HARD_LEARNED_LIT_BUDGET_FACTOR);
+        let formula_guard = self
+            .original_literals
+            .saturating_mul(LBD_HARD_LEARNED_LIT_FORMULA_FACTOR);
+        soft_guard.max(formula_guard)
+    }
+
+    fn schedule_next_lbd_reduce_db(&mut self) {
+        debug_assert_eq!(self.reduce_policy, ReducePolicy::LbdTiered);
+        if !self.reduce_db_enabled() {
+            self.refresh_learned_lit_budgets();
+            return;
+        }
+        let reductions = self.stats.reduce_db_calls.max(1) as f64;
+        let base_interval = self.learntsize_adjust_confl.max(1.0);
+        let interval = (base_interval * reductions.sqrt()) as usize;
+        self.reduce_db_limit = (self.stats.conflicts as usize).saturating_add(interval.max(1));
+        self.refresh_learned_lit_budgets();
+    }
+
     fn note_learnt_budget_conflict(&mut self) {
-        if !self.reduce_db_enabled() || self.learntsize_adjust_cnt == 0 {
+        if !self.reduce_db_enabled()
+            || self.reduce_policy == ReducePolicy::LbdTiered
+            || self.learntsize_adjust_cnt == 0
+        {
             return;
         }
         self.learntsize_adjust_cnt -= 1;
@@ -4446,12 +4507,15 @@ impl Solver {
     fn reduce_db_with_proof(&mut self, proof_log: &mut ProofLog) {
         self.stats.reduce_db_calls += 1;
         match self.reduce_policy {
-            ReducePolicy::LbdTiered => self.reduce_db_lbd_tiered(proof_log),
+            ReducePolicy::LbdTiered => {
+                self.reduce_db_lbd_tiered(proof_log);
+                self.schedule_next_lbd_reduce_db();
+            }
             ReducePolicy::LegacyActivity | ReducePolicy::Activity => {
-                self.reduce_db_legacy_activity(proof_log)
+                self.reduce_db_legacy_activity(proof_log);
+                self.refresh_learned_lit_budgets();
             }
         }
-        self.refresh_learned_lit_budgets();
     }
 
     fn reduce_db_legacy_activity(&mut self, proof_log: &mut ProofLog) {
@@ -7007,6 +7071,140 @@ mod tests {
         s.set_learnt_lbd(clause_idx, lbd);
         s.classify_learnt_clause(clause_idx);
         s.set_learnt_used_recently(clause_idx, used_recently);
+    }
+
+    #[test]
+    fn test_lbd_tiered_reduce_uses_conflict_limit_not_clause_or_soft_lit_budget() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.reduce_db_limit = 1_000;
+        s.stats.conflicts = 999;
+        s.live_learned_clause_count = 10_000;
+        s.learned_literals = 11;
+
+        assert!(!s.should_reduce_db());
+
+        s.stats.conflicts = 1_000;
+
+        assert!(s.should_reduce_db());
+    }
+
+    #[test]
+    fn test_lbd_tiered_reduce_hard_lit_budget_is_emergency_trigger() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.reduce_db_limit = 1_000;
+        s.stats.conflicts = 0;
+        s.learned_literals = 21;
+
+        assert!(s.should_reduce_db());
+    }
+
+    #[test]
+    fn test_lbd_tiered_conflict_accounting_does_not_mutate_reduce_limit() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.reduce_db_limit = 1_000;
+        s.learntsize_adjust_cnt = 1;
+        s.learntsize_adjust_confl = 1.0;
+
+        s.note_learnt_budget_conflict();
+
+        assert_eq!(s.reduce_db_limit, 1_000);
+        assert_eq!(s.learntsize_adjust_cnt, 1);
+    }
+
+    #[test]
+    fn test_lbd_tiered_reduce_reschedules_with_sqrt_conflict_interval() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.reduce_db_limit = 1_000;
+        s.learntsize_adjust_confl = 300.0;
+        s.stats.conflicts = 1_500;
+        s.stats.reduce_db_calls = 4;
+
+        s.schedule_next_lbd_reduce_db();
+
+        assert_eq!(s.reduce_db_limit, 2_100);
+        assert_eq!(s.learned_lit_budget, 2_600);
+        assert_eq!(
+            s.hard_learned_lit_budget,
+            2_600usize.saturating_mul(LBD_HARD_LEARNED_LIT_BUDGET_FACTOR)
+        );
+    }
+
+    #[test]
+    fn test_lbd_tiered_config_uses_kissat_style_reduce_schedule_defaults() {
+        let config = SolverConfig {
+            use_lbd: true,
+            reduce_policy: ReducePolicy::LbdTiered,
+            ..SolverConfig::default()
+        };
+
+        let s = make_solver_with_config(3, vec![], &config);
+
+        assert_eq!(s.reduce_db_limit, LBD_REDUCE_DB_INIT_CONFLICTS);
+        assert_eq!(s.learntsize_adjust_cnt, LBD_REDUCE_DB_INTERVAL_CONFLICTS);
+        assert_eq!(
+            s.learntsize_adjust_confl,
+            LBD_REDUCE_DB_INTERVAL_CONFLICTS as f64
+        );
+        assert!(!s.reset_reduce_db_after_preprocess);
+        assert_eq!(s.learned_lit_budget, LEARNED_LIT_BUDGET_BASE);
+        assert_eq!(
+            s.hard_learned_lit_budget,
+            LEARNED_LIT_BUDGET_BASE.saturating_mul(LBD_HARD_LEARNED_LIT_BUDGET_FACTOR)
+        );
+    }
+
+    #[test]
+    fn test_lbd_tiered_config_honors_reduce_db_schedule_overrides() {
+        let config = SolverConfig {
+            use_lbd: true,
+            reduce_policy: ReducePolicy::LbdTiered,
+            reduce_db_init: Some(50),
+            reduce_db_interval: Some(25),
+            ..SolverConfig::default()
+        };
+
+        let s = make_solver_with_config(3, vec![], &config);
+
+        assert_eq!(s.reduce_db_limit, 50);
+        assert_eq!(s.learntsize_adjust_cnt, 25);
+        assert_eq!(s.learntsize_adjust_confl, 25.0);
+    }
+
+    #[test]
+    fn test_lbd_tiered_hard_budget_scales_with_formula_size() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.original_literals = 1_000_000;
+
+        s.refresh_learned_lit_budgets();
+
+        assert_eq!(s.learned_lit_budget, LEARNED_LIT_BUDGET_BASE);
+        assert_eq!(
+            s.hard_learned_lit_budget,
+            1_000_000usize.saturating_mul(LBD_HARD_LEARNED_LIT_FORMULA_FACTOR)
+        );
+    }
+
+    #[test]
+    fn test_lbd_tiered_preprocess_refresh_preserves_default_schedule() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.reduce_db_limit = 1_000;
+        s.reset_reduce_db_after_preprocess = false;
+        s.stats.conflicts = 123;
+        s.original_literals = 1_000_000;
+
+        s.reset_learned_budget_after_preprocess();
+
+        assert_eq!(s.reduce_db_limit, 1_000);
+        assert_eq!(
+            s.hard_learned_lit_budget,
+            1_000_000usize.saturating_mul(LBD_HARD_LEARNED_LIT_FORMULA_FACTOR)
+        );
     }
 
     #[test]

@@ -54,7 +54,11 @@ Known unpromoted or incomplete feature families at this baseline:
   opt-in Kissat/Glucose-style EMA restart policy are present behind explicit flags, but they are
   not promoted as default-profile behavior yet. Learned clauses now start with the maximum
   `used_recently` value for every LBD tier; later reduce-DB passes age that counter down before
-  high-LBD clauses become eviction candidates.
+  high-LBD clauses become eviction candidates. The LBD-tiered reducer uses a conflict-count
+  schedule rather than the legacy learned-clause-count pressure trigger: first reduce at
+  `SAT_REDUCE_DB_INIT` or 1,000 conflicts, then reschedule at current conflicts plus
+  `sqrt(reduce_db_calls) * SAT_REDUCE_DB_INTERVAL`; the hard learned-literal budget remains an
+  emergency trigger.
 - Chronological backtracking is present behind `SAT_CHRONO=on`. It is deliberately guarded: it
   only chooses `current - 1` when the learned clause remains asserting at that level and otherwise
   uses the normal assertion level.
