@@ -71,6 +71,11 @@ Known unpromoted or incomplete feature families at this baseline:
   starts from focused-mode glue rather than inherited stable-mode glue. Focused-to-stable
   transitions rebuild the VSIDS heap from current variable activities before stable-mode decisions
   resume.
+- Kissat-style mode scheduling is available behind `SAT_USE_LBD=on
+  SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on`. With that flag, stable mode switches back
+  to focused mode by propagation search ticks, focused-mode conflict intervals use Kissat
+  `nlogpown(count, 4)` growth, and every mode switch resets all restart EMAs. The flag is
+  opt-in while the focused/stable candidate remains unpromoted.
 - VMTF focused-mode branching is present behind `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable
   SAT_VMTF=on`; focused mode uses the VMTF queue and stable mode keeps the VSIDS heap. It is not
   promoted as default-profile behavior yet.

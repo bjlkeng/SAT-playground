@@ -59,6 +59,10 @@ What is present:
   LBD EMA restart averages so focused-mode restart calibration does not inherit stable-mode glue.
   Entering stable mode refreshes the VSIDS heap from current variable activities before stable-mode
   decisions resume.
+- opt-in Kissat-style mode scheduling (`SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable
+  SAT_MODE_USE_TICKS=on`) that keeps focused-mode switches conflict-gated with
+  `nlogpown(count, 4)` interval growth, but gates stable-mode duration on propagation search ticks.
+  The flag also resets all restart EMAs on every mode switch.
 - opt-in focused-mode Variable-Move-To-Front branching (`SAT_USE_LBD=on
   SAT_SEARCH_MODE=focused-stable SAT_VMTF=on`) while stable mode continues to use the existing
   VSIDS heap
@@ -118,6 +122,7 @@ SAT_CLAUSE_MIN=off|basic|recursive-limited|inblock
 SAT_MINIMIZE_DEPTH_LIMIT=<u32>
 SAT_PHASE=legacy|saved|target-then-saved|best-then-target-then-saved
 SAT_SEARCH_MODE=single|focused-stable
+SAT_MODE_USE_TICKS=on
 SAT_CHRONO=on
 SAT_CHRONO_MAX_DELTA=<usize>
 SAT_VMTF=on

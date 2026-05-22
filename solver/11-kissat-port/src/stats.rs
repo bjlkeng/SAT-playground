@@ -40,6 +40,7 @@ pub(crate) struct SolverStats {
     pub(crate) decisions: u64,
     pub(crate) restarts: u64,
     pub(crate) simplifications: u64,
+    pub(crate) search_ticks: u64,
     pub(crate) reduce_db_calls: u64,
     pub(crate) deleted_clauses: u64,
     pub(crate) garbage_collections: u64,
@@ -329,6 +330,7 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("conflicts", ctx.stats.conflicts);
     json.u64("decisions", ctx.stats.decisions);
     json.u64("propagations", ctx.stats.propagations);
+    json.u64("search_ticks", ctx.stats.search_ticks);
     json.u64("restarts", ctx.stats.restarts);
     json.u64("reductions", ctx.stats.reduce_db_calls);
     json.u64("gc_count", ctx.stats.garbage_collections);
@@ -484,6 +486,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
             "inprocess_runs=0 inprocess_ticks=0 ",
             "phase_saved_used={} phase_target_used={} phase_best_used={} phase_initial_used={} ",
             "phase_save_target={} phase_save_best={} rephases={} ",
+            "search_ticks={} ",
             "decisions_focused={} decisions_stable={} ",
             "mode_switches={} seconds_focused=0.000000 seconds_stable={:.6} ",
             "learned_kept_tier1={} learned_kept_tier2={} learned_kept_tier3={} learned_collected={} ",
@@ -511,6 +514,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
         stats.phase_save_target,
         stats.phase_save_best,
         stats.rephases,
+        stats.search_ticks,
         stats.decisions_focused,
         stats.decisions_stable,
         stats.mode_switches,

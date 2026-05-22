@@ -977,14 +977,20 @@ struct Solver {
     search_mode: SearchMode,
     /// selected search-mode policy; single keeps solver-10-compatible behavior
     search_mode_policy: SearchModePolicy,
+    /// opt-in Kissat-style stable-mode gate based on propagation search ticks
+    mode_use_ticks: bool,
     /// conflict count when the current search mode started
     mode_start_conflicts: u64,
+    /// search tick count when the current search mode started
+    mode_start_ticks: u64,
     /// decision count when the current search mode started
     mode_start_decisions: u64,
     /// number of focused/stable mode switches performed
     mode_switches: u64,
     /// absolute conflict count at which the next mode switch should happen
     mode_switch_at_conflicts: u64,
+    /// absolute search tick count at which stable mode should switch back
+    mode_switch_at_ticks: u64,
     /// base focused/stable interval before sqrt scaling
     mode_init_conflicts: u64,
     /// current conflict interval between focused/stable switches
@@ -1465,6 +1471,7 @@ impl Solver {
         let phase_policy = config.phase_policy;
         let search_mode_policy = config.search_mode_policy;
         let focused_stable_mode = search_mode_policy == SearchModePolicy::FocusedStable;
+        let mode_use_ticks = config.mode_use_ticks && focused_stable_mode;
         let phase_buffers_enabled =
             phase_policy != PhasePolicy::Legacy || focused_stable_mode || config.rephase;
         let initial_saved_phase = if phase_buffers_enabled {
@@ -1574,10 +1581,13 @@ impl Solver {
             restart_conflicts_since_last: 0,
             search_mode,
             search_mode_policy,
+            mode_use_ticks,
             mode_start_conflicts: 0,
+            mode_start_ticks: 0,
             mode_start_decisions: 0,
             mode_switches: 0,
             mode_switch_at_conflicts,
+            mode_switch_at_ticks: u64::MAX,
             mode_init_conflicts: mode_interval,
             mode_interval,
             mode_interval_scale: config.mode_interval_scale,
@@ -2971,6 +2981,13 @@ impl Solver {
         }
     }
 
+    #[inline]
+    fn record_search_ticks<const MODE_TICKS: bool>(&mut self, ticks: u64) {
+        if MODE_TICKS && !self.accounting_mode.is_temporary() {
+            self.stats.search_ticks = self.stats.search_ticks.saturating_add(ticks);
+        }
+    }
+
     #[inline(always)]
     fn enqueue(&mut self, lit: i32, reason: ReasonRef) -> bool {
         let var = lit.unsigned_abs() as usize;
@@ -3006,14 +3023,15 @@ impl Solver {
     }
 
     fn propagate(&mut self) -> Option<Conflict> {
-        if self.hot_stats {
-            self.propagate_impl::<true>()
-        } else {
-            self.propagate_impl::<false>()
+        match (self.hot_stats, self.mode_use_ticks) {
+            (true, true) => self.propagate_impl::<true, true>(),
+            (true, false) => self.propagate_impl::<true, false>(),
+            (false, true) => self.propagate_impl::<false, true>(),
+            (false, false) => self.propagate_impl::<false, false>(),
         }
     }
 
-    fn propagate_binary_implications<const HOT_STATS: bool>(
+    fn propagate_binary_implications<const HOT_STATS: bool, const MODE_TICKS: bool>(
         &mut self,
         lit: i32,
         normal_search_accounting: bool,
@@ -3024,6 +3042,7 @@ impl Solver {
 
         let edge_count = self.binary_implications.len_for(lit);
         for edge_idx in 0..edge_count {
+            self.record_search_ticks::<MODE_TICKS>(1);
             let edge = self.binary_implications.edge_for(lit, edge_idx);
             if self.binary_clause_is_deleted(edge.clause_id) {
                 if HOT_STATS && normal_search_accounting {
@@ -3052,7 +3071,9 @@ impl Solver {
         None
     }
 
-    fn propagate_impl<const HOT_STATS: bool>(&mut self) -> Option<Conflict> {
+    fn propagate_impl<const HOT_STATS: bool, const MODE_TICKS: bool>(
+        &mut self,
+    ) -> Option<Conflict> {
         let start_head = self.propagate_head;
         let normal_search_accounting = !self.accounting_mode.is_temporary();
         while self.propagate_head < self.trail.len() {
@@ -3060,9 +3081,10 @@ impl Solver {
             let false_lit = -trail_lit;
             self.propagate_head += 1;
             self.record_propagation_accounting();
-            if let Some(conflict) =
-                self.propagate_binary_implications::<HOT_STATS>(trail_lit, normal_search_accounting)
-            {
+            if let Some(conflict) = self.propagate_binary_implications::<HOT_STATS, MODE_TICKS>(
+                trail_lit,
+                normal_search_accounting,
+            ) {
                 return Some(conflict);
             }
             let watch_idx = self.lit_index(false_lit);
@@ -3073,6 +3095,7 @@ impl Solver {
             while read < pending.len() {
                 let watcher = pending[read];
                 read += 1;
+                self.record_search_ticks::<MODE_TICKS>(1);
                 if HOT_STATS && normal_search_accounting {
                     self.stats.watch_scans += 1;
                 }
@@ -3162,6 +3185,7 @@ impl Solver {
                 let mut moved_watch = false;
                 for lit_pos in 2..clause_len {
                     let candidate = self.clause_lit(clause_idx, lit_pos);
+                    self.record_search_ticks::<MODE_TICKS>(1);
                     if self.lit_value(candidate) != FALSE {
                         self.set_clause_lit(clause_idx, 1, candidate);
                         self.set_clause_lit(clause_idx, lit_pos, false_lit);
@@ -3354,11 +3378,59 @@ impl Solver {
         }
     }
 
+    fn nlogpown(count: u64, exponent: u32) -> f64 {
+        debug_assert!(count > 0);
+        let base = (count as f64 + 9.0).log10();
+        let mut factor = 1.0;
+        for _ in 0..exponent {
+            factor *= base;
+        }
+        count as f64 * factor
+    }
+
+    fn next_focused_mode_interval(&self) -> u64 {
+        let focused_count = self.mode_switches.saturating_add(1) / 2;
+        let scaled =
+            Self::nlogpown(focused_count.max(1), 4) * self.mode_init_conflicts.max(1) as f64;
+        if !scaled.is_finite() || scaled < 1.0 {
+            1
+        } else if scaled > u64::MAX as f64 {
+            u64::MAX
+        } else {
+            scaled as u64
+        }
+    }
+
+    fn reset_mode_sensitive_averages(&mut self) {
+        self.restart_fast_lbd.reset();
+        self.restart_slow_lbd.reset();
+        self.restart_fast_level.reset();
+        self.restart_slow_level.reset();
+    }
+
     fn maybe_switch_search_mode(&mut self) {
-        if !self.mode_switching_enabled() || self.stats.conflicts < self.mode_switch_at_conflicts {
+        if !self.mode_switching_enabled() {
+            return;
+        }
+        if self.mode_use_ticks {
+            match self.search_mode {
+                SearchMode::Focused if self.stats.conflicts < self.mode_switch_at_conflicts => {
+                    return;
+                }
+                SearchMode::Stable if self.stats.search_ticks < self.mode_switch_at_ticks => {
+                    return;
+                }
+                _ => {}
+            }
+        } else if self.stats.conflicts < self.mode_switch_at_conflicts {
             return;
         }
 
+        let delta_ticks = self
+            .stats
+            .search_ticks
+            .saturating_sub(self.mode_start_ticks)
+            .max(1);
         self.search_mode = match self.search_mode {
             SearchMode::Focused => SearchMode::Stable,
             SearchMode::Stable => SearchMode::Focused,
@@ -3366,17 +3438,39 @@ impl Solver {
         self.mode_switches = self.mode_switches.saturating_add(1);
         self.stats.mode_switches = self.mode_switches;
         self.mode_start_conflicts = self.stats.conflicts;
+        self.mode_start_ticks = self.stats.search_ticks;
         self.mode_start_decisions = self.stats.decisions;
-        self.mode_interval = self.next_mode_interval();
-        self.mode_switch_at_conflicts = self.stats.conflicts.saturating_add(self.mode_interval);
+        if self.mode_use_ticks {
+            match self.search_mode {
+                SearchMode::Focused => {
+                    self.mode_interval = self.next_focused_mode_interval();
+                    self.mode_switch_at_conflicts =
+                        self.stats.conflicts.saturating_add(self.mode_interval);
+                    self.mode_switch_at_ticks = u64::MAX;
+                }
+                SearchMode::Stable => {
+                    self.mode_interval = delta_ticks;
+                    self.mode_switch_at_conflicts = u64::MAX;
+                    self.mode_switch_at_ticks = self.stats.search_ticks.saturating_add(delta_ticks);
+                }
+            }
+        } else {
+            self.mode_interval = self.next_mode_interval();
+            self.mode_switch_at_conflicts = self.stats.conflicts.saturating_add(self.mode_interval);
+        }
         self.restart_pending = false;
         self.restart_conflicts = 0;
         self.restart_conflicts_since_last = 0;
         self.restart_next_check_conflict = self.stats.conflicts.saturating_add(1);
+        if self.mode_use_ticks {
+            self.reset_mode_sensitive_averages();
+        }
         match self.search_mode {
             SearchMode::Focused => {
-                self.restart_fast_lbd.reset();
-                self.restart_slow_lbd.reset();
+                if !self.mode_use_ticks {
+                    self.restart_fast_lbd.reset();
+                    self.restart_slow_lbd.reset();
+                }
                 if let Some(queue) = self.vmtf_queue.as_mut() {
                     queue.reset_search_to_head();
                 }
@@ -5432,6 +5526,10 @@ impl Solver {
                     }
                 }
                 None => {
+                    if self.mode_use_ticks {
+                        self.maybe_switch_search_mode();
+                    }
+
                     if self.perform_restart_if_pending() {
                         conflict = self.propagate();
                         continue;
@@ -9148,6 +9246,13 @@ mod tests {
         }
     }
 
+    fn focused_stable_tick_config() -> SolverConfig {
+        SolverConfig {
+            mode_use_ticks: true,
+            ..focused_stable_config()
+        }
+    }
+
     #[test]
     fn test_vmtf_recently_analyzed_variable_pops_first() {
         let config = focused_stable_vmtf_config();
@@ -9354,6 +9459,114 @@ mod tests {
         assert!(!s.restart_slow_lbd.initialized);
         assert_eq!(s.restart_fast_lbd.value, 0.0);
         assert_eq!(s.restart_slow_lbd.value, 0.0);
+    }
+
+    #[test]
+    fn test_mode_tick_accounting_is_opt_in() {
+        let clauses = vec![vec![1, 2]];
+        let mut legacy = make_solver_with_config(2, clauses.clone(), &focused_stable_config());
+        legacy.decide(-1);
+        assert_eq!(legacy.propagate(), None);
+        assert_eq!(legacy.stats.search_ticks, 0);
+
+        let mut ticked = make_solver_with_config(2, clauses, &focused_stable_tick_config());
+        ticked.decide(-1);
+        assert_eq!(ticked.propagate(), None);
+        assert!(ticked.stats.search_ticks > 0);
+    }
+
+    #[test]
+    fn test_stable_mode_switch_uses_ticks_when_enabled() {
+        let config = focused_stable_tick_config();
+        let mut s = make_solver_with_config(2, vec![], &config);
+
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+        assert_eq!(s.search_mode, SearchMode::Stable);
+        let stable_tick_limit = s.mode_switch_at_ticks;
+
+        s.stats.conflicts = u64::MAX;
+        s.stats.search_ticks = stable_tick_limit.saturating_sub(1);
+        s.maybe_switch_search_mode();
+        assert_eq!(s.search_mode, SearchMode::Stable);
+
+        s.stats.search_ticks = stable_tick_limit;
+        s.maybe_switch_search_mode();
+        assert_eq!(s.search_mode, SearchMode::Focused);
+    }
+
+    #[test]
+    fn test_tick_mode_switches_after_nonconflicting_propagation() {
+        let config = focused_stable_tick_config();
+        let mut s = make_solver_with_config(2, vec![], &config);
+        s.search_mode = SearchMode::Stable;
+        s.mode_switch_at_ticks = s.stats.search_ticks;
+
+        let mut proof_log = ProofLog::disabled();
+        assert!(s.solve_with_proof(&mut proof_log, &SolverConfig::default()));
+
+        assert_eq!(s.search_mode, SearchMode::Focused);
+        assert_eq!(s.stats.mode_switches, 1);
+    }
+
+    #[test]
+    fn test_tick_mode_uses_kissat_nlogpown_for_focused_intervals() {
+        let config = SolverConfig {
+            mode_init_conflicts: 10,
+            mode_use_ticks: true,
+            ..focused_stable_config()
+        };
+        let mut s = make_solver_with_config(2, vec![], &config);
+
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+        s.stats.search_ticks = s.mode_switch_at_ticks;
+        s.maybe_switch_search_mode();
+        assert_eq!(s.search_mode, SearchMode::Focused);
+        assert_eq!(s.mode_interval, 10);
+
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.stats.search_ticks = s.stats.search_ticks.saturating_add(7);
+        s.maybe_switch_search_mode();
+        s.stats.search_ticks = s.mode_switch_at_ticks;
+        s.maybe_switch_search_mode();
+
+        let expected = (10.0 * Solver::nlogpown(2, 4)) as u64;
+        assert_eq!(s.search_mode, SearchMode::Focused);
+        assert_eq!(s.mode_interval, expected);
+        assert!(s.mode_interval > 10);
+    }
+
+    #[test]
+    fn test_tick_mode_resets_all_restart_emas_on_every_switch() {
+        let config = focused_stable_tick_config();
+        let mut s = make_solver_with_config(1, vec![], &config);
+        s.restart_fast_lbd.update(13.0);
+        s.restart_slow_lbd.update(10.0);
+        s.restart_fast_level.update(9.0);
+        s.restart_slow_level.update(4.0);
+
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+
+        assert_eq!(s.search_mode, SearchMode::Stable);
+        assert!(!s.restart_fast_lbd.initialized);
+        assert!(!s.restart_slow_lbd.initialized);
+        assert!(!s.restart_fast_level.initialized);
+        assert!(!s.restart_slow_level.initialized);
+
+        s.restart_fast_lbd.update(8.0);
+        s.restart_slow_lbd.update(5.0);
+        s.restart_fast_level.update(6.0);
+        s.restart_slow_level.update(3.0);
+        s.stats.search_ticks = s.mode_switch_at_ticks;
+        s.maybe_switch_search_mode();
+
+        assert_eq!(s.search_mode, SearchMode::Focused);
+        assert!(!s.restart_fast_lbd.initialized);
+        assert!(!s.restart_slow_lbd.initialized);
+        assert!(!s.restart_fast_level.initialized);
+        assert!(!s.restart_slow_level.initialized);
     }
 
     #[test]

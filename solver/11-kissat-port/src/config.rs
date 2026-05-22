@@ -480,6 +480,7 @@ pub(crate) struct SolverConfig {
     pub(crate) reduce_policy: ReducePolicy,
     pub(crate) phase_policy: PhasePolicy,
     pub(crate) search_mode_policy: SearchModePolicy,
+    pub(crate) mode_use_ticks: bool,
     pub(crate) chrono_backtrack: bool,
     pub(crate) binary_fast_path: bool,
     pub(crate) clause_min_mode: ClauseMinMode,
@@ -568,6 +569,7 @@ impl Default for SolverConfig {
             reduce_policy: ReducePolicy::LegacyActivity,
             phase_policy: PhasePolicy::Legacy,
             search_mode_policy: SearchModePolicy::Single,
+            mode_use_ticks: false,
             chrono_backtrack: false,
             binary_fast_path: false,
             clause_min_mode: ClauseMinMode::RecursiveLimited,
@@ -837,6 +839,8 @@ impl SolverConfig {
             self.search_mode_policy,
             SearchModePolicy::parse,
         );
+        self.mode_use_ticks =
+            parse_bool_selected(env_map, &key_set, "SAT_MODE_USE_TICKS", self.mode_use_ticks);
         self.chrono_backtrack =
             parse_bool_selected(env_map, &key_set, "SAT_CHRONO", self.chrono_backtrack);
         self.binary_fast_path =
@@ -1066,6 +1070,11 @@ impl SolverConfig {
         if self.rephase && self.search_mode_policy == SearchModePolicy::Single {
             fail_config("Invalid config: SAT_REPHASE=on requires SAT_SEARCH_MODE=focused-stable");
         }
+        if self.mode_use_ticks && self.search_mode_policy == SearchModePolicy::Single {
+            fail_config(
+                "Invalid config: SAT_MODE_USE_TICKS=on requires SAT_SEARCH_MODE=focused-stable",
+            );
+        }
         if self.hbr && !self.probe {
             fail_config("Invalid config: SAT_HBR=on requires SAT_PROBE=on");
         }
@@ -1215,6 +1224,7 @@ impl SolverConfig {
             "search_mode_policy",
             self.search_mode_policy.as_str(),
         );
+        push_kv_bool(&mut lines, "mode_use_ticks", self.mode_use_ticks);
         push_kv_bool(&mut lines, "chrono_backtrack", self.chrono_backtrack);
         push_kv_bool(&mut lines, "binary_fast_path", self.binary_fast_path);
         push_kv(&mut lines, "clause_min_mode", self.clause_min_mode.as_str());
@@ -1543,6 +1553,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             "log/1.12/summary.md",
         ),
         feature(
+            "SAT_MODE_USE_TICKS",
+            config.mode_use_ticks,
+            FeatureMaturity::SmokeSafe,
+            true,
+            true,
+            false,
+            "log/1.14/mode-use-ticks.md",
+        ),
+        feature(
             "SAT_SIMPLIFICATION",
             config.simplification,
             FeatureMaturity::SmokeSafe,
@@ -1765,6 +1784,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "reduce_policy" => Some("SAT_REDUCE"),
         "phase_policy" => Some("SAT_PHASE"),
         "search_mode_policy" => Some("SAT_SEARCH_MODE"),
+        "mode_use_ticks" => Some("SAT_MODE_USE_TICKS"),
         "chrono_backtrack" => Some("SAT_CHRONO"),
         "binary_fast_path" => Some("SAT_BINARY_FAST"),
         "clause_min_mode" => Some("SAT_CLAUSE_MIN"),
@@ -1932,6 +1952,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_REDUCE",
         "SAT_PHASE",
         "SAT_SEARCH_MODE",
+        "SAT_MODE_USE_TICKS",
         "SAT_CHRONO",
         "SAT_BINARY_FAST",
         "SAT_CLAUSE_MIN",
@@ -2488,6 +2509,18 @@ mod tests {
         ]));
 
         assert!(config.use_lbd);
+        assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
+    }
+
+    #[test]
+    fn test_mode_use_ticks_is_runtime_supported_with_focused_stable_mode() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_USE_LBD", "on"),
+            ("SAT_SEARCH_MODE", "focused-stable"),
+            ("SAT_MODE_USE_TICKS", "on"),
+        ]));
+
+        assert!(config.mode_use_ticks);
         assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
     }
 
