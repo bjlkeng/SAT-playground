@@ -3718,6 +3718,7 @@ start focused
 switch after mode_init = 2_000 conflicts
 then alternate with interval scaled by sqrt(mode_switches + 1) * mode_init
 on switch, drain restart_pending so the new mode starts clean
+on switch to stable, refresh the VSIDS heap from current variable activity
 ```
 
 ### Tests

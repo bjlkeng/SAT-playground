@@ -2591,6 +2591,10 @@ impl Solver {
         }
     }
 
+    fn refresh_stable_branch_heap_scores(&mut self) {
+        self.rebuild_branch_queue();
+    }
+
     fn branch_var_better(&self, lhs: usize, rhs: usize) -> bool {
         self.activity[lhs]
             .total_cmp(&self.activity[rhs])
@@ -3351,11 +3355,16 @@ impl Solver {
         self.restart_conflicts = 0;
         self.restart_conflicts_since_last = 0;
         self.restart_next_check_conflict = self.stats.conflicts.saturating_add(1);
-        if self.search_mode == SearchMode::Focused {
-            self.restart_fast_lbd.reset();
-            self.restart_slow_lbd.reset();
-            if let Some(queue) = self.vmtf_queue.as_mut() {
-                queue.reset_search_to_head();
+        match self.search_mode {
+            SearchMode::Focused => {
+                self.restart_fast_lbd.reset();
+                self.restart_slow_lbd.reset();
+                if let Some(queue) = self.vmtf_queue.as_mut() {
+                    queue.reset_search_to_head();
+                }
+            }
+            SearchMode::Stable => {
+                self.refresh_stable_branch_heap_scores();
             }
         }
     }
@@ -9069,6 +9078,25 @@ mod tests {
         assert_eq!(s.search_mode, SearchMode::Focused);
         assert_eq!(s.branch_heap, heap_before);
         assert_eq!(s.branch_pos, pos_before);
+    }
+
+    #[test]
+    fn test_mode_switch_to_stable_refreshes_vsids_heap_scores() {
+        let config = focused_stable_vmtf_config();
+        let mut s = make_solver_with_config(3, vec![], &config);
+        s.activity[1] = 1.0;
+        s.activity[2] = 3.0;
+        s.activity[3] = 2.0;
+        s.rebuild_branch_queue();
+        assert_eq!(s.branch_heap[0] as usize, 2);
+
+        s.activity[1] = 10.0;
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+
+        assert_eq!(s.search_mode, SearchMode::Stable);
+        assert_eq!(s.branch_heap[0] as usize, 1);
+        assert_eq!(s.pick_branch_lit(), Some(-1));
     }
 
     #[test]
