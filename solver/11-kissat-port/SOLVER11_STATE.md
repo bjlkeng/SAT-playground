@@ -57,7 +57,8 @@ Known unpromoted or incomplete feature families at this baseline:
   only chooses `current - 1` when the learned clause remains asserting at that level and otherwise
   uses the normal assertion level.
 - Saved/target/best phase policies are present behind `SAT_PHASE`, but they are not promoted as
-  default-profile behavior yet.
+  default-profile behavior yet. Target phases are preserved across focused/stable mode switches and
+  are reset only by restart handling.
 - Focused/stable mode switching and reluctant restarts are present behind `SAT_USE_LBD=on
   SAT_SEARCH_MODE=focused-stable`, but they are not promoted as default-profile behavior yet.
 - VMTF focused-mode branching is present behind `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable

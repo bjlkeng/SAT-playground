@@ -44,7 +44,8 @@ What is present:
 - an opt-in LBD EMA restart policy (`SAT_USE_LBD=on SAT_RESTART=kissat-ema`) for Phase 1
   search experiments; legacy Luby restarts remain the default for solver-10 parity
 - opt-in saved/target/best phase selection policies via `SAT_PHASE`, with legacy saved-phase
-  branching kept as the default for solver-10 parity
+  branching kept as the default for solver-10 parity. Target phases persist across focused/stable
+  mode switches and are reset only by restart handling.
 - opt-in focused/stable search-mode scaffolding (`SAT_USE_LBD=on
   SAT_SEARCH_MODE=focused-stable`) with focused EMA restarts and stable reluctant restarts;
   single-mode search remains the default for solver-10 parity

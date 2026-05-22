@@ -3351,7 +3351,6 @@ impl Solver {
         self.restart_conflicts = 0;
         self.restart_conflicts_since_last = 0;
         self.restart_next_check_conflict = self.stats.conflicts.saturating_add(1);
-        self.reset_target_phase();
         if self.search_mode == SearchMode::Focused {
             if let Some(queue) = self.vmtf_queue.as_mut() {
                 queue.reset_search_to_head();
@@ -9051,14 +9050,29 @@ mod tests {
     }
 
     #[test]
+    fn test_mode_switch_preserves_target_phase() {
+        let config = focused_stable_config();
+        let mut s = make_solver_with_config(2, vec![], &config);
+        s.target_phase[1] = TRUE;
+        s.target_phase[2] = FALSE;
+        s.target_assigned = 2;
+
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+
+        assert_eq!(s.search_mode, SearchMode::Stable);
+        assert_eq!(s.target_assigned, 2);
+        assert_eq!(s.target_phase[1], TRUE);
+        assert_eq!(s.target_phase[2], FALSE);
+    }
+
+    #[test]
     fn test_mode_switch_resets_restart_pending() {
         let config = focused_stable_config();
         let mut s = make_solver_with_config(2, vec![], &config);
         s.restart_pending = true;
         s.restart_conflicts = 7;
         s.restart_conflicts_since_last = 9;
-        s.target_phase[1] = TRUE;
-        s.target_assigned = 1;
 
         s.stats.conflicts = s.mode_switch_at_conflicts;
         s.maybe_switch_search_mode();
@@ -9066,8 +9080,6 @@ mod tests {
         assert!(!s.restart_pending);
         assert_eq!(s.restart_conflicts, 0);
         assert_eq!(s.restart_conflicts_since_last, 0);
-        assert_eq!(s.target_assigned, 0);
-        assert_eq!(s.target_phase[1], UNASSIGNED);
     }
 
     #[test]
