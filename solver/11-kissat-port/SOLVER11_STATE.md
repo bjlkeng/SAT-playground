@@ -65,7 +65,9 @@ Known unpromoted or incomplete feature families at this baseline:
   than only on protected tier2/tier3 clauses. The reducer uses a conflict-count schedule rather than
   the legacy learned-clause-count pressure trigger: first reduce at `SAT_REDUCE_DB_INIT` or 1,000
   conflicts, then reschedule at current conflicts plus `sqrt(reduce_db_calls) *
-  SAT_REDUCE_DB_INTERVAL`; the hard learned-literal budget remains an emergency trigger.
+  SAT_REDUCE_DB_INTERVAL`; the hard learned-literal budget remains an emergency trigger. To avoid
+  high-LBD focused/stable experiments repeatedly reducing every few conflicts, lbd-tiered mode also
+  defaults `SAT_REDUCE_MIN_INTERVAL` to `100` conflicts and rejects explicit values below `50`.
 - Chronological backtracking is present behind `SAT_CHRONO=on`. It is deliberately guarded: it
   only chooses `current - 1` when the learned clause remains asserting at that level and otherwise
   uses the normal assertion level.

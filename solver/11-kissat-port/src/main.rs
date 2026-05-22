@@ -53,6 +53,7 @@ const LEARNTSIZE_ADJUST_START_CONFL: usize = 100;
 const LEARNTSIZE_ADJUST_INC: f64 = 1.5;
 const LBD_REDUCE_DB_INIT_CONFLICTS: usize = 1_000;
 const LBD_REDUCE_DB_INTERVAL_CONFLICTS: usize = 1_000;
+const LBD_REDUCE_DB_MIN_INTERVAL_CONFLICTS: u64 = 100;
 const CLAUSE_ACTIVITY_WORDS: usize = 2;
 const ORIGINAL_ABSTRACTION_WORDS: usize = 1;
 const CLAUSE_MARK_MASK: u32 = 0b11;
@@ -1030,6 +1031,10 @@ struct Solver {
     reluctant: Reluctant,
     /// learned-clause budget threshold for running a database reduction pass
     reduce_db_limit: usize,
+    /// minimum conflicts that must elapse between learned-clause database reductions
+    reduce_db_min_interval: u64,
+    /// global conflict count at which the last database reduction ran
+    reduce_db_last_conflicts: Option<u64>,
     /// target learned-literal budget for LBD-tiered reduction
     learned_lit_budget: usize,
     /// hard learned-literal budget that allows emergency low-LBD demotion
@@ -1627,6 +1632,8 @@ impl Solver {
             mode_interval_scale: config.mode_interval_scale,
             reluctant: Reluctant::new(),
             reduce_db_limit: ((original_clause_count as f64) * LEARNTSIZE_FACTOR) as usize,
+            reduce_db_min_interval: 0,
+            reduce_db_last_conflicts: None,
             learned_lit_budget: LEARNED_LIT_BUDGET_BASE,
             hard_learned_lit_budget: LEARNED_LIT_BUDGET_BASE.saturating_mul(2),
             reset_reduce_db_after_preprocess: true,
@@ -1697,6 +1704,10 @@ impl Solver {
             solver.reduce_db_limit = config
                 .reduce_db_init
                 .unwrap_or(LBD_REDUCE_DB_INIT_CONFLICTS);
+            solver.reduce_db_min_interval = config
+                .reduce_min_interval
+                .unwrap_or(LBD_REDUCE_DB_MIN_INTERVAL_CONFLICTS as usize)
+                as u64;
             let interval = config
                 .reduce_db_interval
                 .unwrap_or(LBD_REDUCE_DB_INTERVAL_CONFLICTS);
@@ -1708,6 +1719,7 @@ impl Solver {
             if let Some(limit) = config.reduce_db_init {
                 solver.reduce_db_limit = limit;
             }
+            solver.reduce_db_min_interval = config.reduce_min_interval.unwrap_or(0) as u64;
             solver.reset_reduce_db_after_preprocess = config
                 .post_preprocess_reduce_db_reset
                 .unwrap_or(!(reduce_db_limit_overridden || reduce_db_interval_overridden));
@@ -4130,19 +4142,29 @@ impl Solver {
         self.reduce_db_limit != usize::MAX
     }
 
+    fn reduce_db_min_interval_elapsed(&self) -> bool {
+        if self.reduce_db_min_interval == 0 {
+            return true;
+        }
+        self.reduce_db_last_conflicts
+            .map(|last| self.stats.conflicts.saturating_sub(last) >= self.reduce_db_min_interval)
+            .unwrap_or(true)
+    }
+
     fn should_reduce_db(&self) -> bool {
         if !self.reduce_db_enabled() {
             return false;
         }
         if self.reduce_policy == ReducePolicy::LbdTiered {
-            return self.stats.conflicts >= self.reduce_db_limit as u64
+            let budget_due = self.stats.conflicts >= self.reduce_db_limit as u64
                 || self.learned_literals > self.hard_learned_lit_budget;
+            return budget_due && self.reduce_db_min_interval_elapsed();
         }
         let learned_clause_pressure = self
             .live_learned_clause_count
             .saturating_sub(self.trail.len())
             >= self.reduce_db_limit;
-        learned_clause_pressure
+        learned_clause_pressure && self.reduce_db_min_interval_elapsed()
     }
 
     fn refresh_learned_lit_budgets(&mut self) {
@@ -4687,6 +4709,7 @@ impl Solver {
 
     fn reduce_db_with_proof(&mut self, proof_log: &mut ProofLog) {
         self.stats.reduce_db_calls += 1;
+        self.reduce_db_last_conflicts = Some(self.stats.conflicts);
         match self.reduce_policy {
             ReducePolicy::LbdTiered => {
                 self.reduce_db_lbd_tiered(proof_log);
@@ -7490,6 +7513,34 @@ mod tests {
     }
 
     #[test]
+    fn test_lbd_tiered_reduce_min_interval_blocks_hard_budget_repeats() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.reduce_db_limit = 1_000;
+        s.reduce_db_min_interval = 100;
+        s.reduce_db_last_conflicts = Some(1_000);
+        s.stats.conflicts = 1_050;
+        s.learned_literals = 21;
+
+        assert!(!s.should_reduce_db());
+
+        s.stats.conflicts = 1_100;
+
+        assert!(s.should_reduce_db());
+    }
+
+    #[test]
+    fn test_reduce_db_records_last_conflict_for_interval_guard() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.stats.conflicts = 42;
+
+        s.reduce_db();
+
+        assert_eq!(s.reduce_db_last_conflicts, Some(42));
+    }
+
+    #[test]
     fn test_lbd_tiered_conflict_accounting_does_not_mutate_reduce_limit() {
         let mut s = Solver::new(3, vec![]);
         enable_lbd_tiered_for_test(&mut s, 10);
@@ -7533,6 +7584,10 @@ mod tests {
         let s = make_solver_with_config(3, vec![], &config);
 
         assert_eq!(s.reduce_db_limit, LBD_REDUCE_DB_INIT_CONFLICTS);
+        assert_eq!(
+            s.reduce_db_min_interval,
+            LBD_REDUCE_DB_MIN_INTERVAL_CONFLICTS
+        );
         assert_eq!(s.learntsize_adjust_cnt, LBD_REDUCE_DB_INTERVAL_CONFLICTS);
         assert_eq!(
             s.learntsize_adjust_confl,
@@ -7559,8 +7614,23 @@ mod tests {
         let s = make_solver_with_config(3, vec![], &config);
 
         assert_eq!(s.reduce_db_limit, 50);
+        assert_eq!(s.reduce_db_min_interval, 100);
         assert_eq!(s.learntsize_adjust_cnt, 25);
         assert_eq!(s.learntsize_adjust_confl, 25.0);
+    }
+
+    #[test]
+    fn test_lbd_tiered_config_honors_reduce_min_interval_override() {
+        let config = SolverConfig {
+            use_lbd: true,
+            reduce_policy: ReducePolicy::LbdTiered,
+            reduce_min_interval: Some(250),
+            ..SolverConfig::default()
+        };
+
+        let s = make_solver_with_config(3, vec![], &config);
+
+        assert_eq!(s.reduce_db_min_interval, 250);
     }
 
     #[test]

@@ -502,6 +502,7 @@ pub(crate) struct SolverConfig {
     pub(crate) branch_mode: BranchMode,
     pub(crate) reduce_db_init: Option<usize>,
     pub(crate) reduce_db_interval: Option<usize>,
+    pub(crate) reduce_min_interval: Option<usize>,
     pub(crate) post_preprocess_reduce_db_reset: Option<bool>,
     pub(crate) subsumption_limit: Option<isize>,
 
@@ -592,6 +593,7 @@ impl Default for SolverConfig {
             branch_mode: BranchMode::Minisat,
             reduce_db_init: None,
             reduce_db_interval: None,
+            reduce_min_interval: None,
             post_preprocess_reduce_db_reset: None,
             subsumption_limit: None,
 
@@ -942,6 +944,12 @@ impl SolverConfig {
             "SAT_REDUCE_DB_INTERVAL",
             self.reduce_db_interval,
         );
+        self.reduce_min_interval = parse_option_usize_selected(
+            env_map,
+            &key_set,
+            "SAT_REDUCE_MIN_INTERVAL",
+            self.reduce_min_interval,
+        );
         self.post_preprocess_reduce_db_reset = parse_option_bool_selected(
             env_map,
             &key_set,
@@ -1114,6 +1122,11 @@ impl SolverConfig {
         if self.search_mode_policy == SearchModePolicy::FocusedStable && !self.use_lbd {
             fail_config("Invalid config: SAT_SEARCH_MODE=focused-stable requires SAT_USE_LBD=on");
         }
+        if let Some(interval) = self.reduce_min_interval {
+            if interval < 50 {
+                fail_config("Invalid config: SAT_REDUCE_MIN_INTERVAL must be at least 50");
+            }
+        }
     }
 
     pub(crate) fn emit_requested_outputs(&self) {
@@ -1285,6 +1298,7 @@ impl SolverConfig {
         push_kv(&mut lines, "branch_mode", self.branch_mode.as_str());
         push_kv_option_usize(&mut lines, "reduce_db_init", self.reduce_db_init);
         push_kv_option_usize(&mut lines, "reduce_db_interval", self.reduce_db_interval);
+        push_kv_option_usize(&mut lines, "reduce_min_interval", self.reduce_min_interval);
         push_kv_option_bool(
             &mut lines,
             "post_preprocess_reduce_db_reset",
@@ -1818,6 +1832,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "branch_mode" => Some("SAT_BRANCH_MODE"),
         "reduce_db_init" => Some("SAT_REDUCE_DB_INIT"),
         "reduce_db_interval" => Some("SAT_REDUCE_DB_INTERVAL"),
+        "reduce_min_interval" => Some("SAT_REDUCE_MIN_INTERVAL"),
         "post_preprocess_reduce_db_reset" => Some("SAT_POST_PREPROCESS_REDUCE_DB_RESET"),
         "subsumption_limit" => Some("SAT_SUBSUMPTION_LIMIT"),
         "inprocess" => Some("SAT_INPROCESS"),
@@ -2007,6 +2022,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_CCMIN_MODE",
         "SAT_REDUCE_DB_INIT",
         "SAT_REDUCE_DB_INTERVAL",
+        "SAT_REDUCE_MIN_INTERVAL",
         "SAT_POST_PREPROCESS_REDUCE_DB_RESET",
         "SAT_SUBSUMPTION_LIMIT",
     ]
@@ -2510,6 +2526,18 @@ mod tests {
         assert!(config.use_lbd);
         assert_eq!(config.restart_policy, RestartPolicy::KissatEma);
         assert_eq!(config.restart_block_margin, 1.25);
+    }
+
+    #[test]
+    fn test_lbd_tiered_reduce_min_interval_is_runtime_supported() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_USE_LBD", "on"),
+            ("SAT_REDUCE", "lbd-tiered"),
+            ("SAT_REDUCE_MIN_INTERVAL", "200"),
+        ]));
+
+        assert_eq!(config.reduce_policy, ReducePolicy::LbdTiered);
+        assert_eq!(config.reduce_min_interval, Some(200));
     }
 
     #[test]

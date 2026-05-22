@@ -190,6 +190,14 @@ ERRORS_LOG="$LOG_DIR/errors.log"
 : > "$ERRORS_LOG"
 WARNINGS_LOG="$LOG_DIR/warnings.log"
 : > "$WARNINGS_LOG"
+STATS_JSONL="$LOG_DIR/stats.jsonl"
+CAPTURE_STATS_JSON=0
+case "${SAT_STATS_JSON:-}" in
+    1|on|ON|true|TRUE|yes|YES) CAPTURE_STATS_JSON=1 ;;
+esac
+if [[ $CAPTURE_STATS_JSON -eq 1 ]]; then
+    : > "$STATS_JSONL"
+fi
 
 # --- run each instance ---
 run_instance() {
@@ -373,11 +381,34 @@ print(f("status"), f("status_file"), f("model_check_result"), f("termination_rea
             echo ""
         } >> "$ERRORS_LOG"
     fi
-    rm -f "$stderr_output"
 
     # Clamp elapsed to timeout if it somehow ran over
     local clamped_time
     clamped_time=$(perl -e "printf '%.3f', ($elapsed > $TIMEOUT) ? $TIMEOUT : $elapsed")
+
+    if [[ $CAPTURE_STATS_JSON -eq 1 ]]; then
+        local stats_line=""
+        stats_line=$(grep '^c JSON_STATS ' "$stderr_output" | tail -1 || true)
+        if [[ -n "$stats_line" ]]; then
+            python3 -c 'import json,sys
+instance, result, verified, time_s, timeout_s, exit_code, payload = sys.argv[1:]
+record = json.loads(payload)
+record["instance"] = instance
+record["bench_result"] = result
+record["bench_verified"] = verified
+record["bench_time_s"] = float(time_s)
+record["bench_timeout_s"] = float(timeout_s)
+record["bench_exit_code"] = int(exit_code)
+print(json.dumps(record, sort_keys=True, separators=(",", ":")))' \
+                "$name" "$result" "$verified" "$clamped_time" "$TIMEOUT" "$exit_code" \
+                "${stats_line#c JSON_STATS }" >> "$STATS_JSONL" 2>>"$WARNINGS_LOG" || {
+                echo "$name: failed to parse SAT_STATS_JSON payload" >> "$WARNINGS_LOG"
+            }
+        elif [[ "$result" != "TIMEOUT" ]]; then
+            echo "$name: SAT_STATS_JSON=on but no JSON_STATS line was captured" >> "$WARNINGS_LOG"
+        fi
+    fi
+    rm -f "$stderr_output"
 
     # Write CSV row
     echo "$name,$result,$verified,$clamped_time,$TIMEOUT,$exit_code" >> "$RESULTS_CSV"
@@ -465,6 +496,9 @@ SUMMARY="$LOG_DIR/summary.log"
     echo "    PAR-2:     $PAR2"
     echo ""
     echo "    Results:   $RESULTS_CSV"
+    if [[ -s "$STATS_JSONL" ]]; then
+        echo "    Stats:     $STATS_JSONL"
+    fi
     if [[ -s "$ERRORS_LOG" ]]; then
         echo "    Errors:    $ERRORS_LOG"
     fi

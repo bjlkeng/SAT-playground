@@ -73,5 +73,6 @@ SAT_CONFLICT_ANALYSIS_MODE,use_resolved_conflict_analysis,enum,minisat|resolved,
 SAT_CCMIN_MODE,clause_min_mode,enum,0|1|2|none|basic|deep,2,2,2,false,false,true,SAT_CLAUSE_MIN,,0.3,internal
 SAT_REDUCE_DB_INIT,reduce_db_init,option_usize,nonnegative,none,none,none,false,false,true,,,0.3,internal
 SAT_REDUCE_DB_INTERVAL,reduce_db_interval,option_usize,nonnegative,none,none,none,false,false,true,,,0.3,internal
+SAT_REDUCE_MIN_INTERVAL,reduce_min_interval,option_usize,none_or_at_least_50_with_lbd-tiered,none,none,none,false,false,false,,,1.14f,yes
 SAT_POST_PREPROCESS_REDUCE_DB_RESET,post_preprocess_reduce_db_reset,option_bool,on|off|none,none,none,none,false,false,true,,,0.3,internal
 SAT_SUBSUMPTION_LIMIT,subsumption_limit,option_isize,integer,none,none,none,false,false,true,,,0.3,internal
