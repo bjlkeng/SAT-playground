@@ -49,7 +49,11 @@ What is present:
   at the current conflict count plus `sqrt(reduce_db_calls) * SAT_REDUCE_DB_INTERVAL`, and the hard
   learned-literal budget is retained only as an emergency trigger.
 - an opt-in LBD EMA restart policy (`SAT_USE_LBD=on SAT_RESTART=kissat-ema`) for Phase 1
-  search experiments; legacy Luby restarts remain the default for solver-10 parity
+  search experiments. An optional Glucose-style decision-level blocker can suppress EMA restarts
+  when the recent decision-level EMA is high relative to the slow baseline; set
+  `SAT_RESTART_BLOCK_MARGIN` above `0` to enable it. The blocker is default-off after profile
+  testing showed the `1.4` margin regressed the current profiling suite. Legacy Luby restarts
+  remain the default for solver-10 parity
 - opt-in saved/target/best phase selection policies via `SAT_PHASE`, with legacy saved-phase
   branching kept as the default for solver-10 parity. Target phases persist across focused/stable
   mode switches and are reset only by restart handling.
@@ -117,6 +121,7 @@ SAT_STATS_JSON=on
 SAT_STATS_HOT=on
 SAT_USE_LBD=on
 SAT_RESTART=legacy-luby|kissat-ema|reluctant
+SAT_RESTART_BLOCK_MARGIN=<f64>  # 0 disables the level blocker
 SAT_REDUCE=legacy|lbd-tiered
 SAT_CLAUSE_MIN=off|basic|recursive-limited|inblock
 SAT_MINIMIZE_DEPTH_LIMIT=<u32>

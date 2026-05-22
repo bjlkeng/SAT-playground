@@ -52,7 +52,11 @@ Known unpromoted or incomplete feature families at this baseline:
 
 - Full glue/LBD search policy: LBD metadata, reason-LBD update, LBD-tiered reduction, and the
   opt-in Kissat/Glucose-style EMA restart policy are present behind explicit flags, but they are
-  not promoted as default-profile behavior yet. Learned clauses now start with the maximum
+  not promoted as default-profile behavior yet. Kissat-EMA restarts include an optional
+  Glucose-style decision-level blocker controlled by `SAT_RESTART_BLOCK_MARGIN`, so high
+  fast-vs-slow level EMA ratios can preserve a productive deep prefix instead of restarting
+  immediately. The blocker is default-off (`0`) after profile testing showed the `1.4` margin
+  regressed the current profile suite. Learned clauses now start with the maximum
   `used_recently` value for every LBD tier; later reduce-DB passes age that counter down before
   high-LBD clauses become eviction candidates. The LBD-tiered reducer uses a conflict-count
   schedule rather than the legacy learned-clause-count pressure trigger: first reduce at

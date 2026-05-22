@@ -16,6 +16,7 @@ const DEFAULT_CHRONO_MAX_DELTA: usize = 100;
 const DEFAULT_MODE_INIT_CONFLICTS: u64 = 2000;
 const DEFAULT_MODE_INTERVAL_SCALE: f64 = 1.5;
 const DEFAULT_REPHASE_INIT_CONFLICTS: u64 = 1000;
+const DEFAULT_RESTART_BLOCK_MARGIN: f64 = 0.0;
 
 const PARKING_LOT_DENYLIST: &[&str] = &["SAT_WALK", "SAT_SWEEP", "SAT_ELS", "SAT_BCE"];
 const REMOVED_ALIASES: &[&str] = &["SAT_ELIMINATE_INPROCESS"];
@@ -477,6 +478,7 @@ pub(crate) struct SolverConfig {
     pub(crate) use_lbd: bool,
     pub(crate) update_reason_lbd: bool,
     pub(crate) restart_policy: RestartPolicy,
+    pub(crate) restart_block_margin: f64,
     pub(crate) reduce_policy: ReducePolicy,
     pub(crate) phase_policy: PhasePolicy,
     pub(crate) search_mode_policy: SearchModePolicy,
@@ -566,6 +568,7 @@ impl Default for SolverConfig {
             use_lbd: false,
             update_reason_lbd: false,
             restart_policy: RestartPolicy::LegacyLuby,
+            restart_block_margin: DEFAULT_RESTART_BLOCK_MARGIN,
             reduce_policy: ReducePolicy::LegacyActivity,
             phase_policy: PhasePolicy::Legacy,
             search_mode_policy: SearchModePolicy::Single,
@@ -817,6 +820,12 @@ impl SolverConfig {
             "SAT_RESTART",
             self.restart_policy,
             RestartPolicy::parse,
+        );
+        self.restart_block_margin = parse_f64_selected(
+            env_map,
+            &key_set,
+            "SAT_RESTART_BLOCK_MARGIN",
+            self.restart_block_margin,
         );
         self.reduce_policy = parse_enum_selected(
             env_map,
@@ -1217,6 +1226,11 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "use_lbd", self.use_lbd);
         push_kv_bool(&mut lines, "update_reason_lbd", self.update_reason_lbd);
         push_kv(&mut lines, "restart_policy", self.restart_policy.as_str());
+        push_kv(
+            &mut lines,
+            "restart_block_margin",
+            format_f64(self.restart_block_margin),
+        );
         push_kv(&mut lines, "reduce_policy", self.reduce_policy.as_str());
         push_kv(&mut lines, "phase_policy", self.phase_policy.as_str());
         push_kv(
@@ -1781,6 +1795,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "use_lbd" => Some("SAT_USE_LBD"),
         "update_reason_lbd" => Some("SAT_LBD_UPDATE_REASONS"),
         "restart_policy" => Some("SAT_RESTART"),
+        "restart_block_margin" => Some("SAT_RESTART_BLOCK_MARGIN"),
         "reduce_policy" => Some("SAT_REDUCE"),
         "phase_policy" => Some("SAT_PHASE"),
         "search_mode_policy" => Some("SAT_SEARCH_MODE"),
@@ -1949,6 +1964,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_USE_LBD",
         "SAT_LBD_UPDATE_REASONS",
         "SAT_RESTART",
+        "SAT_RESTART_BLOCK_MARGIN",
         "SAT_REDUCE",
         "SAT_PHASE",
         "SAT_SEARCH_MODE",
@@ -2488,10 +2504,12 @@ mod tests {
         let config = SolverConfig::from_env_map(&env_map(&[
             ("SAT_USE_LBD", "on"),
             ("SAT_RESTART", "kissat-ema"),
+            ("SAT_RESTART_BLOCK_MARGIN", "1.25"),
         ]));
 
         assert!(config.use_lbd);
         assert_eq!(config.restart_policy, RestartPolicy::KissatEma);
+        assert_eq!(config.restart_block_margin, 1.25);
     }
 
     #[test]
