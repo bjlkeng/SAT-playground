@@ -48,7 +48,8 @@ What is present:
   mode switches and are reset only by restart handling.
 - opt-in focused/stable search-mode scaffolding (`SAT_USE_LBD=on
   SAT_SEARCH_MODE=focused-stable`) with focused EMA restarts and stable reluctant restarts;
-  single-mode search remains the default for solver-10 parity
+  single-mode search remains the default for solver-10 parity. Entering focused mode resets the
+  LBD EMA restart averages so focused-mode restart calibration does not inherit stable-mode glue.
 - opt-in focused-mode Variable-Move-To-Front branching (`SAT_USE_LBD=on
   SAT_SEARCH_MODE=focused-stable SAT_VMTF=on`) while stable mode continues to use the existing
   VSIDS heap

@@ -434,6 +434,11 @@ impl MovingAverage {
             self.value += self.alpha * (x - self.value);
         }
     }
+
+    fn reset(&mut self) {
+        self.value = 0.0;
+        self.initialized = false;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3352,6 +3357,8 @@ impl Solver {
         self.restart_conflicts_since_last = 0;
         self.restart_next_check_conflict = self.stats.conflicts.saturating_add(1);
         if self.search_mode == SearchMode::Focused {
+            self.restart_fast_lbd.reset();
+            self.restart_slow_lbd.reset();
             if let Some(queue) = self.vmtf_queue.as_mut() {
                 queue.reset_search_to_head();
             }
@@ -9080,6 +9087,32 @@ mod tests {
         assert!(!s.restart_pending);
         assert_eq!(s.restart_conflicts, 0);
         assert_eq!(s.restart_conflicts_since_last, 0);
+    }
+
+    #[test]
+    fn test_mode_switch_resets_lbd_ema_only_when_entering_focused() {
+        let config = focused_stable_config();
+        let mut s = make_solver_with_config(1, vec![], &config);
+        s.restart_fast_lbd.update(13.0);
+        s.restart_slow_lbd.update(10.0);
+
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+
+        assert_eq!(s.search_mode, SearchMode::Stable);
+        assert!(s.restart_fast_lbd.initialized);
+        assert!(s.restart_slow_lbd.initialized);
+        assert_eq!(s.restart_fast_lbd.value, 13.0);
+        assert_eq!(s.restart_slow_lbd.value, 10.0);
+
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+
+        assert_eq!(s.search_mode, SearchMode::Focused);
+        assert!(!s.restart_fast_lbd.initialized);
+        assert!(!s.restart_slow_lbd.initialized);
+        assert_eq!(s.restart_fast_lbd.value, 0.0);
+        assert_eq!(s.restart_slow_lbd.value, 0.0);
     }
 
     #[test]

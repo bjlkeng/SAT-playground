@@ -61,6 +61,8 @@ Known unpromoted or incomplete feature families at this baseline:
   are reset only by restart handling.
 - Focused/stable mode switching and reluctant restarts are present behind `SAT_USE_LBD=on
   SAT_SEARCH_MODE=focused-stable`, but they are not promoted as default-profile behavior yet.
+  Stable-to-focused transitions reset the LBD EMA restart averages so focused restart calibration
+  starts from focused-mode glue rather than inherited stable-mode glue.
 - VMTF focused-mode branching is present behind `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable
   SAT_VMTF=on`; focused mode uses the VMTF queue and stable mode keeps the VSIDS heap. It is not
   promoted as default-profile behavior yet.
