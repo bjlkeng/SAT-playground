@@ -79,7 +79,9 @@ Known unpromoted or incomplete feature families at this baseline:
   Stable-to-focused transitions reset the LBD EMA restart averages so focused restart calibration
   starts from focused-mode glue rather than inherited stable-mode glue. Focused-to-stable
   transitions rebuild the VSIDS heap from current variable activities before stable-mode decisions
-  resume.
+  resume. JSON/trace diagnostics now attribute search wall time, conflicts, learned-clause LBD,
+  and decision level averages separately to focused and stable mode so focused/stable triage does
+  not depend on combined averages.
 - Kissat-style mode scheduling is available behind `SAT_USE_LBD=on
   SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on`. With that flag, stable mode switches back
   to focused mode by propagation search ticks, focused-mode conflict intervals use Kissat

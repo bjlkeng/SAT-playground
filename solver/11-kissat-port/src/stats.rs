@@ -76,6 +76,16 @@ pub(crate) struct SolverStats {
     pub(crate) mode_switches: u64,
     pub(crate) decisions_focused: u64,
     pub(crate) decisions_stable: u64,
+    pub(crate) seconds_focused: f64,
+    pub(crate) seconds_stable: f64,
+    pub(crate) conflicts_focused: u64,
+    pub(crate) conflicts_stable: u64,
+    pub(crate) lbd_sum_focused: u64,
+    pub(crate) lbd_sum_stable: u64,
+    pub(crate) lbd_count_focused: u64,
+    pub(crate) lbd_count_stable: u64,
+    pub(crate) decision_level_sum_focused: u64,
+    pub(crate) decision_level_sum_stable: u64,
     pub(crate) chrono_attempts: u64,
     pub(crate) chrono_used: u64,
     pub(crate) chrono_rejected_not_asserting: u64,
@@ -150,6 +160,32 @@ impl SolverStats {
     pub(crate) fn record_learned_size(&mut self, size: usize) {
         self.learned_size_sum += size as u64;
         self.learned_size_max = self.learned_size_max.max(size as u64);
+    }
+
+    pub(crate) fn record_mode_lbd(&mut self, lbd: u32, focused: bool) {
+        if focused {
+            self.lbd_sum_focused += lbd as u64;
+            self.lbd_count_focused += 1;
+        } else {
+            self.lbd_sum_stable += lbd as u64;
+            self.lbd_count_stable += 1;
+        }
+    }
+
+    pub(crate) fn record_mode_conflict(&mut self, focused: bool) {
+        if focused {
+            self.conflicts_focused += 1;
+        } else {
+            self.conflicts_stable += 1;
+        }
+    }
+
+    pub(crate) fn record_mode_decision_level(&mut self, level: u64, focused: bool) {
+        if focused {
+            self.decision_level_sum_focused += level;
+        } else {
+            self.decision_level_sum_stable += level;
+        }
     }
 }
 
@@ -379,6 +415,22 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("mode_switches", ctx.stats.mode_switches);
     json.u64("decisions_focused", ctx.stats.decisions_focused);
     json.u64("decisions_stable", ctx.stats.decisions_stable);
+    json.f64("seconds_focused", ctx.stats.seconds_focused);
+    json.f64("seconds_stable", ctx.stats.seconds_stable);
+    json.u64("conflicts_focused", ctx.stats.conflicts_focused);
+    json.u64("conflicts_stable", ctx.stats.conflicts_stable);
+    json.u64("lbd_sum_focused", ctx.stats.lbd_sum_focused);
+    json.u64("lbd_sum_stable", ctx.stats.lbd_sum_stable);
+    json.u64("lbd_count_focused", ctx.stats.lbd_count_focused);
+    json.u64("lbd_count_stable", ctx.stats.lbd_count_stable);
+    json.u64(
+        "decision_level_sum_focused",
+        ctx.stats.decision_level_sum_focused,
+    );
+    json.u64(
+        "decision_level_sum_stable",
+        ctx.stats.decision_level_sum_stable,
+    );
     json.u64("chrono_attempts", ctx.stats.chrono_attempts);
     json.u64("chrono_used", ctx.stats.chrono_used);
     json.u64(
@@ -394,6 +446,16 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.f64("avg_decision_level", average_decision_level(ctx.stats));
     json.u64("max_decision_level", ctx.stats.max_decision_level);
     json.f64("avg_lbd", average_lbd(ctx.stats));
+    json.f64("focused_avg_lbd", focused_average_lbd(ctx.stats));
+    json.f64("stable_avg_lbd", stable_average_lbd(ctx.stats));
+    json.f64(
+        "focused_avg_decision_level",
+        focused_average_decision_level(ctx.stats),
+    );
+    json.f64(
+        "stable_avg_decision_level",
+        stable_average_decision_level(ctx.stats),
+    );
     json.u64("lbd_1", ctx.stats.lbd_1);
     json.u64("lbd_2", ctx.stats.lbd_2);
     json.u64("lbd_3_5", ctx.stats.lbd_3_5);
@@ -495,7 +557,7 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     format!("c JSON_STATS {}", json.finish())
 }
 
-pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> String {
+pub(crate) fn trace_full_line(stats: &SolverStats, _timings: &RunTimings) -> String {
     format!(
         concat!(
             "c trace_full ",
@@ -511,7 +573,10 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
             "phase_save_target={} phase_save_best={} rephases={} ",
             "search_ticks={} ",
             "decisions_focused={} decisions_stable={} ",
-            "mode_switches={} seconds_focused=0.000000 seconds_stable={:.6} ",
+            "mode_switches={} seconds_focused={:.6} seconds_stable={:.6} ",
+            "conflicts_focused={} conflicts_stable={} ",
+            "focused_avg_lbd={:.3} stable_avg_lbd={:.3} ",
+            "focused_avg_decision_level={:.3} stable_avg_decision_level={:.3} ",
             "learned_kept_tier1={} learned_kept_tier2={} learned_kept_tier3={} learned_collected={} ",
             "focused_tier1_glue_limit={} focused_tier2_glue_limit={} stable_tier1_glue_limit={} stable_tier2_glue_limit={} ",
             "gc_reason={} gc_words_reclaimed={} gc_refs_rewritten={} ",
@@ -543,7 +608,14 @@ pub(crate) fn trace_full_line(stats: &SolverStats, timings: &RunTimings) -> Stri
         stats.decisions_focused,
         stats.decisions_stable,
         stats.mode_switches,
-        timings.search_sec,
+        stats.seconds_focused,
+        stats.seconds_stable,
+        stats.conflicts_focused,
+        stats.conflicts_stable,
+        focused_average_lbd(stats),
+        stable_average_lbd(stats),
+        focused_average_decision_level(stats),
+        stable_average_decision_level(stats),
         stats.learned_kept_tier1,
         stats.learned_kept_tier2,
         stats.learned_kept_tier3,
@@ -574,6 +646,30 @@ fn average_decision_level(stats: &SolverStats) -> f64 {
         0.0
     } else {
         stats.avg_decision_level_sum as f64 / stats.decisions as f64
+    }
+}
+
+fn focused_average_lbd(stats: &SolverStats) -> f64 {
+    average_from_sum_count(stats.lbd_sum_focused, stats.lbd_count_focused)
+}
+
+fn stable_average_lbd(stats: &SolverStats) -> f64 {
+    average_from_sum_count(stats.lbd_sum_stable, stats.lbd_count_stable)
+}
+
+fn focused_average_decision_level(stats: &SolverStats) -> f64 {
+    average_from_sum_count(stats.decision_level_sum_focused, stats.decisions_focused)
+}
+
+fn stable_average_decision_level(stats: &SolverStats) -> f64 {
+    average_from_sum_count(stats.decision_level_sum_stable, stats.decisions_stable)
+}
+
+fn average_from_sum_count(sum: u64, count: u64) -> f64 {
+    if count == 0 {
+        0.0
+    } else {
+        sum as f64 / count as f64
     }
 }
 
@@ -904,6 +1000,64 @@ impl Sha256 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_stats_line_emits_per_mode_diagnostics() {
+        let config = SolverConfig::default();
+        let stats = SolverStats {
+            seconds_focused: 1.25,
+            seconds_stable: 2.5,
+            conflicts_focused: 3,
+            conflicts_stable: 4,
+            decisions_focused: 2,
+            decisions_stable: 2,
+            lbd_sum_focused: 10,
+            lbd_sum_stable: 20,
+            lbd_count_focused: 2,
+            lbd_count_stable: 4,
+            decision_level_sum_focused: 7,
+            decision_level_sum_stable: 9,
+            ..SolverStats::default()
+        };
+        let proof = ProofStats {
+            state: "not-created",
+            ..ProofStats::default()
+        };
+        let input = InputIdentity::default();
+        let formula = FormulaStats::default();
+        let timings = RunTimings::default();
+        let ctx = StatsJsonContext {
+            config: &config,
+            stats: &stats,
+            proof: &proof,
+            input: &input,
+            formula: &formula,
+            timings: &timings,
+            status: SolveStatus::Sat,
+            exit_code: 0,
+            status_file_status: Some("SAT"),
+            termination_reason: "sat",
+            unknown_reason: None,
+            limit_hit: false,
+            parse_error_kind: None,
+            model_check_result: "pass",
+            proof_check_result: "not_checked",
+            proof_completeness: ProofCompleteness::NotRequested,
+            output_contract_state: "complete",
+            max_rss_mb: None,
+        };
+
+        let line = json_stats_line(&ctx);
+
+        assert!(line.contains("\"seconds_focused\":1.250000"));
+        assert!(line.contains("\"seconds_stable\":2.500000"));
+        assert!(line.contains("\"conflicts_focused\":3"));
+        assert!(line.contains("\"conflicts_stable\":4"));
+        assert!(line.contains("\"focused_avg_lbd\":5.000000"));
+        assert!(line.contains("\"stable_avg_lbd\":5.000000"));
+        assert!(line.contains("\"focused_avg_decision_level\":3.500000"));
+        assert!(line.contains("\"stable_avg_decision_level\":4.500000"));
+    }
 
     #[test]
     fn test_json_writer_escapes_labels_paths_and_diagnostics() {

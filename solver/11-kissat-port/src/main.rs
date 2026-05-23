@@ -1015,6 +1015,10 @@ struct Solver {
     mode_start_ticks: u64,
     /// decision count when the current search mode started
     mode_start_decisions: u64,
+    /// wall-clock start for the currently active search-mode segment
+    mode_wall_start: Instant,
+    /// whether search-mode wall-clock attribution is currently active
+    mode_wall_active: bool,
     /// number of focused/stable mode switches performed
     mode_switches: u64,
     /// absolute conflict count at which the next mode switch should happen
@@ -1624,6 +1628,8 @@ impl Solver {
             mode_start_conflicts: 0,
             mode_start_ticks: 0,
             mode_start_decisions: 0,
+            mode_wall_start: Instant::now(),
+            mode_wall_active: false,
             mode_switches: 0,
             mode_switch_at_conflicts,
             mode_switch_at_ticks: u64::MAX,
@@ -3333,11 +3339,17 @@ impl Solver {
 
     fn decide(&mut self, lit: i32) {
         self.stats.decisions += 1;
-        match self.search_mode {
-            SearchMode::Focused => self.stats.decisions_focused += 1,
-            SearchMode::Stable => self.stats.decisions_stable += 1,
-        }
         let level = self.current_level() as u64 + 1;
+        match self.search_mode {
+            SearchMode::Focused => {
+                self.stats.decisions_focused += 1;
+                self.stats.record_mode_decision_level(level, true);
+            }
+            SearchMode::Stable => {
+                self.stats.decisions_stable += 1;
+                self.stats.record_mode_decision_level(level, false);
+            }
+        }
         self.stats.avg_decision_level_sum += level;
         self.stats.max_decision_level = self.stats.max_decision_level.max(level);
         self.trail_limits.push(self.trail.len());
@@ -3423,6 +3435,57 @@ impl Solver {
     fn mode_switching_enabled(&self) -> bool {
         self.search_mode_policy == SearchModePolicy::FocusedStable
             && !self.accounting_mode.is_temporary()
+    }
+
+    fn begin_search_mode_timing(&mut self) {
+        if self.accounting_mode.is_temporary() {
+            return;
+        }
+        self.mode_wall_start = Instant::now();
+        self.mode_wall_active = true;
+    }
+
+    fn record_current_mode_seconds(&mut self, seconds: f64) {
+        if seconds <= 0.0 || !seconds.is_finite() {
+            return;
+        }
+        match self.search_mode {
+            SearchMode::Focused => self.stats.seconds_focused += seconds,
+            SearchMode::Stable => self.stats.seconds_stable += seconds,
+        }
+    }
+
+    fn account_current_mode_wall_time(&mut self) {
+        if !self.mode_wall_active {
+            return;
+        }
+        let elapsed = self.mode_wall_start.elapsed().as_secs_f64();
+        self.record_current_mode_seconds(elapsed);
+        self.mode_wall_start = Instant::now();
+    }
+
+    fn finish_search_timing(&mut self, search_start: Instant) {
+        self.stats.search_sec = search_start.elapsed().as_secs_f64();
+        if self.mode_wall_active {
+            self.account_current_mode_wall_time();
+            self.mode_wall_active = false;
+        }
+    }
+
+    fn record_search_conflict_mode(&mut self) {
+        if self.accounting_mode.is_temporary() {
+            return;
+        }
+        self.stats
+            .record_mode_conflict(self.search_mode == SearchMode::Focused);
+    }
+
+    fn record_current_mode_lbd(&mut self, lbd: u16) {
+        if self.accounting_mode.is_temporary() {
+            return;
+        }
+        self.stats
+            .record_mode_lbd(u32::from(lbd), self.search_mode == SearchMode::Focused);
     }
 
     fn effective_restart_policy(&self) -> RestartPolicy {
@@ -3518,6 +3581,7 @@ impl Solver {
             .search_ticks
             .saturating_sub(self.mode_start_ticks)
             .max(1);
+        self.account_current_mode_wall_time();
         self.search_mode = match self.search_mode {
             SearchMode::Focused => SearchMode::Stable,
             SearchMode::Stable => SearchMode::Focused,
@@ -5282,6 +5346,7 @@ impl Solver {
             let lbd = self.compute_lbd_from_lits(&learned_clause);
             self.last_conflict_lbd = lbd;
             self.record_lbd_measurement(lbd);
+            self.record_current_mode_lbd(lbd);
         } else {
             self.last_conflict_lbd = 0;
         }
@@ -5609,13 +5674,14 @@ impl Solver {
         let trace_search_interval = config.trace_search_interval as u64;
         let mut next_search_trace = trace_search_interval;
         let search_start = Instant::now();
+        self.begin_search_mode_timing();
         let mut conflict = self.propagate();
 
         loop {
             match conflict {
                 Some(conflict_event) => {
                     if self.current_level() == 0 {
-                        self.stats.search_sec = search_start.elapsed().as_secs_f64();
+                        self.finish_search_timing(search_start);
                         if trace_search_interval > 0 {
                             eprintln!(
                                 "c search done result=UNSAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} reduce_db={}",
@@ -5633,7 +5699,7 @@ impl Solver {
                     if self.binary_fast_path {
                         let conflict_level = self.conflict_max_decision_level(conflict_event);
                         if conflict_level == 0 {
-                            self.stats.search_sec = search_start.elapsed().as_secs_f64();
+                            self.finish_search_timing(search_start);
                             return SolveOutcome::unsat();
                         }
                         if conflict_level < self.current_level() {
@@ -5644,10 +5710,11 @@ impl Solver {
                     }
 
                     self.stats.conflicts += 1;
+                    self.record_search_conflict_mode();
                     if limits_active {
                         if let Some(limit) = self.limit_hit(&runtime_limits, solve_start, proof_log)
                         {
-                            self.stats.search_sec = search_start.elapsed().as_secs_f64();
+                            self.finish_search_timing(search_start);
                             let _class = limit.class.as_str();
                             return SolveOutcome::unknown(limit.reason);
                         }
@@ -5686,6 +5753,7 @@ impl Solver {
                         self.backtrack(0);
                         let inserted = self.enqueue(asserting_lit, ReasonRef::None);
                         if !inserted {
+                            self.finish_search_timing(search_start);
                             return SolveOutcome::unsat();
                         }
                         self.scratch_conflict_clause = learned_clause;
@@ -5723,7 +5791,7 @@ impl Solver {
                     if limits_active {
                         if let Some(limit) = self.limit_hit(&runtime_limits, solve_start, proof_log)
                         {
-                            self.stats.search_sec = search_start.elapsed().as_secs_f64();
+                            self.finish_search_timing(search_start);
                             let _class = limit.class.as_str();
                             return SolveOutcome::unknown(limit.reason);
                         }
@@ -5746,6 +5814,7 @@ impl Solver {
                             self.maybe_garbage_collect(GcReason::ArenaFragmentation);
                         }
                         if !self.simplify_with_proof(proof_log) {
+                            self.finish_search_timing(search_start);
                             return SolveOutcome::unsat();
                         }
                     }
@@ -5757,7 +5826,7 @@ impl Solver {
                     if limits_active {
                         if let Some(limit) = self.limit_hit(&runtime_limits, solve_start, proof_log)
                         {
-                            self.stats.search_sec = search_start.elapsed().as_secs_f64();
+                            self.finish_search_timing(search_start);
                             let _class = limit.class.as_str();
                             return SolveOutcome::unknown(limit.reason);
                         }
@@ -5771,7 +5840,7 @@ impl Solver {
                                 if let Some(limit) =
                                     self.limit_hit(&runtime_limits, solve_start, proof_log)
                                 {
-                                    self.stats.search_sec = search_start.elapsed().as_secs_f64();
+                                    self.finish_search_timing(search_start);
                                     let _class = limit.class.as_str();
                                     return SolveOutcome::unknown(limit.reason);
                                 }
@@ -5779,7 +5848,7 @@ impl Solver {
                         }
                         None => {
                             self.capture_sat_model();
-                            self.stats.search_sec = search_start.elapsed().as_secs_f64();
+                            self.finish_search_timing(search_start);
                             if trace_search_interval > 0 {
                                 eprintln!(
                                     "c search done result=SAT seconds={:.3} conflicts={} decisions={} propagations={} restarts={} learned={} reduce_db={}",
@@ -6331,7 +6400,7 @@ fn main() {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn make_solver(num_vars: usize, clauses: Vec<Vec<i32>>) -> Solver {
         Solver::new(num_vars, clauses)
@@ -9947,6 +10016,59 @@ mod tests {
         assert_eq!(s.stats.decisions_focused, 1);
         assert_eq!(s.stats.decisions_stable, 1);
         assert_eq!(s.mode_start_decisions, 2);
+    }
+
+    #[test]
+    fn test_mode_wall_time_records_focused_and_stable_segments() {
+        let config = focused_stable_config();
+        let mut s = make_solver_with_config(2, vec![], &config);
+
+        s.begin_search_mode_timing();
+        s.mode_wall_start = Instant::now()
+            .checked_sub(Duration::from_millis(10))
+            .expect("test duration should be representable");
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+
+        assert_eq!(s.search_mode, SearchMode::Stable);
+        assert!(s.stats.seconds_focused > 0.0);
+        assert_eq!(s.stats.seconds_stable, 0.0);
+
+        s.mode_wall_start = Instant::now()
+            .checked_sub(Duration::from_millis(10))
+            .expect("test duration should be representable");
+        let search_start = Instant::now()
+            .checked_sub(Duration::from_millis(20))
+            .expect("test duration should be representable");
+        s.finish_search_timing(search_start);
+
+        assert!(s.stats.seconds_stable > 0.0);
+        assert!(!s.mode_wall_active);
+    }
+
+    #[test]
+    fn test_mode_specific_lbd_conflict_and_decision_stats() {
+        let config = focused_stable_config();
+        let mut s = make_solver_with_config(3, vec![], &config);
+
+        s.decide(1);
+        s.record_search_conflict_mode();
+        s.record_current_mode_lbd(4);
+
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+        s.decide(2);
+        s.record_search_conflict_mode();
+        s.record_current_mode_lbd(10);
+
+        assert_eq!(s.stats.conflicts_focused, 1);
+        assert_eq!(s.stats.conflicts_stable, 1);
+        assert_eq!(s.stats.lbd_count_focused, 1);
+        assert_eq!(s.stats.lbd_sum_focused, 4);
+        assert_eq!(s.stats.lbd_count_stable, 1);
+        assert_eq!(s.stats.lbd_sum_stable, 10);
+        assert_eq!(s.stats.decision_level_sum_focused, 1);
+        assert_eq!(s.stats.decision_level_sum_stable, 2);
     }
 
     #[test]

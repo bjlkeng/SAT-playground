@@ -189,7 +189,8 @@ printed, and `v` lines are printed only for SAT. `PARSE_ERROR` is represented as
 and `result.json` records `stats_json_seen=true`. The JSON stats line includes
 config identity, input and binary hashes, result/status fields, timing buckets,
 formula sizes, clause-database/GC budget counters, CDCL/preprocessing/watch/LBD/proof
-counters, output-contract state, and explicit zero/null placeholders for planned
+counters, focused/stable mode timing, per-mode conflict/LBD/decision-level
+diagnostics, output-contract state, and explicit zero/null placeholders for planned
 Phase 1/2 counters that are not implemented yet. High-frequency watcher diagnostics (`watch_scans`,
 `watch_blocker_hits`, `watch_clause_loads`, `watch_stale_skips`,
 `binary_props`, and `long_props`) default to zero to keep the release hot path
