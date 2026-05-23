@@ -79,3 +79,43 @@ Comparison:
 The default profile does not enable `SAT_LBD_UPDATE_REASONS`, so this small aggregate movement is
 treated as run noise rather than a feature-path regression. The opt-in path was exercised by focused
 unit tests and an enabled-feature smoke suite.
+
+## Feature-Mode Profile Follow-Up
+
+After the initial default-profile check, the explicit feature mode was benchmarked before and after
+the change:
+
+- `SAT_USE_LBD=on`
+- `SAT_LBD_UPDATE_REASONS=on`
+- `SAT_REDUCE=lbd-tiered`
+- `SAT_STATS_JSON=on`
+- `SAT_TRACE_FULL=on`
+- `bash tools/bench.sh -t 300 -m 16384 -d benchmarks/profiling solver/11-kissat-port`
+
+Before commit `37e8cb4`:
+
+- `log/phase1/1.14h-feature-profile-before/results.csv`
+- solved 10/11
+- PAR-2 `1119.940`
+- timeout: `mp1-Nb7T46`
+
+After commit `b659331`:
+
+- `log/phase1/1.14h-feature-profile-after/results.csv`
+- solved 9/11
+- PAR-2 `1708.024`
+- timeouts: `mp1-Nb7T46`, `random_v355_s3`
+
+Comparison:
+
+- `compare_bench.py` verdict: FAIL / significant regression;
+- status regression: `random_v355_s3` changed from `SAT` in `62.025s` to `TIMEOUT`;
+- PAR-2 delta: `+588.084s`;
+- median paired speedup: `0.9223`;
+- largest wins: `random_v292_s4 -10.116s`, `REGRandom-K4-L1-Seed40 -7.848s`;
+- largest regressions: `random_v355_s3 +237.975s`, `sudoku-N30-12 +24.672s`,
+  `Kakuro-easy-112 +22.071s`, Timetable `+10.154s`, `feistel_b64_k57_r18 +9.398s`.
+
+Conclusion: the default-off path remains safe by the default-profile check, but the explicit
+feature mode is not promotable. Follow-up bead `SAT-playground-5b2.2.42` tracks investigation or
+tuning/rollback before this propagation-time reason LBD update can be promoted.
