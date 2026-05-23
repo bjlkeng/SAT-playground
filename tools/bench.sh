@@ -137,7 +137,7 @@ mkdir -p "$LOG_DIR"
 MEMLIMIT_KB=$((MEMLIMIT_MB * 1024))
 
 # --- collect benchmark instances (.cnf, .cnf.gz, or .cnf.xz) ---
-mapfile -t CNF_FILES < <(find -L "$BENCH_DIR" \( -name '*.cnf' -o -name '*.cnf.gz' -o -name '*.cnf.xz' \) -type f | sort)
+mapfile -t CNF_FILES < <(find -L "$BENCH_DIR" -maxdepth 1 \( -name '*.cnf' -o -name '*.cnf.gz' -o -name '*.cnf.xz' \) -type f | sort)
 TOTAL=${#CNF_FILES[@]}
 
 if [[ $TOTAL -eq 0 ]]; then

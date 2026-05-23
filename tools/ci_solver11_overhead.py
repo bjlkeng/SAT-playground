@@ -20,8 +20,8 @@ from statistics import mean, median
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INSTANCES = [
-    REPO_ROOT / "benchmarks/profiling/feistel_b64_k57_r18.cnf",
-    REPO_ROOT / "benchmarks/profiling/random_v285_s2.cnf",
+    REPO_ROOT / "benchmarks/profiling/legacy/feistel_b64_k57_r18.cnf",
+    REPO_ROOT / "benchmarks/profiling/legacy/random_v285_s2.cnf",
 ]
 SOLVERS = {
     "solver10": REPO_ROOT / "solver/10-bve-preprocess",

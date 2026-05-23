@@ -468,6 +468,7 @@ state, or iteration status. Instead:
 - Use `git status --short` and `git log --oneline -- solver/NN-name` to see local changes and recent history for a solver
 - Check `benchmarks/reference-solvers/` for the current vendored reference solvers
 - Check `tools/checkers/` and `tools/setup_checkers.sh` for the currently configured proof checkers
+- Read `benchmarks/profiling/README.md` for the current 10-instance profile suite (selected from SAT Competition 2025 medium-track, each <300 s on solver 10); the previous 6-instance set is preserved at `benchmarks/profiling/legacy/`
 - Check `benchmarks/profiling/`, `benchmarks/crypto/`, `benchmarks/random-3sat/`, and the generator tools under `tools/` for the current benchmark inputs
 - Use `tools/bench.sh`, `tools/bench_reference.sh`, and the latest `log/bench-*` directories to see the current benchmark workflow and outputs
 

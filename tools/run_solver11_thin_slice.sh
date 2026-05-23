@@ -23,7 +23,7 @@ link_instance() {
 
 link_instance "tests/cnf/sat/three_sat.cnf" "01-small-sat.cnf"
 link_instance "tests/cnf/unsat/pigeonhole_3_2.cnf" "02-small-unsat.cnf"
-link_instance "benchmarks/profiling/feistel_b64_k57_r18.cnf" "03-medium-sat.cnf"
+link_instance "benchmarks/profiling/legacy/feistel_b64_k57_r18.cnf" "03-medium-sat.cnf"
 link_instance "benchmarks/profiling/minisat-simp-five/46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized.cnf.xz" "04-k4-like.cnf.xz"
 link_instance "benchmarks/profiling/minisat-simp-five/1d18837c0ced5c18a3a4693993e61728-SC25_Timetable_C_392_E_45_Cl_25_D_7_T_50.normalised.cnf.xz" "05-timetable-like.cnf.xz"
 
