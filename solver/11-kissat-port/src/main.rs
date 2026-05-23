@@ -2158,6 +2158,30 @@ impl Solver {
         self.set_learnt_used_recently(clause_idx, recent);
     }
 
+    fn note_clause_used_as_propagation_reason(
+        &mut self,
+        clause_idx: ClauseRef,
+        normal_search_accounting: bool,
+    ) {
+        if !normal_search_accounting
+            || !self.use_lbd
+            || clause_idx >= self.arena.len()
+            || !self.clause_is_learnt(clause_idx)
+            || self.clause_is_deleted(clause_idx)
+        {
+            return;
+        }
+
+        if self.update_reason_lbd {
+            let lbd = self.compute_lbd_for_clause(clause_idx);
+            self.maybe_improve_lbd(clause_idx, lbd);
+        }
+
+        if self.reduce_policy == ReducePolicy::LbdTiered {
+            self.mark_learned_clause_recent(clause_idx);
+        }
+    }
+
     fn increment_glue_histogram(hist: &mut Vec<u64>, glue: u16) {
         let idx = glue as usize;
         if idx >= hist.len() {
@@ -3252,6 +3276,10 @@ impl Solver {
                                 self.watchers[watch_idx] = pending;
                                 return Some(Conflict::Clause(clause_idx));
                             }
+                            self.note_clause_used_as_propagation_reason(
+                                clause_idx,
+                                normal_search_accounting,
+                            );
                             pending[write] = watcher;
                             write += 1;
                         }
@@ -3318,6 +3346,7 @@ impl Solver {
                     self.watchers[watch_idx] = pending;
                     return Some(Conflict::Clause(clause_idx));
                 }
+                self.note_clause_used_as_propagation_reason(clause_idx, normal_search_accounting);
                 if clause_len == 2 {
                     if HOT_STATS && normal_search_accounting {
                         self.stats.binary_props += 1;
@@ -7282,6 +7311,30 @@ mod tests {
     }
 
     #[test]
+    fn test_temp_assumption_propagation_does_not_update_reason_lbd() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.update_reason_lbd = true;
+        let reason = s.add_clause(vec![2, 1, 3]);
+        set_lbd_meta_for_test(&mut s, reason, 9, 0);
+
+        s.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
+            assert_eq!(ctx.enqueue(-3), EnqueueResult::Enqueued);
+            assert_eq!(ctx.enqueue(-1), EnqueueResult::Enqueued);
+            let mut budget = Budget::from_ticks(10);
+            assert_eq!(ctx.propagate_budgeted(&mut budget), None);
+            assert_eq!(ctx.solver.assignment[2], TRUE);
+            assert_eq!(ctx.solver.reason_ref(2), ReasonRef::Clause(reason));
+        });
+
+        assert_eq!(s.assignment[2], UNASSIGNED);
+        assert_eq!(s.reason_ref(2), ReasonRef::None);
+        assert_eq!(s.learnt_lbd(reason), 9);
+        assert_eq!(s.learnt_used_recently(reason), 0);
+        assert_eq!(s.stats.lbd_improved, 0);
+    }
+
+    #[test]
     fn test_temp_assumption_closure_restores_on_early_return() {
         let mut s = make_solver(2, vec![]);
         let start_head = s.propagate_head;
@@ -7950,6 +8003,44 @@ mod tests {
         );
 
         assert_eq!(s.learnt_used_recently(reason), 1);
+    }
+
+    #[test]
+    fn test_propagation_reason_lbd_update_uses_implied_literal_level() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.update_reason_lbd = true;
+        let reason = s.add_clause(vec![2, 1, 3]);
+        set_lbd_meta_for_test(&mut s, reason, 9, 0);
+
+        s.decide(-3);
+        s.decide(-1);
+
+        assert_eq!(s.propagate(), None);
+        assert_eq!(s.assignment[2], TRUE);
+        assert_eq!(s.decision_level[2], 2);
+        assert_eq!(s.reason_ref(2), ReasonRef::Clause(reason));
+        assert_eq!(s.learnt_lbd(reason), 2);
+        assert_eq!(s.learned_meta(reason).unwrap().tier, 0);
+        assert_eq!(s.learnt_used_recently(reason), 1);
+        assert_eq!(s.stats.lbd_improved, 1);
+    }
+
+    #[test]
+    fn test_propagation_reason_marks_recent_without_lbd_update_flag() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        let reason = s.add_clause(vec![2, 1, 3]);
+        set_lbd_meta_for_test(&mut s, reason, 9, 0);
+
+        s.decide(-3);
+        s.decide(-1);
+
+        assert_eq!(s.propagate(), None);
+        assert_eq!(s.assignment[2], TRUE);
+        assert_eq!(s.learnt_lbd(reason), 9);
+        assert_eq!(s.learnt_used_recently(reason), 1);
+        assert_eq!(s.stats.lbd_improved, 0);
     }
 
     #[test]

@@ -44,6 +44,9 @@ What is present:
 - opt-in LBD metadata and LBD-tiered reduction state. Newly learned clauses initialize their
   `used_recently` counter to the solver's maximum for every LBD tier, matching Kissat's
   maximum initial learned-clause retention semantics before reduce-DB aging decides eviction.
+  When `SAT_LBD_UPDATE_REASONS=on`, learned clauses used as propagation reasons recompute their
+  LBD after the implied literal is enqueued, lower their stored LBD/tier if the current assignment
+  gives a better glue value, and lbd-tiered runs mark learned propagation reasons as recently used.
   The LBD-tiered reducer now computes focused-mode and stable-mode tier thresholds from recent
   glue-use histograms at the start of each LBD reduction pass: tier 1 covers the first 50% of
   recently used learned-clause glue counts, tier 2 covers the first 90%, and both thresholds keep
