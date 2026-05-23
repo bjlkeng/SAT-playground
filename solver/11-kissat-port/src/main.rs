@@ -977,6 +977,8 @@ struct Solver {
     restart_conflict_limit: usize,
     /// whether a restart should be applied before the next branch
     restart_pending: bool,
+    /// true after learning a unit clause; skips one post-propagation scheduling pass
+    iterating: bool,
     /// fast EMA of recent learned-clause LBD values for Kissat/Glucose-style restarts
     restart_fast_lbd: MovingAverage,
     /// slow EMA of learned-clause LBD values for restart baseline
@@ -1609,6 +1611,7 @@ impl Solver {
             restart_luby_index: 1,
             restart_conflict_limit: 100,
             restart_pending: false,
+            iterating: false,
             restart_fast_lbd: MovingAverage::new(RESTART_FAST_ALPHA),
             restart_slow_lbd: MovingAverage::new(RESTART_SLOW_ALPHA),
             restart_fast_level: MovingAverage::new(RESTART_FAST_ALPHA),
@@ -4067,6 +4070,27 @@ impl Solver {
         true
     }
 
+    fn take_iterating(&mut self) -> bool {
+        let iterating = self.iterating;
+        self.iterating = false;
+        iterating
+    }
+
+    fn maybe_switch_search_mode_after_conflict(&mut self) {
+        if !self.iterating {
+            self.maybe_switch_search_mode();
+        }
+    }
+
+    fn run_post_propagation_scheduling(&mut self) -> bool {
+        let skip_search_scheduling = self.take_iterating();
+        if !skip_search_scheduling && self.mode_use_ticks {
+            self.maybe_switch_search_mode();
+        }
+
+        !skip_search_scheduling && self.perform_restart_if_pending()
+    }
+
     #[cfg(test)]
     fn simplify(&mut self) -> bool {
         let mut proof_log = ProofLog::disabled();
@@ -5366,6 +5390,7 @@ impl Solver {
             learned_clause.swap(1, backtrack_pos);
         }
 
+        self.iterating = learned_clause.len() == 1;
         self.scratch_conflict_clause = learned_clause;
         for &var in &self.scratch_bumped_vars {
             self.scratch_seen[var] = 0;
@@ -5744,7 +5769,7 @@ impl Solver {
                         self.note_learnt_budget_conflict();
                     }
                     self.note_conflict();
-                    self.maybe_switch_search_mode();
+                    self.maybe_switch_search_mode_after_conflict();
                     let learned_clause = std::mem::take(&mut self.scratch_conflict_clause);
                     let asserting_lit = learned_clause[0];
                     proof_log.record_clause(&learned_clause);
@@ -5798,11 +5823,7 @@ impl Solver {
                     }
                 }
                 None => {
-                    if self.mode_use_ticks {
-                        self.maybe_switch_search_mode();
-                    }
-
-                    if self.perform_restart_if_pending() {
+                    if self.run_post_propagation_scheduling() {
                         conflict = self.propagate();
                         continue;
                     }
@@ -9585,10 +9606,75 @@ mod tests {
 
         assert_eq!(learned_clause, vec![-5]);
         assert_eq!(backtrack_level, 0);
+        assert!(s.iterating);
 
         let mut bumped_vars = s.scratch_bumped_vars.clone();
         bumped_vars.sort_unstable();
         assert_eq!(bumped_vars, vec![2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn test_conflict_analysis_clears_iterating_for_non_unit_learned_clause() {
+        let mut s = make_solver(2, vec![vec![-1, -2]]);
+        s.iterating = true;
+
+        s.decide(1);
+        s.decide(2);
+        let conflict = s.propagate().expect("expected conflict after decisions");
+        let (learned_clause, backtrack_level) = s.analyze_conflict(conflict);
+
+        assert_eq!(learned_clause.len(), 2);
+        assert_eq!(backtrack_level, 1);
+        assert!(!s.iterating);
+    }
+
+    #[test]
+    fn test_iterating_skips_due_conflict_mode_switch() {
+        let config = focused_stable_config();
+        let mut s = make_solver_with_config(2, vec![], &config);
+        s.iterating = true;
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+
+        s.maybe_switch_search_mode_after_conflict();
+
+        assert_eq!(s.search_mode, SearchMode::Focused);
+        assert_eq!(s.mode_switches, 0);
+        assert!(s.iterating);
+    }
+
+    #[test]
+    fn test_iterating_skips_post_propagation_restart_and_tick_switch_once() {
+        let config = focused_stable_tick_config();
+        let mut s = make_solver_with_config(2, vec![], &config);
+        s.decide(1);
+        s.iterating = true;
+        s.restart_pending = true;
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.stats.search_ticks = s.mode_switch_at_ticks;
+
+        assert!(!s.run_post_propagation_scheduling());
+
+        assert!(!s.iterating);
+        assert_eq!(s.search_mode, SearchMode::Focused);
+        assert_eq!(s.mode_switches, 0);
+        assert!(s.restart_pending);
+        assert_eq!(s.current_level(), 1);
+    }
+
+    #[test]
+    fn test_iterating_defers_restart_until_next_scheduling_pass() {
+        let mut s = make_solver(2, vec![]);
+        s.decide(1);
+        s.iterating = true;
+        s.restart_pending = true;
+
+        assert!(!s.run_post_propagation_scheduling());
+        assert!(s.restart_pending);
+        assert_eq!(s.current_level(), 1);
+
+        assert!(s.run_post_propagation_scheduling());
+        assert!(!s.restart_pending);
+        assert_eq!(s.current_level(), 0);
     }
 
     #[test]
