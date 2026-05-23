@@ -487,6 +487,7 @@ pub(crate) struct SolverConfig {
     pub(crate) chrono_backtrack: bool,
     pub(crate) binary_fast_path: bool,
     pub(crate) clause_min_mode: ClauseMinMode,
+    pub(crate) otfs: bool,
     pub(crate) vmtf: bool,
     pub(crate) rephase: bool,
     pub(crate) minimize_depth_limit: u32,
@@ -579,6 +580,7 @@ impl Default for SolverConfig {
             chrono_backtrack: false,
             binary_fast_path: false,
             clause_min_mode: ClauseMinMode::RecursiveLimited,
+            otfs: false,
             vmtf: false,
             rephase: false,
             minimize_depth_limit: DEFAULT_MINIMIZE_DEPTH_LIMIT,
@@ -873,6 +875,7 @@ impl SolverConfig {
             self.clause_min_mode,
             ClauseMinMode::parse,
         );
+        self.otfs = parse_bool_selected(env_map, &key_set, "SAT_OTFS", self.otfs);
         self.vmtf = parse_bool_selected(env_map, &key_set, "SAT_VMTF", self.vmtf);
         self.rephase = parse_bool_selected(env_map, &key_set, "SAT_REPHASE", self.rephase);
         self.minimize_depth_limit = parse_u32_selected(
@@ -1105,6 +1108,9 @@ impl SolverConfig {
                 "Invalid config: SAT_MODE_USE_TICKS=on requires SAT_SEARCH_MODE=focused-stable",
             );
         }
+        if self.otfs && self.clause_min_mode == ClauseMinMode::Off {
+            fail_config("Invalid config: SAT_OTFS=on requires SAT_CLAUSE_MIN=basic|recursive-limited|inblock");
+        }
         if self.hbr && !self.probe {
             fail_config("Invalid config: SAT_HBR=on requires SAT_PROBE=on");
         }
@@ -1273,6 +1279,7 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "chrono_backtrack", self.chrono_backtrack);
         push_kv_bool(&mut lines, "binary_fast_path", self.binary_fast_path);
         push_kv(&mut lines, "clause_min_mode", self.clause_min_mode.as_str());
+        push_kv_bool(&mut lines, "otfs", self.otfs);
         push_kv_bool(&mut lines, "vmtf", self.vmtf);
         push_kv_bool(&mut lines, "rephase", self.rephase);
         push_kv(
@@ -1617,6 +1624,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             "log/1.14/mode-use-ticks.md",
         ),
         feature(
+            "SAT_OTFS",
+            config.otfs,
+            FeatureMaturity::Experimental,
+            true,
+            true,
+            false,
+            "log/phase1/1.14g-otfs-summary.md",
+        ),
+        feature(
             "SAT_SIMPLIFICATION",
             config.simplification,
             FeatureMaturity::SmokeSafe,
@@ -1845,6 +1861,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "chrono_backtrack" => Some("SAT_CHRONO"),
         "binary_fast_path" => Some("SAT_BINARY_FAST"),
         "clause_min_mode" => Some("SAT_CLAUSE_MIN"),
+        "otfs" => Some("SAT_OTFS"),
         "vmtf" => Some("SAT_VMTF"),
         "rephase" => Some("SAT_REPHASE"),
         "minimize_depth_limit" => Some("SAT_MINIMIZE_DEPTH_LIMIT"),
@@ -2016,6 +2033,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_CHRONO",
         "SAT_BINARY_FAST",
         "SAT_CLAUSE_MIN",
+        "SAT_OTFS",
         "SAT_VMTF",
         "SAT_REPHASE",
         "SAT_MINIMIZE_DEPTH_LIMIT",
@@ -2676,6 +2694,17 @@ mod tests {
         let config = SolverConfig::from_env_map(&env_map(&[("SAT_CLAUSE_MIN", "inblock")]));
 
         assert_eq!(config.clause_min_mode, ClauseMinMode::InBlockShrink);
+    }
+
+    #[test]
+    fn test_otfs_is_runtime_supported_with_clause_minimization() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_CLAUSE_MIN", "recursive-limited"),
+            ("SAT_OTFS", "on"),
+        ]));
+
+        assert!(config.otfs);
+        assert_eq!(config.clause_min_mode, ClauseMinMode::RecursiveLimited);
     }
 
     #[test]

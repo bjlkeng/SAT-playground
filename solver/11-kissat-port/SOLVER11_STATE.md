@@ -108,7 +108,13 @@ Known unpromoted or incomplete feature families at this baseline:
 - Clause minimization is binary-reason aware as of 1.11, so explicit `SAT_CLAUSE_MIN` settings are
   honored with `SAT_BINARY_FAST=on`. Binary-fast env runs keep minimization off unless
   `SAT_CLAUSE_MIN` is explicit because the search-core gate does not justify promoting recursive
-  minimization on that path yet.
+  minimization on that path yet. With `SAT_OTFS=on`, clause minimization also runs bounded
+  on-the-fly subsumption after learned non-unit clauses are added: it scans watcher lists for the
+  learned literals, checks candidates no more than four literals larger than the learned clause,
+  refuses live reason clauses, and logs DRAT deletions before tombstoning subsumed learned clauses.
+  Original clauses are skipped by search-time OTFS to preserve SAT model soundness if the subsuming
+  learned clause is later reduced away. The feature remains default-off after the enabled profiling
+  run regressed the current Phase 1 profile suite.
 - Vivification.
 - Failed literal probing.
 - Hyper-binary resolution.

@@ -52,6 +52,10 @@ pub(crate) struct SolverStats {
     pub(crate) learned_kept_tier2: u64,
     pub(crate) learned_kept_tier3: u64,
     pub(crate) learned_collected: u64,
+    pub(crate) otfs_watch_scans: u64,
+    pub(crate) otfs_candidate_checks: u64,
+    pub(crate) otfs_subsumed_clauses: u64,
+    pub(crate) otfs_subsumed_learned: u64,
     pub(crate) focused_tier1_glue_limit: u64,
     pub(crate) focused_tier2_glue_limit: u64,
     pub(crate) stable_tier1_glue_limit: u64,
@@ -394,6 +398,10 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("learned_kept_tier2", ctx.stats.learned_kept_tier2);
     json.u64("learned_kept_tier3", ctx.stats.learned_kept_tier3);
     json.u64("learned_collected", ctx.stats.learned_collected);
+    json.u64("otfs_watch_scans", ctx.stats.otfs_watch_scans);
+    json.u64("otfs_candidate_checks", ctx.stats.otfs_candidate_checks);
+    json.u64("otfs_subsumed_clauses", ctx.stats.otfs_subsumed_clauses);
+    json.u64("otfs_subsumed_learned", ctx.stats.otfs_subsumed_learned);
     json.u64(
         "focused_tier1_glue_limit",
         ctx.stats.focused_tier1_glue_limit,
@@ -580,6 +588,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, _timings: &RunTimings) -> Str
             "focused_avg_lbd={:.3} stable_avg_lbd={:.3} ",
             "focused_avg_decision_level={:.3} stable_avg_decision_level={:.3} ",
             "learned_kept_tier1={} learned_kept_tier2={} learned_kept_tier3={} learned_collected={} ",
+            "otfs_watch_scans={} otfs_candidate_checks={} otfs_subsumed={} otfs_subsumed_learned={} ",
             "focused_tier1_glue_limit={} focused_tier2_glue_limit={} stable_tier1_glue_limit={} stable_tier2_glue_limit={} ",
             "gc_reason={} gc_words_reclaimed={} gc_refs_rewritten={} ",
             "decision_heap_pops={} decision_heap_stale_pops={} decision_heap_inserts={}"
@@ -623,6 +632,10 @@ pub(crate) fn trace_full_line(stats: &SolverStats, _timings: &RunTimings) -> Str
         stats.learned_kept_tier2,
         stats.learned_kept_tier3,
         stats.learned_collected,
+        stats.otfs_watch_scans,
+        stats.otfs_candidate_checks,
+        stats.otfs_subsumed_clauses,
+        stats.otfs_subsumed_learned,
         stats.focused_tier1_glue_limit,
         stats.focused_tier2_glue_limit,
         stats.stable_tier1_glue_limit,

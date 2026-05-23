@@ -46,7 +46,7 @@ static TEST_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(test)]
 thread_local! {
-    static TEST_COUNT_ALLOCATIONS: Cell<bool> = Cell::new(false);
+    static TEST_COUNT_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -128,6 +128,8 @@ const CLAUSE_DELETED_MARK: u32 = 1;
 const DEFAULT_BVE_GROW: isize = 0;
 const DEFAULT_BVE_CLAUSE_LIMIT: isize = 20;
 const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
+const OTFS_MAX_LEARNED_LEN: usize = 20;
+const OTFS_MAX_EXTRA_LITS: usize = 4;
 const INLINE_ABSTRACTION_CLAUSE_THRESHOLD: usize = 750_000;
 const LAZY_DETACH_SMALL_CLAUSE_THRESHOLD: usize = 50_000;
 const SORTED_SUBSUMPTION_MIN_LEN: usize = 2;
@@ -1170,6 +1172,7 @@ struct Solver {
     scratch_seen: Vec<u8>,
     scratch_resolved: Vec<u8>,
     scratch_learned: Vec<i32>,
+    otfs_delete_candidates: Vec<ClauseRef>,
     scratch_conflict_clause: Vec<i32>,
     scratch_bumped_vars: Vec<usize>,
     scratch_redundant_state: Vec<u8>,
@@ -1177,6 +1180,8 @@ struct Solver {
     scratch_analyze_stack: Vec<(usize, i32, u32)>,
     /// 0 = none, 1 = basic, 2 = deep, 3 = in-block shrink
     ccmin_mode: u8,
+    /// opt-in bounded learned-clause-only OTFS pass after learning; default off after profiling.
+    otfs_enabled: bool,
     minimize_depth_limit: u32,
     /// compatibility fallback for the older solver-10 conflict analyzer
     use_resolved_conflict_analysis: bool,
@@ -1745,12 +1750,14 @@ impl Solver {
             scratch_seen: vec![0; num_vars + 1],
             scratch_resolved: vec![0; num_vars + 1],
             scratch_learned: Vec::with_capacity(16),
+            otfs_delete_candidates: Vec::new(),
             scratch_conflict_clause: Vec::with_capacity(16),
             scratch_bumped_vars: Vec::with_capacity(16),
             scratch_redundant_state: vec![0; num_vars + 1],
             scratch_analyze_toclear: Vec::with_capacity(16),
             scratch_analyze_stack: Vec::with_capacity(16),
             ccmin_mode,
+            otfs_enabled: config.otfs,
             minimize_depth_limit: config.minimize_depth_limit,
             use_resolved_conflict_analysis: config.use_resolved_conflict_analysis,
             use_lbd: config.use_lbd,
@@ -3829,6 +3836,7 @@ impl Solver {
                 > self.restart_slow_level.value * self.restart_block_margin
     }
 
+    #[cfg(test)]
     fn should_restart(&self) -> bool {
         match self.effective_restart_policy() {
             RestartPolicy::LegacyLuby => self.legacy_luby_restart_due(),
@@ -4497,7 +4505,6 @@ impl Solver {
         self.mark_clause_deleted(clause_idx);
     }
 
-    #[cfg(test)]
     fn mark_clause_deleted(&mut self, clause_idx: usize) {
         debug_assert!(
             clause_idx < self.arena.len(),
@@ -5307,6 +5314,108 @@ impl Solver {
         stack.clear();
     }
 
+    fn learned_clause_subsumes_watched_clause(
+        &self,
+        learned_clause: &[i32],
+        candidate_idx: ClauseRef,
+    ) -> bool {
+        if candidate_idx >= self.arena.len() || self.clause_is_deleted(candidate_idx) {
+            return false;
+        }
+        let candidate_len = self.clause_len(candidate_idx);
+        if candidate_len < learned_clause.len()
+            || candidate_len <= 1
+            || candidate_len > learned_clause.len().saturating_add(OTFS_MAX_EXTRA_LITS)
+        {
+            return false;
+        }
+
+        learned_clause.iter().copied().all(|needle| {
+            (0..candidate_len).any(|lit_pos| self.clause_lit(candidate_idx, lit_pos) == needle)
+        })
+    }
+
+    fn delete_clause_subsumed_by_otfs(
+        &mut self,
+        clause_idx: ClauseRef,
+        proof_log: &mut ProofLog,
+    ) -> bool {
+        if clause_idx >= self.arena.len()
+            || self.clause_is_deleted(clause_idx)
+            || !self.clause_is_learnt(clause_idx)
+            || self.clause_used_as_reason(clause_idx)
+        {
+            return false;
+        }
+
+        proof_log.record_deletion(self.clause_slice(clause_idx));
+        self.detach_clause(clause_idx);
+        self.mark_clause_deleted(clause_idx);
+        self.stats.otfs_subsumed_learned += 1;
+        self.stats.otfs_subsumed_clauses += 1;
+        true
+    }
+
+    fn otfs_subsume_watched_clauses(
+        &mut self,
+        learned_clause: &[i32],
+        protected_clause_idx: Option<ClauseRef>,
+        proof_log: &mut ProofLog,
+    ) -> usize {
+        if !self.otfs_enabled
+            || self.ccmin_mode == CCMIN_NONE
+            || learned_clause.len() <= 1
+            || learned_clause.len() > OTFS_MAX_LEARNED_LEN
+        {
+            return 0;
+        }
+
+        let mut candidates = std::mem::take(&mut self.otfs_delete_candidates);
+        candidates.clear();
+        for &lit in learned_clause {
+            let watch_idx = self.lit_index(lit);
+            let watch_len = self.watchers[watch_idx].len();
+            for watcher_idx in 0..watch_len {
+                self.stats.otfs_watch_scans += 1;
+                let clause_idx = self.watchers[watch_idx][watcher_idx].clause_idx as ClauseRef;
+                if Some(clause_idx) == protected_clause_idx
+                    || clause_idx >= self.arena.len()
+                    || self.clause_is_deleted(clause_idx)
+                    || !self.clause_is_learnt(clause_idx)
+                {
+                    continue;
+                }
+                let candidate_len = self.clause_len(clause_idx);
+                if candidate_len < learned_clause.len()
+                    || candidate_len > learned_clause.len().saturating_add(OTFS_MAX_EXTRA_LITS)
+                {
+                    continue;
+                }
+                self.stats.otfs_candidate_checks += 1;
+                if self.learned_clause_subsumes_watched_clause(learned_clause, clause_idx) {
+                    candidates.push(clause_idx);
+                }
+            }
+        }
+
+        candidates.sort_unstable();
+        candidates.dedup();
+        let mut deleted = 0usize;
+        for &clause_idx in &candidates {
+            if Some(clause_idx) == protected_clause_idx {
+                continue;
+            }
+            if self.learned_clause_subsumes_watched_clause(learned_clause, clause_idx)
+                && self.delete_clause_subsumed_by_otfs(clause_idx, proof_log)
+            {
+                deleted += 1;
+            }
+        }
+        candidates.clear();
+        self.otfs_delete_candidates = candidates;
+        deleted
+    }
+
     fn mark_clause_literals_for_analysis(
         &mut self,
         clause_idx: usize,
@@ -5945,6 +6054,7 @@ impl Solver {
                             self.finish_search_timing(search_start);
                             return SolveOutcome::unsat();
                         }
+                        self.otfs_subsume_watched_clauses(&learned_clause, None, proof_log);
                         self.scratch_conflict_clause = learned_clause;
                         self.scratch_conflict_clause.clear();
                     } else {
@@ -5955,8 +6065,6 @@ impl Solver {
                         };
                         let learned_clause_idx =
                             self.add_analyzed_clause_from_slice(&learned_clause);
-                        self.scratch_conflict_clause = learned_clause;
-                        self.scratch_conflict_clause.clear();
                         if self.reduce_db_enabled() {
                             self.bump_clause_activity(learned_clause_idx);
                         }
@@ -5971,9 +6079,16 @@ impl Solver {
                             self.reason_ref_for_clause(learned_clause_idx),
                         );
                         debug_assert!(inserted, "learned clause must be asserting after backtrack");
+                        self.otfs_subsume_watched_clauses(
+                            &learned_clause,
+                            Some(learned_clause_idx),
+                            proof_log,
+                        );
                         if self.reduce_policy == ReducePolicy::LbdTiered {
                             self.mark_learned_clause_recent(learned_clause_idx);
                         }
+                        self.scratch_conflict_clause = learned_clause;
+                        self.scratch_conflict_clause.clear();
                     }
 
                     conflict = self.propagate();
@@ -8841,6 +8956,119 @@ mod tests {
         s.minimize_learned_clause(&mut learned_clause);
 
         assert_eq!(learned_clause.first().copied(), Some(-1));
+    }
+
+    #[test]
+    fn test_otfs_default_off_leaves_subsumed_watcher() {
+        let mut s = make_solver(3, vec![]);
+        let subsumed = s.add_clause(vec![1, 2, 3]);
+        let mut proof_log = ProofLog::disabled();
+
+        let deleted = s.otfs_subsume_watched_clauses(&[1, 2], None, &mut proof_log);
+
+        assert_eq!(deleted, 0);
+        assert!(!s.clause_is_deleted(subsumed));
+        assert_eq!(s.stats.otfs_subsumed_clauses, 0);
+    }
+
+    #[test]
+    fn test_otfs_removes_subsumed_watcher() {
+        let mut s = make_solver(3, vec![]);
+        s.otfs_enabled = true;
+        let subsumed = s.add_clause(vec![1, 2, 3]);
+        let mut proof_log = ProofLog::disabled();
+
+        let deleted = s.otfs_subsume_watched_clauses(&[1, 2], None, &mut proof_log);
+
+        assert_eq!(deleted, 1);
+        assert!(s.clause_is_deleted(subsumed));
+        assert!(s.learned_clause_ids.is_empty());
+        assert_eq!(s.live_learned_clause_count, 0);
+        assert_eq!(s.learned_literals, 0);
+        assert_eq!(s.stats.deleted_clauses, 1);
+        assert_eq!(s.stats.otfs_subsumed_clauses, 1);
+        assert_eq!(s.stats.otfs_subsumed_learned, 1);
+    }
+
+    #[test]
+    fn test_otfs_does_not_remove_non_subsumed() {
+        let mut s = make_solver(7, vec![]);
+        s.otfs_enabled = true;
+        let first = s.add_clause(vec![1, -2, 3]);
+        let too_long = s.add_clause(vec![1, 2, 3, 4, 5, 6, 7]);
+        let mut proof_log = ProofLog::disabled();
+
+        let deleted = s.otfs_subsume_watched_clauses(&[1, 2], None, &mut proof_log);
+
+        assert_eq!(deleted, 0);
+        assert!(!s.clause_is_deleted(first));
+        assert!(!s.clause_is_deleted(too_long));
+        assert_eq!(s.learned_clause_ids.len(), 2);
+        assert_eq!(s.stats.deleted_clauses, 0);
+        assert_eq!(s.stats.otfs_subsumed_clauses, 0);
+    }
+
+    #[test]
+    fn test_otfs_does_not_remove_original_clause() {
+        let mut s = make_solver(3, vec![vec![1, 2, 3]]);
+        s.otfs_enabled = true;
+        let original = s.original_clause_ids[0];
+        let mut proof_log = ProofLog::disabled();
+
+        let deleted = s.otfs_subsume_watched_clauses(&[1, 2], None, &mut proof_log);
+
+        assert_eq!(deleted, 0);
+        assert!(!s.clause_is_deleted(original));
+        assert_eq!(s.live_original_clause_count(), 1);
+        assert_eq!(s.original_literals, 3);
+        assert_eq!(s.stats.otfs_subsumed_clauses, 0);
+    }
+
+    #[test]
+    fn test_otfs_proof_logs_deletion() {
+        let mut s = make_solver(3, vec![]);
+        s.otfs_enabled = true;
+        let subsumed = s.add_clause(vec![1, 2, 3]);
+        let dir = make_temp_dir("otfs-proof");
+        let mut proof_log = ProofLog::new(&dir, 32, false);
+        proof_log.record_clause(&[1, 2, 3]);
+        proof_log.record_clause(&[1, 2]);
+
+        let deleted = s.otfs_subsume_watched_clauses(&[1, 2], None, &mut proof_log);
+        proof_log.finish_unsat();
+
+        assert_eq!(deleted, 1);
+        assert!(s.clause_is_deleted(subsumed));
+        assert!(s.learned_clause_ids.is_empty());
+        assert_eq!(s.live_learned_clause_count, 0);
+        assert_eq!(s.learned_literals, 0);
+        assert_eq!(s.stats.otfs_subsumed_learned, 1);
+
+        let proof_text =
+            fs::read_to_string(dir.join("proof.out")).expect("failed to read OTFS proof");
+        assert!(
+            proof_text.contains("d 1 2 3 0\n"),
+            "expected OTFS deletion in proof, got:\n{proof_text}"
+        );
+    }
+
+    #[test]
+    fn test_otfs_does_not_remove_live_reason_clause() {
+        let mut s = make_solver(3, vec![]);
+        s.otfs_enabled = true;
+        let reason = s.add_clause(vec![3, 1, 2]);
+        s.assignment[3] = TRUE;
+        s.decision_level[3] = 1;
+        s.set_reason_ref(3, ReasonRef::Clause(reason));
+        s.trail.push(3);
+        let mut proof_log = ProofLog::disabled();
+
+        let deleted = s.otfs_subsume_watched_clauses(&[1, 2], None, &mut proof_log);
+
+        assert_eq!(deleted, 0);
+        assert!(!s.clause_is_deleted(reason));
+        assert_eq!(s.learned_clause_ids, vec![reason]);
+        assert_eq!(s.stats.otfs_subsumed_clauses, 0);
     }
 
     #[test]

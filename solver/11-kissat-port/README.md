@@ -102,7 +102,14 @@ What is present:
   edges; default propagation remains the legacy watched-clause path. Clause minimization is
   binary-reason aware and remains controlled separately by `SAT_CLAUSE_MIN`; binary-fast env runs
   keep minimization off unless `SAT_CLAUSE_MIN` is explicit because the search-core gate does not
-  justify promoting recursive minimization on that path yet.
+  justify promoting recursive minimization on that path yet. With `SAT_OTFS=on` and clause
+  minimization enabled, newly learned non-unit clauses also run a bounded OTFS pass over their
+  watched literals, deleting live learned watched clauses subsumed by the learned clause when they
+  are not active reasons. The pass is capped at learned clauses of 20 literals and candidate clauses
+  within 4 extra literals, and emits DRAT deletion records before tombstoning clauses. Original
+  clauses are intentionally not removed during search OTFS so SAT models remain checked against the
+  full input formula even if the subsuming learned clause is later reduced away. The feature remains
+  default-off after the enabled profiling run regressed the current Phase 1 profile suite.
 
 Still incomplete:
 
@@ -145,6 +152,7 @@ SAT_RESTART_BLOCK_MARGIN=<f64>  # 0 disables the level blocker
 SAT_REDUCE=legacy|lbd-tiered
 SAT_REDUCE_MIN_INTERVAL=<usize>  # lbd-tiered default is 100, values must be >= 50
 SAT_CLAUSE_MIN=off|basic|recursive-limited|inblock
+SAT_OTFS=on|off
 SAT_MINIMIZE_DEPTH_LIMIT=<u32>
 SAT_PHASE=legacy|saved|target-then-saved|best-then-target-then-saved
 SAT_SEARCH_MODE=single|focused-stable
