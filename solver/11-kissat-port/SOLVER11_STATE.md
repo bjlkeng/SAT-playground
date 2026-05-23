@@ -62,10 +62,12 @@ Known unpromoted or incomplete feature families at this baseline:
   stable tier thresholds from recent glue-use histograms at each reduction pass, using 50% and 90%
   cumulative-use cutoffs with `2/6` as minimum floors, then reclassifies live learned clauses before
   collecting candidates. It also ages `used_recently` on every scanned kept learned clause rather
-  than only on protected tier2/tier3 clauses. Learned clauses used as propagation reasons are now
-  marked recently used in lbd-tiered mode, and `SAT_LBD_UPDATE_REASONS=on` recomputes their LBD
-  after the implied literal is enqueued so useful reasons can be promoted to lower glue tiers before
-  later reductions. The reducer uses a conflict-count schedule rather than the legacy
+  than only on protected tier2/tier3 clauses. `SAT_LBD_UPDATE_REASONS=on` keeps reason-side LBD
+  improvement scoped to conflict analysis; `SAT_LBD_UPDATE_PROP_REASONS=on` separately enables the
+  propagation-time experiment that marks learned propagation reasons recently used in lbd-tiered mode
+  and recomputes their LBD after the implied literal is enqueued. The propagation-time experiment
+  remains isolated after profile testing regressed the current lbd-tiered feature mode. The reducer
+  uses a conflict-count schedule rather than the legacy
   learned-clause-count pressure trigger: first reduce at `SAT_REDUCE_DB_INIT` or 1,000 conflicts,
   then reschedule at current conflicts plus `sqrt(reduce_db_calls) *
   SAT_REDUCE_DB_INTERVAL`; the hard learned-literal budget remains an emergency trigger. To avoid

@@ -99,6 +99,7 @@ pub(crate) struct SolverStats {
     pub(crate) watch_blocker_hits: u64,
     pub(crate) watch_clause_loads: u64,
     pub(crate) phase_saved_used: u64,
+    pub(crate) phase_legacy_used: u64,
     pub(crate) phase_target_used: u64,
     pub(crate) phase_best_used: u64,
     pub(crate) phase_initial_used: u64,
@@ -472,6 +473,7 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("watch_clause_loads", ctx.stats.watch_clause_loads);
 
     json.u64("phase_saved_used", ctx.stats.phase_saved_used);
+    json.u64("phase_legacy_used", ctx.stats.phase_legacy_used);
     json.u64("phase_target_used", ctx.stats.phase_target_used);
     json.u64("phase_best_used", ctx.stats.phase_best_used);
     json.u64("phase_initial_used", ctx.stats.phase_initial_used);
@@ -569,7 +571,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, _timings: &RunTimings) -> Str
             "probe_failed_lits=0 probe_units=0 probe_ticks=0 ",
             "transitive_removed=0 gate_equivs_found=0 appendix_equiv_substitutions=0 ",
             "inprocess_runs=0 inprocess_ticks=0 ",
-            "phase_saved_used={} phase_target_used={} phase_best_used={} phase_initial_used={} ",
+            "phase_saved_used={} phase_legacy_used={} phase_target_used={} phase_best_used={} phase_initial_used={} ",
             "phase_save_target={} phase_save_best={} rephases={} ",
             "search_ticks={} ",
             "decisions_focused={} decisions_stable={} ",
@@ -598,6 +600,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, _timings: &RunTimings) -> Str
         stats.chrono_rejected_delta_too_large,
         stats.chrono_skipped_levels,
         stats.phase_saved_used,
+        stats.phase_legacy_used,
         stats.phase_target_used,
         stats.phase_best_used,
         stats.phase_initial_used,
@@ -1017,6 +1020,7 @@ mod tests {
             lbd_count_stable: 4,
             decision_level_sum_focused: 7,
             decision_level_sum_stable: 9,
+            phase_legacy_used: 5,
             ..SolverStats::default()
         };
         let proof = ProofStats {
@@ -1057,6 +1061,7 @@ mod tests {
         assert!(line.contains("\"stable_avg_lbd\":5.000000"));
         assert!(line.contains("\"focused_avg_decision_level\":3.500000"));
         assert!(line.contains("\"stable_avg_decision_level\":4.500000"));
+        assert!(line.contains("\"phase_legacy_used\":5"));
     }
 
     #[test]

@@ -1121,6 +1121,8 @@ struct Solver {
     use_lbd: bool,
     /// opt-in reason-side LBD improvement; default off until LBD-tiered reduction is stable
     update_reason_lbd: bool,
+    /// opt-in propagation-time reason LBD refresh; isolated after profile regression testing
+    update_propagation_reason_lbd: bool,
     /// learned-clause reduction policy selected by validated configuration
     reduce_policy: ReducePolicy,
     /// opt-in guarded chronological backtracking; default off for solver-10 parity
@@ -1687,6 +1689,7 @@ impl Solver {
             use_resolved_conflict_analysis: config.use_resolved_conflict_analysis,
             use_lbd: config.use_lbd,
             update_reason_lbd: config.update_reason_lbd,
+            update_propagation_reason_lbd: config.update_propagation_reason_lbd,
             reduce_policy: config.reduce_policy,
             chrono_backtrack: config.chrono_backtrack,
             chrono_max_delta: config.chrono_max_delta,
@@ -2165,6 +2168,8 @@ impl Solver {
     ) {
         if !normal_search_accounting
             || !self.use_lbd
+            || !self.update_reason_lbd
+            || !self.update_propagation_reason_lbd
             || clause_idx >= self.arena.len()
             || !self.clause_is_learnt(clause_idx)
             || self.clause_is_deleted(clause_idx)
@@ -2172,10 +2177,8 @@ impl Solver {
             return;
         }
 
-        if self.update_reason_lbd {
-            let lbd = self.compute_lbd_for_clause(clause_idx);
-            self.maybe_improve_lbd(clause_idx, lbd);
-        }
+        let lbd = self.compute_lbd_for_clause(clause_idx);
+        self.maybe_improve_lbd(clause_idx, lbd);
 
         if self.reduce_policy == ReducePolicy::LbdTiered {
             self.mark_learned_clause_recent(clause_idx);
@@ -3791,7 +3794,7 @@ impl Solver {
     fn pick_branch_phase(&mut self, var: usize) -> bool {
         let phase = match self.effective_phase_policy() {
             PhasePolicy::Legacy => {
-                self.stats.phase_initial_used += 1;
+                self.stats.phase_legacy_used += 1;
                 self.saved_phase[var]
             }
             PhasePolicy::Saved => self.saved_or_initial_phase(var),
@@ -7315,6 +7318,7 @@ mod tests {
         let mut s = Solver::new(3, vec![]);
         enable_lbd_tiered_for_test(&mut s, 10);
         s.update_reason_lbd = true;
+        s.update_propagation_reason_lbd = true;
         let reason = s.add_clause(vec![2, 1, 3]);
         set_lbd_meta_for_test(&mut s, reason, 9, 0);
 
@@ -8010,6 +8014,7 @@ mod tests {
         let mut s = Solver::new(3, vec![]);
         enable_lbd_tiered_for_test(&mut s, 10);
         s.update_reason_lbd = true;
+        s.update_propagation_reason_lbd = true;
         let reason = s.add_clause(vec![2, 1, 3]);
         set_lbd_meta_for_test(&mut s, reason, 9, 0);
 
@@ -8027,9 +8032,10 @@ mod tests {
     }
 
     #[test]
-    fn test_propagation_reason_marks_recent_without_lbd_update_flag() {
+    fn test_reason_update_flag_does_not_touch_propagation_reason_metadata() {
         let mut s = Solver::new(3, vec![]);
         enable_lbd_tiered_for_test(&mut s, 10);
+        s.update_reason_lbd = true;
         let reason = s.add_clause(vec![2, 1, 3]);
         set_lbd_meta_for_test(&mut s, reason, 9, 0);
 
@@ -8039,7 +8045,7 @@ mod tests {
         assert_eq!(s.propagate(), None);
         assert_eq!(s.assignment[2], TRUE);
         assert_eq!(s.learnt_lbd(reason), 9);
-        assert_eq!(s.learnt_used_recently(reason), 1);
+        assert_eq!(s.learnt_used_recently(reason), 0);
         assert_eq!(s.stats.lbd_improved, 0);
     }
 
@@ -9327,6 +9333,21 @@ mod tests {
         s.saved_phase[2] = TRUE;
         s.rebuild_branch_queue();
         assert_eq!(s.pick_branch_lit(), Some(2));
+    }
+
+    #[test]
+    fn test_pick_branch_legacy_increments_correct_counter() {
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::Legacy,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(1, vec![], &config);
+        s.saved_phase[1] = TRUE;
+
+        assert_eq!(s.pick_branch_lit(), Some(1));
+        assert_eq!(s.stats.phase_legacy_used, 1);
+        assert_eq!(s.stats.phase_initial_used, 0);
+        assert_eq!(s.stats.phase_saved_used, 0);
     }
 
     #[test]

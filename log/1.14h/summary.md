@@ -119,3 +119,77 @@ Comparison:
 Conclusion: the default-off path remains safe by the default-profile check, but the explicit
 feature mode is not promotable. Follow-up bead `SAT-playground-5b2.2.42` tracks investigation or
 tuning/rollback before this propagation-time reason LBD update can be promoted.
+
+## Follow-Up Fix: `SAT-playground-5b2.2.42`
+
+Fresh-eyes review of the failed feature-mode profile found that `SAT_LBD_UPDATE_REASONS=on` had
+started doing two separate things:
+
+- conflict-analysis reason-side LBD improvement, which was the older intended scope;
+- propagation-time learned reason LBD recomputation and lbd-tiered recent-use marking, which was the
+  new behavior that produced the `random_v355_s3` status regression.
+
+The fix restores `SAT_LBD_UPDATE_REASONS=on` to conflict-analysis reason-side LBD improvement only.
+The propagation-time behavior is now isolated behind a new experimental
+`SAT_LBD_UPDATE_PROP_REASONS=on` flag, which requires `SAT_LBD_UPDATE_REASONS=on`. In solver tests,
+`test_reason_update_flag_does_not_touch_propagation_reason_metadata` confirms the restored mode does
+not mutate propagation-reason LBD or recent-use metadata, while
+`test_propagation_reason_lbd_update_uses_implied_literal_level` keeps coverage for the explicitly
+enabled propagation-time experiment.
+
+Validation after the fix:
+
+- `cargo fmt --check`: PASS.
+- `cargo test propagation_reason -- --nocapture`: PASS, 2 tests.
+- `cargo test temp_assumption -- --nocapture`: PASS, 8 tests.
+- `cargo test lbd_reason_update -- --nocapture`: PASS, 2 tests.
+- `cargo test`: PASS, 292 tests.
+- `bash tools/smoke_test.sh solver/11-kissat-port`: PASS, 9/9.
+- `SAT_CHECK_INVARIANTS=1 bash tools/smoke_test.sh solver/11-kissat-port`: PASS, 9/9.
+- `SAT_USE_LBD=on SAT_LBD_UPDATE_REASONS=on SAT_REDUCE=lbd-tiered
+  bash tools/smoke_test.sh solver/11-kissat-port`: PASS, 9/9.
+- `SAT_USE_LBD=on SAT_LBD_UPDATE_REASONS=on SAT_LBD_UPDATE_PROP_REASONS=on
+  SAT_REDUCE=lbd-tiered bash tools/smoke_test.sh solver/11-kissat-port`: PASS, 9/9.
+
+Targeted regression check:
+
+- settings: `SAT_USE_LBD=on SAT_LBD_UPDATE_REASONS=on SAT_REDUCE=lbd-tiered
+  SAT_STATS_JSON=on SAT_TRACE_FULL=on SAT_TRACE_SEARCH_INTERVAL=500000 SAT_LIMIT_WALL_SEC=120`
+- instance: `benchmarks/profiling/random_v355_s3.cnf`
+- log: `log/phase1/1.14h-prop-reason-fix/random_v355_no_prop.stderr`
+- result: `SAT` in `63.504s`, with `2,144,818` conflicts, `2,625,013` decisions, and
+  `117,452,619` propagations.
+
+Restored feature-mode profile after the fix:
+
+- settings: `SAT_USE_LBD=on SAT_LBD_UPDATE_REASONS=on SAT_REDUCE=lbd-tiered
+  SAT_STATS_JSON=on SAT_TRACE_FULL=on`
+- command: `bash tools/bench.sh -t 300 -m 16384 -d benchmarks/profiling --log-dir
+  log/phase1/1.14h-prop-reason-fix-profile-after solver/11-kissat-port`
+- solved `10/11` (`6 SAT`, `4 UNSAT`, `1 TIMEOUT`)
+- timeout: `mp1-Nb7T46`
+- `random_v355_s3`: `SAT` in `62.636s`
+- PAR-2: `1127.546`
+- `stats.jsonl` rows: `10`
+- `errors.log`: empty
+- `warnings.log`: empty
+
+Comparison to the original pre-propagation-update feature run:
+
+- before: `log/phase1/1.14h-feature-profile-before/results.csv`
+- after: `log/phase1/1.14h-prop-reason-fix-profile-after/results.csv`
+- verdict: PASS
+- status regressions: none
+- solved before/after: `10/11` -> `10/11`
+- PAR-2: `1119.940` -> `1127.546` (`+7.606s`)
+- median paired speedup: `0.9922`
+
+Comparison to the regressed propagation-update feature run:
+
+- before: `log/phase1/1.14h-feature-profile-after/results.csv`
+- after: `log/phase1/1.14h-prop-reason-fix-profile-after/results.csv`
+- verdict: PASS / significant improvement
+- newly solved: `random_v355_s3`
+- solved before/after: `9/11` -> `10/11`
+- PAR-2: `1708.024` -> `1127.546` (`-580.478s`)
+- median paired speedup: `1.0770`

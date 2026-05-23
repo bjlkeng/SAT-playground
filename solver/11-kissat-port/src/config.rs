@@ -477,6 +477,7 @@ pub(crate) struct SolverConfig {
 
     pub(crate) use_lbd: bool,
     pub(crate) update_reason_lbd: bool,
+    pub(crate) update_propagation_reason_lbd: bool,
     pub(crate) restart_policy: RestartPolicy,
     pub(crate) restart_block_margin: f64,
     pub(crate) reduce_policy: ReducePolicy,
@@ -568,6 +569,7 @@ impl Default for SolverConfig {
 
             use_lbd: false,
             update_reason_lbd: false,
+            update_propagation_reason_lbd: false,
             restart_policy: RestartPolicy::LegacyLuby,
             restart_block_margin: DEFAULT_RESTART_BLOCK_MARGIN,
             reduce_policy: ReducePolicy::LegacyActivity,
@@ -815,6 +817,12 @@ impl SolverConfig {
             &key_set,
             "SAT_LBD_UPDATE_REASONS",
             self.update_reason_lbd,
+        );
+        self.update_propagation_reason_lbd = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_LBD_UPDATE_PROP_REASONS",
+            self.update_propagation_reason_lbd,
         );
         self.restart_policy = parse_enum_selected(
             env_map,
@@ -1078,6 +1086,11 @@ impl SolverConfig {
         if self.update_reason_lbd && !self.use_lbd {
             fail_config("Invalid config: SAT_LBD_UPDATE_REASONS=on requires SAT_USE_LBD=on");
         }
+        if self.update_propagation_reason_lbd && !self.update_reason_lbd {
+            fail_config(
+                "Invalid config: SAT_LBD_UPDATE_PROP_REASONS=on requires SAT_LBD_UPDATE_REASONS=on",
+            );
+        }
         if self.restart_policy == RestartPolicy::KissatEma && !self.use_lbd {
             fail_config("Invalid config: SAT_RESTART=kissat-ema requires SAT_USE_LBD=on");
         }
@@ -1238,6 +1251,11 @@ impl SolverConfig {
         push_kv_option_u64(&mut lines, "proof_bytes_limit", self.proof_bytes_limit);
         push_kv_bool(&mut lines, "use_lbd", self.use_lbd);
         push_kv_bool(&mut lines, "update_reason_lbd", self.update_reason_lbd);
+        push_kv_bool(
+            &mut lines,
+            "update_propagation_reason_lbd",
+            self.update_propagation_reason_lbd,
+        );
         push_kv(&mut lines, "restart_policy", self.restart_policy.as_str());
         push_kv(
             &mut lines,
@@ -1542,7 +1560,16 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             true,
             true,
             false,
-            "log/1.2/lbd-reason-update.md",
+            "log/1.14h/summary.md",
+        ),
+        feature(
+            "SAT_LBD_UPDATE_PROP_REASONS",
+            config.update_propagation_reason_lbd,
+            FeatureMaturity::Experimental,
+            true,
+            true,
+            false,
+            "log/1.14h/summary.md",
         ),
         feature(
             "SAT_CHRONO",
@@ -1808,6 +1835,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "proof_bytes_limit" => Some("SAT_LIMIT_PROOF_BYTES"),
         "use_lbd" => Some("SAT_USE_LBD"),
         "update_reason_lbd" => Some("SAT_LBD_UPDATE_REASONS"),
+        "update_propagation_reason_lbd" => Some("SAT_LBD_UPDATE_PROP_REASONS"),
         "restart_policy" => Some("SAT_RESTART"),
         "restart_block_margin" => Some("SAT_RESTART_BLOCK_MARGIN"),
         "reduce_policy" => Some("SAT_REDUCE"),
@@ -1978,6 +2006,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_LIMIT_PROOF_BYTES",
         "SAT_USE_LBD",
         "SAT_LBD_UPDATE_REASONS",
+        "SAT_LBD_UPDATE_PROP_REASONS",
         "SAT_RESTART",
         "SAT_RESTART_BLOCK_MARGIN",
         "SAT_REDUCE",
@@ -2512,6 +2541,22 @@ mod tests {
 
         assert!(config.use_lbd);
         assert!(config.update_reason_lbd);
+        assert!(!config.update_propagation_reason_lbd);
+        assert_eq!(config.reduce_policy, ReducePolicy::LbdTiered);
+    }
+
+    #[test]
+    fn test_propagation_lbd_reason_update_is_runtime_supported_with_reason_update() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_USE_LBD", "on"),
+            ("SAT_LBD_UPDATE_REASONS", "on"),
+            ("SAT_LBD_UPDATE_PROP_REASONS", "on"),
+            ("SAT_REDUCE", "lbd-tiered"),
+        ]));
+
+        assert!(config.use_lbd);
+        assert!(config.update_reason_lbd);
+        assert!(config.update_propagation_reason_lbd);
         assert_eq!(config.reduce_policy, ReducePolicy::LbdTiered);
     }
 

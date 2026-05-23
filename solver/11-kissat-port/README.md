@@ -44,9 +44,12 @@ What is present:
 - opt-in LBD metadata and LBD-tiered reduction state. Newly learned clauses initialize their
   `used_recently` counter to the solver's maximum for every LBD tier, matching Kissat's
   maximum initial learned-clause retention semantics before reduce-DB aging decides eviction.
-  When `SAT_LBD_UPDATE_REASONS=on`, learned clauses used as propagation reasons recompute their
-  LBD after the implied literal is enqueued, lower their stored LBD/tier if the current assignment
-  gives a better glue value, and lbd-tiered runs mark learned propagation reasons as recently used.
+  `SAT_LBD_UPDATE_REASONS=on` keeps reason-side LBD improvement scoped to conflict analysis.
+  `SAT_LBD_UPDATE_PROP_REASONS=on` is a separate experimental extension that recomputes learned
+  propagation-reason LBD after the implied literal is enqueued, lowers the stored LBD/tier if the
+  current assignment gives a better glue value, and marks learned propagation reasons recently used
+  in lbd-tiered runs. The propagation-time extension remains isolated after profile testing showed
+  that enabling it in the lbd-tiered feature mode regressed the current profiling suite.
   The LBD-tiered reducer now computes focused-mode and stable-mode tier thresholds from recent
   glue-use histograms at the start of each LBD reduction pass: tier 1 covers the first 50% of
   recently used learned-clause glue counts, tier 2 covers the first 90%, and both thresholds keep
@@ -156,6 +159,11 @@ runtime overrides (`SAT_CONFIG_OUT`, `SAT_RUN_LABEL`, `SAT_STATS_JSON`,
 `SAT_TRACE_PREPROCESS_DETAILS`, `SAT_TRACE_SEARCH_INTERVAL`,
 `SAT_LIMIT_WALL_SEC`, `SAT_LIMIT_RSS_MB`); set
 `SAT_CONFIG_REPLAY_ALLOW_OVERRIDES=on` only for explicit experiments.
+
+Phase-selection telemetry distinguishes the default legacy saved-phase path
+from explicit phase-policy fallbacks: `phase_legacy_used` counts
+`SAT_PHASE=legacy`, `phase_saved_used` counts explicit saved-phase policy use,
+and `phase_initial_used` counts true initial-phase fallbacks.
 
 New Phase 1 and Phase 2 feature flags default off. Flags whose implementation
 bead has not landed are represented in the schema but fail fast if enabled, so
