@@ -45,6 +45,10 @@ What is present:
   `used_recently` counter to the solver's maximum for every LBD tier, matching Kissat's
   maximum initial learned-clause retention semantics before reduce-DB aging decides eviction.
   `SAT_LBD_UPDATE_REASONS=on` keeps reason-side LBD improvement scoped to conflict analysis.
+  Learned-reason LBD recomputation now walks arena clauses directly instead of allocating a
+  temporary literal vector per reason. LBD-tiered reduce-DB also reuses a persistent delete-marker
+  table and compacts `learned_clause_ids` in place instead of allocating a dense delete vector for
+  every reduction pass.
   `SAT_LBD_UPDATE_PROP_REASONS=on` is a separate experimental extension that recomputes learned
   propagation-reason LBD after the implied literal is enqueued, lowers the stored LBD/tier if the
   current assignment gives a better glue value, and marks learned propagation reasons recently used

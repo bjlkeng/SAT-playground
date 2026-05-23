@@ -58,7 +58,10 @@ Known unpromoted or incomplete feature families at this baseline:
   immediately. The blocker is default-off (`0`) after profile testing showed the `1.4` margin
   regressed the current profile suite. Learned clauses now start with the maximum
   `used_recently` value for every LBD tier; later reduce-DB passes age that counter down before
-  high-LBD clauses become eviction candidates. The LBD-tiered reducer computes current focused and
+  high-LBD clauses become eviction candidates. Learned-reason LBD recomputation now walks arena
+  clauses directly without a temporary literal-vector allocation, and LBD-tiered reduce-DB reuses a
+  persistent delete-marker table plus in-place learned-clause-id compaction rather than allocating a
+  dense delete vector every pass. The LBD-tiered reducer computes current focused and
   stable tier thresholds from recent glue-use histograms at each reduction pass, using 50% and 90%
   cumulative-use cutoffs with `2/6` as minimum floors, then reclassifies live learned clauses before
   collecting candidates. It also ages `used_recently` on every scanned kept learned clause rather

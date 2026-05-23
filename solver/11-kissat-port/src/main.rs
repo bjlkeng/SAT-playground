@@ -4,6 +4,13 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+#[cfg(test)]
+use std::alloc::{GlobalAlloc, Layout, System};
+#[cfg(test)]
+use std::cell::Cell;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 mod branch;
 mod check;
 mod config;
@@ -33,6 +40,62 @@ use stats::{
     json_stats_line, max_rss_mb, trace_full_line, FormulaStats, GcReason, InputIdentity,
     ProofStats, RunTimings, SolverStats, StatsJsonContext,
 };
+
+#[cfg(test)]
+static TEST_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+thread_local! {
+    static TEST_COUNT_ALLOCATIONS: Cell<bool> = Cell::new(false);
+}
+
+#[cfg(test)]
+struct CountingAllocator;
+
+#[cfg(test)]
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        TEST_COUNT_ALLOCATIONS.with(|enabled| {
+            if enabled.get() {
+                TEST_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        TEST_COUNT_ALLOCATIONS.with(|enabled| {
+            if enabled.get() {
+                TEST_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+}
+
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: CountingAllocator = CountingAllocator;
+
+#[cfg(test)]
+fn reset_test_allocations() {
+    TEST_ALLOCATIONS.store(0, Ordering::SeqCst);
+    TEST_COUNT_ALLOCATIONS.with(|enabled| enabled.set(true));
+}
+
+#[cfg(test)]
+fn stop_test_allocations() {
+    TEST_COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
+}
+
+#[cfg(test)]
+fn test_allocation_count() -> usize {
+    TEST_ALLOCATIONS.load(Ordering::SeqCst)
+}
 
 const UNASSIGNED: u8 = 0;
 const TRUE: u8 = 1;
@@ -1147,6 +1210,9 @@ struct Solver {
     lbd_hist_6_10: u64,
     lbd_hist_gt_10: u64,
     reason_pin_generation: u64,
+    reduce_delete_generation: u64,
+    reduce_delete_mark: Vec<u64>,
+    reduce_candidates: Vec<ReduceCand>,
     gc_pending_reason: GcReason,
     track_gc_detail_stats: bool,
     /// opt-in hot-path watcher diagnostics; default off for solver-10 parity
@@ -1704,6 +1770,9 @@ impl Solver {
             lbd_hist_6_10: 0,
             lbd_hist_gt_10: 0,
             reason_pin_generation: 0,
+            reduce_delete_generation: 0,
+            reduce_delete_mark: Vec::new(),
+            reduce_candidates: Vec::new(),
             gc_pending_reason: GcReason::None,
             track_gc_detail_stats: config.stats_json || config.trace_full,
             hot_stats: config.hot_stats,
@@ -1980,30 +2049,45 @@ impl Solver {
     }
 
     #[inline]
-    fn compute_lbd_from_lits(&mut self, lits: &[i32]) -> u16 {
-        if lits.is_empty() {
-            return 0;
-        }
-
+    fn begin_lbd_measurement(&mut self) {
         self.lbd_stamp = self.lbd_stamp.wrapping_add(1);
         if self.lbd_stamp == 0 {
             self.lbd_seen.fill(0);
             self.lbd_stamp = 1;
         }
+    }
+
+    #[inline]
+    fn count_lbd_level(&mut self, level: usize, count: &mut u32) {
+        if level >= self.lbd_seen.len() {
+            self.lbd_seen.resize(level + 1, 0);
+        }
+        if self.lbd_seen[level] != self.lbd_stamp {
+            self.lbd_seen[level] = self.lbd_stamp;
+            *count += 1;
+        }
+    }
+
+    #[inline(always)]
+    fn finish_lbd_measurement(count: u32) -> u16 {
+        count.min(u16::MAX as u32) as u16
+    }
+
+    #[inline]
+    fn compute_lbd_from_lits(&mut self, lits: &[i32]) -> u16 {
+        if lits.is_empty() {
+            return 0;
+        }
+
+        self.begin_lbd_measurement();
 
         let mut count = 0u32;
         for &lit in lits {
             let var = lit.unsigned_abs() as usize;
             let level = self.decision_level.get(var).copied().unwrap_or(0);
-            if level >= self.lbd_seen.len() {
-                self.lbd_seen.resize(level + 1, 0);
-            }
-            if self.lbd_seen[level] != self.lbd_stamp {
-                self.lbd_seen[level] = self.lbd_stamp;
-                count += 1;
-            }
+            self.count_lbd_level(level, &mut count);
         }
-        count.min(u16::MAX as u32) as u16
+        Self::finish_lbd_measurement(count)
     }
 
     fn record_lbd_measurement(&mut self, lbd: u16) {
@@ -2020,8 +2104,21 @@ impl Solver {
     }
 
     fn compute_lbd_for_clause(&mut self, clause_idx: ClauseRef) -> u16 {
-        let lits = self.clause_slice(clause_idx).to_vec();
-        self.compute_lbd_from_lits(&lits)
+        let clause_len = self.clause_len(clause_idx);
+        if clause_len == 0 {
+            return 0;
+        }
+
+        self.begin_lbd_measurement();
+
+        let mut count = 0u32;
+        for lit_pos in 0..clause_len {
+            let lit = self.clause_lit(clause_idx, lit_pos);
+            let var = lit.unsigned_abs() as usize;
+            let level = self.decision_level.get(var).copied().unwrap_or(0);
+            self.count_lbd_level(level, &mut count);
+        }
+        Self::finish_lbd_measurement(count)
     }
 
     fn ensure_learned_id_map_len(&mut self, clause_idx: ClauseRef) {
@@ -5030,19 +5127,41 @@ impl Solver {
         })
     }
 
+    fn begin_reduce_delete_marking(&mut self) {
+        self.reduce_delete_generation = self.reduce_delete_generation.wrapping_add(1);
+        if self.reduce_delete_generation == 0 {
+            self.reduce_delete_mark.fill(0);
+            self.reduce_delete_generation = 1;
+        }
+        if self.reduce_delete_mark.len() < self.arena.len() {
+            self.reduce_delete_mark.resize(self.arena.len(), 0);
+        }
+    }
+
+    fn mark_reduce_delete_candidate(&mut self, clause_idx: ClauseRef) {
+        debug_assert!(clause_idx < self.reduce_delete_mark.len());
+        self.reduce_delete_mark[clause_idx] = self.reduce_delete_generation;
+    }
+
+    fn reduce_delete_candidate_marked(&self, clause_idx: ClauseRef) -> bool {
+        clause_idx < self.reduce_delete_mark.len()
+            && self.reduce_delete_mark[clause_idx] == self.reduce_delete_generation
+    }
+
     fn reduce_db_lbd_tiered(&mut self, proof_log: &mut ProofLog) {
         self.retier_current_mode_from_glue_histogram();
         let pins = self.rebuild_reason_pinset();
         debug_assert!(pins.generation > 0);
         let emergency = self.learned_literals > self.hard_learned_lit_budget;
-        let mut candidates: Vec<_> = self
-            .learned_clause_ids
-            .iter()
-            .copied()
-            .filter_map(|clause_idx| self.reduce_candidate(clause_idx, &pins, emergency))
-            .collect();
+        self.reduce_candidates.clear();
+        for idx in 0..self.learned_clause_ids.len() {
+            let clause_idx = self.learned_clause_ids[idx];
+            if let Some(candidate) = self.reduce_candidate(clause_idx, &pins, emergency) {
+                self.reduce_candidates.push(candidate);
+            }
+        }
 
-        candidates.sort_unstable_by(|lhs, rhs| {
+        self.reduce_candidates.sort_unstable_by(|lhs, rhs| {
             rhs.lbd
                 .cmp(&lhs.lbd)
                 .then_with(|| rhs.size.cmp(&lhs.size))
@@ -5052,18 +5171,22 @@ impl Solver {
         });
 
         let mut projected_lits = self.learned_literals;
-        let mut delete_clause = vec![false; self.arena.len()];
-        for cand in candidates {
+        self.begin_reduce_delete_marking();
+        for idx in 0..self.reduce_candidates.len() {
+            let cand = self.reduce_candidates[idx];
             if projected_lits <= self.learned_lit_budget {
                 break;
             }
-            delete_clause[cand.clause_idx] = true;
+            self.mark_reduce_delete_candidate(cand.clause_idx);
             projected_lits = projected_lits.saturating_sub(cand.size);
         }
+        self.reduce_candidates.clear();
 
-        let learned_clause_ids = std::mem::take(&mut self.learned_clause_ids);
-        for clause_idx in learned_clause_ids {
-            if clause_idx < delete_clause.len() && delete_clause[clause_idx] {
+        let mut write = 0usize;
+        let learned_len = self.learned_clause_ids.len();
+        for read in 0..learned_len {
+            let clause_idx = self.learned_clause_ids[read];
+            if self.reduce_delete_candidate_marked(clause_idx) {
                 proof_log.record_deletion(self.clause_slice(clause_idx));
                 self.detach_clause(clause_idx);
                 self.mark_clause_deleted_already_unlinked(clause_idx);
@@ -5071,9 +5194,11 @@ impl Solver {
             } else {
                 self.record_lbd_tier_kept(clause_idx);
                 self.age_learned_clause_on_reduce(clause_idx);
-                self.learned_clause_ids.push(clause_idx);
+                self.learned_clause_ids[write] = clause_idx;
+                write += 1;
             }
         }
+        self.learned_clause_ids.truncate(write);
         self.live_learned_clause_count = self.learned_clause_ids.len();
 
         let gc_reason = if emergency {
@@ -6671,6 +6796,75 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_lbd_for_clause_matches_compute_lbd_from_lits() {
+        let mut s = make_solver(5, vec![]);
+        s.decision_level[1] = 1;
+        s.decision_level[2] = 3;
+        s.decision_level[3] = 3;
+        s.decision_level[4] = 0;
+        s.decision_level[5] = 2;
+        let clause_idx = s.add_clause(vec![1, -2, 3, -4, 5]);
+
+        let expected = s.compute_lbd_from_lits(&[1, -2, 3, -4, 5]);
+        let actual = s.compute_lbd_for_clause(clause_idx);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_compute_lbd_for_clause_no_allocation() {
+        let mut s = make_solver(5, vec![]);
+        s.decision_level[1] = 1;
+        s.decision_level[2] = 3;
+        s.decision_level[3] = 3;
+        s.decision_level[4] = 0;
+        s.decision_level[5] = 2;
+        let clause_idx = s.add_clause(vec![1, -2, 3, -4, 5]);
+
+        reset_test_allocations();
+        let lbd = s.compute_lbd_for_clause(clause_idx);
+        let allocations = test_allocation_count();
+        stop_test_allocations();
+
+        assert_eq!(lbd, 4);
+        assert_eq!(allocations, 0);
+    }
+
+    #[test]
+    fn test_lbd_reason_analysis_hot_path_no_allocation() {
+        let mut s = make_solver(5, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.update_reason_lbd = true;
+        s.decision_level[1] = 1;
+        s.decision_level[2] = 3;
+        s.decision_level[3] = 3;
+        s.decision_level[4] = 0;
+        s.decision_level[5] = 2;
+        let reason = s.add_clause(vec![1, -2, 3, -4, 5]);
+        set_lbd_meta_for_test(&mut s, reason, 9, 0);
+        s.focused_glue_recent.resize(10, 0);
+        s.stats.focused_glue_used.resize(10, 0);
+        s.stable_glue_recent.resize(10, 0);
+        s.stats.stable_glue_used.resize(10, 0);
+
+        let mut current_level_count = 0;
+        reset_test_allocations();
+        s.mark_reason_literals_for_analysis::<true>(
+            ReasonRef::Clause(reason),
+            1,
+            0,
+            3,
+            &mut current_level_count,
+        );
+        let allocations = test_allocation_count();
+        stop_test_allocations();
+
+        assert_eq!(allocations, 0);
+        assert_eq!(s.learnt_lbd(reason), 4);
+        assert_eq!(current_level_count, 2);
+    }
+
+    #[test]
     fn test_reason_none_for_decision() {
         let mut s = make_solver(2, vec![]);
 
@@ -7972,6 +8166,52 @@ mod tests {
         assert_eq!(s.learned_clause_ids.len(), 0);
         assert_eq!(s.learned_literals, 0);
         assert_eq!(s.stats.learned_collected, 1);
+    }
+
+    #[test]
+    fn test_reduce_delete_marker_handles_arena_growth() {
+        let mut s = Solver::new(3, vec![]);
+        let clause_idx = s.add_clause(vec![1, 2, 3]);
+
+        s.begin_reduce_delete_marking();
+        s.mark_reduce_delete_candidate(clause_idx);
+
+        assert!(s.reduce_delete_mark.len() >= s.arena.len());
+        assert!(s.reduce_delete_candidate_marked(clause_idx));
+    }
+
+    #[test]
+    fn test_reduce_delete_marker_generation_wraparound() {
+        let mut s = Solver::new(2, vec![]);
+        s.reduce_delete_mark.resize(4, u64::MAX);
+        s.reduce_delete_generation = u64::MAX;
+
+        s.begin_reduce_delete_marking();
+
+        assert_eq!(s.reduce_delete_generation, 1);
+        assert!(s.reduce_delete_mark.iter().all(|&mark| mark == 0));
+    }
+
+    #[test]
+    fn test_reduce_db_lbd_tiered_no_per_call_allocation_when_marker_reused() {
+        let mut s = Solver::new(4, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 100);
+        let first = s.add_clause(vec![1, 2, 3]);
+        let second = s.add_clause(vec![1, 2, 3, 4]);
+        set_lbd_meta_for_test(&mut s, first, 8, 0);
+        set_lbd_meta_for_test(&mut s, second, 9, 0);
+        s.begin_reduce_delete_marking();
+        let mut proof_log = ProofLog::disabled();
+
+        reset_test_allocations();
+        s.reduce_db_lbd_tiered(&mut proof_log);
+        s.reduce_db_lbd_tiered(&mut proof_log);
+        let allocations = test_allocation_count();
+        stop_test_allocations();
+
+        assert_eq!(allocations, 0);
+        assert_eq!(s.learned_clause_ids.len(), 2);
+        assert_eq!(s.live_learned_clause_count, 2);
     }
 
     #[test]
