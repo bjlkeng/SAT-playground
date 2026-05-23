@@ -955,13 +955,13 @@ struct Solver {
     assignment: Vec<u8>,
     /// last assigned polarity for each variable, reused when branching after backtrack/restart
     saved_phase: Vec<u8>,
-    /// per-restart target assignment polarity captured from the deepest unconflicted prefix
+    /// target assignment polarity captured from the deepest unconflicted prefix in this phase block
     target_phase: Vec<u8>,
     /// best full-solve assignment polarity captured from the deepest unconflicted prefix
     best_phase: Vec<u8>,
     /// initial polarity used when no saved/target/best phase is available
     original_phase: Vec<u8>,
-    /// deepest unconflicted trail length captured for target phase in the current restart window
+    /// deepest unconflicted trail length captured for target phase in the current phase block
     target_assigned: usize,
     /// deepest unconflicted trail length captured for best phase over the whole solve
     best_assigned: usize,
@@ -3950,6 +3950,10 @@ impl Solver {
         self.target_assigned = 0;
     }
 
+    fn preserve_target_phase_across_restart(&self) -> bool {
+        self.search_mode_policy == SearchModePolicy::FocusedStable
+    }
+
     fn capture_target_phase(&mut self, assigned: usize) {
         for &lit in &self.trail {
             let var = lit.unsigned_abs() as usize;
@@ -4064,6 +4068,7 @@ impl Solver {
             2 => self.rephase_to_original(),
             _ => unreachable!(),
         }
+        self.reset_target_phase();
         self.rephase_index = (self.rephase_index + 1) % 3;
         self.rephase_at_conflicts = self
             .stats
@@ -4186,7 +4191,9 @@ impl Solver {
         }
 
         self.restart_pending = false;
-        self.reset_target_phase();
+        if !self.preserve_target_phase_across_restart() {
+            self.reset_target_phase();
+        }
         if self.current_level() == 0 {
             return false;
         }
@@ -9696,7 +9703,28 @@ mod tests {
     }
 
     #[test]
-    fn test_target_phase_reset_on_restart() {
+    fn test_focused_stable_target_phase_survives_restart() {
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::TargetThenSaved,
+            ..focused_stable_config()
+        };
+        let mut s = make_solver_with_config(2, vec![], &config);
+
+        s.decide(1);
+        s.maybe_capture_phase_prefix();
+        assert_eq!(s.target_phase[1], TRUE);
+        assert_eq!(s.target_assigned, 1);
+
+        s.restart_pending = true;
+        assert!(s.perform_restart_if_pending());
+
+        assert_eq!(s.target_assigned, 1);
+        assert_eq!(s.target_phase[1], TRUE);
+        assert_eq!(s.current_level(), 0);
+    }
+
+    #[test]
+    fn test_single_mode_target_phase_resets_on_restart() {
         let config = SolverConfig {
             phase_policy: PhasePolicy::TargetThenSaved,
             ..SolverConfig::default()
@@ -9717,7 +9745,26 @@ mod tests {
     }
 
     #[test]
-    fn test_target_phase_reset_when_pending_restart_already_at_root() {
+    fn test_focused_stable_target_phase_survives_pending_restart_already_at_root() {
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::TargetThenSaved,
+            ..focused_stable_config()
+        };
+        let mut s = make_solver_with_config(1, vec![], &config);
+        s.target_phase[1] = TRUE;
+        s.target_assigned = 1;
+        s.restart_pending = true;
+
+        assert!(!s.perform_restart_if_pending());
+
+        assert!(!s.restart_pending);
+        assert_eq!(s.target_assigned, 1);
+        assert_eq!(s.target_phase[1], TRUE);
+        assert_eq!(s.stats.restarts, 0);
+    }
+
+    #[test]
+    fn test_single_mode_target_phase_resets_when_pending_restart_already_at_root() {
         let config = SolverConfig {
             phase_policy: PhasePolicy::TargetThenSaved,
             ..SolverConfig::default()
@@ -9733,6 +9780,64 @@ mod tests {
         assert_eq!(s.target_assigned, 0);
         assert_eq!(s.target_phase[1], UNASSIGNED);
         assert_eq!(s.stats.restarts, 0);
+    }
+
+    #[test]
+    fn test_target_assigned_monotone_across_restarts() {
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::TargetThenSaved,
+            ..focused_stable_config()
+        };
+        let mut s = make_solver_with_config(3, vec![], &config);
+
+        s.decide(1);
+        s.maybe_capture_phase_prefix();
+        assert_eq!(s.target_assigned, 1);
+        assert_eq!(s.target_phase[1], TRUE);
+
+        s.restart_pending = true;
+        assert!(s.perform_restart_if_pending());
+        assert_eq!(s.target_assigned, 1);
+        assert_eq!(s.target_phase[1], TRUE);
+
+        s.decide(1);
+        s.decide(-2);
+        s.maybe_capture_phase_prefix();
+        assert_eq!(s.target_assigned, 2);
+        assert_eq!(s.target_phase[1], TRUE);
+        assert_eq!(s.target_phase[2], FALSE);
+
+        s.restart_pending = true;
+        assert!(s.perform_restart_if_pending());
+        assert_eq!(s.target_assigned, 2);
+        assert_eq!(s.target_phase[2], FALSE);
+
+        s.decide(1);
+        s.decide(-2);
+        s.decide(3);
+        s.maybe_capture_phase_prefix();
+        assert_eq!(s.target_assigned, 3);
+        assert_eq!(s.target_phase[3], TRUE);
+    }
+
+    #[test]
+    fn test_pick_branch_phase_uses_target_after_restart() {
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::TargetThenSaved,
+            ..focused_stable_config()
+        };
+        let mut s = make_solver_with_config(1, vec![], &config);
+        s.saved_phase[1] = TRUE;
+        s.target_phase[1] = FALSE;
+        s.target_assigned = 1;
+
+        s.decide(1);
+        s.restart_pending = true;
+        assert!(s.perform_restart_if_pending());
+
+        assert!(!s.pick_branch_phase(1));
+        assert_eq!(s.stats.phase_target_used, 1);
+        assert_eq!(s.stats.phase_saved_used, 0);
     }
 
     #[test]
@@ -9759,6 +9864,26 @@ mod tests {
         assert_eq!(s.best_assigned, 2);
         assert_eq!(s.best_phase[2], FALSE);
         assert_eq!(s.best_phase[3], TRUE);
+    }
+
+    #[test]
+    fn test_target_phase_reset_on_rephase() {
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::TargetThenSaved,
+            rephase: true,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(2, vec![], &config);
+        s.target_phase[1] = TRUE;
+        s.target_phase[2] = FALSE;
+        s.target_assigned = 2;
+
+        s.apply_rephase();
+
+        assert_eq!(s.target_assigned, 0);
+        assert_eq!(s.target_phase[1], UNASSIGNED);
+        assert_eq!(s.target_phase[2], UNASSIGNED);
+        assert_eq!(s.stats.rephases, 1);
     }
 
     #[test]

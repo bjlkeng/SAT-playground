@@ -80,8 +80,10 @@ Known unpromoted or incomplete feature families at this baseline:
   only chooses `current - 1` when the learned clause remains asserting at that level and otherwise
   uses the normal assertion level.
 - Saved/target/best phase policies are present behind `SAT_PHASE`, but they are not promoted as
-  default-profile behavior yet. Target phases are preserved across focused/stable mode switches and
-  are reset only by restart handling.
+  default-profile behavior yet. In focused/stable search, target phases are preserved across mode
+  switches and restart cycles, then reset when a rephase event starts a new phase block. Single-mode
+  target policies still reset target phase on restart because all-mode target persistence regressed
+  the profiling suite.
 - Focused/stable mode switching and reluctant restarts are present behind `SAT_USE_LBD=on
   SAT_SEARCH_MODE=focused-stable`, but they are not promoted as default-profile behavior yet.
   Stable-to-focused transitions reset the LBD EMA restart averages so focused restart calibration

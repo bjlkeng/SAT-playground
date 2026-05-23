@@ -73,8 +73,10 @@ What is present:
   testing showed the `1.4` margin regressed the current profiling suite. Legacy Luby restarts
   remain the default for solver-10 parity
 - opt-in saved/target/best phase selection policies via `SAT_PHASE`, with legacy saved-phase
-  branching kept as the default for solver-10 parity. Target phases persist across focused/stable
-  mode switches and are reset only by restart handling.
+  branching kept as the default for solver-10 parity. In focused/stable search, target phases
+  persist across mode switches and restart cycles, then reset when a rephase event starts a new
+  phase block. Single-mode target policies retain restart-time target reset behavior after the
+  all-mode persistence experiment regressed the profiling suite.
 - opt-in focused/stable search-mode scaffolding (`SAT_USE_LBD=on
   SAT_SEARCH_MODE=focused-stable`) with focused EMA restarts and stable reluctant restarts;
   single-mode search remains the default for solver-10 parity. Entering focused mode resets the
