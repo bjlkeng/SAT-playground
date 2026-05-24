@@ -1060,6 +1060,8 @@ struct Solver {
     restart_margin: f64,
     /// threshold multiplier for blocking restarts when fast level EMA is high
     restart_block_margin: f64,
+    /// opt-in Kissat-style partial restart that keeps the best decision-prefix trail
+    restart_reuse_trail: bool,
     /// conflicts since the last EMA restart
     restart_conflicts_since_last: u64,
     /// current high-level search mode for focused/stable experiments
@@ -1693,6 +1695,7 @@ impl Solver {
             restart_next_check_conflict: 0,
             restart_margin: KISSAT_EMA_RESTART_MARGIN,
             restart_block_margin: config.restart_block_margin,
+            restart_reuse_trail: config.restart_reuse_trail,
             restart_conflicts_since_last: 0,
             search_mode,
             search_mode_policy,
@@ -4193,6 +4196,91 @@ impl Solver {
         }
     }
 
+    fn decision_variable_at_level(&self, level: usize) -> Option<usize> {
+        if level == 0 || level > self.current_level() {
+            return None;
+        }
+        let trail_idx = *self.trail_limits.get(level - 1)?;
+        let lit = *self.trail.get(trail_idx)?;
+        Some(lit.unsigned_abs() as usize)
+    }
+
+    fn vmtf_restart_candidate_eligible(&self, var: usize) -> bool {
+        var > 0
+            && var < self.assignment.len()
+            && self.decision_var[var]
+            && !self.eliminated[var]
+            && self.assignment[var] == UNASSIGNED
+    }
+
+    fn peek_vmtf_branch_var(&self) -> Option<usize> {
+        let queue = self.vmtf_queue.as_ref()?;
+        queue
+            .peek(|var| self.vmtf_restart_candidate_eligible(var))
+            .or_else(|| queue.peek_from_head(|var| self.vmtf_restart_candidate_eligible(var)))
+    }
+
+    fn reuse_stable_trail_level(&mut self, current_level: usize) -> usize {
+        self.heap_remove_assigned_top();
+        let Some(&limit_word) = self.branch_heap.first() else {
+            return current_level;
+        };
+        let limit_var = limit_word as usize;
+        debug_assert!(self.unassigned_decision_candidate(limit_var));
+        let limit_score = self.activity[limit_var];
+
+        let mut reused_level = 0usize;
+        for level in 1..=current_level {
+            let Some(var) = self.decision_variable_at_level(level) else {
+                break;
+            };
+            if self.activity[var].total_cmp(&limit_score).is_le() {
+                break;
+            }
+            reused_level = level;
+        }
+        reused_level
+    }
+
+    fn reuse_focused_trail_level(&self, current_level: usize) -> usize {
+        let Some(limit_var) = self.peek_vmtf_branch_var() else {
+            return current_level;
+        };
+        let Some(queue) = self.vmtf_queue.as_ref() else {
+            return 0;
+        };
+        let limit_stamp = queue.stamp(limit_var);
+
+        let mut reused_level = 0usize;
+        for level in 1..=current_level {
+            let Some(var) = self.decision_variable_at_level(level) else {
+                break;
+            };
+            if queue.stamp(var) <= limit_stamp {
+                break;
+            }
+            reused_level = level;
+        }
+        reused_level
+    }
+
+    fn restart_reuse_trail_level(&mut self) -> usize {
+        if !self.restart_reuse_trail {
+            return 0;
+        }
+
+        let current_level = self.current_level();
+        if current_level == 0 {
+            return 0;
+        }
+
+        if self.vmtf_branching_active() {
+            self.reuse_focused_trail_level(current_level)
+        } else {
+            self.reuse_stable_trail_level(current_level)
+        }
+    }
+
     fn perform_restart_if_pending(&mut self) -> bool {
         if !self.restart_pending {
             return false;
@@ -4206,11 +4294,20 @@ impl Solver {
             return false;
         }
 
+        let backtrack_level = self.restart_reuse_trail_level();
         if self.accounting_mode.update_restart_stats() {
             self.stats.restarts += 1;
+            if backtrack_level > 0 {
+                self.stats.restarts_reused_trails =
+                    self.stats.restarts_reused_trails.saturating_add(1);
+                self.stats.restarts_reused_levels = self
+                    .stats
+                    .restarts_reused_levels
+                    .saturating_add(backtrack_level as u64);
+            }
         }
         self.maybe_rephase_on_stable_restart();
-        self.backtrack(0);
+        self.backtrack(backtrack_level);
         true
     }
 
@@ -11150,5 +11247,81 @@ mod tests {
         assert_eq!(s.assignment[3], UNASSIGNED);
         assert_eq!(s.assignment[4], UNASSIGNED);
         assert!(!s.restart_pending);
+    }
+
+    #[test]
+    fn test_trail_reuse_stable_keeps_high_score_prefix() {
+        let config = SolverConfig {
+            restart_reuse_trail: true,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(4, vec![], &config);
+        s.decide(1);
+        s.decide(2);
+        s.decide(3);
+        s.activity[1] = 10.0;
+        s.activity[2] = 8.0;
+        s.activity[3] = 1.0;
+        s.activity[4] = 5.0;
+        s.rebuild_branch_queue();
+
+        assert_eq!(s.restart_reuse_trail_level(), 2);
+
+        s.restart_pending = true;
+        assert!(s.perform_restart_if_pending());
+
+        assert_eq!(s.current_level(), 2);
+        assert_eq!(s.assignment[1], TRUE);
+        assert_eq!(s.assignment[2], TRUE);
+        assert_eq!(s.assignment[3], UNASSIGNED);
+        assert_eq!(s.stats.restarts, 1);
+        assert_eq!(s.stats.restarts_reused_trails, 1);
+        assert_eq!(s.stats.restarts_reused_levels, 2);
+    }
+
+    #[test]
+    fn test_trail_reuse_focused_keeps_high_stamp_prefix() {
+        let config = SolverConfig {
+            restart_reuse_trail: true,
+            ..focused_stable_vmtf_config()
+        };
+        let mut s = make_solver_with_config(4, vec![], &config);
+        s.decide(1);
+        s.decide(2);
+        s.decide(3);
+        s.vmtf_stamp_analyzed_var(1);
+        s.vmtf_stamp_analyzed_var(2);
+
+        assert_eq!(
+            s.vmtf_queue.as_ref().unwrap().stamp_for_test(1),
+            s.vmtf_queue.as_ref().unwrap().stamp_for_test(4) + 1
+        );
+        assert_eq!(s.restart_reuse_trail_level(), 2);
+
+        s.restart_pending = true;
+        assert!(s.perform_restart_if_pending());
+
+        assert_eq!(s.current_level(), 2);
+        assert_eq!(s.assignment[1], TRUE);
+        assert_eq!(s.assignment[2], TRUE);
+        assert_eq!(s.assignment[3], UNASSIGNED);
+        assert_eq!(s.stats.restarts_reused_trails, 1);
+        assert_eq!(s.stats.restarts_reused_levels, 2);
+    }
+
+    #[test]
+    fn test_trail_reuse_does_not_reuse_at_zero() {
+        let config = SolverConfig {
+            restart_reuse_trail: true,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(2, vec![], &config);
+
+        assert_eq!(s.restart_reuse_trail_level(), 0);
+        s.restart_pending = true;
+        assert!(!s.perform_restart_if_pending());
+        assert_eq!(s.stats.restarts, 0);
+        assert_eq!(s.stats.restarts_reused_trails, 0);
+        assert_eq!(s.stats.restarts_reused_levels, 0);
     }
 }

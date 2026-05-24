@@ -70,8 +70,10 @@ What is present:
   search experiments. An optional Glucose-style decision-level blocker can suppress EMA restarts
   when the recent decision-level EMA is high relative to the slow baseline; set
   `SAT_RESTART_BLOCK_MARGIN` above `0` to enable it. The blocker is default-off after profile
-  testing showed the `1.4` margin regressed the current profiling suite. Legacy Luby restarts
-  remain the default for solver-10 parity
+  testing showed the `1.4` margin regressed the current profiling suite. `SAT_RESTART_REUSE_TRAIL=on`
+  enables Kissat-style partial restart: the solver keeps a decision-level prefix whose VSIDS score
+  or focused-mode VMTF stamp is better than the next decision candidate. Legacy Luby restarts remain
+  the default for solver-10 parity
 - opt-in saved/target/best phase selection policies via `SAT_PHASE`, with legacy saved-phase
   branching kept as the default for solver-10 parity. In focused/stable search, target phases
   persist across mode switches and restart cycles, then reset when a rephase event starts a new
@@ -149,6 +151,7 @@ SAT_STATS_HOT=on
 SAT_USE_LBD=on
 SAT_RESTART=legacy-luby|kissat-ema|reluctant
 SAT_RESTART_BLOCK_MARGIN=<f64>  # 0 disables the level blocker
+SAT_RESTART_REUSE_TRAIL=on|off
 SAT_REDUCE=legacy|lbd-tiered
 SAT_REDUCE_MIN_INTERVAL=<usize>  # lbd-tiered default is 100, values must be >= 50
 SAT_CLAUSE_MIN=off|basic|recursive-limited|inblock

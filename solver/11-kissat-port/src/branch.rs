@@ -81,6 +81,50 @@ impl VmtfQueue {
         None
     }
 
+    pub(crate) fn peek<F>(&self, mut eligible: F) -> Option<usize>
+    where
+        F: FnMut(usize) -> bool,
+    {
+        let mut var = if self.search == 0 {
+            self.head as usize
+        } else {
+            self.search as usize
+        };
+
+        while var != 0 {
+            if eligible(var) {
+                return Some(var);
+            }
+            var = self.prev[var] as usize;
+        }
+
+        None
+    }
+
+    pub(crate) fn peek_from_head<F>(&self, mut eligible: F) -> Option<usize>
+    where
+        F: FnMut(usize) -> bool,
+    {
+        let mut var = self.head as usize;
+
+        while var != 0 {
+            if eligible(var) {
+                return Some(var);
+            }
+            var = self.prev[var] as usize;
+        }
+
+        None
+    }
+
+    pub(crate) fn stamp(&self, var: usize) -> u64 {
+        if self.valid_var(var) {
+            self.stamp[var]
+        } else {
+            0
+        }
+    }
+
     fn insert_new_head(&mut self, var: usize) {
         debug_assert!(self.valid_var(var));
         debug_assert_eq!(self.next[var], 0);
@@ -128,6 +172,6 @@ impl VmtfQueue {
 
     #[cfg(test)]
     pub(crate) fn stamp_for_test(&self, var: usize) -> u64 {
-        self.stamp[var]
+        self.stamp(var)
     }
 }

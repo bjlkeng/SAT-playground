@@ -56,7 +56,10 @@ Known unpromoted or incomplete feature families at this baseline:
   Glucose-style decision-level blocker controlled by `SAT_RESTART_BLOCK_MARGIN`, so high
   fast-vs-slow level EMA ratios can preserve a productive deep prefix instead of restarting
   immediately. The blocker is default-off (`0`) after profile testing showed the `1.4` margin
-  regressed the current profile suite. Learned clauses now start with the maximum
+  regressed the current profile suite. `SAT_RESTART_REUSE_TRAIL=on` separately enables the
+  Kissat-style partial-restart experiment: restarts keep the decision-level prefix whose VSIDS score
+  or focused-mode VMTF stamp beats the next decision candidate and backtrack only to that level.
+  Learned clauses now start with the maximum
   `used_recently` value for every LBD tier; later reduce-DB passes age that counter down before
   high-LBD clauses become eviction candidates. Learned-reason LBD recomputation now walks arena
   clauses directly without a temporary literal-vector allocation, and LBD-tiered reduce-DB reuses a

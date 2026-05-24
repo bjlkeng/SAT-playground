@@ -369,6 +369,118 @@ just chase one wall-time number.
     reference is faster, timeout-only differences, and the one or two instances that dominate PAR-2.
     This prevents repeating preprocessing work when the next gap is actually search-path sensitivity.
 
+### Investigating Why Ported Features Don't Help
+
+Use this when an opt-in feature (kissat-ema restart, lbd-tiered reducer, focused-stable mode,
+chrono backtracking, etc.) has landed but does not improve — or actively regresses — the
+benchmark. The goal is to attribute the regression to specific implementation gaps versus
+"the feature is wrong for this workload," and to produce per-feature code-level recommendations
+rather than parameter-tuning suggestions.
+
+This workflow extends `Reference Solver Gap-Closing Strategy` above by adding multi-config
+ablation, source-level diff against the reference, and chaos-aware analysis. Use a separate git
+worktree (`git worktree add /tmp/<name> <ref>`) when another agent may be working on the repo.
+
+1. **Build a multi-config ablation matrix, not a one-vs-one comparison**: A single feature flip
+   (A vs A+feature) cannot distinguish trajectory effects from execution effects. Define at least
+   five configs:
+   * `A_baseline`: legacy defaults (no opt-in features)
+   * `B_metadata_only`: feature's bookkeeping only (e.g. `SAT_USE_LBD=on` without policy change)
+   * `C_one_feature`: just the suspect feature
+   * `D_other_feature`: just an orthogonal suspect
+   * `E_combined`: both
+   * `F_full_stack`: all related opt-ins together
+   Confirm `B` matches `A` on conflicts/decisions/propagations to verify bookkeeping is free.
+   Anything that diverges past `B` is signal.
+
+2. **Use the full profiling suite, not one instance**: A single instance is a single data point.
+   The 10-instance `benchmarks/profiling/` suite is diverse enough to show feature effects across
+   SAT/UNSAT, structured/random, and several problem families. A feature is rarely uniformly bad;
+   the question is *which instances does it help, which does it hurt, and how do those split.*
+
+3. **Run sequentially in a separate worktree, with `SAT_STATS_JSON=on` and `/usr/bin/time -v`**:
+   Capture per-(config, instance) wall time, conflicts, decisions, propagations, restarts,
+   `learned_clauses_final`, `reduce_db_calls`, max RSS, and minor page faults. JSON_STATS is
+   compact and parseable. Use `SAT_LIMIT_WALL_SEC` plus a `timeout` outer wrapper so timeouts are
+   classified consistently.
+
+4. **Decompose every regression as work × speed against `A_baseline`**: For each `(config,
+   instance)` row, compute
+   * `work_ratio = conflicts_cfg / conflicts_A` (search trajectory effect)
+   * `speed_ratio = (props/s)_A / (props/s)_cfg` (per-event execution effect)
+   * `net = work × speed` and compare to measured wall ratio
+   Trajectory-only features (EMA restart) typically show `speed ≈ 1.0` and `work` ranging widely.
+   Execution-only effects (DB bloat, watcher growth) show `work ≈ 1.0` and `speed > 1`. Mixed
+   features (combined kissat-style) show both moving. A row where `net ≈ measured wall ratio`
+   confirms the decomposition; a large gap suggests a third factor (often GC, allocation, or
+   proof writing).
+
+5. **Read the reference source line-by-line for the suspect feature**: Find the vendored
+   reference under `benchmarks/reference-solvers/<name>/src/` and read the file that implements
+   the feature (e.g. `restart.c`, `reduce.c`, `tiers.c` for kissat). Look for *execution model*
+   differences beyond parameter names:
+   * what the reference does on each event (restart, reduce, decide, learn)
+   * what state survives between events (trail reuse, used counters, tier assignments)
+   * which side-effects happen at which boundary (queue drains, heap rebuilds, EMA resets)
+   Solver 11 vs kissat: same restart trigger, but kissat does `reuse_focused_trail` while solver
+   11 does `backtrack(0)` — same *decision*, completely different *execution*. The reference
+   docs/comments rarely call these out; reading the C is non-negotiable.
+
+6. **Quantify each implementation gap against the data**: For every gap you find, predict which
+   instance behavior would change if the gap were closed. Verify the prediction matches the
+   actual regression pattern. E.g. "no trail reuse on restart" predicts `props/decision` should
+   drop sharply under EMA restart — verified on mp1 under `C_lbd_ema` (205 → 44, 5× drop).
+   Without this verification, source-diff findings are speculation.
+
+7. **Trace one critical instance under at-least two configs at a fixed interval**: Use
+   `SAT_TRACE_SEARCH_INTERVAL=N` (e.g. 20000) to log conflict-aligned snapshots of seconds,
+   conflicts, decisions, propagations, restarts, current level, trail length, and
+   `live_learned_clause_count`. Compare the trajectories side by side. If the trajectories are
+   *identical* through some prefix and diverge late, you have **phase-boundary chaos**: no
+   parameter tuning will reliably fix it because the win/loss is determined by which specific
+   variable VSIDS picks at one critical decision. Document this as "needs algorithmic
+   simplification (inprocessing) or accept as a coin flip" rather than continuing to tune.
+
+8. **Run parameter sweeps that probe specific hypotheses, not blind tuning**: For each suspected
+   bottleneck, define a knob change that should rescue the failing instances if the hypothesis
+   is right. Sweep on the failing instances at a slightly reduced timeout (e.g. 240s vs 300s) so
+   more variants fit. Examples:
+   * "EMA restarts fire too often deep in the trail" → sweep `SAT_RESTART_BLOCK_MARGIN`
+   * "Reducer deletes too early" → sweep `SAT_REDUCE_DB_INIT`
+   * "Phase-saving misleads on HWMCC" → sweep with/without `SAT_PHASE=target-then-saved`
+   Sweeps that rescue zero failing instances refute the hypothesis. Sweeps that rescue one or
+   two confirm the gap but rarely fix everything — record the trade-off (which instances regress
+   when the knob rescues another) so you do not over-promote.
+
+9. **Confirm no single config beats the baseline in aggregate, even after sweeps**: This is the
+   honest end-state of most feature investigations. If even the best parameter-tuned variant
+   loses to baseline on PAR-2, the conclusion is "the implementation needs the code-level fixes
+   identified in step 5/6, parameter tuning is not enough."
+
+10. **Cross-check existing beads before creating new ones**: Use `bd search <keyword>` for every
+    feature/file/symbol you plan to write a bead about. The `bd ready` / `bd list --label
+    phase1` views are usually 30+ entries deep. Find existing beads for the same area and either
+    add a new evidence note (`bd note <id> "..."`) or create a new bead linked to the existing
+    one with `bd link <new> <existing> --type related`. Reframe-style discoveries (e.g. "the old
+    bead targeted the wrong dimension") deserve a note pointing at the new bead, not silent
+    duplication.
+
+11. **Write findings as code-level recommendations, not knob tuning**: Each gap should map to a
+    concrete code change (file + function + a brief sketch of the fix) plus a kissat/reference
+    citation. Recommendations like "try margin = 1.4" are weaker than "implement
+    `reuse_focused_trail` in `perform_restart_if_pending` matching `kissat/src/restart.c:69-84`"
+    because the latter survives a parameter sweep failure. Order recommendations by expected
+    ROI: implementation gaps that explain the largest measured ratios first (e.g. trail reuse
+    when `props/decision` is the dominant drop).
+
+12. **Persist the artifacts under `log/<investigation-name>/`**: Save the ablation script,
+    sweep script, raw `results.csv` and `sweep_results.csv`, per-(config, instance)
+    `stdout/stderr/stats.json`, an `analysis.py` for the decomposition, and a `FINDINGS.md` and
+    `DEEPER_FINDINGS.md` (initial + follow-up). Quote specific stat lines, source line numbers
+    in both repos, and the exact env-var combination for each config. Future investigations
+    should be able to re-derive your conclusions from these artifacts without re-running
+    anything.
+
 ### Standard Optimizations (apply to every solver)
 
 **Cargo.toml release profile** (always include):

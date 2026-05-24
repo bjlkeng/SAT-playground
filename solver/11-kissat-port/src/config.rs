@@ -480,6 +480,7 @@ pub(crate) struct SolverConfig {
     pub(crate) update_propagation_reason_lbd: bool,
     pub(crate) restart_policy: RestartPolicy,
     pub(crate) restart_block_margin: f64,
+    pub(crate) restart_reuse_trail: bool,
     pub(crate) reduce_policy: ReducePolicy,
     pub(crate) phase_policy: PhasePolicy,
     pub(crate) search_mode_policy: SearchModePolicy,
@@ -573,6 +574,7 @@ impl Default for SolverConfig {
             update_propagation_reason_lbd: false,
             restart_policy: RestartPolicy::LegacyLuby,
             restart_block_margin: DEFAULT_RESTART_BLOCK_MARGIN,
+            restart_reuse_trail: false,
             reduce_policy: ReducePolicy::LegacyActivity,
             phase_policy: PhasePolicy::Legacy,
             search_mode_policy: SearchModePolicy::Single,
@@ -838,6 +840,12 @@ impl SolverConfig {
             &key_set,
             "SAT_RESTART_BLOCK_MARGIN",
             self.restart_block_margin,
+        );
+        self.restart_reuse_trail = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_RESTART_REUSE_TRAIL",
+            self.restart_reuse_trail,
         );
         self.reduce_policy = parse_enum_selected(
             env_map,
@@ -1268,6 +1276,7 @@ impl SolverConfig {
             "restart_block_margin",
             format_f64(self.restart_block_margin),
         );
+        push_kv_bool(&mut lines, "restart_reuse_trail", self.restart_reuse_trail);
         push_kv(&mut lines, "reduce_policy", self.reduce_policy.as_str());
         push_kv(&mut lines, "phase_policy", self.phase_policy.as_str());
         push_kv(
@@ -1559,6 +1568,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             true,
             false,
             "log/0.0b/findings.md",
+        ),
+        feature(
+            "SAT_RESTART_REUSE_TRAIL",
+            config.restart_reuse_trail,
+            FeatureMaturity::Experimental,
+            true,
+            true,
+            false,
+            "log/phase1/1.14j-trail-reuse-summary.md",
         ),
         feature(
             "SAT_LBD_UPDATE_REASONS",
@@ -1854,6 +1872,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "update_propagation_reason_lbd" => Some("SAT_LBD_UPDATE_PROP_REASONS"),
         "restart_policy" => Some("SAT_RESTART"),
         "restart_block_margin" => Some("SAT_RESTART_BLOCK_MARGIN"),
+        "restart_reuse_trail" => Some("SAT_RESTART_REUSE_TRAIL"),
         "reduce_policy" => Some("SAT_REDUCE"),
         "phase_policy" => Some("SAT_PHASE"),
         "search_mode_policy" => Some("SAT_SEARCH_MODE"),
@@ -2026,6 +2045,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_LBD_UPDATE_PROP_REASONS",
         "SAT_RESTART",
         "SAT_RESTART_BLOCK_MARGIN",
+        "SAT_RESTART_REUSE_TRAIL",
         "SAT_REDUCE",
         "SAT_PHASE",
         "SAT_SEARCH_MODE",
@@ -2717,6 +2737,21 @@ mod tests {
         assert_eq!(saved.phase_policy, PhasePolicy::Saved);
         assert_eq!(target.phase_policy, PhasePolicy::TargetThenSaved);
         assert_eq!(best.phase_policy, PhasePolicy::BestThenTargetThenSaved);
+    }
+
+    #[test]
+    fn test_restart_reuse_trail_is_runtime_supported_and_replayable() {
+        let config = SolverConfig::from_env_map(&env_map(&[("SAT_RESTART_REUSE_TRAIL", "on")]));
+
+        assert!(config.restart_reuse_trail);
+
+        let replay = config.config_replay_text();
+        assert!(replay.contains("restart_reuse_trail=true"));
+
+        let replayed =
+            SolverConfig::from_replay_text(&replay, Path::new("<restart-reuse-trail-test>"));
+        assert!(replayed.restart_reuse_trail);
+        assert_eq!(replayed.config_hash(), config.config_hash());
     }
 
     #[test]
