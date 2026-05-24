@@ -9,9 +9,10 @@ const FEATURES: &str = "FEATURES.csv";
 fn main() {
     println!("cargo:rerun-if-changed={CONFIG_SCHEMA}");
     println!("cargo:rerun-if-changed={FEATURES}");
-    println!("cargo:rerun-if-changed=../../.git/HEAD");
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    emit_git_rerun_triggers(&manifest_dir);
+
     let target_generated = manifest_dir.join("target/generated");
     fs::create_dir_all(&target_generated).expect("create target/generated");
 
@@ -36,6 +37,43 @@ fn main() {
         "cargo:rustc-env=SOLVER_RUSTC_VERSION={}",
         command_output("rustc", &["--version"])
     );
+}
+
+fn emit_git_rerun_triggers(manifest_dir: &Path) {
+    let git_entry = manifest_dir.join("../../.git");
+    if git_entry.is_dir() {
+        emit_git_dir_rerun_triggers(&git_entry);
+        return;
+    }
+
+    println!("cargo:rerun-if-changed={}", git_entry.display());
+    let Ok(git_file) = fs::read_to_string(&git_entry) else {
+        return;
+    };
+    let Some(git_dir) = git_file.trim().strip_prefix("gitdir:") else {
+        return;
+    };
+    let git_dir = git_dir.trim();
+    let git_dir = if Path::new(git_dir).is_absolute() {
+        PathBuf::from(git_dir)
+    } else {
+        manifest_dir.join("../..").join(git_dir)
+    };
+    emit_git_dir_rerun_triggers(&git_dir);
+}
+
+fn emit_git_dir_rerun_triggers(git_dir: &Path) {
+    let head_path = git_dir.join("HEAD");
+    println!("cargo:rerun-if-changed={}", head_path.display());
+    let Ok(head) = fs::read_to_string(&head_path) else {
+        return;
+    };
+    let Some(reference) = head.trim().strip_prefix("ref:") else {
+        return;
+    };
+    let reference = reference.trim();
+    println!("cargo:rerun-if-changed={}", git_dir.join(reference).display());
+    println!("cargo:rerun-if-changed={}", git_dir.join("packed-refs").display());
 }
 
 fn read(path: &Path) -> String {
