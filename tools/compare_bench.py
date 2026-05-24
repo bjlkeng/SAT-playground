@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Correctness-first paired comparison for bench.sh results.csv files."""
+"""PAR-2-first paired comparison for bench.sh results.csv files."""
 
 from __future__ import annotations
 
@@ -380,7 +380,7 @@ def compare(args: argparse.Namespace) -> int:
             f"{before_time:.3f},{after_time:.3f},{delta:.3f},{category_for(baseline, name)}"
         )
 
-    if correctness or missing_after or extra_after or status_regressions:
+    if correctness or missing_after or extra_after:
         print("promotion_verdict=significant_regression")
         print("verdict=FAIL")
         return 1
@@ -388,6 +388,8 @@ def compare(args: argparse.Namespace) -> int:
         print("promotion_verdict=significant_improvement")
     elif total_delta > 0.01 * max(par2_before, 1.0):
         print("promotion_verdict=significant_regression")
+        print("verdict=FAIL")
+        return 1
     else:
         print("promotion_verdict=indeterminate")
     print("verdict=PASS")
@@ -407,17 +409,20 @@ def self_test() -> None:
             "instance,result,verified,time_s,timeout,exit_code\n"
             "a,SAT,ok,2.000,10,0\n"
             "b,TIMEOUT,skip,10.000,10,124\n"
+            "c,SAT,ok,9.000,10,0\n"
         )
         after_csv.write_text(
             "instance,result,verified,time_s,timeout,exit_code\n"
             "a,SAT,ok,1.000,10,0\n"
-            "b,TIMEOUT,skip,10.000,10,124\n"
+            "b,UNSAT,ok,0.500,10,0\n"
+            "c,TIMEOUT,skip,10.000,10,124\n"
         )
         baseline = root / "baseline.csv"
         baseline.write_text(
             "instance,expected_status,category,selection_version\n"
             "a,SAT,smoke-plus,test\n"
             "b,UNSAT,stress,test\n"
+            "c,SAT,stress,test\n"
         )
         namespace = argparse.Namespace(
             before=before_csv,

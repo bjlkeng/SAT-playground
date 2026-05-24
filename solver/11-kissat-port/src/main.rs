@@ -3680,6 +3680,19 @@ impl Solver {
         count as f64 * factor
     }
 
+    fn kissat_logn(count: u64) -> u64 {
+        if count == 0 {
+            0
+        } else {
+            u64::BITS as u64 - u64::from(count.leading_zeros())
+        }
+    }
+
+    fn focused_restart_interval(&self) -> u64 {
+        KISSAT_EMA_RESTART_MIN_CONFLICTS
+            .saturating_add(Self::kissat_logn(self.stats.focused_restarts).saturating_sub(1))
+    }
+
     fn next_focused_mode_interval(&self) -> u64 {
         let focused_count = self.mode_switches.saturating_add(1) / 2;
         let scaled =
@@ -3866,6 +3879,12 @@ impl Solver {
         self.restart_conflicts_since_last = 0;
         self.restart_next_check_conflict = self.stats.conflicts.saturating_add(1);
         self.stats.glucose_restarts += 1;
+        if self.search_mode_policy == SearchModePolicy::FocusedStable
+            && self.search_mode == SearchMode::Focused
+        {
+            self.stats.focused_restarts = self.stats.focused_restarts.saturating_add(1);
+            self.restart_min_conflicts = self.focused_restart_interval();
+        }
     }
 
     fn note_conflict(&mut self) {
@@ -7688,6 +7707,7 @@ mod tests {
         let restarts = s.stats.restarts;
         let luby_restarts = s.stats.luby_restarts;
         let glucose_restarts = s.stats.glucose_restarts;
+        let focused_restarts = s.stats.focused_restarts;
 
         s.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
             assert_eq!(ctx.enqueue(1), EnqueueResult::Enqueued);
@@ -7703,6 +7723,7 @@ mod tests {
         assert_eq!(s.stats.restarts, restarts);
         assert_eq!(s.stats.luby_restarts, luby_restarts);
         assert_eq!(s.stats.glucose_restarts, glucose_restarts);
+        assert_eq!(s.stats.focused_restarts, focused_restarts);
     }
 
     #[test]
@@ -9911,7 +9932,7 @@ mod tests {
     fn test_pick_branch_legacy_increments_correct_counter() {
         let config = SolverConfig {
             phase_policy: PhasePolicy::Legacy,
-            ..SolverConfig::default()
+            ..single_mode_config()
         };
         let mut s = make_solver_with_config(1, vec![], &config);
         s.saved_phase[1] = TRUE;
@@ -9940,7 +9961,7 @@ mod tests {
     fn test_phase_falls_back_to_initial() {
         let config = SolverConfig {
             phase_policy: PhasePolicy::Saved,
-            ..SolverConfig::default()
+            ..single_mode_config()
         };
         let mut s = make_solver_with_config(1, vec![], &config);
 
@@ -9954,7 +9975,7 @@ mod tests {
     fn test_saved_phase_used_when_no_target() {
         let config = SolverConfig {
             phase_policy: PhasePolicy::TargetThenSaved,
-            ..SolverConfig::default()
+            ..single_mode_config()
         };
         let mut s = make_solver_with_config(1, vec![], &config);
         s.saved_phase[1] = TRUE;
@@ -9968,7 +9989,7 @@ mod tests {
     fn test_target_phase_precedes_saved() {
         let config = SolverConfig {
             phase_policy: PhasePolicy::TargetThenSaved,
-            ..SolverConfig::default()
+            ..single_mode_config()
         };
         let mut s = make_solver_with_config(1, vec![], &config);
         s.saved_phase[1] = TRUE;
@@ -9983,7 +10004,7 @@ mod tests {
     fn test_best_phase_precedes_target_when_policy_selected() {
         let config = SolverConfig {
             phase_policy: PhasePolicy::BestThenTargetThenSaved,
-            ..SolverConfig::default()
+            ..single_mode_config()
         };
         let mut s = make_solver_with_config(1, vec![], &config);
         s.saved_phase[1] = FALSE;
@@ -10000,7 +10021,7 @@ mod tests {
     fn test_target_phase_captured_at_new_deep_prefix() {
         let config = SolverConfig {
             phase_policy: PhasePolicy::TargetThenSaved,
-            ..SolverConfig::default()
+            ..single_mode_config()
         };
         let mut s = make_solver_with_config(3, vec![], &config);
 
@@ -10052,7 +10073,7 @@ mod tests {
     fn test_single_mode_target_phase_resets_on_restart() {
         let config = SolverConfig {
             phase_policy: PhasePolicy::TargetThenSaved,
-            ..SolverConfig::default()
+            ..single_mode_config()
         };
         let mut s = make_solver_with_config(2, vec![], &config);
 
@@ -10092,7 +10113,7 @@ mod tests {
     fn test_single_mode_target_phase_resets_when_pending_restart_already_at_root() {
         let config = SolverConfig {
             phase_policy: PhasePolicy::TargetThenSaved,
-            ..SolverConfig::default()
+            ..single_mode_config()
         };
         let mut s = make_solver_with_config(1, vec![], &config);
         s.target_phase[1] = TRUE;
@@ -10519,6 +10540,17 @@ mod tests {
     }
 
     #[test]
+    fn test_kissat_logn_matches_focused_restart_schedule() {
+        assert_eq!(Solver::kissat_logn(0), 0);
+        assert_eq!(Solver::kissat_logn(1), 1);
+        assert_eq!(Solver::kissat_logn(2), 2);
+        assert_eq!(Solver::kissat_logn(3), 2);
+        assert_eq!(Solver::kissat_logn(4), 3);
+        assert_eq!(Solver::kissat_logn(7), 3);
+        assert_eq!(Solver::kissat_logn(8), 4);
+    }
+
+    #[test]
     fn test_reluctant_sequence_matches_expected_prefix() {
         let mut reluctant = Reluctant::new();
         let mut values = Vec::new();
@@ -10534,7 +10566,7 @@ mod tests {
     fn test_reluctant_restart_policy_schedules_restart() {
         let config = SolverConfig {
             restart_policy: RestartPolicy::Reluctant,
-            ..SolverConfig::default()
+            ..single_mode_config()
         };
         let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
         s.decide(1);
@@ -10551,6 +10583,7 @@ mod tests {
         SolverConfig {
             use_lbd: true,
             search_mode_policy: SearchModePolicy::FocusedStable,
+            mode_use_ticks: false,
             mode_init_conflicts: 2,
             mode_interval_scale: 1.0,
             ..SolverConfig::default()
@@ -10568,6 +10601,14 @@ mod tests {
         SolverConfig {
             mode_use_ticks: true,
             ..focused_stable_config()
+        }
+    }
+
+    fn single_mode_config() -> SolverConfig {
+        SolverConfig {
+            search_mode_policy: SearchModePolicy::Single,
+            mode_use_ticks: false,
+            ..SolverConfig::default()
         }
     }
 
@@ -11049,6 +11090,67 @@ mod tests {
     }
 
     #[test]
+    fn test_focused_restart_interval_grows_with_focused_restarts() {
+        let config = focused_stable_config();
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        s.decide(1);
+        s.stats.conflicts = 100;
+        s.restart_fast_lbd.update(13.0);
+        s.restart_slow_lbd.update(10.0);
+        s.restart_conflicts_since_last = s.restart_min_conflicts - 1;
+        s.last_conflict_lbd = 13;
+
+        s.note_conflict();
+
+        assert!(s.restart_pending);
+        assert_eq!(s.stats.glucose_restarts, 1);
+        assert_eq!(s.stats.focused_restarts, 1);
+        assert_eq!(s.restart_min_conflicts, KISSAT_EMA_RESTART_MIN_CONFLICTS);
+
+        s.restart_pending = false;
+        s.stats.conflicts = s.restart_next_check_conflict;
+        s.restart_fast_lbd.update(13.0);
+        s.restart_slow_lbd.update(10.0);
+        s.restart_conflicts_since_last = s.restart_min_conflicts - 1;
+        s.last_conflict_lbd = 13;
+
+        s.note_conflict();
+
+        assert!(s.restart_pending);
+        assert_eq!(s.stats.glucose_restarts, 2);
+        assert_eq!(s.stats.focused_restarts, 2);
+        assert_eq!(
+            s.restart_min_conflicts,
+            KISSAT_EMA_RESTART_MIN_CONFLICTS + 1
+        );
+    }
+
+    #[test]
+    fn test_single_mode_ema_restart_does_not_grow_focused_interval() {
+        let config = SolverConfig {
+            use_lbd: true,
+            restart_policy: RestartPolicy::KissatEma,
+            search_mode_policy: SearchModePolicy::Single,
+            mode_use_ticks: false,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        s.decide(1);
+        s.stats.conflicts = 100;
+        s.restart_fast_lbd.update(13.0);
+        s.restart_slow_lbd.update(10.0);
+        s.restart_conflicts_since_last = s.restart_min_conflicts - 1;
+        s.last_conflict_lbd = 13;
+
+        s.note_conflict();
+
+        assert!(s.restart_pending);
+        assert_eq!(s.stats.glucose_restarts, 1);
+        assert_eq!(s.stats.focused_restarts, 0);
+        assert_eq!(s.restart_min_conflicts, KISSAT_EMA_RESTART_MIN_CONFLICTS);
+    }
+
+    #[test]
     fn test_blocking_restart_suppresses_when_level_high() {
         let config = SolverConfig {
             use_lbd: true,
@@ -11138,7 +11240,8 @@ mod tests {
 
     #[test]
     fn test_blocking_restart_disabled_for_legacy_luby_and_reluctant() {
-        let mut luby = make_solver(2, vec![vec![1, 2], vec![-1, -2]]);
+        let mut luby =
+            make_solver_with_config(2, vec![vec![1, 2], vec![-1, -2]], &single_mode_config());
         luby.restart_fast_level.update(20.0);
         luby.restart_slow_level.update(10.0);
         luby.restart_unit = 1;
@@ -11151,7 +11254,7 @@ mod tests {
 
         let config = SolverConfig {
             restart_policy: RestartPolicy::Reluctant,
-            ..SolverConfig::default()
+            ..single_mode_config()
         };
         let mut reluctant = make_solver_with_config(2, vec![vec![1, 2]], &config);
         reluctant.decide(1);
@@ -11214,7 +11317,8 @@ mod tests {
 
     #[test]
     fn test_restart_policy_legacy_unchanged_when_selected() {
-        let mut s = make_solver(2, vec![vec![1, 2], vec![-1, -2]]);
+        let mut s =
+            make_solver_with_config(2, vec![vec![1, 2], vec![-1, -2]], &single_mode_config());
         s.restart_min_conflicts = 50;
         s.restart_unit = 2;
         s.restart_luby_index = 1;
@@ -11235,7 +11339,8 @@ mod tests {
 
     #[test]
     fn test_conflict_budget_schedules_restart_and_advances_luby_window() {
-        let mut s = make_solver(2, vec![vec![1, 2], vec![-1, -2]]);
+        let mut s =
+            make_solver_with_config(2, vec![vec![1, 2], vec![-1, -2]], &single_mode_config());
         s.restart_unit = 2;
         s.restart_luby_index = 1;
         s.restart_conflict_limit = 2;

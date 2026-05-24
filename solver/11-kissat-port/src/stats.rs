@@ -75,6 +75,7 @@ pub(crate) struct SolverStats {
     pub(crate) learned_size_max: u64,
     pub(crate) luby_restarts: u64,
     pub(crate) glucose_restarts: u64,
+    pub(crate) focused_restarts: u64,
     pub(crate) reluctant_restarts: u64,
     pub(crate) restarts_blocked_by_level: u64,
     pub(crate) restarts_reused_trails: u64,
@@ -418,6 +419,7 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64_array("stable_glue_used", &ctx.stats.stable_glue_used);
     json.u64("luby_restarts", ctx.stats.luby_restarts);
     json.u64("glucose_restarts", ctx.stats.glucose_restarts);
+    json.u64("focused_restarts", ctx.stats.focused_restarts);
     json.u64("reluctant_restarts", ctx.stats.reluctant_restarts);
     json.u64(
         "restarts_blocked_by_level",
@@ -577,7 +579,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, _timings: &RunTimings) -> Str
             "c trace_full ",
             "glue_sum={} glue_max={} glue_count={} ",
             "learned_size_sum={} learned_size_max={} ",
-            "glucose_restarts={} luby_restarts={} reluctant_restarts={} restarts_blocked_by_level={} restarts_reused_trails={} restarts_reused_levels={} ",
+            "glucose_restarts={} focused_restarts={} luby_restarts={} reluctant_restarts={} restarts_blocked_by_level={} restarts_reused_trails={} restarts_reused_levels={} ",
             "chrono_attempts={} chrono_backtracks={} non_chrono_backtracks={} chrono_rejected_not_asserting={} chrono_rejected_delta_too_large={} chrono_skipped_levels={} ",
             "vivified_clauses=0 vivified_strengthened=0 vivified_subsumed=0 vivified_ticks=0 ",
             "probe_failed_lits=0 probe_units=0 probe_ticks=0 ",
@@ -603,6 +605,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, _timings: &RunTimings) -> Str
         stats.learned_size_sum,
         stats.learned_size_max,
         stats.glucose_restarts,
+        stats.focused_restarts,
         stats.luby_restarts,
         stats.reluctant_restarts,
         stats.restarts_blocked_by_level,
@@ -1040,6 +1043,7 @@ mod tests {
             decision_level_sum_focused: 7,
             decision_level_sum_stable: 9,
             phase_legacy_used: 5,
+            focused_restarts: 7,
             ..SolverStats::default()
         };
         let proof = ProofStats {
@@ -1081,6 +1085,7 @@ mod tests {
         assert!(line.contains("\"focused_avg_decision_level\":3.500000"));
         assert!(line.contains("\"stable_avg_decision_level\":4.500000"));
         assert!(line.contains("\"phase_legacy_used\":5"));
+        assert!(line.contains("\"focused_restarts\":7"));
     }
 
     #[test]

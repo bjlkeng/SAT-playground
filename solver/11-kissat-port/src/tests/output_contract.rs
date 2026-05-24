@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::{PreprocessAxis, ProofPolicy, SearchAxis, SolverProfile};
+use crate::config::{PreprocessAxis, ProofPolicy, SearchAxis, SearchModePolicy, SolverProfile};
 use crate::limits::BudgetClass;
 use crate::output::{
     write_model_file, write_result_contract, OutputContract, OutputContractState,
@@ -436,7 +436,9 @@ fn test_profile_search_conservative_enables_only_documented_features() {
     assert!(config.simplification);
     assert!(config.bve);
     assert!(config.full_bsr);
-    assert!(!config.use_lbd);
+    assert!(config.use_lbd);
+    assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
+    assert!(config.mode_use_ticks);
     assert!(!config.inprocess);
 }
 

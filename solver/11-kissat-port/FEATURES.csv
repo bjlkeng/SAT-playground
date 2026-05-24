@@ -1,5 +1,5 @@
 feature_flag,config_field,maturity,proof_validated,model_validated,full_set_validated,promoted_profiles,validation_artifact,risk_ids,last_changed_task
-SAT_USE_LBD,use_lbd,SmokeSafe,true,true,false,none,log/0.0b/findings.md,search-metadata,0.3
+SAT_USE_LBD,use_lbd,SmokeSafe,true,true,false,default|fast,log/phase1/5b2.2.34-after-default,search-metadata,5b2.2.34
 SAT_LBD_UPDATE_REASONS,update_reason_lbd,SmokeSafe,true,true,false,none,log/1.14h/summary.md,reason-metadata,1.14h-fix
 SAT_LBD_UPDATE_PROP_REASONS,update_propagation_reason_lbd,Experimental,true,true,false,none,log/1.14h/summary.md,reason-metadata|search-trajectory,1.14h-fix
 SAT_RESTART_REUSE_TRAIL,restart_reuse_trail,Experimental,true,true,false,none,log/phase1/1.14j-trail-reuse-summary.md,restart|search-trajectory,1.14j
@@ -7,7 +7,7 @@ SAT_CHRONO,chrono_backtrack,SmokeSafe,true,true,false,none,log/1.13/summary.md,b
 SAT_BINARY_FAST,binary_fast_path,SmokeSafe,true,true,false,none,log/1.6/summary.md,propagation,1.6
 SAT_VMTF,vmtf,SmokeSafe,true,true,false,none,log/1.10/summary.md,branching,1.10
 SAT_REPHASE,rephase,SmokeSafe,true,true,false,none,log/1.12/summary.md,phase-selection,1.12
-SAT_MODE_USE_TICKS,mode_use_ticks,SmokeSafe,true,true,false,none,log/1.14/mode-use-ticks.md,mode-switching,1.14
+SAT_MODE_USE_TICKS,mode_use_ticks,SmokeSafe,true,true,false,default|fast,log/phase1/5b2.2.34-after-default,mode-switching,5b2.2.34
 SAT_OTFS,otfs,Experimental,true,true,false,none,log/phase1/1.14g-otfs-summary.md,learned-clause-db|search-trajectory,1.14g
 SAT_SIMPLIFICATION,simplification,SmokeSafe,true,true,false,default|fast,solver/11-kissat-port/BASELINE_LOCK.raw.txt,preprocess,0.3
 SAT_BVE,bve,SmokeSafe,true,true,false,default|fast,solver/11-kissat-port/BASELINE_LOCK.raw.txt,preprocess-bve,0.3

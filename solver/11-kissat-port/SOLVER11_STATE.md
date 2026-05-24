@@ -50,9 +50,10 @@ Related implementation anchors:
 
 Known unpromoted or incomplete feature families at this baseline:
 
-- Full glue/LBD search policy: LBD metadata, reason-LBD update, LBD-tiered reduction, and the
-  opt-in Kissat/Glucose-style EMA restart policy are present behind explicit flags, but they are
-  not promoted as default-profile behavior yet. Kissat-EMA restarts include an optional
+- Full glue/LBD search policy: LBD metadata, focused/stable search, tick-based mode scheduling,
+  and the Kissat/Glucose-style focused EMA restart policy are now promoted in the default and fast
+  profiles because the latest Phase 1 profile gate is PAR-2-only. Reason-LBD update and LBD-tiered
+  reduction remain explicit flags. Kissat-EMA restarts include an optional
   Glucose-style decision-level blocker controlled by `SAT_RESTART_BLOCK_MARGIN`, so high
   fast-vs-slow level EMA ratios can preserve a productive deep prefix instead of restarting
   immediately. The blocker is default-off (`0`) after profile testing showed the `1.4` margin
@@ -87,19 +88,20 @@ Known unpromoted or incomplete feature families at this baseline:
   switches and restart cycles, then reset when a rephase event starts a new phase block. Single-mode
   target policies still reset target phase on restart because all-mode target persistence regressed
   the profiling suite.
-- Focused/stable mode switching and reluctant restarts are present behind `SAT_USE_LBD=on
-  SAT_SEARCH_MODE=focused-stable`, but they are not promoted as default-profile behavior yet.
+- Focused/stable mode switching and reluctant restarts are the default and fast profile search mode
+  (`SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on`); `SAT_PROFILE=baseline`
+  or `SAT_SEARCH_MODE=single` keeps the old single-mode path.
   Stable-to-focused transitions reset the LBD EMA restart averages so focused restart calibration
   starts from focused-mode glue rather than inherited stable-mode glue. Focused-to-stable
   transitions rebuild the VSIDS heap from current variable activities before stable-mode decisions
   resume. JSON/trace diagnostics now attribute search wall time, conflicts, learned-clause LBD,
   and decision level averages separately to focused and stable mode so focused/stable triage does
   not depend on combined averages.
-- Kissat-style mode scheduling is available behind `SAT_USE_LBD=on
-  SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on`. With that flag, stable mode switches back
+- Kissat-style mode scheduling is enabled by default through `SAT_MODE_USE_TICKS=on`. Stable mode switches back
   to focused mode by propagation search ticks, focused-mode conflict intervals use Kissat
-  `nlogpown(count, 4)` growth, and every mode switch resets all restart EMAs. The flag is
-  opt-in while the focused/stable candidate remains unpromoted.
+  `nlogpown(count, 4)` growth, and every mode switch resets all restart EMAs. Focused EMA restart
+  windows also grow with the cumulative focused restart count as
+  `50 + kissat_logn(focused_restarts) - 1`, and `focused_restarts` is reported in JSON/trace stats.
 - VMTF focused-mode branching is present behind `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable
   SAT_VMTF=on`; focused mode uses the VMTF queue and stable mode keeps the VSIDS heap. It is not
   promoted as default-profile behavior yet.

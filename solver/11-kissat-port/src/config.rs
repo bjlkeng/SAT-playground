@@ -569,7 +569,7 @@ impl Default for SolverConfig {
             extension_bytes_limit: None,
             proof_bytes_limit: None,
 
-            use_lbd: false,
+            use_lbd: true,
             update_reason_lbd: false,
             update_propagation_reason_lbd: false,
             restart_policy: RestartPolicy::LegacyLuby,
@@ -577,8 +577,8 @@ impl Default for SolverConfig {
             restart_reuse_trail: false,
             reduce_policy: ReducePolicy::LegacyActivity,
             phase_policy: PhasePolicy::Legacy,
-            search_mode_policy: SearchModePolicy::Single,
-            mode_use_ticks: false,
+            search_mode_policy: SearchModePolicy::FocusedStable,
+            mode_use_ticks: true,
             chrono_backtrack: false,
             binary_fast_path: false,
             clause_min_mode: ClauseMinMode::RecursiveLimited,
@@ -684,6 +684,18 @@ impl SolverConfig {
         let axes = ProfileAxes::for_profile(requested);
         self.profile = requested;
         self.axes = axes;
+        match requested {
+            SolverProfile::Baseline => {
+                self.use_lbd = false;
+                self.search_mode_policy = SearchModePolicy::Single;
+                self.mode_use_ticks = false;
+            }
+            SolverProfile::Default | SolverProfile::Fast | SolverProfile::Experimental => {
+                self.use_lbd = true;
+                self.search_mode_policy = SearchModePolicy::FocusedStable;
+                self.mode_use_ticks = true;
+            }
+        }
         if requested == SolverProfile::Baseline || axes.preprocess == PreprocessAxis::Off {
             self.simplification = false;
             self.bve = false;
@@ -1567,7 +1579,7 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             true,
             true,
             false,
-            "log/0.0b/findings.md",
+            "log/phase1/5b2.2.34-after-default",
         ),
         feature(
             "SAT_RESTART_REUSE_TRAIL",
@@ -1639,7 +1651,7 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             true,
             true,
             false,
-            "log/1.14/mode-use-ticks.md",
+            "log/phase1/5b2.2.34-after-default",
         ),
         feature(
             "SAT_OTFS",
@@ -2534,7 +2546,9 @@ mod tests {
         assert!(config.simplification);
         assert!(config.bve);
         assert!(config.full_bsr);
-        assert!(!config.use_lbd);
+        assert!(config.use_lbd);
+        assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
+        assert!(config.mode_use_ticks);
         assert_eq!(config.proof_policy, ProofPolicy::Drat);
     }
 
@@ -2547,6 +2561,9 @@ mod tests {
         assert!(!config.simplification);
         assert!(!config.bve);
         assert!(!config.full_bsr);
+        assert!(!config.use_lbd);
+        assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
+        assert!(!config.mode_use_ticks);
     }
 
     #[test]
@@ -2593,8 +2610,12 @@ mod tests {
 
     #[test]
     fn test_config_hash_changes_with_effective_feature_flag() {
-        let off = SolverConfig::from_env_map(&env_map(&[]));
-        let on = SolverConfig::from_env_map(&env_map(&[("SAT_USE_LBD", "on")]));
+        let off = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_SEARCH_MODE", "single"),
+            ("SAT_MODE_USE_TICKS", "off"),
+            ("SAT_USE_LBD", "off"),
+        ]));
+        let on = SolverConfig::from_env_map(&env_map(&[]));
 
         assert_ne!(off.config_hash(), on.config_hash());
     }

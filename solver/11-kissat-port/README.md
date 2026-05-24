@@ -66,14 +66,14 @@ What is present:
   learned-literal budget is retained only as an emergency trigger. A minimum conflict interval
   guard prevents repeated high-LBD emergency reductions from firing more often than
   `SAT_REDUCE_MIN_INTERVAL` conflicts; lbd-tiered mode defaults this guard to `100`.
-- an opt-in LBD EMA restart policy (`SAT_USE_LBD=on SAT_RESTART=kissat-ema`) for Phase 1
+- an LBD EMA restart policy (`SAT_USE_LBD=on SAT_RESTART=kissat-ema`) for single-mode Phase 1
   search experiments. An optional Glucose-style decision-level blocker can suppress EMA restarts
   when the recent decision-level EMA is high relative to the slow baseline; set
   `SAT_RESTART_BLOCK_MARGIN` above `0` to enable it. The blocker is default-off after profile
   testing showed the `1.4` margin regressed the current profiling suite. `SAT_RESTART_REUSE_TRAIL=on`
   enables Kissat-style partial restart: the solver keeps a decision-level prefix whose VSIDS score
-  or focused-mode VMTF stamp is better than the next decision candidate. Legacy Luby restarts remain
-  the default for solver-10 parity. Built-in profiles intentionally do not bundle
+  or focused-mode VMTF stamp is better than the next decision candidate. Single-mode search still
+  defaults to legacy Luby restarts for solver-10 parity. Built-in profiles intentionally do not bundle
   `SAT_RESTART=kissat-ema` with target-phase policies; `SAT_PHASE=target-then-saved` remains an
   explicit opt-in when EMA restarts are active because HWMCC-style instances have regressed under
   that combination.
@@ -82,16 +82,18 @@ What is present:
   persist across mode switches and restart cycles, then reset when a rephase event starts a new
   phase block. Single-mode target policies retain restart-time target reset behavior after the
   all-mode persistence experiment regressed the profiling suite.
-- opt-in focused/stable search-mode scaffolding (`SAT_USE_LBD=on
+- default-profile focused/stable search-mode scaffolding (`SAT_USE_LBD=on
   SAT_SEARCH_MODE=focused-stable`) with focused EMA restarts and stable reluctant restarts;
-  single-mode search remains the default for solver-10 parity. Entering focused mode resets the
-  LBD EMA restart averages so focused-mode restart calibration does not inherit stable-mode glue.
-  Entering stable mode refreshes the VSIDS heap from current variable activities before stable-mode
-  decisions resume.
-- opt-in Kissat-style mode scheduling (`SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable
+  use `SAT_PROFILE=baseline` or `SAT_SEARCH_MODE=single` to force the legacy single-mode search.
+  Entering focused mode resets the LBD EMA restart averages so focused-mode restart calibration
+  does not inherit stable-mode glue. Entering stable mode refreshes the VSIDS heap from current
+  variable activities before stable-mode decisions resume. Focused EMA restarts now use Kissat's
+  soft throttle: after each focused restart, the minimum EMA interval becomes
+  `50 + kissat_logn(focused_restarts) - 1`.
+- default-profile Kissat-style mode scheduling (`SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable
   SAT_MODE_USE_TICKS=on`) that keeps focused-mode switches conflict-gated with
   `nlogpown(count, 4)` interval growth, but gates stable-mode duration on propagation search ticks.
-  The flag also resets all restart EMAs on every mode switch.
+  Tick mode also resets all restart EMAs on every mode switch.
 - opt-in focused-mode Variable-Move-To-Front branching (`SAT_USE_LBD=on
   SAT_SEARCH_MODE=focused-stable SAT_VMTF=on`) while stable mode continues to use the existing
   VSIDS heap
@@ -170,6 +172,11 @@ SAT_REPHASE=on
 SAT_BINARY_FAST=on
 ```
 
+The `default` and `fast` profiles currently enable `SAT_USE_LBD=on`,
+`SAT_SEARCH_MODE=focused-stable`, and `SAT_MODE_USE_TICKS=on` because that combination plus
+focused restart `logn` growth produced the best profiling-suite PAR-2 in the latest Phase 1 run.
+`baseline` keeps LBD and focused/stable search off.
+
 When `SAT_SEARCH_MODE=focused-stable` is enabled, `SAT_PHASE` acts as an input preference rather
 than the literal phase policy used in every mode: focused mode maps `legacy` and `saved` to `saved`,
 and maps `target-then-saved` and `best-then-target-then-saved` to `target-then-saved`; stable mode
@@ -190,7 +197,7 @@ from explicit phase-policy fallbacks: `phase_legacy_used` counts
 `SAT_PHASE=legacy`, `phase_saved_used` counts explicit saved-phase policy use,
 and `phase_initial_used` counts true initial-phase fallbacks.
 
-New Phase 1 and Phase 2 feature flags default off. Flags whose implementation
+Unpromoted Phase 1 and Phase 2 feature flags default off. Flags whose implementation
 bead has not landed are represented in the schema but fail fast if enabled, so
 benchmark artifacts cannot accidentally record no-op feature claims. `lrat`
 still fails fast. `SAT_LIMIT_*` values are parsed into the config contract and
@@ -226,7 +233,7 @@ and `result.json` records `stats_json_seen=true`. The JSON stats line includes
 config identity, input and binary hashes, result/status fields, timing buckets,
 formula sizes, clause-database/GC budget counters, CDCL/preprocessing/watch/LBD/proof
 counters, focused/stable mode timing, per-mode conflict/LBD/decision-level
-diagnostics, output-contract state, and explicit zero/null placeholders for planned
+diagnostics, focused restart interval diagnostics, output-contract state, and explicit zero/null placeholders for planned
 Phase 1/2 counters that are not implemented yet. High-frequency watcher diagnostics (`watch_scans`,
 `watch_blocker_hits`, `watch_clause_loads`, `watch_stale_skips`,
 `binary_props`, and `long_props`) default to zero to keep the release hot path
@@ -240,6 +247,36 @@ Lower-level diagnostics can be enabled independently with `SAT_TRACE_PROOF=on`,
 `SAT_TRACE_SEARCH_INTERVAL=N` for periodic and final `c search ...` counters.
 
 ## Validation
+
+Latest default-profile promotion run on 2026-05-24:
+
+```bash
+SAT_STATS_JSON=on bash tools/bench.sh -t 300 -m 16384 -d benchmarks/profiling \
+  --log-dir log/phase1/5b2.2.34-after-default solver/11-kissat-port
+python3 tools/compare_bench.py \
+  --before log/phase1/5b2.2.34-before-rerun/results.csv \
+  --after log/phase1/5b2.2.34-after-default/results.csv \
+  --timeout 300
+```
+
+| Run | Settings | Solved | SAT | UNSAT | Timeouts | PAR-2 | Results |
+|---|---|---:|---:|---:|---:|---:|---|
+| before focused restart logn | `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on SAT_STATS_JSON=on` | 9/10 | 5 | 4 | 1 | `1756.406` | `log/phase1/5b2.2.34-before-rerun/results.csv` |
+| default after promotion | `SAT_STATS_JSON=on` | 9/10 | 5 | 4 | 1 | `1220.197` | `log/phase1/5b2.2.34-after-default/results.csv` |
+
+The promoted run improves aggregate PAR-2 by `536.209` under the Phase 1 PAR-2-only promotion
+rule. Instance churn is recorded for diagnosis: `case9` changed from timeout to SAT in `1.321s`,
+while `mp1` changed from SAT in `255.953s` to timeout. The largest wins were `case9`
+(`-298.679s`), K4 (`-109.586s`), and battleship (`-101.356s`).
+
+Correctness checks for the same promotion:
+
+- `cargo test`: 321 passed
+- `cargo clippy --all-targets -- -D warnings`: passed
+- `bash tools/smoke_test.sh solver/11-kissat-port`: 9/9 passed
+- `SAT_CHECK_INVARIANTS=on bash tools/smoke_test.sh solver/11-kissat-port`: 9/9 passed
+- `python3 tools/compare_bench.py --self-test`: passed
+- comparison verdict: `significant_improvement`, `PASS`
 
 Run on 2026-05-08:
 
