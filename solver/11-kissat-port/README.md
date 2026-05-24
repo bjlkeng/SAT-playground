@@ -73,7 +73,10 @@ What is present:
   testing showed the `1.4` margin regressed the current profiling suite. `SAT_RESTART_REUSE_TRAIL=on`
   enables Kissat-style partial restart: the solver keeps a decision-level prefix whose VSIDS score
   or focused-mode VMTF stamp is better than the next decision candidate. Legacy Luby restarts remain
-  the default for solver-10 parity
+  the default for solver-10 parity. Built-in profiles intentionally do not bundle
+  `SAT_RESTART=kissat-ema` with target-phase policies; `SAT_PHASE=target-then-saved` remains an
+  explicit opt-in when EMA restarts are active because HWMCC-style instances have regressed under
+  that combination.
 - opt-in saved/target/best phase selection policies via `SAT_PHASE`, with legacy saved-phase
   branching kept as the default for solver-10 parity. In focused/stable search, target phases
   persist across mode switches and restart cycles, then reset when a rephase event starts a new
@@ -166,6 +169,11 @@ SAT_VMTF=on
 SAT_REPHASE=on
 SAT_BINARY_FAST=on
 ```
+
+When `SAT_SEARCH_MODE=focused-stable` is enabled, `SAT_PHASE` acts as an input preference rather
+than the literal phase policy used in every mode: focused mode maps `legacy` and `saved` to `saved`,
+and maps `target-then-saved` and `best-then-target-then-saved` to `target-then-saved`; stable mode
+always uses `best-then-target-then-saved`. In single-mode search, `SAT_PHASE` is used directly.
 
 `SAT_CONFIG_OUT` writes a deterministic replay file with `schema_version`,
 effective profile/axes, proof policy, every config field, feature maturity

@@ -10658,6 +10658,43 @@ mod tests {
     }
 
     #[test]
+    fn test_focused_stable_phase_policy_override_table() {
+        for (configured, focused_effective) in [
+            (PhasePolicy::Legacy, PhasePolicy::Saved),
+            (PhasePolicy::Saved, PhasePolicy::Saved),
+            (PhasePolicy::TargetThenSaved, PhasePolicy::TargetThenSaved),
+            (
+                PhasePolicy::BestThenTargetThenSaved,
+                PhasePolicy::TargetThenSaved,
+            ),
+        ] {
+            let config = SolverConfig {
+                use_lbd: true,
+                search_mode_policy: SearchModePolicy::FocusedStable,
+                phase_policy: configured,
+                ..SolverConfig::default()
+            };
+            let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+
+            s.search_mode = SearchMode::Focused;
+            assert_eq!(s.effective_phase_policy(), focused_effective);
+
+            s.search_mode = SearchMode::Stable;
+            assert_eq!(
+                s.effective_phase_policy(),
+                PhasePolicy::BestThenTargetThenSaved
+            );
+        }
+
+        let single = SolverConfig {
+            phase_policy: PhasePolicy::TargetThenSaved,
+            ..SolverConfig::default()
+        };
+        let s = make_solver_with_config(2, vec![vec![1, 2]], &single);
+        assert_eq!(s.effective_phase_policy(), PhasePolicy::TargetThenSaved);
+    }
+
+    #[test]
     fn test_mode_switch_after_budget() {
         let config = focused_stable_config();
         let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);

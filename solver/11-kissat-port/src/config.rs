@@ -2562,6 +2562,36 @@ mod tests {
     }
 
     #[test]
+    fn test_default_profiles_do_not_bundle_target_phase_with_ema_restart() {
+        for profile in ["baseline", "default", "fast", "experimental"] {
+            let config = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", profile)]));
+
+            if config.restart_policy == RestartPolicy::KissatEma {
+                assert_ne!(config.phase_policy, PhasePolicy::TargetThenSaved);
+                assert_ne!(config.phase_policy, PhasePolicy::BestThenTargetThenSaved);
+            }
+        }
+    }
+
+    #[test]
+    fn test_target_phase_remains_explicit_opt_in_when_ema_restart_is_active() {
+        let ema_default_phase = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_USE_LBD", "on"),
+            ("SAT_RESTART", "kissat-ema"),
+        ]));
+        assert_eq!(ema_default_phase.restart_policy, RestartPolicy::KissatEma);
+        assert_eq!(ema_default_phase.phase_policy, PhasePolicy::Legacy);
+
+        let explicit_target = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_USE_LBD", "on"),
+            ("SAT_RESTART", "kissat-ema"),
+            ("SAT_PHASE", "target-then-saved"),
+        ]));
+        assert_eq!(explicit_target.restart_policy, RestartPolicy::KissatEma);
+        assert_eq!(explicit_target.phase_policy, PhasePolicy::TargetThenSaved);
+    }
+
+    #[test]
     fn test_config_hash_changes_with_effective_feature_flag() {
         let off = SolverConfig::from_env_map(&env_map(&[]));
         let on = SolverConfig::from_env_map(&env_map(&[("SAT_USE_LBD", "on")]));
