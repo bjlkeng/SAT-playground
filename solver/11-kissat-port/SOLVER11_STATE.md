@@ -28,25 +28,25 @@ Audited entry points:
 
 | Entry point | File:line | Notes |
 | --- | --- | --- |
-| `Solver::new` | `src/main.rs:1557` | Builds branch ordering, root assignments, original clause arena, watchers, occurrence/BVE state, and default solver-10-compatible policy fields. |
-| `Solver::solve_to_output` | `src/main.rs:5934` | Creates proof log according to `SAT_PROOF`, runs preprocessing/search, finalizes or discards proof output, and returns proof stats. |
-| `Solver::solve_with_proof` | `src/main.rs:5962` | Runs root propagation, optional BVE/simplification, search loop, trace comments, SAT model snapshot, and proof finalization. |
-| `Solver::propagate` | `src/main.rs:3270` | Watched-literal BCP over long clauses and units; returns conflicting clause arena offset, always updates propagation count, and updates watcher diagnostics only when `SAT_STATS_HOT=on`. |
-| `Solver::analyze_conflict_to_scratch` | `src/main.rs:5722` | Learned clause construction, UIP backtrack target, minimization, and conflict activity updates. |
-| `Solver::reduce_db` | `src/main.rs:5078` | Learned-clause reduction by activity with locked/binary preservation and DRAT deletion recording. |
+| `Solver::new` | `src/main.rs:1565` | Builds branch ordering, root assignments, original clause arena, watchers, occurrence/BVE state, and default solver-10-compatible policy fields. |
+| `Solver::solve_to_output` | `src/main.rs:5965` | Creates proof log according to `SAT_PROOF`, runs preprocessing/search, finalizes or discards proof output, and returns proof stats. |
+| `Solver::solve_with_proof` | `src/main.rs:5993` | Runs root propagation, optional BVE/simplification, search loop, trace comments, SAT model snapshot, and proof finalization. |
+| `Solver::propagate` | `src/main.rs:3295` | Watched-literal BCP over long clauses and units; returns conflicting clause arena offset, always updates propagation count, and updates watcher diagnostics only when `SAT_STATS_HOT=on`. |
+| `Solver::analyze_conflict_to_scratch` | `src/main.rs:5753` | Learned clause construction, UIP backtrack target, minimization, and conflict activity updates. |
+| `Solver::reduce_db` | `src/main.rs:5109` | Learned-clause reduction by activity with locked/binary preservation and DRAT deletion recording. |
 | `Solver::eliminate` | `src/simp.rs:1083` | Preprocessing BVE/BSR driver; owns occurrence cleanup, resolvent generation, proof logging, and extension entries. |
 
 Related implementation anchors:
 
 | Anchor | File:line | Notes |
 | --- | --- | --- |
-| `ProofLog` | `src/main.rs:709` | DRAT buffering, temp/final proof path lifecycle, and proof stats snapshot; planned for `proof.rs`/`output.rs` split later. |
-| `Solver` | `src/main.rs:938` | Current monolithic state owner; future tasks introduce capability wrappers incrementally. |
-| `Solver::attach_clause` | `src/main.rs:3046` | Watcher attachment and empty/unit handling. |
-| `Solver::simplify_with_proof` | `src/main.rs:4386` | Top-level simplification and learned/original clause cleanup. |
-| `Solver::garbage_collect` | `src/main.rs:4867` | Arena compaction and reference rewriting for current side structures. |
-| `parse_cnf` | `src/main.rs:6315` | DIMACS parser used by `main`; returns parse errors so main can emit result.json with PARSE_ERROR. |
-| `main` | `src/main.rs:6544` | CLI/run.sh entry point, config parsing/output before CNF parsing, solver construction, result.json/status/model contract emission, JSON_STATS/trace_full stderr emission, internal SAT model check, and SAT Competition stdout. |
+| `ProofLog` | `src/main.rs:715` | DRAT buffering, temp/final proof path lifecycle, and proof stats snapshot; planned for `proof.rs`/`output.rs` split later. |
+| `Solver` | `src/main.rs:944` | Current monolithic state owner; future tasks introduce capability wrappers incrementally. |
+| `Solver::attach_clause` | `src/main.rs:3071` | Watcher attachment and empty/unit handling. |
+| `Solver::simplify_with_proof` | `src/main.rs:4417` | Top-level simplification and learned/original clause cleanup. |
+| `Solver::garbage_collect` | `src/main.rs:4898` | Arena compaction and reference rewriting for current side structures. |
+| `parse_cnf` | `src/main.rs:6346` | DIMACS parser used by `main`; returns parse errors so main can emit result.json with PARSE_ERROR. |
+| `main` | `src/main.rs:6575` | CLI/run.sh entry point, config parsing/output before CNF parsing, solver construction, result.json/status/model contract emission, JSON_STATS/trace_full stderr emission, internal SAT model check, and SAT Competition stdout. |
 
 Known unpromoted or incomplete feature families at this baseline:
 

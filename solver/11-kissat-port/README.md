@@ -320,28 +320,32 @@ The accepted state improves solver 11 by `40.422` PAR-2 against the rollback bas
 status changes or correctness failures. It still trails the solver 10 clean baseline by `45.887`
 PAR-2, mainly on sudoku (`+13.574s`), Kakuro (`+14.878s`), and `case9` (`+6.434s`).
 
-`SAT_VMTF=single` was added as a default-off routing primitive on 2026-05-25. The code path is
-correctness-safe, but the full profiling suite rejects blanket use:
+`SAT_VMTF=single` was added as a default-off routing primitive on 2026-05-25. An initial
+unbounded version was rejected because `UNKNOWN` means the solver produced neither SAT nor UNSAT
+and is therefore a benchmark failure, even if some rows improve. The accepted implementation bounds
+single-mode VMTF by conflict/decision/propagation budgets, falls back to the VSIDS heap and legacy
+phase when the trial expires, and only uses best/target/saved phase during active VMTF on a
+medium-sized formula class that covers the mp1 win without poisoning small dense SAT rows.
 
 | Run | Settings | Solved | PAR-2 | Results |
 |---|---|---:|---:|---|
 | before VMTF-single work | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10/10 | `745.558` | `log/phase1/5b2.2.56-after-prop-specialization/results.csv` |
 | after VMTF-single work, default | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10/10 | `755.000` | `log/phase1/egy-default-no-regression/results.csv` |
-| VMTF single-mode branch queue | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_VMTF=single` | 5/10 | `3156.865` | `log/phase1/egy-vmtf-single-profile/results.csv` |
+| rejected unbounded VMTF single-mode branch queue | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_VMTF=single` | 5/10 | `3156.865` | `log/phase1/egy-vmtf-single-profile/results.csv` |
+| current default after guarded VMTF | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10/10 | `755.239` | `log/phase1/egy-default-after-formulaguard-profile/results.csv` |
+| guarded VMTF single-mode branch queue | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_VMTF=single` | 10/10 | `647.341` | `log/phase1/egy-vmtf-single-formulaguard-profile/results.csv` |
 
-Default behavior has no status churn and the `+9.442` PAR-2 movement is within normal benchmark
-noise for this suite. `SAT_VMTF=single` is not profile-promotable: it wins on Kakuro
-(`210.291s -> 70.303s`), Velev (`65.100s -> 43.482s`), and battleship (`23.259s -> 3.386s`),
-but regresses sudoku, REGRandom, mp1, SCPC, and case9 to `UNKNOWN`. Targeted probes show that the
-known mp1 VMTF win also needs the focused/stable phase behavior: current
-`SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_VMTF=on` solves mp1 in `2.312s`, while
-`SAT_VMTF=single SAT_PHASE=best-then-target-then-saved` solves mp1 in `1.044s`; plain
-`SAT_VMTF=single` times out. Treat VMTF as a routeable per-instance feature, not a blanket search
-policy.
+Default behavior has no status churn and the current default-off `755.239` PAR-2 run is consistent
+with the earlier `755.000` default-off rerun. Guarded `SAT_VMTF=single` is profile-positive and
+has no `UNKNOWN`/timeout/error rows: it keeps the large mp1 (`42.425s -> 1.046s`), battleship
+(`23.470s -> 3.397s`), velev (`64.943s -> 42.285s`), and case9 (`126.599s -> 102.205s`) wins,
+while the guards recover the previously failing sudoku, REGRandom, SCPC, and Iter30 rows. Kakuro
+improves against default (`209.654s -> 190.526s`) but gives back part of the unbounded VMTF win
+to preserve full-suite reliability.
 
 Latest correctness checks for the accepted state:
 
-- `cargo test`: 325 passed
+- `cargo test`: 328 passed
 - `cargo clippy --all-targets -- -D warnings`: passed
 - `bash tools/smoke_test.sh solver/11-kissat-port`: 9/9 passed
 - `SAT_CHECK_INVARIANTS=on bash tools/smoke_test.sh solver/11-kissat-port`: 9/9 passed
@@ -349,6 +353,7 @@ Latest correctness checks for the accepted state:
 - `bash -n tools/bench.sh`: passed
 - `python3 tools/validate_solver_result.py --self-test`: passed
 - `python3 tools/compare_bench.py --self-test`: passed
+- `python3 tools/validate_solver11_plan.py`: passed
 - comparison verdict against rollback: `significant_improvement`, `PASS`
 
 Run on 2026-05-08:

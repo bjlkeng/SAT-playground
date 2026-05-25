@@ -154,6 +154,12 @@ const GC_GARBAGE_RATIO_DENOMINATOR: usize = 3;
 const GC_WATCHER_STALE_MIN: usize = 1_024;
 const GC_WATCHER_STALE_RATIO_NUMERATOR: usize = 1;
 const GC_WATCHER_STALE_RATIO_DENOMINATOR: usize = 10;
+const VMTF_SINGLE_CONFLICT_BUDGET: u64 = 200_000;
+const VMTF_SINGLE_DECISION_BUDGET: u64 = 500_000;
+const VMTF_SINGLE_PROPAGATION_BUDGET: u64 = 200_000_000;
+const VMTF_SINGLE_BEST_PHASE_MIN_VARS: usize = 10_000;
+const VMTF_SINGLE_BEST_PHASE_MAX_VARS: usize = 100_000;
+const VMTF_SINGLE_BEST_PHASE_MAX_CLAUSES: usize = 1_000_000;
 
 type ClauseRef = usize;
 
@@ -1070,6 +1076,8 @@ struct Solver {
     search_mode_policy: SearchModePolicy,
     /// selected VMTF activation mode; default keeps solver-10-compatible VSIDS branching
     vmtf_mode: VmtfMode,
+    /// whether SAT_VMTF=single may use best/target/saved phase while its VMTF trial is active
+    vmtf_single_best_phase: bool,
     /// dynamic focused-mode glue thresholds computed from recent clause-use histograms
     focused_tier_limits: TierLimits,
     /// dynamic stable-mode glue thresholds computed from recent clause-use histograms
@@ -1559,6 +1567,14 @@ impl Solver {
         Self::new_with_config(num_vars, clauses, &config)
     }
 
+    fn vmtf_single_best_phase_candidate(num_vars: usize, clause_count: usize) -> bool {
+        // Best/target/saved phase is essential for the mp1 VMTF win, but it
+        // poisons small dense SAT formulas. Keep the implicit phase change on
+        // the medium-sized class validated by the profile guard.
+        (VMTF_SINGLE_BEST_PHASE_MIN_VARS..=VMTF_SINGLE_BEST_PHASE_MAX_VARS).contains(&num_vars)
+            && clause_count <= VMTF_SINGLE_BEST_PHASE_MAX_CLAUSES
+    }
+
     fn new_with_config(num_vars: usize, clauses: Vec<Vec<i32>>, config: &SolverConfig) -> Self {
         let original_clause_count = clauses.len();
         let branch_mode = config.branch_mode;
@@ -1588,9 +1604,16 @@ impl Solver {
         let phase_policy = config.phase_policy;
         let search_mode_policy = config.search_mode_policy;
         let focused_stable_mode = search_mode_policy == SearchModePolicy::FocusedStable;
+        let vmtf_mode = config.vmtf;
+        let vmtf_single_best_phase = vmtf_mode == VmtfMode::Single
+            && phase_policy == PhasePolicy::Legacy
+            && Self::vmtf_single_best_phase_candidate(num_vars, original_clause_count);
         let mode_use_ticks = config.mode_use_ticks && focused_stable_mode;
         let phase_buffers_enabled =
-            phase_policy != PhasePolicy::Legacy || focused_stable_mode || config.rephase;
+            phase_policy != PhasePolicy::Legacy
+                || focused_stable_mode
+                || config.rephase
+                || vmtf_single_best_phase;
         let initial_saved_phase = if phase_buffers_enabled {
             UNASSIGNED
         } else {
@@ -1608,7 +1631,6 @@ impl Solver {
             u64::MAX
         };
         let ccmin_mode = ccmin_mode_from_config(config.clause_min_mode);
-        let vmtf_mode = config.vmtf;
         let vmtf_queue = vmtf_mode
             .enabled()
             .then(|| VmtfQueue::new(num_vars, &branch_order));
@@ -1705,6 +1727,7 @@ impl Solver {
             search_mode,
             search_mode_policy,
             vmtf_mode,
+            vmtf_single_best_phase,
             focused_tier_limits: TierLimits::static_defaults(),
             stable_tier_limits: TierLimits::static_defaults(),
             focused_glue_recent: Vec::new(),
@@ -2877,7 +2900,12 @@ impl Solver {
                 self.search_mode_policy == SearchModePolicy::FocusedStable
                     && self.search_mode == SearchMode::Focused
             }
-            VmtfMode::Single => self.search_mode_policy == SearchModePolicy::Single,
+            VmtfMode::Single => {
+                self.search_mode_policy == SearchModePolicy::Single
+                    && self.stats.conflicts <= VMTF_SINGLE_CONFLICT_BUDGET
+                    && self.stats.decisions <= VMTF_SINGLE_DECISION_BUDGET
+                    && self.stats.propagations <= VMTF_SINGLE_PROPAGATION_BUDGET
+            }
         }
     }
 
@@ -2892,10 +2920,7 @@ impl Solver {
 
         let unassigned_candidate = self.unassigned_decision_candidate(var);
         if let Some(queue) = self.vmtf_queue.as_mut() {
-            queue.stamp_and_move_to_front(var);
-            if unassigned_candidate {
-                queue.note_unassigned(var);
-            }
+            queue.stamp_and_move_to_front(var, !unassigned_candidate);
         }
     }
 
@@ -3678,6 +3703,12 @@ impl Solver {
                 },
                 SearchMode::Stable => PhasePolicy::BestThenTargetThenSaved,
             }
+        } else if self.vmtf_mode == VmtfMode::Single
+            && self.phase_policy == PhasePolicy::Legacy
+            && self.vmtf_single_best_phase
+            && self.vmtf_branching_active()
+        {
+            PhasePolicy::BestThenTargetThenSaved
         } else {
             self.phase_policy
         }
@@ -10730,6 +10761,8 @@ mod tests {
         s.vmtf_stamp_analyzed_var(2);
 
         assert_eq!(s.pick_branch_lit(), Some(-2));
+        assert_eq!(s.stats.phase_legacy_used, 1);
+        assert_eq!(s.stats.phase_best_used, 0);
     }
 
     #[test]
@@ -10741,6 +10774,35 @@ mod tests {
         s.bump_analyzed_variable_activity();
 
         assert_eq!(s.pick_branch_lit(), Some(-2));
+    }
+
+    #[test]
+    fn test_vmtf_single_mode_falls_back_to_heap_after_decision_budget() {
+        let config = single_mode_vmtf_config();
+        let mut s = make_solver_with_config(4, vec![], &config);
+
+        s.vmtf_stamp_analyzed_var(2);
+        s.activity[3] = 10.0;
+        s.rebuild_branch_queue();
+        s.stats.decisions = VMTF_SINGLE_DECISION_BUDGET + 1;
+
+        assert!(!s.vmtf_branching_active());
+        assert_eq!(s.pick_branch_lit(), Some(-3));
+        assert_eq!(s.stats.phase_legacy_used, 1);
+        assert_eq!(s.stats.phase_best_used, 0);
+    }
+
+    #[test]
+    fn test_vmtf_single_mode_uses_best_phase_when_legacy_phase_configured() {
+        let config = single_mode_vmtf_config();
+        let mut s = make_solver_with_config(VMTF_SINGLE_BEST_PHASE_MIN_VARS, vec![], &config);
+
+        s.best_phase[2] = TRUE;
+        s.vmtf_stamp_analyzed_var(2);
+
+        assert_eq!(s.pick_branch_lit(), Some(2));
+        assert_eq!(s.stats.phase_best_used, 1);
+        assert_eq!(s.stats.phase_legacy_used, 0);
     }
 
     #[test]

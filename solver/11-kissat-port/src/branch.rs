@@ -29,19 +29,29 @@ impl VmtfQueue {
         queue
     }
 
-    pub(crate) fn stamp_and_move_to_front(&mut self, var: usize) {
+    pub(crate) fn stamp_and_move_to_front(&mut self, var: usize, assigned: bool) {
         if !self.valid_var(var) {
             return;
         }
 
-        self.stamp_counter = self.stamp_counter.saturating_add(1);
-        self.stamp[var] = self.stamp_counter;
         if self.head as usize == var {
             return;
         }
 
+        if assigned && self.search as usize == var {
+            let older = self.prev[var] as usize;
+            let newer = self.next[var] as usize;
+            self.search = if older != 0 { older } else { newer } as u32;
+        }
+
+        self.stamp_counter = self.stamp_counter.saturating_add(1);
+        self.stamp[var] = self.stamp_counter;
+
         self.detach(var);
         self.attach_head(var);
+        if !assigned {
+            self.search = var as u32;
+        }
     }
 
     pub(crate) fn note_unassigned(&mut self, var: usize) {
@@ -173,5 +183,20 @@ impl VmtfQueue {
     #[cfg(test)]
     pub(crate) fn stamp_for_test(&self, var: usize) -> u64 {
         self.stamp(var)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VmtfQueue;
+
+    #[test]
+    fn moving_assigned_search_var_to_front_moves_search_to_older_var() {
+        let mut queue = VmtfQueue::new(4, &[1, 2, 3, 4]);
+        queue.search = 2;
+
+        queue.stamp_and_move_to_front(2, true);
+
+        assert_eq!(queue.search_for_test(), 1);
     }
 }
