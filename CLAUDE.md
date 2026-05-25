@@ -186,6 +186,10 @@ Write DRAT proof to `<output_dir>/proof.out`. This is required from every iterat
   `SATISFIABLE` nor `UNSATISFIABLE` within the run contract. Treat every new or retained
   `UNKNOWN` on a benchmark/profile row that the baseline solves as a failed experiment, even if
   aggregate PAR-2 happens to improve. Do not describe UNKNOWN churn as harmless.
+- **Debug every UNKNOWN before continuing:** when an experiment produces `UNKNOWN`, stop promotion
+  work for that path, debug the cause, and either fix, revert, or quarantine the behavior. Rerun the
+  exact affected configuration and do not leave the task as complete until that configuration no
+  longer produces `UNKNOWN` on the relevant baseline-solved rows.
 - **Solver 11 default/fast promotion gate:** before promoting any solver 11 default or fast
   profile change, run a clean solver 10 comparison on the same benchmark set and pass
   `python3 tools/check_solver11_promotion.py --solver10 <solver10-results.csv> --previous <prior-solver11-results.csv> --candidate <candidate-results.csv> --timeout <seconds> --memory-mb <MB>`.
