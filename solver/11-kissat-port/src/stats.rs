@@ -80,6 +80,10 @@ pub(crate) struct SolverStats {
     pub(crate) restarts_blocked_by_level: u64,
     pub(crate) restarts_reused_trails: u64,
     pub(crate) restarts_reused_levels: u64,
+    pub(crate) restarts_reused_trails_focused: u64,
+    pub(crate) restarts_reused_levels_focused: u64,
+    pub(crate) restarts_reused_trails_stable: u64,
+    pub(crate) restarts_reused_levels_stable: u64,
     pub(crate) mode_switches: u64,
     pub(crate) decisions_focused: u64,
     pub(crate) decisions_stable: u64,
@@ -240,13 +244,19 @@ impl InputIdentity {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct FormulaStats {
     pub(crate) vars: u64,
     pub(crate) original_clauses_initial: u64,
     pub(crate) original_lits_initial: u64,
     pub(crate) original_clauses_after_preprocess: u64,
     pub(crate) original_lits_after_preprocess: u64,
+    pub(crate) formula_size_class: &'static str,
+    pub(crate) formula_kissat_small: bool,
+    pub(crate) formula_kissat_bigbig: bool,
+    pub(crate) formula_binary_fraction: f64,
+    pub(crate) formula_avg_clause_size: f64,
+    pub(crate) formula_variable_density: f64,
     pub(crate) learned_clauses_final: u64,
     pub(crate) learned_lits_final: u64,
     pub(crate) arena_words_live: u64,
@@ -260,6 +270,37 @@ pub(crate) struct FormulaStats {
     pub(crate) binary_clauses_final: u64,
     pub(crate) binary_implication_edges_final: u64,
     pub(crate) max_clause_buffer_len: u64,
+}
+
+impl Default for FormulaStats {
+    fn default() -> Self {
+        Self {
+            vars: 0,
+            original_clauses_initial: 0,
+            original_lits_initial: 0,
+            original_clauses_after_preprocess: 0,
+            original_lits_after_preprocess: 0,
+            formula_size_class: "unknown",
+            formula_kissat_small: false,
+            formula_kissat_bigbig: false,
+            formula_binary_fraction: 0.0,
+            formula_avg_clause_size: 0.0,
+            formula_variable_density: 0.0,
+            learned_clauses_final: 0,
+            learned_lits_final: 0,
+            arena_words_live: 0,
+            arena_words_garbage: 0,
+            arena_garbage_ratio: 0.0,
+            learned_words_live: 0,
+            original_words_live: 0,
+            watchers_live: 0,
+            watchers_stale: 0,
+            deleted_words: 0,
+            binary_clauses_final: 0,
+            binary_implication_edges_final: 0,
+            max_clause_buffer_len: 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -375,6 +416,21 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
         "original_lits_after_preprocess",
         ctx.formula.original_lits_after_preprocess,
     );
+    json.string("formula_size_class", ctx.formula.formula_size_class);
+    json.bool("formula_kissat_small", ctx.formula.formula_kissat_small);
+    json.bool("formula_kissat_bigbig", ctx.formula.formula_kissat_bigbig);
+    json.f64(
+        "formula_binary_fraction",
+        ctx.formula.formula_binary_fraction,
+    );
+    json.f64(
+        "formula_avg_clause_size",
+        ctx.formula.formula_avg_clause_size,
+    );
+    json.f64(
+        "formula_variable_density",
+        ctx.formula.formula_variable_density,
+    );
     json.u64("learned_clauses_final", ctx.formula.learned_clauses_final);
     json.u64("learned_lits_final", ctx.formula.learned_lits_final);
 
@@ -427,6 +483,22 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     );
     json.u64("restarts_reused_trails", ctx.stats.restarts_reused_trails);
     json.u64("restarts_reused_levels", ctx.stats.restarts_reused_levels);
+    json.u64(
+        "restarts_reused_trails_focused",
+        ctx.stats.restarts_reused_trails_focused,
+    );
+    json.u64(
+        "restarts_reused_levels_focused",
+        ctx.stats.restarts_reused_levels_focused,
+    );
+    json.u64(
+        "restarts_reused_trails_stable",
+        ctx.stats.restarts_reused_trails_stable,
+    );
+    json.u64(
+        "restarts_reused_levels_stable",
+        ctx.stats.restarts_reused_levels_stable,
+    );
     json.u64("mode_switches", ctx.stats.mode_switches);
     json.u64("decisions_focused", ctx.stats.decisions_focused);
     json.u64("decisions_stable", ctx.stats.decisions_stable);
@@ -579,7 +651,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, _timings: &RunTimings) -> Str
             "c trace_full ",
             "glue_sum={} glue_max={} glue_count={} ",
             "learned_size_sum={} learned_size_max={} ",
-            "glucose_restarts={} focused_restarts={} luby_restarts={} reluctant_restarts={} restarts_blocked_by_level={} restarts_reused_trails={} restarts_reused_levels={} ",
+            "glucose_restarts={} focused_restarts={} luby_restarts={} reluctant_restarts={} restarts_blocked_by_level={} restarts_reused_trails={} restarts_reused_levels={} restarts_reused_trails_focused={} restarts_reused_levels_focused={} restarts_reused_trails_stable={} restarts_reused_levels_stable={} ",
             "chrono_attempts={} chrono_backtracks={} non_chrono_backtracks={} chrono_rejected_not_asserting={} chrono_rejected_delta_too_large={} chrono_skipped_levels={} ",
             "vivified_clauses=0 vivified_strengthened=0 vivified_subsumed=0 vivified_ticks=0 ",
             "probe_failed_lits=0 probe_units=0 probe_ticks=0 ",
@@ -611,6 +683,10 @@ pub(crate) fn trace_full_line(stats: &SolverStats, _timings: &RunTimings) -> Str
         stats.restarts_blocked_by_level,
         stats.restarts_reused_trails,
         stats.restarts_reused_levels,
+        stats.restarts_reused_trails_focused,
+        stats.restarts_reused_levels_focused,
+        stats.restarts_reused_trails_stable,
+        stats.restarts_reused_levels_stable,
         stats.chrono_attempts,
         stats.chrono_used,
         stats.chrono_attempts.saturating_sub(stats.chrono_used),
@@ -1051,7 +1127,15 @@ mod tests {
             ..ProofStats::default()
         };
         let input = InputIdentity::default();
-        let formula = FormulaStats::default();
+        let formula = FormulaStats {
+            formula_size_class: "medium",
+            formula_kissat_small: false,
+            formula_kissat_bigbig: true,
+            formula_binary_fraction: 0.995,
+            formula_avg_clause_size: 2.125,
+            formula_variable_density: 8.5,
+            ..FormulaStats::default()
+        };
         let timings = RunTimings::default();
         let ctx = StatsJsonContext {
             config: &config,
@@ -1086,6 +1170,12 @@ mod tests {
         assert!(line.contains("\"stable_avg_decision_level\":4.500000"));
         assert!(line.contains("\"phase_legacy_used\":5"));
         assert!(line.contains("\"focused_restarts\":7"));
+        assert!(line.contains("\"formula_size_class\":\"medium\""));
+        assert!(line.contains("\"formula_kissat_small\":false"));
+        assert!(line.contains("\"formula_kissat_bigbig\":true"));
+        assert!(line.contains("\"formula_binary_fraction\":0.995000"));
+        assert!(line.contains("\"formula_avg_clause_size\":2.125000"));
+        assert!(line.contains("\"formula_variable_density\":8.500000"));
     }
 
     #[test]

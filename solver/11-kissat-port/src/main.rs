@@ -160,10 +160,81 @@ const VMTF_SINGLE_PROPAGATION_BUDGET: u64 = 200_000_000;
 const VMTF_SINGLE_BEST_PHASE_MIN_VARS: usize = 10_000;
 const VMTF_SINGLE_BEST_PHASE_MAX_VARS: usize = 100_000;
 const VMTF_SINGLE_BEST_PHASE_MAX_CLAUSES: usize = 1_000_000;
+const FORMULA_SMALL_CLAUSES: u64 = 10_000;
+const FORMULA_MEDIUM_CLAUSES: u64 = 1_000_000;
+const KISSAT_SMALL_CLAUSES: u64 = 100_000;
+const KISSAT_BIGBIG_BINARY_FRACTION: f64 = 0.990;
 
 type ClauseRef = usize;
 
 const NO_CLAUSE_REF: ClauseRef = usize::MAX;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum FormulaSizeClass {
+    #[default]
+    Unknown,
+    Small,
+    Medium,
+    Large,
+}
+
+impl FormulaSizeClass {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Small => "small",
+            Self::Medium => "medium",
+            Self::Large => "large",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct FormulaClass {
+    size_class: FormulaSizeClass,
+    kissat_small: bool,
+    kissat_bigbig: bool,
+    binary_fraction: f64,
+    avg_clause_size: f64,
+    variable_density: f64,
+}
+
+impl FormulaClass {
+    fn from_counts(vars: u64, clauses: u64, literals: u64, binary_clauses: u64) -> Self {
+        let size_class = if clauses < FORMULA_SMALL_CLAUSES {
+            FormulaSizeClass::Small
+        } else if clauses <= FORMULA_MEDIUM_CLAUSES {
+            FormulaSizeClass::Medium
+        } else {
+            FormulaSizeClass::Large
+        };
+        let binary_fraction = if clauses == 0 {
+            0.0
+        } else {
+            binary_clauses as f64 / clauses as f64
+        };
+        let avg_clause_size = if clauses == 0 {
+            0.0
+        } else {
+            literals as f64 / clauses as f64
+        };
+        let variable_density = if vars == 0 {
+            0.0
+        } else {
+            literals as f64 / vars as f64
+        };
+        let kissat_small = clauses <= KISSAT_SMALL_CLAUSES;
+        let kissat_bigbig = !kissat_small && binary_fraction >= KISSAT_BIGBIG_BINARY_FRACTION;
+        Self {
+            size_class,
+            kissat_small,
+            kissat_bigbig,
+            binary_fraction,
+            avg_clause_size,
+            variable_density,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BinaryClauseId(u32);
@@ -946,6 +1017,8 @@ struct Solver {
     arena: Vec<u32>,
     /// references to original clauses inside `arena`
     original_clause_ids: Vec<usize>,
+    /// one-shot post-preprocess formula classification for adaptive policy experiments
+    formula_class: FormulaClass,
     /// MiniSat-style variable abstraction for original clauses, indexed by arena clause offset.
     clause_abstraction: Vec<u64>,
     /// Store original-clause abstractions inline during large preprocessing passes.
@@ -977,6 +1050,10 @@ struct Solver {
     phase_ticks: u64,
     /// selected phase policy; legacy preserves solver-10-compatible saved-phase branching
     phase_policy: PhasePolicy,
+    /// focused-mode phase policy override for focused/stable experiments
+    focused_phase_policy: Option<PhasePolicy>,
+    /// stable-mode phase policy override for focused/stable experiments
+    stable_phase_policy: Option<PhasePolicy>,
     /// opt-in stable-mode rephase hook for focused/stable search experiments
     rephase_enabled: bool,
     /// current step in the default best -> inverted -> original rephase cycle
@@ -1066,8 +1143,10 @@ struct Solver {
     restart_margin: f64,
     /// threshold multiplier for blocking restarts when fast level EMA is high
     restart_block_margin: f64,
-    /// opt-in Kissat-style partial restart that keeps the best decision-prefix trail
-    restart_reuse_trail: bool,
+    /// opt-in focused-mode trail reuse using VMTF stamp ordering
+    restart_reuse_trail_focused: bool,
+    /// opt-in stable-mode trail reuse using VSIDS score ordering
+    restart_reuse_trail_stable: bool,
     /// conflicts since the last EMA restart
     restart_conflicts_since_last: u64,
     /// current high-level search mode for focused/stable experiments
@@ -1609,11 +1688,10 @@ impl Solver {
             && phase_policy == PhasePolicy::Legacy
             && Self::vmtf_single_best_phase_candidate(num_vars, original_clause_count);
         let mode_use_ticks = config.mode_use_ticks && focused_stable_mode;
-        let phase_buffers_enabled =
-            phase_policy != PhasePolicy::Legacy
-                || focused_stable_mode
-                || config.rephase
-                || vmtf_single_best_phase;
+        let phase_buffers_enabled = phase_policy != PhasePolicy::Legacy
+            || focused_stable_mode
+            || config.rephase
+            || vmtf_single_best_phase;
         let initial_saved_phase = if phase_buffers_enabled {
             UNASSIGNED
         } else {
@@ -1648,6 +1726,7 @@ impl Solver {
         let mut solver = Solver {
             arena,
             original_clause_ids,
+            formula_class: FormulaClass::default(),
             clause_abstraction: Vec::new(),
             inline_original_abstractions: false,
             clauses_sorted_by_var: initial_clause_mode == InitialClauseMode::CanonicalSorted,
@@ -1678,6 +1757,8 @@ impl Solver {
             best_assigned: 0,
             phase_ticks: 0,
             phase_policy,
+            focused_phase_policy: config.focused_phase_policy,
+            stable_phase_policy: config.stable_phase_policy,
             rephase_enabled: config.rephase,
             rephase_index: 0,
             rephase_at_conflicts,
@@ -1722,7 +1803,8 @@ impl Solver {
             restart_next_check_conflict: 0,
             restart_margin: KISSAT_EMA_RESTART_MARGIN,
             restart_block_margin: config.restart_block_margin,
-            restart_reuse_trail: config.restart_reuse_trail,
+            restart_reuse_trail_focused: config.restart_reuse_trail_focused,
+            restart_reuse_trail_stable: config.restart_reuse_trail_stable,
             restart_conflicts_since_last: 0,
             search_mode,
             search_mode_policy,
@@ -2909,6 +2991,13 @@ impl Solver {
         }
     }
 
+    fn kissat_focused_vmtf_active(&self) -> bool {
+        self.vmtf_queue.is_some()
+            && self.vmtf_mode == VmtfMode::FocusedOnly
+            && self.search_mode_policy == SearchModePolicy::FocusedStable
+            && self.search_mode == SearchMode::Focused
+    }
+
     fn vmtf_stamp_analyzed_var(&mut self, var: usize) {
         if var == 0
             || var >= self.decision_var.len()
@@ -3595,16 +3684,21 @@ impl Solver {
         self.clause_activity_inc /= self.clause_activity_decay;
     }
 
-    fn bump_analyzed_variable_activity(&mut self) {
+    fn bump_analyzed_variable_activity(&mut self) -> bool {
         let bumped_vars = std::mem::take(&mut self.scratch_bumped_vars);
+        let move_to_front_only =
+            !self.accounting_mode.is_temporary() && self.kissat_focused_vmtf_active();
         for &var in &bumped_vars {
             if !self.accounting_mode.is_temporary() && self.vmtf_branching_active() {
                 self.vmtf_stamp_analyzed_var(var);
             }
-            self.bump_variable_activity(var);
+            if !move_to_front_only {
+                self.bump_variable_activity(var);
+            }
         }
         self.scratch_bumped_vars = bumped_vars;
         self.scratch_bumped_vars.clear();
+        !move_to_front_only
     }
 
     fn luby_value(index: usize) -> usize {
@@ -3695,13 +3789,18 @@ impl Solver {
     fn effective_phase_policy(&self) -> PhasePolicy {
         if self.search_mode_policy == SearchModePolicy::FocusedStable {
             match self.search_mode {
-                SearchMode::Focused => match self.phase_policy {
-                    PhasePolicy::Legacy | PhasePolicy::Saved => PhasePolicy::Saved,
-                    PhasePolicy::TargetThenSaved | PhasePolicy::BestThenTargetThenSaved => {
-                        PhasePolicy::TargetThenSaved
-                    }
-                },
-                SearchMode::Stable => PhasePolicy::BestThenTargetThenSaved,
+                SearchMode::Focused => {
+                    self.focused_phase_policy
+                        .unwrap_or(match self.phase_policy {
+                            PhasePolicy::Legacy | PhasePolicy::Saved => PhasePolicy::Saved,
+                            PhasePolicy::TargetThenSaved | PhasePolicy::BestThenTargetThenSaved => {
+                                PhasePolicy::TargetThenSaved
+                            }
+                        })
+                }
+                SearchMode::Stable => self
+                    .stable_phase_policy
+                    .unwrap_or(PhasePolicy::BestThenTargetThenSaved),
             }
         } else if self.vmtf_mode == VmtfMode::Single
             && self.phase_policy == PhasePolicy::Legacy
@@ -4073,6 +4172,9 @@ impl Solver {
         }
 
         let capture_best = if self.search_mode_policy == SearchModePolicy::FocusedStable {
+            if self.search_mode != SearchMode::Stable {
+                return;
+            }
             true
         } else {
             match self.effective_phase_policy() {
@@ -4341,18 +4443,25 @@ impl Solver {
     }
 
     fn restart_reuse_trail_level(&mut self) -> usize {
-        if !self.restart_reuse_trail {
-            return 0;
-        }
-
         let current_level = self.current_level();
         if current_level == 0 {
             return 0;
         }
 
-        if self.vmtf_branching_active() {
+        if self.search_mode_policy == SearchModePolicy::FocusedStable
+            && self.search_mode == SearchMode::Focused
+        {
+            if !self.restart_reuse_trail_focused {
+                return 0;
+            }
+            if !self.vmtf_branching_active() {
+                return 0;
+            }
             self.reuse_focused_trail_level(current_level)
         } else {
+            if !self.restart_reuse_trail_stable {
+                return 0;
+            }
             self.reuse_stable_trail_level(current_level)
         }
     }
@@ -4380,6 +4489,23 @@ impl Solver {
                     .stats
                     .restarts_reused_levels
                     .saturating_add(backtrack_level as u64);
+                if self.search_mode_policy == SearchModePolicy::FocusedStable
+                    && self.search_mode == SearchMode::Focused
+                {
+                    self.stats.restarts_reused_trails_focused =
+                        self.stats.restarts_reused_trails_focused.saturating_add(1);
+                    self.stats.restarts_reused_levels_focused = self
+                        .stats
+                        .restarts_reused_levels_focused
+                        .saturating_add(backtrack_level as u64);
+                } else {
+                    self.stats.restarts_reused_trails_stable =
+                        self.stats.restarts_reused_trails_stable.saturating_add(1);
+                    self.stats.restarts_reused_levels_stable = self
+                        .stats
+                        .restarts_reused_levels_stable
+                        .saturating_add(backtrack_level as u64);
+                }
             }
         }
         self.maybe_rephase_on_stable_restart();
@@ -5899,6 +6025,14 @@ impl Solver {
         }
     }
 
+    fn classify_formula(&self) -> FormulaClass {
+        let clauses = self.live_original_clause_count() as u64;
+        let literals = self.original_literals as u64;
+        let vars = self.live_original_variable_count() as u64;
+        let binary_clauses = self.binary_clause_count_final() as u64;
+        FormulaClass::from_counts(vars, clauses, literals, binary_clauses)
+    }
+
     fn formula_stats_snapshot(
         &self,
         vars: usize,
@@ -5907,12 +6041,19 @@ impl Solver {
     ) -> FormulaStats {
         let binary_clauses_final = self.binary_clause_count_final() as u64;
         let clause_db = self.clause_db_measurement();
+        let formula_class = self.formula_class;
         FormulaStats {
             vars: vars as u64,
             original_clauses_initial: original_clauses_initial as u64,
             original_lits_initial,
             original_clauses_after_preprocess: self.live_original_clause_count() as u64,
             original_lits_after_preprocess: self.original_literals as u64,
+            formula_size_class: formula_class.size_class.as_str(),
+            formula_kissat_small: formula_class.kissat_small,
+            formula_kissat_bigbig: formula_class.kissat_bigbig,
+            formula_binary_fraction: formula_class.binary_fraction,
+            formula_avg_clause_size: formula_class.avg_clause_size,
+            formula_variable_density: formula_class.variable_density,
             learned_clauses_final: self.live_learned_clause_count as u64,
             learned_lits_final: self.learned_literals as u64,
             arena_words_live: clause_db.arena_words_live as u64,
@@ -6091,9 +6232,10 @@ impl Solver {
             }
         }
         self.reset_learned_budget_after_preprocess();
+        self.formula_class = self.classify_formula();
         if config.trace_preprocess {
             eprintln!(
-                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} root_assigns={} deleted_clauses={} reduce_db_limit={}",
+                "c preprocess seconds={:.3} eliminated={} resolvents={} subsumed={} strengthened={} original_vars={} original_clauses={} original_literals={} root_assigns={} deleted_clauses={} reduce_db_limit={} formula_size_class={} formula_binary_fraction={:.6} formula_avg_clause_size={:.3} formula_variable_density={:.3} kissat_small={} kissat_bigbig={}",
                 preprocess_start.elapsed().as_secs_f64(),
                 self.stats.preprocess_eliminated_vars,
                 self.stats.preprocess_resolvents,
@@ -6105,6 +6247,12 @@ impl Solver {
                 self.trail.len(),
                 self.stats.deleted_clauses,
                 self.reduce_db_limit,
+                self.formula_class.size_class.as_str(),
+                self.formula_class.binary_fraction,
+                self.formula_class.avg_clause_size,
+                self.formula_class.variable_density,
+                self.formula_class.kissat_small,
+                self.formula_class.kissat_bigbig,
             );
         }
         if self.trace_preprocess_details {
@@ -6208,8 +6356,10 @@ impl Solver {
                         next_search_trace = next_search_trace.saturating_add(trace_search_interval);
                     }
                     let assertion_level = self.analyze_conflict_to_scratch(conflict_event);
-                    self.bump_analyzed_variable_activity();
-                    self.decay_variable_activity();
+                    let bumped_variable_scores = self.bump_analyzed_variable_activity();
+                    if bumped_variable_scores {
+                        self.decay_variable_activity();
+                    }
                     if self.reduce_db_enabled() {
                         self.decay_clause_activity();
                         self.note_learnt_budget_conflict();
@@ -6910,6 +7060,45 @@ mod tests {
             chrono_max_delta: max_delta,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn test_formula_class_from_counts_records_size_and_ratios() {
+        let small = FormulaClass::from_counts(4, 3, 7, 2);
+        assert_eq!(small.size_class, FormulaSizeClass::Small);
+        assert!(small.kissat_small);
+        assert!(!small.kissat_bigbig);
+        assert!((small.binary_fraction - (2.0 / 3.0)).abs() < 1e-12);
+        assert!((small.avg_clause_size - (7.0 / 3.0)).abs() < 1e-12);
+        assert!((small.variable_density - 1.75).abs() < 1e-12);
+
+        let bigbig = FormulaClass::from_counts(100, 100_001, 200_002, 100_001);
+        assert_eq!(bigbig.size_class, FormulaSizeClass::Medium);
+        assert!(!bigbig.kissat_small);
+        assert!(bigbig.kissat_bigbig);
+        assert_eq!(bigbig.binary_fraction, 1.0);
+
+        let large = FormulaClass::from_counts(1, 1_000_001, 3_000_003, 0);
+        assert_eq!(large.size_class, FormulaSizeClass::Large);
+        assert!(!large.kissat_bigbig);
+    }
+
+    #[test]
+    fn test_classify_formula_uses_postpreprocess_live_clause_shape() {
+        let mut s = make_solver(
+            4,
+            vec![vec![1, 2], vec![-1, 3], vec![1, -2, 4], vec![1, -1, 4]],
+        );
+        let mut proof = ProofLog::disabled();
+        assert!(s.eliminate(true, &mut proof));
+
+        let class = s.classify_formula();
+
+        assert_eq!(class.size_class, FormulaSizeClass::Small);
+        assert!(class.kissat_small);
+        assert!((0.0..=1.0).contains(&class.binary_fraction));
+        assert!(class.avg_clause_size >= 0.0);
+        assert!(class.variable_density >= 0.0);
     }
 
     #[test]
@@ -10114,6 +10303,7 @@ mod tests {
             ..focused_stable_config()
         };
         let mut s = make_solver_with_config(2, vec![], &config);
+        s.search_mode = SearchMode::Stable;
 
         s.decide(1);
         s.maybe_capture_phase_prefix();
@@ -10126,6 +10316,48 @@ mod tests {
         assert_eq!(s.target_assigned, 1);
         assert_eq!(s.target_phase[1], TRUE);
         assert_eq!(s.current_level(), 0);
+    }
+
+    #[test]
+    fn test_focused_stable_does_not_capture_phase_prefix_in_focused_mode() {
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::BestThenTargetThenSaved,
+            ..focused_stable_config()
+        };
+        let mut s = make_solver_with_config(2, vec![], &config);
+        assert_eq!(s.search_mode, SearchMode::Focused);
+
+        s.decide(1);
+        s.maybe_capture_phase_prefix();
+
+        assert_eq!(s.target_assigned, 0);
+        assert_eq!(s.best_assigned, 0);
+        assert_eq!(s.target_phase[1], UNASSIGNED);
+        assert_eq!(s.best_phase[1], UNASSIGNED);
+        assert_eq!(s.phase_ticks, 0);
+        assert_eq!(s.stats.phase_save_target, 0);
+        assert_eq!(s.stats.phase_save_best, 0);
+    }
+
+    #[test]
+    fn test_focused_stable_captures_phase_prefix_in_stable_mode() {
+        let config = SolverConfig {
+            phase_policy: PhasePolicy::BestThenTargetThenSaved,
+            ..focused_stable_config()
+        };
+        let mut s = make_solver_with_config(2, vec![], &config);
+        s.search_mode = SearchMode::Stable;
+
+        s.decide(1);
+        s.maybe_capture_phase_prefix();
+
+        assert_eq!(s.target_assigned, 1);
+        assert_eq!(s.best_assigned, 1);
+        assert_eq!(s.target_phase[1], TRUE);
+        assert_eq!(s.best_phase[1], TRUE);
+        assert_eq!(s.phase_ticks, 2);
+        assert_eq!(s.stats.phase_save_target, 1);
+        assert_eq!(s.stats.phase_save_best, 1);
     }
 
     #[test]
@@ -10194,6 +10426,7 @@ mod tests {
             ..focused_stable_config()
         };
         let mut s = make_solver_with_config(3, vec![], &config);
+        s.search_mode = SearchMode::Stable;
 
         s.decide(1);
         s.maybe_capture_phase_prefix();
@@ -10751,6 +10984,44 @@ mod tests {
     }
 
     #[test]
+    fn test_focused_vmtf_bump_moves_queue_without_vsids_score() {
+        let config = focused_stable_vmtf_config();
+        let mut s = make_solver_with_config(4, vec![], &config);
+        assert_eq!(s.search_mode, SearchMode::Focused);
+        let activity_before = s.activity[2];
+        let inc_before = s.activity_inc;
+        let stamp_before = s.vmtf_queue.as_ref().unwrap().stamp_for_test(2);
+
+        s.scratch_bumped_vars.push(2);
+        let bumped_scores = s.bump_analyzed_variable_activity();
+
+        assert!(!bumped_scores);
+        assert_eq!(s.activity[2], activity_before);
+        assert_eq!(s.activity_inc, inc_before);
+        assert!(s.vmtf_queue.as_ref().unwrap().stamp_for_test(2) > stamp_before);
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+    }
+
+    #[test]
+    fn test_stable_mode_with_vmtf_bumps_vsids_score_not_queue() {
+        let config = focused_stable_vmtf_config();
+        let mut s = make_solver_with_config(4, vec![], &config);
+        s.search_mode = SearchMode::Stable;
+        let activity_before = s.activity[2];
+        let stamp_before = s.vmtf_queue.as_ref().unwrap().stamp_for_test(2);
+
+        s.scratch_bumped_vars.push(2);
+        let bumped_scores = s.bump_analyzed_variable_activity();
+
+        assert!(bumped_scores);
+        assert!(s.activity[2] > activity_before);
+        assert_eq!(
+            s.vmtf_queue.as_ref().unwrap().stamp_for_test(2),
+            stamp_before
+        );
+    }
+
+    #[test]
     fn test_vmtf_single_mode_activates_without_focused_stable() {
         let config = single_mode_vmtf_config();
         let mut s = make_solver_with_config(4, vec![], &config);
@@ -10854,6 +11125,37 @@ mod tests {
         };
         let s = make_solver_with_config(2, vec![vec![1, 2]], &single);
         assert_eq!(s.effective_phase_policy(), PhasePolicy::TargetThenSaved);
+    }
+
+    #[test]
+    fn test_focused_stable_phase_policy_per_mode_controls() {
+        let config = SolverConfig {
+            use_lbd: true,
+            search_mode_policy: SearchModePolicy::FocusedStable,
+            phase_policy: PhasePolicy::BestThenTargetThenSaved,
+            focused_phase_policy: Some(PhasePolicy::Saved),
+            stable_phase_policy: Some(PhasePolicy::TargetThenSaved),
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+
+        s.search_mode = SearchMode::Focused;
+        assert_eq!(s.effective_phase_policy(), PhasePolicy::Saved);
+
+        s.search_mode = SearchMode::Stable;
+        assert_eq!(s.effective_phase_policy(), PhasePolicy::TargetThenSaved);
+
+        let single = SolverConfig {
+            phase_policy: PhasePolicy::TargetThenSaved,
+            focused_phase_policy: Some(PhasePolicy::Saved),
+            stable_phase_policy: Some(PhasePolicy::BestThenTargetThenSaved),
+            ..SolverConfig::default()
+        };
+        let single_solver = make_solver_with_config(2, vec![vec![1, 2]], &single);
+        assert_eq!(
+            single_solver.effective_phase_policy(),
+            PhasePolicy::TargetThenSaved
+        );
     }
 
     #[test]
@@ -11516,6 +11818,7 @@ mod tests {
     fn test_trail_reuse_stable_keeps_high_score_prefix() {
         let config = SolverConfig {
             restart_reuse_trail: true,
+            restart_reuse_trail_stable: true,
             ..SolverConfig::default()
         };
         let mut s = make_solver_with_config(4, vec![], &config);
@@ -11540,12 +11843,17 @@ mod tests {
         assert_eq!(s.stats.restarts, 1);
         assert_eq!(s.stats.restarts_reused_trails, 1);
         assert_eq!(s.stats.restarts_reused_levels, 2);
+        assert_eq!(s.stats.restarts_reused_trails_stable, 1);
+        assert_eq!(s.stats.restarts_reused_levels_stable, 2);
+        assert_eq!(s.stats.restarts_reused_trails_focused, 0);
+        assert_eq!(s.stats.restarts_reused_levels_focused, 0);
     }
 
     #[test]
     fn test_trail_reuse_focused_keeps_high_stamp_prefix() {
         let config = SolverConfig {
             restart_reuse_trail: true,
+            restart_reuse_trail_focused: true,
             ..focused_stable_vmtf_config()
         };
         let mut s = make_solver_with_config(4, vec![], &config);
@@ -11570,6 +11878,61 @@ mod tests {
         assert_eq!(s.assignment[3], UNASSIGNED);
         assert_eq!(s.stats.restarts_reused_trails, 1);
         assert_eq!(s.stats.restarts_reused_levels, 2);
+        assert_eq!(s.stats.restarts_reused_trails_focused, 1);
+        assert_eq!(s.stats.restarts_reused_levels_focused, 2);
+        assert_eq!(s.stats.restarts_reused_trails_stable, 0);
+        assert_eq!(s.stats.restarts_reused_levels_stable, 0);
+    }
+
+    #[test]
+    fn test_trail_reuse_focused_can_be_disabled_independently() {
+        let config = SolverConfig {
+            restart_reuse_trail: true,
+            restart_reuse_trail_focused: false,
+            restart_reuse_trail_stable: true,
+            ..focused_stable_vmtf_config()
+        };
+        let mut s = make_solver_with_config(4, vec![], &config);
+        s.decide(1);
+        s.decide(2);
+        s.vmtf_stamp_analyzed_var(1);
+
+        assert_eq!(s.restart_reuse_trail_level(), 0);
+
+        s.restart_pending = true;
+        assert!(s.perform_restart_if_pending());
+
+        assert_eq!(s.current_level(), 0);
+        assert_eq!(s.stats.restarts_reused_trails, 0);
+        assert_eq!(s.stats.restarts_reused_trails_focused, 0);
+        assert_eq!(s.stats.restarts_reused_trails_stable, 0);
+    }
+
+    #[test]
+    fn test_trail_reuse_stable_can_be_disabled_independently() {
+        let config = SolverConfig {
+            restart_reuse_trail: true,
+            restart_reuse_trail_focused: true,
+            restart_reuse_trail_stable: false,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(4, vec![], &config);
+        s.decide(1);
+        s.decide(2);
+        s.activity[1] = 10.0;
+        s.activity[2] = 1.0;
+        s.activity[3] = 5.0;
+        s.rebuild_branch_queue();
+
+        assert_eq!(s.restart_reuse_trail_level(), 0);
+
+        s.restart_pending = true;
+        assert!(s.perform_restart_if_pending());
+
+        assert_eq!(s.current_level(), 0);
+        assert_eq!(s.stats.restarts_reused_trails, 0);
+        assert_eq!(s.stats.restarts_reused_trails_focused, 0);
+        assert_eq!(s.stats.restarts_reused_trails_stable, 0);
     }
 
     #[test]

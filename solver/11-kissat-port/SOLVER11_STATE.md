@@ -28,25 +28,25 @@ Audited entry points:
 
 | Entry point | File:line | Notes |
 | --- | --- | --- |
-| `Solver::new` | `src/main.rs:1565` | Builds branch ordering, root assignments, original clause arena, watchers, occurrence/BVE state, and default solver-10-compatible policy fields. |
-| `Solver::solve_to_output` | `src/main.rs:5965` | Creates proof log according to `SAT_PROOF`, runs preprocessing/search, finalizes or discards proof output, and returns proof stats. |
-| `Solver::solve_with_proof` | `src/main.rs:5993` | Runs root propagation, optional BVE/simplification, search loop, trace comments, SAT model snapshot, and proof finalization. |
-| `Solver::propagate` | `src/main.rs:3295` | Watched-literal BCP over long clauses and units; returns conflicting clause arena offset, always updates propagation count, and updates watcher diagnostics only when `SAT_STATS_HOT=on`. |
-| `Solver::analyze_conflict_to_scratch` | `src/main.rs:5753` | Learned clause construction, UIP backtrack target, minimization, and conflict activity updates. |
-| `Solver::reduce_db` | `src/main.rs:5109` | Learned-clause reduction by activity with locked/binary preservation and DRAT deletion recording. |
+| `Solver::new` | `src/main.rs:1644` | Builds branch ordering, root assignments, original clause arena, watchers, occurrence/BVE state, and default solver-10-compatible policy fields. |
+| `Solver::solve_to_output` | `src/main.rs:6106` | Creates proof log according to `SAT_PROOF`, runs preprocessing/search, finalizes or discards proof output, and returns proof stats. |
+| `Solver::solve_with_proof` | `src/main.rs:6134` | Runs root propagation, optional BVE/simplification, search loop, trace comments, SAT model snapshot, and proof finalization. |
+| `Solver::propagate` | `src/main.rs:3384` | Watched-literal BCP over long clauses and units; returns conflicting clause arena offset, always updates propagation count, and updates watcher diagnostics only when `SAT_STATS_HOT=on`. |
+| `Solver::analyze_conflict_to_scratch` | `src/main.rs:5879` | Learned clause construction, UIP backtrack target, minimization, and conflict activity updates. |
+| `Solver::reduce_db` | `src/main.rs:5235` | Learned-clause reduction by activity with locked/binary preservation and DRAT deletion recording. |
 | `Solver::eliminate` | `src/simp.rs:1083` | Preprocessing BVE/BSR driver; owns occurrence cleanup, resolvent generation, proof logging, and extension entries. |
 
 Related implementation anchors:
 
 | Anchor | File:line | Notes |
 | --- | --- | --- |
-| `ProofLog` | `src/main.rs:715` | DRAT buffering, temp/final proof path lifecycle, and proof stats snapshot; planned for `proof.rs`/`output.rs` split later. |
-| `Solver` | `src/main.rs:944` | Current monolithic state owner; future tasks introduce capability wrappers incrementally. |
-| `Solver::attach_clause` | `src/main.rs:3071` | Watcher attachment and empty/unit handling. |
-| `Solver::simplify_with_proof` | `src/main.rs:4417` | Top-level simplification and learned/original clause cleanup. |
-| `Solver::garbage_collect` | `src/main.rs:4898` | Arena compaction and reference rewriting for current side structures. |
-| `parse_cnf` | `src/main.rs:6346` | DIMACS parser used by `main`; returns parse errors so main can emit result.json with PARSE_ERROR. |
-| `main` | `src/main.rs:6575` | CLI/run.sh entry point, config parsing/output before CNF parsing, solver construction, result.json/status/model contract emission, JSON_STATS/trace_full stderr emission, internal SAT model check, and SAT Competition stdout. |
+| `ProofLog` | `src/main.rs:786` | DRAT buffering, temp/final proof path lifecycle, and proof stats snapshot; planned for `proof.rs`/`output.rs` split later. |
+| `Solver` | `src/main.rs:1015` | Current monolithic state owner; future tasks introduce capability wrappers incrementally. |
+| `Solver::attach_clause` | `src/main.rs:3160` | Watcher attachment and empty/unit handling. |
+| `Solver::simplify_with_proof` | `src/main.rs:4543` | Top-level simplification and learned/original clause cleanup. |
+| `Solver::garbage_collect` | `src/main.rs:5024` | Arena compaction and reference rewriting for current side structures. |
+| `parse_cnf` | `src/main.rs:6496` | DIMACS parser used by `main`; returns parse errors so main can emit result.json with PARSE_ERROR. |
+| `main` | `src/main.rs:6725` | CLI/run.sh entry point, config parsing/output before CNF parsing, solver construction, result.json/status/model contract emission, JSON_STATS/trace_full stderr emission, internal SAT model check, and SAT Competition stdout. |
 
 Known unpromoted or incomplete feature families at this baseline:
 
@@ -60,7 +60,11 @@ Known unpromoted or incomplete feature families at this baseline:
   immediately. The blocker is default-off (`0`) after profile testing showed the `1.4` margin
   regressed the current profile suite. `SAT_RESTART_REUSE_TRAIL=on` separately enables the
   Kissat-style partial-restart experiment: restarts keep the decision-level prefix whose VSIDS score
-  or active VMTF stamp beats the next decision candidate and backtrack only to that level.
+  or active VMTF stamp beats the next decision candidate and backtrack only to that level. Focused
+  and stable reuse criteria can be overridden independently with `SAT_RESTART_REUSE_TRAIL_FOCUSED`
+  and `SAT_RESTART_REUSE_TRAIL_STABLE`, and JSON stats report per-mode reuse counters. Stable-only
+  reuse is not promotable for the current single-mode default because the 2026-05-25 profile
+  changed `mp1` from SAT to `UNKNOWN`.
   Learned clauses now start with the maximum
   `used_recently` value for every LBD tier; later reduce-DB passes age that counter down before
   high-LBD clauses become eviction candidates. Learned-reason LBD recomputation now walks arena
@@ -84,8 +88,10 @@ Known unpromoted or incomplete feature families at this baseline:
 - Chronological backtracking is present behind `SAT_CHRONO=on`. It is deliberately guarded: it
   only chooses `current - 1` when the learned clause remains asserting at that level and otherwise
   uses the normal assertion level.
-- Saved/target/best phase policies are present behind `SAT_PHASE`, but they are not promoted as
-  default-profile behavior yet. In focused/stable search, target phases are preserved across mode
+- Saved/target/best phase policies are present behind `SAT_PHASE`, with per-mode focused/stable
+  overrides behind `SAT_FOCUSED_PHASE` and `SAT_STABLE_PHASE`, but they are not promoted as
+  default-profile behavior yet. In focused/stable search, target/best phase snapshots are captured
+  only in stable mode, matching Kissat's update boundary; target phases are preserved across mode
   switches and restart cycles, then reset when a rephase event starts a new phase block. Single-mode
   target policies still reset target phase on restart because all-mode target persistence regressed
   the profiling suite.
@@ -103,10 +109,12 @@ Known unpromoted or incomplete feature families at this baseline:
   `nlogpown(count, 4)` growth, and every mode switch resets all restart EMAs. Focused EMA restart
   windows also grow with the cumulative focused restart count as
   `50 + kissat_logn(focused_restarts) - 1`, and `focused_restarts` is reported in JSON/trace stats.
-- VMTF branching is present behind `SAT_VMTF=single` for the single-mode search path. The legacy
-  `SAT_VMTF=on` spelling maps to `focused-only` and still requires
-  `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable`; focused mode uses the VMTF queue and stable
-  mode keeps the VSIDS heap. VMTF is not promoted as default-profile behavior yet.
+- VMTF branching is present behind `SAT_VMTF=focused-only` for the Kissat-faithful focused/stable
+  path. The legacy `SAT_VMTF=on` spelling maps to `focused-only` and requires
+  `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable`; focused mode uses the VMTF queue and
+  move-to-front conflict bumps without updating VSIDS scores, while stable mode keeps the VSIDS heap
+  and score bumps. `SAT_VMTF=single` remains available as a default-off guarded experimental
+  fallback for the single-mode search path, not as a promoted VMTF policy.
 - Rephasing is present behind `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_REPHASE=on`;
   it runs only on scheduled stable-mode restarts and cycles saved phase data through best, inverted,
   and original polarity sources. It is not promoted as default-profile behavior yet.
@@ -114,6 +122,10 @@ Known unpromoted or incomplete feature families at this baseline:
   representation for proof/model/debug paths while propagation uses stable `BinaryClauseId` reasons.
   The default binary-fast-off propagation path is separately monomorphized so the solver-10-compatible
   profile does not pay a per-propagation binary implication branch.
+- Formula classification now runs once after preprocessing and before the main search. It records
+  size class, Kissat-style `small`/`bigbig`, binary-clause fraction, average clause size, and
+  live-variable density in `SAT_STATS_JSON`; `SAT_TRACE_PREPROCESS=on` prints the same class summary.
+  No adaptive feature routing is enabled yet.
 - Clause minimization is binary-reason aware as of 1.11, so explicit `SAT_CLAUSE_MIN` settings are
   honored with `SAT_BINARY_FAST=on`. Binary-fast env runs keep minimization off unless
   `SAT_CLAUSE_MIN` is explicit because the search-core gate does not justify promoting recursive

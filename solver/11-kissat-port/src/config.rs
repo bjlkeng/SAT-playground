@@ -515,8 +515,12 @@ pub(crate) struct SolverConfig {
     pub(crate) restart_policy: RestartPolicy,
     pub(crate) restart_block_margin: f64,
     pub(crate) restart_reuse_trail: bool,
+    pub(crate) restart_reuse_trail_focused: bool,
+    pub(crate) restart_reuse_trail_stable: bool,
     pub(crate) reduce_policy: ReducePolicy,
     pub(crate) phase_policy: PhasePolicy,
+    pub(crate) focused_phase_policy: Option<PhasePolicy>,
+    pub(crate) stable_phase_policy: Option<PhasePolicy>,
     pub(crate) search_mode_policy: SearchModePolicy,
     pub(crate) mode_use_ticks: bool,
     pub(crate) chrono_backtrack: bool,
@@ -609,8 +613,12 @@ impl Default for SolverConfig {
             restart_policy: RestartPolicy::LegacyLuby,
             restart_block_margin: DEFAULT_RESTART_BLOCK_MARGIN,
             restart_reuse_trail: false,
+            restart_reuse_trail_focused: false,
+            restart_reuse_trail_stable: false,
             reduce_policy: ReducePolicy::LegacyActivity,
             phase_policy: PhasePolicy::Legacy,
+            focused_phase_policy: None,
+            stable_phase_policy: None,
             search_mode_policy: SearchModePolicy::Single,
             mode_use_ticks: false,
             chrono_backtrack: false,
@@ -898,6 +906,20 @@ impl SolverConfig {
             "SAT_RESTART_REUSE_TRAIL",
             self.restart_reuse_trail,
         );
+        self.restart_reuse_trail_focused = self.restart_reuse_trail;
+        self.restart_reuse_trail_stable = self.restart_reuse_trail;
+        self.restart_reuse_trail_focused = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_RESTART_REUSE_TRAIL_FOCUSED",
+            self.restart_reuse_trail_focused,
+        );
+        self.restart_reuse_trail_stable = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_RESTART_REUSE_TRAIL_STABLE",
+            self.restart_reuse_trail_stable,
+        );
         self.reduce_policy = parse_enum_selected(
             env_map,
             &key_set,
@@ -911,6 +933,18 @@ impl SolverConfig {
             "SAT_PHASE",
             self.phase_policy,
             PhasePolicy::parse,
+        );
+        self.focused_phase_policy = parse_option_phase_policy_selected(
+            env_map,
+            &key_set,
+            "SAT_FOCUSED_PHASE",
+            self.focused_phase_policy,
+        );
+        self.stable_phase_policy = parse_option_phase_policy_selected(
+            env_map,
+            &key_set,
+            "SAT_STABLE_PHASE",
+            self.stable_phase_policy,
         );
         self.search_mode_policy = parse_enum_selected(
             env_map,
@@ -1334,8 +1368,24 @@ impl SolverConfig {
             format_f64(self.restart_block_margin),
         );
         push_kv_bool(&mut lines, "restart_reuse_trail", self.restart_reuse_trail);
+        push_kv_bool(
+            &mut lines,
+            "restart_reuse_trail_focused",
+            self.restart_reuse_trail_focused,
+        );
+        push_kv_bool(
+            &mut lines,
+            "restart_reuse_trail_stable",
+            self.restart_reuse_trail_stable,
+        );
         push_kv(&mut lines, "reduce_policy", self.reduce_policy.as_str());
         push_kv(&mut lines, "phase_policy", self.phase_policy.as_str());
+        push_kv_option_phase_policy(
+            &mut lines,
+            "focused_phase_policy",
+            self.focused_phase_policy,
+        );
+        push_kv_option_phase_policy(&mut lines, "stable_phase_policy", self.stable_phase_policy);
         push_kv(
             &mut lines,
             "search_mode_policy",
@@ -1628,7 +1678,9 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
         ),
         feature(
             "SAT_RESTART_REUSE_TRAIL",
-            config.restart_reuse_trail,
+            config.restart_reuse_trail
+                || config.restart_reuse_trail_focused
+                || config.restart_reuse_trail_stable,
             FeatureMaturity::Experimental,
             true,
             true,
@@ -1930,8 +1982,12 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "restart_policy" => Some("SAT_RESTART"),
         "restart_block_margin" => Some("SAT_RESTART_BLOCK_MARGIN"),
         "restart_reuse_trail" => Some("SAT_RESTART_REUSE_TRAIL"),
+        "restart_reuse_trail_focused" => Some("SAT_RESTART_REUSE_TRAIL_FOCUSED"),
+        "restart_reuse_trail_stable" => Some("SAT_RESTART_REUSE_TRAIL_STABLE"),
         "reduce_policy" => Some("SAT_REDUCE"),
         "phase_policy" => Some("SAT_PHASE"),
+        "focused_phase_policy" => Some("SAT_FOCUSED_PHASE"),
+        "stable_phase_policy" => Some("SAT_STABLE_PHASE"),
         "search_mode_policy" => Some("SAT_SEARCH_MODE"),
         "mode_use_ticks" => Some("SAT_MODE_USE_TICKS"),
         "chrono_backtrack" => Some("SAT_CHRONO"),
@@ -2103,8 +2159,12 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_RESTART",
         "SAT_RESTART_BLOCK_MARGIN",
         "SAT_RESTART_REUSE_TRAIL",
+        "SAT_RESTART_REUSE_TRAIL_FOCUSED",
+        "SAT_RESTART_REUSE_TRAIL_STABLE",
         "SAT_REDUCE",
         "SAT_PHASE",
+        "SAT_FOCUSED_PHASE",
+        "SAT_STABLE_PHASE",
         "SAT_SEARCH_MODE",
         "SAT_MODE_USE_TICKS",
         "SAT_CHRONO",
@@ -2305,6 +2365,20 @@ fn parse_option_bool_selected(
         .unwrap_or(default)
 }
 
+fn parse_option_phase_policy_selected(
+    env_map: &BTreeMap<String, String>,
+    key_set: &BTreeSet<&str>,
+    name: &str,
+    default: Option<PhasePolicy>,
+) -> Option<PhasePolicy> {
+    get_selected(env_map, key_set, name)
+        .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "" | "auto" | "default" | "none" => None,
+            _ => Some(PhasePolicy::parse(value, name)),
+        })
+        .unwrap_or(default)
+}
+
 fn parse_option_u64_selected(
     env_map: &BTreeMap<String, String>,
     key_set: &BTreeSet<&str>,
@@ -2436,6 +2510,13 @@ fn push_kv_option_string(lines: &mut Vec<String>, key: &str, value: Option<&str>
 fn push_kv_option_bool(lines: &mut Vec<String>, key: &str, value: Option<bool>) {
     match value {
         Some(value) => push_kv_bool(lines, key, value),
+        None => push_kv(lines, key, ""),
+    }
+}
+
+fn push_kv_option_phase_policy(lines: &mut Vec<String>, key: &str, value: Option<PhasePolicy>) {
+    match value {
+        Some(value) => push_kv(lines, key, value.as_str()),
         None => push_kv(lines, key, ""),
     }
 }
@@ -2851,18 +2932,95 @@ mod tests {
     }
 
     #[test]
+    fn test_focused_stable_phase_map_controls_are_replayable() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_USE_LBD", "on"),
+            ("SAT_SEARCH_MODE", "focused-stable"),
+            ("SAT_FOCUSED_PHASE", "target-then-saved"),
+            ("SAT_STABLE_PHASE", "saved"),
+        ]));
+
+        assert_eq!(
+            config.focused_phase_policy,
+            Some(PhasePolicy::TargetThenSaved)
+        );
+        assert_eq!(config.stable_phase_policy, Some(PhasePolicy::Saved));
+
+        let replay = config.config_replay_text();
+        assert!(replay.contains("focused_phase_policy=target-then-saved"));
+        assert!(replay.contains("stable_phase_policy=saved"));
+
+        let replayed = SolverConfig::from_replay_text(&replay, Path::new("<phase-map-test>"));
+        assert_eq!(replayed.focused_phase_policy, config.focused_phase_policy);
+        assert_eq!(replayed.stable_phase_policy, config.stable_phase_policy);
+        assert_eq!(replayed.config_hash(), config.config_hash());
+
+        let auto = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_USE_LBD", "on"),
+            ("SAT_SEARCH_MODE", "focused-stable"),
+            ("SAT_FOCUSED_PHASE", "auto"),
+            ("SAT_STABLE_PHASE", ""),
+        ]));
+        assert_eq!(auto.focused_phase_policy, None);
+        assert_eq!(auto.stable_phase_policy, None);
+    }
+
+    #[test]
     fn test_restart_reuse_trail_is_runtime_supported_and_replayable() {
         let config = SolverConfig::from_env_map(&env_map(&[("SAT_RESTART_REUSE_TRAIL", "on")]));
 
         assert!(config.restart_reuse_trail);
+        assert!(config.restart_reuse_trail_focused);
+        assert!(config.restart_reuse_trail_stable);
 
         let replay = config.config_replay_text();
         assert!(replay.contains("restart_reuse_trail=true"));
+        assert!(replay.contains("restart_reuse_trail_focused=true"));
+        assert!(replay.contains("restart_reuse_trail_stable=true"));
 
         let replayed =
             SolverConfig::from_replay_text(&replay, Path::new("<restart-reuse-trail-test>"));
         assert!(replayed.restart_reuse_trail);
+        assert!(replayed.restart_reuse_trail_focused);
+        assert!(replayed.restart_reuse_trail_stable);
         assert_eq!(replayed.config_hash(), config.config_hash());
+    }
+
+    #[test]
+    fn test_restart_reuse_trail_per_mode_controls_are_replayable() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_RESTART_REUSE_TRAIL", "on"),
+            ("SAT_RESTART_REUSE_TRAIL_FOCUSED", "off"),
+            ("SAT_RESTART_REUSE_TRAIL_STABLE", "on"),
+        ]));
+
+        assert!(config.restart_reuse_trail);
+        assert!(!config.restart_reuse_trail_focused);
+        assert!(config.restart_reuse_trail_stable);
+
+        let replay = config.config_replay_text();
+        assert!(replay.contains("restart_reuse_trail=true"));
+        assert!(replay.contains("restart_reuse_trail_focused=false"));
+        assert!(replay.contains("restart_reuse_trail_stable=true"));
+
+        let replayed =
+            SolverConfig::from_replay_text(&replay, Path::new("<restart-reuse-mode-test>"));
+        assert_eq!(replayed.restart_reuse_trail, config.restart_reuse_trail);
+        assert_eq!(
+            replayed.restart_reuse_trail_focused,
+            config.restart_reuse_trail_focused
+        );
+        assert_eq!(
+            replayed.restart_reuse_trail_stable,
+            config.restart_reuse_trail_stable
+        );
+        assert_eq!(replayed.config_hash(), config.config_hash());
+
+        let focused_only =
+            SolverConfig::from_env_map(&env_map(&[("SAT_RESTART_REUSE_TRAIL_FOCUSED", "on")]));
+        assert!(!focused_only.restart_reuse_trail);
+        assert!(focused_only.restart_reuse_trail_focused);
+        assert!(!focused_only.restart_reuse_trail_stable);
     }
 
     #[test]
