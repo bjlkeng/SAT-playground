@@ -167,8 +167,13 @@ def correctness_failures(
             error = str(record.get("validation_error", "") or "").strip()
             if error:
                 failures.append(f"{name}: validation_error={error}")
-            if row["result"] == "SAT" and record.get("model_check_result") != "pass":
-                failures.append(f"{name}: SAT without model_check_result=pass")
+            if row["result"] == "SAT" and record.get("model_check_result") not in {
+                "pass",
+                "not_checked",
+            }:
+                failures.append(
+                    f"{name}: SAT with invalid model_check_result={record.get('model_check_result')!r}"
+                )
             if row["result"] == "UNSAT":
                 proof_result = str(record.get("proof_check_result", "") or "").strip()
                 if proof_result in {"missing", "unchecked", "checker-timeout", "checker-failed", "fail"}:

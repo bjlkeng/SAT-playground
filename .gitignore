@@ -48,3 +48,6 @@ benchmarks/reference-solvers/*
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# Claude local scheduler locks
+.claude/*.lock

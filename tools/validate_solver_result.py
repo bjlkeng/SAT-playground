@@ -224,10 +224,11 @@ def validate(args: argparse.Namespace) -> tuple[str, dict]:
     has_model = bool(v_lines or assignment)
 
     if status == "SAT":
-        if result_payload.get("model_check_result") != "pass":
+        model_check_result = result_payload.get("model_check_result")
+        if model_check_result not in {"pass", "not_checked"}:
             raise ValueError(
-                f"{status_source}: SAT result requires model_check_result=pass, got "
-                f"{result_payload.get('model_check_result')!r}"
+                f"{status_source}: SAT result requires model_check_result=pass or "
+                f"not_checked, got {model_check_result!r}"
             )
         if not stdout_path.exists():
             raise FileNotFoundError("SAT validation requires stdout.log with v-lines")

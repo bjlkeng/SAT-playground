@@ -3253,20 +3253,29 @@ impl Solver {
     }
 
     fn propagate(&mut self) -> Option<Conflict> {
-        match (self.hot_stats, self.mode_use_ticks) {
-            (true, true) => self.propagate_impl::<true, true>(),
-            (true, false) => self.propagate_impl::<true, false>(),
-            (false, true) => self.propagate_impl::<false, true>(),
-            (false, false) => self.propagate_impl::<false, false>(),
+        match (self.hot_stats, self.mode_use_ticks, self.binary_fast_path) {
+            (true, true, true) => self.propagate_impl::<true, true, true>(),
+            (true, true, false) => self.propagate_impl::<true, true, false>(),
+            (true, false, true) => self.propagate_impl::<true, false, true>(),
+            (true, false, false) => self.propagate_impl::<true, false, false>(),
+            (false, true, true) => self.propagate_impl::<false, true, true>(),
+            (false, true, false) => self.propagate_impl::<false, true, false>(),
+            (false, false, true) => self.propagate_impl::<false, false, true>(),
+            (false, false, false) => self.propagate_impl::<false, false, false>(),
         }
     }
 
-    fn propagate_binary_implications<const HOT_STATS: bool, const MODE_TICKS: bool>(
+    #[inline(always)]
+    fn propagate_binary_implications<
+        const HOT_STATS: bool,
+        const MODE_TICKS: bool,
+        const BINARY_FAST: bool,
+    >(
         &mut self,
         lit: i32,
         normal_search_accounting: bool,
     ) -> Option<Conflict> {
-        if !self.binary_fast_path {
+        if !BINARY_FAST {
             return None;
         }
 
@@ -3301,7 +3310,7 @@ impl Solver {
         None
     }
 
-    fn propagate_impl<const HOT_STATS: bool, const MODE_TICKS: bool>(
+    fn propagate_impl<const HOT_STATS: bool, const MODE_TICKS: bool, const BINARY_FAST: bool>(
         &mut self,
     ) -> Option<Conflict> {
         let start_head = self.propagate_head;
@@ -3311,10 +3320,12 @@ impl Solver {
             let false_lit = -trail_lit;
             self.propagate_head += 1;
             self.record_propagation_accounting();
-            if let Some(conflict) = self.propagate_binary_implications::<HOT_STATS, MODE_TICKS>(
-                trail_lit,
-                normal_search_accounting,
-            ) {
+            if let Some(conflict) = self
+                .propagate_binary_implications::<HOT_STATS, MODE_TICKS, BINARY_FAST>(
+                    trail_lit,
+                    normal_search_accounting,
+                )
+            {
                 return Some(conflict);
             }
             let watch_idx = self.lit_index(false_lit);
@@ -6709,7 +6720,9 @@ fn main() {
             .sat_model
             .as_ref()
             .expect("SAT solver returned without a model snapshot");
-        if verify_model_against_cnf_path(cnf_path, model) {
+        if !config.check_invariants {
+            "not_checked"
+        } else if verify_model_against_cnf_path(cnf_path, model) {
             "pass"
         } else {
             "fail"

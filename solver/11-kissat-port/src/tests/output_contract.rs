@@ -72,7 +72,9 @@ fn run_contract(path: &Path, mut config: SolverConfig, label: &str) -> ContractR
             };
             let model_check_result = if outcome.status == SolveStatus::Sat {
                 let model = solver.sat_model.as_ref().expect("SAT model snapshot");
-                if verify_model_against_clauses(&clauses, model) {
+                if !config.check_invariants {
+                    "not_checked"
+                } else if verify_model_against_clauses(&clauses, model) {
                     "pass"
                 } else {
                     "fail"
@@ -215,6 +217,17 @@ fn test_golden_sat_tiny_output_contract() {
     assert!(run
         .result_json
         .contains("\"proof_completeness\": \"incomplete\""));
+}
+
+#[test]
+fn test_check_invariants_runs_internal_sat_model_check() {
+    let config = SolverConfig {
+        check_invariants: true,
+        ..SolverConfig::default()
+    };
+    let run = run_contract(&golden_path("sat_tiny.cnf"), config, "sat-invariants");
+    assert_eq!(run.status, SolveStatus::Sat);
+    assert!(run.result_json.contains("\"model_check_result\": \"pass\""));
 }
 
 #[test]
@@ -436,9 +449,9 @@ fn test_profile_search_conservative_enables_only_documented_features() {
     assert!(config.simplification);
     assert!(config.bve);
     assert!(config.full_bsr);
-    assert!(config.use_lbd);
-    assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
-    assert!(config.mode_use_ticks);
+    assert!(!config.use_lbd);
+    assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
+    assert!(!config.mode_use_ticks);
     assert!(!config.inprocess);
 }
 

@@ -82,15 +82,16 @@ What is present:
   persist across mode switches and restart cycles, then reset when a rephase event starts a new
   phase block. Single-mode target policies retain restart-time target reset behavior after the
   all-mode persistence experiment regressed the profiling suite.
-- default-profile focused/stable search-mode scaffolding (`SAT_USE_LBD=on
-  SAT_SEARCH_MODE=focused-stable`) with focused EMA restarts and stable reluctant restarts;
-  use `SAT_PROFILE=baseline` or `SAT_SEARCH_MODE=single` to force the legacy single-mode search.
+- opt-in focused/stable search-mode scaffolding (`SAT_USE_LBD=on
+  SAT_SEARCH_MODE=focused-stable`) with focused EMA restarts and stable reluctant restarts.
+  The `default` and `fast` profiles use the solver-10-compatible single-mode search path after the
+  focused/stable default candidate regressed the clean solver 10 profiling baseline.
   Entering focused mode resets the LBD EMA restart averages so focused-mode restart calibration
   does not inherit stable-mode glue. Entering stable mode refreshes the VSIDS heap from current
   variable activities before stable-mode decisions resume. Focused EMA restarts now use Kissat's
   soft throttle: after each focused restart, the minimum EMA interval becomes
   `50 + kissat_logn(focused_restarts) - 1`.
-- default-profile Kissat-style mode scheduling (`SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable
+- opt-in Kissat-style mode scheduling (`SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable
   SAT_MODE_USE_TICKS=on`) that keeps focused-mode switches conflict-gated with
   `nlogpown(count, 4)` interval growth, but gates stable-mode duration on propagation search ticks.
   Tick mode also resets all restart EMAs on every mode switch.
@@ -172,10 +173,10 @@ SAT_REPHASE=on
 SAT_BINARY_FAST=on
 ```
 
-The `default` and `fast` profiles currently enable `SAT_USE_LBD=on`,
-`SAT_SEARCH_MODE=focused-stable`, and `SAT_MODE_USE_TICKS=on` because that combination plus
-focused restart `logn` growth produced the best profiling-suite PAR-2 in the latest Phase 1 run.
-`baseline` keeps LBD and focused/stable search off.
+The `default` and `fast` profiles currently keep `SAT_USE_LBD=off`,
+`SAT_SEARCH_MODE=single`, and `SAT_MODE_USE_TICKS=off` while retaining the solver-10 preprocessing
+stack. The focused/stable search stack remains opt-in until it beats the clean solver 10 profiling
+baseline. `baseline` keeps both LBD/focused-stable search and preprocessing off.
 
 When `SAT_SEARCH_MODE=focused-stable` is enabled, `SAT_PHASE` acts as an input preference rather
 than the literal phase policy used in every mode: focused mode maps `legacy` and `saved` to `saved`,
@@ -238,8 +239,12 @@ Phase 1/2 counters that are not implemented yet. High-frequency watcher diagnost
 `watch_blocker_hits`, `watch_clause_loads`, `watch_stale_skips`,
 `binary_props`, and `long_props`) default to zero to keep the release hot path
 solver-10-equivalent; set `SAT_STATS_HOT=on` for profiling runs that need those
-counters. The JSON line records `hot_diagnostics_enabled` so artifacts are
-explicit about this choice. `SAT_TRACE_FULL=on` emits an additional
+counters. SAT model files are written on every SAT result; the expensive
+internal reparse-and-check pass is only run with `SAT_CHECK_INVARIANTS=on`, so
+normal runs record `model_check_result=not_checked` and rely on the smoke/bench
+harness validation of emitted assignments. The JSON line records
+`hot_diagnostics_enabled` so artifacts are explicit about this choice.
+`SAT_TRACE_FULL=on` emits an additional
 human-readable `c trace_full ...` line with glue, restart, phase, inprocess,
 learned-clause, GC, and branch-heap counters.
 Lower-level diagnostics can be enabled independently with `SAT_TRACE_PROOF=on`,
@@ -248,7 +253,8 @@ Lower-level diagnostics can be enabled independently with `SAT_TRACE_PROOF=on`,
 
 ## Validation
 
-Latest default-profile promotion run on 2026-05-24:
+Focused/stable default-profile promotion was reverted on 2026-05-24 after a clean solver 10
+comparison:
 
 ```bash
 SAT_STATS_JSON=on bash tools/bench.sh -t 300 -m 16384 -d benchmarks/profiling \
@@ -269,14 +275,59 @@ rule. Instance churn is recorded for diagnosis: `case9` changed from timeout to 
 while `mp1` changed from SAT in `255.953s` to timeout. The largest wins were `case9`
 (`-298.679s`), K4 (`-109.586s`), and battleship (`-101.356s`).
 
-Correctness checks for the same promotion:
+Follow-up clean 300s / 16 GiB comparison against solver 10 showed the promoted focused/stable
+default was not acceptable as a global default:
 
-- `cargo test`: 321 passed
+| Run | Settings | Solved | PAR-2 | Results |
+|---|---|---:|---:|---|
+| solver 10 default | `solver/10-bve-preprocess` | 10/10 | `699.671` | `log/phase1/solver10-default-300-vs-solver11-clean/results.csv` |
+| solver 11 focused/stable default | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 9/10 | `1201.538` | `log/phase1/5b2.2.52-s11-default-clean/results.csv` |
+| solver 11 single/no-LBD | `SAT_USE_LBD=off SAT_SEARCH_MODE=single SAT_MODE_USE_TICKS=off SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10/10 | `798.196` | `log/phase1/5b2.2.52-s11-single-nolbd-clean/results.csv` |
+
+The default and fast profiles therefore use single-mode/no-LBD search until the focused/stable stack
+or a replacement default clears the solver 10 baseline.
+
+Any future default/fast promotion must pass the solver 10 gate on the same benchmark set:
+
+```bash
+python3 tools/check_solver11_promotion.py \
+  --solver10 log/phase1/solver10-default-300-vs-solver11-clean/results.csv \
+  --previous log/phase1/5b2.2.53-after-default-rollback/results.csv \
+  --candidate log/phase1/<candidate>/results.csv \
+  --timeout 300 \
+  --memory-mb 16384
+```
+
+Solver 11 single-mode parity follow-up on 2026-05-24 kept two low-risk runtime fixes:
+
+- SAT model files are still emitted for SAT, but the internal full-CNF reparse/check now runs only
+  with `SAT_CHECK_INVARIANTS=on`; normal benchmark runs record `model_check_result=not_checked`
+  and rely on the existing harness assignment verification.
+- Propagation is specialized on `SAT_BINARY_FAST`, so the default binary-fast-off path compiles out
+  the per-propagation binary implication branch.
+
+| Run | Settings | Solved | PAR-2 | Results |
+|---|---|---:|---:|---|
+| solver 11 rollback baseline | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10/10 | `785.980` | `log/phase1/5b2.2.53-after-default-rollback/results.csv` |
+| after model-check gating | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10/10 | `783.169` | `log/phase1/5b2.2.56-after-model-check-gate/results.csv` |
+| after binary-fast propagation specialization | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10/10 | `745.558` | `log/phase1/5b2.2.56-after-prop-specialization/results.csv` |
+| rejected accounting/LBD helper hoist | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10/10 | `750.454` | `log/phase1/5b2.2.56-after-prop-accounting-hoist/results.csv` |
+| rejected input-hash opt-in | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10/10 | `746.133` | `log/phase1/5b2.2.56-after-input-hash-optin/results.csv` |
+
+The accepted state improves solver 11 by `40.422` PAR-2 against the rollback baseline, with no
+status changes or correctness failures. It still trails the solver 10 clean baseline by `45.887`
+PAR-2, mainly on sudoku (`+13.574s`), Kakuro (`+14.878s`), and `case9` (`+6.434s`).
+
+Latest correctness checks for the accepted state:
+
+- `cargo test`: 322 passed
 - `cargo clippy --all-targets -- -D warnings`: passed
 - `bash tools/smoke_test.sh solver/11-kissat-port`: 9/9 passed
 - `SAT_CHECK_INVARIANTS=on bash tools/smoke_test.sh solver/11-kissat-port`: 9/9 passed
+- `bash -n tools/bench.sh`: passed
+- `python3 tools/validate_solver_result.py --self-test`: passed
 - `python3 tools/compare_bench.py --self-test`: passed
-- comparison verdict: `significant_improvement`, `PASS`
+- comparison verdict against rollback: `significant_improvement`, `PASS`
 
 Run on 2026-05-08:
 

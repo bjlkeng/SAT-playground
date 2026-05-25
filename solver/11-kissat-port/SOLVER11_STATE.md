@@ -51,8 +51,9 @@ Related implementation anchors:
 Known unpromoted or incomplete feature families at this baseline:
 
 - Full glue/LBD search policy: LBD metadata, focused/stable search, tick-based mode scheduling,
-  and the Kissat/Glucose-style focused EMA restart policy are now promoted in the default and fast
-  profiles because the latest Phase 1 profile gate is PAR-2-only. Reason-LBD update and LBD-tiered
+  and the Kissat/Glucose-style focused EMA restart policy are implemented but no longer promoted in
+  the default and fast profiles after the clean 2026-05-24 solver 10 comparison showed a default
+  PAR-2 regression. Reason-LBD update and LBD-tiered
   reduction remain explicit flags. Kissat-EMA restarts include an optional
   Glucose-style decision-level blocker controlled by `SAT_RESTART_BLOCK_MARGIN`, so high
   fast-vs-slow level EMA ratios can preserve a productive deep prefix instead of restarting
@@ -88,16 +89,16 @@ Known unpromoted or incomplete feature families at this baseline:
   switches and restart cycles, then reset when a rephase event starts a new phase block. Single-mode
   target policies still reset target phase on restart because all-mode target persistence regressed
   the profiling suite.
-- Focused/stable mode switching and reluctant restarts are the default and fast profile search mode
-  (`SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on`); `SAT_PROFILE=baseline`
-  or `SAT_SEARCH_MODE=single` keeps the old single-mode path.
+- Focused/stable mode switching and reluctant restarts remain opt-in
+  (`SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on`); `SAT_PROFILE=default`
+  and `SAT_PROFILE=fast` keep the old single-mode search path with solver-10 preprocessing enabled.
   Stable-to-focused transitions reset the LBD EMA restart averages so focused restart calibration
   starts from focused-mode glue rather than inherited stable-mode glue. Focused-to-stable
   transitions rebuild the VSIDS heap from current variable activities before stable-mode decisions
   resume. JSON/trace diagnostics now attribute search wall time, conflicts, learned-clause LBD,
   and decision level averages separately to focused and stable mode so focused/stable triage does
   not depend on combined averages.
-- Kissat-style mode scheduling is enabled by default through `SAT_MODE_USE_TICKS=on`. Stable mode switches back
+- Kissat-style mode scheduling is enabled only when `SAT_MODE_USE_TICKS=on`. Stable mode switches back
   to focused mode by propagation search ticks, focused-mode conflict intervals use Kissat
   `nlogpown(count, 4)` growth, and every mode switch resets all restart EMAs. Focused EMA restart
   windows also grow with the cumulative focused restart count as
@@ -110,6 +111,8 @@ Known unpromoted or incomplete feature families at this baseline:
   and original polarity sources. It is not promoted as default-profile behavior yet.
 - Binary implication propagation is present behind `SAT_BINARY_FAST=on`; binary clauses keep arena
   representation for proof/model/debug paths while propagation uses stable `BinaryClauseId` reasons.
+  The default binary-fast-off propagation path is separately monomorphized so the solver-10-compatible
+  profile does not pay a per-propagation binary implication branch.
 - Clause minimization is binary-reason aware as of 1.11, so explicit `SAT_CLAUSE_MIN` settings are
   honored with `SAT_BINARY_FAST=on`. Binary-fast env runs keep minimization off unless
   `SAT_CLAUSE_MIN` is explicit because the search-core gate does not justify promoting recursive

@@ -569,7 +569,7 @@ impl Default for SolverConfig {
             extension_bytes_limit: None,
             proof_bytes_limit: None,
 
-            use_lbd: true,
+            use_lbd: false,
             update_reason_lbd: false,
             update_propagation_reason_lbd: false,
             restart_policy: RestartPolicy::LegacyLuby,
@@ -577,8 +577,8 @@ impl Default for SolverConfig {
             restart_reuse_trail: false,
             reduce_policy: ReducePolicy::LegacyActivity,
             phase_policy: PhasePolicy::Legacy,
-            search_mode_policy: SearchModePolicy::FocusedStable,
-            mode_use_ticks: true,
+            search_mode_policy: SearchModePolicy::Single,
+            mode_use_ticks: false,
             chrono_backtrack: false,
             binary_fast_path: false,
             clause_min_mode: ClauseMinMode::RecursiveLimited,
@@ -690,7 +690,12 @@ impl SolverConfig {
                 self.search_mode_policy = SearchModePolicy::Single;
                 self.mode_use_ticks = false;
             }
-            SolverProfile::Default | SolverProfile::Fast | SolverProfile::Experimental => {
+            SolverProfile::Default | SolverProfile::Fast => {
+                self.use_lbd = false;
+                self.search_mode_policy = SearchModePolicy::Single;
+                self.mode_use_ticks = false;
+            }
+            SolverProfile::Experimental => {
                 self.use_lbd = true;
                 self.search_mode_policy = SearchModePolicy::FocusedStable;
                 self.mode_use_ticks = true;
@@ -1579,7 +1584,7 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             true,
             true,
             false,
-            "log/phase1/5b2.2.34-after-default",
+            "log/phase1/5b2.2.52-s11-single-lbd-clean",
         ),
         feature(
             "SAT_RESTART_REUSE_TRAIL",
@@ -1651,7 +1656,7 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             true,
             true,
             false,
-            "log/phase1/5b2.2.34-after-default",
+            "log/phase1/5b2.2.52-s11-focused-noticks-clean",
         ),
         feature(
             "SAT_OTFS",
@@ -2537,7 +2542,7 @@ mod tests {
     }
 
     #[test]
-    fn test_default_config_preserves_current_solver11_runtime_defaults() {
+    fn test_default_config_uses_solver10_compatible_search_defaults() {
         let config = SolverConfig::from_env_map(&env_map(&[]));
 
         assert_eq!(config.profile, SolverProfile::Default);
@@ -2546,9 +2551,9 @@ mod tests {
         assert!(config.simplification);
         assert!(config.bve);
         assert!(config.full_bsr);
-        assert!(config.use_lbd);
-        assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
-        assert!(config.mode_use_ticks);
+        assert!(!config.use_lbd);
+        assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
+        assert!(!config.mode_use_ticks);
         assert_eq!(config.proof_policy, ProofPolicy::Drat);
     }
 
@@ -2615,7 +2620,7 @@ mod tests {
             ("SAT_MODE_USE_TICKS", "off"),
             ("SAT_USE_LBD", "off"),
         ]));
-        let on = SolverConfig::from_env_map(&env_map(&[]));
+        let on = SolverConfig::from_env_map(&env_map(&[("SAT_USE_LBD", "on")]));
 
         assert_ne!(off.config_hash(), on.config_hash());
     }

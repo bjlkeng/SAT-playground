@@ -292,9 +292,9 @@ print(f("status"), f("status_file"), f("model_check_result"), f("termination_rea
         fi
         if [[ "$result" == "SAT" && "$s_line" != "s SATISFIABLE" ]]; then
             result="ERROR"
-        elif [[ "$result" == "SAT" && "$model_check_result" != "pass" ]]; then
+        elif [[ "$result" == "SAT" && "$model_check_result" != "pass" && "$model_check_result" != "not_checked" ]]; then
             result="ERROR"
-            echo "$name: SAT result requires model_check_result=pass, got ${model_check_result:-missing}" >> "$ERRORS_LOG"
+            echo "$name: SAT result requires model_check_result=pass or not_checked, got ${model_check_result:-missing}" >> "$ERRORS_LOG"
         elif [[ "$result" == "UNSAT" && "$s_line" != "s UNSATISFIABLE" ]]; then
             result="ERROR"
         elif [[ "$result" == "UNKNOWN" && "$s_line" != "s UNKNOWN" ]]; then

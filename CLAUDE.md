@@ -182,6 +182,11 @@ Write DRAT proof to `<output_dir>/proof.out`. This is required from every iterat
 - **Only commit solver changes that pass the smoke test** (all 8 tests green). If a test fails, fix the solver before committing.
 - **Never modify `tools/smoke_test.sh`** unless the user explicitly asks for changes to it.
 - **Always commit and push** when the user asks — don't skip the push step.
+- **Solver 11 default/fast promotion gate:** before promoting any solver 11 default or fast
+  profile change, run a clean solver 10 comparison on the same benchmark set and pass
+  `python3 tools/check_solver11_promotion.py --solver10 <solver10-results.csv> --previous <prior-solver11-results.csv> --candidate <candidate-results.csv> --timeout <seconds> --memory-mb <MB>`.
+  The gate must record process sanity, matching instance/timeout sets, machine metadata, and the
+  explicit decision when a candidate improves prior solver 11 but still loses to solver 10.
 - **Discord automatic task notices:** For future background ACP/subagent tasks in Discord, suppress automatic `Background task done/failed` channel notices by setting the task notify policy to `silent` once the run/task id exists.
 - **Discord notifications:** When reporting background task completion or failures in Discord, @mention bjlkeng as `<@817490773179760662>` so Discord shows a badge notification.
 
