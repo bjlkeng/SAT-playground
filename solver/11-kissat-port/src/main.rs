@@ -27,7 +27,7 @@ mod oracle_tests;
 use branch::VmtfQueue;
 use config::{
     BranchMode, ClauseMinMode, InitialClauseMode, PhasePolicy, ProofPolicy, ReducePolicy,
-    RestartPolicy, SearchModePolicy, SolverConfig,
+    RestartPolicy, SearchModePolicy, SolverConfig, VmtfMode,
 };
 use limits::{effective_memory_limit_bytes, LimitHit, RuntimeLimits};
 use lit::{lit_to_index, lit_to_word, word_to_lit};
@@ -1016,7 +1016,7 @@ struct Solver {
     branch_heap: Vec<u32>,
     /// current heap index for each variable, or BRANCH_NOT_IN_HEAP
     branch_pos: Vec<usize>,
-    /// focused-mode VMTF queue used only when SAT_VMTF=on
+    /// opt-in VMTF branch queue used by configured search modes
     vmtf_queue: Option<VmtfQueue>,
     /// variables eligible for search branching; eliminated variables stay permanently false here
     decision_var: Vec<bool>,
@@ -1068,6 +1068,8 @@ struct Solver {
     search_mode: SearchMode,
     /// selected search-mode policy; single keeps solver-10-compatible behavior
     search_mode_policy: SearchModePolicy,
+    /// selected VMTF activation mode; default keeps solver-10-compatible VSIDS branching
+    vmtf_mode: VmtfMode,
     /// dynamic focused-mode glue thresholds computed from recent clause-use histograms
     focused_tier_limits: TierLimits,
     /// dynamic stable-mode glue thresholds computed from recent clause-use histograms
@@ -1606,7 +1608,10 @@ impl Solver {
             u64::MAX
         };
         let ccmin_mode = ccmin_mode_from_config(config.clause_min_mode);
-        let vmtf_queue = config.vmtf.then(|| VmtfQueue::new(num_vars, &branch_order));
+        let vmtf_mode = config.vmtf;
+        let vmtf_queue = vmtf_mode
+            .enabled()
+            .then(|| VmtfQueue::new(num_vars, &branch_order));
         let rephase_conflicts = config.rephase_init_conflicts.max(1);
         let rephase_at_conflicts = if config.rephase {
             rephase_conflicts
@@ -1699,6 +1704,7 @@ impl Solver {
             restart_conflicts_since_last: 0,
             search_mode,
             search_mode_policy,
+            vmtf_mode,
             focused_tier_limits: TierLimits::static_defaults(),
             stable_tier_limits: TierLimits::static_defaults(),
             focused_glue_recent: Vec::new(),
@@ -2861,9 +2867,18 @@ impl Solver {
     }
 
     fn vmtf_branching_active(&self) -> bool {
-        self.vmtf_queue.is_some()
-            && self.search_mode_policy == SearchModePolicy::FocusedStable
-            && self.search_mode == SearchMode::Focused
+        if self.vmtf_queue.is_none() {
+            return false;
+        }
+
+        match self.vmtf_mode {
+            VmtfMode::Off => false,
+            VmtfMode::FocusedOnly => {
+                self.search_mode_policy == SearchModePolicy::FocusedStable
+                    && self.search_mode == SearchMode::Focused
+            }
+            VmtfMode::Single => self.search_mode_policy == SearchModePolicy::Single,
+        }
     }
 
     fn vmtf_stamp_analyzed_var(&mut self, var: usize) {
@@ -3558,7 +3573,7 @@ impl Solver {
     fn bump_analyzed_variable_activity(&mut self) {
         let bumped_vars = std::mem::take(&mut self.scratch_bumped_vars);
         for &var in &bumped_vars {
-            if !self.accounting_mode.is_temporary() && self.search_mode == SearchMode::Focused {
+            if !self.accounting_mode.is_temporary() && self.vmtf_branching_active() {
                 self.vmtf_stamp_analyzed_var(var);
             }
             self.bump_variable_activity(var);
@@ -10605,7 +10620,7 @@ mod tests {
 
     fn focused_stable_vmtf_config() -> SolverConfig {
         SolverConfig {
-            vmtf: true,
+            vmtf: VmtfMode::FocusedOnly,
             ..focused_stable_config()
         }
     }
@@ -10622,6 +10637,13 @@ mod tests {
             search_mode_policy: SearchModePolicy::Single,
             mode_use_ticks: false,
             ..SolverConfig::default()
+        }
+    }
+
+    fn single_mode_vmtf_config() -> SolverConfig {
+        SolverConfig {
+            vmtf: VmtfMode::Single,
+            ..single_mode_config()
         }
     }
 
@@ -10695,6 +10717,30 @@ mod tests {
         s.rebuild_branch_queue();
 
         assert_eq!(s.pick_branch_lit(), Some(-1));
+    }
+
+    #[test]
+    fn test_vmtf_single_mode_activates_without_focused_stable() {
+        let config = single_mode_vmtf_config();
+        let mut s = make_solver_with_config(4, vec![], &config);
+
+        assert_eq!(s.search_mode, SearchMode::Stable);
+        assert!(s.vmtf_branching_active());
+
+        s.vmtf_stamp_analyzed_var(2);
+
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+    }
+
+    #[test]
+    fn test_vmtf_single_mode_conflict_bump_updates_queue() {
+        let config = single_mode_vmtf_config();
+        let mut s = make_solver_with_config(4, vec![], &config);
+
+        s.scratch_bumped_vars.push(2);
+        s.bump_analyzed_variable_activity();
+
+        assert_eq!(s.pick_branch_lit(), Some(-2));
     }
 
     #[test]

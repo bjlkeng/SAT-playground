@@ -409,6 +409,40 @@ impl SearchModePolicy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VmtfMode {
+    Off,
+    FocusedOnly,
+    Single,
+}
+
+impl VmtfMode {
+    pub(crate) fn enabled(self) -> bool {
+        self != Self::Off
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::FocusedOnly => "focused-only",
+            Self::Single => "single",
+        }
+    }
+
+    fn parse(value: &str, env_name: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "0" | "off" | "false" | "no" => Self::Off,
+            "1" | "on" | "true" | "yes" | "focused" | "focused-only" | "focused_only" => {
+                Self::FocusedOnly
+            }
+            "single" => Self::Single,
+            other => fail_config(&format!(
+                "Invalid {env_name}={other}; expected off/focused-only/single"
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ClauseMinMode {
     Off,
     Basic,
@@ -489,7 +523,7 @@ pub(crate) struct SolverConfig {
     pub(crate) binary_fast_path: bool,
     pub(crate) clause_min_mode: ClauseMinMode,
     pub(crate) otfs: bool,
-    pub(crate) vmtf: bool,
+    pub(crate) vmtf: VmtfMode,
     pub(crate) rephase: bool,
     pub(crate) minimize_depth_limit: u32,
     pub(crate) chrono_max_delta: usize,
@@ -583,7 +617,7 @@ impl Default for SolverConfig {
             binary_fast_path: false,
             clause_min_mode: ClauseMinMode::RecursiveLimited,
             otfs: false,
-            vmtf: false,
+            vmtf: VmtfMode::Off,
             rephase: false,
             minimize_depth_limit: DEFAULT_MINIMIZE_DEPTH_LIMIT,
             chrono_max_delta: DEFAULT_CHRONO_MAX_DELTA,
@@ -901,7 +935,7 @@ impl SolverConfig {
             ClauseMinMode::parse,
         );
         self.otfs = parse_bool_selected(env_map, &key_set, "SAT_OTFS", self.otfs);
-        self.vmtf = parse_bool_selected(env_map, &key_set, "SAT_VMTF", self.vmtf);
+        self.vmtf = parse_enum_selected(env_map, &key_set, "SAT_VMTF", self.vmtf, VmtfMode::parse);
         self.rephase = parse_bool_selected(env_map, &key_set, "SAT_REPHASE", self.rephase);
         self.minimize_depth_limit = parse_u32_selected(
             env_map,
@@ -1122,8 +1156,14 @@ impl SolverConfig {
         if self.restart_policy == RestartPolicy::KissatEma && !self.use_lbd {
             fail_config("Invalid config: SAT_RESTART=kissat-ema requires SAT_USE_LBD=on");
         }
-        if self.vmtf && self.search_mode_policy == SearchModePolicy::Single {
-            fail_config("Invalid config: SAT_VMTF=on requires SAT_SEARCH_MODE=focused-stable");
+        if self.vmtf == VmtfMode::FocusedOnly && self.search_mode_policy == SearchModePolicy::Single
+        {
+            fail_config(
+                "Invalid config: SAT_VMTF=focused-only requires SAT_SEARCH_MODE=focused-stable",
+            );
+        }
+        if self.vmtf == VmtfMode::Single && self.search_mode_policy != SearchModePolicy::Single {
+            fail_config("Invalid config: SAT_VMTF=single requires SAT_SEARCH_MODE=single");
         }
         if self.rephase && self.search_mode_policy == SearchModePolicy::Single {
             fail_config("Invalid config: SAT_REPHASE=on requires SAT_SEARCH_MODE=focused-stable");
@@ -1306,7 +1346,7 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "binary_fast_path", self.binary_fast_path);
         push_kv(&mut lines, "clause_min_mode", self.clause_min_mode.as_str());
         push_kv_bool(&mut lines, "otfs", self.otfs);
-        push_kv_bool(&mut lines, "vmtf", self.vmtf);
+        push_kv(&mut lines, "vmtf", self.vmtf.as_str());
         push_kv_bool(&mut lines, "rephase", self.rephase);
         push_kv(
             &mut lines,
@@ -1633,7 +1673,7 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
         ),
         feature(
             "SAT_VMTF",
-            config.vmtf,
+            config.vmtf.enabled(),
             FeatureMaturity::SmokeSafe,
             true,
             true,
@@ -2717,8 +2757,23 @@ mod tests {
             ("SAT_VMTF", "on"),
         ]));
 
-        assert!(config.vmtf);
+        assert_eq!(config.vmtf, VmtfMode::FocusedOnly);
         assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
+    }
+
+    #[test]
+    fn test_vmtf_single_mode_is_runtime_supported_without_focused_stable() {
+        let config = SolverConfig::from_env_map(&env_map(&[("SAT_VMTF", "single")]));
+
+        assert_eq!(config.vmtf, VmtfMode::Single);
+        assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
+
+        let replay = config.config_replay_text();
+        assert!(replay.contains("vmtf=single"));
+
+        let replayed = SolverConfig::from_replay_text(&replay, Path::new("<vmtf-single-test>"));
+        assert_eq!(replayed.vmtf, VmtfMode::Single);
+        assert_eq!(replayed.config_hash(), config.config_hash());
     }
 
     #[test]

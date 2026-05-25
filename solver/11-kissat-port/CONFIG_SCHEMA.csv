@@ -41,7 +41,7 @@ SAT_CHRONO,chrono_backtrack,bool,on|off,false,false,false,true,false,false,,,1.1
 SAT_BINARY_FAST,binary_fast_path,bool,on|off,false,false,false,true,false,false,,,0.3,yes
 SAT_CLAUSE_MIN,clause_min_mode,enum,off|basic|recursive-limited|inblock,recursive-limited,recursive-limited,recursive-limited,false,false,false,SAT_CCMIN_MODE,,0.3,yes
 SAT_OTFS,otfs,bool,on|off,false,false,false,true,false,false,,SAT_CLAUSE_MIN!=off,1.14g,yes
-SAT_VMTF,vmtf,bool,on|off,false,false,false,true,false,false,,SAT_SEARCH_MODE=focused-stable,0.3,yes
+SAT_VMTF,vmtf,enum,off|focused-only|single,off,off,off,true,false,false,,focused-only_requires_SAT_SEARCH_MODE=focused-stable;single_requires_SAT_SEARCH_MODE=single,SAT-playground-egy,yes
 SAT_REPHASE,rephase,bool,on|off,false,false,false,true,false,false,,SAT_SEARCH_MODE=focused-stable,1.12,yes
 SAT_MINIMIZE_DEPTH_LIMIT,minimize_depth_limit,u32,nonnegative,100,100,100,false,false,false,,,0.3,internal
 SAT_CHRONO_MAX_DELTA,chrono_max_delta,usize,nonnegative,100,100,100,false,false,false,,,1.13,internal

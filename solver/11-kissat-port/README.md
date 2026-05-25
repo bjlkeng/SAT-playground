@@ -72,7 +72,7 @@ What is present:
   `SAT_RESTART_BLOCK_MARGIN` above `0` to enable it. The blocker is default-off after profile
   testing showed the `1.4` margin regressed the current profiling suite. `SAT_RESTART_REUSE_TRAIL=on`
   enables Kissat-style partial restart: the solver keeps a decision-level prefix whose VSIDS score
-  or focused-mode VMTF stamp is better than the next decision candidate. Single-mode search still
+  or active VMTF stamp is better than the next decision candidate. Single-mode search still
   defaults to legacy Luby restarts for solver-10 parity. Built-in profiles intentionally do not bundle
   `SAT_RESTART=kissat-ema` with target-phase policies; `SAT_PHASE=target-then-saved` remains an
   explicit opt-in when EMA restarts are active because HWMCC-style instances have regressed under
@@ -95,9 +95,11 @@ What is present:
   SAT_MODE_USE_TICKS=on`) that keeps focused-mode switches conflict-gated with
   `nlogpown(count, 4)` interval growth, but gates stable-mode duration on propagation search ticks.
   Tick mode also resets all restart EMAs on every mode switch.
-- opt-in focused-mode Variable-Move-To-Front branching (`SAT_USE_LBD=on
-  SAT_SEARCH_MODE=focused-stable SAT_VMTF=on`) while stable mode continues to use the existing
-  VSIDS heap
+- opt-in Variable-Move-To-Front branching. `SAT_VMTF=single` enables the VMTF queue in the
+  solver-10-compatible single-mode search path, while `SAT_VMTF=focused-only` (or legacy
+  `SAT_VMTF=on`) enables it only during focused mode under
+  `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable`; stable mode continues to use the existing
+  VSIDS heap.
 - opt-in focused/stable rephasing (`SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable
   SAT_REPHASE=on`) that runs only on scheduled stable-mode restarts and cycles saved phases through
   best, inverted, and original polarity sources
@@ -168,7 +170,7 @@ SAT_SEARCH_MODE=single|focused-stable
 SAT_MODE_USE_TICKS=on
 SAT_CHRONO=on
 SAT_CHRONO_MAX_DELTA=<usize>
-SAT_VMTF=on
+SAT_VMTF=off|focused-only|single  # legacy "on" means focused-only
 SAT_REPHASE=on
 SAT_BINARY_FAST=on
 ```
@@ -318,12 +320,32 @@ The accepted state improves solver 11 by `40.422` PAR-2 against the rollback bas
 status changes or correctness failures. It still trails the solver 10 clean baseline by `45.887`
 PAR-2, mainly on sudoku (`+13.574s`), Kakuro (`+14.878s`), and `case9` (`+6.434s`).
 
+`SAT_VMTF=single` was added as a default-off routing primitive on 2026-05-25. The code path is
+correctness-safe, but the full profiling suite rejects blanket use:
+
+| Run | Settings | Solved | PAR-2 | Results |
+|---|---|---:|---:|---|
+| before VMTF-single work | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10/10 | `745.558` | `log/phase1/5b2.2.56-after-prop-specialization/results.csv` |
+| after VMTF-single work, default | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10/10 | `755.000` | `log/phase1/egy-default-no-regression/results.csv` |
+| VMTF single-mode branch queue | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_VMTF=single` | 5/10 | `3156.865` | `log/phase1/egy-vmtf-single-profile/results.csv` |
+
+Default behavior has no status churn and the `+9.442` PAR-2 movement is within normal benchmark
+noise for this suite. `SAT_VMTF=single` is not profile-promotable: it wins on Kakuro
+(`210.291s -> 70.303s`), Velev (`65.100s -> 43.482s`), and battleship (`23.259s -> 3.386s`),
+but regresses sudoku, REGRandom, mp1, SCPC, and case9 to `UNKNOWN`. Targeted probes show that the
+known mp1 VMTF win also needs the focused/stable phase behavior: current
+`SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_VMTF=on` solves mp1 in `2.312s`, while
+`SAT_VMTF=single SAT_PHASE=best-then-target-then-saved` solves mp1 in `1.044s`; plain
+`SAT_VMTF=single` times out. Treat VMTF as a routeable per-instance feature, not a blanket search
+policy.
+
 Latest correctness checks for the accepted state:
 
-- `cargo test`: 322 passed
+- `cargo test`: 325 passed
 - `cargo clippy --all-targets -- -D warnings`: passed
 - `bash tools/smoke_test.sh solver/11-kissat-port`: 9/9 passed
 - `SAT_CHECK_INVARIANTS=on bash tools/smoke_test.sh solver/11-kissat-port`: 9/9 passed
+- `SAT_VMTF=single bash tools/smoke_test.sh solver/11-kissat-port`: 9/9 passed
 - `bash -n tools/bench.sh`: passed
 - `python3 tools/validate_solver_result.py --self-test`: passed
 - `python3 tools/compare_bench.py --self-test`: passed
