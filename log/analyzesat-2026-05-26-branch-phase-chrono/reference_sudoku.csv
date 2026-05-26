@@ -1,0 +1,3 @@
+solver,instance,result,wall_s,exit_code,max_rss_kb
+kissat-sc2024,sudoku,UNSAT,187.37,20,382808
+kissat-latest,sudoku,UNSAT,295.18,20,384644

@@ -1,0 +1,3 @@
+label,result,elapsed_sec,conflicts,decisions,propagations,restarts,phase_legacy_used,phase_saved_used,max_rss_mb
+A_default_sudoku_repeat,UNSAT,186.327212,259775,6772770,1312437897,617,6772770,0,859
+C_saved_sudoku_repeat,UNSAT,195.906775,259775,6772770,1312437897,617,0,6772658,859

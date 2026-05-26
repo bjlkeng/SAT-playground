@@ -1,0 +1,2 @@
+instance,result,verified,time_s,timeout,exit_code
+sudoku,UNSAT,no-checker,196.004,300,0

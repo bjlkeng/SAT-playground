@@ -1,0 +1,13 @@
+=== Benchmark run: 11-kissat-port ===
+    Date:      Tue May 26 09:27:51 EDT 2026
+    Timeout:   300s
+    Memory:    16384 MB
+    Instances: 10
+    SAT checker: /tmp/analyzesat-20260526-083748/tools/verify_sat.py
+    DRAT checker: NONE (run tools/setup_checkers.sh)
+    Log:       /tmp/analyzesat-20260526-083748/log/analyzesat-2026-05-26-branch-phase-chrono/D_target_phase
+
+Building solver...
+Build OK
+
+[  1/10] UNKNOWN   295.85s  0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12

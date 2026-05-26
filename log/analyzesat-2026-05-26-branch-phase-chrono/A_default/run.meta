@@ -1,0 +1,5 @@
+label=A_default
+env=SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295
+purpose=Current default: minisat branch order, legacy phase, no chrono.
+started=2026-05-26T08:39:53-04:00
+finished=2026-05-26T08:55:25-04:00

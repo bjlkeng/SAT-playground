@@ -1,0 +1,8 @@
+label|env|purpose
+A_default|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295|Current default: minisat branch order, legacy phase, no chrono.
+B_occurrence|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_BRANCH_MODE=occurrence|Old occurrence-count decision order without other search changes.
+C_saved_phase|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_PHASE=saved|Saved phase policy on current minisat branch order.
+D_target_phase|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_PHASE=target-then-saved|Single-mode target phase capture/reset behavior.
+E_chrono|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_CHRONO=on|Guarded chronological backtracking only.
+F_occurrence_chrono|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_BRANCH_MODE=occurrence SAT_CHRONO=on|Old occurrence decision order plus chrono, testing whether chrono rescues its trajectory.
+G_occurrence_saved|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_BRANCH_MODE=occurrence SAT_PHASE=saved|Old occurrence decision order plus saved phase policy.

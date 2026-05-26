@@ -1,0 +1,8 @@
+label,solved,unknown,timeout,error,par2,env
+A_default,10,0,0,0,868.674,SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295
+B_occurrence,10,0,0,0,1059.313,SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_BRANCH_MODE=occurrence
+C_saved_phase,10,0,0,0,764.124,SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_PHASE=saved
+D_target_phase,0,1,0,0,600.000,SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_PHASE=target-then-saved
+E_chrono,0,0,0,0,,SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_CHRONO=on
+F_occurrence_chrono,0,0,0,0,,SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_BRANCH_MODE=occurrence SAT_CHRONO=on
+G_occurrence_saved,0,0,0,0,,SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_BRANCH_MODE=occurrence SAT_PHASE=saved

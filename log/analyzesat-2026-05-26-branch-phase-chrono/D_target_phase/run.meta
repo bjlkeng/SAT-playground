@@ -1,0 +1,4 @@
+label=D_target_phase
+env=SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_PHASE=target-then-saved
+purpose=Single-mode target phase capture/reset behavior.
+started=2026-05-26T09:27:51-04:00

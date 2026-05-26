@@ -1,0 +1,13 @@
+=== Benchmark Results: 11-kissat-port ===
+    Date:      Tue May 26 08:55:25 EDT 2026
+    Timeout:   300s
+    Memory:    16384 MB
+
+    Instances: 10
+    Solved:    10 (6 SAT + 4 UNSAT)
+    Unsolved:  0 (0 timeout + 0 unknown + 0 error)
+
+    PAR-2:     868.674
+
+    Results:   /tmp/analyzesat-20260526-083748/log/analyzesat-2026-05-26-branch-phase-chrono/A_default/results.csv
+    Stats:     /tmp/analyzesat-20260526-083748/log/analyzesat-2026-05-26-branch-phase-chrono/A_default/stats.jsonl
