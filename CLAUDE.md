@@ -186,6 +186,13 @@ Write DRAT proof to `<output_dir>/proof.out`. This is required from every iterat
   `SATISFIABLE` nor `UNSATISFIABLE` within the run contract. Treat every new or retained
   `UNKNOWN` on a benchmark/profile row that the baseline solves as a failed experiment, even if
   aggregate PAR-2 happens to improve. Do not describe UNKNOWN churn as harmless.
+- **SAT/UNSAT/UNKNOWN result errors are correctness failures:** if a solver run reports the wrong
+  status, returns a SAT model that does not satisfy the original CNF, fails to write or validate an
+  UNSAT proof, or returns `UNKNOWN` for a row that should produce SAT/UNSAT, stop and debug the
+  issue to root cause. Capture the exact repro command/log, analyze the failing code path, and fix
+  the correctness issue before continuing promotion, tuning, or downstream work. Do not paper over
+  a result error by changing it to `UNKNOWN`, suppressing validation, quarantining flags, or
+  rerouting the requested path unless the user explicitly asks for that mitigation.
 - **Debug every UNKNOWN before continuing:** when an experiment produces `UNKNOWN`, stop promotion
   work for that path, debug the cause, and fix the actual issue or revert the experiment. Do not
   hide an UNKNOWN-producing path by silently normalizing, quarantining, or rerouting requested
