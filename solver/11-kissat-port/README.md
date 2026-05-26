@@ -136,11 +136,12 @@ What is present:
   solver 11 records size class, Kissat-style `small`/`bigbig` flags, binary-clause fraction,
   average clause size, and live-variable density. This is instrumentation for future adaptive
   policy routing and does not change default behavior yet.
-- a default-on pre-search lucky assignment pass (`SAT_LUCKY=on`) that runs after preprocessing and
+- an opt-in pre-search lucky assignment pass (`SAT_LUCKY=on`) that runs after preprocessing and
   before CDCL search. It tries all-true/all-false and forward/backward false/true temporary
   propagation probes, then a bounded small-formula local repair fallback. It captures a SAT model
   only after a full residual-formula satisfaction check and restores temporary propagation state
-  before returning. `SAT_LUCKY=off` disables the pass.
+  before returning. The pass is default-off after the 2026-05-25 rerun showed it solved only the
+  battleship profiling row while adding more time elsewhere.
 
 Still incomplete:
 
@@ -204,9 +205,10 @@ SAT_BINARY_FAST=on
 
 The `default` and `fast` profiles currently keep `SAT_USE_LBD=off`,
 `SAT_SEARCH_MODE=single`, and `SAT_MODE_USE_TICKS=off` while retaining the solver-10 preprocessing
-stack. They also run the post-preprocess lucky assignment pass by default. The focused/stable search
-stack remains opt-in until it beats the clean solver 10 profiling baseline. `baseline` keeps both
-LBD/focused-stable search, lucky assignment, and preprocessing off.
+stack. `SAT_LUCKY` remains an explicit opt-in because unconditional attempts regressed the current
+profiling suite. The focused/stable search stack remains opt-in until it beats the clean solver 10
+profiling baseline. `baseline` keeps both LBD/focused-stable search, lucky assignment, and
+preprocessing off.
 
 When `SAT_SEARCH_MODE=focused-stable` is enabled, `SAT_PHASE` acts as an input preference rather
 than the literal phase policy used in every mode: focused mode maps `legacy` and `saved` to `saved`,
@@ -375,17 +377,20 @@ construction-time choices in the current solver.
 | before classifier | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10/10 | `755.634` | `log/phase1/5b2.2.54-default-after/results.csv` |
 | after classifier | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10/10 | `753.747` | `log/phase1/f06-classify-default-after/results.csv` |
 
-Lucky assignment landed on 2026-05-25 as a default/fast pre-search SAT fast path. The canonical
-battleship lucky case is now solved before CDCL search, but the solver 10 promotion gate still fails
-because solver 11 remains slower than solver 10 overall; keep `SAT-playground-5b2.2.53` /
-`SAT-playground-5b2.2.56` as the parity follow-up rather than treating this as solver10 parity.
+Lucky assignment landed on 2026-05-25 as a pre-search SAT fast path, then was demoted back to
+opt-in after a rerun showed the default-on pass solved only the battleship row and added more time
+across the rest of the profiling suite. The canonical battleship case remains available with
+`SAT_LUCKY=on`, but default and fast profiles leave it off until an adaptive gate proves out.
 
 | Run | Settings | Solved | PAR-2 / Time | Results |
 |---|---|---:|---:|---|
 | before lucky default | default | 10/10 | PAR-2 `859.447` | `log/bench-11-kissat-port-2026-05-25-21-18-03/results.csv` |
 | after lucky default | default | 10/10 | PAR-2 `831.021` | `log/bench-11-kissat-port-2026-05-25-22-30-00/results.csv` |
-| battleship acceptance | default, 60s one-instance run | 1/1 | `0.089s`, `lucky_solved=1` | `log/bench-11-kissat-port-2026-05-25-22-29-54/results.csv` |
+| rerun lucky off | `SAT_LUCKY=off` | 10/10 | PAR-2 `759.720` | `log/analyzesat-2026-05-25-rerun/FINDINGS.md` |
+| after lucky demotion | default | 10/10 | PAR-2 `749.356` | `log/phase1/3fs-lucky-off-default-profile/results.csv` |
+| battleship acceptance | `SAT_LUCKY=on`, 60s one-instance run | 1/1 | `0.089s`, `lucky_solved=1` | `log/bench-11-kissat-port-2026-05-25-22-29-54/results.csv` |
 | solver 10 gate | solver10 clean vs previous solver11 vs candidate | 10/10 candidate | `promotion_gate=FAIL`; candidate still `+131.350` PAR-2 vs solver10 | `tools/check_solver11_promotion.py --solver10 log/phase1/solver10-default-300-vs-solver11-clean/results.csv --previous log/bench-11-kissat-port-2026-05-25-21-18-03/results.csv --candidate log/bench-11-kissat-port-2026-05-25-22-30-00/results.csv --timeout 300 --memory-mb 16384` |
+| demotion gate | solver10 clean vs previous solver11 vs lucky-off candidate | 10/10 candidate | `promotion_gate=FAIL`; candidate improved previous solver 11 by `63.588` PAR-2 but still lost solver10 by `49.113` PAR-2 | `tools/check_solver11_promotion.py --solver10 log/phase1/3fs-solver10-default-profile/results.csv --previous log/bench-11-kissat-port-2026-05-25-23-45-39/results.csv --candidate log/phase1/3fs-lucky-off-default-profile/results.csv --timeout 300 --memory-mb 16384` |
 
 Any future default/fast promotion must pass the solver 10 gate on the same benchmark set:
 

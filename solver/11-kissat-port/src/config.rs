@@ -625,7 +625,7 @@ impl Default for SolverConfig {
             stable_phase_policy: None,
             search_mode_policy: SearchModePolicy::Single,
             mode_use_ticks: false,
-            lucky: true,
+            lucky: false,
             chrono_backtrack: false,
             binary_fast_path: false,
             clause_min_mode: ClauseMinMode::RecursiveLimited,
@@ -742,7 +742,7 @@ impl SolverConfig {
                 self.use_lbd = false;
                 self.search_mode_policy = SearchModePolicy::Single;
                 self.mode_use_ticks = false;
-                self.lucky = true;
+                self.lucky = false;
             }
             SolverProfile::Experimental => {
                 self.use_lbd = true;
@@ -2967,15 +2967,18 @@ mod tests {
     }
 
     #[test]
-    fn test_lucky_defaults_on_and_can_be_disabled() {
+    fn test_lucky_defaults_off_and_can_be_enabled() {
         let config = SolverConfig::from_env_map(&env_map(&[]));
-        assert!(config.lucky);
+        assert!(!config.lucky);
+
+        let fast = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "fast")]));
+        assert!(!fast.lucky);
 
         let baseline = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "baseline")]));
         assert!(!baseline.lucky);
 
-        let disabled = SolverConfig::from_env_map(&env_map(&[("SAT_LUCKY", "off")]));
-        assert!(!disabled.lucky);
+        let enabled = SolverConfig::from_env_map(&env_map(&[("SAT_LUCKY", "on")]));
+        assert!(enabled.lucky);
     }
 
     #[test]
