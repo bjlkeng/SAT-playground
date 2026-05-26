@@ -123,8 +123,8 @@ What is present:
   for proof/model/debug traceability while propagating them through stable binary IDs and implication
   edges; default propagation remains the legacy watched-clause path. Clause minimization is
   binary-reason aware and remains controlled separately by `SAT_CLAUSE_MIN`; binary-fast env runs
-  keep minimization off unless `SAT_CLAUSE_MIN` is explicit because the search-core gate does not
-  justify promoting recursive minimization on that path yet. With `SAT_OTFS=on` and clause
+  preserve the default recursive minimization unless `SAT_CLAUSE_MIN=off` is explicit, because
+  disabling minimization silently can move baseline-solved rows to `UNKNOWN`. With `SAT_OTFS=on` and clause
   minimization enabled, newly learned non-unit clauses also run a bounded OTFS pass over their
   watched literals, deleting live learned watched clauses subsumed by the learned clause when they
   are not active reasons. The pass is capped at learned clauses of 20 literals and candidate clauses
@@ -409,7 +409,8 @@ Solver 11 single-mode parity follow-up on 2026-05-24 kept two low-risk runtime f
   with `SAT_CHECK_INVARIANTS=on`; normal benchmark runs record `model_check_result=not_checked`
   and rely on the existing harness assignment verification.
 - Propagation is specialized on `SAT_BINARY_FAST`, so the default binary-fast-off path compiles out
-  the per-propagation binary implication branch.
+  the per-propagation binary implication branch. Binary-fast runs preserve the configured
+  clause-minimization mode unless `SAT_CLAUSE_MIN=off` is explicit.
 
 | Run | Settings | Solved | PAR-2 | Results |
 |---|---|---:|---:|---|

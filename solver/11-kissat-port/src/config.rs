@@ -974,8 +974,6 @@ impl SolverConfig {
             parse_bool_selected(env_map, &key_set, "SAT_CHRONO", self.chrono_backtrack);
         self.binary_fast_path =
             parse_bool_selected(env_map, &key_set, "SAT_BINARY_FAST", self.binary_fast_path);
-        let clause_min_explicit = get_selected(env_map, &key_set, "SAT_CLAUSE_MIN").is_some()
-            || get_selected(env_map, &key_set, "SAT_CCMIN_MODE").is_some();
         self.clause_min_mode = parse_enum_selected(
             env_map,
             &key_set,
@@ -1048,9 +1046,6 @@ impl SolverConfig {
                 get_selected(env_map, &key_set, "SAT_CCMIN_MODE").unwrap(),
                 "SAT_CCMIN_MODE",
             );
-        }
-        if self.binary_fast_path && !clause_min_explicit {
-            self.clause_min_mode = ClauseMinMode::Off;
         }
         self.reduce_db_init = parse_option_usize_selected(
             env_map,
@@ -3023,11 +3018,11 @@ mod tests {
     }
 
     #[test]
-    fn test_binary_fast_path_is_runtime_supported() {
+    fn test_binary_fast_path_preserves_default_clause_minimization() {
         let config = SolverConfig::from_env_map(&env_map(&[("SAT_BINARY_FAST", "on")]));
 
         assert!(config.binary_fast_path);
-        assert_eq!(config.clause_min_mode, ClauseMinMode::Off);
+        assert_eq!(config.clause_min_mode, ClauseMinMode::RecursiveLimited);
     }
 
     #[test]
@@ -3039,6 +3034,17 @@ mod tests {
 
         assert!(config.binary_fast_path);
         assert_eq!(config.clause_min_mode, ClauseMinMode::RecursiveLimited);
+    }
+
+    #[test]
+    fn test_binary_fast_path_honors_explicit_clause_minimization_off() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_BINARY_FAST", "on"),
+            ("SAT_CLAUSE_MIN", "off"),
+        ]));
+
+        assert!(config.binary_fast_path);
+        assert_eq!(config.clause_min_mode, ClauseMinMode::Off);
     }
 
     #[test]

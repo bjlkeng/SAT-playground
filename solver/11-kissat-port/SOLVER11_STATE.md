@@ -138,9 +138,9 @@ Known unpromoted or incomplete feature families at this baseline:
   rerun showed the unconditional pass solved only battleship while regressing the rest of the
   profiling suite.
 - Clause minimization is binary-reason aware as of 1.11, so explicit `SAT_CLAUSE_MIN` settings are
-  honored with `SAT_BINARY_FAST=on`. Binary-fast env runs keep minimization off unless
-  `SAT_CLAUSE_MIN` is explicit because the search-core gate does not justify promoting recursive
-  minimization on that path yet. With `SAT_OTFS=on`, clause minimization also runs bounded
+  honored with `SAT_BINARY_FAST=on`. Binary-fast env runs now preserve the default recursive
+  minimization unless `SAT_CLAUSE_MIN=off` is explicit, because implicit min-off produced
+  `UNKNOWN` on a baseline-solved Sudoku row. With `SAT_OTFS=on`, clause minimization also runs bounded
   on-the-fly subsumption after learned non-unit clauses are added: it scans watcher lists for the
   learned literals, checks candidates no more than four literals larger than the learned clause,
   refuses live reason clauses, and logs DRAT deletions before tombstoning subsumed learned clauses.
