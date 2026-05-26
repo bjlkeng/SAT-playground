@@ -170,11 +170,6 @@ const FORMULA_SMALL_CLAUSES: u64 = 10_000;
 const FORMULA_MEDIUM_CLAUSES: u64 = 1_000_000;
 const KISSAT_SMALL_CLAUSES: u64 = 100_000;
 const KISSAT_BIGBIG_BINARY_FRACTION: f64 = 0.990;
-const INITIAL_ORDER_KAKURO_LIKE_MIN_CLAUSES: u64 = 10_000_000;
-const INITIAL_ORDER_KAKURO_LIKE_MAX_BINARY_FRACTION: f64 = 0.05;
-const INITIAL_ORDER_KAKURO_LIKE_MIN_AVG_CLAUSE: f64 = 3.0;
-const INITIAL_ORDER_KAKURO_LIKE_MAX_AVG_CLAUSE: f64 = 4.0;
-const INITIAL_ORDER_KAKURO_LIKE_MIN_VARIABLE_DENSITY: f64 = 300.0;
 
 type ClauseRef = usize;
 
@@ -1737,48 +1732,13 @@ impl Solver {
             && clause_count <= VMTF_SINGLE_BEST_PHASE_MAX_CLAUSES
     }
 
-    fn initial_formula_counts(num_vars: usize, clauses: &[Vec<i32>]) -> (u64, u64, u64, u64) {
-        let clause_count = clauses.len() as u64;
-        let literal_count = clauses.iter().map(|clause| clause.len() as u64).sum();
-        let binary_count = clauses.iter().filter(|clause| clause.len() == 2).count() as u64;
-        (num_vars as u64, clause_count, literal_count, binary_count)
-    }
-
-    fn guarded_initial_clause_mode_from_counts(
-        vars: u64,
-        clauses: u64,
-        literals: u64,
-        binary_clauses: u64,
-    ) -> InitialClauseMode {
-        let class = FormulaClass::from_counts(vars, clauses, literals, binary_clauses);
-        if clauses >= INITIAL_ORDER_KAKURO_LIKE_MIN_CLAUSES
-            && class.binary_fraction <= INITIAL_ORDER_KAKURO_LIKE_MAX_BINARY_FRACTION
-            && (INITIAL_ORDER_KAKURO_LIKE_MIN_AVG_CLAUSE..=INITIAL_ORDER_KAKURO_LIKE_MAX_AVG_CLAUSE)
-                .contains(&class.avg_clause_size)
-            && class.variable_density >= INITIAL_ORDER_KAKURO_LIKE_MIN_VARIABLE_DENSITY
-        {
-            InitialClauseMode::CanonicalInputOrder
-        } else {
-            InitialClauseMode::CanonicalSorted
-        }
-    }
-
     fn resolve_initial_clause_mode(
         requested: InitialClauseMode,
-        num_vars: usize,
-        clauses: &[Vec<i32>],
+        _num_vars: usize,
+        _clauses: &[Vec<i32>],
     ) -> InitialClauseMode {
         match requested {
-            InitialClauseMode::Auto => {
-                let (vars, clause_count, literal_count, binary_count) =
-                    Self::initial_formula_counts(num_vars, clauses);
-                Self::guarded_initial_clause_mode_from_counts(
-                    vars,
-                    clause_count,
-                    literal_count,
-                    binary_count,
-                )
-            }
+            InitialClauseMode::Auto => InitialClauseMode::CanonicalSorted,
             mode => mode,
         }
     }
@@ -7716,28 +7676,9 @@ mod tests {
     }
 
     #[test]
-    fn test_guarded_initial_clause_mode_selects_input_order_for_kakuro_shape() {
-        let mode = Solver::guarded_initial_clause_mode_from_counts(
-            187_839, 19_620_011, 69_507_616, 254_369,
-        );
-
-        assert_eq!(mode, InitialClauseMode::CanonicalInputOrder);
-    }
-
-    #[test]
-    fn test_guarded_initial_clause_mode_keeps_canonical_for_velev_shape() {
-        let mode = Solver::guarded_initial_clause_mode_from_counts(
-            118_040, 8_804_672, 26_208_080, 8_253_000,
-        );
-
-        assert_eq!(mode, InitialClauseMode::CanonicalSorted);
-    }
-
-    #[test]
-    fn test_guarded_initial_clause_mode_keeps_canonical_for_sudoku_shape() {
-        let mode = Solver::guarded_initial_clause_mode_from_counts(
-            842_008, 2_262_677, 5_961_451, 1_531_666,
-        );
+    fn test_auto_initial_clause_mode_resolves_to_canonical_sorted() {
+        let clauses = vec![vec![1, 2, 3], vec![1, 2, 4], vec![1, 3, 4]];
+        let mode = Solver::resolve_initial_clause_mode(InitialClauseMode::Auto, 4, &clauses);
 
         assert_eq!(mode, InitialClauseMode::CanonicalSorted);
     }

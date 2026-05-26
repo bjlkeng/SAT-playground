@@ -33,8 +33,9 @@ What is present:
 - parse-time canonical original-clause insertion for input clauses: duplicate literals are removed,
   tautologies / already-satisfied clauses are skipped, root units are enqueued immediately, and
   surviving clauses use the same normalized representation as preprocessing-generated clauses
-- guarded `SAT_INITIAL_CLAUSE_MODE` switch for initial clause loading experiments:
-  `auto` (default/fast), `canonical-sorted` (baseline), `input-order`, or `raw`
+- `SAT_INITIAL_CLAUSE_MODE` switch for initial clause loading experiments:
+  `canonical-sorted` (default/baseline), `input-order`, `raw`, or `auto`
+  (currently an alias for `canonical-sorted`)
 - DRAT logging for preprocessing-generated resolvents/units
 - MiniSat-style elimination stack entries and SAT model extension
 - SAT output from a complete model snapshot instead of the mutable live assignment vector
@@ -729,33 +730,37 @@ and sorted canonical literal order adds another large slowdown. Canonical semant
 input literal order recover the old fast behavior when full BSR is disabled, so duplicate removal,
 tautology skipping, and immediate root units are not the observed Kakuro problem by themselves.
 
-### Guarded initial clause order auto mode (2026-05-26)
+### Rejected guarded initial clause order auto mode (2026-05-26)
 
-`SAT_INITIAL_CLAUSE_MODE=auto` is now the default for the default and fast profiles. Baseline keeps
-`canonical-sorted`. The auto policy uses only input-shape data available before initial clause
-insertion and selects `input-order` for Kakuro-like formulas:
+`SAT_INITIAL_CLAUSE_MODE=auto` was briefly promoted for the default and fast profiles, using only
+input-shape data available before initial clause insertion. The policy selected `input-order` for
+Kakuro-like formulas:
 
 - at least `10,000,000` input clauses
 - input binary-clause fraction at most `0.05`
 - input average clause length between `3.0` and `4.0`
 - input literal/variable density at least `300`
 
-All other formulas use `canonical-sorted`, including the known Velev regressor family. The selected
-policy deliberately uses `input-order` instead of `raw` so duplicate literals, tautologies, and root
-units still go through the canonical original-clause insertion path.
+That gate was reverted because the apparent PAR-2 gain was dominated by one Kakuro row and depended
+on preserving DIMACS literal order. This is an overfit trajectory workaround rather than a
+mechanism-level solver improvement. Default, fast, baseline, and `auto` now resolve to
+`canonical-sorted` until the underlying mechanism is addressed, likely by decoupling initial watch
+selection from physical literal sorting. Explicit `SAT_INITIAL_CLAUSE_MODE=input-order` and `raw`
+remain available as diagnostics.
 
 Rejected alternatives:
 
 - Blindly defaulting to `raw` or `input-order`: AnalyzeSAT evidence showed those modes were
   status-safe on the profiling suite, but they regressed Velev (`canonical-sorted 77.545s`,
-  `input-order 109.516s`, `raw 122.182s`), so the change must be formula-gated.
+  `input-order 109.516s`, `raw 122.182s`), so they remain diagnostics until a mechanism-level fix
+  explains the trajectory movement.
 - A broader low-binary or high-density rule: Brocard and REGRandom share some individual features
   with Kakuro, but not the full high-clause/high-density shape. They stay canonical until a broader
   family has direct evidence.
 - Promoting a Sudoku-shaped rule: the referenced evidence directory for a Sudoku-specific win was
   absent from this checkout, and the 2026-05-26 guard validation kept Sudoku canonical.
 
-Validation:
+Historical validation for the rejected gate:
 
 | Run | Results | PAR-2 | Solved | Notes |
 |---|---:|---:|---:|---|

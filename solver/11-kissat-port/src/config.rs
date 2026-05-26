@@ -752,7 +752,7 @@ impl SolverConfig {
                 self.search_mode_policy = SearchModePolicy::Single;
                 self.mode_use_ticks = false;
                 self.lucky = false;
-                self.initial_clause_mode = InitialClauseMode::Auto;
+                self.initial_clause_mode = InitialClauseMode::CanonicalSorted;
             }
             SolverProfile::Experimental => {
                 self.use_lbd = true;
@@ -2776,7 +2776,10 @@ mod tests {
         assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
         assert!(!config.mode_use_ticks);
         assert_eq!(config.proof_policy, ProofPolicy::Drat);
-        assert_eq!(config.initial_clause_mode, InitialClauseMode::Auto);
+        assert_eq!(
+            config.initial_clause_mode,
+            InitialClauseMode::CanonicalSorted
+        );
     }
 
     #[test]
@@ -2803,13 +2806,19 @@ mod tests {
         let fast = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "fast")]));
         let explicit_raw =
             SolverConfig::from_env_map(&env_map(&[("SAT_INITIAL_CLAUSE_MODE", "raw")]));
+        let explicit_auto =
+            SolverConfig::from_env_map(&env_map(&[("SAT_INITIAL_CLAUSE_MODE", "auto")]));
 
-        assert_eq!(default_config.initial_clause_mode, InitialClauseMode::Auto);
-        assert_eq!(fast.initial_clause_mode, InitialClauseMode::Auto);
+        assert_eq!(
+            default_config.initial_clause_mode,
+            InitialClauseMode::CanonicalSorted
+        );
+        assert_eq!(fast.initial_clause_mode, InitialClauseMode::CanonicalSorted);
         assert_eq!(explicit_raw.initial_clause_mode, InitialClauseMode::Raw);
+        assert_eq!(explicit_auto.initial_clause_mode, InitialClauseMode::Auto);
         assert!(default_config
             .config_replay_text()
-            .contains("initial_clause_mode=auto"));
+            .contains("initial_clause_mode=canonical-sorted"));
     }
 
     #[test]
