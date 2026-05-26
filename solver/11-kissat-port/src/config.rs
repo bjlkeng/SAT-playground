@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 const CONFIG_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_DETERMINISTIC_SEED: u64 = 0;
-const DEFAULT_MINIMIZE_DEPTH_LIMIT: u32 = 1_000_000;
+const DEFAULT_MINIMIZE_DEPTH_LIMIT: u32 = 1_000;
 const DEFAULT_CHRONO_MAX_DELTA: usize = 100;
 const DEFAULT_MODE_INIT_CONFLICTS: u64 = 2000;
 const DEFAULT_MODE_INTERVAL_SCALE: f64 = 1.5;
@@ -2989,6 +2989,36 @@ mod tests {
 
         let replayed = SolverConfig::from_replay_text(&replay, Path::new("<lucky-test>"));
         assert!(!replayed.lucky);
+        assert_eq!(replayed.config_hash(), config.config_hash());
+    }
+
+    #[test]
+    fn test_minimize_depth_limit_default_matches_kissat() {
+        let config = SolverConfig::from_env_map(&env_map(&[]));
+        assert_eq!(config.minimize_depth_limit, 1_000);
+
+        let schema_row = CONFIG_SCHEMA_CSV
+            .lines()
+            .find(|line| line.starts_with("SAT_MINIMIZE_DEPTH_LIMIT,"))
+            .expect("SAT_MINIMIZE_DEPTH_LIMIT schema row");
+        let columns: Vec<&str> = schema_row.split(',').collect();
+        assert_eq!(columns[4], "1000");
+        assert_eq!(columns[5], "1000");
+        assert_eq!(columns[6], "1000");
+    }
+
+    #[test]
+    fn test_minimize_depth_limit_can_be_overridden_and_replayed() {
+        let config =
+            SolverConfig::from_env_map(&env_map(&[("SAT_MINIMIZE_DEPTH_LIMIT", "4096")]));
+        assert_eq!(config.minimize_depth_limit, 4096);
+
+        let replay = config.config_replay_text();
+        assert!(replay.contains("minimize_depth_limit=4096"));
+
+        let replayed =
+            SolverConfig::from_replay_text(&replay, Path::new("<minimize-depth-limit-test>"));
+        assert_eq!(replayed.minimize_depth_limit, config.minimize_depth_limit);
         assert_eq!(replayed.config_hash(), config.config_hash());
     }
 

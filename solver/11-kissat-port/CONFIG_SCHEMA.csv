@@ -49,7 +49,7 @@ SAT_CLAUSE_MIN,clause_min_mode,enum,off|basic|recursive-limited|inblock,recursiv
 SAT_OTFS,otfs,bool,on|off,false,false,false,true,false,false,,SAT_CLAUSE_MIN!=off,1.14g,yes
 SAT_VMTF,vmtf,enum,off|focused-only|single,off,off,off,true,false,false,,focused-only_requires_SAT_SEARCH_MODE=focused-stable;single_requires_SAT_SEARCH_MODE=single,SAT-playground-egy,yes
 SAT_REPHASE,rephase,bool,on|off,false,false,false,true,false,false,,SAT_SEARCH_MODE=focused-stable,1.12,yes
-SAT_MINIMIZE_DEPTH_LIMIT,minimize_depth_limit,u32,nonnegative,100,100,100,false,false,false,,,0.3,internal
+SAT_MINIMIZE_DEPTH_LIMIT,minimize_depth_limit,u32,nonnegative,1000,1000,1000,false,false,false,,,0.3,internal
 SAT_CHRONO_MAX_DELTA,chrono_max_delta,usize,nonnegative,100,100,100,false,false,false,,,1.13,internal
 SAT_MODE_INIT_CONFLICTS,mode_init_conflicts,u64,nonnegative,2000,2000,2000,false,false,false,,,0.3,internal
 SAT_MODE_INTERVAL_SCALE,mode_interval_scale,f64,finite_nonnegative,1.5,1.5,1.5,false,false,false,,,0.3,internal

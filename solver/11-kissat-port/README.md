@@ -189,7 +189,7 @@ SAT_REDUCE=legacy|lbd-tiered
 SAT_REDUCE_MIN_INTERVAL=<usize>  # lbd-tiered default is 100, values must be >= 50
 SAT_CLAUSE_MIN=off|basic|recursive-limited|inblock
 SAT_OTFS=on|off
-SAT_MINIMIZE_DEPTH_LIMIT=<u32>
+SAT_MINIMIZE_DEPTH_LIMIT=<u32>  # default 1000
 SAT_PHASE=legacy|saved|target-then-saved|best-then-target-then-saved
 SAT_FOCUSED_PHASE=auto|legacy|saved|target-then-saved|best-then-target-then-saved
 SAT_STABLE_PHASE=auto|legacy|saved|target-then-saved|best-then-target-then-saved
