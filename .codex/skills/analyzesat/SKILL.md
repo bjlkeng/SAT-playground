@@ -99,7 +99,42 @@ Compare `net` to measured wall ratio:
 Trajectory-only features (EMA restart) show `speed ≈ 1.0`.
 Execution-only effects (watcher growth, DB bloat) show `work ≈ 1.0`.
 
-## Phase 3 — Reference Source Diff
+## Phase 3 — Reference Solver Live Comparison
+
+Run the vendored kissat binaries on the same profiling instances to establish
+empirical targets for conflicts, propagations, decisions, and wall time.
+
+```bash
+# Run kissat-latest and kissat-sc2024 on the profiling suite
+bash tools/bench_reference.sh -t 300 -m 16384 \
+  -d benchmarks/profiling kissat-latest kissat-sc2024
+```
+
+Results land in `log/bench-kissat-latest-<ts>/results.csv` and
+`log/bench-kissat-sc2024-<ts>/results.csv`. Copy or symlink them under
+`log/<slug>/reference-kissat-latest.csv` and `reference-kissat-sc2024.csv`.
+
+For instances where kissat is faster than the repo solver's `A_baseline`, compute
+the gap analysis per instance:
+
+```
+ref_work_ratio  = conflicts_repo / conflicts_kissat   # how many more conflicts?
+ref_speed_ratio = (props/s)_kissat / (props/s)_repo   # how much slower per prop?
+```
+
+Classify each instance gap:
+- `ref_work_ratio >> 1, ref_speed_ratio ≈ 1` → **trajectory gap** (search quality)
+- `ref_work_ratio ≈ 1, ref_speed_ratio >> 1` → **execution gap** (propagation throughput)
+- both elevated → **combined gap**
+- kissat loses or ties → repo is already competitive on this instance (note it)
+
+This gives a per-instance "what to fix first" signal before reading source code.
+Also note instances where kissat **times out** but the repo solver solves — these
+are instances where the repo's preprocessing gives an advantage worth preserving.
+
+Add the reference comparison table to `log/<slug>/FINDINGS.md`.
+
+## Phase 4 — Reference Source Diff
 
 For every feature that regresses, read the reference implementation verbatim:
 
@@ -114,8 +149,12 @@ and read the *execution model* line by line:
 - what state survives between events (trail reuse, used counters, tier assignments)
 - which side-effects happen at which boundary (queue drains, heap rebuilds, EMA resets)
 
+Use the Phase 3 gap classification to prioritize which features to diff first:
+trajectory gaps → focus on restart/branching/phase files; execution gaps → focus
+on propagation/watcher/arena files.
+
 For each gap found, predict which instances/configs would change if the gap were closed.
-Verify the prediction against Phase 1/2 data. Only call something a "gap" if the
+Verify the prediction against Phase 1/2/3 data. Only call something a "gap" if the
 prediction matches observed regressions.
 
 Key known Kissat gaps to check for solver 11:
@@ -125,7 +164,7 @@ Key known Kissat gaps to check for solver 11:
 - `decide.c` — is VMTF queue state preserved correctly across restarts?
 - `search.c` — does mode switching happen at the right conflict boundary?
 
-## Phase 4 — Trajectory Trace for Critical Instances
+## Phase 5 — Trajectory Trace for Critical Instances
 
 Pick 1–2 instances where regression is largest. Run at least two configs with search traces:
 
@@ -143,7 +182,7 @@ sharply, document this as **phase-boundary chaos** (VSIDS picks a different bran
 literal at one critical decision — parameter tuning will not reliably fix it; the
 remedy is algorithmic simplification / inprocessing or accepting it as a coin flip).
 
-## Phase 5 — Hardware Performance Counters
+## Phase 6 — Hardware Performance Counters
 
 For the top 1–2 regressing instances, run `perf stat` on both baseline and the
 regressing config:
@@ -212,6 +251,10 @@ Write `log/<slug>/FINDINGS.md` with this structure:
 ## Config Matrix Results
 <table: config × instance × (wall, conflicts, props/s, result)>
 
+## Reference Solver Live Comparison
+<table: instance × (solver-wall, kissat-wall, ref_work_ratio, ref_speed_ratio, gap type)>
+<note any instances where repo already beats kissat; flag any kissat timeouts where repo solves>
+
 ## Work × Speed Decomposition
 <table: (config, instance) × (work_ratio, speed_ratio, net, actual, dominant cause)>
 
@@ -237,6 +280,7 @@ Write `log/<slug>/FINDINGS.md` with this structure:
 ## Artifact Paths
 - Ablation script: log/<slug>/run_ablation.sh
 - Raw results: log/<slug>/<config>/results.csv
+- Reference solver results: log/<slug>/reference-kissat-latest.csv, reference-kissat-sc2024.csv
 - Trace logs: log/<slug>/trace_*.txt
 - Profile data: log/<slug>/perf_*.txt
 ```
@@ -277,7 +321,10 @@ After writing FINDINGS.md and creating/updating beads:
 
 ```bash
 git add log/<slug>/FINDINGS.md log/<slug>/DEEPER_FINDINGS.md \
-        log/<slug>/run_ablation.sh .beads/issues.jsonl
+        log/<slug>/run_ablation.sh \
+        log/<slug>/reference-kissat-latest.csv \
+        log/<slug>/reference-kissat-sc2024.csv \
+        .beads/issues.jsonl
 git commit -m "analyzesat: <slug> — <one-line summary of top finding>"
 ```
 
