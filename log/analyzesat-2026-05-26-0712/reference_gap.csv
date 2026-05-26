@@ -1,0 +1,11 @@
+instance,kissat_result,repo_result,kissat_wall,repo_wall,wall_ratio_repo_over_kissat,classification
+sudoku-N30-12,UNSAT,UNSAT,260.616,256.443,0.98,comparable
+6s299b685_Iter30,SAT,SAT,37.406,17.564,0.47,repo_faster
+REGRandom-K4-L1-Seed40.sanitized,UNSAT,UNSAT,2.327,60.710,26.09,repo_much_slower
+mp1-Nb7T46,SAT,SAT,7.881,47.071,5.97,repo_much_slower
+Kakuro-easy-112-ext.xml.hg_7,SAT,SAT,37.954,265.163,6.99,repo_much_slower
+SCPC-500-13,UNSAT,UNSAT,6.718,13.403,2.00,repo_slower
+velev-pipe-sat-1.0-b7,SAT,SAT,89.929,81.251,0.90,comparable
+brocard_problem_large,UNSAT,UNSAT,50.591,9.845,0.19,repo_faster
+battleship-16-31-sat,SAT,SAT,0.179,23.336,130.37,repo_much_slower
+case9,SAT,SAT,77.225,126.607,1.64,repo_slower
