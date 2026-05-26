@@ -536,6 +536,106 @@ impl Solver {
         Some(normalized)
     }
 
+    fn move_kissat_initial_watch_to_front(
+        &self,
+        lits: &mut [i32],
+        start: usize,
+        satisfied_is_enough: bool,
+    ) -> u8 {
+        debug_assert!(lits.len() > 1);
+        debug_assert!(start < lits.len());
+
+        let current_lit = lits[start];
+        let mut current_value = self.lit_value(current_lit);
+        if current_value == UNASSIGNED || (current_value == TRUE && satisfied_is_enough) {
+            return current_value;
+        }
+
+        let mut best_pos = start;
+        let mut best_level = self.decision_level[current_lit.unsigned_abs() as usize];
+        for (pos, &candidate_lit) in lits.iter().enumerate().skip(start + 1) {
+            let candidate_value = self.lit_value(candidate_lit);
+            if candidate_value == UNASSIGNED || (candidate_value == TRUE && satisfied_is_enough) {
+                best_pos = pos;
+                current_value = candidate_value;
+                break;
+            }
+
+            let candidate_level = self.decision_level[candidate_lit.unsigned_abs() as usize];
+            let better = match (current_value, candidate_value) {
+                (FALSE, TRUE) => true,
+                (TRUE, FALSE) => false,
+                (FALSE, FALSE) => best_level < candidate_level,
+                (TRUE, TRUE) => candidate_level > best_level,
+                _ => false,
+            };
+            if better {
+                best_pos = pos;
+                current_value = candidate_value;
+                best_level = candidate_level;
+            }
+        }
+
+        if best_pos != start {
+            lits.swap(start, best_pos);
+        }
+        current_value
+    }
+
+    pub(super) fn order_kissat_initial_watches(&self, lits: &mut [i32]) {
+        if lits.len() < 2 {
+            return;
+        }
+        let first_value = self.move_kissat_initial_watch_to_front(lits, 0, false);
+        if lits.len() > 2 {
+            self.move_kissat_initial_watch_to_front(lits, 1, first_value == TRUE);
+        }
+    }
+
+    fn promote_initial_watches_preserving_sorted_tail(
+        sorted: &mut [i32],
+        first_watch: i32,
+        second_watch: i32,
+    ) {
+        debug_assert!(sorted.len() >= 2);
+        debug_assert_ne!(first_watch, second_watch);
+        debug_assert!(sorted.contains(&first_watch));
+        debug_assert!(sorted.contains(&second_watch));
+
+        let mut write = sorted.len();
+        for read in (0..sorted.len()).rev() {
+            let lit = sorted[read];
+            if lit == first_watch || lit == second_watch {
+                continue;
+            }
+            write -= 1;
+            sorted[write] = lit;
+        }
+        debug_assert_eq!(write, 2);
+        sorted[0] = first_watch;
+        sorted[1] = second_watch;
+    }
+
+    pub(super) fn normalize_original_clause_kissat_watch(
+        &self,
+        clause: &[i32],
+    ) -> Option<Vec<i32>> {
+        let mut normalized = self.normalize_original_clause(clause)?;
+        if normalized.len() < 2 {
+            return Some(normalized);
+        }
+
+        let mut watch_order = self.normalize_original_clause_input_order(clause)?;
+        debug_assert_eq!(normalized.len(), watch_order.len());
+        self.order_kissat_initial_watches(&mut watch_order);
+        Self::promote_initial_watches_preserving_sorted_tail(
+            &mut normalized,
+            watch_order[0],
+            watch_order[1],
+        );
+        Some(normalized)
+    }
+
     fn add_normalized_original_clause(
         &mut self,
         normalized: Vec<i32>,
@@ -648,6 +748,31 @@ impl Solver {
                 self.normalize_original_clause_input_order(&clause)
             };
             let Some(normalized) = normalized else {
+                continue;
+            };
+            let _ = self.add_normalized_original_clause(
+                normalized,
+                &mut proof_log,
+                false,
+                &mut touched,
+                &mut touched_flags,
+                None,
+            );
+        }
+        self.use_simplification = use_simplification;
+    }
+
+    pub(super) fn add_initial_original_clauses_kissat_watch(&mut self, clauses: Vec<Vec<i32>>) {
+        let mut proof_log = ProofLog::disabled();
+        let mut touched = Vec::new();
+        let mut touched_flags = Vec::new();
+        let use_simplification = self.use_simplification;
+        self.use_simplification = false;
+        for clause in clauses {
+            if !self.solver_ok {
+                break;
+            }
+            let Some(normalized) = self.normalize_original_clause_kissat_watch(&clause) else {
                 continue;
             };
             let _ = self.add_normalized_original_clause(

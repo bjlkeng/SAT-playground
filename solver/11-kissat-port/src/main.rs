@@ -2047,6 +2047,9 @@ impl Solver {
             InitialClauseMode::CanonicalInputOrder => {
                 solver.add_initial_original_clauses(clauses, false);
             }
+            InitialClauseMode::KissatWatch => {
+                solver.add_initial_original_clauses_kissat_watch(clauses);
+            }
             InitialClauseMode::Raw => {
                 solver.add_raw_initial_original_clauses(clauses);
             }
@@ -7681,6 +7684,84 @@ mod tests {
         let mode = Solver::resolve_initial_clause_mode(InitialClauseMode::Auto, 4, &clauses);
 
         assert_eq!(mode, InitialClauseMode::CanonicalSorted);
+    }
+
+    #[test]
+    fn test_kissat_watch_mode_promotes_input_order_watches_with_sorted_tail() {
+        let config = SolverConfig {
+            initial_clause_mode: InitialClauseMode::KissatWatch,
+            ..Default::default()
+        };
+        let s = make_solver_with_config(5, vec![vec![5, 1, 3, 2]], &config);
+        let clause_idx = s.original_clause_ids[0];
+
+        assert_eq!(s.clause_slice(clause_idx), &[5, 1, 2, 3]);
+        assert_eq!(watched_literals(&s, clause_idx), Some((5, 1)));
+        assert!(!s.clauses_sorted_by_var);
+    }
+
+    #[test]
+    fn test_kissat_watch_normalization_handles_duplicates_units_and_binary() {
+        let s = make_solver(5, vec![]);
+
+        assert_eq!(
+            s.normalize_original_clause_kissat_watch(&[4, 2, 4, 1])
+                .unwrap(),
+            vec![4, 2, 1]
+        );
+        assert_eq!(
+            s.normalize_original_clause_kissat_watch(&[3]).unwrap(),
+            vec![3]
+        );
+        assert_eq!(
+            s.normalize_original_clause_kissat_watch(&[4, 1]).unwrap(),
+            vec![4, 1]
+        );
+        assert!(s
+            .normalize_original_clause_kissat_watch(&[4, -4, 1])
+            .is_none());
+    }
+
+    #[test]
+    fn test_kissat_watch_normalization_skips_satisfied_and_falsified_literals() {
+        let mut satisfied = make_solver(4, vec![]);
+        assert!(satisfied.enqueue(4, ReasonRef::None));
+        assert!(satisfied
+            .normalize_original_clause_kissat_watch(&[4, 2, 1])
+            .is_none());
+
+        let mut falsified = make_solver(4, vec![]);
+        assert!(falsified.enqueue(-4, ReasonRef::None));
+        assert_eq!(
+            falsified
+                .normalize_original_clause_kissat_watch(&[4, 2, 1])
+                .unwrap(),
+            vec![2, 1]
+        );
+    }
+
+    #[test]
+    fn test_kissat_watch_selector_prefers_unassigned_literal() {
+        let mut s = make_solver(5, vec![]);
+        install_manual_state(&mut s, &[1, -2, -3], &[0, 1, 2], &[]);
+        let mut lits = vec![1, -2, 3, 5];
+
+        s.order_kissat_initial_watches(&mut lits);
+
+        assert_eq!(lits[0], 5);
+        assert_eq!(lits[1], -2);
+    }
+
+    #[test]
+    fn test_kissat_watch_selector_prefers_higher_level_falsified_literals() {
+        let mut s = make_solver(4, vec![]);
+        install_manual_state(&mut s, &[-3, -2, -4], &[0, 1, 2], &[]);
+        let mut lits = vec![2, 3, 4];
+
+        s.order_kissat_initial_watches(&mut lits);
+
+        assert_eq!(lits[0], 4);
+        assert_eq!(lits[1], 2);
     }
 
     #[test]

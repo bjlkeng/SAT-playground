@@ -34,7 +34,7 @@ What is present:
   tautologies / already-satisfied clauses are skipped, root units are enqueued immediately, and
   surviving clauses use the same normalized representation as preprocessing-generated clauses
 - `SAT_INITIAL_CLAUSE_MODE` switch for initial clause loading experiments:
-  `canonical-sorted` (default/baseline), `input-order`, `raw`, or `auto`
+  `canonical-sorted` (default/baseline), `input-order`, `kissat-watch`, `raw`, or `auto`
   (currently an alias for `canonical-sorted`)
 - DRAT logging for preprocessing-generated resolvents/units
 - MiniSat-style elimination stack entries and SAT model extension
@@ -745,8 +745,23 @@ That gate was reverted because the apparent PAR-2 gain was dominated by one Kaku
 on preserving DIMACS literal order. This is an overfit trajectory workaround rather than a
 mechanism-level solver improvement. Default, fast, baseline, and `auto` now resolve to
 `canonical-sorted` until the underlying mechanism is addressed, likely by decoupling initial watch
-selection from physical literal sorting. Explicit `SAT_INITIAL_CLAUSE_MODE=input-order` and `raw`
-remain available as diagnostics.
+selection from physical literal sorting. Explicit `SAT_INITIAL_CLAUSE_MODE=input-order`,
+`kissat-watch`, and `raw` remain available as diagnostics. The `kissat-watch` mode mirrors the
+Kissat import step by selecting the first two watched literals from the normalized input-order
+clause while keeping the remaining literals canonicalized; because this breaks globally sorted
+physical clause order, the sorted-subsumption fast path is disabled for that diagnostic mode.
+
+Follow-up diagnostic comparison after adding the explicit `kissat-watch` mode:
+
+| Initial clause mode | Results | PAR-2 | Solved | Notes |
+|---|---:|---:|---:|---|
+| `canonical-sorted` | `log/bench-11-kissat-port-2026-05-26-18-09-15/results.csv` | `746.711` | `10/10` | Default-safe baseline after reverting the overfit auto gate |
+| `input-order` | `log/bench-11-kissat-port-2026-05-26-18-25-42/results.csv` | `644.540` | `10/10` | Big Kakuro win (`48.985s`) but Velev and REGRandom regress, so still diagnostic-only |
+| `kissat-watch` | `log/bench-11-kissat-port-2026-05-26-18-40-32/results.csv` | `822.083` | `10/10` | Status-safe but slower than sorted; not a replacement for canonical sorting |
+
+Conclusion: selecting Kissat-style initial watches alone does not explain the input-order Kakuro
+trajectory win. The diagnostic path is useful evidence, but promotion needs a stronger mechanism
+than moving the first two watched literals while disabling sorted-subsumption.
 
 Rejected alternatives:
 

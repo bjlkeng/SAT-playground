@@ -53,6 +53,7 @@ pub(crate) enum InitialClauseMode {
     Auto,
     CanonicalSorted,
     CanonicalInputOrder,
+    KissatWatch,
     Raw,
 }
 
@@ -62,6 +63,7 @@ impl InitialClauseMode {
             Self::Auto => "auto",
             Self::CanonicalSorted => "canonical-sorted",
             Self::CanonicalInputOrder => "input-order",
+            Self::KissatWatch => "kissat-watch",
             Self::Raw => "raw",
         }
     }
@@ -77,9 +79,15 @@ impl InitialClauseMode {
             | "canonical_input"
             | "input"
             | "preserve-order" => Self::CanonicalInputOrder,
+            "kissat-watch"
+            | "kissat_watch"
+            | "canonical-kissat-watch"
+            | "canonical_kissat_watch"
+            | "watch-select"
+            | "watch_selection" => Self::KissatWatch,
             "raw" | "solver10" | "legacy" | "off" | "0" | "false" => Self::Raw,
             other => fail_config(&format!(
-                "Invalid {env_name}={other}; expected auto/canonical-sorted/input-order/raw"
+                "Invalid {env_name}={other}; expected auto/canonical-sorted/input-order/kissat-watch/raw"
             )),
         }
     }
@@ -2808,6 +2816,8 @@ mod tests {
             SolverConfig::from_env_map(&env_map(&[("SAT_INITIAL_CLAUSE_MODE", "raw")]));
         let explicit_auto =
             SolverConfig::from_env_map(&env_map(&[("SAT_INITIAL_CLAUSE_MODE", "auto")]));
+        let explicit_kissat_watch =
+            SolverConfig::from_env_map(&env_map(&[("SAT_INITIAL_CLAUSE_MODE", "kissat-watch")]));
 
         assert_eq!(
             default_config.initial_clause_mode,
@@ -2816,6 +2826,13 @@ mod tests {
         assert_eq!(fast.initial_clause_mode, InitialClauseMode::CanonicalSorted);
         assert_eq!(explicit_raw.initial_clause_mode, InitialClauseMode::Raw);
         assert_eq!(explicit_auto.initial_clause_mode, InitialClauseMode::Auto);
+        assert_eq!(
+            explicit_kissat_watch.initial_clause_mode,
+            InitialClauseMode::KissatWatch
+        );
+        assert!(explicit_kissat_watch
+            .config_replay_text()
+            .contains("initial_clause_mode=kissat-watch"));
         assert!(default_config
             .config_replay_text()
             .contains("initial_clause_mode=canonical-sorted"));
