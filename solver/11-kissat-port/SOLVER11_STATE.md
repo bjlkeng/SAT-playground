@@ -58,8 +58,10 @@ Known unpromoted or incomplete feature families at this baseline:
   Glucose-style decision-level blocker controlled by `SAT_RESTART_BLOCK_MARGIN`, so high
   fast-vs-slow level EMA ratios can preserve a productive deep prefix instead of restarting
   immediately. The blocker is default-off (`0`) after profile testing showed the `1.4` margin
-  regressed the current profile suite. The Kissat-style partial-restart experiment remains compiled
-  and env-facing `SAT_RESTART_REUSE_TRAIL*` requests are honored. Stable/focused trail reuse is now
+  regressed the current profile suite. Single-mode `SAT_RESTART=kissat-ema` is rejected because it
+  lacks Kissat's focused-mode envelope and restart trail-reuse semantics. The Kissat-style
+  partial-restart experiment remains compiled and env-facing `SAT_RESTART_REUSE_TRAIL*` requests
+  are honored. Stable/focused trail reuse is now
   scoped to focused/stable mode, so the solver-10-compatible single-mode Luby path does not retain
   the `mp1` prefix that previously led to `UNKNOWN`.
   Learned clauses now start with the maximum

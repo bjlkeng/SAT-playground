@@ -66,9 +66,11 @@ What is present:
   learned-literal budget is retained only as an emergency trigger. A minimum conflict interval
   guard prevents repeated high-LBD emergency reductions from firing more often than
   `SAT_REDUCE_MIN_INTERVAL` conflicts; lbd-tiered mode defaults this guard to `100`.
-- an LBD EMA restart policy (`SAT_USE_LBD=on SAT_RESTART=kissat-ema`) for single-mode Phase 1
-  search experiments. An optional Glucose-style decision-level blocker can suppress EMA restarts
-  when the recent decision-level EMA is high relative to the slow baseline; set
+- an LBD EMA restart policy (`SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable
+  SAT_RESTART=kissat-ema`) for focused/stable Phase 1 search experiments. Single-mode
+  `SAT_RESTART=kissat-ema` is rejected because that path lacks Kissat's focused-mode envelope and
+  restart trail-reuse semantics. An optional Glucose-style decision-level blocker can suppress EMA
+  restarts when the recent decision-level EMA is high relative to the slow baseline; set
   `SAT_RESTART_BLOCK_MARGIN` above `0` to enable it. The blocker is default-off after profile
   testing showed the `1.4` margin regressed the current profiling suite. Restart trail reuse is
   available for the focused/stable search path; stable-mode reuse is deliberately not applied to
@@ -175,7 +177,7 @@ SAT_STRICT_CONFIG=on
 SAT_STATS_JSON=on
 SAT_STATS_HOT=on
 SAT_USE_LBD=on
-SAT_RESTART=legacy-luby|kissat-ema|reluctant
+SAT_RESTART=legacy-luby|kissat-ema|reluctant  # kissat-ema requires focused-stable search
 SAT_RESTART_BLOCK_MARGIN=<f64>  # 0 disables the level blocker
 SAT_RESTART_REUSE_TRAIL=on|off
 SAT_RESTART_REUSE_TRAIL_FOCUSED=on|off

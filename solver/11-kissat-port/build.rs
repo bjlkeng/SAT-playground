@@ -72,8 +72,14 @@ fn emit_git_dir_rerun_triggers(git_dir: &Path) {
         return;
     };
     let reference = reference.trim();
-    println!("cargo:rerun-if-changed={}", git_dir.join(reference).display());
-    println!("cargo:rerun-if-changed={}", git_dir.join("packed-refs").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        git_dir.join(reference).display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        git_dir.join("packed-refs").display()
+    );
 }
 
 fn read(path: &Path) -> String {

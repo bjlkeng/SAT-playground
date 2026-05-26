@@ -1207,6 +1207,13 @@ impl SolverConfig {
         if self.restart_policy == RestartPolicy::KissatEma && !self.use_lbd {
             fail_config("Invalid config: SAT_RESTART=kissat-ema requires SAT_USE_LBD=on");
         }
+        if self.restart_policy == RestartPolicy::KissatEma
+            && self.search_mode_policy == SearchModePolicy::Single
+        {
+            fail_config(
+                "Invalid config: SAT_RESTART=kissat-ema requires SAT_SEARCH_MODE=focused-stable",
+            );
+        }
         if self.vmtf == VmtfMode::FocusedOnly && self.search_mode_policy == SearchModePolicy::Single
         {
             fail_config(
@@ -2749,6 +2756,7 @@ mod tests {
     fn test_target_phase_remains_explicit_opt_in_when_ema_restart_is_active() {
         let ema_default_phase = SolverConfig::from_env_map(&env_map(&[
             ("SAT_USE_LBD", "on"),
+            ("SAT_SEARCH_MODE", "focused-stable"),
             ("SAT_RESTART", "kissat-ema"),
         ]));
         assert_eq!(ema_default_phase.restart_policy, RestartPolicy::KissatEma);
@@ -2756,6 +2764,7 @@ mod tests {
 
         let explicit_target = SolverConfig::from_env_map(&env_map(&[
             ("SAT_USE_LBD", "on"),
+            ("SAT_SEARCH_MODE", "focused-stable"),
             ("SAT_RESTART", "kissat-ema"),
             ("SAT_PHASE", "target-then-saved"),
         ]));
@@ -2808,6 +2817,7 @@ mod tests {
     fn test_kissat_ema_restart_is_runtime_supported_with_lbd() {
         let config = SolverConfig::from_env_map(&env_map(&[
             ("SAT_USE_LBD", "on"),
+            ("SAT_SEARCH_MODE", "focused-stable"),
             ("SAT_RESTART", "kissat-ema"),
             ("SAT_RESTART_BLOCK_MARGIN", "1.25"),
         ]));
