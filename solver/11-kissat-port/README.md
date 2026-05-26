@@ -113,6 +113,10 @@ What is present:
   `UNKNOWN` on Sudoku. `SAT_VMTF=single` remains a default-off experimental fallback for the
   solver-10-compatible single-mode path; it is bounded by fixed budgets and should not be treated as
   the promoted VMTF policy.
+- opt-in periodic decision-order reordering (`SAT_REORDER=on`). Stable mode rebuilds the VSIDS
+  heap from current variable activities; VMTF mode rebuilds the queue in the same activity order.
+  The interval is controlled by `SAT_REORDER_INTERVAL_CONFLICTS` and the default profiles leave it
+  off until a promotion-safe interval is validated.
 - focused/stable rephasing is available behind `SAT_REPHASE=on`. It runs only on scheduled stable-mode restarts and cycles saved phases through
   best, inverted, and original polarity sources
 - opt-in guarded chronological backtracking (`SAT_CHRONO=on`) that keeps only `current - 1`
@@ -199,6 +203,8 @@ SAT_LUCKY=on|off
 SAT_CHRONO=on
 SAT_CHRONO_MAX_DELTA=<usize>
 SAT_VMTF=off|focused-only|single  # focused-stable defaults to focused-only unless explicit
+SAT_REORDER=on|off
+SAT_REORDER_INTERVAL_CONFLICTS=<u64>  # default 10000
 SAT_REPHASE=on
 SAT_BINARY_FAST=on
 ```

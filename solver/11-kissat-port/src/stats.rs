@@ -121,6 +121,7 @@ pub(crate) struct SolverStats {
     pub(crate) lucky_attempts: u64,
     pub(crate) lucky_solved: u64,
     pub(crate) rephases: u64,
+    pub(crate) branch_reorders: u64,
     pub(crate) decision_heap_pops: u64,
     pub(crate) decision_heap_stale_pops: u64,
     pub(crate) decision_heap_inserts: u64,
@@ -570,6 +571,7 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("phase_save_target", ctx.stats.phase_save_target);
     json.u64("phase_save_best", ctx.stats.phase_save_best);
     json.u64("rephases", ctx.stats.rephases);
+    json.u64("branch_reorders", ctx.stats.branch_reorders);
     json.u64("random_decisions", ctx.stats.random_decisions);
     json.u64(
         "random_decision_sequences",
@@ -668,7 +670,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, _timings: &RunTimings) -> Str
             "transitive_removed=0 gate_equivs_found=0 appendix_equiv_substitutions=0 ",
             "inprocess_runs=0 inprocess_ticks=0 ",
             "phase_saved_used={} phase_legacy_used={} phase_target_used={} phase_best_used={} phase_initial_used={} ",
-            "phase_save_target={} phase_save_best={} lucky_attempts={} lucky_solved={} rephases={} ",
+            "phase_save_target={} phase_save_best={} lucky_attempts={} lucky_solved={} rephases={} branch_reorders={} ",
             "search_ticks={} ",
             "decisions_focused={} decisions_stable={} ",
             "mode_switches={} seconds_focused={:.6} seconds_stable={:.6} ",
@@ -713,6 +715,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, _timings: &RunTimings) -> Str
         stats.lucky_attempts,
         stats.lucky_solved,
         stats.rephases,
+        stats.branch_reorders,
         stats.search_ticks,
         stats.decisions_focused,
         stats.decisions_stable,

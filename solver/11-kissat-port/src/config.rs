@@ -16,6 +16,7 @@ const DEFAULT_CHRONO_MAX_DELTA: usize = 100;
 const DEFAULT_MODE_INIT_CONFLICTS: u64 = 2000;
 const DEFAULT_MODE_INTERVAL_SCALE: f64 = 1.5;
 const DEFAULT_REPHASE_INIT_CONFLICTS: u64 = 1000;
+const DEFAULT_REORDER_INTERVAL_CONFLICTS: u64 = 10_000;
 const DEFAULT_RESTART_BLOCK_MARGIN: f64 = 0.0;
 const DEFAULT_RESTART_SLOW_WINDOW: u64 = 100_000;
 
@@ -532,11 +533,13 @@ pub(crate) struct SolverConfig {
     pub(crate) otfs: bool,
     pub(crate) vmtf: VmtfMode,
     pub(crate) rephase: bool,
+    pub(crate) reorder: bool,
     pub(crate) minimize_depth_limit: u32,
     pub(crate) chrono_max_delta: usize,
     pub(crate) mode_init_conflicts: u64,
     pub(crate) mode_interval_scale: f64,
     pub(crate) rephase_init_conflicts: u64,
+    pub(crate) reorder_interval_conflicts: u64,
 
     pub(crate) simplification: bool,
     pub(crate) bve: bool,
@@ -632,11 +635,13 @@ impl Default for SolverConfig {
             otfs: false,
             vmtf: VmtfMode::Off,
             rephase: false,
+            reorder: false,
             minimize_depth_limit: DEFAULT_MINIMIZE_DEPTH_LIMIT,
             chrono_max_delta: DEFAULT_CHRONO_MAX_DELTA,
             mode_init_conflicts: DEFAULT_MODE_INIT_CONFLICTS,
             mode_interval_scale: DEFAULT_MODE_INTERVAL_SCALE,
             rephase_init_conflicts: DEFAULT_REPHASE_INIT_CONFLICTS,
+            reorder_interval_conflicts: DEFAULT_REORDER_INTERVAL_CONFLICTS,
 
             simplification: true,
             bve: true,
@@ -985,6 +990,7 @@ impl SolverConfig {
         let vmtf_explicit = get_selected(env_map, &key_set, "SAT_VMTF").is_some();
         self.vmtf = parse_enum_selected(env_map, &key_set, "SAT_VMTF", self.vmtf, VmtfMode::parse);
         self.rephase = parse_bool_selected(env_map, &key_set, "SAT_REPHASE", self.rephase);
+        self.reorder = parse_bool_selected(env_map, &key_set, "SAT_REORDER", self.reorder);
         self.minimize_depth_limit = parse_u32_selected(
             env_map,
             &key_set,
@@ -1014,6 +1020,12 @@ impl SolverConfig {
             &key_set,
             "SAT_REPHASE_INIT_CONFLICTS",
             self.rephase_init_conflicts,
+        );
+        self.reorder_interval_conflicts = parse_u64_selected(
+            env_map,
+            &key_set,
+            "SAT_REORDER_INTERVAL_CONFLICTS",
+            self.reorder_interval_conflicts,
         );
 
         self.simplification =
@@ -1233,6 +1245,9 @@ impl SolverConfig {
         if self.rephase && self.search_mode_policy == SearchModePolicy::Single {
             fail_config("Invalid config: SAT_REPHASE=on requires SAT_SEARCH_MODE=focused-stable");
         }
+        if self.reorder && self.reorder_interval_conflicts == 0 {
+            fail_config("Invalid config: SAT_REORDER_INTERVAL_CONFLICTS must be at least 1");
+        }
         if self.mode_use_ticks && self.search_mode_policy == SearchModePolicy::Single {
             fail_config(
                 "Invalid config: SAT_MODE_USE_TICKS=on requires SAT_SEARCH_MODE=focused-stable",
@@ -1435,6 +1450,7 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "otfs", self.otfs);
         push_kv(&mut lines, "vmtf", self.vmtf.as_str());
         push_kv_bool(&mut lines, "rephase", self.rephase);
+        push_kv_bool(&mut lines, "reorder", self.reorder);
         push_kv(
             &mut lines,
             "minimize_depth_limit",
@@ -1459,6 +1475,11 @@ impl SolverConfig {
             &mut lines,
             "rephase_init_conflicts",
             self.rephase_init_conflicts.to_string(),
+        );
+        push_kv(
+            &mut lines,
+            "reorder_interval_conflicts",
+            self.reorder_interval_conflicts.to_string(),
         );
         push_kv_bool(&mut lines, "simplification", self.simplification);
         push_kv_bool(&mut lines, "bve", self.bve);
@@ -1779,6 +1800,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             "log/bench-11-kissat-port-2026-05-25-20-01-30/results.csv",
         ),
         feature(
+            "SAT_REORDER",
+            config.reorder,
+            FeatureMaturity::Experimental,
+            true,
+            true,
+            false,
+            "log/phase1/1.14n-summary.md",
+        ),
+        feature(
             "SAT_REPHASE",
             config.rephase,
             FeatureMaturity::Experimental,
@@ -2044,11 +2074,13 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "otfs" => Some("SAT_OTFS"),
         "vmtf" => Some("SAT_VMTF"),
         "rephase" => Some("SAT_REPHASE"),
+        "reorder" => Some("SAT_REORDER"),
         "minimize_depth_limit" => Some("SAT_MINIMIZE_DEPTH_LIMIT"),
         "chrono_max_delta" => Some("SAT_CHRONO_MAX_DELTA"),
         "mode_init_conflicts" => Some("SAT_MODE_INIT_CONFLICTS"),
         "mode_interval_scale" => Some("SAT_MODE_INTERVAL_SCALE"),
         "rephase_init_conflicts" => Some("SAT_REPHASE_INIT_CONFLICTS"),
+        "reorder_interval_conflicts" => Some("SAT_REORDER_INTERVAL_CONFLICTS"),
         "simplification" => Some("SAT_SIMPLIFICATION"),
         "bve" => Some("SAT_BVE"),
         "full_bsr" => Some("SAT_FULL_BSR"),
@@ -2223,11 +2255,13 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_OTFS",
         "SAT_VMTF",
         "SAT_REPHASE",
+        "SAT_REORDER",
         "SAT_MINIMIZE_DEPTH_LIMIT",
         "SAT_CHRONO_MAX_DELTA",
         "SAT_MODE_INIT_CONFLICTS",
         "SAT_MODE_INTERVAL_SCALE",
         "SAT_REPHASE_INIT_CONFLICTS",
+        "SAT_REORDER_INTERVAL_CONFLICTS",
         "SAT_SIMPLIFICATION",
         "SAT_BVE",
         "SAT_FULL_BSR",
@@ -2951,6 +2985,28 @@ mod tests {
     }
 
     #[test]
+    fn test_reorder_is_runtime_supported_and_replayable() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_REORDER", "on"),
+            ("SAT_REORDER_INTERVAL_CONFLICTS", "37"),
+        ]));
+
+        assert!(config.reorder);
+        assert_eq!(config.reorder_interval_conflicts, 37);
+        let replay = config.config_replay_text();
+        assert!(replay.contains("reorder=true"));
+        assert!(replay.contains("reorder_interval_conflicts=37"));
+
+        let replayed = SolverConfig::from_replay_text(&replay, Path::new("<reorder-test>"));
+        assert!(replayed.reorder);
+        assert_eq!(
+            replayed.reorder_interval_conflicts,
+            config.reorder_interval_conflicts
+        );
+        assert_eq!(replayed.config_hash(), config.config_hash());
+    }
+
+    #[test]
     fn test_chrono_backtrack_is_runtime_supported() {
         let config = SolverConfig::from_env_map(&env_map(&[
             ("SAT_CHRONO", "on"),
@@ -3004,8 +3060,7 @@ mod tests {
 
     #[test]
     fn test_minimize_depth_limit_can_be_overridden_and_replayed() {
-        let config =
-            SolverConfig::from_env_map(&env_map(&[("SAT_MINIMIZE_DEPTH_LIMIT", "4096")]));
+        let config = SolverConfig::from_env_map(&env_map(&[("SAT_MINIMIZE_DEPTH_LIMIT", "4096")]));
         assert_eq!(config.minimize_depth_limit, 4096);
 
         let replay = config.config_replay_text();

@@ -1223,6 +1223,12 @@ struct Solver {
     vmtf_mode: VmtfMode,
     /// whether SAT_VMTF=single may use best/target/saved phase while its VMTF trial is active
     vmtf_single_best_phase: bool,
+    /// opt-in periodic decision-order rebuild using current VSIDS activity scores
+    reorder_enabled: bool,
+    /// conflict interval between opt-in decision-order rebuilds
+    reorder_interval_conflicts: u64,
+    /// global conflict count at which the next decision-order rebuild runs
+    next_reorder_conflict: u64,
     /// deterministic generator state for Kissat-style focused random decisions
     random_state: u64,
     /// active focused random-decision sequence length measured in conflicts
@@ -1790,6 +1796,12 @@ impl Solver {
         } else {
             u64::MAX
         };
+        let reorder_interval_conflicts = config.reorder_interval_conflicts.max(1);
+        let next_reorder_conflict = if config.reorder {
+            reorder_interval_conflicts
+        } else {
+            u64::MAX
+        };
 
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
         let arena = Vec::with_capacity(total_words);
@@ -1882,6 +1894,9 @@ impl Solver {
             search_mode_policy,
             vmtf_mode,
             vmtf_single_best_phase,
+            reorder_enabled: config.reorder,
+            reorder_interval_conflicts,
+            next_reorder_conflict,
             random_state: config.deterministic_seed ^ RANDOM_DECISION_SEED,
             random_decision_remaining_conflicts: 0,
             random_decision_next_conflict: if focused_stable_mode {
@@ -3041,6 +3056,38 @@ impl Solver {
 
     fn refresh_stable_branch_heap_scores(&mut self) {
         self.rebuild_branch_queue();
+    }
+
+    fn activity_reorder_vars(&self) -> Vec<usize> {
+        let mut vars: Vec<usize> = (1..self.assignment.len()).collect();
+        vars.sort_unstable_by(|&lhs, &rhs| {
+            self.activity[lhs]
+                .total_cmp(&self.activity[rhs])
+                .then_with(|| self.branch_rank[rhs].cmp(&self.branch_rank[lhs]))
+        });
+        vars
+    }
+
+    fn reorder_branching_by_activity(&mut self) {
+        self.refresh_stable_branch_heap_scores();
+        if self.vmtf_queue.is_some() {
+            let vars = self.activity_reorder_vars();
+            if let Some(queue) = self.vmtf_queue.as_mut() {
+                queue.rebuild_from_order(&vars);
+            }
+        }
+        self.stats.branch_reorders = self.stats.branch_reorders.saturating_add(1);
+    }
+
+    fn maybe_reorder_branching(&mut self) {
+        if !self.reorder_enabled || self.stats.conflicts < self.next_reorder_conflict {
+            return;
+        }
+        self.reorder_branching_by_activity();
+        self.next_reorder_conflict = self
+            .stats
+            .conflicts
+            .saturating_add(self.reorder_interval_conflicts);
     }
 
     fn branch_var_better(&self, lhs: usize, rhs: usize) -> bool {
@@ -6840,6 +6887,9 @@ impl Solver {
                     let bumped_variable_scores = self.bump_analyzed_variable_activity();
                     if bumped_variable_scores {
                         self.decay_variable_activity();
+                    }
+                    if self.reorder_enabled {
+                        self.maybe_reorder_branching();
                     }
                     if self.reduce_db_enabled() {
                         self.decay_clause_activity();
@@ -11618,6 +11668,68 @@ mod tests {
         s.rebuild_branch_queue();
 
         assert_eq!(s.pick_branch_lit(), Some(-1));
+    }
+
+    #[test]
+    fn test_reorder_branching_rebuilds_vsids_heap_by_activity() {
+        let config = SolverConfig {
+            reorder: true,
+            reorder_interval_conflicts: 2,
+            ..single_mode_config()
+        };
+        let mut s = make_solver_with_config(4, vec![], &config);
+        s.activity[1] = 1.0;
+        s.activity[2] = 10.0;
+        s.activity[3] = 3.0;
+        s.activity[4] = 2.0;
+
+        s.reorder_branching_by_activity();
+
+        assert_eq!(s.stats.branch_reorders, 1);
+        assert_eq!(s.branch_heap[0] as usize, 2);
+    }
+
+    #[test]
+    fn test_reorder_branching_rebuilds_vmtf_queue_by_activity() {
+        let config = SolverConfig {
+            reorder: true,
+            reorder_interval_conflicts: 2,
+            ..focused_stable_vmtf_config()
+        };
+        let mut s = make_solver_with_config(4, vec![], &config);
+        s.activity[1] = 1.0;
+        s.activity[2] = 10.0;
+        s.activity[3] = 3.0;
+        s.activity[4] = 2.0;
+
+        s.reorder_branching_by_activity();
+
+        let queue = s.vmtf_queue.as_ref().expect("VMTF queue");
+        assert_eq!(queue.peek_from_head(|_| true), Some(2));
+        assert!(queue.stamp_for_test(2) > queue.stamp_for_test(3));
+        assert_eq!(s.pick_branch_lit(), Some(-2));
+    }
+
+    #[test]
+    fn test_maybe_reorder_branching_uses_conflict_interval() {
+        let config = SolverConfig {
+            reorder: true,
+            reorder_interval_conflicts: 2,
+            ..single_mode_config()
+        };
+        let mut s = make_solver_with_config(3, vec![], &config);
+        s.activity[1] = 1.0;
+        s.activity[2] = 2.0;
+        s.stats.conflicts = 1;
+
+        s.maybe_reorder_branching();
+        assert_eq!(s.stats.branch_reorders, 0);
+
+        s.stats.conflicts = 2;
+        s.maybe_reorder_branching();
+        assert_eq!(s.stats.branch_reorders, 1);
+        assert_eq!(s.next_reorder_conflict, 4);
+        assert_eq!(s.branch_heap[0] as usize, 2);
     }
 
     #[test]

@@ -69,6 +69,22 @@ impl VmtfQueue {
         self.search = self.head;
     }
 
+    pub(crate) fn rebuild_from_order(&mut self, order: &[usize]) {
+        self.next.fill(0);
+        self.prev.fill(0);
+        self.stamp.fill(0);
+        self.head = 0;
+        self.search = 0;
+        self.stamp_counter = 0;
+
+        for &var in order {
+            if self.valid_var(var) {
+                self.insert_new_head(var);
+            }
+        }
+        self.search = self.head;
+    }
+
     pub(crate) fn pick<F>(&mut self, mut eligible: F) -> Option<usize>
     where
         F: FnMut(usize) -> bool,
@@ -198,5 +214,18 @@ mod tests {
         queue.stamp_and_move_to_front(2, true);
 
         assert_eq!(queue.search_for_test(), 1);
+    }
+
+    #[test]
+    fn rebuild_from_order_makes_last_ordered_var_first() {
+        let mut queue = VmtfQueue::new(4, &[1, 2, 3, 4]);
+
+        queue.rebuild_from_order(&[4, 2, 1, 3]);
+
+        assert_eq!(queue.peek_from_head(|_| true), Some(3));
+        assert_eq!(queue.search_for_test(), 3);
+        assert!(queue.stamp_for_test(3) > queue.stamp_for_test(1));
+        assert!(queue.stamp_for_test(1) > queue.stamp_for_test(2));
+        assert!(queue.stamp_for_test(2) > queue.stamp_for_test(4));
     }
 }

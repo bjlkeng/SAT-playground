@@ -49,11 +49,13 @@ SAT_CLAUSE_MIN,clause_min_mode,enum,off|basic|recursive-limited|inblock,recursiv
 SAT_OTFS,otfs,bool,on|off,false,false,false,true,false,false,,SAT_CLAUSE_MIN!=off,1.14g,yes
 SAT_VMTF,vmtf,enum,off|focused-only|single,off,off,off,true,false,false,,focused-only_requires_SAT_SEARCH_MODE=focused-stable;single_requires_SAT_SEARCH_MODE=single,SAT-playground-egy,yes
 SAT_REPHASE,rephase,bool,on|off,false,false,false,true,false,false,,SAT_SEARCH_MODE=focused-stable,1.12,yes
+SAT_REORDER,reorder,bool,on|off,false,false,false,true,false,false,,,SAT-playground-7oy,yes
 SAT_MINIMIZE_DEPTH_LIMIT,minimize_depth_limit,u32,nonnegative,1000,1000,1000,false,false,false,,,0.3,internal
 SAT_CHRONO_MAX_DELTA,chrono_max_delta,usize,nonnegative,100,100,100,false,false,false,,,1.13,internal
 SAT_MODE_INIT_CONFLICTS,mode_init_conflicts,u64,nonnegative,2000,2000,2000,false,false,false,,,0.3,internal
 SAT_MODE_INTERVAL_SCALE,mode_interval_scale,f64,finite_nonnegative,1.5,1.5,1.5,false,false,false,,,0.3,internal
 SAT_REPHASE_INIT_CONFLICTS,rephase_init_conflicts,u64,nonnegative,1000,1000,1000,false,false,false,,,0.3,internal
+SAT_REORDER_INTERVAL_CONFLICTS,reorder_interval_conflicts,u64,positive,10000,10000,10000,false,false,false,,SAT_REORDER,SAT-playground-7oy,internal
 SAT_SIMPLIFICATION,simplification,bool,on|off,false,true,true,true,false,true,SAT_INPROCESS|SAT_VIVIFY|SAT_PROBE|SAT_HBR|SAT_TRANSITIVE|SAT_FORWARD_SUBSUME|SAT_GATE_EXTRACT|SAT_GATE_BVE|SAT_RCHECK,,0.3,yes
 SAT_BVE,bve,bool,on|off,false,true,true,true,false,true,SAT_GATE_BVE,,0.3,yes
 SAT_FULL_BSR,full_bsr,bool,on|off,false,true,true,true,false,true,,,0.3,yes
