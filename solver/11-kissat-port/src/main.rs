@@ -3455,14 +3455,54 @@ impl Solver {
         vars
     }
 
+    fn lucky_root_conflict_unit(&mut self, conflict: Conflict) -> Option<i32> {
+        if self.current_level() == 0 || self.conflict_max_decision_level(conflict) == 0 {
+            return None;
+        }
+
+        let saved_iterating = self.iterating;
+        let saved_last_conflict_lbd = self.last_conflict_lbd;
+        let backtrack_level = self.analyze_conflict_to_scratch_impl::<false>(conflict);
+        let unit = if backtrack_level == 0 && self.scratch_conflict_clause.len() == 1 {
+            Some(self.scratch_conflict_clause[0])
+        } else {
+            None
+        };
+        self.iterating = saved_iterating;
+        self.last_conflict_lbd = saved_last_conflict_lbd;
+        unit
+    }
+
+    fn root_propagation_assignment_snapshot(&mut self) -> Option<Vec<u8>> {
+        if self.propagate_head >= self.trail.len() {
+            return Some(self.assignment.clone());
+        }
+
+        self.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
+            let mut budget = Budget::default();
+            if ctx.propagate_budgeted(&mut budget).is_some() {
+                None
+            } else {
+                Some(ctx.solver.assignment.clone())
+            }
+        })
+    }
+
     fn learn_lucky_failed_literal_units(
         &mut self,
         units: &[i32],
         proof_log: &mut ProofLog,
     ) -> bool {
+        let root_propagation_assignment = self.root_propagation_assignment_snapshot();
         for &lit in units {
             let var = lit.unsigned_abs() as usize;
             let target_value = if lit > 0 { TRUE } else { FALSE };
+            if root_propagation_assignment
+                .as_ref()
+                .is_some_and(|assignment| assignment[var] == target_value)
+            {
+                continue;
+            }
             match self.assignment[var] {
                 current if current == target_value => continue,
                 UNASSIGNED => {
@@ -3524,13 +3564,20 @@ impl Solver {
                         }
                         EnqueueResult::Enqueued => {}
                     }
-                    if ctx.propagate_budgeted(&mut budget).is_some() {
+                    if let Some(conflict) = ctx.propagate_budgeted(&mut budget) {
+                        let failed_unit = if base_level == 0 {
+                            ctx.solver
+                                .lucky_root_conflict_unit(conflict)
+                                .unwrap_or(-lit)
+                        } else {
+                            -lit
+                        };
                         ctx.solver.backtrack(base_level);
                         if base_level == 0 {
-                            failed_root_units.push(-lit);
+                            failed_root_units.push(failed_unit);
                         }
                         let opposite_result = if base_level == 0 {
-                            ctx.enqueue_root(-lit)
+                            ctx.enqueue_root(failed_unit)
                         } else {
                             ctx.assume(-lit)
                         };
@@ -8620,6 +8667,56 @@ mod tests {
         assert_eq!(model[1], FALSE);
         assert_eq!(model[2], TRUE);
         assert_eq!(s.assignment, *model);
+    }
+
+    #[test]
+    fn test_lucky_failed_literal_uses_uip_unit() {
+        let clauses = vec![
+            vec![-1, 5],
+            vec![-5, 4],
+            vec![-5, 6],
+            vec![-4, 2],
+            vec![-6, 3],
+            vec![-2, -3],
+        ];
+        let mut s = make_solver(6, clauses);
+
+        s.decide(1);
+        let conflict = s.propagate().expect("expected lucky probe conflict");
+
+        assert_eq!(s.lucky_root_conflict_unit(conflict), Some(-5));
+        assert!(
+            !s.iterating,
+            "temporary lucky analysis must not leak iterating"
+        );
+    }
+
+    #[test]
+    fn test_lucky_failed_literal_skips_implied_unit() {
+        let mut s = make_solver(2, vec![vec![-1, 2]]);
+        assert!(s.enqueue(1, ReasonRef::None));
+        let start_learned = s.learned_clause_ids.len();
+        let mut proof_log = ProofLog::disabled();
+
+        assert!(s.learn_lucky_failed_literal_units(&[2], &mut proof_log));
+
+        assert_eq!(s.assignment[2], UNASSIGNED);
+        assert_eq!(s.learned_clause_ids.len(), start_learned);
+    }
+
+    #[test]
+    fn test_lucky_failed_literal_adds_new_unit_only() {
+        let mut s = make_solver(3, vec![vec![-1, 2]]);
+        assert!(s.enqueue(1, ReasonRef::None));
+        let start_learned = s.learned_clause_ids.len();
+        let mut proof_log = ProofLog::disabled();
+
+        assert!(s.learn_lucky_failed_literal_units(&[3], &mut proof_log));
+
+        assert_eq!(s.assignment[3], TRUE);
+        assert_eq!(s.learned_clause_ids.len(), start_learned + 1);
+        let learned = *s.learned_clause_ids.last().expect("learned lucky unit");
+        assert_eq!(s.clause_slice(learned), &[3]);
     }
 
     #[test]
