@@ -50,6 +50,7 @@ pub(crate) const FEATURES_CSV: &str = include_str!("../FEATURES.csv");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InitialClauseMode {
+    Auto,
     CanonicalSorted,
     CanonicalInputOrder,
     Raw,
@@ -58,6 +59,7 @@ pub(crate) enum InitialClauseMode {
 impl InitialClauseMode {
     fn as_str(self) -> &'static str {
         match self {
+            Self::Auto => "auto",
             Self::CanonicalSorted => "canonical-sorted",
             Self::CanonicalInputOrder => "input-order",
             Self::Raw => "raw",
@@ -66,6 +68,7 @@ impl InitialClauseMode {
 
     fn parse(value: &str, env_name: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
+            "auto" | "guarded" | "formula-gated" | "formula_gated" => Self::Auto,
             "canonical" | "canonical-sorted" | "canonical_sorted" | "sorted" | "1" | "true"
             | "on" => Self::CanonicalSorted,
             "input-order"
@@ -76,7 +79,7 @@ impl InitialClauseMode {
             | "preserve-order" => Self::CanonicalInputOrder,
             "raw" | "solver10" | "legacy" | "off" | "0" | "false" => Self::Raw,
             other => fail_config(&format!(
-                "Invalid {env_name}={other}; expected canonical-sorted/input-order/raw"
+                "Invalid {env_name}={other}; expected auto/canonical-sorted/input-order/raw"
             )),
         }
     }
@@ -742,12 +745,14 @@ impl SolverConfig {
                 self.search_mode_policy = SearchModePolicy::Single;
                 self.mode_use_ticks = false;
                 self.lucky = false;
+                self.initial_clause_mode = InitialClauseMode::CanonicalSorted;
             }
             SolverProfile::Default | SolverProfile::Fast => {
                 self.use_lbd = false;
                 self.search_mode_policy = SearchModePolicy::Single;
                 self.mode_use_ticks = false;
                 self.lucky = false;
+                self.initial_clause_mode = InitialClauseMode::Auto;
             }
             SolverProfile::Experimental => {
                 self.use_lbd = true;
@@ -2760,6 +2765,7 @@ mod tests {
         assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
         assert!(!config.mode_use_ticks);
         assert_eq!(config.proof_policy, ProofPolicy::Drat);
+        assert_eq!(config.initial_clause_mode, InitialClauseMode::Auto);
     }
 
     #[test]
@@ -2774,6 +2780,25 @@ mod tests {
         assert!(!config.use_lbd);
         assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
         assert!(!config.mode_use_ticks);
+        assert_eq!(
+            config.initial_clause_mode,
+            InitialClauseMode::CanonicalSorted
+        );
+    }
+
+    #[test]
+    fn test_initial_clause_mode_profiles_and_overrides() {
+        let default_config = SolverConfig::from_env_map(&env_map(&[]));
+        let fast = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "fast")]));
+        let explicit_raw =
+            SolverConfig::from_env_map(&env_map(&[("SAT_INITIAL_CLAUSE_MODE", "raw")]));
+
+        assert_eq!(default_config.initial_clause_mode, InitialClauseMode::Auto);
+        assert_eq!(fast.initial_clause_mode, InitialClauseMode::Auto);
+        assert_eq!(explicit_raw.initial_clause_mode, InitialClauseMode::Raw);
+        assert!(default_config
+            .config_replay_text()
+            .contains("initial_clause_mode=auto"));
     }
 
     #[test]

@@ -33,8 +33,8 @@ What is present:
 - parse-time canonical original-clause insertion for input clauses: duplicate literals are removed,
   tautologies / already-satisfied clauses are skipped, root units are enqueued immediately, and
   surviving clauses use the same normalized representation as preprocessing-generated clauses
-- diagnostic `SAT_INITIAL_CLAUSE_MODE` switch for initial clause loading experiments:
-  `canonical-sorted` (default), `input-order`, or `raw`
+- guarded `SAT_INITIAL_CLAUSE_MODE` switch for initial clause loading experiments:
+  `auto` (default/fast), `canonical-sorted` (baseline), `input-order`, or `raw`
 - DRAT logging for preprocessing-generated resolvents/units
 - MiniSat-style elimination stack entries and SAT model extension
 - SAT output from a complete model snapshot instead of the mutable live assignment vector
@@ -724,6 +724,45 @@ regression is a compound search-path sensitivity: full BSR/work-loop policy is t
 and sorted canonical literal order adds another large slowdown. Canonical semantics that preserve
 input literal order recover the old fast behavior when full BSR is disabled, so duplicate removal,
 tautology skipping, and immediate root units are not the observed Kakuro problem by themselves.
+
+### Guarded initial clause order auto mode (2026-05-26)
+
+`SAT_INITIAL_CLAUSE_MODE=auto` is now the default for the default and fast profiles. Baseline keeps
+`canonical-sorted`. The auto policy uses only input-shape data available before initial clause
+insertion and selects `input-order` for Kakuro-like formulas:
+
+- at least `10,000,000` input clauses
+- input binary-clause fraction at most `0.05`
+- input average clause length between `3.0` and `4.0`
+- input literal/variable density at least `300`
+
+All other formulas use `canonical-sorted`, including the known Velev regressor family. The selected
+policy deliberately uses `input-order` instead of `raw` so duplicate literals, tautologies, and root
+units still go through the canonical original-clause insertion path.
+
+Rejected alternatives:
+
+- Blindly defaulting to `raw` or `input-order`: AnalyzeSAT evidence showed those modes were
+  status-safe on the profiling suite, but they regressed Velev (`canonical-sorted 77.545s`,
+  `input-order 109.516s`, `raw 122.182s`), so the change must be formula-gated.
+- A broader low-binary or high-density rule: Brocard and REGRandom share some individual features
+  with Kakuro, but not the full high-clause/high-density shape. They stay canonical until a broader
+  family has direct evidence.
+- Promoting a Sudoku-shaped rule: the referenced evidence directory for a Sudoku-specific win was
+  absent from this checkout, and the 2026-05-26 guard validation kept Sudoku canonical.
+
+Validation:
+
+| Run | Results | PAR-2 | Solved | Notes |
+|---|---:|---:|---:|---|
+| Prior solver 11 default | `log/bench-11-kissat-port-2026-05-26-14-31-59/results.csv` | `865.611` | `10/10` | fresh `/nextbeads` baseline |
+| Guarded auto candidate | `log/bench-11-kissat-port-2026-05-26-14-59-03/results.csv` | `666.213` | `10/10` | no UNKNOWN/error/status regressions |
+| Solver 10 comparison | `log/phase1/solver10-default-300-vs-solver11-clean/results.csv` | `699.671` | `10/10` | same 300s profiling set |
+
+Dominant per-instance delta was Kakuro `255.845s -> 51.891s` (`-203.954s`). Velev stayed
+status-safe and canonical-shaped (`81.823s -> 85.904s` in this noisy paired run). The required
+solver 11 promotion gate passed with candidate PAR-2 `33.458s` better than solver 10 and `199.398s`
+better than the prior solver 11 baseline.
 
 ## MiniSat CDCL Compatibility Follow-up
 

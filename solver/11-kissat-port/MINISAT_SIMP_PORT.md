@@ -392,8 +392,8 @@ original-clause insertion semantics used for preprocessing resolvents:
 - tautological or already-satisfied clauses are skipped instead of allocated
 - root units are enqueued immediately instead of stored as persistent original unit clauses
 - contradictory root units poison the persistent solver status during construction
-- diagnostic `SAT_INITIAL_CLAUSE_MODE` is available for sensitivity checks:
-  `canonical-sorted` (default), `input-order`, or `raw`
+- guarded `SAT_INITIAL_CLAUSE_MODE` is available for sensitivity checks:
+  `auto` (default/fast), `canonical-sorted` (baseline/manual), `input-order`, or `raw`
 
 Validation:
 
