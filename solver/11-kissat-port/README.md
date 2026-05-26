@@ -82,11 +82,13 @@ What is present:
   explicit opt-in when EMA restarts are active because HWMCC-style instances have regressed under
   that combination.
 - opt-in saved/target/best phase selection policies via `SAT_PHASE`, with legacy saved-phase
-  branching kept as the default for solver-10 parity. In focused/stable search, target/best phase
+  branching kept as the default for solver-10 parity. Target/best phase policies require
+  `SAT_SEARCH_MODE=focused-stable`; single-mode search accepts only `legacy` and `saved`.
+  In focused/stable search, target/best phase
   snapshots are captured only while stable mode is active, matching Kissat's update boundary; target
   phases persist across mode switches and restart cycles, then reset when a rephase event starts a
-  new phase block. Single-mode target policies retain restart-time target reset behavior after the
-  all-mode persistence experiment regressed the profiling suite.
+  new phase block. Single-mode target policies are rejected after a current Sudoku repro produced
+  `UNKNOWN` where the default profile solves.
 - focused/stable search-mode scaffolding with focused EMA restarts and stable reluctant restarts.
   Env-facing `SAT_SEARCH_MODE=focused-stable` now enters the actual focused/stable path and defaults
   to focused-only VMTF unless `SAT_VMTF=off` is explicitly requested for an ablation. This matches
@@ -194,7 +196,7 @@ SAT_REDUCE_MIN_INTERVAL=<usize>  # lbd-tiered default is 100, values must be >= 
 SAT_CLAUSE_MIN=off|basic|recursive-limited|inblock
 SAT_OTFS=on|off
 SAT_MINIMIZE_DEPTH_LIMIT=<u32>  # default 1000
-SAT_PHASE=legacy|saved|target-then-saved|best-then-target-then-saved
+SAT_PHASE=legacy|saved|target-then-saved|best-then-target-then-saved  # target/best require focused-stable
 SAT_FOCUSED_PHASE=auto|legacy|saved|target-then-saved|best-then-target-then-saved
 SAT_STABLE_PHASE=auto|legacy|saved|target-then-saved|best-then-target-then-saved
 SAT_SEARCH_MODE=single|focused-stable
@@ -222,7 +224,9 @@ and maps `target-then-saved` and `best-then-target-then-saved` to `target-then-s
 always uses `best-then-target-then-saved`. Target/best phase snapshots are updated only in stable
 mode. `SAT_FOCUSED_PHASE` and `SAT_STABLE_PHASE` override those per-mode effective policies for
 focused/stable matrix tests; `auto` or an empty value keeps the default mapping. In single-mode
-search, `SAT_PHASE` is used directly and the per-mode overrides are inert.
+search, `SAT_PHASE=legacy|saved` is used directly and target/best policies are rejected at config
+parse time so invalid benchmark settings fail fast instead of running to `UNKNOWN`; the per-mode
+overrides are inert.
 
 `SAT_CONFIG_OUT` writes a deterministic replay file with `schema_version`,
 effective profile/axes, proof policy, every config field, feature maturity

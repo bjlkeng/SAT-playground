@@ -68,3 +68,34 @@ fn zero_ema_slow_window_is_rejected() {
         "unexpected stderr: {stderr}"
     );
 }
+
+#[test]
+fn single_mode_target_phase_policies_are_rejected() {
+    let cnf = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata")
+        .join("golden")
+        .join("sat_tiny.cnf");
+
+    for phase in ["target-then-saved", "best-then-target-then-saved"] {
+        let out_dir = temp_output_dir("single-mode-target-phase");
+
+        let output = Command::new(env!("CARGO_BIN_EXE_sat-solver"))
+            .env_clear()
+            .env("SAT_PHASE", phase)
+            .arg(&cnf)
+            .arg(&out_dir)
+            .output()
+            .expect("run sat-solver");
+
+        let _ = fs::remove_dir_all(&out_dir);
+
+        assert_eq!(output.status.code(), Some(2), "phase={phase}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!(
+                "SAT_PHASE={phase} requires SAT_SEARCH_MODE=focused-stable"
+            )),
+            "phase={phase}, unexpected stderr: {stderr}"
+        );
+    }
+}

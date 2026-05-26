@@ -1238,6 +1238,17 @@ impl SolverConfig {
         if self.restart_slow_window == 0 {
             fail_config("Invalid config: SAT_EMA_SLOW_WINDOW must be at least 1");
         }
+        if self.search_mode_policy == SearchModePolicy::Single
+            && matches!(
+                self.phase_policy,
+                PhasePolicy::TargetThenSaved | PhasePolicy::BestThenTargetThenSaved
+            )
+        {
+            fail_config(&format!(
+                "Invalid config: SAT_PHASE={} requires SAT_SEARCH_MODE=focused-stable",
+                self.phase_policy.as_str()
+            ));
+        }
         if self.vmtf == VmtfMode::FocusedOnly && self.search_mode_policy == SearchModePolicy::Single
         {
             fail_config(
@@ -3148,9 +3159,16 @@ mod tests {
     #[test]
     fn test_phase_policies_are_runtime_supported() {
         let saved = SolverConfig::from_env_map(&env_map(&[("SAT_PHASE", "saved")]));
-        let target = SolverConfig::from_env_map(&env_map(&[("SAT_PHASE", "target-then-saved")]));
-        let best =
-            SolverConfig::from_env_map(&env_map(&[("SAT_PHASE", "best-then-target-then-saved")]));
+        let target = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_USE_LBD", "on"),
+            ("SAT_SEARCH_MODE", "focused-stable"),
+            ("SAT_PHASE", "target-then-saved"),
+        ]));
+        let best = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_USE_LBD", "on"),
+            ("SAT_SEARCH_MODE", "focused-stable"),
+            ("SAT_PHASE", "best-then-target-then-saved"),
+        ]));
 
         assert_eq!(saved.phase_policy, PhasePolicy::Saved);
         assert_eq!(target.phase_policy, PhasePolicy::TargetThenSaved);

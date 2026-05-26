@@ -37,7 +37,7 @@ SAT_RESTART_REUSE_TRAIL,restart_reuse_trail,bool,on|off,false,false,false,true,f
 SAT_RESTART_REUSE_TRAIL_FOCUSED,restart_reuse_trail_focused,bool,on|off,false,false,false,true,false,false,,effective_with_SAT_SEARCH_MODE=focused-stable,SAT-playground-5b2.2.55,yes
 SAT_RESTART_REUSE_TRAIL_STABLE,restart_reuse_trail_stable,bool,on|off,false,false,false,true,false,false,,effective_with_SAT_SEARCH_MODE=focused-stable,SAT-playground-5b2.2.55,yes
 SAT_REDUCE,reduce_policy,enum,legacy|activity|lbd-tiered,legacy,legacy,legacy,false,false,false,,SAT_USE_LBD_for_lbd-tiered,1.3,yes
-SAT_PHASE,phase_policy,enum,legacy|saved|target-then-saved|best-then-target-then-saved,legacy,legacy,legacy,false,false,false,target_phase_not_default_with_SAT_RESTART=kissat-ema,,0.3,yes
+SAT_PHASE,phase_policy,enum,legacy|saved|target-then-saved|best-then-target-then-saved,legacy,legacy,legacy,false,false,false,target_phase_not_default_with_SAT_RESTART=kissat-ema,target/best_require_SAT_SEARCH_MODE=focused-stable,0.3,yes
 SAT_FOCUSED_PHASE,focused_phase_policy,enum,auto|legacy|saved|target-then-saved|best-then-target-then-saved,auto,auto,auto,false,false,false,,SAT_SEARCH_MODE=focused-stable,SAT-playground-5b2.2.54,yes
 SAT_STABLE_PHASE,stable_phase_policy,enum,auto|legacy|saved|target-then-saved|best-then-target-then-saved,auto,auto,auto,false,false,false,,SAT_SEARCH_MODE=focused-stable,SAT-playground-5b2.2.54,yes
 SAT_SEARCH_MODE,search_mode_policy,enum,single|focused-stable,single,single,single,false,false,false,,SAT_USE_LBD_for_focused-stable,0.3,yes
