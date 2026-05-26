@@ -3408,63 +3408,116 @@ impl Solver {
         vars
     }
 
-    fn lucky_pattern_succeeds(&mut self, pattern: LuckyPattern) -> bool {
-        let vars = self.lucky_var_order(pattern);
-        self.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
-            let mut budget = Budget::default();
-            for var in vars {
-                if !ctx.solver.unassigned_decision_candidate(var) {
-                    continue;
-                }
-
-                if let Some(lit) = pattern.simple_lit(var) {
-                    match ctx.enqueue(lit) {
-                        EnqueueResult::Conflict => return false,
-                        EnqueueResult::Enqueued | EnqueueResult::AlreadyAssigned => {}
-                    }
-                    if ctx.propagate_budgeted(&mut budget).is_some() {
+    fn learn_lucky_failed_literal_units(
+        &mut self,
+        units: &[i32],
+        proof_log: &mut ProofLog,
+    ) -> bool {
+        for &lit in units {
+            let var = lit.unsigned_abs() as usize;
+            let target_value = if lit > 0 { TRUE } else { FALSE };
+            match self.assignment[var] {
+                current if current == target_value => continue,
+                UNASSIGNED => {
+                    proof_log.record_clause(&[lit]);
+                    let clause_idx = self.add_clause_from_slice(&[lit]);
+                    if !self.enqueue(lit, ReasonRef::Clause(clause_idx)) {
+                        self.has_empty_clause = true;
                         return false;
                     }
-                    continue;
                 }
+                _ => {
+                    proof_log.record_clause(&[lit]);
+                    let _clause_idx = self.add_clause_from_slice(&[lit]);
+                    self.has_empty_clause = true;
+                    return false;
+                }
+            }
+        }
+        true
+    }
 
-                let lit = pattern
-                    .preferred_lit(var)
-                    .expect("greedy lucky pattern must choose a polarity");
-                let base_level = ctx.solver.current_level();
-                match ctx.assume(lit) {
-                    EnqueueResult::AlreadyAssigned => continue,
-                    EnqueueResult::Conflict => return false,
-                    EnqueueResult::Enqueued => {}
-                }
-                if ctx.propagate_budgeted(&mut budget).is_some() {
-                    ctx.solver.backtrack(base_level);
-                    let opposite_result = if base_level == 0 {
-                        ctx.enqueue_root(-lit)
-                    } else {
-                        ctx.assume(-lit)
-                    };
-                    match opposite_result {
-                        EnqueueResult::AlreadyAssigned => {}
-                        EnqueueResult::Conflict => return false,
+    fn lucky_pattern_succeeds_with_proof(
+        &mut self,
+        pattern: LuckyPattern,
+        proof_log: &mut ProofLog,
+    ) -> bool {
+        let vars = self.lucky_var_order(pattern);
+        let (succeeded, failed_root_units) =
+            self.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
+                let mut budget = Budget::default();
+                let mut failed_root_units = Vec::new();
+                for var in vars {
+                    if !ctx.solver.unassigned_decision_candidate(var) {
+                        continue;
+                    }
+
+                    if let Some(lit) = pattern.simple_lit(var) {
+                        match ctx.enqueue(lit) {
+                            EnqueueResult::Conflict => return (false, failed_root_units),
+                            EnqueueResult::Enqueued | EnqueueResult::AlreadyAssigned => {}
+                        }
+                        if ctx.propagate_budgeted(&mut budget).is_some() {
+                            return (false, failed_root_units);
+                        }
+                        continue;
+                    }
+
+                    let lit = pattern
+                        .preferred_lit(var)
+                        .expect("greedy lucky pattern must choose a polarity");
+                    let base_level = ctx.solver.current_level();
+                    match ctx.assume(lit) {
+                        EnqueueResult::AlreadyAssigned => continue,
+                        EnqueueResult::Conflict => {
+                            if base_level == 0 {
+                                failed_root_units.push(-lit);
+                            }
+                            return (false, failed_root_units);
+                        }
                         EnqueueResult::Enqueued => {}
                     }
                     if ctx.propagate_budgeted(&mut budget).is_some() {
-                        return false;
+                        ctx.solver.backtrack(base_level);
+                        if base_level == 0 {
+                            failed_root_units.push(-lit);
+                        }
+                        let opposite_result = if base_level == 0 {
+                            ctx.enqueue_root(-lit)
+                        } else {
+                            ctx.assume(-lit)
+                        };
+                        match opposite_result {
+                            EnqueueResult::AlreadyAssigned => {}
+                            EnqueueResult::Conflict => return (false, failed_root_units),
+                            EnqueueResult::Enqueued => {}
+                        }
+                        if ctx.propagate_budgeted(&mut budget).is_some() {
+                            return (false, failed_root_units);
+                        }
                     }
                 }
-            }
-            if ctx.propagate_budgeted(&mut budget).is_some() {
-                return false;
-            }
-            if !ctx.solver.all_live_decision_vars_assigned()
-                || !ctx.solver.all_live_clauses_satisfied()
-            {
-                return false;
-            }
-            ctx.solver.capture_sat_model();
-            true
-        })
+                if ctx.propagate_budgeted(&mut budget).is_some() {
+                    return (false, failed_root_units);
+                }
+                if !ctx.solver.all_live_decision_vars_assigned()
+                    || !ctx.solver.all_live_clauses_satisfied()
+                {
+                    return (false, failed_root_units);
+                }
+                ctx.solver.capture_sat_model();
+                (true, failed_root_units)
+            });
+        if !succeeded && !failed_root_units.is_empty() {
+            self.learn_lucky_failed_literal_units(&failed_root_units, proof_log);
+        }
+        succeeded
+    }
+
+    #[cfg(test)]
+    fn lucky_pattern_succeeds(&mut self, pattern: LuckyPattern) -> bool {
+        let mut proof_log = ProofLog::disabled();
+        self.lucky_pattern_succeeds_with_proof(pattern, &mut proof_log)
     }
 
     fn clause_satisfied_by_trial(&self, clause_idx: ClauseRef, trial: &[u8]) -> bool {
@@ -3583,7 +3636,7 @@ impl Solver {
         false
     }
 
-    fn try_lucky_assignment(&mut self) -> bool {
+    fn try_lucky_assignment_with_proof(&mut self, proof_log: &mut ProofLog) -> bool {
         for pattern in [
             LuckyPattern::AllTrue,
             LuckyPattern::AllFalse,
@@ -3593,12 +3646,15 @@ impl Solver {
             LuckyPattern::BackwardTrue,
         ] {
             self.stats.lucky_attempts += 1;
-            if self.lucky_pattern_succeeds(pattern) {
+            if self.lucky_pattern_succeeds_with_proof(pattern, proof_log) {
                 self.stats.lucky_solved += 1;
                 if let Some(model) = self.sat_model.as_ref() {
                     self.assignment.clone_from(model);
                 }
                 return true;
+            }
+            if self.has_empty_clause {
+                return false;
             }
         }
         self.stats.lucky_attempts += 1;
@@ -3607,6 +3663,12 @@ impl Solver {
             return true;
         }
         false
+    }
+
+    #[cfg(test)]
+    fn try_lucky_assignment(&mut self) -> bool {
+        let mut proof_log = ProofLog::disabled();
+        self.try_lucky_assignment_with_proof(&mut proof_log)
     }
 
     #[cfg(test)]
@@ -6702,8 +6764,11 @@ impl Solver {
             );
         }
 
-        if config.lucky && self.try_lucky_assignment() {
+        if config.lucky && self.try_lucky_assignment_with_proof(proof_log) {
             return SolveOutcome::sat();
+        }
+        if !self.solver_ok || self.has_empty_clause {
+            return SolveOutcome::unsat();
         }
 
         let trace_search_interval = config.trace_search_interval as u64;
@@ -8508,25 +8573,72 @@ mod tests {
     }
 
     #[test]
-    fn test_lucky_failure_restores_solver_state() {
+    fn test_lucky_failed_pattern_learns_failed_literal_units() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![1, -2], vec![-1, 3], vec![-1, -3]]);
+
+        assert!(!s.try_lucky_assignment());
+        assert_eq!(s.assignment[1], TRUE);
+        assert!(
+            s.learned_clause_ids
+                .iter()
+                .any(|&clause_idx| s.clause_slice(clause_idx) == [1]),
+            "failed greedy lucky pattern should keep the root unit it proved"
+        );
+    }
+
+    #[test]
+    fn test_lucky_root_units_survive_temporary_scope() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![1, -2], vec![-1, 3], vec![-1, -3]]);
+
+        assert!(!s.lucky_pattern_succeeds(LuckyPattern::ForwardFalse));
+        assert_eq!(s.assignment[1], TRUE);
+        assert_eq!(s.assignment[2], UNASSIGNED);
+        assert_eq!(s.assignment[3], UNASSIGNED);
+        assert_eq!(s.root_trail_len, 1);
+        assert_eq!(s.reason_ref(1), ReasonRef::Clause(s.learned_clause_ids[0]));
+    }
+
+    #[test]
+    fn test_lucky_solved_battleship_still_works() {
+        let mut s = make_solver(
+            4,
+            vec![
+                vec![1, 2],
+                vec![3, 4],
+                vec![-1, 3],
+                vec![-2, 4],
+                vec![-3, -4],
+            ],
+        );
+
+        assert!(s.try_lucky_assignment());
+        let model = s.sat_model.as_ref().expect("lucky SAT model");
+        assert!(s
+            .original_clause_ids
+            .iter()
+            .all(|&clause_idx| s.clause_satisfied_by_trial(clause_idx, model)));
+    }
+
+    #[test]
+    fn test_lucky_failure_restores_temporary_state_except_root_units() {
         let mut s = make_solver(2, vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]]);
-        let start_assignment = s.assignment.clone();
-        let start_trail = s.trail.clone();
-        let start_root_trail_len = s.root_trail_len;
         let start_propagate_head = s.propagate_head;
-        let start_arena = s.arena.clone();
-        let start_watchers = s.watchers.clone();
 
         assert!(!s.try_lucky_assignment());
 
-        assert_eq!(s.assignment, start_assignment);
-        assert_eq!(s.trail, start_trail);
-        assert_eq!(s.root_trail_len, start_root_trail_len);
         assert_eq!(s.propagate_head, start_propagate_head);
-        assert_eq!(s.arena, start_arena);
-        assert_eq!(s.watchers, start_watchers);
+        assert_eq!(s.trail.len(), s.root_trail_len);
+        assert!(!s.learned_clause_ids.is_empty());
+        for &lit in &s.trail {
+            let var = lit.unsigned_abs() as usize;
+            let ReasonRef::Clause(clause_idx) = s.reason_ref(var) else {
+                panic!("lucky root unit {lit} should have a learned-clause reason");
+            };
+            assert!(s.learned_clause_ids.contains(&clause_idx));
+            assert_eq!(s.clause_slice(clause_idx), [lit]);
+        }
         assert!(s.sat_model.is_none());
-        assert_eq!(s.stats.lucky_attempts, 7);
+        assert!(s.stats.lucky_attempts <= 7);
         assert_eq!(s.stats.lucky_solved, 0);
     }
 
