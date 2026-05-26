@@ -149,6 +149,7 @@ const RESTART_FAST_ALPHA: f64 = 1.0 / 32.0;
 const RESTART_SLOW_ALPHA: f64 = 1.0 / 4096.0;
 const KISSAT_EMA_RESTART_MIN_CONFLICTS: u64 = 50;
 const KISSAT_EMA_RESTART_MARGIN: f64 = 1.20;
+const RELUCTANT_RESTART_INTERVAL: u64 = 1 << 10;
 const GC_GARBAGE_RATIO_NUMERATOR: usize = 1;
 const GC_GARBAGE_RATIO_DENOMINATOR: usize = 3;
 const GC_WATCHER_STALE_MIN: usize = 1_024;
@@ -160,6 +161,10 @@ const VMTF_SINGLE_PROPAGATION_BUDGET: u64 = 200_000_000;
 const VMTF_SINGLE_BEST_PHASE_MIN_VARS: usize = 10_000;
 const VMTF_SINGLE_BEST_PHASE_MAX_VARS: usize = 100_000;
 const VMTF_SINGLE_BEST_PHASE_MAX_CLAUSES: usize = 1_000_000;
+const RANDOM_DECISION_INIT_CONFLICTS: u64 = 500;
+const RANDOM_DECISION_INTERVAL_CONFLICTS: u64 = 500;
+const RANDOM_DECISION_LENGTH_CONFLICTS: u64 = 10;
+const RANDOM_DECISION_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
 const FORMULA_SMALL_CLAUSES: u64 = 10_000;
 const FORMULA_MEDIUM_CLAUSES: u64 = 1_000_000;
 const KISSAT_SMALL_CLAUSES: u64 = 100_000;
@@ -1157,6 +1162,12 @@ struct Solver {
     vmtf_mode: VmtfMode,
     /// whether SAT_VMTF=single may use best/target/saved phase while its VMTF trial is active
     vmtf_single_best_phase: bool,
+    /// deterministic generator state for Kissat-style focused random decisions
+    random_state: u64,
+    /// active focused random-decision sequence length measured in conflicts
+    random_decision_remaining_conflicts: u64,
+    /// next conflict count at which a focused random-decision sequence may start
+    random_decision_next_conflict: u64,
     /// dynamic focused-mode glue thresholds computed from recent clause-use histograms
     focused_tier_limits: TierLimits,
     /// dynamic stable-mode glue thresholds computed from recent clause-use histograms
@@ -1810,6 +1821,13 @@ impl Solver {
             search_mode_policy,
             vmtf_mode,
             vmtf_single_best_phase,
+            random_state: config.deterministic_seed ^ RANDOM_DECISION_SEED,
+            random_decision_remaining_conflicts: 0,
+            random_decision_next_conflict: if focused_stable_mode {
+                RANDOM_DECISION_INIT_CONFLICTS
+            } else {
+                u64::MAX
+            },
             focused_tier_limits: TierLimits::static_defaults(),
             stable_tier_limits: TierLimits::static_defaults(),
             focused_glue_recent: Vec::new(),
@@ -3685,7 +3703,15 @@ impl Solver {
     }
 
     fn bump_analyzed_variable_activity(&mut self) -> bool {
-        let bumped_vars = std::mem::take(&mut self.scratch_bumped_vars);
+        let mut bumped_vars = std::mem::take(&mut self.scratch_bumped_vars);
+        if !self.accounting_mode.is_temporary()
+            && self.vmtf_branching_active()
+            && bumped_vars.len() > 1
+        {
+            if let Some(queue) = self.vmtf_queue.as_ref() {
+                bumped_vars.sort_unstable_by_key(|&var| queue.stamp(var));
+            }
+        }
         let move_to_front_only =
             !self.accounting_mode.is_temporary() && self.kissat_focused_vmtf_active();
         for &var in &bumped_vars {
@@ -3938,6 +3964,7 @@ impl Solver {
                 }
             }
             SearchMode::Stable => {
+                self.reluctant = Reluctant::new();
                 self.refresh_stable_branch_heap_scores();
             }
         }
@@ -3963,7 +3990,12 @@ impl Solver {
     }
 
     fn reluctant_restart_due(&self) -> bool {
-        self.current_level() > 0 && self.restart_conflicts_since_last >= self.reluctant.current()
+        self.current_level() > 0
+            && self.restart_conflicts_since_last
+                >= self
+                    .reluctant
+                    .current()
+                    .saturating_mul(RELUCTANT_RESTART_INTERVAL)
     }
 
     fn note_reluctant_conflict(&mut self) {
@@ -4043,10 +4075,17 @@ impl Solver {
         }
     }
 
+    fn note_random_decision_conflict(&mut self) {
+        if self.random_decision_remaining_conflicts > 0 {
+            self.random_decision_remaining_conflicts -= 1;
+        }
+    }
+
     fn note_conflict(&mut self) {
         if !self.accounting_mode.update_restart_stats() {
             return;
         }
+        self.note_random_decision_conflict();
         if self.restart_pending {
             return;
         }
@@ -4073,29 +4112,34 @@ impl Solver {
         }
     }
 
+    fn focused_cycle_phase(&self, var: usize) -> Option<u8> {
+        if self.search_mode_policy != SearchModePolicy::FocusedStable
+            || self.search_mode != SearchMode::Focused
+            || self.focused_phase_policy.is_some()
+        {
+            return None;
+        }
+
+        match (self.mode_switches >> 1) & 7 {
+            1 => Some(self.initial_phase(var)),
+            3 => Some(Self::invert_phase(self.initial_phase(var))),
+            _ => None,
+        }
+    }
+
     #[inline]
     fn pick_branch_phase(&mut self, var: usize) -> bool {
-        let phase = match self.effective_phase_policy() {
-            PhasePolicy::Legacy => {
-                self.stats.phase_legacy_used += 1;
-                self.saved_phase[var]
-            }
-            PhasePolicy::Saved => self.saved_or_initial_phase(var),
-            PhasePolicy::TargetThenSaved => {
-                let target = self.target_phase[var];
-                if target != UNASSIGNED {
-                    self.stats.phase_target_used += 1;
-                    target
-                } else {
-                    self.saved_or_initial_phase(var)
+        let phase = if let Some(phase) = self.focused_cycle_phase(var) {
+            self.stats.phase_initial_used += 1;
+            phase
+        } else {
+            match self.effective_phase_policy() {
+                PhasePolicy::Legacy => {
+                    self.stats.phase_legacy_used += 1;
+                    self.saved_phase[var]
                 }
-            }
-            PhasePolicy::BestThenTargetThenSaved => {
-                let best = self.best_phase[var];
-                if best != UNASSIGNED {
-                    self.stats.phase_best_used += 1;
-                    best
-                } else {
+                PhasePolicy::Saved => self.saved_or_initial_phase(var),
+                PhasePolicy::TargetThenSaved => {
                     let target = self.target_phase[var];
                     if target != UNASSIGNED {
                         self.stats.phase_target_used += 1;
@@ -4104,13 +4148,84 @@ impl Solver {
                         self.saved_or_initial_phase(var)
                     }
                 }
+                PhasePolicy::BestThenTargetThenSaved => {
+                    let best = self.best_phase[var];
+                    if best != UNASSIGNED {
+                        self.stats.phase_best_used += 1;
+                        best
+                    } else {
+                        let target = self.target_phase[var];
+                        if target != UNASSIGNED {
+                            self.stats.phase_target_used += 1;
+                            target
+                        } else {
+                            self.saved_or_initial_phase(var)
+                        }
+                    }
+                }
             }
         };
         phase == TRUE
     }
 
+    fn focused_random_decisions_enabled(&self) -> bool {
+        self.search_mode_policy == SearchModePolicy::FocusedStable
+            && self.search_mode == SearchMode::Focused
+    }
+
+    fn next_random_word(&mut self) -> u64 {
+        self.random_state = self
+            .random_state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        self.random_state ^ (self.random_state >> 33)
+    }
+
+    fn start_random_decision_sequence(&mut self) {
+        self.stats.random_decision_sequences =
+            self.stats.random_decision_sequences.saturating_add(1);
+        let count = self.stats.random_decision_sequences.max(1);
+        let scale = Self::kissat_logn(count).max(1);
+        self.random_decision_remaining_conflicts =
+            RANDOM_DECISION_LENGTH_CONFLICTS.saturating_mul(scale);
+        let interval = RANDOM_DECISION_INTERVAL_CONFLICTS.saturating_mul(scale);
+        self.random_decision_next_conflict = self.stats.conflicts.saturating_add(interval);
+    }
+
+    fn pick_random_decision_var(&mut self) -> Option<usize> {
+        if !self.focused_random_decisions_enabled() {
+            return None;
+        }
+
+        if self.random_decision_remaining_conflicts == 0 {
+            if self.current_level() > 1 || self.stats.conflicts < self.random_decision_next_conflict
+            {
+                return None;
+            }
+            self.start_random_decision_sequence();
+        }
+
+        let num_vars = self.assignment.len().saturating_sub(1);
+        if num_vars == 0 {
+            return None;
+        }
+
+        for _ in 0..num_vars {
+            let var = (self.next_random_word() as usize % num_vars) + 1;
+            if self.unassigned_decision_candidate(var) {
+                self.branch_heap_remove(var);
+                self.stats.random_decisions = self.stats.random_decisions.saturating_add(1);
+                return Some(var);
+            }
+        }
+
+        None
+    }
+
     fn pick_branch_lit(&mut self) -> Option<i32> {
-        let var = if self.vmtf_branching_active() {
+        let var = if let Some(var) = self.pick_random_decision_var() {
+            var
+        } else if self.vmtf_branching_active() {
             self.pick_vmtf_branch_var().or_else(|| {
                 self.heap_remove_assigned_top();
                 self.branch_heap_pop_best()
@@ -4448,21 +4563,26 @@ impl Solver {
             return 0;
         }
 
-        if self.search_mode_policy == SearchModePolicy::FocusedStable
-            && self.search_mode == SearchMode::Focused
-        {
-            if !self.restart_reuse_trail_focused {
-                return 0;
+        if self.search_mode_policy != SearchModePolicy::FocusedStable {
+            return 0;
+        }
+
+        match self.search_mode {
+            SearchMode::Focused => {
+                if !self.restart_reuse_trail_focused {
+                    return 0;
+                }
+                if !self.vmtf_branching_active() {
+                    return 0;
+                }
+                self.reuse_focused_trail_level(current_level)
             }
-            if !self.vmtf_branching_active() {
-                return 0;
+            SearchMode::Stable => {
+                if !self.restart_reuse_trail_stable {
+                    return 0;
+                }
+                self.reuse_stable_trail_level(current_level)
             }
-            self.reuse_focused_trail_level(current_level)
-        } else {
-            if !self.restart_reuse_trail_stable {
-                return 0;
-            }
-            self.reuse_stable_trail_level(current_level)
         }
     }
 
@@ -4519,19 +4639,14 @@ impl Solver {
         iterating
     }
 
-    fn maybe_switch_search_mode_after_conflict(&mut self) {
-        if !self.iterating {
-            self.maybe_switch_search_mode();
-        }
-    }
-
     fn run_post_propagation_scheduling(&mut self) -> bool {
         let skip_search_scheduling = self.take_iterating();
-        if !skip_search_scheduling && self.mode_use_ticks {
-            self.maybe_switch_search_mode();
+        if skip_search_scheduling {
+            return false;
         }
 
-        !skip_search_scheduling && self.perform_restart_if_pending()
+        self.maybe_switch_search_mode();
+        self.perform_restart_if_pending()
     }
 
     #[cfg(test)]
@@ -6365,7 +6480,6 @@ impl Solver {
                         self.note_learnt_budget_conflict();
                     }
                     self.note_conflict();
-                    self.maybe_switch_search_mode_after_conflict();
                     let learned_clause = std::mem::take(&mut self.scratch_conflict_clause);
                     let asserting_lit = learned_clause[0];
                     proof_log.record_clause(&learned_clause);
@@ -10744,17 +10858,17 @@ mod tests {
     }
 
     #[test]
-    fn test_iterating_skips_due_conflict_mode_switch() {
+    fn test_iterating_skips_post_propagation_conflict_mode_switch_once() {
         let config = focused_stable_config();
         let mut s = make_solver_with_config(2, vec![], &config);
         s.iterating = true;
         s.stats.conflicts = s.mode_switch_at_conflicts;
 
-        s.maybe_switch_search_mode_after_conflict();
+        assert!(!s.run_post_propagation_scheduling());
 
         assert_eq!(s.search_mode, SearchMode::Focused);
         assert_eq!(s.mode_switches, 0);
-        assert!(s.iterating);
+        assert!(!s.iterating);
     }
 
     #[test]
@@ -10790,6 +10904,37 @@ mod tests {
         assert!(s.run_post_propagation_scheduling());
         assert!(!s.restart_pending);
         assert_eq!(s.current_level(), 0);
+    }
+
+    #[test]
+    fn test_conflict_mode_switch_runs_at_post_propagation_boundary() {
+        let config = focused_stable_config();
+        let mut s = make_solver_with_config(2, vec![], &config);
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+
+        assert!(!s.run_post_propagation_scheduling());
+
+        assert_eq!(s.search_mode, SearchMode::Stable);
+        assert_eq!(s.mode_switches, 1);
+    }
+
+    #[test]
+    fn test_mode_switch_takes_precedence_over_old_mode_restart() {
+        let config = focused_stable_config();
+        let mut s = make_solver_with_config(2, vec![], &config);
+        s.decide(1);
+        s.restart_pending = true;
+        s.restart_conflicts = 7;
+        s.restart_conflicts_since_last = 9;
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+
+        assert!(!s.run_post_propagation_scheduling());
+
+        assert_eq!(s.search_mode, SearchMode::Stable);
+        assert!(!s.restart_pending);
+        assert_eq!(s.restart_conflicts, 0);
+        assert_eq!(s.restart_conflicts_since_last, 0);
+        assert_eq!(s.current_level(), 1);
     }
 
     #[test]
@@ -10863,6 +11008,7 @@ mod tests {
         let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
         s.decide(1);
 
+        s.restart_conflicts_since_last = RELUCTANT_RESTART_INTERVAL - 1;
         s.note_conflict();
 
         assert!(s.restart_pending);
@@ -11003,6 +11149,20 @@ mod tests {
     }
 
     #[test]
+    fn test_focused_vmtf_bumps_analyzed_vars_in_existing_stamp_order() {
+        let config = focused_stable_vmtf_config();
+        let mut s = make_solver_with_config(4, vec![], &config);
+        s.vmtf_stamp_analyzed_var(2);
+        s.vmtf_stamp_analyzed_var(3);
+
+        s.scratch_bumped_vars.extend([3, 2]);
+        let bumped_scores = s.bump_analyzed_variable_activity();
+
+        assert!(!bumped_scores);
+        assert_eq!(s.pick_branch_lit(), Some(-3));
+    }
+
+    #[test]
     fn test_stable_mode_with_vmtf_bumps_vsids_score_not_queue() {
         let config = focused_stable_vmtf_config();
         let mut s = make_solver_with_config(4, vec![], &config);
@@ -11125,6 +11285,96 @@ mod tests {
         };
         let s = make_solver_with_config(2, vec![vec![1, 2]], &single);
         assert_eq!(s.effective_phase_policy(), PhasePolicy::TargetThenSaved);
+    }
+
+    #[test]
+    fn test_focused_phase_cycle_forces_initial_and_inverted_initial() {
+        let config = focused_stable_config();
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        s.original_phase[1] = TRUE;
+        s.saved_phase[1] = FALSE;
+
+        s.mode_switches = 2;
+        assert!(s.pick_branch_phase(1));
+        assert_eq!(s.stats.phase_initial_used, 1);
+        assert_eq!(s.stats.phase_saved_used, 0);
+
+        s.mode_switches = 6;
+        assert!(!s.pick_branch_phase(1));
+        assert_eq!(s.stats.phase_initial_used, 2);
+        assert_eq!(s.stats.phase_saved_used, 0);
+
+        s.mode_switches = 4;
+        assert!(!s.pick_branch_phase(1));
+        assert_eq!(s.stats.phase_initial_used, 2);
+        assert_eq!(s.stats.phase_saved_used, 1);
+    }
+
+    #[test]
+    fn test_explicit_focused_phase_policy_disables_focused_phase_cycle() {
+        let config = SolverConfig {
+            use_lbd: true,
+            search_mode_policy: SearchModePolicy::FocusedStable,
+            focused_phase_policy: Some(PhasePolicy::Saved),
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        s.original_phase[1] = TRUE;
+        s.saved_phase[1] = FALSE;
+        s.mode_switches = 2;
+
+        assert!(!s.pick_branch_phase(1));
+        assert_eq!(s.stats.phase_initial_used, 0);
+        assert_eq!(s.stats.phase_saved_used, 1);
+    }
+
+    #[test]
+    fn test_focused_random_decision_sequence_starts_at_root_after_limit() {
+        let config = focused_stable_vmtf_config();
+        let mut s = make_solver_with_config(8, vec![], &config);
+        s.stats.conflicts = RANDOM_DECISION_INIT_CONFLICTS;
+
+        let lit = s.pick_branch_lit().expect("random decision literal");
+        let var = lit.unsigned_abs() as usize;
+
+        assert!((1..=8).contains(&var));
+        assert_eq!(s.stats.random_decision_sequences, 1);
+        assert_eq!(s.stats.random_decisions, 1);
+        assert_eq!(
+            s.random_decision_remaining_conflicts,
+            RANDOM_DECISION_LENGTH_CONFLICTS
+        );
+        assert_eq!(
+            s.random_decision_next_conflict,
+            RANDOM_DECISION_INIT_CONFLICTS + RANDOM_DECISION_INTERVAL_CONFLICTS
+        );
+        assert!(!s.heap_contains_var(var));
+    }
+
+    #[test]
+    fn test_focused_random_decisions_do_not_start_in_stable_mode() {
+        let config = focused_stable_vmtf_config();
+        let mut s = make_solver_with_config(8, vec![], &config);
+        s.search_mode = SearchMode::Stable;
+        s.stats.conflicts = RANDOM_DECISION_INIT_CONFLICTS;
+
+        let _ = s.pick_branch_lit();
+
+        assert_eq!(s.stats.random_decision_sequences, 0);
+        assert_eq!(s.stats.random_decisions, 0);
+    }
+
+    #[test]
+    fn test_random_decision_sequence_counts_down_on_conflicts() {
+        let config = focused_stable_vmtf_config();
+        let mut s = make_solver_with_config(4, vec![], &config);
+        s.random_decision_remaining_conflicts = 2;
+
+        s.note_conflict();
+        assert_eq!(s.random_decision_remaining_conflicts, 1);
+
+        s.note_conflict();
+        assert_eq!(s.random_decision_remaining_conflicts, 0);
     }
 
     #[test]
@@ -11683,6 +11933,7 @@ mod tests {
         reluctant.decide(1);
         reluctant.restart_fast_level.update(20.0);
         reluctant.restart_slow_level.update(10.0);
+        reluctant.restart_conflicts_since_last = RELUCTANT_RESTART_INTERVAL - 1;
         reluctant.note_conflict();
 
         assert!(reluctant.restart_pending);
@@ -11819,9 +12070,10 @@ mod tests {
         let config = SolverConfig {
             restart_reuse_trail: true,
             restart_reuse_trail_stable: true,
-            ..SolverConfig::default()
+            ..focused_stable_config()
         };
         let mut s = make_solver_with_config(4, vec![], &config);
+        s.search_mode = SearchMode::Stable;
         s.decide(1);
         s.decide(2);
         s.decide(3);
@@ -11914,9 +12166,10 @@ mod tests {
             restart_reuse_trail: true,
             restart_reuse_trail_focused: true,
             restart_reuse_trail_stable: false,
-            ..SolverConfig::default()
+            ..focused_stable_config()
         };
         let mut s = make_solver_with_config(4, vec![], &config);
+        s.search_mode = SearchMode::Stable;
         s.decide(1);
         s.decide(2);
         s.activity[1] = 10.0;
@@ -11932,6 +12185,31 @@ mod tests {
         assert_eq!(s.current_level(), 0);
         assert_eq!(s.stats.restarts_reused_trails, 0);
         assert_eq!(s.stats.restarts_reused_trails_focused, 0);
+        assert_eq!(s.stats.restarts_reused_trails_stable, 0);
+    }
+
+    #[test]
+    fn test_trail_reuse_stable_does_not_apply_to_single_mode_luby_path() {
+        let config = SolverConfig {
+            restart_reuse_trail: true,
+            restart_reuse_trail_stable: true,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(4, vec![], &config);
+        s.decide(1);
+        s.decide(2);
+        s.activity[1] = 10.0;
+        s.activity[2] = 8.0;
+        s.activity[3] = 5.0;
+        s.rebuild_branch_queue();
+
+        assert_eq!(s.restart_reuse_trail_level(), 0);
+
+        s.restart_pending = true;
+        assert!(s.perform_restart_if_pending());
+
+        assert_eq!(s.current_level(), 0);
+        assert_eq!(s.stats.restarts_reused_trails, 0);
         assert_eq!(s.stats.restarts_reused_trails_stable, 0);
     }
 

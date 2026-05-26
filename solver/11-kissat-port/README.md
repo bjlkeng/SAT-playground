@@ -70,9 +70,10 @@ What is present:
   search experiments. An optional Glucose-style decision-level blocker can suppress EMA restarts
   when the recent decision-level EMA is high relative to the slow baseline; set
   `SAT_RESTART_BLOCK_MARGIN` above `0` to enable it. The blocker is default-off after profile
-  testing showed the `1.4` margin regressed the current profiling suite. Restart trail reuse remains
-  compiled for internal tests, but env-facing `SAT_RESTART_REUSE_TRAIL*` requests are quarantined
-  after the stable-only profile turned a baseline SAT row into `UNKNOWN`.
+  testing showed the `1.4` margin regressed the current profiling suite. Restart trail reuse is
+  available for the focused/stable search path; stable-mode reuse is deliberately not applied to
+  the solver-10-compatible single-mode Luby path because that hybrid preserved a harmful SAT prefix
+  on `mp1`.
   Single-mode search still defaults to legacy Luby restarts for solver-10 parity. Built-in profiles intentionally do not bundle
   `SAT_RESTART=kissat-ema` with target-phase policies; `SAT_PHASE=target-then-saved` remains an
   explicit opt-in when EMA restarts are active because HWMCC-style instances have regressed under
@@ -84,8 +85,9 @@ What is present:
   new phase block. Single-mode target policies retain restart-time target reset behavior after the
   all-mode persistence experiment regressed the profiling suite.
 - focused/stable search-mode scaffolding with focused EMA restarts and stable reluctant restarts.
-  Env-facing `SAT_SEARCH_MODE=focused-stable` requests are currently quarantined to single-mode
-  execution after phase1 experiments produced `UNKNOWN` on baseline-solved rows.
+  Env-facing `SAT_SEARCH_MODE=focused-stable` now enters the actual focused/stable path and defaults
+  to focused-only VMTF unless `SAT_VMTF=off` is explicitly requested for an ablation. This matches
+  Kissat's focused-mode branching model instead of the rejected VSIDS-in-focused hybrid.
   The `default` and `fast` profiles use the solver-10-compatible single-mode search path after the
   focused/stable default candidate regressed the clean solver 10 profiling baseline.
   Entering focused mode resets the LBD EMA restart averages so focused-mode restart calibration
@@ -93,20 +95,22 @@ What is present:
   variable activities before stable-mode decisions resume. Focused EMA restarts now use Kissat's
   soft throttle: after each focused restart, the minimum EMA interval becomes
   `50 + kissat_logn(focused_restarts) - 1`.
-- Kissat-style mode scheduling is compiled for internal focused/stable tests but env-facing
-  `SAT_MODE_USE_TICKS=on` is quarantined with focused/stable search. The implementation keeps
+  Stable reluctant restarts now use Kissat's `reluctantint=1024` scale instead of raw Luby counts,
+  which fixed the focused/stable case9 wall-clock UNKNOWN caused by hundreds of thousands of stable
+  restarts. Focused mode also has Kissat-style random decision sequences and the focused phase cycle
+  that periodically forces initial and inverted-initial phases by mode-switch count.
+- Kissat-style mode scheduling is available for focused/stable search. The implementation keeps
   focused-mode switches conflict-gated with
   `nlogpown(count, 4)` interval growth, but gates stable-mode duration on propagation search ticks.
   Tick mode also resets all restart EMAs on every mode switch.
-- Variable-Move-To-Front branching. The Kissat-faithful path is compiled internally, but env-facing
-  `SAT_VMTF=focused-only` (or legacy `SAT_VMTF=on`) is quarantined because the current
-  focused/stable stack still produces `UNKNOWN`. Internally, focused mode uses the
-  VMTF queue and move-to-front conflict bumps without updating VSIDS scores, while stable mode uses
-  the VSIDS heap and score bumps. `SAT_VMTF=single` remains a default-off experimental fallback for
-  the solver-10-compatible single-mode path; it is bounded by fixed budgets and should not be
-  treated as the promoted VMTF policy.
-- focused/stable rephasing is compiled internally but env-facing `SAT_REPHASE=on` is quarantined
-  with focused/stable search. It runs only on scheduled stable-mode restarts and cycles saved phases through
+- Variable-Move-To-Front branching. Focused mode uses the VMTF queue and move-to-front conflict
+  bumps without updating VSIDS scores, while stable mode uses the VSIDS heap and score bumps.
+  Conflict-bumped variables are now moved in existing queue-stamp order, matching Kissat's
+  `sort_bump` behavior; the old scratch-order movement could invert the focused queue and produced
+  `UNKNOWN` on Sudoku. `SAT_VMTF=single` remains a default-off experimental fallback for the
+  solver-10-compatible single-mode path; it is bounded by fixed budgets and should not be treated as
+  the promoted VMTF policy.
+- focused/stable rephasing is available behind `SAT_REPHASE=on`. It runs only on scheduled stable-mode restarts and cycles saved phases through
   best, inverted, and original polarity sources
 - opt-in guarded chronological backtracking (`SAT_CHRONO=on`) that keeps only `current - 1`
   instead of the normal assertion level when the learned clause remains asserting there; it falls
@@ -168,23 +172,23 @@ SAT_STATS_HOT=on
 SAT_USE_LBD=on
 SAT_RESTART=legacy-luby|kissat-ema|reluctant
 SAT_RESTART_BLOCK_MARGIN=<f64>  # 0 disables the level blocker
-SAT_RESTART_REUSE_TRAIL=on|off         # quarantined to off after UNKNOWN regression
-SAT_RESTART_REUSE_TRAIL_FOCUSED=on|off # quarantined to off after UNKNOWN regression
-SAT_RESTART_REUSE_TRAIL_STABLE=on|off  # quarantined to off after UNKNOWN regression
+SAT_RESTART_REUSE_TRAIL=on|off
+SAT_RESTART_REUSE_TRAIL_FOCUSED=on|off
+SAT_RESTART_REUSE_TRAIL_STABLE=on|off
 SAT_REDUCE=legacy|lbd-tiered
 SAT_REDUCE_MIN_INTERVAL=<usize>  # lbd-tiered default is 100, values must be >= 50
 SAT_CLAUSE_MIN=off|basic|recursive-limited|inblock
 SAT_OTFS=on|off
 SAT_MINIMIZE_DEPTH_LIMIT=<u32>
 SAT_PHASE=legacy|saved|target-then-saved|best-then-target-then-saved
-SAT_FOCUSED_PHASE=auto|legacy|saved|target-then-saved|best-then-target-then-saved # quarantined
-SAT_STABLE_PHASE=auto|legacy|saved|target-then-saved|best-then-target-then-saved  # quarantined
-SAT_SEARCH_MODE=single|focused-stable # focused-stable is quarantined to single
-SAT_MODE_USE_TICKS=on                 # quarantined with focused-stable
+SAT_FOCUSED_PHASE=auto|legacy|saved|target-then-saved|best-then-target-then-saved
+SAT_STABLE_PHASE=auto|legacy|saved|target-then-saved|best-then-target-then-saved
+SAT_SEARCH_MODE=single|focused-stable
+SAT_MODE_USE_TICKS=on
 SAT_CHRONO=on
 SAT_CHRONO_MAX_DELTA=<usize>
-SAT_VMTF=off|focused-only|single  # focused-only/on is quarantined; single is experimental fallback
-SAT_REPHASE=on                    # quarantined with focused-stable
+SAT_VMTF=off|focused-only|single  # focused-stable defaults to focused-only unless explicit
+SAT_REPHASE=on
 SAT_BINARY_FAST=on
 ```
 
@@ -307,22 +311,23 @@ default was not acceptable as a global default:
 The default and fast profiles therefore use single-mode/no-LBD search until the focused/stable stack
 or a replacement default clears the solver 10 baseline.
 
-Restart trail reuse remains an internal experiment after the 2026-05-25 per-mode split. The
-default-off rerun was status-safe, but stable-only reuse under the current single-mode default was
-rejected as soon as it turned `mp1` from SAT into `UNKNOWN`. Env-facing reuse requests are now
-normalized to off before solver construction, so rerunning the rejected config follows the
-status-safe baseline path instead of retaining an UNKNOWN-producing knob.
+Restart trail reuse remains default-off after the 2026-05-25 per-mode split. The implementation now
+keeps the Kissat stable reuse rule inside focused/stable mode instead of applying it to the
+solver-10-compatible single-mode Luby path. That fixes the previous `mp1` `UNKNOWN`: the exact
+`SAT_RESTART_REUSE_TRAIL_STABLE=on` single-mode rerun now follows the normal single-mode restart
+path and solves `mp1`, while focused/stable runs can still enable stable or focused reuse explicitly.
 
 | Run | Settings | Solved | PAR-2 | Results |
 |---|---|---:|---:|---|
 | default after per-mode reuse controls | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10/10 | `748.732` | `log/phase1/5b2.2.55-default-after/results.csv` |
 | stable-only reuse, stopped on hard failure | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_RESTART_REUSE_TRAIL_STABLE=on` | 3/4 before stop | `FAIL` | `log/phase1/5b2.2.55-reuse-stable-after/results.csv` |
+| stable-only reuse after focused/stable scoping | `SAT_RESTART_REUSE_TRAIL_STABLE=on SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` on mp1 | 1/1 | `42.419` | `log/bench-11-kissat-port-2026-05-25-18-43-57/results.csv` |
 
-Focused/stable phase-map controls landed on 2026-05-25 as internal experiment knobs only. Every
-tested mapping produced an `UNKNOWN` on a row solved by the default profile, so no focused/stable
-phase mapping was promoted. Env-facing focused/stable mode, mode ticks, focused/stable phase
-overrides, focused-only VMTF, and rephase requests are now normalized to the solver-10-compatible
-single-mode execution path before solver construction.
+Focused/stable phase-map controls landed on 2026-05-25 as experiment knobs. The first matrix was
+rejected because the env-facing focused/stable path used a VSIDS-in-focused hybrid and the VMTF
+batch bump order did not match Kissat. After the focused/stable default was changed to focused-only
+VMTF and analyzed variables are moved in existing queue-stamp order, the prior current-auto Velev
+`UNKNOWN` rerun solves with the actual focused/stable/tick path enabled.
 
 | Run | Settings | Solved before stop | Outcome | Results |
 |---|---|---:|---|---|
@@ -331,22 +336,24 @@ single-mode execution path before solver construction.
 | saved/saved mapping | `SAT_FOCUSED_PHASE=saved SAT_STABLE_PHASE=saved` plus focused/stable/ticks | 3/4 | rejected: mp1 SAT to `UNKNOWN` | `log/phase1/5b2.2.54-saved-saved-after/results.csv` |
 | saved/best mapping | `SAT_FOCUSED_PHASE=saved SAT_STABLE_PHASE=best-then-target-then-saved` plus focused/stable/ticks | 6/7 | rejected: velev SAT to `UNKNOWN` | `log/phase1/5b2.2.54-saved-best-after/results.csv` |
 | target/best mapping | `SAT_FOCUSED_PHASE=target-then-saved SAT_STABLE_PHASE=best-then-target-then-saved` plus focused/stable/ticks | 1/2 | rejected: Sudoku UNSAT to `UNKNOWN` | `log/phase1/5b2.2.54-target-best-after/results.csv` |
+| current auto/auto after focused VMTF default | `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on` on velev | 1/1 | SAT, `0` unknown | `log/bench-11-kissat-port-2026-05-25-18-29-53/results.csv` |
 
-UNKNOWN cleanup on 2026-05-25 normalized the env-facing rejected knobs to the safe single-mode
-execution path before solver construction. The internal focused/stable, VMTF, phase-map, rephase,
-and trail-reuse code remains covered by unit tests for future implementation work, but rerunning the
-previously failing env configs no longer leaves an UNKNOWN-producing path exposed.
+A rejected UNKNOWN cleanup attempt on 2026-05-25 normalized rejected knobs to the safe single-mode
+path. That quarantine was reverted. The current fix keeps the env-facing code paths enabled and
+addresses the underlying issues: focused/stable defaults to focused-only VMTF, focused VMTF
+batches preserve Kissat queue-stamp order, conflict-triggered mode switches happen at the
+post-propagation scheduling boundary, stable restart reuse no longer applies to the single-mode
+Luby path, focused mode includes Kissat random decision sequences and phase cycling, and stable
+reluctant restarts use Kissat's `1024` conflict scale.
 
 | Rerun | Settings | Scope | Outcome | Results |
 |---|---|---|---|---|
-| focused/stable VMTF cleanup | prior `SAT_VMTF=focused-only` focused/stable/ticks env | Sudoku | UNSAT, `0` unknown | `log/phase1/unknown-cleanup-focused-vmtf-after/results.csv` |
-| restart reuse cleanup | prior `SAT_RESTART_REUSE_TRAIL_STABLE=on` env | mp1 | SAT, `0` unknown | `log/phase1/unknown-cleanup-reuse-stable-after/results.csv` |
-| focused/stable auto cleanup | prior focused/stable/ticks env | velev | SAT, `0` unknown | `log/phase1/unknown-cleanup-current-auto-after/results.csv` |
-| phase saved/saved cleanup | prior saved/saved focused/stable env | mp1 | SAT, `0` unknown | `log/phase1/unknown-cleanup-phase-saved-saved-after/results.csv` |
-| phase target/best cleanup | prior target/best focused/stable env | Sudoku | UNSAT, `0` unknown | `log/phase1/unknown-cleanup-phase-target-best-after/results.csv` |
-| phase saved/best cleanup | prior saved/best focused/stable env | velev | SAT, `0` unknown | `log/phase1/unknown-cleanup-phase-saved-best-after/results.csv` |
-| full default cleanup profile | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10 profiling instances | 10/10, PAR-2 `745.614`, `0` unknown | `log/phase1/unknown-cleanup-default-after/results.csv` |
-| full combined-risk cleanup profile | focused/stable/ticks + focused-only VMTF + saved/best phase + rephase + stable reuse env | 10 profiling instances | 10/10, PAR-2 `752.693`, `0` unknown | `log/phase1/unknown-cleanup-combined-risk-after/results.csv` |
+| focused/stable VMTF actual-path fix | `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on SAT_VMTF=focused-only` | Sudoku | UNSAT, `0` unknown | `log/bench-11-kissat-port-2026-05-25-18-19-49/results.csv` |
+| focused/stable auto actual-path fix | `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on` | velev | SAT, `0` unknown | `log/bench-11-kissat-port-2026-05-25-18-29-53/results.csv` |
+| restart reuse actual-path fix | `SAT_RESTART_REUSE_TRAIL_STABLE=on` | mp1 | SAT, `0` unknown | `log/bench-11-kissat-port-2026-05-25-18-43-57/results.csv` |
+| focused/stable case9 actual-path fix | `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on` | case9 | SAT, `0` unknown | `log/bench-11-kissat-port-2026-05-25-19-57-35/results.csv` |
+| full focused/stable actual-path profile | `SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10 profiling instances | 10/10, PAR-2 `938.956`, `0` unknown | `log/bench-11-kissat-port-2026-05-25-20-01-30/results.csv` |
+| final default profile check | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10 profiling instances | 10/10, PAR-2 `757.854`, `0` unknown | `log/bench-11-kissat-port-2026-05-25-20-22-29/results.csv` |
 
 Formula classification landed as instrumentation on 2026-05-25. The default path remains
 status-safe; adaptive feature routing is still future work because binary-fast and VMTF are
@@ -388,14 +395,13 @@ The accepted state improves solver 11 by `40.422` PAR-2 against the rollback bas
 status changes or correctness failures. It still trails the solver 10 clean baseline by `45.887`
 PAR-2, mainly on sudoku (`+13.574s`), Kakuro (`+14.878s`), and `case9` (`+6.434s`).
 
-`SAT_VMTF=single` was added as a default-off experimental routing primitive on 2026-05-25. An
-initial unbounded version was rejected because `UNKNOWN` means the solver produced neither SAT nor
-UNSAT and is therefore a benchmark failure, even if some rows improve. The guarded fallback bounds
-single-mode VMTF by conflict/decision/propagation budgets, falls back to the VSIDS heap and legacy
-phase when the trial expires, and only uses best/target/saved phase during active VMTF on a
-medium-sized formula class that covers the mp1 win without poisoning small dense SAT rows. This
-guarded single-mode path is a fallback experiment; the Kissat-faithful VMTF policy is focused-mode
-VMTF inside focused/stable search.
+`SAT_VMTF=single` was added as a default-off diagnostic experiment on 2026-05-25. An initial
+unbounded version was rejected because `UNKNOWN` means the solver produced neither SAT nor UNSAT
+and is therefore a benchmark failure, even if some rows improve. This single-mode route is not the
+Kissat-faithful VMTF policy and is not a promotion target; the supported Kissat-like path is
+focused-mode VMTF inside focused/stable search. The table below is retained as historical evidence
+for the single-mode experiment and for why focused-mode parity became the next implementation
+target.
 
 | Run | Settings | Solved | PAR-2 | Results |
 |---|---|---:|---:|---|
@@ -405,13 +411,10 @@ VMTF inside focused/stable search.
 | current default after guarded VMTF | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295` | 10/10 | `755.239` | `log/phase1/egy-default-after-formulaguard-profile/results.csv` |
 | guarded VMTF single-mode branch queue | `SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_VMTF=single` | 10/10 | `647.341` | `log/phase1/egy-vmtf-single-formulaguard-profile/results.csv` |
 
-Default behavior has no status churn and the current default-off `755.239` PAR-2 run is consistent
-with the earlier `755.000` default-off rerun. Guarded `SAT_VMTF=single` is profile-positive and
-has no `UNKNOWN`/timeout/error rows: it keeps the large mp1 (`42.425s -> 1.046s`), battleship
-(`23.470s -> 3.397s`), velev (`64.943s -> 42.285s`), and case9 (`126.599s -> 102.205s`) wins,
-while the guards recover the previously failing sudoku, REGRandom, SCPC, and Iter30 rows. Kakuro
-improves against default (`209.654s -> 190.526s`) but gives back part of the unbounded VMTF win
-to preserve full-suite reliability.
+Default behavior had no status churn and the default-off `755.239` PAR-2 run was consistent with
+the earlier `755.000` default-off rerun. The guarded single-mode experiment was profile-positive on
+that run and had no `UNKNOWN`/timeout/error rows, but it remains a non-Kissat diagnostic path rather
+than a default or fast-profile candidate.
 
 Latest correctness checks for the accepted state:
 

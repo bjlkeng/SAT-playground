@@ -59,10 +59,9 @@ Known unpromoted or incomplete feature families at this baseline:
   fast-vs-slow level EMA ratios can preserve a productive deep prefix instead of restarting
   immediately. The blocker is default-off (`0`) after profile testing showed the `1.4` margin
   regressed the current profile suite. The Kissat-style partial-restart experiment remains compiled
-  for internal tests, but env-facing `SAT_RESTART_REUSE_TRAIL*` requests are normalized to off before
-  solver construction. Stable-only reuse is not promotable for the current single-mode default
-  because the 2026-05-25 profile changed `mp1` from SAT to `UNKNOWN`; rerunning that rejected env
-  config now follows the status-safe baseline path instead of retaining the UNKNOWN-producing knob.
+  and env-facing `SAT_RESTART_REUSE_TRAIL*` requests are honored. Stable/focused trail reuse is now
+  scoped to focused/stable mode, so the solver-10-compatible single-mode Luby path does not retain
+  the `mp1` prefix that previously led to `UNKNOWN`.
   Learned clauses now start with the maximum
   `used_recently` value for every LBD tier; later reduce-DB passes age that counter down before
   high-LBD clauses become eviction candidates. Learned-reason LBD recomputation now walks arena
@@ -87,36 +86,39 @@ Known unpromoted or incomplete feature families at this baseline:
   only chooses `current - 1` when the learned clause remains asserting at that level and otherwise
   uses the normal assertion level.
 - Saved/target/best phase policies are present behind `SAT_PHASE`. Per-mode focused/stable
-  overrides are compiled internally, but env-facing `SAT_FOCUSED_PHASE` and `SAT_STABLE_PHASE`
-  requests are normalized to `auto` while focused/stable search is quarantined. In focused/stable
-  search, target/best phase snapshots are captured only in stable mode, matching Kissat's update
-  boundary; target phases are preserved across mode switches and restart cycles, then reset when a
-  rephase event starts a new phase block. Single-mode target policies still reset target phase on
-  restart because all-mode target persistence regressed the profiling suite.
-- Focused/stable mode switching and reluctant restarts remain internal experiments. Env-facing
-  `SAT_SEARCH_MODE=focused-stable` and `SAT_MODE_USE_TICKS=on` requests are normalized to
-  single-mode execution after phase1 focused/stable profile rows produced `UNKNOWN`; `SAT_PROFILE=default`
-  and `SAT_PROFILE=fast` keep the old single-mode search path with solver-10 preprocessing enabled.
+  overrides are active behind `SAT_FOCUSED_PHASE` and `SAT_STABLE_PHASE` when
+  `SAT_SEARCH_MODE=focused-stable` is enabled. In focused/stable search, target/best phase snapshots
+  are captured only in stable mode, matching Kissat's update boundary; target phases are preserved
+  across mode switches and restart cycles, then reset when a rephase event starts a new phase block.
+  Single-mode target policies still reset target phase on restart because all-mode target
+  persistence regressed the profiling suite.
+- Focused/stable mode switching and reluctant restarts remain explicit experiments. Env-facing
+  `SAT_SEARCH_MODE=focused-stable` and `SAT_MODE_USE_TICKS=on` requests execute the actual
+  focused/stable path with LBD enabled and focused-only VMTF by default; `SAT_PROFILE=default` and
+  `SAT_PROFILE=fast` keep the old single-mode search path with solver-10 preprocessing enabled.
   Stable-to-focused transitions reset the LBD EMA restart averages so focused restart calibration
   starts from focused-mode glue rather than inherited stable-mode glue. Focused-to-stable
-  transitions rebuild the VSIDS heap from current variable activities before stable-mode decisions
-  resume. JSON/trace diagnostics now attribute search wall time, conflicts, learned-clause LBD,
-  and decision level averages separately to focused and stable mode so focused/stable triage does
-  not depend on combined averages.
+  transitions reset the reluctant restart sequence and rebuild the VSIDS heap from current variable
+  activities before stable-mode decisions resume. Stable reluctant restarts use Kissat's
+  `reluctantint=1024` scale rather than raw Luby counts; this fixed the case9 focused/stable
+  wall-clock UNKNOWN. Focused mode includes Kissat-style random decision sequences and focused
+  phase cycling by mode-switch count. JSON/trace diagnostics now attribute search wall time,
+  conflicts, learned-clause LBD, and decision level averages separately to focused and stable mode
+  so focused/stable triage does not depend on combined averages.
 - Kissat-style mode scheduling is compiled internally. Stable mode switches back
   to focused mode by propagation search ticks, focused-mode conflict intervals use Kissat
   `nlogpown(count, 4)` growth, and every mode switch resets all restart EMAs. Focused EMA restart
   windows also grow with the cumulative focused restart count as
   `50 + kissat_logn(focused_restarts) - 1`, and `focused_restarts` is reported in JSON/trace stats.
-- VMTF branching is compiled for the Kissat-faithful focused/stable path, but env-facing
-  `SAT_VMTF=focused-only` and legacy `SAT_VMTF=on` are normalized to off while focused/stable search
-  is quarantined. Internally, focused mode uses the VMTF queue and move-to-front conflict bumps
-  without updating VSIDS scores, while stable mode keeps the VSIDS heap and score bumps.
-  `SAT_VMTF=single` remains available as a default-off guarded experimental fallback for the
+- VMTF branching is active for the Kissat-faithful focused/stable path. `SAT_SEARCH_MODE=focused-stable`
+  defaults to focused-only VMTF unless `SAT_VMTF=off` is explicit. Focused mode uses the VMTF queue
+  and move-to-front conflict bumps without updating VSIDS scores, and analyzed variables are moved
+  by their existing queue-stamp order to match Kissat; stable mode keeps the VSIDS heap and score
+  bumps. `SAT_VMTF=single` remains available as a default-off guarded experimental fallback for the
   single-mode search path, not as a promoted VMTF policy.
-- Rephasing is compiled internally, but env-facing `SAT_REPHASE=on` is normalized off while
-  focused/stable search is quarantined. It runs only on scheduled stable-mode restarts and cycles
-  saved phase data through best, inverted, and original polarity sources.
+- Rephasing is active behind `SAT_REPHASE=on` for focused/stable experiments. It runs only on
+  scheduled stable-mode restarts and cycles saved phase data through best, inverted, and original
+  polarity sources.
 - Binary implication propagation is present behind `SAT_BINARY_FAST=on`; binary clauses keep arena
   representation for proof/model/debug paths while propagation uses stable `BinaryClauseId` reasons.
   The default binary-fast-off propagation path is separately monomorphized so the solver-10-compatible

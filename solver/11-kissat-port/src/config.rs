@@ -717,7 +717,6 @@ impl SolverConfig {
             config.trace_preprocess = true;
             config.trace_preprocess_details = true;
         }
-        config.quarantine_unknown_risk_features();
         config.refresh_feature_statuses();
         config.validate_runtime_support();
         config
@@ -970,6 +969,7 @@ impl SolverConfig {
             ClauseMinMode::parse,
         );
         self.otfs = parse_bool_selected(env_map, &key_set, "SAT_OTFS", self.otfs);
+        let vmtf_explicit = get_selected(env_map, &key_set, "SAT_VMTF").is_some();
         self.vmtf = parse_enum_selected(env_map, &key_set, "SAT_VMTF", self.vmtf, VmtfMode::parse);
         self.rephase = parse_bool_selected(env_map, &key_set, "SAT_REPHASE", self.rephase);
         self.minimize_depth_limit = parse_u32_selected(
@@ -1144,37 +1144,17 @@ impl SolverConfig {
             self.rcheck_ticks_budget,
         );
 
+        self.apply_focused_stable_defaults(vmtf_explicit);
         self.record_legacy_aliases(env_map);
     }
 
-    fn quarantine_unknown_risk_features(&mut self) {
-        // These env-facing controls produced benchmark UNKNOWN rows during phase1.
-        // Keep the internal implementation reachable through direct unit-test
-        // configs, but do not let env/profile runs enter known unsafe search paths.
-        if self.search_mode_policy == SearchModePolicy::FocusedStable {
-            self.search_mode_policy = SearchModePolicy::Single;
-            self.mode_use_ticks = false;
-            self.focused_phase_policy = None;
-            self.stable_phase_policy = None;
-            self.rephase = false;
-            if self.vmtf == VmtfMode::FocusedOnly {
-                self.vmtf = VmtfMode::Off;
-            }
+    fn apply_focused_stable_defaults(&mut self, vmtf_explicit: bool) {
+        if self.search_mode_policy == SearchModePolicy::FocusedStable
+            && !vmtf_explicit
+            && self.vmtf == VmtfMode::Off
+        {
+            self.vmtf = VmtfMode::FocusedOnly;
         }
-
-        if self.search_mode_policy == SearchModePolicy::Single {
-            self.mode_use_ticks = false;
-            self.focused_phase_policy = None;
-            self.stable_phase_policy = None;
-            self.rephase = false;
-            if self.vmtf == VmtfMode::FocusedOnly {
-                self.vmtf = VmtfMode::Off;
-            }
-        }
-
-        self.restart_reuse_trail = false;
-        self.restart_reuse_trail_focused = false;
-        self.restart_reuse_trail_stable = false;
     }
 
     fn record_legacy_aliases(&mut self, env_map: &BTreeMap<String, String>) {
@@ -1716,7 +1696,7 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             true,
             true,
             false,
-            "log/phase1/unknown-cleanup-reuse-stable-after",
+            "log/bench-11-kissat-port-2026-05-25-18-43-57/results.csv",
         ),
         feature(
             "SAT_LBD_UPDATE_REASONS",
@@ -1761,7 +1741,7 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             true,
             true,
             false,
-            "log/phase1/unknown-cleanup-focused-vmtf-after",
+            "log/bench-11-kissat-port-2026-05-25-20-01-30/results.csv",
         ),
         feature(
             "SAT_REPHASE",
@@ -1770,7 +1750,7 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             true,
             true,
             false,
-            "log/phase1/unknown-cleanup-current-auto-after",
+            "log/bench-11-kissat-port-2026-05-25-18-29-53/results.csv",
         ),
         feature(
             "SAT_MODE_USE_TICKS",
@@ -1779,7 +1759,7 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             true,
             true,
             false,
-            "log/phase1/unknown-cleanup-current-auto-after",
+            "log/bench-11-kissat-port-2026-05-25-20-01-30/results.csv",
         ),
         feature(
             "SAT_OTFS",
@@ -2839,38 +2819,51 @@ mod tests {
     }
 
     #[test]
-    fn test_focused_stable_search_mode_is_quarantined_for_env_runs() {
+    fn test_focused_stable_search_mode_is_runtime_supported_with_lbd() {
         let config = SolverConfig::from_env_map(&env_map(&[
             ("SAT_USE_LBD", "on"),
             ("SAT_SEARCH_MODE", "focused-stable"),
         ]));
 
         assert!(config.use_lbd);
-        assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
+        assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
+        assert_eq!(config.vmtf, VmtfMode::FocusedOnly);
     }
 
     #[test]
-    fn test_mode_use_ticks_is_quarantined_with_focused_stable_mode() {
+    fn test_focused_stable_search_mode_honors_explicit_vmtf_off() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_USE_LBD", "on"),
+            ("SAT_SEARCH_MODE", "focused-stable"),
+            ("SAT_VMTF", "off"),
+        ]));
+
+        assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
+        assert_eq!(config.vmtf, VmtfMode::Off);
+    }
+
+    #[test]
+    fn test_mode_use_ticks_is_runtime_supported_with_focused_stable_mode() {
         let config = SolverConfig::from_env_map(&env_map(&[
             ("SAT_USE_LBD", "on"),
             ("SAT_SEARCH_MODE", "focused-stable"),
             ("SAT_MODE_USE_TICKS", "on"),
         ]));
 
-        assert!(!config.mode_use_ticks);
-        assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
+        assert!(config.mode_use_ticks);
+        assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
     }
 
     #[test]
-    fn test_vmtf_focused_only_is_quarantined_with_focused_stable_mode() {
+    fn test_vmtf_focused_only_is_runtime_supported_with_focused_stable_mode() {
         let config = SolverConfig::from_env_map(&env_map(&[
             ("SAT_USE_LBD", "on"),
             ("SAT_SEARCH_MODE", "focused-stable"),
             ("SAT_VMTF", "on"),
         ]));
 
-        assert_eq!(config.vmtf, VmtfMode::Off);
-        assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
+        assert_eq!(config.vmtf, VmtfMode::FocusedOnly);
+        assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
     }
 
     #[test]
@@ -2889,7 +2882,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rephase_is_quarantined_with_focused_stable_mode() {
+    fn test_rephase_is_runtime_supported_with_focused_stable_mode() {
         let config = SolverConfig::from_env_map(&env_map(&[
             ("SAT_USE_LBD", "on"),
             ("SAT_SEARCH_MODE", "focused-stable"),
@@ -2897,8 +2890,8 @@ mod tests {
             ("SAT_REPHASE_INIT_CONFLICTS", "17"),
         ]));
 
-        assert!(!config.rephase);
-        assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
+        assert!(config.rephase);
+        assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
         assert_eq!(config.rephase_init_conflicts, 17);
     }
 
@@ -2963,7 +2956,7 @@ mod tests {
     }
 
     #[test]
-    fn test_focused_stable_phase_map_controls_are_quarantined_for_env_runs() {
+    fn test_focused_stable_phase_map_controls_are_replayable() {
         let config = SolverConfig::from_env_map(&env_map(&[
             ("SAT_USE_LBD", "on"),
             ("SAT_SEARCH_MODE", "focused-stable"),
@@ -2971,13 +2964,16 @@ mod tests {
             ("SAT_STABLE_PHASE", "saved"),
         ]));
 
-        assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
-        assert_eq!(config.focused_phase_policy, None);
-        assert_eq!(config.stable_phase_policy, None);
+        assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
+        assert_eq!(
+            config.focused_phase_policy,
+            Some(PhasePolicy::TargetThenSaved)
+        );
+        assert_eq!(config.stable_phase_policy, Some(PhasePolicy::Saved));
 
         let replay = config.config_replay_text();
-        assert!(replay.contains("focused_phase_policy="));
-        assert!(replay.contains("stable_phase_policy="));
+        assert!(replay.contains("focused_phase_policy=target-then-saved"));
+        assert!(replay.contains("stable_phase_policy=saved"));
 
         let replayed = SolverConfig::from_replay_text(&replay, Path::new("<phase-map-test>"));
         assert_eq!(replayed.focused_phase_policy, config.focused_phase_policy);
@@ -2995,42 +2991,42 @@ mod tests {
     }
 
     #[test]
-    fn test_restart_reuse_trail_is_quarantined_for_env_runs() {
+    fn test_restart_reuse_trail_is_runtime_supported_and_replayable() {
         let config = SolverConfig::from_env_map(&env_map(&[("SAT_RESTART_REUSE_TRAIL", "on")]));
 
-        assert!(!config.restart_reuse_trail);
-        assert!(!config.restart_reuse_trail_focused);
-        assert!(!config.restart_reuse_trail_stable);
+        assert!(config.restart_reuse_trail);
+        assert!(config.restart_reuse_trail_focused);
+        assert!(config.restart_reuse_trail_stable);
 
         let replay = config.config_replay_text();
-        assert!(replay.contains("restart_reuse_trail=false"));
-        assert!(replay.contains("restart_reuse_trail_focused=false"));
-        assert!(replay.contains("restart_reuse_trail_stable=false"));
+        assert!(replay.contains("restart_reuse_trail=true"));
+        assert!(replay.contains("restart_reuse_trail_focused=true"));
+        assert!(replay.contains("restart_reuse_trail_stable=true"));
 
         let replayed =
             SolverConfig::from_replay_text(&replay, Path::new("<restart-reuse-trail-test>"));
-        assert!(!replayed.restart_reuse_trail);
-        assert!(!replayed.restart_reuse_trail_focused);
-        assert!(!replayed.restart_reuse_trail_stable);
+        assert!(replayed.restart_reuse_trail);
+        assert!(replayed.restart_reuse_trail_focused);
+        assert!(replayed.restart_reuse_trail_stable);
         assert_eq!(replayed.config_hash(), config.config_hash());
     }
 
     #[test]
-    fn test_restart_reuse_trail_per_mode_controls_are_quarantined_for_env_runs() {
+    fn test_restart_reuse_trail_per_mode_controls_are_replayable() {
         let config = SolverConfig::from_env_map(&env_map(&[
             ("SAT_RESTART_REUSE_TRAIL", "on"),
             ("SAT_RESTART_REUSE_TRAIL_FOCUSED", "off"),
             ("SAT_RESTART_REUSE_TRAIL_STABLE", "on"),
         ]));
 
-        assert!(!config.restart_reuse_trail);
+        assert!(config.restart_reuse_trail);
         assert!(!config.restart_reuse_trail_focused);
-        assert!(!config.restart_reuse_trail_stable);
+        assert!(config.restart_reuse_trail_stable);
 
         let replay = config.config_replay_text();
-        assert!(replay.contains("restart_reuse_trail=false"));
+        assert!(replay.contains("restart_reuse_trail=true"));
         assert!(replay.contains("restart_reuse_trail_focused=false"));
-        assert!(replay.contains("restart_reuse_trail_stable=false"));
+        assert!(replay.contains("restart_reuse_trail_stable=true"));
 
         let replayed =
             SolverConfig::from_replay_text(&replay, Path::new("<restart-reuse-mode-test>"));
@@ -3048,7 +3044,7 @@ mod tests {
         let focused_only =
             SolverConfig::from_env_map(&env_map(&[("SAT_RESTART_REUSE_TRAIL_FOCUSED", "on")]));
         assert!(!focused_only.restart_reuse_trail);
-        assert!(!focused_only.restart_reuse_trail_focused);
+        assert!(focused_only.restart_reuse_trail_focused);
         assert!(!focused_only.restart_reuse_trail_stable);
     }
 

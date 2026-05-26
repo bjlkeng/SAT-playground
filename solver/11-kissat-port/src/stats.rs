@@ -116,6 +116,8 @@ pub(crate) struct SolverStats {
     pub(crate) phase_initial_used: u64,
     pub(crate) phase_save_target: u64,
     pub(crate) phase_save_best: u64,
+    pub(crate) random_decisions: u64,
+    pub(crate) random_decision_sequences: u64,
     pub(crate) rephases: u64,
     pub(crate) decision_heap_pops: u64,
     pub(crate) decision_heap_stale_pops: u64,
@@ -566,7 +568,11 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("phase_save_target", ctx.stats.phase_save_target);
     json.u64("phase_save_best", ctx.stats.phase_save_best);
     json.u64("rephases", ctx.stats.rephases);
-    json.u64("random_decisions", 0);
+    json.u64("random_decisions", ctx.stats.random_decisions);
+    json.u64(
+        "random_decision_sequences",
+        ctx.stats.random_decision_sequences,
+    );
 
     json.u64(
         "pre_bve_eliminated_vars",
