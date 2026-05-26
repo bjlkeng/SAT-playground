@@ -523,6 +523,7 @@ pub(crate) struct SolverConfig {
     pub(crate) stable_phase_policy: Option<PhasePolicy>,
     pub(crate) search_mode_policy: SearchModePolicy,
     pub(crate) mode_use_ticks: bool,
+    pub(crate) lucky: bool,
     pub(crate) chrono_backtrack: bool,
     pub(crate) binary_fast_path: bool,
     pub(crate) clause_min_mode: ClauseMinMode,
@@ -621,6 +622,7 @@ impl Default for SolverConfig {
             stable_phase_policy: None,
             search_mode_policy: SearchModePolicy::Single,
             mode_use_ticks: false,
+            lucky: true,
             chrono_backtrack: false,
             binary_fast_path: false,
             clause_min_mode: ClauseMinMode::RecursiveLimited,
@@ -731,16 +733,19 @@ impl SolverConfig {
                 self.use_lbd = false;
                 self.search_mode_policy = SearchModePolicy::Single;
                 self.mode_use_ticks = false;
+                self.lucky = false;
             }
             SolverProfile::Default | SolverProfile::Fast => {
                 self.use_lbd = false;
                 self.search_mode_policy = SearchModePolicy::Single;
                 self.mode_use_ticks = false;
+                self.lucky = true;
             }
             SolverProfile::Experimental => {
                 self.use_lbd = true;
                 self.search_mode_policy = SearchModePolicy::FocusedStable;
                 self.mode_use_ticks = true;
+                self.lucky = true;
             }
         }
         if requested == SolverProfile::Baseline || axes.preprocess == PreprocessAxis::Off {
@@ -955,6 +960,7 @@ impl SolverConfig {
         );
         self.mode_use_ticks =
             parse_bool_selected(env_map, &key_set, "SAT_MODE_USE_TICKS", self.mode_use_ticks);
+        self.lucky = parse_bool_selected(env_map, &key_set, "SAT_LUCKY", self.lucky);
         self.chrono_backtrack =
             parse_bool_selected(env_map, &key_set, "SAT_CHRONO", self.chrono_backtrack);
         self.binary_fast_path =
@@ -1403,6 +1409,7 @@ impl SolverConfig {
             self.search_mode_policy.as_str(),
         );
         push_kv_bool(&mut lines, "mode_use_ticks", self.mode_use_ticks);
+        push_kv_bool(&mut lines, "lucky", self.lucky);
         push_kv_bool(&mut lines, "chrono_backtrack", self.chrono_backtrack);
         push_kv_bool(&mut lines, "binary_fast_path", self.binary_fast_path);
         push_kv(&mut lines, "clause_min_mode", self.clause_min_mode.as_str());
@@ -1717,6 +1724,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             "log/1.14h/summary.md",
         ),
         feature(
+            "SAT_LUCKY",
+            config.lucky,
+            FeatureMaturity::SmokeSafe,
+            true,
+            true,
+            false,
+            "log/bench-11-kissat-port-2026-05-25-22-30-00/results.csv",
+        ),
+        feature(
             "SAT_CHRONO",
             config.chrono_backtrack,
             FeatureMaturity::SmokeSafe,
@@ -2001,6 +2017,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "stable_phase_policy" => Some("SAT_STABLE_PHASE"),
         "search_mode_policy" => Some("SAT_SEARCH_MODE"),
         "mode_use_ticks" => Some("SAT_MODE_USE_TICKS"),
+        "lucky" => Some("SAT_LUCKY"),
         "chrono_backtrack" => Some("SAT_CHRONO"),
         "binary_fast_path" => Some("SAT_BINARY_FAST"),
         "clause_min_mode" => Some("SAT_CLAUSE_MIN"),
@@ -2178,6 +2195,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_STABLE_PHASE",
         "SAT_SEARCH_MODE",
         "SAT_MODE_USE_TICKS",
+        "SAT_LUCKY",
         "SAT_CHRONO",
         "SAT_BINARY_FAST",
         "SAT_CLAUSE_MIN",
@@ -2904,6 +2922,29 @@ mod tests {
 
         assert!(config.chrono_backtrack);
         assert_eq!(config.chrono_max_delta, 7);
+    }
+
+    #[test]
+    fn test_lucky_defaults_on_and_can_be_disabled() {
+        let config = SolverConfig::from_env_map(&env_map(&[]));
+        assert!(config.lucky);
+
+        let baseline = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "baseline")]));
+        assert!(!baseline.lucky);
+
+        let disabled = SolverConfig::from_env_map(&env_map(&[("SAT_LUCKY", "off")]));
+        assert!(!disabled.lucky);
+    }
+
+    #[test]
+    fn test_lucky_is_replayable() {
+        let config = SolverConfig::from_env_map(&env_map(&[("SAT_LUCKY", "off")]));
+        let replay = config.config_replay_text();
+        assert!(replay.contains("lucky=false"));
+
+        let replayed = SolverConfig::from_replay_text(&replay, Path::new("<lucky-test>"));
+        assert!(!replayed.lucky);
+        assert_eq!(replayed.config_hash(), config.config_hash());
     }
 
     #[test]

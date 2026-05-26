@@ -453,7 +453,40 @@ struct TemporaryAssumptionStats {
     conflicts: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LuckyPattern {
+    AllTrue,
+    AllFalse,
+    ForwardFalse,
+    ForwardTrue,
+    BackwardFalse,
+    BackwardTrue,
+}
+
+impl LuckyPattern {
+    fn simple_lit(self, var: usize) -> Option<i32> {
+        match self {
+            Self::AllTrue => Some(var as i32),
+            Self::AllFalse => Some(-(var as i32)),
+            _ => None,
+        }
+    }
+
+    fn preferred_lit(self, var: usize) -> Option<i32> {
+        let positive = match self {
+            Self::ForwardTrue | Self::BackwardTrue => true,
+            Self::ForwardFalse | Self::BackwardFalse => false,
+            _ => return None,
+        };
+        Some(if positive { var as i32 } else { -(var as i32) })
+    }
+
+    fn backward(self) -> bool {
+        matches!(self, Self::BackwardFalse | Self::BackwardTrue)
+    }
+}
+
+#[derive(Debug)]
 #[allow(dead_code)]
 struct TemporaryAssumptionGuard {
     start_trail: usize,
@@ -461,6 +494,9 @@ struct TemporaryAssumptionGuard {
     start_root_trail_len: usize,
     start_propagate_head: usize,
     saved_accounting_mode: SearchAccountingMode,
+    saved_arena: Vec<u32>,
+    saved_watchers: Vec<Vec<Watcher>>,
+    saved_binary_clauses: Vec<BinaryClause>,
 }
 
 #[allow(dead_code)]
@@ -476,7 +512,7 @@ enum EnqueueResult {
     Conflict,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[allow(dead_code)]
 struct Budget {
     remaining: Option<u64>,
@@ -503,6 +539,30 @@ impl Budget {
 
 #[allow(dead_code)]
 impl<'a> TemporaryAssumptionCtx<'a> {
+    fn enqueue_root(&mut self, lit: i32) -> EnqueueResult {
+        let result = self.enqueue(lit);
+        if result == EnqueueResult::Enqueued {
+            self.solver.root_trail_len = self.solver.trail.len();
+        }
+        result
+    }
+
+    fn assume(&mut self, lit: i32) -> EnqueueResult {
+        let var = lit.unsigned_abs() as usize;
+        let target_value = if lit > 0 { TRUE } else { FALSE };
+        match self.solver.assignment[var] {
+            UNASSIGNED => {
+                self.solver.trail_limits.push(self.solver.trail.len());
+                let inserted = self.solver.enqueue(lit, ReasonRef::None);
+                debug_assert!(inserted, "temporary literal was checked as unassigned");
+                self.solver.temporary_stats.enqueues += 1;
+                EnqueueResult::Enqueued
+            }
+            current if current == target_value => EnqueueResult::AlreadyAssigned,
+            _ => EnqueueResult::Conflict,
+        }
+    }
+
     fn enqueue(&mut self, lit: i32) -> EnqueueResult {
         let var = lit.unsigned_abs() as usize;
         let target_value = if lit > 0 { TRUE } else { FALSE };
@@ -3272,6 +3332,9 @@ impl Solver {
             start_root_trail_len: self.root_trail_len,
             start_propagate_head: self.propagate_head,
             saved_accounting_mode: self.accounting_mode,
+            saved_arena: self.arena.clone(),
+            saved_watchers: self.watchers.clone(),
+            saved_binary_clauses: self.binary_clauses.clone(),
         };
         self.accounting_mode = SearchAccountingMode::from_temporary_options(opts);
         guard
@@ -3291,6 +3354,9 @@ impl Solver {
         self.root_trail_len = guard.start_root_trail_len;
         self.propagate_head = guard.start_propagate_head;
         self.accounting_mode = guard.saved_accounting_mode;
+        self.arena = guard.saved_arena;
+        self.watchers = guard.saved_watchers;
+        self.binary_clauses = guard.saved_binary_clauses;
         debug_assert_eq!(self.current_level(), guard.start_level);
         debug_assert_eq!(self.trail.len(), guard.start_trail);
         debug_assert_eq!(self.root_trail_len, guard.start_root_trail_len);
@@ -3310,6 +3376,236 @@ impl Solver {
         };
         self.end_temporary_assumptions(guard);
         result
+    }
+
+    fn all_live_decision_vars_assigned(&self) -> bool {
+        (1..self.assignment.len()).all(|var| {
+            !self.decision_var[var] || self.eliminated[var] || self.assignment[var] != UNASSIGNED
+        })
+    }
+
+    fn all_live_clauses_satisfied(&self) -> bool {
+        self.original_clause_ids
+            .iter()
+            .chain(self.learned_clause_ids.iter())
+            .copied()
+            .filter(|&clause_idx| {
+                clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx)
+            })
+            .all(|clause_idx| {
+                self.clause_slice(clause_idx)
+                    .iter()
+                    .any(|&lit| self.lit_value(lit) == TRUE)
+            })
+    }
+
+    fn lucky_var_order(&self, pattern: LuckyPattern) -> Vec<usize> {
+        let mut vars: Vec<usize> = (1..self.assignment.len()).collect();
+        if pattern.backward() {
+            vars.reverse();
+        }
+        vars
+    }
+
+    fn lucky_pattern_succeeds(&mut self, pattern: LuckyPattern) -> bool {
+        let vars = self.lucky_var_order(pattern);
+        self.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
+            let mut budget = Budget::default();
+            for var in vars {
+                if !ctx.solver.unassigned_decision_candidate(var) {
+                    continue;
+                }
+
+                if let Some(lit) = pattern.simple_lit(var) {
+                    match ctx.enqueue(lit) {
+                        EnqueueResult::Conflict => return false,
+                        EnqueueResult::Enqueued | EnqueueResult::AlreadyAssigned => {}
+                    }
+                    if ctx.propagate_budgeted(&mut budget).is_some() {
+                        return false;
+                    }
+                    continue;
+                }
+
+                let lit = pattern
+                    .preferred_lit(var)
+                    .expect("greedy lucky pattern must choose a polarity");
+                let base_level = ctx.solver.current_level();
+                match ctx.assume(lit) {
+                    EnqueueResult::AlreadyAssigned => continue,
+                    EnqueueResult::Conflict => return false,
+                    EnqueueResult::Enqueued => {}
+                }
+                if ctx.propagate_budgeted(&mut budget).is_some() {
+                    ctx.solver.backtrack(base_level);
+                    let opposite_result = if base_level == 0 {
+                        ctx.enqueue_root(-lit)
+                    } else {
+                        ctx.assume(-lit)
+                    };
+                    match opposite_result {
+                        EnqueueResult::AlreadyAssigned => {}
+                        EnqueueResult::Conflict => return false,
+                        EnqueueResult::Enqueued => {}
+                    }
+                    if ctx.propagate_budgeted(&mut budget).is_some() {
+                        return false;
+                    }
+                }
+            }
+            if ctx.propagate_budgeted(&mut budget).is_some() {
+                return false;
+            }
+            if !ctx.solver.all_live_decision_vars_assigned()
+                || !ctx.solver.all_live_clauses_satisfied()
+            {
+                return false;
+            }
+            ctx.solver.capture_sat_model();
+            true
+        })
+    }
+
+    fn clause_satisfied_by_trial(&self, clause_idx: ClauseRef, trial: &[u8]) -> bool {
+        self.clause_slice(clause_idx).iter().any(|&lit| {
+            let var = lit.unsigned_abs() as usize;
+            let value = trial.get(var).copied().unwrap_or(UNASSIGNED);
+            value != UNASSIGNED && ((lit > 0) == (value == TRUE))
+        })
+    }
+
+    fn collect_unsatisfied_trial_clauses(&self, trial: &[u8], out: &mut Vec<ClauseRef>) {
+        out.clear();
+        for &clause_idx in &self.original_clause_ids {
+            if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
+                continue;
+            }
+            if !self.clause_satisfied_by_trial(clause_idx, trial) {
+                out.push(clause_idx);
+            }
+        }
+    }
+
+    fn count_unsatisfied_trial_clauses(&self, trial: &[u8], stop_at: usize) -> usize {
+        let mut count = 0usize;
+        for &clause_idx in &self.original_clause_ids {
+            if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
+                continue;
+            }
+            if !self.clause_satisfied_by_trial(clause_idx, trial) {
+                count += 1;
+                if count >= stop_at {
+                    break;
+                }
+            }
+        }
+        count
+    }
+
+    fn try_lucky_local_repair(&mut self) -> bool {
+        if self.stats.preprocess_eliminated_vars != 0
+            || self.original_literals > 200_000
+            || self.assignment.len().saturating_sub(1) > 2_000
+        {
+            return false;
+        }
+
+        let mut trial = self.assignment.clone();
+        let mut fixed = vec![false; trial.len()];
+        for var in 1..trial.len() {
+            match trial[var] {
+                TRUE | FALSE => fixed[var] = true,
+                _ => trial[var] = FALSE,
+            }
+        }
+
+        let mut unsatisfied = Vec::new();
+        self.collect_unsatisfied_trial_clauses(&trial, &mut unsatisfied);
+        if unsatisfied.is_empty() {
+            self.sat_model = Some(trial.clone());
+            self.assignment.clone_from(&trial);
+            return true;
+        }
+
+        let max_iters = (trial.len().saturating_sub(1) * 4).clamp(16, 4096);
+        let mut candidates = Vec::new();
+        let mut seen = vec![false; trial.len()];
+        for _ in 0..max_iters {
+            candidates.clear();
+            for &clause_idx in unsatisfied.iter().take(128) {
+                for &lit in self.clause_slice(clause_idx) {
+                    let var = lit.unsigned_abs() as usize;
+                    if var < seen.len()
+                        && !seen[var]
+                        && !fixed[var]
+                        && self.unassigned_decision_candidate(var)
+                    {
+                        seen[var] = true;
+                        candidates.push(var);
+                    }
+                }
+            }
+            for &var in &candidates {
+                seen[var] = false;
+            }
+            if candidates.is_empty() {
+                return false;
+            }
+
+            let mut best_var = 0usize;
+            let mut best_unsatisfied = unsatisfied.len();
+            for &var in &candidates {
+                trial[var] = Self::invert_phase(trial[var]);
+                let score = self.count_unsatisfied_trial_clauses(&trial, best_unsatisfied);
+                trial[var] = Self::invert_phase(trial[var]);
+                if score < best_unsatisfied {
+                    best_unsatisfied = score;
+                    best_var = var;
+                    if score == 0 {
+                        break;
+                    }
+                }
+            }
+            if best_var == 0 {
+                return false;
+            }
+
+            trial[best_var] = Self::invert_phase(trial[best_var]);
+            self.collect_unsatisfied_trial_clauses(&trial, &mut unsatisfied);
+            if unsatisfied.is_empty() {
+                self.sat_model = Some(trial.clone());
+                self.assignment.clone_from(&trial);
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn try_lucky_assignment(&mut self) -> bool {
+        for pattern in [
+            LuckyPattern::AllTrue,
+            LuckyPattern::AllFalse,
+            LuckyPattern::ForwardFalse,
+            LuckyPattern::ForwardTrue,
+            LuckyPattern::BackwardFalse,
+            LuckyPattern::BackwardTrue,
+        ] {
+            self.stats.lucky_attempts += 1;
+            if self.lucky_pattern_succeeds(pattern) {
+                self.stats.lucky_solved += 1;
+                if let Some(model) = self.sat_model.as_ref() {
+                    self.assignment.clone_from(model);
+                }
+                return true;
+            }
+        }
+        self.stats.lucky_attempts += 1;
+        if self.try_lucky_local_repair() {
+            self.stats.lucky_solved += 1;
+            return true;
+        }
+        false
     }
 
     #[cfg(test)]
@@ -6405,6 +6701,10 @@ impl Solver {
             );
         }
 
+        if config.lucky && self.try_lucky_assignment() {
+            return SolveOutcome::sat();
+        }
+
         let trace_search_interval = config.trace_search_interval as u64;
         let mut next_search_trace = trace_search_interval;
         let search_start = Instant::now();
@@ -8149,6 +8449,84 @@ mod tests {
         assert_eq!(s.propagate_head, start_head);
         assert_eq!(s.accounting_mode, SearchAccountingMode::NormalSearch);
         assert_eq!(s.assignment[1], UNASSIGNED);
+    }
+
+    #[test]
+    fn test_lucky_all_true_solves_without_decisions() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![2, 3]]);
+
+        assert!(s.try_lucky_assignment());
+
+        let model = s.sat_model.as_ref().expect("lucky SAT model");
+        assert_eq!(model[1], TRUE);
+        assert_eq!(model[2], TRUE);
+        assert_eq!(model[3], TRUE);
+        assert_eq!(s.stats.lucky_attempts, 1);
+        assert_eq!(s.stats.lucky_solved, 1);
+        assert_eq!(s.stats.decisions, 0);
+    }
+
+    #[test]
+    fn test_lucky_all_false_solves_after_true_conflict() {
+        let mut s = make_solver(2, vec![vec![-1, -2], vec![-1, 2]]);
+
+        assert!(s.try_lucky_assignment());
+
+        let model = s.sat_model.as_ref().expect("lucky SAT model");
+        assert_eq!(model[1], FALSE);
+        assert_eq!(model[2], FALSE);
+        assert_eq!(s.stats.lucky_attempts, 2);
+        assert_eq!(s.stats.lucky_solved, 1);
+        assert_eq!(s.stats.decisions, 0);
+    }
+
+    #[test]
+    fn test_lucky_greedy_pattern_recovers_from_preferred_conflict() {
+        let mut s = make_solver(2, vec![vec![-1, -2], vec![1, 2], vec![-1, 2]]);
+
+        assert!(s.lucky_pattern_succeeds(LuckyPattern::ForwardFalse));
+
+        let model = s.sat_model.as_ref().expect("lucky SAT model");
+        assert_eq!(model[1], FALSE);
+        assert_eq!(model[2], TRUE);
+        assert_eq!(s.stats.lucky_attempts, 0);
+        assert_eq!(s.stats.lucky_solved, 0);
+        assert_eq!(s.stats.decisions, 0);
+    }
+
+    #[test]
+    fn test_lucky_local_repair_solves_from_all_false_seed() {
+        let mut s = make_solver(2, vec![vec![-1, -2], vec![1, 2], vec![-1, 2]]);
+
+        assert!(s.try_lucky_local_repair());
+
+        let model = s.sat_model.as_ref().expect("lucky repair SAT model");
+        assert_eq!(model[1], FALSE);
+        assert_eq!(model[2], TRUE);
+        assert_eq!(s.assignment, *model);
+    }
+
+    #[test]
+    fn test_lucky_failure_restores_solver_state() {
+        let mut s = make_solver(2, vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]]);
+        let start_assignment = s.assignment.clone();
+        let start_trail = s.trail.clone();
+        let start_root_trail_len = s.root_trail_len;
+        let start_propagate_head = s.propagate_head;
+        let start_arena = s.arena.clone();
+        let start_watchers = s.watchers.clone();
+
+        assert!(!s.try_lucky_assignment());
+
+        assert_eq!(s.assignment, start_assignment);
+        assert_eq!(s.trail, start_trail);
+        assert_eq!(s.root_trail_len, start_root_trail_len);
+        assert_eq!(s.propagate_head, start_propagate_head);
+        assert_eq!(s.arena, start_arena);
+        assert_eq!(s.watchers, start_watchers);
+        assert!(s.sat_model.is_none());
+        assert_eq!(s.stats.lucky_attempts, 7);
+        assert_eq!(s.stats.lucky_solved, 0);
     }
 
     #[test]
@@ -9983,7 +10361,7 @@ mod tests {
 
         assert!(s.solve());
         let model = s.sat_model.as_ref().expect("missing SAT model snapshot");
-        assert_eq!(&model[1..], &[FALSE, FALSE, FALSE]);
+        assert_eq!(&model[1..], &[TRUE, TRUE, TRUE]);
     }
 
     #[test]
@@ -11572,7 +11950,11 @@ mod tests {
         s.mode_switch_at_ticks = s.stats.search_ticks;
 
         let mut proof_log = ProofLog::disabled();
-        assert!(s.solve_with_proof(&mut proof_log, &SolverConfig::default()));
+        let solve_config = SolverConfig {
+            lucky: false,
+            ..SolverConfig::default()
+        };
+        assert!(s.solve_with_proof(&mut proof_log, &solve_config));
 
         assert_eq!(s.search_mode, SearchMode::Focused);
         assert_eq!(s.stats.mode_switches, 1);

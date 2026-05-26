@@ -127,6 +127,12 @@ Known unpromoted or incomplete feature families at this baseline:
   size class, Kissat-style `small`/`bigbig`, binary-clause fraction, average clause size, and
   live-variable density in `SAT_STATS_JSON`; `SAT_TRACE_PREPROCESS=on` prints the same class summary.
   No adaptive feature routing is enabled yet.
+- Lucky assignment runs after preprocessing and before main search in the default and fast profiles.
+  It uses the temporary-assumption capability to try all-true/all-false and forward/backward
+  false/true propagation probes, then a bounded local repair fallback for small non-eliminated
+  formulas. It records `lucky_attempts` / `lucky_solved` and captures a SAT model only after a full
+  residual-formula satisfaction check. `SAT_LUCKY=off` disables it; the baseline profile also keeps
+  it off.
 - Clause minimization is binary-reason aware as of 1.11, so explicit `SAT_CLAUSE_MIN` settings are
   honored with `SAT_BINARY_FAST=on`. Binary-fast env runs keep minimization off unless
   `SAT_CLAUSE_MIN` is explicit because the search-core gate does not justify promoting recursive
