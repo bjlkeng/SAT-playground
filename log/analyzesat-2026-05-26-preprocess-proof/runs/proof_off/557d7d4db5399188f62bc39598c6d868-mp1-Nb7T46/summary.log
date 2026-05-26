@@ -1,0 +1,13 @@
+=== Benchmark Results: 11-kissat-port ===
+    Date:      Tue May 26 12:25:00 EDT 2026
+    Timeout:   300s
+    Memory:    16384 MB
+
+    Instances: 1
+    Solved:    1 (1 SAT + 0 UNSAT)
+    Unsolved:  0 (0 timeout + 0 unknown + 0 error)
+
+    PAR-2:     40.051
+
+    Results:   /tmp/analyzesat-20260526-111233/log/analyzesat-2026-05-26-preprocess-proof/runs/proof_off/557d7d4db5399188f62bc39598c6d868-mp1-Nb7T46/results.csv
+    Stats:     /tmp/analyzesat-20260526-111233/log/analyzesat-2026-05-26-preprocess-proof/runs/proof_off/557d7d4db5399188f62bc39598c6d868-mp1-Nb7T46/stats.jsonl

@@ -1,0 +1,2 @@
+instance,result,verified,time_s,timeout,exit_code
+46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized,UNSAT,no-checker,60.990,300,0
