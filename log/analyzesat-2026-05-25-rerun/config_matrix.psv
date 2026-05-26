@@ -1,0 +1,8 @@
+label|env|purpose
+A_default|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295|current default profile, including default-on SAT_LUCKY
+A_lucky_off|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_LUCKY=off|isolates the new default-on lucky assignment pass
+B_lbd_metadata|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_USE_LBD=on|LBD bookkeeping only
+C_lbd_ema|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_USE_LBD=on SAT_RESTART=kissat-ema|standalone single-mode EMA restarts
+D_focused_stable|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_SEARCH_MODE=focused-stable|focused/stable path with default focused-only VMTF
+E_focused_ticks|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on|focused/stable path with tick-gated stable intervals
+F_full_stack|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on SAT_REDUCE=lbd-tiered SAT_LBD_UPDATE_REASONS=on SAT_RESTART_REUSE_TRAIL=on SAT_REPHASE=on SAT_CHRONO=on SAT_BINARY_FAST=on SAT_CLAUSE_MIN=basic|combined supported/experimental search-core opt-ins excluding parked features and OTFS

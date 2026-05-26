@@ -1,0 +1,4 @@
+instance,result,time_s,timeout,exit_code
+mp1,SAT,225.502,300,10
+case9,SAT,32.170,300,10
+battleship,SAT,7.470,300,10

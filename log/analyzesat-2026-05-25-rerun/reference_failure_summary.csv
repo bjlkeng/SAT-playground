@@ -1,0 +1,7 @@
+solver,instance,result,time_s,exit_code
+kissat-latest,mp1,SAT,8.489000,10
+kissat-latest,case9,SAT,77.769000,10
+kissat-latest,battleship,SAT,0.180000,10
+kissat-sc2024,mp1,SAT,225.502000,10
+kissat-sc2024,case9,SAT,32.170000,10
+kissat-sc2024,battleship,SAT,7.470000,10
