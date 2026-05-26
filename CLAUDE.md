@@ -204,6 +204,13 @@ Write DRAT proof to `<output_dir>/proof.out`. This is required from every iterat
   `python3 tools/check_solver11_promotion.py --solver10 <solver10-results.csv> --previous <prior-solver11-results.csv> --candidate <candidate-results.csv> --timeout <seconds> --memory-mb <MB>`.
   The gate must record process sanity, matching instance/timeout sets, machine metadata, and the
   explicit decision when a candidate improves prior solver 11 but still loses to solver 10.
+- **Do not promote one-instance overfit guards:** if a solver 11 default/profile improvement is
+  dominated by one benchmark row, one formula-family classifier, or DIMACS input-order behavior,
+  treat it as a diagnostic until a mechanism-level fix explains the win. Do not hard-code guards
+  for a single instance shape as a default promotion without shuffled-order validation, a broader
+  benchmark sample, and a written revert/rollback plan. Prefer fixing the underlying mechanism
+  (for example watch selection, preprocessing budget, or search policy) over preserving a lucky
+  trajectory from clause or literal order.
 - **Discord automatic task notices:** For future background ACP/subagent tasks in Discord, suppress automatic `Background task done/failed` channel notices by setting the task notify policy to `silent` once the run/task id exists.
 - **Discord notifications:** When reporting background task completion or failures in Discord, @mention bjlkeng as `<@817490773179760662>` so Discord shows a badge notification.
 
