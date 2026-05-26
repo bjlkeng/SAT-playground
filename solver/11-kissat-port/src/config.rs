@@ -17,6 +17,7 @@ const DEFAULT_MODE_INIT_CONFLICTS: u64 = 2000;
 const DEFAULT_MODE_INTERVAL_SCALE: f64 = 1.5;
 const DEFAULT_REPHASE_INIT_CONFLICTS: u64 = 1000;
 const DEFAULT_RESTART_BLOCK_MARGIN: f64 = 0.0;
+const DEFAULT_RESTART_SLOW_WINDOW: u64 = 100_000;
 
 const PARKING_LOT_DENYLIST: &[&str] = &["SAT_WALK", "SAT_SWEEP", "SAT_ELS", "SAT_BCE"];
 const REMOVED_ALIASES: &[&str] = &["SAT_ELIMINATE_INPROCESS"];
@@ -514,6 +515,7 @@ pub(crate) struct SolverConfig {
     pub(crate) update_propagation_reason_lbd: bool,
     pub(crate) restart_policy: RestartPolicy,
     pub(crate) restart_block_margin: f64,
+    pub(crate) restart_slow_window: u64,
     pub(crate) restart_reuse_trail: bool,
     pub(crate) restart_reuse_trail_focused: bool,
     pub(crate) restart_reuse_trail_stable: bool,
@@ -613,6 +615,7 @@ impl Default for SolverConfig {
             update_propagation_reason_lbd: false,
             restart_policy: RestartPolicy::LegacyLuby,
             restart_block_margin: DEFAULT_RESTART_BLOCK_MARGIN,
+            restart_slow_window: DEFAULT_RESTART_SLOW_WINDOW,
             restart_reuse_trail: false,
             restart_reuse_trail_focused: false,
             restart_reuse_trail_stable: false,
@@ -904,6 +907,12 @@ impl SolverConfig {
             &key_set,
             "SAT_RESTART_BLOCK_MARGIN",
             self.restart_block_margin,
+        );
+        self.restart_slow_window = parse_u64_selected(
+            env_map,
+            &key_set,
+            "SAT_EMA_SLOW_WINDOW",
+            self.restart_slow_window,
         );
         self.restart_reuse_trail = parse_bool_selected(
             env_map,
@@ -1214,6 +1223,9 @@ impl SolverConfig {
                 "Invalid config: SAT_RESTART=kissat-ema requires SAT_SEARCH_MODE=focused-stable",
             );
         }
+        if self.restart_slow_window == 0 {
+            fail_config("Invalid config: SAT_EMA_SLOW_WINDOW must be at least 1");
+        }
         if self.vmtf == VmtfMode::FocusedOnly && self.search_mode_policy == SearchModePolicy::Single
         {
             fail_config(
@@ -1390,6 +1402,11 @@ impl SolverConfig {
             &mut lines,
             "restart_block_margin",
             format_f64(self.restart_block_margin),
+        );
+        push_kv(
+            &mut lines,
+            "restart_slow_window",
+            self.restart_slow_window.to_string(),
         );
         push_kv_bool(&mut lines, "restart_reuse_trail", self.restart_reuse_trail);
         push_kv_bool(
@@ -2015,6 +2032,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "update_propagation_reason_lbd" => Some("SAT_LBD_UPDATE_PROP_REASONS"),
         "restart_policy" => Some("SAT_RESTART"),
         "restart_block_margin" => Some("SAT_RESTART_BLOCK_MARGIN"),
+        "restart_slow_window" => Some("SAT_EMA_SLOW_WINDOW"),
         "restart_reuse_trail" => Some("SAT_RESTART_REUSE_TRAIL"),
         "restart_reuse_trail_focused" => Some("SAT_RESTART_REUSE_TRAIL_FOCUSED"),
         "restart_reuse_trail_stable" => Some("SAT_RESTART_REUSE_TRAIL_STABLE"),
@@ -2193,6 +2211,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_LBD_UPDATE_PROP_REASONS",
         "SAT_RESTART",
         "SAT_RESTART_BLOCK_MARGIN",
+        "SAT_EMA_SLOW_WINDOW",
         "SAT_RESTART_REUSE_TRAIL",
         "SAT_RESTART_REUSE_TRAIL_FOCUSED",
         "SAT_RESTART_REUSE_TRAIL_STABLE",
@@ -2825,6 +2844,19 @@ mod tests {
         assert!(config.use_lbd);
         assert_eq!(config.restart_policy, RestartPolicy::KissatEma);
         assert_eq!(config.restart_block_margin, 1.25);
+    }
+
+    #[test]
+    fn test_ema_slow_window_is_runtime_supported_and_replayable() {
+        let config = SolverConfig::from_env_map(&env_map(&[("SAT_EMA_SLOW_WINDOW", "4096")]));
+
+        assert_eq!(config.restart_slow_window, 4096);
+        let replay = config.config_replay_text();
+        assert!(replay.contains("restart_slow_window=4096"));
+
+        let replayed = SolverConfig::from_replay_text(&replay, Path::new("<ema-slow-window-test>"));
+        assert_eq!(replayed.restart_slow_window, config.restart_slow_window);
+        assert_eq!(replayed.config_hash(), config.config_hash());
     }
 
     #[test]

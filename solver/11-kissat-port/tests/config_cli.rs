@@ -42,3 +42,29 @@ fn single_mode_kissat_ema_is_rejected() {
         "unexpected stderr: {stderr}"
     );
 }
+
+#[test]
+fn zero_ema_slow_window_is_rejected() {
+    let cnf = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata")
+        .join("golden")
+        .join("sat_tiny.cnf");
+    let out_dir = temp_output_dir("zero-ema-slow-window");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sat-solver"))
+        .env_clear()
+        .env("SAT_EMA_SLOW_WINDOW", "0")
+        .arg(cnf)
+        .arg(&out_dir)
+        .output()
+        .expect("run sat-solver");
+
+    let _ = fs::remove_dir_all(&out_dir);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("SAT_EMA_SLOW_WINDOW must be at least 1"),
+        "unexpected stderr: {stderr}"
+    );
+}

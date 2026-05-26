@@ -146,7 +146,8 @@ const LBD_HARD_LEARNED_LIT_BUDGET_FACTOR: usize = 64;
 const LBD_HARD_LEARNED_LIT_FORMULA_FACTOR: usize = 64;
 const EMERGENCY_TIER1_MIN_AGE_CONFLICTS: u64 = 1_000;
 const RESTART_FAST_ALPHA: f64 = 1.0 / 32.0;
-const RESTART_SLOW_ALPHA: f64 = 1.0 / 4096.0;
+#[cfg(test)]
+const RESTART_SLOW_ALPHA: f64 = 1.0 / 100_000.0;
 const KISSAT_EMA_RESTART_MIN_CONFLICTS: u64 = 50;
 const KISSAT_EMA_RESTART_MARGIN: f64 = 1.20;
 const RELUCTANT_RESTART_INTERVAL: u64 = 1 << 10;
@@ -1867,9 +1868,9 @@ impl Solver {
             restart_pending: false,
             iterating: false,
             restart_fast_lbd: MovingAverage::new(RESTART_FAST_ALPHA),
-            restart_slow_lbd: MovingAverage::new(RESTART_SLOW_ALPHA),
+            restart_slow_lbd: MovingAverage::new(1.0 / (config.restart_slow_window as f64)),
             restart_fast_level: MovingAverage::new(RESTART_FAST_ALPHA),
-            restart_slow_level: MovingAverage::new(RESTART_SLOW_ALPHA),
+            restart_slow_level: MovingAverage::new(1.0 / (config.restart_slow_window as f64)),
             restart_min_conflicts: KISSAT_EMA_RESTART_MIN_CONFLICTS,
             restart_next_check_conflict: 0,
             restart_margin: KISSAT_EMA_RESTART_MARGIN,
@@ -12120,6 +12121,23 @@ mod tests {
 
         assert!(fast.value > slow.value);
         assert!((fast.value - 4.0) > (slow.value - 4.0));
+    }
+
+    #[test]
+    fn test_restart_slow_ema_window_matches_kissat() {
+        assert_eq!(RESTART_SLOW_ALPHA, 1.0 / 100_000.0);
+    }
+
+    #[test]
+    fn test_configured_restart_slow_window_sets_ema_alpha() {
+        let config = SolverConfig {
+            restart_slow_window: 4096,
+            ..SolverConfig::default()
+        };
+        let s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+
+        assert_eq!(s.restart_slow_lbd.alpha, 1.0 / 4096.0);
+        assert_eq!(s.restart_slow_level.alpha, 1.0 / 4096.0);
     }
 
     #[test]
