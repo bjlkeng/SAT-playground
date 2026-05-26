@@ -1,0 +1,7 @@
+label|env|purpose
+A_default|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295|current default profile: solver-10-compatible single-mode search, lucky off
+B_no_min|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_CLAUSE_MIN=off|ablate recursive clause minimization from the default path
+C_binary_fast|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_BINARY_FAST=on|binary implication adjacency path; config intentionally auto-disables clause minimization unless explicit
+D_binary_fast_min|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_BINARY_FAST=on SAT_CLAUSE_MIN=recursive-limited|binary implication adjacency plus current default recursive minimization
+E_otfs_defaultprop|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_OTFS=on SAT_CLAUSE_MIN=recursive-limited|learned-clause OTFS without binary-fast propagation
+F_binary_fast_otfs|SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_BINARY_FAST=on SAT_CLAUSE_MIN=recursive-limited SAT_OTFS=on|combined binary-fast, minimization, and learned-clause OTFS stack

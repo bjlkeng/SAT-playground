@@ -1,0 +1,3 @@
+solver,instance,result,time_s,exit_code
+kissat-latest,sudoku,TIMEOUT,300.022,124
+kissat-sc2024,sudoku,UNSAT,202.951,20
