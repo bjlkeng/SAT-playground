@@ -1,0 +1,10 @@
+Date: 2026-05-26
+Worktree: /tmp/analyzesat-20260526-143434
+Branch: side-01-analyzesat-20260526-143434
+HEAD: 025fe25083778bad067845835d43606b05489356
+Kernel: Linux ubuntu-desktop 6.8.0-111-generic x86_64
+CPU: AMD Ryzen 5 5600 6-Core Processor, 6 cores / 12 threads
+RAM: 62 GiB
+Benchmark memory limit: 16384 MB
+Benchmark timeout: 300s outer, SAT_LIMIT_WALL_SEC=295 unless noted
+Rust: rustc 1.94.1 (e408947bf 2026-03-25), from solver JSON_STATS

@@ -1,0 +1,5 @@
+config,solved,sat,unsat,unknown,timeout,error,par2,delta_par2
+A_default,10,6,4,0,0,0,853.876,0.0
+B_lbd_metadata,10,6,4,0,0,0,859.259,5.383000000000038
+C_reason_lbd,10,6,4,0,0,0,861.813,7.937000000000012
+D_lbd_tiered,3,1,2,1,0,0,946.494,92.61800000000005
