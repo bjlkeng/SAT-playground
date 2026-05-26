@@ -763,6 +763,32 @@ Conclusion: selecting Kissat-style initial watches alone does not explain the in
 trajectory win. The diagnostic path is useful evidence, but promotion needs a stronger mechanism
 than moving the first two watched literals while disabling sorted-subsumption.
 
+Shuffle-sensitivity validation for the overfit concern:
+
+```bash
+python3 tools/shuffle_sensitivity.py \
+  --instances \
+  benchmarks/profiling/5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7.cnf.xz \
+  benchmarks/profiling/6832fe907740af686fde98518067ea3f-velev-pipe-sat-1.0-b7.cnf.xz \
+  --seeds 1 \
+  --modes canonical-sorted,input-order,kissat-watch \
+  --timeout 300 \
+  --memory-mb 16384 \
+  --work-dir log/phase1/dq9-shuffle-kakuro-velev-seed1 \
+  --force
+```
+
+| Mode | Shuffled Kakuro seed 1 | Shuffled Velev seed 1 | Summary |
+|---|---:|---:|---|
+| `canonical-sorted` | `TIMEOUT` | `SAT 131.729s` | `log/phase1/dq9-shuffle-kakuro-velev-seed1/summary.csv` |
+| `input-order` | `SAT 295.490s` | `SAT 209.618s` | Same summary |
+| `kissat-watch` | `TIMEOUT` | `SAT 204.459s` | Same summary |
+
+The unshuffled `input-order` Kakuro win (`48.985s`) does not survive a single deterministic
+literal/clause shuffle; the same mode needs `295.490s` on the shuffled Kakuro row and regresses
+shuffled Velev. Treat future input-order wins as trajectory-sensitive until they pass
+multi-seed shuffled validation.
+
 Rejected alternatives:
 
 - Blindly defaulting to `raw` or `input-order`: AnalyzeSAT evidence showed those modes were
