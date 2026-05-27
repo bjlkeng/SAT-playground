@@ -5,6 +5,85 @@ description: Work through up to N highest-priority unblocked beads within a sing
 
 # /nextbeads — Work Phase-Scoped Beads In Priority Order
 
+## Multi-agent coordination — read this first
+
+Multiple agents may be working in this repo at the same time. Before you touch any
+bead, assume another agent is already running and verify otherwise. The rules below
+exist because **almost all solver logic lives in a single file** (`solver/11-kissat-port/src/main.rs`,
+~13K lines), so two agents editing concurrently will collide even on logically
+unrelated beads. File-level claims do not solve this — only the rules below do.
+
+### Required pre-claim check
+
+Run both of these before calling `bd update --claim` on anything:
+
+```bash
+# 1. Is the bead — or another shrink/inblock/<your-area> bead — already in progress?
+bd list --status in_progress
+bd search <area-keyword>     # e.g. shrink, propagation, reduce-db, restart
+
+# 2. Is another agent actively running cargo / solver / benchmark processes?
+ps aux | grep -E 'cargo|sat-solver|bench\.sh|run_ablation|nextbeads' | grep -v grep
+```
+
+If either check shows activity in your area, **stop and tell the user**. Do not race.
+Pick a different bead, or wait for the other agent to close.
+
+### Claim discipline
+
+When you start work on a bead:
+
+```bash
+bd update <id> --claim                    # sets owner = you
+bd update <id> --status in_progress       # makes it visible to other agents
+```
+
+When you finish or revert:
+
+```bash
+bd close <id>                             # or bd update <id> --status open if reverting
+```
+
+Beads tracks *declared* state. There is no heartbeat or file lock — if you do not
+claim, no one else can see you are working.
+
+### Worktree isolation
+
+Always work in a dedicated worktree, never the main checkout:
+
+```bash
+git worktree add /tmp/nextbeads-<slug>-$(date +%s) HEAD
+cd /tmp/nextbeads-<slug>-<ts>
+```
+
+This isolates your build artifacts and uncommitted edits from other agents. Conflicts
+resolve at merge / rebase time rather than during editing.
+
+### Serialize edits to `src/main.rs`
+
+The solver-11 monolith file is the contention hotspot. If your bead requires editing
+`solver/11-kissat-port/src/main.rs`:
+
+- Check the pre-claim commands above for any other agent touching the file (claimed
+  bead in `solver11` or `clause-minimization` / `propagation` / etc. labels, or a
+  running cargo build under a worktree).
+- If another agent is editing `main.rs`, **wait or pick a non-`main.rs` bead**. Parallel
+  edits to this file produce rebase conflicts almost every time.
+- Independent work — benchmarks, docs, `FINDINGS.md` writeups, reference reads,
+  `bd remember` updates — can run in parallel with `main.rs` edits.
+
+The long-term mitigation is the **Stage B module split** (`src/arena.rs`, `src/trail.rs`,
+`src/watch.rs`, `src/proof.rs`, `src/model.rs`, `src/branch.rs`, `src/search.rs`,
+`src/inprocess.rs`) outlined in `SOLVER11_STATE.md`. Until those land, treat
+`main.rs` as a single-writer resource.
+
+### Single-file caveat — what file claims can't fix
+
+Even if Beads supported file-level claims (it doesn't), they would not help here:
+two beads addressing unrelated features (e.g. shrink and propagation) still both
+end up patching `main.rs`. The defenses are claim discipline + worktrees + the
+serialize rule above, not file metadata.
+
 ## Invocation
 
 ```
