@@ -95,16 +95,22 @@ comparison gate).
    parameter sweeps (Phase 6) are pending and will be added when ablation
    finishes.
 
-## PAR-2 per config (300 s timeout, profiling suite) — A+B+C+D+E complete, F pending
+## PAR-2 per config (300 s timeout, profiling suite) — all 6 configs complete
 
 | Config | Solved | Timeout | PAR-2 | Δ vs A % | Status |
 |---|---:|---:|---:|---:|---|
-| A_baseline | 10/10 | 0 | 842.3 | +0.0% | complete |
-| **B_binary_fast** | **10/10** | **0** | **1172.1** | **+39.2%** | **complete — net regression** |
-| **C_lbd_tiered** | **8/10** | **2** | **1887.0** | **+124.0%** | **complete — 2 TIMEOUTs (mp1, case9)** |
-| **D_post_reset** | **10/10** | **0** | **755.2** | **−10.3%** | **complete — CLEAN WIN, no regressions** |
-| **E_reuse_trail** | **7/10** | **3** | **2326.4** | **+176.2%** | **complete — 3 TIMEOUTs (sudoku, battleship, case9)** |
-| F_combined_kissat | 0/10 | — | — | — | inflight |
+| A_baseline | 10/10 | 0 | 842.3 | +0.0% | baseline |
+| B_binary_fast | 10/10 | 0 | 1172.1 | +39.2 % | net regression |
+| C_lbd_tiered | 8/10 | 2 | 1887.0 | +124.0 % | 2 TIMEOUTs (mp1, case9) |
+| **D_post_reset** | **10/10** | **0** | **755.2** | **−10.3 %** | **CLEAN WIN** |
+| E_reuse_trail | 7/10 | 3 | 2326.4 | +176.2 % | 3 TIMEOUTs (sudoku, battleship, case9) |
+| F_combined_kissat | 7/10 | 3 | 2555.3 | +203.4 % | worst — features interact destructively |
+
+**Key result:** features that look promising in isolation (E rescues mp1 in 0.7 s,
+C rescues Kakuro in 119 s, B rescues Kakuro in 164 s) **combine destructively in
+F** (F's PAR-2 is worse than B, C, OR E individually; F loses E's mp1 win entirely
+and Kakuro nearly times out at 295 s). Only D shows a consistent, additive,
+trajectory-neutral improvement.
 
 ⚠️ **CRITICAL CORRECTNESS-ADJACENT FINDING:** `SAT_REDUCE=lbd-tiered` produces
 **TIMEOUTs on mp1 and case9** — instances the baseline solves in 45 s and 128 s
@@ -116,20 +122,20 @@ terminate under `SAT_USE_LBD=on SAT_REDUCE=lbd-tiered`.
 
 ## Per-instance wall time (s)
 
-| Instance | A | B | C | D | E |
-|---|---:|---:|---:|---:|---:|
-| sudoku-N30-12 | 232.8 | 219.1 | **192.4** | **191.5** | **TIMEOUT** ⚠️ |
-| 6s299b685 | 17.8 | 18.0 | 16.5 | 16.0 | **87.3 (+390 %)** |
-| REGRandom-K4-L1 | 59.7 | 60.7 | **164.2** | 56.9 | **262.1 (+339 %)** |
-| mp1-Nb7T46 | 44.9 | **225.4** | **TIMEOUT** | 42.3 | **0.7 (−98 %!)** |
-| Kakuro-easy-112 | 241.0 | **164.3** | **119.0** | 210.3 | **51.5 (−79 %)** |
-| SCPC-500-13 | 13.9 | 13.5 | 17.4 | 13.7 | **29.5 (+112 %)** |
-| velev-pipe-sat | 71.4 | **199.7** | **35.9** | 66.0 | 80.9 (+13 %) |
-| brocard | 9.3 | 10.3 | 8.7 | 8.7 | 14.4 (+54 %) |
-| battleship-16-31 | 23.2 | **129.6** | **132.9** | 23.0 | **TIMEOUT** ⚠️ |
-| case9 | 128.4 | 131.4 | **TIMEOUT** | 126.9 | **TIMEOUT** ⚠️ |
-| **TOTAL** | **842.3** | **1172.1** | **1887.0** | **755.2** | **2326.4** |
-| **Δ vs A** | — | +39 % | +124 % | **−10 %** | +176 % |
+| Instance | A | B | C | D | E | F |
+|---|---:|---:|---:|---:|---:|---:|
+| sudoku-N30-12 | 232.8 | 219.1 | **192.4** | **191.5** | **TIMEOUT** | **TIMEOUT** |
+| 6s299b685 | 17.8 | 18.0 | 16.5 | 16.0 | **87.3** | **101.8** |
+| REGRandom-K4-L1 | 59.7 | 60.7 | **164.2** | 56.9 | **262.1** | **TIMEOUT** |
+| mp1-Nb7T46 | 44.9 | **225.4** | **TIMEOUT** | 42.3 | **0.7** | **202.4** |
+| Kakuro-easy-112 | 241.0 | **164.3** | **119.0** | 210.3 | **51.5** | 295.3 |
+| SCPC-500-13 | 13.9 | 13.5 | 17.4 | 13.7 | **29.5** | **42.5** |
+| velev-pipe-sat | 71.4 | **199.7** | **35.9** | 66.0 | 80.9 | 64.9 |
+| brocard | 9.3 | 10.3 | 8.7 | 8.7 | 14.4 | 13.8 |
+| battleship-16-31 | 23.2 | **129.6** | **132.9** | 23.0 | **TIMEOUT** | 34.6 |
+| case9 | 128.4 | 131.4 | **TIMEOUT** | 126.9 | **TIMEOUT** | **TIMEOUT** |
+| **TOTAL** | **842.3** | **1172.1** | **1887.0** | **755.2** | **2326.4** | **2555.3** |
+| **Δ vs A** | — | +39 % | +124 % | **−10 %** | +176 % | +203 % |
 
 ## E_reuse_trail observation summary
 
@@ -170,7 +176,35 @@ integration is what needs fixing.
 ## D_post_reset observation summary
 
 D is the only single-flag winner. Every instance is equal or improved over A_baseline;
-no row regresses; no TIMEOUTs. The mechanism is simple:
+no row regresses; no TIMEOUTs. **Decomposition confirms the mechanism is pure
+execution improvement, not lucky trajectory:**
+
+| Instance | work_D | speed_D | net | measured |
+|---|---:|---:|---:|---:|
+| sudoku | 1.00 | 0.82 | 0.82 | 0.82 |
+| 6s299b685 | 1.00 | 0.90 | 0.90 | 0.90 |
+| REGRandom | 1.00 | 0.95 | 0.95 | 0.95 |
+| mp1 | 1.00 | 0.94 | 0.94 | 0.94 |
+| Kakuro | 1.00 | 0.87 | 0.87 | 0.87 |
+| SCPC | 1.00 | 0.99 | 0.99 | 0.99 |
+| velev | 1.00 | 0.92 | 0.92 | 0.92 |
+| brocard | 1.00 | 0.93 | 0.93 | 0.93 |
+| battleship | 1.00 | 0.99 | 0.99 | 0.99 |
+| case9 | 1.00 | 0.99 | 0.99 | 0.99 |
+
+**`work_D ≡ 1.00` on every instance** — D does not change the search trajectory
+at all. **`speed_D ∈ [0.82, 0.99]`** — D consistently increases per-prop
+throughput by 1–18 % depending on how cluttered the post-preprocess clause DB
+was. This is the safest possible profile of evidence: same conflicts/decisions/
+propagations as A_baseline, but each propagation event is faster because the
+watcher lists carry fewer dead-weight clauses.
+
+The mechanism:
+
+* Solver-11 preprocessing (`SAT_SIMPLIFICATION=on SAT_BVE=on SAT_FULL_BSR=on`)
+  generates a non-trivial number of redundant clauses during BVE resolution and
+  BSR strengthening (post-preprocess `clauses_redundant` is typically several
+  thousand on the profiling instances).
 
 * Solver-11 preprocessing (`SAT_SIMPLIFICATION=on SAT_BVE=on SAT_FULL_BSR=on`)
   generates a non-trivial number of redundant clauses during BVE resolution and
@@ -469,7 +503,15 @@ between binary-first and watcher-mixed walks.
 
 ## Code-Level Recommendations (ordered by ROI)
 
-1. **Fix `SAT_BINARY_FAST` per-prop overhead first** (bead `SAT-playground-ck8`,
+0. **(IMMEDIATE) Promote `SAT_POST_PREPROCESS_REDUCE_DB_RESET=on`** as a default
+   (bead `SAT-playground-2dd`). Cleanest single-flag win in the investigation:
+   −10.3 % PAR-2, 10/10 solved, `work_ratio = 1.00` on every instance, `speed_ratio
+   ∈ [0.82, 0.99]` (1–18 % faster per prop). Per CLAUDE.md promotion gate, run
+   `tools/check_solver11_promotion.py` against a clean solver-10 comparison and
+   the medium-track benchmark set before flipping the default; the profiling-suite
+   evidence is uniformly positive and trajectory-neutral.
+
+1. **Fix `SAT_BINARY_FAST` per-prop overhead** (bead `SAT-playground-ck8`,
    Gap CD-1). The flag is currently a regression. Rewriting the watcher list as
    inline-tagged 4-byte `Watcher` (with long-clause tail follow-up), eagerly
    removing deleted binaries, and dropping `mark_binary_clause_used` should bring
@@ -506,9 +548,19 @@ between binary-first and watcher-mixed walks.
   conflict explosion under B_binary_fast. The flag's name suggests an
   execution-only optimization but it actually changes the conflict trajectory
   through propagation-order reorder.
-* **`SAT_POST_PREPROCESS_REDUCE_DB_RESET=on`** — not yet measured. Skipping
-  recommendation until D_post_reset finishes; the post-preprocess clause pool is
-  small on this profile so the upside is bounded.
+* **"Combining kissat-style features synergizes"** — falsified by F_combined_kissat
+  scoring **+203 % PAR-2** (worse than B, C, or E alone). F loses E's mp1 win
+  (202 s in F vs 0.7 s in E), nearly times out on Kakuro (295 s in F vs 51 s in
+  E), and produces 3 TIMEOUTs. Multi-feature combinations need to be tested
+  empirically, not assumed to compose.
+* **"`SAT_REDUCE=lbd-tiered` is ready for default promotion"** — falsified by
+  the mp1 and case9 TIMEOUTs (Gap CD-3 bead `SAT-playground-4iu`, follow-up
+  bead `SAT-playground-4a3`). Until the TIMEOUT root cause is debugged, the
+  feature is broken.
+* **"`SAT_RESTART_REUSE_TRAIL=on` with focused-stable is ready"** — falsified by
+  E's 3 TIMEOUTs. The kissat-style restart works in isolation (mp1 in 0.7 s,
+  Kakuro in 51 s prove the primitives are correct), but the system-level
+  integration is broken by Gap CD-5 (search-loop priority order).
 
 ## Artifact Paths
 
