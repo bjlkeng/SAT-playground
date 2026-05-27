@@ -95,7 +95,7 @@ comparison gate).
    parameter sweeps (Phase 6) are pending and will be added when ablation
    finishes.
 
-## PAR-2 per config (300 s timeout, profiling suite) — A+B+C+D complete, E/F pending
+## PAR-2 per config (300 s timeout, profiling suite) — A+B+C+D+E complete, F pending
 
 | Config | Solved | Timeout | PAR-2 | Δ vs A % | Status |
 |---|---:|---:|---:|---:|---|
@@ -103,8 +103,8 @@ comparison gate).
 | **B_binary_fast** | **10/10** | **0** | **1172.1** | **+39.2%** | **complete — net regression** |
 | **C_lbd_tiered** | **8/10** | **2** | **1887.0** | **+124.0%** | **complete — 2 TIMEOUTs (mp1, case9)** |
 | **D_post_reset** | **10/10** | **0** | **755.2** | **−10.3%** | **complete — CLEAN WIN, no regressions** |
-| E_reuse_trail | 0/10 | — | — | — | inflight |
-| F_combined_kissat | 0/10 | — | — | — | queued |
+| **E_reuse_trail** | **7/10** | **3** | **2326.4** | **+176.2%** | **complete — 3 TIMEOUTs (sudoku, battleship, case9)** |
+| F_combined_kissat | 0/10 | — | — | — | inflight |
 
 ⚠️ **CRITICAL CORRECTNESS-ADJACENT FINDING:** `SAT_REDUCE=lbd-tiered` produces
 **TIMEOUTs on mp1 and case9** — instances the baseline solves in 45 s and 128 s
@@ -116,19 +116,56 @@ terminate under `SAT_USE_LBD=on SAT_REDUCE=lbd-tiered`.
 
 ## Per-instance wall time (s)
 
-| Instance | A | B | C | D |
-|---|---:|---:|---:|---:|
-| sudoku-N30-12 | 232.8 | 219.1 (-6 %) | **192.4 (-17 %)** | **191.5 (-18 %)** |
-| 6s299b685 | 17.8 | 18.0 | 16.5 (-7 %) | 16.0 (-10 %) |
-| REGRandom-K4-L1 | 59.7 | 60.7 | **164.2 (+175 %)** | **56.9 (-5 %)** |
-| mp1-Nb7T46 | 44.9 | **225.4 (+402 %)** | **TIMEOUT** ⚠️ | 42.3 (-6 %) |
-| Kakuro-easy-112 | 241.0 | **164.3 (-32 %)** | **119.0 (-51 %)** | 210.3 (-13 %) |
-| SCPC-500-13 | 13.9 | 13.5 | 17.4 (+25 %) | 13.7 |
-| velev-pipe-sat | 71.4 | **199.7 (+180 %)** | **35.9 (-50 %)** | 66.0 (-8 %) |
-| brocard | 9.3 | 10.3 | 8.7 (-7 %) | 8.7 (-7 %) |
-| battleship-16-31 | 23.2 | **129.6 (+458 %)** | **132.9 (+473 %)** | 23.0 |
-| case9 | 128.4 | 131.4 | **TIMEOUT** ⚠️ | 126.9 (-1 %) |
-| **TOTAL** | **842.3** | **1172.1** | **1887.0** | **755.2 (−10 %)** |
+| Instance | A | B | C | D | E |
+|---|---:|---:|---:|---:|---:|
+| sudoku-N30-12 | 232.8 | 219.1 | **192.4** | **191.5** | **TIMEOUT** ⚠️ |
+| 6s299b685 | 17.8 | 18.0 | 16.5 | 16.0 | **87.3 (+390 %)** |
+| REGRandom-K4-L1 | 59.7 | 60.7 | **164.2** | 56.9 | **262.1 (+339 %)** |
+| mp1-Nb7T46 | 44.9 | **225.4** | **TIMEOUT** | 42.3 | **0.7 (−98 %!)** |
+| Kakuro-easy-112 | 241.0 | **164.3** | **119.0** | 210.3 | **51.5 (−79 %)** |
+| SCPC-500-13 | 13.9 | 13.5 | 17.4 | 13.7 | **29.5 (+112 %)** |
+| velev-pipe-sat | 71.4 | **199.7** | **35.9** | 66.0 | 80.9 (+13 %) |
+| brocard | 9.3 | 10.3 | 8.7 | 8.7 | 14.4 (+54 %) |
+| battleship-16-31 | 23.2 | **129.6** | **132.9** | 23.0 | **TIMEOUT** ⚠️ |
+| case9 | 128.4 | 131.4 | **TIMEOUT** | 126.9 | **TIMEOUT** ⚠️ |
+| **TOTAL** | **842.3** | **1172.1** | **1887.0** | **755.2** | **2326.4** |
+| **Δ vs A** | — | +39 % | +124 % | **−10 %** | +176 % |
+
+## E_reuse_trail observation summary
+
+E combines `SAT_USE_LBD=on` + `SAT_SEARCH_MODE=focused-stable` + `SAT_RESTART=kissat-ema`
++ `SAT_RESTART_REUSE_TRAIL=on` — the closest the existing solver-11 knobs get to
+kissat's stable-mode restart behaviour. Aggregate PAR-2 is the worst of any
+single-axis config (+176 %), with **3 TIMEOUTs** (sudoku, battleship, case9).
+
+The bimodality is extreme:
+
+* **mp1: 0.7 s** (vs A 44.9 s) — **64× faster**. Kissat-style target-then-saved
+  phase + reuse trail hits the right branch immediately.
+* **Kakuro: 51.5 s** (vs A 241.0 s) — −79 %, the largest single-instance speedup
+  in the whole investigation.
+* **sudoku TIMEOUT** (vs A 232.8 s solves). The kissat-ema restart cadence
+  combined with focused-stable phase saving never settles into a productive
+  search loop on this instance.
+* **battleship TIMEOUT, case9 TIMEOUT** — same failure pattern.
+* **6s299b685: 87.3 s** (+390 %) — the focused-stable mode-switch adds latency
+  on instances that did not need it.
+
+This is exactly the "Investigating Why Ported Features Don't Help" Step 6
+"Read the reference control flow literally" outcome: solver-11's
+focused-stable + kissat-ema port is **algorithmically correct in isolation
+but does not combine well with the rest of the search-loop priority order
+(Gap CD-5)**. Kissat's restart works because it interacts with kissat's
+reduce → switching → restarting → reordering → rephasing → probing →
+eliminating cascade. Solver-11's loop runs mode switch + restart before
+reduce-DB and has no inprocessing pass, so the kissat-style restart fires
+into a clause-DB state kissat would never produce.
+
+Recommended follow-up: do **not** open a new bead. The existing beads
+`5b2.2.55` / `5b2.2.57` cover trail-reuse and EMA tuning; Gap CD-5
+(`SAT-playground-09n`) captures the priority-order issue. The mp1 and
+Kakuro wins are evidence that the *primitives* work; the system-level
+integration is what needs fixing.
 
 ## D_post_reset observation summary
 
