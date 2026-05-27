@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "status": "SAT",
+  "exit_code": 0,
+  "termination_reason": "sat",
+  "unknown_reason": null,
+  "status_file": "/tmp/analyzesat-20260526-184922/log/analyzesat-2026-05-26-conflict-analysis/traces/velev/B_resolved/proof/status.txt",
+  "model_file": "/tmp/analyzesat-20260526-184922/log/analyzesat-2026-05-26-conflict-analysis/traces/velev/B_resolved/proof/model.txt",
+  "proof_file": null,
+  "proof_completeness": "incomplete",
+  "model_check_result": "not_checked",
+  "proof_check_result": "not_checked",
+  "config_hash": "ae6253d9fb6fd64c",
+  "input_sha256": "556af38adccec0528cf8421faad82f18e7a41ea337147eb546d398e5f04d0d80",
+  "profile": "default",
+  "proof_policy": "drat",
+  "output_contract_state": "complete",
+  "stats_json_seen": true
+}

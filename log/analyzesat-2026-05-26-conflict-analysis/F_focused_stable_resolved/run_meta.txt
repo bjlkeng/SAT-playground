@@ -1,0 +1,8 @@
+config: F_focused_stable_resolved
+env: SAT_STATS_JSON=on SAT_LIMIT_WALL_SEC=295 SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_CONFLICT_ANALYSIS_MODE=resolved
+timeout_s: 300
+memory_mb: 16384
+bench_dir: /tmp/analyzesat-20260526-184922/benchmarks/profiling
+worktree: /tmp/analyzesat-20260526-184922
+rev: e7ec1f811b28d61e82411ee92a0e1d31aa271e74
+date: 2026-05-26T20:24:25-04:00

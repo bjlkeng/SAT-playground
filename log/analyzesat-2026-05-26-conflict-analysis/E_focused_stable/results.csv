@@ -1,0 +1,11 @@
+instance,result,verified,time_s,timeout,exit_code
+0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12,UNSAT,no-checker,239.014,300,0
+3746303c659ef65aaa78f3b52cd5de49-6s299b685_Iter30,SAT,ok,90.513,300,0
+46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized,UNSAT,no-checker,183.312,300,0
+557d7d4db5399188f62bc39598c6d868-mp1-Nb7T46,SAT,ok,0.802,300,0
+5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7,SAT,ok,61.183,300,0
+663bb5659e42c2c75f74354f48895302-SCPC-500-13,UNSAT,no-checker,27.279,300,0
+6832fe907740af686fde98518067ea3f-velev-pipe-sat-1.0-b7,SAT,ok,89.900,300,0
+9af7646fc4a32c6f2744ddc0c4b654b7-brocard_problem_large,UNSAT,no-checker,15.351,300,0
+ed6d842f96d10f3400bce251f9e95bfb-battleship-16-31-sat,SAT,ok,8.139,300,0
+fab2022deb130fe3ad1136a5c71b4109-case9,SAT,ok,43.418,300,0

@@ -1,0 +1,5 @@
+name: A_baseline
+env: SAT_STATS_JSON=on SAT_TRACE_SEARCH_INTERVAL=20000 SAT_LIMIT_WALL_SEC=120 
+instance: /tmp/analyzesat-20260526-184922/benchmarks/profiling/6832fe907740af686fde98518067ea3f-velev-pipe-sat-1.0-b7.cnf.xz
+rev: e7ec1f811b28d61e82411ee92a0e1d31aa271e74
+date: 2026-05-26T20:27:05-04:00
