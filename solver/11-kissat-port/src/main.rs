@@ -114,6 +114,7 @@ const LEARNTSIZE_FACTOR: f64 = 1.0 / 3.0;
 const LEARNTSIZE_INC: f64 = 1.1;
 const LEARNTSIZE_ADJUST_START_CONFL: usize = 100;
 const LEARNTSIZE_ADJUST_INC: f64 = 1.5;
+const DEFAULT_ACTIVITY_DECAY: f64 = 0.95;
 const LBD_REDUCE_DB_INIT_CONFLICTS: usize = 1_000;
 const LBD_REDUCE_DB_INTERVAL_CONFLICTS: usize = 1_000;
 const LBD_REDUCE_DB_MIN_INTERVAL_CONFLICTS: u64 = 100;
@@ -1175,6 +1176,10 @@ struct Solver {
     activity_inc: f64,
     /// multiplicative decay factor for older activity
     activity_decay: f64,
+    /// focused-mode decay factor for focused/stable experiments
+    focused_activity_decay: f64,
+    /// stable-mode decay factor for focused/stable experiments
+    stable_activity_decay: f64,
     /// additive bump applied to learned clauses participating in recent conflicts
     clause_activity_inc: f64,
     /// multiplicative decay factor for older learned-clause activity
@@ -2031,7 +2036,13 @@ impl Solver {
             decision_var: vec![true; num_vars + 1],
             activity: vec![0.0; num_vars + 1],
             activity_inc: 1.0,
-            activity_decay: 0.95,
+            activity_decay: if focused_stable_mode {
+                config.focused_activity_decay
+            } else {
+                DEFAULT_ACTIVITY_DECAY
+            },
+            focused_activity_decay: config.focused_activity_decay,
+            stable_activity_decay: config.stable_activity_decay,
             clause_activity_inc: 1.0,
             clause_activity_decay: 0.999,
             restart_policy: config.restart_policy,
@@ -2160,6 +2171,7 @@ impl Solver {
             hot_stats: config.hot_stats,
             stats: SolverStats::default(),
         };
+        solver.stats.current_var_decay = solver.activity_decay;
         solver.sync_tier_limit_stats();
         let reduce_db_limit_overridden = config.reduce_db_init.is_some();
         let reduce_db_interval_overridden = config.reduce_db_interval.is_some();
@@ -4303,6 +4315,22 @@ impl Solver {
         self.activity_inc /= self.activity_decay;
     }
 
+    fn set_activity_decay_for_current_mode(&mut self) {
+        if self.search_mode_policy != SearchModePolicy::FocusedStable {
+            return;
+        }
+
+        let next_decay = match self.search_mode {
+            SearchMode::Focused => self.focused_activity_decay,
+            SearchMode::Stable => self.stable_activity_decay,
+        };
+        if self.activity_decay != next_decay {
+            self.activity_decay = next_decay;
+            self.stats.var_decay_switches = self.stats.var_decay_switches.saturating_add(1);
+            self.stats.current_var_decay = next_decay;
+        }
+    }
+
     fn bump_clause_activity(&mut self, clause_idx: usize) {
         if clause_idx >= self.arena.len() {
             return;
@@ -4555,6 +4583,7 @@ impl Solver {
         self.mode_start_conflicts = self.stats.conflicts;
         self.mode_start_ticks = self.stats.search_ticks;
         self.mode_start_decisions = self.stats.decisions;
+        self.set_activity_decay_for_current_mode();
         if self.mode_use_ticks {
             match self.search_mode {
                 SearchMode::Focused => {
@@ -12532,6 +12561,79 @@ mod tests {
             s.effective_phase_policy(),
             PhasePolicy::BestThenTargetThenSaved
         );
+    }
+
+    #[test]
+    fn test_focused_stable_starts_with_focused_activity_decay() {
+        let config = SolverConfig {
+            focused_activity_decay: 0.91,
+            stable_activity_decay: 0.997,
+            ..focused_stable_config()
+        };
+        let s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+
+        assert_eq!(s.search_mode, SearchMode::Focused);
+        assert_eq!(s.activity_decay, 0.91);
+        assert_eq!(s.stats.current_var_decay, 0.91);
+        assert_eq!(s.stats.var_decay_switches, 0);
+    }
+
+    #[test]
+    fn test_focused_stable_default_decay_preserves_legacy_constant() {
+        let config = focused_stable_config();
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+
+        assert_eq!(s.activity_decay, DEFAULT_ACTIVITY_DECAY);
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+        assert_eq!(s.search_mode, SearchMode::Stable);
+        assert_eq!(s.activity_decay, DEFAULT_ACTIVITY_DECAY);
+        assert_eq!(s.stats.var_decay_switches, 0);
+    }
+
+    #[test]
+    fn test_mode_switch_updates_activity_decay_constant() {
+        let config = SolverConfig {
+            focused_activity_decay: 0.91,
+            stable_activity_decay: 0.997,
+            ..focused_stable_config()
+        };
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+
+        assert_eq!(s.search_mode, SearchMode::Stable);
+        assert_eq!(s.activity_decay, 0.997);
+        assert_eq!(s.stats.current_var_decay, 0.997);
+        assert_eq!(s.stats.var_decay_switches, 1);
+
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+
+        assert_eq!(s.search_mode, SearchMode::Focused);
+        assert_eq!(s.activity_decay, 0.91);
+        assert_eq!(s.stats.current_var_decay, 0.91);
+        assert_eq!(s.stats.var_decay_switches, 2);
+    }
+
+    #[test]
+    fn test_single_mode_unaffected_by_per_mode_decay_config() {
+        let config = SolverConfig {
+            focused_activity_decay: 0.91,
+            stable_activity_decay: 0.997,
+            ..single_mode_config()
+        };
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+
+        assert_eq!(s.search_mode, SearchMode::Stable);
+        assert_eq!(s.activity_decay, DEFAULT_ACTIVITY_DECAY);
+        assert_eq!(s.stats.current_var_decay, DEFAULT_ACTIVITY_DECAY);
+        s.stats.conflicts = s.mode_switch_at_conflicts;
+        s.maybe_switch_search_mode();
+        assert_eq!(s.search_mode, SearchMode::Stable);
+        assert_eq!(s.activity_decay, DEFAULT_ACTIVITY_DECAY);
+        assert_eq!(s.stats.var_decay_switches, 0);
     }
 
     #[test]

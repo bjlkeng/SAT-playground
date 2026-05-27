@@ -125,6 +125,8 @@ pub(crate) struct SolverStats {
     pub(crate) decision_heap_pops: u64,
     pub(crate) decision_heap_stale_pops: u64,
     pub(crate) decision_heap_inserts: u64,
+    pub(crate) var_decay_switches: u64,
+    pub(crate) current_var_decay: f64,
     pub(crate) avg_decision_level_sum: u64,
     pub(crate) max_decision_level: u64,
     pub(crate) preprocess_eliminated_vars: u64,
@@ -581,6 +583,8 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
         "random_decision_sequences",
         ctx.stats.random_decision_sequences,
     );
+    json.u64("var_decay_switches", ctx.stats.var_decay_switches);
+    json.f64("current_var_decay", ctx.stats.current_var_decay);
     json.u64("lucky_attempts", ctx.stats.lucky_attempts);
     json.u64("lucky_solved", ctx.stats.lucky_solved);
 
@@ -688,6 +692,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, _timings: &RunTimings) -> Str
             "inprocess_runs=0 inprocess_ticks=0 ",
             "phase_saved_used={} phase_legacy_used={} phase_target_used={} phase_best_used={} phase_initial_used={} ",
             "phase_save_target={} phase_save_best={} lucky_attempts={} lucky_solved={} rephases={} branch_reorders={} ",
+            "var_decay_switches={} current_var_decay={:.6} ",
             "search_ticks={} ",
             "decisions_focused={} decisions_stable={} ",
             "mode_switches={} seconds_focused={:.6} seconds_stable={:.6} ",
@@ -733,6 +738,8 @@ pub(crate) fn trace_full_line(stats: &SolverStats, _timings: &RunTimings) -> Str
         stats.lucky_solved,
         stats.rephases,
         stats.branch_reorders,
+        stats.var_decay_switches,
+        stats.current_var_decay,
         stats.search_ticks,
         stats.decisions_focused,
         stats.decisions_stable,

@@ -19,6 +19,8 @@ const DEFAULT_REPHASE_INIT_CONFLICTS: u64 = 1000;
 const DEFAULT_REORDER_INTERVAL_CONFLICTS: u64 = 10_000;
 const DEFAULT_RESTART_BLOCK_MARGIN: f64 = 0.0;
 const DEFAULT_RESTART_SLOW_WINDOW: u64 = 100_000;
+const DEFAULT_VAR_DECAY_FOCUSED: f64 = 0.95;
+const DEFAULT_VAR_DECAY_STABLE: f64 = 0.95;
 
 const PARKING_LOT_DENYLIST: &[&str] = &["SAT_WALK", "SAT_SWEEP", "SAT_ELS", "SAT_BCE"];
 const REMOVED_ALIASES: &[&str] = &["SAT_ELIMINATE_INPROCESS"];
@@ -549,6 +551,8 @@ pub(crate) struct SolverConfig {
     pub(crate) chrono_max_delta: usize,
     pub(crate) mode_init_conflicts: u64,
     pub(crate) mode_interval_scale: f64,
+    pub(crate) focused_activity_decay: f64,
+    pub(crate) stable_activity_decay: f64,
     pub(crate) rephase_init_conflicts: u64,
     pub(crate) reorder_interval_conflicts: u64,
 
@@ -652,6 +656,8 @@ impl Default for SolverConfig {
             chrono_max_delta: DEFAULT_CHRONO_MAX_DELTA,
             mode_init_conflicts: DEFAULT_MODE_INIT_CONFLICTS,
             mode_interval_scale: DEFAULT_MODE_INTERVAL_SCALE,
+            focused_activity_decay: DEFAULT_VAR_DECAY_FOCUSED,
+            stable_activity_decay: DEFAULT_VAR_DECAY_STABLE,
             rephase_init_conflicts: DEFAULT_REPHASE_INIT_CONFLICTS,
             reorder_interval_conflicts: DEFAULT_REORDER_INTERVAL_CONFLICTS,
 
@@ -1030,6 +1036,18 @@ impl SolverConfig {
             "SAT_MODE_INTERVAL_SCALE",
             self.mode_interval_scale,
         );
+        self.focused_activity_decay = parse_f64_selected(
+            env_map,
+            &key_set,
+            "SAT_VAR_DECAY_FOCUSED",
+            self.focused_activity_decay,
+        );
+        self.stable_activity_decay = parse_f64_selected(
+            env_map,
+            &key_set,
+            "SAT_VAR_DECAY_STABLE",
+            self.stable_activity_decay,
+        );
         self.rephase_init_conflicts = parse_u64_selected(
             env_map,
             &key_set,
@@ -1280,6 +1298,12 @@ impl SolverConfig {
         if self.reorder && self.reorder_interval_conflicts == 0 {
             fail_config("Invalid config: SAT_REORDER_INTERVAL_CONFLICTS must be at least 1");
         }
+        if self.focused_activity_decay <= 0.0 || self.focused_activity_decay >= 1.0 {
+            fail_config("Invalid config: SAT_VAR_DECAY_FOCUSED must be finite and in (0, 1)");
+        }
+        if self.stable_activity_decay <= 0.0 || self.stable_activity_decay >= 1.0 {
+            fail_config("Invalid config: SAT_VAR_DECAY_STABLE must be finite and in (0, 1)");
+        }
         if self.mode_use_ticks && self.search_mode_policy == SearchModePolicy::Single {
             fail_config(
                 "Invalid config: SAT_MODE_USE_TICKS=on requires SAT_SEARCH_MODE=focused-stable",
@@ -1502,6 +1526,16 @@ impl SolverConfig {
             &mut lines,
             "mode_interval_scale",
             format_f64(self.mode_interval_scale),
+        );
+        push_kv(
+            &mut lines,
+            "focused_activity_decay",
+            format_f64(self.focused_activity_decay),
+        );
+        push_kv(
+            &mut lines,
+            "stable_activity_decay",
+            format_f64(self.stable_activity_decay),
         );
         push_kv(
             &mut lines,
@@ -2116,6 +2150,8 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "chrono_max_delta" => Some("SAT_CHRONO_MAX_DELTA"),
         "mode_init_conflicts" => Some("SAT_MODE_INIT_CONFLICTS"),
         "mode_interval_scale" => Some("SAT_MODE_INTERVAL_SCALE"),
+        "focused_activity_decay" => Some("SAT_VAR_DECAY_FOCUSED"),
+        "stable_activity_decay" => Some("SAT_VAR_DECAY_STABLE"),
         "rephase_init_conflicts" => Some("SAT_REPHASE_INIT_CONFLICTS"),
         "reorder_interval_conflicts" => Some("SAT_REORDER_INTERVAL_CONFLICTS"),
         "simplification" => Some("SAT_SIMPLIFICATION"),
@@ -2298,6 +2334,8 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_CHRONO_MAX_DELTA",
         "SAT_MODE_INIT_CONFLICTS",
         "SAT_MODE_INTERVAL_SCALE",
+        "SAT_VAR_DECAY_FOCUSED",
+        "SAT_VAR_DECAY_STABLE",
         "SAT_REPHASE_INIT_CONFLICTS",
         "SAT_REORDER_INTERVAL_CONFLICTS",
         "SAT_SIMPLIFICATION",
@@ -3061,6 +3099,31 @@ mod tests {
         assert!(config.rephase);
         assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
         assert_eq!(config.rephase_init_conflicts, 17);
+    }
+
+    #[test]
+    fn test_var_decay_per_mode_controls_are_replayable() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_USE_LBD", "on"),
+            ("SAT_SEARCH_MODE", "focused-stable"),
+            ("SAT_VAR_DECAY_FOCUSED", "0.91"),
+            ("SAT_VAR_DECAY_STABLE", "0.997"),
+        ]));
+
+        assert_eq!(config.focused_activity_decay, 0.91);
+        assert_eq!(config.stable_activity_decay, 0.997);
+
+        let replay = config.config_replay_text();
+        assert!(replay.contains("focused_activity_decay=0.91"));
+        assert!(replay.contains("stable_activity_decay=0.997"));
+
+        let replayed = SolverConfig::from_replay_text(&replay, Path::new("<var-decay-test>"));
+        assert_eq!(
+            replayed.focused_activity_decay,
+            config.focused_activity_decay
+        );
+        assert_eq!(replayed.stable_activity_decay, config.stable_activity_decay);
+        assert_eq!(replayed.config_hash(), config.config_hash());
     }
 
     #[test]
