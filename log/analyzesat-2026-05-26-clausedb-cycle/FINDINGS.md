@@ -42,6 +42,14 @@ propagation-primitive** axis. Prior runs covered the orthogonal axes already.
 
 ## Executive Summary
 
+**Headline:** Of the four orthogonal post-conflict-pipeline knobs tested, **only
+`SAT_POST_PREPROCESS_REDUCE_DB_RESET=on` (config D) is a net win** — `−10.3 %`
+PAR-2, **10/10 solved, every instance equal or improved**. `SAT_BINARY_FAST=on`
+(B) is `+39 %` PAR-2; `SAT_REDUCE=lbd-tiered` (C) is `+124 %` PAR-2 with **two
+TIMEOUTs** (mp1, case9). D is the lowest-risk single-flag change and the only one
+that should be considered for default promotion (after the CLAUDE.md solver-10
+comparison gate).
+
 1. **`SAT_BINARY_FAST=on` is a definitive net regression** (full B vs A: PAR-2 842 → 1172,
    **+39 %**). The decomposition is decisive: **every row of B has `speed_ratio ≥ 1.07`**
    (the binary-fast path is 7–23 % slower per propagation event than the legacy watcher
@@ -87,31 +95,100 @@ propagation-primitive** axis. Prior runs covered the orthogonal axes already.
    parameter sweeps (Phase 6) are pending and will be added when ablation
    finishes.
 
-## PAR-2 per config (300 s timeout, profiling suite) — A+B complete, C/D/E/F pending
+## PAR-2 per config (300 s timeout, profiling suite) — A+B+C+D complete, E/F pending
 
 | Config | Solved | Timeout | PAR-2 | Δ vs A % | Status |
 |---|---:|---:|---:|---:|---|
 | A_baseline | 10/10 | 0 | 842.3 | +0.0% | complete |
 | **B_binary_fast** | **10/10** | **0** | **1172.1** | **+39.2%** | **complete — net regression** |
-| C_lbd_tiered | 0/10 | — | — | — | inflight |
-| D_post_reset | 0/10 | — | — | — | queued |
-| E_reuse_trail | 0/10 | — | — | — | queued |
+| **C_lbd_tiered** | **8/10** | **2** | **1887.0** | **+124.0%** | **complete — 2 TIMEOUTs (mp1, case9)** |
+| **D_post_reset** | **10/10** | **0** | **755.2** | **−10.3%** | **complete — CLEAN WIN, no regressions** |
+| E_reuse_trail | 0/10 | — | — | — | inflight |
 | F_combined_kissat | 0/10 | — | — | — | queued |
+
+⚠️ **CRITICAL CORRECTNESS-ADJACENT FINDING:** `SAT_REDUCE=lbd-tiered` produces
+**TIMEOUTs on mp1 and case9** — instances the baseline solves in 45 s and 128 s
+respectively. Per CLAUDE.md "Debug every UNKNOWN before continuing", this is a
+**failed configuration**, not just a slow one. The lbd-tiered policy must not be
+promoted to any default profile until the mp1/case9 TIMEOUT root cause is
+debugged. New bead recommended: investigate why these two instances do not
+terminate under `SAT_USE_LBD=on SAT_REDUCE=lbd-tiered`.
 
 ## Per-instance wall time (s)
 
-| Instance | A | B | B/A | bin frac | dominant |
+| Instance | A | B | C | D |
+|---|---:|---:|---:|---:|
+| sudoku-N30-12 | 232.8 | 219.1 (-6 %) | **192.4 (-17 %)** | **191.5 (-18 %)** |
+| 6s299b685 | 17.8 | 18.0 | 16.5 (-7 %) | 16.0 (-10 %) |
+| REGRandom-K4-L1 | 59.7 | 60.7 | **164.2 (+175 %)** | **56.9 (-5 %)** |
+| mp1-Nb7T46 | 44.9 | **225.4 (+402 %)** | **TIMEOUT** ⚠️ | 42.3 (-6 %) |
+| Kakuro-easy-112 | 241.0 | **164.3 (-32 %)** | **119.0 (-51 %)** | 210.3 (-13 %) |
+| SCPC-500-13 | 13.9 | 13.5 | 17.4 (+25 %) | 13.7 |
+| velev-pipe-sat | 71.4 | **199.7 (+180 %)** | **35.9 (-50 %)** | 66.0 (-8 %) |
+| brocard | 9.3 | 10.3 | 8.7 (-7 %) | 8.7 (-7 %) |
+| battleship-16-31 | 23.2 | **129.6 (+458 %)** | **132.9 (+473 %)** | 23.0 |
+| case9 | 128.4 | 131.4 | **TIMEOUT** ⚠️ | 126.9 (-1 %) |
+| **TOTAL** | **842.3** | **1172.1** | **1887.0** | **755.2 (−10 %)** |
+
+## D_post_reset observation summary
+
+D is the only single-flag winner. Every instance is equal or improved over A_baseline;
+no row regresses; no TIMEOUTs. The mechanism is simple:
+
+* Solver-11 preprocessing (`SAT_SIMPLIFICATION=on SAT_BVE=on SAT_FULL_BSR=on`)
+  generates a non-trivial number of redundant clauses during BVE resolution and
+  BSR strengthening (post-preprocess `clauses_redundant` is typically several
+  thousand on the profiling instances).
+* These redundant clauses are *not* learnt under genuine conflict pressure —
+  they are byproducts of preprocessing and carry no information about the
+  problem's hard combinatorial core.
+* `SAT_POST_PREPROCESS_REDUCE_DB_RESET=on` (`main.rs:5323-5340`,
+  `reset_learned_budget_after_preprocess`) advances the reduce-DB conflict
+  schedule by the existing limit, which forces the first reduce-DB call to
+  consider all post-preprocess clauses as candidates.
+* Effect: search starts with a cleaner DB, lower propagation overhead, and
+  cache-friendlier watcher lists.
+
+The gain is small per instance (5–18 %) but consistent — exactly the kind of
+free-win modification the CLAUDE.md promotion gate is designed to surface.
+**Recommended next step:** run `python3 tools/check_solver11_promotion.py
+--solver10 ... --previous ... --candidate D_post_reset --timeout 1800 ...` on
+the medium track to verify the gain survives at full timeout and on a broader
+sample before promoting `SAT_POST_PREPROCESS_REDUCE_DB_RESET=on` into the
+default profile.
+
+## C_lbd_tiered observation summary
+
+C decomposition (full):
+
+| Instance | work_C | speed_C | net | measured | dominant |
 |---|---:|---:|---:|---:|---|
-| sudoku-N30-12 | 232.8 | 219.1 | 0.94 | 50.8 % | work ↓ (lucky) |
-| 6s299b685_Iter30 | 17.8 | 18.0 | 1.01 | 22.3 % | noise |
-| REGRandom-K4-L1 | 59.7 | 60.7 | 1.02 | 14.9 % | mixed (work ↓ × speed ↑) |
-| **mp1-Nb7T46** | 44.9 | **225.4** | **5.02** | 1.7 % | **WORK ↑↑↑** |
-| **Kakuro-easy-112** | 241.0 | **164.3** | **0.68** | ? | **work ↓↓ (lucky)** |
-| SCPC-500-13 | 13.9 | 13.5 | 0.98 | ? | noise |
-| **velev-pipe-sat** | 71.4 | **199.7** | **2.80** | ? | **WORK ↑↑** |
-| brocard | 9.3 | 10.3 | 1.11 | ? | small WORK ↑ |
-| **battleship-16-31** | 23.2 | **129.6** | **5.58** | ? | **WORK ↑↑↑** |
-| case9 | 128.4 | 131.4 | 1.02 | ? | noise |
+| sudoku | 0.96 | **0.78** | 0.75 | 0.83 | **speed ↓ (clean DB → faster props)** |
+| 6s299b685 | 1.00 | 0.93 | 0.93 | 0.93 | noise |
+| REGRandom | **2.80** | 1.02 | 2.86 | 2.75 | **WORK ↑↑ (random 3-SAT trajectory blowup)** |
+| mp1 | — | — | — | **TIMEOUT** | **CRITICAL — fails to terminate** |
+| Kakuro | **0.50** | 1.00 | 0.50 | 0.49 | **work ↓↓ (cleaner DB → better trajectory)** |
+| SCPC | 0.95 | 1.33 | 1.27 | 1.25 | speed ↑ (different DB shape → slower per-prop) |
+| velev | **0.27** | **2.11** | 0.57 | 0.50 | **mixed — trajectory savings dwarf execution penalty** |
+| brocard | 1.00 | 0.93 | 0.93 | 0.93 | noise |
+| battleship | **6.21** | 0.94 | 5.86 | 5.72 | **WORK ↑↑↑** |
+| case9 | — | — | — | **TIMEOUT** | **CRITICAL** |
+
+The lbd-tiered reducer has a wider amplitude of effect than `BINARY_FAST`:
+- velev `work=0.27` (73 % fewer conflicts) and Kakuro `work=0.50` are
+  trajectory wins from clauses being aged out at meaningful glue boundaries
+  rather than activity-based eviction;
+- REGRandom `work=2.80` and battleship `work=6.21` are trajectory losses where
+  the tier classification deletes clauses needed for the (random-style) CDCL
+  loop;
+- the mp1 and case9 TIMEOUTs are categorically different — those instances
+  never terminate, suggesting the lbd-tiered policy interacts badly with the
+  search loop priority order described in Gap CD-5.
+
+The execution-side effects are subtler than B's: `speed_C` ranges from 0.78
+(faster on sudoku, where the DB is cleaner) to 2.11 (slower on velev, where the
+DB shape changes). Aggregate PAR-2 is dominated by the two TIMEOUTs (+1200 PAR-2)
+rather than by per-prop cost.
 
 ## Work × Speed Decomposition (B vs A_baseline)
 
