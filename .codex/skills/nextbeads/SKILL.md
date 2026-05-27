@@ -59,30 +59,77 @@ cd /tmp/nextbeads-<slug>-<ts>
 This isolates your build artifacts and uncommitted edits from other agents. Conflicts
 resolve at merge / rebase time rather than during editing.
 
-### Serialize edits to `src/main.rs`
+### Pick non-overlapping work — don't wait on `src/main.rs`
 
-The solver-11 monolith file is the contention hotspot. If your bead requires editing
-`solver/11-kissat-port/src/main.rs`:
+The solver-11 monolith file (`solver/11-kissat-port/src/main.rs`, ~13K lines) is the
+contention hotspot. **Do not block waiting for it to free up.** Instead, pick a bead
+whose change surface does not overlap with any open / `in_progress` bead.
 
-- Check the pre-claim commands above for any other agent touching the file (claimed
-  bead in `solver11` or `clause-minimization` / `propagation` / etc. labels, or a
-  running cargo build under a worktree).
-- If another agent is editing `main.rs`, **wait or pick a non-`main.rs` bead**. Parallel
-  edits to this file produce rebase conflicts almost every time.
+Use the pre-claim check to enumerate what's already taken:
+
+```bash
+bd list --status in_progress
+bd list --label solver11 --status=open      # plus any in_progress
+```
+
+Then choose a bead that:
+
+- Touches a *different subsystem keyword* than the in-flight ones (e.g. if `shrink`
+  / `clause-minimization` is in flight, prefer `propagation`, `restart`, `reduce-db`,
+  `vmtf`, `bve`, `rephase`, `chrono`, `lucky`, etc.).
+- Edits a *different function or hot-path region* in `main.rs`. Two agents can both
+  edit `main.rs` if they touch disjoint line ranges — read each in-flight bead's
+  "Fix sketch" / file:line citations to predict the overlap before claiming.
+- Or lives in a file other than `main.rs` entirely (`src/config.rs`, `src/simp.rs`,
+  `src/stats.rs`, `src/branch.rs`, `tools/*`, `docs/*`, `log/*`, `README.md`,
+  `FEATURES.md`, etc.).
 - Independent work — benchmarks, docs, `FINDINGS.md` writeups, reference reads,
-  `bd remember` updates — can run in parallel with `main.rs` edits.
+  `bd remember` updates — always runs safely in parallel.
 
-The long-term mitigation is the **Stage B module split** (`src/arena.rs`, `src/trail.rs`,
-`src/watch.rs`, `src/proof.rs`, `src/model.rs`, `src/branch.rs`, `src/search.rs`,
-`src/inprocess.rs`) outlined in `SOLVER11_STATE.md`. Until those land, treat
-`main.rs` as a single-writer resource.
+If every ready bead overlaps with current in-flight work, prefer the *least
+overlapping* one and accept the merge cost rather than stalling. Surface the
+overlap risk to the user in your run summary.
+
+The long-term mitigation is the **Stage B module split** (`src/arena.rs`,
+`src/trail.rs`, `src/watch.rs`, `src/proof.rs`, `src/model.rs`, `src/branch.rs`,
+`src/search.rs`, `src/inprocess.rs`) outlined in `SOLVER11_STATE.md`. Until those
+land, expect occasional `main.rs` merge work even with good bead-picking.
 
 ### Single-file caveat — what file claims can't fix
 
 Even if Beads supported file-level claims (it doesn't), they would not help here:
 two beads addressing unrelated features (e.g. shrink and propagation) still both
-end up patching `main.rs`. The defenses are claim discipline + worktrees + the
-serialize rule above, not file metadata.
+end up patching `main.rs`. The defenses are claim discipline + worktrees + careful
+non-overlapping bead selection, not file metadata.
+
+### Pre-commit rebase + re-test
+
+Other agents may have pushed in the time between your claim and your commit.
+**Before every commit, sync with the remote and re-verify the change still works.**
+
+```bash
+# 1. Fetch the latest main without merging yet.
+git fetch origin main
+
+# 2. If origin/main is ahead of HEAD, rebase your in-progress branch on top.
+if [ "$(git rev-list --count HEAD..origin/main)" -gt 0 ]; then
+    git rebase origin/main           # resolve conflicts as needed
+fi
+
+# 3. Re-run the validation suite. Hooks may pass but logic can still break
+#    when someone else's change touches a related code path.
+cd solver/NN-name && bash build.sh
+bash tools/smoke_test.sh solver/NN-name
+# For solver-changing beads, also re-run the focused benchmark / cargo test you
+# used to validate the bead originally.
+
+# 4. Only commit + push if smoke + targeted tests still pass.
+```
+
+If the rebase produced conflicts you cannot resolve confidently, **stop and tell
+the user**. Do not paper over conflicts with `git checkout --theirs` / `--ours`.
+If the smoke or targeted tests fail after a clean rebase, the other agent's
+change interacted with yours — investigate the interaction before committing.
 
 ## Invocation
 
