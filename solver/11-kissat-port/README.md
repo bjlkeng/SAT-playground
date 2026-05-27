@@ -74,7 +74,9 @@ What is present:
   restarts when the recent decision-level EMA is high relative to the slow baseline; set
   `SAT_RESTART_BLOCK_MARGIN` above `0` to enable it. The blocker is default-off after profile
   testing showed the `1.4` margin regressed the current profiling suite. The slow LBD EMA window
-  now defaults to Kissat's `100000` conflicts and can be calibrated with `SAT_EMA_SLOW_WINDOW`.
+  defaults to `4096` conflicts; a Kissat-style `100000` window remains available as an explicit
+  `SAT_EMA_SLOW_WINDOW` experiment, but it over-restarts the current partial focused/stable port
+  and times out on the profiling `case9` instance.
   Restart trail reuse is available for the focused/stable search path; stable-mode reuse is
   deliberately not applied to the solver-10-compatible single-mode Luby path because that hybrid
   preserved a harmful SAT prefix on `mp1`.
@@ -191,7 +193,7 @@ SAT_STATS_HOT=on
 SAT_USE_LBD=on
 SAT_RESTART=legacy-luby|kissat-ema|reluctant  # kissat-ema requires focused-stable search
 SAT_RESTART_BLOCK_MARGIN=<f64>  # 0 disables the level blocker
-SAT_EMA_SLOW_WINDOW=<u64>       # default 100000
+SAT_EMA_SLOW_WINDOW=<u64>       # default 4096
 SAT_RESTART_REUSE_TRAIL=on|off
 SAT_RESTART_REUSE_TRAIL_FOCUSED=on|off
 SAT_RESTART_REUSE_TRAIL_STABLE=on|off

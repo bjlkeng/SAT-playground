@@ -60,7 +60,9 @@ Known unpromoted or incomplete feature families at this baseline:
   immediately. The blocker is default-off (`0`) after profile testing showed the `1.4` margin
   regressed the current profile suite. Single-mode `SAT_RESTART=kissat-ema` is rejected because it
   lacks Kissat's focused-mode envelope and restart trail-reuse semantics. The slow LBD EMA window
-  now matches Kissat's `100000` conflict default and can be overridden with `SAT_EMA_SLOW_WINDOW`.
+  defaults to `4096`; the Kissat-style `100000` conflict window remains opt-in through
+  `SAT_EMA_SLOW_WINDOW` because it over-restarts this partial focused/stable port and regresses
+  profiling `case9` to a timeout.
   The Kissat-style partial-restart experiment remains compiled and env-facing
   `SAT_RESTART_REUSE_TRAIL*` requests are honored. Stable/focused trail reuse is now
   scoped to focused/stable mode, so the solver-10-compatible single-mode Luby path does not retain

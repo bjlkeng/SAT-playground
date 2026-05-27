@@ -148,7 +148,7 @@ const LBD_HARD_LEARNED_LIT_FORMULA_FACTOR: usize = 64;
 const EMERGENCY_TIER1_MIN_AGE_CONFLICTS: u64 = 1_000;
 const RESTART_FAST_ALPHA: f64 = 1.0 / 32.0;
 #[cfg(test)]
-const RESTART_SLOW_ALPHA: f64 = 1.0 / 100_000.0;
+const RESTART_SLOW_ALPHA: f64 = 1.0 / 4_096.0;
 const KISSAT_EMA_RESTART_MIN_CONFLICTS: u64 = 50;
 const KISSAT_EMA_RESTART_MARGIN: f64 = 1.20;
 const RELUCTANT_RESTART_INTERVAL: u64 = 1 << 10;
@@ -12949,8 +12949,8 @@ mod tests {
     }
 
     #[test]
-    fn test_restart_slow_ema_window_matches_kissat() {
-        assert_eq!(RESTART_SLOW_ALPHA, 1.0 / 100_000.0);
+    fn test_restart_slow_ema_window_matches_default() {
+        assert_eq!(RESTART_SLOW_ALPHA, 1.0 / 4_096.0);
     }
 
     #[test]

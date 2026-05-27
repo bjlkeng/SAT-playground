@@ -32,7 +32,7 @@ SAT_LBD_UPDATE_REASONS,update_reason_lbd,bool,on|off,false,false,false,true,fals
 SAT_LBD_UPDATE_PROP_REASONS,update_propagation_reason_lbd,bool,on|off,false,false,false,true,false,false,,SAT_LBD_UPDATE_REASONS,1.14h-fix,yes
 SAT_RESTART,restart_policy,enum,legacy-luby|kissat-ema|reluctant,legacy-luby,legacy-luby,legacy-luby,false,false,false,,SAT_USE_LBD_and_SAT_SEARCH_MODE=focused-stable_for_kissat-ema,0.3,yes
 SAT_RESTART_BLOCK_MARGIN,restart_block_margin,f64,finite_nonnegative_or_zero_disables,0,0,0,false,false,false,,,1.4a,yes
-SAT_EMA_SLOW_WINDOW,restart_slow_window,u64,positive,100000,100000,100000,false,false,false,,SAT_RESTART=kissat-ema,SAT-playground-ucm,yes
+SAT_EMA_SLOW_WINDOW,restart_slow_window,u64,positive,4096,4096,4096,false,false,false,,SAT_RESTART=kissat-ema,SAT-playground-ucm,yes
 SAT_RESTART_REUSE_TRAIL,restart_reuse_trail,bool,on|off,false,false,false,true,false,false,,,1.14j,yes
 SAT_RESTART_REUSE_TRAIL_FOCUSED,restart_reuse_trail_focused,bool,on|off,false,false,false,true,false,false,,effective_with_SAT_SEARCH_MODE=focused-stable,SAT-playground-5b2.2.55,yes
 SAT_RESTART_REUSE_TRAIL_STABLE,restart_reuse_trail_stable,bool,on|off,false,false,false,true,false,false,,effective_with_SAT_SEARCH_MODE=focused-stable,SAT-playground-5b2.2.55,yes

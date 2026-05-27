@@ -18,7 +18,7 @@ const DEFAULT_MODE_INTERVAL_SCALE: f64 = 1.5;
 const DEFAULT_REPHASE_INIT_CONFLICTS: u64 = 1000;
 const DEFAULT_REORDER_INTERVAL_CONFLICTS: u64 = 10_000;
 const DEFAULT_RESTART_BLOCK_MARGIN: f64 = 0.0;
-const DEFAULT_RESTART_SLOW_WINDOW: u64 = 100_000;
+const DEFAULT_RESTART_SLOW_WINDOW: u64 = 4_096;
 const DEFAULT_VAR_DECAY_FOCUSED: f64 = 0.95;
 const DEFAULT_VAR_DECAY_STABLE: f64 = 0.95;
 
@@ -2994,11 +2994,23 @@ mod tests {
 
     #[test]
     fn test_ema_slow_window_is_runtime_supported_and_replayable() {
-        let config = SolverConfig::from_env_map(&env_map(&[("SAT_EMA_SLOW_WINDOW", "4096")]));
+        let default_config = SolverConfig::from_env_map(&env_map(&[]));
+        assert_eq!(default_config.restart_slow_window, 4096);
 
-        assert_eq!(config.restart_slow_window, 4096);
+        let schema_row = CONFIG_SCHEMA_CSV
+            .lines()
+            .find(|line| line.starts_with("SAT_EMA_SLOW_WINDOW,"))
+            .expect("SAT_EMA_SLOW_WINDOW schema row");
+        let columns: Vec<&str> = schema_row.split(',').collect();
+        assert_eq!(columns[4], "4096");
+        assert_eq!(columns[5], "4096");
+        assert_eq!(columns[6], "4096");
+
+        let config = SolverConfig::from_env_map(&env_map(&[("SAT_EMA_SLOW_WINDOW", "100000")]));
+
+        assert_eq!(config.restart_slow_window, 100000);
         let replay = config.config_replay_text();
-        assert!(replay.contains("restart_slow_window=4096"));
+        assert!(replay.contains("restart_slow_window=100000"));
 
         let replayed = SolverConfig::from_replay_text(&replay, Path::new("<ema-slow-window-test>"));
         assert_eq!(replayed.restart_slow_window, config.restart_slow_window);
