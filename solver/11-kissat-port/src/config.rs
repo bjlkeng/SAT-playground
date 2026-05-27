@@ -1794,7 +1794,7 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             true,
             true,
             false,
-            "log/bench-11-kissat-port-2026-05-25-22-30-00/results.csv",
+            "log/phase1/3fs-lucky-off-default-profile/results.csv",
         ),
         feature(
             "SAT_CHRONO",

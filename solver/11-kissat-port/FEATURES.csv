@@ -9,7 +9,7 @@ SAT_VMTF,vmtf,SmokeSafe,true,true,false,none,log/bench-11-kissat-port-2026-05-25
 SAT_REORDER,reorder,Experimental,true,true,false,none,log/phase1/1.14n-summary.md,branching|search-trajectory,SAT-playground-7oy
 SAT_REPHASE,rephase,Experimental,true,true,false,none,log/bench-11-kissat-port-2026-05-25-18-29-53/results.csv,phase-selection|focused-stable,SAT-playground-5b2.2.57
 SAT_MODE_USE_TICKS,mode_use_ticks,Experimental,true,true,false,none,log/bench-11-kissat-port-2026-05-25-20-01-30/results.csv,mode-switching|focused-stable|fixed-unknown,SAT-playground-5b2.2.57
-SAT_LUCKY,lucky,SmokeSafe,true,true,false,default|fast,log/bench-11-kissat-port-2026-05-25-22-30-00/results.csv,pre-search|sat-fast-path|local-repair,SAT-playground-ide
+SAT_LUCKY,lucky,SmokeSafe,true,true,false,none,log/phase1/3fs-lucky-off-default-profile/results.csv,pre-search|sat-fast-path|local-repair|default-demoted,SAT-playground-otk
 SAT_OTFS,otfs,Experimental,true,true,false,none,log/phase1/1.14g-otfs-summary.md,learned-clause-db|search-trajectory,1.14g
 SAT_SIMPLIFICATION,simplification,SmokeSafe,true,true,false,default|fast,solver/11-kissat-port/BASELINE_LOCK.raw.txt,preprocess,0.3
 SAT_BVE,bve,SmokeSafe,true,true,false,default|fast,solver/11-kissat-port/BASELINE_LOCK.raw.txt,preprocess-bve,0.3
