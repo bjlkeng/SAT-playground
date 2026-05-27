@@ -822,8 +822,8 @@ On 2026-05-09, the CDCL core was moved closer to MiniSat in five targeted areas:
   from the residual original-clause count unless `SAT_REDUCE_DB_INIT`,
   `SAT_REDUCE_DB_INTERVAL`, or `SAT_POST_PREPROCESS_REDUCE_DB_RESET` override it
 - conflict analysis defaults to MiniSat's `seen`-only behavior and skips literal position 0 in
-  reason clauses; the older solver-10 `scratch_resolved` behavior remains available with
-  `SAT_CONFLICT_ANALYSIS_MODE=resolved`
+  reason clauses; the older solver-10 `scratch_resolved` mode was retired after profiling showed
+  identical CDCL trajectories and only extra hot-loop/config surface
 - variable and learned-clause activities now use `f64`; learned-clause activity uses two arena
   words
 - proof generation remains enabled by default, with `SAT_PROOF=off` available only as a diagnostic

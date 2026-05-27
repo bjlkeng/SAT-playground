@@ -80,7 +80,7 @@ SAT_TRANSITIVE_MAX_REMOVED_PER_ROUND,transitive_max_removed_per_round,u64,nonneg
 SAT_RCHECK_TICKS,rcheck_ticks_budget,u64,nonnegative,0,0,0,false,false,false,,,0.3,internal
 SAT_INITIAL_CLAUSE_MODE,initial_clause_mode,enum,auto|canonical-sorted|input-order|kissat-watch|raw,canonical-sorted,canonical-sorted,canonical-sorted,false,false,true,,,0.3,yes
 SAT_BRANCH_MODE,branch_mode,enum,minisat|occurrence,minisat,minisat,minisat,false,false,true,,,0.3,internal
-SAT_CONFLICT_ANALYSIS_MODE,use_resolved_conflict_analysis,enum,minisat|resolved,minisat,minisat,minisat,false,false,true,,,0.3,internal
+SAT_CONFLICT_ANALYSIS_MODE,use_resolved_conflict_analysis,enum,minisat,minisat,minisat,minisat,false,false,true,,,0.3,internal
 SAT_CCMIN_MODE,clause_min_mode,enum,0|1|2|none|basic|deep,2,2,2,false,false,true,SAT_CLAUSE_MIN,,0.3,internal
 SAT_REDUCE_DB_INIT,reduce_db_init,option_usize,nonnegative,none,none,none,false,false,true,,,0.3,internal
 SAT_REDUCE_DB_INTERVAL,reduce_db_interval,option_usize,nonnegative,none,none,none,false,false,true,,,0.3,internal

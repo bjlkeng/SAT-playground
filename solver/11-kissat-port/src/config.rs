@@ -2370,9 +2370,11 @@ fn parse_conflict_analysis_selected(
     get_selected(env_map, key_set, "SAT_CONFLICT_ANALYSIS_MODE")
         .map(|value| match value.trim().to_ascii_lowercase().as_str() {
             "minisat" | "mini" | "seen" | "false" | "off" | "0" => false,
-            "resolved" | "solver10" | "legacy" | "true" | "on" | "1" => true,
+            "resolved" | "solver10" | "legacy" | "true" | "on" | "1" => {
+                fail_config("SAT_CONFLICT_ANALYSIS_MODE=resolved is retired; use minisat")
+            }
             other => fail_config(&format!(
-                "Invalid SAT_CONFLICT_ANALYSIS_MODE={other}; expected minisat/resolved"
+                "Invalid SAT_CONFLICT_ANALYSIS_MODE={other}; expected minisat"
             )),
         })
         .unwrap_or(default)

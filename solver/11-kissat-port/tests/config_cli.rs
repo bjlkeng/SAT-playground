@@ -70,6 +70,32 @@ fn zero_ema_slow_window_is_rejected() {
 }
 
 #[test]
+fn resolved_conflict_analysis_mode_is_rejected() {
+    let cnf = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata")
+        .join("golden")
+        .join("sat_tiny.cnf");
+    let out_dir = temp_output_dir("resolved-conflict-analysis");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sat-solver"))
+        .env_clear()
+        .env("SAT_CONFLICT_ANALYSIS_MODE", "resolved")
+        .arg(cnf)
+        .arg(&out_dir)
+        .output()
+        .expect("run sat-solver");
+
+    let _ = fs::remove_dir_all(&out_dir);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("SAT_CONFLICT_ANALYSIS_MODE=resolved is retired; use minisat"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
 fn single_mode_target_phase_policies_are_rejected() {
     let cnf = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("testdata")
