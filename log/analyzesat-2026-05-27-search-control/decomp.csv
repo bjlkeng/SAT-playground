@@ -1,0 +1,5 @@
+config,instance,wall_ratio,work_ratio,speed_ratio,net,cause,result_cfg,result_base,t_cfg,t_base,conflicts_cfg,conflicts_base
+B_chrono,0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12,1.32,5.27,1.81,9.54,combined,UNSAT,UNSAT,274.979,207.537,1368858,259775
+B_chrono,3746303c659ef65aaa78f3b52cd5de49-6s299b685_Iter30,1.24,17.89,0.63,11.36,trajectory,SAT,SAT,22.493,18.172,67345,3764
+B_chrono,46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized,3.43,2.95,2.33,6.88,combined,UNSAT,UNSAT,206.860,60.329,4749032,1607608
+B_chrono,557d7d4db5399188f62bc39598c6d868-mp1-Nb7T46,0.43,0.67,0.99,0.66,WIN(trajectory),SAT,SAT,19.804,46.481,284415,425229

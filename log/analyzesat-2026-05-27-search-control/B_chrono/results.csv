@@ -1,0 +1,5 @@
+instance,result,verified,time_s,timeout,exit_code
+0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12,UNSAT,no-checker,274.979,300,0
+3746303c659ef65aaa78f3b52cd5de49-6s299b685_Iter30,SAT,ok,22.493,300,0
+46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized,UNSAT,no-checker,206.860,300,0
+557d7d4db5399188f62bc39598c6d868-mp1-Nb7T46,SAT,ok,19.804,300,0
