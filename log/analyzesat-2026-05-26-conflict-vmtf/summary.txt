@@ -1,0 +1,134 @@
+================================================================================
+Multi-config ablation: conflict analysis / minimization / OTFS / VMTF
+================================================================================
+
+## PAR-2 per config
+
+config                  solved   to  unk  err     PAR-2
+A_baseline                  10    0    0    0     840.8
+B_ccmin_off                  5    5    0    0    3214.8
+C_ccmin_basic                8    2    0    0    2049.5
+D_ccmin_inblock              8    2    0    0    1818.6
+E_otfs_on                    8    2    0    0    1772.8
+F_resolved                  10    0    0    0     888.1
+G_deep_min                  10    0    0    0     805.3
+
+## Per-instance wall time (s)
+
+instance                                   Abaseline   Bccminoff  Cccminbasi  Dccmininbl     Eotfson   Fresolved    Gdeepmin
+0aa22564d00e9716519918d84b25c4a7-sudoku-      231.29     TIMEOUT      292.89      247.14      224.47      254.31      212.43
+3746303c659ef65aaa78f3b52cd5de49-6s299b6       18.36       18.89       17.56       15.90       16.99       19.43       18.90
+46355da785714f239393e7630020cae3-REGRand       61.29       52.15       55.51       63.68       81.58       62.45       60.46
+557d7d4db5399188f62bc39598c6d868-mp1-Nb7       44.61     TIMEOUT     TIMEOUT      139.70     TIMEOUT       48.29       45.55
+5e933a625099cc1ec6a8299a7848a2ae-Kakuro-      232.73     TIMEOUT      275.46       63.42       74.23      254.76      228.64
+663bb5659e42c2c75f74354f48895302-SCPC-50       13.82       24.05       16.20       13.07       11.67       13.82       13.66
+6832fe907740af686fde98518067ea3f-velev-p       77.47      104.71       61.99       57.16     TIMEOUT       73.58       65.99
+9af7646fc4a32c6f2744ddc0c4b654b7-brocard       10.22       15.01       11.76       18.54        9.71        9.42        8.76
+ed6d842f96d10f3400bce251f9e95bfb-battles       23.23     TIMEOUT     TIMEOUT     TIMEOUT       23.19       23.17       22.97
+fab2022deb130fe3ad1136a5c71b4109-case9        127.81     TIMEOUT      118.13     TIMEOUT      130.99      128.89      127.99
+
+## Work × speed decomposition vs A_baseline
+
+cfg                    instance                                work  speed    net  actual
+B_ccmin_off            3746303c659ef65aaa78f3b52cd5de49-6s2    2.08   0.92   1.92    1.03
+B_ccmin_off            46355da785714f239393e7630020cae3-REG    0.81   1.18   0.96    0.85
+B_ccmin_off            663bb5659e42c2c75f74354f48895302-SCP    1.35   1.31   1.77    1.74
+B_ccmin_off            6832fe907740af686fde98518067ea3f-vel    1.19   1.65   1.97    1.35
+B_ccmin_off            9af7646fc4a32c6f2744ddc0c4b654b7-bro    1.41   0.94   1.33    1.47
+C_ccmin_basic          0aa22564d00e9716519918d84b25c4a7-sud    1.20   1.12   1.34    1.27
+C_ccmin_basic          3746303c659ef65aaa78f3b52cd5de49-6s2    0.35   1.41   0.49    0.96
+C_ccmin_basic          46355da785714f239393e7630020cae3-REG    0.91   0.96   0.87    0.91
+C_ccmin_basic          5e933a625099cc1ec6a8299a7848a2ae-Kak    1.07   1.16   1.24    1.18
+C_ccmin_basic          663bb5659e42c2c75f74354f48895302-SCP    1.10   1.08   1.18    1.17
+C_ccmin_basic          6832fe907740af686fde98518067ea3f-vel    0.38   1.97   0.74    0.80
+C_ccmin_basic          9af7646fc4a32c6f2744ddc0c4b654b7-bro    1.40   0.79   1.11    1.15
+C_ccmin_basic          fab2022deb130fe3ad1136a5c71b4109-cas    0.91   1.02   0.93    0.92
+D_ccmin_inblock        0aa22564d00e9716519918d84b25c4a7-sud    1.01   1.01   1.02    1.07
+D_ccmin_inblock        3746303c659ef65aaa78f3b52cd5de49-6s2    0.34   1.24   0.42    0.87
+D_ccmin_inblock        46355da785714f239393e7630020cae3-REG    1.00   1.02   1.02    1.04
+D_ccmin_inblock        557d7d4db5399188f62bc39598c6d868-mp1    2.57   1.17   3.02    3.13
+D_ccmin_inblock        5e933a625099cc1ec6a8299a7848a2ae-Kak    0.11   1.01   0.11    0.27
+D_ccmin_inblock        663bb5659e42c2c75f74354f48895302-SCP    0.96   1.00   0.96    0.95
+D_ccmin_inblock        6832fe907740af686fde98518067ea3f-vel    0.42   0.94   0.40    0.74
+D_ccmin_inblock        9af7646fc4a32c6f2744ddc0c4b654b7-bro    1.65   0.84   1.38    1.81
+E_otfs_on              0aa22564d00e9716519918d84b25c4a7-sud    1.04   0.97   1.00    0.97
+E_otfs_on              3746303c659ef65aaa78f3b52cd5de49-6s2    0.90   0.96   0.86    0.93
+E_otfs_on              46355da785714f239393e7630020cae3-REG    0.98   1.45   1.42    1.33
+E_otfs_on              5e933a625099cc1ec6a8299a7848a2ae-Kak    0.16   1.02   0.17    0.32
+E_otfs_on              663bb5659e42c2c75f74354f48895302-SCP    0.82   1.02   0.84    0.84
+E_otfs_on              9af7646fc4a32c6f2744ddc0c4b654b7-bro    1.00   0.90   0.90    0.95
+E_otfs_on              ed6d842f96d10f3400bce251f9e95bfb-bat    1.00   1.00   1.00    1.00
+E_otfs_on              fab2022deb130fe3ad1136a5c71b4109-cas    1.00   1.02   1.02    1.02
+F_resolved             0aa22564d00e9716519918d84b25c4a7-sud    1.00   1.10   1.10    1.10
+F_resolved             3746303c659ef65aaa78f3b52cd5de49-6s2    1.00   1.08   1.08    1.06
+F_resolved             46355da785714f239393e7630020cae3-REG    1.00   1.02   1.02    1.02
+F_resolved             557d7d4db5399188f62bc39598c6d868-mp1    1.00   1.08   1.08    1.08
+F_resolved             5e933a625099cc1ec6a8299a7848a2ae-Kak    1.00   1.10   1.10    1.09
+F_resolved             663bb5659e42c2c75f74354f48895302-SCP    1.00   1.00   1.00    1.00
+F_resolved             6832fe907740af686fde98518067ea3f-vel    1.00   0.90   0.90    0.95
+F_resolved             9af7646fc4a32c6f2744ddc0c4b654b7-bro    1.00   0.86   0.86    0.92
+F_resolved             ed6d842f96d10f3400bce251f9e95bfb-bat    1.00   1.00   1.00    1.00
+F_resolved             fab2022deb130fe3ad1136a5c71b4109-cas    1.00   1.01   1.01    1.01
+G_deep_min             0aa22564d00e9716519918d84b25c4a7-sud    1.00   0.92   0.92    0.92
+G_deep_min             3746303c659ef65aaa78f3b52cd5de49-6s2    1.00   1.05   1.05    1.03
+G_deep_min             46355da785714f239393e7630020cae3-REG    1.00   0.99   0.99    0.99
+G_deep_min             557d7d4db5399188f62bc39598c6d868-mp1    1.00   1.02   1.02    1.02
+G_deep_min             5e933a625099cc1ec6a8299a7848a2ae-Kak    1.00   0.98   0.98    0.98
+G_deep_min             663bb5659e42c2c75f74354f48895302-SCP    1.00   0.99   0.99    0.99
+G_deep_min             6832fe907740af686fde98518067ea3f-vel    1.00   0.81   0.81    0.85
+G_deep_min             9af7646fc4a32c6f2744ddc0c4b654b7-bro    1.00   0.77   0.77    0.86
+G_deep_min             ed6d842f96d10f3400bce251f9e95bfb-bat    1.00   0.99   0.99    0.99
+G_deep_min             fab2022deb130fe3ad1136a5c71b4109-cas    1.00   1.00   1.00    1.00
+
+## Conflict/propagation/restart counters (vs A_baseline)
+
+cfg                    instance                                A_conf     A_prop   C_conf     C_prop
+B_ccmin_off            3746303c659ef65aaa78f3b52cd5de49-6s2      3764   28092395     7819   31783799
+B_ccmin_off            46355da785714f239393e7630020cae3-REG   1607608   30213317  1300234   20980758
+B_ccmin_off            663bb5659e42c2c75f74354f48895302-SCP    188144   13830775   253353   18322813
+B_ccmin_off            6832fe907740af686fde98518067ea3f-vel    179968  436279112   214749  404619573
+B_ccmin_off            9af7646fc4a32c6f2744ddc0c4b654b7-bro       403   22600764      569   44812189
+C_ccmin_basic          0aa22564d00e9716519918d84b25c4a7-sud    259775 1312437897   311488 1490563714
+C_ccmin_basic          3746303c659ef65aaa78f3b52cd5de49-6s2      3764   28092395     1308   16946662
+C_ccmin_basic          46355da785714f239393e7630020cae3-REG   1607608   30213317  1461213   27900092
+C_ccmin_basic          5e933a625099cc1ec6a8299a7848a2ae-Kak    732107  617655456   781706  647530099
+C_ccmin_basic          663bb5659e42c2c75f74354f48895302-SCP    188144   13830775   206101   15052171
+C_ccmin_basic          6832fe907740af686fde98518067ea3f-vel    179968  436279112    67693  142275803
+C_ccmin_basic          9af7646fc4a32c6f2744ddc0c4b654b7-bro       403   22600764      565   36808770
+C_ccmin_basic          fab2022deb130fe3ad1136a5c71b4109-cas   4186969  436186040  3811034  394834292
+D_ccmin_inblock        0aa22564d00e9716519918d84b25c4a7-sud    259775 1312437897   263204 1392473097
+D_ccmin_inblock        3746303c659ef65aaa78f3b52cd5de49-6s2      3764   28092395     1272   13778529
+D_ccmin_inblock        46355da785714f239393e7630020cae3-REG   1607608   30213317  1607371   31138325
+D_ccmin_inblock        557d7d4db5399188f62bc39598c6d868-mp1    425229  289974291  1093645  775960698
+D_ccmin_inblock        5e933a625099cc1ec6a8299a7848a2ae-Kak    732107  617655456    82441   71193091
+D_ccmin_inblock        663bb5659e42c2c75f74354f48895302-SCP    188144   13830775   179799   13048996
+D_ccmin_inblock        6832fe907740af686fde98518067ea3f-vel    179968  436279112    76160  240851979
+D_ccmin_inblock        9af7646fc4a32c6f2744ddc0c4b654b7-bro       403   22600764      663   67589546
+E_otfs_on              0aa22564d00e9716519918d84b25c4a7-sud    259775 1312437897   270272 1319501994
+E_otfs_on              3746303c659ef65aaa78f3b52cd5de49-6s2      3764   28092395     3387   23517117
+E_otfs_on              46355da785714f239393e7630020cae3-REG   1607608   30213317  1576948   29151278
+E_otfs_on              5e933a625099cc1ec6a8299a7848a2ae-Kak    732107  617655456   119998  100454593
+E_otfs_on              663bb5659e42c2c75f74354f48895302-SCP    188144   13830775   154598   11417979
+E_otfs_on              9af7646fc4a32c6f2744ddc0c4b654b7-bro       403   22600764      403   22600764
+E_otfs_on              ed6d842f96d10f3400bce251f9e95bfb-bat    593019   13003103   593019   13003103
+E_otfs_on              fab2022deb130fe3ad1136a5c71b4109-cas   4186969  436186040  4199111  437914017
+F_resolved             0aa22564d00e9716519918d84b25c4a7-sud    259775 1312437897   259775 1312437897
+F_resolved             3746303c659ef65aaa78f3b52cd5de49-6s2      3764   28092395     3764   28092395
+F_resolved             46355da785714f239393e7630020cae3-REG   1607608   30213317  1607608   30213317
+F_resolved             557d7d4db5399188f62bc39598c6d868-mp1    425229  289974291   425229  289974291
+F_resolved             5e933a625099cc1ec6a8299a7848a2ae-Kak    732107  617655456   732107  617655456
+F_resolved             663bb5659e42c2c75f74354f48895302-SCP    188144   13830775   188144   13830775
+F_resolved             6832fe907740af686fde98518067ea3f-vel    179968  436279112   179968  436279112
+F_resolved             9af7646fc4a32c6f2744ddc0c4b654b7-bro       403   22600764      403   22600764
+F_resolved             ed6d842f96d10f3400bce251f9e95bfb-bat    593019   13003103   593019   13003103
+F_resolved             fab2022deb130fe3ad1136a5c71b4109-cas   4186969  436186040  4186969  436186040
+G_deep_min             0aa22564d00e9716519918d84b25c4a7-sud    259775 1312437897   259775 1312437897
+G_deep_min             3746303c659ef65aaa78f3b52cd5de49-6s2      3764   28092395     3764   28092395
+G_deep_min             46355da785714f239393e7630020cae3-REG   1607608   30213317  1607608   30213317
+G_deep_min             557d7d4db5399188f62bc39598c6d868-mp1    425229  289974291   425229  289974291
+G_deep_min             5e933a625099cc1ec6a8299a7848a2ae-Kak    732107  617655456   732107  617655456
+G_deep_min             663bb5659e42c2c75f74354f48895302-SCP    188144   13830775   188144   13830775
+G_deep_min             6832fe907740af686fde98518067ea3f-vel    179968  436279112   179968  436279112
+G_deep_min             9af7646fc4a32c6f2744ddc0c4b654b7-bro       403   22600764      403   22600764
+G_deep_min             ed6d842f96d10f3400bce251f9e95bfb-bat    593019   13003103   593019   13003103
+G_deep_min             fab2022deb130fe3ad1136a5c71b4109-cas   4186969  436186040  4186969  436186040
