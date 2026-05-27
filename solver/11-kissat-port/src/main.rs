@@ -1345,6 +1345,8 @@ struct Solver {
     scratch_conflict_clause: Vec<i32>,
     scratch_bumped_vars: Vec<usize>,
     scratch_redundant_state: Vec<u8>,
+    scratch_frame_used: Vec<u32>,
+    scratch_used_levels: Vec<usize>,
     scratch_analyze_toclear: Vec<usize>,
     scratch_analyze_stack: Vec<(usize, i32, u32)>,
     /// 0 = none, 1 = basic, 2 = deep, 3 = in-block shrink
@@ -1532,6 +1534,7 @@ struct RedundancyCheckContext<'a> {
     reasons: ReasonExpansionContext<'a>,
     decision_level: &'a [usize],
     reason: &'a [ReasonCode],
+    frame_used: &'a [u32],
     max_depth: u32,
     same_level_only: bool,
 }
@@ -1634,6 +1637,9 @@ fn lit_redundant(
     let mut reason_ref = context.reason[lit.unsigned_abs() as usize].as_ref_unchecked();
     let mut lit_pos = 0usize;
     let target_level = context.decision_level[lit.unsigned_abs() as usize];
+    if context.same_level_only && context.frame_used.get(target_level).copied().unwrap_or(0) <= 1 {
+        return false;
+    }
     let mut depth = 0u32;
 
     loop {
@@ -1656,6 +1662,13 @@ fn lit_redundant(
             }
 
             if (context.same_level_only && context.decision_level[parent_var] != target_level)
+                || (context.same_level_only
+                    && context
+                        .frame_used
+                        .get(context.decision_level[parent_var])
+                        .copied()
+                        .unwrap_or(0)
+                        <= 1)
                 || depth >= context.max_depth
                 || context.reason[parent_var].is_none()
                 || state[parent_var] == REDUNDANT_FAILED
@@ -1974,6 +1987,8 @@ impl Solver {
             scratch_conflict_clause: Vec::with_capacity(16),
             scratch_bumped_vars: Vec::with_capacity(16),
             scratch_redundant_state: vec![0; num_vars + 1],
+            scratch_frame_used: vec![0; num_vars + 1],
+            scratch_used_levels: Vec::with_capacity(16),
             scratch_analyze_toclear: Vec::with_capacity(16),
             scratch_analyze_stack: Vec::with_capacity(16),
             ccmin_mode,
@@ -6151,6 +6166,8 @@ impl Solver {
         let stack = &mut self.scratch_analyze_stack;
         debug_assert!(toclear.is_empty());
         debug_assert!(stack.is_empty());
+        debug_assert!(self.scratch_used_levels.is_empty());
+        let use_frame_singleton = self.ccmin_mode == CCMIN_INBLOCK;
 
         for &lit in &learned_clause[1..] {
             let var = lit.unsigned_abs() as usize;
@@ -6158,11 +6175,19 @@ impl Solver {
                 state[var] = REDUNDANT_SOURCE;
                 toclear.push(var);
             }
+            let level = self.decision_level[var];
+            if use_frame_singleton && level != 0 {
+                if self.scratch_frame_used[level] == 0 {
+                    self.scratch_used_levels.push(level);
+                }
+                self.scratch_frame_used[level] += 1;
+            }
         }
 
         let arena = &self.arena;
         let decision_level = &self.decision_level;
         let reason = &self.reason;
+        let frame_used = &self.scratch_frame_used;
         let reason_context = ReasonExpansionContext {
             arena,
             binary_reasons: &self.binary_reason_lits,
@@ -6171,6 +6196,7 @@ impl Solver {
             reasons: reason_context,
             decision_level,
             reason,
+            frame_used,
             max_depth: self.minimize_depth_limit,
             same_level_only: self.ccmin_mode == CCMIN_INBLOCK,
         };
@@ -6194,6 +6220,12 @@ impl Solver {
 
         for &var in toclear.iter() {
             state[var] = REDUNDANT_UNDEF;
+        }
+        if use_frame_singleton {
+            for &level in self.scratch_used_levels.iter() {
+                self.scratch_frame_used[level] = 0;
+            }
+            self.scratch_used_levels.clear();
         }
         toclear.clear();
         stack.clear();
@@ -7246,6 +7278,7 @@ fn solver_construction_extra_bytes(num_vars: usize, clauses: &[Vec<i32>]) -> u64
     bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u8>())); // scratch_seen
     bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u8>())); // scratch_resolved
     bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u8>())); // scratch_redundant_state
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u32>())); // scratch_frame_used
     bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u32>())); // lbd_seen
     if clause_count >= INLINE_ABSTRACTION_CLAUSE_THRESHOLD as u64 {
         bytes = bytes.saturating_add(bytes_for_elems(literal_slots, std::mem::size_of::<usize>())); // inline-abstraction reloc
@@ -9971,6 +10004,10 @@ mod tests {
     fn test_deep_clause_minimization_recurses_through_learned_reasons() {
         let mut s = make_solver(7, vec![vec![5, 3]]);
         let learned_reason = s.add_clause(vec![7, -5, 3]);
+        s.decision_level[1] = 2;
+        s.decision_level[3] = 1;
+        s.decision_level[5] = 1;
+        s.decision_level[7] = 1;
         s.set_reason_ref(5, ReasonRef::Clause(0));
         s.set_reason_ref(7, ReasonRef::Clause(learned_reason));
 
@@ -9979,6 +10016,21 @@ mod tests {
         s.minimize_learned_clause(&mut learned_clause);
 
         assert_eq!(learned_clause, vec![-1, 3]);
+    }
+
+    #[test]
+    fn test_inblock_clause_minimization_keeps_singleton_frame_literal() {
+        let mut s = make_solver(5, vec![vec![5, 3]]);
+        s.decision_level[1] = 2;
+        s.decision_level[3] = 1;
+        s.decision_level[5] = 1;
+        s.set_reason_ref(5, ReasonRef::Clause(0));
+
+        let mut learned_clause = vec![-1, 5];
+        s.ccmin_mode = CCMIN_INBLOCK;
+        s.minimize_learned_clause(&mut learned_clause);
+
+        assert_eq!(learned_clause, vec![-1, 5]);
     }
 
     #[test]
