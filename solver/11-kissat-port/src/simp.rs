@@ -15,6 +15,11 @@ enum SubsumptionOutcome {
     Strengthen(i32),
 }
 
+enum PreprocessBudgetKind {
+    Resolution,
+    Tick,
+}
+
 impl Solver {
     fn variable_count(&self) -> usize {
         self.assignment.len().saturating_sub(1)
@@ -37,6 +42,50 @@ impl Solver {
 
     fn should_run_full_backward_subsumption(&self) -> bool {
         self.full_bsr
+    }
+
+    fn note_preprocess_budget_hit(&mut self, kind: PreprocessBudgetKind) {
+        if !self.preprocess_budget_exhausted {
+            match kind {
+                PreprocessBudgetKind::Resolution => {
+                    self.stats.preprocess_resolution_budget_hits += 1;
+                }
+                PreprocessBudgetKind::Tick => {
+                    self.stats.preprocess_tick_budget_hits += 1;
+                }
+            }
+        }
+        self.preprocess_budget_exhausted = true;
+    }
+
+    fn consume_eliminate_tick(&mut self) -> bool {
+        if self.eliminate_ticks_budget == 0 {
+            return true;
+        }
+        if self.stats.preprocess_eliminate_ticks >= self.eliminate_ticks_budget {
+            self.note_preprocess_budget_hit(PreprocessBudgetKind::Tick);
+            return false;
+        }
+        self.stats.preprocess_eliminate_ticks =
+            self.stats.preprocess_eliminate_ticks.saturating_add(1);
+        true
+    }
+
+    fn consume_eliminate_resolution_attempt(&mut self) -> bool {
+        if self.eliminate_resolution_budget != 0
+            && self.stats.preprocess_resolution_attempts >= self.eliminate_resolution_budget
+        {
+            self.note_preprocess_budget_hit(PreprocessBudgetKind::Resolution);
+            return false;
+        }
+        if !self.consume_eliminate_tick() {
+            return false;
+        }
+        if self.eliminate_resolution_budget != 0 {
+            self.stats.preprocess_resolution_attempts =
+                self.stats.preprocess_resolution_attempts.saturating_add(1);
+        }
+        true
     }
 
     fn build_occurrence_index(&mut self) {
@@ -904,6 +953,9 @@ impl Solver {
 
             let mut scan_pos = 0usize;
             while scan_pos < self.occurs[best_var].len() {
+                if self.eliminate_ticks_budget != 0 && !self.consume_eliminate_tick() {
+                    return true;
+                }
                 let candidate_idx = self.occurs[best_var][scan_pos] as usize;
                 scan_pos += 1;
                 if TRACE {
@@ -1135,6 +1187,11 @@ impl Solver {
         let mut resolvent_count = 0isize;
         for &pos_clause_idx in &pos_clauses {
             for &neg_clause_idx in &neg_clauses {
+                if (self.eliminate_resolution_budget != 0 || self.eliminate_ticks_budget != 0)
+                    && !self.consume_eliminate_resolution_attempt()
+                {
+                    return false;
+                }
                 let Some(size) = self.merge_size_only(pos_clause_idx, neg_clause_idx, var) else {
                     continue;
                 };
@@ -1209,6 +1266,7 @@ impl Solver {
         if !self.solver_ok {
             return false;
         }
+        self.preprocess_budget_exhausted = false;
         if !self.use_simplification || !self.use_elim {
             return self.simplify_with_proof(proof_log);
         }
@@ -1251,6 +1309,7 @@ impl Solver {
         }
 
         while self.solver_ok
+            && !self.preprocess_budget_exhausted
             && (!touched.is_empty()
                 || (run_full_backward_subsumption
                     && (!queue.is_empty() || self.bwdsub_assigns < self.trail.len()))
@@ -1280,6 +1339,9 @@ impl Solver {
                 self.solver_ok = false;
                 break;
             }
+            if self.preprocess_budget_exhausted {
+                break;
+            }
 
             while let Some(Reverse((_, var, version))) = heap.pop() {
                 if var >= heap_versions.len() || version != heap_versions[var] {
@@ -1301,6 +1363,9 @@ impl Solver {
                     &mut touched_flags,
                 );
                 if !eliminated {
+                    if self.preprocess_budget_exhausted {
+                        break;
+                    }
                     continue;
                 }
 
@@ -1315,6 +1380,9 @@ impl Solver {
                     )
                 {
                     self.solver_ok = false;
+                    break;
+                }
+                if self.preprocess_budget_exhausted {
                     break;
                 }
             }
@@ -1462,5 +1530,102 @@ mod tests {
 
         assert!(live_original_clauses(&s).contains(&vec![2, 3]));
         assert_eq!(s.stats.preprocess_strengthened_clauses, 1);
+    }
+
+    #[test]
+    fn eliminate_respects_resolution_budget_before_variable_edit() {
+        let config = SolverConfig {
+            eliminate_resolution_budget: 1,
+            full_bsr: false,
+            ..SolverConfig::default()
+        };
+        let mut s = Solver::new_with_config(4, vec![vec![1, 2], vec![1, 3], vec![-1, 4]], &config);
+        s.frozen[2] = true;
+        s.frozen[3] = true;
+        s.frozen[4] = true;
+        let mut proof = ProofLog::disabled();
+
+        assert!(s.eliminate(false, &mut proof));
+
+        assert!(
+            !s.eliminated[1],
+            "budget must stop before partial BVE edits"
+        );
+        assert!(s.preprocess_budget_exhausted);
+        assert_eq!(s.stats.preprocess_resolution_attempts, 1);
+        assert_eq!(s.stats.preprocess_resolution_budget_hits, 1);
+        assert_eq!(
+            live_original_clauses(&s),
+            vec![vec![-1, 4], vec![1, 2], vec![1, 3]]
+        );
+    }
+
+    #[test]
+    fn eliminate_respects_tick_budget_during_bsr() {
+        let config = SolverConfig {
+            eliminate_ticks_budget: 1,
+            ..SolverConfig::default()
+        };
+        let mut s =
+            Solver::new_with_config(4, vec![vec![1, 2], vec![1, 2, 3], vec![1, 2, 4]], &config);
+        let mut proof = ProofLog::disabled();
+
+        assert!(s.eliminate(false, &mut proof));
+
+        assert!(s.preprocess_budget_exhausted);
+        assert_eq!(s.stats.preprocess_eliminate_ticks, 1);
+        assert_eq!(s.stats.preprocess_tick_budget_hits, 1);
+        assert!(s.solver_ok);
+    }
+
+    #[test]
+    fn default_eliminate_budget_does_not_count_hot_loop_work() {
+        let mut s = Solver::new(4, vec![vec![1, 2], vec![1, 3], vec![-1, 4]]);
+        s.frozen[2] = true;
+        s.frozen[3] = true;
+        s.frozen[4] = true;
+        let mut proof = ProofLog::disabled();
+
+        assert!(s.eliminate(false, &mut proof));
+
+        assert_eq!(s.stats.preprocess_eliminate_ticks, 0);
+        assert_eq!(s.stats.preprocess_resolution_attempts, 0);
+        assert_eq!(s.stats.preprocess_resolution_budget_hits, 0);
+        assert_eq!(s.stats.preprocess_tick_budget_hits, 0);
+    }
+
+    #[test]
+    fn partial_budgeted_elimination_still_solves_safely() {
+        let config = SolverConfig {
+            eliminate_resolution_budget: 1,
+            full_bsr: false,
+            ..SolverConfig::default()
+        };
+        let clauses = vec![vec![1, 2], vec![-1, 2], vec![3, 4], vec![3, 5], vec![-3, 6]];
+        let mut s = Solver::new_with_config(6, clauses.clone(), &config);
+        for var in [2, 4, 5, 6] {
+            s.frozen[var] = true;
+        }
+
+        assert!(s.solve());
+        assert!(
+            s.eliminated[1],
+            "first variable should finish before budget hit"
+        );
+        assert!(
+            !s.eliminated[3],
+            "second variable should be left for search"
+        );
+
+        let model = s.sat_model.as_ref().expect("missing SAT model snapshot");
+        for clause in clauses {
+            assert!(
+                clause.iter().any(|&lit| {
+                    let var = lit.unsigned_abs() as usize;
+                    (lit > 0 && model[var] == TRUE) || (lit < 0 && model[var] == FALSE)
+                }),
+                "extended model does not satisfy {clause:?}"
+            );
+        }
     }
 }

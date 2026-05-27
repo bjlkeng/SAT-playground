@@ -579,6 +579,7 @@ pub(crate) struct SolverConfig {
     pub(crate) vivify_max_clause_len: usize,
     pub(crate) probe_ticks_budget: u64,
     pub(crate) eliminate_ticks_budget: u64,
+    pub(crate) eliminate_resolution_budget: u64,
     pub(crate) transitive_max_depth: u32,
     pub(crate) transitive_ticks_per_source: u64,
     pub(crate) transitive_max_removed_per_round: u64,
@@ -681,6 +682,7 @@ impl Default for SolverConfig {
             vivify_max_clause_len: 0,
             probe_ticks_budget: 0,
             eliminate_ticks_budget: 0,
+            eliminate_resolution_budget: 0,
             transitive_max_depth: 0,
             transitive_ticks_per_source: 0,
             transitive_max_removed_per_round: 0,
@@ -1154,6 +1156,12 @@ impl SolverConfig {
             "SAT_ELIMINATE_TICKS",
             self.eliminate_ticks_budget,
         );
+        self.eliminate_resolution_budget = parse_u64_selected(
+            env_map,
+            &key_set,
+            "SAT_ELIMINATE_RESOLUTIONS",
+            self.eliminate_resolution_budget,
+        );
         self.transitive_max_depth = parse_u32_selected(
             env_map,
             &key_set,
@@ -1566,6 +1574,11 @@ impl SolverConfig {
             &mut lines,
             "eliminate_ticks_budget",
             self.eliminate_ticks_budget.to_string(),
+        );
+        push_kv(
+            &mut lines,
+            "eliminate_resolution_budget",
+            self.eliminate_resolution_budget.to_string(),
         );
         push_kv(
             &mut lines,
@@ -2131,6 +2144,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "vivify_max_clause_len" => Some("SAT_VIVIFY_MAX_CLAUSE_LEN"),
         "probe_ticks_budget" => Some("SAT_PROBE_TICKS"),
         "eliminate_ticks_budget" => Some("SAT_ELIMINATE_TICKS"),
+        "eliminate_resolution_budget" => Some("SAT_ELIMINATE_RESOLUTIONS"),
         "transitive_max_depth" => Some("SAT_TRANSITIVE_MAX_DEPTH"),
         "transitive_ticks_per_source" => Some("SAT_TRANSITIVE_TICKS_PER_SOURCE"),
         "transitive_max_removed_per_round" => Some("SAT_TRANSITIVE_MAX_REMOVED_PER_ROUND"),
@@ -2304,6 +2318,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_VIVIFY_MAX_CLAUSE_LEN",
         "SAT_PROBE_TICKS",
         "SAT_ELIMINATE_TICKS",
+        "SAT_ELIMINATE_RESOLUTIONS",
         "SAT_TRANSITIVE_MAX_DEPTH",
         "SAT_TRANSITIVE_TICKS_PER_SOURCE",
         "SAT_TRANSITIVE_MAX_REMOVED_PER_ROUND",
@@ -3415,9 +3430,31 @@ mod tests {
     }
 
     #[test]
+    fn test_eliminate_resolution_budget_is_parsed_and_replayable() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_ELIMINATE_RESOLUTIONS", "1234"),
+            ("SAT_ELIMINATE_TICKS", "5678"),
+        ]));
+
+        assert_eq!(config.eliminate_resolution_budget, 1234);
+        assert_eq!(config.eliminate_ticks_budget, 5678);
+
+        let replay = config.config_replay_text();
+        assert!(replay.contains("eliminate_resolution_budget=1234"));
+        let replayed =
+            SolverConfig::from_replay_text(&replay, Path::new("<eliminate-budget-test>"));
+        assert_eq!(
+            replayed.eliminate_resolution_budget,
+            config.eliminate_resolution_budget
+        );
+        assert_eq!(replayed.config_hash(), config.config_hash());
+    }
+
+    #[test]
     fn test_schema_and_feature_csv_are_loaded_into_binary() {
         assert!(CONFIG_SCHEMA_CSV.contains("SAT_USE_LBD"));
         assert!(CONFIG_SCHEMA_CSV.contains("SAT_CONFIG_REPLAY"));
+        assert!(CONFIG_SCHEMA_CSV.contains("SAT_ELIMINATE_RESOLUTIONS"));
         assert!(FEATURES_CSV.contains("SAT_USE_LBD"));
         assert!(FEATURES_CSV.contains("SAT_FULL_BSR"));
     }

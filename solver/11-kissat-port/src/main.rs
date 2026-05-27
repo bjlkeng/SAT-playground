@@ -1315,6 +1315,12 @@ struct Solver {
     bve_grow: isize,
     /// maximum resolvent size allowed during variable elimination; negative means unlimited
     bve_clause_limit: isize,
+    /// local preprocessing work ticks allowed for BSR + BVE; zero means unlimited
+    eliminate_ticks_budget: u64,
+    /// variable-elimination resolution attempts allowed; zero means unlimited
+    eliminate_resolution_budget: u64,
+    /// set when an opt-in local preprocessing budget stops the current pass
+    preprocess_budget_exhausted: bool,
     /// maximum candidate clause size checked during backward subsumption; negative means unlimited
     subsumption_lim: isize,
     /// number of root assignments already fed through backward subsumption
@@ -2100,6 +2106,9 @@ impl Solver {
             full_bsr: config.full_bsr,
             bve_grow: DEFAULT_BVE_GROW,
             bve_clause_limit: DEFAULT_BVE_CLAUSE_LIMIT,
+            eliminate_ticks_budget: config.eliminate_ticks_budget,
+            eliminate_resolution_budget: config.eliminate_resolution_budget,
+            preprocess_budget_exhausted: false,
             subsumption_lim: DEFAULT_SUBSUMPTION_LIMIT,
             bwdsub_assigns: 0,
             frozen: vec![false; num_vars + 1],
@@ -7088,7 +7097,7 @@ impl Solver {
                 self.stats.bsr_best_occurs_sum as f64 / self.stats.bsr_drivers as f64
             };
             eprintln!(
-                "c preprocess_detail bsr_runs={} seeded={} drivers={} clause_drivers={} root_drivers={} driver_lits={} candidates={} skip_self={} skip_deleted={} skip_limit={} relation_calls={} len_reject={} abstraction_reject={} sorted_calls={} nested_calls={} relation_subsumed={} relation_strengthen={} avg_best_occurs={:.3} max_best_occurs={} clean_calls={} clean_dirty={} clean_membership={} clean_scanned={} clean_removed={}",
+                "c preprocess_detail bsr_runs={} seeded={} drivers={} clause_drivers={} root_drivers={} driver_lits={} candidates={} skip_self={} skip_deleted={} skip_limit={} relation_calls={} len_reject={} abstraction_reject={} sorted_calls={} nested_calls={} relation_subsumed={} relation_strengthen={} avg_best_occurs={:.3} max_best_occurs={} clean_calls={} clean_dirty={} clean_membership={} clean_scanned={} clean_removed={} eliminate_ticks={} resolution_attempts={} resolution_budget_hits={} tick_budget_hits={}",
                 self.stats.bsr_runs,
                 self.stats.bsr_seeded_clauses,
                 self.stats.bsr_drivers,
@@ -7113,6 +7122,10 @@ impl Solver {
                 self.stats.occurs_clean_membership_calls,
                 self.stats.occurs_clean_entries_scanned,
                 self.stats.occurs_clean_entries_removed,
+                self.stats.preprocess_eliminate_ticks,
+                self.stats.preprocess_resolution_attempts,
+                self.stats.preprocess_resolution_budget_hits,
+                self.stats.preprocess_tick_budget_hits,
             );
         }
 
