@@ -6175,8 +6175,11 @@ impl Solver {
                 state[var] = REDUNDANT_SOURCE;
                 toclear.push(var);
             }
-            let level = self.decision_level[var];
-            if use_frame_singleton && level != 0 {
+            if use_frame_singleton {
+                let level = self.decision_level[var];
+                if level == 0 {
+                    continue;
+                }
                 if self.scratch_frame_used[level] == 0 {
                     self.scratch_used_levels.push(level);
                 }
