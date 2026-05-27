@@ -4198,10 +4198,11 @@ impl Solver {
                 bumped_vars.sort_unstable_by_key(|&var| queue.stamp(var));
             }
         }
-        let move_to_front_only =
-            !self.accounting_mode.is_temporary() && self.kissat_focused_vmtf_active();
+        let vmtf_active = !self.accounting_mode.is_temporary() && self.vmtf_branching_active();
+        let move_to_front_only = vmtf_active
+            && (self.kissat_focused_vmtf_active() || self.vmtf_mode == VmtfMode::Single);
         for &var in &bumped_vars {
-            if !self.accounting_mode.is_temporary() && self.vmtf_branching_active() {
+            if vmtf_active {
                 self.vmtf_stamp_analyzed_var(var);
             }
             if !move_to_front_only {
@@ -12059,10 +12060,15 @@ mod tests {
     fn test_vmtf_single_mode_conflict_bump_updates_queue() {
         let config = single_mode_vmtf_config();
         let mut s = make_solver_with_config(4, vec![], &config);
+        let activity_before = s.activity[2];
+        let inc_before = s.activity_inc;
 
         s.scratch_bumped_vars.push(2);
-        s.bump_analyzed_variable_activity();
+        let bumped_scores = s.bump_analyzed_variable_activity();
 
+        assert!(!bumped_scores);
+        assert_eq!(s.activity[2], activity_before);
+        assert_eq!(s.activity_inc, inc_before);
         assert_eq!(s.pick_branch_lit(), Some(-2));
     }
 
