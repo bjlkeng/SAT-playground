@@ -131,7 +131,10 @@ What is present:
   edges; default propagation remains the legacy watched-clause path. Clause minimization is
   binary-reason aware and remains controlled separately by `SAT_CLAUSE_MIN`; binary-fast env runs
   preserve the default recursive minimization unless `SAT_CLAUSE_MIN=off` is explicit, because
-  disabling minimization silently can move baseline-solved rows to `UNKNOWN`. With `SAT_OTFS=on` and clause
+  disabling minimization silently can move baseline-solved rows to `UNKNOWN`. The `inblock` mode
+  now runs Kissat-style level-block shrink after same-level minimization, replacing a whole
+  decision-level block with a single UIP literal when the block's reason closure proves one.
+  With `SAT_OTFS=on` and clause
   minimization enabled, newly learned non-unit clauses also run a bounded OTFS pass over their
   watched literals, deleting live learned watched clauses subsumed by the learned clause when they
   are not active reasons. The pass is capped at learned clauses of 20 literals and candidate clauses

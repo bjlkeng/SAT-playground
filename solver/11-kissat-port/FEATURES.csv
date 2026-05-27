@@ -5,6 +5,7 @@ SAT_LBD_UPDATE_PROP_REASONS,update_propagation_reason_lbd,Experimental,true,true
 SAT_RESTART_REUSE_TRAIL,restart_reuse_trail,Experimental,true,true,false,none,log/bench-11-kissat-port-2026-05-25-18-43-57/results.csv,restart|search-trajectory|fixed-unknown,SAT-playground-5b2.2.57
 SAT_CHRONO,chrono_backtrack,SmokeSafe,true,true,false,none,log/1.13/summary.md,backtracking,1.13
 SAT_BINARY_FAST,binary_fast_path,SmokeSafe,true,true,false,none,log/analyzesat-2026-05-26-binary-min-otfs/FINDINGS.md,propagation|clause-minimization|fixed-unknown,SAT-playground-a0f
+SAT_CLAUSE_MIN,clause_min_mode,SmokeSafe,true,true,false,default|fast,log/2026-05-27-08-59-50,clause-minimization|shrink,SAT-playground-02a
 SAT_VMTF,vmtf,SmokeSafe,true,true,false,none,log/bench-11-kissat-port-2026-05-25-20-01-30/results.csv,branching|search-trajectory|fixed-unknown,SAT-playground-5b2.2.57
 SAT_REORDER,reorder,Experimental,true,true,false,none,log/phase1/1.14n-summary.md,branching|search-trajectory,SAT-playground-7oy
 SAT_REPHASE,rephase,Experimental,true,true,false,none,log/bench-11-kissat-port-2026-05-25-18-29-53/results.csv,phase-selection|focused-stable,SAT-playground-5b2.2.57

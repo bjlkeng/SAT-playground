@@ -1539,6 +1539,14 @@ struct RedundancyCheckContext<'a> {
     same_level_only: bool,
 }
 
+#[derive(Clone, Copy)]
+struct ShrinkBlockContext<'a> {
+    reasons: ReasonExpansionContext<'a>,
+    decision_level: &'a [usize],
+    reason: &'a [ReasonCode],
+    trail: &'a [i32],
+}
+
 fn reason_len_in_arena(reasons: ReasonExpansionContext<'_>, reason_ref: ReasonRef) -> usize {
     match reason_ref {
         ReasonRef::None => 0,
@@ -1617,6 +1625,129 @@ fn basic_lit_redundant(
     }
 
     true
+}
+
+fn set_redundant_state(state: &mut [u8], toclear: &mut Vec<usize>, var: usize, value: u8) {
+    if state[var] == REDUNDANT_UNDEF {
+        toclear.push(var);
+    }
+    state[var] = value;
+}
+
+fn sort_learned_clause_by_descending_level(learned_clause: &mut [i32], decision_level: &[usize]) {
+    for read in 2..learned_clause.len() {
+        let lit = learned_clause[read];
+        let level = decision_level[lit.unsigned_abs() as usize];
+        let mut write = read;
+        while write > 1 {
+            let prev_lit = learned_clause[write - 1];
+            let prev_level = decision_level[prev_lit.unsigned_abs() as usize];
+            if prev_level >= level {
+                break;
+            }
+            learned_clause[write] = prev_lit;
+            write -= 1;
+        }
+        learned_clause[write] = lit;
+    }
+}
+
+fn shrink_literal_for_block(
+    lit: i32,
+    level: usize,
+    context: ShrinkBlockContext<'_>,
+    state: &mut [u8],
+    toclear: &mut Vec<usize>,
+) -> Result<bool, ()> {
+    let var = lit.unsigned_abs() as usize;
+    let lit_level = context.decision_level[var];
+    if lit_level == 0 {
+        return Ok(false);
+    }
+    if state[var] == REDUNDANT_SOURCE {
+        return Ok(false);
+    }
+    if lit_level < level {
+        return if state[var] == REDUNDANT_REMOVABLE {
+            Ok(false)
+        } else {
+            Err(())
+        };
+    }
+    if lit_level > level {
+        return Err(());
+    }
+
+    set_redundant_state(state, toclear, var, REDUNDANT_SOURCE);
+    Ok(true)
+}
+
+fn try_shrink_learned_clause_block(
+    learned_clause: &[i32],
+    begin: usize,
+    end: usize,
+    level: usize,
+    context: ShrinkBlockContext<'_>,
+    state: &mut [u8],
+    toclear: &mut Vec<usize>,
+) -> Option<i32> {
+    debug_assert!(begin < end);
+    debug_assert!(begin >= 1);
+
+    for &lit in learned_clause.iter().skip(1) {
+        if lit == 0 {
+            continue;
+        }
+        let var = lit.unsigned_abs() as usize;
+        if context.decision_level[var] != 0 {
+            set_redundant_state(state, toclear, var, REDUNDANT_REMOVABLE);
+        }
+    }
+
+    for &lit in &learned_clause[begin..end] {
+        let var = lit.unsigned_abs() as usize;
+        debug_assert_eq!(context.decision_level[var], level);
+        set_redundant_state(state, toclear, var, REDUNDANT_SOURCE);
+    }
+
+    let mut open = end - begin;
+    let mut trail_pos = context.trail.len();
+    loop {
+        let mut uip_lit = None;
+        while trail_pos > 0 {
+            trail_pos -= 1;
+            let lit = context.trail[trail_pos];
+            let var = lit.unsigned_abs() as usize;
+            if context.decision_level[var] == level && state[var] == REDUNDANT_SOURCE {
+                uip_lit = Some(lit);
+                break;
+            }
+        }
+
+        let uip_lit = uip_lit?;
+        if open == 1 {
+            return Some(uip_lit);
+        }
+
+        let uip_var = uip_lit.unsigned_abs() as usize;
+        if context.reason[uip_var].is_none() {
+            return None;
+        }
+        let reason_ref = context.reason[uip_var].as_ref_unchecked();
+        let clause_len = reason_len_in_arena(context.reasons, reason_ref);
+        for lit_pos in 0..clause_len {
+            let parent = reason_lit_in_arena(context.reasons, reason_ref, lit_pos);
+            if parent.unsigned_abs() as usize == uip_var {
+                continue;
+            }
+            match shrink_literal_for_block(parent, level, context, state, toclear) {
+                Ok(true) => open += 1,
+                Ok(false) => {}
+                Err(()) => return None,
+            }
+        }
+        open -= 1;
+    }
 }
 
 fn lit_redundant(
@@ -6233,6 +6364,79 @@ impl Solver {
         }
         toclear.clear();
         stack.clear();
+
+        if self.ccmin_mode == CCMIN_INBLOCK {
+            self.shrink_learned_clause_blocks(learned_clause);
+        }
+    }
+
+    fn shrink_learned_clause_blocks(&mut self, learned_clause: &mut Vec<i32>) {
+        if learned_clause.len() <= 2 {
+            return;
+        }
+
+        sort_learned_clause_by_descending_level(learned_clause, &self.decision_level);
+
+        let reason_context = ReasonExpansionContext {
+            arena: &self.arena,
+            binary_reasons: &self.binary_reason_lits,
+        };
+        let shrink_context = ShrinkBlockContext {
+            reasons: reason_context,
+            decision_level: &self.decision_level,
+            reason: &self.reason,
+            trail: &self.trail,
+        };
+        let state = &mut self.scratch_redundant_state;
+        let toclear = &mut self.scratch_analyze_toclear;
+        debug_assert!(toclear.is_empty());
+
+        let mut end = learned_clause.len();
+        while end > 1 {
+            let level = self.decision_level[learned_clause[end - 1].unsigned_abs() as usize];
+            let mut begin = end - 1;
+            while begin > 1 {
+                let prev_level =
+                    self.decision_level[learned_clause[begin - 1].unsigned_abs() as usize];
+                if prev_level != level {
+                    break;
+                }
+                begin -= 1;
+            }
+
+            if level != 0 && end - begin > 1 {
+                if let Some(uip_lit) = try_shrink_learned_clause_block(
+                    learned_clause,
+                    begin,
+                    end,
+                    level,
+                    shrink_context,
+                    state,
+                    toclear,
+                ) {
+                    for lit in &mut learned_clause[begin..end] {
+                        *lit = 0;
+                    }
+                    learned_clause[begin] = -uip_lit;
+                }
+                for &var in toclear.iter() {
+                    state[var] = REDUNDANT_UNDEF;
+                }
+                toclear.clear();
+            }
+
+            end = begin;
+        }
+
+        let mut write = 1usize;
+        for read in 1..learned_clause.len() {
+            let lit = learned_clause[read];
+            if lit != 0 {
+                learned_clause[write] = lit;
+                write += 1;
+            }
+        }
+        learned_clause.truncate(write);
     }
 
     fn learned_clause_subsumes_watched_clause(
@@ -10203,6 +10407,26 @@ mod tests {
     }
 
     #[test]
+    fn test_shrink_replaces_level_block_with_new_uip() {
+        let mut s = make_solver(4, vec![vec![2, -4], vec![3, -4]]);
+        let reason_two = s.original_clause_ids[0];
+        let reason_three = s.original_clause_ids[1];
+        s.trail = vec![4, 2, 3, 1];
+        s.decision_level[1] = 2;
+        s.decision_level[2] = 1;
+        s.decision_level[3] = 1;
+        s.decision_level[4] = 1;
+        s.set_reason_ref(2, ReasonRef::Clause(reason_two));
+        s.set_reason_ref(3, ReasonRef::Clause(reason_three));
+
+        let mut learned_clause = vec![-1, -2, -3];
+        s.ccmin_mode = CCMIN_INBLOCK;
+        s.minimize_learned_clause(&mut learned_clause);
+
+        assert_eq!(learned_clause, vec![-1, -4]);
+    }
+
+    #[test]
     fn test_shrink_does_not_cross_decision_level_blocks() {
         let mut s = make_solver(7, vec![vec![5, 3], vec![7, 5]]);
         let first = s.original_clause_ids[0];
@@ -10218,7 +10442,7 @@ mod tests {
         s.ccmin_mode = CCMIN_INBLOCK;
         s.minimize_learned_clause(&mut learned_clause);
 
-        assert_eq!(learned_clause, vec![-1, 3, 7]);
+        assert_eq!(learned_clause, vec![-1, 7, 3]);
     }
 
     #[test]
