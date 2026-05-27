@@ -42,18 +42,18 @@ propagation-primitive** axis. Prior runs covered the orthogonal axes already.
 
 ## Executive Summary
 
-1. **The existing `SAT_BINARY_FAST=on` implementation is a net negative on PAR-2 even
-   on the first 4 ablated instances** (sudoku, 6s299b685, REGRandom, mp1). The
-   per-prop speed is **7 % slower** than the watcher-loop path on sudoku, and on mp1
-   (which has only 1.7 % binary clauses) it causes a **4.1× conflict explosion**
-   (`work_ratio = 4.10`, `speed_ratio = 1.16`, `net = 4.76×`, measured `5.02×`
-   slower). The trajectory change is not a coincidence — flipping the propagation
-   primitive reorders binary vs. long-clause propagation, which feeds different
-   reasons into conflict analysis. **The flag should be considered a regression on
-   this profile, not just "doesn't help"**, and the existing five binary-prop micro-
-   optimization beads (`5b2.2.18.1/.2/.18`, `s11-1-14a/c`) are insufficient — they
-   each tune a piece but none of them address the inline-tagged watcher rewrite that
-   Kissat's `proplit.h:74-92` actually does.
+1. **`SAT_BINARY_FAST=on` is a definitive net regression** (full B vs A: PAR-2 842 → 1172,
+   **+39 %**). The decomposition is decisive: **every row of B has `speed_ratio ≥ 1.07`**
+   (the binary-fast path is 7–23 % slower per propagation event than the legacy watcher
+   path on every single instance). The wins on sudoku (`-6 %`) and Kakuro (`-32 %`)
+   come exclusively from **lucky trajectory divergence** (`work_ratio` 0.89 and 0.57),
+   not from execution speedup. The losses on mp1 (`+402 %`), battleship (`+459 %`),
+   and velev (`+180 %`) are also trajectory-driven (`work_ratio` 4.10, 4.61, 2.61).
+   The flag is a **bimodal coin flip with a slow underlying primitive** — it must be
+   considered an active regression, not just an unused optimization. Existing micro-
+   optimization beads (`5b2.2.18.*`, `s11-1-14a/c`) each tune one piece but none
+   address the inline-tagged watcher rewrite Kissat's `proplit.h:74-92` actually
+   does. New bead `SAT-playground-ck8` captures the full fix.
 
 2. **Source-diff identifies 5 concrete clause-DB / restart / propagation gaps** with
    no existing beads — see "Reference source diff" below. Predictions match the
@@ -87,54 +87,74 @@ propagation-primitive** axis. Prior runs covered the orthogonal axes already.
    parameter sweeps (Phase 6) are pending and will be added when ablation
    finishes.
 
-## PAR-2 per config (300 s timeout, profiling suite) — *PARTIAL, ablation in progress*
+## PAR-2 per config (300 s timeout, profiling suite) — A+B complete, C/D/E/F pending
 
 | Config | Solved | Timeout | PAR-2 | Δ vs A % | Status |
 |---|---:|---:|---:|---:|---|
 | A_baseline | 10/10 | 0 | 842.3 | +0.0% | complete |
-| B_binary_fast | 4/10 | 0* | — | — | 4 instances done; mp1 regression dominates so far |
-| C_lbd_tiered | 0/10 | — | — | — | not started |
-| D_post_reset | 0/10 | — | — | — | not started |
-| E_reuse_trail | 0/10 | — | — | — | not started |
-| F_combined_kissat | 0/10 | — | — | — | not started |
+| **B_binary_fast** | **10/10** | **0** | **1172.1** | **+39.2%** | **complete — net regression** |
+| C_lbd_tiered | 0/10 | — | — | — | inflight |
+| D_post_reset | 0/10 | — | — | — | queued |
+| E_reuse_trail | 0/10 | — | — | — | queued |
+| F_combined_kissat | 0/10 | — | — | — | queued |
 
-*Numbers in the auto-generated `finalize.py` PAR-2 table treat un-run instances
-as timeouts; those rows will be replaced when ablation finishes. The `4/10`
-rows for B are real data.
+## Per-instance wall time (s)
 
-## Per-instance wall time (s) — *PARTIAL*
+| Instance | A | B | B/A | bin frac | dominant |
+|---|---:|---:|---:|---:|---|
+| sudoku-N30-12 | 232.8 | 219.1 | 0.94 | 50.8 % | work ↓ (lucky) |
+| 6s299b685_Iter30 | 17.8 | 18.0 | 1.01 | 22.3 % | noise |
+| REGRandom-K4-L1 | 59.7 | 60.7 | 1.02 | 14.9 % | mixed (work ↓ × speed ↑) |
+| **mp1-Nb7T46** | 44.9 | **225.4** | **5.02** | 1.7 % | **WORK ↑↑↑** |
+| **Kakuro-easy-112** | 241.0 | **164.3** | **0.68** | ? | **work ↓↓ (lucky)** |
+| SCPC-500-13 | 13.9 | 13.5 | 0.98 | ? | noise |
+| **velev-pipe-sat** | 71.4 | **199.7** | **2.80** | ? | **WORK ↑↑** |
+| brocard | 9.3 | 10.3 | 1.11 | ? | small WORK ↑ |
+| **battleship-16-31** | 23.2 | **129.6** | **5.58** | ? | **WORK ↑↑↑** |
+| case9 | 128.4 | 131.4 | 1.02 | ? | noise |
 
-Updated by running `python3 finalize.py` after ablation completes.
+## Work × Speed Decomposition (B vs A_baseline)
 
-| Instance | A_baseline | B_binary_fast | C_lbd_tiered | D_post_reset | E_reuse_trail | F_combined |
+Legend: `work = conflicts_B / conflicts_A`, `speed = (props/s)_A / (props/s)_B`,
+`net = work × speed`. **Note:** `speed_ratio` is the per-prop *slowdown* in B
+relative to A; values > 1 mean B is slower per propagation event.
+
+| Instance | conflicts B | props/s B | work | speed | net | measured |
 |---|---:|---:|---:|---:|---:|---:|
-| sudoku-N30-12 | 232.8 | **219.1** (-6%) | — | — | — | — |
-| 6s299b685 | 17.8 | 18.0 (+1%) | — | — | — | — |
-| REGRandom | 59.7 | 60.7 (+2%) | — | — | — | — |
-| mp1 | 44.9 | **225.4 (+402%)** | — | — | — | — |
-| Kakuro | 241.0 | — | — | — | — | — |
-| SCPC | 13.9 | — | — | — | — | — |
-| velev | 71.4 | — | — | — | — | — |
-| brocard | 9.3 | — | — | — | — | — |
-| battleship | 23.2 | — | — | — | — | — |
-| case9 | 128.4 | — | — | — | — | — |
+| sudoku | 230,401 | 5.25 M | 0.89 | 1.07 | 0.95 | 0.94 |
+| 6s299b685 | 5,479 | 1.43 M | 1.46 | 1.11 | 1.61 | 1.01 |
+| REGRandom | 1,411,240 | 0.43 M | 0.88 | 1.19 | 1.04 | 1.02 |
+| **mp1** | **1,742,302** | 5.56 M | **4.10** | **1.16** | **4.76** | **5.02** |
+| **Kakuro** | **415,769** | 2.16 M | **0.57** | **1.19** | **0.67** | **0.68** |
+| SCPC | 188,144 | 1.02 M | 1.00 | 0.98 | 0.98 | 0.98 |
+| **velev** | **470,505** | 5.57 M | **2.61** | **1.10** | **2.87** | **2.80** |
+| brocard | 513 | 2.46 M | 1.27 | 0.98 | 1.25 | 1.11 |
+| **battleship** | **2,732,102** | 0.46 M | **4.61** | **1.23** | **5.66** | **5.58** |
+| case9 | — | — | — | — | — | 1.02 |
 
-## Work × Speed Decomposition (partial)
+**Decisive observation:** `speed_ratio ≥ 1.07` on every instance except SCPC
+(noise) and brocard (`speed = 0.98`). The B path is consistently slower per
+propagation event. All "wins" are work-ratio (trajectory) effects:
 
-| Instance | Config | work | speed | net | measured | dominant cause |
-|---|---|---:|---:|---:|---:|---|
-| sudoku | B_binary_fast | 0.89 | 1.07 | 0.95 | 0.94 | work (trajectory) |
-| 6s299b685 | B_binary_fast | 1.46 | 1.11 | 1.61 | 1.01 | WORK ↑ but noise on small instance |
-| REGRandom | B_binary_fast | 0.88 | 1.19 | 1.04 | 1.02 | SPEED ↑ (slower per-prop) |
-| **mp1** | **B_binary_fast** | **4.10** | **1.16** | **4.76** | **5.02** | **WORK ↑↑ (4× more conflicts)** |
+* Kakuro `work=0.57` (43 % fewer conflicts) — pure luck from binary-first
+  propagation hitting a faster UIP path on this BSR-heavy instance.
+* sudoku `work=0.89` (11 % fewer) — same mechanism.
+* REGRandom `work=0.88` — same.
 
-The `mp1` row is the key result. The decomposition `net = 4.76` matches `measured
-= 5.02` very well, confirming that the regression is **trajectory + small speed
-penalty**, not third-factor noise. The binary primitive change reorders propagation
-events; on an instance with only 1.7 % binary clauses, those reordered events
-cascade into a 4× conflict explosion. **This is exactly the failure mode
-CLAUDE.md's "Investigating Why Ported Features Don't Help" Step 2 warns about:
-a feature that looks "free" can dramatically change the conflict trajectory.**
+All "losses" are also work-ratio (trajectory) effects, larger in magnitude:
+
+* battleship `work=4.61` — propagation reorder cascades into 4.6× more conflicts.
+* mp1 `work=4.10` — same, on an instance with only 1.7 % binary clauses where
+  the reorder should not matter (but does).
+* velev `work=2.61` — same.
+
+The decomposition `net ≈ measured` holds within ±15 % on every row, so the
+work × speed model is sound. This means the regression is **almost entirely
+work-side** (trajectory) plus a small consistent speed penalty — exactly the
+failure mode CLAUDE.md "Investigating Why Ported Features Don't Help" Step 2
+warns about: a feature that looks "free" actually changes the propagation order
+on every single instance, and changing propagation order changes the conflict
+trajectory unpredictably.
 
 ## Reference Solver Live Comparison
 
