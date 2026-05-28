@@ -1381,6 +1381,12 @@ struct Solver {
     chrono_backtrack: bool,
     /// minimum current/assertion-level gap required for chronological backtracking
     chrono_max_delta: usize,
+    /// opt-in reason-side variable activity bump after each conflict analysis
+    /// (Kissat analyze_reason_side_literals equivalent). See bd SAT-playground-5b2.2.37.
+    bump_reasons: bool,
+    /// Cap on reason-side variables added per conflict, expressed as a multiple of the
+    /// 1-UIP analyzed set size. Default 10x matches Kissat's bumpreasonslimit.
+    bump_reasons_limit_multiplier: u32,
     /// stable learned-clause metadata, keyed by LearnedId rather than moving arena offsets
     learned_meta: Vec<LearnedMeta>,
     /// current arena clause reference for each stable learned id
@@ -2155,6 +2161,8 @@ impl Solver {
             reduce_policy: config.reduce_policy,
             chrono_backtrack: config.chrono_backtrack,
             chrono_max_delta: config.chrono_max_delta,
+            bump_reasons: config.bump_reasons,
+            bump_reasons_limit_multiplier: config.bump_reasons_limit_multiplier,
             lbd_seen: vec![0; num_vars + 1],
             lbd_stamp: 0,
             last_conflict_lbd: 0,
@@ -6930,6 +6938,10 @@ impl Solver {
             learned_clause.swap(1, backtrack_pos);
         }
 
+        if self.bump_reasons && !self.accounting_mode.is_temporary() {
+            self.bump_reason_side_literals_for_learned(&learned_clause);
+        }
+
         self.iterating = learned_clause.len() == 1;
         self.scratch_conflict_clause = learned_clause;
         for &var in &self.scratch_bumped_vars {
@@ -6937,6 +6949,103 @@ impl Solver {
             self.scratch_resolved[var] = 0;
         }
         backtrack_level
+    }
+
+    /// Kissat-style reason-side variable bumping. After the learned clause is built
+    /// and minimized, iterate the learned clause literals (skipping the asserting
+    /// literal at index 0) and add variables from each literal's reason clause to
+    /// `scratch_bumped_vars`. The existing `bump_analyzed_variable_activity` flow
+    /// will then bump those variables' VSIDS activity (and update VMTF stamps) the
+    /// same way it handles the 1-UIP analyzed set. Off by default; gated by
+    /// SAT_BUMP_REASONS (bd SAT-playground-5b2.2.37).
+    ///
+    /// Cap: total added variables are bounded by
+    /// `bump_reasons_limit_multiplier * initial_bumped_set_size`, matching Kissat's
+    /// bumpreasonslimit semantics (default 10x). Variables at level 0 are skipped
+    /// because their activity does not influence the branching heap.
+    fn bump_reason_side_literals_for_learned(&mut self, learned_clause: &[i32]) {
+        self.stats.bump_reasons_attempted = self.stats.bump_reasons_attempted.saturating_add(1);
+        let initial_size = self.scratch_bumped_vars.len() as u64;
+        let limit = initial_size.saturating_mul(self.bump_reasons_limit_multiplier as u64);
+        if limit == 0 {
+            return;
+        }
+        let mut added: u64 = 0;
+        let mut skipped_limit_event = false;
+
+        // Skip index 0: the asserting (UIP) literal. Its reason chain is exactly
+        // what the 1-UIP loop already walked, so reason-side bumping for it is
+        // either redundant or unsafe (reason may be ReasonRef::None at this point
+        // because the learned clause will become its reason post-backtrack).
+        for &lit in learned_clause.iter().skip(1) {
+            if added >= limit {
+                skipped_limit_event = true;
+                break;
+            }
+            let var = lit.unsigned_abs() as usize;
+            let reason_ref = self.reason_ref(var);
+            match reason_ref {
+                ReasonRef::None => continue,
+                ReasonRef::Clause(clause_idx) => {
+                    if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
+                        continue;
+                    }
+                    let clause_len = self.clause_len(clause_idx);
+                    for rpos in 0..clause_len {
+                        if added >= limit {
+                            skipped_limit_event = true;
+                            break;
+                        }
+                        let rlit = self.clause_lit(clause_idx, rpos);
+                        let rvar = rlit.unsigned_abs() as usize;
+                        if rvar == var {
+                            continue;
+                        }
+                        if self.scratch_seen[rvar] != 0 {
+                            continue;
+                        }
+                        if self.decision_level[rvar] == 0 {
+                            continue;
+                        }
+                        self.scratch_seen[rvar] = 1;
+                        self.scratch_bumped_vars.push(rvar);
+                        added = added.saturating_add(1);
+                    }
+                }
+                ReasonRef::Binary(binary_id) => {
+                    let lits = *self
+                        .binary_reason_lits
+                        .get(binary_id.0 as usize)
+                        .expect("invalid binary reason id");
+                    for &rlit in &lits {
+                        if added >= limit {
+                            skipped_limit_event = true;
+                            break;
+                        }
+                        let rvar = rlit.unsigned_abs() as usize;
+                        if rvar == var {
+                            continue;
+                        }
+                        if self.scratch_seen[rvar] != 0 {
+                            continue;
+                        }
+                        if self.decision_level[rvar] == 0 {
+                            continue;
+                        }
+                        self.scratch_seen[rvar] = 1;
+                        self.scratch_bumped_vars.push(rvar);
+                        added = added.saturating_add(1);
+                    }
+                }
+            }
+        }
+
+        self.stats.bump_reasons_vars_added =
+            self.stats.bump_reasons_vars_added.saturating_add(added);
+        if skipped_limit_event {
+            self.stats.bump_reasons_skipped_limit =
+                self.stats.bump_reasons_skipped_limit.saturating_add(1);
+        }
     }
 
     #[cfg(test)]
@@ -13617,6 +13726,84 @@ mod tests {
             warmup: true,
             ..SolverConfig::default()
         }
+    }
+
+    fn bump_reasons_config(limit: u32) -> SolverConfig {
+        SolverConfig {
+            bump_reasons: true,
+            bump_reasons_limit_multiplier: limit,
+            ..SolverConfig::default()
+        }
+    }
+
+    #[test]
+    fn test_bump_reasons_disabled_does_not_alter_bumped_set() {
+        let config = SolverConfig::default();
+        let mut s =
+            make_solver_with_config(3, vec![vec![1, 2], vec![-1, 3], vec![-2, -3]], &config);
+        let _ = s.solve_with_proof(&mut ProofLog::disabled(), &config);
+        assert_eq!(s.stats.bump_reasons_attempted, 0);
+        assert_eq!(s.stats.bump_reasons_vars_added, 0);
+        assert_eq!(s.stats.bump_reasons_skipped_limit, 0);
+    }
+
+    #[test]
+    fn test_bump_reasons_attempts_recorded_when_enabled() {
+        // A pigeonhole-like UNSAT that produces multiple conflict analyses.
+        let config = bump_reasons_config(10);
+        let clauses = vec![
+            vec![1, 2],
+            vec![-1, 3],
+            vec![-2, 3],
+            vec![-1, -2],
+            vec![-3, 4],
+            vec![-3, -4],
+        ];
+        let mut s = make_solver_with_config(4, clauses, &config);
+        let proof_dir = make_temp_dir("bump-reasons-attempted");
+        let outcome = s
+            .solve_to_output(proof_dir.to_str().expect("utf8 temp dir"), &config)
+            .0;
+        // Solver should reach a conclusive verdict (SAT or UNSAT — formula above
+        // is satisfiable: 1=T, 2=F, 3=T, 4=F satisfies all).
+        assert_ne!(outcome.status, SolveStatus::Unknown);
+        assert!(
+            s.stats.bump_reasons_attempted >= s.stats.conflicts,
+            "bump_reasons_attempted ({}) must run at least once per conflict ({})",
+            s.stats.bump_reasons_attempted,
+            s.stats.conflicts
+        );
+    }
+
+    #[test]
+    fn test_bump_reasons_zero_limit_is_no_op() {
+        // limit=0 means initial_size * 0 = 0, so no variables should be added.
+        let config = bump_reasons_config(0);
+        let clauses = vec![vec![1, 2], vec![-1, 3], vec![-2, -3], vec![-1, -2]];
+        let mut s = make_solver_with_config(3, clauses, &config);
+        let _ = s.solve_with_proof(&mut ProofLog::disabled(), &config);
+        assert_eq!(s.stats.bump_reasons_vars_added, 0);
+    }
+
+    #[test]
+    fn test_bump_reasons_skipped_when_temporary_context() {
+        // Lucky-style probing uses with_temporary_assumptions; verify the guard
+        // prevents bump_reasons from firing in that context by counting attempts
+        // before and after a lucky probe.
+        let config = SolverConfig {
+            bump_reasons: true,
+            bump_reasons_limit_multiplier: 10,
+            lucky: true,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(3, vec![vec![1, 2], vec![-1, 3]], &config);
+        let _ = s.try_lucky_assignment();
+        // No main-search conflicts have been analyzed yet, so attempts must remain
+        // zero even though lucky probing may have produced temporary conflicts.
+        assert_eq!(
+            s.stats.bump_reasons_attempted, 0,
+            "bump_reasons must not run inside temporary-assumption context"
+        );
     }
 
     #[test]

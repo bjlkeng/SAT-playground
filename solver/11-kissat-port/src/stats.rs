@@ -126,6 +126,9 @@ pub(crate) struct SolverStats {
     pub(crate) warmup_propagations: u64,
     pub(crate) warmup_assigned_vars: u64,
     pub(crate) warmup_conflict_stopped: u64,
+    pub(crate) bump_reasons_attempted: u64,
+    pub(crate) bump_reasons_vars_added: u64,
+    pub(crate) bump_reasons_skipped_limit: u64,
     pub(crate) rephases: u64,
     pub(crate) branch_reorders: u64,
     pub(crate) decision_heap_pops: u64,
@@ -599,6 +602,12 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("warmup_propagations", ctx.stats.warmup_propagations);
     json.u64("warmup_assigned_vars", ctx.stats.warmup_assigned_vars);
     json.u64("warmup_conflict_stopped", ctx.stats.warmup_conflict_stopped);
+    json.u64("bump_reasons_attempted", ctx.stats.bump_reasons_attempted);
+    json.u64("bump_reasons_vars_added", ctx.stats.bump_reasons_vars_added);
+    json.u64(
+        "bump_reasons_skipped_limit",
+        ctx.stats.bump_reasons_skipped_limit,
+    );
 
     json.u64(
         "pre_bve_eliminated_vars",

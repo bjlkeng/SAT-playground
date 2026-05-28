@@ -541,6 +541,8 @@ pub(crate) struct SolverConfig {
     pub(crate) mode_use_ticks: bool,
     pub(crate) lucky: bool,
     pub(crate) warmup: bool,
+    pub(crate) bump_reasons: bool,
+    pub(crate) bump_reasons_limit_multiplier: u32,
     pub(crate) chrono_backtrack: bool,
     pub(crate) binary_fast_path: bool,
     pub(crate) clause_min_mode: ClauseMinMode,
@@ -647,6 +649,8 @@ impl Default for SolverConfig {
             mode_use_ticks: false,
             lucky: false,
             warmup: false,
+            bump_reasons: false,
+            bump_reasons_limit_multiplier: 10,
             chrono_backtrack: false,
             binary_fast_path: false,
             clause_min_mode: ClauseMinMode::RecursiveLimited,
@@ -999,6 +1003,14 @@ impl SolverConfig {
             parse_bool_selected(env_map, &key_set, "SAT_MODE_USE_TICKS", self.mode_use_ticks);
         self.lucky = parse_bool_selected(env_map, &key_set, "SAT_LUCKY", self.lucky);
         self.warmup = parse_bool_selected(env_map, &key_set, "SAT_WARMUP", self.warmup);
+        self.bump_reasons =
+            parse_bool_selected(env_map, &key_set, "SAT_BUMP_REASONS", self.bump_reasons);
+        self.bump_reasons_limit_multiplier = parse_u32_selected(
+            env_map,
+            &key_set,
+            "SAT_BUMP_REASONS_LIMIT",
+            self.bump_reasons_limit_multiplier,
+        );
         self.chrono_backtrack =
             parse_bool_selected(env_map, &key_set, "SAT_CHRONO", self.chrono_backtrack);
         self.binary_fast_path =
@@ -1504,6 +1516,12 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "mode_use_ticks", self.mode_use_ticks);
         push_kv_bool(&mut lines, "lucky", self.lucky);
         push_kv_bool(&mut lines, "warmup", self.warmup);
+        push_kv_bool(&mut lines, "bump_reasons", self.bump_reasons);
+        push_kv(
+            &mut lines,
+            "bump_reasons_limit_multiplier",
+            self.bump_reasons_limit_multiplier.to_string(),
+        );
         push_kv_bool(&mut lines, "chrono_backtrack", self.chrono_backtrack);
         push_kv_bool(&mut lines, "binary_fast_path", self.binary_fast_path);
         push_kv(&mut lines, "clause_min_mode", self.clause_min_mode.as_str());
@@ -1857,6 +1875,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             "bd:SAT-playground-5b2.2.36",
         ),
         feature(
+            "SAT_BUMP_REASONS",
+            config.bump_reasons,
+            FeatureMaturity::Experimental,
+            true,
+            true,
+            false,
+            "bd:SAT-playground-5b2.2.37",
+        ),
+        feature(
             "SAT_CHRONO",
             config.chrono_backtrack,
             FeatureMaturity::SmokeSafe,
@@ -2153,6 +2180,8 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "mode_use_ticks" => Some("SAT_MODE_USE_TICKS"),
         "lucky" => Some("SAT_LUCKY"),
         "warmup" => Some("SAT_WARMUP"),
+        "bump_reasons" => Some("SAT_BUMP_REASONS"),
+        "bump_reasons_limit_multiplier" => Some("SAT_BUMP_REASONS_LIMIT"),
         "chrono_backtrack" => Some("SAT_CHRONO"),
         "binary_fast_path" => Some("SAT_BINARY_FAST"),
         "clause_min_mode" => Some("SAT_CLAUSE_MIN"),
@@ -2338,6 +2367,8 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_MODE_USE_TICKS",
         "SAT_LUCKY",
         "SAT_WARMUP",
+        "SAT_BUMP_REASONS",
+        "SAT_BUMP_REASONS_LIMIT",
         "SAT_CHRONO",
         "SAT_BINARY_FAST",
         "SAT_CLAUSE_MIN",
@@ -3235,6 +3266,45 @@ mod tests {
 
         let replayed = SolverConfig::from_replay_text(&replay, Path::new("<warmup-test>"));
         assert!(replayed.warmup);
+        assert_eq!(replayed.config_hash(), config.config_hash());
+    }
+
+    #[test]
+    fn test_bump_reasons_defaults_off_and_can_be_enabled() {
+        let config = SolverConfig::from_env_map(&env_map(&[]));
+        assert!(!config.bump_reasons);
+        assert_eq!(config.bump_reasons_limit_multiplier, 10);
+
+        let fast = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "fast")]));
+        assert!(!fast.bump_reasons);
+
+        let baseline = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "baseline")]));
+        assert!(!baseline.bump_reasons);
+
+        let enabled = SolverConfig::from_env_map(&env_map(&[("SAT_BUMP_REASONS", "on")]));
+        assert!(enabled.bump_reasons);
+
+        let custom_limit = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_BUMP_REASONS", "on"),
+            ("SAT_BUMP_REASONS_LIMIT", "25"),
+        ]));
+        assert!(custom_limit.bump_reasons);
+        assert_eq!(custom_limit.bump_reasons_limit_multiplier, 25);
+    }
+
+    #[test]
+    fn test_bump_reasons_is_replayable() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_BUMP_REASONS", "on"),
+            ("SAT_BUMP_REASONS_LIMIT", "5"),
+        ]));
+        let replay = config.config_replay_text();
+        assert!(replay.contains("bump_reasons=true"));
+        assert!(replay.contains("bump_reasons_limit_multiplier=5"));
+
+        let replayed = SolverConfig::from_replay_text(&replay, Path::new("<bump-reasons-test>"));
+        assert!(replayed.bump_reasons);
+        assert_eq!(replayed.bump_reasons_limit_multiplier, 5);
         assert_eq!(replayed.config_hash(), config.config_hash());
     }
 
