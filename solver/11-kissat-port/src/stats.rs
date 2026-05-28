@@ -62,6 +62,14 @@ pub(crate) struct SolverStats {
     pub(crate) stable_tier2_glue_limit: u64,
     pub(crate) focused_glue_used: Vec<u64>,
     pub(crate) stable_glue_used: Vec<u64>,
+    // Subset of focused_glue_used/stable_glue_used contributed by the per-reason path
+    // (mark_learned_clause_recent during conflict analysis / propagation), as opposed to
+    // the new-clause path (add_analyzed_clause_from_slice). Frequently-reused (hot)
+    // reasons tend to have low LBD, so the per-reason path biases the histogram
+    // percentiles downward — these counters expose how much of focused/stable_glue_used
+    // came from reason reuse vs. new clause creation. See [[bead 5b2.2.49]].
+    pub(crate) focused_reason_glue_recordings: u64,
+    pub(crate) stable_reason_glue_recordings: u64,
     pub(crate) lbd_computed: u64,
     pub(crate) lbd_sum: u64,
     pub(crate) lbd_max: u32,
@@ -493,6 +501,14 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("stable_tier2_glue_limit", ctx.stats.stable_tier2_glue_limit);
     json.u64_array("focused_glue_used", &ctx.stats.focused_glue_used);
     json.u64_array("stable_glue_used", &ctx.stats.stable_glue_used);
+    json.u64(
+        "focused_reason_glue_recordings",
+        ctx.stats.focused_reason_glue_recordings,
+    );
+    json.u64(
+        "stable_reason_glue_recordings",
+        ctx.stats.stable_reason_glue_recordings,
+    );
     json.u64("luby_restarts", ctx.stats.luby_restarts);
     json.u64("glucose_restarts", ctx.stats.glucose_restarts);
     json.u64("focused_restarts", ctx.stats.focused_restarts);

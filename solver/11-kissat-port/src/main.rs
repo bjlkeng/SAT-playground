@@ -2665,6 +2665,24 @@ impl Solver {
             return;
         }
         self.record_current_mode_glue_use(self.learnt_lbd(clause_idx));
+        // Track that this histogram increment came from the per-reason path so future
+        // triage can separate the reason-reuse bias from new-clause LBD distribution.
+        // See bead SAT-playground-5b2.2.49 and the doc block above
+        // `record_current_mode_glue_use` for the bias rationale.
+        match self.search_mode {
+            SearchMode::Focused => {
+                self.stats.focused_reason_glue_recordings = self
+                    .stats
+                    .focused_reason_glue_recordings
+                    .saturating_add(1);
+            }
+            SearchMode::Stable => {
+                self.stats.stable_reason_glue_recordings = self
+                    .stats
+                    .stable_reason_glue_recordings
+                    .saturating_add(1);
+            }
+        }
         let recent = self.learnt_used_recently(clause_idx).max(1);
         self.set_learnt_used_recently(clause_idx, recent);
     }
@@ -2701,6 +2719,32 @@ impl Solver {
         hist[idx] = hist[idx].saturating_add(1);
     }
 
+    // Records a single LBD histogram contribution for the current search mode. Writes
+    // BOTH `focused_glue_recent`/`stable_glue_recent` (the percentile driver consumed by
+    // `compute_tier_limits_from_histogram`) AND `stats.focused_glue_used`/
+    // `stats.stable_glue_used` (cumulative reporting emitted in SAT_STATS_JSON).
+    //
+    // Callers fall into two semantically distinct categories:
+    //
+    // 1. NEW-CLAUSE PATH — `add_analyzed_clause_from_slice` calls this exactly once when
+    //    a freshly learned clause is added. This is the "true" LBD distribution.
+    //
+    // 2. PER-REASON PATH — `mark_learned_clause_recent` (called from
+    //    `mark_reason_literals_for_analysis` during the UIP walk and from
+    //    `note_clause_used_as_propagation_reason` when an LBD-tiered clause is the
+    //    propagation reason) fires once per reason use. Hot reasons (which tend to have
+    //    low LBD because that is why they get reused) therefore contribute MANY entries,
+    //    biasing the percentiles downward over time. `compute_tier_limits_from_histogram`
+    //    reads the 50th / 90th percentiles of this biased distribution, so the tier-2
+    //    cutoff drifts toward smaller glue values and more newly-learned clauses become
+    //    eviction candidates as soon as budget pressure appears.
+    //
+    // The bias is intentional — Kissat counts both creation and reuse — but its magnitude
+    // is exposed by `stats.{focused,stable}_reason_glue_recordings`, which count ONLY
+    // the per-reason path. New-clause contributions can be derived as
+    // `sum(stats.<mode>_glue_used) - stats.<mode>_reason_glue_recordings`.
+    //
+    // See bead SAT-playground-5b2.2.49 for the audit and option (a) / (b) discussion.
     fn record_current_mode_glue_use(&mut self, glue: u16) {
         if !self.use_lbd {
             return;
@@ -9585,6 +9629,66 @@ mod tests {
 
         assert_eq!(s.stats.focused_glue_used[8], 2);
         assert_eq!(s.stats.stable_glue_used[8], 1);
+    }
+
+    #[test]
+    fn test_reason_glue_recordings_count_only_per_reason_path() {
+        // Bead SAT-playground-5b2.2.49: the per-reason path
+        // (mark_learned_clause_recent) must increment the new
+        // `{focused,stable}_reason_glue_recordings` counters, while the new-clause path
+        // (add_analyzed_clause_from_slice -> record_current_mode_glue_use) must not.
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.search_mode = SearchMode::Focused;
+        s.last_conflict_lbd = 8;
+
+        // New-clause path: should NOT bump the per-reason counters.
+        let learned = s.add_analyzed_clause_from_slice(&[1, 2, 3]);
+        assert_eq!(s.stats.focused_reason_glue_recordings, 0);
+        assert_eq!(s.stats.stable_reason_glue_recordings, 0);
+
+        // Per-reason path: should bump focused counter once per call.
+        s.mark_learned_clause_recent(learned);
+        s.mark_learned_clause_recent(learned);
+        s.mark_learned_clause_recent(learned);
+        assert_eq!(s.stats.focused_reason_glue_recordings, 3);
+        assert_eq!(s.stats.stable_reason_glue_recordings, 0);
+
+        // Switching mode routes increments to the stable counter.
+        s.search_mode = SearchMode::Stable;
+        s.mark_learned_clause_recent(learned);
+        s.mark_learned_clause_recent(learned);
+        assert_eq!(s.stats.focused_reason_glue_recordings, 3);
+        assert_eq!(s.stats.stable_reason_glue_recordings, 2);
+
+        // The pre-existing histograms must reflect EVERY increment (new + per-reason),
+        // so the new counters never exceed them.
+        let focused_total: u64 = s.stats.focused_glue_used.iter().sum();
+        let stable_total: u64 = s.stats.stable_glue_used.iter().sum();
+        assert!(focused_total >= s.stats.focused_reason_glue_recordings);
+        assert!(stable_total >= s.stats.stable_reason_glue_recordings);
+        // New-clause contribution is recoverable as the difference.
+        assert_eq!(focused_total - s.stats.focused_reason_glue_recordings, 1);
+        assert_eq!(stable_total - s.stats.stable_reason_glue_recordings, 0);
+    }
+
+    #[test]
+    fn test_reason_glue_recordings_skipped_when_use_lbd_off() {
+        // When use_lbd is off, mark_learned_clause_recent returns early before any
+        // histogram or counter write. The new counters must stay at zero.
+        let mut s = Solver::new(3, vec![]);
+        s.search_mode = SearchMode::Focused;
+        s.use_lbd = false; // explicit even though Default is false
+        s.last_conflict_lbd = 8;
+        let plain = s.add_clause(vec![1, 2, 3]);
+
+        s.mark_learned_clause_recent(plain);
+        s.mark_learned_clause_recent(plain);
+
+        assert_eq!(s.stats.focused_reason_glue_recordings, 0);
+        assert_eq!(s.stats.stable_reason_glue_recordings, 0);
+        assert!(s.stats.focused_glue_used.is_empty());
+        assert!(s.stats.stable_glue_used.is_empty());
     }
 
     #[test]
