@@ -1379,7 +1379,7 @@ struct Solver {
     reduce_policy: ReducePolicy,
     /// opt-in guarded chronological backtracking; default off for solver-10 parity
     chrono_backtrack: bool,
-    /// maximum current/assertion-level gap where chronological backtracking is considered
+    /// minimum current/assertion-level gap required for chronological backtracking
     chrono_max_delta: usize,
     /// stable learned-clause metadata, keyed by LearnedId rather than moving arena offsets
     learned_meta: Vec<LearnedMeta>,
@@ -5158,13 +5158,13 @@ impl Solver {
         }
 
         self.stats.chrono_attempts += 1;
-        let delta = current_level - assertion_level;
-        if delta > self.chrono_max_delta {
-            self.stats.chrono_rejected_delta_too_large += 1;
+        let chrono_level = current_level - 1;
+        let delta = chrono_level - assertion_level;
+        if delta <= self.chrono_max_delta {
+            self.stats.chrono_rejected_delta_small += 1;
             return assertion_level;
         }
 
-        let chrono_level = current_level - 1;
         if !self.learned_clause_asserts_at_level(learned_clause, chrono_level) {
             self.stats.chrono_rejected_not_asserting += 1;
             return assertion_level;
@@ -11371,8 +11371,8 @@ mod tests {
     }
 
     #[test]
-    fn test_chrono_rejects_large_delta() {
-        let config = chrono_config(1);
+    fn test_chrono_rejects_small_delta() {
+        let config = chrono_config(2);
         let mut s = make_solver_with_config(3, vec![], &config);
         s.decide(1);
         s.decide(2);
@@ -11383,12 +11383,12 @@ mod tests {
         assert_eq!(chosen, 0);
         assert_eq!(s.stats.chrono_attempts, 1);
         assert_eq!(s.stats.chrono_used, 0);
-        assert_eq!(s.stats.chrono_rejected_delta_too_large, 1);
+        assert_eq!(s.stats.chrono_rejected_delta_small, 1);
     }
 
     #[test]
-    fn test_chrono_allows_small_delta_when_asserting() {
-        let config = chrono_config(3);
+    fn test_chrono_allows_large_delta_when_asserting() {
+        let config = chrono_config(1);
         let mut s = make_solver_with_config(3, vec![], &config);
         s.decide(1);
         s.decide(2);
@@ -11404,7 +11404,7 @@ mod tests {
 
     #[test]
     fn test_chrono_rejects_non_asserting_level() {
-        let config = chrono_config(3);
+        let config = chrono_config(1);
         let mut s = make_solver_with_config(4, vec![], &config);
         s.decide(1);
         s.decide(2);
@@ -11421,7 +11421,7 @@ mod tests {
 
     #[test]
     fn test_chrono_backtrack_preserves_reason_invariant() {
-        let config = chrono_config(3);
+        let config = chrono_config(0);
         let mut s = make_solver_with_config(3, vec![], &config);
         s.decide(1);
         s.decide(2);

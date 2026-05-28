@@ -126,7 +126,7 @@ What is present:
   best, inverted, and original polarity sources
 - opt-in guarded chronological backtracking (`SAT_CHRONO=on`) that keeps only `current - 1`
   instead of the normal assertion level when the learned clause remains asserting there; it falls
-  back to ordinary non-chronological backtracking when the level gap exceeds
+  back to ordinary non-chronological backtracking unless the level gap exceeds
   `SAT_CHRONO_MAX_DELTA` or the learned clause would stop being unit
 - opt-in binary implication fast path (`SAT_BINARY_FAST=on`) that keeps binary clauses in the arena
   for proof/model/debug traceability while propagating them through stable binary IDs and implication

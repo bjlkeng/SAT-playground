@@ -100,7 +100,7 @@ pub(crate) struct SolverStats {
     pub(crate) chrono_attempts: u64,
     pub(crate) chrono_used: u64,
     pub(crate) chrono_rejected_not_asserting: u64,
-    pub(crate) chrono_rejected_delta_too_large: u64,
+    pub(crate) chrono_rejected_delta_small: u64,
     pub(crate) chrono_skipped_levels: u64,
     pub(crate) binary_props: u64,
     pub(crate) binary_stale_skips: u64,
@@ -542,8 +542,8 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
         ctx.stats.chrono_rejected_not_asserting,
     );
     json.u64(
-        "chrono_rejected_delta_too_large",
-        ctx.stats.chrono_rejected_delta_too_large,
+        "chrono_rejected_delta_small",
+        ctx.stats.chrono_rejected_delta_small,
     );
     json.u64("chrono_skipped_levels", ctx.stats.chrono_skipped_levels);
 
@@ -697,7 +697,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, _timings: &RunTimings) -> Str
             "glue_sum={} glue_max={} glue_count={} ",
             "learned_size_sum={} learned_size_max={} ",
             "glucose_restarts={} focused_restarts={} luby_restarts={} reluctant_restarts={} restarts_blocked_by_level={} restarts_reused_trails={} restarts_reused_levels={} restarts_reused_trails_focused={} restarts_reused_levels_focused={} restarts_reused_trails_stable={} restarts_reused_levels_stable={} ",
-            "chrono_attempts={} chrono_backtracks={} non_chrono_backtracks={} chrono_rejected_not_asserting={} chrono_rejected_delta_too_large={} chrono_skipped_levels={} ",
+            "chrono_attempts={} chrono_backtracks={} non_chrono_backtracks={} chrono_rejected_not_asserting={} chrono_rejected_delta_small={} chrono_skipped_levels={} ",
             "vivified_clauses=0 vivified_strengthened=0 vivified_subsumed=0 vivified_ticks=0 ",
             "probe_failed_lits=0 probe_units=0 probe_ticks=0 ",
             "transitive_removed=0 gate_equivs_found=0 appendix_equiv_substitutions=0 ",
@@ -737,7 +737,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, _timings: &RunTimings) -> Str
         stats.chrono_used,
         stats.chrono_attempts.saturating_sub(stats.chrono_used),
         stats.chrono_rejected_not_asserting,
-        stats.chrono_rejected_delta_too_large,
+        stats.chrono_rejected_delta_small,
         stats.chrono_skipped_levels,
         stats.phase_saved_used,
         stats.phase_legacy_used,
