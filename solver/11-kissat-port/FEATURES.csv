@@ -15,6 +15,7 @@ SAT_OTFS,otfs,Experimental,true,true,false,none,log/phase1/1.14g-otfs-summary.md
 SAT_SIMPLIFICATION,simplification,SmokeSafe,true,true,false,default|fast,solver/11-kissat-port/BASELINE_LOCK.raw.txt,preprocess,0.3
 SAT_BVE,bve,SmokeSafe,true,true,false,default|fast,solver/11-kissat-port/BASELINE_LOCK.raw.txt,preprocess-bve,0.3
 SAT_FULL_BSR,full_bsr,SmokeSafe,true,true,false,default|fast,solver/11-kissat-port/BASELINE_LOCK.raw.txt,preprocess-bsr,0.3
+SAT_BSR_FORMULA_GATE,bsr_formula_gate,Experimental,false,false,false,none,,preprocess-bsr,SAT-playground-f06
 SAT_INPROCESS,inprocess,ParkingLot,false,false,false,none,,inprocessing,0.3
 SAT_VIVIFY,vivify,ParkingLot,false,false,false,none,,vivification,0.3
 SAT_PROBE,probe,ParkingLot,false,false,false,none,,probing,0.3

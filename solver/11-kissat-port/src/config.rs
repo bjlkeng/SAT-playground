@@ -562,6 +562,12 @@ pub(crate) struct SolverConfig {
     pub(crate) simplification: bool,
     pub(crate) bve: bool,
     pub(crate) full_bsr: bool,
+    // When true, skip full backward subsumption on formulas classified pre-preprocess as
+    // (size_class=Large, binary_fraction<0.05, variable_density>100). Per
+    // log/analyzesat-2026-05-26-preprocess/FINDINGS.md Gap PRE-3: BSR is a net loss on
+    // such formulas (Kakuro -79%, velev -79%) but useful on random 3-SAT / brocard.
+    // Default off; the first concrete adaptive-routing rule under bead f06.
+    pub(crate) bsr_formula_gate: bool,
     pub(crate) use_resolved_conflict_analysis: bool,
     pub(crate) initial_clause_mode: InitialClauseMode,
     pub(crate) branch_mode: BranchMode,
@@ -670,6 +676,7 @@ impl Default for SolverConfig {
             simplification: true,
             bve: true,
             full_bsr: true,
+            bsr_formula_gate: false,
             use_resolved_conflict_analysis: false,
             initial_clause_mode: InitialClauseMode::CanonicalSorted,
             branch_mode: BranchMode::Minisat,
@@ -1080,6 +1087,12 @@ impl SolverConfig {
             parse_bool_selected(env_map, &key_set, "SAT_SIMPLIFICATION", self.simplification);
         self.bve = parse_bool_selected(env_map, &key_set, "SAT_BVE", self.bve);
         self.full_bsr = parse_bool_selected(env_map, &key_set, "SAT_FULL_BSR", self.full_bsr);
+        self.bsr_formula_gate = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_BSR_FORMULA_GATE",
+            self.bsr_formula_gate,
+        );
         self.use_resolved_conflict_analysis = parse_conflict_analysis_selected(
             env_map,
             &key_set,
@@ -1572,6 +1585,7 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "simplification", self.simplification);
         push_kv_bool(&mut lines, "bve", self.bve);
         push_kv_bool(&mut lines, "full_bsr", self.full_bsr);
+        push_kv_bool(&mut lines, "bsr_formula_gate", self.bsr_formula_gate);
         push_kv_bool(
             &mut lines,
             "use_resolved_conflict_analysis",
@@ -1974,6 +1988,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             "solver/11-kissat-port/BASELINE_LOCK.raw.txt",
         ),
         feature(
+            "SAT_BSR_FORMULA_GATE",
+            config.bsr_formula_gate,
+            FeatureMaturity::Experimental,
+            false,
+            false,
+            false,
+            "",
+        ),
+        feature(
             "SAT_INPROCESS",
             config.inprocess,
             FeatureMaturity::ParkingLot,
@@ -2200,6 +2223,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "simplification" => Some("SAT_SIMPLIFICATION"),
         "bve" => Some("SAT_BVE"),
         "full_bsr" => Some("SAT_FULL_BSR"),
+        "bsr_formula_gate" => Some("SAT_BSR_FORMULA_GATE"),
         "use_resolved_conflict_analysis" => Some("SAT_CONFLICT_ANALYSIS_MODE"),
         "initial_clause_mode" => Some("SAT_INITIAL_CLAUSE_MODE"),
         "branch_mode" => Some("SAT_BRANCH_MODE"),
@@ -2387,6 +2411,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_SIMPLIFICATION",
         "SAT_BVE",
         "SAT_FULL_BSR",
+        "SAT_BSR_FORMULA_GATE",
         "SAT_INPROCESS",
         "SAT_VIVIFY",
         "SAT_PROBE",

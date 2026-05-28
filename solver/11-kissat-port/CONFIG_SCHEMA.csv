@@ -61,6 +61,7 @@ SAT_REORDER_INTERVAL_CONFLICTS,reorder_interval_conflicts,u64,positive,10000,100
 SAT_SIMPLIFICATION,simplification,bool,on|off,false,true,true,true,false,true,SAT_INPROCESS|SAT_VIVIFY|SAT_PROBE|SAT_HBR|SAT_TRANSITIVE|SAT_FORWARD_SUBSUME|SAT_GATE_EXTRACT|SAT_GATE_BVE|SAT_RCHECK,,0.3,yes
 SAT_BVE,bve,bool,on|off,false,true,true,true,false,true,SAT_GATE_BVE,,0.3,yes
 SAT_FULL_BSR,full_bsr,bool,on|off,false,true,true,true,false,true,,,0.3,yes
+SAT_BSR_FORMULA_GATE,bsr_formula_gate,bool,on|off,false,false,false,true,false,false,,SAT_FULL_BSR,SAT-playground-f06,yes
 SAT_INPROCESS,inprocess,bool,on|off,false,false,false,true,false,false,SAT_SIMPLIFICATION,,0.3,yes
 SAT_VIVIFY,vivify,bool,on|off,false,false,false,true,false,false,SAT_SIMPLIFICATION,,0.3,yes
 SAT_PROBE,probe,bool,on|off,false,false,false,true,false,false,SAT_SIMPLIFICATION,,0.3,yes

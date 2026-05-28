@@ -41,7 +41,25 @@ impl Solver {
     }
 
     fn should_run_full_backward_subsumption(&self) -> bool {
-        self.full_bsr
+        if !self.full_bsr {
+            return false;
+        }
+        if self.bsr_formula_gate && self.pre_preprocess_class_skips_bsr() {
+            return false;
+        }
+        true
+    }
+
+    // Adaptive rule from log/analyzesat-2026-05-26-preprocess/FINDINGS.md Gap PRE-3:
+    // full backward subsumption is a net loss on large, sparse, low-binary formulas
+    // (Kakuro -79%, velev -79%) but stays useful on random 3-SAT and brocard. Only
+    // consulted when SAT_BSR_FORMULA_GATE is on; the pre-preprocess snapshot is taken
+    // in main.rs right before `eliminate()` is called.
+    fn pre_preprocess_class_skips_bsr(&self) -> bool {
+        let class = self.pre_preprocess_formula_class;
+        matches!(class.size_class, FormulaSizeClass::Large)
+            && class.binary_fraction < 0.05
+            && class.variable_density > 100.0
     }
 
     fn note_preprocess_budget_hit(&mut self, kind: PreprocessBudgetKind) {
@@ -1627,5 +1645,131 @@ mod tests {
                 "extended model does not satisfy {clause:?}"
             );
         }
+    }
+
+    fn make_matching_pre_class() -> FormulaClass {
+        FormulaClass {
+            size_class: FormulaSizeClass::Large,
+            kissat_small: false,
+            kissat_bigbig: false,
+            binary_fraction: 0.04,
+            avg_clause_size: 3.0,
+            variable_density: 150.0,
+        }
+    }
+
+    fn make_nonmatching_pre_class() -> FormulaClass {
+        FormulaClass {
+            size_class: FormulaSizeClass::Medium,
+            kissat_small: false,
+            kissat_bigbig: false,
+            binary_fraction: 0.5,
+            avg_clause_size: 3.0,
+            variable_density: 50.0,
+        }
+    }
+
+    #[test]
+    fn should_run_full_backward_subsumption_default_behavior_unchanged() {
+        // Default config: full_bsr=true, bsr_formula_gate=false. Regardless of
+        // pre_preprocess class, should_run_full_backward_subsumption returns true.
+        let mut s = Solver::new(2, vec![]);
+        assert!(s.full_bsr);
+        assert!(!s.bsr_formula_gate);
+        s.pre_preprocess_formula_class = make_matching_pre_class();
+        assert!(s.should_run_full_backward_subsumption());
+    }
+
+    #[test]
+    fn bsr_formula_gate_skips_bsr_on_large_low_binary_dense_formula() {
+        let config = SolverConfig {
+            bsr_formula_gate: true,
+            ..SolverConfig::default()
+        };
+        let mut s = Solver::new_with_config(2, vec![], &config);
+        assert!(s.full_bsr);
+        assert!(s.bsr_formula_gate);
+        s.pre_preprocess_formula_class = make_matching_pre_class();
+        assert!(!s.should_run_full_backward_subsumption());
+    }
+
+    #[test]
+    fn bsr_formula_gate_runs_bsr_when_class_does_not_match() {
+        let config = SolverConfig {
+            bsr_formula_gate: true,
+            ..SolverConfig::default()
+        };
+        let mut s = Solver::new_with_config(2, vec![], &config);
+        s.pre_preprocess_formula_class = make_nonmatching_pre_class();
+        assert!(s.should_run_full_backward_subsumption());
+    }
+
+    #[test]
+    fn bsr_formula_gate_off_runs_bsr_even_when_class_matches() {
+        // Default (gate off): the matching class must NOT change behavior.
+        let mut s = Solver::new(2, vec![]);
+        assert!(!s.bsr_formula_gate);
+        s.pre_preprocess_formula_class = make_matching_pre_class();
+        assert!(s.should_run_full_backward_subsumption());
+    }
+
+    #[test]
+    fn bsr_formula_gate_respects_full_bsr_off() {
+        // If full_bsr is already off, the gate is a no-op (return false either way).
+        let config = SolverConfig {
+            full_bsr: false,
+            bsr_formula_gate: true,
+            ..SolverConfig::default()
+        };
+        let mut s = Solver::new_with_config(2, vec![], &config);
+        s.pre_preprocess_formula_class = make_matching_pre_class();
+        assert!(!s.should_run_full_backward_subsumption());
+        s.pre_preprocess_formula_class = make_nonmatching_pre_class();
+        assert!(!s.should_run_full_backward_subsumption());
+    }
+
+    #[test]
+    fn bsr_formula_gate_requires_all_three_conditions() {
+        let config = SolverConfig {
+            bsr_formula_gate: true,
+            ..SolverConfig::default()
+        };
+        let mut s = Solver::new_with_config(2, vec![], &config);
+
+        // Large + low binary but density too low → run BSR.
+        s.pre_preprocess_formula_class = FormulaClass {
+            size_class: FormulaSizeClass::Large,
+            binary_fraction: 0.01,
+            variable_density: 50.0,
+            ..FormulaClass::default()
+        };
+        assert!(s.should_run_full_backward_subsumption());
+
+        // Large + dense but binary too high → run BSR.
+        s.pre_preprocess_formula_class = FormulaClass {
+            size_class: FormulaSizeClass::Large,
+            binary_fraction: 0.5,
+            variable_density: 200.0,
+            ..FormulaClass::default()
+        };
+        assert!(s.should_run_full_backward_subsumption());
+
+        // Boundary: binary_fraction=0.05 (strictly less than required) → run BSR.
+        s.pre_preprocess_formula_class = FormulaClass {
+            size_class: FormulaSizeClass::Large,
+            binary_fraction: 0.05,
+            variable_density: 200.0,
+            ..FormulaClass::default()
+        };
+        assert!(s.should_run_full_backward_subsumption());
+
+        // Boundary: variable_density=100.0 (strictly greater than required) → run BSR.
+        s.pre_preprocess_formula_class = FormulaClass {
+            size_class: FormulaSizeClass::Large,
+            binary_fraction: 0.01,
+            variable_density: 100.0,
+            ..FormulaClass::default()
+        };
+        assert!(s.should_run_full_backward_subsumption());
     }
 }

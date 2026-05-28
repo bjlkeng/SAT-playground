@@ -1087,6 +1087,10 @@ struct Solver {
     original_clause_ids: Vec<usize>,
     /// one-shot post-preprocess formula classification for adaptive policy experiments
     formula_class: FormulaClass,
+    /// one-shot pre-preprocess formula classification (computed right before `eliminate`).
+    /// Used by adaptive gates that need to decide BEFORE preprocessing runs — e.g. the
+    /// SAT_BSR_FORMULA_GATE rule in `should_run_full_backward_subsumption`.
+    pre_preprocess_formula_class: FormulaClass,
     /// MiniSat-style variable abstraction for original clauses, indexed by arena clause offset.
     clause_abstraction: Vec<u64>,
     /// Store original-clause abstractions inline during large preprocessing passes.
@@ -1317,6 +1321,10 @@ struct Solver {
     use_elim: bool,
     /// run full backward subsumption rather than queue-only root/touched work
     full_bsr: bool,
+    /// when true (and full_bsr is also true), `should_run_full_backward_subsumption` skips
+    /// BSR on formulas whose pre-preprocess classification matches the
+    /// "large + low-binary + dense" rule from analyzesat-2026-05-26-preprocess. Default off.
+    bsr_formula_gate: bool,
     /// allowed clause-count growth for one variable-elimination step
     bve_grow: isize,
     /// maximum resolvent size allowed during variable elimination; negative means unlimited
@@ -1986,6 +1994,7 @@ impl Solver {
             arena,
             original_clause_ids,
             formula_class: FormulaClass::default(),
+            pre_preprocess_formula_class: FormulaClass::default(),
             clause_abstraction: Vec::new(),
             inline_original_abstractions: false,
             clauses_sorted_by_var: initial_clause_mode == InitialClauseMode::CanonicalSorted,
@@ -2123,6 +2132,7 @@ impl Solver {
             trace_preprocess_details: config.trace_preprocess_details,
             use_elim: config.bve,
             full_bsr: config.full_bsr,
+            bsr_formula_gate: config.bsr_formula_gate,
             bve_grow: DEFAULT_BVE_GROW,
             bve_clause_limit: DEFAULT_BVE_CLAUSE_LIMIT,
             eliminate_ticks_budget: config.eliminate_ticks_budget,
@@ -7340,6 +7350,11 @@ impl Solver {
             }
         }
 
+        // Snapshot the formula structure before preprocessing so adaptive gates that
+        // need to decide BEFORE BSR/BVE (e.g. SAT_BSR_FORMULA_GATE) have a populated
+        // FormulaClass to consult. The post-preprocess class is captured separately
+        // below for reporting/diagnostics.
+        self.pre_preprocess_formula_class = self.classify_formula();
         let preprocess_start = Instant::now();
         if !self.eliminate(true, proof_log) {
             self.stats.preprocess_sec = preprocess_start.elapsed().as_secs_f64();
