@@ -4272,19 +4272,19 @@ impl Solver {
                 if HOT_STATS && normal_search_accounting {
                     self.stats.watch_scans += 1;
                 }
-                let clause_idx = watcher.clause_idx as usize;
-                if clause_idx >= self.arena.len() {
-                    if HOT_STATS && normal_search_accounting {
-                        self.stats.watch_stale_skips += 1;
-                    }
-                    continue;
-                }
                 if self.lit_value(watcher.blocker) == TRUE {
                     if HOT_STATS && normal_search_accounting {
                         self.stats.watch_blocker_hits += 1;
                     }
                     pending[write] = watcher;
                     write += 1;
+                    continue;
+                }
+                let clause_idx = watcher.clause_idx as usize;
+                if clause_idx >= self.arena.len() {
+                    if HOT_STATS && normal_search_accounting {
+                        self.stats.watch_stale_skips += 1;
+                    }
                     continue;
                 }
                 if self.clause_is_deleted(clause_idx) {
@@ -10781,6 +10781,53 @@ mod tests {
         assert!(diagnostic_solver.stats.watch_scans > 0);
         assert!(diagnostic_solver.stats.watch_clause_loads > 0);
         assert!(diagnostic_solver.stats.binary_props > 0);
+    }
+
+    #[test]
+    fn test_true_blocker_hit_avoids_stale_clause_load() {
+        let config = SolverConfig {
+            hot_stats: true,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(2, vec![], &config);
+        let watch_idx = s.lit_index(1);
+        s.watchers[watch_idx].push(Watcher {
+            clause_idx: u32::MAX,
+            blocker: 2,
+        });
+
+        assert!(s.enqueue(2, ReasonRef::None));
+        s.decide(-1);
+
+        assert_eq!(s.propagate(), None);
+        assert_eq!(s.stats.watch_scans, 1);
+        assert_eq!(s.stats.watch_blocker_hits, 1);
+        assert_eq!(s.stats.watch_clause_loads, 0);
+        assert_eq!(s.stats.watch_stale_skips, 0);
+        assert_eq!(s.watchers[watch_idx].len(), 1);
+    }
+
+    #[test]
+    fn test_false_blocker_still_compacts_stale_watcher() {
+        let config = SolverConfig {
+            hot_stats: true,
+            ..SolverConfig::default()
+        };
+        let mut s = make_solver_with_config(2, vec![], &config);
+        let watch_idx = s.lit_index(1);
+        s.watchers[watch_idx].push(Watcher {
+            clause_idx: u32::MAX,
+            blocker: 2,
+        });
+
+        s.decide(-1);
+
+        assert_eq!(s.propagate(), None);
+        assert_eq!(s.stats.watch_scans, 1);
+        assert_eq!(s.stats.watch_blocker_hits, 0);
+        assert_eq!(s.stats.watch_clause_loads, 0);
+        assert_eq!(s.stats.watch_stale_skips, 1);
+        assert!(s.watchers[watch_idx].is_empty());
     }
 
     #[test]
