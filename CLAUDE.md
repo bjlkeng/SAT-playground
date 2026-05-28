@@ -472,3 +472,104 @@ Use `bd` as the source of truth for creating, updating, closing, and linking bea
 - Run `bd prime` when Beads context is missing or stale.
 - Keep persistent project memory in Beads via `bd remember`; do not create ad hoc memory files.
 <!-- END BEADS CODEX SETUP -->
+
+## Agent Mail
+
+### Installation
+
+Clone the repo, set up and install with uv in a python 3.14 venv (install uv if you don't have it already), and then run `scripts/automatically_detect_all_installed_coding_agents_and_install_mcp_agent_mail_in_all.sh`. This will automatically set things up for your various installed coding agent tools and start the MCP server on port 8765. If you want to run the MCP server again in the future, simply run `scripts/run_server_with_token.sh`:
+
+```bash
+# Install uv (if you don't have it already)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+
+# Clone the repo
+git clone https://github.com/Dicklesworthstone/mcp_agent_mail
+cd mcp_agent_mail
+
+# Create a Python 3.14 virtual environment and install dependencies
+# Note: If you have an older uv version, run `uv self update` first
+uv python install 3.14
+uv venv -p 3.14
+source .venv/bin/activate
+uv sync
+
+# Detect installed coding agents, integrate, and start the MCP server on port 8765
+scripts/automatically_detect_all_installed_coding_agents_and_install_mcp_agent_mail_in_all.sh
+
+# Later, to run the MCP server again with the same token
+scripts/run_server_with_token.sh
+
+# Change port after installation
+uv run python -m mcp_agent_mail.cli config set-port 9000
+```
+
+Now, simply launch Codex-CLI or Claude Code or other agent tools in other consoles; they should have the mail tool available.
+
+### MCP Agent Mail: coordination for multi-agent workflows
+
+What it is
+- A mail-like layer that lets coding agents coordinate asynchronously via MCP tools and resources.
+- Provides identities, inbox/outbox, searchable threads, and advisory file reservations, with human-auditable artifacts in Git.
+
+Why it's useful here
+- The hot file for any active solver iteration is `solver/NN-name/src/main.rs` — multiple agents will want to edit it concurrently. Agent Mail lets them coordinate via Beads claims and thread messages instead of locking each other out with exclusive file reservations.
+- Keeps cross-agent chatter out of the token budget by storing messages in a per-project archive.
+- Fast reads via `resource://inbox/...` and `resource://thread/...`.
+
+#### Coordination workflow (single repo, multiple agents on the same hot file)
+
+This repo runs at most a few agents in parallel on the same solver iteration. The rules below are designed so two agents can both work on `solver/NN-name/src/main.rs` without blocking each other, while still avoiding lost work and racy commits.
+
+1) Register and discover what others are doing
+   - `ensure_project(human_key="/home/bojji/code/SAT-playground")`, then `register_agent` with a unique `agent_name`. Set `AGENT_NAME` in your shell so the pre-commit guard knows who you are.
+   - Before picking a bead, list active claims (`bd ready`, `bd list --status in_progress`) and read the shared coordination thread (default `thread_id="coord"`) via `resource://thread/coord?...` to see what other agents have announced.
+   - Pick a bead whose scope does **not** overlap the regions other agents have already announced. Prefer beads that touch different functions, modules, or solver iterations than the active claims.
+
+2) Always work in a git worktree, never the main checkout
+   - Create one worktree per agent under `/tmp/sat-worktrees/<agent>` on a fresh branch:
+     ```bash
+     git fetch origin
+     git worktree add /tmp/sat-worktrees/<agent> -b agent/<agent>/<bead-id> origin/main
+     cd /tmp/sat-worktrees/<agent>
+     ```
+   - All edits, builds, smoke tests, and benchmarks for the claimed bead happen inside that worktree.
+   - When the bead is closed and merged to `main`, tear down the worktree: `git worktree remove /tmp/sat-worktrees/<agent>` and delete the branch.
+
+3) Don't reserve the hot file — claim a bead and announce intent instead
+   - Do **not** call `file_reservation_paths(..., exclusive=true)` on `solver/**/src/main.rs`. Exclusive reservations on the hot file defeat the point of parallel agents.
+   - Instead: `bd update <id> --claim`, then `send_message(thread_id="coord", subject="claim <id>", body="bead <id>: <one-line scope> — touching <functions/regions> in solver/NN-name/src/main.rs, worktree /tmp/sat-worktrees/<agent>")`.
+   - File reservations are still appropriate for **less-contended paths** (e.g. `docs/**`, `tools/**`, `tests/cnf/**`, `benchmarks/profiling/**`) when an edit will span many files there. Reserve those, not `src/main.rs`.
+
+4) Pre-announce every commit with a short objection window
+   - Before `git commit`, send `send_message(thread_id="coord", subject="commit <bead-id>", body="files: <list> · regions: <fns/lines> · summary: <one line> · validation: <what you ran> · objections within 2 min")`.
+   - Wait ~2 minutes (`fetch_inbox` + `acknowledge_message` for any replies). If no objections, commit and push.
+   - If another agent replies "I'm about to push overlapping hunks for bead Y", let them push first; you rebase and re-validate (step 5).
+   - The 2-minute window is tunable — extend it for risky changes (cross-cutting refactors, new solver iteration scaffolding), keep it tight for narrow bead-scoped edits.
+
+5) If someone beats you to a commit, rebase and re-run the bead's validation
+   - `git fetch origin && git rebase origin/main` inside your worktree. Resolve conflicts (don't `--skip` or `--abort` away their work).
+   - **Re-run whatever validation the bead requires**, in full, on the rebased state:
+     - Correctness/fix beads → `bash tools/smoke_test.sh solver/NN-name` (+ `cargo test` if the bead touches tests).
+     - Perf/optimization beads → smoke test **plus** `bash tools/bench.sh -d benchmarks/profiling solver/NN-name` so the measured delta is against the new baseline, not the pre-rebase one.
+     - Promotion/default-change beads → the full gate described in CLAUDE.md's solver-11 promotion section, with the candidate re-measured on top of the new `main`.
+   - If the rebase changes the baseline materially, **re-take the baseline** before reporting the experiment's delta — numbers from a stale baseline are meaningless.
+   - Re-announce (step 4) with the updated commit-of-base SHA in the body, then push.
+
+6) Closing out
+   - After merge: `bd close <id>` with a summary, send a final `send_message(thread_id="coord", subject="closed <id>", body="merged at <sha>")`, and remove the worktree.
+
+#### Granular vs macro tools
+- Granular (use these in this workflow): `register_agent`, `send_message`, `fetch_inbox`, `acknowledge_message`, `fetch_topic`, `file_reservation_paths` (only for non-hot paths).
+- Macros (handy when you don't need fine control): `macro_start_session`, `macro_prepare_thread`, `macro_contact_handshake`. Skip `macro_file_reservation_cycle` for the hot file — it implies exclusive reservation semantics we explicitly don't want there.
+
+#### Common pitfalls
+- **Treating `src/main.rs` as exclusive**: don't reserve it. Coordinate via Beads claims + the `coord` thread.
+- **Editing in the main checkout while another agent is active**: always use `/tmp/sat-worktrees/<agent>`. Cross-agent edits to the same working tree will corrupt each other's state.
+- **Skipping the pre-announce window**: silent commits race. A 2-minute window costs almost nothing and catches nearly all collisions.
+- **Pushing after a rebase without re-running validation**: the bead's evidence belongs to the rebased commit, not the pre-rebase one. Re-run the full suite the bead requires, including baseline re-take for perf work.
+- **Leaving worktrees behind**: stale `/tmp/sat-worktrees/<agent>` directories pile up and confuse future runs. Remove on bead close.
+- **"from_agent not registered"**: always `register_agent` in the correct `project_key` first.
+- **"FILE_RESERVATION_CONFLICT"** on non-hot paths: adjust patterns, wait for expiry, or use a non-exclusive reservation.
+- **Auth errors**: if JWT+JWKS is enabled, include a bearer token with a `kid` that matches server JWKS; static bearer is used only when JWT is disabled.
