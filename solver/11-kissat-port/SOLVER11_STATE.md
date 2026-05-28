@@ -142,13 +142,15 @@ Known unpromoted or incomplete feature families at this baseline:
 - Clause minimization is binary-reason aware as of 1.11, so explicit `SAT_CLAUSE_MIN` settings are
   honored with `SAT_BINARY_FAST=on`. Binary-fast env runs now preserve the default recursive
   minimization unless `SAT_CLAUSE_MIN=off` is explicit, because implicit min-off produced
-  `UNKNOWN` on a baseline-solved Sudoku row. With `SAT_OTFS=on`, clause minimization also runs bounded
-  on-the-fly subsumption after learned non-unit clauses are added: it scans watcher lists for the
-  learned literals, checks candidates no more than four literals larger than the learned clause,
-  refuses live reason clauses, and logs DRAT deletions before tombstoning subsumed learned clauses.
-  Original clauses are skipped by search-time OTFS to preserve SAT model soundness if the subsuming
-  learned clause is later reduced away. The feature remains default-off after the enabled profiling
-  run regressed the current Phase 1 profile suite.
+  `UNKNOWN` on a baseline-solved Sudoku row. With `SAT_OTFS=on`, clause minimization also runs
+  bounded learned-clause subsumption after learned non-unit clauses are added. The pass now follows
+  Kissat's eager-subsumption shape by checking only the last four remembered learned clauses, not all
+  watcher lists for the learned literals; the watcher-wide variant was too aggressive and moved
+  mp1/velev into baseline-solved timeouts. It checks candidates no more than four literals larger
+  than the learned clause, deletes only when LBD metadata says the new clause is better, refuses
+  live reason clauses, and logs DRAT deletions before tombstoning subsumed learned clauses. Metadata-
+  free default runs therefore do not delete clauses under `SAT_OTFS=on`. The feature remains
+  default-off after enabled profile regressions.
 - Vivification.
 - Failed literal probing.
 - Hyper-binary resolution.

@@ -136,14 +136,15 @@ What is present:
   disabling minimization silently can move baseline-solved rows to `UNKNOWN`. The `inblock` mode
   now runs Kissat-style level-block shrink after same-level minimization, replacing a whole
   decision-level block with a single UIP literal when the block's reason closure proves one.
-  With `SAT_OTFS=on` and clause
-  minimization enabled, newly learned non-unit clauses also run a bounded OTFS pass over their
-  watched literals, deleting live learned watched clauses subsumed by the learned clause when they
-  are not active reasons. The pass is capped at learned clauses of 20 literals and candidate clauses
-  within 4 extra literals, and emits DRAT deletion records before tombstoning clauses. Original
-  clauses are intentionally not removed during search OTFS so SAT models remain checked against the
-  full input formula even if the subsuming learned clause is later reduced away. The feature remains
-  default-off after the enabled profiling run regressed the current Phase 1 profile suite.
+  With `SAT_OTFS=on` and clause minimization enabled, newly learned non-unit clauses also run a
+  bounded recent-clause subsumption pass modeled on Kissat's eager learned-clause window: only the
+  last four remembered learned clauses are candidates, and candidate clauses must be within four
+  extra literals of the new learned clause. Deletion is also gated on LBD metadata, so metadata-free
+  default runs do not discard clauses whose quality cannot be compared. The pass refuses live reason
+  clauses and emits DRAT deletion records before tombstoning subsumed learned clauses. It
+  intentionally does not scan all watcher lists; the earlier watcher-wide version was too aggressive
+  and moved mp1/velev into baseline-solved timeouts. The feature remains default-off after enabled
+  profiling regressions.
 - post-preprocess formula classification in `SAT_STATS_JSON` and `SAT_TRACE_PREPROCESS` output:
   solver 11 records size class, Kissat-style `small`/`bigbig` flags, binary-clause fraction,
   average clause size, and live-variable density. This is instrumentation for future adaptive
