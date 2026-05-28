@@ -48,6 +48,7 @@ SAT_BINARY_FAST,binary_fast_path,bool,on|off,false,false,false,true,false,false,
 SAT_CLAUSE_MIN,clause_min_mode,enum,off|basic|recursive-limited|inblock,recursive-limited,recursive-limited,recursive-limited,false,false,false,SAT_CCMIN_MODE,,SAT-playground-02a,yes
 SAT_OTFS,otfs,bool,on|off,false,false,false,true,false,false,,SAT_CLAUSE_MIN!=off,1.14g,yes
 SAT_OTSS,otss,bool,on|off,false,false,false,true,false,false,,SAT_CLAUSE_MIN!=off,SAT-playground-5b2.2.39,yes
+SAT_REDUCE_TIER2_AT_BUDGET,reduce_tier2_at_budget,bool,on|off,false,false,false,true,false,false,,SAT_REDUCE=lbd-tiered,SAT-playground-5b2.2.44,yes
 SAT_VMTF,vmtf,enum,off|focused-only|single,off,off,off,true,false,false,,focused-only_requires_SAT_SEARCH_MODE=focused-stable;single_requires_SAT_SEARCH_MODE=single,SAT-playground-egy,yes
 SAT_REPHASE,rephase,bool,on|off,false,false,false,true,false,false,,SAT_SEARCH_MODE=focused-stable,1.12,yes
 SAT_REORDER,reorder,bool,on|off,false,false,false,true,false,false,,,SAT-playground-7oy,yes

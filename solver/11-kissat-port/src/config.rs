@@ -552,6 +552,17 @@ pub(crate) struct SolverConfig {
     /// literals were marked during analyze) and delete any that are strict
     /// supersets of the learned clause. Off by default. Bead SAT-playground-5b2.2.39.
     pub(crate) otss: bool,
+    /// Opt-in: drop the `!over_budget` gate on tier 2 (high-LBD) candidates in
+    /// `reduce_candidate`, so high-LBD learnt clauses enter the candidate pool
+    /// on every scheduled reduction, not only emergency runs. Tier 1 keeps its
+    /// `!over_budget` protection. Bead SAT-playground-5b2.2.44. NOTE: with the
+    /// current delete-until-budget loop in `reduce_db_lbd_tiered`, this flag is
+    /// a no-op when `!over_budget` (the delete loop breaks immediately) — see
+    /// bd note on 5b2.2.44 for the dependency on a paired delete-loop change
+    /// (the broader package was rejected via 5b2.2.59). Default off so the
+    /// candidate-pool sort sees no extra entries until the delete loop catches
+    /// up.
+    pub(crate) reduce_tier2_at_budget: bool,
     pub(crate) vmtf: VmtfMode,
     pub(crate) rephase: bool,
     pub(crate) reorder: bool,
@@ -667,6 +678,7 @@ impl Default for SolverConfig {
             clause_min_mode: ClauseMinMode::RecursiveLimited,
             otfs: false,
             otss: false,
+            reduce_tier2_at_budget: false,
             vmtf: VmtfMode::Off,
             rephase: false,
             reorder: false,
@@ -1037,6 +1049,12 @@ impl SolverConfig {
         );
         self.otfs = parse_bool_selected(env_map, &key_set, "SAT_OTFS", self.otfs);
         self.otss = parse_bool_selected(env_map, &key_set, "SAT_OTSS", self.otss);
+        self.reduce_tier2_at_budget = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_REDUCE_TIER2_AT_BUDGET",
+            self.reduce_tier2_at_budget,
+        );
         let vmtf_explicit = get_selected(env_map, &key_set, "SAT_VMTF").is_some();
         self.vmtf = parse_enum_selected(env_map, &key_set, "SAT_VMTF", self.vmtf, VmtfMode::parse);
         self.rephase = parse_bool_selected(env_map, &key_set, "SAT_REPHASE", self.rephase);
@@ -1550,6 +1568,7 @@ impl SolverConfig {
         push_kv(&mut lines, "clause_min_mode", self.clause_min_mode.as_str());
         push_kv_bool(&mut lines, "otfs", self.otfs);
         push_kv_bool(&mut lines, "otss", self.otss);
+        push_kv_bool(&mut lines, "reduce_tier2_at_budget", self.reduce_tier2_at_budget);
         push_kv(&mut lines, "vmtf", self.vmtf.as_str());
         push_kv_bool(&mut lines, "rephase", self.rephase);
         push_kv_bool(&mut lines, "reorder", self.reorder);
@@ -1981,6 +2000,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             "bead/SAT-playground-5b2.2.39",
         ),
         feature(
+            "SAT_REDUCE_TIER2_AT_BUDGET",
+            config.reduce_tier2_at_budget,
+            FeatureMaturity::Experimental,
+            true,
+            true,
+            false,
+            "bead/SAT-playground-5b2.2.44",
+        ),
+        feature(
             "SAT_SIMPLIFICATION",
             config.simplification,
             FeatureMaturity::SmokeSafe,
@@ -2230,6 +2258,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "clause_min_mode" => Some("SAT_CLAUSE_MIN"),
         "otfs" => Some("SAT_OTFS"),
         "otss" => Some("SAT_OTSS"),
+        "reduce_tier2_at_budget" => Some("SAT_REDUCE_TIER2_AT_BUDGET"),
         "vmtf" => Some("SAT_VMTF"),
         "rephase" => Some("SAT_REPHASE"),
         "reorder" => Some("SAT_REORDER"),
@@ -2419,6 +2448,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_CLAUSE_MIN",
         "SAT_OTFS",
         "SAT_OTSS",
+        "SAT_REDUCE_TIER2_AT_BUDGET",
         "SAT_VMTF",
         "SAT_REPHASE",
         "SAT_REORDER",

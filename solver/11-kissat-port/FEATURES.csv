@@ -13,6 +13,7 @@ SAT_MODE_USE_TICKS,mode_use_ticks,Experimental,true,true,false,none,log/bench-11
 SAT_LUCKY,lucky,SmokeSafe,true,true,false,none,log/phase1/3fs-lucky-off-default-profile/results.csv,pre-search|sat-fast-path|local-repair|default-demoted,SAT-playground-otk
 SAT_OTFS,otfs,Experimental,true,true,false,none,log/phase1/1.14g-otfs-summary.md,learned-clause-db|search-trajectory,1.14g
 SAT_OTSS,otss,Experimental,true,true,false,none,,learned-clause-db|reason-strengthening,SAT-playground-5b2.2.39
+SAT_REDUCE_TIER2_AT_BUDGET,reduce_tier2_at_budget,Experimental,true,true,false,none,,reduce-db|lbd-tiered,SAT-playground-5b2.2.44
 SAT_SIMPLIFICATION,simplification,SmokeSafe,true,true,false,default|fast,solver/11-kissat-port/BASELINE_LOCK.raw.txt,preprocess,0.3
 SAT_BVE,bve,SmokeSafe,true,true,false,default|fast,solver/11-kissat-port/BASELINE_LOCK.raw.txt,preprocess-bve,0.3
 SAT_FULL_BSR,full_bsr,SmokeSafe,true,true,false,default|fast,solver/11-kissat-port/BASELINE_LOCK.raw.txt,preprocess-bsr,0.3

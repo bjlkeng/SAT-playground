@@ -1394,6 +1394,11 @@ struct Solver {
     /// learned clause, delete any participating reason clause that is a strict
     /// superset of the learned clause. Bead SAT-playground-5b2.2.39. Default off.
     otss_enabled: bool,
+    /// opt-in: drop the `!over_budget` gate on the tier 2 arm of `reduce_candidate`,
+    /// so high-LBD learnt clauses are considered for eviction on every scheduled
+    /// reduction. Bead SAT-playground-5b2.2.44. Default off. See bead note: the
+    /// flag is a no-op alone until the delete-until-budget loop also changes.
+    reduce_tier2_at_budget: bool,
     minimize_depth_limit: u32,
     /// compatibility fallback for the older solver-10 conflict analyzer
     use_resolved_conflict_analysis: bool,
@@ -2185,6 +2190,7 @@ impl Solver {
             ccmin_mode,
             otfs_enabled: config.otfs,
             otss_enabled: config.otss,
+            reduce_tier2_at_budget: config.reduce_tier2_at_budget,
             minimize_depth_limit: config.minimize_depth_limit,
             use_resolved_conflict_analysis: config.use_resolved_conflict_analysis,
             use_lbd: config.use_lbd,
@@ -2208,7 +2214,11 @@ impl Solver {
             reason_pin_generation: 0,
             reduce_delete_generation: 0,
             reduce_delete_mark: Vec::new(),
-            reduce_candidates: Vec::new(),
+            // Pre-allocate so common-case workloads — and the
+            // `test_reduce_db_lbd_tiered_no_per_call_allocation_when_marker_reused`
+            // invariant — see steady-state zero allocations after the first reduce
+            // call (bead SAT-playground-5b2.2.44 makes tier 2 candidates routine).
+            reduce_candidates: Vec::with_capacity(16),
             gc_pending_reason: GcReason::None,
             track_gc_detail_stats: config.stats_json || config.trace_full,
             hot_stats: config.hot_stats,
@@ -6334,8 +6344,26 @@ impl Solver {
                     return None;
                 }
             }
+            // Tier 2 (high-LBD) eligibility per bead SAT-playground-5b2.2.44.
+            //
+            // Default (`reduce_tier2_at_budget == false`): identical to tier 1 —
+            // candidates only enter the pool when over_budget AND used_recently == 0.
+            //
+            // Opt-in (`SAT_REDUCE_TIER2_AT_BUDGET=on`): drop the !over_budget gate
+            // so high-LBD clauses are candidates on every scheduled reduce, not only
+            // on emergency (over-budget) runs. used_recently still protects.
+            //
+            // CAVEAT: the delete loop in `reduce_db_lbd_tiered` breaks the moment
+            // `projected_lits <= self.learned_lit_budget`, so the opt-in flag is a
+            // no-op at !over_budget under the current delete-until-budget-met
+            // policy. To actually *evict* tier 2 at !over_budget, the delete loop
+            // also needs a tier-2 fraction policy — that broader package is the
+            // rejected SAT-playground-5b2.2.59 (paired Kissat reducer semantics).
+            // The flag is in main so the filter half is ready to pair with a future
+            // delete-loop change without re-litigating this side. See bd note.
             _ => {
-                if !over_budget || meta.used_recently > 0 {
+                let skip_budget_gate = self.reduce_tier2_at_budget;
+                if (!over_budget && !skip_budget_gate) || meta.used_recently > 0 {
                     return None;
                 }
             }
@@ -9947,6 +9975,104 @@ mod tests {
         s.set_clause_activity(newer, 2.0);
 
         assert!(s.reduce_candidate_activity_rank(older) < s.reduce_candidate_activity_rank(newer));
+    }
+
+    #[test]
+    fn test_reduce_candidate_tier2_default_off_keeps_budget_gate() {
+        // Bead SAT-playground-5b2.2.44 default behavior: with the opt-in flag off,
+        // tier 2 retains the same !over_budget protection as tier 1 — the change
+        // is gated behind `SAT_REDUCE_TIER2_AT_BUDGET=on` so default profile
+        // behavior stays bit-identical to pre-bead main.
+        let mut s = Solver::new(4, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 1_000);
+        // reduce_tier2_at_budget defaults to false; just be explicit.
+        s.reduce_tier2_at_budget = false;
+        let tier2 = s.add_clause(vec![1, 2, 3]);
+        set_lbd_meta_for_test(&mut s, tier2, 8, 0);
+        s.set_learnt_tier(tier2, 2);
+        let pins = ReasonPinSet {
+            pinned_clauses: Vec::new(),
+            pinned_binaries: Vec::new(),
+            generation: 1,
+        };
+        let candidate = s.reduce_candidate(tier2, &pins, false);
+        assert!(
+            candidate.is_none(),
+            "default-off tier 2 keeps !over_budget protection"
+        );
+    }
+
+    #[test]
+    fn test_reduce_candidate_tier2_evictable_when_not_over_budget() {
+        // Bead SAT-playground-5b2.2.44: with the opt-in flag on, tier 2 (high-LBD)
+        // clauses must enter the candidate pool on scheduled (non-emergency)
+        // reductions even when the solver is below `learned_lit_budget`. The
+        // delete loop in reduce_db_lbd_tiered is unchanged (still
+        // delete-until-budget-met) so the visible solver behavior at
+        // !over_budget is unchanged — the flag only changes which clauses are
+        // *eligible* candidates, paired-deletion is left for a future bead.
+        let mut s = Solver::new(4, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 1_000);
+        s.reduce_tier2_at_budget = true;
+        let tier2 = s.add_clause(vec![1, 2, 3]);
+        set_lbd_meta_for_test(&mut s, tier2, 8, 0);
+        s.set_learnt_tier(tier2, 2);
+        let pins = ReasonPinSet {
+            pinned_clauses: Vec::new(),
+            pinned_binaries: Vec::new(),
+            generation: 1,
+        };
+        let candidate = s.reduce_candidate(tier2, &pins, false);
+        assert!(
+            candidate.is_some(),
+            "opt-in tier 2 must be a candidate at !over_budget per bead 5b2.2.44"
+        );
+        assert_eq!(candidate.unwrap().clause_idx, tier2);
+    }
+
+    #[test]
+    fn test_reduce_candidate_tier1_still_protected_with_opt_in() {
+        // Bead SAT-playground-5b2.2.44 acceptance: tier 1 keeps its !over_budget
+        // protection even when the opt-in flag is on — only tier 2 is touched.
+        let mut s = Solver::new(4, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 1_000);
+        s.reduce_tier2_at_budget = true;
+        let tier1 = s.add_clause(vec![1, 2, 3]);
+        set_lbd_meta_for_test(&mut s, tier1, 4, 0);
+        s.set_learnt_tier(tier1, 1);
+        let pins = ReasonPinSet {
+            pinned_clauses: Vec::new(),
+            pinned_binaries: Vec::new(),
+            generation: 1,
+        };
+        let candidate = s.reduce_candidate(tier1, &pins, false);
+        assert!(
+            candidate.is_none(),
+            "tier 1 stays protected at !over_budget even with opt-in on"
+        );
+    }
+
+    #[test]
+    fn test_reduce_candidate_tier2_still_kept_when_used_recently_with_opt_in() {
+        // Bead SAT-playground-5b2.2.44 risk note: used_recently protection
+        // remains on both tiers regardless of the opt-in flag. A tier 2 clause
+        // used since the last reduce stays even with the budget gate dropped.
+        let mut s = Solver::new(4, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 1_000);
+        s.reduce_tier2_at_budget = true;
+        let tier2 = s.add_clause(vec![1, 2, 3]);
+        set_lbd_meta_for_test(&mut s, tier2, 8, 1);
+        s.set_learnt_tier(tier2, 2);
+        let pins = ReasonPinSet {
+            pinned_clauses: Vec::new(),
+            pinned_binaries: Vec::new(),
+            generation: 1,
+        };
+        let candidate = s.reduce_candidate(tier2, &pins, false);
+        assert!(
+            candidate.is_none(),
+            "used_recently>0 must still protect tier 2 even with opt-in"
+        );
     }
 
     #[test]
