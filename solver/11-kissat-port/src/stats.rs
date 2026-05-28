@@ -125,6 +125,11 @@ pub(crate) struct SolverStats {
     pub(crate) watch_stale_skips: u64,
     pub(crate) watch_blocker_hits: u64,
     pub(crate) watch_clause_loads: u64,
+    /// Bead SAT-playground-s11-1-14b: count of `compact_all_watch_lists` sweeps
+    /// that ran (one per `reduce_db_lbd_tiered` when `SAT_WATCH_COMPACT=on`).
+    pub(crate) watch_compaction_passes: u64,
+    /// Bead SAT-playground-s11-1-14b: total watchers dropped across all sweeps.
+    pub(crate) watch_compaction_entries_removed: u64,
     pub(crate) phase_saved_used: u64,
     pub(crate) phase_legacy_used: u64,
     pub(crate) phase_target_used: u64,
@@ -604,6 +609,11 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("watch_stale_skips", ctx.stats.watch_stale_skips);
     json.u64("watch_blocker_hits", ctx.stats.watch_blocker_hits);
     json.u64("watch_clause_loads", ctx.stats.watch_clause_loads);
+    json.u64("watch_compaction_passes", ctx.stats.watch_compaction_passes);
+    json.u64(
+        "watch_compaction_entries_removed",
+        ctx.stats.watch_compaction_entries_removed,
+    );
 
     json.u64("phase_saved_used", ctx.stats.phase_saved_used);
     json.u64("phase_legacy_used", ctx.stats.phase_legacy_used);

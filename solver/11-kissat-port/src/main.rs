@@ -1399,6 +1399,14 @@ struct Solver {
     /// reduction. Bead SAT-playground-5b2.2.44. Default off. See bead note: the
     /// flag is a no-op alone until the delete-until-budget loop also changes.
     reduce_tier2_at_budget: bool,
+    /// opt-in: after `reduce_db_lbd_tiered` removes deleted-clause records, sweep
+    /// every watch list and drop watchers whose `clause_idx` is past the arena or
+    /// whose clause was marked deleted. Bead SAT-playground-s11-1-14b. Default off
+    /// — 1.14a intentionally short-circuits stale checks when the blocker is TRUE,
+    /// which leaves stale-with-TRUE-blocker entries accumulating across reduces;
+    /// this opt-in cleans them up at reduce points so the propagate hot path stays
+    /// short.
+    watch_compact_enabled: bool,
     minimize_depth_limit: u32,
     /// compatibility fallback for the older solver-10 conflict analyzer
     use_resolved_conflict_analysis: bool,
@@ -2191,6 +2199,7 @@ impl Solver {
             otfs_enabled: config.otfs,
             otss_enabled: config.otss,
             reduce_tier2_at_budget: config.reduce_tier2_at_budget,
+            watch_compact_enabled: config.watch_compact_enabled,
             minimize_depth_limit: config.minimize_depth_limit,
             use_resolved_conflict_analysis: config.use_resolved_conflict_analysis,
             use_lbd: config.use_lbd,
@@ -6452,12 +6461,69 @@ impl Solver {
         self.learned_clause_ids.truncate(write);
         self.live_learned_clause_count = self.learned_clause_ids.len();
 
+        if self.watch_compact_enabled {
+            self.compact_all_watch_lists();
+        }
+
         let gc_reason = if emergency {
             GcReason::EmergencyMemory
         } else {
             GcReason::LearnedReduction
         };
         self.maybe_garbage_collect(gc_reason);
+    }
+
+    /// Bead SAT-playground-s11-1-14b. Sweep every watch list and drop watchers
+    /// whose `clause_idx` is past the arena or whose clause was marked deleted.
+    ///
+    /// Background: bead s11-1-14a reordered `propagate_impl` so the blocker
+    /// satisfied fast path short-circuits ahead of the stale and deleted checks.
+    /// That turns stale-with-TRUE-blocker entries into permanent residents of
+    /// the watch list — they are never cleaned up by the propagate loop because
+    /// the loop never inspects their clause_idx once the blocker is TRUE. Over
+    /// many `reduce_db` rounds the dead weight grows.
+    ///
+    /// Implementation: a straightforward read/write compaction per watch list,
+    /// matching the existing in-loop compaction pattern. Order is preserved.
+    /// Triggered after `reduce_db_lbd_tiered` removes deleted-clause records and
+    /// before `maybe_garbage_collect`, so each stale entry is dropped exactly
+    /// once per reduce regardless of whether the GC pass also runs (the GC
+    /// relocator handles arena moves but does not always run; this pass handles
+    /// the cases the GC skips).
+    ///
+    /// Off by default behind `SAT_WATCH_COMPACT=on` — the sweep is `O(W)` over
+    /// every watch entry and the right cadence/threshold is workload-dependent,
+    /// so promoting to default requires benchmark evidence on the lbd-tiered
+    /// path.
+    fn compact_all_watch_lists(&mut self) {
+        let watchers_len = self.watchers.len();
+        let mut total_removed: u64 = 0;
+        for watch_idx in 0..watchers_len {
+            let mut list = std::mem::take(&mut self.watchers[watch_idx]);
+            let read_len = list.len();
+            if read_len == 0 {
+                self.watchers[watch_idx] = list;
+                continue;
+            }
+            let mut write = 0usize;
+            for read in 0..read_len {
+                let watcher = list[read];
+                let clause_idx = watcher.clause_idx as usize;
+                if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
+                    total_removed += 1;
+                    continue;
+                }
+                if write != read {
+                    list[write] = watcher;
+                }
+                write += 1;
+            }
+            list.truncate(write);
+            self.watchers[watch_idx] = list;
+        }
+        self.stats.watch_compaction_passes += 1;
+        self.stats.watch_compaction_entries_removed =
+            self.stats.watch_compaction_entries_removed.saturating_add(total_removed);
     }
 
     fn record_lbd_tier_kept(&mut self, clause_idx: ClauseRef) {
@@ -10828,6 +10894,101 @@ mod tests {
         assert_eq!(s.stats.watch_clause_loads, 0);
         assert_eq!(s.stats.watch_stale_skips, 1);
         assert!(s.watchers[watch_idx].is_empty());
+    }
+
+    #[test]
+    fn test_watch_compaction_default_off_keeps_stale_watcher() {
+        // Bead SAT-playground-s11-1-14b: default behavior — `SAT_WATCH_COMPACT`
+        // off — leaves stale entries in the watch lists across a reduce_db pass.
+        // Paired with the 1.14a behavior: stale-with-TRUE-blocker watchers are
+        // intentionally short-circuited past in propagate_impl, so the only way
+        // they get cleaned is via the opt-in sweep below (or eventual GC).
+        let mut s = make_solver(2, vec![]);
+        let watch_idx = s.lit_index(1);
+        s.watchers[watch_idx].push(Watcher {
+            clause_idx: u32::MAX,
+            blocker: 2,
+        });
+        assert_eq!(s.watch_compact_enabled, false);
+        let mut proof_log = ProofLog::disabled();
+        enable_lbd_tiered_for_test(&mut s, 100);
+        s.reduce_db_lbd_tiered(&mut proof_log);
+        assert_eq!(s.stats.watch_compaction_passes, 0);
+        assert_eq!(s.stats.watch_compaction_entries_removed, 0);
+        assert_eq!(s.watchers[watch_idx].len(), 1, "stale watcher remains");
+    }
+
+    #[test]
+    fn test_deleted_watcher_skipped_after_compaction() {
+        // Bead SAT-playground-s11-1-14b: with the opt-in flag on, a
+        // `reduce_db_lbd_tiered` pass sweeps stale watchers (out-of-arena
+        // clause_idx) out of every watch list. After the sweep the watch list
+        // no longer holds the dead entry, so the next propagation does not
+        // touch it at all (no scan, no stale-skip stat increment).
+        let mut s = make_solver(2, vec![]);
+        s.watch_compact_enabled = true;
+        let watch_idx = s.lit_index(1);
+        s.watchers[watch_idx].push(Watcher {
+            clause_idx: u32::MAX,
+            blocker: 2,
+        });
+        let mut proof_log = ProofLog::disabled();
+        enable_lbd_tiered_for_test(&mut s, 100);
+        s.reduce_db_lbd_tiered(&mut proof_log);
+        assert_eq!(s.stats.watch_compaction_passes, 1);
+        assert_eq!(s.stats.watch_compaction_entries_removed, 1);
+        assert!(s.watchers[watch_idx].is_empty());
+
+        // Verify the next propagate does not even see the cleaned watcher.
+        s.decide(-1);
+        let stats_before = s.stats.watch_scans;
+        assert_eq!(s.propagate(), None);
+        assert_eq!(s.stats.watch_scans, stats_before);
+        assert_eq!(s.stats.watch_stale_skips, 0);
+    }
+
+    #[test]
+    fn test_watch_compaction_preserves_propagation_result() {
+        // Bead SAT-playground-s11-1-14b: the compaction sweep must preserve the
+        // propagation result on a mix of stale, deleted, and live watchers.
+        //
+        // Setup: build a real binary clause (1 v 2) on var 2 so propagate
+        // enqueues 2 from -1, plus a stale watcher (out-of-arena clause_idx) and
+        // a deleted-clause watcher (live clause id but the clause is marked
+        // deleted). The live watcher's enqueue effect must survive the sweep.
+        let mut s = make_solver(3, vec![]);
+        s.watch_compact_enabled = true;
+        let live = s.add_clause(vec![2, 1]);
+        let deleted = s.add_clause(vec![3, 1]);
+        s.mark_clause_deleted(deleted);
+
+        // Inject a stale watcher with out-of-arena clause_idx.
+        let watch_idx = s.lit_index(1);
+        s.watchers[watch_idx].push(Watcher {
+            clause_idx: u32::MAX,
+            blocker: -3,
+        });
+        let watchers_before = s.watchers[watch_idx].len();
+
+        let mut proof_log = ProofLog::disabled();
+        enable_lbd_tiered_for_test(&mut s, 100);
+        s.reduce_db_lbd_tiered(&mut proof_log);
+
+        // Compaction removed both the stale (out-of-arena) and the deleted
+        // entries; the live watcher for `live` should still be present.
+        assert_eq!(s.stats.watch_compaction_passes, 1);
+        assert!(s.stats.watch_compaction_entries_removed >= 2,
+                "expected at least the stale + deleted watchers removed, got {}",
+                s.stats.watch_compaction_entries_removed);
+        assert!(s.watchers[watch_idx].len() < watchers_before);
+        assert!(s.watchers[watch_idx]
+            .iter()
+            .any(|w| w.clause_idx as usize == live), "live watcher kept");
+
+        // Now decide -1 → propagate must still enqueue 2 via the live clause.
+        s.decide(-1);
+        assert_eq!(s.propagate(), None);
+        assert_eq!(s.lit_value(2), TRUE, "live propagation result preserved after sweep");
     }
 
     #[test]

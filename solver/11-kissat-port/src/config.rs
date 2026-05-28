@@ -563,6 +563,13 @@ pub(crate) struct SolverConfig {
     /// candidate-pool sort sees no extra entries until the delete loop catches
     /// up.
     pub(crate) reduce_tier2_at_budget: bool,
+    /// Opt-in: after `reduce_db_lbd_tiered` removes deleted-clause records, sweep
+    /// every watch list and drop watchers whose `clause_idx` is past the arena or
+    /// whose clause is deleted. Off by default. Bead SAT-playground-s11-1-14b is
+    /// paired with bead s11-1-14a's blocker-fast-path which intentionally
+    /// short-circuits stale checks when the blocker is TRUE — so stale-with-TRUE
+    /// entries accumulate across reduces and this sweep cleans them up.
+    pub(crate) watch_compact_enabled: bool,
     pub(crate) vmtf: VmtfMode,
     pub(crate) rephase: bool,
     pub(crate) reorder: bool,
@@ -679,6 +686,7 @@ impl Default for SolverConfig {
             otfs: false,
             otss: false,
             reduce_tier2_at_budget: false,
+            watch_compact_enabled: false,
             vmtf: VmtfMode::Off,
             rephase: false,
             reorder: false,
@@ -1054,6 +1062,12 @@ impl SolverConfig {
             &key_set,
             "SAT_REDUCE_TIER2_AT_BUDGET",
             self.reduce_tier2_at_budget,
+        );
+        self.watch_compact_enabled = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_WATCH_COMPACT",
+            self.watch_compact_enabled,
         );
         let vmtf_explicit = get_selected(env_map, &key_set, "SAT_VMTF").is_some();
         self.vmtf = parse_enum_selected(env_map, &key_set, "SAT_VMTF", self.vmtf, VmtfMode::parse);
@@ -1569,6 +1583,7 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "otfs", self.otfs);
         push_kv_bool(&mut lines, "otss", self.otss);
         push_kv_bool(&mut lines, "reduce_tier2_at_budget", self.reduce_tier2_at_budget);
+        push_kv_bool(&mut lines, "watch_compact_enabled", self.watch_compact_enabled);
         push_kv(&mut lines, "vmtf", self.vmtf.as_str());
         push_kv_bool(&mut lines, "rephase", self.rephase);
         push_kv_bool(&mut lines, "reorder", self.reorder);
@@ -2009,6 +2024,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             "bead/SAT-playground-5b2.2.44",
         ),
         feature(
+            "SAT_WATCH_COMPACT",
+            config.watch_compact_enabled,
+            FeatureMaturity::Experimental,
+            true,
+            true,
+            false,
+            "bead/SAT-playground-s11-1-14b",
+        ),
+        feature(
             "SAT_SIMPLIFICATION",
             config.simplification,
             FeatureMaturity::SmokeSafe,
@@ -2259,6 +2283,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "otfs" => Some("SAT_OTFS"),
         "otss" => Some("SAT_OTSS"),
         "reduce_tier2_at_budget" => Some("SAT_REDUCE_TIER2_AT_BUDGET"),
+        "watch_compact_enabled" => Some("SAT_WATCH_COMPACT"),
         "vmtf" => Some("SAT_VMTF"),
         "rephase" => Some("SAT_REPHASE"),
         "reorder" => Some("SAT_REORDER"),
@@ -2449,6 +2474,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_OTFS",
         "SAT_OTSS",
         "SAT_REDUCE_TIER2_AT_BUDGET",
+        "SAT_WATCH_COMPACT",
         "SAT_VMTF",
         "SAT_REPHASE",
         "SAT_REORDER",
