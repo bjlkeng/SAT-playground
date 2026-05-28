@@ -56,6 +56,14 @@ pub(crate) struct SolverStats {
     pub(crate) otfs_candidate_checks: u64,
     pub(crate) otfs_subsumed_clauses: u64,
     pub(crate) otfs_subsumed_learned: u64,
+    /// OTSS: count of times a participating reason clause was scanned as a
+    /// strict-superset candidate of the learned clause. Bead SAT-playground-5b2.2.39.
+    pub(crate) otss_candidate_checks: u64,
+    /// OTSS: count of participating reason clauses deleted via the subsume pass.
+    pub(crate) otss_subsumed_reasons: u64,
+    /// OTSS: count of candidates skipped because the clause was locked
+    /// (still serving as a reason for some assigned variable post-backtrack).
+    pub(crate) otss_skipped_locked: u64,
     pub(crate) focused_tier1_glue_limit: u64,
     pub(crate) focused_tier2_glue_limit: u64,
     pub(crate) stable_tier1_glue_limit: u64,
@@ -489,6 +497,9 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("otfs_candidate_checks", ctx.stats.otfs_candidate_checks);
     json.u64("otfs_subsumed_clauses", ctx.stats.otfs_subsumed_clauses);
     json.u64("otfs_subsumed_learned", ctx.stats.otfs_subsumed_learned);
+    json.u64("otss_candidate_checks", ctx.stats.otss_candidate_checks);
+    json.u64("otss_subsumed_reasons", ctx.stats.otss_subsumed_reasons);
+    json.u64("otss_skipped_locked", ctx.stats.otss_skipped_locked);
     json.u64(
         "focused_tier1_glue_limit",
         ctx.stats.focused_tier1_glue_limit,
@@ -738,6 +749,7 @@ pub(crate) fn trace_full_line(stats: &SolverStats, _timings: &RunTimings) -> Str
             "focused_avg_decision_level={:.3} stable_avg_decision_level={:.3} ",
             "learned_kept_tier1={} learned_kept_tier2={} learned_kept_tier3={} learned_collected={} ",
             "otfs_watch_scans={} otfs_candidate_checks={} otfs_subsumed={} otfs_subsumed_learned={} ",
+            "otss_candidate_checks={} otss_subsumed_reasons={} otss_skipped_locked={} ",
             "focused_tier1_glue_limit={} focused_tier2_glue_limit={} stable_tier1_glue_limit={} stable_tier2_glue_limit={} ",
             "gc_reason={} gc_words_reclaimed={} gc_refs_rewritten={} ",
             "decision_heap_pops={} decision_heap_stale_pops={} decision_heap_inserts={}"
@@ -797,6 +809,9 @@ pub(crate) fn trace_full_line(stats: &SolverStats, _timings: &RunTimings) -> Str
         stats.otfs_candidate_checks,
         stats.otfs_subsumed_clauses,
         stats.otfs_subsumed_learned,
+        stats.otss_candidate_checks,
+        stats.otss_subsumed_reasons,
+        stats.otss_skipped_locked,
         stats.focused_tier1_glue_limit,
         stats.focused_tier2_glue_limit,
         stats.stable_tier1_glue_limit,

@@ -132,6 +132,16 @@ const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
 const OTFS_MAX_LEARNED_LEN: usize = 20;
 const OTFS_MAX_EXTRA_LITS: usize = 4;
 const OTFS_RECENT_LEARNED_LIMIT: usize = 4;
+/// Max participating reasons tracked per conflict for OTSS subsumption. Conflict
+/// analysis can walk an unbounded chain; capping here keeps the post-analyze
+/// candidate scan bounded. Sized to match OTFS recent-learned window scale.
+const OTSS_MAX_PARTICIPATING_REASONS: usize = 16;
+/// Max learned-clause length OTSS considers for the subset check, mirroring OTFS.
+const OTSS_MAX_LEARNED_LEN: usize = 20;
+/// Max extra literals a candidate reason can have beyond the learned-clause length.
+/// Beyond this gap, the subset check is unlikely to succeed in practice and the
+/// O(learned * reason) lit scan becomes wasteful.
+const OTSS_MAX_EXTRA_LITS: usize = 6;
 const INLINE_ABSTRACTION_CLAUSE_THRESHOLD: usize = 750_000;
 const LAZY_DETACH_SMALL_CLAUSE_THRESHOLD: usize = 50_000;
 const SORTED_SUBSUMPTION_MIN_LEN: usize = 2;
@@ -1363,6 +1373,12 @@ struct Solver {
     scratch_learned: Vec<i32>,
     otfs_delete_candidates: Vec<ClauseRef>,
     otfs_recent_learned: Vec<ClauseRef>,
+    /// Clause IDs of participating reason clauses walked during the current
+    /// conflict analysis. Populated in mark_reason_literals_for_analysis when
+    /// otss_enabled, scanned and cleared by otss_subsume_participating_reasons
+    /// after the learned clause is added. Capacity is bounded to
+    /// OTSS_MAX_PARTICIPATING_REASONS to keep the post-analyze scan O(1).
+    otss_participating_reasons: Vec<ClauseRef>,
     scratch_conflict_clause: Vec<i32>,
     scratch_bumped_vars: Vec<usize>,
     scratch_redundant_state: Vec<u8>,
@@ -1374,6 +1390,10 @@ struct Solver {
     ccmin_mode: u8,
     /// opt-in bounded learned-clause-only recent subsumption pass; default off after profiling.
     otfs_enabled: bool,
+    /// opt-in OTSS (on-the-fly self-subsuming resolution): after analyze produces a
+    /// learned clause, delete any participating reason clause that is a strict
+    /// superset of the learned clause. Bead SAT-playground-5b2.2.39. Default off.
+    otss_enabled: bool,
     minimize_depth_limit: u32,
     /// compatibility fallback for the older solver-10 conflict analyzer
     use_resolved_conflict_analysis: bool,
@@ -2154,6 +2174,7 @@ impl Solver {
             scratch_learned: Vec::with_capacity(16),
             otfs_delete_candidates: Vec::new(),
             otfs_recent_learned: Vec::with_capacity(OTFS_RECENT_LEARNED_LIMIT),
+            otss_participating_reasons: Vec::with_capacity(OTSS_MAX_PARTICIPATING_REASONS),
             scratch_conflict_clause: Vec::with_capacity(16),
             scratch_bumped_vars: Vec::with_capacity(16),
             scratch_redundant_state: vec![0; num_vars + 1],
@@ -2163,6 +2184,7 @@ impl Solver {
             scratch_analyze_stack: Vec::with_capacity(16),
             ccmin_mode,
             otfs_enabled: config.otfs,
+            otss_enabled: config.otss,
             minimize_depth_limit: config.minimize_depth_limit,
             use_resolved_conflict_analysis: config.use_resolved_conflict_analysis,
             use_lbd: config.use_lbd,
@@ -3116,6 +3138,7 @@ impl Solver {
         self.learned_clause_ids = new_learned_clause_ids;
         self.live_learned_clause_count = self.learned_clause_ids.len();
         self.otfs_recent_learned.clear();
+        self.otss_participating_reasons.clear();
         self.deleted_clause_words = 0;
         self.clause_abstraction.clear();
     }
@@ -6111,6 +6134,7 @@ impl Solver {
         }
         self.live_learned_clause_count = self.learned_clause_ids.len();
         self.otfs_recent_learned.clear();
+        self.otss_participating_reasons.clear();
         self.deleted_clause_words = 0;
         self.gc_pending_reason = GcReason::None;
         self.stats.gc_words_reclaimed += old_arena_words.saturating_sub(new_arena_len) as u64;
@@ -6745,6 +6769,126 @@ impl Solver {
         deleted
     }
 
+    /// OTSS (on-the-fly self-subsuming resolution) post-analyze pass.
+    ///
+    /// Background: kissat's strengthen.c performs `kissat_on_the_fly_strengthen`
+    /// during the analyze loop, modifying the reason clause in place when the
+    /// in-progress resolvent shrinks below the antecedent. Implementing that
+    /// during-analyze approach in solver 11 would require a clause arena rewrite
+    /// primitive (the size lives in the header word; learnt clauses have extras
+    /// after the literals that would have to move), watcher pointer fixups, and
+    /// careful conflict-redirection back into the analyze loop. Bead
+    /// SAT-playground-5b2.2.39 instead allows the simpler "delete and re-add via
+    /// the proof" framing.
+    ///
+    /// This implementation runs once per conflict, AFTER backtrack and after the
+    /// new learned clause has been added. For each participating reason R tracked
+    /// during analyze, if the new learned clause is a strict subset of R (and the
+    /// usual safety gates pass), delete R via the proof + watcher detach machinery
+    /// that already exists for OTFS. The new learned clause subsumes R, so the
+    /// formula is preserved by the deletion.
+    ///
+    /// Safety:
+    /// - R is checked still alive, still learnt, and not the just-added clause.
+    /// - R is checked not currently locked (clause_used_as_reason after backtrack
+    ///   means R is reason for some variable still on the trail). Locked reasons
+    ///   are NOT deleted; otss_skipped_locked is incremented.
+    /// - DRAT delete is emitted via the existing delete_clause_subsumed_by_otfs
+    ///   helper, which records the deletion before detaching watchers.
+    /// - Length and len-gap caps mirror OTFS to bound the literal subset check
+    ///   to O(learned * reason) per candidate.
+    fn otss_subsume_participating_reasons(
+        &mut self,
+        learned_clause: &[i32],
+        protected_clause_idx: Option<ClauseRef>,
+        proof_log: &mut ProofLog,
+    ) -> usize {
+        if !self.otss_enabled
+            || self.ccmin_mode == CCMIN_NONE
+            || learned_clause.len() <= 1
+            || learned_clause.len() > OTSS_MAX_LEARNED_LEN
+        {
+            self.otss_participating_reasons.clear();
+            return 0;
+        }
+
+        let mut candidates = std::mem::take(&mut self.otfs_delete_candidates);
+        candidates.clear();
+        let participating = std::mem::take(&mut self.otss_participating_reasons);
+
+        for &clause_idx in &participating {
+            if Some(clause_idx) == protected_clause_idx
+                || !self.otfs_recent_candidate_alive(clause_idx)
+            {
+                continue;
+            }
+            let candidate_len = self.clause_len(clause_idx);
+            if candidate_len <= learned_clause.len()
+                || candidate_len > learned_clause.len().saturating_add(OTSS_MAX_EXTRA_LITS)
+            {
+                continue;
+            }
+            self.stats.otss_candidate_checks += 1;
+            if self.learned_clause_subsumes_recent_clause(learned_clause, clause_idx) {
+                candidates.push(clause_idx);
+            }
+        }
+
+        candidates.sort_unstable();
+        candidates.dedup();
+        let mut deleted = 0usize;
+        for &clause_idx in &candidates {
+            if Some(clause_idx) == protected_clause_idx {
+                continue;
+            }
+            // delete_clause_subsumed_by_otfs filters out locked clauses (used as
+            // reason for any currently-assigned variable). Count those as
+            // otss_skipped_locked before the call so the stat reflects the
+            // pre-delete safety filter, not just the candidate scan.
+            let was_locked = self.clause_used_as_reason(clause_idx);
+            if was_locked {
+                self.stats.otss_skipped_locked += 1;
+                continue;
+            }
+            if self.learned_clause_subsumes_recent_clause(learned_clause, clause_idx)
+                && self.delete_clause_subsumed_by_otss(clause_idx, proof_log)
+            {
+                deleted += 1;
+            }
+        }
+        candidates.clear();
+        self.otfs_delete_candidates = candidates;
+        // Reuse the same buffer for next conflict; clear here even though analyze
+        // also clears at start, to keep the post-pass state tidy and avoid
+        // leaking stale clause IDs after a GC that runs between conflicts.
+        self.otss_participating_reasons = participating;
+        self.otss_participating_reasons.clear();
+        deleted
+    }
+
+    /// OTSS variant of delete_clause_subsumed_by_otfs that increments OTSS stats.
+    /// Same machinery as OTFS deletion (proof.record_deletion + detach +
+    /// mark_clause_deleted) but with otss_subsumed_reasons as the counter.
+    fn delete_clause_subsumed_by_otss(
+        &mut self,
+        clause_idx: ClauseRef,
+        proof_log: &mut ProofLog,
+    ) -> bool {
+        if clause_idx >= self.arena.len()
+            || self.clause_is_deleted(clause_idx)
+            || !self.clause_is_learnt(clause_idx)
+            || self.clause_used_as_reason(clause_idx)
+        {
+            return false;
+        }
+
+        proof_log.record_deletion(self.clause_slice(clause_idx));
+        self.detach_clause(clause_idx);
+        self.mark_clause_deleted(clause_idx);
+        self.stats.otss_subsumed_reasons += 1;
+        true
+    }
+
     fn mark_clause_literals_for_analysis(
         &mut self,
         clause_idx: usize,
@@ -6842,6 +6986,12 @@ impl Solver {
                     let lbd = self.compute_lbd_for_clause(clause_idx);
                     self.maybe_improve_lbd(clause_idx, lbd);
                 }
+                if self.otss_enabled
+                    && self.otss_participating_reasons.len() < OTSS_MAX_PARTICIPATING_REASONS
+                    && self.clause_is_learnt(clause_idx)
+                {
+                    self.otss_participating_reasons.push(clause_idx);
+                }
                 self.mark_clause_literals_for_analysis(
                     clause_idx,
                     start_lit_pos,
@@ -6921,6 +7071,9 @@ impl Solver {
         let current_level = self.current_level();
         self.scratch_learned.clear();
         self.scratch_bumped_vars.clear();
+        if self.otss_enabled {
+            self.otss_participating_reasons.clear();
+        }
 
         let mut current_level_count = 0usize;
 
@@ -7531,6 +7684,7 @@ impl Solver {
                             return SolveOutcome::unsat();
                         }
                         self.otfs_subsume_recent_learned(&learned_clause, None, proof_log);
+                        self.otss_subsume_participating_reasons(&learned_clause, None, proof_log);
                         self.scratch_conflict_clause = learned_clause;
                         self.scratch_conflict_clause.clear();
                     } else {
@@ -7556,6 +7710,11 @@ impl Solver {
                         );
                         debug_assert!(inserted, "learned clause must be asserting after backtrack");
                         self.otfs_subsume_recent_learned(
+                            &learned_clause,
+                            Some(learned_clause_idx),
+                            proof_log,
+                        );
+                        self.otss_subsume_participating_reasons(
                             &learned_clause,
                             Some(learned_clause_idx),
                             proof_log,
@@ -10999,6 +11158,176 @@ mod tests {
         assert_eq!(deleted, 0);
         assert!(!s.clause_is_deleted(subsumed));
         assert_eq!(s.stats.otfs_subsumed_clauses, 0);
+    }
+
+    #[test]
+    fn test_otss_default_off_leaves_reason_clause() {
+        let mut s = make_solver(3, vec![]);
+        let reason = s.add_clause(vec![1, 2, 3]);
+        // simulate analyze having walked this reason
+        s.otss_participating_reasons.push(reason);
+        let mut proof_log = ProofLog::disabled();
+
+        let deleted = s.otss_subsume_participating_reasons(&[1, 2], None, &mut proof_log);
+
+        assert_eq!(deleted, 0);
+        assert!(!s.clause_is_deleted(reason));
+        assert_eq!(s.stats.otss_subsumed_reasons, 0);
+        assert_eq!(s.stats.otss_candidate_checks, 0);
+        // Disabled path still clears the participating buffer.
+        assert!(s.otss_participating_reasons.is_empty());
+    }
+
+    #[test]
+    fn test_otss_removes_strict_superset_reason() {
+        let mut s = make_solver(3, vec![]);
+        s.otss_enabled = true;
+        let subsumed = s.add_clause(vec![1, 2, 3]);
+        s.otss_participating_reasons.push(subsumed);
+        let mut proof_log = ProofLog::disabled();
+
+        let deleted = s.otss_subsume_participating_reasons(&[1, 2], None, &mut proof_log);
+
+        assert_eq!(deleted, 1);
+        assert!(s.clause_is_deleted(subsumed));
+        assert!(s.learned_clause_ids.is_empty());
+        assert!(s.otss_participating_reasons.is_empty());
+        assert_eq!(s.live_learned_clause_count, 0);
+        assert_eq!(s.learned_literals, 0);
+        assert_eq!(s.stats.deleted_clauses, 1);
+        assert_eq!(s.stats.otss_subsumed_reasons, 1);
+        assert_eq!(s.stats.otss_candidate_checks, 1);
+        assert_eq!(s.stats.otss_skipped_locked, 0);
+    }
+
+    #[test]
+    fn test_otss_does_not_remove_non_subset_reason() {
+        let mut s = make_solver(7, vec![]);
+        s.otss_enabled = true;
+        // {1, -2, 3} — learned {1, 2} is NOT a subset because -2 vs 2 (literal-level check)
+        let not_subset = s.add_clause(vec![1, -2, 3]);
+        s.otss_participating_reasons.push(not_subset);
+        let mut proof_log = ProofLog::disabled();
+
+        let deleted = s.otss_subsume_participating_reasons(&[1, 2], None, &mut proof_log);
+
+        assert_eq!(deleted, 0);
+        assert!(!s.clause_is_deleted(not_subset));
+        assert_eq!(s.learned_clause_ids, vec![not_subset]);
+        assert_eq!(s.stats.otss_subsumed_reasons, 0);
+        // Candidate check fired but the lit-subset test failed.
+        assert_eq!(s.stats.otss_candidate_checks, 1);
+    }
+
+    #[test]
+    fn test_otss_skips_too_large_reason() {
+        let mut s = make_solver(15, vec![]);
+        s.otss_enabled = true;
+        // Reason has 7 extras over learned of len 2 → > OTSS_MAX_EXTRA_LITS=6.
+        let too_long = s.add_clause(vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        s.otss_participating_reasons.push(too_long);
+        let mut proof_log = ProofLog::disabled();
+
+        let deleted = s.otss_subsume_participating_reasons(&[1, 2], None, &mut proof_log);
+
+        assert_eq!(deleted, 0);
+        assert!(!s.clause_is_deleted(too_long));
+        // The length filter trips before candidate_checks increments.
+        assert_eq!(s.stats.otss_candidate_checks, 0);
+    }
+
+    #[test]
+    fn test_otss_does_not_remove_locked_reason() {
+        let mut s = make_solver(3, vec![]);
+        s.otss_enabled = true;
+        let reason = s.add_clause(vec![3, 1, 2]);
+        // Variable 3 is assigned with this clause as its reason — clause is "locked".
+        s.assignment[3] = TRUE;
+        s.decision_level[3] = 1;
+        s.set_reason_ref(3, ReasonRef::Clause(reason));
+        s.trail.push(3);
+        s.otss_participating_reasons.push(reason);
+        let mut proof_log = ProofLog::disabled();
+
+        let deleted = s.otss_subsume_participating_reasons(&[1, 2], None, &mut proof_log);
+
+        assert_eq!(deleted, 0);
+        assert!(!s.clause_is_deleted(reason));
+        assert_eq!(s.learned_clause_ids, vec![reason]);
+        assert_eq!(s.stats.otss_subsumed_reasons, 0);
+        assert_eq!(s.stats.otss_skipped_locked, 1);
+    }
+
+    #[test]
+    fn test_otss_does_not_remove_original_clause() {
+        let mut s = make_solver(3, vec![vec![1, 2, 3]]);
+        s.otss_enabled = true;
+        let original = s.original_clause_ids[0];
+        // Original clauses can still appear in scratch_otss_participating_reasons
+        // if they served as reasons during analyze. The safety filter on
+        // `clause_is_learnt` inside delete_clause_subsumed_by_otss must reject.
+        s.otss_participating_reasons.push(original);
+        let mut proof_log = ProofLog::disabled();
+
+        let deleted = s.otss_subsume_participating_reasons(&[1, 2], None, &mut proof_log);
+
+        assert_eq!(deleted, 0);
+        assert!(!s.clause_is_deleted(original));
+        assert_eq!(s.live_original_clause_count(), 1);
+        assert_eq!(s.original_literals, 3);
+        assert_eq!(s.stats.otss_subsumed_reasons, 0);
+        // The "alive candidate" pre-filter (shared with OTFS) requires
+        // `clause_is_learnt`, so the original clause is dropped before the
+        // length / subset / candidate_checks accounting runs.
+        assert_eq!(s.stats.otss_candidate_checks, 0);
+    }
+
+    #[test]
+    fn test_otss_proof_logs_deletion() {
+        let mut s = make_solver(3, vec![]);
+        s.otss_enabled = true;
+        let subsumed = s.add_clause(vec![1, 2, 3]);
+        s.otss_participating_reasons.push(subsumed);
+        let dir = make_temp_dir("otss-proof");
+        let mut proof_log = ProofLog::new(&dir, 32, false);
+        proof_log.record_clause(&[1, 2, 3]);
+        proof_log.record_clause(&[1, 2]);
+
+        let deleted = s.otss_subsume_participating_reasons(&[1, 2], None, &mut proof_log);
+        proof_log.finish_unsat();
+
+        assert_eq!(deleted, 1);
+        assert!(s.clause_is_deleted(subsumed));
+        assert!(s.learned_clause_ids.is_empty());
+        assert_eq!(s.stats.otss_subsumed_reasons, 1);
+
+        let proof_text =
+            fs::read_to_string(dir.join("proof.out")).expect("failed to read OTSS proof");
+        assert!(
+            proof_text.contains("d 1 2 3 0\n"),
+            "expected OTSS deletion in proof, got:\n{proof_text}"
+        );
+    }
+
+    #[test]
+    fn test_otss_respects_protected_clause_idx() {
+        let mut s = make_solver(3, vec![]);
+        s.otss_enabled = true;
+        let just_added = s.add_clause(vec![1, 2, 3]);
+        s.otss_participating_reasons.push(just_added);
+        let mut proof_log = ProofLog::disabled();
+
+        // Pretend just_added is the just-added learned clause — must not delete itself.
+        let deleted = s.otss_subsume_participating_reasons(
+            &[1, 2],
+            Some(just_added),
+            &mut proof_log,
+        );
+
+        assert_eq!(deleted, 0);
+        assert!(!s.clause_is_deleted(just_added));
+        assert_eq!(s.stats.otss_subsumed_reasons, 0);
+        assert_eq!(s.stats.otss_candidate_checks, 0);
     }
 
     #[test]
