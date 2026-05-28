@@ -127,7 +127,8 @@ What is present:
 - opt-in guarded chronological backtracking (`SAT_CHRONO=on`) that keeps only `current - 1`
   instead of the normal assertion level when the learned clause remains asserting there; it falls
   back to ordinary non-chronological backtracking unless the level gap exceeds
-  `SAT_CHRONO_MAX_DELTA` or the learned clause would stop being unit
+  `SAT_CHRONO_MAX_DELTA` (default `5000`) or the learned clause would stop being unit. The larger
+  default keeps chrono opt-in conservative on solver 11's deep-level trajectories.
 - opt-in binary implication fast path (`SAT_BINARY_FAST=on`) that keeps binary clauses in the arena
   for proof/model/debug traceability while propagating them through stable binary IDs and implication
   edges; default propagation remains the legacy watched-clause path. Clause minimization is
@@ -212,7 +213,7 @@ SAT_VAR_DECAY_FOCUSED=<f64>  # focused-stable only, default 0.95
 SAT_VAR_DECAY_STABLE=<f64>   # focused-stable only, default 0.95
 SAT_LUCKY=on|off
 SAT_CHRONO=on
-SAT_CHRONO_MAX_DELTA=<usize>
+SAT_CHRONO_MAX_DELTA=<usize>  # default 5000
 SAT_VMTF=off|focused-only|single  # focused-stable defaults to focused-only unless explicit
 SAT_REORDER=on|off
 SAT_REORDER_INTERVAL_CONFLICTS=<u64>  # default 10000

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 const CONFIG_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_DETERMINISTIC_SEED: u64 = 0;
 const DEFAULT_MINIMIZE_DEPTH_LIMIT: u32 = 1_000;
-const DEFAULT_CHRONO_MAX_DELTA: usize = 100;
+const DEFAULT_CHRONO_MAX_DELTA: usize = 5_000;
 const DEFAULT_MODE_INIT_CONFLICTS: u64 = 2000;
 const DEFAULT_MODE_INTERVAL_SCALE: f64 = 1.5;
 const DEFAULT_REPHASE_INIT_CONFLICTS: u64 = 1000;
@@ -3233,6 +3233,10 @@ mod tests {
 
     #[test]
     fn test_chrono_backtrack_is_runtime_supported() {
+        let default_config = SolverConfig::from_env_map(&env_map(&[]));
+        assert_eq!(DEFAULT_CHRONO_MAX_DELTA, 5_000);
+        assert_eq!(default_config.chrono_max_delta, DEFAULT_CHRONO_MAX_DELTA);
+
         let config = SolverConfig::from_env_map(&env_map(&[
             ("SAT_CHRONO", "on"),
             ("SAT_CHRONO_MAX_DELTA", "7"),
