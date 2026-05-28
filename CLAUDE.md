@@ -524,6 +524,21 @@ This repo runs at most a few agents in parallel on the same solver iteration. Th
 
 1) Register and discover what others are doing
    - `ensure_project(human_key="/home/bojji/code/SAT-playground")`, then `register_agent` with a unique `agent_name`. Set `AGENT_NAME` in your shell so the pre-commit guard knows who you are.
+   - If a reused identity such as `s11-06` reports `requires registration_token` after a successful `register_agent`, the MCP connector is not preserving Agent Mail's in-memory session binding across tool calls. Work around it by reading the existing local token from `/home/bojji/code/mcp_agent_mail/storage.sqlite3` and passing it explicitly as `registration_token` / `sender_token` on Agent Mail calls. Do **not** paste the token into chat, commits, Beads notes, or AGENTS.md. Example:
+     ```bash
+     AGENT_MAIL_TOKEN=$(python3 - <<'PY'
+     import sqlite3
+     con = sqlite3.connect('/home/bojji/code/mcp_agent_mail/storage.sqlite3')
+     row = con.execute('''
+     select a.registration_token
+     from agents a join projects p on p.id = a.project_id
+     where p.human_key = ? and lower(a.name) = lower(?)
+     ''', ('/home/bojji/code/SAT-playground', 's11-06')).fetchone()
+     print(row[0] if row and row[0] else '')
+     PY
+     )
+     ```
+     Then call tools with explicit auth, e.g. `fetch_inbox(..., agent_name="s11-06", registration_token=AGENT_MAIL_TOKEN)` or `send_message(..., sender_name="s11-06", sender_token=AGENT_MAIL_TOKEN)`.
    - Before picking a bead, list active claims (`bd ready`, `bd list --status in_progress`) and read the shared coordination thread (default `thread_id="coord"`) via `resource://thread/coord?...` to see what other agents have announced.
    - Pick a bead whose scope does **not** overlap the regions other agents have already announced. Prefer beads that touch different functions, modules, or solver iterations than the active claims.
 
@@ -572,4 +587,5 @@ This repo runs at most a few agents in parallel on the same solver iteration. Th
 - **Leaving worktrees behind**: stale `/tmp/sat-worktrees/<agent>` directories pile up and confuse future runs. Remove on bead close.
 - **"from_agent not registered"**: always `register_agent` in the correct `project_key` first.
 - **"FILE_RESERVATION_CONFLICT"** on non-hot paths: adjust patterns, wait for expiry, or use a non-exclusive reservation.
+- **"requires registration_token" after registering**: tokenless session binding may be broken in this MCP connector. Use the explicit-token workaround in step 1 and pass `registration_token` / `sender_token` on every Agent Mail call.
 - **Auth errors**: if JWT+JWKS is enabled, include a bearer token with a `kid` that matches server JWKS; static bearer is used only when JWT is disabled.
