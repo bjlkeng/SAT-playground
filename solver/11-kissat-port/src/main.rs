@@ -3954,6 +3954,54 @@ impl Solver {
         self.try_lucky_assignment_with_proof(&mut proof_log)
     }
 
+    /// Kissat-style warmup: populate saved_phase with a VSIDS/VMTF-guided candidate
+    /// assignment before main search. Iterates decide+propagate from level 0 until
+    /// pick_branch_lit returns None (all decision vars assigned) or propagate returns
+    /// a conflict. Then backtracks to level 0 — backtrack() only clears
+    /// assignment/decision_level/reason, so the saved_phase entries written by enqueue()
+    /// during the warmup persist into the main search loop. Matches
+    /// kissat_backtrack_without_updating_phases semantics in Kissat's warmup.c.
+    /// Off by default; gated by SAT_WARMUP=on (bd SAT-playground-5b2.2.36).
+    fn warmup(&mut self) {
+        if self.current_level() != 0 {
+            return;
+        }
+        self.stats.warmup_runs = self.stats.warmup_runs.saturating_add(1);
+        let start_decisions = self.stats.decisions;
+        let start_propagations = self.stats.propagations;
+        let mut steps: u64 = 0;
+
+        while let Some(lit) = self.pick_branch_lit() {
+            self.decide(lit);
+            steps = steps.saturating_add(1);
+            if self.propagate().is_some() {
+                self.stats.warmup_conflict_stopped =
+                    self.stats.warmup_conflict_stopped.saturating_add(1);
+                break;
+            }
+        }
+
+        let mut assigned: u64 = 0;
+        for var in 1..self.assignment.len() {
+            if self.assignment[var] != UNASSIGNED {
+                assigned = assigned.saturating_add(1);
+            }
+        }
+        self.stats.warmup_assigned_vars = self.stats.warmup_assigned_vars.saturating_add(assigned);
+
+        self.backtrack(0);
+
+        self.stats.warmup_steps = self.stats.warmup_steps.saturating_add(steps);
+        self.stats.warmup_decisions = self
+            .stats
+            .warmup_decisions
+            .saturating_add(self.stats.decisions.saturating_sub(start_decisions));
+        self.stats.warmup_propagations = self
+            .stats
+            .warmup_propagations
+            .saturating_add(self.stats.propagations.saturating_sub(start_propagations));
+    }
+
     #[cfg(test)]
     fn reason_clause_for_test(&self, var: usize) -> ClauseRef {
         match self.reason_ref(var) {
@@ -7219,6 +7267,10 @@ impl Solver {
         }
         if !self.solver_ok || self.has_empty_clause {
             return SolveOutcome::unsat();
+        }
+
+        if config.warmup {
+            self.warmup();
         }
 
         let trace_search_interval = config.trace_search_interval as u64;
@@ -13558,5 +13610,91 @@ mod tests {
         assert_eq!(s.stats.restarts, 0);
         assert_eq!(s.stats.restarts_reused_trails, 0);
         assert_eq!(s.stats.restarts_reused_levels, 0);
+    }
+
+    fn warmup_config() -> SolverConfig {
+        SolverConfig {
+            warmup: true,
+            ..SolverConfig::default()
+        }
+    }
+
+    #[test]
+    fn test_warmup_populates_saved_phase_and_returns_to_root() {
+        let config = warmup_config();
+        let mut s = make_solver_with_config(3, vec![vec![1, 2], vec![-1, 3], vec![2, 3]], &config);
+
+        let initial_phase_var1 = s.saved_phase[1];
+        assert_eq!(s.current_level(), 0);
+
+        s.warmup();
+
+        assert_eq!(s.current_level(), 0, "warmup must backtrack to root");
+        assert_eq!(
+            s.trail.len(),
+            s.root_trail_len,
+            "trail must collapse to root assignments"
+        );
+        assert!(s.stats.warmup_runs >= 1, "warmup_runs must be incremented");
+        assert!(
+            s.stats.warmup_steps >= 1,
+            "warmup_steps must be incremented when decisions occur"
+        );
+        let any_phase_set = (1..s.saved_phase.len()).any(|v| {
+            let phase = s.saved_phase[v];
+            phase != UNASSIGNED && phase != initial_phase_var1 || (v != 1 && phase != UNASSIGNED)
+        });
+        assert!(
+            any_phase_set,
+            "warmup must populate saved_phase with at least one decision-derived value"
+        );
+    }
+
+    #[test]
+    fn test_warmup_disabled_does_not_run() {
+        let config = SolverConfig::default();
+        assert!(!config.warmup, "warmup must default off");
+        let mut s = make_solver_with_config(3, vec![vec![1, 2], vec![-1, 3], vec![2, 3]], &config);
+
+        // Direct call should still work, but the solve path skips it.
+        let outcome = s.solve_with_proof(&mut ProofLog::disabled(), &config);
+        assert!(outcome, "small SAT instance must solve");
+        assert_eq!(
+            s.stats.warmup_runs, 0,
+            "warmup must not run when SAT_WARMUP is off"
+        );
+        assert_eq!(s.stats.warmup_steps, 0);
+        assert_eq!(s.stats.warmup_decisions, 0);
+    }
+
+    #[test]
+    fn test_warmup_handles_unsat_formula_without_changing_outcome() {
+        let config = warmup_config();
+        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
+        let proof_dir = make_temp_dir("warmup-unsat-proof");
+        let mut s = make_solver_with_config(2, clauses, &config);
+
+        let outcome = s
+            .solve_to_output(proof_dir.to_str().expect("utf8 temp dir"), &config)
+            .0;
+        assert_eq!(outcome.status, SolveStatus::Unsat);
+        assert!(
+            s.stats.warmup_runs <= 1,
+            "warmup should run at most once per solve"
+        );
+    }
+
+    #[test]
+    fn test_warmup_no_op_when_all_decision_vars_assigned() {
+        let config = warmup_config();
+        // Unit clauses force all vars at root; warmup should find no decisions.
+        let mut s = make_solver_with_config(2, vec![vec![1], vec![2]], &config);
+        let _ = s.solve_with_proof(&mut ProofLog::disabled(), &config);
+        assert!(s.stats.warmup_runs >= 1);
+        assert_eq!(
+            s.stats.warmup_steps, 0,
+            "warmup must take zero steps when all vars are unit-assigned at root"
+        );
+        assert_eq!(s.stats.warmup_conflict_stopped, 0);
     }
 }

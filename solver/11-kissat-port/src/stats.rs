@@ -120,6 +120,12 @@ pub(crate) struct SolverStats {
     pub(crate) random_decision_sequences: u64,
     pub(crate) lucky_attempts: u64,
     pub(crate) lucky_solved: u64,
+    pub(crate) warmup_runs: u64,
+    pub(crate) warmup_steps: u64,
+    pub(crate) warmup_decisions: u64,
+    pub(crate) warmup_propagations: u64,
+    pub(crate) warmup_assigned_vars: u64,
+    pub(crate) warmup_conflict_stopped: u64,
     pub(crate) rephases: u64,
     pub(crate) branch_reorders: u64,
     pub(crate) decision_heap_pops: u64,
@@ -587,6 +593,12 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.f64("current_var_decay", ctx.stats.current_var_decay);
     json.u64("lucky_attempts", ctx.stats.lucky_attempts);
     json.u64("lucky_solved", ctx.stats.lucky_solved);
+    json.u64("warmup_runs", ctx.stats.warmup_runs);
+    json.u64("warmup_steps", ctx.stats.warmup_steps);
+    json.u64("warmup_decisions", ctx.stats.warmup_decisions);
+    json.u64("warmup_propagations", ctx.stats.warmup_propagations);
+    json.u64("warmup_assigned_vars", ctx.stats.warmup_assigned_vars);
+    json.u64("warmup_conflict_stopped", ctx.stats.warmup_conflict_stopped);
 
     json.u64(
         "pre_bve_eliminated_vars",

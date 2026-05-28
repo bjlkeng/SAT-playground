@@ -540,6 +540,7 @@ pub(crate) struct SolverConfig {
     pub(crate) search_mode_policy: SearchModePolicy,
     pub(crate) mode_use_ticks: bool,
     pub(crate) lucky: bool,
+    pub(crate) warmup: bool,
     pub(crate) chrono_backtrack: bool,
     pub(crate) binary_fast_path: bool,
     pub(crate) clause_min_mode: ClauseMinMode,
@@ -645,6 +646,7 @@ impl Default for SolverConfig {
             search_mode_policy: SearchModePolicy::Single,
             mode_use_ticks: false,
             lucky: false,
+            warmup: false,
             chrono_backtrack: false,
             binary_fast_path: false,
             clause_min_mode: ClauseMinMode::RecursiveLimited,
@@ -996,6 +998,7 @@ impl SolverConfig {
         self.mode_use_ticks =
             parse_bool_selected(env_map, &key_set, "SAT_MODE_USE_TICKS", self.mode_use_ticks);
         self.lucky = parse_bool_selected(env_map, &key_set, "SAT_LUCKY", self.lucky);
+        self.warmup = parse_bool_selected(env_map, &key_set, "SAT_WARMUP", self.warmup);
         self.chrono_backtrack =
             parse_bool_selected(env_map, &key_set, "SAT_CHRONO", self.chrono_backtrack);
         self.binary_fast_path =
@@ -1500,6 +1503,7 @@ impl SolverConfig {
         );
         push_kv_bool(&mut lines, "mode_use_ticks", self.mode_use_ticks);
         push_kv_bool(&mut lines, "lucky", self.lucky);
+        push_kv_bool(&mut lines, "warmup", self.warmup);
         push_kv_bool(&mut lines, "chrono_backtrack", self.chrono_backtrack);
         push_kv_bool(&mut lines, "binary_fast_path", self.binary_fast_path);
         push_kv(&mut lines, "clause_min_mode", self.clause_min_mode.as_str());
@@ -1844,6 +1848,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             "log/phase1/3fs-lucky-off-default-profile/results.csv",
         ),
         feature(
+            "SAT_WARMUP",
+            config.warmup,
+            FeatureMaturity::Experimental,
+            true,
+            true,
+            false,
+            "bd:SAT-playground-5b2.2.36",
+        ),
+        feature(
             "SAT_CHRONO",
             config.chrono_backtrack,
             FeatureMaturity::SmokeSafe,
@@ -2139,6 +2152,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "search_mode_policy" => Some("SAT_SEARCH_MODE"),
         "mode_use_ticks" => Some("SAT_MODE_USE_TICKS"),
         "lucky" => Some("SAT_LUCKY"),
+        "warmup" => Some("SAT_WARMUP"),
         "chrono_backtrack" => Some("SAT_CHRONO"),
         "binary_fast_path" => Some("SAT_BINARY_FAST"),
         "clause_min_mode" => Some("SAT_CLAUSE_MIN"),
@@ -2323,6 +2337,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_SEARCH_MODE",
         "SAT_MODE_USE_TICKS",
         "SAT_LUCKY",
+        "SAT_WARMUP",
         "SAT_CHRONO",
         "SAT_BINARY_FAST",
         "SAT_CLAUSE_MIN",
@@ -3194,6 +3209,32 @@ mod tests {
 
         let replayed = SolverConfig::from_replay_text(&replay, Path::new("<lucky-test>"));
         assert!(!replayed.lucky);
+        assert_eq!(replayed.config_hash(), config.config_hash());
+    }
+
+    #[test]
+    fn test_warmup_defaults_off_and_can_be_enabled() {
+        let config = SolverConfig::from_env_map(&env_map(&[]));
+        assert!(!config.warmup);
+
+        let fast = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "fast")]));
+        assert!(!fast.warmup);
+
+        let baseline = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "baseline")]));
+        assert!(!baseline.warmup);
+
+        let enabled = SolverConfig::from_env_map(&env_map(&[("SAT_WARMUP", "on")]));
+        assert!(enabled.warmup);
+    }
+
+    #[test]
+    fn test_warmup_is_replayable() {
+        let config = SolverConfig::from_env_map(&env_map(&[("SAT_WARMUP", "on")]));
+        let replay = config.config_replay_text();
+        assert!(replay.contains("warmup=true"));
+
+        let replayed = SolverConfig::from_replay_text(&replay, Path::new("<warmup-test>"));
+        assert!(replayed.warmup);
         assert_eq!(replayed.config_hash(), config.config_hash());
     }
 
