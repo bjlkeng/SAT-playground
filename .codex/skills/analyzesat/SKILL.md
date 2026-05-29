@@ -8,10 +8,25 @@ description: Scientific bottleneck analysis for a SAT solver iteration — runs 
 ## Purpose
 
 Run a comprehensive, scientific investigation into why ported or new solver features
-are not improving — or are actively regressing — the benchmark. The goal is to
-attribute regressions to specific implementation gaps versus workload mismatch, and
-to produce per-feature code-level recommendations (file + function + fix sketch +
-reference citation) rather than parameter-tuning suggestions.
+are not improving — or are actively regressing — **aggregate PAR-2 over the profiling
+suite**. The goal is to attribute the aggregate-PAR-2 effect to specific implementation
+gaps versus workload mismatch, and to produce per-feature code-level recommendations
+(file + function + fix sketch + reference citation) rather than parameter-tuning suggestions.
+
+**The only success metric is aggregate PAR-2 over the whole profiling suite.** A feature
+that regresses some instances — including flipping a solved instance to a timeout — while
+improving total PAR-2 is a *win*, not a regression to be explained away; analyze it as such
+and recommend keeping it. Conversely, a feature that helps a few instances but loses aggregate
+PAR-2 is a loss even if its per-instance wins look impressive. Per-instance deltas are
+diagnostic detail used to understand *why* the aggregate moved; they are never the verdict.
+Honest timeouts/`UNKNOWN` (the solver used its budget and didn't finish) are a priced-in PAR-2
+cost; only a *premature* `UNKNOWN` (returns without using the budget) or a correctness error
+(wrong status, bad model, missing/invalid proof) is a hard stop-and-debug bug.
+
+**Use kissat (and other reference solvers) for inspiration, hypotheses, and comparison — not
+as a 1-to-1 implementation target.** Read kissat to understand *where* and *why* it does less
+work or runs faster, then adapt the idea however best fits this codebase. Exact behavioral or
+source parity with kissat is explicitly **not** a goal; keep whatever wins aggregate PAR-2.
 
 This skill is the primary tool for "fresh eyes" deep-dives on `solver/11-kissat-port`
 or any other iteration. It integrates the workflows from CLAUDE.md sections:
@@ -134,9 +149,14 @@ are instances where the repo's preprocessing gives an advantage worth preserving
 
 Add the reference comparison table to `log/<slug>/FINDINGS.md`.
 
-## Phase 4 — Reference Source Diff
+## Phase 4 — Reference Source Diff (for inspiration, not parity)
 
-For every feature that regresses, read the reference implementation verbatim:
+For a feature whose aggregate-PAR-2 effect you want to understand or improve, read the reference
+implementation for ideas about *where it spends or saves work* — **not** to replicate it
+line-for-line. Kissat is a source of hypotheses about which work to cut or which search decisions
+pay off; this codebase can reach the same PAR-2 effect with a different mechanism. Behavioral or
+source parity with kissat is not the goal — a smaller, simpler, or differently-shaped change that
+wins aggregate PAR-2 is preferred over a faithful port that does not.
 
 ```bash
 # Kissat is vendored under benchmarks/reference-solvers/kissat/src/
@@ -157,12 +177,14 @@ For each gap found, predict which instances/configs would change if the gap were
 Verify the prediction against Phase 1/2/3 data. Only call something a "gap" if the
 prediction matches observed regressions.
 
-Key known Kissat gaps to check for solver 11:
-- `restart.c` — does the Rust impl do `reuse_focused_trail` or `backtrack(0)`?
-- `reduce.c` / `tiers.c` — does the Rust tiered reducer match Kissat's age-then-classify order?
-- `analyze.c` — does conflict analysis walk the same UIP detection path?
-- `decide.c` — is VMTF queue state preserved correctly across restarts?
-- `search.c` — does mode switching happen at the right conflict boundary?
+Kissat ideas worth checking for solver 11 (as inspiration — a similar *effect* is the target,
+not an identical implementation):
+- `restart.c` — would trail reuse vs `backtrack(0)` change the aggregate?
+- `reduce.c` / `tiers.c` — does the Rust tiered reducer keep roughly the right clauses (age/classify intent), even if the order differs?
+- `analyze.c` — is conflict analysis finding good UIP/learned clauses (the same *quality*, not the same code path)?
+- `decide.c` — is VMTF queue state preserved sensibly across restarts?
+- `search.c` — does mode switching happen at a boundary that helps the aggregate?
+- A correctness divergence from kissat is still a bug; a *behavioral* divergence that wins aggregate PAR-2 is fine.
 
 ## Phase 5 — Trajectory Trace for Critical Instances
 
@@ -338,8 +360,13 @@ Do not force-add raw results CSVs unless the user asks for provenance tracking.
   the trajectory trace shows single-decision divergence.
 - **Tie every recommendation to measured evidence** — avoid generic "improve cache
   locality"; cite the hot symbol and source line.
-- **UNKNOWN is a failure** — any config producing UNKNOWN where baseline solves is
-  a bug, not a data point. Stop and report it before continuing.
+- **Judge every config by aggregate PAR-2, not per-instance rows** — recommend keeping a config
+  that improves total profiling-suite PAR-2 even when it regresses or newly times out individual
+  instances. Per-instance deltas explain *why* the aggregate moved; they are not the verdict.
+- **Distinguish a priced-in timeout from a bug** — an honest timeout / resource-limit `UNKNOWN`
+  (the solver used its budget) is just a PAR-2 cost and a valid data point. A *premature* `UNKNOWN`
+  (returns without using the budget) or any correctness error (wrong status, bad model,
+  missing/invalid proof) is a bug regardless of PAR-2 — stop and report it before continuing.
 - **Commit artifacts** — always commit FINDINGS.md and `.beads/issues.jsonl` at the end.
 - **Print a screen summary** — the user cannot see FINDINGS.md until they open it;
   summarize the top findings to stdout before exiting.

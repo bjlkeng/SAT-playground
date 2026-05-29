@@ -177,40 +177,63 @@ Write DRAT proof to `<output_dir>/proof.out`. This is required from every iterat
 
 ## Development Rules
 
+- **Primary objective is aggregate PAR-2 over the profiling suite.** The single optimization
+  goal for solver work is total PAR-2 across the whole benchmark set (`benchmarks/profiling`), not
+  per-instance time. A change that regresses some instances — including flipping a solved instance
+  to a timeout — is acceptable and expected as long as it improves aggregate PAR-2 beyond
+  run-to-run noise. Do not reject a net-positive change because individual rows got slower or newly
+  time out, and do not require a feature to help every instance. The one thing aggregate PAR-2
+  never overrides is correctness (see the correctness rule below). Use kissat and other reference
+  solvers for inspiration, hypotheses, and comparison — matching their behavior or implementation
+  1-to-1 is **not** a goal; adapt freely and keep whatever wins aggregate PAR-2.
 - **Use red-green TDD for solver changes** — add or update a failing test first when practical, then implement until it passes before moving on.
 - **Run smoke tests after every change** to a solver: `bash tools/smoke_test.sh solver/NN-name`
 - **Only commit solver changes that pass the smoke test** (all 8 tests green). If a test fails, fix the solver before committing.
 - **Never modify `tools/smoke_test.sh`** unless the user explicitly asks for changes to it.
 - **Always commit and push** when the user asks — don't skip the push step.
-- **Benchmark UNKNOWN is a failure for solver work:** `UNKNOWN` means the solver produced neither
-  `SATISFIABLE` nor `UNSATISFIABLE` within the run contract. Treat every new or retained
-  `UNKNOWN` on a benchmark/profile row that the baseline solves as a failed experiment, even if
-  aggregate PAR-2 happens to improve. Do not describe UNKNOWN churn as harmless.
-- **SAT/UNSAT/UNKNOWN result errors are correctness failures:** if a solver run reports the wrong
-  status, returns a SAT model that does not satisfy the original CNF, fails to write or validate an
-  UNSAT proof, or returns `UNKNOWN` for a row that should produce SAT/UNSAT, stop and debug the
-  issue to root cause. Capture the exact repro command/log, analyze the failing code path, and fix
-  the correctness issue before continuing promotion, tuning, or downstream work. Do not paper over
-  a result error by changing it to `UNKNOWN`, suppressing validation, quarantining flags, or
-  rerouting the requested path unless the user explicitly asks for that mitigation.
-- **Debug every UNKNOWN before continuing:** when an experiment produces `UNKNOWN`, stop promotion
-  work for that path, debug the cause, and fix the actual issue or revert the experiment. Do not
-  hide an UNKNOWN-producing path by silently normalizing, quarantining, or rerouting requested
-  feature flags unless the user explicitly asks for that mitigation. Rerun the exact affected
-  configuration and do not leave the task as complete until that configuration no longer produces
-  `UNKNOWN` on the relevant baseline-solved rows.
-- **Solver 11 default/fast promotion gate:** before promoting any solver 11 default or fast
-  profile change, run a clean solver 10 comparison on the same benchmark set and pass
+- **A new timeout / honest UNKNOWN is a PAR-2 cost, not an automatic failure:** under the
+  aggregate-PAR-2 objective, an instance that flips from solved to unsolved — a timeout, or an
+  honest resource-limit `UNKNOWN` that actually consumed its time/memory budget — is acceptable as
+  long as aggregate PAR-2 over the profiling suite still improves beyond run-to-run noise. An
+  unsolved row is already priced into PAR-2 as `2 × timeout`, so a net-positive change wins on the
+  total even when it loses individual rows. Do not reject such a change, and do not describe the
+  per-instance regression as a correctness problem. Two carve-outs below still apply.
+- **Correctness errors are never acceptable, regardless of PAR-2:** if a solver run reports the
+  wrong status (claims SAT/UNSAT incorrectly), returns a SAT model that does not satisfy the
+  original CNF, or fails to write/validate a required UNSAT proof, stop and debug to root cause.
+  Capture the exact repro command/log, analyze the failing code path, and fix the correctness issue
+  before continuing promotion, tuning, or downstream work. Do not paper over a result error by
+  changing it to `UNKNOWN`, suppressing validation, quarantining flags, or rerouting the requested
+  path unless the user explicitly asks for that mitigation. Aggregate PAR-2 does not buy back a
+  wrong answer or a missing/invalid proof.
+- **A premature `UNKNOWN` is a bug, not a PAR-2 result:** if a configuration returns `UNKNOWN`
+  *without consuming its time/memory budget* (it bails early, normalizes an error to `UNKNOWN`, or
+  a feature flag short-circuits the requested path), treat it as a likely bug and root-cause it
+  before trusting the run — it is not the same as an honest timeout. Do not hide such a path by
+  silently normalizing, quarantining, or rerouting requested feature flags unless the user
+  explicitly asks for that mitigation. Distinguish "ran out of budget" (a PAR-2 cost, fine if the
+  total wins) from "answered `UNKNOWN` early" (debug it).
+- **Solver 11 default/fast promotion gate:** the decision metric is **aggregate PAR-2 over the
+  profiling suite** vs the current solver 11 default — promote a candidate that improves it beyond
+  run-to-run noise, regardless of which individual instances regressed. Still run a clean solver 10
+  comparison on the same set and pass
   `python3 tools/check_solver11_promotion.py --solver10 <solver10-results.csv> --previous <prior-solver11-results.csv> --candidate <candidate-results.csv> --timeout <seconds> --memory-mb <MB>`.
-  The gate must record process sanity, matching instance/timeout sets, machine metadata, and the
-  explicit decision when a candidate improves prior solver 11 but still loses to solver 10.
-- **Do not promote one-instance overfit guards:** if a solver 11 default/profile improvement is
-  dominated by one benchmark row, one formula-family classifier, or DIMACS input-order behavior,
-  treat it as a diagnostic until a mechanism-level fix explains the win. Do not hard-code guards
-  for a single instance shape as a default promotion without shuffled-order validation, a broader
-  benchmark sample, and a written revert/rollback plan. Prefer fixing the underlying mechanism
-  (for example watch selection, preprocessing budget, or search policy) over preserving a lucky
-  trajectory from clause or literal order. Use the shuffle-sensitivity workflow
+  Solver 10 remains a **regression floor**: do not ship a default that loses to solver 10 on
+  aggregate PAR-2, but the floor is informational pressure, not the keep/revert metric. The gate
+  must record process sanity, matching instance/timeout sets, machine metadata, the aggregate PAR-2
+  decision vs the prior default, and the explicit note when a candidate improves prior solver 11 but
+  still loses to solver 10.
+- **Do not promote overfit guards or lucky-order wins (distinct from honest per-instance
+  regressions):** a real mechanism that improves aggregate PAR-2 while regressing some individual
+  rows is a *good* change — keep it. What this rule forbids is a different thing: an apparent
+  aggregate win that is actually a hard-coded guard for one instance shape, a one-row formula-family
+  classifier, or a fragile DIMACS-input-order / clause-or-literal-order coincidence that will not
+  survive a reshuffle. Those are not durable PAR-2 wins; they are noise dressed up as a win. Treat
+  such a candidate as a diagnostic until a mechanism-level explanation holds. Do not hard-code
+  guards for a single instance shape as a default promotion without shuffled-order validation and a
+  written revert/rollback plan. Prefer fixing the underlying mechanism (for example watch selection,
+  preprocessing budget, or search policy) over preserving a lucky trajectory from clause or literal
+  order. Use the shuffle-sensitivity workflow
   (`python3 tools/shuffle_sensitivity.py --instances <cnf...> --seeds <seed-list>`) to record
   per-seed status, runtime, conflicts, decisions, and propagations before treating
   input-order-sensitive wins as promotion evidence.
@@ -317,18 +340,20 @@ idea or benchmark gap, it is acceptable to test that focused feature as part of 
 
 ### Procedure
 
-1. **Pick a target**: If the user names a reference solver or competition gap, choose one concrete competition instance where the reference is faster than the repo solver but still short enough for repeated iteration. Create a one-instance benchmark directory for it and keep using that target until the user redirects.
-2. **Baseline**: Run `bash tools/bench.sh -d benchmarks/profiling solver/NN-name` and record PAR-2. The profiling-suite default is 300 seconds per instance. For a one-instance target, also run `bash tools/bench.sh -t <seconds> -m 16384 -d <one-instance-dir> solver/NN-name` and record the target-instance runtime. If comparing to MiniSat-style simplification, also capture useful reference variants such as `minisat -no-pre`, `minisat -no-elim`, and full `minisat`.
+   The optimization target metric is **aggregate PAR-2 over the profiling suite** (`benchmarks/profiling`).
+   A single instance is only a fast-iteration / profiling aid — never the keep/revert metric.
+1. **Pick a target for iteration speed (not for the decision)**: If the user names a reference solver or competition gap, choose one concrete competition instance where the reference is faster than the repo solver but still short enough for repeated iteration, and use it to profile and prototype. Create a one-instance benchmark directory for it and keep using that target until the user redirects. The target instance accelerates the edit/measure loop; the decision to keep or revert is always made on aggregate profiling-suite PAR-2, so confirm every candidate on the full suite before keeping it.
+2. **Baseline**: Run `bash tools/bench.sh -d benchmarks/profiling solver/NN-name` and record **aggregate PAR-2 over the suite** as the primary baseline metric. The profiling-suite default is 300 seconds per instance. For a one-instance target, also run `bash tools/bench.sh -t <seconds> -m 16384 -d <one-instance-dir> solver/NN-name` and record the target-instance runtime as a secondary iteration aid. If comparing to MiniSat-style simplification, also capture useful reference variants such as `minisat -no-pre`, `minisat -no-elim`, and full `minisat`.
 3. **Profile first**: Use a profiler such as `perf stat` / `perf record` / `perf report` on the target instance before changing code. Use the profile to choose the next implementation slice. If the release binary is stripped and symbols are needed, rebuild for profiling with `CARGO_PROFILE_RELEASE_STRIP=false CARGO_PROFILE_RELEASE_DEBUG=1 RUSTFLAGS="-C target-cpu=native" cargo build --release`.
 4. **Check opportunity size before coding**: For simplification ideas, do a quick measurement pass over the target formula before implementing. Examples: count duplicate clauses, pure literals, candidate variables, binary subsumption hits, or self-subsuming-resolution opportunities. Do not implement an idea when the measured opportunity is negligible.
 5. **Report diagnostic solver stats for every instance analysis**: Capture enough run data to identify whether the bottleneck is simplification, propagation, conflict learning, or search-path sensitivity. At minimum report pre/post-preprocessing variables, clauses, and literal counts; preprocessing time; eliminated variables, resolvents, subsumed clauses, strengthened literals, and root assignments when available; final result and runtime; conflicts, decisions, propagations, restarts, learned-clause count, reduce-DB calls, and any timeout/error status. When profiling, include propagation time or propagation throughput, conflict-analysis time if measured, simplification/proof I/O time if visible, and the profile/log paths used. When testing sensitivity, report the exact mode flags, seed/order/literal-order choices, preprocessing toggles, and per-instance deltas so the cause is not guessed from PAR-2 alone.
-6. **Iterate** (at least 10 attempts unless the user asked for a narrower experiment): Make one change at a time, benchmark it against the current accepted baseline, and keep it only if it improves the target metric by more than `3%` without introducing or retaining any `UNKNOWN`/timeout/error row that the accepted baseline solves. Recalculate the accepted baseline and keep threshold after every kept change. Revert changes that improve PAR-2 by `3%` or less, worsen aggregate PAR-2, fail correctness checks, introduce a new unsolved/UNKNOWN row, or only shift time into a slow new implementation.
-7. **Stop losers early when safe**: For long target-instance runs, if an experiment has already passed the `>3%` keep cutoff without finishing, stop the run, mark the attempt rejected, and revert it instead of waiting for the full timeout.
+6. **Iterate** (at least 10 attempts unless the user asked for a narrower experiment): Make one change at a time, benchmark it against the current accepted baseline, and **keep it if it improves aggregate PAR-2 over the profiling suite beyond run-to-run noise** — regardless of which individual instances got slower or newly timed out. A change that rescues several instances at the cost of regressing others is a keep when the total wins; a feature does not have to help every row. Re-measure to confirm the aggregate gain is real and not noise (a quick re-run of the affected rows is usually enough). Recalculate the accepted baseline after every kept change. Revert changes that do not improve aggregate PAR-2 beyond noise, worsen aggregate PAR-2, or fail correctness checks (wrong result, invalid model, missing/invalid proof, or a premature non-budget `UNKNOWN`). An honest new timeout is *not* by itself a revert reason — only the aggregate matters.
+7. **Stop losers early when safe**: For long runs, if an experiment clearly cannot improve aggregate PAR-2 (the already-finished rows have lost more PAR-2 than the remaining rows could plausibly recover), stop the run, mark the attempt rejected, and revert it instead of waiting for the full timeout.
 8. **Tune algorithmic features carefully**: When testing a focused solver idea such as bounded variable elimination, run small parameter sweeps around the first good result. More simplification can damage CDCL search even when preprocessing is cheap, so validate caps and cost thresholds empirically rather than assuming monotonic improvement.
-9. **Retest interactions**: A previously rejected micro-optimization can become worthwhile after a later kept change changes the profile. Retest it only when profiler evidence or timing data suggests the interaction could now clear the `>3%` threshold.
-10. **Optimize the new feature if needed**: If a feature is conceptually promising but too slow, profile the modified solver and iterate on that feature's implementation. Keep it only after the optimized version clears the `>3%` improvement threshold.
+9. **Retest interactions**: A previously rejected micro-optimization can become worthwhile after a later kept change changes the profile. Retest it only when profiler evidence or timing data suggests the interaction could now improve aggregate PAR-2.
+10. **Optimize the new feature if needed**: If a feature is conceptually promising but too slow, profile the modified solver and iterate on that feature's implementation. Keep it only once the optimized version improves aggregate PAR-2 over the suite beyond run-to-run noise.
 11. **Correctness checks**: Add or update focused tests when practical before changing solver behavior. Run `cargo test` and the full smoke suite after every kept solver change, and rerun them after reverting failed experiments if the revert touched solver logic.
-12. **Record**: Document every *successful* improvement and its PAR-2 or target-instance runtime impact in the solver's `README.md`, including machine environment metadata, benchmark log paths, profile paths, and the profiler evidence that motivated it. Also document important rejected attempts with their measured runtime or reason for skipping so future loops do not repeat them blindly.
+12. **Record**: Document every *successful* improvement and its aggregate PAR-2 impact (and target-instance runtime where relevant) in the solver's `README.md`, including machine environment metadata, benchmark log paths, profile paths, and the profiler evidence that motivated it. Also document important rejected attempts with their measured runtime or reason for skipping so future loops do not repeat them blindly.
 
 ### Scientific bottleneck workflow
 

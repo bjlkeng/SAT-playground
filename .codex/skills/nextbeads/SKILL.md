@@ -314,12 +314,12 @@ Run these once, after the last bead (or after a failure):
    - status before / after (SAT / UNSAT / TIMEOUT / UNKNOWN / ERROR)
    - wall time before / after
    - delta and percent change
-   - any new UNKNOWN/TIMEOUT/ERROR rows (these are regressions even if PAR-2 dropped)
+   - any new ERROR / wrong-result / premature-UNKNOWN rows (these are correctness bugs — hard fails per CLAUDE.md, regardless of PAR-2). A new honest TIMEOUT or budget-consuming UNKNOWN is *not* a failure on its own — it is a priced-in PAR-2 cost.
 
-3. **Analyze the result.** Call out:
-   - aggregate PAR-2 before vs after
-   - any row where the after run is worse by more than the noise floor
-   - any new UNKNOWN — this blocks promotion per the CLAUDE.md gate
+3. **Analyze the result.** The verdict is **aggregate PAR-2 over the suite**, not per-instance rows. Call out:
+   - aggregate PAR-2 before vs after — this is the decision metric; an improvement beyond the noise floor is a win even if some rows regressed or newly timed out
+   - which rows regressed / improved (diagnostic detail explaining the aggregate move, not a verdict)
+   - any new ERROR, wrong result, or premature `UNKNOWN` (returns without using its budget) — these block regardless of PAR-2
    - the relevant config / env-var combo for the changes you made (so the user can re-run)
 
 ## Final report — required format
@@ -334,7 +334,7 @@ End the run with a single message containing:
 
 2. **What was implemented** — for each bead, a paragraph or two covering: the problem it addressed, the change at file:function granularity, and any non-obvious decision. Include a minimal *example* of how it works when applicable (a short command, a code snippet, a CNF trace, a stats diff — whatever demonstrates the change).
 
-3. **Profile-bench before/after** — the comparison table from step 2 of post-loop, plus a one-paragraph analysis of the delta. State whether the changes regress the profile bench or not. If any new UNKNOWN appeared, flag it explicitly as a failure per CLAUDE.md.
+3. **Profile-bench before/after** — the comparison table from step 2 of post-loop, plus a one-paragraph analysis of the delta. State whether the changes improve or regress **aggregate PAR-2** over the suite (the decision metric); per-instance regressions/new timeouts are acceptable when the aggregate wins. If a new ERROR, wrong result, or premature non-budget `UNKNOWN` appeared, flag it explicitly as a correctness failure per CLAUDE.md (these block regardless of PAR-2).
 
 4. **Next logical beads** — the top 3 highest-value unblocked beads remaining inside `<phaseLabel>`, ranked by the same criteria from pre-flight step 4 (dependencies, blockers, priority, risk, implementation leverage, downstream unblock count). For each, give:
    - bead ID and title
