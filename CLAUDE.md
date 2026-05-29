@@ -283,6 +283,23 @@ wget --content-disposition -i track_main_2025.uri
 
 Competition scoring is PAR-2: sum of runtimes for solved instances + 2 × 5000s for each unsolved instance. Lower is better.
 
+### Concurrent benchmarking with other agents
+
+You do **not** have to wait for another agent's benchmark to finish before running
+your own. Concurrent benchmark runs are acceptable as long as the *combined*
+benchmark CPU usage stays below half the machine's cores. On this host (AMD Ryzen 5
+5600, 6 cores / 12 threads) that operating threshold is **4 cores** — if you and the
+other agents together would keep fewer than 4 cores busy with solver/bench processes,
+the timing stays clean enough that concurrent runs do not meaningfully contaminate
+each other's PAR-2.
+
+- Each `tools/bench.sh` run is single-instance-at-a-time, so it occupies ~1 core; a
+  couple of agents each running one bench is well under the 4-core threshold.
+- Before starting, check current usage (`ps aux --sort=-%cpu | grep -E 'sat-solver|kissat|minisat'`)
+  and only hold off if launching yours would push total solver/bench cores to 4 or more.
+- For tight head-to-head A/B numbers you still want quiet cores, but for routine
+  profiling-suite runs the half-cores rule is the bar — do not stall on it.
+
 ## Key SAT Competition 2025 Facts
 
 - **Main Track:** 5000s timeout, 30 GB RAM, 8-core Xeon, PAR-2 scoring
