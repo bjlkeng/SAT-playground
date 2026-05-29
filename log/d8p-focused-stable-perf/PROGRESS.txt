@@ -1,0 +1,6 @@
+START 2026-05-28T23:20:05-04:00
+[23:20:05] recording default ()
+[23:21:30] done default
+[23:21:30] recording fvmtf (SAT_SEARCH_MODE=focused-stable SAT_USE_LBD=on SAT_MODE_USE_TICKS=on SAT_REDUCE_POLICY=lbd-tiered)
+[23:22:55] done fvmtf
+ALL DONE 2026-05-28T23:22:55-04:00

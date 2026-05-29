@@ -1,0 +1,30 @@
+    72.66%  [.] sat_solver::Solver::propagate                                                                     -      -            
+     8.13%  [.] sat_solver::Solver::backtrack                                                                     -      -            
+     7.38%  [.] sat_solver::Solver::push_branch_var_if_decision                                                   -      -            
+     2.74%  [.] sat_solver::Solver::solve_status_with_proof                                                       -      -            
+     0.89%  [.] sat_solver::simp::<impl sat_solver::Solver>::backward_subsumption_check_dynamic                   -      -            
+     0.80%  [.] sat_solver::Solver::simplify_clause_list                                                          -      -            
+     0.77%  [.] sat_solver::Solver::minimize_learned_clause                                                       -      -            
+     0.73%  [.] core::slice::sort::unstable::quicksort::quicksort                                                 -      -            
+     0.58%  [.] sat_solver::ProofLog::write_clause_line                                                           -      -            
+     0.30%  [.] _int_free                                                                                         -      -            
+     0.30%  [.] sat_solver::Solver::mark_clause_literals_for_analysis                                             -      -            
+     0.24%  [.] sat_solver::simp::<impl sat_solver::Solver>::clean_occurs                                         -      -            
+     0.24%  [.] sat_solver::Solver::branch_var_better                                                             -      -            
+     0.19%  [.] malloc                                                                                            -      -            
+     0.18%  [.] sat_solver::stats::Sha256::process_block                                                          -      -            
+     0.18%  [.] sat_solver::Solver::branch_heap_sift_down                                                         -      -            
+     0.18%  [.] core::slice::sort::unstable::quicksort::quicksort                                                 -      -            
+     0.17%  [.] sat_solver::parse_cnf                                                                             -      -            
+     0.15%  [.] _int_malloc                                                                                       -      -            
+     0.12%  [.] __memmove_avx_unaligned_erms                                                                      -      -            
+     0.11%  [.] sat_solver::simp::<impl sat_solver::Solver>::add_normalized_original_clause                       -      -            
+     0.11%  [.] cfree@GLIBC_2.2.5                                                                                 -      -            
+     0.09%  [.] sat_solver::simp::<impl sat_solver::Solver>::index_original_clause                                -      -            
+     0.09%  [k] 0xffffffff8ebaeba7                                                                                -      -            
+     0.09%  [.] core::slice::sort::shared::smallsort::insertion_sort_shift_left                                   -      -            
+     0.09%  [.] sat_solver::simp::<impl sat_solver::Solver>::normalize_original_clause                            -      -            
+     0.08%  [.] sat_solver::Solver::pick_branch_lit                                                               -      -            
+     0.08%  [.] sat_solver::Solver::branch_heap_sift_up                                                           -      -            
+     0.08%  [.] sat_solver::Solver::garbage_collect_with_reason                                                   -      -            
+     0.08%  [.] __memset_avx2_unaligned_erms                                                                      -      -            
