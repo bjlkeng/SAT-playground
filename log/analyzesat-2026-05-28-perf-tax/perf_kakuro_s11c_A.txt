@@ -1,0 +1,17 @@
+# started on Thu May 28 21:48:27 2026
+
+
+ Performance counter stats for 'env SAT_USE_LBD=off SAT_SEARCH_MODE=single SAT_MODE_USE_TICKS=off SAT_STATS_JSON=on /home/bojji/code/SAT-playground/log/analyzesat-2026-05-28-perf-tax/sat-solver-11-candidate-rebuilt /tmp/perf-tax-cnf/5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7.cnf /tmp/perf-tax-proof/kakuro_s11c_A':
+
+        211,576.89 msec task-clock                       #    0.999 CPUs utilized             
+   939,472,332,987      cycles                           #    4.440 GHz                       
+ 1,482,388,034,632      instructions                     #    1.58  insn per cycle            
+    32,153,319,143      L1-dcache-load-misses                                                 
+     4,251,534,814      dTLB-load-misses                                                      
+
+     211.697421582 seconds time elapsed
+
+     208.473849000 seconds user
+       3.195706000 seconds sys
+
+

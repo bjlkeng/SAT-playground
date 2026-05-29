@@ -1,0 +1,17 @@
+# started on Thu May 28 21:32:31 2026
+
+
+ Performance counter stats for 'env SAT_TRACE_SEARCH_INTERVAL=2000000000 /tmp/analyzesat-2026-05-28-perf-tax/solver/10-bve-preprocess/target/release/sat-solver /tmp/perf-tax-cnf/0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12.cnf /tmp/perf-tax-proof/sudoku_s10_A':
+
+        172,046.09 msec task-clock                       #    1.000 CPUs utilized             
+   763,956,654,803      cycles                           #    4.440 GHz                       
+ 1,007,897,674,283      instructions                     #    1.32  insn per cycle            
+    24,062,072,792      L1-dcache-load-misses                                                 
+     2,837,555,476      dTLB-load-misses                                                      
+
+     172.085607059 seconds time elapsed
+
+     171.171243000 seconds user
+       0.894901000 seconds sys
+
+

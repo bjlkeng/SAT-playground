@@ -1,0 +1,25 @@
+    78.66%  [.] sat_solver::Solver::propagate                                                         -      -            
+     7.10%  [.] sat_solver::Solver::backtrack                                                         -      -            
+     3.77%  [.] sat_solver::Solver::push_branch_var                                                   -      -            
+     2.48%  [.] sat_solver::Solver::solve_with_proof                                                  -      -            
+     0.90%  [.] sat_solver::Solver::simplify_clause_list                                              -      -            
+     0.85%  [.] sat_solver::simp::<impl sat_solver::Solver>::backward_subsumption_check_dynamic       -      -            
+     0.67%  [.] sat_solver::ProofLog::write_clause_line                                               -      -            
+     0.58%  [.] sat_solver::Solver::branch_var_better                                                 -      -            
+     0.33%  [.] sat_solver::Solver::branch_heap_sift_down                                             -      -            
+     0.31%  [.] sat_solver::Solver::branch_heap_sift_up                                               -      -            
+     0.29%  [.] sat_solver::simp::<impl sat_solver::Solver>::clean_occurs                             -      -            
+     0.27%  [.] _int_free                                                                             -      -            
+     0.20%  [.] core::slice::sort::unstable::quicksort::quicksort                                     -      -            
+     0.20%  [.] sat_solver::main                                                                      -      -            
+     0.18%  [.] malloc                                                                                -      -            
+     0.17%  [.] _int_malloc                                                                           -      -            
+     0.14%  [.] sat_solver::Solver::mark_clause_literals_for_analysis                                 -      -            
+     0.14%  [.] __memmove_avx_unaligned_erms                                                          -      -            
+     0.12%  [.] cfree@GLIBC_2.2.5                                                                     -      -            
+     0.11%  [.] sat_solver::simp::<impl sat_solver::Solver>::add_normalized_original_clause           -      -            
+     0.11%  [.] sat_solver::simp::<impl sat_solver::Solver>::index_original_clause                    -      -            
+     0.10%  [.] sat_solver::simp::<impl sat_solver::Solver>::normalize_original_clause                -      -            
+     0.09%  [.] core::slice::sort::shared::smallsort::insertion_sort_shift_left                       -      -            
+     0.09%  [k] 0xffffffff8ebaeba7                                                                    -      -            
+     0.08%  [.] alloc::raw_vec::RawVecInner<A>::finish_grow                                           -      -            

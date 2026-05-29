@@ -1,0 +1,17 @@
+# started on Thu May 28 21:38:30 2026
+
+
+ Performance counter stats for 'env SAT_USE_LBD=off SAT_SEARCH_MODE=single SAT_MODE_USE_TICKS=off SAT_STATS_JSON=on /home/bojji/code/SAT-playground/log/analyzesat-2026-05-28-perf-tax/sat-solver-11-candidate-rebuilt /tmp/perf-tax-cnf/0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12.cnf /tmp/perf-tax-proof/sudoku_s11c_A':
+
+        184,635.70 msec task-clock                       #    1.000 CPUs utilized             
+   819,835,443,139      cycles                           #    4.440 GHz                       
+ 1,106,919,126,206      instructions                     #    1.35  insn per cycle            
+    25,224,185,084      L1-dcache-load-misses                                                 
+     2,837,957,706      dTLB-load-misses                                                      
+
+     184.698265045 seconds time elapsed
+
+     183.787714000 seconds user
+       0.891911000 seconds sys
+
+

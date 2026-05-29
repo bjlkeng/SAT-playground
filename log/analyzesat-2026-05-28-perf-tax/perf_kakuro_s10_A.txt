@@ -1,0 +1,17 @@
+# started on Thu May 28 21:41:34 2026
+
+
+ Performance counter stats for 'env SAT_TRACE_SEARCH_INTERVAL=2000000000 /tmp/analyzesat-2026-05-28-perf-tax/solver/10-bve-preprocess/target/release/sat-solver /tmp/perf-tax-cnf/5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7.cnf /tmp/perf-tax-proof/kakuro_s10_A':
+
+        198,968.64 msec task-clock                       #    1.000 CPUs utilized             
+   883,508,163,034      cycles                           #    4.440 GHz                       
+ 1,355,536,526,078      instructions                     #    1.53  insn per cycle            
+    31,683,848,058      L1-dcache-load-misses                                                 
+     3,817,498,825      dTLB-load-misses                                                      
+
+     199.045806758 seconds time elapsed
+
+     195.759580000 seconds user
+       3.250594000 seconds sys
+
+
