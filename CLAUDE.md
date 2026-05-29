@@ -463,6 +463,7 @@ state, or iteration status. Instead:
 - Read `benchmarks/profiling/README.md` for the current 10-instance profile suite (selected from SAT Competition 2025 medium-track, each <300 s on solver 10); the previous 6-instance set is preserved at `benchmarks/profiling/legacy/`
 - Check `benchmarks/profiling/`, `benchmarks/crypto/`, `benchmarks/random-3sat/`, and the generator tools under `tools/` for the current benchmark inputs
 - Use `tools/bench.sh`, `tools/bench_reference.sh`, and the latest `log/bench-*` directories to see the current benchmark workflow and outputs
+- **Do NOT consult `solver/11-kissat-port/archive/` (archived pre-2026-05-29 search-feature efficacy verdicts) unless the user explicitly asks.** Search-feature efficacy is being re-evaluated fresh under bead `SAT-playground-gbc`; the archived FEATURES ledger and README validation tables are stale provenance contaminated by measurement artifacts (contention, cold-cache, warming variance) and must not be used as current efficacy evidence.
 
 ## Common Pitfalls
 

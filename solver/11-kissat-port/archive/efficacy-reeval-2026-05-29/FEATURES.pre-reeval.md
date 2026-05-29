@@ -5,12 +5,6 @@ prints the same maturity records in `SAT_CONFIG_DUMP`, writes them into
 `SAT_CONFIG_OUT` replay files, includes them in `config_hash`, and emits them in
 `c JSON_STATS ...` when `SAT_STATS_JSON=on`.
 
-> ⚠️ **Search-feature efficacy is under fresh re-evaluation (2026-05-29, bead `SAT-playground-gbc`).**
-> The `Current maturity` / `Validation artifact` / `Notes` efficacy claims for search features below
-> are STALE — the corresponding rows in `FEATURES.csv` are reset to `ReevalPending`. The prior ledger
-> and README validation tables were archived to `archive/efficacy-reeval-2026-05-29/`; **do not consult
-> the archived material unless explicitly asked.**
-
 | Feature flag | Config field | Current maturity | Enabled profiles | Validation artifact | Notes |
 |---|---|---|---|---|---|
 | `SAT_USE_LBD` | `use_lbd` | SmokeSafe | none | `log/phase1/5b2.2.52-s11-single-lbd-clean` | Stable learned-clause metadata records true LBD/glue but remains opt-in after the default focused-stable promotion regressed the solver 10 profiling baseline. |
