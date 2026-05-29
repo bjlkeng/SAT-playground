@@ -446,6 +446,27 @@ The accepted state improves solver 11 by `40.422` PAR-2 against the rollback bas
 status changes or correctness failures. It still trails the solver 10 clean baseline by `45.887`
 PAR-2, mainly on sudoku (`+13.574s`), Kakuro (`+14.878s`), and `case9` (`+6.434s`).
 
+The 2026-05-28 execution-tax follow-up specialized normal-search propagation accounting and
+enqueue policy checks behind a `NORMAL_SEARCH` const generic. This compiles the ordinary search
+path down to direct propagation accounting, saved-phase writes, and root-trail checks while keeping
+temporary-assumption accounting on the runtime-policy path. The source-level input is
+`log/analyzesat-2026-05-28-exec-tax/FINDINGS.md`.
+
+| Run | Settings | Solved | PAR-2 | Results |
+|---|---|---:|---:|---|
+| before normal-search specialization | default | 10/10 | `753.236` | `log/bench-11-kissat-port-2026-05-28-20-20-07/results.csv` |
+| first after normal-search specialization | default | 10/10 | `734.833` | `log/bench-11-kissat-port-2026-05-28-20-51-33/results.csv` |
+| required post-rebase retest | default | 10/10 | `750.260` | `log/bench-11-kissat-port-2026-05-28-21-15-51/results.csv` |
+| solver 10 comparison gate, post-rebase retest | solver10 clean vs previous solver11 vs candidate | 10/10 candidate | `promotion_gate=FAIL`; candidate improved previous solver 11 by `2.976` PAR-2 but still lost solver10 by `50.589` PAR-2 | `tools/check_solver11_promotion.py --solver10 log/phase1/solver10-default-300-vs-solver11-clean/results.csv --previous log/bench-11-kissat-port-2026-05-28-20-20-07/results.csv --candidate log/bench-11-kissat-port-2026-05-28-21-15-51/results.csv --timeout 300 --memory-mb 16384` |
+
+Both after runs were status-safe: `compare_bench.py` reported no correctness failures and no status
+changes. The first run showed PAR-2 `-18.403`, with the largest wins on Kakuro (`-9.034s`), sudoku
+(`-5.855s`), velev (`-1.790s`), and `case9` (`-1.425s`). The required post-rebase retest was much
+noisier, at PAR-2 `-2.976`: Kakuro (`-3.376s`), velev (`-1.269s`), and `case9` (`-1.562s`) still
+improved, while sudoku regressed by `+2.017s`. Treat this as a low-risk hot-path cleanup with
+status-safe evidence, not as a completed solver10 parity gate. Because solver 11 still trails solver
+10, the remaining residual gap is tracked separately as a perf-counter/layout question.
+
 `SAT_VMTF=single` was added as a default-off diagnostic experiment on 2026-05-25. An initial
 unbounded version was rejected because `UNKNOWN` means the solver produced neither SAT nor UNSAT
 and is therefore a benchmark failure, even if some rows improve. This single-mode route is not the
