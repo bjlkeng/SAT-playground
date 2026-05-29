@@ -323,19 +323,53 @@ After writing FINDINGS.md, print a concise summary to stdout with:
 
 For every new actionable finding:
 
-1. Check for an existing bead first: `bd search <keyword>` (mandatory — do not duplicate)
-2. If no bead exists, create one:
+1. Check for an existing bead first: `bd search <keyword>` (mandatory — do not duplicate).
+2. **Classify the finding into a roadmap phase before creating the bead.** Every new solver
+   bead MUST be filed under the correct phase epic — both the phase **label** *and*
+   `--parent <phase-epic>` — so phase-scoped tooling (`/nextbeads phaseN`, the phase guard, and
+   `bv --robot-triage-by-label`) can see it. A standalone bead with no parent epic is invisible
+   to a phase-scoped run even when it is squarely that phase's work. Map the finding's primary
+   subsystem to a phase:
+
+   | Subsystem the finding's primary code change touches | Phase | Label | Parent epic |
+   |-----------------------------------------------------|-------|-------|-------------|
+   | Search loop & priority order, decision/branching (VSIDS/VMTF/`SAT_REORDER`), phase saving / rephase, restart / trail-reuse, chronological backtracking, propagation / BCP / watchers / binary fast-path, conflict analysis, clause minimization / shrink (CCMIN), learned-clause DB (reduce-db / lbd-tiered / tiers), lucky pre-search phase patterns | **Phase 1** | `phase1` | `SAT-playground-5b2.2` |
+   | Clause simplification, bounded variable elimination (BVE), vivification, subsumption / self-subsuming resolution, probing / hyper-binary resolution, formula rewriting, the inprocessing scheduler, preprocessing | **Phase 2** | `phase2` | `SAT-playground-5b2.3` |
+
+   Rule of thumb: if the change is in the **solve/search loop and does not modify the formula**,
+   it is Phase 1; if it **simplifies, rewrites, or eliminates from the formula**, it is Phase 2.
+   For a finding that genuinely spans both, file it under the phase of its *primary* code change
+   and link the other epic with a dependency. If it fits neither phase, use the matching epic
+   instead — `SAT-playground-5b2.4` (governance / invariants / gates), `SAT-playground-5b2.5`
+   (milestones / promotion gates), or `SAT-playground-5b2.6` (parking-lot experiments) — but
+   **never leave a new solver bead with no parent epic.**
+
+3. If no bead exists, create it under the chosen phase epic (Phase 1 shown; for Phase 2 swap
+   `--parent SAT-playground-5b2.3` and label `phase2`):
    ```bash
-   bd new --title "<feature>: <specific gap>" \
-          --label "solver11,performance" \
-          --body "Gap: <description>. Reference: kissat/src/<file>:<line>. Fix: <sketch>. Evidence: log/<slug>/..."
+   bd create --title "<feature>: <specific gap>" \
+             --type bug \
+             --priority 2 \
+             --parent SAT-playground-5b2.2 \
+             --no-inherit-labels \
+             --labels "solver11,performance,phase1,<subsystem-label>" \
+             --description "Gap: <description>. Reference: kissat/src/<file>:<line>. Fix: <sketch>. Evidence: log/<slug>/..."
    ```
-3. If a bead exists, add a note:
+   `--no-inherit-labels` keeps the discovered bead from picking up the epic's *planning* labels
+   (`plan`, `roadmap`, `task-1-N`); carry only the explicit phase label plus topical subsystem
+   labels (e.g. `reduce-db`, `propagation`, `restart`, `clause-minimization`, the
+   `analyzesat-<slug>` tag).
+4. If a bead exists but has no phase, fix it in place — do not create a duplicate:
+   ```bash
+   bd update <id> --add-label phase1 --parent SAT-playground-5b2.2   # or phase2 / 5b2.3
+   ```
+5. If a bead exists, add a note:
    ```bash
    bd note <id> "Confirmed by analyzesat run <slug>: <evidence>"
    ```
-4. Link related beads: `bd link <new> <existing> --type related`
-5. Export: `bd export -o .beads/issues.jsonl`
+6. Link related beads: `bd link <new> <existing> --type related` (or `bd dep add <new> <existing>`
+   for a discovered-from / blocks relationship).
+7. Export: `bd export -o .beads/beads.jsonl`
 
 ## Commit
 
@@ -346,7 +380,7 @@ git add log/<slug>/FINDINGS.md log/<slug>/DEEPER_FINDINGS.md \
         log/<slug>/run_ablation.sh \
         log/<slug>/reference-kissat-latest.csv \
         log/<slug>/reference-kissat-sc2024.csv \
-        .beads/issues.jsonl
+        .beads/beads.jsonl
 git commit -m "analyzesat: <slug> — <one-line summary of top finding>"
 ```
 
@@ -356,6 +390,10 @@ Do not force-add raw results CSVs unless the user asks for provenance tracking.
 
 - **Use a worktree** — always isolate from the main working tree.
 - **Check beads before creating** — `bd search` is mandatory; never duplicate.
+- **File every new bead under its phase epic** — classify the finding (Phase 1 = search/decision/
+  phase/restart/learned-clause; Phase 2 = simplification/rewriting/formula modification) and set
+  *both* the phase label and `--parent <phase-epic>`. A new solver bead must never be left
+  parent-less, or phase-scoped tooling (`/nextbeads phaseN`) cannot see it.
 - **Report phase-boundary chaos honestly** — do not suggest parameter tuning when
   the trajectory trace shows single-decision divergence.
 - **Tie every recommendation to measured evidence** — avoid generic "improve cache
