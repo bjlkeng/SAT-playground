@@ -1,0 +1,21 @@
+round	tag	par2	solved	unsolved	env
+1	baseline	737.665	10	0	
+1	chrono	734.048	10	0	SAT_CHRONO=on
+1	binfast	1099.439	10	0	SAT_BINARY_FAST=on
+1	lucky	726.023	10	0	SAT_LUCKY=on
+1	inblock	3409.465	5	5	SAT_CLAUSE_MIN=inblock
+1	fstab	928.030	10	0	SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on
+1	fstab_vsids	1770.690	8	2	SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on SAT_VMTF=off
+1	fstab_lbdtier	918.216	10	0	SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on SAT_REDUCE=lbd-tiered
+1	combo_chrono_binfast	1517.515	9	1	SAT_CHRONO=on SAT_BINARY_FAST=on
+1	fstab_full	1844.785	8	2	SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on SAT_REDUCE=lbd-tiered SAT_REPHASE=on
+2	baseline	734.765	10	0	
+2	chrono	740.706	10	0	SAT_CHRONO=on
+2	binfast	1099.681	10	0	SAT_BINARY_FAST=on
+2	lucky	723.444	10	0	SAT_LUCKY=on
+2	inblock	3407.395	5	5	SAT_CLAUSE_MIN=inblock
+2	fstab	924.964	10	0	SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on
+2	fstab_vsids	1770.538	8	2	SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on SAT_VMTF=off
+2	fstab_lbdtier	914.720	10	0	SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on SAT_REDUCE=lbd-tiered
+2	combo_chrono_binfast	1520.054	9	1	SAT_CHRONO=on SAT_BINARY_FAST=on
+2	fstab_full	1841.642	8	2	SAT_USE_LBD=on SAT_SEARCH_MODE=focused-stable SAT_MODE_USE_TICKS=on SAT_REDUCE=lbd-tiered SAT_REPHASE=on
