@@ -177,9 +177,12 @@ Write DRAT proof to `<output_dir>/proof.out`. This is required from every iterat
 
 ## Development Rules
 
-- **Primary objective is aggregate PAR-2 over the profiling suite.** The single optimization
-  goal for solver work is total PAR-2 across the whole benchmark set (`benchmarks/profiling`), not
-  per-instance time. A change that regresses some instances — including flipping a solved instance
+- **Primary objective is aggregate PAR-2 over the profile20 suite.** The single optimization
+  goal for solver work is total PAR-2 across the whole `benchmarks/profile20` set — 10 easy
+  control instances (reused verbatim from `benchmarks/profiling`) + 10 hard "headroom" instances
+  solver-10 cannot solve within 5 min but kissat can — reported as an all-20 aggregate with the
+  easy-10 / hard-10 split shown. (`benchmarks/profiling` remains the legacy easy-only control.)
+  It is not per-instance time. A change that regresses some instances — including flipping a solved instance
   to a timeout — is acceptable and expected as long as it improves aggregate PAR-2 beyond
   run-to-run noise. Do not reject a net-positive change because individual rows got slower or newly
   time out, and do not require a feature to help every instance. The one thing aggregate PAR-2
@@ -194,7 +197,7 @@ Write DRAT proof to `<output_dir>/proof.out`. This is required from every iterat
 - **A new timeout / honest UNKNOWN is a PAR-2 cost, not an automatic failure:** under the
   aggregate-PAR-2 objective, an instance that flips from solved to unsolved — a timeout, or an
   honest resource-limit `UNKNOWN` that actually consumed its time/memory budget — is acceptable as
-  long as aggregate PAR-2 over the profiling suite still improves beyond run-to-run noise. An
+  long as aggregate PAR-2 over the profile20 suite still improves beyond run-to-run noise. An
   unsolved row is already priced into PAR-2 as `2 × timeout`, so a net-positive change wins on the
   total even when it loses individual rows. Do not reject such a change, and do not describe the
   per-instance regression as a correctness problem. Two carve-outs below still apply.
@@ -214,15 +217,18 @@ Write DRAT proof to `<output_dir>/proof.out`. This is required from every iterat
   explicitly asks for that mitigation. Distinguish "ran out of budget" (a PAR-2 cost, fine if the
   total wins) from "answered `UNKNOWN` early" (debug it).
 - **Solver 11 default/fast promotion gate:** the decision metric is **aggregate PAR-2 over the
-  profiling suite** vs the current solver 11 default — promote a candidate that improves it beyond
+  profile20 suite** vs the current solver 11 default — promote a candidate that improves it beyond
   run-to-run noise, regardless of which individual instances regressed. Still run a clean solver 10
   comparison on the same set and pass
   `python3 tools/check_solver11_promotion.py --solver10 <solver10-results.csv> --previous <prior-solver11-results.csv> --candidate <candidate-results.csv> --timeout <seconds> --memory-mb <MB>`.
-  Solver 10 remains a **regression floor**: do not ship a default that loses to solver 10 on
-  aggregate PAR-2, but the floor is informational pressure, not the keep/revert metric. The gate
-  must record process sanity, matching instance/timeout sets, machine metadata, the aggregate PAR-2
-  decision vs the prior default, and the explicit note when a candidate improves prior solver 11 but
-  still loses to solver 10.
+  Solver 10 remains an **aggregate-PAR-2 regression floor**: do not ship a default that loses to
+  solver 10 on aggregate PAR-2, but the floor is informational pressure, not the keep/revert metric.
+  The gate is an **aggregate** floor, **not** a per-instance one: an instance that regresses from
+  solved (by solver 10) to a timeout in the candidate is a priced-in PAR-2 cost and does **not** fail
+  the gate — only a **SAT↔UNSAT correctness contradiction** vs solver 10 fails it (PAR-2 can never
+  buy back a wrong answer). The gate must record process sanity, matching instance/timeout sets,
+  machine metadata, the aggregate PAR-2 decision vs the prior default, and the explicit note when a
+  candidate improves prior solver 11 but still loses to solver 10.
 - **Do not promote overfit guards or lucky-order wins (distinct from honest per-instance
   regressions):** a real mechanism that improves aggregate PAR-2 while regressing some individual
   rows is a *good* change — keep it. What this rule forbids is a different thing: an apparent
@@ -340,14 +346,25 @@ idea or benchmark gap, it is acceptable to test that focused feature as part of 
 
 ### Procedure
 
-   The optimization target metric is **aggregate PAR-2 over the profiling suite** (`benchmarks/profiling`).
-   A single instance is only a fast-iteration / profiling aid — never the keep/revert metric.
-1. **Pick a target for iteration speed (not for the decision)**: If the user names a reference solver or competition gap, choose one concrete competition instance where the reference is faster than the repo solver but still short enough for repeated iteration, and use it to profile and prototype. Create a one-instance benchmark directory for it and keep using that target until the user redirects. The target instance accelerates the edit/measure loop; the decision to keep or revert is always made on aggregate profiling-suite PAR-2, so confirm every candidate on the full suite before keeping it.
-2. **Baseline**: Run `bash tools/bench.sh -d benchmarks/profiling solver/NN-name` and record **aggregate PAR-2 over the suite** as the primary baseline metric. The profiling-suite default is 300 seconds per instance. For a one-instance target, also run `bash tools/bench.sh -t <seconds> -m 16384 -d <one-instance-dir> solver/NN-name` and record the target-instance runtime as a secondary iteration aid. If comparing to MiniSat-style simplification, also capture useful reference variants such as `minisat -no-pre`, `minisat -no-elim`, and full `minisat`.
+   The optimization target metric is **aggregate PAR-2 over the profile20 suite** (`benchmarks/profile20`):
+   10 easy control instances (reused from `benchmarks/profiling`) + 10 hard headroom instances
+   (solver-10 times out at 300 s, kissat finishes < 280 s). Report the all-20 aggregate plus the
+   easy-10 / hard-10 split. A single instance is only a fast-iteration aid — never the keep/revert metric.
+
+   For solver-11 feature ablations use the driver `tools/feature_ablation.py` (it encodes the matrix,
+   the same-binary `SAT_*` toggles, and honors flag `requires` deps): it runs **4 workers pinned to
+   physical cores 0–3** (`taskset`, one `bench.sh -j1` shard each; N/2 cores, siblings idle for clean
+   timing; memory capped so 4 jobs fit RAM). It applies the **3% repeat rule** — a config within ±3 %
+   of the baseline PAR-2 is in the noise band and is re-run to confirm; a clear (>3 %) win/loss is
+   accepted from a single run. Run it in **two stages**: Stage 1 screens every config at 300 s on all
+   20 (`--stage1`); Stage 2 re-runs the shortlist at a long timeout on the hard-10 only (`--stage2
+   --configs ...`), because solver-11 needs >300 s on the hard half so 300 s gives it no headroom signal.
+1. **Pick a target for iteration speed (not for the decision)**: If the user names a reference solver or competition gap, choose one concrete competition instance where the reference is faster than the repo solver but still short enough for repeated iteration, and use it to profile and prototype. Create a one-instance benchmark directory for it and keep using that target until the user redirects. The target instance accelerates the edit/measure loop; the decision to keep or revert is always made on aggregate profile20 PAR-2, so confirm every candidate on the full suite before keeping it.
+2. **Baseline**: Run `bash tools/bench.sh -j 4 -d benchmarks/profile20 solver/NN-name` (or the `tools/feature_ablation.py` driver) and record **aggregate PAR-2 over the suite** (all-20, plus the easy-10 / hard-10 split) as the primary baseline metric. The profile20 default is 300 seconds per instance for Stage-1 screening; the hard-10 need a longer Stage-2 timeout to show headroom. For a one-instance target, also run `bash tools/bench.sh -t <seconds> -m 16384 -d <one-instance-dir> solver/NN-name` and record the target-instance runtime as a secondary iteration aid. If comparing to MiniSat-style simplification, also capture useful reference variants such as `minisat -no-pre`, `minisat -no-elim`, and full `minisat`.
 3. **Profile first**: Use a profiler such as `perf stat` / `perf record` / `perf report` on the target instance before changing code. Use the profile to choose the next implementation slice. If the release binary is stripped and symbols are needed, rebuild for profiling with `CARGO_PROFILE_RELEASE_STRIP=false CARGO_PROFILE_RELEASE_DEBUG=1 RUSTFLAGS="-C target-cpu=native" cargo build --release`.
 4. **Check opportunity size before coding**: For simplification ideas, do a quick measurement pass over the target formula before implementing. Examples: count duplicate clauses, pure literals, candidate variables, binary subsumption hits, or self-subsuming-resolution opportunities. Do not implement an idea when the measured opportunity is negligible.
 5. **Report diagnostic solver stats for every instance analysis**: Capture enough run data to identify whether the bottleneck is simplification, propagation, conflict learning, or search-path sensitivity. At minimum report pre/post-preprocessing variables, clauses, and literal counts; preprocessing time; eliminated variables, resolvents, subsumed clauses, strengthened literals, and root assignments when available; final result and runtime; conflicts, decisions, propagations, restarts, learned-clause count, reduce-DB calls, and any timeout/error status. When profiling, include propagation time or propagation throughput, conflict-analysis time if measured, simplification/proof I/O time if visible, and the profile/log paths used. When testing sensitivity, report the exact mode flags, seed/order/literal-order choices, preprocessing toggles, and per-instance deltas so the cause is not guessed from PAR-2 alone.
-6. **Iterate** (at least 10 attempts unless the user asked for a narrower experiment): Make one change at a time, benchmark it against the current accepted baseline, and **keep it if it improves aggregate PAR-2 over the profiling suite beyond run-to-run noise** — regardless of which individual instances got slower or newly timed out. A change that rescues several instances at the cost of regressing others is a keep when the total wins; a feature does not have to help every row. Re-measure to confirm the aggregate gain is real and not noise (a quick re-run of the affected rows is usually enough). Recalculate the accepted baseline after every kept change. Revert changes that do not improve aggregate PAR-2 beyond noise, worsen aggregate PAR-2, or fail correctness checks (wrong result, invalid model, missing/invalid proof, or a premature non-budget `UNKNOWN`). An honest new timeout is *not* by itself a revert reason — only the aggregate matters.
+6. **Iterate** (at least 10 attempts unless the user asked for a narrower experiment): Make one change at a time, benchmark it against the current accepted baseline, and **keep it if it improves aggregate PAR-2 over the profile20 suite beyond run-to-run noise** — regardless of which individual instances got slower or newly timed out. A change that rescues several instances at the cost of regressing others is a keep when the total wins; a feature does not have to help every row. Re-measure to confirm the aggregate gain is real and not noise (a quick re-run of the affected rows is usually enough). Recalculate the accepted baseline after every kept change. Revert changes that do not improve aggregate PAR-2 beyond noise, worsen aggregate PAR-2, or fail correctness checks (wrong result, invalid model, missing/invalid proof, or a premature non-budget `UNKNOWN`). An honest new timeout is *not* by itself a revert reason — only the aggregate matters.
 7. **Stop losers early when safe**: For long runs, if an experiment clearly cannot improve aggregate PAR-2 (the already-finished rows have lost more PAR-2 than the remaining rows could plausibly recover), stop the run, mark the attempt rejected, and revert it instead of waiting for the full timeout.
 8. **Tune algorithmic features carefully**: When testing a focused solver idea such as bounded variable elimination, run small parameter sweeps around the first good result. More simplification can damage CDCL search even when preprocessing is cheap, so validate caps and cost thresholds empirically rather than assuming monotonic improvement.
 9. **Retest interactions**: A previously rejected micro-optimization can become worthwhile after a later kept change changes the profile. Retest it only when profiler evidence or timing data suggests the interaction could now improve aggregate PAR-2.
@@ -460,7 +477,8 @@ state, or iteration status. Instead:
 - Use `git status --short` and `git log --oneline -- solver/NN-name` to see local changes and recent history for a solver
 - Check `benchmarks/reference-solvers/` for the current vendored reference solvers
 - Check `tools/checkers/` and `tools/setup_checkers.sh` for the currently configured proof checkers
-- Read `benchmarks/profiling/README.md` for the current 10-instance profile suite (selected from SAT Competition 2025 medium-track, each <300 s on solver 10); the previous 6-instance set is preserved at `benchmarks/profiling/legacy/`
+- Read `benchmarks/profile20/README.md` for the current 20-instance optimization/promotion target suite (10 easy controls reused from `benchmarks/profiling` + 10 hard headroom instances; `selection.csv`/`selection.json` record provenance; regenerate with `tools/select_profile20.py`)
+- Read `benchmarks/profiling/README.md` for the legacy 10-instance easy-only control suite (selected from SAT Competition 2025 medium-track, each <300 s on solver 10); the previous 6-instance set is preserved at `benchmarks/profiling/legacy/`
 - Check `benchmarks/profiling/`, `benchmarks/crypto/`, `benchmarks/random-3sat/`, and the generator tools under `tools/` for the current benchmark inputs
 - Use `tools/bench.sh`, `tools/bench_reference.sh`, and the latest `log/bench-*` directories to see the current benchmark workflow and outputs
 - **Do NOT consult `solver/11-kissat-port/archive/` (archived pre-2026-05-29 search-feature efficacy verdicts) unless the user explicitly asks.** Search-feature efficacy is being re-evaluated fresh under bead `SAT-playground-gbc`; the archived FEATURES ledger and README validation tables are stale provenance contaminated by measurement artifacts (contention, cold-cache, warming variance) and must not be used as current efficacy evidence.
@@ -610,7 +628,7 @@ This repo runs at most a few agents in parallel on the same solver iteration. Th
    - `git fetch origin && git rebase origin/main` inside your worktree. Resolve conflicts (don't `--skip` or `--abort` away their work).
    - **Re-run whatever validation the bead requires**, in full, on the rebased state:
      - Correctness/fix beads → `bash tools/smoke_test.sh solver/NN-name` (+ `cargo test` if the bead touches tests).
-     - Perf/optimization beads → smoke test **plus** `bash tools/bench.sh -d benchmarks/profiling solver/NN-name` so the measured delta is against the new baseline, not the pre-rebase one.
+     - Perf/optimization beads → smoke test **plus** `bash tools/bench.sh -j 4 -d benchmarks/profile20 solver/NN-name` so the measured delta is against the new baseline, not the pre-rebase one.
      - Promotion/default-change beads → the full gate described in CLAUDE.md's solver-11 promotion section, with the candidate re-measured on top of the new `main`.
    - If the rebase changes the baseline materially, **re-take the baseline** before reporting the experiment's delta — numbers from a stale baseline are meaningless.
    - Re-announce (step 4) with the updated commit-of-base SHA in the body, then push.

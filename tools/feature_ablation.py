@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+"""Solver-11 feature ablation on the profile20 suite.
+
+Process (per the 2026-05-30 design):
+  * Target suite = benchmarks/profile20 (10 easy control + 10 hard headroom).
+  * Decision metric = aggregate PAR-2 over all 20, with easy-10 / hard-10 reported separately.
+  * Parallelism = 4 workers pinned to physical cores 0,1,2,3 (taskset), one bench -j1 each over a
+    4-way shard; siblings left idle for clean timing. Memory capped at 14 GiB/job (4x14<57 free).
+  * 3% repeat rule: a config within +/-3% of the baseline PAR-2 is in the noise band -> rerun
+    (up to n=3, take the mean); a clear (>3%) win/loss is accepted from n=1.
+  * Two stages: Stage 1 screens every config at 300 s on all 20; Stage 2 (separate invocation)
+    re-runs a shortlist at a long timeout on the hard-10 only to measure real headroom.
+
+Each config is a same-binary SAT_* env toggle on solver/11-kissat-port (built once); `solver10`
+is the solver/10-bve-preprocess reference floor. Flag `requires` deps (CONFIG_SCHEMA.csv) are
+encoded so no toggle is a silent no-op; parent-only controls (use_lbd, lbd_tiered, fstab) are
+included for attribution.
+
+Usage:
+  python3 tools/feature_ablation.py --stage1 [--timeout 300] [--mem-mb 14000] [--jobs 4]
+  python3 tools/feature_ablation.py --stage2 --configs tag1,tag2 [--timeout 900]
+  python3 tools/feature_ablation.py --smoke           # 2 configs x 2 instances, fast self-check
+"""
+from __future__ import annotations
+import argparse, csv, os, shutil, subprocess, sys, time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tools"))
+import compare_bench  # noqa: E402
+
+SUITE = ROOT / "benchmarks" / "profile20"
+SELECTION = SUITE / "selection.csv"
+S11 = "solver/11-kissat-port"
+S10 = "solver/10-bve-preprocess"
+CORES = [0, 1, 2, 3]            # distinct physical cores (siblings 6..9 left idle)
+TOL = 0.03                      # 3% noise band for the repeat rule
+
+# tag -> (solver_dir, {env}).  Empty env = that solver's default profile.
+CONFIGS: list[tuple[str, str, dict]] = [
+    # --- references ---
+    ("baseline",            S11, {}),
+    ("solver10",            S10, {}),
+    # --- independent singles (no requires) ---
+    ("lucky",               S11, {"SAT_LUCKY": "on"}),
+    ("chrono",              S11, {"SAT_CHRONO": "on"}),
+    ("binary_fast",         S11, {"SAT_BINARY_FAST": "on"}),
+    ("restart_reuse_trail", S11, {"SAT_RESTART_REUSE_TRAIL": "on"}),
+    ("reorder",             S11, {"SAT_REORDER": "on"}),
+    ("otfs",                S11, {"SAT_OTFS": "on"}),                       # clause_min on by default
+    ("otss",                S11, {"SAT_OTSS": "on"}),
+    # --- LBD family (parent SAT_USE_LBD=on) ---
+    ("use_lbd",             S11, {"SAT_USE_LBD": "on"}),                    # parent control
+    ("lbd_update_reasons",  S11, {"SAT_USE_LBD": "on", "SAT_LBD_UPDATE_REASONS": "on"}),
+    ("lbd_update_pair",     S11, {"SAT_USE_LBD": "on", "SAT_LBD_UPDATE_REASONS": "on",
+                                  "SAT_LBD_UPDATE_PROP_REASONS": "on"}),
+    ("lbd_tiered",          S11, {"SAT_USE_LBD": "on", "SAT_REDUCE": "lbd-tiered"}),   # parent control
+    ("reduce_tier2",        S11, {"SAT_USE_LBD": "on", "SAT_REDUCE": "lbd-tiered",
+                                  "SAT_REDUCE_TIER2_AT_BUDGET": "on"}),
+    ("watch_compact",       S11, {"SAT_USE_LBD": "on", "SAT_REDUCE": "lbd-tiered",
+                                  "SAT_WATCH_COMPACT": "on"}),
+    # --- focused-stable family (parent stack) ---
+    ("fstab",               S11, {"SAT_USE_LBD": "on", "SAT_SEARCH_MODE": "focused-stable",
+                                  "SAT_MODE_USE_TICKS": "on"}),
+    ("fstab_novmtf",        S11, {"SAT_USE_LBD": "on", "SAT_SEARCH_MODE": "focused-stable",
+                                  "SAT_MODE_USE_TICKS": "on", "SAT_VMTF": "off"}),
+    ("fstab_lbdtier",       S11, {"SAT_USE_LBD": "on", "SAT_SEARCH_MODE": "focused-stable",
+                                  "SAT_MODE_USE_TICKS": "on", "SAT_REDUCE": "lbd-tiered"}),
+    ("fstab_rephase",       S11, {"SAT_USE_LBD": "on", "SAT_SEARCH_MODE": "focused-stable",
+                                  "SAT_MODE_USE_TICKS": "on", "SAT_REPHASE": "on"}),
+    ("fstab_full",          S11, {"SAT_USE_LBD": "on", "SAT_SEARCH_MODE": "focused-stable",
+                                  "SAT_MODE_USE_TICKS": "on", "SAT_REDUCE": "lbd-tiered",
+                                  "SAT_REPHASE": "on"}),
+    # --- cross combos ---
+    ("lucky_chrono",        S11, {"SAT_LUCKY": "on", "SAT_CHRONO": "on"}),
+    ("otfs_otss",           S11, {"SAT_OTFS": "on", "SAT_OTSS": "on"}),
+    ("restart_reuse_chrono",S11, {"SAT_RESTART_REUSE_TRAIL": "on", "SAT_CHRONO": "on"}),
+]
+CONFIG_MAP = {t: (s, e) for (t, s, e) in CONFIGS}
+
+
+def load_halves() -> dict[str, str]:
+    halves = {}
+    with open(SELECTION) as f:
+        for row in csv.DictReader(f):
+            halves[row["instance"].strip()] = row["half"]
+    return halves
+
+
+def instances(half: str | None = None) -> list[str]:
+    """profile20 instance stems (== bench results.csv instance keys)."""
+    halves = load_halves()
+    out = [name for name, h in halves.items() if half is None or h == half]
+    return sorted(out)
+
+
+def file_for(stem: str) -> str:
+    return stem + ".cnf.xz"
+
+
+def shard(items: list[str], k: int) -> list[list[str]]:
+    groups: list[list[str]] = [[] for _ in range(k)]
+    for i, it in enumerate(items):        # round-robin so each shard mixes easy+hard
+        groups[i % k].append(it)
+    return [g for g in groups if g]
+
+
+def run_one_config(tag: str, out_dir: Path, insts: list[str], timeout: int,
+                   mem_mb: int, jobs: int) -> Path:
+    """Run one config over `insts` using `jobs` taskset-pinned bench -j1 shards; merge results.csv."""
+    solver_dir, env_extra = CONFIG_MAP[tag]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    merged = out_dir / "results.csv"
+    if merged.exists():
+        return merged   # resume: already done
+
+    groups = shard(insts, min(jobs, len(insts)))
+    procs = []
+    shard_csvs = []
+    for idx, group in enumerate(groups):
+        core = CORES[idx % len(CORES)]
+        sd = out_dir / f"shard{idx}"
+        bdir = sd / "bench"
+        bdir.mkdir(parents=True, exist_ok=True)
+        # symlink the shard's instances into a private benchdir
+        for stem in group:
+            link = bdir / file_for(stem)
+            tgt = (SUITE / file_for(stem)).resolve()
+            if not link.exists():
+                link.symlink_to(tgt)
+        ldir = sd / "log"
+        env = {**os.environ, **env_extra}
+        cmd = ["taskset", "-c", str(core), "bash", "tools/bench.sh",
+               "-t", str(timeout), "-m", str(mem_mb), "-j", "1",
+               "-d", str(bdir), "--log-dir", str(ldir), solver_dir]
+        log_fh = open(sd / "console.log", "w")
+        procs.append((idx, subprocess.Popen(cmd, cwd=ROOT, env=env,
+                                             stdout=log_fh, stderr=subprocess.STDOUT), log_fh))
+        shard_csvs.append(ldir / "results.csv")
+
+    for idx, p, fh in procs:
+        p.wait()
+        fh.close()
+
+    # merge shard results.csv -> one
+    header = None
+    rows = []
+    for csvp in shard_csvs:
+        if not csvp.exists():
+            continue
+        with open(csvp) as f:
+            r = csv.reader(f)
+            h = next(r, None)
+            if h and header is None:
+                header = h
+            for row in r:
+                rows.append(row)
+    if header is None:
+        header = ["instance", "result", "verified", "time_s", "timeout", "exit_code"]
+    with open(merged, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        w.writerows(sorted(rows))
+    return merged
+
+
+def par2_split(results_csv: Path, timeout: int) -> dict[str, float]:
+    rows = compare_bench.read_rows(results_csv)
+    halves = load_halves()
+    easy = {k: v for k, v in rows.items() if halves.get(k) == "easy"}
+    hard = {k: v for k, v in rows.items() if halves.get(k) == "hard"}
+    return {
+        "all": compare_bench.par2(rows, timeout),
+        "easy": compare_bench.par2(easy, timeout),
+        "hard": compare_bench.par2(hard, timeout),
+        "solved": compare_bench.solved_count(rows),
+        "n": len(rows),
+    }
+
+
+def build(solver_dir: str) -> None:
+    print(f"[build] {solver_dir}", flush=True)
+    subprocess.run(["bash", "build.sh"], cwd=ROOT / solver_dir, check=True)
+
+
+def append_summary(summary: Path, tag: str, run_idx: int, m: dict, env: dict) -> None:
+    new = not summary.exists()
+    with open(summary, "a", newline="") as f:
+        w = csv.writer(f, delimiter="\t")
+        if new:
+            w.writerow(["tag", "run", "par2_all", "par2_easy", "par2_hard", "solved", "n", "env"])
+        w.writerow([tag, run_idx, f"{m['all']:.3f}", f"{m['easy']:.3f}", f"{m['hard']:.3f}",
+                    m["solved"], m["n"], " ".join(f"{k}={v}" for k, v in sorted(env.items()))])
+
+
+def stage1(args) -> int:
+    ts = time.strftime("%Y-%m-%d-%H-%M-%S")
+    camp = ROOT / "log" / f"feature-ablation-{ts}"
+    camp.mkdir(parents=True, exist_ok=True)
+    summary = camp / "summary.tsv"
+    insts = instances()
+    print(f"[stage1] {len(CONFIGS)} configs x {len(insts)} instances, t={args.timeout}s "
+          f"m={args.mem_mb}MB jobs={args.jobs} -> {camp}", flush=True)
+
+    build(S11)
+    build(S10)
+
+    # baseline twice for a stable 3% reference
+    means: dict[str, dict] = {}
+    runs: dict[str, list[dict]] = {}
+    for tag, _, env in CONFIGS:
+        reps = 2 if tag == "baseline" else 1
+        for r in range(1, reps + 1):
+            odir = camp / tag / f"r{r}"
+            t0 = time.time()
+            res = run_one_config(tag, odir, insts, args.timeout, args.mem_mb, args.jobs)
+            m = par2_split(res, args.timeout)
+            runs.setdefault(tag, []).append(m)
+            append_summary(summary, tag, r, m, env)
+            print(f"[{tag} r{r}] PAR2 all={m['all']:.1f} easy={m['easy']:.1f} "
+                  f"hard={m['hard']:.1f} solved={m['solved']} ({time.time()-t0:.0f}s)", flush=True)
+        means[tag] = {k: sum(d[k] for d in runs[tag]) / len(runs[tag])
+                      for k in ("all", "easy", "hard")}
+
+    base = means["baseline"]["all"]
+    band = base * TOL
+
+    # 3% repeat rule: configs within +/-band of baseline get reruns to n=3 (mean)
+    for tag, _, env in CONFIGS:
+        if tag in ("baseline", "solver10"):
+            continue
+        while len(runs[tag]) < 2 and abs(means[tag]["all"] - base) <= band:
+            r = len(runs[tag]) + 1
+            odir = camp / tag / f"r{r}"
+            res = run_one_config(tag, odir, insts, args.timeout, args.mem_mb, args.jobs)
+            m = par2_split(res, args.timeout)
+            runs[tag].append(m)
+            append_summary(summary, tag, r, m, env)
+            means[tag] = {k: sum(d[k] for d in runs[tag]) / len(runs[tag])
+                          for k in ("all", "easy", "hard")}
+            print(f"[{tag} repeat r{r}] within 3% -> mean all={means[tag]['all']:.1f}", flush=True)
+
+    # report
+    report = camp / "STAGE1.md"
+    rows = sorted(((t, means[t]) for t, _, _ in CONFIGS), key=lambda x: x[1]["all"])
+    lines = [f"# Stage-1 feature ablation on profile20 ({ts})", "",
+             f"Baseline (solver-11 default) all-20 PAR-2 = **{base:.1f}**; 3% band = +/-{band:.1f}. "
+             f"solver-10 floor all-20 = {means['solver10']['all']:.1f}.", "",
+             "| config | all-20 Δ | all-20 | easy-10 | hard-10 | n |", "|---|---:|---:|---:|---:|---:|"]
+    for t, m in rows:
+        d = m["all"] - base
+        verdict = "WIN" if d < -band else ("regress" if d > band else "neutral")
+        if t == "baseline": verdict = "—"
+        lines.append(f"| {t} | {d:+.1f} {verdict} | {m['all']:.1f} | {m['easy']:.1f} | "
+                     f"{m['hard']:.1f} | {len(runs[t])} |")
+    # Stage-2 shortlist: net all-20 win, or any hard-10 improvement vs baseline beyond band
+    shortlist = [t for t, _, _ in CONFIGS if t not in ("baseline", "solver10")
+                 and (means[t]["all"] < base - band
+                      or means[t]["hard"] < means["baseline"]["hard"] - means["baseline"]["hard"] * TOL)]
+    lines += ["", "## Proposed Stage-2 shortlist (long-timeout, hard-10)",
+              ", ".join(shortlist) if shortlist else "(none beat baseline beyond 3% — review manually)"]
+    report.write_text("\n".join(lines) + "\n")
+    (camp / "DONE").write_text("stage1 complete\n")
+    print("\n".join(lines), flush=True)
+    print(f"\n[stage1] DONE -> {report}", flush=True)
+    return 0
+
+
+def stage2(args) -> int:
+    tags = [t.strip() for t in args.configs.split(",") if t.strip()]
+    ts = time.strftime("%Y-%m-%d-%H-%M-%S")
+    camp = ROOT / "log" / f"feature-ablation-stage2-{ts}"
+    camp.mkdir(parents=True, exist_ok=True)
+    summary = camp / "summary.tsv"
+    insts = instances("hard")
+    print(f"[stage2] {tags} on {len(insts)} hard instances t={args.timeout}s", flush=True)
+    build(S11); build(S10)
+    for tag in ["baseline", "solver10"] + [t for t in tags if t not in ("baseline", "solver10")]:
+        _, env = CONFIG_MAP[tag]
+        odir = camp / tag / "r1"
+        res = run_one_config(tag, odir, insts, args.timeout, args.mem_mb, args.jobs)
+        m = par2_split(res, args.timeout)
+        append_summary(summary, tag, 1, m, env)
+        print(f"[{tag}] hard PAR2={m['hard']:.1f} solved={m['solved']}/{m['n']}", flush=True)
+    (camp / "DONE").write_text("stage2 complete\n")
+    print(f"[stage2] DONE -> {camp}", flush=True)
+    return 0
+
+
+def smoke(args) -> int:
+    """Fast self-check: baseline + chrono on 2 instances, short timeout."""
+    camp = ROOT / "log" / "feature-ablation-smoke"
+    if camp.exists():
+        shutil.rmtree(camp)
+    camp.mkdir(parents=True)
+    insts = instances("easy")[:2]
+    print(f"[smoke] instances={insts}", flush=True)
+    build(S11)
+    for tag in ("baseline", "chrono"):
+        _, env = CONFIG_MAP[tag]
+        res = run_one_config(tag, camp / tag, insts, 60, args.mem_mb, 2)
+        m = par2_split(res, 60)
+        print(f"[smoke {tag}] env={env} -> {compare_bench.read_rows(res)}", flush=True)
+        print(f"[smoke {tag}] PAR2 all={m['all']:.1f} solved={m['solved']}/{m['n']}", flush=True)
+    print("[smoke] ok", flush=True)
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--stage1", action="store_true")
+    ap.add_argument("--stage2", action="store_true")
+    ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--configs", default="")
+    ap.add_argument("--timeout", type=int, default=300)
+    ap.add_argument("--mem-mb", type=int, default=14000)
+    ap.add_argument("--jobs", type=int, default=4)
+    args = ap.parse_args()
+    if args.smoke:
+        return smoke(args)
+    if args.stage1:
+        return stage1(args)
+    if args.stage2:
+        if not args.configs:
+            ap.error("--stage2 requires --configs tag1,tag2,...")
+        if args.timeout == 300:
+            args.timeout = 900
+        return stage2(args)
+    ap.error("one of --smoke / --stage1 / --stage2 required")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

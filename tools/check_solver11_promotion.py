@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Guard solver 11 default/fast promotions against solver 10 regressions."""
+"""Guard solver 11 default/fast promotions against solver 10.
+
+Solver 10 is an **aggregate-PAR-2 floor**, not a per-instance floor: an instance that
+regresses from solved to a timeout/UNKNOWN is a PAR-2 cost handled by the aggregate
+comparison, not a gate failure. The only per-instance solver-10 check the gate still
+enforces is a SAT<->UNSAT **correctness contradiction** (PAR-2 can never buy back a
+wrong answer). Honest solved->unsolved regressions vs solver 10 are reported for
+diagnostics but do not fail the gate.
+"""
 
 from __future__ import annotations
 
@@ -78,6 +86,11 @@ def same_instance_set(left: dict[str, dict[str, str]], right: dict[str, dict[str
 def status_regressions_against_solver10(
     solver10: dict[str, dict[str, str]], candidate: dict[str, dict[str, str]]
 ) -> list[tuple[str, str, str]]:
+    """All status regressions vs solver 10 (solved->unsolved, ->ERROR, or SAT<->UNSAT).
+
+    Reported for diagnostics only; honest solved->unsolved rows are a PAR-2 cost and do
+    NOT fail the gate. The failing subset is computed by status_contradictions_against_solver10.
+    """
     regressions = []
     for name in sorted(set(solver10) & set(candidate)):
         before = solver10[name]["result"]
@@ -85,6 +98,24 @@ def status_regressions_against_solver10(
         if compare_bench.is_status_regression(before, after):
             regressions.append((name, before, after))
     return regressions
+
+
+def status_contradictions_against_solver10(
+    solver10: dict[str, dict[str, str]], candidate: dict[str, dict[str, str]]
+) -> list[tuple[str, str, str]]:
+    """SAT<->UNSAT disagreements vs solver 10 — a correctness signal PAR-2 cannot price.
+
+    One of the two solvers is wrong on these instances, so the candidate must not ship
+    regardless of aggregate PAR-2. (A solver-10-solved instance the candidate merely fails
+    to solve in time is NOT a contradiction; that is priced into PAR-2.)
+    """
+    contradictions = []
+    for name in sorted(set(solver10) & set(candidate)):
+        before = solver10[name]["result"]
+        after = candidate[name]["result"]
+        if before in compare_bench.SOLVED and after in compare_bench.SOLVED and before != after:
+            contradictions.append((name, before, after))
+    return contradictions
 
 
 def check_gate(args: argparse.Namespace, process_lines: list[str] | None = None) -> int:
@@ -125,9 +156,13 @@ def check_gate(args: argparse.Namespace, process_lines: list[str] | None = None)
     warnings.extend(validation_warnings)
     failures.extend(compare_bench.correctness_failures(candidate, {}, candidate_validation))
 
+    # Solver 10 is an aggregate-PAR-2 floor, not a per-instance floor: a solved->unsolved
+    # regression is reported but priced into PAR-2, not a gate failure. Only a SAT<->UNSAT
+    # correctness contradiction vs solver 10 fails the gate.
     status_regressions = status_regressions_against_solver10(solver10, candidate)
-    if status_regressions:
-        failures.append("candidate_status_regresses_solver10")
+    status_contradictions = status_contradictions_against_solver10(solver10, candidate)
+    if status_contradictions:
+        failures.append("candidate_contradicts_solver10")
 
     process_lines = running_solver_processes() if process_lines is None else process_lines
     if process_lines and not args.allow_running_solvers:
@@ -177,7 +212,8 @@ def check_gate(args: argparse.Namespace, process_lines: list[str] | None = None)
     print("extra_in_candidate_vs_solver10=" + json.dumps(extra_candidate))
     print("missing_from_candidate_vs_previous=" + json.dumps(missing_previous))
     print("extra_in_candidate_vs_previous=" + json.dumps(extra_previous))
-    print("status_regressions_vs_solver10=" + json.dumps(status_regressions))
+    print("status_regressions_vs_solver10=" + json.dumps(status_regressions) + "  # informational (priced into PAR-2)")
+    print("status_contradictions_vs_solver10=" + json.dumps(status_contradictions))
     print("validation_warnings=" + json.dumps(warnings))
     print("decision_required=" + decision_required)
     print("failures=" + json.dumps(failures))
@@ -222,6 +258,25 @@ def self_test() -> None:
         wins = argparse.Namespace(**{**vars(base), "candidate": candidate_wins})
         if check_gate(wins, process_lines=[]) != 0:
             raise AssertionError("candidate that beats solver10 must pass")
+
+        # Solver-10 is an aggregate floor, not a per-instance floor: a candidate that flips
+        # a solver-10-solved instance to a timeout but still wins aggregate PAR-2 must PASS.
+        solver10b = root / "solver10b.csv"
+        previousb = root / "previousb.csv"
+        candidate_reg = root / "candidate-regress-but-aggregate-wins.csv"
+        candidate_contra = root / "candidate-contradicts.csv"
+        write_csv(solver10b, [("a", "SAT", 9.0), ("b", "SAT", 9.0), ("c", "SAT", 9.0)])      # PAR2 27
+        write_csv(previousb, [("a", "SAT", 9.5), ("b", "SAT", 9.5), ("c", "SAT", 9.5)])      # PAR2 28.5
+        write_csv(candidate_reg, [("a", "TIMEOUT", 10.0), ("b", "SAT", 0.1), ("c", "SAT", 0.1)])  # PAR2 20.2
+        write_csv(candidate_contra, [("a", "UNSAT", 1.0), ("b", "SAT", 1.0), ("c", "SAT", 1.0)])  # contradicts a
+
+        base_b = argparse.Namespace(**{**vars(base), "solver10": solver10b, "previous": previousb})
+        reg = argparse.Namespace(**{**vars(base_b), "candidate": candidate_reg})
+        if check_gate(reg, process_lines=[]) != 0:
+            raise AssertionError("solved->timeout regression that wins aggregate PAR-2 must pass")
+        contra = argparse.Namespace(**{**vars(base_b), "candidate": candidate_contra})
+        if check_gate(contra, process_lines=[]) == 0:
+            raise AssertionError("SAT<->UNSAT contradiction vs solver10 must fail")
 
 
 def main() -> int:
