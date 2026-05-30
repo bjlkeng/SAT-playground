@@ -71,6 +71,10 @@ CONFIGS: list[tuple[str, str, dict]] = [
     ("fstab_full",          S11, {"SAT_USE_LBD": "on", "SAT_SEARCH_MODE": "focused-stable",
                                   "SAT_MODE_USE_TICKS": "on", "SAT_REDUCE": "lbd-tiered",
                                   "SAT_REPHASE": "on"}),
+    # --- clause minimization + shrink (inblock = kissat-style in-block minimize+shrink;
+    #     SH-A/SH-B fix landed 5a01032; bug prz still open so treat as diagnostic) ---
+    ("inblock",             S11, {"SAT_CLAUSE_MIN": "inblock"}),
+    ("inblock_otfs_otss",   S11, {"SAT_CLAUSE_MIN": "inblock", "SAT_OTFS": "on", "SAT_OTSS": "on"}),
     # --- cross combos ---
     ("lucky_chrono",        S11, {"SAT_LUCKY": "on", "SAT_CHRONO": "on"}),
     ("otfs_otss",           S11, {"SAT_OTFS": "on", "SAT_OTSS": "on"}),
@@ -199,7 +203,10 @@ def stage1(args) -> int:
     camp.mkdir(parents=True, exist_ok=True)
     summary = camp / "summary.tsv"
     insts = instances()
-    print(f"[stage1] {len(CONFIGS)} configs x {len(insts)} instances, t={args.timeout}s "
+    # optional subset: --configs tag1,tag2 runs only those (baseline always kept as the reference)
+    selected = {t.strip() for t in args.configs.split(",") if t.strip()} if args.configs else None
+    run_list = [c for c in CONFIGS if selected is None or c[0] in selected or c[0] == "baseline"]
+    print(f"[stage1] {len(run_list)} configs x {len(insts)} instances, t={args.timeout}s "
           f"m={args.mem_mb}MB jobs={args.jobs} -> {camp}", flush=True)
 
     build(S11)
@@ -208,7 +215,7 @@ def stage1(args) -> int:
     # baseline twice for a stable 3% reference
     means: dict[str, dict] = {}
     runs: dict[str, list[dict]] = {}
-    for tag, _, env in CONFIGS:
+    for tag, _, env in run_list:
         reps = 2 if tag == "baseline" else 1
         for r in range(1, reps + 1):
             odir = camp / tag / f"r{r}"
@@ -226,7 +233,7 @@ def stage1(args) -> int:
     band = base * TOL
 
     # 3% repeat rule: configs within +/-band of baseline get reruns to n=3 (mean)
-    for tag, _, env in CONFIGS:
+    for tag, _, env in run_list:
         if tag in ("baseline", "solver10"):
             continue
         while len(runs[tag]) < 2 and abs(means[tag]["all"] - base) <= band:
@@ -242,7 +249,7 @@ def stage1(args) -> int:
 
     # report
     report = camp / "STAGE1.md"
-    rows = sorted(((t, means[t]) for t, _, _ in CONFIGS), key=lambda x: x[1]["all"])
+    rows = sorted(((t, means[t]) for t, _, _ in run_list), key=lambda x: x[1]["all"])
     lines = [f"# Stage-1 feature ablation on profile20 ({ts})", "",
              f"Baseline (solver-11 default) all-20 PAR-2 = **{base:.1f}**; 3% band = +/-{band:.1f}. "
              f"solver-10 floor all-20 = {means['solver10']['all']:.1f}.", "",
@@ -254,7 +261,7 @@ def stage1(args) -> int:
         lines.append(f"| {t} | {d:+.1f} {verdict} | {m['all']:.1f} | {m['easy']:.1f} | "
                      f"{m['hard']:.1f} | {len(runs[t])} |")
     # Stage-2 shortlist: net all-20 win, or any hard-10 improvement vs baseline beyond band
-    shortlist = [t for t, _, _ in CONFIGS if t not in ("baseline", "solver10")
+    shortlist = [t for t, _, _ in run_list if t not in ("baseline", "solver10")
                  and (means[t]["all"] < base - band
                       or means[t]["hard"] < means["baseline"]["hard"] - means["baseline"]["hard"] * TOL)]
     lines += ["", "## Proposed Stage-2 shortlist (long-timeout, hard-10)",
