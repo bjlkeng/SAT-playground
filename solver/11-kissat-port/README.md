@@ -160,8 +160,11 @@ What is present:
   before CDCL search. It tries all-true/all-false and forward/backward false/true temporary
   propagation probes, then a bounded small-formula local repair fallback. It captures a SAT model
   only after a full residual-formula satisfaction check and restores temporary propagation state
-  before returning. The pass is default-off after the 2026-05-25 rerun showed it solved only the
-  battleship profiling row while adding more time elsewhere.
+  before returning. The pass is **on by default in the `default`/`fast` profiles** (promoted
+  2026-05-30, bead `SAT-playground-70h`): the fresh re-evaluation measured a net −12 PAR-2 over the
+  profiling suite (n≥5, lucky-on entirely below lucky-off), and a shuffle test showed lucky robustly
+  solves the order-fragile battleship instance (0.08 s vs lucky-off 18–904 s / timeouts). `baseline`
+  keeps it off.
 
 Still incomplete:
 
@@ -231,8 +234,8 @@ SAT_ELIMINATE_RESOLUTIONS=<u64>  # 0 means no BVE resolution-attempt budget
 
 The `default` and `fast` profiles currently keep `SAT_USE_LBD=off`,
 `SAT_SEARCH_MODE=single`, and `SAT_MODE_USE_TICKS=off` while retaining the solver-10 preprocessing
-stack. `SAT_LUCKY` remains an explicit opt-in because unconditional attempts regressed the current
-profiling suite. The focused/stable search stack remains opt-in until it beats the clean solver 10
+stack. `SAT_LUCKY` is now **on by default in `default`/`fast`** (promoted 2026-05-30, bead 70h;
+`baseline` keeps it off) after the fresh re-eval measured a net −12 PAR-2 win. The focused/stable search stack remains opt-in until it beats the clean solver 10
 profiling baseline. `baseline` keeps both LBD/focused-stable search, lucky assignment, and
 preprocessing off.
 
@@ -325,6 +328,19 @@ Lower-level diagnostics can be enabled independently with `SAT_TRACE_PROOF=on`,
 > **Do not consult the archived tables unless explicitly asked** — they do not reflect current
 > efficacy. Fresh results (warm-up + n≥2, same-binary toggles vs the chrono-off single-mode
 > baseline, aggregate PAR-2 beyond noise, solver-10 floor) will be recorded here when complete.
+
+### Fresh re-eval results (2026-05-29/30)
+
+- **`SAT_LUCKY` → PROMOTED on by default (`default`/`fast`)** — 2026-05-30, bead `SAT-playground-70h`.
+  n≥5 confirmation: lucky-on (721.6–726.0 PAR-2) is *entirely below* lucky-off (731.8–737.7), net
+  ≈ −12 PAR-2 over the profiling suite; correctness clean (10/10, all proofs verified). Shuffle gate
+  passed decisively: lucky-on solves the order-fragile battleship instance in 0.08 s on every shuffle
+  seed while lucky-off ranges 18–904 s (would time out on 3/5). Solver-10 gate:
+  `candidate_improves_previous_solver11_but_loses_solver10` (−12 vs prior default; still +23 vs
+  solver-10, narrowing the gap). `baseline` keeps lucky off. Evidence:
+  `log/lucky-confirm-2026-05-30/`, `log/efficacy-reeval-2026-05-29/FINDINGS.md`.
+- All other tested search singles/combos (chrono neutral; binary-fast / focused-stable / lbd-tiered /
+  inblock / rephase / combos regress) were **not** promoted — see `FINDINGS.md`.
 
 Smoke/correctness (independent of efficacy) is verified per change via
 `bash tools/smoke_test.sh solver/11-kissat-port` (9/9) and `cargo test`.

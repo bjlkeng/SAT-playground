@@ -10,7 +10,7 @@ SAT_VMTF,vmtf,Reeval-HelpsInFStab,true,true,false,none,log/efficacy-reeval-2026-
 SAT_REORDER,reorder,ReevalPending,true,true,false,none,archived-see-archive/efficacy-reeval-2026-05-29(do-not-consult-unless-asked),branching|search-trajectory,SAT-playground-gbc
 SAT_REPHASE,rephase,Reeval-Regress,true,true,false,none,log/efficacy-reeval-2026-05-29/FINDINGS.md,phase-selection|focused-stable,SAT-playground-gbc
 SAT_MODE_USE_TICKS,mode_use_ticks,Reeval-Regress,true,true,false,none,log/efficacy-reeval-2026-05-29/FINDINGS.md,mode-switching|focused-stable|fixed-unknown,SAT-playground-gbc
-SAT_LUCKY,lucky,Reeval-CandidateWin,true,true,false,none,log/efficacy-reeval-2026-05-29/FINDINGS.md,pre-search|sat-fast-path|local-repair|default-demoted,SAT-playground-gbc
+SAT_LUCKY,lucky,Promoted,true,true,false,default|fast,log/lucky-confirm-2026-05-30+shuffle(SAT-playground-70h),pre-search|sat-fast-path|local-repair|default-demoted,SAT-playground-70h
 SAT_OTFS,otfs,ReevalPending,true,true,false,none,archived-see-archive/efficacy-reeval-2026-05-29(do-not-consult-unless-asked),learned-clause-db|search-trajectory,SAT-playground-gbc
 SAT_OTSS,otss,ReevalPending,true,true,false,none,archived-see-archive/efficacy-reeval-2026-05-29(do-not-consult-unless-asked),learned-clause-db|reason-strengthening,SAT-playground-gbc
 SAT_REDUCE_TIER2_AT_BUDGET,reduce_tier2_at_budget,ReevalPending,true,true,false,none,archived-see-archive/efficacy-reeval-2026-05-29(do-not-consult-unless-asked),reduce-db|lbd-tiered,SAT-playground-gbc

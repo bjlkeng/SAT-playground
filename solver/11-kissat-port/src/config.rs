@@ -806,7 +806,10 @@ impl SolverConfig {
                 self.use_lbd = false;
                 self.search_mode_policy = SearchModePolicy::Single;
                 self.mode_use_ticks = false;
-                self.lucky = false;
+                // 70h: SAT_LUCKY promoted to the default/fast profiles (2026-05-30 re-eval):
+                // n>=5 aggregate -12 PAR-2 vs lucky-off, and lucky robustly solves the
+                // order-fragile battleship instance (0.08s vs lucky-off 18-904s/timeouts).
+                self.lucky = true;
                 self.initial_clause_mode = InitialClauseMode::CanonicalSorted;
             }
             SolverProfile::Experimental => {
@@ -3325,15 +3328,19 @@ mod tests {
     }
 
     #[test]
-    fn test_lucky_defaults_off_and_can_be_enabled() {
+    fn test_lucky_promoted_default_on_baseline_off_overridable() {
+        // 70h: SAT_LUCKY promoted ON in default/fast (2026-05-30), OFF in baseline, env-overridable.
         let config = SolverConfig::from_env_map(&env_map(&[]));
-        assert!(!config.lucky);
+        assert!(config.lucky);
 
         let fast = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "fast")]));
-        assert!(!fast.lucky);
+        assert!(fast.lucky);
 
         let baseline = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "baseline")]));
         assert!(!baseline.lucky);
+
+        let off = SolverConfig::from_env_map(&env_map(&[("SAT_LUCKY", "off")]));
+        assert!(!off.lucky);
 
         let enabled = SolverConfig::from_env_map(&env_map(&[("SAT_LUCKY", "on")]));
         assert!(enabled.lucky);
