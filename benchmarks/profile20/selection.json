@@ -1,0 +1,27 @@
+{
+  "n_hard_candidates": 14,
+  "easy": [
+    "0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12",
+    "3746303c659ef65aaa78f3b52cd5de49-6s299b685_Iter30",
+    "46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized",
+    "557d7d4db5399188f62bc39598c6d868-mp1-Nb7T46",
+    "5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7",
+    "663bb5659e42c2c75f74354f48895302-SCPC-500-13",
+    "6832fe907740af686fde98518067ea3f-velev-pipe-sat-1.0-b7",
+    "9af7646fc4a32c6f2744ddc0c4b654b7-brocard_problem_large",
+    "ed6d842f96d10f3400bce251f9e95bfb-battleship-16-31-sat",
+    "fab2022deb130fe3ad1136a5c71b4109-case9"
+  ],
+  "hard": [
+    "849950561ddce887c78fef773dccfa80-circuit_48in64out_with_800gates_4in4out_dist128_seed3.sanitized",
+    "f0bafebdcce23ccfbaf6c27a7522069b-div-mitern172",
+    "5dbe7b31f9b8d8e56045493439adb949-bp4_CSO_IXA_ZR.normalised",
+    "31e843c53a76ff3961935ad55b953298-sqrt-mitern171",
+    "16ff47a05b769ed6a04c7175cfc6da55-sqrt-mitern170",
+    "ebbda8d90dfd9b6500bf932f952907a6-2018D_VexRiscv-regch0-20-p1_step",
+    "8b22396ef06770c7dfa7552a610fc911-PancakeVsSelectionSort_6_7",
+    "389bb0a8f3568f4bd0e71771df9093c5-BubbleVsPancakeSort_7_6",
+    "296fd43ed40e242875984420f29be73f-oddball_24_5_ttf.normalised",
+    "77a0d54f2fb3740a9a321623c0c10f3e-tseitin_grid_n12_m12"
+  ]
+}
