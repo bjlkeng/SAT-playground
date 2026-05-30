@@ -1605,6 +1605,8 @@ struct ShrinkBlockContext<'a> {
     decision_level: &'a [usize],
     reason: &'a [ReasonCode],
     trail: &'a [i32],
+    frame_used: &'a [u32],
+    max_depth: u32,
 }
 
 fn reason_len_in_arena(reasons: ReasonExpansionContext<'_>, reason_ref: ReasonRef) -> usize {
@@ -1718,6 +1720,7 @@ fn shrink_literal_for_block(
     context: ShrinkBlockContext<'_>,
     state: &mut [u8],
     toclear: &mut Vec<usize>,
+    stack: &mut Vec<(usize, i32, u32)>,
 ) -> Result<bool, ()> {
     let var = lit.unsigned_abs() as usize;
     let lit_level = context.decision_level[var];
@@ -1728,7 +1731,25 @@ fn shrink_literal_for_block(
         return Ok(false);
     }
     if lit_level < level {
-        return if state[var] == REDUNDANT_REMOVABLE {
+        if state[var] == REDUNDANT_REMOVABLE {
+            return Ok(false);
+        }
+        // SH-B (prz): kissat shrink.c:63-77 recovers a lower-level parent that is not
+        // already in the learned clause by attempting a cross-level minimize via reason,
+        // rather than failing the whole block shrink. A decision or an already-failed
+        // literal cannot be minimized.
+        if state[var] == REDUNDANT_FAILED || context.reason[var].is_none() {
+            return Err(());
+        }
+        let redundancy_context = RedundancyCheckContext {
+            reasons: context.reasons,
+            decision_level: context.decision_level,
+            reason: context.reason,
+            frame_used: context.frame_used,
+            max_depth: context.max_depth,
+            same_level_only: false,
+        };
+        return if lit_redundant(lit, redundancy_context, state, toclear, stack) {
             Ok(false)
         } else {
             Err(())
@@ -1750,6 +1771,7 @@ fn try_shrink_learned_clause_block(
     context: ShrinkBlockContext<'_>,
     state: &mut [u8],
     toclear: &mut Vec<usize>,
+    stack: &mut Vec<(usize, i32, u32)>,
 ) -> Option<i32> {
     debug_assert!(begin < end);
     debug_assert!(begin >= 1);
@@ -1800,7 +1822,7 @@ fn try_shrink_learned_clause_block(
             if parent.unsigned_abs() as usize == uip_var {
                 continue;
             }
-            match shrink_literal_for_block(parent, level, context, state, toclear) {
+            match shrink_literal_for_block(parent, level, context, state, toclear, stack) {
                 Ok(true) => open += 1,
                 Ok(false) => {}
                 Err(()) => return None,
@@ -6644,7 +6666,9 @@ impl Solver {
             reason,
             frame_used,
             max_depth: self.minimize_depth_limit,
-            same_level_only: self.ccmin_mode == CCMIN_INBLOCK,
+            // SH-A (prz): inblock upfront minimize must be cross-level (kissat shrink<=2),
+            // not same-level-only, which was a weaker third configuration.
+            same_level_only: false,
         };
         let mut write = 1usize;
         for read in 1..learned_clause.len() {
@@ -6697,9 +6721,12 @@ impl Solver {
             decision_level: &self.decision_level,
             reason: &self.reason,
             trail: &self.trail,
+            frame_used: &self.scratch_frame_used,
+            max_depth: self.minimize_depth_limit,
         };
         let state = &mut self.scratch_redundant_state;
         let toclear = &mut self.scratch_analyze_toclear;
+        let stack = &mut self.scratch_analyze_stack;
         debug_assert!(toclear.is_empty());
 
         let mut end = learned_clause.len();
@@ -6724,6 +6751,7 @@ impl Solver {
                     shrink_context,
                     state,
                     toclear,
+                    stack,
                 ) {
                     for lit in &mut learned_clause[begin..end] {
                         *lit = 0;
@@ -11360,7 +11388,12 @@ mod tests {
     }
 
     #[test]
-    fn test_shrink_does_not_cross_decision_level_blocks() {
+    fn test_inblock_minimize_removes_cross_level_redundant_literal() {
+        // SH-A (prz): inblock's upfront minimize is now cross-level (like the default
+        // recursive-limited mode), so a literal whose reason chain bottoms out at a
+        // clause literal across decision levels is correctly removed. Here 7's reason
+        // is (7 ∨ 5), 5's reason is (5 ∨ 3), and 3 is in the clause, so 7 is redundant.
+        // The old same_level_only=true behavior wrongly kept 7 (asserted `[-1, 7, 3]`).
         let mut s = make_solver(7, vec![vec![5, 3], vec![7, 5]]);
         let first = s.original_clause_ids[0];
         let second = s.original_clause_ids[1];
@@ -11375,7 +11408,7 @@ mod tests {
         s.ccmin_mode = CCMIN_INBLOCK;
         s.minimize_learned_clause(&mut learned_clause);
 
-        assert_eq!(learned_clause, vec![-1, 7, 3]);
+        assert_eq!(learned_clause, vec![-1, 3]);
     }
 
     #[test]
