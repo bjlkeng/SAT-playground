@@ -1,0 +1,5 @@
+tag	run	par2_all	par2_easy	par2_hard	solved	n	env
+baseline	1	6801.938	801.938	6000.000	10	20	
+baseline	2	6797.396	797.396	6000.000	10	20	
+inblock	1	8157.534	2727.129	5430.405	7	20	SAT_CLAUSE_MIN=inblock
+inblock_otfs_otss	1	8661.990	3203.178	5458.812	6	20	SAT_CLAUSE_MIN=inblock SAT_OTFS=on SAT_OTSS=on

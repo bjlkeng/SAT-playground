@@ -250,9 +250,11 @@ def stage1(args) -> int:
     # report
     report = camp / "STAGE1.md"
     rows = sorted(((t, means[t]) for t, _, _ in run_list), key=lambda x: x[1]["all"])
+    floor = f"solver-10 floor all-20 = {means['solver10']['all']:.1f}." if "solver10" in means \
+            else "(solver-10 floor not in this subset run)"
     lines = [f"# Stage-1 feature ablation on profile20 ({ts})", "",
              f"Baseline (solver-11 default) all-20 PAR-2 = **{base:.1f}**; 3% band = +/-{band:.1f}. "
-             f"solver-10 floor all-20 = {means['solver10']['all']:.1f}.", "",
+             f"{floor}", "",
              "| config | all-20 Δ | all-20 | easy-10 | hard-10 | n |", "|---|---:|---:|---:|---:|---:|"]
     for t, m in rows:
         d = m["all"] - base
