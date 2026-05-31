@@ -80,7 +80,51 @@ CONFIGS: list[tuple[str, str, dict]] = [
     ("otfs_otss",           S11, {"SAT_OTFS": "on", "SAT_OTSS": "on"}),
     ("restart_reuse_chrono",S11, {"SAT_RESTART_REUSE_TRAIL": "on", "SAT_CHRONO": "on"}),
 ]
-CONFIG_MAP = {t: (s, e) for (t, s, e) in CONFIGS}
+# --- Sweep 2 (2026-05-31): combine the NEW fstab_lbdtier default with other features. ---
+# Empty env == the new default (focused-stable + LBD + ticks + lbd-tiered + vmtf-focused + lucky),
+# since that was promoted to the default profile. Each config layers overrides ON TOP of it.
+# Two families per the sweep design: (A) focused-stable features newly UNLOCKED by the default
+# (the kissat restart/phase stack was invalid/no-op on the old single-mode base), and (B) prior
+# singles RE-TESTED on the new base where interactions may flip. Plus hand-picked combos.
+# NOTE: validity is non-obvious (requires/conflicts_with); run `--validate --sweep2` before launching.
+CONFIGS_V2: list[tuple[str, str, dict]] = [
+    # --- references ---
+    ("default",             S11, {}),                                  # the new fstab_lbdtier default
+    ("solver10",            S10, {}),
+    # --- (A) newly-unlocked focused-stable / kissat-native features ---
+    ("ema",                 S11, {"SAT_RESTART": "kissat-ema"}),
+    ("reluctant",           S11, {"SAT_RESTART": "reluctant"}),
+    ("target_phase",        S11, {"SAT_PHASE": "target-then-saved"}),
+    ("best_phase",          S11, {"SAT_PHASE": "best-then-target-then-saved"}),
+    ("rephase",             S11, {"SAT_REPHASE": "on"}),
+    ("reuse_focused",       S11, {"SAT_RESTART_REUSE_TRAIL_FOCUSED": "on"}),
+    ("reuse_stable",        S11, {"SAT_RESTART_REUSE_TRAIL_STABLE": "on"}),
+    # --- (B) prior singles re-tested on the new base ---
+    ("chrono",              S11, {"SAT_CHRONO": "on"}),
+    ("binary_fast",         S11, {"SAT_BINARY_FAST": "on"}),
+    ("otfs",                S11, {"SAT_OTFS": "on"}),
+    ("otss",                S11, {"SAT_OTSS": "on"}),
+    ("reorder",             S11, {"SAT_REORDER": "on"}),
+    ("reuse_trail",         S11, {"SAT_RESTART_REUSE_TRAIL": "on"}),
+    ("lbd_update_reasons",  S11, {"SAT_LBD_UPDATE_REASONS": "on"}),
+    ("lbd_update_pair",     S11, {"SAT_LBD_UPDATE_REASONS": "on", "SAT_LBD_UPDATE_PROP_REASONS": "on"}),
+    ("reduce_tier2",        S11, {"SAT_REDUCE_TIER2_AT_BUDGET": "on"}),
+    ("watch_compact",       S11, {"SAT_WATCH_COMPACT": "on"}),
+    # --- hand-picked combos (mechanism-motivated) ---
+    ("ema_target",          S11, {"SAT_RESTART": "kissat-ema", "SAT_PHASE": "target-then-saved"}),
+    ("ema_target_rephase",  S11, {"SAT_RESTART": "kissat-ema", "SAT_PHASE": "target-then-saved",
+                                  "SAT_REPHASE": "on"}),
+    ("ema_reuse",           S11, {"SAT_RESTART": "kissat-ema",
+                                  "SAT_RESTART_REUSE_TRAIL_FOCUSED": "on",
+                                  "SAT_RESTART_REUSE_TRAIL_STABLE": "on"}),
+    ("target_rephase",      S11, {"SAT_PHASE": "target-then-saved", "SAT_REPHASE": "on"}),
+    ("chrono_ema",          S11, {"SAT_CHRONO": "on", "SAT_RESTART": "kissat-ema"}),
+    ("binfast_tier2",       S11, {"SAT_BINARY_FAST": "on", "SAT_REDUCE_TIER2_AT_BUDGET": "on"}),
+    ("otfs_otss",           S11, {"SAT_OTFS": "on", "SAT_OTSS": "on"}),
+]
+# Merged tag->(solver,env) lookup used by run_one_config (tags unique across matrices; the only
+# overlap is `solver10`, identical in both, and `default`/`baseline` which are empty-env refs).
+CONFIG_MAP = {t: (s, e) for (t, s, e) in CONFIGS + CONFIGS_V2}
 
 
 def load_halves() -> dict[str, str]:
@@ -197,26 +241,35 @@ def append_summary(summary: Path, tag: str, run_idx: int, m: dict, env: dict) ->
                     m["solved"], m["n"], " ".join(f"{k}={v}" for k, v in sorted(env.items()))])
 
 
+def active_matrix(args):
+    """Return (matrix_list, reference_tag) for the requested sweep."""
+    if getattr(args, "sweep2", False):
+        return CONFIGS_V2, "default"
+    return CONFIGS, "baseline"
+
+
 def stage1(args) -> int:
+    matrix, ref_tag = active_matrix(args)
+    matrix_map = {t: (s, e) for (t, s, e) in matrix}
     ts = time.strftime("%Y-%m-%d-%H-%M-%S")
     camp = ROOT / "log" / f"feature-ablation-{ts}"
     camp.mkdir(parents=True, exist_ok=True)
     summary = camp / "summary.tsv"
     insts = instances()
-    # optional subset: --configs tag1,tag2 runs only those (baseline always kept as the reference)
+    # optional subset: --configs tag1,tag2 runs only those (the reference tag is always kept)
     selected = {t.strip() for t in args.configs.split(",") if t.strip()} if args.configs else None
-    run_list = [c for c in CONFIGS if selected is None or c[0] in selected or c[0] == "baseline"]
+    run_list = [c for c in matrix if selected is None or c[0] in selected or c[0] == ref_tag]
     print(f"[stage1] {len(run_list)} configs x {len(insts)} instances, t={args.timeout}s "
-          f"m={args.mem_mb}MB jobs={args.jobs} -> {camp}", flush=True)
+          f"m={args.mem_mb}MB jobs={args.jobs} ref={ref_tag} -> {camp}", flush=True)
 
     build(S11)
     build(S10)
 
-    # baseline twice for a stable 3% reference
+    # reference config twice for a stable 3% band
     means: dict[str, dict] = {}
     runs: dict[str, list[dict]] = {}
     for tag, _, env in run_list:
-        reps = 2 if tag == "baseline" else 1
+        reps = 2 if tag == ref_tag else 1
         for r in range(1, reps + 1):
             odir = camp / tag / f"r{r}"
             t0 = time.time()
@@ -229,12 +282,12 @@ def stage1(args) -> int:
         means[tag] = {k: sum(d[k] for d in runs[tag]) / len(runs[tag])
                       for k in ("all", "easy", "hard")}
 
-    base = means["baseline"]["all"]
+    base = means[ref_tag]["all"]
     band = base * TOL
 
-    # 3% repeat rule: configs within +/-band of baseline get reruns to n=3 (mean)
+    # 3% repeat rule: configs within +/-band of the reference get one confirming rerun (n=2)
     for tag, _, env in run_list:
-        if tag in ("baseline", "solver10"):
+        if tag in (ref_tag, "solver10"):
             continue
         while len(runs[tag]) < 2 and abs(means[tag]["all"] - base) <= band:
             r = len(runs[tag]) + 1
@@ -253,21 +306,22 @@ def stage1(args) -> int:
     floor = f"solver-10 floor all-20 = {means['solver10']['all']:.1f}." if "solver10" in means \
             else "(solver-10 floor not in this subset run)"
     lines = [f"# Stage-1 feature ablation on profile20 ({ts})", "",
-             f"Baseline (solver-11 default) all-20 PAR-2 = **{base:.1f}**; 3% band = +/-{band:.1f}. "
+             f"Reference config `{ref_tag}` all-20 PAR-2 = **{base:.1f}**; 3% band = +/-{band:.1f}. "
              f"{floor}", "",
              "| config | all-20 Δ | all-20 | easy-10 | hard-10 | n |", "|---|---:|---:|---:|---:|---:|"]
     for t, m in rows:
         d = m["all"] - base
         verdict = "WIN" if d < -band else ("regress" if d > band else "neutral")
-        if t == "baseline": verdict = "—"
+        if t == ref_tag: verdict = "—"
         lines.append(f"| {t} | {d:+.1f} {verdict} | {m['all']:.1f} | {m['easy']:.1f} | "
                      f"{m['hard']:.1f} | {len(runs[t])} |")
-    # Stage-2 shortlist: net all-20 win, or any hard-10 improvement vs baseline beyond band
-    shortlist = [t for t, _, _ in run_list if t not in ("baseline", "solver10")
+    # Stage-2 shortlist: net all-20 win, or any hard-10 improvement vs the reference beyond band
+    ref_hard = means[ref_tag]["hard"]
+    shortlist = [t for t, _, _ in run_list if t not in (ref_tag, "solver10")
                  and (means[t]["all"] < base - band
-                      or means[t]["hard"] < means["baseline"]["hard"] - means["baseline"]["hard"] * TOL)]
+                      or means[t]["hard"] < ref_hard - ref_hard * TOL)]
     lines += ["", "## Proposed Stage-2 shortlist (long-timeout, hard-10)",
-              ", ".join(shortlist) if shortlist else "(none beat baseline beyond 3% — review manually)"]
+              ", ".join(shortlist) if shortlist else "(none beat the reference beyond 3% — review manually)"]
     report.write_text("\n".join(lines) + "\n")
     (camp / "DONE").write_text("stage1 complete\n")
     print("\n".join(lines), flush=True)
@@ -315,16 +369,57 @@ def smoke(args) -> int:
     return 0
 
 
+def validate(args) -> int:
+    """Pre-flight: run each config on a trivial CNF and report invalid-config rejections.
+
+    The promoted default carries a web of requires/conflicts_with constraints, so some layered
+    combos may be rejected by validate_runtime_support() (exit 2). Catch those here before a
+    multi-hour campaign wastes a config's slot on all-ERROR rows.
+    """
+    matrix, ref_tag = active_matrix(args)
+    build(S11)
+    triv = ROOT / "log" / "_fa_validate.cnf"
+    triv.write_text("p cnf 2 2\n1 -2 0\n2 0\n")
+    bad = []
+    for tag, solver_dir, env_extra in matrix:
+        if solver_dir != S11:
+            continue
+        out = ROOT / "log" / "_fa_validate_out"
+        proc = subprocess.run(
+            [str(ROOT / solver_dir / "target/release/sat-solver"), str(triv), str(out)],
+            cwd=ROOT, env={**os.environ, **env_extra},
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        ok = proc.returncode in (0, 10, 20)   # 0/SAT/UNSAT exit conventions
+        flag = "OK " if ok else "BAD"
+        msg = ""
+        if not ok:
+            inv = [l for l in proc.stderr.splitlines() if "Invalid config" in l or "must" in l]
+            msg = (inv[0] if inv else f"exit={proc.returncode}")
+            bad.append((tag, msg))
+        print(f"  [{flag}] {tag:22s} {' '.join(f'{k}={v}' for k,v in sorted(env_extra.items()))}"
+              + (f"   -> {msg}" if msg else ""), flush=True)
+    print(f"\n{len(matrix)} configs checked; {len(bad)} invalid.", flush=True)
+    if bad:
+        print("INVALID:", ", ".join(t for t, _ in bad), flush=True)
+        return 1
+    print("all configs valid", flush=True)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stage1", action="store_true")
     ap.add_argument("--stage2", action="store_true")
     ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--validate", action="store_true")
+    ap.add_argument("--sweep2", action="store_true", help="use the CONFIGS_V2 matrix (new-default combos)")
     ap.add_argument("--configs", default="")
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--mem-mb", type=int, default=14000)
     ap.add_argument("--jobs", type=int, default=4)
     args = ap.parse_args()
+    if args.validate:
+        return validate(args)
     if args.smoke:
         return smoke(args)
     if args.stage1:
