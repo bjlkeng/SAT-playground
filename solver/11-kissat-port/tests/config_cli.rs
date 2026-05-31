@@ -24,8 +24,14 @@ fn single_mode_kissat_ema_is_rejected() {
         .join("sat_tiny.cnf");
     let out_dir = temp_output_dir("single-mode-kissat-ema");
 
+    // The default search mode is now focused-stable, under which kissat-ema is valid; this test
+    // verifies the SINGLE-mode rejection path, so it must request single mode explicitly (and turn
+    // off the default's focused-stable-only mode_use_ticks / lbd-tiered reduce).
     let output = Command::new(env!("CARGO_BIN_EXE_sat-solver"))
         .env_clear()
+        .env("SAT_SEARCH_MODE", "single")
+        .env("SAT_MODE_USE_TICKS", "off")
+        .env("SAT_REDUCE", "legacy")
         .env("SAT_USE_LBD", "on")
         .env("SAT_RESTART", "kissat-ema")
         .arg(cnf)
@@ -105,8 +111,13 @@ fn single_mode_target_phase_policies_are_rejected() {
     for phase in ["target-then-saved", "best-then-target-then-saved"] {
         let out_dir = temp_output_dir("single-mode-target-phase");
 
+        // Default search mode is now focused-stable (under which target phases are valid); request
+        // single mode explicitly to exercise the single-mode rejection path this test is named for.
         let output = Command::new(env!("CARGO_BIN_EXE_sat-solver"))
             .env_clear()
+            .env("SAT_SEARCH_MODE", "single")
+            .env("SAT_MODE_USE_TICKS", "off")
+            .env("SAT_REDUCE", "legacy")
             .env("SAT_PHASE", phase)
             .arg(&cnf)
             .arg(&out_dir)

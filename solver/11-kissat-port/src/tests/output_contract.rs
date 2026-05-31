@@ -1,5 +1,7 @@
 use super::*;
-use crate::config::{PreprocessAxis, ProofPolicy, SearchAxis, SearchModePolicy, SolverProfile};
+use crate::config::{
+    PreprocessAxis, ProofPolicy, ReducePolicy, SearchAxis, SearchModePolicy, SolverProfile,
+};
 use crate::limits::BudgetClass;
 use crate::output::{
     write_model_file, write_result_contract, OutputContract, OutputContractState,
@@ -449,9 +451,12 @@ fn test_profile_search_conservative_enables_only_documented_features() {
     assert!(config.simplification);
     assert!(config.bve);
     assert!(config.full_bsr);
-    assert!(!config.use_lbd);
-    assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
-    assert!(!config.mode_use_ticks);
+    // Default search config is now the fstab_lbdtier promotion (profile20 Stage-1, 2026-05-30/31):
+    // focused-stable + LBD + ticks + LBD-tiered reduce. Preprocessing axis is unchanged.
+    assert!(config.use_lbd);
+    assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
+    assert!(config.mode_use_ticks);
+    assert_eq!(config.reduce_policy, ReducePolicy::LbdTiered);
     assert!(!config.inprocess);
 }
 

@@ -803,9 +803,17 @@ impl SolverConfig {
                 self.initial_clause_mode = InitialClauseMode::CanonicalSorted;
             }
             SolverProfile::Default | SolverProfile::Fast => {
-                self.use_lbd = false;
-                self.search_mode_policy = SearchModePolicy::Single;
-                self.mode_use_ticks = false;
+                // profile20 Stage-1 ablation (2026-05-30/31): the "fstab_lbdtier" config —
+                // focused-stable search + LBD + tick mode-switching + LBD-tiered reduction
+                // (VMTF auto-resolves to FocusedOnly) — wins aggregate PAR-2 by 2x over the
+                // prior single-mode default (5653 vs 6808 on profile20, 13/20 vs 10/20 solved;
+                // clear of the solver-10 floor 6773). The win is SAT_REDUCE=lbd-tiered
+                // (cracks 3 hard headroom instances), amplified by focused-stable+VMTF halving
+                // the easy-half overhead. See log/feature-ablation-2026-05-30-12-11-01/FINDINGS.md.
+                self.use_lbd = true;
+                self.search_mode_policy = SearchModePolicy::FocusedStable;
+                self.mode_use_ticks = true;
+                self.reduce_policy = ReducePolicy::LbdTiered;
                 // 70h: SAT_LUCKY promoted to the default/fast profiles (2026-05-30 re-eval):
                 // n>=5 aggregate -12 PAR-2 vs lucky-off, and lucky robustly solves the
                 // order-fragile battleship instance (0.08s vs lucky-off 18-904s/timeouts).
@@ -2978,7 +2986,10 @@ mod tests {
     }
 
     #[test]
-    fn test_default_config_uses_solver10_compatible_search_defaults() {
+    fn test_default_config_uses_fstab_lbdtier_search_defaults() {
+        // profile20 Stage-1 ablation (2026-05-30/31) promoted the "fstab_lbdtier" config to the
+        // default/fast profiles: focused-stable + LBD + tick mode-switching + LBD-tiered reduction
+        // (VMTF auto-resolves to FocusedOnly). Preprocessing (simplification/bve/bsr) is unchanged.
         let config = SolverConfig::from_env_map(&env_map(&[]));
 
         assert_eq!(config.profile, SolverProfile::Default);
@@ -2987,9 +2998,12 @@ mod tests {
         assert!(config.simplification);
         assert!(config.bve);
         assert!(config.full_bsr);
-        assert!(!config.use_lbd);
-        assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
-        assert!(!config.mode_use_ticks);
+        assert!(config.use_lbd);
+        assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
+        assert!(config.mode_use_ticks);
+        assert_eq!(config.reduce_policy, ReducePolicy::LbdTiered);
+        assert_eq!(config.vmtf, VmtfMode::FocusedOnly);
+        assert!(config.lucky);
         assert_eq!(config.proof_policy, ProofPolicy::Drat);
         assert_eq!(
             config.initial_clause_mode,
@@ -3095,6 +3109,9 @@ mod tests {
             ("SAT_SEARCH_MODE", "single"),
             ("SAT_MODE_USE_TICKS", "off"),
             ("SAT_USE_LBD", "off"),
+            // default reduce policy is now lbd-tiered, which requires use_lbd; reset it so the
+            // use_lbd=off fixture is a valid config (lbd-tiered+!lbd hard-fails validation).
+            ("SAT_REDUCE", "legacy"),
         ]));
         let on = SolverConfig::from_env_map(&env_map(&[("SAT_USE_LBD", "on")]));
 
@@ -3238,7 +3255,14 @@ mod tests {
 
     #[test]
     fn test_vmtf_single_mode_is_runtime_supported_without_focused_stable() {
-        let config = SolverConfig::from_env_map(&env_map(&[("SAT_VMTF", "single")]));
+        // The default search mode is now focused-stable, so single-mode VMTF must request single
+        // mode explicitly (SAT_VMTF=single requires SAT_SEARCH_MODE=single), and the default's
+        // focused-stable-only mode_use_ticks must be turned off (it requires focused-stable).
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_SEARCH_MODE", "single"),
+            ("SAT_MODE_USE_TICKS", "off"),
+            ("SAT_VMTF", "single"),
+        ]));
 
         assert_eq!(config.vmtf, VmtfMode::Single);
         assert_eq!(config.search_mode_policy, SearchModePolicy::Single);

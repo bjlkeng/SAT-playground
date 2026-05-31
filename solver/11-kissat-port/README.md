@@ -15,6 +15,17 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **Default profile (2026-05-31): `fstab_lbdtier` promoted.** The `default`/`fast` profiles now run
+> focused-stable search + LBD + tick mode-switching + LBD-tiered reduction (VMTF auto → focused-only),
+> plus `lucky` (promoted earlier, 70h). Promoted from the first feature ablation on the new
+> `benchmarks/profile20` suite (10 easy controls + 10 hard headroom instances): fstab_lbdtier wins
+> aggregate PAR-2 by 2x over the prior single-mode default (5653 vs 6808, 13/20 vs 10/20 solved) and
+> clears the solver-10 floor (6773). The win is `SAT_REDUCE=lbd-tiered` (cracks 3 hard headroom
+> instances), amplified by focused-stable+VMTF halving the easy-half overhead. Promoted on the
+> Stage-1 (n=1 screening) decision; a formal `check_solver11_promotion.py` gate run was not recorded.
+> Provenance: `log/feature-ablation-2026-05-30-12-11-01/FINDINGS.md`. To recover the old behavior:
+> `SAT_PROFILE=baseline`, or `SAT_SEARCH_MODE=single SAT_MODE_USE_TICKS=off SAT_REDUCE=legacy SAT_USE_LBD=off`.
+
 What is present:
 
 - original-clause occurrence lists and literal occurrence counts during preprocessing
@@ -102,8 +113,11 @@ What is present:
   Env-facing `SAT_SEARCH_MODE=focused-stable` now enters the actual focused/stable path and defaults
   to focused-only VMTF unless `SAT_VMTF=off` is explicitly requested for an ablation. This matches
   Kissat's focused-mode branching model instead of the rejected VSIDS-in-focused hybrid.
-  The `default` and `fast` profiles use the solver-10-compatible single-mode search path after the
-  focused/stable default candidate regressed the clean solver 10 profiling baseline.
+  The `default` and `fast` profiles use the focused-stable search path with LBD, tick-based
+  mode-switching, and LBD-tiered reduction (the "fstab_lbdtier" config), promoted from the profile20
+  Stage-1 ablation on 2026-05-30/31 (see the "Default profile" note in Current State). The earlier
+  single-mode default was demoted after profile20's headroom half showed fstab_lbdtier wins
+  aggregate PAR-2 by 2x. The `baseline` profile remains the solver-10-compatible single-mode path.
   Entering focused mode resets the LBD EMA restart averages so focused-mode restart calibration
   does not inherit stable-mode glue. Entering stable mode refreshes the VSIDS heap from current
   variable activities before stable-mode decisions resume. Focused EMA restarts now use Kissat's
