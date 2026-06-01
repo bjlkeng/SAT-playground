@@ -1,0 +1,11 @@
+instance	config	result	time_s	conflicts	propagations	decisions	restarts	luby_restarts	glucose_restarts	focused_restarts	reluctant_restarts	mode_switches	chrono_attempts	chrono_used	chrono_rejected_not_asserting	chrono_rejected_delta_small	chrono_skipped_levels	phase_saved_used	phase_legacy_used	phase_target_used	phase_best_used	phase_initial_used	binary_props	binary_stale_skips	rephases	search_ticks	learned_clauses
+ed6d842f96d10f3400bce251f9e95bfb-battleship-16-31-sat	default	SATISFIABLE	0.1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	NA
+ed6d842f96d10f3400bce251f9e95bfb-battleship-16-31-sat	chrono	SATISFIABLE	0.1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	NA
+ed6d842f96d10f3400bce251f9e95bfb-battleship-16-31-sat	binary_fast	SATISFIABLE	0.1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	NA
+ed6d842f96d10f3400bce251f9e95bfb-battleship-16-31-sat	ema	SATISFIABLE	0.1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	NA
+ed6d842f96d10f3400bce251f9e95bfb-battleship-16-31-sat	target_phase	SATISFIABLE	0.1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	NA
+3746303c659ef65aaa78f3b52cd5de49-6s299b685_Iter30	default	SATISFIABLE	93.5	5097	27275660	669722	39	0	37	37	2	1	0	0	0	0	0	224088	0	0	378061	67573	0	0	0	122047229	NA
+3746303c659ef65aaa78f3b52cd5de49-6s299b685_Iter30	chrono	SATISFIABLE	129.7	310424	206531274	2469777	280	0	252	252	32	13	310415	260179	0	50236	5398812898	1059218	0	0	1142400	268159	0	0	0	1416028162	NA
+3746303c659ef65aaa78f3b52cd5de49-6s299b685_Iter30	binary_fast	SATISFIABLE	113.6	12951	107770777	5765382	98	0	94	94	4	4	0	0	0	0	0	5229443	0	0	420962	114977	0	0	0	560826438	NA
+3746303c659ef65aaa78f3b52cd5de49-6s299b685_Iter30	ema	SATISFIABLE	93.5	5097	27275660	669722	39	0	37	37	2	1	0	0	0	0	0	224088	0	0	378061	67573	0	0	0	122047229	NA
+3746303c659ef65aaa78f3b52cd5de49-6s299b685_Iter30	target_phase	SATISFIABLE	94.2	5097	27275660	669722	39	0	37	37	2	1	0	0	0	0	0	224088	0	0	378061	67573	0	0	0	122047229	NA
