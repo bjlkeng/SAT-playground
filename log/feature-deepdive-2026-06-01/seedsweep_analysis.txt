@@ -1,0 +1,69 @@
+
+============================================================================================
+=== binary_fast vs default — conflict distribution per instance (n=5 seeds) ===
+instance                         def_median feat_median  ratio  P(f>d)  default_range / feat_range
+battleship-16-31-sat                      0           0   0.00    0.50  [0-0] / [0-0]
+mp1-Nb7T46                            14379     1414544  98.38    1.00  [12482-43838] / [1393090-1435998]
+circuit_48in64out_with_800gate       179019      147629   0.82    0.36  [111193-192471] / [60676-184531]
+brocard_problem_large                   658         730   1.11    1.00  [652-673] / [681-735]
+SCPC-500-13                          306363      302412   0.99    0.44  [299848-363811] / [273546-349456]
+velev-pipe-sat-1.0-b7                144013      274150   1.90    0.75  [78007-404909] / [129436-428973]
+case9                               1237781     2579532   2.08    1.00  [1237781-1237781] / [2256730-2902334]
+6s299b685_Iter30                       8829        7679   0.87    0.52  [3837-10514] / [3007-26553]
+div-mitern172                       2206914     2163712   0.98    0.36  [2087133-2265986] / [2092137-2298929]
+Kakuro-easy-112-ext.xml.hg_7         162169       63336   0.39    0.24  [65522-362573] / [29068-275677]
+sqrt-mitern171                      2905673     3302755   1.14    0.92  [2724188-3196446] / [3085179-3481425]
+sudoku-N30-12                     (insufficient solved-seed data: def=0 feat=0)
+REGRandom-K4-L1-Seed40.sanitiz    (insufficient solved-seed data: def=0 feat=0)
+
+  -- aggregate (across 13 instances) --
+  default PAR-2/seed: mean=2500 ± 186  range [2154-2706]
+  binary_fast PAR-2/seed: mean=3070 ± 597  range [2290-3799]
+  Δ mean PAR-2 = +570  (default seed-spread ±186)
+  per-instance P(feat>default) mean=0.64  | instances worse:6 better:4 of 11
+
+============================================================================================
+=== target_phase vs default — conflict distribution per instance (n=5 seeds) ===
+instance                         def_median feat_median  ratio  P(f>d)  default_range / feat_range
+battleship-16-31-sat                      0           0   0.00    0.50  [0-0] / [0-0]
+mp1-Nb7T46                            14379        8114   0.56    0.16  [12482-43838] / [7046-26771]
+circuit_48in64out_with_800gate       179019      157586   0.88    0.64  [111193-192471] / [151081-263590]
+brocard_problem_large                   658         658   1.00    0.50  [652-673] / [652-673]
+SCPC-500-13                          306363      259377   0.85    0.00  [299848-363811] / [246585-288834]
+velev-pipe-sat-1.0-b7                144013      219372   1.52    0.40  [78007-404909] / [52106-386638]
+case9                               1237781     3134837   2.53    1.00  [1237781-1237781] / [1545874-4723800]
+6s299b685_Iter30                       8829        8829   1.00    0.50  [3837-10514] / [3837-10514]
+div-mitern172                       2206914     2676666   1.21    1.00  [2087133-2265986] / [2392330-2744192]
+Kakuro-easy-112-ext.xml.hg_7         162169       31184   0.19    0.04  [65522-362573] / [19657-142843]
+sqrt-mitern171                      2905673     2406531   0.83    0.12  [2724188-3196446] / [2205025-2920832]
+sudoku-N30-12                     (insufficient solved-seed data: def=0 feat=0)
+REGRandom-K4-L1-Seed40.sanitiz    (insufficient solved-seed data: def=0 feat=0)
+
+  -- aggregate (across 13 instances) --
+  default PAR-2/seed: mean=2500 ± 186  range [2154-2706]
+  target_phase PAR-2/seed: mean=2749 ± 375  range [2187-3278]
+  Δ mean PAR-2 = +248  (default seed-spread ±186)
+  per-instance P(feat>default) mean=0.44  | instances worse:3 better:5 of 11
+
+============================================================================================
+=== chrono vs default — conflict distribution per instance (n=5 seeds) ===
+instance                         def_median feat_median  ratio  P(f>d)  default_range / feat_range
+battleship-16-31-sat                      0           0   0.00    0.50  [0-0] / [0-0]
+mp1-Nb7T46                            14379       14379   1.00    0.50  [12482-43838] / [12482-43838]
+circuit_48in64out_with_800gate       179019      179019   1.00    0.50  [111193-192471] / [111193-192471]
+brocard_problem_large                   658         658   1.00    0.50  [652-673] / [652-673]
+SCPC-500-13                          306363      306363   1.00    0.50  [299848-363811] / [299848-363811]
+velev-pipe-sat-1.0-b7                144013      109713   0.76    0.40  [78007-404909] / [27387-338253]
+case9                               1237781     1237781   1.00    0.50  [1237781-1237781] / [1237781-1237781]
+6s299b685_Iter30                       8829       50470   5.72    1.00  [3837-10514] / [36297-310424]
+div-mitern172                       2206914     2206914   1.00    0.50  [2087133-2265986] / [2087133-2265986]
+Kakuro-easy-112-ext.xml.hg_7         162169      162169   1.00    0.50  [65522-362573] / [65522-362573]
+sqrt-mitern171                      2905673     2905673   1.00    0.50  [2724188-3196446] / [2724188-3196446]
+sudoku-N30-12                     (insufficient solved-seed data: def=0 feat=0)
+REGRandom-K4-L1-Seed40.sanitiz    (insufficient solved-seed data: def=0 feat=0)
+
+  -- aggregate (across 13 instances) --
+  default PAR-2/seed: mean=2500 ± 186  range [2154-2706]
+  chrono PAR-2/seed: mean=2556 ± 173  range [2216-2694]
+  Δ mean PAR-2 = +56  (default seed-spread ±186)
+  per-instance P(feat>default) mean=0.54  | instances worse:1 better:1 of 11

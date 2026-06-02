@@ -89,3 +89,39 @@ phase saving, which compounds into a longer search. There is no hot-path waste t
 Provenance: `probe.tsv`, `probe.sh`. Code anchors: `effective_restart_policy` main.rs:4677;
 chrono decision main.rs:5326; `attach_clause` binary arm main.rs:3621; binary edge propagation
 `propagate_binary_implications` main.rs:4259.
+
+---
+
+## UPDATE (2026-06-01): seed-distribution sweep — corrects the single-run claims above
+
+The analysis above (and sweep-2) rested on **n=1 seed**, which cannot distinguish "systematically
+worse" from "unlucky draw." Re-ran default vs each feature across **n=5 seeds × 13 default-solved
+instances** at 300s (`SAT_SEED` varies internal random decisions; conflicts are contention-immune).
+11/13 instances yielded data (sudoku + REGRandom timed out under all configs/seeds — censored
+equally, no bias). Primary metric: per-instance **P(feature>default)** conflict stochastic dominance
+(0.50 = lottery) + aggregate PAR-2/seed with the default's own seed-spread as the noise floor.
+Data: `seedsweep_results.tsv`, `seedsweep_analysis.txt`. Driver `seedsweep.py`, analyzer
+`seedsweep_analyze.py`.
+
+**Default's own seed-spread: PAR-2/seed mean 2500 ± 186** (range 2154–2706). That ±186 is the bar
+any feature delta must clear.
+
+| feature | Δ PAR-2 (vs ±186) | P(f>d) mean | better:worse | verdict |
+|---|---|---|---|---|
+| **chrono** | **+56** (noise) | 0.54 | 1:1 (9/11 byte-identical) | **genuinely neutral**: inert on ~all instances (backjumps rarely exceed delta=100), one explosion (6s299b685 5.7× conflicts) the suite dilutes |
+| **target_phase** | +248 (~1.3σ) | **0.44** (<0.5!) | **5:3** | **roughly neutral / mildly net-negative** — helps more instances than it hurts on conflicts (Kakuro 0.19×, SCPC/sqrt171/mp1 better); only case9's 2.53× blowup drags the aggregate positive. Earlier "real degradation" framing was too harsh. |
+| **binary_fast** | **+570 (~3σ, real)** | **0.64** | 4:6 | **systematically worse search distribution** — confirmed (matches the n=8 single-instance P=0.62). Shifted up + **3× variance** (stdev 597 vs 186). case9 worse on all 5 seeds (P=1.00). NOT random, NOT uniformly bad (helps 4/11: Kakuro 0.39×, circuit 0.82×). |
+
+### Corrections to the record
+- **binary_fast is real-but-modest worse search, not "random bad luck"** (P=0.64, case9 P=1.00) — this
+  answers the user's challenge: per-op speed is irrelevant; the *search distribution* is genuinely
+  shifted up. BUT the sweep-2 "+2614 PAR-2" was inflated ~4× by case9 tipping into a hard 600s
+  timeout; the intrinsic 300s search penalty is **+570**. Both "it's fine, just unlucky" and
+  "+2614 systematic" were wrong; truth is "+570, ~3σ, directional, variance-amplified by the metric."
+- **target_phase was over-condemned.** P=0.44 (<0.5) means it improves the *median* instance's
+  conflicts; it's only marginally net-negative in aggregate and entirely due to case9. Not a clean
+  regressor.
+- **chrono confirmed neutral** with the precise mechanism: bimodal (inert | rare explosion), net within noise.
+- **case9 is the universal pathology** — every feature's worst case. It is the fragile instance that
+  any trajectory perturbation breaks, and it dominates aggregate verdicts on this suite. A
+  case9-free suite would flip target_phase net-positive and roughly halve binary_fast's penalty.
