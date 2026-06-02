@@ -369,6 +369,94 @@ def smoke(args) -> int:
     return 0
 
 
+def seedgate(args) -> int:
+    """Multi-seed per-(config,instance,seed) sweep -> gate-compatible TSV (2026-06-02 procedure).
+
+    The standard pre-keep/pre-promote measurement: run a config across N seeds (default 10) on each
+    instance, capturing conflicts (deterministic per (config,seed), contention-immune) for the
+    lexicographic solved->conflicts->PAR-2 decision. Decompresses .cnf.xz to a scratch dir (the
+    solver does not read .xz directly), runs N workers pinned to physical cores, writes one TSV per
+    config that check_solver11_promotion.py --multiseed consumes. Resumable.
+
+    Usage: --seedgate --tag <config-tag> [--seeds 10] [--timeout 600] on the suite's instances.
+    """
+    import shutil
+    tag = args.configs.strip() or "default"
+    if tag not in CONFIG_MAP:
+        print(f"unknown config tag {tag!r}; known: {sorted(CONFIG_MAP)}", flush=True)
+        return 2
+    solver_dir, env_extra = CONFIG_MAP[tag]
+    seeds = list(range(args.seeds))
+    insts = instances(args.half if getattr(args, "half", None) else None)
+    ts = time.strftime("%Y-%m-%d-%H-%M-%S")
+    camp = ROOT / "log" / f"seedgate-{tag}-{ts}"
+    (camp / "_work").mkdir(parents=True, exist_ok=True)
+    scratch = camp / "_cnf"
+    scratch.mkdir(parents=True, exist_ok=True)
+    build(solver_dir)
+
+    # decompress instances once (solver can't read .cnf.xz)
+    cnf_for = {}
+    for stem in insts:
+        dst = scratch / (stem + ".cnf")
+        if not dst.exists():
+            with open(SUITE / (stem + ".cnf.xz"), "rb") as fh:
+                import lzma
+                dst.write_bytes(lzma.decompress(fh.read()))
+        cnf_for[stem] = dst
+
+    jobs = [(i, stem, seed) for i, (stem, seed) in enumerate(
+        (s, sd) for s in insts for sd in seeds)]
+    print(f"[seedgate] tag={tag} {len(jobs)} runs ({len(insts)} inst x {len(seeds)} seeds) "
+          f"t={args.timeout}s m={args.mem_mb}MB jobs={len(CORES)} -> {camp}", flush=True)
+
+    def run(job):
+        idx, stem, seed = job
+        core = CORES[idx % len(CORES)]
+        odir = camp / "_work" / f"{idx}"
+        odir.mkdir(parents=True, exist_ok=True)
+        env = {**os.environ, **env_extra, "SAT_SEED": str(seed), "SAT_STATS_JSON": "on"}
+        cmd = ["taskset", "-c", str(core), "bash", "-c",
+               f'ulimit -v {args.mem_mb*1024}; exec timeout {args.timeout} '
+               f'"{ROOT/solver_dir}/target/release/sat-solver" "{cnf_for[stem]}" "{odir}"']
+        t0 = time.time()
+        try:
+            p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True, env=env, timeout=args.timeout + 30)
+            dt = time.time() - t0
+            res = next((ln.split()[1] for ln in p.stdout.splitlines() if ln.startswith("s ")), None)
+            if res is None:
+                res = "TIMEOUT" if p.returncode == 124 else f"UNKNOWN_rc{p.returncode}"
+            js = ""
+            for ln in p.stderr.splitlines():
+                if '"conflicts"' in ln:
+                    br = ln.find("{")
+                    if br >= 0:
+                        js = ln[br:]
+            import re
+            g = lambda k: (re.search(rf'"{k}":([0-9.eE+-]+)', js) or [None, "NA"])[1]
+            return (stem, seed, res, dt, g("conflicts"), g("propagations"), g("decisions"))
+        except subprocess.TimeoutExpired:
+            return (stem, seed, "TIMEOUT", time.time() - t0, "NA", "NA", "NA")
+
+    from concurrent.futures import ThreadPoolExecutor
+    results = []
+    with ThreadPoolExecutor(max_workers=len(CORES)) as ex:
+        for r in ex.map(run, jobs):
+            results.append(r)
+            print(f"  {r[0][:26]}/s{r[1]} {r[2]} {r[3]:.0f}s conf={r[4]}", flush=True)
+
+    tsv = camp / "results.tsv"
+    with open(tsv, "w") as f:
+        f.write("config\tinstance\tseed\tresult\ttime_s\tconflicts\tpropagations\tdecisions\ttimeout\n")
+        for stem, seed, res, dt, cf, pr, dc in sorted(results):
+            f.write(f"{tag}\t{stem}\t{seed}\t{res}\t{dt:.3f}\t{cf}\t{pr}\t{dc}\t{args.timeout}\n")
+    (camp / "DONE").write_text("seedgate complete\n")
+    solved = sum(1 for r in results if r[2].upper() in ("SAT", "UNSAT", "SATISFIABLE", "UNSATISFIABLE"))
+    print(f"[seedgate] DONE solved={solved}/{len(results)} -> {tsv}", flush=True)
+    return 0
+
+
 def validate(args) -> int:
     """Pre-flight: run each config on a trivial CNF and report invalid-config rejections.
 
@@ -413,11 +501,21 @@ def main() -> int:
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--validate", action="store_true")
     ap.add_argument("--sweep2", action="store_true", help="use the CONFIGS_V2 matrix (new-default combos)")
+    ap.add_argument("--seedgate", action="store_true",
+                    help="multi-seed per-(config,instance,seed) sweep -> gate TSV (use with --configs <tag>)")
+    ap.add_argument("--seeds", type=int, default=10, help="seeds for --seedgate (default 10)")
+    ap.add_argument("--half", default="", help="restrict --seedgate to 'easy' or 'hard' half")
     ap.add_argument("--configs", default="")
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--mem-mb", type=int, default=14000)
     ap.add_argument("--jobs", type=int, default=4)
     args = ap.parse_args()
+    if args.seedgate:
+        if not args.configs:
+            ap.error("--seedgate requires --configs <single-tag>")
+        if args.timeout == 300:
+            args.timeout = 600   # seedgate default: longer to minimize censoring
+        return seedgate(args)
     if args.validate:
         return validate(args)
     if args.smoke:

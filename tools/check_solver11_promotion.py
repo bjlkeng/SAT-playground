@@ -278,10 +278,173 @@ def self_test() -> None:
         if check_gate(contra, process_lines=[]) == 0:
             raise AssertionError("SAT<->UNSAT contradiction vs solver10 must fail")
 
+        _self_test_multiseed(root)
+
+
+def write_seed_tsv(path: Path, config: str, rows: list[tuple[str, str, str, float, int]]) -> None:
+    """rows: (instance, seed, result, time_s, conflicts)."""
+    lines = ["config\tinstance\tseed\tresult\ttime_s\tconflicts\tpropagations\tdecisions\ttimeout"]
+    for inst, seed, res, t, cf in rows:
+        lines.append(f"{config}\t{inst}\t{seed}\t{res}\t{t:.3f}\t{cf}\t0\t0\t600")
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _self_test_multiseed(root: Path) -> None:
+    # solver10 + previous both solve a@2seeds, b@2seeds; conflicts modest.
+    def mk(name, cfg, spec):
+        p = root / name
+        write_seed_tsv(p, cfg, spec)
+        return p
+    seeds = ["0", "1"]
+    s10 = mk("ms_s10.tsv", "solver10",
+             [("a", s, "SAT", 5, 100) for s in seeds] + [("b", s, "UNSAT", 5, 100) for s in seeds])
+    prev = mk("ms_prev.tsv", "default",
+              [("a", s, "SAT", 6, 120) for s in seeds] + [("b", s, "UNSAT", 6, 120) for s in seeds])
+    base = dict(timeout=600.0, memory_mb=16384, tolerance_fraction=0.0,
+                allow_running_solvers=False, multiseed=True, previous=prev, solver10=s10)
+
+    # WIN: candidate solves same, fewer conflicts than previous AND >= solver10 lexicographically.
+    cand_win = mk("ms_cand_win.tsv", "cand",
+                  [("a", s, "SAT", 6, 90) for s in seeds] + [("b", s, "UNSAT", 6, 90) for s in seeds])
+    if check_gate_multiseed(argparse.Namespace(**{**base, "candidate": cand_win}), process_lines=[]) != 0:
+        raise AssertionError("multiseed: fewer-conflicts candidate (beats prev, >=solver10) must PASS")
+
+    # FAIL floor: candidate solves FEWER than solver10 (loses the floor lexicographically).
+    cand_lose = mk("ms_cand_lose.tsv", "cand",
+                   [("a", s, "SAT", 6, 90) for s in seeds] + [("b", s, "TIMEOUT", 600, 0) for s in seeds])
+    if check_gate_multiseed(argparse.Namespace(**{**base, "candidate": cand_lose}), process_lines=[]) == 0:
+        raise AssertionError("multiseed: candidate solving fewer than solver10 must FAIL the floor")
+
+    # FAIL: binary_fast lesson — same solved, MORE conflicts than solver10 (faster PAR-2 cannot save it).
+    cand_moreconf = mk("ms_cand_moreconf.tsv", "cand",
+                       [("a", s, "SAT", 1, 500) for s in seeds] + [("b", s, "UNSAT", 1, 500) for s in seeds])
+    if check_gate_multiseed(argparse.Namespace(**{**base, "candidate": cand_moreconf}), process_lines=[]) == 0:
+        raise AssertionError("multiseed: equal-solved + more-conflicts-than-solver10 must FAIL despite faster PAR-2")
+
+    # FAIL: SAT<->UNSAT contradiction vs solver10.
+    cand_contra = mk("ms_cand_contra.tsv", "cand",
+                     [("a", s, "UNSAT", 5, 90) for s in seeds] + [("b", s, "UNSAT", 5, 90) for s in seeds])
+    if check_gate_multiseed(argparse.Namespace(**{**base, "candidate": cand_contra}), process_lines=[]) == 0:
+        raise AssertionError("multiseed: SAT<->UNSAT contradiction vs solver10 must FAIL")
+
+
+def check_gate_multiseed(args: argparse.Namespace, process_lines: list[str] | None = None) -> int:
+    """Multi-seed lexicographic gate (2026-06-02 procedure).
+
+    Inputs are feature_ablation per-(config,instance,seed) TSVs for solver10/previous/candidate.
+    Decision metric is LEXICOGRAPHIC solved -> conflicts(both-solved) -> PAR-2, evaluated:
+      * candidate vs previous-solver11-default = the promote/keep decision
+      * candidate vs solver10 = the floor (must not lose lexicographically)
+    All structural guards from the single-CSV gate are preserved: matching (instance,seed) cell sets
+    across configs, correctness failures, SAT<->UNSAT contradictions (vs both previous and solver10),
+    process sanity, and required --previous/--memory-mb.
+    """
+    cb = compare_bench
+    s10_cells = cb.seed_cells_by_config(cb.read_seed_tsv(args.solver10))
+    cand_cells = cb.seed_cells_by_config(cb.read_seed_tsv(args.candidate))
+    prev_cells = cb.seed_cells_by_config(cb.read_seed_tsv(args.previous)) if args.previous else None
+
+    # each TSV should contain exactly one config; collapse to its cells
+    def only(cells_by_cfg, label):
+        if len(cells_by_cfg) != 1:
+            failures.append(f"{label}_tsv_must_contain_exactly_one_config")
+            # merge anyway so downstream doesn't crash
+            merged = {}
+            for d in cells_by_cfg.values():
+                merged.update(d)
+            return merged
+        return next(iter(cells_by_cfg.values()))
+
+    failures: list[str] = []
+    warnings: list[str] = []
+    if args.previous is None:
+        failures.append("previous_solver11_required")
+    if args.memory_mb is None:
+        failures.append("memory_mb_required")
+
+    s10 = only(s10_cells, "solver10")
+    cand = only(cand_cells, "candidate")
+    prev = only(prev_cells, "previous") if prev_cells is not None else {}
+
+    # matching (instance,seed) cell sets
+    if set(cand) != set(s10):
+        failures.append("candidate_cells_differ_from_solver10")
+    if prev_cells is not None and set(cand) != set(prev):
+        failures.append("candidate_cells_differ_from_previous_solver11")
+
+    # correctness: any ERROR/PARSE_ERROR cell in the candidate
+    bad = sorted(f"{k[0]}@seed{k[1]}={c['result']}" for k, c in cand.items()
+                 if c["result"].upper() in {"ERROR", "PARSE_ERROR"})
+    if bad:
+        failures.append("candidate_correctness_failures")
+
+    # SAT<->UNSAT contradictions per (instance,seed) vs both references
+    contra_s10 = cb.seed_contradictions(cand, s10)
+    contra_prev = cb.seed_contradictions(cand, prev) if prev else []
+    if contra_s10:
+        failures.append("candidate_contradicts_solver10")
+    if contra_prev:
+        failures.append("candidate_contradicts_previous_solver11")
+
+    process_lines = running_solver_processes() if process_lines is None else process_lines
+    if process_lines and not args.allow_running_solvers:
+        failures.append("running_solver_processes_detected")
+
+    t = args.timeout
+    s10_score = cb.lexicographic_score(s10, t)
+    cand_score = cb.lexicographic_score(cand, t)
+    prev_score = cb.lexicographic_score(prev, t) if prev else None
+
+    # candidate vs solver10 floor (lexicographic)
+    bt_s10 = cb.both_solved_conflict_totals(cand, s10)
+    floor_decision, floor_reason = cb.lexicographic_decision(cand_score, s10_score, bt_s10)
+    candidate_loses_solver10 = floor_decision == "regress"
+
+    # candidate vs previous default (the keep/promote decision)
+    prev_decision = prev_reason = None
+    candidate_improves_previous = False
+    if prev:
+        bt_prev = cb.both_solved_conflict_totals(cand, prev)
+        prev_decision, prev_reason = cb.lexicographic_decision(cand_score, prev_score, bt_prev)
+        candidate_improves_previous = prev_decision == "win"
+
+    decision_required = "none"
+    if candidate_loses_solver10:
+        decision_required = ("candidate_improves_previous_solver11_but_loses_solver10"
+                             if candidate_improves_previous else "candidate_loses_solver10")
+        failures.append(decision_required)
+
+    def fmt(s):
+        return None if s is None else {"solved": s["solved"], "conflicts_solved": s["conflicts_solved"],
+                                       "par2": round(s["par2"], 3), "cells": s["cells"]}
+    print(f"mode=multiseed timeout_s={t:g} memory_mb={args.memory_mb}")
+    print("machine_environment=" + json.dumps(machine_environment(t, args.memory_mb), sort_keys=True))
+    print("running_solver_processes=" + json.dumps(process_lines))
+    print("solver10_score=" + json.dumps(fmt(s10_score)))
+    if prev_score is not None:
+        print("previous_solver11_score=" + json.dumps(fmt(prev_score)))
+    print("candidate_score=" + json.dumps(fmt(cand_score)))
+    print(f"candidate_vs_solver10={floor_decision}  # {floor_reason}")
+    if prev_decision is not None:
+        print(f"candidate_vs_previous_solver11={prev_decision}  # {prev_reason}")
+    print("contradictions_vs_solver10=" + json.dumps(contra_s10))
+    print("contradictions_vs_previous=" + json.dumps(contra_prev))
+    print("candidate_correctness_failures=" + json.dumps(bad))
+    print("decision_required=" + decision_required)
+    print("failures=" + json.dumps(failures))
+    if failures:
+        print("promotion_gate=FAIL")
+        return 1
+    print("promotion_gate=PASS")
+    return 0
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--multiseed", action="store_true",
+                        help="inputs are feature_ablation per-(config,instance,seed) TSVs; "
+                             "decide lexicographically solved->conflicts->PAR-2")
     parser.add_argument("--solver10", type=Path)
     parser.add_argument("--candidate", type=Path)
     parser.add_argument("--previous", type=Path)
@@ -298,7 +461,7 @@ def main() -> int:
 
     if args.solver10 is None or args.candidate is None:
         parser.error("--solver10 and --candidate are required unless --self-test is used")
-    return check_gate(args)
+    return check_gate_multiseed(args) if args.multiseed else check_gate(args)
 
 
 if __name__ == "__main__":

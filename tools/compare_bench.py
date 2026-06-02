@@ -193,6 +193,117 @@ def is_status_regression(before_result: str, after_result: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Lexicographic multi-seed scoring (solved -> conflicts -> PAR-2).
+#
+# Consumes a feature_ablation per-(config,instance,seed) TSV with columns:
+#   config  instance  seed  result  time_s  conflicts  propagations  decisions
+# The decision metric is LEXICOGRAPHIC, per the 2026-06-02 procedure update:
+#   (1) total solved instances across all (instance,seed) cells   [primary]
+#   (2) total conflicts on the cells BOTH configs solve            [tiebreak, lower=better]
+#   (3) aggregate PAR-2                                            [supplemental, lower=better]
+# Conflicts are deterministic per (config,seed) and contention-immune, so they are a sound
+# tiebreak; PAR-2 is contention-sensitive and only breaks a conflicts tie. Correctness and the
+# SAT<->UNSAT contradiction check still gate regardless of the score (handled by the caller).
+# ---------------------------------------------------------------------------
+
+# feature_ablation emits full-word statuses; normalize to the SOLVED set.
+SOLVED_WORDS = SOLVED | {"SATISFIABLE", "UNSATISFIABLE"}
+
+
+def is_solved(result: str) -> bool:
+    return result.strip().upper() in {w.upper() for w in SOLVED_WORDS}
+
+
+def read_seed_tsv(path: Path) -> list[dict[str, str]]:
+    """Read a feature_ablation multi-seed TSV into a list of normalized cell dicts."""
+    with path.open(newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        if reader.fieldnames is None:
+            raise SystemExit(f"{path}: missing TSV header")
+        required = {"config", "instance", "seed", "result", "time_s"}
+        missing = required.difference(reader.fieldnames)
+        if missing:
+            raise SystemExit(f"{path}: missing columns: {', '.join(sorted(missing))}")
+        return [{k: (v or "").strip() for k, v in row.items()} for row in reader]
+
+
+def seed_cells_by_config(cells: list[dict[str, str]]) -> dict[str, dict[tuple[str, str], dict[str, str]]]:
+    """Index cells as out[config][(instance, seed)] = cell."""
+    out: dict[str, dict[tuple[str, str], dict[str, str]]] = defaultdict(dict)
+    for c in cells:
+        out[c["config"]][(c["instance"], c["seed"])] = c
+    return out
+
+
+def lexicographic_score(config_cells: dict[tuple[str, str], dict[str, str]], timeout: float) -> dict:
+    """Per-config aggregate: solved count, total conflicts (solved cells), PAR-2, cell count."""
+    solved = conflicts_solved = par2_total = cells = 0
+    par2_total = 0.0
+    for cell in config_cells.values():
+        cells += 1
+        if is_solved(cell["result"]):
+            solved += 1
+            par2_total += as_float(cell["time_s"])
+            conflicts_solved += int(as_float(cell.get("conflicts", "0")))
+        else:
+            par2_total += 2.0 * timeout_for(cell, timeout)
+    return {"solved": solved, "conflicts_solved": conflicts_solved,
+            "par2": par2_total, "cells": cells}
+
+
+def lexicographic_decision(
+    feature: dict, reference: dict, both_solved_conflicts: tuple[int, int]
+) -> tuple[str, str]:
+    """Return (decision, reason). decision in {win, regress, tie}.
+
+    Lexicographic on the metric hierarchy. Conflicts are compared ONLY over cells both configs
+    solve (passed in as (feature_conf, reference_conf)); PAR-2 only breaks a conflicts tie.
+    """
+    if feature["solved"] != reference["solved"]:
+        d = "win" if feature["solved"] > reference["solved"] else "regress"
+        return d, f"solved {feature['solved']} vs {reference['solved']}"
+    fc, rc = both_solved_conflicts
+    if fc != rc:
+        d = "win" if fc < rc else "regress"
+        return d, f"equal solved; conflicts(both-solved) {fc} vs {rc}"
+    # solved and conflicts tie -> PAR-2 supplemental
+    if abs(feature["par2"] - reference["par2"]) > 1e-9:
+        d = "win" if feature["par2"] < reference["par2"] else "regress"
+        return d, f"equal solved+conflicts; PAR-2 {feature['par2']:.1f} vs {reference['par2']:.1f}"
+    return "tie", "identical solved, conflicts, and PAR-2"
+
+
+def both_solved_conflict_totals(
+    feature_cells: dict[tuple[str, str], dict[str, str]],
+    reference_cells: dict[tuple[str, str], dict[str, str]],
+) -> tuple[int, int]:
+    """Sum conflicts over the (instance,seed) cells BOTH configs solve. (feature_total, ref_total)."""
+    ft = rt = 0
+    for key in set(feature_cells) & set(reference_cells):
+        fc, rc = feature_cells[key], reference_cells[key]
+        if is_solved(fc["result"]) and is_solved(rc["result"]):
+            ft += int(as_float(fc.get("conflicts", "0")))
+            rt += int(as_float(rc.get("conflicts", "0")))
+    return ft, rt
+
+
+def seed_contradictions(
+    feature_cells: dict[tuple[str, str], dict[str, str]],
+    reference_cells: dict[tuple[str, str], dict[str, str]],
+) -> list[tuple[str, str, str, str]]:
+    """SAT<->UNSAT disagreements on the same (instance,seed): a correctness signal PAR-2 cannot price."""
+    out = []
+    for key in sorted(set(feature_cells) & set(reference_cells)):
+        f, r = feature_cells[key], reference_cells[key]
+        fu, ru = f["result"].upper(), r["result"].upper()
+        f_sat = fu in {"SAT", "SATISFIABLE"}; f_uns = fu in {"UNSAT", "UNSATISFIABLE"}
+        r_sat = ru in {"SAT", "SATISFIABLE"}; r_uns = ru in {"UNSAT", "UNSATISFIABLE"}
+        if (f_sat and r_uns) or (f_uns and r_sat):
+            out.append((key[0], key[1], f["result"], r["result"]))
+    return out
+
+
 def category_for(baseline: dict[str, dict[str, str]], instance: str) -> str:
     return baseline_row_for(baseline, instance).get("category", "uncategorized")
 
@@ -438,6 +549,49 @@ def self_test() -> None:
         code = compare(namespace)
         if code != 0:
             raise AssertionError("self-test expected PASS")
+
+    _self_test_lexicographic()
+
+
+def _self_test_lexicographic() -> None:
+    """Unit-test the lexicographic multi-seed scoring primitives."""
+    def cells(rows):  # rows: list of (config,inst,seed,result,time,conflicts)
+        return [dict(config=c, instance=i, seed=s, result=r, time_s=str(t),
+                     conflicts=str(cf), timeout="600") for c, i, s, r, t, cf in rows]
+
+    # (1) solved dominates: feature solves more -> win even with MORE conflicts/PAR2
+    ref = cells([("default", "x", "0", "SAT", 5, 100), ("default", "y", "0", "TIMEOUT", 600, 0)])
+    feat = cells([("f", "x", "0", "SAT", 9, 999), ("f", "y", "0", "SAT", 9, 999)])
+    by = seed_cells_by_config(ref + feat)
+    rs = lexicographic_score(by["default"], 600.0); fs = lexicographic_score(by["f"], 600.0)
+    bt = both_solved_conflict_totals(by["f"], by["default"])
+    d, _ = lexicographic_decision(fs, rs, bt)
+    assert d == "win", f"more-solved must win, got {d}"
+
+    # (2) equal solved, fewer conflicts -> win (the binary_fast lesson: PAR-2 speed can't override)
+    ref = cells([("default", "x", "0", "SAT", 5, 100)])
+    feat = cells([("f", "x", "0", "SAT", 2, 200)])  # FASTER (par2) but MORE conflicts
+    by = seed_cells_by_config(ref + feat)
+    rs = lexicographic_score(by["default"], 600.0); fs = lexicographic_score(by["f"], 600.0)
+    bt = both_solved_conflict_totals(by["f"], by["default"])
+    d, why = lexicographic_decision(fs, rs, bt)
+    assert d == "regress", f"equal-solved + more-conflicts must regress despite faster PAR-2, got {d} ({why})"
+
+    # (3) equal solved + equal conflicts -> PAR-2 breaks the tie
+    ref = cells([("default", "x", "0", "SAT", 5, 100)])
+    feat = cells([("f", "x", "0", "SAT", 2, 100)])
+    by = seed_cells_by_config(ref + feat)
+    rs = lexicographic_score(by["default"], 600.0); fs = lexicographic_score(by["f"], 600.0)
+    bt = both_solved_conflict_totals(by["f"], by["default"])
+    d, _ = lexicographic_decision(fs, rs, bt)
+    assert d == "win", f"equal solved+conflicts, faster PAR-2 must win, got {d}"
+
+    # (4) SAT<->UNSAT contradiction detected
+    ref = cells([("default", "x", "0", "SAT", 5, 100)])
+    feat = cells([("f", "x", "0", "UNSAT", 5, 100)])
+    by = seed_cells_by_config(ref + feat)
+    contra = seed_contradictions(by["f"], by["default"])
+    assert len(contra) == 1, f"contradiction must be flagged, got {contra}"
 
 
 def main() -> int:

@@ -177,16 +177,39 @@ Write DRAT proof to `<output_dir>/proof.out`. This is required from every iterat
 
 ## Development Rules
 
-- **Primary objective is aggregate PAR-2 over the profile20 suite.** The single optimization
-  goal for solver work is total PAR-2 across the whole `benchmarks/profile20` set — 10 easy
-  control instances (reused verbatim from `benchmarks/profiling`) + 10 hard "headroom" instances
-  solver-10 cannot solve within 5 min but kissat can — reported as an all-20 aggregate with the
-  easy-10 / hard-10 split shown. (`benchmarks/profiling` remains the legacy easy-only control.)
-  It is not per-instance time. A change that regresses some instances — including flipping a solved instance
-  to a timeout — is acceptable and expected as long as it improves aggregate PAR-2 beyond
-  run-to-run noise. Do not reject a net-positive change because individual rows got slower or newly
-  time out, and do not require a feature to help every instance. The one thing aggregate PAR-2
-  never overrides is correctness (see the correctness rule below). Use kissat and other reference
+- **Primary objective is the LEXICOGRAPHIC metric over the profile20 suite, measured across seeds.**
+  The decision metric for solver work, in strict priority order, is: **(1) solved instances** across
+  the seed runs [primary]; **(2) total conflicts** on the instances that tie on solved-count
+  [tiebreak, lower is better]; **(3) aggregate PAR-2** [supplemental, breaks a conflicts tie only].
+  This is measured over the whole `benchmarks/profile20` set — 10 easy control instances (reused
+  verbatim from `benchmarks/profiling`) + 10 hard "headroom" instances solver-10 cannot solve within
+  5 min but kissat can — reported as an all-20 aggregate with the easy-10 / hard-10 split.
+  (`benchmarks/profiling` is the legacy easy-only control.) **Conflicts rank above PAR-2 on purpose:**
+  a faster-per-op change that does *more search* (more conflicts) at equal solved-count is NOT a win,
+  even if its wall-clock/PAR-2 looks better — this is the binary_fast lesson (it is 3× faster per
+  propagation yet explores a longer search; see `log/feature-deepdive-2026-06-01/`). PAR-2 is
+  contention-sensitive; conflicts are deterministic per (config, seed) and contention-immune, which
+  is why conflicts are the trustworthy tiebreak and PAR-2 is only supplemental.
+- **Every feature measurement that informs a keep/turn-on/promote decision MUST use a multi-seed
+  per-instance sweep (default N=10 seeds), never a single run.** Single-seed per-instance verdicts on
+  profile20 are unreliable: `case9`, `sudoku-N30-12`, and `REGRandom-K4-L1-Seed40` are seed-fragile
+  (e.g. the default solves case9 on only ~1/5 seeds), so n=1 conflates "systematically better/worse"
+  with a lucky draw and has produced flat-wrong verdicts. Run the sweep with
+  `python3 tools/feature_ablation.py --seedgate --configs <tag> [--seeds 10] [--timeout 600]` per
+  config, then decide with `python3 tools/check_solver11_promotion.py --multiseed ...`. Report
+  per-instance **solve-rate (X/N seeds)**, median conflicts, **P(feature>default)** stochastic
+  dominance (0.50 = no effect / lottery), and compare any aggregate delta against the **default's own
+  seed-spread (±stdev)** as the noise floor. Flag any seed-fragile instance (solve-rate < N/N) — its
+  single-seed numbers must not silently drive a verdict. Fast single-instance / single-seed runs are
+  fine for *mid-iteration exploration while coding*; they are not sufficient for a keep/commit
+  decision. (Conflicts-as-tiebreak assumes the solver is deterministic per (config, seed); if a
+  feature introduces nondeterminism that breaks that, fall back to repeated PAR-2 runs on quiet cores
+  and say so.)
+- A change that regresses some instances — including flipping a solved instance to a timeout — is
+  acceptable as long as it wins the lexicographic metric beyond seed-noise. Do not reject a
+  net-positive change because individual rows got slower, and do not require a feature to help every
+  instance. The one thing the metric never overrides is correctness (see the correctness rule below).
+  Use kissat and other reference
   solvers for inspiration, hypotheses, and comparison — matching their behavior or implementation
   1-to-1 is **not** a goal; adapt freely and keep whatever wins aggregate PAR-2.
 - **Use red-green TDD for solver changes** — add or update a failing test first when practical, then implement until it passes before moving on.
@@ -216,19 +239,25 @@ Write DRAT proof to `<output_dir>/proof.out`. This is required from every iterat
   silently normalizing, quarantining, or rerouting requested feature flags unless the user
   explicitly asks for that mitigation. Distinguish "ran out of budget" (a PAR-2 cost, fine if the
   total wins) from "answered `UNKNOWN` early" (debug it).
-- **Solver 11 default/fast promotion gate:** the decision metric is **aggregate PAR-2 over the
-  profile20 suite** vs the current solver 11 default — promote a candidate that improves it beyond
-  run-to-run noise, regardless of which individual instances regressed. Still run a clean solver 10
-  comparison on the same set and pass
-  `python3 tools/check_solver11_promotion.py --solver10 <solver10-results.csv> --previous <prior-solver11-results.csv> --candidate <candidate-results.csv> --timeout <seconds> --memory-mb <MB>`.
-  Solver 10 remains an **aggregate-PAR-2 regression floor**: do not ship a default that loses to
-  solver 10 on aggregate PAR-2, but the floor is informational pressure, not the keep/revert metric.
-  The gate is an **aggregate** floor, **not** a per-instance one: an instance that regresses from
-  solved (by solver 10) to a timeout in the candidate is a priced-in PAR-2 cost and does **not** fail
-  the gate — only a **SAT↔UNSAT correctness contradiction** vs solver 10 fails it (PAR-2 can never
-  buy back a wrong answer). The gate must record process sanity, matching instance/timeout sets,
-  machine metadata, the aggregate PAR-2 decision vs the prior default, and the explicit note when a
-  candidate improves prior solver 11 but still loses to solver 10.
+- **Solver 11 default/fast promotion gate:** the decision metric is the **LEXICOGRAPHIC
+  solved→conflicts→PAR-2 metric over profile20, measured across N=10 seeds**, candidate vs the
+  current solver-11 default. Produce one multi-seed TSV per config with
+  `python3 tools/feature_ablation.py --seedgate --configs <tag> --seeds 10 [--timeout 600]` (for
+  solver10, the prior default, and the candidate), then run the gate:
+  `python3 tools/check_solver11_promotion.py --multiseed --solver10 <solver10.tsv> --previous <prior-default.tsv> --candidate <candidate.tsv> --timeout <seconds> --memory-mb <MB>`.
+  Promote a candidate that wins lexicographically vs the prior default beyond seed-noise. Solver 10
+  is a **lexicographic regression floor**: do not ship a default that loses to solver 10 on the
+  lexicographic metric (fewer solved, or equal-solved with more conflicts), but the floor is
+  informational pressure, not the keep/revert metric. The floor is **not** a per-instance one: an
+  instance that regresses from solved (by solver 10) to a timeout is priced into the lexicographic
+  comparison and does **not** by itself fail the gate — only a **SAT↔UNSAT correctness
+  contradiction** (per (instance,seed), vs solver 10 or the prior default) fails it (no metric buys
+  back a wrong answer). The gate records process sanity, matching (instance,seed) cell sets,
+  per-config solved/conflicts/PAR-2 scores, the lexicographic decision vs both the prior default and
+  the solver-10 floor, and the explicit note when a candidate beats the prior default but loses the
+  floor. **The single-CSV `check_gate` path (aggregate-PAR-2-only, no `--multiseed`) is retained for
+  legacy/quick comparisons but is no longer the promotion decision; the multi-seed lexicographic path
+  is authoritative.**
 - **Do not promote overfit guards or lucky-order wins (distinct from honest per-instance
   regressions):** a real mechanism that improves aggregate PAR-2 while regressing some individual
   rows is a *good* change — keep it. What this rule forbids is a different thing: an apparent
@@ -352,19 +381,25 @@ idea or benchmark gap, it is acceptable to test that focused feature as part of 
    easy-10 / hard-10 split. A single instance is only a fast-iteration aid — never the keep/revert metric.
 
    For solver-11 feature ablations use the driver `tools/feature_ablation.py` (it encodes the matrix,
-   the same-binary `SAT_*` toggles, and honors flag `requires` deps): it runs **4 workers pinned to
-   physical cores 0–3** (`taskset`, one `bench.sh -j1` shard each; N/2 cores, siblings idle for clean
-   timing; memory capped so 4 jobs fit RAM). It applies the **3% repeat rule** — a config within ±3 %
-   of the baseline PAR-2 is in the noise band and is re-run to confirm; a clear (>3 %) win/loss is
-   accepted from a single run. Run it in **two stages**: Stage 1 screens every config at 300 s on all
-   20 (`--stage1`); Stage 2 re-runs the shortlist at a long timeout on the hard-10 only (`--stage2
-   --configs ...`), because solver-11 needs >300 s on the hard half so 300 s gives it no headroom signal.
+   the same-binary `SAT_*` toggles, and honors flag `requires` deps), running **4 workers pinned to
+   physical cores 0–3** (`taskset`, siblings idle; memory capped so 4 jobs fit RAM).
+   - **Quick screen (exploration only, NOT a decision):** `--stage1` runs every config once at 300 s
+     on all 20 to triage obviously-broken or wildly-regressing configs. Single-seed; cheap. Use it to
+     pick which configs are worth measuring properly — never to keep/promote.
+   - **Keep/turn-on/promote decision (REQUIRED, the authoritative measurement):** the **multi-seed
+     `--seedgate`** mode. For each config worth deciding on, run
+     `python3 tools/feature_ablation.py --seedgate --configs <tag> --seeds 10 [--timeout 600]`
+     (N=10 seeds per instance via `SAT_SEED`, conflicts captured), then decide with the lexicographic
+     gate `python3 tools/check_solver11_promotion.py --multiseed ...` (solved→conflicts→PAR-2). This
+     is mandatory before keeping a feature or promoting a default, because single-seed verdicts on
+     profile20 are unreliable (case9/sudoku/REGRandom are seed-fragile). The old `--stage2` + "3 %
+     repeat rule" workflow is superseded by `--seedgate`; the repeat rule no longer applies.
 1. **Pick a target for iteration speed (not for the decision)**: If the user names a reference solver or competition gap, choose one concrete competition instance where the reference is faster than the repo solver but still short enough for repeated iteration, and use it to profile and prototype. Create a one-instance benchmark directory for it and keep using that target until the user redirects. The target instance accelerates the edit/measure loop; the decision to keep or revert is always made on aggregate profile20 PAR-2, so confirm every candidate on the full suite before keeping it.
 2. **Baseline**: Run `bash tools/bench.sh -j 4 -d benchmarks/profile20 solver/NN-name` (or the `tools/feature_ablation.py` driver) and record **aggregate PAR-2 over the suite** (all-20, plus the easy-10 / hard-10 split) as the primary baseline metric. The profile20 default is 300 seconds per instance for Stage-1 screening; the hard-10 need a longer Stage-2 timeout to show headroom. For a one-instance target, also run `bash tools/bench.sh -t <seconds> -m 16384 -d <one-instance-dir> solver/NN-name` and record the target-instance runtime as a secondary iteration aid. If comparing to MiniSat-style simplification, also capture useful reference variants such as `minisat -no-pre`, `minisat -no-elim`, and full `minisat`.
 3. **Profile first**: Use a profiler such as `perf stat` / `perf record` / `perf report` on the target instance before changing code. Use the profile to choose the next implementation slice. If the release binary is stripped and symbols are needed, rebuild for profiling with `CARGO_PROFILE_RELEASE_STRIP=false CARGO_PROFILE_RELEASE_DEBUG=1 RUSTFLAGS="-C target-cpu=native" cargo build --release`.
 4. **Check opportunity size before coding**: For simplification ideas, do a quick measurement pass over the target formula before implementing. Examples: count duplicate clauses, pure literals, candidate variables, binary subsumption hits, or self-subsuming-resolution opportunities. Do not implement an idea when the measured opportunity is negligible.
 5. **Report diagnostic solver stats for every instance analysis**: Capture enough run data to identify whether the bottleneck is simplification, propagation, conflict learning, or search-path sensitivity. At minimum report pre/post-preprocessing variables, clauses, and literal counts; preprocessing time; eliminated variables, resolvents, subsumed clauses, strengthened literals, and root assignments when available; final result and runtime; conflicts, decisions, propagations, restarts, learned-clause count, reduce-DB calls, and any timeout/error status. When profiling, include propagation time or propagation throughput, conflict-analysis time if measured, simplification/proof I/O time if visible, and the profile/log paths used. When testing sensitivity, report the exact mode flags, seed/order/literal-order choices, preprocessing toggles, and per-instance deltas so the cause is not guessed from PAR-2 alone.
-6. **Iterate** (at least 10 attempts unless the user asked for a narrower experiment): Make one change at a time, benchmark it against the current accepted baseline, and **keep it if it improves aggregate PAR-2 over the profile20 suite beyond run-to-run noise** — regardless of which individual instances got slower or newly timed out. A change that rescues several instances at the cost of regressing others is a keep when the total wins; a feature does not have to help every row. Re-measure to confirm the aggregate gain is real and not noise (a quick re-run of the affected rows is usually enough). Recalculate the accepted baseline after every kept change. Revert changes that do not improve aggregate PAR-2 beyond noise, worsen aggregate PAR-2, or fail correctness checks (wrong result, invalid model, missing/invalid proof, or a premature non-budget `UNKNOWN`). An honest new timeout is *not* by itself a revert reason — only the aggregate matters.
+6. **Iterate** (at least 10 attempts unless the user asked for a narrower experiment): Make one change at a time. Use a fast single-instance / single-seed run *while coding* to sanity-check direction, but **the keep/revert decision MUST come from a multi-seed `--seedgate` sweep** judged on the lexicographic solved→conflicts→PAR-2 metric vs the current accepted baseline, beyond the baseline's own seed-spread. **Keep it if it wins the lexicographic metric beyond seed-noise** — regardless of which individual instances got slower or newly timed out. A change that rescues several instances at the cost of regressing others is a keep when the metric wins; a feature does not have to help every row. Recalculate the accepted baseline after every kept change. Revert changes that do not win the lexicographic metric beyond seed-noise, that lose it, or that fail correctness checks (wrong result, invalid model, missing/invalid proof, or a premature non-budget `UNKNOWN`). An honest new timeout is *not* by itself a revert reason — only the lexicographic metric matters. **Do not keep a change on a single-seed result** — that is the n=1 trap that produced wrong verdicts (see `log/feature-deepdive-2026-06-01/`).
 7. **Stop losers early when safe**: For long runs, if an experiment clearly cannot improve aggregate PAR-2 (the already-finished rows have lost more PAR-2 than the remaining rows could plausibly recover), stop the run, mark the attempt rejected, and revert it instead of waiting for the full timeout.
 8. **Tune algorithmic features carefully**: When testing a focused solver idea such as bounded variable elimination, run small parameter sweeps around the first good result. More simplification can damage CDCL search even when preprocessing is cheap, so validate caps and cost thresholds empirically rather than assuming monotonic improvement.
 9. **Retest interactions**: A previously rejected micro-optimization can become worthwhile after a later kept change changes the profile. Retest it only when profiler evidence or timing data suggests the interaction could now improve aggregate PAR-2.
