@@ -73,3 +73,32 @@ reliability of any profile20 verdict — including the original promotion's per-
 Provenance: structural analysis of /tmp decompressed case9; seed/component isolation runs (5 seeds);
 seedsweep_results.tsv. Code: lbd-tiered reduction reduce_db (main.rs:5235), effective restart policy
 (main.rs:4677).
+
+---
+
+## ADDENDUM (2026-06-02): hard-instance headroom sweep (n=10) — clean contrast to the fragile set
+
+Ran default (fstab_lbdtier) vs +binary_fast / +target_phase / +chrono on the **3 hard instances the
+default robustly solves** (circuit, div-mitern172, sqrt-mitern171) × 10 seeds × 600s = 120 runs,
+**0 censoring** (every config solves all 3, 10/10). Default seed-spread here: PAR-2/seed 424 ± 55 —
+**tight**, unlike the easy/fragile set's wild swings. Data: hardsweep_results.tsv / _analysis.txt.
+
+| feature | Δ solved | Δ PAR-2 (vs ±55) | per-instance |
+|---|:--:|---|---|
+| chrono | +0 | −11 (noise) | **inert on all 3** (P=0.50, ratio 1.00 exact — never fires) |
+| target_phase | +0 | −25 (noise, slight favorable) | **bimodal & REAL**: sqrt171 0.76× P=0.03 (helps), circuit 0.87× (helps), div 1.21× P=0.96 (hurts) |
+| binary_fast | +0 | +56 (~1σ, mild worse) | circuit 0.88×, div 0.98×, sqrt171 1.01× P=0.64 |
+
+Conclusions:
+1. **No headroom win** — none of the three changes solve-rate on the instances where a win was
+   possible (all 30/30). On profile20's reachable hard instances these features do not help the default.
+2. **target_phase has a coherent, reproducible per-instance signal** (P=0.03 on sqrt171, P=0.96 on
+   div — not noise): it suits sqrt/circuit structure, not div. Net ~neutral on this mix. Still NOT a
+   promote (no aggregate win, no solve gain), but the one feature with a real mechanism worth
+   recalling if the instance mix shifts toward sqrt/circuit families.
+3. **chrono inert / binary_fast mildly-worse — both settled** with n=10, no surprises. Confirms the
+   dramatic case9-driven binary_fast regression was a seed-fragile-instance artifact: on robustly
+   solved hard instances binary_fast is only ~1σ worse, not catastrophic.
+4. **Methodological vindication:** on robustly-solved instances the distributions are tight (±55) and
+   signals clean; the earlier sweep chaos was entirely the seed-fragile instances (case9/sudoku/
+   REGRandom). Reinforces bead d8d (multi-seed per-instance reporting).

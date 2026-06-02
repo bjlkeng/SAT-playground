@@ -1,0 +1,33 @@
+
+================================================================================================
+=== binary_fast vs default (n=10 seeds, 3 hard instances, 600s) ===
+instance                     def_solve feat_solve    def_med   feat_med  ratio  P(f>d)
+circuit_48in64out_with_800       10/10      10/10     182103     160990   0.88    0.45
+div-mitern172                    10/10      10/10    2219502    2178560   0.98    0.46
+sqrt-mitern171                   10/10      10/10    3151403    3182007   1.01    0.64
+  -- aggregate (3 hard instances, per-seed PAR-2) --
+  default      solved 30/30  PAR-2/seed mean=424 ± 55  [346-540]
+  binary_fast  solved 30/30  PAR-2/seed mean=481 ± 57  [401-574]
+  Δ solved = +0   Δ mean PAR-2 = +56  (default seed-spread ±55)
+
+================================================================================================
+=== target_phase vs default (n=10 seeds, 3 hard instances, 600s) ===
+instance                     def_solve feat_solve    def_med   feat_med  ratio  P(f>d)
+circuit_48in64out_with_800       10/10      10/10     182103     158657   0.87    0.49
+div-mitern172                    10/10      10/10    2219502    2674866   1.21    0.96
+sqrt-mitern171                   10/10      10/10    3151403    2407164   0.76    0.03
+  -- aggregate (3 hard instances, per-seed PAR-2) --
+  default      solved 30/30  PAR-2/seed mean=424 ± 55  [346-540]
+  target_phase solved 30/30  PAR-2/seed mean=399 ± 44  [340-488]
+  Δ solved = +0   Δ mean PAR-2 = -25  (default seed-spread ±55)
+
+================================================================================================
+=== chrono vs default (n=10 seeds, 3 hard instances, 600s) ===
+instance                     def_solve feat_solve    def_med   feat_med  ratio  P(f>d)
+circuit_48in64out_with_800       10/10      10/10     182103     182103   1.00    0.50
+div-mitern172                    10/10      10/10    2219502    2219502   1.00    0.50
+sqrt-mitern171                   10/10      10/10    3151403    3151403   1.00    0.50
+  -- aggregate (3 hard instances, per-seed PAR-2) --
+  default      solved 30/30  PAR-2/seed mean=424 ± 55  [346-540]
+  chrono       solved 30/30  PAR-2/seed mean=413 ± 39  [360-487]
+  Δ solved = +0   Δ mean PAR-2 = -11  (default seed-spread ±55)
