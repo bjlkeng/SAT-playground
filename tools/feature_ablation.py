@@ -421,23 +421,29 @@ def seedgate(args) -> int:
                f'"{ROOT/solver_dir}/target/release/sat-solver" "{cnf_for[stem]}" "{odir}"']
         t0 = time.time()
         try:
-            p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               text=True, env=env, timeout=args.timeout + 30)
-            dt = time.time() - t0
-            res = next((ln.split()[1] for ln in p.stdout.splitlines() if ln.startswith("s ")), None)
-            if res is None:
-                res = "TIMEOUT" if p.returncode == 124 else f"UNKNOWN_rc{p.returncode}"
-            js = ""
-            for ln in p.stderr.splitlines():
-                if '"conflicts"' in ln:
-                    br = ln.find("{")
-                    if br >= 0:
-                        js = ln[br:]
-            import re
-            g = lambda k: (re.search(rf'"{k}":([0-9.eE+-]+)', js) or [None, "NA"])[1]
-            return (stem, seed, res, dt, g("conflicts"), g("propagations"), g("decisions"))
-        except subprocess.TimeoutExpired:
-            return (stem, seed, "TIMEOUT", time.time() - t0, "NA", "NA", "NA")
+            try:
+                p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, env=env, timeout=args.timeout + 30)
+                dt = time.time() - t0
+                res = next((ln.split()[1] for ln in p.stdout.splitlines() if ln.startswith("s ")), None)
+                if res is None:
+                    res = "TIMEOUT" if p.returncode == 124 else f"UNKNOWN_rc{p.returncode}"
+                js = ""
+                for ln in p.stderr.splitlines():
+                    if '"conflicts"' in ln:
+                        br = ln.find("{")
+                        if br >= 0:
+                            js = ln[br:]
+                import re
+                g = lambda k: (re.search(rf'"{k}":([0-9.eE+-]+)', js) or [None, "NA"])[1]
+                return (stem, seed, res, dt, g("conflicts"), g("propagations"), g("decisions"))
+            except subprocess.TimeoutExpired:
+                return (stem, seed, "TIMEOUT", time.time() - t0, "NA", "NA", "NA")
+        finally:
+            # Drop the per-run DRAT proof scratch immediately. These are multi-GB on hard-UNSAT
+            # instances and are never read back; left to accumulate across a seedgate sweep they
+            # fill the disk and kill the run (see log/hard-search-2026-06-02 _work blowout).
+            shutil.rmtree(odir, ignore_errors=True)
 
     from concurrent.futures import ThreadPoolExecutor
     results = []
