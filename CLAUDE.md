@@ -381,15 +381,30 @@ idea or benchmark gap, it is acceptable to test that focused feature as part of 
    easy-10 / hard-10 split. A single instance is only a fast-iteration aid — never the keep/revert metric.
 
    For solver-11 feature ablations use the driver `tools/feature_ablation.py` (it encodes the matrix,
-   the same-binary `SAT_*` toggles, and honors flag `requires` deps), running **4 workers pinned to
-   physical cores 0–3** (`taskset`, siblings idle; memory capped so 4 jobs fit RAM).
+   the same-binary `SAT_*` toggles, and honors flag `requires` deps). **`--jobs N` sets both the
+   number of parallel workers and the physical cores used** (`taskset 0..N-1`, siblings idle).
+   Default is 4 jobs (cores 0–3). **For feature iteration on a quiet host, the standard run is
+   5 threads × 5 seeds: `--jobs 5 --seeds 5`** (cores 0–4) — faster turnaround while coding; the
+   final keep/turn-on/promote decision still REQUIRES the N=10 gate below (5 seeds is for iteration,
+   not the authoritative verdict). **Cap `--mem-mb` so `jobs × mem` fits RAM** — at 5 jobs on this
+   62 GiB host use ~`--mem-mb 11500` (the 14000 default × 5 overcommits → OOM-kill). **Before
+   launching a parallel sweep, check for competing solver/bench processes
+   (`ps aux --sort=-%cpu | grep -E 'sat-solver|kissat|feature_ablation|bench'`) and ASK the user
+   before proceeding** — the driver also prints a `[preflight]` contention/memory warning at startup,
+   but concurrent runs on the same cores still contaminate PAR-2 timing.
    - **Quick screen (exploration only, NOT a decision):** `--stage1` runs every config once at 300 s
      on all 20 to triage obviously-broken or wildly-regressing configs. Single-seed; cheap. Use it to
      pick which configs are worth measuring properly — never to keep/promote.
+   - **Measuring a NEW feature (ad-hoc, no `CONFIG_MAP` edit):** put the feature behind a `SAT_*`
+     flag (the repo convention), then A/B it with `--seedgate --env`:
+     `python3 tools/feature_ablation.py --seedgate --env "SAT_NEWFEAT=on" --tag newfeat --seeds 5 --jobs 5`
+     vs the baseline `--env "" --tag baseline ...`, and feed the two TSVs to the gate. `--env ''` is the
+     solver default; `--env` works with everything below (5×5 for iteration, N=10 for the verdict).
    - **Keep/turn-on/promote decision (REQUIRED, the authoritative measurement):** the **multi-seed
      `--seedgate`** mode. For each config worth deciding on, run
      `python3 tools/feature_ablation.py --seedgate --configs <tag> --seeds 10 [--timeout 600]`
-     (N=10 seeds per instance via `SAT_SEED`, conflicts captured), then decide with the lexicographic
+     (or `--env "SAT_…" --tag …` for an unregistered feature; N=10 seeds per instance via `SAT_SEED`,
+     conflicts captured), then decide with the lexicographic
      gate `python3 tools/check_solver11_promotion.py --multiseed ...` (solved→conflicts→PAR-2). This
      is mandatory before keeping a feature or promoting a default, because single-seed verdicts on
      profile20 are unreliable (case9/sudoku/REGRandom are seed-fragile). The old `--stage2` + "3 %

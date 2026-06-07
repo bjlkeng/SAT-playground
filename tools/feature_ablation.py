@@ -4,8 +4,9 @@
 Process (per the 2026-05-30 design):
   * Target suite = benchmarks/profile20 (10 easy control + 10 hard headroom).
   * Decision metric = aggregate PAR-2 over all 20, with easy-10 / hard-10 reported separately.
-  * Parallelism = 4 workers pinned to physical cores 0,1,2,3 (taskset), one bench -j1 each over a
-    4-way shard; siblings left idle for clean timing. Memory capped at 14 GiB/job (4x14<57 free).
+  * Parallelism = --jobs workers pinned to physical cores 0..jobs-1 (taskset), one bench -j1 each
+    over a jobs-way shard; siblings left idle for clean timing. Default 4 jobs; for faster feature
+    iteration on a quiet host use --jobs 5 (cores 0-4). Cap --mem-mb so jobs x mem fits RAM.
   * 3% repeat rule: a config within +/-3% of the baseline PAR-2 is in the noise band -> rerun
     (up to n=3, take the mean); a clear (>3%) win/loss is accepted from n=1.
   * Two stages: Stage 1 screens every config at 300 s on all 20; Stage 2 (separate invocation)
@@ -19,7 +20,14 @@ included for attribution.
 Usage:
   python3 tools/feature_ablation.py --stage1 [--timeout 300] [--mem-mb 14000] [--jobs 4]
   python3 tools/feature_ablation.py --stage2 --configs tag1,tag2 [--timeout 900]
+  python3 tools/feature_ablation.py --seedgate --configs <tag> --seeds 5 --jobs 5   # 5 threads x 5 seeds
+  # measure a NEW feature flag ad-hoc (no CONFIG_MAP edit) — A/B candidate vs baseline:
+  python3 tools/feature_ablation.py --seedgate --env "SAT_NEWFEAT=on" --tag newfeat --seeds 5 --jobs 5
+  python3 tools/feature_ablation.py --seedgate --env ""              --tag baseline --seeds 5 --jobs 5
   python3 tools/feature_ablation.py --smoke           # 2 configs x 2 instances, fast self-check
+
+Before launching a parallel sweep, check for competing solver/bench processes (the script prints a
+contention warning at startup; the agent must `ps`/`pgrep` and ASK the user first per CLAUDE.md).
 """
 from __future__ import annotations
 import argparse, csv, os, shutil, subprocess, sys, time
@@ -33,8 +41,48 @@ SUITE = ROOT / "benchmarks" / "profile20"
 SELECTION = SUITE / "selection.csv"
 S11 = "solver/11-kissat-port"
 S10 = "solver/10-bve-preprocess"
-CORES = [0, 1, 2, 3]            # distinct physical cores (siblings 6..9 left idle)
+CORES = [0, 1, 2, 3]            # default worker cores; overridden to range(--jobs) by preflight()
 TOL = 0.03                      # 3% noise band for the repeat rule
+
+
+def preflight(args) -> None:
+    """Pin workers to cores 0..jobs-1 and warn about contention / memory before a sweep.
+
+    --jobs sets BOTH the worker count and the physical cores used (taskset 0..jobs-1), so
+    `--jobs 5 --seeds 5` runs 5 threads (cores 0-4) with 5 seeds/instance. We do NOT prompt here
+    (sweeps usually run backgrounded); we print loud warnings. The agent-facing rule (CLAUDE.md)
+    is to check `ps`/`pgrep` and ASK the user before launching when other solver jobs are running.
+    """
+    global CORES
+    CORES = list(range(max(1, args.jobs)))
+    # memory sanity: jobs x per-job cap must fit physical RAM or the OOM-killer reaps workers
+    try:
+        total_mb = next(int(l.split()[1]) for l in open("/proc/meminfo")
+                        if l.startswith("MemTotal")) // 1024
+        want_mb = args.jobs * args.mem_mb
+        if want_mb > total_mb * 9 // 10:
+            safe = total_mb * 9 // 10 // max(1, args.jobs)
+            print(f"[preflight] WARNING: {args.jobs} jobs x {args.mem_mb}MB = {want_mb}MB > 90% of "
+                  f"{total_mb}MB RAM; lower --mem-mb to ~{safe} to avoid OOM-kill.", flush=True)
+    except Exception:
+        pass
+    # contention: any other solver/bench process on the same cores taints PAR-2 timing
+    try:
+        me = str(os.getpid())
+        out = subprocess.run(
+            ["pgrep", "-af", r"sat-solver|kissat|minisat|tools/bench\.sh|feature_ablation|hard_search"],
+            stdout=subprocess.PIPE, text=True).stdout
+        others = [l for l in out.splitlines() if l and l.split(" ", 1)[0] != me]
+        if others:
+            print(f"[preflight] WARNING: {len(others)} existing solver/bench process(es) detected — "
+                  "concurrent runs on the same cores contaminate PAR-2 timing. Stop them or confirm "
+                  "before trusting results:", flush=True)
+            for l in others[:8]:
+                print(f"[preflight]   {l}", flush=True)
+    except Exception:
+        pass
+    print(f"[preflight] cores={CORES} jobs={args.jobs} seeds={args.seeds} "
+          f"mem={args.mem_mb}MB/job timeout={args.timeout}s", flush=True)
 
 # tag -> (solver_dir, {env}).  Empty env = that solver's default profile.
 CONFIGS: list[tuple[str, str, dict]] = [
@@ -369,6 +417,29 @@ def smoke(args) -> int:
     return 0
 
 
+def parse_env_arg(spec: str) -> dict:
+    """Parse --env 'SAT_X=on,SAT_Y=2' -> {'SAT_X':'on','SAT_Y':'2'}.  '' -> {} (the solver default)."""
+    env = {}
+    for kv in spec.split(","):
+        kv = kv.strip()
+        if not kv:
+            continue
+        if "=" not in kv:
+            raise SystemExit(f"--env entry {kv!r} must be KEY=VALUE")
+        k, v = kv.split("=", 1)
+        env[k.strip()] = v.strip()
+    return env
+
+
+def env_slug(env: dict) -> str:
+    """Short filesystem-safe label for an ad-hoc env dict (names the seedgate-<tag> dir + gate TSV)."""
+    if not env:
+        return "adhoc-default"
+    parts = [f"{k.replace('SAT_', '').lower()}{str(v).lower().replace('.', '').replace('-', '')}"
+             for k, v in sorted(env.items())]
+    return ("adhoc-" + "-".join(parts))[:60]
+
+
 def seedgate(args) -> int:
     """Multi-seed per-(config,instance,seed) sweep -> gate-compatible TSV (2026-06-02 procedure).
 
@@ -381,11 +452,17 @@ def seedgate(args) -> int:
     Usage: --seedgate --tag <config-tag> [--seeds 10] [--timeout 600] on the suite's instances.
     """
     import shutil
-    tag = args.configs.strip() or "default"
-    if tag not in CONFIG_MAP:
-        print(f"unknown config tag {tag!r}; known: {sorted(CONFIG_MAP)}", flush=True)
-        return 2
-    solver_dir, env_extra = CONFIG_MAP[tag]
+    if getattr(args, "env", None) is not None:
+        # ad-hoc mode: measure ANY config/feature flag without registering it in CONFIG_MAP
+        env_extra = parse_env_arg(args.env)
+        solver_dir = (getattr(args, "solver", None) or S11)
+        tag = (getattr(args, "tag", "") or "").strip() or args.configs.strip() or env_slug(env_extra)
+    else:
+        tag = args.configs.strip() or "default"
+        if tag not in CONFIG_MAP:
+            print(f"unknown config tag {tag!r}; known: {sorted(CONFIG_MAP)}", flush=True)
+            return 2
+        solver_dir, env_extra = CONFIG_MAP[tag]
     seeds = list(range(args.seeds))
     insts = instances(args.half if getattr(args, "half", None) else None)
     ts = time.strftime("%Y-%m-%d-%H-%M-%S")
@@ -508,17 +585,25 @@ def main() -> int:
     ap.add_argument("--validate", action="store_true")
     ap.add_argument("--sweep2", action="store_true", help="use the CONFIGS_V2 matrix (new-default combos)")
     ap.add_argument("--seedgate", action="store_true",
-                    help="multi-seed per-(config,instance,seed) sweep -> gate TSV (use with --configs <tag>)")
+                    help="multi-seed per-(config,instance,seed) sweep -> gate TSV "
+                         "(use with --configs <tag> from CONFIG_MAP, or --env 'K=V,...' ad-hoc)")
     ap.add_argument("--seeds", type=int, default=10, help="seeds for --seedgate (default 10)")
     ap.add_argument("--half", default="", help="restrict --seedgate to 'easy' or 'hard' half")
+    ap.add_argument("--env", default=None,
+                    help="ad-hoc --seedgate config without editing CONFIG_MAP: 'SAT_X=on,SAT_Y=2' "
+                         "(''=solver default). A/B it against --env '' (baseline). Pair with --tag.")
+    ap.add_argument("--solver", default=None,
+                    help="solver dir for --env --seedgate (default solver/11-kissat-port)")
+    ap.add_argument("--tag", default="", help="label for an --env --seedgate run (output dir + gate TSV)")
     ap.add_argument("--configs", default="")
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--mem-mb", type=int, default=14000)
     ap.add_argument("--jobs", type=int, default=4)
     args = ap.parse_args()
+    preflight(args)
     if args.seedgate:
-        if not args.configs:
-            ap.error("--seedgate requires --configs <single-tag>")
+        if not args.configs and args.env is None:
+            ap.error("--seedgate requires --configs <tag> OR --env 'KEY=VAL,...' (ad-hoc)")
         if args.timeout == 300:
             args.timeout = 600   # seedgate default: longer to minimize censoring
         return seedgate(args)
