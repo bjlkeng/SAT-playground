@@ -629,9 +629,16 @@ Why it's useful here
 - Keeps cross-agent chatter out of the token budget by storing messages in a per-project archive.
 - Fast reads via `resource://inbox/...` and `resource://thread/...`.
 
-#### Coordination workflow (single repo, multiple agents on the same hot file)
+#### Coordination workflow (single shared checkout, develop on `main` directly)
 
-This repo runs at most a few agents in parallel on the same solver iteration. The rules below are designed so two agents can both work on `solver/NN-name/src/main.rs` without blocking each other, while still avoiding lost work and racy commits.
+This repo runs at most a few agents in parallel. **All agents share the one checkout at
+`/home/bojji/code/SAT-playground` and develop on the `main` branch directly** — no git
+worktrees, no per-agent feature branches for routine bead work. (This overrides the usual
+"branch first before committing to the default branch" default — here, committing to `main`
+is the expected flow.) Because there is no working-tree isolation, the coordination rules
+below are what keep two agents from clobbering each other: discover who is touching what,
+**ask the user before proceeding into a likely conflict**, pre-announce commits, and
+pull-rebase-revalidate before every push. Agent Mail is the communication channel throughout.
 
 1) Register and discover what others are doing
    - `ensure_project(human_key="/home/bojji/code/SAT-playground")`, then `register_agent` with a unique `agent_name`. Set `AGENT_NAME` in your shell so the pre-commit guard knows who you are.
@@ -650,41 +657,37 @@ This repo runs at most a few agents in parallel on the same solver iteration. Th
      )
      ```
      Then call tools with explicit auth, e.g. `fetch_inbox(..., agent_name="s11-06", registration_token=AGENT_MAIL_TOKEN)` or `send_message(..., sender_name="s11-06", sender_token=AGENT_MAIL_TOKEN)`.
-   - Before picking a bead, list active claims (`bd ready`, `bd list --status in_progress`) and read the shared coordination thread (default `thread_id="coord"`) via `resource://thread/coord?...` to see what other agents have announced.
-   - Pick a bead whose scope does **not** overlap the regions other agents have already announced. Prefer beads that touch different functions, modules, or solver iterations than the active claims.
+   - Before picking up work, list active claims (`bd ready`, `bd list --status in_progress`) and read the shared coordination thread (default `thread_id="coord"`) via `resource://thread/coord?...` to see what other agents have announced. Because everyone shares one checkout, **also inspect the working tree itself** — `git status --short` for in-flight edits another agent left uncommitted, and `ps aux --sort=-%cpu | grep -E 'sat-solver|kissat|bench|feature_ablation'` for live solver/bench processes.
+   - Prefer a bead whose scope does **not** overlap the files/regions other agents have already announced or are actively editing. Prefer beads that touch different functions, modules, or solver iterations than the active claims.
 
-2) Always work in a git worktree, never the main checkout
-   - Create one worktree per agent under `/tmp/sat-worktrees/<agent>` on a fresh branch:
-     ```bash
-     git fetch origin
-     git worktree add /tmp/sat-worktrees/<agent> -b agent/<agent>/<bead-id> origin/main
-     cd /tmp/sat-worktrees/<agent>
-     ```
-   - All edits, builds, smoke tests, and benchmarks for the claimed bead happen inside that worktree.
-   - When the bead is closed and merged to `main`, tear down the worktree: `git worktree remove /tmp/sat-worktrees/<agent>` and delete the branch.
+2) Develop in the main directory on `main` directly
+   - Work in `/home/bojji/code/SAT-playground` on the `main` branch. Do **not** create a worktree or a feature branch for routine bead work. All edits, builds, smoke tests, and benchmarks happen in this one shared checkout.
+   - Keep `main` current before you start: `git pull --rebase origin main`.
+   - **Conflict gate — ask the user before proceeding:** if another agent is already working on a file you would need to touch — a coord claim naming it, an `in_progress` bead scoped to it, uncommitted edits to it in `git status --short`, or a live process for it — **stop and ask the user for permission before proceeding** instead of editing it anyway. Surface what you saw (which agent, which file, the evidence) so they can decide, and only proceed once they say so. Non-overlapping work needs no permission — just announce it (step 3) and go. (Use Agent Mail to coordinate with the other agent, but the permission gate is the **user's** call.)
+   - Commit in small, coherent units so a `git pull --rebase` stays cheap and conflicts stay local.
 
 3) Don't reserve the hot file — claim a bead and announce intent instead
    - Do **not** call `file_reservation_paths(..., exclusive=true)` on `solver/**/src/main.rs`. Exclusive reservations on the hot file defeat the point of parallel agents.
-   - Instead: `bd update <id> --claim`, then `send_message(thread_id="coord", subject="claim <id>", body="bead <id>: <one-line scope> — touching <functions/regions> in solver/NN-name/src/main.rs, worktree /tmp/sat-worktrees/<agent>")`.
+   - Instead: `bd update <id> --claim`, then `send_message(thread_id="coord", subject="claim <id>", body="bead <id>: <one-line scope> — touching <functions/regions> in solver/NN-name/src/main.rs")`.
    - File reservations are still appropriate for **less-contended paths** (e.g. `docs/**`, `tools/**`, `tests/cnf/**`, `benchmarks/profiling/**`) when an edit will span many files there. Reserve those, not `src/main.rs`.
 
 4) Pre-announce every commit with a short objection window
    - Before `git commit`, send `send_message(thread_id="coord", subject="commit <bead-id>", body="files: <list> · regions: <fns/lines> · summary: <one line> · validation: <what you ran> · objections within 2 min")`.
-   - Wait ~2 minutes (`fetch_inbox` + `acknowledge_message` for any replies). If no objections, commit and push.
-   - If another agent replies "I'm about to push overlapping hunks for bead Y", let them push first; you rebase and re-validate (step 5).
+   - Wait ~2 minutes (`fetch_inbox` + `acknowledge_message` for any replies). If no objections, commit locally (push happens in step 5 after a pull-rebase).
+   - If another agent replies "I'm about to push overlapping hunks for bead Y", let them push first; you pull-rebase and re-validate (step 5).
    - The 2-minute window is tunable — extend it for risky changes (cross-cutting refactors, new solver iteration scaffolding), keep it tight for narrow bead-scoped edits.
 
-5) If someone beats you to a commit, rebase and re-run the bead's validation
-   - `git fetch origin && git rebase origin/main` inside your worktree. Resolve conflicts (don't `--skip` or `--abort` away their work).
+5) Pull-rebase and re-run the bead's validation before every push
+   - Always `git pull --rebase origin main` immediately before pushing — with everyone on `main`, a stale local `main` means your push is rejected or you rebase onto surprises. Resolve any conflicts (don't `--skip` or `--abort` away another agent's work).
    - **Re-run whatever validation the bead requires**, in full, on the rebased state:
      - Correctness/fix beads → `bash tools/smoke_test.sh solver/NN-name` (+ `cargo test` if the bead touches tests).
      - Perf/optimization beads → smoke test **plus** `bash tools/bench.sh -j 4 -d benchmarks/profile20 solver/NN-name` so the measured delta is against the new baseline, not the pre-rebase one.
      - Promotion/default-change beads → the full gate described in CLAUDE.md's solver-11 promotion section, with the candidate re-measured on top of the new `main`.
    - If the rebase changes the baseline materially, **re-take the baseline** before reporting the experiment's delta — numbers from a stale baseline are meaningless.
-   - Re-announce (step 4) with the updated commit-of-base SHA in the body, then push.
+   - If the rebase pulled in new commits, re-announce (step 4) with the updated base SHA in the body, then `git push origin main`. (Commit and push only when the user has asked for it — same as everywhere else.)
 
 6) Closing out
-   - After merge: `bd close <id>` with a summary, send a final `send_message(thread_id="coord", subject="closed <id>", body="merged at <sha>")`, and remove the worktree.
+   - `bd close <id>` with a summary, then send a final `send_message(thread_id="coord", subject="closed <id>", body="pushed at <sha>")`. (No worktree to tear down — you were on `main` the whole time. Leave the shared checkout clean: don't leave half-finished uncommitted edits behind for the next agent.)
 
 #### Granular vs macro tools
 - Granular (use these in this workflow): `register_agent`, `send_message`, `fetch_inbox`, `acknowledge_message`, `fetch_topic`, `file_reservation_paths` (only for non-hot paths).
@@ -692,10 +695,11 @@ This repo runs at most a few agents in parallel on the same solver iteration. Th
 
 #### Common pitfalls
 - **Treating `src/main.rs` as exclusive**: don't reserve it. Coordinate via Beads claims + the `coord` thread.
-- **Editing in the main checkout while another agent is active**: always use `/tmp/sat-worktrees/<agent>`. Cross-agent edits to the same working tree will corrupt each other's state.
+- **Editing a file another agent is actively working on**: the conflict gate (step 2) says stop and **ask the user first** — don't edit a contended file just because your local build is green. Everyone shares one working tree, so two agents editing the same file at once corrupts both their states.
 - **Skipping the pre-announce window**: silent commits race. A 2-minute window costs almost nothing and catches nearly all collisions.
 - **Pushing after a rebase without re-running validation**: the bead's evidence belongs to the rebased commit, not the pre-rebase one. Re-run the full suite the bead requires, including baseline re-take for perf work.
-- **Leaving worktrees behind**: stale `/tmp/sat-worktrees/<agent>` directories pile up and confuse future runs. Remove on bead close.
+- **Pushing without a `git pull --rebase` first**: with everyone committing to `main`, a stale local `main` gets your push rejected or rebased onto surprises. Pull-rebase + re-validate right before every push (step 5).
+- **Leaving uncommitted edits in the shared checkout**: another agent will trip over them in `git status` and may have to ask you about them. Finish, commit, or revert your changes before stepping away.
 - **"from_agent not registered"**: always `register_agent` in the correct `project_key` first.
 - **"FILE_RESERVATION_CONFLICT"** on non-hot paths: adjust patterns, wait for expiry, or use a non-exclusive reservation.
 - **"requires registration_token" after registering**: tokenless session binding may be broken in this MCP connector. Use the explicit-token workaround in step 1 and pass `registration_token` / `sender_token` on every Agent Mail call.

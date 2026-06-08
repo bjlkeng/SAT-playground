@@ -29,7 +29,7 @@ description: Review, debug, and fix interactive web visualizations or static HTM
 5. Report or fix.
    - For a review request, lead with findings ordered by severity and include file/line references.
    - For a fix request, patch only the relevant page/CSS/script, then rerun browser checks.
-   - Leave unrelated worktree changes untouched.
+   - Leave unrelated working-tree changes untouched.
 
 ## Browser Script
 

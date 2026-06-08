@@ -47,17 +47,17 @@ bd close <id>                             # or bd update <id> --status open if r
 Beads tracks *declared* state. There is no heartbeat or file lock — if you do not
 claim, no one else can see you are working.
 
-### Worktree isolation
+### Develop on `main` in the main checkout (no worktrees)
 
-Always work in a dedicated worktree, never the main checkout:
+Work in `/home/bojji/code/SAT-playground` on the `main` branch directly — **no worktrees,
+no per-agent feature branches** (see CLAUDE.md's coordination workflow). Keep `main` current
+with `git pull --rebase origin main` before you start.
 
-```bash
-git worktree add /tmp/nextbeads-<slug>-$(date +%s) HEAD
-cd /tmp/nextbeads-<slug>-<ts>
-```
-
-This isolates your build artifacts and uncommitted edits from other agents. Conflicts
-resolve at merge / rebase time rather than during editing.
+Because everyone shares one working tree, there is no edit-time isolation: **before touching
+a file, check whether another agent is already on it** — the `coord` thread, `bd list
+--status in_progress`, and `git status --short` for uncommitted edits. If a likely conflict
+exists, **stop and ask the user before proceeding**. Non-overlapping work just gets announced
+on `coord` and proceeds. Conflicts otherwise resolve at `git pull --rebase` time before push.
 
 ### Pick non-overlapping work — don't wait on `src/main.rs`
 
@@ -99,8 +99,9 @@ land, expect occasional `main.rs` merge work even with good bead-picking.
 
 Even if Beads supported file-level claims (it doesn't), they would not help here:
 two beads addressing unrelated features (e.g. shrink and propagation) still both
-end up patching `main.rs`. The defenses are claim discipline + worktrees + careful
-non-overlapping bead selection, not file metadata.
+end up patching `main.rs`. The defenses are claim discipline + the conflict gate
+(ask the user before editing a file another agent is on) + careful non-overlapping
+bead selection + pull-rebase before push, not file metadata.
 
 ### Pre-commit rebase + re-test
 
@@ -108,22 +109,17 @@ Other agents may have pushed in the time between your claim and your commit.
 **Before every commit, sync with the remote and re-verify the change still works.**
 
 ```bash
-# 1. Fetch the latest main without merging yet.
-git fetch origin main
+# 1. You are on `main`. Pull-rebase your local commits on top of origin/main.
+git pull --rebase origin main        # resolve conflicts as needed
 
-# 2. If origin/main is ahead of HEAD, rebase your in-progress branch on top.
-if [ "$(git rev-list --count HEAD..origin/main)" -gt 0 ]; then
-    git rebase origin/main           # resolve conflicts as needed
-fi
-
-# 3. Re-run the validation suite. Hooks may pass but logic can still break
+# 2. Re-run the validation suite. Hooks may pass but logic can still break
 #    when someone else's change touches a related code path.
 cd solver/NN-name && bash build.sh
 bash tools/smoke_test.sh solver/NN-name
 # For solver-changing beads, also re-run the focused benchmark / cargo test you
 # used to validate the bead originally.
 
-# 4. Only commit + push if smoke + targeted tests still pass.
+# 3. Only commit + push if smoke + targeted tests still pass.
 ```
 
 If the rebase produced conflicts you cannot resolve confidently, **stop and tell

@@ -51,12 +51,13 @@ Default target: `solver/11-kissat-port`
 3. **Read CLAUDE.md** sections for the current iteration and the optimization workflow.
 4. **Check existing beads**: run `bd search <feature>` for every feature under investigation.
    Record existing bead IDs so findings are linked, not duplicated.
-5. **Create an isolated worktree** so the investigation does not conflict with other agents:
-   ```bash
-   git worktree add /tmp/analyzesat-$(date +%s) HEAD
-   cd /tmp/analyzesat-<timestamp>
-   ```
-   Build the target solver in the worktree:
+5. **Work in the main checkout on `main`** (no worktrees — see CLAUDE.md's coordination
+   workflow). Before touching any source file, check whether another agent is already
+   working on it (coord thread, `bd list --status in_progress`, `git status --short`); if a
+   likely conflict exists, **ask the user before proceeding**. An analysis pass that only
+   reads + profiles + writes to `log/` rarely conflicts; a profiling rebuild does change the
+   shared target binary, so coordinate via the `coord` thread if another agent is mid-build.
+   Build the target solver in place:
    ```bash
    cd solver/NN-name && bash build.sh
    ```
@@ -388,7 +389,7 @@ Do not force-add raw results CSVs unless the user asks for provenance tracking.
 
 ## Rules
 
-- **Use a worktree** — always isolate from the main working tree.
+- **Work on `main` in the main checkout** — no worktrees. Check for another agent on the same files first and **ask the user before proceeding** into a likely conflict (CLAUDE.md coordination workflow).
 - **Check beads before creating** — `bd search` is mandatory; never duplicate.
 - **File every new bead under its phase epic** — classify the finding (Phase 1 = search/decision/
   phase/restart/learned-clause; Phase 2 = simplification/rewriting/formula modification) and set

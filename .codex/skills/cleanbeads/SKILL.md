@@ -1,6 +1,6 @@
 ---
 name: cleanbeads
-description: Audit the beads tracker for stale or incorrectly-marked work — in_progress claims no agent is actually working, beads stuck in_progress that should be blocked, beads stuck blocked whose dependencies have closed, deferred beads whose defer date has passed, and ready-queue beads with an assignee set but never claimed. Cross-references active processes, git worktrees, and the agent-mail coord thread to tell the difference between "actively running" and "stale." Asks per-bead before applying any state change. Default staleness threshold is 48 hours; pass an arg like `/cleanbeads 24h` or `/cleanbeads 7d` to override.
+description: Audit the beads tracker for stale or incorrectly-marked work — in_progress claims no agent is actually working, beads stuck in_progress that should be blocked, beads stuck blocked whose dependencies have closed, deferred beads whose defer date has passed, and ready-queue beads with an assignee set but never claimed. Cross-references active processes, uncommitted edits in the shared checkout, and the agent-mail coord thread to tell the difference between "actively running" and "stale." Asks per-bead before applying any state change. Default staleness threshold is 48 hours; pass an arg like `/cleanbeads 24h` or `/cleanbeads 7d` to override.
 ---
 
 # /cleanbeads — Audit beads for stale or incorrectly-marked state
@@ -11,7 +11,7 @@ Bead state drifts. Agents crash, sessions get killed, claims get forgotten, depe
 
 Checks performed:
 
-1. **Stale `in_progress`** — claimed beads whose `Updated:` timestamp is older than the threshold (default 48h) AND that have no live evidence of active work (no matching process, no matching worktree, no fresh coord-thread message).
+1. **Stale `in_progress`** — claimed beads whose `Updated:` timestamp is older than the threshold (default 48h) AND that have no live evidence of active work (no matching process, no matching uncommitted edits in the shared checkout, no fresh coord-thread message).
 2. **`in_progress` that should be `blocked`** — beads marked `in_progress` whose `DEPENDS ON` list contains an open or in_progress bead. The dependency means no work can land; status should reflect that.
 3. **`blocked` that should be `open`** — beads marked `blocked` whose declared blockers are all closed/superseded. Free them to the ready queue.
 4. **`deferred` past defer date** — beads with a `defer` date in the past. Surface for re-triage.
@@ -54,9 +54,9 @@ ps aux | grep -E 'sat-solver|cargo|bench\.sh|claude' | grep -v grep
 ```
 
 ```bash
-# Active worktrees — who has a branch checked out
-git worktree list
-ls -lat /tmp/sat-worktrees/ 2>/dev/null
+# Shared checkout — in-flight edits + recent activity (all agents work on main here)
+git -C /home/bojji/code/SAT-playground status --short          # uncommitted edits = someone mid-bead
+git -C /home/bojji/code/SAT-playground log --oneline -15        # recent commits = recently active work
 ```
 
 ```bash
@@ -78,7 +78,7 @@ Extract: `Updated:`, `Assignee:`, `DEPENDS ON:`, and the most recent `NOTES` ent
 
 Classify into one of:
 
-- **Active**: matches a running process command line, worktree branch name (e.g. `agent/<owner>/<bead-id-suffix>`), or coord-thread message newer than the staleness threshold. Leave alone.
+- **Active**: matches a running process command line, uncommitted edits in the shared checkout (`git status --short`) or a recent `main` commit touching the bead's files, or a coord-thread message newer than the staleness threshold. Leave alone.
 - **Should-be-blocked**: `DEPENDS ON` has at least one entry that is not closed. Propose status change to `blocked`.
 - **Stale**: `Updated:` older than threshold AND no live-work match AND no open dependency. Propose release to `open`.
 - **Recent**: `Updated:` within threshold and no live-work signal — ambiguous. Don't propose anything; mention in the report so the user can decide.
@@ -167,8 +167,8 @@ Then print a one-paragraph summary of what changed: how many released, how many 
 This skill **modifies bead state**, which is shared across all agents. Before applying any change, the calling agent must:
 
 - Not be running inside another `/nextbeads` or `/analyzesat` session itself.
-- Confirm that any in_progress bead it proposes to release does not match an active process or worktree (Step 2 already does this — don't skip it).
-- Not touch the `5b2.2.36`-style entries that match a *fresh* `/nextbeads` worktree just created in the last hour. The pre-bead profiling bench can take 30+ minutes; an agent that just claimed a bead and started profiling looks "stale" by raw timestamp but isn't.
+- Confirm that any in_progress bead it proposes to release does not match an active process, uncommitted edits in the shared checkout, or a recent `main` commit (Step 2 already does this — don't skip it).
+- Not touch the `5b2.2.36`-style entries that match a *freshly claimed* `/nextbeads` session from the last hour. The pre-bead profiling bench can take 30+ minutes; an agent that just claimed a bead and started profiling looks "stale" by raw timestamp but isn't.
 
 If you cannot positively classify a bead as stale, propose "Leave as-is" or skip it from the findings entirely. **It is always safe to leave a claim alone; it is sometimes destructive to release one.**
 
