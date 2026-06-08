@@ -1343,6 +1343,8 @@ struct Solver {
     eliminate_ticks_budget: u64,
     /// variable-elimination resolution attempts allowed; zero means unlimited
     eliminate_resolution_budget: u64,
+    /// max per-polarity occurrences for a BVE candidate (kissat eliminateocclim); zero = unlimited
+    eliminate_occurrence_limit: u64,
     /// set when an opt-in local preprocessing budget stops the current pass
     preprocess_budget_exhausted: bool,
     /// maximum candidate clause size checked during backward subsumption; negative means unlimited
@@ -2192,6 +2194,7 @@ impl Solver {
             bve_clause_limit: DEFAULT_BVE_CLAUSE_LIMIT,
             eliminate_ticks_budget: config.eliminate_ticks_budget,
             eliminate_resolution_budget: config.eliminate_resolution_budget,
+            eliminate_occurrence_limit: config.eliminate_occurrence_limit,
             preprocess_budget_exhausted: false,
             subsumption_lim: DEFAULT_SUBSUMPTION_LIMIT,
             bwdsub_assigns: 0,

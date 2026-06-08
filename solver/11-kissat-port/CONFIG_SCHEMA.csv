@@ -81,6 +81,7 @@ SAT_VIVIFY_MAX_CLAUSE_LEN,vivify_max_clause_len,usize,nonnegative,0,0,0,false,fa
 SAT_PROBE_TICKS,probe_ticks_budget,u64,nonnegative,0,0,0,false,false,false,,,0.3,internal
 SAT_ELIMINATE_TICKS,eliminate_ticks_budget,u64,nonnegative,0,0,0,false,false,false,,,0.3,internal
 SAT_ELIMINATE_RESOLUTIONS,eliminate_resolution_budget,u64,nonnegative,0,0,0,false,false,false,,,SAT-playground-e7k,internal
+SAT_ELIMINATE_OCCLIM,eliminate_occurrence_limit,u64,nonnegative,2000,2000,2000,false,true,false,,,SAT-playground-5b2.3.22,internal
 SAT_TRANSITIVE_MAX_DEPTH,transitive_max_depth,u32,nonnegative,0,0,0,false,false,false,,,0.3,internal
 SAT_TRANSITIVE_TICKS_PER_SOURCE,transitive_ticks_per_source,u64,nonnegative,0,0,0,false,false,false,,,0.3,internal
 SAT_TRANSITIVE_MAX_REMOVED_PER_ROUND,transitive_max_removed_per_round,u64,nonnegative,0,0,0,false,false,false,,,0.3,internal
