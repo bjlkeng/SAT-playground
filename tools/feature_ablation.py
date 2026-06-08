@@ -605,7 +605,7 @@ def main() -> int:
         if not args.configs and args.env is None:
             ap.error("--seedgate requires --configs <tag> OR --env 'KEY=VAL,...' (ad-hoc)")
         if args.timeout == 300:
-            args.timeout = 600   # seedgate default: longer to minimize censoring
+            args.timeout = 900   # seedgate default: 15min — long enough for the hard-10 headroom
         return seedgate(args)
     if args.validate:
         return validate(args)

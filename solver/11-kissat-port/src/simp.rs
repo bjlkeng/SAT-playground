@@ -32,6 +32,22 @@ impl Solver {
             && !self.frozen[var]
             && !self.eliminated[var]
             && self.assignment[var] == UNASSIGNED
+            && self.within_eliminate_occurrence_limit(var)
+    }
+
+    /// kissat `eliminateocclim` (options.h:47, eliminate.c:44-50): skip variables occurring in
+    /// more than `eliminate_occurrence_limit` clauses per polarity, to bound the O(pos*neg)
+    /// resolvent gate loop in `try_eliminate_var`. `0` = unlimited (the shipped default), so
+    /// default behavior is unchanged. Bead SAT-playground-5b2.3.22 (root-cause fix for the
+    /// unbounded BVE pass that OOMs at 14GB on VexRiscv).
+    fn within_eliminate_occurrence_limit(&self, var: usize) -> bool {
+        let limit = self.eliminate_occurrence_limit;
+        if limit == 0 {
+            return true;
+        }
+        let pos = self.n_occ[lit_to_index(var as i32)] as u64;
+        let neg = self.n_occ[lit_to_index(-(var as i32))] as u64;
+        pos <= limit && neg <= limit
     }
 
     fn occurrence_cost(&self, var: usize) -> u64 {
@@ -1575,6 +1591,57 @@ mod tests {
         assert_eq!(
             live_original_clauses(&s),
             vec![vec![-1, 4], vec![1, 2], vec![1, 3]]
+        );
+    }
+
+    #[test]
+    fn eliminate_occurrence_limit_skips_high_degree_variable() {
+        // var 1: 2 positive occurrences (1,2),(1,3) + 2 negative (-1,4),(-1,5). With occlim=1 it
+        // exceeds the per-polarity cap (kissat eliminateocclim) and must be skipped, not eliminated.
+        let config = SolverConfig {
+            eliminate_occurrence_limit: 1,
+            full_bsr: false,
+            ..SolverConfig::default()
+        };
+        let mut s = Solver::new_with_config(
+            5,
+            vec![vec![1, 2], vec![1, 3], vec![-1, 4], vec![-1, 5]],
+            &config,
+        );
+        s.frozen[2] = true;
+        s.frozen[3] = true;
+        s.frozen[4] = true;
+        s.frozen[5] = true;
+        let mut proof = ProofLog::disabled();
+        assert!(s.eliminate(false, &mut proof));
+        assert!(
+            !s.eliminated[1],
+            "var 1 (2 pos + 2 neg occ) must be skipped under occlim=1"
+        );
+    }
+
+    #[test]
+    fn eliminate_occurrence_limit_zero_is_unlimited() {
+        // Same formula; occlim=0 (the shipped default) -> var 1 IS eliminated (4 non-growing resolvents).
+        let config = SolverConfig {
+            eliminate_occurrence_limit: 0,
+            full_bsr: false,
+            ..SolverConfig::default()
+        };
+        let mut s = Solver::new_with_config(
+            5,
+            vec![vec![1, 2], vec![1, 3], vec![-1, 4], vec![-1, 5]],
+            &config,
+        );
+        s.frozen[2] = true;
+        s.frozen[3] = true;
+        s.frozen[4] = true;
+        s.frozen[5] = true;
+        let mut proof = ProofLog::disabled();
+        assert!(s.eliminate(false, &mut proof));
+        assert!(
+            s.eliminated[1],
+            "var 1 must be eliminated when occlim=0 (unlimited)"
         );
     }
 

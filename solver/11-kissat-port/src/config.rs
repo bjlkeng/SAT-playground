@@ -616,6 +616,7 @@ pub(crate) struct SolverConfig {
     pub(crate) probe_ticks_budget: u64,
     pub(crate) eliminate_ticks_budget: u64,
     pub(crate) eliminate_resolution_budget: u64,
+    pub(crate) eliminate_occurrence_limit: u64,
     pub(crate) transitive_max_depth: u32,
     pub(crate) transitive_ticks_per_source: u64,
     pub(crate) transitive_max_removed_per_round: u64,
@@ -728,6 +729,7 @@ impl Default for SolverConfig {
             probe_ticks_budget: 0,
             eliminate_ticks_budget: 0,
             eliminate_resolution_budget: 0,
+            eliminate_occurrence_limit: 2000,
             transitive_max_depth: 0,
             transitive_ticks_per_source: 0,
             transitive_max_removed_per_round: 0,
@@ -1258,6 +1260,12 @@ impl SolverConfig {
             "SAT_ELIMINATE_RESOLUTIONS",
             self.eliminate_resolution_budget,
         );
+        self.eliminate_occurrence_limit = parse_u64_selected(
+            env_map,
+            &key_set,
+            "SAT_ELIMINATE_OCCLIM",
+            self.eliminate_occurrence_limit,
+        );
         self.transitive_max_depth = parse_u32_selected(
             env_map,
             &key_set,
@@ -1705,6 +1713,11 @@ impl SolverConfig {
             &mut lines,
             "eliminate_resolution_budget",
             self.eliminate_resolution_budget.to_string(),
+        );
+        push_kv(
+            &mut lines,
+            "eliminate_occurrence_limit",
+            self.eliminate_occurrence_limit.to_string(),
         );
         push_kv(
             &mut lines,
@@ -2334,6 +2347,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "probe_ticks_budget" => Some("SAT_PROBE_TICKS"),
         "eliminate_ticks_budget" => Some("SAT_ELIMINATE_TICKS"),
         "eliminate_resolution_budget" => Some("SAT_ELIMINATE_RESOLUTIONS"),
+        "eliminate_occurrence_limit" => Some("SAT_ELIMINATE_OCCLIM"),
         "transitive_max_depth" => Some("SAT_TRANSITIVE_MAX_DEPTH"),
         "transitive_ticks_per_source" => Some("SAT_TRANSITIVE_TICKS_PER_SOURCE"),
         "transitive_max_removed_per_round" => Some("SAT_TRANSITIVE_MAX_REMOVED_PER_ROUND"),
@@ -2517,6 +2531,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_PROBE_TICKS",
         "SAT_ELIMINATE_TICKS",
         "SAT_ELIMINATE_RESOLUTIONS",
+        "SAT_ELIMINATE_OCCLIM",
         "SAT_TRANSITIVE_MAX_DEPTH",
         "SAT_TRANSITIVE_TICKS_PER_SOURCE",
         "SAT_TRANSITIVE_MAX_REMOVED_PER_ROUND",
@@ -3775,10 +3790,26 @@ mod tests {
     }
 
     #[test]
+    fn test_eliminate_occurrence_limit_is_parsed_and_replayable() {
+        let config = SolverConfig::from_env_map(&env_map(&[("SAT_ELIMINATE_OCCLIM", "2000")]));
+        assert_eq!(config.eliminate_occurrence_limit, 2000);
+
+        let replay = config.config_replay_text();
+        assert!(replay.contains("eliminate_occurrence_limit=2000"));
+        let replayed = SolverConfig::from_replay_text(&replay, Path::new("<occlim-test>"));
+        assert_eq!(
+            replayed.eliminate_occurrence_limit,
+            config.eliminate_occurrence_limit
+        );
+        assert_eq!(replayed.config_hash(), config.config_hash());
+    }
+
+    #[test]
     fn test_schema_and_feature_csv_are_loaded_into_binary() {
         assert!(CONFIG_SCHEMA_CSV.contains("SAT_USE_LBD"));
         assert!(CONFIG_SCHEMA_CSV.contains("SAT_CONFIG_REPLAY"));
         assert!(CONFIG_SCHEMA_CSV.contains("SAT_ELIMINATE_RESOLUTIONS"));
+        assert!(CONFIG_SCHEMA_CSV.contains("SAT_ELIMINATE_OCCLIM"));
         assert!(FEATURES_CSV.contains("SAT_USE_LBD"));
         assert!(FEATURES_CSV.contains("SAT_FULL_BSR"));
     }

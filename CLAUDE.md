@@ -195,7 +195,7 @@ Write DRAT proof to `<output_dir>/proof.out`. This is required from every iterat
   profile20 are unreliable: `case9`, `sudoku-N30-12`, and `REGRandom-K4-L1-Seed40` are seed-fragile
   (e.g. the default solves case9 on only ~1/5 seeds), so n=1 conflates "systematically better/worse"
   with a lucky draw and has produced flat-wrong verdicts. Run the sweep with
-  `python3 tools/feature_ablation.py --seedgate --configs <tag> [--seeds 10] [--timeout 600]` per
+  `python3 tools/feature_ablation.py --seedgate --configs <tag> [--seeds 10] [--timeout 900]` per
   config, then decide with `python3 tools/check_solver11_promotion.py --multiseed ...`. Report
   per-instance **solve-rate (X/N seeds)**, median conflicts, **P(feature>default)** stochastic
   dominance (0.50 = no effect / lottery), and compare any aggregate delta against the **default's own
@@ -242,7 +242,7 @@ Write DRAT proof to `<output_dir>/proof.out`. This is required from every iterat
 - **Solver 11 default/fast promotion gate:** the decision metric is the **LEXICOGRAPHIC
   solved→conflicts→PAR-2 metric over profile20, measured across N=10 seeds**, candidate vs the
   current solver-11 default. Produce one multi-seed TSV per config with
-  `python3 tools/feature_ablation.py --seedgate --configs <tag> --seeds 10 [--timeout 600]` (for
+  `python3 tools/feature_ablation.py --seedgate --configs <tag> --seeds 10 [--timeout 900]` (for
   solver10, the prior default, and the candidate), then run the gate:
   `python3 tools/check_solver11_promotion.py --multiseed --solver10 <solver10.tsv> --previous <prior-default.tsv> --candidate <candidate.tsv> --timeout <seconds> --memory-mb <MB>`.
   Promote a candidate that wins lexicographically vs the prior default beyond seed-noise. Solver 10
@@ -402,7 +402,7 @@ idea or benchmark gap, it is acceptable to test that focused feature as part of 
      solver default; `--env` works with everything below (5×5 for iteration, N=10 for the verdict).
    - **Keep/turn-on/promote decision (REQUIRED, the authoritative measurement):** the **multi-seed
      `--seedgate`** mode. For each config worth deciding on, run
-     `python3 tools/feature_ablation.py --seedgate --configs <tag> --seeds 10 [--timeout 600]`
+     `python3 tools/feature_ablation.py --seedgate --configs <tag> --seeds 10 [--timeout 900]`
      (or `--env "SAT_…" --tag …` for an unregistered feature; N=10 seeds per instance via `SAT_SEED`,
      conflicts captured), then decide with the lexicographic
      gate `python3 tools/check_solver11_promotion.py --multiseed ...` (solved→conflicts→PAR-2). This
