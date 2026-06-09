@@ -244,6 +244,8 @@ SAT_REPHASE=on
 SAT_BINARY_FAST=on
 SAT_ELIMINATE_TICKS=<u64>        # 0 means no local BSR/BVE work budget
 SAT_ELIMINATE_RESOLUTIONS=<u64>  # 0 means no BVE resolution-attempt budget
+SAT_ELIMINATE_OCCLIM=<u64>       # 0 means unlimited BVE occurrence scan
+SAT_BSR_OCCLIM=<u64>             # default 0; 0 means unlimited BSR best-occurrence scan
 ```
 
 The `default` and `fast` profiles currently keep `SAT_USE_LBD=off`,
@@ -358,6 +360,20 @@ Lower-level diagnostics can be enabled independently with `SAT_TRACE_PROOF=on`,
 
 Smoke/correctness (independent of efficacy) is verified per change via
 `bash tools/smoke_test.sh solver/11-kissat-port` (9/9) and `cargo test`.
+
+### BSR occurrence-cap experiment (2026-06-08)
+
+- **`SAT_BSR_OCCLIM=1000` → REJECTED as a default** — bead `SAT-playground-5b2.3.29`.
+  A 5-seed profile20 seedgate showed fewer solved cells than the unlimited baseline:
+  unlimited (`SAT_BSR_OCCLIM=0`) solved 65/100 with PAR-2 74926.668, while the capped candidate
+  solved 61/100 with PAR-2 79865.034. The loss is primarily `REGRandom-K4-L1-Seed40`, where 5/5
+  previously solved seeds become timeouts; the only solved-count gain is one seed on `bp4_CSO_IXA_ZR`.
+  Keep the knob diagnostic/default-off unless a later parameter or adaptive rule clears the
+  solved-count gate. Evidence:
+  `log/seedgate-bsr_occlim_unlimited-2026-06-08-16-33-14/results.tsv`,
+  `log/seedgate-bsr_occlim_1000-2026-06-08-20-44-54/results.tsv`, and
+  `tools/check_solver11_promotion.py --multiseed ...` gate output
+  (`promotion_gate=FAIL`, candidate 61 solved vs previous 65).
 ## 2026-05-15 Profile Simplification Optimization Pass
 
 Target: close the solver-10 preprocessing gap to MiniSat `simp` on `benchmarks/profiling` while

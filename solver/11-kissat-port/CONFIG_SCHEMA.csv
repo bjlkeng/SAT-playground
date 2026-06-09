@@ -65,6 +65,7 @@ SAT_SIMPLIFICATION,simplification,bool,on|off,false,true,true,true,false,true,SA
 SAT_BVE,bve,bool,on|off,false,true,true,true,false,true,SAT_GATE_BVE,,0.3,yes
 SAT_FULL_BSR,full_bsr,bool,on|off,false,true,true,true,false,true,,,0.3,yes
 SAT_BSR_FORMULA_GATE,bsr_formula_gate,bool,on|off,false,false,false,true,false,false,,SAT_FULL_BSR,SAT-playground-f06,yes
+SAT_BSR_OCCLIM,bsr_occurrence_limit,u64,nonnegative,0,0,0,false,true,false,,SAT_FULL_BSR,SAT-playground-5b2.3.29,internal
 SAT_INPROCESS,inprocess,bool,on|off,false,false,false,true,false,false,SAT_SIMPLIFICATION,,0.3,yes
 SAT_VIVIFY,vivify,bool,on|off,false,false,false,true,false,false,SAT_SIMPLIFICATION,,0.3,yes
 SAT_PROBE,probe,bool,on|off,false,false,false,true,false,false,SAT_SIMPLIFICATION,,0.3,yes

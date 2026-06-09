@@ -179,6 +179,7 @@ pub(crate) struct SolverStats {
     pub(crate) bsr_skip_self: u64,
     pub(crate) bsr_skip_deleted: u64,
     pub(crate) bsr_skip_limit: u64,
+    pub(crate) bsr_skip_occurrence_limit: u64,
     pub(crate) bsr_relation_calls: u64,
     pub(crate) bsr_relation_len_reject: u64,
     pub(crate) bsr_relation_abstraction_reject: u64,

@@ -591,6 +591,7 @@ pub(crate) struct SolverConfig {
     // such formulas (Kakuro -79%, velev -79%) but useful on random 3-SAT / brocard.
     // Default off; the first concrete adaptive-routing rule under bead f06.
     pub(crate) bsr_formula_gate: bool,
+    pub(crate) bsr_occurrence_limit: u64,
     pub(crate) use_resolved_conflict_analysis: bool,
     pub(crate) initial_clause_mode: InitialClauseMode,
     pub(crate) branch_mode: BranchMode,
@@ -704,6 +705,7 @@ impl Default for SolverConfig {
             bve: true,
             full_bsr: true,
             bsr_formula_gate: false,
+            bsr_occurrence_limit: 0,
             use_resolved_conflict_analysis: false,
             initial_clause_mode: InitialClauseMode::CanonicalSorted,
             branch_mode: BranchMode::Minisat,
@@ -1202,6 +1204,12 @@ impl SolverConfig {
             "SAT_SUBSUMPTION_LIMIT",
             self.subsumption_limit,
         );
+        self.bsr_occurrence_limit = parse_u64_selected(
+            env_map,
+            &key_set,
+            "SAT_BSR_OCCLIM",
+            self.bsr_occurrence_limit,
+        );
 
         self.inprocess = parse_bool_selected(env_map, &key_set, "SAT_INPROCESS", self.inprocess);
         self.vivify = parse_bool_selected(env_map, &key_set, "SAT_VIVIFY", self.vivify);
@@ -1650,6 +1658,11 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "bve", self.bve);
         push_kv_bool(&mut lines, "full_bsr", self.full_bsr);
         push_kv_bool(&mut lines, "bsr_formula_gate", self.bsr_formula_gate);
+        push_kv(
+            &mut lines,
+            "bsr_occurrence_limit",
+            self.bsr_occurrence_limit.to_string(),
+        );
         push_kv_bool(
             &mut lines,
             "use_resolved_conflict_analysis",
@@ -2323,6 +2336,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "bve" => Some("SAT_BVE"),
         "full_bsr" => Some("SAT_FULL_BSR"),
         "bsr_formula_gate" => Some("SAT_BSR_FORMULA_GATE"),
+        "bsr_occurrence_limit" => Some("SAT_BSR_OCCLIM"),
         "use_resolved_conflict_analysis" => Some("SAT_CONFLICT_ANALYSIS_MODE"),
         "initial_clause_mode" => Some("SAT_INITIAL_CLAUSE_MODE"),
         "branch_mode" => Some("SAT_BRANCH_MODE"),
@@ -2515,6 +2529,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_BVE",
         "SAT_FULL_BSR",
         "SAT_BSR_FORMULA_GATE",
+        "SAT_BSR_OCCLIM",
         "SAT_INPROCESS",
         "SAT_VIVIFY",
         "SAT_PROBE",
@@ -3805,9 +3820,22 @@ mod tests {
     }
 
     #[test]
+    fn test_bsr_occurrence_limit_is_parsed_and_replayable() {
+        let config = SolverConfig::from_env_map(&env_map(&[("SAT_BSR_OCCLIM", "1000")]));
+        assert_eq!(config.bsr_occurrence_limit, 1000);
+
+        let replay = config.config_replay_text();
+        assert!(replay.contains("bsr_occurrence_limit=1000"));
+        let replayed = SolverConfig::from_replay_text(&replay, Path::new("<bsr-occlim-test>"));
+        assert_eq!(replayed.bsr_occurrence_limit, config.bsr_occurrence_limit);
+        assert_eq!(replayed.config_hash(), config.config_hash());
+    }
+
+    #[test]
     fn test_schema_and_feature_csv_are_loaded_into_binary() {
         assert!(CONFIG_SCHEMA_CSV.contains("SAT_USE_LBD"));
         assert!(CONFIG_SCHEMA_CSV.contains("SAT_CONFIG_REPLAY"));
+        assert!(CONFIG_SCHEMA_CSV.contains("SAT_BSR_OCCLIM"));
         assert!(CONFIG_SCHEMA_CSV.contains("SAT_ELIMINATE_RESOLUTIONS"));
         assert!(CONFIG_SCHEMA_CSV.contains("SAT_ELIMINATE_OCCLIM"));
         assert!(FEATURES_CSV.contains("SAT_USE_LBD"));

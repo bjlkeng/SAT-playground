@@ -978,11 +978,17 @@ impl Solver {
                 continue;
             }
             self.clean_occurs::<TRACE>(best_var);
+            let best_occurs_len = self.occurs[best_var].len() as u64;
             if TRACE {
-                let best_occurs_len = self.occurs[best_var].len() as u64;
                 self.stats.bsr_best_occurs_sum += best_occurs_len;
                 self.stats.bsr_best_occurs_max =
                     self.stats.bsr_best_occurs_max.max(best_occurs_len);
+            }
+            if self.bsr_occurrence_limit != 0 && best_occurs_len > self.bsr_occurrence_limit {
+                if TRACE {
+                    self.stats.bsr_skip_occurrence_limit += 1;
+                }
+                continue;
             }
 
             let mut scan_pos = 0usize;
@@ -1564,6 +1570,41 @@ mod tests {
 
         assert!(live_original_clauses(&s).contains(&vec![2, 3]));
         assert_eq!(s.stats.preprocess_strengthened_clauses, 1);
+    }
+
+    #[test]
+    fn backward_subsumption_occurrence_limit_skips_dense_driver_scan() {
+        let config = SolverConfig {
+            bsr_occurrence_limit: 1,
+            trace_preprocess_details: true,
+            ..SolverConfig::default()
+        };
+        let mut s = Solver::new_with_config(2, vec![vec![1, 2], vec![1, 2]], &config);
+        let mut proof = ProofLog::disabled();
+        s.build_occurrence_index();
+
+        assert!(run_backward_subsumption(&mut s, true, &mut proof));
+
+        assert_eq!(live_original_clauses(&s), vec![vec![1, 2], vec![1, 2]]);
+        assert_eq!(s.stats.bsr_skip_occurrence_limit, 2);
+        assert_eq!(s.stats.bsr_candidates_seen, 0);
+        assert_eq!(s.stats.preprocess_subsumed_clauses, 0);
+    }
+
+    #[test]
+    fn backward_subsumption_occurrence_limit_zero_keeps_unlimited_scan() {
+        let config = SolverConfig {
+            bsr_occurrence_limit: 0,
+            ..SolverConfig::default()
+        };
+        let mut s = Solver::new_with_config(2, vec![vec![1, 2], vec![1, 2]], &config);
+        let mut proof = ProofLog::disabled();
+        s.build_occurrence_index();
+
+        assert!(run_backward_subsumption(&mut s, true, &mut proof));
+
+        assert_eq!(live_original_clauses(&s), vec![vec![1, 2]]);
+        assert_eq!(s.stats.preprocess_subsumed_clauses, 1);
     }
 
     #[test]

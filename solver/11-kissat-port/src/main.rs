@@ -1335,6 +1335,8 @@ struct Solver {
     /// BSR on formulas whose pre-preprocess classification matches the
     /// "large + low-binary + dense" rule from analyzesat-2026-05-26-preprocess. Default off.
     bsr_formula_gate: bool,
+    /// max candidates in the selected best occurrence list for one BSR driver; zero = unlimited
+    bsr_occurrence_limit: u64,
     /// allowed clause-count growth for one variable-elimination step
     bve_grow: isize,
     /// maximum resolvent size allowed during variable elimination; negative means unlimited
@@ -2190,6 +2192,7 @@ impl Solver {
             use_elim: config.bve,
             full_bsr: config.full_bsr,
             bsr_formula_gate: config.bsr_formula_gate,
+            bsr_occurrence_limit: config.bsr_occurrence_limit,
             bve_grow: DEFAULT_BVE_GROW,
             bve_clause_limit: DEFAULT_BVE_CLAUSE_LIMIT,
             eliminate_ticks_budget: config.eliminate_ticks_budget,
@@ -7716,7 +7719,7 @@ impl Solver {
                 self.stats.bsr_best_occurs_sum as f64 / self.stats.bsr_drivers as f64
             };
             eprintln!(
-                "c preprocess_detail bsr_runs={} seeded={} drivers={} clause_drivers={} root_drivers={} driver_lits={} candidates={} skip_self={} skip_deleted={} skip_limit={} relation_calls={} len_reject={} abstraction_reject={} sorted_calls={} nested_calls={} relation_subsumed={} relation_strengthen={} avg_best_occurs={:.3} max_best_occurs={} clean_calls={} clean_dirty={} clean_membership={} clean_scanned={} clean_removed={} eliminate_ticks={} resolution_attempts={} resolution_budget_hits={} tick_budget_hits={}",
+                "c preprocess_detail bsr_runs={} seeded={} drivers={} clause_drivers={} root_drivers={} driver_lits={} candidates={} skip_self={} skip_deleted={} skip_limit={} skip_occlim={} relation_calls={} len_reject={} abstraction_reject={} sorted_calls={} nested_calls={} relation_subsumed={} relation_strengthen={} avg_best_occurs={:.3} max_best_occurs={} clean_calls={} clean_dirty={} clean_membership={} clean_scanned={} clean_removed={} eliminate_ticks={} resolution_attempts={} resolution_budget_hits={} tick_budget_hits={}",
                 self.stats.bsr_runs,
                 self.stats.bsr_seeded_clauses,
                 self.stats.bsr_drivers,
@@ -7727,6 +7730,7 @@ impl Solver {
                 self.stats.bsr_skip_self,
                 self.stats.bsr_skip_deleted,
                 self.stats.bsr_skip_limit,
+                self.stats.bsr_skip_occurrence_limit,
                 self.stats.bsr_relation_calls,
                 self.stats.bsr_relation_len_reject,
                 self.stats.bsr_relation_abstraction_reject,
