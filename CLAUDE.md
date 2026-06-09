@@ -409,6 +409,29 @@ idea or benchmark gap, it is acceptable to test that focused feature as part of 
      is mandatory before keeping a feature or promoting a default, because single-seed verdicts on
      profile20 are unreliable (case9/sudoku/REGRandom are seed-fragile). The old `--stage2` + "3 %
      repeat rule" workflow is superseded by `--seedgate`; the repeat rule no longer applies.
+
+   **Long ablation/seedgate jobs: run detached, report hourly, end with a comparative summary.**
+   A full `--seedgate` sweep (20 instances × N seeds at 900 s, or any multi-config matrix) runs for
+   hours — do not block the session on it. After the pre-launch contention/memory check and the
+   user's go-ahead:
+   - **Launch it in the background** so it survives the session — `run_in_background: true` on the
+     Bash call for a single sweep, or the one-shot cron pattern under "Running Full/Medium SAT
+     Competition 2025 Benchmarks" for very long / multi-day runs. Record the run dir
+     (`log/seedgate-<tag>-<ts>/`) and the driver PID.
+   - **Post an hourly status report** while it runs. `feature_ablation.py --seedgate` writes
+     `results.tsv` only at the very end and deletes each `_work/<idx>` scratch dir per-cell, so
+     mid-run progress comes from the live process list, not a partial file: `pgrep -af
+     feature_ablation` for liveness, then map the in-flight `_work/<idx>` dirs to instances (idx =
+     position in the instance-major × N-seed job list, so the lowest in-flight idx ≈ cells done).
+     Report cells-done, current instance, and an ETA against the paired baseline's wall time, and
+     schedule the next check ~1 h out (e.g. `ScheduleWakeup`). Stop the cadence when the run
+     finishes or the user says so.
+   - **Close with a comparative analysis + summary, not just "done".** When `DONE` / `results.tsv`
+     land, parse the TSV and run the lexicographic gate against the paired baseline (plus the
+     solver-10 floor for a promotion): `python3 tools/check_solver11_promotion.py --multiseed
+     --candidate <cand.tsv> --previous <baseline.tsv> [--solver10 <s10.tsv>] --timeout <s>
+     --memory-mb <MB>`. Summarize the solved→conflicts→PAR-2 verdict, per-instance solve-rate
+     deltas (flag any seed-fragile row), and the keep/promote recommendation.
 1. **Pick a target for iteration speed (not for the decision)**: If the user names a reference solver or competition gap, choose one concrete competition instance where the reference is faster than the repo solver but still short enough for repeated iteration, and use it to profile and prototype. Create a one-instance benchmark directory for it and keep using that target until the user redirects. The target instance accelerates the edit/measure loop; the decision to keep or revert is always made on aggregate profile20 PAR-2, so confirm every candidate on the full suite before keeping it.
 2. **Baseline**: Run `bash tools/bench.sh -j 4 -d benchmarks/profile20 solver/NN-name` (or the `tools/feature_ablation.py` driver) and record **aggregate PAR-2 over the suite** (all-20, plus the easy-10 / hard-10 split) as the primary baseline metric. The profile20 default is 300 seconds per instance for Stage-1 screening; the hard-10 need a longer Stage-2 timeout to show headroom. For a one-instance target, also run `bash tools/bench.sh -t <seconds> -m 16384 -d <one-instance-dir> solver/NN-name` and record the target-instance runtime as a secondary iteration aid. If comparing to MiniSat-style simplification, also capture useful reference variants such as `minisat -no-pre`, `minisat -no-elim`, and full `minisat`.
 3. **Profile first**: Use a profiler such as `perf stat` / `perf record` / `perf report` on the target instance before changing code. Use the profile to choose the next implementation slice. If the release binary is stripped and symbols are needed, rebuild for profiling with `CARGO_PROFILE_RELEASE_STRIP=false CARGO_PROFILE_RELEASE_DEBUG=1 RUSTFLAGS="-C target-cpu=native" cargo build --release`.

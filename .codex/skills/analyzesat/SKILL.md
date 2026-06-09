@@ -88,6 +88,14 @@ tools/bench.sh -t 300 -m 16384 -d benchmarks/profiling solver/NN-name
 Set env vars via wrapper or by temporarily modifying config defaults; record the exact
 `SAT_*` env string for every run in the results so conclusions are reproducible.
 
+**Long matrices run in the background with hourly status.** A full multi-config × 10-instance
+matrix at 300 s is a multi-hour job — launch it detached (Bash `run_in_background: true`, or the
+one-shot cron pattern for very long runs) instead of blocking the session, post an hourly status
+report while it runs (liveness via `pgrep`, cells-done, ETA), and close with the comparative
+analysis/summary this skill already produces (the Phase 2–7 decomposition + `FINDINGS.md` + the
+screen summary). See CLAUDE.md's "Code-Level Optimization Workflow" for the full
+detached-run / hourly-status / end-of-run-summary convention.
+
 Capture per-(config, instance):
 - wall time, result (SAT/UNSAT/timeout)
 - conflicts, decisions, propagations, restarts (from `SAT_STATS_JSON=on`)
