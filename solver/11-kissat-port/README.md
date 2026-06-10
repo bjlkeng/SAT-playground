@@ -374,6 +374,54 @@ Smoke/correctness (independent of efficacy) is verified per change via
   `log/seedgate-bsr_occlim_1000-2026-06-08-20-44-54/results.tsv`, and
   `tools/check_solver11_promotion.py --multiseed ...` gate output
   (`promotion_gate=FAIL`, candidate 61 solved vs previous 65).
+
+### Auto-enable SAT_BINARY_FAST under SAT_FULL_BSR (analyzesat PRE-2, 2026-06-09)
+
+- **Coupling `binary_fast_path` on whenever `full_bsr` is on → REJECTED as a default** — bead
+  `SAT-playground-5b2.3.27`. Hypothesis (analyzesat PRE-2): BSR strengthens long clauses into
+  binaries that, with the binary fast path off, fall onto the slow long-clause watcher list, so
+  defaulting `SAT_BINARY_FAST=on` alongside BSR should recover Kakuro/velev. A 5-seed profile20
+  seedgate (candidate `--env ""` with the coupling vs baseline `--env "SAT_BINARY_FAST=off"`,
+  900s) **loses the lexicographic metric on the primary axis**: candidate solved **61/100**
+  PAR-2 82149 vs baseline **65/100** PAR-2 74433 (baseline = the current default; its 65/100 ≈
+  the BSR-occlim run's 65/100, cross-run consistent).
+- **Why it loses:** the binary fast path is a propagation-order change (binaries propagate first,
+  via `binary_implications`, before the long-clause watch scan in `propagate_impl`), which reshapes
+  reasons → learned clauses → the whole search trajectory — faster per propagation but a *longer*
+  search on formulas that are not binary-propagation-bound. The premise only half-held:
+  **Kakuro improved** (−61% conflicts on commonly-solved seeds) but **velev got worse** (+155%
+  conflicts, both still 5/5 at 900s), and the longer search tipped three borderline instances over
+  the timeout: `sqrt-mitern170` (0/5 vs 2/5), `mp1-Nb7T46` (3/5 vs 5/5, +10657% conflicts on the
+  seeds both solve), `REGRandom-K4-L1-Seed40` (4/5 vs 5/5). Only `bp4_CSO_IXA_ZR` gained (1/5 vs 0/5).
+- **1800s confirmation (the reject is a conflicts loss, not a budget artifact):** to rule out the
+  900s timeout being the cause, the 10 instances that timed out in the screen were re-run at a 30-min
+  (1800s) timeout, N=5, both configs (`SAT_BINARY_FAST=on` reproduces the coupling on the reverted
+  binary; `=off` is the baseline). With the extra budget the 900s solved-count gap **mostly closed** —
+  `sqrt-mitern170` (0/5→5/5), `REGRandom` (4/5→5/5) and `case9` (3/5→5/5) were pure budget artifacts
+  that recover in the candidate, and `bp4` genuinely *helps* (cand 2/5 vs base 0/5, both SAT seeds the
+  baseline cannot crack even at 1800s). Combining the 1800s timeout-rows with the 900s always-solved
+  rows for a full-20 read: candidate **solved 72/100 vs baseline 71/100** (cand +1, a single cell,
+  within seed-noise and driven by seed-fragile `case9`), i.e. **solved-count effectively ties at a
+  generous budget**. The decision therefore falls to the **conflicts tiebreak, where the candidate
+  does +24.9% more search** (226.3M vs 181.1M conflicts over 63 commonly-solved cells). Per the repo
+  metric — a faster-per-op change that does more search at equal solved-count is **not** a win — this
+  is a clean reject on the genuine mechanism, not the 900s budget cliff. Per-instance conflicts split:
+  helps Kakuro −61% / circuit −18% / 6s299b685 −13%; hurts mp1 **+10657%** / velev +155% / case9 +137%
+  / sqrt-mitern171 +14% / brocard +11%; the big regressions (mp1/velev/case9) dominate the aggregate.
+  `mp1-Nb7T46` is the one genuine solved-count loss (cand 3/5 vs base 5/5 even at 1800s).
+- **Takeaway:** binary-fast-under-BSR is instance-shape-dependent (helps truly binary-bound formulas
+  like Kakuro/bp4, hurts arithmetic/long-clause miters like velev/mitern/mp1), which argues for a
+  *gated* coupling rather than an unconditional default — feed this into the BSR/binary-fast
+  formula-gate beads (`SAT-playground-5b2.3.28` / `5b2.3.31`), not a blanket default flip.
+  `SAT_BINARY_FAST=on` remains available as an explicit opt-in. The 5-seed screen + the 1800s
+  timeout-instance rerun together (solved ties at generous budget, conflicts −25% for the baseline)
+  were decisive enough to revert without an N=10 gate. Evidence:
+  `log/seedgate-binfast_cand-2026-06-09-07-33-05/results.tsv`,
+  `log/seedgate-binfast_base-2026-06-09-10-16-38/results.tsv`,
+  `log/seedgate-binfast_to_on-2026-06-09-17-38-40/results.tsv`,
+  `log/seedgate-binfast_to_off-2026-06-09-21-37-23/results.tsv`,
+  screen log `log/binfast-5x5-screen.log`, rerun log `log/binfast-timeout-rerun.log`.
+
 ## 2026-05-15 Profile Simplification Optimization Pass
 
 Target: close the solver-10 preprocessing gap to MiniSat `simp` on `benchmarks/profiling` while
