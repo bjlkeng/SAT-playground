@@ -7676,6 +7676,24 @@ impl Solver {
         // FormulaClass to consult. The post-preprocess class is captured separately
         // below for reporting/diagnostics.
         self.pre_preprocess_formula_class = self.classify_formula();
+        if config.trace_preprocess {
+            // The PRE-preprocess class drives SAT_BSR_FORMULA_GATE (simp.rs
+            // pre_preprocess_class_skips_bsr); trace it so gate decisions are auditable
+            // per instance (bead 5b2.3.31). The post-preprocess class is traced below.
+            let class = self.pre_preprocess_formula_class;
+            eprintln!(
+                "c pre_preprocess_class size_class={} binary_fraction={:.6} avg_clause_size={:.3} variable_density={:.3} kissat_small={} kissat_bigbig={} vars={} clauses={} literals={}",
+                class.size_class.as_str(),
+                class.binary_fraction,
+                class.avg_clause_size,
+                class.variable_density,
+                class.kissat_small,
+                class.kissat_bigbig,
+                self.live_original_variable_count(),
+                self.live_original_clause_count(),
+                self.original_literals,
+            );
+        }
         let preprocess_start = Instant::now();
         if !self.eliminate(true, proof_log) {
             self.stats.preprocess_sec = preprocess_start.elapsed().as_secs_f64();
