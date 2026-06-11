@@ -528,6 +528,13 @@ Processes spawned by the script can outlive the parent if only the wrapper is ki
 
 ## Status Reporting
 
+**Re-output command results as markdown in the reply.** Raw tool/command output is not
+reliably visible or readable to the user. Whenever command output informs a status report,
+comparison, analysis, or decision, re-present the relevant data directly in the reply as
+clean GitHub-flavored markdown — markdown tables for tabular data (benchmark rows, per-instance
+comparisons, sweep progress), inline numbers for single facts. Do not point at a tool result or
+log path as the only presentation of the data.
+
 When the user asks for status (e.g. "status?", "how's it going?", "what's running?"):
 
 1. **CPU usage**: Run `ps aux --sort=-%cpu | head -20` and report SAT solver processes (sat-solver, minisat, kissat, etc.) with their CPU%, runtime, and instance name

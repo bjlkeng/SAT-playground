@@ -242,8 +242,8 @@ SAT_REORDER=on|off
 SAT_REORDER_INTERVAL_CONFLICTS=<u64>  # default 10000
 SAT_REPHASE=on
 SAT_BINARY_FAST=on
-SAT_ELIMINATE_TICKS=<u64>        # 0 means no local BSR/BVE work budget
-SAT_ELIMINATE_RESOLUTIONS=<u64>  # 0 means no BVE resolution-attempt budget
+SAT_ELIMINATE_TICKS=<u64>        # default 3000000000; BSR/BVE work budget for the eliminate pass; 0 = unlimited
+SAT_ELIMINATE_RESOLUTIONS=<u64>  # default 100000000; BVE resolution-attempt budget; 0 = unlimited
 SAT_ELIMINATE_OCCLIM=<u64>       # 0 means unlimited BVE occurrence scan
 SAT_BSR_OCCLIM=<u64>             # default 0; 0 means unlimited BSR best-occurrence scan
 ```

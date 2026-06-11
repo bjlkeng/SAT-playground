@@ -1705,8 +1705,14 @@ mod tests {
     }
 
     #[test]
-    fn default_eliminate_budget_does_not_count_hot_loop_work() {
-        let mut s = Solver::new(4, vec![vec![1, 2], vec![1, 3], vec![-1, 4]]);
+    fn zero_eliminate_budget_disables_counting_and_stays_unlimited() {
+        // Explicit 0 budgets are the unlimited opt-out: no counting in the hot loop.
+        let config = SolverConfig {
+            eliminate_ticks_budget: 0,
+            eliminate_resolution_budget: 0,
+            ..SolverConfig::default()
+        };
+        let mut s = Solver::new_with_config(4, vec![vec![1, 2], vec![1, 3], vec![-1, 4]], &config);
         s.frozen[2] = true;
         s.frozen[3] = true;
         s.frozen[4] = true;
@@ -1718,6 +1724,33 @@ mod tests {
         assert_eq!(s.stats.preprocess_resolution_attempts, 0);
         assert_eq!(s.stats.preprocess_resolution_budget_hits, 0);
         assert_eq!(s.stats.preprocess_tick_budget_hits, 0);
+    }
+
+    #[test]
+    fn default_eliminate_budget_is_active_and_spares_small_formulas() {
+        // bead 5b2.3.24: the shipped default budgets are non-zero, so eliminate work
+        // is counted by default — but they are generous enough that a small formula
+        // completes its full pass without exhausting them.
+        let mut s = Solver::new(4, vec![vec![1, 2], vec![1, 3], vec![-1, 4]]);
+        s.frozen[2] = true;
+        s.frozen[3] = true;
+        s.frozen[4] = true;
+        let mut proof = ProofLog::disabled();
+
+        assert!(s.eliminate(false, &mut proof));
+
+        assert!(
+            s.stats.preprocess_eliminate_ticks > 0,
+            "default budgets must count eliminate work"
+        );
+        assert!(
+            !s.preprocess_budget_exhausted,
+            "small formula must not exhaust the default budget"
+        );
+        assert!(
+            s.eliminated[1],
+            "BVE must proceed normally under the default budget"
+        );
     }
 
     #[test]

@@ -50,6 +50,27 @@ pub(crate) const CONFIG_SCHEMA_CSV: &str = include_str!("../CONFIG_SCHEMA.csv");
 #[cfg(test)]
 pub(crate) const FEATURES_CSV: &str = include_str!("../FEATURES.csv");
 
+// Default eliminate-pass effort budgets (bead SAT-playground-5b2.3.24, analyzesat PRE-1).
+// Chosen from the measured natural tick usage across profile20 (2026-06-10, counters active
+// via huge budgets; tick counts are work counters — deterministic per formula, consumed
+// before any seed-dependent choice, contention-immune): 18 of 20 instances finish within
+// 2.77B ticks (max REGRandom 2.766B — an instance where BSR is measured load-bearing, so it
+// must stay under budget), while the two runaways sit above (velev 3.72B, Kakuro 10.0B,
+// both BSR-harmful per log/analyzesat-2026-05-26-preprocess −79% studies). 3B binds the
+// runaways and spares the rest. The resolution budget is an independent BVE safety cap at
+// ~1.5× the largest observed legitimate usage (VexRiscv 67.0M attempts); it binds nothing
+// on profile20. Explicit 0 remains the unlimited opt-out (and skips counting in the hot
+// loop entirely). A wall-clock cap was rejected on purpose: it would break the
+// per-(config,seed) determinism of conflicts that the lexicographic metric's tiebreak
+// relies on. Kept via the 2026-06-10 5x5 profile20 seedgate vs the unlimited prior default:
+// solved 65/100 both (identical cell sets), conflicts tiebreak −0.3% (Kakuro −39.8%,
+// velev +16.3%, all other rows bit-identical), PAR-2 +0.33% (noise). Known limits: the
+// budget exhausts inside Kakuro's initial BSR so its BVE never runs, and clean_occurs /
+// resolvent-materialization work is NOT tick-counted (VexRiscv-shaped BVE-heavy walls stay
+// unbounded — see bead 5b2.3.23). Evidence: log/seedgate-elimbudget-{on,off}-2026-06-10-*.
+pub(crate) const DEFAULT_ELIMINATE_TICKS_BUDGET: u64 = 3_000_000_000;
+pub(crate) const DEFAULT_ELIMINATE_RESOLUTION_BUDGET: u64 = 100_000_000;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InitialClauseMode {
     Auto,
@@ -729,8 +750,8 @@ impl Default for SolverConfig {
             vivify_ticks_budget: 0,
             vivify_max_clause_len: 0,
             probe_ticks_budget: 0,
-            eliminate_ticks_budget: 0,
-            eliminate_resolution_budget: 0,
+            eliminate_ticks_budget: DEFAULT_ELIMINATE_TICKS_BUDGET,
+            eliminate_resolution_budget: DEFAULT_ELIMINATE_RESOLUTION_BUDGET,
             eliminate_occurrence_limit: 2000,
             transitive_max_depth: 0,
             transitive_ticks_per_source: 0,
@@ -3802,6 +3823,43 @@ mod tests {
             config.eliminate_resolution_budget
         );
         assert_eq!(replayed.config_hash(), config.config_hash());
+    }
+
+    #[test]
+    fn test_default_eliminate_budgets_bound_the_preprocess_pass() {
+        // bead 5b2.3.24 (analyzesat PRE-1): the eliminate pass must ship with a
+        // bounded default effort budget so preprocessing wall is bounded on hard
+        // formulas; explicit 0 stays available as the unlimited opt-out.
+        let config = SolverConfig::from_env_map(&env_map(&[]));
+        assert_eq!(config.eliminate_ticks_budget, DEFAULT_ELIMINATE_TICKS_BUDGET);
+        assert_eq!(
+            config.eliminate_resolution_budget,
+            DEFAULT_ELIMINATE_RESOLUTION_BUDGET
+        );
+        assert!(DEFAULT_ELIMINATE_TICKS_BUDGET > 0);
+        assert!(DEFAULT_ELIMINATE_RESOLUTION_BUDGET > 0);
+
+        for (env_var, expected) in [
+            ("SAT_ELIMINATE_TICKS", DEFAULT_ELIMINATE_TICKS_BUDGET),
+            ("SAT_ELIMINATE_RESOLUTIONS", DEFAULT_ELIMINATE_RESOLUTION_BUDGET),
+        ] {
+            let schema_row = CONFIG_SCHEMA_CSV
+                .lines()
+                .find(|line| line.starts_with(&format!("{env_var},")))
+                .unwrap_or_else(|| panic!("{env_var} schema row"));
+            let columns: Vec<&str> = schema_row.split(',').collect();
+            let expected = expected.to_string();
+            assert_eq!(columns[4], expected, "{env_var} baseline_default");
+            assert_eq!(columns[5], expected, "{env_var} default_default");
+            assert_eq!(columns[6], expected, "{env_var} fast_default");
+        }
+
+        let unlimited = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_ELIMINATE_TICKS", "0"),
+            ("SAT_ELIMINATE_RESOLUTIONS", "0"),
+        ]));
+        assert_eq!(unlimited.eliminate_ticks_budget, 0);
+        assert_eq!(unlimited.eliminate_resolution_budget, 0);
     }
 
     #[test]
