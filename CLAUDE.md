@@ -528,12 +528,18 @@ Processes spawned by the script can outlive the parent if only the wrapper is ki
 
 ## Status Reporting
 
-**Re-output command results as markdown in the reply.** Raw tool/command output is not
-reliably visible or readable to the user. Whenever command output informs a status report,
-comparison, analysis, or decision, re-present the relevant data directly in the reply as
-clean GitHub-flavored markdown — markdown tables for tabular data (benchmark rows, per-instance
-comparisons, sweep progress), inline numbers for single facts. Do not point at a tool result or
-log path as the only presentation of the data.
+**Show tool runs in the reply, in markdown.** Raw tool/command output is not reliably
+visible or readable to the user. Whenever a command run informs a status report, comparison,
+analysis, or decision, show BOTH parts directly in the reply:
+
+1. **The command that was run** — in a short fenced code block (trim boilerplate paths/flags
+   when they add nothing), so the user can see what produced the data and rerun it.
+2. **The relevant output, re-rendered as markdown** — markdown tables for tabular data
+   (benchmark rows, per-instance comparisons, sweep progress), inline numbers for single
+   facts, short fenced blocks only for verbatim log lines that resist tabulation.
+
+Do not point at a tool result or a log path as the only presentation of the data, and do not
+present derived numbers without showing the command they came from.
 
 When the user asks for status (e.g. "status?", "how's it going?", "what's running?"):
 
