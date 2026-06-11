@@ -1,6 +1,6 @@
 # Contextual Bandit / RL Search Controller for Solver 11 — Design Plan
 
-**Status:** plan, rev 2 — post fresh-eyes review · **Date:** 2026-06-09 · **Target:** `solver/11-kissat-port`
+**Status:** plan, rev 3 — second review + round-2 deep research integrated · **Date:** 2026-06-11 · **Target:** `solver/11-kissat-port`
 **Objective metric:** the repo's lexicographic metric — (1) solved, (2) total conflicts on ties,
 (3) PAR-2 — over `benchmarks/profile20`, N=10 seeds, per `CLAUDE.md`.
 
@@ -32,6 +32,12 @@ Every keep/promote decision goes through the existing gate:
 `tools/feature_ablation.py --seedgate` (N=10) → `tools/check_solver11_promotion.py --multiseed`,
 with the solver-10 floor and shuffled-order validation for anything that smells input-order-lucky.
 
+Rev 3 integrates a second research round (§3.1): the exact deployed reward formulas of the
+SC2024/25 MAB lineage (Kissat_MAB-DC, CoReward — verified against source), short-horizon bandit
+evidence that challenges UCB-by-default (H21), formal OPE-confounding limits that demote offline
+evaluation to screening-only (§8), clause-management findings that constrain reward choice
+(H20/H22), and deployed safe-fallback precedents (Kissat-Pred → H23, Conservative UCB → H19).
+
 ---
 
 ## 2. What solver 11 decides today (decision-point map)
@@ -47,7 +53,7 @@ LBD-tiered reduction + VMTF in focused mode + LBD + lucky. All file:line refs be
 | Restart trigger | `note_conflict` main.rs:4964; EMA logic main.rs:4934, 4906-4920 | focused: fast/slow LBD-EMA margin; stable: reluctant doubling (main.rs:4881) | **Yes — Phase 2/3** (margin arm, or MLR-style contextual trigger) |
 | Restart execution + trail reuse | `perform_restart_if_pending` main.rs:5469 | optional trail-reuse flags | **Primary bandit hook point** (period boundary) |
 | Mode switching | `maybe_switch_search_mode` main.rs:4777 | fixed schedule: focused interval `nlogpown(conflicts,4)`, stable = prior focused ticks | Phase 3 (extend-vs-switch arm) |
-| Rephase strategy | main.rs:5190 / `apply_rephase` main.rs:5248 | fixed cycle best→inverted→original on stable restarts | **Yes — Phase 1 arm** (4-arm precedent: Kissat-MAB-rephasing, SC2022) |
+| Rephase strategy | main.rs:5190 / `apply_rephase` main.rs:5248 | fixed cycle best→inverted→original on stable restarts — behind `SAT_REPHASE`, **off by default** (see A2) | **Yes — Phase 1 arm** (4-arm precedent: Kissat-MAB-rephasing, SC2022) |
 | Reduce schedule + tiers | `should_reduce_db` main.rs:5680; `reduce_db_lbd_tiered` main.rs:6479 | sqrt-scheduled; tier cuts at 50th/90th glue-use percentiles | Phase 3 (DynamicSAT evidence: clause-DB knobs gave the biggest DAC wins) |
 | Chrono backtrack | main.rs:4860 | `SAT_CHRONO` off by default | Phase 3 arm |
 | Random decisions | main.rs:5051-5073 | fixed interval, focused only | feature input, not an arm initially |
@@ -122,12 +128,114 @@ concentrates in the first ~10 decisions.
   offline-contextual-bandit-from-logged-trajectories is a genuine open niche; nearest neighbors
   are RLAF (episodic policy gradient) and Nejati CP 2020 (offline ranking for D&C splitting).
 
+### 3.1 Round-2 deep-dive findings (2026-06-10; raw payloads: `log/deepresearch-rl-bandit-2026-06-10-salvage.md`)
+
+**Exact deployed reward formulas** (the round-1 unknowns, now resolved from primary sources):
+
+- **Kissat_MAB-DC (SC2024, NUDT):** reward `r_t = log2(decisions_t) / log2(conflicts_t)` since
+  the latest restart — a decisions-to-conflicts ratio, chosen after the authors found "the bigger
+  decisions over conflicts, the more efficient the branching heuristic." Beat Kissat_MAB, HyWalk,
+  and MAB_Conflict+ on 800 SC22/23 instances, advantage **concentrated on satisfiable
+  instances**. (Their "2nd place SC2024" claim is overstated vs official results — 144 solved,
+  PAR-2 2740 — treat rankings in solver descriptions skeptically.) Their stated motivation: the
+  standard `log2(decisions)/decidedVars` family is "not well-aligned with CDCL, biasing arm
+  selection on hard instances" — a direct published critique of our pre-registered R1.
+- **Kissat_CoRephase_CoReward (SC2025, NUDT)** — the "three targeted dimensions" reward,
+  **verified 4× against the authors' repo** (`src/rephase.c:394-455`,
+  github.com/2317891476/Kissat_CoRephase_CoReward):
+  `reward = 0.4·conflict_rate + 0.1·avg_lbd + 0.5·unsigned_num`, where
+  `conflict_rate = log2(decisions)·log2(conflicts)/decidedVars²`, `avg_lbd = 1/median_LBD` (live
+  redundant clauses), `unsigned_num` = an inverse-remaining/eliminated-variables term (paper says
+  `1/(1+remain_vars)`, code computes `1/(vars−active+1)` — they differ in direction). Three
+  implementation quirks worth knowing: (a) each component is normalized by a **folded z-score**
+  `|x−μ|/σ` with hard-coded offline-fit constants — the comment says "z-score" but the code
+  discards the sign, so the reward favors *atypical* periods in either direction (design choice
+  or bug; see H24); (b) per-arm value uses EMA `α = 0.7^age` — inverted recency (long-idle arms
+  keep stale estimates); (c) UCB1 exploration constant is **0.01**, orders of magnitude below
+  textbook √2 — the deployed-winner lineage explores far less than theory suggests. Arms are
+  rephase *triples* {BWO, BWI, BWC, BWF}; one pull per 3 rephase events — pulls are scarce.
+  Note the 0.5-weighted variable-elimination component is convergent with our R6.
+- **AE_kissat2025_MAB (SC2025 winner lineage):** replaces the fixed UCB constant with
+  `adaptive_c = mabc/(momentum × (stable_restarts+1))`, momentum ×1.1/×0.9 against a
+  window-10 average gain; authors report ~3% PAR-2 on SC2024.
+- **Kissat-CURE (SC2025):** kissat 4.0.2 + DynamicSAT-style MAB config tuning + **cold-restart
+  arms** — forget branching order / forget phases / forget clauses (from arXiv:2404.16387).
+  **Kissat_MAB_ESA:** no reward change (BVE-ordering tweak only). **Kissat-Pred (SC2025):**
+  embedded *quantized decision trees* over linear-time graph features predict SAT/UNSAT +
+  difficulty; the conservative variant adjusts only restart intervals and mode-switch periods and
+  **falls back to defaults when the prediction is UNKNOWN** — a deployed in-run-classifier +
+  safe-fallback precedent (H23).
+
+**Short-horizon / non-stationary bandit theory (changes our default-index thinking):**
+
+- At **h≈70 pulls, k=3 arms** — close to our pulls-per-episode regime — ε-greedy/ε-decreasing
+  (+ simple regression oracles) **beat UCB1, tuned UCB, PHE, and Thompson**; UCB1 is
+  hypersensitive to its exploration constant at short horizons; **UCBT** (parameter-free,
+  variance-based Student-t bound) ≈ optimally-tuned UCB1 (IEEE CoG 2020, arXiv:2102.05263).
+  Combined with CoReward's deployed c=0.01: confidence-bound exploration at textbook strength is
+  probably wrong for this setting (H21).
+- Garivier & Moulines (ALT 2011) parameter recipes: discount `γ = 1−¼√(Υ_T/T)`, window
+  `τ = 2√(T·logT/Υ_T)`; D-UCB/SW-UCB significantly beat Exp3.S under abrupt change (the right
+  model for mode/phase transitions) — softmax/adversarial bandits are the wrong default here.
+  Discounted Thompson (arXiv:2305.10718, one γ on Gaussian posteriors) empirically beats both.
+- **Meta-learned priors across instances** have a formal recipe: MTSS (AISTATS 2022) /
+  Meta-Thompson hierarchical Bayes — learn per-arm priors across instances offline, start each
+  episode warm. This is H14 with published machinery.
+- **Conservative Bandits (ICML 2016):** anytime constraint "cumulative reward ≥ (1−α)× the
+  default arm's," enforced by playing the default whenever a budget lower-bound goes negative;
+  the safety price is only additive O(K/(αμ₀)) and provably unavoidable. Caveat: the *anytime*
+  constraint suppresses early exploration — expensive at <100 pulls/episode (H19).
+
+**OPE formal limits (demotes Phase 2 offline evaluation to screening, on proof not just policy):**
+
+- Replay/IPS unbiasedness requires i.i.d. contexts + randomized logging (Li et al., WSDM 2011) —
+  a CDCL run violates i.i.d. **outright**: the arm at restart k shapes the context at k+1. Also
+  ~K·T logged events per T replay steps, and no concentration guarantee when evaluating an
+  *adaptive* (learning) policy — repeat and average replays.
+- FQE/DR are provably biased under unobserved confounders **with memory** — and the hidden
+  solver state (heap order, clause DB composition) persists across restarts; error can be Ω(H)
+  even with infinite data (Kausik et al. arXiv:2211.16583; Bruns-Smith & Zhou arXiv:2302.00662).
+  Mitigations that survive: sensitivity-sweep acceptance tests, pessimistic value lower bounds,
+  and warm-starting online learning with robust bounds (H14's offline-prior shape).
+- Logs collected by an *adaptive* policy additionally break IPS/DR asymptotic normality; valid
+  inference needs an exploration floor `e_t ≥ C·t^(−α)`, α < ½, plus stabilized weights (Zhan et
+  al., KDD 2021). Uniform-random logging sidesteps all of it — keep `explore` as the only
+  training-data mode. Log exact propensities at decision time; never re-estimate post hoc
+  (calibration failures produce up to 50% OPE error from 0.06 propensity error — Raghu et al.,
+  ICML 2018). For the estimator itself, SWITCH-DR dominates IPS/DR/DM at small samples (Wang et
+  al., ICML 2017).
+
+**Clause-management / reward-validity findings:**
+
+- **CrystalBall (Soos):** clause-usefulness labels from DRAT ("used >5× in next 10k conflicts");
+  LBD≤3 clauses used ~30× vs ~6× for LBD≥4 — yet the **hand-crafted deletion heuristic still
+  beat the full ML system end-to-end**. ML-for-clause-deletion has never beaten hand-crafted in
+  a competitive solver (also: AITP 2020 RL deletion — preliminary only; its episodic reward
+  `200 − op×10⁻⁷` with op = propagation clause-accesses, and its observation "op highly
+  correlated with wall-clock," directly support our R7/tick-normalization).
+- **arXiv:2602.20829 (Feb 2026):** on arithmetic-circuit families (multipliers), **LBD collapses
+  to clause length** and carries no usage information — LBD-based rewards (R2/R3/R5, DynamicSAT's
+  U−avgLBD) are *uninformative on whole families* (H20). Their LBD-free usage counter (+1 per
+  BCP/analysis use, −1 every T=4096 conflicts, delete a `0.90 − 0.40/log10(r+9)` fraction of
+  zero-score clauses) beats kissat 4.0.2: 60/60 vs 56/60 on multipliers (PAR-2 −40%), 301 vs 297
+  on SC22 main — rule-based, no ML.
+- CaDiCaL 1.9.4 negative result: treating glue-shrink-during-strengthening as clause "use"
+  caused a regression, reverted in 1.9.5 — plausible usefulness proxies can be net-negative.
+- Biere-group adaptive machinery details (SC2024/25 descriptions): tier1/tier2 = glue at
+  50th/90th percentile of *used* clauses, computed per mode but **only focused-mode limits used
+  in both modes**; per-tier vivification ticks budgets with rollover to the next tier; SC2024
+  kissat caps reason-side bumping by ticks *conditioned on decision rate* — each a hand-tuned
+  feedback rule a contextual policy could subsume. Kissat was frozen 2024→2025 (effort went to
+  porting kissat techniques into CaDiCaL, 46→64 KLOC).
+
 ---
 
 ## 4. Decisions to drive (action spaces, ranked)
 
 Defined relative to the current default profile. Every arm set includes the current default
-behavior as an arm, so the bandit's worst case is "always pick default."
+behavior as an arm, so the bandit's worst *asymptotic* case is "always pick default" — the
+residual downside is bounded exploration cost, capped by the cold-start guard, default-arm
+pseudo-counts, and discounting (§10.4).
 
 ### Phase 1 (online bandit, no training)
 - **A1 — Branching system, chosen per restart**:
@@ -221,8 +329,15 @@ LBD/efficiency proxies. **Candidates to log and validate (E0) before committing:
 | R3 | `U − avgLBD_t` (U fixed cap) | DynamicSAT |
 | R4 | period GLR = `Δconflicts_t / Δdecisions_t` | GLR study (Liang 2017) |
 | R5 | `−mean(learned LBD_t)` z-scored against the run's own slow EMA | MLR-flavored |
-| R6 | root-fixed-vars delta + learned-binary delta (proof-progress proxy) | novel, log it cheaply |
-| R7 | E0-winner recomputed per `Δticks` instead of per conflict (tick-normalized efficiency) | novel; guards arm-cost asymmetry (H11) |
+| R6 | root-fixed-vars delta + learned-binary delta (proof-progress proxy) | novel here; convergent with CoReward's 0.5-weighted variable-elimination term (SC2025, §3.1) |
+| R7 | E0-winner recomputed per `Δticks` instead of per conflict (tick-normalized efficiency) | guards arm-cost asymmetry (H11); AITP 2020 used op-count (≈ticks) episodic reward, "op highly correlated with wall-clock" |
+| R8 | `log2(Δdecisions_t) / log2(Δconflicts_t)` | Kissat_MAB-DC (SC2024); beat the R1 family on 800 SC22/23 instances, esp. on SAT instances |
+
+Two design rules from the deployed-reward deep-dive (§3.1): use **signed** normalization (the
+CoReward folded `|x−μ|/σ` rewards atypicality in either direction — replicate only deliberately,
+as H24); and **report E0 correlations per benchmark family** — LBD-family candidates (R2/R3/R5)
+are known-uninformative on arithmetic-circuit-like families where LBD degrades to clause length
+(H20), so a headline reward must be family-robust or blended with a non-LBD component (R6/R8).
 
 **E0 (surrogate validation, run before any bandit ships):** instrument trajectory logging on the
 *current default* (no behavior change), run the training pool × 5 seeds, and measure Spearman
@@ -244,14 +359,18 @@ repo's conflicts-over-PAR2 philosophy. **Wall-clock is never a reward input.**
 
 Discounted statistics (MapleSSV-style): arm counts and reward sums decay by α=0.95 per pull
 (sweep α ∈ {0.9, 0.95, 0.99, 1.0} in E2). Optionally reset bandit state at mode switches
-(kissat's EMA-reset precedent, main.rs:4813-4850 already resets EMAs there).
+(kissat's EMA-reset precedent, main.rs:4813-4850 already resets EMAs there). The E2 index-policy
+matrix must also include the short-horizon-favored alternatives (§3.1, H21): UCBT
+(variance-based, parameter-free), ε-greedy/ε-decreasing (ε ≈ 0.03-0.11 per the short-horizon
+study), discounted Thompson, AE-style adaptive exploration constant, and a UCB-c sweep extending
+down to the deployed winner's 0.01 — not just textbook √2-scale values.
 
 ### 6.3 Terminal reward (offline training only)
 
 For offline policy learning, augment per-period rewards with a terminal signal aligned to the
 lexicographic metric: `+B` if solved within budget else 0, and `−log(total_conflicts)` scaled to
-the per-period reward range; censored (timeout) episodes get conflicts = limit and a censoring
-flag. Start with pure per-period reward (bandit assumption: periods independent); terminal-aware
+the per-period reward range; censored (timeout) episodes record the conflicts actually reached at
+the budget plus a censoring flag (a lower bound on true cost — do not fabricate a value). Start with pure per-period reward (bandit assumption: periods independent); terminal-aware
 credit assignment is hypothesis H4, not the baseline.
 
 ### 6.4 Measurement windows — the self-confounding trap
@@ -261,8 +380,13 @@ directly controls restart frequency, and even the branching arm changes the LBD 
 drives the EMA restart trigger. Comparing raw per-period rewards across arms then confounds "arm
 was good" with "arm made the period short." Rules:
 
-- Every reward candidate is normalized **per conflict** within its window (R1's denominator
-  already is; R2-R6 are means/rates, never raw period sums).
+- Reward candidates must be **window-length-insensitive** before they are compared across arms.
+  As defined in §6.1 they are not all so: R2's and R6's numerators are raw period sums (by design
+  in MapleSSV, which deliberately rewards throughput), and R1's `log2(decisions)` dampens but
+  does not remove length sensitivity. E0 therefore evaluates each candidate in two forms — as
+  defined, and per-conflict-normalized (e.g. R2′ = `1/avgLBD_t`, R6′ = deltas per 1k conflicts) —
+  and any candidate driving variable-length windows must be the normalized form, or be scored
+  under fixed blocks (H17).
 - Each decision point gets its **own** window: branch arm = restart→restart, rephase arm =
   rephase→rephase, reduce arm = reduce→reduce, margin arm = fixed conflict blocks (below). A
   rephase arm scored on a single restart period is mis-measured — its effect spans several
@@ -281,17 +405,19 @@ was good" with "arm made the period short." Rules:
 
 New flag; when set, the solver appends **JSONL**: one `header` record (instance hash, static
 features, full config, seed, arm definitions), one `period` record per boundary (period index,
-boundary type, raw feature vector, action taken, **behavior-policy propensity**, all reward
-candidates R1-R6, cumulative counters), one `final` record (status, conflicts, ticks, proof
-bytes, wall time). Buffered writes, flush at period boundaries only; zero cost when unset.
+boundary type, **raw counters — not the engineered feature vector** (features are derived offline
+in `build_dataset.py`, so feature re-engineering never forces a re-collection), action taken,
+**behavior-policy propensity**, all reward candidates R1-R7 incl. Δticks, cumulative counters),
+one `final` record (status, conflicts, ticks, proof bytes, wall time). Buffered writes, flush at period boundaries only; zero cost when unset.
 Rough volume: ≤ a few thousand periods × ~1 KB ≈ ≤ 5 MB/run — fine uncompressed in `log/`.
 
 ### 7.2 Behavior policy for collection
 
 `SAT_BANDIT=explore`: choose arms **uniformly at random** from the solver's seeded LCG →
-propensity = 1/K exactly, which makes off-policy estimates unbiased and trivial. Collect a
-smaller slice under `SAT_BANDIT=ucb` (Phase 1 policy) for offline evaluation realism (usable by
-DR/FQE, not by plain IPS).
+propensity = 1/K exactly, logged at decision time (never re-estimated post hoc — §3.1's
+calibration result). Collect a smaller slice under `SAT_BANDIT=ucb` (Phase 1 policy) for
+offline-evaluation realism only — adaptive-policy logs are formally unusable for unbiased OPE
+without exploration floors (§8, step 3), so uniform logs are the only *training* data.
 
 ### 7.3 Instance pool — **train/test hygiene**
 
@@ -319,8 +445,9 @@ DR/FQE, not by plain IPS).
 Collection run = pool(≈120) × seeds(5) × avg runtime ≈350 s (600 s cap) ≈ 58 core-hours per
 exploration config → **~15 wall-hours at 4 jobs**. Run detached via the one-shot cron pattern
 (CLAUDE.md), hourly status, respecting the 4-core concurrency bar. Start with a 40-instance ×
-3-seed pilot (~4 h) to shake out the format before the full run. Re-collection is needed whenever
-features/arms change — version the log schema (`traj_schema: 1`).
+3-seed pilot (~4 h) to shake out the format before the full run. Because periods log raw counters
+(§7.1), feature re-engineering needs **no** re-collection; only arm/action-space changes or newly
+needed raw counters force one. Version the log schema (`traj_schema: 1`).
 
 ---
 
@@ -329,21 +456,30 @@ features/arms change — version the log schema (`traj_schema: 1`).
 ```
 tools/bandit/
   collect_trajectories.py   # orchestrates runs (taskset cores, mem caps, pool manifest, seeds)
-  build_dataset.py          # JSONL → npz; per-instance split; normalization constants
+  build_dataset.py          # JSONL → npz; family-level split; feature derivation from raw counters; normalization constants
   train_policy.py           # models: ridge-per-arm (LinUCB/LinTS), tiny MLP Q(s,·)
   eval_offline.py           # OPE: IPS / SNIPS / doubly-robust, CIs; vs logged UCB + uniform
   export_weights.py         # weights → flat f32 .bin + .json metadata (feature order, μ/σ, arms, sha)
 ```
 
-1. **Dataset:** rows = (context x, action a, propensity p, rewards r₁..r₆, episode id, terminal).
+1. **Dataset:** rows = (context x, action a, propensity p, rewards r₁..r₇, episode id, terminal).
 2. **Models (in order):**
    - *Ridge regression per arm* → LinUCB/LinTS parameters. Interpretable; coefficients tell us
      *which* context features matter (itself a deliverable — they may suggest a hand-coded rule).
    - *Tiny MLP* Q(x,·): 40 → 64 → 64 → K, ReLU, ~7k params, trained with weighted regression on
      the chosen reward (importance weights from propensities) or doubly-robust objective.
-3. **Offline policy evaluation gate:** the learned policy must beat both the uniform behavior
-   policy and the simulated-UCB policy on DR-estimated reward with a bootstrap CI excluding zero
-   **before** any solver wall-time is spent on it. (Cheap kill-switch for bad models.)
+3. **Offline policy evaluation gate — screening only, with known formal limits (§3.1):** the
+   learned policy must beat both the uniform behavior policy and the simulated-UCB policy on
+   estimated reward with a bootstrap CI excluding zero **before** any solver wall-time is spent
+   on it (cheap kill-switch for bad models). But OPE here is *provably* only a screen, not a
+   verdict: contexts inside a run are not i.i.d. (the arm at restart k shapes the context at
+   k+1 — replay unbiasedness fails), and the unlogged solver state is a confounder *with memory*
+   (FQE/DR bias can be Ω(horizon) even with infinite data). Practice rules: estimate per-period
+   reward effects (valid-ish) rather than whole-episode values (invalid); use SWITCH-DR as the
+   estimator; stratify within-instance (instance identity is an *observed* global confounder —
+   exploit that); train/evaluate ONLY on uniform-random (`explore`) logs — if logs from an
+   adaptive policy are ever used, they need an exploration floor `e_t ≥ C·t^(−α)`, α < ½, plus
+   stabilized weights, so just don't. The seedgate remains the only decision metric.
 4. **Export:** little-endian f32 blob + JSON sidecar. Loaded via `SAT_BANDIT_WEIGHTS=<path>`;
    once a model is promoted, bake it into the binary via `include_bytes!` (build.rs) so the
    default needs no runtime file. The sidecar sha goes into `SAT_STATS_JSON` output for
@@ -362,9 +498,12 @@ as the deterministic alternative. This is the architecture to beat — the liter
 Kissat_MAB) says linear-at-coarse-granularity is already competitive.
 
 ### 9.2 Tiny MLP
-`f32` MLP 40 → 64 → 64 → K (~7k params), fixed-size arrays, no heap allocation, no SIMD needed —
-evaluated at most a few times per second of search. Pure-Rust forward pass in `src/bandit.rs`
-(~50 lines), no inference crate. Deterministic (no dropout at inference; fixed weight blob).
+`f32` MLP 40 → 64 → 64 → K (~7k params), fixed-size arrays, no heap allocation, no SIMD needed.
+Worst-case eval frequency is bounded by the minimum restart interval (~50 conflicts): at
+10⁴-10⁵ conflicts/s that is potentially **hundreds to ~2k evals/s**, not "a few" — but at ~14k
+FLOPs/eval that is still < 0.01% of a core's throughput; confirm empirically in E7 rather than by
+estimate. Pure-Rust forward pass in `src/bandit.rs` (~50 lines), no inference crate.
+Deterministic (no dropout at inference; fixed weight blob).
 
 ### 9.3 Temporal context without recurrence
 No RNN. Temporal signal enters via two-timescale EMA features (fast/slow) of the key period
@@ -418,7 +557,10 @@ arm is active — measure in E7.
 ### 10.3 Config flags (repo convention)
 
 ```
-SAT_BANDIT=off|ucb|thompson|linucb|lints|mlp|explore     (default off)
+SAT_BANDIT=off|ucb|thompson|linucb|lints|mlp|explore|roundrobin   (default off)
+#   explore   = uniform-random arms from the seeded LCG (collection behavior policy AND
+#               E1's seeded-random control — same thing, propensity 1/K)
+#   roundrobin = deterministic arm rotation (E1's second non-learning control)
 SAT_BANDIT_ARMS=branch,rephase[,restart-margin,reduce,mode]
 SAT_BANDIT_UCB_C=<f64>          # exploration constant (Kissat_MAB used small c; sweep)
 SAT_BANDIT_DISCOUNT=<f64>       # 0.95 default, 1.0 = vanilla
@@ -463,11 +605,11 @@ iteration only. Long runs detached + hourly status per CLAUDE.md.
 
 | id | Question | Setup | Decision rule |
 |---|---|---|---|
-| **E0** | Which surrogate reward predicts real outcomes? | Default solver + `SAT_TRAJ_LOG`, training pool × 5 seeds; Spearman(prefix-mean Rᵢ, outcome rank) | Highest correlation wins; R1 is the pre-registered default |
+| **E0** | Which surrogate reward predicts real outcomes? | Default solver + `SAT_TRAJ_LOG`, training pool × 5 seeds; Spearman(prefix-mean Rᵢ, outcome rank), **within-instance only**, reported **per benchmark family** (§6.1, H20) | Highest within-instance correlation wins, and the winner must be family-robust (no family where it carries zero signal); R1 pre-registered default, R8 the strongest challenger |
 | **E1** | Does Phase-1 UCB (A1+A2) beat the default? | `SAT_BANDIT=ucb` vs default vs **seeded-random arms** vs **round-robin arms**, seedgate N=10, timeout 900 | UCB must beat default *and* both non-learning controls (Kissat_MAB's own CP 2021 controls). Beating default but not random ⇒ diversification, not learning (H9) — still shippable, but ship the cheaper policy. Go/no-go for the program |
-| **E2** | Index policy & non-stationarity | ucb vs thompson vs MOSS-c sweep × discount {0.9,0.95,0.99,1.0}; + racing/commit-after-trial (H15) | Best-of on N=10; expect Thompson ≥ UCB (RL-Reset evidence) |
+| **E2** | Index policy & non-stationarity | ucb (c-sweep incl. **0.01**) vs thompson vs discounted-thompson vs **UCBT** vs **ε-greedy/ε-decreasing** vs MOSS × discount {0.9,0.95,0.99,1.0}; + adaptive-c (AE-style); + racing/commit-after-trial (H15) | Best-of on N=10; priors: Thompson ≥ UCB (RL-Reset) but ε/UCBT may beat both at our pull counts (H21) |
 | **E3** | Does *context* help online? | LinTS (online, no offline training) vs best E2 config | Gate; also inspect learned coefficients |
-| **E4** | Does *offline training* help? | Phase-2 frozen policy vs hybrid (offline prior + online update) vs best online | OPE gate first (§8.3), then seedgate |
+| **E4** | Does *offline training* help? | Phase-2 frozen policy vs hybrid (offline prior + online update) vs best online | OPE gate first (§8, step 3), then seedgate |
 | **E5** | Action-space ablation | each of A1/A2/A3/A4 alone vs combined | Per-space lexicographic delta; drop spaces that add nothing (fewer arms = faster online learning) |
 | **E6** | Overfit / generalization | (a) fresh 30-instance sample from sat-comp-2025-medium not in train pool; (b) `tools/shuffle_sensitivity.py` on any instance the bandit newly wins | Wins must survive reshuffle + fresh sample, else treat as lottery (CLAUDE.md no-overfit rule) |
 | **E7** | Overhead isolation | `SAT_BANDIT=ucb` forced to always pick the default arm vs `SAT_BANDIT=off` | ticks delta < 1%, conflicts identical (else the controller itself perturbs search — find out why) |
@@ -494,11 +636,15 @@ single-seed flip drive a verdict.
   *Test:* re-run best E5 config with divergence-triggered selection, θ ∈ {10, 30, 50}%.
 - **H3 (cheapest contextual win):** an MLR-style *online per-instance linear regressor* on recent
   LBDs predicting next-period LBD, used as a restart trigger — no offline training at all.
-  *Test:* implement as `SAT_BANDIT=mlr-restart` variant of A3; compare against offline-trained A3.
+  *Test:* implement as a restart-policy variant (`SAT_RESTART=mlr`, fitting the existing enum)
+  rather than a bandit mode; compare against offline-trained A3.
 - **H4 (credit assignment):** periods are not independent (reduce policy now changes future
   periods), so a bandit is mis-specified; fitted-Q iteration over the period-MDP could do better.
-  *Risk:* offline RL instability on ~10⁵ transitions. *Test:* only if E4 shows the frozen policy
-  underperforming its OPE estimate (the signature of horizon effects); use BC-regularized FQI.
+  *Risk:* offline RL instability on ~10⁵ transitions — and round-2 theory (§3.1) shows FQE is
+  *provably* biased here (hidden solver state = confounder with memory; bias up to Ω(horizon)).
+  *Test:* only if E4 shows the frozen policy underperforming its OPE estimate (the signature of
+  horizon effects); use BC-regularized, pessimistic/sensitivity-bounded FQI variants only, and
+  let the seedgate alone judge the result — FQE numbers are direction, never evidence.
 - **H5 (arm-set expansion):** CHB as a third branching arm replicates the exact SC-winner setup.
   *Test:* Phase 3, after E5 confirms A1 is a live action space.
 - **H6 (per-instance prior):** a per-instance *config classifier* — run all K fixed-arm configs
@@ -537,7 +683,11 @@ single-seed flip drive a verdict.
 - **H14 (Bayesian warm start — a-priori best Phase-2 config):** frozen offline weights ignore
   instance idiosyncrasy; pure online learning wastes early pulls. LinTS with an offline-learned
   prior (mean + precision from the corpus) updated online per instance gets both. *Test:* E4's
-  hybrid arm vs frozen-offline and pure-online.
+  hybrid arm vs frozen-offline and pure-online. *Round-2 grounding:* this is exactly the
+  meta-learned-prior recipe of MTSS (AISTATS 2022) / Meta-Thompson — hierarchical Bayes pooling
+  across tasks (here: instances/families) into per-arm priors; and warm-starting online learning
+  with offline-derived robust bounds is the one offline-RL mechanism that survives the
+  confounding critiques (§3.1).
 - **H15 (racing beats bandits):** commit-after-trial may beat continual selection — race all arms
   round-robin over the first conflict blocks, then lock the per-instance winner for the rest of
   the run. Simpler, lower variance, immune to non-stationarity in the locked phase. *Test:* one
@@ -554,6 +704,43 @@ single-seed flip drive a verdict.
   *Test:* compare per-instance conflict variance, candidate vs default, in the E1 TSVs.
   *Contingency:* escalate deciding sweeps to N=20 seeds for bandit configs (cost is linear)
   rather than shipping or rejecting on an underpowered gate.
+- **H19 (conservative-exploration guard):** a formal champion-challenger gate exists —
+  Conservative UCB (ICML 2016) plays the default arm whenever a lower confidence bound on the
+  cumulative-reward budget vs `(1−α)×default` goes negative; the safety price is additive and
+  provably unavoidable. *But* the anytime constraint suppresses early exploration, which is
+  exactly where our few-pull episodes live. *Test:* implement as an optional guard in E2; compare
+  against the soft guards (dormancy + pseudo-counts + hysteresis). *Contingency:* prefer the soft
+  guards unless E1 shows easy-10 regressions that dormancy alone cannot fix.
+- **H20 (reward family-robustness):** LBD-family rewards (R2/R3/R5) are *provably uninformative*
+  on families where LBD degrades to clause length (arithmetic circuits/multipliers —
+  arXiv:2602.20829). *Test:* E0 reports per-family correlation; any family with ~zero signal
+  disqualifies a pure-LBD headline reward. *Contingency:* blend a non-LBD component (R6/R8 — note
+  CoReward weights its variable-elimination term highest at 0.5), or adopt the usage-counter
+  signal (+1 per BCP/analysis use, −1 per T conflicts) as the clause-quality input.
+- **H21 (short-horizon index policy):** confidence-bound exploration at textbook strength is
+  likely wrong at our pulls-per-episode: at h≈70 pulls ε-greedy/ε-decreasing beat UCB1/Thompson,
+  UCB1 is hypersensitive to its constant, and the deployed SC2025 winner-lineage runs UCB with
+  c=0.01. *Test:* the expanded E2 matrix (UCBT, ε-policies, c-sweep to 0.01, discounted-TS,
+  adaptive-c). *Contingency:* if ε/UCBT win, the bandit is effectively "mostly-exploit with a
+  trickle of exploration" — simplify the shipped controller accordingly.
+- **H22 (clause-usefulness arm design):** if/when clause-DB arms (A4/A7) are pursued, the arm set
+  should include the *rule-based usage-counter* policy (proven: +4 solved on SC22 main over
+  kissat 4.0.2; 60/60 multipliers), not just LBD-tier variants — and NOT a learned per-clause
+  predictor: ML-for-deletion has never beaten hand-crafted end-to-end (CrystalBall negative
+  result; AITP 2020 preliminary-only; CaDiCaL 1.9.4 usefulness-proxy regression). The bandit
+  picks *between* rule-based policies; it does not score clauses.
+- **H23 (embedded in-run SAT/UNSAT classifier — the H6/H13/H16 deployment shape):** Kissat-Pred
+  (SC2025) ships quantized offline-trained decision trees over linear-time graph features,
+  predicts SAT/UNSAT + difficulty, adjusts only restart intervals and mode-switch periods, and
+  falls back to defaults on UNKNOWN. That is: distilled trees (H13), per-instance prior (H6),
+  SAT/UNSAT conditioning (H16), and a safe fallback — all in one deployed precedent. *Test:* if
+  H6's classifier works, deploy it Kissat-Pred-style (trees, conservative surface set,
+  UNKNOWN→default) before considering anything heavier.
+- **H24 (atypicality bonus):** CoReward's folded `|x−μ|/σ` normalization rewards *atypical*
+  periods in either direction — possibly an accidental exploration bonus that nonetheless ships
+  in a competitive solver. *Test:* in E0/E2, compare signed vs folded normalization of the chosen
+  reward; if folded wins, that is evidence the bandit benefits from novelty-seeking, not just
+  reward-seeking (connects to count-based exploration bonuses). Default remains signed.
 
 ### Contingency decision tree
 
@@ -574,8 +761,14 @@ single-seed flip drive a verdict.
   same model harder.
 - **Any stage: a win rides on 1-2 seed-fragile rows or fails E6's shuffle test** → lottery per
   CLAUDE.md; reject the config but keep its trajectories (still valid training data).
-- **Easy-10 regress beyond noise at any gate** → raise cold-start dormancy (H10) and re-gate
-  before any other tuning.
+- **Easy-10 regress beyond noise at any gate** → raise cold-start dormancy (H10) and re-gate;
+  if dormancy cannot fix it, escalate to the Conservative-UCB hard guard (H19) before any other
+  tuning.
+- **E0: the winning reward has a zero-signal family (H20)** → do not ship a pure-LBD reward;
+  blend R6/R8 or the usage-counter signal and re-run E0 before starting bandit work.
+- **E2: ε-greedy/UCBT beat UCB and Thompson (H21)** → our pulls-per-episode are below the
+  confidence-bound regime; simplify to mostly-exploit + trickle exploration, and re-weigh H15
+  (racing) which thrives in exactly this regime.
 
 ---
 
@@ -595,7 +788,9 @@ single-seed flip drive a verdict.
 | Arm-cost asymmetry (conflict-blind reward) | Δticks logged per period from M1; R7 in E0; tick-normalize if arms differ > 10% in ticks/conflict (H11) |
 | OOD contexts on long runs (collection horizon 600 s < gate 900 s) | Feature clipping ±4σ + fallback to online-UCB/default arm (§5); clip rates logged and reviewed per eval |
 | Bandit widens seed variance → underpowered N=10 gate | Per-instance conflict-variance comparison in E1; escalate deciding sweeps to N=20 (H18) |
-| Easy-instance regression from exploration noise | Cold-start dormancy + default-arm pseudo-counts + dwell hysteresis (§10.4, H10) |
+| Easy-instance regression from exploration noise | Cold-start dormancy + default-arm pseudo-counts + dwell hysteresis (§10.4, H10); Conservative-UCB hard guard as escalation (H19) |
+| Headline reward uninformative on LBD-degenerate families | E0 per-family correlation reporting; blend non-LBD components (R6/R8) or usage-counter signal (H20) |
+| Wrong index policy for few-pull episodes (UCB over-explores or C mistuned) | E2 includes UCBT/ε-policies/c=0.01; deployed-winner priors favor near-greedy (H21) |
 
 ---
 
@@ -639,3 +834,20 @@ README per repo convention.
 - Eriksson et al. — *Learning to Rank Initial Branching Order* — 2026 (init-only signal gets overwritten).
 - Biedenkapp et al. — *DAC* — ECAI 2020; Adriaensen et al. — JAIR 2022.
 - AE-Kissat-MAB — SAT Competition 2025 main-track winner (MAB lineage, 327/400).
+
+Round-2 additions (raw verified payloads in `log/deepresearch-rl-bandit-2026-06-10-salvage.md`):
+
+- Liu, Zhang, Sun — *Kissat_MAB-DC* — SC2024 proceedings (reward `log2(dec)/log2(conf)`); journal version 2025 (IEEE).
+- Chen, Zhang, Liu, Sun, Li — *Kissat_MAB_CoRephase / Kissat_CoRephase_CoReward* — SC2025 proceedings pp. 13-14; code github.com/2317891476/Kissat_CoRephase_CoReward (reward verified against src/rephase.c).
+- *Kissat-CURE*, *Kissat-Pred*, *AE_kissat2025_MAB* — SC2025 proceedings (TU Wien repositum, DOI 10.34726/10379).
+- Oh — *Between SAT and UNSAT* — SAT 2015 (origin of SAT/UNSAT-mode; H16's premise).
+- Garivier, Moulines — *D-UCB / SW-UCB* — ALT 2011 (γ, τ recipes; beats Exp3.S on abrupt change).
+- Wu, Shariff, Lattimore, Szepesvári — *Conservative Bandits* — ICML 2016 (H19's guard).
+- *Regression Oracles and Exploration Strategies for Short-Horizon MABs* — IEEE CoG 2020, arXiv:2102.05263 (H21).
+- Hsieh et al. — *Discounted Thompson Sampling* — arXiv:2305.10718; MTSS — AISTATS 2022 (H14 priors).
+- Li, Chu, Langford, Wang — *replay OPE* — WSDM 2011; Wang, Agarwal, Dudík — *SWITCH* — ICML 2017; Zhan, Hadad, Athey, Wager — KDD 2021 (adaptive-log OPE); Raghu et al. — ICML 2018 (propensity calibration); Kausik et al. — arXiv:2211.16583 + Bruns-Smith, Zhou — arXiv:2302.00662 (confounded-OPE impossibility/robustness).
+- Soos — *CrystalBall* — 2019 (clause-usefulness labels; ML-lost-to-heuristic negative result).
+- *Rethinking Clause Management for CDCL SAT Solvers* — arXiv:2602.20829 (2026; LBD→length degeneration, usage-counter policy; H20/H22).
+- Biere et al. — CaDiCaL/Kissat SC2024 + SC2025 descriptions (tier percentiles, vivify ticks budgets, decision-rate-conditioned bumping caps); *CaDiCaL 2.0* — CAV 2024.
+- Shavit, Hoos — *Revisiting SATzilla Features in 2024* — SAT 2024 (parse-time feature refresh for H6).
+- Jamali — SFU PhD thesis 2021 (age/RU-counter vs activity deletion; centrality bumping).
