@@ -242,13 +242,27 @@ impl Solver {
         touched.push(var);
     }
 
+    fn touch_preprocess_var_and_bsr(
+        touched: &mut Vec<usize>,
+        touched_flags: &mut Vec<bool>,
+        bsr_touched: &mut Vec<usize>,
+        bsr_touched_flags: &mut Vec<bool>,
+        var: usize,
+    ) {
+        Self::touch_preprocess_var(touched, touched_flags, var);
+        Self::touch_preprocess_var(bsr_touched, bsr_touched_flags, var);
+    }
+
     fn gather_touched_clauses(
         &mut self,
         touched: &mut Vec<usize>,
         touched_flags: &mut [bool],
+        bsr_touched: &mut Vec<usize>,
+        bsr_touched_flags: &mut [bool],
         queue: &mut VecDeque<SubsumptionCandidate>,
         heap: &mut BinaryHeap<Reverse<(u64, usize, u32)>>,
         heap_versions: &mut [u32],
+        enqueue_subsumption_work: bool,
     ) {
         let vars = std::mem::take(touched);
         for var in vars {
@@ -259,12 +273,6 @@ impl Solver {
                 continue;
             }
             self.clean_occurs_dynamic(var);
-            let mut scan_pos = 0usize;
-            while scan_pos < self.occurs[var].len() {
-                let clause_idx = self.occurs[var][scan_pos] as usize;
-                scan_pos += 1;
-                self.enqueue_subsumption_clause(queue, clause_idx);
-            }
             if var < heap_versions.len() && self.preprocessing_candidate(var) {
                 heap_versions[var] = heap_versions[var].wrapping_add(1);
                 heap.push(Reverse((
@@ -274,13 +282,30 @@ impl Solver {
                 )));
             }
         }
+
+        let bsr_vars = std::mem::take(bsr_touched);
+        for var in bsr_vars {
+            if var < bsr_touched_flags.len() {
+                bsr_touched_flags[var] = false;
+            }
+            if !enqueue_subsumption_work || var == 0 || var >= self.occurs.len() {
+                continue;
+            }
+            self.clean_occurs_dynamic(var);
+            let mut scan_pos = 0usize;
+            while scan_pos < self.occurs[var].len() {
+                let clause_idx = self.occurs[var][scan_pos] as usize;
+                scan_pos += 1;
+                self.enqueue_subsumption_clause(queue, clause_idx);
+            }
+        }
     }
 
     fn mark_occurs_dirty_for_clause(
         &mut self,
         clause_idx: usize,
-        _touched: &mut Vec<usize>,
-        _touched_flags: &mut Vec<bool>,
+        touched: &mut Vec<usize>,
+        touched_flags: &mut Vec<bool>,
     ) {
         let clause_len = self.clause_len(clause_idx);
         for lit_pos in 0..clause_len {
@@ -292,6 +317,7 @@ impl Solver {
             let lit_idx = lit_to_index(lit);
             self.n_occ[lit_idx] = self.n_occ[lit_idx].saturating_sub(1);
             self.occurs_dirty[var] = true;
+            Self::touch_preprocess_var(touched, touched_flags, var);
         }
     }
 
@@ -461,6 +487,8 @@ impl Solver {
         proof_log: &mut ProofLog,
         touched: &mut Vec<usize>,
         touched_flags: &mut Vec<bool>,
+        bsr_touched: &mut Vec<usize>,
+        bsr_touched_flags: &mut Vec<bool>,
         queue: &mut VecDeque<SubsumptionCandidate>,
     ) -> bool {
         if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
@@ -519,7 +547,13 @@ impl Solver {
             let lit_idx = lit_to_index(remove_lit);
             self.n_occ[lit_idx] = self.n_occ[lit_idx].saturating_sub(1);
         }
-        Self::touch_preprocess_var(touched, touched_flags, remove_var);
+        Self::touch_preprocess_var_and_bsr(
+            touched,
+            touched_flags,
+            bsr_touched,
+            bsr_touched_flags,
+            remove_var,
+        );
 
         self.detach_clause(clause_idx);
         for (lit_pos, &lit) in strengthened.iter().enumerate() {
@@ -726,6 +760,8 @@ impl Solver {
         log_proof: bool,
         touched: &mut Vec<usize>,
         touched_flags: &mut Vec<bool>,
+        bsr_touched: &mut Vec<usize>,
+        bsr_touched_flags: &mut Vec<bool>,
         mut subsumption_work: Option<&mut VecDeque<SubsumptionCandidate>>,
     ) -> OriginalClauseInsertResult {
         if normalized.is_empty() {
@@ -777,7 +813,13 @@ impl Solver {
             }
             self.index_original_clause(clause_idx);
             for &lit in &normalized {
-                Self::touch_preprocess_var(touched, touched_flags, lit.unsigned_abs() as usize);
+                Self::touch_preprocess_var_and_bsr(
+                    touched,
+                    touched_flags,
+                    bsr_touched,
+                    bsr_touched_flags,
+                    lit.unsigned_abs() as usize,
+                );
             }
         }
 
@@ -795,6 +837,8 @@ impl Solver {
         log_proof: bool,
         touched: &mut Vec<usize>,
         touched_flags: &mut Vec<bool>,
+        bsr_touched: &mut Vec<usize>,
+        bsr_touched_flags: &mut Vec<bool>,
         subsumption_work: Option<&mut VecDeque<SubsumptionCandidate>>,
     ) -> OriginalClauseInsertResult {
         if !self.solver_ok {
@@ -811,6 +855,8 @@ impl Solver {
             log_proof,
             touched,
             touched_flags,
+            bsr_touched,
+            bsr_touched_flags,
             subsumption_work,
         )
     }
@@ -819,6 +865,8 @@ impl Solver {
         let mut proof_log = ProofLog::disabled();
         let mut touched = Vec::new();
         let mut touched_flags = Vec::new();
+        let mut bsr_touched = Vec::new();
+        let mut bsr_touched_flags = Vec::new();
         let use_simplification = self.use_simplification;
         self.use_simplification = false;
         for clause in clauses {
@@ -839,6 +887,8 @@ impl Solver {
                 false,
                 &mut touched,
                 &mut touched_flags,
+                &mut bsr_touched,
+                &mut bsr_touched_flags,
                 None,
             );
         }
@@ -849,6 +899,8 @@ impl Solver {
         let mut proof_log = ProofLog::disabled();
         let mut touched = Vec::new();
         let mut touched_flags = Vec::new();
+        let mut bsr_touched = Vec::new();
+        let mut bsr_touched_flags = Vec::new();
         let use_simplification = self.use_simplification;
         self.use_simplification = false;
         for clause in clauses {
@@ -864,6 +916,8 @@ impl Solver {
                 false,
                 &mut touched,
                 &mut touched_flags,
+                &mut bsr_touched,
+                &mut bsr_touched_flags,
                 None,
             );
         }
@@ -905,6 +959,8 @@ impl Solver {
         queue: &mut VecDeque<SubsumptionCandidate>,
         touched: &mut Vec<usize>,
         touched_flags: &mut Vec<bool>,
+        bsr_touched: &mut Vec<usize>,
+        bsr_touched_flags: &mut Vec<bool>,
         proof_log: &mut ProofLog,
     ) -> bool {
         if TRACE {
@@ -1045,6 +1101,8 @@ impl Solver {
                             proof_log,
                             touched,
                             touched_flags,
+                            bsr_touched,
+                            bsr_touched_flags,
                             queue,
                         ) {
                             return false;
@@ -1066,6 +1124,8 @@ impl Solver {
         queue: &mut VecDeque<SubsumptionCandidate>,
         touched: &mut Vec<usize>,
         touched_flags: &mut Vec<bool>,
+        bsr_touched: &mut Vec<usize>,
+        bsr_touched_flags: &mut Vec<bool>,
         proof_log: &mut ProofLog,
     ) -> bool {
         if self.trace_preprocess_details {
@@ -1074,6 +1134,8 @@ impl Solver {
                 queue,
                 touched,
                 touched_flags,
+                bsr_touched,
+                bsr_touched_flags,
                 proof_log,
             )
         } else {
@@ -1082,6 +1144,8 @@ impl Solver {
                 queue,
                 touched,
                 touched_flags,
+                bsr_touched,
+                bsr_touched_flags,
                 proof_log,
             )
         }
@@ -1185,6 +1249,8 @@ impl Solver {
         queue: &mut VecDeque<SubsumptionCandidate>,
         touched: &mut Vec<usize>,
         touched_flags: &mut Vec<bool>,
+        bsr_touched: &mut Vec<usize>,
+        bsr_touched_flags: &mut Vec<bool>,
     ) -> bool {
         self.clean_occurs_dynamic(var);
         let Some(occurrence_ids) = self.occurs.get(var).cloned() else {
@@ -1284,6 +1350,8 @@ impl Solver {
                         true,
                         touched,
                         touched_flags,
+                        bsr_touched,
+                        bsr_touched_flags,
                         Some(&mut *queue),
                     );
                     if result == OriginalClauseInsertResult::Unsat {
@@ -1321,6 +1389,8 @@ impl Solver {
         let mut queue = VecDeque::new();
         let mut touched = Vec::new();
         let mut touched_flags = vec![false; self.assignment.len()];
+        let mut bsr_touched = Vec::new();
+        let mut bsr_touched_flags = vec![false; self.assignment.len()];
         let mut heap = BinaryHeap::new();
         let mut heap_versions = vec![0u32; self.assignment.len()];
 
@@ -1341,6 +1411,8 @@ impl Solver {
                 &mut queue,
                 &mut touched,
                 &mut touched_flags,
+                &mut bsr_touched,
+                &mut bsr_touched_flags,
                 proof_log,
             )
         {
@@ -1351,17 +1423,21 @@ impl Solver {
         while self.solver_ok
             && !self.preprocess_budget_exhausted
             && (!touched.is_empty()
+                || !bsr_touched.is_empty()
                 || (run_full_backward_subsumption
                     && (!queue.is_empty() || self.bwdsub_assigns < self.trail.len()))
                 || !heap.is_empty())
         {
-            if !touched.is_empty() {
+            if !touched.is_empty() || !bsr_touched.is_empty() {
                 self.gather_touched_clauses(
                     &mut touched,
                     &mut touched_flags,
+                    &mut bsr_touched,
+                    &mut bsr_touched_flags,
                     &mut queue,
                     &mut heap,
                     &mut heap_versions,
+                    run_full_backward_subsumption,
                 );
                 continue;
             }
@@ -1373,6 +1449,8 @@ impl Solver {
                     &mut queue,
                     &mut touched,
                     &mut touched_flags,
+                    &mut bsr_touched,
+                    &mut bsr_touched_flags,
                     proof_log,
                 )
             {
@@ -1401,6 +1479,8 @@ impl Solver {
                     &mut queue,
                     &mut touched,
                     &mut touched_flags,
+                    &mut bsr_touched,
+                    &mut bsr_touched_flags,
                 );
                 if !eliminated {
                     if self.preprocess_budget_exhausted {
@@ -1416,6 +1496,8 @@ impl Solver {
                         &mut queue,
                         &mut touched,
                         &mut touched_flags,
+                        &mut bsr_touched,
+                        &mut bsr_touched_flags,
                         proof_log,
                     )
                 {
@@ -1525,11 +1607,15 @@ mod tests {
         let mut queue = VecDeque::new();
         let mut touched = Vec::new();
         let mut touched_flags = vec![false; s.assignment.len()];
+        let mut bsr_touched = Vec::new();
+        let mut bsr_touched_flags = vec![false; s.assignment.len()];
         s.backward_subsumption_check_dynamic(
             seed_all,
             &mut queue,
             &mut touched,
             &mut touched_flags,
+            &mut bsr_touched,
+            &mut bsr_touched_flags,
             proof,
         )
     }
@@ -1570,6 +1656,90 @@ mod tests {
 
         assert!(live_original_clauses(&s).contains(&vec![2, 3]));
         assert_eq!(s.stats.preprocess_strengthened_clauses, 1);
+    }
+
+    #[test]
+    fn removed_original_clause_vars_are_touched_for_preprocess_retry() {
+        let mut s = Solver::new(4, vec![vec![1, 2, -3], vec![1, 3], vec![2, 4]]);
+        s.build_occurrence_index();
+        let clause_idx = s.original_clause_ids[0];
+        let mut touched = Vec::new();
+        let mut touched_flags = vec![false; s.assignment.len()];
+
+        s.remove_original_clause_preprocess(clause_idx, &mut touched, &mut touched_flags);
+        touched.sort_unstable();
+
+        assert_eq!(touched, vec![1, 2, 3]);
+        assert!(touched_flags[1]);
+        assert!(touched_flags[2]);
+        assert!(touched_flags[3]);
+        assert!(s.occurs_dirty[1]);
+        assert!(s.occurs_dirty[2]);
+        assert!(s.occurs_dirty[3]);
+    }
+
+    #[test]
+    fn heap_only_touched_vars_refresh_bve_heap_without_bsr_queue() {
+        let mut s = Solver::new(3, vec![vec![1, 2], vec![1, 3]]);
+        s.build_occurrence_index();
+        let mut touched = vec![1];
+        let mut touched_flags = vec![false; s.assignment.len()];
+        touched_flags[1] = true;
+        let mut bsr_touched = Vec::new();
+        let mut bsr_touched_flags = vec![false; s.assignment.len()];
+        let mut queue = VecDeque::new();
+        let mut heap = BinaryHeap::new();
+        let mut heap_versions = vec![0u32; s.assignment.len()];
+
+        s.gather_touched_clauses(
+            &mut touched,
+            &mut touched_flags,
+            &mut bsr_touched,
+            &mut bsr_touched_flags,
+            &mut queue,
+            &mut heap,
+            &mut heap_versions,
+            true,
+        );
+
+        assert!(touched.is_empty());
+        assert!(!touched_flags[1]);
+        assert!(bsr_touched.is_empty());
+        assert!(queue.is_empty());
+        assert_eq!(heap_versions[1], 1);
+        assert!(heap
+            .iter()
+            .any(|Reverse((_, var, version))| *var == 1 && *version == 1));
+    }
+
+    #[test]
+    fn bsr_touched_vars_enqueue_subsumption_work() {
+        let mut s = Solver::new(3, vec![vec![1, 2], vec![1, 3]]);
+        s.build_occurrence_index();
+        let mut touched = Vec::new();
+        let mut touched_flags = vec![false; s.assignment.len()];
+        let mut bsr_touched = vec![1];
+        let mut bsr_touched_flags = vec![false; s.assignment.len()];
+        bsr_touched_flags[1] = true;
+        let mut queue = VecDeque::new();
+        let mut heap = BinaryHeap::new();
+        let mut heap_versions = vec![0u32; s.assignment.len()];
+
+        s.gather_touched_clauses(
+            &mut touched,
+            &mut touched_flags,
+            &mut bsr_touched,
+            &mut bsr_touched_flags,
+            &mut queue,
+            &mut heap,
+            &mut heap_versions,
+            true,
+        );
+
+        assert!(bsr_touched.is_empty());
+        assert!(!bsr_touched_flags[1]);
+        assert_eq!(queue.len(), 2);
+        assert!(heap.is_empty());
     }
 
     #[test]
