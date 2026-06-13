@@ -839,6 +839,11 @@ impl SolverConfig {
                 self.search_mode_policy = SearchModePolicy::FocusedStable;
                 self.mode_use_ticks = true;
                 self.reduce_policy = ReducePolicy::LbdTiered;
+                // SAT-playground-5b2.2.64 (2026-06-13): profile20 5x5/900s re-eval promoted
+                // target-then-saved to default/fast focused phases (+1 solved, -11.1M conflicts
+                // vs 156ade2 current baseline). Keep the raw config/baseline profile on legacy
+                // phase so single-mode and explicit legacy fixtures remain valid.
+                self.phase_policy = PhasePolicy::TargetThenSaved;
                 // 70h: SAT_LUCKY promoted to the default/fast profiles (2026-05-30 re-eval):
                 // n>=5 aggregate -12 PAR-2 vs lucky-off, and lucky robustly solves the
                 // order-fragile battleship instance (0.08s vs lucky-off 18-904s/timeouts).
@@ -3053,6 +3058,7 @@ mod tests {
         assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
         assert!(config.mode_use_ticks);
         assert_eq!(config.reduce_policy, ReducePolicy::LbdTiered);
+        assert_eq!(config.phase_policy, PhasePolicy::TargetThenSaved);
         assert_eq!(config.vmtf, VmtfMode::FocusedOnly);
         assert!(config.lucky);
         assert_eq!(config.proof_policy, ProofPolicy::Drat);
@@ -3074,6 +3080,7 @@ mod tests {
         assert!(!config.use_lbd);
         assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
         assert!(!config.mode_use_ticks);
+        assert_eq!(config.phase_policy, PhasePolicy::Legacy);
         assert_eq!(
             config.initial_clause_mode,
             InitialClauseMode::CanonicalSorted
@@ -3123,35 +3130,38 @@ mod tests {
     }
 
     #[test]
-    fn test_default_profiles_do_not_bundle_target_phase_with_ema_restart() {
-        for profile in ["baseline", "default", "fast", "experimental"] {
+    fn test_default_fast_profiles_promote_target_phase_only() {
+        for profile in ["default", "fast"] {
             let config = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", profile)]));
 
-            if config.restart_policy == RestartPolicy::KissatEma {
-                assert_ne!(config.phase_policy, PhasePolicy::TargetThenSaved);
-                assert_ne!(config.phase_policy, PhasePolicy::BestThenTargetThenSaved);
-            }
+            assert_eq!(config.phase_policy, PhasePolicy::TargetThenSaved);
+        }
+
+        for profile in ["baseline", "experimental"] {
+            let config = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", profile)]));
+
+            assert_eq!(config.phase_policy, PhasePolicy::Legacy);
         }
     }
 
     #[test]
-    fn test_target_phase_remains_explicit_opt_in_when_ema_restart_is_active() {
+    fn test_target_phase_default_survives_ema_restart_and_can_be_overridden() {
         let ema_default_phase = SolverConfig::from_env_map(&env_map(&[
             ("SAT_USE_LBD", "on"),
             ("SAT_SEARCH_MODE", "focused-stable"),
             ("SAT_RESTART", "kissat-ema"),
         ]));
         assert_eq!(ema_default_phase.restart_policy, RestartPolicy::KissatEma);
-        assert_eq!(ema_default_phase.phase_policy, PhasePolicy::Legacy);
+        assert_eq!(ema_default_phase.phase_policy, PhasePolicy::TargetThenSaved);
 
-        let explicit_target = SolverConfig::from_env_map(&env_map(&[
+        let explicit_saved = SolverConfig::from_env_map(&env_map(&[
             ("SAT_USE_LBD", "on"),
             ("SAT_SEARCH_MODE", "focused-stable"),
             ("SAT_RESTART", "kissat-ema"),
-            ("SAT_PHASE", "target-then-saved"),
+            ("SAT_PHASE", "saved"),
         ]));
-        assert_eq!(explicit_target.restart_policy, RestartPolicy::KissatEma);
-        assert_eq!(explicit_target.phase_policy, PhasePolicy::TargetThenSaved);
+        assert_eq!(explicit_saved.restart_policy, RestartPolicy::KissatEma);
+        assert_eq!(explicit_saved.phase_policy, PhasePolicy::Saved);
     }
 
     #[test]
@@ -3159,6 +3169,7 @@ mod tests {
         let off = SolverConfig::from_env_map(&env_map(&[
             ("SAT_SEARCH_MODE", "single"),
             ("SAT_MODE_USE_TICKS", "off"),
+            ("SAT_PHASE", "legacy"),
             ("SAT_USE_LBD", "off"),
             // default reduce policy is now lbd-tiered, which requires use_lbd; reset it so the
             // use_lbd=off fixture is a valid config (lbd-tiered+!lbd hard-fails validation).
@@ -3312,6 +3323,7 @@ mod tests {
         let config = SolverConfig::from_env_map(&env_map(&[
             ("SAT_SEARCH_MODE", "single"),
             ("SAT_MODE_USE_TICKS", "off"),
+            ("SAT_PHASE", "legacy"),
             ("SAT_VMTF", "single"),
         ]));
 
