@@ -612,6 +612,9 @@ pub(crate) struct SolverConfig {
     // such formulas (Kakuro -79%, velev -79%) but useful on random 3-SAT / brocard.
     // Default off; the first concrete adaptive-routing rule under bead f06.
     pub(crate) bsr_formula_gate: bool,
+    // Opt-in experiment: defer BSR queue draining until the outer preprocessing loop,
+    // instead of immediately after each successful BVE elimination.
+    pub(crate) bsr_drain_batched: bool,
     pub(crate) bsr_occurrence_limit: u64,
     pub(crate) use_resolved_conflict_analysis: bool,
     pub(crate) initial_clause_mode: InitialClauseMode,
@@ -726,6 +729,7 @@ impl Default for SolverConfig {
             bve: true,
             full_bsr: true,
             bsr_formula_gate: false,
+            bsr_drain_batched: false,
             bsr_occurrence_limit: 0,
             use_resolved_conflict_analysis: false,
             initial_clause_mode: InitialClauseMode::CanonicalSorted,
@@ -844,6 +848,10 @@ impl SolverConfig {
                 // vs 156ade2 current baseline). Keep the raw config/baseline profile on legacy
                 // phase so single-mode and explicit legacy fixtures remain valid.
                 self.phase_policy = PhasePolicy::TargetThenSaved;
+                // SAT-playground-5b2.6.6 (2026-06-13): batching BSR queue drains until
+                // the outer preprocessing loop improves profile20 5x5/900s from 67/100
+                // to 70/100 solved by preserving more BVE opportunity on sqrt170/bp4.
+                self.bsr_drain_batched = true;
                 // 70h: SAT_LUCKY promoted to the default/fast profiles (2026-05-30 re-eval):
                 // n>=5 aggregate -12 PAR-2 vs lucky-off, and lucky robustly solves the
                 // order-fragile battleship instance (0.08s vs lucky-off 18-904s/timeouts).
@@ -1172,6 +1180,12 @@ impl SolverConfig {
             &key_set,
             "SAT_BSR_FORMULA_GATE",
             self.bsr_formula_gate,
+        );
+        self.bsr_drain_batched = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_BSR_DRAIN_BATCHED",
+            self.bsr_drain_batched,
         );
         self.use_resolved_conflict_analysis = parse_conflict_analysis_selected(
             env_map,
@@ -1684,6 +1698,7 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "bve", self.bve);
         push_kv_bool(&mut lines, "full_bsr", self.full_bsr);
         push_kv_bool(&mut lines, "bsr_formula_gate", self.bsr_formula_gate);
+        push_kv_bool(&mut lines, "bsr_drain_batched", self.bsr_drain_batched);
         push_kv(
             &mut lines,
             "bsr_occurrence_limit",
@@ -2132,6 +2147,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             "",
         ),
         feature(
+            "SAT_BSR_DRAIN_BATCHED",
+            config.bsr_drain_batched,
+            FeatureMaturity::DiscriminatingValidated,
+            false,
+            false,
+            false,
+            "",
+        ),
+        feature(
             "SAT_INPROCESS",
             config.inprocess,
             FeatureMaturity::ParkingLot,
@@ -2362,6 +2386,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "bve" => Some("SAT_BVE"),
         "full_bsr" => Some("SAT_FULL_BSR"),
         "bsr_formula_gate" => Some("SAT_BSR_FORMULA_GATE"),
+        "bsr_drain_batched" => Some("SAT_BSR_DRAIN_BATCHED"),
         "bsr_occurrence_limit" => Some("SAT_BSR_OCCLIM"),
         "use_resolved_conflict_analysis" => Some("SAT_CONFLICT_ANALYSIS_MODE"),
         "initial_clause_mode" => Some("SAT_INITIAL_CLAUSE_MODE"),
@@ -2555,6 +2580,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_BVE",
         "SAT_FULL_BSR",
         "SAT_BSR_FORMULA_GATE",
+        "SAT_BSR_DRAIN_BATCHED",
         "SAT_BSR_OCCLIM",
         "SAT_INPROCESS",
         "SAT_VIVIFY",
@@ -3898,6 +3924,33 @@ mod tests {
         assert!(replay.contains("bsr_occurrence_limit=1000"));
         let replayed = SolverConfig::from_replay_text(&replay, Path::new("<bsr-occlim-test>"));
         assert_eq!(replayed.bsr_occurrence_limit, config.bsr_occurrence_limit);
+        assert_eq!(replayed.config_hash(), config.config_hash());
+    }
+
+    #[test]
+    fn test_bsr_drain_batched_is_parsed_and_replayable() {
+        let raw_config = SolverConfig::default();
+        assert!(!raw_config.bsr_drain_batched);
+
+        let default_config = SolverConfig::from_env_map(&env_map(&[]));
+        assert!(default_config.bsr_drain_batched);
+
+        let fast_config = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "fast")]));
+        assert!(fast_config.bsr_drain_batched);
+
+        let baseline_config = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "baseline")]));
+        assert!(!baseline_config.bsr_drain_batched);
+
+        let disabled = SolverConfig::from_env_map(&env_map(&[("SAT_BSR_DRAIN_BATCHED", "off")]));
+        assert!(!disabled.bsr_drain_batched);
+
+        let config = SolverConfig::from_env_map(&env_map(&[("SAT_BSR_DRAIN_BATCHED", "on")]));
+        assert!(config.bsr_drain_batched);
+
+        let replay = config.config_replay_text();
+        assert!(replay.contains("bsr_drain_batched=true"));
+        let replayed = SolverConfig::from_replay_text(&replay, Path::new("<bsr-drain-test>"));
+        assert_eq!(replayed.bsr_drain_batched, config.bsr_drain_batched);
         assert_eq!(replayed.config_hash(), config.config_hash());
     }
 

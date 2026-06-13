@@ -1335,6 +1335,8 @@ struct Solver {
     /// BSR on formulas whose pre-preprocess classification matches the
     /// "large + low-binary + dense" rule from analyzesat-2026-05-26-preprocess. Default off.
     bsr_formula_gate: bool,
+    /// when true, defer BSR queue drains until the outer preprocessing loop
+    bsr_drain_batched: bool,
     /// max candidates in the selected best occurrence list for one BSR driver; zero = unlimited
     bsr_occurrence_limit: u64,
     /// allowed clause-count growth for one variable-elimination step
@@ -2194,6 +2196,7 @@ impl Solver {
             use_elim: config.bve,
             full_bsr: config.full_bsr,
             bsr_formula_gate: config.bsr_formula_gate,
+            bsr_drain_batched: config.bsr_drain_batched,
             bsr_occurrence_limit: config.bsr_occurrence_limit,
             bve_grow: DEFAULT_BVE_GROW,
             bve_clause_limit: DEFAULT_BVE_CLAUSE_LIMIT,

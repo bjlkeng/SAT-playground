@@ -1518,6 +1518,7 @@ impl Solver {
                 }
 
                 if run_full_backward_subsumption
+                    && !self.bsr_drain_batched
                     && !self.preprocess_bsr_budget_exhausted
                     && (!queue.is_empty() || self.bwdsub_assigns < self.trail.len())
                     && !self.backward_subsumption_check_dynamic(
