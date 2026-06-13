@@ -92,6 +92,13 @@ impl Solver {
         self.preprocess_budget_exhausted = true;
     }
 
+    fn note_preprocess_bsr_tick_budget_hit(&mut self) {
+        if !self.preprocess_bsr_budget_exhausted {
+            self.stats.preprocess_bsr_tick_budget_hits += 1;
+        }
+        self.preprocess_bsr_budget_exhausted = true;
+    }
+
     fn consume_eliminate_tick(&mut self) -> bool {
         if self.eliminate_ticks_budget == 0 {
             return true;
@@ -102,6 +109,18 @@ impl Solver {
         }
         self.stats.preprocess_eliminate_ticks =
             self.stats.preprocess_eliminate_ticks.saturating_add(1);
+        true
+    }
+
+    fn consume_bsr_tick(&mut self) -> bool {
+        if self.eliminate_ticks_budget == 0 {
+            return true;
+        }
+        if self.stats.preprocess_bsr_ticks >= self.eliminate_ticks_budget {
+            self.note_preprocess_bsr_tick_budget_hit();
+            return false;
+        }
+        self.stats.preprocess_bsr_ticks = self.stats.preprocess_bsr_ticks.saturating_add(1);
         true
     }
 
@@ -1049,7 +1068,7 @@ impl Solver {
 
             let mut scan_pos = 0usize;
             while scan_pos < self.occurs[best_var].len() {
-                if self.eliminate_ticks_budget != 0 && !self.consume_eliminate_tick() {
+                if self.eliminate_ticks_budget != 0 && !self.consume_bsr_tick() {
                     return true;
                 }
                 let candidate_idx = self.occurs[best_var][scan_pos] as usize;
@@ -1344,6 +1363,11 @@ impl Solver {
                 let keep = self.merge_into_vec(pos_clause_idx, neg_clause_idx, var, &mut resolvent);
                 if keep {
                     self.stats.preprocess_resolvents += 1;
+                    let subsumption_work = if self.preprocess_bsr_budget_exhausted {
+                        None
+                    } else {
+                        Some(&mut *queue)
+                    };
                     let result = self.add_original_clause_from_slice(
                         &resolvent,
                         proof_log,
@@ -1352,7 +1376,7 @@ impl Solver {
                         touched_flags,
                         bsr_touched,
                         bsr_touched_flags,
-                        Some(&mut *queue),
+                        subsumption_work,
                     );
                     if result == OriginalClauseInsertResult::Unsat {
                         self.scratch_preprocess_clause = resolvent;
@@ -1375,6 +1399,7 @@ impl Solver {
             return false;
         }
         self.preprocess_budget_exhausted = false;
+        self.preprocess_bsr_budget_exhausted = false;
         if !self.use_simplification || !self.use_elim {
             return self.simplify_with_proof(proof_log);
         }
@@ -1406,6 +1431,7 @@ impl Solver {
         }
 
         if run_full_backward_subsumption
+            && !self.preprocess_bsr_budget_exhausted
             && !self.backward_subsumption_check_dynamic(
                 true,
                 &mut queue,
@@ -1425,6 +1451,7 @@ impl Solver {
             && (!touched.is_empty()
                 || !bsr_touched.is_empty()
                 || (run_full_backward_subsumption
+                    && !self.preprocess_bsr_budget_exhausted
                     && (!queue.is_empty() || self.bwdsub_assigns < self.trail.len()))
                 || !heap.is_empty())
         {
@@ -1437,12 +1464,13 @@ impl Solver {
                     &mut queue,
                     &mut heap,
                     &mut heap_versions,
-                    run_full_backward_subsumption,
+                    run_full_backward_subsumption && !self.preprocess_bsr_budget_exhausted,
                 );
                 continue;
             }
 
             if run_full_backward_subsumption
+                && !self.preprocess_bsr_budget_exhausted
                 && (!queue.is_empty() || self.bwdsub_assigns < self.trail.len())
                 && !self.backward_subsumption_check_dynamic(
                     false,
@@ -1490,6 +1518,7 @@ impl Solver {
                 }
 
                 if run_full_backward_subsumption
+                    && !self.preprocess_bsr_budget_exhausted
                     && (!queue.is_empty() || self.bwdsub_assigns < self.trail.len())
                     && !self.backward_subsumption_check_dynamic(
                         false,
@@ -1868,10 +1897,34 @@ mod tests {
 
         assert!(s.eliminate(false, &mut proof));
 
-        assert!(s.preprocess_budget_exhausted);
-        assert_eq!(s.stats.preprocess_eliminate_ticks, 1);
-        assert_eq!(s.stats.preprocess_tick_budget_hits, 1);
+        assert!(s.preprocess_bsr_budget_exhausted);
+        assert!(!s.preprocess_budget_exhausted);
+        assert_eq!(s.stats.preprocess_bsr_ticks, 1);
+        assert_eq!(s.stats.preprocess_bsr_tick_budget_hits, 1);
+        assert_eq!(s.stats.preprocess_tick_budget_hits, 0);
         assert!(s.solver_ok);
+    }
+
+    #[test]
+    fn bsr_tick_budget_exhaustion_does_not_stop_bve_heap() {
+        let config = SolverConfig {
+            eliminate_ticks_budget: 1,
+            ..SolverConfig::default()
+        };
+        let mut s = Solver::new_with_config(2, vec![vec![1, 2], vec![-1, 2]], &config);
+        s.frozen[2] = true;
+        let mut proof = ProofLog::disabled();
+
+        assert!(s.eliminate(false, &mut proof));
+
+        assert!(
+            s.eliminated[1],
+            "BVE should still run after BSR consumes its own tick budget"
+        );
+        assert!(
+            !s.preprocess_budget_exhausted,
+            "BSR tick exhaustion must not stop the BVE budget"
+        );
     }
 
     #[test]
@@ -1891,9 +1944,11 @@ mod tests {
         assert!(s.eliminate(false, &mut proof));
 
         assert_eq!(s.stats.preprocess_eliminate_ticks, 0);
+        assert_eq!(s.stats.preprocess_bsr_ticks, 0);
         assert_eq!(s.stats.preprocess_resolution_attempts, 0);
         assert_eq!(s.stats.preprocess_resolution_budget_hits, 0);
         assert_eq!(s.stats.preprocess_tick_budget_hits, 0);
+        assert_eq!(s.stats.preprocess_bsr_tick_budget_hits, 0);
     }
 
     #[test]

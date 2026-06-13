@@ -163,8 +163,10 @@ pub(crate) struct SolverStats {
     pub(crate) preprocess_resolvents: u64,
     pub(crate) preprocess_resolution_attempts: u64,
     pub(crate) preprocess_eliminate_ticks: u64,
+    pub(crate) preprocess_bsr_ticks: u64,
     pub(crate) preprocess_resolution_budget_hits: u64,
     pub(crate) preprocess_tick_budget_hits: u64,
+    pub(crate) preprocess_bsr_tick_budget_hits: u64,
     pub(crate) preprocess_subsumed_clauses: u64,
     pub(crate) preprocess_strengthened_clauses: u64,
     pub(crate) bsr_runs: u64,
@@ -657,6 +659,7 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
         ctx.stats.preprocess_resolution_attempts,
     );
     json.u64("pre_eliminate_ticks", ctx.stats.preprocess_eliminate_ticks);
+    json.u64("pre_bsr_ticks", ctx.stats.preprocess_bsr_ticks);
     json.u64(
         "pre_eliminate_resolution_budget_hits",
         ctx.stats.preprocess_resolution_budget_hits,
@@ -664,6 +667,10 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64(
         "pre_eliminate_tick_budget_hits",
         ctx.stats.preprocess_tick_budget_hits,
+    );
+    json.u64(
+        "pre_bsr_tick_budget_hits",
+        ctx.stats.preprocess_bsr_tick_budget_hits,
     );
     json.u64("pre_bsr_subsumed", ctx.stats.preprocess_subsumed_clauses);
     json.u64(
