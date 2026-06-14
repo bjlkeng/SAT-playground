@@ -852,6 +852,11 @@ impl SolverConfig {
                 // the outer preprocessing loop improves profile20 5x5/900s from 67/100
                 // to 70/100 solved by preserving more BVE opportunity on sqrt170/bp4.
                 self.bsr_drain_batched = true;
+                // SAT-playground-5b2.3.45 (2026-06-13): kissat-style BSR occurrence
+                // cap (`SAT_BSR_OCCLIM=1000`) keeps the same 70/100 solved profile20
+                // 5x5/900s count while cutting solved-cell conflicts by 4.36M and
+                // PAR-2 by 2284s vs the batched-drain default.
+                self.bsr_occurrence_limit = 1000;
                 // 70h: SAT_LUCKY promoted to the default/fast profiles (2026-05-30 re-eval):
                 // n>=5 aggregate -12 PAR-2 vs lucky-off, and lucky robustly solves the
                 // order-fragile battleship instance (0.08s vs lucky-off 18-904s/timeouts).
@@ -3085,6 +3090,7 @@ mod tests {
         assert!(config.mode_use_ticks);
         assert_eq!(config.reduce_policy, ReducePolicy::LbdTiered);
         assert_eq!(config.phase_policy, PhasePolicy::TargetThenSaved);
+        assert_eq!(config.bsr_occurrence_limit, 1000);
         assert_eq!(config.vmtf, VmtfMode::FocusedOnly);
         assert!(config.lucky);
         assert_eq!(config.proof_policy, ProofPolicy::Drat);
@@ -3103,6 +3109,7 @@ mod tests {
         assert!(!config.simplification);
         assert!(!config.bve);
         assert!(!config.full_bsr);
+        assert_eq!(config.bsr_occurrence_limit, 0);
         assert!(!config.use_lbd);
         assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
         assert!(!config.mode_use_ticks);
@@ -3917,8 +3924,23 @@ mod tests {
 
     #[test]
     fn test_bsr_occurrence_limit_is_parsed_and_replayable() {
+        let raw_config = SolverConfig::default();
+        assert_eq!(raw_config.bsr_occurrence_limit, 0);
+
+        let default_config = SolverConfig::from_env_map(&env_map(&[]));
+        assert_eq!(default_config.bsr_occurrence_limit, 1000);
+
+        let fast_config = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "fast")]));
+        assert_eq!(fast_config.bsr_occurrence_limit, 1000);
+
+        let baseline_config = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "baseline")]));
+        assert_eq!(baseline_config.bsr_occurrence_limit, 0);
+
         let config = SolverConfig::from_env_map(&env_map(&[("SAT_BSR_OCCLIM", "1000")]));
         assert_eq!(config.bsr_occurrence_limit, 1000);
+
+        let disabled = SolverConfig::from_env_map(&env_map(&[("SAT_BSR_OCCLIM", "0")]));
+        assert_eq!(disabled.bsr_occurrence_limit, 0);
 
         let replay = config.config_replay_text();
         assert!(replay.contains("bsr_occurrence_limit=1000"));
