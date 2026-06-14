@@ -56,6 +56,22 @@ impl Solver {
         (self.n_occ[pos] as u64) * (self.n_occ[neg] as u64)
     }
 
+    fn live_occurrence_count(&self, var: usize) -> usize {
+        if var == 0 || var >= self.occurs.len() {
+            return usize::MAX;
+        }
+        if self.n_occ.is_empty() || var > i32::MAX as usize {
+            return self.occurs[var].len();
+        }
+        let lit = var as i32;
+        let pos = lit_to_index(lit);
+        let neg = lit_to_index(-lit);
+        match (self.n_occ.get(pos), self.n_occ.get(neg)) {
+            (Some(&pos_count), Some(&neg_count)) => pos_count.saturating_add(neg_count),
+            _ => self.occurs[var].len(),
+        }
+    }
+
     fn should_run_full_backward_subsumption(&self) -> bool {
         if !self.full_bsr {
             return false;
@@ -1036,20 +1052,23 @@ impl Solver {
             }
             let driver_abstraction = self.subsumption_driver_abstraction(driver);
 
-            let mut best_var = self.subsumption_driver_lit(driver, 0).unsigned_abs() as usize;
-            for driver_pos in 1..driver_len {
+            let mut best_var = 0usize;
+            let mut best_live_occurs = usize::MAX;
+            for driver_pos in 0..driver_len {
                 let var = self
                     .subsumption_driver_lit(driver, driver_pos)
                     .unsigned_abs() as usize;
-                if var < self.occurs.len()
-                    && best_var < self.occurs.len()
-                    && self.occurs[var].len() < self.occurs[best_var].len()
-                {
+                if var == 0 || var >= self.occurs.len() {
+                    continue;
+                }
+                let live_occurs = self.live_occurrence_count(var);
+                if live_occurs < best_live_occurs {
                     best_var = var;
+                    best_live_occurs = live_occurs;
                 }
             }
 
-            if best_var >= self.occurs.len() {
+            if best_var == 0 {
                 continue;
             }
             self.clean_occurs::<TRACE>(best_var);
@@ -1805,6 +1824,65 @@ mod tests {
 
         assert_eq!(live_original_clauses(&s), vec![vec![1, 2]]);
         assert_eq!(s.stats.preprocess_subsumed_clauses, 1);
+    }
+
+    #[test]
+    fn backward_subsumption_best_var_ignores_stale_occurs_tombstones() {
+        let config = SolverConfig {
+            bsr_occurrence_limit: 2,
+            trace_preprocess_details: true,
+            ..SolverConfig::default()
+        };
+        let mut s = Solver::new_with_config(
+            9,
+            vec![
+                vec![1, 2],
+                vec![1, 2, 3],
+                vec![2, 4],
+                vec![3, 5],
+                vec![3, 6],
+                vec![1, 7],
+                vec![1, 8],
+                vec![1, 9],
+            ],
+            &config,
+        );
+        let mut proof = ProofLog::disabled();
+        s.build_occurrence_index();
+
+        let driver = s.original_clause_ids[0];
+        let mut touched = Vec::new();
+        let mut touched_flags = vec![false; s.assignment.len()];
+        for clause_idx in s.original_clause_ids[5..].to_vec() {
+            s.remove_original_clause_preprocess(clause_idx, &mut touched, &mut touched_flags);
+        }
+
+        assert!(s.occurs_dirty[1]);
+        assert!(s.occurs[1].len() > s.occurs[2].len());
+        assert_eq!(s.n_occ[lit_to_index(1)], 2);
+        assert_eq!(s.n_occ[lit_to_index(2)], 3);
+        assert_eq!(s.n_occ[lit_to_index(3)], 3);
+
+        let mut queue = VecDeque::new();
+        queue.push_back(SubsumptionCandidate::Clause(driver));
+        let mut bsr_touched = Vec::new();
+        let mut bsr_touched_flags = vec![false; s.assignment.len()];
+        assert!(s.backward_subsumption_check_dynamic(
+            false,
+            &mut queue,
+            &mut touched,
+            &mut touched_flags,
+            &mut bsr_touched,
+            &mut bsr_touched_flags,
+            &mut proof,
+        ));
+
+        assert_eq!(
+            live_original_clauses(&s),
+            vec![vec![1, 2], vec![2, 4], vec![3, 5], vec![3, 6]]
+        );
+        assert_eq!(s.stats.preprocess_subsumed_clauses, 1);
+        assert_eq!(s.stats.bsr_skip_occurrence_limit, 0);
     }
 
     #[test]
