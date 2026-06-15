@@ -20,6 +20,8 @@ enum PreprocessBudgetKind {
     Tick,
 }
 
+const MARKED_SUBSUMPTION_MIN_PRODUCT: usize = 32;
+
 impl Solver {
     fn variable_count(&self) -> usize {
         self.assignment.len().saturating_sub(1)
@@ -415,6 +417,8 @@ impl Solver {
         driver_len: usize,
         driver_abstraction: u64,
         candidate_idx: usize,
+        relation_marks: &mut Vec<u32>,
+        relation_mark_stamp: &mut u32,
     ) -> SubsumptionOutcome {
         if candidate_idx >= self.arena.len() || self.clause_is_deleted(candidate_idx) {
             return SubsumptionOutcome::None;
@@ -446,6 +450,19 @@ impl Solver {
             return self.sorted_subsumption_relation::<TRACE>(driver, driver_len, candidate_idx);
         }
 
+        if driver_len.saturating_mul(candidate_len) >= MARKED_SUBSUMPTION_MIN_PRODUCT {
+            if TRACE {
+                self.stats.bsr_relation_marked_calls += 1;
+            }
+            return self.marked_subsumption_relation::<TRACE>(
+                driver,
+                driver_len,
+                candidate_idx,
+                relation_marks,
+                relation_mark_stamp,
+            );
+        }
+
         if TRACE {
             self.stats.bsr_relation_nested_calls += 1;
         }
@@ -469,6 +486,56 @@ impl Solver {
             if !found {
                 return SubsumptionOutcome::None;
             }
+        }
+
+        if remove_lit == 0 {
+            if TRACE {
+                self.stats.bsr_relation_subsumed += 1;
+            }
+            SubsumptionOutcome::Subsumed
+        } else {
+            if TRACE {
+                self.stats.bsr_relation_strengthen += 1;
+            }
+            SubsumptionOutcome::Strengthen(remove_lit)
+        }
+    }
+
+    fn marked_subsumption_relation<const TRACE: bool>(
+        &mut self,
+        driver: SubsumptionCandidate,
+        driver_len: usize,
+        candidate_idx: usize,
+        relation_marks: &mut Vec<u32>,
+        relation_mark_stamp: &mut u32,
+    ) -> SubsumptionOutcome {
+        let lit_slots = self.variable_count().saturating_mul(2);
+        if relation_marks.len() < lit_slots {
+            relation_marks.resize(lit_slots, 0);
+        }
+        *relation_mark_stamp = relation_mark_stamp.wrapping_add(1);
+        if *relation_mark_stamp == 0 {
+            relation_marks.fill(0);
+            *relation_mark_stamp = 1;
+        }
+        let mark = *relation_mark_stamp;
+
+        for &candidate_lit in self.clause_slice(candidate_idx) {
+            relation_marks[lit_to_index(candidate_lit)] = mark;
+        }
+
+        let mut remove_lit = 0i32;
+        for driver_pos in 0..driver_len {
+            let driver_lit = self.subsumption_driver_lit(driver, driver_pos);
+            if relation_marks[lit_to_index(driver_lit)] == mark {
+                continue;
+            }
+
+            let candidate_complement = -driver_lit;
+            if relation_marks[lit_to_index(candidate_complement)] != mark || remove_lit != 0 {
+                return SubsumptionOutcome::None;
+            }
+            remove_lit = candidate_complement;
         }
 
         if remove_lit == 0 {
@@ -1043,6 +1110,9 @@ impl Solver {
             }
         }
 
+        let mut relation_marks = Vec::new();
+        let mut relation_mark_stamp = 0u32;
+
         while !queue.is_empty() || self.bwdsub_assigns < self.trail.len() {
             let driver = if let Some(candidate) = queue.pop_front() {
                 match candidate {
@@ -1145,6 +1215,8 @@ impl Solver {
                     driver_len,
                     driver_abstraction,
                     candidate_idx,
+                    &mut relation_marks,
+                    &mut relation_mark_stamp,
                 ) {
                     SubsumptionOutcome::None => {}
                     SubsumptionOutcome::Subsumed => {
@@ -1710,6 +1782,82 @@ mod tests {
             &mut bsr_touched_flags,
             proof,
         )
+    }
+
+    #[test]
+    fn marked_subsumption_relation_detects_subsumed_clause() {
+        let mut s = Solver::new(
+            10,
+            vec![vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10], vec![2, 4, 6, 8]],
+        );
+        let candidate = s.original_clause_ids[0];
+        let driver_idx = s.original_clause_ids[1];
+        let driver = SubsumptionCandidate::Clause(driver_idx);
+        let mut marks = Vec::new();
+        let mut stamp = 0;
+
+        let relation = s.subsumption_relation::<true>(
+            driver,
+            s.subsumption_driver_len(driver),
+            s.subsumption_driver_abstraction(driver),
+            candidate,
+            &mut marks,
+            &mut stamp,
+        );
+
+        assert!(matches!(relation, SubsumptionOutcome::Subsumed));
+        assert_eq!(s.stats.bsr_relation_marked_calls, 1);
+        assert_eq!(stamp, 1);
+    }
+
+    #[test]
+    fn marked_subsumption_relation_detects_strengthen_literal() {
+        let mut s = Solver::new(
+            10,
+            vec![vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10], vec![2, -4, 6, 8]],
+        );
+        let candidate = s.original_clause_ids[0];
+        let driver_idx = s.original_clause_ids[1];
+        let driver = SubsumptionCandidate::Clause(driver_idx);
+        let mut marks = Vec::new();
+        let mut stamp = 0;
+
+        let relation = s.subsumption_relation::<true>(
+            driver,
+            s.subsumption_driver_len(driver),
+            s.subsumption_driver_abstraction(driver),
+            candidate,
+            &mut marks,
+            &mut stamp,
+        );
+
+        assert!(matches!(relation, SubsumptionOutcome::Strengthen(4)));
+        assert_eq!(s.stats.bsr_relation_marked_calls, 1);
+    }
+
+    #[test]
+    fn marked_subsumption_relation_rejects_two_complements() {
+        let mut s = Solver::new(
+            10,
+            vec![vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10], vec![-2, -4, 6, 8]],
+        );
+        let candidate = s.original_clause_ids[0];
+        let driver_idx = s.original_clause_ids[1];
+        let driver = SubsumptionCandidate::Clause(driver_idx);
+        let mut marks = Vec::new();
+        let mut stamp = 0;
+
+        let relation = s.subsumption_relation::<true>(
+            driver,
+            s.subsumption_driver_len(driver),
+            s.subsumption_driver_abstraction(driver),
+            candidate,
+            &mut marks,
+            &mut stamp,
+        );
+
+        assert!(matches!(relation, SubsumptionOutcome::None));
+        assert_eq!(s.stats.bsr_relation_marked_calls, 1);
     }
 
     #[test]

@@ -7753,7 +7753,7 @@ impl Solver {
                 self.stats.bsr_best_occurs_sum as f64 / self.stats.bsr_drivers as f64
             };
             eprintln!(
-                "c preprocess_detail bsr_runs={} seeded={} drivers={} clause_drivers={} root_drivers={} driver_lits={} candidates={} skip_self={} skip_deleted={} skip_limit={} skip_occlim={} relation_calls={} len_reject={} abstraction_reject={} sorted_calls={} nested_calls={} relation_subsumed={} relation_strengthen={} avg_best_occurs={:.3} max_best_occurs={} clean_calls={} clean_dirty={} clean_membership={} clean_scanned={} clean_removed={} eliminate_ticks={} bsr_ticks={} resolution_attempts={} resolution_budget_hits={} tick_budget_hits={} bsr_tick_budget_hits={}",
+                "c preprocess_detail bsr_runs={} seeded={} drivers={} clause_drivers={} root_drivers={} driver_lits={} candidates={} skip_self={} skip_deleted={} skip_limit={} skip_occlim={} relation_calls={} len_reject={} abstraction_reject={} sorted_calls={} marked_calls={} nested_calls={} relation_subsumed={} relation_strengthen={} avg_best_occurs={:.3} max_best_occurs={} clean_calls={} clean_dirty={} clean_membership={} clean_scanned={} clean_removed={} eliminate_ticks={} bsr_ticks={} resolution_attempts={} resolution_budget_hits={} tick_budget_hits={} bsr_tick_budget_hits={}",
                 self.stats.bsr_runs,
                 self.stats.bsr_seeded_clauses,
                 self.stats.bsr_drivers,
@@ -7769,6 +7769,7 @@ impl Solver {
                 self.stats.bsr_relation_len_reject,
                 self.stats.bsr_relation_abstraction_reject,
                 self.stats.bsr_relation_sorted_calls,
+                self.stats.bsr_relation_marked_calls,
                 self.stats.bsr_relation_nested_calls,
                 self.stats.bsr_relation_subsumed,
                 self.stats.bsr_relation_strengthen,
