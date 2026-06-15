@@ -1027,7 +1027,14 @@ impl Solver {
             self.stats.bsr_runs += 1;
         }
         if seed_all_clauses {
-            let original_clause_ids = self.original_clause_ids.clone();
+            let mut original_clause_ids = self.original_clause_ids.clone();
+            original_clause_ids.sort_by_key(|&clause_idx| {
+                if clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx) {
+                    (self.clause_len(clause_idx), clause_idx)
+                } else {
+                    (usize::MAX, clause_idx)
+                }
+            });
             for clause_idx in original_clause_ids {
                 self.enqueue_subsumption_clause(queue, clause_idx);
                 if TRACE {
@@ -1860,6 +1867,25 @@ mod tests {
 
         assert_eq!(live_original_clauses(&s), vec![vec![1, 2]]);
         assert_eq!(s.stats.preprocess_subsumed_clauses, 1);
+    }
+
+    #[test]
+    fn backward_subsumption_seed_all_runs_short_clause_before_tick_budget_hits() {
+        let config = SolverConfig {
+            eliminate_ticks_budget: 1,
+            ..SolverConfig::default()
+        };
+        let mut s = Solver::new_with_config(3, vec![vec![1, 2, 3], vec![1, 2]], &config);
+        let mut proof = ProofLog::disabled();
+        s.build_occurrence_index();
+
+        assert!(run_backward_subsumption(&mut s, true, &mut proof));
+
+        assert_eq!(live_original_clauses(&s), vec![vec![1, 2]]);
+        assert_eq!(s.stats.preprocess_bsr_ticks, 1);
+        assert_eq!(s.stats.preprocess_subsumed_clauses, 1);
+        assert!(s.preprocess_bsr_budget_exhausted);
+        assert_no_subsumption_queue_marks(&s);
     }
 
     #[test]
