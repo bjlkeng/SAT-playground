@@ -1517,6 +1517,16 @@ fn clause_header_mark(header: u32) -> u32 {
 }
 
 #[inline(always)]
+fn clause_header_persistent_mark(header: u32) -> u32 {
+    let mark = clause_header_mark(header);
+    if mark == 2 {
+        0
+    } else {
+        mark
+    }
+}
+
+#[inline(always)]
 fn clause_header_learnt(header: u32) -> bool {
     (header & CLAUSE_LEARNT_BIT) != 0
 }
@@ -3094,7 +3104,7 @@ impl Solver {
                 clause_len,
                 false,
                 true,
-                clause_header_mark(header),
+                clause_header_persistent_mark(header),
                 clause_header_reloced(header),
             ));
             let lits_start = old_clause_idx + 1;
@@ -6077,7 +6087,7 @@ impl Solver {
                 clause_len,
                 clause_header_learnt(header),
                 has_extra,
-                clause_header_mark(header),
+                clause_header_persistent_mark(header),
                 clause_header_reloced(header),
             ));
             let lits_start = old_clause_idx + 1;

@@ -263,6 +263,31 @@ impl Solver {
         queue.push_back(SubsumptionCandidate::Clause(clause_idx));
     }
 
+    fn clear_subsumption_clause_mark(&mut self, clause_idx: usize) {
+        if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
+            return;
+        }
+        if clause_header_mark(self.clause_header(clause_idx)) != 2 {
+            return;
+        }
+        let header = self.clause_header(clause_idx);
+        self.arena[clause_idx] = clause_make_header(
+            clause_header_size(header),
+            clause_header_learnt(header),
+            clause_header_has_extra(header),
+            0,
+            clause_header_reloced(header),
+        );
+    }
+
+    fn clear_subsumption_queue_marks(&mut self, queue: &mut VecDeque<SubsumptionCandidate>) {
+        while let Some(candidate) = queue.pop_front() {
+            if let SubsumptionCandidate::Clause(clause_idx) = candidate {
+                self.clear_subsumption_clause_mark(clause_idx);
+            }
+        }
+    }
+
     fn touch_preprocess_var(touched: &mut Vec<usize>, touched_flags: &mut Vec<bool>, var: usize) {
         if var == 0 {
             return;
@@ -1018,16 +1043,7 @@ impl Solver {
                         if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
                             continue;
                         }
-                        if clause_header_mark(self.clause_header(clause_idx)) == 2 {
-                            let header = self.clause_header(clause_idx);
-                            self.arena[clause_idx] = clause_make_header(
-                                clause_header_size(header),
-                                clause_header_learnt(header),
-                                clause_header_has_extra(header),
-                                0,
-                                clause_header_reloced(header),
-                            );
-                        }
+                        self.clear_subsumption_clause_mark(clause_idx);
                     }
                     SubsumptionCandidate::RootUnit(_) => {}
                 }
@@ -1088,6 +1104,7 @@ impl Solver {
             let mut scan_pos = 0usize;
             while scan_pos < self.occurs[best_var].len() {
                 if self.eliminate_ticks_budget != 0 && !self.consume_bsr_tick() {
+                    self.clear_subsumption_queue_marks(queue);
                     return true;
                 }
                 let candidate_idx = self.occurs[best_var][scan_pos] as usize;
@@ -1143,6 +1160,7 @@ impl Solver {
                             bsr_touched_flags,
                             queue,
                         ) {
+                            self.clear_subsumption_queue_marks(queue);
                             return false;
                         }
                         if remove_lit.unsigned_abs() as usize == best_var {
@@ -1284,6 +1302,7 @@ impl Solver {
         &mut self,
         var: usize,
         proof_log: &mut ProofLog,
+        enqueue_subsumption_work: bool,
         queue: &mut VecDeque<SubsumptionCandidate>,
         touched: &mut Vec<usize>,
         touched_flags: &mut Vec<bool>,
@@ -1382,11 +1401,12 @@ impl Solver {
                 let keep = self.merge_into_vec(pos_clause_idx, neg_clause_idx, var, &mut resolvent);
                 if keep {
                     self.stats.preprocess_resolvents += 1;
-                    let subsumption_work = if self.preprocess_bsr_budget_exhausted {
-                        None
-                    } else {
-                        Some(&mut *queue)
-                    };
+                    let subsumption_work =
+                        if enqueue_subsumption_work && !self.preprocess_bsr_budget_exhausted {
+                            Some(&mut *queue)
+                        } else {
+                            None
+                        };
                     let result = self.add_original_clause_from_slice(
                         &resolvent,
                         proof_log,
@@ -1461,6 +1481,7 @@ impl Solver {
                 proof_log,
             )
         {
+            self.clear_subsumption_queue_marks(&mut queue);
             self.solver_ok = false;
             return false;
         }
@@ -1523,6 +1544,7 @@ impl Solver {
                 let eliminated = self.try_eliminate_var(
                     var,
                     proof_log,
+                    run_full_backward_subsumption && !self.preprocess_bsr_budget_exhausted,
                     &mut queue,
                     &mut touched,
                     &mut touched_flags,
@@ -1558,6 +1580,8 @@ impl Solver {
                 }
             }
         }
+
+        self.clear_subsumption_queue_marks(&mut queue);
 
         let original_clause_ids = std::mem::take(&mut self.original_clause_ids);
         self.original_clause_ids = original_clause_ids
@@ -1650,6 +1674,18 @@ mod tests {
             .collect();
         clauses.sort();
         clauses
+    }
+
+    fn assert_no_subsumption_queue_marks(s: &Solver) {
+        for &clause_idx in &s.original_clause_ids {
+            if clause_idx < s.arena.len() && !s.clause_is_deleted(clause_idx) {
+                assert_ne!(
+                    clause_header_mark(s.clause_header(clause_idx)),
+                    2,
+                    "live original clause {clause_idx} kept a BSR queue mark"
+                );
+            }
+        }
     }
 
     fn run_backward_subsumption(s: &mut Solver, seed_all: bool, proof: &mut ProofLog) -> bool {
@@ -1982,6 +2018,59 @@ mod tests {
         assert_eq!(s.stats.preprocess_bsr_tick_budget_hits, 1);
         assert_eq!(s.stats.preprocess_tick_budget_hits, 0);
         assert!(s.solver_ok);
+        assert_no_subsumption_queue_marks(&s);
+    }
+
+    #[test]
+    fn bsr_budget_exhaustion_clears_pending_queue_marks() {
+        let config = SolverConfig {
+            eliminate_ticks_budget: 1,
+            ..SolverConfig::default()
+        };
+        let mut s =
+            Solver::new_with_config(4, vec![vec![1, 2], vec![1, 2, 3], vec![1, 2, 4]], &config);
+        let mut proof = ProofLog::disabled();
+        let mut queue = VecDeque::new();
+        let mut touched = Vec::new();
+        let mut touched_flags = vec![false; s.assignment.len()];
+        let mut bsr_touched = Vec::new();
+        let mut bsr_touched_flags = vec![false; s.assignment.len()];
+
+        s.build_occurrence_index();
+        assert!(s.backward_subsumption_check_dynamic(
+            true,
+            &mut queue,
+            &mut touched,
+            &mut touched_flags,
+            &mut bsr_touched,
+            &mut bsr_touched_flags,
+            &mut proof,
+        ));
+
+        assert!(s.preprocess_bsr_budget_exhausted);
+        assert!(
+            queue.is_empty(),
+            "BSR queue should be drained after budget exit"
+        );
+        assert_no_subsumption_queue_marks(&s);
+    }
+
+    #[test]
+    fn bve_resolvents_are_not_bsr_marked_when_full_bsr_is_off() {
+        let config = SolverConfig {
+            full_bsr: false,
+            ..SolverConfig::default()
+        };
+        let mut s = Solver::new_with_config(3, vec![vec![1, 2], vec![-1, 3]], &config);
+        s.frozen[2] = true;
+        s.frozen[3] = true;
+        let mut proof = ProofLog::disabled();
+
+        assert!(s.eliminate(false, &mut proof));
+
+        assert!(s.eliminated[1]);
+        assert_eq!(live_original_clauses(&s), vec![vec![2, 3]]);
+        assert_no_subsumption_queue_marks(&s);
     }
 
     #[test]
