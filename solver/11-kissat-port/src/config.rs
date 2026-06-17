@@ -843,6 +843,14 @@ impl SolverConfig {
                 self.search_mode_policy = SearchModePolicy::FocusedStable;
                 self.mode_use_ticks = true;
                 self.reduce_policy = ReducePolicy::LbdTiered;
+                // SAT-playground-5b2.2.67 (2026-06-17): glue recompute + tier
+                // promotion on reason use (kissat deduce.c mark_clause_as_used).
+                // Folding this into the lbd-tiered default feeds the reducer a
+                // kissat-faithful distribution instead of frozen birth LBDs.
+                // profile20 5x5/900s: +4 solved (71->75, oddball 1/5->4/5),
+                // -17.0M conflicts, -5844 PAR-2 vs the prior default.
+                self.update_reason_lbd = true;
+                self.update_propagation_reason_lbd = true;
                 // SAT-playground-5b2.2.64 (2026-06-13): profile20 5x5/900s re-eval promoted
                 // target-then-saved to default/fast focused phases (+1 solved, -11.1M conflicts
                 // vs 156ade2 current baseline). Keep the raw config/baseline profile on legacy
@@ -3207,6 +3215,10 @@ mod tests {
             // default reduce policy is now lbd-tiered, which requires use_lbd; reset it so the
             // use_lbd=off fixture is a valid config (lbd-tiered+!lbd hard-fails validation).
             ("SAT_REDUCE", "legacy"),
+            // 5b2.2.67: the default profile now also enables LBD reason updates,
+            // which likewise require use_lbd; disable them for this use_lbd=off fixture.
+            ("SAT_LBD_UPDATE_REASONS", "off"),
+            ("SAT_LBD_UPDATE_PROP_REASONS", "off"),
         ]));
         let on = SolverConfig::from_env_map(&env_map(&[("SAT_USE_LBD", "on")]));
 
@@ -3215,9 +3227,13 @@ mod tests {
 
     #[test]
     fn test_lbd_reason_update_and_tiered_reduce_are_runtime_supported() {
+        // 5b2.2.67: the default profile now enables both LBD-update flags, so
+        // pin PROP off explicitly here to verify the flags remain independently
+        // controllable (REASONS on, PROP off).
         let config = SolverConfig::from_env_map(&env_map(&[
             ("SAT_USE_LBD", "on"),
             ("SAT_LBD_UPDATE_REASONS", "on"),
+            ("SAT_LBD_UPDATE_PROP_REASONS", "off"),
             ("SAT_REDUCE", "lbd-tiered"),
         ]));
 
@@ -3947,6 +3963,25 @@ mod tests {
         let replayed = SolverConfig::from_replay_text(&replay, Path::new("<bsr-occlim-test>"));
         assert_eq!(replayed.bsr_occurrence_limit, config.bsr_occurrence_limit);
         assert_eq!(replayed.config_hash(), config.config_hash());
+    }
+
+    #[test]
+    fn test_lbd_reason_update_promoted_in_default_profile() {
+        // SAT-playground-5b2.2.67: glue recompute + tier promotion on reason use
+        // is on by default in default/fast (lbd-tiered), off in raw/baseline.
+        assert!(!SolverConfig::default().update_reason_lbd);
+        let default_cfg = SolverConfig::from_env_map(&env_map(&[]));
+        assert!(default_cfg.update_reason_lbd);
+        assert!(default_cfg.update_propagation_reason_lbd);
+        let fast = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "fast")]));
+        assert!(fast.update_reason_lbd && fast.update_propagation_reason_lbd);
+        let baseline = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "baseline")]));
+        assert!(!baseline.update_reason_lbd && !baseline.update_propagation_reason_lbd);
+        let off = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_LBD_UPDATE_REASONS", "off"),
+            ("SAT_LBD_UPDATE_PROP_REASONS", "off"),
+        ]));
+        assert!(!off.update_reason_lbd && !off.update_propagation_reason_lbd);
     }
 
     #[test]
