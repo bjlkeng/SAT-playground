@@ -1286,45 +1286,103 @@ impl Solver {
         }
     }
 
-    fn merge_size_only(&self, lhs_idx: usize, rhs_idx: usize, var: usize) -> Option<usize> {
-        let mut size = 0usize;
-        let lhs_len = self.clause_len(lhs_idx);
-        let rhs_len = self.clause_len(rhs_idx);
-
-        for lit_pos in 0..lhs_len {
-            let lit = self.clause_lit(lhs_idx, lit_pos);
-            if lit.unsigned_abs() as usize != var {
-                size += 1;
-            }
-        }
-
-        'rhs_lits: for rhs_pos in 0..rhs_len {
-            let lit = self.clause_lit(rhs_idx, rhs_pos);
-            if lit.unsigned_abs() as usize == var {
-                continue;
-            }
-            for lhs_pos in 0..lhs_len {
-                let existing = self.clause_lit(lhs_idx, lhs_pos);
-                if existing.unsigned_abs() == lit.unsigned_abs() {
-                    if existing == -lit {
-                        return None;
-                    }
-                    continue 'rhs_lits;
-                }
-            }
-            size += 1;
-        }
-        Some(size)
-    }
-
-    fn merge_into_vec(
+    fn append_resolvent_into_vec(
         &self,
         lhs_idx: usize,
         rhs_idx: usize,
         var: usize,
         out: &mut Vec<i32>,
     ) -> bool {
-        out.clear();
+        let start = out.len();
+        if self.clauses_sorted_by_var {
+            if self.append_sorted_resolvent_into_vec(lhs_idx, rhs_idx, var, out) {
+                true
+            } else {
+                out.truncate(start);
+                false
+            }
+        } else {
+            if self.append_nested_resolvent_into_vec(lhs_idx, rhs_idx, var, out) {
+                true
+            } else {
+                out.truncate(start);
+                false
+            }
+        }
+    }
+
+    fn append_sorted_resolvent_into_vec(
+        &self,
+        lhs_idx: usize,
+        rhs_idx: usize,
+        var: usize,
+        out: &mut Vec<i32>,
+    ) -> bool {
+        let lhs_len = self.clause_len(lhs_idx);
+        let rhs_len = self.clause_len(rhs_idx);
+        let mut lhs_pos = 0usize;
+        let mut rhs_pos = 0usize;
+
+        loop {
+            while lhs_pos < lhs_len {
+                let lit = self.clause_lit(lhs_idx, lhs_pos);
+                if lit.unsigned_abs() as usize != var {
+                    break;
+                }
+                lhs_pos += 1;
+            }
+            while rhs_pos < rhs_len {
+                let lit = self.clause_lit(rhs_idx, rhs_pos);
+                if lit.unsigned_abs() as usize != var {
+                    break;
+                }
+                rhs_pos += 1;
+            }
+
+            match (lhs_pos < lhs_len, rhs_pos < rhs_len) {
+                (false, false) => return true,
+                (true, false) => {
+                    out.push(self.clause_lit(lhs_idx, lhs_pos));
+                    lhs_pos += 1;
+                }
+                (false, true) => {
+                    out.push(self.clause_lit(rhs_idx, rhs_pos));
+                    rhs_pos += 1;
+                }
+                (true, true) => {
+                    let lhs_lit = self.clause_lit(lhs_idx, lhs_pos);
+                    let rhs_lit = self.clause_lit(rhs_idx, rhs_pos);
+                    match lhs_lit.unsigned_abs().cmp(&rhs_lit.unsigned_abs()) {
+                        std::cmp::Ordering::Less => {
+                            out.push(lhs_lit);
+                            lhs_pos += 1;
+                        }
+                        std::cmp::Ordering::Greater => {
+                            out.push(rhs_lit);
+                            rhs_pos += 1;
+                        }
+                        std::cmp::Ordering::Equal => {
+                            if lhs_lit == -rhs_lit {
+                                return false;
+                            }
+                            out.push(lhs_lit);
+                            lhs_pos += 1;
+                            rhs_pos += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn append_nested_resolvent_into_vec(
+        &self,
+        lhs_idx: usize,
+        rhs_idx: usize,
+        var: usize,
+        out: &mut Vec<i32>,
+    ) -> bool {
+        let resolvent_start = out.len();
         let lhs_len = self.clause_len(lhs_idx);
         let rhs_len = self.clause_len(rhs_idx);
 
@@ -1340,10 +1398,9 @@ impl Solver {
             if lit.unsigned_abs() as usize == var {
                 continue;
             }
-            for &existing in out.iter() {
+            for &existing in &out[resolvent_start..] {
                 if existing.unsigned_abs() == lit.unsigned_abs() {
                     if existing == -lit {
-                        out.clear();
                         return false;
                     }
                     continue 'rhs_lits;
@@ -1427,6 +1484,8 @@ impl Solver {
         }
 
         let mut resolvent_count = 0isize;
+        let mut resolvent_lits = Vec::new();
+        let mut resolvent_ranges = Vec::new();
         for &pos_clause_idx in &pos_clauses {
             for &neg_clause_idx in &neg_clauses {
                 if (self.eliminate_resolution_budget != 0 || self.eliminate_ticks_budget != 0)
@@ -1434,16 +1493,26 @@ impl Solver {
                 {
                     return false;
                 }
-                let Some(size) = self.merge_size_only(pos_clause_idx, neg_clause_idx, var) else {
+                let start = resolvent_lits.len();
+                if !self.append_resolvent_into_vec(
+                    pos_clause_idx,
+                    neg_clause_idx,
+                    var,
+                    &mut resolvent_lits,
+                ) {
                     continue;
-                };
+                }
                 resolvent_count += 1;
                 if resolvent_count > occurrence_count as isize + self.bve_grow {
+                    resolvent_lits.truncate(start);
                     return false;
                 }
+                let size = resolvent_lits.len() - start;
                 if self.bve_clause_limit >= 0 && size as isize > self.bve_clause_limit {
+                    resolvent_lits.truncate(start);
                     return false;
                 }
+                resolvent_ranges.push((start, size));
             }
         }
 
@@ -1464,9 +1533,7 @@ impl Solver {
         self.branch_heap_remove(var);
         self.stats.preprocess_eliminated_vars += 1;
 
-        let mut proof_deletions = Vec::with_capacity(pos_clauses.len() + neg_clauses.len());
         for &clause_idx in pos_clauses.iter().chain(neg_clauses.iter()) {
-            proof_deletions.push(self.clause_slice(clause_idx).to_vec());
             self.remove_original_clause_preprocess(clause_idx, touched, touched_flags);
         }
         if var < self.occurs.len() {
@@ -1474,39 +1541,31 @@ impl Solver {
             self.occurs_dirty[var] = false;
         }
 
-        for &pos_clause_idx in &pos_clauses {
-            for &neg_clause_idx in &neg_clauses {
-                let mut resolvent = std::mem::take(&mut self.scratch_preprocess_clause);
-                let keep = self.merge_into_vec(pos_clause_idx, neg_clause_idx, var, &mut resolvent);
-                if keep {
-                    self.stats.preprocess_resolvents += 1;
-                    let subsumption_work =
-                        if enqueue_subsumption_work && !self.preprocess_bsr_budget_exhausted {
-                            Some(&mut *queue)
-                        } else {
-                            None
-                        };
-                    let result = self.add_original_clause_from_slice(
-                        &resolvent,
-                        proof_log,
-                        true,
-                        touched,
-                        touched_flags,
-                        bsr_touched,
-                        bsr_touched_flags,
-                        subsumption_work,
-                    );
-                    if result == OriginalClauseInsertResult::Unsat {
-                        self.scratch_preprocess_clause = resolvent;
-                        return true;
-                    }
-                }
-                self.scratch_preprocess_clause = resolvent;
+        for &(start, len) in &resolvent_ranges {
+            self.stats.preprocess_resolvents += 1;
+            let subsumption_work =
+                if enqueue_subsumption_work && !self.preprocess_bsr_budget_exhausted {
+                    Some(&mut *queue)
+                } else {
+                    None
+                };
+            let result = self.add_original_clause_from_slice(
+                &resolvent_lits[start..start + len],
+                proof_log,
+                true,
+                touched,
+                touched_flags,
+                bsr_touched,
+                bsr_touched_flags,
+                subsumption_work,
+            );
+            if result == OriginalClauseInsertResult::Unsat {
+                return true;
             }
         }
 
-        for clause in &proof_deletions {
-            proof_log.record_deletion(clause);
+        for &clause_idx in pos_clauses.iter().chain(neg_clauses.iter()) {
+            proof_log.record_deletion(self.clause_slice(clause_idx));
         }
 
         true
@@ -2245,6 +2304,30 @@ mod tests {
         assert!(s.eliminated[1]);
         assert_eq!(live_original_clauses(&s), vec![vec![2, 3]]);
         assert_no_subsumption_queue_marks(&s);
+    }
+
+    #[test]
+    fn bve_sorted_resolvent_merge_deduplicates_and_preserves_order() {
+        let mut s = Solver::new(8, vec![vec![1, 5, 7], vec![-1, 2, 5, 8]]);
+        s.build_occurrence_index();
+        let lhs = s.original_clause_ids[0];
+        let rhs = s.original_clause_ids[1];
+        let mut resolvent = Vec::new();
+
+        assert!(s.append_resolvent_into_vec(lhs, rhs, 1, &mut resolvent));
+        assert_eq!(resolvent, vec![2, 5, 7, 8]);
+    }
+
+    #[test]
+    fn bve_sorted_resolvent_merge_rejects_tautology() {
+        let mut s = Solver::new(4, vec![vec![1, 2, 4], vec![-1, -2, 3]]);
+        s.build_occurrence_index();
+        let lhs = s.original_clause_ids[0];
+        let rhs = s.original_clause_ids[1];
+        let mut resolvent = Vec::new();
+
+        assert!(!s.append_resolvent_into_vec(lhs, rhs, 1, &mut resolvent));
+        assert!(resolvent.is_empty());
     }
 
     #[test]
