@@ -1738,6 +1738,8 @@ impl Solver {
             self.inline_original_abstractions = false;
             self.rebuild_branch_queue();
             self.garbage_collect();
+            self.clause_abstraction.clear();
+            self.clause_abstraction.shrink_to_fit();
         }
 
         self.solver_ok
@@ -2231,6 +2233,22 @@ mod tests {
             s.eliminated[1],
             "var 1 must be eliminated when occlim=0 (unlimited)"
         );
+    }
+
+    #[test]
+    fn eliminate_turn_off_drops_dead_clause_abstraction_table() {
+        let mut s = Solver::new(3, vec![vec![1, 2], vec![-1, 3]]);
+        s.build_occurrence_index();
+        assert!(!s.inline_original_abstractions);
+        assert!(!s.clause_abstraction.is_empty());
+        assert!(s.clause_abstraction.capacity() > 0);
+        let mut proof = ProofLog::disabled();
+
+        assert!(s.eliminate(true, &mut proof));
+
+        assert!(!s.use_simplification);
+        assert!(s.clause_abstraction.is_empty());
+        assert_eq!(s.clause_abstraction.capacity(), 0);
     }
 
     #[test]
