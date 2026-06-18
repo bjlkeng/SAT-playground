@@ -968,3 +968,44 @@ Validation after the accepted change:
 - `cargo test` in `solver/10-bve-preprocess`: 48 passed
 - smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
 - smoke log: `log/2026-05-15-23-40-34`
+
+## 2026-06-17 Propagation Watch-Prefetch Pass (bead 5b2.8.1, `SAT_PREFETCH`)
+
+`perf record` on `case9` showed `Solver::propagate` is **~83% of self-time**, bottlenecked on
+random `arena[clause_idx]` loads: the watch-list slots are sequential (hardware-prefetched) but
+each watcher's clause sits at an unpredictable arena offset, so every clause inspection is a likely
+last-level-cache miss that stalls the core.
+
+**Accepted change:** software-prefetch the *next* watcher's clause (`_mm_prefetch`, `_MM_HINT_T0`)
+while the loop processes the current watcher — classic software pipelining of a pointer-chasing
+loop. Gated behind `SAT_PREFETCH` (config `prefetch_watched_clauses`), promoted to **default + fast**
+(off in raw/baseline). The prefetch is a pure microarchitectural hint: it never reads a value or
+touches solver state, so it is **conflict-preserving** — it cannot change which clauses propagate,
+which conflicts arise, the learned clauses, or the DRAT proof.
+
+Evidence:
+
+- **Conflict-preservation, proven at scale:** the 5×5/900s seedgate's 75 shared-solved cells have
+  **byte-identical conflicts** (98,219,572; 0 mismatches), and every single-instance A/B is
+  conflict-identical.
+- **Single-instance (quiet cores — the competition scenario):** faster-or-neutral on **all 20**
+  profile20 instances, conflict-capped at 200k/50k conflicts: `SCPC −20.9%`, `case9 −13.8%`,
+  `Kakuro −10.0%`, `oddball −9.0%`, `circuit −7.2%`, `sqrt171 −4.4%`, `BubblePancake −4.2%`,
+  `bp4 −3.7%`, `sqrt170 −3.4%`, `sudoku −3.3%`, `brocard −2.7%`, `Pancake −2.6%`, `div −2.6%`,
+  `mp1 −2.0%`, `6s299 −1.5%`, `tseitin −1.1%`, `velev −0.6%`, `REGRandom −0.1%`,
+  `VexRiscv +0.3%` (noise, 0.14s/43s), `battleship` (too fast to measure).
+- **5×5/900s seedgate (parallel):** solved `75 = 75` (tied), conflicts identical on all shared-solved
+  cells, PAR-2 `−0.14%` (`61782.8 → 61697.7`). The tiny aggregate is a **5-parallel memory-bandwidth
+  artifact** — with 5 cells running concurrently the extra prefetch traffic contends for bandwidth,
+  even inverting the gain *under parallel load* (`sqrt170 +8%`, `bp4 +5%`, `6s299 +7%` in parallel,
+  yet all faster single-instance). The competition/bench runs single-instance, where the benefit is
+  real; the doc itself notes PAR-2 is contention-sensitive and conflicts are the contention-immune
+  metric (here exactly tied).
+
+Validation after the accepted change:
+
+- `cargo test`: 459 passed (incl. `test_prefetch_watched_clauses_is_parsed_and_replayable`)
+- smoke suite: 9/9 passed, including DRAT verification with `SAT_PREFETCH` on (`s VERIFIED`)
+- baseline run: `log/seedgate-pref-baseline-2026-06-17-17-25-59/`
+- candidate run: `log/seedgate-pref-on-2026-06-17-19-42-46/`
+- profile: `propagate` 83% self-time (perf on `case9`, conflict-capped)

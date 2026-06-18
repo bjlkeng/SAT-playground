@@ -566,6 +566,9 @@ pub(crate) struct SolverConfig {
     pub(crate) bump_reasons_limit_multiplier: u32,
     pub(crate) chrono_backtrack: bool,
     pub(crate) binary_fast_path: bool,
+    // bead 5b2.8.1: software-prefetch the next watched clause during propagation. Pure cache
+    // hint — does not change search results. Default off.
+    pub(crate) prefetch_watched_clauses: bool,
     pub(crate) clause_min_mode: ClauseMinMode,
     pub(crate) otfs: bool,
     /// Opt-in OTSS: on-the-fly self-subsuming resolution. After conflict analysis
@@ -708,6 +711,7 @@ impl Default for SolverConfig {
             bump_reasons_limit_multiplier: 10,
             chrono_backtrack: false,
             binary_fast_path: false,
+            prefetch_watched_clauses: false,
             clause_min_mode: ClauseMinMode::RecursiveLimited,
             otfs: false,
             otss: false,
@@ -870,6 +874,17 @@ impl SolverConfig {
                 // order-fragile battleship instance (0.08s vs lucky-off 18-904s/timeouts).
                 self.lucky = true;
                 self.initial_clause_mode = InitialClauseMode::CanonicalSorted;
+                // SAT-playground-5b2.8.1 (2026-06-17): software-prefetch the next watched
+                // clause in propagation (perf: propagate is 83% of self-time, bottlenecked on
+                // random arena[clause_idx] cache misses). Conflict-preserving (a pure cache
+                // hint): seedgate solved 75=75 with byte-identical conflicts on all 75
+                // shared-solved cells. Single-instance (quiet cores, the competition scenario)
+                // it is faster-or-neutral on all 20 profile20 instances (-0.1%..-20.9%, e.g.
+                // case9 -14%, SCPC -21%, Kakuro -10%). The 5x5 seedgate's PAR-2 was only -0.14%
+                // because 5 parallel cells saturate memory bandwidth and the extra prefetch
+                // traffic contends; that is a measurement artifact of the parallel sweep, not
+                // the single-instance objective.
+                self.prefetch_watched_clauses = true;
             }
             SolverProfile::Experimental => {
                 self.use_lbd = true;
@@ -1110,6 +1125,12 @@ impl SolverConfig {
             parse_bool_selected(env_map, &key_set, "SAT_CHRONO", self.chrono_backtrack);
         self.binary_fast_path =
             parse_bool_selected(env_map, &key_set, "SAT_BINARY_FAST", self.binary_fast_path);
+        self.prefetch_watched_clauses = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_PREFETCH",
+            self.prefetch_watched_clauses,
+        );
         self.clause_min_mode = parse_enum_selected(
             env_map,
             &key_set,
@@ -1659,6 +1680,11 @@ impl SolverConfig {
         );
         push_kv_bool(&mut lines, "chrono_backtrack", self.chrono_backtrack);
         push_kv_bool(&mut lines, "binary_fast_path", self.binary_fast_path);
+        push_kv_bool(
+            &mut lines,
+            "prefetch_watched_clauses",
+            self.prefetch_watched_clauses,
+        );
         push_kv(&mut lines, "clause_min_mode", self.clause_min_mode.as_str());
         push_kv_bool(&mut lines, "otfs", self.otfs);
         push_kv_bool(&mut lines, "otss", self.otss);
@@ -2052,6 +2078,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             "log/1.6/summary.md",
         ),
         feature(
+            "SAT_PREFETCH",
+            config.prefetch_watched_clauses,
+            FeatureMaturity::Experimental,
+            false,
+            false,
+            false,
+            "",
+        ),
+        feature(
             "SAT_VMTF",
             config.vmtf.enabled(),
             FeatureMaturity::SmokeSafe,
@@ -2379,6 +2414,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "bump_reasons_limit_multiplier" => Some("SAT_BUMP_REASONS_LIMIT"),
         "chrono_backtrack" => Some("SAT_CHRONO"),
         "binary_fast_path" => Some("SAT_BINARY_FAST"),
+        "prefetch_watched_clauses" => Some("SAT_PREFETCH"),
         "clause_min_mode" => Some("SAT_CLAUSE_MIN"),
         "otfs" => Some("SAT_OTFS"),
         "otss" => Some("SAT_OTSS"),
@@ -2573,6 +2609,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_BUMP_REASONS_LIMIT",
         "SAT_CHRONO",
         "SAT_BINARY_FAST",
+        "SAT_PREFETCH",
         "SAT_CLAUSE_MIN",
         "SAT_OTFS",
         "SAT_OTSS",
@@ -3615,6 +3652,36 @@ mod tests {
 
         assert!(config.binary_fast_path);
         assert_eq!(config.clause_min_mode, ClauseMinMode::Off);
+    }
+
+    #[test]
+    fn test_prefetch_watched_clauses_is_parsed_and_replayable() {
+        // bead 5b2.8.1: conflict-preserving propagation prefetch, promoted to default+fast
+        // (off in raw/baseline). Mirrors the bsr_drain_batched promotion pattern.
+        assert!(!SolverConfig::default().prefetch_watched_clauses);
+        assert!(SolverConfig::from_env_map(&env_map(&[])).prefetch_watched_clauses);
+        assert!(
+            SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "fast")])).prefetch_watched_clauses
+        );
+        assert!(
+            !SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "baseline")]))
+                .prefetch_watched_clauses
+        );
+        assert!(
+            !SolverConfig::from_env_map(&env_map(&[("SAT_PREFETCH", "off")])).prefetch_watched_clauses
+        );
+
+        let config = SolverConfig::from_env_map(&env_map(&[("SAT_PREFETCH", "on")]));
+        assert!(config.prefetch_watched_clauses);
+
+        let replay = config.config_replay_text();
+        assert!(replay.contains("prefetch_watched_clauses=true"));
+        let replayed = SolverConfig::from_replay_text(&replay, Path::new("<prefetch-test>"));
+        assert_eq!(
+            replayed.prefetch_watched_clauses,
+            config.prefetch_watched_clauses
+        );
+        assert_eq!(replayed.config_hash(), config.config_hash());
     }
 
     #[test]

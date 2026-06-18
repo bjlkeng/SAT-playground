@@ -1163,6 +1163,8 @@ struct Solver {
     binary_dedup_stamp: u32,
     /// opt-in switch for binary implication propagation; default off for solver-10 parity
     binary_fast_path: bool,
+    /// bead 5b2.8.1: software-prefetch the next watched clause during propagation (default off)
+    prefetch_watched_clauses: bool,
     /// controls whether the current propagation/accounting path mutates normal search counters
     accounting_mode: SearchAccountingMode,
     /// counters for temporary assumptions, kept separate from normal search stats
@@ -2113,6 +2115,7 @@ impl Solver {
             binary_dedup_seen: vec![0; num_vars.saturating_mul(2)],
             binary_dedup_stamp: 0,
             binary_fast_path: config.binary_fast_path,
+            prefetch_watched_clauses: config.prefetch_watched_clauses,
             accounting_mode: SearchAccountingMode::NormalSearch,
             temporary_stats: TemporaryAssumptionStats::default(),
             trail: Vec::with_capacity(num_vars),
@@ -4354,10 +4357,27 @@ impl Solver {
             let mut pending = std::mem::take(&mut self.watchers[watch_idx]);
             let mut read = 0usize;
             let mut write = 0usize;
+            let prefetch_clauses = self.prefetch_watched_clauses;
 
             while read < pending.len() {
                 let watcher = pending[read];
                 read += 1;
+                // bead 5b2.8.1: software-prefetch the next watched clause's arena words while we
+                // process the current watcher. Watch-list slots are sequential (hardware-prefetched)
+                // but `arena[clause_idx]` is a random load that stalls the loop on a cache miss.
+                // This is a pure hint and cannot change the search result.
+                if prefetch_clauses && read < pending.len() {
+                    let next_clause_idx = pending[read].clause_idx as usize;
+                    if next_clause_idx < self.arena.len() {
+                        #[cfg(target_arch = "x86_64")]
+                        unsafe {
+                            core::arch::x86_64::_mm_prefetch(
+                                self.arena.as_ptr().add(next_clause_idx) as *const i8,
+                                core::arch::x86_64::_MM_HINT_T0,
+                            );
+                        }
+                    }
+                }
                 self.record_search_ticks::<MODE_TICKS, NORMAL_SEARCH>(1);
                 if HOT_STATS && normal_search_accounting {
                     self.stats.watch_scans += 1;
