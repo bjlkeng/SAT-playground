@@ -1,6 +1,6 @@
 ---
 name: nextbeads
-description: Work through up to N highest-priority unblocked beads within a single phase (default phase1), one bead at a time — claim, implement, fresh-eyes review, fix, run smoke + cargo test, update the bead, commit, push. Run the profiling-suite benchmark before the first bead and after the last to confirm no regression. Never crosses into the next phase. Reports beads worked on, what was implemented (with examples), the before/after profile-bench delta, and the next logical beads to tackle.
+description: Work through up to N highest-priority unblocked beads within a single phase (default phase1), one bead at a time — claim, implement, fresh-eyes review, fix, run smoke + cargo test, update the bead, commit, push, and release every bead claimed by the run before exit. Run the profiling-suite benchmark before the first bead and after the last to confirm no regression. Never crosses into the next phase. Reports beads worked on, what was implemented (with examples), the before/after profile-bench delta, and the next logical beads to tackle.
 ---
 
 # /nextbeads — Work Phase-Scoped Beads In Priority Order
@@ -41,11 +41,32 @@ bd update <id> --status in_progress       # makes it visible to other agents
 When you finish or revert:
 
 ```bash
-bd close <id>                             # or bd update <id> --status open if reverting
+bd close <id> && bd update <id> --assignee ''          # completed
+bd update <id> --status=open --assignee ''             # reverted / unfinished
 ```
 
 Beads tracks *declared* state. There is no heartbeat or file lock — if you do not
 claim, no one else can see you are working.
+
+### Release discipline
+
+Every bead claimed by this run must be released before `/nextbeads` exits, even
+after a failure, early stop, user interruption, benchmark regression, or reverted
+experiment.
+
+- If the bead was completed, close it and clear its assignee:
+  ```bash
+  bd close <id> --reason="Completed via /nextbeads"
+  bd update <id> --assignee ''
+  ```
+- If the bead was not completed, put it back in the ready pool and clear its
+  assignee:
+  ```bash
+  bd update <id> --status=open --assignee ''
+  ```
+- Before the final response, verify that every bead claimed by this run is no
+  longer `in_progress` and has no assignee. Do not clear or reopen beads claimed
+  by another active agent unless the user explicitly asks for tracker cleanup.
 
 ### Develop on `main` in the main checkout (no worktrees)
 
@@ -244,6 +265,7 @@ For each bead in the work order, up to N times:
 9. **Close the bead.**
    ```bash
    bd close <id> --reason="Completed via /nextbeads"
+   bd update <id> --assignee ''
    bd export -o .beads/beads.jsonl
    ```
 
@@ -280,7 +302,7 @@ On failure:
    Or, if changes are spread widely, hard-reset only files this bead touched. Never `git reset --hard` blindly — confirm scope first.
 3. **Re-open the bead** with a detailed failure note:
    ```bash
-   bd update <id> --status=open
+   bd update <id> --status=open --assignee ''
    bd note <id> "Reverted by /nextbeads. Failure: <exact failing command and output>. Hypothesis: <one sentence>."
    ```
 4. **Run the after-bench step below anyway** so the user sees the current state.
@@ -298,6 +320,20 @@ Stop the loop when any of these is true:
 ## Post-loop — after-bench and report
 
 Run these once, after the last bead (or after a failure):
+
+0. **Release any bead claimed by this run that is not already closed.** This is
+   mandatory cleanup, not optional hygiene. For every worked bead still marked
+   `in_progress`, or still assigned to you after being reopened, run:
+   ```bash
+   bd update <id> --status=open --assignee ''
+   bd export -o .beads/beads.jsonl
+   ```
+   For every worked bead that was closed but still has an assignee, run:
+   ```bash
+   bd update <id> --assignee ''
+   bd export -o .beads/beads.jsonl
+   ```
+   Verify the worked-bead list is clean before writing the final report.
 
 1. **Rebuild and run the profiling-suite benchmark (after).**
    ```bash
