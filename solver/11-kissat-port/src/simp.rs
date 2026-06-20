@@ -1533,6 +1533,22 @@ impl Solver {
         self.branch_heap_remove(var);
         self.stats.preprocess_eliminated_vars += 1;
 
+        for &clause_idx in pos_clauses.iter().chain(neg_clauses.iter()) {
+            proof_log.record_deletion(self.clause_slice(clause_idx));
+        }
+
+        // Resolvents are derived from these clauses, but the eliminated clauses must
+        // leave the live occurrence/watch structures before resolvents are inserted.
+        // Otherwise resolvent insertion can see stale eliminated clauses during
+        // immediate subsumption work and materially change the post-BVE formula.
+        for &clause_idx in pos_clauses.iter().chain(neg_clauses.iter()) {
+            self.remove_original_clause_preprocess(clause_idx, touched, touched_flags);
+        }
+        if var < self.occurs.len() {
+            self.occurs[var].clear();
+            self.occurs_dirty[var] = false;
+        }
+
         for &(start, len) in &resolvent_ranges {
             self.stats.preprocess_resolvents += 1;
             let subsumption_work =
@@ -1554,18 +1570,6 @@ impl Solver {
             if result == OriginalClauseInsertResult::Unsat {
                 return true;
             }
-        }
-
-        for &clause_idx in pos_clauses.iter().chain(neg_clauses.iter()) {
-            proof_log.record_deletion(self.clause_slice(clause_idx));
-        }
-
-        for &clause_idx in pos_clauses.iter().chain(neg_clauses.iter()) {
-            self.remove_original_clause_preprocess(clause_idx, touched, touched_flags);
-        }
-        if var < self.occurs.len() {
-            self.occurs[var].clear();
-            self.occurs_dirty[var] = false;
         }
 
         true
