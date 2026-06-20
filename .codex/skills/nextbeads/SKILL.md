@@ -168,10 +168,12 @@ Examples:
 
 Read in full, in this order:
 
-1. `CLAUDE.md` — the project guide. The sections under *Development Rules*, *Code-Level Optimization Workflow*, *Debugging Optimization Regressions*, *Investigating Why Ported Features Don't Help*, *Solver Interface Contract*, *Status Reporting*, and *Beads Issue Tracker* are load-bearing for this skill. The **Solver 11 default/fast promotion gate**, **UNKNOWN as failure**, **SAT/UNSAT/UNKNOWN result errors are correctness failures**, and **smoke-test-before-commit** rules are non-negotiable.
-2. `.agents/skills/beads/SKILL.md` — the Beads workflow (`bd ready`, `bd show`, `bd update --claim`, `bd close`, `bd note`, `bd link`, `bd remember`). Use `bd`, not the `bv` TUI, for mutations. Use `bv --robot-*` for read-only triage.
-3. The target solver's `README.md` — find the active iteration with `ls solver/` and pick the latest (`solver/NN-name/README.md`). Also read `FEATURES.md` / `FEATURES.csv` and `SOLVER11_STATE.md` if they exist.
-4. Any `log/<investigation>/FINDINGS.md` or `DEEPER_FINDINGS.md` referenced by the beads you are about to work — these are usually how the bead's *why* is documented.
+1. `CLAUDE.md` — the high-signal project guide. The **Solver 11 default/fast promotion gate**, **UNKNOWN as failure**, **SAT/UNSAT/UNKNOWN result errors are correctness failures**, and **smoke-test-before-commit** rules are non-negotiable.
+2. `plan/solver-optimization-workflow.md` — the detailed optimization, seedgate, benchmark, and long-run reporting workflow.
+3. `benchmarks/BENCHMARK_WORKFLOWS.md` — full/medium benchmark cron and reference-run operations.
+4. `.agents/skills/beads/SKILL.md` — the Beads workflow (`bd ready`, `bd show`, `bd update --claim`, `bd close`, `bd note`, `bd link`, `bd remember`). Use `bd`, not the `bv` TUI, for mutations. Use `bv --robot-*` for read-only triage.
+5. The target solver's `README.md` — find the active iteration with `ls solver/` and pick the latest (`solver/NN-name/README.md`). Also read `FEATURES.md` / `FEATURES.csv` and `SOLVER11_STATE.md` if they exist.
+6. Any `log/<investigation>/FINDINGS.md` or `DEEPER_FINDINGS.md` referenced by the beads you are about to work — these are usually how the bead's *why* is documented.
 
 Do not paraphrase from memory. Open each file with the Read tool.
 

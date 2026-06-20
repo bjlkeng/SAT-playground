@@ -29,10 +29,9 @@ work or runs faster, then adapt the idea however best fits this codebase. Exact 
 source parity with kissat is explicitly **not** a goal; keep whatever wins aggregate PAR-2.
 
 This skill is the primary tool for "fresh eyes" deep-dives on `solver/11-kissat-port`
-or any other iteration. It integrates the workflows from CLAUDE.md sections:
-- *Investigating Why Ported Features Don't Help*
-- *Debugging Optimization Regressions*
-- *Reference Solver Gap-Closing Strategy*
+or any other iteration. It owns the deep-dive workflows formerly documented in
+the project guide: investigating why ported features do not help, debugging
+optimization regressions, and reference-solver gap-closing analysis.
 
 ## Invocation
 
@@ -48,7 +47,8 @@ Default target: `solver/11-kissat-port`
 2. **Read current state**: read `solver/NN-name/README.md`, `FEATURES.md` / `FEATURES.csv`,
    `SOLVER11_STATE.md` (if present), and `src/config.rs` to understand which features exist
    and which are opt-in vs. default.
-3. **Read CLAUDE.md** sections for the current iteration and the optimization workflow.
+3. **Read CLAUDE.md** for project rules and `plan/solver-optimization-workflow.md`
+   for the detailed optimization workflow.
 4. **Check existing beads**: run `bd search <feature>` for every feature under investigation.
    Record existing bead IDs so findings are linked, not duplicated.
 5. **Work in the main checkout on `main`** (no worktrees — see CLAUDE.md's coordination
@@ -93,8 +93,8 @@ matrix at 300 s is a multi-hour job — launch it detached (Bash `run_in_backgro
 one-shot cron pattern for very long runs) instead of blocking the session, post an hourly status
 report while it runs (liveness via `pgrep`, cells-done, ETA), and close with the comparative
 analysis/summary this skill already produces (the Phase 2–7 decomposition + `FINDINGS.md` + the
-screen summary). See CLAUDE.md's "Code-Level Optimization Workflow" for the full
-detached-run / hourly-status / end-of-run-summary convention.
+screen summary). See `plan/solver-optimization-workflow.md` for the full detached-run /
+hourly-status / end-of-run-summary convention.
 
 Capture per-(config, instance):
 - wall time, result (SAT/UNSAT/timeout)
