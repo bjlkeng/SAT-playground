@@ -4212,6 +4212,48 @@ impl Solver {
         }
     }
 
+    /// kissat_assignment_level (inlineassign.h): the level at which a propagated literal
+    /// is assigned is the maximum decision level among the other (false) literals of its
+    /// reason clause. Used by real chronological backtracking (bd SAT-playground-5b2.2.68)
+    /// so a literal forced by a low-level reason keeps that low level even when propagated
+    /// at a higher current decision level.
+    fn assignment_level_from_reason(&self, lit: i32, reason: ReasonRef) -> usize {
+        let mut level = 0usize;
+        match reason {
+            ReasonRef::None => self.current_level(),
+            ReasonRef::Clause(clause_idx) => {
+                let clause_len = self.clause_len(clause_idx);
+                for i in 0..clause_len {
+                    let rlit = self.clause_lit(clause_idx, i);
+                    if rlit == lit {
+                        continue;
+                    }
+                    let l = self.decision_level[rlit.unsigned_abs() as usize];
+                    if l > level {
+                        level = l;
+                    }
+                }
+                level
+            }
+            ReasonRef::Binary(binary_id) => {
+                let lits = *self
+                    .binary_reason_lits
+                    .get(binary_id.0 as usize)
+                    .expect("invalid binary reason id");
+                for &rlit in &lits {
+                    if rlit == lit {
+                        continue;
+                    }
+                    let l = self.decision_level[rlit.unsigned_abs() as usize];
+                    if l > level {
+                        level = l;
+                    }
+                }
+                level
+            }
+        }
+    }
+
     #[inline(always)]
     fn enqueue_impl<const NORMAL_SEARCH: bool>(&mut self, lit: i32, reason: ReasonRef) -> bool {
         let var = lit.unsigned_abs() as usize;
@@ -4219,11 +4261,22 @@ impl Solver {
         let current = self.assignment[var];
         if current == UNASSIGNED {
             let current_level = self.current_level();
+            // Real chronological backtracking: a propagated literal takes the level of its
+            // reason (which may be below the current level), not the current decision level.
+            // Decisions (ReasonRef::None) keep the current level.
+            let level = if self.chrono_backtrack {
+                match reason {
+                    ReasonRef::None => current_level,
+                    _ => self.assignment_level_from_reason(lit, reason),
+                }
+            } else {
+                current_level
+            };
             self.assignment[var] = target_value;
             if NORMAL_SEARCH || self.accounting_mode.update_phase() {
                 self.saved_phase[var] = target_value;
             }
-            self.decision_level[var] = current_level;
+            self.decision_level[var] = level;
             self.set_reason_ref(var, reason);
             self.trail.push(lit);
             if current_level == 0 && NORMAL_SEARCH {
@@ -5316,6 +5369,38 @@ impl Solver {
         } else {
             self.trail_limits[target_level]
         };
+
+        if self.chrono_backtrack {
+            // kissat reassign-on-backtrack (backtrack.c): scan the trail above the
+            // target-level decision boundary; KEEP literals whose assignment level is
+            // already <= target_level (compacting them down in place), and unassign the
+            // rest. Decision literals always have level > target_level here, so they are
+            // unassigned; only out-of-order propagated literals are reassigned.
+            let old_len = self.trail.len();
+            let mut write = new_trail_len;
+            for read in new_trail_len..old_len {
+                let lit = self.trail[read];
+                let var = lit.unsigned_abs() as usize;
+                if self.decision_level[var] <= target_level {
+                    self.trail[write] = lit;
+                    write += 1;
+                } else {
+                    self.assignment[var] = UNASSIGNED;
+                    self.decision_level[var] = 0;
+                    self.set_reason_ref(var, ReasonRef::None);
+                    self.heap_reinsert_unassigned_decision_var(var);
+                    self.vmtf_note_unassigned_decision_var(var);
+                }
+            }
+            self.trail.truncate(write);
+            self.trail_limits.truncate(target_level);
+            // Re-propagate the reassigned literals (eager reimplication): propagation
+            // resumes at the decision boundary so any implications lost with the
+            // unassigned higher-level literals are re-derived. Mirrors kissat setting
+            // solver->propagate = new_end.
+            self.propagate_head = new_trail_len;
+            return;
+        }
 
         while self.trail.len() > new_trail_len {
             let lit = self.trail.pop().expect("trail underflow");
@@ -7294,6 +7379,16 @@ impl Solver {
                 continue;
             }
 
+            // Under chronological backtracking the trail is not sorted by level, so a
+            // seen literal below the current level can appear near the trail top. Only
+            // current-level seen literals participate in the 1-UIP resolution; the rest
+            // are already recorded in `scratch_learned` by the marking pass and must be
+            // skipped here, or the current-level count is corrupted and the walk stops at
+            // a non-current-level "UIP" (bd SAT-playground-5b2.2.68).
+            if self.chrono_backtrack && self.decision_level[var] != current_level {
+                continue;
+            }
+
             self.scratch_seen[var] = 0;
             if self.use_resolved_conflict_analysis {
                 self.scratch_resolved[var] = 1;
@@ -7845,7 +7940,11 @@ impl Solver {
                         }
                         return SolveOutcome::unsat();
                     }
-                    if self.binary_fast_path {
+                    if self.binary_fast_path || self.chrono_backtrack {
+                        // Under chronological backtracking the trail is no longer sorted by
+                        // level, so a conflict can be discovered below the current decision
+                        // level. Backtrack to the conflict's own level before analysis
+                        // (kissat search.c conflict-level handling).
                         let conflict_level = self.conflict_max_decision_level(conflict_event);
                         if conflict_level == 0 {
                             self.finish_search_timing(search_start);
@@ -12529,6 +12628,49 @@ mod tests {
         assert!(
             proof_text.ends_with("0\n"),
             "expected chrono-enabled UNSAT proof to end with the empty clause"
+        );
+    }
+
+    #[test]
+    fn test_chrono_aware_analyze_solves_unsat_with_chrono_firing() {
+        // Regression for the chrono-aware 1-UIP walk (bd SAT-playground-5b2.2.68): with a
+        // low chrono threshold, chronological backtracking fires and the trail is no longer
+        // sorted by level. If the analyze walk does not skip non-current-level seen literals
+        // it returns a below-current "UIP" and the asserting-after-backtrack invariant
+        // breaks (caught by debug_assert in this test build) and/or the proof is wrong.
+        // PHP(6,5) — 6 pigeons, 5 holes — is UNSAT and deep enough that chrono fires at a
+        // zero threshold (any backjump skipping 2+ levels).
+        let pigeons = 6usize;
+        let holes = 5usize;
+        let var = |p: usize, h: usize| -> i32 { ((p - 1) * holes + h) as i32 };
+        let mut clauses: Vec<Vec<i32>> = Vec::new();
+        for p in 1..=pigeons {
+            clauses.push((1..=holes).map(|h| var(p, h)).collect());
+        }
+        for h in 1..=holes {
+            for p1 in 1..=pigeons {
+                for p2 in (p1 + 1)..=pigeons {
+                    clauses.push(vec![-var(p1, h), -var(p2, h)]);
+                }
+            }
+        }
+        let config = chrono_config(0);
+        let proof_dir = make_temp_dir("chrono-php-unsat");
+        let mut s = make_solver_with_config(pigeons * holes, clauses, &config);
+        let outcome = s
+            .solve_to_output(proof_dir.to_str().expect("utf8 temp dir"), &config)
+            .0;
+        assert_eq!(outcome.status, SolveStatus::Unsat, "PHP(5,4) must be UNSAT");
+        assert!(
+            s.stats.chrono_used > 0,
+            "chrono must fire so the chrono-aware analyze walk is exercised (used={})",
+            s.stats.chrono_used
+        );
+        let proof_text =
+            fs::read_to_string(proof_dir.join("proof.out")).expect("failed to read emitted proof");
+        assert!(
+            proof_text.ends_with("0\n"),
+            "chrono-fired UNSAT proof must end with the empty clause"
         );
     }
 
