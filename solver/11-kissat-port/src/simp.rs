@@ -1533,14 +1533,26 @@ impl Solver {
         self.branch_heap_remove(var);
         self.stats.preprocess_eliminated_vars += 1;
 
-        for &clause_idx in pos_clauses.iter().chain(neg_clauses.iter()) {
-            proof_log.record_deletion(self.clause_slice(clause_idx));
-        }
+        // DRAT ordering invariant: the eliminated source clauses must be DELETED in the
+        // proof *after* the resolvents are added (each resolvent is a RAT clause on the
+        // eliminated variable, so the checker needs the source clauses still present when
+        // it validates the resolvent). The source clauses must also leave the live
+        // occurrence/watch structures *before* resolvents are inserted, so immediate
+        // subsumption cannot see stale eliminated clauses during resolvent insertion and
+        // materially change the post-BVE formula. Those two orderings conflict, so snapshot
+        // the source-clause literals now while they are still live and emit their proof
+        // deletions after the resolvent loop below. (Emitting them here, before the
+        // resolvents, strips the RAT support and drat-trim rejects the proof.)
+        let proof_deletions: Vec<Vec<i32>> = if proof_log.is_enabled() {
+            pos_clauses
+                .iter()
+                .chain(neg_clauses.iter())
+                .map(|&clause_idx| self.clause_slice(clause_idx).to_vec())
+                .collect()
+        } else {
+            Vec::new()
+        };
 
-        // Resolvents are derived from these clauses, but the eliminated clauses must
-        // leave the live occurrence/watch structures before resolvents are inserted.
-        // Otherwise resolvent insertion can see stale eliminated clauses during
-        // immediate subsumption work and materially change the post-BVE formula.
         for &clause_idx in pos_clauses.iter().chain(neg_clauses.iter()) {
             self.remove_original_clause_preprocess(clause_idx, touched, touched_flags);
         }
@@ -1570,6 +1582,13 @@ impl Solver {
             if result == OriginalClauseInsertResult::Unsat {
                 return true;
             }
+        }
+
+        // Now that the resolvents have been recorded, delete the eliminated source clauses
+        // from the proof (snapshotted above before structure removal). See the DRAT
+        // ordering invariant comment near the snapshot.
+        for deletion in &proof_deletions {
+            proof_log.record_deletion(deletion);
         }
 
         true

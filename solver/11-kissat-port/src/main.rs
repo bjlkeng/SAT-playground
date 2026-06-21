@@ -942,6 +942,10 @@ impl ProofLog {
         }
     }
 
+    fn is_enabled(&self) -> bool {
+        matches!(self.mode, ProofMode::Stream(_))
+    }
+
     fn record_clause(&mut self, clause: &[i32]) {
         if let ProofMode::Stream(stream) = &mut self.mode {
             stream.clause_count += 1;
@@ -8844,6 +8848,54 @@ mod tests {
         let legacy = make_solver_with_config(2, vec![vec![1, 2]], &legacy_config);
 
         assert_eq!(legacy.ccmin_mode, CCMIN_BASIC);
+    }
+
+    #[test]
+    fn test_bve_proof_deletes_source_clauses_after_resolvents() {
+        // Regression for the BVE DRAT-proof ordering bug: the proof deletions of the
+        // eliminated source clauses must be emitted *after* the resolvent additions.
+        // Emitting deletions first strips the RAT support for the resolvents, and
+        // drat-trim rejects the proof with "RAT check failed on all possible pivots".
+        let config = SolverConfig {
+            eliminate_occurrence_limit: 0,
+            full_bsr: false,
+            ..SolverConfig::default()
+        };
+        // var 1: pos in (1,2),(1,3); neg in (-1,4),(-1,5). occlim=0 -> var 1 is eliminated,
+        // producing resolvents (2,4),(2,5),(3,4),(3,5). vars 2..=5 frozen so they survive.
+        let mut s = Solver::new_with_config(
+            5,
+            vec![vec![1, 2], vec![1, 3], vec![-1, 4], vec![-1, 5]],
+            &config,
+        );
+        s.frozen[2] = true;
+        s.frozen[3] = true;
+        s.frozen[4] = true;
+        s.frozen[5] = true;
+
+        let dir = make_temp_dir("bve-proof-order");
+        let mut proof = ProofLog::new(&dir, 64, false);
+        assert!(s.eliminate(false, &mut proof));
+        assert!(s.eliminated[1], "var 1 must be eliminated under occlim=0");
+        proof.finish_unsat();
+
+        let proof_text =
+            fs::read_to_string(dir.join("proof.out")).expect("failed to read BVE proof");
+        let line_idx = |needle: &str| proof_text.lines().position(|l| l == needle);
+        // A resolvent addition (e.g. "2 4 0") must precede every deletion of an eliminated
+        // source clause (e.g. "d 1 2 0").
+        let resolvent_add =
+            line_idx("2 4 0").expect("resolvent (2,4) must be added to the proof");
+        for del in ["d 1 2 0", "d 1 3 0", "d -1 4 0", "d -1 5 0"] {
+            let del_idx =
+                line_idx(del).unwrap_or_else(|| panic!("missing source-clause deletion {del}"));
+            assert!(
+                resolvent_add < del_idx,
+                "resolvent add (line {resolvent_add}) must precede source deletion {del} \
+                 (line {del_idx}); deletions must come after resolvents in the DRAT proof\n\
+                 proof:\n{proof_text}"
+            );
+        }
     }
 
     fn make_temp_dir(label: &str) -> PathBuf {
