@@ -1,21 +1,25 @@
 ---
 name: nextbeads
-description: Work through up to N highest-priority unblocked beads within one phase (default phase1), one bead at a time. Claims, implements, validates, closes or releases every claimed bead, commits, pushes, and reports. Benchmarks are launched detached, validated after launch, then polled hourly instead of being waited on continuously.
+description: Work through up to N highest-priority unblocked beads within one phase (default phase1 search; pass phase2 to take inprocessing / rewriting kissat features), one bead at a time. Claims, implements, validates, closes or releases every claimed bead, commits, pushes, and reports. Benchmarks are launched detached, validated after launch, then polled hourly instead of being waited on continuously.
 ---
 
 # /nextbeads - Phase-Scoped Bead Work
 
 ## Purpose
 
-Work through up to `N` ready beads in one phase, defaulting to `phase1`, without
-crossing phases. Use this skill when the user asks for `/nextbeads` or asks an
-agent to take ready Beads work in priority order.
+Work through up to `N` ready beads in one phase, defaulting to `phase1`
+(search, decision, restart, and learned-clause work), without crossing phases.
+Pass `phase2` to work the inprocessing / rewriting kissat features instead:
+clause simplification, rewriting, and formula modification (for example the
+inprocessing scheduler, vivification, probing, equivalent-literal substitution,
+and gate-aware BVE). Use this skill when the user asks for `/nextbeads` or asks
+an agent to take ready Beads work in priority order.
 
 ## Non-Negotiables
 
 - One bead at a time. Do not interleave implementations.
-- Stay within the requested phase. Never pick up `phase2` because `phase1` ran
-  dry.
+- Stay within the requested phase. Never cross into another phase (e.g.
+  `phase1` <-> `phase2`) because the requested one ran dry.
 - Claim before implementation and release every claimed bead before exit.
 - Work in `/home/bojji/code/SAT-playground` on `main`, not in worktrees or
   routine feature branches.
@@ -33,7 +37,9 @@ agent to take ready Beads work in priority order.
 ```
 
 - `N`: maximum beads to complete. Default: `5`.
-- `phaseLabel`: phase label to scope to. Default: `phase1`.
+- `phaseLabel`: phase label to scope to. Default: `phase1` (search work); pass
+  `phase2` for inprocessing / rewriting kissat features (clause simplification,
+  rewriting, and formula modification).
 
 Examples:
 
@@ -50,8 +56,8 @@ Read these before selecting work. A compaction may have evicted project rules.
 3. `benchmarks/BENCHMARK_WORKFLOWS.md`
 4. `.agents/skills/beads/SKILL.md`
 5. Target solver README and feature/state files:
-   `solver/NN-name/README.md`, plus `FEATURES.md`, `FEATURES.csv`, or
-   `SOLVER11_STATE.md` when present.
+   `solver/NN-name/README.md`, plus `FEATURES.md`, `FEATURES.csv`, or a
+   `SOLVERNN_STATE.md` (e.g. `SOLVER12_STATE.md`) when present.
 6. Any `log/<investigation>/FINDINGS.md` or `DEEPER_FINDINGS.md` referenced by
    candidate beads.
 
