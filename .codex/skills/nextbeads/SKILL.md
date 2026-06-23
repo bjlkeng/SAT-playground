@@ -1,25 +1,27 @@
 ---
 name: nextbeads
-description: Work through up to N highest-priority unblocked beads within one phase (default phase1 search; pass phase2 to take inprocessing / rewriting kissat features), one bead at a time. Claims, implements, validates, closes or releases every claimed bead, commits, pushes, and reports. Benchmarks are launched detached, validated after launch, then polled hourly instead of being waited on continuously.
+description: Work through up to N highest-priority unblocked beads drawn from phase1 or phase2 (search work plus inprocessing / rewriting kissat features; pass a single phase label to narrow), one bead at a time. Claims, implements, validates, closes or releases every claimed bead, commits, pushes, and reports. Benchmarks are launched detached, validated after launch, then polled hourly instead of being waited on continuously.
 ---
 
 # /nextbeads - Phase-Scoped Bead Work
 
 ## Purpose
 
-Work through up to `N` ready beads in one phase, defaulting to `phase1`
-(search, decision, restart, and learned-clause work), without crossing phases.
-Pass `phase2` to work the inprocessing / rewriting kissat features instead:
-clause simplification, rewriting, and formula modification (for example the
+Work through up to `N` ready beads drawn from `phase1` or `phase2`, ranked
+together by priority. `phase1` is search, decision, restart, and learned-clause
+work; `phase2` is the inprocessing / rewriting kissat features: clause
+simplification, rewriting, and formula modification (for example the
 inprocessing scheduler, vivification, probing, equivalent-literal substitution,
-and gate-aware BVE). Use this skill when the user asks for `/nextbeads` or asks
-an agent to take ready Beads work in priority order.
+and gate-aware BVE). Pass a single phase label to narrow to just that phase. Use
+this skill when the user asks for `/nextbeads` or asks an agent to take ready
+Beads work in priority order.
 
 ## Non-Negotiables
 
 - One bead at a time. Do not interleave implementations.
-- Stay within the requested phase. Never cross into another phase (e.g.
-  `phase1` <-> `phase2`) because the requested one ran dry.
+- Pick only from `phase1` and `phase2` (or the single phase requested). Do not
+  pull beads from other epics / work-areas (e.g. governance, hot-path) unless the
+  user explicitly asks.
 - Claim before implementation and release every claimed bead before exit.
 - Work in `/home/bojji/code/SAT-playground` on `main`, not in worktrees or
   routine feature branches.
@@ -37,15 +39,17 @@ an agent to take ready Beads work in priority order.
 ```
 
 - `N`: maximum beads to complete. Default: `5`.
-- `phaseLabel`: phase label to scope to. Default: `phase1` (search work); pass
-  `phase2` for inprocessing / rewriting kissat features (clause simplification,
-  rewriting, and formula modification).
+- `phaseLabel`: optional single phase to narrow to (`phase1` or `phase2`).
+  Default: both — pick from `phase1` (search) and `phase2` (inprocessing /
+  rewriting kissat features: clause simplification, rewriting, formula
+  modification), ranked together.
 
 Examples:
 
-- `/nextbeads`
-- `/nextbeads 3`
-- `/nextbeads 5 phase2`
+- `/nextbeads`           # up to 5 from phase1 or phase2
+- `/nextbeads 3`         # up to 3 from phase1 or phase2
+- `/nextbeads 5 phase2`  # narrow to phase2 only
+- `/nextbeads 5 phase1`  # narrow to phase1 only
 
 ## Required Reading
 
@@ -151,12 +155,15 @@ PID/log/progress, and stop the current turn cleanly.
    ps aux | grep -E 'cargo|sat-solver|bench\.sh|feature_ablation|kissat|minisat' | grep -v grep
    ```
 
-2. Confirm phase scope:
+2. Confirm phase scope. By default that is both `phase1` and `phase2`; if a
+   single `phaseLabel` was given, use only that one:
    ```bash
-   bd list --label <phaseLabel> --status=open
-   bd list --label <phaseLabel> --status=in_progress
+   for ph in phase1 phase2; do   # or just the requested phaseLabel
+     bd list --label "$ph" --status=open
+     bd list --label "$ph" --status=in_progress
+   done
    ```
-   If no ready/open work exists for the requested phase, stop and say so.
+   If no ready/open work exists in scope, stop and say so.
 
 3. Use `bv` only for read-only graph analysis:
    ```bash
@@ -165,9 +172,10 @@ PID/log/progress, and stop the current turn cleanly.
    bv --robot-insights
    ```
 
-4. Build the work order from ready beads in the requested phase. Rank by
+4. Build the work order from ready beads across the in-scope phases (`phase1`
+   and `phase2`, or the single requested phase), ranked together. Rank by
    blockers/dependencies, priority, scope risk, implementation leverage, and
-   downstream unblock count. Drop cross-phase recommendations.
+   downstream unblock count. Drop recommendations outside the in-scope phases.
 
 5. Start the before benchmark for the whole run using the benchmark discipline
    above:
@@ -186,7 +194,7 @@ For each bead in the work order, up to `N`:
    ```bash
    bd show <id>
    ```
-   Verify the bead is still in phase and unblocked.
+   Verify the bead is still in scope (`phase1` / `phase2`) and unblocked.
 
 2. Claim and note:
    ```bash
@@ -289,7 +297,7 @@ When all required results exist, finish with:
 2. What changed: file/function granularity and any non-obvious decisions.
 3. Validation: cargo, smoke, and benchmark logs/results.
 4. Profile-bench before/after: aggregate PAR-2 verdict plus notable rows.
-5. Next logical beads: top three ready beads in the same phase and why.
+5. Next logical beads: top three ready beads in scope (`phase1` / `phase2`) and why.
 
 If a required benchmark is still running, do not give the final comparison.
 Instead give a monitoring report with PID/log/progress and the next poll time.
