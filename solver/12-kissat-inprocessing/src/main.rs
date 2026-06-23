@@ -525,6 +525,18 @@ enum EnqueueResult {
     Conflict,
 }
 
+/// Result of probing a single literal during root failed-literal probing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProbeOutcome {
+    /// Assuming the literal propagated without a root conflict.
+    Clean,
+    /// Assuming the literal hit a root conflict; the opposite literal is forced
+    /// (and has already been enqueued at root inside the probing context).
+    Forced(i32),
+    /// Probing derived complementary root units / an empty clause: UNSAT.
+    Unsat,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[allow(dead_code)]
 struct Budget {
@@ -610,6 +622,43 @@ impl<'a> TemporaryAssumptionCtx<'a> {
             self.solver.temporary_stats.conflicts += 1;
         }
         conflict
+    }
+
+    /// Probe a single literal at root for failed-literal probing.
+    ///
+    /// Assumes `lit` at a fresh decision level and unit-propagates under
+    /// `budget`. If propagation reaches a root conflict then `lit` is a failed
+    /// literal: `-lit` is implied by the formula (reverse-unit-propagation), so
+    /// we backtrack, enqueue `-lit` at root (cascading the simplification into
+    /// later probes in this pass), and report it as forced. A second conflict
+    /// while propagating the forced unit means the formula is UNSAT.
+    fn probe_one_polarity(&mut self, budget: &mut Budget, lit: i32) -> ProbeOutcome {
+        let base_level = self.solver.current_level();
+        match self.assume(lit) {
+            // `lit` is already assigned consistently: nothing to learn here.
+            EnqueueResult::AlreadyAssigned => return ProbeOutcome::Clean,
+            // `lit` is already falsified at root: `-lit` already holds.
+            EnqueueResult::Conflict => return ProbeOutcome::Clean,
+            EnqueueResult::Enqueued => {}
+        }
+        if self.propagate_budgeted(budget).is_some() {
+            // Failed literal: `lit` -> conflict, so `-lit` is forced.
+            let forced = -lit;
+            self.solver.backtrack(base_level);
+            match self.enqueue_root(forced) {
+                EnqueueResult::Conflict => ProbeOutcome::Unsat,
+                EnqueueResult::AlreadyAssigned | EnqueueResult::Enqueued => {
+                    if self.propagate_budgeted(budget).is_some() {
+                        ProbeOutcome::Unsat
+                    } else {
+                        ProbeOutcome::Forced(forced)
+                    }
+                }
+            }
+        } else {
+            self.solver.backtrack(base_level);
+            ProbeOutcome::Clean
+        }
     }
 }
 
@@ -3956,6 +4005,124 @@ impl Solver {
     fn lucky_pattern_succeeds(&mut self, pattern: LuckyPattern) -> bool {
         let mut proof_log = ProofLog::disabled();
         self.lucky_pattern_succeeds_with_proof(pattern, &mut proof_log)
+    }
+
+    /// Root-level failed-literal probing (a.k.a. backbone harvesting).
+    ///
+    /// For each unassigned root decision variable, tentatively assume each
+    /// polarity and unit-propagate. If an assumption propagates to a root
+    /// conflict the opposite literal is forced (the variable is in the formula
+    /// backbone). Forced units shrink the formula for every downstream technique
+    /// and for search, which is the dominant lever on the structured UNSAT
+    /// headroom (circuits, miters, tseitin) in the profile20 hard half.
+    ///
+    /// The whole pass runs inside a single `with_temporary_assumptions` context
+    /// so the expensive arena/watcher clone is paid once (like the lucky path),
+    /// not once per probe. Forced units are cascaded in-context (so later probes
+    /// see earlier simplifications) and then re-applied permanently after the
+    /// context unwinds via `learn_lucky_failed_literal_units`, which writes each
+    /// forced unit to the DRAT proof as a RUP addition exactly like the
+    /// proof-validated lucky path.
+    ///
+    /// Returns `false` only when probing proves the formula UNSAT.
+    fn probe_root_failed_literals(
+        &mut self,
+        proof_log: &mut ProofLog,
+        config: &SolverConfig,
+    ) -> bool {
+        // Proportional default budget (in propagation steps), bounded so probing
+        // never dominates the run; `SAT_PROBE_TICKS` overrides it.
+        const PROBE_BUDGET_LITS_MULTIPLIER: u64 = 20;
+        const PROBE_BUDGET_MIN_TICKS: u64 = 5_000_000;
+        const PROBE_BUDGET_MAX_TICKS: u64 = 100_000_000;
+
+        if self.current_level() != 0 || self.has_empty_clause || !self.solver_ok {
+            return true;
+        }
+
+        let budget_ticks = if config.probe_ticks_budget > 0 {
+            config.probe_ticks_budget
+        } else {
+            (self.original_literals as u64)
+                .saturating_mul(PROBE_BUDGET_LITS_MULTIPLIER)
+                .clamp(PROBE_BUDGET_MIN_TICKS, PROBE_BUDGET_MAX_TICKS)
+        };
+
+        let var_count = self.assignment.len();
+        let mut forced_units: Vec<i32> = Vec::new();
+        let mut proved_unsat = false;
+        let mut probes = 0u64;
+
+        self.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
+            let mut budget = Budget::from_ticks(budget_ticks);
+            for var in 1..var_count {
+                if budget.exhausted() {
+                    break;
+                }
+                if !ctx.solver.unassigned_decision_candidate(var) {
+                    continue;
+                }
+                // The variable may have been forced by an earlier probe this pass.
+                if ctx.solver.assignment[var] != UNASSIGNED {
+                    continue;
+                }
+                probes += 1;
+                match ctx.probe_one_polarity(&mut budget, var as i32) {
+                    ProbeOutcome::Unsat => {
+                        proved_unsat = true;
+                        return;
+                    }
+                    ProbeOutcome::Forced(unit) => {
+                        forced_units.push(unit);
+                        // Positive polarity forced the negative; the variable is
+                        // assigned now, so skip the second probe.
+                        continue;
+                    }
+                    ProbeOutcome::Clean => {}
+                }
+                if budget.exhausted() {
+                    break;
+                }
+                probes += 1;
+                match ctx.probe_one_polarity(&mut budget, -(var as i32)) {
+                    ProbeOutcome::Unsat => {
+                        proved_unsat = true;
+                        return;
+                    }
+                    ProbeOutcome::Forced(unit) => forced_units.push(unit),
+                    ProbeOutcome::Clean => {}
+                }
+            }
+        });
+
+        if proved_unsat {
+            self.has_empty_clause = true;
+            return false;
+        }
+
+        if config.trace_preprocess {
+            eprintln!(
+                "c probe failed_literals={} probes={} budget_ticks={}",
+                forced_units.len(),
+                probes,
+                budget_ticks,
+            );
+        }
+
+        if forced_units.is_empty() {
+            return true;
+        }
+
+        // Re-apply the forced units to the real (restored) solver, recording each
+        // as a RUP unit in the DRAT proof, then propagate them at root.
+        if !self.learn_lucky_failed_literal_units(&forced_units, proof_log) {
+            return false;
+        }
+        if self.propagate().is_some() {
+            self.has_empty_clause = true;
+            return false;
+        }
+        true
     }
 
     fn clause_satisfied_by_trial(&self, clause_idx: ClauseRef, trial: &[u8]) -> bool {
@@ -7841,6 +8008,9 @@ impl Solver {
                 return SolveOutcome::unknown(limit.reason);
             }
         }
+        if config.probe && !self.probe_root_failed_literals(proof_log, config) {
+            return SolveOutcome::unsat();
+        }
         self.reset_learned_budget_after_preprocess();
         self.formula_class = self.classify_formula();
         if config.trace_preprocess {
@@ -8702,6 +8872,82 @@ mod tests {
             chrono_backtrack: true,
             chrono_max_delta: max_delta,
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn probe_root_failed_literals_forces_backbone_unit() {
+        // (~1 v 2) and (~1 v ~2): assuming x1=true propagates both 2 and ~2,
+        // a root conflict, so x1 is a failed literal and ~1 is forced. Plain
+        // root unit propagation finds nothing here; only probing does.
+        let mut s = make_solver(2, vec![vec![-1, 2], vec![-1, -2]]);
+        let config = SolverConfig::default();
+        let mut proof = ProofLog::disabled();
+
+        assert_eq!(s.assignment[1], UNASSIGNED);
+        assert!(
+            s.probe_root_failed_literals(&mut proof, &config),
+            "probing this satisfiable formula must not report UNSAT"
+        );
+        assert_eq!(
+            s.assignment[1], FALSE,
+            "failed-literal probing should force x1=false"
+        );
+        assert!(!s.has_empty_clause);
+    }
+
+    #[test]
+    fn probe_root_failed_literals_detects_unsat() {
+        // x1=true fails via (~1 v 2)/(~1 v ~2) forcing ~1; propagating ~1 then
+        // fails via (1 v 3)/(1 v ~3). Both polarities of x1 are impossible, so
+        // probing alone proves UNSAT.
+        let mut s = make_solver(3, vec![vec![-1, 2], vec![-1, -2], vec![1, 3], vec![1, -3]]);
+        let config = SolverConfig::default();
+        let mut proof = ProofLog::disabled();
+
+        assert!(
+            !s.probe_root_failed_literals(&mut proof, &config),
+            "probing must report UNSAT for a probe-refutable formula"
+        );
+        assert!(s.has_empty_clause);
+    }
+
+    #[test]
+    fn probe_root_failed_literals_is_noop_without_failed_literals() {
+        // No assumption propagates to a conflict, so nothing is forced.
+        let mut s = make_solver(3, vec![vec![1, 2, 3], vec![-1, -2]]);
+        let config = SolverConfig::default();
+        let mut proof = ProofLog::disabled();
+
+        let assignment_before = s.assignment.clone();
+        assert!(s.probe_root_failed_literals(&mut proof, &config));
+        assert_eq!(
+            s.assignment, assignment_before,
+            "probing must not assign anything when there are no failed literals"
+        );
+        assert!(!s.has_empty_clause);
+    }
+
+    #[test]
+    fn probe_enabled_solver_keeps_sat_correctness() {
+        // End-to-end: a satisfiable formula with a backbone literal still solves
+        // SAT with a valid model when SAT_PROBE is enabled.
+        let config = SolverConfig {
+            probe: true,
+            ..Default::default()
+        };
+        let clauses = vec![vec![-1, 2], vec![-1, -2], vec![2, 3], vec![1, 3, -4]];
+        let mut s = make_solver_with_config(4, clauses.clone(), &config);
+        let mut proof = ProofLog::disabled();
+        assert!(
+            s.solve_with_proof(&mut proof, &config),
+            "formula is satisfiable"
+        );
+        for clause in &clauses {
+            assert!(
+                clause.iter().any(|&lit| s.lit_value(lit) == TRUE),
+                "every original clause must be satisfied by the model"
+            );
         }
     }
 

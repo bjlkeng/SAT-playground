@@ -1492,7 +1492,6 @@ impl SolverConfig {
         let unsupported = [
             (self.inprocess, "SAT_INPROCESS"),
             (self.vivify, "SAT_VIVIFY"),
-            (self.probe, "SAT_PROBE"),
             (self.hbr, "SAT_HBR"),
             (self.transitive, "SAT_TRANSITIVE"),
             (self.forward_subsume, "SAT_FORWARD_SUBSUME"),
