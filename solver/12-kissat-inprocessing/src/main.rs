@@ -3363,6 +3363,207 @@ impl Solver {
         self.stats.deleted_clauses += 1;
     }
 
+    // ===================================================================
+    // Formula-edit transaction layer (bead 5b2.3.4) + watch-rebuild policy
+    // (bead 5b2.3.3).
+    //
+    // The single auditable path for inprocessing techniques (vivification,
+    // probing, ELS, gate-aware BVE, ...) to mutate the clause database at
+    // decision level 0. Every edit routes through the DRAT proof and the watch
+    // lists, and keeps the live literal/clause counters consistent.
+    //
+    // NONE of this is reached by the default profile: it is consumed only by the
+    // SAT_INPROCESS round (currently empty) and by unit tests. Preconditions for
+    // every method: decision level 0, binary_fast_path off (the default), and the
+    // caller has established that any added/strengthened clause is RUP-implied by
+    // the current formula (so the `record_clause` line is a valid DRAT addition).
+    //
+    // Proof discipline mirrors the proven `trim_root_false_literals_with_proof` /
+    // `simplify_clause_list` paths: additions are recorded with `record_clause`;
+    // clause *removals* are physical-only (no `d` line), which is valid DRAT
+    // because a strengthened/redundant clause that is dropped only ever shrinks
+    // the live set while the original stays available to the checker. Explicit
+    // deletion lines (proof-size efficiency, bead 5b2.3.2 full scope) are a
+    // follow-up once a technique exercises and drat-trim-validates them.
+    // ===================================================================
+
+    /// Detach a clause's watches before its literals are rewritten in place.
+    /// Pairs with [`reattach_clause_after_rewrite`]. (Watch-rebuild policy.)
+    #[allow(dead_code)]
+    fn detach_clause_for_rewrite(&mut self, clause_idx: usize) {
+        self.detach_clause_strict(clause_idx);
+    }
+
+    /// Reattach a clause's watches after its literals/size were rewritten.
+    #[allow(dead_code)]
+    fn reattach_clause_after_rewrite(&mut self, clause_idx: usize) {
+        self.attach_clause(clause_idx, false);
+    }
+
+    /// Rebuild every watch list from the live clause set after a bulk inprocessing
+    /// pass. O(live clauses); decision level 0; binary fast path must be off.
+    #[allow(dead_code)]
+    fn rebuild_watchers_after_inprocess(&mut self) {
+        debug_assert_eq!(self.current_level(), 0);
+        debug_assert!(
+            !self.binary_fast_path,
+            "binary fast path maintains a separate binary index; not supported here"
+        );
+        for list in &mut self.watchers {
+            list.clear();
+        }
+        let originals = std::mem::take(&mut self.original_clause_ids);
+        for &clause_idx in &originals {
+            if !self.clause_is_deleted(clause_idx) {
+                self.attach_clause(clause_idx, false);
+            }
+        }
+        self.original_clause_ids = originals;
+        let learned = std::mem::take(&mut self.learned_clause_ids);
+        for &clause_idx in &learned {
+            if !self.clause_is_deleted(clause_idx) {
+                self.attach_clause(clause_idx, false);
+            }
+        }
+        self.learned_clause_ids = learned;
+    }
+
+    /// Debug/test invariant check: every live clause of length >= 2 is watched on
+    /// exactly its first two literals, and no watch entry points at a deleted
+    /// clause. Only compiled in test/debug builds.
+    #[cfg(any(test, debug_assertions))]
+    #[allow(dead_code)]
+    fn validate_watch_invariants(&self) {
+        if self.binary_fast_path {
+            return;
+        }
+        for &clause_idx in self
+            .original_clause_ids
+            .iter()
+            .chain(self.learned_clause_ids.iter())
+        {
+            if self.clause_is_deleted(clause_idx) {
+                continue;
+            }
+            let len = self.clause_len(clause_idx);
+            if len < 2 {
+                continue;
+            }
+            for pos in 0..2 {
+                let lit = self.clause_lit(clause_idx, pos);
+                let watched = self.watchers[self.lit_index(lit)]
+                    .iter()
+                    .any(|w| w.clause_idx as usize == clause_idx);
+                debug_assert!(
+                    watched,
+                    "clause {clause_idx} not watched on its literal at position {pos}"
+                );
+            }
+        }
+        for list in &self.watchers {
+            for w in list {
+                debug_assert!(
+                    !self.clause_is_deleted(w.clause_idx as usize),
+                    "watch list references deleted clause {}",
+                    w.clause_idx
+                );
+            }
+        }
+    }
+
+    /// Strengthen `clause_idx` in place to `new_lits` (a non-empty subset of its
+    /// current literals, length >= 2, RUP-implied). Records the proof addition,
+    /// rebuilds the clause's watches (any of its literals may have been a watched
+    /// one), and updates the live literal counters. Decision level 0.
+    #[allow(dead_code)]
+    fn inprocess_strengthen_clause(
+        &mut self,
+        clause_idx: usize,
+        new_lits: &[i32],
+        proof_log: &mut ProofLog,
+    ) {
+        debug_assert_eq!(self.current_level(), 0);
+        debug_assert!(!self.binary_fast_path);
+        debug_assert!(!self.clause_is_deleted(clause_idx));
+        let old_len = self.clause_len(clause_idx);
+        let write = new_lits.len();
+        debug_assert!(
+            (2..=old_len).contains(&write),
+            "inprocess_strengthen_clause expects 2..=old_len literals (got {write}, old {old_len})"
+        );
+        if write == old_len {
+            return;
+        }
+
+        // Record the (RUP) strengthened clause before mutating, then detach the
+        // old watches (which may sit on literals we are about to drop).
+        proof_log.record_clause(new_lits);
+        self.detach_clause_for_rewrite(clause_idx);
+
+        // Preserve any trailing extra words (e.g. abstraction) at the new offset.
+        if self.clause_has_extra(clause_idx) {
+            let old_extra_idx = clause_idx + 1 + old_len;
+            let new_extra_idx = clause_idx + 1 + write;
+            let extra_words = clause_header_extra_words(self.clause_header(clause_idx));
+            for offset in 0..extra_words {
+                self.arena[new_extra_idx + offset] = self.arena[old_extra_idx + offset];
+            }
+        }
+
+        for (pos, &lit) in new_lits.iter().enumerate() {
+            self.set_clause_lit(clause_idx, pos, lit);
+        }
+        let header = self.clause_header(clause_idx);
+        self.arena[clause_idx] = clause_make_header(
+            write,
+            clause_header_learnt(header),
+            clause_header_has_extra(header),
+            clause_header_mark(header),
+            clause_header_reloced(header),
+        );
+
+        let removed = old_len - write;
+        if self.clause_is_learnt(clause_idx) {
+            self.learned_literals -= removed;
+        } else {
+            self.original_literals -= removed;
+        }
+        self.deleted_clause_words += removed;
+        self.reattach_clause_after_rewrite(clause_idx);
+    }
+
+    /// Delete a clause that is redundant (RUP-implied by the rest of the formula)
+    /// during inprocessing. Physical removal only; valid DRAT (see module note).
+    #[allow(dead_code)]
+    fn inprocess_delete_clause(&mut self, clause_idx: usize) {
+        debug_assert_eq!(self.current_level(), 0);
+        if self.clause_is_deleted(clause_idx) {
+            return;
+        }
+        self.detach_clause_for_rewrite(clause_idx);
+        self.delete_clause_for_simplify(clause_idx);
+    }
+
+    /// Add a derived clause (RUP-implied, length >= 2) during inprocessing, e.g. a
+    /// hyper-binary resolvent. Records the proof addition, stores it as a redundant
+    /// learned clause, and attaches its watches. Returns the new clause index.
+    #[allow(dead_code)]
+    fn inprocess_add_clause(&mut self, lits: &[i32], proof_log: &mut ProofLog) -> usize {
+        debug_assert_eq!(self.current_level(), 0);
+        debug_assert!(lits.len() >= 2, "use inprocess_add_root_units for units");
+        proof_log.record_clause(lits);
+        self.add_clause_from_slice(lits)
+    }
+
+    /// Add and enqueue forced root units derived during inprocessing (failed
+    /// literals / backbone). Delegates to the proof-validated lucky-path helper.
+    /// Returns false if a unit conflicts with the trail (=> UNSAT).
+    #[allow(dead_code)]
+    fn inprocess_add_root_units(&mut self, units: &[i32], proof_log: &mut ProofLog) -> bool {
+        debug_assert_eq!(self.current_level(), 0);
+        self.learn_lucky_failed_literal_units(units, proof_log)
+    }
+
     fn simplify_clause_list(
         &mut self,
         clause_ids: Vec<usize>,
@@ -9140,6 +9341,102 @@ mod tests {
             s_on.inprocess_rounds > 0,
             "the scheduler hook must actually fire during this solve"
         );
+    }
+
+    fn watches_clause(s: &Solver, lit: i32, clause_idx: usize) -> bool {
+        s.watchers[s.lit_index(lit)]
+            .iter()
+            .any(|w| w.clause_idx as usize == clause_idx)
+    }
+
+    #[test]
+    fn inprocess_strengthen_clause_rewrites_watches_len_and_counts() {
+        // [1,2,3,4] strengthened to [4,3]: drops the originally-watched literals
+        // 1,2, so the watches must move to the new positions 0,1 (= 4,3).
+        let mut s = make_solver(4, vec![vec![1, 2, 3, 4]]);
+        let cidx = s.original_clause_ids[0];
+        let lits_before = s.original_literals;
+        assert_eq!(s.clause_len(cidx), 4);
+        assert!(watches_clause(&s, 1, cidx) && watches_clause(&s, 2, cidx));
+
+        let mut proof = ProofLog::disabled();
+        s.inprocess_strengthen_clause(cidx, &[4, 3], &mut proof);
+
+        assert_eq!(s.clause_len(cidx), 2);
+        assert_eq!(s.clause_lit(cidx, 0), 4);
+        assert_eq!(s.clause_lit(cidx, 1), 3);
+        assert_eq!(s.original_literals, lits_before - 2);
+        assert!(watches_clause(&s, 4, cidx) && watches_clause(&s, 3, cidx));
+        assert!(!watches_clause(&s, 1, cidx) && !watches_clause(&s, 2, cidx));
+        s.validate_watch_invariants();
+    }
+
+    #[test]
+    fn inprocess_strengthened_clause_propagates_correctly() {
+        // Strengthen [1,2,3] -> [2,3]; with -2 and -3 forced, the clause must
+        // drive a root conflict (UNSAT), proving the rewritten clause propagates.
+        let mut s = make_solver(3, vec![vec![1, 2, 3], vec![-2], vec![-3]]);
+        let cidx = s.original_clause_ids[0];
+        let mut proof = ProofLog::disabled();
+        s.inprocess_strengthen_clause(cidx, &[2, 3], &mut proof);
+        s.validate_watch_invariants();
+        assert!(!s.solve(), "[2,3] with units -2,-3 is UNSAT");
+    }
+
+    #[test]
+    fn inprocess_delete_clause_removes_and_keeps_invariants() {
+        let mut s = make_solver(3, vec![vec![1, 2, 3], vec![-1, 2]]);
+        let c0 = s.original_clause_ids[0];
+        assert!(watches_clause(&s, 1, c0));
+        s.inprocess_delete_clause(c0);
+        assert!(s.clause_is_deleted(c0));
+        assert!(!watches_clause(&s, 1, c0));
+        s.validate_watch_invariants();
+    }
+
+    #[test]
+    fn inprocess_add_clause_attaches_watches() {
+        let mut s = make_solver(3, vec![vec![1, 2, 3]]);
+        let mut proof = ProofLog::disabled();
+        let new = s.inprocess_add_clause(&[-1, -2], &mut proof);
+        assert_eq!(s.clause_len(new), 2);
+        assert!(watches_clause(&s, -1, new) && watches_clause(&s, -2, new));
+        s.validate_watch_invariants();
+    }
+
+    #[test]
+    fn inprocess_add_root_units_enqueues_unit() {
+        let mut s = make_solver(3, vec![vec![1, 2, 3]]);
+        let mut proof = ProofLog::disabled();
+        assert!(s.inprocess_add_root_units(&[1], &mut proof));
+        assert_eq!(s.assignment[1], TRUE);
+    }
+
+    #[test]
+    fn rebuild_watchers_after_inprocess_restores_invariants_and_solves() {
+        let mut s = make_solver(4, vec![vec![1, 2, 3, 4], vec![-1, 2], vec![3, -4]]);
+        s.rebuild_watchers_after_inprocess();
+        s.validate_watch_invariants();
+        assert!(s.solve());
+    }
+
+    #[test]
+    fn inprocess_strengthen_preserves_original_satisfiability() {
+        // A model of the strengthened (subset) clause set still satisfies every
+        // original clause, since each strengthened clause implies its original.
+        let original = vec![vec![1, 2, 3], vec![-1, 4], vec![2, 3, -4]];
+        let mut s = make_solver(4, original.clone());
+        let c2 = s.original_clause_ids[2];
+        let mut proof = ProofLog::disabled();
+        s.inprocess_strengthen_clause(c2, &[2, 3], &mut proof);
+        s.validate_watch_invariants();
+        assert!(s.solve(), "strengthened formula is still satisfiable");
+        for clause in &original {
+            assert!(
+                clause.iter().any(|&lit| s.lit_value(lit) == TRUE),
+                "model must satisfy original clause {clause:?}"
+            );
+        }
     }
 
     #[test]

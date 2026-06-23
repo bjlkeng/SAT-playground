@@ -358,3 +358,7 @@
 {"id":"int-0fccfa51","kind":"field_change","created_at":"2026-06-23T08:05:49.112923697Z","actor":"Brian Keng","issue_id":"SAT-playground-5b2.3.49","extra":{"field":"assignee","new_value":"","old_value":"Brian Keng"}}
 {"id":"int-f3e7cc98","kind":"field_change","created_at":"2026-06-23T12:53:51.527408173Z","actor":"Brian Keng","issue_id":"SAT-playground-5b2.3.1","extra":{"field":"assignee","new_value":"","old_value":"Brian Keng"}}
 {"id":"int-44561310","kind":"field_change","created_at":"2026-06-23T12:54:34.607800594Z","actor":"Brian Keng","issue_id":"SAT-playground-5b2.3.1","extra":{"field":"status","new_value":"open","old_value":"in_progress"}}
+{"id":"int-5dcfa06a","kind":"field_change","created_at":"2026-06-23T13:18:27.132810108Z","actor":"Brian Keng","issue_id":"SAT-playground-5b2.3.3","extra":{"field":"status","new_value":"open","old_value":"in_progress"}}
+{"id":"int-d4947f4d","kind":"field_change","created_at":"2026-06-23T13:18:27.13296016Z","actor":"Brian Keng","issue_id":"SAT-playground-5b2.3.3","extra":{"field":"assignee","new_value":"","old_value":"Brian Keng"}}
+{"id":"int-d57359d8","kind":"field_change","created_at":"2026-06-23T13:18:53.084137815Z","actor":"Brian Keng","issue_id":"SAT-playground-5b2.3.4","extra":{"field":"status","new_value":"open","old_value":"in_progress"}}
+{"id":"int-62134a65","kind":"field_change","created_at":"2026-06-23T13:18:53.084314919Z","actor":"Brian Keng","issue_id":"SAT-playground-5b2.3.4","extra":{"field":"assignee","new_value":"","old_value":"Brian Keng"}}
