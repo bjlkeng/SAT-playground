@@ -32,6 +32,7 @@ COLORS = {
     "08-clause-db-management": "#23657a",
     "09-root-simp-opts": "#5b6f1f",
     "10-bve-subsume": "#9a5b20",
+    "11-kissat-search": "#7a2f9e",
     "minisat": "#ecab4e",
     "minisat-core": "#8f7a27",
     "kissat-latest": "#8d3613",
@@ -120,6 +121,17 @@ SOLVERS = [
         family="repo",
         source_url=f"{GITHUB_TREE_BASE}/solver/10-bve-subsume",
         info_url="./solvers/10-bve-subsume.html",
+        # Renamed from 10-bve-preprocess; its medium run dir keeps the old name.
+        log_aliases=("10-bve-preprocess",),
+    ),
+    SolverSpec(
+        slug="11-kissat-search",
+        label="11 kissat-search",
+        family="repo",
+        source_url=f"{GITHUB_TREE_BASE}/solver/11-kissat-search",
+        info_url="./solvers/11-kissat-search.html",
+        # Medium run was logged under bench-11-medium-<stamp>.
+        log_aliases=("11-medium",),
     ),
     SolverSpec(
         slug="minisat",

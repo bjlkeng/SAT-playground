@@ -26,6 +26,10 @@ log/*
 log/bench-10-bve-preprocess-2026-05-18-16-04-01/*
 !log/bench-10-bve-preprocess-2026-05-18-16-04-01/results.csv
 !log/bench-10-bve-preprocess-2026-05-18-16-04-01/summary.log
+!log/bench-11-medium-2026-06-21-15-08-05/
+log/bench-11-medium-2026-06-21-15-08-05/*
+!log/bench-11-medium-2026-06-21-15-08-05/results.csv
+!log/bench-11-medium-2026-06-21-15-08-05/summary.log
 !log/profiles/
 log/profiles/*
 !log/profiles/README.md

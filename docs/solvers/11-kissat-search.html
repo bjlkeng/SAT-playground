@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>11 kissat-search · SAT Playground</title>
+    <link rel="stylesheet" href="../solver-pages.css" />
+    <style>
+      .solver-demo{margin-top:18px;padding:22px;border:1px solid var(--line);border-radius:22px;background:linear-gradient(180deg,rgba(249,251,255,.98),rgba(255,255,255,.95))}
+      .solver-demo-header h3{margin:0 0 6px;font-size:1.08rem}
+      .solver-demo-header p,.solver-demo-caption p,.solver-demo-panel p{margin:0;color:var(--muted)}
+      .solver-demo-step,.solver-demo-button{border-radius:999px;border:1px solid var(--line);background:#fff;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.78rem}
+      .solver-demo-step{padding:8px 11px;color:var(--accent);background:var(--accent-soft);white-space:nowrap}
+      .solver-demo-controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:16px}
+      .solver-demo-button-group{display:flex;gap:8px;align-items:center}
+      .solver-demo-button{position:relative;display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;color:var(--ink);cursor:pointer}
+      .solver-demo-button:hover{border-color:rgba(15,122,216,.32)}
+      .solver-demo-button:disabled{opacity:.45;cursor:not-allowed}
+      .solver-demo-button::before,.solver-demo-button::after{content:"";display:block;box-sizing:border-box}
+      .solver-demo-button[data-demo-action="back"]::before{width:9px;height:9px;border-left:2px solid currentColor;border-bottom:2px solid currentColor;transform:translateX(2px) rotate(45deg)}
+      .solver-demo-button[data-demo-action="next"]::before{width:9px;height:9px;border-right:2px solid currentColor;border-top:2px solid currentColor;transform:translateX(-2px) rotate(45deg)}
+      .solver-demo-button[data-demo-action="play"]::before{width:0;height:0;margin-left:2px;border-top:6px solid transparent;border-bottom:6px solid transparent;border-left:10px solid currentColor}
+      .solver-demo-button[data-demo-action="play"].is-playing::before{width:12px;height:13px;margin-left:0;border:0;border-left:4px solid currentColor;border-right:4px solid currentColor}
+      .solver-demo-button[data-demo-action="reset"]::before{width:15px;height:15px;border:2px solid currentColor;border-right-color:transparent;border-radius:999px;transform:rotate(-35deg)}
+      .solver-demo-button[data-demo-action="reset"]::after{position:absolute;right:8px;top:9px;width:0;height:0;border-left:5px solid currentColor;border-top:3px solid transparent;border-bottom:3px solid transparent;transform:rotate(20deg)}
+      .solver-demo-caption{margin-top:14px;padding:14px 16px;border-radius:18px;border:1px solid rgba(15,122,216,.14);background:rgba(255,255,255,.88)}
+      .solver-demo-caption strong{display:block;margin-bottom:4px}
+      .solver-demo-legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.74rem;color:var(--muted)}
+      .solver-demo-legend span{display:inline-flex;align-items:center;gap:6px;padding:5px 8px;border:1px solid var(--line);border-radius:999px;background:#fff}
+      .solver-demo-legend i{width:18px;height:18px;border-radius:999px;border:1px solid rgba(22,32,43,.14);display:inline-flex;align-items:center;justify-content:center;font-style:normal;font-weight:700;font-size:.62rem;color:var(--ink);line-height:1}
+      .solver-demo-legend .good i{background:var(--diff-add);border-color:rgba(17,102,59,.25)}
+      .solver-demo-legend .bad i{background:var(--diff-del);border-color:rgba(176,68,68,.25)}
+      .solver-demo-legend .warn i{background:#fff4c2;border-color:rgba(185,140,15,.3)}
+      .solver-demo-legend .active i{background:var(--accent-soft);border-color:rgba(15,122,216,.3)}
+      .solver-demo-grid{display:grid;gap:16px;margin-top:16px}
+      .solver-demo-panel{min-height:260px;padding:16px;border-radius:18px;border:1px solid var(--line);background:rgba(255,255,255,.9)}
+      .solver-demo-panel h4{margin:0 0 10px;font-size:.98rem}
+      .solver-demo-chip-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+      .solver-demo-chip{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;min-height:32px;border-radius:999px;border:1px solid var(--line);background:#fff;font-family:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;font-size:.76rem}
+      .solver-demo-chip.good{color:var(--diff-add-ink);background:var(--diff-add);border-color:rgba(17,102,59,.22)}
+      .solver-demo-chip.bad{color:var(--diff-del-ink);background:var(--diff-del);border-color:rgba(176,68,68,.22);text-decoration:line-through}
+      .solver-demo-chip.warn{color:#7a5600;background:#fff4c2;border-color:rgba(185,140,15,.28)}
+      .solver-demo-chip.active{color:var(--accent);background:var(--accent-soft);border-color:rgba(15,122,216,.28)}
+      .solver-demo-var sub{font-size:.68em;line-height:0}.solver-demo-neg-name{text-decoration-line:overline;text-decoration-thickness:1.5px}
+      .solver-demo-card{margin-top:10px;padding:12px;border-radius:16px;border:1px solid var(--line);background:#f9fbff}
+      .solver-demo-card strong{display:block;margin-bottom:6px}
+      @media (min-width:820px){.solver-demo-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
+      @media (max-width:620px){.solver-demo{padding:18px}.solver-demo-controls{gap:8px}.solver-demo-button{width:34px;height:34px}.solver-demo-step{font-size:.72rem}}
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="panel">
+        <p class="eyebrow">SAT Playground · Solver 11</p>
+        <h1>11 kissat-search</h1>
+        <p class="lead">
+          This iteration keeps solver <code>10</code>'s MiniSat <code>SimpSolver</code>-style
+          preprocessing baseline and ports a
+          <a href="https://github.com/arminbiere/kissat" target="_blank" rel="noreferrer">Kissat</a>-style
+          search engine on top of it: a focused/stable dual-mode scheduler, a VMTF decision queue,
+          LBD (glue) clause scoring with tiered reduction, and a suite of optional inprocessing-era
+          refinements, all driven by an explicit configuration and profile system.
+        </p>
+        <div class="actions">
+          <a class="button" href="../index.html">Back To Main Page</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/tree/main/solver/11-kissat-search" target="_blank" rel="noreferrer">Solver Source</a>
+          <a class="button" href="https://github.com/bjlkeng/SAT-playground/blob/main/solver/11-kissat-search/README.md" target="_blank" rel="noreferrer">Optimization Notes</a>
+        </div>
+        <div class="pill-row">
+          <span class="pill">Focused / stable modes</span>
+          <span class="pill">VMTF decision queue</span>
+          <span class="pill">LBD-tiered reduction</span>
+          <span class="pill">Profile system</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>What It Implements</h2>
+        <ul>
+          <li>The full solver <code>10</code> baseline: parse-time clause normalization, backward subsumption, bounded variable elimination, model extension, and the optimized <code>09</code> CDCL core and proof streaming.</li>
+          <li>A Kissat-style <strong>focused/stable dual-mode search</strong>: focused mode digs aggressively for conflicts with frequent restarts, while stable mode consolidates with quieter reluctant restarts. A tick-based scheduler switches modes at propagation-bounded boundaries.</li>
+          <li>A <strong>VMTF</strong> (variable-move-to-front) decision queue used in focused mode, alongside the EVSIDS/VSIDS activity heap used in stable mode.</li>
+          <li><strong>LBD (literal-block-distance) glue</strong> scoring for learned clauses, with an LBD-tiered <code>reduce</code> policy that keeps low-glue clauses and recycles high-glue ones.</li>
+          <li>Optional, default-off Kissat-era refinements behind explicit flags: a pre-search <code>lucky</code> pass, guarded chronological backtracking, restart trail reuse, rephasing, on-the-fly subsumption (OTFS), binary-clause fast paths, and software prefetch of the next watched clause.</li>
+          <li>An explicit <strong>configuration and profile system</strong> (<code>SolverConfig</code>, <code>CONFIG_SCHEMA.csv</code>, a feature-maturity ledger, config hashing, and JSON stats) so every benchmark records exactly which features were active.</li>
+          <li>Config-reserved slots for not-yet-landed inprocessing (vivification, probing, hyper-binary resolution, gate extraction) that are rejected at runtime until their implementation lands, so no benchmark records a no-op flag.</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>High-Level Pseudocode</h2>
+        <pre><code>run solver 10 preprocessing (subsumption + bounded variable elimination)
+
+optionally run a pre-search lucky assignment probe
+
+mode = focused
+while not solved:
+  propagate
+  if conflict:
+    analyze, compute LBD glue, learn clause, record proof step
+    backtrack (optionally one-level chronological)
+    bump activity (VMTF in focused, VSIDS in stable)
+  else if all variables assigned:
+    return SAT
+  else:
+    decide next literal (VMTF queue or activity heap by mode)
+
+  at scheduling boundaries (tick budget reached):
+    maybe restart (frequent in focused, reluctant in stable)
+    maybe reduce the clause DB by LBD tier
+    maybe rephase saved phases
+    maybe switch focused <-> stable
+
+if SAT:
+  extend the model through the elimination stack and print it
+if UNSAT:
+  finalize the combined preprocessing + search DRAT proof</code></pre>
+      </section>
+
+      <section class="panel">
+        <h2>Visual Walkthrough</h2>
+        <div class="solver-demo" id="search-demo">
+          <div class="solver-demo-header">
+            <div>
+              <h3>Focused / Stable Search Loop</h3>
+              <p>
+                This visualization follows the Kissat-style search overlay: take the preprocessed
+                formula, alternate between focused and stable modes, score learned clauses by LBD
+                glue, and reduce the clause database by tier.
+              </p>
+            </div>
+          </div>
+          <div class="solver-demo-legend" aria-label="Legend">
+            <span class="good"><i>1</i>kept / progress</span>
+            <span class="bad"><i>0</i>dropped / recycled</span>
+            <span class="warn"><i>U</i>pending / scheduled</span>
+            <span class="active"><i>F</i>focus</span>
+          </div>
+          <div class="solver-demo-grid">
+            <div class="solver-demo-panel">
+              <h4>Search State</h4>
+              <div data-demo-pane="left"></div>
+            </div>
+            <div class="solver-demo-panel">
+              <h4>Clause / Mode Effect</h4>
+              <div data-demo-pane="right"></div>
+            </div>
+          </div>
+          <div class="solver-demo-controls">
+            <div class="solver-demo-button-group" aria-label="Walkthrough controls">
+              <button class="solver-demo-button" type="button" data-demo-action="back" aria-label="Back" title="Back"></button>
+              <button class="solver-demo-button" type="button" data-demo-action="play" aria-label="Play" title="Play"></button>
+              <button class="solver-demo-button" type="button" data-demo-action="next" aria-label="Next step" title="Next step"></button>
+              <button class="solver-demo-button" type="button" data-demo-action="reset" aria-label="Reset" title="Reset"></button>
+            </div>
+            <div class="solver-demo-step" data-demo-step>Step 1 / 1</div>
+          </div>
+          <div class="solver-demo-caption">
+            <strong data-demo-title></strong>
+            <p data-demo-caption></p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Code-Level Optimization Diffs</h2>
+        <p class="small">
+          The README and feature ledger have the full flag-by-flag history. These are the changes
+          that best explain how <code>11</code> differs from <code>10</code>.
+        </p>
+        <div class="diff-grid">
+          <article class="diff-card">
+            <h3>Dual-Mode Scheduler</h3>
+            <p>
+              Solver <code>10</code> ran a single search mode. Solver <code>11</code> overlays a
+              Kissat-style focused/stable schedule, switching at tick-budget boundaries.
+            </p>
+            <pre><code><span class="diff-del">- one fixed restart + decision policy for all of search</span>
+<span class="diff-add">+ focused mode: VMTF + frequent restarts to find conflicts</span>
+<span class="diff-add">+ stable mode: VSIDS + reluctant restarts to consolidate</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>LBD Glue + Tiered Reduce</h3>
+            <p>
+              Learned clauses are scored by literal-block distance, and clause-database reduction
+              keeps low-glue clauses while recycling high-glue ones.
+            </p>
+            <pre><code><span class="diff-del">- reduce by clause activity only</span>
+<span class="diff-add">+ compute LBD glue on every learned clause</span>
+<span class="diff-add">+ keep low-LBD tiers, recycle high-LBD clauses</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Optional Search Refinements</h3>
+            <p>
+              A set of Kissat-era refinements ship behind explicit, default-off flags so each can be
+              measured independently before promotion.
+            </p>
+            <pre><code><span class="diff-del">- no lucky probe, rephasing, chrono, or OTFS</span>
+<span class="diff-add">+ flagged lucky / rephase / chrono / trail-reuse / OTFS</span>
+<span class="diff-add">+ software prefetch of the next watched clause</span></code></pre>
+          </article>
+
+          <article class="diff-card">
+            <h3>Config + Profile Governance</h3>
+            <p>
+              Every feature is a typed config field with a maturity record, so benchmark artifacts
+              capture exactly which flags were active and reject reserved no-op flags at runtime.
+            </p>
+            <pre><code><span class="diff-del">- env toggles with no provenance record</span>
+<span class="diff-add">+ SolverConfig + CONFIG_SCHEMA + config_hash in stats</span>
+<span class="diff-add">+ reserved inprocessing flags rejected until implemented</span></code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Benchmark Role</h2>
+        <p>
+          Solver <code>11</code> is the repo's first solver to layer a modern Kissat-class search
+          engine on top of MiniSat-style preprocessing. Its default profile (<code>fstab_lbdtier</code>)
+          runs focused/stable search with LBD-tiered reduction.
+        </p>
+        <p>
+          On the 100-instance SAT Competition 2025 medium site run, solver <code>11</code> solves
+          <code>53/100</code> (29 SAT + 24 UNSAT) with PAR-2 <code>183013.118</code>, improving on
+          solver <code>10</code>'s <code>47/100</code> and PAR-2 <code>204961.832</code>. Its
+          remaining non-solves are honest 16 GB resource limits on very large formulas — two
+          memory-aborts and two memory-preflight <code>UNKNOWN</code>s — plus search timeouts, so it
+          is best read as a stronger but still resource-bounded medium baseline. All of its UNSAT
+          DRAT proofs verify with drat-trim.
+        </p>
+      </section>
+    </main>
+    <script src="../vendor/d3.v7.min.js"></script>
+    <script>
+      (() => {
+        const root = document.getElementById("search-demo");
+        if (!root) return;
+        const chips = (items) => `<div class="solver-demo-chip-row">${items.map(([text,cls]) => `<span class="solver-demo-chip ${cls}">${text}</span>`).join("")}</div>`;
+        const steps = [
+          {
+            title: "Search starts on the preprocessed formula",
+            caption: "Solver 11 inherits solver 10's residual formula after subsumption and bounded variable elimination, then begins its dual-mode search.",
+            left: `<div class="solver-demo-card"><strong>Handoff from preprocessing</strong>${chips([["residual clauses","good"],["eliminated vars on stack","warn"],["mode = focused","active"]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>Optional lucky probe</strong>${chips([["all-true / all-false","warn"],["bounded local repair","warn"],["off by default","bad"]])}</div>`,
+          },
+          {
+            title: "Focused mode digs for conflicts",
+            caption: "Focused mode uses a VMTF decision queue and frequent restarts to drive into conflicts quickly and learn clauses.",
+            left: `<div class="solver-demo-card"><strong>Focused state</strong>${chips([["VMTF queue","active"],["frequent restarts","good"],["propagate -> conflict","warn"]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>Conflict analysis</strong>${chips([["learn clause","good"],["compute LBD glue","active"],["log proof step","good"]])}</div>`,
+          },
+          {
+            title: "Stable mode consolidates",
+            caption: "At a scheduling boundary the tick budget flips to stable mode: VSIDS activity branching with quieter reluctant restarts to exploit the learned structure.",
+            left: `<div class="solver-demo-card"><strong>Stable state</strong>${chips([["VSIDS heap","active"],["reluctant restarts","good"],["rephase saved phases","warn"]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>Mode switch</strong>${chips([["tick budget reached","warn"],["focused -> stable","active"],["keep trail where safe","good"]])}</div>`,
+          },
+          {
+            title: "LBD-tiered clause-DB reduction",
+            caption: "Learned clauses are scored by LBD glue; reduction keeps low-glue tiers and recycles high-glue clauses so the database stays compact.",
+            left: `<div class="solver-demo-card"><strong>Learned clauses</strong>${chips([["glue 2 (core)","good"],["glue 4 (mid)","warn"],["glue 9 (high)","bad"]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>Reduce by tier</strong>${chips([["keep low-LBD","good"],["recycle high-LBD","bad"],["DB stays compact","active"]])}</div>`,
+          },
+          {
+            title: "Configuration is recorded",
+            caption: "Every active feature is a typed config field with a maturity record, so the benchmark artifact captures exactly which flags ran.",
+            left: `<div class="solver-demo-card"><strong>Active profile</strong>${chips([["fstab_lbdtier","active"],["LBD on","good"],["tick mode-switch on","good"]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>Provenance</strong>${chips([["config_hash in stats","active"],["reserved flags rejected","bad"],["JSON stats emitted","good"]])}</div>`,
+          },
+          {
+            title: "Emit a verified result",
+            caption: "On SAT the model is extended through the elimination stack; on UNSAT the combined preprocessing and search DRAT proof is finalized and verifies with drat-trim.",
+            left: `<div class="solver-demo-card"><strong>SAT path</strong>${chips([["residual model","good"],["replay elimination stack","active"],["full model emitted","good"]])}</div>`,
+            right: `<div class="solver-demo-card"><strong>UNSAT path</strong>${chips([["empty clause derived","good"],["finalize DRAT proof","active"],["drat-trim verified","good"]])}</div>`,
+          },
+        ];
+        let current=0,timer=null;
+        const title=root.querySelector("[data-demo-title]"),caption=root.querySelector("[data-demo-caption]"),stepLabel=root.querySelector("[data-demo-step]"),left=root.querySelector('[data-demo-pane="left"]'),right=root.querySelector('[data-demo-pane="right"]'),back=root.querySelector('[data-demo-action="back"]'),next=root.querySelector('[data-demo-action="next"]'),play=root.querySelector('[data-demo-action="play"]');
+        function compactDemoText(value){return value.replace(/\s*->\s*/g," -> ").replace(/\b(x\d+)\s*=\s*true\b/g,"$1=1").replace(/\b(x\d+)\s*=\s*false\b/g,"$1=0").replace(/\btrue\b/g,"1").replace(/\bfalse\b/g,"0").replace(/\s+=\s+/g,"=").replace(/\bdecision level\s+(\d+)/g,"DL$1");}
+        function formatDemoHtml(value){return compactDemoText(value).replace(/-?x(\d+)/g,(match,digits)=>`<span class="solver-demo-var${match.startsWith("-")?" solver-demo-neg-name":""}">x<sub>${digits}</sub></span>`);}
+        function stop(){if(timer!==null)window.clearInterval(timer);timer=null;play.classList.remove("is-playing");play.setAttribute("aria-label","Play");play.title="Play";}
+        function render(){const step=steps[current];d3.select(title).html(formatDemoHtml(step.title));d3.select(caption).html(formatDemoHtml(step.caption));stepLabel.textContent=`Step ${current+1} / ${steps.length}`;d3.select(left).html(formatDemoHtml(step.left));d3.select(right).html(formatDemoHtml(step.right));back.disabled=current===0;next.disabled=current===steps.length-1;play.disabled=current===steps.length-1&&timer===null;}
+        root.addEventListener("click",(event)=>{const button=event.target.closest("[data-demo-action]");if(!button||!root.contains(button))return;const action=button.dataset.demoAction;if(action==="back")current=Math.max(0,current-1);if(action==="next")current=Math.min(steps.length-1,current+1);if(action==="reset"){stop();current=0;}if(action==="play"){if(timer===null){play.classList.add("is-playing");play.setAttribute("aria-label","Pause");play.title="Pause";timer=window.setInterval(()=>{if(current===steps.length-1){stop();render();return;}current+=1;if(current===steps.length-1)stop();render();},1600);}else stop();}render();});
+        render();
+      })();
+    </script>
+  </body>
+</html>
