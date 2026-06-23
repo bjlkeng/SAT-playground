@@ -1,8 +1,8 @@
-# MiniSat `simp` Port Design For `solver/10-bve-preprocess`
+# MiniSat `simp` Port Design For `solver/10-bve-subsume`
 
 ## Goal
 
-Implement MiniSat's `SimpSolver` preprocessing pipeline in `solver/10-bve-preprocess` faithfully
+Implement MiniSat's `SimpSolver` preprocessing pipeline in `solver/10-bve-subsume` faithfully
 on top of the current `09-root-simp-opts` Rust baseline.
 
 ## Restart Constraints
@@ -11,7 +11,7 @@ The next implementation pass should follow these constraints explicitly:
 
 - start from scratch from the current workspace state; do not reuse or port from previous local
   experimental commits
-- keep `solver/10-bve-preprocess/src/main.rs` as close to the plain `09-root-simp-opts` baseline
+- keep `solver/10-bve-subsume/src/main.rs` as close to the plain `09-root-simp-opts` baseline
   as practical until the new simplification code is ready
 - put the new implementation primarily in a new `src/simp.rs` file so the MiniSat-`simp` work is
   isolated and reviewable
@@ -25,11 +25,11 @@ Use this exact workflow:
 
 - keep the current five-instance benchmark set in
   `benchmarks/profiling/minisat-simp-five/`
-- compare `solver/09-root-simp-opts`, `solver/10-bve-preprocess`, and reference `minisat` with the
+- compare `solver/09-root-simp-opts`, `solver/10-bve-subsume`, and reference `minisat` with the
   benchmark harness, not ad hoc `run.sh` timings
 - run with a 10 minute timeout and 16 GB memory limit:
   - `bash tools/bench.sh -t 600 -m 16384 -d benchmarks/profiling/minisat-simp-five solver/09-root-simp-opts`
-  - `bash tools/bench.sh -t 600 -m 16384 -d benchmarks/profiling/minisat-simp-five solver/10-bve-preprocess`
+  - `bash tools/bench.sh -t 600 -m 16384 -d benchmarks/profiling/minisat-simp-five solver/10-bve-subsume`
   - `bash tools/bench_reference.sh -t 600 -m 16384 -d benchmarks/profiling/minisat-simp-five minisat`
 - use the harness `results.csv` outputs as the source of truth for timing comparisons
 - require SAT verification to pass; a faster SAT result with `verified=FAIL` does not count
@@ -43,7 +43,7 @@ Status after commit `967a312` (`Implement solver 10 BVE preprocessing`):
 | Solver | Solved | SAT | UNSAT | Timeouts | PAR-2 | Results |
 |---|---:|---:|---:|---:|---:|---|
 | `09-root-simp-opts` | 3/5 | 2 | 1 | 2 | `3195.921` | `log/bench-09-root-simp-opts-2026-05-08-09-58-03/results.csv` |
-| `10-bve-preprocess` | 4/5 | 3 | 1 | 1 | `1532.975` | `log/bench-10-bve-preprocess-2026-05-08-13-08-41/results.csv` |
+| `10-bve-subsume` | 4/5 | 3 | 1 | 1 | `1532.975` | `log/bench-10-bve-preprocess-2026-05-08-13-08-41/results.csv` |
 | `minisat` | 5/5 | 3 | 2 | 0 | `453.343` | `log/bench-minisat-2026-05-08-09-58-03/results.csv` |
 
 Per-instance gap:
@@ -163,7 +163,7 @@ memory cap. These numbers are fresh harness runs, not reused medium-run timings.
 
 Fresh logs:
 
-- `10-bve-preprocess`: `log/bench-10-bve-preprocess-2026-05-08-17-46-01/results.csv`
+- `10-bve-subsume`: `log/bench-10-bve-preprocess-2026-05-08-17-46-01/results.csv`
 - `09-root-simp-opts`: `log/bench-09-root-simp-opts-2026-05-08-18-16-07/results.csv`
 - `minisat`: `log/bench-minisat-2026-05-08-19-05-28/results.csv`
 
@@ -172,12 +172,12 @@ Summary:
 | Solver | Solved | SAT | UNSAT | Timeouts | PAR-2 |
 |---|---:|---:|---:|---:|---:|
 | `09-root-simp-opts` | 1/5 | 0 | 1 | 4 | `5281.200` |
-| `10-bve-preprocess` current gated BSR | 3/5 | 2 | 1 | 2 | `2986.963` |
+| `10-bve-subsume` current gated BSR | 3/5 | 2 | 1 | 2 | `2986.963` |
 | `minisat` | 5/5 | 4 | 1 | 0 | `533.762` |
 
 Per-instance fresh results:
 
-| Instance | `10-bve-preprocess` | `09-root-simp-opts` | `minisat` | Notes |
+| Instance | `10-bve-subsume` | `09-root-simp-opts` | `minisat` | Notes |
 |---|---:|---:|---:|---|
 | `849950...circuit_48in64out_with_800gates_4in4out_dist128_seed3` | SAT `49.372s` | TIMEOUT | SAT `86.095s` | Candidate did not hold; current `10` beats MiniSat. |
 | `98e8...bp4_TCO_CSO_IXA_LP_ZR` | TIMEOUT | TIMEOUT | SAT `245.131s` | Real MiniSat-over-`10` gap. |
@@ -280,8 +280,8 @@ Harness rerun on the same five instances:
 | Solver | Solved | SAT | UNSAT | Timeouts | PAR-2 | Results |
 |---|---:|---:|---:|---:|---:|---|
 | `09-root-simp-opts` | 1/5 | 0 | 1 | 4 | `5281.200` | `log/bench-09-root-simp-opts-2026-05-08-18-16-07/results.csv` |
-| `10-bve-preprocess` before this refactor | 3/5 | 2 | 1 | 2 | `2986.963` | `log/bench-10-bve-preprocess-2026-05-08-17-46-01/results.csv` |
-| `10-bve-preprocess` MiniSat work-loop refactor | 2/5 | 1 | 1 | 3 | `3823.879` | `log/bench-10-bve-preprocess-2026-05-08-22-51-56/results.csv` |
+| `10-bve-subsume` before this refactor | 3/5 | 2 | 1 | 2 | `2986.963` | `log/bench-10-bve-preprocess-2026-05-08-17-46-01/results.csv` |
+| `10-bve-subsume` MiniSat work-loop refactor | 2/5 | 1 | 1 | 3 | `3823.879` | `log/bench-10-bve-preprocess-2026-05-08-22-51-56/results.csv` |
 | `minisat` | 5/5 | 4 | 1 | 0 | `533.762` | `log/bench-minisat-2026-05-08-19-05-28/results.csv` |
 
 Per-instance harness result:
@@ -392,13 +392,13 @@ original-clause insertion semantics used for preprocessing resolvents:
 - tautological or already-satisfied clauses are skipped instead of allocated
 - root units are enqueued immediately instead of stored as persistent original unit clauses
 - contradictory root units poison the persistent solver status during construction
-- diagnostic `SAT_INITIAL_CLAUSE_MODE` is available for sensitivity checks:
-  `canonical-sorted` (default), `input-order`, or `raw`
+- guarded `SAT_INITIAL_CLAUSE_MODE` is available for sensitivity checks:
+  `auto` (default/fast), `canonical-sorted` (baseline/manual), `input-order`, or `raw`
 
 Validation:
 
 - `cargo test`: 48 passed
-- `bash tools/smoke_test.sh solver/10-bve-preprocess`: 9/9 passed
+- `bash tools/smoke_test.sh solver/10-bve-subsume`: 9/9 passed
 - smoke log: `log/2026-05-09-07-33-09`
 
 Benchmark rerun on `benchmarks/profiling/minisat-simp-five` with `600s` timeout and `16384 MB`:
@@ -1254,7 +1254,7 @@ The order below is chosen to preserve correctness and keep regressions local.
 Exit criteria:
 
 - `cargo test`
-- `bash tools/smoke_test.sh solver/10-bve-preprocess`
+- `bash tools/smoke_test.sh solver/10-bve-subsume`
 
 ### Phase 1: preprocessing state scaffolding
 
@@ -1387,7 +1387,7 @@ Tests first:
 Tests and checks:
 
 - `cargo test`
-- `bash tools/smoke_test.sh solver/10-bve-preprocess`
+- `bash tools/smoke_test.sh solver/10-bve-subsume`
 - proof checker run on UNSAT smoke tests
 - benchmark spot-checks against MiniSat on targeted instances
 

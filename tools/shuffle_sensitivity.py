@@ -92,7 +92,7 @@ def write_summary(
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--solver", default="solver/11-kissat-port")
+    parser.add_argument("--solver", default="solver/11-kissat-search")
     parser.add_argument("--instances", nargs="+", required=True, type=Path)
     parser.add_argument("--seeds", default="1,2,3")
     parser.add_argument("--modes", default=DEFAULT_MODES)

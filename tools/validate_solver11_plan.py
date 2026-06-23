@@ -459,8 +459,8 @@ def main() -> int:
         "path",
         nargs="?",
         type=Path,
-        default=Path("solver/11-kissat-port"),
-        help="Path to solver/11-kissat-port or plan/solver-11-plan.md",
+        default=Path("solver/11-kissat-search"),
+        help="Path to solver/11-kissat-search or plan/solver-11-plan.md",
     )
     args = parser.parse_args()
 
@@ -470,10 +470,10 @@ def main() -> int:
     if args.path.is_file():
         plan_path = args.path.resolve()
         repo_root = plan_path.parent.parent
-        solver_dir = repo_root / "solver" / "11-kissat-port"
+        solver_dir = repo_root / "solver" / "11-kissat-search"
     else:
         solver_dir = args.path.resolve()
-        if solver_dir.name == "11-kissat-port" and solver_dir.parent.name == "solver":
+        if solver_dir.name == "11-kissat-search" and solver_dir.parent.name == "solver":
             repo_root = solver_dir.parent.parent
     src_dir = solver_dir / "src"
     errors: list[str] = []

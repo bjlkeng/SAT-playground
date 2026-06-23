@@ -338,7 +338,7 @@ def baseline_lock_raw_path(args: argparse.Namespace) -> Path | None:
     before_s = args.before.as_posix()
     after_s = args.after.as_posix()
     if "log/baseline-lock/solver10/results.csv" in before_s and "log/baseline-lock/solver11/results.csv" in after_s:
-        return Path("solver/11-kissat-port/BASELINE_LOCK.raw.txt")
+        return Path("solver/11-kissat-search/BASELINE_LOCK.raw.txt")
     return None
 
 

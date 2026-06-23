@@ -6,7 +6,7 @@ profile20 = the existing 10-instance `benchmarks/profiling` suite (EASY: solver-
             kissat-latest finishes within 5 min), drawn from the medium-100 set.
 
 Source data (re-thresholded at 300 s; verified to be the IDENTICAL 100-instance set):
-  - solver-10 (10-bve-preprocess) @1800s/16GiB: three runs (results.csv) on the medium-100 set
+  - solver-10 (10-bve-subsume) @1800s/16GiB: three runs (results.csv) on the medium-100 set
   - kissat-latest @1800s: one run on benchmarks/sat-comp-2025-medium
 
 HARD rules (robust across all three solver-10 runs):
@@ -171,7 +171,7 @@ Two halves:
 
 - **easy (10)** — the existing `benchmarks/profiling` control suite, reused verbatim (symlinked to
   `../profiling/`), to preserve direct comparability with all prior profiling results. solver-10
-  (`10-bve-preprocess`) solves every one within 5 min on its fast run (best-of-3 < 300 s for all 10).
+  (`10-bve-subsume`) solves every one within 5 min on its fast run (best-of-3 < 300 s for all 10).
   **Caveat (variance):** these are the profiling instances and two of them are bimodal /
   variance-sensitive — `brocard_problem_large` (7.9 / 526.5 / 585.3 s) and
   `REGRandom-K4-L1-Seed40` (54.2 / 966.8 / 1278.1 s) — and `mp1-Nb7T46` / `sudoku-N30-12` each have

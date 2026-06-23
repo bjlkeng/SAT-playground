@@ -119,7 +119,7 @@ fi
 TIMESTAMP=$(date +%Y-%m-%d-%H-%M-%S)
 SOLVER_NAME=$(basename "$SOLVER_DIR")
 REQUIRE_RESULT_JSON=0
-if [[ "$SOLVER_NAME" == "11-kissat-port" ]]; then
+if [[ "$SOLVER_NAME" == "11-kissat-search" ]]; then
     REQUIRE_RESULT_JSON=1
 fi
 if [[ -n "$LOG_DIR_OVERRIDE" ]]; then

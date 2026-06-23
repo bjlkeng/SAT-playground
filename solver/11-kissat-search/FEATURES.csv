@@ -15,9 +15,9 @@ SAT_OTFS,otfs,ReevalPending,true,true,false,none,archived-see-archive/efficacy-r
 SAT_OTSS,otss,ReevalPending,true,true,false,none,archived-see-archive/efficacy-reeval-2026-05-29(do-not-consult-unless-asked),learned-clause-db|reason-strengthening,SAT-playground-gbc
 SAT_REDUCE_TIER2_AT_BUDGET,reduce_tier2_at_budget,ReevalPending,true,true,false,none,archived-see-archive/efficacy-reeval-2026-05-29(do-not-consult-unless-asked),reduce-db|lbd-tiered,SAT-playground-gbc
 SAT_WATCH_COMPACT,watch_compact_enabled,ReevalPending,true,true,false,none,archived-see-archive/efficacy-reeval-2026-05-29(do-not-consult-unless-asked),watch-list|reduce-db,SAT-playground-gbc
-SAT_SIMPLIFICATION,simplification,SmokeSafe,true,true,false,default|fast,solver/11-kissat-port/BASELINE_LOCK.raw.txt,preprocess,0.3
-SAT_BVE,bve,SmokeSafe,true,true,false,default|fast,solver/11-kissat-port/BASELINE_LOCK.raw.txt,preprocess-bve,0.3
-SAT_FULL_BSR,full_bsr,SmokeSafe,true,true,false,default|fast,solver/11-kissat-port/BASELINE_LOCK.raw.txt,preprocess-bsr,0.3
+SAT_SIMPLIFICATION,simplification,SmokeSafe,true,true,false,default|fast,solver/11-kissat-search/BASELINE_LOCK.raw.txt,preprocess,0.3
+SAT_BVE,bve,SmokeSafe,true,true,false,default|fast,solver/11-kissat-search/BASELINE_LOCK.raw.txt,preprocess-bve,0.3
+SAT_FULL_BSR,full_bsr,SmokeSafe,true,true,false,default|fast,solver/11-kissat-search/BASELINE_LOCK.raw.txt,preprocess-bsr,0.3
 SAT_BSR_FORMULA_GATE,bsr_formula_gate,Experimental,false,false,false,none,,preprocess-bsr,SAT-playground-f06
 SAT_INPROCESS,inprocess,ParkingLot,false,false,false,none,,inprocessing,0.3
 SAT_VIVIFY,vivify,ParkingLot,false,false,false,none,,vivification,0.3

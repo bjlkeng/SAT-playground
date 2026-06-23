@@ -1,5 +1,5 @@
 [package]
-name = "sat-solver-10-bve-preprocess"
+name = "sat-solver-11-kissat-search"
 version = "0.1.0"
 edition = "2021"
 

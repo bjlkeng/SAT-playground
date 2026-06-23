@@ -4,10 +4,10 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SOLVER="${1:-solver/11-kissat-port}"
+SOLVER="${1:-solver/11-kissat-search}"
 TIMEOUT="${SAT_CI_MATRIX_TIMEOUT:-30}"
 OUT_ROOT="${SAT_CI_MATRIX_OUT:-$REPO_ROOT/log/ci_solver11_matrix-$(date +%Y-%m-%d-%H-%M-%S)}"
-INSTANCE="$REPO_ROOT/solver/11-kissat-port/testdata/golden/sat_tiny.cnf"
+INSTANCE="$REPO_ROOT/solver/11-kissat-search/testdata/golden/sat_tiny.cnf"
 
 mkdir -p "$OUT_ROOT"
 SUMMARY="$OUT_ROOT/summary.tsv"

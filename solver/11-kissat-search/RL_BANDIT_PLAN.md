@@ -1,6 +1,6 @@
 # Contextual Bandit / RL Search Controller for Solver 11 — Design Plan
 
-**Status:** plan, rev 3 — second review + round-2 deep research integrated · **Date:** 2026-06-11 · **Target:** `solver/11-kissat-port`
+**Status:** plan, rev 3 — second review + round-2 deep research integrated · **Date:** 2026-06-11 · **Target:** `solver/11-kissat-search`
 **Objective metric:** the repo's lexicographic metric — (1) solved, (2) total conflicts on ties,
 (3) PAR-2 — over `benchmarks/profile20`, N=10 seeds, per `CLAUDE.md`.
 
@@ -44,7 +44,7 @@ evaluation to screening-only (§8), clause-management findings that constrain re
 
 Current default profile (`config.rs:809-826`): focused-stable search + tick mode-switching +
 LBD-tiered reduction + VMTF in focused mode + LBD + lucky. All file:line refs below are to
-`solver/11-kissat-port/src/`.
+`solver/11-kissat-search/src/`.
 
 | Decision point | Where | Current policy | Bandit-controllable? |
 |---|---|---|---|

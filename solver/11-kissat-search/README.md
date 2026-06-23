@@ -1,11 +1,11 @@
-# 11-kissat-port
+# 11-kissat-search
 
-Solver 11 starts as a current copy of `10-bve-preprocess`, including the MiniSat `simp`-style bounded variable elimination baseline, so new Kissat-class work can proceed without losing solver 10 fixes.
+Solver 11 starts as a current copy of `10-bve-subsume`, including the MiniSat `simp`-style bounded variable elimination baseline, so new Kissat-class work can proceed without losing solver 10 fixes.
 
 This iteration keeps the `09` CDCL core and adds a one-shot preprocessing phase before search. The
 preprocessor is intentionally isolated in `src/simp.rs` so it can keep evolving toward the full
 MiniSat `SimpSolver` design described in
-[MINISAT_SIMP_PORT.md](/home/bojji/code/SAT-playground/solver/11-kissat-port/MINISAT_SIMP_PORT.md).
+[MINISAT_SIMP_PORT.md](/home/bojji/code/SAT-playground/solver/11-kissat-search/MINISAT_SIMP_PORT.md).
 
 > ⚠️ **Search-feature efficacy verdicts are under fresh re-evaluation (2026-05-29, bead `SAT-playground-gbc`).**
 > Efficacy claims embedded in the "Current State" prose below and in the feature ledger may be stale.
@@ -359,7 +359,7 @@ Lower-level diagnostics can be enabled independently with `SAT_TRACE_PROOF=on`,
   inblock / rephase / combos regress) were **not** promoted — see `FINDINGS.md`.
 
 Smoke/correctness (independent of efficacy) is verified per change via
-`bash tools/smoke_test.sh solver/11-kissat-port` (9/9) and `cargo test`.
+`bash tools/smoke_test.sh solver/11-kissat-search` (9/9) and `cargo test`.
 
 ### BSR occurrence-cap experiment (2026-06-08)
 
@@ -468,7 +468,7 @@ remaining gap is now about `2.5x` on preprocessing rather than `3.4x`.
 Full `benchmarks/profiling` result:
 
 ```bash
-bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/10-bve-preprocess
+bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/10-bve-subsume
 ```
 
 | Solver/run | Solved | SAT | UNSAT | Timeouts | PAR-2 | Results |
@@ -506,7 +506,7 @@ Rejected experiments from this pass:
 Command:
 
 ```bash
-bash tools/bench.sh -t 600 -m 16384 -d benchmarks/profiling/minisat-simp-five solver/10-bve-preprocess
+bash tools/bench.sh -t 600 -m 16384 -d benchmarks/profiling/minisat-simp-five solver/10-bve-subsume
 ```
 
 Result log:
@@ -525,8 +525,8 @@ Comparison against matching harness runs:
 | Solver | Solved | SAT | UNSAT | Timeouts | PAR-2 | Results |
 |---|---:|---:|---:|---:|---:|---|
 | `09-root-simp-opts` | 3/5 | 2 | 1 | 2 | `3195.921` | `log/bench-09-root-simp-opts-2026-05-08-09-58-03/results.csv` |
-| `10-bve-preprocess` before gated BSR | 4/5 | 3 | 1 | 1 | `1532.975` | `log/bench-10-bve-preprocess-2026-05-08-13-08-41/results.csv` |
-| `10-bve-preprocess` gated BSR | 5/5 | 3 | 2 | 0 | `540.550` | `log/bench-10-bve-preprocess-2026-05-08-15-56-37/results.csv` |
+| `10-bve-subsume` before gated BSR | 4/5 | 3 | 1 | 1 | `1532.975` | `log/bench-10-bve-preprocess-2026-05-08-13-08-41/results.csv` |
+| `10-bve-subsume` gated BSR | 5/5 | 3 | 2 | 0 | `540.550` | `log/bench-10-bve-preprocess-2026-05-08-15-56-37/results.csv` |
 | `minisat` | 5/5 | 3 | 2 | 0 | `453.343` | `log/bench-minisat-2026-05-08-09-58-03/results.csv` |
 
 Per-instance notes for the gated-BSR run:
@@ -596,7 +596,7 @@ by these `simp` work-loop differences alone.
 
 Matching harness rerun:
 
-- `10-bve-preprocess`: `log/bench-10-bve-preprocess-2026-05-08-22-51-56/results.csv`
+- `10-bve-subsume`: `log/bench-10-bve-preprocess-2026-05-08-22-51-56/results.csv`
 - solved `2/5` (`1 SAT`, `1 UNSAT`, `3` timeouts)
 - PAR-2: `3823.879`
 
@@ -609,7 +609,7 @@ dramatically (`163.160s -> 16.277s`) but regresses the overall benchmark (`3/5`,
 On 2026-05-09, initial parsed clauses were routed through the same MiniSat-style original-clause
 normalization path used by preprocessing-generated resolvents. Validation:
 
-- `cargo test` in `solver/10-bve-preprocess`: 48 passed
+- `cargo test` in `solver/10-bve-subsume`: 48 passed
 - smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
 - smoke log: `log/2026-05-09-07-33-09`
 
@@ -749,14 +749,14 @@ On 2026-05-09, the CDCL core was moved closer to MiniSat in five targeted areas:
 
 Validation:
 
-- `cargo test` in `solver/10-bve-preprocess`: 48 passed
+- `cargo test` in `solver/10-bve-subsume`: 48 passed
 - smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
 - smoke log: `log/2026-05-09-10-42-44`
 
 Benchmark command:
 
 ```bash
-bash tools/bench.sh -t 600 -m 16384 -d benchmarks/profiling/minisat-simp-five solver/10-bve-preprocess
+bash tools/bench.sh -t 600 -m 16384 -d benchmarks/profiling/minisat-simp-five solver/10-bve-subsume
 ```
 
 Before/after logs:
@@ -887,10 +887,10 @@ profile-bench cap even after the preprocessing speedup.
 Final profile benchmark:
 
 ```bash
-bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/10-bve-preprocess
+bash tools/bench.sh -t 120 -m 16384 -d benchmarks/profiling solver/10-bve-subsume
 ```
 
-- `10-bve-preprocess`: 7/11 solved, PAR-2 `1093.858`
+- `10-bve-subsume`: 7/11 solved, PAR-2 `1093.858`
 - results: `log/bench-10-bve-preprocess-2026-05-15-00-25-35/results.csv`
 - comparison MiniSat run: 10/11 solved, PAR-2 `559.646`
   (`log/bench-minisat-2026-05-14-13-31-31/results.csv`)
@@ -915,7 +915,7 @@ Rejected code-level attempts from this pass:
 
 Validation for the accepted changes:
 
-- `cargo test` in `solver/10-bve-preprocess`: 48 passed
+- `cargo test` in `solver/10-bve-subsume`: 48 passed
 - smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
 - smoke log: `log/2026-05-15-00-25-25`
 
@@ -965,7 +965,7 @@ Rejected fresh-pass attempts:
 
 Validation after the accepted change:
 
-- `cargo test` in `solver/10-bve-preprocess`: 48 passed
+- `cargo test` in `solver/10-bve-subsume`: 48 passed
 - smoke suite: 9/9 passed, including DRAT verification for all UNSAT smoke instances
 - smoke log: `log/2026-05-15-23-40-34`
 

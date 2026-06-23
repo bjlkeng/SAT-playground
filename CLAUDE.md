@@ -32,8 +32,8 @@ bash tools/bench.sh solver/NN-name
 - Current benchmark target suite: `benchmarks/profile20/README.md`
 - Legacy fast control suite: `benchmarks/profiling/README.md`
 - Solver 11 current state and feature surface:
-  `solver/11-kissat-port/README.md`, `solver/11-kissat-port/FEATURES.md`,
-  and `solver/11-kissat-port/SOLVER11_STATE.md`
+  `solver/11-kissat-search/README.md`, `solver/11-kissat-search/FEATURES.md`,
+  and `solver/11-kissat-search/SOLVER11_STATE.md`
 
 Use existing skills instead of duplicating their workflows here:
 
@@ -270,6 +270,6 @@ benchmark state, or feature efficacy. Instead:
   checkers.
 - Use `tools/bench.sh`, `tools/bench_reference.sh`, and latest `log/bench-*`
   directories for real benchmark outputs.
-- Do not consult `solver/11-kissat-port/archive/` for current search-feature
+- Do not consult `solver/11-kissat-search/archive/` for current search-feature
   efficacy unless the user explicitly asks. It is archived pre-2026-05-29
   provenance and is known to include stale, noise-contaminated verdicts.

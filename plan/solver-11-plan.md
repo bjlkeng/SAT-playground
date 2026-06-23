@@ -1,4 +1,4 @@
-# Superior Plan: Evolve `solver/10-bve-preprocess` Toward Kissat-Class Performance
+# Superior Plan: Evolve `solver/10-bve-subsume` Toward Kissat-Class Performance
 
 This plan synthesizes the strongest parts of the uploaded plans into a single implementation specification. It keeps the conservative, correctness-first scaffolding from `kissat_style_sat_solver_plan.md` and combines it with the more concrete performance roadmap, benchmark discipline, milestones, and risk register from `PLAN.md`.
 
@@ -22,10 +22,10 @@ Add Kissat-style search and inprocessing features incrementally, behind narrow f
 Use one directory name everywhere:
 
 ```text
-solver/11-kissat-port
+solver/11-kissat-search
 ```
 
-Several drafts used `solver/11-kissat-style`; do not mix both names. All scripts, smoke tests, logs, and benchmark commands in this synthesized plan use `solver/11-kissat-port`.
+Several drafts used `solver/11-kissat-style`; do not mix both names. All scripts, smoke tests, logs, and benchmark commands in this synthesized plan use `solver/11-kissat-search`.
 
 ---
 
@@ -51,7 +51,7 @@ Several drafts used `solver/11-kissat-style`; do not mix both names. All scripts
 At the end of each phase, produce:
 
 ```text
-solver/11-kissat-port/README.md:
+solver/11-kissat-search/README.md:
   - supported profiles
   - exact run.sh contract
   - proof behavior
@@ -86,12 +86,12 @@ log/<phase>/summary.md:
 Every accepted `solver-behavior`, `config-contract`, or `performance-claim` task must satisfy this gate. `docs-only` and `tooling-only` tasks use the task-class gates in section 0.7, unless they change solver behavior, result parsing, or validation semantics.
 
 ```bash
-cd solver/11-kissat-port
+cd solver/11-kissat-search
 cargo test
 
 cd ../..
-bash tools/smoke_test.sh solver/11-kissat-port
-SAT_CHECK_INVARIANTS=on bash tools/smoke_test.sh solver/11-kissat-port
+bash tools/smoke_test.sh solver/11-kissat-search
+SAT_CHECK_INVARIANTS=on bash tools/smoke_test.sh solver/11-kissat-search
 ```
 
 Acceptance:
@@ -111,20 +111,20 @@ After task 0.5 has created generated iteration sets, every `solver-behavior` or 
 
 ```bash
 bash tools/bench.sh -t 120 -m 16384 \
-  -d benchmarks/iteration/smoke-plus solver/11-kissat-port
+  -d benchmarks/iteration/smoke-plus solver/11-kissat-search
 ```
 
 Before task 0.5 exists, solver-behavior/config-contract tasks 0.0 through 0.4 use this reduced gate instead:
 
 ```bash
-cd solver/11-kissat-port
+cd solver/11-kissat-search
 cargo test
 
 cd ../..
-bash tools/smoke_test.sh solver/11-kissat-port
-SAT_CHECK_INVARIANTS=on bash tools/smoke_test.sh solver/11-kissat-port
+bash tools/smoke_test.sh solver/11-kissat-search
+SAT_CHECK_INVARIANTS=on bash tools/smoke_test.sh solver/11-kissat-search
 bash tools/bench.sh -t 120 -m 16384 \
-  -d benchmarks/profiling solver/11-kissat-port
+  -d benchmarks/profiling solver/11-kissat-search
 ```
 
 Task 0.5 is the boundary after which `benchmarks/iteration/*` is mandatory.
@@ -133,37 +133,37 @@ Search changes must also run:
 
 ```bash
 bash tools/bench.sh -t 120 -m 16384 \
-  -d benchmarks/iteration/search-core solver/11-kissat-port
+  -d benchmarks/iteration/search-core solver/11-kissat-search
 ```
 
 Simplification/inprocessing changes must also run:
 
 ```bash
 bash tools/bench.sh -t 120 -m 16384 \
-  -d benchmarks/iteration/preprocess-core solver/11-kissat-port
+  -d benchmarks/iteration/preprocess-core solver/11-kissat-search
 ```
 
 Milestones must run:
 
 ```bash
 bash tools/bench.sh -t 300 -m 16384 \
-  -d benchmarks/discriminating solver/11-kissat-port
+  -d benchmarks/discriminating solver/11-kissat-search
 
 bash tools/bench.sh -t 120 -m 16384 \
-  -d benchmarks/profiling solver/11-kissat-port
+  -d benchmarks/profiling solver/11-kissat-search
 
 bash tools/bench.sh -t 300 -m 16384 \
-  -d benchmarks/iteration/holdout solver/11-kissat-port
+  -d benchmarks/iteration/holdout solver/11-kissat-search
 
 bash tools/bench.sh -t 600 -m 16384 \
-  -d benchmarks/profiling/minisat-simp-five solver/11-kissat-port
+  -d benchmarks/profiling/minisat-simp-five solver/11-kissat-search
 ```
 
 End-of-phase runs must use the full set:
 
 ```bash
 bash tools/bench.sh -t 1800 -m 16384 \
-  -d benchmarks/sat-comp-2025 solver/11-kissat-port
+  -d benchmarks/sat-comp-2025 solver/11-kissat-search
 ```
 
 ## 1.5 Noise discipline
@@ -331,14 +331,14 @@ Create an identity copy of solver 10 that can be A/B tested against the unchange
 ### Implementation
 
 ```bash
-cp -R solver/10-bve-preprocess solver/11-kissat-port
+cp -R solver/10-bve-subsume solver/11-kissat-search
 ```
 
-Update `solver/11-kissat-port/Cargo.toml`:
+Update `solver/11-kissat-search/Cargo.toml`:
 
 ```toml
 [package]
-name = "sat-solver-11-kissat-port"
+name = "sat-solver-11-kissat-search"
 
 [[bin]]
 name = "sat-solver"
@@ -388,51 +388,51 @@ Script contents:
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd solver/11-kissat-port
+cd solver/11-kissat-search
 cargo test
 
 cargo build --release
 
 cd ../..
-bash tools/smoke_test.sh solver/11-kissat-port
+bash tools/smoke_test.sh solver/11-kissat-search
 mkdir -p log/baseline-lock
 
 bash tools/bench.sh -t 120 -m 16384 \
-  -d benchmarks/profiling solver/10-bve-preprocess \
+  -d benchmarks/profiling solver/10-bve-subsume \
   --log-dir log/baseline-lock/solver10
 
 bash tools/bench.sh -t 120 -m 16384 \
-  -d benchmarks/profiling solver/11-kissat-port \
+  -d benchmarks/profiling solver/11-kissat-search \
   --log-dir log/baseline-lock/solver11
 
 python3 tools/status_compare.py \
   --before log/baseline-lock/solver10/results.csv \
   --after log/baseline-lock/solver11/results.csv \
-  > solver/11-kissat-port/BASELINE_LOCK.raw.txt
+  > solver/11-kissat-search/BASELINE_LOCK.raw.txt
 
 {
-  echo "solver10_dir=solver/10-bve-preprocess"
-  echo "solver11_dir=solver/11-kissat-port"
+  echo "solver10_dir=solver/10-bve-subsume"
+  echo "solver11_dir=solver/11-kissat-search"
   echo "date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "rustc=$(rustc --version 2>/dev/null || true)"
   echo "cargo=$(cargo --version 2>/dev/null || true)"
   echo "uname=$(uname -a)"
-  echo "solver10_binary_sha256=$(sha256sum solver/10-bve-preprocess/target/release/sat-solver 2>/dev/null | awk '{print $1}')"
-  echo "solver11_binary_sha256=$(sha256sum solver/11-kissat-port/target/release/sat-solver 2>/dev/null | awk '{print $1}')"
+  echo "solver10_binary_sha256=$(sha256sum solver/10-bve-subsume/target/release/sat-solver 2>/dev/null | awk '{print $1}')"
+  echo "solver11_binary_sha256=$(sha256sum solver/11-kissat-search/target/release/sat-solver 2>/dev/null | awk '{print $1}')"
   echo "env_SAT=$(env | sort | grep '^SAT_' || true)"
   echo "solver10_log=log/baseline-lock/solver10/results.csv"
   echo "solver11_log=log/baseline-lock/solver11/results.csv"
-} >> solver/11-kissat-port/BASELINE_LOCK.raw.txt
+} >> solver/11-kissat-search/BASELINE_LOCK.raw.txt
 ```
 
 ### Tests
 
 ```bash
-cd solver/11-kissat-port
+cd solver/11-kissat-search
 cargo build
 cargo test
 cd ../..
-bash tools/smoke_test.sh solver/11-kissat-port
+bash tools/smoke_test.sh solver/11-kissat-search
 ```
 
 ### Acceptance
@@ -615,10 +615,10 @@ Capability ownership (applies once each capability is introduced; see roll-out o
 ### Tests
 
 ```bash
-cd solver/11-kissat-port
+cd solver/11-kissat-search
 cargo test
 cd ../..
-bash tools/smoke_test.sh solver/11-kissat-port
+bash tools/smoke_test.sh solver/11-kissat-search
 ```
 
 ### Acceptance
@@ -655,7 +655,7 @@ Give coding agents the current solver map and force a one-time audit of line num
 Create:
 
 ```text
-solver/11-kissat-port/SOLVER11_STATE.md
+solver/11-kissat-search/SOLVER11_STATE.md
 ```
 
 It should record:
@@ -1059,7 +1059,7 @@ Default-profile hardening gate:
 Per-feature maturity ledger:
 
 ```text
-solver/11-kissat-port/FEATURES.md:
+solver/11-kissat-search/FEATURES.md:
   - one row per feature flag
   - current maturity
   - proof/model validation state
@@ -1071,7 +1071,7 @@ solver/11-kissat-port/FEATURES.md:
 Machine-readable maturity ledger:
 
 ```text
-solver/11-kissat-port/FEATURES.csv:
+solver/11-kissat-search/FEATURES.csv:
   - feature_flag
   - config_field
   - maturity
@@ -1877,7 +1877,7 @@ python3 tools/compare_bench.py \
   --after log/baseline-lock/solver11/results.csv \
   --baseline benchmarks/iteration/baseline.csv \
   --timeout 120 \
-  > solver/11-kissat-port/BASELINE_LOCK.txt
+  > solver/11-kissat-search/BASELINE_LOCK.txt
 ```
 
 ### Acceptance
@@ -2201,7 +2201,7 @@ struct OutputContract {
 Add fixed golden contract tests:
 
 ```text
-solver/11-kissat-port/testdata/golden/
+solver/11-kissat-search/testdata/golden/
   - sat_tiny.cnf
   - unsat_empty_clause.cnf
   - empty_formula.cnf
@@ -2356,23 +2356,23 @@ tools/validate_solver11_plan.py
 `tools/ci_solver11_fast.sh` must run:
 
 ```bash
-cd solver/11-kissat-port
+cd solver/11-kissat-search
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
-python3 ../../tools/validate_solver11_plan.py ../../solver/11-kissat-port/PLAN.md
+python3 ../../tools/validate_solver11_plan.py ../../solver/11-kissat-search/PLAN.md
 
 cd ../..
 python3 -m py_compile tools/status_compare.py tools/validate_solver_result.py tools/select_iter_bench.py tools/compare_bench.py  # legacy Python compile-check; remove after sat-bench cutover
-cargo run -p sat-bench --release -- validate-plan solver/11-kissat-port/PLAN.md
+cargo run -p sat-bench --release -- validate-plan solver/11-kissat-search/PLAN.md
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck tools/*.sh solver/11-kissat-port/*.sh
+  shellcheck tools/*.sh solver/11-kissat-search/*.sh
 fi
-bash tools/smoke_test.sh solver/11-kissat-port
-SAT_CHECK_INVARIANTS=on bash tools/smoke_test.sh solver/11-kissat-port
+bash tools/smoke_test.sh solver/11-kissat-search
+SAT_CHECK_INVARIANTS=on bash tools/smoke_test.sh solver/11-kissat-search
 bash tools/bench.sh -t 120 -m 16384 \
-  -d benchmarks/iteration/smoke-plus solver/11-kissat-port
-bash tools/ci_reproducibility.sh solver/11-kissat-port
+  -d benchmarks/iteration/smoke-plus solver/11-kissat-search
+bash tools/ci_reproducibility.sh solver/11-kissat-search
 ```
 
 `tools/ci_reproducibility.sh` must verify, for at least 5 instances (one each: trivial SAT, trivial UNSAT, medium SAT, medium UNSAT, proof-on UNSAT):
@@ -2775,7 +2775,7 @@ test_lbd_metadata_does_not_touch_original_clause_layout
 ```bash
 SAT_USE_LBD=on SAT_REDUCE=legacy SAT_RESTART=legacy-luby \
   bash tools/bench.sh -t 120 -m 16384 \
-  -d benchmarks/iteration/search-core solver/11-kissat-port
+  -d benchmarks/iteration/search-core solver/11-kissat-search
 ```
 
 Expected: nearly identical search path except for small memory/layout effects. Heavy regression means metadata placement is too invasive.
@@ -3006,7 +3006,7 @@ Run:
 ```bash
 SAT_USE_LBD=on SAT_REDUCE=lbd-tiered SAT_RESTART=legacy-luby \
   bash tools/bench.sh -t 300 -m 16384 \
-  -d benchmarks/discriminating solver/11-kissat-port
+  -d benchmarks/discriminating solver/11-kissat-search
 ```
 
 Track:
@@ -3160,7 +3160,7 @@ Run median of 3 on search-core:
 ```bash
 SAT_USE_LBD=on SAT_RESTART=kissat-ema SAT_REDUCE=lbd-tiered \
   bash tools/bench.sh -t 120 -m 16384 \
-  -d benchmarks/iteration/search-core solver/11-kissat-port
+  -d benchmarks/iteration/search-core solver/11-kissat-search
 ```
 
 Inspect:
@@ -3444,7 +3444,7 @@ test_binary_usage_counter_updates_on_reason
 ```bash
 SAT_BINARY_FAST=on \
   bash tools/bench.sh -t 120 -m 16384 \
-  -d benchmarks/iteration/search-core solver/11-kissat-port
+  -d benchmarks/iteration/search-core solver/11-kissat-search
 ```
 
 Track:
@@ -4153,10 +4153,10 @@ Run:
 
 ```bash
 bash tools/bench.sh -t 300 -m 16384 \
-  -d benchmarks/discriminating solver/11-kissat-port
+  -d benchmarks/discriminating solver/11-kissat-search
 
 bash tools/bench.sh -t 1800 -m 16384 \
-  -d benchmarks/sat-comp-2025 solver/11-kissat-port
+  -d benchmarks/sat-comp-2025 solver/11-kissat-search
 ```
 
 Target direction:
@@ -4425,7 +4425,7 @@ test_inprocess_rebuilds_branch_heap_after_simplification
 ### Benchmark gate
 
 ```bash
-SAT_INPROCESS=on SAT_VIVIFY=off SAT_PROBE=off SAT_HBR=off   bash tools/bench.sh -t 120 -m 16384   -d benchmarks/iteration/search-core solver/11-kissat-port
+SAT_INPROCESS=on SAT_VIVIFY=off SAT_PROBE=off SAT_HBR=off   bash tools/bench.sh -t 120 -m 16384   -d benchmarks/iteration/search-core solver/11-kissat-search
 ```
 
 Expected: no behavior change except tiny scheduling overhead.
@@ -4510,7 +4510,7 @@ For each simplification/inprocessing mutator, specify:
 Create:
 
 ```text
-solver/11-kissat-port/PROOF_OBLIGATIONS.md
+solver/11-kissat-search/PROOF_OBLIGATIONS.md
 ```
 
 Required matrix columns:
@@ -5017,7 +5017,7 @@ test_vivification_uses_formula_edit_transaction
 ```bash
 SAT_INPROCESS=on SAT_VIVIFY=on SAT_PROBE=off SAT_HBR=off \
   bash tools/bench.sh -t 120 -m 16384 \
-  -d benchmarks/iteration/preprocess-core solver/11-kissat-port
+  -d benchmarks/iteration/preprocess-core solver/11-kissat-search
 ```
 
 Track:
@@ -5701,7 +5701,7 @@ bash tools/ci_solver11_fast.sh
 bash tools/ci_solver11_matrix.sh
 bash tools/ci_solver11_proof_model.sh
 SAT_CHECK_INVARIANTS=on bash tools/bench.sh -t 120 -m 16384 \
-  -d benchmarks/iteration/preprocess-core solver/11-kissat-port
+  -d benchmarks/iteration/preprocess-core solver/11-kissat-search
 ```
 
 ### Acceptance
@@ -5841,7 +5841,7 @@ Phase 2 full gate:
 
 ```bash
 bash tools/bench.sh -t 1800 -m 16384 \
-  -d benchmarks/sat-comp-2025 solver/11-kissat-port
+  -d benchmarks/sat-comp-2025 solver/11-kissat-search
 ```
 
 Target direction:
@@ -6025,21 +6025,21 @@ bash tools/ci_solver11_matrix.sh
 The expanded manual equivalent is:
 
 ```bash
-cd solver/11-kissat-port
+cd solver/11-kissat-search
 cargo test
 
 cd ../..
-bash tools/smoke_test.sh solver/11-kissat-port
-SAT_CHECK_INVARIANTS=on bash tools/smoke_test.sh solver/11-kissat-port
+bash tools/smoke_test.sh solver/11-kissat-search
+SAT_CHECK_INVARIANTS=on bash tools/smoke_test.sh solver/11-kissat-search
 bash tools/bench.sh -t 120 -m 16384 \
-  -d benchmarks/iteration/smoke-plus solver/11-kissat-port
+  -d benchmarks/iteration/smoke-plus solver/11-kissat-search
 ```
 
 For search nodes:
 
 ```bash
 bash tools/bench.sh -t 120 -m 16384 \
-  -d benchmarks/iteration/search-core solver/11-kissat-port \
+  -d benchmarks/iteration/search-core solver/11-kissat-search \
   --log-dir log/tasks/<task-id>-<slug>/search-core
 ```
 
@@ -6047,7 +6047,7 @@ For simplification nodes:
 
 ```bash
 bash tools/bench.sh -t 120 -m 16384 \
-  -d benchmarks/iteration/preprocess-core solver/11-kissat-port \
+  -d benchmarks/iteration/preprocess-core solver/11-kissat-search \
   --log-dir log/tasks/<task-id>-<slug>/preprocess-core
 ```
 
@@ -6055,7 +6055,7 @@ For milestone nodes:
 
 ```bash
 bash tools/bench.sh -t 300 -m 16384 \
-  -d benchmarks/discriminating solver/11-kissat-port
+  -d benchmarks/discriminating solver/11-kissat-search
 ```
 
 Compare benchmark runs:
@@ -6072,7 +6072,7 @@ End of phase:
 
 ```bash
 bash tools/bench.sh -t 1800 -m 16384 \
-  -d benchmarks/sat-comp-2025 solver/11-kissat-port
+  -d benchmarks/sat-comp-2025 solver/11-kissat-search
 ```
 
 ---

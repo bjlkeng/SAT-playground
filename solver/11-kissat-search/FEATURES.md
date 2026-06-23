@@ -27,9 +27,9 @@ prints the same maturity records in `SAT_CONFIG_DUMP`, writes them into
 | `SAT_MODE_USE_TICKS` | `mode_use_ticks` | Experimental | none | `log/bench-11-kissat-port-2026-05-25-20-01-30/results.csv` | Kissat-style focused/stable mode scheduling. Env-facing requests remain enabled with focused/stable search; conflict-triggered switches now run at the post-propagation scheduling boundary. |
 | `SAT_LUCKY` | `lucky` | SmokeSafe | none | `log/phase1/3fs-lucky-off-default-profile/results.csv` | Pre-search lucky assignment pass. Default and fast profiles leave it off after the lucky-on rerun solved only the battleship row while adding time elsewhere; `SAT_LUCKY=on` remains the explicit opt-in for all-true/all-false, forward/backward false/true temporary propagation probes, and bounded small-formula local repair. |
 | `SAT_OTFS` | `otfs` | Experimental | none | `log/phase1/1.14g-otfs-summary.md` | Optional bounded learned-clause-only subsumption after learning. It now checks a Kissat-style four-clause recent learned window instead of scanning watcher lists globally, and deletes only when LBD metadata shows the new clause is better; default remains off after enabled profile regressions. |
-| `SAT_SIMPLIFICATION` | `simplification` | SmokeSafe | default, fast | `solver/11-kissat-port/BASELINE_LOCK.raw.txt` | Legacy solver-10 preprocessing umbrella retained for compatibility. |
-| `SAT_BVE` | `bve` | SmokeSafe | default, fast | `solver/11-kissat-port/BASELINE_LOCK.raw.txt` | Existing bounded variable elimination switch. |
-| `SAT_FULL_BSR` | `full_bsr` | SmokeSafe | default, fast | `solver/11-kissat-port/BASELINE_LOCK.raw.txt` | Existing full backward-subsumption switch. |
+| `SAT_SIMPLIFICATION` | `simplification` | SmokeSafe | default, fast | `solver/11-kissat-search/BASELINE_LOCK.raw.txt` | Legacy solver-10 preprocessing umbrella retained for compatibility. |
+| `SAT_BVE` | `bve` | SmokeSafe | default, fast | `solver/11-kissat-search/BASELINE_LOCK.raw.txt` | Existing bounded variable elimination switch. |
+| `SAT_FULL_BSR` | `full_bsr` | SmokeSafe | default, fast | `solver/11-kissat-search/BASELINE_LOCK.raw.txt` | Existing full backward-subsumption switch. |
 | `SAT_INPROCESS` | `inprocess` | ParkingLot | none |  | Config-reserved until inprocessing scheduling lands. |
 | `SAT_VIVIFY` | `vivify` | ParkingLot | none |  | Config-reserved until vivification lands. |
 | `SAT_PROBE` | `probe` | ParkingLot | none |  | Config-reserved until probing lands. |

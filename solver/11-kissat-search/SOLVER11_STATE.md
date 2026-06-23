@@ -1,6 +1,6 @@
 # Solver 11 State
 
-Task 0.1 establishes the architecture boundary map for `solver/11-kissat-port`.
+Task 0.1 establishes the architecture boundary map for `solver/11-kissat-search`.
 This file is durable handoff state for future agents; keep it current when a
 task moves code, introduces a capability, or changes ownership of an invariant.
 

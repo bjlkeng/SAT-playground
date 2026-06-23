@@ -12,8 +12,8 @@ Process (per the 2026-05-30 design):
   * Two stages: Stage 1 screens every config at 300 s on all 20; Stage 2 (separate invocation)
     re-runs a shortlist at a long timeout on the hard-10 only to measure real headroom.
 
-Each config is a same-binary SAT_* env toggle on solver/11-kissat-port (built once); `solver10`
-is the solver/10-bve-preprocess reference floor. Flag `requires` deps (CONFIG_SCHEMA.csv) are
+Each config is a same-binary SAT_* env toggle on solver/11-kissat-search (built once); `solver10`
+is the solver/10-bve-subsume reference floor. Flag `requires` deps (CONFIG_SCHEMA.csv) are
 encoded so no toggle is a silent no-op; parent-only controls (use_lbd, lbd_tiered, fstab) are
 included for attribution.
 
@@ -39,8 +39,8 @@ import compare_bench  # noqa: E402
 
 SUITE = ROOT / "benchmarks" / "profile20"
 SELECTION = SUITE / "selection.csv"
-S11 = "solver/11-kissat-port"
-S10 = "solver/10-bve-preprocess"
+S11 = "solver/11-kissat-search"
+S10 = "solver/10-bve-subsume"
 CORES = [0, 1, 2, 3]            # default worker cores; overridden to range(--jobs) by preflight()
 TOL = 0.03                      # 3% noise band for the repeat rule
 
@@ -593,7 +593,7 @@ def main() -> int:
                     help="ad-hoc --seedgate config without editing CONFIG_MAP: 'SAT_X=on,SAT_Y=2' "
                          "(''=solver default). A/B it against --env '' (baseline). Pair with --tag.")
     ap.add_argument("--solver", default=None,
-                    help="solver dir for --env --seedgate (default solver/11-kissat-port)")
+                    help="solver dir for --env --seedgate (default solver/11-kissat-search)")
     ap.add_argument("--tag", default="", help="label for an --env --seedgate run (output dir + gate TSV)")
     ap.add_argument("--configs", default="")
     ap.add_argument("--timeout", type=int, default=300)

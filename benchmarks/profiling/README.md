@@ -13,7 +13,7 @@ benchmark directory resolves to this directory.
 Ten instances chosen from the SAT Competition 2025 main-track medium subset
 (`benchmarks/sat-comp-2025-medium/`). Selection criteria:
 
-* Each instance was solved by both `kissat-latest` and `solver/10-bve-preprocess`
+* Each instance was solved by both `kissat-latest` and `solver/10-bve-subsume`
   in under 300 s wall-clock on the reference hardware (records:
   `log/bench-kissat-latest-2026-04-11-22-21-01/results.csv` and
   `log/bench-10-bve-preprocess-2026-05-18-16-04-01/results.csv`).

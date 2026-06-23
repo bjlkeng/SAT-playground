@@ -9,7 +9,7 @@ Two halves:
 
 - **easy (10)** — the existing `benchmarks/profiling` control suite, reused verbatim (symlinked to
   `../profiling/`), to preserve direct comparability with all prior profiling results. solver-10
-  (`10-bve-preprocess`) solves every one within 5 min on its fast run (best-of-3 < 300 s for all 10).
+  (`10-bve-subsume`) solves every one within 5 min on its fast run (best-of-3 < 300 s for all 10).
   **Caveat (variance):** these are the profiling instances and two of them are bimodal /
   variance-sensitive — `brocard_problem_large` (7.9 / 526.5 / 585.3 s) and
   `REGRandom-K4-L1-Seed40` (54.2 / 966.8 / 1278.1 s) — and `mp1-Nb7T46` / `sudoku-N30-12` each have

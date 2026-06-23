@@ -4,7 +4,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SOLVER="solver/11-kissat-port"
+SOLVER="solver/11-kissat-search"
 TIMEOUT=300
 MEMLIMIT_MB=16384
 declare -a SETS=(smoke-plus search-core preprocess-core regression-guards)
@@ -14,7 +14,7 @@ usage() {
 Usage: bash tools/run_matrix.sh [options]
 
 Options:
-  --solver <dir>             Solver directory (default: solver/11-kissat-port)
+  --solver <dir>             Solver directory (default: solver/11-kissat-search)
   -t, --timeout <seconds>    Per-instance timeout (default: 300)
   -m, --memory <MB>          Memory limit (default: 16384)
   --sets <a,b,c>             Benchmark sets under benchmarks/iteration

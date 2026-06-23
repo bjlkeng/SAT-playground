@@ -15,7 +15,7 @@ Rules:
 Recommended iteration command:
 
 ```bash
-bash tools/bench.sh -t 300 -d benchmarks/discriminating solver/11-kissat-port
+bash tools/bench.sh -t 300 -d benchmarks/discriminating solver/11-kissat-search
 ```
 
 Use `-t 600` for end-of-phase confirmation when a feature is a promotion candidate.

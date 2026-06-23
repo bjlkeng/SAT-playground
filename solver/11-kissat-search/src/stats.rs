@@ -399,7 +399,7 @@ pub(crate) fn max_rss_mb() -> Option<u64> {
 pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     let mut json = JsonObject::new();
     json.u64("schema_version", 1);
-    json.string("solver", "11-kissat-port");
+    json.string("solver", "11-kissat-search");
     json.string(
         "solver_git_sha",
         option_env!("SOLVER_GIT_SHA").unwrap_or("unknown"),

@@ -4,8 +4,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-SOLVER10="solver/10-bve-preprocess"
-SOLVER11="solver/11-kissat-port"
+SOLVER10="solver/10-bve-subsume"
+SOLVER11="solver/11-kissat-search"
 LOG_DIR="log/0.0b"
 INSTANCE_DIR="$LOG_DIR/instances"
 STDOUT_DIR="$LOG_DIR/lbd-on-stdout"

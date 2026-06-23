@@ -1,6 +1,6 @@
 ---
 name: analyzesat
-description: Scientific bottleneck analysis for a SAT solver iteration — runs multi-config ablation across the profiling suite, profiles with perf, decomposes regressions into work × speed, diffs the reference source, writes FINDINGS.md + DEEPER_FINDINGS.md, creates beads for new actionable issues, summarizes findings to screen, and commits the artifacts. Default target is solver/11-kissat-port. Pass an optional solver path argument to target a different iteration (e.g. /analyzesat solver/10-bve-preprocess).
+description: Scientific bottleneck analysis for a SAT solver iteration — runs multi-config ablation across the profiling suite, profiles with perf, decomposes regressions into work × speed, diffs the reference source, writes FINDINGS.md + DEEPER_FINDINGS.md, creates beads for new actionable issues, summarizes findings to screen, and commits the artifacts. Default target is solver/11-kissat-search. Pass an optional solver path argument to target a different iteration (e.g. /analyzesat solver/10-bve-subsume).
 ---
 
 # Analyze SAT Solver Bottlenecks
@@ -28,7 +28,7 @@ as a 1-to-1 implementation target.** Read kissat to understand *where* and *why*
 work or runs faster, then adapt the idea however best fits this codebase. Exact behavioral or
 source parity with kissat is explicitly **not** a goal; keep whatever wins aggregate PAR-2.
 
-This skill is the primary tool for "fresh eyes" deep-dives on `solver/11-kissat-port`
+This skill is the primary tool for "fresh eyes" deep-dives on `solver/11-kissat-search`
 or any other iteration. It owns the deep-dive workflows formerly documented in
 the project guide: investigating why ported features do not help, debugging
 optimization regressions, and reference-solver gap-closing analysis.
@@ -39,7 +39,7 @@ optimization regressions, and reference-solver gap-closing analysis.
 /analyzesat [solver/NN-name]
 ```
 
-Default target: `solver/11-kissat-port`
+Default target: `solver/11-kissat-search`
 
 ## Pre-flight
 

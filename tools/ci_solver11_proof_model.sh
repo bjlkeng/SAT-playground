@@ -4,7 +4,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SOLVER="${1:-solver/11-kissat-port}"
+SOLVER="${1:-solver/11-kissat-search}"
 OUT_ROOT="${SAT_CI_PROOF_MODEL_OUT:-$REPO_ROOT/log/ci_solver11_proof_model-$(date +%Y-%m-%d-%H-%M-%S)}"
 
 mkdir -p "$OUT_ROOT"
@@ -34,15 +34,15 @@ unknown_dir="$OUT_ROOT/unknown-limit"
 mkdir -p "$unknown_dir"
 SAT_PROFILE=baseline SAT_LIMIT_TICKS=0 SAT_STATS_JSON=on \
     bash "$REPO_ROOT/$SOLVER/run.sh" \
-    "$REPO_ROOT/solver/11-kissat-port/testdata/golden/split_clause.cnf" \
+    "$REPO_ROOT/solver/11-kissat-search/testdata/golden/split_clause.cnf" \
     "$unknown_dir" > "$unknown_dir/stdout.log" 2> "$unknown_dir/stderr.log"
 python3 "$REPO_ROOT/tools/validate_solver_result.py" \
-    --cnf "$REPO_ROOT/solver/11-kissat-port/testdata/golden/split_clause.cnf" \
+    --cnf "$REPO_ROOT/solver/11-kissat-search/testdata/golden/split_clause.cnf" \
     --out-dir "$unknown_dir" --expected-status UNKNOWN --proof-policy drat \
     --require-json-stats on
 
 echo "ci_solver11_proof_model: generated proof/model golden tests"
-(cd "$REPO_ROOT/solver/11-kissat-port" && \
+(cd "$REPO_ROOT/solver/11-kissat-search" && \
     cargo test oracle_tests::output_contract::test_golden)
 
 echo "ci_solver11_proof_model: LRAT is expected unsupported until the proof-upgrade bead"
@@ -50,7 +50,7 @@ lrat_dir="$OUT_ROOT/lrat-unsupported"
 mkdir -p "$lrat_dir"
 set +e
 SAT_PROOF=lrat bash "$REPO_ROOT/$SOLVER/run.sh" \
-    "$REPO_ROOT/solver/11-kissat-port/testdata/golden/unsat_empty_clause.cnf" \
+    "$REPO_ROOT/solver/11-kissat-search/testdata/golden/unsat_empty_clause.cnf" \
     "$lrat_dir" > "$lrat_dir/stdout.log" 2> "$lrat_dir/stderr.log"
 lrat_rc=$?
 set -e

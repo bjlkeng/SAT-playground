@@ -1,5 +1,5 @@
 [package]
-name = "sat-solver-11-kissat-port"
+name = "sat-solver-10-bve-subsume"
 version = "0.1.0"
 edition = "2021"
 

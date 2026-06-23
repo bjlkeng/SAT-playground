@@ -4,8 +4,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-SOLVER10="solver/10-bve-preprocess"
-SOLVER11="solver/11-kissat-port"
+SOLVER10="solver/10-bve-subsume"
+SOLVER11="solver/11-kissat-search"
 PROFILE_BENCH_TIMEOUT="${PROFILE_BENCH_TIMEOUT:-300}"
 LOCK_DIR="log/baseline-lock"
 SMOKE_VALIDATE_DIR="$LOCK_DIR/solver11-smoke-validation"

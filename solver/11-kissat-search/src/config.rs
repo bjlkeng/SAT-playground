@@ -2165,7 +2165,7 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             true,
             true,
             false,
-            "solver/11-kissat-port/BASELINE_LOCK.raw.txt",
+            "solver/11-kissat-search/BASELINE_LOCK.raw.txt",
         ),
         feature(
             "SAT_BVE",
@@ -2174,7 +2174,7 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             true,
             true,
             false,
-            "solver/11-kissat-port/BASELINE_LOCK.raw.txt",
+            "solver/11-kissat-search/BASELINE_LOCK.raw.txt",
         ),
         feature(
             "SAT_FULL_BSR",
@@ -2183,7 +2183,7 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             true,
             true,
             false,
-            "solver/11-kissat-port/BASELINE_LOCK.raw.txt",
+            "solver/11-kissat-search/BASELINE_LOCK.raw.txt",
         ),
         feature(
             "SAT_BSR_FORMULA_GATE",

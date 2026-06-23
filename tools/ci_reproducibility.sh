@@ -4,7 +4,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SOLVER="${1:-solver/11-kissat-port}"
+SOLVER="${1:-solver/11-kissat-search}"
 SOLVER_DIR="$REPO_ROOT/$SOLVER"
 OUT_ROOT="${SAT_CI_REPRO_OUT:-$REPO_ROOT/log/ci_reproducibility-$(date +%Y-%m-%d-%H-%M-%S)}"
 STRICT_SEED_EFFECT="${SAT_CI_REQUIRE_SEED_EFFECT:-off}"
@@ -38,7 +38,7 @@ declare -a CASES=(
     "trivial_unsat:$REPO_ROOT/tests/cnf/unsat/contradiction.cnf"
     "medium_sat:$REPO_ROOT/tests/cnf/sat/three_sat.cnf"
     "medium_unsat:$REPO_ROOT/tests/cnf/unsat/pigeonhole_3_2.cnf"
-    "proof_unsat:$REPO_ROOT/solver/11-kissat-port/testdata/golden/unsat_empty_clause.cnf"
+    "proof_unsat:$REPO_ROOT/solver/11-kissat-search/testdata/golden/unsat_empty_clause.cnf"
 )
 
 extract_stats() {

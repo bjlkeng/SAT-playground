@@ -24,8 +24,8 @@ DEFAULT_INSTANCES = [
     REPO_ROOT / "benchmarks/profiling/legacy/random_v285_s2.cnf",
 ]
 SOLVERS = {
-    "solver10": REPO_ROOT / "solver/10-bve-preprocess",
-    "solver11": REPO_ROOT / "solver/11-kissat-port",
+    "solver10": REPO_ROOT / "solver/10-bve-subsume",
+    "solver11": REPO_ROOT / "solver/11-kissat-search",
 }
 SEARCH_DONE_RE = re.compile(
     r"c search done result=(?P<result>\S+) seconds=(?P<seconds>[0-9.]+) "
