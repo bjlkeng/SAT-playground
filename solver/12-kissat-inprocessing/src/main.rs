@@ -129,6 +129,8 @@ const CLAUSE_DELETED_MARK: u32 = 1;
 const DEFAULT_BVE_GROW: isize = 0;
 const DEFAULT_BVE_CLAUSE_LIMIT: isize = 20;
 const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
+/// Default conflicts between inprocessing rounds when SAT_INPROCESS_INTERVAL_CONFLICTS=0.
+const INPROCESS_DEFAULT_INTERVAL: u64 = 2000;
 const OTFS_MAX_LEARNED_LEN: usize = 20;
 const OTFS_MAX_EXTRA_LITS: usize = 4;
 const OTFS_RECENT_LEARNED_LIMIT: usize = 4;
@@ -1350,6 +1352,17 @@ struct Solver {
     reduce_db_min_interval: u64,
     /// global conflict count at which the last database reduction ran
     reduce_db_last_conflicts: Option<u64>,
+    /// inprocessing scheduler: run periodic root simplification / formula-rewriting
+    /// rounds during search (default off; currently an empty round entry point)
+    inprocess: bool,
+    /// conflicts between inprocessing rounds (0 => use INPROCESS_DEFAULT_INTERVAL)
+    inprocess_interval_conflicts: u64,
+    /// cap on inprocessing rounds per solve (0 => unlimited)
+    inprocess_max_rounds: u64,
+    /// global conflict count at which the next inprocessing round becomes due
+    next_inprocess_conflicts: u64,
+    /// number of inprocessing rounds run so far this solve
+    inprocess_rounds: u64,
     /// target learned-literal budget for LBD-tiered reduction
     learned_lit_budget: usize,
     /// hard learned-literal budget that allows emergency low-LBD demotion
@@ -2243,6 +2256,15 @@ impl Solver {
             reduce_db_limit: ((original_clause_count as f64) * LEARNTSIZE_FACTOR) as usize,
             reduce_db_min_interval: 0,
             reduce_db_last_conflicts: None,
+            inprocess: config.inprocess,
+            inprocess_interval_conflicts: config.inprocess_interval_conflicts,
+            inprocess_max_rounds: config.inprocess_max_rounds,
+            next_inprocess_conflicts: if config.inprocess_interval_conflicts > 0 {
+                config.inprocess_interval_conflicts
+            } else {
+                INPROCESS_DEFAULT_INTERVAL
+            },
+            inprocess_rounds: 0,
             learned_lit_budget: LEARNED_LIT_BUDGET_BASE,
             hard_learned_lit_budget: LEARNED_LIT_BUDGET_BASE.saturating_mul(2),
             reset_reduce_db_after_preprocess: true,
@@ -5985,6 +6007,57 @@ impl Solver {
         learned_clause_pressure && self.reduce_db_min_interval_elapsed()
     }
 
+    /// Resolved conflict interval between inprocessing rounds (0 config => default).
+    fn inprocess_interval(&self) -> u64 {
+        if self.inprocess_interval_conflicts > 0 {
+            self.inprocess_interval_conflicts
+        } else {
+            INPROCESS_DEFAULT_INTERVAL
+        }
+    }
+
+    /// Whether an inprocessing round is due. Only ever true when `SAT_INPROCESS`
+    /// is enabled; the default profile keeps inprocessing off and this is a no-op.
+    /// Must be checked only at decision level 0 (the caller guarantees it), since
+    /// inprocessing rewrites the root formula.
+    fn should_inprocess(&self) -> bool {
+        if !self.inprocess {
+            return false;
+        }
+        if self.inprocess_max_rounds != 0 && self.inprocess_rounds >= self.inprocess_max_rounds {
+            return false;
+        }
+        self.stats.conflicts >= self.next_inprocess_conflicts
+    }
+
+    /// Run one inprocessing round at decision level 0, then reschedule.
+    ///
+    /// This is the scaffold entry point for clause-simplification / formula-rewriting
+    /// techniques (vivification, probing, equivalent-literal substitution, gate-aware
+    /// BVE, ...). It is invoked only at root. No technique is wired in yet, so the
+    /// round is intentionally empty and trajectory-neutral: it touches no clauses,
+    /// trail, or watches, and only advances the schedule counter. Techniques added
+    /// here must (a) operate at decision level 0, (b) keep the DRAT proof valid, and
+    /// (c) leave watch lists / occurrence state consistent before returning.
+    ///
+    /// Returns `false` if the round proves the formula UNSAT.
+    fn inprocess_round(&mut self, _proof_log: &mut ProofLog) -> bool {
+        debug_assert_eq!(
+            self.current_level(),
+            0,
+            "inprocessing must run at decision level 0"
+        );
+        self.inprocess_rounds += 1;
+
+        // (no inprocessing techniques wired in yet — empty round)
+
+        self.next_inprocess_conflicts = self
+            .stats
+            .conflicts
+            .saturating_add(self.inprocess_interval().max(1));
+        true
+    }
+
     fn refresh_learned_lit_budgets(&mut self) {
         if !self.reduce_db_enabled() {
             self.learned_lit_budget = usize::MAX;
@@ -8252,6 +8325,13 @@ impl Solver {
                             self.finish_search_timing(search_start);
                             return SolveOutcome::unsat();
                         }
+                        // Inprocessing scheduler hook: at root, periodically run a
+                        // clause-simplification / formula-rewriting round. Default-off
+                        // and currently an empty round, so this is performance-neutral.
+                        if self.should_inprocess() && !self.inprocess_round(proof_log) {
+                            self.finish_search_timing(search_start);
+                            return SolveOutcome::unsat();
+                        }
                     }
 
                     if self.reduce_db_enabled() && self.should_reduce_db() {
@@ -8949,6 +9029,117 @@ mod tests {
                 "every original clause must be satisfied by the model"
             );
         }
+    }
+
+    /// Pigeonhole PHP(pigeons, holes): each pigeon in >=1 hole, no two pigeons
+    /// share a hole. UNSAT when pigeons > holes; generates conflicts and restarts.
+    fn php_clauses(pigeons: usize, holes: usize) -> Vec<Vec<i32>> {
+        let var = |p: usize, h: usize| ((p - 1) * holes + h) as i32; // 1-based
+        let mut clauses = Vec::new();
+        for p in 1..=pigeons {
+            clauses.push((1..=holes).map(|h| var(p, h)).collect());
+        }
+        for h in 1..=holes {
+            for p1 in 1..=pigeons {
+                for p2 in (p1 + 1)..=pigeons {
+                    clauses.push(vec![-var(p1, h), -var(p2, h)]);
+                }
+            }
+        }
+        clauses
+    }
+
+    #[test]
+    fn inprocess_scheduler_fires_and_respects_round_cap() {
+        let config = SolverConfig {
+            inprocess: true,
+            inprocess_interval_conflicts: 1,
+            ..Default::default()
+        };
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        let mut proof = ProofLog::disabled();
+        // Not due before the first interval of conflicts has elapsed.
+        assert!(!s.should_inprocess());
+        s.stats.conflicts = 5;
+        assert!(s.should_inprocess());
+        assert!(s.inprocess_round(&mut proof));
+        assert_eq!(s.inprocess_rounds, 1);
+        assert!(
+            s.next_inprocess_conflicts > 5,
+            "round must reschedule the next trigger forward"
+        );
+
+        // Round cap is honored.
+        let capped = SolverConfig {
+            inprocess: true,
+            inprocess_interval_conflicts: 1,
+            inprocess_max_rounds: 1,
+            ..Default::default()
+        };
+        let mut s2 = make_solver_with_config(2, vec![vec![1, 2]], &capped);
+        s2.stats.conflicts = 5;
+        assert!(s2.should_inprocess());
+        assert!(s2.inprocess_round(&mut proof));
+        s2.stats.conflicts = 1000;
+        assert!(!s2.should_inprocess(), "max_rounds cap must stop further rounds");
+    }
+
+    #[test]
+    fn inprocess_disabled_by_default_never_fires() {
+        let s = make_solver(2, vec![vec![1, 2]]);
+        assert!(!s.inprocess, "SAT_INPROCESS is off by default");
+        let mut s = s;
+        s.stats.conflicts = 1_000_000;
+        assert!(!s.should_inprocess());
+    }
+
+    #[test]
+    fn inprocess_on_solves_sat_and_unsat_correctly() {
+        let config = SolverConfig {
+            inprocess: true,
+            inprocess_interval_conflicts: 1,
+            ..Default::default()
+        };
+        let mut sat = make_solver_with_config(3, vec![vec![1, 2, 3], vec![-1, 2]], &config);
+        let mut p1 = ProofLog::disabled();
+        assert!(sat.solve_with_proof(&mut p1, &config));
+
+        let mut unsat = make_solver_with_config(5 * 4, php_clauses(5, 4), &config);
+        let mut p2 = ProofLog::disabled();
+        assert!(!unsat.solve_with_proof(&mut p2, &config));
+    }
+
+    #[test]
+    fn inprocess_empty_round_is_trajectory_neutral() {
+        // The scaffold round does no work yet, so enabling the scheduler (with the
+        // hook firing during search) must not change the search trajectory at all:
+        // identical result AND identical conflict count vs the default-off run.
+        let clauses = php_clauses(6, 5);
+        let off = SolverConfig::default();
+        let on = SolverConfig {
+            inprocess: true,
+            inprocess_interval_conflicts: 1, // fire at every level-0 visit
+            ..Default::default()
+        };
+        let nvars = 6 * 5;
+
+        let mut s_off = make_solver_with_config(nvars, clauses.clone(), &off);
+        let mut p_off = ProofLog::disabled();
+        let r_off = s_off.solve_with_proof(&mut p_off, &off);
+
+        let mut s_on = make_solver_with_config(nvars, clauses.clone(), &on);
+        let mut p_on = ProofLog::disabled();
+        let r_on = s_on.solve_with_proof(&mut p_on, &on);
+
+        assert_eq!(r_off, r_on, "result must be unchanged by the empty scaffold");
+        assert_eq!(
+            s_off.stats.conflicts, s_on.stats.conflicts,
+            "empty inprocessing round must not perturb the search trajectory"
+        );
+        assert!(
+            s_on.inprocess_rounds > 0,
+            "the scheduler hook must actually fire during this solve"
+        );
     }
 
     #[test]

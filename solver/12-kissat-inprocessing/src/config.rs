@@ -1490,7 +1490,6 @@ impl SolverConfig {
             fail_config("Invalid config: SAT_GATE_BVE=on requires SAT_GATE_EXTRACT=on");
         }
         let unsupported = [
-            (self.inprocess, "SAT_INPROCESS"),
             (self.vivify, "SAT_VIVIFY"),
             (self.hbr, "SAT_HBR"),
             (self.transitive, "SAT_TRANSITIVE"),
