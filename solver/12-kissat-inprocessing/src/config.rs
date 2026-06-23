@@ -1486,11 +1486,13 @@ impl SolverConfig {
         if self.hbr && !self.probe {
             fail_config("Invalid config: SAT_HBR=on requires SAT_PROBE=on");
         }
+        if self.vivify && !self.inprocess {
+            fail_config("Invalid config: SAT_VIVIFY=on requires SAT_INPROCESS=on (vivify runs in the inprocessing round)");
+        }
         if self.gate_bve && !self.gate_extract {
             fail_config("Invalid config: SAT_GATE_BVE=on requires SAT_GATE_EXTRACT=on");
         }
         let unsupported = [
-            (self.vivify, "SAT_VIVIFY"),
             (self.hbr, "SAT_HBR"),
             (self.transitive, "SAT_TRANSITIVE"),
             (self.forward_subsume, "SAT_FORWARD_SUBSUME"),

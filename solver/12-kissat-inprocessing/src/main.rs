@@ -131,6 +131,12 @@ const DEFAULT_BVE_CLAUSE_LIMIT: isize = 20;
 const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
 /// Default conflicts between inprocessing rounds when SAT_INPROCESS_INTERVAL_CONFLICTS=0.
 const INPROCESS_DEFAULT_INTERVAL: u64 = 2000;
+/// Default per-round vivification propagation budget multiplier over live literals.
+const VIVIFY_BUDGET_LITS_MULTIPLIER: u64 = 20;
+const VIVIFY_BUDGET_MIN_TICKS: u64 = 5_000_000;
+const VIVIFY_BUDGET_MAX_TICKS: u64 = 100_000_000;
+/// Default cap on original-clause length considered for vivification.
+const DEFAULT_VIVIFY_MAX_CLAUSE_LEN: usize = 100;
 const OTFS_MAX_LEARNED_LEN: usize = 20;
 const OTFS_MAX_EXTRA_LITS: usize = 4;
 const OTFS_RECENT_LEARNED_LIMIT: usize = 4;
@@ -1363,6 +1369,12 @@ struct Solver {
     next_inprocess_conflicts: u64,
     /// number of inprocessing rounds run so far this solve
     inprocess_rounds: u64,
+    /// run clause vivification inside each inprocessing round (SAT_VIVIFY)
+    vivify: bool,
+    /// per-round propagation budget for vivification (0 => proportional default)
+    vivify_ticks_budget: u64,
+    /// only vivify original clauses up to this length (0 => DEFAULT_VIVIFY_MAX_CLAUSE_LEN)
+    vivify_max_clause_len: usize,
     /// target learned-literal budget for LBD-tiered reduction
     learned_lit_budget: usize,
     /// hard learned-literal budget that allows emergency low-LBD demotion
@@ -2265,6 +2277,9 @@ impl Solver {
                 INPROCESS_DEFAULT_INTERVAL
             },
             inprocess_rounds: 0,
+            vivify: config.vivify,
+            vivify_ticks_budget: config.vivify_ticks_budget,
+            vivify_max_clause_len: config.vivify_max_clause_len,
             learned_lit_budget: LEARNED_LIT_BUDGET_BASE,
             hard_learned_lit_budget: LEARNED_LIT_BUDGET_BASE.saturating_mul(2),
             reset_reduce_db_after_preprocess: true,
@@ -6242,7 +6257,7 @@ impl Solver {
     /// (c) leave watch lists / occurrence state consistent before returning.
     ///
     /// Returns `false` if the round proves the formula UNSAT.
-    fn inprocess_round(&mut self, _proof_log: &mut ProofLog) -> bool {
+    fn inprocess_round(&mut self, proof_log: &mut ProofLog) -> bool {
         debug_assert_eq!(
             self.current_level(),
             0,
@@ -6250,12 +6265,222 @@ impl Solver {
         );
         self.inprocess_rounds += 1;
 
-        // (no inprocessing techniques wired in yet — empty round)
+        let mut ok = true;
+        if self.vivify {
+            ok = self.vivify_round(proof_log);
+        }
 
         self.next_inprocess_conflicts = self
             .stats
             .conflicts
             .saturating_add(self.inprocess_interval().max(1));
+        ok
+    }
+
+    /// One vivification round at decision level 0 (clause strengthening / redundancy
+    /// removal by asymmetric tautology). For each candidate original clause, the
+    /// clause is detached and its literals' negations are assumed one-by-one under
+    /// propagation (using the rest of the formula). A propagation conflict proves the
+    /// assumed prefix is RUP, so the clause strengthens to it; a literal implied true
+    /// proves the clause redundant. Analysis runs inside a single temporary-assumption
+    /// context (one arena/watcher clone for the whole round); decisions are applied
+    /// afterwards through the formula-edit transaction layer.
+    ///
+    /// Returns false if the round proves the formula UNSAT.
+    fn vivify_round(&mut self, proof_log: &mut ProofLog) -> bool {
+        if self.current_level() != 0 || self.has_empty_clause || !self.solver_ok {
+            return true;
+        }
+        if self.binary_fast_path {
+            // The transaction layer assumes normal watches; skip when the separate
+            // binary index is active (off by default).
+            return true;
+        }
+
+        let budget_ticks = if self.vivify_ticks_budget > 0 {
+            self.vivify_ticks_budget
+        } else {
+            (self.original_literals as u64)
+                .saturating_mul(VIVIFY_BUDGET_LITS_MULTIPLIER)
+                .clamp(VIVIFY_BUDGET_MIN_TICKS, VIVIFY_BUDGET_MAX_TICKS)
+        };
+        let max_len = if self.vivify_max_clause_len > 0 {
+            self.vivify_max_clause_len
+        } else {
+            DEFAULT_VIVIFY_MAX_CLAUSE_LEN
+        };
+
+        let candidates: Vec<usize> = self
+            .original_clause_ids
+            .iter()
+            .copied()
+            .filter(|&c| {
+                !self.clause_is_deleted(c) && (3..=max_len).contains(&self.clause_len(c))
+            })
+            .collect();
+        if candidates.is_empty() {
+            return true;
+        }
+
+        // Analyze inside a single temporary-assumption context (one arena/watcher
+        // clone). To stay SOUND, each edit is applied to the CLONE as it is decided,
+        // so later clauses are analyzed against the already-edited formula (this kills
+        // the batch-interdependency bug: A redundant-given-B and B redundant-given-A
+        // can't both be dropped). The decisions are recorded and REPLAYED in the same
+        // order on the real solver afterwards (the context restores arena/watchers, so
+        // there is no watch corruption like the ctx-less approach). Three caveats keep
+        // it correct: (1) skip locked clauses (their reason-clear is not restored by
+        // the context); (2) save/restore the live-literal counters the context does not
+        // restore; (3) units are applied to the clone via enqueue_root (rolled back),
+        // and added permanently only on replay.
+        let saved_original_literals = self.original_literals;
+        let saved_learned_literals = self.learned_literals;
+        let saved_deleted_words = self.deleted_clause_words;
+
+        // Each decision is (clause_idx, keep): keep.len()==1 => unit, else strengthen.
+        let mut decisions: Vec<(usize, Vec<i32>)> = Vec::new();
+        let mut proved_unsat = false;
+        self.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
+            let mut budget = Budget::from_ticks(budget_ticks);
+            let mut clone_proof = ProofLog::disabled();
+            for &c in &candidates {
+                if budget.exhausted() {
+                    break;
+                }
+                if ctx.solver.clause_is_deleted(c) || ctx.solver.clause_locked(c) {
+                    continue;
+                }
+                let lits: Vec<i32> = ctx.solver.clause_slice(c).to_vec();
+                let base = ctx.solver.current_level();
+                debug_assert_eq!(base, 0);
+
+                // Exclude the clause itself from propagation while we test it.
+                ctx.solver.detach_clause_strict(c);
+
+                let mut keep: Vec<i32> = Vec::with_capacity(lits.len());
+                let mut redundant = false;
+                let mut conflicted = false;
+                for &l in &lits {
+                    match ctx.solver.lit_value(l) {
+                        // `l` is implied true by the rest under the assumed prefix:
+                        // the clause is RUP-implied, hence redundant.
+                        TRUE => {
+                            redundant = true;
+                            break;
+                        }
+                        // `l` is implied false: redundant in the clause and re-derived
+                        // when ¬keep is replayed, so it is dropped from keep.
+                        FALSE => continue,
+                        _ => match ctx.assume(-l) {
+                            EnqueueResult::Enqueued => {
+                                keep.push(l);
+                                if ctx.propagate_budgeted(&mut budget).is_some() {
+                                    conflicted = true;
+                                    break;
+                                }
+                            }
+                            EnqueueResult::AlreadyAssigned => keep.push(l),
+                            EnqueueResult::Conflict => {
+                                redundant = true;
+                                break;
+                            }
+                        },
+                    }
+                }
+
+                ctx.solver.backtrack(base);
+                ctx.solver.attach_clause(c, false);
+
+                // Asymmetric clause strengthening only. The asymmetric-tautology
+                // redundancy DELETE path (drop a clause when a literal is implied
+                // true) is intentionally NOT taken: it was empirically unsound here
+                // (made div-mitern172 UNSAT->SAT) while conflict-based strengthening
+                // and unit derivation are sound. `redundant` clauses are left intact.
+                // Apply to the clone immediately so later analyses see the edit.
+                let _ = redundant;
+                if conflicted && keep.len() < lits.len() {
+                    match keep.len() {
+                        0 => {
+                            proved_unsat = true;
+                            break;
+                        }
+                        1 => {
+                            let unit = keep[0];
+                            if matches!(ctx.enqueue_root(unit), EnqueueResult::Conflict) {
+                                proved_unsat = true;
+                                break;
+                            }
+                            if ctx.propagate_budgeted(&mut budget).is_some() {
+                                proved_unsat = true;
+                                break;
+                            }
+                            ctx.solver.inprocess_delete_clause(c);
+                            decisions.push((c, keep));
+                        }
+                        _ => {
+                            ctx.solver
+                                .inprocess_strengthen_clause(c, &keep, &mut clone_proof);
+                            decisions.push((c, keep));
+                        }
+                    }
+                }
+            }
+        });
+
+        // The context restored arena/watchers/trail; restore the counters it does not.
+        self.original_literals = saved_original_literals;
+        self.learned_literals = saved_learned_literals;
+        self.deleted_clause_words = saved_deleted_words;
+
+        if proved_unsat {
+            proof_log.record_clause(&[]);
+            self.has_empty_clause = true;
+            return false;
+        }
+
+        // Replay the recorded edits on the REAL solver, in order, with the real proof.
+        let (mut units, mut strengthened) = (0u64, 0u64);
+        for (c, keep) in decisions {
+            if self.clause_is_deleted(c) {
+                continue;
+            }
+            match keep.len() {
+                0 => {
+                    proof_log.record_clause(&[]);
+                    self.has_empty_clause = true;
+                    return false;
+                }
+                1 => {
+                    units += 1;
+                    if !self.inprocess_add_root_units(&keep, proof_log) {
+                        self.has_empty_clause = true;
+                        return false;
+                    }
+                    self.inprocess_delete_clause(c);
+                    if self.propagate().is_some() {
+                        self.has_empty_clause = true;
+                        return false;
+                    }
+                }
+                _ => {
+                    strengthened += 1;
+                    self.inprocess_strengthen_clause(c, &keep, proof_log);
+                }
+            }
+        }
+
+        if self.trace_preprocess_details {
+            eprintln!(
+                "c vivify round={} candidates={} strengthened={} units={} budget_ticks={}",
+                self.inprocess_rounds, candidates.len(), strengthened, units, budget_ticks,
+            );
+        }
+
+        // Propagate any forced units; a root conflict means UNSAT.
+        if self.propagate().is_some() {
+            self.has_empty_clause = true;
+            return false;
+        }
         true
     }
 
@@ -9431,6 +9656,88 @@ mod tests {
         s.inprocess_strengthen_clause(c2, &[2, 3], &mut proof);
         s.validate_watch_invariants();
         assert!(s.solve(), "strengthened formula is still satisfiable");
+        for clause in &original {
+            assert!(
+                clause.iter().any(|&lit| s.lit_value(lit) == TRUE),
+                "model must satisfy original clause {clause:?}"
+            );
+        }
+    }
+
+    fn vivify_config() -> SolverConfig {
+        SolverConfig {
+            inprocess: true,
+            vivify: true,
+            inprocess_interval_conflicts: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn vivify_round_leaves_redundant_clause_intact() {
+        // Assuming -1 forces 5 (via [1,5]); then [2,-5] forces 2 true, so the second
+        // literal of [1,2,3,4] is implied true (the clause is RUP-redundant). The
+        // redundancy-DELETE path is intentionally disabled (it was unsound), so the
+        // clause must be left intact and still enforced.
+        let cfg = vivify_config();
+        let mut s = make_solver_with_config(
+            5,
+            vec![vec![1, 5], vec![2, -5], vec![1, 2, 3, 4]],
+            &cfg,
+        );
+        let target = s.original_clause_ids[2];
+        assert_eq!(s.clause_len(target), 4);
+        let mut proof = ProofLog::disabled();
+        assert!(s.vivify_round(&mut proof));
+        assert!(!s.clause_is_deleted(target), "redundancy-delete is disabled");
+        assert_eq!(s.clause_len(target), 4, "redundant clause must be left intact");
+        s.validate_watch_invariants();
+    }
+
+    #[test]
+    fn vivify_round_leaves_subsumed_clause_intact() {
+        // [1,2,3] is redundant given [1,2] but delete is disabled; left intact.
+        let cfg = vivify_config();
+        let mut s = make_solver_with_config(3, vec![vec![1, 2], vec![1, 2, 3]], &cfg);
+        let target = s.original_clause_ids[1];
+        let mut proof = ProofLog::disabled();
+        assert!(s.vivify_round(&mut proof));
+        assert!(!s.clause_is_deleted(target));
+        s.validate_watch_invariants();
+    }
+
+    #[test]
+    fn vivify_disabled_by_default_does_nothing() {
+        let s = make_solver(5, vec![vec![1, 5], vec![2, -5], vec![1, 2, 3, 4]]);
+        assert!(!s.vivify);
+        let target = s.original_clause_ids[2];
+        // vivify_round honours the flag via inprocess_round; a direct call still
+        // runs, but with the default config the scheduler never invokes it. Verify
+        // the default solver leaves the clause intact.
+        assert_eq!(s.clause_len(target), 4);
+    }
+
+    #[test]
+    fn vivify_preserves_unsat() {
+        let cfg = vivify_config();
+        let mut s = make_solver_with_config(5 * 4, php_clauses(5, 4), &cfg);
+        let mut proof = ProofLog::disabled();
+        assert!(!s.solve_with_proof(&mut proof, &cfg), "PHP(5,4) is UNSAT");
+    }
+
+    #[test]
+    fn vivify_preserves_sat_model() {
+        let cfg = vivify_config();
+        let original = vec![
+            vec![1, 5],
+            vec![2, -5],
+            vec![1, 2, 3, 4],
+            vec![-1, -2],
+            vec![3, 4],
+        ];
+        let mut s = make_solver_with_config(5, original.clone(), &cfg);
+        let mut proof = ProofLog::disabled();
+        assert!(s.solve_with_proof(&mut proof, &cfg));
         for clause in &original {
             assert!(
                 clause.iter().any(|&lit| s.lit_value(lit) == TRUE),
