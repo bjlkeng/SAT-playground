@@ -1,0 +1,44 @@
+before=log/baseline-lock/solver10/results.csv
+after=log/baseline-lock/solver11/results.csv
+baseline=benchmarks/iteration/baseline.csv
+timeout_s=120
+correctness_failures=[]
+status_changes=[]
+status_regressions=[]
+validation_warnings=["log/baseline-lock/solver10/validation.jsonl: validation summary missing", "log/baseline-lock/solver11/validation.jsonl: validation summary missing"]
+raw_status_counts_match=true
+raw_lock_metadata={"after": "log/baseline-lock/solver11/results.csv", "after_counts": "{'SAT': 6, 'TIMEOUT': 2, 'UNSAT': 3}", "after_rows": "11", "after_solved": "9", "before": "log/baseline-lock/solver10/results.csv", "before_counts": "{'SAT': 6, 'TIMEOUT': 2, 'UNSAT': 3}", "before_rows": "11", "before_solved": "9", "cargo": "cargo 1.94.1 (29ea6fb6a 2026-03-24)", "common_rows": "11", "date_utc": "2026-05-19T01:34:02Z", "env_SAT": "", "extra_after": "[]", "missing_after": "[]", "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)", "solver10_binary_sha256": "1fd5b767ef40e5600bf7e2f5ce3f4c9e7c355edb264c7681c307a7097a90c9fa", "solver10_dir": "solver/10-bve-subsume", "solver10_log": "log/baseline-lock/solver10/results.csv", "solver11_binary_sha256": "e31dd3d4d69c646a230a549066e7892e1a8ab28a8b7e48ae2713d9d17ee99038", "solver11_dir": "solver/12-kissat-inprocessing", "solver11_log": "log/baseline-lock/solver11/results.csv", "solver11_smoke_validation_dir": "log/baseline-lock/solver11-smoke-validation", "status_mismatches": "[]", "uname": "Linux ubuntu-desktop 6.8.0-111-generic #111~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue Apr 14 17:13:45 UTC  x86_64 x86_64 x86_64 GNU/Linux", "verdict": "PASS", "verified_mismatches": "[]"}
+PAR2_before=705.007
+PAR2_after=709.091
+PAR2_delta=4.084
+solved_before=9
+solved_after=9
+newly_solved=[]
+new_timeouts=[]
+missing_after=[]
+extra_after=[]
+per_category_PAR2_before={"preprocess-core": 294.279, "search-core": 45.102999999999994, "uncategorized": 365.625}
+per_category_PAR2_after={"preprocess-core": 296.373, "search-core": 47.183, "uncategorized": 365.535}
+paired_speedup_median=0.9952
+bootstrap_ci_PAR2_delta=not_computed_single_run
+seed_vs_binary_variance=not_available
+counter_deltas=not_available_without_JSON_STATS_join
+proof_throughput_deltas=not_available_without_proof_validation_join
+machine_environment={"SAT_SEED": "unset", "binary_sha256": "not_available_from_results_csv", "command_line": "tools/compare_bench.py --before log/baseline-lock/solver10/results.csv --after log/baseline-lock/solver11/results.csv --baseline benchmarks/iteration/baseline.csv --timeout 120", "config_hash": "not_available_without_JSON_STATS", "core_count": "12", "cpu_model": "AMD Ryzen 5 5600 6-Core Processor", "governor": "schedutil", "memory_limit": "not_available_from_results_csv", "os": "Linux-6.8.0-111-generic-x86_64-with-glibc2.35", "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)", "timeout": "120"}
+top_10_wins=[["feistel_b64_k52_r17", -0.259], ["random_v355_s3", -0.118], ["random_v292_s4", -0.058], ["0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12", 0.0], ["5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7", 0.0], ["feistel_b64_k57_r18", 0.045], ["random_v285_s2", 0.058], ["feistel_b64_k32_r22", 0.242], ["1d18837c0ced5c18a3a4693993e61728-SC25_Timetable_C_392_E_45_Cl_25_D_7_T_50.normalised", 0.296], ["557d7d4db5399188f62bc39598c6d868-mp1-Nb7T46", 1.784]]
+top_10_regressions=[["46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized", 2.094], ["557d7d4db5399188f62bc39598c6d868-mp1-Nb7T46", 1.784], ["1d18837c0ced5c18a3a4693993e61728-SC25_Timetable_C_392_E_45_Cl_25_D_7_T_50.normalised", 0.296], ["feistel_b64_k32_r22", 0.242], ["random_v285_s2", 0.058], ["feistel_b64_k57_r18", 0.045], ["0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12", 0.0], ["5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7", 0.0], ["random_v292_s4", -0.058], ["random_v355_s3", -0.118]]
+instances_requiring_manual_review=[]
+instance,before_result,after_result,before_time_s,after_time_s,delta_s,category
+0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12,TIMEOUT,TIMEOUT,120.000,120.000,0.000,uncategorized
+1d18837c0ced5c18a3a4693993e61728-SC25_Timetable_C_392_E_45_Cl_25_D_7_T_50.normalised,SAT,SAT,3.721,4.017,0.296,search-core
+46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized,UNSAT,UNSAT,54.279,56.373,2.094,preprocess-core
+557d7d4db5399188f62bc39598c6d868-mp1-Nb7T46,SAT,SAT,41.382,43.166,1.784,search-core
+5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7,TIMEOUT,TIMEOUT,120.000,120.000,0.000,preprocess-core
+feistel_b64_k32_r22,SAT,SAT,49.886,50.128,0.242,uncategorized
+feistel_b64_k52_r17,SAT,SAT,22.587,22.328,-0.259,uncategorized
+feistel_b64_k57_r18,SAT,SAT,8.489,8.534,0.045,uncategorized
+random_v285_s2,UNSAT,UNSAT,8.432,8.490,0.058,uncategorized
+random_v292_s4,UNSAT,UNSAT,13.584,13.526,-0.058,uncategorized
+random_v355_s3,SAT,SAT,22.647,22.529,-0.118,uncategorized
+promotion_verdict=indeterminate
+verdict=PASS
