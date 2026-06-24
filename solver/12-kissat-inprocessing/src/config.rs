@@ -640,6 +640,7 @@ pub(crate) struct SolverConfig {
     pub(crate) inprocess_interval_conflicts: u64,
     pub(crate) inprocess_max_rounds: u64,
     pub(crate) vivify_ticks_budget: u64,
+    pub(crate) vivify_permille: u64,
     pub(crate) vivify_max_clause_len: usize,
     pub(crate) probe_ticks_budget: u64,
     pub(crate) eliminate_ticks_budget: u64,
@@ -756,6 +757,7 @@ impl Default for SolverConfig {
             inprocess_interval_conflicts: 0,
             inprocess_max_rounds: 0,
             vivify_ticks_budget: 0,
+            vivify_permille: 0,
             vivify_max_clause_len: 0,
             probe_ticks_budget: 0,
             eliminate_ticks_budget: DEFAULT_ELIMINATE_TICKS_BUDGET,
@@ -1318,6 +1320,12 @@ impl SolverConfig {
             "SAT_VIVIFY_TICKS",
             self.vivify_ticks_budget,
         );
+        self.vivify_permille = parse_u64_selected(
+            env_map,
+            &key_set,
+            "SAT_VIVIFY_PERMILLE",
+            self.vivify_permille,
+        );
         self.vivify_max_clause_len = parse_usize_selected(
             env_map,
             &key_set,
@@ -1786,6 +1794,11 @@ impl SolverConfig {
             &mut lines,
             "vivify_ticks_budget",
             self.vivify_ticks_budget.to_string(),
+        );
+        push_kv(
+            &mut lines,
+            "vivify_permille",
+            self.vivify_permille.to_string(),
         );
         push_kv(
             &mut lines,
@@ -2457,6 +2470,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "inprocess_interval_conflicts" => Some("SAT_INPROCESS_INTERVAL_CONFLICTS"),
         "inprocess_max_rounds" => Some("SAT_INPROCESS_MAX_ROUNDS"),
         "vivify_ticks_budget" => Some("SAT_VIVIFY_TICKS"),
+        "vivify_permille" => Some("SAT_VIVIFY_PERMILLE"),
         "vivify_max_clause_len" => Some("SAT_VIVIFY_MAX_CLAUSE_LEN"),
         "probe_ticks_budget" => Some("SAT_PROBE_TICKS"),
         "eliminate_ticks_budget" => Some("SAT_ELIMINATE_TICKS"),
@@ -2644,6 +2658,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_INPROCESS_INTERVAL_CONFLICTS",
         "SAT_INPROCESS_MAX_ROUNDS",
         "SAT_VIVIFY_TICKS",
+        "SAT_VIVIFY_PERMILLE",
         "SAT_VIVIFY_MAX_CLAUSE_LEN",
         "SAT_PROBE_TICKS",
         "SAT_ELIMINATE_TICKS",
@@ -4002,6 +4017,22 @@ mod tests {
             replayed.eliminate_occurrence_limit,
             config.eliminate_occurrence_limit
         );
+        assert_eq!(replayed.config_hash(), config.config_hash());
+    }
+
+    #[test]
+    fn test_vivify_permille_is_parsed_and_replayable() {
+        // Defaults to 0 (=> the solver uses DEFAULT_VIVIFY_PERMILLE).
+        let default_config = SolverConfig::from_env_map(&env_map(&[]));
+        assert_eq!(default_config.vivify_permille, 0);
+
+        let config = SolverConfig::from_env_map(&env_map(&[("SAT_VIVIFY_PERMILLE", "250")]));
+        assert_eq!(config.vivify_permille, 250);
+
+        let replay = config.config_replay_text();
+        assert!(replay.contains("vivify_permille=250"));
+        let replayed = SolverConfig::from_replay_text(&replay, Path::new("<vivify-permille-test>"));
+        assert_eq!(replayed.vivify_permille, config.vivify_permille);
         assert_eq!(replayed.config_hash(), config.config_hash());
     }
 

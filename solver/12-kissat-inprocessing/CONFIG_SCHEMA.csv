@@ -78,6 +78,7 @@ SAT_RCHECK,rcheck,bool,on|off,false,false,false,true,false,false,SAT_SIMPLIFICAT
 SAT_INPROCESS_INTERVAL_CONFLICTS,inprocess_interval_conflicts,u64,nonnegative,0,0,0,false,false,false,,,0.3,internal
 SAT_INPROCESS_MAX_ROUNDS,inprocess_max_rounds,u64,nonnegative,0,0,0,false,false,false,,,0.3,internal
 SAT_VIVIFY_TICKS,vivify_ticks_budget,u64,nonnegative,0,0,0,false,false,false,,,0.3,internal
+SAT_VIVIFY_PERMILLE,vivify_permille,u64,nonnegative,0,0,0,false,false,false,,,5b2.3.7,internal
 SAT_VIVIFY_MAX_CLAUSE_LEN,vivify_max_clause_len,usize,nonnegative,0,0,0,false,false,false,,,0.3,internal
 SAT_PROBE_TICKS,probe_ticks_budget,u64,nonnegative,0,0,0,false,false,false,,,0.3,internal
 SAT_ELIMINATE_TICKS,eliminate_ticks_budget,u64,nonnegative,3000000000,3000000000,3000000000,false,false,false,,,0.3,internal

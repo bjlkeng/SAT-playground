@@ -131,8 +131,13 @@ const DEFAULT_BVE_CLAUSE_LIMIT: isize = 20;
 const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
 /// Default conflicts between inprocessing rounds when SAT_INPROCESS_INTERVAL_CONFLICTS=0.
 const INPROCESS_DEFAULT_INTERVAL: u64 = 2000;
-/// Default per-round vivification propagation budget multiplier over live literals.
-const VIVIFY_BUDGET_LITS_MULTIPLIER: u64 = 20;
+/// Default per-round vivification budget as a fraction (per mille) of cumulative
+/// search propagations. Inprocessing then scales as a small bounded share of the
+/// search effort already spent, rather than as a static multiple of formula size.
+const DEFAULT_VIVIFY_PERMILLE: u64 = 100;
+/// Floor/ceiling on the per-round vivification propagation budget. The floor keeps
+/// early rounds (few propagations spent so far) from starving; the ceiling bounds
+/// the work a single root visit can do on long runs.
 const VIVIFY_BUDGET_MIN_TICKS: u64 = 5_000_000;
 const VIVIFY_BUDGET_MAX_TICKS: u64 = 100_000_000;
 /// Default cap on original-clause length considered for vivification.
@@ -1371,8 +1376,11 @@ struct Solver {
     inprocess_rounds: u64,
     /// run clause vivification inside each inprocessing round (SAT_VIVIFY)
     vivify: bool,
-    /// per-round propagation budget for vivification (0 => proportional default)
+    /// absolute per-round propagation budget for vivification (0 => proportional default)
     vivify_ticks_budget: u64,
+    /// proportional vivification budget: per mille of cumulative search propagations,
+    /// used when `vivify_ticks_budget == 0` (0 => DEFAULT_VIVIFY_PERMILLE)
+    vivify_permille: u64,
     /// only vivify original clauses up to this length (0 => DEFAULT_VIVIFY_MAX_CLAUSE_LEN)
     vivify_max_clause_len: usize,
     /// target learned-literal budget for LBD-tiered reduction
@@ -2279,6 +2287,7 @@ impl Solver {
             inprocess_rounds: 0,
             vivify: config.vivify,
             vivify_ticks_budget: config.vivify_ticks_budget,
+            vivify_permille: config.vivify_permille,
             vivify_max_clause_len: config.vivify_max_clause_len,
             learned_lit_budget: LEARNED_LIT_BUDGET_BASE,
             hard_learned_lit_budget: LEARNED_LIT_BUDGET_BASE.saturating_mul(2),
@@ -3510,9 +3519,32 @@ impl Solver {
             return;
         }
 
+        // Maintain the solver-wide watched-literal invariant: the two watched
+        // positions (0 and 1) of an unsatisfied clause must not be root-false,
+        // exactly like every other clause the solver builds. An earlier inprocessing
+        // unit derived in this same round can have made one of `new_lits` root-false,
+        // so order the non-false literals first and watch those. Without this, the
+        // later root false-literal trimming (`trim_root_false_literals_with_proof`,
+        // which assumes watched literals are never root-false and so does no watch
+        // maintenance) removes a watched false literal and desyncs the watch lists.
+        let mut ordered: Vec<i32> = new_lits.to_vec();
+        ordered.sort_by_key(|&lit| self.lit_value(lit) == FALSE);
+        let non_false = ordered
+            .iter()
+            .take_while(|&&lit| self.lit_value(lit) != FALSE)
+            .count();
+        if non_false < 2 {
+            // Degenerate at the current root: the strengthened clause would be a
+            // unit or empty, so there are not two live literals to watch. Leave the
+            // clause intact rather than create an invalid watch — not strengthening
+            // is always sound, and simplify / propagation resolve the implied unit
+            // or conflict on the original clause.
+            return;
+        }
+
         // Record the (RUP) strengthened clause before mutating, then detach the
         // old watches (which may sit on literals we are about to drop).
-        proof_log.record_clause(new_lits);
+        proof_log.record_clause(&ordered);
         self.detach_clause_for_rewrite(clause_idx);
 
         // Preserve any trailing extra words (e.g. abstraction) at the new offset.
@@ -3525,7 +3557,7 @@ impl Solver {
             }
         }
 
-        for (pos, &lit) in new_lits.iter().enumerate() {
+        for (pos, &lit) in ordered.iter().enumerate() {
             self.set_clause_lit(clause_idx, pos, lit);
         }
         let header = self.clause_header(clause_idx);
@@ -6277,6 +6309,26 @@ impl Solver {
         ok
     }
 
+    /// Per-round vivification propagation budget. An explicit `vivify_ticks_budget`
+    /// (`SAT_VIVIFY_TICKS`) is an absolute override. Otherwise the budget is a small
+    /// bounded fraction of search effort: `vivify_permille` per mille of the cumulative
+    /// search propagations spent so far (`SAT_VIVIFY_PERMILLE`, default
+    /// `DEFAULT_VIVIFY_PERMILLE`), clamped to `[VIVIFY_BUDGET_MIN_TICKS,
+    /// VIVIFY_BUDGET_MAX_TICKS]` so early rounds do not starve and a single root visit
+    /// stays bounded on long runs.
+    fn vivify_budget_ticks(&self) -> u64 {
+        if self.vivify_ticks_budget > 0 {
+            return self.vivify_ticks_budget;
+        }
+        let permille = if self.vivify_permille > 0 {
+            self.vivify_permille
+        } else {
+            DEFAULT_VIVIFY_PERMILLE
+        };
+        (self.stats.propagations.saturating_mul(permille) / 1000)
+            .clamp(VIVIFY_BUDGET_MIN_TICKS, VIVIFY_BUDGET_MAX_TICKS)
+    }
+
     /// One vivification round at decision level 0 (clause strengthening / redundancy
     /// removal by asymmetric tautology). For each candidate original clause, the
     /// clause is detached and its literals' negations are assumed one-by-one under
@@ -6297,13 +6349,7 @@ impl Solver {
             return true;
         }
 
-        let budget_ticks = if self.vivify_ticks_budget > 0 {
-            self.vivify_ticks_budget
-        } else {
-            (self.original_literals as u64)
-                .saturating_mul(VIVIFY_BUDGET_LITS_MULTIPLIER)
-                .clamp(VIVIFY_BUDGET_MIN_TICKS, VIVIFY_BUDGET_MAX_TICKS)
-        };
+        let budget_ticks = self.vivify_budget_ticks();
         let max_len = if self.vivify_max_clause_len > 0 {
             self.vivify_max_clause_len
         } else {
@@ -6391,12 +6437,17 @@ impl Solver {
                 ctx.solver.backtrack(base);
                 ctx.solver.attach_clause(c, false);
 
-                // Asymmetric clause strengthening only. The asymmetric-tautology
-                // redundancy DELETE path (drop a clause when a literal is implied
-                // true) is intentionally NOT taken: it was empirically unsound here
-                // (made div-mitern172 UNSAT->SAT) while conflict-based strengthening
-                // and unit derivation are sound. `redundant` clauses are left intact.
-                // Apply to the clone immediately so later analyses see the edit.
+                // Asymmetric clause strengthening and unit derivation only. No clause
+                // is ever DELETED here. The asymmetric-tautology redundancy delete path
+                // (drop a clause when a literal is implied true) was empirically unsound
+                // (made div-mitern172 UNSAT->SAT), so `redundant` clauses are left
+                // intact. The derived-unit path likewise leaves its (now unit-satisfied)
+                // source clause intact: deleting an original clause here would leave its
+                // id in `original_clause_ids` and could leave a live root reason dangling,
+                // tripping the garbage-collector's "originals stay live" invariant
+                // (ClauseOverflow in release). Strengthening rewrites in place, so the
+                // clause index stays live. Apply to the clone immediately so later
+                // analyses see the edit.
                 let _ = redundant;
                 if conflicted && keep.len() < lits.len() {
                     match keep.len() {
@@ -6414,7 +6465,6 @@ impl Solver {
                                 proved_unsat = true;
                                 break;
                             }
-                            ctx.solver.inprocess_delete_clause(c);
                             decisions.push((c, keep));
                         }
                         _ => {
@@ -6452,11 +6502,14 @@ impl Solver {
                 }
                 1 => {
                     units += 1;
+                    // Add the derived root unit; the source clause `c` is left intact
+                    // (now unit-satisfied) rather than deleted — see the analysis-loop
+                    // note: deleting an original clause breaks the GC invariant that all
+                    // `original_clause_ids` stay live and can dangle a root reason.
                     if !self.inprocess_add_root_units(&keep, proof_log) {
                         self.has_empty_clause = true;
                         return false;
                     }
-                    self.inprocess_delete_clause(c);
                     if self.propagate().is_some() {
                         self.has_empty_clause = true;
                         return false;
@@ -9598,14 +9651,63 @@ mod tests {
 
     #[test]
     fn inprocess_strengthened_clause_propagates_correctly() {
-        // Strengthen [1,2,3] -> [2,3]; with -2 and -3 forced, the clause must
-        // drive a root conflict (UNSAT), proving the rewritten clause propagates.
-        let mut s = make_solver(3, vec![vec![1, 2, 3], vec![-2], vec![-3]]);
+        // Strengthen [1,2,3] -> [2,3] while 2 and 3 are still live, then force -2:
+        // the rewritten clause must propagate 3, proving it is correctly watched
+        // and active. (Strengthening to an all-root-false clause is correctly
+        // refused; see inprocess_strengthen_skips_when_fewer_than_two_live_literals.)
+        let mut s = make_solver(3, vec![vec![1, 2, 3]]);
         let cidx = s.original_clause_ids[0];
         let mut proof = ProofLog::disabled();
         s.inprocess_strengthen_clause(cidx, &[2, 3], &mut proof);
+        assert_eq!(s.clause_len(cidx), 2);
         s.validate_watch_invariants();
-        assert!(!s.solve(), "[2,3] with units -2,-3 is UNSAT");
+        assert!(s.enqueue(-2, ReasonRef::None));
+        assert!(s.propagate().is_none());
+        assert_eq!(s.lit_value(3), TRUE, "rewritten clause [2,3] must propagate 3");
+    }
+
+    #[test]
+    fn inprocess_strengthen_avoids_watching_root_false_literals() {
+        // Regression (watch desync): vivify can keep a literal that an earlier
+        // same-round unit made root-false. The strengthened clause must still be
+        // watched on two live (non-false) literals, like every clause the solver
+        // builds, so later root false-literal trimming does not remove a watched
+        // literal without watch maintenance and desync the watch lists.
+        let mut s = make_solver(4, vec![vec![1, 2, 3, 4]]);
+        let cidx = s.original_clause_ids[0];
+        // Force literal 1 false at the root (watches are not moved without a
+        // propagate, mirroring a literal that a vivify unit just falsified).
+        assert!(s.enqueue(-1, ReasonRef::None));
+        assert_eq!(s.lit_value(1), FALSE);
+
+        let mut proof = ProofLog::disabled();
+        // Keep {1,2,3}: literal 1 is root-false; 2 and 3 are live.
+        s.inprocess_strengthen_clause(cidx, &[1, 2, 3], &mut proof);
+
+        assert_eq!(s.clause_len(cidx), 3);
+        assert!(
+            !watches_clause(&s, 1, cidx),
+            "must not watch the root-false literal 1"
+        );
+        assert!(watches_clause(&s, 2, cidx) && watches_clause(&s, 3, cidx));
+        assert_ne!(s.lit_value(s.clause_lit(cidx, 0)), FALSE);
+        assert_ne!(s.lit_value(s.clause_lit(cidx, 1)), FALSE);
+        s.validate_watch_invariants();
+    }
+
+    #[test]
+    fn inprocess_strengthen_skips_when_fewer_than_two_live_literals() {
+        // If all but one kept literal is root-false, the strengthened clause would
+        // be a root unit/empty with no two live literals to watch; the strengthen
+        // is skipped (leaving the longer clause intact, which is always sound)
+        // rather than create a clause watched on a false literal.
+        let mut s = make_solver(3, vec![vec![1, 2, 3]]);
+        let cidx = s.original_clause_ids[0];
+        assert!(s.enqueue(-1, ReasonRef::None));
+        assert!(s.enqueue(-2, ReasonRef::None));
+        let mut proof = ProofLog::disabled();
+        s.inprocess_strengthen_clause(cidx, &[1, 2], &mut proof);
+        assert_eq!(s.clause_len(cidx), 3, "degenerate strengthen left intact");
     }
 
     #[test]
@@ -9671,6 +9773,36 @@ mod tests {
             inprocess_interval_conflicts: 1,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn vivify_budget_ticks_is_a_clamped_per_mille_of_propagations() {
+        let cfg = vivify_config();
+        let mut s = make_solver_with_config(3, vec![vec![1, 2, 3]], &cfg);
+
+        // Default permille (0 => DEFAULT_VIVIFY_PERMILLE = 100, i.e. 10%).
+        assert_eq!(s.vivify_permille, 0);
+
+        // Few propagations spent => below the floor => clamped up to MIN.
+        s.stats.propagations = 1_000;
+        assert_eq!(s.vivify_budget_ticks(), VIVIFY_BUDGET_MIN_TICKS);
+
+        // Mid band: 1_000_000_000 * 100 / 1000 = 100_000_000 == MAX (boundary).
+        s.stats.propagations = 200_000_000; // 10% => 20_000_000, inside [MIN, MAX].
+        assert_eq!(s.vivify_budget_ticks(), 20_000_000);
+
+        // Huge propagation count => above the ceiling => clamped down to MAX.
+        s.stats.propagations = 10_000_000_000;
+        assert_eq!(s.vivify_budget_ticks(), VIVIFY_BUDGET_MAX_TICKS);
+
+        // An explicit per-mille knob overrides the default fraction.
+        s.vivify_permille = 10; // 1%
+        s.stats.propagations = 2_000_000_000; // 1% => 20_000_000.
+        assert_eq!(s.vivify_budget_ticks(), 20_000_000);
+
+        // An absolute SAT_VIVIFY_TICKS budget overrides the proportional path entirely.
+        s.vivify_ticks_budget = 7_777;
+        assert_eq!(s.vivify_budget_ticks(), 7_777);
     }
 
     #[test]
