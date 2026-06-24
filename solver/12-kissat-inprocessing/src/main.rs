@@ -134,7 +134,13 @@ const INPROCESS_DEFAULT_INTERVAL: u64 = 2000;
 /// Default per-round vivification budget as a fraction (per mille) of cumulative
 /// search propagations. Inprocessing then scales as a small bounded share of the
 /// search effort already spent, rather than as a static multiple of formula size.
-const DEFAULT_VIVIFY_PERMILLE: u64 = 100;
+/// Kept deliberately small (2%): measured inert on easy profile20 instances (the
+/// 5M floor dominates there — mp1/SCPC byte-for-byte identical at 10/100/1000 per
+/// mille), and on billion-propagation instances 100 per mille pinned every late
+/// round at the 100M ceiling (vivify-on then dominated wall time). 20 per mille
+/// caps a 1e9-propagation round near 20M ticks instead. The exact value is a
+/// seedgate-tuning knob (`SAT_VIVIFY_PERMILLE`); this is a conservative default.
+const DEFAULT_VIVIFY_PERMILLE: u64 = 20;
 /// Floor/ceiling on the per-round vivification propagation budget. The floor keeps
 /// early rounds (few propagations spent so far) from starving; the ceiling bounds
 /// the work a single root visit can do on long runs.
@@ -9810,18 +9816,19 @@ mod tests {
         let cfg = vivify_config();
         let mut s = make_solver_with_config(3, vec![vec![1, 2, 3]], &cfg);
 
-        // Default permille (0 => DEFAULT_VIVIFY_PERMILLE = 100, i.e. 10%).
+        // Default permille (0 => DEFAULT_VIVIFY_PERMILLE = 20, i.e. 2%).
         assert_eq!(s.vivify_permille, 0);
 
         // Few propagations spent => below the floor => clamped up to MIN.
         s.stats.propagations = 1_000;
         assert_eq!(s.vivify_budget_ticks(), VIVIFY_BUDGET_MIN_TICKS);
 
-        // Mid band: 1_000_000_000 * 100 / 1000 = 100_000_000 == MAX (boundary).
-        s.stats.propagations = 200_000_000; // 10% => 20_000_000, inside [MIN, MAX].
+        // Mid band: 1_000_000_000 * 20 / 1000 = 20_000_000, inside [MIN, MAX].
+        s.stats.propagations = 1_000_000_000;
         assert_eq!(s.vivify_budget_ticks(), 20_000_000);
 
         // Huge propagation count => above the ceiling => clamped down to MAX.
+        // 10e9 * 20 / 1000 = 200_000_000 > MAX.
         s.stats.propagations = 10_000_000_000;
         assert_eq!(s.vivify_budget_ticks(), VIVIFY_BUDGET_MAX_TICKS);
 
