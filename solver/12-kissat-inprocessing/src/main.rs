@@ -6280,16 +6280,17 @@ impl Solver {
 
     /// Run one inprocessing round at decision level 0, then reschedule.
     ///
-    /// This is the scaffold entry point for clause-simplification / formula-rewriting
-    /// techniques (vivification, probing, equivalent-literal substitution, gate-aware
-    /// BVE, ...). It is invoked only at root. No technique is wired in yet, so the
-    /// round is intentionally empty and trajectory-neutral: it touches no clauses,
-    /// trail, or watches, and only advances the schedule counter. Techniques added
-    /// here must (a) operate at decision level 0, (b) keep the DRAT proof valid, and
-    /// (c) leave watch lists / occurrence state consistent before returning.
+    /// Interleaves the enabled clause-simplification / formula-rewriting techniques so
+    /// they compound within a round: failed-literal probing derives root units that
+    /// shrink the formula, then vivification strengthens / deletes against the smaller
+    /// formula. (Equivalent-literal substitution — ELS — is a further technique that
+    /// would slot in here; it is currently parked, see PARKING_LOT_DENYLIST.) Invoked
+    /// only at root. Each technique must (a) operate at decision level 0, (b) keep the
+    /// DRAT proof valid, and (c) leave watch lists / occurrence state consistent before
+    /// returning. With all techniques off the round is trajectory-neutral.
     ///
     /// Returns `false` if the round proves the formula UNSAT.
-    fn inprocess_round(&mut self, proof_log: &mut ProofLog) -> bool {
+    fn inprocess_round(&mut self, proof_log: &mut ProofLog, config: &SolverConfig) -> bool {
         debug_assert_eq!(
             self.current_level(),
             0,
@@ -6298,7 +6299,12 @@ impl Solver {
         self.inprocess_rounds += 1;
 
         let mut ok = true;
-        if self.vivify {
+        // Probe first: failed-literal probing forces backbone units, so vivification
+        // then runs against an already-simplified root.
+        if ok && config.probe {
+            ok = self.probe_root_failed_literals(proof_log, config);
+        }
+        if ok && self.vivify {
             ok = self.vivify_round(proof_log);
         }
 
@@ -8804,10 +8810,11 @@ impl Solver {
                             self.finish_search_timing(search_start);
                             return SolveOutcome::unsat();
                         }
-                        // Inprocessing scheduler hook: at root, periodically run a
-                        // clause-simplification / formula-rewriting round. Default-off
-                        // and currently an empty round, so this is performance-neutral.
-                        if self.should_inprocess() && !self.inprocess_round(proof_log) {
+                        // Inprocessing scheduler hook: at root, periodically run an
+                        // interleaved clause-simplification / formula-rewriting round
+                        // (probing + vivification). Default-off, so performance-neutral
+                        // unless SAT_INPROCESS plus a technique flag is set.
+                        if self.should_inprocess() && !self.inprocess_round(proof_log, config) {
                             self.finish_search_timing(search_start);
                             return SolveOutcome::unsat();
                         }
@@ -9541,7 +9548,7 @@ mod tests {
         assert!(!s.should_inprocess());
         s.stats.conflicts = 5;
         assert!(s.should_inprocess());
-        assert!(s.inprocess_round(&mut proof));
+        assert!(s.inprocess_round(&mut proof, &config));
         assert_eq!(s.inprocess_rounds, 1);
         assert!(
             s.next_inprocess_conflicts > 5,
@@ -9558,7 +9565,7 @@ mod tests {
         let mut s2 = make_solver_with_config(2, vec![vec![1, 2]], &capped);
         s2.stats.conflicts = 5;
         assert!(s2.should_inprocess());
-        assert!(s2.inprocess_round(&mut proof));
+        assert!(s2.inprocess_round(&mut proof, &capped));
         s2.stats.conflicts = 1000;
         assert!(!s2.should_inprocess(), "max_rounds cap must stop further rounds");
     }
@@ -9586,6 +9593,29 @@ mod tests {
         let mut unsat = make_solver_with_config(5 * 4, php_clauses(5, 4), &config);
         let mut p2 = ProofLog::disabled();
         assert!(!unsat.solve_with_proof(&mut p2, &config));
+    }
+
+    #[test]
+    fn inprocess_probe_and_vivify_interleave_solves_correctly() {
+        // Interleaving failed-literal probing and vivification in each inprocessing
+        // round must preserve SAT/UNSAT correctness (both run, compounding).
+        let config = SolverConfig {
+            inprocess: true,
+            vivify: true,
+            probe: true,
+            inprocess_interval_conflicts: 1,
+            ..Default::default()
+        };
+        let mut sat = make_solver_with_config(3, vec![vec![1, 2, 3], vec![-1, 2]], &config);
+        let mut p1 = ProofLog::disabled();
+        assert!(sat.solve_with_proof(&mut p1, &config), "SAT instance stays SAT");
+
+        let mut unsat = make_solver_with_config(5 * 4, php_clauses(5, 4), &config);
+        let mut p2 = ProofLog::disabled();
+        assert!(
+            !unsat.solve_with_proof(&mut p2, &config),
+            "PHP(5,4) is UNSAT with probe+vivify interleaved"
+        );
     }
 
     #[test]
