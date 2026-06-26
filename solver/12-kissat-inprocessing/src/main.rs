@@ -3345,6 +3345,7 @@ impl Solver {
         }
 
         proof_log.record_clause(&trimmed);
+        proof_log.record_deletion(self.clause_slice(clause_idx));
         if self.clause_has_extra(clause_idx) {
             let old_extra_idx = clause_idx + 1 + clause_len;
             let new_extra_idx = clause_idx + 1 + write;
@@ -3375,12 +3376,13 @@ impl Solver {
         self.deleted_clause_words += removed;
     }
 
-    fn delete_clause_for_simplify(&mut self, clause_idx: usize) {
+    fn delete_clause_for_simplify(&mut self, clause_idx: usize, proof_log: &mut ProofLog) {
         if self.clause_locked(clause_idx) {
             self.clear_reason_for_locked_clause(clause_idx);
         }
 
         let clause_len = self.clause_len(clause_idx);
+        proof_log.record_deletion(self.clause_slice(clause_idx));
         self.detach_clause(clause_idx);
         if self.clause_is_learnt(clause_idx) {
             self.clear_learned_clause_metadata_ref(clause_idx);
@@ -3586,15 +3588,15 @@ impl Solver {
     }
 
     /// Delete a clause that is redundant (RUP-implied by the rest of the formula)
-    /// during inprocessing. Physical removal only; valid DRAT (see module note).
+    /// during inprocessing.
     #[allow(dead_code)]
-    fn inprocess_delete_clause(&mut self, clause_idx: usize) {
+    fn inprocess_delete_clause(&mut self, clause_idx: usize, proof_log: &mut ProofLog) {
         debug_assert_eq!(self.current_level(), 0);
         if self.clause_is_deleted(clause_idx) {
             return;
         }
         self.detach_clause_for_rewrite(clause_idx);
-        self.delete_clause_for_simplify(clause_idx);
+        self.delete_clause_for_simplify(clause_idx, proof_log);
     }
 
     /// Add a derived clause (RUP-implied, length >= 2) during inprocessing, e.g. a
@@ -3628,7 +3630,7 @@ impl Solver {
                 continue;
             }
             if self.clause_satisfied(clause_idx) {
-                self.delete_clause_for_simplify(clause_idx);
+                self.delete_clause_for_simplify(clause_idx, proof_log);
                 continue;
             }
             if !self.clause_is_learnt(clause_idx) {
@@ -8406,14 +8408,6 @@ impl Solver {
         count
     }
 
-    fn record_live_original_clauses_for_proof(&self, proof_log: &mut ProofLog) {
-        for &clause_idx in &self.original_clause_ids {
-            if clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx) {
-                proof_log.record_clause(self.clause_slice(clause_idx));
-            }
-        }
-    }
-
     #[cfg(test)]
     fn solve(&mut self) -> bool {
         let mut proof_log = ProofLog::disabled();
@@ -8529,7 +8523,6 @@ impl Solver {
             return SolveOutcome::unsat();
         }
 
-        self.record_live_original_clauses_for_proof(proof_log);
         if limits_active {
             if let Some(limit) = self.limit_hit(&runtime_limits, solve_start, proof_log) {
                 let _class = limit.class.as_str();
@@ -9751,7 +9744,8 @@ mod tests {
         let mut s = make_solver(3, vec![vec![1, 2, 3], vec![-1, 2]]);
         let c0 = s.original_clause_ids[0];
         assert!(watches_clause(&s, 1, c0));
-        s.inprocess_delete_clause(c0);
+        let mut proof = ProofLog::disabled();
+        s.inprocess_delete_clause(c0, &mut proof);
         assert!(s.clause_is_deleted(c0));
         assert!(!watches_clause(&s, 1, c0));
         s.validate_watch_invariants();
@@ -13728,6 +13722,75 @@ mod tests {
                 .iter()
                 .any(|line| *line != "0"),
             "expected at least one non-empty learned clause before the final empty clause"
+        );
+    }
+
+    #[test]
+    fn test_sat_proof_does_not_copy_live_original_formula() {
+        let proof_dir = make_temp_dir("sat-proof-no-input-copy");
+        let mut s = make_solver(2, vec![vec![1, 2]]);
+        let config = SolverConfig {
+            simplification: false,
+            lucky: false,
+            ..SolverConfig::default()
+        };
+
+        let (outcome, proof) =
+            s.solve_to_output(proof_dir.to_str().expect("utf8 temp dir"), &config);
+
+        assert_eq!(outcome.status, SolveStatus::Sat);
+        assert_eq!(
+            proof.added_clauses, 0,
+            "SAT proof temp stream must not copy input/original clauses before being discarded"
+        );
+        assert!(
+            !proof_dir.join("proof.out.tmp").exists(),
+            "SAT temp proof should still be removed"
+        );
+    }
+
+    #[test]
+    fn test_trim_root_false_literals_records_original_deletion() {
+        let mut s = make_solver(3, vec![vec![-1, 2, 3]]);
+        assert!(s.enqueue(1, ReasonRef::None));
+        assert_eq!(s.propagate(), None);
+        let target = s
+            .original_clause_ids
+            .iter()
+            .copied()
+            .find(|&clause_idx| s.clause_len(clause_idx) == 3)
+            .expect("expected ternary original clause");
+
+        let dir = make_temp_dir("proof-trim-delete");
+        let mut proof = ProofLog::new(&dir, 64, false);
+        s.trim_root_false_literals_with_proof(target, &mut proof);
+        proof.finish_unsat();
+
+        let proof_text = fs::read_to_string(dir.join("proof.out")).expect("failed to read proof");
+        assert!(
+            proof_text.contains("2 3 0\n"),
+            "trimmed clause must be recorded as a DRAT addition:\n{proof_text}"
+        );
+        assert!(
+            proof_text.contains("d -1 2 3 0\n"),
+            "original pre-trim clause must be deleted from the proof stream:\n{proof_text}"
+        );
+    }
+
+    #[test]
+    fn test_simplify_clause_deletion_records_drat_delete() {
+        let mut s = make_solver(2, vec![vec![1, 2]]);
+        let target = s.original_clause_ids[0];
+        let dir = make_temp_dir("proof-simplify-delete");
+        let mut proof = ProofLog::new(&dir, 64, false);
+
+        s.delete_clause_for_simplify(target, &mut proof);
+        proof.finish_unsat();
+
+        let proof_text = fs::read_to_string(dir.join("proof.out")).expect("failed to read proof");
+        assert!(
+            proof_text.contains("d 1 2 0\n"),
+            "simplify deletion must be recorded in DRAT deletion format:\n{proof_text}"
         );
     }
 
