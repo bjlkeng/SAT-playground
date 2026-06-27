@@ -920,6 +920,7 @@ struct ProofStream {
     scratch: Vec<i32>,
     capacity: usize,
     trace: bool,
+    canonicalize_clauses: bool,
     clause_count: u64,
     literal_count: u64,
     deletion_count: u64,
@@ -972,6 +973,15 @@ impl ProofLog {
     }
 
     fn new<P: AsRef<Path>>(output_dir: P, capacity: usize, trace: bool) -> Self {
+        Self::new_with_clause_canonicalization(output_dir, capacity, trace, false)
+    }
+
+    fn new_with_clause_canonicalization<P: AsRef<Path>>(
+        output_dir: P,
+        capacity: usize,
+        trace: bool,
+        canonicalize_clauses: bool,
+    ) -> Self {
         let output_dir = output_dir.as_ref();
         fs::create_dir_all(output_dir).unwrap_or_else(|e| {
             eprintln!("Error creating {}: {}", output_dir.display(), e);
@@ -994,6 +1004,7 @@ impl ProofLog {
                 scratch: Vec::new(),
                 capacity,
                 trace,
+                canonicalize_clauses,
                 clause_count: 0,
                 literal_count: 0,
                 deletion_count: 0,
@@ -1033,19 +1044,25 @@ impl ProofLog {
     }
 
     fn write_clause_line(stream: &mut ProofStream, prefix: &[u8], clause: &[i32]) {
-        stream.scratch.clear();
-        stream.scratch.extend_from_slice(clause);
-        stream.scratch.sort_unstable_by(|&lhs, &rhs| {
-            lhs.unsigned_abs()
-                .cmp(&rhs.unsigned_abs())
-                .then_with(|| lhs.cmp(&rhs))
-        });
-
         stream.buffer.reserve(prefix.len() + clause.len() * 12 + 2);
         stream.buffer.extend_from_slice(prefix);
-        for idx in 0..stream.scratch.len() {
-            append_i32_ascii(&mut stream.buffer, stream.scratch[idx]);
-            stream.buffer.push(b' ');
+        if stream.canonicalize_clauses {
+            stream.scratch.clear();
+            stream.scratch.extend_from_slice(clause);
+            stream.scratch.sort_unstable_by(|&lhs, &rhs| {
+                lhs.unsigned_abs()
+                    .cmp(&rhs.unsigned_abs())
+                    .then_with(|| lhs.cmp(&rhs))
+            });
+            for &lit in &stream.scratch {
+                append_i32_ascii(&mut stream.buffer, lit);
+                stream.buffer.push(b' ');
+            }
+        } else {
+            for &lit in clause {
+                append_i32_ascii(&mut stream.buffer, lit);
+                stream.buffer.push(b' ');
+            }
         }
         stream.buffer.extend_from_slice(b"0\n");
         if stream.buffer.len() >= stream.capacity {
@@ -13650,6 +13667,44 @@ mod tests {
     }
 
     #[test]
+    fn test_proof_log_preserves_clause_order_by_default() {
+        let unsorted_dir = make_temp_dir("proof-unsorted-order");
+        let mut proof = ProofLog::new(&unsorted_dir, 64, false);
+        proof.record_clause(&[-3, 1, -2]);
+        proof.record_deletion(&[4, -1, 2]);
+        proof.finish_unsat();
+
+        let unsorted_text =
+            fs::read_to_string(unsorted_dir.join("proof.out")).expect("failed to read proof");
+        assert!(
+            unsorted_text.contains("-3 1 -2 0\n"),
+            "default proof writer must preserve addition order:\n{unsorted_text}"
+        );
+        assert!(
+            unsorted_text.contains("d 4 -1 2 0\n"),
+            "default proof writer must preserve deletion order:\n{unsorted_text}"
+        );
+
+        let canonical_dir = make_temp_dir("proof-canonical-order");
+        let mut canonical =
+            ProofLog::new_with_clause_canonicalization(&canonical_dir, 64, false, true);
+        canonical.record_clause(&[-3, 1, -2]);
+        canonical.record_deletion(&[4, -1, 2]);
+        canonical.finish_unsat();
+
+        let canonical_text =
+            fs::read_to_string(canonical_dir.join("proof.out")).expect("failed to read proof");
+        assert!(
+            canonical_text.contains("1 -2 -3 0\n"),
+            "canonical proof writer must sort additions by DIMACS variable:\n{canonical_text}"
+        );
+        assert!(
+            canonical_text.contains("d -1 2 4 0\n"),
+            "canonical proof writer must sort deletions by DIMACS variable:\n{canonical_text}"
+        );
+    }
+
+    #[test]
     fn test_proof_log_finalizes_unsat_and_discards_sat_temp_file() {
         let unsat_dir = make_temp_dir("proof-unsat");
         let mut unsat_proof = ProofLog::new(&unsat_dir, 32, false);
@@ -13772,8 +13827,8 @@ mod tests {
             "trimmed clause must be recorded as a DRAT addition:\n{proof_text}"
         );
         assert!(
-            proof_text.contains("d -1 2 3 0\n"),
-            "original pre-trim clause must be deleted from the proof stream:\n{proof_text}"
+            proof_text.contains("d 2 3 -1 0\n"),
+            "original pre-trim clause must be deleted in live clause order:\n{proof_text}"
         );
     }
 
