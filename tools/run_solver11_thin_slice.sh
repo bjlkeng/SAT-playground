@@ -4,8 +4,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-SOLVER10="solver/10-bve-subsume"
-SOLVER11="solver/11-kissat-search"
+SOLVER10="${SAT_REFERENCE_SOLVER:-solver/10-bve-subsume}"
+TARGET_SOLVER="$("$REPO_ROOT/tools/current_solver.sh" "${1:-}")"
 LOG_DIR="log/0.0b"
 INSTANCE_DIR="$LOG_DIR/instances"
 STDOUT_DIR="$LOG_DIR/lbd-on-stdout"
@@ -27,34 +27,34 @@ link_instance "benchmarks/profiling/legacy/feistel_b64_k57_r18.cnf" "03-medium-s
 link_instance "benchmarks/profiling/minisat-simp-five/46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized.cnf.xz" "04-k4-like.cnf.xz"
 link_instance "benchmarks/profiling/minisat-simp-five/1d18837c0ced5c18a3a4693993e61728-SC25_Timetable_C_392_E_45_Cl_25_D_7_T_50.normalised.cnf.xz" "05-timetable-like.cnf.xz"
 
-echo "=== 0.0b thin-slice: solver10 baseline ==="
+echo "=== 0.0b thin-slice: reference floor baseline ==="
 bash tools/bench.sh -t 120 -m 16384 \
     -d "$INSTANCE_DIR" "$SOLVER10" \
-    --log-dir "$LOG_DIR/solver10"
+    --log-dir "$LOG_DIR/floor"
 
-echo "=== 0.0b thin-slice: solver11 SAT_USE_LBD=off ==="
+echo "=== 0.0b thin-slice: target SAT_USE_LBD=off ==="
 SAT_USE_LBD=off bash tools/bench.sh -t 120 -m 16384 \
-    -d "$INSTANCE_DIR" "$SOLVER11" \
-    --log-dir "$LOG_DIR/solver11-lbd-off"
+    -d "$INSTANCE_DIR" "$TARGET_SOLVER" \
+    --log-dir "$LOG_DIR/target-lbd-off"
 
-echo "=== 0.0b thin-slice: solver11 SAT_USE_LBD=on ==="
+echo "=== 0.0b thin-slice: target SAT_USE_LBD=on ==="
 SAT_USE_LBD=on bash tools/bench.sh -t 120 -m 16384 \
-    -d "$INSTANCE_DIR" "$SOLVER11" \
-    --log-dir "$LOG_DIR/solver11-lbd-on"
+    -d "$INSTANCE_DIR" "$TARGET_SOLVER" \
+    --log-dir "$LOG_DIR/target-lbd-on"
 
 python3 tools/status_compare.py \
-    --before "$LOG_DIR/solver10/results.csv" \
-    --after "$LOG_DIR/solver11-lbd-off/results.csv" \
-    > "$LOG_DIR/status-compare-solver10-vs-lbd-off.txt"
+    --before "$LOG_DIR/floor/results.csv" \
+    --after "$LOG_DIR/target-lbd-off/results.csv" \
+    > "$LOG_DIR/status-compare-floor-vs-lbd-off.txt"
 
 python3 tools/status_compare.py \
-    --before "$LOG_DIR/solver11-lbd-off/results.csv" \
-    --after "$LOG_DIR/solver11-lbd-on/results.csv" \
+    --before "$LOG_DIR/target-lbd-off/results.csv" \
+    --after "$LOG_DIR/target-lbd-on/results.csv" \
     > "$LOG_DIR/status-compare-lbd-off-vs-on.txt"
 
 python3 tools/compare_bench.py \
-    --before "$LOG_DIR/solver11-lbd-off/results.csv" \
-    --after "$LOG_DIR/solver11-lbd-on/results.csv" \
+    --before "$LOG_DIR/target-lbd-off/results.csv" \
+    --after "$LOG_DIR/target-lbd-on/results.csv" \
     --timeout 120 \
     > "$LOG_DIR/compare-lbd-off-vs-on.txt"
 
@@ -75,7 +75,7 @@ for cnf in "$INSTANCE_DIR"/*; do
         solver_input="$TMP_DIR/$name.cnf"
         gzip -dkc "$cnf" > "$solver_input"
     fi
-    SAT_USE_LBD=on bash "$SOLVER11/run.sh" "$solver_input" "$out_dir" > "$out_dir/stdout.log" 2> "$out_dir/stderr.log"
+    SAT_USE_LBD=on bash "$TARGET_SOLVER/run.sh" "$solver_input" "$out_dir" > "$out_dir/stdout.log" 2> "$out_dir/stderr.log"
     grep '^s ' "$out_dir/stdout.log" | head -1 > "$out_dir/stdout-status.txt"
     line="$(grep '^c lbd ' "$out_dir/stdout.log" | tail -1 || true)"
     computed="$(printf '%s\n' "$line" | sed -n 's/.*computed=\([0-9][0-9]*\).*/\1/p')"

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Run solver 11 across generated iteration benchmark sets.
+# Run the current solver across generated iteration benchmark sets.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SOLVER="solver/11-kissat-search"
+SOLVER="$("$REPO_ROOT/tools/current_solver.sh")"
 TIMEOUT=300
 MEMLIMIT_MB=16384
 declare -a SETS=(smoke-plus search-core preprocess-core regression-guards)
@@ -14,7 +14,7 @@ usage() {
 Usage: bash tools/run_matrix.sh [options]
 
 Options:
-  --solver <dir>             Solver directory (default: solver/11-kissat-search)
+  --solver <dir>             Solver directory (default: current solver)
   -t, --timeout <seconds>    Per-instance timeout (default: 300)
   -m, --memory <MB>          Memory limit (default: 16384)
   --sets <a,b,c>             Benchmark sets under benchmarks/iteration
@@ -27,7 +27,7 @@ USAGE
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --solver) SOLVER="$2"; shift 2 ;;
+        --solver) SOLVER="$("$REPO_ROOT/tools/current_solver.sh" "$2")"; shift 2 ;;
         -t|--timeout) TIMEOUT="$2"; shift 2 ;;
         -m|--memory) MEMLIMIT_MB="$2"; shift 2 ;;
         --sets) IFS=',' read -r -a SETS <<< "$2"; shift 2 ;;

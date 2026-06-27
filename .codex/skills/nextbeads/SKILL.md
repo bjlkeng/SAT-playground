@@ -59,11 +59,27 @@ Read these before selecting work. A compaction may have evicted project rules.
 2. `plan/solver-optimization-workflow.md`
 3. `benchmarks/BENCHMARK_WORKFLOWS.md`
 4. `.agents/skills/beads/SKILL.md`
-5. Target solver README and feature/state files:
-   `solver/NN-name/README.md`, plus `FEATURES.md`, `FEATURES.csv`, or a
-   `SOLVERNN_STATE.md` (e.g. `SOLVER12_STATE.md`) when present.
+5. Target solver README and feature/state files. Resolve the target once with
+   `tools/current_solver.sh`, then read `$TARGET_SOLVER/README.md`, plus
+   `FEATURES.md`, `FEATURES.csv`, or a `SOLVERNN_STATE.md` when present.
 6. Any `log/<investigation>/FINDINGS.md` or `DEEPER_FINDINGS.md` referenced by
    candidate beads.
+
+## Target Solver
+
+Use the solver currently under work. Do not hardcode `solver/11-kissat-search`,
+`solver/12-kissat-inprocessing`, or any other iteration in the skill workflow.
+Resolve it once during preflight and reuse that value for every build, test,
+smoke, benchmark, seedgate, and promotion-gate command:
+
+```bash
+TARGET_SOLVER="$(tools/current_solver.sh "${NEXTBEADS_SOLVER:-}")"
+echo "target_solver=$TARGET_SOLVER"
+```
+
+`tools/current_solver.sh` honors `NEXTBEADS_SOLVER` when set, then
+`SAT_TARGET_SOLVER` / `SAT_CURRENT_SOLVER` / `SAT_SOLVER`, then falls back to the newest
+`solver/NN-*` directory with `build.sh` and `run.sh`.
 
 ## Benchmark Discipline
 
@@ -150,6 +166,8 @@ PID/log/progress, and stop the current turn cleanly.
    ```bash
    bd prime
    bd export -o .beads/beads.jsonl
+   TARGET_SOLVER="$(tools/current_solver.sh "${NEXTBEADS_SOLVER:-}")"
+   echo "target_solver=$TARGET_SOLVER"
    git status --short
    bd list --status=in_progress
    ps aux | grep -E 'cargo|sat-solver|bench\.sh|feature_ablation|kissat|minisat' | grep -v grep
@@ -180,8 +198,8 @@ PID/log/progress, and stop the current turn cleanly.
 5. Start the before benchmark for the whole run using the benchmark discipline
    above:
    ```bash
-   cd solver/NN-name && bash build.sh && cd -
-   bash tools/bench.sh -d benchmarks/profiling solver/NN-name
+   cd "$TARGET_SOLVER" && bash build.sh && cd -
+   bash tools/bench.sh -d benchmarks/profiling "$TARGET_SOLVER"
    ```
    Wait only via hourly polling. Do not start bead implementation until this
    baseline has completed and the `results.csv` path is known.
@@ -216,8 +234,8 @@ For each bead in the work order, up to `N`:
 
 7. Run required validation:
    ```bash
-   cd solver/NN-name && cargo test && cd -
-   bash tools/smoke_test.sh solver/NN-name
+   cd "$TARGET_SOLVER" && cargo test && cd -
+   bash tools/smoke_test.sh "$TARGET_SOLVER"
    ```
    If extra benchmark validation is needed, launch it with the benchmark
    discipline above and wait by hourly polling until results exist.
@@ -279,8 +297,8 @@ Before exiting:
 
 2. Start the after benchmark using the benchmark discipline:
    ```bash
-   cd solver/NN-name && bash build.sh && cd -
-   bash tools/bench.sh -d benchmarks/profiling solver/NN-name
+   cd "$TARGET_SOLVER" && bash build.sh && cd -
+   bash tools/bench.sh -d benchmarks/profiling "$TARGET_SOLVER"
    ```
    Poll hourly until `results.csv` exists. Do not make before/after claims while
    it is still running.

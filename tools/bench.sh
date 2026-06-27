@@ -118,10 +118,20 @@ fi
 # --- set up log directory ---
 TIMESTAMP=$(date +%Y-%m-%d-%H-%M-%S)
 SOLVER_NAME=$(basename "$SOLVER_DIR")
-REQUIRE_RESULT_JSON=0
-if [[ "$SOLVER_NAME" == "11-kissat-search" ]]; then
-    REQUIRE_RESULT_JSON=1
+REQUIRE_RESULT_JSON="${SAT_BENCH_REQUIRE_RESULT_JSON:-auto}"
+if [[ "$REQUIRE_RESULT_JSON" == "auto" ]]; then
+    REQUIRE_RESULT_JSON=0
+    if [[ -f "$SOLVER_DIR/src/output.rs" ]] && grep -q 'RESULT_JSON' "$SOLVER_DIR/src/output.rs"; then
+        REQUIRE_RESULT_JSON=1
+    elif [[ -f "$SOLVER_DIR/README.md" ]] && grep -qi 'result\.json.*mandatory' "$SOLVER_DIR/README.md"; then
+        REQUIRE_RESULT_JSON=1
+    fi
 fi
+case "$REQUIRE_RESULT_JSON" in
+    1|on|ON|true|TRUE|yes|YES) REQUIRE_RESULT_JSON=1 ;;
+    0|off|OFF|false|FALSE|no|NO) REQUIRE_RESULT_JSON=0 ;;
+    *) echo "ERROR: SAT_BENCH_REQUIRE_RESULT_JSON must be auto/on/off" >&2; exit 1 ;;
+esac
 if [[ -n "$LOG_DIR_OVERRIDE" ]]; then
     if [[ "$LOG_DIR_OVERRIDE" = /* ]]; then
         LOG_DIR="$LOG_DIR_OVERRIDE"

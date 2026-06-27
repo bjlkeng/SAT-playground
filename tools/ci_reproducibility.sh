@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# Reproducibility gate for solver 11.
+# Reproducibility gate for the current solver.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SOLVER="${1:-solver/11-kissat-search}"
+SOLVER="$("$REPO_ROOT/tools/current_solver.sh" "${1:-}")"
 SOLVER_DIR="$REPO_ROOT/$SOLVER"
-OUT_ROOT="${SAT_CI_REPRO_OUT:-$REPO_ROOT/log/ci_reproducibility-$(date +%Y-%m-%d-%H-%M-%S)}"
+OUT_ROOT="${SAT_CI_REPRO_OUT:-$REPO_ROOT/log/ci_reproducibility-$(basename "$SOLVER")-$(date +%Y-%m-%d-%H-%M-%S)}"
 STRICT_SEED_EFFECT="${SAT_CI_REQUIRE_SEED_EFFECT:-off}"
+PROOF_UNSAT="$SOLVER_DIR/testdata/golden/unsat_empty_clause.cnf"
+if [[ ! -f "$PROOF_UNSAT" ]]; then
+    PROOF_UNSAT="$REPO_ROOT/tests/cnf/unsat/contradiction.cnf"
+fi
 
 mkdir -p "$OUT_ROOT"
 (cd "$SOLVER_DIR" && bash build.sh)
@@ -38,7 +42,7 @@ declare -a CASES=(
     "trivial_unsat:$REPO_ROOT/tests/cnf/unsat/contradiction.cnf"
     "medium_sat:$REPO_ROOT/tests/cnf/sat/three_sat.cnf"
     "medium_unsat:$REPO_ROOT/tests/cnf/unsat/pigeonhole_3_2.cnf"
-    "proof_unsat:$REPO_ROOT/solver/11-kissat-search/testdata/golden/unsat_empty_clause.cnf"
+    "proof_unsat:$PROOF_UNSAT"
 )
 
 extract_stats() {

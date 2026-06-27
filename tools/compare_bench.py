@@ -337,6 +337,27 @@ def parse_raw_counts(raw_path: Path) -> tuple[dict[str, int] | None, dict[str, i
 def baseline_lock_raw_path(args: argparse.Namespace) -> Path | None:
     before_s = args.before.as_posix()
     after_s = args.after.as_posix()
+    if "log/baseline-lock/floor/results.csv" in before_s and "log/baseline-lock/target/results.csv" in after_s:
+        target = (
+            os.environ.get("SAT_TARGET_SOLVER")
+            or os.environ.get("SAT_CURRENT_SOLVER")
+            or os.environ.get("SAT_SOLVER")
+        )
+        if target:
+            path = Path(target)
+            if path.is_absolute():
+                raw = path / "BASELINE_LOCK.raw.txt"
+            else:
+                raw = Path(target) / "BASELINE_LOCK.raw.txt"
+            return raw if raw.exists() else None
+        candidates = sorted(
+            (
+                path for path in Path("solver").glob("[0-9][0-9]-*/BASELINE_LOCK.raw.txt")
+                if path.is_file()
+            ),
+            key=lambda path: path.parent.name,
+        )
+        return candidates[-1] if candidates else None
     if "log/baseline-lock/solver10/results.csv" in before_s and "log/baseline-lock/solver11/results.csv" in after_s:
         return Path("solver/11-kissat-search/BASELINE_LOCK.raw.txt")
     return None

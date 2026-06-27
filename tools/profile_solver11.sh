@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Capture reproducible profiling artifacts for one solver 11 instance.
+# Capture reproducible profiling artifacts for one current-solver instance.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SOLVER_REL="solver/11-kissat-search"
+SOLVER_REL="$("$REPO_ROOT/tools/current_solver.sh")"
 TIMEOUT_SEC=300
 MEMLIMIT_MB=16384
 RUN_LABEL=""
@@ -19,7 +19,7 @@ usage() {
 Usage: bash tools/profile_solver11.sh [options] <instance.cnf[.gz|.xz]>
 
 Options:
-  --solver <dir>                 Solver directory (default: solver/11-kissat-search)
+  --solver <dir>                 Solver directory (default: current solver)
   -t, --timeout <seconds>        Timeout for each solver run (default: 300)
   -m, --memory <MB>              Virtual-memory limit for solver process (default: 16384)
   --profile <name>               Set SAT_PROFILE for this run
@@ -36,7 +36,7 @@ USAGE
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --solver) SOLVER_REL="$2"; shift 2 ;;
+        --solver) SOLVER_REL="$("$REPO_ROOT/tools/current_solver.sh" "$2")"; shift 2 ;;
         -t|--timeout) TIMEOUT_SEC="$2"; shift 2 ;;
         -m|--memory) MEMLIMIT_MB="$2"; shift 2 ;;
         --profile) SAT_PROFILE_ARG="$2"; shift 2 ;;
@@ -253,7 +253,7 @@ if [[ "$FINAL_DIR" != "$PENDING_DIR" ]]; then
 fi
 
 {
-    echo "# Solver 11 Profile"
+    echo "# Solver Profile"
     echo
     echo "- instance: \`$CNF_PATH\`"
     echo "- solver: \`$SOLVER_REL\`"

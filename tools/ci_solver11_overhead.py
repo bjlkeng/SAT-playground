@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interleaved solver 10 vs solver 11 overhead regression gate."""
+"""Interleaved reference-floor vs current-target overhead regression gate."""
 
 from __future__ import annotations
 
@@ -24,8 +24,8 @@ DEFAULT_INSTANCES = [
     REPO_ROOT / "benchmarks/profiling/legacy/random_v285_s2.cnf",
 ]
 SOLVERS = {
-    "solver10": REPO_ROOT / "solver/10-bve-subsume",
-    "solver11": REPO_ROOT / "solver/11-kissat-search",
+    "floor": REPO_ROOT / os.environ.get("SAT_REFERENCE_SOLVER", "solver/10-bve-subsume"),
+    "target": REPO_ROOT,
 }
 SEARCH_DONE_RE = re.compile(
     r"c search done result=(?P<result>\S+) seconds=(?P<seconds>[0-9.]+) "
@@ -33,6 +33,39 @@ SEARCH_DONE_RE = re.compile(
     r"propagations=(?P<propagations>\d+) restarts=(?P<restarts>\d+) "
     r"learned=(?P<learned>\d+) reduce_db=(?P<reduce_db>\d+)"
 )
+
+
+def solver_sort_key(path: Path) -> tuple[int, str]:
+    prefix = path.name.split("-", 1)[0]
+    try:
+        return int(prefix), path.name
+    except ValueError:
+        return -1, path.name
+
+
+def resolve_solver(value: str | None) -> Path:
+    value = value or os.environ.get("SAT_CURRENT_SOLVER") or os.environ.get("SAT_SOLVER")
+    if value:
+        path = Path(value)
+        return path if path.is_absolute() else REPO_ROOT / path
+    candidates = [
+        path for path in (REPO_ROOT / "solver").glob("[0-9][0-9]-*")
+        if (path / "build.sh").is_file() and (path / "run.sh").is_file()
+    ]
+    if not candidates:
+        raise SystemExit("no solver/NN-* directory with build.sh and run.sh found")
+    return sorted(candidates, key=solver_sort_key)[-1]
+
+
+def configure_solvers(args: argparse.Namespace) -> None:
+    global SOLVERS
+    SOLVERS = {
+        "floor": resolve_solver(args.floor_solver),
+        "target": resolve_solver(args.target_solver),
+    }
+    for label, solver_dir in SOLVERS.items():
+        if not (solver_dir / "build.sh").is_file() or not (solver_dir / "run.sh").is_file():
+            raise SystemExit(f"{label} solver is invalid: {solver_dir}")
 
 
 @dataclass
@@ -52,7 +85,7 @@ class RunRecord:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run an interleaved solver 10 vs solver 11 overhead gate."
+        description="Run an interleaved reference-floor vs target overhead gate."
     )
     parser.add_argument(
         "--repeats",
@@ -64,7 +97,7 @@ def parse_args() -> argparse.Namespace:
         "--threshold-pct",
         type=float,
         default=float(os.environ.get("SAT_OVERHEAD_THRESHOLD_PCT", "1.5")),
-        help="Fail when solver 11 median overhead exceeds this percentage, default: 1.5.",
+        help="Fail when target median overhead exceeds this percentage, default: 1.5.",
     )
     parser.add_argument(
         "--timeout",
@@ -76,7 +109,17 @@ def parse_args() -> argparse.Namespace:
         "--log-dir",
         type=Path,
         default=None,
-        help="Artifact directory, default: log/solver11-overhead-<timestamp>.",
+        help="Artifact directory, default: log/solver-overhead-<target>-<timestamp>.",
+    )
+    parser.add_argument(
+        "--floor-solver",
+        default=os.environ.get("SAT_REFERENCE_SOLVER", "solver/10-bve-subsume"),
+        help="Reference floor solver directory, default: SAT_REFERENCE_SOLVER or solver/10-bve-subsume.",
+    )
+    parser.add_argument(
+        "--target-solver",
+        default=os.environ.get("SAT_TARGET_SOLVER"),
+        help="Target solver directory, default: SAT_TARGET_SOLVER, SAT_CURRENT_SOLVER, SAT_SOLVER, or current solver.",
     )
     parser.add_argument(
         "--instance",
@@ -203,7 +246,7 @@ def run_timing_matrix(
     timing_dir = log_dir / "timing"
     timing_dir.mkdir(parents=True, exist_ok=True)
     env = proof_env(proof)
-    solver_order = ["solver10", "solver11"]
+    solver_order = ["floor", "target"]
 
     for instance in instances:
         for repeat in range(1, repeats + 1):
@@ -275,7 +318,7 @@ def run_counter_parity(instance: Path, log_dir: Path, timeout: int) -> dict[str,
         "solvers": {},
         "matching_core_counters": False,
     }
-    for solver in ("solver10", "solver11"):
+    for solver in ("floor", "target"):
         output_dir = parity_dir / solver / "out"
         output_dir.mkdir(parents=True, exist_ok=True)
         stdout_path = parity_dir / solver / "stdout.txt"
@@ -300,8 +343,8 @@ def run_counter_parity(instance: Path, log_dir: Path, timeout: int) -> dict[str,
             "search_done": parse_search_done(stdout + "\n" + stderr),
         }
 
-    left = result["solvers"]["solver10"]["search_done"]
-    right = result["solvers"]["solver11"]["search_done"]
+    left = result["solvers"]["floor"]["search_done"]
+    right = result["solvers"]["target"]["search_done"]
     core_keys = ["result", "conflicts", "decisions", "propagations", "restarts"]
     result["matching_core_counters"] = bool(
         left and right and all(left[key] == right[key] for key in core_keys)
@@ -320,35 +363,35 @@ def summarize(records: list[RunRecord], threshold_pct: float) -> dict[str, objec
         "failed_instances": [],
     }
     for instance, solver_records in by_instance.items():
-        s10 = solver_records.get("solver10", [])
-        s11 = solver_records.get("solver11", [])
-        times10 = [record.seconds for record in s10]
-        times11 = [record.seconds for record in s11]
-        med10 = median(times10)
-        med11 = median(times11)
-        mean10 = mean(times10)
-        mean11 = mean(times11)
-        median_delta_pct = ((med11 - med10) / med10) * 100.0
-        mean_delta_pct = ((mean11 - mean10) / mean10) * 100.0
+        floor_records = solver_records.get("floor", [])
+        target_records = solver_records.get("target", [])
+        floor_times = [record.seconds for record in floor_records]
+        target_times = [record.seconds for record in target_records]
+        floor_median = median(floor_times)
+        target_median = median(target_times)
+        floor_mean = mean(floor_times)
+        target_mean = mean(target_times)
+        median_delta_pct = ((target_median - floor_median) / floor_median) * 100.0
+        mean_delta_pct = ((target_mean - floor_mean) / floor_mean) * 100.0
         status_ok = (
-            [record.status for record in s10] == [record.status for record in s11]
-            and all(record.returncode == 0 for record in s10 + s11)
-            and not any(record.timeout for record in s10 + s11)
+            [record.status for record in floor_records] == [record.status for record in target_records]
+            and all(record.returncode == 0 for record in floor_records + target_records)
+            and not any(record.timeout for record in floor_records + target_records)
         )
         passes = status_ok and median_delta_pct <= threshold_pct
         if not passes:
             summary["failed_instances"].append(instance)
         summary["instances"][instance] = {
-            "solver10_times": times10,
-            "solver11_times": times11,
-            "solver10_statuses": [record.status for record in s10],
-            "solver11_statuses": [record.status for record in s11],
-            "median10": med10,
-            "median11": med11,
-            "median_delta_pct_solver11_vs_10": median_delta_pct,
-            "mean10": mean10,
-            "mean11": mean11,
-            "mean_delta_pct_solver11_vs_10": mean_delta_pct,
+            "floor_times": floor_times,
+            "target_times": target_times,
+            "floor_statuses": [record.status for record in floor_records],
+            "target_statuses": [record.status for record in target_records],
+            "floor_median": floor_median,
+            "target_median": target_median,
+            "median_delta_pct_target_vs_floor": median_delta_pct,
+            "floor_mean": floor_mean,
+            "target_mean": target_mean,
+            "mean_delta_pct_target_vs_floor": mean_delta_pct,
             "status_ok": status_ok,
             "passes_threshold": passes,
         }
@@ -366,6 +409,7 @@ def write_records(records: list[RunRecord], path: Path) -> None:
 
 def main() -> int:
     args = parse_args()
+    configure_solvers(args)
     if args.repeats <= 0:
         raise SystemExit("--repeats must be positive")
     instances = [path.resolve() for path in (args.instances or DEFAULT_INSTANCES)]
@@ -374,7 +418,8 @@ def main() -> int:
             raise SystemExit(f"instance not found: {instance}")
 
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    log_dir = (args.log_dir or (REPO_ROOT / "log" / f"solver11-overhead-{timestamp}")).resolve()
+    target_name = sanitize(SOLVERS["target"].name)
+    log_dir = (args.log_dir or (REPO_ROOT / "log" / f"solver-overhead-{target_name}-{timestamp}")).resolve()
     if log_dir.exists():
         shutil.rmtree(log_dir)
     log_dir.mkdir(parents=True)
@@ -402,23 +447,25 @@ def main() -> int:
     summary["passed"] = bool(summary["passed"] and parity["matching_core_counters"])
     (log_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
-    print("\n=== solver11 overhead summary ===")
+    print("\n=== solver overhead summary ===")
     print(f"Artifacts: {rel(log_dir)}")
-    print(f"Threshold: {args.threshold_pct:.3f}% median solver11 overhead")
+    print(f"Floor solver: {rel(SOLVERS['floor'])}")
+    print(f"Target solver: {rel(SOLVERS['target'])}")
+    print(f"Threshold: {args.threshold_pct:.3f}% median target overhead")
     for instance, item in summary["instances"].items():
         print(
-            f"{Path(instance).name}: median10={item['median10']:.6f}s "
-            f"median11={item['median11']:.6f}s "
-            f"delta={item['median_delta_pct_solver11_vs_10']:.3f}% "
-            f"mean_delta={item['mean_delta_pct_solver11_vs_10']:.3f}% "
+            f"{Path(instance).name}: floor_median={item['floor_median']:.6f}s "
+            f"target_median={item['target_median']:.6f}s "
+            f"delta={item['median_delta_pct_target_vs_floor']:.3f}% "
+            f"mean_delta={item['mean_delta_pct_target_vs_floor']:.3f}% "
             f"status_ok={item['status_ok']}"
         )
     print(f"Counter parity: {parity['matching_core_counters']}")
 
     if not summary["passed"]:
-        print("solver11 overhead gate FAILED", file=sys.stderr)
+        print("solver overhead gate FAILED", file=sys.stderr)
         return 1
-    print("solver11 overhead gate PASS")
+    print("solver overhead gate PASS")
     return 0
 
 

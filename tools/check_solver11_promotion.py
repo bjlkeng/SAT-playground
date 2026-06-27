@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Guard solver 11 default/fast promotions against solver 10.
+"""Guard current-solver default/fast promotions against a reference floor.
 
-Solver 10 is an **aggregate-PAR-2 floor**, not a per-instance floor: an instance that
+The floor is an **aggregate-PAR-2 floor**, not a per-instance floor: an instance that
 regresses from solved to a timeout/UNKNOWN is a PAR-2 cost handled by the aggregate
-comparison, not a gate failure. The only per-instance solver-10 check the gate still
+comparison, not a gate failure. The only per-instance floor check the gate still
 enforces is a SAT<->UNSAT **correctness contradiction** (PAR-2 can never buy back a
 wrong answer). Honest solved->unsolved regressions vs solver 10 are reported for
 diagnostics but do not fail the gate.
@@ -445,7 +445,7 @@ def main() -> int:
     parser.add_argument("--multiseed", action="store_true",
                         help="inputs are feature_ablation per-(config,instance,seed) TSVs; "
                              "decide lexicographically solved->conflicts->PAR-2")
-    parser.add_argument("--solver10", type=Path)
+    parser.add_argument("--floor", "--solver10", dest="solver10", type=Path)
     parser.add_argument("--candidate", type=Path)
     parser.add_argument("--previous", type=Path)
     parser.add_argument("--timeout", type=float, default=300.0)
@@ -460,7 +460,7 @@ def main() -> int:
         return 0
 
     if args.solver10 is None or args.candidate is None:
-        parser.error("--solver10 and --candidate are required unless --self-test is used")
+        parser.error("--floor (or legacy --solver10) and --candidate are required unless --self-test is used")
     return check_gate_multiseed(args) if args.multiseed else check_gate(args)
 
 

@@ -32,6 +32,29 @@ SUMMARY_FIELDS = [
 ]
 
 
+def current_solver(explicit: str | None = None) -> str:
+    env_solver = explicit or (
+        os.environ.get("SAT_TARGET_SOLVER")
+        or os.environ.get("SAT_CURRENT_SOLVER")
+        or os.environ.get("SAT_SOLVER")
+    )
+    if env_solver:
+        solver = Path(env_solver)
+        if solver.is_absolute():
+            try:
+                return str(solver.resolve().relative_to(REPO_ROOT))
+            except ValueError:
+                return str(solver)
+        return env_solver
+    candidates = []
+    for path in (REPO_ROOT / "solver").glob("[0-9][0-9]-*"):
+        if (path / "build.sh").is_file() and (path / "run.sh").is_file():
+            candidates.append(path)
+    if not candidates:
+        raise SystemExit("no solver/NN-* directory with build.sh and run.sh found")
+    return str(sorted(candidates, key=lambda p: p.name)[-1].relative_to(REPO_ROOT))
+
+
 def parse_csv_list(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
@@ -92,7 +115,7 @@ def write_summary(
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--solver", default="solver/11-kissat-search")
+    parser.add_argument("--solver", default=current_solver())
     parser.add_argument("--instances", nargs="+", required=True, type=Path)
     parser.add_argument("--seeds", default="1,2,3")
     parser.add_argument("--modes", default=DEFAULT_MODES)
@@ -102,6 +125,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    args.solver = current_solver(args.solver)
 
     seeds = [int(seed) for seed in parse_csv_list(args.seeds)]
     modes = parse_csv_list(args.modes)

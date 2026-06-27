@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Bounded solver 11 feature-interaction matrix.
+# Bounded feature-interaction matrix for the current solver.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SOLVER="${1:-solver/11-kissat-search}"
+SOLVER="$("$REPO_ROOT/tools/current_solver.sh" "${1:-}")"
 TIMEOUT="${SAT_CI_MATRIX_TIMEOUT:-30}"
-OUT_ROOT="${SAT_CI_MATRIX_OUT:-$REPO_ROOT/log/ci_solver11_matrix-$(date +%Y-%m-%d-%H-%M-%S)}"
-INSTANCE="$REPO_ROOT/solver/11-kissat-search/testdata/golden/sat_tiny.cnf"
+OUT_ROOT="${SAT_CI_MATRIX_OUT:-$REPO_ROOT/log/ci-matrix-$(basename "$SOLVER")-$(date +%Y-%m-%d-%H-%M-%S)}"
+INSTANCE="${SAT_CI_MATRIX_INSTANCE:-$REPO_ROOT/$SOLVER/testdata/golden/sat_tiny.cnf}"
+if [[ ! -f "$INSTANCE" ]]; then
+    INSTANCE="$REPO_ROOT/tests/cnf/sat/unit.cnf"
+fi
 
 mkdir -p "$OUT_ROOT"
 SUMMARY="$OUT_ROOT/summary.tsv"
@@ -48,7 +51,7 @@ print(p.get("status","ERROR"), p.get("config_hash","unavailable"), sep="\t")' \
         pass:SAT|pass:UNSAT|pass:UNKNOWN) ;;
         unsupported:UNSUPPORTED|unsupported:ERROR) ;;
         *)
-            echo "ci_solver11_matrix: unexpected result for $name expected=$expected actual=$actual" >&2
+            echo "ci matrix: unexpected result for $name expected=$expected actual=$actual" >&2
             return 1
             ;;
     esac
@@ -61,4 +64,4 @@ run_row lbd_tiered_kissat_ema unsupported 'SAT_USE_LBD=on SAT_REDUCE=lbd-tiered 
 run_row binary_fast unsupported 'SAT_BINARY_FAST=on'
 run_row inprocess_shell unsupported 'SAT_INPROCESS=on SAT_VIVIFY=off SAT_PROBE=off SAT_HBR=off'
 
-echo "ci_solver11_matrix: summary=$SUMMARY"
+echo "ci matrix: summary=$SUMMARY"
