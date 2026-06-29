@@ -36,8 +36,8 @@ prints the same maturity records in `SAT_CONFIG_DUMP`, writes them into
 | `SAT_HBR` | `hbr` | ParkingLot | none |  | Config-reserved until HBR lands; requires probing. |
 | `SAT_TRANSITIVE` | `transitive` | ParkingLot | none |  | Config-reserved until transitive reduction lands. |
 | `SAT_FORWARD_SUBSUME` | `forward_subsume` | ParkingLot | none |  | Config-reserved until forward subsumption lands. |
-| `SAT_GATE_EXTRACT` | `gate_extract` | ParkingLot | none |  | Config-reserved until gate extraction lands. |
-| `SAT_GATE_BVE` | `gate_bve` | ParkingLot | none |  | Config-reserved until gate-aware BVE lands; requires gate extraction. |
+| `SAT_GATE_EXTRACT` | `gate_extract` | Experimental | none | `log/seedgate-s12_gate_bve-2026-06-29-09-22-12` | AND/OR gate detection over a pivot's clauses (`x <-> OR(o1..ok)`: base clause + binaries). Enables `SAT_GATE_BVE`. Default-off. |
+| `SAT_GATE_BVE` | `gate_bve` | Experimental | none | `log/seedgate-s12_gate_bve-2026-06-29-09-22-12` | Gate-aware bounded variable elimination: when the pivot is gate-defined, resolution is restricted to gate-vs-nongate pairs (Plaisted-Greenbaum), so gate vars eliminate where naive all-pairs BVE blows past the resolvent bound. Sound (DRAT-verified on a large UNSAT, 0 RAT lemmas) and a reusable building block, but **rejected for the default**: as a one-shot root pass on profile20 it nets −1 (sudoku derailed; the 0.6–2% clause reduction was too weak to crack the timing-out targets VexRiscv/Bubble/tseitin). Requires `SAT_GATE_EXTRACT=on`. See bead `SAT-playground-2ro`. |
 | `SAT_RCHECK` | `rcheck` | ParkingLot | none |  | Config-reserved until implied-clause checking lands. |
 
 ParkingLot entries are deliberately accepted as schema fields but rejected when

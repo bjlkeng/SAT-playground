@@ -1504,8 +1504,6 @@ impl SolverConfig {
             (self.hbr, "SAT_HBR"),
             (self.transitive, "SAT_TRANSITIVE"),
             (self.forward_subsume, "SAT_FORWARD_SUBSUME"),
-            (self.gate_extract, "SAT_GATE_EXTRACT"),
-            (self.gate_bve, "SAT_GATE_BVE"),
             (self.rcheck, "SAT_RCHECK"),
         ];
         for (enabled, name) in unsupported {
@@ -2273,7 +2271,7 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
         feature(
             "SAT_GATE_EXTRACT",
             config.gate_extract,
-            FeatureMaturity::ParkingLot,
+            FeatureMaturity::Experimental,
             false,
             false,
             false,
@@ -2282,7 +2280,7 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
         feature(
             "SAT_GATE_BVE",
             config.gate_bve,
-            FeatureMaturity::ParkingLot,
+            FeatureMaturity::Experimental,
             false,
             false,
             false,

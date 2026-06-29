@@ -160,6 +160,8 @@ pub(crate) struct SolverStats {
     pub(crate) avg_decision_level_sum: u64,
     pub(crate) max_decision_level: u64,
     pub(crate) preprocess_eliminated_vars: u64,
+    /// subset of `preprocess_eliminated_vars` eliminated via gate-aware BVE (SAT_GATE_BVE)
+    pub(crate) preprocess_gate_eliminated_vars: u64,
     pub(crate) preprocess_resolvents: u64,
     pub(crate) preprocess_resolution_attempts: u64,
     pub(crate) preprocess_eliminate_ticks: u64,

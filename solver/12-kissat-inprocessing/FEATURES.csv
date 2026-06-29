@@ -25,6 +25,6 @@ SAT_PROBE,probe,ParkingLot,false,false,false,none,,probing,0.3
 SAT_HBR,hbr,ParkingLot,false,false,false,none,,hyper-binary-resolution,0.3
 SAT_TRANSITIVE,transitive,ParkingLot,false,false,false,none,,transitive-reduction,0.3
 SAT_FORWARD_SUBSUME,forward_subsume,ParkingLot,false,false,false,none,,subsumption,0.3
-SAT_GATE_EXTRACT,gate_extract,ParkingLot,false,false,false,none,,gate-extraction,0.3
-SAT_GATE_BVE,gate_bve,ParkingLot,false,false,false,none,,gate-aware-bve,0.3
+SAT_GATE_EXTRACT,gate_extract,Experimental,false,false,false,none,,gate-extraction,2ro
+SAT_GATE_BVE,gate_bve,Experimental,false,false,false,none,,gate-aware-bve,2ro
 SAT_RCHECK,rcheck,ParkingLot,false,false,false,none,,redundancy-checking,0.3

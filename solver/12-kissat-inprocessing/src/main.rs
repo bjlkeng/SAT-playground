@@ -1440,6 +1440,15 @@ struct Solver {
     trace_preprocess_details: bool,
     /// run bounded variable elimination during the one-shot preprocessing phase
     use_elim: bool,
+    /// gate-aware BVE (SAT_GATE_BVE): when a pivot variable is functionally defined
+    /// by an AND/OR gate, restrict resolution to gate-vs-nongate pairs
+    /// (Plaisted-Greenbaum substitution) instead of all-pairs, so gate-defined vars
+    /// eliminate without the clause blow-up that naive BVE rejects. Requires SAT_GATE_EXTRACT.
+    gate_bve: bool,
+    /// lit-indexed stamped scratch for gate detection (mirrors the relation_marks idiom);
+    /// resized lazily, cleared by bumping `gate_mark_stamp` instead of zeroing.
+    gate_marks: Vec<u32>,
+    gate_mark_stamp: u32,
     /// run full backward subsumption rather than queue-only root/touched work
     full_bsr: bool,
     /// when true (and full_bsr is also true), `should_run_full_backward_subsumption` skips
@@ -2329,6 +2338,9 @@ impl Solver {
             use_simplification: config.simplification,
             trace_preprocess_details: config.trace_preprocess_details,
             use_elim: config.bve,
+            gate_bve: config.gate_bve,
+            gate_marks: Vec::new(),
+            gate_mark_stamp: 0,
             full_bsr: config.full_bsr,
             bsr_formula_gate: config.bsr_formula_gate,
             bsr_drain_batched: config.bsr_drain_batched,
