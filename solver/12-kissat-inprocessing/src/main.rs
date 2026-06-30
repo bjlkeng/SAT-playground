@@ -132,6 +132,16 @@ const DEFAULT_BVE_CLAUSE_LIMIT: isize = 20;
 const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
 /// Default conflicts between inprocessing rounds when SAT_INPROCESS_INTERVAL_CONFLICTS=0.
 const INPROCESS_DEFAULT_INTERVAL: u64 = 2000;
+/// Minimum fraction of clauses that must be consumed by extracted XOR constraints
+/// before the XOR/parity Gaussian engine (SAT_GAUSS) attempts a refutation. Below
+/// this the formula is not parity-structured, so a Gaussian pass would be a costly
+/// no-op; Tseitin instances sit at ~1.0 while incidental-XOR formulas sit well below.
+const GAUSS_MIN_COVERAGE: f64 = 0.90;
+/// Upper bound on original-clause count for the XOR extraction pass (default-on
+/// safety): above this the one-shot extraction allocation/time is not worth paying
+/// on every solve. A pure viability bound (no profile20 cell approaches it); larger
+/// parity instances can still opt in via SAT_GAUSS with this raised.
+const GAUSS_MAX_CLAUSES: usize = 5_000_000;
 /// Default per-round vivification budget as a fraction (per mille) of cumulative
 /// search propagations. Inprocessing then scales as a small bounded share of the
 /// search effort already spent, rather than as a static multiple of formula size.
@@ -8537,6 +8547,73 @@ impl Solver {
         None
     }
 
+    /// Attempt to refute the formula via XOR/parity Gaussian elimination (SAT_GAUSS).
+    ///
+    /// Extracts XOR constraints from the live original clauses and runs Gaussian
+    /// elimination over GF(2). If the XOR subsystem is inconsistent it emits a DRAT
+    /// proof (pure resolution, drat-trim-verified) into `proof_log` and returns true,
+    /// so the caller reports UNSAT through the normal output contract. The proof is
+    /// buffered and committed to `proof_log` only on success, so a non-refuting attempt
+    /// leaves the proof stream untouched and search proceeds normally. Soundness: the
+    /// extracted XORs are a clause subset of the formula, so their inconsistency is a
+    /// sound UNSAT witness (the proof obligation is only to certify it).
+    fn try_gauss_refute(&mut self, proof_log: &mut ProofLog) -> bool {
+        if self.original_clause_ids.len() > GAUSS_MAX_CLAUSES {
+            return false;
+        }
+        let t0 = Instant::now();
+        let clauses: Vec<Vec<i32>> = self
+            .original_clause_ids
+            .iter()
+            .filter(|&&cid| cid < self.arena.len() && !self.clause_is_deleted(cid))
+            .map(|&cid| self.clause_slice(cid).to_vec())
+            .collect();
+        let total = clauses.len().max(1);
+        let (xors, consumed) = gauss::extract_xors(&clauses, 8);
+        if xors.is_empty() {
+            return false;
+        }
+        // Only attempt the (potentially expensive) Gaussian elimination + proof when
+        // the XOR constraints cover most of the formula — i.e. the instance is
+        // parity-structured (Tseitin-like). On formulas with only incidental XOR
+        // structure this skips a doomed elimination and its large proof buffer.
+        let coverage = consumed.len() as f64 / total as f64;
+        if coverage < GAUSS_MIN_COVERAGE {
+            if std::env::var("SAT_DEBUG_GAUSS").is_ok() {
+                eprintln!(
+                    "c gauss_refute skip coverage={:.3} xors={} extract_sec={:.4}",
+                    coverage,
+                    xors.len(),
+                    t0.elapsed().as_secs_f64()
+                );
+            }
+            return false;
+        }
+        let num_vars = self.assignment.len().saturating_sub(1);
+        let mut buffer: Vec<Vec<i32>> = Vec::new();
+        let proved = {
+            let mut emit = |clause: &[i32]| buffer.push(clause.to_vec());
+            gauss::gaussian_unsat_with_proof(&xors, num_vars, &mut emit)
+        };
+        if std::env::var("SAT_DEBUG_GAUSS").is_ok() {
+            eprintln!(
+                "c gauss_refute coverage={:.3} xors={} proved={} clauses={} sec={:.4}",
+                coverage,
+                xors.len(),
+                proved,
+                buffer.len(),
+                t0.elapsed().as_secs_f64()
+            );
+        }
+        if !proved {
+            return false;
+        }
+        for clause in &buffer {
+            proof_log.record_clause(clause);
+        }
+        true
+    }
+
     fn solve_status_with_proof(
         &mut self,
         proof_log: &mut ProofLog,
@@ -8550,6 +8627,14 @@ impl Solver {
         }
 
         if self.propagate().is_some() {
+            return SolveOutcome::unsat();
+        }
+
+        // XOR/parity Gaussian refutation (SAT_GAUSS). On parity-heavy formulas (e.g.
+        // Tseitin) that CDCL cannot refute in polynomial resolution, this proves UNSAT
+        // at the root via Gaussian elimination over GF(2) and emits a drat-trim-verified
+        // DRAT proof. A no-op on formulas without an inconsistent XOR subsystem.
+        if config.gauss && self.try_gauss_refute(proof_log) {
             return SolveOutcome::unsat();
         }
 

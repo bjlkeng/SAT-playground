@@ -637,6 +637,7 @@ pub(crate) struct SolverConfig {
     pub(crate) gate_extract: bool,
     pub(crate) gate_bve: bool,
     pub(crate) rcheck: bool,
+    pub(crate) gauss: bool,
     pub(crate) inprocess_interval_conflicts: u64,
     pub(crate) inprocess_max_rounds: u64,
     pub(crate) vivify_ticks_budget: u64,
@@ -754,6 +755,7 @@ impl Default for SolverConfig {
             gate_extract: false,
             gate_bve: false,
             rcheck: false,
+            gauss: false,
             inprocess_interval_conflicts: 0,
             inprocess_max_rounds: 0,
             vivify_ticks_budget: 0,
@@ -887,6 +889,15 @@ impl SolverConfig {
                 // traffic contends; that is a measurement artifact of the parallel sweep, not
                 // the single-instance objective.
                 self.prefetch_watched_clauses = true;
+                // SAT-playground-qld (2026-06-30): XOR/parity Gaussian refutation promoted
+                // to default/fast. profile20 5x5/900s: +5 solved (76->81) — tseitin_grid_n12
+                // 0/5->5/5, which CDCL cannot refute (exponential resolution) but Gaussian
+                // elimination over GF(2) cracks at root in ~5s. Trajectory-neutral: the 76
+                // prior-solved cells keep byte-identical conflicts (the engine is
+                // coverage-gated, firing only on parity-structured formulas; extraction tax
+                // <=0.74s on the largest cell, which times out regardless). The DRAT proof is
+                // pure resolution and drat-trim VERIFIED (1.26M-clause proof, 0 RAT lemmas).
+                self.gauss = true;
             }
             SolverProfile::Experimental => {
                 self.use_lbd = true;
@@ -1302,6 +1313,7 @@ impl SolverConfig {
             parse_bool_selected(env_map, &key_set, "SAT_GATE_EXTRACT", self.gate_extract);
         self.gate_bve = parse_bool_selected(env_map, &key_set, "SAT_GATE_BVE", self.gate_bve);
         self.rcheck = parse_bool_selected(env_map, &key_set, "SAT_RCHECK", self.rcheck);
+        self.gauss = parse_bool_selected(env_map, &key_set, "SAT_GAUSS", self.gauss);
         self.inprocess_interval_conflicts = parse_u64_selected(
             env_map,
             &key_set,
@@ -1778,6 +1790,7 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "gate_extract", self.gate_extract);
         push_kv_bool(&mut lines, "gate_bve", self.gate_bve);
         push_kv_bool(&mut lines, "rcheck", self.rcheck);
+        push_kv_bool(&mut lines, "gauss", self.gauss);
         push_kv(
             &mut lines,
             "inprocess_interval_conflicts",
@@ -2295,6 +2308,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             false,
             "",
         ),
+        feature(
+            "SAT_GAUSS",
+            config.gauss,
+            FeatureMaturity::SmokeSafe,
+            true,
+            false,
+            false,
+            "log/seedgate-s12_gauss-2026-06-30-08-18-10",
+        ),
     ]
 }
 
@@ -2465,6 +2487,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "gate_extract" => Some("SAT_GATE_EXTRACT"),
         "gate_bve" => Some("SAT_GATE_BVE"),
         "rcheck" => Some("SAT_RCHECK"),
+        "gauss" => Some("SAT_GAUSS"),
         "inprocess_interval_conflicts" => Some("SAT_INPROCESS_INTERVAL_CONFLICTS"),
         "inprocess_max_rounds" => Some("SAT_INPROCESS_MAX_ROUNDS"),
         "vivify_ticks_budget" => Some("SAT_VIVIFY_TICKS"),
@@ -2653,6 +2676,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_GATE_EXTRACT",
         "SAT_GATE_BVE",
         "SAT_RCHECK",
+        "SAT_GAUSS",
         "SAT_INPROCESS_INTERVAL_CONFLICTS",
         "SAT_INPROCESS_MAX_ROUNDS",
         "SAT_VIVIFY_TICKS",
