@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod branch;
 mod check;
 mod config;
+mod gauss;
 mod limits;
 mod lit;
 mod output;
@@ -9220,6 +9221,24 @@ fn main() {
     let parse_sec = parse_start.elapsed().as_secs_f64();
     let original_clause_count = clauses.len();
     let original_lits_initial = initial_lit_count(&clauses);
+    // Phase 1+2 validation hook for the XOR/parity Gaussian engine (bead
+    // SAT-playground-qld). Detect-only: extracts XOR constraints and reports whether
+    // Gaussian elimination finds a parity contradiction. Does NOT change the solve
+    // result — emitting UNSAT requires the Phase 3 DRAT proof. Gated by GAUSS_DETECT.
+    if std::env::var("GAUSS_DETECT").is_ok() {
+        let gauss_start = std::time::Instant::now();
+        let (xors, consumed) = gauss::extract_xors(&clauses, 8);
+        let unsat = gauss::gaussian_unsat(&xors, num_vars);
+        eprintln!(
+            "c gauss_detect xors={} clauses_consumed={}/{} num_vars={} unsat_detected={} seconds={:.4}",
+            xors.len(),
+            consumed.len(),
+            original_clause_count,
+            num_vars,
+            unsat,
+            gauss_start.elapsed().as_secs_f64(),
+        );
+    }
     if let Some(preflight) = memory_preflight(num_vars, &clauses, &config) {
         eprintln!(
             "c memory_preflight result=UNKNOWN reason=memory-preflight-limit vars={} clauses={} literals={} estimated_peak_mb={} limit_mb={} threshold_mb={}",
