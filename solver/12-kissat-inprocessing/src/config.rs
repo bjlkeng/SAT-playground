@@ -639,6 +639,7 @@ pub(crate) struct SolverConfig {
     pub(crate) rcheck: bool,
     pub(crate) gauss: bool,
     pub(crate) els: bool,
+    pub(crate) congruence: bool,
     pub(crate) inprocess_interval_conflicts: u64,
     pub(crate) inprocess_max_rounds: u64,
     pub(crate) vivify_ticks_budget: u64,
@@ -758,6 +759,7 @@ impl Default for SolverConfig {
             rcheck: false,
             gauss: false,
             els: false,
+            congruence: false,
             inprocess_interval_conflicts: 0,
             inprocess_max_rounds: 0,
             vivify_ticks_budget: 0,
@@ -1317,6 +1319,8 @@ impl SolverConfig {
         self.rcheck = parse_bool_selected(env_map, &key_set, "SAT_RCHECK", self.rcheck);
         self.gauss = parse_bool_selected(env_map, &key_set, "SAT_GAUSS", self.gauss);
         self.els = parse_bool_selected(env_map, &key_set, "SAT_ELS", self.els);
+        self.congruence =
+            parse_bool_selected(env_map, &key_set, "SAT_CONGRUENCE", self.congruence);
         self.inprocess_interval_conflicts = parse_u64_selected(
             env_map,
             &key_set,
@@ -1795,6 +1799,7 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "rcheck", self.rcheck);
         push_kv_bool(&mut lines, "gauss", self.gauss);
         push_kv_bool(&mut lines, "els", self.els);
+        push_kv_bool(&mut lines, "congruence", self.congruence);
         push_kv(
             &mut lines,
             "inprocess_interval_conflicts",
@@ -2330,6 +2335,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             false,
             "bd:SAT-playground-otd",
         ),
+        feature(
+            "SAT_CONGRUENCE",
+            config.congruence,
+            FeatureMaturity::Experimental,
+            true,
+            true,
+            false,
+            "bd:SAT-playground-otd",
+        ),
     ]
 }
 
@@ -2502,6 +2516,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "rcheck" => Some("SAT_RCHECK"),
         "gauss" => Some("SAT_GAUSS"),
         "els" => Some("SAT_ELS"),
+        "congruence" => Some("SAT_CONGRUENCE"),
         "inprocess_interval_conflicts" => Some("SAT_INPROCESS_INTERVAL_CONFLICTS"),
         "inprocess_max_rounds" => Some("SAT_INPROCESS_MAX_ROUNDS"),
         "vivify_ticks_budget" => Some("SAT_VIVIFY_TICKS"),
@@ -2692,6 +2707,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_RCHECK",
         "SAT_GAUSS",
         "SAT_ELS",
+        "SAT_CONGRUENCE",
         "SAT_INPROCESS_INTERVAL_CONFLICTS",
         "SAT_INPROCESS_MAX_ROUNDS",
         "SAT_VIVIFY_TICKS",

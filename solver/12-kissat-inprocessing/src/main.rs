@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod branch;
 mod check;
 mod config;
+mod congruence;
 mod els;
 mod gauss;
 mod limits;
@@ -143,6 +144,16 @@ const GAUSS_MIN_COVERAGE: f64 = 0.90;
 /// on every solve. A pure viability bound (no profile20 cell approaches it); larger
 /// parity instances can still opt in via SAT_GAUSS with this raised.
 const GAUSS_MAX_CLAUSES: usize = 5_000_000;
+/// Upper bound on original-clause count for gate congruence closure (SAT_CONGRUENCE):
+/// above this the occurrence-index allocation is not worth paying. Circuit miters sit
+/// well under this (VexRiscv ~2.3M clauses).
+const CONGRUENCE_MAX_CLAUSES: usize = 40_000_000;
+/// Maximum congruence→substitute rounds before giving up on the fixpoint. Each round that
+/// finds a merge strictly reduces the active-variable count, so this only caps pathology.
+const CONGRUENCE_MAX_ROUNDS: usize = 64;
+/// Clauses longer than this are ignored as gate bases during congruence extraction (gate
+/// definitions in circuit miters are small; the O(size^2) base scan must stay bounded).
+const CONGRUENCE_MAX_CLAUSE_LEN: usize = 64;
 /// Default per-round vivification budget as a fraction (per mille) of cumulative
 /// search propagations. Inprocessing then scales as a small bounded share of the
 /// search effort already spent, rather than as a static multiple of formula size.
@@ -8899,6 +8910,448 @@ impl Solver {
         false
     }
 
+    /// Extract AND/OR and ITE gates from the live original clauses for gate congruence.
+    ///
+    /// Only clauses all of whose variables are unassigned and not eliminated are used, so
+    /// every gate's defining clauses are logically live (present in the DRAT formula) and
+    /// the RUP proof chains the driver later emits hold. Gates are returned normalized
+    /// (see `congruence::Gate`): OR gates folded to AND on the negated output, ITE gates in
+    /// canonical polarity.
+    fn extract_gates_for_congruence(&self) -> Vec<congruence::Gate> {
+        use std::collections::HashMap;
+        use std::collections::HashSet;
+
+        let num_vars = self.assignment.len().saturating_sub(1);
+        let live_lit = |lit: i32| -> bool {
+            let v = lit.unsigned_abs() as usize;
+            v >= 1 && v <= num_vars && self.assignment[v] == UNASSIGNED && !self.eliminated[v]
+        };
+        let sorted_pair = |a: i32, b: i32| -> (i32, i32) {
+            if a <= b {
+                (a, b)
+            } else {
+                (b, a)
+            }
+        };
+
+        // Index the live clauses: binary membership set, large clauses as AND/ITE bases,
+        // ternary membership set, and a (pair -> third literals) map for ITE else lookup.
+        let mut binaries: HashSet<(i32, i32)> = HashSet::new();
+        let mut large_clauses: Vec<Vec<i32>> = Vec::new();
+        let mut ternary_set: HashSet<(i32, i32, i32)> = HashSet::new();
+        let mut pair_thirds: HashMap<(i32, i32), Vec<i32>> = HashMap::new();
+
+        for &cid in &self.original_clause_ids {
+            if cid >= self.arena.len() || self.clause_is_deleted(cid) {
+                continue;
+            }
+            let len = self.clause_len(cid);
+            if len < 2 || len > CONGRUENCE_MAX_CLAUSE_LEN {
+                continue;
+            }
+            let mut lits: Vec<i32> = Vec::with_capacity(len);
+            let mut ok = true;
+            for pos in 0..len {
+                let lit = self.clause_lit(cid, pos);
+                if !live_lit(lit) {
+                    ok = false;
+                    break;
+                }
+                lits.push(lit);
+            }
+            if !ok {
+                continue;
+            }
+            if len == 2 {
+                binaries.insert(sorted_pair(lits[0], lits[1]));
+            } else {
+                if len == 3 {
+                    let mut t = [lits[0], lits[1], lits[2]];
+                    t.sort_unstable();
+                    ternary_set.insert((t[0], t[1], t[2]));
+                    pair_thirds
+                        .entry(sorted_pair(lits[0], lits[1]))
+                        .or_default()
+                        .push(lits[2]);
+                    pair_thirds
+                        .entry(sorted_pair(lits[0], lits[2]))
+                        .or_default()
+                        .push(lits[1]);
+                    pair_thirds
+                        .entry(sorted_pair(lits[1], lits[2]))
+                        .or_default()
+                        .push(lits[0]);
+                }
+                large_clauses.push(lits);
+            }
+        }
+
+        let has_binary = |a: i32, b: i32| binaries.contains(&sorted_pair(a, b));
+        let has_ternary = |a: i32, b: i32, c: i32| {
+            let mut t = [a, b, c];
+            t.sort_unstable();
+            ternary_set.contains(&(t[0], t[1], t[2]))
+        };
+
+        let mut gates: Vec<congruence::Gate> = Vec::new();
+
+        // AND/OR gates. Base clause (¬L ∨ o1 ∨ .. ∨ ok): treat each literal `nl` as ¬L
+        // (so L = -nl); the gate exists iff every binary (L ∨ ¬oi) is present, giving
+        // L = OR(o1..ok), stored as the AND gate ¬L = AND(¬o1..¬ok).
+        for clause in &large_clauses {
+            let k = clause.len();
+            for i in 0..k {
+                let nl = clause[i]; // ¬L
+                let l = -nl; // L
+                let mut all = true;
+                for (j, &o) in clause.iter().enumerate() {
+                    if j == i {
+                        continue;
+                    }
+                    if !has_binary(l, -o) {
+                        all = false;
+                        break;
+                    }
+                }
+                if !all {
+                    continue;
+                }
+                let out = nl; // ¬L
+                let mut inputs: Vec<i32> = Vec::with_capacity(k - 1);
+                let mut degenerate = false;
+                for (j, &o) in clause.iter().enumerate() {
+                    if j == i {
+                        continue;
+                    }
+                    let inp = -o;
+                    if inp.unsigned_abs() == out.unsigned_abs() {
+                        degenerate = true;
+                        break;
+                    }
+                    inputs.push(inp);
+                }
+                if degenerate {
+                    continue;
+                }
+                inputs.sort_unstable();
+                inputs.dedup();
+                let mut trivial = inputs.len() < 2;
+                for w in inputs.windows(2) {
+                    if w[0] == -w[1] {
+                        trivial = true;
+                        break;
+                    }
+                }
+                if trivial {
+                    continue;
+                }
+                gates.push(congruence::Gate {
+                    out,
+                    kind: congruence::GateKind::And,
+                    inputs,
+                });
+            }
+        }
+
+        // ITE gates. Base clause C2 = (lhs ∨ ¬cond ∨ ¬then). For each ternary clause, each
+        // output literal, and each choice of which remaining literal is ¬cond, require the
+        // companions C1 = (¬lhs ∨ ¬cond ∨ then), C3 = (¬lhs ∨ cond ∨ else),
+        // C4 = (lhs ∨ cond ∨ ¬else).
+        for clause in &large_clauses {
+            if clause.len() != 3 {
+                continue;
+            }
+            for lhs_i in 0..3 {
+                let lhs = clause[lhs_i];
+                let others: [i32; 2] = {
+                    let mut it = (0..3).filter(|&j| j != lhs_i).map(|j| clause[j]);
+                    [it.next().unwrap(), it.next().unwrap()]
+                };
+                for order in 0..2 {
+                    let not_cond = others[order];
+                    let not_then = others[1 - order];
+                    let cond = -not_cond;
+                    let then_lit = -not_then;
+                    if !has_ternary(-lhs, not_cond, then_lit) {
+                        continue;
+                    }
+                    let Some(cands) = pair_thirds.get(&sorted_pair(-lhs, cond)) else {
+                        continue;
+                    };
+                    for &else_lit in cands {
+                        if !has_ternary(lhs, cond, -else_lit) {
+                            continue;
+                        }
+                        let vars = [
+                            lhs.unsigned_abs(),
+                            cond.unsigned_abs(),
+                            then_lit.unsigned_abs(),
+                            else_lit.unsigned_abs(),
+                        ];
+                        let mut distinct = true;
+                        for a in 0..4 {
+                            for b in (a + 1)..4 {
+                                if vars[a] == vars[b] {
+                                    distinct = false;
+                                }
+                            }
+                        }
+                        if !distinct {
+                            continue;
+                        }
+                        let mut rhs = [cond, then_lit, else_lit];
+                        let negate = congruence::normalize_ite(&mut rhs);
+                        let out = if negate { -lhs } else { lhs };
+                        gates.push(congruence::Gate {
+                            out,
+                            kind: congruence::GateKind::Ite,
+                            inputs: rhs.to_vec(),
+                        });
+                    }
+                }
+            }
+        }
+
+        gates
+    }
+
+    /// Emit the DRAT proof for one congruence merge `p ≡ q` into `proof_log` and return
+    /// the equivalence binaries `[(¬p, q), (p, ¬q)]` to install as clauses. Returns an
+    /// empty vector when `q == ¬p` (the "binaries" degenerate to the units `p` and `¬p`,
+    /// which are emitted to the proof; the driver then adds the empty clause).
+    ///
+    /// AND merge: both binaries are directly RUP from the two AND gates' defining clauses
+    /// (assume one output true and the other false; the first gate's binaries force all
+    /// inputs, the second gate's base clause then conflicts). ITE merge: each binary needs
+    /// a two-step resolution chain over the shared condition literal — two ternary lemmas
+    /// emitted first, then the binary, all RUP from the two ITE gates' clauses.
+    fn emit_congruence_chain(
+        &self,
+        proof_log: &mut ProofLog,
+        m: &congruence::Merge,
+    ) -> Vec<(i32, i32)> {
+        let mut rec = |lits: &[i32]| {
+            let mut clause: Vec<i32> = Vec::with_capacity(lits.len());
+            for &l in lits {
+                if clause.contains(&-l) {
+                    return; // tautology: nothing to record
+                }
+                if !clause.contains(&l) {
+                    clause.push(l);
+                }
+            }
+            proof_log.record_clause(&clause);
+        };
+        let p = m.p;
+        let q = m.q;
+        match m.kind {
+            congruence::MergeKind::And => {
+                rec(&[-p, q]);
+                rec(&[p, -q]);
+            }
+            congruence::MergeKind::Ite { cond } => {
+                // q → p: (p ∨ ¬q ∨ cond), (p ∨ ¬q ∨ ¬cond), then (p ∨ ¬q).
+                rec(&[p, -q, cond]);
+                rec(&[p, -q, -cond]);
+                rec(&[p, -q]);
+                // p → q: (¬p ∨ q ∨ cond), (¬p ∨ q ∨ ¬cond), then (¬p ∨ q).
+                rec(&[-p, q, cond]);
+                rec(&[-p, q, -cond]);
+                rec(&[-p, q]);
+            }
+        }
+        if p == -q {
+            Vec::new()
+        } else {
+            vec![(-p, q), (p, -q)]
+        }
+    }
+
+    /// Gate congruence closure (SAT_CONGRUENCE). Runs at decision level 0, before/around BVE.
+    ///
+    /// Extracts AND/OR and ITE gates from the live clauses, hashes them by normalized
+    /// (type, inputs), and for every collision installs the implied output equivalence
+    /// `p ≡ q`: it emits a RUP DRAT chain (directly for AND, a short resolution chain for
+    /// ITE), installs the two equivalence binaries as clauses, then collapses the class
+    /// with the Phase A ELS substitution machinery (`try_els`). It iterates
+    /// congruence→substitute until no new merges appear, so merges on shared inputs
+    /// compound — an approximation of full congruence closure that keeps every step
+    /// independently sound.
+    ///
+    /// Returns `true` iff it proved the formula UNSAT (a gate output equivalent to its own
+    /// negation, or an ELS substitution that empties a clause); the empty clause has then
+    /// been emitted to `proof_log`. Otherwise the formula is substituted in place (with the
+    /// proof recorded) so downstream BVE eliminates more.
+    /// Ternary self-subsuming resolution feeding the equivalence engine (mirrors kissat's
+    /// `extract_binaries`). For a live ternary `(a ∨ b ∨ c)`, if a binary `(¬x ∨ y)` exists
+    /// for `x` one of the three literals and `y` another, the ternary resolves on `x` to a
+    /// binary `(l ∨ k)` over the surviving two literals. Adding these hidden binaries seeds
+    /// the binary implication graph so ELS collapses far more equivalences — the dominant
+    /// source of substitutions on circuit miters. Each added binary is RUP from the ternary
+    /// plus the triggering binary, so it is recorded and installed soundly. Returns the
+    /// number of binaries added.
+    fn congruence_extract_binaries(&mut self, proof_log: &mut ProofLog) -> usize {
+        use std::collections::HashSet;
+        let num_vars = self.assignment.len().saturating_sub(1);
+        let live_lit = |lit: i32| -> bool {
+            let v = lit.unsigned_abs() as usize;
+            v >= 1 && v <= num_vars && self.assignment[v] == UNASSIGNED && !self.eliminated[v]
+        };
+        let sorted_pair = |a: i32, b: i32| -> (i32, i32) {
+            if a <= b {
+                (a, b)
+            } else {
+                (b, a)
+            }
+        };
+        let mut binaries: HashSet<(i32, i32)> = HashSet::new();
+        let mut ternaries: Vec<[i32; 3]> = Vec::new();
+        for &cid in &self.original_clause_ids {
+            if cid >= self.arena.len() || self.clause_is_deleted(cid) {
+                continue;
+            }
+            match self.clause_len(cid) {
+                2 => {
+                    let a = self.clause_lit(cid, 0);
+                    let b = self.clause_lit(cid, 1);
+                    if live_lit(a) && live_lit(b) {
+                        binaries.insert(sorted_pair(a, b));
+                    }
+                }
+                3 => {
+                    let a = self.clause_lit(cid, 0);
+                    let b = self.clause_lit(cid, 1);
+                    let c = self.clause_lit(cid, 2);
+                    if live_lit(a) && live_lit(b) && live_lit(c) {
+                        ternaries.push([a, b, c]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let has = |a: i32, b: i32| binaries.contains(&sorted_pair(a, b));
+        let mut added: HashSet<(i32, i32)> = HashSet::new();
+        let mut new_binaries: Vec<(i32, i32)> = Vec::new();
+        for t in &ternaries {
+            let (a, b, c) = (t[0], t[1], t[2]);
+            let (l, k) = if has(-a, b) || has(-a, c) {
+                (b, c)
+            } else if has(-b, a) || has(-b, c) {
+                (a, c)
+            } else if has(-c, a) || has(-c, b) {
+                (a, b)
+            } else {
+                continue;
+            };
+            let key = sorted_pair(l, k);
+            if binaries.contains(&key) || !added.insert(key) {
+                continue;
+            }
+            new_binaries.push((l, k));
+        }
+        for &(l, k) in &new_binaries {
+            proof_log.record_clause(&[l, k]);
+            let cid = self.els_install_original_clause(&[l, k]);
+            self.original_clause_ids.push(cid);
+        }
+        new_binaries.len()
+    }
+
+    fn try_congruence(&mut self, proof_log: &mut ProofLog) -> bool {
+        if self.binary_fast_path
+            || self.current_level() != 0
+            || self.has_empty_clause
+            || !self.solver_ok
+        {
+            return false;
+        }
+        if self.original_clause_ids.len() > CONGRUENCE_MAX_CLAUSES {
+            return false;
+        }
+        let debug = std::env::var("SAT_DEBUG_CONGRUENCE").is_ok();
+        let t0 = Instant::now();
+        let mut total_merges: u64 = 0;
+        let mut total_bins: u64 = 0;
+
+        for round in 0..CONGRUENCE_MAX_ROUNDS {
+            if self.has_empty_clause || !self.solver_ok {
+                break;
+            }
+
+            // 1. Strengthen ternaries to hidden binaries, then collapse binary equivalences.
+            let added_bins = self.congruence_extract_binaries(proof_log);
+            total_bins += added_bins as u64;
+            if self.try_els(proof_log) {
+                return true;
+            }
+
+            // 2. Extract gates and match congruent outputs.
+            let gates = self.extract_gates_for_congruence();
+            if round == 0 {
+                let mut and_gates = 0u64;
+                let mut ite_gates = 0u64;
+                for g in &gates {
+                    match g.kind {
+                        congruence::GateKind::And => and_gates += 1,
+                        congruence::GateKind::Ite => ite_gates += 1,
+                    }
+                }
+                self.stats.congruence_and_gates = and_gates;
+                self.stats.congruence_ite_gates = ite_gates;
+                if debug {
+                    eprintln!(
+                        "c congruence gates and={and_gates} ite={ite_gates} (round 0, {:.4}s)",
+                        t0.elapsed().as_secs_f64()
+                    );
+                }
+            }
+
+            let plan = congruence::find_merges(&gates);
+
+            if let Some(unsat) = plan.unsat {
+                self.emit_congruence_chain(proof_log, &unsat);
+                proof_log.record_clause(&[]);
+                self.has_empty_clause = true;
+                self.solver_ok = false;
+                self.stats.congruence_merges += 1;
+                if debug {
+                    eprintln!(
+                        "c congruence UNSAT round={round} via {} ≡ {} (self-negation)",
+                        unsat.p, unsat.q
+                    );
+                }
+                return true;
+            }
+
+            for m in &plan.merges {
+                let binaries = self.emit_congruence_chain(proof_log, m);
+                for (a, b) in binaries {
+                    let cid = self.els_install_original_clause(&[a, b]);
+                    self.original_clause_ids.push(cid);
+                }
+            }
+            total_merges += plan.merges.len() as u64;
+            self.stats.congruence_merges += plan.merges.len() as u64;
+            if !plan.merges.is_empty() && self.try_els(proof_log) {
+                return true;
+            }
+
+            if debug {
+                eprintln!(
+                    "c congruence round={round} added_bins={added_bins} merges={} total_bins={total_bins} total_merges={total_merges} {:.4}s",
+                    plan.merges.len(),
+                    t0.elapsed().as_secs_f64()
+                );
+            }
+
+            // Fixpoint: nothing new this round.
+            if added_bins == 0 && plan.merges.is_empty() {
+                break;
+            }
+        }
+        false
+    }
+
     fn solve_status_with_proof(
         &mut self,
         proof_log: &mut ProofLog,
@@ -8929,6 +9382,16 @@ impl Solver {
         // drat-verified proof) when a literal is equivalent to its own negation; otherwise
         // it substitutes in place (recording the proof) and search/BVE continue.
         if config.els && self.try_els(proof_log) {
+            return SolveOutcome::unsat();
+        }
+
+        // Gate congruence closure (SAT_CONGRUENCE). Detects AND/OR and ITE gates that
+        // compute the same function, merges their equivalent outputs (DRAT-verified RUP
+        // chains), and substitutes via the ELS engine — collapsing gate/equivalence
+        // circuit miters so BVE eliminates the bulk of their variables. Returns UNSAT
+        // (with a drat-verified proof) when a gate output is equivalent to its own
+        // negation; otherwise it substitutes in place and search/BVE continue.
+        if config.congruence && self.try_congruence(proof_log) {
             return SolveOutcome::unsat();
         }
 
@@ -10424,6 +10887,128 @@ mod tests {
         assert_eq!(
             s.stats.els_substituted_vars, 0,
             "the default path must never run ELS"
+        );
+    }
+
+    fn congruence_config() -> SolverConfig {
+        // Isolate congruence: no BVE/ELS so the merge and its substitution are observable.
+        SolverConfig {
+            congruence: true,
+            simplification: false,
+            els: false,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn congruence_merges_equivalent_and_gate_outputs_and_preserves_model() {
+        // 3 = AND(1,2) and 4 = AND(1,2) ⇒ 3 ≡ 4; congruence merges them and the ELS engine
+        // eliminates variable 4 (representative 3). The reconstructed model must satisfy
+        // every original clause, including the one that mentions only 4.
+        let cfg = congruence_config();
+        let original = vec![
+            vec![-3, 1],
+            vec![-3, 2],
+            vec![3, -1, -2],
+            vec![-4, 1],
+            vec![-4, 2],
+            vec![4, -1, -2],
+            vec![-3, 5],
+            vec![-4, 6],
+        ];
+        let mut s = make_solver_with_config(6, original.clone(), &cfg);
+        let mut proof = ProofLog::disabled();
+        assert!(s.solve_with_proof(&mut proof, &cfg), "instance is SAT");
+        assert!(
+            s.stats.congruence_merges >= 1,
+            "congruence must merge the two equivalent AND outputs"
+        );
+        assert!(s.eliminated[4], "variable 4 must be substituted away");
+        for clause in &original {
+            assert!(
+                clause.iter().any(|&lit| s.lit_value(lit) == TRUE),
+                "reconstructed model must satisfy original clause {clause:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn congruence_merges_equivalent_ite_gate_outputs_and_preserves_model() {
+        // 4 = ITE(1,2,3) and 5 = ITE(1,2,3) ⇒ 4 ≡ 5; congruence merges them via the ITE
+        // resolution chain and ELS eliminates variable 5 (representative 4).
+        let cfg = congruence_config();
+        let original = vec![
+            vec![-4, -1, 2],
+            vec![4, -1, -2],
+            vec![-4, 1, 3],
+            vec![4, 1, -3],
+            vec![-5, -1, 2],
+            vec![5, -1, -2],
+            vec![-5, 1, 3],
+            vec![5, 1, -3],
+            vec![-4, 6],
+            vec![-5, 7],
+        ];
+        let mut s = make_solver_with_config(7, original.clone(), &cfg);
+        let mut proof = ProofLog::disabled();
+        assert!(s.solve_with_proof(&mut proof, &cfg), "instance is SAT");
+        assert!(
+            s.stats.congruence_merges >= 1,
+            "congruence must merge the two equivalent ITE outputs"
+        );
+        assert!(s.eliminated[5], "variable 5 must be substituted away");
+        for clause in &original {
+            assert!(
+                clause.iter().any(|&lit| s.lit_value(lit) == TRUE),
+                "reconstructed model must satisfy original clause {clause:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn congruence_detects_output_equivalent_to_negation_unsat() {
+        // 3 = AND(1,2) and ¬3 = AND(1,2) ⇒ 3 ≡ ¬3 ⇒ UNSAT, found by gate congruence.
+        let cfg = congruence_config();
+        let mut s = make_solver_with_config(
+            3,
+            vec![
+                vec![-3, 1],
+                vec![-3, 2],
+                vec![3, -1, -2],
+                vec![3, 1],
+                vec![3, 2],
+                vec![-3, -1, -2],
+            ],
+            &cfg,
+        );
+        let mut proof = ProofLog::disabled();
+        assert!(s.enqueue_root_units());
+        assert!(s.propagate().is_none());
+        assert!(
+            s.try_congruence(&mut proof),
+            "congruence must prove UNSAT via the self-negation merge"
+        );
+        assert!(s.has_empty_clause);
+    }
+
+    #[test]
+    fn congruence_disabled_by_default_does_not_merge() {
+        let cfg = SolverConfig::default();
+        assert!(!cfg.congruence);
+        let original = vec![
+            vec![-3, 1],
+            vec![-3, 2],
+            vec![3, -1, -2],
+            vec![-4, 1],
+            vec![-4, 2],
+            vec![4, -1, -2],
+        ];
+        let mut s = make_solver_with_config(4, original, &cfg);
+        let mut proof = ProofLog::disabled();
+        let _ = s.solve_with_proof(&mut proof, &cfg);
+        assert_eq!(
+            s.stats.congruence_merges, 0,
+            "the default path must never run gate congruence"
         );
     }
 

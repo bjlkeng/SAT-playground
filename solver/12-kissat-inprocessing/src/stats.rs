@@ -166,6 +166,12 @@ pub(crate) struct SolverStats {
     pub(crate) els_substituted_vars: u64,
     /// clauses rewritten by equivalent-literal substitution (SAT_ELS)
     pub(crate) els_rewritten_clauses: u64,
+    /// AND/OR gates extracted for gate congruence closure (SAT_CONGRUENCE)
+    pub(crate) congruence_and_gates: u64,
+    /// ITE gates extracted for gate congruence closure (SAT_CONGRUENCE)
+    pub(crate) congruence_ite_gates: u64,
+    /// gate output equivalences merged by gate congruence closure (SAT_CONGRUENCE)
+    pub(crate) congruence_merges: u64,
     pub(crate) preprocess_resolvents: u64,
     pub(crate) preprocess_resolution_attempts: u64,
     pub(crate) preprocess_eliminate_ticks: u64,
