@@ -160,6 +160,17 @@ const CONGRUENCE_MAX_CLAUSE_LEN: usize = 64;
 /// helpers, so this bound keeps both detection and proof size in check. Circuit XORs are
 /// dominated by `k = 3` (2-input XOR gates) and `k = 4` (adder sum/carry bits).
 const CONGRUENCE_MAX_XOR_ARITY: usize = 4;
+/// Maximum congruence↔BVE outer iterations at the root when `SAT_CONGRUENCE_ITER` is on.
+/// Each iteration runs a full gate-congruence closure (ELS-substituting the merges) then a
+/// BVE round; the BVE round unifies gate inputs so the next closure can find congruent
+/// AND/XOR gates that were invisible before substitution. Mirrors kissat's ~14-closure
+/// congruence/BVE interleave (`congruence.c`); capped so a pathological formula cannot spin.
+const CONGRUENCE_ITER_MAX_ROUNDS: usize = 20;
+/// Wall-clock budget (seconds) for the entire congruence↔BVE root fixpoint. The loop stops
+/// early once this is exceeded so the root reduction cannot eat the whole solve budget on a
+/// large miter (C.1's single congruence pass alone was ~34s on VexRiscv). Search then
+/// proceeds on whatever reduction was achieved.
+const CONGRUENCE_ITER_MAX_SECONDS: f64 = 300.0;
 /// Default per-round vivification budget as a fraction (per mille) of cumulative
 /// search propagations. Inprocessing then scales as a small bounded share of the
 /// search effort already spent, rather than as a static multiple of formula size.
@@ -9513,6 +9524,99 @@ impl Solver {
         false
     }
 
+    /// Iterated congruence↔BVE fixpoint at the ROOT (`SAT_CONGRUENCE_ITER`).
+    ///
+    /// Repeats `{ gate-congruence closure (ELS-substituting the merges) → one BVE round }`
+    /// until a closure produces no new merges (or the round/time cap is hit). Each BVE round
+    /// unifies gate inputs, so the next closure discovers congruent AND/XOR gates whose
+    /// inputs only became equal after the previous substitution — kissat's ~14-closure
+    /// congruence/BVE interleave. Every step is one of the already-sound, already-DRAT-proven
+    /// primitives (`try_congruence`, `eliminate`), so the whole loop is sound and its proof
+    /// chain is the concatenation of the per-step proofs.
+    ///
+    /// Runs only at the ROOT, before search begins — so there is no mid-search /
+    /// learned-clause hazard. Returns `true` iff the formula was proved UNSAT (with the empty
+    /// clause emitted to `proof_log`); otherwise the formula is substituted/eliminated in
+    /// place and search continues on the reduced formula.
+    fn try_congruence_bve_fixpoint(
+        &mut self,
+        proof_log: &mut ProofLog,
+        config: &SolverConfig,
+    ) -> bool {
+        let debug = std::env::var("SAT_DEBUG_CONGRUENCE").is_ok();
+        let num_vars = self.assignment.len().saturating_sub(1);
+        let t0 = Instant::now();
+        for iter in 0..CONGRUENCE_ITER_MAX_ROUNDS {
+            if self.has_empty_clause || !self.solver_ok {
+                return true;
+            }
+
+            // 1. Gate-congruence closure (internally iterates congruence↔ELS to its own
+            //    fixpoint), substituting every merged equivalence in place.
+            let merges_before = self.stats.congruence_merges;
+            if self.try_congruence(proof_log, config.congruence_xor) {
+                return true;
+            }
+            let new_merges = self.stats.congruence_merges - merges_before;
+
+            // 2. One BVE round (non-final: keep occurrence lists / simplification live so the
+            //    next closure sees the unified gate inputs). `eliminate` rebuilds the
+            //    occurrence index itself, so any clause additions the closure made are
+            //    reconciled here. A `false` return means BVE derived the empty clause.
+            let elim_before = self.stats.preprocess_eliminated_vars;
+            if !self.eliminate(false, proof_log) {
+                return true;
+            }
+            let new_elims = self.stats.preprocess_eliminated_vars - elim_before;
+
+            if debug {
+                let eliminated_vars = (1..=num_vars).filter(|&v| self.eliminated[v]).count();
+                let root_fixed = self.trail.len();
+                let live_vars = self.live_original_variable_count();
+                let collapsed = eliminated_vars + root_fixed;
+                let pct_declared = if num_vars > 0 {
+                    100.0 * collapsed as f64 / num_vars as f64
+                } else {
+                    0.0
+                };
+                let pct_by_live = if num_vars > 0 {
+                    100.0 * (num_vars - live_vars) as f64 / num_vars as f64
+                } else {
+                    0.0
+                };
+                eprintln!(
+                    "c congruence_iter round={iter} new_merges={new_merges} new_elims={new_elims} \
+                     total_merges={} eliminated_vars={eliminated_vars} root_fixed={root_fixed} \
+                     collapsed={collapsed} live_vars={live_vars} declared_vars={num_vars} \
+                     elim_pct_declared={pct_declared:.2} elim_pct_by_live={pct_by_live:.2} \
+                     clauses={} {:.2}s",
+                    self.stats.congruence_merges,
+                    self.original_clause_ids.len(),
+                    t0.elapsed().as_secs_f64()
+                );
+            }
+
+            // Fixpoint: the closure found nothing new, so no further BVE round can unlock a
+            // congruent gate. Stop; the final teardown `eliminate(true)` runs afterward.
+            if new_merges == 0 {
+                break;
+            }
+
+            // Budget guard: bound total root reduction time so a large miter cannot consume
+            // the whole solve budget. Proceed to search on whatever reduction was achieved.
+            if t0.elapsed().as_secs_f64() > CONGRUENCE_ITER_MAX_SECONDS {
+                if debug {
+                    eprintln!(
+                        "c congruence_iter time budget hit ({:.2}s > {CONGRUENCE_ITER_MAX_SECONDS}s), stopping at round={iter}",
+                        t0.elapsed().as_secs_f64()
+                    );
+                }
+                break;
+            }
+        }
+        false
+    }
+
     fn solve_status_with_proof(
         &mut self,
         proof_log: &mut ProofLog,
@@ -9552,8 +9656,18 @@ impl Solver {
         // circuit miters so BVE eliminates the bulk of their variables. Returns UNSAT
         // (with a drat-verified proof) when a gate output is equivalent to its own
         // negation; otherwise it substitutes in place and search/BVE continue.
-        if config.congruence && self.try_congruence(proof_log, config.congruence_xor) {
-            return SolveOutcome::unsat();
+        if config.congruence {
+            // SAT_CONGRUENCE_ITER runs the congruence closure and BVE to a joint root
+            // fixpoint (each BVE round unifies gate inputs for the next closure); otherwise a
+            // single congruence closure runs. Both return UNSAT with a drat-verified proof.
+            let unsat = if config.congruence_iter {
+                self.try_congruence_bve_fixpoint(proof_log, config)
+            } else {
+                self.try_congruence(proof_log, config.congruence_xor)
+            };
+            if unsat {
+                return SolveOutcome::unsat();
+            }
         }
 
         if limits_active {
@@ -11247,6 +11361,181 @@ mod tests {
         assert_eq!(
             s.stats.congruence_merges, 0,
             "the default path must never run gate congruence"
+        );
+    }
+
+    fn congruence_iter_config() -> SolverConfig {
+        // Full congruence↔BVE root fixpoint: congruence + XOR + iteration, with BVE and
+        // simplification at their (enabled) defaults so the interleaved BVE rounds run.
+        SolverConfig {
+            congruence: true,
+            congruence_xor: true,
+            congruence_iter: true,
+            ..Default::default()
+        }
+    }
+
+    fn model_satisfies(model: &[u8], clauses: &[Vec<i32>]) {
+        for clause in clauses {
+            assert!(
+                clause.iter().any(|&lit| {
+                    let var = lit.unsigned_abs() as usize;
+                    (lit > 0 && model[var] == TRUE) || (lit < 0 && model[var] == FALSE)
+                }),
+                "reconstructed model does not satisfy {clause:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn congruence_iter_preserves_model_on_gate_miter() {
+        // Congruent AND and ITE gate pairs; the iterated congruence↔BVE path must merge the
+        // equivalent outputs, eliminate the duplicates, and still reconstruct a model that
+        // satisfies every original clause (soundness / model-preservation of the new path).
+        let cfg = congruence_iter_config();
+        let original = vec![
+            // 3 = AND(1,2), 4 = AND(1,2)  ⇒ 3 ≡ 4
+            vec![-3, 1],
+            vec![-3, 2],
+            vec![3, -1, -2],
+            vec![-4, 1],
+            vec![-4, 2],
+            vec![4, -1, -2],
+            // 8 = ITE(1,2,5), 9 = ITE(1,2,5)  ⇒ 8 ≡ 9
+            vec![-8, -1, 2],
+            vec![8, -1, -2],
+            vec![-8, 1, 5],
+            vec![8, 1, -5],
+            vec![-9, -1, 2],
+            vec![9, -1, -2],
+            vec![-9, 1, 5],
+            vec![9, 1, -5],
+            // keep every gate output live outside its defining clauses
+            vec![-3, 6],
+            vec![-4, 7],
+            vec![-8, 10],
+            vec![-9, 11],
+        ];
+        let mut s = make_solver_with_config(11, original.clone(), &cfg);
+        let mut proof = ProofLog::disabled();
+        assert!(s.solve_with_proof(&mut proof, &cfg), "instance is SAT");
+        assert!(
+            s.stats.congruence_merges >= 1,
+            "iterated congruence must merge the equivalent gate outputs"
+        );
+        let model = s.sat_model.as_ref().expect("missing SAT model snapshot");
+        model_satisfies(model, &original);
+    }
+
+    #[test]
+    fn congruence_iter_reports_unsat_on_self_negation() {
+        // 3 = AND(1,2) and ¬3 = AND(1,2) ⇒ 3 ≡ ¬3 ⇒ UNSAT. The iterated congruence↔BVE path
+        // must prove UNSAT soundly (whether via the congruence self-negation merge or the
+        // downstream binary-strengthening/ELS/search it unlocks) and record the empty clause.
+        let cfg = congruence_iter_config();
+        let original = vec![
+            vec![-3, 1],
+            vec![-3, 2],
+            vec![3, -1, -2],
+            vec![3, 1],
+            vec![3, 2],
+            vec![-3, -1, -2],
+        ];
+        let mut s = make_solver_with_config(3, original, &cfg);
+        let mut proof = ProofLog::disabled();
+        assert!(
+            !s.solve_with_proof(&mut proof, &cfg),
+            "iterated congruence must prove the self-negation instance UNSAT"
+        );
+    }
+
+    #[test]
+    fn congruence_iter_self_negation_merge_in_isolation() {
+        // With simplification/ELS off (so the ternary-strengthening path cannot pre-empt it),
+        // the gate-congruence closure itself proves the self-negation UNSAT via a merge — the
+        // building block the iterated driver relies on. Mirrors the single-pass test but
+        // asserts the merge is counted.
+        let cfg = SolverConfig {
+            congruence: true,
+            simplification: false,
+            els: false,
+            ..Default::default()
+        };
+        let mut s = make_solver_with_config(
+            3,
+            vec![
+                vec![-3, 1],
+                vec![-3, 2],
+                vec![3, -1, -2],
+                vec![3, 1],
+                vec![3, 2],
+                vec![-3, -1, -2],
+            ],
+            &cfg,
+        );
+        let mut proof = ProofLog::disabled();
+        assert!(s.enqueue_root_units());
+        assert!(s.propagate().is_none());
+        assert!(
+            s.try_congruence_bve_fixpoint(&mut proof, &cfg),
+            "iterated congruence fixpoint must prove the self-negation instance UNSAT"
+        );
+        assert!(s.has_empty_clause);
+    }
+
+    #[test]
+    fn congruence_iter_reduction_at_least_single_pass() {
+        // Nested-gate construction where a second closure only becomes productive after a BVE
+        // round: p = AND(w,3) with w = AND(1,2), versus q = AND(1,2,3). In round 0 the gate
+        // inputs differ ({w,3} vs {1,2,3}); once BVE eliminates the intermediate w, p is
+        // redefined over {1,2,3} and the next closure can merge p ≡ q. The iterated path must
+        // therefore reduce at least as much as a single closure, and preserve the model.
+        let original = vec![
+            // w = AND(1,2)   [w = var 4]
+            vec![-4, 1],
+            vec![-4, 2],
+            vec![4, -1, -2],
+            // p = AND(w,3)   [p = var 5]
+            vec![-5, 4],
+            vec![-5, 3],
+            vec![5, -4, -3],
+            // q = AND(1,2,3) [q = var 6]
+            vec![-6, 1],
+            vec![-6, 2],
+            vec![-6, 3],
+            vec![6, -1, -2, -3],
+            // keep p and q live outside their gates
+            vec![-5, 7],
+            vec![-6, 8],
+        ];
+        let single_cfg = SolverConfig {
+            congruence: true,
+            congruence_xor: true,
+            congruence_iter: false,
+            ..Default::default()
+        };
+        let iter_cfg = congruence_iter_config();
+
+        let mut s_single = make_solver_with_config(8, original.clone(), &single_cfg);
+        let mut p1 = ProofLog::disabled();
+        assert!(s_single.solve_with_proof(&mut p1, &single_cfg), "SAT (single)");
+        model_satisfies(
+            s_single.sat_model.as_ref().expect("single model"),
+            &original,
+        );
+
+        let mut s_iter = make_solver_with_config(8, original.clone(), &iter_cfg);
+        let mut p2 = ProofLog::disabled();
+        assert!(s_iter.solve_with_proof(&mut p2, &iter_cfg), "SAT (iter)");
+        model_satisfies(s_iter.sat_model.as_ref().expect("iter model"), &original);
+
+        // The iterated closure runs a superset of the single closure's work, so it can never
+        // find fewer congruence merges.
+        assert!(
+            s_iter.stats.congruence_merges >= s_single.stats.congruence_merges,
+            "iterated congruence must not regress merge count (iter={}, single={})",
+            s_iter.stats.congruence_merges,
+            s_single.stats.congruence_merges
         );
     }
 

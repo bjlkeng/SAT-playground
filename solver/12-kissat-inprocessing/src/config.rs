@@ -641,6 +641,7 @@ pub(crate) struct SolverConfig {
     pub(crate) els: bool,
     pub(crate) congruence: bool,
     pub(crate) congruence_xor: bool,
+    pub(crate) congruence_iter: bool,
     pub(crate) inprocess_interval_conflicts: u64,
     pub(crate) inprocess_max_rounds: u64,
     pub(crate) vivify_ticks_budget: u64,
@@ -762,6 +763,7 @@ impl Default for SolverConfig {
             els: false,
             congruence: false,
             congruence_xor: false,
+            congruence_iter: false,
             inprocess_interval_conflicts: 0,
             inprocess_max_rounds: 0,
             vivify_ticks_budget: 0,
@@ -1329,6 +1331,12 @@ impl SolverConfig {
             "SAT_CONGRUENCE_XOR",
             self.congruence_xor,
         );
+        self.congruence_iter = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_CONGRUENCE_ITER",
+            self.congruence_iter,
+        );
         self.inprocess_interval_conflicts = parse_u64_selected(
             env_map,
             &key_set,
@@ -1809,6 +1817,7 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "els", self.els);
         push_kv_bool(&mut lines, "congruence", self.congruence);
         push_kv_bool(&mut lines, "congruence_xor", self.congruence_xor);
+        push_kv_bool(&mut lines, "congruence_iter", self.congruence_iter);
         push_kv(
             &mut lines,
             "inprocess_interval_conflicts",
@@ -2362,6 +2371,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             false,
             "bd:SAT-playground-otd",
         ),
+        feature(
+            "SAT_CONGRUENCE_ITER",
+            config.congruence_iter,
+            FeatureMaturity::Experimental,
+            true,
+            true,
+            false,
+            "bd:SAT-playground-otd",
+        ),
     ]
 }
 
@@ -2726,6 +2744,8 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_GAUSS",
         "SAT_ELS",
         "SAT_CONGRUENCE",
+        "SAT_CONGRUENCE_XOR",
+        "SAT_CONGRUENCE_ITER",
         "SAT_INPROCESS_INTERVAL_CONFLICTS",
         "SAT_INPROCESS_MAX_ROUNDS",
         "SAT_VIVIFY_TICKS",

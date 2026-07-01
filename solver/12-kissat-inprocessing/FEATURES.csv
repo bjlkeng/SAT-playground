@@ -32,3 +32,4 @@ SAT_GAUSS,gauss,SmokeSafe,true,false,false,default|fast,log/seedgate-s12_gauss-2
 SAT_ELS,els,Experimental,true,true,false,none,,els-equiv-substitution,SAT-playground-otd
 SAT_CONGRUENCE,congruence,Experimental,true,true,false,none,,gate-congruence-closure,SAT-playground-otd
 SAT_CONGRUENCE_XOR,congruence_xor,Experimental,true,true,false,none,,gate-congruence-xor,SAT-playground-otd
+SAT_CONGRUENCE_ITER,congruence_iter,Experimental,true,true,false,none,,gate-congruence-iterated-bve-fixpoint,SAT-playground-otd
