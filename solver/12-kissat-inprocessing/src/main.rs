@@ -154,6 +154,12 @@ const CONGRUENCE_MAX_ROUNDS: usize = 64;
 /// Clauses longer than this are ignored as gate bases during congruence extraction (gate
 /// definitions in circuit miters are small; the O(size^2) base scan must stay bounded).
 const CONGRUENCE_MAX_CLAUSE_LEN: usize = 64;
+/// Maximum XOR-relation arity (total variables, including the chosen output) considered by
+/// gate congruence when `SAT_CONGRUENCE_XOR` is on. An arity-`k` relation is defined by
+/// `2^(k-1)` clauses of length `k`, and each merge over it emits `2^k - 4` RUP proof-chain
+/// helpers, so this bound keeps both detection and proof size in check. Circuit XORs are
+/// dominated by `k = 3` (2-input XOR gates) and `k = 4` (adder sum/carry bits).
+const CONGRUENCE_MAX_XOR_ARITY: usize = 4;
 /// Default per-round vivification budget as a fraction (per mille) of cumulative
 /// search propagations. Inprocessing then scales as a small bounded share of the
 /// search effort already spent, rather than as a static multiple of formula size.
@@ -8917,7 +8923,7 @@ impl Solver {
     /// the RUP proof chains the driver later emits hold. Gates are returned normalized
     /// (see `congruence::Gate`): OR gates folded to AND on the negated output, ITE gates in
     /// canonical polarity.
-    fn extract_gates_for_congruence(&self) -> Vec<congruence::Gate> {
+    fn extract_gates_for_congruence(&self, xor: bool) -> Vec<congruence::Gate> {
         use std::collections::HashMap;
         use std::collections::HashSet;
 
@@ -9112,6 +9118,101 @@ impl Solver {
             }
         }
 
+        // XOR gates (SAT_CONGRUENCE_XOR). A parity relation `v1 ⊕ … ⊕ vk = t` over `k`
+        // distinct variables is encoded by exactly the `2^(k-1)` clauses of length `k` whose
+        // negated-literal count has parity `1 - t`. Group live clauses of length in
+        // `[3, MAX_XOR_ARITY]` by their sorted positive variable tuple, recording which
+        // sign-patterns are present; when a full parity family is present the relation holds,
+        // and "solving for" each variable in turn gives an XOR gate `vj = XOR(others)` (the
+        // parity target folds into `vj`'s sign). Two such gates with the same input set have
+        // equivalent outputs.
+        if xor {
+            // Key: [k, v1, v2, v3, v4] with sorted positive vars (trailing zeros unused).
+            // Value: bitmask over sign-patterns [0, 2^k); bit `s` set iff the clause whose
+            // negated literals are exactly the bits of `s` (in sorted-var order) is present.
+            let mut families: HashMap<[i32; 5], u32> = HashMap::new();
+            for &cid in &self.original_clause_ids {
+                if cid >= self.arena.len() || self.clause_is_deleted(cid) {
+                    continue;
+                }
+                let len = self.clause_len(cid);
+                if len < 3 || len > CONGRUENCE_MAX_XOR_ARITY {
+                    continue;
+                }
+                let mut lits: Vec<i32> = Vec::with_capacity(len);
+                let mut ok = true;
+                for pos in 0..len {
+                    let lit = self.clause_lit(cid, pos);
+                    if !live_lit(lit) {
+                        ok = false;
+                        break;
+                    }
+                    lits.push(lit);
+                }
+                if !ok {
+                    continue;
+                }
+                lits.sort_unstable_by_key(|&l| l.unsigned_abs());
+                let mut key = [0i32; 5];
+                key[0] = len as i32;
+                let mut mask: u32 = 0;
+                let mut distinct = true;
+                for (i, &l) in lits.iter().enumerate() {
+                    let v = l.unsigned_abs() as i32;
+                    if i > 0 && key[i] == v {
+                        distinct = false;
+                        break;
+                    }
+                    key[i + 1] = v;
+                    if l < 0 {
+                        mask |= 1u32 << i;
+                    }
+                }
+                if !distinct {
+                    continue;
+                }
+                *families.entry(key).or_insert(0) |= 1u32 << mask;
+            }
+
+            for (key, &present) in &families {
+                let k = key[0] as usize;
+                let vars = &key[1..=k];
+                // Required sign-pattern sets for the two parity targets.
+                let mut odd_req: u32 = 0;
+                let mut even_req: u32 = 0;
+                for s in 0u32..(1u32 << k) {
+                    if s.count_ones() & 1 == 1 {
+                        odd_req |= 1u32 << s;
+                    } else {
+                        even_req |= 1u32 << s;
+                    }
+                }
+                // t = 0 forbids odd-parity assignments; t = 1 forbids even-parity ones.
+                let t = if present & odd_req == odd_req {
+                    0
+                } else if present & even_req == even_req {
+                    1
+                } else {
+                    continue;
+                };
+                for j in 0..k {
+                    let out_var = vars[j];
+                    let out = if t == 0 { out_var } else { -out_var };
+                    let mut inputs: Vec<i32> = Vec::with_capacity(k - 1);
+                    for (i, &v) in vars.iter().enumerate() {
+                        if i != j {
+                            inputs.push(v);
+                        }
+                    }
+                    gates.push(congruence::Gate {
+                        out,
+                        kind: congruence::GateKind::Xor,
+                        inputs,
+                    });
+                }
+            }
+        }
+
         gates
     }
 
@@ -9124,7 +9225,10 @@ impl Solver {
     /// (assume one output true and the other false; the first gate's binaries force all
     /// inputs, the second gate's base clause then conflicts). ITE merge: each binary needs
     /// a two-step resolution chain over the shared condition literal — two ternary lemmas
-    /// emitted first, then the binary, all RUP from the two ITE gates' clauses.
+    /// emitted first, then the binary, all RUP from the two ITE gates' clauses. XOR merge:
+    /// both outputs equal `XOR(inputs)`, so a parity resolution ladder (mirroring kissat's
+    /// `add_xor_matching_proof_chain`) emits progressively shorter RUP helpers, one per sign
+    /// pattern of the inputs, so the equivalence binaries then unit-propagate to a conflict.
     fn emit_congruence_chain(
         &self,
         proof_log: &mut ProofLog,
@@ -9144,12 +9248,13 @@ impl Solver {
         };
         let p = m.p;
         let q = m.q;
-        match m.kind {
+        match &m.kind {
             congruence::MergeKind::And => {
                 rec(&[-p, q]);
                 rec(&[p, -q]);
             }
             congruence::MergeKind::Ite { cond } => {
+                let cond = *cond;
                 // q → p: (p ∨ ¬q ∨ cond), (p ∨ ¬q ∨ ¬cond), then (p ∨ ¬q).
                 rec(&[p, -q, cond]);
                 rec(&[p, -q, -cond]);
@@ -9158,6 +9263,49 @@ impl Solver {
                 rec(&[-p, q, cond]);
                 rec(&[-p, q, -cond]);
                 rec(&[-p, q]);
+            }
+            congruence::MergeKind::Xor { inputs } => {
+                // Both p and q equal XOR(inputs). Emit the parity ladder: for each level,
+                // enumerate every sign pattern of the current prefix of inputs and record
+                // (prefix ∨ ¬p ∨ q) and (prefix ∨ p ∨ ¬q). Each level's helpers are RUP from
+                // the next-longer level (and the longest from the two gates' XOR clauses),
+                // and the final binaries are RUP from the shortest (length-3) helpers.
+                let l = inputs.len();
+                if l >= 2 {
+                    // `work` starts as the first l-1 inputs (all positive) and is cycled
+                    // through all sign patterns by an LSB-first binary counter, then shrunk.
+                    let mut work: Vec<i32> = inputs[..l - 1].to_vec();
+                    loop {
+                        let size = work.len();
+                        for _ in 0..(1u64 << size) {
+                            let mut c1: Vec<i32> = Vec::with_capacity(size + 2);
+                            c1.extend_from_slice(&work);
+                            c1.push(-p);
+                            c1.push(q);
+                            rec(&c1);
+                            let mut c2: Vec<i32> = Vec::with_capacity(size + 2);
+                            c2.extend_from_slice(&work);
+                            c2.push(p);
+                            c2.push(-q);
+                            rec(&c2);
+                            // Increment the sign counter: flip literals LSB-first, stopping
+                            // at the first that turns negative (0→1, no carry).
+                            for lit in work.iter_mut() {
+                                *lit = -*lit;
+                                if *lit < 0 {
+                                    break;
+                                }
+                            }
+                        }
+                        // `work` is back to all-positive after a full 2^size cycle.
+                        work.pop();
+                        if work.is_empty() {
+                            break;
+                        }
+                    }
+                }
+                rec(&[-p, q]);
+                rec(&[p, -q]);
             }
         }
         if p == -q {
@@ -9257,7 +9405,7 @@ impl Solver {
         new_binaries.len()
     }
 
-    fn try_congruence(&mut self, proof_log: &mut ProofLog) -> bool {
+    fn try_congruence(&mut self, proof_log: &mut ProofLog, xor: bool) -> bool {
         if self.binary_fast_path
             || self.current_level() != 0
             || self.has_empty_clause
@@ -9286,21 +9434,23 @@ impl Solver {
             }
 
             // 2. Extract gates and match congruent outputs.
-            let gates = self.extract_gates_for_congruence();
+            let gates = self.extract_gates_for_congruence(xor);
             if round == 0 {
                 let mut and_gates = 0u64;
                 let mut ite_gates = 0u64;
+                let mut xor_gates = 0u64;
                 for g in &gates {
                     match g.kind {
                         congruence::GateKind::And => and_gates += 1,
                         congruence::GateKind::Ite => ite_gates += 1,
+                        congruence::GateKind::Xor => xor_gates += 1,
                     }
                 }
                 self.stats.congruence_and_gates = and_gates;
                 self.stats.congruence_ite_gates = ite_gates;
                 if debug {
                     eprintln!(
-                        "c congruence gates and={and_gates} ite={ite_gates} (round 0, {:.4}s)",
+                        "c congruence gates and={and_gates} ite={ite_gates} xor={xor_gates} (round 0, {:.4}s)",
                         t0.elapsed().as_secs_f64()
                     );
                 }
@@ -9323,12 +9473,23 @@ impl Solver {
                 return true;
             }
 
+            let mut and_merges = 0u64;
+            let mut ite_merges = 0u64;
+            let mut xor_merges = 0u64;
             for m in &plan.merges {
+                match &m.kind {
+                    congruence::MergeKind::And => and_merges += 1,
+                    congruence::MergeKind::Ite { .. } => ite_merges += 1,
+                    congruence::MergeKind::Xor { .. } => xor_merges += 1,
+                }
                 let binaries = self.emit_congruence_chain(proof_log, m);
                 for (a, b) in binaries {
                     let cid = self.els_install_original_clause(&[a, b]);
                     self.original_clause_ids.push(cid);
                 }
+            }
+            if debug {
+                eprintln!("c congruence round={round} merge_split and={and_merges} ite={ite_merges} xor={xor_merges}");
             }
             total_merges += plan.merges.len() as u64;
             self.stats.congruence_merges += plan.merges.len() as u64;
@@ -9391,7 +9552,7 @@ impl Solver {
         // circuit miters so BVE eliminates the bulk of their variables. Returns UNSAT
         // (with a drat-verified proof) when a gate output is equivalent to its own
         // negation; otherwise it substitutes in place and search/BVE continue.
-        if config.congruence && self.try_congruence(proof_log) {
+        if config.congruence && self.try_congruence(proof_log, config.congruence_xor) {
             return SolveOutcome::unsat();
         }
 
@@ -10965,6 +11126,83 @@ mod tests {
         }
     }
 
+    /// 3-input XOR clause family `v1 ⊕ v2 ⊕ v3 ⊕ out = 0` (the 8 length-4 clauses with an odd
+    /// number of negations). These are not ITE- or AND-extractable, so they isolate the XOR
+    /// gate path.
+    fn xor3_gate_clauses(v1: i32, v2: i32, v3: i32, out: i32) -> Vec<Vec<i32>> {
+        let vars = [v1, v2, v3, out];
+        let mut clauses = Vec::new();
+        for s in 0u32..16 {
+            if s.count_ones() & 1 == 1 {
+                let clause = vars
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &v)| if (s >> i) & 1 == 1 { -v } else { v })
+                    .collect();
+                clauses.push(clause);
+            }
+        }
+        clauses
+    }
+
+    #[test]
+    fn congruence_merges_equivalent_xor_gate_outputs_and_preserves_model() {
+        // 4 = XOR(1,2,3) and 5 = XOR(1,2,3) ⇒ 4 ≡ 5; congruence (with SAT_CONGRUENCE_XOR)
+        // merges them via the parity resolution ladder and ELS eliminates variable 5 (rep 4).
+        let cfg = SolverConfig {
+            congruence: true,
+            congruence_xor: true,
+            simplification: false,
+            els: false,
+            gauss: false,
+            ..Default::default()
+        };
+        let mut original = xor3_gate_clauses(1, 2, 3, 4);
+        original.extend(xor3_gate_clauses(1, 2, 3, 5));
+        original.push(vec![-4, 6]); // keep 4 live outside its gate
+        original.push(vec![-5, 7]); // keep 5 live outside its gate
+        let mut s = make_solver_with_config(7, original.clone(), &cfg);
+        let mut proof = ProofLog::disabled();
+        assert!(s.solve_with_proof(&mut proof, &cfg), "instance is SAT");
+        assert!(
+            s.stats.congruence_merges >= 1,
+            "congruence must merge the two equivalent XOR outputs"
+        );
+        assert!(s.eliminated[5], "variable 5 must be substituted away");
+        for clause in &original {
+            assert!(
+                clause.iter().any(|&lit| s.lit_value(lit) == TRUE),
+                "reconstructed model must satisfy original clause {clause:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn congruence_xor_disabled_does_not_merge_xor_only_gates() {
+        // With SAT_CONGRUENCE on but SAT_CONGRUENCE_XOR off, two equivalent 3-input XOR gates
+        // (not ITE/AND-extractable) are not merged, so no variable is substituted away.
+        let cfg = SolverConfig {
+            congruence: true,
+            congruence_xor: false,
+            simplification: false,
+            els: false,
+            gauss: false,
+            ..Default::default()
+        };
+        let mut original = xor3_gate_clauses(1, 2, 3, 4);
+        original.extend(xor3_gate_clauses(1, 2, 3, 5));
+        original.push(vec![-4, 6]);
+        original.push(vec![-5, 7]);
+        let mut s = make_solver_with_config(7, original, &cfg);
+        let mut proof = ProofLog::disabled();
+        assert!(!s.try_congruence(&mut proof, cfg.congruence_xor));
+        assert_eq!(
+            s.stats.congruence_merges, 0,
+            "without XOR congruence the two XOR outputs are not merged"
+        );
+        assert!(!s.eliminated[5]);
+    }
+
     #[test]
     fn congruence_detects_output_equivalent_to_negation_unsat() {
         // 3 = AND(1,2) and ¬3 = AND(1,2) ⇒ 3 ≡ ¬3 ⇒ UNSAT, found by gate congruence.
@@ -10985,7 +11223,7 @@ mod tests {
         assert!(s.enqueue_root_units());
         assert!(s.propagate().is_none());
         assert!(
-            s.try_congruence(&mut proof),
+            s.try_congruence(&mut proof, false),
             "congruence must prove UNSAT via the self-negation merge"
         );
         assert!(s.has_empty_clause);

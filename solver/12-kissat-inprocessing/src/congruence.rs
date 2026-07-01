@@ -41,6 +41,10 @@ pub(crate) enum GateKind {
     And,
     /// `out = ITE(inputs[0], inputs[1], inputs[2])`, normalized by [`normalize_ite`].
     Ite,
+    /// `out = XOR(inputs)` where every input is a positive variable-literal and the parity
+    /// target is folded into `out`'s sign (see `main.rs` XOR extraction). Two XOR gates with
+    /// the same input set have equivalent outputs (`v = a⊕b⊕… and w = a⊕b⊕… ⇒ v ≡ w`).
+    Xor,
 }
 
 /// A gate extracted from the clause database in normalized form.
@@ -50,18 +54,22 @@ pub(crate) struct Gate {
     pub(crate) out: i32,
     pub(crate) kind: GateKind,
     /// AND: sorted input literals. ITE: `[cond, then, else]` in canonical order.
+    /// XOR: sorted positive input variable-literals.
     pub(crate) inputs: Vec<i32>,
 }
 
 /// The proof-chain shape needed to certify a merge.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum MergeKind {
     And,
     Ite { cond: i32 },
+    /// The shared, polarity-normalized XOR input literals — needed to emit the parity
+    /// resolution ladder that makes the equivalence binaries RUP.
+    Xor { inputs: Vec<i32> },
 }
 
 /// Two gate outputs that are provably equivalent: `p ≡ q`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Merge {
     /// The representative output (first gate seen for the key).
     pub(crate) p: i32,
@@ -115,6 +123,7 @@ pub(crate) fn find_merges(gates: &[Gate]) -> Plan {
         let tag = match g.kind {
             GateKind::And => 0u8,
             GateKind::Ite => 1u8,
+            GateKind::Xor => 2u8,
         };
         let key = (tag, g.inputs.clone());
         match table.get(&key).copied() {
@@ -128,6 +137,9 @@ pub(crate) fn find_merges(gates: &[Gate]) -> Plan {
                 let kind = match g.kind {
                     GateKind::And => MergeKind::And,
                     GateKind::Ite => MergeKind::Ite { cond: g.inputs[0] },
+                    GateKind::Xor => MergeKind::Xor {
+                        inputs: g.inputs.clone(),
+                    },
                 };
                 // Drop degenerate ITE merges (condition shares a variable with an output)
                 // before deciding UNSAT-vs-merge: their proof chain over `cond` collapses.
@@ -196,7 +208,7 @@ mod tests {
         let plan = find_merges(&gates);
         assert!(plan.unsat.is_none());
         assert_eq!(plan.merges.len(), 1);
-        let m = plan.merges[0];
+        let m = &plan.merges[0];
         assert_eq!(m.p, 3);
         assert_eq!(m.q, 4);
         assert_eq!(m.kind, MergeKind::And);
@@ -238,7 +250,7 @@ mod tests {
         let plan = find_merges(&gates);
         assert!(plan.unsat.is_none());
         assert_eq!(plan.merges.len(), 1);
-        let m = plan.merges[0];
+        let m = &plan.merges[0];
         assert_eq!(m.kind, MergeKind::Ite { cond: 1 });
         // Outputs are the canonical (unnegated here) forms.
         assert_eq!(m.p, 4);
@@ -274,5 +286,55 @@ mod tests {
         };
         let plan = find_merges(&[a, i]);
         assert!(plan.merges.is_empty());
+    }
+
+    fn xor_gate(out: i32, mut inputs: Vec<i32>) -> Gate {
+        inputs.sort_unstable();
+        Gate {
+            out,
+            kind: GateKind::Xor,
+            inputs,
+        }
+    }
+
+    #[test]
+    fn xor_gates_same_inputs_merge_outputs() {
+        // p = a⊕b and q = a⊕b ⇒ p ≡ q. Inputs are positive vars {1,2}.
+        let gates = vec![xor_gate(3, vec![1, 2]), xor_gate(4, vec![2, 1])];
+        let plan = find_merges(&gates);
+        assert!(plan.unsat.is_none());
+        assert_eq!(plan.merges.len(), 1);
+        let m = &plan.merges[0];
+        assert_eq!(m.p, 3);
+        assert_eq!(m.q, 4);
+        assert_eq!(m.kind, MergeKind::Xor { inputs: vec![1, 2] });
+    }
+
+    #[test]
+    fn xor_gates_different_inputs_do_not_merge() {
+        let gates = vec![xor_gate(4, vec![1, 2]), xor_gate(5, vec![1, 3])];
+        let plan = find_merges(&gates);
+        assert!(plan.merges.is_empty());
+        assert!(plan.unsat.is_none());
+    }
+
+    #[test]
+    fn xor_output_and_negation_is_unsat() {
+        // p = a⊕b and ¬p = a⊕b ⇒ p ≡ ¬p ⇒ UNSAT.
+        let gates = vec![xor_gate(3, vec![1, 2]), xor_gate(-3, vec![1, 2])];
+        let plan = find_merges(&gates);
+        let u = plan.unsat.expect("must be UNSAT");
+        assert_eq!(u.p, 3);
+        assert_eq!(u.q, -3);
+    }
+
+    #[test]
+    fn xor_does_not_cross_match_and_or_ite() {
+        // Same input tuple, different kinds must not merge with XOR.
+        let x = xor_gate(4, vec![1, 2]);
+        let a = and_gate(5, vec![1, 2]);
+        let plan = find_merges(&[x, a]);
+        assert!(plan.merges.is_empty());
+        assert!(plan.unsat.is_none());
     }
 }

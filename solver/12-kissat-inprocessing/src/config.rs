@@ -640,6 +640,7 @@ pub(crate) struct SolverConfig {
     pub(crate) gauss: bool,
     pub(crate) els: bool,
     pub(crate) congruence: bool,
+    pub(crate) congruence_xor: bool,
     pub(crate) inprocess_interval_conflicts: u64,
     pub(crate) inprocess_max_rounds: u64,
     pub(crate) vivify_ticks_budget: u64,
@@ -760,6 +761,7 @@ impl Default for SolverConfig {
             gauss: false,
             els: false,
             congruence: false,
+            congruence_xor: false,
             inprocess_interval_conflicts: 0,
             inprocess_max_rounds: 0,
             vivify_ticks_budget: 0,
@@ -1321,6 +1323,12 @@ impl SolverConfig {
         self.els = parse_bool_selected(env_map, &key_set, "SAT_ELS", self.els);
         self.congruence =
             parse_bool_selected(env_map, &key_set, "SAT_CONGRUENCE", self.congruence);
+        self.congruence_xor = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_CONGRUENCE_XOR",
+            self.congruence_xor,
+        );
         self.inprocess_interval_conflicts = parse_u64_selected(
             env_map,
             &key_set,
@@ -1800,6 +1808,7 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "gauss", self.gauss);
         push_kv_bool(&mut lines, "els", self.els);
         push_kv_bool(&mut lines, "congruence", self.congruence);
+        push_kv_bool(&mut lines, "congruence_xor", self.congruence_xor);
         push_kv(
             &mut lines,
             "inprocess_interval_conflicts",
@@ -2338,6 +2347,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
         feature(
             "SAT_CONGRUENCE",
             config.congruence,
+            FeatureMaturity::Experimental,
+            true,
+            true,
+            false,
+            "bd:SAT-playground-otd",
+        ),
+        feature(
+            "SAT_CONGRUENCE_XOR",
+            config.congruence_xor,
             FeatureMaturity::Experimental,
             true,
             true,
