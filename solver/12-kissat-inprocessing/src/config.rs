@@ -22,7 +22,7 @@ const DEFAULT_RESTART_SLOW_WINDOW: u64 = 4_096;
 const DEFAULT_VAR_DECAY_FOCUSED: f64 = 0.95;
 const DEFAULT_VAR_DECAY_STABLE: f64 = 0.95;
 
-const PARKING_LOT_DENYLIST: &[&str] = &["SAT_WALK", "SAT_SWEEP", "SAT_ELS", "SAT_BCE"];
+const PARKING_LOT_DENYLIST: &[&str] = &["SAT_WALK", "SAT_SWEEP", "SAT_BCE"];
 const REMOVED_ALIASES: &[&str] = &["SAT_ELIMINATE_INPROCESS"];
 
 const REPLAY_ALWAYS_ALLOWED: &[&str] = &[
@@ -638,6 +638,7 @@ pub(crate) struct SolverConfig {
     pub(crate) gate_bve: bool,
     pub(crate) rcheck: bool,
     pub(crate) gauss: bool,
+    pub(crate) els: bool,
     pub(crate) inprocess_interval_conflicts: u64,
     pub(crate) inprocess_max_rounds: u64,
     pub(crate) vivify_ticks_budget: u64,
@@ -756,6 +757,7 @@ impl Default for SolverConfig {
             gate_bve: false,
             rcheck: false,
             gauss: false,
+            els: false,
             inprocess_interval_conflicts: 0,
             inprocess_max_rounds: 0,
             vivify_ticks_budget: 0,
@@ -1314,6 +1316,7 @@ impl SolverConfig {
         self.gate_bve = parse_bool_selected(env_map, &key_set, "SAT_GATE_BVE", self.gate_bve);
         self.rcheck = parse_bool_selected(env_map, &key_set, "SAT_RCHECK", self.rcheck);
         self.gauss = parse_bool_selected(env_map, &key_set, "SAT_GAUSS", self.gauss);
+        self.els = parse_bool_selected(env_map, &key_set, "SAT_ELS", self.els);
         self.inprocess_interval_conflicts = parse_u64_selected(
             env_map,
             &key_set,
@@ -1791,6 +1794,7 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "gate_bve", self.gate_bve);
         push_kv_bool(&mut lines, "rcheck", self.rcheck);
         push_kv_bool(&mut lines, "gauss", self.gauss);
+        push_kv_bool(&mut lines, "els", self.els);
         push_kv(
             &mut lines,
             "inprocess_interval_conflicts",
@@ -2317,6 +2321,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             false,
             "log/seedgate-s12_gauss-2026-06-30-08-18-10",
         ),
+        feature(
+            "SAT_ELS",
+            config.els,
+            FeatureMaturity::Experimental,
+            true,
+            true,
+            false,
+            "bd:SAT-playground-otd",
+        ),
     ]
 }
 
@@ -2488,6 +2501,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "gate_bve" => Some("SAT_GATE_BVE"),
         "rcheck" => Some("SAT_RCHECK"),
         "gauss" => Some("SAT_GAUSS"),
+        "els" => Some("SAT_ELS"),
         "inprocess_interval_conflicts" => Some("SAT_INPROCESS_INTERVAL_CONFLICTS"),
         "inprocess_max_rounds" => Some("SAT_INPROCESS_MAX_ROUNDS"),
         "vivify_ticks_budget" => Some("SAT_VIVIFY_TICKS"),
@@ -2677,6 +2691,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_GATE_BVE",
         "SAT_RCHECK",
         "SAT_GAUSS",
+        "SAT_ELS",
         "SAT_INPROCESS_INTERVAL_CONFLICTS",
         "SAT_INPROCESS_MAX_ROUNDS",
         "SAT_VIVIFY_TICKS",

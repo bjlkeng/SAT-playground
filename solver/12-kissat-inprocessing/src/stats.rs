@@ -162,6 +162,10 @@ pub(crate) struct SolverStats {
     pub(crate) preprocess_eliminated_vars: u64,
     /// subset of `preprocess_eliminated_vars` eliminated via gate-aware BVE (SAT_GATE_BVE)
     pub(crate) preprocess_gate_eliminated_vars: u64,
+    /// variables removed by equivalent-literal substitution (SAT_ELS)
+    pub(crate) els_substituted_vars: u64,
+    /// clauses rewritten by equivalent-literal substitution (SAT_ELS)
+    pub(crate) els_rewritten_clauses: u64,
     pub(crate) preprocess_resolvents: u64,
     pub(crate) preprocess_resolution_attempts: u64,
     pub(crate) preprocess_eliminate_ticks: u64,

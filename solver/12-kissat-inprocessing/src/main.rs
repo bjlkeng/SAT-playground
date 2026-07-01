@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod branch;
 mod check;
 mod config;
+mod els;
 mod gauss;
 mod limits;
 mod lit;
@@ -8614,6 +8615,290 @@ impl Solver {
         true
     }
 
+    /// Push the model-reconstruction witness for an ELS equivalence `v ≡ r` (`v` the
+    /// positive literal of the eliminated variable, `r` its signed representative). The
+    /// two witness "clauses" `(v ∨ ¬r)` and `(¬v ∨ r)` are stored in the elimination-
+    /// extension stack in the same `[head, rest.., len]` layout as BVE's `push_elim_clause`,
+    /// so `extend_model_snapshot` reconstructs `value(v) = value(r)` for any model of the
+    /// substituted formula. Pushed before any BVE elimination, i.e. reconstructed last
+    /// (LIFO), so `r` already holds its final value when `v` is recovered.
+    fn push_elim_equivalence(&mut self, v: i32, r: i32) {
+        // (v ∨ ¬r): if ¬r is falsified (r true) => v := true.
+        self.elim_clauses.push(v);
+        self.elim_clauses.push(-r);
+        self.elim_clauses.push(2);
+        // (¬v ∨ r): if r is falsified (r false) => ¬v := true (v false).
+        self.elim_clauses.push(-v);
+        self.elim_clauses.push(r);
+        self.elim_clauses.push(2);
+    }
+
+    /// Install a rewritten clause (`lits`, length >= 2) as an original clause during ELS.
+    /// Appends it to the arena and attaches its watches, mirroring the arena layout of
+    /// `add_normalized_original_clause`, but does NOT record a proof line (the ELS driver
+    /// records the RUP addition itself) and does NOT push into `original_clause_ids` (the
+    /// driver rebuilds that list). Returns the new clause index.
+    fn els_install_original_clause(&mut self, lits: &[i32]) -> usize {
+        let clause_idx = self.arena.len();
+        let store_abstraction_inline = self.use_simplification && self.inline_original_abstractions;
+        self.arena.push(clause_make_header(
+            lits.len(),
+            false,
+            store_abstraction_inline,
+            0,
+            false,
+        ));
+        self.arena.extend(lits.iter().copied().map(lit_to_word));
+        if store_abstraction_inline {
+            let abstraction = clause_abstraction_from_lits(lits);
+            self.arena.push(abstraction as u32);
+        }
+        self.original_literals += lits.len();
+        self.attach_clause(clause_idx, false);
+        clause_idx
+    }
+
+    /// Equivalent-literal substitution (SAT_ELS). Runs at decision level 0, before BVE.
+    ///
+    /// Builds the binary implication graph over the currently active (unassigned,
+    /// non-eliminated) variables, finds its strongly-connected components (equivalence
+    /// classes) via `els::compute_representatives`, and substitutes every literal by its
+    /// class representative — rewriting clauses, dropping tautologies/duplicates, deriving
+    /// units, and emitting a DRAT proof for every change (equivalence binaries are RUP
+    /// from the implication cycle; each rewritten clause is RUP from its original plus the
+    /// equivalence binaries). Model-reconstruction witnesses are recorded so SAT models
+    /// extend back to the eliminated variables.
+    ///
+    /// Returns `true` iff it proved the formula UNSAT (a literal equivalent to its own
+    /// negation, or a clause emptied by substitution) — in which case the empty clause has
+    /// been emitted to `proof_log`. Otherwise returns `false`; the formula may have been
+    /// substituted in place (with the proof recorded) so downstream BVE eliminates more.
+    fn try_els(&mut self, proof_log: &mut ProofLog) -> bool {
+        // The substitution mutates watches/clauses directly; it requires the normal watch
+        // lists (not the separate binary index) and a clean decision level 0.
+        if self.binary_fast_path
+            || self.current_level() != 0
+            || self.has_empty_clause
+            || !self.solver_ok
+        {
+            return false;
+        }
+        let num_vars = self.assignment.len().saturating_sub(1);
+        if num_vars == 0 {
+            return false;
+        }
+
+        let debug = std::env::var("SAT_DEBUG_ELS").is_ok();
+        let t0 = Instant::now();
+
+        // Active = unassigned and not already eliminated.
+        let mut active = vec![false; num_vars + 1];
+        for v in 1..=num_vars {
+            active[v] = self.assignment[v] == UNASSIGNED && !self.eliminated[v];
+        }
+
+        // Collect live binary clauses over active variables.
+        let ids: Vec<usize> = self.original_clause_ids.clone();
+        let mut binaries: Vec<(i32, i32)> = Vec::new();
+        for &cid in &ids {
+            if self.clause_is_deleted(cid) || self.clause_len(cid) != 2 {
+                continue;
+            }
+            let a = self.clause_lit(cid, 0);
+            let b = self.clause_lit(cid, 1);
+            let va = a.unsigned_abs() as usize;
+            let vb = b.unsigned_abs() as usize;
+            if va > num_vars || vb > num_vars || !active[va] || !active[vb] {
+                continue;
+            }
+            binaries.push((a, b));
+        }
+
+        let repr = match els::compute_representatives(num_vars, &active, &binaries) {
+            els::ElsResult::Unsat(lit) => {
+                // lit ≡ ¬lit. Both units are RUP from the implication cycle; the empty
+                // clause is then RUP from the two units.
+                proof_log.record_clause(&[lit]);
+                proof_log.record_clause(&[-lit]);
+                proof_log.record_clause(&[]);
+                self.has_empty_clause = true;
+                self.solver_ok = false;
+                if debug {
+                    eprintln!("c els UNSAT via {lit} ≡ {neg} (self-negation SCC)", neg = -lit);
+                }
+                return true;
+            }
+            els::ElsResult::Reprs(repr) => repr,
+        };
+
+        // Eliminated variables (positive literal, signed representative).
+        let mut equivalences: Vec<(i32, i32)> = Vec::new();
+        for v in 1..=num_vars {
+            if active[v] && repr[v] != v as i32 {
+                equivalences.push((v as i32, repr[v]));
+            }
+        }
+        if equivalences.is_empty() {
+            if debug {
+                eprintln!(
+                    "c els no equivalences ({} active binaries, {:.4}s)",
+                    binaries.len(),
+                    t0.elapsed().as_secs_f64()
+                );
+            }
+            return false;
+        }
+
+        let repr_of = |lit: i32| -> i32 {
+            let var = lit.unsigned_abs() as usize;
+            if lit > 0 {
+                repr[var]
+            } else {
+                -repr[var]
+            }
+        };
+
+        // Add the equivalence binaries to the proof (RUP), mark the eliminated variables,
+        // and record their model-reconstruction witnesses. Do this for all classes before
+        // rewriting, so every rewritten clause is RUP against the equivalence binaries.
+        for &(v, r) in &equivalences {
+            proof_log.record_clause(&[-v, r]);
+            proof_log.record_clause(&[v, -r]);
+            self.push_elim_equivalence(v, r);
+            let var = v as usize;
+            self.eliminated[var] = true;
+            self.decision_var[var] = false;
+            self.branch_heap_remove(var);
+        }
+        self.stats.els_substituted_vars += equivalences.len() as u64;
+
+        // Rewrite every clause that mentions an eliminated variable.
+        let mut units: Vec<i32> = Vec::new();
+        let mut rewritten: u64 = 0;
+        let old_ids = std::mem::take(&mut self.original_clause_ids);
+        let mut new_ids: Vec<usize> = Vec::with_capacity(old_ids.len());
+        let mut proved_unsat = false;
+        for cid in old_ids {
+            if self.clause_is_deleted(cid) {
+                continue;
+            }
+            let len = self.clause_len(cid);
+            let mut touches = false;
+            for pos in 0..len {
+                let lit = self.clause_lit(cid, pos);
+                if self.eliminated[lit.unsigned_abs() as usize] {
+                    touches = true;
+                    break;
+                }
+            }
+            if !touches {
+                new_ids.push(cid);
+                continue;
+            }
+
+            // Value-aware substitution with dedup / tautology detection.
+            let mut new_lits: Vec<i32> = Vec::with_capacity(len);
+            let mut satisfied = false;
+            for pos in 0..len {
+                let lit = self.clause_lit(cid, pos);
+                match self.lit_value(lit) {
+                    TRUE => {
+                        satisfied = true;
+                        break;
+                    }
+                    FALSE => continue,
+                    _ => {}
+                }
+                let rl = repr_of(lit);
+                match self.lit_value(rl) {
+                    TRUE => {
+                        satisfied = true;
+                        break;
+                    }
+                    FALSE => continue,
+                    _ => {}
+                }
+                if new_lits.contains(&rl) {
+                    continue; // duplicate literal
+                }
+                if new_lits.contains(&(-rl)) {
+                    satisfied = true; // tautology (r and ¬r)
+                    break;
+                }
+                new_lits.push(rl);
+            }
+
+            if satisfied {
+                self.delete_clause_for_simplify(cid, proof_log);
+                continue;
+            }
+            match new_lits.len() {
+                0 => {
+                    proof_log.record_clause(&[]);
+                    proved_unsat = true;
+                    self.delete_clause_for_simplify(cid, proof_log);
+                    break;
+                }
+                1 => {
+                    proof_log.record_clause(&new_lits);
+                    units.push(new_lits[0]);
+                    self.delete_clause_for_simplify(cid, proof_log);
+                }
+                _ => {
+                    proof_log.record_clause(&new_lits);
+                    let new_cid = self.els_install_original_clause(&new_lits);
+                    new_ids.push(new_cid);
+                    self.delete_clause_for_simplify(cid, proof_log);
+                    rewritten += 1;
+                }
+            }
+        }
+        self.original_clause_ids = new_ids;
+        self.stats.els_rewritten_clauses += rewritten;
+
+        if proved_unsat {
+            self.has_empty_clause = true;
+            self.solver_ok = false;
+            if debug {
+                eprintln!("c els UNSAT via emptied clause");
+            }
+            return true;
+        }
+
+        // Apply derived units and propagate. A root conflict makes the empty clause RUP.
+        let mut conflict = false;
+        for &u in &units {
+            if !self.enqueue(u, ReasonRef::None) {
+                conflict = true;
+                break;
+            }
+        }
+        if !conflict && self.propagate().is_some() {
+            conflict = true;
+        }
+        if conflict {
+            proof_log.record_clause(&[]);
+            self.has_empty_clause = true;
+            self.solver_ok = false;
+            if debug {
+                eprintln!("c els UNSAT via root unit propagation");
+            }
+            return true;
+        }
+
+        if debug {
+            eprintln!(
+                "c els substituted vars={} rewritten_clauses={} units={} binaries={} {:.4}s",
+                equivalences.len(),
+                rewritten,
+                units.len(),
+                binaries.len(),
+                t0.elapsed().as_secs_f64()
+            );
+        }
+        false
+    }
+
     fn solve_status_with_proof(
         &mut self,
         proof_log: &mut ProofLog,
@@ -8635,6 +8920,15 @@ impl Solver {
         // at the root via Gaussian elimination over GF(2) and emits a drat-trim-verified
         // DRAT proof. A no-op on formulas without an inconsistent XOR subsystem.
         if config.gauss && self.try_gauss_refute(proof_log) {
+            return SolveOutcome::unsat();
+        }
+
+        // Equivalent-literal substitution (SAT_ELS). Collapses binary-implication-graph
+        // SCCs to representatives before BVE, removing variables and unlocking more
+        // downstream elimination on gate/equivalence circuit miters. Returns UNSAT (with a
+        // drat-verified proof) when a literal is equivalent to its own negation; otherwise
+        // it substitutes in place (recording the proof) and search/BVE continue.
+        if config.els && self.try_els(proof_log) {
             return SolveOutcome::unsat();
         }
 
@@ -10040,6 +10334,97 @@ mod tests {
                 "model must satisfy original clause {clause:?}"
             );
         }
+    }
+
+    fn els_config() -> SolverConfig {
+        SolverConfig {
+            els: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn els_substitutes_equivalent_literal_and_preserves_sat_model() {
+        // 1 ≡ 2 via the binary pair (¬1∨2),(1∨¬2); the ternary clauses add no implication
+        // edges, so the equivalence reaches ELS. ELS substitutes 2→1 and eliminates var 2,
+        // and the reconstructed model must still satisfy every original clause.
+        let cfg = els_config();
+        let original = vec![vec![-1, 2], vec![1, -2], vec![1, 3, 4], vec![-2, -3, 5]];
+        let mut s = make_solver_with_config(5, original.clone(), &cfg);
+        let mut proof = ProofLog::disabled();
+        assert!(s.solve_with_proof(&mut proof, &cfg), "instance is SAT");
+        assert!(
+            s.stats.els_substituted_vars >= 1,
+            "ELS must substitute an equivalent variable"
+        );
+        assert!(s.eliminated[2], "substituted variable 2 must be marked eliminated");
+        for clause in &original {
+            assert!(
+                clause.iter().any(|&lit| s.lit_value(lit) == TRUE),
+                "reconstructed model must satisfy original clause {clause:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn els_detects_self_negation_unsat() {
+        // A binary implication SCC containing both +1 and -1 (1 ≡ ¬1) ⇒ UNSAT, found by ELS.
+        let cfg = els_config();
+        let mut s = make_solver_with_config(
+            2,
+            vec![vec![-1, 2], vec![-2, -1], vec![1, -2], vec![2, 1]],
+            &cfg,
+        );
+        let mut proof = ProofLog::disabled();
+        assert!(s.enqueue_root_units());
+        assert!(s.propagate().is_none());
+        assert!(
+            s.try_els(&mut proof),
+            "ELS must prove UNSAT via the self-negation SCC"
+        );
+        assert!(s.has_empty_clause);
+    }
+
+    #[test]
+    fn els_substitution_preserves_unsat() {
+        // Equivalences 1≡2, 3≡4, 5≡6 plus an UNSAT core over {1,3,5} written partly via the
+        // even equivalents, so ELS substitutes before search refutes the merged core.
+        let cfg = els_config();
+        let clauses = vec![
+            vec![-1, 2],
+            vec![1, -2],
+            vec![-3, 4],
+            vec![3, -4],
+            vec![-5, 6],
+            vec![5, -6],
+            vec![1, 3, 5],
+            vec![2, 4, -5],
+            vec![2, -3, 6],
+            vec![2, -3, -5],
+            vec![-1, 4, 6],
+            vec![-1, 4, -5],
+            vec![-1, -3, 6],
+            vec![-1, -3, -5],
+        ];
+        let mut s = make_solver_with_config(6, clauses, &cfg);
+        let mut proof = ProofLog::disabled();
+        assert!(
+            !s.solve_with_proof(&mut proof, &cfg),
+            "the substituted core is UNSAT"
+        );
+    }
+
+    #[test]
+    fn els_disabled_by_default_does_not_substitute() {
+        let cfg = SolverConfig::default();
+        assert!(!cfg.els);
+        let mut s = make_solver_with_config(5, vec![vec![-1, 2], vec![1, -2], vec![1, 3, 4]], &cfg);
+        let mut proof = ProofLog::disabled();
+        let _ = s.solve_with_proof(&mut proof, &cfg);
+        assert_eq!(
+            s.stats.els_substituted_vars, 0,
+            "the default path must never run ELS"
+        );
     }
 
     #[test]

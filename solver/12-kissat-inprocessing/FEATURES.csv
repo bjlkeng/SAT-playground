@@ -29,3 +29,4 @@ SAT_GATE_EXTRACT,gate_extract,Experimental,false,false,false,none,,gate-extracti
 SAT_GATE_BVE,gate_bve,Experimental,false,false,false,none,,gate-aware-bve,2ro
 SAT_RCHECK,rcheck,ParkingLot,false,false,false,none,,redundancy-checking,0.3
 SAT_GAUSS,gauss,SmokeSafe,true,false,false,default|fast,log/seedgate-s12_gauss-2026-06-30-08-18-10,parity-gauss-xor,SAT-playground-qld
+SAT_ELS,els,Experimental,true,true,false,none,,els-equiv-substitution,SAT-playground-otd
