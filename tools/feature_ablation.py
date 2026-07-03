@@ -524,42 +524,31 @@ def seedgate(args) -> int:
     print(f"[seedgate] tag={tag} {len(jobs)} runs ({len(insts)} inst x {len(seeds)} seeds) "
           f"t={args.timeout}s m={args.mem_mb}MB jobs={len(CORES)} -> {camp}", flush=True)
 
+    # Free-core pool: one physical core per running job (get() on start, put() on finish), identical
+    # to abtest(). This GUARANTEES each concurrent run owns a distinct physical core even under uneven
+    # instance runtimes. A static `CORES[idx % len(CORES)]` pin (the pre-2026-07-03 seedgate default)
+    # double-books a core the moment a later job (idx >= len(CORES)) starts while its index-congruent
+    # earlier job is still running — inflating that cell's PAR-2 with hyperthread/scheduler contention
+    # while another core sits idle. The pool checks a core back in only when a run actually finishes,
+    # so there is never more than one running job per core. Solve/scrape/proof-cleanup are shared with
+    # abtest via _solve_one so the two modes cannot drift.
+    import queue
+    from concurrent.futures import ThreadPoolExecutor
+    core_pool = queue.Queue()
+    for c in CORES:
+        core_pool.put(c)
+
     def run(job):
         idx, stem, seed = job
-        core = CORES[idx % len(CORES)]
-        odir = camp / "_work" / f"{idx}"
-        odir.mkdir(parents=True, exist_ok=True)
-        env = {**os.environ, **env_extra, "SAT_SEED": str(seed), "SAT_STATS_JSON": "on"}
-        cmd = ["taskset", "-c", str(core), "bash", "-c",
-               f'ulimit -v {args.mem_mb*1024}; exec timeout {args.timeout} '
-               f'"{ROOT/solver_dir}/target/release/sat-solver" "{cnf_for[stem]}" "{odir}"']
-        t0 = time.time()
+        core = core_pool.get()
         try:
-            try:
-                p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   text=True, env=env, timeout=args.timeout + 30)
-                dt = time.time() - t0
-                res = next((ln.split()[1] for ln in p.stdout.splitlines() if ln.startswith("s ")), None)
-                if res is None:
-                    res = "TIMEOUT" if p.returncode == 124 else f"UNKNOWN_rc{p.returncode}"
-                js = ""
-                for ln in p.stderr.splitlines():
-                    if '"conflicts"' in ln:
-                        br = ln.find("{")
-                        if br >= 0:
-                            js = ln[br:]
-                import re
-                g = lambda k: (re.search(rf'"{k}":([0-9.eE+-]+)', js) or [None, "NA"])[1]
-                return (stem, seed, res, dt, g("conflicts"), g("propagations"), g("decisions"))
-            except subprocess.TimeoutExpired:
-                return (stem, seed, "TIMEOUT", time.time() - t0, "NA", "NA", "NA")
+            res, dt, cf, pr, dc = _solve_one(
+                core, solver_dir, env_extra, cnf_for[stem], camp / "_work" / f"{idx}",
+                args.timeout, args.mem_mb, seed)
         finally:
-            # Drop the per-run DRAT proof scratch immediately. These are multi-GB on hard-UNSAT
-            # instances and are never read back; left to accumulate across a seedgate sweep they
-            # fill the disk and kill the run (see log/hard-search-2026-06-02 _work blowout).
-            shutil.rmtree(odir, ignore_errors=True)
+            core_pool.put(core)
+        return (stem, seed, res, dt, cf, pr, dc)
 
-    from concurrent.futures import ThreadPoolExecutor
     results = []
     with ThreadPoolExecutor(max_workers=len(CORES)) as ex:
         for r in ex.map(run, jobs):
