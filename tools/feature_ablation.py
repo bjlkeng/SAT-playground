@@ -24,6 +24,9 @@ Usage:
   # measure a NEW feature flag ad-hoc (no CONFIG_MAP edit) — A/B candidate vs baseline:
   python3 tools/feature_ablation.py --seedgate --env "SAT_NEWFEAT=on" --tag newfeat --seeds 5 --jobs 5
   python3 tools/feature_ablation.py --seedgate --env ""              --tag baseline --seeds 5 --jobs 5
+  # A/B (or N-way) with a SIMULTANEOUS, interleaved, fair shared-core run (defaults: 32 cores, 16GB, 30min):
+  python3 tools/feature_ablation.py --arm "cand:SAT_NEWFEAT=on" --arm "base:"            # A vs B, one shot
+  python3 tools/feature_ablation.py --arm "cand:SAT_X=on" --arm "base:" --arm solver10   # N-way + s10 floor
   python3 tools/feature_ablation.py --smoke           # 2 configs x 2 instances, fast self-check
 
 Before launching a parallel sweep, check for competing solver/bench processes (the script prints a
@@ -574,6 +577,230 @@ def seedgate(args) -> int:
     return 0
 
 
+def parse_arm(spec: str, default_solver: str) -> tuple[str, str, dict]:
+    """'tag:ENVSPEC' -> (tag, solver_dir, env); no ':' -> a registered CONFIG_MAP tag.
+
+    'cand:SAT_X=on,SAT_Y=2' -> ('cand', default_solver, {SAT_X:on, SAT_Y:2})
+    'base:'                  -> ('base', default_solver, {})            # ':' + empty env = solver default
+    'solver10'               -> CONFIG_MAP lookup (its own solver_dir + env; lets you A/B vs the floor)
+    """
+    if ":" in spec:
+        tag, envspec = spec.split(":", 1)
+        tag = tag.strip()
+        if not tag:
+            raise SystemExit(f"--arm {spec!r}: empty tag before ':'")
+        return tag, default_solver, parse_env_arg(envspec)
+    tag = spec.strip()
+    if tag not in CONFIG_MAP:
+        raise SystemExit(f"--arm {spec!r}: not a CONFIG_MAP tag and has no ':ENV'. Use 'tag:SAT_X=on' "
+                         f"(':' with empty env = baseline), or a registered tag from CONFIG_MAP.")
+    solver_dir, env = CONFIG_MAP[tag]
+    return tag, solver_dir, env
+
+
+def pick_baseline(tags: list[str], explicit: str) -> str:
+    """Choose the A/B reference arm: --baseline if given, else a conventionally-named arm, else last."""
+    if explicit:
+        if explicit not in tags:
+            raise SystemExit(f"--baseline {explicit!r} is not one of the arms: {tags}")
+        return explicit
+    for pref in ("baseline", "base", "default", "prev", "previous"):
+        for t in tags:
+            if t.lower() == pref:
+                return t
+    return tags[-1]
+
+
+def _solve_one(core: int, solver_dir: str, env_extra: dict, cnf_path: Path, odir: Path,
+               timeout: int, mem_mb: int, seed: int) -> tuple:
+    """Run the solver on one (instance,seed) pinned to `core`; return (result, secs, conf, props, decs).
+
+    Mirrors seedgate()'s inner run: ulimit -v address-space cap, SAT_STATS_JSON conflicts scraped from
+    stderr, and the per-run DRAT-proof scratch deleted in `finally` (multi-GB on hard-UNSAT, never read
+    back — left to accumulate it fills the disk and kills the sweep).
+    """
+    import re
+    odir.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, **env_extra, "SAT_SEED": str(seed), "SAT_STATS_JSON": "on"}
+    cmd = ["taskset", "-c", str(core), "bash", "-c",
+           f'ulimit -v {mem_mb*1024}; exec timeout {timeout} '
+           f'"{ROOT/solver_dir}/target/release/sat-solver" "{cnf_path}" "{odir}"']
+    t0 = time.time()
+    try:
+        try:
+            p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True, env=env, timeout=timeout + 30)
+            dt = time.time() - t0
+            res = next((ln.split()[1] for ln in p.stdout.splitlines() if ln.startswith("s ")), None)
+            if res is None:
+                res = "TIMEOUT" if p.returncode == 124 else f"UNKNOWN_rc{p.returncode}"
+            js = ""
+            for ln in p.stderr.splitlines():
+                if '"conflicts"' in ln:
+                    br = ln.find("{")
+                    if br >= 0:
+                        js = ln[br:]
+            g = lambda k: (re.search(rf'"{k}":([0-9.eE+-]+)', js) or [None, "NA"])[1]
+            return (res, dt, g("conflicts"), g("propagations"), g("decisions"))
+        except subprocess.TimeoutExpired:
+            return ("TIMEOUT", time.time() - t0, "NA", "NA", "NA")
+    finally:
+        shutil.rmtree(odir, ignore_errors=True)
+
+
+def abtest(args) -> int:
+    """Simultaneous-start, interleaved, fair shared-core A/B (or N-way) seedgate (2026-07-03).
+
+    Every (arm, instance, seed) run goes into ONE queue pulled by `jobs` workers, each pinned to its own
+    physical core drawn from a free-core pool. Jobs are submitted interleaved as (instance, seed, arm) so
+    consecutive jobs cycle the arms — an instance's arm-A and arm-B runs start within one scheduling slot
+    of each other, both arms run in the SAME wall-clock window, and each arm lands on whatever core is
+    free (uniform spread across all cores) so neither arm inherits a socket/thermal/turbo bias. Writes one
+    gate-compatible results.tsv per arm (feed check_solver11_promotion.py --multiseed) + an inline verdict.
+
+    Mode defaults (resolved in main): --jobs 32 (physical cores 0..31 on this 36-core box; siblings idle),
+    --mem-mb 16000, --timeout 1800. Conflicts are deterministic per (config,seed) and contention-immune,
+    so the solved->conflicts tie-breaks stay clean even under the shared-core load; only PAR-2 is timing-
+    sensitive, and the interleave keeps that fair too.
+    """
+    import lzma
+    import queue
+    from collections import defaultdict
+    from concurrent.futures import ThreadPoolExecutor
+
+    default_solver = (getattr(args, "solver", None) or S11)
+    arms = [parse_arm(a, default_solver) for a in args.arm]
+    tags = [t for t, _, _ in arms]
+    if len(set(tags)) != len(tags):
+        raise SystemExit(f"--arm tags must be unique (A/A noise checks are fine — just distinct tags): {tags}")
+    baseline = pick_baseline(tags, args.baseline.strip())
+
+    seeds = list(range(args.seeds))
+    insts = instances(args.half if getattr(args, "half", None) else None)
+    ts = time.strftime("%Y-%m-%d-%H-%M-%S")
+    camp = ROOT / "log" / f"abtest-{('-vs-'.join(tags))[:48]}-{ts}"
+    (camp / "_work").mkdir(parents=True, exist_ok=True)
+    scratch = camp / "_cnf"
+    scratch.mkdir(parents=True, exist_ok=True)
+
+    for sd in sorted({s for _, s, _ in arms}):
+        build(sd)
+
+    # decompress instances once (shared across arms; the solver can't read .cnf.xz directly)
+    cnf_for = {}
+    for stem in insts:
+        dst = scratch / (stem + ".cnf")
+        if not dst.exists():
+            with open(SUITE / (stem + ".cnf.xz"), "rb") as fh:
+                dst.write_bytes(lzma.decompress(fh.read()))
+        cnf_for[stem] = dst
+
+    # interleaved job list: (instance, seed, arm) so consecutive jobs cycle arms -> arms start together
+    jobs = []
+    idx = 0
+    for stem in insts:
+        for seed in seeds:
+            for (tag, sdir, env) in arms:
+                jobs.append((idx, tag, sdir, env, stem, seed))
+                idx += 1
+
+    print(f"[abtest] arms={tags} baseline={baseline} {len(insts)} inst x {len(seeds)} seeds "
+          f"= {len(jobs)} runs; jobs={len(CORES)} cores={CORES[0]}..{CORES[-1]} "
+          f"t={args.timeout}s m={args.mem_mb}MB -> {camp}", flush=True)
+
+    # free-core pool: one physical core per running job. max_workers == len(CORES), so get() never
+    # checks out more than len(CORES) cores at once and never blocks longer than a scheduling gap.
+    core_pool = queue.Queue()
+    for c in CORES:
+        core_pool.put(c)
+
+    def run(job):
+        jidx, tag, sdir, env_extra, stem, seed = job
+        core = core_pool.get()
+        try:
+            res, dt, cf, pr, dc = _solve_one(
+                core, sdir, env_extra, cnf_for[stem], camp / "_work" / f"{jidx}",
+                args.timeout, args.mem_mb, seed)
+        finally:
+            core_pool.put(core)
+        return (tag, stem, seed, res, dt, cf, pr, dc)
+
+    results = []
+    with ThreadPoolExecutor(max_workers=len(CORES)) as ex:
+        for r in ex.map(run, jobs):
+            results.append(r)
+            print(f"  [{r[0]}] {r[1][:24]}/s{r[2]} {r[3]} {r[4]:.0f}s conf={r[5]}", flush=True)
+
+    # one gate-compatible results.tsv per arm (identical schema to seedgate's, so --multiseed consumes it)
+    by_arm = defaultdict(list)
+    for r in results:
+        by_arm[r[0]].append(r)
+    arm_tsv = {}
+    for tag in tags:
+        adir = camp / tag
+        adir.mkdir(parents=True, exist_ok=True)
+        tsv = adir / "results.tsv"
+        with open(tsv, "w") as f:
+            f.write("config\tinstance\tseed\tresult\ttime_s\tconflicts\tpropagations\tdecisions\ttimeout\n")
+            for tag_, stem, seed, res, dt, cf, pr, dc in sorted(by_arm[tag]):
+                f.write(f"{tag}\t{stem}\t{seed}\t{res}\t{dt:.3f}\t{cf}\t{pr}\t{dc}\t{args.timeout}\n")
+        arm_tsv[tag] = tsv
+
+    (camp / "DONE").write_text("abtest complete\n")
+    _ab_verdict(arm_tsv, tags, baseline, args.timeout, args.mem_mb)
+    print(f"\n[abtest] DONE -> {camp}", flush=True)
+    return 0
+
+
+def _ab_verdict(arm_tsv: dict, tags: list[str], baseline: str, timeout: int, mem_mb: int) -> None:
+    """Inline solved -> conflicts(both-solved) -> PAR-2 verdict.
+
+    Uses the SAME compare_bench scoring the promotion gate uses (lexicographic_score /
+    both_solved_conflict_totals / lexicographic_decision), so this verdict and
+    check_solver11_promotion.py --multiseed can never disagree. Also prints the exact gate command.
+    """
+    cells, score = {}, {}
+    for tag in tags:
+        by_cfg = compare_bench.seed_cells_by_config(compare_bench.read_seed_tsv(arm_tsv[tag]))
+        cells[tag] = by_cfg.get(tag) or next(iter(by_cfg.values()), {})
+        score[tag] = compare_bench.lexicographic_score(cells[tag], timeout)
+
+    print("\n=== A/B verdict — metric: solved -> conflicts(both-solved) -> PAR-2 "
+          f"(baseline: {baseline}) ===", flush=True)
+    print(f"{'arm':<22} {'solved':>8} {'conf(own solved)':>18} {'PAR-2':>12}   vs baseline", flush=True)
+    for tag in tags:
+        s = score[tag]
+        solved = f"{s['solved']}/{s['cells']}"
+        conf = f"{s['conflicts_solved']:,}"
+        line = f"{tag:<22} {solved:>8} {conf:>18} {s['par2']:>12.1f}"
+        if tag == baseline:
+            print(line + "   —  (reference)", flush=True)
+            continue
+        both = compare_bench.both_solved_conflict_totals(cells[tag], cells[baseline])
+        decision, reason = compare_bench.lexicographic_decision(score[tag], score[baseline], both)
+        verdict = {"win": "WIN", "regress": "LOSE", "tie": "tie"}.get(decision, decision)
+        # Same decision the gate makes, but flag win/regress that rest ONLY on the PAR-2 tie-break
+        # (solved & conflicts both tie): sub-noise timing, not a real signal — don't over-read it.
+        note = "  [PAR-2 tie-break only — solved & conflicts tie; timing noise]" \
+            if reason.startswith("equal solved+conflicts; PAR-2") else ""
+        print(line + f"   {verdict}  ({reason}){note}", flush=True)
+        contra = compare_bench.seed_contradictions(cells[tag], cells[baseline])
+        if contra:
+            print(f"    *** CORRECTNESS ALERT: {tag} vs {baseline} disagree SAT<->UNSAT on "
+                  f"{len(contra)} cell(s): {contra[:3]} — a real bug, investigate before trusting metrics.",
+                  flush=True)
+    print("* conf(own solved) sums that arm's own solved cells; the WIN/LOSE decision compares conflicts "
+          "only over cells BOTH arms solve (as the gate does).", flush=True)
+
+    floor = arm_tsv.get("solver10", "<solver10.tsv>")
+    for tag in tags:
+        if tag == baseline:
+            continue
+        print(f"\ngate[{tag} vs {baseline}]: python3 tools/check_solver11_promotion.py --multiseed \\\n"
+              f"  --candidate {arm_tsv[tag]} \\\n  --previous {arm_tsv[baseline]} \\\n"
+              f"  --floor {floor} --timeout {timeout} --memory-mb {mem_mb}", flush=True)
+
+
 def validate(args) -> int:
     """Pre-flight: run each config on a trivial CNF and report invalid-config rejections.
 
@@ -630,15 +857,35 @@ def main() -> int:
                     help="solver dir for --env --seedgate (default: current solver)")
     ap.add_argument("--tag", default="", help="label for an --env --seedgate run (output dir + gate TSV)")
     ap.add_argument("--configs", default="")
-    ap.add_argument("--timeout", type=int, default=300)
-    ap.add_argument("--mem-mb", type=int, default=14000)
-    ap.add_argument("--jobs", type=int, default=4)
+    ap.add_argument("--arm", action="append", default=None, metavar="TAG:ENV",
+                    help="A/B arm 'tag:SAT_X=on,SAT_Y=2' (':' with empty env = solver default), or a "
+                         "bare CONFIG_MAP tag. Repeat for N-way. Triggers a simultaneous-start, "
+                         "interleaved, fair shared-core seedgate across all arms (defaults: 32 cores, "
+                         "16GB/job, 1800s; one gate-compatible results.tsv per arm + inline verdict).")
+    ap.add_argument("--baseline", default="",
+                    help="arm tag used as the A/B reference (default: an arm named "
+                         "base/baseline/default/prev/previous, else the last --arm).")
+    # None => resolve per mode below: A/B (--arm) wants 32 cores / 16GB / 30min; other modes keep 4/14000/300.
+    ap.add_argument("--timeout", type=int, default=None)
+    ap.add_argument("--mem-mb", type=int, default=None)
+    ap.add_argument("--jobs", type=int, default=None)
     args = ap.parse_args()
+    arm_mode = bool(args.arm)
+    timeout_explicit = args.timeout is not None
+    if args.jobs is None:
+        args.jobs = 32 if arm_mode else 4
+    if args.mem_mb is None:
+        args.mem_mb = 16000 if arm_mode else 14000
+    if args.timeout is None:
+        args.timeout = 1800 if arm_mode else 300
     preflight(args)
+    if arm_mode:
+        return abtest(args)
     if args.seedgate:
         if not args.configs and args.env is None:
-            ap.error("--seedgate requires --configs <tag> OR --env 'KEY=VAL,...' (ad-hoc)")
-        if args.timeout == 300:
+            ap.error("--seedgate requires --configs <tag> OR --env 'KEY=VAL,...' (ad-hoc); "
+                     "for A/B across configs use --arm TAG:ENV (repeatable)")
+        if not timeout_explicit:
             args.timeout = 900   # seedgate default: 15min — long enough for the hard-10 headroom
         return seedgate(args)
     if args.validate:
@@ -650,7 +897,7 @@ def main() -> int:
     if args.stage2:
         if not args.configs:
             ap.error("--stage2 requires --configs tag1,tag2,...")
-        if args.timeout == 300:
+        if not timeout_explicit:
             args.timeout = 900
         return stage2(args)
     ap.error("one of --smoke / --stage1 / --stage2 required")

@@ -115,7 +115,12 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
   `benchmarks/profile20/README.md` before interpreting profile20 results.
 - Any keep, turn-on, or promotion decision must use a multi-seed sweep, normally
   N=10, and the multiseed gate:
-  `python3 tools/check_solver11_promotion.py --multiseed ...`.
+  `python3 tools/check_solver11_promotion.py --multiseed ...`. When iterating, run
+  the candidate and baseline together as one A/B:
+  `python3 tools/feature_ablation.py --arm 'cand:SAT_X=on' --arm 'base:'` — it
+  starts both arms simultaneously on shared pinned cores (defaults: 32 cores,
+  16 GB, 30 min), emits the per-arm gate TSVs, and prints the
+  solved→conflicts→PAR-2 verdict inline.
 - Single-seed or one-instance runs are allowed for debugging and iteration only.
   Do not keep or promote a solver feature on that evidence.
 - Honest timeouts and budget-consuming `UNKNOWN` results are priced into the
@@ -145,6 +150,13 @@ config with:
 
 ```bash
 python3 tools/feature_ablation.py --seedgate --configs <tag> --seeds 10
+```
+
+Or produce the candidate and previous-default TSVs in one fair, simultaneous-start
+A/B run (add `--arm solver10` to include the floor arm):
+
+```bash
+python3 tools/feature_ablation.py --arm 'candidate:SAT_X=on' --arm 'previous:'
 ```
 
 Then run:

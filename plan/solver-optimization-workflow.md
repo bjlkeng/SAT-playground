@@ -20,6 +20,33 @@ single-seed runs are iteration aids, not keep/promote evidence.
 For solver 11 feature ablations, use `tools/feature_ablation.py`. It handles the
 config matrix, same-binary `SAT_*` toggles, `SAT_SEED`, and `requires` deps.
 
+### A/B a candidate against baseline (preferred when iterating)
+
+Compare a candidate feature against baseline in ONE command so both arms start
+together and share the pinned cores — no host drift, socket, or thermal bias
+between arms:
+
+```bash
+python3 tools/feature_ablation.py --arm 'cand:SAT_NEWFEAT=on' --arm 'base:'
+```
+
+Repeat `--arm 'tag:ENV'` for N-way (empty env after `:` = solver default; a bare
+`CONFIG_MAP` tag such as `solver10` uses its registered config, so you can add the
+floor as an arm). Every `(arm, instance, seed)` run is interleaved into one
+free-core pool, so both arms run in the same wall-clock window and each spreads
+evenly across all cores. The run writes one gate-compatible `results.tsv` per arm,
+then prints an inline solved -> conflicts -> PAR-2 verdict and the exact
+`check_solver11_promotion.py --multiseed` command to confirm the decision.
+
+Defaults are sized for a large multi-core host (36 cores / ~500 GB): `--jobs 32`
+(physical cores 0-31), `--mem-mb 16000`, `--timeout 1800` (30 min), `--seeds 10`.
+On a constrained host (e.g. ~62 GiB) scale down, e.g. `--jobs 5 --mem-mb 11500`.
+
+### Single-config primitives
+
+The `--arm` run above composes these single-config seedgates; run one directly
+when you only need one config measured.
+
 For quiet-host iteration, a common screen is five jobs by five seeds:
 
 ```bash
@@ -68,7 +95,8 @@ Long `--seedgate` jobs can run for hours. After preflight and user approval:
 
 1. Pick a fast target instance only for iteration speed. The decision remains
    profile20 aggregate evidence.
-2. Capture a baseline with `tools/feature_ablation.py` or:
+2. Capture baseline and candidate together with one `tools/feature_ablation.py
+   --arm` A/B run (see Standard Driver). For a quick single-solver PAR-2 snapshot:
 
    ```bash
    bash tools/bench.sh -j 4 -d benchmarks/profile20 solver/NN-name
@@ -91,7 +119,9 @@ Long `--seedgate` jobs can run for hours. After preflight and user approval:
 6. Use fast single-instance or single-seed runs only as smoke signals while
    coding.
 7. Keep a change only after it wins the multiseed lexicographic gate beyond
-   seed noise and passes correctness checks.
+   seed noise and passes correctness checks. The `--arm` A/B prints this
+   solved -> conflicts -> PAR-2 verdict inline; confirm with
+   `check_solver11_promotion.py --multiseed`.
 8. Revert changes that lose, tie only through noise, or trigger correctness
    failures.
 9. Stop long losers early when finished rows have already lost more than the

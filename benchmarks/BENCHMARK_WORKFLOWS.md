@@ -39,7 +39,10 @@ busy cores as the routine upper bound.
 - Hold off if launching yours would push total solver/bench cores to four or
   more.
 - For tight A/B measurements, use quiet cores even if the routine threshold
-  would allow overlap.
+  would allow overlap, and run both arms in one
+  `tools/feature_ablation.py --arm 'cand:…' --arm 'base:'` invocation so they
+  start together and share the pinned cores (fair paired timing) instead of as
+  two separate runs.
 
 ## Full Or Medium SAT Competition Benchmark Runs
 

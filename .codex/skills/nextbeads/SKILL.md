@@ -155,7 +155,11 @@ exist. For example:
 
 - The before benchmark must finish before using it as the comparison baseline.
 - The after benchmark must finish before making a before/after PAR-2 claim.
-- A seedgate must finish before a keep/promote/revert decision.
+- A seedgate must finish before a keep/promote/revert decision. For a keep or
+  turn-on A/B, prefer one `tools/feature_ablation.py --arm 'cand:…' --arm 'base:'`
+  run (both arms start together on shared pinned cores; emits per-arm gate TSVs
+  plus an inline solved→conflicts→PAR-2 verdict) over two separate single-config
+  seedgates.
 
 If a required benchmark is still running, release any claimed beads, report the
 PID/log/progress, and stop the current turn cleanly.
