@@ -21,6 +21,8 @@ Usage:
   python3 tools/feature_ablation.py --stage1 [--timeout 300] [--mem-mb 14000] [--jobs 4]
   python3 tools/feature_ablation.py --stage2 --configs tag1,tag2 [--timeout 900]
   python3 tools/feature_ablation.py --seedgate --configs <tag> --seeds 5 --jobs 5   # 5 threads x 5 seeds
+  # gate on the 100-instance sat-comp-2025-medium suite at the single default seed (nextbeads default):
+  python3 tools/feature_ablation.py --seedgate --configs default --suite sat-comp-2025-medium --seeds 1
   # measure a NEW feature flag ad-hoc (no CONFIG_MAP edit) — A/B candidate vs baseline:
   python3 tools/feature_ablation.py --seedgate --env "SAT_NEWFEAT=on" --tag newfeat --seeds 5 --jobs 5
   python3 tools/feature_ablation.py --seedgate --env ""              --tag baseline --seeds 5 --jobs 5
@@ -42,6 +44,25 @@ import compare_bench  # noqa: E402
 
 SUITE = ROOT / "benchmarks" / "profile20"
 SELECTION = SUITE / "selection.csv"
+
+
+def resolve_suite(name: str | None) -> Path:
+    """Resolve a --suite/SAT_ABLATION_SUITE value to a benchmark directory.
+
+    Accepts a bare suite name ('sat-comp-2025-medium'), a repo-relative path
+    ('benchmarks/sat-comp-2025-medium'), or an absolute path. Empty/None keeps
+    the profile20 default. Suites without a selection.csv (e.g. the 100-instance
+    sat-comp-2025-medium set) are enumerated directly by instances().
+    """
+    if not name:
+        return ROOT / "benchmarks" / "profile20"
+    p = Path(name)
+    if p.is_absolute():
+        return p
+    for cand in (ROOT / name, ROOT / "benchmarks" / name):
+        if cand.exists():
+            return cand
+    return ROOT / "benchmarks" / name
 
 
 def _solver_sort_key(path: Path) -> tuple[int, str]:
@@ -118,7 +139,7 @@ def preflight(args) -> None:
                 print(f"[preflight]   {l}", flush=True)
     except Exception:
         pass
-    print(f"[preflight] cores={CORES} jobs={args.jobs} seeds={args.seeds} "
+    print(f"[preflight] suite={SUITE.name} cores={CORES} jobs={args.jobs} seeds={args.seeds} "
           f"mem={args.mem_mb}MB/job timeout={args.timeout}s", flush=True)
 
 # tag -> (solver_dir, {env}).  Empty env = that solver's default profile.
@@ -221,10 +242,23 @@ def load_halves() -> dict[str, str]:
 
 
 def instances(half: str | None = None) -> list[str]:
-    """profile20 instance stems (== bench results.csv instance keys)."""
-    halves = load_halves()
-    out = [name for name, h in halves.items() if half is None or h == half]
-    return sorted(out)
+    """Suite instance stems (== bench results.csv instance keys).
+
+    profile20 carries a selection.csv with an easy/hard `half` column. Suites
+    without one (e.g. sat-comp-2025-medium) are enumerated straight from their
+    .cnf.xz files; `--half` is only meaningful for a suite that has halves.
+    """
+    if SELECTION.exists():
+        halves = load_halves()
+        out = [name for name, h in halves.items() if half is None or h == half]
+        return sorted(out)
+    if half:
+        raise SystemExit(f"suite {SUITE.name} has no selection.csv, so --half {half!r} "
+                         "is unavailable (halves are a profile20-only concept)")
+    stems = [p.name[:-len(".cnf.xz")] for p in SUITE.glob("*.cnf.xz")]
+    if not stems:
+        raise SystemExit(f"no *.cnf.xz instances found in suite {SUITE}")
+    return sorted(stems)
 
 
 def file_for(stem: str) -> str:
@@ -839,6 +873,11 @@ def main() -> int:
                          "(use with --configs <tag> from CONFIG_MAP, or --env 'K=V,...' ad-hoc)")
     ap.add_argument("--seeds", type=int, default=10, help="seeds for --seedgate (default 10)")
     ap.add_argument("--half", default="", help="restrict --seedgate to 'easy' or 'hard' half")
+    ap.add_argument("--suite", default=None,
+                    help="benchmark suite for --seedgate/--arm: a name ('sat-comp-2025-medium'), a "
+                         "repo-relative path, or absolute path (default: profile20; also SAT_ABLATION_SUITE). "
+                         "Suites without a selection.csv are enumerated from their .cnf.xz files, so --half "
+                         "is profile20-only.")
     ap.add_argument("--env", default=None,
                     help="ad-hoc --seedgate config without editing CONFIG_MAP: 'SAT_X=on,SAT_Y=2' "
                          "(''=solver default). A/B it against --env '' (baseline). Pair with --tag.")
@@ -859,6 +898,11 @@ def main() -> int:
     ap.add_argument("--mem-mb", type=int, default=None)
     ap.add_argument("--jobs", type=int, default=None)
     args = ap.parse_args()
+    global SUITE, SELECTION
+    SUITE = resolve_suite(args.suite or os.environ.get("SAT_ABLATION_SUITE"))
+    SELECTION = SUITE / "selection.csv"
+    if not SUITE.is_dir():
+        ap.error(f"--suite {SUITE} is not a directory")
     arm_mode = bool(args.arm)
     timeout_explicit = args.timeout is not None
     if args.jobs is None:

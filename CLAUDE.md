@@ -29,7 +29,10 @@ bash tools/bench.sh solver/NN-name
 - Benchmark operations, cron runs, and reference-solver runs:
   `benchmarks/BENCHMARK_WORKFLOWS.md`
 - Solver optimization workflow: `plan/solver-optimization-workflow.md`
-- Current benchmark target suite: `benchmarks/profile20/README.md`
+- Current decision/gate suite: `benchmarks/sat-comp-2025-medium/` (100
+  instances, single default seed; run via
+  `feature_ablation.py --suite sat-comp-2025-medium --seeds 1`)
+- Prior profile20 target suite (provenance/background): `benchmarks/profile20/README.md`
 - Legacy fast control suite: `benchmarks/profiling/README.md`
 - Solver 11 current state and feature surface:
   `solver/11-kissat-search/README.md`, `solver/11-kissat-search/FEATURES.md`,
@@ -109,20 +112,24 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
 
 ## Development Rules
 
-- The primary solver decision metric is lexicographic over
-  `benchmarks/profile20`: solved count, then total conflicts on tied solved
-  cells, then PAR-2 only as a supplemental tie-break. Read
-  `benchmarks/profile20/README.md` before interpreting profile20 results.
-- Any keep, turn-on, or promotion decision must use a multi-seed sweep, normally
-  N=10, and the multiseed gate:
-  `python3 tools/check_promotion_gate.py --multiseed ...`. When iterating, run
-  the candidate and baseline together as one A/B:
-  `python3 tools/feature_ablation.py --arm 'cand:SAT_X=on' --arm 'base:'` — it
-  starts both arms simultaneously on shared pinned cores (defaults: 32 cores,
-  16 GB, 30 min), emits the per-arm gate TSVs, and prints the
+- The primary solver decision metric is lexicographic over the 100-instance
+  `benchmarks/sat-comp-2025-medium` suite at the single default seed: solved
+  count, then total conflicts on tied solved cells, then PAR-2 only as a
+  supplemental tie-break.
+- Any keep, turn-on, or promotion decision must use the full medium single-seed
+  sweep and the gate:
+  `python3 tools/check_promotion_gate.py --multiseed ...` (the `--multiseed` TSV
+  format is unchanged for a single seed). Point feature_ablation at the suite
+  with `--suite sat-comp-2025-medium --seeds 1`. When iterating, run the
+  candidate and baseline together as one A/B:
+  `python3 tools/feature_ablation.py --arm 'cand:SAT_X=on' --arm 'base:' --suite sat-comp-2025-medium --seeds 1`
+  — it starts both arms simultaneously on shared pinned cores (defaults: 32
+  cores, 16 GB, 30 min), emits the per-arm gate TSVs, and prints the
   solved→conflicts→PAR-2 verdict inline.
-- Single-seed or one-instance runs are allowed for debugging and iteration only.
-  Do not keep or promote a solver feature on that evidence.
+- Single-instance, subset, or raw `tools/bench.sh` runs are allowed for
+  debugging and iteration only. Do not keep or promote a solver feature on that
+  evidence — the promotable evidence is the full 100-instance medium
+  single-seed gate.
 - Honest timeouts and budget-consuming `UNKNOWN` results are priced into the
   metric. They are not correctness bugs by themselves.
 - Correctness errors are never acceptable: wrong SAT/UNSAT status, invalid SAT
@@ -144,19 +151,19 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
 
 ## Solver 11 Promotion Gate
 
-Solver 11 default/fast promotion uses the profile20 lexicographic
-solved-to-conflicts-to-PAR-2 metric across N=10 seeds. Produce one TSV per
-config with:
+Solver 11 default/fast promotion uses the `sat-comp-2025-medium` lexicographic
+solved-to-conflicts-to-PAR-2 metric over all 100 instances at the single default
+seed. Produce one TSV per config with:
 
 ```bash
-python3 tools/feature_ablation.py --seedgate --configs <tag> --seeds 10
+python3 tools/feature_ablation.py --seedgate --configs <tag> --suite sat-comp-2025-medium --seeds 1
 ```
 
 Or produce the candidate and previous-default TSVs in one fair, simultaneous-start
 A/B run (add `--arm solver10` to include the floor arm):
 
 ```bash
-python3 tools/feature_ablation.py --arm 'candidate:SAT_X=on' --arm 'previous:'
+python3 tools/feature_ablation.py --arm 'candidate:SAT_X=on' --arm 'previous:' --suite sat-comp-2025-medium --seeds 1
 ```
 
 Then run:

@@ -89,13 +89,16 @@ Benchmark commands are measurement runs, not tests. This applies to
 tests, smoke tests, and tiny direct solver repros may still run synchronously.
 
 `tools/feature_ablation.py` is the canonical checking tool for every keep,
-turn-on, promote, or before/after decision: it runs the profile20 suite the
-CLAUDE.md decision metric is defined on, pins each concurrent run to its own
-physical core, and emits the multiseed gate TSVs that
-`tools/check_promotion_gate.py --multiseed` scores. Use `--seedgate` for a
-single-config baseline and `--arm 'cand:…' --arm 'base:'` for a
-simultaneous-start A/B. `tools/bench.sh` is only a rough single-seed profiling
-aid (its `-j` runs sequentially) — never base a keep/promote decision on it.
+turn-on, promote, or before/after decision. For nextbeads the gate suite is the
+100-instance `benchmarks/sat-comp-2025-medium` set run at the single default
+seed — pass `--suite sat-comp-2025-medium --seeds 1` to every gate command
+(`--seedgate` and `--arm`). feature_ablation pins each concurrent run to its own
+physical core and emits the gate TSVs that
+`tools/check_promotion_gate.py --multiseed` scores (the `--multiseed` TSV format
+is identical for a single seed, so the same gate still applies). Use
+`--seedgate` for a single-config baseline and `--arm 'cand:…' --arm 'base:'` for
+a simultaneous-start A/B. `tools/bench.sh` is only a rough profiling aid (its
+`-j` runs sequentially) — never base a keep/promote decision on it.
 
 ### Launch
 
@@ -209,18 +212,19 @@ PID/log/progress, and stop the current turn cleanly.
    downstream unblock count. Drop recommendations outside the in-scope phases.
 
 5. Start the before baseline for the whole run using the benchmark discipline
-   above. The canonical check is `tools/feature_ablation.py` on profile20 — per
-   CLAUDE.md the decision metric is lexicographic solved→conflicts→PAR-2 over
-   `benchmarks/profile20`, measured with feature_ablation, not a raw
-   `tools/bench.sh` run (bench.sh is single-seed and its `-j` is a no-op, so it
-   cannot produce a keep/promote-grade number):
+   above. The canonical check is `tools/feature_ablation.py` on
+   `sat-comp-2025-medium` — the decision metric is lexicographic
+   solved→conflicts→PAR-2 over the 100-instance `benchmarks/sat-comp-2025-medium`
+   suite at the single default seed, measured with feature_ablation, not a raw
+   `tools/bench.sh` run (bench.sh's `-j` is a no-op, so it cannot produce a
+   keep/promote-grade number):
    ```bash
    cd "$TARGET_SOLVER" && bash build.sh && cd -
    # Size --jobs to the physical cores you may use (see Benchmark Discipline);
-   # --seeds 10 is the standard gate width. feature_ablation always runs on
-   # benchmarks/profile20, so no -d/suite argument is needed.
+   # --seeds 1 runs the single default seed over all 100 medium instances.
    SAT_TARGET_SOLVER="$TARGET_SOLVER" python3 tools/feature_ablation.py \
-     --seedgate --configs default --seeds 10 --jobs <cores> --timeout 1800
+     --seedgate --configs default --suite sat-comp-2025-medium --seeds 1 \
+     --jobs <cores> --timeout 1800
    ```
    This writes a gate-compatible `results.tsv` — the `before` baseline that
    `tools/check_promotion_gate.py --multiseed` consumes. Wait only via hourly
@@ -267,7 +271,8 @@ For each bead in the work order, up to `N`:
    plus an inline solved→conflicts→PAR-2 verdict):
    ```bash
    SAT_TARGET_SOLVER="$TARGET_SOLVER" python3 tools/feature_ablation.py \
-     --arm 'cand:SAT_<FEATURE>=on' --arm 'base:'
+     --arm 'cand:SAT_<FEATURE>=on' --arm 'base:' \
+     --suite sat-comp-2025-medium --seeds 1
    ```
    Launch it with the benchmark discipline above and wait by hourly polling until
    the per-arm `results.tsv` files and inline verdict exist. Feed the arm TSVs to
@@ -333,7 +338,8 @@ Before exiting:
    ```bash
    cd "$TARGET_SOLVER" && bash build.sh && cd -
    SAT_TARGET_SOLVER="$TARGET_SOLVER" python3 tools/feature_ablation.py \
-     --seedgate --configs default --seeds 10 --jobs <cores> --timeout 1800
+     --seedgate --configs default --suite sat-comp-2025-medium --seeds 1 \
+     --jobs <cores> --timeout 1800
    ```
    Poll hourly until its `results.tsv` exists. Do not make before/after claims
    while it is still running.
@@ -347,8 +353,9 @@ Before exiting:
    ```
    Report the gate verdict (solved, both-solved conflicts, PAR-2), any new
    ERROR/wrong-result/premature-UNKNOWN cells, and the config/env used. Produce
-   the `<solver10.tsv>` floor once with
-   `feature_ablation.py --seedgate --configs solver10`, or reuse a recent one.
+   the `<solver10.tsv>` floor on the SAME suite/seed with
+   `feature_ablation.py --seedgate --configs solver10 --suite sat-comp-2025-medium --seeds 1`,
+   or reuse a recent one.
 
 ## Final Report
 
