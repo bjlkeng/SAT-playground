@@ -64,7 +64,7 @@ def running_solver_processes() -> list[str]:
         line = raw.strip()
         if not line or line.split(maxsplit=1)[0] == self_pid:
             continue
-        if "check_solver11_promotion.py" in line or "pgrep -a -f" in line:
+        if "check_promotion_gate.py" in line or "pgrep -a -f" in line:
             continue
         lines.append(line)
     return lines

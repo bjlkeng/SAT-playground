@@ -484,7 +484,7 @@ def seedgate(args) -> int:
     instance, capturing conflicts (deterministic per (config,seed), contention-immune) for the
     lexicographic solved->conflicts->PAR-2 decision. Decompresses .cnf.xz to a scratch dir (the
     solver does not read .xz directly), runs N workers pinned to physical cores, writes one TSV per
-    config that check_solver11_promotion.py --multiseed consumes. Resumable.
+    config that check_promotion_gate.py --multiseed consumes. Resumable.
 
     Usage: --seedgate --tag <config-tag> [--seeds 10] [--timeout 600] on the suite's instances.
     """
@@ -645,7 +645,7 @@ def abtest(args) -> int:
     consecutive jobs cycle the arms — an instance's arm-A and arm-B runs start within one scheduling slot
     of each other, both arms run in the SAME wall-clock window, and each arm lands on whatever core is
     free (uniform spread across all cores) so neither arm inherits a socket/thermal/turbo bias. Writes one
-    gate-compatible results.tsv per arm (feed check_solver11_promotion.py --multiseed) + an inline verdict.
+    gate-compatible results.tsv per arm (feed check_promotion_gate.py --multiseed) + an inline verdict.
 
     Mode defaults (resolved in main): --jobs 32 (physical cores 0..31 on this 36-core box; siblings idle),
     --mem-mb 16000, --timeout 1800. Conflicts are deterministic per (config,seed) and contention-immune,
@@ -746,7 +746,7 @@ def _ab_verdict(arm_tsv: dict, tags: list[str], baseline: str, timeout: int, mem
 
     Uses the SAME compare_bench scoring the promotion gate uses (lexicographic_score /
     both_solved_conflict_totals / lexicographic_decision), so this verdict and
-    check_solver11_promotion.py --multiseed can never disagree. Also prints the exact gate command.
+    check_promotion_gate.py --multiseed can never disagree. Also prints the exact gate command.
     """
     cells, score = {}, {}
     for tag in tags:
@@ -785,7 +785,7 @@ def _ab_verdict(arm_tsv: dict, tags: list[str], baseline: str, timeout: int, mem
     for tag in tags:
         if tag == baseline:
             continue
-        print(f"\ngate[{tag} vs {baseline}]: python3 tools/check_solver11_promotion.py --multiseed \\\n"
+        print(f"\ngate[{tag} vs {baseline}]: python3 tools/check_promotion_gate.py --multiseed \\\n"
               f"  --candidate {arm_tsv[tag]} \\\n  --previous {arm_tsv[baseline]} \\\n"
               f"  --floor {floor} --timeout {timeout} --memory-mb {mem_mb}", flush=True)
 

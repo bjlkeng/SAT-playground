@@ -22,7 +22,7 @@ MiniSat `SimpSolver` design described in
 > aggregate PAR-2 by 2x over the prior single-mode default (5653 vs 6808, 13/20 vs 10/20 solved) and
 > clears the solver-10 floor (6773). The win is `SAT_REDUCE=lbd-tiered` (cracks 3 hard headroom
 > instances), amplified by focused-stable+VMTF halving the easy-half overhead. Promoted on the
-> Stage-1 (n=1 screening) decision; a formal `check_solver11_promotion.py` gate run was not recorded.
+> Stage-1 (n=1 screening) decision; a formal `check_promotion_gate.py` gate run was not recorded.
 > Provenance: `log/feature-ablation-2026-05-30-12-11-01/FINDINGS.md`. To recover the old behavior:
 > `SAT_PROFILE=baseline`, or `SAT_SEARCH_MODE=single SAT_MODE_USE_TICKS=off SAT_REDUCE=legacy SAT_USE_LBD=off`.
 
@@ -372,7 +372,7 @@ Smoke/correctness (independent of efficacy) is verified per change via
   solved-count gate. Evidence:
   `log/seedgate-bsr_occlim_unlimited-2026-06-08-16-33-14/results.tsv`,
   `log/seedgate-bsr_occlim_1000-2026-06-08-20-44-54/results.tsv`, and
-  `tools/check_solver11_promotion.py --multiseed ...` gate output
+  `tools/check_promotion_gate.py --multiseed ...` gate output
   (`promotion_gate=FAIL`, candidate 61 solved vs previous 65).
 
 ### Auto-enable SAT_BINARY_FAST under SAT_FULL_BSR (analyzesat PRE-2, 2026-06-09)

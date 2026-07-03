@@ -115,7 +115,7 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
   `benchmarks/profile20/README.md` before interpreting profile20 results.
 - Any keep, turn-on, or promotion decision must use a multi-seed sweep, normally
   N=10, and the multiseed gate:
-  `python3 tools/check_solver11_promotion.py --multiseed ...`. When iterating, run
+  `python3 tools/check_promotion_gate.py --multiseed ...`. When iterating, run
   the candidate and baseline together as one A/B:
   `python3 tools/feature_ablation.py --arm 'cand:SAT_X=on' --arm 'base:'` — it
   starts both arms simultaneously on shared pinned cores (defaults: 32 cores,
@@ -162,7 +162,7 @@ python3 tools/feature_ablation.py --arm 'candidate:SAT_X=on' --arm 'previous:'
 Then run:
 
 ```bash
-python3 tools/check_solver11_promotion.py --multiseed \
+python3 tools/check_promotion_gate.py --multiseed \
   --solver10 <solver10.tsv> \
   --previous <prior-default.tsv> \
   --candidate <candidate.tsv> \

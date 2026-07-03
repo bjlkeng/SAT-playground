@@ -36,7 +36,7 @@ floor as an arm). Every `(arm, instance, seed)` run is interleaved into one
 free-core pool, so both arms run in the same wall-clock window and each spreads
 evenly across all cores. The run writes one gate-compatible `results.tsv` per arm,
 then prints an inline solved -> conflicts -> PAR-2 verdict and the exact
-`check_solver11_promotion.py --multiseed` command to confirm the decision.
+`check_promotion_gate.py --multiseed` command to confirm the decision.
 
 Defaults are sized for a large multi-core host (36 cores / ~500 GB): `--jobs 32`
 (physical cores 0-31), `--mem-mb 16000`, `--timeout 1800` (30 min), `--seeds 10`.
@@ -66,7 +66,7 @@ The authoritative keep/turn-on/promote run is N=10:
 
 ```bash
 python3 tools/feature_ablation.py --seedgate --configs <tag> --seeds 10
-python3 tools/check_solver11_promotion.py --multiseed ...
+python3 tools/check_promotion_gate.py --multiseed ...
 ```
 
 Before launching a parallel sweep, check for competing solver/bench processes
@@ -121,7 +121,7 @@ Long `--seedgate` jobs can run for hours. After preflight and user approval:
 7. Keep a change only after it wins the multiseed lexicographic gate beyond
    seed noise and passes correctness checks. The `--arm` A/B prints this
    solved -> conflicts -> PAR-2 verdict inline; confirm with
-   `check_solver11_promotion.py --multiseed`.
+   `check_promotion_gate.py --multiseed`.
 8. Revert changes that lose, tie only through noise, or trigger correctness
    failures.
 9. Stop long losers early when finished rows have already lost more than the

@@ -29,7 +29,7 @@ frequency. Contextual bandits at this granularity are explicitly flagged as *pro
 unexplored* by the SoCS 2025 MAB-for-SAT survey — this plan is novel-but-derisked territory.
 
 Every keep/promote decision goes through the existing gate:
-`tools/feature_ablation.py --seedgate` (N=10) → `tools/check_solver11_promotion.py --multiseed`,
+`tools/feature_ablation.py --seedgate` (N=10) → `tools/check_promotion_gate.py --multiseed`,
 with the solver-10 floor and shuffled-order validation for anything that smells input-order-lucky.
 
 Rev 3 integrates a second research round (§3.1): the exact deployed reward formulas of the
@@ -599,7 +599,7 @@ All registered in `config.rs` + `CONFIG_SCHEMA.csv`, ablatable via
 
 ## 11. Experiments & validation plan
 
-All keep/promote decisions: N=10 seedgate + `check_solver11_promotion.py --multiseed`
+All keep/promote decisions: N=10 seedgate + `check_promotion_gate.py --multiseed`
 (lexicographic solved→conflicts→PAR-2, solver-10 floor). 5×5 (`--jobs 5 --seeds 5`) for
 iteration only. Long runs detached + hourly status per CLAUDE.md.
 
