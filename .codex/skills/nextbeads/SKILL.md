@@ -88,6 +88,15 @@ Benchmark commands are measurement runs, not tests. This applies to
 `tools/feature_ablation.py`, and similar profiling or ablation commands. Unit
 tests, smoke tests, and tiny direct solver repros may still run synchronously.
 
+`tools/feature_ablation.py` is the canonical checking tool for every keep,
+turn-on, promote, or before/after decision: it runs the profile20 suite the
+CLAUDE.md decision metric is defined on, pins each concurrent run to its own
+physical core, and emits the multiseed gate TSVs that
+`tools/check_promotion_gate.py --multiseed` scores. Use `--seedgate` for a
+single-config baseline and `--arm 'cand:…' --arm 'base:'` for a
+simultaneous-start A/B. `tools/bench.sh` is only a rough single-seed profiling
+aid (its `-j` runs sequentially) — never base a keep/promote decision on it.
+
 ### Launch
 
 After the initial benchmark launch, immediately validate that it is running.
@@ -199,14 +208,24 @@ PID/log/progress, and stop the current turn cleanly.
    blockers/dependencies, priority, scope risk, implementation leverage, and
    downstream unblock count. Drop recommendations outside the in-scope phases.
 
-5. Start the before benchmark for the whole run using the benchmark discipline
-   above:
+5. Start the before baseline for the whole run using the benchmark discipline
+   above. The canonical check is `tools/feature_ablation.py` on profile20 — per
+   CLAUDE.md the decision metric is lexicographic solved→conflicts→PAR-2 over
+   `benchmarks/profile20`, measured with feature_ablation, not a raw
+   `tools/bench.sh` run (bench.sh is single-seed and its `-j` is a no-op, so it
+   cannot produce a keep/promote-grade number):
    ```bash
    cd "$TARGET_SOLVER" && bash build.sh && cd -
-   bash tools/bench.sh -d benchmarks/profiling "$TARGET_SOLVER"
+   # Size --jobs to the physical cores you may use (see Benchmark Discipline);
+   # --seeds 10 is the standard gate width. feature_ablation always runs on
+   # benchmarks/profile20, so no -d/suite argument is needed.
+   SAT_TARGET_SOLVER="$TARGET_SOLVER" python3 tools/feature_ablation.py \
+     --seedgate --configs default --seeds 10 --jobs <cores> --timeout 1800
    ```
-   Wait only via hourly polling. Do not start bead implementation until this
-   baseline has completed and the `results.csv` path is known.
+   This writes a gate-compatible `results.tsv` — the `before` baseline that
+   `tools/check_promotion_gate.py --multiseed` consumes. Wait only via hourly
+   polling. Do not start bead implementation until this baseline has completed and
+   its `results.tsv` path is recorded.
 
 ## Per-Bead Loop
 
@@ -241,8 +260,18 @@ For each bead in the work order, up to `N`:
    cd "$TARGET_SOLVER" && cargo test && cd -
    bash tools/smoke_test.sh "$TARGET_SOLVER"
    ```
-   If extra benchmark validation is needed, launch it with the benchmark
-   discipline above and wait by hourly polling until results exist.
+   cargo + smoke are the correctness gate. For any feature-efficacy or
+   keep/turn-on check, measure with `tools/feature_ablation.py`, never
+   `tools/bench.sh`. When the bead adds an env-gated feature, run one
+   simultaneous-start A/B (both arms share pinned cores; emits per-arm gate TSVs
+   plus an inline solved→conflicts→PAR-2 verdict):
+   ```bash
+   SAT_TARGET_SOLVER="$TARGET_SOLVER" python3 tools/feature_ablation.py \
+     --arm 'cand:SAT_<FEATURE>=on' --arm 'base:'
+   ```
+   Launch it with the benchmark discipline above and wait by hourly polling until
+   the per-arm `results.tsv` files and inline verdict exist. Feed the arm TSVs to
+   `tools/check_promotion_gate.py --multiseed` for the formal keep decision.
 
 8. Update the bead:
    ```bash
@@ -299,17 +328,27 @@ Before exiting:
 1. Verify every bead claimed by this run is either closed or reopened and has no
    assignee. Do not alter beads claimed by other active agents.
 
-2. Start the after benchmark using the benchmark discipline:
+2. Start the after baseline with the same feature_ablation command used for the
+   before baseline, on the rebuilt post-loop solver:
    ```bash
    cd "$TARGET_SOLVER" && bash build.sh && cd -
-   bash tools/bench.sh -d benchmarks/profiling "$TARGET_SOLVER"
+   SAT_TARGET_SOLVER="$TARGET_SOLVER" python3 tools/feature_ablation.py \
+     --seedgate --configs default --seeds 10 --jobs <cores> --timeout 1800
    ```
-   Poll hourly until `results.csv` exists. Do not make before/after claims while
-   it is still running.
+   Poll hourly until its `results.tsv` exists. Do not make before/after claims
+   while it is still running.
 
-3. Compare before and after results. Report per-instance status/time deltas,
-   aggregate PAR-2, any new ERROR/wrong-result/premature-UNKNOWN rows, and the
-   config/env used.
+3. Compare before and after with the promotion gate — the same lexicographic
+   solved→conflicts→PAR-2 metric CLAUDE.md mandates, not a raw PAR-2 diff:
+   ```bash
+   python3 tools/check_promotion_gate.py --multiseed \
+     --previous <before.tsv> --candidate <after.tsv> \
+     --floor <solver10.tsv> --timeout 1800 --memory-mb <MB>
+   ```
+   Report the gate verdict (solved, both-solved conflicts, PAR-2), any new
+   ERROR/wrong-result/premature-UNKNOWN cells, and the config/env used. Produce
+   the `<solver10.tsv>` floor once with
+   `feature_ablation.py --seedgate --configs solver10`, or reuse a recent one.
 
 ## Final Report
 
@@ -318,7 +357,8 @@ When all required results exist, finish with:
 1. Beads worked on: order, bead ID, title, final status.
 2. What changed: file/function granularity and any non-obvious decisions.
 3. Validation: cargo, smoke, and benchmark logs/results.
-4. Profile-bench before/after: aggregate PAR-2 verdict plus notable rows.
+4. feature_ablation before/after: the `check_promotion_gate.py --multiseed`
+   verdict (solved → both-solved conflicts → PAR-2) plus notable per-cell rows.
 5. Next logical beads: top three ready beads in scope (`phase1` / `phase2`) and why.
 
 If a required benchmark is still running, do not give the final comparison.
