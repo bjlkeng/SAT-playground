@@ -120,9 +120,9 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
   sweep and the gate:
   `python3 tools/check_promotion_gate.py --multiseed ...` (the `--multiseed` TSV
   format is unchanged for a single seed). Point feature_ablation at the suite
-  with `--suite sat-comp-2025-medium --seeds 1`, and cap parallelism at 32
-  physical cores (`--jobs 32`) on this 36-core host to leave system headroom.
-  When iterating, run the
+  with `--suite sat-comp-2025-medium --seeds 1`; the standard gate parallelism is
+  32 physical cores at 16 GB per job (`--jobs 32 --mem-mb 16000`) on this 36-core
+  host — 32 not 36 to leave system headroom. When iterating, run the
   candidate and baseline together as one A/B:
   `python3 tools/feature_ablation.py --arm 'cand:SAT_X=on' --arm 'base:' --suite sat-comp-2025-medium --seeds 1`
   — it starts both arms simultaneously on shared pinned cores (defaults: 32

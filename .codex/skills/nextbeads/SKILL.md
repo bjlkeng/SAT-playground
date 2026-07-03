@@ -93,8 +93,9 @@ turn-on, promote, or before/after decision. For nextbeads the gate suite is the
 100-instance `benchmarks/sat-comp-2025-medium` set run at the single default
 seed — pass `--suite sat-comp-2025-medium --seeds 1` to every gate command
 (`--seedgate` and `--arm`). feature_ablation pins each concurrent run to its own
-physical core; use at most **32 physical cores** (`--jobs 32`) even though the
-host has 36, to leave scheduler/system headroom. It emits the gate TSVs that
+physical core; the standard gate parallelism is **32 physical cores at 16 GB per
+job** (`--jobs 32 --mem-mb 16000`, matching the abtest defaults) — 32 not 36 to
+leave scheduler/system headroom on this host. It emits the gate TSVs that
 `tools/check_promotion_gate.py --multiseed` scores (the `--multiseed` TSV format
 is identical for a single seed, so the same gate still applies). Use
 `--seedgate` for a single-config baseline and `--arm 'cand:…' --arm 'base:'` for
@@ -221,11 +222,11 @@ PID/log/progress, and stop the current turn cleanly.
    keep/promote-grade number):
    ```bash
    cd "$TARGET_SOLVER" && bash build.sh && cd -
-   # Size --jobs to the physical cores you may use, capped at 32 (see Benchmark
+   # Standard gate parallelism: 32 physical cores at 16 GB/job (see Benchmark
    # Discipline); --seeds 1 runs the single default seed over all 100 medium instances.
    SAT_TARGET_SOLVER="$TARGET_SOLVER" python3 tools/feature_ablation.py \
      --seedgate --configs default --suite sat-comp-2025-medium --seeds 1 \
-     --jobs 32 --timeout 1800
+     --jobs 32 --mem-mb 16000 --timeout 1800
    ```
    This writes a gate-compatible `results.tsv` — the `before` baseline that
    `tools/check_promotion_gate.py --multiseed` consumes. Wait only via hourly
@@ -340,7 +341,7 @@ Before exiting:
    cd "$TARGET_SOLVER" && bash build.sh && cd -
    SAT_TARGET_SOLVER="$TARGET_SOLVER" python3 tools/feature_ablation.py \
      --seedgate --configs default --suite sat-comp-2025-medium --seeds 1 \
-     --jobs 32 --timeout 1800
+     --jobs 32 --mem-mb 16000 --timeout 1800
    ```
    Poll hourly until its `results.tsv` exists. Do not make before/after claims
    while it is still running.
