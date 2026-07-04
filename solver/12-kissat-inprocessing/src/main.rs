@@ -1265,6 +1265,9 @@ struct Solver {
     focused_phase_policy: Option<PhasePolicy>,
     /// stable-mode phase policy override for focused/stable experiments
     stable_phase_policy: Option<PhasePolicy>,
+    /// reset the target-phase snapshot on each switch into stable mode
+    /// (SAT_STABLE_TARGET_RESET); kissat-style anti-diversification fix (bead 8id)
+    stable_target_reset: bool,
     /// opt-in stable-mode rephase hook for focused/stable search experiments
     rephase_enabled: bool,
     /// current step in the default best -> inverted -> original rephase cycle
@@ -2260,6 +2263,7 @@ impl Solver {
             phase_policy,
             focused_phase_policy: config.focused_phase_policy,
             stable_phase_policy: config.stable_phase_policy,
+            stable_target_reset: config.stable_target_reset,
             rephase_enabled: config.rephase,
             rephase_index: 0,
             rephase_at_conflicts,
@@ -5453,6 +5457,13 @@ impl Solver {
             SearchMode::Stable => {
                 self.reluctant = Reluctant::new();
                 self.refresh_stable_branch_heap_scores();
+                // Anti-diversification fix (bead 8id): kissat clears the target
+                // snapshot on mode switches, so each stable phase recaptures a
+                // fresh target prefix instead of replaying an all-time-best one
+                // that is otherwise never reset on the default (rephase-off) path.
+                if self.stable_target_reset {
+                    self.reset_target_phase();
+                }
             }
         }
     }

@@ -558,6 +558,7 @@ pub(crate) struct SolverConfig {
     pub(crate) phase_policy: PhasePolicy,
     pub(crate) focused_phase_policy: Option<PhasePolicy>,
     pub(crate) stable_phase_policy: Option<PhasePolicy>,
+    pub(crate) stable_target_reset: bool,
     pub(crate) search_mode_policy: SearchModePolicy,
     pub(crate) mode_use_ticks: bool,
     pub(crate) lucky: bool,
@@ -709,6 +710,7 @@ impl Default for SolverConfig {
             phase_policy: PhasePolicy::Legacy,
             focused_phase_policy: None,
             stable_phase_policy: None,
+            stable_target_reset: false,
             search_mode_policy: SearchModePolicy::Single,
             mode_use_ticks: false,
             lucky: false,
@@ -872,6 +874,21 @@ impl SolverConfig {
                 // vs 156ade2 current baseline). Keep the raw config/baseline profile on legacy
                 // phase so single-mode and explicit legacy fixtures remain valid.
                 self.phase_policy = PhasePolicy::TargetThenSaved;
+                // SAT-playground-8id (2026-07-04): kissat-parity anti-diversification fix
+                // for the FocusedStable default. Stable-mode decisions previously consulted
+                // best_phase FIRST (BestThenTargetThenSaved), and neither best_assigned nor
+                // target_assigned is ever reset on the default path (rephase is off), so an
+                // early-captured all-time-best prefix was replayed by every stable decision
+                // forever. Demote stable to TargetThenSaved AND reset the target snapshot on
+                // each switch into stable so every stable phase recaptures a fresh prefix.
+                // The two are only effective together: demote alone is byte-identical to the
+                // prior default (best-first masks target); the reset only bites once best is
+                // out of the consult path. sat-comp-2025-medium single-seed A/B (32c/16GB/1800s,
+                // log/abtest-demote_reset-vs-demote-vs-base-2026-07-04-02-51-41): 53/100 vs 48/100
+                // (+5 solved; 7 cracks incl. UNSAT 0f269188, all drat/model verified; 2 losses),
+                // demote-alone 48/100 with identical conflicts.
+                self.stable_phase_policy = Some(PhasePolicy::TargetThenSaved);
+                self.stable_target_reset = true;
                 // SAT-playground-5b2.6.6 (2026-06-13): batching BSR queue drains until
                 // the outer preprocessing loop improves profile20 5x5/900s from 67/100
                 // to 70/100 solved by preserving more BVE opportunity on sqrt170/bp4.
@@ -1122,6 +1139,12 @@ impl SolverConfig {
             &key_set,
             "SAT_STABLE_PHASE",
             self.stable_phase_policy,
+        );
+        self.stable_target_reset = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_STABLE_TARGET_RESET",
+            self.stable_target_reset,
         );
         self.search_mode_policy = parse_enum_selected(
             env_map,
@@ -1705,6 +1728,7 @@ impl SolverConfig {
             self.focused_phase_policy,
         );
         push_kv_option_phase_policy(&mut lines, "stable_phase_policy", self.stable_phase_policy);
+        push_kv_bool(&mut lines, "stable_target_reset", self.stable_target_reset);
         push_kv(
             &mut lines,
             "search_mode_policy",
@@ -2502,6 +2526,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "phase_policy" => Some("SAT_PHASE"),
         "focused_phase_policy" => Some("SAT_FOCUSED_PHASE"),
         "stable_phase_policy" => Some("SAT_STABLE_PHASE"),
+        "stable_target_reset" => Some("SAT_STABLE_TARGET_RESET"),
         "search_mode_policy" => Some("SAT_SEARCH_MODE"),
         "mode_use_ticks" => Some("SAT_MODE_USE_TICKS"),
         "lucky" => Some("SAT_LUCKY"),
@@ -2701,6 +2726,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_PHASE",
         "SAT_FOCUSED_PHASE",
         "SAT_STABLE_PHASE",
+        "SAT_STABLE_TARGET_RESET",
         "SAT_SEARCH_MODE",
         "SAT_MODE_USE_TICKS",
         "SAT_LUCKY",
