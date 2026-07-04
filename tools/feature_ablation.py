@@ -141,6 +141,12 @@ def preflight(args) -> None:
         pass
     print(f"[preflight] suite={SUITE.name} cores={CORES} jobs={args.jobs} seeds={args.seeds} "
           f"mem={args.mem_mb}MB/job timeout={args.timeout}s", flush=True)
+    if getattr(args, "verify", False):
+        drat = "yes" if DRAT_TRIM else "MISSING (UNSAT->no-checker; run tools/setup_checkers.sh)"
+        sat_ok = "yes" if VERIFY_SAT.is_file() else "MISSING"
+        print(f"[preflight] verify=on  sat_checker={sat_ok}  drat_trim={drat}", flush=True)
+    else:
+        print("[preflight] verify=off (--no-verify): answers trusted, proofs deleted unchecked", flush=True)
 
 # tag -> (solver_dir, {env}).  Empty env = that solver's default profile.
 CONFIGS: list[tuple[str, str, dict]] = [
@@ -576,27 +582,35 @@ def seedgate(args) -> int:
         idx, stem, seed = job
         core = core_pool.get()
         try:
-            res, dt, cf, pr, dc = _solve_one(
+            res, dt, cf, pr, dc, ver = _solve_one(
                 core, solver_dir, env_extra, cnf_for[stem], camp / "_work" / f"{idx}",
-                args.timeout, args.mem_mb, seed)
+                args.timeout, args.mem_mb, seed, verify=args.verify)
         finally:
             core_pool.put(core)
-        return (stem, seed, res, dt, cf, pr, dc)
+        return (stem, seed, res, dt, cf, pr, dc, ver)
 
     results = []
     with ThreadPoolExecutor(max_workers=len(CORES)) as ex:
         for r in ex.map(run, jobs):
             results.append(r)
-            print(f"  {r[0][:26]}/s{r[1]} {r[2]} {r[3]:.0f}s conf={r[4]}", flush=True)
+            vtag = "" if r[7] in ("ok", "off", "skip") else f" verify={r[7]}"
+            print(f"  {r[0][:26]}/s{r[1]} {r[2]} {r[3]:.0f}s conf={r[4]}{vtag}", flush=True)
+            if r[7] == "FAIL":
+                print(f"    *** CORRECTNESS ALERT: {r[0]}/s{r[1]} reported {r[2]} but verification FAILED "
+                      f"(invalid SAT model or bad DRAT proof) — a real bug; do not trust this run.", flush=True)
 
     tsv = camp / "results.tsv"
     with open(tsv, "w") as f:
-        f.write("config\tinstance\tseed\tresult\ttime_s\tconflicts\tpropagations\tdecisions\ttimeout\n")
-        for stem, seed, res, dt, cf, pr, dc in sorted(results):
-            f.write(f"{tag}\t{stem}\t{seed}\t{res}\t{dt:.3f}\t{cf}\t{pr}\t{dc}\t{args.timeout}\n")
+        f.write("config\tinstance\tseed\tresult\ttime_s\tconflicts\tpropagations\tdecisions\ttimeout\tverified\n")
+        for stem, seed, res, dt, cf, pr, dc, ver in sorted(results):
+            f.write(f"{tag}\t{stem}\t{seed}\t{res}\t{dt:.3f}\t{cf}\t{pr}\t{dc}\t{args.timeout}\t{ver}\n")
     (camp / "DONE").write_text("seedgate complete\n")
     solved = sum(1 for r in results if r[2].upper() in ("SAT", "UNSAT", "SATISFIABLE", "UNSATISFIABLE"))
-    print(f"[seedgate] DONE solved={solved}/{len(results)} -> {tsv}", flush=True)
+    fails = [r for r in results if r[7] == "FAIL"]
+    print(f"[seedgate] DONE solved={solved}/{len(results)} verify_fail={len(fails)} -> {tsv}", flush=True)
+    if fails:
+        print("[seedgate] *** VERIFICATION FAILURES: "
+              + ", ".join(f"{r[0]}/s{r[1]}({r[2]})" for r in fails[:8]), flush=True)
     return 0
 
 
@@ -634,13 +648,65 @@ def pick_baseline(tags: list[str], explicit: str) -> str:
     return tags[-1]
 
 
+VERIFY_SAT = ROOT / "tools" / "verify_sat.py"
+
+
+def _find_drat_trim() -> str | None:
+    local = ROOT / "tools" / "checkers" / "drat-trim" / "drat-trim"
+    if local.is_file() and os.access(local, os.X_OK):
+        return str(local)
+    return shutil.which("drat-trim")
+
+
+DRAT_TRIM = _find_drat_trim()
+
+
+def _verify_result(result: str, cnf_path: Path, odir: Path, stdout_text: str) -> str:
+    """Independently check a solver answer before its scratch dir is deleted.
+
+    SAT   -> verify_sat.py confirms the reported model satisfies every clause (partial models ok).
+    UNSAT -> drat-trim replays the DRAT proof at odir/proof.out against the CNF.
+    Anything else (TIMEOUT / UNKNOWN_rc*) has nothing to check.
+
+    Returns one of: ok | FAIL | no-proof | no-checker | checker-timeout | checker-error | skip.
+    'FAIL' is a correctness bug (wrong SAT model or invalid UNSAT proof); callers must surface it.
+    """
+    r = (result or "").upper()
+    try:
+        if r in ("SAT", "SATISFIABLE"):
+            model = odir / "_model.txt"
+            model.write_text(stdout_text)
+            p = subprocess.run([sys.executable, str(VERIFY_SAT), str(cnf_path), str(model)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
+            return "ok" if p.returncode == 0 else "FAIL"
+        if r in ("UNSAT", "UNSATISFIABLE"):
+            proof = odir / "proof.out"
+            if not proof.is_file():
+                return "no-proof"
+            if not DRAT_TRIM:
+                return "no-checker"
+            p = subprocess.run([DRAT_TRIM, str(cnf_path), str(proof)],
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=1800)
+            out = p.stdout or ""
+            if any(ln.strip() in ("s VERIFIED", "s ACCEPTED") for ln in out.splitlines()):
+                return "ok"
+            return "FAIL"
+    except subprocess.TimeoutExpired:
+        return "checker-timeout"
+    except Exception:
+        return "checker-error"
+    return "skip"
+
+
 def _solve_one(core: int, solver_dir: str, env_extra: dict, cnf_path: Path, odir: Path,
-               timeout: int, mem_mb: int, seed: int) -> tuple:
-    """Run the solver on one (instance,seed) pinned to `core`; return (result, secs, conf, props, decs).
+               timeout: int, mem_mb: int, seed: int, verify: bool = True) -> tuple:
+    """Run the solver on one (instance,seed) pinned to `core`; return (result, secs, conf, props, decs, verified).
 
     Mirrors seedgate()'s inner run: ulimit -v address-space cap, SAT_STATS_JSON conflicts scraped from
-    stderr, and the per-run DRAT-proof scratch deleted in `finally` (multi-GB on hard-UNSAT, never read
-    back — left to accumulate it fills the disk and kills the sweep).
+    stderr. When `verify` is set, the SAT model / UNSAT DRAT proof is independently checked (see
+    _verify_result) BEFORE the per-run scratch is deleted; verification runs off the timed path so it
+    does not inflate time_s. The scratch (multi-GB proof on hard-UNSAT) is always deleted in `finally`
+    — left to accumulate it fills the disk and kills the sweep.
     """
     import re
     odir.mkdir(parents=True, exist_ok=True)
@@ -664,9 +730,10 @@ def _solve_one(core: int, solver_dir: str, env_extra: dict, cnf_path: Path, odir
                     if br >= 0:
                         js = ln[br:]
             g = lambda k: (re.search(rf'"{k}":([0-9.eE+-]+)', js) or [None, "NA"])[1]
-            return (res, dt, g("conflicts"), g("propagations"), g("decisions"))
+            ver = _verify_result(res, cnf_path, odir, p.stdout) if verify else "off"
+            return (res, dt, g("conflicts"), g("propagations"), g("decisions"), ver)
         except subprocess.TimeoutExpired:
-            return ("TIMEOUT", time.time() - t0, "NA", "NA", "NA")
+            return ("TIMEOUT", time.time() - t0, "NA", "NA", "NA", "skip")
     finally:
         shutil.rmtree(odir, ignore_errors=True)
 
@@ -741,18 +808,22 @@ def abtest(args) -> int:
         jidx, tag, sdir, env_extra, stem, seed = job
         core = core_pool.get()
         try:
-            res, dt, cf, pr, dc = _solve_one(
+            res, dt, cf, pr, dc, ver = _solve_one(
                 core, sdir, env_extra, cnf_for[stem], camp / "_work" / f"{jidx}",
-                args.timeout, args.mem_mb, seed)
+                args.timeout, args.mem_mb, seed, verify=args.verify)
         finally:
             core_pool.put(core)
-        return (tag, stem, seed, res, dt, cf, pr, dc)
+        return (tag, stem, seed, res, dt, cf, pr, dc, ver)
 
     results = []
     with ThreadPoolExecutor(max_workers=len(CORES)) as ex:
         for r in ex.map(run, jobs):
             results.append(r)
-            print(f"  [{r[0]}] {r[1][:24]}/s{r[2]} {r[3]} {r[4]:.0f}s conf={r[5]}", flush=True)
+            vtag = "" if r[8] in ("ok", "off", "skip") else f" verify={r[8]}"
+            print(f"  [{r[0]}] {r[1][:24]}/s{r[2]} {r[3]} {r[4]:.0f}s conf={r[5]}{vtag}", flush=True)
+            if r[8] == "FAIL":
+                print(f"    *** CORRECTNESS ALERT: [{r[0]}] {r[1]}/s{r[2]} reported {r[3]} but verification "
+                      f"FAILED (invalid SAT model or bad DRAT proof) — a real bug; do not trust this run.", flush=True)
 
     # one gate-compatible results.tsv per arm (identical schema to seedgate's, so --multiseed consumes it)
     by_arm = defaultdict(list)
@@ -764,12 +835,16 @@ def abtest(args) -> int:
         adir.mkdir(parents=True, exist_ok=True)
         tsv = adir / "results.tsv"
         with open(tsv, "w") as f:
-            f.write("config\tinstance\tseed\tresult\ttime_s\tconflicts\tpropagations\tdecisions\ttimeout\n")
-            for tag_, stem, seed, res, dt, cf, pr, dc in sorted(by_arm[tag]):
-                f.write(f"{tag}\t{stem}\t{seed}\t{res}\t{dt:.3f}\t{cf}\t{pr}\t{dc}\t{args.timeout}\n")
+            f.write("config\tinstance\tseed\tresult\ttime_s\tconflicts\tpropagations\tdecisions\ttimeout\tverified\n")
+            for tag_, stem, seed, res, dt, cf, pr, dc, ver in sorted(by_arm[tag]):
+                f.write(f"{tag}\t{stem}\t{seed}\t{res}\t{dt:.3f}\t{cf}\t{pr}\t{dc}\t{args.timeout}\t{ver}\n")
         arm_tsv[tag] = tsv
 
     (camp / "DONE").write_text("abtest complete\n")
+    fails = [r for r in results if r[8] == "FAIL"]
+    if fails:
+        print("[abtest] *** VERIFICATION FAILURES: "
+              + ", ".join(f"[{r[0]}]{r[1]}/s{r[2]}({r[3]})" for r in fails[:8]), flush=True)
     _ab_verdict(arm_tsv, tags, baseline, args.timeout, args.mem_mb)
     print(f"\n[abtest] DONE -> {camp}", flush=True)
     return 0
@@ -873,6 +948,10 @@ def main() -> int:
                          "(use with --configs <tag> from CONFIG_MAP, or --env 'K=V,...' ad-hoc)")
     ap.add_argument("--seeds", type=int, default=10, help="seeds for --seedgate (default 10)")
     ap.add_argument("--half", default="", help="restrict --seedgate to 'easy' or 'hard' half")
+    ap.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True,
+                    help="independently verify each answer before deleting its scratch: SAT models via "
+                         "tools/verify_sat.py, UNSAT DRAT proofs via drat-trim; records a 'verified' TSV "
+                         "column and flags FAILs. --no-verify skips it for max throughput (default: on).")
     ap.add_argument("--suite", default=None,
                     help="benchmark suite for --seedgate/--arm: a name ('sat-comp-2025-medium'), a "
                          "repo-relative path, or absolute path (default: profile20; also SAT_ABLATION_SUITE). "
