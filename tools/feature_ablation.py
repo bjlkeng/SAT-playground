@@ -890,13 +890,12 @@ def _ab_verdict(arm_tsv: dict, tags: list[str], baseline: str, timeout: int, mem
     print("* conf(own solved) sums that arm's own solved cells; the WIN/LOSE decision compares conflicts "
           "only over cells BOTH arms solve (as the gate does).", flush=True)
 
-    floor = arm_tsv.get("solver10", "<solver10.tsv>")
     for tag in tags:
         if tag == baseline:
             continue
         print(f"\ngate[{tag} vs {baseline}]: python3 tools/check_promotion_gate.py --multiseed \\\n"
-              f"  --candidate {arm_tsv[tag]} \\\n  --previous {arm_tsv[baseline]} \\\n"
-              f"  --floor {floor} --timeout {timeout} --memory-mb {mem_mb}", flush=True)
+              f"  --candidate {arm_tsv[tag]} \\\n  --baseline {arm_tsv[baseline]} \\\n"
+              f"  --timeout {timeout} --memory-mb {mem_mb}", flush=True)
 
 
 def validate(args) -> int:

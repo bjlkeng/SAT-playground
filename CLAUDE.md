@@ -151,9 +151,9 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
   `silent`. When manually reporting completion/failure in Discord, mention
   bjlkeng as `<@817490773179760662>`.
 
-## Solver 11 Promotion Gate
+## Promotion Gate
 
-Solver 11 default/fast promotion uses the `sat-comp-2025-medium` lexicographic
+Default/fast promotion uses the `sat-comp-2025-medium` lexicographic
 solved-to-conflicts-to-PAR-2 metric over all 100 instances at the single default
 seed. Produce one TSV per config with:
 
@@ -161,27 +161,29 @@ seed. Produce one TSV per config with:
 python3 tools/feature_ablation.py --seedgate --configs <tag> --suite sat-comp-2025-medium --seeds 1
 ```
 
-Or produce the candidate and previous-default TSVs in one fair, simultaneous-start
-A/B run (add `--arm solver10` to include the floor arm):
+Or produce the candidate and baseline TSVs in one fair, simultaneous-start
+before/after A/B run:
 
 ```bash
-python3 tools/feature_ablation.py --arm 'candidate:SAT_X=on' --arm 'previous:' --suite sat-comp-2025-medium --seeds 1
+python3 tools/feature_ablation.py --arm 'candidate:SAT_X=on' --arm 'baseline:' --suite sat-comp-2025-medium --seeds 1
 ```
 
 Then run:
 
 ```bash
 python3 tools/check_promotion_gate.py --multiseed \
-  --solver10 <solver10.tsv> \
-  --previous <prior-default.tsv> \
   --candidate <candidate.tsv> \
+  --baseline <pre-change-baseline.tsv> \
   --timeout <seconds> \
   --memory-mb <MB>
 ```
 
-Solver 10 is the regression floor: do not ship a default that loses to solver 10
-lexicographically. The floor is aggregate, not per-instance; only a SAT/UNSAT
-correctness contradiction fails regardless of the metric.
+The gate is a before/after A/B with no external floor. It makes only two kinds of
+comparison: candidate correctness (invalid model/proof, ERROR/PARSE_ERROR, and
+SAT/UNSAT contradictions against the baseline) and the candidate versus the
+pre-change baseline on the lexicographic metric. A lexicographic regression
+against the baseline fails the gate; a tie or improvement (correctness-clean)
+passes.
 
 ## Iteration Workflow
 

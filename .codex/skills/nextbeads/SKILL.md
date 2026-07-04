@@ -347,17 +347,16 @@ Before exiting:
    while it is still running.
 
 3. Compare before and after with the promotion gate — the same lexicographic
-   solved→conflicts→PAR-2 metric CLAUDE.md mandates, not a raw PAR-2 diff:
+   solved→conflicts→PAR-2 metric CLAUDE.md mandates, not a raw PAR-2 diff. The
+   gate is a before/after A/B: it compares the candidate only against the
+   pre-change baseline (plus candidate correctness). There is no external floor.
    ```bash
    python3 tools/check_promotion_gate.py --multiseed \
-     --previous <before.tsv> --candidate <after.tsv> \
-     --floor <solver10.tsv> --timeout 1800 --memory-mb <MB>
+     --baseline <before.tsv> --candidate <after.tsv> \
+     --timeout 1800 --memory-mb <MB>
    ```
    Report the gate verdict (solved, both-solved conflicts, PAR-2), any new
-   ERROR/wrong-result/premature-UNKNOWN cells, and the config/env used. Produce
-   the `<solver10.tsv>` floor on the SAME suite/seed with
-   `feature_ablation.py --seedgate --configs solver10 --suite sat-comp-2025-medium --seeds 1`,
-   or reuse a recent one.
+   ERROR/wrong-result/premature-UNKNOWN cells, and the config/env used.
 
 ## Final Report
 
