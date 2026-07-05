@@ -284,9 +284,13 @@ pub(crate) struct InputIdentity {
 }
 
 impl InputIdentity {
-    pub(crate) fn from_path(path: &Path) -> Self {
-        let sha256 = sha256_file(path);
-        let compressed_sha256 = if is_compressed_cnf(path) {
+    pub(crate) fn from_path(path: &Path, include_hashes: bool) -> Self {
+        let sha256 = if include_hashes {
+            sha256_file(path)
+        } else {
+            None
+        };
+        let compressed_sha256 = if include_hashes && is_compressed_cnf(path) {
             sha256.clone()
         } else {
             None
@@ -1322,5 +1326,30 @@ mod tests {
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn test_input_identity_hashes_only_when_requested() {
+        let path = std::env::temp_dir().join(format!(
+            "sat_input_identity_{}_{}.cnf",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("unnamed")
+        ));
+        fs::write(&path, b"p cnf 1 1\n1 0\n").expect("write temp cnf");
+
+        let without_hash = InputIdentity::from_path(&path, false);
+        assert!(without_hash.sha256.is_none());
+        assert!(without_hash.compressed_sha256.is_none());
+        assert_eq!(without_hash.size_bytes, Some(14));
+
+        let with_hash = InputIdentity::from_path(&path, true);
+        assert_eq!(
+            with_hash.sha256.as_deref(),
+            Some("6642f3ff4fae6f869a53f303bc768802cec0a16af731686c6bf03f342cf0489e")
+        );
+        assert!(with_hash.compressed_sha256.is_none());
+        assert_eq!(with_hash.size_bytes, Some(14));
+
+        let _ = fs::remove_file(path);
     }
 }

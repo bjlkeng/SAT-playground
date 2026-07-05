@@ -10258,6 +10258,13 @@ fn verify_model_against_cnf_path(path: &str, assignment: &[u8]) -> bool {
     verify_model_against_clauses(&clauses, assignment)
 }
 
+fn force_input_hash_for_compat() -> bool {
+    matches!(
+        env::var("SATPLAY_INPUT_HASH").as_deref(),
+        Ok("1" | "true" | "TRUE" | "on" | "ON" | "yes" | "YES")
+    )
+}
+
 fn main() {
     let run_start = Instant::now();
     let args: Vec<String> = env::args().collect();
@@ -10272,7 +10279,10 @@ fn main() {
 
     let config = SolverConfig::from_env();
     config.emit_requested_outputs();
-    let input_identity = InputIdentity::from_path(Path::new(cnf_path));
+    let input_identity = InputIdentity::from_path(
+        Path::new(cnf_path),
+        config.stats_json || force_input_hash_for_compat(),
+    );
     prepare_output_contract_dir(output_path);
     let parse_start = Instant::now();
     let (num_vars, clauses) = match parse_cnf(cnf_path) {
