@@ -923,6 +923,20 @@ impl SolverConfig {
                 // <=0.74s on the largest cell, which times out regardless). The DRAT proof is
                 // pure resolution and drat-trim VERIFIED (1.26M-clause proof, 0 RAT lemmas).
                 self.gauss = true;
+                // SAT-playground-5b2.2.76-adjacent (2026-07-05): promote kissat-parity
+                // reason-side literal bumping (analyze.c bump_reason mark set) to the
+                // default profile. Stock kissat bumps not only the 1UIP-analyzed
+                // variables but the literals on the reason side of the learned clause;
+                // solver 12 previously bumped only the analyzed set (SAT_BUMP_REASONS
+                // off), a real VSIDS-quality gap. sat-comp-2025-medium single-seed A/B
+                // (32c/16GB/1800s, log/abtest-bumpreason-vs-chrono-vs-rephase-vs-base-
+                // 2026-07-05-12-35-41): 53/100 solved (tie vs base) but conflicts on the
+                // both-solved cells 36,570,896 vs 61,594,138 (-41%), PAR-2 185121 vs
+                // 192220; check_promotion_gate PASS, 0 contradictions, 0 correctness
+                // failures. The +4/-4 solved shuffle nets a tie; the conflict reduction
+                // is the promotable win (lexicographic level 2). Multiplier stays at the
+                // kissat-default 10x initial-bumped-set cap.
+                self.bump_reasons = true;
             }
             SolverProfile::Experimental => {
                 self.use_lbd = true;
@@ -3689,16 +3703,21 @@ mod tests {
     }
 
     #[test]
-    fn test_bump_reasons_defaults_off_and_can_be_enabled() {
+    fn test_bump_reasons_on_in_default_and_fast_off_in_baseline() {
+        // Promoted to the default/fast profiles 2026-07-05 (kissat-parity reason-side
+        // bumping; medium single-seed A/B -41% both-solved conflicts, gate PASS).
         let config = SolverConfig::from_env_map(&env_map(&[]));
-        assert!(!config.bump_reasons);
+        assert!(config.bump_reasons);
         assert_eq!(config.bump_reasons_limit_multiplier, 10);
 
         let fast = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "fast")]));
-        assert!(!fast.bump_reasons);
+        assert!(fast.bump_reasons);
 
         let baseline = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "baseline")]));
         assert!(!baseline.bump_reasons);
+
+        let disabled = SolverConfig::from_env_map(&env_map(&[("SAT_BUMP_REASONS", "off")]));
+        assert!(!disabled.bump_reasons);
 
         let enabled = SolverConfig::from_env_map(&env_map(&[("SAT_BUMP_REASONS", "on")]));
         assert!(enabled.bump_reasons);
