@@ -241,6 +241,20 @@ pub(crate) fn gaussian_unsat(xors: &[XorConstraint], num_vars: usize) -> bool {
 
 const MAX_COMBINE_VARS: usize = 128;
 
+/// Hard cap on the width (variable count) of any XOR row we are willing to
+/// materialize. `xor_row_clauses` enumerates `2^(k-1)` clauses for a width-`k`
+/// row, so width alone bounds both time and memory. Combined rows grow in width
+/// across elimination steps (symmetric difference of the two operand supports),
+/// so an unbounded chain can reach widths that (1) OOM well before k=32
+/// (k=25 => 2^24 clause Vecs) and (2) with release `overflow-checks = false`
+/// wrap `1u32 << k` for k>=32, silently enumerating the WRONG clause set and
+/// emitting an invalid DRAT proof under `s UNSATISFIABLE`. Exceeding this cap
+/// aborts the refutation safely (`None` -> caller reports UNKNOWN, never UNSAT),
+/// leaving CDCL to solve the instance. 24 keeps the bounded-treewidth parity
+/// systems this engine targets (e.g. the 12x12 Tseitin grid) while making the
+/// materialization cost bounded and the `1u32 << k` shift always well-defined.
+const MAX_ROW_WIDTH: usize = 24;
+
 /// Canonicalise a clause: sort literals by variable then sign, dedup. Matches the
 /// representation used for the dedup/`have` set and for drat-trim output.
 fn canon_clause(mut c: Vec<i32>) -> Vec<i32> {
@@ -254,6 +268,13 @@ fn canon_clause(mut c: Vec<i32>) -> Vec<i32> {
 /// `0 = 1` yields the single empty clause, `0 = 0` yields nothing.
 fn xor_row_clauses(vars: &[u32], rhs: bool) -> Vec<Vec<i32>> {
     let k = vars.len();
+    // Invariant: all call sites gate width at MAX_ROW_WIDTH (< 32) before
+    // reaching here, so `1u32 << k` below never wraps. This asserts the invariant
+    // in debug builds; release safety is provided by the combine_rows guards.
+    debug_assert!(
+        k < 32,
+        "xor_row_clauses width {k} would overflow 1u32 << k (see MAX_ROW_WIDTH guard)"
+    );
     let mut out = Vec::new();
     if k == 0 {
         if rhs {
@@ -297,6 +318,15 @@ fn combine_rows(
     emit: &mut dyn FnMut(&[i32]),
 ) -> Option<(Vec<u32>, bool)> {
     use std::collections::HashSet;
+
+    // Width guard (mpo (a)): `xor_row_clauses(a_vars)` / `(b_vars)` below
+    // materialize 2^(k-1) clauses each, so abort BEFORE materializing if either
+    // operand row is wider than the cap. Combined rows fed back through the
+    // elimination loop can reach these widths; aborting here (None) is always
+    // safe — the caller reports UNKNOWN, never UNSAT.
+    if a_vars.len() > MAX_ROW_WIDTH || b_vars.len() > MAX_ROW_WIDTH {
+        return None;
+    }
 
     // Local variable index = sorted union of the two rows' variables.
     let mut union: Vec<u32> = a_vars.to_vec();
@@ -408,6 +438,12 @@ fn combine_rows(
         .copied()
         .collect();
     c_vars.sort_unstable();
+    // Result width guard (mpo (a)): a combined row wider than the cap must never
+    // be stored back into the active set, or a later combine would try to
+    // materialize 2^(k-1) clauses for it. Abort now rather than defer the OOM.
+    if c_vars.len() > MAX_ROW_WIDTH {
+        return None;
+    }
     Some((c_vars, a_rhs ^ b_rhs))
 }
 
@@ -614,6 +650,49 @@ mod tests {
         let clauses = vec![vec![1, 2, 3], vec![1, 2, 3], vec![-1, 2]];
         let (xors, _) = extract_xors(&clauses, 8);
         assert!(xors.is_empty());
+    }
+
+    #[test]
+    fn combine_rows_aborts_on_overwide_input_without_materializing() {
+        // An operand row wider than MAX_ROW_WIDTH would make xor_row_clauses
+        // enumerate 2^(k-1) clauses (2^24 for width 25 -> OOM / 1u32<<25 hazard).
+        // The input guard must return None BEFORE any materialization.
+        let a_vars: Vec<u32> = (1..=(MAX_ROW_WIDTH as u32 + 1)).collect();
+        let b_vars: Vec<u32> = vec![MAX_ROW_WIDTH as u32 + 1, MAX_ROW_WIDTH as u32 + 2];
+        let mut have = std::collections::HashSet::new();
+        let mut emit = |_: &[i32]| panic!("over-wide input must abort before emitting");
+        let r = combine_rows(&a_vars, false, &b_vars, false, &mut have, &mut emit);
+        assert!(r.is_none(), "over-wide input row must abort, not materialize");
+    }
+
+    #[test]
+    fn combine_rows_aborts_when_result_exceeds_width_cap() {
+        // Two disjoint rows (no shared variable, so no resolution blow-up) whose
+        // union width 13 + 12 = 25 exceeds MAX_ROW_WIDTH; the result-width guard
+        // must abort so the wide row is never stored for a later materialization.
+        let a_vars: Vec<u32> = (1..=13).collect();
+        let b_vars: Vec<u32> = (14..=25).collect(); // disjoint from a_vars
+        let mut have = std::collections::HashSet::new();
+        let mut emit = |_: &[i32]| {};
+        let r = combine_rows(&a_vars, false, &b_vars, false, &mut have, &mut emit);
+        assert!(
+            r.is_none(),
+            "combined row wider than MAX_ROW_WIDTH must abort (safe UNKNOWN), not be stored"
+        );
+    }
+
+    #[test]
+    fn combine_rows_succeeds_within_width_cap() {
+        // A normal small combine (within the cap) must still work and return the
+        // symmetric-difference row, proving the guards do not over-abort.
+        let a_vars: Vec<u32> = vec![1, 2, 3];
+        let b_vars: Vec<u32> = vec![3, 4]; // shares var 3
+        let mut have = std::collections::HashSet::new();
+        let mut emit = |_: &[i32]| {};
+        let r = combine_rows(&a_vars, false, &b_vars, true, &mut have, &mut emit);
+        let (cvars, crhs) = r.expect("in-cap combine must succeed");
+        assert_eq!(cvars, vec![1, 2, 4]);
+        assert!(crhs, "rhs is a_rhs ^ b_rhs = false ^ true = true");
     }
 
     #[test]
