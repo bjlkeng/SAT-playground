@@ -937,6 +937,19 @@ impl SolverConfig {
                 // is the promotable win (lexicographic level 2). Multiplier stays at the
                 // kissat-default 10x initial-bumped-set cap.
                 self.bump_reasons = true;
+                // SAT-playground (2026-07-05): promote chronological backtracking
+                // (kissat/cadical parity — both default it on) to default/fast, ON TOP
+                // of SAT_BUMP_REASONS. Chrono backtracks only to the conflict's second-
+                // highest level instead of always to the asserting level, preserving
+                // out-of-order propagations. sat-comp-2025-medium single-seed A/B on the
+                // bump_reasons baseline (32c/16GB/1800s, log/abtest-chrono-vs-base-
+                // 2026-07-05-17-53-24): 55/100 vs 53 (+2 solved), PAR-2 179710 vs 185028;
+                // check_promotion_gate PASS, 0 contradictions, 0 correctness failures.
+                // The +2 exactly recovers the two SAT cells (mp1-Nb7T46, 59-129706) that
+                // bump_reasons' VSIDS shift had shuffled out — zero regressions, a
+                // mechanism-plausible interaction, not a boundary flip. chrono_max_delta
+                // keeps the kissat reassign-delta cap.
+                self.chrono_backtrack = true;
             }
             SolverProfile::Experimental => {
                 self.use_lbd = true;
@@ -3636,6 +3649,12 @@ mod tests {
         let default_config = SolverConfig::from_env_map(&env_map(&[]));
         assert_eq!(DEFAULT_CHRONO_MAX_DELTA, 5_000);
         assert_eq!(default_config.chrono_max_delta, DEFAULT_CHRONO_MAX_DELTA);
+        // Promoted ON in default/fast (2026-07-05, +2 solved on medium over the
+        // bump_reasons baseline); OFF in baseline; env-overridable.
+        assert!(default_config.chrono_backtrack);
+        assert!(SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "fast")])).chrono_backtrack);
+        assert!(!SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "baseline")])).chrono_backtrack);
+        assert!(!SolverConfig::from_env_map(&env_map(&[("SAT_CHRONO", "off")])).chrono_backtrack);
 
         let config = SolverConfig::from_env_map(&env_map(&[
             ("SAT_CHRONO", "on"),

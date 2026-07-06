@@ -44,7 +44,7 @@ SAT_STABLE_TARGET_RESET,stable_target_reset,bool,on|off,false,false,false,true,f
 SAT_SEARCH_MODE,search_mode_policy,enum,single|focused-stable,single,single,single,false,false,false,,SAT_USE_LBD_for_focused-stable,0.3,yes
 SAT_MODE_USE_TICKS,mode_use_ticks,bool,on|off,false,false,false,true,false,false,,SAT_SEARCH_MODE=focused-stable,1.14,yes
 SAT_LUCKY,lucky,bool,on|off,false,true,true,true,false,false,,,SAT-playground-3fs,yes
-SAT_CHRONO,chrono_backtrack,bool,on|off,false,false,false,true,false,false,,,1.13,yes
+SAT_CHRONO,chrono_backtrack,bool,on|off,false,true,true,true,false,false,,,1.13,yes
 SAT_BINARY_FAST,binary_fast_path,bool,on|off,false,false,false,true,false,false,,,0.3,yes
 SAT_CLAUSE_MIN,clause_min_mode,enum,off|basic|recursive-limited|inblock,recursive-limited,recursive-limited,recursive-limited,false,false,false,SAT_CCMIN_MODE,,SAT-playground-02a,yes
 SAT_OTFS,otfs,bool,on|off,false,false,false,true,false,false,,SAT_CLAUSE_MIN!=off,1.14g,yes
