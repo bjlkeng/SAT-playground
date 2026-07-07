@@ -64,6 +64,13 @@ pub(crate) struct SolverStats {
     /// OTSS: count of candidates skipped because the clause was locked
     /// (still serving as a reason for some assigned variable post-backtrack).
     pub(crate) otss_skipped_locked: u64,
+    /// Vivification counters (bead SAT-playground-5b2.3.6): clauses scanned as
+    /// candidates, clauses strengthened (literals dropped), and derived root units
+    /// (failed-literal harvests). Previously hardcoded to 0 in JSON_STATS; now wired.
+    pub(crate) vivify_attempts: u64,
+    pub(crate) vivify_strengthened: u64,
+    pub(crate) vivify_subsumed: u64,
+    pub(crate) vivify_removed_literals: u64,
     pub(crate) focused_tier1_glue_limit: u64,
     pub(crate) focused_tier2_glue_limit: u64,
     pub(crate) stable_tier1_glue_limit: u64,
@@ -704,10 +711,10 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     );
 
     json.u64("inprocess_rounds", 0);
-    json.u64("vivify_attempts", 0);
-    json.u64("vivify_strengthened", 0);
-    json.u64("vivify_subsumed", 0);
-    json.u64("vivify_removed_literals", 0);
+    json.u64("vivify_attempts", ctx.stats.vivify_attempts);
+    json.u64("vivify_strengthened", ctx.stats.vivify_strengthened);
+    json.u64("vivify_subsumed", ctx.stats.vivify_subsumed);
+    json.u64("vivify_removed_literals", ctx.stats.vivify_removed_literals);
     json.u64("probe_attempts", 0);
     json.u64("probe_failed_literals", 0);
     json.u64("probe_units", 0);

@@ -188,6 +188,14 @@ const VIVIFY_BUDGET_MIN_TICKS: u64 = 5_000_000;
 const VIVIFY_BUDGET_MAX_TICKS: u64 = 100_000_000;
 /// Default cap on original-clause length considered for vivification.
 const DEFAULT_VIVIFY_MAX_CLAUSE_LEN: usize = 100;
+/// Bead SAT-playground-5b2.3.6: after this many consecutive vivify rounds that
+/// strengthen nothing and derive no unit, stop scheduling vivify for the instance.
+const VIVIFY_MAX_UNPRODUCTIVE_ROUNDS: u32 = 2;
+/// Bead SAT-playground-5b2.3.6: when learnt-clause vivification is on, only vivify
+/// LEARNT clauses with stored LBD at or below this (tier1/tier2). Vivifying all learnt
+/// clauses (measured 74k on SCPC) churns the learnt DB and inflates conflicts; kissat
+/// restricts to the low-glue tiers where the value is and the churn is small.
+const VIVIFY_LEARNED_MAX_LBD: u16 = 6;
 const OTFS_MAX_LEARNED_LEN: usize = 20;
 const OTFS_MAX_EXTRA_LITS: usize = 4;
 const OTFS_RECENT_LEARNED_LIMIT: usize = 4;
@@ -1449,6 +1457,27 @@ struct Solver {
     vivify_permille: u64,
     /// only vivify original clauses up to this length (0 => DEFAULT_VIVIFY_MAX_CLAUSE_LEN)
     vivify_max_clause_len: usize,
+    /// Bead SAT-playground-5b2.3.6: persistent rotating cursor into `original_clause_ids`
+    /// so each vivify round RESUMES where the last left off instead of rebuilding the
+    /// candidate list from clause 0 (which re-tested the same early clauses forever and
+    /// never reached late clauses under a per-round budget). Advances past every position
+    /// visited (eligible or skipped) so coverage sweeps the whole clause DB over rounds.
+    vivify_cursor: usize,
+    /// Bead SAT-playground-5b2.3.6: consecutive vivify rounds that strengthened nothing
+    /// and derived no unit. Vivify is heavily instance-dependent — gate/circuit/miter
+    /// formulas yield thousands of strengthenings, but random/SCPC-style formulas yield
+    /// zero while still paying the full detach/assume/propagate/backtrack cost per clause.
+    /// After VIVIFY_MAX_UNPRODUCTIVE_ROUNDS zero-yield rounds, stop scheduling vivify for
+    /// this instance so it never taxes formulas it cannot help.
+    vivify_unproductive_rounds: u32,
+    /// Bead SAT-playground-5b2.3.6: env SAT_VIVIFY_LEARNED. Also vivify LEARNT clauses
+    /// (not only irredundant originals). Kissat vivifies tier1/tier2 learnt clauses for a
+    /// meaningful share of its gain; on medium the original clauses often yield zero
+    /// strengthenings (SCPC) while learnt clauses accumulate the redundancy vivify
+    /// removes. Strengthening a learnt clause reuses the same sound clone-analyze-replay
+    /// path (inprocess_strengthen_clause handles learnt); deletion stays disabled.
+    /// Default off = originals-only (byte-identical to the prior behaviour).
+    vivify_learned: bool,
     /// target learned-literal budget for LBD-tiered reduction
     learned_lit_budget: usize,
     /// hard learned-literal budget that allows emergency low-LBD demotion
@@ -2365,6 +2394,12 @@ impl Solver {
             vivify_ticks_budget: config.vivify_ticks_budget,
             vivify_permille: config.vivify_permille,
             vivify_max_clause_len: config.vivify_max_clause_len,
+            vivify_cursor: 0,
+            vivify_unproductive_rounds: 0,
+            vivify_learned: matches!(
+                std::env::var("SAT_VIVIFY_LEARNED").as_deref(),
+                Ok("on") | Ok("1") | Ok("true")
+            ),
             learned_lit_budget: LEARNED_LIT_BUDGET_BASE,
             hard_learned_lit_budget: LEARNED_LIT_BUDGET_BASE.saturating_mul(2),
             reset_reduce_db_after_preprocess: true,
@@ -6450,17 +6485,58 @@ impl Solver {
             DEFAULT_VIVIFY_MAX_CLAUSE_LEN
         };
 
-        let candidates: Vec<usize> = self
-            .original_clause_ids
-            .iter()
-            .copied()
-            .filter(|&c| {
-                !self.clause_is_deleted(c) && (3..=max_len).contains(&self.clause_len(c))
+        // Bead SAT-playground-5b2.3.6: build the candidate list ROTATED by the persistent
+        // cursor so each round resumes past the last round's stopping point. Pair each
+        // eligible clause with its absolute position in `original_clause_ids` so the
+        // cursor can advance monotonically (mod n) over rounds and sweep the whole DB.
+        // Positions [0, n_orig) index `original_clause_ids`; [n_orig, n) index
+        // `learned_clause_ids` when SAT_VIVIFY_LEARNED is on (else n_learned == 0, so the
+        // candidate set is byte-identical to the originals-only behaviour). One cursor
+        // sweeps the combined space.
+        let n_orig = self.original_clause_ids.len();
+        let n_learned = if self.vivify_learned {
+            self.learned_clause_ids.len()
+        } else {
+            0
+        };
+        let n = n_orig + n_learned;
+        if n == 0 {
+            return true;
+        }
+        let start = self.vivify_cursor % n;
+        let candidates: Vec<(usize, usize)> = (0..n)
+            .map(|k| (start + k) % n)
+            .map(|p| {
+                let c = if p < n_orig {
+                    self.original_clause_ids[p]
+                } else {
+                    self.learned_clause_ids[p - n_orig]
+                };
+                (p, c)
+            })
+            .filter(|&(p, c)| {
+                if self.clause_is_deleted(c) || !(3..=max_len).contains(&self.clause_len(c)) {
+                    return false;
+                }
+                // Learnt candidates (positions >= n_orig): restrict to low-LBD tier1/tier2
+                // clauses. Vivifying every learnt clause churns the DB and inflates
+                // conflicts; the low-glue tiers hold the value with little churn.
+                if p >= n_orig {
+                    self.learnt_lbd(c) <= VIVIFY_LEARNED_MAX_LBD
+                } else {
+                    true
+                }
             })
             .collect();
         if candidates.is_empty() {
+            // No eligible clause in this rotation; advance a full sweep so we do not
+            // rescan the same ineligible positions immediately.
+            self.vivify_cursor = start.wrapping_add(n);
             return true;
         }
+        // Where the next round resumes: updated as candidates are reached; on budget
+        // exhaustion it points at the first unprocessed candidate's position.
+        let mut resume_pos = start.wrapping_add(n);
 
         // Analyze inside a single temporary-assumption context (one arena/watcher
         // clone). To stay SOUND, each edit is applied to the CLONE as it is decided,
@@ -6483,10 +6559,14 @@ impl Solver {
         self.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
             let mut budget = Budget::from_ticks(budget_ticks);
             let mut clone_proof = ProofLog::disabled();
-            for &c in &candidates {
+            for &(pos, c) in &candidates {
                 if budget.exhausted() {
+                    // This candidate was not reached; resume here next round.
+                    resume_pos = pos;
                     break;
                 }
+                // Reached this candidate (any exit path below advances past it).
+                resume_pos = pos + 1;
                 if ctx.solver.clause_is_deleted(c) || ctx.solver.clause_locked(c) {
                     continue;
                 }
@@ -6575,6 +6655,8 @@ impl Solver {
         self.original_literals = saved_original_literals;
         self.learned_literals = saved_learned_literals;
         self.deleted_clause_words = saved_deleted_words;
+        // Persist the rotating cursor so the next round resumes past this round's work.
+        self.vivify_cursor = resume_pos;
 
         if proved_unsat {
             proof_log.record_clause(&[]);
@@ -6614,6 +6696,27 @@ impl Solver {
                     self.inprocess_strengthen_clause(c, &keep, proof_log);
                 }
             }
+        }
+
+        // Wire the vivification counters (bead 5b2.3.6): attempts = candidates scanned
+        // this round, strengthened = clauses whose literals were dropped, subsumed reused
+        // for derived root units (failed-literal harvests). Enables measuring cursor
+        // coverage and per-round yield in JSON_STATS / gate TSVs.
+        self.stats.vivify_attempts = self.stats.vivify_attempts.saturating_add(candidates.len() as u64);
+        self.stats.vivify_strengthened = self.stats.vivify_strengthened.saturating_add(strengthened);
+        self.stats.vivify_subsumed = self.stats.vivify_subsumed.saturating_add(units);
+
+        // Bead SAT-playground-5b2.3.6: adaptive effort gating. Vivify's cost is paid on
+        // every candidate regardless of yield; on formulas it cannot help (SCPC/random —
+        // measured 27k attempts, 0 strengthenings) that is pure overhead. Back off after
+        // repeated zero-yield rounds so vivify taxes only formulas it actually simplifies.
+        if strengthened == 0 && units == 0 {
+            self.vivify_unproductive_rounds = self.vivify_unproductive_rounds.saturating_add(1);
+            if self.vivify_unproductive_rounds >= VIVIFY_MAX_UNPRODUCTIVE_ROUNDS {
+                self.vivify = false;
+            }
+        } else {
+            self.vivify_unproductive_rounds = 0;
         }
 
         if self.trace_preprocess_details {
