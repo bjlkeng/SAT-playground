@@ -120,7 +120,7 @@ where
     let mut truncated = false;
 
     // Register the seed variable first so it is kitten var 1.
-    let mut intern = |v: i32,
+    let intern = |v: i32,
                       to_kitten: &mut HashMap<i32, i32>,
                       to_outer: &mut Vec<i32>|
      -> Option<i32> {
