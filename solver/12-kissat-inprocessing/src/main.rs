@@ -6767,6 +6767,15 @@ impl Solver {
         if self.current_level() != 0 || self.has_empty_clause || !self.solver_ok {
             return true;
         }
+        // Env-tunable environment reach (bead 5b2.3.38): deeper/larger environments span
+        // more of a miter so more equivalent pairs get co-located; with the ELS fixpoint
+        // the input-adjacent equivalences then cascade over rounds.
+        let env_usize = |name: &str, dflt: usize| -> usize {
+            std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(dflt)
+        };
+        let sweep_depth = env_usize("SAT_SWEEP_DEPTH", SWEEP_DEPTH);
+        let sweep_max_vars = env_usize("SAT_SWEEP_MAX_VARS", SWEEP_MAX_VARS);
+        let sweep_max_clauses = env_usize("SAT_SWEEP_MAX_CLAUSES", SWEEP_MAX_CLAUSES);
         let nvars = self.assignment.len().saturating_sub(1);
         if nvars == 0 {
             return true;
@@ -6828,9 +6837,9 @@ impl Solver {
             let mut env = build_environment(
                 seed,
                 &clauses_of,
-                SWEEP_DEPTH,
-                SWEEP_MAX_VARS,
-                SWEEP_MAX_CLAUSES,
+                sweep_depth,
+                sweep_max_vars,
+                sweep_max_clauses,
             );
             let facts = prove_facts(&mut env, SWEEP_SOLVE_BUDGET);
             seeds_done += 1;
