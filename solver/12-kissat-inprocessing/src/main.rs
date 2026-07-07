@@ -17,6 +17,7 @@ mod config;
 mod congruence;
 mod els;
 mod gauss;
+mod kitten;
 mod limits;
 mod lit;
 mod output;
