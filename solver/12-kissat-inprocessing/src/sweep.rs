@@ -57,6 +57,45 @@ impl SweepEnv {
     pub(crate) fn kitten_var_to_outer(&self, kitten_var: i32) -> i32 {
         self.to_outer[(kitten_var - 1) as usize]
     }
+
+    /// The kitten refutation proof lemmas translated to OUTER literals, in derivation
+    /// order. Emitting these as RUP `a` lines before adding a proven fact keeps the
+    /// outer DRAT proof valid (Phase 4).
+    pub(crate) fn proof_lemmas_outer(&self) -> Vec<Vec<i32>> {
+        self.kitten
+            .proof_lemmas()
+            .iter()
+            .map(|lemma| {
+                lemma
+                    .iter()
+                    .map(|&kl| {
+                        let ov = self.to_outer[(kl.unsigned_abs() - 1) as usize];
+                        if kl < 0 {
+                            -ov
+                        } else {
+                            ov
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+}
+
+/// The outer clauses that realize a set of proven facts: a unit `[u]` per backbone, and
+/// the two implication binaries `[-a, b]`, `[-b, a]` per equivalence `a <-> b`. These are
+/// what the outer solver adds to the formula (and emits to the proof) after the RUP
+/// lemmas from `proof_lemmas_outer`.
+pub(crate) fn fact_clauses(facts: &SweepFacts) -> Vec<Vec<i32>> {
+    let mut out = Vec::new();
+    for &u in &facts.backbones {
+        out.push(vec![u]);
+    }
+    for &(a, b) in &facts.equivalences {
+        out.push(vec![-a, b]);
+        out.push(vec![-b, a]);
+    }
+    out
 }
 
 /// Build a sweeping environment by BFS from `seed` (outer DIMACS variable id).
@@ -512,6 +551,110 @@ mod tests {
                     models.iter().all(|&m| val(m, a) == val(m, b)),
                     "unsound equivalence {a}<->{b} for {clauses:?}"
                 );
+            }
+        }
+    }
+
+    /// Self-contained RUP check: is clause `c` reverse-unit-propagation implied by
+    /// `clauses`? Assume every literal of `c` false, unit-propagate, and look for a
+    /// falsified clause. (Small, test-only; not performance-tuned.)
+    fn is_rup(clauses: &[Vec<i32>], c: &[i32]) -> bool {
+        use std::collections::HashMap;
+        let mut assign: HashMap<i32, bool> = HashMap::new(); // var -> value
+        for &l in c {
+            let v = l.abs();
+            let want = l < 0; // l is FALSE => value of v is (l<0)
+            if let Some(&e) = assign.get(&v) {
+                if e != want {
+                    return true; // c contains l and -l
+                }
+            }
+            assign.insert(v, want);
+        }
+        loop {
+            let mut changed = false;
+            for clause in clauses {
+                let mut unassigned: Vec<i32> = Vec::new();
+                let mut satisfied = false;
+                for &l in clause {
+                    match assign.get(&l.abs()) {
+                        Some(&val) => {
+                            if (val && l > 0) || (!val && l < 0) {
+                                satisfied = true;
+                                break;
+                            }
+                        }
+                        None => unassigned.push(l),
+                    }
+                }
+                if satisfied {
+                    continue;
+                }
+                if unassigned.is_empty() {
+                    return true; // conflict => RUP
+                }
+                if unassigned.len() == 1 {
+                    let l = unassigned[0];
+                    assign.insert(l.abs(), l > 0);
+                    changed = true;
+                }
+            }
+            if !changed {
+                return false;
+            }
+        }
+    }
+
+    #[test]
+    fn phase4_emitted_proof_is_rup_sound() {
+        // For random environments, the RUP lemmas (kitten proof, translated) followed by
+        // the fact clauses must form a valid DRAT (RUP) extension of the environment
+        // clauses — i.e. every emitted clause is RUP given the accumulated clause set.
+        let mut state: u64 = 0x243F6A8885A308D3;
+        let mut next = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 33) as u32
+        };
+        for _ in 0..800 {
+            let nv = 2 + (next() % 4) as usize;
+            let nc = 2 + (next() % 8) as usize;
+            let mut clauses: Vec<Vec<i32>> = Vec::new();
+            for _ in 0..nc {
+                let clen = 1 + (next() % 3) as usize;
+                let mut c = Vec::new();
+                for _ in 0..clen {
+                    let v = 1 + (next() % nv as u32) as i32;
+                    let l = if next() & 1 == 0 { v } else { -v };
+                    if !c.contains(&l) && !c.contains(&-l) {
+                        c.push(l);
+                    }
+                }
+                if !c.is_empty() {
+                    clauses.push(c);
+                }
+            }
+            let occf = {
+                let clauses = clauses.clone();
+                move |var: i32| clauses.iter().filter(|c| c.iter().any(|&l| l.abs() == var)).cloned().collect::<Vec<_>>()
+            };
+            let mut env = build_environment(1, occf, 3, 256, 1024);
+            let facts = prove_facts(&mut env, 10_000);
+            // Accumulated proof starts from the environment's clauses (the subset kitten
+            // reasoned about; every emitted lemma is RUP w.r.t. it, hence w.r.t. the whole
+            // formula which is a superset).
+            let mut acc = env.outer_clauses.clone();
+            for lemma in env.proof_lemmas_outer() {
+                assert!(is_rup(&acc, &lemma), "lemma {lemma:?} not RUP; formula={:?}", env.outer_clauses);
+                acc.push(lemma);
+            }
+            if facts.env_unsat {
+                // The empty clause must be RUP after the lemmas.
+                assert!(is_rup(&acc, &[]), "env_unsat but empty clause not RUP: {:?}", env.outer_clauses);
+                continue;
+            }
+            for fc in fact_clauses(&facts) {
+                assert!(is_rup(&acc, &fc), "fact clause {fc:?} not RUP; formula={:?}", env.outer_clauses);
+                acc.push(fc);
             }
         }
     }

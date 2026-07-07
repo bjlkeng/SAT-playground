@@ -101,6 +101,14 @@ pub(crate) struct Kitten {
 
     /// Input-clause indices in the most recent UNSAT core (filled by `solve` on UNSAT).
     core: Vec<usize>,
+
+    /// Proof trace: every learned clause derived over this kitten's lifetime, in
+    /// derivation order, as signed DIMACS literals (kitten variable ids). The sequence
+    /// of 1-UIP learned clauses from a CDCL refutation is a valid RUP proof, so the
+    /// sweep layer translates these to outer literals and emits them as RUP lemmas
+    /// before adding a proven fact, keeping the outer DRAT proof valid (bead 5b2.3.38
+    /// Phase 4). Accumulates across incremental `solve` calls on the same environment.
+    proof: Vec<Vec<i32>>,
 }
 
 impl Kitten {
@@ -119,7 +127,14 @@ impl Kitten {
             seen: Vec::new(),
             inconsistent: false,
             core: Vec::new(),
+            proof: Vec::new(),
         }
+    }
+
+    /// The recorded RUP proof lemmas (learned clauses, in derivation order) as signed
+    /// DIMACS literals over kitten variables.
+    pub(crate) fn proof_lemmas(&self) -> &[Vec<i32>] {
+        &self.proof
     }
 
     fn ensure_var(&mut self, var: usize) {
@@ -340,6 +355,20 @@ impl Kitten {
     }
 
     fn add_learned(&mut self, lits: Vec<Lit>) -> usize {
+        // Record the learned clause into the RUP proof trace (as signed DIMACS lits).
+        let dimacs: Vec<i32> = lits
+            .iter()
+            .map(|&l| {
+                let v = (lit_var(l) as i32) + 1;
+                if lit_sign_positive(l) {
+                    v
+                } else {
+                    -v
+                }
+            })
+            .collect();
+        self.proof.push(dimacs);
+
         let idx = self.clauses.len();
         if lits.len() >= 2 {
             self.watches[lits[0] as usize].push(idx);
