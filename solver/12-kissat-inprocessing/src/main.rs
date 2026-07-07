@@ -6879,6 +6879,20 @@ impl Solver {
             self.has_empty_clause = true;
             return false;
         }
+        // Bead SAT-playground-5b2.3.38: substitute the proven equivalences via ELS so the
+        // equivalent variables are actually MERGED (not just constrained by binaries). This
+        // is the sweep fixpoint: merging one layer of a miter exposes the next layer's
+        // equivalences to the following round. Without it the miter never collapses.
+        if !all_equivalences.is_empty() {
+            self.try_els(proof_log);
+            if self.has_empty_clause {
+                return false;
+            }
+            if self.propagate().is_some() {
+                self.has_empty_clause = true;
+                return false;
+            }
+        }
         true
     }
 
