@@ -198,6 +198,10 @@ const VIVIFY_MAX_UNPRODUCTIVE_ROUNDS: u32 = 2;
 /// clauses (measured 74k on SCPC) churns the learnt DB and inflates conflicts; kissat
 /// restricts to the low-glue tiers where the value is and the churn is small.
 const VIVIFY_LEARNED_MAX_LBD: u16 = 6;
+/// Bead SAT-playground-5b2.3.38: max variables swept per sweeping round.
+const SWEEP_SEED_BUDGET: usize = 512;
+/// Bead SAT-playground-5b2.3.38: max kitten solve calls per environment.
+const SWEEP_SOLVE_BUDGET: usize = 2000;
 const OTFS_MAX_LEARNED_LEN: usize = 20;
 const OTFS_MAX_EXTRA_LITS: usize = 4;
 const OTFS_RECENT_LEARNED_LIMIT: usize = 4;
@@ -1472,6 +1476,12 @@ struct Solver {
     /// After VIVIFY_MAX_UNPRODUCTIVE_ROUNDS zero-yield rounds, stop scheduling vivify for
     /// this instance so it never taxes formulas it cannot help.
     vivify_unproductive_rounds: u32,
+    /// Bead SAT-playground-5b2.3.38: env SAT_SWEEP. Run the SAT-sweeping inprocessor —
+    /// per scheduled variable, build a bounded local environment, solve it with the
+    /// embedded kitten sub-solver to prove backbone units and literal equivalences, emit
+    /// the kitten RUP proof, add the backbones as root units and feed the equivalences to
+    /// ELS. Requires SAT_INPROCESS=on; default off. Correctness-critical (DRAT).
+    sweep: bool,
     /// Bead SAT-playground-5b2.3.6: env SAT_VIVIFY_LEARNED. Also vivify LEARNT clauses
     /// (not only irredundant originals). Kissat vivifies tier1/tier2 learnt clauses for a
     /// meaningful share of its gain; on medium the original clauses often yield zero
@@ -2398,6 +2408,10 @@ impl Solver {
             vivify_max_clause_len: config.vivify_max_clause_len,
             vivify_cursor: 0,
             vivify_unproductive_rounds: 0,
+            sweep: matches!(
+                std::env::var("SAT_SWEEP").as_deref(),
+                Ok("on") | Ok("1") | Ok("true")
+            ),
             vivify_learned: matches!(
                 std::env::var("SAT_VIVIFY_LEARNED").as_deref(),
                 Ok("on") | Ok("1") | Ok("true")
@@ -6432,6 +6446,9 @@ impl Solver {
         if ok && self.vivify {
             ok = self.vivify_round(proof_log);
         }
+        if ok && self.sweep {
+            ok = self.sweep_round(proof_log);
+        }
 
         self.next_inprocess_conflicts = self
             .stats
@@ -6729,6 +6746,135 @@ impl Solver {
         }
 
         // Propagate any forced units; a root conflict means UNSAT.
+        if self.propagate().is_some() {
+            self.has_empty_clause = true;
+            return false;
+        }
+        true
+    }
+
+    /// One SAT-sweeping round at decision level 0 (bead SAT-playground-5b2.3.38). Snapshot
+    /// the live original clauses, then for each scheduled unassigned variable build a
+    /// bounded local environment, solve it with the embedded kitten sub-solver to prove
+    /// backbone units and literal equivalences, emit kitten's refutation as RUP lemmas,
+    /// and add the backbones as root units / the equivalences as implication binaries.
+    /// Every emitted fact is preceded by its RUP lemmas so the DRAT proof stays valid.
+    /// Returns false if the formula is proven UNSAT.
+    fn sweep_round(&mut self, proof_log: &mut ProofLog) -> bool {
+        use crate::sweep::{
+            build_environment, prove_facts, SWEEP_DEPTH, SWEEP_MAX_CLAUSES, SWEEP_MAX_VARS,
+        };
+        if self.current_level() != 0 || self.has_empty_clause || !self.solver_ok {
+            return true;
+        }
+        let nvars = self.assignment.len().saturating_sub(1);
+        if nvars == 0 {
+            return true;
+        }
+
+        // Snapshot the live original clauses (len >= 2; units are already root facts) as
+        // DIMACS literals plus a variable -> snapshot-index occurrence map. Owned locals so
+        // the BFS closure does not borrow `self` while we later mutate it to apply facts.
+        let mut snap: Vec<Vec<i32>> = Vec::new();
+        let mut occ: Vec<Vec<usize>> = vec![Vec::new(); nvars + 1];
+        let ids = self.original_clause_ids.clone();
+        for cid in ids {
+            if self.clause_is_deleted(cid) {
+                continue;
+            }
+            let len = self.clause_len(cid);
+            if len < 2 {
+                continue;
+            }
+            let mut lits = Vec::with_capacity(len);
+            for p in 0..len {
+                lits.push(self.clause_lit(cid, p));
+            }
+            let si = snap.len();
+            for &l in &lits {
+                let v = l.unsigned_abs() as usize;
+                if v >= 1 && v <= nvars {
+                    occ[v].push(si);
+                }
+            }
+            snap.push(lits);
+        }
+        if snap.is_empty() {
+            return true;
+        }
+
+        let clauses_of = |var: i32| -> Vec<Vec<i32>> {
+            let v = var as usize;
+            match occ.get(v) {
+                Some(list) => list.iter().map(|&si| snap[si].clone()).collect(),
+                None => Vec::new(),
+            }
+        };
+
+        let mut all_backbones: Vec<i32> = Vec::new();
+        let mut all_equivalences: Vec<(i32, i32)> = Vec::new();
+        let mut seeds_done = 0usize;
+        for seed in 1..=nvars as i32 {
+            if seeds_done >= SWEEP_SEED_BUDGET {
+                break;
+            }
+            let sv = seed as usize;
+            if self.assignment[sv] != UNASSIGNED || self.eliminated[sv] {
+                continue;
+            }
+            if occ[sv].is_empty() {
+                continue;
+            }
+            let mut env = build_environment(
+                seed,
+                &clauses_of,
+                SWEEP_DEPTH,
+                SWEEP_MAX_VARS,
+                SWEEP_MAX_CLAUSES,
+            );
+            let facts = prove_facts(&mut env, SWEEP_SOLVE_BUDGET);
+            seeds_done += 1;
+
+            if facts.env_unsat {
+                for lemma in env.proof_lemmas_outer() {
+                    proof_log.record_clause(&lemma);
+                }
+                proof_log.record_clause(&[]);
+                self.has_empty_clause = true;
+                return false;
+            }
+            if facts.backbones.is_empty() && facts.equivalences.is_empty() {
+                continue;
+            }
+            // Emit the RUP lemmas that justify this environment's facts, then collect them.
+            for lemma in env.proof_lemmas_outer() {
+                proof_log.record_clause(&lemma);
+            }
+            all_backbones.extend(facts.backbones);
+            all_equivalences.extend(facts.equivalences);
+        }
+
+        // Apply the proven facts. Backbones become root units (enqueued + propagated);
+        // equivalences become implication binaries. Their proof lines were emitted above.
+        if !all_backbones.is_empty() {
+            self.stats.sweep_backbones =
+                self.stats.sweep_backbones.saturating_add(all_backbones.len() as u64);
+            if !self.inprocess_add_root_units(&all_backbones, proof_log) {
+                self.has_empty_clause = true;
+                return false;
+            }
+        }
+        for &(a, b) in &all_equivalences {
+            let av = a.unsigned_abs() as usize;
+            let bv = b.unsigned_abs() as usize;
+            // Skip if either variable was fixed/eliminated in the meantime.
+            if av > nvars || bv > nvars || self.eliminated[av] || self.eliminated[bv] {
+                continue;
+            }
+            self.stats.sweep_equivalences = self.stats.sweep_equivalences.saturating_add(1);
+            self.inprocess_add_clause(&[-a, b], proof_log);
+            self.inprocess_add_clause(&[-b, a], proof_log);
+        }
         if self.propagate().is_some() {
             self.has_empty_clause = true;
             return false;
@@ -11058,6 +11204,40 @@ mod tests {
         let mut proof = ProofLog::disabled();
         assert!(s.inprocess_add_root_units(&[1], &mut proof));
         assert_eq!(s.assignment[1], TRUE);
+    }
+
+    #[test]
+    fn sweep_round_proves_and_applies_backbone() {
+        // var 4 is forced true by (4 OR 1) AND (4 OR -1); the rest give environment
+        // structure. sweep should prove 4 as a backbone and enqueue it at root.
+        let mut s = make_solver(4, vec![vec![4, 1], vec![4, -1], vec![1, 2], vec![-2, 3]]);
+        let mut proof = ProofLog::disabled();
+        assert!(s.sweep_round(&mut proof));
+        assert_eq!(s.assignment[4], TRUE, "sweep must force var 4 true");
+        assert!(s.stats.sweep_backbones >= 1, "sweep_backbones={}", s.stats.sweep_backbones);
+    }
+
+    #[test]
+    fn sweep_round_proves_equivalence() {
+        // 1 <-> 2 via (-1 OR 2) AND (-2 OR 1); plus a clause so both stay unassigned.
+        let mut s = make_solver(3, vec![vec![-1, 2], vec![-2, 1], vec![1, 3]]);
+        let mut proof = ProofLog::disabled();
+        assert!(s.sweep_round(&mut proof));
+        assert!(
+            s.stats.sweep_equivalences >= 1,
+            "sweep_equivalences={}",
+            s.stats.sweep_equivalences
+        );
+    }
+
+    #[test]
+    fn sweep_round_default_off_is_noop() {
+        // sweep_round on a formula with no provable local facts leaves it unchanged.
+        let mut s = make_solver(3, vec![vec![1, 2, 3]]);
+        let mut proof = ProofLog::disabled();
+        assert!(s.sweep_round(&mut proof));
+        assert_eq!(s.stats.sweep_backbones, 0);
+        assert_eq!(s.stats.sweep_equivalences, 0);
     }
 
     #[test]
