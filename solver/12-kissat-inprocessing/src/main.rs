@@ -22,6 +22,7 @@ mod limits;
 mod lit;
 mod output;
 mod simp;
+mod sweep;
 mod stats;
 
 #[cfg(test)]
