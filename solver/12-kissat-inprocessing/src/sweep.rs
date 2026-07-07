@@ -113,6 +113,26 @@ pub(crate) fn build_environment<F>(
 where
     F: Fn(i32) -> Vec<Vec<i32>>,
 {
+    build_environment_multi(&[seed.abs()], clauses_of, depth, max_vars, max_clauses)
+}
+
+/// Build a sweeping environment by simultaneous BFS from several `seeds` (outer DIMACS
+/// variable ids). This is the random-simulation entry point (bead 5b2.3.38): given a
+/// candidate-equivalent pair `[a, b]` discovered by simulation, seeding the BFS from
+/// BOTH members co-locates their two fan-in cones in ONE environment — the thing a
+/// single-seed BFS can never do for a cross-circuit miter pair, because from either
+/// member alone the twin is many hops away. With both cones present, `prove_facts` can
+/// test (and prove) `a ≡ b` directly.
+pub(crate) fn build_environment_multi<F>(
+    seeds: &[i32],
+    clauses_of: F,
+    depth: usize,
+    max_vars: usize,
+    max_clauses: usize,
+) -> SweepEnv
+where
+    F: Fn(i32) -> Vec<Vec<i32>>,
+{
     let mut to_kitten: HashMap<i32, i32> = HashMap::new();
     let mut to_outer: Vec<i32> = Vec::new();
     let mut outer_clauses: Vec<Vec<i32>> = Vec::new();
@@ -136,10 +156,14 @@ where
         Some(kv)
     };
 
-    intern(seed.abs(), &mut to_kitten, &mut to_outer);
-
-    // BFS frontier of outer variables to expand.
-    let mut frontier: Vec<i32> = vec![seed.abs()];
+    // BFS frontier of outer variables to expand (all seeds start on the frontier).
+    let mut frontier: Vec<i32> = Vec::new();
+    for &s in seeds {
+        let sv = s.abs();
+        if intern(sv, &mut to_kitten, &mut to_outer).is_some() {
+            frontier.push(sv);
+        }
+    }
     let mut expanded: std::collections::HashSet<i32> = std::collections::HashSet::new();
 
     'bfs: for _ in 0..depth {
@@ -382,6 +406,24 @@ mod tests {
         assert_eq!(env.kitten_var_to_outer(1), 7);
         assert_eq!(env.to_kitten[&7], 1);
         assert_eq!(env.outer_lit_to_kitten(-7), Some(-1));
+    }
+
+    #[test]
+    fn multi_seed_environment_co_locates_both_seeds() {
+        // Two disjoint two-clause islands: {10,11} and {20,21}. A single-seed BFS from 10
+        // never reaches 20; a two-seed BFS from [10,20] contains both.
+        let clauses = vec![vec![10, 11], vec![-10, 11], vec![20, 21], vec![-20, 21]];
+        let single = build_environment(10, occ(clauses.clone()), 2, 256, 1024);
+        assert!(single.to_kitten.contains_key(&10) && !single.to_kitten.contains_key(&20));
+        let multi = build_environment_multi(&[10, 20], occ(clauses), 2, 256, 1024);
+        assert!(
+            multi.to_kitten.contains_key(&10) && multi.to_kitten.contains_key(&20),
+            "both seeds must be interned: {:?}",
+            multi.to_kitten
+        );
+        // Seed 10 is kitten var 1, seed 20 is kitten var 2 (seeds interned first, in order).
+        assert_eq!(multi.kitten_var_to_outer(1), 10);
+        assert_eq!(multi.kitten_var_to_outer(2), 20);
     }
 
     #[test]

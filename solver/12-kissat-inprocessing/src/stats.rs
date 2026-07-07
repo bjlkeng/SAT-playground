@@ -75,6 +75,7 @@ pub(crate) struct SolverStats {
     /// applied by the sweep inprocessor.
     pub(crate) sweep_backbones: u64,
     pub(crate) sweep_equivalences: u64,
+    pub(crate) sweep_sim_pairs: u64,
     pub(crate) focused_tier1_glue_limit: u64,
     pub(crate) focused_tier2_glue_limit: u64,
     pub(crate) stable_tier1_glue_limit: u64,
@@ -721,6 +722,7 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("vivify_removed_literals", ctx.stats.vivify_removed_literals);
     json.u64("sweep_backbones", ctx.stats.sweep_backbones);
     json.u64("sweep_equivalences", ctx.stats.sweep_equivalences);
+    json.u64("sweep_sim_pairs", ctx.stats.sweep_sim_pairs);
     json.u64("probe_attempts", 0);
     json.u64("probe_failed_literals", 0);
     json.u64("probe_units", 0);
