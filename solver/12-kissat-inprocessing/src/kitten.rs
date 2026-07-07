@@ -134,6 +134,14 @@ impl Kitten {
         }
     }
 
+    /// Reserve variables 1..=n (DIMACS) so that solving under assumptions that mention
+    /// an isolated variable (one in no clause) is well-defined rather than out-of-bounds.
+    pub(crate) fn ensure_num_vars(&mut self, n: usize) {
+        if n > 0 {
+            self.ensure_var(n - 1);
+        }
+    }
+
     /// Add an input clause given as signed DIMACS literals. Tautologies and repeated
     /// literals are normalized away; the empty clause makes the instance inconsistent.
     pub(crate) fn add_clause(&mut self, dimacs: &[i32]) {
