@@ -86,6 +86,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static TEST_ALLOCATOR: CountingAllocator = CountingAllocator;
 
+
 #[cfg(test)]
 fn reset_test_allocations() {
     TEST_ALLOCATIONS.store(0, Ordering::SeqCst);
@@ -239,6 +240,10 @@ const RELUCTANT_RESTART_INTERVAL: u64 = 1 << 10;
 const GC_GARBAGE_RATIO_NUMERATOR: usize = 1;
 const GC_GARBAGE_RATIO_DENOMINATOR: usize = 3;
 const GC_WATCHER_STALE_MIN: usize = 1_024;
+/// Skip routine (non-emergency) copy-GC once the arena reaches this many words: on giant
+/// formulas the GC's relocation map + new arena are a multi-GB transient that OOM-kills
+/// instances which otherwise fit under `ulimit -v`. ~10-100x any normal medium arena.
+const GC_SKIP_ARENA_WORDS: usize = 100_000_000;
 const GC_WATCHER_STALE_RATIO_NUMERATOR: usize = 1;
 const GC_WATCHER_STALE_RATIO_DENOMINATOR: usize = 10;
 const VMTF_SINGLE_CONFLICT_BUDGET: u64 = 200_000;
@@ -259,6 +264,14 @@ const KISSAT_BIGBIG_BINARY_FRACTION: f64 = 0.990;
 type ClauseRef = usize;
 
 const NO_CLAUSE_REF: ClauseRef = usize::MAX;
+/// Compact relocation-map entry type for garbage collection. The GC relocation map is sized
+/// to `arena.len()` (one entry per arena word); as `usize` that is an 8-byte-per-word transient
+/// (~2GB on giant formulas, e.g. 00fd8ac ~256M words) that stacks on the live old arena + new
+/// arena and trips the 16GB `ulimit -v` cap. Arena word indices are bounded by `arena.len()`,
+/// which for any formula fitting a 16GB u32-word arena is < 4.0e9 < `u32::MAX` (4.29e9), so a
+/// `u32` map is sound and halves the transient. `NO_RELOC` is the "clause not copied" sentinel.
+type RelocRef = u32;
+const NO_RELOC: RelocRef = u32::MAX;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum FormulaSizeClass {
@@ -1866,15 +1879,15 @@ fn reason_lit_in_arena(
 
 fn rewrite_reason_ref(
     reason_ref: ReasonRef,
-    reloc: &[ClauseRef],
+    reloc: &[RelocRef],
     removed_clause_message: &str,
 ) -> Result<ReasonCode, ReasonCodeError> {
     match reason_ref {
         ReasonRef::None => ReasonCode::from_ref(ReasonRef::None),
         ReasonRef::Clause(clause_idx) => {
-            let new_idx = reloc.get(clause_idx).copied().unwrap_or(NO_CLAUSE_REF);
-            debug_assert_ne!(new_idx, NO_CLAUSE_REF, "{removed_clause_message}");
-            ReasonCode::from_ref(ReasonRef::Clause(new_idx))
+            let new_idx = reloc.get(clause_idx).copied().unwrap_or(NO_RELOC);
+            debug_assert_ne!(new_idx, NO_RELOC, "{removed_clause_message}");
+            ReasonCode::from_ref(ReasonRef::Clause(new_idx as usize))
         }
         ReasonRef::Binary(binary_id) => ReasonCode::from_ref(ReasonRef::Binary(binary_id)),
     }
@@ -2263,7 +2276,17 @@ impl Solver {
         };
 
         let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
-        let arena = Vec::with_capacity(total_words);
+        // Giant arenas: reserve headroom so the FIRST learned clause appended during search
+        // does not doubling-realloc a multi-GB arena — that transient (old + new buffer live
+        // at once) is a ~2x-arena virtual spike that pushes peak VmSize over the `ulimit -v`
+        // cap and OOM-kills instances that would otherwise fit and solve (e.g. 00fd8ac).
+        // Bounded, and only for large arenas, so normal instances are byte-for-byte identical.
+        let arena_headroom = if total_words > 20_000_000 {
+            (total_words / 4).min(256 * 1024 * 1024)
+        } else {
+            0
+        };
+        let arena = Vec::with_capacity(total_words + arena_headroom);
         let original_clause_ids = Vec::with_capacity(original_clause_count);
         let initial_clause_mode =
             Self::resolve_initial_clause_mode(config.initial_clause_mode, num_vars, &clauses);
@@ -3133,7 +3156,7 @@ impl Solver {
 
     fn remap_learned_metadata_clause_refs(
         &mut self,
-        reloc: &[usize],
+        reloc: &[RelocRef],
         new_arena_len: usize,
         count_rewrites: bool,
     ) -> u64 {
@@ -3150,7 +3173,8 @@ impl Solver {
                 continue;
             }
             let new_clause_idx = reloc[old_clause_idx];
-            if new_clause_idx != NO_CLAUSE_REF {
+            if new_clause_idx != NO_RELOC {
+                let new_clause_idx = new_clause_idx as usize;
                 if count_rewrites && new_clause_idx != old_clause_idx {
                     refs_rewritten += 1;
                 }
@@ -3166,7 +3190,7 @@ impl Solver {
 
     fn remap_binary_clause_refs(
         &mut self,
-        reloc: &[usize],
+        reloc: &[RelocRef],
         new_arena_len: usize,
         count_rewrites: bool,
     ) -> u64 {
@@ -3187,10 +3211,11 @@ impl Solver {
                 continue;
             }
             let new_clause_idx = reloc[old_clause_idx];
-            if new_clause_idx == NO_CLAUSE_REF {
+            if new_clause_idx == NO_RELOC {
                 self.binary_clauses[id_idx].deleted = true;
                 continue;
             }
+            let new_clause_idx = new_clause_idx as usize;
             if count_rewrites && new_clause_idx != old_clause_idx {
                 refs_rewritten += 1;
             }
@@ -3296,7 +3321,11 @@ impl Solver {
             return;
         }
 
-        let mut reloc = vec![NO_CLAUSE_REF; self.arena.len()];
+        debug_assert!(
+            self.arena.len() <= RelocRef::MAX as usize,
+            "arena too large for u32 relocation map"
+        );
+        let mut reloc = vec![NO_RELOC; self.arena.len()];
         let original_live_word_count: usize = self
             .original_clause_ids
             .iter()
@@ -3331,7 +3360,7 @@ impl Solver {
             let header = self.clause_header(old_clause_idx);
             let clause_len = clause_header_size(header);
             let new_clause_idx = new_arena.len();
-            reloc[old_clause_idx] = new_clause_idx;
+            reloc[old_clause_idx] = new_clause_idx as u32;
             new_arena.push(clause_make_header(
                 clause_len,
                 false,
@@ -3360,7 +3389,7 @@ impl Solver {
             }
             let new_clause_idx = new_arena.len();
             let old_end = old_clause_idx + self.clause_word_len(old_clause_idx);
-            reloc[old_clause_idx] = new_clause_idx;
+            reloc[old_clause_idx] = new_clause_idx as u32;
             new_arena.extend_from_slice(&self.arena[old_clause_idx..old_end]);
             new_learned_clause_ids.push(new_clause_idx);
         }
@@ -3374,7 +3403,7 @@ impl Solver {
                     continue;
                 }
                 let new_idx = reloc[old_idx];
-                if new_idx == NO_CLAUSE_REF {
+                if new_idx == NO_RELOC {
                     continue;
                 }
                 watcher.clause_idx = new_idx as u32;
@@ -3392,7 +3421,7 @@ impl Solver {
                 continue;
             }
             let new_idx = reloc[old_idx];
-            if new_idx == NO_CLAUSE_REF {
+            if new_idx == NO_RELOC {
                 continue;
             }
             watcher.clause_idx = new_idx as u32;
@@ -3417,10 +3446,10 @@ impl Solver {
                 continue;
             }
             let new_idx = reloc[old_idx];
-            if new_idx == NO_CLAUSE_REF {
+            if new_idx == NO_RELOC {
                 continue;
             }
-            self.root_unit_clauses[root_write] = new_idx;
+            self.root_unit_clauses[root_write] = new_idx as usize;
             root_write += 1;
         }
         self.root_unit_clauses.truncate(root_write);
@@ -4644,6 +4673,17 @@ impl Solver {
     }
 
     fn try_lucky_assignment_with_proof(&mut self, proof_log: &mut ProofLog) -> bool {
+        // Giant formulas: the lucky phase snapshots (deep-clones) arena + watchers +
+        // binary_clauses, a multi-GB one-shot virtual-memory transient that trips the
+        // `ulimit -v` cap and OOM-aborts instances whose steady-state RSS otherwise fits
+        // (e.g. 00fd8ac: RSS ~14GB, but the ~1GB lucky clone pushes VmSize over the 16GB cap).
+        // Gated far above every normal medium instance, so they run the lucky phase unchanged;
+        // giants are unsolved anyway, so trading the (optional) heuristic to avoid an OOM is
+        // strictly better.
+        if self.assignment.len().saturating_sub(1) > 20_000_000 {
+            self.stats.lucky_skipped_large += 1;
+            return false;
+        }
         for pattern in [
             LuckyPattern::AllTrue,
             LuckyPattern::AllFalse,
@@ -7223,6 +7263,21 @@ impl Solver {
             }
             return false;
         }
+        // Giant arenas: skip routine (non-emergency) copy-GC. Copy-GC transiently allocates
+        // the relocation map plus the new compacted arena (several GB together on giant
+        // formulas) while the old arena is still live; that transient pushes peak VmSize over
+        // the `ulimit -v` cap and OOM-kills instances that would otherwise fit (e.g. 00fd8ac:
+        // base ~15GB, GC spike -> 17.7GB). Tolerating dead-clause slack is cheaper than an
+        // OOM. Emergency (near-limit) GC still runs. Threshold is ~10-100x any normal medium
+        // instance's arena, so smaller instances GC as before.
+        if reason != GcReason::EmergencyMemory
+            && self.arena.len() > GC_SKIP_ARENA_WORDS
+            && self.assignment.len().saturating_sub(1) > 20_000_000
+        {
+            self.stats.gc_skipped_large += 1;
+            self.gc_pending_reason = GcReason::None;
+            return false;
+        }
         self.gc_pending_reason = GcReason::None;
         self.garbage_collect_with_reason(reason);
         true
@@ -7240,7 +7295,11 @@ impl Solver {
         let mut refs_rewritten = 0u64;
         let pins = self.rebuild_reason_pinset();
         let strip_original_extra = !self.use_simplification;
-        let mut reloc = vec![NO_CLAUSE_REF; self.arena.len()];
+        debug_assert!(
+            self.arena.len() <= RelocRef::MAX as usize,
+            "arena too large for u32 relocation map"
+        );
+        let mut reloc = vec![NO_RELOC; self.arena.len()];
         let live_clause_count = self.original_clause_ids.len() + self.learned_clause_ids.len();
         let original_live_word_count: usize = self
             .original_clause_ids
@@ -7261,7 +7320,6 @@ impl Solver {
             .sum();
         let live_word_count = original_live_word_count + learned_live_word_count;
 
-        let mut new_arena = Vec::with_capacity(live_word_count);
         let mut new_original_clause_ids = Vec::with_capacity(self.original_clause_ids.len());
         let mut new_learned_clause_ids = Vec::with_capacity(self.learned_clause_ids.len());
         debug_assert_eq!(
@@ -7269,60 +7327,130 @@ impl Solver {
             self.original_clause_ids.len() + self.learned_clause_ids.len()
         );
 
-        let copy_clause = |old_clause_idx: usize,
-                           arena: &[u32],
-                           new_arena: &mut Vec<u32>,
-                           reloc: &mut [usize],
-                           strip_extra: bool| {
-            let new_clause_idx = new_arena.len();
-            reloc[old_clause_idx] = new_clause_idx;
-            let header = arena[old_clause_idx];
-            let clause_len = clause_header_size(header);
-            let has_extra = clause_header_has_extra(header) && !strip_extra;
-            new_arena.push(clause_make_header(
-                clause_len,
-                clause_header_learnt(header),
-                has_extra,
-                clause_header_persistent_mark(header),
-                clause_header_reloced(header),
-            ));
-            let lits_start = old_clause_idx + 1;
-            let lits_end = lits_start + clause_len;
-            new_arena.extend_from_slice(&arena[lits_start..lits_end]);
-            if has_extra {
-                let extra_end = lits_end + clause_header_extra_words(header);
-                new_arena.extend_from_slice(&arena[lits_end..extra_end]);
+        // Giant arenas: compact IN PLACE (walk clauses in arena order, shift each live clause
+        // down within self.arena, no separate `new_arena`). The copy-GC allocates a fresh
+        // `new_arena` of `live_word_count` (~1GB on 00fd8ac) while the old arena is still live
+        // — that virtual-memory transient trips the 16GB `ulimit -v` cap. In-place avoids it,
+        // producing an identical set of live clauses (reloc maps old->new) so the shared
+        // reference-rewriting below is unchanged. Env-tunable (SAT_INPLACE_GC_MIN_WORDS) so the
+        // path can be exercised on small instances in tests. Gated far above normal arenas.
+        let inplace_min_words: usize = std::env::var("SAT_INPLACE_GC_MIN_WORDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100_000_000usize);
+        let new_arena_len_val: usize;
+        if self.arena.len() > inplace_min_words {
+            self.stats.gc_inplace_compactions += 1;
+            // Process live clauses in ASCENDING arena order (sorted) so write <= old_idx at
+            // every step and shifting each clause down within self.arena via memmove is safe.
+            // We do NOT walk the arena linearly (deleted/free words are not reliably typed);
+            // we sort the explicit live-clause indices. learnt-ness is read from each header.
+            let orig = std::mem::take(&mut self.original_clause_ids);
+            let learn = std::mem::take(&mut self.learned_clause_ids);
+            let mut ids: Vec<usize> =
+                Vec::with_capacity(orig.len() + learn.len());
+            ids.extend_from_slice(&orig);
+            ids.extend_from_slice(&learn);
+            ids.sort_unstable();
+            let mut write = 0usize;
+            for &old_idx in &ids {
+                debug_assert!(write <= old_idx, "in-place compaction would clobber live data");
+                let header = self.arena[old_idx];
+                let learnt = clause_header_learnt(header);
+                let strip = !learnt && strip_original_extra;
+                let clause_len = clause_header_size(header);
+                let old_extra = clause_header_extra_words(header);
+                let has_extra = clause_header_has_extra(header) && !strip;
+                reloc[old_idx] = write as RelocRef;
+                let new_header = clause_make_header(
+                    clause_len,
+                    learnt,
+                    has_extra,
+                    clause_header_persistent_mark(header),
+                    clause_header_reloced(header),
+                );
+                // write <= old_idx; copy_within is memmove so overlap is safe. Shift literals
+                // (and kept extra) first, then stamp the header, so source words aren't
+                // clobbered before being read.
+                if write != old_idx {
+                    self.arena
+                        .copy_within(old_idx + 1..old_idx + 1 + clause_len, write + 1);
+                    if has_extra {
+                        self.arena.copy_within(
+                            old_idx + 1 + clause_len..old_idx + 1 + clause_len + old_extra,
+                            write + 1 + clause_len,
+                        );
+                    }
+                }
+                self.arena[write] = new_header;
+                if learnt {
+                    new_learned_clause_ids.push(write);
+                } else {
+                    new_original_clause_ids.push(write);
+                }
+                write += 1 + clause_len + if has_extra { old_extra } else { 0 };
             }
-            new_clause_idx
-        };
+            self.arena.truncate(write);
+            new_arena_len_val = write;
+        } else {
+            let mut new_arena = Vec::with_capacity(live_word_count);
+            let copy_clause = |old_clause_idx: usize,
+                               arena: &[u32],
+                               new_arena: &mut Vec<u32>,
+                               reloc: &mut [RelocRef],
+                               strip_extra: bool| {
+                let new_clause_idx = new_arena.len();
+                reloc[old_clause_idx] = new_clause_idx as u32;
+                let header = arena[old_clause_idx];
+                let clause_len = clause_header_size(header);
+                let has_extra = clause_header_has_extra(header) && !strip_extra;
+                new_arena.push(clause_make_header(
+                    clause_len,
+                    clause_header_learnt(header),
+                    has_extra,
+                    clause_header_persistent_mark(header),
+                    clause_header_reloced(header),
+                ));
+                let lits_start = old_clause_idx + 1;
+                let lits_end = lits_start + clause_len;
+                new_arena.extend_from_slice(&arena[lits_start..lits_end]);
+                if has_extra {
+                    let extra_end = lits_end + clause_header_extra_words(header);
+                    new_arena.extend_from_slice(&arena[lits_end..extra_end]);
+                }
+                new_clause_idx
+            };
 
-        for &old_clause_idx in &self.original_clause_ids {
-            debug_assert!(
-                !self.clause_is_deleted(old_clause_idx),
-                "original clauses must stay live across garbage collection"
-            );
-            let new_clause_idx = copy_clause(
-                old_clause_idx,
-                &self.arena,
-                &mut new_arena,
-                &mut reloc,
-                strip_original_extra,
-            );
-            new_original_clause_ids.push(new_clause_idx);
-        }
-        for &old_clause_idx in &self.learned_clause_ids {
-            debug_assert!(
-                !self.clause_is_deleted(old_clause_idx),
-                "live learned clauses must stay live across garbage collection"
-            );
-            let new_clause_idx = copy_clause(
-                old_clause_idx,
-                &self.arena,
-                &mut new_arena,
-                &mut reloc,
-                false,
-            );
-            new_learned_clause_ids.push(new_clause_idx);
+            for &old_clause_idx in &self.original_clause_ids {
+                debug_assert!(
+                    !self.clause_is_deleted(old_clause_idx),
+                    "original clauses must stay live across garbage collection"
+                );
+                let new_clause_idx = copy_clause(
+                    old_clause_idx,
+                    &self.arena,
+                    &mut new_arena,
+                    &mut reloc,
+                    strip_original_extra,
+                );
+                new_original_clause_ids.push(new_clause_idx);
+            }
+            for &old_clause_idx in &self.learned_clause_ids {
+                debug_assert!(
+                    !self.clause_is_deleted(old_clause_idx),
+                    "live learned clauses must stay live across garbage collection"
+                );
+                let new_clause_idx = copy_clause(
+                    old_clause_idx,
+                    &self.arena,
+                    &mut new_arena,
+                    &mut reloc,
+                    false,
+                );
+                new_learned_clause_ids.push(new_clause_idx);
+            }
+            new_arena_len_val = new_arena.len();
+            self.arena = new_arena;
         }
 
         for watch_list in &mut self.watchers {
@@ -7334,10 +7462,10 @@ impl Solver {
                     continue;
                 }
                 let new_idx = reloc[old_idx];
-                if new_idx == NO_CLAUSE_REF {
+                if new_idx == NO_RELOC {
                     continue;
                 }
-                if track_gc_detail_stats && new_idx != old_idx {
+                if track_gc_detail_stats && new_idx as usize != old_idx {
                     refs_rewritten += 1;
                 }
                 watcher.clause_idx = new_idx as u32;
@@ -7355,10 +7483,10 @@ impl Solver {
                 continue;
             }
             let new_idx = reloc[old_idx];
-            if new_idx == NO_CLAUSE_REF {
+            if new_idx == NO_RELOC {
                 continue;
             }
-            if track_gc_detail_stats && new_idx != old_idx {
+            if track_gc_detail_stats && new_idx as usize != old_idx {
                 refs_rewritten += 1;
             }
             watcher.clause_idx = new_idx as u32;
@@ -7386,7 +7514,7 @@ impl Solver {
         }
         for &pinned_clause in &pins.pinned_clauses {
             debug_assert!(
-                pinned_clause < reloc.len() && reloc[pinned_clause] != NO_CLAUSE_REF,
+                pinned_clause < reloc.len() && reloc[pinned_clause] != NO_RELOC,
                 "garbage collection removed a reason-pinned clause"
             );
         }
@@ -7398,18 +7526,18 @@ impl Solver {
                 continue;
             }
             let new_idx = reloc[old_idx];
-            if new_idx == NO_CLAUSE_REF {
+            if new_idx == NO_RELOC {
                 continue;
             }
-            if track_gc_detail_stats && new_idx != old_idx {
+            if track_gc_detail_stats && new_idx as usize != old_idx {
                 refs_rewritten += 1;
             }
-            self.root_unit_clauses[root_write] = new_idx;
+            self.root_unit_clauses[root_write] = new_idx as usize;
             root_write += 1;
         }
         self.root_unit_clauses.truncate(root_write);
 
-        let new_arena_len = new_arena.len();
+        let new_arena_len = new_arena_len_val;
         refs_rewritten += self.remap_learned_metadata_clause_refs(
             &reloc,
             new_arena_len,
@@ -7417,7 +7545,6 @@ impl Solver {
         );
         refs_rewritten +=
             self.remap_binary_clause_refs(&reloc, new_arena_len, self.track_gc_detail_stats);
-        self.arena = new_arena;
         self.original_clause_ids = new_original_clause_ids;
         self.learned_clause_ids = new_learned_clause_ids;
         if !self.clause_abstraction.is_empty() {
@@ -9902,6 +10029,24 @@ impl Solver {
         false
     }
 
+    /// Reclaim reserved-but-unused capacity in the per-literal watch lists. During parse each
+    /// `Vec<Watcher>` grows by doubling, leaving up to ~2x slack; on giant formulas (tens of
+    /// millions of lists) that slack is ~2GB of virtual address space that trips the
+    /// `ulimit -v` cap. `shrink_to_fit` returns it. Gated far above every normal medium
+    /// instance, so smaller formulas keep their watch capacity untouched (behavior-preserving
+    /// either way — only unused capacity is freed).
+    fn shrink_watch_lists_if_large(&mut self) {
+        const SHRINK_WATCH_MIN_VARS: usize = 20_000_000;
+        if self.assignment.len().saturating_sub(1) <= SHRINK_WATCH_MIN_VARS {
+            return;
+        }
+        for list in self.watchers.iter_mut() {
+            if list.capacity() > list.len() {
+                list.shrink_to_fit();
+            }
+        }
+    }
+
     fn solve_status_with_proof(
         &mut self,
         proof_log: &mut ProofLog,
@@ -9917,6 +10062,13 @@ impl Solver {
         if self.propagate().is_some() {
             return SolveOutcome::unsat();
         }
+
+        // Giant formulas: reclaim watch-list doubling slack built during parse (~2GB of
+        // reserved-but-unused virtual address space on 00fd8ac-class formulas) before the
+        // memory-heavy preprocessing phase, so occurrence lists and transients don't push peak
+        // VmSize over the `ulimit -v` cap. Behavior-preserving (frees only unused capacity)
+        // and giant-gated, so normal instances are unaffected.
+        self.shrink_watch_lists_if_large();
 
         // XOR/parity Gaussian refutation (SAT_GAUSS). On parity-heavy formulas (e.g.
         // Tseitin) that CDCL cannot refute in polynomial resolution, this proves UNSAT

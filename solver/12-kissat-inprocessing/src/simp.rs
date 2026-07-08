@@ -177,6 +177,29 @@ impl Solver {
         true
     }
 
+    /// Giant formulas (tens of millions of vars) OOM when the full occurrence index is
+    /// materialized: the occ-lists are multi-GB working memory stacked on an already ~13-15GB
+    /// base (e.g. 00fd8ac: 23.4M vars, base VmPeak 15.6GB). `Some(cap)` selects a PARTIAL
+    /// occurrence index that materializes `occurs[var]` only for vars whose per-polarity
+    /// degree is `<= cap`; high-degree vars (never good BVE candidates — `occurrence_limit`
+    /// skips them anyway) are left unindexed. `None` = build the full index (the shipped
+    /// behavior). Gated far above every normal medium instance, so they are byte-for-byte
+    /// unaffected. Tunable via SAT_PARTIAL_OCC_MIN_VARS / SAT_PARTIAL_OCC_CAP.
+    fn partial_occurrence_cap(&self, num_vars: usize) -> Option<u64> {
+        let threshold = std::env::var("SAT_PARTIAL_OCC_MIN_VARS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(20_000_000usize);
+        if num_vars <= threshold {
+            return None;
+        }
+        let cap = std::env::var("SAT_PARTIAL_OCC_CAP")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(10_000u64);
+        Some(cap)
+    }
+
     fn build_occurrence_index(&mut self) {
         self.ensure_original_clause_abstractions();
         let num_vars = self.variable_count();
@@ -190,9 +213,54 @@ impl Solver {
         self.n_occ.resize(num_vars.saturating_mul(2), 0);
 
         let original_clause_ids = self.original_clause_ids.clone();
-        for clause_idx in original_clause_ids {
-            if !self.clause_is_deleted(clause_idx) {
-                self.index_original_clause(clause_idx);
+
+        if let Some(cap) = self.partial_occurrence_cap(num_vars) {
+            // Pass 1: degrees only (cheap; no per-var occurrence storage).
+            for &clause_idx in &original_clause_ids {
+                if self.clause_is_deleted(clause_idx) {
+                    continue;
+                }
+                let clause_len = self.clause_len(clause_idx);
+                for lit_pos in 0..clause_len {
+                    let lit = self.clause_lit(clause_idx, lit_pos);
+                    let idx = lit_to_index(lit);
+                    if idx < self.n_occ.len() {
+                        self.n_occ[idx] += 1;
+                    }
+                }
+            }
+            // Cap BVE candidate selection to the materialized (low-degree) set so we never
+            // attempt to eliminate a var whose occurs list is intentionally incomplete.
+            if self.eliminate_occurrence_limit == 0 || self.eliminate_occurrence_limit > cap {
+                self.eliminate_occurrence_limit = cap;
+            }
+            self.stats.partial_occurrence_index = 1;
+            // Pass 2: materialize occurs only for low-degree vars. Sound: any var we later
+            // eliminate has a complete occurs list; subsumption over the empty high-degree
+            // lists simply finds fewer candidates (never a wrong removal).
+            for &clause_idx in &original_clause_ids {
+                if self.clause_is_deleted(clause_idx) {
+                    continue;
+                }
+                let clause_len = self.clause_len(clause_idx);
+                for lit_pos in 0..clause_len {
+                    let lit = self.clause_lit(clause_idx, lit_pos);
+                    let var = lit.unsigned_abs() as usize;
+                    if var == 0 || var >= self.occurs.len() {
+                        continue;
+                    }
+                    let pos = self.n_occ[lit_to_index(var as i32)] as u64;
+                    let neg = self.n_occ[lit_to_index(-(var as i32))] as u64;
+                    if pos <= cap && neg <= cap {
+                        self.occurs[var].push(clause_idx as u32);
+                    }
+                }
+            }
+        } else {
+            for clause_idx in original_clause_ids {
+                if !self.clause_is_deleted(clause_idx) {
+                    self.index_original_clause(clause_idx);
+                }
             }
         }
     }
@@ -2019,16 +2087,44 @@ impl Solver {
             .collect();
 
         if turn_off_elim {
-            self.occurs.clear();
-            self.occurs_dirty.clear();
-            self.occurs_membership_dirty.clear();
-            self.n_occ.clear();
+            // Only on the true OOM giants (>20M vars) do we aggressively free the elimination
+            // working sets BEFORE the post-preprocessing GC. `clear()` keeps each Vec's
+            // capacity, so on a giant ~0.8-2GB of occurrence-list / n_occ / abstraction /
+            // clause-id-map address space would stay reserved right when the GC's relocation
+            // map + new arena transient needs headroom under the 16GB `ulimit -v` cap. Dropping
+            // to empty Vecs frees that virtual memory so the compaction fits. Non-giants keep
+            // the exact original `.clear()` behavior (byte-identical) — this reclaim is pure
+            // memory management and is behavior-preserving, but restricting it to giants keeps
+            // any allocator-timing difference off the instances the baseline already solves.
+            let is_giant = self.assignment.len().saturating_sub(1) > 20_000_000;
+            if is_giant {
+                self.occurs = Vec::new();
+                self.occurs_dirty = Vec::new();
+                self.occurs_membership_dirty = Vec::new();
+                self.n_occ = Vec::new();
+                self.clause_abstraction = Vec::new();
+                self.learned_id_by_clause = Vec::new();
+                self.binary_id_by_clause = Vec::new();
+            } else {
+                self.occurs.clear();
+                self.occurs_dirty.clear();
+                self.occurs_membership_dirty.clear();
+                self.n_occ.clear();
+            }
             self.use_simplification = false;
             self.inline_original_abstractions = false;
             self.rebuild_branch_queue();
+            if is_giant {
+                // BVE re-grows per-literal watch-list doubling slack during preprocessing;
+                // reclaim it right before the GC so the relocation map (arena-sized, ~1GB on
+                // 00fd8ac) fits under the 16GB `ulimit -v` cap. Behavior-preserving.
+                self.shrink_watch_lists_if_large();
+            }
             self.garbage_collect();
-            self.clause_abstraction.clear();
-            self.clause_abstraction.shrink_to_fit();
+            if !is_giant {
+                self.clause_abstraction.clear();
+                self.clause_abstraction.shrink_to_fit();
+            }
         }
 
         self.solver_ok
