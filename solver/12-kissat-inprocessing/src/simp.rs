@@ -87,7 +87,9 @@ impl Solver {
         let pos = lit_to_index(lit);
         let neg = lit_to_index(-lit);
         match (self.n_occ.get(pos), self.n_occ.get(neg)) {
-            (Some(&pos_count), Some(&neg_count)) => pos_count.saturating_add(neg_count),
+            (Some(&pos_count), Some(&neg_count)) => {
+                (pos_count as usize).saturating_add(neg_count as usize)
+            }
             _ => self.occurs[var].len(),
         }
     }
@@ -217,6 +219,7 @@ impl Solver {
         if let Some(cap) = self.partial_occurrence_cap(num_vars) {
             // Pass 1: degrees only (cheap; no per-var occurrence storage).
             for &clause_idx in &original_clause_ids {
+                let clause_idx = clause_idx as usize;
                 if self.clause_is_deleted(clause_idx) {
                     continue;
                 }
@@ -239,6 +242,7 @@ impl Solver {
             // eliminate has a complete occurs list; subsumption over the empty high-degree
             // lists simply finds fewer candidates (never a wrong removal).
             for &clause_idx in &original_clause_ids {
+                let clause_idx = clause_idx as usize;
                 if self.clause_is_deleted(clause_idx) {
                     continue;
                 }
@@ -258,6 +262,7 @@ impl Solver {
             }
         } else {
             for clause_idx in original_clause_ids {
+                let clause_idx = clause_idx as usize;
                 if !self.clause_is_deleted(clause_idx) {
                     self.index_original_clause(clause_idx);
                 }
@@ -1013,7 +1018,8 @@ impl Solver {
             let abstraction = clause_abstraction_from_lits(&normalized);
             self.arena.push(abstraction as u32);
         }
-        self.original_clause_ids.push(clause_idx);
+        debug_assert!(clause_idx < u32::MAX as usize);
+        self.original_clause_ids.push(clause_idx as u32);
         self.original_literals += normalized.len();
         self.attach_clause(clause_idx, false);
 
@@ -1182,6 +1188,7 @@ impl Solver {
         if seed_all_clauses {
             let mut original_clause_ids = self.original_clause_ids.clone();
             original_clause_ids.sort_by_key(|&clause_idx| {
+                let clause_idx = clause_idx as usize;
                 if clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx) {
                     (self.clause_len(clause_idx), clause_idx)
                 } else {
@@ -1189,7 +1196,7 @@ impl Solver {
                 }
             });
             for clause_idx in original_clause_ids {
-                self.enqueue_subsumption_clause(queue, clause_idx);
+                self.enqueue_subsumption_clause(queue, clause_idx as usize);
                 if TRACE {
                     self.stats.bsr_seeded_clauses += 1;
                 }
@@ -2082,6 +2089,7 @@ impl Solver {
         self.original_clause_ids = original_clause_ids
             .into_iter()
             .filter(|&clause_idx| {
+                let clause_idx = clause_idx as usize;
                 clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx)
             })
             .collect();
@@ -2193,7 +2201,7 @@ mod tests {
         let mut clauses: Vec<Vec<i32>> = s
             .original_clause_ids
             .iter()
-            .copied()
+            .map(|&clause_idx| clause_idx as usize)
             .filter(|&clause_idx| !s.clause_is_deleted(clause_idx))
             .map(|clause_idx| s.clause_slice(clause_idx).to_vec())
             .collect();
@@ -2203,6 +2211,7 @@ mod tests {
 
     fn assert_no_subsumption_queue_marks(s: &Solver) {
         for &clause_idx in &s.original_clause_ids {
+            let clause_idx = clause_idx as usize;
             if clause_idx < s.arena.len() && !s.clause_is_deleted(clause_idx) {
                 assert_ne!(
                     clause_header_mark(s.clause_header(clause_idx)),
@@ -2236,8 +2245,8 @@ mod tests {
             10,
             vec![vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10], vec![2, 4, 6, 8]],
         );
-        let candidate = s.original_clause_ids[0];
-        let driver_idx = s.original_clause_ids[1];
+        let candidate = s.original_clause_ids[0] as usize ;
+        let driver_idx = s.original_clause_ids[1] as usize ;
         let driver = SubsumptionCandidate::Clause(driver_idx);
         let mut marks = Vec::new();
         let mut stamp = 0;
@@ -2262,8 +2271,8 @@ mod tests {
             10,
             vec![vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10], vec![2, -4, 6, 8]],
         );
-        let candidate = s.original_clause_ids[0];
-        let driver_idx = s.original_clause_ids[1];
+        let candidate = s.original_clause_ids[0] as usize ;
+        let driver_idx = s.original_clause_ids[1] as usize ;
         let driver = SubsumptionCandidate::Clause(driver_idx);
         let mut marks = Vec::new();
         let mut stamp = 0;
@@ -2287,8 +2296,8 @@ mod tests {
             10,
             vec![vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10], vec![-2, -4, 6, 8]],
         );
-        let candidate = s.original_clause_ids[0];
-        let driver_idx = s.original_clause_ids[1];
+        let candidate = s.original_clause_ids[0] as usize ;
+        let driver_idx = s.original_clause_ids[1] as usize ;
         let driver = SubsumptionCandidate::Clause(driver_idx);
         let mut marks = Vec::new();
         let mut stamp = 0;
@@ -2348,7 +2357,7 @@ mod tests {
     fn removed_original_clause_vars_are_touched_for_preprocess_retry() {
         let mut s = Solver::new(4, vec![vec![1, 2, -3], vec![1, 3], vec![2, 4]]);
         s.build_occurrence_index();
-        let clause_idx = s.original_clause_ids[0];
+        let clause_idx = s.original_clause_ids[0] as usize ;
         let mut touched = Vec::new();
         let mut touched_flags = vec![false; s.assignment.len()];
 
@@ -2506,11 +2515,15 @@ mod tests {
         let mut proof = ProofLog::disabled();
         s.build_occurrence_index();
 
-        let driver = s.original_clause_ids[0];
+        let driver = s.original_clause_ids[0] as usize ;
         let mut touched = Vec::new();
         let mut touched_flags = vec![false; s.assignment.len()];
         for clause_idx in s.original_clause_ids[5..].to_vec() {
-            s.remove_original_clause_preprocess(clause_idx, &mut touched, &mut touched_flags);
+            s.remove_original_clause_preprocess(
+                clause_idx as usize,
+                &mut touched,
+                &mut touched_flags,
+            );
         }
 
         assert!(s.occurs_dirty[1]);
@@ -2713,8 +2726,8 @@ mod tests {
     fn bve_sorted_resolvent_merge_deduplicates_and_preserves_order() {
         let mut s = Solver::new(8, vec![vec![1, 5, 7], vec![-1, 2, 5, 8]]);
         s.build_occurrence_index();
-        let lhs = s.original_clause_ids[0];
-        let rhs = s.original_clause_ids[1];
+        let lhs = s.original_clause_ids[0] as usize ;
+        let rhs = s.original_clause_ids[1] as usize ;
         let mut resolvent = Vec::new();
 
         assert!(s.append_resolvent_into_vec(lhs, rhs, 1, &mut resolvent));
@@ -2725,8 +2738,8 @@ mod tests {
     fn bve_sorted_resolvent_merge_rejects_tautology() {
         let mut s = Solver::new(4, vec![vec![1, 2, 4], vec![-1, -2, 3]]);
         s.build_occurrence_index();
-        let lhs = s.original_clause_ids[0];
-        let rhs = s.original_clause_ids[1];
+        let lhs = s.original_clause_ids[0] as usize ;
+        let rhs = s.original_clause_ids[1] as usize ;
         let mut resolvent = Vec::new();
 
         assert!(!s.append_resolvent_into_vec(lhs, rhs, 1, &mut resolvent));

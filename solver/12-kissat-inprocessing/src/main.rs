@@ -106,7 +106,7 @@ fn test_allocation_count() -> usize {
 const UNASSIGNED: u8 = 0;
 const TRUE: u8 = 1;
 const FALSE: u8 = 2;
-const BRANCH_NOT_IN_HEAP: usize = usize::MAX;
+const BRANCH_NOT_IN_HEAP: u32 = u32::MAX;
 const CCMIN_NONE: u8 = 0;
 const CCMIN_BASIC: u8 = 1;
 const CCMIN_DEEP: u8 = 2;
@@ -272,6 +272,38 @@ const NO_CLAUSE_REF: ClauseRef = usize::MAX;
 /// `u32` map is sound and halves the transient. `NO_RELOC` is the "clause not copied" sentinel.
 type RelocRef = u32;
 const NO_RELOC: RelocRef = u32::MAX;
+
+/// Old->new clause-offset mapping used while rewriting references after GC compaction.
+/// `Dense` is the classic arena-length relocation map. `Sparse` avoids that transient
+/// allocation (4 bytes x arena.len(), ~1.7GB on OOM-giant instances) on the in-place
+/// compaction path: `ids` holds the live old clause offsets in ascending order and
+/// `new_off[k]` the new offset of `ids[k]`; offsets absent from `ids` (deleted clauses)
+/// map to NO_RELOC exactly like the dense map.
+enum RelocLookup<'a> {
+    Dense(&'a [RelocRef]),
+    Sparse {
+        ids: &'a [u32],
+        new_off: &'a [RelocRef],
+    },
+}
+
+impl RelocLookup<'_> {
+    #[inline]
+    fn get(&self, old_idx: usize) -> RelocRef {
+        match self {
+            RelocLookup::Dense(map) => map.get(old_idx).copied().unwrap_or(NO_RELOC),
+            RelocLookup::Sparse { ids, new_off } => {
+                let Ok(old_idx) = u32::try_from(old_idx) else {
+                    return NO_RELOC;
+                };
+                match ids.binary_search(&old_idx) {
+                    Ok(k) => new_off[k],
+                    Err(_) => NO_RELOC,
+                }
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum FormulaSizeClass {
@@ -1231,6 +1263,30 @@ impl ProofLog {
     }
 }
 
+#[allow(dead_code)]
+fn debug_mem_line(tag: &str, arena_len: usize) {
+    if std::env::var("SAT_DEBUG_MEM").is_err() {
+        return;
+    }
+    let mut vm_size_kb = 0u64;
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        for line in status.lines() {
+            if let Some(rest) = line.strip_prefix("VmSize:") {
+                vm_size_kb = rest
+                    .trim()
+                    .trim_end_matches(" kB")
+                    .trim()
+                    .parse()
+                    .unwrap_or(0);
+            }
+        }
+    }
+    eprintln!(
+        "c MEMDBG {tag} arena_len={arena_len} vm_size_gb={:.2}",
+        vm_size_kb as f64 / 1048576.0
+    );
+}
+
 fn proof_stats_from_stream(stream: &ProofStream, state: &'static str) -> ProofStats {
     ProofStats {
         added_clauses: stream.clause_count,
@@ -1249,8 +1305,8 @@ fn proof_stats_from_stream(stream: &ProofStream, state: &'static str) -> ProofSt
 struct Solver {
     /// MiniSat-style word arena: packed clause header, literals, and optional extra word.
     arena: Vec<u32>,
-    /// references to original clauses inside `arena`
-    original_clause_ids: Vec<usize>,
+    /// references to original clauses inside `arena` (arena offsets; < arena.len() < u32::MAX)
+    original_clause_ids: Vec<u32>,
     /// one-shot post-preprocess formula classification for adaptive policy experiments
     formula_class: FormulaClass,
     /// one-shot pre-preprocess formula classification (computed right before `eliminate`).
@@ -1304,7 +1360,7 @@ struct Solver {
     /// conflict interval between scheduled rephase opportunities
     rephase_conflicts: u64,
     /// decision level of each variable assignment
-    decision_level: Vec<usize>,
+    decision_level: Vec<u32>,
     /// encoded reason for each implied assignment; NONE for decisions/root-unassigned vars
     reason: Vec<ReasonCode>,
     /// binary reason literals, indexed by stable BinaryClauseId
@@ -1337,11 +1393,11 @@ struct Solver {
     /// next trail entry whose falsified literal still needs watcher processing
     propagate_head: usize,
     /// static tie-break rank used when activity ties
-    branch_rank: Vec<usize>,
+    branch_rank: Vec<u32>,
     /// binary max-heap of candidate branch variables ordered by activity
     branch_heap: Vec<u32>,
     /// current heap index for each variable, or BRANCH_NOT_IN_HEAP
-    branch_pos: Vec<usize>,
+    branch_pos: Vec<u32>,
     /// opt-in VMTF branch queue used by configured search modes
     vmtf_queue: Option<VmtfQueue>,
     /// variables eligible for search branching; eliminated variables stay permanently false here
@@ -1585,7 +1641,7 @@ struct Solver {
     /// dirty bits for occurrence lists after a clause is strengthened and loses a variable
     occurs_membership_dirty: Vec<bool>,
     /// literal occurrence counts for elimination cost, indexed by `lit_to_index`
-    n_occ: Vec<usize>,
+    n_occ: Vec<u32>,
     /// packed MiniSat-style model-extension clauses
     elim_clauses: Vec<i32>,
     /// final SAT model snapshot, including assignments reconstructed for eliminated variables
@@ -1827,7 +1883,7 @@ struct ReasonExpansionContext<'a> {
 #[derive(Clone, Copy)]
 struct RedundancyCheckContext<'a> {
     reasons: ReasonExpansionContext<'a>,
-    decision_level: &'a [usize],
+    decision_level: &'a [u32],
     reason: &'a [ReasonCode],
     frame_used: &'a [u32],
     max_depth: u32,
@@ -1837,7 +1893,7 @@ struct RedundancyCheckContext<'a> {
 #[derive(Clone, Copy)]
 struct ShrinkBlockContext<'a> {
     reasons: ReasonExpansionContext<'a>,
-    decision_level: &'a [usize],
+    decision_level: &'a [u32],
     reason: &'a [ReasonCode],
     trail: &'a [i32],
     frame_used: &'a [u32],
@@ -1879,13 +1935,13 @@ fn reason_lit_in_arena(
 
 fn rewrite_reason_ref(
     reason_ref: ReasonRef,
-    reloc: &[RelocRef],
+    reloc: &RelocLookup<'_>,
     removed_clause_message: &str,
 ) -> Result<ReasonCode, ReasonCodeError> {
     match reason_ref {
         ReasonRef::None => ReasonCode::from_ref(ReasonRef::None),
         ReasonRef::Clause(clause_idx) => {
-            let new_idx = reloc.get(clause_idx).copied().unwrap_or(NO_RELOC);
+            let new_idx = reloc.get(clause_idx);
             debug_assert_ne!(new_idx, NO_RELOC, "{removed_clause_message}");
             ReasonCode::from_ref(ReasonRef::Clause(new_idx as usize))
         }
@@ -1896,7 +1952,7 @@ fn rewrite_reason_ref(
 fn basic_lit_redundant(
     lit: i32,
     reasons: ReasonExpansionContext<'_>,
-    decision_level: &[usize],
+    decision_level: &[u32],
     reason: &[ReasonCode],
     state: &[u8],
 ) -> bool {
@@ -1931,7 +1987,7 @@ fn set_redundant_state(state: &mut [u8], toclear: &mut Vec<usize>, var: usize, v
     state[var] = value;
 }
 
-fn sort_learned_clause_by_descending_level(learned_clause: &mut [i32], decision_level: &[usize]) {
+fn sort_learned_clause_by_descending_level(learned_clause: &mut [i32], decision_level: &[u32]) {
     for read in 2..learned_clause.len() {
         let lit = learned_clause[read];
         let level = decision_level[lit.unsigned_abs() as usize];
@@ -1958,7 +2014,7 @@ fn shrink_literal_for_block(
     stack: &mut Vec<(usize, i32, u32)>,
 ) -> Result<bool, ()> {
     let var = lit.unsigned_abs() as usize;
-    let lit_level = context.decision_level[var];
+    let lit_level = context.decision_level[var] as usize;
     if lit_level == 0 {
         return Ok(false);
     }
@@ -2023,7 +2079,7 @@ fn try_shrink_learned_clause_block(
 
     for &lit in &learned_clause[begin..end] {
         let var = lit.unsigned_abs() as usize;
-        debug_assert_eq!(context.decision_level[var], level);
+        debug_assert_eq!(context.decision_level[var] as usize, level);
         set_redundant_state(state, toclear, var, REDUNDANT_SOURCE);
     }
 
@@ -2035,7 +2091,7 @@ fn try_shrink_learned_clause_block(
             trail_pos -= 1;
             let lit = context.trail[trail_pos];
             let var = lit.unsigned_abs() as usize;
-            if context.decision_level[var] == level && state[var] == REDUNDANT_SOURCE {
+            if context.decision_level[var] as usize == level && state[var] == REDUNDANT_SOURCE {
                 uip_lit = Some(lit);
                 break;
             }
@@ -2085,7 +2141,14 @@ fn lit_redundant(
     let mut reason_ref = context.reason[lit.unsigned_abs() as usize].as_ref_unchecked();
     let mut lit_pos = 0usize;
     let target_level = context.decision_level[lit.unsigned_abs() as usize];
-    if context.same_level_only && context.frame_used.get(target_level).copied().unwrap_or(0) <= 1 {
+    if context.same_level_only
+        && context
+            .frame_used
+            .get(target_level as usize)
+            .copied()
+            .unwrap_or(0)
+            <= 1
+    {
         return false;
     }
     let mut depth = 0u32;
@@ -2113,7 +2176,7 @@ fn lit_redundant(
                 || (context.same_level_only
                     && context
                         .frame_used
-                        .get(context.decision_level[parent_var])
+                        .get(context.decision_level[parent_var] as usize)
                         .copied()
                         .unwrap_or(0)
                         <= 1)
@@ -2222,9 +2285,9 @@ impl Solver {
                     .then_with(|| lhs.cmp(&rhs))
             });
         }
-        let mut branch_rank = vec![0usize; num_vars + 1];
+        let mut branch_rank = vec![0u32; num_vars + 1];
         for (rank, &var) in branch_order.iter().enumerate() {
-            branch_rank[var as usize] = rank;
+            branch_rank[var as usize] = rank as u32;
         }
         let default_phase = match branch_mode {
             BranchMode::Minisat => FALSE,
@@ -2599,7 +2662,8 @@ impl Solver {
             self.arena
                 .push(clause_make_header(clause_len, false, false, 0, false));
             self.arena.extend(clause.iter().copied().map(lit_to_word));
-            self.original_clause_ids.push(clause_idx);
+            debug_assert!(clause_idx < u32::MAX as usize);
+            self.original_clause_ids.push(clause_idx as u32);
             self.original_literals += clause_len;
             self.attach_clause(clause_idx, true);
         }
@@ -2846,7 +2910,7 @@ impl Solver {
         for &lit in lits {
             let var = lit.unsigned_abs() as usize;
             let level = self.decision_level.get(var).copied().unwrap_or(0);
-            self.count_lbd_level(level, &mut count);
+            self.count_lbd_level(level as usize, &mut count);
         }
         Self::finish_lbd_measurement(count)
     }
@@ -2877,7 +2941,7 @@ impl Solver {
             let lit = self.clause_lit(clause_idx, lit_pos);
             let var = lit.unsigned_abs() as usize;
             let level = self.decision_level.get(var).copied().unwrap_or(0);
-            self.count_lbd_level(level, &mut count);
+            self.count_lbd_level(level as usize, &mut count);
         }
         Self::finish_lbd_measurement(count)
     }
@@ -3156,7 +3220,7 @@ impl Solver {
 
     fn remap_learned_metadata_clause_refs(
         &mut self,
-        reloc: &[RelocRef],
+        reloc: &RelocLookup<'_>,
         new_arena_len: usize,
         count_rewrites: bool,
     ) -> u64 {
@@ -3168,11 +3232,11 @@ impl Solver {
         self.learned_id_by_clause.resize(new_arena_len, 0);
         for id_idx in 0..self.learned_clause_by_id.len() {
             let old_clause_idx = self.learned_clause_by_id[id_idx];
-            if old_clause_idx == NO_CLAUSE_REF || old_clause_idx >= reloc.len() {
+            if old_clause_idx == NO_CLAUSE_REF {
                 self.learned_clause_by_id[id_idx] = NO_CLAUSE_REF;
                 continue;
             }
-            let new_clause_idx = reloc[old_clause_idx];
+            let new_clause_idx = reloc.get(old_clause_idx);
             if new_clause_idx != NO_RELOC {
                 let new_clause_idx = new_clause_idx as usize;
                 if count_rewrites && new_clause_idx != old_clause_idx {
@@ -3190,7 +3254,7 @@ impl Solver {
 
     fn remap_binary_clause_refs(
         &mut self,
-        reloc: &[RelocRef],
+        reloc: &RelocLookup<'_>,
         new_arena_len: usize,
         count_rewrites: bool,
     ) -> u64 {
@@ -3206,11 +3270,7 @@ impl Solver {
                 continue;
             }
             let old_clause_idx = self.binary_clauses[id_idx].clause_ref;
-            if old_clause_idx >= reloc.len() {
-                self.binary_clauses[id_idx].deleted = true;
-                continue;
-            }
-            let new_clause_idx = reloc[old_clause_idx];
+            let new_clause_idx = reloc.get(old_clause_idx);
             if new_clause_idx == NO_RELOC {
                 self.binary_clauses[id_idx].deleted = true;
                 continue;
@@ -3302,6 +3362,7 @@ impl Solver {
             self.clause_abstraction.resize(self.arena.len(), 0);
             let original_clause_ids = self.original_clause_ids.clone();
             for clause_idx in original_clause_ids {
+                let clause_idx = clause_idx as usize;
                 if clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx) {
                     self.clause_abstraction[clause_idx] =
                         clause_abstraction_from_lits(self.clause_slice(clause_idx));
@@ -3312,6 +3373,7 @@ impl Solver {
 
         self.inline_original_abstractions = true;
         let needs_inline_abstraction = self.original_clause_ids.iter().any(|&clause_idx| {
+            let clause_idx = clause_idx as usize;
             clause_idx < self.arena.len()
                 && !self.clause_is_deleted(clause_idx)
                 && !self.clause_has_extra(clause_idx)
@@ -3325,14 +3387,16 @@ impl Solver {
             self.arena.len() <= RelocRef::MAX as usize,
             "arena too large for u32 relocation map"
         );
+        debug_mem_line("abstraction_migration_reloc_alloc", self.arena.len());
         let mut reloc = vec![NO_RELOC; self.arena.len()];
         let original_live_word_count: usize = self
             .original_clause_ids
             .iter()
-            .filter(|&&clause_idx| {
+            .map(|&clause_idx| clause_idx as usize)
+            .filter(|&clause_idx| {
                 clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx)
             })
-            .map(|&clause_idx| {
+            .map(|clause_idx| {
                 self.clause_word_len(clause_idx)
                     + if self.clause_has_extra(clause_idx) {
                         0
@@ -3354,6 +3418,7 @@ impl Solver {
         let mut new_learned_clause_ids = Vec::with_capacity(self.learned_clause_ids.len());
 
         for &old_clause_idx in &self.original_clause_ids {
+            let old_clause_idx = old_clause_idx as usize;
             if old_clause_idx >= self.arena.len() || self.clause_is_deleted(old_clause_idx) {
                 continue;
             }
@@ -3380,7 +3445,7 @@ impl Solver {
                 })
             };
             new_arena.push(abstraction as u32);
-            new_original_clause_ids.push(new_clause_idx);
+            new_original_clause_ids.push(new_clause_idx as u32);
         }
 
         for &old_clause_idx in &self.learned_clause_ids {
@@ -3433,7 +3498,7 @@ impl Solver {
         for reason_code in &mut self.reason {
             *reason_code = rewrite_reason_ref(
                 reason_code.as_ref_unchecked(),
-                &reloc,
+                &RelocLookup::Dense(&reloc),
                 "inline abstraction migration removed a live reason clause",
             )
             .expect("reason rewrite failed during inline abstraction migration");
@@ -3455,8 +3520,9 @@ impl Solver {
         self.root_unit_clauses.truncate(root_write);
 
         let new_arena_len = new_arena.len();
-        let _ = self.remap_learned_metadata_clause_refs(&reloc, new_arena_len, false);
-        let _ = self.remap_binary_clause_refs(&reloc, new_arena_len, false);
+        let _ =
+            self.remap_learned_metadata_clause_refs(&RelocLookup::Dense(&reloc), new_arena_len, false);
+        let _ = self.remap_binary_clause_refs(&RelocLookup::Dense(&reloc), new_arena_len, false);
         self.arena = new_arena;
         self.original_clause_ids = new_original_clause_ids;
         self.learned_clause_ids = new_learned_clause_ids;
@@ -3599,6 +3665,7 @@ impl Solver {
         }
         let originals = std::mem::take(&mut self.original_clause_ids);
         for &clause_idx in &originals {
+            let clause_idx = clause_idx as usize;
             if !self.clause_is_deleted(clause_idx) {
                 self.attach_clause(clause_idx, false);
             }
@@ -3622,10 +3689,11 @@ impl Solver {
         if self.binary_fast_path {
             return;
         }
-        for &clause_idx in self
+        for clause_idx in self
             .original_clause_ids
             .iter()
-            .chain(self.learned_clause_ids.iter())
+            .map(|&clause_idx| clause_idx as usize)
+            .chain(self.learned_clause_ids.iter().copied())
         {
             if self.clause_is_deleted(clause_idx) {
                 continue;
@@ -3794,6 +3862,29 @@ impl Solver {
         kept
     }
 
+    fn simplify_clause_list_u32(
+        &mut self,
+        clause_ids: Vec<u32>,
+        proof_log: &mut ProofLog,
+    ) -> Vec<u32> {
+        let mut kept = Vec::with_capacity(clause_ids.len());
+        for clause_idx_word in clause_ids {
+            let clause_idx = clause_idx_word as usize;
+            if self.clause_is_deleted(clause_idx) {
+                continue;
+            }
+            if self.clause_satisfied(clause_idx) {
+                self.delete_clause_for_simplify(clause_idx, proof_log);
+                continue;
+            }
+            if !self.clause_is_learnt(clause_idx) {
+                self.trim_root_false_literals_with_proof(clause_idx, proof_log);
+            }
+            kept.push(clause_idx_word);
+        }
+        kept
+    }
+
     fn total_live_clause_literals(&self) -> usize {
         self.original_literals + self.learned_literals
     }
@@ -3804,8 +3895,8 @@ impl Solver {
         }
         let idx = self.branch_pos[var];
         idx != BRANCH_NOT_IN_HEAP
-            && idx < self.branch_heap.len()
-            && self.branch_heap[idx] as usize == var
+            && (idx as usize) < self.branch_heap.len()
+            && self.branch_heap[idx as usize] as usize == var
     }
 
     fn unassigned_decision_candidate(&self, var: usize) -> bool {
@@ -3830,7 +3921,7 @@ impl Solver {
         if self.accounting_mode.update_branch_stats() {
             self.stats.decision_heap_inserts += 1;
         }
-        self.branch_pos[var] = idx;
+        self.branch_pos[var] = idx as u32;
         self.branch_heap_sift_up(idx);
     }
 
@@ -3869,7 +3960,7 @@ impl Solver {
         self.branch_pos.fill(BRANCH_NOT_IN_HEAP);
         for var in 1..self.assignment.len() {
             if self.unassigned_decision_candidate(var) {
-                self.branch_pos[var] = self.branch_heap.len();
+                self.branch_pos[var] = self.branch_heap.len() as u32;
                 self.branch_heap.push(var as u32);
             }
         }
@@ -3996,8 +4087,8 @@ impl Solver {
         self.branch_heap.swap(lhs, rhs);
         let lhs_var = self.branch_heap[lhs] as usize;
         let rhs_var = self.branch_heap[rhs] as usize;
-        self.branch_pos[lhs_var] = lhs;
-        self.branch_pos[rhs_var] = rhs;
+        self.branch_pos[lhs_var] = lhs as u32;
+        self.branch_pos[rhs_var] = rhs as u32;
     }
 
     fn branch_heap_sift_up(&mut self, mut idx: usize) {
@@ -4048,6 +4139,7 @@ impl Solver {
         if idx == BRANCH_NOT_IN_HEAP {
             return;
         }
+        let idx = idx as usize;
 
         let last_var = self.branch_heap.pop().expect("heap underflow") as usize;
         self.branch_pos[var] = BRANCH_NOT_IN_HEAP;
@@ -4056,7 +4148,7 @@ impl Solver {
         }
 
         self.branch_heap[idx] = last_var as u32;
-        self.branch_pos[last_var] = idx;
+        self.branch_pos[last_var] = idx as u32;
         if idx > 0 {
             let parent = (idx - 1) / 2;
             let parent_var = self.branch_heap[parent] as usize;
@@ -4259,8 +4351,8 @@ impl Solver {
     fn all_live_clauses_satisfied(&self) -> bool {
         self.original_clause_ids
             .iter()
-            .chain(self.learned_clause_ids.iter())
-            .copied()
+            .map(|&clause_idx| clause_idx as usize)
+            .chain(self.learned_clause_ids.iter().copied())
             .filter(|&clause_idx| {
                 clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx)
             })
@@ -4567,6 +4659,7 @@ impl Solver {
     fn collect_unsatisfied_trial_clauses(&self, trial: &[u8], out: &mut Vec<ClauseRef>) {
         out.clear();
         for &clause_idx in &self.original_clause_ids {
+            let clause_idx = clause_idx as usize;
             if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
                 continue;
             }
@@ -4579,6 +4672,7 @@ impl Solver {
     fn count_unsatisfied_trial_clauses(&self, trial: &[u8], stop_at: usize) -> usize {
         let mut count = 0usize;
         for &clause_idx in &self.original_clause_ids {
+            let clause_idx = clause_idx as usize;
             if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
                 continue;
             }
@@ -4841,7 +4935,7 @@ impl Solver {
                     if rlit == lit {
                         continue;
                     }
-                    let l = self.decision_level[rlit.unsigned_abs() as usize];
+                    let l = self.decision_level[rlit.unsigned_abs() as usize] as usize;
                     if l > level {
                         level = l;
                     }
@@ -4857,7 +4951,7 @@ impl Solver {
                     if rlit == lit {
                         continue;
                     }
-                    let l = self.decision_level[rlit.unsigned_abs() as usize];
+                    let l = self.decision_level[rlit.unsigned_abs() as usize] as usize;
                     if l > level {
                         level = l;
                     }
@@ -4889,7 +4983,7 @@ impl Solver {
             if NORMAL_SEARCH || self.accounting_mode.update_phase() {
                 self.saved_phase[var] = target_value;
             }
-            self.decision_level[var] = level;
+            self.decision_level[var] = level as u32;
             self.set_reason_ref(var, reason);
             self.trail.push(lit);
             if current_level == 0 && NORMAL_SEARCH {
@@ -5231,7 +5325,7 @@ impl Solver {
         }
         let idx = self.branch_pos[var];
         if idx != BRANCH_NOT_IN_HEAP {
-            self.branch_heap_sift_up(idx);
+            self.branch_heap_sift_up(idx as usize);
         } else {
             self.push_branch_var_if_decision(var);
         }
@@ -6001,7 +6095,7 @@ impl Solver {
             for read in new_trail_len..old_len {
                 let lit = self.trail[read];
                 let var = lit.unsigned_abs() as usize;
-                if self.decision_level[var] <= target_level {
+                if self.decision_level[var] as usize <= target_level {
                     self.trail[write] = lit;
                     write += 1;
                 } else {
@@ -6044,7 +6138,7 @@ impl Solver {
         let mut unassigned_after_backtrack = 0usize;
         for &lit in learned_clause {
             let var = lit.unsigned_abs() as usize;
-            if self.decision_level[var] > target_level {
+            if self.decision_level[var] as usize > target_level {
                 unassigned_after_backtrack += 1;
                 if unassigned_after_backtrack > 1 {
                     return false;
@@ -6293,7 +6387,7 @@ impl Solver {
         self.live_learned_clause_count = self.learned_clause_ids.len();
 
         let original_clause_ids = std::mem::take(&mut self.original_clause_ids);
-        self.original_clause_ids = self.simplify_clause_list(original_clause_ids, proof_log);
+        self.original_clause_ids = self.simplify_clause_list_u32(original_clause_ids, proof_log);
 
         self.maybe_garbage_collect(GcReason::ArenaFragmentation);
         self.rebuild_branch_queue();
@@ -6567,7 +6661,7 @@ impl Solver {
             .map(|k| (start + k) % n)
             .map(|p| {
                 let c = if p < n_orig {
-                    self.original_clause_ids[p]
+                    self.original_clause_ids[p] as usize
                 } else {
                     self.learned_clause_ids[p - n_orig]
                 };
@@ -6828,6 +6922,7 @@ impl Solver {
         let mut occ: Vec<Vec<usize>> = vec![Vec::new(); nvars + 1];
         let ids = self.original_clause_ids.clone();
         for cid in ids {
+            let cid = cid as usize;
             if self.clause_is_deleted(cid) {
                 continue;
             }
@@ -7137,7 +7232,7 @@ impl Solver {
         let original_words_live: usize = self
             .original_clause_ids
             .iter()
-            .copied()
+            .map(|&clause_idx| clause_idx as usize)
             .filter(|&clause_idx| {
                 clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx)
             })
@@ -7299,12 +7394,12 @@ impl Solver {
             self.arena.len() <= RelocRef::MAX as usize,
             "arena too large for u32 relocation map"
         );
-        let mut reloc = vec![NO_RELOC; self.arena.len()];
         let live_clause_count = self.original_clause_ids.len() + self.learned_clause_ids.len();
         let original_live_word_count: usize = self
             .original_clause_ids
             .iter()
             .map(|&clause_idx| {
+                let clause_idx = clause_idx as usize;
                 let word_len = self.clause_word_len(clause_idx);
                 if strip_original_extra && self.clause_has_extra(clause_idx) {
                     word_len - ORIGINAL_ABSTRACTION_WORDS
@@ -7338,22 +7433,38 @@ impl Solver {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(100_000_000usize);
+        let use_inplace = self.arena.len() > inplace_min_words;
+        // The in-place path uses a SPARSE relocation lookup (sorted live ids + parallel new
+        // offsets, 4B per live clause each) instead of the dense arena-length map — that
+        // dense `vec![NO_RELOC; arena.len()]` transient (~1.7GB on OOM-giant instances) was
+        // the binding allocation that tripped the memory cap right at GC time.
+        let mut reloc: Vec<RelocRef> = Vec::new();
+        let mut sparse_ids: Vec<u32> = Vec::new();
+        let mut sparse_new_off: Vec<RelocRef> = Vec::new();
+        if !use_inplace {
+            debug_mem_line("gc_reloc_alloc", self.arena.len());
+            reloc = vec![NO_RELOC; self.arena.len()];
+        }
         let new_arena_len_val: usize;
-        if self.arena.len() > inplace_min_words {
+        if use_inplace {
             self.stats.gc_inplace_compactions += 1;
+            debug_mem_line("gc_inplace_sparse_reloc", self.arena.len());
             // Process live clauses in ASCENDING arena order (sorted) so write <= old_idx at
             // every step and shifting each clause down within self.arena via memmove is safe.
             // We do NOT walk the arena linearly (deleted/free words are not reliably typed);
             // we sort the explicit live-clause indices. learnt-ness is read from each header.
             let orig = std::mem::take(&mut self.original_clause_ids);
             let learn = std::mem::take(&mut self.learned_clause_ids);
-            let mut ids: Vec<usize> =
-                Vec::with_capacity(orig.len() + learn.len());
-            ids.extend_from_slice(&orig);
-            ids.extend_from_slice(&learn);
-            ids.sort_unstable();
+            // u32 ids keep this transient at 4B per live clause (arena.len() < u32::MAX is
+            // asserted above via the reloc-map debug_assert).
+            sparse_ids.reserve_exact(orig.len() + learn.len());
+            sparse_ids.extend_from_slice(&orig);
+            sparse_ids.extend(learn.iter().map(|&clause_idx| clause_idx as u32));
+            sparse_ids.sort_unstable();
+            sparse_new_off.reserve_exact(sparse_ids.len());
             let mut write = 0usize;
-            for &old_idx in &ids {
+            for &old_idx in &sparse_ids {
+                let old_idx = old_idx as usize;
                 debug_assert!(write <= old_idx, "in-place compaction would clobber live data");
                 let header = self.arena[old_idx];
                 let learnt = clause_header_learnt(header);
@@ -7361,7 +7472,7 @@ impl Solver {
                 let clause_len = clause_header_size(header);
                 let old_extra = clause_header_extra_words(header);
                 let has_extra = clause_header_has_extra(header) && !strip;
-                reloc[old_idx] = write as RelocRef;
+                sparse_new_off.push(write as RelocRef);
                 let new_header = clause_make_header(
                     clause_len,
                     learnt,
@@ -7386,7 +7497,7 @@ impl Solver {
                 if learnt {
                     new_learned_clause_ids.push(write);
                 } else {
-                    new_original_clause_ids.push(write);
+                    new_original_clause_ids.push(write as u32);
                 }
                 write += 1 + clause_len + if has_extra { old_extra } else { 0 };
             }
@@ -7422,6 +7533,7 @@ impl Solver {
             };
 
             for &old_clause_idx in &self.original_clause_ids {
+                let old_clause_idx = old_clause_idx as usize;
                 debug_assert!(
                     !self.clause_is_deleted(old_clause_idx),
                     "original clauses must stay live across garbage collection"
@@ -7433,7 +7545,7 @@ impl Solver {
                     &mut reloc,
                     strip_original_extra,
                 );
-                new_original_clause_ids.push(new_clause_idx);
+                new_original_clause_ids.push(new_clause_idx as u32);
             }
             for &old_clause_idx in &self.learned_clause_ids {
                 debug_assert!(
@@ -7453,15 +7565,21 @@ impl Solver {
             self.arena = new_arena;
         }
 
+        let reloc_lookup = if use_inplace {
+            RelocLookup::Sparse {
+                ids: &sparse_ids,
+                new_off: &sparse_new_off,
+            }
+        } else {
+            RelocLookup::Dense(&reloc)
+        };
+
         for watch_list in &mut self.watchers {
             let mut write = 0usize;
             for read in 0..watch_list.len() {
                 let mut watcher = watch_list[read];
                 let old_idx = watcher.clause_idx as usize;
-                if old_idx >= reloc.len() {
-                    continue;
-                }
-                let new_idx = reloc[old_idx];
+                let new_idx = reloc_lookup.get(old_idx);
                 if new_idx == NO_RELOC {
                     continue;
                 }
@@ -7479,10 +7597,7 @@ impl Solver {
         for read in 0..self.watch_scratch.len() {
             let mut watcher = self.watch_scratch[read];
             let old_idx = watcher.clause_idx as usize;
-            if old_idx >= reloc.len() {
-                continue;
-            }
-            let new_idx = reloc[old_idx];
+            let new_idx = reloc_lookup.get(old_idx);
             if new_idx == NO_RELOC {
                 continue;
             }
@@ -7499,7 +7614,7 @@ impl Solver {
             let old_reason = reason_code.as_ref_unchecked();
             let new_code = rewrite_reason_ref(
                 old_reason,
-                &reloc,
+                &reloc_lookup,
                 "garbage collection removed a clause that is still a live reason",
             )
             .expect("reason rewrite failed during garbage collection");
@@ -7514,7 +7629,7 @@ impl Solver {
         }
         for &pinned_clause in &pins.pinned_clauses {
             debug_assert!(
-                pinned_clause < reloc.len() && reloc[pinned_clause] != NO_RELOC,
+                reloc_lookup.get(pinned_clause) != NO_RELOC,
                 "garbage collection removed a reason-pinned clause"
             );
         }
@@ -7522,10 +7637,7 @@ impl Solver {
         let mut root_write = 0usize;
         for read in 0..self.root_unit_clauses.len() {
             let old_idx = self.root_unit_clauses[read];
-            if old_idx >= reloc.len() {
-                continue;
-            }
-            let new_idx = reloc[old_idx];
+            let new_idx = reloc_lookup.get(old_idx);
             if new_idx == NO_RELOC {
                 continue;
             }
@@ -7539,12 +7651,12 @@ impl Solver {
 
         let new_arena_len = new_arena_len_val;
         refs_rewritten += self.remap_learned_metadata_clause_refs(
-            &reloc,
+            &reloc_lookup,
             new_arena_len,
             self.track_gc_detail_stats,
         );
         refs_rewritten +=
-            self.remap_binary_clause_refs(&reloc, new_arena_len, self.track_gc_detail_stats);
+            self.remap_binary_clause_refs(&reloc_lookup, new_arena_len, self.track_gc_detail_stats);
         self.original_clause_ids = new_original_clause_ids;
         self.learned_clause_ids = new_learned_clause_ids;
         if !self.clause_abstraction.is_empty() {
@@ -7553,6 +7665,7 @@ impl Solver {
                 self.clause_abstraction.resize(self.arena.len(), 0);
                 let original_clause_ids = self.original_clause_ids.clone();
                 for clause_idx in original_clause_ids {
+                    let clause_idx = clause_idx as usize;
                     self.clause_abstraction[clause_idx] =
                         clause_abstraction_from_lits(self.clause_slice(clause_idx));
                 }
@@ -7986,7 +8099,7 @@ impl Solver {
                 toclear.push(var);
             }
             if use_frame_singleton {
-                let level = self.decision_level[var];
+                let level = self.decision_level[var] as usize;
                 if level == 0 {
                     continue;
                 }
@@ -8076,11 +8189,13 @@ impl Solver {
 
         let mut end = learned_clause.len();
         while end > 1 {
-            let level = self.decision_level[learned_clause[end - 1].unsigned_abs() as usize];
+            let level =
+                self.decision_level[learned_clause[end - 1].unsigned_abs() as usize] as usize;
             let mut begin = end - 1;
             while begin > 1 {
-                let prev_level =
-                    self.decision_level[learned_clause[begin - 1].unsigned_abs() as usize];
+                let prev_level = self.decision_level
+                    [learned_clause[begin - 1].unsigned_abs() as usize]
+                    as usize;
                 if prev_level != level {
                     break;
                 }
@@ -8417,7 +8532,7 @@ impl Solver {
                 continue;
             }
 
-            let level = self.decision_level[var];
+            let level = self.decision_level[var] as usize;
             if level == 0 {
                 continue;
             }
@@ -8455,7 +8570,7 @@ impl Solver {
                 continue;
             }
 
-            let level = self.decision_level[var];
+            let level = self.decision_level[var] as usize;
             if level == 0 {
                 continue;
             }
@@ -8545,7 +8660,7 @@ impl Solver {
                 let mut max_level = 0usize;
                 for lit_pos in 0..clause_len {
                     let var = self.clause_lit(clause_idx, lit_pos).unsigned_abs() as usize;
-                    max_level = max_level.max(self.decision_level[var]);
+                    max_level = max_level.max(self.decision_level[var] as usize);
                 }
                 max_level
             }
@@ -8554,7 +8669,7 @@ impl Solver {
                 .get(binary_id.0 as usize)
                 .map(|lits| {
                     lits.iter()
-                        .map(|lit| self.decision_level[lit.unsigned_abs() as usize])
+                        .map(|lit| self.decision_level[lit.unsigned_abs() as usize] as usize)
                         .max()
                         .unwrap_or(0)
                 })
@@ -8603,7 +8718,7 @@ impl Solver {
             // are already recorded in `scratch_learned` by the marking pass and must be
             // skipped here, or the current-level count is corrupted and the walk stops at
             // a non-current-level "UIP" (bd SAT-playground-5b2.2.68).
-            if self.chrono_backtrack && self.decision_level[var] != current_level {
+            if self.chrono_backtrack && self.decision_level[var] as usize != current_level {
                 continue;
             }
 
@@ -8651,7 +8766,7 @@ impl Solver {
         let mut backtrack_pos = 1usize;
         for (pos, &lit) in learned_clause.iter().enumerate().skip(1) {
             let var = lit.unsigned_abs() as usize;
-            let level = self.decision_level[var];
+            let level = self.decision_level[var] as usize;
             if level > backtrack_level {
                 backtrack_level = level;
                 backtrack_pos = pos;
@@ -8787,7 +8902,7 @@ impl Solver {
     fn live_original_clause_count(&self) -> usize {
         self.original_clause_ids
             .iter()
-            .copied()
+            .map(|&clause_idx| clause_idx as usize)
             .filter(|&clause_idx| {
                 clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx)
             })
@@ -8804,8 +8919,8 @@ impl Solver {
         }
         self.original_clause_ids
             .iter()
-            .chain(self.learned_clause_ids.iter())
-            .copied()
+            .map(|&clause_idx| clause_idx as usize)
+            .chain(self.learned_clause_ids.iter().copied())
             .filter(|&clause_idx| {
                 clause_idx < self.arena.len()
                     && !self.clause_is_deleted(clause_idx)
@@ -8875,6 +8990,7 @@ impl Solver {
         let mut seen = vec![false; self.assignment.len()];
         let mut count = 0usize;
         for &clause_idx in &self.original_clause_ids {
+            let clause_idx = clause_idx as usize;
             if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
                 continue;
             }
@@ -9006,8 +9122,9 @@ impl Solver {
         let clauses: Vec<Vec<i32>> = self
             .original_clause_ids
             .iter()
-            .filter(|&&cid| cid < self.arena.len() && !self.clause_is_deleted(cid))
-            .map(|&cid| self.clause_slice(cid).to_vec())
+            .map(|&cid| cid as usize)
+            .filter(|&cid| cid < self.arena.len() && !self.clause_is_deleted(cid))
+            .map(|cid| self.clause_slice(cid).to_vec())
             .collect();
         let total = clauses.len().max(1);
         let (xors, consumed) = gauss::extract_xors(&clauses, 8);
@@ -9138,9 +9255,10 @@ impl Solver {
         }
 
         // Collect live binary clauses over active variables.
-        let ids: Vec<usize> = self.original_clause_ids.clone();
+        let ids: Vec<u32> = self.original_clause_ids.clone();
         let mut binaries: Vec<(i32, i32)> = Vec::new();
         for &cid in &ids {
+            let cid = cid as usize;
             if self.clause_is_deleted(cid) || self.clause_len(cid) != 2 {
                 continue;
             }
@@ -9216,9 +9334,10 @@ impl Solver {
         let mut units: Vec<i32> = Vec::new();
         let mut rewritten: u64 = 0;
         let old_ids = std::mem::take(&mut self.original_clause_ids);
-        let mut new_ids: Vec<usize> = Vec::with_capacity(old_ids.len());
+        let mut new_ids: Vec<u32> = Vec::with_capacity(old_ids.len());
         let mut proved_unsat = false;
-        for cid in old_ids {
+        for cid_word in old_ids {
+            let cid = cid_word as usize;
             if self.clause_is_deleted(cid) {
                 continue;
             }
@@ -9232,7 +9351,7 @@ impl Solver {
                 }
             }
             if !touches {
-                new_ids.push(cid);
+                new_ids.push(cid_word);
                 continue;
             }
 
@@ -9287,7 +9406,8 @@ impl Solver {
                 _ => {
                     proof_log.record_clause(&new_lits);
                     let new_cid = self.els_install_original_clause(&new_lits);
-                    new_ids.push(new_cid);
+                    debug_assert!(new_cid < u32::MAX as usize);
+                    new_ids.push(new_cid as u32);
                     self.delete_clause_for_simplify(cid, proof_log);
                     rewritten += 1;
                 }
@@ -9371,6 +9491,7 @@ impl Solver {
         let mut pair_thirds: HashMap<(i32, i32), Vec<i32>> = HashMap::new();
 
         for &cid in &self.original_clause_ids {
+            let cid = cid as usize;
             if cid >= self.arena.len() || self.clause_is_deleted(cid) {
                 continue;
             }
@@ -9555,6 +9676,7 @@ impl Solver {
             // negated literals are exactly the bits of `s` (in sorted-var order) is present.
             let mut families: HashMap<[i32; 5], u32> = HashMap::new();
             for &cid in &self.original_clause_ids {
+                let cid = cid as usize;
                 if cid >= self.arena.len() || self.clause_is_deleted(cid) {
                     continue;
                 }
@@ -9778,6 +9900,7 @@ impl Solver {
         let mut binaries: HashSet<(i32, i32)> = HashSet::new();
         let mut ternaries: Vec<[i32; 3]> = Vec::new();
         for &cid in &self.original_clause_ids {
+            let cid = cid as usize;
             if cid >= self.arena.len() || self.clause_is_deleted(cid) {
                 continue;
             }
@@ -9823,7 +9946,8 @@ impl Solver {
         for &(l, k) in &new_binaries {
             proof_log.record_clause(&[l, k]);
             let cid = self.els_install_original_clause(&[l, k]);
-            self.original_clause_ids.push(cid);
+            debug_assert!(cid < u32::MAX as usize);
+            self.original_clause_ids.push(cid as u32);
         }
         new_binaries.len()
     }
@@ -9908,7 +10032,8 @@ impl Solver {
                 let binaries = self.emit_congruence_chain(proof_log, m);
                 for (a, b) in binaries {
                     let cid = self.els_install_original_clause(&[a, b]);
-                    self.original_clause_ids.push(cid);
+                    debug_assert!(cid < u32::MAX as usize);
+                    self.original_clause_ids.push(cid as u32);
                 }
             }
             if debug {
@@ -10566,10 +10691,10 @@ fn solver_construction_extra_bytes(num_vars: usize, clauses: &[Vec<i32>]) -> u64
     bytes = bytes.saturating_add(bytes_for_elems(vars, std::mem::size_of::<u32>())); // branch_order
     bytes = bytes.saturating_add(bytes_for_elems(
         vars_with_zero,
-        std::mem::size_of::<usize>(),
+        std::mem::size_of::<u32>(),
     )); // branch_rank
     bytes = bytes.saturating_add(bytes_for_elems(literal_slots, std::mem::size_of::<u32>())); // arena
-    bytes = bytes.saturating_add(bytes_for_elems(clause_count, std::mem::size_of::<usize>())); // original_clause_ids
+    bytes = bytes.saturating_add(bytes_for_elems(clause_count, std::mem::size_of::<u32>())); // original_clause_ids
     bytes = bytes.saturating_add(bytes_for_elems(
         vars.saturating_mul(2),
         std::mem::size_of::<Vec<Watcher>>(),
@@ -10582,7 +10707,7 @@ fn solver_construction_extra_bytes(num_vars: usize, clauses: &[Vec<i32>]) -> u64
     bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u8>())); // saved_phase
     bytes = bytes.saturating_add(bytes_for_elems(
         vars_with_zero,
-        std::mem::size_of::<usize>(),
+        std::mem::size_of::<u32>(),
     )); // decision_level
     bytes = bytes.saturating_add(bytes_for_elems(
         vars_with_zero,
@@ -10592,7 +10717,7 @@ fn solver_construction_extra_bytes(num_vars: usize, clauses: &[Vec<i32>]) -> u64
     bytes = bytes.saturating_add(bytes_for_elems(vars, std::mem::size_of::<u32>())); // branch_heap
     bytes = bytes.saturating_add(bytes_for_elems(
         vars_with_zero,
-        std::mem::size_of::<usize>(),
+        std::mem::size_of::<u32>(),
     )); // branch_pos
     bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<bool>())); // decision_var
     bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<f64>())); // activity
@@ -10607,7 +10732,7 @@ fn solver_construction_extra_bytes(num_vars: usize, clauses: &[Vec<i32>]) -> u64
     bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<bool>())); // occurs_membership_dirty
     bytes = bytes.saturating_add(bytes_for_elems(
         vars.saturating_mul(2),
-        std::mem::size_of::<usize>(),
+        std::mem::size_of::<u32>(),
     )); // n_occ
     bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u8>())); // scratch_seen
     bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u8>())); // scratch_resolved
@@ -11273,7 +11398,7 @@ mod tests {
         // [1,2,3,4] strengthened to [4,3]: drops the originally-watched literals
         // 1,2, so the watches must move to the new positions 0,1 (= 4,3).
         let mut s = make_solver(4, vec![vec![1, 2, 3, 4]]);
-        let cidx = s.original_clause_ids[0];
+        let cidx = s.original_clause_ids[0] as usize ;
         let lits_before = s.original_literals;
         assert_eq!(s.clause_len(cidx), 4);
         assert!(watches_clause(&s, 1, cidx) && watches_clause(&s, 2, cidx));
@@ -11297,7 +11422,7 @@ mod tests {
         // and active. (Strengthening to an all-root-false clause is correctly
         // refused; see inprocess_strengthen_skips_when_fewer_than_two_live_literals.)
         let mut s = make_solver(3, vec![vec![1, 2, 3]]);
-        let cidx = s.original_clause_ids[0];
+        let cidx = s.original_clause_ids[0] as usize ;
         let mut proof = ProofLog::disabled();
         s.inprocess_strengthen_clause(cidx, &[2, 3], &mut proof);
         assert_eq!(s.clause_len(cidx), 2);
@@ -11315,7 +11440,7 @@ mod tests {
         // builds, so later root false-literal trimming does not remove a watched
         // literal without watch maintenance and desync the watch lists.
         let mut s = make_solver(4, vec![vec![1, 2, 3, 4]]);
-        let cidx = s.original_clause_ids[0];
+        let cidx = s.original_clause_ids[0] as usize ;
         // Force literal 1 false at the root (watches are not moved without a
         // propagate, mirroring a literal that a vivify unit just falsified).
         assert!(s.enqueue(-1, ReasonRef::None));
@@ -11343,7 +11468,7 @@ mod tests {
         // is skipped (leaving the longer clause intact, which is always sound)
         // rather than create a clause watched on a false literal.
         let mut s = make_solver(3, vec![vec![1, 2, 3]]);
-        let cidx = s.original_clause_ids[0];
+        let cidx = s.original_clause_ids[0] as usize ;
         assert!(s.enqueue(-1, ReasonRef::None));
         assert!(s.enqueue(-2, ReasonRef::None));
         let mut proof = ProofLog::disabled();
@@ -11354,7 +11479,7 @@ mod tests {
     #[test]
     fn inprocess_delete_clause_removes_and_keeps_invariants() {
         let mut s = make_solver(3, vec![vec![1, 2, 3], vec![-1, 2]]);
-        let c0 = s.original_clause_ids[0];
+        let c0 = s.original_clause_ids[0] as usize ;
         assert!(watches_clause(&s, 1, c0));
         let mut proof = ProofLog::disabled();
         s.inprocess_delete_clause(c0, &mut proof);
@@ -11429,7 +11554,7 @@ mod tests {
         // original clause, since each strengthened clause implies its original.
         let original = vec![vec![1, 2, 3], vec![-1, 4], vec![2, 3, -4]];
         let mut s = make_solver(4, original.clone());
-        let c2 = s.original_clause_ids[2];
+        let c2 = s.original_clause_ids[2] as usize ;
         let mut proof = ProofLog::disabled();
         s.inprocess_strengthen_clause(c2, &[2, 3], &mut proof);
         s.validate_watch_invariants();
@@ -11494,7 +11619,7 @@ mod tests {
             vec![vec![1, 5], vec![2, -5], vec![1, 2, 3, 4]],
             &cfg,
         );
-        let target = s.original_clause_ids[2];
+        let target = s.original_clause_ids[2] as usize ;
         assert_eq!(s.clause_len(target), 4);
         let mut proof = ProofLog::disabled();
         assert!(s.vivify_round(&mut proof));
@@ -11508,7 +11633,7 @@ mod tests {
         // [1,2,3] is redundant given [1,2] but delete is disabled; left intact.
         let cfg = vivify_config();
         let mut s = make_solver_with_config(3, vec![vec![1, 2], vec![1, 2, 3]], &cfg);
-        let target = s.original_clause_ids[1];
+        let target = s.original_clause_ids[1] as usize ;
         let mut proof = ProofLog::disabled();
         assert!(s.vivify_round(&mut proof));
         assert!(!s.clause_is_deleted(target));
@@ -11519,7 +11644,7 @@ mod tests {
     fn vivify_disabled_by_default_does_nothing() {
         let s = make_solver(5, vec![vec![1, 5], vec![2, -5], vec![1, 2, 3, 4]]);
         assert!(!s.vivify);
-        let target = s.original_clause_ids[2];
+        let target = s.original_clause_ids[2] as usize ;
         // vivify_round honours the flag via inprocess_round; a direct call still
         // runs, but with the default config the scheduler never invokes it. Verify
         // the default solver leaves the clause intact.
@@ -12056,7 +12181,7 @@ mod tests {
             ..Default::default()
         };
         let s = make_solver_with_config(5, vec![vec![5, 1, 3, 2]], &config);
-        let clause_idx = s.original_clause_ids[0];
+        let clause_idx = s.original_clause_ids[0] as usize ;
 
         assert_eq!(s.clause_slice(clause_idx), &[5, 1, 2, 3]);
         assert_eq!(watched_literals(&s, clause_idx), Some((5, 1)));
@@ -12280,7 +12405,7 @@ mod tests {
         let mut clauses: Vec<Vec<i32>> = s
             .original_clause_ids
             .iter()
-            .copied()
+            .map(|&clause_idx| clause_idx as usize)
             .filter(|&clause_idx| !s.clause_is_deleted(clause_idx))
             .map(|clause_idx| s.clause_slice(clause_idx).to_vec())
             .collect();
@@ -12320,7 +12445,7 @@ mod tests {
 
             let var = lit.unsigned_abs() as usize;
             s.assignment[var] = if lit > 0 { TRUE } else { FALSE };
-            s.decision_level[var] = level;
+            s.decision_level[var] = level as u32;
         }
 
         for &(var, reason_idx) in reason_overrides {
@@ -12515,7 +12640,7 @@ mod tests {
     fn test_binary_propagates_implied_literal() {
         let config = binary_fast_hot_stats_config();
         let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
-        let clause_idx = s.original_clause_ids[0];
+        let clause_idx = s.original_clause_ids[0] as usize ;
         let binary_id = s.binary_id_for_clause(clause_idx);
 
         assert_eq!(s.binary_implications.len_for(-1), 1);
@@ -12531,7 +12656,7 @@ mod tests {
     fn test_binary_conflict_detected() {
         let config = binary_fast_config();
         let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
-        let clause_idx = s.original_clause_ids[0];
+        let clause_idx = s.original_clause_ids[0] as usize ;
         let binary_id = s.binary_id_for_clause(clause_idx);
 
         assert!(s.enqueue(-1, ReasonRef::None));
@@ -12544,7 +12669,7 @@ mod tests {
     fn test_binary_conflict_level_uses_reason_literals() {
         let config = binary_fast_config();
         let mut s = make_solver_with_config(3, vec![vec![1, 2]], &config);
-        let binary_id = s.binary_id_for_clause(s.original_clause_ids[0]);
+        let binary_id = s.binary_id_for_clause(s.original_clause_ids[0] as usize );
 
         assert!(s.enqueue(-1, ReasonRef::None));
         assert!(s.enqueue(-2, ReasonRef::None));
@@ -12563,7 +12688,7 @@ mod tests {
     fn test_binary_reason_expands_in_analyze() {
         let config = binary_fast_config();
         let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
-        let binary_id = s.binary_id_for_clause(s.original_clause_ids[0]);
+        let binary_id = s.binary_id_for_clause(s.original_clause_ids[0] as usize );
         assert!(s.enqueue(-1, ReasonRef::None));
         s.decide(-2);
 
@@ -12591,7 +12716,7 @@ mod tests {
     fn test_binary_original_clause_preserved_for_model_check() {
         let config = binary_fast_config();
         let s = make_solver_with_config(2, vec![vec![1, 2]], &config);
-        let clause_idx = s.original_clause_ids[0];
+        let clause_idx = s.original_clause_ids[0] as usize ;
 
         assert_eq!(s.clause_slice(clause_idx), &[1, 2]);
         assert_eq!(
@@ -12604,13 +12729,15 @@ mod tests {
     fn test_binary_refs_survive_inline_abstraction_migration_and_gc() {
         let config = binary_fast_config();
         let mut s = make_solver_with_config(5, vec![vec![3, 4, 5], vec![1, 2]], &config);
-        let old_binary_clause_idx = s.original_clause_ids[1];
+        let old_binary_clause_idx = s.original_clause_ids[1] as usize ;
         let binary_id = s.binary_id_for_clause(old_binary_clause_idx);
 
         // Force the large-formula inline-abstraction migration without constructing
         // a huge distinct formula.
-        s.original_clause_ids
-            .resize(INLINE_ABSTRACTION_CLAUSE_THRESHOLD, old_binary_clause_idx);
+        s.original_clause_ids.resize(
+            INLINE_ABSTRACTION_CLAUSE_THRESHOLD,
+            old_binary_clause_idx as u32,
+        );
         s.ensure_original_clause_abstractions();
 
         let migrated_clause_idx = s.binary_clauses[binary_id.0 as usize].clause_ref;
@@ -12710,7 +12837,7 @@ mod tests {
     fn test_original_binary_not_deleted_by_binary_budget() {
         let config = binary_fast_config();
         let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
-        let clause_idx = s.original_clause_ids[0];
+        let clause_idx = s.original_clause_ids[0] as usize ;
 
         s.reduce_db();
 
@@ -12722,7 +12849,7 @@ mod tests {
     fn test_binary_usage_counter_updates_on_reason() {
         let config = binary_fast_config();
         let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
-        let binary_id = s.binary_id_for_clause(s.original_clause_ids[0]);
+        let binary_id = s.binary_id_for_clause(s.original_clause_ids[0] as usize );
 
         assert!(s.enqueue(-1, ReasonRef::None));
         assert!(s.propagate().is_none());
@@ -12941,7 +13068,7 @@ mod tests {
         s.decide(-1);
         assert_eq!(s.propagate(), None);
 
-        let clause_idx = s.original_clause_ids[0];
+        let clause_idx = s.original_clause_ids[0] as usize ;
         assert_eq!(s.reason_ref(2), ReasonRef::Clause(clause_idx));
         assert!(s.binary_reason_lits.is_empty());
         assert_eq!(s.reason_lits_for_test(s.reason_ref(2)), vec![2, 1]);
@@ -13102,7 +13229,7 @@ mod tests {
         assert_eq!(s.propagate(), None);
 
         assert_eq!(s.assignment[2], TRUE);
-        assert_eq!(s.reason_ref(2), ReasonRef::Clause(s.original_clause_ids[0]));
+        assert_eq!(s.reason_ref(2), ReasonRef::Clause(s.original_clause_ids[0] as usize ));
         assert_eq!(s.stats.propagations, start_props + 2);
         assert_eq!(s.temporary_stats.propagations, start_temp_props);
         assert_eq!(s.saved_phase[2], TRUE);
@@ -13299,7 +13426,7 @@ mod tests {
         assert!(s
             .original_clause_ids
             .iter()
-            .all(|&clause_idx| s.clause_satisfied_by_trial(clause_idx, model)));
+            .all(|&clause_idx| s.clause_satisfied_by_trial(clause_idx as usize, model)));
     }
 
     #[test]
@@ -13351,7 +13478,7 @@ mod tests {
         let mut s = Solver::new(9, vec![]);
         s.use_lbd = true;
         for var in 1..=9 {
-            s.decision_level[var] = var;
+            s.decision_level[var] = var as u32;
         }
 
         let tier1 = s.add_clause(vec![1, 2]);
@@ -13382,7 +13509,7 @@ mod tests {
     #[test]
     fn test_lbd_metadata_does_not_touch_original_clause_layout() {
         let mut s = Solver::new(2, vec![vec![1, 2]]);
-        let original_idx = s.original_clause_ids[0];
+        let original_idx = s.original_clause_ids[0] as usize ;
         let original_header = s.clause_header(original_idx);
         let original_word_len = s.clause_word_len(original_idx);
         s.use_lbd = true;
@@ -13441,7 +13568,7 @@ mod tests {
     fn test_original_clause_lbd_not_touched() {
         let mut s = Solver::new(2, vec![vec![1, 2]]);
         s.use_lbd = true;
-        let original_idx = s.original_clause_ids[0];
+        let original_idx = s.original_clause_ids[0] as usize ;
 
         s.maybe_improve_lbd(original_idx, 1);
 
@@ -14615,10 +14742,10 @@ mod tests {
         let clauses = vec![vec![5, 3, 4], vec![2, 1, 5], vec![6, 1, 3, 4], vec![2, 6]];
         let mut s = make_solver(6, clauses);
         let reason_clause_ids = [
-            s.original_clause_ids[0],
-            s.original_clause_ids[1],
-            s.original_clause_ids[2],
-            s.original_clause_ids[3],
+            (s.original_clause_ids[0] as usize),
+            (s.original_clause_ids[1] as usize),
+            (s.original_clause_ids[2] as usize),
+            (s.original_clause_ids[3] as usize),
         ];
         rewrite_clause_for_test(&mut s, reason_clause_ids[0], &[5, 3, 4]);
         rewrite_clause_for_test(&mut s, reason_clause_ids[1], &[2, 1, 5]);
@@ -14659,11 +14786,11 @@ mod tests {
         ];
         let mut s = make_solver(8, clauses);
         let reason_clause_ids = [
-            s.original_clause_ids[0],
-            s.original_clause_ids[1],
-            s.original_clause_ids[2],
-            s.original_clause_ids[3],
-            s.original_clause_ids[4],
+            (s.original_clause_ids[0] as usize),
+            (s.original_clause_ids[1] as usize),
+            (s.original_clause_ids[2] as usize),
+            (s.original_clause_ids[3] as usize),
+            (s.original_clause_ids[4] as usize),
         ];
         rewrite_clause_for_test(&mut s, reason_clause_ids[0], &[5, 3, 4]);
         rewrite_clause_for_test(&mut s, reason_clause_ids[1], &[7, 5, 6]);
@@ -14845,8 +14972,8 @@ mod tests {
     #[test]
     fn test_recursive_limit_prevents_unbounded_walk() {
         let mut s = make_solver(7, vec![vec![5, 3], vec![7, 5]]);
-        let first = s.original_clause_ids[0];
-        let second = s.original_clause_ids[1];
+        let first = s.original_clause_ids[0] as usize ;
+        let second = s.original_clause_ids[1] as usize ;
         s.decision_level[1] = 2;
         s.decision_level[3] = 1;
         s.decision_level[5] = 1;
@@ -14900,8 +15027,8 @@ mod tests {
     #[test]
     fn test_shrink_replaces_level_block_with_new_uip() {
         let mut s = make_solver(4, vec![vec![2, -4], vec![3, -4]]);
-        let reason_two = s.original_clause_ids[0];
-        let reason_three = s.original_clause_ids[1];
+        let reason_two = s.original_clause_ids[0] as usize ;
+        let reason_three = s.original_clause_ids[1] as usize ;
         s.trail = vec![4, 2, 3, 1];
         s.decision_level[1] = 2;
         s.decision_level[2] = 1;
@@ -14925,8 +15052,8 @@ mod tests {
         // is (7 ∨ 5), 5's reason is (5 ∨ 3), and 3 is in the clause, so 7 is redundant.
         // The old same_level_only=true behavior wrongly kept 7 (asserted `[-1, 7, 3]`).
         let mut s = make_solver(7, vec![vec![5, 3], vec![7, 5]]);
-        let first = s.original_clause_ids[0];
-        let second = s.original_clause_ids[1];
+        let first = s.original_clause_ids[0] as usize ;
+        let second = s.original_clause_ids[1] as usize ;
         s.decision_level[1] = 3;
         s.decision_level[3] = 1;
         s.decision_level[5] = 1;
@@ -15021,7 +15148,7 @@ mod tests {
     fn test_otfs_does_not_remove_original_clause() {
         let mut s = make_solver(3, vec![vec![1, 2, 3]]);
         s.otfs_enabled = true;
-        let original = s.original_clause_ids[0];
+        let original = s.original_clause_ids[0] as usize ;
         let mut proof_log = ProofLog::disabled();
 
         let deleted = s.otfs_subsume_recent_learned(&[1, 2], None, &mut proof_log);
@@ -15220,7 +15347,7 @@ mod tests {
     fn test_otss_does_not_remove_original_clause() {
         let mut s = make_solver(3, vec![vec![1, 2, 3]]);
         s.otss_enabled = true;
-        let original = s.original_clause_ids[0];
+        let original = s.original_clause_ids[0] as usize ;
         // Original clauses can still appear in scratch_otss_participating_reasons
         // if they served as reasons during analyze. The safety filter on
         // `clause_is_learnt` inside delete_clause_subsumed_by_otss must reject.
@@ -15628,7 +15755,7 @@ mod tests {
         let mut original_clauses: Vec<Vec<i32>> = s
             .original_clause_ids
             .iter()
-            .map(|&clause_idx| s.clause_slice(clause_idx).to_vec())
+            .map(|&clause_idx| s.clause_slice(clause_idx as usize).to_vec())
             .collect();
         original_clauses.sort();
         assert_eq!(original_clauses, vec![vec![4, 5]]);
@@ -15906,7 +16033,7 @@ mod tests {
         let target = s
             .original_clause_ids
             .iter()
-            .copied()
+            .map(|&clause_idx| clause_idx as usize)
             .find(|&clause_idx| s.clause_len(clause_idx) == 3)
             .expect("expected ternary original clause");
 
@@ -15929,7 +16056,7 @@ mod tests {
     #[test]
     fn test_simplify_clause_deletion_records_drat_delete() {
         let mut s = make_solver(2, vec![vec![1, 2]]);
-        let target = s.original_clause_ids[0];
+        let target = s.original_clause_ids[0] as usize ;
         let dir = make_temp_dir("proof-simplify-delete");
         let mut proof = ProofLog::new(&dir, 64, false);
 
