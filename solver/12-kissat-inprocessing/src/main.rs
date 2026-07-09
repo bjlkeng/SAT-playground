@@ -203,6 +203,11 @@ const VIVIFY_LEARNED_MAX_LBD: u16 = 6;
 const SWEEP_SEED_BUDGET: usize = 512;
 /// Bead SAT-playground-5b2.3.38: max kitten solve calls per environment.
 const SWEEP_SOLVE_BUDGET: usize = 2000;
+/// Skip SAT sweeping when phase search has already found a near-complete
+/// SAT-looking assignment prefix. This protects long SAT trajectories where
+/// true local equivalences can still derail a nearly complete model.
+const SWEEP_SKIP_BEST_PHASE_PERMILLE: usize = 950;
+const SWEEP_SKIP_TARGET_PHASE_PERMILLE: usize = 875;
 const OTFS_MAX_LEARNED_LEN: usize = 20;
 const OTFS_MAX_EXTRA_LITS: usize = 4;
 const OTFS_RECENT_LEARNED_LIMIT: usize = 4;
@@ -6551,6 +6556,17 @@ impl Solver {
         self.stats.conflicts >= self.next_inprocess_conflicts
     }
 
+    fn should_skip_sweep_for_deep_phase(&self) -> bool {
+        let num_vars = self.assignment.len().saturating_sub(1);
+        if num_vars == 0 {
+            return false;
+        }
+        self.best_assigned.saturating_mul(1000)
+            >= num_vars.saturating_mul(SWEEP_SKIP_BEST_PHASE_PERMILLE)
+            && self.target_assigned.saturating_mul(1000)
+                >= num_vars.saturating_mul(SWEEP_SKIP_TARGET_PHASE_PERMILLE)
+    }
+
     /// Run one inprocessing round at decision level 0, then reschedule.
     ///
     /// Interleaves the enabled clause-simplification / formula-rewriting techniques so
@@ -6571,6 +6587,19 @@ impl Solver {
         );
         self.inprocess_rounds += 1;
 
+        if config.trace_search_interval > 0 {
+            eprintln!(
+                "c inprocess round={} conflicts={} target={} best={} trail={} orig_clauses={} orig_literals={}",
+                self.inprocess_rounds,
+                self.stats.conflicts,
+                self.target_assigned,
+                self.best_assigned,
+                self.trail.len(),
+                self.original_clause_ids.len(),
+                self.original_literals,
+            );
+        }
+
         let mut ok = true;
         // Probe first: failed-literal probing forces backbone units, so vivification
         // then runs against an already-simplified root.
@@ -6581,7 +6610,19 @@ impl Solver {
             ok = self.vivify_round(proof_log);
         }
         if ok && self.sweep {
-            ok = self.sweep_round(proof_log);
+            if self.should_skip_sweep_for_deep_phase() {
+                if config.trace_search_interval > 0 {
+                    eprintln!(
+                        "c sweep skipped=deep_phase conflicts={} target={} best={} vars={}",
+                        self.stats.conflicts,
+                        self.target_assigned,
+                        self.best_assigned,
+                        self.assignment.len().saturating_sub(1),
+                    );
+                }
+            } else {
+                ok = self.sweep_round(proof_log);
+            }
         }
 
         self.next_inprocess_conflicts = self
@@ -10409,7 +10450,7 @@ impl Solver {
                     }
                     if trace_search_interval > 0 && self.stats.conflicts >= next_search_trace {
                         eprintln!(
-                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} level={} trail={} learned={} reduce_db={} orig_clauses={} orig_literals={}",
+                            "c search seconds={:.3} conflicts={} decisions={} propagations={} restarts={} level={} trail={} target={} best={} learned={} reduce_db={} orig_clauses={} orig_literals={}",
                             search_start.elapsed().as_secs_f64(),
                             self.stats.conflicts,
                             self.stats.decisions,
@@ -10417,6 +10458,8 @@ impl Solver {
                             self.stats.restarts,
                             self.current_level(),
                             self.trail.len(),
+                            self.target_assigned,
+                            self.best_assigned,
                             self.live_learned_clause_count,
                             self.stats.reduce_db_calls,
                             self.original_clause_ids.len(),
@@ -11313,6 +11356,28 @@ mod tests {
         let mut s = s;
         s.stats.conflicts = 1_000_000;
         assert!(!s.should_inprocess());
+    }
+
+    #[test]
+    fn sweep_deep_phase_guard_requires_best_and_target_prefixes() {
+        let mut s = make_solver(100, vec![vec![1, 2]]);
+        assert!(!s.should_skip_sweep_for_deep_phase());
+
+        s.best_assigned = 95;
+        s.target_assigned = 87;
+        assert!(
+            !s.should_skip_sweep_for_deep_phase(),
+            "best alone must not suppress sweep"
+        );
+
+        s.target_assigned = 88;
+        assert!(s.should_skip_sweep_for_deep_phase());
+
+        s.best_assigned = 94;
+        assert!(
+            !s.should_skip_sweep_for_deep_phase(),
+            "target alone must not suppress sweep"
+        );
     }
 
     #[test]
