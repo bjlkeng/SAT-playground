@@ -76,6 +76,7 @@ SAT_FORWARD_SUBSUME,forward_subsume,bool,on|off,false,false,false,true,false,fal
 SAT_GATE_EXTRACT,gate_extract,bool,on|off,false,false,false,true,false,false,SAT_SIMPLIFICATION,,0.3,yes
 SAT_GATE_BVE,gate_bve,bool,on|off,false,false,false,true,false,false,SAT_SIMPLIFICATION|SAT_BVE,SAT_GATE_EXTRACT,0.3,yes
 SAT_RCHECK,rcheck,bool,on|off,false,false,false,true,false,false,SAT_SIMPLIFICATION,,0.3,yes
+SAT_PAIR_ABS_REFUTE,pair_abs_refute,bool,on|off,false,true,true,true,false,false,,,SAT-playground-2a7,yes
 SAT_INPROCESS_INTERVAL_CONFLICTS,inprocess_interval_conflicts,u64,nonnegative,0,0,0,false,false,false,,,0.3,internal
 SAT_INPROCESS_MAX_ROUNDS,inprocess_max_rounds,u64,nonnegative,0,0,0,false,false,false,,,0.3,internal
 SAT_VIVIFY_TICKS,vivify_ticks_budget,u64,nonnegative,0,0,0,false,false,false,,,0.3,internal

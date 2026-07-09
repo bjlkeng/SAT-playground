@@ -26,6 +26,16 @@ MiniSat `SimpSolver` design described in
 > Provenance: `log/feature-ablation-2026-05-30-12-11-01/FINDINGS.md`. To recover the old behavior:
 > `SAT_PROFILE=baseline`, or `SAT_SEARCH_MODE=single SAT_MODE_USE_TICKS=off SAT_REDUCE=legacy SAT_USE_LBD=off`.
 
+> **Medium-suite default promotion (2026-07-09): adjacent-pair parity abstraction.**
+> `SAT_PAIR_ABS_REFUTE` is enabled in the `default` and `fast` profiles after the
+> `sat-comp-2025-medium` single-seed A/B gate improved solved count from `55/100` to `58/100`
+> with identical both-solved conflicts and PAR-2 `180659.0 -> 170286.2`.
+> The feature targets complete expanded clauses over adjacent pair parities, introduces fresh
+> parity variables, emits a pure-resolution DRAT lift from the concrete expansion to the compact
+> abstract CNF, solves that abstract CNF, and maps its UNSAT proof back to the fresh variables.
+> Evidence: `log/abtest-pairabs-vs-base-2026-07-09-08-20-53`; `check_promotion_gate.py`
+> reported `promotion_gate=PASS`. Disable with `SAT_PAIR_ABS_REFUTE=off`.
+
 What is present:
 
 - original-clause occurrence lists and literal occurrence counts during preprocessing
@@ -54,6 +64,8 @@ What is present:
   `canonical-sorted` (default/baseline), `input-order`, `kissat-watch`, `raw`, or `auto`
   (currently an alias for `canonical-sorted`)
 - DRAT logging for preprocessing-generated resolvents/units
+- DRAT-verified adjacent-pair parity abstraction refutation for expanded `xor_op`-style UNSAT
+  formulas (`SAT_PAIR_ABS_REFUTE`, default/fast)
 - MiniSat-style elimination stack entries and SAT model extension
 - SAT output from a complete model snapshot instead of the mutable live assignment vector
 - one-shot cleanup after preprocessing: drop occurrence metadata, rebuild branch heap, and force GC

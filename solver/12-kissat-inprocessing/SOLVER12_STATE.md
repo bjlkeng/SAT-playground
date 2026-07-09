@@ -23,6 +23,7 @@ Known source files:
 | `src/limits.rs` | Placeholder boundary for future limit checks. |
 | `src/output.rs` | SAT Competition model line formatting, SolveStatus, model.txt writing, status.txt/result.json contract emission, and JSON escaping. |
 | `src/check.rs` | Debug generation-handle scaffold and tests. |
+| `src/pair_abs.rs` | Adjacent-pair parity abstraction recognizer and pure-resolution DRAT lift for expanded `xor_op`-style formulas. |
 
 Audited entry points:
 
@@ -48,8 +49,16 @@ Related implementation anchors:
 | `parse_cnf` | `src/main.rs:6496` | DIMACS parser used by `main`; returns parse errors so main can emit result.json with PARSE_ERROR. |
 | `main` | `src/main.rs:6725` | CLI/run.sh entry point, config parsing/output before CNF parsing, solver construction, result.json/status/model contract emission, JSON_STATS/trace_full stderr emission, internal SAT model check, and SAT Competition stdout. |
 
-Known unpromoted or incomplete feature families at this baseline:
+Known promoted, unpromoted, or incomplete feature families at this baseline:
 
+- Adjacent-pair parity abstraction is promoted in the `default` and `fast` profiles as
+  `SAT_PAIR_ABS_REFUTE`. It runs at decision level 0 before Gaussian refutation and BVE, accepts
+  only complete clause expansions over adjacent pair parity variables, introduces fresh parity
+  variables with DRAT definitions, lifts every abstract clause by resolution from its concrete
+  expansion, solves the compact abstract CNF with an in-memory proof log, and maps that proof back
+  to the fresh variables. The 2026-07-09 medium A/B gate improved solved count `55 -> 58` by
+  recovering `xor_op_n36_d3`, `xor_op_n38_d3`, and `xor_op_n40_d3`; disable with
+  `SAT_PAIR_ABS_REFUTE=off`.
 - Full glue/LBD search policy: LBD metadata, focused/stable search, tick-based mode scheduling,
   and the Kissat/Glucose-style focused EMA restart policy are implemented but no longer promoted in
   the default and fast profiles after the clean 2026-05-24 solver 10 comparison showed a default

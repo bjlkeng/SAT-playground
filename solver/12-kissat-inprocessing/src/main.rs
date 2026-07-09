@@ -9295,7 +9295,7 @@ impl Solver {
     /// variables. Default-on after the medium-suite gate showed a solved-count win;
     /// use `SAT_PAIR_ABS_REFUTE=off` to disable it.
     fn try_pair_abs_refute(&mut self, proof_log: &mut ProofLog, config: &SolverConfig) -> bool {
-        if !env_bool_or_default("SAT_PAIR_ABS_REFUTE", true) || !proof_log.is_enabled() {
+        if !config.pair_abs_refute || !proof_log.is_enabled() {
             return false;
         }
         if PAIR_ABS_REFUTE_DEPTH.with(|depth| depth.get() != 0) {

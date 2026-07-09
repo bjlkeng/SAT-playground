@@ -29,6 +29,7 @@ SAT_GATE_EXTRACT,gate_extract,Experimental,false,false,false,none,,gate-extracti
 SAT_GATE_BVE,gate_bve,Experimental,false,false,false,none,,gate-aware-bve,2ro
 SAT_RCHECK,rcheck,ParkingLot,false,false,false,none,,redundancy-checking,0.3
 SAT_GAUSS,gauss,SmokeSafe,true,false,false,default|fast,log/seedgate-s12_gauss-2026-06-30-08-18-10,parity-gauss-xor,SAT-playground-qld
+SAT_PAIR_ABS_REFUTE,pair_abs_refute,FullSetValidated,true,false,true,default|fast,log/abtest-pairabs-vs-base-2026-07-09-08-20-53,pair-parity-abstraction|xor-op,SAT-playground-2a7
 SAT_ELS,els,Experimental,true,true,false,none,,els-equiv-substitution,SAT-playground-otd
 SAT_CONGRUENCE,congruence,Experimental,true,true,false,none,,gate-congruence-closure,SAT-playground-otd
 SAT_CONGRUENCE_XOR,congruence_xor,Experimental,true,true,false,none,,gate-congruence-xor,SAT-playground-otd

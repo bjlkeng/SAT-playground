@@ -639,6 +639,7 @@ pub(crate) struct SolverConfig {
     pub(crate) gate_bve: bool,
     pub(crate) rcheck: bool,
     pub(crate) gauss: bool,
+    pub(crate) pair_abs_refute: bool,
     pub(crate) els: bool,
     pub(crate) congruence: bool,
     pub(crate) congruence_xor: bool,
@@ -762,6 +763,7 @@ impl Default for SolverConfig {
             gate_bve: false,
             rcheck: false,
             gauss: false,
+            pair_abs_refute: false,
             els: false,
             congruence: false,
             congruence_xor: false,
@@ -923,6 +925,16 @@ impl SolverConfig {
                 // <=0.74s on the largest cell, which times out regardless). The DRAT proof is
                 // pure resolution and drat-trim VERIFIED (1.26M-clause proof, 0 RAT lemmas).
                 self.gauss = true;
+                // 2026-07-09: adjacent-pair parity abstraction refuter promoted to
+                // default/fast. It detects complete pair-XOR expansions such as the
+                // sat-comp-2025-medium xor_op family, introduces fresh parity variables,
+                // lifts the compact abstract clauses by resolution from the concrete
+                // expansion, then maps a compact abstract UNSAT proof back into the
+                // outer DRAT proof. Medium single-seed A/B (32c/16GB/1800s,
+                // log/abtest-pairabs-vs-base-2026-07-09-08-20-53): 58/100 vs 55/100,
+                // same both-solved conflicts, PAR-2 170286.2 vs 180659.0,
+                // promotion_gate PASS. This recovers xor_op_n36/n38/n40.
+                self.pair_abs_refute = true;
                 // SAT-playground-5b2.2.76-adjacent (2026-07-05): promote kissat-parity
                 // reason-side literal bumping (analyze.c bump_reason mark set) to the
                 // default profile. Stock kissat bumps not only the 1UIP-analyzed
@@ -1385,6 +1397,12 @@ impl SolverConfig {
         self.gate_bve = parse_bool_selected(env_map, &key_set, "SAT_GATE_BVE", self.gate_bve);
         self.rcheck = parse_bool_selected(env_map, &key_set, "SAT_RCHECK", self.rcheck);
         self.gauss = parse_bool_selected(env_map, &key_set, "SAT_GAUSS", self.gauss);
+        self.pair_abs_refute = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_PAIR_ABS_REFUTE",
+            self.pair_abs_refute,
+        );
         self.els = parse_bool_selected(env_map, &key_set, "SAT_ELS", self.els);
         self.congruence =
             parse_bool_selected(env_map, &key_set, "SAT_CONGRUENCE", self.congruence);
@@ -1878,6 +1896,7 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "gate_bve", self.gate_bve);
         push_kv_bool(&mut lines, "rcheck", self.rcheck);
         push_kv_bool(&mut lines, "gauss", self.gauss);
+        push_kv_bool(&mut lines, "pair_abs_refute", self.pair_abs_refute);
         push_kv_bool(&mut lines, "els", self.els);
         push_kv_bool(&mut lines, "congruence", self.congruence);
         push_kv_bool(&mut lines, "congruence_xor", self.congruence_xor);
@@ -2409,6 +2428,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             "log/seedgate-s12_gauss-2026-06-30-08-18-10",
         ),
         feature(
+            "SAT_PAIR_ABS_REFUTE",
+            config.pair_abs_refute,
+            FeatureMaturity::FullSetValidated,
+            true,
+            false,
+            true,
+            "log/abtest-pairabs-vs-base-2026-07-09-08-20-53",
+        ),
+        feature(
             "SAT_ELS",
             config.els,
             FeatureMaturity::Experimental,
@@ -2616,6 +2644,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "gate_bve" => Some("SAT_GATE_BVE"),
         "rcheck" => Some("SAT_RCHECK"),
         "gauss" => Some("SAT_GAUSS"),
+        "pair_abs_refute" => Some("SAT_PAIR_ABS_REFUTE"),
         "els" => Some("SAT_ELS"),
         "congruence" => Some("SAT_CONGRUENCE"),
         "inprocess_interval_conflicts" => Some("SAT_INPROCESS_INTERVAL_CONFLICTS"),
@@ -2808,6 +2837,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_GATE_BVE",
         "SAT_RCHECK",
         "SAT_GAUSS",
+        "SAT_PAIR_ABS_REFUTE",
         "SAT_ELS",
         "SAT_CONGRUENCE",
         "SAT_CONGRUENCE_XOR",
@@ -4220,7 +4250,8 @@ mod tests {
         let fast_config = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "fast")]));
         assert_eq!(fast_config.bsr_occurrence_limit, 1000);
 
-        let baseline_config = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "baseline")]));
+        let baseline_config =
+            SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "baseline")]));
         assert_eq!(baseline_config.bsr_occurrence_limit, 0);
 
         let config = SolverConfig::from_env_map(&env_map(&[("SAT_BSR_OCCLIM", "1000")]));
@@ -4266,7 +4297,8 @@ mod tests {
         let fast_config = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "fast")]));
         assert!(fast_config.bsr_drain_batched);
 
-        let baseline_config = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "baseline")]));
+        let baseline_config =
+            SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "baseline")]));
         assert!(!baseline_config.bsr_drain_batched);
 
         let disabled = SolverConfig::from_env_map(&env_map(&[("SAT_BSR_DRAIN_BATCHED", "off")]));
@@ -4283,14 +4315,40 @@ mod tests {
     }
 
     #[test]
+    fn test_pair_abs_refute_is_default_profile_and_replayable() {
+        assert!(!SolverConfig::default().pair_abs_refute);
+
+        let default_config = SolverConfig::from_env_map(&env_map(&[]));
+        assert!(default_config.pair_abs_refute);
+
+        let fast_config = SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "fast")]));
+        assert!(fast_config.pair_abs_refute);
+
+        let baseline_config =
+            SolverConfig::from_env_map(&env_map(&[("SAT_PROFILE", "baseline")]));
+        assert!(!baseline_config.pair_abs_refute);
+
+        let disabled = SolverConfig::from_env_map(&env_map(&[("SAT_PAIR_ABS_REFUTE", "off")]));
+        assert!(!disabled.pair_abs_refute);
+
+        let replay = default_config.config_replay_text();
+        assert!(replay.contains("pair_abs_refute=true"));
+        let replayed = SolverConfig::from_replay_text(&replay, Path::new("<pair-abs-test>"));
+        assert_eq!(replayed.pair_abs_refute, default_config.pair_abs_refute);
+        assert_eq!(replayed.config_hash(), default_config.config_hash());
+    }
+
+    #[test]
     fn test_schema_and_feature_csv_are_loaded_into_binary() {
         assert!(CONFIG_SCHEMA_CSV.contains("SAT_USE_LBD"));
         assert!(CONFIG_SCHEMA_CSV.contains("SAT_CONFIG_REPLAY"));
         assert!(CONFIG_SCHEMA_CSV.contains("SAT_BSR_OCCLIM"));
         assert!(CONFIG_SCHEMA_CSV.contains("SAT_ELIMINATE_RESOLUTIONS"));
         assert!(CONFIG_SCHEMA_CSV.contains("SAT_ELIMINATE_OCCLIM"));
+        assert!(CONFIG_SCHEMA_CSV.contains("SAT_PAIR_ABS_REFUTE"));
         assert!(FEATURES_CSV.contains("SAT_USE_LBD"));
         assert!(FEATURES_CSV.contains("SAT_FULL_BSR"));
+        assert!(FEATURES_CSV.contains("SAT_PAIR_ABS_REFUTE"));
     }
 
     #[test]
