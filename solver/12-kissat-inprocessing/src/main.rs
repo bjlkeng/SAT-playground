@@ -21,6 +21,7 @@ mod kitten;
 mod limits;
 mod lit;
 mod output;
+mod pair_abs;
 mod simp;
 mod sweep;
 mod stats;
@@ -52,6 +53,10 @@ static TEST_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 thread_local! {
     static TEST_COUNT_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
+}
+
+thread_local! {
+    static PAIR_ABS_REFUTE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -1014,6 +1019,7 @@ enum OriginalClauseInsertResult {
 enum ProofMode {
     Disabled,
     Stream(ProofStream),
+    Memory(ProofMemory),
 }
 
 struct ProofStream {
@@ -1032,6 +1038,10 @@ struct ProofStream {
     max_clause_len: usize,
     bytes_written: u64,
     flush_count: u64,
+}
+
+struct ProofMemory {
+    clauses: Vec<Vec<i32>>,
 }
 
 struct ProofLog {
@@ -1125,25 +1135,44 @@ impl ProofLog {
         }
     }
 
+    fn memory() -> Self {
+        Self {
+            mode: ProofMode::Memory(ProofMemory {
+                clauses: Vec::new(),
+            }),
+            stats: ProofStats {
+                state: "memory",
+                ..ProofStats::default()
+            },
+        }
+    }
+
     fn is_enabled(&self) -> bool {
-        matches!(self.mode, ProofMode::Stream(_))
+        matches!(self.mode, ProofMode::Stream(_) | ProofMode::Memory(_))
     }
 
     fn record_clause(&mut self, clause: &[i32]) {
-        if let ProofMode::Stream(stream) = &mut self.mode {
-            stream.clause_count += 1;
-            stream.literal_count += clause.len() as u64;
-            stream.max_clause_len = stream.max_clause_len.max(clause.len());
-            Self::write_clause_line(stream, b"", clause);
+        match &mut self.mode {
+            ProofMode::Disabled => {}
+            ProofMode::Stream(stream) => {
+                stream.clause_count += 1;
+                stream.literal_count += clause.len() as u64;
+                stream.max_clause_len = stream.max_clause_len.max(clause.len());
+                Self::write_clause_line(stream, b"", clause);
+            }
+            ProofMode::Memory(memory) => memory.clauses.push(clause.to_vec()),
         }
     }
 
     fn record_deletion(&mut self, clause: &[i32]) {
-        if let ProofMode::Stream(stream) = &mut self.mode {
-            stream.deletion_count += 1;
-            stream.deletion_literal_count += clause.len() as u64;
-            stream.max_clause_len = stream.max_clause_len.max(clause.len());
-            Self::write_clause_line(stream, b"d ", clause);
+        match &mut self.mode {
+            ProofMode::Disabled | ProofMode::Memory(_) => {}
+            ProofMode::Stream(stream) => {
+                stream.deletion_count += 1;
+                stream.deletion_literal_count += clause.len() as u64;
+                stream.max_clause_len = stream.max_clause_len.max(clause.len());
+                Self::write_clause_line(stream, b"d ", clause);
+            }
         }
     }
 
@@ -1177,6 +1206,10 @@ impl ProofLog {
     fn finish_sat(&mut self) {
         match std::mem::replace(&mut self.mode, ProofMode::Disabled) {
             ProofMode::Disabled => {}
+            ProofMode::Memory(memory) => {
+                self.mode = ProofMode::Memory(memory);
+                self.stats.state = "memory-sat";
+            }
             ProofMode::Stream(stream) => {
                 self.stats = proof_stats_from_stream(&stream, "discarded");
                 drop(stream.file);
@@ -1188,6 +1221,11 @@ impl ProofLog {
     fn finish_unknown(&mut self) {
         match std::mem::replace(&mut self.mode, ProofMode::Disabled) {
             ProofMode::Disabled => {}
+            ProofMode::Memory(memory) => {
+                self.mode = ProofMode::Memory(memory);
+                self.stats.state = "memory-incomplete";
+                self.stats.incomplete = true;
+            }
             ProofMode::Stream(stream) => {
                 self.stats = proof_stats_from_stream(&stream, "discarded-incomplete");
                 self.stats.incomplete = true;
@@ -1200,6 +1238,12 @@ impl ProofLog {
     fn finish_unsat(&mut self) {
         match std::mem::replace(&mut self.mode, ProofMode::Disabled) {
             ProofMode::Disabled => {}
+            ProofMode::Memory(mut memory) => {
+                memory.clauses.push(Vec::new());
+                self.mode = ProofMode::Memory(memory);
+                self.stats.state = "memory-finalized";
+                self.stats.finalized = true;
+            }
             ProofMode::Stream(mut stream) => {
                 stream.clause_count += 1;
                 stream
@@ -1261,9 +1305,24 @@ impl ProofLog {
     fn bytes_written_estimate(&self) -> u64 {
         match &self.mode {
             ProofMode::Disabled => self.stats.bytes_written,
+            ProofMode::Memory(memory) => memory
+                .clauses
+                .iter()
+                .map(|clause| clause.len() as u64 * 12 + 2)
+                .sum(),
             ProofMode::Stream(stream) => stream
                 .bytes_written
                 .saturating_add(stream.buffer.len() as u64),
+        }
+    }
+
+    fn take_memory_clauses(&mut self) -> Option<Vec<Vec<i32>>> {
+        match std::mem::replace(&mut self.mode, ProofMode::Disabled) {
+            ProofMode::Memory(memory) => Some(memory.clauses),
+            other => {
+                self.mode = other;
+                None
+            }
         }
     }
 }
@@ -9228,6 +9287,119 @@ impl Solver {
         true
     }
 
+    /// Refute adjacent-pair parity abstractions such as the `xor_op` family. The
+    /// original formula must be a complete expansion of clauses over pair parity
+    /// variables `(x_{2i-1} xor x_{2i})`. We introduce fresh parity variables in
+    /// DRAT, lift every abstract clause by pure resolution from its expansion, solve
+    /// the much smaller abstract CNF, then map that abstract proof back to the fresh
+    /// variables. Default-on after the medium-suite gate showed a solved-count win;
+    /// use `SAT_PAIR_ABS_REFUTE=off` to disable it.
+    fn try_pair_abs_refute(&mut self, proof_log: &mut ProofLog, config: &SolverConfig) -> bool {
+        if !env_bool_or_default("SAT_PAIR_ABS_REFUTE", true) || !proof_log.is_enabled() {
+            return false;
+        }
+        if PAIR_ABS_REFUTE_DEPTH.with(|depth| depth.get() != 0) {
+            return false;
+        }
+
+        let debug = std::env::var("SAT_DEBUG_PAIR_ABS").is_ok();
+        let t0 = Instant::now();
+        let num_vars = self.assignment.len().saturating_sub(1);
+        let clauses: Vec<Vec<i32>> = self
+            .original_clause_ids
+            .iter()
+            .map(|&cid| cid as usize)
+            .filter(|&cid| cid < self.arena.len() && !self.clause_is_deleted(cid))
+            .map(|cid| self.clause_slice(cid).to_vec())
+            .collect();
+
+        let Some(abs_formula) = pair_abs::extract_pair_abs_formula(&clauses, num_vars) else {
+            if debug {
+                eprintln!(
+                    "c pair_abs_refute skip clauses={} vars={} sec={:.4}",
+                    clauses.len(),
+                    num_vars,
+                    t0.elapsed().as_secs_f64()
+                );
+            }
+            return false;
+        };
+
+        let mut abs_solver = Solver::new_with_config(
+            abs_formula.abstract_num_vars,
+            abs_formula.abstract_clauses.clone(),
+            config,
+        );
+        let mut abs_proof = ProofLog::memory();
+        let outcome = PAIR_ABS_REFUTE_DEPTH.with(|depth| {
+            let old = depth.get();
+            depth.set(old + 1);
+            let outcome = abs_solver.solve_status_with_proof(&mut abs_proof, config);
+            depth.set(old);
+            outcome
+        });
+        if outcome.status != SolveStatus::Unsat {
+            match outcome.status {
+                SolveStatus::Sat => abs_proof.finish_sat(),
+                SolveStatus::Unknown => abs_proof.finish_unknown(),
+                SolveStatus::Unsat => unreachable!(),
+                SolveStatus::ParseError => unreachable!("abstract solve does not parse input"),
+            }
+            if debug {
+                eprintln!(
+                    "c pair_abs_refute abstract_status={:?} pairs={} abstract_clauses={} sec={:.4}",
+                    outcome.status,
+                    abs_formula.pair_count(),
+                    abs_formula.abstract_clause_count(),
+                    t0.elapsed().as_secs_f64()
+                );
+            }
+            return false;
+        }
+        abs_proof.finish_unsat();
+        let Some(abs_proof_clauses) = abs_proof.take_memory_clauses() else {
+            return false;
+        };
+        let Some(lift_proof) = abs_formula.build_lift_proof() else {
+            if debug {
+                eprintln!(
+                    "c pair_abs_refute lift_failed pairs={} abstract_clauses={} sec={:.4}",
+                    abs_formula.pair_count(),
+                    abs_formula.abstract_clause_count(),
+                    t0.elapsed().as_secs_f64()
+                );
+            }
+            return false;
+        };
+
+        for clause in &lift_proof {
+            proof_log.record_clause(clause);
+        }
+        for clause in &abs_proof_clauses {
+            let mut mapped = Vec::with_capacity(clause.len());
+            for &lit in clause {
+                let dense = lit.unsigned_abs() as usize;
+                if dense == 0 || dense >= abs_formula.dense_to_fresh.len() {
+                    return false;
+                }
+                let fresh = abs_formula.dense_to_fresh[dense];
+                mapped.push(if lit > 0 { fresh } else { -fresh });
+            }
+            proof_log.record_clause(&mapped);
+        }
+        if debug {
+            eprintln!(
+                "c pair_abs_refute proved pairs={} abstract_clauses={} lift_clauses={} abstract_proof_clauses={} sec={:.4}",
+                abs_formula.pair_count(),
+                abs_formula.abstract_clause_count(),
+                lift_proof.len(),
+                abs_proof_clauses.len(),
+                t0.elapsed().as_secs_f64()
+            );
+        }
+        true
+    }
+
     /// Push the model-reconstruction witness for an ELS equivalence `v ≡ r` (`v` the
     /// positive literal of the eliminated variable, `r` its signed representative). The
     /// two witness "clauses" `(v ∨ ¬r)` and `(¬v ∨ r)` are stored in the elimination-
@@ -10250,6 +10422,14 @@ impl Solver {
         // VmSize over the `ulimit -v` cap. Behavior-preserving (frees only unused capacity)
         // and giant-gated, so normal instances are unaffected.
         self.shrink_watch_lists_if_large();
+
+        // Adjacent-pair parity abstraction (SAT_PAIR_ABS_REFUTE). This
+        // targets expanded pair-XOR formulas by proving UNSAT on a compact abstract
+        // CNF over fresh parity variables, with a DRAT resolution lift back to the
+        // original clauses.
+        if self.try_pair_abs_refute(proof_log, config) {
+            return SolveOutcome::unsat();
+        }
 
         // XOR/parity Gaussian refutation (SAT_GAUSS). On parity-heavy formulas (e.g.
         // Tseitin) that CDCL cannot refute in polynomial resolution, this proves UNSAT
