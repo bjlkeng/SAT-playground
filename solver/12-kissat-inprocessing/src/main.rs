@@ -32,7 +32,7 @@ mod oracle_tests;
 use branch::VmtfQueue;
 use config::{
     BranchMode, ClauseMinMode, InitialClauseMode, PhasePolicy, ProofPolicy, ReducePolicy,
-    RestartPolicy, SearchModePolicy, SolverConfig, VmtfMode,
+    RestartPolicy, SearchModePolicy, SolverConfig, SolverProfile, VmtfMode,
 };
 use limits::{effective_memory_limit_bytes, LimitHit, RuntimeLimits};
 use lit::{lit_to_index, lit_to_word, word_to_lit};
@@ -1292,6 +1292,18 @@ fn debug_mem_line(tag: &str, arena_len: usize) {
     );
 }
 
+fn env_bool_or_default(name: &str, default: bool) -> bool {
+    parse_bool_token_or_default(std::env::var(name).ok().as_deref(), default)
+}
+
+fn parse_bool_token_or_default(value: Option<&str>, default: bool) -> bool {
+    match value {
+        Some("on") | Some("1") | Some("true") => true,
+        Some("off") | Some("0") | Some("false") => false,
+        _ => default,
+    }
+}
+
 fn proof_stats_from_stream(stream: &ProofStream, state: &'static str) -> ProofStats {
     ProofStats {
         added_clauses: stream.clause_count,
@@ -1554,7 +1566,9 @@ struct Solver {
     /// per scheduled variable, build a bounded local environment, solve it with the
     /// embedded kitten sub-solver to prove backbone units and literal equivalences, emit
     /// the kitten RUP proof, add the backbones as root units and feed the equivalences to
-    /// ELS. Requires SAT_INPROCESS=on; default off. Correctness-critical (DRAT).
+    /// ELS. Defaults on for the Default/Fast profiles with the guarded 1M inprocess
+    /// cadence, and can be disabled explicitly with SAT_SWEEP=off. Correctness-critical
+    /// (DRAT).
     sweep: bool,
     /// Bead SAT-playground-5b2.3.6: env SAT_VIVIFY_LEARNED. Also vivify LEARNT clauses
     /// (not only irredundant originals). Kissat vivifies tier1/tier2 learnt clauses for a
@@ -2499,9 +2513,10 @@ impl Solver {
             vivify_max_clause_len: config.vivify_max_clause_len,
             vivify_cursor: 0,
             vivify_unproductive_rounds: 0,
-            sweep: matches!(
-                std::env::var("SAT_SWEEP").as_deref(),
-                Ok("on") | Ok("1") | Ok("true")
+            sweep: env_bool_or_default(
+                "SAT_SWEEP",
+                config.inprocess
+                    && matches!(config.profile, SolverProfile::Default | SolverProfile::Fast),
             ),
             vivify_learned: matches!(
                 std::env::var("SAT_VIVIFY_LEARNED").as_deref(),
@@ -6542,8 +6557,8 @@ impl Solver {
         }
     }
 
-    /// Whether an inprocessing round is due. Only ever true when `SAT_INPROCESS`
-    /// is enabled; the default profile keeps inprocessing off and this is a no-op.
+    /// Whether an inprocessing round is due. Only ever true when the selected profile
+    /// or `SAT_INPROCESS` enables the inprocessing scheduler.
     /// Must be checked only at decision level 0 (the caller guarantees it), since
     /// inprocessing rewrites the root formula.
     fn should_inprocess(&self) -> bool {
@@ -11352,10 +11367,32 @@ mod tests {
     #[test]
     fn inprocess_disabled_by_default_never_fires() {
         let s = make_solver(2, vec![vec![1, 2]]);
-        assert!(!s.inprocess, "SAT_INPROCESS is off by default");
+        assert!(!s.inprocess, "raw SolverConfig::default keeps inprocess off");
         let mut s = s;
         s.stats.conflicts = 1_000_000;
         assert!(!s.should_inprocess());
+    }
+
+    #[test]
+    fn promoted_default_profile_enables_guarded_sweep_cadence() {
+        let config = SolverConfig::from_env_map(&std::collections::BTreeMap::new());
+        assert!(config.inprocess);
+        assert_eq!(config.inprocess_interval_conflicts, 1_000_000);
+
+        let s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        assert!(s.sweep);
+        assert_eq!(s.next_inprocess_conflicts, 1_000_000);
+    }
+
+    #[test]
+    fn sweep_env_parser_keeps_explicit_off_available() {
+        assert!(parse_bool_token_or_default(None, true));
+        assert!(!parse_bool_token_or_default(Some("off"), true));
+        assert!(!parse_bool_token_or_default(Some("0"), true));
+        assert!(!parse_bool_token_or_default(Some("false"), true));
+        assert!(parse_bool_token_or_default(Some("on"), false));
+        assert!(parse_bool_token_or_default(Some("1"), false));
+        assert!(parse_bool_token_or_default(Some("true"), false));
     }
 
     #[test]
@@ -11427,6 +11464,7 @@ mod tests {
         let clauses = php_clauses(6, 5);
         let off = SolverConfig::default();
         let on = SolverConfig {
+            profile: SolverProfile::Baseline,
             inprocess: true,
             inprocess_interval_conflicts: 1, // fire at every level-0 visit
             ..Default::default()

@@ -452,12 +452,14 @@ fn test_profile_search_conservative_enables_only_documented_features() {
     assert!(config.bve);
     assert!(config.full_bsr);
     // Default search config is now the fstab_lbdtier promotion (profile20 Stage-1, 2026-05-30/31):
-    // focused-stable + LBD + ticks + LBD-tiered reduce. Preprocessing axis is unchanged.
+    // focused-stable + LBD + ticks + LBD-tiered reduce. The conservative preprocessing axis
+    // also includes the later guarded 1M-conflict sweep cadence.
     assert!(config.use_lbd);
     assert_eq!(config.search_mode_policy, SearchModePolicy::FocusedStable);
     assert!(config.mode_use_ticks);
     assert_eq!(config.reduce_policy, ReducePolicy::LbdTiered);
-    assert!(!config.inprocess);
+    assert!(config.inprocess);
+    assert_eq!(config.inprocess_interval_conflicts, 1_000_000);
 }
 
 #[test]
@@ -468,7 +470,8 @@ fn test_profile_inprocess_conservative_enables_only_documented_features() {
     assert!(config.simplification);
     assert!(config.bve);
     assert!(config.full_bsr);
-    assert!(!config.inprocess);
+    assert!(config.inprocess);
+    assert_eq!(config.inprocess_interval_conflicts, 1_000_000);
     assert!(!config.vivify);
     assert!(!config.probe);
     assert!(!config.hbr);

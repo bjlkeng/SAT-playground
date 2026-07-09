@@ -950,6 +950,19 @@ impl SolverConfig {
                 // mechanism-plausible interaction, not a boundary flip. chrono_max_delta
                 // keeps the kissat reassign-delta cap.
                 self.chrono_backtrack = true;
+                // SAT-playground (2026-07-09): promote guarded SAT sweeping to the
+                // default/fast profiles at a conservative 1M-conflict cadence. The
+                // sweep pass is a Kissat-style inprocessing capability gap for miters,
+                // but the raw 1M arm lost a long SAT trajectory. The deep-phase guard
+                // in main.rs skips sweep when both best and target phase prefixes are
+                // already near-complete, preserving the fragile SAT cell while keeping
+                // the miter/circuit conflict wins. sat-comp-2025-medium single-seed A/B
+                // (32c/16GB/1800s, log/abtest-sweepguard1m-vs-base-2026-07-08-22-35-36):
+                // 55/100 solved tie, conflicts on both-solved cells 48,310,770 vs
+                // 49,165,593, PAR-2 180415.3 vs 180795.7; promotion_gate PASS with
+                // zero correctness failures or SAT/UNSAT contradictions.
+                self.inprocess = true;
+                self.inprocess_interval_conflicts = 1_000_000;
             }
             SolverProfile::Experimental => {
                 self.use_lbd = true;
@@ -2308,11 +2321,11 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
         feature(
             "SAT_INPROCESS",
             config.inprocess,
-            FeatureMaturity::ParkingLot,
-            false,
-            false,
-            false,
-            "",
+            FeatureMaturity::DiscriminatingValidated,
+            true,
+            true,
+            true,
+            "log/abtest-sweepguard1m-vs-base-2026-07-08-22-35-36",
         ),
         feature(
             "SAT_VIVIFY",
@@ -3280,7 +3293,8 @@ mod tests {
     fn test_default_config_uses_fstab_lbdtier_search_defaults() {
         // profile20 Stage-1 ablation (2026-05-30/31) promoted the "fstab_lbdtier" config to the
         // default/fast profiles: focused-stable + LBD + tick mode-switching + LBD-tiered reduction
-        // (VMTF auto-resolves to FocusedOnly). Preprocessing (simplification/bve/bsr) is unchanged.
+        // (VMTF auto-resolves to FocusedOnly), with the guarded sweep inprocessing cadence
+        // promoted later as a conservative preprocessing increment.
         let config = SolverConfig::from_env_map(&env_map(&[]));
 
         assert_eq!(config.profile, SolverProfile::Default);
@@ -3295,6 +3309,8 @@ mod tests {
         assert_eq!(config.reduce_policy, ReducePolicy::LbdTiered);
         assert_eq!(config.phase_policy, PhasePolicy::TargetThenSaved);
         assert_eq!(config.bsr_occurrence_limit, 1000);
+        assert!(config.inprocess);
+        assert_eq!(config.inprocess_interval_conflicts, 1_000_000);
         assert_eq!(config.vmtf, VmtfMode::FocusedOnly);
         assert!(config.lucky);
         assert_eq!(config.proof_policy, ProofPolicy::Drat);
@@ -3313,6 +3329,8 @@ mod tests {
         assert!(!config.simplification);
         assert!(!config.bve);
         assert!(!config.full_bsr);
+        assert!(!config.inprocess);
+        assert_eq!(config.inprocess_interval_conflicts, 0);
         assert_eq!(config.bsr_occurrence_limit, 0);
         assert!(!config.use_lbd);
         assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
