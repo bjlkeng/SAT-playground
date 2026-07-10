@@ -31,11 +31,15 @@ Usage:
   python3 tools/feature_ablation.py --arm "cand:SAT_X=on" --arm "base:" --arm solver10   # N-way + s10 floor
   python3 tools/feature_ablation.py --smoke           # 2 configs x 2 instances, fast self-check
 
+Compressed suite CNFs used by --seedgate/--arm are expanded into a TemporaryDirectory and removed
+after the run, along with solver proof scratch. Set SAT_ABLATION_TMPDIR=/path/with/space to choose
+the temporary filesystem for large suites.
+
 Before launching a parallel sweep, check for competing solver/bench processes (the script prints a
 contention warning at startup; the agent must `ps`/`pgrep` and ASK the user first per CLAUDE.md).
 """
 from __future__ import annotations
-import argparse, csv, os, shutil, subprocess, sys, time
+import argparse, csv, gzip, lzma, os, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -269,6 +273,45 @@ def instances(half: str | None = None) -> list[str]:
 
 def file_for(stem: str) -> str:
     return stem + ".cnf.xz"
+
+
+def temp_parent() -> str | None:
+    """Optional parent for large ablation scratch; defaults to the system temp dir."""
+    parent = os.environ.get("SAT_ABLATION_TMPDIR")
+    if not parent:
+        return None
+    Path(parent).mkdir(parents=True, exist_ok=True)
+    return parent
+
+
+def materialize_cnf_instances(insts: list[str], scratch: Path) -> dict[str, Path]:
+    """Return plain-CNF paths for solver runs, with generated copies confined to `scratch`.
+
+    The solver binary opens a normal file and does not understand .xz/.gz, so the fair timing path
+    still needs a plain CNF outside the measured solver invocation. Keep those expanded files in a
+    TemporaryDirectory instead of the campaign log so full medium A/B runs do not leave hundreds of
+    GB of decompressed instances behind.
+    """
+    scratch.mkdir(parents=True, exist_ok=True)
+    cnf_for: dict[str, Path] = {}
+    for stem in insts:
+        plain = SUITE / (stem + ".cnf")
+        if plain.is_file():
+            cnf_for[stem] = plain
+            continue
+        gz = SUITE / (stem + ".cnf.gz")
+        xz = SUITE / (stem + ".cnf.xz")
+        dst = scratch / (stem + ".cnf")
+        if gz.is_file():
+            with gzip.open(gz, "rb") as src, open(dst, "wb") as out:
+                shutil.copyfileobj(src, out)
+        elif xz.is_file():
+            with lzma.open(xz, "rb") as src, open(dst, "wb") as out:
+                shutil.copyfileobj(src, out)
+        else:
+            raise SystemExit(f"missing CNF for {stem}: expected .cnf, .cnf.gz, or .cnf.xz in {SUITE}")
+        cnf_for[stem] = dst
+    return cnf_for
 
 
 def shard(items: list[str], k: int) -> list[list[str]]:
@@ -522,9 +565,10 @@ def seedgate(args) -> int:
 
     The standard pre-keep/pre-promote measurement: run a config across N seeds (default 10) on each
     instance, capturing conflicts (deterministic per (config,seed), contention-immune) for the
-    lexicographic solved->conflicts->PAR-2 decision. Decompresses .cnf.xz to a scratch dir (the
-    solver does not read .xz directly), runs N workers pinned to physical cores, writes one TSV per
-    config that check_promotion_gate.py --multiseed consumes. Resumable.
+    lexicographic solved->conflicts->PAR-2 decision. Decompresses compressed CNFs into a temporary
+    scratch directory that is deleted after the run (the solver does not read .xz directly), runs N
+    workers pinned to physical cores, and writes one TSV per config that check_promotion_gate.py
+    --multiseed consumes.
 
     Usage: --seedgate --tag <config-tag> [--seeds 10] [--timeout 600] on the suite's instances.
     """
@@ -544,25 +588,19 @@ def seedgate(args) -> int:
     insts = instances(args.half if getattr(args, "half", None) else None)
     ts = time.strftime("%Y-%m-%d-%H-%M-%S")
     camp = ROOT / "log" / f"seedgate-{tag}-{ts}"
-    (camp / "_work").mkdir(parents=True, exist_ok=True)
-    scratch = camp / "_cnf"
-    scratch.mkdir(parents=True, exist_ok=True)
+    camp.mkdir(parents=True, exist_ok=True)
     build(solver_dir)
 
-    # decompress instances once (solver can't read .cnf.xz)
-    cnf_for = {}
-    for stem in insts:
-        dst = scratch / (stem + ".cnf")
-        if not dst.exists():
-            with open(SUITE / (stem + ".cnf.xz"), "rb") as fh:
-                import lzma
-                dst.write_bytes(lzma.decompress(fh.read()))
-        cnf_for[stem] = dst
+    tmp_ctx = tempfile.TemporaryDirectory(prefix=f"seedgate-{tag}-", dir=temp_parent())
+    tmp_root = Path(tmp_ctx.name)
+    scratch = tmp_root / "cnf"
+    work_root = tmp_root / "work"
+    cnf_for = materialize_cnf_instances(insts, scratch)
 
     jobs = [(i, stem, seed) for i, (stem, seed) in enumerate(
         (s, sd) for s in insts for sd in seeds)]
     print(f"[seedgate] tag={tag} {len(jobs)} runs ({len(insts)} inst x {len(seeds)} seeds) "
-          f"t={args.timeout}s m={args.mem_mb}MB jobs={len(CORES)} -> {camp}", flush=True)
+          f"t={args.timeout}s m={args.mem_mb}MB jobs={len(CORES)} tmp={tmp_root} -> {camp}", flush=True)
 
     # Free-core pool: one physical core per running job (get() on start, put() on finish), identical
     # to abtest(). This GUARANTEES each concurrent run owns a distinct physical core even under uneven
@@ -578,26 +616,29 @@ def seedgate(args) -> int:
     for c in CORES:
         core_pool.put(c)
 
-    def run(job):
-        idx, stem, seed = job
-        core = core_pool.get()
-        try:
-            res, dt, cf, pr, dc, ver = _solve_one(
-                core, solver_dir, env_extra, cnf_for[stem], camp / "_work" / f"{idx}",
-                args.timeout, args.mem_mb, seed, verify=args.verify)
-        finally:
-            core_pool.put(core)
-        return (stem, seed, res, dt, cf, pr, dc, ver)
+    try:
+        def run(job):
+            idx, stem, seed = job
+            core = core_pool.get()
+            try:
+                res, dt, cf, pr, dc, ver = _solve_one(
+                    core, solver_dir, env_extra, cnf_for[stem], work_root / f"{idx}",
+                    args.timeout, args.mem_mb, seed, verify=args.verify)
+            finally:
+                core_pool.put(core)
+            return (stem, seed, res, dt, cf, pr, dc, ver)
 
-    results = []
-    with ThreadPoolExecutor(max_workers=len(CORES)) as ex:
-        for r in ex.map(run, jobs):
-            results.append(r)
-            vtag = "" if r[7] in ("ok", "off", "skip") else f" verify={r[7]}"
-            print(f"  {r[0][:26]}/s{r[1]} {r[2]} {r[3]:.0f}s conf={r[4]}{vtag}", flush=True)
-            if r[7] == "FAIL":
-                print(f"    *** CORRECTNESS ALERT: {r[0]}/s{r[1]} reported {r[2]} but verification FAILED "
-                      f"(invalid SAT model or bad DRAT proof) — a real bug; do not trust this run.", flush=True)
+        results = []
+        with ThreadPoolExecutor(max_workers=len(CORES)) as ex:
+            for r in ex.map(run, jobs):
+                results.append(r)
+                vtag = "" if r[7] in ("ok", "off", "skip") else f" verify={r[7]}"
+                print(f"  {r[0][:26]}/s{r[1]} {r[2]} {r[3]:.0f}s conf={r[4]}{vtag}", flush=True)
+                if r[7] == "FAIL":
+                    print(f"    *** CORRECTNESS ALERT: {r[0]}/s{r[1]} reported {r[2]} but verification FAILED "
+                          f"(invalid SAT model or bad DRAT proof) — a real bug; do not trust this run.", flush=True)
+    finally:
+        tmp_ctx.cleanup()
 
     tsv = camp / "results.tsv"
     with open(tsv, "w") as f:
@@ -753,7 +794,6 @@ def abtest(args) -> int:
     so the solved->conflicts tie-breaks stay clean even under the shared-core load; only PAR-2 is timing-
     sensitive, and the interleave keeps that fair too.
     """
-    import lzma
     import queue
     from collections import defaultdict
     from concurrent.futures import ThreadPoolExecutor
@@ -769,21 +809,16 @@ def abtest(args) -> int:
     insts = instances(args.half if getattr(args, "half", None) else None)
     ts = time.strftime("%Y-%m-%d-%H-%M-%S")
     camp = ROOT / "log" / f"abtest-{('-vs-'.join(tags))[:48]}-{ts}"
-    (camp / "_work").mkdir(parents=True, exist_ok=True)
-    scratch = camp / "_cnf"
-    scratch.mkdir(parents=True, exist_ok=True)
+    camp.mkdir(parents=True, exist_ok=True)
 
     for sd in sorted({s for _, s, _ in arms}):
         build(sd)
 
-    # decompress instances once (shared across arms; the solver can't read .cnf.xz directly)
-    cnf_for = {}
-    for stem in insts:
-        dst = scratch / (stem + ".cnf")
-        if not dst.exists():
-            with open(SUITE / (stem + ".cnf.xz"), "rb") as fh:
-                dst.write_bytes(lzma.decompress(fh.read()))
-        cnf_for[stem] = dst
+    tmp_ctx = tempfile.TemporaryDirectory(prefix=f"abtest-{('-vs-'.join(tags))[:32]}-", dir=temp_parent())
+    tmp_root = Path(tmp_ctx.name)
+    scratch = tmp_root / "cnf"
+    work_root = tmp_root / "work"
+    cnf_for = materialize_cnf_instances(insts, scratch)
 
     # interleaved job list: (instance, seed, arm) so consecutive jobs cycle arms -> arms start together
     jobs = []
@@ -796,7 +831,7 @@ def abtest(args) -> int:
 
     print(f"[abtest] arms={tags} baseline={baseline} {len(insts)} inst x {len(seeds)} seeds "
           f"= {len(jobs)} runs; jobs={len(CORES)} cores={CORES[0]}..{CORES[-1]} "
-          f"t={args.timeout}s m={args.mem_mb}MB -> {camp}", flush=True)
+          f"t={args.timeout}s m={args.mem_mb}MB tmp={tmp_root} -> {camp}", flush=True)
 
     # free-core pool: one physical core per running job. max_workers == len(CORES), so get() never
     # checks out more than len(CORES) cores at once and never blocks longer than a scheduling gap.
@@ -804,26 +839,29 @@ def abtest(args) -> int:
     for c in CORES:
         core_pool.put(c)
 
-    def run(job):
-        jidx, tag, sdir, env_extra, stem, seed = job
-        core = core_pool.get()
-        try:
-            res, dt, cf, pr, dc, ver = _solve_one(
-                core, sdir, env_extra, cnf_for[stem], camp / "_work" / f"{jidx}",
-                args.timeout, args.mem_mb, seed, verify=args.verify)
-        finally:
-            core_pool.put(core)
-        return (tag, stem, seed, res, dt, cf, pr, dc, ver)
+    try:
+        def run(job):
+            jidx, tag, sdir, env_extra, stem, seed = job
+            core = core_pool.get()
+            try:
+                res, dt, cf, pr, dc, ver = _solve_one(
+                    core, sdir, env_extra, cnf_for[stem], work_root / f"{jidx}",
+                    args.timeout, args.mem_mb, seed, verify=args.verify)
+            finally:
+                core_pool.put(core)
+            return (tag, stem, seed, res, dt, cf, pr, dc, ver)
 
-    results = []
-    with ThreadPoolExecutor(max_workers=len(CORES)) as ex:
-        for r in ex.map(run, jobs):
-            results.append(r)
-            vtag = "" if r[8] in ("ok", "off", "skip") else f" verify={r[8]}"
-            print(f"  [{r[0]}] {r[1][:24]}/s{r[2]} {r[3]} {r[4]:.0f}s conf={r[5]}{vtag}", flush=True)
-            if r[8] == "FAIL":
-                print(f"    *** CORRECTNESS ALERT: [{r[0]}] {r[1]}/s{r[2]} reported {r[3]} but verification "
-                      f"FAILED (invalid SAT model or bad DRAT proof) — a real bug; do not trust this run.", flush=True)
+        results = []
+        with ThreadPoolExecutor(max_workers=len(CORES)) as ex:
+            for r in ex.map(run, jobs):
+                results.append(r)
+                vtag = "" if r[8] in ("ok", "off", "skip") else f" verify={r[8]}"
+                print(f"  [{r[0]}] {r[1][:24]}/s{r[2]} {r[3]} {r[4]:.0f}s conf={r[5]}{vtag}", flush=True)
+                if r[8] == "FAIL":
+                    print(f"    *** CORRECTNESS ALERT: [{r[0]}] {r[1]}/s{r[2]} reported {r[3]} but verification "
+                          f"FAILED (invalid SAT model or bad DRAT proof) — a real bug; do not trust this run.", flush=True)
+    finally:
+        tmp_ctx.cleanup()
 
     # one gate-compatible results.tsv per arm (identical schema to seedgate's, so --multiseed consumes it)
     by_arm = defaultdict(list)
