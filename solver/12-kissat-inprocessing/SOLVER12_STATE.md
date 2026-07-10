@@ -149,9 +149,12 @@ Known promoted, unpromoted, or incomplete feature families at this baseline:
   rerun showed the unconditional pass solved only battleship while regressing the rest of the
   profiling suite.
 - Clause minimization is binary-reason aware as of 1.11, so explicit `SAT_CLAUSE_MIN` settings are
-  honored with `SAT_BINARY_FAST=on`. Binary-fast env runs now preserve the default recursive
-  minimization unless `SAT_CLAUSE_MIN=off` is explicit, because implicit min-off produced
-  `UNKNOWN` on a baseline-solved Sudoku row. With `SAT_OTFS=on`, clause minimization also runs
+  honored with `SAT_BINARY_FAST=on`. The default is now `inblock-late`: recursive minimization
+  always runs, while Kissat-style level-block shrink is delayed until
+  `SAT_INBLOCK_DELAY_CONFLICTS` conflicts and only fires on formulas whose pre-preprocess binary
+  fraction is at least `SAT_INBLOCK_BINARY_MIN`. This preserves the SAT-sensitive rows that eager
+  `inblock` moved to timeouts while recovering two binary-dominated medium gap cells. With
+  `SAT_OTFS=on`, clause minimization also runs
   bounded learned-clause subsumption after learned non-unit clauses are added. The pass now follows
   Kissat's eager-subsumption shape by checking only the last four remembered learned clauses, not all
   watcher lists for the learned literals; the watcher-wide variant was too aggressive and moved

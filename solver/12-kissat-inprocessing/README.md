@@ -165,10 +165,12 @@ What is present:
   for proof/model/debug traceability while propagating them through stable binary IDs and implication
   edges; default propagation remains the legacy watched-clause path. Clause minimization is
   binary-reason aware and remains controlled separately by `SAT_CLAUSE_MIN`; binary-fast env runs
-  preserve the default recursive minimization unless `SAT_CLAUSE_MIN=off` is explicit, because
-  disabling minimization silently can move baseline-solved rows to `UNKNOWN`. The `inblock` mode
-  now runs Kissat-style level-block shrink after same-level minimization, replacing a whole
-  decision-level block with a single UIP literal when the block's reason closure proves one.
+  preserve the configured clause minimization mode unless `SAT_CLAUSE_MIN=off` is explicit, because
+  disabling minimization silently can move baseline-solved rows to `UNKNOWN`. The default
+  `inblock-late` mode keeps recursive minimization active and runs Kissat-style level-block shrink
+  only after `SAT_INBLOCK_DELAY_CONFLICTS` conflicts on formulas whose pre-preprocess binary-clause
+  fraction is at least `SAT_INBLOCK_BINARY_MIN`. Eager `inblock` remains available as an opt-in
+  diagnostic for shrink experiments.
   With `SAT_OTFS=on` and clause minimization enabled, newly learned non-unit clauses also run a
   bounded recent-clause subsumption pass modeled on Kissat's eager learned-clause window: only the
   last four remembered learned clauses are candidates, and candidate clauses must be within four
@@ -236,7 +238,9 @@ SAT_RESTART_REUSE_TRAIL_FOCUSED=on|off
 SAT_RESTART_REUSE_TRAIL_STABLE=on|off
 SAT_REDUCE=legacy|lbd-tiered
 SAT_REDUCE_MIN_INTERVAL=<usize>  # lbd-tiered default is 100, values must be >= 50
-SAT_CLAUSE_MIN=off|basic|recursive-limited|inblock
+SAT_CLAUSE_MIN=off|basic|recursive-limited|inblock|inblock-late
+SAT_INBLOCK_DELAY_CONFLICTS=<u64>  # default 1000000
+SAT_INBLOCK_BINARY_MIN=<f64>       # default 0.85, valid range 0.0..=1.0
 SAT_OTFS=on|off
 SAT_MINIMIZE_DEPTH_LIMIT=<u32>  # default 1000
 SAT_PHASE=legacy|saved|target-then-saved|best-then-target-then-saved  # target/best require focused-stable
@@ -367,8 +371,24 @@ Lower-level diagnostics can be enabled independently with `SAT_TRACE_PROOF=on`,
   `candidate_improves_previous_solver11_but_loses_solver10` (−12 vs prior default; still +23 vs
   solver-10, narrowing the gap). `baseline` keeps lucky off. Evidence:
   `log/lucky-confirm-2026-05-30/`, `log/efficacy-reeval-2026-05-29/FINDINGS.md`.
-- All other tested search singles/combos (chrono neutral; binary-fast / focused-stable / lbd-tiered /
-  inblock / rephase / combos regress) were **not** promoted — see `FINDINGS.md`.
+- All other tested search singles/combos from the original May sweep (chrono neutral; binary-fast /
+  focused-stable / lbd-tiered / eager inblock / rephase / combos regress) were **not** promoted —
+  see `FINDINGS.md`.
+
+### Medium Clause-Minimization Promotion (2026-07-10)
+
+`SAT_CLAUSE_MIN=inblock-late` is now the default. The promoted mode keeps the recursive minimizer
+on every learned clause, then enables Kissat-style in-block shrink only after one million conflicts
+and only on binary-dominated formulas (`SAT_INBLOCK_BINARY_MIN=0.85`). The guard was chosen after
+the eager in-block mode solved useful gap cells but regressed SAT-sensitive rows on the full medium
+suite.
+
+Focused screen:
+`log/abtest-latebin-vs-base-2026-07-10-00-58-15` improved the targeted 13-row set from 10/13 to
+12/13. Full medium gate:
+`log/abtest-latebin-vs-base-2026-07-10-01-28-43` improved the default from 58/100 to 60/100 solved,
+with no lost solved cells and `promotion_gate=PASS`. The two gained cells were
+`296fd43...oddball_24_5_ttf` and `f1973c...lockchart-group2`.
 
 Smoke/correctness (independent of efficacy) is verified per change via
 `bash tools/smoke_test.sh solver/12-kissat-inprocessing` (9/9) and `cargo test`.
