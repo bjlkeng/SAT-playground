@@ -1553,7 +1553,7 @@ impl SolverConfig {
         self.legacy_aliases_used.sort();
     }
 
-    fn refresh_feature_statuses(&mut self) {
+    pub(crate) fn refresh_feature_statuses(&mut self) {
         self.feature_statuses = feature_metadata(self);
     }
 

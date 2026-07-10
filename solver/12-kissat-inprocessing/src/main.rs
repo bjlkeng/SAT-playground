@@ -32,8 +32,9 @@ mod oracle_tests;
 
 use branch::VmtfQueue;
 use config::{
-    BranchMode, ClauseMinMode, InitialClauseMode, PhasePolicy, ProofPolicy, ReducePolicy,
-    RestartPolicy, SearchModePolicy, SolverConfig, SolverProfile, VmtfMode,
+    BranchMode, ClauseMinMode, InitialClauseMode, PhasePolicy, PreprocessAxis, ProfileAxes,
+    ProofPolicy, ReducePolicy, RestartPolicy, SearchAxis, SearchModePolicy, SolverConfig,
+    SolverProfile, VmtfMode,
 };
 use limits::{effective_memory_limit_bytes, LimitHit, RuntimeLimits};
 use lit::{lit_to_index, lit_to_word, word_to_lit};
@@ -11032,6 +11033,103 @@ fn mb_ceil(bytes: u64) -> u64 {
     bytes.div_ceil(1024 * 1024)
 }
 
+const GIANT_LIGHT_MIN_VARS: usize = 20_000_000;
+const GIANT_LIGHT_MIN_CLAUSES: usize = 50_000_000;
+
+const GIANT_LIGHT_BLOCKING_ENV: &[&str] = &[
+    "SAT_PROFILE",
+    "SAT_SEARCH_AXIS",
+    "SAT_PREPROCESS_AXIS",
+    "SAT_USE_LBD",
+    "SAT_LBD_UPDATE_REASONS",
+    "SAT_LBD_UPDATE_PROP_REASONS",
+    "SAT_RESTART",
+    "SAT_REDUCE",
+    "SAT_PHASE",
+    "SAT_FOCUSED_PHASE",
+    "SAT_STABLE_PHASE",
+    "SAT_SEARCH_MODE",
+    "SAT_MODE_USE_TICKS",
+    "SAT_LUCKY",
+    "SAT_BUMP_REASONS",
+    "SAT_CHRONO",
+    "SAT_PREFETCH",
+    "SAT_GAUSS",
+    "SAT_PAIR_ABS_REFUTE",
+    "SAT_INPROCESS",
+    "SAT_SWEEP",
+    "SAT_BRANCH_MODE",
+    "SAT_INITIAL_CLAUSE_MODE",
+    "SAT_BVE",
+    "SAT_FULL_BSR",
+    "SAT_BSR_DRAIN_BATCHED",
+    "SAT_BSR_OCCLIM",
+    "SAT_CLAUSE_MIN",
+];
+
+fn should_use_giant_light_profile(
+    num_vars: usize,
+    clause_count: usize,
+    config: &SolverConfig,
+) -> bool {
+    if num_vars < GIANT_LIGHT_MIN_VARS || clause_count < GIANT_LIGHT_MIN_CLAUSES {
+        return false;
+    }
+    if !matches!(config.profile, SolverProfile::Default | SolverProfile::Fast) {
+        return false;
+    }
+    if config.config_replay.is_some() {
+        return false;
+    }
+    !GIANT_LIGHT_BLOCKING_ENV
+        .iter()
+        .any(|name| env::var_os(name).is_some())
+}
+
+fn apply_giant_light_profile(config: &mut SolverConfig) {
+    config.profile = SolverProfile::Baseline;
+    config.axes = ProfileAxes {
+        search: SearchAxis::Safe,
+        preprocess: PreprocessAxis::Off,
+    };
+    config.use_lbd = false;
+    config.update_reason_lbd = false;
+    config.update_propagation_reason_lbd = false;
+    config.restart_policy = RestartPolicy::LegacyLuby;
+    config.reduce_policy = ReducePolicy::LegacyActivity;
+    config.phase_policy = PhasePolicy::Legacy;
+    config.focused_phase_policy = None;
+    config.stable_phase_policy = None;
+    config.stable_target_reset = false;
+    config.search_mode_policy = SearchModePolicy::Single;
+    config.mode_use_ticks = false;
+    config.lucky = false;
+    config.bump_reasons = false;
+    config.chrono_backtrack = false;
+    config.prefetch_watched_clauses = false;
+    config.vmtf = VmtfMode::Off;
+    config.rephase = false;
+    config.reorder = false;
+    config.simplification = false;
+    config.bve = false;
+    config.full_bsr = false;
+    config.bsr_drain_batched = false;
+    config.bsr_occurrence_limit = 0;
+    config.initial_clause_mode = InitialClauseMode::Raw;
+    config.branch_mode = BranchMode::Occurrence;
+    config.inprocess = false;
+    config.vivify = false;
+    config.probe = false;
+    config.gauss = false;
+    config.pair_abs_refute = false;
+    config.els = false;
+    config.congruence = false;
+    config.congruence_iter = false;
+    config.inprocess_interval_conflicts = 0;
+    config.inprocess_max_rounds = 0;
+    config.refresh_feature_statuses();
+}
+
 fn verify_model_against_clauses(clauses: &[Vec<i32>], assignment: &[u8]) -> bool {
     for clause in clauses {
         let mut satisfied = false;
@@ -11078,7 +11176,7 @@ fn main() {
     let output_dir = &args[2];
     let output_path = Path::new(output_dir);
 
-    let config = SolverConfig::from_env();
+    let mut config = SolverConfig::from_env();
     config.emit_requested_outputs();
     let input_identity = InputIdentity::from_path(
         Path::new(cnf_path),
@@ -11160,6 +11258,13 @@ fn main() {
     let parse_sec = parse_start.elapsed().as_secs_f64();
     let original_clause_count = clauses.len();
     let original_lits_initial = initial_lit_count(&clauses);
+    if should_use_giant_light_profile(num_vars, original_clause_count, &config) {
+        eprintln!(
+            "c giant_light_profile enabled vars={} clauses={} literals={}",
+            num_vars, original_clause_count, original_lits_initial
+        );
+        apply_giant_light_profile(&mut config);
+    }
     // Phase 1+2 validation hook for the XOR/parity Gaussian engine (bead
     // SAT-playground-qld). Detect-only: extracts XOR constraints and reports whether
     // Gaussian elimination finds a parity contradiction. Does NOT change the solve
