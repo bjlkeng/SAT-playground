@@ -116,6 +116,7 @@ const CCMIN_NONE: u8 = 0;
 const CCMIN_BASIC: u8 = 1;
 const CCMIN_DEEP: u8 = 2;
 const CCMIN_INBLOCK: u8 = 3;
+const CCMIN_INBLOCK_LATE: u8 = 4;
 const REDUNDANT_UNDEF: u8 = 0;
 const REDUNDANT_SOURCE: u8 = 1;
 const REDUNDANT_REMOVABLE: u8 = 2;
@@ -1745,8 +1746,10 @@ struct Solver {
     scratch_used_levels: Vec<usize>,
     scratch_analyze_toclear: Vec<usize>,
     scratch_analyze_stack: Vec<(usize, i32, u32)>,
-    /// 0 = none, 1 = basic, 2 = deep, 3 = in-block shrink
+    /// 0 = none, 1 = basic, 2 = deep, 3 = in-block shrink, 4 = delayed in-block shrink
     ccmin_mode: u8,
+    inblock_delay_conflicts: u64,
+    inblock_binary_min: f64,
     /// opt-in bounded learned-clause-only recent subsumption pass; default off after profiling.
     otfs_enabled: bool,
     /// opt-in OTSS (on-the-fly self-subsuming resolution): after analyze produces a
@@ -2316,6 +2319,7 @@ fn ccmin_mode_from_config(mode: ClauseMinMode) -> u8 {
         ClauseMinMode::Basic => CCMIN_BASIC,
         ClauseMinMode::RecursiveLimited => CCMIN_DEEP,
         ClauseMinMode::InBlockShrink => CCMIN_INBLOCK,
+        ClauseMinMode::InBlockLate => CCMIN_INBLOCK_LATE,
     }
 }
 
@@ -2637,6 +2641,8 @@ impl Solver {
             scratch_analyze_toclear: Vec::with_capacity(16),
             scratch_analyze_stack: Vec::with_capacity(16),
             ccmin_mode,
+            inblock_delay_conflicts: config.inblock_delay_conflicts,
+            inblock_binary_min: config.inblock_binary_min,
             otfs_enabled: config.otfs,
             otss_enabled: config.otss,
             reduce_tier2_at_budget: config.reduce_tier2_at_budget,
@@ -8205,7 +8211,13 @@ impl Solver {
         debug_assert!(toclear.is_empty());
         debug_assert!(stack.is_empty());
         debug_assert!(self.scratch_used_levels.is_empty());
-        let use_frame_singleton = self.ccmin_mode == CCMIN_INBLOCK;
+        let binary_dominated =
+            self.pre_preprocess_formula_class.binary_fraction >= self.inblock_binary_min;
+        let use_block_shrink = self.ccmin_mode == CCMIN_INBLOCK
+            || (self.ccmin_mode == CCMIN_INBLOCK_LATE
+                && binary_dominated
+                && self.stats.conflicts >= self.inblock_delay_conflicts);
+        let use_frame_singleton = use_block_shrink;
 
         for &lit in &learned_clause[1..] {
             let var = lit.unsigned_abs() as usize;
@@ -8273,7 +8285,7 @@ impl Solver {
         toclear.clear();
         stack.clear();
 
-        if self.ccmin_mode == CCMIN_INBLOCK {
+        if use_block_shrink {
             self.shrink_learned_clause_blocks(learned_clause);
         }
     }
@@ -15325,6 +15337,41 @@ mod tests {
         s.minimize_learned_clause(&mut learned_clause);
 
         assert_eq!(learned_clause, vec![-1, -4]);
+    }
+
+    #[test]
+    fn test_late_inblock_shrink_waits_for_conflict_threshold() {
+        let mut s = make_solver(4, vec![vec![2, -4], vec![3, -4]]);
+        let reason_two = s.original_clause_ids[0] as usize ;
+        let reason_three = s.original_clause_ids[1] as usize ;
+        s.trail = vec![4, 2, 3, 1];
+        s.decision_level[1] = 2;
+        s.decision_level[2] = 1;
+        s.decision_level[3] = 1;
+        s.decision_level[4] = 1;
+        s.set_reason_ref(2, ReasonRef::Clause(reason_two));
+        s.set_reason_ref(3, ReasonRef::Clause(reason_three));
+        s.ccmin_mode = CCMIN_INBLOCK_LATE;
+        s.inblock_delay_conflicts = 100;
+        s.inblock_binary_min = 0.85;
+        s.pre_preprocess_formula_class = FormulaClass::from_counts(4, 10, 20, 9);
+
+        let mut early_clause = vec![-1, -2, -3];
+        s.stats.conflicts = 99;
+        s.minimize_learned_clause(&mut early_clause);
+        assert_eq!(early_clause, vec![-1, -2, -3]);
+
+        let mut non_binary_dominated_clause = vec![-1, -2, -3];
+        s.stats.conflicts = 100;
+        s.pre_preprocess_formula_class = FormulaClass::from_counts(4, 10, 20, 8);
+        s.minimize_learned_clause(&mut non_binary_dominated_clause);
+        assert_eq!(non_binary_dominated_clause, vec![-1, -2, -3]);
+
+        let mut late_clause = vec![-1, -2, -3];
+        s.stats.conflicts = 100;
+        s.pre_preprocess_formula_class = FormulaClass::from_counts(4, 10, 20, 9);
+        s.minimize_learned_clause(&mut late_clause);
+        assert_eq!(late_clause, vec![-1, -4]);
     }
 
     #[test]

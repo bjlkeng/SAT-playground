@@ -484,6 +484,7 @@ pub(crate) enum ClauseMinMode {
     Basic,
     RecursiveLimited,
     InBlockShrink,
+    InBlockLate,
 }
 
 impl ClauseMinMode {
@@ -493,6 +494,7 @@ impl ClauseMinMode {
             Self::Basic => "basic",
             Self::RecursiveLimited => "recursive-limited",
             Self::InBlockShrink => "inblock",
+            Self::InBlockLate => "inblock-late",
         }
     }
 
@@ -504,8 +506,11 @@ impl ClauseMinMode {
                 Self::RecursiveLimited
             }
             "inblock" | "in-block" | "in_block" => Self::InBlockShrink,
+            "inblock-late" | "inblock_late" | "late-inblock" | "late_inblock" => {
+                Self::InBlockLate
+            }
             other => fail_config(&format!(
-                "Invalid {env_name}={other}; expected off/basic/recursive-limited/inblock"
+                "Invalid {env_name}={other}; expected off/basic/recursive-limited/inblock/inblock-late"
             )),
         }
     }
@@ -571,6 +576,8 @@ pub(crate) struct SolverConfig {
     // hint — does not change search results. Default off.
     pub(crate) prefetch_watched_clauses: bool,
     pub(crate) clause_min_mode: ClauseMinMode,
+    pub(crate) inblock_delay_conflicts: u64,
+    pub(crate) inblock_binary_min: f64,
     pub(crate) otfs: bool,
     /// Opt-in OTSS: on-the-fly self-subsuming resolution. After conflict analysis
     /// produces a learned clause, scan participating reason clauses (those whose
@@ -721,7 +728,9 @@ impl Default for SolverConfig {
             chrono_backtrack: false,
             binary_fast_path: false,
             prefetch_watched_clauses: false,
-            clause_min_mode: ClauseMinMode::RecursiveLimited,
+            clause_min_mode: ClauseMinMode::InBlockLate,
+            inblock_delay_conflicts: 1_000_000,
+            inblock_binary_min: 0.85,
             otfs: false,
             otss: false,
             reduce_tier2_at_budget: false,
@@ -1234,6 +1243,18 @@ impl SolverConfig {
             self.clause_min_mode,
             ClauseMinMode::parse,
         );
+        self.inblock_delay_conflicts = parse_u64_selected(
+            env_map,
+            &key_set,
+            "SAT_INBLOCK_DELAY_CONFLICTS",
+            self.inblock_delay_conflicts,
+        );
+        self.inblock_binary_min = parse_f64_selected(
+            env_map,
+            &key_set,
+            "SAT_INBLOCK_BINARY_MIN",
+            self.inblock_binary_min,
+        );
         self.otfs = parse_bool_selected(env_map, &key_set, "SAT_OTFS", self.otfs);
         self.otss = parse_bool_selected(env_map, &key_set, "SAT_OTSS", self.otss);
         self.reduce_tier2_at_budget = parse_bool_selected(
@@ -1602,10 +1623,13 @@ impl SolverConfig {
             );
         }
         if self.otfs && self.clause_min_mode == ClauseMinMode::Off {
-            fail_config("Invalid config: SAT_OTFS=on requires SAT_CLAUSE_MIN=basic|recursive-limited|inblock");
+            fail_config("Invalid config: SAT_OTFS=on requires SAT_CLAUSE_MIN=basic|recursive-limited|inblock|inblock-late");
         }
         if self.otss && self.clause_min_mode == ClauseMinMode::Off {
-            fail_config("Invalid config: SAT_OTSS=on requires SAT_CLAUSE_MIN=basic|recursive-limited|inblock");
+            fail_config("Invalid config: SAT_OTSS=on requires SAT_CLAUSE_MIN=basic|recursive-limited|inblock|inblock-late");
+        }
+        if !(0.0..=1.0).contains(&self.inblock_binary_min) {
+            fail_config("Invalid config: SAT_INBLOCK_BINARY_MIN must be in [0,1]");
         }
         if self.hbr && !self.probe {
             fail_config("Invalid config: SAT_HBR=on requires SAT_PROBE=on");
@@ -1809,6 +1833,16 @@ impl SolverConfig {
             self.prefetch_watched_clauses,
         );
         push_kv(&mut lines, "clause_min_mode", self.clause_min_mode.as_str());
+        push_kv(
+            &mut lines,
+            "inblock_delay_conflicts",
+            self.inblock_delay_conflicts.to_string(),
+        );
+        push_kv(
+            &mut lines,
+            "inblock_binary_min",
+            self.inblock_binary_min.to_string(),
+        );
         push_kv_bool(&mut lines, "otfs", self.otfs);
         push_kv_bool(&mut lines, "otss", self.otss);
         push_kv_bool(&mut lines, "reduce_tier2_at_budget", self.reduce_tier2_at_budget);
@@ -2605,6 +2639,8 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "binary_fast_path" => Some("SAT_BINARY_FAST"),
         "prefetch_watched_clauses" => Some("SAT_PREFETCH"),
         "clause_min_mode" => Some("SAT_CLAUSE_MIN"),
+        "inblock_delay_conflicts" => Some("SAT_INBLOCK_DELAY_CONFLICTS"),
+        "inblock_binary_min" => Some("SAT_INBLOCK_BINARY_MIN"),
         "otfs" => Some("SAT_OTFS"),
         "otss" => Some("SAT_OTSS"),
         "reduce_tier2_at_budget" => Some("SAT_REDUCE_TIER2_AT_BUDGET"),
@@ -3847,7 +3883,7 @@ mod tests {
         let config = SolverConfig::from_env_map(&env_map(&[("SAT_BINARY_FAST", "on")]));
 
         assert!(config.binary_fast_path);
-        assert_eq!(config.clause_min_mode, ClauseMinMode::RecursiveLimited);
+        assert_eq!(config.clause_min_mode, ClauseMinMode::InBlockLate);
     }
 
     #[test]
@@ -3907,6 +3943,33 @@ mod tests {
         let config = SolverConfig::from_env_map(&env_map(&[("SAT_CLAUSE_MIN", "inblock")]));
 
         assert_eq!(config.clause_min_mode, ClauseMinMode::InBlockShrink);
+    }
+
+    #[test]
+    fn test_late_inblock_clause_minimization_is_replayable() {
+        let config = SolverConfig::from_env_map(&env_map(&[
+            ("SAT_CLAUSE_MIN", "inblock-late"),
+            ("SAT_INBLOCK_DELAY_CONFLICTS", "123456"),
+            ("SAT_INBLOCK_BINARY_MIN", "0.9"),
+        ]));
+
+        assert_eq!(config.clause_min_mode, ClauseMinMode::InBlockLate);
+        assert_eq!(config.inblock_delay_conflicts, 123_456);
+        assert!((config.inblock_binary_min - 0.9).abs() < 1e-12);
+
+        let replay = config.config_replay_text();
+        assert!(replay.contains("clause_min_mode=inblock-late"));
+        assert!(replay.contains("inblock_delay_conflicts=123456"));
+        assert!(replay.contains("inblock_binary_min=0.9"));
+        let replayed =
+            SolverConfig::from_replay_text(&replay, Path::new("<inblock-late-test>"));
+        assert_eq!(replayed.clause_min_mode, config.clause_min_mode);
+        assert_eq!(
+            replayed.inblock_delay_conflicts,
+            config.inblock_delay_conflicts
+        );
+        assert!((replayed.inblock_binary_min - config.inblock_binary_min).abs() < 1e-12);
+        assert_eq!(replayed.config_hash(), config.config_hash());
     }
 
     #[test]
