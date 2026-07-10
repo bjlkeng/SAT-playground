@@ -472,7 +472,7 @@ fn test_profile_inprocess_conservative_enables_only_documented_features() {
     assert!(config.full_bsr);
     assert!(config.inprocess);
     assert_eq!(config.inprocess_interval_conflicts, 1_000_000);
-    assert!(!config.vivify);
+    assert!(config.vivify);
     assert!(!config.probe);
     assert!(!config.hbr);
 }

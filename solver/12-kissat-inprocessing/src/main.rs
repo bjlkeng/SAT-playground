@@ -201,6 +201,10 @@ const DEFAULT_VIVIFY_MAX_CLAUSE_LEN: usize = 100;
 /// Bead SAT-playground-5b2.3.6: after this many consecutive vivify rounds that
 /// strengthen nothing and derive no unit, stop scheduling vivify for the instance.
 const VIVIFY_MAX_UNPRODUCTIVE_ROUNDS: u32 = 2;
+/// Learned-clause vivification is useful only once search has already spent a
+/// very large budget. Delaying it keeps the promoted 1M sweep cadence intact
+/// while skipping fragile long SAT cells that finish before 6M conflicts.
+const DEFAULT_LEARNED_VIVIFY_DELAY_CONFLICTS: u64 = 6_000_000;
 /// Bead SAT-playground-5b2.3.6: when learnt-clause vivification is on, only vivify
 /// LEARNT clauses with stored LBD at or below this (tier1/tier2). Vivifying all learnt
 /// clauses (measured 74k on SCPC) churns the learnt DB and inflates conflicts; kissat
@@ -2582,9 +2586,10 @@ impl Solver {
                 config.inprocess
                     && matches!(config.profile, SolverProfile::Default | SolverProfile::Fast),
             ),
-            vivify_learned: matches!(
-                std::env::var("SAT_VIVIFY_LEARNED").as_deref(),
-                Ok("on") | Ok("1") | Ok("true")
+            vivify_learned: env_bool_or_default(
+                "SAT_VIVIFY_LEARNED",
+                config.vivify
+                    && matches!(config.profile, SolverProfile::Default | SolverProfile::Fast),
             ),
             learned_lit_budget: LEARNED_LIT_BUDGET_BASE,
             hard_learned_lit_budget: LEARNED_LIT_BUDGET_BASE.saturating_mul(2),
@@ -6637,6 +6642,18 @@ impl Solver {
         self.stats.conflicts >= self.next_inprocess_conflicts
     }
 
+    fn should_vivify_inprocess_round(&self) -> bool {
+        if !self.vivify {
+            return false;
+        }
+        if self.vivify_learned
+            && self.stats.conflicts < DEFAULT_LEARNED_VIVIFY_DELAY_CONFLICTS
+        {
+            return false;
+        }
+        true
+    }
+
     fn should_skip_sweep_for_deep_phase(&self) -> bool {
         let num_vars = self.assignment.len().saturating_sub(1);
         if num_vars == 0 {
@@ -6687,7 +6704,7 @@ impl Solver {
         if ok && config.probe {
             ok = self.probe_root_failed_literals(proof_log, config);
         }
-        if ok && self.vivify {
+        if ok && self.should_vivify_inprocess_round() {
             ok = self.vivify_round(proof_log);
         }
         if ok && self.sweep {
@@ -11679,6 +11696,37 @@ mod tests {
         let s = make_solver_with_config(2, vec![vec![1, 2]], &config);
         assert!(s.sweep);
         assert_eq!(s.next_inprocess_conflicts, 1_000_000);
+    }
+
+    #[test]
+    fn promoted_default_profile_enables_delayed_learned_vivify() {
+        let config = SolverConfig::from_env_map(&std::collections::BTreeMap::new());
+        assert!(config.vivify);
+
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        assert!(s.vivify);
+        assert!(s.vivify_learned);
+
+        s.stats.conflicts = DEFAULT_LEARNED_VIVIFY_DELAY_CONFLICTS - 1;
+        assert!(!s.should_vivify_inprocess_round());
+
+        s.stats.conflicts = DEFAULT_LEARNED_VIVIFY_DELAY_CONFLICTS;
+        assert!(s.should_vivify_inprocess_round());
+    }
+
+    #[test]
+    fn originals_only_vivify_keeps_immediate_schedule() {
+        let config = SolverConfig {
+            vivify: true,
+            ..Default::default()
+        };
+        let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
+        assert!(s.vivify);
+        s.vivify_learned = false;
+        assert!(!s.vivify_learned);
+
+        s.stats.conflicts = 0;
+        assert!(s.should_vivify_inprocess_round());
     }
 
     #[test]

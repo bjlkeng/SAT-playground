@@ -984,6 +984,11 @@ impl SolverConfig {
                 // zero correctness failures or SAT/UNSAT contradictions.
                 self.inprocess = true;
                 self.inprocess_interval_conflicts = 1_000_000;
+                // 2026-07-10: enable learned-clause vivification behind the
+                // delayed scheduler in main.rs. Sweep keeps the 1M cadence; vivify
+                // only starts on very long searches where the focused screen found
+                // a Kissat-gap recovery without disturbing sub-6M-conflict SAT cells.
+                self.vivify = true;
             }
             SolverProfile::Experimental => {
                 self.use_lbd = true;
@@ -3377,6 +3382,7 @@ mod tests {
         assert_eq!(config.bsr_occurrence_limit, 1000);
         assert!(config.inprocess);
         assert_eq!(config.inprocess_interval_conflicts, 1_000_000);
+        assert!(config.vivify);
         assert_eq!(config.vmtf, VmtfMode::FocusedOnly);
         assert!(config.lucky);
         assert_eq!(config.proof_policy, ProofPolicy::Drat);
@@ -3397,6 +3403,7 @@ mod tests {
         assert!(!config.full_bsr);
         assert!(!config.inprocess);
         assert_eq!(config.inprocess_interval_conflicts, 0);
+        assert!(!config.vivify);
         assert_eq!(config.bsr_occurrence_limit, 0);
         assert!(!config.use_lbd);
         assert_eq!(config.search_mode_policy, SearchModePolicy::Single);
