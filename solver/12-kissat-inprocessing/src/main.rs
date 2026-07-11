@@ -205,6 +205,11 @@ const VIVIFY_MAX_UNPRODUCTIVE_ROUNDS: u32 = 2;
 /// very large budget. Delaying it keeps the promoted 1M sweep cadence intact
 /// while skipping fragile long SAT cells that finish before 6M conflicts.
 const DEFAULT_LEARNED_VIVIFY_DELAY_CONFLICTS: u64 = 6_000_000;
+/// On binary-dominated formulas, learned-clause vivification can churn the low-LBD
+/// implication graph enough to derail SAT trajectories. Keep original-clause
+/// vivification, but leave learnt candidates out once the post-preprocess formula is
+/// at least as binary-heavy as the inblock shrink gate.
+const LEARNED_VIVIFY_BINARY_DOMINATED_FRACTION: f64 = 0.85;
 /// Bead SAT-playground-5b2.3.6: when learnt-clause vivification is on, only vivify
 /// LEARNT clauses with stored LBD at or below this (tier1/tier2). Vivifying all learnt
 /// clauses (measured 74k on SCPC) churns the learnt DB and inflates conflicts; kissat
@@ -1643,6 +1648,10 @@ struct Solver {
     /// path (inprocess_strengthen_clause handles learnt); deletion stays disabled.
     /// Default off = originals-only (byte-identical to the prior behaviour).
     vivify_learned: bool,
+    /// Env SAT_VIVIFY_LEARNED_BINARY_GATE. Defaults on so binary-dominated formulas
+    /// keep originals-only vivify; disabling restores the previous always-learned path
+    /// for before/after A/B runs.
+    vivify_learned_binary_gate: bool,
     /// target learned-literal budget for LBD-tiered reduction
     learned_lit_budget: usize,
     /// hard learned-literal budget that allows emergency low-LBD demotion
@@ -2591,6 +2600,7 @@ impl Solver {
                 config.vivify
                     && matches!(config.profile, SolverProfile::Default | SolverProfile::Fast),
             ),
+            vivify_learned_binary_gate: env_bool_or_default("SAT_VIVIFY_LEARNED_BINARY_GATE", true),
             learned_lit_budget: LEARNED_LIT_BUDGET_BASE,
             hard_learned_lit_budget: LEARNED_LIT_BUDGET_BASE.saturating_mul(2),
             reset_reduce_db_after_preprocess: true,
@@ -6646,12 +6656,18 @@ impl Solver {
         if !self.vivify {
             return false;
         }
-        if self.vivify_learned
+        if self.learned_vivify_active_for_formula()
             && self.stats.conflicts < DEFAULT_LEARNED_VIVIFY_DELAY_CONFLICTS
         {
             return false;
         }
         true
+    }
+
+    fn learned_vivify_active_for_formula(&self) -> bool {
+        self.vivify_learned
+            && (!self.vivify_learned_binary_gate
+                || self.formula_class.binary_fraction < LEARNED_VIVIFY_BINARY_DOMINATED_FRACTION)
     }
 
     fn should_skip_sweep_for_deep_phase(&self) -> bool {
@@ -6786,7 +6802,7 @@ impl Solver {
         // candidate set is byte-identical to the originals-only behaviour). One cursor
         // sweeps the combined space.
         let n_orig = self.original_clause_ids.len();
-        let n_learned = if self.vivify_learned {
+        let n_learned = if self.learned_vivify_active_for_formula() {
             self.learned_clause_ids.len()
         } else {
             0
@@ -11706,12 +11722,37 @@ mod tests {
         let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
         assert!(s.vivify);
         assert!(s.vivify_learned);
+        s.formula_class = FormulaClass::from_counts(4, 10, 50, 1);
+        assert!(s.learned_vivify_active_for_formula());
 
         s.stats.conflicts = DEFAULT_LEARNED_VIVIFY_DELAY_CONFLICTS - 1;
         assert!(!s.should_vivify_inprocess_round());
 
         s.stats.conflicts = DEFAULT_LEARNED_VIVIFY_DELAY_CONFLICTS;
         assert!(s.should_vivify_inprocess_round());
+    }
+
+    #[test]
+    fn binary_dominated_default_vivify_skips_learned_candidates_immediately() {
+        let config = SolverConfig::from_env_map(&std::collections::BTreeMap::new());
+        assert!(config.vivify);
+
+        let mut s = make_solver_with_config(4, vec![vec![1, 2], vec![2, 3], vec![3, 4]], &config);
+        assert!(s.vivify);
+        assert!(s.vivify_learned);
+        s.formula_class = FormulaClass::from_counts(4, 10, 20, 9);
+        assert!(!s.learned_vivify_active_for_formula());
+
+        s.stats.conflicts = 0;
+        assert!(
+            s.should_vivify_inprocess_round(),
+            "binary-dominated formulas should keep originals-only vivify on the immediate schedule"
+        );
+
+        s.vivify_learned_binary_gate = false;
+        assert!(s.learned_vivify_active_for_formula());
+        s.stats.conflicts = DEFAULT_LEARNED_VIVIFY_DELAY_CONFLICTS - 1;
+        assert!(!s.should_vivify_inprocess_round());
     }
 
     #[test]
