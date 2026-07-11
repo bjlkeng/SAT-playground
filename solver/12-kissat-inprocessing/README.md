@@ -36,6 +36,18 @@ MiniSat `SimpSolver` design described in
 > Evidence: `log/abtest-pairabs-vs-base-2026-07-09-08-20-53`; `check_promotion_gate.py`
 > reported `promotion_gate=PASS`. Disable with `SAT_PAIR_ABS_REFUTE=off`.
 
+> **Medium-suite default promotion (2026-07-11): learned-vivify binary gate.**
+> The `default`/`fast` profiles run guarded 1M-conflict inprocessing with SAT sweeping and
+> vivification. Learned-clause vivification stays delayed until 6M conflicts, but now becomes
+> originals-only on post-preprocess binary-dominated formulas (`binary_fraction >= 0.85`). This
+> preserves the low-binary `sted2_0x1e3-216` solve that needs learned vivify while recovering the
+> binary-heavy `59-129706` trajectory where learned candidates churned the implication graph.
+> Full `sat-comp-2025-medium` single-seed A/B:
+> `log/abtest-cand-vs-base-2026-07-11-08-54-35` kept solved count tied at `61/100` and improved
+> both-solved conflicts `57,134,586 -> 52,607,869`; `check_promotion_gate.py` reported
+> `promotion_gate=PASS`. Disable learned candidates entirely with `SAT_VIVIFY_LEARNED=off`; disable
+> only the binary-fraction gate for before/after replay with `SAT_VIVIFY_LEARNED_BINARY_GATE=off`.
+
 What is present:
 
 - original-clause occurrence lists and literal occurrence counts during preprocessing
@@ -182,8 +194,13 @@ What is present:
   profiling regressions.
 - post-preprocess formula classification in `SAT_STATS_JSON` and `SAT_TRACE_PREPROCESS` output:
   solver 12 records size class, Kissat-style `small`/`bigbig` flags, binary-clause fraction,
-  average clause size, and live-variable density. This is instrumentation for future adaptive
-  policy routing and does not change default behavior yet.
+  average clause size, and live-variable density. The class now drives adaptive defaults such as
+  BSR formula gating and the learned-vivify binary-dominated gate.
+- guarded inprocessing in the `default`/`fast` profiles. The scheduler fires at a 1M-conflict
+  cadence, runs SAT sweeping unless the deep-phase guard sees a nearly complete SAT-looking prefix,
+  and runs vivification. Learned-clause vivification is enabled only on long searches (6M-conflict
+  delay), restricted to low-LBD tier1/tier2 clauses, and suppressed on binary-dominated formulas so
+  original-clause vivification still runs without learned-clause churn.
 - an opt-in pre-search lucky assignment pass (`SAT_LUCKY=on`) that runs after preprocessing and
   before CDCL search. It tries all-true/all-false and forward/backward false/true temporary
   propagation probes, then a bounded small-formula local repair fallback. It captures a SAT model
@@ -258,6 +275,16 @@ SAT_REORDER=on|off
 SAT_REORDER_INTERVAL_CONFLICTS=<u64>  # default 10000
 SAT_REPHASE=on
 SAT_BINARY_FAST=on
+SAT_INPROCESS=on|off
+SAT_INPROCESS_INTERVAL_CONFLICTS=<u64>  # default profile uses 1000000
+SAT_INPROCESS_MAX_ROUNDS=<u64>          # 0 = unlimited
+SAT_SWEEP=on|off                        # direct runtime override for SAT sweeping
+SAT_VIVIFY=on|off
+SAT_VIVIFY_LEARNED=on|off               # direct runtime override for learnt-clause vivify
+SAT_VIVIFY_LEARNED_BINARY_GATE=on|off   # off restores pre-2026-07-11 learned-vivify behavior
+SAT_VIVIFY_PERMILLE=<u64>               # default 20 when SAT_VIVIFY_TICKS=0
+SAT_VIVIFY_TICKS=<u64>                  # absolute per-round vivify budget; 0 = proportional
+SAT_VIVIFY_MAX_CLAUSE_LEN=<usize>       # 0 = default cap
 SAT_ELIMINATE_TICKS=<u64>        # default 3000000000; BSR/BVE work budget for the eliminate pass; 0 = unlimited
 SAT_ELIMINATE_RESOLUTIONS=<u64>  # default 100000000; BVE resolution-attempt budget; 0 = unlimited
 SAT_ELIMINATE_OCCLIM=<u64>       # 0 means unlimited BVE occurrence scan

@@ -19,8 +19,8 @@ SAT_SIMPLIFICATION,simplification,SmokeSafe,true,true,false,default|fast,solver/
 SAT_BVE,bve,SmokeSafe,true,true,false,default|fast,solver/12-kissat-inprocessing/BASELINE_LOCK.raw.txt,preprocess-bve,0.3
 SAT_FULL_BSR,full_bsr,SmokeSafe,true,true,false,default|fast,solver/12-kissat-inprocessing/BASELINE_LOCK.raw.txt,preprocess-bsr,0.3
 SAT_BSR_FORMULA_GATE,bsr_formula_gate,Experimental,false,false,false,none,,preprocess-bsr,SAT-playground-f06
-SAT_INPROCESS,inprocess,ParkingLot,false,false,false,none,,inprocessing,0.3
-SAT_VIVIFY,vivify,ParkingLot,false,false,false,none,,vivification,0.3
+SAT_INPROCESS,inprocess,DiscriminatingValidated,true,true,true,default|fast,log/abtest-sweepguard1m-vs-base-2026-07-08-22-35-36,inprocessing|sat-sweep,SAT-playground-5b2.3.38
+SAT_VIVIFY,vivify,FullSetValidated,true,true,true,default|fast,log/abtest-cand-vs-base-2026-07-11-08-54-35,vivification|learned-clause-vivify|binary-gate,SAT-playground-5b2.3.6
 SAT_PROBE,probe,ParkingLot,false,false,false,none,,probing,0.3
 SAT_HBR,hbr,ParkingLot,false,false,false,none,,hyper-binary-resolution,0.3
 SAT_TRANSITIVE,transitive,ParkingLot,false,false,false,none,,transitive-reduction,0.3

@@ -2394,11 +2394,11 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
         feature(
             "SAT_VIVIFY",
             config.vivify,
-            FeatureMaturity::ParkingLot,
-            false,
-            false,
-            false,
-            "",
+            FeatureMaturity::FullSetValidated,
+            true,
+            true,
+            true,
+            "log/abtest-cand-vs-base-2026-07-11-08-54-35",
         ),
         feature(
             "SAT_PROBE",
