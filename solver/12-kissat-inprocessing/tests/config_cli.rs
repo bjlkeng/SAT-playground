@@ -136,3 +136,71 @@ fn single_mode_target_phase_policies_are_rejected() {
         );
     }
 }
+
+#[test]
+fn factor_bva_sat_model_covers_only_original_variables() {
+    // A 3x10 factorable grid (30 clauses over 23 vars, clause reduction 17 >
+    // FACTOR_BOUND): SAT_FACTOR introduces a fresh variable 24 internally, but
+    // the reported model must stop at the original variable count and satisfy
+    // every original clause.
+    let out_dir = temp_output_dir("factor-bva-sat");
+    let cnf_path = out_dir.join("factor_grid.cnf");
+    let mut original_clauses: Vec<Vec<i32>> = Vec::new();
+    for factor in 1..=3i32 {
+        for rest in 0..10i32 {
+            original_clauses.push(vec![factor, 4 + 2 * rest, 5 + 2 * rest]);
+        }
+    }
+    let mut dimacs = String::from("p cnf 23 30\n");
+    for clause in &original_clauses {
+        for lit in clause {
+            dimacs.push_str(&format!("{lit} "));
+        }
+        dimacs.push_str("0\n");
+    }
+    fs::write(&cnf_path, dimacs).expect("write cnf");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sat-solver"))
+        .env_clear()
+        .env("SAT_FACTOR", "on")
+        .arg(&cnf_path)
+        .arg(&out_dir)
+        .output()
+        .expect("run sat-solver");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = fs::remove_dir_all(&out_dir);
+
+    assert_eq!(output.status.code(), Some(0), "stdout: {stdout}");
+    assert!(stdout.contains("s SATISFIABLE"), "stdout: {stdout}");
+    assert!(
+        stderr.contains("c factor_bva fresh_vars=1"),
+        "factoring must fire: {stderr}"
+    );
+
+    let mut values = std::collections::HashMap::new();
+    for line in stdout.lines().filter(|line| line.starts_with('v')) {
+        for token in line.split_whitespace().skip(1) {
+            let lit: i32 = token.parse().expect("literal token");
+            if lit == 0 {
+                continue;
+            }
+            let var = lit.unsigned_abs();
+            assert!(
+                (1..=23).contains(&var),
+                "model must not mention fresh variables: {lit}"
+            );
+            values.insert(var, lit > 0);
+        }
+    }
+    assert_eq!(values.len(), 23, "model must cover the original variables");
+    for clause in &original_clauses {
+        assert!(
+            clause
+                .iter()
+                .any(|&lit| values[&lit.unsigned_abs()] == (lit > 0)),
+            "original clause {clause:?} unsatisfied"
+        );
+    }
+}

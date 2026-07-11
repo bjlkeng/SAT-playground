@@ -646,6 +646,7 @@ pub(crate) struct SolverConfig {
     pub(crate) gate_bve: bool,
     pub(crate) rcheck: bool,
     pub(crate) gauss: bool,
+    pub(crate) factor: bool,
     pub(crate) pair_abs_refute: bool,
     pub(crate) els: bool,
     pub(crate) congruence: bool,
@@ -772,6 +773,7 @@ impl Default for SolverConfig {
             gate_bve: false,
             rcheck: false,
             gauss: false,
+            factor: false,
             pair_abs_refute: false,
             els: false,
             congruence: false,
@@ -940,6 +942,18 @@ impl SolverConfig {
                 // <=0.74s on the largest cell, which times out regardless). The DRAT proof is
                 // pure resolution and drat-trim VERIFIED (1.26M-clause proof, 0 RAT lemmas).
                 self.gauss = true;
+                // SAT-playground-5b2.3.46 (2026-07-11): bounded variable addition
+                // (kissat factor.c port) promoted to default/fast. Frontend pass on the
+                // parsed formula (vars <= 10^4, clause size <= 5, reduction bound 16,
+                // 700M-tick productivity-extended budget) that factors shared subclauses
+                // into fresh variables with DRAT RAT definitions. sat-comp-2025-medium
+                // single-seed A/B (32c/16GB/1800s,
+                // log/abtest-cand-vs-base-2026-07-11-17-39-48): 63/100 vs 61/100
+                // (+REGRandom-K4 UNSAT 28s ex-timeout, +MVRoundRobin_n16_d10_v2 UNSAT
+                // 183s ex-timeout), PAR-2 153448.7 vs 158211.3, zero contradictions or
+                // correctness failures; promotion_gate PASS. REGRandom's factored DRAT
+                // proof (128,640 RAT lemmas) drat-trim VERIFIED standalone.
+                self.factor = true;
                 // 2026-07-09: adjacent-pair parity abstraction refuter promoted to
                 // default/fast. It detects complete pair-XOR expansions such as the
                 // sat-comp-2025-medium xor_op family, introduces fresh parity variables,
@@ -1429,6 +1443,7 @@ impl SolverConfig {
         self.gate_bve = parse_bool_selected(env_map, &key_set, "SAT_GATE_BVE", self.gate_bve);
         self.rcheck = parse_bool_selected(env_map, &key_set, "SAT_RCHECK", self.rcheck);
         self.gauss = parse_bool_selected(env_map, &key_set, "SAT_GAUSS", self.gauss);
+        self.factor = parse_bool_selected(env_map, &key_set, "SAT_FACTOR", self.factor);
         self.pair_abs_refute = parse_bool_selected(
             env_map,
             &key_set,
@@ -1941,6 +1956,7 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "gate_bve", self.gate_bve);
         push_kv_bool(&mut lines, "rcheck", self.rcheck);
         push_kv_bool(&mut lines, "gauss", self.gauss);
+        push_kv_bool(&mut lines, "factor", self.factor);
         push_kv_bool(&mut lines, "pair_abs_refute", self.pair_abs_refute);
         push_kv_bool(&mut lines, "els", self.els);
         push_kv_bool(&mut lines, "congruence", self.congruence);
@@ -2691,6 +2707,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "gate_bve" => Some("SAT_GATE_BVE"),
         "rcheck" => Some("SAT_RCHECK"),
         "gauss" => Some("SAT_GAUSS"),
+        "factor" => Some("SAT_FACTOR"),
         "pair_abs_refute" => Some("SAT_PAIR_ABS_REFUTE"),
         "els" => Some("SAT_ELS"),
         "congruence" => Some("SAT_CONGRUENCE"),
@@ -2884,6 +2901,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_GATE_BVE",
         "SAT_RCHECK",
         "SAT_GAUSS",
+        "SAT_FACTOR",
         "SAT_PAIR_ABS_REFUTE",
         "SAT_ELS",
         "SAT_CONGRUENCE",
@@ -3390,6 +3408,7 @@ mod tests {
         assert!(config.inprocess);
         assert_eq!(config.inprocess_interval_conflicts, 1_000_000);
         assert!(config.vivify);
+        assert!(config.factor);
         assert_eq!(config.vmtf, VmtfMode::FocusedOnly);
         assert!(config.lucky);
         assert_eq!(config.proof_policy, ProofPolicy::Drat);

@@ -16,6 +16,7 @@ mod check;
 mod config;
 mod congruence;
 mod els;
+mod factor;
 mod gauss;
 mod kitten;
 mod limits;
@@ -1739,6 +1740,9 @@ struct Solver {
     elim_clauses: Vec<i32>,
     /// final SAT model snapshot, including assignments reconstructed for eliminated variables
     sat_model: Option<Vec<u8>>,
+    /// DRAT steps from frontend preprocessing (bounded variable addition) that must be
+    /// replayed into the proof log before any solver-derived proof line
+    pre_search_proof_steps: Vec<factor::FactorProofStep>,
     /// scratch buffer for preprocessing-generated clauses
     scratch_preprocess_clause: Vec<i32>,
     /// scratch buffers reused during conflict analysis
@@ -2642,6 +2646,7 @@ impl Solver {
             n_occ: vec![0; num_vars.saturating_mul(2)],
             elim_clauses: Vec::new(),
             sat_model: None,
+            pre_search_proof_steps: Vec::new(),
             scratch_preprocess_clause: Vec::with_capacity(16),
             scratch_seen: vec![0; num_vars + 1],
             scratch_resolved: vec![0; num_vars + 1],
@@ -10452,6 +10457,18 @@ impl Solver {
         config: &SolverConfig,
     ) -> SolveOutcome {
         let solve_start = Instant::now();
+        // Frontend bounded-variable-addition proof prefix (SAT_FACTOR): the fresh-variable
+        // definition clauses and product-clause deletions must precede every solver-derived
+        // proof line, otherwise later lemmas resolve on clauses the checker has not seen.
+        if !self.pre_search_proof_steps.is_empty() {
+            let steps = std::mem::take(&mut self.pre_search_proof_steps);
+            for step in &steps {
+                match step {
+                    factor::FactorProofStep::Add(lits) => proof_log.record_clause(lits),
+                    factor::FactorProofStep::Delete(lits) => proof_log.record_deletion(lits),
+                }
+            }
+        }
         let runtime_limits = RuntimeLimits::from_config(config);
         let limits_active = runtime_limits.is_active();
         if !self.solver_ok || self.has_empty_clause || !self.enqueue_root_units() {
@@ -11401,9 +11418,47 @@ fn main() {
         println!("{}", SolveStatus::Unknown.s_line());
         std::process::exit(SolveStatus::Unknown.exit_code());
     }
-    let mut solver = Solver::new_with_config(num_vars, clauses, &config);
+    // Frontend bounded variable addition (SAT_FACTOR, kissat factor.c port). Runs on the
+    // parsed formula before solver construction, mirroring kissat's preprocessing-time
+    // delay rule (log10(vars) <= factordelay, i.e. at most 10^4 variables) with the
+    // kissat initial tick budget. The transform is equisatisfiable and model-restricting,
+    // so the solver simply runs on the factored formula with the fresh variables, and the
+    // model is truncated back to the original variables for output.
+    let mut solver_num_vars = num_vars;
+    let mut solver_clauses = clauses;
+    let mut bva_steps: Vec<factor::FactorProofStep> = Vec::new();
+    if config.factor && num_vars <= factor::FACTOR_MAX_VARS {
+        let factor_start = Instant::now();
+        if let Some(outcome) = factor::factor_formula(
+            num_vars,
+            &solver_clauses,
+            factor::FACTOR_TICKS_LIMIT,
+            factor::FACTOR_BOUND,
+        ) {
+            eprintln!(
+                "c factor_bva fresh_vars={} clauses_removed={} clauses_added={} ticks={} completed={} sec={:.3}",
+                outcome.fresh_vars,
+                outcome.clauses_removed,
+                outcome.clauses_added,
+                outcome.ticks,
+                outcome.completed,
+                factor_start.elapsed().as_secs_f64(),
+            );
+            solver_num_vars = outcome.num_vars;
+            solver_clauses = outcome.clauses;
+            bva_steps = outcome.steps;
+        }
+    }
+    let mut solver = Solver::new_with_config(solver_num_vars, solver_clauses, &config);
+    solver.pre_search_proof_steps = bva_steps;
 
     let (outcome, proof_stats) = solver.solve_to_output(output_dir, &config);
+    if let Some(model) = solver.sat_model.as_mut() {
+        // Bounded variable addition may have introduced fresh variables past the original
+        // count; the output/validation contract is over the original variables, and a
+        // factored model restricted to them satisfies every original clause.
+        model.truncate(num_vars + 1);
+    }
     let status = outcome.status;
     let model_path = if status == SolveStatus::Sat {
         let model = solver
