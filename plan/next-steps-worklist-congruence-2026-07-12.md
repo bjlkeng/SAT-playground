@@ -63,7 +63,39 @@ trajectories bit-identical.
    49-74% of vars mid-search (eliminate↔substitute↔congruence interplay), not by
    out-conflicting us.
 
+## LATE-SESSION MILESTONE: VexRiscv solved UNSAT standalone (first time ever)
+
+Third knob, same session: **`SAT_CONGRUENCE_ARMED_MIN_MERGES`** (default 0 =
+inert). On ARMED formulas, mid-search re-closures use this lower dry-run
+threshold instead of the shipped 3000 — the fragile-cell protection rationale
+does not apply to a formula whose root closure already cleared the productivity
+bar, and the 3000 threshold was measurably blocking the eliminate→congruence
+feedback loop (oski merges frozen at 58,416 across all v2 rounds).
+
+With the full bundle (`SAT_CONGRUENCE_WORKLIST=on SAT_ELIM_ARMED_BOUNDS=on
+SAT_CONGRUENCE_ARMED_MIN_MERGES=32`, idle, single core, proof off):
+
+- **VexRiscv: `s UNSATISFIABLE` in 1371.9s, 2.77M conflicts** — a kissat-only
+  gap cell never solved by any iteration before (kissat: 169s). Mid-search
+  cascade: merges 18,360 → 19,287, eliminations +6k over v2; small increments,
+  but they convert.
+- oski: 2.28M conflicts/1500s (+26% rate over v2, merges now growing) — no solve.
+- ibm canary: SAT, another trajectory roll (1.0M conflicts; base 292k / wl 681k).
+- goldcrest: 0 merges, untouched as designed.
+
+**Why no A/B**: the in-gate flip line is ≲1000s standalone (32-way contention
+≈1.8x); 1372s ≈ 2470s in-gate → still TIMEOUT, while ibm's conflicts-tier roll
+worsens. Promoting this bundle needs VexRiscv (or oski/g2) under ~1000s
+standalone first. A proof-ON rerun + drat-trim verification was launched at
+session end (scratchpad `vexproof.status`) to certify the milestone.
+
 ## Ranked next steps
+
+### 0. Push the armed cascade under the in-gate line (direct continuation)
+VexRiscv needs −30% standalone. Knob sweeps worth screening (cheap, standalone):
+armed threshold 32 → 8; armed-BVE effort 10% → 20%; and the real lever,
+per-round ELS substitution + vivify on armed formulas between eliminate rounds
+(kissat runs substitute twice per probe round). Then the factor step (below).
 
 ### 1. The full probe-round parity bundle (the real +1 play, multi-session)
 Kissat's oski recipe: 20 mid-search rounds of congruence → substitute → vivify →

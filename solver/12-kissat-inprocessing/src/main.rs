@@ -1679,6 +1679,16 @@ struct Solver {
     /// on the substitute→re-extract outer rounds, so one `try_congruence` call reaches
     /// the full congruence fixpoint at a fraction of the O(formula)-per-round cost.
     congruence_worklist: bool,
+    /// Mid-search re-closure threshold on ARMED formulas
+    /// (SAT_CONGRUENCE_ARMED_MIN_MERGES, default 0 = off). The shipped 3000-merge
+    /// dry-run threshold protects untouched fragile cells from a first zero-payoff
+    /// rewrite; on a formula whose ROOT closure already cleared the productivity
+    /// bar (inprocess_aggressive armed) it also blocks the small incremental
+    /// re-closures that let mid-search eliminations feed back into congruence
+    /// (kissat re-runs the closure in EVERY probe round). When >0 and the formula
+    /// is armed, the dry-run threshold drops to this value mid-search; the root
+    /// closure (which runs before arming) keeps the shipped threshold.
+    congruence_armed_min_merges: usize,
     /// Kissat-parity mid-search elimination bounds on armed formulas
     /// (SAT_ELIM_ARMED_BOUNDS, default off): the `inprocess_aggressive` mid-search
     /// `eliminate(true)` rounds run with `bve_grow = armed_bve_bound` (escalating
@@ -2697,6 +2707,10 @@ impl Solver {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(CONGRUENCE_MIN_APPLY_MERGES),
             congruence_worklist: env_bool_or_default("SAT_CONGRUENCE_WORKLIST", false),
+            congruence_armed_min_merges: std::env::var("SAT_CONGRUENCE_ARMED_MIN_MERGES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
             elim_armed_bounds: env_bool_or_default("SAT_ELIM_ARMED_BOUNDS", false),
             armed_bve_bound: 0,
             armed_elim_last_search_ticks: 0,
@@ -10501,6 +10515,19 @@ impl Solver {
         let debug = std::env::var("SAT_DEBUG_CONGRUENCE").is_ok();
         let t0 = Instant::now();
 
+        // Mid-search re-closures on an armed formula may use the lower armed
+        // threshold: the formula is already congruence-edited, so the
+        // fragile-cell protection rationale of the shipped threshold no longer
+        // applies, and small incremental cascades are what let eliminations
+        // feed back into congruence (kissat probe-round parity).
+        let apply_threshold = if self.inprocess_aggressive && self.congruence_armed_min_merges > 0
+        {
+            self.congruence_armed_min_merges
+                .min(self.congruence_min_apply_merges)
+        } else {
+            self.congruence_min_apply_merges
+        };
+
         // All-or-nothing productivity gate: dry-run extraction + matching on the
         // untouched formula, applying nothing. Only formulas with a real congruence
         // payoff proceed to the editing loop below; everything else returns with the
@@ -10519,12 +10546,12 @@ impl Solver {
                 eprintln!(
                     "c congruence dry_run merges={} threshold={} unsat={} ({:.4}s)",
                     plan.merges.len(),
-                    self.congruence_min_apply_merges,
+                    apply_threshold,
                     plan.unsat.is_some(),
                     t0.elapsed().as_secs_f64()
                 );
             }
-            if plan.unsat.is_none() && plan.merges.len() < self.congruence_min_apply_merges {
+            if plan.unsat.is_none() && plan.merges.len() < apply_threshold {
                 return false;
             }
         }
@@ -13094,6 +13121,47 @@ mod tests {
         assert!(
             !s.solve_with_proof(&mut proof, &cfg),
             "cascaded self-negation must be UNSAT"
+        );
+    }
+
+    #[test]
+    fn congruence_armed_threshold_applies_only_when_armed() {
+        // Two equivalent AND gates -> exactly 1 merge, far below the shipped 3000
+        // threshold. With the armed threshold at 1: an UNARMED solver must leave the
+        // formula untouched (dry-run gate holds); once inprocess_aggressive is armed
+        // the same closure applies the merge.
+        let cfg = congruence_config();
+        let original = vec![
+            vec![-3, 1],
+            vec![-3, 2],
+            vec![3, -1, -2],
+            vec![-4, 1],
+            vec![-4, 2],
+            vec![4, -1, -2],
+            vec![-3, 5],
+            vec![-4, 6],
+        ];
+        let mut proof = ProofLog::disabled();
+
+        let mut unarmed = make_solver_with_config(6, original.clone(), &cfg);
+        unarmed.congruence_armed_min_merges = 1;
+        assert!(unarmed.enqueue_root_units());
+        assert!(unarmed.propagate().is_none());
+        assert!(!unarmed.try_congruence(&mut proof, false));
+        assert_eq!(
+            unarmed.stats.congruence_merges, 0,
+            "unarmed solver keeps the shipped threshold"
+        );
+
+        let mut armed = make_solver_with_config(6, original, &cfg);
+        armed.congruence_armed_min_merges = 1;
+        armed.inprocess_aggressive = true;
+        assert!(armed.enqueue_root_units());
+        assert!(armed.propagate().is_none());
+        armed.try_congruence(&mut proof, false);
+        assert!(
+            armed.stats.congruence_merges >= 1,
+            "armed solver applies sub-threshold merges at the armed threshold"
         );
     }
 
