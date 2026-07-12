@@ -725,6 +725,9 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("vivify_removed_literals", ctx.stats.vivify_removed_literals);
     json.u64("sweep_backbones", ctx.stats.sweep_backbones);
     json.u64("sweep_equivalences", ctx.stats.sweep_equivalences);
+    json.u64("congruence_merges", ctx.stats.congruence_merges);
+    json.u64("congruence_and_gates", ctx.stats.congruence_and_gates);
+    json.u64("congruence_ite_gates", ctx.stats.congruence_ite_gates);
     json.u64("probe_attempts", 0);
     json.u64("probe_failed_literals", 0);
     json.u64("probe_units", 0);

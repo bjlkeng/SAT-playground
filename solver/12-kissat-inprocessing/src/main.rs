@@ -251,6 +251,35 @@ const CONGRUENCE_PRODUCTIVE_MIN_MERGES: u64 = 1000;
 /// First inprocessing interval (conflicts) on congruence-productive formulas. The
 /// interval doubles every round until it reaches the regular flat interval.
 const INPROCESS_AGGRESSIVE_FIRST_INTERVAL: u64 = 10_000;
+/// Kissat-analog `chronolevels` cap applied ONLY on congruence-productive formulas
+/// (env override SAT_CHRONO_PRODUCTIVE_DELTA; 0 disables the gate). Kissat backtracks
+/// chronologically whenever a backjump would discard more than chronolevels=100 levels
+/// (learn.c backjump_limit); our global default SAT_CHRONO_MAX_DELTA=5000 nearly never
+/// fires on deep-trail BMC/miter cells. Measured on VexRiscv (240s, same host): base
+/// 767 decisions/conflict at avg backjump ~2000 levels vs kissat 35 decisions/conflict
+/// — identical decision throughput, 22x conflict-density gap. Delta calibration
+/// (standalone, 2026-07-12): 100 solves VexRiscv fastest (~1000s) but derails the
+/// armed SAT cell ibm-2004 (390k -> 1.34M conflicts); 1000 keeps VexRiscv solvable
+/// standalone (1578s, 3.09M conflicts) AND improves ibm-2004 (390k -> 292k conflicts,
+/// -25%) because it fires only on catastrophic multi-thousand-level jumps (453 fires
+/// on ibm vs 13k at delta=100). Applying delta=100 globally was measured-rejected
+/// (2026-06-20, derails fragile SAT cells oddball/bp4), hence the root-productivity
+/// gate. Promotion A/B log/abtest-cand-vs-base-2026-07-12-10-48-37: 62==62 solved,
+/// both-solved conflicts 53,454,576 vs 53,552,717 (the ibm delta exactly), PAR-2
+/// 155,681.7 vs 155,820.8, gate PASS; ibm-2004 is the only cell whose trajectory
+/// changes at this delta.
+const CHRONO_PRODUCTIVE_DELTA: usize = 1000;
+/// Root-BVE elimination yield (percent of declared variables) at or above which a
+/// formula arms the aggressive inprocessing cadence even without congruence merges
+/// (env override SAT_ELIM_PRODUCTIVE_MIN_PCT; 0 disables). Kissat's win mechanism on
+/// structured-SAT cells (Timetable family: 41s, 170k conflicts) is mid-search
+/// elimination — 67% of variables across 4 elimination rounds between search phases —
+/// while our flat 1M-conflict cadence runs zero inprocess rounds in the first 300s and
+/// never re-eliminates. Root elimination yield is the productivity dry-run for this
+/// class: Timetable eliminates 50% and VexRiscv 58% at the root, so further rounds are
+/// evidence-backed; formulas whose root yield is low keep the shipped flat cadence and
+/// byte-identical trajectories.
+const ELIM_PRODUCTIVE_MIN_PCT: usize = 0;
 
 const SWEEP_SKIP_BEST_PHASE_PERMILLE: usize = 950;
 const SWEEP_SKIP_TARGET_PHASE_PERMILLE: usize = 875;
@@ -1650,6 +1679,22 @@ struct Solver {
     /// (see CONGRUENCE_PRODUCTIVE_MIN_MERGES). Off on all other formulas so their
     /// trajectories keep the shipped flat cadence byte-identical.
     inprocess_aggressive: bool,
+    /// Kissat-parity chronolevels on congruence-productive gate circuits
+    /// (CHRONO_PRODUCTIVE_DELTA; env override SAT_CHRONO_PRODUCTIVE_DELTA, 0 = off).
+    /// When the root congruence closure proves the formula gate-productive (the same
+    /// signal that arms `inprocess_aggressive`), `chrono_max_delta` is lowered to this
+    /// value. Kissat backtracks chronologically whenever a backjump would discard more
+    /// than `chronolevels=100` levels (learn.c); our promoted default of 5000 almost
+    /// never fires on deep-trail BMC/miter cells (VexRiscv: avg jump ~2000 levels, 93%
+    /// of conflicts pay a full re-descent at 767 decisions/conflict vs kissat's 35).
+    /// Gated on root productivity so fragile SAT trajectories (oddball/bp4 — the
+    /// measured 2026-06-20 delta=100 global-promotion losers) stay byte-identical.
+    chrono_productive_delta: usize,
+    /// Root-BVE elimination yield (percent of declared vars) that arms the aggressive
+    /// inprocessing cadence without congruence merges (ELIM_PRODUCTIVE_MIN_PCT; env
+    /// override SAT_ELIM_PRODUCTIVE_MIN_PCT, 0 = off). Targets kissat's mid-search
+    /// elimination mechanism on structured-SAT cells (Timetable class).
+    elim_productive_min_pct: usize,
     /// current aggressive-cadence interval; doubles per round up to the flat interval
     inprocess_aggressive_interval: u64,
     /// run clause vivification inside each inprocessing round (SAT_VIVIFY)
@@ -2635,6 +2680,14 @@ impl Solver {
                 .unwrap_or(CONGRUENCE_MIN_APPLY_MERGES),
             inprocess_aggressive: false,
             inprocess_aggressive_interval: INPROCESS_AGGRESSIVE_FIRST_INTERVAL,
+            chrono_productive_delta: std::env::var("SAT_CHRONO_PRODUCTIVE_DELTA")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(CHRONO_PRODUCTIVE_DELTA),
+            elim_productive_min_pct: std::env::var("SAT_ELIM_PRODUCTIVE_MIN_PCT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(ELIM_PRODUCTIVE_MIN_PCT),
             vivify: config.vivify,
             vivify_ticks_budget: config.vivify_ticks_budget,
             vivify_permille: config.vivify_permille,
@@ -6733,6 +6786,55 @@ impl Solver {
                 >= num_vars.saturating_mul(SWEEP_SKIP_TARGET_PHASE_PERMILLE)
     }
 
+    /// Arm the congruence-productive search adaptations after root reduction.
+    ///
+    /// Congruence-productive gate circuits (miters/BMC) switch to the kissat-parity
+    /// early inprocessing cadence: kissat interleaves congruence/substitution and
+    /// elimination with search from small conflict limits, which is what collapses
+    /// these formulas; a flat 1M-conflict cadence never gets enough rounds. The same
+    /// root-merge signal optionally lowers `chrono_max_delta` to the kissat
+    /// `chronolevels` scale (`chrono_productive_delta`, 0 = off): on deep-trail
+    /// BMC/miter cells the promoted global delta of 5000 almost never fires, so every
+    /// conflict pays a multi-thousand-level backjump plus re-descent. Gated on actual
+    /// root merges so every other formula keeps the shipped schedule and trajectory.
+    fn maybe_arm_congruence_productive_search(&mut self, config: &SolverConfig) {
+        if !self.inprocess {
+            return;
+        }
+        let congruence_productive = config.congruence
+            && self.stats.congruence_merges >= CONGRUENCE_PRODUCTIVE_MIN_MERGES;
+        // Elimination-yield productivity (Timetable-class structured SAT): a high
+        // root-BVE yield is the dry-run evidence that further mid-search elimination
+        // rounds will keep paying (kissat removes 67% of Timetable vars across 4
+        // mid-search eliminations). Uses declared vars as the denominator so the
+        // signal is stable across preprocessing variants.
+        let num_vars = self.assignment.len().saturating_sub(1);
+        let elim_productive = self.elim_productive_min_pct > 0
+            && self.use_elim
+            && num_vars > 0
+            && self
+                .stats
+                .preprocess_eliminated_vars
+                .saturating_mul(100)
+                >= (num_vars as u64).saturating_mul(self.elim_productive_min_pct as u64);
+        if !congruence_productive && !elim_productive {
+            return;
+        }
+        self.inprocess_aggressive = true;
+        self.inprocess_aggressive_interval = INPROCESS_AGGRESSIVE_FIRST_INTERVAL;
+        self.next_inprocess_conflicts = self
+            .stats
+            .conflicts
+            .saturating_add(INPROCESS_AGGRESSIVE_FIRST_INTERVAL);
+        // The chrono cap stays tied to the CONGRUENCE signal only: it is validated on
+        // deep-trail BMC/miter cells (VexRiscv/ibm), while elimination-armed formulas
+        // (Timetable class, avg backjump well under 1000) get no benefit and would
+        // only pick up trajectory risk.
+        if congruence_productive && self.chrono_backtrack && self.chrono_productive_delta > 0 {
+            self.chrono_max_delta = self.chrono_max_delta.min(self.chrono_productive_delta);
+        }
+    }
+
     /// Run one inprocessing round at decision level 0, then reschedule.
     ///
     /// Interleaves the enabled clause-simplification / formula-rewriting techniques so
@@ -10698,17 +10800,7 @@ impl Solver {
         // elimination with search from small conflict limits, which is what collapses
         // these formulas; a flat 1M-conflict cadence never gets enough rounds. Gated on
         // actual root merges so every other formula keeps the shipped schedule.
-        if self.inprocess
-            && config.congruence
-            && self.stats.congruence_merges >= CONGRUENCE_PRODUCTIVE_MIN_MERGES
-        {
-            self.inprocess_aggressive = true;
-            self.inprocess_aggressive_interval = INPROCESS_AGGRESSIVE_FIRST_INTERVAL;
-            self.next_inprocess_conflicts = self
-                .stats
-                .conflicts
-                .saturating_add(INPROCESS_AGGRESSIVE_FIRST_INTERVAL);
-        }
+        self.maybe_arm_congruence_productive_search(config);
         self.formula_class = self.classify_formula();
         if config.trace_preprocess {
             eprintln!(
@@ -12528,6 +12620,134 @@ mod tests {
                 "reconstructed model must satisfy original clause {clause:?}"
             );
         }
+    }
+
+    #[test]
+    fn congruence_productive_arming_lowers_chrono_delta_when_enabled() {
+        let cfg = SolverConfig {
+            congruence: true,
+            inprocess: true,
+            chrono_backtrack: true,
+            ..Default::default()
+        };
+        let mut s = make_solver_with_config(4, vec![vec![1, 2], vec![-1, 3], vec![2, 3, 4]], &cfg);
+        s.chrono_max_delta = 5000;
+        s.chrono_productive_delta = 100;
+        s.stats.congruence_merges = CONGRUENCE_PRODUCTIVE_MIN_MERGES;
+        s.maybe_arm_congruence_productive_search(&cfg);
+        assert!(s.inprocess_aggressive, "productive formula arms the cadence");
+        assert_eq!(
+            s.chrono_max_delta, 100,
+            "productive formula adopts the kissat-parity chronolevels"
+        );
+    }
+
+    #[test]
+    fn congruence_productive_arming_keeps_chrono_delta_when_knob_off() {
+        let cfg = SolverConfig {
+            congruence: true,
+            inprocess: true,
+            chrono_backtrack: true,
+            ..Default::default()
+        };
+        let mut s = make_solver_with_config(4, vec![vec![1, 2], vec![-1, 3], vec![2, 3, 4]], &cfg);
+        s.chrono_max_delta = 5000;
+        s.chrono_productive_delta = 0;
+        s.stats.congruence_merges = CONGRUENCE_PRODUCTIVE_MIN_MERGES;
+        s.maybe_arm_congruence_productive_search(&cfg);
+        assert!(s.inprocess_aggressive, "cadence arming is independent of the knob");
+        assert_eq!(s.chrono_max_delta, 5000, "knob off leaves the global delta");
+    }
+
+    #[test]
+    fn unproductive_formula_keeps_chrono_delta_and_flat_cadence() {
+        let cfg = SolverConfig {
+            congruence: true,
+            inprocess: true,
+            chrono_backtrack: true,
+            ..Default::default()
+        };
+        let mut s = make_solver_with_config(4, vec![vec![1, 2], vec![-1, 3], vec![2, 3, 4]], &cfg);
+        s.chrono_max_delta = 5000;
+        s.chrono_productive_delta = 100;
+        s.stats.congruence_merges = CONGRUENCE_PRODUCTIVE_MIN_MERGES - 1;
+        s.maybe_arm_congruence_productive_search(&cfg);
+        assert!(!s.inprocess_aggressive, "sub-threshold formula stays on flat cadence");
+        assert_eq!(s.chrono_max_delta, 5000, "sub-threshold formula keeps the global delta");
+    }
+
+    #[test]
+    fn elim_productive_yield_arms_cadence_without_congruence_merges() {
+        let cfg = SolverConfig {
+            congruence: true,
+            inprocess: true,
+            chrono_backtrack: true,
+            ..Default::default()
+        };
+        let mut s = make_solver_with_config(4, vec![vec![1, 2], vec![-1, 3], vec![2, 3, 4]], &cfg);
+        s.use_elim = true;
+        s.chrono_max_delta = 5000;
+        s.chrono_productive_delta = 100;
+        s.elim_productive_min_pct = 40;
+        s.stats.congruence_merges = 0;
+        s.stats.preprocess_eliminated_vars = 2; // 2 of 4 vars = 50% >= 40%
+        s.maybe_arm_congruence_productive_search(&cfg);
+        assert!(s.inprocess_aggressive, "high root-BVE yield arms the cadence");
+        assert_eq!(
+            s.chrono_max_delta, 5000,
+            "elim-only arming must NOT lower the chrono delta"
+        );
+    }
+
+    #[test]
+    fn low_elim_yield_keeps_flat_cadence() {
+        let cfg = SolverConfig {
+            congruence: true,
+            inprocess: true,
+            ..Default::default()
+        };
+        let mut s = make_solver_with_config(4, vec![vec![1, 2], vec![-1, 3], vec![2, 3, 4]], &cfg);
+        s.use_elim = true;
+        s.elim_productive_min_pct = 40;
+        s.stats.congruence_merges = 0;
+        s.stats.preprocess_eliminated_vars = 1; // 25% < 40%
+        s.maybe_arm_congruence_productive_search(&cfg);
+        assert!(!s.inprocess_aggressive, "low yield keeps the shipped schedule");
+    }
+
+    #[test]
+    fn elim_productive_knob_off_is_inert() {
+        let cfg = SolverConfig {
+            congruence: true,
+            inprocess: true,
+            ..Default::default()
+        };
+        let mut s = make_solver_with_config(4, vec![vec![1, 2], vec![-1, 3], vec![2, 3, 4]], &cfg);
+        s.use_elim = true;
+        s.elim_productive_min_pct = 0;
+        s.stats.congruence_merges = 0;
+        s.stats.preprocess_eliminated_vars = 4;
+        s.maybe_arm_congruence_productive_search(&cfg);
+        assert!(!s.inprocess_aggressive, "knob off never arms via elimination yield");
+    }
+
+    #[test]
+    fn chrono_productive_delta_never_raises_explicit_lower_delta() {
+        let cfg = SolverConfig {
+            congruence: true,
+            inprocess: true,
+            chrono_backtrack: true,
+            ..Default::default()
+        };
+        let mut s = make_solver_with_config(4, vec![vec![1, 2], vec![-1, 3], vec![2, 3, 4]], &cfg);
+        s.chrono_max_delta = 50;
+        s.chrono_productive_delta = 100;
+        s.stats.congruence_merges = CONGRUENCE_PRODUCTIVE_MIN_MERGES;
+        s.maybe_arm_congruence_productive_search(&cfg);
+        assert_eq!(
+            s.chrono_max_delta, 50,
+            "an explicitly lower delta is never raised by the gate"
+        );
     }
 
     #[test]
