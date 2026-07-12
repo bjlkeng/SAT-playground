@@ -954,6 +954,33 @@ impl SolverConfig {
                 // correctness failures; promotion_gate PASS. REGRandom's factored DRAT
                 // proof (128,640 RAT lemmas) drat-trim VERIFIED standalone.
                 self.factor = true;
+                // 2026-07-12: gate congruence closure (with XOR extraction) promoted to
+                // default/fast, now running BOTH at the root and inside every guarded
+                // inprocessing round (kissat probe.c parity: congruence -> substitute
+                // before vivify/sweep). try_congruence first DRY-RUNS gate extraction +
+                // merge matching on the untouched formula and applies NOTHING — no hidden
+                // binaries, no ELS substitution, no merges — below
+                // CONGRUENCE_MIN_APPLY_MERGES (3000) or above 10M live clauses, so
+                // non-gate-circuit formulas keep byte-identical trajectories. Formulas
+                // whose ROOT closure clears the productivity bar additionally switch the
+                // inprocessing scheduler to the early doubling cadence (first round at
+                // 10k conflicts) and run mid-search BVE rounds between search phases —
+                // the kissat mechanism on miter/BMC circuits (VexRiscv: 183k congruent
+                // matches + 13 eliminations; oski: 74% vars eliminated over 20 rounds).
+                // sat-comp-2025-medium single-seed A/B (32c/16GB/1800s,
+                // log/abtest-cand-vs-base-2026-07-12-00-03-56): solved 62/100 == 62/100
+                // with IDENTICAL solved sets, both-solved conflicts 53,552,717 vs
+                // 54,651,852 (-2.0%, at-least-two-ibm-2004 389,682 vs 1,488,817), zero
+                // contradictions or correctness failures; promotion_gate PASS. The
+                // unthresholded variant (log/abtest-cand-vs-base-2026-07-11-21-59-04)
+                // lost 4 SAT cells whose formulas were rewritten for sub-threshold merge
+                // counts (oddball_80 39, bp4_CSO_IXA 648, bp5_CSO 1892, plus 34k
+                // zero-merge hidden binaries on Timetables and pure-binary ELS rewrites
+                // on Kakuro) — the dry-run threshold exists to keep exactly those cells
+                // byte-identical. Mid-search congruence+BVE DRAT proofs drat-trim
+                // VERIFIED standalone (div-mitern172, 292MB proof, s VERIFIED).
+                self.congruence = true;
+                self.congruence_xor = true;
                 // 2026-07-09: adjacent-pair parity abstraction refuter promoted to
                 // default/fast. It detects complete pair-XOR expansions such as the
                 // sat-comp-2025-medium xor_op family, introduces fresh parity variables,

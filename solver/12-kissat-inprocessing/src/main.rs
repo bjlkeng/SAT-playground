@@ -223,6 +223,35 @@ const SWEEP_SOLVE_BUDGET: usize = 2000;
 /// Skip SAT sweeping when phase search has already found a near-complete
 /// SAT-looking assignment prefix. This protects long SAT trajectories where
 /// true local equivalences can still derail a nearly complete model.
+/// All-or-nothing congruence edit threshold: a `try_congruence` call first dry-runs
+/// gate extraction + merge matching on the UNTOUCHED formula and applies nothing —
+/// no hidden binaries, no ELS substitution, no merge equivalences — unless at least
+/// this many merges are found. The 2026-07-11 medium A/B showed why: formulas below
+/// this line (Timetables: 34k hidden binaries / 0 merges; Kakuro: pure-binary ELS
+/// rewrites / 0 merges; oddball/QG7/Pancake: <50 merges) got their formulas rewritten
+/// for zero congruence payoff and lost solved cells or blew up conflicts, while the
+/// real winners (VexRiscv 7.7k, ibm 25k, oski 56k dry merges) sit far above it. The
+/// 3000 line places every measured SAT-cell loser (bp5_CSO 1.9k, DLTM 3.0k,
+/// bp4_BC012 1.0-1.1k, bp4_CSO_IXA 0.65k) on the no-edit side while keeping the
+/// heavy gate circuits. Sub-threshold formulas stay byte-identical.
+const CONGRUENCE_MIN_APPLY_MERGES: usize = 3000;
+/// Skip congruence entirely (even the dry run) above this live-clause count: gate
+/// extraction hashes every clause, which costs minutes on 20M+-clause formulas
+/// (Kakuro: 165s) that show no gate structure anyway.
+const CONGRUENCE_DRY_MAX_CLAUSES: usize = 10_000_000;
+
+/// Root-congruence merge count at or above which a formula is treated as a
+/// congruence-productive gate circuit (miter/BMC shape). On these formulas kissat's
+/// win mechanism is interleaving congruence/substitution/elimination with search many
+/// times (its probe/eliminate limits start small and grow NLOGN), while our flat
+/// 1M-conflict inprocessing cadence yields only 2-3 rounds per 1800s. Productive
+/// formulas therefore switch to the early doubling cadence below and run mid-search
+/// elimination rounds; everything else keeps the shipped flat cadence untouched.
+const CONGRUENCE_PRODUCTIVE_MIN_MERGES: u64 = 1000;
+/// First inprocessing interval (conflicts) on congruence-productive formulas. The
+/// interval doubles every round until it reaches the regular flat interval.
+const INPROCESS_AGGRESSIVE_FIRST_INTERVAL: u64 = 10_000;
+
 const SWEEP_SKIP_BEST_PHASE_PERMILLE: usize = 950;
 const SWEEP_SKIP_TARGET_PHASE_PERMILLE: usize = 875;
 const OTFS_MAX_LEARNED_LEN: usize = 20;
@@ -1611,6 +1640,18 @@ struct Solver {
     next_inprocess_conflicts: u64,
     /// number of inprocessing rounds run so far this solve
     inprocess_rounds: u64,
+    /// All-or-nothing congruence edit threshold (CONGRUENCE_MIN_APPLY_MERGES; env
+    /// override SAT_CONGRUENCE_MIN_MERGES). Dry-run merge counts below this leave the
+    /// formula byte-identical; tests lower it to exercise the editing loop on small
+    /// crafted gates.
+    congruence_min_apply_merges: usize,
+    /// kissat-parity cadence for congruence-productive gate circuits: rounds start
+    /// early and interleave congruence/vivify/sweep with mid-search elimination
+    /// (see CONGRUENCE_PRODUCTIVE_MIN_MERGES). Off on all other formulas so their
+    /// trajectories keep the shipped flat cadence byte-identical.
+    inprocess_aggressive: bool,
+    /// current aggressive-cadence interval; doubles per round up to the flat interval
+    inprocess_aggressive_interval: u64,
     /// run clause vivification inside each inprocessing round (SAT_VIVIFY)
     vivify: bool,
     /// absolute per-round propagation budget for vivification (0 => proportional default)
@@ -2588,6 +2629,12 @@ impl Solver {
                 INPROCESS_DEFAULT_INTERVAL
             },
             inprocess_rounds: 0,
+            congruence_min_apply_merges: std::env::var("SAT_CONGRUENCE_MIN_MERGES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(CONGRUENCE_MIN_APPLY_MERGES),
+            inprocess_aggressive: false,
+            inprocess_aggressive_interval: INPROCESS_AGGRESSIVE_FIRST_INTERVAL,
             vivify: config.vivify,
             vivify_ticks_budget: config.vivify_ticks_budget,
             vivify_permille: config.vivify_permille,
@@ -6725,6 +6772,25 @@ impl Solver {
         if ok && config.probe {
             ok = self.probe_root_failed_literals(proof_log, config);
         }
+        // Gate congruence closure first, kissat probe-round parity (probe.c runs
+        // kissat_congruence before vivify/sweep): merging congruent gate outputs
+        // mid-search substitutes variables so the later passes and the continuing
+        // search work on the collapsed formula. Root-only congruence does not crack
+        // the circuit miters; kissat's win on them comes from re-running the closure
+        // between search phases as units/simplifications expose new merges. The
+        // deep-phase guard shared with sweep keeps SAT-looking trajectories intact.
+        if ok && config.congruence {
+            if self.should_skip_sweep_for_deep_phase() {
+                if config.trace_search_interval > 0 {
+                    eprintln!(
+                        "c congruence skipped=deep_phase conflicts={} target={} best={}",
+                        self.stats.conflicts, self.target_assigned, self.best_assigned,
+                    );
+                }
+            } else if self.try_congruence(proof_log, config.congruence_xor) {
+                ok = false;
+            }
+        }
         if ok && self.should_vivify_inprocess_round() {
             ok = self.vivify_round(proof_log);
         }
@@ -6743,11 +6809,34 @@ impl Solver {
                 ok = self.sweep_round(proof_log);
             }
         }
+        // Mid-search elimination round, kissat parity for congruence-productive gate
+        // circuits: kissat removes 49-74% of the variables on the miter/BMC gap cells
+        // through repeated eliminations BETWEEN search phases, after congruence and
+        // substitution have unified gate inputs. `eliminate(true, ..)` restores the
+        // preprocessing invariants itself (occurrence teardown, use_simplification off,
+        // branch-queue rebuild), so the call is bracketed only by re-enabling the
+        // simplification umbrella. Learned clauses that mention eliminated variables
+        // stay live: they are implied clauses over now-non-decision variables, the same
+        // treatment the mid-search ELS substitution path has always used, and the SAT
+        // model extension replays elimination witnesses regardless of any search-time
+        // value of an eliminated variable.
+        if ok && self.inprocess_aggressive && self.use_elim && !self.should_skip_sweep_for_deep_phase()
+        {
+            self.use_simplification = true;
+            ok = self.eliminate(true, proof_log);
+        }
 
-        self.next_inprocess_conflicts = self
-            .stats
-            .conflicts
-            .saturating_add(self.inprocess_interval().max(1));
+        let interval = if self.inprocess_aggressive {
+            // Early rounds matter most on gate circuits; double toward the flat cadence.
+            let current = self.inprocess_aggressive_interval.max(1);
+            self.inprocess_aggressive_interval = current
+                .saturating_mul(2)
+                .min(self.inprocess_interval().max(1));
+            current
+        } else {
+            self.inprocess_interval().max(1)
+        };
+        self.next_inprocess_conflicts = self.stats.conflicts.saturating_add(interval);
         ok
     }
 
@@ -10242,8 +10331,35 @@ impl Solver {
         if self.original_clause_ids.len() > CONGRUENCE_MAX_CLAUSES {
             return false;
         }
+        if self.original_clause_ids.len() > CONGRUENCE_DRY_MAX_CLAUSES {
+            return false;
+        }
         let debug = std::env::var("SAT_DEBUG_CONGRUENCE").is_ok();
         let t0 = Instant::now();
+
+        // All-or-nothing productivity gate: dry-run extraction + matching on the
+        // untouched formula, applying nothing. Only formulas with a real congruence
+        // payoff proceed to the editing loop below; everything else returns with the
+        // formula byte-identical (see CONGRUENCE_MIN_APPLY_MERGES for the evidence).
+        // A dry-run UNSAT merge (gate output equivalent to its own negation) falls
+        // through to the loop, which re-derives and proves it.
+        {
+            let gates = self.extract_gates_for_congruence(xor);
+            let plan = congruence::find_merges(&gates);
+            if debug {
+                eprintln!(
+                    "c congruence dry_run merges={} threshold={} unsat={} ({:.4}s)",
+                    plan.merges.len(),
+                    self.congruence_min_apply_merges,
+                    plan.unsat.is_some(),
+                    t0.elapsed().as_secs_f64()
+                );
+            }
+            if plan.unsat.is_none() && plan.merges.len() < self.congruence_min_apply_merges {
+                return false;
+            }
+        }
+
         let mut total_merges: u64 = 0;
         let mut total_bins: u64 = 0;
 
@@ -10577,6 +10693,22 @@ impl Solver {
             return SolveOutcome::unsat();
         }
         self.reset_learned_budget_after_preprocess();
+        // Congruence-productive gate circuits (miters/BMC) switch to the kissat-parity
+        // early inprocessing cadence: kissat interleaves congruence/substitution and
+        // elimination with search from small conflict limits, which is what collapses
+        // these formulas; a flat 1M-conflict cadence never gets enough rounds. Gated on
+        // actual root merges so every other formula keeps the shipped schedule.
+        if self.inprocess
+            && config.congruence
+            && self.stats.congruence_merges >= CONGRUENCE_PRODUCTIVE_MIN_MERGES
+        {
+            self.inprocess_aggressive = true;
+            self.inprocess_aggressive_interval = INPROCESS_AGGRESSIVE_FIRST_INTERVAL;
+            self.next_inprocess_conflicts = self
+                .stats
+                .conflicts
+                .saturating_add(INPROCESS_AGGRESSIVE_FIRST_INTERVAL);
+        }
         self.formula_class = self.classify_formula();
         if config.trace_preprocess {
             eprintln!(
@@ -12326,6 +12458,142 @@ mod tests {
     }
 
     #[test]
+    fn inprocess_round_runs_congruence_when_enabled() {
+        // Two identical AND gates 3 = AND(1,2) and 4 = AND(1,2). An inprocessing round
+        // with SAT_CONGRUENCE on must run the congruence closure mid-search: the outputs
+        // merge and ELS substitutes variable 4 by representative 3.
+        let cfg = SolverConfig {
+            congruence: true,
+            inprocess: true,
+            vivify: false,
+            simplification: false,
+            els: false,
+            ..Default::default()
+        };
+        let original = vec![
+            vec![-3, 1],
+            vec![-3, 2],
+            vec![3, -1, -2],
+            vec![-4, 1],
+            vec![-4, 2],
+            vec![4, -1, -2],
+            vec![-3, 5],
+            vec![-4, 6],
+        ];
+        let mut s = make_solver_with_config(6, original, &cfg);
+        s.congruence_min_apply_merges = 1;
+        s.sweep = false;
+        let mut proof = ProofLog::disabled();
+        assert!(s.inprocess_round(&mut proof, &cfg));
+        assert!(
+            s.stats.congruence_merges >= 1,
+            "inprocess round must merge the two equivalent AND outputs, merges={}",
+            s.stats.congruence_merges
+        );
+        assert!(s.eliminated[4], "variable 4 must be substituted away mid-search");
+    }
+
+    #[test]
+    fn inprocess_round_aggressive_runs_midsearch_elimination() {
+        // Aggressive (congruence-productive) inprocessing must run a mid-search BVE
+        // round: variable 1 appears in two clauses resolvable to one resolvent, so the
+        // round eliminates it and search still finishes with a model that satisfies
+        // every original clause after extension replay.
+        let cfg = SolverConfig {
+            congruence: true,
+            inprocess: true,
+            vivify: false,
+            els: false,
+            ..Default::default()
+        };
+        let original = vec![vec![1, 2], vec![-1, 3], vec![2, 3, 4]];
+        let mut s = make_solver_with_config(4, original.clone(), &cfg);
+        s.sweep = false;
+        s.inprocess_aggressive = true;
+        let mut proof = ProofLog::disabled();
+        assert!(s.inprocess_round(&mut proof, &cfg));
+        assert!(
+            s.stats.preprocess_eliminated_vars >= 1,
+            "aggressive round must run mid-search BVE, eliminated={}",
+            s.stats.preprocess_eliminated_vars
+        );
+        assert!(
+            !s.use_simplification,
+            "eliminate(true) turn-off must restore the umbrella flag"
+        );
+        assert!(s.solve(), "instance is SAT");
+        for clause in &original {
+            assert!(
+                clause.iter().any(|&lit| s.lit_value(lit) == TRUE),
+                "reconstructed model must satisfy original clause {clause:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inprocess_round_aggressive_doubles_interval_toward_flat_cadence() {
+        let cfg = SolverConfig {
+            congruence: true,
+            inprocess: true,
+            vivify: false,
+            els: false,
+            ..Default::default()
+        };
+        let mut s = make_solver_with_config(4, vec![vec![1, 2], vec![-1, 3], vec![2, 3, 4]], &cfg);
+        s.sweep = false;
+        s.inprocess_aggressive = true;
+        s.inprocess_aggressive_interval = INPROCESS_AGGRESSIVE_FIRST_INTERVAL;
+        s.inprocess_interval_conflicts = 1_000_000;
+        let mut proof = ProofLog::disabled();
+        assert!(s.inprocess_round(&mut proof, &cfg));
+        assert_eq!(
+            s.next_inprocess_conflicts,
+            s.stats.conflicts + INPROCESS_AGGRESSIVE_FIRST_INTERVAL,
+            "first aggressive round reschedules at the small interval"
+        );
+        assert_eq!(
+            s.inprocess_aggressive_interval,
+            INPROCESS_AGGRESSIVE_FIRST_INTERVAL * 2,
+            "interval doubles for the next round"
+        );
+    }
+
+    #[test]
+    fn inprocess_round_congruence_respects_deep_phase_guard() {
+        // Same two identical AND gates, but a deep best/target phase prefix marks the
+        // trajectory as SAT-looking: the guard shared with sweep must skip congruence.
+        let cfg = SolverConfig {
+            congruence: true,
+            inprocess: true,
+            vivify: false,
+            simplification: false,
+            els: false,
+            ..Default::default()
+        };
+        let original = vec![
+            vec![-3, 1],
+            vec![-3, 2],
+            vec![3, -1, -2],
+            vec![-4, 1],
+            vec![-4, 2],
+            vec![4, -1, -2],
+            vec![-3, 5],
+            vec![-4, 6],
+        ];
+        let mut s = make_solver_with_config(6, original, &cfg);
+        s.sweep = false;
+        s.best_assigned = 6;
+        s.target_assigned = 6;
+        let mut proof = ProofLog::disabled();
+        assert!(s.inprocess_round(&mut proof, &cfg));
+        assert_eq!(
+            s.stats.congruence_merges, 0,
+            "deep-phase guard must skip mid-search congruence"
+        );
+        assert!(!s.eliminated[4]);
+    }
+
+    #[test]
     fn congruence_merges_equivalent_and_gate_outputs_and_preserves_model() {
         // 3 = AND(1,2) and 4 = AND(1,2) ⇒ 3 ≡ 4; congruence merges them and the ELS engine
         // eliminates variable 4 (representative 3). The reconstructed model must satisfy
@@ -12342,6 +12610,7 @@ mod tests {
             vec![-4, 6],
         ];
         let mut s = make_solver_with_config(6, original.clone(), &cfg);
+        s.congruence_min_apply_merges = 1;
         let mut proof = ProofLog::disabled();
         assert!(s.solve_with_proof(&mut proof, &cfg), "instance is SAT");
         assert!(
@@ -12375,6 +12644,7 @@ mod tests {
             vec![-5, 7],
         ];
         let mut s = make_solver_with_config(7, original.clone(), &cfg);
+        s.congruence_min_apply_merges = 1;
         let mut proof = ProofLog::disabled();
         assert!(s.solve_with_proof(&mut proof, &cfg), "instance is SAT");
         assert!(
@@ -12426,6 +12696,7 @@ mod tests {
         original.push(vec![-4, 6]); // keep 4 live outside its gate
         original.push(vec![-5, 7]); // keep 5 live outside its gate
         let mut s = make_solver_with_config(7, original.clone(), &cfg);
+        s.congruence_min_apply_merges = 1;
         let mut proof = ProofLog::disabled();
         assert!(s.solve_with_proof(&mut proof, &cfg), "instance is SAT");
         assert!(
@@ -12567,6 +12838,7 @@ mod tests {
             vec![-9, 11],
         ];
         let mut s = make_solver_with_config(11, original.clone(), &cfg);
+        s.congruence_min_apply_merges = 1;
         let mut proof = ProofLog::disabled();
         assert!(s.solve_with_proof(&mut proof, &cfg), "instance is SAT");
         assert!(
