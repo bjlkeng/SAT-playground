@@ -31,7 +31,7 @@
 //! RUP from the gates' defining clauses (directly for AND, via a short resolution chain
 //! for ITE — emitted by the driver). If instead `q == ¬p` the formula is UNSAT.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// The shape of a detected gate. Determines the DRAT proof chain the driver emits when
 /// two such gates are merged.
@@ -165,6 +165,326 @@ pub(crate) fn find_merges(gates: &[Gate]) -> Plan {
             }
         }
     }
+    Plan {
+        merges,
+        unsat: None,
+    }
+}
+
+/// Union-find representative of `lit` (two-pass with path compression).
+///
+/// `parent[v]` is the literal that the positive literal `+v` currently maps to;
+/// `find(-v) = -find(+v)`. Roots satisfy `parent[v] == ±v` only in the identity form
+/// `parent[v] == v` — a merge never installs `parent[v] == -v` (that is the UNSAT case,
+/// detected before the union).
+fn find_lit(parent: &mut [i32], lit: i32) -> i32 {
+    let mut l = lit;
+    let root = loop {
+        let v = l.unsigned_abs() as usize;
+        let p = if l > 0 { parent[v] } else { -parent[v] };
+        if p == l {
+            break l;
+        }
+        l = p;
+    };
+    // Compress the walked path so long chains stay cheap.
+    let mut l = lit;
+    while l != root {
+        let v = l.unsigned_abs() as usize;
+        let next = if l > 0 { parent[v] } else { -parent[v] };
+        parent[v] = if l > 0 { root } else { -root };
+        l = next;
+    }
+    root
+}
+
+/// Outcome of renormalizing one gate through the current representative map.
+enum Renormalized {
+    /// Gate dropped (degenerate after substitution). Always sound — only forgoes work.
+    Dead,
+    /// Gate collapsed to a direct equivalence `input ≡ out` (e.g. `x = AND(a, a)`).
+    Collapsed(Merge),
+    /// Live gate with its canonical hash key `(tag, inputs)` and canonical output literal.
+    Keyed { tag: u8, inputs: Vec<i32>, out: i32 },
+}
+
+/// Map a gate through `parent` and renormalize it to canonical form.
+///
+/// Substituting representatives can create duplicate inputs, XOR cancellations, or
+/// self-references; each is either collapsed to a direct merge (when the equivalence is
+/// RUP from the gate clauses plus the already-recorded equivalence binaries) or the gate
+/// is conservatively dropped.
+fn renormalize_gate(parent: &mut [i32], g: &Gate) -> Renormalized {
+    match g.kind {
+        GateKind::And => {
+            let out = find_lit(parent, g.out);
+            let mut inputs: Vec<i32> = g.inputs.iter().map(|&l| find_lit(parent, l)).collect();
+            inputs.sort_unstable();
+            inputs.dedup();
+            let ov = out.unsigned_abs();
+            if inputs.iter().any(|&l| l.unsigned_abs() == ov) {
+                return Renormalized::Dead;
+            }
+            if inputs.len() == 1 {
+                // x = AND(a): output equivalent to the sole input. RUP from the original
+                // gate clauses plus the input-equivalence binaries recorded earlier.
+                return Renormalized::Collapsed(Merge {
+                    p: inputs[0],
+                    q: out,
+                    kind: MergeKind::And,
+                });
+            }
+            if inputs.is_empty() {
+                return Renormalized::Dead;
+            }
+            Renormalized::Keyed {
+                tag: 0,
+                inputs,
+                out,
+            }
+        }
+        GateKind::Ite => {
+            let mut rhs = [
+                find_lit(parent, g.inputs[0]),
+                find_lit(parent, g.inputs[1]),
+                find_lit(parent, g.inputs[2]),
+            ];
+            let negate = normalize_ite(&mut rhs);
+            let mut out = find_lit(parent, g.out);
+            if negate {
+                out = -out;
+            }
+            let [c, t, e] = rhs;
+            let (cv, tv, ev, ov) = (
+                c.unsigned_abs(),
+                t.unsigned_abs(),
+                e.unsigned_abs(),
+                out.unsigned_abs(),
+            );
+            if t == e {
+                // x = ITE(c, t, t) ≡ t. The ITE chain over `c` stays RUP through the
+                // recorded input-equivalence binaries.
+                if cv == tv || cv == ov || tv == ov {
+                    return Renormalized::Dead;
+                }
+                return Renormalized::Collapsed(Merge {
+                    p: t,
+                    q: out,
+                    kind: MergeKind::Ite { cond: c },
+                });
+            }
+            // Any shared variable after substitution: drop (extraction guaranteed four
+            // distinct variables; the proof chains rely on that shape).
+            if cv == tv || cv == ev || tv == ev || ov == cv || ov == tv || ov == ev {
+                return Renormalized::Dead;
+            }
+            Renormalized::Keyed {
+                tag: 1,
+                inputs: vec![c, t, e],
+                out,
+            }
+        }
+        GateKind::Xor => {
+            // Inputs are positive variable-literals with the parity folded into the output
+            // sign. A representative with negative polarity flips the output; equal pairs
+            // cancel (a ⊕ a = 0).
+            let mut out = find_lit(parent, g.out);
+            let mut inputs: Vec<i32> = Vec::with_capacity(g.inputs.len());
+            for &l in &g.inputs {
+                let mut r = find_lit(parent, l);
+                if r < 0 {
+                    out = -out;
+                    r = -r;
+                }
+                inputs.push(r);
+            }
+            inputs.sort_unstable();
+            let mut cancelled: Vec<i32> = Vec::with_capacity(inputs.len());
+            let mut i = 0;
+            while i < inputs.len() {
+                if i + 1 < inputs.len() && inputs[i] == inputs[i + 1] {
+                    i += 2; // a ⊕ a cancels
+                } else {
+                    cancelled.push(inputs[i]);
+                    i += 1;
+                }
+            }
+            let inputs = cancelled;
+            let ov = out.unsigned_abs() as i32;
+            if inputs.iter().any(|&l| l == ov) {
+                return Renormalized::Dead;
+            }
+            if inputs.is_empty() {
+                return Renormalized::Dead;
+            }
+            if inputs.len() == 1 {
+                return Renormalized::Collapsed(Merge {
+                    p: inputs[0],
+                    q: out,
+                    kind: MergeKind::Xor {
+                        inputs: inputs.clone(),
+                    },
+                });
+            }
+            Renormalized::Keyed {
+                tag: 2,
+                inputs,
+                out,
+            }
+        }
+    }
+}
+
+/// Worklist congruence closure (`SAT_CONGRUENCE_WORKLIST`) — the kissat `congruence.c`
+/// cascade ported onto [`find_merges`]'s Plan interface.
+///
+/// Where [`find_merges`] performs a single syntactic hashing pass (relying on the caller
+/// to substitute the formula and re-extract gates to observe cascaded merges), this
+/// variant keeps the gates in memory and cascades internally: every merge `p ≡ q` unions
+/// the literal classes, and every gate mentioning `q`'s variable is renormalized through
+/// the representative map, rehashed, and re-matched — which can schedule further merges
+/// (kissat congruence.c: `rewrite_gates` over per-literal occurrence lists + a FIFO
+/// worklist). One call reaches the full congruence fixpoint over the given gate set
+/// without touching the formula.
+///
+/// Proof-order contract: `Plan::merges` is in discovery order, and each merge's
+/// equivalence binaries are RUP from the gates' defining clauses **plus the equivalence
+/// binaries of the earlier merges** (unit propagation routes through them). The driver
+/// must emit the merges in order, and — unlike the [`find_merges`] driver path — must
+/// emit them **before** the [`Plan::unsat`] refutation, which may be a cascaded
+/// self-negation that depends on them.
+pub(crate) fn find_merges_closure(num_vars: usize, gates_in: Vec<Gate>) -> Plan {
+    let mut parent: Vec<i32> = (0..=num_vars as i32).collect();
+    let mut merges: Vec<Merge> = Vec::new();
+    let mut pending: VecDeque<Merge> = VecDeque::new();
+    // var -> indices of live gates with that variable among their (current) inputs.
+    let mut occ: Vec<Vec<u32>> = vec![Vec::new(); num_vars + 1];
+    let mut table: HashMap<(u8, Vec<i32>), i32> = HashMap::new();
+    let mut gates: Vec<Option<Gate>> = gates_in.into_iter().map(Some).collect();
+
+    // Renormalize gate `idx` and register it. `register_inputs`: on the initial pass every
+    // input variable is registered; on reprocessing only the variable that just changed
+    // representative maps to a new one (`new_var`), the others are already registered.
+    fn process_gate(
+        idx: u32,
+        register_all: bool,
+        parent: &mut Vec<i32>,
+        gates: &mut Vec<Option<Gate>>,
+        occ: &mut Vec<Vec<u32>>,
+        table: &mut HashMap<(u8, Vec<i32>), i32>,
+        pending: &mut VecDeque<Merge>,
+    ) {
+        let Some(g) = gates[idx as usize].as_ref() else {
+            return;
+        };
+        match renormalize_gate(parent, g) {
+            Renormalized::Dead => {
+                gates[idx as usize] = None;
+            }
+            Renormalized::Collapsed(m) => {
+                gates[idx as usize] = None;
+                pending.push_back(m);
+            }
+            Renormalized::Keyed { tag, inputs, out } => {
+                // Keep the canonical form so later reprocessing starts from it (for ITE
+                // the output flip is already folded into `out`).
+                {
+                    let g = gates[idx as usize].as_mut().unwrap();
+                    g.out = out;
+                    g.inputs = inputs.clone();
+                }
+                if register_all {
+                    for &l in &inputs {
+                        let v = l.unsigned_abs() as usize;
+                        occ[v].push(idx);
+                    }
+                }
+                let key = (tag, inputs);
+                match table.get(&key).copied() {
+                    None => {
+                        table.insert(key, out);
+                    }
+                    Some(rep) => {
+                        if rep != out {
+                            let kind = match tag {
+                                0 => MergeKind::And,
+                                1 => MergeKind::Ite { cond: key.1[0] },
+                                _ => MergeKind::Xor {
+                                    inputs: key.1.clone(),
+                                },
+                            };
+                            pending.push_back(Merge { p: rep, q: out, kind });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for idx in 0..gates.len() as u32 {
+        process_gate(
+            idx,
+            true,
+            &mut parent,
+            &mut gates,
+            &mut occ,
+            &mut table,
+            &mut pending,
+        );
+    }
+
+    while let Some(m) = pending.pop_front() {
+        let p = find_lit(&mut parent, m.p);
+        let q = find_lit(&mut parent, m.q);
+        if p == q {
+            continue;
+        }
+        // Degenerate ITE merges (condition variable shared with an output) are dropped,
+        // matching find_merges: their proof chain over `cond` collapses.
+        if let MergeKind::Ite { cond } = &m.kind {
+            let cv = cond.unsigned_abs();
+            if cv == p.unsigned_abs() || cv == q.unsigned_abs() {
+                continue;
+            }
+        }
+        let merge = Merge {
+            p,
+            q,
+            kind: m.kind.clone(),
+        };
+        if p == -q {
+            return Plan {
+                merges,
+                unsat: Some(merge),
+            };
+        }
+        merges.push(merge);
+        // Union: q's class now points at p. p keeps its root, so gates registered under
+        // p's variable stay current; only gates mentioning q's variable must reprocess.
+        let qv = q.unsigned_abs() as usize;
+        parent[qv] = if q > 0 { p } else { -p };
+        let touched = std::mem::take(&mut occ[qv]);
+        let pv = p.unsigned_abs() as usize;
+        for idx in touched {
+            if gates[idx as usize].is_none() {
+                continue;
+            }
+            // The reprocessed gate's inputs now mention p's variable; register it there so
+            // a future merge of p reprocesses it again. Other input registrations are
+            // still current.
+            occ[pv].push(idx);
+            process_gate(
+                idx,
+                false,
+                &mut parent,
+                &mut gates,
+                &mut occ,
+                &mut table,
+                &mut pending,
+            );
+        }
+    }
+
     Plan {
         merges,
         unsat: None,
@@ -336,5 +656,171 @@ mod tests {
         let plan = find_merges(&[x, a]);
         assert!(plan.merges.is_empty());
         assert!(plan.unsat.is_none());
+    }
+
+    // ---- worklist closure (find_merges_closure) ----
+
+    #[test]
+    fn closure_matches_single_pass_on_non_cascading_input() {
+        let gates = vec![and_gate(3, vec![1, 2]), and_gate(4, vec![2, 1])];
+        let plan = find_merges_closure(4, gates);
+        assert!(plan.unsat.is_none());
+        assert_eq!(plan.merges.len(), 1);
+        assert_eq!((plan.merges[0].p, plan.merges[0].q), (3, 4));
+        assert_eq!(plan.merges[0].kind, MergeKind::And);
+    }
+
+    #[test]
+    fn closure_cascades_and_merges_one_call() {
+        // Layer 1: x1 = AND(1,2), x2 = AND(1,2) ⇒ x1 ≡ x2.
+        // Layer 2: y1 = AND(x1,5), y2 = AND(x2,5) — congruent only AFTER x1 ≡ x2.
+        // The single-pass matcher needs a substitute→re-extract round to see y1 ≡ y2;
+        // the closure must find both merges in one call, layer 1 first.
+        let gates = vec![
+            and_gate(3, vec![1, 2]),
+            and_gate(4, vec![1, 2]),
+            and_gate(6, vec![3, 5]),
+            and_gate(7, vec![4, 5]),
+        ];
+        let single = find_merges(&gates);
+        assert_eq!(single.merges.len(), 1, "single pass sees only layer 1");
+        let plan = find_merges_closure(7, gates);
+        assert!(plan.unsat.is_none());
+        assert_eq!(plan.merges.len(), 2, "closure cascades to layer 2");
+        assert_eq!((plan.merges[0].p, plan.merges[0].q), (3, 4));
+        assert_eq!((plan.merges[1].p, plan.merges[1].q), (6, 7));
+    }
+
+    #[test]
+    fn closure_cascades_through_negated_inputs() {
+        // x1 = AND(1,2) ⇒ out 3; x2 = AND(1,2) ⇒ out 4 ⇒ 3 ≡ 4.
+        // y1 = AND(-3,5) out 6; y2 = AND(-4,5) out 7: after 3 ≡ 4 the mapped input of
+        // y2 is -3, so y1 ≡ y2 must cascade with correct polarity handling.
+        let gates = vec![
+            and_gate(3, vec![1, 2]),
+            and_gate(4, vec![1, 2]),
+            and_gate(6, vec![-3, 5]),
+            and_gate(7, vec![-4, 5]),
+        ];
+        let plan = find_merges_closure(7, gates);
+        assert!(plan.unsat.is_none());
+        assert_eq!(plan.merges.len(), 2);
+        assert_eq!((plan.merges[1].p, plan.merges[1].q), (6, 7));
+    }
+
+    #[test]
+    fn closure_xor_cancellation_collapses_to_input_merge() {
+        // a ≡ b via matched AND gates (outputs 3 and 4), then z = XOR(3,4,5): after the
+        // merge the XOR inputs cancel pairwise, so z ≡ 5 directly.
+        let gates = vec![
+            and_gate(3, vec![1, 2]),
+            and_gate(4, vec![1, 2]),
+            xor_gate(6, vec![3, 4, 5]),
+        ];
+        let plan = find_merges_closure(6, gates);
+        assert!(plan.unsat.is_none());
+        assert_eq!(plan.merges.len(), 2);
+        assert_eq!((plan.merges[0].p, plan.merges[0].q), (3, 4));
+        let m = &plan.merges[1];
+        assert_eq!((m.p, m.q), (5, 6));
+        assert_eq!(
+            m.kind,
+            MergeKind::Xor {
+                inputs: vec![5]
+            }
+        );
+    }
+
+    #[test]
+    fn closure_unary_and_collapse_merges_output_with_input() {
+        // x = AND(3,4) with 3 ≡ 4 (via layer-1 AND congruence) ⇒ x ≡ 3.
+        let gates = vec![
+            and_gate(3, vec![1, 2]),
+            and_gate(4, vec![1, 2]),
+            and_gate(5, vec![3, 4]),
+        ];
+        let plan = find_merges_closure(5, gates);
+        assert!(plan.unsat.is_none());
+        assert_eq!(plan.merges.len(), 2);
+        assert_eq!((plan.merges[1].p, plan.merges[1].q), (3, 5));
+        assert_eq!(plan.merges[1].kind, MergeKind::And);
+    }
+
+    #[test]
+    fn closure_cascaded_self_negation_reports_unsat_after_merges() {
+        // Layer 1 merges 3 ≡ 4; layer 2 gates give 6 ≡ -6 only through that merge.
+        // The prior merges MUST be present in Plan::merges (the refutation chain is
+        // RUP only after their binaries are emitted).
+        let gates = vec![
+            and_gate(3, vec![1, 2]),
+            and_gate(4, vec![1, 2]),
+            and_gate(6, vec![3, 5]),
+            and_gate(-6, vec![4, 5]),
+        ];
+        let plan = find_merges_closure(6, gates);
+        let u = plan.unsat.expect("cascaded self-negation must be UNSAT");
+        assert_eq!(plan.merges.len(), 1, "layer-1 merge precedes the refutation");
+        assert_eq!((plan.merges[0].p, plan.merges[0].q), (3, 4));
+        assert_eq!(u.p.unsigned_abs(), 6);
+        assert_eq!(u.q, -u.p);
+    }
+
+    #[test]
+    fn closure_ite_then_else_collapse_merges_with_branch() {
+        // x = ITE(c, t, e) with t ≡ e via layer-1 AND congruence ⇒ x ≡ t.
+        let gates = vec![
+            and_gate(4, vec![1, 2]),
+            and_gate(5, vec![1, 2]),
+            ite_gate(7, 6, 4, 5),
+        ];
+        let plan = find_merges_closure(7, gates);
+        assert!(plan.unsat.is_none());
+        assert_eq!(plan.merges.len(), 2);
+        let m = &plan.merges[1];
+        assert_eq!((m.p, m.q), (4, 7));
+        assert_eq!(m.kind, MergeKind::Ite { cond: 6 });
+    }
+
+    #[test]
+    fn closure_ite_cascade_via_condition_rewrite() {
+        // Two ITE gates whose conditions become equal only after an AND merge.
+        let gates = vec![
+            and_gate(4, vec![1, 2]),
+            and_gate(5, vec![1, 2]),
+            ite_gate(8, 4, 6, 7),
+            ite_gate(9, 5, 6, 7),
+        ];
+        let single = find_merges(&gates);
+        assert_eq!(single.merges.len(), 1);
+        let plan = find_merges_closure(9, gates);
+        assert!(plan.unsat.is_none());
+        assert_eq!(plan.merges.len(), 2);
+        assert_eq!((plan.merges[1].p, plan.merges[1].q), (8, 9));
+        assert_eq!(plan.merges[1].kind, MergeKind::Ite { cond: 4 });
+    }
+
+    #[test]
+    fn closure_xor_sign_flip_through_negative_representative() {
+        // -3 ≡ 4 (outputs of AND gates on the same inputs with opposite polarity
+        // conventions): p = XOR over var 3 must match q = XOR over var 4 with the
+        // output sign flipped by the negative representative.
+        let gates = vec![
+            and_gate(-3, vec![1, 2]),
+            and_gate(4, vec![1, 2]),
+            xor_gate(6, vec![3, 5]),
+            xor_gate(7, vec![4, 5]),
+        ];
+        let plan = find_merges_closure(7, gates);
+        assert!(plan.unsat.is_none());
+        // merge 1: -3 ≡ 4. merge 2: XOR(3,5) vs XOR(4,5): with 4 ↦ -3 the second gate
+        // is XOR(3,5) on the flipped output, so 6 ≡ -7.
+        assert_eq!(plan.merges.len(), 2);
+        let m = &plan.merges[1];
+        assert_eq!(m.p.unsigned_abs().max(m.q.unsigned_abs()), 7);
+        assert_eq!(
+            (m.p, m.q),
+            (6, -7),
+            "negative representative must flip the XOR output"
+        );
     }
 }

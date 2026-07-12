@@ -1674,6 +1674,24 @@ struct Solver {
     /// formula byte-identical; tests lower it to exercise the editing loop on small
     /// crafted gates.
     congruence_min_apply_merges: usize,
+    /// Worklist congruence closure (SAT_CONGRUENCE_WORKLIST, default off): cascade
+    /// merges in memory (kissat congruence.c rewrite_gates parity) instead of relying
+    /// on the substitute→re-extract outer rounds, so one `try_congruence` call reaches
+    /// the full congruence fixpoint at a fraction of the O(formula)-per-round cost.
+    congruence_worklist: bool,
+    /// Kissat-parity mid-search elimination bounds on armed formulas
+    /// (SAT_ELIM_ARMED_BOUNDS, default off): the `inprocess_aggressive` mid-search
+    /// `eliminate(true)` rounds run with `bve_grow = armed_bve_bound` (escalating
+    /// 0→1→2→4→8→16 after zero-yield rounds, kissat eliminate.c
+    /// `set_next_elimination_bound`) and `bve_clause_limit = 100` (kissat
+    /// eliminateclslim) instead of the frontend grow=0/clslim=20, so armed rounds
+    /// actually eliminate variables mid-search. Root preprocessing bounds unchanged.
+    elim_armed_bounds: bool,
+    /// current kissat `additional_clauses` analog for armed mid-search elimination
+    armed_bve_bound: isize,
+    /// search-ticks snapshot at the last armed mid-search elimination round, for the
+    /// kissat-style proportional effort budget (eliminateeffort analog)
+    armed_elim_last_search_ticks: u64,
     /// kissat-parity cadence for congruence-productive gate circuits: rounds start
     /// early and interleave congruence/vivify/sweep with mid-search elimination
     /// (see CONGRUENCE_PRODUCTIVE_MIN_MERGES). Off on all other formulas so their
@@ -2678,6 +2696,10 @@ impl Solver {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(CONGRUENCE_MIN_APPLY_MERGES),
+            congruence_worklist: env_bool_or_default("SAT_CONGRUENCE_WORKLIST", false),
+            elim_armed_bounds: env_bool_or_default("SAT_ELIM_ARMED_BOUNDS", false),
+            armed_bve_bound: 0,
+            armed_elim_last_search_ticks: 0,
             inprocess_aggressive: false,
             inprocess_aggressive_interval: INPROCESS_AGGRESSIVE_FIRST_INTERVAL,
             chrono_productive_delta: std::env::var("SAT_CHRONO_PRODUCTIVE_DELTA")
@@ -6925,7 +6947,47 @@ impl Solver {
         if ok && self.inprocess_aggressive && self.use_elim && !self.should_skip_sweep_for_deep_phase()
         {
             self.use_simplification = true;
-            ok = self.eliminate(true, proof_log);
+            if self.elim_armed_bounds {
+                // Kissat-parity bound schedule for the armed round (eliminate.c
+                // set_next_elimination_bound): allow up to `armed_bve_bound` additional
+                // clauses per elimination, escalating 0→1→2→4→8→16 only after a
+                // zero-yield round, so the first rounds replay the shipped no-growth
+                // behavior exactly. The resolvent length limit stays at the shipped
+                // `bve_clause_limit` (=20): the 2026-07-12 clslim=100 screen poisoned
+                // VexRiscv's watch lists with fat resolvents (ticks/prop 26→205).
+                // Effort is bounded kissat-style (SET_EFFORT_LIMIT, eliminateeffort
+                // =100‰): ~10% of the search ticks accumulated since the last armed
+                // round, floored, instead of the flat lifetime budget.
+                const ARMED_BVE_BOUND_MAX: isize = 16;
+                const ARMED_BVE_MIN_EFFORT_TICKS: u64 = 50_000_000;
+                let saved_grow = self.bve_grow;
+                let saved_ticks_budget = self.eliminate_ticks_budget;
+                self.bve_grow = self.armed_bve_bound;
+                let since = self
+                    .stats
+                    .search_ticks
+                    .saturating_sub(self.armed_elim_last_search_ticks);
+                let allowance = (since / 10).max(ARMED_BVE_MIN_EFFORT_TICKS);
+                let spent = self
+                    .stats
+                    .preprocess_eliminate_ticks
+                    .max(self.stats.preprocess_bsr_ticks);
+                self.eliminate_ticks_budget = spent.saturating_add(allowance);
+                self.armed_elim_last_search_ticks = self.stats.search_ticks;
+                let eliminated_before = self.stats.preprocess_eliminated_vars;
+                ok = self.eliminate(true, proof_log);
+                self.bve_grow = saved_grow;
+                self.eliminate_ticks_budget = saved_ticks_budget;
+                if self.stats.preprocess_eliminated_vars == eliminated_before {
+                    self.armed_bve_bound = if self.armed_bve_bound == 0 {
+                        1
+                    } else {
+                        (self.armed_bve_bound * 2).min(ARMED_BVE_BOUND_MAX)
+                    };
+                }
+            } else {
+                ok = self.eliminate(true, proof_log);
+            }
         }
 
         let interval = if self.inprocess_aggressive {
@@ -10447,7 +10509,12 @@ impl Solver {
         // through to the loop, which re-derives and proves it.
         {
             let gates = self.extract_gates_for_congruence(xor);
-            let plan = congruence::find_merges(&gates);
+            let plan = if self.congruence_worklist {
+                let num_vars = self.assignment.len().saturating_sub(1);
+                congruence::find_merges_closure(num_vars, gates)
+            } else {
+                congruence::find_merges(&gates)
+            };
             if debug {
                 eprintln!(
                     "c congruence dry_run merges={} threshold={} unsat={} ({:.4}s)",
@@ -10500,21 +10567,28 @@ impl Solver {
                 }
             }
 
-            let plan = congruence::find_merges(&gates);
+            let plan = if self.congruence_worklist {
+                let num_vars = self.assignment.len().saturating_sub(1);
+                congruence::find_merges_closure(num_vars, gates)
+            } else {
+                congruence::find_merges(&gates)
+            };
 
-            if let Some(unsat) = plan.unsat {
-                self.emit_congruence_chain(proof_log, &unsat);
-                proof_log.record_clause(&[]);
-                self.has_empty_clause = true;
-                self.solver_ok = false;
-                self.stats.congruence_merges += 1;
-                if debug {
-                    eprintln!(
-                        "c congruence UNSAT round={round} via {} ≡ {} (self-negation)",
-                        unsat.p, unsat.q
-                    );
+            if !self.congruence_worklist {
+                if let Some(unsat) = plan.unsat {
+                    self.emit_congruence_chain(proof_log, &unsat);
+                    proof_log.record_clause(&[]);
+                    self.has_empty_clause = true;
+                    self.solver_ok = false;
+                    self.stats.congruence_merges += 1;
+                    if debug {
+                        eprintln!(
+                            "c congruence UNSAT round={round} via {} ≡ {} (self-negation)",
+                            unsat.p, unsat.q
+                        );
+                    }
+                    return true;
                 }
-                return true;
             }
 
             let mut and_merges = 0u64;
@@ -10538,6 +10612,23 @@ impl Solver {
             }
             total_merges += plan.merges.len() as u64;
             self.stats.congruence_merges += plan.merges.len() as u64;
+            if let Some(unsat) = plan.unsat {
+                // Worklist cascade only: the self-negation may have been discovered
+                // through earlier merges, so its RUP chain depends on the equivalence
+                // binaries emitted just above — refute after them, never before.
+                self.emit_congruence_chain(proof_log, &unsat);
+                proof_log.record_clause(&[]);
+                self.has_empty_clause = true;
+                self.solver_ok = false;
+                self.stats.congruence_merges += 1;
+                if debug {
+                    eprintln!(
+                        "c congruence UNSAT round={round} via {} ≡ {} (cascaded self-negation)",
+                        unsat.p, unsat.q
+                    );
+                }
+                return true;
+            }
             if !plan.merges.is_empty() && self.try_els(proof_log) {
                 return true;
             }
@@ -12930,6 +13021,90 @@ mod tests {
                 "reconstructed model must satisfy original clause {clause:?}"
             );
         }
+    }
+
+    #[test]
+    fn congruence_worklist_cascades_layered_gates_and_preserves_model() {
+        // Layer 1: 3 = AND(1,2), 4 = AND(1,2) ⇒ 3 ≡ 4. Layer 2: 6 = AND(3,5),
+        // 7 = AND(4,5) — congruent only through the layer-1 merge. With the worklist
+        // closure both merges land in one try_congruence round; ELS must substitute
+        // away both duplicates and the reconstructed model must satisfy every
+        // original clause.
+        let cfg = congruence_config();
+        let original = vec![
+            vec![-3, 1],
+            vec![-3, 2],
+            vec![3, -1, -2],
+            vec![-4, 1],
+            vec![-4, 2],
+            vec![4, -1, -2],
+            vec![-6, 3],
+            vec![-6, 5],
+            vec![6, -3, -5],
+            vec![-7, 4],
+            vec![-7, 5],
+            vec![7, -4, -5],
+            vec![-6, 8],
+            vec![-7, 9],
+        ];
+        let mut s = make_solver_with_config(9, original.clone(), &cfg);
+        s.congruence_min_apply_merges = 1;
+        s.congruence_worklist = true;
+        let mut proof = ProofLog::disabled();
+        assert!(s.solve_with_proof(&mut proof, &cfg), "instance is SAT");
+        assert!(
+            s.stats.congruence_merges >= 2,
+            "worklist closure must cascade to the layer-2 merge (got {})",
+            s.stats.congruence_merges
+        );
+        assert!(s.eliminated[4], "variable 4 must be substituted away");
+        assert!(s.eliminated[7], "variable 7 must be substituted away");
+        for clause in &original {
+            assert!(
+                clause.iter().any(|&lit| s.lit_value(lit) == TRUE),
+                "reconstructed model must satisfy original clause {clause:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn congruence_worklist_proves_cascaded_self_negation_unsat() {
+        // Layer 1 merges 3 ≡ 4; layer 2 then yields 6 = AND(3,5) versus ¬6 = AND(4,5),
+        // i.e. 6 ≡ ¬6 — reachable only through the cascade. The worklist path must
+        // prove UNSAT with the refutation emitted AFTER the supporting merge binaries.
+        let cfg = congruence_config();
+        let original = vec![
+            vec![-3, 1],
+            vec![-3, 2],
+            vec![3, -1, -2],
+            vec![-4, 1],
+            vec![-4, 2],
+            vec![4, -1, -2],
+            vec![-6, 3],
+            vec![-6, 5],
+            vec![6, -3, -5],
+            vec![6, 4],
+            vec![6, 5],
+            vec![-6, -4, -5],
+        ];
+        let mut s = make_solver_with_config(6, original, &cfg);
+        s.congruence_min_apply_merges = 1;
+        s.congruence_worklist = true;
+        let mut proof = ProofLog::disabled();
+        assert!(
+            !s.solve_with_proof(&mut proof, &cfg),
+            "cascaded self-negation must be UNSAT"
+        );
+    }
+
+    #[test]
+    fn congruence_worklist_off_by_default() {
+        let cfg = congruence_config();
+        let s = make_solver_with_config(3, vec![vec![1, 2, 3]], &cfg);
+        assert!(
+            !s.congruence_worklist,
+            "worklist closure must stay opt-in (SAT_CONGRUENCE_WORKLIST) until promoted"
+        );
     }
 
     #[test]
