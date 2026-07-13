@@ -183,6 +183,11 @@ pub(crate) struct SolverStats {
     pub(crate) congruence_ite_gates: u64,
     /// gate output equivalences merged by gate congruence closure (SAT_CONGRUENCE)
     pub(crate) congruence_merges: u64,
+    /// fresh variables introduced by mid-search bounded variable addition
+    /// (SAT_FACTOR_INPROCESS)
+    pub(crate) factor_inprocess_fresh_vars: u64,
+    /// product clauses removed by mid-search bounded variable addition
+    pub(crate) factor_inprocess_clauses_removed: u64,
     pub(crate) preprocess_resolvents: u64,
     pub(crate) preprocess_resolution_attempts: u64,
     pub(crate) preprocess_eliminate_ticks: u64,
@@ -728,6 +733,11 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("congruence_merges", ctx.stats.congruence_merges);
     json.u64("congruence_and_gates", ctx.stats.congruence_and_gates);
     json.u64("congruence_ite_gates", ctx.stats.congruence_ite_gates);
+    json.u64("factor_inprocess_fresh_vars", ctx.stats.factor_inprocess_fresh_vars);
+    json.u64(
+        "factor_inprocess_clauses_removed",
+        ctx.stats.factor_inprocess_clauses_removed,
+    );
     json.u64("probe_attempts", 0);
     json.u64("probe_failed_literals", 0);
     json.u64("probe_units", 0);

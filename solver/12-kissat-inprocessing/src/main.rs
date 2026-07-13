@@ -1702,6 +1702,23 @@ struct Solver {
     /// search-ticks snapshot at the last armed mid-search elimination round, for the
     /// kissat-style proportional effort budget (eliminateeffort analog)
     armed_elim_last_search_ticks: u64,
+    /// armed mid-search elimination effort as a percentage of search ticks since the
+    /// last armed round (SAT_ELIM_ARMED_EFFORT_PCT, default 10 — kissat
+    /// eliminateeffort=100‰). Only read when `elim_armed_bounds` is on.
+    armed_elim_effort_pct: u64,
+    /// kissat `proberounds` analog for ARMED formulas (SAT_INPROCESS_ROUNDS, default
+    /// 1 = shipped single pass): repeat the armed inprocess technique sequence up to
+    /// this many times per root visit while the active-variable count keeps
+    /// strictly decreasing, so congruence→substitute→eliminate cascades compound
+    /// within one visit instead of waiting a full search interval per layer.
+    inprocess_armed_rounds: usize,
+    /// Mid-search bounded variable addition on ARMED formulas (SAT_FACTOR_INPROCESS,
+    /// default off): kissat runs factor at the END of every probe round (probe.c),
+    /// re-compressing the clause database after congruence/elimination collapse it.
+    /// The frontend SAT_FACTOR pass only fires on ≤10^4-var formulas; the armed gap
+    /// cells (VexRiscv 400k vars, oski, Timetables 220-300k) never see it. Requires
+    /// mid-search fresh-variable growth (`grow_variables`).
+    factor_inprocess: bool,
     /// kissat-parity cadence for congruence-productive gate circuits: rounds start
     /// early and interleave congruence/vivify/sweep with mid-search elimination
     /// (see CONGRUENCE_PRODUCTIVE_MIN_MERGES). Off on all other formulas so their
@@ -2714,6 +2731,17 @@ impl Solver {
             elim_armed_bounds: env_bool_or_default("SAT_ELIM_ARMED_BOUNDS", false),
             armed_bve_bound: 0,
             armed_elim_last_search_ticks: 0,
+            armed_elim_effort_pct: std::env::var("SAT_ELIM_ARMED_EFFORT_PCT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&p: &u64| p > 0)
+                .unwrap_or(10),
+            inprocess_armed_rounds: std::env::var("SAT_INPROCESS_ROUNDS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&r: &usize| r > 0)
+                .unwrap_or(1),
+            factor_inprocess: env_bool_or_default("SAT_FACTOR_INPROCESS", false),
             inprocess_aggressive: false,
             inprocess_aggressive_interval: INPROCESS_AGGRESSIVE_FIRST_INTERVAL,
             chrono_productive_delta: std::env::var("SAT_CHRONO_PRODUCTIVE_DELTA")
@@ -6905,6 +6933,59 @@ impl Solver {
         }
 
         let mut ok = true;
+        // Kissat `proberounds` parity on armed formulas (SAT_INPROCESS_ROUNDS > 1):
+        // repeat the technique pass while it keeps deactivating variables, so the
+        // congruence→substitute→eliminate cascade compounds within one root visit
+        // instead of waiting a full search interval per collapsed layer. Kissat loops
+        // its probe() sequence up to proberounds=2 while `solver->active` drops.
+        let max_rounds = if self.inprocess_aggressive {
+            self.inprocess_armed_rounds.max(1)
+        } else {
+            1
+        };
+        let mut prev_active = usize::MAX;
+        for _ in 0..max_rounds {
+            if !ok || self.has_empty_clause || !self.solver_ok {
+                break;
+            }
+            if max_rounds > 1 {
+                let active = self.count_active_vars();
+                if active >= prev_active {
+                    break;
+                }
+                prev_active = active;
+            }
+            ok = self.inprocess_round_pass(proof_log, config);
+        }
+
+        let interval = if self.inprocess_aggressive {
+            // Early rounds matter most on gate circuits; double toward the flat cadence.
+            let current = self.inprocess_aggressive_interval.max(1);
+            self.inprocess_aggressive_interval = current
+                .saturating_mul(2)
+                .min(self.inprocess_interval().max(1));
+            current
+        } else {
+            self.inprocess_interval().max(1)
+        };
+        self.next_inprocess_conflicts = self.stats.conflicts.saturating_add(interval);
+        ok
+    }
+
+    /// Number of variables still participating in search: unassigned at root and not
+    /// eliminated/substituted away. The armed multi-round inprocess loop uses this as
+    /// its progress measure (kissat `solver->active` analog).
+    fn count_active_vars(&self) -> usize {
+        let nvars = self.assignment.len().saturating_sub(1);
+        (1..=nvars)
+            .filter(|&v| self.assignment[v] == UNASSIGNED && !self.eliminated[v])
+            .count()
+    }
+
+    /// One pass of the inprocess technique sequence (the body historically inlined in
+    /// `inprocess_round`). Returns `false` if the pass proves the formula UNSAT.
+    fn inprocess_round_pass(&mut self, proof_log: &mut ProofLog, config: &SolverConfig) -> bool {
+        let mut ok = true;
         // Probe first: failed-literal probing forces backbone units, so vivification
         // then runs against an already-simplified root.
         if ok && config.probe {
@@ -6981,7 +7062,8 @@ impl Solver {
                     .stats
                     .search_ticks
                     .saturating_sub(self.armed_elim_last_search_ticks);
-                let allowance = (since / 10).max(ARMED_BVE_MIN_EFFORT_TICKS);
+                let allowance = (since.saturating_mul(self.armed_elim_effort_pct) / 100)
+                    .max(ARMED_BVE_MIN_EFFORT_TICKS);
                 let spent = self
                     .stats
                     .preprocess_eliminate_ticks
@@ -7003,19 +7085,197 @@ impl Solver {
                 ok = self.eliminate(true, proof_log);
             }
         }
-
-        let interval = if self.inprocess_aggressive {
-            // Early rounds matter most on gate circuits; double toward the flat cadence.
-            let current = self.inprocess_aggressive_interval.max(1);
-            self.inprocess_aggressive_interval = current
-                .saturating_mul(2)
-                .min(self.inprocess_interval().max(1));
-            current
-        } else {
-            self.inprocess_interval().max(1)
-        };
-        self.next_inprocess_conflicts = self.stats.conflicts.saturating_add(interval);
+        // Mid-search factor (SAT_FACTOR_INPROCESS), kissat probe.c parity: factor runs
+        // LAST in every probe round, re-compressing the clause database after
+        // congruence/substitution/elimination collapsed variables. Armed formulas only,
+        // same deep-phase guard as the other formula-rewriting passes.
+        if ok
+            && self.factor_inprocess
+            && self.inprocess_aggressive
+            && !self.should_skip_sweep_for_deep_phase()
+        {
+            self.try_factor_inprocess(proof_log, config);
+        }
         ok
+    }
+
+    /// Grow every variable-indexed structure to `new_num_vars` (mid-search fresh
+    /// variables, factor support). New variables start unassigned, decision-eligible,
+    /// zero-activity, unfrozen, and outside the branch heap; the caller rebuilds the
+    /// branch queue after installing the clauses that mention them.
+    fn grow_variables(&mut self, new_num_vars: usize) {
+        let old = self.assignment.len().saturating_sub(1);
+        if new_num_vars <= old {
+            return;
+        }
+        let n1 = new_num_vars + 1;
+        let n2 = new_num_vars * 2;
+        self.assignment.resize(n1, UNASSIGNED);
+        // Var slot 0 is unused and still holds each phase buffer's constructor fill
+        // value (initial_saved_phase / default_phase), so it is the right fill for
+        // fresh variables too.
+        let saved_fill = self.saved_phase.first().copied().unwrap_or(UNASSIGNED);
+        self.saved_phase.resize(n1, saved_fill);
+        if !self.target_phase.is_empty() {
+            self.target_phase.resize(n1, UNASSIGNED);
+        }
+        if !self.best_phase.is_empty() {
+            self.best_phase.resize(n1, UNASSIGNED);
+        }
+        if !self.original_phase.is_empty() {
+            let orig_fill = self.original_phase.first().copied().unwrap_or(UNASSIGNED);
+            self.original_phase.resize(n1, orig_fill);
+        }
+        self.decision_level.resize(n1, 0);
+        self.reason.resize(n1, NO_REASON);
+        self.branch_pos.resize(n1, BRANCH_NOT_IN_HEAP);
+        self.branch_rank.resize(n1, 0);
+        self.decision_var.resize(n1, true);
+        self.activity.resize(n1, 0.0);
+        self.frozen.resize(n1, false);
+        self.eliminated.resize(n1, false);
+        self.occurs.resize(n1, Vec::new());
+        self.occurs_dirty.resize(n1, false);
+        self.occurs_membership_dirty.resize(n1, false);
+        self.scratch_seen.resize(n1, 0);
+        self.scratch_resolved.resize(n1, 0);
+        self.scratch_redundant_state.resize(n1, 0);
+        self.scratch_frame_used.resize(n1, 0);
+        self.lbd_seen.resize(self.lbd_seen.len().max(n1), 0);
+        self.watchers.resize(n2, Vec::new());
+        self.binary_dedup_seen.resize(n2, 0);
+        self.n_occ.resize(n2, 0);
+        if let BinaryImplications::Nested(edges) = &mut self.binary_implications {
+            edges.resize(n2, Vec::new());
+        }
+        if let Some(queue) = self.vmtf_queue.as_mut() {
+            queue.grow(new_num_vars);
+        }
+    }
+
+    /// Mid-search bounded variable addition on an armed formula: snapshot the live,
+    /// fully-unassigned original clauses, run the frontend factoring pass
+    /// (`factor::factor_formula`) on the snapshot, and apply its DRAT step list to the
+    /// live clause database — additions install fresh-variable clauses, deletions
+    /// remove the factored product clauses. The transform is equisatisfiable and
+    /// model-restricting (see factor.rs), so no reconstruction witnesses are needed;
+    /// the SAT model is truncated to the original variables at output as with the
+    /// frontend pass.
+    fn try_factor_inprocess(&mut self, proof_log: &mut ProofLog, config: &SolverConfig) {
+        if self.current_level() != 0 || self.has_empty_clause || !self.solver_ok {
+            return;
+        }
+        // Variable growth is not wired for the separate binary index (off by default).
+        if self.binary_fast_path {
+            return;
+        }
+        use std::collections::HashMap;
+        let num_vars = self.assignment.len().saturating_sub(1);
+        let t0 = Instant::now();
+        let mut snap: Vec<Vec<i32>> = Vec::new();
+        let mut by_lits: HashMap<Vec<i32>, Vec<u32>> = HashMap::new();
+        let ids = self.original_clause_ids.clone();
+        for cid_word in ids {
+            let cid = cid_word as usize;
+            if self.clause_is_deleted(cid) {
+                continue;
+            }
+            let len = self.clause_len(cid);
+            if len < 2 {
+                continue;
+            }
+            let mut lits = Vec::with_capacity(len);
+            let mut clean = true;
+            for p in 0..len {
+                let l = self.clause_lit(cid, p);
+                if self.lit_value(l) != UNASSIGNED {
+                    clean = false;
+                    break;
+                }
+                lits.push(l);
+            }
+            if !clean {
+                continue;
+            }
+            let mut key = lits.clone();
+            key.sort_unstable();
+            by_lits.entry(key).or_default().push(cid_word);
+            snap.push(lits);
+        }
+        if snap.is_empty() {
+            return;
+        }
+        // Kissat factor.c parity: the mid-search clause-reduction bound is the CURRENT
+        // eliminate additional-clauses bound (bounds.eliminate.additional_clauses),
+        // which starts at 0 and escalates only after zero-yield elimination rounds —
+        // so mid-search factoring applies on any positive reduction. The frontend
+        // pass keeps the mature FACTOR_BOUND=16 (promoted behavior, unchanged).
+        let bound = if self.elim_armed_bounds {
+            self.armed_bve_bound.max(0) as usize
+        } else {
+            factor::FACTOR_BOUND
+        };
+        let outcome_opt =
+            factor::factor_formula(num_vars, &snap, factor::FACTOR_TICKS_LIMIT, bound);
+        let Some(outcome) = outcome_opt else {
+            if config.trace_search_interval > 0 {
+                eprintln!(
+                    "c factor_inprocess fresh_vars=0 bound={} snap_clauses={} {:.4}s",
+                    bound,
+                    snap.len(),
+                    t0.elapsed().as_secs_f64(),
+                );
+            }
+            return;
+        };
+        if outcome.fresh_vars == 0 {
+            return;
+        }
+        self.grow_variables(outcome.num_vars);
+        let mut installed: u64 = 0;
+        let mut removed: u64 = 0;
+        for step in &outcome.steps {
+            match step {
+                factor::FactorProofStep::Add(lits) => {
+                    proof_log.record_clause(lits);
+                    let cid = self.els_install_original_clause(lits);
+                    debug_assert!(cid < u32::MAX as usize);
+                    self.original_clause_ids.push(cid as u32);
+                    installed += 1;
+                }
+                factor::FactorProofStep::Delete(lits) => {
+                    let mut key = lits.clone();
+                    key.sort_unstable();
+                    if let Some(cids) = by_lits.get_mut(&key) {
+                        if let Some(cid_word) = cids.pop() {
+                            if !self.clause_is_deleted(cid_word as usize) {
+                                self.delete_clause_for_simplify(cid_word as usize, proof_log);
+                                removed += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let dead_ids = std::mem::take(&mut self.original_clause_ids);
+        self.original_clause_ids = dead_ids
+            .into_iter()
+            .filter(|&cid| !self.clause_is_deleted(cid as usize))
+            .collect();
+        self.stats.factor_inprocess_fresh_vars += outcome.fresh_vars as u64;
+        self.stats.factor_inprocess_clauses_removed += removed;
+        self.rebuild_branch_queue();
+        if config.trace_search_interval > 0 {
+            eprintln!(
+                "c factor_inprocess fresh_vars={} installed={} removed={} ticks={} completed={} {:.4}s",
+                outcome.fresh_vars,
+                installed,
+                removed,
+                outcome.ticks,
+                outcome.completed,
+                t0.elapsed().as_secs_f64(),
+            );
+        }
     }
 
     /// Per-round vivification propagation budget. An explicit `vivify_ticks_budget`
@@ -11319,7 +11579,22 @@ fn bytes_for_elems(count: u64, elem_size: usize) -> u64 {
     count.saturating_mul(elem_size as u64)
 }
 
-fn solver_construction_extra_bytes(num_vars: usize, clauses: &[Vec<i32>]) -> u64 {
+/// Estimate the construction-and-preprocessing allocations beyond the parse-time RSS.
+/// `simplification_enabled` mirrors `config.simplification` AFTER profile resolution:
+/// the giant-light profile (>20M vars) turns simplification/BVE off, so the occurrence
+/// entries and the inline-abstraction arena-migration transient are never allocated on
+/// exactly the formulas where they dominate the estimate. Charging them anyway rejected
+/// 83aa (29.3M vars) at preflight with a 14.7GB estimate whose true measured peak is
+/// 12.7GB VmSize (solves SAT in ~90s idle).
+fn solver_construction_extra_bytes(
+    num_vars: usize,
+    clauses: &[Vec<i32>],
+    simplification_enabled: Option<bool>,
+) -> u64 {
+    // None = legacy estimate (SAT_PREFLIGHT_SIMP_AWARE=off): charge the
+    // simplification-path transients unconditionally with the pre-02e5d00 usize
+    // relocation width, byte-identical to the shipped estimator.
+    let legacy = simplification_enabled.is_none();
     let vars = num_vars as u64;
     let vars_with_zero = vars.saturating_add(1);
     let lits = initial_lit_count(clauses);
@@ -11370,7 +11645,9 @@ fn solver_construction_extra_bytes(num_vars: usize, clauses: &[Vec<i32>]) -> u64
         vars_with_zero,
         std::mem::size_of::<Vec<u32>>(),
     )); // occurs
-    bytes = bytes.saturating_add(bytes_for_elems(lits, std::mem::size_of::<u32>())); // occurs entries
+    if legacy || simplification_enabled == Some(true) {
+        bytes = bytes.saturating_add(bytes_for_elems(lits, std::mem::size_of::<u32>())); // occurs entries
+    }
     bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<bool>())); // occurs_dirty
     bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<bool>())); // occurs_membership_dirty
     bytes = bytes.saturating_add(bytes_for_elems(
@@ -11382,8 +11659,19 @@ fn solver_construction_extra_bytes(num_vars: usize, clauses: &[Vec<i32>]) -> u64
     bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u8>())); // scratch_redundant_state
     bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u32>())); // scratch_frame_used
     bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u32>())); // lbd_seen
-    if clause_count >= INLINE_ABSTRACTION_CLAUSE_THRESHOLD as u64 {
-        bytes = bytes.saturating_add(bytes_for_elems(literal_slots, std::mem::size_of::<usize>())); // inline-abstraction reloc
+    // The inline-abstraction arena migration (`ensure_original_clause_abstractions`)
+    // only runs from the simplification/eliminate path, and its relocation map is
+    // RelocRef = u32 since the 02e5d00 memory diet (the old estimate still charged
+    // usize).
+    if (legacy || simplification_enabled == Some(true))
+        && clause_count >= INLINE_ABSTRACTION_CLAUSE_THRESHOLD as u64
+    {
+        let reloc_elem = if legacy {
+            std::mem::size_of::<usize>()
+        } else {
+            std::mem::size_of::<RelocRef>()
+        };
+        bytes = bytes.saturating_add(bytes_for_elems(literal_slots, reloc_elem)); // inline-abstraction reloc
         bytes = bytes.saturating_add(bytes_for_elems(
             literal_slots.saturating_add(clause_count),
             std::mem::size_of::<u32>(),
@@ -11402,7 +11690,16 @@ fn memory_preflight(
         .unwrap_or(0)
         .saturating_mul(1024)
         .saturating_mul(1024);
-    memory_preflight_with_limit(num_vars, clauses, limit_bytes, current_rss_bytes)
+    memory_preflight_with_limit(
+        num_vars,
+        clauses,
+        limit_bytes,
+        current_rss_bytes,
+        // SAT_PREFLIGHT_SIMP_AWARE (default on): estimate only the allocations the
+        // resolved profile will actually make. `off` restores the legacy estimate that
+        // charges the simplification-path transients unconditionally (A/B escape hatch).
+        env_bool_or_default("SAT_PREFLIGHT_SIMP_AWARE", true).then_some(config.simplification),
+    )
 }
 
 fn memory_preflight_with_limit(
@@ -11410,9 +11707,11 @@ fn memory_preflight_with_limit(
     clauses: &[Vec<i32>],
     limit_bytes: u64,
     current_rss_bytes: u64,
+    simplification_enabled: Option<bool>,
 ) -> Option<MemoryPreflight> {
-    let estimated_peak_bytes =
-        current_rss_bytes.saturating_add(solver_construction_extra_bytes(num_vars, clauses));
+    let estimated_peak_bytes = current_rss_bytes.saturating_add(
+        solver_construction_extra_bytes(num_vars, clauses, simplification_enabled),
+    );
     let threshold_bytes = limit_bytes.saturating_mul(9) / 10;
     (estimated_peak_bytes >= threshold_bytes).then_some(MemoryPreflight {
         estimated_peak_bytes,
@@ -12741,6 +13040,53 @@ mod tests {
     }
 
     #[test]
+    fn inprocess_factor_introduces_fresh_vars_and_preserves_sat_model() {
+        // 6x6 product grid: clauses (f_i ∨ d_j) for f in vars 1..6, d in vars 7..12.
+        // Factoring replaces the 36 products with 12 clauses over a fresh variable
+        // (clause reduction 24 > FACTOR_BOUND=16). The armed round must apply it
+        // mid-search, grow the variable-indexed state, and still produce a model
+        // satisfying every original clause.
+        let cfg = SolverConfig {
+            inprocess: true,
+            congruence: false,
+            vivify: false,
+            els: false,
+            probe: false,
+            ..Default::default()
+        };
+        let mut original: Vec<Vec<i32>> = Vec::new();
+        for f in 1..=6 {
+            for d in 7..=12 {
+                original.push(vec![f, d]);
+            }
+        }
+        let mut s = make_solver_with_config(12, original.clone(), &cfg);
+        s.sweep = false;
+        s.use_elim = false;
+        s.inprocess_aggressive = true;
+        s.factor_inprocess = true;
+        let mut proof = ProofLog::disabled();
+        assert!(s.inprocess_round(&mut proof, &cfg));
+        assert!(
+            s.stats.factor_inprocess_fresh_vars >= 1,
+            "armed round must factor the product grid, fresh_vars={}",
+            s.stats.factor_inprocess_fresh_vars
+        );
+        assert!(
+            s.assignment.len() > 13,
+            "variable-indexed state must have grown, len={}",
+            s.assignment.len()
+        );
+        assert!(s.solve(), "instance is SAT");
+        for clause in &original {
+            assert!(
+                clause.iter().any(|&lit| s.lit_value(lit) == TRUE),
+                "model must satisfy original clause {clause:?}"
+            );
+        }
+    }
+
+    #[test]
     fn congruence_productive_arming_lowers_chrono_delta_when_enabled() {
         let cfg = SolverConfig {
             congruence: true,
@@ -13645,7 +13991,7 @@ mod tests {
     #[test]
     fn memory_preflight_accounts_for_dense_watchers() {
         let clauses = vec![vec![1, 2], vec![-1, 3]];
-        let estimated = solver_construction_extra_bytes(10, &clauses);
+        let estimated = solver_construction_extra_bytes(10, &clauses, None);
         let watcher_headers = bytes_for_elems(20, std::mem::size_of::<Vec<Watcher>>());
 
         assert!(estimated >= watcher_headers);
@@ -13654,11 +14000,11 @@ mod tests {
     #[test]
     fn memory_preflight_trips_before_dense_allocation_exceeds_limit() {
         let clauses = vec![vec![1, -2, 3]; 100];
-        let extra = solver_construction_extra_bytes(10_000, &clauses);
+        let extra = solver_construction_extra_bytes(10_000, &clauses, None);
         let current = 64 * 1024 * 1024;
         let limit = current + extra;
 
-        let preflight = memory_preflight_with_limit(10_000, &clauses, limit, current)
+        let preflight = memory_preflight_with_limit(10_000, &clauses, limit, current, None)
             .expect("90% threshold should trip before allocation reaches the cap");
 
         assert_eq!(preflight.limit_bytes, limit);
@@ -13666,11 +14012,31 @@ mod tests {
     }
 
     #[test]
+    fn memory_preflight_skips_simplification_transients_when_disabled() {
+        // Giant-light formulas (simplification off) never allocate the occurrence
+        // entries or the inline-abstraction migration transient; the estimate must
+        // not charge them (83aa: the stale charge was ~4GB of a 14.7GB estimate
+        // against a 12.7GB measured true peak).
+        let clauses = vec![vec![1, -2, 3]; INLINE_ABSTRACTION_CLAUSE_THRESHOLD];
+        let with_simp = solver_construction_extra_bytes(10_000, &clauses, Some(true));
+        let without_simp = solver_construction_extra_bytes(10_000, &clauses, Some(false));
+        let lits = initial_lit_count(&clauses);
+        let literal_slots = lits + clauses.len() as u64;
+        let expected_delta = bytes_for_elems(lits, std::mem::size_of::<u32>())
+            + bytes_for_elems(literal_slots, std::mem::size_of::<RelocRef>())
+            + bytes_for_elems(
+                literal_slots + clauses.len() as u64,
+                std::mem::size_of::<u32>(),
+            );
+        assert_eq!(with_simp - without_simp, expected_delta);
+    }
+
+    #[test]
     fn memory_preflight_allows_small_instance_under_limit() {
         let clauses = vec![vec![1, -2, 3]; 10];
         let limit = 1024 * 1024 * 1024;
 
-        assert!(memory_preflight_with_limit(10, &clauses, limit, 0).is_none());
+        assert!(memory_preflight_with_limit(10, &clauses, limit, 0, None).is_none());
     }
 
     fn watched_literals(s: &Solver, clause_idx: usize) -> Option<(i32, i32)> {

@@ -151,6 +151,23 @@ impl VmtfQueue {
         }
     }
 
+    /// Extend the queue for mid-search fresh variables (factor support). New
+    /// variables are attached at the head with fresh stamps — the same "newest is
+    /// hottest" position kissat gives a just-activated variable on enqueue.
+    pub(crate) fn grow(&mut self, new_num_vars: usize) {
+        let n1 = new_num_vars + 1;
+        let old = self.stamp.len();
+        if n1 <= old {
+            return;
+        }
+        self.next.resize(n1, 0);
+        self.prev.resize(n1, 0);
+        self.stamp.resize(n1, 0);
+        for var in old..n1 {
+            self.insert_new_head(var);
+        }
+    }
+
     fn insert_new_head(&mut self, var: usize) {
         debug_assert!(self.valid_var(var));
         debug_assert_eq!(self.next[var], 0);
