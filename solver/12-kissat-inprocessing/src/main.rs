@@ -532,9 +532,12 @@ impl BinaryImplications {
         let idx = Self::lit_index(antecedent);
         match self {
             Self::Nested(edges) => {
-                if let Some(list) = edges.get_mut(idx) {
-                    list.push(edge);
+                // Lean giant construction starts with no per-literal edge lists;
+                // grow on demand so a binary-fast-path config stays correct.
+                if idx >= edges.len() {
+                    edges.resize(idx + 1, Vec::new());
                 }
+                edges[idx].push(edge);
             }
             Self::Flat {
                 edges,
@@ -2499,13 +2502,43 @@ impl Solver {
     }
 
     fn new_with_config(num_vars: usize, clauses: Vec<Vec<i32>>, config: &SolverConfig) -> Self {
-        let original_clause_count = clauses.len();
+        Self::new_with_config_formula(num_vars, ParsedFormula::Nested(clauses), config)
+    }
+
+    fn new_with_config_formula(
+        num_vars: usize,
+        formula: ParsedFormula,
+        config: &SolverConfig,
+    ) -> Self {
+        // Lean giant construction: the giant-arena parse only exists for
+        // giant-light-eligible formulas, whose profile never runs simplification or
+        // inprocessing. Skip allocating the simplification-only side structures —
+        // every one of them is rebuilt from scratch (`build_occurrence_index`) or
+        // grows on demand (`lbd_seen`, `BinaryImplications::add_edge`) if a config
+        // ever needs it, so this is allocation-only and behavior-preserving.
+        let lean_giant = formula.is_giant_arena();
+        let original_clause_count = formula.clause_count();
         let branch_mode = config.branch_mode;
         let mut occurrence_count = vec![0usize; num_vars + 1];
-        for clause in &clauses {
-            for &lit in clause {
-                let var = lit.unsigned_abs() as usize;
-                occurrence_count[var] += 1;
+        match &formula {
+            ParsedFormula::Nested(clauses) => {
+                for clause in clauses {
+                    for &lit in clause {
+                        let var = lit.unsigned_abs() as usize;
+                        occurrence_count[var] += 1;
+                    }
+                }
+            }
+            ParsedFormula::GiantArena(pre) => {
+                for &clause_idx in &pre.clause_ids {
+                    let clause_idx = clause_idx as usize;
+                    let len = clause_header_size(pre.arena[clause_idx]);
+                    for offset in 1..=len {
+                        let var =
+                            word_to_lit(pre.arena[clause_idx + offset]).unsigned_abs() as usize;
+                        occurrence_count[var] += 1;
+                    }
+                }
             }
         }
         let mut branch_order: Vec<u32> = (1..=num_vars as u32).collect();
@@ -2569,7 +2602,12 @@ impl Solver {
             u64::MAX
         };
 
-        let total_words: usize = clauses.iter().map(|clause| 1 + clause.len()).sum();
+        let total_words: usize = match &formula {
+            ParsedFormula::Nested(clauses) => {
+                clauses.iter().map(|clause| 1 + clause.len()).sum()
+            }
+            ParsedFormula::GiantArena(pre) => pre.arena.len(),
+        };
         // Giant arenas: reserve headroom so the FIRST learned clause appended during search
         // does not doubling-realloc a multi-GB arena — that transient (old + new buffer live
         // at once) is a ~2x-arena virtual spike that pushes peak VmSize over the `ulimit -v`
@@ -2580,10 +2618,26 @@ impl Solver {
         } else {
             0
         };
-        let arena = Vec::with_capacity(total_words + arena_headroom);
-        let original_clause_ids = Vec::with_capacity(original_clause_count);
-        let initial_clause_mode =
-            Self::resolve_initial_clause_mode(config.initial_clause_mode, num_vars, &clauses);
+        // Giant path: the preparsed arena is installed after construction; avoid an
+        // unused multi-GB reservation here.
+        let arena = if lean_giant {
+            Vec::new()
+        } else {
+            Vec::with_capacity(total_words + arena_headroom)
+        };
+        let original_clause_ids = if lean_giant {
+            Vec::new()
+        } else {
+            Vec::with_capacity(original_clause_count)
+        };
+        let initial_clause_mode = match &formula {
+            ParsedFormula::Nested(clauses) => {
+                Self::resolve_initial_clause_mode(config.initial_clause_mode, num_vars, clauses)
+            }
+            ParsedFormula::GiantArena(_) => {
+                Self::resolve_initial_clause_mode(config.initial_clause_mode, num_vars, &[])
+            }
+        };
         let mut solver = Solver {
             arena,
             original_clause_ids,
@@ -2630,9 +2684,17 @@ impl Solver {
             reason: vec![NO_REASON; num_vars + 1],
             binary_reason_lits: Vec::new(),
             binary_clauses: Vec::new(),
-            binary_implications: BinaryImplications::nested(num_vars.saturating_mul(2)),
+            binary_implications: if lean_giant {
+                BinaryImplications::Nested(Vec::new())
+            } else {
+                BinaryImplications::nested(num_vars.saturating_mul(2))
+            },
             binary_id_by_clause: Vec::new(),
-            binary_dedup_seen: vec![0; num_vars.saturating_mul(2)],
+            binary_dedup_seen: if lean_giant {
+                Vec::new()
+            } else {
+                vec![0; num_vars.saturating_mul(2)]
+            },
             binary_dedup_stamp: 0,
             binary_fast_path: config.binary_fast_path,
             prefetch_watched_clauses: config.prefetch_watched_clauses,
@@ -2804,10 +2866,26 @@ impl Solver {
             bwdsub_assigns: 0,
             frozen: vec![false; num_vars + 1],
             eliminated: vec![false; num_vars + 1],
-            occurs: vec![Vec::new(); num_vars + 1],
-            occurs_dirty: vec![false; num_vars + 1],
-            occurs_membership_dirty: vec![false; num_vars + 1],
-            n_occ: vec![0; num_vars.saturating_mul(2)],
+            occurs: if lean_giant {
+                Vec::new()
+            } else {
+                vec![Vec::new(); num_vars + 1]
+            },
+            occurs_dirty: if lean_giant {
+                Vec::new()
+            } else {
+                vec![false; num_vars + 1]
+            },
+            occurs_membership_dirty: if lean_giant {
+                Vec::new()
+            } else {
+                vec![false; num_vars + 1]
+            },
+            n_occ: if lean_giant {
+                Vec::new()
+            } else {
+                vec![0; num_vars.saturating_mul(2)]
+            },
             elim_clauses: Vec::new(),
             sat_model: None,
             pre_search_proof_steps: Vec::new(),
@@ -2842,7 +2920,13 @@ impl Solver {
             chrono_max_delta: config.chrono_max_delta,
             bump_reasons: config.bump_reasons,
             bump_reasons_limit_multiplier: config.bump_reasons_limit_multiplier,
-            lbd_seen: vec![0; num_vars + 1],
+            lbd_seen: if lean_giant {
+                // Self-growing (compute_lbd resizes to the observed level); the
+                // giant-light profile runs with use_lbd off, so this usually stays empty.
+                Vec::new()
+            } else {
+                vec![0; num_vars + 1]
+            },
             lbd_stamp: 0,
             last_conflict_lbd: 0,
             sum_lbd: 0,
@@ -2901,21 +2985,28 @@ impl Solver {
         if let Some(limit) = config.subsumption_limit {
             solver.subsumption_lim = limit;
         }
-        match initial_clause_mode {
-            InitialClauseMode::CanonicalSorted => {
-                solver.add_initial_original_clauses(clauses, true);
-            }
-            InitialClauseMode::CanonicalInputOrder => {
-                solver.add_initial_original_clauses(clauses, false);
-            }
-            InitialClauseMode::KissatWatch => {
-                solver.add_initial_original_clauses_kissat_watch(clauses);
-            }
-            InitialClauseMode::Raw => {
-                solver.add_raw_initial_original_clauses(clauses);
-            }
-            InitialClauseMode::Auto => {
-                unreachable!("auto initial clause mode must be resolved before clause insertion");
+        match formula {
+            ParsedFormula::Nested(clauses) => match initial_clause_mode {
+                InitialClauseMode::CanonicalSorted => {
+                    solver.add_initial_original_clauses(clauses, true);
+                }
+                InitialClauseMode::CanonicalInputOrder => {
+                    solver.add_initial_original_clauses(clauses, false);
+                }
+                InitialClauseMode::KissatWatch => {
+                    solver.add_initial_original_clauses_kissat_watch(clauses);
+                }
+                InitialClauseMode::Raw => {
+                    solver.add_raw_initial_original_clauses(clauses);
+                }
+                InitialClauseMode::Auto => {
+                    unreachable!(
+                        "auto initial clause mode must be resolved before clause insertion"
+                    );
+                }
+            },
+            ParsedFormula::GiantArena(pre) => {
+                solver.install_preparsed_giant_arena(pre, arena_headroom);
             }
         }
         for &var in &branch_order {
@@ -2923,6 +3014,44 @@ impl Solver {
         }
         solver.refresh_learned_lit_budgets();
         solver
+    }
+
+    /// Adopt a preparsed giant arena: the clause words are already in
+    /// `add_raw_initial_original_clauses` layout, so this only extends the arena by
+    /// the search headroom, sizes each watch list exactly (one counting pass — at
+    /// 108M lists the doubling-growth slack alone is a multi-GB charge), and runs
+    /// the same attach loop the raw insertion path runs, in the same clause order.
+    fn install_preparsed_giant_arena(&mut self, pre: PreparsedArena, arena_headroom: usize) {
+        let PreparsedArena {
+            mut arena,
+            clause_ids,
+            total_lits,
+        } = pre;
+        arena.reserve_exact(arena_headroom);
+        self.arena = arena;
+        let mut watch_counts = vec![0u32; self.watchers.len()];
+        for &clause_idx in &clause_ids {
+            let clause_idx = clause_idx as usize;
+            let len = clause_header_size(self.arena[clause_idx]);
+            if len >= 1 {
+                watch_counts[lit_to_index(word_to_lit(self.arena[clause_idx + 1]))] += 1;
+            }
+            if len >= 2 {
+                watch_counts[lit_to_index(word_to_lit(self.arena[clause_idx + 2]))] += 1;
+            }
+        }
+        for (list, &count) in self.watchers.iter_mut().zip(watch_counts.iter()) {
+            if count > 0 {
+                list.reserve_exact(count as usize);
+            }
+        }
+        drop(watch_counts);
+        self.original_clause_ids = clause_ids;
+        self.original_literals = total_lits as usize;
+        for position in 0..self.original_clause_ids.len() {
+            let clause_idx = self.original_clause_ids[position] as usize;
+            self.attach_clause(clause_idx, true);
+        }
     }
 
     fn add_raw_initial_original_clauses(&mut self, clauses: Vec<Vec<i32>>) {
@@ -11482,6 +11611,250 @@ impl Solver {
     }
 }
 
+/// Preparsed giant formula: original clauses already laid out in solver arena word
+/// format (per clause: `clause_make_header(len, false, false, 0, false)` followed by
+/// `lit_to_word` literal words), byte-identical to the arena
+/// `add_raw_initial_original_clauses` builds from a nested parse. Built by
+/// `parse_cnf_giant_arena` so declared-giant instances never materialize the
+/// `Vec<Vec<i32>>` parse representation — 145M clause-vector headers alone are
+/// ~3.5GB (plus allocator overhead) on an ee5-class instance, against a 16GB gate.
+#[derive(Debug)]
+struct PreparsedArena {
+    arena: Vec<u32>,
+    clause_ids: Vec<u32>,
+    total_lits: u64,
+}
+
+enum ParsedFormula {
+    Nested(Vec<Vec<i32>>),
+    GiantArena(PreparsedArena),
+}
+
+impl ParsedFormula {
+    fn clause_count(&self) -> usize {
+        match self {
+            Self::Nested(clauses) => clauses.len(),
+            Self::GiantArena(pre) => pre.clause_ids.len(),
+        }
+    }
+
+    fn lit_count(&self) -> u64 {
+        match self {
+            Self::Nested(clauses) => initial_lit_count(clauses),
+            Self::GiantArena(pre) => pre.total_lits,
+        }
+    }
+
+    fn is_giant_arena(&self) -> bool {
+        matches!(self, Self::GiantArena(_))
+    }
+
+    /// Fallback for the declared-giant-but-actually-not case (a problem line whose
+    /// counts disagree with the body): rebuild the nested representation so every
+    /// downstream path is byte-identical to the historical parse.
+    fn into_nested(self) -> Vec<Vec<i32>> {
+        match self {
+            Self::Nested(clauses) => clauses,
+            Self::GiantArena(pre) => {
+                let mut clauses = Vec::with_capacity(pre.clause_ids.len());
+                for &clause_idx in &pre.clause_ids {
+                    let clause_idx = clause_idx as usize;
+                    let len = clause_header_size(pre.arena[clause_idx]);
+                    clauses.push(
+                        pre.arena[clause_idx + 1..clause_idx + 1 + len]
+                            .iter()
+                            .map(|&word| word_to_lit(word))
+                            .collect(),
+                    );
+                }
+                clauses
+            }
+        }
+    }
+}
+
+/// Declared (vars, clauses) from the DIMACS problem line, or None when no
+/// well-formed problem line appears before clause data — the nested parser then
+/// owns the canonical error message.
+fn read_declared_problem_line(path: &str) -> Option<(usize, usize)> {
+    let file = fs::File::open(path).ok()?;
+    let reader = io::BufReader::new(file);
+    for line in reader.lines() {
+        let line = line.ok()?;
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('c') {
+            continue;
+        }
+        if line.starts_with('p') {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() != 4 || parts[0] != "p" || parts[1] != "cnf" {
+                return None;
+            }
+            let vars = parts[2].parse().ok()?;
+            let clauses = parts[3].parse().ok()?;
+            return Some((vars, clauses));
+        }
+        return None;
+    }
+    None
+}
+
+/// Parse a declared-giant DIMACS file directly into solver arena words. Two passes:
+/// pass 1 counts tokens so pass 2 allocates the arena and clause-id vectors once
+/// with `reserve_exact` — a doubling-growth transient on a ~2GB arena is exactly the
+/// kind of virtual-memory spike the 16GB `ulimit -v` gate charges. Pass-1 counts are
+/// best-effort (validation lives in pass 2, which reports errors byte-identical to
+/// `parse_cnf`); a miscount only costs a reallocation.
+fn parse_cnf_giant_arena(path: &str) -> Result<(usize, PreparsedArena), String> {
+    let file = fs::File::open(path).map_err(|e| format!("Error opening {path}: {e}"))?;
+    let mut counter = io::BufReader::new(file);
+    let mut counted_lits: u64 = 0;
+    let mut counted_clauses: u64 = 0;
+    let mut buf = String::new();
+    loop {
+        buf.clear();
+        let bytes = std::io::BufRead::read_line(&mut counter, &mut buf)
+            .map_err(|e| format!("{path}: read error: {e}"))?;
+        if bytes == 0 {
+            break;
+        }
+        let line = buf.trim();
+        if line.is_empty() || line.starts_with('c') || line.starts_with('p') {
+            continue;
+        }
+        for token in line.split_whitespace() {
+            if token == "0" {
+                counted_clauses += 1;
+            } else {
+                counted_lits += 1;
+            }
+        }
+    }
+
+    let file = fs::File::open(path).map_err(|e| format!("Error opening {path}: {e}"))?;
+    let reader = io::BufReader::new(file);
+    let mut num_vars: Option<usize> = None;
+    let mut arena: Vec<u32> = Vec::new();
+    let mut clause_ids: Vec<u32> = Vec::new();
+    let mut total_lits: u64 = 0;
+    let mut current_clause: Vec<i32> = Vec::new();
+    let total_words = counted_lits.saturating_add(counted_clauses);
+    if total_words <= u32::MAX as u64 {
+        arena.reserve_exact(total_words as usize);
+        clause_ids.reserve_exact(counted_clauses as usize);
+    }
+
+    for (line_idx, line) in reader.lines().enumerate() {
+        let line = line.map_err(|e| format!("{path}:{}: read error: {e}", line_idx + 1))?;
+        let line = line.trim();
+
+        if line.is_empty() || line.starts_with('c') {
+            continue;
+        }
+
+        if line.starts_with('p') {
+            if num_vars.is_some() {
+                return Err(format!("{path}:{}: duplicate problem line", line_idx + 1));
+            }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() != 4 || parts[0] != "p" || parts[1] != "cnf" {
+                return Err(format!(
+                    "{path}:{}: malformed problem line, expected 'p cnf <vars> <clauses>'",
+                    line_idx + 1
+                ));
+            }
+            let parsed_vars = parts[2].parse().map_err(|e| {
+                format!(
+                    "{path}:{}: invalid variable count {:?}: {e}",
+                    line_idx + 1,
+                    parts[2]
+                )
+            })?;
+            let _declared_clauses: usize = parts[3].parse().map_err(|e| {
+                format!(
+                    "{path}:{}: invalid clause count {:?}: {e}",
+                    line_idx + 1,
+                    parts[3]
+                )
+            })?;
+            num_vars = Some(parsed_vars);
+            continue;
+        }
+
+        let Some(declared_vars) = num_vars else {
+            return Err(format!(
+                "{path}:{}: literal data before problem line",
+                line_idx + 1
+            ));
+        };
+
+        for token in line.split_whitespace() {
+            let lit: i32 = token
+                .parse()
+                .map_err(|e| format!("{path}:{}: invalid literal {token:?}: {e}", line_idx + 1))?;
+            if lit == 0 {
+                let clause_idx = arena.len();
+                if clause_idx >= u32::MAX as usize {
+                    return Err(format!(
+                        "{path}: formula exceeds giant arena addressing (u32 clause offsets)"
+                    ));
+                }
+                arena.push(clause_make_header(current_clause.len(), false, false, 0, false));
+                arena.extend(current_clause.iter().copied().map(lit_to_word));
+                clause_ids.push(clause_idx as u32);
+                total_lits += current_clause.len() as u64;
+                current_clause.clear();
+            } else {
+                let var = lit.unsigned_abs() as usize;
+                if var == 0 || var > declared_vars {
+                    return Err(format!(
+                        "{path}:{}: literal {lit} uses variable {var}, beyond declared bound {declared_vars}",
+                        line_idx + 1
+                    ));
+                }
+                current_clause.push(lit);
+            }
+        }
+    }
+
+    if !current_clause.is_empty() {
+        return Err(format!("{path}: missing terminal 0 for final clause"));
+    }
+
+    let Some(num_vars) = num_vars else {
+        return Err(format!("{path}: missing problem line"));
+    };
+
+    Ok((
+        num_vars,
+        PreparsedArena {
+            arena,
+            clause_ids,
+            total_lits,
+        },
+    ))
+}
+
+/// Route parsing by declared problem-line counts: declared-giant instances eligible
+/// for the giant-light profile parse directly into arena words; everything else uses
+/// the historical nested parser, byte-identical.
+fn parse_cnf_auto(path: &str, config: &SolverConfig) -> Result<(usize, ParsedFormula), String> {
+    // SAT_GIANT_ARENA_PARSE (default on): declared-giant instances parse directly
+    // into arena words and construct lean. `off` restores the legacy nested parse
+    // and full side-structure allocation (A/B escape hatch).
+    if env_bool_or_default("SAT_GIANT_ARENA_PARSE", true) && giant_light_config_eligible(config) {
+        if let Some((declared_vars, declared_clauses)) = read_declared_problem_line(path) {
+            if declared_vars >= GIANT_LIGHT_MIN_VARS && declared_clauses >= GIANT_LIGHT_MIN_CLAUSES
+            {
+                let (num_vars, pre) = parse_cnf_giant_arena(path)?;
+                return Ok((num_vars, ParsedFormula::GiantArena(pre)));
+            }
+        }
+    }
+    let (num_vars, clauses) = parse_cnf(path)?;
+    Ok((num_vars, ParsedFormula::Nested(clauses)))
+}
+
 fn parse_cnf(path: &str) -> Result<(usize, Vec<Vec<i32>>), String> {
     let file = fs::File::open(path).map_err(|e| format!("Error opening {path}: {e}"))?;
     let reader = io::BufReader::new(file);
@@ -11586,19 +11959,105 @@ fn bytes_for_elems(count: u64, elem_size: usize) -> u64 {
 /// exactly the formulas where they dominate the estimate. Charging them anyway rejected
 /// 83aa (29.3M vars) at preflight with a 14.7GB estimate whose true measured peak is
 /// 12.7GB VmSize (solves SAT in ~90s idle).
+#[cfg(test)]
 fn solver_construction_extra_bytes(
     num_vars: usize,
     clauses: &[Vec<i32>],
     simplification_enabled: Option<bool>,
 ) -> u64 {
+    solver_construction_extra_bytes_counts(
+        num_vars,
+        clauses.len() as u64,
+        initial_lit_count(clauses),
+        simplification_enabled,
+        false,
+    )
+}
+
+/// Construction extra for the giant-arena parse path: the clause arena and clause-id
+/// vector are already resident at preflight time (built during parse), and the lean
+/// giant constructor skips the simplification-only structures (`occurs` headers,
+/// `n_occ`, dirty maps, `binary_implications` edge headers, `lbd_seen`), so this
+/// charges only what that constructor actually allocates: arena search headroom, the
+/// watcher headers/entries plus the exact-capacity counting transient, and the
+/// per-variable search arrays.
+fn giant_arena_construction_extra_bytes(num_vars: usize, clause_count: u64, lits: u64) -> u64 {
+    let vars = num_vars as u64;
+    let vars_with_zero = vars.saturating_add(1);
+    let total_words = lits.saturating_add(clause_count);
+    // Mirrors the constructor's arena_headroom rule.
+    let headroom_words = if total_words > 20_000_000 {
+        (total_words / 4).min(256 * 1024 * 1024)
+    } else {
+        0
+    };
+
+    let mut bytes = 0u64;
+    bytes = bytes.saturating_add(bytes_for_elems(headroom_words, std::mem::size_of::<u32>())); // arena headroom
+    bytes = bytes.saturating_add(bytes_for_elems(
+        vars_with_zero,
+        std::mem::size_of::<usize>(),
+    )); // occurrence_count
+    bytes = bytes.saturating_add(bytes_for_elems(vars, std::mem::size_of::<u32>())); // branch_order
+    bytes = bytes.saturating_add(bytes_for_elems(
+        vars_with_zero,
+        std::mem::size_of::<u32>(),
+    )); // branch_rank
+    bytes = bytes.saturating_add(bytes_for_elems(
+        vars.saturating_mul(2),
+        std::mem::size_of::<Vec<Watcher>>(),
+    )); // watchers
+    bytes = bytes.saturating_add(bytes_for_elems(
+        clause_count.saturating_mul(2),
+        std::mem::size_of::<Watcher>(),
+    )); // watcher entries
+    bytes = bytes.saturating_add(bytes_for_elems(
+        vars.saturating_mul(2),
+        std::mem::size_of::<u32>(),
+    )); // exact-capacity watcher counting transient
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u8>())); // assignment
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u8>())); // saved_phase
+    bytes = bytes.saturating_add(bytes_for_elems(
+        vars_with_zero,
+        std::mem::size_of::<u32>(),
+    )); // decision_level
+    bytes = bytes.saturating_add(bytes_for_elems(
+        vars_with_zero,
+        std::mem::size_of::<ReasonCode>(),
+    )); // reason
+    bytes = bytes.saturating_add(bytes_for_elems(vars, std::mem::size_of::<i32>())); // trail
+    bytes = bytes.saturating_add(bytes_for_elems(vars, std::mem::size_of::<u32>())); // branch_heap
+    bytes = bytes.saturating_add(bytes_for_elems(
+        vars_with_zero,
+        std::mem::size_of::<u32>(),
+    )); // branch_pos
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<bool>())); // decision_var
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<f64>())); // activity
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<bool>())); // frozen
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<bool>())); // eliminated
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u8>())); // scratch_seen
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u8>())); // scratch_resolved
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u8>())); // scratch_redundant_state
+    bytes = bytes.saturating_add(bytes_for_elems(vars_with_zero, std::mem::size_of::<u32>())); // scratch_frame_used
+    bytes
+}
+
+fn solver_construction_extra_bytes_counts(
+    num_vars: usize,
+    clause_count: u64,
+    lits: u64,
+    simplification_enabled: Option<bool>,
+    giant_arena_parsed: bool,
+) -> u64 {
+    if giant_arena_parsed {
+        return giant_arena_construction_extra_bytes(num_vars, clause_count, lits);
+    }
     // None = legacy estimate (SAT_PREFLIGHT_SIMP_AWARE=off): charge the
     // simplification-path transients unconditionally with the pre-02e5d00 usize
     // relocation width, byte-identical to the shipped estimator.
     let legacy = simplification_enabled.is_none();
     let vars = num_vars as u64;
     let vars_with_zero = vars.saturating_add(1);
-    let lits = initial_lit_count(clauses);
-    let clause_count = clauses.len() as u64;
     let literal_slots = lits.saturating_add(clause_count);
 
     let mut bytes = 0u64;
@@ -11682,7 +12141,7 @@ fn solver_construction_extra_bytes(
 
 fn memory_preflight(
     num_vars: usize,
-    clauses: &[Vec<i32>],
+    formula: &ParsedFormula,
     config: &SolverConfig,
 ) -> Option<MemoryPreflight> {
     let limit_bytes = effective_memory_limit_bytes(config)?;
@@ -11690,9 +12149,11 @@ fn memory_preflight(
         .unwrap_or(0)
         .saturating_mul(1024)
         .saturating_mul(1024);
-    memory_preflight_with_limit(
+    memory_preflight_with_limit_counts(
         num_vars,
-        clauses,
+        formula.clause_count() as u64,
+        formula.lit_count(),
+        formula.is_giant_arena(),
         limit_bytes,
         current_rss_bytes,
         // SAT_PREFLIGHT_SIMP_AWARE (default on): estimate only the allocations the
@@ -11702,6 +12163,7 @@ fn memory_preflight(
     )
 }
 
+#[cfg(test)]
 fn memory_preflight_with_limit(
     num_vars: usize,
     clauses: &[Vec<i32>],
@@ -11709,9 +12171,35 @@ fn memory_preflight_with_limit(
     current_rss_bytes: u64,
     simplification_enabled: Option<bool>,
 ) -> Option<MemoryPreflight> {
-    let estimated_peak_bytes = current_rss_bytes.saturating_add(
-        solver_construction_extra_bytes(num_vars, clauses, simplification_enabled),
-    );
+    memory_preflight_with_limit_counts(
+        num_vars,
+        clauses.len() as u64,
+        initial_lit_count(clauses),
+        false,
+        limit_bytes,
+        current_rss_bytes,
+        simplification_enabled,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn memory_preflight_with_limit_counts(
+    num_vars: usize,
+    clause_count: u64,
+    lits: u64,
+    giant_arena_parsed: bool,
+    limit_bytes: u64,
+    current_rss_bytes: u64,
+    simplification_enabled: Option<bool>,
+) -> Option<MemoryPreflight> {
+    let estimated_peak_bytes =
+        current_rss_bytes.saturating_add(solver_construction_extra_bytes_counts(
+            num_vars,
+            clause_count,
+            lits,
+            simplification_enabled,
+            giant_arena_parsed,
+        ));
     let threshold_bytes = limit_bytes.saturating_mul(9) / 10;
     (estimated_peak_bytes >= threshold_bytes).then_some(MemoryPreflight {
         estimated_peak_bytes,
@@ -11758,14 +12246,7 @@ const GIANT_LIGHT_BLOCKING_ENV: &[&str] = &[
     "SAT_CLAUSE_MIN",
 ];
 
-fn should_use_giant_light_profile(
-    num_vars: usize,
-    clause_count: usize,
-    config: &SolverConfig,
-) -> bool {
-    if num_vars < GIANT_LIGHT_MIN_VARS || clause_count < GIANT_LIGHT_MIN_CLAUSES {
-        return false;
-    }
+fn giant_light_config_eligible(config: &SolverConfig) -> bool {
     if !matches!(config.profile, SolverProfile::Default | SolverProfile::Fast) {
         return false;
     }
@@ -11775,6 +12256,17 @@ fn should_use_giant_light_profile(
     !GIANT_LIGHT_BLOCKING_ENV
         .iter()
         .any(|name| env::var_os(name).is_some())
+}
+
+fn should_use_giant_light_profile(
+    num_vars: usize,
+    clause_count: usize,
+    config: &SolverConfig,
+) -> bool {
+    if num_vars < GIANT_LIGHT_MIN_VARS || clause_count < GIANT_LIGHT_MIN_CLAUSES {
+        return false;
+    }
+    giant_light_config_eligible(config)
 }
 
 fn apply_giant_light_profile(config: &mut SolverConfig) {
@@ -11821,6 +12313,7 @@ fn apply_giant_light_profile(config: &mut SolverConfig) {
     config.refresh_feature_statuses();
 }
 
+#[cfg(test)]
 fn verify_model_against_clauses(clauses: &[Vec<i32>], assignment: &[u8]) -> bool {
     for clause in clauses {
         let mut satisfied = false;
@@ -11841,11 +12334,78 @@ fn verify_model_against_clauses(clauses: &[Vec<i32>], assignment: &[u8]) -> bool
     true
 }
 
+/// Streaming clause-at-a-time model check: same boolean as parsing the whole file
+/// and calling `verify_model_against_clauses` (any parse anomaly → false, any
+/// unsatisfied clause → false), but never rebuilds the parse-time clause vector —
+/// on a giant formula that re-materialization alone is a multi-GB post-solve spike.
 fn verify_model_against_cnf_path(path: &str, assignment: &[u8]) -> bool {
-    let Ok((_, clauses)) = parse_cnf(path) else {
+    let Ok(file) = fs::File::open(path) else {
         return false;
     };
-    verify_model_against_clauses(&clauses, assignment)
+    let reader = io::BufReader::new(file);
+    let mut num_vars: Option<usize> = None;
+    let mut clause_satisfied = false;
+    let mut in_clause = false;
+    for line in reader.lines() {
+        let Ok(line) = line else {
+            return false;
+        };
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('c') {
+            continue;
+        }
+        if line.starts_with('p') {
+            if num_vars.is_some() {
+                return false;
+            }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() != 4 || parts[0] != "p" || parts[1] != "cnf" {
+                return false;
+            }
+            let Ok(parsed_vars) = parts[2].parse::<usize>() else {
+                return false;
+            };
+            if parts[3].parse::<usize>().is_err() {
+                return false;
+            }
+            num_vars = Some(parsed_vars);
+            continue;
+        }
+        let Some(declared_vars) = num_vars else {
+            return false;
+        };
+        for token in line.split_whitespace() {
+            let Ok(lit) = token.parse::<i32>() else {
+                return false;
+            };
+            if lit == 0 {
+                if !clause_satisfied {
+                    return false;
+                }
+                clause_satisfied = false;
+                in_clause = false;
+                continue;
+            }
+            let var = lit.unsigned_abs() as usize;
+            if var == 0 || var > declared_vars {
+                return false;
+            }
+            in_clause = true;
+            if clause_satisfied {
+                continue;
+            }
+            let Some(&value) = assignment.get(var) else {
+                return false;
+            };
+            if (lit > 0 && value == TRUE) || (lit < 0 && value == FALSE) {
+                clause_satisfied = true;
+            }
+        }
+    }
+    if in_clause {
+        return false;
+    }
+    num_vars.is_some()
 }
 
 fn force_input_hash_for_compat() -> bool {
@@ -11875,7 +12435,7 @@ fn main() {
     );
     prepare_output_contract_dir(output_path);
     let parse_start = Instant::now();
-    let (num_vars, clauses) = match parse_cnf(cnf_path) {
+    let (num_vars, formula) = match parse_cnf_auto(cnf_path, &config) {
         Ok(parsed) => parsed,
         Err(message) => {
             let parse_sec = parse_start.elapsed().as_secs_f64();
@@ -11947,8 +12507,19 @@ fn main() {
         }
     };
     let parse_sec = parse_start.elapsed().as_secs_f64();
-    let original_clause_count = clauses.len();
-    let original_lits_initial = initial_lit_count(&clauses);
+    let original_clause_count = formula.clause_count();
+    let original_lits_initial = formula.lit_count();
+    // The giant-arena parse is chosen from the declared problem-line counts; if the
+    // actual formula does not qualify for giant-light (counts disagreeing with the
+    // problem line), fall back to the nested representation so every downstream
+    // path is byte-identical to the historical parse.
+    let formula = if formula.is_giant_arena()
+        && !should_use_giant_light_profile(num_vars, original_clause_count, &config)
+    {
+        ParsedFormula::Nested(formula.into_nested())
+    } else {
+        formula
+    };
     if should_use_giant_light_profile(num_vars, original_clause_count, &config) {
         eprintln!(
             "c giant_light_profile enabled vars={} clauses={} literals={}",
@@ -11961,20 +12532,27 @@ fn main() {
     // Gaussian elimination finds a parity contradiction. Does NOT change the solve
     // result — emitting UNSAT requires the Phase 3 DRAT proof. Gated by GAUSS_DETECT.
     if std::env::var("GAUSS_DETECT").is_ok() {
-        let gauss_start = std::time::Instant::now();
-        let (xors, consumed) = gauss::extract_xors(&clauses, 8);
-        let unsat = gauss::gaussian_unsat(&xors, num_vars);
-        eprintln!(
-            "c gauss_detect xors={} clauses_consumed={}/{} num_vars={} unsat_detected={} seconds={:.4}",
-            xors.len(),
-            consumed.len(),
-            original_clause_count,
-            num_vars,
-            unsat,
-            gauss_start.elapsed().as_secs_f64(),
-        );
+        match &formula {
+            ParsedFormula::Nested(clauses) => {
+                let gauss_start = std::time::Instant::now();
+                let (xors, consumed) = gauss::extract_xors(clauses, 8);
+                let unsat = gauss::gaussian_unsat(&xors, num_vars);
+                eprintln!(
+                    "c gauss_detect xors={} clauses_consumed={}/{} num_vars={} unsat_detected={} seconds={:.4}",
+                    xors.len(),
+                    consumed.len(),
+                    original_clause_count,
+                    num_vars,
+                    unsat,
+                    gauss_start.elapsed().as_secs_f64(),
+                );
+            }
+            ParsedFormula::GiantArena(_) => {
+                eprintln!("c gauss_detect skipped: giant-arena parse");
+            }
+        }
     }
-    if let Some(preflight) = memory_preflight(num_vars, &clauses, &config) {
+    if let Some(preflight) = memory_preflight(num_vars, &formula, &config) {
         eprintln!(
             "c memory_preflight result=UNKNOWN reason=memory-preflight-limit vars={} clauses={} literals={} estimated_peak_mb={} limit_mb={} threshold_mb={}",
             num_vars,
@@ -12066,31 +12644,35 @@ fn main() {
     // so the solver simply runs on the factored formula with the fresh variables, and the
     // model is truncated back to the original variables for output.
     let mut solver_num_vars = num_vars;
-    let mut solver_clauses = clauses;
+    let mut solver_formula = formula;
     let mut bva_steps: Vec<factor::FactorProofStep> = Vec::new();
     if config.factor && num_vars <= factor::FACTOR_MAX_VARS {
-        let factor_start = Instant::now();
-        if let Some(outcome) = factor::factor_formula(
-            num_vars,
-            &solver_clauses,
-            factor::FACTOR_TICKS_LIMIT,
-            factor::FACTOR_BOUND,
-        ) {
-            eprintln!(
-                "c factor_bva fresh_vars={} clauses_removed={} clauses_added={} ticks={} completed={} sec={:.3}",
-                outcome.fresh_vars,
-                outcome.clauses_removed,
-                outcome.clauses_added,
-                outcome.ticks,
-                outcome.completed,
-                factor_start.elapsed().as_secs_f64(),
-            );
-            solver_num_vars = outcome.num_vars;
-            solver_clauses = outcome.clauses;
-            bva_steps = outcome.steps;
+        // FACTOR_MAX_VARS (10^4) is far below the giant-arena threshold, so the
+        // giant path never reaches this block; the match is type plumbing only.
+        if let ParsedFormula::Nested(clauses) = &solver_formula {
+            let factor_start = Instant::now();
+            if let Some(outcome) = factor::factor_formula(
+                num_vars,
+                clauses,
+                factor::FACTOR_TICKS_LIMIT,
+                factor::FACTOR_BOUND,
+            ) {
+                eprintln!(
+                    "c factor_bva fresh_vars={} clauses_removed={} clauses_added={} ticks={} completed={} sec={:.3}",
+                    outcome.fresh_vars,
+                    outcome.clauses_removed,
+                    outcome.clauses_added,
+                    outcome.ticks,
+                    outcome.completed,
+                    factor_start.elapsed().as_secs_f64(),
+                );
+                solver_num_vars = outcome.num_vars;
+                solver_formula = ParsedFormula::Nested(outcome.clauses);
+                bva_steps = outcome.steps;
+            }
         }
     }
-    let mut solver = Solver::new_with_config(solver_num_vars, solver_clauses, &config);
+    let mut solver = Solver::new_with_config_formula(solver_num_vars, solver_formula, &config);
     solver.pre_search_proof_steps = bva_steps;
 
     let (outcome, proof_stats) = solver.solve_to_output(output_dir, &config);
@@ -14037,6 +14619,144 @@ mod tests {
         let limit = 1024 * 1024 * 1024;
 
         assert!(memory_preflight_with_limit(10, &clauses, limit, 0, None).is_none());
+    }
+
+    fn write_cnf_file(label: &str, content: &str) -> PathBuf {
+        let dir = make_temp_dir(label);
+        let path = dir.join("formula.cnf");
+        fs::write(&path, content).expect("failed to write test cnf");
+        path
+    }
+
+    #[test]
+    fn giant_arena_parse_matches_nested_parse() {
+        let content = "c comment line\n\np cnf 5 6\n1 2 0\n-1 3 4 0\n5 0\n-2 -3\n-4 0\n0\n1 -5 0\n";
+        let path = write_cnf_file("giant-parse-eq", content);
+        let path = path.to_str().unwrap();
+        let (nested_vars, nested) = parse_cnf(path).expect("nested parse");
+        let (giant_vars, pre) = parse_cnf_giant_arena(path).expect("giant parse");
+        assert_eq!(nested_vars, giant_vars);
+        assert_eq!(pre.clause_ids.len(), nested.len());
+        assert_eq!(pre.total_lits, initial_lit_count(&nested));
+        assert_eq!(ParsedFormula::GiantArena(pre).into_nested(), nested);
+    }
+
+    #[test]
+    fn giant_arena_parse_error_messages_match_nested() {
+        for content in [
+            "p cnf 2 1\n1 3 0\n",
+            "p cnf 2 1\n1 x 0\n",
+            "p cnf 2 1\n1 2\n",
+            "1 2 0\n",
+            "p cnf 2 1\np cnf 2 1\n1 0\n",
+            "c only comments\n",
+            "p cnf x 1\n1 0\n",
+        ] {
+            let path = write_cnf_file("giant-parse-err", content);
+            let path = path.to_str().unwrap();
+            let nested_err = parse_cnf(path).expect_err("nested parse should fail");
+            let giant_err = parse_cnf_giant_arena(path).expect_err("giant parse should fail");
+            assert_eq!(nested_err, giant_err);
+        }
+    }
+
+    #[test]
+    fn giant_arena_solver_matches_nested_solver() {
+        // A giant-light-style config (raw clause order, no simplification) over a
+        // formula mixing units, binaries, and long clauses: the lean giant-arena
+        // construction must reproduce the nested construction's solve exactly.
+        let content = "p cnf 6 7\n1 2 0\n-1 3 4 0\n-2 -3 0\n5 0\n-5 -4 2 0\n1 -3 -4 5 0\n-6 1 0\n";
+        let path = write_cnf_file("giant-solver-eq", content);
+        let path = path.to_str().unwrap();
+        let mut config = SolverConfig::default();
+        apply_giant_light_profile(&mut config);
+
+        let (num_vars, nested) = parse_cnf(path).expect("nested parse");
+        let (_, pre) = parse_cnf_giant_arena(path).expect("giant parse");
+
+        let mut nested_solver =
+            Solver::new_with_config_formula(num_vars, ParsedFormula::Nested(nested), &config);
+        let mut giant_solver =
+            Solver::new_with_config_formula(num_vars, ParsedFormula::GiantArena(pre), &config);
+
+        assert_eq!(nested_solver.arena, giant_solver.arena);
+        assert_eq!(
+            nested_solver.original_clause_ids,
+            giant_solver.original_clause_ids
+        );
+        assert_eq!(nested_solver.original_literals, giant_solver.original_literals);
+        assert_eq!(nested_solver.watchers, giant_solver.watchers);
+        assert_eq!(nested_solver.root_unit_clauses, giant_solver.root_unit_clauses);
+
+        // Lean giant construction skips the simplification-only side structures.
+        assert!(giant_solver.occurs.is_empty());
+        assert!(giant_solver.n_occ.is_empty());
+        assert!(giant_solver.occurs_dirty.is_empty());
+        assert!(giant_solver.binary_dedup_seen.is_empty());
+        assert!(giant_solver.lbd_seen.is_empty());
+        assert_eq!(giant_solver.binary_implications.len_for(1), 0);
+
+        let nested_result = nested_solver.solve();
+        let giant_result = giant_solver.solve();
+        assert_eq!(nested_result, giant_result);
+        assert_eq!(nested_solver.stats.conflicts, giant_solver.stats.conflicts);
+        assert_eq!(
+            nested_solver.stats.propagations,
+            giant_solver.stats.propagations
+        );
+        assert_eq!(nested_solver.assignment, giant_solver.assignment);
+    }
+
+    #[test]
+    fn giant_arena_estimate_below_nested_estimate() {
+        let vars = 25_000_000usize;
+        let clause_count = 60_000_000u64;
+        let lits = 140_000_000u64;
+        let giant =
+            solver_construction_extra_bytes_counts(vars, clause_count, lits, Some(false), true);
+        let nested =
+            solver_construction_extra_bytes_counts(vars, clause_count, lits, Some(false), false);
+        assert!(giant < nested);
+        // The giant estimate must at least stop charging the resident arena words and
+        // the occurs headers the lean constructor never allocates.
+        let arena_words = bytes_for_elems(
+            lits.saturating_add(clause_count),
+            std::mem::size_of::<u32>(),
+        );
+        let occurs_headers =
+            bytes_for_elems(vars as u64 + 1, std::mem::size_of::<Vec<u32>>());
+        assert!(nested - giant >= arena_words + occurs_headers);
+    }
+
+    #[test]
+    fn streaming_model_verify_matches_clause_semantics() {
+        let path = write_cnf_file("verify-stream", "p cnf 3 2\n1 -2 0\n2 3 0\n");
+        let path_str = path.to_str().unwrap();
+        let mut model = vec![UNASSIGNED; 4];
+        model[1] = TRUE;
+        model[2] = FALSE;
+        model[3] = TRUE;
+        assert!(verify_model_against_cnf_path(path_str, &model));
+        model[3] = FALSE;
+        assert!(!verify_model_against_cnf_path(path_str, &model));
+
+        let empty_clause = write_cnf_file("verify-empty-clause", "p cnf 2 2\n1 0\n0\n");
+        assert!(!verify_model_against_cnf_path(
+            empty_clause.to_str().unwrap(),
+            &[UNASSIGNED, TRUE, TRUE]
+        ));
+
+        let malformed = write_cnf_file("verify-malformed", "p cnf 2 1\n1 2\n");
+        assert!(!verify_model_against_cnf_path(
+            malformed.to_str().unwrap(),
+            &[UNASSIGNED, TRUE, TRUE]
+        ));
+
+        let no_problem_line = write_cnf_file("verify-no-pline", "c nothing\n");
+        assert!(!verify_model_against_cnf_path(
+            no_problem_line.to_str().unwrap(),
+            &[UNASSIGNED]
+        ));
     }
 
     fn watched_literals(s: &Solver, clause_idx: usize) -> Option<(i32, i32)> {
