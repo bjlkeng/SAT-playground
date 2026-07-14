@@ -1603,6 +1603,21 @@ struct Solver {
     restart_reuse_trail_focused: bool,
     /// opt-in stable-mode trail reuse using VSIDS score ordering
     restart_reuse_trail_stable: bool,
+    /// Armed-only focused restart interval floor (SAT_RESTART_ARMED_FLOOR, default
+    /// 0 = off). On congruence-productive formulas (the same deep-trail BMC/miter
+    /// signal that arms the chrono cap) the focused-mode restart interval floor is
+    /// lowered from the shipped 50 to this value; kissat parity is 1 (restartint).
+    restart_armed_floor: u64,
+    /// Armed-only restart margin override (SAT_RESTART_ARMED_MARGIN, default 0.0 =
+    /// off). Kissat parity is 1.10 vs the shipped 1.20.
+    restart_armed_margin: f64,
+    /// Armed-only restart trail reuse (SAT_RESTART_REUSE_TRAIL_ARMED, default off).
+    /// Enables focused+stable trail reuse only after the congruence signal arms.
+    restart_armed_reuse_trail: bool,
+    /// Set when maybe_arm_congruence_productive_search fired on the congruence
+    /// signal (as opposed to elimination yield); scopes armed restart knobs to
+    /// deep-trail BMC/miter cells.
+    congruence_search_armed: bool,
     /// conflicts since the last EMA restart
     restart_conflicts_since_last: u64,
     /// current high-level search mode for focused/stable experiments
@@ -1729,6 +1744,26 @@ struct Solver {
     /// strengthening is a feed of the congruence⇄eliminate collapse flywheel.
     /// Non-armed formulas keep the shipped schedule byte-identical.
     vivify_armed: bool,
+    /// Asymmetric literal elimination in vivify (SAT_VIVIFY_ALE, default ON since
+    /// the 2026-07-14 promotion; armed formulas only — see the scoping note in
+    /// `vivify_round`): strengthen a candidate clause even when the negated-prefix
+    /// assumption walk ends without a conflict, by dropping the literals that were
+    /// implied FALSE along the way (kissat vivify.c parity). The conflict-only
+    /// strengthening path yielded 14k strengthenings from 8.26M attempts on
+    /// VexRiscv while kissat vivifies 322k clauses there; with ALE + the armed
+    /// budget the 2026-07-14 gate flipped VexRiscv and oski15a01b40s (both
+    /// kissat-only cells before) and medium moved 64 -> 67.
+    vivify_ale: bool,
+    /// Kissat-parity literal ordering inside vivify candidates (SAT_VIVIFY_SORT,
+    /// default off): assume the literals most frequent across this round's
+    /// candidates first, raising the implied-TRUE/FALSE density per attempt.
+    vivify_sort: bool,
+    /// Armed-only per-round vivify tick budget (SAT_VIVIFY_ARMED_TICKS, default
+    /// 300M since the 2026-07-14 promotion; 0 = off => permille clamp). Applies
+    /// only while `inprocess_aggressive`. With ALE raising per-attempt yield the
+    /// shipped 100M cap was the binding constraint on the BMC cascade cells
+    /// (oski40 1343s -> 1026s standalone at 3x; ibm canary improved).
+    vivify_armed_ticks: u64,
     /// Extended gate-aware BVE (SAT_ELIM_GATES_EXT, default ON since the 2026-07-13
     /// promotion; off = AND/OR-only detection): in addition to
     /// the AND/OR detector (SAT_GATE_BVE), elimination candidates are checked for
@@ -2764,6 +2799,16 @@ impl Solver {
             restart_block_margin: config.restart_block_margin,
             restart_reuse_trail_focused: config.restart_reuse_trail_focused,
             restart_reuse_trail_stable: config.restart_reuse_trail_stable,
+            restart_armed_floor: std::env::var("SAT_RESTART_ARMED_FLOOR")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            restart_armed_margin: std::env::var("SAT_RESTART_ARMED_MARGIN")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0),
+            restart_armed_reuse_trail: env_bool_or_default("SAT_RESTART_REUSE_TRAIL_ARMED", false),
+            congruence_search_armed: false,
             restart_conflicts_since_last: 0,
             search_mode,
             search_mode_policy,
@@ -2831,6 +2876,12 @@ impl Solver {
                 .filter(|&r: &usize| r > 0)
                 .unwrap_or(1),
             vivify_armed: env_bool_or_default("SAT_VIVIFY_ARMED", true),
+            vivify_ale: env_bool_or_default("SAT_VIVIFY_ALE", true),
+            vivify_sort: env_bool_or_default("SAT_VIVIFY_SORT", false),
+            vivify_armed_ticks: std::env::var("SAT_VIVIFY_ARMED_TICKS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(300_000_000),
             elim_gates_ext: env_bool_or_default("SAT_ELIM_GATES_EXT", true),
             factor_inprocess: env_bool_or_default("SAT_FACTOR_INPROCESS", false),
             inprocess_aggressive: false,
@@ -5974,8 +6025,12 @@ impl Solver {
     }
 
     fn focused_restart_interval(&self) -> u64 {
-        KISSAT_EMA_RESTART_MIN_CONFLICTS
-            .saturating_add(Self::kissat_logn(self.stats.focused_restarts).saturating_sub(1))
+        let floor = if self.congruence_search_armed && self.restart_armed_floor > 0 {
+            self.restart_armed_floor
+        } else {
+            KISSAT_EMA_RESTART_MIN_CONFLICTS
+        };
+        floor.saturating_add(Self::kissat_logn(self.stats.focused_restarts).saturating_sub(1))
     }
 
     fn next_focused_mode_interval(&self) -> u64 {
@@ -7076,6 +7131,24 @@ impl Solver {
         if congruence_productive && self.chrono_backtrack && self.chrono_productive_delta > 0 {
             self.chrono_max_delta = self.chrono_max_delta.min(self.chrono_productive_delta);
         }
+        // Armed restart-cadence knobs share the congruence-only scoping rationale:
+        // they target conflict density on deep-trail BMC/miter cells and stay inert
+        // (default 0/off) everywhere else. All were global-losers historically; the
+        // armed re-test is deliberate (bundle context flips verdicts, see the
+        // 2026-07-13 armed-collapse notes).
+        if congruence_productive {
+            self.congruence_search_armed = true;
+            if self.restart_armed_floor > 0 {
+                self.restart_min_conflicts = self.restart_min_conflicts.min(self.restart_armed_floor);
+            }
+            if self.restart_armed_margin > 0.0 {
+                self.restart_margin = self.restart_armed_margin;
+            }
+            if self.restart_armed_reuse_trail {
+                self.restart_reuse_trail_focused = true;
+                self.restart_reuse_trail_stable = true;
+            }
+        }
     }
 
     /// Run one inprocessing round at decision level 0, then reschedule.
@@ -7468,6 +7541,14 @@ impl Solver {
         if self.vivify_ticks_budget > 0 {
             return self.vivify_ticks_budget;
         }
+        // Armed-only vivify budget (SAT_VIVIFY_ARMED_TICKS, default 0 = off): on
+        // aggressive-inprocess (congruence-productive) formulas the per-round budget
+        // replaces the permille clamp. With ALE raising per-attempt yield, the 100M
+        // cap binds on the BMC cascade cells (vex round yield kept climbing at 3x);
+        // ibm canary at 300M: 347k conflicts vs 370k base, strengthenings 53k→237k.
+        if self.inprocess_aggressive && self.vivify_armed_ticks > 0 {
+            return self.vivify_armed_ticks;
+        }
         let permille = if self.vivify_permille > 0 {
             self.vivify_permille
         } else {
@@ -7575,6 +7656,32 @@ impl Solver {
         // Each decision is (clause_idx, keep): keep.len()==1 => unit, else strengthen.
         let mut decisions: Vec<(usize, Vec<i32>)> = Vec::new();
         let mut proved_unsat = false;
+        // ALE is scoped to armed (aggressive-inprocess) formulas: the 2026-07-14 full
+        // A/B measured unscoped ALE flipping VexRiscv UNSAT in-gate (first ever) and
+        // cutting oski40 by 1.04M conflicts, but rolling two non-armed solved SAT
+        // cells (sted2_0x1e3-216, 59-129706) into timeouts via the originals-schedule
+        // vivify rounds. Armed formulas keep the win; everything else stays
+        // byte-identical.
+        let vivify_ale = self.vivify_ale && self.inprocess_aggressive;
+        // Kissat vivify.c literal ordering (SAT_VIVIFY_SORT, default off): count each
+        // literal's occurrences across this round's candidates and assume the
+        // most-frequent literals first. Frequent literals propagate the most shared
+        // structure, maximizing the chance later literals are found implied
+        // (TRUE => redundant, FALSE => ALE-removable) before the budget is spent.
+        // Only the LOCAL walk order changes; stored clauses are never reordered.
+        // Skipped on giants (counts would be ~8B/var; giants never reach vivify).
+        let vivify_sort = self.vivify_sort && self.assignment.len() <= 20_000_000;
+        let counts: Vec<u32> = if vivify_sort {
+            let mut counts = vec![0u32; self.assignment.len() * 2];
+            for &(_, c) in &candidates {
+                for &l in self.clause_slice(c) {
+                    counts[lit_to_index(l)] = counts[lit_to_index(l)].saturating_add(1);
+                }
+            }
+            counts
+        } else {
+            Vec::new()
+        };
         self.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
             let mut budget = Budget::from_ticks(budget_ticks);
             let mut clone_proof = ProofLog::disabled();
@@ -7589,7 +7696,16 @@ impl Solver {
                 if ctx.solver.clause_is_deleted(c) || ctx.solver.clause_locked(c) {
                     continue;
                 }
-                let lits: Vec<i32> = ctx.solver.clause_slice(c).to_vec();
+                let mut lits: Vec<i32> = ctx.solver.clause_slice(c).to_vec();
+                if vivify_sort {
+                    // Descending by candidate-occurrence count, ties by literal index
+                    // (deterministic across runs).
+                    lits.sort_by(|&a, &b| {
+                        counts[lit_to_index(b)]
+                            .cmp(&counts[lit_to_index(a)])
+                            .then_with(|| lit_to_index(a).cmp(&lit_to_index(b)))
+                    });
+                }
                 let base = ctx.solver.current_level();
                 debug_assert_eq!(base, 0);
 
@@ -7642,7 +7758,20 @@ impl Solver {
                 // clause index stays live. Apply to the clone immediately so later
                 // analyses see the edit.
                 let _ = redundant;
-                if conflicted && keep.len() < lits.len() {
+                // Asymmetric literal elimination (SAT_VIVIFY_ALE): when the assumption
+                // walk finishes WITHOUT a conflict, any literal that was implied FALSE
+                // by the negated prefix (`FALSE => continue` above) is still removable:
+                // a model falsifying every kept literal satisfies the negated prefix,
+                // hence (by the recorded UP derivations) falsifies each dropped literal
+                // too, contradicting the original clause. The replayed `keep` is RUP —
+                // propagating its negation re-derives every dropped literal false and
+                // the original (still present) clause supplies the conflict. Kissat
+                // strengthens this case in vivify.c; skipping it was the bulk of the
+                // vivify yield gap (vex: 8.26M attempts, 14k strengthenings, 0 removed
+                // literals). The `redundant` (implied-true) DELETE path stays excluded —
+                // see the soundness note above.
+                let ale_strengthen = vivify_ale && !conflicted && !redundant;
+                if (conflicted || ale_strengthen) && keep.len() < lits.len() {
                     match keep.len() {
                         0 => {
                             proved_unsat = true;
@@ -7712,7 +7841,12 @@ impl Solver {
                 }
                 _ => {
                     strengthened += 1;
+                    let before = self.clause_len(c) as u64;
                     self.inprocess_strengthen_clause(c, &keep, proof_log);
+                    self.stats.vivify_removed_literals = self
+                        .stats
+                        .vivify_removed_literals
+                        .saturating_add(before.saturating_sub(keep.len() as u64));
                 }
             }
         }
@@ -10795,16 +10929,23 @@ impl Solver {
                 rec(&[-p, q]);
             }
             congruence::MergeKind::Xor { inputs } => {
-                // Both p and q equal XOR(inputs). Emit the parity ladder: for each level,
+                // Both p and q equal XOR over functions of `inputs` (the chain variable
+                // set: the shared normalized key inputs plus every var either gate's
+                // renormalization cancelled — the gates' ORIGINAL clauses still range
+                // over the cancelled vars, so the ladder must case-split on them too;
+                // see find_merges_closure). Emit the parity ladder: for each level,
                 // enumerate every sign pattern of the current prefix of inputs and record
-                // (prefix ∨ ¬p ∨ q) and (prefix ∨ p ∨ ¬q). Each level's helpers are RUP from
-                // the next-longer level (and the longest from the two gates' XOR clauses),
-                // and the final binaries are RUP from the shortest (length-3) helpers.
+                // (prefix ∨ ¬p ∨ q) and (prefix ∨ p ∨ ¬q). The longest level is RUP from
+                // the two gates' XOR clauses routed through the earlier equivalence
+                // binaries (a full sign assignment pins every original input, so both
+                // outputs unit-propagate to the same parity); each shorter level is RUP
+                // from the two sign cases of the dropped var one level up, and the final
+                // binaries from the two length-3 helpers.
                 let l = inputs.len();
-                if l >= 2 {
-                    // `work` starts as the first l-1 inputs (all positive) and is cycled
-                    // through all sign patterns by an LSB-first binary counter, then shrunk.
-                    let mut work: Vec<i32> = inputs[..l - 1].to_vec();
+                if l >= 1 {
+                    // `work` starts as ALL chain inputs (positive) and is cycled through
+                    // all sign patterns by an LSB-first binary counter, then shrunk.
+                    let mut work: Vec<i32> = inputs.to_vec();
                     loop {
                         let size = work.len();
                         for _ in 0..(1u64 << size) {

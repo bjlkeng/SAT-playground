@@ -203,9 +203,19 @@ enum Renormalized {
     /// Gate dropped (degenerate after substitution). Always sound — only forgoes work.
     Dead,
     /// Gate collapsed to a direct equivalence `input ≡ out` (e.g. `x = AND(a, a)`).
-    Collapsed(Merge),
-    /// Live gate with its canonical hash key `(tag, inputs)` and canonical output literal.
-    Keyed { tag: u8, inputs: Vec<i32>, out: i32 },
+    /// For XOR the `cancelled` vars removed by `a ⊕ a` cancellation THIS pass are
+    /// returned alongside so the driver can extend the merge's proof-chain
+    /// enumeration (see the XOR cancellation soundness note in `find_merges_closure`).
+    Collapsed(Merge, Vec<i32>),
+    /// Live gate with its canonical hash key `(tag, inputs)` and canonical output
+    /// literal. `cancelled` lists the positive vars removed by XOR cancellation THIS
+    /// pass (always empty for AND/ITE).
+    Keyed {
+        tag: u8,
+        inputs: Vec<i32>,
+        out: i32,
+        cancelled: Vec<i32>,
+    },
 }
 
 /// Map a gate through `parent` and renormalize it to canonical form.
@@ -228,11 +238,14 @@ fn renormalize_gate(parent: &mut [i32], g: &Gate) -> Renormalized {
             if inputs.len() == 1 {
                 // x = AND(a): output equivalent to the sole input. RUP from the original
                 // gate clauses plus the input-equivalence binaries recorded earlier.
-                return Renormalized::Collapsed(Merge {
-                    p: inputs[0],
-                    q: out,
-                    kind: MergeKind::And,
-                });
+                return Renormalized::Collapsed(
+                    Merge {
+                        p: inputs[0],
+                        q: out,
+                        kind: MergeKind::And,
+                    },
+                    Vec::new(),
+                );
             }
             if inputs.is_empty() {
                 return Renormalized::Dead;
@@ -241,6 +254,7 @@ fn renormalize_gate(parent: &mut [i32], g: &Gate) -> Renormalized {
                 tag: 0,
                 inputs,
                 out,
+                cancelled: Vec::new(),
             }
         }
         GateKind::Ite => {
@@ -267,11 +281,14 @@ fn renormalize_gate(parent: &mut [i32], g: &Gate) -> Renormalized {
                 if cv == tv || cv == ov || tv == ov {
                     return Renormalized::Dead;
                 }
-                return Renormalized::Collapsed(Merge {
-                    p: t,
-                    q: out,
-                    kind: MergeKind::Ite { cond: c },
-                });
+                return Renormalized::Collapsed(
+                    Merge {
+                        p: t,
+                        q: out,
+                        kind: MergeKind::Ite { cond: c },
+                    },
+                    Vec::new(),
+                );
             }
             // Any shared variable after substitution: drop (extraction guaranteed four
             // distinct variables; the proof chains rely on that shape).
@@ -282,6 +299,7 @@ fn renormalize_gate(parent: &mut [i32], g: &Gate) -> Renormalized {
                 tag: 1,
                 inputs: vec![c, t, e],
                 out,
+                cancelled: Vec::new(),
             }
         }
         GateKind::Xor => {
@@ -299,17 +317,25 @@ fn renormalize_gate(parent: &mut [i32], g: &Gate) -> Renormalized {
                 inputs.push(r);
             }
             inputs.sort_unstable();
-            let mut cancelled: Vec<i32> = Vec::with_capacity(inputs.len());
+            // Split into surviving inputs and cancelled vars (`a ⊕ a` pairs). The
+            // cancelled vars are REMOVED from the hash key (parity is unaffected) but
+            // must stay in the merge proof chain: the gate's original CNF still ranges
+            // over them, so the equivalence binaries are only unit-derivable after a
+            // case split on each cancelled var. Dropping them from the emitted ladder
+            // produced non-RUP lemmas (oski15a01b40s drat-trim rejection, 2026-07-14).
+            let mut survived: Vec<i32> = Vec::with_capacity(inputs.len());
+            let mut cancelled: Vec<i32> = Vec::new();
             let mut i = 0;
             while i < inputs.len() {
                 if i + 1 < inputs.len() && inputs[i] == inputs[i + 1] {
+                    cancelled.push(inputs[i]);
                     i += 2; // a ⊕ a cancels
                 } else {
-                    cancelled.push(inputs[i]);
+                    survived.push(inputs[i]);
                     i += 1;
                 }
             }
-            let inputs = cancelled;
+            let inputs = survived;
             let ov = out.unsigned_abs() as i32;
             if inputs.iter().any(|&l| l == ov) {
                 return Renormalized::Dead;
@@ -318,18 +344,24 @@ fn renormalize_gate(parent: &mut [i32], g: &Gate) -> Renormalized {
                 return Renormalized::Dead;
             }
             if inputs.len() == 1 {
-                return Renormalized::Collapsed(Merge {
-                    p: inputs[0],
-                    q: out,
-                    kind: MergeKind::Xor {
-                        inputs: inputs.clone(),
+                // out ≡ sole surviving input; the chain enumerates the cancelled vars
+                // (the caller extends it with this gate's previously-accumulated ones).
+                return Renormalized::Collapsed(
+                    Merge {
+                        p: inputs[0],
+                        q: out,
+                        kind: MergeKind::Xor {
+                            inputs: cancelled.clone(),
+                        },
                     },
-                });
+                    cancelled,
+                );
             }
             Renormalized::Keyed {
                 tag: 2,
                 inputs,
                 out,
+                cancelled,
             }
         }
     }
@@ -359,20 +391,39 @@ pub(crate) fn find_merges_closure(num_vars: usize, gates_in: Vec<Gate>) -> Plan 
     let mut pending: VecDeque<Merge> = VecDeque::new();
     // var -> indices of live gates with that variable among their (current) inputs.
     let mut occ: Vec<Vec<u32>> = vec![Vec::new(); num_vars + 1];
-    let mut table: HashMap<(u8, Vec<i32>), i32> = HashMap::new();
+    // key -> (representative output, rep gate's accumulated cancelled vars at insert).
+    let mut table: HashMap<(u8, Vec<i32>), (i32, Vec<i32>)> = HashMap::new();
     let mut gates: Vec<Option<Gate>> = gates_in.into_iter().map(Some).collect();
+    // Per-gate XOR-cancelled vars accumulated across renormalization passes: the stored
+    // canonical `g.inputs` forgets cancelled vars, but the gate's ORIGINAL clauses (the
+    // proof-chain support) still range over them, so every merge involving this gate
+    // must keep enumerating them in its parity ladder.
+    let mut acc_cancelled: Vec<Vec<i32>> = vec![Vec::new(); gates.len()];
+
+    // Sorted, deduped chain-variable union for an XOR merge proof ladder.
+    fn xor_chain(key_inputs: &[i32], a: &[i32], b: &[i32]) -> Vec<i32> {
+        let mut chain: Vec<i32> = Vec::with_capacity(key_inputs.len() + a.len() + b.len());
+        chain.extend_from_slice(key_inputs);
+        chain.extend_from_slice(a);
+        chain.extend_from_slice(b);
+        chain.sort_unstable();
+        chain.dedup();
+        chain
+    }
 
     // Renormalize gate `idx` and register it. `register_inputs`: on the initial pass every
     // input variable is registered; on reprocessing only the variable that just changed
     // representative maps to a new one (`new_var`), the others are already registered.
+    #[allow(clippy::too_many_arguments)]
     fn process_gate(
         idx: u32,
         register_all: bool,
         parent: &mut Vec<i32>,
         gates: &mut Vec<Option<Gate>>,
         occ: &mut Vec<Vec<u32>>,
-        table: &mut HashMap<(u8, Vec<i32>), i32>,
+        table: &mut HashMap<(u8, Vec<i32>), (i32, Vec<i32>)>,
         pending: &mut VecDeque<Merge>,
+        acc_cancelled: &mut [Vec<i32>],
     ) {
         let Some(g) = gates[idx as usize].as_ref() else {
             return;
@@ -381,17 +432,35 @@ pub(crate) fn find_merges_closure(num_vars: usize, gates_in: Vec<Gate>) -> Plan 
             Renormalized::Dead => {
                 gates[idx as usize] = None;
             }
-            Renormalized::Collapsed(m) => {
+            Renormalized::Collapsed(mut m, cancelled) => {
                 gates[idx as usize] = None;
+                // XOR collapse: extend the ladder with this gate's full cancellation
+                // history (this pass + earlier passes).
+                if let MergeKind::Xor { inputs } = &mut m.kind {
+                    let _ = cancelled; // this pass's vars are already in `inputs`
+                    *inputs = xor_chain(inputs, &acc_cancelled[idx as usize], &[]);
+                }
                 pending.push_back(m);
             }
-            Renormalized::Keyed { tag, inputs, out } => {
+            Renormalized::Keyed {
+                tag,
+                inputs,
+                out,
+                cancelled,
+            } => {
                 // Keep the canonical form so later reprocessing starts from it (for ITE
-                // the output flip is already folded into `out`).
+                // the output flip is already folded into `out`), and accumulate the
+                // cancellation history.
                 {
                     let g = gates[idx as usize].as_mut().unwrap();
                     g.out = out;
                     g.inputs = inputs.clone();
+                }
+                if !cancelled.is_empty() {
+                    let acc = &mut acc_cancelled[idx as usize];
+                    acc.extend_from_slice(&cancelled);
+                    acc.sort_unstable();
+                    acc.dedup();
                 }
                 if register_all {
                     for &l in &inputs {
@@ -400,17 +469,23 @@ pub(crate) fn find_merges_closure(num_vars: usize, gates_in: Vec<Gate>) -> Plan 
                     }
                 }
                 let key = (tag, inputs);
-                match table.get(&key).copied() {
+                match table.get(&key) {
                     None => {
-                        table.insert(key, out);
+                        let snapshot = acc_cancelled[idx as usize].clone();
+                        table.insert(key, (out, snapshot));
                     }
-                    Some(rep) => {
+                    Some((rep, rep_cancelled)) => {
+                        let rep = *rep;
                         if rep != out {
                             let kind = match tag {
                                 0 => MergeKind::And,
                                 1 => MergeKind::Ite { cond: key.1[0] },
                                 _ => MergeKind::Xor {
-                                    inputs: key.1.clone(),
+                                    inputs: xor_chain(
+                                        &key.1,
+                                        rep_cancelled,
+                                        &acc_cancelled[idx as usize],
+                                    ),
                                 },
                             };
                             pending.push_back(Merge { p: rep, q: out, kind });
@@ -430,6 +505,7 @@ pub(crate) fn find_merges_closure(num_vars: usize, gates_in: Vec<Gate>) -> Plan 
             &mut occ,
             &mut table,
             &mut pending,
+            &mut acc_cancelled,
         );
     }
 
@@ -447,11 +523,20 @@ pub(crate) fn find_merges_closure(num_vars: usize, gates_in: Vec<Gate>) -> Plan 
                 continue;
             }
         }
-        let merge = Merge {
-            p,
-            q,
-            kind: m.kind.clone(),
-        };
+        let mut kind = m.kind.clone();
+        if let MergeKind::Xor { inputs } = &mut kind {
+            // Chain vars equal to var(p)/var(q) are pinned by the RUP assumption
+            // itself — enumerating them would only produce tautologies (which the
+            // emitter skips, leaving holes in the ladder). Filter them out.
+            let (pv, qv) = (p.unsigned_abs() as i32, q.unsigned_abs() as i32);
+            inputs.retain(|&v| v != pv && v != qv);
+            // Ladder size is 2^|chain| clauses per level; XOR extraction is arity <= 4
+            // and cancellations are rare, so this cap only guards pathological unions.
+            if inputs.len() > 12 {
+                continue;
+            }
+        }
+        let merge = Merge { p, q, kind };
         if p == -q {
             return Plan {
                 merges,
@@ -481,6 +566,7 @@ pub(crate) fn find_merges_closure(num_vars: usize, gates_in: Vec<Gate>) -> Plan 
                 &mut occ,
                 &mut table,
                 &mut pending,
+                &mut acc_cancelled,
             );
         }
     }
@@ -723,10 +809,36 @@ mod tests {
         assert_eq!((plan.merges[0].p, plan.merges[0].q), (3, 4));
         let m = &plan.merges[1];
         assert_eq!((m.p, m.q), (5, 6));
+        // The proof-chain enumeration must cover the CANCELLED var (3): the gate's
+        // original clauses still range over it, so `z ≡ 5` is only unit-derivable
+        // after a case split on it. (The old contract carried the surviving input 5
+        // here — i.e. var(p) itself — which emitted only tautologies and produced
+        // non-RUP equivalence binaries; oski15a01b40s drat-trim rejection, 2026-07-14.)
+        assert_eq!(m.kind, MergeKind::Xor { inputs: vec![3] });
+    }
+
+    #[test]
+    fn closure_xor_cancellation_extends_keyed_merge_chain() {
+        // a ≡ b via matched ANDs (3, 4); w = XOR(3,4,5,6) then cancels to XOR(5,6),
+        // colliding with v = XOR(5,6). The merge chain must enumerate the cancelled
+        // var 3 alongside the shared key inputs 5,6 — w's original clauses still
+        // range over 3 and 4, so the equivalence is only RUP after splitting on 3.
+        let gates = vec![
+            and_gate(3, vec![1, 2]),
+            and_gate(4, vec![1, 2]),
+            xor_gate(7, vec![3, 4, 5, 6]),
+            xor_gate(8, vec![5, 6]),
+        ];
+        let plan = find_merges_closure(8, gates);
+        assert!(plan.unsat.is_none());
+        assert_eq!(plan.merges.len(), 2);
+        assert_eq!((plan.merges[0].p, plan.merges[0].q), (3, 4));
+        let m = &plan.merges[1];
+        assert_eq!((m.p, m.q), (8, 7));
         assert_eq!(
             m.kind,
             MergeKind::Xor {
-                inputs: vec![5]
+                inputs: vec![3, 5, 6]
             }
         );
     }
