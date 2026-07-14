@@ -173,6 +173,10 @@ pub(crate) struct SolverStats {
     pub(crate) preprocess_eliminated_vars: u64,
     /// subset of `preprocess_eliminated_vars` eliminated via gate-aware BVE (SAT_GATE_BVE)
     pub(crate) preprocess_gate_eliminated_vars: u64,
+    /// subset of gate eliminations recognized as equivalence definitions (SAT_ELIM_GATES_EXT)
+    pub(crate) preprocess_eq_gate_eliminated_vars: u64,
+    /// subset of gate eliminations recognized as if-then-else definitions (SAT_ELIM_GATES_EXT)
+    pub(crate) preprocess_ite_gate_eliminated_vars: u64,
     /// variables removed by equivalent-literal substitution (SAT_ELS)
     pub(crate) els_substituted_vars: u64,
     /// clauses rewritten by equivalent-literal substitution (SAT_ELS)
@@ -691,6 +695,18 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
         ctx.stats.preprocess_eliminated_vars,
     );
     json.u64("pre_bve_resolvents", ctx.stats.preprocess_resolvents);
+    json.u64(
+        "gate_eliminated_vars",
+        ctx.stats.preprocess_gate_eliminated_vars,
+    );
+    json.u64(
+        "eq_gate_eliminated_vars",
+        ctx.stats.preprocess_eq_gate_eliminated_vars,
+    );
+    json.u64(
+        "ite_gate_eliminated_vars",
+        ctx.stats.preprocess_ite_gate_eliminated_vars,
+    );
     json.u64(
         "pre_bve_resolution_attempts",
         ctx.stats.preprocess_resolution_attempts,

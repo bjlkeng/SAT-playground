@@ -1,5 +1,5 @@
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, VecDeque};
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 
 use super::*;
 
@@ -36,6 +36,16 @@ struct GatePartition {
     nongate_pos: Vec<usize>,
     /// clauses containing -pivot that are not part of the gate definition
     nongate_neg: Vec<usize>,
+    /// which detector produced the definition (stats attribution only)
+    kind: ElimGateKind,
+}
+
+/// Which gate detector recognized the elimination pivot's definition.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ElimGateKind {
+    AndOr,
+    Equivalence,
+    Ite,
 }
 
 const MARKED_SUBSUMPTION_MIN_PRODUCT: usize = 32;
@@ -1721,6 +1731,7 @@ impl Solver {
                     gate_neg: gate_base,
                     nongate_pos: nongate_l,
                     nongate_neg: nongate_base,
+                    kind: ElimGateKind::AndOr,
                 }
             } else {
                 GatePartition {
@@ -1728,8 +1739,258 @@ impl Solver {
                     gate_neg: gate_l,
                     nongate_pos: nongate_base,
                     nongate_neg: nongate_l,
+                    kind: ElimGateKind::AndOr,
                 }
             });
+        }
+        None
+    }
+
+    /// Shared safety check for elimination gate detection: every clause of the pivot
+    /// must be free of root-assigned literals, otherwise a stale root-satisfied clause
+    /// could yield a spurious gate definition and an unsound resolvent skip.
+    fn elim_gate_clauses_clean(&self, pos_clauses: &[usize], neg_clauses: &[usize]) -> bool {
+        for &ci in pos_clauses.iter().chain(neg_clauses.iter()) {
+            let len = self.clause_len(ci);
+            for k in 0..len {
+                let v = self.clause_lit(ci, k).unsigned_abs() as usize;
+                if v < self.assignment.len() && self.assignment[v] != UNASSIGNED {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Detect an equivalence definition `var ≡ r` from two exact binary clauses
+    /// `(v ∨ ¬r)` and `(¬v ∨ r)` (kissat equivalences.c). Eliminating an
+    /// equivalence-defined pivot resolves each side's non-gate clauses against the
+    /// single opposite gate binary — i.e. substitution by resolution — producing
+    /// `occurrences − 2` resolvents, always within the acceptance bound. The
+    /// gate-vs-gate resolvent `(¬r ∨ r)` is a tautology, so omitting it is sound.
+    fn detect_equivalence_gate(
+        &mut self,
+        var: usize,
+        pos_clauses: &[usize],
+        neg_clauses: &[usize],
+    ) -> Option<GatePartition> {
+        if !self.elim_gate_clauses_clean(pos_clauses, neg_clauses) {
+            return None;
+        }
+        let l = var as i32;
+        let mut marks = std::mem::take(&mut self.gate_marks);
+        let lit_slots = self.variable_count().saturating_mul(2);
+        if marks.len() < lit_slots {
+            marks.resize(lit_slots, 0);
+        }
+        self.gate_mark_stamp = self.gate_mark_stamp.wrapping_add(1);
+        if self.gate_mark_stamp == 0 {
+            for m in marks.iter_mut() {
+                *m = 0;
+            }
+            self.gate_mark_stamp = 1;
+        }
+        let stamp = self.gate_mark_stamp;
+        let mut any = false;
+        for &ci in pos_clauses {
+            if self.clause_len(ci) != 2 {
+                continue;
+            }
+            let a = self.clause_lit(ci, 0);
+            let b = self.clause_lit(ci, 1);
+            let other = if a == l {
+                b
+            } else if b == l {
+                a
+            } else {
+                continue;
+            };
+            marks[lit_to_index(other)] = stamp;
+            any = true;
+        }
+        let mut found: Option<(usize, i32)> = None;
+        if any {
+            for &cj in neg_clauses {
+                if self.clause_len(cj) != 2 {
+                    continue;
+                }
+                let a = self.clause_lit(cj, 0);
+                let b = self.clause_lit(cj, 1);
+                let other = if a == -l {
+                    b
+                } else if b == -l {
+                    a
+                } else {
+                    continue;
+                };
+                if other.unsigned_abs() as usize == var {
+                    continue;
+                }
+                if marks[lit_to_index(-other)] == stamp {
+                    found = Some((cj, other));
+                    break;
+                }
+            }
+        }
+        self.gate_marks = marks;
+        let (neg_gate_ci, r) = found?;
+        let mut pos_gate_ci = None;
+        for &ci in pos_clauses {
+            if self.clause_len(ci) != 2 {
+                continue;
+            }
+            let a = self.clause_lit(ci, 0);
+            let b = self.clause_lit(ci, 1);
+            let other = if a == l {
+                b
+            } else if b == l {
+                a
+            } else {
+                continue;
+            };
+            if other == -r {
+                pos_gate_ci = Some(ci);
+                break;
+            }
+        }
+        let pos_gate_ci = pos_gate_ci?;
+        Some(GatePartition {
+            gate_pos: vec![pos_gate_ci],
+            gate_neg: vec![neg_gate_ci],
+            nongate_pos: pos_clauses
+                .iter()
+                .copied()
+                .filter(|&c| c != pos_gate_ci)
+                .collect(),
+            nongate_neg: neg_clauses
+                .iter()
+                .copied()
+                .filter(|&c| c != neg_gate_ci)
+                .collect(),
+            kind: ElimGateKind::Equivalence,
+        })
+    }
+
+    /// Detect an if-then-else definition `var = ITE(c, t, e)` from its four exact
+    /// ternary Tseitin clauses (kissat ifthenelse.c, exact-shape case):
+    /// `(v ∨ ¬c ∨ ¬t)`, `(v ∨ c ∨ ¬e)` on the positive side and `(¬v ∨ ¬c ∨ t)`,
+    /// `(¬v ∨ c ∨ e)` on the negative side. All four gate-vs-gate resolvents on the
+    /// pivot are tautologies (each pair shares `c` in opposite polarity or resolves a
+    /// branch literal against itself), so restricting resolution to gate-vs-nongate
+    /// pairs is the standard substitution-by-definition argument. The four variables
+    /// `v, c, t, e` must be pairwise distinct (degenerate shapes are skipped —
+    /// conservative and sound).
+    fn detect_ite_gate(
+        &mut self,
+        var: usize,
+        pos_clauses: &[usize],
+        neg_clauses: &[usize],
+    ) -> Option<GatePartition> {
+        const ITE_MAX_TERNARIES: usize = 64;
+        const ITE_MAX_PAIRS: usize = 2048;
+        if !self.elim_gate_clauses_clean(pos_clauses, neg_clauses) {
+            return None;
+        }
+        let l = var as i32;
+        let collect_ternaries = |s: &Self, lit: i32, clauses: &[usize]| -> Option<Vec<(usize, [i32; 2])>> {
+            let mut out: Vec<(usize, [i32; 2])> = Vec::new();
+            for &ci in clauses {
+                if s.clause_len(ci) != 3 {
+                    continue;
+                }
+                let mut others = [0i32; 2];
+                let mut n = 0usize;
+                let mut has_lit = false;
+                for k in 0..3 {
+                    let cl = s.clause_lit(ci, k);
+                    if cl == lit {
+                        has_lit = true;
+                    } else if n < 2 {
+                        others[n] = cl;
+                        n += 1;
+                    }
+                }
+                if !has_lit || n != 2 {
+                    continue;
+                }
+                out.push((ci, others));
+                if out.len() > ITE_MAX_TERNARIES {
+                    return None;
+                }
+            }
+            Some(out)
+        };
+        let pos_tern = collect_ternaries(self, l, pos_clauses)?;
+        if pos_tern.len() < 2 {
+            return None;
+        }
+        let neg_tern_list = collect_ternaries(self, -l, neg_clauses)?;
+        if neg_tern_list.len() < 2 {
+            return None;
+        }
+        let sorted_pair = |a: i32, b: i32| if a <= b { (a, b) } else { (b, a) };
+        let mut neg_tern: HashMap<(i32, i32), usize> = HashMap::new();
+        for &(cj, o) in &neg_tern_list {
+            neg_tern.entry(sorted_pair(o[0], o[1])).or_insert(cj);
+        }
+        let vv = var as u32;
+        let mut pairs = 0usize;
+        for i in 0..pos_tern.len() {
+            for j in (i + 1)..pos_tern.len() {
+                pairs += 1;
+                if pairs > ITE_MAX_PAIRS {
+                    return None;
+                }
+                let (ci1, o1) = pos_tern[i];
+                let (ci2, o2) = pos_tern[j];
+                for a in 0..2 {
+                    for b in 0..2 {
+                        // Candidate roles: clause i = (v ∨ x1 ∨ nt) as (v ∨ ¬c ∨ ¬t),
+                        // clause j = (v ∨ x2 ∨ ne) as (v ∨ c ∨ ¬e), i.e. c = ¬x1 = x2.
+                        let x1 = o1[a];
+                        let nt = o1[1 - a];
+                        let x2 = o2[b];
+                        let ne = o2[1 - b];
+                        if x1 != -x2 {
+                            continue;
+                        }
+                        let cv = x1.unsigned_abs();
+                        let tv = nt.unsigned_abs();
+                        let ev = ne.unsigned_abs();
+                        if cv == tv || cv == ev || tv == ev || cv == vv || tv == vv || ev == vv {
+                            continue;
+                        }
+                        let Some(&c3) = neg_tern.get(&sorted_pair(x1, -nt)) else {
+                            continue;
+                        };
+                        let Some(&c4) = neg_tern.get(&sorted_pair(x2, -ne)) else {
+                            continue;
+                        };
+                        if c3 == c4 {
+                            continue;
+                        }
+                        let gate_pos = vec![ci1, ci2];
+                        let gate_neg = vec![c3, c4];
+                        let nongate_pos: Vec<usize> = pos_clauses
+                            .iter()
+                            .copied()
+                            .filter(|&c| c != ci1 && c != ci2)
+                            .collect();
+                        let nongate_neg: Vec<usize> = neg_clauses
+                            .iter()
+                            .copied()
+                            .filter(|&c| c != c3 && c != c4)
+                            .collect();
+                        return Some(GatePartition {
+                            gate_pos,
+                            gate_neg,
+                            nongate_pos,
+                            nongate_neg,
+                            kind: ElimGateKind::Ite,
+                        });
+                    }
+                }
+            }
         }
         None
     }
@@ -1790,10 +2051,25 @@ impl Solver {
         // pass the `resolvent_count <= occurrence_count + bve_grow` bound that naive all-pairs
         // BVE rejects. The acceptance bound and DRAT add/delete ordering below are unchanged;
         // the resolvents are still ordinary (RUP) resolvents of two live source clauses.
-        let gate = if self.gate_bve {
-            self.detect_and_or_gate(var, &pos_clauses, &neg_clauses)
-        } else {
-            None
+        // Extended detectors run only in ARMED mid-search rounds (`inprocess_aggressive`):
+        // root elimination stays byte-identical on every formula, so the blast radius is
+        // exactly the congruence-armed miter/BMC cells whose collapse flywheel needs the
+        // extra elimination yield. (Root-level extended gate BVE was measured a suite
+        // regression in the SAT_GATE_BVE provenance — do not widen this without a gate.)
+        let gates_ext = self.elim_gates_ext && self.inprocess_aggressive;
+        let gate = {
+            let mut g = None;
+            // Kissat gates.c detection order: equivalence → AND/OR → if-then-else.
+            if gates_ext {
+                g = self.detect_equivalence_gate(var, &pos_clauses, &neg_clauses);
+            }
+            if g.is_none() && (self.gate_bve || gates_ext) {
+                g = self.detect_and_or_gate(var, &pos_clauses, &neg_clauses);
+            }
+            if g.is_none() && gates_ext {
+                g = self.detect_ite_gate(var, &pos_clauses, &neg_clauses);
+            }
+            g
         };
 
         let mut resolvent_count = 0isize;
@@ -1839,6 +2115,11 @@ impl Solver {
                 return false;
             }
             self.stats.preprocess_gate_eliminated_vars += 1;
+            match g.kind {
+                ElimGateKind::AndOr => {}
+                ElimGateKind::Equivalence => self.stats.preprocess_eq_gate_eliminated_vars += 1,
+                ElimGateKind::Ite => self.stats.preprocess_ite_gate_eliminated_vars += 1,
+            }
         } else {
             for &pos_clause_idx in &pos_clauses {
                 for &neg_clause_idx in &neg_clauses {
@@ -2918,6 +3199,155 @@ mod tests {
                 "gate-eliminated model violates original clause {clause:?}"
             );
         }
+    }
+
+    #[test]
+    fn eq_gate_bve_eliminates_var_that_naive_bve_rejects() {
+        // x=1 ≡ a=2 via (1,-2),(-1,2), plus 3 pos and 3 neg extra binaries.
+        // Naive non-taut resolvents = 3 + 3 + 9 = 15 > occ(8); EQ-aware = 3 + 3 = 6 <= 8.
+        let clauses = vec![
+            vec![1, -2],
+            vec![-1, 2],
+            vec![1, 4],
+            vec![1, 5],
+            vec![1, 6],
+            vec![-1, 7],
+            vec![-1, 8],
+            vec![-1, 9],
+        ];
+        let run = |ext_on: bool| {
+            let config = SolverConfig {
+                full_bsr: false,
+                ..SolverConfig::default()
+            };
+            let mut s = Solver::new_with_config(9, clauses.clone(), &config);
+            s.elim_gates_ext = ext_on;
+            s.inprocess_aggressive = true;
+            for var in 2..=9 {
+                s.frozen[var] = true;
+            }
+            let sat = s.solve();
+            (s, sat)
+        };
+
+        let (s_off, sat_off) = run(false);
+        assert!(
+            !s_off.eliminated[1],
+            "naive BVE must reject x (15 resolvents > 8 occurrences)"
+        );
+        assert_eq!(s_off.stats.preprocess_eq_gate_eliminated_vars, 0);
+
+        let (s_on, sat_on) = run(true);
+        assert!(
+            s_on.eliminated[1],
+            "EQ-gate BVE must eliminate x (6 gate-restricted resolvents <= 8 occurrences)"
+        );
+        assert_eq!(s_on.stats.preprocess_eq_gate_eliminated_vars, 1);
+
+        assert!(sat_off && sat_on, "instance is satisfiable in both configs");
+        let model = s_on.sat_model.as_ref().expect("missing SAT model");
+        for clause in &clauses {
+            assert!(
+                clause.iter().any(|&lit| {
+                    let v = lit.unsigned_abs() as usize;
+                    (lit > 0 && model[v] == TRUE) || (lit < 0 && model[v] == FALSE)
+                }),
+                "EQ-eliminated model violates original clause {clause:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ite_gate_bve_eliminates_var_that_naive_bve_rejects() {
+        // x=1 = ITE(c=2, t=3, e=4): the four Tseitin ternaries, plus 2 pos and 2 neg
+        // extra binaries chosen to match no equivalence or AND/OR pattern.
+        // Naive non-taut resolvents = 4 + 4 + 4 = 12 > occ(8); ITE-aware = 4 + 4 = 8 <= 8.
+        let clauses = vec![
+            vec![1, -2, -3],
+            vec![1, 2, -4],
+            vec![-1, -2, 3],
+            vec![-1, 2, 4],
+            vec![1, 5],
+            vec![1, 6],
+            vec![-1, 7],
+            vec![-1, 8],
+        ];
+        let run = |ext_on: bool| {
+            let config = SolverConfig {
+                full_bsr: false,
+                ..SolverConfig::default()
+            };
+            let mut s = Solver::new_with_config(8, clauses.clone(), &config);
+            s.elim_gates_ext = ext_on;
+            s.inprocess_aggressive = true;
+            for var in 2..=8 {
+                s.frozen[var] = true;
+            }
+            let sat = s.solve();
+            (s, sat)
+        };
+
+        let (s_off, sat_off) = run(false);
+        assert!(
+            !s_off.eliminated[1],
+            "naive BVE must reject x (12 resolvents > 8 occurrences)"
+        );
+        assert_eq!(s_off.stats.preprocess_ite_gate_eliminated_vars, 0);
+
+        let (s_on, sat_on) = run(true);
+        assert!(
+            s_on.eliminated[1],
+            "ITE-gate BVE must eliminate x (8 gate-restricted resolvents <= 8 occurrences)"
+        );
+        assert_eq!(s_on.stats.preprocess_ite_gate_eliminated_vars, 1);
+
+        assert!(sat_off && sat_on, "instance is satisfiable in both configs");
+        let model = s_on.sat_model.as_ref().expect("missing SAT model");
+        for clause in &clauses {
+            assert!(
+                clause.iter().any(|&lit| {
+                    let v = lit.unsigned_abs() as usize;
+                    (lit > 0 && model[v] == TRUE) || (lit < 0 && model[v] == FALSE)
+                }),
+                "ITE-eliminated model violates original clause {clause:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn elim_gates_ext_preserves_unsat() {
+        // x=1 = ITE(c=2, t=3, e=4) plus x→¬t, x→¬e, ¬x→t, ¬x→e: in either branch of c
+        // the ITE forces x ≡ branch while the binaries force x ≠ branch. UNSAT.
+        // The extra binaries also form equivalence definitions (x ≡ ¬t), so this covers
+        // both new detectors' resolvent-restriction soundness on an UNSAT pivot.
+        let clauses = vec![
+            vec![1, -2, -3],
+            vec![1, 2, -4],
+            vec![-1, -2, 3],
+            vec![-1, 2, 4],
+            vec![-1, -3],
+            vec![-1, -4],
+            vec![1, 3],
+            vec![1, 4],
+        ];
+        let run = |ext_on: bool| {
+            let config = SolverConfig {
+                full_bsr: false,
+                ..SolverConfig::default()
+            };
+            let mut s = Solver::new_with_config(4, clauses.clone(), &config);
+            s.elim_gates_ext = ext_on;
+            s.inprocess_aggressive = true;
+            for var in 2..=4 {
+                s.frozen[var] = true;
+            }
+            s.solve()
+        };
+        assert!(!run(false), "baseline must report UNSAT");
+        assert!(
+            !run(true),
+            "extended gate BVE must preserve UNSAT (must not drop a load-bearing resolvent)"
+        );
     }
 
     #[test]

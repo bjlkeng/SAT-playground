@@ -264,11 +264,15 @@ const INPROCESS_AGGRESSIVE_FIRST_INTERVAL: u64 = 10_000;
 /// -25%) because it fires only on catastrophic multi-thousand-level jumps (453 fires
 /// on ibm vs 13k at delta=100). Applying delta=100 globally was measured-rejected
 /// (2026-06-20, derails fragile SAT cells oddball/bp4), hence the root-productivity
-/// gate. Promotion A/B log/abtest-cand-vs-base-2026-07-12-10-48-37: 62==62 solved,
-/// both-solved conflicts 53,454,576 vs 53,552,717 (the ibm delta exactly), PAR-2
-/// 155,681.7 vs 155,820.8, gate PASS; ibm-2004 is the only cell whose trajectory
-/// changes at this delta.
-const CHRONO_PRODUCTIVE_DELTA: usize = 1000;
+/// gate. delta=1000 was promoted at 689f080 (A/B 2026-07-12-10-48-37). Re-calibrated
+/// to 100 with the armed collapse bundle (worklist congruence + armed BVE bounds +
+/// extended gate BVE + armed vivify, 2026-07-13): the mid-search collapse (ibm-2004
+/// reaches 145k merges vs 20k) tames the delta=100 derailment that killed the
+/// original parity attempt — ibm-2004 SAT 133s/370k conflicts at bundle+100 vs
+/// 250s/981k at bundle+1000 vs 416s/292k baseline. Promotion A/B
+/// log/abtest-cand-vs-base-2026-07-13-20-23-49: 64==64 solved, both-solved conflicts
+/// 53,406,201 vs 53,455,304, PAR-2 149,169.6 vs 149,607.4, gate PASS.
+const CHRONO_PRODUCTIVE_DELTA: usize = 100;
 /// Root-BVE elimination yield (percent of declared variables) at or above which a
 /// formula arms the aggressive inprocessing cadence even without congruence merges
 /// (env override SAT_ELIM_PRODUCTIVE_MIN_PCT; 0 disables). Kissat's win mechanism on
@@ -1715,6 +1719,29 @@ struct Solver {
     /// strictly decreasing, so congruence→substitute→eliminate cascades compound
     /// within one visit instead of waiting a full search interval per layer.
     inprocess_armed_rounds: usize,
+    /// Armed vivification (SAT_VIVIFY_ARMED, default ON since the 2026-07-13
+    /// elim-gates-ext promotion; off = shipped pre-promotion schedule): on ARMED formulas
+    /// (`inprocess_aggressive`, congruence-productive gate circuits) vivify runs in
+    /// every inprocess round, bypassing the 6M-conflict learned-vivify delay gate.
+    /// The delay starves the armed cascade: VexRiscv reaches ~1M conflicts in the
+    /// whole 1800s budget, so the shipped gate means it NEVER vivifies, while
+    /// kissat vivifies 322k clauses there (every probe round) — vivification
+    /// strengthening is a feed of the congruence⇄eliminate collapse flywheel.
+    /// Non-armed formulas keep the shipped schedule byte-identical.
+    vivify_armed: bool,
+    /// Extended gate-aware BVE (SAT_ELIM_GATES_EXT, default ON since the 2026-07-13
+    /// promotion; off = AND/OR-only detection): in addition to
+    /// the AND/OR detector (SAT_GATE_BVE), elimination candidates are checked for
+    /// equivalence definitions (two exact binaries `(v ∨ ¬r)`, `(¬v ∨ r)`) and
+    /// if-then-else definitions (the four exact ternary Tseitin clauses of
+    /// `v = ITE(c, t, e)`), kissat gates.c order: equivalence → AND/OR → ITE.
+    /// Gate-defined pivots resolve only gate-vs-nongate pairs (substitution by
+    /// definition, Eén–Biere), so they pass the resolvent bound where all-pairs
+    /// BVE blows past it. VexRiscv-class BMC circuits are ITE-dominant (57% of
+    /// kissat's extracted gates there), and kissat eliminates 49% of vex's
+    /// variables mid-search while our AND/OR-only detector strands the ITE-defined
+    /// ones — this is the elimination-yield gap in the armed cascade.
+    elim_gates_ext: bool,
     /// Mid-search bounded variable addition on ARMED formulas (SAT_FACTOR_INPROCESS,
     /// default off): kissat runs factor at the END of every probe round (probe.c),
     /// re-compressing the clause database after congruence/elimination collapse it.
@@ -2785,12 +2812,12 @@ impl Solver {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(CONGRUENCE_MIN_APPLY_MERGES),
-            congruence_worklist: env_bool_or_default("SAT_CONGRUENCE_WORKLIST", false),
+            congruence_worklist: env_bool_or_default("SAT_CONGRUENCE_WORKLIST", true),
             congruence_armed_min_merges: std::env::var("SAT_CONGRUENCE_ARMED_MIN_MERGES")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
-            elim_armed_bounds: env_bool_or_default("SAT_ELIM_ARMED_BOUNDS", false),
+                .unwrap_or(32),
+            elim_armed_bounds: env_bool_or_default("SAT_ELIM_ARMED_BOUNDS", true),
             armed_bve_bound: 0,
             armed_elim_last_search_ticks: 0,
             armed_elim_effort_pct: std::env::var("SAT_ELIM_ARMED_EFFORT_PCT")
@@ -2803,6 +2830,8 @@ impl Solver {
                 .and_then(|s| s.parse().ok())
                 .filter(|&r: &usize| r > 0)
                 .unwrap_or(1),
+            vivify_armed: env_bool_or_default("SAT_VIVIFY_ARMED", true),
+            elim_gates_ext: env_bool_or_default("SAT_ELIM_GATES_EXT", true),
             factor_inprocess: env_bool_or_default("SAT_FACTOR_INPROCESS", false),
             inprocess_aggressive: false,
             inprocess_aggressive_interval: INPROCESS_AGGRESSIVE_FIRST_INTERVAL,
@@ -6954,6 +6983,12 @@ impl Solver {
         if !self.vivify {
             return false;
         }
+        // Armed formulas vivify every round (kissat probe.c parity): the 6M-conflict
+        // learned-vivify delay below would otherwise starve the collapse flywheel on
+        // low-conflict-rate BMC/miter cells (SAT_VIVIFY_ARMED, default off).
+        if self.vivify_armed && self.inprocess_aggressive {
+            return true;
+        }
         if self.learned_vivify_active_for_formula()
             && self.stats.conflicts < DEFAULT_LEARNED_VIVIFY_DELAY_CONFLICTS
         {
@@ -6966,6 +7001,21 @@ impl Solver {
         self.vivify_learned
             && (!self.vivify_learned_binary_gate
                 || self.formula_class.binary_fraction < LEARNED_VIVIFY_BINARY_DOMINATED_FRACTION)
+    }
+
+    /// Whether the current vivify round includes learned-clause candidates. On ARMED
+    /// formulas with SAT_VIVIFY_ARMED, learned candidates are included from the first
+    /// armed round (kissat vivifies redundant tiers every probe round — most of its
+    /// 322k vivifications on VexRiscv are learned-clause strengthenings; original
+    /// clauses on a preprocessed formula are already subsumption-clean and yield
+    /// ~nothing). Everywhere else this is exactly `learned_vivify_active_for_formula`
+    /// combined with the 6M-conflict delay applied by the round scheduler.
+    fn vivify_includes_learned_candidates(&self) -> bool {
+        if self.vivify_armed && self.inprocess_aggressive && self.vivify_learned {
+            return true;
+        }
+        self.learned_vivify_active_for_formula()
+            && self.stats.conflicts >= DEFAULT_LEARNED_VIVIFY_DELAY_CONFLICTS
     }
 
     fn should_skip_sweep_for_deep_phase(&self) -> bool {
@@ -7463,7 +7513,7 @@ impl Solver {
         // candidate set is byte-identical to the originals-only behaviour). One cursor
         // sweeps the combined space.
         let n_orig = self.original_clause_ids.len();
-        let n_learned = if self.learned_vivify_active_for_formula() {
+        let n_learned = if self.vivify_includes_learned_candidates() {
             self.learned_clause_ids.len()
         } else {
             0
@@ -14094,12 +14144,14 @@ mod tests {
     }
 
     #[test]
-    fn congruence_worklist_off_by_default() {
+    fn congruence_worklist_on_by_default() {
+        // Promoted 2026-07-13 with the armed collapse bundle
+        // (log/abtest-cand-vs-base-2026-07-13-20-23-49, gate PASS).
         let cfg = congruence_config();
         let s = make_solver_with_config(3, vec![vec![1, 2, 3]], &cfg);
         assert!(
-            !s.congruence_worklist,
-            "worklist closure must stay opt-in (SAT_CONGRUENCE_WORKLIST) until promoted"
+            s.congruence_worklist,
+            "worklist closure is default-on since the 2026-07-13 promotion"
         );
     }
 
