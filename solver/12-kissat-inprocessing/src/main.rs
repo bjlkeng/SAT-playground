@@ -1907,6 +1907,27 @@ struct Solver {
     /// cells (VexRiscv 400k vars, oski, Timetables 220-300k) never see it. Requires
     /// mid-search fresh-variable growth (`grow_variables`).
     factor_inprocess: bool,
+    /// Decision-heavy arming ratio (SAT_DECISION_ARM, default 24; 0 = off =>
+    /// byte-identical shipped baseline). Checked at the vivify-yield probe points
+    /// (200k conflicts, then 4x spacing) BEFORE the clone probe: a formula whose
+    /// cumulative decisions/conflict is at least this ratio and that is not
+    /// deep-phase arms the aggressive inprocess bundle PLUS mid-search factor and
+    /// the kissat rephase/walk schedule. Targets the Timetable class (dec/conf
+    /// 45-50 at the first probe; kissat solves TT406 in 32s via 4 mid-search
+    /// eliminations to 67% of vars + 15k factored vars + 13 rephases/walks, and
+    /// TIMES OUT itself with --rephase=0 or --eliminatebound=0). Every measured
+    /// solved/fragile cell sits at dec/conf <= 13.2 at its probe points (sudoku
+    /// 13.2, velev/reconf 8.1, oddball_80 7.5, 59-129706 6.7, mp1 5.8, Kakuro
+    /// 5.4, lockchart 4.1, case1 2.6, jkkk 2.2, 544707/case9/VanDerWaerden 1.3),
+    /// so 24 has ~2x margin on both sides. Verified standalone 2026-07-15:
+    /// TT406 SATISFIABLE ~305s with the armed collapse (factor 18.8k fresh vars,
+    /// 190k product clauses removed) + walk (3 walks, model on walk-improved
+    /// phases); the identical config minus rephase/walk churns 1.3M conflicts
+    /// with the same collapse and does NOT solve.
+    decision_arm_ratio: u64,
+    /// set when the decision-heavy rule armed this run (scopes rephase/walk and
+    /// mid-search factor; yield/congruence-armed formulas stay untouched)
+    decision_search_armed: bool,
     /// kissat-parity cadence for congruence-productive gate circuits: rounds start
     /// early and interleave congruence/vivify/sweep with mid-search elimination
     /// (see CONGRUENCE_PRODUCTIVE_MIN_MERGES). Off on all other formulas so their
@@ -3041,6 +3062,11 @@ impl Solver {
             vivify_yield_next_probe_conflicts: 0,
             elim_gates_ext: env_bool_or_default("SAT_ELIM_GATES_EXT", true),
             factor_inprocess: env_bool_or_default("SAT_FACTOR_INPROCESS", false),
+            decision_arm_ratio: std::env::var("SAT_DECISION_ARM")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(24),
+            decision_search_armed: false,
             inprocess_aggressive: false,
             inprocess_aggressive_interval: INPROCESS_AGGRESSIVE_FIRST_INTERVAL,
             chrono_productive_delta: std::env::var("SAT_CHRONO_PRODUCTIVE_DELTA")
@@ -6632,7 +6658,9 @@ impl Solver {
 
     fn rephase_due_on_stable_restart(&self) -> bool {
         self.rephase_enabled
-            && (!self.rephase_armed_only || self.yield_search_armed)
+            && (!self.rephase_armed_only
+                || self.yield_search_armed
+                || self.decision_search_armed)
             && !self.accounting_mode.is_temporary()
             && self.search_mode_policy == SearchModePolicy::FocusedStable
             && self.search_mode == SearchMode::Stable
@@ -7423,6 +7451,26 @@ impl Solver {
             self.vivify_yield_probe_conflicts
         };
         self.vivify_yield_next_probe_conflicts = due.saturating_mul(4);
+        // Decision-heavy arming (SAT_DECISION_ARM): evaluated BEFORE the clone
+        // probe and its candidate-count/binary-fast-path early returns — the
+        // signal is pure search telemetry (cumulative decisions/conflict) and
+        // needs no learned-candidate analysis. High-decision formulas are the
+        // OPPOSITE regime of the dense (dec/conf <= 3) yield rule below: SAT
+        // model search stuck in a huge weakly-constrained space, where kissat
+        // wins by collapsing the formula mid-search (eliminate+factor) and
+        // walking to a model (rephase/walk). Deep-phase formulas (sted2-class,
+        // best >= 950 permille) are excluded like every other formula-rewriting
+        // pass; arming replays the aggressive-inprocess cadence from this
+        // conflict point and additionally scopes-in mid-search factor and the
+        // rephase/walk schedule via `decision_search_armed`.
+        if self.decision_arm_ratio > 0
+            && self.stats.decisions
+                >= self.stats.conflicts.saturating_mul(self.decision_arm_ratio)
+            && !self.should_skip_sweep_for_deep_phase()
+        {
+            self.arm_decision_heavy_search();
+            return;
+        }
         if self.binary_fast_path {
             return;
         }
@@ -7576,6 +7624,42 @@ impl Solver {
                 self.target_assigned.saturating_mul(1000) / nvars,
                 self.should_skip_sweep_for_deep_phase(),
                 armed,
+            );
+        }
+    }
+
+    /// Arm the aggressive inprocess bundle for a decision-heavy (SAT-search-stuck)
+    /// formula: the standard armed cadence (early doubling interval, armed BVE with
+    /// bound escalation, armed vivify) plus — scoped by `decision_search_armed` —
+    /// mid-search factor and the kissat rephase/walk schedule. The rephase machinery
+    /// is activated here even when SAT_REPHASE is off (its config default): the
+    /// decision-heavy class is exactly where kissat's rephase/walk evidence is
+    /// load-bearing (TT406: kissat itself cannot solve it with --rephase=0), while
+    /// yield/congruence-armed formulas keep rephase off as shipped.
+    fn arm_decision_heavy_search(&mut self) {
+        self.inprocess_aggressive = true;
+        self.decision_search_armed = true;
+        self.inprocess_aggressive_interval = INPROCESS_AGGRESSIVE_FIRST_INTERVAL;
+        self.next_inprocess_conflicts = self
+            .stats
+            .conflicts
+            .saturating_add(INPROCESS_AGGRESSIVE_FIRST_INTERVAL);
+        if !self.rephase_enabled {
+            self.rephase_enabled = true;
+            self.rephase_at_conflicts = self
+                .stats
+                .conflicts
+                .saturating_add(self.rephase_conflicts.max(1));
+        }
+        if self.trace_preprocess_details {
+            let nvars = self.assignment.len().saturating_sub(1).max(1);
+            eprintln!(
+                "c decision_arm probe={} conflicts={} dec_per_conf={:.2} ratio={} best_permille={} armed=true",
+                self.vivify_yield_probes_done,
+                self.stats.conflicts,
+                self.stats.decisions as f64 / self.stats.conflicts.max(1) as f64,
+                self.decision_arm_ratio,
+                self.best_assigned.saturating_mul(1000) / nvars,
             );
         }
     }
@@ -7865,7 +7949,7 @@ impl Solver {
         // congruence/substitution/elimination collapsed variables. Armed formulas only,
         // same deep-phase guard as the other formula-rewriting passes.
         if ok
-            && self.factor_inprocess
+            && (self.factor_inprocess || self.decision_search_armed)
             && self.inprocess_aggressive
             && !self.should_skip_sweep_for_deep_phase()
         {
@@ -14448,6 +14532,71 @@ mod tests {
         s.vivify_yield_arm_permille = 500;
         s.inprocess_aggressive = true;
         assert!(!s.should_vivify_yield_probe());
+    }
+
+    #[test]
+    fn decision_arm_arms_on_high_decision_ratio_from_first_probe() {
+        // Zero-yield candidates (the yield rule can never arm) but a decision-heavy
+        // history: the SAT_DECISION_ARM rule arms on the FIRST probe, scopes in
+        // rephase/walk, and skips the clone probe entirely.
+        let mut s = vivify_yield_probe_solver(false);
+        assert_eq!(s.decision_arm_ratio, 24, "shipped default");
+        assert!(!s.rephase_enabled, "rephase is off by config default");
+        s.stats.decisions = s.stats.conflicts * 24;
+        assert!(s.should_vivify_yield_probe());
+        s.vivify_yield_probe();
+        assert!(s.inprocess_aggressive, "decision-heavy formula must arm");
+        assert!(s.decision_search_armed);
+        assert!(!s.yield_search_armed, "the yield flag stays untouched");
+        assert_eq!(
+            s.next_inprocess_conflicts,
+            200_000 + INPROCESS_AGGRESSIVE_FIRST_INTERVAL
+        );
+        assert!(s.rephase_enabled, "decision arming activates the rephase machinery");
+        assert!(
+            s.rephase_at_conflicts >= 200_000 && s.rephase_at_conflicts != u64::MAX,
+            "rephase must be scheduled from the arming point"
+        );
+        assert!(
+            s.rephase_due_on_stable_restart() || s.stats.conflicts < s.rephase_at_conflicts,
+            "decision_search_armed passes the armed-only rephase gate"
+        );
+        s.validate_watch_invariants();
+    }
+
+    #[test]
+    fn decision_arm_below_ratio_and_off_switch_stay_inert() {
+        // Below the ratio: the probe falls through to the normal (zero-yield) clone
+        // path and nothing arms.
+        let mut s = vivify_yield_probe_solver(false);
+        s.stats.decisions = s.stats.conflicts * 23;
+        s.vivify_yield_probe();
+        assert!(!s.inprocess_aggressive);
+        assert!(!s.decision_search_armed);
+        assert!(!s.rephase_enabled);
+
+        // Off switch: SAT_DECISION_ARM=0 disables the rule even far over ratio.
+        let mut s = vivify_yield_probe_solver(false);
+        s.decision_arm_ratio = 0;
+        s.stats.decisions = s.stats.conflicts * 100;
+        s.vivify_yield_probe();
+        assert!(!s.inprocess_aggressive);
+        assert!(!s.decision_search_armed);
+    }
+
+    #[test]
+    fn decision_arm_respects_deep_phase_guard() {
+        // sted2-class protection: a near-complete best-phase prefix blocks the
+        // decision rule exactly like every other formula-rewriting pass.
+        let mut s = vivify_yield_probe_solver(false);
+        s.stats.decisions = s.stats.conflicts * 50;
+        let nvars = s.assignment.len() - 1;
+        s.best_assigned = nvars;
+        s.target_assigned = nvars;
+        s.vivify_yield_probe();
+        assert!(!s.inprocess_aggressive, "deep-phase formulas must not arm");
+        assert!(!s.decision_search_armed);
+        assert!(!s.rephase_enabled);
     }
 
     #[test]
