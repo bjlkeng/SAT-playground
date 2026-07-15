@@ -16,6 +16,7 @@ const DEFAULT_CHRONO_MAX_DELTA: usize = 5_000;
 const DEFAULT_MODE_INIT_CONFLICTS: u64 = 3000;
 const DEFAULT_MODE_INTERVAL_SCALE: f64 = 1.5;
 const DEFAULT_REPHASE_INIT_CONFLICTS: u64 = 1000;
+const DEFAULT_WALK_EFFORT_PERMILLE: u64 = 50;
 const DEFAULT_REORDER_INTERVAL_CONFLICTS: u64 = 10_000;
 const DEFAULT_RESTART_BLOCK_MARGIN: f64 = 0.0;
 const DEFAULT_RESTART_SLOW_WINDOW: u64 = 4_096;
@@ -263,6 +264,12 @@ impl ProfileAxes {
 pub(crate) enum ProofPolicy {
     Off,
     Drat,
+    /// Binary DRAT (drat-trim `-i` wire format, auto-detected by drat-trim):
+    /// 'a'/'d' tag byte, 7-bit varint literals (2*var+sign), 0x00 terminator.
+    /// Semantically identical proof stream at ~2.5-3x fewer bytes and no ASCII
+    /// formatting cost — pure proof-I/O wall savings on the multi-GB UNSAT
+    /// cells (oski20 writes 7.3GB of text DRAT inside a ~1500s solve).
+    DratBinary,
     Lrat,
 }
 
@@ -271,6 +278,7 @@ impl ProofPolicy {
         match self {
             Self::Off => "off",
             Self::Drat => "drat",
+            Self::DratBinary => "drat-binary",
             Self::Lrat => "lrat",
         }
     }
@@ -279,9 +287,10 @@ impl ProofPolicy {
         match value.trim().to_ascii_lowercase().as_str() {
             "1" | "true" | "yes" | "on" | "enabled" | "drat" => Self::Drat,
             "0" | "false" | "no" | "off" | "disabled" => Self::Off,
+            "binary" | "drat-binary" | "bindrat" => Self::DratBinary,
             "lrat" => Self::Lrat,
             other => fail_config(&format!(
-                "Invalid {env_name}={other}; expected off/drat/lrat"
+                "Invalid {env_name}={other}; expected off/drat/drat-binary/lrat"
             )),
         }
     }
@@ -604,6 +613,20 @@ pub(crate) struct SolverConfig {
     pub(crate) watch_compact_enabled: bool,
     pub(crate) vmtf: VmtfMode,
     pub(crate) rephase: bool,
+    /// Restrict the rephase/walk cycle to vivify-yield-armed formulas (the
+    /// conflict-dense refutation signature: probe yield + decisions/conflict
+    /// <= 3 + !deep_phase). The 2026-07-05 global-rephase A/B lost 10 solved
+    /// cells, and the 2026-07-14 screen showed the congruence-armed SAT canary
+    /// ibm-2004 regressing +46% conflicts under rephasing — the yield-armed
+    /// class is where kissat's rephase/walk evidence lives (49-65 rephases,
+    /// 16-22 walks per density cell) and has no SAT trajectory to lose.
+    pub(crate) rephase_armed_only: bool,
+    /// Enable the ProbSAT walk slots of the kissat rephase schedule
+    /// (best, walk, inverted, best, walk, original).
+    pub(crate) walk: bool,
+    /// Walk effort in permille of search ticks since the last walk
+    /// (kissat `walkeffort`, default 50).
+    pub(crate) walk_effort_permille: u64,
     pub(crate) reorder: bool,
     pub(crate) minimize_depth_limit: u32,
     pub(crate) chrono_max_delta: usize,
@@ -677,7 +700,14 @@ impl Default for SolverConfig {
             schema_version: CONFIG_SCHEMA_VERSION,
             profile: SolverProfile::Default,
             axes: ProfileAxes::for_profile(SolverProfile::Default),
-            proof_policy: ProofPolicy::Drat,
+            // Binary DRAT default since the 2026-07-15 promotion
+            // (log/abtest-bindrat-vs-base-2026-07-15-01-07-48, gate PASS/WIN:
+            // solved 66==66 with identical both-solved conflicts, PAR-2
+            // 146409.6 vs 146492.7; sted2_0x1e3-216 solved 1746s in the binary
+            // arm only). Trajectory-neutral: proof bytes never feed back into
+            // search; drat-trim auto-detects the format (64 verify=ok in-gate).
+            // Off-switch: SAT_PROOF=drat restores ASCII DRAT.
+            proof_policy: ProofPolicy::DratBinary,
             feature_statuses: Vec::new(),
             config_dump: false,
             config_out: None,
@@ -738,6 +768,9 @@ impl Default for SolverConfig {
             watch_compact_enabled: false,
             vmtf: VmtfMode::Off,
             rephase: false,
+            rephase_armed_only: true,
+            walk: true,
+            walk_effort_permille: DEFAULT_WALK_EFFORT_PERMILLE,
             reorder: false,
             minimize_depth_limit: DEFAULT_MINIMIZE_DEPTH_LIMIT,
             chrono_max_delta: DEFAULT_CHRONO_MAX_DELTA,
@@ -1324,6 +1357,19 @@ impl SolverConfig {
         let vmtf_explicit = get_selected(env_map, &key_set, "SAT_VMTF").is_some();
         self.vmtf = parse_enum_selected(env_map, &key_set, "SAT_VMTF", self.vmtf, VmtfMode::parse);
         self.rephase = parse_bool_selected(env_map, &key_set, "SAT_REPHASE", self.rephase);
+        self.rephase_armed_only = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_REPHASE_ARMED_ONLY",
+            self.rephase_armed_only,
+        );
+        self.walk = parse_bool_selected(env_map, &key_set, "SAT_WALK", self.walk);
+        self.walk_effort_permille = parse_u64_selected(
+            env_map,
+            &key_set,
+            "SAT_WALK_EFFORT",
+            self.walk_effort_permille,
+        );
         self.reorder = parse_bool_selected(env_map, &key_set, "SAT_REORDER", self.reorder);
         self.minimize_depth_limit = parse_u32_selected(
             env_map,
@@ -1902,6 +1948,13 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "watch_compact_enabled", self.watch_compact_enabled);
         push_kv(&mut lines, "vmtf", self.vmtf.as_str());
         push_kv_bool(&mut lines, "rephase", self.rephase);
+        push_kv_bool(&mut lines, "rephase_armed_only", self.rephase_armed_only);
+        push_kv_bool(&mut lines, "walk", self.walk);
+        push_kv(
+            &mut lines,
+            "walk_effort_permille",
+            self.walk_effort_permille.to_string(),
+        );
         push_kv_bool(&mut lines, "reorder", self.reorder);
         push_kv(
             &mut lines,
@@ -2701,6 +2754,9 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "watch_compact_enabled" => Some("SAT_WATCH_COMPACT"),
         "vmtf" => Some("SAT_VMTF"),
         "rephase" => Some("SAT_REPHASE"),
+        "rephase_armed_only" => Some("SAT_REPHASE_ARMED_ONLY"),
+        "walk" => Some("SAT_WALK"),
+        "walk_effort_permille" => Some("SAT_WALK_EFFORT"),
         "reorder" => Some("SAT_REORDER"),
         "minimize_depth_limit" => Some("SAT_MINIMIZE_DEPTH_LIMIT"),
         "chrono_max_delta" => Some("SAT_CHRONO_MAX_DELTA"),
@@ -2903,6 +2959,9 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_WATCH_COMPACT",
         "SAT_VMTF",
         "SAT_REPHASE",
+        "SAT_REPHASE_ARMED_ONLY",
+        "SAT_WALK",
+        "SAT_WALK_EFFORT",
         "SAT_REORDER",
         "SAT_MINIMIZE_DEPTH_LIMIT",
         "SAT_CHRONO_MAX_DELTA",
@@ -3438,7 +3497,7 @@ mod tests {
         assert!(config.factor);
         assert_eq!(config.vmtf, VmtfMode::FocusedOnly);
         assert!(config.lucky);
-        assert_eq!(config.proof_policy, ProofPolicy::Drat);
+        assert_eq!(config.proof_policy, ProofPolicy::DratBinary);
         assert_eq!(
             config.initial_clause_mode,
             InitialClauseMode::CanonicalSorted

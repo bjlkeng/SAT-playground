@@ -26,6 +26,7 @@ mod pair_abs;
 mod simp;
 mod sweep;
 mod stats;
+mod walk;
 
 #[cfg(test)]
 #[path = "tests/mod.rs"]
@@ -1108,6 +1109,9 @@ struct ProofStream {
     capacity: usize,
     trace: bool,
     canonicalize_clauses: bool,
+    /// Emit the drat-trim binary wire format instead of ASCII DRAT
+    /// (SAT_PROOF=binary): 'a'/'d' tag, varint literals, 0x00 terminator.
+    binary: bool,
     clause_count: u64,
     literal_count: u64,
     deletion_count: u64,
@@ -1152,6 +1156,21 @@ fn append_i32_ascii(buffer: &mut Vec<u8>, value: i32) {
     append_u32_ascii(buffer, value.unsigned_abs());
 }
 
+/// drat-trim binary literal encoding: map `lit` to `2*|lit| + (lit<0)`, then
+/// emit as a little-endian 7-bit varint with the high bit as continuation.
+fn append_lit_binary_drat(buffer: &mut Vec<u8>, lit: i32) {
+    let mut mapped: u32 = lit.unsigned_abs() * 2 + u32::from(lit < 0);
+    loop {
+        let byte = (mapped & 0x7f) as u8;
+        mapped >>= 7;
+        if mapped == 0 {
+            buffer.push(byte);
+            break;
+        }
+        buffer.push(byte | 0x80);
+    }
+}
+
 impl ProofLog {
     fn disabled() -> Self {
         Self {
@@ -1164,7 +1183,11 @@ impl ProofLog {
     }
 
     fn new<P: AsRef<Path>>(output_dir: P, capacity: usize, trace: bool) -> Self {
-        Self::new_with_clause_canonicalization(output_dir, capacity, trace, false)
+        Self::new_full(output_dir, capacity, trace, false, false)
+    }
+
+    fn new_binary<P: AsRef<Path>>(output_dir: P, capacity: usize, trace: bool) -> Self {
+        Self::new_full(output_dir, capacity, trace, false, true)
     }
 
     fn new_with_clause_canonicalization<P: AsRef<Path>>(
@@ -1172,6 +1195,16 @@ impl ProofLog {
         capacity: usize,
         trace: bool,
         canonicalize_clauses: bool,
+    ) -> Self {
+        Self::new_full(output_dir, capacity, trace, canonicalize_clauses, false)
+    }
+
+    fn new_full<P: AsRef<Path>>(
+        output_dir: P,
+        capacity: usize,
+        trace: bool,
+        canonicalize_clauses: bool,
+        binary: bool,
     ) -> Self {
         let output_dir = output_dir.as_ref();
         fs::create_dir_all(output_dir).unwrap_or_else(|e| {
@@ -1196,6 +1229,7 @@ impl ProofLog {
                 capacity,
                 trace,
                 canonicalize_clauses,
+                binary,
                 clause_count: 0,
                 literal_count: 0,
                 deletion_count: 0,
@@ -1254,6 +1288,35 @@ impl ProofLog {
     }
 
     fn write_clause_line(stream: &mut ProofStream, prefix: &[u8], clause: &[i32]) {
+        if stream.binary {
+            // drat-trim binary wire format: tag byte ('a' addition / 'd'
+            // deletion), varint-encoded literals, 0x00 terminator.
+            stream.buffer.reserve(clause.len() * 5 + 2);
+            stream
+                .buffer
+                .push(if prefix.is_empty() { b'a' } else { b'd' });
+            if stream.canonicalize_clauses {
+                stream.scratch.clear();
+                stream.scratch.extend_from_slice(clause);
+                stream.scratch.sort_unstable_by(|&lhs, &rhs| {
+                    lhs.unsigned_abs()
+                        .cmp(&rhs.unsigned_abs())
+                        .then_with(|| lhs.cmp(&rhs))
+                });
+                for &lit in &stream.scratch {
+                    append_lit_binary_drat(&mut stream.buffer, lit);
+                }
+            } else {
+                for &lit in clause {
+                    append_lit_binary_drat(&mut stream.buffer, lit);
+                }
+            }
+            stream.buffer.push(0);
+            if stream.buffer.len() >= stream.capacity {
+                Self::flush_stream(stream);
+            }
+            return;
+        }
         stream.buffer.reserve(prefix.len() + clause.len() * 12 + 2);
         stream.buffer.extend_from_slice(prefix);
         if stream.canonicalize_clauses {
@@ -1323,9 +1386,10 @@ impl ProofLog {
             }
             ProofMode::Stream(mut stream) => {
                 stream.clause_count += 1;
+                let empty_clause: &[u8] = if stream.binary { &[b'a', 0] } else { b"0\n" };
                 stream
                     .buffer
-                    .write_all(b"0\n")
+                    .write_all(empty_clause)
                     .expect("Failed to buffer empty proof clause");
                 Self::flush_stream(&mut stream);
                 stream.file.flush().expect("Failed to flush proof file");
@@ -1506,12 +1570,25 @@ struct Solver {
     stable_target_reset: bool,
     /// opt-in stable-mode rephase hook for focused/stable search experiments
     rephase_enabled: bool,
-    /// current step in the default best -> inverted -> original rephase cycle
+    /// current step in the kissat rephase schedule (best, walk, inverted, best,
+    /// walk, original — rephase.c `rephase_schedule`)
     rephase_index: u8,
     /// global conflict count at which the next stable-mode restart may rephase
     rephase_at_conflicts: u64,
-    /// conflict interval between scheduled rephase opportunities
+    /// base conflict interval between rephases (kissat `rephaseint`); the
+    /// effective interval grows as base * n*log10(n+9)^3 (kissat NLOG3N)
     rephase_conflicts: u64,
+    /// restrict rephasing (and its walks) to armed (`inprocess_aggressive`)
+    /// formulas (SAT_REPHASE_ARMED_ONLY); the 2026-07-05 global-rephase A/B
+    /// lost 10 solved cells, so the default scope is the armed class only
+    rephase_armed_only: bool,
+    /// enable the local-search walk slots of the rephase schedule (SAT_WALK)
+    walk_enabled: bool,
+    /// walk effort budget in permille of search ticks since the last walk
+    /// (kissat `walkeffort`, default 50)
+    walk_effort_permille: u64,
+    /// search-tick snapshot at the last walk (effort reference)
+    walk_last_search_ticks: u64,
     /// decision level of each variable assignment
     decision_level: Vec<u32>,
     /// encoded reason for each implied assignment; NONE for decisions/root-unassigned vars
@@ -1618,6 +1695,15 @@ struct Solver {
     /// signal (as opposed to elimination yield); scopes armed restart knobs to
     /// deep-trail BMC/miter cells.
     congruence_search_armed: bool,
+    /// Set when an arming path (congruence-productive or vivify-yield) lowered
+    /// the focused restart interval floor to `restart_armed_floor`.
+    restart_floor_armed: bool,
+    /// Set when the vivify-yield probe armed the formula: the conflict-dense
+    /// refutation signature (yield + decisions/conflict <= 3 + !deep_phase).
+    /// Scopes the rephase/walk cycle — congruence-armed SAT-capable cells like
+    /// ibm-2004 measurably regress under rephasing (+46% conflicts, 2026-07-14
+    /// screen) while this class has no SAT trajectory to lose.
+    yield_search_armed: bool,
     /// conflicts since the last EMA restart
     restart_conflicts_since_last: u64,
     /// current high-level search mode for focused/stable experiments
@@ -1754,6 +1840,19 @@ struct Solver {
     /// budget the 2026-07-14 gate flipped VexRiscv and oski15a01b40s (both
     /// kissat-only cells before) and medium moved 64 -> 67.
     vivify_ale: bool,
+    /// Kissat vivify.c `vivify_deduce` parity (SAT_VIVIFY_DEDUCE, default off):
+    /// on a conflicting assumption walk, analyze the reason cone and strengthen
+    /// the candidate to the subset of assumed literals actually needed for the
+    /// conflict (instead of the full assumed prefix), and on an implied-TRUE
+    /// walk strengthen to {implied} plus the cone's needed assumptions (instead
+    /// of no edit). This is the kissat hit-rate mechanism: 54% of its vivify
+    /// checks strengthen on the density cells vs our 18% with prefix-shrink.
+    /// Armed-scoped like ALE (non-armed trajectories stay byte-identical).
+    vivify_deduce: bool,
+    /// stamp buffer for the vivify-deduce reason-cone walk (by variable)
+    vivify_seen: Vec<u32>,
+    /// current stamp value for `vivify_seen`
+    vivify_seen_stamp: u32,
     /// Kissat-parity literal ordering inside vivify candidates (SAT_VIVIFY_SORT,
     /// default off): assume the literals most frequent across this round's
     /// candidates first, raising the implied-TRUE/FALSE density per attempt.
@@ -2766,6 +2865,10 @@ impl Solver {
             rephase_index: 0,
             rephase_at_conflicts,
             rephase_conflicts,
+            rephase_armed_only: config.rephase_armed_only,
+            walk_enabled: config.walk,
+            walk_effort_permille: config.walk_effort_permille,
+            walk_last_search_ticks: 0,
             decision_level: vec![0; num_vars + 1],
             reason: vec![NO_REASON; num_vars + 1],
             binary_reason_lits: Vec::new(),
@@ -2833,6 +2936,8 @@ impl Solver {
                 .unwrap_or(0.0),
             restart_armed_reuse_trail: env_bool_or_default("SAT_RESTART_REUSE_TRAIL_ARMED", false),
             congruence_search_armed: false,
+            restart_floor_armed: false,
+            yield_search_armed: false,
             restart_conflicts_since_last: 0,
             search_mode,
             search_mode_policy,
@@ -2901,6 +3006,9 @@ impl Solver {
                 .unwrap_or(1),
             vivify_armed: env_bool_or_default("SAT_VIVIFY_ARMED", true),
             vivify_ale: env_bool_or_default("SAT_VIVIFY_ALE", true),
+            vivify_deduce: env_bool_or_default("SAT_VIVIFY_DEDUCE", false),
+            vivify_seen: Vec::new(),
+            vivify_seen_stamp: 0,
             vivify_sort: env_bool_or_default("SAT_VIVIFY_SORT", false),
             vivify_armed_ticks: std::env::var("SAT_VIVIFY_ARMED_TICKS")
                 .ok()
@@ -6074,7 +6182,7 @@ impl Solver {
     }
 
     fn focused_restart_interval(&self) -> u64 {
-        let floor = if self.congruence_search_armed && self.restart_armed_floor > 0 {
+        let floor = if self.restart_floor_armed && self.restart_armed_floor > 0 {
             self.restart_armed_floor
         } else {
             KISSAT_EMA_RESTART_MIN_CONFLICTS
@@ -6524,6 +6632,7 @@ impl Solver {
 
     fn rephase_due_on_stable_restart(&self) -> bool {
         self.rephase_enabled
+            && (!self.rephase_armed_only || self.yield_search_armed)
             && !self.accounting_mode.is_temporary()
             && self.search_mode_policy == SearchModePolicy::FocusedStable
             && self.search_mode == SearchMode::Stable
@@ -6551,13 +6660,13 @@ impl Solver {
         if self.saved_phase.is_empty() {
             return;
         }
+        // Kissat rephase.c rephase_best: only variables with a captured best
+        // phase are overwritten; the rest keep their saved phase.
         for var in 1..self.saved_phase.len() {
             let best = self.best_phase.get(var).copied().unwrap_or(UNASSIGNED);
-            self.saved_phase[var] = if best == UNASSIGNED {
-                self.initial_phase(var)
-            } else {
-                best
-            };
+            if best != UNASSIGNED {
+                self.saved_phase[var] = best;
+            }
         }
     }
 
@@ -6580,26 +6689,172 @@ impl Solver {
         }
     }
 
+    /// kissat NLOG3N scaling: `count * log10(count + 9)^3`, used for the growing
+    /// rephase interval (kimits.h UPDATE_CONFLICT_LIMIT with NLOG3N).
+    fn kissat_nlog3n(count: u64) -> f64 {
+        Self::nlogpown(count.max(1), 3).max(1.0)
+    }
+
     fn apply_rephase(&mut self) {
-        match self.rephase_index % 3 {
-            0 => self.rephase_to_best(),
-            1 => self.rephase_to_inverted(),
-            2 => self.rephase_to_original(),
+        // Kissat rephase.c schedule: best, walking, inverted, best, walking,
+        // original. The walk slots degrade to phase-preserving no-ops when the
+        // walker is disabled or infeasible (kissat_walk early-returns likewise).
+        let slot = self.rephase_index % 6;
+        match slot {
+            0 | 3 => self.rephase_to_best(),
+            1 | 4 => self.rephase_walk(),
+            2 => self.rephase_to_inverted(),
+            5 => self.rephase_to_original(),
             _ => unreachable!(),
         }
         self.reset_target_phase();
-        self.rephase_index = (self.rephase_index + 1) % 3;
-        self.rephase_at_conflicts = self
-            .stats
-            .conflicts
-            .saturating_add(self.rephase_conflicts.max(1));
-        self.phase_ticks = self.phase_ticks.saturating_add(1);
+        if slot == 0 || slot == 3 {
+            // Kissat resets the best trail height only on 'B' rephases so the
+            // next stable phase recaptures a fresh best prefix.
+            self.best_assigned = 0;
+        }
+        self.rephase_index = (self.rephase_index + 1) % 6;
         self.stats.rephases = self.stats.rephases.saturating_add(1);
+        let delta = (self.rephase_conflicts.max(1) as f64
+            * Self::kissat_nlog3n(self.stats.rephases.max(1))) as u64;
+        self.rephase_at_conflicts = self.stats.conflicts.saturating_add(delta.max(1));
+        self.phase_ticks = self.phase_ticks.saturating_add(1);
     }
 
-    fn maybe_rephase_on_stable_restart(&mut self) {
-        if self.rephase_due_on_stable_restart() {
-            self.apply_rephase();
+    /// Phase value the decision heuristic would pick for `var` right now
+    /// (target -> saved -> initial under the default stable policy), without
+    /// touching the phase-usage stats. Used to seed the walker (kissat
+    /// import_decision_phases / kissat_decide_phase).
+    fn walk_decide_phase_value(&self, var: usize) -> u8 {
+        let target = self.target_phase.get(var).copied().unwrap_or(UNASSIGNED);
+        if target != UNASSIGNED {
+            return target;
+        }
+        let saved = self.saved_phase.get(var).copied().unwrap_or(UNASSIGNED);
+        if saved != UNASSIGNED {
+            return saved;
+        }
+        self.initial_phase(var)
+    }
+
+    /// The 'W' slot of the rephase schedule: run one effort-bounded ProbSAT
+    /// walk over the live irredundant clauses and, when it finds an assignment
+    /// with fewer unsatisfied clauses than the current decision phases, export
+    /// it into the saved phases (kissat walk.c save_final_minimum +
+    /// export_best_values). Never touches the clause database or the proof.
+    fn rephase_walk(&mut self) {
+        // Walk needs the root assignment as its frame of reference; rephasing
+        // is scheduled after a full restart backtrack, but direct callers
+        // (tests) may sit at a higher level — degrade to a no-op there.
+        if !self.walk_enabled || self.current_level() != 0 || self.has_empty_clause {
+            return;
+        }
+        const WALK_MIN_EFFORT_TICKS: u64 = 10_000_000;
+        // Cap the walkable-formula size: the walker allocates ~8 bytes per
+        // literal occurrence (flattened lits + occurrence CSR), and the
+        // phase-reset mechanism targets the small conflict-dense refutation
+        // formulas (booth/Bubble/fixedbandwidth class), not the multi-GB BMC
+        // giants whose gap is congruence/elimination, so 20M literals bounds
+        // the transient at ~160MB and keeps vex-class cells walk-free.
+        const WALK_MAX_TOTAL_LITS: usize = 20_000_000;
+
+        let num_vars = self.assignment.len().saturating_sub(1);
+        if num_vars == 0 {
+            return;
+        }
+
+        // Collect the walkable clauses: live originals, minus root-satisfied
+        // clauses and root-assigned literals.
+        let mut clause_lits: Vec<i32> = Vec::new();
+        let mut clause_ends: Vec<u32> = Vec::new();
+        for &cid in &self.original_clause_ids {
+            let cid = cid as usize;
+            if self.clause_is_deleted(cid) {
+                continue;
+            }
+            let start = clause_lits.len();
+            let mut satisfied = false;
+            for &lit in self.clause_slice(cid) {
+                let var = lit.unsigned_abs() as usize;
+                match self.assignment.get(var).copied().unwrap_or(UNASSIGNED) {
+                    UNASSIGNED => clause_lits.push(lit),
+                    value => {
+                        if (value == TRUE) == (lit > 0) {
+                            satisfied = true;
+                            break;
+                        }
+                        // Root-false literal: drop it from the walker's view.
+                    }
+                }
+            }
+            if satisfied {
+                clause_lits.truncate(start);
+                continue;
+            }
+            debug_assert!(
+                clause_lits.len() >= start + 2,
+                "unit/empty clause survived root propagation"
+            );
+            clause_ends.push(clause_lits.len() as u32);
+            if clause_lits.len() > WALK_MAX_TOTAL_LITS {
+                // Formula too large to walk within reasonable memory; skip.
+                return;
+            }
+        }
+        if clause_ends.is_empty() {
+            return;
+        }
+
+        // Initial assignment: the phases the decision heuristic would use.
+        let mut initial = vec![walk::WALK_UNSET; num_vars + 1];
+        for var in 1..=num_vars {
+            if self.assignment[var] == UNASSIGNED {
+                initial[var] = if self.walk_decide_phase_value(var) == TRUE {
+                    walk::WALK_TRUE
+                } else {
+                    walk::WALK_FALSE
+                };
+            }
+        }
+
+        // Effort limit: kissat walkeffort (permille) of the search ticks since
+        // the last walk, floored at mineffort (10M).
+        let since = self
+            .stats
+            .search_ticks
+            .saturating_sub(self.walk_last_search_ticks)
+            .max(WALK_MIN_EFFORT_TICKS);
+        let step_limit = since.saturating_mul(self.walk_effort_permille) / 1000;
+        self.walk_last_search_ticks = self.stats.search_ticks;
+
+        self.stats.walks = self.stats.walks.saturating_add(1);
+        let fitted_cb = self.stats.walks & 1 == 1;
+        let seed = 0x9e37_79b9_7f4a_7c15u64 ^ self.stats.walks;
+
+        let result = walk::walk(
+            num_vars,
+            &clause_lits,
+            &clause_ends,
+            &initial,
+            seed,
+            step_limit,
+            fitted_cb,
+        );
+
+        self.stats.walk_steps = self.stats.walk_steps.saturating_add(result.steps);
+        self.stats.walk_flips = self.stats.walk_flips.saturating_add(result.flips);
+        if result.improved {
+            self.stats.walk_improved = self.stats.walk_improved.saturating_add(1);
+            for var in 1..=num_vars {
+                if self.assignment[var] != UNASSIGNED {
+                    continue;
+                }
+                match result.best_values[var] {
+                    walk::WALK_TRUE => self.saved_phase[var] = TRUE,
+                    walk::WALK_FALSE => self.saved_phase[var] = FALSE,
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -6846,7 +7101,15 @@ impl Solver {
             return false;
         }
 
-        let backtrack_level = self.restart_reuse_trail_level();
+        // Kissat rephases at decision level 0 (rephase.c backtracks and flushes
+        // first) — the walk slots need the root assignment. When a rephase is
+        // due, force a full restart instead of a trail-reusing one.
+        let rephase_due = self.rephase_due_on_stable_restart();
+        let backtrack_level = if rephase_due {
+            0
+        } else {
+            self.restart_reuse_trail_level()
+        };
         if self.accounting_mode.update_restart_stats() {
             self.stats.restarts += 1;
             if backtrack_level > 0 {
@@ -6875,8 +7138,10 @@ impl Solver {
                 }
             }
         }
-        self.maybe_rephase_on_stable_restart();
         self.backtrack(backtrack_level);
+        if rephase_due {
+            self.apply_rephase();
+        }
         true
     }
 
@@ -7275,11 +7540,26 @@ impl Solver {
                 >= attempts.saturating_mul(self.vivify_yield_arm_permille);
         if armed {
             self.inprocess_aggressive = true;
+            self.yield_search_armed = true;
             self.inprocess_aggressive_interval = INPROCESS_AGGRESSIVE_FIRST_INTERVAL;
             self.next_inprocess_conflicts = self
                 .stats
                 .conflicts
                 .saturating_add(INPROCESS_AGGRESSIVE_FIRST_INTERVAL);
+            // The armed restart-cadence knobs (default 0/off, so this is inert
+            // unless explicitly enabled) also apply to the yield-armed class:
+            // the composite arming rule already selects the refutation-churn
+            // signature (decisions/conflict <= 3) these knobs target, and the
+            // kissat profile on exactly these cells restarts 5-10x more often
+            // than our EMA cadence (Bubble: 161k restarts vs our 31k).
+            if self.restart_armed_floor > 0 {
+                self.restart_min_conflicts =
+                    self.restart_min_conflicts.min(self.restart_armed_floor);
+                self.restart_floor_armed = true;
+            }
+            if self.restart_armed_margin > 0.0 {
+                self.restart_margin = self.restart_armed_margin;
+            }
         }
         if self.trace_preprocess_details {
             let nvars = self.assignment.len().saturating_sub(1).max(1);
@@ -7382,6 +7662,7 @@ impl Solver {
             self.congruence_search_armed = true;
             if self.restart_armed_floor > 0 {
                 self.restart_min_conflicts = self.restart_min_conflicts.min(self.restart_armed_floor);
+                self.restart_floor_armed = true;
             }
             if self.restart_armed_margin > 0.0 {
                 self.restart_margin = self.restart_armed_margin;
@@ -7810,6 +8091,75 @@ impl Solver {
     /// afterwards through the formula-edit transaction layer.
     ///
     /// Returns false if the round proves the formula UNSAT.
+    /// Kissat vivify.c `vivify_deduce`: walk the reason cone backwards from
+    /// `seeds` (the falsified conflict-clause literals, or the negation of an
+    /// implied-TRUE candidate literal) and collect the candidate literals whose
+    /// assumptions the cone actually grounds in. Root-level (level 0) literals
+    /// terminate chains; every level>0 chain grounds in an assumption decision
+    /// because the walk runs inside the temporary-assumption context where all
+    /// decisions are the candidate's negated literals. Returns the needed
+    /// candidate literals (each is the negation of a needed assumption).
+    ///
+    /// Soundness of the strengthened clause built from this set: propagating
+    /// the negation of every returned literal replays the recorded UP chains
+    /// (each cone literal's full antecedent set is root-fixed, in-cone, or a
+    /// returned assumption) and re-derives the seed conflict, so the shrunken
+    /// clause is RUP against the formula WITHOUT the candidate (which is
+    /// detached during the walk and therefore appears in no reason).
+    fn vivify_collect_needed(&mut self, seeds: &[i32], needed: &mut Vec<i32>) {
+        needed.clear();
+        let nvars = self.assignment.len();
+        let mut seen = std::mem::take(&mut self.vivify_seen);
+        if seen.len() < nvars {
+            seen.resize(nvars, 0);
+        }
+        if self.vivify_seen_stamp == u32::MAX {
+            seen.fill(0);
+            self.vivify_seen_stamp = 0;
+        }
+        self.vivify_seen_stamp += 1;
+        let stamp = self.vivify_seen_stamp;
+
+        let mut queue: Vec<usize> = Vec::new();
+        for &lit in seeds {
+            let var = lit.unsigned_abs() as usize;
+            if var < nvars && self.decision_level[var] > 0 && seen[var] != stamp {
+                seen[var] = stamp;
+                queue.push(var);
+            }
+        }
+        let mut i = 0;
+        while i < queue.len() {
+            let var = queue[i];
+            i += 1;
+            let reason = self.reason_ref(var);
+            if matches!(reason, ReasonRef::None) {
+                // Assumption decision: the assumed literal is the one
+                // currently true; the candidate literal is its negation.
+                let assumed = if self.assignment[var] == TRUE {
+                    var as i32
+                } else {
+                    -(var as i32)
+                };
+                needed.push(-assumed);
+                continue;
+            }
+            let antecedents: &[i32] = match reason {
+                ReasonRef::Clause(clause_idx) => self.clause_slice(clause_idx),
+                ReasonRef::Binary(binary_id) => &self.binary_reason_lits[binary_id.0 as usize],
+                ReasonRef::None => unreachable!(),
+            };
+            for &l in antecedents {
+                let u = l.unsigned_abs() as usize;
+                if u != var && u < nvars && self.decision_level[u] > 0 && seen[u] != stamp {
+                    seen[u] = stamp;
+                    queue.push(u);
+                }
+            }
+        }
+        self.vivify_seen = seen;
+    }
+
     fn vivify_round(&mut self, proof_log: &mut ProofLog) -> bool {
         if self.current_level() != 0 || self.has_empty_clause || !self.solver_ok {
             return true;
@@ -7905,6 +8255,11 @@ impl Solver {
         // vivify rounds. Armed formulas keep the win; everything else stays
         // byte-identical.
         let vivify_ale = self.vivify_ale && self.inprocess_aggressive;
+        // Deduce (reason-cone shrink + implied-TRUE strengthen) shares ALE's
+        // armed scope: it changes which edits happen, so non-armed formulas must
+        // keep byte-identical trajectories (the unscoped-ALE A/B rolled two
+        // solved SAT cells; same fragility class applies here).
+        let vivify_deduce = self.vivify_deduce && self.inprocess_aggressive;
         // Kissat vivify.c literal ordering (SAT_VIVIFY_SORT, default off): count each
         // literal's occurrences across this round's candidates and assume the
         // most-frequent literals first. Frequent literals propagate the most shared
@@ -7957,12 +8312,15 @@ impl Solver {
                 let mut keep: Vec<i32> = Vec::with_capacity(lits.len());
                 let mut redundant = false;
                 let mut conflicted = false;
+                let mut conflict_ref: Option<Conflict> = None;
+                let mut implied_lit: Option<i32> = None;
                 for &l in &lits {
                     match ctx.solver.lit_value(l) {
                         // `l` is implied true by the rest under the assumed prefix:
                         // the clause is RUP-implied, hence redundant.
                         TRUE => {
                             redundant = true;
+                            implied_lit = Some(l);
                             break;
                         }
                         // `l` is implied false: redundant in the clause and re-derived
@@ -7971,8 +8329,9 @@ impl Solver {
                         _ => match ctx.assume(-l) {
                             EnqueueResult::Enqueued => {
                                 keep.push(l);
-                                if ctx.propagate_budgeted(&mut budget).is_some() {
+                                if let Some(conflict) = ctx.propagate_budgeted(&mut budget) {
                                     conflicted = true;
+                                    conflict_ref = Some(conflict);
                                     break;
                                 }
                             }
@@ -7982,6 +8341,64 @@ impl Solver {
                                 break;
                             }
                         },
+                    }
+                }
+
+                // Kissat vivify_deduce parity (SAT_VIVIFY_DEDUCE, armed-scoped):
+                // analyze the reason cone WHILE the assumption trail is intact.
+                // Conflict case: shrink `keep` to the assumptions the conflict
+                // actually needs. Implied-TRUE case: strengthen the candidate to
+                // {implied} + the assumptions that derived it (previously no
+                // edit at all). Both results are subsets of the original clause
+                // and RUP against the candidate-free formula (see
+                // vivify_collect_needed); the replay path emits the DRAT adds.
+                let mut deduced: Option<Vec<i32>> = None;
+                if vivify_deduce {
+                    if conflicted {
+                        let seeds: Option<Vec<i32>> = match conflict_ref {
+                            Some(Conflict::Clause(ci)) => {
+                                Some(ctx.solver.clause_slice(ci).to_vec())
+                            }
+                            Some(Conflict::Binary(id)) => Some(
+                                ctx.solver.binary_reason_lits[id.0 as usize].to_vec(),
+                            ),
+                            // Root-unit conflicts have no clause to seed from;
+                            // keep the prefix semantics.
+                            Some(Conflict::RootUnit) | None => None,
+                        };
+                        if let Some(seeds) = seeds {
+                            let mut needed: Vec<i32> = Vec::new();
+                            ctx.solver.vivify_collect_needed(&seeds, &mut needed);
+                            if !needed.is_empty() {
+                                let shrunk: Vec<i32> = keep
+                                    .iter()
+                                    .copied()
+                                    .filter(|l| needed.contains(l))
+                                    .collect();
+                                // Defensive: an empty cone would claim root
+                                // UNSAT, which a clean pre-walk root propagation
+                                // contradicts — fall back to the prefix there.
+                                if !shrunk.is_empty() && shrunk.len() < keep.len() {
+                                    ctx.solver.stats.vivify_deduce_shrunk += 1;
+                                    deduced = Some(shrunk);
+                                }
+                            }
+                        }
+                    } else if let Some(implied) = implied_lit {
+                        let mut needed: Vec<i32> = Vec::new();
+                        ctx.solver.vivify_collect_needed(&[-implied], &mut needed);
+                        let mut strengthened: Vec<i32> = lits
+                            .iter()
+                            .copied()
+                            .filter(|&l| l == implied || needed.contains(&l))
+                            .collect();
+                        if !strengthened.contains(&implied) {
+                            strengthened.push(implied);
+                        }
+                        if strengthened.len() < lits.len() {
+                            ctx.solver.stats.vivify_deduce_implied += 1;
+                            deduced = Some(strengthened);
+                        }
                     }
                 }
 
@@ -7999,7 +8416,6 @@ impl Solver {
                 // (ClauseOverflow in release). Strengthening rewrites in place, so the
                 // clause index stays live. Apply to the clone immediately so later
                 // analyses see the edit.
-                let _ = redundant;
                 // Asymmetric literal elimination (SAT_VIVIFY_ALE): when the assumption
                 // walk finishes WITHOUT a conflict, any literal that was implied FALSE
                 // by the negated prefix (`FALSE => continue` above) is still removable:
@@ -8013,7 +8429,23 @@ impl Solver {
                 // literals). The `redundant` (implied-true) DELETE path stays excluded —
                 // see the soundness note above.
                 let ale_strengthen = vivify_ale && !conflicted && !redundant;
-                if (conflicted || ale_strengthen) && keep.len() < lits.len() {
+                let final_keep: Option<Vec<i32>> = if conflicted {
+                    match deduced {
+                        // Reason-cone shrink: strictly smaller than the prefix.
+                        Some(shrunk) => Some(shrunk),
+                        None if keep.len() < lits.len() => Some(keep),
+                        None => None,
+                    }
+                } else if redundant {
+                    // Implied-TRUE strengthen (deduce only); the clause itself
+                    // is never deleted — see the soundness note above.
+                    deduced
+                } else if ale_strengthen && keep.len() < lits.len() {
+                    Some(keep)
+                } else {
+                    None
+                };
+                if let Some(keep) = final_keep {
                     match keep.len() {
                         0 => {
                             proved_unsat = true;
@@ -10269,6 +10701,9 @@ impl Solver {
             ProofPolicy::Off => ProofLog::disabled(),
             ProofPolicy::Drat => {
                 ProofLog::new(output_dir, PROOF_BUFFER_CAPACITY, config.trace_proof)
+            }
+            ProofPolicy::DratBinary => {
+                ProofLog::new_binary(output_dir, PROOF_BUFFER_CAPACITY, config.trace_proof)
             }
             ProofPolicy::Lrat => {
                 eprintln!("SAT_PROOF=lrat is not implemented yet");
@@ -13004,7 +13439,9 @@ fn main() {
         );
         let proof_completeness = match config.proof_policy {
             ProofPolicy::Off => ProofCompleteness::NotRequested,
-            ProofPolicy::Drat | ProofPolicy::Lrat => ProofCompleteness::Incomplete,
+            ProofPolicy::Drat | ProofPolicy::DratBinary | ProofPolicy::Lrat => {
+                ProofCompleteness::Incomplete
+            }
         };
         let output_contract = OutputContract {
             status: SolveStatus::Unknown,
@@ -13151,11 +13588,17 @@ fn main() {
         eprintln!("internal model check failed for {}", cnf_path);
     }
     let proof_completeness = match (status, config.proof_policy) {
-        (SolveStatus::Unsat, ProofPolicy::Drat) => ProofCompleteness::Complete,
+        (SolveStatus::Unsat, ProofPolicy::Drat | ProofPolicy::DratBinary) => {
+            ProofCompleteness::Complete
+        }
         (SolveStatus::Unsat, ProofPolicy::Off) => ProofCompleteness::NotRequested,
-        (SolveStatus::Sat, ProofPolicy::Drat) => ProofCompleteness::Incomplete,
+        (SolveStatus::Sat, ProofPolicy::Drat | ProofPolicy::DratBinary) => {
+            ProofCompleteness::Incomplete
+        }
         (SolveStatus::Sat, ProofPolicy::Off) => ProofCompleteness::NotRequested,
-        (SolveStatus::Unknown, ProofPolicy::Drat) => ProofCompleteness::Incomplete,
+        (SolveStatus::Unknown, ProofPolicy::Drat | ProofPolicy::DratBinary) => {
+            ProofCompleteness::Incomplete
+        }
         (SolveStatus::Unknown, ProofPolicy::Off) => ProofCompleteness::NotRequested,
         _ => ProofCompleteness::None,
     };
@@ -13844,6 +14287,78 @@ mod tests {
         let mut proof = ProofLog::disabled();
         assert!(s.vivify_round(&mut proof));
         assert!(!s.clause_is_deleted(target));
+        s.validate_watch_invariants();
+    }
+
+    #[test]
+    fn vivify_deduce_shrinks_to_conflict_cone() {
+        // Candidate [1,2,3,4]; assuming ¬3 implies 5 (via [3,5]) and then ¬4
+        // conflicts on [4,-5]. The conflict cone needs only the assumptions
+        // {¬3, ¬4}, so deduce strengthens the candidate to [3,4] — the prefix
+        // rule would keep all four literals (no drop => no edit).
+        let cfg = vivify_config();
+        let clauses = vec![vec![3, 5], vec![4, -5], vec![1, 2, 3, 4]];
+
+        // Control: deduce off => conflicted with a full prefix => no edit.
+        let mut control = make_solver_with_config(5, clauses.clone(), &cfg);
+        control.inprocess_aggressive = true;
+        let target = control.original_clause_ids[2] as usize;
+        let mut proof = ProofLog::disabled();
+        assert!(control.vivify_round(&mut proof));
+        assert_eq!(control.clause_len(target), 4, "prefix rule keeps all literals");
+
+        // Deduce on (armed): strengthened to the cone assumptions.
+        let mut s = make_solver_with_config(5, clauses, &cfg);
+        s.inprocess_aggressive = true;
+        s.vivify_deduce = true;
+        let target = s.original_clause_ids[2] as usize;
+        let mut proof = ProofLog::disabled();
+        assert!(s.vivify_round(&mut proof));
+        assert_eq!(s.clause_len(target), 2);
+        assert_eq!(s.clause_slice(target), &[3, 4]);
+        s.validate_watch_invariants();
+    }
+
+    #[test]
+    fn vivify_deduce_strengthens_on_implied_true_literal() {
+        // Candidate [1,2,3]; assuming ¬1 implies 3 (via [1,3]), so the walk
+        // finds literal 3 implied TRUE. Deduce analyzes why (cone grounds in
+        // the ¬1 assumption only) and strengthens to [1,3]; without deduce the
+        // implied-TRUE case makes no edit (delete stays disabled).
+        let cfg = vivify_config();
+        let clauses = vec![vec![1, 3], vec![1, 2, 3]];
+
+        let mut control = make_solver_with_config(3, clauses.clone(), &cfg);
+        control.inprocess_aggressive = true;
+        let target = control.original_clause_ids[1] as usize;
+        let mut proof = ProofLog::disabled();
+        assert!(control.vivify_round(&mut proof));
+        assert_eq!(control.clause_len(target), 3, "implied-TRUE makes no edit without deduce");
+
+        let mut s = make_solver_with_config(3, clauses, &cfg);
+        s.inprocess_aggressive = true;
+        s.vivify_deduce = true;
+        let target = s.original_clause_ids[1] as usize;
+        let mut proof = ProofLog::disabled();
+        assert!(s.vivify_round(&mut proof));
+        assert_eq!(s.clause_len(target), 2);
+        assert_eq!(s.clause_slice(target), &[1, 3]);
+        assert!(!s.clause_is_deleted(target));
+        s.validate_watch_invariants();
+    }
+
+    #[test]
+    fn vivify_deduce_stays_inert_when_not_armed() {
+        // Same formula as the conflict-cone test, deduce enabled but the
+        // formula NOT armed: the armed scope must keep the edit off.
+        let cfg = vivify_config();
+        let clauses = vec![vec![3, 5], vec![4, -5], vec![1, 2, 3, 4]];
+        let mut s = make_solver_with_config(5, clauses, &cfg);
+        s.vivify_deduce = true;
+        let target = s.original_clause_ids[2] as usize;
+        let mut proof = ProofLog::disabled();
+        assert!(s.vivify_round(&mut proof));
+        assert_eq!(s.clause_len(target), 4);
         s.validate_watch_invariants();
     }
 
@@ -18931,7 +19446,12 @@ mod tests {
         let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
         let proof_dir = make_temp_dir("solver-unsat-proof");
         let mut s = make_solver(2, clauses);
-        let config = SolverConfig::default();
+        // This test parses the proof as text; pin ASCII DRAT (the shipped
+        // default is binary since the 2026-07-15 promotion).
+        let config = SolverConfig {
+            proof_policy: ProofPolicy::Drat,
+            ..SolverConfig::default()
+        };
         assert_eq!(
             s.solve_to_output(proof_dir.to_str().expect("utf8 temp dir"), &config)
                 .0
@@ -19026,6 +19546,27 @@ mod tests {
             proof_text.contains("d 1 2 0\n"),
             "simplify deletion must be recorded in DRAT deletion format:\n{proof_text}"
         );
+    }
+
+    #[test]
+    fn test_binary_drat_wire_format() {
+        // drat-trim binary format: 'a'/'d' tag, varint(2*var + neg) literals,
+        // 0x00 terminator; the closing empty clause is "a 0x00".
+        let dir = make_temp_dir("proof-binary-format");
+        let mut proof = ProofLog::new_binary(&dir, 64, false);
+        proof.record_clause(&[1, -2]);
+        proof.record_deletion(&[-1]);
+        proof.record_clause(&[200]); // 2*200 = 400 => two varint bytes
+        proof.finish_unsat();
+
+        let bytes = fs::read(dir.join("proof.out")).expect("failed to read binary proof");
+        let expected: Vec<u8> = vec![
+            b'a', 2, 5, 0, // (1, -2): 2*1=2, 2*2+1=5
+            b'd', 3, 0, // (-1): 2*1+1=3
+            b'a', 0x90, 0x03, 0, // (200): 400 = 0x190 -> 0x90 0x03
+            b'a', 0, // final empty clause
+        ];
+        assert_eq!(bytes, expected);
     }
 
     #[test]
@@ -19170,7 +19711,11 @@ mod tests {
 
     #[test]
     fn test_chrono_does_not_break_smoke_unsat_proof() {
-        let config = chrono_config(100);
+        // Parses the proof as text; pin ASCII DRAT (binary is the default).
+        let config = SolverConfig {
+            proof_policy: ProofPolicy::Drat,
+            ..chrono_config(100)
+        };
         let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
         let proof_dir = make_temp_dir("chrono-unsat-proof");
         let mut s = make_solver_with_config(2, clauses, &config);
@@ -19213,7 +19758,11 @@ mod tests {
                 }
             }
         }
-        let config = chrono_config(0);
+        // Parses the proof as text; pin ASCII DRAT (binary is the default).
+        let config = SolverConfig {
+            proof_policy: ProofPolicy::Drat,
+            ..chrono_config(0)
+        };
         let proof_dir = make_temp_dir("chrono-php-unsat");
         let mut s = make_solver_with_config(pigeons * holes, clauses, &config);
         let outcome = s
@@ -19620,15 +20169,17 @@ mod tests {
         s.best_phase[1] = TRUE;
         s.best_phase[2] = FALSE;
         s.saved_phase[3] = TRUE;
+        s.best_assigned = 2;
 
         s.apply_rephase();
 
         assert_eq!(s.saved_phase[1], TRUE);
         assert_eq!(s.saved_phase[2], FALSE);
         assert_eq!(
-            s.saved_phase[3], FALSE,
-            "variables outside the best prefix fall back to the original phase"
+            s.saved_phase[3], TRUE,
+            "variables without a captured best phase keep their saved phase (kissat parity)"
         );
+        assert_eq!(s.best_assigned, 0, "'B' rephases reset the best trail height");
         assert_eq!(s.rephase_index, 1);
         assert_eq!(s.stats.rephases, 1);
     }
@@ -19640,7 +20191,7 @@ mod tests {
             ..focused_stable_config()
         };
         let mut s = make_solver_with_config(3, vec![], &config);
-        s.rephase_index = 1;
+        s.rephase_index = 2;
         s.saved_phase[1] = TRUE;
         s.saved_phase[2] = FALSE;
         s.saved_phase[3] = UNASSIGNED;
@@ -19653,7 +20204,7 @@ mod tests {
             s.saved_phase[3], TRUE,
             "unassigned saved phases invert from the original phase"
         );
-        assert_eq!(s.rephase_index, 2);
+        assert_eq!(s.rephase_index, 3);
     }
 
     #[test]
@@ -19663,7 +20214,7 @@ mod tests {
             ..focused_stable_config()
         };
         let mut s = make_solver_with_config(3, vec![], &config);
-        s.rephase_index = 2;
+        s.rephase_index = 5;
         s.saved_phase[1] = TRUE;
         s.saved_phase[2] = TRUE;
         s.saved_phase[3] = FALSE;
@@ -19677,49 +20228,88 @@ mod tests {
     }
 
     #[test]
-    fn test_rephase_advances_index_on_each_call() {
+    fn test_rephase_schedule_is_kissat_six_slot_cycle() {
+        // kissat rephase.c: best, walking, inverted, best, walking, original.
         let config = SolverConfig {
             rephase: true,
             ..focused_stable_config()
         };
         let mut s = make_solver_with_config(1, vec![], &config);
 
-        s.apply_rephase();
-        assert_eq!(s.rephase_index, 1);
-        s.apply_rephase();
-        assert_eq!(s.rephase_index, 2);
-        s.apply_rephase();
-        assert_eq!(s.rephase_index, 0);
-        assert_eq!(s.stats.rephases, 3);
+        for expected in [1u8, 2, 3, 4, 5, 0] {
+            s.apply_rephase();
+            assert_eq!(s.rephase_index, expected);
+        }
+        assert_eq!(s.stats.rephases, 6);
+        assert_eq!(
+            s.stats.walks, 0,
+            "walk slots are no-ops without walkable clauses"
+        );
     }
 
     #[test]
-    fn test_rephase_cycle_excludes_walk_by_default() {
+    fn test_rephase_interval_grows_nlog3n() {
         let config = SolverConfig {
             rephase: true,
+            rephase_init_conflicts: 1000,
+            ..focused_stable_config()
+        };
+        let mut s = make_solver_with_config(1, vec![], &config);
+        s.stats.conflicts = 50_000;
+
+        s.apply_rephase();
+        // n=1: delta = 1000 * 1 * log10(10)^3 = 1000.
+        assert_eq!(s.rephase_at_conflicts, 51_000);
+
+        s.stats.conflicts = 60_000;
+        s.apply_rephase();
+        // n=2: delta = (1000 * 2 * log10(11)^3) as u64 = 2258.
+        let expected = (1000.0 * Solver::kissat_nlog3n(2)) as u64;
+        assert_eq!(s.rephase_at_conflicts, 60_000 + expected);
+        assert!(expected > 2000, "interval must grow superlinearly");
+    }
+
+    #[test]
+    fn test_rephase_armed_only_gates_on_yield_arming() {
+        let config = SolverConfig {
+            rephase: true,
+            rephase_init_conflicts: 1,
             ..focused_stable_config()
         };
         let mut s = make_solver_with_config(2, vec![], &config);
-        s.best_phase[1] = TRUE;
-        s.best_phase[2] = FALSE;
+        assert!(s.rephase_armed_only, "yield-armed scope is the default");
+        s.search_mode = SearchMode::Stable;
+        s.stats.conflicts = 10;
 
-        s.apply_rephase();
-        s.apply_rephase();
-        s.apply_rephase();
-        s.saved_phase[1] = FALSE;
-        s.saved_phase[2] = TRUE;
-        s.apply_rephase();
+        assert!(
+            !s.rephase_due_on_stable_restart(),
+            "un-armed formulas must never rephase under the default scope"
+        );
 
-        assert_eq!(s.saved_phase[1], TRUE);
-        assert_eq!(s.saved_phase[2], FALSE);
-        assert_eq!(s.rephase_index, 1);
-        assert_eq!(s.stats.rephases, 4);
+        s.inprocess_aggressive = true;
+        assert!(
+            !s.rephase_due_on_stable_restart(),
+            "congruence/elim-armed formulas (ibm class) stay rephase-free: \
+             the 2026-07-14 ibm screen regressed +46% conflicts under rephasing"
+        );
+
+        s.yield_search_armed = true;
+        assert!(s.rephase_due_on_stable_restart());
+
+        s.rephase_armed_only = false;
+        s.inprocess_aggressive = false;
+        s.yield_search_armed = false;
+        assert!(
+            s.rephase_due_on_stable_restart(),
+            "SAT_REPHASE_ARMED_ONLY=off restores the global scope"
+        );
     }
 
     #[test]
     fn test_rephase_only_runs_on_due_stable_restart() {
         let config = SolverConfig {
             rephase: true,
+            rephase_armed_only: false,
             rephase_init_conflicts: 3,
             ..focused_stable_config()
         };
@@ -19753,7 +20343,58 @@ mod tests {
         assert_eq!(s.stats.rephases, 1);
         assert_eq!(s.saved_phase[1], TRUE);
         assert_eq!(s.rephase_index, 1);
+        // n=1: delta = rephase_init_conflicts * nlog3n(1) = 3.
         assert_eq!(s.rephase_at_conflicts, 6);
+        assert_eq!(
+            s.current_level(),
+            0,
+            "a rephasing restart must backtrack to the root for the walk slots"
+        );
+    }
+
+    #[test]
+    fn test_rephase_walk_exports_model_phases_into_saved() {
+        // Satisfiable formula whose decide phases falsify a clause: the walk
+        // slot must find the model and export it into the saved phases.
+        // Clauses: (1 v 2) & (-1 v 2) & (1 v -2) — unique model 1=T, 2=T.
+        let config = SolverConfig {
+            rephase: true,
+            ..focused_stable_config()
+        };
+        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2]];
+        let mut s = make_solver_with_config(2, clauses, &config);
+        s.saved_phase[1] = FALSE;
+        s.saved_phase[2] = FALSE;
+        s.rephase_index = 1; // next slot is 'W'
+
+        s.apply_rephase();
+
+        assert_eq!(s.stats.walks, 1);
+        assert_eq!(s.stats.walk_improved, 1);
+        assert_eq!(s.saved_phase[1], TRUE);
+        assert_eq!(s.saved_phase[2], TRUE);
+        assert_eq!(s.rephase_index, 2);
+    }
+
+    #[test]
+    fn test_rephase_walk_disabled_keeps_saved_phases() {
+        let config = SolverConfig {
+            rephase: true,
+            walk: false,
+            ..focused_stable_config()
+        };
+        let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2]];
+        let mut s = make_solver_with_config(2, clauses, &config);
+        s.saved_phase[1] = FALSE;
+        s.saved_phase[2] = FALSE;
+        s.rephase_index = 1;
+
+        s.apply_rephase();
+
+        assert_eq!(s.stats.walks, 0);
+        assert_eq!(s.saved_phase[1], FALSE);
+        assert_eq!(s.saved_phase[2], FALSE);
+        assert_eq!(s.rephase_index, 2, "the schedule still advances");
     }
 
     #[test]

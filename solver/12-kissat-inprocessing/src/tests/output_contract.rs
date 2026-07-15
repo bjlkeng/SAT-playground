@@ -47,11 +47,17 @@ fn env_map(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
 
 fn proof_completeness_for(status: SolveStatus, proof_policy: ProofPolicy) -> ProofCompleteness {
     match (status, proof_policy) {
-        (SolveStatus::Unsat, ProofPolicy::Drat) => ProofCompleteness::Complete,
+        (SolveStatus::Unsat, ProofPolicy::Drat | ProofPolicy::DratBinary) => {
+            ProofCompleteness::Complete
+        }
         (SolveStatus::Unsat, ProofPolicy::Off) => ProofCompleteness::NotRequested,
-        (SolveStatus::Sat, ProofPolicy::Drat) => ProofCompleteness::Incomplete,
+        (SolveStatus::Sat, ProofPolicy::Drat | ProofPolicy::DratBinary) => {
+            ProofCompleteness::Incomplete
+        }
         (SolveStatus::Sat, ProofPolicy::Off) => ProofCompleteness::NotRequested,
-        (SolveStatus::Unknown, ProofPolicy::Drat) => ProofCompleteness::Incomplete,
+        (SolveStatus::Unknown, ProofPolicy::Drat | ProofPolicy::DratBinary) => {
+            ProofCompleteness::Incomplete
+        }
         (SolveStatus::Unknown, ProofPolicy::Off) => ProofCompleteness::NotRequested,
         _ => ProofCompleteness::None,
     }
@@ -234,9 +240,13 @@ fn test_check_invariants_runs_internal_sat_model_check() {
 
 #[test]
 fn test_golden_unsat_proof_contract() {
+    // Asserts on the text proof tail; pin ASCII DRAT (binary is the default).
     let run = run_contract(
         &golden_path("unsat_empty_clause.cnf"),
-        SolverConfig::default(),
+        SolverConfig {
+            proof_policy: ProofPolicy::Drat,
+            ..SolverConfig::default()
+        },
         "unsat",
     );
     assert_manifest_expectation("unsat_empty_clause.cnf", &run);

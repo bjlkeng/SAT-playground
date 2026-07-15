@@ -162,6 +162,12 @@ pub(crate) struct SolverStats {
     pub(crate) bump_reasons_vars_added: u64,
     pub(crate) bump_reasons_skipped_limit: u64,
     pub(crate) rephases: u64,
+    pub(crate) vivify_deduce_shrunk: u64,
+    pub(crate) vivify_deduce_implied: u64,
+    pub(crate) walks: u64,
+    pub(crate) walk_steps: u64,
+    pub(crate) walk_flips: u64,
+    pub(crate) walk_improved: u64,
     pub(crate) branch_reorders: u64,
     pub(crate) decision_heap_pops: u64,
     pub(crate) decision_heap_stale_pops: u64,
@@ -667,6 +673,12 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("phase_save_target", ctx.stats.phase_save_target);
     json.u64("phase_save_best", ctx.stats.phase_save_best);
     json.u64("rephases", ctx.stats.rephases);
+    json.u64("vivify_deduce_shrunk", ctx.stats.vivify_deduce_shrunk);
+    json.u64("vivify_deduce_implied", ctx.stats.vivify_deduce_implied);
+    json.u64("walks", ctx.stats.walks);
+    json.u64("walk_steps", ctx.stats.walk_steps);
+    json.u64("walk_flips", ctx.stats.walk_flips);
+    json.u64("walk_improved", ctx.stats.walk_improved);
     json.u64("branch_reorders", ctx.stats.branch_reorders);
     json.u64("random_decisions", ctx.stats.random_decisions);
     json.u64(
