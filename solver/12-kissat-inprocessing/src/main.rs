@@ -1764,6 +1764,30 @@ struct Solver {
     /// shipped 100M cap was the binding constraint on the BMC cascade cells
     /// (oski40 1343s -> 1026s standalone at 3x; ibm canary improved).
     vivify_armed_ticks: u64,
+    /// Vivify-yield arming threshold (SAT_VIVIFY_YIELD_ARM, default 170 since the
+    /// 2026-07-14 evening promotion; 0 = off => shipped-baseline byte-identical), in
+    /// per-mille of analyzed learned candidates that a DRY-RUN vivify probe must
+    /// find strengthenable to arm `inprocess_aggressive`. Targets the
+    /// conflict-density gap cells (booth/Bubble/fixedbandwidth class) that have 0
+    /// congruence merges and so never arm: kissat continuously vivifies 34-55% of
+    /// checked learned clauses there while our learned vivify waits for the
+    /// 6M-conflict delay it never reaches. The probe follows the congruence
+    /// dry-run pattern: it analyzes learned tier1/tier2 candidates on the
+    /// temporary-assumption clone and APPLIES NOTHING, so sub-threshold formulas
+    /// keep byte-identical trajectories (the probe costs wall time only).
+    vivify_yield_arm_permille: u64,
+    /// First dry-run probe fires at this many conflicts (SAT_VIVIFY_YIELD_PROBE_CONFLICTS,
+    /// default 200k); each subsequent probe waits 4x longer, up to
+    /// `vivify_yield_max_probes` probes total.
+    vivify_yield_probe_conflicts: u64,
+    /// Clone-propagation tick budget per dry-run probe (SAT_VIVIFY_YIELD_PROBE_TICKS).
+    vivify_yield_probe_ticks: u64,
+    /// Maximum dry-run probes per run (SAT_VIVIFY_YIELD_MAX_PROBES).
+    vivify_yield_max_probes: u32,
+    /// dry-run probes already spent
+    vivify_yield_probes_done: u32,
+    /// conflict count that triggers the next dry-run probe (0 = use first-probe default)
+    vivify_yield_next_probe_conflicts: u64,
     /// Extended gate-aware BVE (SAT_ELIM_GATES_EXT, default ON since the 2026-07-13
     /// promotion; off = AND/OR-only detection): in addition to
     /// the AND/OR detector (SAT_GATE_BVE), elimination candidates are checked for
@@ -2882,6 +2906,31 @@ impl Solver {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(300_000_000),
+            // Default 170 permille since the 2026-07-14 evening promotion
+            // (log/abtest-cand-vs-base-2026-07-14-18-24-40: gate PASS, WIN on the
+            // conflicts tier, 66==66 solved, both-solved conflicts 58,469,094 vs
+            // 59,450,839). 0 = off (byte-identical shipped baseline).
+            vivify_yield_arm_permille: std::env::var("SAT_VIVIFY_YIELD_ARM")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(170),
+            vivify_yield_probe_conflicts: std::env::var("SAT_VIVIFY_YIELD_PROBE_CONFLICTS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&c: &u64| c > 0)
+                .unwrap_or(200_000),
+            vivify_yield_probe_ticks: std::env::var("SAT_VIVIFY_YIELD_PROBE_TICKS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&t: &u64| t > 0)
+                .unwrap_or(30_000_000),
+            vivify_yield_max_probes: std::env::var("SAT_VIVIFY_YIELD_MAX_PROBES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&p: &u32| p > 0)
+                .unwrap_or(3),
+            vivify_yield_probes_done: 0,
+            vivify_yield_next_probe_conflicts: 0,
             elim_gates_ext: env_bool_or_default("SAT_ELIM_GATES_EXT", true),
             factor_inprocess: env_bool_or_default("SAT_FACTOR_INPROCESS", false),
             inprocess_aggressive: false,
@@ -7056,6 +7105,199 @@ impl Solver {
         self.vivify_learned
             && (!self.vivify_learned_binary_gate
                 || self.formula_class.binary_fraction < LEARNED_VIVIFY_BINARY_DOMINATED_FRACTION)
+    }
+
+    /// Whether a vivify-yield dry-run probe is due (SAT_VIVIFY_YIELD_ARM > 0 only).
+    /// Non-armed formulas only: the probe exists to extend the aggressive cadence
+    /// to formulas the congruence/elim signals miss. Must be checked at root.
+    fn should_vivify_yield_probe(&self) -> bool {
+        if self.vivify_yield_arm_permille == 0 || self.inprocess_aggressive {
+            return false;
+        }
+        if !self.inprocess || !self.vivify || !self.vivify_learned {
+            return false;
+        }
+        if self.vivify_yield_probes_done >= self.vivify_yield_max_probes {
+            return false;
+        }
+        // The probe clones arena+watchers; on giant formulas that doubles multi-GB
+        // state (memory-fit risk under the 16GB cap) for a mechanism aimed at
+        // small dense formulas. Same 10M live-clause cap as the congruence dry-run.
+        if self.original_clause_ids.len() + self.learned_clause_ids.len() > 10_000_000 {
+            return false;
+        }
+        let due = if self.vivify_yield_next_probe_conflicts > 0 {
+            self.vivify_yield_next_probe_conflicts
+        } else {
+            self.vivify_yield_probe_conflicts
+        };
+        self.stats.conflicts >= due
+    }
+
+    /// Edit-free DRY-RUN probe of learned-clause vivification yield. Analyzes
+    /// learned tier1/tier2 candidates inside a temporary-assumption clone exactly
+    /// like `vivify_round` (prefix-shrink on conflict, ALE drops on a clean walk)
+    /// but replays NOTHING — the clone restore discards every would-be edit, so
+    /// the search trajectory is untouched whatever the outcome. If the fraction
+    /// of analyzed candidates that would be edited reaches
+    /// `vivify_yield_arm_permille`, the formula arms `inprocess_aggressive`:
+    /// early doubling cadence, per-round learned vivify with ALE + the armed tick
+    /// budget, and armed mid-search BVE — the same bundle the congruence and
+    /// elim-yield signals arm. Congruence-scoped adaptations (chrono delta,
+    /// restart knobs) stay untouched.
+    fn vivify_yield_probe(&mut self) {
+        debug_assert_eq!(
+            self.current_level(),
+            0,
+            "vivify-yield probe must run at decision level 0"
+        );
+        self.vivify_yield_probes_done += 1;
+        let due = if self.vivify_yield_next_probe_conflicts > 0 {
+            self.vivify_yield_next_probe_conflicts
+        } else {
+            self.vivify_yield_probe_conflicts
+        };
+        self.vivify_yield_next_probe_conflicts = due.saturating_mul(4);
+        if self.binary_fast_path {
+            return;
+        }
+        let max_len = if self.vivify_max_clause_len > 0 {
+            self.vivify_max_clause_len
+        } else {
+            DEFAULT_VIVIFY_MAX_CLAUSE_LEN
+        };
+        // Learned tier1/tier2 candidates only: the armed rounds' yield on the
+        // density cells is dominated by learned strengthenings (kissat vivifies
+        // 34-55% of checked learned clauses there), and an originals-based signal
+        // would fire on the originals-schedule cells the 6M delay protects.
+        let candidates: Vec<usize> = self
+            .learned_clause_ids
+            .iter()
+            .copied()
+            .filter(|&c| {
+                !self.clause_is_deleted(c)
+                    && (3..=max_len).contains(&self.clause_len(c))
+                    && self.learnt_lbd(c) <= VIVIFY_LEARNED_MAX_LBD
+            })
+            .collect();
+        // Too few candidates make the ratio noise; retry at the next probe point.
+        const VIVIFY_YIELD_MIN_CANDIDATES: usize = 256;
+        if candidates.len() < VIVIFY_YIELD_MIN_CANDIDATES {
+            return;
+        }
+        let probe_ticks = self.vivify_yield_probe_ticks;
+        let mut attempts = 0u64;
+        let mut would_edit = 0u64;
+        self.with_temporary_assumptions(TemporaryAssumptionOptions::default(), |ctx| {
+            let mut budget = Budget::from_ticks(probe_ticks);
+            for &c in &candidates {
+                if budget.exhausted() {
+                    break;
+                }
+                if ctx.solver.clause_is_deleted(c) || ctx.solver.clause_locked(c) {
+                    continue;
+                }
+                let lits: Vec<i32> = ctx.solver.clause_slice(c).to_vec();
+                let base = ctx.solver.current_level();
+                debug_assert_eq!(base, 0);
+                ctx.solver.detach_clause_strict(c);
+                let mut kept = 0usize;
+                let mut dropped = 0usize;
+                let mut redundant = false;
+                let mut conflicted = false;
+                for &l in &lits {
+                    match ctx.solver.lit_value(l) {
+                        TRUE => {
+                            redundant = true;
+                            break;
+                        }
+                        FALSE => {
+                            dropped += 1;
+                            continue;
+                        }
+                        _ => match ctx.assume(-l) {
+                            EnqueueResult::Enqueued => {
+                                kept += 1;
+                                if ctx.propagate_budgeted(&mut budget).is_some() {
+                                    conflicted = true;
+                                    break;
+                                }
+                            }
+                            EnqueueResult::AlreadyAssigned => kept += 1,
+                            EnqueueResult::Conflict => {
+                                redundant = true;
+                                break;
+                            }
+                        },
+                    }
+                }
+                ctx.solver.backtrack(base);
+                ctx.solver.attach_clause(c, false);
+                attempts += 1;
+                // Mirror vivify_round's edit conditions: prefix-shrink when the
+                // walk conflicted before consuming every literal, ALE drops on a
+                // clean walk. Implied-true (`redundant`) stays a non-edit — the
+                // delete path is excluded there too.
+                let would = if conflicted {
+                    kept < lits.len()
+                } else if !redundant {
+                    dropped > 0
+                } else {
+                    false
+                };
+                if would {
+                    would_edit += 1;
+                }
+            }
+        });
+        // Composite arming rule, calibrated on the 2026-07-14 19-cell probe sweep
+        // (scratchpad calib/calib2; numbers preserved in the promotion notes):
+        // - yield >= threshold: the probe's would-edit fraction. Alone it does NOT
+        //   separate targets from fragile solved cells (Pancake 390 > Bubble 370;
+        //   SAT cells 544707/59-129706 probe 384/352).
+        // - decisions/conflict <= 3: the refutation-churn signature. The density
+        //   targets sit at 1.3-1.6 while SAT cells making search progress sit
+        //   higher (mp1 5.8, 59-129706 7.3, Timetables 45-50).
+        // - !deep_phase: phase prefixes near-complete mean a SAT trajectory close
+        //   to a solution (sted2 at 966 permille best-phase) — never perturb.
+        // - 2nd+ probe only (>= 800k conflicts at the default first-probe point):
+        //   every measured solved SAT cell with a low decision ratio and high
+        //   yield (544707 241k, case1 748k, velev 782k, case9 431k, mp1 336k)
+        //   finishes before the second probe fires; requiring probe >= 2 protects
+        //   that whole class by construction while costing the 1750s targets
+        //   nothing.
+        let dense = self.stats.decisions <= self.stats.conflicts.saturating_mul(3);
+        let armed = attempts > 0
+            && self.vivify_yield_probes_done >= 2
+            && dense
+            && !self.should_skip_sweep_for_deep_phase()
+            && would_edit.saturating_mul(1000)
+                >= attempts.saturating_mul(self.vivify_yield_arm_permille);
+        if armed {
+            self.inprocess_aggressive = true;
+            self.inprocess_aggressive_interval = INPROCESS_AGGRESSIVE_FIRST_INTERVAL;
+            self.next_inprocess_conflicts = self
+                .stats
+                .conflicts
+                .saturating_add(INPROCESS_AGGRESSIVE_FIRST_INTERVAL);
+        }
+        if self.trace_preprocess_details {
+            let nvars = self.assignment.len().saturating_sub(1).max(1);
+            eprintln!(
+                "c vivify_yield_probe probe={} conflicts={} candidates={} attempts={} would_edit={} permille={} dec_per_conf={:.2} best_permille={} target_permille={} deep_phase={} armed={}",
+                self.vivify_yield_probes_done,
+                self.stats.conflicts,
+                candidates.len(),
+                attempts,
+                would_edit,
+                if attempts > 0 { would_edit * 1000 / attempts } else { 0 },
+                self.stats.decisions as f64 / self.stats.conflicts.max(1) as f64,
+                self.best_assigned.saturating_mul(1000) / nvars,
+                self.target_assigned.saturating_mul(1000) / nvars,
+                self.should_skip_sweep_for_deep_phase(),
+                armed,
+            );
+        }
     }
 
     /// Whether the current vivify round includes learned-clause candidates. On ARMED
@@ -11741,6 +11983,13 @@ impl Solver {
                             self.finish_search_timing(search_start);
                             return SolveOutcome::unsat();
                         }
+                        // Vivify-yield dry-run probe (SAT_VIVIFY_YIELD_ARM, default
+                        // 0 = off): edit-free learned-vivify yield measurement that
+                        // can arm the aggressive inprocess cadence on conflict-dense
+                        // formulas the congruence/elim signals miss.
+                        if self.should_vivify_yield_probe() {
+                            self.vivify_yield_probe();
+                        }
                         // Inprocessing scheduler hook: at root, periodically run an
                         // interleaved clause-simplification / formula-rewriting round
                         // (probing + vivification). Default-off, so performance-neutral
@@ -13596,6 +13845,122 @@ mod tests {
         assert!(s.vivify_round(&mut proof));
         assert!(!s.clause_is_deleted(target));
         s.validate_watch_invariants();
+    }
+
+    /// Builds a solver whose learned tier1/tier2 candidates are ALE-strengthenable:
+    /// each learned clause [1, 3, x] walks assume(-1) -> 5 (via [1,5]) -> -3 (via
+    /// [-5,-3]), so literal 3 is implied FALSE on a clean walk (an ALE drop).
+    fn vivify_yield_probe_solver(strengthenable: bool) -> Solver {
+        let cfg = vivify_config();
+        let mut s = make_solver_with_config(300, vec![vec![1, 5], vec![-5, -3]], &cfg);
+        s.vivify_learned = true;
+        s.vivify_yield_arm_permille = 500;
+        for v in 6..=280 {
+            if strengthenable {
+                s.add_clause_from_slice_with_lbd(&[1, 3, v], 2);
+            } else {
+                // Unconstrained variables: the walk assumes every literal, nothing
+                // propagates, nothing is dropped => zero yield.
+                s.add_clause_from_slice_with_lbd(&[v, -(v + 1), (v % 7 == 0) as i32 * 2 + 2], 2);
+            }
+        }
+        s.stats.conflicts = 200_000;
+        s
+    }
+
+    #[test]
+    fn vivify_yield_probe_arms_on_high_yield_without_editing() {
+        let mut s = vivify_yield_probe_solver(true);
+        // Second-probe state with a dense (low decisions/conflict) history: the
+        // composite rule arms only from the second probe onward.
+        s.vivify_yield_probes_done = 1;
+        s.vivify_yield_next_probe_conflicts = 200_000;
+        s.stats.decisions = 300_000; // 1.5 per conflict, under the <= 3 cap
+        assert!(s.should_vivify_yield_probe());
+        let learned_before: Vec<Vec<i32>> = s
+            .learned_clause_ids
+            .clone()
+            .into_iter()
+            .map(|c| s.clause_slice(c).to_vec())
+            .collect();
+        let trail_before = s.trail.len();
+        s.vivify_yield_probe();
+        assert!(s.inprocess_aggressive, "high yield must arm the cadence");
+        assert_eq!(
+            s.next_inprocess_conflicts,
+            200_000 + INPROCESS_AGGRESSIVE_FIRST_INTERVAL
+        );
+        // DRY-RUN contract: nothing edited, no units, trajectory state untouched.
+        let learned_after: Vec<Vec<i32>> = s
+            .learned_clause_ids
+            .clone()
+            .into_iter()
+            .map(|c| s.clause_slice(c).to_vec())
+            .collect();
+        assert_eq!(learned_before, learned_after, "probe must not edit clauses");
+        assert_eq!(s.trail.len(), trail_before, "probe must not add root units");
+        s.validate_watch_invariants();
+    }
+
+    #[test]
+    fn vivify_yield_probe_below_threshold_backs_off() {
+        let mut s = vivify_yield_probe_solver(false);
+        assert!(s.should_vivify_yield_probe());
+        s.vivify_yield_probe();
+        assert!(!s.inprocess_aggressive, "zero yield must not arm");
+        assert_eq!(s.vivify_yield_probes_done, 1);
+        assert_eq!(
+            s.vivify_yield_next_probe_conflicts,
+            800_000,
+            "next probe waits 4x the first trigger"
+        );
+        assert!(!s.should_vivify_yield_probe(), "not due again until 800k conflicts");
+        s.stats.conflicts = 800_000;
+        assert!(s.should_vivify_yield_probe());
+        // Probe budget is capped by max probes.
+        s.vivify_yield_probes_done = s.vivify_yield_max_probes;
+        assert!(!s.should_vivify_yield_probe());
+        s.validate_watch_invariants();
+    }
+
+    #[test]
+    fn vivify_yield_probe_off_switch_disables() {
+        let mut s = vivify_yield_probe_solver(true);
+        s.vivify_yield_arm_permille = 0;
+        assert!(!s.should_vivify_yield_probe());
+        // Armed formulas never probe: the signal exists to extend arming, not
+        // to re-fire on already-armed formulas.
+        s.vivify_yield_arm_permille = 500;
+        s.inprocess_aggressive = true;
+        assert!(!s.should_vivify_yield_probe());
+    }
+
+    #[test]
+    fn vivify_yield_probe_composite_rule_blocks_arming() {
+        // First probe never arms, whatever the yield.
+        let mut s = vivify_yield_probe_solver(true);
+        s.stats.decisions = 300_000;
+        s.vivify_yield_probe();
+        assert!(!s.inprocess_aggressive, "first probe must never arm");
+
+        // High decisions/conflict (search-progress signature) blocks arming.
+        let mut s = vivify_yield_probe_solver(true);
+        s.vivify_yield_probes_done = 1;
+        s.vivify_yield_next_probe_conflicts = 200_000;
+        s.stats.decisions = 2_000_000; // 10 per conflict, over the <= 3 cap
+        s.vivify_yield_probe();
+        assert!(!s.inprocess_aggressive, "high decision ratio must not arm");
+
+        // A near-complete phase prefix (deep phase) blocks arming.
+        let mut s = vivify_yield_probe_solver(true);
+        s.vivify_yield_probes_done = 1;
+        s.vivify_yield_next_probe_conflicts = 200_000;
+        s.stats.decisions = 300_000;
+        let nvars = s.assignment.len() - 1;
+        s.best_assigned = nvars;
+        s.target_assigned = nvars;
+        s.vivify_yield_probe();
+        assert!(!s.inprocess_aggressive, "deep phase must not arm");
     }
 
     #[test]
