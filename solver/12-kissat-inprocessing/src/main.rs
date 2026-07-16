@@ -1900,6 +1900,40 @@ struct Solver {
     /// variables mid-search while our AND/OR-only detector strands the ITE-defined
     /// ones — this is the elimination-yield gap in the armed cascade.
     elim_gates_ext: bool,
+    /// Kitten-based semantic definition extraction in armed BVE (SAT_ELIM_DEF,
+    /// default off): kissat definition.c parity, the last fallback after the
+    /// syntactic detectors. Exports the pivot's occurrence environment with the
+    /// pivot removed into the kitten sub-solver; UNSAT means the pivot is
+    /// functionally defined and the clausal core is the definition. Finds XOR/
+    /// irregular definitions the syntactic eq/AND/ITE matchers miss — kissat's
+    /// elimination reaches 72-77% of vars on the booth/Bubble density cells
+    /// (ours stalls ~54%) and 67% on the Timetable class (ours ~55%) largely on
+    /// the back of gate/definition-pruned resolution. Armed-scope only, same as
+    /// SAT_ELIM_GATES_EXT.
+    elim_def: bool,
+    /// Kitten tick budget per definition check (SAT_ELIM_DEF_TICKS, default 50k;
+    /// kissat `definitionticks` is 1e6, but our checks run once per candidate per
+    /// armed round rather than per touched candidate, and non-definable (SAT)
+    /// environments burn the whole budget — 1M ticks cost oski40 ~700s of kitten
+    /// wall; real gate definitions refute in far fewer ticks). Consumed ticks are
+    /// charged to the eliminate tick budget, so definition probing never extends
+    /// an armed round's bound.
+    elim_def_ticks: u64,
+    /// Per-variable definition-check memo: (pos occurrences, neg occurrences,
+    /// armed growth bound) at the last kitten check that did NOT eliminate the
+    /// pivot. Armed eliminate re-scans every variable each round, so without this
+    /// the same pivot is kitten-solved and bound-rejected once per round (measured
+    /// on oski40: 947k checks / 573k found / 2,054 eliminated — the re-check wall
+    /// halved the conflict rate and timed out a base-solved cell). A pivot is
+    /// re-checked only when its occurrence counts or the armed bound change.
+    /// Lazily sized; u32::MAX sentinel = never checked. The fourth slot counts
+    /// found-but-bound-rejected attempts at the stored bound: after
+    /// ELIM_DEF_MAX_FAILS the pivot is skipped until the armed bound escalates
+    /// (amnesty on bound change) — occurrence counts shift constantly while
+    /// neighbors get eliminated, so without the cap a rejected pivot is re-found
+    /// once per occurrence change (measured on oski40: 126k founds for 1,643
+    /// eliminations even with the occurrence memo).
+    elim_def_last_probe: Vec<(u32, u32, i32, u8)>,
     /// Mid-search bounded variable addition on ARMED formulas (SAT_FACTOR_INPROCESS,
     /// default off): kissat runs factor at the END of every probe round (probe.c),
     /// re-compressing the clause database after congruence/elimination collapse it.
@@ -3061,6 +3095,12 @@ impl Solver {
             vivify_yield_probes_done: 0,
             vivify_yield_next_probe_conflicts: 0,
             elim_gates_ext: env_bool_or_default("SAT_ELIM_GATES_EXT", true),
+            elim_def: env_bool_or_default("SAT_ELIM_DEF", false),
+            elim_def_ticks: std::env::var("SAT_ELIM_DEF_TICKS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(50_000),
+            elim_def_last_probe: Vec::new(),
             factor_inprocess: env_bool_or_default("SAT_FACTOR_INPROCESS", false),
             decision_arm_ratio: std::env::var("SAT_DECISION_ARM")
                 .ok()

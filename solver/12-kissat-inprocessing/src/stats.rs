@@ -183,6 +183,14 @@ pub(crate) struct SolverStats {
     pub(crate) preprocess_eq_gate_eliminated_vars: u64,
     /// subset of gate eliminations recognized as if-then-else definitions (SAT_ELIM_GATES_EXT)
     pub(crate) preprocess_ite_gate_eliminated_vars: u64,
+    /// subset of gate eliminations via kitten semantic definitions (SAT_ELIM_DEF)
+    pub(crate) preprocess_def_gate_eliminated_vars: u64,
+    /// kitten definition checks attempted (SAT_ELIM_DEF)
+    pub(crate) preprocess_def_gate_checks: u64,
+    /// kitten definition checks that found a two-sided definition core (SAT_ELIM_DEF)
+    pub(crate) preprocess_def_gate_found: u64,
+    /// cumulative kitten ticks spent in definition checks (SAT_ELIM_DEF)
+    pub(crate) preprocess_def_gate_ticks: u64,
     /// variables removed by equivalent-literal substitution (SAT_ELS)
     pub(crate) els_substituted_vars: u64,
     /// clauses rewritten by equivalent-literal substitution (SAT_ELS)
@@ -719,6 +727,13 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
         "ite_gate_eliminated_vars",
         ctx.stats.preprocess_ite_gate_eliminated_vars,
     );
+    json.u64(
+        "def_gate_eliminated_vars",
+        ctx.stats.preprocess_def_gate_eliminated_vars,
+    );
+    json.u64("def_gate_checks", ctx.stats.preprocess_def_gate_checks);
+    json.u64("def_gate_found", ctx.stats.preprocess_def_gate_found);
+    json.u64("def_gate_ticks", ctx.stats.preprocess_def_gate_ticks);
     json.u64(
         "pre_bve_resolution_attempts",
         ctx.stats.preprocess_resolution_attempts,

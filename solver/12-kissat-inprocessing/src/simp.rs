@@ -1,6 +1,8 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 
+use crate::kitten::{Kitten, KittenResult};
+
 use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +48,10 @@ enum ElimGateKind {
     AndOr,
     Equivalence,
     Ite,
+    /// Semantic definition found by the kitten sub-solver (kissat definition.c).
+    /// Unlike the syntactic kinds, gate-vs-gate resolvents are NOT necessarily
+    /// tautologies, so the resolution loop must include them (kissat `resolve_gate`).
+    Definition,
 }
 
 const MARKED_SUBSUMPTION_MIN_PRODUCT: usize = 32;
@@ -1555,6 +1561,37 @@ impl Solver {
         resolvent_lits: &mut Vec<i32>,
         resolvent_ranges: &mut Vec<(usize, usize)>,
     ) -> bool {
+        self.resolve_elim_pair_capped(
+            pos_idx,
+            neg_idx,
+            var,
+            occurrence_count,
+            resolvent_count,
+            resolvent_lits,
+            resolvent_ranges,
+            None,
+        )
+    }
+
+    /// `resolve_elim_pair` with an optional per-resolvent length cap on top of
+    /// `bve_clause_limit`. Definition-gate eliminations pass the longer parent's
+    /// length: a semantic-core elimination may never produce a resolvent longer
+    /// than the clauses it replaces, because densifying resolvents compound —
+    /// measured on oski40, unrestricted definition eliminations doubled the live
+    /// arena, tripled learned literals, and cost 5.6x search ticks (+700s wall)
+    /// for a 14% conflict reduction.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_elim_pair_capped(
+        &mut self,
+        pos_idx: usize,
+        neg_idx: usize,
+        var: usize,
+        occurrence_count: usize,
+        resolvent_count: &mut isize,
+        resolvent_lits: &mut Vec<i32>,
+        resolvent_ranges: &mut Vec<(usize, usize)>,
+        max_len: Option<usize>,
+    ) -> bool {
         if (self.eliminate_resolution_budget != 0 || self.eliminate_ticks_budget != 0)
             && !self.consume_eliminate_resolution_attempt()
         {
@@ -1573,6 +1610,12 @@ impl Solver {
         if self.bve_clause_limit >= 0 && size as isize > self.bve_clause_limit {
             resolvent_lits.truncate(start);
             return false;
+        }
+        if let Some(cap) = max_len {
+            if size > cap {
+                resolvent_lits.truncate(start);
+                return false;
+            }
         }
         resolvent_ranges.push((start, size));
         true
@@ -1995,6 +2038,189 @@ impl Solver {
         None
     }
 
+    /// kissat definition.c parity: semantic definition extraction via the kitten
+    /// sub-solver, the LAST fallback after the syntactic detectors (kissat gates.c
+    /// order: equivalence → AND/OR → ITE → definition). Export every occurrence of
+    /// the pivot with the pivot literal removed; if that pivot-free environment is
+    /// UNSAT, the pivot is functionally defined by its neighbor variables, and the
+    /// refutation's clausal core selects the defining clause subset (the "gate").
+    /// This finds definitions the syntactic detectors cannot: XOR chains, majority/
+    /// threshold shapes, and irregular multi-clause encodings left behind by
+    /// strengthening — the dominant definition shapes on arithmetic-circuit (booth/
+    /// Bubble) and BMC formulas where our congruence closure finds zero merges.
+    ///
+    /// Soundness: every emitted resolvent is an ordinary RUP resolvent of two live
+    /// clauses, so the DRAT stream needs no extra lemmas; omitting the
+    /// nongate-vs-nongate resolvents is the standard substitution-by-definition
+    /// argument (Eén–Biere), which for a semantic core additionally requires the
+    /// gate-vs-gate resolvents — kissat sets `resolve_gate` for definition cores
+    /// (resolve.c:340-345) and `try_eliminate_var` mirrors that via
+    /// `ElimGateKind::Definition`. One-sided cores (kissat's failed-literal bonus)
+    /// are skipped conservatively: a unit clause derived from a one-sided core is
+    /// not necessarily RUP, and the elimination win does not need it.
+    ///
+    /// Budget: `SAT_ELIM_DEF_TICKS` kitten ticks per check (kissat
+    /// `definitionticks`, default 1e6); consumed ticks are charged against the
+    /// armed-BVE eliminate tick budget so definition probing cannot extend a round
+    /// past its existing wall budget.
+    fn detect_kitten_definition(
+        &mut self,
+        var: usize,
+        pos_clauses: &[usize],
+        neg_clauses: &[usize],
+    ) -> Option<GatePartition> {
+        // The environment export is linear in clauses+literals; these caps bound the
+        // per-candidate setup cost on pathological occurrence lists (the tick budget
+        // only bounds the solve). Generous vs kissat's typical envs.
+        // Tight caps: a definition only converts to an elimination when its core's
+        // gate-restricted resolvents fit the occurrence bound, which never happens
+        // for cores beyond a few dozen clauses — and non-definable (SAT) envs burn
+        // the full tick budget. Circuit gate definitions (XOR/adder/mux) live in
+        // envs of a handful of clauses. Measured on oski40: env 1024/lits 8192 +
+        // 1M ticks cost ~700s of kitten wall for 1.2k conversions.
+        const ELIM_DEF_MAX_ENV_CLAUSES: usize = 64;
+        const ELIM_DEF_MAX_ENV_LITS: usize = 512;
+        // Formula-adaptive cutoff: if tens of thousands of checks never found a
+        // single definition, this formula's pivots are not kitten-definable
+        // (measured: Timetable_492 1.7M checks / 0 found, lockchart-group1 5.0M / 0
+        // — pure wall burn inside armed rounds), so stop probing it. Cells where
+        // definitions exist find them almost immediately (found/checks 60-99% on
+        // oski/ibm/booth/Bubble screens).
+        const ELIM_DEF_PROBE_CHECKS: u64 = 20_000;
+        if self.stats.preprocess_def_gate_checks >= ELIM_DEF_PROBE_CHECKS
+            && self.stats.preprocess_def_gate_found == 0
+        {
+            return None;
+        }
+        if pos_clauses.is_empty() || neg_clauses.is_empty() {
+            return None;
+        }
+        let total = pos_clauses.len() + neg_clauses.len();
+        if total > ELIM_DEF_MAX_ENV_CLAUSES {
+            return None;
+        }
+        // Per-variable re-check memo (see the field doc): only kitten-solve a pivot
+        // again when its occurrence counts or the armed growth bound moved since the
+        // last non-eliminating check, and give up on a pivot whose found definition
+        // was bound-rejected ELIM_DEF_MAX_FAILS times at the current bound (amnesty
+        // when the armed bound escalates 0 -> 1 -> ... -> 16).
+        const ELIM_DEF_MAX_FAILS: u8 = 2;
+        let pos_n = self.n_occ[lit_to_index(var as i32)];
+        let neg_n = self.n_occ[lit_to_index(-(var as i32))];
+        let bound = self.bve_grow as i32;
+        if self.elim_def_last_probe.len() <= var {
+            self.elim_def_last_probe
+                .resize(var + 1, (u32::MAX, u32::MAX, 0, 0));
+        }
+        let entry = self.elim_def_last_probe[var];
+        let fails = if entry.2 == bound { entry.3 } else { 0 };
+        if fails >= ELIM_DEF_MAX_FAILS {
+            return None;
+        }
+        if (entry.0, entry.1, entry.2) == (pos_n, neg_n, bound) {
+            return None;
+        }
+        self.elim_def_last_probe[var] = (pos_n, neg_n, bound, fails);
+        if !self.elim_gate_clauses_clean(pos_clauses, neg_clauses) {
+            return None;
+        }
+        self.stats.preprocess_def_gate_checks += 1;
+
+        // Map outer variables to dense kitten DIMACS variables and export each
+        // occurrence with the pivot literal removed. Outer clauses are canonical
+        // (no duplicate variables), so the pivot-free export can never be a
+        // tautology or contain duplicates — kitten input indices stay positional.
+        let mut var_map: HashMap<usize, i32> = HashMap::new();
+        let mut next_kitten_var = 1i32;
+        let mut kitten = Kitten::new();
+        let mut buf: Vec<i32> = Vec::new();
+        let mut total_lits = 0usize;
+        for &ci in pos_clauses.iter().chain(neg_clauses.iter()) {
+            let len = self.clause_len(ci);
+            if len <= 1 {
+                return None; // unit pivot clause: root-assignment race, bail
+            }
+            total_lits += len - 1;
+            if total_lits > ELIM_DEF_MAX_ENV_LITS {
+                return None;
+            }
+            buf.clear();
+            for k in 0..len {
+                let lit = self.clause_lit(ci, k);
+                let v = lit.unsigned_abs() as usize;
+                if v == var {
+                    continue;
+                }
+                let kv = *var_map.entry(v).or_insert_with(|| {
+                    let kv = next_kitten_var;
+                    next_kitten_var += 1;
+                    kv
+                });
+                buf.push(if lit > 0 { kv } else { -kv });
+            }
+            if buf.is_empty() {
+                return None; // defensive: pivot-only clause
+            }
+            kitten.add_clause(&buf);
+        }
+        debug_assert_eq!(kitten.num_input_clauses(), total);
+
+        let result = kitten.solve_budgeted(&[], self.elim_def_ticks);
+        self.stats.preprocess_def_gate_ticks =
+            self.stats.preprocess_def_gate_ticks.saturating_add(kitten.ticks());
+        // Charge the kitten work against the eliminate tick budget so armed rounds
+        // keep their existing wall bound (mirrors consume_eliminate_tick).
+        if self.eliminate_ticks_budget != 0 {
+            self.stats.preprocess_eliminate_ticks = self
+                .stats
+                .preprocess_eliminate_ticks
+                .saturating_add(kitten.ticks());
+            if self.stats.preprocess_eliminate_ticks >= self.eliminate_ticks_budget {
+                self.note_preprocess_budget_hit(PreprocessBudgetKind::Tick);
+            }
+        }
+        if result != Some(KittenResult::Unsat) {
+            return None; // SAT (no definition) or budget exhausted
+        }
+
+        let pos_len = pos_clauses.len();
+        let mut in_core = vec![false; total];
+        for &idx in kitten.core() {
+            if idx < total {
+                in_core[idx] = true;
+            }
+        }
+        let mut gate_pos = Vec::new();
+        let mut nongate_pos = Vec::new();
+        for (i, &ci) in pos_clauses.iter().enumerate() {
+            if in_core[i] {
+                gate_pos.push(ci);
+            } else {
+                nongate_pos.push(ci);
+            }
+        }
+        let mut gate_neg = Vec::new();
+        let mut nongate_neg = Vec::new();
+        for (j, &ci) in neg_clauses.iter().enumerate() {
+            if in_core[pos_len + j] {
+                gate_neg.push(ci);
+            } else {
+                nongate_neg.push(ci);
+            }
+        }
+        if gate_pos.is_empty() || gate_neg.is_empty() {
+            return None; // one-sided core: unit/failed-literal case, skipped (see doc)
+        }
+        self.stats.preprocess_def_gate_found += 1;
+        Some(GatePartition {
+            gate_pos,
+            gate_neg,
+            nongate_pos,
+            nongate_neg,
+            kind: ElimGateKind::Definition,
+        })
+    }
+
     fn try_eliminate_var(
         &mut self,
         var: usize,
@@ -2069,6 +2295,9 @@ impl Solver {
             if g.is_none() && gates_ext {
                 g = self.detect_ite_gate(var, &pos_clauses, &neg_clauses);
             }
+            if g.is_none() && gates_ext && self.elim_def {
+                g = self.detect_kitten_definition(var, &pos_clauses, &neg_clauses);
+            }
             g
         };
 
@@ -2077,9 +2306,20 @@ impl Solver {
         let mut resolvent_ranges = Vec::new();
         if let Some(g) = &gate {
             let mut rejected = false;
+            // Definition kind: cap each resolvent at its longer parent's length
+            // (see resolve_elim_pair_capped doc). Syntactic kinds keep the
+            // promoted unlimited behavior.
+            let def_cap = |s: &Self, p: usize, n: usize| -> Option<usize> {
+                if g.kind == ElimGateKind::Definition {
+                    Some(s.clause_len(p).max(s.clause_len(n)))
+                } else {
+                    None
+                }
+            };
             'gate_pos_nongate_neg: for &p in &g.gate_pos {
                 for &n in &g.nongate_neg {
-                    if !self.resolve_elim_pair(
+                    let cap = def_cap(self, p, n);
+                    if !self.resolve_elim_pair_capped(
                         p,
                         n,
                         var,
@@ -2087,6 +2327,7 @@ impl Solver {
                         &mut resolvent_count,
                         &mut resolvent_lits,
                         &mut resolvent_ranges,
+                        cap,
                     ) {
                         rejected = true;
                         break 'gate_pos_nongate_neg;
@@ -2096,7 +2337,8 @@ impl Solver {
             if !rejected {
                 'nongate_pos_gate_neg: for &p in &g.nongate_pos {
                     for &n in &g.gate_neg {
-                        if !self.resolve_elim_pair(
+                        let cap = def_cap(self, p, n);
+                        if !self.resolve_elim_pair_capped(
                             p,
                             n,
                             var,
@@ -2104,6 +2346,7 @@ impl Solver {
                             &mut resolvent_count,
                             &mut resolvent_lits,
                             &mut resolvent_ranges,
+                            cap,
                         ) {
                             rejected = true;
                             break 'nongate_pos_gate_neg;
@@ -2111,7 +2354,33 @@ impl Solver {
                     }
                 }
             }
+            // Semantic definition cores additionally need the gate-vs-gate resolvents
+            // (kissat `resolve_gate`): unlike AND/OR/eq/ITE, they are not tautologies.
+            if !rejected && g.kind == ElimGateKind::Definition {
+                'gate_pos_gate_neg: for &p in &g.gate_pos {
+                    for &n in &g.gate_neg {
+                        let cap = def_cap(self, p, n);
+                        if !self.resolve_elim_pair_capped(
+                            p,
+                            n,
+                            var,
+                            occurrence_count,
+                            &mut resolvent_count,
+                            &mut resolvent_lits,
+                            &mut resolvent_ranges,
+                            cap,
+                        ) {
+                            rejected = true;
+                            break 'gate_pos_gate_neg;
+                        }
+                    }
+                }
+            }
             if rejected {
+                if g.kind == ElimGateKind::Definition && var < self.elim_def_last_probe.len() {
+                    let e = &mut self.elim_def_last_probe[var];
+                    e.3 = e.3.saturating_add(1);
+                }
                 return false;
             }
             self.stats.preprocess_gate_eliminated_vars += 1;
@@ -2119,6 +2388,7 @@ impl Solver {
                 ElimGateKind::AndOr => {}
                 ElimGateKind::Equivalence => self.stats.preprocess_eq_gate_eliminated_vars += 1,
                 ElimGateKind::Ite => self.stats.preprocess_ite_gate_eliminated_vars += 1,
+                ElimGateKind::Definition => self.stats.preprocess_def_gate_eliminated_vars += 1,
             }
         } else {
             for &pos_clause_idx in &pos_clauses {
@@ -3348,6 +3618,206 @@ mod tests {
             !run(true),
             "extended gate BVE must preserve UNSAT (must not drop a load-bearing resolvent)"
         );
+    }
+
+    #[test]
+    fn def_gate_bve_eliminates_xor_defined_var_that_naive_bve_rejects() {
+        // x=1 = a=2 XOR b=3 via the four XOR Tseitin clauses — a definition none of
+        // the syntactic detectors (eq/AND-OR/ITE) can match — plus 2 pos and 2 neg
+        // extra binaries. Naive non-taut resolvents = 4 + 4 + 4 = 12 > occ(8);
+        // definition-aware = gate_pos×nongate_neg (4) + nongate_pos×gate_neg (4)
+        // + gate×gate (all 4 tautological, skipped) = 8 <= 8.
+        let clauses = vec![
+            vec![1, 2, -3],
+            vec![1, -2, 3],
+            vec![-1, 2, 3],
+            vec![-1, -2, -3],
+            vec![1, 4],
+            vec![1, 5],
+            vec![-1, 6],
+            vec![-1, 7],
+        ];
+        let run = |def_on: bool| {
+            let config = SolverConfig {
+                full_bsr: false,
+                ..SolverConfig::default()
+            };
+            let mut s = Solver::new_with_config(7, clauses.clone(), &config);
+            s.elim_gates_ext = true;
+            s.elim_def = def_on;
+            s.inprocess_aggressive = true;
+            for var in 2..=7 {
+                s.frozen[var] = true;
+            }
+            let sat = s.solve();
+            (s, sat)
+        };
+
+        let (s_off, sat_off) = run(false);
+        assert!(
+            !s_off.eliminated[1],
+            "syntactic-only BVE must reject x (XOR definition is not eq/AND-OR/ITE)"
+        );
+        assert_eq!(s_off.stats.preprocess_def_gate_eliminated_vars, 0);
+
+        let (s_on, sat_on) = run(true);
+        assert!(
+            s_on.eliminated[1],
+            "definition-aware BVE must eliminate x (8 restricted resolvents <= 8 occurrences)"
+        );
+        assert_eq!(s_on.stats.preprocess_def_gate_eliminated_vars, 1);
+        assert!(s_on.stats.preprocess_def_gate_checks >= 1);
+        assert!(s_on.stats.preprocess_def_gate_found >= 1);
+
+        assert!(sat_off && sat_on, "instance is satisfiable in both configs");
+        let model = s_on.sat_model.as_ref().expect("missing SAT model");
+        for clause in &clauses {
+            assert!(
+                clause.iter().any(|&lit| {
+                    let v = lit.unsigned_abs() as usize;
+                    (lit > 0 && model[v] == TRUE) || (lit < 0 && model[v] == FALSE)
+                }),
+                "definition-eliminated model violates original clause {clause:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn elim_def_preserves_unsat() {
+        // x=1 = a=2 XOR b=3, a ≡ b forces x false, while (x ∨ 4), (x ∨ ¬4) force x
+        // true. UNSAT. The definition core is the four XOR clauses (two-sided);
+        // gate-restricted elimination must keep the resolvents that carry the
+        // contradiction (dropping a load-bearing resolvent would flip to SAT).
+        let clauses = vec![
+            vec![1, 2, -3],
+            vec![1, -2, 3],
+            vec![-1, 2, 3],
+            vec![-1, -2, -3],
+            vec![-2, 3],
+            vec![2, -3],
+            vec![1, 4],
+            vec![1, -4],
+        ];
+        let run = |def_on: bool| {
+            let config = SolverConfig {
+                full_bsr: false,
+                ..SolverConfig::default()
+            };
+            let mut s = Solver::new_with_config(4, clauses.clone(), &config);
+            s.elim_gates_ext = true;
+            s.elim_def = def_on;
+            s.inprocess_aggressive = true;
+            for var in 2..=4 {
+                s.frozen[var] = true;
+            }
+            s.solve()
+        };
+        assert!(!run(false), "baseline must report UNSAT");
+        assert!(
+            !run(true),
+            "definition-gate BVE must preserve UNSAT (must not drop a load-bearing resolvent)"
+        );
+    }
+
+    #[test]
+    fn elim_def_fuzz_against_brute_force() {
+        let mut state: u64 = 0x243F6A8885A308D3;
+        let mut next = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 33) as u32
+        };
+        for round in 0..4000 {
+            let nv = 4 + (next() % 5) as usize; // 4..=8 vars
+            let nc = 6 + (next() % 18) as usize; // 6..=23 clauses
+            let mut clauses: Vec<Vec<i32>> = Vec::new();
+            for _ in 0..nc {
+                let clen = 2 + (next() % 3) as usize; // 2..=4 lits
+                let mut c: Vec<i32> = Vec::new();
+                for _ in 0..clen {
+                    let v = 1 + (next() % nv as u32) as i32;
+                    let lit = if next() & 1 == 0 { v } else { -v };
+                    if !c.contains(&lit) && !c.contains(&-lit) {
+                        c.push(lit);
+                    }
+                }
+                if c.len() >= 2 {
+                    clauses.push(c);
+                }
+            }
+            if clauses.is_empty() {
+                continue;
+            }
+            let expect_sat = {
+                let mut sat = false;
+                'outer: for mask in 0u32..(1u32 << nv) {
+                    for c in &clauses {
+                        if !c.iter().any(|&d| {
+                            let bit = (mask >> (d.unsigned_abs() - 1)) & 1 == 1;
+                            if d > 0 { bit } else { !bit }
+                        }) {
+                            continue 'outer;
+                        }
+                    }
+                    sat = true;
+                    break;
+                }
+                sat
+            };
+            let config = SolverConfig {
+                full_bsr: false,
+                ..SolverConfig::default()
+            };
+            let mut s = Solver::new_with_config(nv, clauses.clone(), &config);
+            s.elim_gates_ext = true;
+            s.elim_def = true;
+            s.inprocess_aggressive = true;
+            let got = s.solve();
+            assert_eq!(
+                got, expect_sat,
+                "round {round}: elim_def status mismatch (expect sat={expect_sat}) on {clauses:?}"
+            );
+            if got {
+                let model = s.sat_model.as_ref().expect("missing model");
+                for c in &clauses {
+                    assert!(
+                        c.iter().any(|&lit| {
+                            let v = lit.unsigned_abs() as usize;
+                            (lit > 0 && model[v] == TRUE) || (lit < 0 && model[v] == FALSE)
+                        }),
+                        "round {round}: model violates {c:?} in {clauses:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn elim_def_repro_684() {
+        let clauses: Vec<Vec<i32>> = vec![
+            vec![-1, -3, 5], vec![5, 1, 2], vec![-3, -1], vec![5, 1, -2],
+            vec![-3, -1], vec![1, 5, -2], vec![5, 2, -3], vec![1, -3, 5],
+            vec![2, -5, -3], vec![5, -3], vec![-4, -3], vec![5, 3],
+            vec![-1, -2, 5, 3], vec![-4, -3], vec![-3, 5], vec![2, 1, 3, 5],
+            vec![-3, -1, 4], vec![-3, 5], vec![-5, -2, -4], vec![5, 3, -2],
+            vec![-5, -4, 2], vec![4, 3],
+        ];
+        let config = SolverConfig { full_bsr: false, ..SolverConfig::default() };
+        let mut s = Solver::new_with_config(5, clauses.clone(), &config);
+        s.elim_gates_ext = true;
+        s.elim_def = true;
+        s.inprocess_aggressive = true;
+        let got = s.solve();
+        assert!(got, "formula is SAT");
+        let model = s.sat_model.as_ref().expect("missing model");
+        for c in &clauses {
+            assert!(
+                c.iter().any(|&lit| {
+                    let v = lit.unsigned_abs() as usize;
+                    (lit > 0 && model[v] == TRUE) || (lit < 0 && model[v] == FALSE)
+                }),
+                "model violates {c:?}"
+            );
+        }
     }
 
     #[test]

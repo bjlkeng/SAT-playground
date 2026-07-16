@@ -102,6 +102,15 @@ pub(crate) struct Kitten {
     /// Input-clause indices in the most recent UNSAT core (filled by `solve` on UNSAT).
     core: Vec<usize>,
 
+    /// antecedents[i]: for a learned clause `i`, the clause indices resolved during
+    /// its 1-UIP derivation (the initial conflict plus every pivot reason). Empty for
+    /// input clauses. `compute_core` expands learned clauses through this so the core
+    /// is a true refutation support — following only the *current* reason graph
+    /// under-approximates (a learned clause's derivation antecedents need not be
+    /// anyone's live reason at final-conflict time), which produced non-refuting
+    /// "cores" that made definition-based elimination unsound.
+    antecedents: Vec<Vec<usize>>,
+
     /// Proof trace: every learned clause derived over this kitten's lifetime, in
     /// derivation order, as signed DIMACS literals (kitten variable ids). The sequence
     /// of 1-UIP learned clauses from a CDCL refutation is a valid RUP proof, so the
@@ -109,6 +118,16 @@ pub(crate) struct Kitten {
     /// before adding a proven fact, keeping the outer DRAT proof valid (bead 5b2.3.38
     /// Phase 4). Accumulates across incremental `solve` calls on the same environment.
     proof: Vec<Vec<i32>>,
+
+    /// Work counter for budgeted solves: one tick per watched-clause visit during
+    /// propagation (kissat kitten-ticks analog). Reset at the start of each
+    /// `solve_budgeted` call.
+    ticks: u64,
+    /// Tick ceiling for the current `solve_budgeted` call (`u64::MAX` = unlimited).
+    tick_limit: u64,
+    /// Set by `propagate` when `ticks` crosses `tick_limit`; the solve loops abort
+    /// with `None` (search state is stale but `reset_search` on the next call heals it).
+    budget_exhausted: bool,
 }
 
 impl Kitten {
@@ -128,7 +147,23 @@ impl Kitten {
             inconsistent: false,
             core: Vec::new(),
             proof: Vec::new(),
+            antecedents: Vec::new(),
+            ticks: 0,
+            tick_limit: u64::MAX,
+            budget_exhausted: false,
         }
+    }
+
+    /// Ticks consumed by the most recent `solve`/`solve_budgeted` call.
+    pub(crate) fn ticks(&self) -> u64 {
+        self.ticks
+    }
+
+    /// Number of input (non-learned) clauses added so far. Core indices returned by
+    /// `core()` index into this range in `add_clause` order (tautologies are dropped
+    /// without an index, so callers relying on positional mapping must not add them).
+    pub(crate) fn num_input_clauses(&self) -> usize {
+        self.num_input
     }
 
     /// The recorded RUP proof lemmas (learned clauses, in derivation order) as signed
@@ -177,6 +212,7 @@ impl Kitten {
         if lits.is_empty() {
             self.inconsistent = true;
             self.clauses.push(lits);
+            self.antecedents.push(Vec::new());
             self.num_input = self.clauses.len();
             return;
         }
@@ -185,6 +221,7 @@ impl Kitten {
             self.watches[lits[1] as usize].push(idx);
         }
         self.clauses.push(lits);
+        self.antecedents.push(Vec::new());
         self.num_input = self.clauses.len();
     }
 
@@ -236,6 +273,11 @@ impl Kitten {
             let watch_lit = lit_neg(p) as usize;
             let mut i = 0;
             'next_clause: while i < self.watches[watch_lit].len() {
+                self.ticks += 1;
+                if self.ticks > self.tick_limit {
+                    self.budget_exhausted = true;
+                    return None;
+                }
                 let cidx = self.watches[watch_lit][i];
                 // Ensure the watched literal is at position 1 so position 0 is the
                 // "other" watch (standard two-watched-literal bookkeeping).
@@ -273,13 +315,15 @@ impl Kitten {
     /// 1-UIP conflict analysis. Returns the learned clause (internal lits, asserting
     /// literal first) and the backjump level. Assumes `conflict` is a falsified clause
     /// at the current (>0) decision level.
-    fn analyze(&mut self, conflict: usize) -> (Vec<Lit>, u32) {
+    fn analyze(&mut self, conflict: usize) -> (Vec<Lit>, u32, Vec<usize>) {
         let current_level = self.trail_lim.len() as u32;
         let mut learned: Vec<Lit> = vec![0]; // reserve slot 0 for the UIP
         let mut path_count = 0usize;
         let mut trail_idx = self.trail.len();
         let mut confl = conflict;
         let mut resolve_lit: Option<Lit> = None;
+        // Clauses resolved in this derivation (the learned clause's antecedents).
+        let mut used: Vec<usize> = vec![conflict];
 
         loop {
             // Add the reason clause's literals (all but the resolved pivot) to the
@@ -323,6 +367,7 @@ impl Kitten {
             match self.reason[pivot_var] {
                 Reason::Clause(c) => {
                     confl = c;
+                    used.push(c);
                     resolve_lit = Some(pivot);
                 }
                 Reason::Decision | Reason::Assumption => {
@@ -351,10 +396,10 @@ impl Kitten {
         if learned.len() > 2 && second_pos != 1 {
             learned.swap(1, second_pos);
         }
-        (learned, backjump)
+        (learned, backjump, used)
     }
 
-    fn add_learned(&mut self, lits: Vec<Lit>) -> usize {
+    fn add_learned(&mut self, lits: Vec<Lit>, antecedents: Vec<usize>) -> usize {
         // Record the learned clause into the RUP proof trace (as signed DIMACS lits).
         let dimacs: Vec<i32> = lits
             .iter()
@@ -375,6 +420,7 @@ impl Kitten {
             self.watches[lits[1] as usize].push(idx);
         }
         self.clauses.push(lits);
+        self.antecedents.push(antecedents);
         idx
     }
 
@@ -405,10 +451,26 @@ impl Kitten {
     /// installed as pseudo-decisions at level 0-adjacent so a conflict among them (or
     /// with the formula) yields an UNSAT with a valid clausal core.
     pub(crate) fn solve(&mut self, assumptions: &[i32]) -> KittenResult {
+        self.solve_budgeted(assumptions, u64::MAX)
+            .expect("unlimited kitten solve cannot exhaust its budget")
+    }
+
+    /// Budgeted `solve` (kissat `definitionticks` analog): abort and return `None`
+    /// once propagation has visited more than `budget` watched clauses. On `None`
+    /// the search state is stale but the solver stays reusable (the next call's
+    /// `reset_search` clears it); `ticks()` reports the work consumed either way.
+    pub(crate) fn solve_budgeted(
+        &mut self,
+        assumptions: &[i32],
+        budget: u64,
+    ) -> Option<KittenResult> {
+        self.ticks = 0;
+        self.tick_limit = budget;
+        self.budget_exhausted = false;
         self.reset_search();
         if self.inconsistent {
             self.compute_core_empty();
-            return KittenResult::Unsat;
+            return Some(KittenResult::Unsat);
         }
 
         // Enqueue all unit clauses (input + learned) at the root; they carry no watches
@@ -420,7 +482,7 @@ impl Kitten {
                     TRUE => {}
                     FALSE => {
                         self.compute_core(i);
-                        return KittenResult::Unsat;
+                        return Some(KittenResult::Unsat);
                     }
                     _ => self.assign(u, Reason::Clause(i)),
                 }
@@ -430,7 +492,10 @@ impl Kitten {
         // Root propagation of any existing units.
         if let Some(confl) = self.propagate() {
             self.compute_core(confl);
-            return KittenResult::Unsat;
+            return Some(KittenResult::Unsat);
+        }
+        if self.budget_exhausted {
+            return None;
         }
 
         // Install assumptions as forced literals at increasing decision levels so a
@@ -444,14 +509,17 @@ impl Kitten {
                     // Reconstruct the conflict by treating the failing literal's reason.
                     let confl = self.conflict_for_falsified_assumption(l);
                     self.compute_core(confl);
-                    return KittenResult::Unsat;
+                    return Some(KittenResult::Unsat);
                 }
                 _ => {
                     self.trail_lim.push(self.trail.len());
                     self.assign(l, Reason::Assumption);
                     if let Some(confl) = self.propagate() {
                         self.compute_core(confl);
-                        return KittenResult::Unsat;
+                        return Some(KittenResult::Unsat);
+                    }
+                    if self.budget_exhausted {
+                        return None;
                     }
                 }
             }
@@ -460,35 +528,40 @@ impl Kitten {
         // CDCL search.
         loop {
             match self.pick_decision() {
-                None => return KittenResult::Sat,
+                None => return Some(KittenResult::Sat),
                 Some(dec) => {
                     self.trail_lim.push(self.trail.len());
                     self.assign(dec, Reason::Decision);
                     loop {
                         match self.propagate() {
-                            None => break,
+                            None => {
+                                if self.budget_exhausted {
+                                    return None;
+                                }
+                                break;
+                            }
                             Some(confl) => {
                                 let level = self.trail_lim.len() as u32;
                                 if level == 0 {
                                     self.compute_core(confl);
-                                    return KittenResult::Unsat;
+                                    return Some(KittenResult::Unsat);
                                 }
-                                let (learned, backjump) = self.analyze(confl);
+                                let (learned, backjump, used) = self.analyze(confl);
                                 if learned.len() == 1 {
                                     // Learned a unit: backjump to root and assign it.
                                     self.backtrack(0);
                                     let uip = learned[0];
                                     if self.lit_value(uip) == FALSE {
                                         // Root conflict: UNSAT.
-                                        let cidx = self.add_learned(learned);
+                                        let cidx = self.add_learned(learned, used);
                                         self.compute_core(cidx);
-                                        return KittenResult::Unsat;
+                                        return Some(KittenResult::Unsat);
                                     }
-                                    let cidx = self.add_learned(learned);
+                                    let cidx = self.add_learned(learned, used);
                                     self.assign(uip, Reason::Clause(cidx));
                                 } else {
                                     let uip = learned[0];
-                                    let cidx = self.add_learned(learned);
+                                    let cidx = self.add_learned(learned, used);
                                     self.backtrack(backjump);
                                     self.assign(uip, Reason::Clause(cidx));
                                 }
@@ -562,6 +635,16 @@ impl Kitten {
         while let Some(cidx) = stack.pop() {
             if cidx < self.num_input {
                 self.core.push(cidx);
+            } else {
+                // Learned clause: its refutation support is its derivation
+                // antecedents, which need not be live reasons anymore.
+                for k in 0..self.antecedents[cidx].len() {
+                    let a = self.antecedents[cidx][k];
+                    if !clause_seen[a] {
+                        clause_seen[a] = true;
+                        stack.push(a);
+                    }
+                }
             }
             // Follow the reasons of the clause's assigned literals.
             for k in 0..self.clauses[cidx].len() {
@@ -742,6 +825,32 @@ mod tests {
             checked += 1;
         }
         assert!(checked >= 2000);
+    }
+
+    #[test]
+    fn budgeted_solve_exhausts_and_recovers() {
+        // 5-pigeon/4-hole PHP is expensive enough that a 10-tick budget must abort;
+        // an unlimited retry on the same instance must still refute it correctly.
+        let mut k = Kitten::new();
+        let var = |p: i32, h: i32| (p - 1) * 4 + h; // vars 1..20
+        for p in 1..=5 {
+            k.add_clause(&[var(p, 1), var(p, 2), var(p, 3), var(p, 4)]);
+        }
+        for h in 1..=4 {
+            for p1 in 1..=5 {
+                for p2 in (p1 + 1)..=5 {
+                    k.add_clause(&[-var(p1, h), -var(p2, h)]);
+                }
+            }
+        }
+        assert_eq!(k.solve_budgeted(&[], 10), None, "10 ticks must not refute PHP(5,4)");
+        assert!(k.ticks() >= 10);
+        assert_eq!(
+            k.solve_budgeted(&[], u64::MAX),
+            Some(KittenResult::Unsat),
+            "unlimited retry after a budget abort must still work"
+        );
+        assert!(!k.core().is_empty());
     }
 
     #[test]
