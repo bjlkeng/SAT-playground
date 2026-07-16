@@ -460,6 +460,14 @@ impl FormulaClass {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BinaryClauseId(u32);
 
+/// High bit of a `BinaryEdge::clause_id` marks the edge deleted. The binary hot
+/// loop previously did a random load into the 48-byte `BinaryClause` record per
+/// edge just to read its `deleted` flag; tagging the edge keeps the deleted
+/// check inside the sequentially-scanned edge array. Ids stay well below 2^31
+/// (one per binary clause), and edges carrying a live id are never tagged, so
+/// ids that reach `Conflict::Binary`/`ReasonRef::Binary` are always untagged.
+const BINARY_EDGE_DELETED_TAG: u32 = 1 << 31;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BinaryEdge {
     implied: i32,
@@ -566,6 +574,32 @@ impl BinaryImplications {
     fn mark_deleted(&mut self, _id: BinaryClauseId) {
         if let Self::Flat { dirty, .. } = self {
             *dirty = true;
+        }
+    }
+
+    /// Set the deleted tag on every edge under `antecedent` whose clause id is
+    /// `id`. Called from the two `BinaryClause::deleted = true` sites so the
+    /// edge tag stays exactly in sync with the record flag the hot loop used
+    /// to consult.
+    fn tag_deleted_edges(&mut self, antecedent: i32, id: BinaryClauseId) {
+        let idx = Self::lit_index(antecedent);
+        let list: &mut [BinaryEdge] = match self {
+            Self::Nested(edges) => match edges.get_mut(idx) {
+                Some(v) => v.as_mut_slice(),
+                None => return,
+            },
+            Self::Flat { edges, offsets, .. } => {
+                let Some(&start) = offsets.get(idx) else {
+                    return;
+                };
+                let end = offsets.get(idx + 1).copied().unwrap_or(edges.len() as u32);
+                &mut edges[start as usize..end as usize]
+            }
+        };
+        for edge in list {
+            if edge.clause_id.0 & !BINARY_EDGE_DELETED_TAG == id.0 {
+                edge.clause_id.0 |= BINARY_EDGE_DELETED_TAG;
+            }
         }
     }
 
@@ -1599,6 +1633,13 @@ struct Solver {
     binary_clauses: Vec<BinaryClause>,
     /// binary implication adjacency indexed by the assigned-true antecedent literal
     binary_implications: BinaryImplications,
+    /// Hot-loop read path for the binary deleted check (SAT_BINARY_EDGE_TAG,
+    /// default on): read the deleted tag inline in the edge array (no random
+    /// `BinaryClause` record load, no dead usage-metadata writes). `off` replays
+    /// the legacy record-load path byte-for-byte (including the usage-metadata
+    /// writes) for A/B gating. Both paths see identical trajectories; the tag
+    /// bits are maintained at the deletion sites regardless of the flag.
+    binary_edge_tag_fast: bool,
     /// arena clause offset to stable BinaryClauseId + 1; 0 means not represented as binary
     binary_id_by_clause: Vec<u32>,
     /// scratch stamps reserved for generated binary deduplication in later HBR/transitive passes
@@ -2941,6 +2982,7 @@ impl Solver {
             },
             binary_dedup_stamp: 0,
             binary_fast_path: config.binary_fast_path,
+            binary_edge_tag_fast: env_bool_or_default("SAT_BINARY_EDGE_TAG", true),
             prefetch_watched_clauses: config.prefetch_watched_clauses,
             accounting_mode: SearchAccountingMode::NormalSearch,
             temporary_stats: TemporaryAssumptionStats::default(),
@@ -3527,6 +3569,10 @@ impl Solver {
         if let Some(binary) = self.binary_clauses.get_mut(id.0 as usize) {
             binary.deleted = true;
         }
+        if let Some(&[a, b]) = self.binary_reason_lits.get(id.0 as usize) {
+            self.binary_implications.tag_deleted_edges(-a, id);
+            self.binary_implications.tag_deleted_edges(-b, id);
+        }
         self.binary_implications.mark_deleted(id);
         if clause_idx < self.binary_id_by_clause.len() {
             self.binary_id_by_clause[clause_idx] = 0;
@@ -3975,6 +4021,11 @@ impl Solver {
             let new_clause_idx = reloc.get(old_clause_idx);
             if new_clause_idx == NO_RELOC {
                 self.binary_clauses[id_idx].deleted = true;
+                let id = BinaryClauseId(id_idx as u32);
+                if let Some(&[a, b]) = self.binary_reason_lits.get(id_idx) {
+                    self.binary_implications.tag_deleted_edges(-a, id);
+                    self.binary_implications.tag_deleted_edges(-b, id);
+                }
                 continue;
             }
             let new_clause_idx = new_clause_idx as usize;
@@ -5759,6 +5810,44 @@ impl Solver {
         }
 
         let edge_count = self.binary_implications.len_for(lit);
+        if self.binary_edge_tag_fast {
+            for edge_idx in 0..edge_count {
+                self.record_search_ticks::<MODE_TICKS, NORMAL_SEARCH>(1);
+                let edge = self.binary_implications.edge_for(lit, edge_idx);
+                // Deleted check via the edge tag: no random `BinaryClause` record
+                // load in the hot loop (see BINARY_EDGE_DELETED_TAG). Usage metadata
+                // is no longer written here either — `used_count`/`last_used_conflict`
+                // have no functional readers; conflict analysis still marks reasons.
+                if edge.clause_id.0 & BINARY_EDGE_DELETED_TAG != 0 {
+                    if HOT_STATS && normal_search_accounting {
+                        self.stats.binary_stale_skips += 1;
+                    }
+                    continue;
+                }
+                match self.lit_value(edge.implied) {
+                    TRUE => {}
+                    FALSE => {
+                        return Some(Conflict::Binary(edge.clause_id));
+                    }
+                    UNASSIGNED => {
+                        if !self.enqueue_impl::<NORMAL_SEARCH>(
+                            edge.implied,
+                            ReasonRef::Binary(edge.clause_id),
+                        ) {
+                            return Some(Conflict::Binary(edge.clause_id));
+                        }
+                        if HOT_STATS && normal_search_accounting {
+                            self.stats.binary_props += 1;
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            return None;
+        }
+        // Legacy path (SAT_BINARY_EDGE_TAG=off): byte-for-byte the pre-tag hot
+        // loop — random record load for the deleted flag plus per-propagation
+        // usage-metadata writes — kept for before/after A/B gating.
         for edge_idx in 0..edge_count {
             self.record_search_ticks::<MODE_TICKS, NORMAL_SEARCH>(1);
             let edge = self.binary_implications.edge_for(lit, edge_idx);
@@ -16474,6 +16563,10 @@ mod tests {
 
     #[test]
     fn test_binary_usage_counter_updates_on_reason() {
+        // Propagation no longer writes usage metadata (dead in the hot path);
+        // usage is recorded when the binary participates in conflict analysis
+        // (mark_binary_literals_for_analysis). Propagation itself must leave
+        // the counters untouched.
         let config = binary_fast_config();
         let mut s = make_solver_with_config(2, vec![vec![1, 2]], &config);
         let binary_id = s.binary_id_for_clause(s.original_clause_ids[0] as usize );
@@ -16481,7 +16574,7 @@ mod tests {
         assert!(s.enqueue(-1, ReasonRef::None));
         assert!(s.propagate().is_none());
 
-        assert_eq!(s.binary_clauses[binary_id.0 as usize].used_count, 1);
+        assert_eq!(s.binary_clauses[binary_id.0 as usize].used_count, 0);
         assert_eq!(s.binary_clauses[binary_id.0 as usize].last_used_conflict, 0);
     }
 
