@@ -1120,6 +1120,50 @@ struct Watcher {
     blocker: i32,
 }
 
+/// Inline binary watcher tags (SAT_WATCH_INLINE_BIN, kissat proplit.h parity;
+/// bead ck8). Bit 31 marks a watcher whose clause is a live length-2 clause and
+/// whose `blocker` is EXACTLY the clause's other literal, so the hot loop can
+/// conflict/enqueue from the watcher alone with zero arena dereference (the
+/// clause body is only touched later by conflict analysis, which needs it
+/// anyway). Bit 30 (meaningful only when bit 31 is set) caches the learnt flag
+/// so the reason-LBD bookkeeping call can be skipped for original binaries
+/// without loading the header. Invariants that keep the tag sound:
+/// - only `attach_clause` creates tagged entries, and only for length-2
+///   clauses at arena indices below 2^30;
+/// - every clause deletion routes through `clause_set_deleted`, which untags
+///   the entries in both literals' watch lists IN PLACE (they become ordinary
+///   stale watchers the legacy loop drops at its next visit, preserving the
+///   legacy list-order and tick-accounting evolution byte-for-byte);
+/// - in-place rewrites either delete the binary (preprocess strengthen) or
+///   strict-detach + reattach (rewrite transaction layer), refreshing tags;
+/// - GC/compaction passes mask the tag before relocation lookups and reapply
+///   it to the rewritten index.
+/// Untagged entries with arena indices in [2^30, 2^31) are unambiguous (bit 31
+/// clear); indices at or above 2^31 are rejected by an assert in
+/// `attach_clause` while the feature is on (an arena that large cannot fit the
+/// 16GB job cap long before the index wraps into the tag bit).
+const WATCH_BINARY_TAG: u32 = 1 << 31;
+const WATCH_LEARNT_TAG: u32 = 1 << 30;
+const WATCH_TAG_MASK: u32 = WATCH_BINARY_TAG | WATCH_LEARNT_TAG;
+
+#[inline(always)]
+fn watcher_untagged_idx(clause_idx: u32) -> usize {
+    if clause_idx & WATCH_BINARY_TAG != 0 {
+        (clause_idx & !WATCH_TAG_MASK) as usize
+    } else {
+        clause_idx as usize
+    }
+}
+
+#[inline(always)]
+fn watcher_tag_bits(clause_idx: u32) -> u32 {
+    if clause_idx & WATCH_BINARY_TAG != 0 {
+        clause_idx & WATCH_TAG_MASK
+    } else {
+        0
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum OriginalClauseInsertResult {
     Allocated(usize),
@@ -1648,6 +1692,32 @@ struct Solver {
     /// Byte-for-byte identical trajectories; `off` selects the legacy loop for A/B
     /// gating (same pattern as `binary_edge_tag_fast`).
     hotloop_ptr_fast: bool,
+    /// Watch-inline binary handling (SAT_WATCH_INLINE_BIN): length-2 clauses get
+    /// tagged watchers (`WATCH_BINARY_TAG`) whose blocker is exactly the other
+    /// literal, so binary propagation and conflict detection never touch the
+    /// arena (kissat proplit.h parity, bead ck8). Off = legacy watcher path.
+    /// Trajectory note: the inline path skips the legacy l0/l1 normalization
+    /// swap on binary clauses, so arena literal order (and thus analysis bump
+    /// order) can diverge from the legacy path — gate with a full A/B.
+    watch_inline_bin: bool,
+    /// Tags-in-play switch for the inline binary path. Stays false through
+    /// parse and root preprocessing (legacy behavior byte-for-byte, including
+    /// the l0/l1 normalization swaps the arena accumulates), and flips on via
+    /// `activate_watch_inline_tags` only for formulas the root closure did NOT
+    /// arm (`!inprocess_aggressive`): root-armed BMC/miter cells run mid-search
+    /// formula-editing rounds that read binary literal order, so keeping them
+    /// untagged keeps them byte-identical to the shipped baseline (the v1
+    /// unscoped gate `log/abtest-cand-vs-base-2026-07-17-11-15-41` lost oski40
+    /// to exactly that trajectory roll).
+    watch_inline_tags_active: bool,
+    /// Bump-order parity hint for inline binary conflicts: the legacy path
+    /// normalizes a conflicting binary clause to arena order
+    /// `[blocker, false_lit]` right before analysis reads it; the inline path
+    /// never touches the arena, so it stashes that pair here and
+    /// `mark_conflict_literals_for_analysis` marks in exactly that order.
+    /// Take-once protocol: set at every inline-binary conflict return,
+    /// consumed (taken) by the next conflict marking.
+    inline_binary_conflict_hint: Option<(usize, i32, i32)>,
     /// opt-in switch for binary implication propagation; default off for solver-10 parity
     binary_fast_path: bool,
     /// bead 5b2.8.1: software-prefetch the next watched clause during propagation (default off)
@@ -2734,9 +2804,15 @@ fn lit_redundant(
             );
             lit = parent;
             reason_ref = context.reason[parent_var].as_ref_unchecked();
+            // Start every reason walk at position 0: the propagated literal is
+            // skipped by the parent_var == lit_var check above, not by position.
+            // Legacy propagation normalizes the propagated literal to lits[0],
+            // but inline binary watchers (SAT_WATCH_INLINE_BIN) never touch the
+            // arena, so a binary reason's propagated literal may sit at either
+            // position. Identical walk order for normalized reasons.
             lit_pos = match reason_ref {
                 ReasonRef::Binary(_) => 0,
-                ReasonRef::Clause(_) | ReasonRef::None => 1,
+                ReasonRef::Clause(_) | ReasonRef::None => 0,
             };
             depth += 1;
             continue;
@@ -2989,6 +3065,9 @@ impl Solver {
             },
             binary_id_by_clause: Vec::new(),
             hotloop_ptr_fast: env_bool_or_default("SAT_HOTLOOP_PTR", true),
+            watch_inline_bin: env_bool_or_default("SAT_WATCH_INLINE_BIN", true),
+            watch_inline_tags_active: false,
+            inline_binary_conflict_hint: None,
             binary_fast_path: config.binary_fast_path,
             binary_edge_tag_fast: env_bool_or_default("SAT_BINARY_EDGE_TAG", true),
             prefetch_watched_clauses: config.prefetch_watched_clauses,
@@ -3466,8 +3545,83 @@ impl Solver {
         1 + self.clause_len(clause_idx) + clause_header_extra_words(self.clause_header(clause_idx))
     }
 
+    /// Untag the inline-binary watcher entries for a deleted length-2 clause in
+    /// both its literals' watch lists. Tagged entries carry no deleted check in
+    /// the hot loop, so every deletion MUST route through this (it does:
+    /// `clause_set_deleted` is the single deletion choke point). Never called
+    /// inside the propagation `mem::take` window — no deletion site runs
+    /// mid-propagation.
+    fn detach_inline_binary_watchers(&mut self, clause_idx: usize) {
+        for lit_pos in 0..2 {
+            let lit = self.clause_lit(clause_idx, lit_pos);
+            let watch_idx = self.lit_index(lit);
+            if watch_idx >= self.watchers.len() {
+                continue;
+            }
+            // Untag IN PLACE — do not remove. The entry becomes an ordinary
+            // stale watcher that the legacy loop drops at its next visit, so
+            // list order, tick accounting, and stale-skip stats evolve
+            // byte-for-byte like the legacy path.
+            for w in &mut self.watchers[watch_idx] {
+                if w.clause_idx & WATCH_BINARY_TAG != 0
+                    && (w.clause_idx & !WATCH_TAG_MASK) as usize == clause_idx
+                {
+                    w.clause_idx = clause_idx as u32;
+                }
+            }
+        }
+    }
+
+    /// One-time O(W) activation of the inline binary watcher tags, called after
+    /// the root-arming decision for formulas the root closure did NOT arm.
+    /// Pure tag-bit addition: an entry is tagged only when its watched literal
+    /// is one of the clause's two literals AND its blocker already equals the
+    /// other literal (always true for freshly attached/rebuilt watchers; stale
+    /// entries from lazy preprocessing rewrites are left untagged for the
+    /// legacy path to drop). No blockers are rewritten, so knob-on trajectories
+    /// on never-armed formulas stay byte-identical to legacy up to this point
+    /// and the inline path takes over from here.
+    fn activate_watch_inline_tags(&mut self) {
+        self.watch_inline_tags_active = true;
+        let num_lists = self.watchers.len();
+        for watch_idx in 0..num_lists {
+            let var = watch_idx / 2 + 1;
+            let list_lit = if watch_idx % 2 == 0 {
+                var as i32
+            } else {
+                -(var as i32)
+            };
+            let mut list = std::mem::take(&mut self.watchers[watch_idx]);
+            for w in &mut list {
+                let idx = w.clause_idx as usize;
+                if idx >= (1usize << 30) || idx >= self.arena.len() {
+                    continue;
+                }
+                if self.clause_is_deleted(idx) || self.clause_len(idx) != 2 {
+                    continue;
+                }
+                let l0 = self.clause_lit(idx, 0);
+                let l1 = self.clause_lit(idx, 1);
+                let sound = (l0 == list_lit && w.blocker == l1)
+                    || (l1 == list_lit && w.blocker == l0);
+                if !sound {
+                    continue;
+                }
+                let mut tagged = w.clause_idx | WATCH_BINARY_TAG;
+                if self.clause_is_learnt(idx) {
+                    tagged |= WATCH_LEARNT_TAG;
+                }
+                w.clause_idx = tagged;
+            }
+            self.watchers[watch_idx] = list;
+        }
+    }
+
     #[inline(always)]
     fn clause_set_deleted(&mut self, clause_idx: usize, deleted: bool) {
+        if deleted && self.watch_inline_tags_active && self.clause_len(clause_idx) == 2 {
+            self.detach_inline_binary_watchers(clause_idx);
+        }
         let header = self.clause_header(clause_idx);
         let mark = if deleted { CLAUSE_DELETED_MARK } else { 0 };
         self.arena[clause_idx] = clause_make_header(
@@ -4229,7 +4383,8 @@ impl Solver {
             let mut write = 0usize;
             for read in 0..watch_list.len() {
                 let mut watcher = watch_list[read];
-                let old_idx = watcher.clause_idx as usize;
+                let tag = watcher_tag_bits(watcher.clause_idx);
+                let old_idx = watcher_untagged_idx(watcher.clause_idx);
                 if old_idx >= reloc.len() {
                     continue;
                 }
@@ -4237,7 +4392,7 @@ impl Solver {
                 if new_idx == NO_RELOC {
                     continue;
                 }
-                watcher.clause_idx = new_idx as u32;
+                watcher.clause_idx = new_idx | tag;
                 watch_list[write] = watcher;
                 write += 1;
             }
@@ -4247,7 +4402,8 @@ impl Solver {
         let mut watch_scratch_write = 0usize;
         for read in 0..self.watch_scratch.len() {
             let mut watcher = self.watch_scratch[read];
-            let old_idx = watcher.clause_idx as usize;
+            let tag = watcher_tag_bits(watcher.clause_idx);
+            let old_idx = watcher_untagged_idx(watcher.clause_idx);
             if old_idx >= reloc.len() {
                 continue;
             }
@@ -4255,7 +4411,7 @@ impl Solver {
             if new_idx == NO_RELOC {
                 continue;
             }
-            watcher.clause_idx = new_idx as u32;
+            watcher.clause_idx = new_idx | tag;
             self.watch_scratch[watch_scratch_write] = watcher;
             watch_scratch_write += 1;
         }
@@ -4472,7 +4628,7 @@ impl Solver {
                 let lit = self.clause_lit(clause_idx, pos);
                 let watched = self.watchers[self.lit_index(lit)]
                     .iter()
-                    .any(|w| w.clause_idx as usize == clause_idx);
+                    .any(|w| watcher_untagged_idx(w.clause_idx) == clause_idx);
                 debug_assert!(
                     watched,
                     "clause {clause_idx} not watched on its literal at position {pos}"
@@ -4482,7 +4638,7 @@ impl Solver {
         for list in &self.watchers {
             for w in list {
                 debug_assert!(
-                    !self.clause_is_deleted(w.clause_idx as usize),
+                    !self.clause_is_deleted(watcher_untagged_idx(w.clause_idx)),
                     "watch list references deleted clause {}",
                     w.clause_idx
                 );
@@ -4943,7 +5099,7 @@ impl Solver {
         let watch_list = &mut self.watchers[watch_idx];
         if let Some(pos) = watch_list
             .iter()
-            .position(|watcher| watcher.clause_idx as usize == clause_idx)
+            .position(|watcher| watcher_untagged_idx(watcher.clause_idx) == clause_idx)
         {
             watch_list.swap_remove(pos);
         } else {
@@ -4988,17 +5144,30 @@ impl Solver {
             2 if self.binary_fast_path => {
                 self.register_binary_clause(clause_idx);
             }
-            _ => {
+            len => {
                 let first = self.clause_lit(clause_idx, 0);
                 let second = self.clause_lit(clause_idx, 1);
                 let first_watch_idx = self.lit_index(first);
                 let second_watch_idx = self.lit_index(second);
+                let mut tagged_idx = clause_idx as u32;
+                if self.watch_inline_tags_active {
+                    assert!(
+                        clause_idx < (1usize << 31),
+                        "watch-inline-bin requires arena indices below 2^31"
+                    );
+                    if len == 2 && clause_idx < (1usize << 30) {
+                        tagged_idx |= WATCH_BINARY_TAG;
+                        if self.clause_is_learnt(clause_idx) {
+                            tagged_idx |= WATCH_LEARNT_TAG;
+                        }
+                    }
+                }
                 self.watchers[first_watch_idx].push(Watcher {
-                    clause_idx: clause_idx as u32,
+                    clause_idx: tagged_idx,
                     blocker: second,
                 });
                 self.watchers[second_watch_idx].push(Watcher {
-                    clause_idx: clause_idx as u32,
+                    clause_idx: tagged_idx,
                     blocker: first,
                 });
             }
@@ -6011,7 +6180,7 @@ impl Solver {
                 // but `arena[clause_idx]` is a random load that stalls the loop on a cache miss.
                 // This is a pure hint and cannot change the search result.
                 if prefetch_clauses && read < pending.len() {
-                    let next_clause_idx = pending[read].clause_idx as usize;
+                    let next_clause_idx = watcher_untagged_idx(pending[read].clause_idx);
                     if next_clause_idx < self.arena.len() {
                         #[cfg(target_arch = "x86_64")]
                         unsafe {
@@ -6026,9 +6195,81 @@ impl Solver {
                 if HOT_STATS && normal_search_accounting {
                     self.stats.watch_scans += 1;
                 }
-                if self.lit_value(watcher.blocker) == TRUE {
+                let blocker_value = self.lit_value(watcher.blocker);
+                if blocker_value == TRUE {
                     if HOT_STATS && normal_search_accounting {
                         self.stats.watch_blocker_hits += 1;
+                    }
+                    pending[write] = watcher;
+                    write += 1;
+                    continue;
+                }
+                if watcher.clause_idx & WATCH_BINARY_TAG != 0 && self.watch_inline_tags_active {
+                    // Inline binary watcher (SAT_WATCH_INLINE_BIN): the blocker
+                    // is exactly the clause's other literal and the clause is
+                    // live (deletions eagerly remove tagged entries), so the
+                    // whole binary case resolves without touching the arena.
+                    // Mirrors the legacy binary flow: blocker FALSE => conflict
+                    // with the watcher kept in place; UNASSIGNED => propagate
+                    // the blocker with the clause as reason. Tick accounting is
+                    // identical (one tick per visit, zero replacement-scan
+                    // ticks). The clause body is NOT order-normalized here (the
+                    // legacy path swaps lits[0]/lits[1]); analysis reads the
+                    // attach-time order instead.
+                    let clause_idx = (watcher.clause_idx & !WATCH_TAG_MASK) as usize;
+                    #[cfg(debug_assertions)]
+                    {
+                        assert!(clause_idx < self.arena.len(), "tagged watcher OOB");
+                        assert!(
+                            !self.clause_is_deleted(clause_idx),
+                            "tagged watcher points at deleted clause {clause_idx}"
+                        );
+                        assert_eq!(
+                            self.clause_len(clause_idx),
+                            2,
+                            "tagged watcher clause {clause_idx} is not binary"
+                        );
+                        let l0 = self.clause_lit(clause_idx, 0);
+                        let l1 = self.clause_lit(clause_idx, 1);
+                        assert!(
+                            (l0 == watcher.blocker && l1 == false_lit)
+                                || (l1 == watcher.blocker && l0 == false_lit),
+                            "tagged watcher clause {clause_idx} lits ({l0},{l1}) do not match blocker {} / watched {}",
+                            watcher.blocker,
+                            false_lit
+                        );
+                    }
+                    if blocker_value == FALSE
+                        || !self
+                            .enqueue_impl::<NORMAL_SEARCH>(
+                                watcher.blocker,
+                                ReasonRef::Clause(clause_idx),
+                            )
+                    {
+                        // Bump-order parity: the legacy path would have
+                        // normalized this clause to [blocker, false_lit] in the
+                        // arena; hand analysis that exact marking order.
+                        self.inline_binary_conflict_hint =
+                            Some((clause_idx, watcher.blocker, false_lit));
+                        pending[write] = watcher;
+                        write += 1;
+                        while read < pending.len() {
+                            pending[write] = pending[read];
+                            write += 1;
+                            read += 1;
+                        }
+                        pending.truncate(write);
+                        self.watchers[watch_idx] = pending;
+                        return Some(Conflict::Clause(clause_idx));
+                    }
+                    if watcher.clause_idx & WATCH_LEARNT_TAG != 0 {
+                        self.note_clause_used_as_propagation_reason(
+                            clause_idx,
+                            normal_search_accounting,
+                        );
+                    }
+                    if HOT_STATS && normal_search_accounting {
+                        self.stats.binary_props += 1;
                     }
                     pending[write] = watcher;
                     write += 1;
@@ -7578,9 +7819,23 @@ impl Solver {
                 }
             }
         }
-        let implied_lit = self.clause_lit(clause_idx, 0);
-        let var = implied_lit.unsigned_abs() as usize;
-        self.lit_value(implied_lit) == TRUE && self.reason_ref(var) == ReasonRef::Clause(clause_idx)
+        // Check BOTH watched positions: legacy propagation normalizes the
+        // propagated literal to lits[0], but inline binary watchers
+        // (SAT_WATCH_INLINE_BIN) never touch the arena, so a binary's
+        // propagated literal may sit at either position. For legacy reasons the
+        // extra position can never match (its reason is not this clause), so
+        // this is behavior-identical when the inline path is off.
+        let check_len = self.clause_len(clause_idx).min(2);
+        for lit_pos in 0..check_len {
+            let implied_lit = self.clause_lit(clause_idx, lit_pos);
+            let var = implied_lit.unsigned_abs() as usize;
+            if self.lit_value(implied_lit) == TRUE
+                && self.reason_ref(var) == ReasonRef::Clause(clause_idx)
+            {
+                return true;
+            }
+        }
+        false
     }
 
     fn clear_reason_for_locked_clause(&mut self, clause_idx: usize) {
@@ -9252,7 +9507,7 @@ impl Solver {
         let mut stale = 0usize;
         for watch_list in &self.watchers {
             for watcher in watch_list {
-                let clause_idx = watcher.clause_idx as usize;
+                let clause_idx = watcher_untagged_idx(watcher.clause_idx);
                 if clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx) {
                     live += 1;
                 } else {
@@ -9321,7 +9576,7 @@ impl Solver {
             let mut write = 0usize;
             for read in 0..watch_list.len() {
                 let watcher = watch_list[read];
-                let clause_idx = watcher.clause_idx as usize;
+                let clause_idx = watcher_untagged_idx(watcher.clause_idx);
                 if clause_idx < arena.len()
                     && clause_header_mark(arena[clause_idx]) != CLAUSE_DELETED_MARK
                 {
@@ -9614,7 +9869,8 @@ impl Solver {
             let mut write = 0usize;
             for read in 0..watch_list.len() {
                 let mut watcher = watch_list[read];
-                let old_idx = watcher.clause_idx as usize;
+                let tag = watcher_tag_bits(watcher.clause_idx);
+                let old_idx = watcher_untagged_idx(watcher.clause_idx);
                 let new_idx = reloc_lookup.get(old_idx);
                 if new_idx == NO_RELOC {
                     continue;
@@ -9622,7 +9878,7 @@ impl Solver {
                 if track_gc_detail_stats && new_idx as usize != old_idx {
                     refs_rewritten += 1;
                 }
-                watcher.clause_idx = new_idx as u32;
+                watcher.clause_idx = new_idx as u32 | tag;
                 watch_list[write] = watcher;
                 write += 1;
             }
@@ -9632,7 +9888,8 @@ impl Solver {
         let mut watch_scratch_write = 0usize;
         for read in 0..self.watch_scratch.len() {
             let mut watcher = self.watch_scratch[read];
-            let old_idx = watcher.clause_idx as usize;
+            let tag = watcher_tag_bits(watcher.clause_idx);
+            let old_idx = watcher_untagged_idx(watcher.clause_idx);
             let new_idx = reloc_lookup.get(old_idx);
             if new_idx == NO_RELOC {
                 continue;
@@ -9640,7 +9897,7 @@ impl Solver {
             if track_gc_detail_stats && new_idx as usize != old_idx {
                 refs_rewritten += 1;
             }
-            watcher.clause_idx = new_idx as u32;
+            watcher.clause_idx = new_idx as u32 | tag;
             self.watch_scratch[watch_scratch_write] = watcher;
             watch_scratch_write += 1;
         }
@@ -10064,7 +10321,7 @@ impl Solver {
             let mut write = 0usize;
             for read in 0..read_len {
                 let watcher = list[read];
-                let clause_idx = watcher.clause_idx as usize;
+                let clause_idx = watcher_untagged_idx(watcher.clause_idx);
                 if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
                     total_removed += 1;
                     continue;
@@ -10556,7 +10813,7 @@ impl Solver {
     fn mark_clause_literals_for_analysis(
         &mut self,
         clause_idx: usize,
-        start_lit_pos: usize,
+        skip_var: Option<usize>,
         current_level: usize,
         current_level_count: &mut usize,
     ) {
@@ -10565,27 +10822,20 @@ impl Solver {
         }
 
         let clause_len = self.clause_len(clause_idx);
-        for lit_pos in start_lit_pos..clause_len {
+        for lit_pos in 0..clause_len {
             let lit = self.clause_lit(clause_idx, lit_pos);
             let var = lit.unsigned_abs() as usize;
-            if self.scratch_seen[var] != 0
-                || (self.use_resolved_conflict_analysis && self.scratch_resolved[var] != 0)
-            {
+            // Reason-side marking skips the resolved variable by VALUE, not by
+            // position: legacy propagation normalizes the propagated literal to
+            // lits[0], but the inline-binary watcher path (SAT_WATCH_INLINE_BIN)
+            // does not touch the arena, so a binary reason's propagated literal
+            // may sit at either position. Identical marking order for normalized
+            // reasons (position 0 is skipped by the var check instead of the
+            // range start).
+            if Some(var) == skip_var {
                 continue;
             }
-
-            let level = self.decision_level[var] as usize;
-            if level == 0 {
-                continue;
-            }
-
-            self.scratch_seen[var] = 1;
-            self.scratch_bumped_vars.push(var);
-            if level == current_level {
-                *current_level_count += 1;
-            } else {
-                self.scratch_learned.push(lit);
-            }
+            self.mark_analysis_lit(lit, current_level, current_level_count);
         }
     }
 
@@ -10656,9 +10906,19 @@ impl Solver {
                 {
                     self.otss_participating_reasons.push(clause_idx);
                 }
+                // start_lit_pos == 0 is the resolved-analysis mode (the resolved
+                // variable is filtered by scratch_resolved); the legacy positional
+                // skip (start_lit_pos == 1) is expressed as a skip-by-var so
+                // reasons whose propagated literal is not at position 0 (inline
+                // binary watchers never normalize the arena) resolve correctly.
+                let skip_var = if start_lit_pos == 0 {
+                    None
+                } else {
+                    Some(resolved_var)
+                };
                 self.mark_clause_literals_for_analysis(
                     clause_idx,
-                    start_lit_pos,
+                    skip_var,
                     current_level,
                     current_level_count,
                 );
@@ -10672,19 +10932,58 @@ impl Solver {
         }
     }
 
+    /// Mark one conflict/reason literal for 1-UIP analysis (shared per-literal
+    /// body of `mark_clause_literals_for_analysis`).
+    #[inline(always)]
+    fn mark_analysis_lit(&mut self, lit: i32, current_level: usize, current_level_count: &mut usize) {
+        let var = lit.unsigned_abs() as usize;
+        if self.scratch_seen[var] != 0
+            || (self.use_resolved_conflict_analysis && self.scratch_resolved[var] != 0)
+        {
+            return;
+        }
+        let level = self.decision_level[var] as usize;
+        if level == 0 {
+            return;
+        }
+        self.scratch_seen[var] = 1;
+        self.scratch_bumped_vars.push(var);
+        if level == current_level {
+            *current_level_count += 1;
+        } else {
+            self.scratch_learned.push(lit);
+        }
+    }
+
     fn mark_conflict_literals_for_analysis(
         &mut self,
         conflict: Conflict,
         current_level: usize,
         current_level_count: &mut usize,
     ) {
+        let hint = self.inline_binary_conflict_hint.take();
         match conflict {
-            Conflict::Clause(clause_idx) => self.mark_clause_literals_for_analysis(
-                clause_idx,
-                0,
-                current_level,
-                current_level_count,
-            ),
+            Conflict::Clause(clause_idx) => {
+                if let Some((hint_idx, blocker, false_lit)) = hint {
+                    if hint_idx == clause_idx {
+                        // Inline binary conflict: reproduce the exact marking
+                        // order the legacy path would produce after its arena
+                        // normalization ([blocker, false_lit]).
+                        if self.reduce_db_enabled() {
+                            self.bump_clause_activity(clause_idx);
+                        }
+                        self.mark_analysis_lit(blocker, current_level, current_level_count);
+                        self.mark_analysis_lit(false_lit, current_level, current_level_count);
+                        return;
+                    }
+                }
+                self.mark_clause_literals_for_analysis(
+                    clause_idx,
+                    None,
+                    current_level,
+                    current_level_count,
+                )
+            }
             Conflict::Binary(binary_id) => self.mark_binary_literals_for_analysis(
                 binary_id,
                 None,
@@ -12538,6 +12837,13 @@ impl Solver {
         // these formulas; a flat 1M-conflict cadence never gets enough rounds. Gated on
         // actual root merges so every other formula keeps the shipped schedule.
         self.maybe_arm_congruence_productive_search(config);
+        // Inline binary watchers activate only for formulas the root closure
+        // did NOT arm: root-armed BMC/miter cells run mid-search formula-editing
+        // rounds that read binary literal order, so they stay untagged and
+        // byte-identical to the shipped baseline.
+        if self.watch_inline_bin && !self.inprocess_aggressive {
+            self.activate_watch_inline_tags();
+        }
         self.formula_class = self.classify_formula();
         if config.trace_preprocess {
             eprintln!(
@@ -18485,6 +18791,93 @@ mod tests {
         assert_eq!(s.stats.watch_clause_loads, 0);
         assert_eq!(s.stats.watch_stale_skips, 0);
         assert_eq!(s.watchers[watch_idx].len(), 1);
+    }
+
+    #[test]
+    fn test_watch_inline_bin_tags_binary_attach_and_propagates_without_arena_touch() {
+        let mut s = make_solver(3, vec![]);
+        s.watch_inline_bin = true;
+        s.watch_inline_tags_active = true;
+        let bin = s.add_clause(vec![1, 2]);
+        let long = s.add_clause(vec![1, 2, 3]);
+
+        // Binary watchers carry the tag + exact other-literal blocker; the long
+        // clause stays untagged.
+        for (lit, other) in [(1, 2), (2, 1)] {
+            let entry = s.watchers[s.lit_index(lit)]
+                .iter()
+                .copied()
+                .find(|w| watcher_untagged_idx(w.clause_idx) == bin)
+                .expect("binary watcher present");
+            assert_ne!(entry.clause_idx & WATCH_BINARY_TAG, 0);
+            // add_clause creates learned clauses, so the learnt bit is cached.
+            assert_ne!(entry.clause_idx & WATCH_LEARNT_TAG, 0);
+            assert_eq!(entry.blocker, other);
+        }
+        assert!(s.watchers[s.lit_index(1)]
+            .iter()
+            .any(|w| w.clause_idx as usize == long));
+
+        // Propagation through the tagged watcher enqueues the blocker with the
+        // clause as reason and leaves the arena literal order untouched.
+        s.decide(-1);
+        assert_eq!(s.propagate(), None);
+        assert_eq!(s.lit_value(2), TRUE);
+        assert_eq!(s.reason_ref(2), ReasonRef::Clause(bin));
+        assert_eq!(s.clause_lit(bin, 0), 1, "inline path must not swap lits");
+        assert_eq!(s.clause_lit(bin, 1), 2);
+    }
+
+    #[test]
+    fn test_watch_inline_bin_conflict_returns_clause_and_analysis_succeeds() {
+        // (x1 v x2), (x1 v -x2): deciding -x1 propagates x2 via the first
+        // binary and conflicts on the second; both are handled by the tagged
+        // path with no arena normalization.
+        let mut s = make_solver(2, vec![]);
+        s.watch_inline_bin = true;
+        s.watch_inline_tags_active = true;
+        let b1 = s.add_clause(vec![1, 2]);
+        let b2 = s.add_clause(vec![1, -2]);
+        s.decide(-1);
+        let conflict = s.propagate();
+        assert!(matches!(conflict, Some(Conflict::Clause(idx)) if idx == b1 || idx == b2));
+        let mut count = 0usize;
+        s.mark_conflict_literals_for_analysis(conflict.unwrap(), s.current_level(), &mut count);
+        assert!(count > 0, "conflict must mark current-level literals");
+    }
+
+    #[test]
+    fn test_watch_inline_bin_deletion_untags_in_place() {
+        let mut s = make_solver(3, vec![]);
+        s.watch_inline_bin = true;
+        s.watch_inline_tags_active = true;
+        let bin = s.add_clause(vec![1, 2]);
+        let pre: Vec<usize> = s.watchers[s.lit_index(1)]
+            .iter()
+            .map(|w| watcher_untagged_idx(w.clause_idx))
+            .collect();
+        s.clause_set_deleted(bin, true);
+        for lit in [1, 2] {
+            let list = &s.watchers[s.lit_index(lit)];
+            let entry = list
+                .iter()
+                .find(|w| watcher_untagged_idx(w.clause_idx) == bin)
+                .expect("entry stays in list as a stale watcher");
+            assert_eq!(
+                entry.clause_idx & WATCH_TAG_MASK,
+                0,
+                "deletion must untag in place"
+            );
+        }
+        let post: Vec<usize> = s.watchers[s.lit_index(1)]
+            .iter()
+            .map(|w| watcher_untagged_idx(w.clause_idx))
+            .collect();
+        assert_eq!(pre, post, "list order must be preserved");
+        // The now-stale entry is dropped lazily by the next visit, legacy-style.
+        s.decide(-1);
+        assert_eq!(s.propagate(), None);
+        assert_eq!(s.lit_value(2), UNASSIGNED, "deleted binary must not propagate");
     }
 
     #[test]
