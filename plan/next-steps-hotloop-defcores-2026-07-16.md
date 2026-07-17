@@ -68,11 +68,12 @@ in-gate. Two attack lines, both valid:
 (a) more wall diet on the propagation path (this session banked ~5% in-gate;
 the remaining big item is the CSR/merged watcher layout, bead ck8, with the
 conflict-order-parity minefield documented in the worklist note), and
-(b) trajectory luck via the walk/rephase schedule — the walker improved twice
-and found the model; check SAT_WALK_EFFORT scaling on decision-armed cells
-(lockchart arms at 36.2 dec/conf). A standalone idle wall measurement of the
-270k-conflict solve is the first datum (was impossible this session — A/B
-owned the cores).
+(b) walk-effort economics — the walker improved twice and found the model,
+but 444.6M walk steps dominate the wall budget; measure the wall split
+(walk vs search vs factor) and whether SAT_WALK_EFFORT can be cut without
+losing the model-finding walk (risky: the walk IS the mechanism). Idle wall
+datum now measured: 2598s to the 270k-conflict solve → ~2.6x needed for the
+in-gate flip; that is CSR-watcher-scale (ck8), not diet-scale.
 
 ### 2. oski20 margin (unchanged)
 Still TIMEOUT in both arms this gate. oski40 in-gate went 1425→1351s on the
