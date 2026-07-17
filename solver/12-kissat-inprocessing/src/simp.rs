@@ -2063,6 +2063,23 @@ impl Solver {
     /// `definitionticks`, default 1e6); consumed ticks are charged against the
     /// armed-BVE eliminate tick budget so definition probing cannot extend a round
     /// past its existing wall budget.
+    /// Charge kitten definition-check work to the definition stats and (mirroring
+    /// `consume_eliminate_tick`) to the eliminate tick budget so definition probing
+    /// and core refinement can never extend an armed round past its existing bound.
+    fn charge_def_kitten_ticks(&mut self, ticks: u64) {
+        self.stats.preprocess_def_gate_ticks =
+            self.stats.preprocess_def_gate_ticks.saturating_add(ticks);
+        if self.eliminate_ticks_budget != 0 {
+            self.stats.preprocess_eliminate_ticks = self
+                .stats
+                .preprocess_eliminate_ticks
+                .saturating_add(ticks);
+            if self.stats.preprocess_eliminate_ticks >= self.eliminate_ticks_budget {
+                self.note_preprocess_budget_hit(PreprocessBudgetKind::Tick);
+            }
+        }
+    }
+
     fn detect_kitten_definition(
         &mut self,
         var: usize,
@@ -2135,6 +2152,9 @@ impl Solver {
         let mut kitten = Kitten::new();
         let mut buf: Vec<i32> = Vec::new();
         let mut total_lits = 0usize;
+        // Pivot-free exports kept for core-refinement re-solves (only saved when
+        // refinement is enabled).
+        let mut exports: Vec<Vec<i32>> = Vec::new();
         for &ci in pos_clauses.iter().chain(neg_clauses.iter()) {
             let len = self.clause_len(ci);
             if len <= 1 {
@@ -2162,33 +2182,104 @@ impl Solver {
                 return None; // defensive: pivot-only clause
             }
             kitten.add_clause(&buf);
+            if self.elim_def_cores > 1 {
+                exports.push(buf.clone());
+            }
         }
         debug_assert_eq!(kitten.num_input_clauses(), total);
 
         let result = kitten.solve_budgeted(&[], self.elim_def_ticks);
-        self.stats.preprocess_def_gate_ticks =
-            self.stats.preprocess_def_gate_ticks.saturating_add(kitten.ticks());
-        // Charge the kitten work against the eliminate tick budget so armed rounds
-        // keep their existing wall bound (mirrors consume_eliminate_tick).
-        if self.eliminate_ticks_budget != 0 {
-            self.stats.preprocess_eliminate_ticks = self
-                .stats
-                .preprocess_eliminate_ticks
-                .saturating_add(kitten.ticks());
-            if self.stats.preprocess_eliminate_ticks >= self.eliminate_ticks_budget {
-                self.note_preprocess_budget_hit(PreprocessBudgetKind::Tick);
-            }
-        }
+        self.charge_def_kitten_ticks(kitten.ticks());
         if result != Some(KittenResult::Unsat) {
             return None; // SAT (no definition) or budget exhausted
         }
 
+        // kissat definition.c `definitioncores` parity: refine the core before
+        // converting it into a gate. Each extra round re-exports ONLY the current
+        // core clauses into a fresh kitten with shuffled variable numbering
+        // (decision order) and clause order (watch order), re-solves at 10x the
+        // check budget, and keeps the recomputed (weakly smaller) core. A budget
+        // exhaustion during refinement drops the definition entirely (kissat
+        // ABORT parity), keeping the work calibrated.
+        let mut core_members: Vec<usize> = kitten
+            .core()
+            .iter()
+            .copied()
+            .filter(|&idx| idx < total)
+            .collect();
+        core_members.sort_unstable();
+        core_members.dedup();
+        let num_kitten_vars = (next_kitten_var - 1) as usize;
+        let mut rng_state =
+            (var as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5_4A32_D192_ED03;
+        // Deterministic splitmix64 stream: shuffles must not depend on host state.
+        let mut next_rand = move || -> u64 {
+            rng_state = rng_state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = rng_state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        };
+        for _round in 2..=self.elim_def_cores {
+            // A two-clause core (one per side) is already minimal for a
+            // two-sided definition; skip the re-solve.
+            if core_members.len() <= 2 {
+                break;
+            }
+            let mut var_perm: Vec<i32> = (1..=num_kitten_vars as i32).collect();
+            for i in (1..var_perm.len()).rev() {
+                let j = (next_rand() % (i as u64 + 1)) as usize;
+                var_perm.swap(i, j);
+            }
+            let mut order: Vec<usize> = (0..core_members.len()).collect();
+            for i in (1..order.len()).rev() {
+                let j = (next_rand() % (i as u64 + 1)) as usize;
+                order.swap(i, j);
+            }
+            let mut refine = Kitten::new();
+            let mut shuffled: Vec<i32> = Vec::new();
+            for &pos in &order {
+                let member = core_members[pos];
+                shuffled.clear();
+                for &lit in &exports[member] {
+                    let mapped = var_perm[(lit.unsigned_abs() - 1) as usize];
+                    shuffled.push(if lit > 0 { mapped } else { -mapped });
+                }
+                refine.add_clause(&shuffled);
+            }
+            self.stats.preprocess_def_refine_solves += 1;
+            let refined = refine.solve_budgeted(&[], self.elim_def_ticks.saturating_mul(10));
+            self.charge_def_kitten_ticks(refine.ticks());
+            match refined {
+                Some(KittenResult::Unsat) => {
+                    let mut new_members: Vec<usize> = refine
+                        .core()
+                        .iter()
+                        .filter(|&&p| p < order.len())
+                        .map(|&p| core_members[order[p]])
+                        .collect();
+                    new_members.sort_unstable();
+                    new_members.dedup();
+                    if new_members.len() < core_members.len() {
+                        self.stats.preprocess_def_refine_shrunk += 1;
+                    }
+                    core_members = new_members;
+                }
+                Some(KittenResult::Sat) => {
+                    // A subset of a refutation support cannot be SAT; a SAT answer
+                    // means the previous core was not a true support. Do not
+                    // eliminate on a broken core.
+                    debug_assert!(false, "definition core re-solved SAT");
+                    return None;
+                }
+                None => return None, // budget exhausted: kissat ABORT parity
+            }
+        }
+
         let pos_len = pos_clauses.len();
         let mut in_core = vec![false; total];
-        for &idx in kitten.core() {
-            if idx < total {
-                in_core[idx] = true;
-            }
+        for &idx in &core_members {
+            in_core[idx] = true;
         }
         let mut gate_pos = Vec::new();
         let mut nongate_pos = Vec::new();
@@ -3679,6 +3770,63 @@ mod tests {
                 }),
                 "definition-eliminated model violates original clause {clause:?}"
             );
+        }
+    }
+
+    #[test]
+    fn elim_def_core_refinement_preserves_definition_and_runs() {
+        // Same XOR-defined pivot as def_gate_bve_eliminates_xor_defined_var_...:
+        // the definition core is exactly the four XOR clauses (any proper subset
+        // is SAT), so refinement re-solves MUST reproduce the same two-sided core
+        // at any SAT_ELIM_DEF_CORES level, and the elimination must survive.
+        let clauses = vec![
+            vec![1, 2, -3],
+            vec![1, -2, 3],
+            vec![-1, 2, 3],
+            vec![-1, -2, -3],
+            vec![1, 4],
+            vec![1, 5],
+            vec![-1, 6],
+            vec![-1, 7],
+        ];
+        for cores in [1u32, 2, 4] {
+            let config = SolverConfig {
+                full_bsr: false,
+                ..SolverConfig::default()
+            };
+            let mut s = Solver::new_with_config(7, clauses.clone(), &config);
+            s.elim_gates_ext = true;
+            s.elim_def = true;
+            s.elim_def_cores = cores;
+            s.inprocess_aggressive = true;
+            for var in 2..=7 {
+                s.frozen[var] = true;
+            }
+            let sat = s.solve();
+            assert!(sat, "cores={cores}: instance is satisfiable");
+            assert!(
+                s.eliminated[1],
+                "cores={cores}: definition-aware BVE must still eliminate x"
+            );
+            assert_eq!(s.stats.preprocess_def_gate_eliminated_vars, 1);
+            if cores > 1 {
+                assert!(
+                    s.stats.preprocess_def_refine_solves >= 1,
+                    "cores={cores}: refinement must have re-solved (4-clause core > 2)"
+                );
+            } else {
+                assert_eq!(s.stats.preprocess_def_refine_solves, 0);
+            }
+            let model = s.sat_model.as_ref().expect("missing SAT model");
+            for clause in &clauses {
+                assert!(
+                    clause.iter().any(|&lit| {
+                        let v = lit.unsigned_abs() as usize;
+                        (lit > 0 && model[v] == TRUE) || (lit < 0 && model[v] == FALSE)
+                    }),
+                    "cores={cores}: model violates original clause {clause:?}"
+                );
+            }
         }
     }
 

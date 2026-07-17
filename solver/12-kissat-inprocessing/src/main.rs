@@ -1642,11 +1642,12 @@ struct Solver {
     binary_edge_tag_fast: bool,
     /// arena clause offset to stable BinaryClauseId + 1; 0 means not represented as binary
     binary_id_by_clause: Vec<u32>,
-    /// scratch stamps reserved for generated binary deduplication in later HBR/transitive passes
-    #[allow(dead_code)]
-    binary_dedup_seen: Vec<u32>,
-    #[allow(dead_code)]
-    binary_dedup_stamp: u32,
+    /// Pointer-based propagation hot loop (SAT_HOTLOOP_PTR, default on): hoists the
+    /// per-edge nested-Vec lookup out of the binary scan, reads long-clause literals
+    /// through a once-validated unchecked window, and batches search-tick accounting.
+    /// Byte-for-byte identical trajectories; `off` selects the legacy loop for A/B
+    /// gating (same pattern as `binary_edge_tag_fast`).
+    hotloop_ptr_fast: bool,
     /// opt-in switch for binary implication propagation; default off for solver-10 parity
     binary_fast_path: bool,
     /// bead 5b2.8.1: software-prefetch the next watched clause during propagation (default off)
@@ -1960,6 +1961,18 @@ struct Solver {
     /// charged to the eliminate tick budget, so definition probing never extends
     /// an armed round's bound.
     elim_def_ticks: u64,
+    /// Definition-core refinement rounds (SAT_ELIM_DEF_CORES, default 2 = kissat
+    /// `definitioncores` parity; 1 = no refinement). After the first UNSAT core,
+    /// each extra round re-exports ONLY the core clauses into a fresh kitten with
+    /// shuffled variable numbering and clause order and re-solves at 10x the check
+    /// budget; the recomputed core can only stay equal or shrink. Smaller cores
+    /// mean smaller gates and fewer definition resolvents — the measured
+    /// conversion-rate gap on the density class (Bubble: 19,245 found / 307
+    /// converted under the resolvent bound) and the densification that killed
+    /// oski40 in the e7d149a gate both trace to oversized round-1 cores. A budget
+    /// exhaustion during refinement drops the definition entirely (kissat ABORT
+    /// parity), keeping the work calibrated.
+    elim_def_cores: u32,
     /// Per-variable definition-check memo: (pos occurrences, neg occurrences,
     /// armed growth bound) at the last kitten check that did NOT eliminate the
     /// pivot. Armed eliminate re-scans every variable each round, so without this
@@ -2975,12 +2988,7 @@ impl Solver {
                 BinaryImplications::nested(num_vars.saturating_mul(2))
             },
             binary_id_by_clause: Vec::new(),
-            binary_dedup_seen: if lean_giant {
-                Vec::new()
-            } else {
-                vec![0; num_vars.saturating_mul(2)]
-            },
-            binary_dedup_stamp: 0,
+            hotloop_ptr_fast: env_bool_or_default("SAT_HOTLOOP_PTR", true),
             binary_fast_path: config.binary_fast_path,
             binary_edge_tag_fast: env_bool_or_default("SAT_BINARY_EDGE_TAG", true),
             prefetch_watched_clauses: config.prefetch_watched_clauses,
@@ -3142,6 +3150,11 @@ impl Solver {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(50_000),
+            elim_def_cores: std::env::var("SAT_ELIM_DEF_CORES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&c: &u32| c >= 1)
+                .unwrap_or(2),
             elim_def_last_probe: Vec::new(),
             factor_inprocess: env_bool_or_default("SAT_FACTOR_INPROCESS", false),
             decision_arm_ratio: std::env::var("SAT_DECISION_ARM")
@@ -5769,28 +5782,58 @@ impl Solver {
     }
 
     fn propagate(&mut self) -> Option<Conflict> {
+        if self.hotloop_ptr_fast {
+            self.propagate_dispatch::<true>()
+        } else {
+            self.propagate_dispatch::<false>()
+        }
+    }
+
+    fn propagate_dispatch<const PTR_FAST: bool>(&mut self) -> Option<Conflict> {
         match (
             !self.accounting_mode.is_temporary(),
             self.hot_stats,
             self.mode_use_ticks,
             self.binary_fast_path,
         ) {
-            (true, true, true, true) => self.propagate_impl::<true, true, true, true>(),
-            (true, true, true, false) => self.propagate_impl::<true, true, true, false>(),
-            (true, true, false, true) => self.propagate_impl::<true, true, false, true>(),
-            (true, true, false, false) => self.propagate_impl::<true, true, false, false>(),
-            (true, false, true, true) => self.propagate_impl::<true, false, true, true>(),
-            (true, false, true, false) => self.propagate_impl::<true, false, true, false>(),
-            (true, false, false, true) => self.propagate_impl::<true, false, false, true>(),
-            (true, false, false, false) => self.propagate_impl::<true, false, false, false>(),
-            (false, true, true, true) => self.propagate_impl::<false, true, true, true>(),
-            (false, true, true, false) => self.propagate_impl::<false, true, true, false>(),
-            (false, true, false, true) => self.propagate_impl::<false, true, false, true>(),
-            (false, true, false, false) => self.propagate_impl::<false, true, false, false>(),
-            (false, false, true, true) => self.propagate_impl::<false, false, true, true>(),
-            (false, false, true, false) => self.propagate_impl::<false, false, true, false>(),
-            (false, false, false, true) => self.propagate_impl::<false, false, false, true>(),
-            (false, false, false, false) => self.propagate_impl::<false, false, false, false>(),
+            (true, true, true, true) => self.propagate_impl::<true, true, true, true, PTR_FAST>(),
+            (true, true, true, false) => self.propagate_impl::<true, true, true, false, PTR_FAST>(),
+            (true, true, false, true) => self.propagate_impl::<true, true, false, true, PTR_FAST>(),
+            (true, true, false, false) => {
+                self.propagate_impl::<true, true, false, false, PTR_FAST>()
+            }
+            (true, false, true, true) => self.propagate_impl::<true, false, true, true, PTR_FAST>(),
+            (true, false, true, false) => {
+                self.propagate_impl::<true, false, true, false, PTR_FAST>()
+            }
+            (true, false, false, true) => {
+                self.propagate_impl::<true, false, false, true, PTR_FAST>()
+            }
+            (true, false, false, false) => {
+                self.propagate_impl::<true, false, false, false, PTR_FAST>()
+            }
+            (false, true, true, true) => self.propagate_impl::<false, true, true, true, PTR_FAST>(),
+            (false, true, true, false) => {
+                self.propagate_impl::<false, true, true, false, PTR_FAST>()
+            }
+            (false, true, false, true) => {
+                self.propagate_impl::<false, true, false, true, PTR_FAST>()
+            }
+            (false, true, false, false) => {
+                self.propagate_impl::<false, true, false, false, PTR_FAST>()
+            }
+            (false, false, true, true) => {
+                self.propagate_impl::<false, false, true, true, PTR_FAST>()
+            }
+            (false, false, true, false) => {
+                self.propagate_impl::<false, false, true, false, PTR_FAST>()
+            }
+            (false, false, false, true) => {
+                self.propagate_impl::<false, false, false, true, PTR_FAST>()
+            }
+            (false, false, false, false) => {
+                self.propagate_impl::<false, false, false, false, PTR_FAST>()
+            }
         }
     }
 
@@ -5800,12 +5843,61 @@ impl Solver {
         const MODE_TICKS: bool,
         const BINARY_FAST: bool,
         const NORMAL_SEARCH: bool,
+        const PTR_FAST: bool,
     >(
         &mut self,
         lit: i32,
         normal_search_accounting: bool,
     ) -> Option<Conflict> {
         if !BINARY_FAST {
+            return None;
+        }
+
+        if PTR_FAST && self.binary_edge_tag_fast {
+            // Hoisted-slice scan: the legacy loop re-derives the nested
+            // `Vec<Vec<BinaryEdge>>` lookup on every edge because the interleaved
+            // `&mut self` calls block LLVM from hoisting it. The edge list for `lit`
+            // is never mutated during propagation (enqueue touches only
+            // assignment/trail/reason state), so capture the slice once and read
+            // through a raw pointer. Tick accounting is batched into one add per
+            // scan; nothing reads `search_ticks` mid-propagation, so the running
+            // total at every observation point is unchanged.
+            let (edges_ptr, edges_len) = {
+                let edges = self.binary_implications.edges_for(lit);
+                (edges.as_ptr(), edges.len())
+            };
+            let mut pending_ticks = 0u64;
+            for edge_idx in 0..edges_len {
+                pending_ticks += 1;
+                let edge = unsafe { *edges_ptr.add(edge_idx) };
+                if edge.clause_id.0 & BINARY_EDGE_DELETED_TAG != 0 {
+                    if HOT_STATS && normal_search_accounting {
+                        self.stats.binary_stale_skips += 1;
+                    }
+                    continue;
+                }
+                match self.lit_value(edge.implied) {
+                    TRUE => {}
+                    FALSE => {
+                        self.record_search_ticks::<MODE_TICKS, NORMAL_SEARCH>(pending_ticks);
+                        return Some(Conflict::Binary(edge.clause_id));
+                    }
+                    UNASSIGNED => {
+                        if !self.enqueue_impl::<NORMAL_SEARCH>(
+                            edge.implied,
+                            ReasonRef::Binary(edge.clause_id),
+                        ) {
+                            self.record_search_ticks::<MODE_TICKS, NORMAL_SEARCH>(pending_ticks);
+                            return Some(Conflict::Binary(edge.clause_id));
+                        }
+                        if HOT_STATS && normal_search_accounting {
+                            self.stats.binary_props += 1;
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            self.record_search_ticks::<MODE_TICKS, NORMAL_SEARCH>(pending_ticks);
             return None;
         }
 
@@ -5886,6 +5978,7 @@ impl Solver {
         const HOT_STATS: bool,
         const MODE_TICKS: bool,
         const BINARY_FAST: bool,
+        const PTR_FAST: bool,
     >(
         &mut self,
     ) -> Option<Conflict> {
@@ -5897,7 +5990,7 @@ impl Solver {
             self.propagate_head += 1;
             self.record_propagation_accounting::<NORMAL_SEARCH>();
             if let Some(conflict) = self
-                .propagate_binary_implications::<HOT_STATS, MODE_TICKS, BINARY_FAST, NORMAL_SEARCH>(
+                .propagate_binary_implications::<HOT_STATS, MODE_TICKS, BINARY_FAST, NORMAL_SEARCH, PTR_FAST>(
                     trail_lit,
                     normal_search_accounting,
                 )
@@ -6005,35 +6098,92 @@ impl Solver {
                     continue;
                 }
 
-                if self.clause_lit(clause_idx, 0) == false_lit {
-                    self.swap_clause_lits(clause_idx, 0, 1);
-                }
-                if self.clause_lit(clause_idx, 1) != false_lit {
-                    continue;
-                }
-
-                let first = self.clause_lit(clause_idx, 0);
-                let updated_watcher = Watcher {
-                    clause_idx: watcher.clause_idx,
-                    blocker: first,
-                };
-                if first != watcher.blocker && self.lit_value(first) == TRUE {
-                    pending[write] = updated_watcher;
-                    write += 1;
-                    continue;
-                }
-
+                let first;
+                let updated_watcher;
                 let mut moved_watch = false;
-                for lit_pos in 2..clause_len {
-                    let candidate = self.clause_lit(clause_idx, lit_pos);
-                    self.record_search_ticks::<MODE_TICKS, NORMAL_SEARCH>(1);
-                    if self.lit_value(candidate) != FALSE {
-                        self.set_clause_lit(clause_idx, 1, candidate);
-                        self.set_clause_lit(clause_idx, lit_pos, false_lit);
-                        let new_watch_idx = self.lit_index(candidate);
-                        self.watchers[new_watch_idx].push(updated_watcher);
-                        moved_watch = true;
-                        break;
+                if PTR_FAST {
+                    // Once-validated unchecked window over the clause body: the
+                    // stale/deleted checks above proved `clause_idx` addresses a live
+                    // header, and a live clause's body always lies within the arena
+                    // (same invariant `clause_slice` relies on) — assert it once and
+                    // drop the per-literal bounds checks the legacy accessors pay.
+                    // Replacement-scan ticks are batched into one add; nothing reads
+                    // `search_ticks` mid-propagation.
+                    assert!(clause_idx + 1 + clause_len <= self.arena.len());
+                    let mut l0 =
+                        word_to_lit(unsafe { *self.arena.get_unchecked(clause_idx + 1) });
+                    let mut l1 =
+                        word_to_lit(unsafe { *self.arena.get_unchecked(clause_idx + 2) });
+                    if l0 == false_lit {
+                        unsafe {
+                            *self.arena.get_unchecked_mut(clause_idx + 1) = lit_to_word(l1);
+                            *self.arena.get_unchecked_mut(clause_idx + 2) = lit_to_word(l0);
+                        }
+                        core::mem::swap(&mut l0, &mut l1);
+                    }
+                    if l1 != false_lit {
+                        continue;
+                    }
+                    first = l0;
+                    updated_watcher = Watcher {
+                        clause_idx: watcher.clause_idx,
+                        blocker: first,
+                    };
+                    if first != watcher.blocker && self.lit_value(first) == TRUE {
+                        pending[write] = updated_watcher;
+                        write += 1;
+                        continue;
+                    }
+                    let mut scanned = 0u64;
+                    for lit_pos in 2..clause_len {
+                        let candidate = word_to_lit(unsafe {
+                            *self.arena.get_unchecked(clause_idx + 1 + lit_pos)
+                        });
+                        scanned += 1;
+                        if self.lit_value(candidate) != FALSE {
+                            unsafe {
+                                *self.arena.get_unchecked_mut(clause_idx + 2) =
+                                    lit_to_word(candidate);
+                                *self.arena.get_unchecked_mut(clause_idx + 1 + lit_pos) =
+                                    lit_to_word(false_lit);
+                            }
+                            let new_watch_idx = self.lit_index(candidate);
+                            self.watchers[new_watch_idx].push(updated_watcher);
+                            moved_watch = true;
+                            break;
+                        }
+                    }
+                    self.record_search_ticks::<MODE_TICKS, NORMAL_SEARCH>(scanned);
+                } else {
+                    if self.clause_lit(clause_idx, 0) == false_lit {
+                        self.swap_clause_lits(clause_idx, 0, 1);
+                    }
+                    if self.clause_lit(clause_idx, 1) != false_lit {
+                        continue;
+                    }
+
+                    first = self.clause_lit(clause_idx, 0);
+                    updated_watcher = Watcher {
+                        clause_idx: watcher.clause_idx,
+                        blocker: first,
+                    };
+                    if first != watcher.blocker && self.lit_value(first) == TRUE {
+                        pending[write] = updated_watcher;
+                        write += 1;
+                        continue;
+                    }
+
+                    for lit_pos in 2..clause_len {
+                        let candidate = self.clause_lit(clause_idx, lit_pos);
+                        self.record_search_ticks::<MODE_TICKS, NORMAL_SEARCH>(1);
+                        if self.lit_value(candidate) != FALSE {
+                            self.set_clause_lit(clause_idx, 1, candidate);
+                            self.set_clause_lit(clause_idx, lit_pos, false_lit);
+                            let new_watch_idx = self.lit_index(candidate);
+                            self.watchers[new_watch_idx].push(updated_watcher);
+                            moved_watch = true;
+                            break;
+                        }
                     }
                 }
 
@@ -8131,7 +8281,6 @@ impl Solver {
         self.scratch_frame_used.resize(n1, 0);
         self.lbd_seen.resize(self.lbd_seen.len().max(n1), 0);
         self.watchers.resize(n2, Vec::new());
-        self.binary_dedup_seen.resize(n2, 0);
         self.n_occ.resize(n2, 0);
         if let BinaryImplications::Nested(edges) = &mut self.binary_implications {
             edges.resize(n2, Vec::new());
@@ -16043,7 +16192,6 @@ mod tests {
         assert!(giant_solver.occurs.is_empty());
         assert!(giant_solver.n_occ.is_empty());
         assert!(giant_solver.occurs_dirty.is_empty());
-        assert!(giant_solver.binary_dedup_seen.is_empty());
         assert!(giant_solver.lbd_seen.is_empty());
         assert_eq!(giant_solver.binary_implications.len_for(1), 0);
 

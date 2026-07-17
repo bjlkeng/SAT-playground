@@ -191,6 +191,10 @@ pub(crate) struct SolverStats {
     pub(crate) preprocess_def_gate_found: u64,
     /// cumulative kitten ticks spent in definition checks (SAT_ELIM_DEF)
     pub(crate) preprocess_def_gate_ticks: u64,
+    /// core-refinement re-solves attempted (SAT_ELIM_DEF_CORES > 1)
+    pub(crate) preprocess_def_refine_solves: u64,
+    /// core-refinement re-solves that shrank the core (SAT_ELIM_DEF_CORES > 1)
+    pub(crate) preprocess_def_refine_shrunk: u64,
     /// variables removed by equivalent-literal substitution (SAT_ELS)
     pub(crate) els_substituted_vars: u64,
     /// clauses rewritten by equivalent-literal substitution (SAT_ELS)
@@ -734,6 +738,14 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("def_gate_checks", ctx.stats.preprocess_def_gate_checks);
     json.u64("def_gate_found", ctx.stats.preprocess_def_gate_found);
     json.u64("def_gate_ticks", ctx.stats.preprocess_def_gate_ticks);
+    json.u64(
+        "def_refine_solves",
+        ctx.stats.preprocess_def_refine_solves,
+    );
+    json.u64(
+        "def_refine_shrunk",
+        ctx.stats.preprocess_def_refine_shrunk,
+    );
     json.u64(
         "pre_bve_resolution_attempts",
         ctx.stats.preprocess_resolution_attempts,
