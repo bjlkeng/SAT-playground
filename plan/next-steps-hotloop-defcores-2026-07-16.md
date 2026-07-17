@@ -47,9 +47,13 @@ Context for a fresh session. State as of this writing:
    decision-arm bundle did the work (factor 2,075 fresh vars, 7 rephases,
    2 walks, walk_improved=2). Probe: SAT_LIMIT_CONFLICTS=300000, niced free
    cores under full A/B load (wall meaningless). The cell is
-   **conflict-rate-bound**: idle screens historically reach ~265k conflicts in
-   1750s; the solve point is ~270k; in-gate both arms still TIMEOUT. The flip
-   needs ~1.15x+ in-gate conflict rate (11k props/conflict cell).
+   **conflict-rate-bound** (11k props/conflict): in-gate both arms still
+   TIMEOUT. Idle wall measured post-gate: **2598s to the 270,451-conflict
+   solve** (~104 conf/s — slower per conflict than the old 265k/1750s screens
+   because the decision-arm machinery that FINDS the model also costs wall:
+   444.6M walk steps + mid-search factor). In-gate flip line ≈1000s idle
+   (1.8x contention) → the flip needs **~2.6x wall speedup** on this cell,
+   not the 1.15x a naive conflict-count comparison suggests.
 3. Hot-loop identity screens: wall-limit cutoffs are USELESS for identity
    comparison (arms stop at different trajectory points) — use
    SAT_LIMIT_CONFLICTS. 400k-conflict paired runs gave byte-equal
