@@ -1,4 +1,4 @@
-# Session notes: elimination-bound / rounds / lit-values / congruence-learned screens — SIX MEASURED NEGATIVES (2026-07-18)
+# Session notes: elimination-bound / rounds / lit-values / congruence-learned / unarmed-elim screens — SEVEN MEASURED NEGATIVES (2026-07-18)
 
 State at session start and end: medium baseline **67-68/100** @ 6199fb2/8018782
 (watchpool promotion; TT492 in, rbsat/TT406 the lottery cells). Kissat 4.0.4
@@ -98,6 +98,25 @@ substitution creates genuinely different circuit structure, or counts merges
 differently. Next honest step there: diff kissat closure.c merge accounting
 vs ours on a small miter.
 
+### 7. SAT_ELIM_UNARMED (mid-search eliminate for unarmed formulas) — marginal + taxed
+Implemented after the g2 profile below suggested elimination starvation; the
+knob extends the armed-round eliminate gate to unarmed inprocess rounds
+(default OFF, committed). Measured:
+- The starvation theory was WRONG at root: g2's ROOT BVE already eliminates
+  416,892 of 509,532 vars (82%; kissat 88%). The 4 unarmed mid-search rounds
+  added only +6,076 vars (1.2%). g2 stays UNKNOWN at 4.08M conflicts/1790s;
+  the residual gap is conflict RATE (kissat 11.36M conflicts at 8.9k/s vs our
+  2.3k/s) — propagation throughput, not elimination.
+- Safety is real: ALL FIVE fragile canaries byte-identical conflicts (mp1
+  336,333 / velev 782,238 / 544707 241,644 / case9 431,668 / sudoku 612,825)
+  — the deep-phase guard plus zero-yield rounds leave trajectories exactly
+  intact.
+- Cost is real: identical trajectories but sudoku +9.3% wall, velev +4.7% —
+  fruitless eliminate rounds pay the occurrence-index rebuild every 2k
+  conflicts. Any revival needs kissat's variables-based skip (do not re-run
+  until eliminable candidates change) or zero-yield backoff.
+Not gate-worthy: no flip anywhere, PAR-2 tax on unarmed solved cells.
+
 ## Other measurements this session
 
 - **lockchart walk-effort**: base(50‰) no longer solves at 300k conflicts
@@ -124,11 +143,15 @@ vs ours on a small miter.
 
 ## Ranked next steps (updated)
 
-1. **Universal (unarmed) mid-search elimination at kissat cadence** — the g2
-   finding above. Kissat eliminates 88% on g2 and runs eliminate everywhere;
-   our unarmed cells forfeit ALL mid-search elimination. Gate the cadence and
-   aggression carefully (fragile-SAT screens first: mp1, 544707, case9,
-   velev, sudoku). This is now the best-evidenced structural gap.
+1. **Propagation throughput on the conflict-rate-bound cells** — now the
+   single best-evidenced gap: g2 2.3k vs kissat 8.9k conflicts/s (2.8x, and
+   MEASURED this session with elimination depth equalized at 82-88%),
+   lockchart 2.6x, pj2008/goldcrest same class. The remaining structural
+   deltas vs kissat proplit.h are small per-visit costs; perf is blocked on
+   this host (perf_event_paranoid=4), so the next session should use
+   /analyzesat's ablation-based decomposition or targeted counter
+   instrumentation (per-visit loads) before writing any code. SAT_ELIM_UNARMED
+   was the last cheap knob; see negative #7.
 2. **CSR/merged long-clause watcher layout** (unchanged from watchpool note)
    — the remaining big wall lever for oski20 (1430-1581s idle, needs
    10-20% in-gate) and the propagation-bound cells (lockchart/goldcrest/

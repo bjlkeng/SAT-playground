@@ -2202,6 +2202,12 @@ struct Solver {
     /// there (kissat times out on TT406 with --eliminatebound=0). Separate knob
     /// from the yield scope so each class gates independently.
     elim_bound_complete_decision: bool,
+    /// SAT_ELIM_UNARMED (default off): unarmed formulas also run the bounded
+    /// mid-search elimination in their inprocess rounds (kissat parity — kissat
+    /// eliminates on every formula; measured g2: kissat 88% eliminated, our
+    /// unarmed cells run zero elimination rounds). Uses the same
+    /// `elim_armed_bounds` effort/bound machinery as armed rounds.
+    elim_unarmed: bool,
     /// SAT_CONGRUENCE_LEARNED (default off): congruence gate extraction also
     /// scans learned clauses of length <= 3 (kissat closure parity — vivify-
     /// created binaries/ternaries keep feeding gate discovery mid-search).
@@ -3501,6 +3507,7 @@ impl Solver {
                 "SAT_ELIM_BOUND_COMPLETE_DECISION",
                 false,
             ),
+            elim_unarmed: env_bool_or_default("SAT_ELIM_UNARMED", false),
             congruence_learned: env_bool_or_default("SAT_CONGRUENCE_LEARNED", false),
             armed_elim_last_search_ticks: 0,
             armed_elim_effort_pct: std::env::var("SAT_ELIM_ARMED_EFFORT_PCT")
@@ -8974,7 +8981,16 @@ impl Solver {
         // treatment the mid-search ELS substitution path has always used, and the SAT
         // model extension replays elimination witnesses regardless of any search-time
         // value of an eliminated variable.
-        if ok && self.inprocess_aggressive && self.use_elim && !self.should_skip_sweep_for_deep_phase()
+        // SAT_ELIM_UNARMED (default off): run the same bounded mid-search
+        // elimination on UNARMED formulas too. Kissat runs eliminate on every
+        // formula on its interval schedule; our unarmed cells previously
+        // forfeited ALL mid-search elimination (measured on g2: kissat
+        // eliminates 88% of vars there, we run zero rounds — the cell never
+        // arms). Armed-cell behavior is untouched by this knob.
+        if ok
+            && (self.inprocess_aggressive || self.elim_unarmed)
+            && self.use_elim
+            && !self.should_skip_sweep_for_deep_phase()
         {
             self.use_simplification = true;
             if self.elim_armed_bounds {
