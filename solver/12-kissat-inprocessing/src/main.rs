@@ -2175,6 +2175,37 @@ struct Solver {
     elim_armed_bounds: bool,
     /// current kissat `additional_clauses` analog for armed mid-search elimination
     armed_bve_bound: isize,
+    /// Kissat `set_next_elimination_bound` COMPLETE-round parity
+    /// (SAT_ELIM_BOUND_COMPLETE, default off = shipped zero-yield rule): escalate
+    /// `armed_bve_bound` after every armed round whose effort budget was NOT
+    /// exhausted, regardless of elimination yield. The shipped rule escalates only
+    /// after zero-yield rounds, which stalls the bound at 0 on formulas where every
+    /// round eliminates a trickle of variables (measured on Bubble: rounds of
+    /// +72/+3/+1 vars kept grow=0 while ~1,430 candidate vars per round were
+    /// rejected on the resolvent-count bound; kissat reaches bound 16 in 5 rounds).
+    elim_bound_complete: bool,
+    /// Armed-round resolvent length limit (SAT_ELIM_ARMED_CLSLIM, default 0 =
+    /// shipped `bve_clause_limit` everywhere). When > 0, armed mid-search
+    /// elimination rounds run with this `bve_clause_limit` (kissat
+    /// eliminateclslim=100) instead of the frontend 20. The 2026-07-12 global
+    /// clslim=100 screen poisoned VexRiscv's watch lists with fat resolvents,
+    /// so any raise must be validated per armed class through the gate.
+    elim_armed_clslim: isize,
+    /// Kissat parity for definition-gate resolvents (SAT_ELIM_DEF_NOCAP, default
+    /// off): drop the parent-length cap so definition eliminations are limited only
+    /// by `bve_clause_limit`, exactly like the syntactic gate kinds. Kissat has no
+    /// parent-length cap. Off keeps the oski40 densification guard.
+    elim_def_nocap: bool,
+    /// SAT_ELIM_BOUND_COMPLETE_DECISION (default off): extend the kissat-parity
+    /// complete-round escalation to DECISION-armed (Timetable-class) formulas.
+    /// Kissat's own TT406 ablation says the elimination bound is load-bearing
+    /// there (kissat times out on TT406 with --eliminatebound=0). Separate knob
+    /// from the yield scope so each class gates independently.
+    elim_bound_complete_decision: bool,
+    /// SAT_CONGRUENCE_LEARNED (default off): congruence gate extraction also
+    /// scans learned clauses of length <= 3 (kissat closure parity — vivify-
+    /// created binaries/ternaries keep feeding gate discovery mid-search).
+    congruence_learned: bool,
     /// search-ticks snapshot at the last armed mid-search elimination round, for the
     /// kissat-style proportional effort budget (eliminateeffort analog)
     armed_elim_last_search_ticks: u64,
@@ -2470,6 +2501,16 @@ struct Solver {
     eliminate_resolution_budget: u64,
     /// max per-polarity occurrences for a BVE candidate (kissat eliminateocclim); zero = unlimited
     eliminate_occurrence_limit: u64,
+    /// diagnostic: elimination attempts rejected because resolvent count exceeded occ+grow
+    elim_reject_count_bound: u64,
+    /// diagnostic: elimination attempts rejected because a resolvent exceeded bve_clause_limit
+    elim_reject_clslim: u64,
+    /// diagnostic: elimination attempts rejected by the definition-gate parent-length cap
+    elim_reject_defcap: u64,
+    /// diagnostic: elimination attempts rejected because the resolution/tick budget ran out
+    elim_reject_budget: u64,
+    /// diagnostic: try_eliminate_var calls this run
+    elim_attempted_vars: u64,
     /// set when an opt-in BVE local preprocessing budget stops the current pass
     preprocess_budget_exhausted: bool,
     /// set when an opt-in BSR local preprocessing budget stops the current BSR sweep
@@ -3450,6 +3491,17 @@ impl Solver {
                 .unwrap_or(32),
             elim_armed_bounds: env_bool_or_default("SAT_ELIM_ARMED_BOUNDS", true),
             armed_bve_bound: 0,
+            elim_bound_complete: env_bool_or_default("SAT_ELIM_BOUND_COMPLETE", false),
+            elim_armed_clslim: std::env::var("SAT_ELIM_ARMED_CLSLIM")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            elim_def_nocap: env_bool_or_default("SAT_ELIM_DEF_NOCAP", false),
+            elim_bound_complete_decision: env_bool_or_default(
+                "SAT_ELIM_BOUND_COMPLETE_DECISION",
+                false,
+            ),
+            congruence_learned: env_bool_or_default("SAT_CONGRUENCE_LEARNED", false),
             armed_elim_last_search_ticks: 0,
             armed_elim_effort_pct: std::env::var("SAT_ELIM_ARMED_EFFORT_PCT")
                 .ok()
@@ -3570,6 +3622,11 @@ impl Solver {
             eliminate_ticks_budget: config.eliminate_ticks_budget,
             eliminate_resolution_budget: config.eliminate_resolution_budget,
             eliminate_occurrence_limit: config.eliminate_occurrence_limit,
+            elim_reject_count_bound: 0,
+            elim_reject_clslim: 0,
+            elim_reject_defcap: 0,
+            elim_reject_budget: 0,
+            elim_attempted_vars: 0,
             preprocess_budget_exhausted: false,
             preprocess_bsr_budget_exhausted: false,
             subsumption_lim: DEFAULT_SUBSUMPTION_LIMIT,
@@ -6103,8 +6160,9 @@ impl Solver {
             self.stats.lucky_attempts += 1;
             if self.lucky_pattern_succeeds_with_proof(pattern, proof_log) {
                 self.stats.lucky_solved += 1;
-                if let Some(model) = self.sat_model.as_ref() {
-                    self.assignment.clone_from(model);
+                if let Some(model) = self.sat_model.take() {
+                    self.assignment.clone_from(&model);
+                    self.sat_model = Some(model);
                 }
                 return true;
             }
@@ -8934,7 +8992,11 @@ impl Solver {
                 const ARMED_BVE_MIN_EFFORT_TICKS: u64 = 50_000_000;
                 let saved_grow = self.bve_grow;
                 let saved_ticks_budget = self.eliminate_ticks_budget;
+                let saved_clslim = self.bve_clause_limit;
                 self.bve_grow = self.armed_bve_bound;
+                if self.elim_armed_clslim > 0 {
+                    self.bve_clause_limit = self.elim_armed_clslim;
+                }
                 let since = self
                     .stats
                     .search_ticks
@@ -8950,8 +9012,24 @@ impl Solver {
                 let eliminated_before = self.stats.preprocess_eliminated_vars;
                 ok = self.eliminate(true, proof_log);
                 self.bve_grow = saved_grow;
+                self.bve_clause_limit = saved_clslim;
                 self.eliminate_ticks_budget = saved_ticks_budget;
-                if self.stats.preprocess_eliminated_vars == eliminated_before {
+                // Escalation rule. Kissat parity (`set_next_elimination_bound`,
+                // SAT_ELIM_BOUND_COMPLETE): every COMPLETE round (effort budget not
+                // exhausted) escalates, regardless of yield. Shipped rule: only
+                // zero-yield rounds escalate — which stalls the bound at 0 on
+                // trickle-yield formulas (see the field doc). Scoped to YIELD-armed
+                // formulas (density/refutation-churn class): root/congruence-armed
+                // (vex, oski, ibm — the wire cells) and decision-armed (Timetable)
+                // trajectories stay byte-identical to shipped.
+                let complete_scope = (self.elim_bound_complete && self.yield_search_armed)
+                    || (self.elim_bound_complete_decision && self.decision_search_armed);
+                let escalate = if complete_scope {
+                    !self.preprocess_budget_exhausted
+                } else {
+                    self.stats.preprocess_eliminated_vars == eliminated_before
+                };
+                if escalate {
                     self.armed_bve_bound = if self.armed_bve_bound == 0 {
                         1
                     } else {
@@ -12436,7 +12514,29 @@ impl Solver {
         let mut ternary_set: HashSet<(i32, i32, i32)> = HashSet::new();
         let mut pair_thirds: HashMap<(i32, i32), Vec<i32>> = HashMap::new();
 
-        for &cid in &self.original_clause_ids {
+        // Kissat closure.c parity (SAT_CONGRUENCE_LEARNED): gate extraction also
+        // scans SHORT learned clauses (len <= 3). Kissat keeps discovering gates
+        // mid-search because vivify/strengthening create new binaries/ternaries
+        // that feed its closure; our extraction previously saw original clauses
+        // only, freezing the merge count once root patterns are exhausted (vex:
+        // 18.4k merges frozen vs kissat 183k). Learned clauses are implied, so
+        // gate patterns over them justify merges exactly like original clauses
+        // (the merge proofs are RUP against the full proof-stream formula, which
+        // contains every learned clause).
+        let learned_short: Vec<u32> = if self.congruence_learned {
+            self.learned_clause_ids
+                .iter()
+                .filter_map(|&cid| {
+                    (cid < self.arena.len()
+                        && !self.clause_is_deleted(cid)
+                        && self.clause_len(cid) <= 3)
+                        .then_some(cid as u32)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for &cid in self.original_clause_ids.iter().chain(learned_short.iter()) {
             let cid = cid as usize;
             if cid >= self.arena.len() || self.clause_is_deleted(cid) {
                 continue;

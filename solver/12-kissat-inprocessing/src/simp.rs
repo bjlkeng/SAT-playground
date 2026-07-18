@@ -1595,6 +1595,7 @@ impl Solver {
         if (self.eliminate_resolution_budget != 0 || self.eliminate_ticks_budget != 0)
             && !self.consume_eliminate_resolution_attempt()
         {
+            self.elim_reject_budget += 1;
             return false;
         }
         let start = resolvent_lits.len();
@@ -1603,16 +1604,19 @@ impl Solver {
         }
         *resolvent_count += 1;
         if *resolvent_count > occurrence_count as isize + self.bve_grow {
+            self.elim_reject_count_bound += 1;
             resolvent_lits.truncate(start);
             return false;
         }
         let size = resolvent_lits.len() - start;
         if self.bve_clause_limit >= 0 && size as isize > self.bve_clause_limit {
+            self.elim_reject_clslim += 1;
             resolvent_lits.truncate(start);
             return false;
         }
         if let Some(cap) = max_len {
             if size > cap {
+                self.elim_reject_defcap += 1;
                 resolvent_lits.truncate(start);
                 return false;
             }
@@ -2323,6 +2327,7 @@ impl Solver {
         bsr_touched: &mut Vec<usize>,
         bsr_touched_flags: &mut Vec<bool>,
     ) -> bool {
+        self.elim_attempted_vars += 1;
         self.clean_occurs_dynamic(var);
         let Some(occurrence_ids) = self.occurs.get(var).cloned() else {
             return false;
@@ -2400,8 +2405,13 @@ impl Solver {
             // Definition kind: cap each resolvent at its longer parent's length
             // (see resolve_elim_pair_capped doc). Syntactic kinds keep the
             // promoted unlimited behavior.
-            let def_cap = |s: &Self, p: usize, n: usize| -> Option<usize> {
-                if g.kind == ElimGateKind::Definition {
+            // Kissat has NO parent-length cap on definition resolvents — clslim is its
+            // only limit. SAT_ELIM_DEF_NOCAP=on restores that parity; default keeps the
+            // parent-length cap (the oski40 densification guard: unrestricted definition
+            // eliminations doubled the live arena there, +700s wall).
+            let def_nocap = self.elim_def_nocap;
+            let def_cap = move |s: &Self, p: usize, n: usize| -> Option<usize> {
+                if g.kind == ElimGateKind::Definition && !def_nocap {
                     Some(s.clause_len(p).max(s.clause_len(n)))
                 } else {
                     None
@@ -2726,6 +2736,21 @@ impl Solver {
         }
 
         self.clear_subsumption_queue_marks(&mut queue);
+
+        if self.trace_preprocess_details {
+            eprintln!(
+                "c elim_round attempted={} eliminated_total={} reject_count_bound={} reject_clslim={} reject_defcap={} reject_budget={} bve_grow={} clslim={} conflicts={}",
+                self.elim_attempted_vars,
+                self.stats.preprocess_eliminated_vars,
+                self.elim_reject_count_bound,
+                self.elim_reject_clslim,
+                self.elim_reject_defcap,
+                self.elim_reject_budget,
+                self.bve_grow,
+                self.bve_clause_limit,
+                self.stats.conflicts,
+            );
+        }
 
         let original_clause_ids = std::mem::take(&mut self.original_clause_ids);
         self.original_clause_ids = original_clause_ids
