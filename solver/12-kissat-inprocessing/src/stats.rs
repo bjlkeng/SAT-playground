@@ -168,6 +168,9 @@ pub(crate) struct SolverStats {
     pub(crate) walk_steps: u64,
     pub(crate) walk_flips: u64,
     pub(crate) walk_improved: u64,
+    pub(crate) walk_warmups: u64,
+    pub(crate) walk_warmup_decisions: u64,
+    pub(crate) walk_warmup_conflicts: u64,
     pub(crate) branch_reorders: u64,
     pub(crate) decision_heap_pops: u64,
     pub(crate) decision_heap_stale_pops: u64,
@@ -691,6 +694,9 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("walk_steps", ctx.stats.walk_steps);
     json.u64("walk_flips", ctx.stats.walk_flips);
     json.u64("walk_improved", ctx.stats.walk_improved);
+    json.u64("walk_warmups", ctx.stats.walk_warmups);
+    json.u64("walk_warmup_decisions", ctx.stats.walk_warmup_decisions);
+    json.u64("walk_warmup_conflicts", ctx.stats.walk_warmup_conflicts);
     json.u64("branch_reorders", ctx.stats.branch_reorders);
     json.u64("random_decisions", ctx.stats.random_decisions);
     json.u64(

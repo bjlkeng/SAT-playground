@@ -627,6 +627,14 @@ pub(crate) struct SolverConfig {
     /// Walk effort in permille of search ticks since the last walk
     /// (kissat `walkeffort`, default 50).
     pub(crate) walk_effort_permille: u64,
+    /// Warm up the walker's starting assignment kissat-style (warmup.c):
+    /// before each walk, complete the root assignment by repeated
+    /// decide + propagate-beyond-conflicts (assignments eagerly save phases),
+    /// then backtrack to root without touching the saved phases, so the walk
+    /// starts from a unit-propagation-consistent completion of the decision
+    /// phases instead of the raw saved/target snapshot (kissat `warmup`,
+    /// default on there).
+    pub(crate) walk_warmup: bool,
     pub(crate) reorder: bool,
     pub(crate) minimize_depth_limit: u32,
     pub(crate) chrono_max_delta: usize,
@@ -771,6 +779,7 @@ impl Default for SolverConfig {
             rephase_armed_only: true,
             walk: true,
             walk_effort_permille: DEFAULT_WALK_EFFORT_PERMILLE,
+            walk_warmup: false,
             reorder: false,
             minimize_depth_limit: DEFAULT_MINIMIZE_DEPTH_LIMIT,
             chrono_max_delta: DEFAULT_CHRONO_MAX_DELTA,
@@ -1370,6 +1379,8 @@ impl SolverConfig {
             "SAT_WALK_EFFORT",
             self.walk_effort_permille,
         );
+        self.walk_warmup =
+            parse_bool_selected(env_map, &key_set, "SAT_WALK_WARMUP", self.walk_warmup);
         self.reorder = parse_bool_selected(env_map, &key_set, "SAT_REORDER", self.reorder);
         self.minimize_depth_limit = parse_u32_selected(
             env_map,
@@ -1955,6 +1966,7 @@ impl SolverConfig {
             "walk_effort_permille",
             self.walk_effort_permille.to_string(),
         );
+        push_kv_bool(&mut lines, "walk_warmup", self.walk_warmup);
         push_kv_bool(&mut lines, "reorder", self.reorder);
         push_kv(
             &mut lines,
@@ -2757,6 +2769,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "rephase_armed_only" => Some("SAT_REPHASE_ARMED_ONLY"),
         "walk" => Some("SAT_WALK"),
         "walk_effort_permille" => Some("SAT_WALK_EFFORT"),
+        "walk_warmup" => Some("SAT_WALK_WARMUP"),
         "reorder" => Some("SAT_REORDER"),
         "minimize_depth_limit" => Some("SAT_MINIMIZE_DEPTH_LIMIT"),
         "chrono_max_delta" => Some("SAT_CHRONO_MAX_DELTA"),
@@ -2962,6 +2975,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_REPHASE_ARMED_ONLY",
         "SAT_WALK",
         "SAT_WALK_EFFORT",
+        "SAT_WALK_WARMUP",
         "SAT_REORDER",
         "SAT_MINIMIZE_DEPTH_LIMIT",
         "SAT_CHRONO_MAX_DELTA",

@@ -749,6 +749,7 @@ struct TemporaryAssumptionGuard {
     saved_accounting_mode: SearchAccountingMode,
     saved_arena: Vec<u32>,
     saved_watchers: Vec<Vec<Watcher>>,
+    saved_watch_pool: WatchPool,
     saved_binary_clauses: Vec<BinaryClause>,
 }
 
@@ -1161,6 +1162,249 @@ fn watcher_tag_bits(clause_idx: u32) -> u32 {
         clause_idx & WATCH_TAG_MASK
     } else {
         0
+    }
+}
+
+/// Flat watcher storage (SAT_WATCH_POOL, default off; kissat vectors.c
+/// analog — the bead ck8 long-clause endgame). Every literal's watch list
+/// lives in ONE shared arena `data`, described by per-list (start, len, cap):
+/// the legacy `Vec<Vec<Watcher>>` pays a heap pointer chase per visited
+/// literal and scatters lists across the allocator, while the pool serves
+/// every list from a single contiguous allocation.
+///
+/// Trajectory identity by construction: `push` appends at the end of the
+/// list exactly like `Vec::push` (order preserved); on capacity overflow the
+/// list relocates to the arena end with doubled capacity, copying entries in
+/// order — list CONTENTS and their evolution are byte-identical to the
+/// legacy path, only addresses differ. Kissat's delayed watching
+/// (`kissat_delay_watching_large`) is deliberately NOT ported: deferred
+/// pushes change list-arrival order versus the legacy immediate push and
+/// would reroll every trajectory.
+///
+/// All mutation goes through indices, never held pointers, so a push that
+/// grows `data` (moving the allocation) can never invalidate a caller's
+/// view: a grow only changes the START of the pushed-to list, and the
+/// propagation loop never pushes to the list it is currently scanning (the
+/// replacement candidate is never the false literal).
+///
+/// Holes left by relocation are tracked in `wasted` and reclaimed by
+/// `defragment`, which the GC-adjacent maintenance sites call.
+/// Per-list metadata for `WatchPool`, kept as ONE 16-byte struct so a literal
+/// visit touches a single cache line (the first gate run kept start/len/cap in
+/// three parallel arrays — 2-3 lines per visit — and paid a systematic ~2-3%
+/// on mid-size cells for it; the legacy Vec header is 24 bytes on one line).
+#[derive(Clone, Copy, Debug, Default)]
+struct WatchMeta {
+    start: usize,
+    len: u32,
+    cap: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+struct WatchPool {
+    data: Vec<Watcher>,
+    meta: Vec<WatchMeta>,
+    /// entries stranded in relocation holes (reclaimed by `defragment`)
+    wasted: usize,
+}
+
+const WATCH_POOL_MIN_CAP: u32 = 4;
+const WATCH_POOL_PAD: Watcher = Watcher {
+    clause_idx: u32::MAX,
+    blocker: 0,
+};
+
+impl WatchPool {
+    fn list_count(&self) -> usize {
+        self.meta.len()
+    }
+
+    /// Append empty (capacity-0) lists until `n` lists exist. Existing lists
+    /// are untouched (mirrors `Vec::resize(n, Vec::new())` on the legacy
+    /// nested storage, which only ever grows).
+    fn resize_lists(&mut self, n: usize) {
+        self.meta.resize(n, WatchMeta::default());
+    }
+
+    #[inline(always)]
+    fn len_of(&self, idx: usize) -> usize {
+        self.meta[idx].len as usize
+    }
+
+    #[inline(always)]
+    fn list(&self, idx: usize) -> &[Watcher] {
+        let m = self.meta[idx];
+        &self.data[m.start..m.start + m.len as usize]
+    }
+
+    #[inline(always)]
+    fn list_mut(&mut self, idx: usize) -> &mut [Watcher] {
+        let m = self.meta[idx];
+        &mut self.data[m.start..m.start + m.len as usize]
+    }
+
+    #[inline]
+    fn push(&mut self, idx: usize, w: Watcher) {
+        let m = self.meta[idx];
+        if m.len == m.cap {
+            self.grow(idx, m.len as usize);
+        }
+        let m = self.meta[idx];
+        let slot = m.start + m.len as usize;
+        self.data[slot] = w;
+        self.meta[idx].len = m.len + 1;
+    }
+
+    /// Relocate list `idx` (currently `len` entries, full) to the arena end
+    /// with doubled capacity. The capacity region is materialized eagerly with
+    /// pad entries so `push` always writes within `data.len()`.
+    #[cold]
+    fn grow(&mut self, idx: usize, len: usize) {
+        let old = self.meta[idx];
+        let new_cap = (old.cap as usize * 2).max(WATCH_POOL_MIN_CAP as usize);
+        let new_start = self.data.len();
+        self.data.reserve(new_cap);
+        // Move the existing entries, then pad out the fresh capacity.
+        for i in 0..len {
+            let w = self.data[old.start + i];
+            self.data.push(w);
+        }
+        self.data.resize(new_start + new_cap, WATCH_POOL_PAD);
+        self.meta[idx] = WatchMeta {
+            start: new_start,
+            len: old.len,
+            cap: new_cap as u32,
+        };
+        self.wasted += old.cap as usize;
+    }
+
+    /// `Vec::swap_remove` semantics on list `idx`.
+    fn swap_remove(&mut self, idx: usize, pos: usize) {
+        let m = self.meta[idx];
+        let len = m.len as usize;
+        debug_assert!(pos < len);
+        self.data[m.start + pos] = self.data[m.start + len - 1];
+        self.meta[idx].len = (len - 1) as u32;
+    }
+
+    /// Reset every list to length 0, keeping starts/capacities so refills
+    /// (e.g. the post-inprocess watcher rebuild) write in place without
+    /// relocation (mirrors per-list `Vec::clear`).
+    fn clear_all(&mut self) {
+        for m in &mut self.meta {
+            m.len = 0;
+        }
+    }
+
+    /// Rebuild the arena tightly (capacity == length per list), dropping all
+    /// holes. Order within every list is preserved.
+    fn defragment(&mut self) {
+        let total: usize = self.meta.iter().map(|m| m.len as usize).sum();
+        let mut new_data = Vec::with_capacity(total);
+        for idx in 0..self.meta.len() {
+            let m = self.meta[idx];
+            let l = m.len as usize;
+            self.meta[idx] = WatchMeta {
+                start: new_data.len(),
+                len: m.len,
+                cap: m.len,
+            };
+            new_data.extend_from_slice(&self.data[m.start..m.start + l]);
+        }
+        self.data = new_data;
+        self.wasted = 0;
+    }
+
+    /// Tight snapshot for the temporary-assumption guard: copies only the
+    /// LIVE entries of every list (like the legacy per-list `Vec::clone`,
+    /// which allocates len, not capacity). A plain `.clone()` would copy the
+    /// whole arena including relocation holes and slack capacity — on
+    /// rewrite-heavy armed cells (vex-class) that fragmentation made every
+    /// vivify-round clone copy a ballooning buffer (the gate-2 vex timeout).
+    fn clone_tight(&self) -> WatchPool {
+        let total: usize = self.meta.iter().map(|m| m.len as usize).sum();
+        let mut data = Vec::with_capacity(total);
+        let mut meta = Vec::with_capacity(self.meta.len());
+        for m in &self.meta {
+            meta.push(WatchMeta {
+                start: data.len(),
+                len: m.len,
+                cap: m.len,
+            });
+            data.extend_from_slice(&self.data[m.start..m.start + m.len as usize]);
+        }
+        WatchPool {
+            data,
+            meta,
+            wasted: 0,
+        }
+    }
+
+    /// Defragment when relocation holes dominate the arena. Layout-only
+    /// (list contents and order preserved) — trajectory-neutral. Called from
+    /// the GC-adjacent maintenance passes; without this only giants ever
+    /// defragmented and rewrite-heavy cells fragmented without bound.
+    fn maybe_defragment(&mut self) {
+        if self.wasted > 0 && self.wasted >= self.data.len() / 4 {
+            self.defragment();
+        }
+    }
+
+    /// Exact-capacity CSR layout from per-list counts (giant-arena parse
+    /// path: mirrors the legacy `reserve_exact` prealloc, with zero slack).
+    fn install_exact_counts(&mut self, counts: &[u32]) {
+        debug_assert_eq!(counts.len(), self.meta.len());
+        let total: usize = counts.iter().map(|&c| c as usize).sum();
+        self.data.clear();
+        self.data.resize(total, WATCH_POOL_PAD);
+        let mut acc = 0usize;
+        for (idx, &c) in counts.iter().enumerate() {
+            self.meta[idx] = WatchMeta {
+                start: acc,
+                len: 0,
+                cap: c,
+            };
+            acc += c as usize;
+        }
+        self.wasted = 0;
+    }
+}
+
+/// Order-preserving filter-map over every watch list, on whichever storage is
+/// active: `f` returns the rewritten watcher to keep, or `None` to drop the
+/// entry. Free function over the storage fields so call sites keep
+/// field-level split borrows (closures may read `self.arena` etc.).
+fn rewrite_all_watch_lists(
+    watchers: &mut [Vec<Watcher>],
+    pool: &mut WatchPool,
+    pool_active: bool,
+    mut f: impl FnMut(Watcher) -> Option<Watcher>,
+) {
+    if pool_active {
+        for idx in 0..pool.meta.len() {
+            let m = pool.meta[idx];
+            let s = m.start;
+            let n = m.len as usize;
+            let mut write = 0usize;
+            for read in 0..n {
+                if let Some(w) = f(pool.data[s + read]) {
+                    pool.data[s + write] = w;
+                    write += 1;
+                }
+            }
+            pool.meta[idx].len = write as u32;
+        }
+    } else {
+        for list in watchers {
+            let mut write = 0usize;
+            for read in 0..list.len() {
+                if let Some(w) = f(list[read]) {
+                    list[write] = w;
+                    write += 1;
+                }
+            }
+            list.truncate(write);
+        }
     }
 }
 
@@ -1617,7 +1861,15 @@ struct Solver {
     /// live learned-clause ids, mirroring MiniSat's dedicated `learnts` vector
     learned_clause_ids: Vec<usize>,
     /// clauses currently watching each literal, with blocker fast path
+    /// (legacy nested storage; unused when `watch_pool_active`)
     watchers: Vec<Vec<Watcher>>,
+    /// flat watcher storage (SAT_WATCH_POOL): all watch lists in one shared
+    /// arena; active iff `watch_pool_active` (then `watchers` stays empty)
+    watch_pool: WatchPool,
+    /// SAT_WATCH_POOL=on — serve watch lists from `watch_pool` instead of the
+    /// legacy `Vec<Vec<Watcher>>`; list contents and evolution are
+    /// byte-identical, only the memory layout differs
+    watch_pool_active: bool,
     /// scratch buffer reused when rebuilding a watch list during propagation
     watch_scratch: Vec<Watcher>,
     /// assignment[v] for variable v (1-based, index 0 unused)
@@ -1665,6 +1917,10 @@ struct Solver {
     /// walk effort budget in permille of search ticks since the last walk
     /// (kissat `walkeffort`, default 50)
     walk_effort_permille: u64,
+    /// warm the walker's starting assignment before each walk by completing the
+    /// root assignment via decide + propagate-beyond-conflicts, kissat warmup.c
+    /// parity (SAT_WALK_WARMUP, default off)
+    walk_warmup: bool,
     /// search-tick snapshot at the last walk (effort reference)
     walk_last_search_ticks: u64,
     /// decision level of each variable assignment
@@ -3008,6 +3264,10 @@ impl Solver {
                 Self::resolve_initial_clause_mode(config.initial_clause_mode, num_vars, &[])
             }
         };
+        // Promoted 2026-07-18 (watchpool gate 3, PAR-2 win at identical
+        // trajectories): flat watcher storage by default. SAT_WATCH_POOL=off
+        // replays the legacy Vec<Vec<Watcher>> path byte-for-byte.
+        let watch_pool_active = env_bool_or_default("SAT_WATCH_POOL", true);
         let mut solver = Solver {
             arena,
             original_clause_ids,
@@ -3020,7 +3280,19 @@ impl Solver {
             learned_meta: Vec::new(),
             learned_clause_by_id: Vec::new(),
             learned_id_by_clause: Vec::new(),
-            watchers: vec![Vec::new(); num_vars.saturating_mul(2)],
+            watchers: if watch_pool_active {
+                Vec::new()
+            } else {
+                vec![Vec::new(); num_vars.saturating_mul(2)]
+            },
+            watch_pool: {
+                let mut pool = WatchPool::default();
+                if watch_pool_active {
+                    pool.resize_lists(num_vars.saturating_mul(2));
+                }
+                pool
+            },
+            watch_pool_active,
             watch_scratch: Vec::new(),
             assignment: vec![UNASSIGNED; num_vars + 1],
             saved_phase: vec![initial_saved_phase; num_vars + 1],
@@ -3053,6 +3325,7 @@ impl Solver {
             rephase_armed_only: config.rephase_armed_only,
             walk_enabled: config.walk,
             walk_effort_permille: config.walk_effort_permille,
+            walk_warmup: config.walk_warmup,
             walk_last_search_ticks: 0,
             decision_level: vec![0; num_vars + 1],
             reason: vec![NO_REASON; num_vars + 1],
@@ -3466,7 +3739,7 @@ impl Solver {
         } = pre;
         arena.reserve_exact(arena_headroom);
         self.arena = arena;
-        let mut watch_counts = vec![0u32; self.watchers.len()];
+        let mut watch_counts = vec![0u32; self.watch_lists_len()];
         for &clause_idx in &clause_ids {
             let clause_idx = clause_idx as usize;
             let len = clause_header_size(self.arena[clause_idx]);
@@ -3477,9 +3750,13 @@ impl Solver {
                 watch_counts[lit_to_index(word_to_lit(self.arena[clause_idx + 2]))] += 1;
             }
         }
-        for (list, &count) in self.watchers.iter_mut().zip(watch_counts.iter()) {
-            if count > 0 {
-                list.reserve_exact(count as usize);
+        if self.watch_pool_active {
+            self.watch_pool.install_exact_counts(&watch_counts);
+        } else {
+            for (list, &count) in self.watchers.iter_mut().zip(watch_counts.iter()) {
+                if count > 0 {
+                    list.reserve_exact(count as usize);
+                }
             }
         }
         drop(watch_counts);
@@ -3555,14 +3832,14 @@ impl Solver {
         for lit_pos in 0..2 {
             let lit = self.clause_lit(clause_idx, lit_pos);
             let watch_idx = self.lit_index(lit);
-            if watch_idx >= self.watchers.len() {
+            if watch_idx >= self.watch_lists_len() {
                 continue;
             }
             // Untag IN PLACE — do not remove. The entry becomes an ordinary
             // stale watcher that the legacy loop drops at its next visit, so
             // list order, tick accounting, and stale-skip stats evolve
             // byte-for-byte like the legacy path.
-            for w in &mut self.watchers[watch_idx] {
+            for w in self.watch_list_mut(watch_idx) {
                 if w.clause_idx & WATCH_BINARY_TAG != 0
                     && (w.clause_idx & !WATCH_TAG_MASK) as usize == clause_idx
                 {
@@ -3583,7 +3860,7 @@ impl Solver {
     /// and the inline path takes over from here.
     fn activate_watch_inline_tags(&mut self) {
         self.watch_inline_tags_active = true;
-        let num_lists = self.watchers.len();
+        let num_lists = self.watch_lists_len();
         for watch_idx in 0..num_lists {
             let var = watch_idx / 2 + 1;
             let list_lit = if watch_idx % 2 == 0 {
@@ -3591,8 +3868,9 @@ impl Solver {
             } else {
                 -(var as i32)
             };
-            let mut list = std::mem::take(&mut self.watchers[watch_idx]);
-            for w in &mut list {
+            let n = self.watch_list_len(watch_idx);
+            for pos in 0..n {
+                let w = self.watch_entry(watch_idx, pos);
                 let idx = w.clause_idx as usize;
                 if idx >= (1usize << 30) || idx >= self.arena.len() {
                     continue;
@@ -3611,9 +3889,15 @@ impl Solver {
                 if self.clause_is_learnt(idx) {
                     tagged |= WATCH_LEARNT_TAG;
                 }
-                w.clause_idx = tagged;
+                self.watch_entry_set(
+                    watch_idx,
+                    pos,
+                    Watcher {
+                        clause_idx: tagged,
+                        blocker: w.blocker,
+                    },
+                );
             }
-            self.watchers[watch_idx] = list;
         }
     }
 
@@ -4379,24 +4663,26 @@ impl Solver {
             new_learned_clause_ids.push(new_clause_idx);
         }
 
-        for watch_list in &mut self.watchers {
-            let mut write = 0usize;
-            for read in 0..watch_list.len() {
-                let mut watcher = watch_list[read];
+        rewrite_all_watch_lists(
+            &mut self.watchers,
+            &mut self.watch_pool,
+            self.watch_pool_active,
+            |mut watcher| {
                 let tag = watcher_tag_bits(watcher.clause_idx);
                 let old_idx = watcher_untagged_idx(watcher.clause_idx);
                 if old_idx >= reloc.len() {
-                    continue;
+                    return None;
                 }
                 let new_idx = reloc[old_idx];
                 if new_idx == NO_RELOC {
-                    continue;
+                    return None;
                 }
                 watcher.clause_idx = new_idx | tag;
-                watch_list[write] = watcher;
-                write += 1;
-            }
-            watch_list.truncate(write);
+                Some(watcher)
+            },
+        );
+        if self.watch_pool_active {
+            self.watch_pool.maybe_defragment();
         }
 
         let mut watch_scratch_write = 0usize;
@@ -4582,8 +4868,12 @@ impl Solver {
             !self.binary_fast_path,
             "binary fast path maintains a separate binary index; not supported here"
         );
-        for list in &mut self.watchers {
-            list.clear();
+        if self.watch_pool_active {
+            self.watch_pool.clear_all();
+        } else {
+            for list in &mut self.watchers {
+                list.clear();
+            }
         }
         let originals = std::mem::take(&mut self.original_clause_ids);
         for &clause_idx in &originals {
@@ -4626,7 +4916,8 @@ impl Solver {
             }
             for pos in 0..2 {
                 let lit = self.clause_lit(clause_idx, pos);
-                let watched = self.watchers[self.lit_index(lit)]
+                let watched = self
+                    .watch_list(self.lit_index(lit))
                     .iter()
                     .any(|w| watcher_untagged_idx(w.clause_idx) == clause_idx);
                 debug_assert!(
@@ -4635,8 +4926,8 @@ impl Solver {
                 );
             }
         }
-        for list in &self.watchers {
-            for w in list {
+        for idx in 0..self.watch_lists_len() {
+            for w in self.watch_list(idx) {
                 debug_assert!(
                     !self.clause_is_deleted(watcher_untagged_idx(w.clause_idx)),
                     "watch list references deleted clause {}",
@@ -5094,14 +5385,91 @@ impl Solver {
         Some(best_var)
     }
 
+    /// Storage-dispatch helpers for the watch lists: the legacy nested
+    /// `Vec<Vec<Watcher>>` and the flat `WatchPool` (SAT_WATCH_POOL) expose
+    /// identical list semantics through these, so every cold-path site works
+    /// on either storage. The propagation hot loop keeps its own specialized
+    /// dual-mode access.
+    #[inline(always)]
+    fn watch_lists_len(&self) -> usize {
+        if self.watch_pool_active {
+            self.watch_pool.list_count()
+        } else {
+            self.watchers.len()
+        }
+    }
+
+    #[inline(always)]
+    fn watch_list_len(&self, idx: usize) -> usize {
+        if self.watch_pool_active {
+            self.watch_pool.len_of(idx)
+        } else {
+            self.watchers[idx].len()
+        }
+    }
+
+    #[inline(always)]
+    fn watch_list(&self, idx: usize) -> &[Watcher] {
+        if self.watch_pool_active {
+            self.watch_pool.list(idx)
+        } else {
+            &self.watchers[idx]
+        }
+    }
+
+    #[inline(always)]
+    fn watch_list_mut(&mut self, idx: usize) -> &mut [Watcher] {
+        if self.watch_pool_active {
+            self.watch_pool.list_mut(idx)
+        } else {
+            &mut self.watchers[idx]
+        }
+    }
+
+    #[inline(always)]
+    fn watch_entry(&self, idx: usize, pos: usize) -> Watcher {
+        if self.watch_pool_active {
+            self.watch_pool.data[self.watch_pool.meta[idx].start + pos]
+        } else {
+            self.watchers[idx][pos]
+        }
+    }
+
+    #[inline(always)]
+    fn watch_entry_set(&mut self, idx: usize, pos: usize, w: Watcher) {
+        if self.watch_pool_active {
+            let s = self.watch_pool.meta[idx].start;
+            self.watch_pool.data[s + pos] = w;
+        } else {
+            self.watchers[idx][pos] = w;
+        }
+    }
+
+    #[inline(always)]
+    fn watch_push(&mut self, idx: usize, w: Watcher) {
+        if self.watch_pool_active {
+            self.watch_pool.push(idx, w);
+        } else {
+            self.watchers[idx].push(w);
+        }
+    }
+
+    fn watch_swap_remove(&mut self, idx: usize, pos: usize) {
+        if self.watch_pool_active {
+            self.watch_pool.swap_remove(idx, pos);
+        } else {
+            self.watchers[idx].swap_remove(pos);
+        }
+    }
+
     fn detach_clause_watcher_strict(&mut self, lit: i32, clause_idx: usize) {
         let watch_idx = self.lit_index(lit);
-        let watch_list = &mut self.watchers[watch_idx];
-        if let Some(pos) = watch_list
+        if let Some(pos) = self
+            .watch_list(watch_idx)
             .iter()
             .position(|watcher| watcher_untagged_idx(watcher.clause_idx) == clause_idx)
         {
-            watch_list.swap_remove(pos);
+            self.watch_swap_remove(watch_idx, pos);
         } else {
             debug_assert!(
                 false,
@@ -5133,10 +5501,13 @@ impl Solver {
             1 => {
                 let lit = self.clause_lit(clause_idx, 0);
                 let watch_idx = self.lit_index(lit);
-                self.watchers[watch_idx].push(Watcher {
-                    clause_idx: clause_idx as u32,
-                    blocker: lit,
-                });
+                self.watch_push(
+                    watch_idx,
+                    Watcher {
+                        clause_idx: clause_idx as u32,
+                        blocker: lit,
+                    },
+                );
                 if track_root_unit {
                     self.root_unit_clauses.push(clause_idx);
                 }
@@ -5162,14 +5533,20 @@ impl Solver {
                         }
                     }
                 }
-                self.watchers[first_watch_idx].push(Watcher {
-                    clause_idx: tagged_idx,
-                    blocker: second,
-                });
-                self.watchers[second_watch_idx].push(Watcher {
-                    clause_idx: tagged_idx,
-                    blocker: first,
-                });
+                self.watch_push(
+                    first_watch_idx,
+                    Watcher {
+                        clause_idx: tagged_idx,
+                        blocker: second,
+                    },
+                );
+                self.watch_push(
+                    second_watch_idx,
+                    Watcher {
+                        clause_idx: tagged_idx,
+                        blocker: first,
+                    },
+                );
             }
         }
     }
@@ -5233,6 +5610,7 @@ impl Solver {
             saved_accounting_mode: self.accounting_mode,
             saved_arena: self.arena.clone(),
             saved_watchers: self.watchers.clone(),
+            saved_watch_pool: self.watch_pool.clone_tight(),
             saved_binary_clauses: self.binary_clauses.clone(),
         };
         self.accounting_mode = SearchAccountingMode::from_temporary_options(opts);
@@ -5255,6 +5633,7 @@ impl Solver {
         self.accounting_mode = guard.saved_accounting_mode;
         self.arena = guard.saved_arena;
         self.watchers = guard.saved_watchers;
+        self.watch_pool = guard.saved_watch_pool;
         self.binary_clauses = guard.saved_binary_clauses;
         debug_assert_eq!(self.current_level(), guard.start_level);
         debug_assert_eq!(self.trail.len(), guard.start_trail);
@@ -6167,20 +6546,80 @@ impl Solver {
                 return Some(conflict);
             }
             let watch_idx = self.lit_index(false_lit);
-            let mut pending = std::mem::take(&mut self.watchers[watch_idx]);
+            // Dual-mode watch-list window (SAT_WATCH_POOL): identical
+            // read/compact/writeback semantics over either storage. Pool mode
+            // addresses entries as pool.data[pstart + i]; a moved-watch push
+            // can only grow the PUSHED-TO list (and possibly realloc the pool
+            // arena — offsets survive that), never relocate THIS list, so
+            // `pstart` stays valid for the whole scan. Legacy mode keeps the
+            // mem::take ownership dance byte-for-byte.
+            let pool_mode = self.watch_pool_active;
+            let mut pending: Vec<Watcher>;
+            let pstart: usize;
+            let plen: usize;
+            if pool_mode {
+                pending = Vec::new();
+                let m = self.watch_pool.meta[watch_idx];
+                pstart = m.start;
+                plen = m.len as usize;
+            } else {
+                pending = std::mem::take(&mut self.watchers[watch_idx]);
+                pstart = 0;
+                plen = pending.len();
+            }
+            // SAFETY of the unchecked pool accesses below: every index passed
+            // is < plen, and pstart + plen <= pstart + cap <= data.len() held
+            // when the window was captured; mid-scan pool pushes only append
+            // or relocate OTHER lists (data.len() grows monotonically), so
+            // the window region stays in bounds for the whole scan. Access
+            // goes through `self` on every use (no held raw pointers), the
+            // same UB-clean shape as the PTR_FAST arena window.
+            macro_rules! wat_get {
+                ($i:expr) => {
+                    if pool_mode {
+                        debug_assert!($i < plen && pstart + plen <= self.watch_pool.data.len());
+                        unsafe { *self.watch_pool.data.get_unchecked(pstart + $i) }
+                    } else {
+                        pending[$i]
+                    }
+                };
+            }
+            macro_rules! wat_set {
+                ($i:expr, $w:expr) => {
+                    let w = $w;
+                    if pool_mode {
+                        debug_assert!($i < plen && pstart + plen <= self.watch_pool.data.len());
+                        unsafe {
+                            *self.watch_pool.data.get_unchecked_mut(pstart + $i) = w;
+                        }
+                    } else {
+                        pending[$i] = w;
+                    }
+                };
+            }
+            macro_rules! wat_finish {
+                ($n:expr) => {
+                    if pool_mode {
+                        self.watch_pool.meta[watch_idx].len = $n as u32;
+                    } else {
+                        pending.truncate($n);
+                        self.watchers[watch_idx] = pending;
+                    }
+                };
+            }
             let mut read = 0usize;
             let mut write = 0usize;
             let prefetch_clauses = self.prefetch_watched_clauses;
 
-            while read < pending.len() {
-                let watcher = pending[read];
+            while read < plen {
+                let watcher = wat_get!(read);
                 read += 1;
                 // bead 5b2.8.1: software-prefetch the next watched clause's arena words while we
                 // process the current watcher. Watch-list slots are sequential (hardware-prefetched)
                 // but `arena[clause_idx]` is a random load that stalls the loop on a cache miss.
                 // This is a pure hint and cannot change the search result.
-                if prefetch_clauses && read < pending.len() {
-                    let next_clause_idx = watcher_untagged_idx(pending[read].clause_idx);
+                if prefetch_clauses && read < plen {
+                    let next_clause_idx = watcher_untagged_idx(wat_get!(read).clause_idx);
                     if next_clause_idx < self.arena.len() {
                         #[cfg(target_arch = "x86_64")]
                         unsafe {
@@ -6200,7 +6639,7 @@ impl Solver {
                     if HOT_STATS && normal_search_accounting {
                         self.stats.watch_blocker_hits += 1;
                     }
-                    pending[write] = watcher;
+                    wat_set!(write, watcher);
                     write += 1;
                     continue;
                 }
@@ -6251,15 +6690,14 @@ impl Solver {
                         // arena; hand analysis that exact marking order.
                         self.inline_binary_conflict_hint =
                             Some((clause_idx, watcher.blocker, false_lit));
-                        pending[write] = watcher;
+                        wat_set!(write, watcher);
                         write += 1;
-                        while read < pending.len() {
-                            pending[write] = pending[read];
+                        while read < plen {
+                            wat_set!(write, wat_get!(read));
                             write += 1;
                             read += 1;
                         }
-                        pending.truncate(write);
-                        self.watchers[watch_idx] = pending;
+                        wat_finish!(write);
                         return Some(Conflict::Clause(clause_idx));
                     }
                     if watcher.clause_idx & WATCH_LEARNT_TAG != 0 {
@@ -6271,7 +6709,7 @@ impl Solver {
                     if HOT_STATS && normal_search_accounting {
                         self.stats.binary_props += 1;
                     }
-                    pending[write] = watcher;
+                    wat_set!(write, watcher);
                     write += 1;
                     continue;
                 }
@@ -6296,19 +6734,18 @@ impl Solver {
                     let unit_lit = self.clause_lit(clause_idx, 0);
                     match self.lit_value(unit_lit) {
                         TRUE => {
-                            pending[write] = watcher;
+                            wat_set!(write, watcher);
                             write += 1;
                         }
                         FALSE => {
-                            pending[write] = watcher;
+                            wat_set!(write, watcher);
                             write += 1;
-                            while read < pending.len() {
-                                pending[write] = pending[read];
+                            while read < plen {
+                                wat_set!(write, wat_get!(read));
                                 write += 1;
                                 read += 1;
                             }
-                            pending.truncate(write);
-                            self.watchers[watch_idx] = pending;
+                            wat_finish!(write);
                             return Some(Conflict::Clause(clause_idx));
                         }
                         UNASSIGNED => {
@@ -6316,22 +6753,21 @@ impl Solver {
                                 unit_lit,
                                 ReasonRef::Clause(clause_idx),
                             ) {
-                                pending[write] = watcher;
+                                wat_set!(write, watcher);
                                 write += 1;
-                                while read < pending.len() {
-                                    pending[write] = pending[read];
+                                while read < plen {
+                                    wat_set!(write, wat_get!(read));
                                     write += 1;
                                     read += 1;
                                 }
-                                pending.truncate(write);
-                                self.watchers[watch_idx] = pending;
+                                wat_finish!(write);
                                 return Some(Conflict::Clause(clause_idx));
                             }
                             self.note_clause_used_as_propagation_reason(
                                 clause_idx,
                                 normal_search_accounting,
                             );
-                            pending[write] = watcher;
+                            wat_set!(write, watcher);
                             write += 1;
                         }
                         _ => unreachable!(),
@@ -6371,7 +6807,7 @@ impl Solver {
                         blocker: first,
                     };
                     if first != watcher.blocker && self.lit_value(first) == TRUE {
-                        pending[write] = updated_watcher;
+                        wat_set!(write, updated_watcher);
                         write += 1;
                         continue;
                     }
@@ -6389,7 +6825,11 @@ impl Solver {
                                     lit_to_word(false_lit);
                             }
                             let new_watch_idx = self.lit_index(candidate);
-                            self.watchers[new_watch_idx].push(updated_watcher);
+                            if pool_mode {
+                                self.watch_pool.push(new_watch_idx, updated_watcher);
+                            } else {
+                                self.watchers[new_watch_idx].push(updated_watcher);
+                            }
                             moved_watch = true;
                             break;
                         }
@@ -6409,7 +6849,7 @@ impl Solver {
                         blocker: first,
                     };
                     if first != watcher.blocker && self.lit_value(first) == TRUE {
-                        pending[write] = updated_watcher;
+                        wat_set!(write, updated_watcher);
                         write += 1;
                         continue;
                     }
@@ -6421,7 +6861,11 @@ impl Solver {
                             self.set_clause_lit(clause_idx, 1, candidate);
                             self.set_clause_lit(clause_idx, lit_pos, false_lit);
                             let new_watch_idx = self.lit_index(candidate);
-                            self.watchers[new_watch_idx].push(updated_watcher);
+                            if pool_mode {
+                                self.watch_pool.push(new_watch_idx, updated_watcher);
+                            } else {
+                                self.watchers[new_watch_idx].push(updated_watcher);
+                            }
                             moved_watch = true;
                             break;
                         }
@@ -6432,26 +6876,24 @@ impl Solver {
                     continue;
                 }
 
-                pending[write] = updated_watcher;
+                wat_set!(write, updated_watcher);
                 write += 1;
                 if self.lit_value(first) == FALSE {
-                    while read < pending.len() {
-                        pending[write] = pending[read];
+                    while read < plen {
+                        wat_set!(write, wat_get!(read));
                         write += 1;
                         read += 1;
                     }
-                    pending.truncate(write);
-                    self.watchers[watch_idx] = pending;
+                    wat_finish!(write);
                     return Some(Conflict::Clause(clause_idx));
                 }
                 if !self.enqueue_impl::<NORMAL_SEARCH>(first, ReasonRef::Clause(clause_idx)) {
-                    while read < pending.len() {
-                        pending[write] = pending[read];
+                    while read < plen {
+                        wat_set!(write, wat_get!(read));
                         write += 1;
                         read += 1;
                     }
-                    pending.truncate(write);
-                    self.watchers[watch_idx] = pending;
+                    wat_finish!(write);
                     return Some(Conflict::Clause(clause_idx));
                 }
                 self.note_clause_used_as_propagation_reason(clause_idx, normal_search_accounting);
@@ -6466,8 +6908,7 @@ impl Solver {
                 }
             }
 
-            pending.truncate(write);
-            self.watchers[watch_idx] = pending;
+            wat_finish!(write);
         }
 
         if normal_search_accounting {
@@ -7285,6 +7726,46 @@ impl Solver {
         self.initial_phase(var)
     }
 
+    /// Kissat warmup.c parity for the walk slots (SAT_WALK_WARMUP): before a
+    /// rephase walk, complete the root assignment by repeated decide +
+    /// propagate-beyond-conflicts — a falsified clause is skipped without
+    /// analysis or backjumping and propagation resumes with the next trail
+    /// literal — so the walk starts from a unit-propagation-consistent
+    /// completion of the current decision phases (kissat warms 100% of walks).
+    /// Every assignment eagerly writes its saved phase (enqueue update_phase),
+    /// and the final backtrack(0) leaves those phases in place —
+    /// kissat_backtrack_without_updating_phases semantics. Runs under the
+    /// temporary accounting mode so warmup work never feeds search stats,
+    /// tick-based effort budgets, or the decisions/conflict arming signals.
+    fn warmup_walk_phases(&mut self) {
+        debug_assert_eq!(self.current_level(), 0);
+        let saved_mode = self.accounting_mode;
+        self.accounting_mode = SearchAccountingMode::TemporaryAssumption {
+            update_phase: true,
+            update_branch_stats: false,
+            update_restart_stats: false,
+            count_as_decision: false,
+        };
+        let mut decisions = 0u64;
+        let mut conflicts = 0u64;
+        while let Some(lit) = self.pick_branch_lit() {
+            self.trail_limits.push(self.trail.len());
+            let inserted = self.enqueue(lit, ReasonRef::None);
+            debug_assert!(inserted, "warmup decision literal must be unassigned");
+            decisions = decisions.saturating_add(1);
+            while self.propagate().is_some() {
+                conflicts = conflicts.saturating_add(1);
+            }
+        }
+        self.backtrack(0);
+        self.accounting_mode = saved_mode;
+        self.stats.walk_warmups = self.stats.walk_warmups.saturating_add(1);
+        self.stats.walk_warmup_decisions =
+            self.stats.walk_warmup_decisions.saturating_add(decisions);
+        self.stats.walk_warmup_conflicts =
+            self.stats.walk_warmup_conflicts.saturating_add(conflicts);
+    }
+
     /// The 'W' slot of the rephase schedule: run one effort-bounded ProbSAT
     /// walk over the live irredundant clauses and, when it finds an assignment
     /// with fewer unsatisfied clauses than the current decision phases, export
@@ -7296,6 +7777,9 @@ impl Solver {
         // (tests) may sit at a higher level — degrade to a no-op there.
         if !self.walk_enabled || self.current_level() != 0 || self.has_empty_clause {
             return;
+        }
+        if self.walk_warmup {
+            self.warmup_walk_phases();
         }
         const WALK_MIN_EFFORT_TICKS: u64 = 10_000_000;
         // Cap the walkable-formula size: the walker allocates ~8 bytes per
@@ -8535,7 +9019,11 @@ impl Solver {
         self.scratch_redundant_state.resize(n1, 0);
         self.scratch_frame_used.resize(n1, 0);
         self.lbd_seen.resize(self.lbd_seen.len().max(n1), 0);
-        self.watchers.resize(n2, Vec::new());
+        if self.watch_pool_active {
+            self.watch_pool.resize_lists(n2);
+        } else {
+            self.watchers.resize(n2, Vec::new());
+        }
         self.n_occ.resize(n2, 0);
         if let BinaryImplications::Nested(edges) = &mut self.binary_implications {
             edges.resize(n2, Vec::new());
@@ -9505,8 +9993,8 @@ impl Solver {
     fn watcher_liveness_counts(&self) -> (usize, usize) {
         let mut live = 0usize;
         let mut stale = 0usize;
-        for watch_list in &self.watchers {
-            for watcher in watch_list {
+        for idx in 0..self.watch_lists_len() {
+            for watcher in self.watch_list(idx) {
                 let clause_idx = watcher_untagged_idx(watcher.clause_idx);
                 if clause_idx < self.arena.len() && !self.clause_is_deleted(clause_idx) {
                     live += 1;
@@ -9572,21 +10060,24 @@ impl Solver {
     fn prune_stale_watchers(&mut self) -> usize {
         let arena = &self.arena;
         let mut pruned = 0usize;
-        for watch_list in &mut self.watchers {
-            let mut write = 0usize;
-            for read in 0..watch_list.len() {
-                let watcher = watch_list[read];
+        rewrite_all_watch_lists(
+            &mut self.watchers,
+            &mut self.watch_pool,
+            self.watch_pool_active,
+            |watcher| {
                 let clause_idx = watcher_untagged_idx(watcher.clause_idx);
                 if clause_idx < arena.len()
                     && clause_header_mark(arena[clause_idx]) != CLAUSE_DELETED_MARK
                 {
-                    watch_list[write] = watcher;
-                    write += 1;
+                    Some(watcher)
                 } else {
                     pruned += 1;
+                    None
                 }
-            }
-            watch_list.truncate(write);
+            },
+        );
+        if self.watch_pool_active {
+            self.watch_pool.maybe_defragment();
         }
         pruned
     }
@@ -9865,24 +10356,26 @@ impl Solver {
             RelocLookup::Dense(&reloc)
         };
 
-        for watch_list in &mut self.watchers {
-            let mut write = 0usize;
-            for read in 0..watch_list.len() {
-                let mut watcher = watch_list[read];
+        rewrite_all_watch_lists(
+            &mut self.watchers,
+            &mut self.watch_pool,
+            self.watch_pool_active,
+            |mut watcher| {
                 let tag = watcher_tag_bits(watcher.clause_idx);
                 let old_idx = watcher_untagged_idx(watcher.clause_idx);
                 let new_idx = reloc_lookup.get(old_idx);
                 if new_idx == NO_RELOC {
-                    continue;
+                    return None;
                 }
                 if track_gc_detail_stats && new_idx as usize != old_idx {
                     refs_rewritten += 1;
                 }
                 watcher.clause_idx = new_idx as u32 | tag;
-                watch_list[write] = watcher;
-                write += 1;
-            }
-            watch_list.truncate(write);
+                Some(watcher)
+            },
+        );
+        if self.watch_pool_active {
+            self.watch_pool.maybe_defragment();
         }
 
         let mut watch_scratch_write = 0usize;
@@ -10309,30 +10802,26 @@ impl Solver {
     /// so promoting to default requires benchmark evidence on the lbd-tiered
     /// path.
     fn compact_all_watch_lists(&mut self) {
-        let watchers_len = self.watchers.len();
         let mut total_removed: u64 = 0;
-        for watch_idx in 0..watchers_len {
-            let mut list = std::mem::take(&mut self.watchers[watch_idx]);
-            let read_len = list.len();
-            if read_len == 0 {
-                self.watchers[watch_idx] = list;
-                continue;
-            }
-            let mut write = 0usize;
-            for read in 0..read_len {
-                let watcher = list[read];
+        let arena = &self.arena;
+        rewrite_all_watch_lists(
+            &mut self.watchers,
+            &mut self.watch_pool,
+            self.watch_pool_active,
+            |watcher| {
                 let clause_idx = watcher_untagged_idx(watcher.clause_idx);
-                if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
+                if clause_idx >= arena.len()
+                    || clause_header_mark(arena[clause_idx]) == CLAUSE_DELETED_MARK
+                {
                     total_removed += 1;
-                    continue;
+                    None
+                } else {
+                    Some(watcher)
                 }
-                if write != read {
-                    list[write] = watcher;
-                }
-                write += 1;
-            }
-            list.truncate(write);
-            self.watchers[watch_idx] = list;
+            },
+        );
+        if self.watch_pool_active {
+            self.watch_pool.maybe_defragment();
         }
         self.stats.watch_compaction_passes += 1;
         self.stats.watch_compaction_entries_removed =
@@ -12698,9 +13187,13 @@ impl Solver {
         if self.assignment.len().saturating_sub(1) <= SHRINK_WATCH_MIN_VARS {
             return;
         }
-        for list in self.watchers.iter_mut() {
-            if list.capacity() > list.len() {
-                list.shrink_to_fit();
+        if self.watch_pool_active {
+            self.watch_pool.defragment();
+        } else {
+            for list in self.watchers.iter_mut() {
+                if list.capacity() > list.len() {
+                    list.shrink_to_fit();
+                }
             }
         }
     }
@@ -14363,6 +14856,134 @@ mod tests {
         Solver::new(num_vars, clauses)
     }
 
+    fn wp_watcher(clause_idx: u32, blocker: i32) -> Watcher {
+        Watcher {
+            clause_idx,
+            blocker,
+        }
+    }
+
+    #[test]
+    fn watch_pool_push_preserves_vec_order_across_growth() {
+        // Mirror Vec::push semantics on two interleaved lists across several
+        // capacity-doubling relocations; contents and order must match a
+        // reference Vec<Vec<Watcher>> exactly.
+        let mut pool = WatchPool::default();
+        pool.resize_lists(2);
+        let mut reference: Vec<Vec<Watcher>> = vec![Vec::new(), Vec::new()];
+        for i in 0..37u32 {
+            let idx = (i % 2) as usize;
+            let w = wp_watcher(i, i as i32 + 1);
+            pool.push(idx, w);
+            reference[idx].push(w);
+            // Interleave: every third entry also lands on the other list to
+            // force relocations while list 0/1 storage interleaves.
+            if i % 3 == 0 {
+                let other = 1 - idx;
+                let w2 = wp_watcher(1000 + i, -(i as i32) - 1);
+                pool.push(other, w2);
+                reference[other].push(w2);
+            }
+        }
+        assert_eq!(pool.list(0), reference[0].as_slice());
+        assert_eq!(pool.list(1), reference[1].as_slice());
+        assert!(pool.wasted > 0, "growth must have relocated at least once");
+    }
+
+    #[test]
+    fn watch_pool_swap_remove_truncate_and_defragment() {
+        let mut pool = WatchPool::default();
+        pool.resize_lists(3);
+        let mut reference: Vec<Vec<Watcher>> = vec![Vec::new(); 3];
+        for i in 0..12u32 {
+            let idx = (i % 3) as usize;
+            let w = wp_watcher(i, 7);
+            pool.push(idx, w);
+            reference[idx].push(w);
+        }
+        pool.swap_remove(1, 0);
+        reference[1].swap_remove(0);
+        assert_eq!(pool.list(1), reference[1].as_slice());
+
+        pool.meta[2].len = 2;
+        reference[2].truncate(2);
+        assert_eq!(pool.list(2), reference[2].as_slice());
+
+        pool.defragment();
+        for idx in 0..3 {
+            assert_eq!(pool.list(idx), reference[idx].as_slice(), "list {idx}");
+            assert_eq!(pool.meta[idx].cap as usize, reference[idx].len());
+        }
+        assert_eq!(pool.wasted, 0);
+        // Pushes after a tight defragment must relocate, not corrupt.
+        let w = wp_watcher(99, -3);
+        pool.push(0, w);
+        reference[0].push(w);
+        assert_eq!(pool.list(0), reference[0].as_slice());
+    }
+
+    #[test]
+    fn watch_pool_clone_tight_drops_holes_and_preserves_lists() {
+        let mut pool = WatchPool::default();
+        pool.resize_lists(2);
+        for i in 0..20u32 {
+            pool.push((i % 2) as usize, wp_watcher(i, 1));
+        }
+        assert!(pool.wasted > 0, "growth should have left holes");
+        let tight = pool.clone_tight();
+        assert_eq!(tight.wasted, 0);
+        assert_eq!(
+            tight.data.len(),
+            pool.len_of(0) + pool.len_of(1),
+            "tight clone copies only live entries"
+        );
+        assert_eq!(tight.list(0), pool.list(0));
+        assert_eq!(tight.list(1), pool.list(1));
+
+        // maybe_defragment fires once waste dominates and preserves lists.
+        let before0: Vec<Watcher> = pool.list(0).to_vec();
+        let before1: Vec<Watcher> = pool.list(1).to_vec();
+        while pool.wasted < pool.data.len() / 4 {
+            pool.push(0, wp_watcher(999, 2));
+            pool.swap_remove(0, pool.len_of(0) - 1);
+            // Force relocation churn by growing list 1.
+            pool.push(1, wp_watcher(998, 3));
+            pool.swap_remove(1, pool.len_of(1) - 1);
+            if pool.wasted == 0 {
+                break;
+            }
+        }
+        pool.maybe_defragment();
+        if pool.wasted == 0 {
+            assert_eq!(pool.list(0), before0.as_slice());
+            assert_eq!(pool.list(1), before1.as_slice());
+        }
+    }
+
+    #[test]
+    fn watch_pool_install_exact_counts_lays_out_csr() {
+        let mut pool = WatchPool::default();
+        pool.resize_lists(3);
+        pool.install_exact_counts(&[2, 0, 3]);
+        assert_eq!(pool.data.len(), 5);
+        for (idx, expect) in [(0usize, 2u32), (1, 0), (2, 3)] {
+            assert_eq!(pool.meta[idx].cap, expect);
+            assert_eq!(pool.len_of(idx), 0);
+        }
+        // Fill exactly to capacity: no relocation may happen (starts stable).
+        let starts_before: Vec<usize> = pool.meta.iter().map(|m| m.start).collect();
+        pool.push(0, wp_watcher(1, 1));
+        pool.push(0, wp_watcher(2, 2));
+        pool.push(2, wp_watcher(3, 3));
+        pool.push(2, wp_watcher(4, 4));
+        pool.push(2, wp_watcher(5, 5));
+        let starts_after: Vec<usize> = pool.meta.iter().map(|m| m.start).collect();
+        assert_eq!(starts_after, starts_before);
+        assert_eq!(pool.wasted, 0);
+        assert_eq!(pool.list(0).len(), 2);
+        assert_eq!(pool.list(2).len(), 3);
+    }
+
     fn make_solver_with_config(
         num_vars: usize,
         clauses: Vec<Vec<i32>>,
@@ -14706,7 +15327,7 @@ mod tests {
     }
 
     fn watches_clause(s: &Solver, lit: i32, clause_idx: usize) -> bool {
-        s.watchers[s.lit_index(lit)]
+        s.watch_list(s.lit_index(lit))
             .iter()
             .any(|w| w.clause_idx as usize == clause_idx)
     }
@@ -16491,7 +17112,14 @@ mod tests {
             giant_solver.original_clause_ids
         );
         assert_eq!(nested_solver.original_literals, giant_solver.original_literals);
-        assert_eq!(nested_solver.watchers, giant_solver.watchers);
+        assert_eq!(nested_solver.watch_lists_len(), giant_solver.watch_lists_len());
+        for wl_idx in 0..nested_solver.watch_lists_len() {
+            assert_eq!(
+                nested_solver.watch_list(wl_idx),
+                giant_solver.watch_list(wl_idx),
+                "watch list {wl_idx} differs"
+            );
+        }
         assert_eq!(nested_solver.root_unit_clauses, giant_solver.root_unit_clauses);
 
         // Lean giant construction skips the simplification-only side structures.
@@ -17173,7 +17801,8 @@ mod tests {
         assert_eq!(s.clause_slice(relocated_root), &[1]);
         assert_eq!(s.learnt_lbd(relocated_live), 4);
         assert_eq!(s.learnt_used_recently(relocated_live), 1);
-        for watch_list in &s.watchers {
+        for wl_idx in 0..s.watch_lists_len() {
+            let watch_list = s.watch_list(wl_idx);
             for watcher in watch_list {
                 let clause_idx = watcher.clause_idx as usize;
                 assert!(clause_idx < s.arena.len());
@@ -17219,20 +17848,22 @@ mod tests {
     fn test_gc_watcher_staleness_reason_after_skip_pressure() {
         let mut s = make_solver(1, vec![]);
         let watch_idx = s.lit_index(1);
-        s.watchers[watch_idx].resize(
-            GC_WATCHER_STALE_MIN,
-            Watcher {
-                clause_idx: u32::MAX,
-                blocker: 1,
-            },
-        );
+        for _ in 0..GC_WATCHER_STALE_MIN {
+            s.watch_push(
+                watch_idx,
+                Watcher {
+                    clause_idx: u32::MAX,
+                    blocker: 1,
+                },
+            );
+        }
         s.stats.watch_stale_skips = GC_WATCHER_STALE_MIN as u64;
 
         assert!(s.maybe_garbage_collect(GcReason::LearnedReduction));
 
         assert_eq!(s.stats.gc_last_reason, GcReason::WatcherStaleness);
         assert_eq!(s.stats.garbage_collections, 1);
-        assert!(s.watchers[watch_idx].is_empty());
+        assert!(s.watch_list(watch_idx).is_empty());
     }
 
     #[test]
@@ -18711,14 +19342,14 @@ mod tests {
         let mut s = make_solver(3, vec![vec![1, 2, 3]]);
 
         assert_eq!(
-            s.watchers[s.lit_index(1)],
+            s.watch_list(s.lit_index(1)),
             vec![Watcher {
                 clause_idx: 0,
                 blocker: 2,
             }]
         );
         assert_eq!(
-            s.watchers[s.lit_index(2)],
+            s.watch_list(s.lit_index(2)),
             vec![Watcher {
                 clause_idx: 0,
                 blocker: 1,
@@ -18730,7 +19361,7 @@ mod tests {
 
         assert_eq!(watched_literals(&s, 0), Some((2, 3)));
         assert_eq!(
-            s.watchers[s.lit_index(3)],
+            s.watch_list(s.lit_index(3)),
             vec![Watcher {
                 clause_idx: 0,
                 blocker: 2,
@@ -18777,7 +19408,7 @@ mod tests {
         };
         let mut s = make_solver_with_config(2, vec![], &config);
         let watch_idx = s.lit_index(1);
-        s.watchers[watch_idx].push(Watcher {
+        s.watch_push(watch_idx, Watcher {
             clause_idx: u32::MAX,
             blocker: 2,
         });
@@ -18790,7 +19421,7 @@ mod tests {
         assert_eq!(s.stats.watch_blocker_hits, 1);
         assert_eq!(s.stats.watch_clause_loads, 0);
         assert_eq!(s.stats.watch_stale_skips, 0);
-        assert_eq!(s.watchers[watch_idx].len(), 1);
+        assert_eq!(s.watch_list(watch_idx).len(), 1);
     }
 
     #[test]
@@ -18804,7 +19435,7 @@ mod tests {
         // Binary watchers carry the tag + exact other-literal blocker; the long
         // clause stays untagged.
         for (lit, other) in [(1, 2), (2, 1)] {
-            let entry = s.watchers[s.lit_index(lit)]
+            let entry = s.watch_list(s.lit_index(lit))
                 .iter()
                 .copied()
                 .find(|w| watcher_untagged_idx(w.clause_idx) == bin)
@@ -18814,7 +19445,7 @@ mod tests {
             assert_ne!(entry.clause_idx & WATCH_LEARNT_TAG, 0);
             assert_eq!(entry.blocker, other);
         }
-        assert!(s.watchers[s.lit_index(1)]
+        assert!(s.watch_list(s.lit_index(1))
             .iter()
             .any(|w| w.clause_idx as usize == long));
 
@@ -18852,13 +19483,13 @@ mod tests {
         s.watch_inline_bin = true;
         s.watch_inline_tags_active = true;
         let bin = s.add_clause(vec![1, 2]);
-        let pre: Vec<usize> = s.watchers[s.lit_index(1)]
+        let pre: Vec<usize> = s.watch_list(s.lit_index(1))
             .iter()
             .map(|w| watcher_untagged_idx(w.clause_idx))
             .collect();
         s.clause_set_deleted(bin, true);
         for lit in [1, 2] {
-            let list = &s.watchers[s.lit_index(lit)];
+            let list = s.watch_list(s.lit_index(lit));
             let entry = list
                 .iter()
                 .find(|w| watcher_untagged_idx(w.clause_idx) == bin)
@@ -18869,7 +19500,7 @@ mod tests {
                 "deletion must untag in place"
             );
         }
-        let post: Vec<usize> = s.watchers[s.lit_index(1)]
+        let post: Vec<usize> = s.watch_list(s.lit_index(1))
             .iter()
             .map(|w| watcher_untagged_idx(w.clause_idx))
             .collect();
@@ -18888,7 +19519,7 @@ mod tests {
         };
         let mut s = make_solver_with_config(2, vec![], &config);
         let watch_idx = s.lit_index(1);
-        s.watchers[watch_idx].push(Watcher {
+        s.watch_push(watch_idx, Watcher {
             clause_idx: u32::MAX,
             blocker: 2,
         });
@@ -18900,7 +19531,7 @@ mod tests {
         assert_eq!(s.stats.watch_blocker_hits, 0);
         assert_eq!(s.stats.watch_clause_loads, 0);
         assert_eq!(s.stats.watch_stale_skips, 1);
-        assert!(s.watchers[watch_idx].is_empty());
+        assert!(s.watch_list(watch_idx).is_empty());
     }
 
     #[test]
@@ -18912,7 +19543,7 @@ mod tests {
         // they get cleaned is via the opt-in sweep below (or eventual GC).
         let mut s = make_solver(2, vec![]);
         let watch_idx = s.lit_index(1);
-        s.watchers[watch_idx].push(Watcher {
+        s.watch_push(watch_idx, Watcher {
             clause_idx: u32::MAX,
             blocker: 2,
         });
@@ -18922,7 +19553,7 @@ mod tests {
         s.reduce_db_lbd_tiered(&mut proof_log);
         assert_eq!(s.stats.watch_compaction_passes, 0);
         assert_eq!(s.stats.watch_compaction_entries_removed, 0);
-        assert_eq!(s.watchers[watch_idx].len(), 1, "stale watcher remains");
+        assert_eq!(s.watch_list(watch_idx).len(), 1, "stale watcher remains");
     }
 
     #[test]
@@ -18935,7 +19566,7 @@ mod tests {
         let mut s = make_solver(2, vec![]);
         s.watch_compact_enabled = true;
         let watch_idx = s.lit_index(1);
-        s.watchers[watch_idx].push(Watcher {
+        s.watch_push(watch_idx, Watcher {
             clause_idx: u32::MAX,
             blocker: 2,
         });
@@ -18944,7 +19575,7 @@ mod tests {
         s.reduce_db_lbd_tiered(&mut proof_log);
         assert_eq!(s.stats.watch_compaction_passes, 1);
         assert_eq!(s.stats.watch_compaction_entries_removed, 1);
-        assert!(s.watchers[watch_idx].is_empty());
+        assert!(s.watch_list(watch_idx).is_empty());
 
         // Verify the next propagate does not even see the cleaned watcher.
         s.decide(-1);
@@ -18971,11 +19602,11 @@ mod tests {
 
         // Inject a stale watcher with out-of-arena clause_idx.
         let watch_idx = s.lit_index(1);
-        s.watchers[watch_idx].push(Watcher {
+        s.watch_push(watch_idx, Watcher {
             clause_idx: u32::MAX,
             blocker: -3,
         });
-        let watchers_before = s.watchers[watch_idx].len();
+        let watchers_before = s.watch_list(watch_idx).len();
 
         let mut proof_log = ProofLog::disabled();
         enable_lbd_tiered_for_test(&mut s, 100);
@@ -18987,8 +19618,8 @@ mod tests {
         assert!(s.stats.watch_compaction_entries_removed >= 2,
                 "expected at least the stale + deleted watchers removed, got {}",
                 s.stats.watch_compaction_entries_removed);
-        assert!(s.watchers[watch_idx].len() < watchers_before);
-        assert!(s.watchers[watch_idx]
+        assert!(s.watch_list(watch_idx).len() < watchers_before);
+        assert!(s.watch_list(watch_idx)
             .iter()
             .any(|w| w.clause_idx as usize == live), "live watcher kept");
 
@@ -19721,7 +20352,7 @@ mod tests {
         s.garbage_collect();
         let relocated_live = s.learned_clause_ids[0];
 
-        let watch_clause_ids: Vec<_> = s.watchers[s.lit_index(1)]
+        let watch_clause_ids: Vec<_> = s.watch_list(s.lit_index(1))
             .iter()
             .map(|watcher| watcher.clause_idx)
             .collect();
@@ -19760,10 +20391,10 @@ mod tests {
         let mut s = make_solver(3, vec![]);
         let clause_idx = s.add_clause(vec![3, 1, 2]);
 
-        assert!(s.watchers[s.lit_index(3)]
+        assert!(s.watch_list(s.lit_index(3))
             .iter()
             .any(|watcher| watcher.clause_idx as usize == clause_idx));
-        assert!(s.watchers[s.lit_index(1)]
+        assert!(s.watch_list(s.lit_index(1))
             .iter()
             .any(|watcher| watcher.clause_idx as usize == clause_idx));
 
@@ -19773,22 +20404,22 @@ mod tests {
         assert_eq!(s.learned_clause_count(), 0);
         assert!(s.learned_clause_ids.is_empty());
         assert_eq!(s.stats.deleted_clauses, 1);
-        assert!(s.watchers[s.lit_index(3)]
+        assert!(s.watch_list(s.lit_index(3))
             .iter()
             .any(|watcher| watcher.clause_idx as usize == clause_idx));
-        assert!(s.watchers[s.lit_index(1)]
+        assert!(s.watch_list(s.lit_index(1))
             .iter()
             .any(|watcher| watcher.clause_idx as usize == clause_idx));
 
         s.decide(-3);
         assert_eq!(s.propagate(), None);
-        assert!(s.watchers[s.lit_index(3)]
+        assert!(s.watch_list(s.lit_index(3))
             .iter()
             .all(|watcher| watcher.clause_idx as usize != clause_idx));
 
         s.decide(-1);
         assert_eq!(s.propagate(), None);
-        assert!(s.watchers[s.lit_index(1)]
+        assert!(s.watch_list(s.lit_index(1))
             .iter()
             .all(|watcher| watcher.clause_idx as usize != clause_idx));
     }
@@ -20019,7 +20650,7 @@ mod tests {
         assert_eq!(s.propagate(), None);
         assert_eq!(s.assignment[4], TRUE);
         assert!(
-            s.watchers[s.lit_index(1)]
+            s.watch_list(s.lit_index(1))
                 .iter()
                 .all(|watcher| !s.clause_is_deleted(watcher.clause_idx as usize)),
             "propagation should drop tombstoned watchers from scanned lists"
@@ -21197,6 +21828,84 @@ mod tests {
         assert_eq!(s.saved_phase[1], TRUE);
         assert_eq!(s.saved_phase[2], TRUE);
         assert_eq!(s.rephase_index, 2);
+    }
+
+    #[test]
+    fn test_walk_warmup_completes_and_saves_phases_then_returns_to_root() {
+        // Chain formula: deciding 1=T propagates 2=T then 3=T. Warmup must
+        // complete the assignment, persist the propagated phases into
+        // saved_phase, and fully restore the root search state.
+        let config = SolverConfig {
+            rephase: true,
+            walk_warmup: true,
+            ..focused_stable_config()
+        };
+        let clauses = vec![vec![-1, 2], vec![-2, 3], vec![1, 2, 3]];
+        let mut s = make_solver_with_config(3, clauses, &config);
+        s.saved_phase[1] = TRUE;
+        s.saved_phase[2] = FALSE;
+        s.saved_phase[3] = FALSE;
+
+        s.warmup_walk_phases();
+
+        assert_eq!(s.stats.walk_warmups, 1);
+        assert!(s.stats.walk_warmup_decisions >= 1);
+        // Root state fully restored.
+        assert_eq!(s.current_level(), 0);
+        for var in 1..=3usize {
+            assert_eq!(s.assignment[var], UNASSIGNED, "var {var} unassigned");
+        }
+        // The decide-phase for var 1 was TRUE, so propagation assigned 2 and 3
+        // TRUE; those phases must survive the backtrack (kissat
+        // backtrack_without_updating_phases semantics).
+        assert_eq!(s.saved_phase[1], TRUE);
+        assert_eq!(s.saved_phase[2], TRUE);
+        assert_eq!(s.saved_phase[3], TRUE);
+        // Warmup work must not leak into the search stats that feed arming
+        // signals and effort budgets.
+        assert_eq!(s.stats.decisions, 0);
+        assert_eq!(s.stats.search_ticks, 0);
+        // The heap must still serve all variables for the real search.
+        let mut seen = 0;
+        while s.pick_branch_lit().map(|lit| s.decide(lit)).is_some() {
+            seen += 1;
+        }
+        assert_eq!(seen, 3);
+    }
+
+    #[test]
+    fn test_walk_warmup_propagates_beyond_conflicts() {
+        // Deciding 1=F propagates one of (1 v 2)/(1 v -2) and falsifies the
+        // other — an unavoidable conflict under the all-false decide phases.
+        // Warmup must record it, keep going without analysis, and still
+        // assign and phase-save every variable.
+        let config = SolverConfig {
+            rephase: true,
+            walk_warmup: true,
+            ..focused_stable_config()
+        };
+        let clauses = vec![vec![1, 2], vec![1, -2], vec![-3, 4]];
+        let mut s = make_solver_with_config(4, clauses, &config);
+        for var in 1..=4usize {
+            s.saved_phase[var] = FALSE;
+        }
+
+        s.warmup_walk_phases();
+
+        assert_eq!(s.stats.walk_warmups, 1);
+        assert!(
+            s.stats.walk_warmup_conflicts >= 1,
+            "the falsified clause must be skipped, not analyzed (it is re-detected \
+             once per watching literal, so the count may exceed 1)"
+        );
+        assert_eq!(s.current_level(), 0);
+        assert_eq!(s.stats.conflicts, 0, "warmup conflicts are not search conflicts");
+        for var in 1..=4usize {
+            assert_eq!(s.assignment[var], UNASSIGNED);
+            assert_ne!(s.saved_phase[var], UNASSIGNED, "var {var} phase saved");
+        }
+        assert_eq!(s.saved_phase[1], FALSE, "decision phase saved");
+        assert_eq!(s.saved_phase[2], TRUE, "propagated phase saved");
     }
 
     #[test]
