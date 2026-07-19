@@ -171,6 +171,143 @@ pub(crate) fn compute_representatives(
     ElsResult::Reprs(repr)
 }
 
+/// Flat-CSR variant of [`compute_representatives`] (SAT_ROUND_DIET): identical
+/// results, but the implication graph is three flat arrays instead of a
+/// `Vec<Vec<u32>>` with `2·num_vars` headers and per-node heap blocks. Per-node
+/// edge order equals the legacy push order (both passes scan `binaries` in
+/// order), so the Tarjan traversal — and therefore every SCC representative —
+/// is byte-identical.
+pub(crate) fn compute_representatives_csr(
+    num_vars: usize,
+    active: &[bool],
+    binaries: &[(i32, i32)],
+) -> ElsResult {
+    let n = num_vars.saturating_mul(2);
+    if n == 0 {
+        return ElsResult::Reprs(vec![0]);
+    }
+
+    // CSR adjacency over literal nodes. Edge x -> y means the implication x → y.
+    let edge_endpoints = |a: i32, b: i32| -> Option<()> {
+        let va = a.unsigned_abs() as usize;
+        let vb = b.unsigned_abs() as usize;
+        if va == 0 || vb == 0 || va > num_vars || vb > num_vars {
+            return None;
+        }
+        if !active[va] || !active[vb] {
+            return None;
+        }
+        Some(())
+    };
+    let mut start = vec![0u32; n + 1];
+    for &(a, b) in binaries {
+        if edge_endpoints(a, b).is_none() {
+            continue;
+        }
+        start[lit_to_index(-a) + 1] += 1;
+        start[lit_to_index(-b) + 1] += 1;
+    }
+    for i in 0..n {
+        start[i + 1] += start[i];
+    }
+    let mut edges = vec![0u32; start[n] as usize];
+    let mut cursor = start.clone();
+    for &(a, b) in binaries {
+        if edge_endpoints(a, b).is_none() {
+            continue;
+        }
+        // (a ∨ b): ¬a → b and ¬b → a.
+        let ia = lit_to_index(-a);
+        let ib = lit_to_index(-b);
+        edges[cursor[ia] as usize] = lit_to_index(b) as u32;
+        cursor[ia] += 1;
+        edges[cursor[ib] as usize] = lit_to_index(a) as u32;
+        cursor[ib] += 1;
+    }
+
+    // Iterative Tarjan. `comp_min[node]` becomes the smallest node index in `node`'s SCC.
+    const UNVISITED: u32 = u32::MAX;
+    let mut disc = vec![UNVISITED; n];
+    let mut low = vec![0u32; n];
+    let mut on_stack = vec![false; n];
+    let mut comp_min = vec![UNVISITED; n];
+    let mut scc_stack: Vec<u32> = Vec::new();
+    let mut counter: u32 = 0;
+    // Explicit DFS work stack of (node, next-child-index).
+    let mut work: Vec<(u32, usize)> = Vec::new();
+    let mut members: Vec<u32> = Vec::new();
+
+    for start_node in 0..n {
+        let var = start_node / 2 + 1;
+        if !active[var] || disc[start_node] != UNVISITED {
+            continue;
+        }
+        work.push((start_node as u32, 0));
+        while let Some(&(v, ci)) = work.last() {
+            let vu = v as usize;
+            if ci == 0 {
+                disc[vu] = counter;
+                low[vu] = counter;
+                counter += 1;
+                scc_stack.push(v);
+                on_stack[vu] = true;
+            }
+            let deg = (start[vu + 1] - start[vu]) as usize;
+            if ci < deg {
+                let w = edges[start[vu] as usize + ci];
+                work.last_mut().unwrap().1 += 1;
+                let wu = w as usize;
+                if disc[wu] == UNVISITED {
+                    work.push((w, 0));
+                } else if on_stack[wu] {
+                    low[vu] = low[vu].min(disc[wu]);
+                }
+            } else {
+                if low[vu] == disc[vu] {
+                    members.clear();
+                    loop {
+                        let w = scc_stack.pop().unwrap();
+                        on_stack[w as usize] = false;
+                        members.push(w);
+                        if w == v {
+                            break;
+                        }
+                    }
+                    let min_node = *members.iter().min().unwrap();
+                    for &w in &members {
+                        comp_min[w as usize] = min_node;
+                    }
+                }
+                work.pop();
+                if let Some(&(parent, _)) = work.last() {
+                    low[parent as usize] = low[parent as usize].min(low[vu]);
+                }
+            }
+        }
+    }
+
+    // UNSAT iff a variable's two polarity nodes landed in one SCC.
+    let mut repr = vec![0i32; num_vars + 1];
+    for v in 1..=num_vars {
+        if !active[v] {
+            repr[v] = v as i32;
+            continue;
+        }
+        let pos = lit_to_index(v as i32);
+        let neg = lit_to_index(-(v as i32));
+        if comp_min[pos] != UNVISITED && comp_min[pos] == comp_min[neg] {
+            return ElsResult::Unsat(v as i32);
+        }
+        repr[v] = if comp_min[pos] == UNVISITED {
+            v as i32
+        } else {
+            node_to_lit(comp_min[pos])
+        };
+    }
+
+    ElsResult::Reprs(repr)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,6 +387,34 @@ mod tests {
                 assert!(lit.unsigned_abs() == 1 || lit.unsigned_abs() == 2);
             }
             ElsResult::Reprs(_) => panic!("expected UNSAT for x ≡ ¬x"),
+        }
+    }
+
+    /// The CSR variant must agree with the legacy Vec-of-Vec implementation on
+    /// every scenario (including UNSAT detection and inactive filtering).
+    #[test]
+    fn csr_variant_matches_legacy() {
+        let cases: Vec<(usize, Vec<bool>, Vec<(i32, i32)>)> = vec![
+            (3, all_active(3), vec![]),
+            (2, all_active(2), vec![(-1, 2), (1, -2)]),
+            (4, all_active(4), vec![(-1, 2), (-2, 3), (-3, 4), (-4, 1)]),
+            (2, all_active(2), vec![(-1, 2), (-2, -1), (1, -2), (2, 1)]),
+            (3, {
+                let mut a = all_active(3);
+                a[2] = false;
+                a
+            }, vec![(-1, 3), (1, -3)]),
+            // Duplicate edges and self-referential binaries.
+            (5, all_active(5), vec![(-1, 2), (-1, 2), (1, -2), (3, 4), (-4, 5), (0, 1), (6, 1)]),
+        ];
+        for (num_vars, active, bins) in cases {
+            let legacy = compute_representatives(num_vars, &active, &bins);
+            let csr = compute_representatives_csr(num_vars, &active, &bins);
+            match (legacy, csr) {
+                (ElsResult::Reprs(a), ElsResult::Reprs(b)) => assert_eq!(a, b),
+                (ElsResult::Unsat(a), ElsResult::Unsat(b)) => assert_eq!(a, b),
+                _ => panic!("legacy and CSR disagree on outcome kind"),
+            }
         }
     }
 

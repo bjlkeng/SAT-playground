@@ -2563,6 +2563,20 @@ struct Solver {
     /// `off` replays the pre-diet allocating implementations verbatim (the fair
     /// simultaneous A/B baseline arm; see the fastidx off-switch precedent).
     elim_scratch: bool,
+    /// SAT_ROUND_DIET (default on): per-round overhead diet for the inprocessing
+    /// passes — persistent `eliminate()` round workspaces, allocation-free
+    /// `try_els` (no clause-id clone, reused active/binaries buffers, flat CSR
+    /// implication graph), and congruence round-0 dry-run plan reuse when the
+    /// pre-closure steps provably made no formula edits. `off` replays the
+    /// pre-diet per-round allocating implementations verbatim (the fair
+    /// simultaneous A/B baseline arm).
+    round_diet: bool,
+    /// Persistent `eliminate()` round workspaces (SAT_ROUND_DIET).
+    elim_round_ws: simp::ElimRoundWs,
+    /// Persistent `try_els` active-variable scratch (SAT_ROUND_DIET).
+    els_active_scratch: Vec<bool>,
+    /// Persistent `try_els` live-binaries scratch (SAT_ROUND_DIET).
+    els_binaries_scratch: Vec<(i32, i32)>,
     /// Persistent stamped marks buffer for backward-subsumption relation checks.
     bsr_relation_marks_scratch: Vec<u32>,
     bsr_relation_stamp: u32,
@@ -3715,6 +3729,10 @@ impl Solver {
             elim_proof_del_ranges_scratch: Vec::new(),
             norm_scratch: Vec::new(),
             elim_scratch: env_bool_or_default("SAT_ELIM_SCRATCH", true),
+            round_diet: env_bool_or_default("SAT_ROUND_DIET", true),
+            elim_round_ws: simp::ElimRoundWs::default(),
+            els_active_scratch: Vec::new(),
+            els_binaries_scratch: Vec::new(),
             bsr_relation_marks_scratch: Vec::new(),
             bsr_relation_stamp: 0,
             full_bsr: config.full_bsr,
@@ -12478,7 +12496,264 @@ impl Solver {
     /// negation, or a clause emptied by substitution) — in which case the empty clause has
     /// been emitted to `proof_log`. Otherwise returns `false`; the formula may have been
     /// substituted in place (with the proof recorded) so downstream BVE eliminates more.
+    /// ELS driver: workspace-reusing dispatch (SAT_ROUND_DIET). The diet path
+    /// reuses the persistent active/binaries buffers, iterates the clause-id
+    /// list in place instead of cloning it, and builds the binary implication
+    /// graph as a flat CSR — all behavior-identical; `off` replays the pre-diet
+    /// allocating implementation verbatim as the fair A/B baseline arm.
     fn try_els(&mut self, proof_log: &mut ProofLog) -> bool {
+        if !self.round_diet {
+            return self.try_els_legacy(proof_log);
+        }
+        let mut active = std::mem::take(&mut self.els_active_scratch);
+        let mut binaries = std::mem::take(&mut self.els_binaries_scratch);
+        let result = self.try_els_inner(proof_log, &mut active, &mut binaries);
+        active.clear();
+        binaries.clear();
+        self.els_active_scratch = active;
+        self.els_binaries_scratch = binaries;
+        result
+    }
+
+    fn try_els_inner(
+        &mut self,
+        proof_log: &mut ProofLog,
+        active: &mut Vec<bool>,
+        binaries: &mut Vec<(i32, i32)>,
+    ) -> bool {
+        // The substitution mutates watches/clauses directly; it requires the normal watch
+        // lists (not the separate binary index) and a clean decision level 0.
+        if self.binary_fast_path
+            || self.current_level() != 0
+            || self.has_empty_clause
+            || !self.solver_ok
+        {
+            return false;
+        }
+        let num_vars = self.assignment.len().saturating_sub(1);
+        if num_vars == 0 {
+            return false;
+        }
+
+        let debug = std::env::var("SAT_DEBUG_ELS").is_ok();
+        let t0 = Instant::now();
+
+        // Active = unassigned and not already eliminated.
+        active.clear();
+        active.resize(num_vars + 1, false);
+        for v in 1..=num_vars {
+            active[v] = self.assignment[v] == UNASSIGNED && !self.eliminated[v];
+        }
+
+        // Collect live binary clauses over active variables. Nothing in this loop
+        // mutates the clause database, so iterate the id list in place (the legacy
+        // path's defensive clone is a multi-MB copy per call).
+        binaries.clear();
+        for i in 0..self.original_clause_ids.len() {
+            let cid = self.original_clause_ids[i] as usize;
+            if self.clause_is_deleted(cid) || self.clause_len(cid) != 2 {
+                continue;
+            }
+            let a = self.clause_lit(cid, 0);
+            let b = self.clause_lit(cid, 1);
+            let va = a.unsigned_abs() as usize;
+            let vb = b.unsigned_abs() as usize;
+            if va > num_vars || vb > num_vars || !active[va] || !active[vb] {
+                continue;
+            }
+            binaries.push((a, b));
+        }
+
+        let repr = match els::compute_representatives_csr(num_vars, active, binaries) {
+            els::ElsResult::Unsat(lit) => {
+                // lit ≡ ¬lit. Both units are RUP from the implication cycle; the empty
+                // clause is then RUP from the two units.
+                proof_log.record_clause(&[lit]);
+                proof_log.record_clause(&[-lit]);
+                proof_log.record_clause(&[]);
+                self.has_empty_clause = true;
+                self.solver_ok = false;
+                if debug {
+                    eprintln!("c els UNSAT via {lit} ≡ {neg} (self-negation SCC)", neg = -lit);
+                }
+                return true;
+            }
+            els::ElsResult::Reprs(repr) => repr,
+        };
+
+        // Eliminated variables (positive literal, signed representative).
+        let mut equivalences: Vec<(i32, i32)> = Vec::new();
+        for v in 1..=num_vars {
+            if active[v] && repr[v] != v as i32 {
+                equivalences.push((v as i32, repr[v]));
+            }
+        }
+        if equivalences.is_empty() {
+            if debug {
+                eprintln!(
+                    "c els no equivalences ({} active binaries, {:.4}s)",
+                    binaries.len(),
+                    t0.elapsed().as_secs_f64()
+                );
+            }
+            return false;
+        }
+
+        let repr_of = |lit: i32| -> i32 {
+            let var = lit.unsigned_abs() as usize;
+            if lit > 0 {
+                repr[var]
+            } else {
+                -repr[var]
+            }
+        };
+
+        // Add the equivalence binaries to the proof (RUP), mark the eliminated variables,
+        // and record their model-reconstruction witnesses. Do this for all classes before
+        // rewriting, so every rewritten clause is RUP against the equivalence binaries.
+        for &(v, r) in &equivalences {
+            proof_log.record_clause(&[-v, r]);
+            proof_log.record_clause(&[v, -r]);
+            self.push_elim_equivalence(v, r);
+            let var = v as usize;
+            self.eliminated[var] = true;
+            self.decision_var[var] = false;
+            self.branch_heap_remove(var);
+        }
+        self.stats.els_substituted_vars += equivalences.len() as u64;
+
+        // Rewrite every clause that mentions an eliminated variable.
+        let mut units: Vec<i32> = Vec::new();
+        let mut rewritten: u64 = 0;
+        let old_ids = std::mem::take(&mut self.original_clause_ids);
+        let mut new_ids: Vec<u32> = Vec::with_capacity(old_ids.len());
+        let mut proved_unsat = false;
+        for cid_word in old_ids {
+            let cid = cid_word as usize;
+            if self.clause_is_deleted(cid) {
+                continue;
+            }
+            let len = self.clause_len(cid);
+            let mut touches = false;
+            for pos in 0..len {
+                let lit = self.clause_lit(cid, pos);
+                if self.eliminated[lit.unsigned_abs() as usize] {
+                    touches = true;
+                    break;
+                }
+            }
+            if !touches {
+                new_ids.push(cid_word);
+                continue;
+            }
+
+            // Value-aware substitution with dedup / tautology detection.
+            let mut new_lits: Vec<i32> = Vec::with_capacity(len);
+            let mut satisfied = false;
+            for pos in 0..len {
+                let lit = self.clause_lit(cid, pos);
+                match self.lit_value(lit) {
+                    TRUE => {
+                        satisfied = true;
+                        break;
+                    }
+                    FALSE => continue,
+                    _ => {}
+                }
+                let rl = repr_of(lit);
+                match self.lit_value(rl) {
+                    TRUE => {
+                        satisfied = true;
+                        break;
+                    }
+                    FALSE => continue,
+                    _ => {}
+                }
+                if new_lits.contains(&rl) {
+                    continue; // duplicate literal
+                }
+                if new_lits.contains(&(-rl)) {
+                    satisfied = true; // tautology (r and ¬r)
+                    break;
+                }
+                new_lits.push(rl);
+            }
+
+            if satisfied {
+                self.delete_clause_for_simplify(cid, proof_log);
+                continue;
+            }
+            match new_lits.len() {
+                0 => {
+                    proof_log.record_clause(&[]);
+                    proved_unsat = true;
+                    self.delete_clause_for_simplify(cid, proof_log);
+                    break;
+                }
+                1 => {
+                    proof_log.record_clause(&new_lits);
+                    units.push(new_lits[0]);
+                    self.delete_clause_for_simplify(cid, proof_log);
+                }
+                _ => {
+                    proof_log.record_clause(&new_lits);
+                    let new_cid = self.els_install_original_clause(&new_lits);
+                    debug_assert!(new_cid < u32::MAX as usize);
+                    new_ids.push(new_cid as u32);
+                    self.delete_clause_for_simplify(cid, proof_log);
+                    rewritten += 1;
+                }
+            }
+        }
+        self.original_clause_ids = new_ids;
+        self.stats.els_rewritten_clauses += rewritten;
+
+        if proved_unsat {
+            self.has_empty_clause = true;
+            self.solver_ok = false;
+            if debug {
+                eprintln!("c els UNSAT via emptied clause");
+            }
+            return true;
+        }
+
+        // Apply derived units and propagate. A root conflict makes the empty clause RUP.
+        let mut conflict = false;
+        for &u in &units {
+            if !self.enqueue(u, ReasonRef::None) {
+                conflict = true;
+                break;
+            }
+        }
+        if !conflict && self.propagate().is_some() {
+            conflict = true;
+        }
+        if conflict {
+            proof_log.record_clause(&[]);
+            self.has_empty_clause = true;
+            self.solver_ok = false;
+            if debug {
+                eprintln!("c els UNSAT via root unit propagation");
+            }
+            return true;
+        }
+
+        if debug {
+            eprintln!(
+                "c els substituted vars={} rewritten_clauses={} units={} binaries={} {:.4}s",
+                equivalences.len(),
+                rewritten,
+                units.len(),
+                binaries.len(),
+                t0.elapsed().as_secs_f64()
+            );
+        }
+        false
+    }
+
+    /// The pre-diet (2026-07-19) ELS implementation VERBATIM, selected by
+    /// SAT_ROUND_DIET=off as the fair simultaneous A/B baseline arm.
+    fn try_els_legacy(&mut self, proof_log: &mut ProofLog) -> bool {
         // The substitution mutates watches/clauses directly; it requires the normal watch
         // lists (not the separate binary index) and a clean decision level 0.
         if self.binary_fast_path
@@ -13691,8 +13966,29 @@ impl Solver {
         // formula byte-identical (see CONGRUENCE_MIN_APPLY_MERGES for the evidence).
         // A dry-run UNSAT merge (gate output equivalent to its own negation) falls
         // through to the loop, which re-derives and proves it.
+        //
+        // SAT_ROUND_DIET: the dry-run plan (and the round-0 gate-kind counts) are
+        // kept and reused by round 0 below WHEN the intervening extract-binaries +
+        // ELS steps provably made no formula edit — in that case the formula is
+        // byte-identical to what the dry run saw, and extraction + closure are pure
+        // functions of the formula, so recomputing them would reproduce this exact
+        // plan. Any edit forfeits the reuse and round 0 recomputes as before.
+        let mut dry_plan: Option<congruence::Plan> = None;
+        let mut dry_gate_counts: (u64, u64) = (0, 0);
         {
             let gates = self.extract_gates_for_congruence(xor);
+            if self.round_diet {
+                let mut and_gates = 0u64;
+                let mut ite_gates = 0u64;
+                for g in &gates {
+                    match g.kind {
+                        congruence::GateKind::And => and_gates += 1,
+                        congruence::GateKind::Ite => ite_gates += 1,
+                        congruence::GateKind::Xor => {}
+                    }
+                }
+                dry_gate_counts = (and_gates, ite_gates);
+            }
             let plan = if self.congruence_worklist {
                 let num_vars = self.assignment.len().saturating_sub(1);
                 congruence::find_merges_closure(num_vars, gates)
@@ -13710,6 +14006,9 @@ impl Solver {
             }
             if plan.unsat.is_none() && plan.merges.len() < apply_threshold {
                 return false;
+            }
+            if self.round_diet {
+                dry_plan = Some(plan);
             }
         }
 
@@ -13731,6 +14030,7 @@ impl Solver {
                     step_t.elapsed().as_secs_f64()
                 );
             }
+            let els_subst_before = self.stats.els_substituted_vars;
             let step_t = Instant::now();
             if self.try_els(proof_log) {
                 return true;
@@ -13742,50 +14042,78 @@ impl Solver {
                 );
             }
 
-            // 2. Extract gates and match congruent outputs.
-            let step_t = Instant::now();
-            let gates = self.extract_gates_for_congruence(xor);
-            if debug {
-                eprintln!(
-                    "c congruence step=extract_gates round={round} gates={} sec={:.4}",
-                    gates.len(),
-                    step_t.elapsed().as_secs_f64()
-                );
-            }
-            if round == 0 {
-                let mut and_gates = 0u64;
-                let mut ite_gates = 0u64;
-                let mut xor_gates = 0u64;
-                for g in &gates {
-                    match g.kind {
-                        congruence::GateKind::And => and_gates += 1,
-                        congruence::GateKind::Ite => ite_gates += 1,
-                        congruence::GateKind::Xor => xor_gates += 1,
-                    }
-                }
-                self.stats.congruence_and_gates = and_gates;
-                self.stats.congruence_ite_gates = ite_gates;
+            // SAT_ROUND_DIET round-0 dry-run reuse: `added_bins == 0` means
+            // extract-binaries installed nothing (its only mutation site is the
+            // new-binaries install loop), and an unchanged `els_substituted_vars`
+            // means `try_els` returned before its first mutation (every editing
+            // path bumps that counter first). The formula is then byte-identical
+            // to what the dry run extracted from, so the dry-run plan IS what
+            // recomputation would produce.
+            let reused_plan = if round == 0
+                && added_bins == 0
+                && self.stats.els_substituted_vars == els_subst_before
+            {
+                dry_plan.take()
+            } else {
+                None
+            };
+            let plan = if let Some(plan) = reused_plan {
+                self.stats.congruence_and_gates = dry_gate_counts.0;
+                self.stats.congruence_ite_gates = dry_gate_counts.1;
                 if debug {
                     eprintln!(
-                        "c congruence gates and={and_gates} ite={ite_gates} xor={xor_gates} (round 0, {:.4}s)",
-                        t0.elapsed().as_secs_f64()
+                        "c congruence round=0 reusing dry-run plan (edit-free preamble, merges={})",
+                        plan.merges.len()
                     );
                 }
-            }
-
-            let step_t = Instant::now();
-            let plan = if self.congruence_worklist {
-                let num_vars = self.assignment.len().saturating_sub(1);
-                congruence::find_merges_closure(num_vars, gates)
+                plan
             } else {
-                congruence::find_merges(&gates)
+                // 2. Extract gates and match congruent outputs.
+                let step_t = Instant::now();
+                let gates = self.extract_gates_for_congruence(xor);
+                if debug {
+                    eprintln!(
+                        "c congruence step=extract_gates round={round} gates={} sec={:.4}",
+                        gates.len(),
+                        step_t.elapsed().as_secs_f64()
+                    );
+                }
+                if round == 0 {
+                    let mut and_gates = 0u64;
+                    let mut ite_gates = 0u64;
+                    let mut xor_gates = 0u64;
+                    for g in &gates {
+                        match g.kind {
+                            congruence::GateKind::And => and_gates += 1,
+                            congruence::GateKind::Ite => ite_gates += 1,
+                            congruence::GateKind::Xor => xor_gates += 1,
+                        }
+                    }
+                    self.stats.congruence_and_gates = and_gates;
+                    self.stats.congruence_ite_gates = ite_gates;
+                    if debug {
+                        eprintln!(
+                            "c congruence gates and={and_gates} ite={ite_gates} xor={xor_gates} (round 0, {:.4}s)",
+                            t0.elapsed().as_secs_f64()
+                        );
+                    }
+                }
+
+                let step_t = Instant::now();
+                let plan = if self.congruence_worklist {
+                    let num_vars = self.assignment.len().saturating_sub(1);
+                    congruence::find_merges_closure(num_vars, gates)
+                } else {
+                    congruence::find_merges(&gates)
+                };
+                if debug {
+                    eprintln!(
+                        "c congruence step=closure round={round} sec={:.4}",
+                        step_t.elapsed().as_secs_f64()
+                    );
+                }
+                plan
             };
-            if debug {
-                eprintln!(
-                    "c congruence step=closure round={round} sec={:.4}",
-                    step_t.elapsed().as_secs_f64()
-                );
-            }
 
             if !self.congruence_worklist {
                 if let Some(unsat) = plan.unsat {

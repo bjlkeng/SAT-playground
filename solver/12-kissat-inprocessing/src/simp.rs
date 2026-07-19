@@ -17,6 +17,30 @@ enum SubsumptionOutcome {
     Strengthen(i32),
 }
 
+/// Persistent `eliminate()` round workspaces (SAT_ROUND_DIET): the subsumption
+/// queue, touched/BSR-touched worklists + flags, the elimination candidate heap,
+/// and the heap version stamps are reused across rounds instead of being
+/// reallocated (three `vec![_; vars]` fills plus heap growth) on every root or
+/// mid-search armed round.
+///
+/// Trajectory-identity argument: the flags obey `flag[v] == true ⟺ v` present in
+/// the paired worklist, so clearing the listed entries restores the all-false
+/// round-entry state on every exit; the queue is fully drained by
+/// `clear_subsumption_queue_marks` on every exit; the heap is cleared at round
+/// entry; and the carried-over version stamps only ever compare between entries
+/// of the SAME variable, where relative order (older < newer) is preserved
+/// because per-variable stamps only grow.
+#[derive(Default)]
+pub(crate) struct ElimRoundWs {
+    queue: VecDeque<SubsumptionCandidate>,
+    touched: Vec<usize>,
+    touched_flags: Vec<bool>,
+    bsr_touched: Vec<usize>,
+    bsr_touched_flags: Vec<bool>,
+    heap: BinaryHeap<Reverse<(u64, usize, u32)>>,
+    heap_versions: Vec<u32>,
+}
+
 enum PreprocessBudgetKind {
     Resolution,
     Tick,
@@ -3124,34 +3148,66 @@ impl Solver {
         self.build_occurrence_index();
         let t_occ = t_occ_start.elapsed();
         self.bwdsub_assigns = 0;
-        let mut queue = VecDeque::new();
-        let mut touched = Vec::new();
-        let mut touched_flags = vec![false; self.assignment.len()];
-        let mut bsr_touched = Vec::new();
-        let mut bsr_touched_flags = vec![false; self.assignment.len()];
-        let mut heap = BinaryHeap::new();
-        let mut heap_versions = vec![0u32; self.assignment.len()];
+        let use_ws = self.round_diet;
+        let mut ws = if use_ws {
+            // Persistent workspaces: reset to the legacy round-entry state (empty
+            // queue/worklists/heap, all-false flags; see ElimRoundWs for the
+            // identity argument), keeping the allocations.
+            let mut ws = std::mem::take(&mut self.elim_round_ws);
+            ws.heap.clear();
+            ws.queue.clear();
+            for &var in &ws.touched {
+                if var < ws.touched_flags.len() {
+                    ws.touched_flags[var] = false;
+                }
+            }
+            ws.touched.clear();
+            for &var in &ws.bsr_touched {
+                if var < ws.bsr_touched_flags.len() {
+                    ws.bsr_touched_flags[var] = false;
+                }
+            }
+            ws.bsr_touched.clear();
+            ws.touched_flags.resize(self.assignment.len(), false);
+            ws.bsr_touched_flags.resize(self.assignment.len(), false);
+            ws.heap_versions.resize(self.assignment.len(), 0);
+            ws
+        } else {
+            // Legacy per-round allocations (SAT_ROUND_DIET=off) verbatim.
+            ElimRoundWs {
+                queue: VecDeque::new(),
+                touched: Vec::new(),
+                touched_flags: vec![false; self.assignment.len()],
+                bsr_touched: Vec::new(),
+                bsr_touched_flags: vec![false; self.assignment.len()],
+                heap: BinaryHeap::new(),
+                heap_versions: vec![0u32; self.assignment.len()],
+            }
+        };
 
-        for (var, &version) in heap_versions
+        let t_heap_build_start = std::time::Instant::now();
+        for (var, &version) in ws
+            .heap_versions
             .iter()
             .enumerate()
             .take(self.variable_count() + 1)
             .skip(1)
         {
             if self.preprocessing_candidate(var) {
-                heap.push(Reverse((self.occurrence_cost(var), var, version)));
+                ws.heap.push(Reverse((self.occurrence_cost(var), var, version)));
             }
         }
+        let t_heap_build = t_heap_build_start.elapsed();
 
         if run_full_backward_subsumption && !self.preprocess_bsr_budget_exhausted {
             let t = elim_trace::start(trace_elim);
             let ok = self.backward_subsumption_check_dynamic(
                 true,
-                &mut queue,
-                &mut touched,
-                &mut touched_flags,
-                &mut bsr_touched,
-                &mut bsr_touched_flags,
+                &mut ws.queue,
+                &mut ws.touched,
+                &mut ws.touched_flags,
+                &mut ws.bsr_touched,
+                &mut ws.bsr_touched_flags,
                 proof_log,
             );
             if let Some(d) = t.elapsed_opt() {
@@ -3159,31 +3215,34 @@ impl Solver {
             }
             n_bsr_calls += 1;
             if !ok {
-                self.clear_subsumption_queue_marks(&mut queue);
+                self.clear_subsumption_queue_marks(&mut ws.queue);
                 self.solver_ok = false;
+                if use_ws {
+                    self.elim_round_ws = ws;
+                }
                 return false;
             }
         }
 
         while self.solver_ok
             && !self.preprocess_budget_exhausted
-            && (!touched.is_empty()
-                || !bsr_touched.is_empty()
+            && (!ws.touched.is_empty()
+                || !ws.bsr_touched.is_empty()
                 || (run_full_backward_subsumption
                     && !self.preprocess_bsr_budget_exhausted
-                    && (!queue.is_empty() || self.bwdsub_assigns < self.trail.len()))
-                || !heap.is_empty())
+                    && (!ws.queue.is_empty() || self.bwdsub_assigns < self.trail.len()))
+                || !ws.heap.is_empty())
         {
-            if !touched.is_empty() || !bsr_touched.is_empty() {
+            if !ws.touched.is_empty() || !ws.bsr_touched.is_empty() {
                 let t = elim_trace::start(trace_elim);
                 self.gather_touched_clauses(
-                    &mut touched,
-                    &mut touched_flags,
-                    &mut bsr_touched,
-                    &mut bsr_touched_flags,
-                    &mut queue,
-                    &mut heap,
-                    &mut heap_versions,
+                    &mut ws.touched,
+                    &mut ws.touched_flags,
+                    &mut ws.bsr_touched,
+                    &mut ws.bsr_touched_flags,
+                    &mut ws.queue,
+                    &mut ws.heap,
+                    &mut ws.heap_versions,
                     run_full_backward_subsumption && !self.preprocess_bsr_budget_exhausted,
                 );
                 if let Some(d) = t.elapsed_opt() {
@@ -3194,16 +3253,16 @@ impl Solver {
 
             if run_full_backward_subsumption
                 && !self.preprocess_bsr_budget_exhausted
-                && (!queue.is_empty() || self.bwdsub_assigns < self.trail.len())
+                && (!ws.queue.is_empty() || self.bwdsub_assigns < self.trail.len())
             {
                 let t = elim_trace::start(trace_elim);
                 let ok = self.backward_subsumption_check_dynamic(
                     false,
-                    &mut queue,
-                    &mut touched,
-                    &mut touched_flags,
-                    &mut bsr_touched,
-                    &mut bsr_touched_flags,
+                    &mut ws.queue,
+                    &mut ws.touched,
+                    &mut ws.touched_flags,
+                    &mut ws.bsr_touched,
+                    &mut ws.bsr_touched_flags,
                     proof_log,
                 );
                 if let Some(d) = t.elapsed_opt() {
@@ -3219,8 +3278,8 @@ impl Solver {
                 break;
             }
 
-            while let Some(Reverse((_, var, version))) = heap.pop() {
-                if var >= heap_versions.len() || version != heap_versions[var] {
+            while let Some(Reverse((_, var, version))) = ws.heap.pop() {
+                if var >= ws.heap_versions.len() || version != ws.heap_versions[var] {
                     continue;
                 }
                 if !self.preprocessing_candidate(var) {
@@ -3236,11 +3295,11 @@ impl Solver {
                     var,
                     proof_log,
                     run_full_backward_subsumption && !self.preprocess_bsr_budget_exhausted,
-                    &mut queue,
-                    &mut touched,
-                    &mut touched_flags,
-                    &mut bsr_touched,
-                    &mut bsr_touched_flags,
+                    &mut ws.queue,
+                    &mut ws.touched,
+                    &mut ws.touched_flags,
+                    &mut ws.bsr_touched,
+                    &mut ws.bsr_touched_flags,
                 );
                 if let Some(d) = t.elapsed_opt() {
                     t_bve += d;
@@ -3256,16 +3315,16 @@ impl Solver {
                 if run_full_backward_subsumption
                     && !self.bsr_drain_batched
                     && !self.preprocess_bsr_budget_exhausted
-                    && (!queue.is_empty() || self.bwdsub_assigns < self.trail.len())
+                    && (!ws.queue.is_empty() || self.bwdsub_assigns < self.trail.len())
                 {
                     let t = elim_trace::start(trace_elim);
                     let ok = self.backward_subsumption_check_dynamic(
                         false,
-                        &mut queue,
-                        &mut touched,
-                        &mut touched_flags,
-                        &mut bsr_touched,
-                        &mut bsr_touched_flags,
+                        &mut ws.queue,
+                        &mut ws.touched,
+                        &mut ws.touched_flags,
+                        &mut ws.bsr_touched,
+                        &mut ws.bsr_touched_flags,
                         proof_log,
                     );
                     if let Some(d) = t.elapsed_opt() {
@@ -3283,16 +3342,20 @@ impl Solver {
             }
         }
 
-        self.clear_subsumption_queue_marks(&mut queue);
+        self.clear_subsumption_queue_marks(&mut ws.queue);
+        if use_ws {
+            self.elim_round_ws = ws;
+        }
 
         if trace_elim {
             eprintln!(
-                "c trace_elim total={:.3} occ_build={:.3} bsr={:.3} bve={:.3} gather={:.3} other={:.3} bsr_calls={} bve_calls={}",
+                "c trace_elim total={:.3} occ_build={:.3} bsr={:.3} bve={:.3} gather={:.3} heap_build={:.3} other={:.3} bsr_calls={} bve_calls={}",
                 elim_t0.elapsed().as_secs_f64(),
                 t_occ.as_secs_f64(),
                 t_bsr.as_secs_f64(),
                 t_bve.as_secs_f64(),
                 t_gather.as_secs_f64(),
+                t_heap_build.as_secs_f64(),
                 (elim_t0.elapsed() - t_occ - t_bsr - t_bve - t_gather).as_secs_f64(),
                 n_bsr_calls,
                 n_bve_calls,
@@ -3367,6 +3430,13 @@ impl Solver {
                 self.clause_abstraction = Vec::new();
                 self.learned_id_by_clause = Vec::new();
                 self.binary_id_by_clause = Vec::new();
+                // The SAT_ROUND_DIET persistent workspaces are ~O(vars) too, and
+                // eliminate/ELS never run again after turn-off; free them so the
+                // GC relocation transient keeps its headroom (same rationale as
+                // the reclaims above, same giant-only scoping).
+                self.elim_round_ws = ElimRoundWs::default();
+                self.els_active_scratch = Vec::new();
+                self.els_binaries_scratch = Vec::new();
             } else {
                 self.occurs.clear();
                 self.occurs_dirty.clear();
