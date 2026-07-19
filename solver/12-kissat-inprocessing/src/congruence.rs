@@ -34,6 +34,13 @@
 use crate::fxhash::FxHashMap as HashMap;
 use std::collections::VecDeque;
 
+/// SAT_ELIM_SCRATCH=off replays the pre-diet unconditional gate-inputs clone in
+/// `find_merges_closure` (the fair A/B baseline arm). Read once per process.
+fn legacy_clone_mode() -> bool {
+    static MODE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| matches!(std::env::var("SAT_ELIM_SCRATCH").ok().as_deref(), Some("off") | Some("0") | Some("false")))
+}
+
 /// The shape of a detected gate. Determines the DRAT proof chain the driver emits when
 /// two such gates are merged.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -458,7 +465,14 @@ pub(crate) fn find_merges_closure(num_vars: usize, gates_in: Vec<Gate>) -> Plan 
                 {
                     let g = gates[idx as usize].as_mut().unwrap();
                     g.out = out;
-                    g.inputs = inputs.clone();
+                    // Skip the write-back clone when renormalization changed nothing —
+                    // on fixpoint rounds (~all gates) this kills ~1 Vec clone per gate
+                    // per round. Equality compare is cheap and the stored value is
+                    // identical either way (behavior-preserving). SAT_ELIM_SCRATCH=off
+                    // replays the unconditional legacy clone (A/B baseline arm).
+                    if legacy_clone_mode() || g.inputs != inputs {
+                        g.inputs = inputs.clone();
+                    }
                 }
                 if !cancelled.is_empty() {
                     let acc = &mut acc_cancelled[idx as usize];

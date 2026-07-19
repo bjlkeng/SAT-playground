@@ -56,6 +56,57 @@ enum ElimGateKind {
 
 const MARKED_SUBSUMPTION_MIN_PRODUCT: usize = 32;
 
+/// Env-gated (SAT_TRACE_ELIM=1) fine-grained wall counters for try_eliminate_var.
+/// eprintln-only measurement aid; zero effect on solver behavior.
+mod elim_trace {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::OnceLock;
+    pub static SETUP_NS: AtomicU64 = AtomicU64::new(0);
+    pub static PARTITION_NS: AtomicU64 = AtomicU64::new(0);
+    pub static GATE_NS: AtomicU64 = AtomicU64::new(0);
+    pub static RESOLVE_NS: AtomicU64 = AtomicU64::new(0);
+    pub static APPLY_NS: AtomicU64 = AtomicU64::new(0);
+    pub static APPLY_PUSHELIM_NS: AtomicU64 = AtomicU64::new(0);
+    pub static APPLY_PROOFSNAP_NS: AtomicU64 = AtomicU64::new(0);
+    pub static APPLY_REMOVE_NS: AtomicU64 = AtomicU64::new(0);
+    pub static APPLY_ADD_NS: AtomicU64 = AtomicU64::new(0);
+    pub static APPLY_PROOFDEL_NS: AtomicU64 = AtomicU64::new(0);
+    pub static ADD_NORM_NS: AtomicU64 = AtomicU64::new(0);
+    pub static ADD_PROOF_NS: AtomicU64 = AtomicU64::new(0);
+    pub static ADD_ARENA_NS: AtomicU64 = AtomicU64::new(0);
+    pub static ADD_ATTACH_NS: AtomicU64 = AtomicU64::new(0);
+    pub static ADD_INDEX_NS: AtomicU64 = AtomicU64::new(0);
+    pub static ADD_ENQ_NS: AtomicU64 = AtomicU64::new(0);
+    pub fn enabled() -> bool {
+        static ON: OnceLock<bool> = OnceLock::new();
+        *ON.get_or_init(|| std::env::var("SAT_TRACE_ELIM").is_ok())
+    }
+    /// A timing token: `None` when tracing is off, so the disabled path costs
+    /// one predictable branch and never calls `Instant::now()`.
+    #[derive(Clone, Copy)]
+    pub struct T(pub Option<std::time::Instant>);
+    impl T {
+        pub fn elapsed_opt(self) -> Option<std::time::Duration> {
+            self.0.map(|s| s.elapsed())
+        }
+    }
+    pub fn start(enabled: bool) -> T {
+        T(if enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        })
+    }
+    pub fn add(counter: &AtomicU64, t: T) {
+        if let Some(s) = t.0 {
+            counter.fetch_add(s.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        }
+    }
+    pub fn secs(counter: &AtomicU64) -> f64 {
+        counter.load(Ordering::Relaxed) as f64 / 1e9
+    }
+}
+
 impl Solver {
     fn variable_count(&self) -> usize {
         self.assignment.len().saturating_sub(1)
@@ -819,21 +870,37 @@ impl Solver {
 
     fn normalize_original_clause(&self, clause: &[i32]) -> Option<Vec<i32>> {
         let mut normalized = Vec::with_capacity(clause.len());
+        if self.normalize_original_clause_into(clause, &mut normalized) {
+            Some(normalized)
+        } else {
+            None
+        }
+    }
+
+    /// `normalize_original_clause` writing into a caller-owned reusable buffer
+    /// (allocation-free in steady state). Returns `false` where the allocating
+    /// variant returns `None` (satisfied or tautological — caller skips the
+    /// clause); returns `true` with `out` holding the normalized literals
+    /// otherwise, including the defensive empty-clause case for out-of-range or
+    /// eliminated variables (`Some(Vec::new())` in the allocating variant).
+    fn normalize_original_clause_into(&self, clause: &[i32], out: &mut Vec<i32>) -> bool {
+        out.clear();
         for &lit in clause {
             let var = lit.unsigned_abs() as usize;
             if var == 0 || var >= self.assignment.len() || self.eliminated[var] {
-                return Some(Vec::new());
+                out.clear();
+                return true;
             }
 
             match self.lit_value(lit) {
-                TRUE => return None,
+                TRUE => return false,
                 FALSE => {}
-                UNASSIGNED => normalized.push(lit),
+                UNASSIGNED => out.push(lit),
                 _ => unreachable!(),
             }
         }
 
-        normalized.sort_unstable_by(|&lhs, &rhs| {
+        out.sort_unstable_by(|&lhs, &rhs| {
             lhs.unsigned_abs()
                 .cmp(&rhs.unsigned_abs())
                 .then_with(|| lhs.cmp(&rhs))
@@ -841,22 +908,22 @@ impl Solver {
 
         let mut write = 0usize;
         let mut prev_lit = 0i32;
-        for read in 0..normalized.len() {
-            let lit = normalized[read];
+        for read in 0..out.len() {
+            let lit = out[read];
             if write > 0 {
                 if lit == prev_lit {
                     continue;
                 }
                 if lit == -prev_lit {
-                    return None;
+                    return false;
                 }
             }
-            normalized[write] = lit;
+            out[write] = lit;
             write += 1;
             prev_lit = lit;
         }
-        normalized.truncate(write);
-        Some(normalized)
+        out.truncate(write);
+        true
     }
 
     fn normalize_original_clause_input_order(&self, clause: &[i32]) -> Option<Vec<i32>> {
@@ -989,7 +1056,7 @@ impl Solver {
 
     fn add_normalized_original_clause(
         &mut self,
-        normalized: Vec<i32>,
+        normalized: &[i32],
         proof_log: &mut ProofLog,
         log_proof: bool,
         touched: &mut Vec<usize>,
@@ -1007,8 +1074,11 @@ impl Solver {
             return OriginalClauseInsertResult::Unsat;
         }
 
+        let tr = elim_trace::enabled();
         if log_proof {
-            proof_log.record_clause(&normalized);
+            let t = elim_trace::start(tr);
+            proof_log.record_clause(normalized);
+            elim_trace::add(&elim_trace::ADD_PROOF_NS, t);
         }
 
         if normalized.len() == 1 {
@@ -1019,6 +1089,7 @@ impl Solver {
             return OriginalClauseInsertResult::Unit;
         }
 
+        let t_arena = elim_trace::start(tr);
         let clause_idx = self.arena.len();
         let store_abstraction_inline = self.use_simplification && self.inline_original_abstractions;
         self.arena.push(clause_make_header(
@@ -1031,23 +1102,27 @@ impl Solver {
         self.arena
             .extend(normalized.iter().copied().map(lit_to_word));
         if store_abstraction_inline {
-            let abstraction = clause_abstraction_from_lits(&normalized);
+            let abstraction = clause_abstraction_from_lits(normalized);
             self.arena.push(abstraction as u32);
         }
         debug_assert!(clause_idx < u32::MAX as usize);
         self.original_clause_ids.push(clause_idx as u32);
         self.original_literals += normalized.len();
+        elim_trace::add(&elim_trace::ADD_ARENA_NS, t_arena);
+        let t_attach = elim_trace::start(tr);
         self.attach_clause(clause_idx, false);
+        elim_trace::add(&elim_trace::ADD_ATTACH_NS, t_attach);
 
         if self.use_simplification {
+            let t_index = elim_trace::start(tr);
             if !store_abstraction_inline && !self.clause_abstraction.is_empty() {
                 self.set_original_clause_abstraction(
                     clause_idx,
-                    clause_abstraction_from_lits(&normalized),
+                    clause_abstraction_from_lits(normalized),
                 );
             }
             self.index_original_clause(clause_idx);
-            for &lit in &normalized {
+            for &lit in normalized {
                 Self::touch_preprocess_var_and_bsr(
                     touched,
                     touched_flags,
@@ -1056,10 +1131,13 @@ impl Solver {
                     lit.unsigned_abs() as usize,
                 );
             }
+            elim_trace::add(&elim_trace::ADD_INDEX_NS, t_index);
         }
 
         if let Some(queue) = subsumption_work.as_mut() {
+            let t_enq = elim_trace::start(tr);
             self.enqueue_subsumption_clause(queue, clause_idx);
+            elim_trace::add(&elim_trace::ADD_ENQ_NS, t_enq);
         }
 
         OriginalClauseInsertResult::Allocated(clause_idx)
@@ -1080,12 +1158,35 @@ impl Solver {
             return OriginalClauseInsertResult::Unsat;
         }
 
-        let Some(normalized) = self.normalize_original_clause(clause) else {
-            return OriginalClauseInsertResult::Skipped;
-        };
+        if !self.elim_scratch {
+            // Legacy allocating path (SAT_ELIM_SCRATCH=off): fresh normalize Vec per clause.
+            let Some(normalized) = self.normalize_original_clause(clause) else {
+                return OriginalClauseInsertResult::Skipped;
+            };
+            return self.add_normalized_original_clause(
+                &normalized,
+                proof_log,
+                log_proof,
+                touched,
+                touched_flags,
+                bsr_touched,
+                bsr_touched_flags,
+                subsumption_work,
+            );
+        }
 
-        self.add_normalized_original_clause(
-            normalized,
+        let tr = elim_trace::enabled();
+        let t_norm = elim_trace::start(tr);
+        let mut normalized = std::mem::take(&mut self.norm_scratch);
+        let keep = self.normalize_original_clause_into(clause, &mut normalized);
+        elim_trace::add(&elim_trace::ADD_NORM_NS, t_norm);
+        if !keep {
+            self.norm_scratch = normalized;
+            return OriginalClauseInsertResult::Skipped;
+        }
+
+        let result = self.add_normalized_original_clause(
+            &normalized,
             proof_log,
             log_proof,
             touched,
@@ -1093,7 +1194,9 @@ impl Solver {
             bsr_touched,
             bsr_touched_flags,
             subsumption_work,
-        )
+        );
+        self.norm_scratch = normalized;
+        result
     }
 
     pub(super) fn add_initial_original_clauses(&mut self, clauses: Vec<Vec<i32>>, sort: bool) {
@@ -1117,7 +1220,7 @@ impl Solver {
                 continue;
             };
             let _ = self.add_normalized_original_clause(
-                normalized,
+                &normalized,
                 &mut proof_log,
                 false,
                 &mut touched,
@@ -1146,7 +1249,7 @@ impl Solver {
                 continue;
             };
             let _ = self.add_normalized_original_clause(
-                normalized,
+                &normalized,
                 &mut proof_log,
                 false,
                 &mut touched,
@@ -1198,6 +1301,50 @@ impl Solver {
         bsr_touched_flags: &mut Vec<bool>,
         proof_log: &mut ProofLog,
     ) -> bool {
+        // Persist the stamped relation-marks buffer across calls (SAT_ELIM_SCRATCH):
+        // the legacy per-call fresh Vec re-zeroed 2*vars u32 (~5.8MB on vex-class) on
+        // every BSR entry. Stamp semantics make persistence behavior-identical: only
+        // equality with the current stamp is ever read, and the stamp keeps
+        // monotonically increasing across calls (wraparound clears as before).
+        let (mut relation_marks, mut relation_mark_stamp) = if self.elim_scratch {
+            (
+                std::mem::take(&mut self.bsr_relation_marks_scratch),
+                self.bsr_relation_stamp,
+            )
+        } else {
+            (Vec::new(), 0u32)
+        };
+        let result = self.backward_subsumption_check_body::<TRACE>(
+            seed_all_clauses,
+            queue,
+            touched,
+            touched_flags,
+            bsr_touched,
+            bsr_touched_flags,
+            proof_log,
+            &mut relation_marks,
+            &mut relation_mark_stamp,
+        );
+        if self.elim_scratch {
+            self.bsr_relation_marks_scratch = relation_marks;
+            self.bsr_relation_stamp = relation_mark_stamp;
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn backward_subsumption_check_body<const TRACE: bool>(
+        &mut self,
+        seed_all_clauses: bool,
+        queue: &mut VecDeque<SubsumptionCandidate>,
+        touched: &mut Vec<usize>,
+        touched_flags: &mut Vec<bool>,
+        bsr_touched: &mut Vec<usize>,
+        bsr_touched_flags: &mut Vec<bool>,
+        proof_log: &mut ProofLog,
+        relation_marks: &mut Vec<u32>,
+        relation_mark_stamp: &mut u32,
+    ) -> bool {
         if TRACE {
             self.stats.bsr_runs += 1;
         }
@@ -1218,9 +1365,6 @@ impl Solver {
                 }
             }
         }
-
-        let mut relation_marks = Vec::new();
-        let mut relation_mark_stamp = 0u32;
 
         while !queue.is_empty() || self.bwdsub_assigns < self.trail.len() {
             let driver = if let Some(candidate) = queue.pop_front() {
@@ -1324,8 +1468,8 @@ impl Solver {
                     driver_len,
                     driver_abstraction,
                     candidate_idx,
-                    &mut relation_marks,
-                    &mut relation_mark_stamp,
+                    &mut *relation_marks,
+                    &mut *relation_mark_stamp,
                 ) {
                     SubsumptionOutcome::None => {}
                     SubsumptionOutcome::Subsumed => {
@@ -2316,7 +2460,68 @@ impl Solver {
         })
     }
 
+    /// Workspace-reusing wrapper: hands the persistent scratch buffers to the body so
+    /// the ~O(vars) pivot attempts per eliminate round are allocation-free in steady
+    /// state. Behavior-identical to the former locals-allocating version.
+    #[allow(clippy::too_many_arguments)]
     fn try_eliminate_var(
+        &mut self,
+        var: usize,
+        proof_log: &mut ProofLog,
+        enqueue_subsumption_work: bool,
+        queue: &mut VecDeque<SubsumptionCandidate>,
+        touched: &mut Vec<usize>,
+        touched_flags: &mut Vec<bool>,
+        bsr_touched: &mut Vec<usize>,
+        bsr_touched_flags: &mut Vec<bool>,
+    ) -> bool {
+        if !self.elim_scratch {
+            return self.try_eliminate_var_legacy(
+                var,
+                proof_log,
+                enqueue_subsumption_work,
+                queue,
+                touched,
+                touched_flags,
+                bsr_touched,
+                bsr_touched_flags,
+            );
+        }
+        let mut pos_clauses = std::mem::take(&mut self.elim_pos_scratch);
+        let mut neg_clauses = std::mem::take(&mut self.elim_neg_scratch);
+        let mut resolvent_lits = std::mem::take(&mut self.elim_resolvent_lits_scratch);
+        let mut resolvent_ranges = std::mem::take(&mut self.elim_resolvent_ranges_scratch);
+        let mut proof_del_lits = std::mem::take(&mut self.elim_proof_del_lits_scratch);
+        let mut proof_del_ranges = std::mem::take(&mut self.elim_proof_del_ranges_scratch);
+        let result = self.try_eliminate_var_inner(
+            var,
+            proof_log,
+            enqueue_subsumption_work,
+            queue,
+            touched,
+            touched_flags,
+            bsr_touched,
+            bsr_touched_flags,
+            &mut pos_clauses,
+            &mut neg_clauses,
+            &mut resolvent_lits,
+            &mut resolvent_ranges,
+            &mut proof_del_lits,
+            &mut proof_del_ranges,
+        );
+        self.elim_pos_scratch = pos_clauses;
+        self.elim_neg_scratch = neg_clauses;
+        self.elim_resolvent_lits_scratch = resolvent_lits;
+        self.elim_resolvent_ranges_scratch = resolvent_ranges;
+        self.elim_proof_del_lits_scratch = proof_del_lits;
+        self.elim_proof_del_ranges_scratch = proof_del_ranges;
+        result
+    }
+
+    /// The pre-scratch (2026-07-19) implementation VERBATIM, selected by
+    /// SAT_ELIM_SCRATCH=off as the fair simultaneous A/B baseline arm.
+    #[allow(clippy::too_many_arguments)]
+    fn try_eliminate_var_legacy(
         &mut self,
         var: usize,
         proof_log: &mut ProofLog,
@@ -2588,6 +2793,308 @@ impl Solver {
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn try_eliminate_var_inner(
+        &mut self,
+        var: usize,
+        proof_log: &mut ProofLog,
+        enqueue_subsumption_work: bool,
+        queue: &mut VecDeque<SubsumptionCandidate>,
+        touched: &mut Vec<usize>,
+        touched_flags: &mut Vec<bool>,
+        bsr_touched: &mut Vec<usize>,
+        bsr_touched_flags: &mut Vec<bool>,
+        pos_clauses: &mut Vec<usize>,
+        neg_clauses: &mut Vec<usize>,
+        resolvent_lits: &mut Vec<i32>,
+        resolvent_ranges: &mut Vec<(usize, usize)>,
+        proof_del_lits: &mut Vec<i32>,
+        proof_del_ranges: &mut Vec<(usize, usize)>,
+    ) -> bool {
+        let tr = elim_trace::enabled();
+        let t_setup = elim_trace::start(tr);
+        self.elim_attempted_vars += 1;
+        self.clean_occurs_dynamic(var);
+        if var >= self.occurs.len() {
+            return false;
+        }
+        let occ_len = self.occurs[var].len();
+        elim_trace::add(&elim_trace::SETUP_NS, t_setup);
+        if occ_len == 0 {
+            return false;
+        }
+
+        let t_part = elim_trace::start(tr);
+        pos_clauses.clear();
+        neg_clauses.clear();
+        for occ_pos in 0..occ_len {
+            let clause_idx = self.occurs[var][occ_pos] as usize;
+            if clause_idx >= self.arena.len() || self.clause_is_deleted(clause_idx) {
+                continue;
+            }
+
+            let mut has_pos = false;
+            let mut has_neg = false;
+            for lit_pos in 0..self.clause_len(clause_idx) {
+                let lit = self.clause_lit(clause_idx, lit_pos);
+                if lit == var as i32 {
+                    has_pos = true;
+                } else if lit == -(var as i32) {
+                    has_neg = true;
+                }
+            }
+            if has_pos {
+                pos_clauses.push(clause_idx);
+            } else if has_neg {
+                neg_clauses.push(clause_idx);
+            }
+        }
+        elim_trace::add(&elim_trace::PARTITION_NS, t_part);
+
+        let occurrence_count = pos_clauses.len() + neg_clauses.len();
+        if occurrence_count == 0 {
+            return false;
+        }
+
+        // When `var` is functionally defined by an AND/OR gate, restrict resolution to
+        // gate-vs-nongate pairs (Plaisted-Greenbaum): the nongate-vs-nongate resolvents are
+        // implied by the gate definition and gate-vs-gate resolvents are tautologies, so both
+        // are sound to omit. This produces far fewer resolvents, so gate-defined variables
+        // pass the `resolvent_count <= occurrence_count + bve_grow` bound that naive all-pairs
+        // BVE rejects. The acceptance bound and DRAT add/delete ordering below are unchanged;
+        // the resolvents are still ordinary (RUP) resolvents of two live source clauses.
+        // Extended detectors run only in ARMED mid-search rounds (`inprocess_aggressive`):
+        // root elimination stays byte-identical on every formula, so the blast radius is
+        // exactly the congruence-armed miter/BMC cells whose collapse flywheel needs the
+        // extra elimination yield. (Root-level extended gate BVE was measured a suite
+        // regression in the SAT_GATE_BVE provenance — do not widen this without a gate.)
+        let gates_ext = self.elim_gates_ext
+            && (self.inprocess_aggressive || self.unarmed_flywheel_round_active);
+        let t_gate = elim_trace::start(tr);
+        let gate = {
+            let mut g = None;
+            // Kissat gates.c detection order: equivalence → AND/OR → if-then-else.
+            if gates_ext {
+                g = self.detect_equivalence_gate(var, pos_clauses, neg_clauses);
+            }
+            if g.is_none() && (self.gate_bve || gates_ext) {
+                g = self.detect_and_or_gate(var, pos_clauses, neg_clauses);
+            }
+            if g.is_none() && gates_ext {
+                g = self.detect_ite_gate(var, pos_clauses, neg_clauses);
+            }
+            if g.is_none() && gates_ext && self.elim_def {
+                g = self.detect_kitten_definition(var, pos_clauses, neg_clauses);
+            }
+            g
+        };
+        elim_trace::add(&elim_trace::GATE_NS, t_gate);
+        let t_resolve = elim_trace::start(tr);
+
+        let mut resolvent_count = 0isize;
+        resolvent_lits.clear();
+        resolvent_ranges.clear();
+        if let Some(g) = &gate {
+            let mut rejected = false;
+            // Definition kind: cap each resolvent at its longer parent's length
+            // (see resolve_elim_pair_capped doc). Syntactic kinds keep the
+            // promoted unlimited behavior.
+            // Kissat has NO parent-length cap on definition resolvents — clslim is its
+            // only limit. SAT_ELIM_DEF_NOCAP=on restores that parity; default keeps the
+            // parent-length cap (the oski40 densification guard: unrestricted definition
+            // eliminations doubled the live arena there, +700s wall).
+            let def_nocap = self.elim_def_nocap;
+            let def_cap = move |s: &Self, p: usize, n: usize| -> Option<usize> {
+                if g.kind == ElimGateKind::Definition && !def_nocap {
+                    Some(s.clause_len(p).max(s.clause_len(n)))
+                } else {
+                    None
+                }
+            };
+            'gate_pos_nongate_neg: for &p in &g.gate_pos {
+                for &n in &g.nongate_neg {
+                    let cap = def_cap(self, p, n);
+                    if !self.resolve_elim_pair_capped(
+                        p,
+                        n,
+                        var,
+                        occurrence_count,
+                        &mut resolvent_count,
+                        &mut *resolvent_lits,
+                        &mut *resolvent_ranges,
+                        cap,
+                    ) {
+                        rejected = true;
+                        break 'gate_pos_nongate_neg;
+                    }
+                }
+            }
+            if !rejected {
+                'nongate_pos_gate_neg: for &p in &g.nongate_pos {
+                    for &n in &g.gate_neg {
+                        let cap = def_cap(self, p, n);
+                        if !self.resolve_elim_pair_capped(
+                            p,
+                            n,
+                            var,
+                            occurrence_count,
+                            &mut resolvent_count,
+                            &mut *resolvent_lits,
+                            &mut *resolvent_ranges,
+                            cap,
+                        ) {
+                            rejected = true;
+                            break 'nongate_pos_gate_neg;
+                        }
+                    }
+                }
+            }
+            // Semantic definition cores additionally need the gate-vs-gate resolvents
+            // (kissat `resolve_gate`): unlike AND/OR/eq/ITE, they are not tautologies.
+            if !rejected && g.kind == ElimGateKind::Definition {
+                'gate_pos_gate_neg: for &p in &g.gate_pos {
+                    for &n in &g.gate_neg {
+                        let cap = def_cap(self, p, n);
+                        if !self.resolve_elim_pair_capped(
+                            p,
+                            n,
+                            var,
+                            occurrence_count,
+                            &mut resolvent_count,
+                            &mut *resolvent_lits,
+                            &mut *resolvent_ranges,
+                            cap,
+                        ) {
+                            rejected = true;
+                            break 'gate_pos_gate_neg;
+                        }
+                    }
+                }
+            }
+            if rejected {
+                if g.kind == ElimGateKind::Definition && var < self.elim_def_last_probe.len() {
+                    let e = &mut self.elim_def_last_probe[var];
+                    e.3 = e.3.saturating_add(1);
+                }
+                elim_trace::add(&elim_trace::RESOLVE_NS, t_resolve);
+                return false;
+            }
+            self.stats.preprocess_gate_eliminated_vars += 1;
+            match g.kind {
+                ElimGateKind::AndOr => {}
+                ElimGateKind::Equivalence => self.stats.preprocess_eq_gate_eliminated_vars += 1,
+                ElimGateKind::Ite => self.stats.preprocess_ite_gate_eliminated_vars += 1,
+                ElimGateKind::Definition => self.stats.preprocess_def_gate_eliminated_vars += 1,
+            }
+        } else {
+            for &pos_clause_idx in pos_clauses.iter() {
+                for &neg_clause_idx in neg_clauses.iter() {
+                    if !self.resolve_elim_pair(
+                        pos_clause_idx,
+                        neg_clause_idx,
+                        var,
+                        occurrence_count,
+                        &mut resolvent_count,
+                        &mut *resolvent_lits,
+                        &mut *resolvent_ranges,
+                    ) {
+                        elim_trace::add(&elim_trace::RESOLVE_NS, t_resolve);
+                        return false;
+                    }
+                }
+            }
+        }
+        elim_trace::add(&elim_trace::RESOLVE_NS, t_resolve);
+        let t_apply = elim_trace::start(tr);
+
+        if pos_clauses.len() > neg_clauses.len() {
+            for &clause_idx in neg_clauses.iter() {
+                self.push_elim_clause(var, clause_idx);
+            }
+            self.push_elim_unit(var as i32);
+        } else {
+            for &clause_idx in pos_clauses.iter() {
+                self.push_elim_clause(var, clause_idx);
+            }
+            self.push_elim_unit(-(var as i32));
+        }
+
+        self.eliminated[var] = true;
+        self.decision_var[var] = false;
+        self.branch_heap_remove(var);
+        self.stats.preprocess_eliminated_vars += 1;
+        elim_trace::add(&elim_trace::APPLY_PUSHELIM_NS, t_apply);
+        let t_snap = elim_trace::start(tr);
+
+        // DRAT ordering invariant: the eliminated source clauses must be DELETED in the
+        // proof *after* the resolvents are added (each resolvent is a RAT clause on the
+        // eliminated variable, so the checker needs the source clauses still present when
+        // it validates the resolvent). The source clauses must also leave the live
+        // occurrence/watch structures *before* resolvents are inserted, so immediate
+        // subsumption cannot see stale eliminated clauses during resolvent insertion and
+        // materially change the post-BVE formula. Those two orderings conflict, so snapshot
+        // the source-clause literals now while they are still live and emit their proof
+        // deletions after the resolvent loop below. (Emitting them here, before the
+        // resolvents, strips the RAT support and drat-trim rejects the proof.)
+        proof_del_lits.clear();
+        proof_del_ranges.clear();
+        if proof_log.is_enabled() {
+            for &clause_idx in pos_clauses.iter().chain(neg_clauses.iter()) {
+                let start = proof_del_lits.len();
+                proof_del_lits.extend_from_slice(self.clause_slice(clause_idx));
+                proof_del_ranges.push((start, proof_del_lits.len() - start));
+            }
+        }
+        elim_trace::add(&elim_trace::APPLY_PROOFSNAP_NS, t_snap);
+
+        let t_remove = elim_trace::start(tr);
+        for &clause_idx in pos_clauses.iter().chain(neg_clauses.iter()) {
+            self.remove_original_clause_preprocess(clause_idx, touched, touched_flags);
+        }
+        if var < self.occurs.len() {
+            self.occurs[var].clear();
+            self.occurs_dirty[var] = false;
+        }
+        elim_trace::add(&elim_trace::APPLY_REMOVE_NS, t_remove);
+
+        let t_add = elim_trace::start(tr);
+        for &(start, len) in resolvent_ranges.iter() {
+            self.stats.preprocess_resolvents += 1;
+            let subsumption_work =
+                if enqueue_subsumption_work && !self.preprocess_bsr_budget_exhausted {
+                    Some(&mut *queue)
+                } else {
+                    None
+                };
+            let result = self.add_original_clause_from_slice(
+                &resolvent_lits[start..start + len],
+                proof_log,
+                true,
+                touched,
+                touched_flags,
+                bsr_touched,
+                bsr_touched_flags,
+                subsumption_work,
+            );
+            if result == OriginalClauseInsertResult::Unsat {
+                return true;
+            }
+        }
+        elim_trace::add(&elim_trace::APPLY_ADD_NS, t_add);
+
+        // Now that the resolvents have been recorded, delete the eliminated source clauses
+        // from the proof (snapshotted above before structure removal). See the DRAT
+        // ordering invariant comment near the snapshot.
+        let t_pdel = elim_trace::start(tr);
+        for &(start, len) in proof_del_ranges.iter() {
+            proof_log.record_deletion(&proof_del_lits[start..start + len]);
+        }
+        elim_trace::add(&elim_trace::APPLY_PROOFDEL_NS, t_pdel);
+
+        elim_trace::add(&elim_trace::APPLY_NS, t_apply);
+        true
+    }
+
     pub(super) fn eliminate(&mut self, turn_off_elim: bool, proof_log: &mut ProofLog) -> bool {
         if !self.solver_ok {
             return false;
@@ -2602,8 +3109,20 @@ impl Solver {
             return false;
         }
 
+        // Env-gated wall decomposition (SAT_TRACE_ELIM=1): eprintln-only, measures where
+        // root-eliminate wall goes (occurrence build vs BSR vs BVE vs touched-gather).
+        let trace_elim = std::env::var("SAT_TRACE_ELIM").is_ok();
+        let elim_t0 = std::time::Instant::now();
+        let mut t_bsr = std::time::Duration::ZERO;
+        let mut t_bve = std::time::Duration::ZERO;
+        let mut t_gather = std::time::Duration::ZERO;
+        let mut n_bsr_calls = 0u64;
+        let mut n_bve_calls = 0u64;
+
         let run_full_backward_subsumption = self.should_run_full_backward_subsumption();
+        let t_occ_start = std::time::Instant::now();
         self.build_occurrence_index();
+        let t_occ = t_occ_start.elapsed();
         self.bwdsub_assigns = 0;
         let mut queue = VecDeque::new();
         let mut touched = Vec::new();
@@ -2624,9 +3143,9 @@ impl Solver {
             }
         }
 
-        if run_full_backward_subsumption
-            && !self.preprocess_bsr_budget_exhausted
-            && !self.backward_subsumption_check_dynamic(
+        if run_full_backward_subsumption && !self.preprocess_bsr_budget_exhausted {
+            let t = elim_trace::start(trace_elim);
+            let ok = self.backward_subsumption_check_dynamic(
                 true,
                 &mut queue,
                 &mut touched,
@@ -2634,11 +3153,16 @@ impl Solver {
                 &mut bsr_touched,
                 &mut bsr_touched_flags,
                 proof_log,
-            )
-        {
-            self.clear_subsumption_queue_marks(&mut queue);
-            self.solver_ok = false;
-            return false;
+            );
+            if let Some(d) = t.elapsed_opt() {
+                t_bsr += d;
+            }
+            n_bsr_calls += 1;
+            if !ok {
+                self.clear_subsumption_queue_marks(&mut queue);
+                self.solver_ok = false;
+                return false;
+            }
         }
 
         while self.solver_ok
@@ -2651,6 +3175,7 @@ impl Solver {
                 || !heap.is_empty())
         {
             if !touched.is_empty() || !bsr_touched.is_empty() {
+                let t = elim_trace::start(trace_elim);
                 self.gather_touched_clauses(
                     &mut touched,
                     &mut touched_flags,
@@ -2661,13 +3186,18 @@ impl Solver {
                     &mut heap_versions,
                     run_full_backward_subsumption && !self.preprocess_bsr_budget_exhausted,
                 );
+                if let Some(d) = t.elapsed_opt() {
+                    t_gather += d;
+                }
                 continue;
             }
 
             if run_full_backward_subsumption
                 && !self.preprocess_bsr_budget_exhausted
                 && (!queue.is_empty() || self.bwdsub_assigns < self.trail.len())
-                && !self.backward_subsumption_check_dynamic(
+            {
+                let t = elim_trace::start(trace_elim);
+                let ok = self.backward_subsumption_check_dynamic(
                     false,
                     &mut queue,
                     &mut touched,
@@ -2675,10 +3205,15 @@ impl Solver {
                     &mut bsr_touched,
                     &mut bsr_touched_flags,
                     proof_log,
-                )
-            {
-                self.solver_ok = false;
-                break;
+                );
+                if let Some(d) = t.elapsed_opt() {
+                    t_bsr += d;
+                }
+                n_bsr_calls += 1;
+                if !ok {
+                    self.solver_ok = false;
+                    break;
+                }
             }
             if self.preprocess_budget_exhausted {
                 break;
@@ -2696,6 +3231,7 @@ impl Solver {
                     continue;
                 }
 
+                let t = elim_trace::start(trace_elim);
                 let eliminated = self.try_eliminate_var(
                     var,
                     proof_log,
@@ -2706,6 +3242,10 @@ impl Solver {
                     &mut bsr_touched,
                     &mut bsr_touched_flags,
                 );
+                if let Some(d) = t.elapsed_opt() {
+                    t_bve += d;
+                }
+                n_bve_calls += 1;
                 if !eliminated {
                     if self.preprocess_budget_exhausted {
                         break;
@@ -2717,7 +3257,9 @@ impl Solver {
                     && !self.bsr_drain_batched
                     && !self.preprocess_bsr_budget_exhausted
                     && (!queue.is_empty() || self.bwdsub_assigns < self.trail.len())
-                    && !self.backward_subsumption_check_dynamic(
+                {
+                    let t = elim_trace::start(trace_elim);
+                    let ok = self.backward_subsumption_check_dynamic(
                         false,
                         &mut queue,
                         &mut touched,
@@ -2725,10 +3267,15 @@ impl Solver {
                         &mut bsr_touched,
                         &mut bsr_touched_flags,
                         proof_log,
-                    )
-                {
-                    self.solver_ok = false;
-                    break;
+                    );
+                    if let Some(d) = t.elapsed_opt() {
+                        t_bsr += d;
+                    }
+                    n_bsr_calls += 1;
+                    if !ok {
+                        self.solver_ok = false;
+                        break;
+                    }
                 }
                 if self.preprocess_budget_exhausted {
                     break;
@@ -2737,6 +3284,45 @@ impl Solver {
         }
 
         self.clear_subsumption_queue_marks(&mut queue);
+
+        if trace_elim {
+            eprintln!(
+                "c trace_elim total={:.3} occ_build={:.3} bsr={:.3} bve={:.3} gather={:.3} other={:.3} bsr_calls={} bve_calls={}",
+                elim_t0.elapsed().as_secs_f64(),
+                t_occ.as_secs_f64(),
+                t_bsr.as_secs_f64(),
+                t_bve.as_secs_f64(),
+                t_gather.as_secs_f64(),
+                (elim_t0.elapsed() - t_occ - t_bsr - t_bve - t_gather).as_secs_f64(),
+                n_bsr_calls,
+                n_bve_calls,
+            );
+            eprintln!(
+                "c trace_elim_bve setup={:.3} partition={:.3} gate={:.3} resolve={:.3} apply={:.3}",
+                elim_trace::secs(&elim_trace::SETUP_NS),
+                elim_trace::secs(&elim_trace::PARTITION_NS),
+                elim_trace::secs(&elim_trace::GATE_NS),
+                elim_trace::secs(&elim_trace::RESOLVE_NS),
+                elim_trace::secs(&elim_trace::APPLY_NS),
+            );
+            eprintln!(
+                "c trace_elim_apply pushelim={:.3} proofsnap={:.3} remove={:.3} add={:.3} proofdel={:.3}",
+                elim_trace::secs(&elim_trace::APPLY_PUSHELIM_NS),
+                elim_trace::secs(&elim_trace::APPLY_PROOFSNAP_NS),
+                elim_trace::secs(&elim_trace::APPLY_REMOVE_NS),
+                elim_trace::secs(&elim_trace::APPLY_ADD_NS),
+                elim_trace::secs(&elim_trace::APPLY_PROOFDEL_NS),
+            );
+            eprintln!(
+                "c trace_elim_add norm={:.3} proof={:.3} arena={:.3} attach={:.3} index={:.3} enq={:.3}",
+                elim_trace::secs(&elim_trace::ADD_NORM_NS),
+                elim_trace::secs(&elim_trace::ADD_PROOF_NS),
+                elim_trace::secs(&elim_trace::ADD_ARENA_NS),
+                elim_trace::secs(&elim_trace::ADD_ATTACH_NS),
+                elim_trace::secs(&elim_trace::ADD_INDEX_NS),
+                elim_trace::secs(&elim_trace::ADD_ENQ_NS),
+            );
+        }
 
         if self.trace_preprocess_details {
             eprintln!(

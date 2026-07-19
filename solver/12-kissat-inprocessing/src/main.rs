@@ -2545,6 +2545,27 @@ struct Solver {
     /// resized lazily, cleared by bumping `gate_mark_stamp` instead of zeroing.
     gate_marks: Vec<u32>,
     gate_mark_stamp: u32,
+    /// Reusable BVE workspaces (root/inprocess eliminate): keep capacity across the
+    /// ~O(vars) `try_eliminate_var` calls per round instead of allocating fresh
+    /// vectors per pivot. Contents are cleared before every use; behavior-identical
+    /// allocation diet (see the vex root-eliminate decomposition, 2026-07-19).
+    elim_pos_scratch: Vec<usize>,
+    elim_neg_scratch: Vec<usize>,
+    elim_resolvent_lits_scratch: Vec<i32>,
+    elim_resolvent_ranges_scratch: Vec<(usize, usize)>,
+    /// Flat (lits, ranges) snapshot of the eliminated source clauses for the deferred
+    /// DRAT deletions — replaces a per-clause `Vec<Vec<i32>>` allocation.
+    elim_proof_del_lits_scratch: Vec<i32>,
+    elim_proof_del_ranges_scratch: Vec<(usize, usize)>,
+    /// Reusable normalization buffer for original-clause insertion.
+    norm_scratch: Vec<i32>,
+    /// SAT_ELIM_SCRATCH (default on): workspace-reusing BVE/insertion paths.
+    /// `off` replays the pre-diet allocating implementations verbatim (the fair
+    /// simultaneous A/B baseline arm; see the fastidx off-switch precedent).
+    elim_scratch: bool,
+    /// Persistent stamped marks buffer for backward-subsumption relation checks.
+    bsr_relation_marks_scratch: Vec<u32>,
+    bsr_relation_stamp: u32,
     /// run full backward subsumption rather than queue-only root/touched work
     full_bsr: bool,
     /// when true (and full_bsr is also true), `should_run_full_backward_subsumption` skips
@@ -3686,6 +3707,16 @@ impl Solver {
             gate_bve: config.gate_bve,
             gate_marks: Vec::new(),
             gate_mark_stamp: 0,
+            elim_pos_scratch: Vec::new(),
+            elim_neg_scratch: Vec::new(),
+            elim_resolvent_lits_scratch: Vec::new(),
+            elim_resolvent_ranges_scratch: Vec::new(),
+            elim_proof_del_lits_scratch: Vec::new(),
+            elim_proof_del_ranges_scratch: Vec::new(),
+            norm_scratch: Vec::new(),
+            elim_scratch: env_bool_or_default("SAT_ELIM_SCRATCH", true),
+            bsr_relation_marks_scratch: Vec::new(),
+            bsr_relation_stamp: 0,
             full_bsr: config.full_bsr,
             bsr_formula_gate: config.bsr_formula_gate,
             bsr_drain_batched: config.bsr_drain_batched,
