@@ -2378,7 +2378,8 @@ impl Solver {
         // exactly the congruence-armed miter/BMC cells whose collapse flywheel needs the
         // extra elimination yield. (Root-level extended gate BVE was measured a suite
         // regression in the SAT_GATE_BVE provenance — do not widen this without a gate.)
-        let gates_ext = self.elim_gates_ext && self.inprocess_aggressive;
+        let gates_ext = self.elim_gates_ext
+            && (self.inprocess_aggressive || self.unarmed_flywheel_round_active);
         let gate = {
             let mut g = None;
             // Kissat gates.c detection order: equivalence → AND/OR → if-then-else.

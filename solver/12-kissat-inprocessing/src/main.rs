@@ -146,6 +146,16 @@ const DEFAULT_BVE_CLAUSE_LIMIT: isize = 20;
 const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
 /// Default conflicts between inprocessing rounds when SAT_INPROCESS_INTERVAL_CONFLICTS=0.
 const INPROCESS_DEFAULT_INTERVAL: u64 = 2000;
+/// Conflicts between unarmed flywheel eliminate rounds (SAT_ELIM_UNARMED_FLYWHEEL).
+/// Kissat re-eliminates every ~500·n·log²n conflicts (eliminateint=500 with the
+/// NLOG2N conflict-limit update) — dozens of rounds per million conflicts; 100k is
+/// the conservative port that still yields ~10 escalating rounds in the 1M→2M
+/// window where the g2-class clause collapse has to happen.
+const UNARMED_FLYWHEEL_INTERVAL: u64 = 100_000;
+/// Density-class guard for the unarmed flywheel: formulas at or below this
+/// decisions-per-conflict ratio are the yield-arm candidates (QG7/Pancake class)
+/// where complete-round escalation measured toxic; leave them on the shipped path.
+const UNARMED_FLYWHEEL_MIN_DEC_PER_CONF: u64 = 3;
 /// Minimum fraction of clauses that must be consumed by extracted XOR constraints
 /// before the XOR/parity Gaussian engine (SAT_GAUSS) attempts a refutation. Below
 /// this the formula is not parity-structured, so a Gaussian pass would be a costly
@@ -2208,6 +2218,46 @@ struct Solver {
     /// unarmed cells run zero elimination rounds). Uses the same
     /// `elim_armed_bounds` effort/bound machinery as armed rounds.
     elim_unarmed: bool,
+    /// SAT_ELIM_UNARMED_FLYWHEEL (default off): NEVER-armed formulas past the
+    /// first unarmed inprocess point (the 1M-conflict interval) run bounded
+    /// mid-search eliminate rounds on a fast follow-up cadence
+    /// (UNARMED_FLYWHEEL_INTERVAL) with kissat-parity COMPLETE-round bound
+    /// escalation (eliminate.c set_next_elimination_bound: every round whose
+    /// effort budget was not exhausted escalates 0→1→2→4→8→16 regardless of
+    /// yield). Mechanism evidence (2026-07-18 g2 decomposition screens): at
+    /// equal conflict counts our propagation rate MATCHES kissat (3.6-3.7M
+    /// props/s in the 200k→1M window) but kissat needs half the props per
+    /// conflict because its repeated eliminate rounds collapse g2 to ~37k
+    /// irredundant clauses while ours stays at ~503k forever — the full-run
+    /// conflict-rate gap (kissat 8.9k/s vs our 2.3k/s) is clause-database
+    /// size, not hot-loop speed. Scope guards: the >=1M-conflict start leaves
+    /// every cell that finishes earlier byte-identical (all documented fragile
+    /// solved cells finish <800k conflicts); decisions/conflict must exceed 3
+    /// so the yield-armed density class (QG7/Pancake — where escalation
+    /// measured toxic, elimbounds negative #2) keeps its shipped path; the
+    /// deep-phase guard protects SAT-close trajectories; two consecutive
+    /// zero-yield rounds at the max bound stop the schedule permanently
+    /// (occurrence-rebuild wall-tax mitigation, elimbounds negative #7).
+    /// The bound counter is separate from `armed_bve_bound` so a formula that
+    /// arms later starts the armed schedule exactly as shipped.
+    elim_unarmed_flywheel: bool,
+    /// current escalation bound for unarmed flywheel eliminate rounds
+    unarmed_bve_bound: isize,
+    /// next conflicts checkpoint for an unarmed flywheel eliminate round
+    unarmed_elim_next_conflicts: u64,
+    /// search-ticks snapshot at the last unarmed flywheel round (effort budget)
+    unarmed_elim_last_search_ticks: u64,
+    /// consecutive zero-yield flywheel rounds at the max bound
+    unarmed_elim_dry_rounds: u32,
+    /// true only while an unarmed flywheel eliminate round is executing: extends
+    /// the ARMED-scoped extended gate detectors (eq/AND-OR/ITE, `elim_gates_ext`)
+    /// to the flywheel round. The 2026-07-18 escalation probe on g2 showed the
+    /// gate detectors carry most of the escalated yield (33.8k of the +45k
+    /// eliminations were gate-partitioned) — naive all-pairs BVE cannot pass the
+    /// count bound on the BMC gate outputs that hold the clause mass.
+    unarmed_flywheel_round_active: bool,
+    /// flywheel permanently stopped for this formula (dry at max bound twice)
+    unarmed_elim_stopped: bool,
     /// SAT_CONGRUENCE_LEARNED (default off): congruence gate extraction also
     /// scans learned clauses of length <= 3 (kissat closure parity — vivify-
     /// created binaries/ternaries keep feeding gate discovery mid-search).
@@ -3508,6 +3558,13 @@ impl Solver {
                 false,
             ),
             elim_unarmed: env_bool_or_default("SAT_ELIM_UNARMED", false),
+            elim_unarmed_flywheel: env_bool_or_default("SAT_ELIM_UNARMED_FLYWHEEL", false),
+            unarmed_bve_bound: 0,
+            unarmed_elim_next_conflicts: 0,
+            unarmed_elim_last_search_ticks: 0,
+            unarmed_elim_dry_rounds: 0,
+            unarmed_flywheel_round_active: false,
+            unarmed_elim_stopped: false,
             congruence_learned: env_bool_or_default("SAT_CONGRUENCE_LEARNED", false),
             armed_elim_last_search_ticks: 0,
             armed_elim_effort_pct: std::env::var("SAT_ELIM_ARMED_EFFORT_PCT")
@@ -9070,6 +9127,117 @@ impl Solver {
         ok
     }
 
+    /// Whether an unarmed flywheel eliminate round is due. Caller guarantees
+    /// decision level 0. See the `elim_unarmed_flywheel` field doc for the
+    /// mechanism evidence and scope rationale.
+    fn should_unarmed_elim_flywheel(&self) -> bool {
+        if !self.elim_unarmed_flywheel
+            || self.inprocess_aggressive
+            || self.unarmed_elim_stopped
+            || !self.inprocess
+            || !self.use_elim
+        {
+            return false;
+        }
+        // First round no earlier than the unarmed inprocess point (1M conflicts
+        // by default): every cell that finishes before it stays byte-identical.
+        let due = if self.unarmed_elim_next_conflicts == 0 {
+            self.inprocess_interval()
+        } else {
+            self.unarmed_elim_next_conflicts
+        };
+        if self.stats.conflicts < due {
+            return false;
+        }
+        // Density-class (refutation-churn) formulas keep their yield-armed path.
+        if self.stats.decisions
+            <= self
+                .stats
+                .conflicts
+                .saturating_mul(UNARMED_FLYWHEEL_MIN_DEC_PER_CONF)
+        {
+            return false;
+        }
+        // Near-complete phase prefixes signal a SAT trajectory close to a model;
+        // never rewrite the formula under it (shared guard with sweep/congruence).
+        if self.should_skip_sweep_for_deep_phase() {
+            return false;
+        }
+        true
+    }
+
+    /// One unarmed flywheel eliminate round: the armed-round bounded eliminate
+    /// (kissat-style proportional effort budget, shipped clslim) driven by the
+    /// SEPARATE `unarmed_bve_bound` with kissat COMPLETE-round escalation, plus
+    /// the dry-round stop that kills the occurrence-rebuild tax on formulas
+    /// with nothing left to eliminate. Returns `false` if the round proves the
+    /// formula UNSAT.
+    fn unarmed_elim_flywheel_round(&mut self, proof_log: &mut ProofLog) -> bool {
+        debug_assert_eq!(
+            self.current_level(),
+            0,
+            "unarmed flywheel eliminate must run at decision level 0"
+        );
+        const UNARMED_BVE_BOUND_MAX: isize = 16;
+        const UNARMED_BVE_MIN_EFFORT_TICKS: u64 = 50_000_000;
+        self.use_simplification = true;
+        let saved_grow = self.bve_grow;
+        let saved_ticks_budget = self.eliminate_ticks_budget;
+        self.bve_grow = self.unarmed_bve_bound;
+        let since = self
+            .stats
+            .search_ticks
+            .saturating_sub(self.unarmed_elim_last_search_ticks);
+        let allowance = (since.saturating_mul(self.armed_elim_effort_pct) / 100)
+            .max(UNARMED_BVE_MIN_EFFORT_TICKS);
+        let spent = self
+            .stats
+            .preprocess_eliminate_ticks
+            .max(self.stats.preprocess_bsr_ticks);
+        self.eliminate_ticks_budget = spent.saturating_add(allowance);
+        self.unarmed_elim_last_search_ticks = self.stats.search_ticks;
+        let eliminated_before = self.stats.preprocess_eliminated_vars;
+        self.unarmed_flywheel_round_active = true;
+        let ok = self.eliminate(true, proof_log);
+        self.unarmed_flywheel_round_active = false;
+        self.bve_grow = saved_grow;
+        self.eliminate_ticks_budget = saved_ticks_budget;
+        let yielded = self.stats.preprocess_eliminated_vars > eliminated_before;
+        // Kissat set_next_elimination_bound parity: a COMPLETE round (effort
+        // budget not exhausted) escalates regardless of yield.
+        if !self.preprocess_budget_exhausted {
+            self.unarmed_bve_bound = if self.unarmed_bve_bound == 0 {
+                1
+            } else {
+                (self.unarmed_bve_bound * 2).min(UNARMED_BVE_BOUND_MAX)
+            };
+        }
+        if !yielded && self.unarmed_bve_bound >= UNARMED_BVE_BOUND_MAX {
+            self.unarmed_elim_dry_rounds += 1;
+            if self.unarmed_elim_dry_rounds >= 2 {
+                self.unarmed_elim_stopped = true;
+            }
+        } else if yielded {
+            self.unarmed_elim_dry_rounds = 0;
+        }
+        self.unarmed_elim_next_conflicts = self
+            .stats
+            .conflicts
+            .saturating_add(UNARMED_FLYWHEEL_INTERVAL);
+        if self.trace_preprocess_details {
+            eprintln!(
+                "c unarmed_flywheel conflicts={} bound={} yielded={} complete={} dry={} stopped={}",
+                self.stats.conflicts,
+                self.unarmed_bve_bound,
+                yielded,
+                !self.preprocess_budget_exhausted,
+                self.unarmed_elim_dry_rounds,
+                self.unarmed_elim_stopped,
+            );
+        }
+        ok
+    }
+
     /// Grow every variable-indexed structure to `new_num_vars` (mid-search fresh
     /// variables, factor support). New variables start unassigned, decision-eligible,
     /// zero-activity, unfrozen, and outside the branch heap; the caller rebuilds the
@@ -13710,6 +13878,16 @@ impl Solver {
                             self.finish_search_timing(search_start);
                             return SolveOutcome::unsat();
                         }
+                        // Unarmed flywheel eliminate rounds (SAT_ELIM_UNARMED_FLYWHEEL):
+                        // fast-cadence bounded eliminate with complete-round bound
+                        // escalation for never-armed formulas past the 1M-conflict
+                        // point — the g2-class clause-database collapse.
+                        if self.should_unarmed_elim_flywheel()
+                            && !self.unarmed_elim_flywheel_round(proof_log)
+                        {
+                            self.finish_search_timing(search_start);
+                            return SolveOutcome::unsat();
+                        }
                     }
 
                     if self.reduce_db_enabled() && self.should_reduce_db() {
@@ -16335,6 +16513,52 @@ mod tests {
             s.chrono_max_delta, 50,
             "an explicitly lower delta is never raised by the gate"
         );
+    }
+
+    #[test]
+    fn unarmed_flywheel_gating_and_escalation() {
+        let cfg = SolverConfig {
+            inprocess: true,
+            vivify: false,
+            els: false,
+            ..Default::default()
+        };
+        let mut s = make_solver_with_config(4, vec![vec![1, 2], vec![-1, 3], vec![2, 3, 4]], &cfg);
+        s.inprocess_interval_conflicts = 100;
+        s.use_elim = true;
+        // Default off: never fires regardless of conflicts.
+        s.stats.conflicts = 1_000;
+        s.stats.decisions = 100_000;
+        assert!(!s.should_unarmed_elim_flywheel());
+        s.elim_unarmed_flywheel = true;
+        assert!(s.should_unarmed_elim_flywheel());
+        // Below the first unarmed inprocess point: inert.
+        s.stats.conflicts = 10;
+        assert!(!s.should_unarmed_elim_flywheel());
+        s.stats.conflicts = 1_000;
+        // Density class (decisions/conflict <= 3) keeps its shipped path.
+        s.stats.decisions = 3_000;
+        assert!(!s.should_unarmed_elim_flywheel());
+        s.stats.decisions = 100_000;
+        // Armed formulas keep the armed schedule.
+        s.inprocess_aggressive = true;
+        assert!(!s.should_unarmed_elim_flywheel());
+        s.inprocess_aggressive = false;
+        // A COMPLETE round escalates the bound and reschedules on the fast cadence.
+        let mut proof = ProofLog::disabled();
+        assert!(s.unarmed_elim_flywheel_round(&mut proof));
+        assert_eq!(s.unarmed_bve_bound, 1, "complete round escalates 0 -> 1");
+        assert_eq!(
+            s.unarmed_elim_next_conflicts,
+            s.stats.conflicts + UNARMED_FLYWHEEL_INTERVAL,
+            "flywheel reschedules on the follow-up cadence"
+        );
+        // Permanent stop after two dry rounds at the max bound.
+        s.unarmed_bve_bound = 16;
+        s.unarmed_elim_dry_rounds = 1;
+        assert!(s.unarmed_elim_flywheel_round(&mut proof));
+        assert!(s.unarmed_elim_stopped, "second dry round at max bound stops the schedule");
+        assert!(!s.should_unarmed_elim_flywheel());
     }
 
     #[test]
