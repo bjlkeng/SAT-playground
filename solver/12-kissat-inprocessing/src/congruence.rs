@@ -31,7 +31,8 @@
 //! RUP from the gates' defining clauses (directly for AND, via a short resolution chain
 //! for ITE — emitted by the driver). If instead `q == ¬p` the formula is UNSAT.
 
-use std::collections::{HashMap, VecDeque};
+use crate::fxhash::FxHashMap as HashMap;
+use std::collections::VecDeque;
 
 /// The shape of a detected gate. Determines the DRAT proof chain the driver emits when
 /// two such gates are merged.
@@ -117,7 +118,7 @@ pub(crate) fn normalize_ite(rhs: &mut [i32; 3]) -> bool {
 /// dropped: their proof chain would not be expressible as plain binaries. Skipping a
 /// merge is always sound (it only forgoes an optimization).
 pub(crate) fn find_merges(gates: &[Gate]) -> Plan {
-    let mut table: HashMap<(u8, Vec<i32>), i32> = HashMap::new();
+    let mut table: HashMap<(u8, Vec<i32>), i32> = HashMap::default();
     let mut merges: Vec<Merge> = Vec::new();
     for g in gates {
         let tag = match g.kind {
@@ -392,7 +393,10 @@ pub(crate) fn find_merges_closure(num_vars: usize, gates_in: Vec<Gate>) -> Plan 
     // var -> indices of live gates with that variable among their (current) inputs.
     let mut occ: Vec<Vec<u32>> = vec![Vec::new(); num_vars + 1];
     // key -> (representative output, rep gate's accumulated cancelled vars at insert).
-    let mut table: HashMap<(u8, Vec<i32>), (i32, Vec<i32>)> = HashMap::new();
+    // Reserved to the gate count: the table takes ~1 entry per gate (1.3M on ibm)
+    // and is never iterated, so pre-sizing only removes growth rehashes.
+    let mut table: HashMap<(u8, Vec<i32>), (i32, Vec<i32>)> = HashMap::default();
+    table.reserve(gates_in.len());
     let mut gates: Vec<Option<Gate>> = gates_in.into_iter().map(Some).collect();
     // Per-gate XOR-cancelled vars accumulated across renormalization passes: the stored
     // canonical `g.inputs` forgets cancelled vars, but the gate's ORIGINAL clauses (the
