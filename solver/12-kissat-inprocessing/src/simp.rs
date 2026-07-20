@@ -3438,6 +3438,7 @@ impl Solver {
                 self.els_active_scratch = Vec::new();
                 self.els_binaries_scratch = Vec::new();
                 self.els_csr_ws.release();
+                self.extract_cache.release();
             } else {
                 self.occurs.clear();
                 self.occurs_dirty.clear();

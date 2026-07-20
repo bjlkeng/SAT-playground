@@ -608,7 +608,7 @@ pub(crate) struct FlatGates {
 }
 
 /// Header of one gate in a [`FlatGates`] arena.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct FlatGate {
     /// Output literal (polarity-adjusted for the canonical form).
     pub(crate) out: i32,
@@ -639,6 +639,147 @@ impl FlatGates {
 #[inline]
 fn arena_slice<'a>(lits: &'a [i32], g: &FlatGate) -> &'a [i32] {
     &lits[g.start as usize..(g.start + g.len) as usize]
+}
+
+/// Cached AND/ITE gate ranges of one clause (SAT_EXTRACT_CACHE): windows into
+/// the [`ExtractCache`] gate pool holding exactly the gates the extraction
+/// AND-pass / ITE-pass emitted for that clause the last time it was computed.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ExtractEntry {
+    pub(crate) and_start: u32,
+    pub(crate) and_len: u32,
+    pub(crate) ite_start: u32,
+    pub(crate) ite_len: u32,
+}
+
+/// Per-clause gate-extraction cache + persistent extraction workspace
+/// (SAT_EXTRACT_CACHE).
+///
+/// Scope: ONE `try_congruence` invocation. The armed congruence loop
+/// re-extracts gates from the full formula every round (measured ibm
+/// 2026-07-20: 2.1-2.5s x 8 extractions of a 131s solve), yet after round 1
+/// the per-round formula delta is tiny (<= 8 installed binaries, <= 200
+/// merges). The cache reuses the previous round's per-clause AND/ITE gate
+/// lists for every clause whose var neighborhood is untouched, and recomputes
+/// only touched clauses against the freshly rebuilt index.
+///
+/// Soundness of the invalidation rule (why splice == recompute): the cached
+/// passes are AND and ITE only, and every OTHER clause a cached gate of
+/// clause `C` depends on is a binary (AND companions) or a ternary (ITE
+/// companions and else-candidates), each sharing at least one variable with
+/// `C`. The `touched` set accumulates the full var set of every len<=3
+/// clause installed (`els_install_original_clause` hook), deleted
+/// (`delete_clause_for_simplify` hook), or newly extraction-dead (a var
+/// assigned/eliminated since the last extraction — detected in the scan via
+/// `nonlive_delta`). len>=4 clauses carry no cross-clause gate dependency:
+/// their only cached contribution is their own AND gates, keyed by their own
+/// cid (a rewrite installs a new cid; a death drops them from the large
+/// pool), and the sole len-4 consumer — XOR families — is recomputed fresh
+/// every extraction. Hence any change that could alter `C`'s cached gates
+/// marks a var of `C`, and `vars(C) ∩ touched = ∅` implies `C`'s
+/// recomputation would reproduce its cached gates verbatim (same content,
+/// same order — the scan rebuilds the index fresh each round, and clause
+/// order for untouched clauses is stable: ELS replaces rewritten clauses
+/// positionally and appends new clauses at the end).
+///
+/// In-place literal reorders (root-propagation watch swaps) only happen in
+/// clauses containing a newly assigned var; such clauses are extraction-dead
+/// afterwards and their vars enter `touched` through the newly-dead scan
+/// path, so no live cached clause can have had its literal order changed.
+///
+/// The cache is invalidated wholesale at every `try_congruence` entry
+/// (`begin`) and disabled at every exit (`end`): edits outside the invocation
+/// window (search, vivify, eliminate, GC relocation) are not hooked. Arena
+/// cids are stable within the window (append-only arena, no GC inside
+/// `try_congruence`), so entries keyed by cid cannot alias.
+///
+/// `SAT_EXTRACT_CACHE_VERIFY=1` re-runs the shipped full extraction after
+/// every cached extraction and asserts the two gate streams are identical.
+#[derive(Debug, Default)]
+pub(crate) struct ExtractCache {
+    /// Hooks record clause installs/deletes/eliminations only while true
+    /// (i.e. inside a `try_congruence` invocation with the cache enabled).
+    pub(crate) recording: bool,
+    /// A prior extraction this invocation populated `entries`/pools.
+    pub(crate) valid: bool,
+    /// SAT_EXTRACT_CACHE_VERIFY: re-extract fresh and assert identity.
+    pub(crate) verify: bool,
+    /// Trail length at the last extraction (assigned-var delta baseline).
+    pub(crate) trail_len: usize,
+    /// Vars dirtied since the last extraction (see soundness note above).
+    pub(crate) touched: Vec<bool>,
+    /// Vars whose liveness changed since the last extraction (assigned via
+    /// the trail delta, eliminated via the ELS hook). Kept precise — it is
+    /// the "was this clause already dead before?" test.
+    pub(crate) nonlive_delta: Vec<bool>,
+    /// cid -> cached gate ranges. cids are stable within the invocation.
+    pub(crate) entries: HashMap<u32, ExtractEntry>,
+    /// Append-only gate pool (headers + literal arena) for cached ranges.
+    /// Superseded ranges are abandoned in place; the pool is cleared at
+    /// `begin` and its garbage is bounded by the per-round touched volume.
+    pub(crate) pool_gates: Vec<FlatGate>,
+    pub(crate) pool_lits: Vec<i32>,
+    // ---- persistent per-extraction scan workspaces (cleared each call) ----
+    pub(crate) ws_binaries: crate::fxhash::FxHashSet<(i32, i32)>,
+    pub(crate) ws_ternary: crate::fxhash::FxHashSet<(i32, i32, i32)>,
+    /// pair -> (head, tail) chain indices into `ws_pair_entries`; the chain
+    /// is appended at the tail so iteration order equals insertion order
+    /// (identical to the shipped per-pair `Vec` push order).
+    pub(crate) ws_pair_heads: HashMap<(i32, i32), (u32, u32)>,
+    /// (third literal, next index) — `u32::MAX` terminates a chain.
+    pub(crate) ws_pair_entries: Vec<(i32, u32)>,
+    pub(crate) ws_large_lits: Vec<i32>,
+    pub(crate) ws_large_ends: Vec<u32>,
+    pub(crate) ws_large_cids: Vec<u32>,
+    pub(crate) ws_large_reuse: Vec<bool>,
+    pub(crate) ws_learned_short: Vec<u32>,
+}
+
+impl ExtractCache {
+    /// Invocation entry: arm the hooks, drop any stale cached state, size the
+    /// var bitmaps. Buffer capacities persist across invocations.
+    pub(crate) fn begin(&mut self, num_vars: usize, trail_len: usize, verify: bool) {
+        self.recording = true;
+        self.valid = false;
+        self.verify = verify;
+        self.trail_len = trail_len;
+        self.entries.clear();
+        self.pool_gates.clear();
+        self.pool_lits.clear();
+        self.touched.clear();
+        self.touched.resize(num_vars + 1, false);
+        self.nonlive_delta.clear();
+        self.nonlive_delta.resize(num_vars + 1, false);
+    }
+
+    /// Invocation exit: disarm the hooks and invalidate (edits outside the
+    /// window are not tracked). Idempotent.
+    pub(crate) fn end(&mut self) {
+        self.recording = false;
+        self.valid = false;
+    }
+
+    /// Free all buffers (giant-formula simplification turn-off path).
+    pub(crate) fn release(&mut self) {
+        *self = ExtractCache::default();
+    }
+
+    /// Hook: a clause containing var `v` was installed or deleted.
+    #[inline]
+    pub(crate) fn mark_touched(&mut self, v: usize) {
+        if v < self.touched.len() {
+            self.touched[v] = true;
+        }
+    }
+
+    /// Hook: var `v` was eliminated (ELS substitution) — liveness changed.
+    #[inline]
+    pub(crate) fn mark_eliminated(&mut self, v: usize) {
+        if v < self.touched.len() {
+            self.touched[v] = true;
+            self.nonlive_delta[v] = true;
+        }
+    }
 }
 
 /// Content hash of a gate key `(tag, inputs)` for the flat closure table.

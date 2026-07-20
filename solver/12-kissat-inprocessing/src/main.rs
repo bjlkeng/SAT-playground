@@ -2582,6 +2582,16 @@ struct Solver {
     /// shipped per-call allocating implementations verbatim (the fair
     /// simultaneous A/B baseline arm).
     closure_diet: bool,
+    /// SAT_EXTRACT_CACHE: reuse per-clause AND/ITE gate-extraction results
+    /// across congruence rounds within one `try_congruence` invocation
+    /// (see [`congruence::ExtractCache`]). Behavior-identical (same gates in
+    /// the same order every round); `off` runs the shipped full re-extraction
+    /// verbatim as the fair simultaneous A/B baseline arm.
+    extract_cache_enabled: bool,
+    /// SAT_EXTRACT_CACHE_VERIFY: assert cached == fresh extraction per round.
+    extract_cache_verify: bool,
+    /// Per-invocation gate-extraction cache + persistent workspace.
+    extract_cache: congruence::ExtractCache,
     /// Persistent ELS CSR SCC workspace (SAT_CLOSURE_DIET).
     els_csr_ws: els::ElsCsrWs,
     /// Persistent `eliminate()` round workspaces (SAT_ROUND_DIET).
@@ -3744,6 +3754,9 @@ impl Solver {
             elim_scratch: env_bool_or_default("SAT_ELIM_SCRATCH", true),
             round_diet: env_bool_or_default("SAT_ROUND_DIET", true),
             closure_diet: env_bool_or_default("SAT_CLOSURE_DIET", true),
+            extract_cache_enabled: env_bool_or_default("SAT_EXTRACT_CACHE", true),
+            extract_cache_verify: env_bool_or_default("SAT_EXTRACT_CACHE_VERIFY", false),
+            extract_cache: congruence::ExtractCache::default(),
             els_csr_ws: els::ElsCsrWs::default(),
             elim_round_ws: simp::ElimRoundWs::default(),
             els_active_scratch: Vec::new(),
@@ -5003,6 +5016,19 @@ impl Solver {
         }
 
         let clause_len = self.clause_len(clause_idx);
+        // SAT_EXTRACT_CACHE hook: a deleted clause changes the gate
+        // neighborhood of every var it mentions (recording only inside a
+        // try_congruence invocation). Only len<=3 clauses matter: AND gates
+        // depend on neighbor binaries, ITE gates on neighbor ternaries, and
+        // the sole len-4 consumer (XOR families) is recomputed fresh every
+        // extraction. A len>=4 clause only carries its own gates, which are
+        // keyed by its cid and die with it.
+        if self.extract_cache.recording && clause_len <= 3 {
+            for pos in 0..clause_len {
+                let v = self.clause_lit(clause_idx, pos).unsigned_abs() as usize;
+                self.extract_cache.mark_touched(v);
+            }
+        }
         proof_log.record_deletion(self.clause_slice(clause_idx));
         self.detach_clause(clause_idx);
         if self.clause_is_learnt(clause_idx) {
@@ -12493,6 +12519,15 @@ impl Solver {
         }
         self.original_literals += lits.len();
         self.attach_clause(clause_idx, false);
+        // SAT_EXTRACT_CACHE hook: an installed clause changes the gate
+        // neighborhood of every var it mentions. len<=3 only — see the
+        // matching delete_clause_for_simplify hook for the dependency
+        // argument (binaries/ternaries are the only cross-clause gate deps).
+        if self.extract_cache.recording && lits.len() <= 3 {
+            for &l in lits {
+                self.extract_cache.mark_touched(l.unsigned_abs() as usize);
+            }
+        }
         clause_idx
     }
 
@@ -12642,6 +12677,10 @@ impl Solver {
             self.eliminated[var] = true;
             self.decision_var[var] = false;
             self.branch_heap_remove(var);
+            // SAT_EXTRACT_CACHE hook: liveness of `var` changed (eliminated).
+            if self.extract_cache.recording {
+                self.extract_cache.mark_eliminated(var);
+            }
         }
         self.stats.els_substituted_vars += equivalences.len() as u64;
 
@@ -12873,6 +12912,10 @@ impl Solver {
             self.eliminated[var] = true;
             self.decision_var[var] = false;
             self.branch_heap_remove(var);
+            // SAT_EXTRACT_CACHE hook: liveness of `var` changed (eliminated).
+            if self.extract_cache.recording {
+                self.extract_cache.mark_eliminated(var);
+            }
         }
         self.stats.els_substituted_vars += equivalences.len() as u64;
 
@@ -13354,6 +13397,9 @@ impl Solver {
         // order (byte-reproducible outcomes across randomly-seeded SipHash runs).
         use crate::fxhash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
+        let trace_extract = std::env::var("SAT_TRACE_EXTRACT").is_ok();
+        let trace_t0 = Instant::now();
+
         let num_vars = self.assignment.len().saturating_sub(1);
         let live_lit = |lit: i32| -> bool {
             let v = lit.unsigned_abs() as usize;
@@ -13451,6 +13497,9 @@ impl Solver {
             }
         }
 
+        let trace_scan_sec = trace_t0.elapsed().as_secs_f64();
+        let trace_t1 = Instant::now();
+
         let has_binary = |a: i32, b: i32| binaries.contains(&sorted_pair(a, b));
         let has_ternary = |a: i32, b: i32, c: i32| {
             let mut t = [a, b, c];
@@ -13522,6 +13571,9 @@ impl Solver {
             }
         }
 
+        let trace_and_sec = trace_t1.elapsed().as_secs_f64();
+        let trace_t2 = Instant::now();
+
         // ITE gates. Base clause C2 = (lhs ∨ ¬cond ∨ ¬then). For each ternary clause, each
         // output literal, and each choice of which remaining literal is ¬cond, require the
         // companions C1 = (¬lhs ∨ ¬cond ∨ then), C3 = (¬lhs ∨ cond ∨ else),
@@ -13577,6 +13629,9 @@ impl Solver {
                 }
             }
         }
+
+        let trace_ite_sec = trace_t2.elapsed().as_secs_f64();
+        let trace_t3 = Instant::now();
 
         // XOR gates (SAT_CONGRUENCE_XOR). A parity relation `v1 ⊕ … ⊕ vk = t` over `k`
         // distinct variables is encoded by exactly the `2^(k-1)` clauses of length `k` whose
@@ -13669,6 +13724,557 @@ impl Solver {
                     flat.push(out, congruence::GateKind::Xor, &scratch_gate);
                 }
             }
+        }
+
+        if trace_extract {
+            eprintln!(
+                "c extract_trace scan={trace_scan_sec:.4} and={trace_and_sec:.4} ite={trace_ite_sec:.4} xor={:.4} large={} gates={}",
+                trace_t3.elapsed().as_secs_f64(),
+                large_ends.len(),
+                flat.len()
+            );
+        }
+
+        flat
+    }
+
+    /// SAT_EXTRACT_CACHE variant of [`Self::extract_gates_for_congruence_flat`]:
+    /// identical gates in identical order every round, but per-clause AND/ITE
+    /// gate lists are spliced from the previous extraction of this
+    /// `try_congruence` invocation for every clause whose var neighborhood is
+    /// untouched, and recomputed only for touched clauses (see
+    /// [`congruence::ExtractCache`] for the invalidation-soundness argument).
+    /// The scan/index pass still runs in full every call — gate probes of
+    /// recomputed clauses read index entries contributed by untouched clauses —
+    /// but the index workspaces are persistent (cleared, not reallocated) and
+    /// the per-pair third-literal lists are tail-appended chains through one
+    /// flat vector (iteration order == the shipped per-pair Vec push order;
+    /// per-key bucket Vecs measurably undo arena diets). XOR extraction is
+    /// uncached (families span clauses; measured 0.09s/round on ibm).
+    fn extract_gates_for_congruence_cached(&mut self, xor: bool) -> congruence::FlatGates {
+        use crate::fxhash::FxHashMap as HashMap;
+
+        /// Append `third` to the pair's chain tail (iteration order stays
+        /// insertion order, matching the shipped per-pair Vec push order).
+        fn pair_push(
+            heads: &mut HashMap<(i32, i32), (u32, u32)>,
+            entries: &mut Vec<(i32, u32)>,
+            key: (i32, i32),
+            third: i32,
+        ) {
+            let idx = entries.len() as u32;
+            entries.push((third, u32::MAX));
+            match heads.entry(key) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    let (head, tail) = *e.get();
+                    entries[tail as usize].1 = idx;
+                    e.insert((head, idx));
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert((idx, idx));
+                }
+            }
+        }
+
+        fn pool_push(
+            pool_gates: &mut Vec<congruence::FlatGate>,
+            pool_lits: &mut Vec<i32>,
+            out: i32,
+            kind: congruence::GateKind,
+            inputs: &[i32],
+        ) {
+            let start = pool_lits.len() as u32;
+            pool_lits.extend_from_slice(inputs);
+            pool_gates.push(congruence::FlatGate {
+                out,
+                kind,
+                start,
+                len: inputs.len() as u32,
+            });
+        }
+
+        let trace_extract = std::env::var("SAT_TRACE_EXTRACT").is_ok();
+        let trace_t0 = Instant::now();
+
+        let mut cache = std::mem::take(&mut self.extract_cache);
+        let num_vars = self.assignment.len().saturating_sub(1);
+        debug_assert!(cache.recording && cache.touched.len() == num_vars + 1);
+
+        // Vars assigned since the last extraction: liveness changed, so their
+        // clauses became extraction-dead and neighborhoods shifted.
+        if cache.valid {
+            for i in cache.trail_len..self.trail.len() {
+                let v = self.trail[i].unsigned_abs() as usize;
+                if v < cache.touched.len() {
+                    cache.touched[v] = true;
+                    cache.nonlive_delta[v] = true;
+                }
+            }
+        }
+        let use_cache = cache.valid;
+
+        let live_lit = |lit: i32| -> bool {
+            let v = lit.unsigned_abs() as usize;
+            v >= 1 && v <= num_vars && self.assignment[v] == UNASSIGNED && !self.eliminated[v]
+        };
+        let sorted_pair = |a: i32, b: i32| -> (i32, i32) {
+            if a <= b {
+                (a, b)
+            } else {
+                (b, a)
+            }
+        };
+
+        // Persistent index workspaces (identical content/order to the shipped
+        // per-call structures; only the allocations are reused).
+        let mut binaries = std::mem::take(&mut cache.ws_binaries);
+        let mut ternary_set = std::mem::take(&mut cache.ws_ternary);
+        let mut pair_heads = std::mem::take(&mut cache.ws_pair_heads);
+        let mut pair_entries = std::mem::take(&mut cache.ws_pair_entries);
+        let mut large_lits = std::mem::take(&mut cache.ws_large_lits);
+        let mut large_ends = std::mem::take(&mut cache.ws_large_ends);
+        let mut large_cids = std::mem::take(&mut cache.ws_large_cids);
+        let mut large_reuse = std::mem::take(&mut cache.ws_large_reuse);
+        let mut learned_short = std::mem::take(&mut cache.ws_learned_short);
+        binaries.clear();
+        ternary_set.clear();
+        pair_heads.clear();
+        pair_entries.clear();
+        large_lits.clear();
+        large_ends.clear();
+        large_cids.clear();
+        learned_short.clear();
+        binaries.reserve(self.original_clause_ids.len() / 2);
+
+        if self.congruence_learned {
+            learned_short.extend(self.learned_clause_ids.iter().filter_map(|&cid| {
+                (cid < self.arena.len()
+                    && !self.clause_is_deleted(cid)
+                    && self.clause_len(cid) <= 3)
+                    .then_some(cid as u32)
+            }));
+        }
+        let mut scratch_lits: Vec<i32> = Vec::with_capacity(CONGRUENCE_MAX_CLAUSE_LEN);
+        for &cid_word in self.original_clause_ids.iter().chain(learned_short.iter()) {
+            let cid = cid_word as usize;
+            if cid >= self.arena.len() || self.clause_is_deleted(cid) {
+                continue;
+            }
+            let len = self.clause_len(cid);
+            if len < 2 || len > CONGRUENCE_MAX_CLAUSE_LEN {
+                continue;
+            }
+            scratch_lits.clear();
+            let mut ok = true;
+            for pos in 0..len {
+                let lit = self.clause_lit(cid, pos);
+                if !live_lit(lit) {
+                    ok = false;
+                    break;
+                }
+                scratch_lits.push(lit);
+            }
+            if !ok {
+                // Newly-dead classification: a clause that just became
+                // extraction-dead (some var assigned/eliminated since the last
+                // extraction) leaves the index, changing its neighbors' gates.
+                // A clause already dead at the last extraction contributes no
+                // change. Non-liveness only grows within the invocation, so
+                // "was dead before" == "contains a non-live var outside
+                // `nonlive_delta`". len<=3 only: binaries/ternaries are the
+                // only cross-clause gate dependencies (see the
+                // delete_clause_for_simplify hook).
+                if use_cache && len <= 3 {
+                    let mut was_dead = false;
+                    for pos in 0..len {
+                        let v = self.clause_lit(cid, pos).unsigned_abs() as usize;
+                        let live = v >= 1
+                            && v <= num_vars
+                            && self.assignment[v] == UNASSIGNED
+                            && !self.eliminated[v];
+                        if !live && !(v < cache.nonlive_delta.len() && cache.nonlive_delta[v]) {
+                            was_dead = true;
+                            break;
+                        }
+                    }
+                    if !was_dead {
+                        for pos in 0..len {
+                            let v = self.clause_lit(cid, pos).unsigned_abs() as usize;
+                            if v < cache.touched.len() {
+                                cache.touched[v] = true;
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+            let lits = &scratch_lits[..];
+            if len == 2 {
+                binaries.insert(sorted_pair(lits[0], lits[1]));
+            } else {
+                if len == 3 {
+                    let mut t = [lits[0], lits[1], lits[2]];
+                    t.sort_unstable();
+                    ternary_set.insert((t[0], t[1], t[2]));
+                    pair_push(
+                        &mut pair_heads,
+                        &mut pair_entries,
+                        sorted_pair(lits[0], lits[1]),
+                        lits[2],
+                    );
+                    pair_push(
+                        &mut pair_heads,
+                        &mut pair_entries,
+                        sorted_pair(lits[0], lits[2]),
+                        lits[1],
+                    );
+                    pair_push(
+                        &mut pair_heads,
+                        &mut pair_entries,
+                        sorted_pair(lits[1], lits[2]),
+                        lits[0],
+                    );
+                }
+                large_lits.extend_from_slice(lits);
+                large_ends.push(large_lits.len() as u32);
+                large_cids.push(cid_word);
+            }
+        }
+
+        let trace_scan_sec = trace_t0.elapsed().as_secs_f64();
+        let trace_t1 = Instant::now();
+
+        // Reuse decision per large clause: cached entry exists and no var of
+        // the clause was touched since that entry was computed. Decided only
+        // after the scan completes (the scan itself adds newly-dead marks).
+        let n_large = large_ends.len();
+        large_reuse.clear();
+        large_reuse.resize(n_large, false);
+        let mut reused: usize = 0;
+        if use_cache {
+            for ci in 0..n_large {
+                if !cache.entries.contains_key(&large_cids[ci]) {
+                    continue;
+                }
+                let start = if ci == 0 {
+                    0
+                } else {
+                    large_ends[ci - 1] as usize
+                };
+                let clause = &large_lits[start..large_ends[ci] as usize];
+                if clause
+                    .iter()
+                    .all(|&l| !cache.touched[l.unsigned_abs() as usize])
+                {
+                    large_reuse[ci] = true;
+                    reused += 1;
+                }
+            }
+        }
+
+        let has_binary = |a: i32, b: i32| binaries.contains(&sorted_pair(a, b));
+        let has_ternary = |a: i32, b: i32, c: i32| {
+            let mut t = [a, b, c];
+            t.sort_unstable();
+            ternary_set.contains(&(t[0], t[1], t[2]))
+        };
+
+        let mut flat = congruence::FlatGates::default();
+        flat.gates.reserve(n_large);
+        let mut scratch_gate: Vec<i32> = Vec::with_capacity(CONGRUENCE_MAX_CLAUSE_LEN);
+
+        let large_clause = |i: usize| -> &[i32] {
+            let start = if i == 0 { 0 } else { large_ends[i - 1] as usize };
+            &large_lits[start..large_ends[i] as usize]
+        };
+
+        // AND/OR gates (see extract_gates_for_congruence_flat for the pattern
+        // semantics; this loop is that code with a per-clause splice fast path
+        // and a pool record on the recompute path).
+        for ci in 0..n_large {
+            if large_reuse[ci] {
+                let e = cache.entries[&large_cids[ci]];
+                for gi in e.and_start..(e.and_start + e.and_len) {
+                    let g = cache.pool_gates[gi as usize];
+                    let inputs =
+                        &cache.pool_lits[g.start as usize..(g.start + g.len) as usize];
+                    flat.push(g.out, g.kind, inputs);
+                }
+                continue;
+            }
+            let pool_and_start = cache.pool_gates.len() as u32;
+            let clause = large_clause(ci);
+            let k = clause.len();
+            for i in 0..k {
+                let nl = clause[i]; // ¬L
+                let l = -nl; // L
+                let mut all = true;
+                for (j, &o) in clause.iter().enumerate() {
+                    if j == i {
+                        continue;
+                    }
+                    if !has_binary(l, -o) {
+                        all = false;
+                        break;
+                    }
+                }
+                if !all {
+                    continue;
+                }
+                let out = nl; // ¬L
+                scratch_gate.clear();
+                let mut degenerate = false;
+                for (j, &o) in clause.iter().enumerate() {
+                    if j == i {
+                        continue;
+                    }
+                    let inp = -o;
+                    if inp.unsigned_abs() == out.unsigned_abs() {
+                        degenerate = true;
+                        break;
+                    }
+                    scratch_gate.push(inp);
+                }
+                if degenerate {
+                    continue;
+                }
+                scratch_gate.sort_unstable();
+                scratch_gate.dedup();
+                let mut trivial = scratch_gate.len() < 2;
+                for w in scratch_gate.windows(2) {
+                    if w[0] == -w[1] {
+                        trivial = true;
+                        break;
+                    }
+                }
+                if trivial {
+                    continue;
+                }
+                flat.push(out, congruence::GateKind::And, &scratch_gate);
+                pool_push(
+                    &mut cache.pool_gates,
+                    &mut cache.pool_lits,
+                    out,
+                    congruence::GateKind::And,
+                    &scratch_gate,
+                );
+            }
+            let e = cache.entries.entry(large_cids[ci]).or_default();
+            e.and_start = pool_and_start;
+            e.and_len = cache.pool_gates.len() as u32 - pool_and_start;
+        }
+
+        let trace_and_sec = trace_t1.elapsed().as_secs_f64();
+        let trace_t2 = Instant::now();
+
+        // ITE gates (same clause pattern as extract_gates_for_congruence_flat;
+        // per-pair candidate chains replace the per-pair Vecs, same order).
+        for ci in 0..n_large {
+            let clause = large_clause(ci);
+            if clause.len() != 3 {
+                continue;
+            }
+            if large_reuse[ci] {
+                let e = cache.entries[&large_cids[ci]];
+                for gi in e.ite_start..(e.ite_start + e.ite_len) {
+                    let g = cache.pool_gates[gi as usize];
+                    let inputs =
+                        &cache.pool_lits[g.start as usize..(g.start + g.len) as usize];
+                    flat.push(g.out, g.kind, inputs);
+                }
+                continue;
+            }
+            let pool_ite_start = cache.pool_gates.len() as u32;
+            for lhs_i in 0..3 {
+                let lhs = clause[lhs_i];
+                let others: [i32; 2] = {
+                    let mut it = (0..3).filter(|&j| j != lhs_i).map(|j| clause[j]);
+                    [it.next().unwrap(), it.next().unwrap()]
+                };
+                for order in 0..2 {
+                    let not_cond = others[order];
+                    let not_then = others[1 - order];
+                    let cond = -not_cond;
+                    let then_lit = -not_then;
+                    if !has_ternary(-lhs, not_cond, then_lit) {
+                        continue;
+                    }
+                    let Some(&(head, _tail)) = pair_heads.get(&sorted_pair(-lhs, cond))
+                    else {
+                        continue;
+                    };
+                    let mut cursor = head;
+                    while cursor != u32::MAX {
+                        let (else_lit, next) = pair_entries[cursor as usize];
+                        cursor = next;
+                        if !has_ternary(lhs, cond, -else_lit) {
+                            continue;
+                        }
+                        let vars = [
+                            lhs.unsigned_abs(),
+                            cond.unsigned_abs(),
+                            then_lit.unsigned_abs(),
+                            else_lit.unsigned_abs(),
+                        ];
+                        let mut distinct = true;
+                        for a in 0..4 {
+                            for b in (a + 1)..4 {
+                                if vars[a] == vars[b] {
+                                    distinct = false;
+                                }
+                            }
+                        }
+                        if !distinct {
+                            continue;
+                        }
+                        let mut rhs = [cond, then_lit, else_lit];
+                        let negate = congruence::normalize_ite(&mut rhs);
+                        let out = if negate { -lhs } else { lhs };
+                        flat.push(out, congruence::GateKind::Ite, &rhs);
+                        pool_push(
+                            &mut cache.pool_gates,
+                            &mut cache.pool_lits,
+                            out,
+                            congruence::GateKind::Ite,
+                            &rhs,
+                        );
+                    }
+                }
+            }
+            let e = cache.entries.entry(large_cids[ci]).or_default();
+            e.ite_start = pool_ite_start;
+            e.ite_len = cache.pool_gates.len() as u32 - pool_ite_start;
+        }
+
+        let trace_ite_sec = trace_t2.elapsed().as_secs_f64();
+        let trace_t3 = Instant::now();
+
+        // XOR gates: verbatim extract_gates_for_congruence_flat (uncached).
+        if xor {
+            let mut families: HashMap<[i32; 5], u32> = HashMap::default();
+            for &cid in &self.original_clause_ids {
+                let cid = cid as usize;
+                if cid >= self.arena.len() || self.clause_is_deleted(cid) {
+                    continue;
+                }
+                let len = self.clause_len(cid);
+                if len < 3 || len > CONGRUENCE_MAX_XOR_ARITY {
+                    continue;
+                }
+                scratch_lits.clear();
+                let mut ok = true;
+                for pos in 0..len {
+                    let lit = self.clause_lit(cid, pos);
+                    if !live_lit(lit) {
+                        ok = false;
+                        break;
+                    }
+                    scratch_lits.push(lit);
+                }
+                if !ok {
+                    continue;
+                }
+                let lits = &mut scratch_lits;
+                lits.sort_unstable_by_key(|&l| l.unsigned_abs());
+                let mut key = [0i32; 5];
+                key[0] = len as i32;
+                let mut mask: u32 = 0;
+                let mut distinct = true;
+                for (i, &l) in lits.iter().enumerate() {
+                    let v = l.unsigned_abs() as i32;
+                    if i > 0 && key[i] == v {
+                        distinct = false;
+                        break;
+                    }
+                    key[i + 1] = v;
+                    if l < 0 {
+                        mask |= 1u32 << i;
+                    }
+                }
+                if !distinct {
+                    continue;
+                }
+                *families.entry(key).or_insert(0) |= 1u32 << mask;
+            }
+
+            for (key, &present) in &families {
+                let k = key[0] as usize;
+                let vars = &key[1..=k];
+                let mut odd_req: u32 = 0;
+                let mut even_req: u32 = 0;
+                for s in 0u32..(1u32 << k) {
+                    if s.count_ones() & 1 == 1 {
+                        odd_req |= 1u32 << s;
+                    } else {
+                        even_req |= 1u32 << s;
+                    }
+                }
+                let t = if present & odd_req == odd_req {
+                    0
+                } else if present & even_req == even_req {
+                    1
+                } else {
+                    continue;
+                };
+                for j in 0..k {
+                    let out_var = vars[j];
+                    let out = if t == 0 { out_var } else { -out_var };
+                    scratch_gate.clear();
+                    for (i, &v) in vars.iter().enumerate() {
+                        if i != j {
+                            scratch_gate.push(v);
+                        }
+                    }
+                    flat.push(out, congruence::GateKind::Xor, &scratch_gate);
+                }
+            }
+        }
+
+        if trace_extract {
+            eprintln!(
+                "c extract_trace_cached scan={trace_scan_sec:.4} and={trace_and_sec:.4} ite={trace_ite_sec:.4} xor={:.4} large={} reused={} gates={}",
+                trace_t3.elapsed().as_secs_f64(),
+                n_large,
+                reused,
+                flat.len()
+            );
+        }
+
+        // Snapshot for the next round: deltas accumulate from here.
+        cache.trail_len = self.trail.len();
+        for b in cache.touched.iter_mut() {
+            *b = false;
+        }
+        for b in cache.nonlive_delta.iter_mut() {
+            *b = false;
+        }
+        cache.valid = true;
+
+        // Return the workspaces (capacity reuse next call).
+        cache.ws_binaries = binaries;
+        cache.ws_ternary = ternary_set;
+        cache.ws_pair_heads = pair_heads;
+        cache.ws_pair_entries = pair_entries;
+        cache.ws_large_lits = large_lits;
+        cache.ws_large_ends = large_ends;
+        cache.ws_large_cids = large_cids;
+        cache.ws_large_reuse = large_reuse;
+        cache.ws_learned_short = learned_short;
+
+        let verify = cache.verify;
+        self.extract_cache = cache;
+
+        if verify {
+            let fresh = self.extract_gates_for_congruence_flat(xor);
+            assert_eq!(
+                fresh.gates.len(),
+                flat.gates.len(),
+                "SAT_EXTRACT_CACHE_VERIFY: gate count mismatch"
+            );
+            assert!(
+                fresh.gates == flat.gates && fresh.lits == flat.lits,
+                "SAT_EXTRACT_CACHE_VERIFY: gate stream mismatch"
+            );
         }
 
         flat
@@ -14285,7 +14891,16 @@ impl Solver {
         new_binaries.len()
     }
 
+    /// Driver wrapper: guarantees the SAT_EXTRACT_CACHE hooks are disarmed on
+    /// every return path of the congruence loop (the cache is only coherent
+    /// inside one invocation window).
     fn try_congruence(&mut self, proof_log: &mut ProofLog, xor: bool) -> bool {
+        let r = self.try_congruence_inner(proof_log, xor);
+        self.extract_cache.end();
+        r
+    }
+
+    fn try_congruence_inner(&mut self, proof_log: &mut ProofLog, xor: bool) -> bool {
         if self.binary_fast_path
             || self.current_level() != 0
             || self.has_empty_clause
@@ -14301,6 +14916,16 @@ impl Solver {
         }
         let debug = std::env::var("SAT_DEBUG_CONGRUENCE").is_ok();
         let t0 = Instant::now();
+
+        // SAT_EXTRACT_CACHE: arm the per-invocation gate-extraction cache.
+        // Must mirror the dispatch condition at the two extraction sites
+        // below (flat path only).
+        if self.extract_cache_enabled && self.closure_diet && self.congruence_worklist {
+            let num_vars = self.assignment.len().saturating_sub(1);
+            let trail_len = self.trail.len();
+            let verify = self.extract_cache_verify;
+            self.extract_cache.begin(num_vars, trail_len, verify);
+        }
 
         // Mid-search re-closures on an armed formula may use the lower armed
         // threshold: the formula is already congruence-edited, so the
@@ -14333,8 +14958,14 @@ impl Solver {
         {
             // SAT_CLOSURE_DIET: same gates in the same order via the flat arena;
             // the plain-Vec path below is the verbatim legacy (off) arm.
+            // SAT_EXTRACT_CACHE: the cached variant populates/reuses the
+            // per-invocation cache; off runs the shipped flat path verbatim.
             let plan = if self.closure_diet && self.congruence_worklist {
-                let flat = self.extract_gates_for_congruence_flat(xor);
+                let flat = if self.extract_cache_enabled {
+                    self.extract_gates_for_congruence_cached(xor)
+                } else {
+                    self.extract_gates_for_congruence_flat(xor)
+                };
                 if self.round_diet {
                     let mut and_gates = 0u64;
                     let mut ite_gates = 0u64;
@@ -14444,9 +15075,14 @@ impl Solver {
                 plan
             } else if self.closure_diet && self.congruence_worklist {
                 // 2. Extract gates and match congruent outputs (SAT_CLOSURE_DIET
-                // flat-arena path: same gates in the same order, same plan).
+                // flat-arena path: same gates in the same order, same plan;
+                // SAT_EXTRACT_CACHE splices unchanged clauses' gates).
                 let step_t = Instant::now();
-                let flat = self.extract_gates_for_congruence_flat(xor);
+                let flat = if self.extract_cache_enabled {
+                    self.extract_gates_for_congruence_cached(xor)
+                } else {
+                    self.extract_gates_for_congruence_flat(xor)
+                };
                 if debug {
                     eprintln!(
                         "c congruence step=extract_gates round={round} gates={} sec={:.4}",
