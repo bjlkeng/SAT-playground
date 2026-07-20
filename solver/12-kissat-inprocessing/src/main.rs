@@ -2571,6 +2571,19 @@ struct Solver {
     /// pre-diet per-round allocating implementations verbatim (the fair
     /// simultaneous A/B baseline arm).
     round_diet: bool,
+    /// SAT_CLOSURE_DIET (default on): allocation diet for the congruence/ELS
+    /// closure machinery — gate extraction emits into one flat literal arena
+    /// (`congruence::FlatGates`, killing the 0.9-1.3M per-gate input Vec
+    /// allocations per armed round) consumed by the arena-based
+    /// `find_merges_closure_flat`, and the ELS CSR SCC pass reuses a persistent
+    /// workspace (`els::ElsCsrWs`) for its seven flat arrays instead of
+    /// reallocating them on every call. Results are identical (same gates in
+    /// the same order, same merges, same representatives); `off` replays the
+    /// shipped per-call allocating implementations verbatim (the fair
+    /// simultaneous A/B baseline arm).
+    closure_diet: bool,
+    /// Persistent ELS CSR SCC workspace (SAT_CLOSURE_DIET).
+    els_csr_ws: els::ElsCsrWs,
     /// Persistent `eliminate()` round workspaces (SAT_ROUND_DIET).
     elim_round_ws: simp::ElimRoundWs,
     /// Persistent `try_els` active-variable scratch (SAT_ROUND_DIET).
@@ -3730,6 +3743,8 @@ impl Solver {
             norm_scratch: Vec::new(),
             elim_scratch: env_bool_or_default("SAT_ELIM_SCRATCH", true),
             round_diet: env_bool_or_default("SAT_ROUND_DIET", true),
+            closure_diet: env_bool_or_default("SAT_CLOSURE_DIET", true),
+            els_csr_ws: els::ElsCsrWs::default(),
             elim_round_ws: simp::ElimRoundWs::default(),
             els_active_scratch: Vec::new(),
             els_binaries_scratch: Vec::new(),
@@ -12564,7 +12579,15 @@ impl Solver {
             binaries.push((a, b));
         }
 
-        let repr = match els::compute_representatives_csr(num_vars, active, binaries) {
+        let result = if self.closure_diet {
+            let mut ws = std::mem::take(&mut self.els_csr_ws);
+            let r = els::compute_representatives_csr_ws(num_vars, active, binaries, &mut ws);
+            self.els_csr_ws = ws;
+            r
+        } else {
+            els::compute_representatives_csr(num_vars, active, binaries)
+        };
+        let repr = match result {
             els::ElsResult::Unsat(lit) => {
                 // lit ≡ ¬lit. Both units are RUP from the implication cycle; the empty
                 // clause is then RUP from the two units.
@@ -13319,6 +13342,338 @@ impl Solver {
         }
     }
 
+    /// Flat-arena variant of [`Self::extract_gates_for_congruence_fast`]
+    /// (SAT_CLOSURE_DIET): identical gates in identical order, but the inputs go
+    /// into one shared literal arena ([`congruence::FlatGates`]) instead of one
+    /// heap `Vec<i32>` per gate (0.9-1.3M gates per armed round on the
+    /// miter/BMC cells). Consumed by [`congruence::find_merges_closure_flat`].
+    fn extract_gates_for_congruence_flat(&self, xor: bool) -> congruence::FlatGates {
+        // FxHash containers (src/fxhash.rs): membership/lookup only — gate ORDER
+        // comes from the deterministic clause-scan Vecs, and the one map that IS
+        // iterated (XOR `families`) feeds a pipeline verified insensitive to hash
+        // order (byte-reproducible outcomes across randomly-seeded SipHash runs).
+        use crate::fxhash::{FxHashMap as HashMap, FxHashSet as HashSet};
+
+        let num_vars = self.assignment.len().saturating_sub(1);
+        let live_lit = |lit: i32| -> bool {
+            let v = lit.unsigned_abs() as usize;
+            v >= 1 && v <= num_vars && self.assignment[v] == UNASSIGNED && !self.eliminated[v]
+        };
+        let sorted_pair = |a: i32, b: i32| -> (i32, i32) {
+            if a <= b {
+                (a, b)
+            } else {
+                (b, a)
+            }
+        };
+
+        // Index the live clauses: binary membership set, large clauses as AND/ITE bases,
+        // ternary membership set, and a (pair -> third literals) map for ITE else lookup.
+        // The large-clause pool is a flat literal arena + end offsets (NOT Vec<Vec>):
+        // this pass runs once per closure round over millions of clauses, and the
+        // per-clause Vec allocations dominated its wall (measured on ibm 2026-07-18).
+        // Clause ORDER and content are identical to the nested representation.
+        let mut binaries: HashSet<(i32, i32)> = HashSet::default();
+        binaries.reserve(self.original_clause_ids.len() / 2);
+        let mut large_lits: Vec<i32> = Vec::new();
+        let mut large_ends: Vec<u32> = Vec::new();
+        let mut ternary_set: HashSet<(i32, i32, i32)> = HashSet::default();
+        let mut pair_thirds: HashMap<(i32, i32), Vec<i32>> = HashMap::default();
+
+        // Kissat closure.c parity (SAT_CONGRUENCE_LEARNED): gate extraction also
+        // scans SHORT learned clauses (len <= 3). Kissat keeps discovering gates
+        // mid-search because vivify/strengthening create new binaries/ternaries
+        // that feed its closure; our extraction previously saw original clauses
+        // only, freezing the merge count once root patterns are exhausted (vex:
+        // 18.4k merges frozen vs kissat 183k). Learned clauses are implied, so
+        // gate patterns over them justify merges exactly like original clauses
+        // (the merge proofs are RUP against the full proof-stream formula, which
+        // contains every learned clause).
+        let learned_short: Vec<u32> = if self.congruence_learned {
+            self.learned_clause_ids
+                .iter()
+                .filter_map(|&cid| {
+                    (cid < self.arena.len()
+                        && !self.clause_is_deleted(cid)
+                        && self.clause_len(cid) <= 3)
+                        .then_some(cid as u32)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut scratch_lits: Vec<i32> = Vec::with_capacity(CONGRUENCE_MAX_CLAUSE_LEN);
+        for &cid in self.original_clause_ids.iter().chain(learned_short.iter()) {
+            let cid = cid as usize;
+            if cid >= self.arena.len() || self.clause_is_deleted(cid) {
+                continue;
+            }
+            let len = self.clause_len(cid);
+            if len < 2 || len > CONGRUENCE_MAX_CLAUSE_LEN {
+                continue;
+            }
+            scratch_lits.clear();
+            let mut ok = true;
+            for pos in 0..len {
+                let lit = self.clause_lit(cid, pos);
+                if !live_lit(lit) {
+                    ok = false;
+                    break;
+                }
+                scratch_lits.push(lit);
+            }
+            if !ok {
+                continue;
+            }
+            let lits = &scratch_lits[..];
+            if len == 2 {
+                binaries.insert(sorted_pair(lits[0], lits[1]));
+            } else {
+                if len == 3 {
+                    let mut t = [lits[0], lits[1], lits[2]];
+                    t.sort_unstable();
+                    ternary_set.insert((t[0], t[1], t[2]));
+                    pair_thirds
+                        .entry(sorted_pair(lits[0], lits[1]))
+                        .or_default()
+                        .push(lits[2]);
+                    pair_thirds
+                        .entry(sorted_pair(lits[0], lits[2]))
+                        .or_default()
+                        .push(lits[1]);
+                    pair_thirds
+                        .entry(sorted_pair(lits[1], lits[2]))
+                        .or_default()
+                        .push(lits[0]);
+                }
+                large_lits.extend_from_slice(lits);
+                large_ends.push(large_lits.len() as u32);
+            }
+        }
+
+        let has_binary = |a: i32, b: i32| binaries.contains(&sorted_pair(a, b));
+        let has_ternary = |a: i32, b: i32, c: i32| {
+            let mut t = [a, b, c];
+            t.sort_unstable();
+            ternary_set.contains(&(t[0], t[1], t[2]))
+        };
+
+        let mut flat = congruence::FlatGates::default();
+        flat.gates.reserve(large_ends.len());
+        let mut scratch_gate: Vec<i32> = Vec::with_capacity(CONGRUENCE_MAX_CLAUSE_LEN);
+
+        let large_clause = |i: usize| -> &[i32] {
+            let start = if i == 0 { 0 } else { large_ends[i - 1] as usize };
+            &large_lits[start..large_ends[i] as usize]
+        };
+
+        // AND/OR gates. Base clause (¬L ∨ o1 ∨ .. ∨ ok): treat each literal `nl` as ¬L
+        // (so L = -nl); the gate exists iff every binary (L ∨ ¬oi) is present, giving
+        // L = OR(o1..ok), stored as the AND gate ¬L = AND(¬o1..¬ok).
+        for ci in 0..large_ends.len() {
+            let clause = large_clause(ci);
+            let k = clause.len();
+            for i in 0..k {
+                let nl = clause[i]; // ¬L
+                let l = -nl; // L
+                let mut all = true;
+                for (j, &o) in clause.iter().enumerate() {
+                    if j == i {
+                        continue;
+                    }
+                    if !has_binary(l, -o) {
+                        all = false;
+                        break;
+                    }
+                }
+                if !all {
+                    continue;
+                }
+                let out = nl; // ¬L
+                scratch_gate.clear();
+                let mut degenerate = false;
+                for (j, &o) in clause.iter().enumerate() {
+                    if j == i {
+                        continue;
+                    }
+                    let inp = -o;
+                    if inp.unsigned_abs() == out.unsigned_abs() {
+                        degenerate = true;
+                        break;
+                    }
+                    scratch_gate.push(inp);
+                }
+                if degenerate {
+                    continue;
+                }
+                scratch_gate.sort_unstable();
+                scratch_gate.dedup();
+                let mut trivial = scratch_gate.len() < 2;
+                for w in scratch_gate.windows(2) {
+                    if w[0] == -w[1] {
+                        trivial = true;
+                        break;
+                    }
+                }
+                if trivial {
+                    continue;
+                }
+                flat.push(out, congruence::GateKind::And, &scratch_gate);
+            }
+        }
+
+        // ITE gates. Base clause C2 = (lhs ∨ ¬cond ∨ ¬then). For each ternary clause, each
+        // output literal, and each choice of which remaining literal is ¬cond, require the
+        // companions C1 = (¬lhs ∨ ¬cond ∨ then), C3 = (¬lhs ∨ cond ∨ else),
+        // C4 = (lhs ∨ cond ∨ ¬else).
+        for ci in 0..large_ends.len() {
+            let clause = large_clause(ci);
+            if clause.len() != 3 {
+                continue;
+            }
+            for lhs_i in 0..3 {
+                let lhs = clause[lhs_i];
+                let others: [i32; 2] = {
+                    let mut it = (0..3).filter(|&j| j != lhs_i).map(|j| clause[j]);
+                    [it.next().unwrap(), it.next().unwrap()]
+                };
+                for order in 0..2 {
+                    let not_cond = others[order];
+                    let not_then = others[1 - order];
+                    let cond = -not_cond;
+                    let then_lit = -not_then;
+                    if !has_ternary(-lhs, not_cond, then_lit) {
+                        continue;
+                    }
+                    let Some(cands) = pair_thirds.get(&sorted_pair(-lhs, cond)) else {
+                        continue;
+                    };
+                    for &else_lit in cands {
+                        if !has_ternary(lhs, cond, -else_lit) {
+                            continue;
+                        }
+                        let vars = [
+                            lhs.unsigned_abs(),
+                            cond.unsigned_abs(),
+                            then_lit.unsigned_abs(),
+                            else_lit.unsigned_abs(),
+                        ];
+                        let mut distinct = true;
+                        for a in 0..4 {
+                            for b in (a + 1)..4 {
+                                if vars[a] == vars[b] {
+                                    distinct = false;
+                                }
+                            }
+                        }
+                        if !distinct {
+                            continue;
+                        }
+                        let mut rhs = [cond, then_lit, else_lit];
+                        let negate = congruence::normalize_ite(&mut rhs);
+                        let out = if negate { -lhs } else { lhs };
+                        flat.push(out, congruence::GateKind::Ite, &rhs);
+                    }
+                }
+            }
+        }
+
+        // XOR gates (SAT_CONGRUENCE_XOR). A parity relation `v1 ⊕ … ⊕ vk = t` over `k`
+        // distinct variables is encoded by exactly the `2^(k-1)` clauses of length `k` whose
+        // negated-literal count has parity `1 - t`. Group live clauses of length in
+        // `[3, MAX_XOR_ARITY]` by their sorted positive variable tuple, recording which
+        // sign-patterns are present; when a full parity family is present the relation holds,
+        // and "solving for" each variable in turn gives an XOR gate `vj = XOR(others)` (the
+        // parity target folds into `vj`'s sign). Two such gates with the same input set have
+        // equivalent outputs.
+        if xor {
+            // Key: [k, v1, v2, v3, v4] with sorted positive vars (trailing zeros unused).
+            // Value: bitmask over sign-patterns [0, 2^k); bit `s` set iff the clause whose
+            // negated literals are exactly the bits of `s` (in sorted-var order) is present.
+            let mut families: HashMap<[i32; 5], u32> = HashMap::default();
+            for &cid in &self.original_clause_ids {
+                let cid = cid as usize;
+                if cid >= self.arena.len() || self.clause_is_deleted(cid) {
+                    continue;
+                }
+                let len = self.clause_len(cid);
+                if len < 3 || len > CONGRUENCE_MAX_XOR_ARITY {
+                    continue;
+                }
+                scratch_lits.clear();
+                let mut ok = true;
+                for pos in 0..len {
+                    let lit = self.clause_lit(cid, pos);
+                    if !live_lit(lit) {
+                        ok = false;
+                        break;
+                    }
+                    scratch_lits.push(lit);
+                }
+                if !ok {
+                    continue;
+                }
+                let lits = &mut scratch_lits;
+                lits.sort_unstable_by_key(|&l| l.unsigned_abs());
+                let mut key = [0i32; 5];
+                key[0] = len as i32;
+                let mut mask: u32 = 0;
+                let mut distinct = true;
+                for (i, &l) in lits.iter().enumerate() {
+                    let v = l.unsigned_abs() as i32;
+                    if i > 0 && key[i] == v {
+                        distinct = false;
+                        break;
+                    }
+                    key[i + 1] = v;
+                    if l < 0 {
+                        mask |= 1u32 << i;
+                    }
+                }
+                if !distinct {
+                    continue;
+                }
+                *families.entry(key).or_insert(0) |= 1u32 << mask;
+            }
+
+            for (key, &present) in &families {
+                let k = key[0] as usize;
+                let vars = &key[1..=k];
+                // Required sign-pattern sets for the two parity targets.
+                let mut odd_req: u32 = 0;
+                let mut even_req: u32 = 0;
+                for s in 0u32..(1u32 << k) {
+                    if s.count_ones() & 1 == 1 {
+                        odd_req |= 1u32 << s;
+                    } else {
+                        even_req |= 1u32 << s;
+                    }
+                }
+                // t = 0 forbids odd-parity assignments; t = 1 forbids even-parity ones.
+                let t = if present & odd_req == odd_req {
+                    0
+                } else if present & even_req == even_req {
+                    1
+                } else {
+                    continue;
+                };
+                for j in 0..k {
+                    let out_var = vars[j];
+                    let out = if t == 0 { out_var } else { -out_var };
+                    scratch_gate.clear();
+                    for (i, &v) in vars.iter().enumerate() {
+                        if i != j {
+                            scratch_gate.push(v);
+                        }
+                    }
+                    flat.push(out, congruence::GateKind::Xor, &scratch_gate);
+                }
+            }
+        }
+
+        flat
+    }
+
     fn extract_gates_for_congruence_fast(&self, xor: bool) -> Vec<congruence::Gate> {
         // FxHash containers (src/fxhash.rs): membership/lookup only — gate ORDER
         // comes from the deterministic clause-scan Vecs, and the one map that IS
@@ -13976,24 +14331,44 @@ impl Solver {
         let mut dry_plan: Option<congruence::Plan> = None;
         let mut dry_gate_counts: (u64, u64) = (0, 0);
         {
-            let gates = self.extract_gates_for_congruence(xor);
-            if self.round_diet {
-                let mut and_gates = 0u64;
-                let mut ite_gates = 0u64;
-                for g in &gates {
-                    match g.kind {
-                        congruence::GateKind::And => and_gates += 1,
-                        congruence::GateKind::Ite => ite_gates += 1,
-                        congruence::GateKind::Xor => {}
+            // SAT_CLOSURE_DIET: same gates in the same order via the flat arena;
+            // the plain-Vec path below is the verbatim legacy (off) arm.
+            let plan = if self.closure_diet && self.congruence_worklist {
+                let flat = self.extract_gates_for_congruence_flat(xor);
+                if self.round_diet {
+                    let mut and_gates = 0u64;
+                    let mut ite_gates = 0u64;
+                    for g in &flat.gates {
+                        match g.kind {
+                            congruence::GateKind::And => and_gates += 1,
+                            congruence::GateKind::Ite => ite_gates += 1,
+                            congruence::GateKind::Xor => {}
+                        }
                     }
+                    dry_gate_counts = (and_gates, ite_gates);
                 }
-                dry_gate_counts = (and_gates, ite_gates);
-            }
-            let plan = if self.congruence_worklist {
                 let num_vars = self.assignment.len().saturating_sub(1);
-                congruence::find_merges_closure(num_vars, gates)
+                congruence::find_merges_closure_flat(num_vars, flat)
             } else {
-                congruence::find_merges(&gates)
+                let gates = self.extract_gates_for_congruence(xor);
+                if self.round_diet {
+                    let mut and_gates = 0u64;
+                    let mut ite_gates = 0u64;
+                    for g in &gates {
+                        match g.kind {
+                            congruence::GateKind::And => and_gates += 1,
+                            congruence::GateKind::Ite => ite_gates += 1,
+                            congruence::GateKind::Xor => {}
+                        }
+                    }
+                    dry_gate_counts = (and_gates, ite_gates);
+                }
+                if self.congruence_worklist {
+                    let num_vars = self.assignment.len().saturating_sub(1);
+                    congruence::find_merges_closure(num_vars, gates)
+                } else {
+                    congruence::find_merges(&gates)
+                }
             };
             if debug {
                 eprintln!(
@@ -14064,6 +14439,49 @@ impl Solver {
                     eprintln!(
                         "c congruence round=0 reusing dry-run plan (edit-free preamble, merges={})",
                         plan.merges.len()
+                    );
+                }
+                plan
+            } else if self.closure_diet && self.congruence_worklist {
+                // 2. Extract gates and match congruent outputs (SAT_CLOSURE_DIET
+                // flat-arena path: same gates in the same order, same plan).
+                let step_t = Instant::now();
+                let flat = self.extract_gates_for_congruence_flat(xor);
+                if debug {
+                    eprintln!(
+                        "c congruence step=extract_gates round={round} gates={} sec={:.4}",
+                        flat.len(),
+                        step_t.elapsed().as_secs_f64()
+                    );
+                }
+                if round == 0 {
+                    let mut and_gates = 0u64;
+                    let mut ite_gates = 0u64;
+                    let mut xor_gates = 0u64;
+                    for g in &flat.gates {
+                        match g.kind {
+                            congruence::GateKind::And => and_gates += 1,
+                            congruence::GateKind::Ite => ite_gates += 1,
+                            congruence::GateKind::Xor => xor_gates += 1,
+                        }
+                    }
+                    self.stats.congruence_and_gates = and_gates;
+                    self.stats.congruence_ite_gates = ite_gates;
+                    if debug {
+                        eprintln!(
+                            "c congruence gates and={and_gates} ite={ite_gates} xor={xor_gates} (round 0, {:.4}s)",
+                            t0.elapsed().as_secs_f64()
+                        );
+                    }
+                }
+
+                let step_t = Instant::now();
+                let num_vars = self.assignment.len().saturating_sub(1);
+                let plan = congruence::find_merges_closure_flat(num_vars, flat);
+                if debug {
+                    eprintln!(
+                        "c congruence step=closure round={round} sec={:.4}",
+                        step_t.elapsed().as_secs_f64()
                     );
                 }
                 plan

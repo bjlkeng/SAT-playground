@@ -595,6 +595,457 @@ pub(crate) fn find_merges_closure(num_vars: usize, gates_in: Vec<Gate>) -> Plan 
     }
 }
 
+/// Flat gate set (SAT_CLOSURE_DIET): every gate's inputs live as a `(start, len)`
+/// window into one shared literal arena instead of a per-gate `Vec<i32>`. The
+/// extraction pass produces 0.9-1.3M gates per armed congruence round on the
+/// miter/BMC cells, so the per-gate heap blocks dominated both extraction and
+/// closure wall (measured ibm 2026-07-19: extract 19.4s + closure 5.5s of a
+/// 137s solve).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FlatGates {
+    pub(crate) lits: Vec<i32>,
+    pub(crate) gates: Vec<FlatGate>,
+}
+
+/// Header of one gate in a [`FlatGates`] arena.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FlatGate {
+    /// Output literal (polarity-adjusted for the canonical form).
+    pub(crate) out: i32,
+    pub(crate) kind: GateKind,
+    /// Input window `[start, start+len)` in the arena.
+    pub(crate) start: u32,
+    pub(crate) len: u32,
+}
+
+impl FlatGates {
+    pub(crate) fn push(&mut self, out: i32, kind: GateKind, inputs: &[i32]) {
+        let start = self.lits.len() as u32;
+        self.lits.extend_from_slice(inputs);
+        self.gates.push(FlatGate {
+            out,
+            kind,
+            start,
+            len: inputs.len() as u32,
+        });
+    }
+
+    #[inline]
+    pub(crate) fn len(&self) -> usize {
+        self.gates.len()
+    }
+}
+
+#[inline]
+fn arena_slice<'a>(lits: &'a [i32], g: &FlatGate) -> &'a [i32] {
+    &lits[g.start as usize..(g.start + g.len) as usize]
+}
+
+/// Content hash of a gate key `(tag, inputs)` for the flat closure table.
+/// Collisions are resolved by full content comparison, so the hash function
+/// affects only bucket shape, never results.
+fn flat_key_hash(tag: u8, inputs: &[i32]) -> u64 {
+    use std::hash::Hasher;
+    let mut h = crate::fxhash::FxHasher::default();
+    h.write_u8(tag);
+    for &l in inputs {
+        h.write_i32(l);
+    }
+    h.finish()
+}
+
+/// One table entry of the flat closure: a key window into the (append-only)
+/// arena plus the representative output and its cancelled-vars snapshot.
+/// Entries with the same key hash form a chain through `next` inside one flat
+/// entry vector (no per-bucket heap allocation).
+struct FlatKeyEntry {
+    tag: u8,
+    start: u32,
+    len: u32,
+    out: i32,
+    /// Next entry index in this hash chain (`u32::MAX` = end).
+    next: u32,
+    cancelled: Vec<i32>,
+}
+
+/// Outcome of renormalizing one flat gate; renormalized inputs are left in the
+/// caller's `scratch_inputs` (and XOR-cancelled vars in `scratch_cancelled`).
+enum FlatRenorm {
+    Dead,
+    Collapsed(Merge),
+    Keyed { tag: u8, out: i32 },
+}
+
+/// [`renormalize_gate`] over an arena slice, writing into reusable scratch
+/// buffers instead of allocating per-gate vectors. Logic (and therefore every
+/// outcome) is identical.
+fn renormalize_gate_flat(
+    parent: &mut [i32],
+    inputs_in: &[i32],
+    out_in: i32,
+    kind: GateKind,
+    scratch_inputs: &mut Vec<i32>,
+    scratch_cancelled: &mut Vec<i32>,
+) -> FlatRenorm {
+    scratch_inputs.clear();
+    scratch_cancelled.clear();
+    match kind {
+        GateKind::And => {
+            let out = find_lit(parent, out_in);
+            scratch_inputs.extend(inputs_in.iter().map(|&l| find_lit(parent, l)));
+            scratch_inputs.sort_unstable();
+            scratch_inputs.dedup();
+            let ov = out.unsigned_abs();
+            if scratch_inputs.iter().any(|&l| l.unsigned_abs() == ov) {
+                return FlatRenorm::Dead;
+            }
+            if scratch_inputs.len() == 1 {
+                return FlatRenorm::Collapsed(Merge {
+                    p: scratch_inputs[0],
+                    q: out,
+                    kind: MergeKind::And,
+                });
+            }
+            if scratch_inputs.is_empty() {
+                return FlatRenorm::Dead;
+            }
+            FlatRenorm::Keyed { tag: 0, out }
+        }
+        GateKind::Ite => {
+            let mut rhs = [
+                find_lit(parent, inputs_in[0]),
+                find_lit(parent, inputs_in[1]),
+                find_lit(parent, inputs_in[2]),
+            ];
+            let negate = normalize_ite(&mut rhs);
+            let mut out = find_lit(parent, out_in);
+            if negate {
+                out = -out;
+            }
+            let [c, t, e] = rhs;
+            let (cv, tv, ev, ov) = (
+                c.unsigned_abs(),
+                t.unsigned_abs(),
+                e.unsigned_abs(),
+                out.unsigned_abs(),
+            );
+            if t == e {
+                if cv == tv || cv == ov || tv == ov {
+                    return FlatRenorm::Dead;
+                }
+                return FlatRenorm::Collapsed(Merge {
+                    p: t,
+                    q: out,
+                    kind: MergeKind::Ite { cond: c },
+                });
+            }
+            if cv == tv || cv == ev || tv == ev || ov == cv || ov == tv || ov == ev {
+                return FlatRenorm::Dead;
+            }
+            scratch_inputs.extend_from_slice(&rhs);
+            FlatRenorm::Keyed { tag: 1, out }
+        }
+        GateKind::Xor => {
+            let mut out = find_lit(parent, out_in);
+            // Map into scratch_inputs, sort, then split out cancelled `a ⊕ a`
+            // pairs in place (survivors compact to the front).
+            for &l in inputs_in {
+                let mut r = find_lit(parent, l);
+                if r < 0 {
+                    out = -out;
+                    r = -r;
+                }
+                scratch_inputs.push(r);
+            }
+            scratch_inputs.sort_unstable();
+            let mut w = 0;
+            let mut i = 0;
+            while i < scratch_inputs.len() {
+                if i + 1 < scratch_inputs.len() && scratch_inputs[i] == scratch_inputs[i + 1] {
+                    scratch_cancelled.push(scratch_inputs[i]);
+                    i += 2; // a ⊕ a cancels
+                } else {
+                    scratch_inputs[w] = scratch_inputs[i];
+                    w += 1;
+                    i += 1;
+                }
+            }
+            scratch_inputs.truncate(w);
+            let ov = out.unsigned_abs() as i32;
+            if scratch_inputs.iter().any(|&l| l == ov) {
+                return FlatRenorm::Dead;
+            }
+            if scratch_inputs.is_empty() {
+                return FlatRenorm::Dead;
+            }
+            if scratch_inputs.len() == 1 {
+                return FlatRenorm::Collapsed(Merge {
+                    p: scratch_inputs[0],
+                    q: out,
+                    kind: MergeKind::Xor {
+                        inputs: scratch_cancelled.clone(),
+                    },
+                });
+            }
+            FlatRenorm::Keyed { tag: 2, out }
+        }
+    }
+}
+
+/// [`find_merges_closure`] over a [`FlatGates`] arena (SAT_CLOSURE_DIET):
+/// identical Plan — same merges in the same discovery order, same UNSAT
+/// detection — with per-gate input vectors replaced by arena windows and the
+/// content-keyed hash table replaced by a hash-bucket table whose collisions
+/// are resolved by full content comparison (representative-is-first-seen
+/// semantics preserved exactly). The arena is append-only: renormalization
+/// writes a gate's new inputs to fresh arena space, so windows referenced by
+/// older table keys stay valid for comparison.
+pub(crate) fn find_merges_closure_flat(num_vars: usize, flat: FlatGates) -> Plan {
+    let FlatGates {
+        mut lits,
+        mut gates,
+    } = flat;
+    let mut parent: Vec<i32> = (0..=num_vars as i32).collect();
+    let mut merges: Vec<Merge> = Vec::new();
+    let mut pending: VecDeque<Merge> = VecDeque::new();
+    // var -> indices of live gates with that variable among their (current) inputs.
+    let mut occ: Vec<Vec<u32>> = vec![Vec::new(); num_vars + 1];
+    // hash -> head index into `entries`; collision chains run through
+    // `FlatKeyEntry::next`. One flat vector, zero per-key heap blocks.
+    let mut table: HashMap<u64, u32> = HashMap::default();
+    table.reserve(gates.len());
+    let mut entries: Vec<FlatKeyEntry> = Vec::with_capacity(gates.len());
+    let mut alive: Vec<bool> = vec![true; gates.len()];
+    let mut acc_cancelled: Vec<Vec<i32>> = vec![Vec::new(); gates.len()];
+    let mut scratch_inputs: Vec<i32> = Vec::new();
+    let mut scratch_cancelled: Vec<i32> = Vec::new();
+
+    // Sorted, deduped chain-variable union for an XOR merge proof ladder.
+    fn xor_chain(key_inputs: &[i32], a: &[i32], b: &[i32]) -> Vec<i32> {
+        let mut chain: Vec<i32> = Vec::with_capacity(key_inputs.len() + a.len() + b.len());
+        chain.extend_from_slice(key_inputs);
+        chain.extend_from_slice(a);
+        chain.extend_from_slice(b);
+        chain.sort_unstable();
+        chain.dedup();
+        chain
+    }
+
+    // Renormalize gate `idx` and register it (see the legacy `process_gate`).
+    #[allow(clippy::too_many_arguments)]
+    fn process_gate_flat(
+        idx: u32,
+        register_all: bool,
+        parent: &mut Vec<i32>,
+        lits: &mut Vec<i32>,
+        gates: &mut Vec<FlatGate>,
+        alive: &mut [bool],
+        occ: &mut Vec<Vec<u32>>,
+        table: &mut HashMap<u64, u32>,
+        entries: &mut Vec<FlatKeyEntry>,
+        pending: &mut VecDeque<Merge>,
+        acc_cancelled: &mut [Vec<i32>],
+        scratch_inputs: &mut Vec<i32>,
+        scratch_cancelled: &mut Vec<i32>,
+    ) {
+        if !alive[idx as usize] {
+            return;
+        }
+        let hdr = gates[idx as usize];
+        let outcome = {
+            let inputs_in = arena_slice(lits, &hdr);
+            renormalize_gate_flat(
+                parent,
+                inputs_in,
+                hdr.out,
+                hdr.kind,
+                scratch_inputs,
+                scratch_cancelled,
+            )
+        };
+        match outcome {
+            FlatRenorm::Dead => {
+                alive[idx as usize] = false;
+            }
+            FlatRenorm::Collapsed(mut m) => {
+                alive[idx as usize] = false;
+                // XOR collapse: extend the ladder with this gate's full cancellation
+                // history (this pass + earlier passes).
+                if let MergeKind::Xor { inputs } = &mut m.kind {
+                    *inputs = xor_chain(inputs, &acc_cancelled[idx as usize], &[]);
+                }
+                pending.push_back(m);
+            }
+            FlatRenorm::Keyed { tag, out } => {
+                {
+                    let g = &mut gates[idx as usize];
+                    g.out = out;
+                    // Write back the canonical form only when it changed: append the
+                    // new window to the (append-only) arena so older key windows stay
+                    // valid.
+                    if arena_slice(lits, g) != scratch_inputs.as_slice() {
+                        let start = lits.len() as u32;
+                        lits.extend_from_slice(scratch_inputs);
+                        g.start = start;
+                        g.len = scratch_inputs.len() as u32;
+                    }
+                }
+                if !scratch_cancelled.is_empty() {
+                    let acc = &mut acc_cancelled[idx as usize];
+                    acc.extend_from_slice(scratch_cancelled);
+                    acc.sort_unstable();
+                    acc.dedup();
+                }
+                if register_all {
+                    for &l in scratch_inputs.iter() {
+                        let v = l.unsigned_abs() as usize;
+                        occ[v].push(idx);
+                    }
+                }
+                let hdr = gates[idx as usize];
+                let h = flat_key_hash(tag, scratch_inputs);
+                const NIL: u32 = u32::MAX;
+                let head = table.entry(h).or_insert(NIL);
+                let mut found = false;
+                let mut cursor = *head;
+                while cursor != NIL {
+                    let e = &entries[cursor as usize];
+                    cursor = e.next;
+                    if e.tag != tag || e.len != hdr.len {
+                        continue;
+                    }
+                    let key_slice = &lits[e.start as usize..(e.start + e.len) as usize];
+                    if key_slice != scratch_inputs.as_slice() {
+                        continue;
+                    }
+                    found = true;
+                    let rep = e.out;
+                    if rep != out {
+                        let kind = match tag {
+                            0 => MergeKind::And,
+                            1 => MergeKind::Ite {
+                                cond: scratch_inputs[0],
+                            },
+                            _ => MergeKind::Xor {
+                                inputs: xor_chain(
+                                    scratch_inputs,
+                                    &e.cancelled,
+                                    &acc_cancelled[idx as usize],
+                                ),
+                            },
+                        };
+                        pending.push_back(Merge { p: rep, q: out, kind });
+                    }
+                    break;
+                }
+                if !found {
+                    let snapshot = acc_cancelled[idx as usize].clone();
+                    let new_idx = entries.len() as u32;
+                    entries.push(FlatKeyEntry {
+                        tag,
+                        start: hdr.start,
+                        len: hdr.len,
+                        out,
+                        next: *head,
+                        cancelled: snapshot,
+                    });
+                    *head = new_idx;
+                }
+            }
+        }
+    }
+
+    for idx in 0..gates.len() as u32 {
+        process_gate_flat(
+            idx,
+            true,
+            &mut parent,
+            &mut lits,
+            &mut gates,
+            &mut alive,
+            &mut occ,
+            &mut table,
+            &mut entries,
+            &mut pending,
+            &mut acc_cancelled,
+            &mut scratch_inputs,
+            &mut scratch_cancelled,
+        );
+    }
+
+    while let Some(m) = pending.pop_front() {
+        let p = find_lit(&mut parent, m.p);
+        let q = find_lit(&mut parent, m.q);
+        if p == q {
+            continue;
+        }
+        // Degenerate ITE merges (condition variable shared with an output) are dropped,
+        // matching find_merges: their proof chain over `cond` collapses.
+        if let MergeKind::Ite { cond } = &m.kind {
+            let cv = cond.unsigned_abs();
+            if cv == p.unsigned_abs() || cv == q.unsigned_abs() {
+                continue;
+            }
+        }
+        let mut kind = m.kind.clone();
+        if let MergeKind::Xor { inputs } = &mut kind {
+            // Chain vars equal to var(p)/var(q) are pinned by the RUP assumption
+            // itself — enumerating them would only produce tautologies (which the
+            // emitter skips, leaving holes in the ladder). Filter them out.
+            let (pv, qv) = (p.unsigned_abs() as i32, q.unsigned_abs() as i32);
+            inputs.retain(|&v| v != pv && v != qv);
+            // Ladder size is 2^|chain| clauses per level; XOR extraction is arity <= 4
+            // and cancellations are rare, so this cap only guards pathological unions.
+            if inputs.len() > 12 {
+                continue;
+            }
+        }
+        let merge = Merge { p, q, kind };
+        if p == -q {
+            return Plan {
+                merges,
+                unsat: Some(merge),
+            };
+        }
+        merges.push(merge);
+        // Union: q's class now points at p. p keeps its root, so gates registered under
+        // p's variable stay current; only gates mentioning q's variable must reprocess.
+        let qv = q.unsigned_abs() as usize;
+        parent[qv] = if q > 0 { p } else { -p };
+        let touched = std::mem::take(&mut occ[qv]);
+        let pv = p.unsigned_abs() as usize;
+        for idx in touched {
+            if !alive[idx as usize] {
+                continue;
+            }
+            // The reprocessed gate's inputs now mention p's variable; register it there so
+            // a future merge of p reprocesses it again. Other input registrations are
+            // still current.
+            occ[pv].push(idx);
+            process_gate_flat(
+                idx,
+                false,
+                &mut parent,
+                &mut lits,
+                &mut gates,
+                &mut alive,
+                &mut occ,
+                &mut table,
+                &mut entries,
+                &mut pending,
+                &mut acc_cancelled,
+                &mut scratch_inputs,
+                &mut scratch_cancelled,
+            );
+        }
+    }
+
+    Plan {
+        merges,
+        unsat: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -952,5 +1403,153 @@ mod tests {
             (6, -7),
             "negative representative must flip the XOR output"
         );
+    }
+
+    /// Convert a legacy gate list to the flat-arena representation.
+    fn flatten(gates: &[Gate]) -> FlatGates {
+        let mut flat = FlatGates::default();
+        for g in gates {
+            flat.push(g.out, g.kind, &g.inputs);
+        }
+        flat
+    }
+
+    fn assert_plans_equal(a: &Plan, b: &Plan, ctx: &str) {
+        assert_eq!(a.merges, b.merges, "merges diverge: {ctx}");
+        assert_eq!(a.unsat, b.unsat, "unsat diverges: {ctx}");
+    }
+
+    #[test]
+    fn flat_closure_matches_legacy_on_random_gate_sets() {
+        // find_merges_closure_flat must reproduce find_merges_closure exactly:
+        // same merges in the same discovery order, same UNSAT detection.
+        let mut state: u64 = 0xC2B2AE3D27D4EB4F;
+        let mut next = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 33) as u32
+        };
+        for iter in 0..800 {
+            let nv = 4 + (next() % 10) as usize; // 4..=13 variables
+            let ng = 1 + (next() % 12) as usize;
+            let mut gates: Vec<Gate> = Vec::new();
+            for _ in 0..ng {
+                let kind = next() % 3;
+                match kind {
+                    0 => {
+                        // AND gate with 2..4 distinct-var inputs and a distinct output.
+                        let k = 2 + (next() % 3) as usize;
+                        let mut inputs: Vec<i32> = Vec::new();
+                        for _ in 0..k {
+                            let v = 1 + (next() % nv as u32) as i32;
+                            let l = if next() & 1 == 0 { v } else { -v };
+                            if !inputs.iter().any(|&x| x.abs() == v) {
+                                inputs.push(l);
+                            }
+                        }
+                        if inputs.len() < 2 {
+                            continue;
+                        }
+                        let ov = 1 + (next() % nv as u32) as i32;
+                        if inputs.iter().any(|&x| x.abs() == ov) {
+                            continue;
+                        }
+                        let out = if next() & 1 == 0 { ov } else { -ov };
+                        gates.push(and_gate(out, inputs));
+                    }
+                    1 => {
+                        // ITE gate over four distinct variables.
+                        let mut vars: Vec<i32> = Vec::new();
+                        for _ in 0..8 {
+                            let v = 1 + (next() % nv as u32) as i32;
+                            if !vars.contains(&v) {
+                                vars.push(v);
+                            }
+                            if vars.len() == 4 {
+                                break;
+                            }
+                        }
+                        if vars.len() < 4 {
+                            continue;
+                        }
+                        let sgn = |v: i32, r: u32| if r & 1 == 0 { v } else { -v };
+                        gates.push(ite_gate(
+                            sgn(vars[0], next()),
+                            sgn(vars[1], next()),
+                            sgn(vars[2], next()),
+                            sgn(vars[3], next()),
+                        ));
+                    }
+                    _ => {
+                        // XOR gate: sorted positive distinct input vars + distinct output.
+                        let k = 2 + (next() % 3) as usize;
+                        let mut inputs: Vec<i32> = Vec::new();
+                        for _ in 0..8 {
+                            let v = 1 + (next() % nv as u32) as i32;
+                            if !inputs.contains(&v) {
+                                inputs.push(v);
+                            }
+                            if inputs.len() == k {
+                                break;
+                            }
+                        }
+                        if inputs.len() < 2 {
+                            continue;
+                        }
+                        inputs.sort_unstable();
+                        let ov = 1 + (next() % nv as u32) as i32;
+                        if inputs.contains(&ov) {
+                            continue;
+                        }
+                        let out = if next() & 1 == 0 { ov } else { -ov };
+                        gates.push(Gate {
+                            out,
+                            kind: GateKind::Xor,
+                            inputs,
+                        });
+                    }
+                }
+            }
+            let flat = flatten(&gates);
+            let legacy = find_merges_closure(nv, gates.clone());
+            let flat_plan = find_merges_closure_flat(nv, flat);
+            assert_plans_equal(&legacy, &flat_plan, &format!("iter={iter} gates={gates:?}"));
+        }
+    }
+
+    #[test]
+    fn flat_closure_matches_legacy_on_cascade_and_unsat_cases() {
+        // Deterministic shapes exercising cascaded merges, XOR cancellation, and
+        // the UNSAT (self-negation) early return.
+        let cases: Vec<Vec<Gate>> = vec![
+            // Cascade: two AND layers.
+            vec![
+                and_gate(3, vec![1, 2]),
+                and_gate(4, vec![1, 2]),
+                and_gate(5, vec![3, 6]),
+                and_gate(7, vec![4, 6]),
+            ],
+            // XOR cancellation through a merged input pair.
+            vec![
+                and_gate(3, vec![1, 2]),
+                and_gate(4, vec![1, 2]),
+                xor_gate(6, vec![3, 5]),
+                xor_gate(7, vec![4, 5]),
+            ],
+            // Self-negation UNSAT: outputs of identical gates with opposite signs.
+            vec![and_gate(3, vec![1, 2]), and_gate(-3, vec![1, 2])],
+            // ITE cascade.
+            vec![
+                and_gate(5, vec![1, 2]),
+                and_gate(6, vec![1, 2]),
+                ite_gate(8, 4, 5, 7),
+                ite_gate(9, 4, 6, 7),
+            ],
+        ];
+        for (i, gates) in cases.into_iter().enumerate() {
+            let flat = flatten(&gates);
+            let legacy = find_merges_closure(12, gates.clone());
+            let flat_plan = find_merges_closure_flat(12, flat);
+            assert_plans_equal(&legacy, &flat_plan, &format!("case={i}"));
+        }
     }
 }

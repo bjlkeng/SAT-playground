@@ -3437,6 +3437,7 @@ impl Solver {
                 self.elim_round_ws = ElimRoundWs::default();
                 self.els_active_scratch = Vec::new();
                 self.els_binaries_scratch = Vec::new();
+                self.els_csr_ws.release();
             } else {
                 self.occurs.clear();
                 self.occurs_dirty.clear();

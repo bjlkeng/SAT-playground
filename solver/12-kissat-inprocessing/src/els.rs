@@ -171,6 +171,186 @@ pub(crate) fn compute_representatives(
     ElsResult::Reprs(repr)
 }
 
+/// Persistent per-call workspace for [`compute_representatives_csr_ws`]
+/// (SAT_CLOSURE_DIET): the seven flat arrays the CSR SCC pass previously
+/// allocated fresh on every call (2 calls per congruence round + root ELS).
+/// All buffers are length-reset per call; contents never leak between calls.
+#[derive(Default)]
+pub(crate) struct ElsCsrWs {
+    start: Vec<u32>,
+    edges: Vec<u32>,
+    cursor: Vec<u32>,
+    disc: Vec<u32>,
+    low: Vec<u32>,
+    on_stack: Vec<bool>,
+    comp_min: Vec<u32>,
+    scc_stack: Vec<u32>,
+    work: Vec<(u32, usize)>,
+    members: Vec<u32>,
+}
+
+impl ElsCsrWs {
+    /// Drop every held allocation (giant-formula memory hygiene: persistent
+    /// workspaces must release before the post-preprocessing GC on >20M-var
+    /// formulas; see the eliminate turn-off precedent).
+    pub(crate) fn release(&mut self) {
+        *self = ElsCsrWs::default();
+    }
+}
+
+/// Workspace-reusing variant of [`compute_representatives_csr`]
+/// (SAT_CLOSURE_DIET): identical results — same fill values, same edge order,
+/// same traversal — with every flat array taken from `ws` instead of allocated
+/// per call.
+pub(crate) fn compute_representatives_csr_ws(
+    num_vars: usize,
+    active: &[bool],
+    binaries: &[(i32, i32)],
+    ws: &mut ElsCsrWs,
+) -> ElsResult {
+    let n = num_vars.saturating_mul(2);
+    if n == 0 {
+        return ElsResult::Reprs(vec![0]);
+    }
+
+    // CSR adjacency over literal nodes. Edge x -> y means the implication x → y.
+    let edge_endpoints = |a: i32, b: i32| -> Option<()> {
+        let va = a.unsigned_abs() as usize;
+        let vb = b.unsigned_abs() as usize;
+        if va == 0 || vb == 0 || va > num_vars || vb > num_vars {
+            return None;
+        }
+        if !active[va] || !active[vb] {
+            return None;
+        }
+        Some(())
+    };
+    let start = &mut ws.start;
+    start.clear();
+    start.resize(n + 1, 0);
+    for &(a, b) in binaries {
+        if edge_endpoints(a, b).is_none() {
+            continue;
+        }
+        start[lit_to_index(-a) + 1] += 1;
+        start[lit_to_index(-b) + 1] += 1;
+    }
+    for i in 0..n {
+        start[i + 1] += start[i];
+    }
+    let edges = &mut ws.edges;
+    edges.clear();
+    edges.resize(start[n] as usize, 0);
+    let cursor = &mut ws.cursor;
+    cursor.clear();
+    cursor.extend_from_slice(start);
+    for &(a, b) in binaries {
+        if edge_endpoints(a, b).is_none() {
+            continue;
+        }
+        // (a ∨ b): ¬a → b and ¬b → a.
+        let ia = lit_to_index(-a);
+        let ib = lit_to_index(-b);
+        edges[cursor[ia] as usize] = lit_to_index(b) as u32;
+        cursor[ia] += 1;
+        edges[cursor[ib] as usize] = lit_to_index(a) as u32;
+        cursor[ib] += 1;
+    }
+
+    // Iterative Tarjan. `comp_min[node]` becomes the smallest node index in `node`'s SCC.
+    const UNVISITED: u32 = u32::MAX;
+    let disc = &mut ws.disc;
+    disc.clear();
+    disc.resize(n, UNVISITED);
+    let low = &mut ws.low;
+    low.clear();
+    low.resize(n, 0);
+    let on_stack = &mut ws.on_stack;
+    on_stack.clear();
+    on_stack.resize(n, false);
+    let comp_min = &mut ws.comp_min;
+    comp_min.clear();
+    comp_min.resize(n, UNVISITED);
+    let scc_stack = &mut ws.scc_stack;
+    scc_stack.clear();
+    let mut counter: u32 = 0;
+    // Explicit DFS work stack of (node, next-child-index).
+    let work = &mut ws.work;
+    work.clear();
+    let members = &mut ws.members;
+    members.clear();
+
+    for start_node in 0..n {
+        let var = start_node / 2 + 1;
+        if !active[var] || disc[start_node] != UNVISITED {
+            continue;
+        }
+        work.push((start_node as u32, 0));
+        while let Some(&(v, ci)) = work.last() {
+            let vu = v as usize;
+            if ci == 0 {
+                disc[vu] = counter;
+                low[vu] = counter;
+                counter += 1;
+                scc_stack.push(v);
+                on_stack[vu] = true;
+            }
+            let deg = (start[vu + 1] - start[vu]) as usize;
+            if ci < deg {
+                let w = edges[start[vu] as usize + ci];
+                work.last_mut().unwrap().1 += 1;
+                let wu = w as usize;
+                if disc[wu] == UNVISITED {
+                    work.push((w, 0));
+                } else if on_stack[wu] {
+                    low[vu] = low[vu].min(disc[wu]);
+                }
+            } else {
+                if low[vu] == disc[vu] {
+                    members.clear();
+                    loop {
+                        let w = scc_stack.pop().unwrap();
+                        on_stack[w as usize] = false;
+                        members.push(w);
+                        if w == v {
+                            break;
+                        }
+                    }
+                    let min_node = *members.iter().min().unwrap();
+                    for &w in members.iter() {
+                        comp_min[w as usize] = min_node;
+                    }
+                }
+                work.pop();
+                if let Some(&(parent, _)) = work.last() {
+                    low[parent as usize] = low[parent as usize].min(low[vu]);
+                }
+            }
+        }
+    }
+
+    // UNSAT iff a variable's two polarity nodes landed in one SCC.
+    let mut repr = vec![0i32; num_vars + 1];
+    for v in 1..=num_vars {
+        if !active[v] {
+            repr[v] = v as i32;
+            continue;
+        }
+        let pos = lit_to_index(v as i32);
+        let neg = lit_to_index(-(v as i32));
+        if comp_min[pos] != UNVISITED && comp_min[pos] == comp_min[neg] {
+            return ElsResult::Unsat(v as i32);
+        }
+        repr[v] = if comp_min[pos] == UNVISITED {
+            v as i32
+        } else {
+            node_to_lit(comp_min[pos])
+        };
+    }
+
+    ElsResult::Reprs(repr)
+}
+
 /// Flat-CSR variant of [`compute_representatives`] (SAT_ROUND_DIET): identical
 /// results, but the implication graph is three flat arrays instead of a
 /// `Vec<Vec<u32>>` with `2·num_vars` headers and per-node heap blocks. Per-node
@@ -414,6 +594,48 @@ mod tests {
                 (ElsResult::Reprs(a), ElsResult::Reprs(b)) => assert_eq!(a, b),
                 (ElsResult::Unsat(a), ElsResult::Unsat(b)) => assert_eq!(a, b),
                 _ => panic!("legacy and CSR disagree on outcome kind"),
+            }
+        }
+    }
+
+    #[test]
+    fn csr_ws_matches_csr_on_random_graphs() {
+        // The workspace variant must produce identical results to the per-call
+        // allocating CSR pass — including across REUSED workspaces (stale
+        // contents from a previous, larger call must never leak).
+        let mut state: u64 = 0x9E3779B97F4A7C15;
+        let mut next = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 33) as u32
+        };
+        let mut ws = ElsCsrWs::default();
+        for _ in 0..500 {
+            let nv = 1 + (next() % 12) as usize;
+            let nb = (next() % 24) as usize;
+            let mut active = all_active(nv);
+            for v in 1..=nv {
+                if next() % 5 == 0 {
+                    active[v] = false;
+                }
+            }
+            let mut bins: Vec<(i32, i32)> = Vec::new();
+            for _ in 0..nb {
+                let a = 1 + (next() % nv as u32) as i32;
+                let b = 1 + (next() % nv as u32) as i32;
+                let sa = if next() & 1 == 0 { a } else { -a };
+                let sb = if next() & 1 == 0 { b } else { -b };
+                bins.push((sa, sb));
+            }
+            let plain = compute_representatives_csr(nv, &active, &bins);
+            let with_ws = compute_representatives_csr_ws(nv, &active, &bins, &mut ws);
+            match (plain, with_ws) {
+                (ElsResult::Reprs(a), ElsResult::Reprs(b)) => {
+                    assert_eq!(a, b, "reprs diverge nv={nv} bins={bins:?}")
+                }
+                (ElsResult::Unsat(a), ElsResult::Unsat(b)) => {
+                    assert_eq!(a, b, "unsat literal diverges nv={nv} bins={bins:?}")
+                }
+                _ => panic!("csr and csr_ws disagree on outcome kind: bins={bins:?}"),
             }
         }
     }
