@@ -140,7 +140,22 @@ const CLAUSE_MARK_MASK: u32 = 0b11;
 const CLAUSE_LEARNT_BIT: u32 = 1 << 2;
 const CLAUSE_HAS_EXTRA_BIT: u32 = 1 << 3;
 const CLAUSE_RELOCED_BIT: u32 = 1 << 4;
-const CLAUSE_SIZE_SHIFT: u32 = 5;
+/// Kissat clause.h `searched` (SAT_SEARCHED, default on): each clause header
+/// carries a 6-bit saved replacement-scan position (clamped to 63); the next
+/// replacement-watch scan resumes there (wrapping to the 2..pos prefix),
+/// amortizing the scan instead of rescanning the falsified prefix from
+/// position 2 on every visit. bp4 measured 21.7 scanned lits/propagation =
+/// 61% of all search ticks (avg 12.7 lits per loaded clause) with the
+/// always-from-2 scan. The field lives in the header word the hot loop loads
+/// anyway (and the header's cache line is dirtied by the lits[1] swap on
+/// every successful move), so reading/updating it costs no extra cache-line
+/// traffic — a trailing-word variant of this port measured a NET wall
+/// regression on bp4 (+3.4% clean) from the extra tail-line touch despite a
+/// 16% tick cut; do not resurrect it.
+const CLAUSE_SEARCHED_POS_SHIFT: u32 = 5;
+const CLAUSE_SEARCHED_POS_MAX: u32 = 63;
+const CLAUSE_SEARCHED_POS_MASK: u32 = CLAUSE_SEARCHED_POS_MAX << CLAUSE_SEARCHED_POS_SHIFT;
+const CLAUSE_SIZE_SHIFT: u32 = 11;
 const CLAUSE_DELETED_MARK: u32 = 1;
 const DEFAULT_BVE_GROW: isize = 0;
 const DEFAULT_BVE_CLAUSE_LIMIT: isize = 20;
@@ -1829,6 +1844,30 @@ fn env_bool_or_default(name: &str, default: bool) -> bool {
     parse_bool_token_or_default(std::env::var(name).ok().as_deref(), default)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SearchedMode {
+    Off,
+    On,
+    Armed,
+}
+
+/// Default OFF (2026-07-21): the mechanism is real (clean bp4 screen: wall
+/// −10.1%, ticks/prop −29%; the always-on gate flipped IN three kissat-only
+/// cells — bp4_TCO_CSO_IXA_LP, TT406, oski15) but ANY activation rerolls the
+/// search trajectory, and the 69-solved baseline embeds accumulated
+/// wall-lottery luck that rerolls regress to the mean: always-on gate 63v69
+/// (9 SAT-lottery losses), armed@512ppc/300k gate lost fresh victims plus an
+/// oski15 16GB OOM from trajectory-dependent memory growth. Promote only
+/// bundled into a gate that rerolls trajectories anyway, or revisit when the
+/// solve margins no longer depend on banked lottery draws.
+fn searched_mode_from_env() -> SearchedMode {
+    match std::env::var("SAT_SEARCHED").ok().as_deref() {
+        Some("armed") => SearchedMode::Armed,
+        Some("on") | Some("1") | Some("true") => SearchedMode::On,
+        _ => SearchedMode::Off,
+    }
+}
+
 fn parse_bool_token_or_default(value: Option<&str>, default: bool) -> bool {
     match value {
         Some("on") | Some("1") | Some("true") => true,
@@ -2590,6 +2629,22 @@ struct Solver {
     extract_cache_enabled: bool,
     /// SAT_EXTRACT_CACHE_VERIFY: assert cached == fresh extraction per round.
     extract_cache_verify: bool,
+    /// SAT_SEARCHED=off|armed|on (default OFF — see `searched_mode_from_env`
+    /// for the promotion-gate history): kissat clause.h saved replacement-scan
+    /// position, stored in 6 spare header bits. `armed` activates the scan
+    /// only once the formula proves propagation-heavy (cumulative
+    /// props/conflict >= SAT_SEARCHED_ARM_PPC after
+    /// SAT_SEARCHED_ARM_MIN_CONFLICTS, checked at restarts, latched); cells
+    /// that never cross the threshold stay byte-identical to the shipped
+    /// solver. `on` is the unconditional variant; `off` never reads or
+    /// writes the field.
+    searched_mode: SearchedMode,
+    /// Active flag the hot loop reads (latched on by the armed rule).
+    searched_scan: bool,
+    /// Cumulative props/conflict threshold for the armed rule.
+    searched_arm_ppc: u64,
+    /// Minimum conflicts before the armed rule is evaluated.
+    searched_arm_min_conflicts: u64,
     /// Per-invocation gate-extraction cache + persistent workspace.
     extract_cache: congruence::ExtractCache,
     /// Persistent ELS CSR SCC workspace (SAT_CLOSURE_DIET).
@@ -2789,8 +2844,12 @@ impl SolveOutcome {
 
 #[inline(always)]
 fn clause_make_header(size: usize, learnt: bool, has_extra: bool, mark: u32, reloced: bool) -> u32 {
-    debug_assert!(
-        size < (1usize << 27),
+    // Hard assert (not debug): the searched field shrank the size field to 21
+    // bits; a >=2M-literal clause (conceivable only as a pathological learned
+    // clause on a giant) must abort loudly instead of silently corrupting the
+    // header. No suite instance comes near this bound today.
+    assert!(
+        size < (1usize << 21),
         "clause too large for packed header: {size}"
     );
     (mark & CLAUSE_MARK_MASK)
@@ -2798,6 +2857,19 @@ fn clause_make_header(size: usize, learnt: bool, has_extra: bool, mark: u32, rel
         | ((has_extra as u32) << 3)
         | ((reloced as u32) << 4)
         | ((size as u32) << CLAUSE_SIZE_SHIFT)
+}
+
+/// Saved replacement-scan resume position (0 = unset; scan starts at 2).
+#[inline(always)]
+fn clause_header_searched_pos(header: u32) -> usize {
+    ((header & CLAUSE_SEARCHED_POS_MASK) >> CLAUSE_SEARCHED_POS_SHIFT) as usize
+}
+
+/// Header with the searched field replaced by `pos` clamped to the field width.
+#[inline(always)]
+fn clause_header_with_searched_pos(header: u32, pos: usize) -> u32 {
+    let clamped = (pos as u32).min(CLAUSE_SEARCHED_POS_MAX);
+    (header & !CLAUSE_SEARCHED_POS_MASK) | (clamped << CLAUSE_SEARCHED_POS_SHIFT)
 }
 
 #[inline(always)]
@@ -3756,6 +3828,21 @@ impl Solver {
             closure_diet: env_bool_or_default("SAT_CLOSURE_DIET", true),
             extract_cache_enabled: env_bool_or_default("SAT_EXTRACT_CACHE", true),
             extract_cache_verify: env_bool_or_default("SAT_EXTRACT_CACHE_VERIFY", false),
+            searched_mode: searched_mode_from_env(),
+            searched_scan: searched_mode_from_env() == SearchedMode::On,
+            searched_arm_ppc: std::env::var("SAT_SEARCHED_ARM_PPC")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(512),
+            // 300k floor: cells that solve before 300k conflicts keep exactly
+            // the shipped trajectory (protects fast SAT-lottery solves like
+            // bp4_BC012F @239k / oddball @191k / jkkk @30k); the deep
+            // propagation-heavy cells this port targets run millions of
+            // conflicts and keep nearly all of the benefit.
+            searched_arm_min_conflicts: std::env::var("SAT_SEARCHED_ARM_MIN_CONFLICTS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300_000),
             extract_cache: congruence::ExtractCache::default(),
             els_csr_ws: els::ElsCsrWs::default(),
             elim_round_ws: simp::ElimRoundWs::default(),
@@ -3944,6 +4031,14 @@ impl Solver {
             clause_ids,
             total_lits,
         } = pre;
+        // SAT_SEARCHED stays off on giants this generation: the field costs no
+        // memory, but enabling it rerolls the trajectory of the memory-fit
+        // giant cells (00fd8ac/83aa/ee5 are solved cells won by dedicated
+        // campaigns). Giants stay byte-identical to the shipped solver;
+        // enabling searched for the pj2008-class giants is a deliberate
+        // follow-up gate.
+        self.searched_mode = SearchedMode::Off;
+        self.searched_scan = false;
         arena.reserve_exact(arena_headroom);
         self.arena = arena;
         let mut watch_counts = vec![0u32; self.watch_lists_len()];
@@ -4121,7 +4216,7 @@ impl Solver {
             clause_header_has_extra(header),
             mark,
             clause_header_reloced(header),
-        );
+        ) | (header & CLAUSE_SEARCHED_POS_MASK);
         if deleted {
             self.mark_binary_clause_deleted_for_clause(clause_idx);
         }
@@ -4837,13 +4932,15 @@ impl Solver {
             let clause_len = clause_header_size(header);
             let new_clause_idx = new_arena.len();
             reloc[old_clause_idx] = new_clause_idx as u32;
-            new_arena.push(clause_make_header(
-                clause_len,
-                false,
-                true,
-                clause_header_persistent_mark(header),
-                clause_header_reloced(header),
-            ));
+            new_arena.push(
+                clause_make_header(
+                    clause_len,
+                    false,
+                    true,
+                    clause_header_persistent_mark(header),
+                    clause_header_reloced(header),
+                ) | (header & CLAUSE_SEARCHED_POS_MASK),
+            );
             let lits_start = old_clause_idx + 1;
             let lits_end = lits_start + clause_len;
             new_arena.extend_from_slice(&self.arena[lits_start..lits_end]);
@@ -4988,11 +5085,12 @@ impl Solver {
                 self.arena[new_extra_idx + offset] = self.arena[old_extra_idx + offset];
             }
         }
-
         for (lit_pos, lit) in trimmed.into_iter().enumerate() {
             self.set_clause_lit(clause_idx, lit_pos, lit);
         }
 
+        // The searched field resets on shrink (a stale resume position past the
+        // new length would just clamp back to 2 at the next scan anyway).
         let header = self.clause_header(clause_idx);
         self.arena[clause_idx] = clause_make_header(
             write,
@@ -5218,10 +5316,10 @@ impl Solver {
                 self.arena[new_extra_idx + offset] = self.arena[old_extra_idx + offset];
             }
         }
-
         for (pos, &lit) in ordered.iter().enumerate() {
             self.set_clause_lit(clause_idx, pos, lit);
         }
+        // Searched field resets on shrink (stale positions clamp to 2 anyway).
         let header = self.clause_header(clause_idx);
         self.arena[clause_idx] = clause_make_header(
             write,
@@ -7033,27 +7131,70 @@ impl Solver {
                         continue;
                     }
                     let mut scanned = 0u64;
-                    for lit_pos in 2..clause_len {
+                    // SAT_SEARCHED: resume the replacement scan at the clause's
+                    // saved header-field position (kissat clause.h `searched`),
+                    // wrapping to the 2..start prefix only if the tail finds
+                    // nothing. With the flag off the field is always 0 and the
+                    // scan starts at 2 exactly as before.
+                    let header = unsafe { *self.arena.get_unchecked(clause_idx) };
+                    let searched_active = self.searched_scan;
+                    let scan_start = if searched_active {
+                        let saved = clause_header_searched_pos(header);
+                        if (2..clause_len).contains(&saved) {
+                            saved
+                        } else {
+                            2
+                        }
+                    } else {
+                        2
+                    };
+                    let mut found_pos = usize::MAX;
+                    for lit_pos in scan_start..clause_len {
+                        scanned += 1;
                         let candidate = word_to_lit(unsafe {
                             *self.arena.get_unchecked(clause_idx + 1 + lit_pos)
                         });
-                        scanned += 1;
                         if self.lit_value(candidate) != FALSE {
-                            unsafe {
-                                *self.arena.get_unchecked_mut(clause_idx + 2) =
-                                    lit_to_word(candidate);
-                                *self.arena.get_unchecked_mut(clause_idx + 1 + lit_pos) =
-                                    lit_to_word(false_lit);
-                            }
-                            let new_watch_idx = self.lit_index(candidate);
-                            if pool_mode {
-                                self.watch_pool.push(new_watch_idx, updated_watcher);
-                            } else {
-                                self.watchers[new_watch_idx].push(updated_watcher);
-                            }
-                            moved_watch = true;
+                            found_pos = lit_pos;
                             break;
                         }
+                    }
+                    if found_pos == usize::MAX {
+                        for lit_pos in 2..scan_start {
+                            scanned += 1;
+                            let candidate = word_to_lit(unsafe {
+                                *self.arena.get_unchecked(clause_idx + 1 + lit_pos)
+                            });
+                            if self.lit_value(candidate) != FALSE {
+                                found_pos = lit_pos;
+                                break;
+                            }
+                        }
+                    }
+                    if found_pos != usize::MAX {
+                        let candidate = word_to_lit(unsafe {
+                            *self.arena.get_unchecked(clause_idx + 1 + found_pos)
+                        });
+                        unsafe {
+                            *self.arena.get_unchecked_mut(clause_idx + 2) =
+                                lit_to_word(candidate);
+                            *self.arena.get_unchecked_mut(clause_idx + 1 + found_pos) =
+                                lit_to_word(false_lit);
+                        }
+                        if searched_active {
+                            // Same cache line as the lits[1] swap above — free.
+                            unsafe {
+                                *self.arena.get_unchecked_mut(clause_idx) =
+                                    clause_header_with_searched_pos(header, found_pos);
+                            }
+                        }
+                        let new_watch_idx = self.lit_index(candidate);
+                        if pool_mode {
+                            self.watch_pool.push(new_watch_idx, updated_watcher);
+                        } else {
+                            self.watchers[new_watch_idx].push(updated_watcher);
+                        }
+                        moved_watch = true;
                     }
                     self.record_search_ticks::<MODE_TICKS, NORMAL_SEARCH>(scanned);
                 } else {
@@ -7075,21 +7216,54 @@ impl Solver {
                         continue;
                     }
 
-                    for lit_pos in 2..clause_len {
+                    // SAT_SEARCHED: same resume-position scan as the PTR_FAST path,
+                    // via the checked accessors.
+                    let header = self.clause_header(clause_idx);
+                    let searched_active = self.searched_scan;
+                    let scan_start = if searched_active {
+                        let saved = clause_header_searched_pos(header);
+                        if (2..clause_len).contains(&saved) {
+                            saved
+                        } else {
+                            2
+                        }
+                    } else {
+                        2
+                    };
+                    let mut found_pos = usize::MAX;
+                    for lit_pos in scan_start..clause_len {
                         let candidate = self.clause_lit(clause_idx, lit_pos);
                         self.record_search_ticks::<MODE_TICKS, NORMAL_SEARCH>(1);
                         if self.lit_value(candidate) != FALSE {
-                            self.set_clause_lit(clause_idx, 1, candidate);
-                            self.set_clause_lit(clause_idx, lit_pos, false_lit);
-                            let new_watch_idx = self.lit_index(candidate);
-                            if pool_mode {
-                                self.watch_pool.push(new_watch_idx, updated_watcher);
-                            } else {
-                                self.watchers[new_watch_idx].push(updated_watcher);
-                            }
-                            moved_watch = true;
+                            found_pos = lit_pos;
                             break;
                         }
+                    }
+                    if found_pos == usize::MAX {
+                        for lit_pos in 2..scan_start {
+                            let candidate = self.clause_lit(clause_idx, lit_pos);
+                            self.record_search_ticks::<MODE_TICKS, NORMAL_SEARCH>(1);
+                            if self.lit_value(candidate) != FALSE {
+                                found_pos = lit_pos;
+                                break;
+                            }
+                        }
+                    }
+                    if found_pos != usize::MAX {
+                        let candidate = self.clause_lit(clause_idx, found_pos);
+                        self.set_clause_lit(clause_idx, 1, candidate);
+                        self.set_clause_lit(clause_idx, found_pos, false_lit);
+                        if searched_active {
+                            self.arena[clause_idx] =
+                                clause_header_with_searched_pos(header, found_pos);
+                        }
+                        let new_watch_idx = self.lit_index(candidate);
+                        if pool_mode {
+                            self.watch_pool.push(new_watch_idx, updated_watcher);
+                        } else {
+                            self.watchers[new_watch_idx].push(updated_watcher);
+                        }
+                        moved_watch = true;
                     }
                 }
 
@@ -8344,6 +8518,19 @@ impl Solver {
     fn perform_restart_if_pending(&mut self) -> bool {
         if !self.restart_pending {
             return false;
+        }
+
+        // SAT_SEARCHED armed rule: latch the saved-scan-position optimization
+        // on once the formula proves propagation-heavy. Checked here (every
+        // restart) so the hot loop pays nothing; cells that never cross the
+        // threshold keep byte-identical trajectories.
+        if self.searched_mode == SearchedMode::Armed
+            && !self.searched_scan
+            && self.stats.conflicts >= self.searched_arm_min_conflicts
+            && self.stats.propagations / self.stats.conflicts.max(1) >= self.searched_arm_ppc
+        {
+            self.searched_scan = true;
+            self.stats.searched_armed_at_conflict = self.stats.conflicts;
         }
 
         self.restart_pending = false;
@@ -10622,7 +10809,7 @@ impl Solver {
                     has_extra,
                     clause_header_persistent_mark(header),
                     clause_header_reloced(header),
-                );
+                ) | (header & CLAUSE_SEARCHED_POS_MASK);
                 // write <= old_idx; copy_within is memmove so overlap is safe. Shift literals
                 // (and kept extra) first, then stamp the header, so source words aren't
                 // clobbered before being read.
@@ -10658,13 +10845,15 @@ impl Solver {
                 let header = arena[old_clause_idx];
                 let clause_len = clause_header_size(header);
                 let has_extra = clause_header_has_extra(header) && !strip_extra;
-                new_arena.push(clause_make_header(
-                    clause_len,
-                    clause_header_learnt(header),
-                    has_extra,
-                    clause_header_persistent_mark(header),
-                    clause_header_reloced(header),
-                ));
+                new_arena.push(
+                    clause_make_header(
+                        clause_len,
+                        clause_header_learnt(header),
+                        has_extra,
+                        clause_header_persistent_mark(header),
+                        clause_header_reloced(header),
+                    ) | (header & CLAUSE_SEARCHED_POS_MASK),
+                );
                 let lits_start = old_clause_idx + 1;
                 let lits_end = lits_start + clause_len;
                 new_arena.extend_from_slice(&arena[lits_start..lits_end]);
@@ -25952,5 +26141,154 @@ mod tests {
             "warmup must take zero steps when all vars are unit-assigned at root"
         );
         assert_eq!(s.stats.warmup_conflict_stopped, 0);
+    }
+
+    // ---- SAT_SEARCHED: saved replacement-scan position (header field) ----
+
+    #[test]
+    fn searched_header_field_roundtrip_and_size_isolation() {
+        // The 6-bit field must roundtrip, clamp at 63, and never disturb the
+        // size/flag bits it was carved out of.
+        for size in [0usize, 3, 9, 63, 64, 1000, (1 << 21) - 1] {
+            let header = clause_make_header(size, true, true, 2, false);
+            assert_eq!(clause_header_searched_pos(header), 0);
+            for pos in [0usize, 2, 5, 63, 64, 5000] {
+                let updated = clause_header_with_searched_pos(header, pos);
+                assert_eq!(clause_header_searched_pos(updated), pos.min(63));
+                assert_eq!(clause_header_size(updated), size);
+                assert_eq!(clause_header_learnt(updated), clause_header_learnt(header));
+                assert_eq!(clause_header_mark(updated), clause_header_mark(header));
+                assert_eq!(
+                    clause_header_has_extra(updated),
+                    clause_header_has_extra(header)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn searched_pos_survives_gc_and_delete_mark() {
+        let mut s = Solver::new(12, vec![]);
+        assert_eq!(s.searched_mode, SearchedMode::Off, "SAT_SEARCHED defaults off");
+        assert!(!s.searched_scan, "off mode never activates the scan");
+        s.searched_scan = true;
+        let long_orig: Vec<i32> = (1..=9).collect();
+        s.add_raw_initial_original_clauses(vec![long_orig, vec![10, 11, 12]]);
+        s.use_lbd = true;
+        for v in 1..=10 {
+            s.decision_level[v] = v as u32;
+        }
+        let learned_idx = s.add_clause((1..=10).map(|v| -(v as i32)).collect());
+
+        let long_idx = s.original_clause_ids[0] as usize;
+        s.arena[long_idx] = clause_header_with_searched_pos(s.clause_header(long_idx), 5);
+        s.arena[learned_idx] = clause_header_with_searched_pos(s.clause_header(learned_idx), 7);
+        // The delete-mark rewrite must preserve the field (round-trip the mark).
+        s.clause_set_deleted(learned_idx, true);
+        assert_eq!(clause_header_searched_pos(s.clause_header(learned_idx)), 7);
+        s.clause_set_deleted(learned_idx, false);
+
+        s.garbage_collect();
+        let long_idx = s.original_clause_ids[0] as usize;
+        let learned_idx = s.learned_clause_ids[0];
+        assert_eq!(clause_header_searched_pos(s.clause_header(long_idx)), 5);
+        assert_eq!(clause_header_searched_pos(s.clause_header(learned_idx)), 7);
+        // Word lengths are unchanged by the field (no layout change at all).
+        assert_eq!(
+            s.clause_word_len(long_idx),
+            1 + 9 + clause_header_extra_words(s.clause_header(long_idx))
+        );
+    }
+
+    #[test]
+    fn searched_armed_rule_latches_on_ppc_threshold() {
+        let mut s = Solver::new(4, vec![vec![1, 2], vec![-1, 3]]);
+        s.searched_mode = SearchedMode::Armed;
+        s.searched_scan = false;
+        s.searched_arm_min_conflicts = 100;
+        s.searched_arm_ppc = 512;
+
+        // Below the conflict floor: never arms, whatever the ratio.
+        s.stats.conflicts = 99;
+        s.stats.propagations = 99 * 1000;
+        s.restart_pending = true;
+        s.perform_restart_if_pending();
+        assert!(!s.searched_scan);
+
+        // Above the floor but below the ratio: stays off.
+        s.stats.conflicts = 200;
+        s.stats.propagations = 200 * 100;
+        s.restart_pending = true;
+        s.perform_restart_if_pending();
+        assert!(!s.searched_scan);
+
+        // Above both: latches on and records the arming conflict.
+        s.stats.propagations = 200 * 512;
+        s.restart_pending = true;
+        s.perform_restart_if_pending();
+        assert!(s.searched_scan);
+        assert_eq!(s.stats.searched_armed_at_conflict, 200);
+
+        // Off mode never arms.
+        let mut off = Solver::new(4, vec![vec![1, 2]]);
+        off.searched_mode = SearchedMode::Off;
+        off.stats.conflicts = 1_000_000;
+        off.stats.propagations = u64::MAX / 2;
+        off.restart_pending = true;
+        off.perform_restart_if_pending();
+        assert!(!off.searched_scan);
+    }
+
+    #[test]
+    fn searched_scan_agrees_with_legacy_scan_on_random_formulas() {
+        // Deterministic LCG fuzz: mixed-length clauses (3..=10 lits) stress the
+        // wraparound replacement scan; the searched and legacy scans may pick
+        // different replacement watches but must agree on every solve status,
+        // and SAT models must satisfy the formula.
+        let mut state = 0x9e3779b97f4a7c15u64;
+        let mut next = move || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 33) as u32
+        };
+        for round in 0..40 {
+            let num_vars = 8 + (next() % 5) as usize; // 8..=12
+            let num_clauses = 20 + (next() % 25) as usize;
+            let mut clauses = Vec::with_capacity(num_clauses);
+            for _ in 0..num_clauses {
+                let len = 3 + (next() % 8) as usize; // 3..=10
+                let mut clause = Vec::with_capacity(len);
+                for _ in 0..len {
+                    let v = 1 + (next() % num_vars as u32) as i32;
+                    let lit = if next() % 2 == 0 { v } else { -v };
+                    if !clause.contains(&lit) && !clause.contains(&-lit) {
+                        clause.push(lit);
+                    }
+                }
+                if clause.is_empty() {
+                    clause.push(1);
+                }
+                clauses.push(clause);
+            }
+            let mut on = Solver::new(num_vars, vec![]);
+            on.searched_scan = true;
+            on.add_raw_initial_original_clauses(clauses.clone());
+            let mut off = Solver::new(num_vars, vec![]);
+            off.searched_scan = false;
+            off.add_raw_initial_original_clauses(clauses.clone());
+            let sat_on = on.solve();
+            let sat_off = off.solve();
+            assert_eq!(sat_on, sat_off, "round {round}: status diverged");
+            if sat_on {
+                for clause in &clauses {
+                    assert!(
+                        clause.iter().any(|&lit| {
+                            let val = on.assignment[lit.unsigned_abs() as usize];
+                            (lit > 0 && val == TRUE) || (lit < 0 && val == FALSE)
+                        }),
+                        "round {round}: model does not satisfy {clause:?}"
+                    );
+                }
+            }
+        }
     }
 }

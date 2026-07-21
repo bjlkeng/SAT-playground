@@ -443,7 +443,7 @@ impl Solver {
             clause_header_has_extra(header),
             2,
             clause_header_reloced(header),
-        );
+        ) | (header & CLAUSE_SEARCHED_POS_MASK);
         queue.push_back(SubsumptionCandidate::Clause(clause_idx));
     }
 
@@ -461,7 +461,7 @@ impl Solver {
             clause_header_has_extra(header),
             0,
             clause_header_reloced(header),
-        );
+        ) | (header & CLAUSE_SEARCHED_POS_MASK);
     }
 
     fn clear_subsumption_queue_marks(&mut self, queue: &mut VecDeque<SubsumptionCandidate>) {
