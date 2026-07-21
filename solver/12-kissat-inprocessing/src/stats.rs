@@ -150,6 +150,9 @@ pub(crate) struct SolverStats {
     pub(crate) phase_initial_used: u64,
     pub(crate) phase_save_target: u64,
     pub(crate) phase_save_best: u64,
+    /// trail entries walked by the phase-prefix capture loops (SAT_PHASE_DELTA
+    /// traffic meter: legacy full walks vs incremental low-water walks)
+    pub(crate) phase_capture_entries: u64,
     pub(crate) random_decisions: u64,
     pub(crate) random_decision_sequences: u64,
     pub(crate) lucky_attempts: u64,
@@ -690,6 +693,7 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("phase_initial_used", ctx.stats.phase_initial_used);
     json.u64("phase_save_target", ctx.stats.phase_save_target);
     json.u64("phase_save_best", ctx.stats.phase_save_best);
+    json.u64("phase_capture_entries", ctx.stats.phase_capture_entries);
     json.u64("rephases", ctx.stats.rephases);
     json.u64("vivify_deduce_shrunk", ctx.stats.vivify_deduce_shrunk);
     json.u64("vivify_deduce_implied", ctx.stats.vivify_deduce_implied);

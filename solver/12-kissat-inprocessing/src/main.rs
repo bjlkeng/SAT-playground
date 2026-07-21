@@ -1937,6 +1937,22 @@ struct Solver {
     target_assigned: usize,
     /// deepest unconflicted trail length captured for best phase over the whole solve
     best_assigned: usize,
+    /// Incremental phase-prefix capture (SAT_PHASE_DELTA, default on): trail
+    /// positions below this mark are unchanged since the last target capture
+    /// (the var at each such position has stayed continuously assigned with the
+    /// same value — every trail shrink site lowers the mark), so
+    /// `capture_target_phase` only needs to walk `trail[mark..]`. The legacy
+    /// full-trail walk is O(trail) per new-max event, which on deep-trail
+    /// giants (pj2008: ~90k levels, captures on nearly every decision) was
+    /// measured as the dominant search cost (2 random DRAM touches per entry,
+    /// twice per decision). Array contents are byte-identical in both modes.
+    target_capture_low: usize,
+    /// Same low-water mark for `capture_best_phase` / `best_phase`.
+    best_capture_low: usize,
+    /// SAT_PHASE_DELTA=off replays the legacy full-trail capture walks
+    /// byte-for-byte (A/B arm); contents and trajectories are identical either
+    /// way, only the walk cost differs.
+    phase_capture_delta: bool,
     /// monotonic phase-capture counter used by tests and future rephase scheduling
     phase_ticks: u64,
     /// selected phase policy; legacy preserves solver-10-compatible saved-phase branching
@@ -3548,6 +3564,9 @@ impl Solver {
             },
             target_assigned: 0,
             best_assigned: 0,
+            target_capture_low: 0,
+            best_capture_low: 0,
+            phase_capture_delta: env_bool_or_default("SAT_PHASE_DELTA", true),
             phase_ticks: 0,
             phase_policy,
             focused_phase_policy: config.focused_phase_policy,
@@ -5937,6 +5956,9 @@ impl Solver {
 
     #[allow(dead_code)]
     fn end_temporary_assumptions(&mut self, guard: TemporaryAssumptionGuard) {
+        // Phase-capture low-water maintenance (see `capture_target_phase`).
+        self.target_capture_low = self.target_capture_low.min(guard.start_trail);
+        self.best_capture_low = self.best_capture_low.min(guard.start_trail);
         while self.trail.len() > guard.start_trail {
             let lit = self.trail.pop().expect("temporary trail underflow");
             let var = lit.unsigned_abs() as usize;
@@ -7954,6 +7976,8 @@ impl Solver {
         }
         self.target_phase.fill(UNASSIGNED);
         self.target_assigned = 0;
+        // The array was cleared, so no prefix is captured anymore.
+        self.target_capture_low = 0;
     }
 
     fn preserve_target_phase_across_restart(&self) -> bool {
@@ -7961,26 +7985,51 @@ impl Solver {
     }
 
     fn capture_target_phase(&mut self, assigned: usize) {
-        for &lit in &self.trail {
+        // Positions below `target_capture_low` were captured with these exact
+        // values and their vars have stayed continuously assigned since (every
+        // trail shrink lowers the mark), so skipping them writes an identical
+        // array. SAT_PHASE_DELTA=off replays the legacy full walk.
+        let start = if self.phase_capture_delta {
+            self.target_capture_low.min(self.trail.len())
+        } else {
+            0
+        };
+        self.stats.phase_capture_entries = self
+            .stats
+            .phase_capture_entries
+            .saturating_add((self.trail.len() - start) as u64);
+        for &lit in &self.trail[start..] {
             let var = lit.unsigned_abs() as usize;
             let value = self.assignment[var];
             if value != UNASSIGNED {
                 self.target_phase[var] = value;
             }
         }
+        self.target_capture_low = self.trail.len();
         self.target_assigned = assigned;
         self.phase_ticks = self.phase_ticks.saturating_add(1);
         self.stats.phase_save_target = self.stats.phase_save_target.saturating_add(1);
     }
 
     fn capture_best_phase(&mut self, assigned: usize) {
-        for &lit in &self.trail {
+        // Same low-water scheme as `capture_target_phase`.
+        let start = if self.phase_capture_delta {
+            self.best_capture_low.min(self.trail.len())
+        } else {
+            0
+        };
+        self.stats.phase_capture_entries = self
+            .stats
+            .phase_capture_entries
+            .saturating_add((self.trail.len() - start) as u64);
+        for &lit in &self.trail[start..] {
             let var = lit.unsigned_abs() as usize;
             let value = self.assignment[var];
             if value != UNASSIGNED {
                 self.best_phase[var] = value;
             }
         }
+        self.best_capture_low = self.trail.len();
         self.best_assigned = assigned;
         self.phase_ticks = self.phase_ticks.saturating_add(1);
         self.stats.phase_save_best = self.stats.phase_save_best.saturating_add(1);
@@ -8096,6 +8145,9 @@ impl Solver {
             // Kissat resets the best trail height only on 'B' rephases so the
             // next stable phase recaptures a fresh best prefix.
             self.best_assigned = 0;
+            // The next capture must overwrite stale values for the whole
+            // trail, exactly like the legacy full walk would.
+            self.best_capture_low = 0;
         }
         self.rephase_index = (self.rephase_index + 1) % 6;
         self.stats.rephases = self.stats.rephases.saturating_add(1);
@@ -8297,6 +8349,12 @@ impl Solver {
         } else {
             self.trail_limits[target_level]
         };
+
+        // Phase-capture low-water maintenance: every trail mutation happens at
+        // positions >= new_trail_len (the chrono compaction below reads and
+        // writes only that suffix), so the captured-prefix marks shrink to it.
+        self.target_capture_low = self.target_capture_low.min(new_trail_len);
+        self.best_capture_low = self.best_capture_low.min(new_trail_len);
 
         if self.chrono_backtrack {
             // kissat reassign-on-backtrack (backtrack.c): scan the trail above the
@@ -26237,6 +26295,68 @@ mod tests {
         off.restart_pending = true;
         off.perform_restart_if_pending();
         assert!(!off.searched_scan);
+    }
+
+    #[test]
+    fn phase_capture_delta_is_byte_identical_to_legacy_full_walk() {
+        // The incremental low-water capture must produce EXACTLY the same
+        // target/best phase arrays and the same trajectory as the legacy
+        // full-trail walk — this is an identity diet, not a heuristic change.
+        // Hard-ish random 3-SAT at ratio ~4.2 under the shipped default
+        // profile (FocusedStable) generates conflicts, mode switches,
+        // backtracks, and phase captures.
+        let mut state = 0xc0ffee123456789u64;
+        let mut next = move || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 33) as u32
+        };
+        let mut config = SolverConfig::from_env_map(&std::collections::BTreeMap::new());
+        // Reach stable mode (where captures happen) quickly on small formulas.
+        config.mode_init_conflicts = 50;
+        config.mode_use_ticks = false;
+        let mut total_captures = 0u64;
+        for round in 0..12 {
+            let num_vars = 40 + (next() % 30) as usize;
+            let num_clauses = num_vars * 43 / 10;
+            let mut clauses = Vec::with_capacity(num_clauses);
+            for _ in 0..num_clauses {
+                let mut clause = Vec::with_capacity(3);
+                while clause.len() < 3 {
+                    let v = 1 + (next() % num_vars as u32) as i32;
+                    let lit = if next() % 2 == 0 { v } else { -v };
+                    if !clause.contains(&lit) && !clause.contains(&-lit) {
+                        clause.push(lit);
+                    }
+                }
+                clauses.push(clause);
+            }
+            let mut on = make_solver_with_config(num_vars, clauses.clone(), &config);
+            on.phase_capture_delta = true;
+            let mut off = make_solver_with_config(num_vars, clauses.clone(), &config);
+            off.phase_capture_delta = false;
+            let sat_on = on.solve();
+            let sat_off = off.solve();
+            assert_eq!(sat_on, sat_off, "round {round}: status diverged");
+            assert_eq!(
+                (on.stats.conflicts, on.stats.decisions, on.stats.propagations),
+                (off.stats.conflicts, off.stats.decisions, off.stats.propagations),
+                "round {round}: trajectory diverged"
+            );
+            assert_eq!(on.target_phase, off.target_phase, "round {round}: target_phase diverged");
+            assert_eq!(on.best_phase, off.best_phase, "round {round}: best_phase diverged");
+            assert_eq!(on.saved_phase, off.saved_phase, "round {round}: saved_phase diverged");
+            assert_eq!(
+                (on.target_assigned, on.best_assigned),
+                (off.target_assigned, off.best_assigned),
+                "round {round}: capture marks diverged"
+            );
+            assert!(
+                on.stats.phase_capture_entries <= off.stats.phase_capture_entries,
+                "round {round}: delta walked more entries than legacy"
+            );
+            total_captures += on.stats.phase_save_target + on.stats.phase_save_best;
+        }
+        assert!(total_captures > 0, "fuzz never exercised a phase capture");
     }
 
     #[test]
