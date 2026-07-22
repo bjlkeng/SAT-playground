@@ -12589,6 +12589,51 @@ impl Solver {
             return false;
         }
         let num_vars = self.assignment.len().saturating_sub(1);
+        // Scalable closed-Tseitin component path first (bead SAT-playground-kk8):
+        // linear detection (union-find + charge parity) and an extension-variable
+        // summation proof whose row widths stay small regardless of the graph's
+        // cutwidth. This cracks parity systems the resolution-only fallback below
+        // cannot certify (expander/grid Tseitin), and short-circuits that
+        // fallback's quadratic min-degree ordering on large systems. Streaming
+        // directly into the live proof is safe: every emitted line (RAT
+        // definitions over fresh variables, RUP resolvents) is independently
+        // valid DRAT, so an aborted attempt never invalidates a later proof.
+        // SAT_TSEITIN (default on): A/B kill switch for the closed-Tseitin
+        // engine; the resolution-only fallback below is unaffected.
+        if env_bool_or_default("SAT_TSEITIN", true) {
+        if let Some(component) = gauss::find_odd_closed_tseitin_component(&xors) {
+            let lines = std::cell::Cell::new(0u64);
+            let proved = {
+                let proof = std::cell::RefCell::new(&mut *proof_log);
+                let mut emit = |clause: &[i32]| {
+                    lines.set(lines.get() + 1);
+                    proof.borrow_mut().record_clause(clause);
+                };
+                let mut emit_del = |clause: &[i32]| {
+                    proof.borrow_mut().record_deletion(clause);
+                };
+                gauss::tseitin_refute_with_proof(
+                    &xors,
+                    &component,
+                    num_vars,
+                    &mut emit,
+                    &mut emit_del,
+                )
+            };
+            if std::env::var("SAT_DEBUG_GAUSS").is_ok() {
+                eprintln!(
+                    "c gauss_refute tseitin component={} proved={} proof_clauses={} sec={:.4}",
+                    component.len(),
+                    proved,
+                    lines.get(),
+                    t0.elapsed().as_secs_f64()
+                );
+            }
+            if proved {
+                return true;
+            }
+        }
+        }
         let mut buffer: Vec<Vec<i32>> = Vec::new();
         let proved = {
             let mut emit = |clause: &[i32]| buffer.push(clause.to_vec());

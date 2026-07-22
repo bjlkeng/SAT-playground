@@ -15,6 +15,24 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **Medium-suite default promotion (2026-07-22): closed-Tseitin ER refutation (`SAT_TSEITIN`).**
+> Detects closed Tseitin XOR components (every variable in exactly two extracted XOR
+> constraints; union-find + odd rhs-parity charge ⇒ UNSAT) and emits a width-bounded
+> extension-variable DRAT proof: equations are summed in a greedy min-cut-growth connected
+> order, the partial-sum row is compressed into prefix-accumulator chains ordered by next
+> use (forward pointer-pair consumption, pointer parking, aggressive deletion lines for
+> drat-trim backward-check speed). Capped at 20k-equation components / 6M proof lemmas so
+> every emitted proof stays verifiable under the harness's 1800 s drat-trim budget.
+> Gate `log/abtest-cand-vs-base-2026-07-22-14-52-12`: **WIN 70 vs 68 solved**
+> (tseitin_n188_d3 TIMEOUT → UNSAT 44 s — kissat 4.0.4 cannot solve it either;
+> plus the documented oski15 load-lottery flip), both-solved conflicts EXACT tie
+> (trajectory-identical elsewhere), PAR-2 139761.9 → 134611.0; `promotion_gate=PASS`.
+> tseitin_grid_n12_m12 also drops 5.65 s → ~1.5 s (proof 1.26M → 10.7k clauses).
+> tseitin_grid_n400_m400 is provable (14.6M lemmas, 22 s) but deliberately left
+> unsolved: its proof cannot be backward-verified within the checker cap and a
+> `checker-timeout` on UNSAT is a gate correctness failure. Disable with `SAT_TSEITIN=off`.
+> Detail: `plan/next-steps-tseitin-2026-07-22.md` (bead `SAT-playground-kk8`).
+
 > **Default profile (2026-05-31): `fstab_lbdtier` promoted.** The `default`/`fast` profiles now run
 > focused-stable search + LBD + tick mode-switching + LBD-tiered reduction (VMTF auto → focused-only),
 > plus `lucky` (promoted earlier, 70h). Promoted from the first feature ablation on the new

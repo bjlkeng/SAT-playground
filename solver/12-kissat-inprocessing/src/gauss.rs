@@ -88,7 +88,15 @@ pub(crate) fn extract_xors(
 
     let mut xors = Vec::new();
     let mut consumed = Vec::new();
-    for (vars, members) in groups {
+    // Deterministic output order: HashMap iteration order varies per process
+    // (RandomState), which would make proof construction order — and thus proof
+    // size/time — nondeterministic. Sort groups by their smallest member clause
+    // index, which recovers the generator's clause order (e.g. row-major vertex
+    // order on grid Tseitin instances, exactly the locality the summation proof
+    // wants).
+    let mut ordered: Vec<(Vec<u32>, Vec<usize>)> = groups.into_iter().collect();
+    ordered.sort_by_key(|(_, members)| members.iter().copied().min().unwrap_or(usize::MAX));
+    for (vars, members) in ordered {
         let k = vars.len();
         if k == 0 || k > max_degree || k > 31 {
             continue;
@@ -582,6 +590,633 @@ pub(crate) fn gaussian_unsat_with_proof(
     false
 }
 
+// ===========================================================================
+// Scalable Tseitin-component refutation with extension variables (bead
+// SAT-playground-kk8).
+//
+// The resolution-only engine above materializes 2^(k-1) clauses per XOR row, so
+// it is capped at MAX_ROW_WIDTH = 24 and cannot refute parity systems whose
+// elimination fill-in exceeds that width (a 3-regular expander like
+// tseitin_n188_d3, cutwidth ~30, or a 400x400 grid, cutwidth ~400). Those
+// systems have polynomial *extended-resolution* refutations: DRAT permits RAT
+// additions over fresh variables, so we can define `z <-> a ^ b` (4 clauses,
+// pivot literal first) and use `z` to keep every materialized row narrow.
+//
+// This engine targets the closed Tseitin shape: every variable occurs in
+// exactly two XOR constraints (edges of a graph whose vertices are the
+// constraints). Summing all constraints of a connected component cancels every
+// variable, leaving `0 = charge`; if the component's charge (XOR of rhs) is
+// odd the formula is UNSAT. Detection is linear (union-find + parity).
+//
+// The proof sums the component's constraints one at a time, maintaining the
+// partial-sum row P. Raw cut variables in P are compressed in pairs into fresh
+// definition variables whenever |P| exceeds a small target width, pairing the
+// two variables whose *next use* (second occurrence) is farthest in the future
+// (Belady). When an upcoming constraint needs a variable hidden inside
+// definitions, the definition chain is reopened top-down with one small row
+// combine per level. Every row combine stays within MAX_ROW_WIDTH, so the
+// existing `combine_rows` machinery (pure RUP resolvents) is reused unchanged.
+// Every emitted line is independently valid DRAT (RAT definitions + RUP
+// resolvents), so a caller may stream lines directly into the live proof and
+// safely abandon on an internal guard: leftover additions never invalidate a
+// later proof.
+// ===========================================================================
+
+/// Raw (uncompressed) partial-sum width target. Smaller keeps each combine's
+/// materialization tiny (2^(w-1) clauses; chain pointers add ~2 per live chain
+/// on top); larger reduces compression churn. On the 400x400 grid Tseitin cell
+/// the steady-state row is ~4 chain pointers + raws, so 2 keeps combines at
+/// ~2^6 clauses. Overridable via `SAT_TSEITIN_COMPRESS` for measurement.
+const TSEITIN_COMPRESS_TARGET: usize = 2;
+
+/// Abort proof construction after this many emitted clauses. This is a
+/// VERIFIABILITY bound, not just a runtime backstop: the harness re-checks
+/// every UNSAT proof with backward drat-trim under a 1800 s cap, and measured
+/// throughput there is ~8-25 k lemmas/s (tseitin_n188_d3: 4.71 M lemmas =
+/// 187 s idle). Proofs past ~6 M lemmas risk `checker-timeout`, which the
+/// promotion gate counts as a correctness failure — worse than not answering.
+/// (The 400x400 grid Tseitin cell generates a valid 14.6 M-lemma proof in
+/// 22 s but cannot be verified in time; it is deliberately left unsolved. See
+/// TSEITIN_MAX_COMPONENT.)
+const TSEITIN_MAX_EMIT: u64 = 6_000_000;
+
+/// Skip the Tseitin engine on components larger than this. Large components
+/// (e.g. the 160 k-equation 400x400 grid) produce proofs beyond the
+/// verifiability bound above; declining early keeps the solve trajectory of
+/// those cells byte-identical to the pre-engine baseline.
+const TSEITIN_MAX_COMPONENT: usize = 20_000;
+
+/// Find a connected component of the XOR system that is *closed Tseitin*
+/// (every variable of the component occurs in exactly two constraints) with
+/// odd charge (XOR of member rhs values) — a sound UNSAT witness. Returns the
+/// member indices (ascending) of the smallest such component, or None.
+pub(crate) fn find_odd_closed_tseitin_component(xors: &[XorConstraint]) -> Option<Vec<usize>> {
+    use std::collections::HashMap;
+    if xors.is_empty() {
+        return None;
+    }
+    // var -> constraint indices (up to 3 recorded; more than 2 disqualifies).
+    let mut occ: HashMap<u32, Vec<usize>> = HashMap::new();
+    for (i, x) in xors.iter().enumerate() {
+        for &v in &x.vars {
+            let e = occ.entry(v).or_default();
+            if e.len() < 3 {
+                e.push(i);
+            }
+        }
+    }
+    // Union-find over constraints.
+    let mut parent: Vec<usize> = (0..xors.len()).collect();
+    fn find(parent: &mut Vec<usize>, mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    for eqs in occ.values() {
+        for w in eqs.windows(2) {
+            let (a, b) = (find(&mut parent, w[0]), find(&mut parent, w[1]));
+            if a != b {
+                parent[a] = b;
+            }
+        }
+    }
+    let n = xors.len();
+    let mut charge: Vec<bool> = vec![false; n];
+    let mut eligible: Vec<bool> = vec![true; n];
+    let mut size: Vec<usize> = vec![0; n];
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        charge[r] ^= xors[i].rhs;
+        size[r] += 1;
+    }
+    for (_, eqs) in occ.iter() {
+        // A variable occurring once (dangling edge) makes its component's
+        // parity satisfiable; occurring 3+ times breaks the Tseitin shape.
+        if eqs.len() != 2 {
+            let r = find(&mut parent, eqs[0]);
+            eligible[r] = false;
+        }
+    }
+    // Smallest odd, closed, eligible component (deterministic tie-break by root).
+    let mut best: Option<usize> = None;
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        if r == i && charge[r] && eligible[r] {
+            if best.map(|b| size[r] < size[b] || (size[r] == size[b] && r < b)).unwrap_or(true) {
+                best = Some(r);
+            }
+        }
+    }
+    let root = best?;
+    let members: Vec<usize> = (0..n).filter(|&i| find(&mut parent, i) == root).collect();
+    Some(members)
+}
+
+/// Emit a DRAT refutation of a closed odd-charge Tseitin component (as found
+/// by `find_odd_closed_tseitin_component`) using extension variables. Fresh
+/// definition variables are numbered from `num_vars + 1`. Returns `true` iff
+/// the empty clause was emitted. Every emitted line is independently valid
+/// DRAT, so streaming `emit` into a live proof is safe even on `false`.
+pub(crate) fn tseitin_refute_with_proof(
+    xors: &[XorConstraint],
+    component: &[usize],
+    num_vars: usize,
+    emit: &mut dyn FnMut(&[i32]),
+    emit_del: &mut dyn FnMut(&[i32]),
+) -> bool {
+    use std::collections::HashMap;
+    if component.is_empty() || component.len() > TSEITIN_MAX_COMPONENT {
+        return false;
+    }
+    let compress_target: usize = std::env::var("SAT_TSEITIN_COMPRESS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&c: &usize| (2..=12).contains(&c))
+        .unwrap_or(TSEITIN_COMPRESS_TARGET);
+
+    // Processing order: a connected, deterministic walk of the component.
+    // Connectivity is required for soundness: `combine_rows` only derives the
+    // sum row's clauses when the operands share a variable, so every summand
+    // should cancel at least one variable of the partial sum. Among the
+    // frontier (constraints adjacent to the processed set) we greedily take
+    // the one minimizing cut growth (#introduced - #cancelled variables),
+    // tie-broken by index — this bounds the live cut near the graph's
+    // bisection width (the whole scheme's width driver) and keeps next-use
+    // distances local so the compression chains stay coherent. On a row-major
+    // grid this reproduces row-major order.
+    let order: Vec<usize> = {
+        // var -> the (up to two) component constraints containing it.
+        let mut var_eqs: HashMap<u32, (usize, usize)> = HashMap::new();
+        for &ei in component {
+            for &v in &xors[ei].vars {
+                match var_eqs.entry(v) {
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert((ei, usize::MAX));
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut e) => {
+                        if e.get().1 != usize::MAX {
+                            return false; // >2 occurrences: not closed Tseitin
+                        }
+                        e.get_mut().1 = ei;
+                    }
+                }
+            }
+        }
+        if var_eqs.values().any(|&(_, b)| b == usize::MAX) {
+            return false; // some variable occurs once: component not closed
+        }
+        let in_comp: std::collections::HashSet<usize> = component.iter().copied().collect();
+        let start = *component.iter().min().unwrap();
+        let mut processed: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut frontier: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        let mut order = Vec::with_capacity(component.len());
+        let mut push_neighbors =
+            |ei: usize,
+             processed: &std::collections::HashSet<usize>,
+             frontier: &mut std::collections::BTreeSet<usize>| {
+                for &v in &xors[ei].vars {
+                    let (a, b) = var_eqs[&v];
+                    let other = if a == ei { b } else { a };
+                    if in_comp.contains(&other) && !processed.contains(&other) {
+                        frontier.insert(other);
+                    }
+                }
+            };
+        order.push(start);
+        processed.insert(start);
+        push_neighbors(start, &processed, &mut frontier);
+        loop {
+            // Minimize (introduced - cancelled); ties by smallest index.
+            let pick = frontier
+                .iter()
+                .min_by_key(|&&ei| {
+                    let mut delta: i64 = 0;
+                    for &v in &xors[ei].vars {
+                        let (a, b) = var_eqs[&v];
+                        let other = if a == ei { b } else { a };
+                        if processed.contains(&other) {
+                            delta -= 1; // cancels a live cut variable
+                        } else {
+                            delta += 1; // introduces a new cut variable
+                        }
+                    }
+                    (delta, ei)
+                })
+                .copied();
+            let Some(pick) = pick else {
+                break;
+            };
+            frontier.remove(&pick);
+            order.push(pick);
+            processed.insert(pick);
+            push_neighbors(pick, &processed, &mut frontier);
+        }
+        if order.len() != component.len() {
+            return false; // component not connected (should not happen)
+        }
+        order
+    };
+
+    // Next use of each variable: step index (into `order`) of its second
+    // occurrence. Every component variable occurs exactly twice.
+    let mut first_seen: HashMap<u32, usize> = HashMap::new();
+    let mut next_use: HashMap<u32, usize> = HashMap::new();
+    for (step, &ei) in order.iter().enumerate() {
+        for &v in &xors[ei].vars {
+            match first_seen.entry(v) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(step);
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    next_use.insert(v, step);
+                }
+            }
+        }
+    }
+
+    let emitted = std::cell::Cell::new(0u64);
+
+    // One row combine, with proof-hygiene deletions. Handles both the shared
+    // case (resolution cascade via `combine_rows`; `have` is fresh per call —
+    // a duplicate emission across combines is a legal DRAT addition and
+    // per-call scoping keeps memory bounded) and the disjoint case (every
+    // clause of the sum `C = A ^ B` of variable-disjoint rows is directly RUP
+    // given both operands' full clause sets: falsifying a C-clause assigns
+    // every variable of A and B, violating the parity of at least one side).
+    //
+    // Deletions keep drat-trim's live clause database small (the derivation is
+    // linear, so spent clauses are never revisited): after each combine we
+    // delete every intermediate resolvent (emitted clauses not in the result
+    // row), the old P row's clauses, and — when `delete_q` says this was the
+    // Q row's last use — the Q row's clauses. drat-trim matches deletions on
+    // sorted literals and keeps duplicate additions as separate copies, so
+    // deleting our copy never kills a live original.
+    #[allow(clippy::too_many_arguments)]
+    fn do_combine(
+        p_vars: &[u32],
+        p_rhs: bool,
+        q_vars: &[u32],
+        q_rhs: bool,
+        delete_q: bool,
+        emitted: &std::cell::Cell<u64>,
+        add: &mut dyn FnMut(&[i32]),
+        del: &mut dyn FnMut(&[i32]),
+    ) -> Option<(Vec<u32>, bool)> {
+        let disjoint = !p_vars.iter().any(|v| q_vars.contains(v));
+        let mut local: Vec<Vec<i32>> = Vec::new();
+        let res = {
+            let mut emitf = |c: &[i32]| local.push(c.to_vec());
+            if disjoint {
+                let mut c_vars: Vec<u32> = p_vars.to_vec();
+                c_vars.extend_from_slice(q_vars);
+                c_vars.sort_unstable();
+                c_vars.dedup();
+                if c_vars.len() != p_vars.len() + q_vars.len()
+                    || c_vars.len() > MAX_ROW_WIDTH
+                {
+                    return None;
+                }
+                let c_rhs = p_rhs ^ q_rhs;
+                for cl in xor_row_clauses(&c_vars, c_rhs) {
+                    emitf(&cl);
+                }
+                (c_vars, c_rhs)
+            } else {
+                let mut have = std::collections::HashSet::new();
+                combine_rows(p_vars, p_rhs, q_vars, q_rhs, &mut have, &mut emitf)?
+            }
+        };
+        emitted.set(emitted.get() + local.len() as u64);
+        for c in &local {
+            add(c);
+        }
+        let result_set: std::collections::HashSet<Vec<i32>> =
+            xor_row_clauses(&res.0, res.1).into_iter().collect();
+        for c in &local {
+            if !result_set.contains(c) {
+                del(c);
+            }
+        }
+        for c in xor_row_clauses(p_vars, p_rhs) {
+            del(&c);
+        }
+        if delete_q {
+            for c in xor_row_clauses(q_vars, q_rhs) {
+                del(&c);
+            }
+        }
+        Some(res)
+    }
+
+    // A prefix-accumulator chain compresses cut variables ordered by next use.
+    // `zs[j]` (fresh) is defined as the parity of `vars[0..=j+1]`; `z(1)` is
+    // `vars[0]` itself. While alive the chain occupies P as `{z(end)}` before
+    // first consumption, then as the pointer pair `{z(end), z(base)}` meaning
+    // "parity of vars[base..end]". Consumption shifts the base pointer forward
+    // with one 3-var definition-row combine per variable — no unwinding.
+    struct Chain {
+        vars: Vec<u32>,
+        zs: Vec<u32>,
+        base: usize, // number of consumed vars; 0 = untouched
+        /// Parked pointer pair: `(z', z_end, z_base)` with `z' = z_end ^
+        /// z_base` defined. While parked, P holds only `z'` for this chain
+        /// (instead of the pair), halving the standing width cost of a
+        /// dormant partially-consumed chain. Unparking replays the same
+        /// definition row.
+        parked: Option<(u32, u32, u32)>,
+    }
+    impl Chain {
+        fn z(&self, j: usize) -> u32 {
+            // 1-based prefix index; z(1) = vars[0].
+            if j == 1 {
+                self.vars[0]
+            } else {
+                self.zs[j - 2]
+            }
+        }
+        fn len(&self) -> usize {
+            self.vars.len()
+        }
+    }
+
+    // Raw-var width target for P (excluding chain pointers) and the hard cap on
+    // total P width. Exceeding the cap aborts safely (caller falls back).
+    let raw_target = compress_target;
+    const P_WIDTH_CAP: usize = 14;
+
+    let mut fresh: u32 = num_vars as u32;
+    let mut chains: Vec<Chain> = Vec::new();
+    // var -> chain index (only while the var is unconsumed inside a chain).
+    let mut in_chain: HashMap<u32, usize> = HashMap::new();
+
+    // Partial-sum row.
+    let mut p_vars: Vec<u32> = xors[order[0]].vars.clone();
+    let mut p_rhs: bool = xors[order[0]].rhs;
+
+    // Emit the four RAT definition clauses of `z <-> a ^ b`, pivot first.
+    fn emit_def(
+        z: u32,
+        a: u32,
+        b: u32,
+        emitted: &std::cell::Cell<u64>,
+        add: &mut dyn FnMut(&[i32]),
+    ) {
+        let (zi, ai, bi) = (z as i32, a as i32, b as i32);
+        emitted.set(emitted.get() + 4);
+        add(&[-zi, ai, bi]);
+        add(&[-zi, -ai, -bi]);
+        add(&[zi, -ai, bi]);
+        add(&[zi, ai, -bi]);
+    }
+
+    let debug = std::env::var("SAT_DEBUG_GAUSS").is_ok();
+    let mut max_width = 0usize;
+    for (step, &ei) in order.iter().enumerate().skip(1) {
+        max_width = max_width.max(p_vars.len());
+        if emitted.get() > TSEITIN_MAX_EMIT || p_vars.len() > P_WIDTH_CAP {
+            if debug {
+                eprintln!(
+                    "c tseitin abort step={} emitted={} p_width={} max_width={} chains={}",
+                    step,
+                    emitted.get(),
+                    p_vars.len(),
+                    max_width,
+                    chains.len()
+                );
+            }
+            return false;
+        }
+        let eq = &xors[ei];
+        // Expose every to-be-cancelled variable hidden inside a chain by
+        // shifting that chain's base pointer forward to it.
+        for &v in &eq.vars {
+            if next_use.get(&v) != Some(&step) {
+                continue; // first occurrence: nothing hidden
+            }
+            let Some(&ci) = in_chain.get(&v) else {
+                continue; // raw in P already
+            };
+            // Unpark first: consumption needs the pointer pair in P. The park
+            // definition is spent after this (last use).
+            if let Some((zp, ze, zb)) = chains[ci].parked.take() {
+                let mut row = vec![zp, ze, zb];
+                row.sort_unstable();
+                let Some((nv, nr)) =
+                    do_combine(&p_vars, p_rhs, &row, false, true, &emitted, emit, emit_del)
+                else {
+                    return false;
+                };
+                p_vars = nv;
+                p_rhs = nr;
+            }
+            loop {
+                if emitted.get() > TSEITIN_MAX_EMIT {
+                    return false;
+                }
+                let (die, shift_row): (bool, Vec<u32>) = {
+                    let c = &chains[ci];
+                    let b = c.base;
+                    debug_assert!(b < c.len());
+                    if b == 0 {
+                        if c.len() == 2 {
+                            // {z2, x1, x2}: shares z2 (= z(end)) with P.
+                            (true, vec![c.z(2), c.vars[0], c.vars[1]])
+                        } else {
+                            // {z2, x1, x2} shares nothing with P (z(end) is
+                            // deeper): disjoint sum, exposes x1 and x2.
+                            (false, vec![c.z(2), c.vars[0], c.vars[1]])
+                        }
+                    } else if b + 1 == c.len() {
+                        // Final shift {z(end), z(b), x_last}: both pointers
+                        // cancel; the chain dies.
+                        (true, vec![c.z(b + 1), c.z(b), c.vars[b]])
+                    } else {
+                        // {z(b+1), z(b), x_{b+1}}: pointer moves forward.
+                        (false, vec![c.z(b + 1), c.z(b), c.vars[b]])
+                    }
+                };
+                let mut row = shift_row;
+                row.sort_unstable();
+                row.dedup();
+                // The shift consumes this definition row (its last use).
+                let Some((nv, nr)) =
+                    do_combine(&p_vars, p_rhs, &row, false, true, &emitted, emit, emit_del)
+                else {
+                    return false;
+                };
+                p_vars = nv;
+                p_rhs = nr;
+                let c = &mut chains[ci];
+                if die {
+                    for &x in &c.vars[c.base..] {
+                        in_chain.remove(&x);
+                    }
+                    c.base = c.len();
+                } else if c.base == 0 {
+                    // First opening of a len>=3 chain exposed vars[0] and
+                    // vars[1] raw.
+                    in_chain.remove(&c.vars[0]);
+                    in_chain.remove(&c.vars[1]);
+                    c.base = 2;
+                } else {
+                    in_chain.remove(&c.vars[c.base]);
+                    c.base += 1;
+                }
+                if !in_chain.contains_key(&v) {
+                    break;
+                }
+                if p_vars.len() > P_WIDTH_CAP {
+                    return false;
+                }
+            }
+        }
+        // Sum the constraint into P (the exposed shared variables cancel); the
+        // constraint's axiom clauses are spent afterwards.
+        let Some((nv, nr)) =
+            do_combine(&p_vars, p_rhs, &eq.vars, eq.rhs, true, &emitted, emit, emit_del)
+        else {
+            return false;
+        };
+        p_vars = nv;
+        p_rhs = nr;
+        // Compress: move far-next-use raw vars into prefix chains until the raw
+        // width is back at the target. The excess is swept in ascending
+        // next-use order, each var appended to a chain whose tail stays below
+        // it (keeping every chain's internal order ascending — what makes
+        // forward consumption line up) or paired with the next excess var into
+        // a new chain. Ascending sweep makes consecutive far vars coalesce
+        // into few large chains instead of fragmenting into many pointer pairs.
+        let mut raw: Vec<u32> = p_vars
+            .iter()
+            .copied()
+            .filter(|v| next_use.contains_key(v) && !in_chain.contains_key(v))
+            .collect();
+        if raw.len() > raw_target {
+            raw.sort_by_key(|&v| (next_use[&v], v));
+            let excess = raw.split_off(raw_target);
+            let mut pending: Option<u32> = None;
+            for &x in &excess {
+                if emitted.get() > TSEITIN_MAX_EMIT {
+                    return false;
+                }
+                let x_nu = next_use[&x];
+                // Best append target: alive chain whose tail next-use is
+                // maximal but still <= x's.
+                let mut target: Option<usize> = None;
+                for (i, c) in chains.iter().enumerate() {
+                    if c.base >= c.len() {
+                        continue; // dead
+                    }
+                    let tail_nu = next_use[c.vars.last().unwrap()];
+                    if tail_nu <= x_nu
+                        && target
+                            .map(|t| tail_nu > next_use[chains[t].vars.last().unwrap()])
+                            .unwrap_or(true)
+                    {
+                        target = Some(i);
+                    }
+                }
+                if let Some(ci) = target {
+                    // Append x: fresh z(end+1) = z(end) ^ x; P swaps
+                    // {z(end), x} for {z(end+1)}. A parked chain must be
+                    // unparked first (the pair returns to P).
+                    if let Some((zp, ze, zb)) = chains[ci].parked.take() {
+                        let mut row = vec![zp, ze, zb];
+                        row.sort_unstable();
+                        let Some((nv, nr)) = do_combine(
+                            &p_vars, p_rhs, &row, false, true, &emitted, emit, emit_del,
+                        ) else {
+                            return false;
+                        };
+                        p_vars = nv;
+                        p_rhs = nr;
+                    }
+                    let zend = chains[ci].z(chains[ci].len());
+                    fresh += 1;
+                    let z = fresh;
+                    emit_def(z, zend, x, &emitted, emit);
+                    let mut row = vec![z, zend, x];
+                    row.sort_unstable();
+                    // The append definition is reused by the future shift
+                    // through this position: keep it live (delete_q=false).
+                    let Some((nv, nr)) = do_combine(
+                        &p_vars, p_rhs, &row, false, false, &emitted, emit, emit_del,
+                    ) else {
+                        return false;
+                    };
+                    p_vars = nv;
+                    p_rhs = nr;
+                    let c = &mut chains[ci];
+                    c.vars.push(x);
+                    c.zs.push(z);
+                    in_chain.insert(x, ci);
+                } else if let Some(x1) = pending.take() {
+                    // Pair the two unplaced excess vars (ascending order) into
+                    // a fresh chain. The creation definition is reused when the
+                    // chain is first opened: keep it live (delete_q=false).
+                    fresh += 1;
+                    let z = fresh;
+                    emit_def(z, x1, x, &emitted, emit);
+                    let mut row = vec![z, x1, x];
+                    row.sort_unstable();
+                    let Some((nv, nr)) = do_combine(
+                        &p_vars, p_rhs, &row, false, false, &emitted, emit, emit_del,
+                    ) else {
+                        return false;
+                    };
+                    p_vars = nv;
+                    p_rhs = nr;
+                    let ci = chains.len();
+                    chains.push(Chain { vars: vec![x1, x], zs: vec![z], base: 0, parked: None });
+                    in_chain.insert(x1, ci);
+                    in_chain.insert(x, ci);
+                } else {
+                    pending = Some(x);
+                }
+            }
+            // A leftover unpaired var simply stays raw.
+        }
+        // Park the pointer pair of every partially-consumed chain that is not
+        // needed on the very next step: {z_end, z_base} becomes one fresh var.
+        for ci in 0..chains.len() {
+            let c = &chains[ci];
+            if c.base == 0 || c.base >= c.len() || c.parked.is_some() {
+                continue;
+            }
+            let next_needed = next_use[&c.vars[c.base]];
+            if next_needed <= step + 1 {
+                continue; // consumed imminently: parking would just churn
+            }
+            let ze = c.z(c.len());
+            let zb = c.z(c.base);
+            fresh += 1;
+            let zp = fresh;
+            emit_def(zp, ze, zb, &emitted, emit);
+            let mut row = vec![zp, ze, zb];
+            row.sort_unstable();
+            // The park definition is reused at unpark: keep it live.
+            let Some((nv, nr)) =
+                do_combine(&p_vars, p_rhs, &row, false, false, &emitted, emit, emit_del)
+            else {
+                return false;
+            };
+            p_vars = nv;
+            p_rhs = nr;
+            chains[ci].parked = Some((zp, ze, zb));
+        }
+    }
+
+    if p_vars.is_empty() && p_rhs {
+        emitted.set(emitted.get() + 1);
+        emit(&[]);
+        true
+    } else {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -871,6 +1506,198 @@ mod tests {
         assert!(gaussian_unsat(&xors, nv));
         if let Some(v) = drat_verify_xor_system(&xors, nv) {
             assert!(v, "drat-trim must verify the 4x4 grid Tseitin proof");
+        }
+    }
+
+    // ---- Closed-Tseitin extension-variable refutation (bead SAT-playground-kk8) ----
+
+    /// drat-trim verification for the Tseitin engine: CNF = the XOR rows'
+    /// clausal encodings, proof = the extension-variable summation refutation.
+    fn drat_verify_tseitin(xors: &[XorConstraint], num_vars: usize) -> Option<bool> {
+        use std::io::Write;
+        let drat = drat_trim_path();
+        if !drat.exists() {
+            eprintln!("drat-trim not found at {drat:?}; skipping proof check");
+            return None;
+        }
+        let component =
+            find_odd_closed_tseitin_component(xors).expect("expected an odd closed component");
+        let mut cnf_clauses: Vec<Vec<i32>> = Vec::new();
+        for x in xors {
+            cnf_clauses.extend(xor_row_clauses(&x.vars, x.rhs));
+        }
+        // (is_add, clause) so deletions land interleaved in emission order.
+        let proof_lines: std::cell::RefCell<Vec<(bool, Vec<i32>)>> =
+            std::cell::RefCell::new(Vec::new());
+        let ok = {
+            let mut emit = |c: &[i32]| proof_lines.borrow_mut().push((true, c.to_vec()));
+            let mut emit_del = |c: &[i32]| proof_lines.borrow_mut().push((false, c.to_vec()));
+            tseitin_refute_with_proof(xors, &component, num_vars, &mut emit, &mut emit_del)
+        };
+        let proof_lines = proof_lines.into_inner();
+        assert!(ok, "expected the Tseitin engine to produce a proof");
+        assert_eq!(
+            proof_lines.last().map(|(add, c)| *add && c.is_empty()),
+            Some(true)
+        );
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let tag = format!("{}_{}_{}", pid, num_vars, xors.len());
+        let cnf_path = dir.join(format!("tseitin_proof_{tag}.cnf"));
+        let proof_path = dir.join(format!("tseitin_proof_{tag}.drat"));
+        {
+            let mut f = std::fs::File::create(&cnf_path).unwrap();
+            writeln!(f, "p cnf {} {}", num_vars, cnf_clauses.len()).unwrap();
+            for c in &cnf_clauses {
+                for &l in c {
+                    write!(f, "{l} ").unwrap();
+                }
+                writeln!(f, "0").unwrap();
+            }
+        }
+        {
+            let mut f = std::fs::File::create(&proof_path).unwrap();
+            for (add, c) in &proof_lines {
+                if !add {
+                    write!(f, "d ").unwrap();
+                }
+                for &l in c {
+                    write!(f, "{l} ").unwrap();
+                }
+                writeln!(f, "0").unwrap();
+            }
+        }
+        let out = std::process::Command::new(&drat)
+            .arg(&cnf_path)
+            .arg(&proof_path)
+            .output()
+            .expect("failed to run drat-trim");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let _ = std::fs::remove_file(&cnf_path);
+        let _ = std::fs::remove_file(&proof_path);
+        Some(stdout.contains("s VERIFIED"))
+    }
+
+    #[test]
+    fn tseitin_detects_odd_cycle() {
+        let xors = vec![
+            XorConstraint { vars: vec![1, 2], rhs: true },
+            XorConstraint { vars: vec![2, 3], rhs: true },
+            XorConstraint { vars: vec![1, 3], rhs: true },
+        ];
+        let comp = find_odd_closed_tseitin_component(&xors).expect("odd cycle is closed+odd");
+        assert_eq!(comp, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn tseitin_rejects_even_cycle_and_open_chain() {
+        let even = vec![
+            XorConstraint { vars: vec![1, 2], rhs: true },
+            XorConstraint { vars: vec![2, 3], rhs: true },
+            XorConstraint { vars: vec![1, 3], rhs: false },
+        ];
+        assert!(find_odd_closed_tseitin_component(&even).is_none());
+        // Open chain: var 3 occurs once, so the odd charge is satisfiable.
+        let open = vec![
+            XorConstraint { vars: vec![1, 2], rhs: true },
+            XorConstraint { vars: vec![2, 3], rhs: false },
+        ];
+        assert!(find_odd_closed_tseitin_component(&open).is_none());
+    }
+
+    #[test]
+    fn tseitin_rejects_var_in_three_constraints() {
+        let xors = vec![
+            XorConstraint { vars: vec![1, 2], rhs: true },
+            XorConstraint { vars: vec![1, 3], rhs: true },
+            XorConstraint { vars: vec![1, 2, 3], rhs: true },
+        ];
+        assert!(find_odd_closed_tseitin_component(&xors).is_none());
+    }
+
+    #[test]
+    fn tseitin_picks_odd_component_among_several() {
+        // Component A (vars 1-3): even cycle (consistent). Component B (vars
+        // 4-6): odd cycle (UNSAT).
+        let xors = vec![
+            XorConstraint { vars: vec![1, 2], rhs: true },
+            XorConstraint { vars: vec![2, 3], rhs: true },
+            XorConstraint { vars: vec![1, 3], rhs: false },
+            XorConstraint { vars: vec![4, 5], rhs: true },
+            XorConstraint { vars: vec![5, 6], rhs: true },
+            XorConstraint { vars: vec![4, 6], rhs: true },
+        ];
+        let comp = find_odd_closed_tseitin_component(&xors).expect("odd component exists");
+        assert_eq!(comp, vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn tseitin_proof_odd_cycle_verified() {
+        let xors = vec![
+            XorConstraint { vars: vec![1, 2], rhs: true },
+            XorConstraint { vars: vec![2, 3], rhs: true },
+            XorConstraint { vars: vec![1, 3], rhs: true },
+        ];
+        if let Some(v) = drat_verify_tseitin(&xors, 3) {
+            assert!(v, "drat-trim must verify the odd-cycle ER proof");
+        }
+    }
+
+    #[test]
+    fn tseitin_proof_grid_verified() {
+        // 6x6 grid: cutwidth ~6 exceeds the compression target, so extension
+        // variables and reopening are exercised.
+        let (nv, xors) = grid_tseitin(6, 6);
+        if let Some(v) = drat_verify_tseitin(&xors, nv) {
+            assert!(v, "drat-trim must verify the 6x6 grid ER proof");
+        }
+    }
+
+    #[test]
+    fn tseitin_proof_wide_grid_verified() {
+        // 4x20 grid: long rows force compression churn and deep reopen chains.
+        let (nv, xors) = grid_tseitin(4, 20);
+        if let Some(v) = drat_verify_tseitin(&xors, nv) {
+            assert!(v, "drat-trim must verify the 4x20 grid ER proof");
+        }
+    }
+
+    #[test]
+    fn tseitin_proof_expander_verified() {
+        // Deterministic random 3-regular-ish multigraph on 30 nodes with odd
+        // charge: cutwidth well above the compression target, non-grid shape.
+        let n = 30usize;
+        let mut state: u64 = 0x9E3779B97F4A7C15;
+        let mut next = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 33) as usize
+        };
+        // Build edges: a cycle (ensures connectivity + every node degree >= 2)
+        // plus n/2 random chords.
+        let mut edges: Vec<(usize, usize)> = (0..n).map(|i| (i, (i + 1) % n)).collect();
+        for _ in 0..n / 2 {
+            let a = next() % n;
+            let b = next() % n;
+            if a != b {
+                edges.push((a.min(b), a.max(b)));
+            }
+        }
+        let mut inc: Vec<Vec<u32>> = vec![Vec::new(); n];
+        for (ei, &(a, b)) in edges.iter().enumerate() {
+            inc[a].push(ei as u32 + 1);
+            inc[b].push(ei as u32 + 1);
+        }
+        let mut xors = Vec::new();
+        for (i, mut vars) in inc.into_iter().enumerate() {
+            vars.sort_unstable();
+            vars.dedup();
+            xors.push(XorConstraint { vars, rhs: i == 0 });
+        }
+        // Charge is odd (exactly one rhs=true) and every edge var occurs in
+        // exactly its two endpoint constraints (dedup killed none: a==b skipped).
+        assert!(gaussian_unsat(&xors, edges.len()));
+        if let Some(v) = drat_verify_tseitin(&xors, edges.len()) {
+            assert!(v, "drat-trim must verify the expander ER proof");
         }
     }
 
