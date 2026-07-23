@@ -26,8 +26,8 @@ addendum section at the bottom — filled in when the gate lands.
    main=7.62M/shift=2.54M/append=3.82M — the s=2 resolution-cascade
    intermediates are an architectural floor (~48/step minimum, analyzed
    exhaustively: snake order, eq-splitting, fusions all >= 52/step). Getting
-   under the ~6M-lemma budget needs a fundamentally different derivation or a
-   checker change (forward mode/LRAT — harness change, not .rs).
+   under the ~6M-lemma budget needs a fundamentally different derivation
+   (ruled out by the floor analysis for this class). Arc closed.
 3. **SAT_ENDGAME implemented (default on, trigger 4M armed conflicts) — the
    reroll-free scoped-firing shape.** Provably cannot touch any solved cell:
    armed-solved conflict census (exact-deterministic, digit-for-digit TSV
@@ -131,13 +131,10 @@ addendum section at the bottom — filled in when the gate lands.
    degradation hits both modes (n188 control: forward 147s VERIFIED, faster
    than backward's 198s — forward is fine on normal-scale proofs, but the
    grid's 14.63M lemmas over 319k vars + 1.27M originals sink it either way).
-   The ONLY remaining lever is LRAT (checker does zero search, needs
-   antecedent hints emitted by the solver — a substantial proof-logger
-   project: the gauss engine knows its antecedents, but hint emission would
-   have to be threaded through every DRAT-emitting path, and the harness
-   would need an lrat-check pipeline) — or a proof <=~8M lemmas, which the
-   architecture floor analysis rules out for this derivation class (~12M
-   floor). Grid n400: CLOSED, both checker modes, measured.
+   Grid n400: CLOSED, both checker modes, measured — DO NOT REVISIT. The only
+   theoretical lever left is a proof <=~8M lemmas, which the architecture floor
+   analysis rules out for this derivation class (~12M floor). No further work
+   on this cell.
 
 ## Standing traps (carried forward + new this session)
 
