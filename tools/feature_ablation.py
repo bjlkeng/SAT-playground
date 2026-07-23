@@ -702,11 +702,16 @@ def _find_drat_trim() -> str | None:
 DRAT_TRIM = _find_drat_trim()
 
 
-def _verify_result(result: str, cnf_path: Path, odir: Path, stdout_text: str) -> str:
+def _verify_result(result: str, cnf_path: Path, odir: Path, stdout_text: str,
+                   solver_timeout: int = 1800) -> str:
     """Independently check a solver answer before its scratch dir is deleted.
 
     SAT   -> verify_sat.py confirms the reported model satisfies every clause (partial models ok).
-    UNSAT -> drat-trim replays the DRAT proof at odir/proof.out against the CNF.
+    UNSAT -> drat-trim replays the DRAT proof at odir/proof.out against the CNF, with a
+             budget of 2x the solver's wall limit (verification runs off the timed path, so a
+             slow-to-check-but-valid proof costs checker wall, not the cell's time_s; the 2x
+             cap still bounds a sweep's tail and still surfaces pathological proofs as
+             checker-timeout = correctness failure).
     Anything else (TIMEOUT / UNKNOWN_rc*) has nothing to check.
 
     Returns one of: ok | FAIL | no-proof | no-checker | checker-timeout | checker-error | skip.
@@ -727,7 +732,8 @@ def _verify_result(result: str, cnf_path: Path, odir: Path, stdout_text: str) ->
             if not DRAT_TRIM:
                 return "no-checker"
             p = subprocess.run([DRAT_TRIM, str(cnf_path), str(proof)],
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=1800)
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                               timeout=2 * solver_timeout)
             out = p.stdout or ""
             if any(ln.strip() in ("s VERIFIED", "s ACCEPTED") for ln in out.splitlines()):
                 return "ok"
@@ -771,7 +777,7 @@ def _solve_one(core: int, solver_dir: str, env_extra: dict, cnf_path: Path, odir
                     if br >= 0:
                         js = ln[br:]
             g = lambda k: (re.search(rf'"{k}":([0-9.eE+-]+)', js) or [None, "NA"])[1]
-            ver = _verify_result(res, cnf_path, odir, p.stdout) if verify else "off"
+            ver = _verify_result(res, cnf_path, odir, p.stdout, timeout) if verify else "off"
             return (res, dt, g("conflicts"), g("propagations"), g("decisions"), ver)
         except subprocess.TimeoutExpired:
             return ("TIMEOUT", time.time() - t0, "NA", "NA", "NA", "skip")

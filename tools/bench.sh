@@ -347,7 +347,9 @@ print(f("status"), f("status_file"), f("model_check_result"), f("termination_rea
             if [[ -n "$DRAT_TRIM" ]]; then
                 local checker_output=""
                 local checker_status=""
-                checker_output=$("$DRAT_TRIM" "$solver_input" "$proof_dir/proof.out" 2>&1) || true
+                # Checker budget: 2x the solver time limit (matches feature_ablation.py's
+                # _verify_result policy; verification runs off the timed path).
+                checker_output=$("$TIMEOUT_CMD" $((TIMEOUT * 2)) "$DRAT_TRIM" "$solver_input" "$proof_dir/proof.out" 2>&1) || true
                 checker_status=$(printf '%s\n' "$checker_output" | tr -d '\r')
                 if echo "$checker_status" | grep -qx "s VERIFIED"; then
                     verified="ok"

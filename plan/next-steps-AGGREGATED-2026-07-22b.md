@@ -104,10 +104,25 @@ addendum section at the bottom — filled in when the gate lands.
    proof-churn during preprocessing is also a WALL cost on every big cell.
    Two shreds worth measuring: buffer/batch the BVE deletion emission, and
    the occurrence-list peak during preprocessing (the 9.5GB spike).
-5. **Grid n400 / XOR arc: CLOSED.** Do not revisit under .rs-only rules (see
-   TL;DR 1-2). If harness changes ever become fair game: drat-trim `-f`
-   (forward) or LRAT would verify the existing 14.6M-lemma proof in minutes —
-   an instant +1.
+5. **Carried forward from the 21c/22 aggregates (unstarted kissat gaps,
+   still valid):**
+   (a) Elimination depth: kissat 72-88% var elimination on circuit miters vs
+       our 43-56% (gap-read 2026-07-21). Bound escalation and rounds=2 are
+       measured-dead (elimbounds session) — the remaining delta is in
+       substitution/definition-extraction interplay, not raw bounds.
+   (b) SAT-sweeping productivity: kissat kitten does 90k-18M solves/run
+       extracting backbones+equivalences; our sweep finds 0-826 facts.
+       First known defect: `sweep_round` restarts its 512-seed scan at var 1
+       every round (no persistent cursor). Bead SAT-playground-5b2.3.39 area.
+   (c) Tiered vivification port + probing/HBR parity (21c #4/#5), unstarted.
+   All three are trajectory-coupled (reroll the >=1M-conflict solved cells);
+   scope with the armed-census machinery or bundle with a measured re-deal.
+6. **Grid n400 / XOR arc: CLOSED under .rs-only rules** (see TL;DR 1-2).
+   NOTE 2026-07-23: the checker budget is now 2x the solver limit (3600s) —
+   feature_ablation.py `_verify_result` + bench.sh — which re-opens this arc;
+   uncapped verify timing of the recycled 14.63M-lemma proof in flight at
+   write time. If it fits with load margin, raising TSEITIN_MAX_COMPONENT/
+   MAX_EMIT is the +1.
 
 ## Standing traps (carried forward + new this session)
 
