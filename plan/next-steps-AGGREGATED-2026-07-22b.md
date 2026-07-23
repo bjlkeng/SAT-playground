@@ -125,12 +125,19 @@ addendum section at the bottom — filled in when the gate lands.
    thread, idle 36-core host). That exceeds even the relaxed 3600s cap before
    any gate-load inflation. Earlier ">2046s" was a kill point, not a
    completion — the true verify time is at least 2.6x the old cap and >1.3x
-   the new one. Conclusion unchanged in kind, strengthened in degree: the +1
-   needs a proof ~<=8M lemmas (architecture floor analysis says this class
-   bottoms at ~12M) or a forward-mode/LRAT checker change. Next realistic
-   lever if ever wanted: make the harness use drat-trim `-f` (forward mode)
-   for proofs above a size threshold — the 22s-generated proof would verify
-   in minutes.
+   the new one. FORWARD MODE MEASURED TOO (2026-07-23): drat-trim `-f` on the
+   same proof TIMED OUT at the full 3600s unfinished — the earlier "forward
+   would verify in minutes" claim was WRONG; the grid's checker-rate
+   degradation hits both modes (n188 control: forward 147s VERIFIED, faster
+   than backward's 198s — forward is fine on normal-scale proofs, but the
+   grid's 14.63M lemmas over 319k vars + 1.27M originals sink it either way).
+   The ONLY remaining lever is LRAT (checker does zero search, needs
+   antecedent hints emitted by the solver — a substantial proof-logger
+   project: the gauss engine knows its antecedents, but hint emission would
+   have to be threaded through every DRAT-emitting path, and the harness
+   would need an lrat-check pipeline) — or a proof <=~8M lemmas, which the
+   architecture floor analysis rules out for this derivation class (~12M
+   floor). Grid n400: CLOSED, both checker modes, measured.
 
 ## Standing traps (carried forward + new this session)
 
