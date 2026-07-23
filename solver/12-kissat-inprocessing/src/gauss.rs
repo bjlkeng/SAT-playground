@@ -727,7 +727,17 @@ pub(crate) fn tseitin_refute_with_proof(
     emit_del: &mut dyn FnMut(&[i32]),
 ) -> bool {
     use std::collections::HashMap;
-    if component.is_empty() || component.len() > TSEITIN_MAX_COMPONENT {
+    // Measurement overrides for the verifiability caps (see the const docs):
+    // SAT_TSEITIN_MAX_COMPONENT / SAT_TSEITIN_MAX_EMIT. Defaults unchanged.
+    let max_component: usize = std::env::var("SAT_TSEITIN_MAX_COMPONENT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(TSEITIN_MAX_COMPONENT);
+    let max_emit: u64 = std::env::var("SAT_TSEITIN_MAX_EMIT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(TSEITIN_MAX_EMIT);
+    if component.is_empty() || component.len() > max_component {
         return false;
     }
     let compress_target: usize = std::env::var("SAT_TSEITIN_COMPRESS")
@@ -837,6 +847,14 @@ pub(crate) fn tseitin_refute_with_proof(
     }
 
     let emitted = std::cell::Cell::new(0u64);
+    // Per-category emission counters (SAT_DEBUG_GAUSS breakdown).
+    let cat_main = std::cell::Cell::new(0u64);
+    let cat_shift = std::cell::Cell::new(0u64);
+    let cat_unpark = std::cell::Cell::new(0u64);
+    let cat_append = std::cell::Cell::new(0u64);
+    let cat_create = std::cell::Cell::new(0u64);
+    let cat_park = std::cell::Cell::new(0u64);
+    let cat_defs = std::cell::Cell::new(0u64);
 
     // One row combine, with proof-hygiene deletions. Handles both the shared
     // case (resolution cascade via `combine_rows`; `have` is fresh per call —
@@ -861,6 +879,7 @@ pub(crate) fn tseitin_refute_with_proof(
         q_rhs: bool,
         delete_q: bool,
         emitted: &std::cell::Cell<u64>,
+        cat: &std::cell::Cell<u64>,
         add: &mut dyn FnMut(&[i32]),
         del: &mut dyn FnMut(&[i32]),
     ) -> Option<(Vec<u32>, bool)> {
@@ -889,6 +908,7 @@ pub(crate) fn tseitin_refute_with_proof(
             }
         };
         emitted.set(emitted.get() + local.len() as u64);
+        cat.set(cat.get() + local.len() as u64);
         for c in &local {
             add(c);
         }
@@ -947,6 +967,21 @@ pub(crate) fn tseitin_refute_with_proof(
     const P_WIDTH_CAP: usize = 14;
 
     let mut fresh: u32 = num_vars as u32;
+    // Definition-variable recycling. A definition variable is returned to this
+    // free list the moment no live (undeleted) emitted clause can mention it:
+    // a park variable at unpark (its definition row is consumed there,
+    // delete_q=true), a chain's variables when the chain dies (every
+    // definition row has been consumed by a shift by then, and only z(end)/
+    // z(base) ever sat in P — both cancel in the dying combine, whose old-P
+    // clauses are deleted inside `do_combine`). Redefining a recycled
+    // variable is sound DRAT: the RAT check on the new definition's pivot
+    // sees no live clause over the variable, exactly as for a never-used one.
+    // This keeps the proof's variable space at `num_vars + O(live chains)`
+    // instead of one variable per definition — on the 400x400 grid Tseitin
+    // proof ~320 k total vars instead of ~1.1 M. Backward drat-trim's array
+    // footprint and its per-RAT-lemma watch scans are proportional to the
+    // variable space, which is what made that proof unverifiable in time.
+    let mut free_zs: Vec<u32> = Vec::new();
     let mut chains: Vec<Chain> = Vec::new();
     // var -> chain index (only while the var is unconsumed inside a chain).
     let mut in_chain: HashMap<u32, usize> = HashMap::new();
@@ -975,7 +1010,7 @@ pub(crate) fn tseitin_refute_with_proof(
     let mut max_width = 0usize;
     for (step, &ei) in order.iter().enumerate().skip(1) {
         max_width = max_width.max(p_vars.len());
-        if emitted.get() > TSEITIN_MAX_EMIT || p_vars.len() > P_WIDTH_CAP {
+        if emitted.get() > max_emit || p_vars.len() > P_WIDTH_CAP {
             if debug {
                 eprintln!(
                     "c tseitin abort step={} emitted={} p_width={} max_width={} chains={}",
@@ -999,20 +1034,21 @@ pub(crate) fn tseitin_refute_with_proof(
                 continue; // raw in P already
             };
             // Unpark first: consumption needs the pointer pair in P. The park
-            // definition is spent after this (last use).
+            // definition is spent after this (last use), so `zp` recycles.
             if let Some((zp, ze, zb)) = chains[ci].parked.take() {
                 let mut row = vec![zp, ze, zb];
                 row.sort_unstable();
                 let Some((nv, nr)) =
-                    do_combine(&p_vars, p_rhs, &row, false, true, &emitted, emit, emit_del)
+                    do_combine(&p_vars, p_rhs, &row, false, true, &emitted, &cat_unpark, emit, emit_del)
                 else {
                     return false;
                 };
                 p_vars = nv;
                 p_rhs = nr;
+                free_zs.push(zp);
             }
             loop {
-                if emitted.get() > TSEITIN_MAX_EMIT {
+                if emitted.get() > max_emit {
                     return false;
                 }
                 let (die, shift_row): (bool, Vec<u32>) = {
@@ -1042,7 +1078,7 @@ pub(crate) fn tseitin_refute_with_proof(
                 row.dedup();
                 // The shift consumes this definition row (its last use).
                 let Some((nv, nr)) =
-                    do_combine(&p_vars, p_rhs, &row, false, true, &emitted, emit, emit_del)
+                    do_combine(&p_vars, p_rhs, &row, false, true, &emitted, &cat_shift, emit, emit_del)
                 else {
                     return false;
                 };
@@ -1053,6 +1089,13 @@ pub(crate) fn tseitin_refute_with_proof(
                     for &x in &c.vars[c.base..] {
                         in_chain.remove(&x);
                     }
+                    // The dying combine cancelled both pointers out of P and
+                    // consumed the last definition row; every interior z was
+                    // already recycled by the shift that moved base past it.
+                    if c.base >= 2 {
+                        free_zs.push(c.z(c.base));
+                    }
+                    free_zs.push(c.z(c.len()));
                     c.base = c.len();
                 } else if c.base == 0 {
                     // First opening of a len>=3 chain exposed vars[0] and
@@ -1062,6 +1105,13 @@ pub(crate) fn tseitin_refute_with_proof(
                     c.base = 2;
                 } else {
                     in_chain.remove(&c.vars[c.base]);
+                    // The old base pointer z(base) is now fully dead: its
+                    // definition row was consumed by the previous shift, the
+                    // row consumed just now (the definition of z(base+1)) was
+                    // its last remaining reference, and it left P in this
+                    // combine (old-P clauses deleted inside `do_combine`).
+                    // base is never 1, so z(base) here is always a fresh var.
+                    free_zs.push(c.z(c.base));
                     c.base += 1;
                 }
                 if !in_chain.contains_key(&v) {
@@ -1075,7 +1125,7 @@ pub(crate) fn tseitin_refute_with_proof(
         // Sum the constraint into P (the exposed shared variables cancel); the
         // constraint's axiom clauses are spent afterwards.
         let Some((nv, nr)) =
-            do_combine(&p_vars, p_rhs, &eq.vars, eq.rhs, true, &emitted, emit, emit_del)
+            do_combine(&p_vars, p_rhs, &eq.vars, eq.rhs, true, &emitted, &cat_main, emit, emit_del)
         else {
             return false;
         };
@@ -1098,7 +1148,7 @@ pub(crate) fn tseitin_refute_with_proof(
             let excess = raw.split_off(raw_target);
             let mut pending: Option<u32> = None;
             for &x in &excess {
-                if emitted.get() > TSEITIN_MAX_EMIT {
+                if emitted.get() > max_emit {
                     return false;
                 }
                 let x_nu = next_use[&x];
@@ -1126,23 +1176,27 @@ pub(crate) fn tseitin_refute_with_proof(
                         let mut row = vec![zp, ze, zb];
                         row.sort_unstable();
                         let Some((nv, nr)) = do_combine(
-                            &p_vars, p_rhs, &row, false, true, &emitted, emit, emit_del,
+                            &p_vars, p_rhs, &row, false, true, &emitted, &cat_unpark, emit, emit_del,
                         ) else {
                             return false;
                         };
                         p_vars = nv;
                         p_rhs = nr;
+                        free_zs.push(zp);
                     }
                     let zend = chains[ci].z(chains[ci].len());
-                    fresh += 1;
-                    let z = fresh;
+                    let z = free_zs.pop().unwrap_or_else(|| {
+                        fresh += 1;
+                        fresh
+                    });
+                    cat_defs.set(cat_defs.get() + 4);
                     emit_def(z, zend, x, &emitted, emit);
                     let mut row = vec![z, zend, x];
                     row.sort_unstable();
                     // The append definition is reused by the future shift
                     // through this position: keep it live (delete_q=false).
                     let Some((nv, nr)) = do_combine(
-                        &p_vars, p_rhs, &row, false, false, &emitted, emit, emit_del,
+                        &p_vars, p_rhs, &row, false, false, &emitted, &cat_append, emit, emit_del,
                     ) else {
                         return false;
                     };
@@ -1156,13 +1210,16 @@ pub(crate) fn tseitin_refute_with_proof(
                     // Pair the two unplaced excess vars (ascending order) into
                     // a fresh chain. The creation definition is reused when the
                     // chain is first opened: keep it live (delete_q=false).
-                    fresh += 1;
-                    let z = fresh;
+                    let z = free_zs.pop().unwrap_or_else(|| {
+                        fresh += 1;
+                        fresh
+                    });
+                    cat_defs.set(cat_defs.get() + 4);
                     emit_def(z, x1, x, &emitted, emit);
                     let mut row = vec![z, x1, x];
                     row.sort_unstable();
                     let Some((nv, nr)) = do_combine(
-                        &p_vars, p_rhs, &row, false, false, &emitted, emit, emit_del,
+                        &p_vars, p_rhs, &row, false, false, &emitted, &cat_create, emit, emit_del,
                     ) else {
                         return false;
                     };
@@ -1191,14 +1248,17 @@ pub(crate) fn tseitin_refute_with_proof(
             }
             let ze = c.z(c.len());
             let zb = c.z(c.base);
-            fresh += 1;
-            let zp = fresh;
+            let zp = free_zs.pop().unwrap_or_else(|| {
+                fresh += 1;
+                fresh
+            });
+            cat_defs.set(cat_defs.get() + 4);
             emit_def(zp, ze, zb, &emitted, emit);
             let mut row = vec![zp, ze, zb];
             row.sort_unstable();
             // The park definition is reused at unpark: keep it live.
             let Some((nv, nr)) =
-                do_combine(&p_vars, p_rhs, &row, false, false, &emitted, emit, emit_del)
+                do_combine(&p_vars, p_rhs, &row, false, false, &emitted, &cat_park, emit, emit_del)
             else {
                 return false;
             };
@@ -1208,6 +1268,19 @@ pub(crate) fn tseitin_refute_with_proof(
         }
     }
 
+    if debug {
+        eprintln!(
+            "c tseitin emit breakdown: main={} shift={} unpark={} append={} create={} park={} defs={} total={}",
+            cat_main.get(),
+            cat_shift.get(),
+            cat_unpark.get(),
+            cat_append.get(),
+            cat_create.get(),
+            cat_park.get(),
+            cat_defs.get(),
+            emitted.get()
+        );
+    }
     if p_vars.is_empty() && p_rhs {
         emitted.set(emitted.get() + 1);
         emit(&[]);

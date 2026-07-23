@@ -162,6 +162,33 @@ const DEFAULT_BVE_CLAUSE_LIMIT: isize = 20;
 const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
 /// Default conflicts between inprocessing rounds when SAT_INPROCESS_INTERVAL_CONFLICTS=0.
 const INPROCESS_DEFAULT_INTERVAL: u64 = 2000;
+/// Endgame cadence (SAT_ENDGAME, default on): when an ARMED (`inprocess_aggressive`)
+/// formula is still unsolved after this many conflicts, it has demonstrably lost the
+/// current trajectory lottery — no armed cell the current 70/100 baseline SOLVES ever
+/// reaches this count (measured 2026-07-22, exact-deterministic reproduction of the
+/// gate TSV: armed solved max is sqrt-mitern170 at 3,889,649; TT_C492 3,729,575;
+/// every solved cell at >=4M conflicts — 59-129706 7.87M, rbsat-v1375 6.26M,
+/// VanDerWaerden-462 5.84M, sted2 4.40M — verified UNARMED), so latching here can
+/// only touch baseline-timeout cells and the promotion gate's solved set stays
+/// byte-identical by construction. On latch the solver stops
+/// decaying toward the flat cadence and adopts kissat-parity endgame knobs: pinned
+/// 10k-conflict inprocess rounds, a short rephase/walk cycle, and the aggressive
+/// restart floor. Measured motivation (2026-07-22): kissat 4.0.4 solves
+/// SC25_Timetable_C_406 SAT in ~31s/170k conflicts with 18 vivifications + 4 walks
+/// + restart interval 23, while the shipped armed cadence wandered 1.48M conflicts
+/// in 300s with 7 walks and restart interval 235 on the same cell.
+const ENDGAME_TRIGGER_CONFLICTS: u64 = 4_000_000;
+/// Pinned conflicts between inprocess rounds while the endgame is active
+/// (kissat's measured vivification interval on TT406 is ~9.5k).
+const ENDGAME_INPROCESS_INTERVAL: u64 = 10_000;
+/// Flat rephase interval while the endgame is active (replaces the n·log3(n)
+/// growth; kissat walked TT406 every ~42k conflicts).
+const ENDGAME_REPHASE_DELTA: u64 = 50_000;
+/// Focused restart-interval floor while the endgame is active (kissat's measured
+/// TT406 restart interval is 23; the shipped EMA floor is 50 plus log growth).
+const ENDGAME_RESTART_FLOOR: u64 = 10;
+/// Fast/slow LBD-EMA restart margin while the endgame is active (shipped: 1.20).
+const ENDGAME_RESTART_MARGIN: f64 = 1.05;
 /// Conflicts between unarmed flywheel eliminate rounds (SAT_ELIM_UNARMED_FLYWHEEL).
 /// Kissat re-eliminates every ~500·n·log²n conflicts (eliminateint=500 with the
 /// NLOG2N conflict-limit update) — dozens of rounds per million conflicts; 100k is
@@ -2515,6 +2542,13 @@ struct Solver {
     elim_productive_min_pct: usize,
     /// current aggressive-cadence interval; doubles per round up to the flat interval
     inprocess_aggressive_interval: u64,
+    /// SAT_ENDGAME master switch (default on; the A/B kill switch).
+    endgame_enabled: bool,
+    /// Trigger override for measurement (SAT_ENDGAME_TRIGGER; default
+    /// ENDGAME_TRIGGER_CONFLICTS).
+    endgame_trigger_conflicts: u64,
+    /// Latched once `inprocess_aggressive` and past ENDGAME_TRIGGER_CONFLICTS.
+    endgame_active: bool,
     /// run clause vivification inside each inprocessing round (SAT_VIVIFY)
     vivify: bool,
     /// absolute per-round propagation budget for vivification (0 => proportional default)
@@ -3790,6 +3824,12 @@ impl Solver {
             decision_search_armed: false,
             inprocess_aggressive: false,
             inprocess_aggressive_interval: INPROCESS_AGGRESSIVE_FIRST_INTERVAL,
+            endgame_enabled: env_bool_or_default("SAT_ENDGAME", true),
+            endgame_trigger_conflicts: std::env::var("SAT_ENDGAME_TRIGGER")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(ENDGAME_TRIGGER_CONFLICTS),
+            endgame_active: false,
             chrono_productive_delta: std::env::var("SAT_CHRONO_PRODUCTIVE_DELTA")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -8151,8 +8191,12 @@ impl Solver {
         }
         self.rephase_index = (self.rephase_index + 1) % 6;
         self.stats.rephases = self.stats.rephases.saturating_add(1);
-        let delta = (self.rephase_conflicts.max(1) as f64
-            * Self::kissat_nlog3n(self.stats.rephases.max(1))) as u64;
+        let delta = if self.endgame_active {
+            ENDGAME_REPHASE_DELTA
+        } else {
+            (self.rephase_conflicts.max(1) as f64
+                * Self::kissat_nlog3n(self.stats.rephases.max(1))) as u64
+        };
         self.rephase_at_conflicts = self.stats.conflicts.saturating_add(delta.max(1));
         self.phase_ticks = self.phase_ticks.saturating_add(1);
     }
@@ -9071,6 +9115,9 @@ impl Solver {
             && would_edit.saturating_mul(1000)
                 >= attempts.saturating_mul(self.vivify_yield_arm_permille);
         if armed {
+            if !self.inprocess_aggressive && self.stats.inprocess_armed_at_conflict == 0 {
+                self.stats.inprocess_armed_at_conflict = self.stats.conflicts.max(1);
+            }
             self.inprocess_aggressive = true;
             self.yield_search_armed = true;
             self.inprocess_aggressive_interval = INPROCESS_AGGRESSIVE_FIRST_INTERVAL;
@@ -9112,6 +9159,47 @@ impl Solver {
         }
     }
 
+    /// Enter the endgame cadence (see ENDGAME_TRIGGER_CONFLICTS): pin the
+    /// inprocess interval at ENDGAME_INPROCESS_INTERVAL, shorten the rephase/walk
+    /// cycle to a flat ENDGAME_REPHASE_DELTA, and adopt the aggressive restart
+    /// floor/margin. Latched once; only reachable on armed formulas the current
+    /// trajectory has failed for 5M conflicts (baseline-timeout cells only).
+    fn enter_endgame(&mut self) {
+        self.endgame_active = true;
+        self.stats.endgame_at_conflict = self.stats.conflicts.max(1);
+        // Restart floor: reuse the armed-floor plumbing so focused-mode restart
+        // interval recomputation (`focused_restart_interval`) keeps the floor.
+        if self.restart_armed_floor == 0 || self.restart_armed_floor > ENDGAME_RESTART_FLOOR {
+            self.restart_armed_floor = ENDGAME_RESTART_FLOOR;
+        }
+        self.restart_floor_armed = true;
+        self.restart_min_conflicts = self.restart_min_conflicts.min(ENDGAME_RESTART_FLOOR);
+        self.restart_margin = self.restart_margin.min(ENDGAME_RESTART_MARGIN);
+        // Inprocess cadence: pull the next round close and pin the interval
+        // (the doubling site holds it at ENDGAME_INPROCESS_INTERVAL while active).
+        self.inprocess_aggressive_interval = ENDGAME_INPROCESS_INTERVAL;
+        self.next_inprocess_conflicts = self
+            .next_inprocess_conflicts
+            .min(self.stats.conflicts.saturating_add(ENDGAME_INPROCESS_INTERVAL));
+        // Rephase/walk: enable the machinery (congruence/elim-armed formulas ship
+        // with it off) and shorten the cycle. The rephase-delta site emits flat
+        // ENDGAME_REPHASE_DELTA intervals while the endgame is active.
+        self.rephase_enabled = true;
+        if self.rephase_at_conflicts == u64::MAX
+            || self.rephase_at_conflicts
+                > self.stats.conflicts.saturating_add(ENDGAME_REPHASE_DELTA)
+        {
+            self.rephase_at_conflicts =
+                self.stats.conflicts.saturating_add(ENDGAME_REPHASE_DELTA);
+        }
+        if self.trace_preprocess_details {
+            eprintln!(
+                "c endgame latched at conflicts={} (armed, trigger={})",
+                self.stats.conflicts, self.endgame_trigger_conflicts
+            );
+        }
+    }
+
     /// Arm the aggressive inprocess bundle for a decision-heavy (SAT-search-stuck)
     /// formula: the standard armed cadence (early doubling interval, armed BVE with
     /// bound escalation, armed vivify) plus — scoped by `decision_search_armed` —
@@ -9121,6 +9209,9 @@ impl Solver {
     /// load-bearing (TT406: kissat itself cannot solve it with --rephase=0), while
     /// yield/congruence-armed formulas keep rephase off as shipped.
     fn arm_decision_heavy_search(&mut self) {
+        if !self.inprocess_aggressive && self.stats.inprocess_armed_at_conflict == 0 {
+            self.stats.inprocess_armed_at_conflict = self.stats.conflicts.max(1);
+        }
         self.inprocess_aggressive = true;
         self.decision_search_armed = true;
         self.inprocess_aggressive_interval = INPROCESS_AGGRESSIVE_FIRST_INTERVAL;
@@ -9207,6 +9298,9 @@ impl Solver {
                 >= (num_vars as u64).saturating_mul(self.elim_productive_min_pct as u64);
         if !congruence_productive && !elim_productive {
             return;
+        }
+        if !self.inprocess_aggressive && self.stats.inprocess_armed_at_conflict == 0 {
+            self.stats.inprocess_armed_at_conflict = self.stats.conflicts.max(1);
         }
         self.inprocess_aggressive = true;
         self.inprocess_aggressive_interval = INPROCESS_AGGRESSIVE_FIRST_INTERVAL;
@@ -9301,7 +9395,11 @@ impl Solver {
             ok = self.inprocess_round_pass(proof_log, config);
         }
 
-        let interval = if self.inprocess_aggressive {
+        let interval = if self.endgame_active {
+            // Endgame: hold the kissat-parity flat cadence; no decay.
+            self.inprocess_aggressive_interval = ENDGAME_INPROCESS_INTERVAL;
+            ENDGAME_INPROCESS_INTERVAL
+        } else if self.inprocess_aggressive {
             // Early rounds matter most on gate circuits; double toward the flat cadence.
             let current = self.inprocess_aggressive_interval.max(1);
             self.inprocess_aggressive_interval = current
@@ -16057,6 +16155,18 @@ impl Solver {
                         // formulas the congruence/elim signals miss.
                         if self.should_vivify_yield_probe() {
                             self.vivify_yield_probe();
+                        }
+                        // Endgame latch (SAT_ENDGAME): armed formulas that are still
+                        // unsolved this deep have lost the trajectory lottery; switch
+                        // to the kissat-parity endgame cadence. Deterministic (pure
+                        // conflict-count trigger) and unreachable by every armed cell
+                        // the baseline solves (see ENDGAME_TRIGGER_CONFLICTS).
+                        if self.endgame_enabled
+                            && !self.endgame_active
+                            && self.inprocess_aggressive
+                            && self.stats.conflicts >= self.endgame_trigger_conflicts
+                        {
+                            self.enter_endgame();
                         }
                         // Inprocessing scheduler hook: at root, periodically run an
                         // interleaved clause-simplification / formula-rewriting round

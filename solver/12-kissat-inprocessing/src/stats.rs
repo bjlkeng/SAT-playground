@@ -43,6 +43,10 @@ pub(crate) struct SolverStats {
     pub(crate) search_ticks: u64,
     /// Conflict count when the SAT_SEARCHED armed rule latched on (0 = never).
     pub(crate) searched_armed_at_conflict: u64,
+    /// Conflict count when `inprocess_aggressive` first armed (0 = never armed).
+    pub(crate) inprocess_armed_at_conflict: u64,
+    /// Conflict count when the SAT_ENDGAME cadence latched (0 = never).
+    pub(crate) endgame_at_conflict: u64,
     pub(crate) reduce_db_calls: u64,
     pub(crate) deleted_clauses: u64,
     pub(crate) garbage_collections: u64,
@@ -550,6 +554,8 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("propagations", ctx.stats.propagations);
     json.u64("search_ticks", ctx.stats.search_ticks);
     json.u64("searched_armed_at_conflict", ctx.stats.searched_armed_at_conflict);
+    json.u64("inprocess_armed_at_conflict", ctx.stats.inprocess_armed_at_conflict);
+    json.u64("endgame_at_conflict", ctx.stats.endgame_at_conflict);
     json.u64("restarts", ctx.stats.restarts);
     json.u64("reductions", ctx.stats.reduce_db_calls);
     json.u64("gc_count", ctx.stats.garbage_collections);
