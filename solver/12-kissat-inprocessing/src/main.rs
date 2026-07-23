@@ -162,22 +162,30 @@ const DEFAULT_BVE_CLAUSE_LIMIT: isize = 20;
 const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
 /// Default conflicts between inprocessing rounds when SAT_INPROCESS_INTERVAL_CONFLICTS=0.
 const INPROCESS_DEFAULT_INTERVAL: u64 = 2000;
-/// Endgame cadence (SAT_ENDGAME, default on): when an ARMED (`inprocess_aggressive`)
-/// formula is still unsolved after this many conflicts, it has demonstrably lost the
-/// current trajectory lottery — no armed cell the current 70/100 baseline SOLVES ever
-/// reaches this count (measured 2026-07-22, exact-deterministic reproduction of the
-/// gate TSV: armed solved max is sqrt-mitern170 at 3,889,649; TT_C492 3,729,575;
-/// every solved cell at >=4M conflicts — 59-129706 7.87M, rbsat-v1375 6.26M,
-/// VanDerWaerden-462 5.84M, sted2 4.40M — verified UNARMED), so latching here can
-/// only touch baseline-timeout cells and the promotion gate's solved set stays
-/// byte-identical by construction. On latch the solver stops
-/// decaying toward the flat cadence and adopts kissat-parity endgame knobs: pinned
-/// 10k-conflict inprocess rounds, a short rephase/walk cycle, and the aggressive
-/// restart floor. Measured motivation (2026-07-22): kissat 4.0.4 solves
-/// SC25_Timetable_C_406 SAT in ~31s/170k conflicts with 18 vivifications + 4 walks
-/// + restart interval 23, while the shipped armed cadence wandered 1.48M conflicts
-/// in 300s with 7 walks and restart interval 235 on the same cell.
-const ENDGAME_TRIGGER_CONFLICTS: u64 = 4_000_000;
+/// Endgame cadence (SAT_ENDGAME, default on): LATE-ARMED formulas (see
+/// ENDGAME_MIN_ARMED_AT) latch the kissat-parity endgame cadence at arming —
+/// flat ENDGAME_REPHASE_DELTA rephase/walk cycle plus the aggressive restart
+/// floor/margin (parts "rf"; the pinned-inprocess part 'i' is default-OFF: it
+/// was measured both unnecessary for the TT406 flip and the killer of the
+/// dense yield-armed refutation cells, slowing sqrt-mitern170 ~40%).
+/// Decomposition (2026-07-23, idle, from-arming): TT406 parts=rf SAT 155s /
+/// 593k conflicts; parts=r SAT 904s / 3.15M; parts=f timeout — flat rephase
+/// carries the flip, the restart floor multiplies it. Original motivation
+/// (2026-07-22): kissat 4.0.4 solves SC25_Timetable_C_406 SAT in ~31s/170k
+/// conflicts with 18 vivifications + 4 walks + restart interval 23, while the
+/// shipped armed cadence wandered 1.48M conflicts in 300s with restart
+/// interval 235 on the same cell. Trigger default 1 = latch at arming.
+const ENDGAME_TRIGGER_CONFLICTS: u64 = 1;
+/// Late-arming scope for the endgame latch (SAT_ENDGAME_MIN_ARMED default):
+/// only cells whose arming itself happened at or after this many conflicts
+/// latch the endgame. Measured 2026-07-23: instantly-armed cells
+/// (`inprocess_armed_at_conflict` == 1: vex/oski15x2/TT492 class) carry banked
+/// trajectory lottery wins and lose under any cadence reroll (TT492's SAT draw
+/// died in both the unscoped probe and the unscoped-bundle session), while
+/// every late-armed cell (TT406/TT395 decision-armed at ~200k; sqrt-miter/QG7/
+/// Pancake/aaai10 yield-armed at ~800k) survives or wins under the rf cadence.
+/// Gate 2026-07-23 (cand 70 vs base 69): TT406 timeout -> SAT 212s in-gate.
+const ENDGAME_MIN_ARMED_AT: u64 = 100_000;
 /// Pinned conflicts between inprocess rounds while the endgame is active
 /// (kissat's measured vivification interval on TT406 is ~9.5k).
 const ENDGAME_INPROCESS_INTERVAL: u64 = 10_000;
@@ -2549,6 +2557,21 @@ struct Solver {
     endgame_trigger_conflicts: u64,
     /// Latched once `inprocess_aggressive` and past ENDGAME_TRIGGER_CONFLICTS.
     endgame_active: bool,
+    /// Bundle decomposition mask (SAT_ENDGAME_PARTS, default "rf"): 'i' pinned
+    /// inprocess cadence (default-off — measured victim-killer and unnecessary,
+    /// 2026-07-23), 'r' flat rephase cycle, 'f' restart floor/margin.
+    endgame_part_inprocess: bool,
+    endgame_part_rephase: bool,
+    endgame_part_restart: bool,
+    /// Late-arming scope for the endgame latch (SAT_ENDGAME_MIN_ARMED):
+    /// only latch when arming itself happened at or after this conflict count.
+    /// Instantly-armed cells (dec/conf ratio trips at the first check,
+    /// `inprocess_armed_at_conflict` == 1: vex/oski15x2/TT492 class) carry the
+    /// banked trajectory lottery and are measured victims of any cadence
+    /// reroll; late-armed cells (TT406/TT395 at ~200k, sqrt/QG7/pancake/aaai10
+    /// yield-armed at ~800k) all survive or win under the endgame cadence
+    /// (measured 2026-07-23). 0 = no scoping (latch for any armed cell).
+    endgame_min_armed_at_conflict: u64,
     /// run clause vivification inside each inprocessing round (SAT_VIVIFY)
     vivify: bool,
     /// absolute per-round propagation budget for vivification (0 => proportional default)
@@ -3830,6 +3853,19 @@ impl Solver {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(ENDGAME_TRIGGER_CONFLICTS),
             endgame_active: false,
+            endgame_part_inprocess: std::env::var("SAT_ENDGAME_PARTS")
+                .map(|s| s.contains('i'))
+                .unwrap_or(false),
+            endgame_part_rephase: std::env::var("SAT_ENDGAME_PARTS")
+                .map(|s| s.contains('r'))
+                .unwrap_or(true),
+            endgame_part_restart: std::env::var("SAT_ENDGAME_PARTS")
+                .map(|s| s.contains('f'))
+                .unwrap_or(true),
+            endgame_min_armed_at_conflict: std::env::var("SAT_ENDGAME_MIN_ARMED")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(ENDGAME_MIN_ARMED_AT),
             chrono_productive_delta: std::env::var("SAT_CHRONO_PRODUCTIVE_DELTA")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -8191,7 +8227,7 @@ impl Solver {
         }
         self.rephase_index = (self.rephase_index + 1) % 6;
         self.stats.rephases = self.stats.rephases.saturating_add(1);
-        let delta = if self.endgame_active {
+        let delta = if self.endgame_active && self.endgame_part_rephase {
             ENDGAME_REPHASE_DELTA
         } else {
             (self.rephase_conflicts.max(1) as f64
@@ -9169,28 +9205,34 @@ impl Solver {
         self.stats.endgame_at_conflict = self.stats.conflicts.max(1);
         // Restart floor: reuse the armed-floor plumbing so focused-mode restart
         // interval recomputation (`focused_restart_interval`) keeps the floor.
-        if self.restart_armed_floor == 0 || self.restart_armed_floor > ENDGAME_RESTART_FLOOR {
-            self.restart_armed_floor = ENDGAME_RESTART_FLOOR;
+        if self.endgame_part_restart {
+            if self.restart_armed_floor == 0 || self.restart_armed_floor > ENDGAME_RESTART_FLOOR {
+                self.restart_armed_floor = ENDGAME_RESTART_FLOOR;
+            }
+            self.restart_floor_armed = true;
+            self.restart_min_conflicts = self.restart_min_conflicts.min(ENDGAME_RESTART_FLOOR);
+            self.restart_margin = self.restart_margin.min(ENDGAME_RESTART_MARGIN);
         }
-        self.restart_floor_armed = true;
-        self.restart_min_conflicts = self.restart_min_conflicts.min(ENDGAME_RESTART_FLOOR);
-        self.restart_margin = self.restart_margin.min(ENDGAME_RESTART_MARGIN);
         // Inprocess cadence: pull the next round close and pin the interval
         // (the doubling site holds it at ENDGAME_INPROCESS_INTERVAL while active).
-        self.inprocess_aggressive_interval = ENDGAME_INPROCESS_INTERVAL;
-        self.next_inprocess_conflicts = self
-            .next_inprocess_conflicts
-            .min(self.stats.conflicts.saturating_add(ENDGAME_INPROCESS_INTERVAL));
+        if self.endgame_part_inprocess {
+            self.inprocess_aggressive_interval = ENDGAME_INPROCESS_INTERVAL;
+            self.next_inprocess_conflicts = self
+                .next_inprocess_conflicts
+                .min(self.stats.conflicts.saturating_add(ENDGAME_INPROCESS_INTERVAL));
+        }
         // Rephase/walk: enable the machinery (congruence/elim-armed formulas ship
         // with it off) and shorten the cycle. The rephase-delta site emits flat
         // ENDGAME_REPHASE_DELTA intervals while the endgame is active.
-        self.rephase_enabled = true;
-        if self.rephase_at_conflicts == u64::MAX
-            || self.rephase_at_conflicts
-                > self.stats.conflicts.saturating_add(ENDGAME_REPHASE_DELTA)
-        {
-            self.rephase_at_conflicts =
-                self.stats.conflicts.saturating_add(ENDGAME_REPHASE_DELTA);
+        if self.endgame_part_rephase {
+            self.rephase_enabled = true;
+            if self.rephase_at_conflicts == u64::MAX
+                || self.rephase_at_conflicts
+                    > self.stats.conflicts.saturating_add(ENDGAME_REPHASE_DELTA)
+            {
+                self.rephase_at_conflicts =
+                    self.stats.conflicts.saturating_add(ENDGAME_REPHASE_DELTA);
+            }
         }
         if self.trace_preprocess_details {
             eprintln!(
@@ -9395,7 +9437,7 @@ impl Solver {
             ok = self.inprocess_round_pass(proof_log, config);
         }
 
-        let interval = if self.endgame_active {
+        let interval = if self.endgame_active && self.endgame_part_inprocess {
             // Endgame: hold the kissat-parity flat cadence; no decay.
             self.inprocess_aggressive_interval = ENDGAME_INPROCESS_INTERVAL;
             ENDGAME_INPROCESS_INTERVAL
@@ -16165,6 +16207,8 @@ impl Solver {
                             && !self.endgame_active
                             && self.inprocess_aggressive
                             && self.stats.conflicts >= self.endgame_trigger_conflicts
+                            && self.stats.inprocess_armed_at_conflict
+                                >= self.endgame_min_armed_at_conflict
                         {
                             self.enter_endgame();
                         }
