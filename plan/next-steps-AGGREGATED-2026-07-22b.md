@@ -117,12 +117,20 @@ addendum section at the bottom — filled in when the gate lands.
    (c) Tiered vivification port + probing/HBR parity (21c #4/#5), unstarted.
    All three are trajectory-coupled (reroll the >=1M-conflict solved cells);
    scope with the armed-census machinery or bundle with a measured re-deal.
-6. **Grid n400 / XOR arc: CLOSED under .rs-only rules** (see TL;DR 1-2).
-   NOTE 2026-07-23: the checker budget is now 2x the solver limit (3600s) —
-   feature_ablation.py `_verify_result` + bench.sh — which re-opens this arc;
-   uncapped verify timing of the recycled 14.63M-lemma proof in flight at
-   write time. If it fits with load margin, raising TSEITIN_MAX_COMPONENT/
-   MAX_EMIT is the +1.
+6. **Grid n400 / XOR arc: STAYS CLOSED even under the 2x checker budget.**
+   The checker budget is now 2x the solver limit (3600s) — feature_ablation.py
+   `_verify_result` + bench.sh (commit e46f7a4) — but the definitive uncapped
+   idle measurement killed the arc anyway: backward drat-trim on the recycled
+   14.63M-lemma proof ran **>4754s CPU without finishing** (killed; single
+   thread, idle 36-core host). That exceeds even the relaxed 3600s cap before
+   any gate-load inflation. Earlier ">2046s" was a kill point, not a
+   completion — the true verify time is at least 2.6x the old cap and >1.3x
+   the new one. Conclusion unchanged in kind, strengthened in degree: the +1
+   needs a proof ~<=8M lemmas (architecture floor analysis says this class
+   bottoms at ~12M) or a forward-mode/LRAT checker change. Next realistic
+   lever if ever wanted: make the harness use drat-trim `-f` (forward mode)
+   for proofs above a size threshold — the 22s-generated proof would verify
+   in minutes.
 
 ## Standing traps (carried forward + new this session)
 
