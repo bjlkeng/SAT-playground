@@ -333,6 +333,57 @@ while the budget reaches deeper variables.
 here. The legacy behaviour was load-bearing on three cells. Always measure
 the mechanism before assuming a defect is pure loss.
 
+### 2.2b The seed budget is the real scaling defect
+
+`SWEEP_SEED_BUDGET` is a FIXED 512 seeds/round, but the suite spans three
+orders of magnitude in variable count, so the same constant means wildly
+different coverage:
+
+| cell | variables | 512 seeds covers |
+|------|----------:|-----------------:|
+| booth_dadda | 2 948 | 17% per round |
+| oski15a01b20s | 488 500 | 0.10% |
+| VexRiscv | 723 395 | 0.07% |
+
+On VexRiscv a cursor needs ~1 400 rounds merely to wrap once, so it never
+returns to the frontier AND never completes a pass to trigger escalation.
+kissat has no seed count at all — sweep is budgeted at `sweepeffort=100` per
+mille of search ticks. **This is the tick-vs-count denomination problem of
+section 2.1 appearing independently in a second place.**
+
+Raising the budget multiplies measured productivity (`sweep_equivalences` at
+200k conflicts / 20k interval, legacy -> retire@2048): booth_dadda 792 ->
+41 460 (52x), bp4_TCO_IXA 1 486 -> 72 984 (49x), oski15 1 005 -> 4 336,
+VexRiscv 10 330 -> 11 928. At b=8192 oski15 reaches 26 512 but several cells
+start timing out.
+
+### 2.2c GATE RESULT — retire@2048 FAILED, and why it matters
+
+**Gate (medium 100, single seed, 1800 s): cand 64 v base 69 — LOSE.**
+Artifacts `log/abtest-cand-vs-base-2026-07-24-15-48-41`.
+
+- **Lost 6:** sqrt-mitern170 (base UNSAT 1151 s), sqrt-mitern171 (389 s),
+  div-mitern172 (220 s), PancakeVsSelectionSort_6_7 (639 s), **TT496
+  (1133 s — banked unique capability)**, VexRiscv (1502 s).
+- **Gained 1:** oski15a01b20s (1745 s, wall coin).
+- Both-solved wall **19 751 s vs 17 855 s (+10.6%)**; worst deltas TT406
+  +848 s, 59-129706 +623 s, oddball_24 +393 s.
+
+**THE MITERS REGRESSED** — the exact class SAT sweeping exists to crack.
+b=2048 quadruples kitten solves per round; the extra equivalences do not pay
+for their wall cost, and cells already solving in 200-1200 s get pushed past
+1800 s.
+
+**The load-bearing lesson: sweep productivity is NOT solving improvement.**
+The 49-52x equivalence multipliers were bought with wall time the gate
+charges for. Any future sweep work must be measured in solved cells and
+wall, never in `sweep_equivalences` alone — that metric is actively
+misleading as an optimisation target.
+
+Follow-up gate (schedule change isolated at constant cost,
+`SAT_SWEEP_SCHED=retire` with the budget left at 512):
+`log/abtest-sweepretire512-launch-2026-07-24.log`.
+
 ## 2.3 Variable elimination
 
 **kissat's bound escalation** (`eliminate.c set_next_elimination_bound`):
