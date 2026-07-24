@@ -192,6 +192,18 @@ const ENDGAME_INPROCESS_INTERVAL: u64 = 10_000;
 /// Flat rephase interval while the endgame is active (replaces the n·log3(n)
 /// growth; kissat walked TT406 every ~42k conflicts).
 const ENDGAME_REPHASE_DELTA: u64 = 50_000;
+/// Flat endgame rephase cycle for DECISION-ARMED cells (armed before
+/// ENDGAME_DELTA_ARMED_SPLIT; the SC25 Timetable class arms at ~200k).
+/// The yield-armed (~800k) classes always keep ENDGAME_REPHASE_DELTA so
+/// their banked trajectories stay bit-identical.
+/// 48_000 promoted 2026-07-23 (gate WIN 70v68): SC25_Timetable_C_496
+/// first-ever solve (1097s in-gate / 2.57M conflicts; kissat 4.0.4 times
+/// out at 1800s), TT395 393k (-254k), TT406 909k (+316k, 290s in-gate).
+/// Only 48k (and uselessly-thin 49k) flips TT496 across 12 tested deltas.
+const ENDGAME_REPHASE_DELTA_DEC: u64 = 48_000;
+/// Arming-time split separating decision-armed (~200k) from yield-armed
+/// (~800k) endgame cells.
+const ENDGAME_DELTA_ARMED_SPLIT: u64 = 500_000;
 /// Focused restart-interval floor while the endgame is active (kissat's measured
 /// TT406 restart interval is 23; the shipped EMA floor is 50 plus log growth).
 const ENDGAME_RESTART_FLOOR: u64 = 10;
@@ -2563,6 +2575,22 @@ struct Solver {
     endgame_part_inprocess: bool,
     endgame_part_rephase: bool,
     endgame_part_restart: bool,
+    /// Flat rephase/walk cycle length while the endgame is active for
+    /// DECISION-ARMED cells (SAT_ENDGAME_REPHASE_DELTA, default
+    /// ENDGAME_REPHASE_DELTA_DEC). Scoped by arming time: only cells whose
+    /// arming happened before ENDGAME_DELTA_ARMED_SPLIT use this value;
+    /// late/yield-armed cells (~800k: sqrt/QG7/pancake/aaai10/oddball/div
+    /// classes) keep the legacy flat ENDGAME_REPHASE_DELTA so their banked
+    /// trajectories stay bit-identical (arming-time discriminator, measured
+    /// 2026-07-23).
+    endgame_rephase_delta: u64,
+    /// Arming-time split for the delta scope (SAT_ENDGAME_DELTA_SPLIT):
+    /// armed_at < split -> endgame_rephase_delta; armed_at >= split ->
+    /// ENDGAME_REPHASE_DELTA. Decision-armed cells trip at ~200k, yield-armed
+    /// at ~800k, so the default 500k separates the measured classes.
+    endgame_delta_armed_split: u64,
+    /// Effective flat rephase delta, resolved once at endgame latch.
+    endgame_delta_active: u64,
     /// Late-arming scope for the endgame latch (SAT_ENDGAME_MIN_ARMED):
     /// only latch when arming itself happened at or after this conflict count.
     /// Instantly-armed cells (dec/conf ratio trips at the first check,
@@ -3862,6 +3890,15 @@ impl Solver {
             endgame_part_restart: std::env::var("SAT_ENDGAME_PARTS")
                 .map(|s| s.contains('f'))
                 .unwrap_or(true),
+            endgame_rephase_delta: std::env::var("SAT_ENDGAME_REPHASE_DELTA")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(ENDGAME_REPHASE_DELTA_DEC),
+            endgame_delta_armed_split: std::env::var("SAT_ENDGAME_DELTA_SPLIT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(ENDGAME_DELTA_ARMED_SPLIT),
+            endgame_delta_active: ENDGAME_REPHASE_DELTA,
             endgame_min_armed_at_conflict: std::env::var("SAT_ENDGAME_MIN_ARMED")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -8228,7 +8265,7 @@ impl Solver {
         self.rephase_index = (self.rephase_index + 1) % 6;
         self.stats.rephases = self.stats.rephases.saturating_add(1);
         let delta = if self.endgame_active && self.endgame_part_rephase {
-            ENDGAME_REPHASE_DELTA
+            self.endgame_delta_active
         } else {
             (self.rephase_conflicts.max(1) as f64
                 * Self::kissat_nlog3n(self.stats.rephases.max(1))) as u64
@@ -9203,6 +9240,15 @@ impl Solver {
     fn enter_endgame(&mut self) {
         self.endgame_active = true;
         self.stats.endgame_at_conflict = self.stats.conflicts.max(1);
+        // Arming-time discriminator: the tuned decision-armed delta applies
+        // only to cells that armed before the split; yield-armed cells keep
+        // the legacy flat delta so their banked trajectories never reroll.
+        self.endgame_delta_active =
+            if self.stats.inprocess_armed_at_conflict < self.endgame_delta_armed_split {
+                self.endgame_rephase_delta
+            } else {
+                ENDGAME_REPHASE_DELTA
+            };
         // Restart floor: reuse the armed-floor plumbing so focused-mode restart
         // interval recomputation (`focused_restart_interval`) keeps the floor.
         if self.endgame_part_restart {
@@ -9228,10 +9274,10 @@ impl Solver {
             self.rephase_enabled = true;
             if self.rephase_at_conflicts == u64::MAX
                 || self.rephase_at_conflicts
-                    > self.stats.conflicts.saturating_add(ENDGAME_REPHASE_DELTA)
+                    > self.stats.conflicts.saturating_add(self.endgame_delta_active)
             {
                 self.rephase_at_conflicts =
-                    self.stats.conflicts.saturating_add(ENDGAME_REPHASE_DELTA);
+                    self.stats.conflicts.saturating_add(self.endgame_delta_active);
             }
         }
         if self.trace_preprocess_details {
