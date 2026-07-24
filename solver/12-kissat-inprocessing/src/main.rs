@@ -162,6 +162,19 @@ const DEFAULT_BVE_CLAUSE_LIMIT: isize = 20;
 const DEFAULT_SUBSUMPTION_LIMIT: isize = 1000;
 /// Default conflicts between inprocessing rounds when SAT_INPROCESS_INTERVAL_CONFLICTS=0.
 const INPROCESS_DEFAULT_INTERVAL: u64 = 2000;
+/// SAT_INPROCESS_TICK_CADENCE defaults. The interval is sized from measured tick rates
+/// (2026-07-24, 240 s windows): the starved class runs 4.3M-9.5M ticks/s, so 1.5e9 ticks
+/// is roughly 160-350 s of work — about 5-11 rounds across an 1800 s run on cells that
+/// currently get ZERO. The ratio floor of 12k ticks/conflict sits in the measured gap
+/// between the healthy class (<=9.2k: case7 9012, sqrt170 9155, fixedbandwidth 4362) and
+/// the starved class (>=15k: VexRiscv 15033, goldcrest 20925, pj2008 23671, lockchart
+/// 47123), so healthy cells never arm the tick trigger and keep their exact trajectory.
+const INPROCESS_DEFAULT_TICK_INTERVAL: u64 = 1_500_000_000;
+const INPROCESS_DEFAULT_TICKS_PER_CONF_MIN: u64 = 12_000;
+/// Minimum conflicts before the ticks/conflict ratio is trusted to classify the formula.
+/// Early search is propagation-heavy and unrepresentative, so classifying at conflict 1
+/// would arm nearly everything.
+const INPROCESS_TICK_RATIO_MIN_CONFLICTS: u64 = 20_000;
 /// Endgame cadence (SAT_ENDGAME, default on): LATE-ARMED formulas (see
 /// ENDGAME_MIN_ARMED_AT) latch the kissat-parity endgame cadence at arming —
 /// flat ENDGAME_REPHASE_DELTA rephase/walk cycle plus the aggressive restart
@@ -2266,6 +2279,35 @@ struct Solver {
     inprocess: bool,
     /// conflicts between inprocessing rounds (0 => use INPROCESS_DEFAULT_INTERVAL)
     inprocess_interval_conflicts: u64,
+    /// Bead SAT-playground-5b2.3.38.1 follow-up: env SAT_INPROCESS_TICK_CADENCE. Add a
+    /// TICK-denominated inprocessing trigger alongside the conflict one, scoped to the
+    /// cells the conflict trigger structurally cannot serve.
+    ///
+    /// The defect: the cadence is conflict-denominated at a flat 1M, but only 21 of 73
+    /// solved medium cells reach 1M conflicts at all, so the rest inprocess ZERO times in
+    /// a full run. kissat instead budgets in ticks (propagation work), which keeps
+    /// accruing when conflicts are scarce (`plan/kissat-gaps.md` section 2.1).
+    ///
+    /// Why it must be SCOPED rather than global (measured 2026-07-24): tick rate is far
+    /// more uniform than conflict rate (4.3M-102M ticks/s, a 23x spread, vs 92-23390
+    /// conf/s, a 254x spread), so a flat tick interval that fires on lockchart also fires
+    /// ~19x on sqrt-mitern170 — and gate `abtest-cand-vs-base-2026-07-24-15-48-41` proved
+    /// that piling extra inprocessing onto already-solving miters LOSES them (sqrt170/171,
+    /// div172, Pancake all died at 64 v 69). TICKS PER CONFLICT is the discriminator that
+    /// separates the two classes cleanly: starved cells run 15k-47k ticks/conflict
+    /// (lockchart 47123, pj2008 23671, goldcrest 20925, VexRiscv 15033) while healthy ones
+    /// run 4k-9k (case7 9012, sqrt170 9155, fixedbandwidth 4362). High ticks/conflict means
+    /// lots of propagation work per learned clause — an unsimplified formula relative to
+    /// search progress, which is exactly when inprocessing should pay.
+    ///
+    /// Default off pending the gate.
+    inprocess_tick_cadence: bool,
+    /// Tick interval between inprocessing rounds once the tick cadence is armed.
+    inprocess_tick_interval: u64,
+    /// Minimum search_ticks/conflict for the tick cadence to arm on this formula.
+    inprocess_ticks_per_conf_min: u64,
+    /// search_ticks value at which the next tick-triggered round becomes due.
+    next_inprocess_ticks: u64,
     /// cap on inprocessing rounds per solve (0 => unlimited)
     inprocess_max_rounds: u64,
     /// global conflict count at which the next inprocessing round becomes due
@@ -3835,6 +3877,22 @@ impl Solver {
             reduce_db_last_conflicts: None,
             inprocess: config.inprocess,
             inprocess_interval_conflicts: config.inprocess_interval_conflicts,
+            inprocess_tick_cadence: env_bool_or_default("SAT_INPROCESS_TICK_CADENCE", false),
+            inprocess_tick_interval: std::env::var("SAT_INPROCESS_TICK_INTERVAL")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&n: &u64| n > 0)
+                .unwrap_or(INPROCESS_DEFAULT_TICK_INTERVAL),
+            inprocess_ticks_per_conf_min: std::env::var("SAT_INPROCESS_TICKS_PER_CONF_MIN")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&n: &u64| n > 0)
+                .unwrap_or(INPROCESS_DEFAULT_TICKS_PER_CONF_MIN),
+            next_inprocess_ticks: std::env::var("SAT_INPROCESS_TICK_INTERVAL")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&n: &u64| n > 0)
+                .unwrap_or(INPROCESS_DEFAULT_TICK_INTERVAL),
             inprocess_max_rounds: config.inprocess_max_rounds,
             next_inprocess_conflicts: if config.inprocess_interval_conflicts > 0 {
                 config.inprocess_interval_conflicts
@@ -9062,7 +9120,28 @@ impl Solver {
         if self.inprocess_max_rounds != 0 && self.inprocess_rounds >= self.inprocess_max_rounds {
             return false;
         }
-        self.stats.conflicts >= self.next_inprocess_conflicts
+        if self.stats.conflicts >= self.next_inprocess_conflicts {
+            return true;
+        }
+        self.tick_cadence_due()
+    }
+
+    /// Whether the TICK-denominated trigger is armed AND due on this formula. Armed only
+    /// when the formula's work-per-conflict ratio puts it in the starved class that the
+    /// conflict trigger structurally cannot serve (see `inprocess_tick_cadence`).
+    fn tick_cadence_due(&self) -> bool {
+        if !self.inprocess_tick_cadence {
+            return false;
+        }
+        // Needs a meaningful sample before the ratio means anything.
+        if self.stats.conflicts < INPROCESS_TICK_RATIO_MIN_CONFLICTS {
+            return false;
+        }
+        let ticks_per_conf = self.stats.search_ticks / self.stats.conflicts.max(1);
+        if ticks_per_conf < self.inprocess_ticks_per_conf_min {
+            return false;
+        }
+        self.stats.search_ticks >= self.next_inprocess_ticks
     }
 
     fn should_vivify_inprocess_round(&self) -> bool {
@@ -9586,6 +9665,14 @@ impl Solver {
             self.inprocess_interval().max(1)
         };
         self.next_inprocess_conflicts = self.stats.conflicts.saturating_add(interval);
+        // Advance the tick deadline too, whichever trigger fired: a round is a round, and
+        // leaving the tick deadline behind would make every subsequent search step due.
+        if self.inprocess_tick_cadence {
+            self.next_inprocess_ticks = self
+                .stats
+                .search_ticks
+                .saturating_add(self.inprocess_tick_interval.max(1));
+        }
         ok
     }
 
@@ -18413,6 +18500,81 @@ mod tests {
             "repeated rounds must complete a full pass, cursor={}",
             s.sweep_cursor
         );
+    }
+
+    /// Tick cadence must stay completely inert when off — the shipped default path keeps
+    /// its exact conflict-triggered trajectory.
+    #[test]
+    fn tick_cadence_off_is_inert() {
+        let mut s = make_solver(3, vec![vec![1, 2, 3]]);
+        s.inprocess = true;
+        s.inprocess_tick_cadence = false;
+        s.next_inprocess_conflicts = 1_000_000;
+        s.stats.conflicts = 500_000;
+        s.stats.search_ticks = 500_000 * 50_000; // absurdly high ratio
+        assert!(!s.should_inprocess(), "tick cadence must not fire when off");
+    }
+
+    /// The ratio floor must separate the measured classes: starved cells (>=15k
+    /// ticks/conflict) arm, healthy cells (<=9.2k) never do. Numbers are the 2026-07-24
+    /// 240 s measurements.
+    #[test]
+    fn tick_cadence_arms_only_on_starved_work_ratio() {
+        let cases: [(&str, u64, bool); 7] = [
+            ("lockchart", 47_123, true),
+            ("pj2008", 23_671, true),
+            ("goldcrest", 20_925, true),
+            ("VexRiscv", 15_033, true),
+            ("case7", 9_012, false),
+            ("sqrt-mitern170", 9_155, false),
+            ("fixedbandwidth", 4_362, false),
+        ];
+        for (name, ticks_per_conf, want_armed) in cases {
+            let mut s = make_solver(3, vec![vec![1, 2, 3]]);
+            s.inprocess = true;
+            s.inprocess_tick_cadence = true;
+            s.next_inprocess_conflicts = u64::MAX; // conflict trigger can never fire
+            s.stats.conflicts = 100_000;
+            s.stats.search_ticks = 100_000 * ticks_per_conf;
+            s.next_inprocess_ticks = 0; // tick deadline already passed
+            assert_eq!(
+                s.should_inprocess(),
+                want_armed,
+                "{name} at {ticks_per_conf} ticks/conflict: expected armed={want_armed}"
+            );
+        }
+    }
+
+    /// An armed formula must still respect the tick INTERVAL, not fire every step.
+    #[test]
+    fn tick_cadence_respects_interval_and_advances() {
+        let mut s = make_solver(3, vec![vec![1, 2, 3]]);
+        s.inprocess = true;
+        s.inprocess_tick_cadence = true;
+        s.next_inprocess_conflicts = u64::MAX;
+        s.stats.conflicts = 100_000;
+        s.stats.search_ticks = 100_000 * 20_000; // starved ratio, armed
+        s.next_inprocess_ticks = s.stats.search_ticks + 1_000;
+        assert!(!s.should_inprocess(), "not due until the tick deadline passes");
+        s.stats.search_ticks += 2_000;
+        assert!(s.should_inprocess(), "due once the deadline passes");
+    }
+
+    /// The ratio needs a warmup sample: classifying at conflict 1 would arm nearly
+    /// everything, since early search is propagation-heavy.
+    #[test]
+    fn tick_cadence_needs_ratio_warmup() {
+        let mut s = make_solver(3, vec![vec![1, 2, 3]]);
+        s.inprocess = true;
+        s.inprocess_tick_cadence = true;
+        s.next_inprocess_conflicts = u64::MAX;
+        s.next_inprocess_ticks = 0;
+        s.stats.conflicts = INPROCESS_TICK_RATIO_MIN_CONFLICTS - 1;
+        s.stats.search_ticks = s.stats.conflicts * 50_000;
+        assert!(!s.should_inprocess(), "must not classify before the warmup sample");
+        s.stats.conflicts = INPROCESS_TICK_RATIO_MIN_CONFLICTS;
+        s.stats.search_ticks = s.stats.conflicts * 50_000;
+        assert!(s.should_inprocess(), "arms once the sample is large enough");
     }
 
     /// Retire policy: a seed that yields no facts is marked done and skipped on later
