@@ -48,7 +48,7 @@ Session mechanics (5 probe rounds, 2 full gates):
 
 ## Current state
 
-- HEAD: the banded-delta promotion commit (on top of f75e26b). Medium
+- HEAD: b671ae0 (banded-delta promotion, on top of f75e26b). Medium
   baseline: **70/100** (see lineage TSV below).
 - Solver12 endgame surface now: SAT_ENDGAME (on), SAT_ENDGAME_TRIGGER (1),
   SAT_ENDGAME_PARTS ("rf"), SAT_ENDGAME_MIN_ARMED (100k),
