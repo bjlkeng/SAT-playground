@@ -28,6 +28,28 @@ the idle host to itself; same methodology as `plan/gap-read-2026-07-21.md`).
   **kissat's marginal tail is ~2x fatter than ours** — at SAT-comp 5000 s
   conditions the gap widens; capability work beats coin-tuning long-term.
 
+### THE decision number — same-deal truncation curve
+
+Truncating THIS 3600 s deal at virtual cutoffs (one run, so zero
+deal-to-deal lottery — the cleanest s12-vs-kissat comparison we have):
+
+| cutoff | solver12 | kissat | delta |
+|-------:|---------:|-------:|:-----:|
+|  300 s | 45 | 39 | −6 |
+|  600 s | 55 | 54 | −1 |
+| 1200 s | 66 | 60 | −6 |
+| **1800 s** | **71** | **67** | **−4** |
+| 2400 s | 72 | 70 | −2 |
+| 3000 s | 73 | 73 | 0 |
+| 3600 s | 73 | 75 | +2 |
+
+**solver12 is AHEAD at every cutoff through 2400 s and only crosses over at
+~3000 s.** We are not behind kissat — we are a different shape: faster to
+close what we can close, thinner in the long tail. Framing for any
+"is more iteration worth it" call: at the 1800 s gate we already win; the
+deficit is purely a >3000 s tail phenomenon, i.e. it only matters if the
+target is competition-realistic (5000 s) scoring.
+
 ### Result files
 - solver12 TSV: `log/seedgate-default-2026-07-24-07-24-29/results.tsv`
 - kissat CSV:   `log/kissat-medium-20260724-102838/results.csv`
@@ -75,45 +97,171 @@ kissat faster on 41 of 66 both-solved cells. The dense/margin band:
 (bp4_TCO_CSO_ZR 1880, rbsat 1780, sted2 1667, vex 1657, oski15 1615). Each
 is an exactly-deterministic trajectory whose solve is a wall coin at 1800 s.
 
+## IMPLEMENTATION DELTA vs kissat 4.0.4 (source-audited 2026-07-24)
+
+Full audit of both codebases this session (solver12 46k lines Rust; kissat
+39k lines C). **The remaining gap is mostly configuration plus one
+scheduling bug — NOT missing algorithms.** This section replaces the vaguer
+"carried kissat gaps" bullets in prior aggregates.
+
+### DOC WARNING — read source, not FEATURES.md
+
+`FEATURES.md`, `FEATURES.csv`, `CONFIG_SCHEMA.csv` are STALE. Authoritative
+defaults are `src/config.rs` (`impl Default for SolverConfig` ~L705-840 +
+`apply_profile_defaults` L895-1094) and raw `env_bool_or_default` reads in
+`src/main.rs` ~L3600-3970. Specifically wrong in the docs:
+`SAT_CONGRUENCE`/`SAT_CONGRUENCE_XOR`/`SAT_FACTOR` are **default-ON** in
+source but documented Experimental; `SAT_TSEITIN`, `SAT_ENDGAME`,
+`SAT_SWEEP`, `SAT_WALK`, `SAT_ELIM_*` and the whole arming layer are in
+**no** doc file. **`SAT_PROBE` is IMPLEMENTED and works** (see below) —
+prior plans calling it ParkingLot were repeating the stale doc.
+
+### 1. The one real architectural difference: what the budget clock counts
+
+kissat denominates every simplifier in **ticks** (propagation work,
+`(watchlist_bytes >> 7) + 1` per literal), taken as a fixed per-mille share
+of search ticks since that technique last ran, floored at 10M ticks
+(`mineffort`), via `kimits.h SET_EFFORT_LIMIT`:
+
+| technique | per mille | share |
+|---|--:|--:|
+| eliminate / vivify / sweep / forward-subsume | 100 | 10% |
+| factor / walk | 50 | 5% |
+| backbone / transitive | 20 | 2% |
+| substitute | 10 | 1% |
+
+solver12 denominates in **conflicts**: `inprocess_interval_conflicts =
+1_000_000` flat (10k first round only for arming-flagged formulas).
+Consequence is structural, not a tuning delta: kissat keeps accruing ticks
+on slow-conflict instances and still inprocesses; we simply never fire.
+goldcrest (474 conf/s) and lockchart (330 conf/s) reach ZERO inprocessing
+rounds in a full run.
+
+CORRECTION to earlier notes: kissat's `eliminateinit=500` / `probeint=100`
+are NOT raw conflict counts — `kimits.c kissat_scale_delta` multiplies by
+>=25 (formula-size quadratic in log10 clauses), so real first fire is
+~12,500 conflicts (BVE) and ~2,500 (probe), then growing NLOG2N / NLOGN.
+
+### 2. Sweeping — crippled by SCHEDULING, sub-solver is fine
+
+kitten exists and works (`kitten.rs` 868 lines vs kissat `kitten.c` 2877).
+kissat `sweep.c schedule_sweeping` keeps a PERSISTENT schedule: leftovers
+from the previous round to the front, all other candidates radix-sorted by
+occurrence count ascending, per-variable `sweep` flags for completion, and
+on each COMPLETED sweep the bounds escalate — env vars double 256->8192,
+clauses 1024->32768, depth 2->3 (`sweepvars/maxvars/clauses/maxclauses/
+depth/maxdepth`), budget `sweepeffort=100` per mille of kitten_ticks.
+
+solver12 `sweep_round` (`main.rs:10468`): `for seed in 1..=nvars` capped at
+`SWEEP_SEED_BUDGET = 512`, **restarting at variable 1 every round**, no
+completion tracking, no escalation ladder, and it clones the entire
+original clause DB into a snapshot per round. On a 100k-var instance it
+re-sweeps the same ~512 lowest-numbered vars forever. THIS is the 450x
+productivity gap (0-826 equivalences vs 90k-18M kitten solves).
+
+### 3. Already at PARITY — do not spend effort here
+
+- **Tier limits**: both derive tier1/tier2 from a glue-usage histogram at
+  the 50%/90% percentiles with 2/6 floors (ours:
+  `compute_tier_limits_from_histogram`, `main.rs:11357`; kissat `tiers.c`).
+- **BVE bound ladder** 0->1->2->4->8->16 on round completion (ours via
+  `SAT_ELIM_ARMED_BOUNDS`, armed formulas only).
+- **Propagation throughput**: 5.62M props/s vs kissat 5.1M on pj2008.
+
+### 4. Genuinely different control law: REDUCE (best throughput hypothesis)
+
+kissat `reduce.c` deletes a FRACTION of reducibles, ramping 50% -> 90% as
+`high - (high-low)/log10(reductions+9)` (`reducelow=500`, `reducehigh=900`
+per mille), keeping anything with `glue<=tier1 && used>0` or
+`glue<=tier2 && used>=30`, where `used` is a 5-bit counter (`MAX_USED=31`).
+
+solver12 `reduce_db_lbd_tiered` (`main.rs:11511`) deletes down to a LITERAL
+BUDGET (`learned_lit_budget`), worst-LBD-first, with
+`MAX_USED_RECENTLY = 3`. A budget-driven law and a fraction-driven law
+diverge on long runs, and a 3-step vs 31-step usage counter is a much
+coarser retention signal -> longer DB -> longer watch lists. This is the
+shape of the observed 2.2-9x slowdown at identical conflict counts.
+
+### 5. Built but SWITCHED OFF (gate runs, not development)
+
+`SAT_PROBE` (root failed-literal probing, `main.rs:6318`, proportional
+5M-100M tick budget — NOT in the runtime rejection list, it works),
+`SAT_GATE_BVE`+`SAT_GATE_EXTRACT` (gate-aware/Plaisted-Greenbaum BVE),
+`SAT_ELIM_DEF` (kitten definition extraction = kissat `definition.c`),
+`SAT_ELS` as a standalone root pass, `SAT_FACTOR_INPROCESS`.
+
+### 6. Actually ABSENT (runtime-rejected, `config.rs:1752`)
+
+`SAT_HBR`, `SAT_TRANSITIVE`, `SAT_FORWARD_SUBSUME`, `SAT_RCHECK`; plus BCE
+(denylisted name only). NOTE kissat has no standalone HBR module either —
+the failed-literal role lives in `backbone.c` (binary-implication-graph
+only, 2% effort) and `transitive.c` (2% effort). Small cheap passes, not
+big ports.
+
+### 7. Vivification granularity
+
+kissat runs FOUR rounds per invocation (tier1, tier2, tier3, irredundant)
+splitting one budget 3:3:1:3 (`vivifytier1/2/3=3/3/1`, `vivifyirr=3`) with
+unspent slack carried forward. solver12 does originals + tier1/tier2
+learned only, learned delayed to 6M conflicts. **tier3 is never vivified.**
+
+### 8. Our side of the ledger (no kissat counterpart at all)
+
+GF(2) Gaussian refutation w/ pure-resolution DRAT (`SAT_GAUSS`),
+closed-Tseitin extended resolution (`SAT_TSEITIN` — outside kissat's proof
+system entirely), adjacent-pair parity abstraction
+(`SAT_PAIR_ABS_REFUTE`), the endgame rephase latch (`SAT_ENDGAME`), and the
+per-formula arming/routing layer (`SAT_DECISION_ARM`,
+`SAT_VIVIFY_YIELD_ARM`, deep-phase sweep guard, congruence dry-run
+threshold).
+
 ## RANKED PLAN for next session
 
-1. **10th wall-diet — now with a deterministic +1 attached (carried #1,
-   strengthened).** bp4_TCO_CSO_ZR solves at 1880 s with a kissat-impossible
-   trajectory: **~5% wall is a guaranteed, capability-backed +1 at the
-   1800 s gate** — no lottery, no reroll (conflicts 2,008,325 deterministic).
-   The same diet hardens rbsat (20 s under the wire this deal!), sted2, vex,
-   oski15. Proven gate-safe shape: conflicts EXACT tie, wall down
-   (watch-pool / closure-diet / round-diet / elim-scratch / hotloop-ptr /
-   fastidx / extract-cache / phase-delta / endgame lineage). Profile the
-   1600–1900 s five first; pick the fattest shared sink.
-2. **Throughput / learned-DB discipline (carried #3, new evidence).** The
-   2.2–9x wall ratios above at identical outcomes; Bubble's 9x (20.1 M
-   conflicts at ~7 k conf/s) is the new extreme datapoint. Lever = reduce
-   policy / kept-clause counts -> shorter watch lists (kissat tier limits).
-   Measure OFFLINE first (kept clauses + ticks/prop on rbsat/Bubble under
-   kissat-style limits, SAT_LIMIT_CONFLICTS identity screens — no gate).
-   WARNING: rerolls every >=1M-conflict trajectory — bundle as a deliberate
-   re-luck campaign (REROLL-LUCK LAW), scope by arming time where possible.
-3. **Inprocessing capability arc (carried #4/#6, targets now precise).**
-   Four cells kissat closes in <=1400 s that 2x time does NOT give us:
-   fixedbandwidth, goldcrest, bp4_TCO_IXA_LP, booth_dadda_mapped. The
-   2026-07-21 deep dive (still current, `log/gap-read-2026-07-21/deepdive/`)
-   ranks the mechanisms: (a) kitten-class SAT-sweeping productivity (ours
-   finds 0–826 equivalences where kissat kitten-solves 90 k–18 M; bead
-   SAT-playground-5b2.3.39: sweep_round restarts its 512-seed scan at var 1
-   every round); (b) elimination depth 72–88% vs our 43–56% on miters +
-   equivalence substitution; (c) **time/tick-budgeted inprocessing cadence**
-   — goldcrest (474 conf/s) and lockchart (330 conf/s) NEVER reach the 1M
-   conflict trigger in a full run. Must spare sudoku-N30 + bp5.
-4. **Giant memory diet (carried #5).** pj2008 RSS 10.4 GB vs kissat 1.4 GB;
+**Ranking CHANGED from the 2026-07-23b aggregate.** The wall-diet/lottery
+vein is near-exhausted (9 consecutive diets, 67->70 over ~20 sessions, last
+wins are coin flips); the source audit shows items 1-3 below are
+deterministic, mechanism-backed work with named target cells.
+
+1. **Fix the sweep seed cursor (NEW #1 — bug, not research).** Advance the
+   scan monotonically across rounds, add kissat's leftovers-first +
+   occurrence-sorted persistent schedule and the completion/escalation
+   ladder, and stop cloning the clause DB per round. Bead
+   SAT-playground-5b2.3.39. 450x measured productivity gap behind it;
+   touches all nine kissat-only cells. See delta section 2.
+2. **Re-denominate the inprocessing budget in ticks** with an effort floor
+   (kissat `SET_EFFORT_LIMIT`). Contained change; kills the entire
+   "never fires" class. Named beneficiaries: goldcrest, lockchart-group1.
+   Must spare sudoku-N30 + bp5 (never-armed but solving). See section 1.
+3. **Evaluate what is already built but off** — `SAT_PROBE`,
+   `SAT_GATE_BVE`+`SAT_GATE_EXTRACT`, `SAT_ELIM_DEF`. These are GATE RUNS,
+   not development. Gate-aware BVE + kitten definitions is exactly how
+   kissat reaches 72-88% elimination where we sit at 43-56%. Target cells:
+   fixedbandwidth, goldcrest, bp4_TCO_IXA_LP, booth_dadda_mapped (the four
+   kissat closes in <=1400 s that 2x time does NOT give us). See section 5.
+4. **Small ports:** `backbone.c` (BIG failed literals, 2% effort),
+   `transitive.c` (2% effort), vivify tier3 + the 3:3:1:3 budget split.
+   See sections 6-7.
+5. **Reduce control law (highest ceiling, highest risk).** Fraction-ramp +
+   31-step `used` counter vs our literal-budget + 3-step. Best hypothesis
+   for the 2.2-9x throughput gap. Measure OFFLINE first (kept clauses +
+   ticks/prop on rbsat/Bubble under kissat-style limits,
+   SAT_LIMIT_CONFLICTS identity screens — no gate). WARNING: rerolls every
+   >=1M-conflict trajectory — needs a deliberate re-luck campaign
+   (REROLL-LUCK LAW), not a single gate run. See section 4.
+6. **10th wall-diet (DEMOTED from #1, still has a free +1).**
+   bp4_TCO_CSO_ZR solves at 1880 s with a kissat-impossible trajectory, so
+   **~5% wall is a deterministic capability-backed +1 at the 1800 s gate**
+   (conflicts 2,008,325, no reroll). Same diet hardens rbsat (20 s under
+   the wire this deal!), sted2, vex, oski15 — five cells in the 1600-1900 s
+   band. Proven gate-safe shape (conflicts EXACT tie, wall down). Keep as
+   the cheap fallback when items 1-3 stall; do not lead with it.
+7. **Giant memory diet (carried).** pj2008 RSS 10.4 GB vs kissat 1.4 GB;
    BVE emits 1.7 GB discarded DRAT in 150 s. Note pj2008 is marginal even
-   for kissat (2866 s at 3600). Unstarted.
-5. **TT class bookkeeping.** TT496 banked and re-confirmed unique at 3600 s.
-   TT492: kissat needs 2222 s — NOT a 1800 s-gate loss; our old draw existed
-   only pre-rf (closed). TT495: nobody solves at 3600 s — needs a genuinely
-   new mechanism; low priority standalone.
-6. **Carried kissat gaps (unstarted):** tiered vivification, probing/HBR
-   parity (SAT_PROBE/SAT_HBR still ParkingLot).
+   for kissat (2866 s at 3600 s). Unstarted.
+8. **TT class bookkeeping.** TT496 banked and re-confirmed unique at
+   3600 s. TT492: kissat needs 2222 s — NOT a 1800 s-gate loss; our old
+   draw existed only pre-rf (closed). TT495: nobody solves at 3600 s —
+   needs a genuinely new mechanism; low priority standalone.
 
 ## Current state
 
@@ -129,6 +277,10 @@ is an exactly-deterministic trajectory whose solve is a wall coin at 1800 s.
 
 ## Standing traps (carried + this session)
 
+- **`FEATURES.md`/`FEATURES.csv`/`CONFIG_SCHEMA.csv` are STALE — never quote
+  them for a default or a "not implemented" claim. Read `src/config.rs` +
+  the raw env reads in `src/main.rs`. This trap already cost one wrong
+  "SAT_PROBE is ParkingLot" line in a prior plan.**
 - `results.tsv` written only at run END — monitor per-cell lines in launch
   logs instead.
 - `pgrep -f feature_ablation` inside a monitor loop matches ITSELF; use
