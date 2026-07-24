@@ -10754,6 +10754,46 @@ impl Solver {
             }
         }
 
+        // Bead SAT-playground-5b2.3.38.1: NEIGHBOURHOOD INVALIDATION. A retire flag records
+        // "barren at these bounds ON THE FORMULA AS IT WAS" — barrenness is state-dependent,
+        // not permanent. `try_els` merges below rewrite the neighbourhood of every proven
+        // fact, which can make a previously barren seed productive.
+        //
+        // This matters most exactly where it hurt: on giant formulas (VexRiscv 723k vars,
+        // oski15 488k) a 512-seed round never walks the whole range, so a pass never
+        // completes and the wholesale clear on escalation never fires — retired seeds would
+        // be stranded for the rest of the solve. Legacy avoided this by blindly re-sweeping
+        // its prefix every round.
+        //
+        // Scope it like SAT_EXTRACT_CACHE's len<=3 invalidation (the key to that win):
+        // clear only the fact variables and their one-hop clause neighbours, not the whole
+        // map, so the miter gains from retiring genuinely-barren regions survive.
+        if self.sweep_retire_enabled && !(all_backbones.is_empty() && all_equivalences.is_empty())
+        {
+            let mut touched: Vec<usize> = Vec::new();
+            for &b in &all_backbones {
+                touched.push(b.unsigned_abs() as usize);
+            }
+            for &(a, b) in &all_equivalences {
+                touched.push(a.unsigned_abs() as usize);
+                touched.push(b.unsigned_abs() as usize);
+            }
+            for v in touched {
+                if v == 0 || v > nvars {
+                    continue;
+                }
+                self.sweep_done[v] = false;
+                for &si in &occ[v] {
+                    for &l in &snap[si] {
+                        let n = l.unsigned_abs() as usize;
+                        if n >= 1 && n <= nvars {
+                            self.sweep_done[n] = false;
+                        }
+                    }
+                }
+            }
+        }
+
         // Apply the proven facts. Backbones become root units (enqueued + propagated);
         // equivalences become implication binaries. Their proof lines were emitted above.
         if !all_backbones.is_empty() {
@@ -18476,6 +18516,40 @@ mod tests {
             s.sweep_completed, s.sweep_unproductive_passes
         );
         assert!(s.sweep_completed >= SWEEP_MAX_UNPRODUCTIVE_PASSES as u32);
+    }
+
+    /// Proving a fact must un-retire the fact's variables and their one-hop neighbours:
+    /// the ELS merge rewrites that neighbourhood, so "barren" no longer holds there. On
+    /// giant formulas a pass never completes, so this is the ONLY thing that clears flags.
+    #[test]
+    fn sweep_retire_invalidates_neighbourhood_of_proven_facts() {
+        // x1 <-> x2 equivalence (provable), plus barren filler sharing a clause with x1.
+        let clauses = vec![
+            vec![-1, 2],
+            vec![1, -2],
+            vec![1, 2, 9],
+            vec![3, -4, 7],
+            vec![4, -5, 7],
+            vec![5, -6, 8],
+            vec![6, -3, 8],
+        ];
+        let mut s = make_solver(9, clauses);
+        s.sweep_cursor_enabled = true;
+        s.sweep_retire_enabled = true;
+        s.sweep_seed_budget = 64;
+        s.sweep_done = vec![false; 10];
+        // Pre-retire a neighbour of the equivalence (shares clause [1,2,9] with x1).
+        s.sweep_done[9] = true;
+        let mut proof = ProofLog::disabled();
+        assert!(s.sweep_round(&mut proof));
+        assert!(
+            s.stats.sweep_equivalences > 0,
+            "probe needs a proven equivalence to invalidate around"
+        );
+        assert!(
+            !s.sweep_done[9],
+            "one-hop neighbour of a proven fact must be un-retired"
+        );
     }
 
     /// Retire flags must never be consulted when the policy is off (legacy/cursor modes),
