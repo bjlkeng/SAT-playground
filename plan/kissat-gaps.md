@@ -297,6 +297,42 @@ equivalences per instance where kissat kitten-solves 90k–18M times
 This is a scheduling bug with a known-good target design — ordinary
 engineering, not research.
 
+### 2.2a MEASURED 2026-07-24 — a bare cursor is NOT a uniform win
+
+Implementing the plain cursor and measuring it (paired probe, 200k conflict
+limit, `SAT_INPROCESS_INTERVAL_CONFLICTS=20000` so rounds actually fire —
+note the shipped 1M cadence produces ZERO sweep rounds at 200k conflicts,
+which is itself section 2.1 in miniature):
+
+| cell | legacy `sweep_eq` | cursor `sweep_eq` | direction |
+|------|------------------:|------------------:|-----------|
+| booth_dadda_mapped | 792 | **7 303** | cursor 9.2x better |
+| BubbleVsPancakeSort | 77 | **316** | cursor 4.1x better (bb 1 -> 93) |
+| VexRiscv | **10 330** | 3 291 | cursor 3.1x WORSE |
+| oski15a01b20s | **1 005** | 234 | cursor 4.3x WORSE |
+| bp4_TCO_IXA_LP | **1 486** | 882 | cursor 1.7x WORSE |
+| fixedbandwidth | 0 | 0 | tie (sweep finds nothing either way) |
+
+**Why:** restarting at variable 1 accidentally re-visits a PRODUCTIVE
+frontier. `try_els` merges one miter layer, which exposes the next layer's
+equivalences **at the same variables** (this is documented in the
+`sweep_round` code comment). A bare cursor walks away from that frontier
+before it is exhausted, trading depth of exploitation for breadth of
+coverage. Miters (booth/Bubble) want breadth; BMC/circuit cells
+(VexRiscv/oski/bp4) want the repeated frontier.
+
+**The fix is kissat's actual design, which does BOTH:** retire only
+*exhausted* seeds, keep leftovers at the front. Implemented as
+`SAT_SWEEP_SCHED=retire` — per-variable barren flags, skipped on later
+rounds, cleared wholesale on a completed pass so the escalated environment
+gets a fresh crack (kissat's `try_to_eliminate_all_variables_again`
+analogue). Productive seeds are never flagged, so they stay in rotation
+while the budget reaches deeper variables.
+
+**Lesson worth carrying:** "this is obviously a bug, just fix it" was wrong
+here. The legacy behaviour was load-bearing on three cells. Always measure
+the mechanism before assuming a defect is pure loss.
+
 ## 2.3 Variable elimination
 
 **kissat's bound escalation** (`eliminate.c set_next_elimination_bound`):

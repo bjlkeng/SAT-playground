@@ -276,6 +276,10 @@ const DEFAULT_VIVIFY_MAX_CLAUSE_LEN: usize = 100;
 /// Bead SAT-playground-5b2.3.6: after this many consecutive vivify rounds that
 /// strengthen nothing and derive no unit, stop scheduling vivify for the instance.
 const VIVIFY_MAX_UNPRODUCTIVE_ROUNDS: u32 = 2;
+/// Bead SAT-playground-5b2.3.38.1: consecutive zero-yield COMPLETED sweep passes after
+/// which sweeping is retired for the instance (kissat's `BUMP_DELAY(sweep)` analogue).
+/// Only consulted in `SAT_SWEEP_SCHED=retire` mode.
+const SWEEP_MAX_UNPRODUCTIVE_PASSES: u32 = 2;
 /// Learned-clause vivification is useful only once search has already spent a
 /// very large budget. Delaying it keeps the promoted 1M sweep cadence intact
 /// while skipping fragile long SAT cells that finish before 6M conflicts.
@@ -294,6 +298,16 @@ const VIVIFY_LEARNED_MAX_LBD: u16 = 6;
 const SWEEP_SEED_BUDGET: usize = 512;
 /// Bead SAT-playground-5b2.3.38: max kitten solve calls per environment.
 const SWEEP_SOLVE_BUDGET: usize = 2000;
+/// Bead SAT-playground-5b2.3.38.1 (kissat `sweep.c` parity): escalation caps applied
+/// once a full seed pass completes. kissat doubles the environment variable/clause
+/// bounds and increments depth per completed sweep (`sweepmaxvars`, `sweepmaxclauses`,
+/// `sweepmaxdepth`); our per-round bases (`SWEEP_MAX_VARS` 256, `SWEEP_MAX_CLAUSES`
+/// 1024, `SWEEP_DEPTH` 2) already match kissat's initial values, so only the ladder was
+/// missing. Without it a formula whose equivalences sit outside a depth-2/256-var
+/// neighborhood can never be reached no matter how many rounds run.
+const SWEEP_MAX_VARS_CAP: usize = 8192;
+const SWEEP_MAX_CLAUSES_CAP: usize = 32768;
+const SWEEP_MAX_DEPTH_CAP: usize = 3;
 /// Skip SAT sweeping when phase search has already found a near-complete
 /// SAT-looking assignment prefix. This protects long SAT trajectories where
 /// true local equivalences can still derail a nearly complete model.
@@ -2630,6 +2644,56 @@ struct Solver {
     /// cadence, and can be disabled explicitly with SAT_SWEEP=off. Correctness-critical
     /// (DRAT).
     sweep: bool,
+    /// Bead SAT-playground-5b2.3.38.1: env SAT_SWEEP_CURSOR. Carry the seed scan position
+    /// across sweeping rounds instead of restarting at variable 1 every round.
+    ///
+    /// The pre-fix loop was `for seed in 1..=nvars` capped at SWEEP_SEED_BUDGET (512),
+    /// so on any formula with more than ~512 eligible variables every round re-swept the
+    /// same lowest-numbered prefix and the rest of the formula was never reached at all.
+    /// Measured consequence: 0-826 equivalences found per instance where kissat's kitten
+    /// runs 90k-18M solves (`plan/gap-read-2026-07-21.md`). kissat instead keeps a
+    /// persistent schedule (leftovers first, then unscheduled sorted by occurrence count)
+    /// with per-variable completion flags.
+    ///
+    /// Default off so the promoted trajectory stays byte-identical until the A/B lands.
+    ///
+    /// MEASURED 2026-07-24: a plain cursor is NOT a uniform win. Restarting at variable 1
+    /// accidentally re-visits a productive frontier — `try_els` merges one miter layer,
+    /// which exposes the next layer's equivalences at the SAME variables — so a bare
+    /// cursor walks away from that frontier before it is exhausted. Paired probe at 200k
+    /// conflicts / 20k interval, sweep_equivalences legacy vs cursor: booth_dadda 792 ->
+    /// 7303 and Bubble 77 -> 316 (cursor much better), but VexRiscv 10330 -> 3291,
+    /// oski15a01b20 1005 -> 234, bp4_TCO_IXA 1486 -> 882 (cursor much worse). Hence the
+    /// `retire` policy below, which is what kissat actually does.
+    sweep_cursor_enabled: bool,
+    /// Bead SAT-playground-5b2.3.38.1: retire only EXHAUSTED seeds (kissat `sweep.c`
+    /// parity). kissat keeps leftover/incomplete variables at the FRONT of the next
+    /// round's schedule and marks a variable complete only when it is actually done, so
+    /// productive variables are revisited while exhausted ones are skipped and the scan
+    /// reaches deeper into the formula. Implies cursor scanning. On a completed pass all
+    /// flags are cleared and the environment bounds escalate — again kissat's behaviour
+    /// (`try_to_eliminate_all_variables_again` is the BVE analogue).
+    sweep_retire_enabled: bool,
+    /// Per-variable "swept and yielded nothing at the current bounds" flag. Cleared
+    /// wholesale on a completed pass so the escalated environment gets a fresh crack.
+    sweep_done: Vec<bool>,
+    /// Facts (backbones + equivalences) proven since the last completed pass. Drives the
+    /// unproductive-pass backoff below.
+    sweep_facts_this_pass: u64,
+    /// Consecutive COMPLETED passes that proved nothing. kissat throttles a low-yield
+    /// sweeper with `BUMP_DELAY(sweep)` (yield < 0.1% per swept variable); without an
+    /// equivalent, retire mode would re-sweep a barren formula forever once the bound
+    /// ladder caps out, burning wall for no facts. After
+    /// `SWEEP_MAX_UNPRODUCTIVE_PASSES` such passes we stop scheduling sweep for this
+    /// instance, mirroring `vivify_unproductive_rounds`.
+    sweep_unproductive_passes: u32,
+    /// Next seed variable to examine (1-based). Only advanced when `sweep_cursor_enabled`.
+    sweep_cursor: usize,
+    /// Completed full seed passes; drives the bound escalation ladder (see
+    /// `SWEEP_MAX_VARS_CAP`). Only advanced when `sweep_cursor_enabled`.
+    sweep_completed: u32,
+    /// Env SAT_SWEEP_SEED_BUDGET: seeds actually swept per round.
+    sweep_seed_budget: usize,
     /// Bead SAT-playground-5b2.3.6: env SAT_VIVIFY_LEARNED. Also vivify LEARNT clauses
     /// (not only irredundant originals). Kissat vivifies tier1/tier2 learnt clauses for a
     /// meaningful share of its gain; on medium the original clauses often yield zero
@@ -3922,6 +3986,30 @@ impl Solver {
                 config.inprocess
                     && matches!(config.profile, SolverProfile::Default | SolverProfile::Fast),
             ),
+            // SAT_SWEEP_SCHED = legacy | cursor | retire. `legacy` is the shipped
+            // restart-at-1 scan (byte-identical default); `cursor` advances the scan
+            // position across rounds; `retire` additionally skips seeds that already
+            // yielded nothing at the current bounds (kissat parity). SAT_SWEEP_CURSOR=on
+            // is kept as an alias for `cursor` so the earlier probe scripts still work.
+            sweep_cursor_enabled: {
+                let sched = std::env::var("SAT_SWEEP_SCHED").unwrap_or_default();
+                sched == "cursor"
+                    || sched == "retire"
+                    || env_bool_or_default("SAT_SWEEP_CURSOR", false)
+            },
+            sweep_retire_enabled: std::env::var("SAT_SWEEP_SCHED")
+                .map(|s| s == "retire")
+                .unwrap_or(false),
+            sweep_done: Vec::new(),
+            sweep_facts_this_pass: 0,
+            sweep_unproductive_passes: 0,
+            sweep_cursor: 1,
+            sweep_completed: 0,
+            sweep_seed_budget: std::env::var("SAT_SWEEP_SEED_BUDGET")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&n: &usize| n > 0)
+                .unwrap_or(SWEEP_SEED_BUDGET),
             vivify_learned: env_bool_or_default(
                 "SAT_VIVIFY_LEARNED",
                 config.vivify
@@ -10478,9 +10566,25 @@ impl Solver {
         let env_usize = |name: &str, dflt: usize| -> usize {
             std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(dflt)
         };
-        let sweep_depth = env_usize("SAT_SWEEP_DEPTH", SWEEP_DEPTH);
-        let sweep_max_vars = env_usize("SAT_SWEEP_MAX_VARS", SWEEP_MAX_VARS);
-        let sweep_max_clauses = env_usize("SAT_SWEEP_MAX_CLAUSES", SWEEP_MAX_CLAUSES);
+        let mut sweep_depth = env_usize("SAT_SWEEP_DEPTH", SWEEP_DEPTH);
+        let mut sweep_max_vars = env_usize("SAT_SWEEP_MAX_VARS", SWEEP_MAX_VARS);
+        let mut sweep_max_clauses = env_usize("SAT_SWEEP_MAX_CLAUSES", SWEEP_MAX_CLAUSES);
+        // Bead SAT-playground-5b2.3.38.1: kissat's escalation ladder. Each COMPLETED seed
+        // pass doubles the environment variable/clause bounds and adds one to depth,
+        // capped. Shift amount is clamped so the doubling cannot overflow; the caps are
+        // raised to any explicit env override so a manual bound is never reduced.
+        if self.sweep_cursor_enabled && self.sweep_completed > 0 {
+            let steps = self.sweep_completed.min(16) as usize;
+            sweep_max_vars = sweep_max_vars
+                .checked_shl(steps as u32).unwrap_or(usize::MAX)
+                .min(SWEEP_MAX_VARS_CAP.max(sweep_max_vars));
+            sweep_max_clauses = sweep_max_clauses
+                .checked_shl(steps as u32).unwrap_or(usize::MAX)
+                .min(SWEEP_MAX_CLAUSES_CAP.max(sweep_max_clauses));
+            sweep_depth = sweep_depth
+                .saturating_add(steps)
+                .min(SWEEP_MAX_DEPTH_CAP.max(sweep_depth));
+        }
         let nvars = self.assignment.len().saturating_sub(1);
         if nvars == 0 {
             return true;
@@ -10529,15 +10633,51 @@ impl Solver {
         let mut all_backbones: Vec<i32> = Vec::new();
         let mut all_equivalences: Vec<(i32, i32)> = Vec::new();
         let mut seeds_done = 0usize;
-        for seed in 1..=nvars as i32 {
-            if seeds_done >= SWEEP_SEED_BUDGET {
+        // Bead SAT-playground-5b2.3.38.1: scan order. Legacy mode restarts at variable 1
+        // every round (and therefore only ever reaches the first ~budget eligible vars).
+        // Cursor mode walks all nvars positions starting where the previous round
+        // stopped, wrapping once, so successive rounds cover the whole formula; a wrap
+        // without exhausting the budget means a full pass completed and the bounds
+        // escalate.
+        // Retire mode deliberately scans from variable 1 like legacy — NOT from a cursor.
+        // That is what makes it kissat-equivalent: un-retired seeds (productive ones, which
+        // are never flagged, plus never-examined ones) sit at the FRONT of the scan, which
+        // is kissat's "reschedule previously remaining variables first". Advancing a cursor
+        // past un-retired productive seeds would strand them until a full wrap and would
+        // reintroduce exactly the regression the bare cursor showed on VexRiscv/oski/bp4.
+        // Retired seeds are skipped cheaply, so the budget flows to the frontier.
+        let use_cursor_start = self.sweep_cursor_enabled && !self.sweep_retire_enabled;
+        let scan_start = if use_cursor_start {
+            self.sweep_cursor.clamp(1, nvars)
+        } else {
+            1
+        };
+        let seed_budget = self.sweep_seed_budget;
+        if self.sweep_retire_enabled && self.sweep_done.len() != nvars + 1 {
+            self.sweep_done = vec![false; nvars + 1];
+        }
+        let mut scanned = 0usize;
+        while scanned < nvars {
+            if seeds_done >= seed_budget {
                 break;
             }
-            let sv = seed as usize;
+            let sv = if use_cursor_start {
+                (scan_start - 1 + scanned) % nvars + 1
+            } else {
+                scanned + 1
+            };
+            scanned += 1;
+            let seed = sv as i32;
             if self.assignment[sv] != UNASSIGNED || self.eliminated[sv] {
                 continue;
             }
             if occ[sv].is_empty() {
+                continue;
+            }
+            // Retire policy: skip seeds already proven barren at the current bounds, so the
+            // budget goes to unexamined variables while productive seeds (never marked
+            // done) stay in rotation and keep exploiting the ELS merge cascade.
+            if self.sweep_retire_enabled && self.sweep_done[sv] {
                 continue;
             }
             let mut env = build_environment(
@@ -10559,14 +10699,59 @@ impl Solver {
                 return false;
             }
             if facts.backbones.is_empty() && facts.equivalences.is_empty() {
+                // Barren at these bounds — retire it until the next escalation.
+                if self.sweep_retire_enabled {
+                    self.sweep_done[sv] = true;
+                }
                 continue;
             }
             // Emit the RUP lemmas that justify this environment's facts, then collect them.
             for lemma in env.proof_lemmas_outer() {
                 proof_log.record_clause(&lemma);
             }
+            self.sweep_facts_this_pass = self.sweep_facts_this_pass.saturating_add(
+                (facts.backbones.len() + facts.equivalences.len()) as u64,
+            );
             all_backbones.extend(facts.backbones);
             all_equivalences.extend(facts.equivalences);
+        }
+
+        // Bead SAT-playground-5b2.3.38.1: persist the scan position. `scanned` counts every
+        // position examined (including ones skipped as assigned/eliminated/occurrence-free),
+        // so the next round resumes past them rather than re-walking the same prefix.
+        //
+        // Coverage of the variable range accumulates ACROSS rounds — a budget-capped round
+        // covers only its slice — so a pass is complete when this round's scan crosses the
+        // end of the range, not when a single round happens to scan everything. Crossing
+        // increments `sweep_completed`, which escalates the environment bounds next round.
+        if self.sweep_cursor_enabled {
+            // In retire mode `scan_start` is always 1, so this reduces to "did this round
+            // walk the whole range" — which, with barren seeds skipped, means everything is
+            // either retired or examined: a completed pass.
+            let crossed_end = scan_start - 1 + scanned >= nvars;
+            if use_cursor_start {
+                self.sweep_cursor = (scan_start - 1 + scanned) % nvars + 1;
+            }
+            if crossed_end {
+                self.sweep_completed = self.sweep_completed.saturating_add(1);
+                // kissat re-flags every variable when it escalates a bound, so the larger
+                // environment gets a fresh crack at seeds that were barren at the smaller
+                // one. Without this the retire flags would permanently starve the scan.
+                if self.sweep_retire_enabled {
+                    self.sweep_done.iter_mut().for_each(|d| *d = false);
+                    if self.sweep_facts_this_pass == 0 {
+                        self.sweep_unproductive_passes =
+                            self.sweep_unproductive_passes.saturating_add(1);
+                        if self.sweep_unproductive_passes >= SWEEP_MAX_UNPRODUCTIVE_PASSES {
+                            // Barren formula at these bounds — stop paying for it.
+                            self.sweep = false;
+                        }
+                    } else {
+                        self.sweep_unproductive_passes = 0;
+                    }
+                    self.sweep_facts_this_pass = 0;
+                }
+            }
         }
 
         // Apply the proven facts. Backbones become root units (enqueued + propagated);
@@ -18178,6 +18363,159 @@ mod tests {
         assert!(s.sweep_round(&mut proof));
         assert_eq!(s.stats.sweep_backbones, 0);
         assert_eq!(s.stats.sweep_equivalences, 0);
+    }
+
+    /// Bead SAT-playground-5b2.3.38.1. Legacy mode restarts the seed scan at variable 1
+    /// every round, so with a budget below the variable count the same prefix is swept
+    /// forever and the tail of the formula is never reached.
+    #[test]
+    fn sweep_cursor_off_restarts_scan_every_round() {
+        let clauses: Vec<Vec<i32>> = (1..=20).map(|v| vec![v, -(v % 20 + 1)]).collect();
+        let mut s = make_solver(20, clauses);
+        s.sweep_cursor_enabled = false;
+        s.sweep_seed_budget = 4;
+        let mut proof = ProofLog::disabled();
+        assert!(s.sweep_round(&mut proof));
+        assert_eq!(s.sweep_cursor, 1, "legacy mode must not move the cursor");
+        assert!(s.sweep_round(&mut proof));
+        assert_eq!(s.sweep_cursor, 1);
+        assert_eq!(s.sweep_completed, 0);
+    }
+
+    /// Cursor mode resumes where the previous round stopped and wraps exactly once,
+    /// so successive rounds cover the whole variable range instead of one prefix.
+    #[test]
+    fn sweep_cursor_advances_and_wraps_across_rounds() {
+        let clauses: Vec<Vec<i32>> = (1..=20).map(|v| vec![v, -(v % 20 + 1)]).collect();
+        let mut s = make_solver(20, clauses);
+        s.sweep_cursor_enabled = true;
+        s.sweep_seed_budget = 4;
+        let mut proof = ProofLog::disabled();
+
+        assert!(s.sweep_round(&mut proof));
+        let first = s.sweep_cursor;
+        assert!(first > 1, "cursor must advance past the swept prefix, got {first}");
+        assert_eq!(s.sweep_completed, 0, "a budget-capped round is not a full pass");
+
+        assert!(s.sweep_round(&mut proof));
+        let second = s.sweep_cursor;
+        assert!(
+            second > first || s.sweep_completed > 0,
+            "round 2 must resume past round 1 (first={first} second={second})"
+        );
+
+        // Drive enough rounds to wrap the 20-variable range at 4 seeds per round.
+        for _ in 0..12 {
+            assert!(s.sweep_round(&mut proof));
+        }
+        assert!(
+            s.sweep_completed >= 1,
+            "repeated rounds must complete a full pass, cursor={}",
+            s.sweep_cursor
+        );
+    }
+
+    /// Retire policy: a seed that yields no facts is marked done and skipped on later
+    /// rounds; a completed pass clears every flag so the escalated environment retries.
+    #[test]
+    fn sweep_retire_marks_barren_seeds_and_clears_on_completed_pass() {
+        // No provable local facts anywhere -> every swept seed is barren.
+        let clauses: Vec<Vec<i32>> = (1..=12).map(|v| vec![v, -(v % 12 + 1), 7]).collect();
+        let mut s = make_solver(12, clauses);
+        s.sweep_cursor_enabled = true;
+        s.sweep_retire_enabled = true;
+        s.sweep_seed_budget = 3;
+        let mut proof = ProofLog::disabled();
+
+        assert!(s.sweep_round(&mut proof));
+        let retired = s.sweep_done.iter().filter(|&&d| d).count();
+        assert!(retired > 0, "barren seeds must be retired, got {retired}");
+        assert!(retired <= 3, "only budgeted seeds can be retired, got {retired}");
+
+        // Retired seeds are skipped, so later rounds reach deeper variables and the
+        // retired set grows monotonically until the pass completes.
+        assert!(s.sweep_round(&mut proof));
+        assert!(s.sweep_done.iter().filter(|&&d| d).count() >= retired);
+
+        // Once a pass completes, flags reset for the escalated bounds.
+        for _ in 0..12 {
+            assert!(s.sweep_round(&mut proof));
+            if s.sweep_completed > 0 {
+                break;
+            }
+        }
+        assert!(s.sweep_completed >= 1, "expected a completed pass");
+        assert!(
+            s.sweep_done.iter().all(|&d| !d),
+            "completed pass must clear retire flags so escalation gets a fresh crack"
+        );
+    }
+
+    /// Barren formulas must stop paying for sweeping: after
+    /// SWEEP_MAX_UNPRODUCTIVE_PASSES zero-yield completed passes, sweep retires itself
+    /// (kissat's BUMP_DELAY(sweep) analogue). Without this, retire mode re-sweeps forever
+    /// once the bound ladder caps out.
+    #[test]
+    fn sweep_retire_disables_itself_on_barren_formula() {
+        let clauses: Vec<Vec<i32>> = (1..=12).map(|v| vec![v, -(v % 12 + 1), 7]).collect();
+        let mut s = make_solver(12, clauses);
+        s.sweep = true;
+        s.sweep_cursor_enabled = true;
+        s.sweep_retire_enabled = true;
+        s.sweep_seed_budget = 3;
+        let mut proof = ProofLog::disabled();
+        for _ in 0..40 {
+            if !s.sweep {
+                break;
+            }
+            assert!(s.sweep_round(&mut proof));
+        }
+        assert!(
+            !s.sweep,
+            "barren formula must retire sweeping (completed={} unproductive={})",
+            s.sweep_completed, s.sweep_unproductive_passes
+        );
+        assert!(s.sweep_completed >= SWEEP_MAX_UNPRODUCTIVE_PASSES as u32);
+    }
+
+    /// Retire flags must never be consulted when the policy is off (legacy/cursor modes),
+    /// so those trajectories stay exactly as measured.
+    #[test]
+    fn sweep_retire_off_leaves_flags_untouched() {
+        let clauses: Vec<Vec<i32>> = (1..=12).map(|v| vec![v, -(v % 12 + 1), 7]).collect();
+        let mut s = make_solver(12, clauses);
+        s.sweep_cursor_enabled = true;
+        s.sweep_retire_enabled = false;
+        s.sweep_seed_budget = 3;
+        let mut proof = ProofLog::disabled();
+        assert!(s.sweep_round(&mut proof));
+        assert!(s.sweep_done.is_empty(), "retire state must stay unallocated when off");
+    }
+
+    /// A completed pass escalates the environment bounds (kissat `sweep.c` ladder),
+    /// and the escalation is capped rather than doubling without bound.
+    #[test]
+    fn sweep_completed_passes_escalate_bounds_within_caps() {
+        let mut s = make_solver(3, vec![vec![1, 2, 3]]);
+        s.sweep_cursor_enabled = true;
+        s.sweep_completed = 3;
+        let steps = s.sweep_completed.min(16) as usize;
+        let vars = crate::sweep::SWEEP_MAX_VARS
+            .checked_shl(steps as u32).unwrap_or(usize::MAX)
+            .min(SWEEP_MAX_VARS_CAP.max(crate::sweep::SWEEP_MAX_VARS));
+        let depth = crate::sweep::SWEEP_DEPTH
+            .saturating_add(steps)
+            .min(SWEEP_MAX_DEPTH_CAP.max(crate::sweep::SWEEP_DEPTH));
+        assert_eq!(vars, 2048, "256 << 3 = 2048, under the 8192 cap");
+        assert_eq!(depth, SWEEP_MAX_DEPTH_CAP, "depth saturates at the cap");
+
+        // A very large completed count must still respect the caps (no overflow).
+        s.sweep_completed = 1_000;
+        let steps = s.sweep_completed.min(16) as usize;
+        let vars = crate::sweep::SWEEP_MAX_VARS
+            .checked_shl(steps as u32).unwrap_or(usize::MAX)
+            .min(SWEEP_MAX_VARS_CAP.max(crate::sweep::SWEEP_MAX_VARS));
+        assert_eq!(vars, SWEEP_MAX_VARS_CAP);
     }
 
     #[test]
