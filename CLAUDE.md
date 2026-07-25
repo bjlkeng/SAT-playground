@@ -288,8 +288,6 @@ hand-auditing the interface.
 
 ## Benchmarking Rules
 
-- For routine single-worker profiling runs, concurrent benchmarking is allowed
-  while combined solver/bench CPU use stays below four cores on this host.
 - Before starting benchmarks, check live solver usage and ask before launching a
   parallel sweep if competing solver/bench processes are live. Cap memory so
   `jobs * mem` fits RAM.
