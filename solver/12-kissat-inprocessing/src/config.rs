@@ -675,6 +675,18 @@ pub(crate) struct SolverConfig {
     pub(crate) forward_subsume: bool,
     pub(crate) gate_extract: bool,
     pub(crate) gate_bve: bool,
+    /// Scoped gate-aware BVE (SAT_GATE_BVE_SCOPED): at the root, dry-run plain BVE
+    /// (E0) and gate-aware BVE (E1) on throwaway sub-solvers, then enable gate_bve
+    /// for the real run only when the net elimination gain crosses
+    /// `gate_bve_min_gain_pct`. Formulas below the threshold (or above
+    /// `gate_bve_scoped_max_vars`) stay byte-identical to the plain baseline.
+    pub(crate) gate_bve_scoped: bool,
+    /// Minimum net elimination gain in percent (E1/E0 - 1 >= pct/100) for the
+    /// scoped pass to adopt gate-aware BVE (SAT_GATE_BVE_MIN_GAIN_PCT).
+    pub(crate) gate_bve_min_gain_pct: u64,
+    /// Variable-count cap for the scoped dry-run (SAT_GATE_BVE_SCOPED_MAX_VARS):
+    /// larger formulas skip the dry-run entirely and keep plain BVE.
+    pub(crate) gate_bve_scoped_max_vars: usize,
     pub(crate) rcheck: bool,
     pub(crate) gauss: bool,
     pub(crate) factor: bool,
@@ -813,6 +825,9 @@ impl Default for SolverConfig {
             forward_subsume: false,
             gate_extract: false,
             gate_bve: false,
+            gate_bve_scoped: false,
+            gate_bve_min_gain_pct: 2,
+            gate_bve_scoped_max_vars: 100_000,
             rcheck: false,
             gauss: false,
             factor: false,
@@ -1023,6 +1038,27 @@ impl SolverConfig {
                 // VERIFIED standalone (div-mitern172, 292MB proof, s VERIFIED).
                 self.congruence = true;
                 self.congruence_xor = true;
+                // 2026-07-25: scoped gate-aware BVE promoted to default/fast. At the
+                // root, plain BVE (E0) and Plaisted-Greenbaum gate-aware BVE (E1) are
+                // dry-run on throwaway sub-solvers built from the live root-simplified
+                // clauses (tick-budgeted, no proof, fully deterministic); gate-aware
+                // BVE is enabled for the real run only when the net elimination gain
+                // (E1/E0 - 1) reaches SAT_GATE_BVE_MIN_GAIN_PCT (2%), and only for
+                // formulas <= SAT_GATE_BVE_SCOPED_MAX_VARS (100k) — the cap keeps the
+                // big gate-3 reroll casualties (TT496 260k, bp5_CSO 380k, VexRiscv
+                // 723k vars) byte-identical at zero dry-run cost. The threshold
+                // filters the degenerate churn case (bp5_CSO: 56,646 gate
+                // eliminations, 0% net gain — measured plan/kissat-gaps.md 2.6c).
+                // sat-comp-2025-medium single-seed A/B (32c/16GB/1800s,
+                // log/abtest-cand-vs-base-2026-07-25-13-59-16): solved 72/100 vs
+                // 71/100 (+RoundRobin_n16_d13 UNSAT 119s FIRST-EVER — kissat cannot
+                // even at 3600s; +bp4_TCO_CSO_IXA_LP_ZR SAT 237s kissat-only cell;
+                // -bp4_BC012_CSO_FPBEQ, the pre-judged single casualty), both-solved
+                // conflicts -1,088,186 on 70 cells (58 trajectory-identical), wall
+                // -481s, PAR-2 126512.9 vs 130449.2; promotion_gate PASS, zero
+                // contradictions or correctness failures. RoundRobin proof drat-trim
+                // VERIFIED standalone (90MB, s VERIFIED).
+                self.gate_bve_scoped = true;
                 // 2026-07-09: adjacent-pair parity abstraction refuter promoted to
                 // default/fast. It detects complete pair-XOR expansions such as the
                 // sat-comp-2025-medium xor_op family, introduces fresh parity variables,
@@ -1525,6 +1561,30 @@ impl SolverConfig {
         self.gate_extract =
             parse_bool_selected(env_map, &key_set, "SAT_GATE_EXTRACT", self.gate_extract);
         self.gate_bve = parse_bool_selected(env_map, &key_set, "SAT_GATE_BVE", self.gate_bve);
+        self.gate_bve_scoped = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_GATE_BVE_SCOPED",
+            self.gate_bve_scoped,
+        );
+        self.gate_bve_min_gain_pct = parse_u64_selected(
+            env_map,
+            &key_set,
+            "SAT_GATE_BVE_MIN_GAIN_PCT",
+            self.gate_bve_min_gain_pct,
+        );
+        self.gate_bve_scoped_max_vars = parse_usize_selected(
+            env_map,
+            &key_set,
+            "SAT_GATE_BVE_SCOPED_MAX_VARS",
+            self.gate_bve_scoped_max_vars,
+        );
+        // Explicit global gate-BVE supersedes the scoped per-formula decision:
+        // with scoped on by default, SAT_GATE_BVE=on must stay usable as the
+        // unconditional variant (A/B arms, reproductions) without a config error.
+        if self.gate_bve_scoped && self.gate_bve {
+            self.gate_bve_scoped = false;
+        }
         self.rcheck = parse_bool_selected(env_map, &key_set, "SAT_RCHECK", self.rcheck);
         self.gauss = parse_bool_selected(env_map, &key_set, "SAT_GAUSS", self.gauss);
         self.factor = parse_bool_selected(env_map, &key_set, "SAT_FACTOR", self.factor);
@@ -2046,6 +2106,17 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "forward_subsume", self.forward_subsume);
         push_kv_bool(&mut lines, "gate_extract", self.gate_extract);
         push_kv_bool(&mut lines, "gate_bve", self.gate_bve);
+        push_kv_bool(&mut lines, "gate_bve_scoped", self.gate_bve_scoped);
+        push_kv(
+            &mut lines,
+            "gate_bve_min_gain_pct",
+            self.gate_bve_min_gain_pct.to_string(),
+        );
+        push_kv(
+            &mut lines,
+            "gate_bve_scoped_max_vars",
+            self.gate_bve_scoped_max_vars.to_string(),
+        );
         push_kv_bool(&mut lines, "rcheck", self.rcheck);
         push_kv_bool(&mut lines, "gauss", self.gauss);
         push_kv_bool(&mut lines, "factor", self.factor);
@@ -2563,6 +2634,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             "",
         ),
         feature(
+            "SAT_GATE_BVE_SCOPED",
+            config.gate_bve_scoped,
+            FeatureMaturity::FullSetValidated,
+            true,
+            true,
+            true,
+            "log/abtest-cand-vs-base-2026-07-25-13-59-16",
+        ),
+        feature(
             "SAT_RCHECK",
             config.rcheck,
             FeatureMaturity::ParkingLot,
@@ -2801,6 +2881,9 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "forward_subsume" => Some("SAT_FORWARD_SUBSUME"),
         "gate_extract" => Some("SAT_GATE_EXTRACT"),
         "gate_bve" => Some("SAT_GATE_BVE"),
+        "gate_bve_scoped" => Some("SAT_GATE_BVE_SCOPED"),
+        "gate_bve_min_gain_pct" => Some("SAT_GATE_BVE_MIN_GAIN_PCT"),
+        "gate_bve_scoped_max_vars" => Some("SAT_GATE_BVE_SCOPED_MAX_VARS"),
         "rcheck" => Some("SAT_RCHECK"),
         "gauss" => Some("SAT_GAUSS"),
         "factor" => Some("SAT_FACTOR"),
@@ -2863,6 +2946,7 @@ fn validate_legacy_conflicts(env_map: &BTreeMap<String, String>, strict: bool) {
     let conflicts = [
         ("SAT_CCMIN_MODE", "SAT_CLAUSE_MIN"),
         ("SAT_BVE", "SAT_GATE_BVE"),
+        ("SAT_BVE", "SAT_GATE_BVE_SCOPED"),
         ("SAT_SIMPLIFICATION", "SAT_INPROCESS"),
         ("SAT_SIMPLIFICATION", "SAT_VIVIFY"),
         ("SAT_SIMPLIFICATION", "SAT_PROBE"),
@@ -2871,6 +2955,7 @@ fn validate_legacy_conflicts(env_map: &BTreeMap<String, String>, strict: bool) {
         ("SAT_SIMPLIFICATION", "SAT_FORWARD_SUBSUME"),
         ("SAT_SIMPLIFICATION", "SAT_GATE_EXTRACT"),
         ("SAT_SIMPLIFICATION", "SAT_GATE_BVE"),
+        ("SAT_SIMPLIFICATION", "SAT_GATE_BVE_SCOPED"),
         ("SAT_SIMPLIFICATION", "SAT_RCHECK"),
     ];
     for (legacy, explicit) in conflicts {
@@ -2999,6 +3084,9 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_FORWARD_SUBSUME",
         "SAT_GATE_EXTRACT",
         "SAT_GATE_BVE",
+        "SAT_GATE_BVE_SCOPED",
+        "SAT_GATE_BVE_MIN_GAIN_PCT",
+        "SAT_GATE_BVE_SCOPED_MAX_VARS",
         "SAT_RCHECK",
         "SAT_GAUSS",
         "SAT_FACTOR",

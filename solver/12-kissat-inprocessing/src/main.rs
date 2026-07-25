@@ -2787,6 +2787,21 @@ struct Solver {
     /// (Plaisted-Greenbaum substitution) instead of all-pairs, so gate-defined vars
     /// eliminate without the clause blow-up that naive BVE rejects. Requires SAT_GATE_EXTRACT.
     gate_bve: bool,
+    /// Scoped gate-aware BVE (SAT_GATE_BVE_SCOPED): before the real root elimination,
+    /// dry-run plain BVE (E0) and gate-aware BVE (E1) on throwaway sub-solvers built
+    /// from the live root-simplified clauses, then set `gate_bve` for the real run only
+    /// when the net elimination gain crosses `gate_bve_min_gain_pct`. The threshold
+    /// filters the degenerate case where gate BVE reaches the same variables by another
+    /// route (pure trajectory churn, e.g. bp5_CSO: 56k gate eliminations, 0% net gain) —
+    /// those formulas stay byte-identical to the plain baseline. The dry-runs use tick
+    /// budgets only (no wall clock), so the decision is load-independent and exactly
+    /// reproducible across deals.
+    gate_bve_scoped: bool,
+    /// minimum net elimination gain in percent for scoped adoption (E1/E0 - 1 >= pct/100)
+    gate_bve_min_gain_pct: u64,
+    /// variable-count cap for the scoped dry-run: larger formulas skip it entirely,
+    /// keeping plain BVE with zero dry-run cost (protects big marginal/banked cells)
+    gate_bve_scoped_max_vars: usize,
     /// lit-indexed stamped scratch for gate detection (mirrors the relation_marks idiom);
     /// resized lazily, cleared by bumping `gate_mark_stamp` instead of zeroing.
     gate_marks: Vec<u32>,
@@ -4092,6 +4107,9 @@ impl Solver {
             trace_preprocess_details: config.trace_preprocess_details,
             use_elim: config.bve,
             gate_bve: config.gate_bve,
+            gate_bve_scoped: config.gate_bve_scoped,
+            gate_bve_min_gain_pct: config.gate_bve_min_gain_pct,
+            gate_bve_scoped_max_vars: config.gate_bve_scoped_max_vars,
             gate_marks: Vec::new(),
             gate_mark_stamp: 0,
             elim_pos_scratch: Vec::new(),
@@ -16109,6 +16127,119 @@ impl Solver {
         }
     }
 
+    /// Scoped gate-aware BVE decision (SAT_GATE_BVE_SCOPED). Runs at the root, right
+    /// before the real `eliminate(true)`: snapshot the live root-simplified clauses,
+    /// dry-run plain BVE (E0) and gate-aware BVE (E1) on throwaway sub-solvers with
+    /// disabled proofs, and enable `gate_bve` for the real run only when
+    /// `(E1 - E0) * 100 >= E0 * gate_bve_min_gain_pct`. Everything below the threshold
+    /// (and every formula above `gate_bve_scoped_max_vars`) keeps the plain path
+    /// byte-identical. See plan/kissat-gaps.md 2.6c for the measured discriminator.
+    fn maybe_scope_gate_bve(&mut self, config: &SolverConfig) {
+        if !self.gate_bve_scoped || self.gate_bve {
+            return;
+        }
+        if !self.use_simplification || !self.use_elim || !self.solver_ok || self.has_empty_clause
+        {
+            return;
+        }
+        let num_vars = self.assignment.len().saturating_sub(1);
+        if num_vars == 0 || num_vars > self.gate_bve_scoped_max_vars {
+            return;
+        }
+        let t0 = Instant::now();
+        // Live root-simplified snapshot: skip deleted/satisfied clauses, strip false
+        // literals. Root propagation is at fixpoint here, so no clause can reduce to a
+        // unit or become empty.
+        let mut snap: Vec<Vec<i32>> = Vec::with_capacity(self.original_clause_ids.len());
+        for &cid_word in &self.original_clause_ids {
+            let cid = cid_word as usize;
+            if self.clause_is_deleted(cid) {
+                continue;
+            }
+            let len = self.clause_len(cid);
+            let mut lits = Vec::with_capacity(len);
+            let mut satisfied = false;
+            for pos in 0..len {
+                let lit = self.clause_lit(cid, pos);
+                match self.lit_value(lit) {
+                    TRUE => {
+                        satisfied = true;
+                        break;
+                    }
+                    FALSE => {}
+                    _ => lits.push(lit),
+                }
+            }
+            if satisfied {
+                continue;
+            }
+            debug_assert!(
+                lits.len() >= 2,
+                "root-propagated live clause reduced below 2 literals"
+            );
+            snap.push(lits);
+        }
+        if snap.is_empty() {
+            return;
+        }
+        let e0 = self.dry_run_root_elim(num_vars, snap.clone(), config, false);
+        let e1 = self.dry_run_root_elim(num_vars, snap, config, true);
+        self.stats.gate_bve_dryrun_e0 = e0;
+        self.stats.gate_bve_dryrun_e1 = e1;
+        // (E1 - E0) * 100 >= E0 * pct, signed so pct=0 still requires E1 >= E0 and an
+        // E0 of zero adopts on any positive E1.
+        let adopt = (e1 as i128 - e0 as i128) * 100
+            >= (e0 as i128) * (self.gate_bve_min_gain_pct as i128)
+            && e1 > 0;
+        if adopt {
+            self.gate_bve = true;
+            self.stats.gate_bve_scoped_adopted = 1;
+        }
+        if config.trace_preprocess {
+            let gain_pct = if e0 > 0 {
+                100.0 * (e1 as f64 - e0 as f64) / e0 as f64
+            } else {
+                0.0
+            };
+            eprintln!(
+                "c gate_bve_scoped e0={} e1={} gain_pct={:.2} threshold_pct={} adopt={} vars={} {:.3}s",
+                e0,
+                e1,
+                gain_pct,
+                self.gate_bve_min_gain_pct,
+                adopt,
+                num_vars,
+                t0.elapsed().as_secs_f64(),
+            );
+        }
+    }
+
+    /// One scoped-gate-BVE dry run: build a throwaway sub-solver over the snapshot
+    /// clauses with gate-aware BVE forced on or off, run root elimination with a
+    /// disabled proof, and return the eliminated-variable count. Tick-budgeted like
+    /// the real pass, never wall-budgeted, so the result is deterministic.
+    fn dry_run_root_elim(
+        &self,
+        num_vars: usize,
+        clauses: Vec<Vec<i32>>,
+        config: &SolverConfig,
+        gates: bool,
+    ) -> u64 {
+        let mut dry_config = config.clone();
+        dry_config.gate_extract = gates;
+        dry_config.gate_bve = gates;
+        dry_config.gate_bve_scoped = false;
+        let mut dry = Solver::new_with_config(num_vars, clauses, &dry_config);
+        dry.frozen.copy_from_slice(&self.frozen);
+        let mut dry_proof = ProofLog::disabled();
+        if !dry.enqueue_root_units() || dry.propagate().is_some() {
+            return 0;
+        }
+        dry.pre_preprocess_formula_class = dry.classify_formula();
+        let _ = dry.eliminate(false, &mut dry_proof);
+        dry.stats.preprocess_eliminated_vars
+    }
+
     fn solve_status_with_proof(
         &mut self,
         proof_log: &mut ProofLog,
@@ -16237,6 +16368,7 @@ impl Solver {
                 self.original_literals,
             );
         }
+        self.maybe_scope_gate_bve(config);
         let preprocess_start = Instant::now();
         if !self.eliminate(true, proof_log) {
             self.stats.preprocess_sec = preprocess_start.elapsed().as_secs_f64();

@@ -197,6 +197,12 @@ pub(crate) struct SolverStats {
     pub(crate) preprocess_ite_gate_eliminated_vars: u64,
     /// subset of gate eliminations via kitten semantic definitions (SAT_ELIM_DEF)
     pub(crate) preprocess_def_gate_eliminated_vars: u64,
+    /// scoped gate-BVE dry-run: plain-BVE eliminated vars (SAT_GATE_BVE_SCOPED)
+    pub(crate) gate_bve_dryrun_e0: u64,
+    /// scoped gate-BVE dry-run: gate-BVE eliminated vars (SAT_GATE_BVE_SCOPED)
+    pub(crate) gate_bve_dryrun_e1: u64,
+    /// 1 when the scoped dry-run adopted gate-aware BVE for the real run (SAT_GATE_BVE_SCOPED)
+    pub(crate) gate_bve_scoped_adopted: u64,
     /// kitten definition checks attempted (SAT_ELIM_DEF)
     pub(crate) preprocess_def_gate_checks: u64,
     /// kitten definition checks that found a two-sided definition core (SAT_ELIM_DEF)
@@ -754,6 +760,9 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
         "def_gate_eliminated_vars",
         ctx.stats.preprocess_def_gate_eliminated_vars,
     );
+    json.u64("gate_bve_dryrun_e0", ctx.stats.gate_bve_dryrun_e0);
+    json.u64("gate_bve_dryrun_e1", ctx.stats.gate_bve_dryrun_e1);
+    json.u64("gate_bve_scoped_adopted", ctx.stats.gate_bve_scoped_adopted);
     json.u64("def_gate_checks", ctx.stats.preprocess_def_gate_checks);
     json.u64("def_gate_found", ctx.stats.preprocess_def_gate_found);
     json.u64("def_gate_ticks", ctx.stats.preprocess_def_gate_ticks);

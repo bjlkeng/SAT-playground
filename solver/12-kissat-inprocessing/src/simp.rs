@@ -4247,6 +4247,78 @@ mod tests {
     }
 
     #[test]
+    fn scoped_gate_bve_adopts_on_net_elimination_gain() {
+        // Same OR-gate formula as gate_bve_eliminates_var_that_naive_bve_rejects:
+        // plain BVE rejects the pivot (E0=0), gate-aware BVE eliminates it (E1=1),
+        // so the scoped dry-run must adopt and the real run eliminates the var.
+        let clauses = or_gate_with_extras(&[4, 5, 6], &[7, 8, 9]);
+        let config = SolverConfig {
+            gate_bve_scoped: true,
+            full_bsr: false,
+            ..SolverConfig::default()
+        };
+        let mut s = Solver::new_with_config(9, clauses, &config);
+        for var in 2..=9 {
+            s.frozen[var] = true;
+        }
+        let mut proof = ProofLog::disabled();
+        assert!(s.solve_with_proof(&mut proof, &config));
+        assert_eq!(s.stats.gate_bve_dryrun_e0, 0);
+        assert_eq!(s.stats.gate_bve_dryrun_e1, 1);
+        assert_eq!(s.stats.gate_bve_scoped_adopted, 1);
+        assert!(s.eliminated[1], "adopted gate-aware BVE must eliminate x");
+        assert_eq!(s.stats.preprocess_gate_eliminated_vars, 1);
+    }
+
+    #[test]
+    fn scoped_gate_bve_size_cap_keeps_plain_path() {
+        // Same formula, but the var cap is below the formula size: the dry-run must
+        // not fire and the run stays on the plain path (pivot not eliminated).
+        let clauses = or_gate_with_extras(&[4, 5, 6], &[7, 8, 9]);
+        let config = SolverConfig {
+            gate_bve_scoped: true,
+            gate_bve_scoped_max_vars: 3,
+            full_bsr: false,
+            ..SolverConfig::default()
+        };
+        let mut s = Solver::new_with_config(9, clauses, &config);
+        for var in 2..=9 {
+            s.frozen[var] = true;
+        }
+        let mut proof = ProofLog::disabled();
+        assert!(s.solve_with_proof(&mut proof, &config));
+        assert_eq!(s.stats.gate_bve_dryrun_e0, 0);
+        assert_eq!(s.stats.gate_bve_dryrun_e1, 0);
+        assert_eq!(s.stats.gate_bve_scoped_adopted, 0);
+        assert!(!s.eliminated[1], "capped scoped run must keep plain BVE");
+        assert_eq!(s.stats.preprocess_gate_eliminated_vars, 0);
+    }
+
+    #[test]
+    fn scoped_gate_bve_keeps_plain_when_gates_add_nothing() {
+        // No gate structure: plain and gated dry-runs eliminate the same count
+        // (E1 == E0 > 0), the 2% threshold rejects, and gate_bve stays off while
+        // the plain elimination still happens.
+        let clauses = vec![vec![1, 2], vec![-1, 3]];
+        let config = SolverConfig {
+            gate_bve_scoped: true,
+            full_bsr: false,
+            ..SolverConfig::default()
+        };
+        let mut s = Solver::new_with_config(3, clauses, &config);
+        s.frozen[2] = true;
+        s.frozen[3] = true;
+        let mut proof = ProofLog::disabled();
+        assert!(s.solve_with_proof(&mut proof, &config));
+        assert_eq!(s.stats.gate_bve_dryrun_e0, s.stats.gate_bve_dryrun_e1);
+        assert!(s.stats.gate_bve_dryrun_e0 > 0);
+        assert_eq!(s.stats.gate_bve_scoped_adopted, 0);
+        assert!(!s.gate_bve, "threshold reject must leave gate_bve off");
+        assert!(s.eliminated[1], "plain BVE must still eliminate the var");
+        assert_eq!(s.stats.preprocess_gate_eliminated_vars, 0);
+    }
+
+    #[test]
     fn eq_gate_bve_eliminates_var_that_naive_bve_rejects() {
         // x=1 ≡ a=2 via (1,-2),(-1,2), plus 3 pos and 3 neg extra binaries.
         // Naive non-taut resolvents = 3 + 3 + 9 = 15 > occ(8); EQ-aware = 3 + 3 = 6 <= 8.
