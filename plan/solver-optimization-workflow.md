@@ -15,6 +15,25 @@ The decision target is the lexicographic profile20 metric:
 Use `benchmarks/profile20/README.md` for suite provenance. Single-instance and
 single-seed runs are iteration aids, not keep/promote evidence.
 
+## Triage Tiers
+
+Escalate evidence; do not spend a 100-instance gate on an unscreened idea.
+
+1. **Probe (minutes)** — 1-15 cells that exercise the mechanism, short walls,
+   mechanism counters via `SAT_STATS_JSON=on` with `SAT_LIMIT_CONFLICTS` or
+   `SAT_LIMIT_WALL_SEC`. Answers "does it do anything at all".
+2. **Triage subset (tens of minutes)** — the ~20-cell
+   `benchmarks/discriminating` set, a ~15-cell hand-picked probe set, or the
+   ~30-cell timeout subset built from the newest medium TSV (rows whose result
+   is not SAT/UNSAT — that is where capability gains appear). Walls 300-900 s.
+   Answers "which of my 4 variants is best, and is this worth a gate".
+3. **Promotion gate (hours)** — full 100-instance medium single-seed A/B at
+   1800 s / 16 GB / 32 pinned cores. The ONLY promotion evidence.
+
+Match the subset to the mechanism: timeout cells for capability work, the
+1600-1800 s margin band for wall-diet work, miters/circuits for elimination
+work. Always state which tier a reported number came from.
+
 ## Standard Driver
 
 For solver 11 feature ablations, use `tools/feature_ablation.py`. It handles the
@@ -30,9 +49,24 @@ between arms:
 python3 tools/feature_ablation.py --arm 'cand:SAT_NEWFEAT=on' --arm 'base:'
 ```
 
-Repeat `--arm 'tag:ENV'` for N-way (empty env after `:` = solver default; a bare
+**Run up to 4 candidate variants per sweep and promote the best arm.** Repeat
+`--arm 'tag:ENV'` for N-way (empty env after `:` = solver default; a bare
 `CONFIG_MAP` tag such as `solver10` uses its registered config, so you can add the
-floor as an arm). Every `(arm, instance, seed)` run is interleaved into one
+floor as an arm):
+
+```bash
+python3 tools/feature_ablation.py \
+  --arm 'v1:SAT_X=on' --arm 'v2:SAT_X=on,SAT_X_TUNE=2048' \
+  --arm 'v3:SAT_X=aggressive' --arm 'base:' \
+  --suite sat-comp-2025-medium --seeds 1
+```
+
+Always include `base:`. Cap at 4 arms total (3 candidates + base) — more arms
+means cells contend and marginal cells get noisier. Vary ONE axis per sweep so
+the winner is interpretable. Prefer a 4-arm sweep to sequential A/Bs when tuning
+a knob: it removes host drift between arms entirely. Pick the winner by the
+CLAUDE.md "Judging Trades" rules, then re-gate the winner alone if the sweep ran
+on a triage subset. Every `(arm, instance, seed)` run is interleaved into one
 free-core pool, so both arms run in the same wall-clock window and each spreads
 evenly across all cores. The run writes one gate-compatible `results.tsv` per arm,
 then prints an inline solved -> conflicts -> PAR-2 verdict and the exact
@@ -118,19 +152,36 @@ Long `--seedgate` jobs can run for hours. After preflight and user approval:
 5. Make one focused change at a time.
 6. Use fast single-instance or single-seed runs only as smoke signals while
    coding.
-7. Keep a change only after it wins the multiseed lexicographic gate beyond
-   seed noise and passes correctness checks. The `--arm` A/B prints this
+7. Keep a change only after it wins the lexicographic gate beyond noise and
+   passes correctness checks. The `--arm` A/B prints the
    solved -> conflicts -> PAR-2 verdict inline; confirm with
    `check_promotion_gate.py --multiseed`.
-8. Revert changes that lose, tie only through noise, or trigger correctness
-   failures.
-9. Stop long losers early when finished rows have already lost more than the
-   remaining rows can plausibly recover.
-10. Tune promising algorithmic features empirically; more simplification or more
-    search machinery can damage CDCL trajectory.
-11. Retest previously rejected micro-optimizations only when profiler evidence
-    suggests the context changed.
-12. Document successful improvements in the solver README with benchmark log
+8. **Do not revert on any loss — judge the trade.** Classify every changed cell
+   as a wall-coin cell or a capability cell. A cell is a wall coin if its
+   baseline margin is `timeout - base_time <= ~120 s`, OR if it has flipped
+   across deals at an identical conflict count (the stronger test — conflicts
+   are deterministic, wall is not, so identical conflicts with a different
+   outcome proves wall luck regardless of margin). A candidate may lose up to
+   N = 2 wall-coin cells (3 with written justification) if it gains
+   mechanism-validated capability elsewhere. Remember ±2 solved cells is deal
+   noise: the same baseline scored 67/69/71 across three gates on 2026-07-24.
+   Revert on capability losses, on coin-only wins that regress tier-2 conflicts
+   and wall, and always on correctness failures. Full rule in CLAUDE.md
+   "Judging Trades". Record the trade: cells gained, cells lost with margins,
+   mechanism evidence, tier-2/PAR-2 movement.
+9. Keep iterating until the lexicographic metric actually moves. A correct,
+   identity-verified change that ties is groundwork, not a stopping point —
+   either find the variant that moves the metric or record why the arc is
+   closed.
+10. Stop long losers early when finished rows have already lost more than the
+    remaining rows can plausibly recover.
+11. Tune promising algorithmic features empirically; more simplification or more
+    search machinery can damage CDCL trajectory. Two individually-good features
+    can be antagonistic — when bundling, also run each alone as its own arm.
+12. Retest previously rejected micro-optimizations only when profiler evidence
+    suggests the context changed. Treat stale "rejected for default" notes as
+    hypotheses to re-measure, not settled verdicts.
+13. Document successful improvements in the solver README with benchmark log
     paths, profile paths, machine metadata, and measured impact. Also record
     important rejected attempts so future loops do not repeat them.
 

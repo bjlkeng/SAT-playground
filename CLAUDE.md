@@ -128,10 +128,10 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
   — it starts both arms simultaneously on shared pinned cores (defaults: 32
   cores, 16 GB, 30 min), emits the per-arm gate TSVs, and prints the
   solved→conflicts→PAR-2 verdict inline.
-- Single-instance, subset, or raw `tools/bench.sh` runs are allowed for
-  debugging and iteration only. Do not keep or promote a solver feature on that
-  evidence — the promotable evidence is the full 100-instance medium
-  single-seed gate.
+- Use tiered evidence: triage candidates on a subset with short walls, and
+  spend the full 100-instance medium gate only on promotion decisions. See
+  "Candidate Triage Tiers" below. Subset and single-instance runs are never
+  promotion evidence on their own.
 - Honest timeouts and budget-consuming `UNKNOWN` results are priced into the
   metric. They are not correctness bugs by themselves.
 - Correctness errors are never acceptable: wrong SAT/UNSAT status, invalid SAT
@@ -139,6 +139,11 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
   debugged before tuning or promotion continues.
 - A change may regress individual instances if it wins the lexicographic
   aggregate metric beyond seed noise.
+- **Do not revert on any loss. Judge the trade explicitly** — see "Judging
+  Trades" below. Keep iterating until the lexicographic metric (instances,
+  then conflicts, then PAR-2) actually moves; a candidate that loses thin
+  wall-coin cells while gaining mechanism-validated capability can still be
+  the better solver.
 - Do not promote hard-coded guards, one-family classifiers, or lucky input-order
   wins without mechanism-level evidence and shuffle-sensitivity validation.
 - Use red-green TDD for solver behavior changes when practical.
@@ -181,9 +186,115 @@ python3 tools/check_promotion_gate.py --multiseed \
 The gate is a before/after A/B with no external floor. It makes only two kinds of
 comparison: candidate correctness (invalid model/proof, ERROR/PARSE_ERROR, and
 SAT/UNSAT contradictions against the baseline) and the candidate versus the
-pre-change baseline on the lexicographic metric. A lexicographic regression
-against the baseline fails the gate; a tie or improvement (correctness-clean)
-passes.
+pre-change baseline on the lexicographic metric.
+
+Correctness failures are absolute: they fail the gate, always, no trade.
+
+For the performance comparison the gate output is an input to a judgement, not
+the verdict itself. See "Judging Trades".
+
+## Judging Trades
+
+A raw lexicographic regression does not automatically mean revert. Classify
+every changed cell before deciding, because a solved-count delta mixes two very
+different things:
+
+- **Wall-coin cell** — either test qualifies it:
+  1. *Thin margin*: `timeout - baseline_time <= ~120 s` (at the 1800 s gate, a
+     baseline solve at >= ~1680 s).
+  2. *Documented flipper*: the cell has been observed to flip solved/unsolved
+     across deals **at an identical conflict count**. This test is the stronger
+     one — conflicts are exactly deterministic across load while wall is not, so
+     identical conflicts with a different outcome is proof the cell is pure
+     wall luck, whatever its margin. The current flipper list lives in the
+     newest `plan/next-steps-*.md` / `plan/next-plan.md` "Standing traps".
+- **Capability cell** — the baseline solved it with real margin and a stable
+  trajectory, or the candidate solves something previously unsolved. Signal.
+
+Test 2 matters because margins alone mislead: a known flipper can post a
+300-700 s margin in one deal and time out in the next on the same trajectory.
+Check the conflict counts before calling a loss a capability loss.
+
+Calibration: across three gates on one host on 2026-07-24 the *baseline* scored
+67, 69, and 71 on the same suite and commit. **±2 solved cells is deal noise.**
+Weigh a raw solved-count delta of 1-2 accordingly, and lean on tier-2 conflicts,
+wall, and mechanism evidence to break those ties.
+
+The flexible rule:
+
+> A candidate may lose up to **N = 2** wall-coin cells (3 with written
+> justification) and still be promotable, **provided** it gains
+> mechanism-validated capability elsewhere. Judge and record the trade
+> explicitly; do not revert on any loss, and do not promote on coin wins alone.
+
+"Mechanism-validated" means the gain is explained and reproducible, not a lucky
+draw: a first-ever solve, a fat margin (well clear of the timeout), a
+digit-exact identity check showing untouched cells, or a measured mechanism
+(elimination depth, propagation rate, proof size) that accounts for the win.
+
+Trades that FAIL this rule:
+
+- Losing a cell whose baseline margin was large (a real capability loss).
+- Winning only wall coins while tier-2 conflicts and wall regress — that is a
+  reroll lottery, not an improvement. Prefer the arm that wins on mechanism.
+- Any correctness failure.
+
+Write the trade into the promotion note: cells gained, cells lost with their
+baseline margins, the mechanism evidence, and the tier-2/PAR-2 movement. If the
+trade is genuinely ambiguous, say so and ask.
+
+## Candidate Triage Tiers
+
+Do not spend a 100-instance gate on an unscreened idea. Escalate:
+
+1. **Probe (minutes).** 1-15 cells chosen to exercise the mechanism, short
+   walls, mechanism counters via `SAT_STATS_JSON=on` plus `SAT_LIMIT_CONFLICTS`
+   or `SAT_LIMIT_WALL_SEC`. Answers "does it do anything at all".
+2. **Triage subset (tens of minutes).** Either the ~20-cell
+   `benchmarks/discriminating` set, a ~15-cell hand-picked probe set, or the
+   ~30-cell timeout subset drawn from the newest medium results (the cells that
+   currently time out — that is where capability gains appear). Short walls
+   (300-900 s). Answers "which variant is best, and is it worth a gate".
+3. **Promotion gate (hours).** Full 100-instance medium single-seed A/B at
+   1800 s / 16 GB / 32 pinned cores. The ONLY promotion evidence.
+
+Build the timeout subset from the latest gate or seedgate TSV, e.g. select rows
+whose `result` is not SAT/UNSAT and pass those stems via a `--suite` directory of
+symlinks. Use judgement on subset choice: match the subset to the mechanism
+(timeout cells for capability work, the 1600-1800 s margin band for wall work,
+miters/circuits for elimination work).
+
+Never quote a subset result as a promotion decision, and always say which tier a
+number came from.
+
+## Multi-Arm Sweeps
+
+Run **up to 4 candidate variants per sweep and promote the best arm.** One
+invocation, simultaneous start, shared pinned cores — that is a fair paired
+comparison and it costs little more than a single A/B:
+
+```bash
+python3 tools/feature_ablation.py \
+  --arm 'v1:SAT_X=on' \
+  --arm 'v2:SAT_X=on,SAT_X_TUNE=2048' \
+  --arm 'v3:SAT_X=aggressive' \
+  --arm 'base:' \
+  --suite sat-comp-2025-medium --seeds 1
+```
+
+Guidance:
+
+- Always include a `base:` arm; without it there is no baseline to judge against.
+- 4 arms total (3 candidates + base) is the cap — more arms means each arm's
+  cells contend and marginal cells get noisier.
+- Vary ONE axis per sweep (a tuning parameter, a policy choice) so the winner is
+  interpretable. Do not mix unrelated features into different arms.
+- Prefer this to sequential A/Bs when tuning a knob: it removes host drift
+  between arms entirely.
+- Pick the winning arm by the same "Judging Trades" rules, then re-gate the
+  winner alone if the sweep was run on a triage subset.
+- Beware antagonistic combinations: two individually-good features can lose
+  together. If you bundle, also run each alone as its own arm.
 
 ## Iteration Workflow
 
@@ -226,6 +337,10 @@ Common interface pitfalls:
 - For feature-ablation sweeps, follow
   `plan/solver-optimization-workflow.md`; it has stricter preflight and
   long-run reporting rules.
+- **Marginal-cell timing is invalid while another 32-way sweep runs.** A gate
+  saturates memory bandwidth, so cells near the timeout report TIMEOUT in every
+  arm even on nominally free cores. Under contention a SOLVE is trustworthy but
+  a TIMEOUT is not — schedule margin measurements on a quiet host.
 - For full or medium SAT Competition benchmark campaigns, follow
   `benchmarks/BENCHMARK_WORKFLOWS.md` and use the one-shot cron pattern so runs
   survive agent session loss.
