@@ -1,15 +1,69 @@
-# NEXT PLAN — 2026-07-24 (supersedes next-steps-AGGREGATED-2026-07-23b.md)
+# NEXT PLAN — 2026-07-25 (supersedes the 2026-07-24 revision of this file)
 
-One-file plan for the next clear context. Folds the 2026-07-24 **3600 s / 16 GB
-solver12-vs-kissat medium gap read** plus the same-day **source audit and
-three-gate depth campaign** on top of the 2026-07-23b aggregate (banded
-endgame-delta promotion). Where this contradicts an older
-`plan/next-steps-*.md`, THIS file wins.
+One-file plan for the next clear context. Folds the 2026-07-25 **scoped
+gate-aware BVE PROMOTION (gate WIN 72 v 71)** on top of the 2026-07-24 gap
+read + source audit + three-gate depth campaign. Where this contradicts an
+older `plan/next-steps-*.md`, THIS file wins.
 
-**START HERE:** read "SESSION 2" then the RANKED PLAN. Item 1 (scoped
-gate-aware BVE) has a measured discriminator and a projected gate WIN
-(69 -> 72); it is the highest-value open item in the project. Companion
-deep-dive: `plan/kissat-gaps.md`.
+**START HERE:** read "SESSION 3" below, then the RANKED PLAN (updated —
+item 1 is DONE/PROMOTED). Companion deep-dive: `plan/kissat-gaps.md`.
+
+## SESSION 3 (2026-07-25) — SCOPED GATE-BVE PROMOTED, baseline now 72/100
+
+**PROMOTED aa9f4d6: `SAT_GATE_BVE_SCOPED` default-on — the 2026-07-24 ranked
+item 1, implemented exactly as projected, gate WIN 72 v 71.**
+Artifacts: `log/abtest-cand-vs-base-2026-07-25-13-59-16` (cand/base TSVs),
+`promotion_gate=PASS`, zero contradictions, zero correctness failures.
+
+Mechanism (all in solver12 `.rs`, ~300 lines):
+
+- Two-phase root pass in `maybe_scope_gate_bve` (main.rs, called right before
+  the real `eliminate(true)`): snapshot the live root-simplified clauses
+  (satisfied clauses skipped, false literals stripped), build TWO throwaway
+  sub-solvers via `Solver::new_with_config`, run `eliminate(false)` with
+  `ProofLog::disabled()` — plain (E0) and gate-aware (E1) — then set
+  `self.gate_bve = true` for the real run only when
+  `(E1-E0)*100 >= E0*SAT_GATE_BVE_MIN_GAIN_PCT` (default 2%).
+- `SAT_GATE_BVE_SCOPED_MAX_VARS=100k` cap: bigger formulas skip the dry-run
+  entirely. This is TRIPLE protection: zero dry-run wall on big marginal
+  cells (vex, oski15, TT406), hard byte-identity for the gate-3 reroll
+  casualties (TT496 260k, bp5_CSO 380k, VexRiscv 723k vars), and a memory
+  guard. Verified in-gate: bp5_CSO conflicts EXACT-identical both arms.
+- Decisions are tick-budgeted, wall-free → deterministic across load/deals.
+  Dry-run cost: ≤5.4s (bp4_BC012), typical <1s, 0.1s on rbsat.
+- Explicit `SAT_GATE_BVE=on` supersedes scoped mode (normalized in env parse,
+  no config error) so the unconditional variant stays usable for A/B arms.
+- Observability: `gate_bve_dryrun_e0/e1`, `gate_bve_scoped_adopted` in stats
+  JSON; `c gate_bve_scoped e0=... adopt=...` line under SAT_TRACE_PREPROCESS.
+
+Gate result detail (single deal, 1800 s/16 GB/32 pinned):
+
+- **GAINED 2 (both fat-margin capability):** `RoundRobin_n16_d13` UNSAT
+  **119.4 s** (FIRST-EVER in-gate solve; kissat cannot at 3600 s; proof
+  drat-trim VERIFIED standalone, 90MB) and `bp4_TCO_CSO_IXA_LP_ZR` SAT
+  **237.0 s** (kissat-only cell, kissat needs 1187 s).
+- **LOST 1:** `bp4_BC012_CSO_FPBEQ_FPBLE_ZR` (base SAT 211.5 s, real margin —
+  a genuine capability loss). This is EXACTLY the casualty the 2.6c
+  discriminator predicted (+48% gain yet still dies); pre-judged a
+  defensible trade (+2 fat capability −1) per the CLAUDE.md flexible rule.
+- Tier-2: both-solved conflicts **−1,088,186** over 70 cells
+  (58/70 trajectory-identical vs gate 3's 40/67); wall −481 s;
+  PAR-2 126512.9 vs 130449.2 (−3936). Every lexicographic tier improves.
+- Decision scan (100 cells, SAT_LIMIT_CONFLICTS=100): **19 adopt** — the two
+  winners, the whole bp4 family (+2.8–57%), sted2 (+180%), aaai10 (+21.5%),
+  both sqrt-miters, div172, Pancake/Bubble, jkkk, twitter, TC-256, circuit,
+  booth_wallace_mapped (+2.6%); 42 dry-run-but-reject, 39 cap-skip.
+- Reroll winners besides the flips: aaai10 −411 s, **sted2 1555→1199 s (OUT
+  of the 1600–1800 coin band — hardened)**, twitter −266 s, bp4_CSO_IXA
+  −194 s. Reroll losers (all still solved, fat margins): jkkk +327 s
+  (7→334 s), TC-256 +191 s, sqrt-miters +20 s.
+- vex verify=checker-timeout in BOTH arms — the documented
+  historical/symmetric event, not a gate failure.
+
+Validation chain: 680/680 unit tests (3 new: adopt-on-gain, size-cap,
+reject-when-no-gain), smoke 9/9, dry-run reproduces every 2.6c measured
+number digit-exact (RoundRobin 116/223, bp4_TCO 25353/26065, bp4_BC012
+16106/23852), TT496+rbsat digit-exact identity at 100k conflicts.
 
 ## TL;DR — what happened this session (2026-07-24)
 
@@ -256,7 +310,37 @@ capability; wall coin = margin <=~120 s OR flipped across deals at an IDENTICAL
 conflict count), tiered triage (probe -> subset -> 100-cell gate for promotion
 only), and 4-arm sweeps (promote the best arm).
 
-## RANKED PLAN for next session
+## RANKED PLAN for next session (updated 2026-07-25)
+
+0. **DONE 2026-07-25 — item 1 PROMOTED (aa9f4d6, 72/100).** See SESSION 3.
+   Leftovers folded into the items below: bp4_BC012 is a confirmed −1 (its
+   protection would need a second discriminator — arming-time or a per-cell
+   dry-run of the SEARCH, not worth it unless it recurs); threshold arms
+   1%/5% were NOT swept (2% validated; 5% would drop the +2.8% winner, 1%
+   only adds cells in [1,2)% — none measured there on this suite).
+
+NEW top of the list:
+
+1. **`SAT_ELIM_DEF` at kissat-parity budgets (was item 3).** Kitten definition
+   extraction retried with `SAT_ELIM_DEF_TICKS` raised 50k → 500k → 1e6
+   (kissat `definitionticks=1e6` + 10x for core minimisation). 4-arm sweep on
+   the ~30-cell timeout subset first. Now stacks ON TOP of scoped gate-BVE —
+   test the interaction (it adds Definition-kind gates to the same E1 dry-run
+   path only when armed; root-scoped adoption may unlock it more often).
+2. **Small ports (was item 5):** `backbone.c` (binary-implication-graph failed
+   literals, 2% effort), `transitive.c` (2%), vivify tier3 + 3:3:1:3 budget
+   split. Cheap, additive, low reroll risk.
+3. **Reduce control law (was item 6, highest ceiling/risk).** Fraction-ramp
+   50→90% + 31-step used counter vs our literal-budget + 3-step. Offline
+   measurement first; needs a deliberate re-luck campaign.
+4. **10th wall-diet (was item 7).** bp4_TCO_CSO_ZR adopts gate-BVE now (+3.16%
+   gain) — recheck whether it still needs the wall-diet +1 or the reroll
+   already flipped it (it was NOT in this deal's solved set: check next gate).
+   sted2 no longer needs hardening (1199 s). rbsat/vex/oski15 still in band.
+5. **Giant memory diet (was item 9, unstarted).** pj2008 RSS 10.4 GB.
+6. **Sweep schedule / tick cadence — still CLOSED** (unchanged verdicts).
+
+Historical detail of the promoted item (kept for provenance):
 
 1. **SCOPED gate-aware BVE — THE #1 ITEM, projected 69 -> 72 (gate WIN).**
    Gate 3's losses are reroll casualties, not mechanism failures, and the
@@ -324,9 +408,18 @@ only), and 4-arm sweeps (promote the best arm).
 
 ## Current state
 
-- HEAD: b671ae0 (banded-delta promotion). **Medium 1800 s baseline: 70/100**;
-  lineage TSV `log/abtest-cand-vs-base-2026-07-23-21-23-54/cand/results.tsv`.
-  At 3600 s: 73/100 (this session; solver12 verify clean).
+- HEAD: aa9f4d6 (scoped gate-BVE promotion). **Medium 1800 s baseline:
+  72/100**; lineage TSV
+  `log/abtest-cand-vs-base-2026-07-25-13-59-16/cand/results.tsv`.
+  Same-deal base scored 71 (67/69/71 on 2026-07-24 — ±2 deal noise stands).
+- Scoped gate-BVE surface: SAT_GATE_BVE_SCOPED (on), MIN_GAIN_PCT 2,
+  SCOPED_MAX_VARS 100k; explicit SAT_GATE_BVE=on supersedes scoped.
+  19/100 cells adopt (see SESSION 3 list); 81 byte-identical to b671ae0
+  behavior.
+- Prior state (b671ae0): 70/100, lineage
+  `log/abtest-cand-vs-base-2026-07-23-21-23-54/cand/results.tsv`.
+  At 3600 s: 73/100 (2026-07-24 session; solver12 verify clean — PRE-scoped;
+  re-measure at 3600 s only if a gap read is needed).
 - Endgame surface: SAT_ENDGAME (on), TRIGGER 1, PARTS "rf", MIN_ARMED 100k,
   banded REPHASE_DELTA (decision-armed 48k / yield-armed legacy 50k),
   DELTA_SPLIT 500k.
@@ -362,9 +455,14 @@ only), and 4-arm sweeps (promote the best arm).
 - Conflict counts are EXACTLY deterministic across load; wall is not.
   Digit-exact identity checks (yield-protect + passthrough + default-equiv)
   for every scoped-reroll change.
-- Wall-coin cells at the 1800 s gate, updated: **rbsat-v1375 (1780 s),
-  bp4_TCO_CSO_ZR (1880 s — just OUT of gate), sted2 (1667-1791 s), vex
-  (1476-1664 s), oski15 (1597-1657 s), VanDerWaerden_pd_2-3-22 (1718 s)**.
+- Wall-coin cells at the 1800 s gate, updated 2026-07-25: **rbsat-v1375
+  (1780 s), bp4_TCO_CSO_ZR (1880 s — just OUT of gate; now ADOPTS gate-BVE
+  +3.16%, rerolled), vex (1476-1664 s), oski15 (1597-1657 s),
+  VanDerWaerden_pd_2-3-22 (1718 s)**. sted2 LEFT the band under scoped
+  gate-BVE (1199 s this deal, was 1667-1791 s).
+- Scoped gate-BVE dry-run decisions are DETERMINISTIC (tick-budgeted, no
+  wall): the 19-cell adopt list is stable across deals; only their search
+  trajectories reroll deal-to-deal, exactly like any other solved cell.
   Margins under ~120 s are load noise — but note vex/sted2/oski15 swing by
   100-300 s across deals, so the STRONGER coin test is "flipped across deals at
   an IDENTICAL conflict count" (see CLAUDE.md "Judging Trades").
