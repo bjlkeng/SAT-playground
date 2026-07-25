@@ -387,6 +387,47 @@ saturated memory bandwidth on cores 0-31, though it solves at ~1500 s idle.
 **Under contention a SOLVE is still trustworthy; a TIMEOUT is not.** Schedule
 marginal-cell measurements on a quiet host.
 
+### 2.6a BREAKTHROUGH 2026-07-24 — gate-aware BVE solves a kissat-only cell
+
+Depth probe, full 1800 s, 5 starved/kissat-only cells x 6 arms
+(base / tick / gbve / edef / tick+gbve / tick+gbve+edef):
+
+| cell | base | tick | **gbve** | edef | tick+gbve | tick+gbve+edef |
+|------|------|------|----------|------|-----------|----------------|
+| **bp4_TCO_CSO_IXA_LP_ZR** | TO | TO | **SAT 425 s** | TO | TO | TO |
+| booth_dadda_mapped | TO | TO | TO | TO | TO | TO |
+| goldcrest | TO | TO | TO | TO | TO | TO |
+| fixedbandwidth | TO | TO | TO | TO | TO | TO |
+| pj2008 | TO | TO | TO | TO | TO | TO |
+
+**`SAT_GATE_EXTRACT=on SAT_GATE_BVE=on` solves bp4_TCO_CSO_IXA_LP_ZR in 425 s
+— a FIRST-EVER solve of a kissat-only cell (kissat needs 1187 s), with a
+1375 s margin.** Solves under contention are trustworthy (see the contention
+trap in 2.1a), so this is real signal.
+
+**Two findings of equal importance:**
+
+1. **Depth is the lever, not frequency.** `gbve` (deeper elimination per
+   round) flipped a cell that no cadence interval and no sweep schedule could
+   touch. This is the third consecutive result pointing the same way:
+   scheduling/frequency changes (sweep cursor 2.2c, tick cadence 2.1a) are
+   neutral-to-negative, while a DEPTH change flips a cell on its first try.
+   Section 3.3's ordering was wrong — the built-but-off depth passes should
+   have been #1, not #3.
+2. **tick+gbve TIMED OUT where gbve alone solved.** Adding inprocessing
+   rounds destroyed the win. Consistent with 2.2c (extra inprocessing on a
+   cell that can otherwise finish is a net loss). **Do not bundle the cadence
+   with the depth passes** — they are antagonistic on this cell.
+
+`edef` (`SAT_ELIM_DEF`, kitten definition extraction) flipped nothing alone
+and did not add to gbve.
+
+Next: reproduce + model-verify bp4 (first-ever solves are exactly where latent
+model/proof bugs surface), then gate `SAT_GATE_EXTRACT+SAT_GATE_BVE` ALONE.
+Note FEATURES.md claims gate-BVE was "rejected for default" by an earlier
+session — that verdict predates the current feature set, and this is now a
+measured +1 candidate, so re-gate rather than trust the note.
+
 ### 2.2b The seed budget is the real scaling defect
 
 `SWEEP_SEED_BUDGET` is a FIXED 512 seeds/round, but the suite spans three
