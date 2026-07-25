@@ -27,8 +27,8 @@ bash tools/bench.sh solver/NN-name
 ## Canonical References
 
 - Site workflow: `docs/SITE_WORKFLOW.md`
-- Benchmark operations, cron runs, and reference-solver runs:
-  `benchmarks/BENCHMARK_WORKFLOWS.md`
+- Pinned reference solvers and baseline provenance:
+  `benchmarks/REFERENCE_SOLVERS.md`
 - Current decision/gate suite: `benchmarks/sat-comp-2025-medium/` (100
   instances, single default seed; run via
   `feature_ablation.py --suite sat-comp-2025-medium --seeds 1`)
@@ -38,10 +38,6 @@ bash tools/bench.sh solver/NN-name
   `solver/11-kissat-search/README.md`, `solver/11-kissat-search/FEATURES.md`,
   and `solver/11-kissat-search/SOLVER11_STATE.md`
 
-Use existing skills instead of duplicating their workflows here:
-
-- `/analyzesat`: `.claude/skills/analyzesat/SKILL.md`
-- Web visualization/debugging: `.claude/skills/debug-web-visualizations/SKILL.md`
 
 ## Solver Interface Contract
 
@@ -90,6 +86,13 @@ Rules:
 - Match the existing iterations' release profile and `build.sh` (fat LTO, one
   codegen unit, `target-cpu=native`); copy them from the previous iteration
   rather than reinventing.
+- The release profile sets `strip = true`, so profiling needs an explicit
+  override to get symbols:
+
+  ```bash
+  CARGO_PROFILE_RELEASE_STRIP=false CARGO_PROFILE_RELEASE_DEBUG=1 \
+  RUSTFLAGS="-C target-cpu=native" cargo build --release
+  ```
 
 ## Development Rules
 
@@ -112,6 +115,11 @@ Rules:
   actually moves.
 - Do not promote hard-coded guards, one-family classifiers, or lucky input-order
   wins without mechanism-level evidence and shuffle-sensitivity validation.
+- Treat stale "rejected for default" notes as hypotheses to re-measure, not
+  settled verdicts — the context may have changed since they were written.
+- Record improvements in the solver README with benchmark log paths, machine
+  metadata, and measured impact, and record important rejected attempts too so
+  future loops do not repeat them.
 - Use red-green TDD for solver behavior changes when practical.
 - Run `bash tools/smoke_test.sh solver/NN-name` after every solver change, and
   only commit changes that pass it. Never modify `tools/smoke_test.sh` unless
@@ -266,33 +274,6 @@ Guidance:
 - Beware antagonistic combinations: two individually-good features can lose
   together. If you bundle, also run each alone as its own arm.
 
-## Optimization Workflow
-
-A new iteration is a copy of the previous directory with a renamed package; the
-non-obvious part is what comes after. When optimizing rather than adding a
-technique:
-
-- Profile before coding, and check the opportunity size (duplicate clauses, pure
-  literals, candidate variables, subsumption hits) before implementing an idea.
-  For symbols in release builds:
-
-  ```bash
-  CARGO_PROFILE_RELEASE_STRIP=false CARGO_PROFILE_RELEASE_DEBUG=1 \
-  RUSTFLAGS="-C target-cpu=native" cargo build --release
-  ```
-
-- Make one focused change at a time; a correct, identity-verified change that
-  ties the metric is groundwork, not a stopping point.
-- Stop long losers early when finished rows have already lost more than the
-  remaining rows can plausibly recover.
-- Treat stale "rejected for default" notes as hypotheses to re-measure, not
-  settled verdicts — retest when profiler evidence suggests the context changed.
-- Document improvements in the solver README with benchmark log paths, machine
-  metadata, and measured impact. Record important rejected attempts too, so
-  future loops do not repeat them.
-- Use `/analyzesat` for full bottleneck deep dives (multi-config ablation, speed
-  decomposition, reference-source diff, trajectory traces).
-
 ## Testing
 
 ```bash
@@ -309,21 +290,32 @@ hand-auditing the interface.
 
 - For routine single-worker profiling runs, concurrent benchmarking is allowed
   while combined solver/bench CPU use stays below four cores on this host.
-- Before starting benchmarks, check live solver usage:
-  `ps aux --sort=-%cpu | grep -E 'sat-solver|kissat|minisat'`.
-- Ask before launching a parallel sweep if competing solver/bench processes are
-  live, and cap memory so `jobs * mem` fits RAM.
+- Before starting benchmarks, check live solver usage and ask before launching a
+  parallel sweep if competing solver/bench processes are live. Cap memory so
+  `jobs * mem` fits RAM.
 - `feature_ablation.py --seedgate` writes `results.tsv` only at the end;
   mid-run progress has to come from live processes and `_work/<idx>` scratch
-  dirs. Long sweeps run for hours — launch detached or via the cron pattern in
-  `benchmarks/BENCHMARK_WORKFLOWS.md`, and record the run directory and PID.
+  dirs. Long sweeps run for hours — launch them detached so they survive session
+  loss, and record the run directory and PID.
 - **Marginal-cell timing is invalid while another 32-way sweep runs.** A gate
   saturates memory bandwidth, so cells near the timeout report TIMEOUT in every
   arm even on nominally free cores. Under contention a SOLVE is trustworthy but
   a TIMEOUT is not — schedule margin measurements on a quiet host.
-- For full or medium SAT Competition benchmark campaigns, follow
-  `benchmarks/BENCHMARK_WORKFLOWS.md` and use the one-shot cron pattern so runs
-  survive agent session loss.
+- When killing a run, kill the wrappers *and* the solver binaries — children
+  outlive the parent:
+  `pkill -f 'bench_reference'; pkill -f 'kissat.*\.cnf'`, then verify with `ps`.
+- Reference-solver runs use `tools/run_bench_reference.sh` (`-t` timeout, `-m`
+  memory MB, `-d` benchmark dir; solvers default to
+  `kissat-latest kissat-sc2024 minisat`). It writes the
+  `log/bench_reference_RUNNING` / `_DONE` sentinels and
+  `log/bench-<solver>-<timestamp>/results.csv`. See
+  `benchmarks/REFERENCE_SOLVERS.md` for pinned versions and baseline provenance.
+
+SAT Competition 2025 main track, for calibration: 5000 s timeout, 30 GB RAM,
+8-core competition host; the winner was kissat-sc2024 at PAR-2 2788 and 306/400
+solved. Competition scoring is PAR-2 — runtime for solved instances plus twice
+the timeout for each unsolved one, lower better. Instances came from
+`https://benchmark-database.de/?track=main_2025&context=cnf`.
 
 ## Site And Docs
 
