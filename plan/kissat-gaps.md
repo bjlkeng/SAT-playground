@@ -422,11 +422,68 @@ trap in 2.1a), so this is real signal.
 `edef` (`SAT_ELIM_DEF`, kitten definition extraction) flipped nothing alone
 and did not add to gbve.
 
-Next: reproduce + model-verify bp4 (first-ever solves are exactly where latent
-model/proof bugs surface), then gate `SAT_GATE_EXTRACT+SAT_GATE_BVE` ALONE.
-Note FEATURES.md claims gate-BVE was "rejected for default" by an earlier
-session — that verdict predates the current feature set, and this is now a
-measured +1 candidate, so re-gate rather than trust the note.
+Reproduced twice, SAT model VERIFIED against the original CNF both times
+(153 s uncontended). FEATURES.md's "rejected for default" note predates the
+current feature set and the docs are known stale, so it was re-gated.
+
+### 2.6b GATE 3 — gate-BVE LOSE 69 v 71, but with TWO capability wins
+
+Artifacts `log/abtest-cand-vs-base-2026-07-24-21-17-01`. Zero correctness
+failures; candidate is FASTER overall (21 638 s vs 22 498 s both-solved wall).
+
+- **GAINED 2, both real capability:**
+  - **`RoundRobin_n16_d13` UNSAT 80.7 s — was in the BOTH-TIMEOUT hard core.
+    NOBODY solved this before, kissat included, even at 3600 s. First solve in
+    project history and an outright win over kissat.**
+  - `bp4_TCO_CSO_IXA_LP_ZR` SAT 238.9 s (kissat-only cell, kissat 1187 s).
+- **LOST 4 to trajectory rerolls:** bp4_BC012 (base 206.8 s), **TT496
+  (1072.5 s — banked unique capability)**, bp5_CSO (904.9 s), VexRiscv
+  (1505.4 s).
+- Only **40/67 cells trajectory-identical** — gate-BVE edits the root formula,
+  so it rerolls broadly. Classic REROLL-LUCK exposure.
+
+The losses are reroll casualties, not mechanism failures. The established fix
+in this codebase is an all-or-nothing dry-run threshold
+(cf `CONGRUENCE_MIN_APPLY_MERGES=3000`) so formulas that gain nothing stay
+byte-identical.
+
+### 2.6c THE SCOPING DISCRIMINATOR (measured, and it works)
+
+Root-only elimination counts, gate-BVE off vs on
+(`pre_bve_eliminated_vars`, `gate_eliminated_vars`):
+
+| cell | role | elim off | elim on | gate_elim | **net gain** |
+|------|------|---------:|--------:|----------:|-------------:|
+| RoundRobin_n16_d13 | WIN | 116 | 223 | 118 | **+92%** |
+| bp4_TCO_CSO_IXA_LP_ZR | WIN | 25 353 | 26 065 | 10 148 | **+2.8%** |
+| bp4_BC012_CSO_FPBEQ | casualty | 16 106 | 23 852 | 22 849 | +48% |
+| VexRiscv | casualty | 414 433 | 420 736 | 49 138 | +1.5% |
+| TT496 | casualty | 127 291 | 127 489 | 561 | +0.16% |
+| bp5_CSO | casualty | 122 262 | 122 262 | 56 646 | **0%** |
+
+**The decisive observation: bp5_CSO gate-eliminated 56 646 variables and its
+TOTAL elimination did not change at all (122 262 -> 122 262).** Gate-BVE
+reached exactly the same variables by a different route — pure trajectory
+churn for zero benefit, guaranteed −EV. TT496 (+0.16%) and VexRiscv (+1.5%)
+are near-zero for the same reason.
+
+**A 2% net-elimination-gain threshold keeps BOTH wins (+92%, +2.8%) and skips
+three of the four casualties (bp5 0%, TT496 0.16%, VexRiscv 1.5%)** →
+projected **69 -> 72, a gate WIN**. Only bp4_BC012 (+48% gain yet still a
+casualty) would remain a loss, so the projection is +2 −1 over base 71.
+
+Note neither absolute nor relative gain alone separates perfectly (RoundRobin
+wins at +107 absolute while TT496 loses at +198; bp4_BC012 loses at +48%
+relative). The threshold works because it filters the *degenerate* cases —
+gate-BVE doing the same work by another path — not because gain predicts
+success monotonically.
+
+**Implementation required:** a two-phase root pass — run plain BVE to
+completion recording E0, re-run from the original formula with gates on
+recording E1, apply the gated result only when `E1/E0 − 1 >= threshold`. Root
+BVE is cheap relative to an 1800 s budget (bp4_TCO_IXA spends 7.6M eliminate
+ticks), so the doubled cost is affordable. This is the highest-value open item
+in the project.
 
 ### 2.2b The seed budget is the real scaling defect
 
