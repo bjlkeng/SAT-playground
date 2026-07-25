@@ -1,9 +1,15 @@
 # NEXT PLAN — 2026-07-24 (supersedes next-steps-AGGREGATED-2026-07-23b.md)
 
 One-file plan for the next clear context. Folds the 2026-07-24 **3600 s / 16 GB
-solver12-vs-kissat medium gap read** on top of the 2026-07-23b aggregate
-(banded endgame-delta promotion). Where this contradicts an older
+solver12-vs-kissat medium gap read** plus the same-day **source audit and
+three-gate depth campaign** on top of the 2026-07-23b aggregate (banded
+endgame-delta promotion). Where this contradicts an older
 `plan/next-steps-*.md`, THIS file wins.
+
+**START HERE:** read "SESSION 2" then the RANKED PLAN. Item 1 (scoped
+gate-aware BVE) has a measured discriminator and a projected gate WIN
+(69 -> 72); it is the highest-value open item in the project. Companion
+deep-dive: `plan/kissat-gaps.md`.
 
 ## TL;DR — what happened this session (2026-07-24)
 
@@ -215,53 +221,106 @@ per-formula arming/routing layer (`SAT_DECISION_ARM`,
 `SAT_VIVIFY_YIELD_ARM`, deep-phase sweep guard, congruence dry-run
 threshold).
 
+## SESSION 2 (2026-07-24 evening) — three gates, one breakthrough
+
+Everything below supersedes the earlier ranking in this same file. Full detail:
+`plan/kissat-gaps.md` sections 2.1a, 2.2a-c, 2.6a-c.
+
+**THE RESULT: `RoundRobin_n16_d13` UNSAT 80.7 s under gate-aware BVE. It was in
+the both-timeout hard core — NOBODY solved it, kissat included, even at 3600 s.
+First solve in project history and an outright capability win over kissat.**
+Alongside it `bp4_TCO_CSO_IXA_LP_ZR` SAT 238.9 s (kissat-only, kissat 1187 s),
+reproduced twice with the SAT model drat/model-VERIFIED.
+
+Three gates run, none promoted:
+
+| gate | candidate | verdict | why not promoted |
+|------|-----------|---------|------------------|
+| 1 | `SAT_SWEEP_SCHED=retire` + budget 2048 | **LOSE 64 v 69** | killed the miters (sqrt170/171, div172, Pancake) + TT496; both-solved wall +10.6% |
+| 2 | `SAT_SWEEP_SCHED=retire` (budget 512) | WIN 69 v 67 **but rejected** | all 4 flips are wall coins (sted2 landed 1791 s of 1800); tier-2 conflicts +2.6M, wall +5.6%, only 54/66 trajectory-identical |
+| 3 | `SAT_GATE_EXTRACT+SAT_GATE_BVE` | LOSE 69 v 71 | 2 real capability gains, but 4 reroll casualties with LARGE margins; only 40/67 trajectory-identical |
+
+**THE LESSON, three results agreeing: DEPTH IS THE LEVER, FREQUENCY IS NOT.**
+Sweep re-scheduling and the tick cadence are neutral-to-negative; the first
+DEPTH change flipped two cells on its first attempt. The earlier ranking in
+this file (sweep #1, cadence #2, depth #3) was WRONG — depth was always #1.
+
+**Deal-noise calibration (important):** the same baseline scored **67, 69, and
+71** across the three gates, same host, same commit, same suite. **±2 solved
+cells is deal noise.** Do not read a 1-2 cell delta as signal without tier-2
+conflicts, wall, and a mechanism.
+
+Also landed: `CLAUDE.md` + `plan/solver-optimization-workflow.md` now carry the
+flexible trade rule (lose up to N=2 wall coins for mechanism-validated
+capability; wall coin = margin <=~120 s OR flipped across deals at an IDENTICAL
+conflict count), tiered triage (probe -> subset -> 100-cell gate for promotion
+only), and 4-arm sweeps (promote the best arm).
+
 ## RANKED PLAN for next session
 
-**Ranking CHANGED from the 2026-07-23b aggregate.** The wall-diet/lottery
-vein is near-exhausted (9 consecutive diets, 67->70 over ~20 sessions, last
-wins are coin flips); the source audit shows items 1-3 below are
-deterministic, mechanism-backed work with named target cells.
-
-1. **Fix the sweep seed cursor (NEW #1 — bug, not research).** Advance the
-   scan monotonically across rounds, add kissat's leftovers-first +
-   occurrence-sorted persistent schedule and the completion/escalation
-   ladder, and stop cloning the clause DB per round. Bead
-   SAT-playground-5b2.3.39. 450x measured productivity gap behind it;
-   touches all nine kissat-only cells. See delta section 2.
-2. **Re-denominate the inprocessing budget in ticks** with an effort floor
-   (kissat `SET_EFFORT_LIMIT`). Contained change; kills the entire
-   "never fires" class. Named beneficiaries: goldcrest, lockchart-group1.
-   Must spare sudoku-N30 + bp5 (never-armed but solving). See section 1.
-3. **Evaluate what is already built but off** — `SAT_PROBE`,
-   `SAT_GATE_BVE`+`SAT_GATE_EXTRACT`, `SAT_ELIM_DEF`. These are GATE RUNS,
-   not development. Gate-aware BVE + kitten definitions is exactly how
-   kissat reaches 72-88% elimination where we sit at 43-56%. Target cells:
-   fixedbandwidth, goldcrest, bp4_TCO_IXA_LP, booth_dadda_mapped (the four
-   kissat closes in <=1400 s that 2x time does NOT give us). See section 5.
-4. **Small ports:** `backbone.c` (BIG failed literals, 2% effort),
-   `transitive.c` (2% effort), vivify tier3 + the 3:3:1:3 budget split.
-   See sections 6-7.
-5. **Reduce control law (highest ceiling, highest risk).** Fraction-ramp +
-   31-step `used` counter vs our literal-budget + 3-step. Best hypothesis
-   for the 2.2-9x throughput gap. Measure OFFLINE first (kept clauses +
-   ticks/prop on rbsat/Bubble under kissat-style limits,
-   SAT_LIMIT_CONFLICTS identity screens — no gate). WARNING: rerolls every
-   >=1M-conflict trajectory — needs a deliberate re-luck campaign
-   (REROLL-LUCK LAW), not a single gate run. See section 4.
-6. **10th wall-diet (DEMOTED from #1, still has a free +1).**
-   bp4_TCO_CSO_ZR solves at 1880 s with a kissat-impossible trajectory, so
-   **~5% wall is a deterministic capability-backed +1 at the 1800 s gate**
-   (conflicts 2,008,325, no reroll). Same diet hardens rbsat (20 s under
-   the wire this deal!), sted2, vex, oski15 — five cells in the 1600-1900 s
-   band. Proven gate-safe shape (conflicts EXACT tie, wall down). Keep as
-   the cheap fallback when items 1-3 stall; do not lead with it.
-7. **Giant memory diet (carried).** pj2008 RSS 10.4 GB vs kissat 1.4 GB;
-   BVE emits 1.7 GB discarded DRAT in 150 s. Note pj2008 is marginal even
-   for kissat (2866 s at 3600 s). Unstarted.
-8. **TT class bookkeeping.** TT496 banked and re-confirmed unique at
-   3600 s. TT492: kissat needs 2222 s — NOT a 1800 s-gate loss; our old
-   draw existed only pre-rf (closed). TT495: nobody solves at 3600 s —
-   needs a genuinely new mechanism; low priority standalone.
+1. **SCOPED gate-aware BVE — THE #1 ITEM, projected 69 -> 72 (gate WIN).**
+   Gate 3's losses are reroll casualties, not mechanism failures, and the
+   discriminator is MEASURED (kissat-gaps 2.6c). Decisive datum: **bp5_CSO
+   gate-eliminates 56 646 vars while its TOTAL elimination is byte-identical
+   (122 262 -> 122 262)** — gate-BVE reaching the same vars by another route,
+   pure trajectory churn for zero benefit. TT496 (+0.16%) and VexRiscv (+1.5%)
+   are near-zero likewise, while the two winners sit at **+92%** and **+2.8%**.
+   A **2% net-elimination-gain threshold** keeps both wins and skips 3 of the 4
+   casualties.
+   *Implementation:* two-phase root pass — plain BVE to completion recording
+   E0, re-run from the ORIGINAL formula with gates on recording E1, apply the
+   gated result only when `E1/E0 - 1 >= threshold`, else keep the plain result
+   byte-identical. Root BVE is cheap (bp4_TCO_IXA spends 7.6M eliminate ticks),
+   so the doubled cost is affordable. This is the established gate-safe shape
+   (`CONGRUENCE_MIN_APPLY_MERGES=3000` all-or-nothing dry-run).
+   *Tune with a 4-arm sweep:* thresholds 1% / 2% / 5% + base, on the ~30-cell
+   timeout subset first, then gate the winner. Bead
+   SAT-playground-5b2.3 child "Gate-aware BVE ... re-gate for default".
+2. **Protect the reroll casualties explicitly.** bp4_BC012 gains +48%
+   elimination and STILL dies — so gain does not predict success monotonically;
+   the threshold works by filtering DEGENERATE cases, not by ranking. If
+   bp4_BC012 remains a loss after scoping, that is 1 capability loss against 2
+   capability gains: judge the trade per the new CLAUDE.md rule (it is
+   defensible, but write it out). Consider also scoping by arming time, the
+   trick that saved the endgame-delta promotion.
+3. **`SAT_ELIM_DEF` (kitten definition extraction) — still unexplored.** It
+   flipped nothing alone and added nothing on top of gbve in the depth probe,
+   but it was only tested at default budgets (`SAT_ELIM_DEF_TICKS=50k`,
+   `_CORES=2`). kissat gives definition extraction `definitionticks=1e6` and
+   **10x that** for its 2 core-minimisation passes. Retry with budgets raised
+   to kissat parity — a 20x budget gap is not a fair test. 4-arm sweep on
+   ticks: 50k / 500k / 1e6 + base.
+4. **DO NOT bundle the tick cadence with the depth passes — they are
+   ANTAGONISTIC.** `tick+gbve` TIMED OUT where `gbve` alone solved. Same shape
+   as gate 1. `SAT_INPROCESS_TICK_CADENCE` is implemented, correct, identity-
+   verified and default-off; treat it as groundwork that is currently a dead
+   end for the metric, and do not re-litigate it without a depth win first.
+5. **Small ports (unstarted):** `backbone.c` (binary-implication-graph failed
+   literals, 2% effort in kissat), `transitive.c` (2% effort), vivify tier3 +
+   the 3:3:1:3 budget split. Cheap, additive, low reroll risk.
+6. **Reduce control law (highest ceiling, highest risk).** Fraction-ramp
+   50%->90% + 31-step `used` counter vs our literal-budget + 3-step. Best
+   hypothesis for the 2.2-9x throughput gap. Measure OFFLINE first; rerolls
+   every >=1M-conflict trajectory so it needs a deliberate re-luck campaign,
+   not one gate.
+7. **10th wall-diet (cheap fallback, still has a free +1).** bp4_TCO_CSO_ZR
+   solves at 1880 s deterministically (2 008 325 conflicts) and kissat cannot
+   do it at 3600 s, so ~5% wall is a capability-backed +1 with no reroll. Also
+   hardens rbsat/sted2/vex/oski15 in the 1600-1900 s band. Use when items 1-3
+   stall; do not lead with it.
+8. **Sweep schedule — CLOSED for now.** `SAT_SWEEP_SCHED=retire` is
+   implemented, identity-verified (legacy digit-exact on 7/7 fingerprints) and
+   default-off. It is CORRECT but earns no default flip: gate 2's win was pure
+   coin. Do not spend more time here unless a depth win changes the context.
+   The seed budget is a genuine scaling defect (512 fixed = 17% coverage on a
+   2948-var formula vs 0.07% on 723k; kissat uses `sweepeffort` per-mille of
+   ticks, no seed count) but raising it LOST gate 1 badly.
+9. **Giant memory diet (carried, unstarted).** pj2008 RSS 10.4 GB vs kissat
+   1.4 GB; BVE emits 1.7 GB discarded DRAT in 150 s. pj2008 is marginal even
+   for kissat (2866 s at 3600 s).
+10. **TT class bookkeeping.** TT496 banked, re-confirmed kissat-impossible at
+    3600 s — and it is a gate-BVE casualty, so protect it. TT492: kissat needs
+    2222 s, not an 1800 s-gate loss. TT495: nobody solves at 3600 s.
 
 ## Current state
 
@@ -274,6 +333,19 @@ deterministic, mechanism-backed work with named target cells.
 - Decision metric UNCHANGED: lexicographic solved -> conflicts -> PAR-2 on
   the medium suite at 1800 s, 16 GB, 32 pinned cores. The 3600 s numbers are
   analysis-only — do NOT promote on them.
+- **Decision PROCESS changed 2026-07-24** (`CLAUDE.md` "Judging Trades",
+  "Candidate Triage Tiers", "Multi-Arm Sweeps"): do not revert on any loss —
+  classify cells and judge the trade (lose up to N=2 wall coins for
+  mechanism-validated capability); triage on a probe/subset before spending a
+  100-cell gate; run up to 4 arms per sweep and promote the best.
+- New default-off flags added this session (all identity-verified, none
+  promoted): `SAT_SWEEP_SCHED` (legacy|cursor|retire), `SAT_SWEEP_SEED_BUDGET`,
+  `SAT_INPROCESS_TICK_CADENCE`, `SAT_INPROCESS_TICK_INTERVAL`,
+  `SAT_INPROCESS_TICKS_PER_CONF_MIN`.
+- Gate artifacts this session: `log/abtest-cand-vs-base-2026-07-24-15-48-41`
+  (sweep retire+2048, LOSE 64v69), `...-2026-07-24-18-28-40` (sweep retire@512,
+  coin WIN 69v67, rejected), `...-2026-07-24-21-17-01` (gate-BVE, LOSE 69v71,
+  the two capability gains).
 
 ## Standing traps (carried + this session)
 
@@ -291,8 +363,32 @@ deterministic, mechanism-backed work with named target cells.
   Digit-exact identity checks (yield-protect + passthrough + default-equiv)
   for every scoped-reroll change.
 - Wall-coin cells at the 1800 s gate, updated: **rbsat-v1375 (1780 s),
-  bp4_TCO_CSO_ZR (1880 s — just OUT of gate), sted2 (1667 s), vex (1657 s),
-  oski15 (1615 s)**. Tier-1 margins under ~120 s are load noise.
+  bp4_TCO_CSO_ZR (1880 s — just OUT of gate), sted2 (1667-1791 s), vex
+  (1476-1664 s), oski15 (1597-1657 s), VanDerWaerden_pd_2-3-22 (1718 s)**.
+  Margins under ~120 s are load noise — but note vex/sted2/oski15 swing by
+  100-300 s across deals, so the STRONGER coin test is "flipped across deals at
+  an IDENTICAL conflict count" (see CLAUDE.md "Judging Trades").
+- **DEAL NOISE IS ±2 SOLVED CELLS.** The same baseline scored 67, 69 and 71
+  across three gates on 2026-07-24, same host/commit/suite. Never read a 1-2
+  cell delta as signal without tier-2 conflicts, wall, and a mechanism.
+- **Marginal-cell timing is INVALID while another 32-way sweep runs.** VexRiscv
+  timed out in BOTH arms on "free" cores 40/42 while a gate saturated memory
+  bandwidth on 0-31, though it solves ~1500 s idle. Under contention a SOLVE is
+  trustworthy; a TIMEOUT is not.
+- **Activity proxies mislead — never optimise them.** `sweep_equivalences` rose
+  49-52x under a bigger seed budget and the gate LOST 64 v 69. Measure solved
+  cells and wall.
+- sqrt-mitern170 produced `verify=checker-timeout` in gate 2's cand arm (first
+  time on that cell; drat-trim resource limit on a large proof, not an invalid
+  proof — same class as the documented vex case, but watch it).
+- `inprocess_rounds` is hardcoded to 0 in the stats JSON — useless as a proxy.
+  Use `vivify_attempts` / `sweep_equivalences` / `gate_eliminated_vars` instead.
+  Elimination keys are `pre_bve_eliminated_vars` and `gate_eliminated_vars`
+  (NOT the Rust field names).
+- Build to a scratch `CARGO_TARGET_DIR` when a gate is running, so the gate's
+  binary is not swapped underneath it.
+- `rm -rf` in scratch scripts is blocked by a guard — use fresh timestamped
+  dirs instead of deleting.
 - Arming times (idle, re-confirmed): instant: vex, oski15 x2. ~200k: TT406
   (200,057), TT492 (200,057), TT395 (200,191), TT496 (200,013). ~800k:
   sqrt170/171, pancake, QG7, aaai10, oddball24, div172.
@@ -305,6 +401,10 @@ deterministic, mechanism-backed work with named target cells.
   (~1.9 h); solver12 via seedgate `--timeout 3600` (~3 h incl. verify).
 
 ## solver12's capability edge (protect in rerolls)
+
+**NEW 2026-07-24 (gate-BVE, needs scoping to bank):** `RoundRobin_n16_d13`
+UNSAT 80.7 s — nobody solves it, kissat included, even at 3600 s;
+`bp4_TCO_CSO_IXA_LP_ZR` SAT 238.9 s (kissat 1187 s).
 
 xor_op x2, tseitin_n188_d3 (SAT_TSEITIN), oddball_80_5, MVRoundRobin_n16_d10,
 SC25_Timetable_C_406 (endgame rf), SC25_Timetable_C_496 (banded d48k, 1076 s
