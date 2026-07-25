@@ -333,6 +333,60 @@ while the budget reaches deeper variables.
 here. The legacy behaviour was load-bearing on three cells. Always measure
 the mechanism before assuming a defect is pure loss.
 
+### 2.1a IMPLEMENTED 2026-07-24 — `SAT_INPROCESS_TICK_CADENCE` (default-off)
+
+Tick-denominated inprocessing trigger, added alongside the conflict one.
+
+**Measured tick vs conflict accumulation (240 s windows, idle host):**
+
+| cell | conf/s | ticks/s | ticks/conflict |
+|------|-------:|--------:|---------------:|
+| lockchart-group1 | 92 | 4.3M | **47 123** |
+| pj2008 | 389 | 9.2M | **23 671** |
+| goldcrest | 452 | 9.5M | **20 925** |
+| VexRiscv | 401 | 6.0M | **15 033** |
+| case7 (healthy) | 648 | 5.8M | 9 012 |
+| sqrt-mitern170 | 3 705 | 33.9M | 9 155 |
+| fixedbandwidth | 23 390 | 102M | 4 362 |
+
+**Why the trigger MUST be ratio-scoped, not a flat tick interval.** Tick rate
+spans only 23x across cells; conflict rate spans 254x. So any flat tick
+interval that fires on lockchart also fires ~19x on sqrt-mitern170 — and
+section 2.2c already proved that piling inprocessing onto already-solving
+miters LOSES them. **Ticks-per-conflict is the discriminator** and the
+measured gap is clean: starved 15k-47k, healthy 4k-9.2k. Floor set at 12 000,
+with a 20k-conflict warmup so early propagation-heavy search cannot
+misclassify. Mechanism (not a family classifier): high ticks/conflict means
+much propagation work per learned clause, i.e. an unsimplified formula
+relative to search progress.
+
+**Verified inert where it must be:** sqrt-mitern170 bit-identical with the
+flag on (889 421 conflicts / 177 390 vivify attempts / 83 equivalences),
+case7 identical (155 717). **Verified live where it should be:** goldcrest
+first-ever sweep facts (0 -> 351 equivalences, 0 -> 11 backbones), VexRiscv
+vivify +50%, and VexRiscv/pj2008 do 29%/24% MORE conflicts in the same wall
+(formula shrank, search sped up).
+
+**TUNING RESULT: no +1.** Full 1800 s runs at intervals 0.5e9 / 1.5e9 / 4e9
+across goldcrest, pj2008, lockchart, VexRiscv, booth_dadda, bp4_TCO_IXA —
+**all 24 runs TIMEOUT, no cell flipped at any interval.**
+
+**Why: this is a magnitude problem, not a scheduling one.** kissat cracks
+goldcrest with 85% elimination and 4.7M kitten solves; a few extra rounds buy
+us 351 sweep equivalences. The cadence fix was NECESSARY (52 of 73 solved
+cells inprocess zero times) but is nowhere near SUFFICIENT. Classification:
+validated-neutral groundwork that unblocks depth work, not a metric mover on
+its own. The follow-up is rounds x DEPTH — the built-but-off passes of
+section 2.6 (`SAT_GATE_BVE`+`SAT_GATE_EXTRACT`, `SAT_ELIM_DEF`) running on
+cells that now actually get rounds.
+
+**Methodological trap learned the hard way:** marginal-cell timing is
+impossible while a 32-way gate runs. VexRiscv (2.3M props/s over 723k vars)
+timed out at 1801 s in BOTH arms on "free" cores 40/42 while the gate
+saturated memory bandwidth on cores 0-31, though it solves at ~1500 s idle.
+**Under contention a SOLVE is still trustworthy; a TIMEOUT is not.** Schedule
+marginal-cell measurements on a quiet host.
+
 ### 2.2b The seed budget is the real scaling defect
 
 `SWEEP_SEED_BUDGET` is a FIXED 512 seeds/round, but the suite spans three
