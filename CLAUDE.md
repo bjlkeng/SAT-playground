@@ -1,8 +1,9 @@
 # CLAUDE.md - SAT-playground Development Guide
 
-This file is the high-signal project contract for coding agents. Keep long
-procedures in skills or domain reference files, and keep this file focused on
-rules that should be in context for most work.
+This file is the high-signal project contract for coding agents. It carries the
+measured facts and decision rules that are not derivable from the repo — above
+all the evaluation metric and promotion gate, which live here in full because
+almost every change is judged against them. Everything else should be a pointer.
 
 ## Project Overview
 
@@ -28,7 +29,6 @@ bash tools/bench.sh solver/NN-name
 - Site workflow: `docs/SITE_WORKFLOW.md`
 - Benchmark operations, cron runs, and reference-solver runs:
   `benchmarks/BENCHMARK_WORKFLOWS.md`
-- Solver optimization workflow: `plan/solver-optimization-workflow.md`
 - Current decision/gate suite: `benchmarks/sat-comp-2025-medium/` (100
   instances, single default seed; run via
   `feature_ablation.py --suite sat-comp-2025-medium --seeds 1`)
@@ -40,11 +40,8 @@ bash tools/bench.sh solver/NN-name
 
 Use existing skills instead of duplicating their workflows here:
 
-- `beads`: `.agents/skills/beads/SKILL.md`
-- `/nextbeads`: `.codex/skills/nextbeads/SKILL.md`
-- `/cleanbeads`: `.codex/skills/cleanbeads/SKILL.md`
-- `/analyzesat`: `.codex/skills/analyzesat/SKILL.md`
-- Web visualization/debugging: `.codex/skills/debug-web-visualizations/SKILL.md`
+- `/analyzesat`: `.claude/skills/analyzesat/SKILL.md`
+- Web visualization/debugging: `.claude/skills/debug-web-visualizations/SKILL.md`
 
 ## Solver Interface Contract
 
@@ -90,25 +87,9 @@ Rules:
 - Each iteration is self-contained; copy-and-modify rather than introducing
   workspace dependencies between iterations.
 - Test with small hand-crafted CNFs before competition-sized benchmarks.
-
-Standard release profile for solver crates:
-
-```toml
-[profile.release]
-opt-level = 3
-lto = "fat"
-codegen-units = 1
-panic = "abort"
-strip = true
-overflow-checks = false
-```
-
-Standard `build.sh`:
-
-```bash
-[[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
-RUSTFLAGS="-C target-cpu=native" cargo build --release
-```
+- Match the existing iterations' release profile and `build.sh` (fat LTO, one
+  codegen unit, `target-cpu=native`); copy them from the previous iteration
+  rather than reinventing.
 
 ## Development Rules
 
@@ -117,39 +98,24 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
   count, then total conflicts on tied solved cells, then PAR-2 only as a
   supplemental tie-break.
 - Any keep, turn-on, or promotion decision must use the full medium single-seed
-  sweep and the gate:
-  `python3 tools/check_promotion_gate.py --multiseed ...` (the `--multiseed` TSV
-  format is unchanged for a single seed). Point feature_ablation at the suite
-  with `--suite sat-comp-2025-medium --seeds 1`; the standard gate parallelism is
-  32 physical cores at 16 GB per job (`--jobs 32 --mem-mb 16000`) on this 36-core
-  host — 32 not 36 to leave system headroom. When iterating, run the
-  candidate and baseline together as one A/B:
-  `python3 tools/feature_ablation.py --arm 'cand:SAT_X=on' --arm 'base:' --suite sat-comp-2025-medium --seeds 1`
-  — it starts both arms simultaneously on shared pinned cores (defaults: 32
-  cores, 16 GB, 30 min), emits the per-arm gate TSVs, and prints the
-  solved→conflicts→PAR-2 verdict inline.
-- Use tiered evidence: triage candidates on a subset with short walls, and
-  spend the full 100-instance medium gate only on promotion decisions. See
-  "Candidate Triage Tiers" below. Subset and single-instance runs are never
-  promotion evidence on their own.
+  A/B and the gate — see "Promotion Gate". Screen the idea on a cheaper tier
+  first ("Candidate Triage Tiers"); subset and single-instance runs are never
+  promotion evidence on their own, and always say which tier a number came from.
 - Honest timeouts and budget-consuming `UNKNOWN` results are priced into the
   metric. They are not correctness bugs by themselves.
 - Correctness errors are never acceptable: wrong SAT/UNSAT status, invalid SAT
   model, missing/invalid UNSAT proof, or premature non-budget `UNKNOWN` must be
   debugged before tuning or promotion continues.
 - A change may regress individual instances if it wins the lexicographic
-  aggregate metric beyond seed noise.
-- **Do not revert on any loss. Judge the trade explicitly** — see "Judging
-  Trades" below. Keep iterating until the lexicographic metric (instances,
-  then conflicts, then PAR-2) actually moves; a candidate that loses thin
-  wall-coin cells while gaining mechanism-validated capability can still be
-  the better solver.
+  aggregate metric beyond seed noise. **Do not revert on any loss — judge the
+  trade explicitly** ("Judging Trades"), and keep iterating until the metric
+  actually moves.
 - Do not promote hard-coded guards, one-family classifiers, or lucky input-order
   wins without mechanism-level evidence and shuffle-sensitivity validation.
 - Use red-green TDD for solver behavior changes when practical.
-- Run `bash tools/smoke_test.sh solver/NN-name` after every solver change.
-- Only commit solver changes that pass the smoke test.
-- Never modify `tools/smoke_test.sh` unless the user explicitly asks.
+- Run `bash tools/smoke_test.sh solver/NN-name` after every solver change, and
+  only commit changes that pass it. Never modify `tools/smoke_test.sh` unless
+  the user explicitly asks.
 - Always commit and push when the user asks; do not skip the push.
 - For background ACP/subagent tasks in Discord, suppress automatic
   `Background task done/failed` notices by setting the task notify policy to
@@ -173,7 +139,12 @@ before/after A/B run:
 python3 tools/feature_ablation.py --arm 'candidate:SAT_X=on' --arm 'baseline:' --suite sat-comp-2025-medium --seeds 1
 ```
 
-Then run:
+Both arms start simultaneously on shared pinned cores, so there is no host drift
+between them. Standard parallelism is `--jobs 32 --mem-mb 16000` at a 1800 s
+wall: 32 and not all 36 physical cores, to leave system headroom. The run emits
+one gate TSV per arm and prints the solved→conflicts→PAR-2 verdict inline.
+
+Then confirm with:
 
 ```bash
 python3 tools/check_promotion_gate.py --multiseed \
@@ -237,7 +208,6 @@ Trades that FAIL this rule:
 - Losing a cell whose baseline margin was large (a real capability loss).
 - Winning only wall coins while tier-2 conflicts and wall regress — that is a
   reroll lottery, not an improvement. Prefer the arm that wins on mechanism.
-- Any correctness failure.
 
 Write the trade into the promotion note: cells gained, cells lost with their
 baseline margins, the mechanism evidence, and the tier-2/PAR-2 movement. If the
@@ -296,18 +266,32 @@ Guidance:
 - Beware antagonistic combinations: two individually-good features can lose
   together. If you bundle, also run each alone as its own arm.
 
-## Iteration Workflow
+## Optimization Workflow
 
-When creating a new iteration:
+A new iteration is a copy of the previous directory with a renamed package; the
+non-obvious part is what comes after. When optimizing rather than adding a
+technique:
 
-1. Copy the previous iteration directory.
-2. Update `Cargo.toml` package name.
-3. Add or update tests first when practical.
-4. Implement the new technique.
-5. Add unit tests for the new feature.
-6. Run `bash tools/smoke_test.sh solver/MM-name`.
-7. Record benchmark results and notes in the iteration README.
-8. Ensure `build.sh` and `run.sh` still work.
+- Profile before coding, and check the opportunity size (duplicate clauses, pure
+  literals, candidate variables, subsumption hits) before implementing an idea.
+  For symbols in release builds:
+
+  ```bash
+  CARGO_PROFILE_RELEASE_STRIP=false CARGO_PROFILE_RELEASE_DEBUG=1 \
+  RUSTFLAGS="-C target-cpu=native" cargo build --release
+  ```
+
+- Make one focused change at a time; a correct, identity-verified change that
+  ties the metric is groundwork, not a stopping point.
+- Stop long losers early when finished rows have already lost more than the
+  remaining rows can plausibly recover.
+- Treat stale "rejected for default" notes as hypotheses to re-measure, not
+  settled verdicts — retest when profiler evidence suggests the context changed.
+- Document improvements in the solver README with benchmark log paths, machine
+  metadata, and measured impact. Record important rejected attempts too, so
+  future loops do not repeat them.
+- Use `/analyzesat` for full bottleneck deep dives (multi-config ablation, speed
+  decomposition, reference-source diff, trajectory traces).
 
 ## Testing
 
@@ -318,15 +302,8 @@ bash tools/smoke_test.sh solver/NN-name
 
 Smoke tests live under `tests/cnf/` and cover small SAT and UNSAT instances.
 The smoke script builds the solver, checks the `s` line, and validates SAT
-assignments.
-
-Common interface pitfalls:
-
-- Missing trailing `0` on `v` lines.
-- Printing `v` lines for UNSAT.
-- Mishandling empty clauses or top-level unit clauses.
-- Off-by-one variable indexing; DIMACS variables are 1-based.
-- Exceeding 4096 characters on a single `v` line.
+assignments — it catches the usual output-format mistakes, so run it before
+hand-auditing the interface.
 
 ## Benchmarking Rules
 
@@ -334,9 +311,12 @@ Common interface pitfalls:
   while combined solver/bench CPU use stays below four cores on this host.
 - Before starting benchmarks, check live solver usage:
   `ps aux --sort=-%cpu | grep -E 'sat-solver|kissat|minisat'`.
-- For feature-ablation sweeps, follow
-  `plan/solver-optimization-workflow.md`; it has stricter preflight and
-  long-run reporting rules.
+- Ask before launching a parallel sweep if competing solver/bench processes are
+  live, and cap memory so `jobs * mem` fits RAM.
+- `feature_ablation.py --seedgate` writes `results.tsv` only at the end;
+  mid-run progress has to come from live processes and `_work/<idx>` scratch
+  dirs. Long sweeps run for hours — launch detached or via the cron pattern in
+  `benchmarks/BENCHMARK_WORKFLOWS.md`, and record the run directory and PID.
 - **Marginal-cell timing is invalid while another 32-way sweep runs.** A gate
   saturates memory bandwidth, so cells near the timeout report TIMEOUT in every
   arm even on nominally free cores. Under contention a SOLVE is trustworthy but
@@ -354,42 +334,20 @@ content conventions, generated data, README chart updates, and validation.
 For interactive or visual docs, use the `debug-web-visualizations` skill and
 verify in a browser rather than relying on static inspection.
 
-## Beads And Multi-Agent Work
+## Multi-Agent Work
 
-Use Beads for durable task tracking in this repo. The workflow lives in the
-`beads`, `/nextbeads`, and `/cleanbeads` skills; do not duplicate their command
-recipes here. At minimum:
-
-```bash
-bd prime
-bd ready
-bd show <id>
-bd update <id> --claim
-bd close <id> --reason="Completed"
-bd update <id> --assignee ''
-```
-
-Run `/nextbeads` for phase-scoped bead work. It owns the full claim, implement,
-validate, close, release, commit, and push workflow.
-
-Agents share the main checkout on `main`. Before editing, check for active beads,
-uncommitted edits, and live solver/bench processes. If another active agent is
-working on a file or region you need, stop and ask the user before proceeding.
-Optional Agent Mail coordination details are in `plan/agent-coordination.md`.
+Agents share the main checkout on `main`. Before editing, check for uncommitted
+edits and live solver/bench processes. If another active agent is working on a
+file or region you need, stop and ask the user before proceeding. Optional Agent
+Mail coordination details are in `plan/agent-coordination.md`.
 
 ## Status Reporting
 
 When reporting command-derived status, show the command and the relevant output
 or summary in the reply; do not rely on hidden tool output.
 
-When the user asks for runtime status, check:
-
-```bash
-ps aux --sort=-%cpu | head -20
-pgrep -a sat-solver; pgrep -a minisat; pgrep -a kissat
-```
-
-Also inspect active benchmark sentinels/logs under `log/`, especially
+For runtime status, check live `sat-solver`/`minisat`/`kissat` processes and the
+benchmark sentinels and logs under `log/` — especially
 `log/bench_reference_RUNNING`, the newest `log/bench-*`, and any relevant
 `results.csv`. Report SAT/UNSAT/timeout/error counts when a benchmark is running.
 
@@ -412,50 +370,17 @@ benchmark state, or feature efficacy. Instead:
   efficacy unless the user explicitly asks. It is archived pre-2026-05-29
   provenance and is known to include stale, noise-contaminated verdicts.
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->
-## Beads Issue Tracker
-
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
-
-### Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
-```
-
-### Rules
-
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
-
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
-
 ## Session Completion
 
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+When ending a work session, work is not complete until `git push` succeeds. Run
+the quality gates for whatever changed (smoke test, `cargo test`), commit, then:
 
-**MANDATORY WORKFLOW:**
+```bash
+git pull --rebase
+git push
+git status  # must show "up to date with origin"
+```
 
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
-
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
-<!-- END BEADS INTEGRATION -->
+Never stop before pushing, and never say "ready to push when you are" — push it.
+If the push fails, resolve and retry until it succeeds. Then hand off with
+context for the next session, recording follow-up work in `plan/next-plan.md`.

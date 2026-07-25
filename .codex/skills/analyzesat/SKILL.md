@@ -1,6 +1,6 @@
 ---
 name: analyzesat
-description: Scientific bottleneck analysis for a SAT solver iteration — runs multi-config ablation across the profiling suite, profiles with perf, decomposes regressions into work × speed, diffs the reference source, writes FINDINGS.md + DEEPER_FINDINGS.md, creates beads for new actionable issues, summarizes findings to screen, and commits the artifacts. Default target is solver/11-kissat-search. Pass an optional solver path argument to target a different iteration (e.g. /analyzesat solver/10-bve-subsume).
+description: Scientific bottleneck analysis for a SAT solver iteration — runs multi-config ablation across the profiling suite, profiles with perf, decomposes regressions into work × speed, diffs the reference source, writes FINDINGS.md + DEEPER_FINDINGS.md, records follow-up work in plan/next-plan.md, summarizes findings to screen, and commits the artifacts. Default target is solver/11-kissat-search. Pass an optional solver path argument to target a different iteration (e.g. /analyzesat solver/10-bve-subsume).
 ---
 
 # Analyze SAT Solver Bottlenecks
@@ -47,13 +47,11 @@ Default target: `solver/11-kissat-search`
 2. **Read current state**: read `solver/NN-name/README.md`, `FEATURES.md` / `FEATURES.csv`,
    `SOLVER11_STATE.md` (if present), and `src/config.rs` to understand which features exist
    and which are opt-in vs. default.
-3. **Read CLAUDE.md** for project rules and `plan/solver-optimization-workflow.md`
-   for the detailed optimization workflow.
-4. **Check existing beads**: run `bd search <feature>` for every feature under investigation.
-   Record existing bead IDs so findings are linked, not duplicated.
-5. **Work in the main checkout on `main`** (no worktrees — see CLAUDE.md's coordination
+3. **Read CLAUDE.md** for project rules, the decision metric, triage tiers, and the
+   promotion gate.
+4. **Work in the main checkout on `main`** (no worktrees — see CLAUDE.md's coordination
    workflow). Before touching any source file, check whether another agent is already
-   working on it (coord thread, `bd list --status in_progress`, `git status --short`); if a
+   working on it (coord thread, `git status --short`); if a
    likely conflict exists, **ask the user before proceeding**. An analysis pass that only
    reads + profiles + writes to `log/` rarely conflicts; a profiling rebuild does change the
    shared target binary, so coordinate via the `coord` thread if another agent is mid-build.
@@ -61,7 +59,7 @@ Default target: `solver/11-kissat-search`
    ```bash
    cd solver/NN-name && bash build.sh
    ```
-6. **Name the investigation**: pick a slug like `analyzesat-YYYY-MM-DD` and create the output
+5. **Name the investigation**: pick a slug like `analyzesat-YYYY-MM-DD` and create the output
    directory: `log/<slug>/`.
 
 ## Phase 1 — Multi-Config Ablation Matrix
@@ -93,8 +91,8 @@ matrix at 300 s is a multi-hour job — launch it detached (Bash `run_in_backgro
 one-shot cron pattern for very long runs) instead of blocking the session, post an hourly status
 report while it runs (liveness via `pgrep`, cells-done, ETA), and close with the comparative
 analysis/summary this skill already produces (the Phase 2–7 decomposition + `FINDINGS.md` + the
-screen summary). See `plan/solver-optimization-workflow.md` for the full detached-run /
-hourly-status / end-of-run-summary convention.
+screen summary). See the "Benchmarking Rules" section of CLAUDE.md for the detached-run
+and end-of-run-summary convention.
 
 Capture per-(config, instance):
 - wall time, result (SAT/UNSAT/timeout)
@@ -324,72 +322,26 @@ second-pass findings.
 After writing FINDINGS.md, print a concise summary to stdout with:
 - Top 3 bottlenecks identified (one sentence each)
 - Dominant cause per feature: work (trajectory) vs speed (execution) vs gap (reference diff)
-- Number of new beads created
+- Number of new follow-up items recorded
 - Any phase-boundary chaos instances (cannot be fixed by parameter tuning)
 - What to do next
 
-### Beads
+### Follow-Up Work
 
-For every new actionable finding:
-
-1. Check for an existing bead first: `bd search <keyword>` (mandatory — do not duplicate).
-2. **Classify the finding into a roadmap phase before creating the bead.** Every new solver
-   bead MUST be filed under the correct phase epic — both the phase **label** *and*
-   `--parent <phase-epic>` — so phase-scoped tooling (`/nextbeads phaseN`, the phase guard, and
-   `bv --robot-triage-by-label`) can see it. A standalone bead with no parent epic is invisible
-   to a phase-scoped run even when it is squarely that phase's work. Map the finding's primary
-   subsystem to a phase:
-
-   | Subsystem the finding's primary code change touches | Phase | Label | Parent epic |
-   |-----------------------------------------------------|-------|-------|-------------|
-   | Search loop & priority order, decision/branching (VSIDS/VMTF/`SAT_REORDER`), phase saving / rephase, restart / trail-reuse, chronological backtracking, propagation / BCP / watchers / binary fast-path, conflict analysis, clause minimization / shrink (CCMIN), learned-clause DB (reduce-db / lbd-tiered / tiers), lucky pre-search phase patterns | **Phase 1** | `phase1` | `SAT-playground-5b2.2` |
-   | Clause simplification, bounded variable elimination (BVE), vivification, subsumption / self-subsuming resolution, probing / hyper-binary resolution, formula rewriting, the inprocessing scheduler, preprocessing | **Phase 2** | `phase2` | `SAT-playground-5b2.3` |
-
-   Rule of thumb: if the change is in the **solve/search loop and does not modify the formula**,
-   it is Phase 1; if it **simplifies, rewrites, or eliminates from the formula**, it is Phase 2.
-   For a finding that genuinely spans both, file it under the phase of its *primary* code change
-   and link the other epic with a dependency. If it fits neither phase, use the matching epic
-   instead — `SAT-playground-5b2.4` (governance / invariants / gates), `SAT-playground-5b2.5`
-   (milestones / promotion gates), or `SAT-playground-5b2.6` (parking-lot experiments) — but
-   **never leave a new solver bead with no parent epic.**
-
-3. If no bead exists, create it under the chosen phase epic (Phase 1 shown; for Phase 2 swap
-   `--parent SAT-playground-5b2.3` and label `phase2`):
-   ```bash
-   bd create --title "<feature>: <specific gap>" \
-             --type bug \
-             --priority 2 \
-             --parent SAT-playground-5b2.2 \
-             --no-inherit-labels \
-             --labels "solver11,performance,phase1,<subsystem-label>" \
-             --description "Gap: <description>. Reference: kissat/src/<file>:<line>. Fix: <sketch>. Evidence: log/<slug>/..."
-   ```
-   `--no-inherit-labels` keeps the discovered bead from picking up the epic's *planning* labels
-   (`plan`, `roadmap`, `task-1-N`); carry only the explicit phase label plus topical subsystem
-   labels (e.g. `reduce-db`, `propagation`, `restart`, `clause-minimization`, the
-   `analyzesat-<slug>` tag).
-4. If a bead exists but has no phase, fix it in place — do not create a duplicate:
-   ```bash
-   bd update <id> --add-label phase1 --parent SAT-playground-5b2.2   # or phase2 / 5b2.3
-   ```
-5. If a bead exists, add a note:
-   ```bash
-   bd note <id> "Confirmed by analyzesat run <slug>: <evidence>"
-   ```
-6. Link related beads: `bd link <new> <existing> --type related` (or `bd dep add <new> <existing>`
-   for a discovered-from / blocks relationship).
-7. Export: `bd export -o .beads/beads.jsonl`
+For every new actionable finding, append an entry to `plan/next-plan.md` with the
+gap, the reference citation (`kissat/src/<file>:<line>` where applicable), a fix
+sketch, and the evidence path (`log/<slug>/...`). Check the existing entries
+first so a known gap gets updated rather than duplicated.
 
 ## Commit
 
-After writing FINDINGS.md and creating/updating beads:
+After writing FINDINGS.md and recording follow-up work:
 
 ```bash
 git add log/<slug>/FINDINGS.md log/<slug>/DEEPER_FINDINGS.md \
         log/<slug>/run_ablation.sh \
         log/<slug>/reference-kissat-latest.csv \
-        log/<slug>/reference-kissat-sc2024.csv \
-        .beads/beads.jsonl
+        log/<slug>/reference-kissat-sc2024.csv plan/next-plan.md
 git commit -m "analyzesat: <slug> — <one-line summary of top finding>"
 ```
 
@@ -398,11 +350,7 @@ Do not force-add raw results CSVs unless the user asks for provenance tracking.
 ## Rules
 
 - **Work on `main` in the main checkout** — no worktrees. Check for another agent on the same files first and **ask the user before proceeding** into a likely conflict (CLAUDE.md coordination workflow).
-- **Check beads before creating** — `bd search` is mandatory; never duplicate.
-- **File every new bead under its phase epic** — classify the finding (Phase 1 = search/decision/
-  phase/restart/learned-clause; Phase 2 = simplification/rewriting/formula modification) and set
-  *both* the phase label and `--parent <phase-epic>`. A new solver bead must never be left
-  parent-less, or phase-scoped tooling (`/nextbeads phaseN`) cannot see it.
+- **Check `plan/next-plan.md` before adding** — update a known gap rather than duplicating it.
 - **Report phase-boundary chaos honestly** — do not suggest parameter tuning when
   the trajectory trace shows single-decision divergence.
 - **Tie every recommendation to measured evidence** — avoid generic "improve cache
@@ -414,6 +362,6 @@ Do not force-add raw results CSVs unless the user asks for provenance tracking.
   (the solver used its budget) is just a PAR-2 cost and a valid data point. A *premature* `UNKNOWN`
   (returns without using the budget) or any correctness error (wrong status, bad model,
   missing/invalid proof) is a bug regardless of PAR-2 — stop and report it before continuing.
-- **Commit artifacts** — always commit FINDINGS.md and `.beads/issues.jsonl` at the end.
+- **Commit artifacts** — always commit FINDINGS.md and `plan/next-plan.md` at the end.
 - **Print a screen summary** — the user cannot see FINDINGS.md until they open it;
   summarize the top findings to stdout before exiting.
