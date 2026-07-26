@@ -1,12 +1,98 @@
-# NEXT PLAN — 2026-07-25 (supersedes the 2026-07-24 revision of this file)
+# NEXT PLAN — 2026-07-26 (supersedes the 2026-07-25 revision of this file)
 
-One-file plan for the next clear context. Folds the 2026-07-25 **scoped
-gate-aware BVE PROMOTION (gate WIN 72 v 71)** on top of the 2026-07-24 gap
-read + source audit + three-gate depth campaign. Where this contradicts an
-older `plan/next-steps-*.md`, THIS file wins.
+One-file plan for the next clear context. Folds SESSION 4 (2026-07-25/26:
+elim_def CLOSED with mechanism autopsy, tier-split vivify gate LOSE with a
+capability-loss trade, bump-sort diet neutral, bp4_TCO_CSO_ZR reroll loss
+CONFIRMED at 3600 s idle) on top of the scoped gate-BVE promotion session.
+Where this contradicts an older `plan/next-steps-*.md`, THIS file wins.
 
-**START HERE:** read "SESSION 3" below, then the RANKED PLAN (updated —
-item 1 is DONE/PROMOTED). Companion deep-dive: `plan/kissat-gaps.md`.
+**START HERE:** read "SESSION 4" below, then the RANKED PLAN (updated —
+items 1, 2-vivify-tier3, and 4 are now CLOSED). Companion deep-dive:
+`plan/kissat-gaps.md`.
+
+## SESSION 4 (2026-07-25 evening → 07-26) — three negatives, zero promotions, baseline stays 72/100
+
+HEAD fd68696 (groundwork commit, defaults unchanged). Nothing promoted; the
+value of this session is three closed lines with mechanism evidence, one
+standing-trap correction, and a committed triage suite
+(`benchmarks/timeout-subset-2026-07-25`, 28 cells, relative symlinks).
+
+**1. `SAT_ELIM_DEF` — CLOSED at ANY tick budget. The ranked-item-1 framing
+("20x budget gap was an unfair test") was WRONG; arming and the resolvent
+cap are the blockers, not budget.** Probes (400k/4M-conflict, digit-exact):
+
+- The density-class timeout targets (booth x2, Bubble, fixedbandwidth,
+  goldcrest, g2-oski) do NOT arm by 400k conflicts; booth/Bubble arm at the
+  SECOND yield probe (~800k). goldcrest (474 conf/s) reaches 800k conflicts
+  only at ~1700 s — the mechanism never fires there in a gate.
+- Timetable class: TT492 runs exactly 20,000 checks / 0 found → the
+  formula-adaptive probe-cutoff stops it (pivots not kitten-definable).
+- Once armed, elim_def FINDS definitions at 99% hit rate (booth 2383/2399,
+  Bubble 2938/2950) but converts ZERO under the default parent-length cap —
+  and a found-but-rejected definition BLOCKS the naive-BVE fallback for that
+  pivot, so capped elim_def eliminates FEWER vars than base (booth 1581 vs
+  1662). The default-off shape is actively harmful, not just useless.
+- `SAT_ELIM_DEF_NOCAP=on` converts, but the yield is 3 orders of magnitude
+  short (+56/+109 def elims, net +43/+4 total at 4M conflicts, vs kissat's
+  72-77% collapse) and NOCAP is the documented oski40 killer.
+- Tick budget 50k vs 1e6: BYTE-IDENTICAL runs (same propagation count);
+  whole-run def kitten spend is 34-138k ticks. Budget was never binding.
+- If elim_def is ever revisited: fix the rejected-definition fallback first
+  (fall through to naive BVE on bound rejection), then re-measure.
+
+**2. `SAT_VIVIFY_TIER_SPLIT` (kissat 3:3:1:3 tier schedule, armed-scoped) —
+implemented, mechanism REAL, gate LOSE 70v70 on conflicts; DO NOT enable.**
+Artifacts: `log/abtest-cand-vs-base-2026-07-25-22-05-56`, zero correctness
+failures (vex checker-timeout symmetric both arms, the documented event).
+
+- Mechanism probe (fixed conflicts): tier3 — which the legacy single pass
+  NEVER vivifies (learned cap LBD<=6) — hits 28-63% of scanned candidates:
+  booth 20k → 197k total strengthenings (10x), oski15b20 +24%, TT492 +26%,
+  vex +15%.
+- Gate: 70 v 70 solved, both-solved conflicts +1.05M WORSE, PAR-2 +2354
+  WORSE, and the solved-set swap is a FAILING trade: LOST TT496 (base SAT
+  1111 s, fat margin, the kissat-impossible banked capability cell — it is
+  decision-armed, so tier-split rerolled exactly it) for oski15a01b20s
+  (documented wall coin, kissat 574 s).
+- LESSON (repeat of the sweep-budget lesson, now with vivify): raw yield is
+  an ACTIVITY PROXY. 10x strengthenings churned armed trajectories
+  net-negative. Any future vivify-depth idea must protect decision-armed
+  banked cells (TT406/TT496) by scoping, and be judged on conflicts, never
+  on strengthening counts.
+
+**3. `SAT_BUMP_SORT_CACHE` (10th wall-diet attempt) — identity-exact but
+wall-NEUTRAL; the visible sort cost is irreducible by key-caching.**
+
+- perf is blocked on this host (perf_event_paranoid=4, no sudo). Built a
+  gdb SIGINT-sampler instead (works under ptrace_scope=1 because gdb is the
+  parent; `handle SIGINT stop print nopass` + external kill -INT loop —
+  note `noprint` implies `nostop`, which silently yields ZERO samples).
+- 400/173-sample profiles of bp4_TCO_CSO_ZR / rbsat-v1375: 75-85% propagate,
+  9-13% analyze, no side-pass fat left. The one non-primitive item:
+  `bump_analyzed_variable_activity`'s per-conflict
+  `sort_unstable_by_key(stamp)` = 4.3% / 6.9% of wall.
+- The diet (cache (stamp,var) pairs; >=2 zero stamps → legacy call verbatim
+  so tie permutations cannot diverge) is digit-exact on 4 cells but wall is
+  NOISE (booth +1.9%, bp4 −1.1%, rbsat +3.1%, TT492 +6.2%): the cost is the
+  sort's own compare/swap work — which kissat also pays (radix) — not the
+  key recomputation. Committed default-off; do not gate.
+- Conclusion for the wall-diet arc: after nine diets the band cells'
+  profiles are propagation-bound with primitives already lean. The 2.2-9x
+  throughput gap vs kissat is the clause-DB size / REDUCE control law
+  (ranked item below), not per-instruction overhead. The cheap 10th diet
+  probably does not exist.
+
+**4. STANDING-TRAP CORRECTION — bp4_TCO_CSO_ZR's 1880 s trajectory is GONE.**
+Idle 3600 s re-run at HEAD (scoped gate-BVE adopts it, +3.16% elimination):
+TIMEOUT. The reroll lost the cell even at 2x the gate wall (it was also
+TIMEOUT in both arms of this session's gate and in the aa9f4d6 winning
+deal). Ranked-plan items built on "bp4_TCO_CSO_ZR solves at 1880 s
+deterministically / free +1 via 5% wall diet" are DEAD. If the cell is ever
+wanted back, the lever is its gate-BVE dry-run decision (adopt threshold or
+a per-cell arming-time discriminator), not wall.
+
+Validation state at HEAD: 688 unit tests (5 new this session), smoke 9/9,
+both new flags default-off with shipped trajectories byte-identical.
 
 ## SESSION 3 (2026-07-25) — SCOPED GATE-BVE PROMOTED, baseline now 72/100
 
@@ -310,35 +396,47 @@ capability; wall coin = margin <=~120 s OR flipped across deals at an IDENTICAL
 conflict count), tiered triage (probe -> subset -> 100-cell gate for promotion
 only), and 4-arm sweeps (promote the best arm).
 
-## RANKED PLAN for next session (updated 2026-07-25)
+## RANKED PLAN for next session (updated 2026-07-26)
 
-0. **DONE 2026-07-25 — item 1 PROMOTED (aa9f4d6, 72/100).** See SESSION 3.
-   Leftovers folded into the items below: bp4_BC012 is a confirmed −1 (its
-   protection would need a second discriminator — arming-time or a per-cell
-   dry-run of the SEARCH, not worth it unless it recurs); threshold arms
-   1%/5% were NOT swept (2% validated; 5% would drop the +2.8% winner, 1%
-   only adds cells in [1,2)% — none measured there on this suite).
+0. **CLOSED in SESSION 4 (see above): `SAT_ELIM_DEF` (any budget; fallback
+   defect documented), vivify tier3/3:3:1:3 (gate LOSE, capability trade
+   fail), 10th wall-diet (profiles propagation-bound; bump-sort neutral),
+   and the bp4_TCO_CSO_ZR free +1 (cell lost to the gate-BVE reroll).**
+   `backbone.c` remains dead from the earlier measurement
+   (bindrat-promotion note). Sweep schedule / tick cadence stay CLOSED.
 
 NEW top of the list:
 
-1. **`SAT_ELIM_DEF` at kissat-parity budgets (was item 3).** Kitten definition
-   extraction retried with `SAT_ELIM_DEF_TICKS` raised 50k → 500k → 1e6
-   (kissat `definitionticks=1e6` + 10x for core minimisation). 4-arm sweep on
-   the ~30-cell timeout subset first. Now stacks ON TOP of scoped gate-BVE —
-   test the interaction (it adds Definition-kind gates to the same E1 dry-run
-   path only when armed; root-scoped adoption may unlock it more often).
-2. **Small ports (was item 5):** `backbone.c` (binary-implication-graph failed
-   literals, 2% effort), `transitive.c` (2%), vivify tier3 + 3:3:1:3 budget
-   split. Cheap, additive, low reroll risk.
-3. **Reduce control law (was item 6, highest ceiling/risk).** Fraction-ramp
-   50→90% + 31-step used counter vs our literal-budget + 3-step. Offline
-   measurement first; needs a deliberate re-luck campaign.
-4. **10th wall-diet (was item 7).** bp4_TCO_CSO_ZR adopts gate-BVE now (+3.16%
-   gain) — recheck whether it still needs the wall-diet +1 or the reroll
-   already flipped it (it was NOT in this deal's solved set: check next gate).
-   sted2 no longer needs hardening (1199 s). rbsat/vex/oski15 still in band.
-5. **Giant memory diet (was item 9, unstarted).** pj2008 RSS 10.4 GB.
-6. **Sweep schedule / tick cadence — still CLOSED** (unchanged verdicts).
+1. **Reduce control law (now the only open high-ceiling item).**
+   Fraction-ramp 50→90% (`reducelow=500`/`reducehigh=900` per mille,
+   `high - (high-low)/log10(reductions+9)`) + 31-step `used` counter vs our
+   literal-budget + 3-step MAX_USED_RECENTLY. SESSION 4's profiling
+   CONFIRMS the motivation: band-cell wall is 75-85% propagation with lean
+   primitives, so the 2.2-9x conflict-rate gap vs kissat at identical
+   trajectories is clause-DB size → watch-list length. Measure OFFLINE
+   first (fixed-conflict runs: live-learned count, watch-list bytes,
+   props/conflict, wall on rbsat/bp4/booth); it rerolls every >=1M-conflict
+   trajectory, so promotion needs a deliberate re-luck campaign — protect
+   TT406/TT496 (decision-armed banked cells; TT496 was this session's
+   tier-split casualty) with an explicit scope or accept the re-luck bundle
+   framing (searched-reroll lesson).
+2. **`transitive.c` port (last unmeasured small port).** Binary-implication
+   transitive reduction, 2% effort in kissat. Cheap; backbone and vivify
+   tier3 are both now measured dead, so this is the only remaining item in
+   that class. Screen on the committed 28-cell timeout subset.
+3. **Giant memory diet (unstarted).** pj2008 RSS 10.4 GB vs kissat 1.4 GB;
+   BVE emits 1.7 GB discarded DRAT in 150 s. pj2008 is marginal even for
+   kissat (2866 s at 3600 s), so this is capability-adjacent, not urgent.
+4. **elim_def revisit ONLY behind the fallback fix:** on bound-rejection,
+   fall through to naive all-pairs BVE for that pivot (the current shape
+   strictly loses eliminations vs base — SESSION 4 autopsy). Low priority;
+   even NOCAP yield was 3 orders of magnitude short of the target class.
+5. **TT496/bp4_TCO_CSO_ZR bookkeeping.** Both are now RerollED cells: TT496
+   still solves on the shipped default (banked, protect it in every future
+   armed-path change); bp4_TCO_CSO_ZR is LOST at 3600 s idle under the
+   adopted gate-BVE trajectory — recovering it means revisiting its
+   dry-run adoption decision (threshold/arming-time discriminator), not
+   wall diets.
 
 Historical detail of the promoted item (kept for provenance):
 
@@ -408,10 +506,16 @@ Historical detail of the promoted item (kept for provenance):
 
 ## Current state
 
-- HEAD: aa9f4d6 (scoped gate-BVE promotion). **Medium 1800 s baseline:
-  72/100**; lineage TSV
+- HEAD: fd68696 (SESSION 4 groundwork: SAT_BUMP_SORT_CACHE +
+  SAT_VIVIFY_TIER_SPLIT, both default-off, defaults byte-identical to
+  aa9f4d6). **Medium 1800 s baseline: 72/100**; lineage TSV
   `log/abtest-cand-vs-base-2026-07-25-13-59-16/cand/results.tsv`.
-  Same-deal base scored 71 (67/69/71 on 2026-07-24 — ±2 deal noise stands).
+  The SESSION 4 gate's base arm posted 70/100 on the same commit
+  (log/abtest-cand-vs-base-2026-07-25-22-05-56/base — ±2 deal noise again,
+  TT496 IN, oski15b20/bp4_TCO_CSO_ZR OUT in that deal).
+- New default-off flags this session: `SAT_BUMP_SORT_CACHE`,
+  `SAT_VIVIFY_TIER_SPLIT` (+ `vivify_tier3_attempts`/`_strengthened` stats).
+  New triage suite: `benchmarks/timeout-subset-2026-07-25` (28 cells).
 - Scoped gate-BVE surface: SAT_GATE_BVE_SCOPED (on), MIN_GAIN_PCT 2,
   SCOPED_MAX_VARS 100k; explicit SAT_GATE_BVE=on supersedes scoped.
   19/100 cells adopt (see SESSION 3 list); 81 byte-identical to b671ae0
@@ -455,11 +559,13 @@ Historical detail of the promoted item (kept for provenance):
 - Conflict counts are EXACTLY deterministic across load; wall is not.
   Digit-exact identity checks (yield-protect + passthrough + default-equiv)
   for every scoped-reroll change.
-- Wall-coin cells at the 1800 s gate, updated 2026-07-25: **rbsat-v1375
-  (1780 s), bp4_TCO_CSO_ZR (1880 s — just OUT of gate; now ADOPTS gate-BVE
-  +3.16%, rerolled), vex (1476-1664 s), oski15 (1597-1657 s),
-  VanDerWaerden_pd_2-3-22 (1718 s)**. sted2 LEFT the band under scoped
-  gate-BVE (1199 s this deal, was 1667-1791 s).
+- Wall-coin cells at the 1800 s gate, updated 2026-07-26: **rbsat-v1375
+  (1780 s), vex (1476-1664 s), oski15 (1597-1663 s; b20s flipped IN only in
+  the tier-split cand arm at 1316 s — still a coin), VanDerWaerden_pd_2-3-22
+  (1718 s)**. sted2 LEFT the band under scoped gate-BVE (1199 s).
+  **bp4_TCO_CSO_ZR left the COIN class entirely: it is now a 3600 s-idle
+  TIMEOUT under the adopted gate-BVE trajectory (SESSION 4 re-measure) — do
+  not count it as a margin cell.**
 - Scoped gate-BVE dry-run decisions are DETERMINISTIC (tick-budgeted, no
   wall): the 19-cell adopt list is stable across deals; only their search
   trajectories reroll deal-to-deal, exactly like any other solved cell.
@@ -497,6 +603,16 @@ Historical detail of the promoted item (kept for provenance):
   repo root first.
 - Kissat 3600 s sweeps: `tools/run_kissat_medium.sh -t 3600 -m 16000 -j 32`
   (~1.9 h); solver12 via seedgate `--timeout 3600` (~3 h incl. verify).
+- perf is BLOCKED on this host (perf_event_paranoid=4, no passwordless
+  sudo). Working substitute: gdb SIGINT-sampler (gdb is the parent →
+  ptrace_scope=1 ok; `handle SIGINT stop print nopass` + N x `bt 40` +
+  `continue` in a -batch script, external `kill -INT <inferior>` loop).
+  Trap: `noprint` implies `nostop` — that variant yields ZERO samples.
+  Script pattern in scratchpad gdb_sample.sh (SESSION 4).
+- 900 s subset walls on TIMEOUT cells discriminate NOTHING under 32-way
+  contention (SESSION 4's elim_def 4-arm sweep: 0/28 in every arm incl.
+  base). For timeout-cell triage use SAT_LIMIT_CONFLICTS probes with stats
+  JSON, not short-wall subset sweeps.
 
 ## solver12's capability edge (protect in rerolls)
 
@@ -505,9 +621,12 @@ UNSAT 80.7 s — nobody solves it, kissat included, even at 3600 s;
 `bp4_TCO_CSO_IXA_LP_ZR` SAT 238.9 s (kissat 1187 s).
 
 xor_op x2, tseitin_n188_d3 (SAT_TSEITIN), oddball_80_5, MVRoundRobin_n16_d10,
-SC25_Timetable_C_406 (endgame rf), SC25_Timetable_C_496 (banded d48k, 1076 s
-— kissat cannot at 3600 s), **bp4_TCO_CSO_ZR (new: kissat cannot at 3600 s;
-ours at 1880 s, 80 s from the gate line)**. Kakuro-easy-132 + case1 are now
+SC25_Timetable_C_406 (endgame rf), SC25_Timetable_C_496 (banded d48k,
+1076-1111 s — kissat cannot at 3600 s; **decision-armed, the tier-split
+gate's casualty — protect it in every armed-path change**),
+RoundRobin_n16_d13 (gate-BVE, 119 s). **bp4_TCO_CSO_ZR is REVOKED from this
+list (SESSION 4): the adopted gate-BVE trajectory times out at 3600 s idle;
+neither we nor kissat solve it now.** Kakuro-easy-132 + case1 are
 speed wins (12x/7x), no longer unique-capability — still gate +1s at 1800 s.
 
 ## Where the evidence lives
