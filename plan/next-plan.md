@@ -1,14 +1,70 @@
-# NEXT PLAN — 2026-07-26 (supersedes the 2026-07-25 revision of this file)
+# NEXT PLAN — 2026-07-26b (supersedes the 2026-07-26 morning revision)
 
-One-file plan for the next clear context. Folds SESSION 4 (2026-07-25/26:
-elim_def CLOSED with mechanism autopsy, tier-split vivify gate LOSE with a
-capability-loss trade, bump-sort diet neutral, bp4_TCO_CSO_ZR reroll loss
-CONFIRMED at 3600 s idle) on top of the scoped gate-BVE promotion session.
-Where this contradicts an older `plan/next-steps-*.md`, THIS file wins.
+One-file plan for the next clear context. Folds SESSION 5 (2026-07-26
+daytime: the REDUCE control law — ranked item 1 — implemented, measured,
+gate LOSE 70v71, CLOSED at the 1800 s gate with a full reroll-variance
+autopsy; groundwork committed default-off) on top of SESSION 4. Where this
+contradicts an older `plan/next-steps-*.md`, THIS file wins.
 
-**START HERE:** read "SESSION 4" below, then the RANKED PLAN (updated —
-items 1, 2-vivify-tier3, and 4 are now CLOSED). Companion deep-dive:
-`plan/kissat-gaps.md`.
+**START HERE:** read "SESSION 5" below, then the RANKED PLAN (updated —
+the reduce law is now CLOSED at 1800 s; transitive.c is the top open
+item). Companion deep-dive: `plan/kissat-gaps.md`.
+
+## SESSION 5 (2026-07-26) — REDUCE law ported, mechanism REAL, gate LOSE 70v71, CLOSED at 1800 s
+
+HEAD b8495b7 (groundwork commit, defaults byte-identical to ac0e675 —
+digit-exact conflicts/props/ticks verified on rbsat+booth at 400k).
+Baseline stays 72/100 (lineage) / 71 in this session's gate deal.
+
+**`SAT_REDUCE_FRACTION` — kissat reduce.c deletion law (fraction-ramp
+50→90% of candidates via `high-(high-low)/log10(reductions+9)` + 31-step
+`used` counter, born/bumped 31, −1 per reduce, tier1 exempt while used>0,
+tier2 while used>=30, tier3 always candidate; no budget gate; hard-budget
+emergency trigger dropped while active). Scoped activation: first reduce
+>= `SAT_REDUCE_FRACTION_MIN_CONFLICTS` (1.3M) AND never
+`inprocess_aggressive`-armed; warm-starts all live used counters to 31 on
+activation. Cadence was already kissat-parity (1000·sqrt(reductions)) —
+only the deletion law differed.**
+
+- **Mechanism is REAL.** Fixed-conflict idle probes: learned DB 2–4.5x
+  smaller in literals everywhere, RSS −20..−40%, wall −19.3% rbsat /
+  −17.3% sted2 / −14.6% bubble at identical conflict counts; vex/oski15
+  wall-neutral (props/conflict grows to offset shorter watch lists).
+  In-gate: 59-129706 −295 s, VdW −209 s *despite* +497k conflicts,
+  case20 −121 s. The 2.2–9x throughput-gap hypothesis (clause-DB size →
+  watch-list length) is CONFIRMED as mechanism.
+- **Gate LOSE 70v71** (`log/abtest-candidate-vs-baseline-2026-07-26-08-19-42`,
+  zero correctness failures, vex checker-timeout symmetric-documented,
+  64/70 both-solved trajectory-identical — the scope banked TT/armed/
+  sub-1.3M cells digit-exact as designed, verified in-gate). Tier-2
+  +1.85M (ENTIRELY sted2's reroll +2.22M; excluding it tier-2 improves
+  −372k), PAR-2 +1941. The −1 is rbsat: baseline SAT 1757.4 s (43 s
+  margin, the documented thinnest coin), candidate's post-1.3M reroll
+  lost the SAT draw. Zero capability gained → no trade available.
+- **REROLL-VARIANCE LAW (new, the session's key result):** deep SAT
+  cells reroll with ±2x conflict variance PER DRAW under any reduce-law
+  change, and the draw sign is not controllable by scoping axis. Sweep
+  of T ∈ {1.3M, 4M, 7M} × {cold, warm-start} (all deterministic idle
+  probes): rbsat LOST its draw in 3/3 rerolls that touched it (TIMEOUT
+  at 9.4–9.9M conf); 59-129706 swung from −1.65M (T=1.3M cold) to
+  +8.5M (7M cold) to +11.7M (1.3M warm); sted2 +2.2M/+2.85M in both
+  draws; VdW −1.28M warm after +497k cold. UNSAT rerolls by contrast
+  are conflict-neutral-to-good with wall gains (MVRR −22k warm,
+  bp4_BC012 +67k warm, both wall-faster in-gate). The warm-start
+  (anti-mass-eviction) fix is mechanically correct but does NOT tame
+  SAT-draw variance.
+- **Verdict: promotion at the 1800 s gate is a lottery purchase — any
+  winning shape rests on one favorable SAT draw (the class the
+  searched-reroll session banned). CLOSED at 1800 s.** The law's value
+  is at >3000 s horizons (competition scoring) where the deep-tail
+  throughput compounds and single-deal coins wash out; revisit ONLY
+  under a 3600 s/5000 s objective, or as insurance-only with
+  T >= 8M (fires exclusively past every solved cell's conflict count —
+  a strict no-op at 1800 s, deep-tail insurance beyond it).
+- Surface: `SAT_REDUCE_FRACTION` (off), `SAT_REDUCE_FRACTION_MIN_CONFLICTS`
+  (1.3M), `SAT_REDUCE_LOW`/`SAT_REDUCE_HIGH` (500/900 per mille),
+  `reduce_fraction_activated_at` in stats JSON. 689 unit tests (7 new),
+  smoke 9/9.
 
 ## SESSION 4 (2026-07-25 evening → 07-26) — three negatives, zero promotions, baseline stays 72/100
 
@@ -396,42 +452,47 @@ capability; wall coin = margin <=~120 s OR flipped across deals at an IDENTICAL
 conflict count), tiered triage (probe -> subset -> 100-cell gate for promotion
 only), and 4-arm sweeps (promote the best arm).
 
-## RANKED PLAN for next session (updated 2026-07-26)
+## RANKED PLAN for next session (updated 2026-07-26 evening)
 
-0. **CLOSED in SESSION 4 (see above): `SAT_ELIM_DEF` (any budget; fallback
-   defect documented), vivify tier3/3:3:1:3 (gate LOSE, capability trade
-   fail), 10th wall-diet (profiles propagation-bound; bump-sort neutral),
-   and the bp4_TCO_CSO_ZR free +1 (cell lost to the gate-BVE reroll).**
-   `backbone.c` remains dead from the earlier measurement
-   (bindrat-promotion note). Sweep schedule / tick cadence stay CLOSED.
+0. **CLOSED in SESSIONS 4-5 (see above): the REDUCE control law at the
+   1800 s gate (SESSION 5 — mechanism real, SAT-reroll variance fatal;
+   revisit only under a >3000 s objective or as T>=8M insurance),
+   `SAT_ELIM_DEF` (any budget; fallback defect documented), vivify
+   tier3/3:3:1:3 (gate LOSE, capability trade fail), 10th wall-diet
+   (profiles propagation-bound; bump-sort neutral), and the
+   bp4_TCO_CSO_ZR free +1 (cell lost to the gate-BVE reroll).**
+   `backbone.c` remains dead (bindrat-promotion note). Sweep schedule /
+   tick cadence stay CLOSED.
 
 NEW top of the list:
 
-1. **Reduce control law (now the only open high-ceiling item).**
-   Fraction-ramp 50→90% (`reducelow=500`/`reducehigh=900` per mille,
-   `high - (high-low)/log10(reductions+9)`) + 31-step `used` counter vs our
-   literal-budget + 3-step MAX_USED_RECENTLY. SESSION 4's profiling
-   CONFIRMS the motivation: band-cell wall is 75-85% propagation with lean
-   primitives, so the 2.2-9x conflict-rate gap vs kissat at identical
-   trajectories is clause-DB size → watch-list length. Measure OFFLINE
-   first (fixed-conflict runs: live-learned count, watch-list bytes,
-   props/conflict, wall on rbsat/bp4/booth); it rerolls every >=1M-conflict
-   trajectory, so promotion needs a deliberate re-luck campaign — protect
-   TT406/TT496 (decision-armed banked cells; TT496 was this session's
-   tier-split casualty) with an explicit scope or accept the re-luck bundle
-   framing (searched-reroll lesson).
-2. **`transitive.c` port (last unmeasured small port).** Binary-implication
+1. **`transitive.c` port (last unmeasured small port).** Binary-implication
    transitive reduction, 2% effort in kissat. Cheap; backbone and vivify
-   tier3 are both now measured dead, so this is the only remaining item in
-   that class. Screen on the committed 28-cell timeout subset.
-3. **Giant memory diet (unstarted).** pj2008 RSS 10.4 GB vs kissat 1.4 GB;
+   tier3 are both measured dead, so this is the only remaining item in
+   that class. Screen on the committed 28-cell timeout subset with
+   SAT_LIMIT_CONFLICTS probes (NOT short-wall subset sweeps — SESSION 4
+   trap). NOTE from SESSION 5: any pass that touches search trajectories
+   rerolls the deep SAT coins; prefer a scope that keeps solved-cell
+   trajectories byte-identical (root-only pass before search starts, or
+   armed/threshold scoping) and judge on the banked-identity + flip shape,
+   not on global conflicts.
+2. **Giant memory diet (unstarted).** pj2008 RSS 10.4 GB vs kissat 1.4 GB;
    BVE emits 1.7 GB discarded DRAT in 150 s. pj2008 is marginal even for
    kissat (2866 s at 3600 s), so this is capability-adjacent, not urgent.
+   SESSION 5 note: SAT_REDUCE_FRACTION cuts search-phase RSS 20-40% on
+   band cells if a memory-pressure (not metric) motivation ever appears.
+3. **The 3600 s / competition-horizon question.** SESSION 5 makes the
+   split concrete: the reduce law is worth ~15-20% deep-tail wall but
+   cannot be promoted under the 1800 s single-deal metric. If the target
+   ever shifts toward SAT-comp scoring (5000 s), re-run the truncation
+   analysis with SAT_REDUCE_FRACTION=on at 3600 s — that is where its
+   value lives (kissat's marginal tail is 2x fatter than ours; the law
+   attacks exactly that).
 4. **elim_def revisit ONLY behind the fallback fix:** on bound-rejection,
    fall through to naive all-pairs BVE for that pivot (the current shape
    strictly loses eliminations vs base — SESSION 4 autopsy). Low priority;
    even NOCAP yield was 3 orders of magnitude short of the target class.
-5. **TT496/bp4_TCO_CSO_ZR bookkeeping.** Both are now RerollED cells: TT496
+5. **TT496/bp4_TCO_CSO_ZR bookkeeping.** Both are RerollED cells: TT496
    still solves on the shipped default (banked, protect it in every future
    armed-path change); bp4_TCO_CSO_ZR is LOST at 3600 s idle under the
    adopted gate-BVE trajectory — recovering it means revisiting its
@@ -506,13 +567,15 @@ Historical detail of the promoted item (kept for provenance):
 
 ## Current state
 
-- HEAD: fd68696 (SESSION 4 groundwork: SAT_BUMP_SORT_CACHE +
-  SAT_VIVIFY_TIER_SPLIT, both default-off, defaults byte-identical to
-  aa9f4d6). **Medium 1800 s baseline: 72/100**; lineage TSV
+- HEAD: b8495b7 (SESSION 5 groundwork: SAT_REDUCE_FRACTION default-off,
+  defaults byte-identical to ac0e675/fd68696 — digit-exact verified).
+  **Medium 1800 s baseline: 72/100**; lineage TSV
   `log/abtest-cand-vs-base-2026-07-25-13-59-16/cand/results.tsv`.
-  The SESSION 4 gate's base arm posted 70/100 on the same commit
-  (log/abtest-cand-vs-base-2026-07-25-22-05-56/base — ±2 deal noise again,
-  TT496 IN, oski15b20/bp4_TCO_CSO_ZR OUT in that deal).
+  The SESSION 5 gate's base arm posted 71/100 on the same defaults
+  (log/abtest-candidate-vs-baseline-2026-07-26-08-19-42/baseline —
+  ±2 deal noise again; rbsat IN at 1757 s in that deal). The SESSION 4
+  gate's base arm posted 70/100 (±2 deal noise; TT496 IN,
+  oski15b20/bp4_TCO_CSO_ZR OUT in that deal).
 - New default-off flags this session: `SAT_BUMP_SORT_CACHE`,
   `SAT_VIVIFY_TIER_SPLIT` (+ `vivify_tier3_attempts`/`_strengthened` stats).
   New triage suite: `benchmarks/timeout-subset-2026-07-25` (28 cells).
