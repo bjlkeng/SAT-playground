@@ -77,6 +77,10 @@ pub(crate) struct SolverStats {
     pub(crate) vivify_strengthened: u64,
     pub(crate) vivify_subsumed: u64,
     pub(crate) vivify_removed_literals: u64,
+    /// tier3 (glue > tier2) candidates scanned by the SAT_VIVIFY_TIER_SPLIT pass
+    pub(crate) vivify_tier3_attempts: u64,
+    /// tier3 strengthenings + derived units (SAT_VIVIFY_TIER_SPLIT)
+    pub(crate) vivify_tier3_strengthened: u64,
     /// SAT-sweeping (bead 5b2.3.38): backbone units and literal equivalences proven and
     /// applied by the sweep inprocessor.
     pub(crate) sweep_backbones: u64,
@@ -811,6 +815,8 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("vivify_strengthened", ctx.stats.vivify_strengthened);
     json.u64("vivify_subsumed", ctx.stats.vivify_subsumed);
     json.u64("vivify_removed_literals", ctx.stats.vivify_removed_literals);
+    json.u64("vivify_tier3_attempts", ctx.stats.vivify_tier3_attempts);
+    json.u64("vivify_tier3_strengthened", ctx.stats.vivify_tier3_strengthened);
     json.u64("sweep_backbones", ctx.stats.sweep_backbones);
     json.u64("sweep_equivalences", ctx.stats.sweep_equivalences);
     json.u64("congruence_merges", ctx.stats.congruence_merges);
