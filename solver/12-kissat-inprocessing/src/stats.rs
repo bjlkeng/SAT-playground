@@ -47,6 +47,9 @@ pub(crate) struct SolverStats {
     pub(crate) inprocess_armed_at_conflict: u64,
     /// Conflict count when the SAT_ENDGAME cadence latched (0 = never).
     pub(crate) endgame_at_conflict: u64,
+    /// Conflict count when the SAT_REDUCE_FRACTION law activated (0 = never:
+    /// flag off, decision-armed formula, or the run stayed below the threshold).
+    pub(crate) reduce_fraction_activated_at: u64,
     pub(crate) reduce_db_calls: u64,
     pub(crate) deleted_clauses: u64,
     pub(crate) garbage_collections: u64,
@@ -566,6 +569,10 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("searched_armed_at_conflict", ctx.stats.searched_armed_at_conflict);
     json.u64("inprocess_armed_at_conflict", ctx.stats.inprocess_armed_at_conflict);
     json.u64("endgame_at_conflict", ctx.stats.endgame_at_conflict);
+    json.u64(
+        "reduce_fraction_activated_at",
+        ctx.stats.reduce_fraction_activated_at,
+    );
     json.u64("restarts", ctx.stats.restarts);
     json.u64("reductions", ctx.stats.reduce_db_calls);
     json.u64("gc_count", ctx.stats.garbage_collections);

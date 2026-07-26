@@ -411,6 +411,11 @@ const TIER1_RELATIVE_DENOMINATOR: u64 = 2;
 const TIER2_RELATIVE_NUMERATOR: u64 = 9;
 const TIER2_RELATIVE_DENOMINATOR: u64 = 10;
 const MAX_USED_RECENTLY: u8 = 3;
+/// kissat clause.h MAX_USED (5-bit `used` counter): under the fraction reduce
+/// law a use sets the counter to 31 and every reduce decrements it by one, so a
+/// tier1 clause survives 31 reductions after its last use and a tier2 clause is
+/// protected only while `used >= 30` (used since the previous reduce).
+const REDUCE_FRACTION_MAX_USED: u8 = 31;
 const LEARNED_LIT_BUDGET_BASE: usize = 2_000;
 const LEARNED_LIT_BUDGET_FACTOR: usize = 300;
 const LBD_HARD_LEARNED_LIT_BUDGET_FACTOR: usize = 64;
@@ -2633,6 +2638,30 @@ struct Solver {
     /// set when the decision-heavy rule armed this run (scopes rephase/walk and
     /// mid-search factor; yield/congruence-armed formulas stay untouched)
     decision_search_armed: bool,
+    /// SAT_REDUCE_FRACTION (default off): kissat reduce.c deletion law — delete a
+    /// FRACTION of the reducible candidates each reduce (ramping reducelow/10% →
+    /// reducehigh/10% as `high - (high-low)/log10(reductions+9)`) instead of
+    /// deleting down to the literal budget, with the 31-step kissat `used`
+    /// counter replacing the 3-step MAX_USED_RECENTLY retention signal.
+    reduce_fraction_enabled: bool,
+    /// Scope guard: the fraction law activates at the first reduce at or past
+    /// this many conflicts (default 1.3M) and ONLY if the formula has not armed
+    /// `inprocess_aggressive` by then (decision/yield/congruence/elim arming all
+    /// set it; TT406/TT496 decision-arm at ~200,057, vex/oski15 arm instantly,
+    /// the miter/pancake class arms at ~800k — all banked byte-identical, as is
+    /// every cell that solves below the threshold, e.g. bp4_TCO_CSO_IXA_LP_ZR
+    /// at 499,722 and RoundRobin_n16_d13 at 1,075,924 conflicts). The measured
+    /// winners (rbsat −19% / sted2 −17% wall at fixed conflicts) are unarmed
+    /// multi-million-conflict runs, which keep ~80% law coverage.
+    reduce_fraction_min_conflicts: u64,
+    /// kissat reducelow, per mille of candidates (default 500 = 50%).
+    reduce_fraction_low_permille: u64,
+    /// kissat reducehigh, per mille of candidates (default 900 = 90%).
+    reduce_fraction_high_permille: u64,
+    /// runtime latch: fraction law + 31-step used semantics are live.
+    reduce_fraction_active: bool,
+    /// runtime latch: the activate-or-not decision has been taken for this run.
+    reduce_fraction_decided: bool,
     /// kissat-parity cadence for congruence-productive gate circuits: rounds start
     /// early and interleave congruence/vivify/sweep with mid-search elimination
     /// (see CONGRUENCE_PRODUCTIVE_MIN_MERGES). Off on all other formulas so their
@@ -4052,6 +4081,23 @@ impl Solver {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(24),
             decision_search_armed: false,
+            reduce_fraction_enabled: env_bool_or_default("SAT_REDUCE_FRACTION", false),
+            reduce_fraction_min_conflicts: std::env::var("SAT_REDUCE_FRACTION_MIN_CONFLICTS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1_300_000),
+            reduce_fraction_low_permille: std::env::var("SAT_REDUCE_LOW")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&p: &u64| p <= 1000)
+                .unwrap_or(500),
+            reduce_fraction_high_permille: std::env::var("SAT_REDUCE_HIGH")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&p: &u64| p <= 1000)
+                .unwrap_or(900),
+            reduce_fraction_active: false,
+            reduce_fraction_decided: false,
             inprocess_aggressive: false,
             inprocess_aggressive_interval: INPROCESS_AGGRESSIVE_FIRST_INTERVAL,
             endgame_enabled: env_bool_or_default("SAT_ENDGAME", true),
@@ -4836,7 +4882,12 @@ impl Solver {
     fn initialize_learnt_lbd(&mut self, clause_idx: ClauseRef, lbd: u16) {
         self.set_learnt_lbd(clause_idx, lbd);
         self.classify_learnt_clause(clause_idx);
-        self.set_learnt_used_recently(clause_idx, MAX_USED_RECENTLY);
+        let initial_used = if self.reduce_fraction_active {
+            REDUCE_FRACTION_MAX_USED
+        } else {
+            MAX_USED_RECENTLY
+        };
+        self.set_learnt_used_recently(clause_idx, initial_used);
         let id = self.learned_id_for_clause(clause_idx);
         self.learned_meta_mut_by_id(id).created_at_conflict = self.stats.conflicts;
     }
@@ -4937,7 +4988,11 @@ impl Solver {
                     .saturating_add(1);
             }
         }
-        let recent = self.learnt_used_recently(clause_idx).max(1);
+        let recent = if self.reduce_fraction_active {
+            REDUCE_FRACTION_MAX_USED
+        } else {
+            self.learnt_used_recently(clause_idx).max(1)
+        };
         self.set_learnt_used_recently(clause_idx, recent);
     }
 
@@ -9174,8 +9229,13 @@ impl Solver {
             return false;
         }
         if self.reduce_policy == ReducePolicy::LbdTiered {
+            // Under the fraction law the DB is bounded by fractional deletion, not
+            // a literal budget; the hard-budget emergency trigger would otherwise
+            // fire every min-interval and thrash the used counters (kissat's only
+            // reduce trigger is the conflict limit).
             let budget_due = self.stats.conflicts >= self.reduce_db_limit as u64
-                || self.learned_literals > self.hard_learned_lit_budget;
+                || (!self.reduce_fraction_active
+                    && self.learned_literals > self.hard_learned_lit_budget);
             return budget_due && self.reduce_db_min_interval_elapsed();
         }
         let learned_clause_pressure = self
@@ -11721,7 +11781,54 @@ impl Solver {
         self.reduce_db_with_proof(&mut proof_log);
     }
 
+    /// One-shot scope decision for SAT_REDUCE_FRACTION, taken at the first reduce
+    /// at or past `reduce_fraction_min_conflicts`. ARMED formulas (any
+    /// `inprocess_aggressive` arming — decision, vivify-yield, congruence, elim;
+    /// they all arm well before the 1.3M default: TT ~200k, vex/oski15 instant,
+    /// miter/pancake class ~800k) latch the shipped budget law for the whole
+    /// run, so their banked lottery trajectories stay byte-identical (the
+    /// armed-cell-reroll casino documented in the inline-bin and tier-split
+    /// sessions). Everything that solves below the threshold is untouched by
+    /// construction. Deterministic: pure conflict-count trigger plus the
+    /// deterministic arming latch.
+    fn maybe_activate_reduce_fraction(&mut self) {
+        if !self.reduce_fraction_enabled
+            || self.reduce_fraction_decided
+            || self.reduce_policy != ReducePolicy::LbdTiered
+        {
+            return;
+        }
+        if self.stats.conflicts < self.reduce_fraction_min_conflicts {
+            return;
+        }
+        self.reduce_fraction_decided = true;
+        self.reduce_fraction_active = !self.inprocess_aggressive;
+        if self.reduce_fraction_active {
+            self.stats.reduce_fraction_activated_at = self.stats.conflicts.max(1);
+            // Warm-start the 31-step counters: legacy semantics leave most
+            // long-lived clauses at used == 0, and under the fraction law's
+            // tier1 rule (candidate at used == 0) the whole accumulated tier1
+            // core would be mass-evicted at the first fraction reduce —
+            // catastrophic forgetting that measured strictly worse the later
+            // the switch (T=4M/7M probes: every reroll 1.4-2.1x more
+            // conflicts). Seeding every live clause at MAX_USED mirrors
+            // kissat's birth state (learn.c: c->used = MAX_USED) and lets the
+            // old core decay over 31 reductions instead.
+            for idx in 0..self.learned_clause_ids.len() {
+                let clause_idx = self.learned_clause_ids[idx];
+                if clause_idx < self.arena.len()
+                    && !self.clause_is_deleted(clause_idx)
+                    && self.clause_is_learnt(clause_idx)
+                    && self.learned_meta(clause_idx).is_some()
+                {
+                    self.set_learnt_used_recently(clause_idx, REDUCE_FRACTION_MAX_USED);
+                }
+            }
+        }
+    }
+
     fn reduce_db_with_proof(&mut self, proof_log: &mut ProofLog) {
+        self.maybe_activate_reduce_fraction();
         self.stats.reduce_db_calls += 1;
         self.reduce_db_last_conflicts = Some(self.stats.conflicts);
         match self.reduce_policy {
@@ -11942,6 +12049,69 @@ impl Solver {
         })
     }
 
+    /// kissat reduce.c collect_reducibles keep rules, on the pre-decrement `used`
+    /// value (the per-reduce decrement happens in `age_learned_clause_on_reduce`
+    /// on the kept sweep, which visits exactly the clauses kissat decrements):
+    /// tier1 clauses are exempt while `used > 0` (31 reductions of protection
+    /// after a use), tier2 while `used >= MAX_USED - 1` (used since the previous
+    /// reduce), tier3 is always a candidate. No budget gate — deletion quantity
+    /// comes from `reduce_fraction_target`.
+    fn reduce_fraction_candidate(
+        &self,
+        clause_idx: ClauseRef,
+        pins: &ReasonPinSet,
+    ) -> Option<ReduceCand> {
+        if clause_idx >= self.arena.len()
+            || self.clause_is_deleted(clause_idx)
+            || !self.clause_is_learnt(clause_idx)
+            || self.clause_len(clause_idx) <= 2
+            || self.clause_locked(clause_idx)
+            || self.clause_is_reason_pinned(pins, clause_idx)
+        {
+            return None;
+        }
+        let meta = self.learned_meta(clause_idx)?;
+        if !meta.removable {
+            return None;
+        }
+        match meta.tier {
+            0 => {
+                if meta.used_recently > 0 {
+                    return None;
+                }
+            }
+            1 => {
+                if meta.used_recently >= REDUCE_FRACTION_MAX_USED - 1 {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+        Some(ReduceCand {
+            clause_idx,
+            lbd: meta.lbd,
+            size: self.clause_len(clause_idx),
+            used_recently: meta.used_recently,
+            activity_rank: self.reduce_candidate_activity_rank(clause_idx),
+        })
+    }
+
+    /// kissat reduce.c mark_less_useful_clauses_as_garbage target: delete
+    /// `candidates * fraction` worst-ranked candidates, where the percentage
+    /// ramps `high - (high - low) / log10(reductions + 9)` — 50% at the first
+    /// reduction rising asymptotically to 90% (reducelow=500/reducehigh=900).
+    fn reduce_fraction_target(&self, candidates: usize) -> usize {
+        let high = self.reduce_fraction_high_permille as f64 * 0.1;
+        let low = self.reduce_fraction_low_permille as f64 * 0.1;
+        let reductions = self.stats.reduce_db_calls.max(1);
+        let percent = if low < high {
+            high - (high - low) / ((reductions + 9) as f64).log10()
+        } else {
+            low
+        };
+        ((candidates as f64) * (percent / 100.0)) as usize
+    }
+
     fn begin_reduce_delete_marking(&mut self) {
         self.reduce_delete_generation = self.reduce_delete_generation.wrapping_add(1);
         if self.reduce_delete_generation == 0 {
@@ -11967,33 +12137,60 @@ impl Solver {
         self.retier_current_mode_from_glue_histogram();
         let pins = self.rebuild_reason_pinset();
         debug_assert!(pins.generation > 0);
-        let emergency = self.learned_literals > self.hard_learned_lit_budget;
+        let fraction_mode = self.reduce_fraction_active;
+        let emergency =
+            !fraction_mode && self.learned_literals > self.hard_learned_lit_budget;
         self.reduce_candidates.clear();
         for idx in 0..self.learned_clause_ids.len() {
             let clause_idx = self.learned_clause_ids[idx];
-            if let Some(candidate) = self.reduce_candidate(clause_idx, &pins, emergency) {
+            let candidate = if fraction_mode {
+                self.reduce_fraction_candidate(clause_idx, &pins)
+            } else {
+                self.reduce_candidate(clause_idx, &pins, emergency)
+            };
+            if let Some(candidate) = candidate {
                 self.reduce_candidates.push(candidate);
             }
         }
 
-        self.reduce_candidates.sort_unstable_by(|lhs, rhs| {
-            rhs.lbd
-                .cmp(&lhs.lbd)
-                .then_with(|| rhs.size.cmp(&lhs.size))
-                .then_with(|| lhs.used_recently.cmp(&rhs.used_recently))
-                .then_with(|| lhs.activity_rank.cmp(&rhs.activity_rank))
-                .then_with(|| lhs.clause_idx.cmp(&rhs.clause_idx))
-        });
+        if fraction_mode {
+            // kissat rank: glue descending, then size descending (worst first);
+            // clause_idx keeps the order deterministic like kissat's stable radix
+            // sort over arena order.
+            self.reduce_candidates.sort_unstable_by(|lhs, rhs| {
+                rhs.lbd
+                    .cmp(&lhs.lbd)
+                    .then_with(|| rhs.size.cmp(&lhs.size))
+                    .then_with(|| lhs.clause_idx.cmp(&rhs.clause_idx))
+            });
+        } else {
+            self.reduce_candidates.sort_unstable_by(|lhs, rhs| {
+                rhs.lbd
+                    .cmp(&lhs.lbd)
+                    .then_with(|| rhs.size.cmp(&lhs.size))
+                    .then_with(|| lhs.used_recently.cmp(&rhs.used_recently))
+                    .then_with(|| lhs.activity_rank.cmp(&rhs.activity_rank))
+                    .then_with(|| lhs.clause_idx.cmp(&rhs.clause_idx))
+            });
+        }
 
-        let mut projected_lits = self.learned_literals;
         self.begin_reduce_delete_marking();
-        for idx in 0..self.reduce_candidates.len() {
-            let cand = self.reduce_candidates[idx];
-            if projected_lits <= self.learned_lit_budget {
-                break;
+        if fraction_mode {
+            let target = self.reduce_fraction_target(self.reduce_candidates.len());
+            for idx in 0..target {
+                let cand = self.reduce_candidates[idx];
+                self.mark_reduce_delete_candidate(cand.clause_idx);
             }
-            self.mark_reduce_delete_candidate(cand.clause_idx);
-            projected_lits = projected_lits.saturating_sub(cand.size);
+        } else {
+            let mut projected_lits = self.learned_literals;
+            for idx in 0..self.reduce_candidates.len() {
+                let cand = self.reduce_candidates[idx];
+                if projected_lits <= self.learned_lit_budget {
+                    break;
+                }
+                self.mark_reduce_delete_candidate(cand.clause_idx);
+                projected_lits = projected_lits.saturating_sub(cand.size);
+            }
         }
         self.reduce_candidates.clear();
 
@@ -22297,6 +22494,185 @@ mod tests {
             candidate.is_none(),
             "used_recently>0 must still protect tier 2 even with opt-in"
         );
+    }
+
+    fn empty_pins_for_test() -> ReasonPinSet {
+        ReasonPinSet {
+            pinned_clauses: Vec::new(),
+            pinned_binaries: Vec::new(),
+            generation: 1,
+        }
+    }
+
+    #[test]
+    fn test_reduce_fraction_target_ramps_from_50_to_90_percent() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        // kissat mark_less_useful_clauses_as_garbage: percent =
+        // high - (high-low)/log10(reductions+9), high=90, low=50.
+        s.stats.reduce_db_calls = 1; // log10(10) = 1 -> 50%
+        assert_eq!(s.reduce_fraction_target(1000), 500);
+        s.stats.reduce_db_calls = 91; // log10(100) = 2 -> 70%
+        assert_eq!(s.reduce_fraction_target(1000), 700);
+        s.stats.reduce_db_calls = 999_991; // log10(1e6) = 6 -> 83.33%
+        assert_eq!(s.reduce_fraction_target(1000), 833);
+        // low >= high pins the fraction at low, matching kissat's guard.
+        s.reduce_fraction_low_permille = 900;
+        s.reduce_fraction_high_permille = 500;
+        s.stats.reduce_db_calls = 1;
+        assert_eq!(s.reduce_fraction_target(1000), 900);
+    }
+
+    #[test]
+    fn test_reduce_fraction_candidate_tier_rules_use_31_step_counter() {
+        let mut s = Solver::new(4, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        let pins = empty_pins_for_test();
+
+        // Tier1 (tier 0): exempt while used > 0, candidate at used == 0.
+        let tier1 = s.add_clause(vec![1, 2, 3]);
+        set_lbd_meta_for_test(&mut s, tier1, 2, 1);
+        s.set_learnt_tier(tier1, 0);
+        assert!(s.reduce_fraction_candidate(tier1, &pins).is_none());
+        s.set_learnt_used_recently(tier1, 0);
+        assert!(s.reduce_fraction_candidate(tier1, &pins).is_some());
+
+        // Tier2 (tier 1): exempt only while used >= MAX_USED - 1 (used since the
+        // previous reduce), candidate below that.
+        let tier2 = s.add_clause(vec![1, 2, 4]);
+        set_lbd_meta_for_test(&mut s, tier2, 5, REDUCE_FRACTION_MAX_USED - 1);
+        s.set_learnt_tier(tier2, 1);
+        assert!(s.reduce_fraction_candidate(tier2, &pins).is_none());
+        s.set_learnt_used_recently(tier2, REDUCE_FRACTION_MAX_USED - 2);
+        assert!(s.reduce_fraction_candidate(tier2, &pins).is_some());
+
+        // Tier3 (tier 2): always a candidate, even freshly used.
+        let tier3 = s.add_clause(vec![2, 3, 4]);
+        set_lbd_meta_for_test(&mut s, tier3, 9, REDUCE_FRACTION_MAX_USED);
+        s.set_learnt_tier(tier3, 2);
+        assert!(s.reduce_fraction_candidate(tier3, &pins).is_some());
+    }
+
+    #[test]
+    fn test_reduce_fraction_activation_latch_and_decision_arm_scope() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.reduce_fraction_enabled = true;
+        s.reduce_fraction_min_conflicts = 300_000;
+
+        // Below the threshold: undecided, inactive.
+        s.stats.conflicts = 299_999;
+        s.maybe_activate_reduce_fraction();
+        assert!(!s.reduce_fraction_decided);
+        assert!(!s.reduce_fraction_active);
+
+        // Armed at the threshold (any inprocess_aggressive arming — decision,
+        // yield, congruence): decided but latched OFF for the run
+        // (TT406/TT496/vex/oski15 banked-trajectory protection).
+        s.inprocess_aggressive = true;
+        s.stats.conflicts = 300_000;
+        s.maybe_activate_reduce_fraction();
+        assert!(s.reduce_fraction_decided);
+        assert!(!s.reduce_fraction_active);
+        assert_eq!(s.stats.reduce_fraction_activated_at, 0);
+
+        // A fresh solver that is not armed activates, stamps stats, and
+        // warm-starts every live clause's used counter to MAX_USED so the
+        // accumulated tier1 core is not mass-evicted at the first fraction
+        // reduce (the measured late-switch catastrophic-forgetting failure).
+        let mut s2 = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s2, 10);
+        s2.reduce_fraction_enabled = true;
+        s2.reduce_fraction_min_conflicts = 300_000;
+        let old_core = s2.add_clause(vec![1, 2, 3]);
+        set_lbd_meta_for_test(&mut s2, old_core, 2, 0);
+        s2.stats.conflicts = 300_000;
+        s2.maybe_activate_reduce_fraction();
+        assert!(s2.reduce_fraction_decided);
+        assert!(s2.reduce_fraction_active);
+        assert_eq!(s2.stats.reduce_fraction_activated_at, 300_000);
+        assert_eq!(
+            s2.learnt_used_recently(old_core),
+            REDUCE_FRACTION_MAX_USED,
+            "activation must warm-start pre-existing clauses' used counters"
+        );
+
+        // The decision is one-shot: arming later cannot flip it back off.
+        s2.inprocess_aggressive = true;
+        s2.maybe_activate_reduce_fraction();
+        assert!(s2.reduce_fraction_active);
+    }
+
+    #[test]
+    fn test_reduce_fraction_active_drops_hard_budget_trigger() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.reduce_db_limit = 1_000;
+        s.stats.conflicts = 0;
+        s.learned_literals = 21; // over the hard budget of 20
+
+        assert!(s.should_reduce_db(), "legacy law: hard budget is an emergency trigger");
+        s.reduce_fraction_active = true;
+        assert!(
+            !s.should_reduce_db(),
+            "fraction law: only the conflict limit schedules reduces (kissat parity)"
+        );
+        s.stats.conflicts = 1_000;
+        assert!(s.should_reduce_db());
+    }
+
+    #[test]
+    fn test_reduce_fraction_deletes_worst_half_on_first_reduction() {
+        let mut s = Solver::new(5, vec![]);
+        enable_lbd_tiered_for_test(&mut s, usize::MAX);
+        s.reduce_fraction_active = true;
+        // Four tier3 candidates (lbd > default tier2 limit), used == 0. First
+        // reduction deletes 50% = the 2 worst-ranked (highest lbd, then size).
+        let keep_a = s.add_clause(vec![1, 2, 3]);
+        let keep_b = s.add_clause(vec![1, 2, 4]);
+        let del_a = s.add_clause(vec![1, 2, 5]);
+        let del_b = s.add_clause(vec![2, 3, 4]);
+        set_lbd_meta_for_test(&mut s, keep_a, 8, 0);
+        set_lbd_meta_for_test(&mut s, keep_b, 9, 0);
+        set_lbd_meta_for_test(&mut s, del_a, 10, 0);
+        set_lbd_meta_for_test(&mut s, del_b, 11, 0);
+
+        s.reduce_db();
+
+        // The reduce's GC pass may relocate the arena, so identify survivors by
+        // LBD rather than by pre-reduce clause indices.
+        assert_eq!(s.learned_clause_ids.len(), 2);
+        let mut kept: Vec<u16> = s
+            .learned_clause_ids
+            .clone()
+            .into_iter()
+            .map(|c| s.learnt_lbd(c))
+            .collect();
+        kept.sort_unstable();
+        assert_eq!(kept, vec![8, 9], "the two worst-lbd candidates are deleted");
+        let _ = (keep_a, keep_b, del_a, del_b);
+    }
+
+    #[test]
+    fn test_reduce_fraction_use_bump_sets_max_used() {
+        let mut s = Solver::new(3, vec![]);
+        enable_lbd_tiered_for_test(&mut s, 10);
+        s.reduce_fraction_active = true;
+        let reason = s.add_clause(vec![2, 1, 3]);
+        set_lbd_meta_for_test(&mut s, reason, 9, 0);
+
+        let mut current_level_count = 0;
+        s.decision_level[1] = 1;
+        s.decision_level[2] = 1;
+        s.mark_reason_literals_for_analysis::<true>(
+            ReasonRef::Clause(reason),
+            2,
+            1,
+            1,
+            &mut current_level_count,
+        );
+
+        assert_eq!(s.learnt_used_recently(reason), REDUCE_FRACTION_MAX_USED);
     }
 
     #[test]
