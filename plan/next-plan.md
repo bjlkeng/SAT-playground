@@ -1,14 +1,86 @@
-# NEXT PLAN — 2026-07-26b (supersedes the 2026-07-26 morning revision)
+# NEXT PLAN — 2026-07-26c (supersedes the 2026-07-26b revision)
 
-One-file plan for the next clear context. Folds SESSION 5 (2026-07-26
-daytime: the REDUCE control law — ranked item 1 — implemented, measured,
-gate LOSE 70v71, CLOSED at the 1800 s gate with a full reroll-variance
-autopsy; groundwork committed default-off) on top of SESSION 4. Where this
-contradicts an older `plan/next-steps-*.md`, THIS file wins.
+One-file plan for the next clear context. Folds SESSION 6 (2026-07-26
+evening: transitive.c — ranked item 1 — implemented, threshold-scoped,
+gate WIN 70v70 on conflicts −3.34M, PROMOTED ab592d2) on top of SESSIONS
+4-5. Where this contradicts an older `plan/next-steps-*.md`, THIS file wins.
 
-**START HERE:** read "SESSION 5" below, then the RANKED PLAN (updated —
-the reduce law is now CLOSED at 1800 s; transitive.c is the top open
-item). Companion deep-dive: `plan/kissat-gaps.md`.
+**START HERE:** read "SESSION 6" below, then the RANKED PLAN (updated —
+transitive.c is DONE; the small-port class is now EXHAUSTED. Giant memory
+diet and the >3000 s horizon question are the top open items). Companion
+deep-dive: `plan/kissat-gaps.md`.
+
+## SESSION 6 (2026-07-26 evening) — SAT_TRANSITIVE PROMOTED, gate WIN 70v70 (conflicts −3.34M)
+
+**PROMOTED ab592d2: `SAT_TRANSITIVE` default-on with
+`SAT_TRANSITIVE_MIN_REMOVED_PERMILLE=100` — the last small kissat port
+(transitive.c), implemented as a root-scoped, threshold-gated dry-run.**
+Gate: `log/abtest-candidate-vs-baseline-2026-07-26-17-59-06`,
+`promotion_gate=PASS`, 70 v 70 solved with **IDENTICAL solved sets**,
+both-solved conflicts **58,178,148 vs 61,520,922 (−3,342,774)**, PAR-2
+129,564 vs 130,389 (−825), zero correctness failures/contradictions
+(vex checker-timeout symmetric-documented as always).
+
+Mechanism (all in solver12 `.rs`, ~230 lines + tests):
+
+- Root pass in `try_transitive_reduce` (main.rs), called right after
+  `probe_root_failed_literals`: collect live binaries over unassigned vars,
+  build a CSR implication graph (edge-labeled by clause id), then probe each
+  binary clause (src ∨ dst) ONCE from its smaller-index literal side — BFS
+  from ¬src with the clause itself excluded (by id, both orientations).
+  Reaching dst ⇒ clause implied by the rest ⇒ delete (`d` proof line via
+  `delete_clause_for_simplify`); reaching ¬dst or two contradictory literals
+  ⇒ failed literal ⇒ unit src (RUP, `learn_lucky_failed_literal_units`,
+  units emitted BEFORE deletions — RUP is monotone in the clause set).
+  Removals are discovered sequentially against the already-reduced graph, so
+  a mutually-redundant duplicate pair never loses both copies and graph
+  reachability never shrinks.
+- **The whole scan is a DRY-RUN; edits apply only when
+  removed ≥ 10% (100‰) of live binaries.** Below threshold NOTHING is
+  touched: rbsat-v1375 (19.1‰), vex (0.97‰), oski15 (0.03‰) verified
+  digit-exact (conflicts/props/decisions) at 100k conflicts, and 96/100
+  cells were trajectory-identical in-gate. Deterministic (tick-budgeted,
+  wall-free): SAT_TRANSITIVE_TICKS default = literals*20 clamped 10M..100M.
+- Adopting cells: **4 of 100** — sted2 (121‰ removable, −1.80M conflicts,
+  1210→524 s), MVRoundRobin (276‰, −1.95M, 179→25 s), gm16sparrc (311‰,
+  −254), ibm-2004-23 (120‰, +408k, 160→260 s — fat margin, inseparable
+  from sted2 at 120.9‰). All four reproduced digit-exact across idle screen
+  and both gate deals.
+
+**THRESHOLD AUTOPSY (the session's key scoping result):**
+
+- **T=25‰ KILLS TT496** (banked, kissat-impossible): 1800 s idle screen
+  TIMEOUT under its 3.0% reroll. And the five timeout targets that adopt at
+  low thresholds (TT492, TT495, bp4_TCO_CSO_ZR, stp212, rbsat-v945) ALL
+  stay TIMEOUT at idle — **transitive reduction flips NO timeout cell;
+  conflicts are deterministic, so an idle-timeout cell cannot flip in-gate
+  either. Deep-cell rerolls under this pass are pure downside.**
+- T=40‰ adds Kakuro-132 +288k / ibm +408k / Kakuro-112 +55k for only −21k
+  (Kakuro-115) back. T=100‰ keeps only the four winners.
+- bp4_TCO_CSO_IXA_LP_ZR measured +994k conflicts at T≤36 (solves 738 s idle
+  — survives but regresses); the TT band sits at 27-30‰; both are protected
+  below the shipped 100‰ threshold. The bp4/TT structure classes contain
+  banked winners and timeout targets at NEARLY IDENTICAL removable-permille
+  (TT496 29.79‰ vs TT492 29.79‰) — permille CANNOT separate within a class,
+  only across classes.
+- First gate deal LOSE 70v72 (`log/abtest-...-2026-07-26-15-19-21`): both
+  losses were wall coins on BYTE-IDENTICAL trajectories (rbsat-v1375 base
+  1757.8 s = 42 s margin; VdW-22 base 1603 s, 0 of 77 binaries removable —
+  zero formula edits, the documented flipper). Second deal: both symmetric
+  (VdW solved both arms — cand 56 s faster; rbsat TIMEOUT both arms).
+  Textbook ±2 deal-noise; the re-gate was justified by the byte-identity
+  proof and won cleanly.
+- Failed-literal units are real but scoped out below threshold: reconf10
+  x2 have 1074 units each (0.4-0.5‰), goldcrest 18, g2-oski15a10 122,
+  jkkk 84, twitter 25. All those cells are SOLVED (reconf10/jkkk/twitter,
+  fat margins) or timeout-and-stay-timeout (goldcrest/g2) — a units-only
+  adoption arm would reroll 5 solved SAT cells for unproven gain. Screen
+  before ever trying it.
+
+Validation: 695 unit tests (6 new: removal, failed-literal unit, threshold
+identity, duplicate-pair survivor, no-op, end-to-end SAT), smoke 9/9 both
+flag states, shipped defaults reproduce the gate candidate digit-exact
+(sted2 1,761,498 conflicts adopted; rbsat 17,758,017 props untouched).
 
 ## SESSION 5 (2026-07-26) — REDUCE law ported, mechanism REAL, gate LOSE 70v71, CLOSED at 1800 s
 
@@ -452,49 +524,53 @@ capability; wall coin = margin <=~120 s OR flipped across deals at an IDENTICAL
 conflict count), tiered triage (probe -> subset -> 100-cell gate for promotion
 only), and 4-arm sweeps (promote the best arm).
 
-## RANKED PLAN for next session (updated 2026-07-26 evening)
+## RANKED PLAN for next session (updated 2026-07-26 late evening)
 
-0. **CLOSED in SESSIONS 4-5 (see above): the REDUCE control law at the
-   1800 s gate (SESSION 5 — mechanism real, SAT-reroll variance fatal;
-   revisit only under a >3000 s objective or as T>=8M insurance),
+0. **DONE in SESSION 6: `transitive.c` (PROMOTED ab592d2, T=100‰ scope).
+   The small-port class is now EXHAUSTED** (backbone dead, vivify tier3
+   LOSE, transitive banked; HBR has no kissat module — its role lives in
+   backbone/transitive which are both now measured). CLOSED in SESSIONS
+   4-5: REDUCE law at 1800 s (revisit only >3000 s or as T>=8M insurance),
    `SAT_ELIM_DEF` (any budget; fallback defect documented), vivify
-   tier3/3:3:1:3 (gate LOSE, capability trade fail), 10th wall-diet
-   (profiles propagation-bound; bump-sort neutral), and the
-   bp4_TCO_CSO_ZR free +1 (cell lost to the gate-BVE reroll).**
-   `backbone.c` remains dead (bindrat-promotion note). Sweep schedule /
+   tier3/3:3:1:3, 10th wall-diet, bp4_TCO_CSO_ZR free +1. Sweep schedule /
    tick cadence stay CLOSED.
 
 NEW top of the list:
 
-1. **`transitive.c` port (last unmeasured small port).** Binary-implication
-   transitive reduction, 2% effort in kissat. Cheap; backbone and vivify
-   tier3 are both measured dead, so this is the only remaining item in
-   that class. Screen on the committed 28-cell timeout subset with
-   SAT_LIMIT_CONFLICTS probes (NOT short-wall subset sweeps — SESSION 4
-   trap). NOTE from SESSION 5: any pass that touches search trajectories
-   rerolls the deep SAT coins; prefer a scope that keeps solved-cell
-   trajectories byte-identical (root-only pass before search starts, or
-   armed/threshold scoping) and judge on the banked-identity + flip shape,
-   not on global conflicts.
-2. **Giant memory diet (unstarted).** pj2008 RSS 10.4 GB vs kissat 1.4 GB;
+1. **Giant memory diet (unstarted).** pj2008 RSS 10.4 GB vs kissat 1.4 GB;
    BVE emits 1.7 GB discarded DRAT in 150 s. pj2008 is marginal even for
    kissat (2866 s at 3600 s), so this is capability-adjacent, not urgent.
    SESSION 5 note: SAT_REDUCE_FRACTION cuts search-phase RSS 20-40% on
    band cells if a memory-pressure (not metric) motivation ever appears.
-3. **The 3600 s / competition-horizon question.** SESSION 5 makes the
+2. **The 3600 s / competition-horizon question.** SESSION 5 makes the
    split concrete: the reduce law is worth ~15-20% deep-tail wall but
    cannot be promoted under the 1800 s single-deal metric. If the target
    ever shifts toward SAT-comp scoring (5000 s), re-run the truncation
    analysis with SAT_REDUCE_FRACTION=on at 3600 s — that is where its
    value lives (kissat's marginal tail is 2x fatter than ours; the law
-   attacks exactly that).
+   attacks exactly that). SESSION 6 adds: SAT_TRANSITIVE thresholds below
+   100‰ (25-40‰) trade banked cells for deep-tail throughput — the SAME
+   >3000 s-horizon shape; a lower threshold may pay at 3600 s where
+   TT/bp4 reroll variance has room to wash out.
+3. **Transitive follow-ups (screen before spending a gate):**
+   (a) *units-only arm* — apply failed-literal units when below the
+   removal threshold: reconf10 x2 carry 1074 root units each, jkkk 84,
+   twitter 25, but all three are SOLVED SAT cells with fat margins —
+   1800 s idle screen first, walk away on any conflict regression;
+   (b) *inprocessing-round transitive* (kissat runs it every probe
+   interval, we run root-only) — armed-scope it and protect the
+   decision-armed banked cells (TT406/TT496) per the tier-split lesson;
+   (c) Kakuro-115 (−21k at 77.6‰) is the only sub-100‰ cell measured to
+   improve — not worth a per-cell scope alone.
 4. **elim_def revisit ONLY behind the fallback fix:** on bound-rejection,
    fall through to naive all-pairs BVE for that pivot (the current shape
    strictly loses eliminations vs base — SESSION 4 autopsy). Low priority;
    even NOCAP yield was 3 orders of magnitude short of the target class.
 5. **TT496/bp4_TCO_CSO_ZR bookkeeping.** Both are RerollED cells: TT496
-   still solves on the shipped default (banked, protect it in every future
-   armed-path change); bp4_TCO_CSO_ZR is LOST at 3600 s idle under the
+   still solves on the shipped default (banked — SESSION 6 re-confirmed
+   the protection: it is byte-identical under the shipped T=100‰ scope,
+   and DIES at T=25‰; protect it in every future armed-path or
+   binary-graph change); bp4_TCO_CSO_ZR is LOST at 3600 s idle under the
    adopted gate-BVE trajectory — recovering it means revisiting its
    dry-run adoption decision (threshold/arming-time discriminator), not
    wall diets.
@@ -567,15 +643,16 @@ Historical detail of the promoted item (kept for provenance):
 
 ## Current state
 
-- HEAD: b8495b7 (SESSION 5 groundwork: SAT_REDUCE_FRACTION default-off,
-  defaults byte-identical to ac0e675/fd68696 — digit-exact verified).
-  **Medium 1800 s baseline: 72/100**; lineage TSV
-  `log/abtest-cand-vs-base-2026-07-25-13-59-16/cand/results.tsv`.
-  The SESSION 5 gate's base arm posted 71/100 on the same defaults
-  (log/abtest-candidate-vs-baseline-2026-07-26-08-19-42/baseline —
-  ±2 deal noise again; rbsat IN at 1757 s in that deal). The SESSION 4
-  gate's base arm posted 70/100 (±2 deal noise; TT496 IN,
-  oski15b20/bp4_TCO_CSO_ZR OUT in that deal).
+- HEAD: ab592d2 (SESSION 6: SAT_TRANSITIVE default-on, T=100‰ scope —
+  4 cells adopt, 96 byte-identical to b8495b7 behavior).
+  **Medium 1800 s baseline: 72/100 lineage** (solved SET unchanged by the
+  promotion — gate 70v70 identical sets, conflicts −3.34M, PAR-2 −825);
+  newest candidate TSV
+  `log/abtest-candidate-vs-baseline-2026-07-26-17-59-06/candidate/results.tsv`.
+  This session's two gate deals posted base 72 (rbsat+VdW IN,
+  15-19-21 deal) and base 70 (both OUT, 17-59-06 deal) — ±2 deal noise on
+  exactly the documented coins. The SESSION 5 gate's base arm posted
+  71/100; SESSION 4's posted 70/100.
 - New default-off flags this session: `SAT_BUMP_SORT_CACHE`,
   `SAT_VIVIFY_TIER_SPLIT` (+ `vivify_tier3_attempts`/`_strengthened` stats).
   New triage suite: `benchmarks/timeout-subset-2026-07-25` (28 cells).
@@ -608,6 +685,18 @@ Historical detail of the promoted item (kept for provenance):
   the two capability gains).
 
 ## Standing traps (carried + this session)
+
+- **SESSION 6:** a permille-of-removable-binaries threshold CANNOT separate
+  cells WITHIN a structure class (TT496 vs TT492 both 29.79‰) — only across
+  classes. And transitive-style trajectory rerolls flip NO timeout cell
+  (conflicts deterministic: idle TIMEOUT ⇒ in-gate TIMEOUT); their only
+  value is conflict/wall improvement on already-solved adopters. Judge any
+  future binary-graph edit on that shape.
+- **SESSION 6:** a gate deal can lose BOTH documented wall coins in one arm
+  on byte-identical trajectories (deal 15-19-21: rbsat 42 s margin + VdW
+  flipper, zero formula edits on either). When every flipped cell is
+  proven byte-identical (digit-exact identity + zero dry-run adoption),
+  one re-gate is the correct move, not a revert.
 
 - **`FEATURES.md`/`FEATURES.csv`/`CONFIG_SCHEMA.csv` are STALE — never quote
   them for a default or a "not implemented" claim. Read `src/config.rs` +
