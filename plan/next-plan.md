@@ -1,15 +1,76 @@
-# NEXT PLAN — 2026-07-27 (supersedes the 2026-07-26c revision)
+# NEXT PLAN — 2026-07-27b (supersedes the 2026-07-27 revision)
 
-One-file plan for the next clear context. Folds SESSION 7 (2026-07-27:
-inprocessing-round transitive — ranked follow-up 3b — implemented scoped
-to root-adopters, gate WIN 72v72 on conflicts −385k, PROMOTED ecdf632)
-on top of SESSIONS 4-6. Where this contradicts an older
+One-file plan for the next clear context. Folds SESSION 8 (2026-07-27
+afternoon: root-adopter probe rounds — ranked follow-up 3d — gate WIN
+72v72 on conflicts −121.6k, PROMOTED fe82400; ELS rounds screened
+NEGATIVE) on top of SESSIONS 4-7. Where this contradicts an older
 `plan/next-steps-*.md`, THIS file wins.
 
-**START HERE:** read "SESSION 7" below, then the RANKED PLAN (updated —
-transitive follow-up (b) is DONE; the units-only arm (a) is the remaining
-cheap screen. Giant memory diet and the >3000 s horizon question are the
-top open items). Companion deep-dive: `plan/kissat-gaps.md`.
+**START HERE:** read "SESSION 8" below, then the RANKED PLAN (updated —
+transitive follow-ups (b) and (d) are DONE; the units-only arm (a) is the
+remaining cheap screen. Giant memory diet and the >3000 s horizon question
+are the top open items). Companion deep-dive: `plan/kissat-gaps.md`.
+
+## SESSION 8 (2026-07-27 afternoon) — SAT_PROBE_INPROCESS PROMOTED, gate WIN 72v72 (conflicts −121.6k); ELS rounds NEGATIVE
+
+**PROMOTED fe82400: `SAT_PROBE_INPROCESS` default-on — failed-literal
+probing every inprocessing round (kissat probe.c parity:
+binary_clauses_backbone fires each probe interval), scoped to
+ROOT-TRANSITIVE-ADOPTERS — the first reuse of SESSION 7's root-adopter
+shape on another pass, exactly ranked follow-up 3d.** Gate:
+`log/abtest-cand-vs-base-2026-07-27-11-58-13`, `promotion_gate=PASS`,
+72 v 72 with IDENTICAL solved sets, both-solved conflicts **66,592,856 vs
+66,714,464 (−121,608)**, PAR-2 125,937.5 vs 125,917.3 (+20.2, never
+reached — decided at the conflicts tier; the delta is load noise), zero
+correctness failures (vex checker-timeout symmetric as always).
+
+Mechanism (~40 lines in solver12 `.rs` + 3 tests):
+
+- `inprocess_round_pass` computes `root_adopter = config.transitive &&
+  transitive_adopted == 1` and runs the EXISTING
+  `probe_root_failed_literals` (tick-budgeted, lits*20 clamped 5M..100M,
+  deterministic) at round start when `probe_inprocess && root_adopter`.
+  Root SAT_PROBE stays off/independent. New stat `probe_inprocess_rounds`.
+- Also landed default-OFF groundwork `SAT_ELS_INPROCESS` (+
+  `els_inprocess_rounds` stat): standalone `try_els` right after the
+  congruence block (kissat parity: substitute-after-congruence), same
+  adopter scope. Identity-verified; see the negative screen below.
+
+Results (deterministic, digit-exact idle → gate → shipped default):
+
+- **sted2: 1,492,091 → 1,246,166 conflicts (−16.5%), 476 → 318 s in-gate,
+  1 probe round.** ibm-2004-23: 638,674 → 762,991 (+124k, 208 → 270 s,
+  7 rounds) — the aggregate wins the tier. Exactly these 2 cells moved
+  in-gate (98/100 conflict-identical pairs).
+- rbsat non-adopter identity digit-exact (props 17,758,017 at 100k);
+  MVRR (267,199 conf) and gm16 (62) below the 1M round interval — zero
+  rounds, byte-identical, verified.
+
+**The 4-arm idle screen (the only two movable cells = complete gate
+forecast, again confirmed to the digit):**
+
+| arm | ibm conf | sted2 conf | 2-cell Δ vs base |
+|---|---:|---:|:---:|
+| base | 638,674 | 1,492,091 | — |
+| +ELS | 346,718 | 1,828,373 | +44k WORSE |
+| +probe | 762,991 | 1,246,166 | **−122k (promoted)** |
+| +both | 250,867 | 4,486,785 | +2.6M MUCH WORSE |
+
+**Take-aways:**
+
+- ELS-only and ELS+probe LOSE despite ELS being great on ibm (−292k):
+  per-cell signs are uncontrollable reroll draws (the REROLL-VARIANCE law
+  inside the adopter class), but the ADOPTER-SCOPE screen prices the whole
+  gate in one 4×2-cell idle sweep — ~25 CPU-minutes to kill two arms and
+  bank the third. `SAT_ELS_INPROCESS=on` is a measured NEGATIVE default;
+  do not enable without a new mechanism argument.
+- The root-adopter shape is now 2-for-2 (transitive rounds, probe rounds).
+  Remaining same-shape candidates are thinner: sweep/factor rounds already
+  run via arming; vivify is covered. The shape is likely mined out unless
+  a new root pass creates a new adopter class.
+
+Validation: 700 unit tests (3 new), smoke 9/9 both flag states, shipped
+defaults reproduce the gate candidate digit-exact on all 4 probe cells.
 
 ## SESSION 7 (2026-07-27) — SAT_TRANSITIVE_INPROCESS PROMOTED, gate WIN 72v72 (conflicts −385k)
 
@@ -583,17 +644,20 @@ capability; wall coin = margin <=~120 s OR flipped across deals at an IDENTICAL
 conflict count), tiered triage (probe -> subset -> 100-cell gate for promotion
 only), and 4-arm sweeps (promote the best arm).
 
-## RANKED PLAN for next session (updated 2026-07-27)
+## RANKED PLAN for next session (updated 2026-07-27b)
 
-0. **DONE in SESSION 7: inprocessing-round transitive (PROMOTED ecdf632,
-   root-adopter scope) — follow-up 3b banked.** DONE in SESSION 6:
-   `transitive.c` root pass (PROMOTED ab592d2, T=100‰ scope). **The
-   small-port class stays EXHAUSTED** (backbone dead, vivify tier3 LOSE,
-   transitive root+rounds both banked; HBR has no kissat module). CLOSED
-   in SESSIONS 4-5: REDUCE law at 1800 s (revisit only >3000 s or as
-   T>=8M insurance), `SAT_ELIM_DEF` (any budget; fallback defect
-   documented), vivify tier3/3:3:1:3, 10th wall-diet, bp4_TCO_CSO_ZR free
-   +1. Sweep schedule / tick cadence stay CLOSED.
+0. **DONE in SESSION 8: root-adopter probe rounds (PROMOTED fe82400) —
+   follow-up 3d banked; ELS rounds screened NEGATIVE (default-off
+   groundwork stays).** DONE in SESSION 7: inprocessing-round transitive
+   (PROMOTED ecdf632, root-adopter scope) — follow-up 3b banked. DONE in
+   SESSION 6: `transitive.c` root pass (PROMOTED ab592d2, T=100‰ scope).
+   **The small-port class stays EXHAUSTED** (backbone dead, vivify tier3
+   LOSE, transitive root+rounds banked, probe rounds banked, ELS rounds
+   negative; HBR has no kissat module). CLOSED in SESSIONS 4-5: REDUCE
+   law at 1800 s (revisit only >3000 s or as T>=8M insurance),
+   `SAT_ELIM_DEF` (any budget; fallback defect documented), vivify
+   tier3/3:3:1:3, 10th wall-diet, bp4_TCO_CSO_ZR free +1. Sweep schedule /
+   tick cadence stay CLOSED.
 
 1. **Giant memory diet (unstarted).** pj2008 RSS 10.4 GB vs kissat 1.4 GB;
    BVE emits 1.7 GB discarded DRAT in 150 s. pj2008 is marginal even for
@@ -617,14 +681,12 @@ only), and 4-arm sweeps (promote the best arm).
    removal threshold: reconf10 x2 carry 1074 root units each, jkkk 84,
    twitter 25, but all three are SOLVED SAT cells with fat margins —
    1800 s idle screen first, walk away on any conflict regression;
-   (b) DONE (SESSION 7, ecdf632);
+   (b) DONE (SESSION 7, ecdf632); (d) DONE (SESSION 8, fe82400 — probe
+   rounds promoted, ELS rounds measured negative; the adopter-scope
+   shape is likely mined out unless a new root pass creates a new
+   adopter class);
    (c) Kakuro-115 (−21k at 77.6‰) is the only sub-100‰ cell measured to
-   improve — not worth a per-cell scope alone. NEW (d): *root-adopter
-   round scope for OTHER passes* — the SESSION 7 shape (reroll risk
-   confined to already-rerolled fat-margin adopters) generalizes; a
-   candidate is re-running failed-literal probing or ELS on the same
-   adopter class. Screen the same way: enumerate adopters, idle-probe
-   them, everything else is byte-identical by construction.
+   improve — not worth a per-cell scope alone.
 4. **elim_def revisit ONLY behind the fallback fix:** on bound-rejection,
    fall through to naive all-pairs BVE for that pivot (the current shape
    strictly loses eliminations vs base — SESSION 4 autopsy). Low priority;
@@ -707,19 +769,28 @@ Historical detail of the promoted item (kept for provenance):
 
 ## Current state
 
-- HEAD: ecdf632 (SESSION 7: SAT_TRANSITIVE_INPROCESS default-on,
+- HEAD: fe82400 (SESSION 8: SAT_PROBE_INPROCESS default-on, root-adopter
+  scope — only sted2 (−246k, 1 round) and ibm (+124k, 7 rounds) moved,
+  aggregate −121.6k; SAT_ELS_INPROCESS landed default-off, measured
+  negative). **Medium 1800 s baseline: 72/100 lineage** (solved SET
+  unchanged again — gate 72v72 identical sets, conflicts −121,608);
+  newest candidate TSV
+  `log/abtest-cand-vs-base-2026-07-27-11-58-13/cand/results.tsv`.
+  This gate's deal posted 72 in BOTH arms.
+- Prior HEAD: ecdf632 (SESSION 7: SAT_TRANSITIVE_INPROCESS default-on,
   root-adopter scope — only sted2/ibm trajectories moved, both improved;
-  98/100 cells conflict-identical to ab592d2 behavior in-gate).
-  **Medium 1800 s baseline: 72/100 lineage** (solved SET unchanged again —
-  gate 72v72 identical sets, conflicts −385k, PAR-2 −471.5); newest
-  candidate TSV
-  `log/abtest-cand-vs-base-2026-07-26-23-11-04/cand/results.tsv`.
-  This gate's deal posted 72 in BOTH arms (rbsat IN both arms,
-  byte-identical trajectory).
+  98/100 cells conflict-identical to ab592d2 behavior in-gate; gate
+  72v72, conflicts −385k, PAR-2 −471.5, TSV
+  `log/abtest-cand-vs-base-2026-07-26-23-11-04/cand/results.tsv`).
 - Transitive surface: SAT_TRANSITIVE (on), MIN_REMOVED_PERMILLE 100,
   SAT_TRANSITIVE_INPROCESS (on), INPROCESS_MIN_REMOVED_PERMILLE 0,
   SAT_TRANSITIVE_TICKS 0 = proportional. Round pass fires only where
   `transitive_adopted=1` (stats JSON: `transitive_inprocess_rounds`).
+  NEW (SESSION 8): SAT_PROBE_INPROCESS (on) and SAT_ELS_INPROCESS (off)
+  share the same adopter scope (stats JSON: `probe_inprocess_rounds`,
+  `els_inprocess_rounds`). Adopter trajectories at HEAD: sted2 1,246,166
+  conflicts / ibm 762,991 / MVRR 267,199 / gm16 62 (digit-exact
+  references for future identity checks).
 - Prior HEAD: ab592d2 (SESSION 6: SAT_TRANSITIVE root default-on, T=100‰ —
   4 cells adopt, 96 byte-identical to b8495b7 behavior). Its gate deals
   posted base 72 (rbsat+VdW IN) and base 70 (both OUT) — ±2 deal noise on
@@ -758,6 +829,14 @@ Historical detail of the promoted item (kept for provenance):
 
 ## Standing traps (carried + this session)
 
+- **SESSION 8:** `SAT_ELS_INPROCESS=on` is a MEASURED NEGATIVE default
+  (idle 2-cell forecast +44k conflicts alone, +2.6M with probe — sted2
+  ballooned to 4.49M conflicts / 1065 s under both). It exists as
+  identity-verified groundwork only. Within the adopter class, per-cell
+  reroll signs are uncontrollable (ELS helped ibm −292k while hurting
+  sted2 +336k); judge any adopter-scoped pass ONLY on the 2-cell
+  aggregate idle forecast, which has now matched the gate to the digit
+  twice (SESSIONS 7 and 8).
 - **SESSION 6:** a permille-of-removable-binaries threshold CANNOT separate
   cells WITHIN a structure class (TT496 vs TT492 both 29.79‰) — only across
   classes. And transitive-style trajectory rerolls flip NO timeout cell
