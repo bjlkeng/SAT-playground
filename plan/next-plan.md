@@ -1,14 +1,73 @@
-# NEXT PLAN — 2026-07-26c (supersedes the 2026-07-26b revision)
+# NEXT PLAN — 2026-07-27 (supersedes the 2026-07-26c revision)
 
-One-file plan for the next clear context. Folds SESSION 6 (2026-07-26
-evening: transitive.c — ranked item 1 — implemented, threshold-scoped,
-gate WIN 70v70 on conflicts −3.34M, PROMOTED ab592d2) on top of SESSIONS
-4-5. Where this contradicts an older `plan/next-steps-*.md`, THIS file wins.
+One-file plan for the next clear context. Folds SESSION 7 (2026-07-27:
+inprocessing-round transitive — ranked follow-up 3b — implemented scoped
+to root-adopters, gate WIN 72v72 on conflicts −385k, PROMOTED ecdf632)
+on top of SESSIONS 4-6. Where this contradicts an older
+`plan/next-steps-*.md`, THIS file wins.
 
-**START HERE:** read "SESSION 6" below, then the RANKED PLAN (updated —
-transitive.c is DONE; the small-port class is now EXHAUSTED. Giant memory
-diet and the >3000 s horizon question are the top open items). Companion
-deep-dive: `plan/kissat-gaps.md`.
+**START HERE:** read "SESSION 7" below, then the RANKED PLAN (updated —
+transitive follow-up (b) is DONE; the units-only arm (a) is the remaining
+cheap screen. Giant memory diet and the >3000 s horizon question are the
+top open items). Companion deep-dive: `plan/kissat-gaps.md`.
+
+## SESSION 7 (2026-07-27) — SAT_TRANSITIVE_INPROCESS PROMOTED, gate WIN 72v72 (conflicts −385k)
+
+**PROMOTED ecdf632: `SAT_TRANSITIVE_INPROCESS` default-on — inprocessing-
+round transitive reduction (ranked follow-up 3b), scoped to ROOT-ADOPTERS
+only.** Gate: `log/abtest-cand-vs-base-2026-07-26-23-11-04`,
+`promotion_gate=PASS`, 72 v 72 solved with **IDENTICAL solved sets**,
+both-solved conflicts **66,714,464 vs 67,099,722 (−385,258)**, PAR-2
+125,500.8 vs 125,972.3 (−471.5), zero correctness failures/contradictions
+(vex checker-timeout symmetric-documented, ~60 CPU-min per arm).
+
+Mechanism (~60 lines in solver12 `.rs` + 2 tests):
+
+- `inprocess_round_pass` calls `try_transitive_reduce` right after the
+  probe step, gated on `config.transitive && config.transitive_inprocess
+  && self.stats.transitive_adopted == 1`. The `transitive_adopted` flag is
+  set ONLY by the root pass crossing `SAT_TRANSITIVE_MIN_REMOVED_PERMILLE`
+  (100‰), so the 96 non-adopter cells never even scan mid-search —
+  byte-identity by construction, verified digit-exact on rbsat (props
+  17,758,017) and 98/100 conflict-identical pairs in-gate.
+- Round threshold `SAT_TRANSITIVE_INPROCESS_MIN_REMOVED_PERMILLE` default
+  0 = kissat parity (apply everything found): the adopter's trajectory is
+  already rerolled by the root edits, and each round's finds are fresh
+  edges exposed by mid-search BVE/congruence/units.
+- `try_transitive_reduce` now takes `(min_removed_permille, inprocess)`
+  params; new stat `transitive_inprocess_rounds` counts APPLIED rounds.
+  Deletion of inline-tagged binaries mid-search is sound: every deletion
+  routes through `clause_set_deleted`, which untags watchers in place.
+
+Results (deterministic, reproduced digit-exact idle → gate → shipped
+default):
+
+- **sted2: 1,761,498 → 1,492,091 conflicts (−15.3%), 517 → 420 s**,
+  1 round fired (its total is ~1.5M conflicts, one 1M-interval round).
+- **ibm-2004-23: 754,525 → 638,674 (−15.4%), 262 → 212 s, 5 rounds** —
+  93,353 binaries removed vs 57,892 root-only (+35k found mid-search!)
+  and 114 vs 94 units. Mid-search rounds keep finding NEW transitive
+  edges; the root pass is nowhere near closure on this class. Note ibm
+  was the root promotion's +408k reroll loser — the rounds more than
+  paid it back.
+- gm16sparrc (62 conf) and MVRoundRobin (267,199 conf) finish below the
+  1M-conflict round interval: zero rounds, byte-identical (verified).
+- Both wall-coin documented flippers behaved: rbsat solved both arms
+  (byte-identical trajectory), no solved-set movement anywhere.
+
+**Take-aways:**
+
+- The root-adopter scope is a REUSABLE gate-safe shape for any
+  "extend a promoted root pass into rounds" idea: reroll risk confined to
+  cells that already rerolled at promotion time, all of them fat-margin
+  solved cells.
+- A cell's round count is its conflict total over the 1M interval —
+  adopters below 1M conflicts are automatically protected. Only sted2/ibm
+  could ever move, which made the idle 4-cell probe a complete gate
+  forecast (and it was: gate deltas matched the probe to the digit).
+
+Validation: 697 unit tests (2 new), smoke 9/9, shipped defaults reproduce
+the gate candidate digit-exact on both touched cells.
 
 ## SESSION 6 (2026-07-26 evening) — SAT_TRANSITIVE PROMOTED, gate WIN 70v70 (conflicts −3.34M)
 
@@ -524,18 +583,17 @@ capability; wall coin = margin <=~120 s OR flipped across deals at an IDENTICAL
 conflict count), tiered triage (probe -> subset -> 100-cell gate for promotion
 only), and 4-arm sweeps (promote the best arm).
 
-## RANKED PLAN for next session (updated 2026-07-26 late evening)
+## RANKED PLAN for next session (updated 2026-07-27)
 
-0. **DONE in SESSION 6: `transitive.c` (PROMOTED ab592d2, T=100‰ scope).
-   The small-port class is now EXHAUSTED** (backbone dead, vivify tier3
-   LOSE, transitive banked; HBR has no kissat module — its role lives in
-   backbone/transitive which are both now measured). CLOSED in SESSIONS
-   4-5: REDUCE law at 1800 s (revisit only >3000 s or as T>=8M insurance),
-   `SAT_ELIM_DEF` (any budget; fallback defect documented), vivify
-   tier3/3:3:1:3, 10th wall-diet, bp4_TCO_CSO_ZR free +1. Sweep schedule /
-   tick cadence stay CLOSED.
-
-NEW top of the list:
+0. **DONE in SESSION 7: inprocessing-round transitive (PROMOTED ecdf632,
+   root-adopter scope) — follow-up 3b banked.** DONE in SESSION 6:
+   `transitive.c` root pass (PROMOTED ab592d2, T=100‰ scope). **The
+   small-port class stays EXHAUSTED** (backbone dead, vivify tier3 LOSE,
+   transitive root+rounds both banked; HBR has no kissat module). CLOSED
+   in SESSIONS 4-5: REDUCE law at 1800 s (revisit only >3000 s or as
+   T>=8M insurance), `SAT_ELIM_DEF` (any budget; fallback defect
+   documented), vivify tier3/3:3:1:3, 10th wall-diet, bp4_TCO_CSO_ZR free
+   +1. Sweep schedule / tick cadence stay CLOSED.
 
 1. **Giant memory diet (unstarted).** pj2008 RSS 10.4 GB vs kissat 1.4 GB;
    BVE emits 1.7 GB discarded DRAT in 150 s. pj2008 is marginal even for
@@ -551,17 +609,22 @@ NEW top of the list:
    attacks exactly that). SESSION 6 adds: SAT_TRANSITIVE thresholds below
    100‰ (25-40‰) trade banked cells for deep-tail throughput — the SAME
    >3000 s-horizon shape; a lower threshold may pay at 3600 s where
-   TT/bp4 reroll variance has room to wash out.
-3. **Transitive follow-ups (screen before spending a gate):**
+   TT/bp4 reroll variance has room to wash out. SESSION 7 adds: the
+   round pass would fire on MANY more cells at a lower root threshold —
+   any future threshold experiment now sweeps both knobs together.
+3. **Transitive follow-ups still open (screen before spending a gate):**
    (a) *units-only arm* — apply failed-literal units when below the
    removal threshold: reconf10 x2 carry 1074 root units each, jkkk 84,
    twitter 25, but all three are SOLVED SAT cells with fat margins —
    1800 s idle screen first, walk away on any conflict regression;
-   (b) *inprocessing-round transitive* (kissat runs it every probe
-   interval, we run root-only) — armed-scope it and protect the
-   decision-armed banked cells (TT406/TT496) per the tier-split lesson;
+   (b) DONE (SESSION 7, ecdf632);
    (c) Kakuro-115 (−21k at 77.6‰) is the only sub-100‰ cell measured to
-   improve — not worth a per-cell scope alone.
+   improve — not worth a per-cell scope alone. NEW (d): *root-adopter
+   round scope for OTHER passes* — the SESSION 7 shape (reroll risk
+   confined to already-rerolled fat-margin adopters) generalizes; a
+   candidate is re-running failed-literal probing or ELS on the same
+   adopter class. Screen the same way: enumerate adopters, idle-probe
+   them, everything else is byte-identical by construction.
 4. **elim_def revisit ONLY behind the fallback fix:** on bound-rejection,
    fall through to naive all-pairs BVE for that pivot (the current shape
    strictly loses eliminations vs base — SESSION 4 autopsy). Low priority;
@@ -570,10 +633,11 @@ NEW top of the list:
    still solves on the shipped default (banked — SESSION 6 re-confirmed
    the protection: it is byte-identical under the shipped T=100‰ scope,
    and DIES at T=25‰; protect it in every future armed-path or
-   binary-graph change); bp4_TCO_CSO_ZR is LOST at 3600 s idle under the
-   adopted gate-BVE trajectory — recovering it means revisiting its
-   dry-run adoption decision (threshold/arming-time discriminator), not
-   wall diets.
+   binary-graph change; SESSION 7's round pass cannot touch it — it is a
+   non-adopter). bp4_TCO_CSO_ZR is LOST at 3600 s idle under the adopted
+   gate-BVE trajectory — recovering it means revisiting its dry-run
+   adoption decision (threshold/arming-time discriminator), not wall
+   diets.
 
 Historical detail of the promoted item (kept for provenance):
 
@@ -643,14 +707,22 @@ Historical detail of the promoted item (kept for provenance):
 
 ## Current state
 
-- HEAD: ab592d2 (SESSION 6: SAT_TRANSITIVE default-on, T=100‰ scope —
-  4 cells adopt, 96 byte-identical to b8495b7 behavior).
-  **Medium 1800 s baseline: 72/100 lineage** (solved SET unchanged by the
-  promotion — gate 70v70 identical sets, conflicts −3.34M, PAR-2 −825);
-  newest candidate TSV
-  `log/abtest-candidate-vs-baseline-2026-07-26-17-59-06/candidate/results.tsv`.
-  This session's two gate deals posted base 72 (rbsat+VdW IN,
-  15-19-21 deal) and base 70 (both OUT, 17-59-06 deal) — ±2 deal noise on
+- HEAD: ecdf632 (SESSION 7: SAT_TRANSITIVE_INPROCESS default-on,
+  root-adopter scope — only sted2/ibm trajectories moved, both improved;
+  98/100 cells conflict-identical to ab592d2 behavior in-gate).
+  **Medium 1800 s baseline: 72/100 lineage** (solved SET unchanged again —
+  gate 72v72 identical sets, conflicts −385k, PAR-2 −471.5); newest
+  candidate TSV
+  `log/abtest-cand-vs-base-2026-07-26-23-11-04/cand/results.tsv`.
+  This gate's deal posted 72 in BOTH arms (rbsat IN both arms,
+  byte-identical trajectory).
+- Transitive surface: SAT_TRANSITIVE (on), MIN_REMOVED_PERMILLE 100,
+  SAT_TRANSITIVE_INPROCESS (on), INPROCESS_MIN_REMOVED_PERMILLE 0,
+  SAT_TRANSITIVE_TICKS 0 = proportional. Round pass fires only where
+  `transitive_adopted=1` (stats JSON: `transitive_inprocess_rounds`).
+- Prior HEAD: ab592d2 (SESSION 6: SAT_TRANSITIVE root default-on, T=100‰ —
+  4 cells adopt, 96 byte-identical to b8495b7 behavior). Its gate deals
+  posted base 72 (rbsat+VdW IN) and base 70 (both OUT) — ±2 deal noise on
   exactly the documented coins. The SESSION 5 gate's base arm posted
   71/100; SESSION 4's posted 70/100.
 - New default-off flags this session: `SAT_BUMP_SORT_CACHE`,
