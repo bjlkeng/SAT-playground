@@ -234,6 +234,9 @@ pub(crate) struct SolverStats {
     pub(crate) transitive_adopted: u64,
     /// ticks spent by the root transitive-reduction scan (SAT_TRANSITIVE)
     pub(crate) transitive_ticks: u64,
+    /// inprocessing-round transitive scans whose edits were applied
+    /// (SAT_TRANSITIVE_INPROCESS)
+    pub(crate) transitive_inprocess_rounds: u64,
     /// variables removed by equivalent-literal substitution (SAT_ELS)
     pub(crate) els_substituted_vars: u64,
     /// clauses rewritten by equivalent-literal substitution (SAT_ELS)
@@ -860,6 +863,10 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("transitive_units", ctx.stats.transitive_units);
     json.u64("transitive_adopted", ctx.stats.transitive_adopted);
     json.u64("transitive_ticks", ctx.stats.transitive_ticks);
+    json.u64(
+        "transitive_inprocess_rounds",
+        ctx.stats.transitive_inprocess_rounds,
+    );
     json.u64("rcheck_attempts", 0);
     json.u64("rcheck_implied", 0);
     json.u64("proof_added_clauses", ctx.proof.added_clauses);

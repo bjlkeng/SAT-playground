@@ -717,6 +717,17 @@ pub(crate) struct SolverConfig {
     /// threshold nothing is touched, so the cell's trajectory stays
     /// byte-identical to SAT_TRANSITIVE=off.
     pub(crate) transitive_min_removed_permille: u64,
+    /// Re-run transitive reduction at every inprocessing round
+    /// (SAT_TRANSITIVE_INPROCESS), but ONLY on formulas whose root pass
+    /// adopted (crossed `transitive_min_removed_permille`). Formulas below the
+    /// root threshold never scan mid-search, so their trajectories stay
+    /// byte-identical to SAT_TRANSITIVE_INPROCESS=off.
+    pub(crate) transitive_inprocess: bool,
+    /// Adoption threshold for each inprocessing-round transitive dry-run
+    /// (SAT_TRANSITIVE_INPROCESS_MIN_REMOVED_PERMILLE). Default 0 = kissat
+    /// parity: apply everything the round finds (the formula's trajectory is
+    /// already rerolled by the root adoption).
+    pub(crate) transitive_inprocess_min_removed_permille: u64,
     pub(crate) rcheck_ticks_budget: u64,
 
     pub(crate) replay_overridden: bool,
@@ -860,6 +871,8 @@ impl Default for SolverConfig {
             transitive_max_removed_per_round: 0,
             transitive_ticks_budget: 0,
             transitive_min_removed_permille: 100,
+            transitive_inprocess: true,
+            transitive_inprocess_min_removed_permille: 0,
             rcheck_ticks_budget: 0,
 
             replay_overridden: false,
@@ -1704,6 +1717,18 @@ impl SolverConfig {
             &key_set,
             "SAT_TRANSITIVE_MIN_REMOVED_PERMILLE",
             self.transitive_min_removed_permille,
+        );
+        self.transitive_inprocess = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_TRANSITIVE_INPROCESS",
+            self.transitive_inprocess,
+        );
+        self.transitive_inprocess_min_removed_permille = parse_u64_selected(
+            env_map,
+            &key_set,
+            "SAT_TRANSITIVE_INPROCESS_MIN_REMOVED_PERMILLE",
+            self.transitive_inprocess_min_removed_permille,
         );
         self.rcheck_ticks_budget = parse_u64_selected(
             env_map,
@@ -2937,6 +2962,10 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "transitive_max_removed_per_round" => Some("SAT_TRANSITIVE_MAX_REMOVED_PER_ROUND"),
         "transitive_ticks_budget" => Some("SAT_TRANSITIVE_TICKS"),
         "transitive_min_removed_permille" => Some("SAT_TRANSITIVE_MIN_REMOVED_PERMILLE"),
+        "transitive_inprocess" => Some("SAT_TRANSITIVE_INPROCESS"),
+        "transitive_inprocess_min_removed_permille" => {
+            Some("SAT_TRANSITIVE_INPROCESS_MIN_REMOVED_PERMILLE")
+        }
         "rcheck_ticks_budget" => Some("SAT_RCHECK_TICKS"),
         _ => None,
     }
@@ -3142,6 +3171,10 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_TRANSITIVE_MAX_DEPTH",
         "SAT_TRANSITIVE_TICKS_PER_SOURCE",
         "SAT_TRANSITIVE_MAX_REMOVED_PER_ROUND",
+        "SAT_TRANSITIVE_TICKS",
+        "SAT_TRANSITIVE_MIN_REMOVED_PERMILLE",
+        "SAT_TRANSITIVE_INPROCESS",
+        "SAT_TRANSITIVE_INPROCESS_MIN_REMOVED_PERMILLE",
         "SAT_RCHECK_TICKS",
         "SAT_INITIAL_CLAUSE_MODE",
         "SAT_BRANCH_MODE",

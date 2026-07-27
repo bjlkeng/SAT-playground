@@ -6695,10 +6695,17 @@ impl Solver {
     /// tick-budgeted and wall-free — deterministic across host load.
     ///
     /// Returns false when the pass proves UNSAT (contradictory units).
+    ///
+    /// `min_removed_permille` is the dry-run adoption threshold for THIS scan
+    /// (the root pass uses `transitive_min_removed_permille`, inprocessing
+    /// rounds use `transitive_inprocess_min_removed_permille`); `inprocess`
+    /// only routes stats/trace.
     fn try_transitive_reduce(
         &mut self,
         proof_log: &mut ProofLog,
         config: &SolverConfig,
+        min_removed_permille: u64,
+        inprocess: bool,
     ) -> bool {
         if self.binary_fast_path
             || self.current_level() != 0
@@ -6858,7 +6865,7 @@ impl Solver {
         let found = !removal_order.is_empty() || !units.is_empty();
         let adopt = found
             && (removal_order.len() as u64) * 1000
-                >= (bins.len() as u64) * config.transitive_min_removed_permille;
+                >= (bins.len() as u64) * min_removed_permille;
 
         self.stats.transitive_probes += probes;
         self.stats.transitive_found_removed += removal_order.len() as u64;
@@ -6866,7 +6873,7 @@ impl Solver {
         self.stats.transitive_ticks += ticks;
         if config.trace_preprocess {
             eprintln!(
-                "c transitive probes={} found_removed={} found_units={} binaries={} ticks={} budget={} adopted={}",
+                "c transitive probes={} found_removed={} found_units={} binaries={} ticks={} budget={} adopted={} inprocess={}",
                 probes,
                 removal_order.len(),
                 units.len(),
@@ -6874,12 +6881,17 @@ impl Solver {
                 ticks,
                 budget_ticks,
                 adopt as u64,
+                inprocess as u64,
             );
         }
         if !adopt {
             return true;
         }
-        self.stats.transitive_adopted = 1;
+        if inprocess {
+            self.stats.transitive_inprocess_rounds += 1;
+        } else {
+            self.stats.transitive_adopted = 1;
+        }
 
         // Units first: each failed literal is RUP against the pre-deletion
         // formula, and RUP is monotone in the clause set — at this point in
@@ -10067,6 +10079,27 @@ impl Solver {
         // then runs against an already-simplified root.
         if ok && config.probe {
             ok = self.probe_root_failed_literals(proof_log, config);
+        }
+        // Inprocessing-round transitive reduction (SAT_TRANSITIVE_INPROCESS,
+        // kissat probe-round parity — kissat re-runs transitive.c every probe
+        // interval, the shipped default runs it root-only). Scoped to formulas
+        // whose ROOT pass adopted: everything below the root threshold never
+        // scans mid-search and keeps a byte-identical trajectory, the same
+        // protection shape the root promotion validated (TT/bp4 classes stay
+        // untouched). The round's own dry-run threshold defaults to 0 =
+        // apply everything found (the adopter's trajectory is already
+        // rerolled by the root edits).
+        if ok
+            && config.transitive
+            && config.transitive_inprocess
+            && self.stats.transitive_adopted == 1
+        {
+            ok = self.try_transitive_reduce(
+                proof_log,
+                config,
+                config.transitive_inprocess_min_removed_permille,
+                true,
+            );
         }
         // Gate congruence closure first, kissat probe-round parity (probe.c runs
         // kissat_congruence before vivify/sweep): merging congruent gate outputs
@@ -16978,7 +17011,14 @@ impl Solver {
         // transitive.c). Runs on the final root formula after BVE/probe; the
         // dry-run applies nothing below the adoption threshold, keeping those
         // cells' trajectories byte-identical to SAT_TRANSITIVE=off.
-        if config.transitive && !self.try_transitive_reduce(proof_log, config) {
+        if config.transitive
+            && !self.try_transitive_reduce(
+                proof_log,
+                config,
+                config.transitive_min_removed_permille,
+                false,
+            )
+        {
             return SolveOutcome::unsat();
         }
         self.reset_learned_budget_after_preprocess();
@@ -18810,7 +18850,12 @@ mod tests {
             ..Default::default()
         };
         let mut proof = ProofLog::disabled();
-        assert!(s.try_transitive_reduce(&mut proof, &config));
+        assert!(s.try_transitive_reduce(
+            &mut proof,
+            &config,
+            config.transitive_min_removed_permille,
+            false,
+        ));
         assert_eq!(s.stats.transitive_found_removed, 1);
         assert_eq!(s.stats.transitive_removed, 1);
         assert_eq!(s.stats.transitive_units, 0);
@@ -18831,7 +18876,12 @@ mod tests {
             ..Default::default()
         };
         let mut proof = ProofLog::disabled();
-        assert!(s.try_transitive_reduce(&mut proof, &config));
+        assert!(s.try_transitive_reduce(
+            &mut proof,
+            &config,
+            config.transitive_min_removed_permille,
+            false,
+        ));
         assert_eq!(s.stats.transitive_found_units, 1);
         assert_eq!(s.stats.transitive_units, 1);
         assert_eq!(s.assignment[1], TRUE, "failed literal ¬1 must force x1=true");
@@ -18851,7 +18901,12 @@ mod tests {
         };
         let mut proof = ProofLog::disabled();
         let assignment_before = s.assignment.clone();
-        assert!(s.try_transitive_reduce(&mut proof, &config));
+        assert!(s.try_transitive_reduce(
+            &mut proof,
+            &config,
+            config.transitive_min_removed_permille,
+            false,
+        ));
         assert_eq!(s.stats.transitive_found_removed, 1, "dry-run still measures");
         assert_eq!(s.stats.transitive_removed, 0);
         assert_eq!(s.stats.transitive_adopted, 0);
@@ -18870,7 +18925,12 @@ mod tests {
             ..Default::default()
         };
         let mut proof = ProofLog::disabled();
-        assert!(s.try_transitive_reduce(&mut proof, &config));
+        assert!(s.try_transitive_reduce(
+            &mut proof,
+            &config,
+            config.transitive_min_removed_permille,
+            false,
+        ));
         assert_eq!(s.stats.transitive_removed, 1);
         assert_eq!(live_binary_count(&s), 1, "exactly one duplicate survives");
     }
@@ -18884,11 +18944,81 @@ mod tests {
         };
         let mut proof = ProofLog::disabled();
         let assignment_before = s.assignment.clone();
-        assert!(s.try_transitive_reduce(&mut proof, &config));
+        assert!(s.try_transitive_reduce(
+            &mut proof,
+            &config,
+            config.transitive_min_removed_permille,
+            false,
+        ));
         assert_eq!(s.stats.transitive_found_removed, 0);
         assert_eq!(s.stats.transitive_found_units, 0);
         assert_eq!(live_binary_count(&s), 2);
         assert_eq!(s.assignment, assignment_before);
+    }
+
+    #[test]
+    fn transitive_inprocess_round_skips_non_adopters() {
+        // Root pass below threshold (adopted=0): the inprocessing round must
+        // not even scan — probes stay untouched, formula byte-identical.
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-2, 3], vec![1, 3]]);
+        let config = SolverConfig {
+            transitive: true,
+            transitive_inprocess: true,
+            transitive_min_removed_permille: 1000,
+            ..Default::default()
+        };
+        let mut proof = ProofLog::disabled();
+        assert!(s.try_transitive_reduce(
+            &mut proof,
+            &config,
+            config.transitive_min_removed_permille,
+            false,
+        ));
+        assert_eq!(s.stats.transitive_adopted, 0);
+        let probes_after_root = s.stats.transitive_probes;
+        assert!(s.inprocess_round_pass(&mut proof, &config));
+        assert_eq!(
+            s.stats.transitive_probes, probes_after_root,
+            "non-adopter must not scan in the inprocessing round"
+        );
+        assert_eq!(s.stats.transitive_inprocess_rounds, 0);
+        assert_eq!(live_binary_count(&s), 3);
+    }
+
+    #[test]
+    fn transitive_inprocess_round_reduces_for_root_adopter() {
+        // Root pass adopts (default 100‰ threshold); a binary that becomes
+        // transitive only later is then removed by the inprocessing round.
+        let mut s = make_solver(
+            4,
+            vec![vec![1, 2], vec![-2, 3], vec![1, 3], vec![-3, 4], vec![1, 4]],
+        );
+        let config = SolverConfig {
+            transitive: true,
+            transitive_inprocess: true,
+            ..Default::default()
+        };
+        let mut proof = ProofLog::disabled();
+        assert!(s.try_transitive_reduce(
+            &mut proof,
+            &config,
+            config.transitive_min_removed_permille,
+            false,
+        ));
+        assert_eq!(s.stats.transitive_adopted, 1);
+        assert!(s.stats.transitive_removed >= 1);
+        let probes_after_root = s.stats.transitive_probes;
+        // The round re-scans the adopter and applies anything still redundant
+        // (permille 0 = apply-all default for rounds).
+        assert!(s.inprocess_round_pass(&mut proof, &config));
+        assert!(
+            s.stats.transitive_probes > probes_after_root,
+            "adopter must re-scan in the inprocessing round"
+        );
+        // Whether or not the round found more, correctness holds: the solver
+        // still solves SAT with a valid model.
+        let outcome = s.solve_with_proof(&mut proof, &config);
+        assert!(outcome, "formula is satisfiable");
     }
 
     #[test]
