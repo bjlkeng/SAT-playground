@@ -6677,6 +6677,234 @@ impl Solver {
         true
     }
 
+    /// Root binary-implication transitive reduction (SAT_TRANSITIVE — kissat
+    /// transitive.c port, root-scoped; plan/next-plan.md ranked item 1).
+    ///
+    /// Each live binary clause (src ∨ dst) is probed once, from its
+    /// smaller-index literal side: BFS the binary implication graph from ¬src
+    /// with the clause itself excluded. Reaching dst proves the clause is
+    /// implied by the remaining binaries (delete it — a `d` line in the
+    /// proof); reaching ¬dst, or two contradictory literals, proves ¬src is a
+    /// failed literal (learn unit src, RUP). The scan is a dry-run over a CSR
+    /// snapshot: edits are applied only when the removable count crosses
+    /// `transitive_min_removed_permille`, so below-threshold formulas keep a
+    /// byte-identical trajectory. Removals are discovered sequentially against
+    /// the already-reduced graph, so the surviving graph implies every deleted
+    /// clause (a mutually-redundant duplicate pair never loses both copies),
+    /// and graph reachability never shrinks across deletions. Decisions are
+    /// tick-budgeted and wall-free — deterministic across host load.
+    ///
+    /// Returns false when the pass proves UNSAT (contradictory units).
+    fn try_transitive_reduce(
+        &mut self,
+        proof_log: &mut ProofLog,
+        config: &SolverConfig,
+    ) -> bool {
+        if self.binary_fast_path
+            || self.current_level() != 0
+            || self.has_empty_clause
+            || !self.solver_ok
+        {
+            return true;
+        }
+        let num_vars = self.assignment.len().saturating_sub(1);
+        if num_vars == 0 {
+            return true;
+        }
+
+        // Live binary clauses over unassigned variables: (cid, a, b).
+        let mut bins: Vec<(u32, i32, i32)> = Vec::new();
+        for i in 0..self.original_clause_ids.len() {
+            let cid_word = self.original_clause_ids[i];
+            let cid = cid_word as usize;
+            if self.clause_is_deleted(cid) || self.clause_len(cid) != 2 {
+                continue;
+            }
+            let a = self.clause_lit(cid, 0);
+            let b = self.clause_lit(cid, 1);
+            if a.unsigned_abs() == b.unsigned_abs() {
+                // (x ∨ x) or the tautology (x ∨ ¬x) — not an implication edge.
+                continue;
+            }
+            if self.lit_value(a) != UNASSIGNED || self.lit_value(b) != UNASSIGNED {
+                continue;
+            }
+            bins.push((cid_word, a, b));
+        }
+        if bins.is_empty() {
+            return true;
+        }
+
+        // CSR adjacency over literal nodes, each edge labeled with its
+        // clause's index in `bins`: (a ∨ b) contributes ¬a→b and ¬b→a.
+        let n = num_vars * 2;
+        let mut start = vec![0u32; n + 1];
+        for &(_, a, b) in &bins {
+            start[lit_to_index(-a) + 1] += 1;
+            start[lit_to_index(-b) + 1] += 1;
+        }
+        for i in 0..n {
+            start[i + 1] += start[i];
+        }
+        let mut target = vec![0u32; start[n] as usize];
+        let mut label = vec![0u32; start[n] as usize];
+        let mut cursor: Vec<u32> = start.clone();
+        for (k, &(_, a, b)) in bins.iter().enumerate() {
+            let ia = lit_to_index(-a);
+            let ib = lit_to_index(-b);
+            target[cursor[ia] as usize] = lit_to_index(b) as u32;
+            label[cursor[ia] as usize] = k as u32;
+            cursor[ia] += 1;
+            target[cursor[ib] as usize] = lit_to_index(a) as u32;
+            label[cursor[ib] as usize] = k as u32;
+            cursor[ib] += 1;
+        }
+
+        const TRANSITIVE_BUDGET_LITS_MULTIPLIER: u64 = 20;
+        const TRANSITIVE_BUDGET_MIN_TICKS: u64 = 10_000_000;
+        const TRANSITIVE_BUDGET_MAX_TICKS: u64 = 100_000_000;
+        let budget_ticks = if config.transitive_ticks_budget > 0 {
+            config.transitive_ticks_budget
+        } else {
+            (self.original_literals as u64)
+                .saturating_mul(TRANSITIVE_BUDGET_LITS_MULTIPLIER)
+                .clamp(TRANSITIVE_BUDGET_MIN_TICKS, TRANSITIVE_BUDGET_MAX_TICKS)
+        };
+
+        let mut removed = vec![false; bins.len()];
+        let mut removal_order: Vec<u32> = Vec::new();
+        let mut units: Vec<i32> = Vec::new();
+        let mut mark = vec![0u32; n];
+        let mut stamp: u32 = 0;
+        let mut queue: Vec<u32> = Vec::new();
+        let mut ticks: u64 = 0;
+        let mut probes: u64 = 0;
+
+        'sources: for s in 0..n {
+            if ticks > budget_ticks {
+                break;
+            }
+            let u = s ^ 1; // ¬src: the BFS root
+            let (edges_start, edges_end) = (start[u] as usize, start[u + 1] as usize);
+            for ei in edges_start..edges_end {
+                let k = label[ei] as usize;
+                if removed[k] {
+                    continue;
+                }
+                let v = target[ei] as usize;
+                if v <= s {
+                    // Each clause is probed once, from its smaller-index side.
+                    continue;
+                }
+                probes += 1;
+                stamp += 1;
+                queue.clear();
+                mark[u] = stamp;
+                queue.push(u as u32);
+                let mut qi = 0usize;
+                let mut transitive = false;
+                let mut failed = false;
+                ticks += 1;
+                while qi < queue.len() {
+                    let x = queue[qi] as usize;
+                    qi += 1;
+                    let (xs, xe) = (start[x] as usize, start[x + 1] as usize);
+                    ticks += 1 + ((xe - xs) as u64 >> 3);
+                    for j in xs..xe {
+                        let k2 = label[j] as usize;
+                        if k2 == k || removed[k2] {
+                            continue;
+                        }
+                        let w = target[j] as usize;
+                        if w == v {
+                            transitive = true;
+                            break;
+                        }
+                        if mark[w] == stamp {
+                            continue;
+                        }
+                        if w == (v ^ 1) || mark[w ^ 1] == stamp {
+                            failed = true;
+                            break;
+                        }
+                        mark[w] = stamp;
+                        queue.push(w as u32);
+                    }
+                    if transitive || failed || ticks > budget_ticks {
+                        break;
+                    }
+                }
+                if transitive {
+                    removed[k] = true;
+                    removal_order.push(bins[k].0);
+                } else if failed {
+                    // ¬src implies a contradiction: src is a RUP unit. Mirror
+                    // kissat: stop probing this source's remaining candidates.
+                    let src_var = (s >> 1) + 1;
+                    let src_lit = if s & 1 == 0 {
+                        src_var as i32
+                    } else {
+                        -(src_var as i32)
+                    };
+                    units.push(src_lit);
+                    continue 'sources;
+                }
+                if ticks > budget_ticks {
+                    break 'sources;
+                }
+            }
+        }
+
+        let found = !removal_order.is_empty() || !units.is_empty();
+        let adopt = found
+            && (removal_order.len() as u64) * 1000
+                >= (bins.len() as u64) * config.transitive_min_removed_permille;
+
+        self.stats.transitive_probes += probes;
+        self.stats.transitive_found_removed += removal_order.len() as u64;
+        self.stats.transitive_found_units += units.len() as u64;
+        self.stats.transitive_ticks += ticks;
+        if config.trace_preprocess {
+            eprintln!(
+                "c transitive probes={} found_removed={} found_units={} binaries={} ticks={} budget={} adopted={}",
+                probes,
+                removal_order.len(),
+                units.len(),
+                bins.len(),
+                ticks,
+                budget_ticks,
+                adopt as u64,
+            );
+        }
+        if !adopt {
+            return true;
+        }
+        self.stats.transitive_adopted = 1;
+
+        // Units first: each failed literal is RUP against the pre-deletion
+        // formula, and RUP is monotone in the clause set — at this point in
+        // the proof nothing has been deleted yet.
+        if !units.is_empty() {
+            self.stats.transitive_units += units.len() as u64;
+            if !self.learn_lucky_failed_literal_units(&units, proof_log) {
+                return false;
+            }
+            if self.propagate().is_some() {
+                self.has_empty_clause = true;
+                return false;
+            }
+        }
+        self.stats.transitive_removed += removal_order.len() as u64;
+        for &cid_word in &removal_order {
+            let cid = cid_word as usize;
+            if self.clause_is_deleted(cid) {
+                continue;
+            }
+            self.delete_clause_for_simplify(cid, proof_log);
+        }
+        true
+    }
+
     fn clause_satisfied_by_trial(&self, clause_idx: ClauseRef, trial: &[u8]) -> bool {
         self.clause_slice(clause_idx).iter().any(|&lit| {
             let var = lit.unsigned_abs() as usize;
@@ -16746,6 +16974,13 @@ impl Solver {
         if config.probe && !self.probe_root_failed_literals(proof_log, config) {
             return SolveOutcome::unsat();
         }
+        // Root binary-implication transitive reduction (SAT_TRANSITIVE, kissat
+        // transitive.c). Runs on the final root formula after BVE/probe; the
+        // dry-run applies nothing below the adoption threshold, keeping those
+        // cells' trajectories byte-identical to SAT_TRANSITIVE=off.
+        if config.transitive && !self.try_transitive_reduce(proof_log, config) {
+            return SolveOutcome::unsat();
+        }
         self.reset_learned_budget_after_preprocess();
         // Congruence-productive gate circuits (miters/BMC) switch to the kissat-parity
         // early inprocessing cadence: kissat interleaves congruence/substitution and
@@ -18544,6 +18779,127 @@ mod tests {
             ..Default::default()
         };
         let clauses = vec![vec![-1, 2], vec![-1, -2], vec![2, 3], vec![1, 3, -4]];
+        let mut s = make_solver_with_config(4, clauses.clone(), &config);
+        let mut proof = ProofLog::disabled();
+        assert!(
+            s.solve_with_proof(&mut proof, &config),
+            "formula is satisfiable"
+        );
+        for clause in &clauses {
+            assert!(
+                clause.iter().any(|&lit| s.lit_value(lit) == TRUE),
+                "every original clause must be satisfied by the model"
+            );
+        }
+    }
+
+    fn live_binary_count(s: &Solver) -> usize {
+        s.original_clause_ids
+            .iter()
+            .filter(|&&cid| !s.clause_is_deleted(cid as usize) && s.clause_len(cid as usize) == 2)
+            .count()
+    }
+
+    #[test]
+    fn transitive_reduce_removes_implied_binary() {
+        // (1∨2), (¬2∨3), (1∨3): ¬1→2→3 bypasses the direct edge of (1∨3),
+        // so exactly that clause is transitive and gets deleted.
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-2, 3], vec![1, 3]]);
+        let config = SolverConfig {
+            transitive: true,
+            ..Default::default()
+        };
+        let mut proof = ProofLog::disabled();
+        assert!(s.try_transitive_reduce(&mut proof, &config));
+        assert_eq!(s.stats.transitive_found_removed, 1);
+        assert_eq!(s.stats.transitive_removed, 1);
+        assert_eq!(s.stats.transitive_units, 0);
+        assert_eq!(s.stats.transitive_adopted, 1);
+        assert_eq!(live_binary_count(&s), 2, "only (1∨3) is deleted");
+        assert!(!s.has_empty_clause);
+    }
+
+    #[test]
+    fn transitive_reduce_learns_failed_literal_unit() {
+        // (1∨2) and (1∨¬2): ¬1 implies both 2 and ¬2, so 1 is a RUP unit.
+        // Threshold 0: a units-only find adopts (the shipped default demands
+        // removed >= 10% of binaries before applying anything).
+        let mut s = make_solver(2, vec![vec![1, 2], vec![1, -2]]);
+        let config = SolverConfig {
+            transitive: true,
+            transitive_min_removed_permille: 0,
+            ..Default::default()
+        };
+        let mut proof = ProofLog::disabled();
+        assert!(s.try_transitive_reduce(&mut proof, &config));
+        assert_eq!(s.stats.transitive_found_units, 1);
+        assert_eq!(s.stats.transitive_units, 1);
+        assert_eq!(s.assignment[1], TRUE, "failed literal ¬1 must force x1=true");
+        assert!(!s.has_empty_clause);
+    }
+
+    #[test]
+    fn transitive_reduce_threshold_keeps_formula_untouched() {
+        // Same formula as the removal test, but the adoption threshold demands
+        // every binary be removable — the dry-run finds the clause and applies
+        // nothing (trajectory stays byte-identical to SAT_TRANSITIVE=off).
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-2, 3], vec![1, 3]]);
+        let config = SolverConfig {
+            transitive: true,
+            transitive_min_removed_permille: 1000,
+            ..Default::default()
+        };
+        let mut proof = ProofLog::disabled();
+        let assignment_before = s.assignment.clone();
+        assert!(s.try_transitive_reduce(&mut proof, &config));
+        assert_eq!(s.stats.transitive_found_removed, 1, "dry-run still measures");
+        assert_eq!(s.stats.transitive_removed, 0);
+        assert_eq!(s.stats.transitive_adopted, 0);
+        assert_eq!(live_binary_count(&s), 3, "nothing deleted below threshold");
+        assert_eq!(s.assignment, assignment_before);
+    }
+
+    #[test]
+    fn transitive_reduce_keeps_one_copy_of_duplicate_binary() {
+        // Two copies of (1∨2): each is transitive given the other, but the
+        // sequential scan removes only the first — the survivor still
+        // constrains the formula.
+        let mut s = make_solver(2, vec![vec![1, 2], vec![1, 2]]);
+        let config = SolverConfig {
+            transitive: true,
+            ..Default::default()
+        };
+        let mut proof = ProofLog::disabled();
+        assert!(s.try_transitive_reduce(&mut proof, &config));
+        assert_eq!(s.stats.transitive_removed, 1);
+        assert_eq!(live_binary_count(&s), 1, "exactly one duplicate survives");
+    }
+
+    #[test]
+    fn transitive_reduce_noop_without_redundant_binaries() {
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-2, 3]]);
+        let config = SolverConfig {
+            transitive: true,
+            ..Default::default()
+        };
+        let mut proof = ProofLog::disabled();
+        let assignment_before = s.assignment.clone();
+        assert!(s.try_transitive_reduce(&mut proof, &config));
+        assert_eq!(s.stats.transitive_found_removed, 0);
+        assert_eq!(s.stats.transitive_found_units, 0);
+        assert_eq!(live_binary_count(&s), 2);
+        assert_eq!(s.assignment, assignment_before);
+    }
+
+    #[test]
+    fn transitive_enabled_solver_keeps_sat_correctness() {
+        // End-to-end: a satisfiable formula with a transitive binary still
+        // solves SAT with a valid model when SAT_TRANSITIVE is enabled.
+        let config = SolverConfig {
+            transitive: true,
+            ..Default::default()
+        };
+        let clauses = vec![vec![1, 2], vec![-2, 3], vec![1, 3], vec![-1, -3, 4]];
         let mut s = make_solver_with_config(4, clauses.clone(), &config);
         let mut proof = ProofLog::disabled();
         assert!(

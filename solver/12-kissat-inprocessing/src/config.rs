@@ -707,6 +707,16 @@ pub(crate) struct SolverConfig {
     pub(crate) transitive_max_depth: u32,
     pub(crate) transitive_ticks_per_source: u64,
     pub(crate) transitive_max_removed_per_round: u64,
+    /// Total tick budget for the root transitive-reduction scan
+    /// (SAT_TRANSITIVE_TICKS); 0 = proportional default
+    /// (original_literals * 20 clamped to [10M, 100M]).
+    pub(crate) transitive_ticks_budget: u64,
+    /// Adoption threshold for the root transitive-reduction dry-run
+    /// (SAT_TRANSITIVE_MIN_REMOVED_PERMILLE): the collected removals/units are
+    /// applied only when removed * 1000 >= live_binaries * permille. Below the
+    /// threshold nothing is touched, so the cell's trajectory stays
+    /// byte-identical to SAT_TRANSITIVE=off.
+    pub(crate) transitive_min_removed_permille: u64,
     pub(crate) rcheck_ticks_budget: u64,
 
     pub(crate) replay_overridden: bool,
@@ -821,7 +831,7 @@ impl Default for SolverConfig {
             vivify: false,
             probe: false,
             hbr: false,
-            transitive: false,
+            transitive: true,
             forward_subsume: false,
             gate_extract: false,
             gate_bve: false,
@@ -848,6 +858,8 @@ impl Default for SolverConfig {
             transitive_max_depth: 0,
             transitive_ticks_per_source: 0,
             transitive_max_removed_per_round: 0,
+            transitive_ticks_budget: 0,
+            transitive_min_removed_permille: 100,
             rcheck_ticks_budget: 0,
 
             replay_overridden: false,
@@ -1681,6 +1693,18 @@ impl SolverConfig {
             "SAT_TRANSITIVE_MAX_REMOVED_PER_ROUND",
             self.transitive_max_removed_per_round,
         );
+        self.transitive_ticks_budget = parse_u64_selected(
+            env_map,
+            &key_set,
+            "SAT_TRANSITIVE_TICKS",
+            self.transitive_ticks_budget,
+        );
+        self.transitive_min_removed_permille = parse_u64_selected(
+            env_map,
+            &key_set,
+            "SAT_TRANSITIVE_MIN_REMOVED_PERMILLE",
+            self.transitive_min_removed_permille,
+        );
         self.rcheck_ticks_budget = parse_u64_selected(
             env_map,
             &key_set,
@@ -1812,7 +1836,6 @@ impl SolverConfig {
         }
         let unsupported = [
             (self.hbr, "SAT_HBR"),
-            (self.transitive, "SAT_TRANSITIVE"),
             (self.forward_subsume, "SAT_FORWARD_SUBSUME"),
             (self.rcheck, "SAT_RCHECK"),
         ];
@@ -2184,6 +2207,16 @@ impl SolverConfig {
             &mut lines,
             "transitive_max_removed_per_round",
             self.transitive_max_removed_per_round.to_string(),
+        );
+        push_kv(
+            &mut lines,
+            "transitive_ticks_budget",
+            self.transitive_ticks_budget.to_string(),
+        );
+        push_kv(
+            &mut lines,
+            "transitive_min_removed_permille",
+            self.transitive_min_removed_permille.to_string(),
         );
         push_kv(
             &mut lines,
@@ -2600,11 +2633,11 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
         feature(
             "SAT_TRANSITIVE",
             config.transitive,
-            FeatureMaturity::ParkingLot,
+            FeatureMaturity::Experimental,
             false,
             false,
             false,
-            "",
+            "root binary-implication transitive reduction (kissat transitive.c)",
         ),
         feature(
             "SAT_FORWARD_SUBSUME",
@@ -2902,6 +2935,8 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "transitive_max_depth" => Some("SAT_TRANSITIVE_MAX_DEPTH"),
         "transitive_ticks_per_source" => Some("SAT_TRANSITIVE_TICKS_PER_SOURCE"),
         "transitive_max_removed_per_round" => Some("SAT_TRANSITIVE_MAX_REMOVED_PER_ROUND"),
+        "transitive_ticks_budget" => Some("SAT_TRANSITIVE_TICKS"),
+        "transitive_min_removed_permille" => Some("SAT_TRANSITIVE_MIN_REMOVED_PERMILLE"),
         "rcheck_ticks_budget" => Some("SAT_RCHECK_TICKS"),
         _ => None,
     }

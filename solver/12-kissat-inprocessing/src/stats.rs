@@ -220,6 +220,20 @@ pub(crate) struct SolverStats {
     pub(crate) preprocess_def_refine_solves: u64,
     /// core-refinement re-solves that shrank the core (SAT_ELIM_DEF_CORES > 1)
     pub(crate) preprocess_def_refine_shrunk: u64,
+    /// transitive-reduction probes attempted at the root (SAT_TRANSITIVE)
+    pub(crate) transitive_probes: u64,
+    /// transitive binary clauses found removable by the root dry-run (SAT_TRANSITIVE)
+    pub(crate) transitive_found_removed: u64,
+    /// failed-literal units found by the root transitive dry-run (SAT_TRANSITIVE)
+    pub(crate) transitive_found_units: u64,
+    /// transitive binary clauses actually deleted (SAT_TRANSITIVE, after adoption)
+    pub(crate) transitive_removed: u64,
+    /// failed-literal units actually learned (SAT_TRANSITIVE, after adoption)
+    pub(crate) transitive_units: u64,
+    /// 1 when the root transitive dry-run's edits were adopted (SAT_TRANSITIVE)
+    pub(crate) transitive_adopted: u64,
+    /// ticks spent by the root transitive-reduction scan (SAT_TRANSITIVE)
+    pub(crate) transitive_ticks: u64,
     /// variables removed by equivalent-literal substitution (SAT_ELS)
     pub(crate) els_substituted_vars: u64,
     /// clauses rewritten by equivalent-literal substitution (SAT_ELS)
@@ -839,7 +853,13 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("probe_units", 0);
     json.u64("hbr_added_binary", 0);
     json.u64("gate_equivalences_detected", 0);
-    json.u64("transitive_removed", 0);
+    json.u64("transitive_probes", ctx.stats.transitive_probes);
+    json.u64("transitive_found_removed", ctx.stats.transitive_found_removed);
+    json.u64("transitive_found_units", ctx.stats.transitive_found_units);
+    json.u64("transitive_removed", ctx.stats.transitive_removed);
+    json.u64("transitive_units", ctx.stats.transitive_units);
+    json.u64("transitive_adopted", ctx.stats.transitive_adopted);
+    json.u64("transitive_ticks", ctx.stats.transitive_ticks);
     json.u64("rcheck_attempts", 0);
     json.u64("rcheck_implied", 0);
     json.u64("proof_added_clauses", ctx.proof.added_clauses);
