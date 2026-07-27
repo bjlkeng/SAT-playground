@@ -10075,9 +10075,18 @@ impl Solver {
     /// `inprocess_round`). Returns `false` if the pass proves the formula UNSAT.
     fn inprocess_round_pass(&mut self, proof_log: &mut ProofLog, config: &SolverConfig) -> bool {
         let mut ok = true;
+        // Root-adopter scope for the two probe.c-parity round passes below
+        // (SAT_PROBE_INPROCESS / SAT_ELS_INPROCESS): fire only on formulas
+        // whose ROOT transitive pass adopted, the SESSION 7 shape — reroll
+        // risk confined to already-rerolled fat-margin cells, everything else
+        // byte-identical by construction.
+        let root_adopter = config.transitive && self.stats.transitive_adopted == 1;
         // Probe first: failed-literal probing forces backbone units, so vivification
         // then runs against an already-simplified root.
-        if ok && config.probe {
+        if ok && (config.probe || (config.probe_inprocess && root_adopter)) {
+            if !config.probe {
+                self.stats.probe_inprocess_rounds += 1;
+            }
             ok = self.probe_root_failed_literals(proof_log, config);
         }
         // Inprocessing-round transitive reduction (SAT_TRANSITIVE_INPROCESS,
@@ -10117,6 +10126,18 @@ impl Solver {
                     );
                 }
             } else if self.try_congruence(proof_log, config.congruence_xor) {
+                ok = false;
+            }
+        }
+        // Standalone equivalent-literal substitution after congruence, kissat
+        // probe.c parity (kissat_substitute runs right after kissat_congruence
+        // every probe round). Congruence only substitutes when it finds gate
+        // merges; a standalone ELS pass also collapses plain binary-implication
+        // SCCs the gate extractor never sees. Same root-adopter scope as the
+        // round transitive pass above. `try_els` returns true only on UNSAT.
+        if ok && config.els_inprocess && root_adopter {
+            self.stats.els_inprocess_rounds += 1;
+            if self.try_els(proof_log) {
                 ok = false;
             }
         }
@@ -19019,6 +19040,118 @@ mod tests {
         // still solves SAT with a valid model.
         let outcome = s.solve_with_proof(&mut proof, &config);
         assert!(outcome, "formula is satisfiable");
+    }
+
+    #[test]
+    fn els_probe_inprocess_round_skips_non_adopters() {
+        // Root transitive pass below threshold (adopted=0): neither the ELS
+        // nor the probe round pass may fire — byte-identity by construction.
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-2, 3], vec![1, 3]]);
+        let config = SolverConfig {
+            transitive: true,
+            els_inprocess: true,
+            probe_inprocess: true,
+            transitive_min_removed_permille: 1000,
+            ..Default::default()
+        };
+        let mut proof = ProofLog::disabled();
+        assert!(s.try_transitive_reduce(
+            &mut proof,
+            &config,
+            config.transitive_min_removed_permille,
+            false,
+        ));
+        assert_eq!(s.stats.transitive_adopted, 0);
+        assert!(s.inprocess_round_pass(&mut proof, &config));
+        assert_eq!(
+            s.stats.els_inprocess_rounds, 0,
+            "non-adopter must not run the ELS round"
+        );
+        assert_eq!(
+            s.stats.probe_inprocess_rounds, 0,
+            "non-adopter must not run the probe round"
+        );
+    }
+
+    #[test]
+    fn els_inprocess_round_substitutes_for_root_adopter() {
+        // Root pass adopts on the transitive chain; the ELS round then
+        // collapses the binary-implication SCC 5≡6 that congruence's gate
+        // extractor never sees. Congruence off to isolate the mechanism.
+        let clauses = vec![
+            vec![1, 2],
+            vec![-2, 3],
+            vec![1, 3],
+            vec![-3, 4],
+            vec![1, 4],
+            vec![-5, 6],
+            vec![5, -6],
+            vec![-1, -4, 5],
+        ];
+        let mut s = make_solver(6, clauses.clone());
+        let config = SolverConfig {
+            transitive: true,
+            els_inprocess: true,
+            congruence: false,
+            ..Default::default()
+        };
+        let mut proof = ProofLog::disabled();
+        assert!(s.try_transitive_reduce(
+            &mut proof,
+            &config,
+            config.transitive_min_removed_permille,
+            false,
+        ));
+        assert_eq!(s.stats.transitive_adopted, 1);
+        assert!(s.inprocess_round_pass(&mut proof, &config));
+        assert_eq!(s.stats.els_inprocess_rounds, 1, "adopter runs the ELS round");
+        assert!(
+            s.stats.els_substituted_vars >= 1,
+            "the 5≡6 SCC must be substituted"
+        );
+        assert!(
+            s.solve_with_proof(&mut proof, &config),
+            "formula is satisfiable"
+        );
+        for clause in &clauses {
+            assert!(
+                clause.iter().any(|&lit| s.lit_value(lit) == TRUE),
+                "every original clause must be satisfied by the model"
+            );
+        }
+    }
+
+    #[test]
+    fn probe_inprocess_round_probes_for_root_adopter() {
+        // Root pass adopts; the probe round then runs failed-literal probing
+        // without SAT_PROBE being enabled (root probe untouched).
+        let mut s = make_solver(
+            4,
+            vec![vec![1, 2], vec![-2, 3], vec![1, 3], vec![-3, 4], vec![1, 4]],
+        );
+        let config = SolverConfig {
+            transitive: true,
+            probe_inprocess: true,
+            ..Default::default()
+        };
+        assert!(!config.probe, "root SAT_PROBE stays off");
+        let mut proof = ProofLog::disabled();
+        assert!(s.try_transitive_reduce(
+            &mut proof,
+            &config,
+            config.transitive_min_removed_permille,
+            false,
+        ));
+        assert_eq!(s.stats.transitive_adopted, 1);
+        assert!(s.inprocess_round_pass(&mut proof, &config));
+        assert_eq!(
+            s.stats.probe_inprocess_rounds, 1,
+            "adopter runs the probe round"
+        );
+        assert!(
+            s.solve_with_proof(&mut proof, &config),
+            "formula is satisfiable"
+        );
     }
 
     #[test]

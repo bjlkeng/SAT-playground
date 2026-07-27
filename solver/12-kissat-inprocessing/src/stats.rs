@@ -237,6 +237,10 @@ pub(crate) struct SolverStats {
     /// inprocessing-round transitive scans whose edits were applied
     /// (SAT_TRANSITIVE_INPROCESS)
     pub(crate) transitive_inprocess_rounds: u64,
+    /// inprocessing-round standalone ELS passes run (SAT_ELS_INPROCESS)
+    pub(crate) els_inprocess_rounds: u64,
+    /// inprocessing-round failed-literal probe passes run (SAT_PROBE_INPROCESS)
+    pub(crate) probe_inprocess_rounds: u64,
     /// variables removed by equivalent-literal substitution (SAT_ELS)
     pub(crate) els_substituted_vars: u64,
     /// clauses rewritten by equivalent-literal substitution (SAT_ELS)
@@ -867,6 +871,8 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
         "transitive_inprocess_rounds",
         ctx.stats.transitive_inprocess_rounds,
     );
+    json.u64("els_inprocess_rounds", ctx.stats.els_inprocess_rounds);
+    json.u64("probe_inprocess_rounds", ctx.stats.probe_inprocess_rounds);
     json.u64("rcheck_attempts", 0);
     json.u64("rcheck_implied", 0);
     json.u64("proof_added_clauses", ctx.proof.added_clauses);

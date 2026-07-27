@@ -728,6 +728,17 @@ pub(crate) struct SolverConfig {
     /// parity: apply everything the round finds (the formula's trajectory is
     /// already rerolled by the root adoption).
     pub(crate) transitive_inprocess_min_removed_permille: u64,
+    /// Run standalone equivalent-literal substitution every inprocessing round
+    /// (SAT_ELS_INPROCESS, kissat probe.c parity — kissat_substitute runs each
+    /// probe round), but ONLY on formulas whose root transitive pass adopted
+    /// (`transitive_adopted == 1`), the SESSION 7 root-adopter scope: every
+    /// non-adopter keeps a byte-identical trajectory.
+    pub(crate) els_inprocess: bool,
+    /// Run root failed-literal probing every inprocessing round
+    /// (SAT_PROBE_INPROCESS, kissat probe.c parity — binary_clauses_backbone
+    /// runs each probe round), scoped to root-transitive adopters exactly like
+    /// `els_inprocess`. Does not touch the root SAT_PROBE pass.
+    pub(crate) probe_inprocess: bool,
     pub(crate) rcheck_ticks_budget: u64,
 
     pub(crate) replay_overridden: bool,
@@ -873,6 +884,13 @@ impl Default for SolverConfig {
             transitive_min_removed_permille: 100,
             transitive_inprocess: true,
             transitive_inprocess_min_removed_permille: 0,
+            els_inprocess: false,
+            // Default-on since the 2026-07-27 promotion (gate WIN 72v72
+            // identical solved sets, both-solved conflicts -121,608:
+            // log/abtest-cand-vs-base-2026-07-27-11-58-13). Root-adopter
+            // scope: only sted2/ibm trajectories move; everything else is
+            // byte-identical (rbsat digit-exact at 100k conflicts).
+            probe_inprocess: true,
             rcheck_ticks_budget: 0,
 
             replay_overridden: false,
@@ -1729,6 +1747,18 @@ impl SolverConfig {
             &key_set,
             "SAT_TRANSITIVE_INPROCESS_MIN_REMOVED_PERMILLE",
             self.transitive_inprocess_min_removed_permille,
+        );
+        self.els_inprocess = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_ELS_INPROCESS",
+            self.els_inprocess,
+        );
+        self.probe_inprocess = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_PROBE_INPROCESS",
+            self.probe_inprocess,
         );
         self.rcheck_ticks_budget = parse_u64_selected(
             env_map,
@@ -2966,6 +2996,8 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "transitive_inprocess_min_removed_permille" => {
             Some("SAT_TRANSITIVE_INPROCESS_MIN_REMOVED_PERMILLE")
         }
+        "els_inprocess" => Some("SAT_ELS_INPROCESS"),
+        "probe_inprocess" => Some("SAT_PROBE_INPROCESS"),
         "rcheck_ticks_budget" => Some("SAT_RCHECK_TICKS"),
         _ => None,
     }
@@ -3175,6 +3207,8 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_TRANSITIVE_MIN_REMOVED_PERMILLE",
         "SAT_TRANSITIVE_INPROCESS",
         "SAT_TRANSITIVE_INPROCESS_MIN_REMOVED_PERMILLE",
+        "SAT_ELS_INPROCESS",
+        "SAT_PROBE_INPROCESS",
         "SAT_RCHECK_TICKS",
         "SAT_INITIAL_CLAUSE_MODE",
         "SAT_BRANCH_MODE",
