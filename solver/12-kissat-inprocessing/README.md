@@ -1086,3 +1086,44 @@ Validation after the accepted change:
 - baseline run: `log/seedgate-pref-baseline-2026-06-17-17-25-59/`
 - candidate run: `log/seedgate-pref-on-2026-06-17-19-42-46/`
 - profile: `propagate` 83% self-time (perf on `case9`, conflict-capped)
+
+## 2026-07-28 SAT-Sweeping Productivity Pass (SAT_SWEEP_ROOT, SAT_SWEEP_SUBST — both default-off)
+
+Session goal: attack the largest measured mechanism gap vs kissat — sweep productivity
+(kissat kitten-solves 90k-18M times per instance with up to 3.5M substitutions on the
+starved timeout cells; solver12 posted 0 sweep finds there — `plan/gap-read-2026-07-21.md`).
+
+**Defect found (permanent fact):** `sweep_round` added its proven equivalences as LEARNED
+binaries (`inprocess_add_clause` → `add_clause_from_slice`), but `try_els` harvests its
+implication graph from `original_clause_ids` only — **sweep-proven equivalences were never
+substituted, on any cell, ever**. Measured on booth_dadda_mapped: 352 equivalences found
+across rounds, 4 ELS calls, 0 substitutions. The finds are also duplicate-inflated by
+overlapping environments (352 finds = 11 distinct pairs).
+
+**`SAT_SWEEP_SUBST` (default-off):** installs sweep equivalence binaries as ORIGINAL
+clauses (deduped, skip-assigned) so the ELS merge actually fires;
+`SAT_SWEEP_SUBST_MIN_EQUIVS` keeps low-yield rounds (TT class finds ~5) on the shipped
+learned shape byte-identically. Result: **kissat-parity substitution mass on the BMC
+class** — oski15a01b20s 69,347 substituted vars (kissat 71,487), VexRiscv 76,062 — and a
+large wall win (oski15b20 1642 s idle baseline → 1281 s under load), but the decisive
+conflicts tier LOSES: vex 2,975,066 → 3,412,420 (+437k), oski15b20 2,663,684 → 2,832,881
+(+169k). Booth x3 / Bubble / stp212 / g2 timeout cells: zero flips. Verdict: the
+REDUCE-law shape — real mechanism, negative at the 1800 s metric; >3000 s-horizon item.
+
+**`SAT_SWEEP_ROOT` (default-off):** kissat-parity escalating root sweep — whole-environment
+completion flags (without them 91/102 booth probe finds were re-proofs), cross-pass dedup,
+kitten-tick budget (`SAT_SWEEP_ROOT_TICKS`, default lits*200 clamped 200M..2G), bound
+escalation (256→8192 vars / 1024→32768 clauses / depth 2→3), pass-1 dry-run probe
+(`SAT_SWEEP_ROOT_PROBE_ENVS`=2000 or 10% budget) with an all-or-nothing yield threshold
+(`SAT_SWEEP_ROOT_MIN_YIELD_PERMILLE`=20) and a live-var cap (`SAT_SWEEP_ROOT_MAX_VARS`=400k);
+adopters get units + original equivalence binaries + ELS + a final eliminate(true).
+Result: **zero flips** on 14 under-cap timeout cells at 1800 s idle (stp212 applied 520
+units + 13,518 equivalences — 8% of live vars — and still timed out, even at 3e9 ticks
+with SWEEP_SUBST stacked); the probe-yield threshold separates the wrong way across
+classes (TT_C392 adopts at 139‰ while goldcrest sits at 31‰ — the SESSION 6 threshold
+law), so no promotable scope exists. Kept as identity-safe groundwork.
+
+Validation: 715 unit tests (+9), smoke 9/9, drat-trim VERIFIED on every UNSAT smoke
+formula in all flag combinations, byte-identity of defaults re-verified digit-exact
+(rbsat 100k: 100001 conflicts / 196258 decisions / 17,758,017 propagations; MVRR 267,199
+conflicts). Full session detail and screen artifacts: `plan/next-plan.md` SESSION 10.

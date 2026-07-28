@@ -249,6 +249,24 @@ impl SweepEnv {
 /// pathological environment cannot stall; on budget exhaustion the proven-so-far facts
 /// are returned (sound: every returned fact was proven by a UNSAT kitten call).
 pub(crate) fn prove_facts(env: &mut SweepEnv, solve_budget: usize) -> SweepFacts {
+    // Unlimited tick budget: `solve_budgeted(_, u64::MAX)` can never exhaust, so this is
+    // decision-identical to the historical unbudgeted path (byte-identity for the
+    // shipped inprocessing sweep).
+    let mut unlimited = u64::MAX;
+    prove_facts_budgeted(env, solve_budget, &mut unlimited)
+}
+
+/// Tick-budgeted variant of [`prove_facts`] (root sweep, SAT_SWEEP_ROOT). `tick_budget`
+/// is a REMAINING-budget accumulator shared across environments: each kitten solve is
+/// capped at the remaining ticks, its consumed ticks are subtracted, and the loop stops
+/// proving (returning the facts established so far — each one proven by a completed
+/// UNSAT call, so soundness is unaffected) once the budget reaches zero. Deterministic:
+/// ticks count propagation work, never wall time.
+pub(crate) fn prove_facts_budgeted(
+    env: &mut SweepEnv,
+    solve_budget: usize,
+    tick_budget: &mut u64,
+) -> SweepFacts {
     use crate::kitten::KittenResult;
     let mut facts = SweepFacts::default();
     let n = env.to_outer.len();
@@ -257,10 +275,28 @@ pub(crate) fn prove_facts(env: &mut SweepEnv, solve_budget: usize) -> SweepFacts
     }
     let mut solves = 0usize;
 
+    // One budgeted kitten call: charge consumed ticks against the remaining budget and
+    // surface `None` when the budget is exhausted (before or during the call).
+    macro_rules! budgeted_solve {
+        ($assumps:expr) => {{
+            if *tick_budget == 0 {
+                None
+            } else {
+                let result = env.kitten.solve_budgeted($assumps, *tick_budget);
+                *tick_budget = tick_budget.saturating_sub(env.kitten.ticks());
+                result
+            }
+        }};
+    }
+
     // Initial model. If the environment is UNSAT outright, the outer formula is UNSAT.
-    if env.kitten.solve(&[]) != KittenResult::Sat {
-        facts.env_unsat = true;
-        return facts;
+    match budgeted_solve!(&[]) {
+        Some(KittenResult::Sat) => {}
+        Some(KittenResult::Unsat) => {
+            facts.env_unsat = true;
+            return facts;
+        }
+        None => return facts,
     }
     solves += 1;
 
@@ -283,14 +319,15 @@ pub(crate) fn prove_facts(env: &mut SweepEnv, solve_budget: usize) -> SweepFacts
         }
         // Probe the opposite polarity.
         let probe = if v0 { -var } else { var };
-        match env.kitten.solve(&[probe]) {
-            KittenResult::Unsat => {
+        match budgeted_solve!(&[probe]) {
+            Some(KittenResult::Unsat) => {
                 let outer_var = env.to_outer[idx];
                 facts.backbones.push(if v0 { outer_var } else { -outer_var });
             }
-            KittenResult::Sat => {
+            Some(KittenResult::Sat) => {
                 models.push(env.model_snapshot());
             }
+            None => return facts,
         }
         solves += 1;
         var += 1;
@@ -299,7 +336,7 @@ pub(crate) fn prove_facts(env: &mut SweepEnv, solve_budget: usize) -> SweepFacts
     // Re-establish a full model for equivalence partitioning (last solve may have been a
     // probe under an assumption; solve() cleared assumptions on entry so value() is a
     // model of the whole environment only after an unassumed SAT solve).
-    if solves < solve_budget && env.kitten.solve(&[]) == KittenResult::Sat {
+    if solves < solve_budget && budgeted_solve!(&[]) == Some(KittenResult::Sat) {
         solves += 1;
         // --- Equivalence detection via model partition refinement ---
         // Two non-backbone variables a, b are equivalence candidates if in every model
@@ -332,7 +369,10 @@ pub(crate) fn prove_facts(env: &mut SweepEnv, solve_budget: usize) -> SweepFacts
                 // Prove a <-> (b if same else ¬b): both (a & ¬target) and (¬a & target)
                 // must be UNSAT.
                 let target = if same0 { b } else { -b };
-                let unsat_ab = env.kitten.solve(&[a, -target]) == KittenResult::Unsat;
+                let unsat_ab = match budgeted_solve!(&[a, -target]) {
+                    Some(r) => r == KittenResult::Unsat,
+                    None => return facts,
+                };
                 solves += 1;
                 if !unsat_ab {
                     // record the distinguishing model to prune future pairs
@@ -342,7 +382,10 @@ pub(crate) fn prove_facts(env: &mut SweepEnv, solve_budget: usize) -> SweepFacts
                 if solves >= solve_budget {
                     break;
                 }
-                let unsat_ba = env.kitten.solve(&[-a, target]) == KittenResult::Unsat;
+                let unsat_ba = match budgeted_solve!(&[-a, target]) {
+                    Some(r) => r == KittenResult::Unsat,
+                    None => return facts,
+                };
                 solves += 1;
                 if unsat_ba {
                     let oa = env.to_outer[ai];

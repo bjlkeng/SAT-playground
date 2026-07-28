@@ -1,0 +1,101 @@
+04648cef5bed430ab6429991fa9e107d-ramsey_3_6_19.normalised	c sweep_root probe units=0 equivs=0 probe_envs=1 live_vars=171 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=50861
+1b84df53843ecd90ec8c3c7a01cada6c-ramsey_4_4_18.normalised	c sweep_root probe units=0 equivs=0 probe_envs=1 live_vars=153 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=10742
+1e0d58c7e52319b3b17e343ec7ca6de5-QG7-gensys-icl006.sat05-3132.reshuffled-07	c sweep_root probe units=0 equivs=0 probe_envs=9 live_vars=636 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=911995
+21415e807689ea75536e846a24623de1-clqcl_50_6_5.normalised	c sweep_root probe units=0 equivs=0 probe_envs=31 live_vars=1896 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=1788184
+16ff47a05b769ed6a04c7175cfc6da55-sqrt-mitern170	c sweep_root probe units=0 equivs=2 probe_envs=37 live_vars=2062 yield_permille_threshold=20 adopted=1 budget_ticks=200000000 probe_ticks=2521719
+0aa22564d00e9716519918d84b25c4a7-sudoku-N30-12	c sweep_root skipped=max_vars live_vars=411227 cap=400000
+16c999d046885c8e51f196e60c34d966-aaai10-planning-ipc5-pathways-17-step20	c sweep_root probe units=0 equivs=455 probe_envs=1342 live_vars=35758 yield_permille_threshold=20 adopted=1 budget_ticks=200000000 probe_ticks=20002911
+00fd8ac9acd186a7a78a2c4d92f90de1-2.normalised	c sweep_root skipped=max_vars live_vars=20696704 cap=400000
+1d18837c0ced5c18a3a4693993e61728-SC25_Timetable_C_392_E_45_Cl_25_D_7_T_50.normalised	c sweep_root probe units=53 equivs=28 probe_envs=581 live_vars=102469 yield_permille_threshold=20 adopted=1 budget_ticks=350809800 probe_ticks=35127936
+0205e2dffaef93a90c239df31755f2e1-bp4_CSO_AM_IXA_LP.normalised	c sweep_root probe units=0 equivs=331 probe_envs=2000 live_vars=39013 yield_permille_threshold=20 adopted=1 budget_ticks=475216800 probe_ticks=554188
+0f269188707a1b2f309dd1c70bfe22b0-bp4_BC012_CSO_AM_IXA.normalised	c sweep_root probe units=0 equivs=184 probe_envs=2000 live_vars=35307 yield_permille_threshold=20 adopted=1 budget_ticks=500301400 probe_ticks=362859
+19951d43eff5fc4ef6fd07d7a5324fa0-oddball_80_5_tto_zp.normalised	no_sweep_root_line
+2412325e3c099453b99c87864477363c-arles_thres20_p10_r7340	no_sweep_root_line
+31e843c53a76ff3961935ad55b953298-sqrt-mitern171	c sweep_root probe units=0 equivs=4 probe_envs=31 live_vars=1796 yield_permille_threshold=20 adopted=1 budget_ticks=200000000 probe_ticks=1947421
+389bb0a8f3568f4bd0e71771df9093c5-BubbleVsPancakeSort_7_6	c sweep_root probe units=0 equivs=2 probe_envs=35 live_vars=1483 yield_permille_threshold=20 adopted=1 budget_ticks=200000000 probe_ticks=1379602
+296fd43ed40e242875984420f29be73f-oddball_24_5_ttf.normalised	c sweep_root probe units=1098 equivs=0 probe_envs=261 live_vars=5484 yield_permille_threshold=20 adopted=1 budget_ticks=200000000 probe_ticks=20065647
+22c8d6aa86d51e15ef5ab37479eda22b-xor_op_n40_d3	c sweep_root probe units=0 equivs=0 probe_envs=19 live_vars=1560 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=3281508
+35b9091b90bd28a492c9556d6fc4348d-bp4_TCO_CSO_ZR.normalised	c sweep_root probe units=0 equivs=11 probe_envs=2000 live_vars=25710 yield_permille_threshold=20 adopted=0 budget_ticks=372677400 probe_ticks=1084795
+42f1311ce504db8cc0cb590a568da20a-tseitin_n188_d3	no_sweep_root_line
+3746303c659ef65aaa78f3b52cd5de49-6s299b685_Iter30	c sweep_root skipped=max_vars live_vars=793258 cap=400000
+2925ee90763e08b2f7e79c7c713c86b9-at-least-two-ibm-2004-23-k100	c sweep_root probe units=631 equivs=973 probe_envs=1280 live_vars=107919 yield_permille_threshold=20 adopted=1 budget_ticks=521103600 probe_ticks=52134533
+28eeb2beac7005a9afa98e4d3aaca621-oski15a01b40s_opt	c sweep_root probe units=2 equivs=73 probe_envs=1110 live_vars=185351 yield_permille_threshold=20 adopted=1 budget_ticks=559506400 probe_ticks=55988011
+2241a1fb5bdbac0c1a3c1980ed8b332d-crusti_g2io_225_0.1_31_25.normalised	c sweep_root probe units=0 equivs=0 probe_envs=555 live_vars=20925 yield_permille_threshold=20 adopted=0 budget_ticks=568110000 probe_ticks=56943120
+29b7d5a498eff7a98fcd03a273eaeba3-Kakuro-easy-132-ext.xml.hg_8	c sweep_root probe units=0 equivs=651 probe_envs=2000 live_vars=145770 yield_permille_threshold=20 adopted=1 budget_ticks=2000000000 probe_ticks=111973749
+5c8f4e54e195d46053b04e232a5661c4-case7.normalised	c sweep_root probe units=0 equivs=0 probe_envs=18 live_vars=638 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=210961
+57b478982ee9aba245ba792452b18fe3-VanDerWaerden_pd_2-3-22_462	c sweep_root probe units=0 equivs=0 probe_envs=1 live_vars=231 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=37560
+557d7d4db5399188f62bc39598c6d868-mp1-Nb7T46	c sweep_root probe units=0 equivs=0 probe_envs=264 live_vars=29907 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=20011652
+54d496c14fd2461642ef6be5341b297b-hwmcc17miters-xits-iso-6s163.sanitized	no_sweep_root_line
+465795fa2641c616ce76de8501672a19-VanDerWaerden_pd_2-3-27_663	c sweep_root probe units=1 equivs=0 probe_envs=53 live_vars=332 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=2349138
+4f4d22ce7643079412975a662e9363fd-xor_op_n38_d3	c sweep_root probe units=0 equivs=0 probe_envs=18 live_vars=1406 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=3233871
+46355da785714f239393e7630020cae3-REGRandom-K4-L1-Seed40.sanitized	c sweep_root probe units=0 equivs=0 probe_envs=373 live_vars=3262 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=2147549
+5dbe7b31f9b8d8e56045493439adb949-bp4_CSO_IXA_ZR.normalised	c sweep_root probe units=0 equivs=13 probe_envs=2000 live_vars=25738 yield_permille_threshold=20 adopted=0 budget_ticks=373477400 probe_ticks=1085835
+4e3195a382f5af213444736fcc8b364f-case1.normalised	c sweep_root probe units=0 equivs=0 probe_envs=1417 live_vars=19148 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=20003150
+6415a71364351c0a521fdee510bc2589-18.normalised	c sweep_root skipped=max_vars live_vars=2142727 cap=400000
+5c47810953b22baa5f6f45585430fc77-oski15a01b20s_opt	c sweep_root probe units=2 equivs=98 probe_envs=1154 live_vars=184640 yield_permille_threshold=20 adopted=1 budget_ticks=557626800 probe_ticks=55815171
+5e933a625099cc1ec6a8299a7848a2ae-Kakuro-easy-112-ext.xml.hg_7	c sweep_root probe units=0 equivs=516 probe_envs=2000 live_vars=131463 yield_permille_threshold=20 adopted=1 budget_ticks=2000000000 probe_ticks=102400497
+77a0d54f2fb3740a9a321623c0c10f3e-tseitin_grid_n12_m12	no_sweep_root_line
+6cb995b1c550beb579c53e27f6ca881a-RoundRobin_n16_d13	c sweep_root probe units=0 equivs=0 probe_envs=32 live_vars=1637 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=2153651
+780b0c9b5aed38a127f61c6aae7287aa-rbsat-v1375c111739gyes10	c sweep_root probe units=0 equivs=0 probe_envs=83 live_vars=2297 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=5682519
+75cc1f02ed4b8c06553ef579b163e1be-SCPC-500-14	c sweep_root probe units=0 equivs=0 probe_envs=10 live_vars=500 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=1396957
+663bb5659e42c2c75f74354f48895302-SCPC-500-13	c sweep_root probe units=0 equivs=0 probe_envs=9 live_vars=500 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=1246021
+849950561ddce887c78fef773dccfa80-circuit_48in64out_with_800gates_4in4out_dist128_seed3.sanitized	c sweep_root probe units=0 equivs=11 probe_envs=118 live_vars=3097 yield_permille_threshold=20 adopted=1 budget_ticks=200000000 probe_ticks=3925594
+72cec28d6e34efe366150066b71edc33-bp4_LPI_FPBEQ_ZR.normalised	c sweep_root probe units=0 equivs=2 probe_envs=2000 live_vars=25800 yield_permille_threshold=20 adopted=0 budget_ticks=213903000 probe_ticks=1391084
+67aa1a256f92020dccdf66b235de3986-jkkk-one-one-10-34-sat	c sweep_root probe units=126 equivs=121 probe_envs=364 live_vars=9107 yield_permille_threshold=20 adopted=1 budget_ticks=200000000 probe_ticks=19154068
+65f7145996bbec02b90bd0fa64a20502-test_v7_r12_vr10_c1_s18160.smt2-stp212	c sweep_root probe units=29 equivs=1002 probe_envs=2000 live_vars=172027 yield_permille_threshold=20 adopted=1 budget_ticks=695324800 probe_ticks=39030534
+818c585e5986431917605fca8d775034-g2-hwmcc15deep-oski15a10b10s-k20	c sweep_root probe units=21 equivs=18 probe_envs=818 live_vars=92633 yield_permille_threshold=20 adopted=1 budget_ticks=426456600 probe_ticks=42671139
+83aa254f7d17e1df7bee19322ac4752b-1.normalised	c sweep_root skipped=max_vars live_vars=25885004 cap=400000
+6832fe907740af686fde98518067ea3f-velev-pipe-sat-1.0-b7	no_sweep_root_line
+8a05f9b6bf49285e40d0a197967ea5d3-arles_thres10_p10_r7466	no_sweep_root_line
+91c429adc2dc8430461b6d87a9aef335-16_16_booth_wallace_mapped_and_and_wallace_origin_bit28	c sweep_root probe units=0 equivs=0 probe_envs=141 live_vars=1502 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=433012
+8707ef793f0443b5804c56c2ffca322e-clqcl_40_6_5.normalised	c sweep_root probe units=0 equivs=0 probe_envs=26 live_vars=1321 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=2018340
+8b22396ef06770c7dfa7552a610fc911-PancakeVsSelectionSort_6_7	c sweep_root probe units=2 equivs=5 probe_envs=40 live_vars=1539 yield_permille_threshold=20 adopted=1 budget_ticks=200000000 probe_ticks=2179690
+918d9e7c2e197312517736421d728958-SCPC-500-1	c sweep_root probe units=0 equivs=0 probe_envs=10 live_vars=500 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=1340265
+8733dfd02c923d69720500c9ec8ce36a-reconf10_70_queen14_2	c sweep_root skipped=max_vars live_vars=519144 cap=400000
+85ba26d796de9ad740ce5a6813488fbc-sted2_0x1e3-216	c sweep_root probe units=4 equivs=1 probe_envs=48 live_vars=2528 yield_permille_threshold=20 adopted=1 budget_ticks=200000000 probe_ticks=5784758
+8f391f2bf8167f1b96467f3479b33dc5-oddball_20_5_ttf.normalised	c sweep_root probe units=960 equivs=0 probe_envs=280 live_vars=4103 yield_permille_threshold=20 adopted=1 budget_ticks=200000000 probe_ticks=20006987
+931621d9964e9d0cd1c4001822015c92-DLTM_twitter845_79_19	c sweep_root probe units=20 equivs=67 probe_envs=558 live_vars=18645 yield_permille_threshold=20 adopted=1 budget_ticks=200000000 probe_ticks=11392561
+9277f5d1bc65276294617e672c4f2443-bp4_BC012_CSO_FPBEQ_FPBLE_ZR.normalised	c sweep_root probe units=0 equivs=2 probe_envs=2000 live_vars=29616 yield_permille_threshold=20 adopted=0 budget_ticks=251232800 probe_ticks=1012138
+8e62c5d47920ffe36052f86177403e70-SC25_Timetable_C_393_E_45_Cl_26_D_7_T_50.normalised	c sweep_root probe units=50 equivs=27 probe_envs=580 live_vars=102465 yield_permille_threshold=20 adopted=1 budget_ticks=350888200 probe_ticks=35107162
+901fa244999d250bc8d8cce19cabc114-SC25_Timetable_C_492_E_48_Cl_33_D_7_T_58.normalised	c sweep_root probe units=44 equivs=28 probe_envs=872 live_vars=148142 yield_permille_threshold=20 adopted=1 budget_ticks=519072400 probe_ticks=51944495
+abadaf0ee0e21ff1a4b0e294f13ab5ab-arles_thres10_p20_r4305	no_sweep_root_line
+a497d784c61c330f012dcd80d44dcd43-x9-06099.sat.sanitized	c sweep_root probe units=0 equivs=0 probe_envs=10 live_vars=316 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=122513
+98a991c902324b02349e766ad357cdc6-16_16_booth_dadda_origin_and_and_dadda_mapped_bit28	c sweep_root probe units=0 equivs=2 probe_envs=114 live_vars=1361 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=379716
+96977e8e00a3728097861502a449e343-lockchart-group3-L13-K26-p4d3j1.normalised	c sweep_root probe units=0 equivs=0 probe_envs=29 live_vars=3966 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=947551
+9f38c92ba81c754103444edc15c1f44b-simon-r21-1.sanitized	c sweep_root probe units=0 equivs=224 probe_envs=32 live_vars=1280 yield_permille_threshold=20 adopted=1 budget_ticks=200000000 probe_ticks=840457
+a8608545f9ae0462c7426e71a0e3e634-rbsat-v945c61409g3	c sweep_root probe units=0 equivs=0 probe_envs=48 live_vars=1469 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=2971585
+95abe8aeebbe88fcb0503b13109593b3-reconf10_68_queen14_1	c sweep_root skipped=max_vars live_vars=490940 cap=400000
+9af7646fc4a32c6f2744ddc0c4b654b7-brocard_problem_large	c sweep_root skipped=max_vars live_vars=710640 cap=400000
+98e8aa2ace21d3362ef51524ad546764-bp4_TCO_CSO_IXA_LP_ZR.normalised	c sweep_root probe units=0 equivs=12 probe_envs=2000 live_vars=28428 yield_permille_threshold=20 adopted=0 budget_ticks=381225000 probe_ticks=1092154
+a28f59752c160af22b6d04cb89ddf802-pj2008_k200	c sweep_root skipped=max_vars live_vars=6101799 cap=400000
+95931bb010dba306e24c79c120044ff9-SC25_Timetable_C_496_E_48_Cl_33_D_7_T_50.normalised	c sweep_root probe units=41 equivs=27 probe_envs=747 live_vars=128322 yield_permille_threshold=20 adopted=1 budget_ticks=441477600 probe_ticks=44160923
+9f1cb42232335f84435126b5ae0fb701-SC25_Timetable_C_495_E_48_Cl_33_D_7_T_50.normalised	c sweep_root probe units=49 equivs=27 probe_envs=746 live_vars=127837 yield_permille_threshold=20 adopted=1 budget_ticks=440689800 probe_ticks=44137632
+b628043a07c5576dd6cd21c9d73a69e0-fixedbandwidth-eq-37_shuffled	c sweep_root probe units=0 equivs=0 probe_envs=15 live_vars=149 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=15091
+cb950b9accfb53eb98f77b0f995ac0ae-rphp5_050_shuffled	c sweep_root probe units=0 equivs=0 probe_envs=3 live_vars=450 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=204838
+c0074020a48535e6062421cea2850dd0-st_659_37_25_686.normalised	c sweep_root probe units=0 equivs=0 probe_envs=203 live_vars=1725 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=9633074
+c05d4d3ecd06a2e3942fea09159dd27b-MVRoundRobin_n16_d10_v2	c sweep_root probe units=0 equivs=0 probe_envs=107 live_vars=5600 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=3850217
+b3d3680b3287a989ce61a6db1054efd2-case20.normalised	c sweep_root probe units=0 equivs=0 probe_envs=50 live_vars=1484 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=3369646
+bea83d274b1c57b2171b380e34fd645d-xor_op_n36_d3	c sweep_root probe units=0 equivs=0 probe_envs=17 live_vars=1260 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=3079538
+d2af3fde615d7c4d4a4574fc8839970e-lockchart-group1-L190-K276-p8d4j1.normalised	c sweep_root skipped=max_vars live_vars=1692960 cap=400000
+d5b11b0b73eb4ecebdbf6ee8143da689-oisc-subrv-and-nested-11	c sweep_root skipped=max_vars live_vars=2306467 cap=400000
+d89fc3e9c24e0383e940464f4704657e-SC25_Timetable_C_395_E_47_Cl_27_D_7_T_50.normalised	c sweep_root probe units=50 equivs=28 probe_envs=597 live_vars=104091 yield_permille_threshold=20 adopted=1 budget_ticks=356094400 probe_ticks=35629346
+c0bd86bd7ca2c65e44311de374168150-goldcrest-and-14	c sweep_root probe units=21 equivs=34 probe_envs=1791 live_vars=321259 yield_permille_threshold=20 adopted=1 budget_ticks=856839600 probe_ticks=85780978
+c8cde50f32ca3f78a4c74a173c63449b-bp5_CSO.normalised	c sweep_root probe units=0 equivs=63 probe_envs=2000 live_vars=137388 yield_permille_threshold=20 adopted=1 budget_ticks=2000000000 probe_ticks=80638
+b655faa69774192a80d9e2a2bc602ce4-Kakuro-easy-115-ext.xml.hg_5	c sweep_root probe units=0 equivs=594 probe_envs=2000 live_vars=130504 yield_permille_threshold=20 adopted=1 budget_ticks=2000000000 probe_ticks=116161962
+d971241ca861121371d20be1d61c15a3-arles_thres20_p10_r7532	no_sweep_root_line
+e12874b16df577b301608d03731595d8-rphp5_085_shuffled	c sweep_root probe units=0 equivs=0 probe_envs=7 live_vars=765 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=482384
+ed6d842f96d10f3400bce251f9e95bfb-battleship-16-31-sat	c sweep_root probe units=0 equivs=0 probe_envs=38 live_vars=527 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=428813
+de8c42d50f1dbf43a731f1916dc6bf01-16_16_booth_dadda_mapped_and_and_wallace_origin_bit28	c sweep_root probe units=0 equivs=3 probe_envs=150 live_vars=1538 yield_permille_threshold=20 adopted=1 budget_ticks=200000000 probe_ticks=463771
+f1973c0a4e960a914ff12aa7e4e9293c-lockchart-group2-rnd0.3-L19-K38-P8D4J1_4	c sweep_root probe units=0 equivs=0 probe_envs=512 live_vars=24928 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=14756563
+e318e2ac78b473091c3c2197afd7fc98-544707209399nw.shuffled-as.sat03-1671	c sweep_root probe units=26 equivs=99 probe_envs=232 live_vars=2622 yield_permille_threshold=20 adopted=1 budget_ticks=200000000 probe_ticks=460860
+e2d2b011b0805782df6adba648db92e8-59-129706	c sweep_root probe units=0 equivs=0 probe_envs=443 live_vars=29862 yield_permille_threshold=20 adopted=0 budget_ticks=339402400 probe_ticks=33988617
+f25a1df88f89c6bcbe2602fa7f6e816b-1-TC-256-K-63.sanitized	c sweep_root probe units=34 equivs=0 probe_envs=111 live_vars=12641 yield_permille_threshold=20 adopted=1 budget_ticks=200000000 probe_ticks=8596820
+f0bafebdcce23ccfbaf6c27a7522069b-div-mitern172	c sweep_root probe units=1 equivs=7 probe_envs=37 live_vars=1736 yield_permille_threshold=20 adopted=1 budget_ticks=200000000 probe_ticks=1904142
+f17dfbed8c18716a41b231702e127524-SC25_Timetable_C_406_E_45_Cl_26_D_7_T_50.normalised	c sweep_root probe units=44 equivs=26 probe_envs=600 live_vars=104868 yield_permille_threshold=20 adopted=1 budget_ticks=361456600 probe_ticks=36205730
+ee5fb3e181571740adb8444bd052dbdc-11.normalised	c sweep_root skipped=max_vars live_vars=47675864 cap=400000
+ebbda8d90dfd9b6500bf932f952907a6-2018D_VexRiscv-regch0-20-p1_step	c sweep_root probe units=91 equivs=6562 probe_envs=1975 live_vars=194472 yield_permille_threshold=20 adopted=1 budget_ticks=849476800 probe_ticks=84948381
+fab2022deb130fe3ad1136a5c71b4109-case9	c sweep_root probe units=0 equivs=0 probe_envs=18 live_vars=529 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=197565
+fbdca334e6985cd2de8718b60695b5f6-gm16sparrc	c sweep_root probe units=0 equivs=0 probe_envs=230 live_vars=13891 yield_permille_threshold=20 adopted=0 budget_ticks=200000000 probe_ticks=20074872
+f4ca5fca83e870d2ed56f2b00b074ed4-TT7F-33-24B	c sweep_root probe units=0 equivs=0 probe_envs=131 live_vars=5984 yield_permille_threshold=20 adopted=0 budget_ticks=2000000000 probe_ticks=872105
+f3abc375afaf48c7eae21500b773bd21-tseitin_grid_n400_m400	no_sweep_root_line
+SCAN_DONE

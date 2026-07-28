@@ -321,6 +321,34 @@ const SWEEP_SOLVE_BUDGET: usize = 2000;
 const SWEEP_MAX_VARS_CAP: usize = 8192;
 const SWEEP_MAX_CLAUSES_CAP: usize = 32768;
 const SWEEP_MAX_DEPTH_CAP: usize = 3;
+/// SAT_SWEEP_ROOT: root sweep pass (kissat-productivity SAT sweeping BEFORE search).
+/// The pass-1 scan is a pure dry-run: facts and their kitten proofs are buffered and
+/// nothing is emitted or applied unless the found mass (units + equivalences) crosses
+/// `SAT_SWEEP_ROOT_MIN_FOUND_PERMILLE` of the live variables — the all-or-nothing
+/// scoping shape shared with congruence/transitive/scoped-gate-BVE, so below-threshold
+/// formulas keep byte-identical trajectories. On adoption the pass loops full seed
+/// sweeps with the kissat escalation ladder until the kitten-tick budget is spent or
+/// two consecutive completed passes prove nothing.
+const SWEEP_ROOT_BUDGET_LITS_MULTIPLIER: u64 = 200;
+const SWEEP_ROOT_BUDGET_MIN_TICKS: u64 = 200_000_000;
+const SWEEP_ROOT_BUDGET_MAX_TICKS: u64 = 2_000_000_000;
+/// Default adoption threshold: found facts must be >= this per mille of the seeds
+/// actually SWEPT during the probe prefix (yield per swept environment — the same
+/// basis as kissat's sweep delay governor). Measured calibration (2026-07-27):
+/// goldcrest probes at ~45 per mille; barren cells at 0.
+const SWEEP_ROOT_MIN_YIELD_PERMILLE: u64 = 20;
+/// Probe prefix: the adoption decision is taken after this many swept environments
+/// (or after 10% of the tick budget, whichever first), so a rejecting formula pays
+/// only the bounded probe cost, never the full sweep budget.
+const SWEEP_ROOT_PROBE_ENVS: u64 = 2_000;
+/// Formulas above this live-variable count skip the root sweep entirely (wall + memory
+/// guard, same shape as SAT_GATE_BVE_SCOPED_MAX_VARS). 400k keeps goldcrest (321k
+/// live) in scope while excluding the vex/pj2008/g2 giants.
+const SWEEP_ROOT_MAX_VARS: usize = 400_000;
+/// Consecutive zero-yield COMPLETED root-sweep passes before the loop stops.
+const SWEEP_ROOT_MAX_UNPRODUCTIVE_PASSES: u32 = 2;
+/// Hard cap on root-sweep passes (safety backstop; the tick budget is the real limit).
+const SWEEP_ROOT_MAX_PASSES: u32 = 64;
 /// Skip SAT sweeping when phase search has already found a near-complete
 /// SAT-looking assignment prefix. This protects long SAT trajectories where
 /// true local equivalences can still derail a nearly complete model.
@@ -2803,6 +2831,32 @@ struct Solver {
     sweep_completed: u32,
     /// Env SAT_SWEEP_SEED_BUDGET: seeds actually swept per round.
     sweep_seed_budget: usize,
+    /// Env SAT_SWEEP_ROOT (default off): run the escalating, tick-budgeted root sweep
+    /// pass after the other root passes. See `try_root_sweep`.
+    sweep_root: bool,
+    /// Env SAT_SWEEP_SUBST (default off): install the inprocessing sweep's equivalence
+    /// binaries as ORIGINAL clauses instead of learned ones. `try_els` harvests its
+    /// implication graph from `original_clause_ids` only, so the shipped learned-binary
+    /// shape means sweep-proven equivalences are NEVER substituted — measured on
+    /// booth_dadda_mapped 2026-07-27: 352 equivalences found across rounds, 4 ELS calls,
+    /// 0 substitutions. With this on, the documented sweep->ELS merge cascade actually
+    /// fires. Default off: flipping it rerolls every sweep-active trajectory.
+    sweep_subst: bool,
+    /// Env SAT_SWEEP_SUBST_MIN_EQUIVS: substitution mode fires only on rounds proving
+    /// at least this many DISTINCT eligible pairs (low-yield rounds keep the shipped
+    /// learned-binary shape byte-identically). 0/1 = any.
+    sweep_subst_min_equivs: u64,
+    /// Env SAT_SWEEP_ROOT_MIN_YIELD_PERMILLE: probe adoption threshold —
+    /// (units + equivalences) * 1000 >= swept_envs * permille, else zero edits.
+    sweep_root_min_found_permille: u64,
+    /// Env SAT_SWEEP_ROOT_PROBE_ENVS: environments swept before the adoption decision.
+    sweep_root_probe_envs: u64,
+    /// Env SAT_SWEEP_ROOT_MAX_VARS: skip the root sweep on formulas with more live
+    /// variables than this.
+    sweep_root_max_vars: usize,
+    /// Env SAT_SWEEP_ROOT_TICKS: total kitten-tick budget for the whole root sweep
+    /// (0 = proportional to formula literals).
+    sweep_root_ticks_budget: u64,
     /// Bead SAT-playground-5b2.3.6: env SAT_VIVIFY_LEARNED. Also vivify LEARNT clauses
     /// (not only irredundant originals). Kissat vivifies tier1/tier2 learnt clauses for a
     /// meaningful share of its gain; on medium the original clauses often yield zero
@@ -4171,6 +4225,30 @@ impl Solver {
                 .and_then(|s| s.parse().ok())
                 .filter(|&n: &usize| n > 0)
                 .unwrap_or(SWEEP_SEED_BUDGET),
+            sweep_root: env_bool_or_default("SAT_SWEEP_ROOT", false),
+            sweep_subst: env_bool_or_default("SAT_SWEEP_SUBST", false),
+            sweep_subst_min_equivs: std::env::var("SAT_SWEEP_SUBST_MIN_EQUIVS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            sweep_root_min_found_permille: std::env::var("SAT_SWEEP_ROOT_MIN_YIELD_PERMILLE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(SWEEP_ROOT_MIN_YIELD_PERMILLE),
+            sweep_root_probe_envs: std::env::var("SAT_SWEEP_ROOT_PROBE_ENVS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&n: &u64| n > 0)
+                .unwrap_or(SWEEP_ROOT_PROBE_ENVS),
+            sweep_root_max_vars: std::env::var("SAT_SWEEP_ROOT_MAX_VARS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&n: &usize| n > 0)
+                .unwrap_or(SWEEP_ROOT_MAX_VARS),
+            sweep_root_ticks_budget: std::env::var("SAT_SWEEP_ROOT_TICKS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
             vivify_learned: env_bool_or_default(
                 "SAT_VIVIFY_LEARNED",
                 config.vivify
@@ -11402,6 +11480,33 @@ impl Solver {
                 return false;
             }
         }
+        // SAT_SWEEP_SUBST scoping: substitution mode activates only when this round
+        // proved at least `sweep_subst_min_equivs` DISTINCT eligible pairs. Low-yield
+        // rounds (the TT/sqrt classes find a handful) keep the shipped learned-binary
+        // shape exactly, protecting banked trajectories byte-identically.
+        let subst_active = self.sweep_subst && {
+            let mut seen: std::collections::HashSet<(i32, i32)> =
+                std::collections::HashSet::new();
+            let mut distinct: u64 = 0;
+            for &(a, b) in &all_equivalences {
+                let av = a.unsigned_abs() as usize;
+                let bv = b.unsigned_abs() as usize;
+                if av > nvars || bv > nvars || self.eliminated[av] || self.eliminated[bv] {
+                    continue;
+                }
+                if self.assignment[av] != UNASSIGNED || self.assignment[bv] != UNASSIGNED {
+                    continue;
+                }
+                let (x, y) = if av <= bv { (a, b) } else { (b, a) };
+                let key = if x < 0 { (-x, -y) } else { (x, y) };
+                if seen.insert(key) {
+                    distinct += 1;
+                }
+            }
+            distinct >= self.sweep_subst_min_equivs.max(1)
+        };
+        let mut subst_seen: std::collections::HashSet<(i32, i32)> =
+            std::collections::HashSet::new();
         for &(a, b) in &all_equivalences {
             let av = a.unsigned_abs() as usize;
             let bv = b.unsigned_abs() as usize;
@@ -11409,9 +11514,33 @@ impl Solver {
             if av > nvars || bv > nvars || self.eliminated[av] || self.eliminated[bv] {
                 continue;
             }
-            self.stats.sweep_equivalences = self.stats.sweep_equivalences.saturating_add(1);
-            self.inprocess_add_clause(&[-a, b], proof_log);
-            self.inprocess_add_clause(&[-b, a], proof_log);
+            if subst_active {
+                // SAT_SWEEP_SUBST: overlapping environments re-prove the same pair;
+                // as permanent ORIGINAL clauses duplicates would bloat the formula, so
+                // skip already-assigned variables and dedup within the round.
+                if self.assignment[av] != UNASSIGNED || self.assignment[bv] != UNASSIGNED {
+                    continue;
+                }
+                let (x, y) = if av <= bv { (a, b) } else { (b, a) };
+                let key = if x < 0 { (-x, -y) } else { (x, y) };
+                if !subst_seen.insert(key) {
+                    continue;
+                }
+                self.stats.sweep_equivalences = self.stats.sweep_equivalences.saturating_add(1);
+                // Install as ORIGINAL clauses: `try_els` harvests binaries from
+                // `original_clause_ids` only, so this is what lets the substitution
+                // below actually merge the pair (the learned-binary shape never does).
+                proof_log.record_clause(&[-a, b]);
+                let idx = self.els_install_original_clause(&[-a, b]);
+                self.original_clause_ids.push(idx as u32);
+                proof_log.record_clause(&[-b, a]);
+                let idx = self.els_install_original_clause(&[-b, a]);
+                self.original_clause_ids.push(idx as u32);
+            } else {
+                self.stats.sweep_equivalences = self.stats.sweep_equivalences.saturating_add(1);
+                self.inprocess_add_clause(&[-a, b], proof_log);
+                self.inprocess_add_clause(&[-b, a], proof_log);
+            }
         }
         if self.propagate().is_some() {
             self.has_empty_clause = true;
@@ -11430,6 +11559,383 @@ impl Solver {
                 self.has_empty_clause = true;
                 return false;
             }
+        }
+        true
+    }
+
+    /// SAT_SWEEP_ROOT: escalating, tick-budgeted SAT-sweeping as a ROOT pass (before
+    /// search), targeting kissat's sweep productivity on the cells where the shipped
+    /// 512-seed / 1M-conflict-cadence inprocessing sweep finds nothing (gap read
+    /// 2026-07-21: kissat kitten-solves 90k-18M times per instance on the starved
+    /// timeout cells; solver12 posts 0 sweep finds on every one of them).
+    ///
+    /// Shape (the 4-time-promoted all-or-nothing dry-run):
+    /// - Pass 1 scans EVERY eligible seed at the base environment bounds, buffering
+    ///   facts and their kitten RUP lemmas WITHOUT touching the formula. If the found
+    ///   mass (backbone units + equivalences) is below
+    ///   `sweep_root_min_found_permille` per mille of live variables, everything is
+    ///   discarded: no proof lines, no edits, byte-identical trajectory.
+    /// - On adoption the buffered facts are applied (units, implication binaries, ELS
+    ///   substitution — the same machinery as `sweep_round`) and full passes repeat
+    ///   with kissat's escalation ladder (vars 256->8192, clauses 1024->32768, depth
+    ///   2->3, re-flagging all seeds per completed pass) until the kitten-tick budget
+    ///   is exhausted or two consecutive completed passes prove nothing.
+    ///
+    /// Deterministic: budgets are kitten ticks + solve counts, never wall. Returns
+    /// false when the pass proves UNSAT (empty clause emitted).
+    fn try_root_sweep(&mut self, proof_log: &mut ProofLog, trace: bool) -> bool {
+        use crate::sweep::{
+            build_environment, prove_facts_budgeted, SWEEP_DEPTH, SWEEP_MAX_CLAUSES,
+            SWEEP_MAX_VARS,
+        };
+        if !self.sweep_root
+            || self.current_level() != 0
+            || self.has_empty_clause
+            || !self.solver_ok
+        {
+            return true;
+        }
+        let nvars = self.assignment.len().saturating_sub(1);
+        if nvars == 0 {
+            return true;
+        }
+        let live_vars = self.count_active_vars();
+        if live_vars == 0 || live_vars > self.sweep_root_max_vars {
+            if trace {
+                eprintln!(
+                    "c sweep_root skipped=max_vars live_vars={} cap={}",
+                    live_vars, self.sweep_root_max_vars,
+                );
+            }
+            return true;
+        }
+        let budget_ticks = if self.sweep_root_ticks_budget > 0 {
+            self.sweep_root_ticks_budget
+        } else {
+            (self.original_literals as u64)
+                .saturating_mul(SWEEP_ROOT_BUDGET_LITS_MULTIPLIER)
+                .clamp(SWEEP_ROOT_BUDGET_MIN_TICKS, SWEEP_ROOT_BUDGET_MAX_TICKS)
+        };
+        let mut remaining = budget_ticks;
+
+        let mut sweep_depth = SWEEP_DEPTH;
+        let mut sweep_max_vars = SWEEP_MAX_VARS;
+        let mut sweep_max_clauses = SWEEP_MAX_CLAUSES;
+        let mut done: Vec<bool> = vec![false; nvars + 1];
+        let mut passes: u32 = 0;
+        let mut unproductive: u32 = 0;
+        // Adoption is decided once, on the pass-1 probe prefix (a fixed number of swept
+        // environments or 10% of the tick budget, whichever comes first) — a rejecting
+        // formula pays only that bounded probe cost and is left byte-identical.
+        let mut decided = false;
+        let probe_tick_floor = remaining.saturating_sub(budget_ticks / 10);
+        let mut probe_envs_swept: u64 = 0;
+        // Cross-pass dedup: overlapping environments re-prove the same facts (measured
+        // on booth_dadda_mapped: 91 of 102 probe equivalences were duplicates), and a
+        // fact once applied stays applied — re-buffering it would only bloat the clause
+        // DB and the proof.
+        let mut seen_units: std::collections::HashSet<i32> = std::collections::HashSet::new();
+        let mut seen_pairs: std::collections::HashSet<(i32, i32)> =
+            std::collections::HashSet::new();
+
+        loop {
+            passes += 1;
+            // Fresh snapshot per pass: applied units/substitutions change the live
+            // clause set, and environments must reflect the current formula.
+            let mut snap: Vec<Vec<i32>> = Vec::new();
+            let mut occ: Vec<Vec<usize>> = vec![Vec::new(); nvars + 1];
+            let ids = self.original_clause_ids.clone();
+            for cid in ids {
+                let cid = cid as usize;
+                if self.clause_is_deleted(cid) {
+                    continue;
+                }
+                let len = self.clause_len(cid);
+                if len < 2 {
+                    continue;
+                }
+                let mut lits = Vec::with_capacity(len);
+                for p in 0..len {
+                    lits.push(self.clause_lit(cid, p));
+                }
+                let si = snap.len();
+                for &l in &lits {
+                    let v = l.unsigned_abs() as usize;
+                    if v >= 1 && v <= nvars {
+                        occ[v].push(si);
+                    }
+                }
+                snap.push(lits);
+            }
+            if snap.is_empty() {
+                break;
+            }
+            let clauses_of = |var: i32| -> Vec<Vec<i32>> {
+                let v = var as usize;
+                match occ.get(v) {
+                    Some(list) => list.iter().map(|&si| snap[si].clone()).collect(),
+                    None => Vec::new(),
+                }
+            };
+
+            // Scan every eligible seed, buffering lemmas + facts (nothing is emitted or
+            // applied until the pass finishes — and pass 1 additionally holds everything
+            // back until the adoption decision).
+            let mut pass_lemmas: Vec<Vec<i32>> = Vec::new();
+            let mut pass_backbones: Vec<i32> = Vec::new();
+            let mut pass_equivalences: Vec<(i32, i32)> = Vec::new();
+            let mut pass_completed = true;
+            for sv in 1..=nvars {
+                if remaining == 0 {
+                    pass_completed = false;
+                    break;
+                }
+                if self.assignment[sv] != UNASSIGNED || self.eliminated[sv] {
+                    continue;
+                }
+                if occ[sv].is_empty() || done[sv] {
+                    continue;
+                }
+                let mut env = build_environment(
+                    sv as i32,
+                    &clauses_of,
+                    sweep_depth,
+                    sweep_max_vars,
+                    sweep_max_clauses,
+                );
+                // Charge the environment build (BFS + kitten load) against the budget:
+                // roughly one tick per loaded clause, so huge barren neighbourhoods
+                // cannot run the scan for free.
+                remaining = remaining.saturating_sub(env.outer_clauses.len() as u64);
+                let facts = prove_facts_budgeted(&mut env, SWEEP_SOLVE_BUDGET, &mut remaining);
+                self.stats.sweep_root_envs = self.stats.sweep_root_envs.saturating_add(1);
+                if facts.env_unsat {
+                    // The environment alone is UNSAT => the formula is UNSAT. Emitting
+                    // the kitten refutation is sound regardless of adoption.
+                    for lemma in env.proof_lemmas_outer() {
+                        proof_log.record_clause(&lemma);
+                    }
+                    proof_log.record_clause(&[]);
+                    self.has_empty_clause = true;
+                    self.stats.sweep_root_ticks = self
+                        .stats
+                        .sweep_root_ticks
+                        .saturating_add(budget_ticks - remaining);
+                    return false;
+                }
+                // Deduplicate against everything already proven this invocation.
+                let fresh_backbones: Vec<i32> = facts
+                    .backbones
+                    .iter()
+                    .copied()
+                    .filter(|&u| seen_units.insert(u))
+                    .collect();
+                let fresh_equivalences: Vec<(i32, i32)> = facts
+                    .equivalences
+                    .iter()
+                    .copied()
+                    .filter(|&(a, b)| {
+                        // Canonical form: smaller |var| first, positive first literal.
+                        let (x, y) = if a.unsigned_abs() <= b.unsigned_abs() {
+                            (a, b)
+                        } else {
+                            (b, a)
+                        };
+                        let key = if x < 0 { (-x, -y) } else { (x, y) };
+                        seen_pairs.insert(key)
+                    })
+                    .collect();
+                if !fresh_backbones.is_empty() || !fresh_equivalences.is_empty() {
+                    pass_lemmas.extend(env.proof_lemmas_outer());
+                    pass_backbones.extend(fresh_backbones);
+                    pass_equivalences.extend(fresh_equivalences);
+                }
+                // kissat parity: the WHOLE swept environment is marked complete at the
+                // current bounds (kissat flags every variable of the environment), so
+                // overlapping neighbourhoods are not re-swept this pass. Flags clear on
+                // escalation, giving the bigger environment a fresh crack.
+                for &ov in &env.to_outer {
+                    let v = ov.unsigned_abs() as usize;
+                    if v <= nvars {
+                        done[v] = true;
+                    }
+                }
+
+                // Pass-1 probe decision, taken mid-scan once the probe prefix is spent.
+                if !decided {
+                    probe_envs_swept += 1;
+                    if probe_envs_swept >= self.sweep_root_probe_envs
+                        || remaining <= probe_tick_floor
+                    {
+                        decided = true;
+                        let found = pass_backbones.len() + pass_equivalences.len();
+                        self.stats.sweep_root_found_units = pass_backbones.len() as u64;
+                        self.stats.sweep_root_found_equivs = pass_equivalences.len() as u64;
+                        let adopted = found > 0
+                            && (found as u64) * 1000
+                                >= probe_envs_swept * self.sweep_root_min_found_permille;
+                        if trace {
+                            eprintln!(
+                                "c sweep_root probe units={} equivs={} probe_envs={} live_vars={} yield_permille_threshold={} adopted={} budget_ticks={} probe_ticks={}",
+                                pass_backbones.len(),
+                                pass_equivalences.len(),
+                                probe_envs_swept,
+                                live_vars,
+                                self.sweep_root_min_found_permille,
+                                adopted as u64,
+                                budget_ticks,
+                                budget_ticks - remaining,
+                            );
+                        }
+                        if !adopted {
+                            // Dry-run rejection: nothing was emitted or applied, so the
+                            // trajectory stays byte-identical to SAT_SWEEP_ROOT=off.
+                            self.stats.sweep_root_ticks = self
+                                .stats
+                                .sweep_root_ticks
+                                .saturating_add(budget_ticks - remaining);
+                            return true;
+                        }
+                        self.stats.sweep_root_adopted = 1;
+                    }
+                }
+            }
+
+            // A small formula can finish its whole first pass inside the probe prefix:
+            // decide on the complete pass-1 evidence.
+            if !decided {
+                decided = true;
+                let found = pass_backbones.len() + pass_equivalences.len();
+                self.stats.sweep_root_found_units = pass_backbones.len() as u64;
+                self.stats.sweep_root_found_equivs = pass_equivalences.len() as u64;
+                let adopted = found > 0
+                    && (found as u64) * 1000
+                        >= probe_envs_swept.max(1) * self.sweep_root_min_found_permille;
+                if trace {
+                    eprintln!(
+                        "c sweep_root probe units={} equivs={} probe_envs={} live_vars={} yield_permille_threshold={} adopted={} budget_ticks={} probe_ticks={}",
+                        pass_backbones.len(),
+                        pass_equivalences.len(),
+                        probe_envs_swept,
+                        live_vars,
+                        self.sweep_root_min_found_permille,
+                        adopted as u64,
+                        budget_ticks,
+                        budget_ticks - remaining,
+                    );
+                }
+                if !adopted {
+                    self.stats.sweep_root_ticks = self
+                        .stats
+                        .sweep_root_ticks
+                        .saturating_add(budget_ticks - remaining);
+                    return true;
+                }
+                self.stats.sweep_root_adopted = 1;
+            }
+
+            let found_this_pass = pass_backbones.len() + pass_equivalences.len();
+
+            // Apply the buffered pass: RUP lemmas first, then units, then the
+            // equivalence binaries, then ELS substitution (sweep_round's order).
+            if found_this_pass > 0 {
+                for lemma in &pass_lemmas {
+                    proof_log.record_clause(lemma);
+                }
+                if !pass_backbones.is_empty() {
+                    self.stats.sweep_root_applied_units = self
+                        .stats
+                        .sweep_root_applied_units
+                        .saturating_add(pass_backbones.len() as u64);
+                    self.stats.sweep_backbones = self
+                        .stats
+                        .sweep_backbones
+                        .saturating_add(pass_backbones.len() as u64);
+                    if !self.inprocess_add_root_units(&pass_backbones, proof_log) {
+                        self.has_empty_clause = true;
+                        return false;
+                    }
+                }
+                for &(a, b) in &pass_equivalences {
+                    let av = a.unsigned_abs() as usize;
+                    let bv = b.unsigned_abs() as usize;
+                    if av > nvars || bv > nvars || self.eliminated[av] || self.eliminated[bv] {
+                        continue;
+                    }
+                    self.stats.sweep_root_applied_equivs =
+                        self.stats.sweep_root_applied_equivs.saturating_add(1);
+                    self.stats.sweep_equivalences =
+                        self.stats.sweep_equivalences.saturating_add(1);
+                    // Install the implication binaries as ORIGINAL clauses: `try_els`
+                    // harvests its implication graph from `original_clause_ids` only, so
+                    // a learned-clause binary (the inprocessing sweep's shape) can never
+                    // be substituted — the merge cascade below depends on this.
+                    proof_log.record_clause(&[-a, b]);
+                    let idx = self.els_install_original_clause(&[-a, b]);
+                    self.original_clause_ids.push(idx as u32);
+                    proof_log.record_clause(&[-b, a]);
+                    let idx = self.els_install_original_clause(&[-b, a]);
+                    self.original_clause_ids.push(idx as u32);
+                }
+                if self.propagate().is_some() {
+                    self.has_empty_clause = true;
+                    return false;
+                }
+                if !pass_equivalences.is_empty() {
+                    self.try_els(proof_log);
+                    if self.has_empty_clause {
+                        return false;
+                    }
+                    if self.propagate().is_some() {
+                        self.has_empty_clause = true;
+                        return false;
+                    }
+                }
+            }
+
+            if remaining == 0 || passes >= SWEEP_ROOT_MAX_PASSES {
+                break;
+            }
+            if pass_completed {
+                if found_this_pass == 0 {
+                    unproductive += 1;
+                    if unproductive >= SWEEP_ROOT_MAX_UNPRODUCTIVE_PASSES {
+                        break;
+                    }
+                } else {
+                    unproductive = 0;
+                }
+                // kissat escalation ladder: bigger environment next pass, and every
+                // seed re-flagged so the larger neighbourhood gets a fresh crack.
+                sweep_max_vars = (sweep_max_vars << 1).min(SWEEP_MAX_VARS_CAP);
+                sweep_max_clauses = (sweep_max_clauses << 1).min(SWEEP_MAX_CLAUSES_CAP);
+                sweep_depth = (sweep_depth + 1).min(SWEEP_MAX_DEPTH_CAP);
+                done.iter_mut().for_each(|d| *d = false);
+            }
+        }
+
+        // kissat pipeline parity (sweep -> substitute -> eliminate): one more bounded
+        // BVE round on the substituted formula, so merged/backboned structure actually
+        // collapses. Only adopters reach this point.
+        if (self.stats.sweep_root_applied_units > 0 || self.stats.sweep_root_applied_equivs > 0)
+            && !self.eliminate(true, proof_log)
+        {
+            return false;
+        }
+        self.stats.sweep_root_passes = passes as u64;
+        self.stats.sweep_root_ticks = self
+            .stats
+            .sweep_root_ticks
+            .saturating_add(budget_ticks - remaining);
+        if trace {
+            eprintln!(
+                "c sweep_root done passes={} applied_units={} applied_equivs={} ticks={} budget={}",
+                passes,
+                self.stats.sweep_root_applied_units,
+                self.stats.sweep_root_applied_equivs,
+                self.stats.sweep_root_ticks,
+                budget_ticks,
+            );
         }
         true
     }
@@ -17068,6 +17574,13 @@ impl Solver {
         {
             return SolveOutcome::unsat();
         }
+        // Root SAT sweeping (SAT_SWEEP_ROOT, default off): escalating tick-budgeted
+        // sweep with a pass-1 dry-run adoption threshold — below-threshold formulas
+        // stay byte-identical. Runs on the final root formula so the environments see
+        // the post-BVE/probe/transitive clause set.
+        if !self.try_root_sweep(proof_log, config.trace_preprocess) {
+            return SolveOutcome::unsat();
+        }
         self.reset_learned_budget_after_preprocess();
         // Congruence-productive gate circuits (miters/BMC) switch to the kissat-parity
         // early inprocessing cadence: kissat interleaves congruence/substitution and
@@ -19747,6 +20260,193 @@ mod tests {
         assert!(s.sweep_round(&mut proof));
         assert_eq!(s.stats.sweep_backbones, 0);
         assert_eq!(s.stats.sweep_equivalences, 0);
+    }
+
+    /// Two identical AND gates 4=AND(1,2), 5=AND(1,2): 4 <-> 5 is provable by kitten
+    /// but is NOT a binary 2-cycle, so the binary-SCC ELS pass cannot see it unless the
+    /// sweep installs the proven equivalence binaries where ELS harvests them.
+    fn sweep_subst_test_solver() -> Solver {
+        make_solver(
+            5,
+            vec![
+                vec![-4, 1],
+                vec![-4, 2],
+                vec![4, -1, -2],
+                vec![-5, 1],
+                vec![-5, 2],
+                vec![5, -1, -2],
+            ],
+        )
+    }
+
+    /// SAT_SWEEP_SUBST: sweep-proven equivalences installed as original binaries must
+    /// actually be merged by the ELS pass (the learned-binary default never merges).
+    #[test]
+    fn sweep_subst_merges_equivalence_via_els() {
+        let mut s = sweep_subst_test_solver();
+        s.sweep_subst = true;
+        let mut proof = ProofLog::disabled();
+        assert!(s.sweep_round(&mut proof));
+        assert!(
+            s.stats.sweep_equivalences >= 1,
+            "sweep must find the 4<->5 equivalence, stats={}",
+            s.stats.sweep_equivalences
+        );
+        assert!(
+            s.stats.els_substituted_vars >= 1,
+            "ELS must merge the pair when the binaries are originals, substituted={}",
+            s.stats.els_substituted_vars
+        );
+    }
+
+    /// The min-equivs scope: a round proving fewer distinct pairs than the threshold
+    /// must keep the shipped learned-binary shape (no substitution).
+    #[test]
+    fn sweep_subst_min_equivs_protects_low_yield_rounds() {
+        let mut s = sweep_subst_test_solver();
+        s.sweep_subst = true;
+        s.sweep_subst_min_equivs = 100;
+        let mut proof = ProofLog::disabled();
+        assert!(s.sweep_round(&mut proof));
+        assert!(s.stats.sweep_equivalences >= 1);
+        assert_eq!(
+            s.stats.els_substituted_vars, 0,
+            "below-threshold round must keep the learned-binary shape"
+        );
+    }
+
+    /// With SAT_SWEEP_SUBST off (the default), the shipped learned-binary shape is
+    /// preserved: the equivalence is found but never substituted (the measured
+    /// booth_dadda_mapped defect this flag exists to fix).
+    #[test]
+    fn sweep_subst_off_keeps_learned_binary_shape() {
+        let mut s = sweep_subst_test_solver();
+        assert!(!s.sweep_subst, "SAT_SWEEP_SUBST must default off");
+        let mut proof = ProofLog::disabled();
+        assert!(s.sweep_round(&mut proof));
+        assert!(s.stats.sweep_equivalences >= 1);
+        assert_eq!(
+            s.stats.els_substituted_vars, 0,
+            "default path must not substitute (byte-identity with shipped behaviour)"
+        );
+    }
+
+    /// SAT_SWEEP_ROOT off (the default) must be a strict no-op: no stats, no edits.
+    #[test]
+    fn root_sweep_default_off_is_noop() {
+        let mut s = make_solver(3, vec![vec![-1, 2], vec![-2, 1], vec![1, 3]]);
+        assert!(!s.sweep_root, "SAT_SWEEP_ROOT must default off");
+        let mut proof = ProofLog::disabled();
+        assert!(s.try_root_sweep(&mut proof, false));
+        assert_eq!(s.stats.sweep_root_envs, 0);
+        assert_eq!(s.stats.sweep_root_adopted, 0);
+        assert_eq!(s.stats.sweep_equivalences, 0);
+    }
+
+    /// Below the adoption threshold the pass-1 dry-run must discard everything: found
+    /// mass is reported in stats but no unit/binary/substitution is applied.
+    #[test]
+    fn root_sweep_below_threshold_discards_all_edits() {
+        // 1 <-> 2 is provable, but the threshold demands more than 100% of live vars.
+        let mut s = make_solver(3, vec![vec![-1, 2], vec![-2, 1], vec![1, 3]]);
+        s.sweep_root = true;
+        s.sweep_root_min_found_permille = 1001;
+        let clauses_before = s.original_clause_ids.len();
+        let mut proof = ProofLog::disabled();
+        assert!(s.try_root_sweep(&mut proof, false));
+        assert_eq!(s.stats.sweep_root_adopted, 0);
+        assert!(
+            s.stats.sweep_root_found_equivs >= 1,
+            "probe must still report the find mass, got {}",
+            s.stats.sweep_root_found_equivs
+        );
+        assert_eq!(s.stats.sweep_root_applied_units, 0);
+        assert_eq!(s.stats.sweep_root_applied_equivs, 0);
+        assert_eq!(s.stats.sweep_equivalences, 0);
+        assert_eq!(
+            s.original_clause_ids.len(),
+            clauses_before,
+            "no clause may be added on a rejected dry-run"
+        );
+    }
+
+    /// Above the threshold the pass applies backbones as root units and equivalences
+    /// via binaries + ELS, exactly like the inprocessing sweep.
+    #[test]
+    fn root_sweep_adopts_and_applies_facts() {
+        // var 4 forced true by (4 OR 1) AND (4 OR -1); 1 <-> 2 equivalence.
+        let mut s = make_solver(
+            4,
+            vec![vec![4, 1], vec![4, -1], vec![-1, 2], vec![-2, 1], vec![1, 3]],
+        );
+        s.sweep_root = true;
+        s.sweep_root_min_found_permille = 0;
+        let mut proof = ProofLog::disabled();
+        assert!(s.try_root_sweep(&mut proof, false));
+        assert_eq!(s.stats.sweep_root_adopted, 1);
+        assert_eq!(s.assignment[4], TRUE, "backbone var 4 must be forced at root");
+        assert!(
+            s.stats.sweep_root_applied_units >= 1,
+            "applied_units={}",
+            s.stats.sweep_root_applied_units
+        );
+        assert!(
+            s.stats.sweep_root_applied_equivs >= 1,
+            "applied_equivs={}",
+            s.stats.sweep_root_applied_equivs
+        );
+        assert!(s.stats.sweep_root_passes >= 1);
+    }
+
+    /// An UNSAT environment refutes the whole formula; the root sweep must emit the
+    /// refutation and report UNSAT even in pass-1 probe mode.
+    #[test]
+    fn root_sweep_detects_unsat_environment() {
+        let mut s = make_solver(
+            2,
+            vec![vec![1, 2], vec![1, -2], vec![-1, 2], vec![-1, -2]],
+        );
+        s.sweep_root = true;
+        s.sweep_root_min_found_permille = 1001; // even a rejecting threshold
+        let mut proof = ProofLog::disabled();
+        assert!(!s.try_root_sweep(&mut proof, false), "must prove UNSAT");
+        assert!(s.has_empty_clause);
+    }
+
+    /// The var cap must skip the pass wholesale (wall guard for giant formulas).
+    #[test]
+    fn root_sweep_respects_max_vars_cap() {
+        let mut s = make_solver(3, vec![vec![-1, 2], vec![-2, 1], vec![1, 3]]);
+        s.sweep_root = true;
+        s.sweep_root_min_found_permille = 0;
+        s.sweep_root_max_vars = 2;
+        let mut proof = ProofLog::disabled();
+        assert!(s.try_root_sweep(&mut proof, false));
+        assert_eq!(s.stats.sweep_root_envs, 0, "capped formula must not be swept");
+        assert_eq!(s.stats.sweep_root_adopted, 0);
+    }
+
+    /// prove_facts_budgeted with an unlimited budget must agree with prove_facts
+    /// (the shipped inprocessing sweep path is a wrapper over it — byte-identity).
+    #[test]
+    fn prove_facts_budgeted_zero_budget_returns_no_facts() {
+        use crate::sweep::{build_environment, prove_facts_budgeted};
+        let clauses: Vec<Vec<i32>> = vec![vec![-1, 2], vec![-2, 1], vec![1, 3]];
+        let occf = {
+            let clauses = clauses.clone();
+            move |var: i32| {
+                clauses
+                    .iter()
+                    .filter(|c| c.iter().any(|&l| l.abs() == var))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            }
+        };
+        let mut env = build_environment(1, occf, 2, 256, 1024);
+        let mut budget = 0u64;
+        let facts = prove_facts_budgeted(&mut env, 2000, &mut budget);
+        assert!(!facts.env_unsat);
+        assert!(facts.backbones.is_empty() && facts.equivalences.is_empty());
     }
 
     /// Bead SAT-playground-5b2.3.38.1. Legacy mode restarts the seed scan at variable 1

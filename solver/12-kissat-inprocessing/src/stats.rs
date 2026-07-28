@@ -88,6 +88,16 @@ pub(crate) struct SolverStats {
     /// applied by the sweep inprocessor.
     pub(crate) sweep_backbones: u64,
     pub(crate) sweep_equivalences: u64,
+    /// SAT_SWEEP_ROOT: pass-1 dry-run find mass (probe basis for the adoption
+    /// decision), adoption flag, and the applied totals across all passes.
+    pub(crate) sweep_root_found_units: u64,
+    pub(crate) sweep_root_found_equivs: u64,
+    pub(crate) sweep_root_adopted: u64,
+    pub(crate) sweep_root_passes: u64,
+    pub(crate) sweep_root_envs: u64,
+    pub(crate) sweep_root_applied_units: u64,
+    pub(crate) sweep_root_applied_equivs: u64,
+    pub(crate) sweep_root_ticks: u64,
     pub(crate) focused_tier1_glue_limit: u64,
     pub(crate) focused_tier2_glue_limit: u64,
     pub(crate) stable_tier1_glue_limit: u64,
@@ -849,6 +859,14 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("vivify_tier3_strengthened", ctx.stats.vivify_tier3_strengthened);
     json.u64("sweep_backbones", ctx.stats.sweep_backbones);
     json.u64("sweep_equivalences", ctx.stats.sweep_equivalences);
+    json.u64("sweep_root_found_units", ctx.stats.sweep_root_found_units);
+    json.u64("sweep_root_found_equivs", ctx.stats.sweep_root_found_equivs);
+    json.u64("sweep_root_adopted", ctx.stats.sweep_root_adopted);
+    json.u64("sweep_root_passes", ctx.stats.sweep_root_passes);
+    json.u64("sweep_root_envs", ctx.stats.sweep_root_envs);
+    json.u64("sweep_root_applied_units", ctx.stats.sweep_root_applied_units);
+    json.u64("sweep_root_applied_equivs", ctx.stats.sweep_root_applied_equivs);
+    json.u64("sweep_root_ticks", ctx.stats.sweep_root_ticks);
     json.u64("congruence_merges", ctx.stats.congruence_merges);
     json.u64("congruence_and_gates", ctx.stats.congruence_and_gates);
     json.u64("congruence_ite_gates", ctx.stats.congruence_ite_gates);

@@ -1,17 +1,123 @@
-# NEXT PLAN — 2026-07-27c (supersedes the 2026-07-27b revision)
+# NEXT PLAN — 2026-07-28a (supersedes the 2026-07-27c revision)
 
-One-file plan for the next clear context. Folds SESSION 9 (2026-07-27
-evening: FIVE candidate lines screened, ALL measured negative, zero
-promotions, zero gates spent — units-only 3a, tick-cadence re-measure,
-gbve-adopter rounds x3 arms, root ELS enumeration) on top of SESSIONS 4-8.
-Where this contradicts an older `plan/next-steps-*.md`, THIS file wins.
+One-file plan for the next clear context. Folds SESSION 10 (2026-07-27
+night → 07-28: the SAT-sweeping productivity arc — SAT_SWEEP_ROOT
+kissat-parity root sweep + the SAT_SWEEP_SUBST substitution-defect fix,
+both implemented, identity-verified and screened; zero promotions, zero
+gates spent) on top of SESSIONS 4-9. Where this contradicts an older
+`plan/next-steps-*.md`, THIS file wins.
 
-**START HERE:** read "SESSION 9" below — it CLOSES every cheap open item
-from the 2026-07-27b ranking. The 1800 s metric is at a measured local
-optimum: every remaining candidate is either a banned global-reroll
-lottery or a >3000 s-horizon item. Giant memory diet and the >3000 s
-horizon question are what remains. Companion deep-dive:
-`plan/kissat-gaps.md`.
+**START HERE:** read "SESSION 10" below. The headline discovery: the
+shipped mid-search sweep has NEVER substituted a single equivalence
+(learned-binary shape invisible to ELS — the "sweep fixpoint cascade" in
+the sweep_round comment never fired once), and fixing it reaches
+KISSAT-PARITY substitution mass on the BMC class (oski15b20 69,347
+substituted vars vs kissat's 71,487) — but at 1800 s the conflicts tier
+still loses (the REDUCE-law verdict shape: mechanism real, wall-good,
+conflicts-reroll-negative). The 1800 s local-optimum statement is now
+STRONGER: the sweeping-productivity arc joins REDUCE/tick-cadence in the
+>3000 s-horizon drawer. Companion deep-dive: `plan/kissat-gaps.md`.
+
+## SESSION 10 (2026-07-27 night → 07-28) — SAT-sweeping productivity arc: two features landed default-off, sweep-substitution defect FOUND and fixed, zero promotions, baseline stays 72/100
+
+Both features are committed default-off with byte-identical defaults
+(rbsat 100k fingerprint 100001/196258/17,758,017 digit-exact; MVRR
+267,199 digit-exact; 715 unit tests (+9); smoke 9/9; drat-trim VERIFIED
+on every UNSAT smoke formula in all flag combinations).
+
+**1. THE DEFECT (permanent mechanism fact): `sweep_round` adds its proven
+equivalences as LEARNED binaries via `inprocess_add_clause`, but
+`try_els` harvests its implication graph from `original_clause_ids`
+ONLY — so sweep-proven equivalences have NEVER been substituted, on any
+cell, ever.** Measured on booth_dadda_mapped (20k-interval probe, 100k
+conflicts): 352 sweep equivalences found across rounds, 4 ELS calls, 0
+substitutions, every ELS call logging "no equivalences". The
+"ELS merge cascade" comment in sweep_round described machinery that never
+ran. Additionally the finds are massively DUPLICATED (the same pair
+re-proven by overlapping environments): booth's 352 finds are 11 distinct
+pairs. All historical `sweep_equivalences` stats (vex 10,330 /
+oski15 1,005 / booth 792 / TT_C406 5) are duplicate-inflated counts of
+never-substituted facts — they only ever acted as extra learned binaries.
+
+**2. `SAT_SWEEP_SUBST` (default-off) — the fix: install sweep equivalence
+binaries as ORIGINAL clauses (deduped, skip-assigned), so `try_els`
+actually merges them; `SAT_SWEEP_SUBST_MIN_EQUIVS` scopes it to rounds
+proving >= N distinct pairs (low-yield rounds keep the learned shape
+byte-identically — the TT class finds ~5, so N=100 protects every banked
+timetable cell by construction).** Screen results (1800 s idle-ish, scan
+load background; conflicts are load-immune):
+
+- **Substitution mass is REAL and kissat-scale: vex 76,062 substituted
+  vars, oski15b20 69,347 (kissat: 71,487 — parity).** A handful of sweep
+  binaries close huge implication cycles in the BMC binary graph.
+- **But the metric loses at the decisive tier: vex conflicts 2,975,066 →
+  3,412,420 (+437k), oski15b20 2,663,684 → 2,832,881 (+169k) — 2-cell
+  aggregate +606k WORSE.** Both still solve (both UNSAT verified).
+  Wall moves the OTHER way and hard: oski15b20 1642 s (idle baseline) →
+  1281 s UNDER LOAD (−22%+); vex 1469 → 1524 s under load (≈neutral-ish).
+- Timeout cells: booth x3, Bubble, stp212 (3 arms incl. 3e9-tick root
+  budget + subst), g2-oski — ALL stayed TIMEOUT. No capability flip.
+- **Verdict: the REDUCE-law shape exactly — real throughput/collapse
+  mechanism, negative on the conflicts tier at 1800 s single-deal.
+  DO NOT enable at 1800 s without new evidence. It belongs in the
+  >3000 s-horizon bundle** (wall-dominated scoring; the substitution
+  mass shrinks the formula permanently, which compounds over long runs).
+
+**3. `SAT_SWEEP_ROOT` (default-off) — kissat-parity ROOT sweep pass:
+occurrence-driven environments over the post-BVE/probe/transitive root
+formula, per-environment completion marking (kissat's whole-env sweep
+flags — without it 91/102 booth probe finds were duplicates and a 90 s
+budget re-proved the same facts forever), cross-pass dedup, kitten-tick
+budget (lits x200 clamped 200M..2G), escalation ladder (256->8192 vars,
+1024->32768 clauses, depth 2->3, re-flag on completed pass), pass-1
+dry-run probe (2000 envs or 10% budget) with a yield-per-swept-env
+adoption threshold (default 20 permille), all-or-nothing: rejecting cells
+pay only the bounded probe (0.4M-40M ticks, sub-second to ~4 s) and stay
+byte-identical. Adopters get units + original-clause equivalence binaries
++ ELS merge + a final eliminate(true) re-run.** Screen results:
+
+- 1800 s idle on 14 under-cap timeout cells: **ZERO flips.** stp212
+  applied the largest mass by far (520 units + 13,518 equivalences = ~8%
+  of 172k live vars, probe yield 515 permille) and still TIMEOUT, even at
+  a 3e9-tick budget and with SWEEP_SUBST stacked. goldcrest applied
+  131+163 (its 321k live vars need ~20x the budget for full coverage —
+  the root-only pass cannot reach kissat's 38k-substitution mass there;
+  kissat gets it by sweeping 10% of ticks ALL RUN LONG on a
+  progressively-collapsed formula). booth/Bubble reach fixpoint fast but
+  their distinct equivalence structure at root is tiny (11 / 5 pairs).
+- 100-cell probe scan (SAT_LIMIT_CONFLICTS=100, final tally 36 adopt /
+  42 reject / 12 var-cap-skip / 10 solved-pre-sweep): at the 20-permille
+  yield threshold **36 cells adopt, including the ENTIRE banked TT class
+  (C392/393/492/495/496), sted2, ibm, both oski15s, both Kakuros, jkkk,
+  twitter, the sqrt-miters and Pancake** — a huge solved-cell reroll
+  surface. And the yield ranking separates the WRONG WAY: the intended
+  capability target goldcrest probes at **31‰ — the LOWEST of all
+  measured adopters** — versus TT496 91‰, sted2 104‰, TT_C392 139‰,
+  Kakuro-132 326‰, aaai10 339‰ (SESSION 6's THRESHOLD LAW, now proven
+  for probe-yield too). Only stp212 (515‰) separates cleanly above
+  everything, and stp212 does not flip.
+- **Verdict: no promotable scope exists — the pass either adopts nothing
+  that moves, or rerolls protected solved cells. Stays default-off
+  groundwork.** Its real contribution: the fixed sweep engine
+  (env-marking + dedup) and the probe/scan numbers above.
+
+**4. Engine facts worth keeping:** solver12's sweep environment cost is
+~6-10 ms per env on dense cells (2000-solve budget, ~30 ticks/solve —
+tiny kitten solves, per-solve overhead dominated); goldcrest live vars
+after root simp = 321,259 with only 4.5% probe coverage per 856M ticks.
+kissat's sweep productivity is NOT one bug but three compounding designs:
+tick-share budget over the whole run, whole-env completion flags, and
+substitution that actually fires. We now have all three implemented, but
+only as a root pass (cadence-starved cells still get zero mid-search
+rounds — the SESSION 9 tick-cadence verdict stands).
+
+**5. Screen artifacts (preserved):** `log/sweep-arc-2026-07-28/` —
+`scan_results.txt` (100-cell probe map: per-cell probe units/equivs/
+envs/yield/adoption + skip reasons), `triage1_summary.txt` (14-cell
+SWEEP_ROOT idle, all TIMEOUT), `triage2_summary.txt` (SWEEP_SUBST:
+booth x3/Bubble TIMEOUT, vex/oski15 solved — conflict/wall numbers
+above), `triage3_summary.txt` (stp212 3 arms, all TIMEOUT), plus the
+vex/oski15 stats JSONs with the substitution-mass counters.
 
 ## SESSION 9 (2026-07-27 evening) — five lines screened NEGATIVE, zero promotions, baseline stays 72/100
 
@@ -729,22 +835,26 @@ capability; wall coin = margin <=~120 s OR flipped across deals at an IDENTICAL
 conflict count), tiered triage (probe -> subset -> 100-cell gate for promotion
 only), and 4-arm sweeps (promote the best arm).
 
-## RANKED PLAN for next session (updated 2026-07-27c)
+## RANKED PLAN for next session (updated 2026-07-28a)
 
-0. **DONE in SESSION 9 (all NEGATIVE, all closed at triage tier, zero
-   gates spent): units-only arm 3a (screen LOSE 15v16 + capability loss);
-   tick-cadence re-measure (zero flips with rounds confirmed firing —
-   1800 s CLOSED for good, mechanism-solid); gbve-adopter rounds
-   (4-arm screen ALL LOSE — the root-adopter round shape is measured
-   MINED OUT: it pays only where the root pass finds percent-scale
-   regenerating edge mass, which only the transitive class has); root
-   ELS (mass enumeration shows coins-only exposure — closed without a
-   screen).** DONE in SESSION 8: probe rounds (PROMOTED fe82400). DONE in
-   SESSION 7: transitive rounds (PROMOTED ecdf632). DONE in SESSION 6:
-   `transitive.c` root pass (PROMOTED ab592d2). The small-port class
-   stays EXHAUSTED. CLOSED in SESSIONS 4-5: REDUCE law at 1800 s,
-   `SAT_ELIM_DEF` (any budget), vivify tier3/3:3:1:3, 10th wall-diet,
-   bp4_TCO_CSO_ZR free +1. Sweep schedule stays CLOSED.
+0. **DONE in SESSION 10 (zero promotions, zero gates spent): the
+   SAT-sweeping productivity arc.** SAT_SWEEP_ROOT (kissat-parity root
+   sweep, all three kissat sweep designs implemented) — zero timeout
+   flips on 14 idle 1800 s cells, no promotable adopter scope (yield
+   threshold separates the wrong way, TT_C392 adopts at 139‰ while
+   goldcrest sits at 31‰). SAT_SWEEP_SUBST (fixes the never-fired sweep
+   substitution defect, kissat-parity substitution mass on BMC) —
+   conflicts tier LOSES on the 2-coin forecast (+606k), wall wins big;
+   the REDUCE-law verdict: CLOSED at 1800 s, filed in the >3000 s
+   bundle. DONE in SESSION 9 (all NEGATIVE): units-only 3a, tick-cadence
+   re-measure, gbve-adopter rounds, root ELS. DONE in SESSION 8: probe
+   rounds (PROMOTED fe82400). DONE in SESSION 7: transitive rounds
+   (PROMOTED ecdf632). DONE in SESSION 6: `transitive.c` root pass
+   (PROMOTED ab592d2). The small-port class stays EXHAUSTED. CLOSED in
+   SESSIONS 4-5: REDUCE law at 1800 s, `SAT_ELIM_DEF` (any budget),
+   vivify tier3/3:3:1:3, 10th wall-diet, bp4_TCO_CSO_ZR free +1. Sweep
+   schedule stays CLOSED — and with SESSION 10, sweep DEPTH at 1800 s is
+   now closed too.
 
 1. **Giant memory diet (unstarted).** pj2008 RSS 10.4 GB vs kissat 1.4 GB;
    BVE emits 1.7 GB discarded DRAT in 150 s. pj2008 is marginal even for
@@ -852,13 +962,21 @@ Historical detail of the promoted item (kept for provenance):
 
 ## Current state
 
-- HEAD: 69ec5eb (SESSION 9: groundwork only, defaults byte-identical to
-  fe82400 — new default-off flags SAT_TRANSITIVE_UNITS_ONLY,
-  SAT_TRANSITIVE_INPROCESS_GBVE, SAT_PROBE_INPROCESS_GBVE, all measured
-  negative; stats JSON now emits els_substituted_vars /
-  els_rewritten_clauses + transitive_units_only_applied). **Medium 1800 s
-  baseline: 72/100 lineage, unchanged**; newest candidate TSV remains
+- HEAD: SESSION 10 groundwork commit (defaults byte-identical to
+  69ec5eb/fe82400 — new default-off flags SAT_SWEEP_ROOT (+
+  _MIN_YIELD_PERMILLE/_MAX_VARS/_TICKS/_PROBE_ENVS), SAT_SWEEP_SUBST (+
+  _MIN_EQUIVS), both measured non-promotable at 1800 s; new stats
+  sweep_root_* x8; sweep.rs prove_facts refactored to a budgeted core
+  with the unlimited-budget wrapper decision-identical). Identity refs
+  re-verified at HEAD: rbsat 100k = 100001 conf / 196258 dec /
+  17,758,017 props; MVRR 267,199 conflicts. **Medium 1800 s baseline:
+  72/100 lineage, unchanged**; newest candidate TSV remains
   `log/abtest-cand-vs-base-2026-07-27-11-58-13/cand/results.tsv`.
+- Prior HEAD: 69ec5eb (SESSION 9: groundwork only, defaults
+  byte-identical to fe82400 — SAT_TRANSITIVE_UNITS_ONLY,
+  SAT_TRANSITIVE_INPROCESS_GBVE, SAT_PROBE_INPROCESS_GBVE, all measured
+  negative; stats JSON emits els_substituted_vars / els_rewritten_clauses
+  + transitive_units_only_applied).
 - Prior HEAD: fe82400 (SESSION 8: SAT_PROBE_INPROCESS default-on,
   root-adopter scope — only sted2 (−246k, 1 round) and ibm (+124k,
   7 rounds) moved, aggregate −121.6k; SAT_ELS_INPROCESS landed
@@ -916,6 +1034,19 @@ Historical detail of the promoted item (kept for provenance):
 
 ## Standing traps (carried + this session)
 
+- **SESSION 10:** `sweep_equivalences` in ANY historical stats output is a
+  duplicate-inflated count of never-substituted facts (the learned-binary
+  defect) — never read it as substitution mass; distinct-pair counts are
+  1-2 orders smaller (booth 352 -> 11 distinct). `els_substituted_vars`
+  is the real merge counter. And `SAT_SWEEP_SUBST=on` is a MEASURED
+  NEGATIVE default at 1800 s (2-coin conflicts forecast +606k) despite
+  kissat-parity substitution mass — do not enable without a >3000 s
+  objective or a new scoping argument.
+- **SESSION 10:** a root-sweep-style adoption threshold on probe yield
+  separates the WRONG WAY across classes (TT_C392 139‰ > goldcrest 31‰)
+  — the THRESHOLD LAW (SESSION 6) generalizes: per-mille find-mass
+  thresholds cannot rank capability targets above protected solved cells,
+  in either direction, for ANY root pass measured so far.
 - **SESSION 9:** all three new flags (`SAT_TRANSITIVE_UNITS_ONLY`,
   `SAT_TRANSITIVE_INPROCESS_GBVE`, `SAT_PROBE_INPROCESS_GBVE`) are
   MEASURED NEGATIVE defaults — identity-verified groundwork only; do not
