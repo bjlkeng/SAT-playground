@@ -230,6 +230,8 @@ pub(crate) struct SolverStats {
     pub(crate) transitive_removed: u64,
     /// failed-literal units actually learned (SAT_TRANSITIVE, after adoption)
     pub(crate) transitive_units: u64,
+    /// units applied below the adoption threshold (SAT_TRANSITIVE_UNITS_ONLY)
+    pub(crate) transitive_units_only_applied: u64,
     /// 1 when the root transitive dry-run's edits were adopted (SAT_TRANSITIVE)
     pub(crate) transitive_adopted: u64,
     /// ticks spent by the root transitive-reduction scan (SAT_TRANSITIVE)
@@ -865,6 +867,10 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("transitive_found_units", ctx.stats.transitive_found_units);
     json.u64("transitive_removed", ctx.stats.transitive_removed);
     json.u64("transitive_units", ctx.stats.transitive_units);
+    json.u64(
+        "transitive_units_only_applied",
+        ctx.stats.transitive_units_only_applied,
+    );
     json.u64("transitive_adopted", ctx.stats.transitive_adopted);
     json.u64("transitive_ticks", ctx.stats.transitive_ticks);
     json.u64(
@@ -872,6 +878,8 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
         ctx.stats.transitive_inprocess_rounds,
     );
     json.u64("els_inprocess_rounds", ctx.stats.els_inprocess_rounds);
+    json.u64("els_substituted_vars", ctx.stats.els_substituted_vars);
+    json.u64("els_rewritten_clauses", ctx.stats.els_rewritten_clauses);
     json.u64("probe_inprocess_rounds", ctx.stats.probe_inprocess_rounds);
     json.u64("rcheck_attempts", 0);
     json.u64("rcheck_implied", 0);

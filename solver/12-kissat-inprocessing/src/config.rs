@@ -717,6 +717,14 @@ pub(crate) struct SolverConfig {
     /// threshold nothing is touched, so the cell's trajectory stays
     /// byte-identical to SAT_TRANSITIVE=off.
     pub(crate) transitive_min_removed_permille: u64,
+    /// Apply the failed-literal units found by the ROOT transitive dry-run
+    /// even when the removable-binary count stays below
+    /// `transitive_min_removed_permille` (SAT_TRANSITIVE_UNITS_ONLY). The
+    /// units are RUP-sound independent of adoption; deletions stay withheld
+    /// and the formula does NOT become a round adopter (`transitive_adopted`
+    /// stays 0, so no inprocessing rounds fire). Root-only: inprocessing-round
+    /// scans keep their own threshold semantics.
+    pub(crate) transitive_units_only: bool,
     /// Re-run transitive reduction at every inprocessing round
     /// (SAT_TRANSITIVE_INPROCESS), but ONLY on formulas whose root pass
     /// adopted (crossed `transitive_min_removed_permille`). Formulas below the
@@ -739,6 +747,16 @@ pub(crate) struct SolverConfig {
     /// runs each probe round), scoped to root-transitive adopters exactly like
     /// `els_inprocess`. Does not touch the root SAT_PROBE pass.
     pub(crate) probe_inprocess: bool,
+    /// Extend the inprocessing-round transitive scan to SCOPED-GATE-BVE
+    /// adopters (`gate_bve_scoped_adopted == 1`), the second root-pass adopter
+    /// class (SAT_TRANSITIVE_INPROCESS_GBVE). Same safety shape as the
+    /// root-transitive scope: reroll risk confined to cells that already
+    /// rerolled at the gate-BVE promotion; non-adopters stay byte-identical.
+    pub(crate) transitive_inprocess_gbve: bool,
+    /// Extend the inprocessing-round failed-literal probe to scoped-gate-BVE
+    /// adopters (SAT_PROBE_INPROCESS_GBVE), exactly like
+    /// `transitive_inprocess_gbve`.
+    pub(crate) probe_inprocess_gbve: bool,
     pub(crate) rcheck_ticks_budget: u64,
 
     pub(crate) replay_overridden: bool,
@@ -882,9 +900,12 @@ impl Default for SolverConfig {
             transitive_max_removed_per_round: 0,
             transitive_ticks_budget: 0,
             transitive_min_removed_permille: 100,
+            transitive_units_only: false,
             transitive_inprocess: true,
             transitive_inprocess_min_removed_permille: 0,
             els_inprocess: false,
+            transitive_inprocess_gbve: false,
+            probe_inprocess_gbve: false,
             // Default-on since the 2026-07-27 promotion (gate WIN 72v72
             // identical solved sets, both-solved conflicts -121,608:
             // log/abtest-cand-vs-base-2026-07-27-11-58-13). Root-adopter
@@ -1736,6 +1757,12 @@ impl SolverConfig {
             "SAT_TRANSITIVE_MIN_REMOVED_PERMILLE",
             self.transitive_min_removed_permille,
         );
+        self.transitive_units_only = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_TRANSITIVE_UNITS_ONLY",
+            self.transitive_units_only,
+        );
         self.transitive_inprocess = parse_bool_selected(
             env_map,
             &key_set,
@@ -1759,6 +1786,18 @@ impl SolverConfig {
             &key_set,
             "SAT_PROBE_INPROCESS",
             self.probe_inprocess,
+        );
+        self.transitive_inprocess_gbve = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_TRANSITIVE_INPROCESS_GBVE",
+            self.transitive_inprocess_gbve,
+        );
+        self.probe_inprocess_gbve = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_PROBE_INPROCESS_GBVE",
+            self.probe_inprocess_gbve,
         );
         self.rcheck_ticks_budget = parse_u64_selected(
             env_map,
@@ -2992,12 +3031,15 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "transitive_max_removed_per_round" => Some("SAT_TRANSITIVE_MAX_REMOVED_PER_ROUND"),
         "transitive_ticks_budget" => Some("SAT_TRANSITIVE_TICKS"),
         "transitive_min_removed_permille" => Some("SAT_TRANSITIVE_MIN_REMOVED_PERMILLE"),
+        "transitive_units_only" => Some("SAT_TRANSITIVE_UNITS_ONLY"),
         "transitive_inprocess" => Some("SAT_TRANSITIVE_INPROCESS"),
         "transitive_inprocess_min_removed_permille" => {
             Some("SAT_TRANSITIVE_INPROCESS_MIN_REMOVED_PERMILLE")
         }
         "els_inprocess" => Some("SAT_ELS_INPROCESS"),
         "probe_inprocess" => Some("SAT_PROBE_INPROCESS"),
+        "transitive_inprocess_gbve" => Some("SAT_TRANSITIVE_INPROCESS_GBVE"),
+        "probe_inprocess_gbve" => Some("SAT_PROBE_INPROCESS_GBVE"),
         "rcheck_ticks_budget" => Some("SAT_RCHECK_TICKS"),
         _ => None,
     }
@@ -3205,10 +3247,13 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_TRANSITIVE_MAX_REMOVED_PER_ROUND",
         "SAT_TRANSITIVE_TICKS",
         "SAT_TRANSITIVE_MIN_REMOVED_PERMILLE",
+        "SAT_TRANSITIVE_UNITS_ONLY",
         "SAT_TRANSITIVE_INPROCESS",
         "SAT_TRANSITIVE_INPROCESS_MIN_REMOVED_PERMILLE",
         "SAT_ELS_INPROCESS",
         "SAT_PROBE_INPROCESS",
+        "SAT_TRANSITIVE_INPROCESS_GBVE",
+        "SAT_PROBE_INPROCESS_GBVE",
         "SAT_RCHECK_TICKS",
         "SAT_INITIAL_CLAUSE_MODE",
         "SAT_BRANCH_MODE",

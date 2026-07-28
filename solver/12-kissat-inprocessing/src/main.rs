@@ -6885,6 +6885,21 @@ impl Solver {
             );
         }
         if !adopt {
+            // SAT_TRANSITIVE_UNITS_ONLY (root scan only): the failed-literal
+            // units are RUP against the untouched formula, so they can be
+            // applied even when the deletions stay withheld. The formula does
+            // NOT become a round adopter — `transitive_adopted` stays 0.
+            if !inprocess && config.transitive_units_only && !units.is_empty() {
+                self.stats.transitive_units += units.len() as u64;
+                self.stats.transitive_units_only_applied += units.len() as u64;
+                if !self.learn_lucky_failed_literal_units(&units, proof_log) {
+                    return false;
+                }
+                if self.propagate().is_some() {
+                    self.has_empty_clause = true;
+                    return false;
+                }
+            }
             return true;
         }
         if inprocess {
@@ -10081,9 +10096,20 @@ impl Solver {
         // risk confined to already-rerolled fat-margin cells, everything else
         // byte-identical by construction.
         let root_adopter = config.transitive && self.stats.transitive_adopted == 1;
+        // Second adopter class (SESSION 8 follow-up): SCOPED-GATE-BVE adopters
+        // (`gate_bve_scoped_adopted == 1`) — a deterministic root dry-run
+        // decision, so the class is stable across deals and its members
+        // already rerolled at the gate-BVE promotion. The *_GBVE flags extend
+        // the round passes below to this class; non-adopters stay
+        // byte-identical by construction.
+        let gbve_adopter = self.stats.gate_bve_scoped_adopted == 1;
         // Probe first: failed-literal probing forces backbone units, so vivification
         // then runs against an already-simplified root.
-        if ok && (config.probe || (config.probe_inprocess && root_adopter)) {
+        if ok
+            && (config.probe
+                || (config.probe_inprocess && root_adopter)
+                || (config.probe_inprocess_gbve && gbve_adopter))
+        {
             if !config.probe {
                 self.stats.probe_inprocess_rounds += 1;
             }
@@ -10100,8 +10126,8 @@ impl Solver {
         // rerolled by the root edits).
         if ok
             && config.transitive
-            && config.transitive_inprocess
-            && self.stats.transitive_adopted == 1
+            && ((config.transitive_inprocess && self.stats.transitive_adopted == 1)
+                || (config.transitive_inprocess_gbve && gbve_adopter))
         {
             ok = self.try_transitive_reduce(
                 proof_log,
@@ -18910,6 +18936,76 @@ mod tests {
     }
 
     #[test]
+    fn transitive_units_only_applies_units_below_threshold() {
+        // (1∨2) and (1∨¬2): unit 1 is found but zero binaries are removable,
+        // so the shipped 100‰ threshold rejects adoption. With
+        // SAT_TRANSITIVE_UNITS_ONLY the RUP unit is applied anyway — while
+        // deletions stay withheld and the formula does NOT become an adopter.
+        let mut s = make_solver(2, vec![vec![1, 2], vec![1, -2]]);
+        let config = SolverConfig {
+            transitive: true,
+            transitive_units_only: true,
+            ..Default::default()
+        };
+        let mut proof = ProofLog::disabled();
+        assert!(s.try_transitive_reduce(
+            &mut proof,
+            &config,
+            config.transitive_min_removed_permille,
+            false,
+        ));
+        assert_eq!(s.stats.transitive_found_units, 1);
+        assert_eq!(s.stats.transitive_units, 1);
+        assert_eq!(s.stats.transitive_units_only_applied, 1);
+        assert_eq!(s.stats.transitive_adopted, 0, "units-only is not adoption");
+        assert_eq!(s.stats.transitive_removed, 0);
+        assert_eq!(live_binary_count(&s), 2, "no deletions below threshold");
+        assert_eq!(s.assignment[1], TRUE, "failed literal ¬1 must force x1=true");
+        assert!(!s.has_empty_clause);
+    }
+
+    #[test]
+    fn transitive_units_only_default_off_keeps_units_unapplied() {
+        // Same formula with the flag at its default (off): the dry-run still
+        // measures the unit but applies nothing — byte-identical trajectory.
+        let mut s = make_solver(2, vec![vec![1, 2], vec![1, -2]]);
+        let config = SolverConfig {
+            transitive: true,
+            ..Default::default()
+        };
+        let mut proof = ProofLog::disabled();
+        let assignment_before = s.assignment.clone();
+        assert!(s.try_transitive_reduce(
+            &mut proof,
+            &config,
+            config.transitive_min_removed_permille,
+            false,
+        ));
+        assert_eq!(s.stats.transitive_found_units, 1, "dry-run still measures");
+        assert_eq!(s.stats.transitive_units, 0);
+        assert_eq!(s.stats.transitive_units_only_applied, 0);
+        assert_eq!(s.assignment, assignment_before);
+    }
+
+    #[test]
+    fn transitive_units_only_ignores_inprocess_scans() {
+        // The flag is root-only: an inprocessing-round scan below its own
+        // threshold applies nothing even with the flag on.
+        let mut s = make_solver(2, vec![vec![1, 2], vec![1, -2]]);
+        let config = SolverConfig {
+            transitive: true,
+            transitive_units_only: true,
+            ..Default::default()
+        };
+        let mut proof = ProofLog::disabled();
+        let assignment_before = s.assignment.clone();
+        assert!(s.try_transitive_reduce(&mut proof, &config, 1000, true));
+        assert_eq!(s.stats.transitive_found_units, 1, "dry-run still measures");
+        assert_eq!(s.stats.transitive_units_only_applied, 0);
+        assert_eq!(s.assignment, assignment_before);
+    }
+
+    #[test]
     fn transitive_reduce_threshold_keeps_formula_untouched() {
         // Same formula as the removal test, but the adoption threshold demands
         // every binary be removable — the dry-run finds the clause and applies
@@ -19147,6 +19243,94 @@ mod tests {
         assert_eq!(
             s.stats.probe_inprocess_rounds, 1,
             "adopter runs the probe round"
+        );
+        assert!(
+            s.solve_with_proof(&mut proof, &config),
+            "formula is satisfiable"
+        );
+    }
+
+    #[test]
+    fn gbve_round_flags_skip_non_adopters() {
+        // Neither adopter flag set (transitive_adopted=0, gate_bve_scoped
+        // adopted=0): the *_GBVE round flags must not fire anything —
+        // byte-identity by construction for the 81 non-adopter cells.
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-2, 3], vec![1, 3]]);
+        let config = SolverConfig {
+            transitive: true,
+            transitive_inprocess_gbve: true,
+            probe_inprocess_gbve: true,
+            ..Default::default()
+        };
+        assert_eq!(s.stats.gate_bve_scoped_adopted, 0);
+        assert_eq!(s.stats.transitive_adopted, 0);
+        let mut proof = ProofLog::disabled();
+        let probes_before = s.stats.transitive_probes;
+        assert!(s.inprocess_round_pass(&mut proof, &config));
+        assert_eq!(
+            s.stats.probe_inprocess_rounds, 0,
+            "non-adopter must not run the probe round"
+        );
+        assert_eq!(
+            s.stats.transitive_probes, probes_before,
+            "non-adopter must not scan transitive in the round"
+        );
+    }
+
+    #[test]
+    fn gbve_adopter_runs_probe_round() {
+        // A scoped-gate-BVE adopter (adopted flag set by the root dry-run)
+        // runs the probe round under SAT_PROBE_INPROCESS_GBVE even though it
+        // is not a transitive adopter and SAT_PROBE stays off.
+        let mut s = make_solver(
+            4,
+            vec![vec![1, 2], vec![-2, 3], vec![1, 3], vec![-3, 4], vec![1, 4]],
+        );
+        let config = SolverConfig {
+            transitive: true,
+            probe_inprocess_gbve: true,
+            ..Default::default()
+        };
+        assert!(!config.probe, "root SAT_PROBE stays off");
+        s.stats.gate_bve_scoped_adopted = 1;
+        assert_eq!(s.stats.transitive_adopted, 0);
+        let mut proof = ProofLog::disabled();
+        assert!(s.inprocess_round_pass(&mut proof, &config));
+        assert_eq!(
+            s.stats.probe_inprocess_rounds, 1,
+            "gate-BVE adopter runs the probe round"
+        );
+        assert!(
+            s.solve_with_proof(&mut proof, &config),
+            "formula is satisfiable"
+        );
+    }
+
+    #[test]
+    fn gbve_adopter_runs_transitive_round() {
+        // A scoped-gate-BVE adopter re-scans transitive in the round under
+        // SAT_TRANSITIVE_INPROCESS_GBVE even when the root transitive pass
+        // did not adopt (round threshold 0 = apply everything found).
+        let mut s = make_solver(
+            4,
+            vec![vec![1, 2], vec![-2, 3], vec![1, 3], vec![-3, 4], vec![1, 4]],
+        );
+        let config = SolverConfig {
+            transitive: true,
+            transitive_inprocess_gbve: true,
+            ..Default::default()
+        };
+        s.stats.gate_bve_scoped_adopted = 1;
+        assert_eq!(s.stats.transitive_adopted, 0);
+        let mut proof = ProofLog::disabled();
+        assert!(s.inprocess_round_pass(&mut proof, &config));
+        assert!(
+            s.stats.transitive_probes > 0,
+            "gate-BVE adopter must scan transitive in the round"
+        );
+        assert!(
+            s.stats.transitive_removed >= 1,
+            "round threshold 0 applies the redundant binary"
         );
         assert!(
             s.solve_with_proof(&mut proof, &config),
