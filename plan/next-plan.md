@@ -1,15 +1,100 @@
-# NEXT PLAN — 2026-07-27b (supersedes the 2026-07-27 revision)
+# NEXT PLAN — 2026-07-27c (supersedes the 2026-07-27b revision)
 
-One-file plan for the next clear context. Folds SESSION 8 (2026-07-27
-afternoon: root-adopter probe rounds — ranked follow-up 3d — gate WIN
-72v72 on conflicts −121.6k, PROMOTED fe82400; ELS rounds screened
-NEGATIVE) on top of SESSIONS 4-7. Where this contradicts an older
-`plan/next-steps-*.md`, THIS file wins.
+One-file plan for the next clear context. Folds SESSION 9 (2026-07-27
+evening: FIVE candidate lines screened, ALL measured negative, zero
+promotions, zero gates spent — units-only 3a, tick-cadence re-measure,
+gbve-adopter rounds x3 arms, root ELS enumeration) on top of SESSIONS 4-8.
+Where this contradicts an older `plan/next-steps-*.md`, THIS file wins.
 
-**START HERE:** read "SESSION 8" below, then the RANKED PLAN (updated —
-transitive follow-ups (b) and (d) are DONE; the units-only arm (a) is the
-remaining cheap screen. Giant memory diet and the >3000 s horizon question
-are the top open items). Companion deep-dive: `plan/kissat-gaps.md`.
+**START HERE:** read "SESSION 9" below — it CLOSES every cheap open item
+from the 2026-07-27b ranking. The 1800 s metric is at a measured local
+optimum: every remaining candidate is either a banned global-reroll
+lottery or a >3000 s-horizon item. Giant memory diet and the >3000 s
+horizon question are what remains. Companion deep-dive:
+`plan/kissat-gaps.md`.
+
+## SESSION 9 (2026-07-27 evening) — five lines screened NEGATIVE, zero promotions, baseline stays 72/100
+
+HEAD 69ec5eb (groundwork commit, defaults byte-identical to fe82400 —
+rbsat props 17,758,017 / MVRR 267,199 digit-exact, 706 unit tests (+6),
+smoke 9/9 both flag states). No 100-cell gate was spent; every verdict
+below is triage-tier idle-screen evidence, which twice this month matched
+the gate to the digit.
+
+**1. `SAT_TRANSITIVE_UNITS_ONLY` (ranked 3a) — implemented default-off,
+screen LOSE 15v16. Item 3a CLOSED.** The decision scan (100 cells,
+SAT_LIMIT_CONFLICTS=100, `transitive_found_units`) found the exposure is
+21 non-adopter cells, 3.5x SESSION 6's remembered list — including the
+three giants (00fd8ac/83aa/ee5, 363 units each), all three Kakuros, and
+four bp4s. 21-cell 1800 s A/B: the units arm TIMED OUT
+bp4_TCO_CSO_IXA_LP_ZR (base SAT 233 s — the banked kissat-only capability
+cell) and lost both-solved conflicts ~+1.0M (jkkk +1.70M, twitter +345k,
+Kakuro-132 +283k vs reconf10_70 −147k, Pancake −395k...). Root units are
+just another uncontrolled trajectory reroll — REROLL-VARIANCE, exactly as
+SESSION 6 predicted.
+
+**2. `SAT_INPROCESS_TICK_CADENCE` re-measure (stale-context hypothesis:
+its old rejection was bundled with unconditional gate-BVE) — ZERO flips,
+CLOSED at 1800 s.** 10-cell starved-class A/B (goldcrest, lockchart x3,
+pj2008, vex, stp212, oisc, booth_dadda_mapped, fixedbandwidth): every
+timeout cell stayed TIMEOUT in both arms; lockchart-group2 solved both
+arms conflict-identical (1,239,136 — ratio never armed, scope confirmed).
+Mechanism probe: rounds DO fire (goldcrest on-arm sweep_equivalences 351
+vs 0 off-arm at 100k conflicts, 1.66e9 ticks > the 1.5e9 interval;
+goldcrest is 41,622 ticks/conflict — deeply starved). Conclusion is
+mechanism-solid: tick-fired inprocessing rounds run and still flip
+NOTHING at 1800 s. Stays the >3000 s-horizon candidate only.
+
+**3. GBVE-adopter round extension (`SAT_TRANSITIVE_INPROCESS_GBVE` /
+`SAT_PROBE_INPROCESS_GBVE`, default-off) — the root-adopter shape's 3rd
+reuse FAILED; the shape is now measured MINED OUT.** Scoped-gate-BVE is a
+root pass with a deterministic 19-cell adopter class (enumerated via
+`gate_bve_scoped_adopted`, matches SESSION 3's list; sted2 is also a
+transitive adopter = flag no-op there). 12 movable cells (7 solved with
+>=1M conflicts + 5 timeouts; 6 adopters sit under the 1M round interval,
+auto-protected). 4-arm screen (tr/pr/both/base): **ALL LOSE** — tr +109k,
+pr +3.18M, both +403k both-solved conflicts, zero timeout flips,
+RoundRobin_n16_d13 conflict-identical in all four arms (its single 1M
+round finds nothing). Trace autopsy of the tr arm: the miter "wins"
+(sqrt171 −110k conflicts on FIFTEEN total removals, Pancake −205k on ~30)
+are pure reroll luck, while the one high-yield cell (bp4_BC012: rounds
+removed 11,855 then 3,366 binaries at 38.9‰/11.6‰) LOST +519k — a
+round-yield threshold separates in the WRONG DIRECTION (it would keep the
+loser and drop the lucky winners). Unlike sted2/ibm (whose rounds remove
+30-90k binaries against structure that keeps regenerating edges), the
+gbve class has no mid-search edge mass: the shape only pays where the
+ROOT pass itself found percent-scale binary redundancy.
+
+**4. Root ELS enumeration (`SAT_ELS=on` scan; stats JSON now emits
+`els_substituted_vars`/`els_rewritten_clauses` — the fields existed but
+were never emitted) — CLOSED WITHOUT A SCREEN.** Substitution mass lives
+exclusively on solved cells with nothing to gain or coins to lose:
+6s299b685 624k vars (but SAT 186 s / 10,887 conflicts), 18.normalised
+492k (SAT 93 s, 0 conflicts), ibm 175k (adopter — would reroll its tuned
+trajectory), **oski15 x2 58k each (the 1154 s/1642 s UNSAT wall-coins)**,
+vex 5.8k (coin), sudoku-N30 5.3k. Every timeout cell carries <2k vars
+(bp4s 35-42, Bubble 160, stp212 1.9k). No adopter class with upside
+exists; enabling root ELS is a pure coin-reroll lottery.
+
+**5. Bookkeeping:** the tickcad probe re-confirmed vex times out in BOTH
+arms under 20-way load (the documented contention artifact — not signal).
+New triage suites committed: `benchmarks/units-screen-2026-07-27` (21),
+`benchmarks/tickcad-screen-2026-07-27` (10),
+`benchmarks/gbverounds-screen-2026-07-27` (12). Screen artifacts:
+`log/abtest-units-vs-base-2026-07-27-17-23-24`,
+`log/abtest-tickcad-vs-base-2026-07-27-18-*`,
+`log/abtest-tr-vs-pr-vs-both-vs-base-2026-07-27-18-51-20`.
+
+**SESSION 9 take-away: the 1800 s metric is at a measured local optimum.**
+Every cheap candidate from the 2026-07-27b ranking is now closed with
+mechanism evidence. What remains: (a) the giant memory diet
+(capability-adjacent, not metric-moving at 1800 s), (b) the >3000 s
+horizon bundle (REDUCE law + tick cadence + low transitive thresholds —
+all measured real but valueless at 1800 s), (c) elim_def behind its
+fallback fix (low priority, yield 3 orders short), and (d) waiting for a
+genuinely new mechanism idea — the next +1 likely needs a new root pass
+with percent-scale find mass on a timeout cell, which nothing currently
+built provides.
 
 ## SESSION 8 (2026-07-27 afternoon) — SAT_PROBE_INPROCESS PROMOTED, gate WIN 72v72 (conflicts −121.6k); ELS rounds NEGATIVE
 
@@ -644,20 +729,22 @@ capability; wall coin = margin <=~120 s OR flipped across deals at an IDENTICAL
 conflict count), tiered triage (probe -> subset -> 100-cell gate for promotion
 only), and 4-arm sweeps (promote the best arm).
 
-## RANKED PLAN for next session (updated 2026-07-27b)
+## RANKED PLAN for next session (updated 2026-07-27c)
 
-0. **DONE in SESSION 8: root-adopter probe rounds (PROMOTED fe82400) —
-   follow-up 3d banked; ELS rounds screened NEGATIVE (default-off
-   groundwork stays).** DONE in SESSION 7: inprocessing-round transitive
-   (PROMOTED ecdf632, root-adopter scope) — follow-up 3b banked. DONE in
-   SESSION 6: `transitive.c` root pass (PROMOTED ab592d2, T=100‰ scope).
-   **The small-port class stays EXHAUSTED** (backbone dead, vivify tier3
-   LOSE, transitive root+rounds banked, probe rounds banked, ELS rounds
-   negative; HBR has no kissat module). CLOSED in SESSIONS 4-5: REDUCE
-   law at 1800 s (revisit only >3000 s or as T>=8M insurance),
-   `SAT_ELIM_DEF` (any budget; fallback defect documented), vivify
-   tier3/3:3:1:3, 10th wall-diet, bp4_TCO_CSO_ZR free +1. Sweep schedule /
-   tick cadence stay CLOSED.
+0. **DONE in SESSION 9 (all NEGATIVE, all closed at triage tier, zero
+   gates spent): units-only arm 3a (screen LOSE 15v16 + capability loss);
+   tick-cadence re-measure (zero flips with rounds confirmed firing —
+   1800 s CLOSED for good, mechanism-solid); gbve-adopter rounds
+   (4-arm screen ALL LOSE — the root-adopter round shape is measured
+   MINED OUT: it pays only where the root pass finds percent-scale
+   regenerating edge mass, which only the transitive class has); root
+   ELS (mass enumeration shows coins-only exposure — closed without a
+   screen).** DONE in SESSION 8: probe rounds (PROMOTED fe82400). DONE in
+   SESSION 7: transitive rounds (PROMOTED ecdf632). DONE in SESSION 6:
+   `transitive.c` root pass (PROMOTED ab592d2). The small-port class
+   stays EXHAUSTED. CLOSED in SESSIONS 4-5: REDUCE law at 1800 s,
+   `SAT_ELIM_DEF` (any budget), vivify tier3/3:3:1:3, 10th wall-diet,
+   bp4_TCO_CSO_ZR free +1. Sweep schedule stays CLOSED.
 
 1. **Giant memory diet (unstarted).** pj2008 RSS 10.4 GB vs kissat 1.4 GB;
    BVE emits 1.7 GB discarded DRAT in 150 s. pj2008 is marginal even for
@@ -676,17 +763,13 @@ only), and 4-arm sweeps (promote the best arm).
    TT/bp4 reroll variance has room to wash out. SESSION 7 adds: the
    round pass would fire on MANY more cells at a lower root threshold —
    any future threshold experiment now sweeps both knobs together.
-3. **Transitive follow-ups still open (screen before spending a gate):**
-   (a) *units-only arm* — apply failed-literal units when below the
-   removal threshold: reconf10 x2 carry 1074 root units each, jkkk 84,
-   twitter 25, but all three are SOLVED SAT cells with fat margins —
-   1800 s idle screen first, walk away on any conflict regression;
-   (b) DONE (SESSION 7, ecdf632); (d) DONE (SESSION 8, fe82400 — probe
-   rounds promoted, ELS rounds measured negative; the adopter-scope
-   shape is likely mined out unless a new root pass creates a new
-   adopter class);
-   (c) Kakuro-115 (−21k at 77.6‰) is the only sub-100‰ cell measured to
-   improve — not worth a per-cell scope alone.
+3. **Transitive follow-ups ALL CLOSED as of SESSION 9:** (a) units-only
+   arm — screened LOSE 15v16 (SESSION 9.1), CLOSED; (b) DONE (SESSION 7);
+   (d) DONE (SESSION 8); the "new root pass creates a new adopter class"
+   corollary was tested on the scoped-gate-BVE class and FAILED
+   (SESSION 9.3) — the shape requires percent-scale regenerating edge
+   mass, not just a deterministic adopter set; (c) Kakuro-115 remains not
+   worth a per-cell scope.
 4. **elim_def revisit ONLY behind the fallback fix:** on bound-rejection,
    fall through to naive all-pairs BVE for that pivot (the current shape
    strictly loses eliminations vs base — SESSION 4 autopsy). Low priority;
@@ -769,14 +852,18 @@ Historical detail of the promoted item (kept for provenance):
 
 ## Current state
 
-- HEAD: fe82400 (SESSION 8: SAT_PROBE_INPROCESS default-on, root-adopter
-  scope — only sted2 (−246k, 1 round) and ibm (+124k, 7 rounds) moved,
-  aggregate −121.6k; SAT_ELS_INPROCESS landed default-off, measured
-  negative). **Medium 1800 s baseline: 72/100 lineage** (solved SET
-  unchanged again — gate 72v72 identical sets, conflicts −121,608);
-  newest candidate TSV
+- HEAD: 69ec5eb (SESSION 9: groundwork only, defaults byte-identical to
+  fe82400 — new default-off flags SAT_TRANSITIVE_UNITS_ONLY,
+  SAT_TRANSITIVE_INPROCESS_GBVE, SAT_PROBE_INPROCESS_GBVE, all measured
+  negative; stats JSON now emits els_substituted_vars /
+  els_rewritten_clauses + transitive_units_only_applied). **Medium 1800 s
+  baseline: 72/100 lineage, unchanged**; newest candidate TSV remains
   `log/abtest-cand-vs-base-2026-07-27-11-58-13/cand/results.tsv`.
-  This gate's deal posted 72 in BOTH arms.
+- Prior HEAD: fe82400 (SESSION 8: SAT_PROBE_INPROCESS default-on,
+  root-adopter scope — only sted2 (−246k, 1 round) and ibm (+124k,
+  7 rounds) moved, aggregate −121.6k; SAT_ELS_INPROCESS landed
+  default-off, measured negative). Gate 72v72 identical sets, conflicts
+  −121,608; that gate's deal posted 72 in BOTH arms.
 - Prior HEAD: ecdf632 (SESSION 7: SAT_TRANSITIVE_INPROCESS default-on,
   root-adopter scope — only sted2/ibm trajectories moved, both improved;
   98/100 cells conflict-identical to ab592d2 behavior in-gate; gate
@@ -829,6 +916,17 @@ Historical detail of the promoted item (kept for provenance):
 
 ## Standing traps (carried + this session)
 
+- **SESSION 9:** all three new flags (`SAT_TRANSITIVE_UNITS_ONLY`,
+  `SAT_TRANSITIVE_INPROCESS_GBVE`, `SAT_PROBE_INPROCESS_GBVE`) are
+  MEASURED NEGATIVE defaults — identity-verified groundwork only; do not
+  enable without a new mechanism argument. Tiny formula edits (a dozen
+  binary deletions) can swing a solved cell ±100-400k conflicts — never
+  read a small-edit per-cell improvement as mechanism; demand find-mass
+  (SESSION 7's 30-90k binaries/round) before believing a round pass.
+- **SESSION 9:** the stats JSON did NOT emit `els_substituted_vars` /
+  `els_rewritten_clauses` before 69ec5eb — any older scan that grepped
+  them silently measured nothing (this cost one wasted 10-min scan).
+  Check the emission list in `stats.rs` before scripting a stats grep.
 - **SESSION 8:** `SAT_ELS_INPROCESS=on` is a MEASURED NEGATIVE default
   (idle 2-cell forecast +44k conflicts alone, +2.6M with probe — sted2
   ballooned to 4.49M conflicts / 1065 s under both). It exists as
