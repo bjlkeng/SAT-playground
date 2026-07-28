@@ -1,22 +1,99 @@
-# NEXT PLAN — 2026-07-28a (supersedes the 2026-07-27c revision)
+# NEXT PLAN — 2026-07-28b (supersedes the 2026-07-28a revision)
 
-One-file plan for the next clear context. Folds SESSION 10 (2026-07-27
-night → 07-28: the SAT-sweeping productivity arc — SAT_SWEEP_ROOT
-kissat-parity root sweep + the SAT_SWEEP_SUBST substitution-defect fix,
-both implemented, identity-verified and screened; zero promotions, zero
-gates spent) on top of SESSIONS 4-9. Where this contradicts an older
-`plan/next-steps-*.md`, THIS file wins.
+One-file plan for the next clear context. Folds SESSION 11 (2026-07-28:
+SAT_PHP_REFUTE pigeonhole-counting ER refutation PROMOTED, gate WIN
+74 v 71 — FOUR first-ever solves out of the both-timeout hard core,
+medium baseline now 74/100) on top of SESSIONS 4-10. Where this
+contradicts an older `plan/next-steps-*.md`, THIS file wins.
 
-**START HERE:** read "SESSION 10" below. The headline discovery: the
-shipped mid-search sweep has NEVER substituted a single equivalence
-(learned-binary shape invisible to ELS — the "sweep fixpoint cascade" in
-the sweep_round comment never fired once), and fixing it reaches
-KISSAT-PARITY substitution mass on the BMC class (oski15b20 69,347
-substituted vars vs kissat's 71,487) — but at 1800 s the conflicts tier
-still loses (the REDUCE-law verdict shape: mechanism real, wall-good,
-conflicts-reroll-negative). The 1800 s local-optimum statement is now
-STRONGER: the sweeping-productivity arc joins REDUCE/tick-cadence in the
->3000 s-horizon drawer. Companion deep-dive: `plan/kissat-gaps.md`.
+**START HERE:** read "SESSION 11" below. The 1800 s "measured local
+optimum" of SESSION 9 was real for the *search/inprocessing* axis but
+not for the *special-refutation* axis: a brand-new capability mechanism
+(the SAT_TSEITIN promotion shape — universal-timeout + unique-capability
++ scoped-firing) took FOUR cells (rphp5_050/085, clqcl_40/50_6_5) that
+NOBODY — kissat included — solves at 3600 s, each in <0.3 s with
+drat-trim-verified extended-resolution counting proofs. The hard core is
+now 14 cells. Companion deep-dive: `plan/kissat-gaps.md`.
+
+## SESSION 11 (2026-07-28) — SAT_PHP_REFUTE PROMOTED, gate WIN 74v71 (+4 FIRST-EVER capability, −1 documented coin), baseline now 74/100
+
+**PROMOTED: `SAT_PHP_REFUTE` default-on — pigeonhole-counting
+extended-resolution refutation (php.rs, ~700 lines + 14 tests).** Gate:
+`log/abtest-cand-vs-base-2026-07-28-08-08-20`, `promotion_gate=PASS`,
+**74 v 71 solved**, 70 both-solved cells ALL conflict-identical (zero
+diff cells — complete trajectory identity), PAR-2 115,260.5 vs
+128,218.6, zero contradictions/correctness failures (vex
+checker-timeout symmetric as always).
+
+**Mechanism.** Two clause shapes reduce to one abstract counting core
+(P pigeon literals a[p][r] over N places, hole literals hole[r][h],
+H < P shared holes, with F1/F2/F3 unit-propagation conflict guarantees):
+
+- `rphp` (relativized PHP, SHUFFLED + sign-flipped instances): P
+  var-disjoint pigeon covers (the strictly longest clauses), per-place
+  at-most-one binary cliques, pigeon→used binaries, used→hole covers,
+  and pairwise used-places-can't-share-a-hole 4-clauses. rphp5 = 5
+  pigeons → 50/85 places → 4 holes.
+- `clqcl` (clique-coloring with EXISTENTIAL edge vars): 6 slot covers,
+  AMO-per-vertex cliques, slots force edge literals via ternaries, edges
+  forbid equal colors, unconditional H-color covers. 6 slots → 40/50
+  vertices → 5 colors.
+
+Detection is literal-based (shuffle/polarity invariant) and
+all-or-nothing: EVERY clause the counting argument needs is verified by
+exact lookup, so detection itself is the soundness anchor (matching ∧
+P>H ⇒ UNSAT by construction; a proof bug could only produce a
+checker-rejected proof, never a wrong answer on a SAT instance). The
+proof: fresh W[p][r][h] ~ a∧hole and G[p][h] ~ OR_r W definitions (RAT,
+pivot-first), N²-scale pairwise W blocking lemmas (RUP via F2/F3), G
+lifting, per-pigeon covers (RUP via F1), and an injective-assignment
+DFS over the (H+1)×H G matrix ending in the empty clause. Proofs
+106k-300k lemmas / 0.6-1.8 MB, emitted in <0.08 s, drat-trim VERIFIED
+on all four real cells (in-gate `verified=ok` AND standalone).
+
+**Key implementation facts:**
+
+- Frontend BVA had to be held off matching formulas
+  (`php::formula_matches` consulted before the factor block in main.rs):
+  factoring rewrites the clqcl adjacency ternaries and hides the
+  structure — clqcl declined until this was found. rphp survives factor
+  untouched, clqcl does not.
+- The histogram precheck (3-7 strictly-longest covers ≥10 wide,
+  everything else ≤8 literals, ≤400k clauses) passes on EXACTLY the 4
+  family cells of the 100-cell suite (measured offline over all 100) —
+  the other 96 pay one length scan; full detection never runs there.
+  Byte-identity verified: rbsat 100k fingerprint 100001/196258/
+  17,758,017 and MVRR 267,199 digit-exact in BOTH flag states, in-gate
+  70/70 both-solved conflict-identical.
+- The −1 is `oski15a01b20s`: base solved 1602.1 s of 1800 at conflicts
+  2,663,684 — its EXACT documented reference trajectory (the standing
+  wall-coin flipper test: identical conflicts, different outcome = pure
+  wall lottery under load). The pass provably never touches it. Trade:
+  4 mechanism-validated capability gains vs 1 documented coin — clean
+  under the flexible rule.
+- Validation: 729 unit tests (14 new: RUP/RAT per-line proof checks,
+  shuffle/flip detection, SAT-variant/missing-clause declines, drat-trim
+  end-to-end on synthetics), smoke 9/9 both flag states, shipped
+  defaults reproduce all four solves + both identity references
+  digit-exact.
+
+**Take-aways:**
+
+1. The SESSION 9 "local optimum" verdict applies to the
+   search/inprocessing axis only. The special-refutation ledger
+   (SAT_GAUSS → SAT_PAIR_ABS → SAT_TSEITIN → SAT_PHP_REFUTE) is now
+   4-for-4 promoted, each banking unique capability kissat cannot reach
+   at any wall. Structure detection + ER proof emission is solver12's
+   highest-yield promotion shape: zero reroll risk by construction
+   (fires pre-search, strict decline elsewhere), so a gate can only
+   confirm capability, not lose banked cells (modulo deal-noise coins).
+2. When hunting the next such family, reverse-engineer the timeout
+   cells' clause-length histograms + variable roles FIRST (the rphp
+   structure was fully decoded from the shuffled instances in minutes
+   offline, before any solver work).
+3. drat-trim RAT-with-fresh-variables + RUP-lemma streams remain fully
+   checker-compatible at 300k lemmas — the TSEITIN infrastructure
+   generalizes.
 
 ## SESSION 10 (2026-07-27 night → 07-28) — SAT-sweeping productivity arc: two features landed default-off, sweep-substitution defect FOUND and fixed, zero promotions, baseline stays 72/100
 
@@ -835,7 +912,33 @@ capability; wall coin = margin <=~120 s OR flipped across deals at an IDENTICAL
 conflict count), tiered triage (probe -> subset -> 100-cell gate for promotion
 only), and 4-arm sweeps (promote the best arm).
 
-## RANKED PLAN for next session (updated 2026-07-28a)
+## RANKED PLAN for next session (updated 2026-07-28b)
+
+0. **DONE in SESSION 11: SAT_PHP_REFUTE PROMOTED (gate WIN 74v71,
+   baseline 74/100).** The special-refutation axis is the proven way out
+   of the 1800 s search-side local optimum — 4-for-4 promoted
+   (gauss/pair_abs/tseitin/php).
+1. **NEW #1 — hunt the next special-refutation family in the remaining
+   14-cell hard core.** Method (SESSION 11 take-away 2): decode clause
+   -length histograms + variable roles of each timeout cell offline
+   first. Candidates by structure class: ramsey_3_6_19 / ramsey_4_4_18
+   (Ramsey colorings — symmetry-heavy, DRAT-expressible proof unknown,
+   hard), TT7F-33-24B / TT495 (timetable — mixed structure),
+   VdW-27 (arithmetic progressions), st_659 (?), oisc-subrv (?),
+   rphp-adjacent variants may appear in future suites. NOTE: counting/
+   injectivity shapes (exactly what php.rs's abstract F1/F2/F3 core
+   covers) are the tractable kind; pure symmetry (ramsey) likely needs
+   proof systems beyond drat-trim. Time-box the structure read; if no
+   new family falls out, fall through to item 2.
+2. **Giant memory diet (carried).** pj2008 RSS 10.4 GB vs kissat 1.4 GB;
+   BVE emits 1.7 GB discarded DRAT in 150 s. pj2008 is marginal even for
+   kissat (2866 s at 3600 s), so this is capability-adjacent, not urgent.
+3. **The 3600 s / competition-horizon bundle (carried).** REDUCE law +
+   tick cadence + SWEEP_SUBST + low transitive thresholds — all measured
+   real but valueless at 1800 s; revisit only under a >3000 s objective.
+4. **elim_def revisit ONLY behind the fallback fix (carried, low).**
+
+Previous ranking (2026-07-28a), kept for provenance:
 
 0. **DONE in SESSION 10 (zero promotions, zero gates spent): the
    SAT-sweeping productivity arc.** SAT_SWEEP_ROOT (kissat-parity root
@@ -962,7 +1065,17 @@ Historical detail of the promoted item (kept for provenance):
 
 ## Current state
 
-- HEAD: SESSION 10 groundwork commit (defaults byte-identical to
+- HEAD: SESSION 11 promotion commit — `SAT_PHP_REFUTE` default-on
+  (php.rs detector + ER proof engine; frontend BVA held off matching
+  formulas; feature table FullSetValidated). **Medium 1800 s baseline:
+  74/100**, candidate TSV
+  `log/abtest-cand-vs-base-2026-07-28-08-08-20/cand/results.tsv` (that
+  deal's base arm posted 71 — rbsat/VdW/oski15 coins OUT, textbook ±2
+  noise band around the 72 lineage). Both-timeout hard core now 14
+  cells (was 18): rphp5 x2 + clqcl x2 REMOVED. Identity refs at HEAD
+  unchanged: rbsat 100k = 100001 conf / 196258 dec / 17,758,017 props;
+  MVRR 267,199 conflicts; 729 unit tests; smoke 9/9.
+- Prior HEAD: ba928c1 SESSION 10 groundwork commit (defaults byte-identical to
   69ec5eb/fe82400 — new default-off flags SAT_SWEEP_ROOT (+
   _MIN_YIELD_PERMILLE/_MAX_VARS/_TICKS/_PROBE_ENVS), SAT_SWEEP_SUBST (+
   _MIN_EQUIVS), both measured non-promotable at 1800 s; new stats
@@ -1147,6 +1260,13 @@ Historical detail of the promoted item (kept for provenance):
   JSON, not short-wall subset sweeps.
 
 ## solver12's capability edge (protect in rerolls)
+
+**NEW 2026-07-28 (SAT_PHP_REFUTE, banked at promotion):** `rphp5_050`,
+`rphp5_085`, `clqcl_40_6_5`, `clqcl_50_6_5` — all UNSAT <0.3 s,
+drat-trim-verified ER counting proofs; nobody else solves any of them
+at 3600 s. Reroll-immune by construction (pre-search refutation, strict
+structural detection — but protect the php.rs detector invariants and
+the frontend-BVA hold-off in any parse/factor refactor).
 
 **NEW 2026-07-24 (gate-BVE, needs scoping to bank):** `RoundRobin_n16_d13`
 UNSAT 80.7 s — nobody solves it, kissat included, even at 3600 s;

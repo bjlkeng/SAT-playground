@@ -15,6 +15,34 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **Medium-suite default promotion (2026-07-28): pigeonhole-counting ER refutation (`SAT_PHP_REFUTE`).**
+> Detects two relativized-pigeonhole clause shapes at the root — the `rphp` family
+> (P pigeons -> N resting places -> H holes with used-place guards) and the `clqcl`
+> family (P clique slots -> N vertices with existential edge literals -> H colors) —
+> by strict all-or-nothing structural matching: literal-based (invariant under
+> shuffling and per-variable polarity flips), every clause required for the counting
+> argument verified by exact lookup, which makes detection itself the soundness
+> anchor (a matching formula with P > H is UNSAT by construction). Refutes with an
+> extended-resolution DRAT proof: fresh definitions `W[p][r][h] ~ a & hole` and
+> `G[p][h] ~ OR_r W` (RAT on the leading fresh literal), pairwise blocking lemmas at
+> the W then G level (RUP), per-pigeon covers, and an injective-assignment DFS over
+> the (H+1)xH G-matrix ending in the empty clause. Frontend BVA is held off matching
+> formulas (factoring rewrites the clqcl adjacency ternaries and hides the shape).
+> The histogram precheck (3-7 strictly-longest covers >= 10 wide, all else <= 8
+> literals) passes on EXACTLY the 4 family cells of the 100-cell medium suite, so
+> the other 96 pay one length scan and stay byte-identical (rbsat 100k fingerprint
+> 100001/196258/17,758,017 and MVRR 267,199 digit-exact both flag states).
+> Gate `log/abtest-cand-vs-base-2026-07-28-08-08-20`: **WIN 74 vs 71 solved**
+> (+rphp5_050 +rphp5_085 +clqcl_40_6_5 +clqcl_50_6_5, all FIRST-EVER solves, all
+> UNSAT in <= 0.3 s with drat-trim-verified proofs in-gate — kissat 4.0.4 solves
+> none of them even at 3600 s; -oski15a01b20s, the documented wall-coin flipper,
+> lost at its exact reference conflict count 2,663,684 = pure wall luck), 70
+> both-solved cells ALL conflict-identical, PAR-2 115260.5 vs 128218.6;
+> `promotion_gate=PASS`, zero contradictions, zero correctness failures (vex
+> checker-timeout symmetric both arms as documented). Proof sizes 0.6-1.8 MB
+> (106k-300k lemmas), emission < 0.08 s. Disable with `SAT_PHP_REFUTE=off`.
+> Detail: `plan/next-plan.md` SESSION 11.
+
 > **Medium-suite default promotion (2026-07-22): closed-Tseitin ER refutation (`SAT_TSEITIN`).**
 > Detects closed Tseitin XOR components (every variable in exactly two extracted XOR
 > constraints; union-find + odd rhs-parity charge ⇒ UNSAT) and emits a width-bounded

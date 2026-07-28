@@ -691,6 +691,12 @@ pub(crate) struct SolverConfig {
     pub(crate) gauss: bool,
     pub(crate) factor: bool,
     pub(crate) pair_abs_refute: bool,
+    /// Pigeonhole-counting extended-resolution refutation (SAT_PHP_REFUTE):
+    /// detects the relativized-PHP (`rphp`) and clique-coloring (`clqcl`)
+    /// clause shapes at the root and refutes them with a counting DRAT proof
+    /// over fresh definition variables. Strict all-or-nothing detection, so
+    /// non-matching formulas stay byte-identical.
+    pub(crate) php_refute: bool,
     pub(crate) els: bool,
     pub(crate) congruence: bool,
     pub(crate) congruence_xor: bool,
@@ -882,6 +888,7 @@ impl Default for SolverConfig {
             gauss: false,
             factor: false,
             pair_abs_refute: false,
+            php_refute: false,
             els: false,
             congruence: false,
             congruence_xor: false,
@@ -1133,6 +1140,21 @@ impl SolverConfig {
                 // same both-solved conflicts, PAR-2 170286.2 vs 180659.0,
                 // promotion_gate PASS. This recovers xor_op_n36/n38/n40.
                 self.pair_abs_refute = true;
+                // 2026-07-28: pigeonhole-counting extended-resolution refutation
+                // promoted to default/fast. Detects the relativized-PHP (rphp) and
+                // clique-coloring (clqcl) clause shapes by strict structural matching
+                // (shuffle/sign-flip invariant, every required clause verified by
+                // exact lookup) and refutes P pigeons -> N places -> H<P holes with a
+                // counting DRAT proof over fresh W/G definition variables. Medium
+                // single-seed A/B (32c/16GB/1800s,
+                // log/abtest-cand-vs-base-2026-07-28-08-08-20): 74/100 vs 71/100
+                // (+rphp5_050 +rphp5_085 +clqcl_40_6_5 +clqcl_50_6_5, all FIRST-EVER,
+                // all UNSAT <0.3s with drat-trim-verified proofs, kissat cannot solve
+                // any at 3600s; -oski15a01b20s, the documented wall-coin flipper at
+                // its exact reference conflict count 2,663,684), 70 both-solved cells
+                // ALL conflict-identical, PAR-2 115260.5 vs 128218.6;
+                // promotion_gate PASS, zero contradictions/correctness failures.
+                self.php_refute = true;
                 // SAT-playground-5b2.2.76-adjacent (2026-07-05): promote kissat-parity
                 // reason-side literal bumping (analyze.c bump_reason mark set) to the
                 // default profile. Stock kissat bumps not only the 1UIP-analyzed
@@ -1658,6 +1680,8 @@ impl SolverConfig {
             "SAT_PAIR_ABS_REFUTE",
             self.pair_abs_refute,
         );
+        self.php_refute =
+            parse_bool_selected(env_map, &key_set, "SAT_PHP_REFUTE", self.php_refute);
         self.els = parse_bool_selected(env_map, &key_set, "SAT_ELS", self.els);
         self.congruence =
             parse_bool_selected(env_map, &key_set, "SAT_CONGRUENCE", self.congruence);
@@ -2238,6 +2262,7 @@ impl SolverConfig {
         push_kv_bool(&mut lines, "gauss", self.gauss);
         push_kv_bool(&mut lines, "factor", self.factor);
         push_kv_bool(&mut lines, "pair_abs_refute", self.pair_abs_refute);
+        push_kv_bool(&mut lines, "php_refute", self.php_refute);
         push_kv_bool(&mut lines, "els", self.els);
         push_kv_bool(&mut lines, "congruence", self.congruence);
         push_kv_bool(&mut lines, "congruence_xor", self.congruence_xor);
@@ -2797,6 +2822,15 @@ fn feature_metadata(config: &SolverConfig) -> Vec<FeatureStatus> {
             "log/abtest-pairabs-vs-base-2026-07-09-08-20-53",
         ),
         feature(
+            "SAT_PHP_REFUTE",
+            config.php_refute,
+            FeatureMaturity::FullSetValidated,
+            true,
+            false,
+            true,
+            "log/abtest-cand-vs-base-2026-07-28-08-08-20",
+        ),
+        feature(
             "SAT_ELS",
             config.els,
             FeatureMaturity::Experimental,
@@ -3015,6 +3049,7 @@ fn replay_field_to_env(field: &str) -> Option<&'static str> {
         "gauss" => Some("SAT_GAUSS"),
         "factor" => Some("SAT_FACTOR"),
         "pair_abs_refute" => Some("SAT_PAIR_ABS_REFUTE"),
+        "php_refute" => Some("SAT_PHP_REFUTE"),
         "els" => Some("SAT_ELS"),
         "congruence" => Some("SAT_CONGRUENCE"),
         "inprocess_interval_conflicts" => Some("SAT_INPROCESS_INTERVAL_CONFLICTS"),

@@ -24,6 +24,7 @@ mod limits;
 mod lit;
 mod output;
 mod pair_abs;
+mod php;
 mod simp;
 mod sweep;
 mod stats;
@@ -14310,6 +14311,71 @@ impl Solver {
         true
     }
 
+    /// Attempt a pigeonhole-counting extended-resolution refutation
+    /// (SAT_PHP_REFUTE). Detects the relativized-PHP (`rphp`) and
+    /// clique-coloring (`clqcl`) clause shapes — exponentially hard for
+    /// CDCL/resolution, polynomial for extended resolution — and emits a DRAT
+    /// refutation built from fresh-variable counting definitions (see php.rs).
+    /// Detection is all-or-nothing exact clause matching, so non-matching
+    /// formulas pay only a histogram scan plus (rarely) a bounded structural
+    /// probe, and no solver state is touched either way.
+    fn try_php_refute(&mut self, proof_log: &mut ProofLog) -> bool {
+        if !proof_log.is_enabled() {
+            return false;
+        }
+        let t0 = Instant::now();
+        // Histogram precheck without gathering (shared shape filter): exits in
+        // one cheap length pass on ordinary formulas.
+        let live_lens = self
+            .original_clause_ids
+            .iter()
+            .map(|&cid| cid as usize)
+            .filter(|&cid| cid < self.arena.len() && !self.clause_is_deleted(cid))
+            .map(|cid| self.clause_slice(cid).len());
+        if !php::histogram_precheck(live_lens) {
+            return false;
+        }
+        let clauses: Vec<Vec<i32>> = self
+            .original_clause_ids
+            .iter()
+            .map(|&cid| cid as usize)
+            .filter(|&cid| cid < self.arena.len() && !self.clause_is_deleted(cid))
+            .map(|cid| self.clause_slice(cid).to_vec())
+            .collect();
+        let Some(structure) = php::detect(&clauses, php::MIN_PLACES) else {
+            if std::env::var("SAT_DEBUG_PHP").is_ok() {
+                eprintln!(
+                    "c php_refute no-structure clauses={} sec={:.4}",
+                    clauses.len(),
+                    t0.elapsed().as_secs_f64()
+                );
+            }
+            return false;
+        };
+        // Keep the emitted proof well inside drat-trim's practical range.
+        const PHP_MAX_PROOF_LINES: u64 = 5_000_000;
+        if php::estimated_proof_lines(&structure) > PHP_MAX_PROOF_LINES {
+            return false;
+        }
+        let num_vars = self.assignment.len().saturating_sub(1);
+        let mut lines = 0u64;
+        php::refute_with_proof(&structure, num_vars, &mut |clause: &[i32]| {
+            lines += 1;
+            proof_log.record_clause(clause);
+        });
+        if std::env::var("SAT_DEBUG_PHP").is_ok() {
+            eprintln!(
+                "c php_refute proved pigeons={} places={} holes={} proof_clauses={} sec={:.4}",
+                structure.pigeons(),
+                structure.places(),
+                structure.holes(),
+                lines,
+                t0.elapsed().as_secs_f64()
+            );
+        }
+        true
+    }
+
     /// Refute adjacent-pair parity abstractions such as the `xor_op` family. The
     /// original formula must be a complete expansion of clauses over pair parity
     /// variables `(x_{2i-1} xor x_{2i})`. We introduce fresh parity variables in
@@ -17483,6 +17549,14 @@ impl Solver {
             return SolveOutcome::unsat();
         }
 
+        // Pigeonhole-counting extended-resolution refutation (SAT_PHP_REFUTE).
+        // Detects relativized-PHP / clique-coloring structure and refutes it
+        // with a counting DRAT proof; a strict all-or-nothing detector, so
+        // non-matching formulas are untouched.
+        if config.php_refute && self.try_php_refute(proof_log) {
+            return SolveOutcome::unsat();
+        }
+
         // Equivalent-literal substitution (SAT_ELS). Collapses binary-implication-graph
         // SCCs to representatives before BVE, removing variables and unlocking more
         // downstream elimination on gate/equivalence circuit miters. Returns UNSAT (with a
@@ -18979,7 +19053,20 @@ fn main() {
     let mut solver_num_vars = num_vars;
     let mut solver_formula = formula;
     let mut bva_steps: Vec<factor::FactorProofStep> = Vec::new();
-    if config.factor && num_vars <= factor::FACTOR_MAX_VARS {
+    // A detected pigeonhole structure must reach solve() intact: frontend BVA
+    // rewrites the clique-coloring adjacency ternaries and hides the shape
+    // from SAT_PHP_REFUTE, which would otherwise refute the formula outright
+    // in milliseconds. Matching formulas are proven UNSAT by detection, so
+    // holding factoring off them is strictly sound; non-matching formulas pay
+    // one histogram pass (and detection only when that passes) and behave
+    // byte-identically.
+    let mut php_structure_present = false;
+    if config.php_refute && config.factor && num_vars <= factor::FACTOR_MAX_VARS {
+        if let ParsedFormula::Nested(clauses) = &solver_formula {
+            php_structure_present = php::formula_matches(clauses);
+        }
+    }
+    if config.factor && !php_structure_present && num_vars <= factor::FACTOR_MAX_VARS {
         // FACTOR_MAX_VARS (10^4) is far below the giant-arena threshold, so the
         // giant path never reaches this block; the match is type plumbing only.
         if let ParsedFormula::Nested(clauses) = &solver_formula {
