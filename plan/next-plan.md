@@ -1,12 +1,125 @@
-# NEXT PLAN — 2026-07-28b (supersedes the 2026-07-28a revision)
+# NEXT PLAN — 2026-07-28c (supersedes the 2026-07-28b revision)
 
-One-file plan for the next clear context. Folds SESSION 11 (2026-07-28:
-SAT_PHP_REFUTE pigeonhole-counting ER refutation PROMOTED, gate WIN
-74 v 71 — FOUR first-ever solves out of the both-timeout hard core,
-medium baseline now 74/100) on top of SESSIONS 4-10. Where this
-contradicts an older `plan/next-steps-*.md`, THIS file wins.
+One-file plan for the next clear context. Folds SESSION 12 (2026-07-28
+evening: starved-class tick-round sweep+elim bundle implemented and
+screened DEFINITIVELY NEGATIVE, zero promotions; grid-n400 checker arc
+re-measured and REOPENED with a concrete shrink target; baseline stays
+74/100) on top of SESSIONS 4-11. Where this contradicts an older
+`plan/next-steps-*.md`, THIS file wins.
 
-**START HERE:** read "SESSION 11" below. The 1800 s "measured local
+**START HERE:** read "SESSION 12" below, then "SESSION 11".
+
+## SESSION 12 (2026-07-28 evening) — starved-class kissat-pipeline bundle NEGATIVE (the last search-side axis closed); grid n400 verify measured; zero promotions, baseline stays 74/100
+
+HEAD defaults byte-identical (rbsat 100k fingerprint 100001/196258/
+17,758,017 digit-exact; MVRR 267,199 digit-exact; 738 unit tests (+5);
+smoke 9/9 both flag states). No 100-cell gate spent.
+
+**1. Hard-core structure read (SESSION 11 item 1) — NO tractable
+special-refutation family remains.** Full clause-length/role decode of
+the 14-cell hard core: ramsey_4_4_18 (K18, 2x3060 len-6 clauses) has a
+mathematically complete counting+parity proof (Greenwood-Gleason
+R(4,4)<=R(3,4)+R(4,3), handshake parity for R(3,4)<=9) but the DRAT
+emission needs ~C(17,9)=24k per-subset R(3,4) sub-proofs x thousands of
+lemmas = ~100M+ lemmas vs the ~6M checker cap — research-scale, not a
+session. ramsey_3_6_19 worse. VdW-27: no poly refutation known, status
+possibly SAT. TT495/TT7F/lockchart/rbsat-v945: SAT-likely or no
+counting core. st_659 decoded (NEW): 3 layers x 659 item-vars
+(x/y/z_i), 655 at-least-one ternaries (i, i+659, i+1318), per-item AMO
+(1965 negneg binaries at dist 659/1318), ~11.8k cross-item conflict
+binaries, 1309 wide all-positive per-layer covers (len 10-26, npos
+15-20), 96 forced units — a 3-period timetabling/partition shape, no
+strict php-core over-constraint visible, UNSAT status unknown. Item 1
+is CLOSED unless a new suite arrives.
+
+**2. `SAT_SWEEP_TICK_ROUNDS` + `SAT_ELIM_TICK_ROUNDS` (default-off
+groundwork) — the full kissat starved-cell pipeline, implemented and
+DEFINITIVELY NEGATIVE at 1800 s.** This was the one unmeasured
+combination left from SESSIONS 9-10: tick-cadence-triggered rounds
+running the FIXED sweep engine (kitten-tick-share budget 100‰ since
+last sweep clamped 10M..1G, whole-env completion flags resuming across
+rounds, escalation on completed passes, persistent cross-round dedup,
+substitution as ORIGINAL binaries + ELS) plus bounded unarmed eliminate
+(armed-bounds effort path) — everything scoped to `round_via_tick` so
+conflict-cadence rounds and non-starved cells are byte-identical by
+construction. Mechanism CONFIRMED on goldcrest (300 s idle: 3 tick
+rounds, 7197 envs, 2358 equivalences, 1293 ELS-substituted vars vs 0
+baseline, elim rounds firing) — and the metric still loses everywhere:
+
+- 4-arm 1800 s screen on 14 starved cells
+  (`log/abtest-full-vs-sweep-vs-elim-vs-base-2026-07-28-17-17-33`,
+  suite `benchmarks/starved-screen-2026-07-28`): **base 3/14 solved
+  (oski15b20 1538 s at reference conflicts 2,663,684; vex at reference
+  2,975,066; rbsat 1652 s), full 0/14, elim 0/14, sweep 1/14 (rbsat
+  conflict-identical 6,257,890 — its tick trigger never armed in-run).
+  ZERO timeout flips; every candidate arm loses the in-class coins.**
+- Idle 1800 s re-check (contention caveat closed): goldcrest, st_659,
+  TT7F, lockchart-group1 ALL still TIMEOUT under the full bundle
+  (`log/starved-arc-2026-07-28/idle_full_bundle_4cells.txt`).
+- 100-cell ticks/conflict scan at 100k conflicts
+  (`log/starved-arc-2026-07-28/ticks_per_conflict_scan.txt`): the
+  >=12k-ratio class is ~44 cells including ~30 SOLVED (bp5_CSO 172k,
+  oddball 122k, velev 71k, sudoku 45k, oski15b40 44k, Kakuros, jkkk,
+  aaai10, reconf10 x2, vex 15.2k, oski15b20 31.6k) — the early-search
+  proxy OVERSTATES in-run arming (rbsat 19k proxy never armed; session
+  9's lockchart-group2 29k proxy never armed), but vex/oski15 DO arm
+  and DO lose their coins. There is no promotable scope: the class
+  either contains the coins or fires nothing.
+- booth x3 / Bubble / fixedbandwidth sit at 2.2-4.9k ticks/conflict —
+  NOT starved; the tick trigger structurally cannot reach the density
+  class at any sane floor.
+
+**VERDICT: the starved-cell inprocessing axis is now CLOSED at 1800 s
+with the complete kissat design measured** (session 9 cadence-only,
+session 10 root-pass-only, session 12 full pipeline). kissat's
+goldcrest/booth wins at ~1200-1400 s do not transfer at our search
+shape inside 1800 s. Both flags stay default-off groundwork; do not
+re-enable without a >3000 s objective.
+
+**3. tseitin_grid_n400 checker arc RE-MEASURED — still blocked, but
+the blocking mechanism is now precise and the reopen target concrete
+(`log/starved-arc-2026-07-28/grid_n400_checker_measurements.txt`).**
+- Engine reproduces the proof with caps lifted: 14,629,730 lemmas /
+  528 MB / 23.3 s gen (breakdown main=7.6M shift=2.5M append=3.8M
+  defs=0.64M). In-gate solve would be ~25 s = fat-margin +1 that
+  NOBODY (kissat included) solves at 3600 s.
+- `SAT_TSEITIN_COMPRESS` sweep: default target=2 IS the floor (c=3
+  doubles to 28.6M, c=4 quadruples — 2^(w-1) materialization
+  dominates).
+- drat-trim WITH deletions: **killed unfinished at >3717 s idle vs the
+  3600 s harness verify budget (2 x 1800 s)** — unverifiable in-gate;
+  the old 6M-lemma cap stays correct.
+- drat-trim WITHOUT deletions (new `SAT_TSEITIN_NO_DEL` measurement
+  knob): **s NOT VERIFIED in 11 s** — definition-variable RECYCLING is
+  RAT-sound ONLY because deletions clear the recycled var's old
+  clauses. no-del + no-recycling = the originally-documented
+  unverifiable variant (var-space blowup). Deletions are load-bearing;
+  do not strip them.
+- **The reopen lever is superlinearity: n188_d3 checks at 25k
+  lemmas/s (4.71M/187 s) while grid checks at ~4.1k/s — rate degrades
+  ~6x for a 3x bigger proof. A ~2.5x proof shrink (to ~6M lemmas)
+  likely restores the fast rate => ~240-600 s verify, comfortably
+  in-budget.** Candidate shrink: fold the constraint's new far-use
+  vars into the chain inside the SAME combine as the main addition
+  (append+main fusion — append is 3.8M of the 14.6M), and/or fuse
+  shift+main. This is a redesign of the chain machinery in
+  `gauss.rs tseitin_refute_with_proof` — one focused session, high
+  correctness bar (proof-critical), offline-testable in ~40 s per
+  iteration (23 s gen + drat-trim on a prefix).
+
+**4. Bookkeeping.** New default-off flags: `SAT_SWEEP_TICK_ROUNDS`,
+`SAT_SWEEP_TICK_PERMILLE` (100), `SAT_ELIM_TICK_ROUNDS`,
+`SAT_TSEITIN_NO_DEL` (measurement-only). New stats: sweep_tick_rounds/
+envs/ticks, elim_tick_rounds. New triage suite:
+`benchmarks/starved-screen-2026-07-28` (14 cells). The 2026-07-24
+tick-ratio calibration ("healthy <=9.2k / starved >=15k") is
+SUPERSEDED by the 100-cell scan — the class boundary is much broader
+and includes solved coins; any future tick-scoped pass must enumerate
+arming on the FULL suite, not a 10-cell probe.
+
+## SESSION 11 context (unchanged)
+
+The 1800 s "measured local
 optimum" of SESSION 9 was real for the *search/inprocessing* axis but
 not for the *special-refutation* axis: a brand-new capability mechanism
 (the SAT_TSEITIN promotion shape — universal-timeout + unique-capability
@@ -912,30 +1025,38 @@ capability; wall coin = margin <=~120 s OR flipped across deals at an IDENTICAL
 conflict count), tiered triage (probe -> subset -> 100-cell gate for promotion
 only), and 4-arm sweeps (promote the best arm).
 
-## RANKED PLAN for next session (updated 2026-07-28b)
+## RANKED PLAN for next session (updated 2026-07-28c)
 
-0. **DONE in SESSION 11: SAT_PHP_REFUTE PROMOTED (gate WIN 74v71,
-   baseline 74/100).** The special-refutation axis is the proven way out
-   of the 1800 s search-side local optimum — 4-for-4 promoted
-   (gauss/pair_abs/tseitin/php).
-1. **NEW #1 — hunt the next special-refutation family in the remaining
-   14-cell hard core.** Method (SESSION 11 take-away 2): decode clause
-   -length histograms + variable roles of each timeout cell offline
-   first. Candidates by structure class: ramsey_3_6_19 / ramsey_4_4_18
-   (Ramsey colorings — symmetry-heavy, DRAT-expressible proof unknown,
-   hard), TT7F-33-24B / TT495 (timetable — mixed structure),
-   VdW-27 (arithmetic progressions), st_659 (?), oisc-subrv (?),
-   rphp-adjacent variants may appear in future suites. NOTE: counting/
-   injectivity shapes (exactly what php.rs's abstract F1/F2/F3 core
-   covers) are the tractable kind; pure symmetry (ramsey) likely needs
-   proof systems beyond drat-trim. Time-box the structure read; if no
-   new family falls out, fall through to item 2.
+0. **DONE in SESSION 12 (zero promotions, zero gates spent):** item 1
+   of the 07-28b ranking (refutation-family hunt) CLOSED — hard core
+   fully decoded, no tractable counting family (ramsey needs ~100M+
+   lemmas vs the ~6M cap; st_659 decoded, timetabling shape, status
+   unknown). The starved-cell kissat pipeline (tick rounds + fixed
+   sweep + subst + unarmed eliminate) implemented and screened
+   DEFINITIVELY NEGATIVE — the search/inprocessing axis is now closed
+   at 1800 s with the COMPLETE kissat design measured across sessions
+   9/10/12.
+1. **NEW #1 — grid-n400 proof shrink (`gauss.rs`
+   `tseitin_refute_with_proof` chain-machinery redesign).** The only
+   concrete, mechanism-backed +1 currently visible at 1800 s: the cell
+   solves in ~25 s with a valid 14.6M-lemma ER proof; verification
+   misses the 3600 s budget (>3717 s idle, unfinished), BUT checker throughput is
+   superlinearly length-dependent (n188: 25k lemmas/s vs grid ~4.1k/s)
+   so a ~2.5x shrink to ~6M lemmas likely verifies in ~240-600 s.
+   Shrink candidates: fuse the append combines (3.8M lemmas) into the
+   main additions; fuse shifts (2.5M) where the consumed var arrives in
+   the incoming constraint. Fat-margin, reroll-free (pre-search), the
+   4-for-4 promotion shape. High correctness bar — offline test loop
+   is 23 s gen + drat-trim. Measurements:
+   `log/starved-arc-2026-07-28/grid_n400_checker_measurements.txt`.
 2. **Giant memory diet (carried).** pj2008 RSS 10.4 GB vs kissat 1.4 GB;
    BVE emits 1.7 GB discarded DRAT in 150 s. pj2008 is marginal even for
    kissat (2866 s at 3600 s), so this is capability-adjacent, not urgent.
-3. **The 3600 s / competition-horizon bundle (carried).** REDUCE law +
-   tick cadence + SWEEP_SUBST + low transitive thresholds — all measured
-   real but valueless at 1800 s; revisit only under a >3000 s objective.
+3. **The 3600 s / competition-horizon bundle (carried, grown).** REDUCE
+   law + tick cadence + SWEEP_SUBST + low transitive thresholds + NOW
+   the SESSION 12 tick-round sweep/elim bundle — all measured real but
+   valueless (or coin-negative) at 1800 s; revisit only under a
+   >3000 s objective.
 4. **elim_def revisit ONLY behind the fallback fix (carried, low).**
 
 Previous ranking (2026-07-28a), kept for provenance:
@@ -1065,7 +1186,16 @@ Historical detail of the promoted item (kept for provenance):
 
 ## Current state
 
-- HEAD: SESSION 11 promotion commit — `SAT_PHP_REFUTE` default-on
+- HEAD: SESSION 12 groundwork commit — defaults byte-identical to
+  d46f988 (rbsat 100k = 100001 conf / 196258 dec / 17,758,017 props;
+  MVRR 267,199 digit-exact; 738 unit tests; smoke 9/9 both flag
+  states). New default-off flags SAT_SWEEP_TICK_ROUNDS /
+  SAT_SWEEP_TICK_PERMILLE / SAT_ELIM_TICK_ROUNDS / SAT_TSEITIN_NO_DEL;
+  new stats sweep_tick_* x3 + elim_tick_rounds; new suite
+  benchmarks/starved-screen-2026-07-28; artifacts
+  log/starved-arc-2026-07-28 + the 4-arm screen dir. **Medium 1800 s
+  baseline: 74/100, unchanged.**
+- Prior HEAD: SESSION 11 promotion commit d46f988 — `SAT_PHP_REFUTE` default-on
   (php.rs detector + ER proof engine; frontend BVA held off matching
   formulas; feature table FullSetValidated). **Medium 1800 s baseline:
   74/100**, candidate TSV
@@ -1147,6 +1277,17 @@ Historical detail of the promoted item (kept for provenance):
 
 ## Standing traps (carried + this session)
 
+- **SESSION 12:** `SAT_SWEEP_TICK_ROUNDS` / `SAT_ELIM_TICK_ROUNDS` are
+  MEASURED NEGATIVE defaults at 1800 s (4-arm screen: 0-1/14 vs base
+  3/14 — they reroll vex/oski15 coins away and flip nothing, confirmed
+  idle). `SAT_TSEITIN_NO_DEL` is measurement-only and produces
+  NOT-VERIFIED proofs by design (definition-var recycling needs the
+  deletions for RAT soundness — deletions are load-bearing in every
+  tseitin/gauss ER proof). And the ticks/conflict EARLY-SEARCH ratio
+  (100k-conflict scan) OVERSTATES in-run tick arming: rbsat 19k proxy
+  and lockchart-group2 29k proxy never arm in a full run, while vex
+  15.2k does — enumerate arming with the real trigger counters, never
+  the proxy.
 - **SESSION 10:** `sweep_equivalences` in ANY historical stats output is a
   duplicate-inflated count of never-substituted facts (the learned-binary
   defect) — never read it as substitution mass; distinct-pair counts are

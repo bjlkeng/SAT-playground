@@ -312,6 +312,10 @@ const VIVIFY_LEARNED_MAX_LBD: u16 = 6;
 const SWEEP_SEED_BUDGET: usize = 512;
 /// Bead SAT-playground-5b2.3.38: max kitten solve calls per environment.
 const SWEEP_SOLVE_BUDGET: usize = 2000;
+/// SAT_SWEEP_TICK_ROUNDS per-round kitten-tick budget clamp: kissat `mineffort` floor
+/// (10M) and a safety cap (one round can never exceed 1G kitten ticks).
+const SWEEP_TICK_MIN_EFFORT: u64 = 10_000_000;
+const SWEEP_TICK_MAX_EFFORT: u64 = 1_000_000_000;
 /// Bead SAT-playground-5b2.3.38.1 (kissat `sweep.c` parity): escalation caps applied
 /// once a full seed pass completes. kissat doubles the environment variable/clause
 /// bounds and increments depth per completed sweep (`sweepmaxvars`, `sweepmaxclauses`,
@@ -2858,6 +2862,46 @@ struct Solver {
     /// Env SAT_SWEEP_ROOT_TICKS: total kitten-tick budget for the whole root sweep
     /// (0 = proportional to formula literals).
     sweep_root_ticks_budget: u64,
+    /// Env SAT_SWEEP_TICK_ROUNDS (default off): on TICK-CADENCE-triggered inprocessing
+    /// rounds (the starved class — see `inprocess_tick_cadence`), replace the legacy
+    /// 512-seed sweep scan with the kissat-productivity engine: kitten-tick-share
+    /// budget (`sweep_tick_permille` of search ticks since the last sweep round),
+    /// whole-environment completion marking that RESUMES across rounds, bound
+    /// escalation on completed passes, persistent cross-round fact dedup, and
+    /// substitution via ORIGINAL-clause binaries + ELS (the SESSION 10 fix). Rounds
+    /// triggered by the conflict cadence keep the legacy scan byte-identically, so
+    /// every non-starved cell is untouched by construction. Motivation (gap read
+    /// 2026-07-21): kissat sweeps 10% of ticks ALL RUN LONG on a progressively
+    /// collapsed formula — goldcrest gets 38.5k substitutions and 85% elimination
+    /// where the root-only pass reaches 4.5% seed coverage and rounds never fire.
+    sweep_tick_rounds: bool,
+    /// Env SAT_SWEEP_TICK_PERMILLE: kitten-tick budget per tick-round sweep as a
+    /// per-mille share of search ticks accumulated since the last sweep round
+    /// (kissat `sweepeffort`=100).
+    sweep_tick_permille: u64,
+    /// Search-tick stamp of the last tick-round sweep (budget accounting).
+    sweep_tick_last_search_ticks: u64,
+    /// Cross-round dedup for tick-round sweeping: facts already proven+applied are
+    /// never re-buffered (overlapping environments re-prove the same pair; measured
+    /// 91/102 duplicates on booth_dadda_mapped).
+    sweep_tick_seen_units: std::collections::HashSet<i32>,
+    sweep_tick_seen_pairs: std::collections::HashSet<(i32, i32)>,
+    /// Facts proven since the last COMPLETED tick-sweep pass, and the consecutive
+    /// unproductive completed passes (2 => stop tick sweeping this formula).
+    sweep_tick_facts_this_pass: u64,
+    sweep_tick_unproductive: u32,
+    /// Tick-round sweeping disabled for this formula (unproductive backoff). The
+    /// legacy conflict-round sweep path is deliberately unaffected.
+    sweep_tick_stopped: bool,
+    /// Env SAT_ELIM_TICK_ROUNDS (default off): run the bounded (armed-bounds
+    /// effort-accounting) mid-search eliminate on TICK-CADENCE-triggered rounds even
+    /// when the formula never armed. The starved class structurally never fires
+    /// conflict rounds, so its cells previously forfeited ALL mid-search elimination
+    /// (goldcrest: kissat 85% eliminated vs our 54% root-only).
+    elim_tick_rounds: bool,
+    /// True while the currently-executing inprocessing round was triggered by the
+    /// tick cadence rather than the conflict cadence. Set by `inprocess_round`.
+    round_via_tick: bool,
     /// Bead SAT-playground-5b2.3.6: env SAT_VIVIFY_LEARNED. Also vivify LEARNT clauses
     /// (not only irredundant originals). Kissat vivifies tier1/tier2 learnt clauses for a
     /// meaningful share of its gain; on medium the original clauses often yield zero
@@ -4250,6 +4294,20 @@ impl Solver {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0),
+            sweep_tick_rounds: env_bool_or_default("SAT_SWEEP_TICK_ROUNDS", false),
+            sweep_tick_permille: std::env::var("SAT_SWEEP_TICK_PERMILLE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&n: &u64| n > 0)
+                .unwrap_or(100),
+            sweep_tick_last_search_ticks: 0,
+            sweep_tick_seen_units: std::collections::HashSet::new(),
+            sweep_tick_seen_pairs: std::collections::HashSet::new(),
+            sweep_tick_facts_this_pass: 0,
+            sweep_tick_unproductive: 0,
+            sweep_tick_stopped: false,
+            elim_tick_rounds: env_bool_or_default("SAT_ELIM_TICK_ROUNDS", false),
+            round_via_tick: false,
             vivify_learned: env_bool_or_default(
                 "SAT_VIVIFY_LEARNED",
                 config.vivify
@@ -10089,6 +10147,13 @@ impl Solver {
             "inprocessing must run at decision level 0"
         );
         self.inprocess_rounds += 1;
+        // Classify the trigger: a round is "via tick" when the conflict cadence was NOT
+        // due and the tick cadence was (the starved class). The tick-scoped passes
+        // (SAT_SWEEP_TICK_ROUNDS / SAT_ELIM_TICK_ROUNDS) key on this, so conflict-cadence
+        // rounds — and every formula that never arms the tick trigger — keep their
+        // byte-identical shipped behavior.
+        self.round_via_tick =
+            self.stats.conflicts < self.next_inprocess_conflicts && self.tick_cadence_due();
 
         if config.trace_search_interval > 0 {
             eprintln!(
@@ -10152,6 +10217,7 @@ impl Solver {
                 .search_ticks
                 .saturating_add(self.inprocess_tick_interval.max(1));
         }
+        self.round_via_tick = false;
         ok
     }
 
@@ -10287,11 +10353,19 @@ impl Solver {
         // forfeited ALL mid-search elimination (measured on g2: kissat
         // eliminates 88% of vars there, we run zero rounds — the cell never
         // arms). Armed-cell behavior is untouched by this knob.
+        // SAT_ELIM_TICK_ROUNDS: tick-cadence rounds (starved class only) additionally run
+        // the bounded eliminate below even when the formula never armed — the starved
+        // cells structurally never fire conflict rounds, so without this they forfeit
+        // ALL mid-search elimination (goldcrest: kissat 85% eliminated vs 54% root-only).
+        let elim_tick_round = self.elim_tick_rounds && self.round_via_tick;
         if ok
-            && (self.inprocess_aggressive || self.elim_unarmed)
+            && (self.inprocess_aggressive || self.elim_unarmed || elim_tick_round)
             && self.use_elim
             && !self.should_skip_sweep_for_deep_phase()
         {
+            if elim_tick_round && !self.inprocess_aggressive && !self.elim_unarmed {
+                self.stats.elim_tick_rounds = self.stats.elim_tick_rounds.saturating_add(1);
+            }
             self.use_simplification = true;
             if self.elim_armed_bounds {
                 // Kissat-parity bound schedule for the armed round (eliminate.c
@@ -11272,9 +11346,22 @@ impl Solver {
     /// Returns false if the formula is proven UNSAT.
     fn sweep_round(&mut self, proof_log: &mut ProofLog) -> bool {
         use crate::sweep::{
-            build_environment, prove_facts, SWEEP_DEPTH, SWEEP_MAX_CLAUSES, SWEEP_MAX_VARS,
+            build_environment, prove_facts, prove_facts_budgeted, SWEEP_DEPTH,
+            SWEEP_MAX_CLAUSES, SWEEP_MAX_VARS,
         };
         if self.current_level() != 0 || self.has_empty_clause || !self.solver_ok {
+            return true;
+        }
+        // SAT_SWEEP_TICK_ROUNDS: tick-cadence-triggered rounds (starved class) use the
+        // kissat-productivity engine below; conflict-cadence rounds keep the legacy
+        // scan byte-identically (`tick_engine` is false there by construction).
+        let tick_engine = self.sweep_tick_rounds && self.round_via_tick;
+        if tick_engine && self.sweep_tick_stopped {
+            return true;
+        }
+        if tick_engine && self.count_active_vars() > self.sweep_root_max_vars {
+            // Memory guard: the snapshot + kitten environments on a multi-million-var
+            // formula would risk the 16 GB cap (same cap as the root sweep).
             return true;
         }
         // Env-tunable environment reach (bead 5b2.3.38): deeper/larger environments span
@@ -11290,7 +11377,7 @@ impl Solver {
         // pass doubles the environment variable/clause bounds and adds one to depth,
         // capped. Shift amount is clamped so the doubling cannot overflow; the caps are
         // raised to any explicit env override so a manual bound is never reduced.
-        if self.sweep_cursor_enabled && self.sweep_completed > 0 {
+        if (self.sweep_cursor_enabled || tick_engine) && self.sweep_completed > 0 {
             let steps = self.sweep_completed.min(16) as usize;
             sweep_max_vars = sweep_max_vars
                 .checked_shl(steps as u32).unwrap_or(usize::MAX)
@@ -11349,6 +11436,118 @@ impl Solver {
 
         let mut all_backbones: Vec<i32> = Vec::new();
         let mut all_equivalences: Vec<(i32, i32)> = Vec::new();
+        if tick_engine {
+            // Kissat-productivity scan (SAT_SWEEP_TICK_ROUNDS): kitten-tick-share budget,
+            // whole-environment completion marking that resumes across rounds (retired
+            // seeds skipped cheaply, so the budget flows to the frontier — kissat's
+            // "reschedule remaining variables first"), escalation on completed passes,
+            // and persistent cross-round fact dedup.
+            let since = self
+                .stats
+                .search_ticks
+                .saturating_sub(self.sweep_tick_last_search_ticks);
+            self.sweep_tick_last_search_ticks = self.stats.search_ticks;
+            let budget = (since.saturating_mul(self.sweep_tick_permille) / 1000)
+                .clamp(SWEEP_TICK_MIN_EFFORT, SWEEP_TICK_MAX_EFFORT);
+            let mut remaining = budget;
+            if self.sweep_done.len() != nvars + 1 {
+                self.sweep_done = vec![false; nvars + 1];
+            }
+            self.stats.sweep_tick_rounds = self.stats.sweep_tick_rounds.saturating_add(1);
+            let mut pass_completed = true;
+            for sv in 1..=nvars {
+                if remaining == 0 {
+                    pass_completed = false;
+                    break;
+                }
+                if self.assignment[sv] != UNASSIGNED || self.eliminated[sv] {
+                    continue;
+                }
+                if occ[sv].is_empty() || self.sweep_done[sv] {
+                    continue;
+                }
+                let mut env = build_environment(
+                    sv as i32,
+                    &clauses_of,
+                    sweep_depth,
+                    sweep_max_vars,
+                    sweep_max_clauses,
+                );
+                // Charge the environment build (BFS + kitten load) against the budget so
+                // huge barren neighbourhoods cannot run the scan for free.
+                remaining = remaining.saturating_sub(env.outer_clauses.len() as u64);
+                let facts = prove_facts_budgeted(&mut env, SWEEP_SOLVE_BUDGET, &mut remaining);
+                self.stats.sweep_tick_envs = self.stats.sweep_tick_envs.saturating_add(1);
+                if facts.env_unsat {
+                    for lemma in env.proof_lemmas_outer() {
+                        proof_log.record_clause(&lemma);
+                    }
+                    proof_log.record_clause(&[]);
+                    self.has_empty_clause = true;
+                    return false;
+                }
+                // Whole-environment completion (kissat flags every variable of the swept
+                // env), so overlapping neighbourhoods are not re-swept this pass.
+                for &ov in &env.to_outer {
+                    let v = ov.unsigned_abs() as usize;
+                    if v <= nvars {
+                        self.sweep_done[v] = true;
+                    }
+                }
+                // Dedup against every fact already proven by earlier tick rounds:
+                // re-proving an applied fact would only bloat the DB and the proof.
+                let fresh_backbones: Vec<i32> = facts
+                    .backbones
+                    .iter()
+                    .copied()
+                    .filter(|&u| self.sweep_tick_seen_units.insert(u))
+                    .collect();
+                let fresh_equivalences: Vec<(i32, i32)> = facts
+                    .equivalences
+                    .iter()
+                    .copied()
+                    .filter(|&(a, b)| {
+                        let (x, y) = if a.unsigned_abs() <= b.unsigned_abs() {
+                            (a, b)
+                        } else {
+                            (b, a)
+                        };
+                        let key = if x < 0 { (-x, -y) } else { (x, y) };
+                        self.sweep_tick_seen_pairs.insert(key)
+                    })
+                    .collect();
+                if !fresh_backbones.is_empty() || !fresh_equivalences.is_empty() {
+                    for lemma in env.proof_lemmas_outer() {
+                        proof_log.record_clause(&lemma);
+                    }
+                    self.sweep_tick_facts_this_pass = self
+                        .sweep_tick_facts_this_pass
+                        .saturating_add((fresh_backbones.len() + fresh_equivalences.len()) as u64);
+                    all_backbones.extend(fresh_backbones);
+                    all_equivalences.extend(fresh_equivalences);
+                }
+            }
+            self.stats.sweep_tick_ticks = self
+                .stats
+                .sweep_tick_ticks
+                .saturating_add(budget - remaining);
+            if pass_completed {
+                // Full pass at the current bounds: escalate (kissat re-flags every
+                // variable so the larger environment gets a fresh crack), and back off
+                // for good after two consecutive completed passes proving nothing.
+                self.sweep_completed = self.sweep_completed.saturating_add(1);
+                self.sweep_done.iter_mut().for_each(|d| *d = false);
+                if self.sweep_tick_facts_this_pass == 0 {
+                    self.sweep_tick_unproductive = self.sweep_tick_unproductive.saturating_add(1);
+                    if self.sweep_tick_unproductive >= SWEEP_MAX_UNPRODUCTIVE_PASSES {
+                        self.sweep_tick_stopped = true;
+                    }
+                } else {
+                    self.sweep_tick_unproductive = 0;
+                }
+                self.sweep_tick_facts_this_pass = 0;
+            }
+        } else {
         let mut seeds_done = 0usize;
         // Bead SAT-playground-5b2.3.38.1: scan order. Legacy mode restarts at variable 1
         // every round (and therefore only ever reaches the first ~budget eligible vars).
@@ -11470,6 +11669,7 @@ impl Solver {
                 }
             }
         }
+        }
 
         // Apply the proven facts. Backbones become root units (enqueued + propagated);
         // equivalences become implication binaries. Their proof lines were emitted above.
@@ -11485,7 +11685,15 @@ impl Solver {
         // proved at least `sweep_subst_min_equivs` DISTINCT eligible pairs. Low-yield
         // rounds (the TT/sqrt classes find a handful) keep the shipped learned-binary
         // shape exactly, protecting banked trajectories byte-identically.
-        let subst_active = self.sweep_subst && {
+        // Tick-engine rounds always substitute (any distinct pair): the starved class is
+        // exactly where the sweep->ELS merge cascade has to fire for the formula to
+        // collapse, and the class fires no other sweep shape to protect.
+        let subst_min_equivs = if tick_engine {
+            1
+        } else {
+            self.sweep_subst_min_equivs.max(1)
+        };
+        let subst_active = (self.sweep_subst || tick_engine) && {
             let mut seen: std::collections::HashSet<(i32, i32)> =
                 std::collections::HashSet::new();
             let mut distinct: u64 = 0;
@@ -11504,7 +11712,7 @@ impl Solver {
                     distinct += 1;
                 }
             }
-            distinct >= self.sweep_subst_min_equivs.max(1)
+            distinct >= subst_min_equivs
         };
         let mut subst_seen: std::collections::HashSet<(i32, i32)> =
             std::collections::HashSet::new();
@@ -14262,8 +14470,13 @@ impl Solver {
                     lines.set(lines.get() + 1);
                     proof.borrow_mut().record_clause(clause);
                 };
+                // SAT_TSEITIN_NO_DEL (measurement only): suppress deletion lines to
+                // probe drat-trim's backward-check cost model on huge ER proofs.
+                let no_del = std::env::var("SAT_TSEITIN_NO_DEL").is_ok();
                 let mut emit_del = |clause: &[i32]| {
-                    proof.borrow_mut().record_deletion(clause);
+                    if !no_del {
+                        proof.borrow_mut().record_deletion(clause);
+                    }
                 };
                 gauss::tseitin_refute_with_proof(
                     &xors,
@@ -20400,6 +20613,76 @@ mod tests {
             s.stats.els_substituted_vars, 0,
             "below-threshold round must keep the learned-binary shape"
         );
+    }
+
+    /// SAT_SWEEP_TICK_ROUNDS: on a tick-triggered round the kissat-productivity engine
+    /// runs — finds the 4<->5 equivalence, substitutes it via ELS (originals shape,
+    /// no SAT_SWEEP_SUBST needed), and counts the round.
+    #[test]
+    fn sweep_tick_engine_runs_and_substitutes_on_tick_round() {
+        let mut s = sweep_subst_test_solver();
+        s.sweep_tick_rounds = true;
+        s.round_via_tick = true;
+        let mut proof = ProofLog::disabled();
+        assert!(s.sweep_round(&mut proof));
+        assert_eq!(s.stats.sweep_tick_rounds, 1);
+        assert!(s.stats.sweep_tick_envs >= 1);
+        assert!(
+            s.stats.sweep_equivalences >= 1,
+            "tick engine must find the 4<->5 equivalence, stats={}",
+            s.stats.sweep_equivalences
+        );
+        assert!(
+            s.stats.els_substituted_vars >= 1,
+            "tick engine must substitute without SAT_SWEEP_SUBST, substituted={}",
+            s.stats.els_substituted_vars
+        );
+    }
+
+    /// The tick engine is scoped to tick-triggered rounds: with the flag on but the
+    /// round conflict-triggered (round_via_tick=false), the legacy scan runs untouched.
+    #[test]
+    fn sweep_tick_engine_scoped_to_tick_rounds() {
+        let mut s = sweep_subst_test_solver();
+        s.sweep_tick_rounds = true;
+        s.round_via_tick = false;
+        let mut proof = ProofLog::disabled();
+        assert!(s.sweep_round(&mut proof));
+        assert_eq!(
+            s.stats.sweep_tick_rounds, 0,
+            "conflict-cadence rounds must keep the legacy scan"
+        );
+        assert_eq!(
+            s.stats.els_substituted_vars, 0,
+            "legacy default round must keep the learned-binary shape"
+        );
+    }
+
+    /// Cross-round dedup: a second tick round must not re-prove or re-apply the
+    /// already-substituted pair (persistent seen-sets + whole-env completion flags).
+    #[test]
+    fn sweep_tick_engine_dedups_across_rounds() {
+        let mut s = sweep_subst_test_solver();
+        s.sweep_tick_rounds = true;
+        s.round_via_tick = true;
+        let mut proof = ProofLog::disabled();
+        assert!(s.sweep_round(&mut proof));
+        let equivs_after_first = s.stats.sweep_equivalences;
+        assert!(equivs_after_first >= 1);
+        assert!(s.sweep_round(&mut proof));
+        assert_eq!(
+            s.stats.sweep_equivalences, equivs_after_first,
+            "second tick round must not re-apply the deduped pair"
+        );
+    }
+
+    /// Both tick-round flags default off.
+    #[test]
+    fn tick_round_flags_default_off() {
+        let s = make_solver(2, vec![vec![1, 2]]);
+        assert!(!s.sweep_tick_rounds, "SAT_SWEEP_TICK_ROUNDS must default off");
+        assert!(!s.elim_tick_rounds, "SAT_ELIM_TICK_ROUNDS must default off");
+        assert!(!s.round_via_tick);
     }
 
     /// With SAT_SWEEP_SUBST off (the default), the shipped learned-binary shape is

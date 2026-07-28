@@ -98,6 +98,13 @@ pub(crate) struct SolverStats {
     pub(crate) sweep_root_applied_units: u64,
     pub(crate) sweep_root_applied_equivs: u64,
     pub(crate) sweep_root_ticks: u64,
+    /// SAT_SWEEP_TICK_ROUNDS: tick-cadence-round sweep engine — rounds run,
+    /// environments swept, and kitten ticks spent.
+    pub(crate) sweep_tick_rounds: u64,
+    pub(crate) sweep_tick_envs: u64,
+    pub(crate) sweep_tick_ticks: u64,
+    /// SAT_ELIM_TICK_ROUNDS: bounded eliminate rounds run on tick-cadence rounds.
+    pub(crate) elim_tick_rounds: u64,
     pub(crate) focused_tier1_glue_limit: u64,
     pub(crate) focused_tier2_glue_limit: u64,
     pub(crate) stable_tier1_glue_limit: u64,
@@ -867,6 +874,10 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("sweep_root_applied_units", ctx.stats.sweep_root_applied_units);
     json.u64("sweep_root_applied_equivs", ctx.stats.sweep_root_applied_equivs);
     json.u64("sweep_root_ticks", ctx.stats.sweep_root_ticks);
+    json.u64("sweep_tick_rounds", ctx.stats.sweep_tick_rounds);
+    json.u64("sweep_tick_envs", ctx.stats.sweep_tick_envs);
+    json.u64("sweep_tick_ticks", ctx.stats.sweep_tick_ticks);
+    json.u64("elim_tick_rounds", ctx.stats.elim_tick_rounds);
     json.u64("congruence_merges", ctx.stats.congruence_merges);
     json.u64("congruence_and_gates", ctx.stats.congruence_and_gates);
     json.u64("congruence_ite_gates", ctx.stats.congruence_ite_gates);
