@@ -638,13 +638,21 @@ const TSEITIN_COMPRESS_TARGET: usize = 2;
 /// (The 400x400 grid Tseitin cell generates a valid 14.6 M-lemma proof in
 /// 22 s but cannot be verified in time; it is deliberately left unsolved. See
 /// TSEITIN_MAX_COMPONENT.)
-const TSEITIN_MAX_EMIT: u64 = 6_000_000;
+const TSEITIN_MAX_EMIT: u64 = 8_000_000;
+
+/// Caps of the previously shipped (legacy-only) engine, used when
+/// SAT_TSEITIN_SNAKE=off — the A/B baseline arm. The legacy layout emits
+/// 14.6M lemmas on the 160k-constraint grid, unverifiable in the gate's
+/// 2x-wall drat-trim budget, so the legacy caps deliberately decline it.
+const LEGACY_MAX_COMPONENT: usize = 20_000;
+const LEGACY_MAX_EMIT: u64 = 6_000_000;
 
 /// Skip the Tseitin engine on components larger than this. Large components
 /// (e.g. the 160 k-equation 400x400 grid) produce proofs beyond the
 /// verifiability bound above; declining early keeps the solve trajectory of
 /// those cells byte-identical to the pre-engine baseline.
-const TSEITIN_MAX_COMPONENT: usize = 20_000;
+const TSEITIN_MAX_COMPONENT: usize = 200_000;
+
 
 /// Find a connected component of the XOR system that is *closed Tseitin*
 /// (every variable of the component occurs in exactly two constraints) with
@@ -726,25 +734,76 @@ pub(crate) fn tseitin_refute_with_proof(
     emit: &mut dyn FnMut(&[i32]),
     emit_del: &mut dyn FnMut(&[i32]),
 ) -> bool {
-    use std::collections::HashMap;
-    // Measurement overrides for the verifiability caps (see the const docs):
-    // SAT_TSEITIN_MAX_COMPONENT / SAT_TSEITIN_MAX_EMIT. Defaults unchanged.
+    // Two layout modes, behind SAT_TSEITIN_SNAKE (default ON; =off is the
+    // A/B baseline arm and reproduces the previously shipped engine exactly,
+    // including the legacy 20k-component / 6M-lemma caps). Snake mode
+    // (boustrophedon walk + valley chains + pop consumption + raw target 1)
+    // roughly HALVES the proof on grid-shaped components (n400: 14.6M ->
+    // 7.6M lemmas — which is what lifts the caps to 200k/8M and makes the
+    // grid cell reachable) but aborts on irregular components whose cut
+    // needs many live chains (n188_d3 expander), where the legacy layout
+    // still works. The mode is chosen by a DRY-RUN with sink emitters: an
+    // aborted attempt must never reach the live proof, because it DELETES
+    // the axiom clauses it consumed and a follow-up attempt needs those
+    // axioms as RUP premises (measured: a residue+retry composite proof is
+    // s NOT VERIFIED). The construction is deterministic, so a successful
+    // dry-run replays identically live; cost is one extra generation pass
+    // (~17 s on the 160k-constraint grid), pre-search and far inside the
+    // wall budget.
+    let snake_enabled = std::env::var("SAT_TSEITIN_SNAKE")
+        .map(|v| !matches!(v.as_str(), "0" | "off" | "false" | "no"))
+        .unwrap_or(false); // default-off groundwork; flip on promotion
+    // Verifiability caps (see the const docs); env overrides for measurement.
     let max_component: usize = std::env::var("SAT_TSEITIN_MAX_COMPONENT")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(TSEITIN_MAX_COMPONENT);
+        .unwrap_or(if snake_enabled { TSEITIN_MAX_COMPONENT } else { LEGACY_MAX_COMPONENT });
     let max_emit: u64 = std::env::var("SAT_TSEITIN_MAX_EMIT")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(TSEITIN_MAX_EMIT);
+        .unwrap_or(if snake_enabled { TSEITIN_MAX_EMIT } else { LEGACY_MAX_EMIT });
     if component.is_empty() || component.len() > max_component {
         return false;
     }
+    let snake_ok = snake_enabled && {
+        let mut fresh_dry: u32 = num_vars as u32;
+        tseitin_refute_mode(
+            xors,
+            component,
+            true,
+            max_emit,
+            &mut fresh_dry,
+            &mut |_: &[i32]| {},
+            &mut |_: &[i32]| {},
+        )
+    };
+    // When the snake dry-run fails, fall back to the legacy layout — but
+    // only within the LEGACY component cap: a legacy attempt on a larger
+    // component cannot produce a verifiable proof (that is why the legacy
+    // cap exists) and would only stream a multi-million-line dead residue
+    // into the live proof of a cell that then goes to search.
+    if !snake_ok && component.len() > LEGACY_MAX_COMPONENT {
+        return false;
+    }
+    let mut fresh: u32 = num_vars as u32;
+    tseitin_refute_mode(xors, component, snake_ok, max_emit, &mut fresh, emit, emit_del)
+}
+
+fn tseitin_refute_mode(
+    xors: &[XorConstraint],
+    component: &[usize],
+    snake: bool,
+    max_emit: u64,
+    fresh: &mut u32,
+    emit: &mut dyn FnMut(&[i32]),
+    emit_del: &mut dyn FnMut(&[i32]),
+) -> bool {
+    use std::collections::HashMap;
     let compress_target: usize = std::env::var("SAT_TSEITIN_COMPRESS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .filter(|&c: &usize| (2..=12).contains(&c))
-        .unwrap_or(TSEITIN_COMPRESS_TARGET);
+        .filter(|&c: &usize| (1..=12).contains(&c))
+        .unwrap_or(if snake { 1 } else { TSEITIN_COMPRESS_TARGET });
 
     // Processing order: a connected, deterministic walk of the component.
     // Connectivity is required for soundness: `combine_rows` only derives the
@@ -797,22 +856,34 @@ pub(crate) fn tseitin_refute_with_proof(
         order.push(start);
         processed.insert(start);
         push_neighbors(start, &processed, &mut frontier);
+        let mut last = start;
         loop {
-            // Minimize (introduced - cancelled); ties by smallest index.
+            // Minimize (introduced - cancelled); ties prefer a neighbor of the
+            // LAST processed constraint, then smallest index. The adjacency
+            // tie-break turns row-major grid walks into boustrophedon (snake)
+            // walks: successive rows run in alternating direction, so each
+            // row's cut variables are consumed in exact reverse (LIFO) order
+            // of their introduction — which the chain machinery below turns
+            // into single-slot pop-consumed chains instead of base-shifted
+            // pointer pairs.
             let pick = frontier
                 .iter()
                 .min_by_key(|&&ei| {
                     let mut delta: i64 = 0;
+                    let mut adjacent = false;
                     for &v in &xors[ei].vars {
                         let (a, b) = var_eqs[&v];
                         let other = if a == ei { b } else { a };
+                        if other == last {
+                            adjacent = true;
+                        }
                         if processed.contains(&other) {
                             delta -= 1; // cancels a live cut variable
                         } else {
                             delta += 1; // introduces a new cut variable
                         }
                     }
-                    (delta, ei)
+                    (delta, snake && !adjacent, ei)
                 })
                 .copied();
             let Some(pick) = pick else {
@@ -822,6 +893,7 @@ pub(crate) fn tseitin_refute_with_proof(
             order.push(pick);
             processed.insert(pick);
             push_neighbors(pick, &processed, &mut frontier);
+            last = pick;
         }
         if order.len() != component.len() {
             return false; // component not connected (should not happen)
@@ -850,6 +922,7 @@ pub(crate) fn tseitin_refute_with_proof(
     // Per-category emission counters (SAT_DEBUG_GAUSS breakdown).
     let cat_main = std::cell::Cell::new(0u64);
     let cat_shift = std::cell::Cell::new(0u64);
+    let cat_pop = std::cell::Cell::new(0u64);
     let cat_unpark = std::cell::Cell::new(0u64);
     let cat_append = std::cell::Cell::new(0u64);
     let cat_create = std::cell::Cell::new(0u64);
@@ -940,6 +1013,13 @@ pub(crate) fn tseitin_refute_with_proof(
         vars: Vec<u32>,
         zs: Vec<u32>,
         base: usize, // number of consumed vars; 0 = untouched
+        // VALLEY INVARIANT: the live window vars[base..] is kept BITONIC in
+        // next-use — ascending from the base, then (optionally) descending to
+        // the top. A bitonic window's earliest-due var is always at one of
+        // the two ends, so consumption only ever needs a base shift or a top
+        // pop, never interior extraction. Appends preserve it: a var due at
+        // or before the tail extends (or starts) the descent; a var due
+        // after the tail may extend only a still-ascending window.
         /// Parked pointer pair: `(z', z_end, z_base)` with `z' = z_end ^
         /// z_base` defined. While parked, P holds only `z'` for this chain
         /// (instead of the pair), halving the standing width cost of a
@@ -966,7 +1046,6 @@ pub(crate) fn tseitin_refute_with_proof(
     let raw_target = compress_target;
     const P_WIDTH_CAP: usize = 14;
 
-    let mut fresh: u32 = num_vars as u32;
     // Definition-variable recycling. A definition variable is returned to this
     // free list the moment no live (undeleted) emitted clause can mention it:
     // a park variable at unpark (its definition row is consumed there,
@@ -1007,9 +1086,18 @@ pub(crate) fn tseitin_refute_with_proof(
     }
 
     let debug = std::env::var("SAT_DEBUG_GAUSS").is_ok();
+    let trace = std::env::var("SAT_DEBUG_GAUSS_TRACE").is_ok();
     let mut max_width = 0usize;
     for (step, &ei) in order.iter().enumerate().skip(1) {
         max_width = max_width.max(p_vars.len());
+        if trace {
+            let alive: Vec<String> = chains
+                .iter()
+                .map(|c| format!("[b{} n{} tail_nu{}]", c.base, c.len(),
+                    c.vars.last().map(|v| *next_use.get(v).unwrap_or(&usize::MAX)).unwrap_or(0)))
+                .collect();
+            eprintln!("c T step={} ei={} p={:?} chains={}", step, ei, p_vars, alive.join(""));
+        }
         if emitted.get() > max_emit || p_vars.len() > P_WIDTH_CAP {
             if debug {
                 eprintln!(
@@ -1041,6 +1129,7 @@ pub(crate) fn tseitin_refute_with_proof(
                 let Some((nv, nr)) =
                     do_combine(&p_vars, p_rhs, &row, false, true, &emitted, &cat_unpark, emit, emit_del)
                 else {
+                    if debug { eprintln!("c tseitin abort unpark step={step} p_width={}", p_vars.len()); }
                     return false;
                 };
                 p_vars = nv;
@@ -1050,6 +1139,40 @@ pub(crate) fn tseitin_refute_with_proof(
             loop {
                 if emitted.get() > max_emit {
                     return false;
+                }
+                // LIFO fast-path: the needed var sits at the chain TOP (and is
+                // not the only live var). Pop it by consuming z(end)'s own
+                // definition row {z(n), z(n-1), vars[n-1]}: P holds z(end), so
+                // this is a 1-shared combine that emits only the result row —
+                // no base movement, no intermediate stage. A chain consumed
+                // entirely by pops never opens its {z(end), z(base)} pointer
+                // pair and occupies ONE P slot for its whole life. The snake
+                // processing order (see the order builder) makes every grid
+                // chain consume this way.
+                {
+                    let c = &chains[ci];
+                    let n = c.len();
+                    if snake && n >= 3 && c.base < n - 1 && c.vars[n - 1] == v {
+                        let mut row = vec![c.z(n), c.z(n - 1), c.vars[n - 1]];
+                        row.sort_unstable();
+                        // The pop consumes z(n)'s definition row (its last use).
+                        let Some((nv, nr)) = do_combine(
+                            &p_vars, p_rhs, &row, false, true, &emitted, &cat_pop, emit, emit_del,
+                        ) else {
+                            if debug {
+                                eprintln!("c tseitin abort pop step={step} p_width={}", p_vars.len());
+                            }
+                            return false;
+                        };
+                        p_vars = nv;
+                        p_rhs = nr;
+                        let c = &mut chains[ci];
+                        free_zs.push(c.z(n));
+                        c.vars.pop();
+                        c.zs.pop();
+                        in_chain.remove(&v);
+                        break;
+                    }
                 }
                 let (die, shift_row): (bool, Vec<u32>) = {
                     let c = &chains[ci];
@@ -1080,6 +1203,7 @@ pub(crate) fn tseitin_refute_with_proof(
                 let Some((nv, nr)) =
                     do_combine(&p_vars, p_rhs, &row, false, true, &emitted, &cat_shift, emit, emit_del)
                 else {
+                    if debug { eprintln!("c tseitin abort shift step={step} p_width={}", p_vars.len()); }
                     return false;
                 };
                 p_vars = nv;
@@ -1118,6 +1242,7 @@ pub(crate) fn tseitin_refute_with_proof(
                     break;
                 }
                 if p_vars.len() > P_WIDTH_CAP {
+                    if debug { eprintln!("c tseitin abort loop-width step={step} p_width={}", p_vars.len()); }
                     return false;
                 }
             }
@@ -1127,17 +1252,21 @@ pub(crate) fn tseitin_refute_with_proof(
         let Some((nv, nr)) =
             do_combine(&p_vars, p_rhs, &eq.vars, eq.rhs, true, &emitted, &cat_main, emit, emit_del)
         else {
+            if debug { eprintln!("c tseitin abort main step={step} p_width={}", p_vars.len()); }
             return false;
         };
         p_vars = nv;
         p_rhs = nr;
         // Compress: move far-next-use raw vars into prefix chains until the raw
-        // width is back at the target. The excess is swept in ascending
-        // next-use order, each var appended to a chain whose tail stays below
-        // it (keeping every chain's internal order ascending — what makes
-        // forward consumption line up) or paired with the next excess var into
-        // a new chain. Ascending sweep makes consecutive far vars coalesce
-        // into few large chains instead of fragmenting into many pointer pairs.
+        // width is back at the target. Two passes over the excess, one per
+        // chain orientation. Pass 1 sweeps DESCENDING next-use and fills LIFO
+        // chains (append valid when x is due no later than the tail; x becomes
+        // the new top, popped first). Pass 2 sweeps the leftovers ASCENDING
+        // and fills FIFO chains (tail stays below x — forward shift
+        // consumption) or pairs adjacent leftovers into a fresh chain whose
+        // orientation follows the arrival stream: if the earlier-arriving var
+        // of the pair is due LATER, arrivals run descending (a snake-consumed
+        // cut) and the pair founds a LIFO chain; otherwise FIFO as before.
         let mut raw: Vec<u32> = p_vars
             .iter()
             .copied()
@@ -1146,38 +1275,44 @@ pub(crate) fn tseitin_refute_with_proof(
         if raw.len() > raw_target {
             raw.sort_by_key(|&v| (next_use[&v], v));
             let excess = raw.split_off(raw_target);
-            let mut pending: Option<u32> = None;
-            for &x in &excess {
-                if emitted.get() > max_emit {
-                    return false;
-                }
-                let x_nu = next_use[&x];
-                // Best append target: alive chain whose tail next-use is
-                // maximal but still <= x's.
-                let mut target: Option<usize> = None;
-                for (i, c) in chains.iter().enumerate() {
-                    if c.base >= c.len() {
-                        continue; // dead
+            if snake {
+                let mut leftovers: Vec<u32> = Vec::new();
+                for &x in excess.iter().rev() {
+                    if emitted.get() > max_emit {
+                        return false;
                     }
-                    let tail_nu = next_use[c.vars.last().unwrap()];
-                    if tail_nu <= x_nu
-                        && target
-                            .map(|t| tail_nu > next_use[chains[t].vars.last().unwrap()])
-                            .unwrap_or(true)
-                    {
-                        target = Some(i);
+                    let x_nu = next_use[&x];
+                    // Descent append: x due at or before some chain's tail —
+                    // tightest tail above wins (a chain already descending has a
+                    // low tail and is naturally preferred over bending a fresh
+                    // ascending one).
+                    let mut target: Option<usize> = None;
+                    for (i, c) in chains.iter().enumerate() {
+                        if c.base >= c.len() {
+                            continue;
+                        }
+                        let tail_nu = next_use[c.vars.last().unwrap()];
+                        if tail_nu >= x_nu
+                            && target
+                                .map(|t| tail_nu < next_use[chains[t].vars.last().unwrap()])
+                                .unwrap_or(true)
+                        {
+                            target = Some(i);
+                        }
                     }
-                }
-                if let Some(ci) = target {
-                    // Append x: fresh z(end+1) = z(end) ^ x; P swaps
-                    // {z(end), x} for {z(end+1)}. A parked chain must be
-                    // unparked first (the pair returns to P).
+                    let Some(ci) = target else {
+                        leftovers.push(x);
+                        continue;
+                    };
+                    // Append x: fresh z(end+1) = z(end) ^ x; P swaps {z(end), x}
+                    // for {z(end+1)}. A parked chain must be unparked first.
                     if let Some((zp, ze, zb)) = chains[ci].parked.take() {
                         let mut row = vec![zp, ze, zb];
                         row.sort_unstable();
                         let Some((nv, nr)) = do_combine(
                             &p_vars, p_rhs, &row, false, true, &emitted, &cat_unpark, emit, emit_del,
                         ) else {
+                            if debug { eprintln!("c tseitin abort unpark step={step} p_width={}", p_vars.len()); }
                             return false;
                         };
                         p_vars = nv;
@@ -1186,18 +1321,19 @@ pub(crate) fn tseitin_refute_with_proof(
                     }
                     let zend = chains[ci].z(chains[ci].len());
                     let z = free_zs.pop().unwrap_or_else(|| {
-                        fresh += 1;
-                        fresh
+                        *fresh += 1;
+                        *fresh
                     });
                     cat_defs.set(cat_defs.get() + 4);
                     emit_def(z, zend, x, &emitted, emit);
                     let mut row = vec![z, zend, x];
                     row.sort_unstable();
-                    // The append definition is reused by the future shift
+                    // The append definition is consumed by the future pop/shift
                     // through this position: keep it live (delete_q=false).
                     let Some((nv, nr)) = do_combine(
                         &p_vars, p_rhs, &row, false, false, &emitted, &cat_append, emit, emit_del,
                     ) else {
+                        if debug { eprintln!("c tseitin abort append step={step} p_width={}", p_vars.len()); }
                         return false;
                     };
                     p_vars = nv;
@@ -1206,31 +1342,193 @@ pub(crate) fn tseitin_refute_with_proof(
                     c.vars.push(x);
                     c.zs.push(z);
                     in_chain.insert(x, ci);
-                } else if let Some(x1) = pending.take() {
-                    // Pair the two unplaced excess vars (ascending order) into
-                    // a fresh chain. The creation definition is reused when the
-                    // chain is first opened: keep it live (delete_q=false).
-                    let z = free_zs.pop().unwrap_or_else(|| {
-                        fresh += 1;
-                        fresh
-                    });
-                    cat_defs.set(cat_defs.get() + 4);
-                    emit_def(z, x1, x, &emitted, emit);
-                    let mut row = vec![z, x1, x];
-                    row.sort_unstable();
-                    let Some((nv, nr)) = do_combine(
-                        &p_vars, p_rhs, &row, false, false, &emitted, &cat_create, emit, emit_del,
-                    ) else {
+                }
+                leftovers.reverse(); // back to ascending next-use
+                let mut pending: Option<u32> = None;
+                for &x in &leftovers {
+                    if emitted.get() > max_emit {
                         return false;
-                    };
-                    p_vars = nv;
-                    p_rhs = nr;
-                    let ci = chains.len();
-                    chains.push(Chain { vars: vec![x1, x], zs: vec![z], base: 0, parked: None });
-                    in_chain.insert(x1, ci);
-                    in_chain.insert(x, ci);
-                } else {
-                    pending = Some(x);
+                    }
+                    let x_nu = next_use[&x];
+                    // Ascent append: only onto a chain whose live window is still
+                    // ascending (unbent), tail at or below x — tightest below
+                    // wins (existing rule). Appending after a descent would break
+                    // the bitonic window.
+                    let mut target: Option<usize> = None;
+                    for (i, c) in chains.iter().enumerate() {
+                        let n = c.len();
+                        if c.base >= n {
+                            continue;
+                        }
+                        let bent = n - c.base >= 2
+                            && next_use[&c.vars[n - 1]] < next_use[&c.vars[n - 2]];
+                        if bent {
+                            continue;
+                        }
+                        let tail_nu = next_use[c.vars.last().unwrap()];
+                        if tail_nu <= x_nu
+                            && target
+                                .map(|t| tail_nu > next_use[chains[t].vars.last().unwrap()])
+                                .unwrap_or(true)
+                        {
+                            target = Some(i);
+                        }
+                    }
+                    if let Some(ci) = target {
+                        if let Some((zp, ze, zb)) = chains[ci].parked.take() {
+                            let mut row = vec![zp, ze, zb];
+                            row.sort_unstable();
+                            let Some((nv, nr)) = do_combine(
+                                &p_vars, p_rhs, &row, false, true, &emitted, &cat_unpark, emit, emit_del,
+                            ) else {
+                                if debug { eprintln!("c tseitin abort unpark step={step} p_width={}", p_vars.len()); }
+                                return false;
+                            };
+                            p_vars = nv;
+                            p_rhs = nr;
+                            free_zs.push(zp);
+                        }
+                        let zend = chains[ci].z(chains[ci].len());
+                        let z = free_zs.pop().unwrap_or_else(|| {
+                            *fresh += 1;
+                            *fresh
+                        });
+                        cat_defs.set(cat_defs.get() + 4);
+                        emit_def(z, zend, x, &emitted, emit);
+                        let mut row = vec![z, zend, x];
+                        row.sort_unstable();
+                        let Some((nv, nr)) = do_combine(
+                            &p_vars, p_rhs, &row, false, false, &emitted, &cat_append, emit, emit_del,
+                        ) else {
+                            if debug { eprintln!("c tseitin abort append step={step} p_width={}", p_vars.len()); }
+                            return false;
+                        };
+                        p_vars = nv;
+                        p_rhs = nr;
+                        let c = &mut chains[ci];
+                        c.vars.push(x);
+                        c.zs.push(z);
+                        in_chain.insert(x, ci);
+                    } else if let Some(x1) = pending.take() {
+                        // Pair the two unplaced excess vars (ascending next-use)
+                        // into a fresh chain — a fresh ascending window, open to
+                        // both later ascent appends and a bend into descent. The
+                        // creation definition is reused when the chain is first
+                        // opened: keep it live (delete_q=false).
+                        let z = free_zs.pop().unwrap_or_else(|| {
+                            *fresh += 1;
+                            *fresh
+                        });
+                        cat_defs.set(cat_defs.get() + 4);
+                        emit_def(z, x1, x, &emitted, emit);
+                        let mut row = vec![z, x1, x];
+                        row.sort_unstable();
+                        let Some((nv, nr)) = do_combine(
+                            &p_vars, p_rhs, &row, false, false, &emitted, &cat_create, emit, emit_del,
+                        ) else {
+                            if debug { eprintln!("c tseitin abort create step={step} p_width={}", p_vars.len()); }
+                            return false;
+                        };
+                        p_vars = nv;
+                        p_rhs = nr;
+                        let ci = chains.len();
+                        chains.push(Chain { vars: vec![x1, x], zs: vec![z], base: 0, parked: None });
+                        in_chain.insert(x1, ci);
+                        in_chain.insert(x, ci);
+                    } else {
+                        pending = Some(x);
+                    }
+                }
+            } else {
+                // Legacy placement (previously shipped layout): single
+                // ascending sweep, append onto the tightest tail at or below
+                // x, pair adjacent leftovers.
+                let mut pending: Option<u32> = None;
+                for &x in &excess {
+                    if emitted.get() > max_emit {
+                        return false;
+                    }
+                    let x_nu = next_use[&x];
+                    // Best append target: alive chain whose tail next-use is
+                    // maximal but still <= x's.
+                    let mut target: Option<usize> = None;
+                    for (i, c) in chains.iter().enumerate() {
+                        if c.base >= c.len() {
+                            continue; // dead
+                        }
+                        let tail_nu = next_use[c.vars.last().unwrap()];
+                        if tail_nu <= x_nu
+                            && target
+                                .map(|t| tail_nu > next_use[chains[t].vars.last().unwrap()])
+                                .unwrap_or(true)
+                        {
+                            target = Some(i);
+                        }
+                    }
+                    if let Some(ci) = target {
+                        // Append x: fresh z(end+1) = z(end) ^ x; P swaps
+                        // {z(end), x} for {z(end+1)}. A parked chain must be
+                        // unparked first (the pair returns to P).
+                        if let Some((zp, ze, zb)) = chains[ci].parked.take() {
+                            let mut row = vec![zp, ze, zb];
+                            row.sort_unstable();
+                            let Some((nv, nr)) = do_combine(
+                                &p_vars, p_rhs, &row, false, true, &emitted, &cat_unpark, emit, emit_del,
+                            ) else {
+                                return false;
+                            };
+                            p_vars = nv;
+                            p_rhs = nr;
+                            free_zs.push(zp);
+                        }
+                        let zend = chains[ci].z(chains[ci].len());
+                        let z = free_zs.pop().unwrap_or_else(|| {
+                            *fresh += 1;
+                            *fresh
+                        });
+                        cat_defs.set(cat_defs.get() + 4);
+                        emit_def(z, zend, x, &emitted, emit);
+                        let mut row = vec![z, zend, x];
+                        row.sort_unstable();
+                        // The append definition is reused by the future shift
+                        // through this position: keep it live (delete_q=false).
+                        let Some((nv, nr)) = do_combine(
+                            &p_vars, p_rhs, &row, false, false, &emitted, &cat_append, emit, emit_del,
+                        ) else {
+                            return false;
+                        };
+                        p_vars = nv;
+                        p_rhs = nr;
+                        let c = &mut chains[ci];
+                        c.vars.push(x);
+                        c.zs.push(z);
+                        in_chain.insert(x, ci);
+                    } else if let Some(x1) = pending.take() {
+                        // Pair the two unplaced excess vars (ascending order) into
+                        // a fresh chain. The creation definition is reused when the
+                        // chain is first opened: keep it live (delete_q=false).
+                        let z = free_zs.pop().unwrap_or_else(|| {
+                            *fresh += 1;
+                            *fresh
+                        });
+                        cat_defs.set(cat_defs.get() + 4);
+                        emit_def(z, x1, x, &emitted, emit);
+                        let mut row = vec![z, x1, x];
+                        row.sort_unstable();
+                        let Some((nv, nr)) = do_combine(
+                            &p_vars, p_rhs, &row, false, false, &emitted, &cat_create, emit, emit_del,
+                        ) else {
+                            return false;
+                        };
+                        p_vars = nv;
+                        p_rhs = nr;
+                        let ci = chains.len();
+                        chains.push(Chain { vars: vec![x1, x], zs: vec![z], base: 0, parked: None });
+                        in_chain.insert(x1, ci);
+                        in_chain.insert(x, ci);
+                    } else {
+                        pending = Some(x);
+                    }
                 }
             }
             // A leftover unpaired var simply stays raw.
@@ -1249,8 +1547,8 @@ pub(crate) fn tseitin_refute_with_proof(
             let ze = c.z(c.len());
             let zb = c.z(c.base);
             let zp = free_zs.pop().unwrap_or_else(|| {
-                fresh += 1;
-                fresh
+                *fresh += 1;
+                *fresh
             });
             cat_defs.set(cat_defs.get() + 4);
             emit_def(zp, ze, zb, &emitted, emit);
@@ -1260,6 +1558,7 @@ pub(crate) fn tseitin_refute_with_proof(
             let Some((nv, nr)) =
                 do_combine(&p_vars, p_rhs, &row, false, false, &emitted, &cat_park, emit, emit_del)
             else {
+                if debug { eprintln!("c tseitin abort park step={step} p_width={}", p_vars.len()); }
                 return false;
             };
             p_vars = nv;
@@ -1270,9 +1569,10 @@ pub(crate) fn tseitin_refute_with_proof(
 
     if debug {
         eprintln!(
-            "c tseitin emit breakdown: main={} shift={} unpark={} append={} create={} park={} defs={} total={}",
+            "c tseitin emit breakdown: main={} shift={} pop={} unpark={} append={} create={} park={} defs={} total={}",
             cat_main.get(),
             cat_shift.get(),
+            cat_pop.get(),
             cat_unpark.get(),
             cat_append.get(),
             cat_create.get(),
@@ -1587,6 +1887,24 @@ mod tests {
     /// drat-trim verification for the Tseitin engine: CNF = the XOR rows'
     /// clausal encodings, proof = the extension-variable summation refutation.
     fn drat_verify_tseitin(xors: &[XorConstraint], num_vars: usize) -> Option<bool> {
+        drat_verify_tseitin_impl(xors, num_vars, None)
+    }
+
+    /// Like `drat_verify_tseitin` but pins the layout mode (bypassing the
+    /// SAT_TSEITIN_SNAKE env default, which parallel tests must not touch).
+    fn drat_verify_tseitin_mode(
+        xors: &[XorConstraint],
+        num_vars: usize,
+        snake: bool,
+    ) -> Option<bool> {
+        drat_verify_tseitin_impl(xors, num_vars, Some(snake))
+    }
+
+    fn drat_verify_tseitin_impl(
+        xors: &[XorConstraint],
+        num_vars: usize,
+        mode: Option<bool>,
+    ) -> Option<bool> {
         use std::io::Write;
         let drat = drat_trim_path();
         if !drat.exists() {
@@ -1605,7 +1923,23 @@ mod tests {
         let ok = {
             let mut emit = |c: &[i32]| proof_lines.borrow_mut().push((true, c.to_vec()));
             let mut emit_del = |c: &[i32]| proof_lines.borrow_mut().push((false, c.to_vec()));
-            tseitin_refute_with_proof(xors, &component, num_vars, &mut emit, &mut emit_del)
+            match mode {
+                None => {
+                    tseitin_refute_with_proof(xors, &component, num_vars, &mut emit, &mut emit_del)
+                }
+                Some(snake) => {
+                    let mut fresh: u32 = num_vars as u32;
+                    tseitin_refute_mode(
+                        xors,
+                        &component,
+                        snake,
+                        TSEITIN_MAX_EMIT,
+                        &mut fresh,
+                        &mut emit,
+                        &mut emit_del,
+                    )
+                }
+            }
         };
         let proof_lines = proof_lines.into_inner();
         assert!(ok, "expected the Tseitin engine to produce a proof");
@@ -1615,7 +1949,9 @@ mod tests {
         );
         let dir = std::env::temp_dir();
         let pid = std::process::id();
-        let tag = format!("{}_{}_{}", pid, num_vars, xors.len());
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tag = format!("{}_{}_{}_{}", pid, num_vars, xors.len(), seq);
         let cnf_path = dir.join(format!("tseitin_proof_{tag}.cnf"));
         let proof_path = dir.join(format!("tseitin_proof_{tag}.drat"));
         {
@@ -1733,6 +2069,49 @@ mod tests {
         if let Some(v) = drat_verify_tseitin(&xors, nv) {
             assert!(v, "drat-trim must verify the 4x20 grid ER proof");
         }
+    }
+
+    #[test]
+    fn tseitin_proof_snake_grids_verified() {
+        // Snake/valley layout (the SAT_TSEITIN_SNAKE candidate mode): grids
+        // of both aspect ratios must produce drat-trim-verified proofs. The
+        // 4x20 wide grid regression-tests the valley-chain orientation fix
+        // (mis-oriented founding pairs fragmented the cut and hit the width
+        // cap).
+        for (r, c) in [(4usize, 4usize), (4, 20), (6, 6)] {
+            let (nv, xors) = grid_tseitin(r, c);
+            if let Some(v) = drat_verify_tseitin_mode(&xors, nv, true) {
+                assert!(v, "snake-mode {r}x{c} grid ER proof must verify");
+            }
+        }
+    }
+
+    #[test]
+    fn tseitin_snake_shrinks_grid_proof() {
+        // The whole point of snake mode: strictly fewer lemmas than the
+        // legacy layout on a snake-consumable grid.
+        let (nv, xors) = grid_tseitin(8, 8);
+        let count = |snake: bool| {
+            let component = find_odd_closed_tseitin_component(&xors).unwrap();
+            let mut n = 0u64;
+            let mut fresh: u32 = nv as u32;
+            let ok = tseitin_refute_mode(
+                &xors,
+                &component,
+                snake,
+                TSEITIN_MAX_EMIT,
+                &mut fresh,
+                &mut |_: &[i32]| n += 1,
+                &mut |_: &[i32]| {},
+            );
+            assert!(ok, "8x8 grid must prove in both modes");
+            n
+        };
+        let (snake_n, legacy_n) = (count(true), count(false));
+        assert!(
+            snake_n < legacy_n,
+            "snake layout must shrink the grid proof (snake {snake_n} vs legacy {legacy_n})"
+        );
     }
 
     #[test]

@@ -1142,8 +1142,13 @@ mod tests {
         }
         let dir = std::env::temp_dir();
         let pid = std::process::id();
-        let cnf_path = dir.join(format!("php_cnf_{pid}_{nv}.cnf"));
-        let proof_path = dir.join(format!("php_proof_{pid}_{nv}.drat"));
+        // Unique per call: tests sharing (pid, nv) — e.g. the plain and
+        // shuffled rphp tests — otherwise race on the same paths under the
+        // parallel test runner (observed as a flaky s NOT VERIFIED).
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let cnf_path = dir.join(format!("php_cnf_{pid}_{nv}_{seq}.cnf"));
+        let proof_path = dir.join(format!("php_proof_{pid}_{nv}_{seq}.drat"));
         std::fs::write(&cnf_path, cnf).unwrap();
         std::fs::write(&proof_path, proof).unwrap();
         let out = std::process::Command::new(&drat)
