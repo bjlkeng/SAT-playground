@@ -1,13 +1,103 @@
-# NEXT PLAN — 2026-07-28c (supersedes the 2026-07-28b revision)
+# NEXT PLAN — 2026-07-28d (supersedes the 2026-07-28c revision)
 
-One-file plan for the next clear context. Folds SESSION 12 (2026-07-28
-evening: starved-class tick-round sweep+elim bundle implemented and
-screened DEFINITIVELY NEGATIVE, zero promotions; grid-n400 checker arc
-re-measured and REOPENED with a concrete shrink target; baseline stays
-74/100) on top of SESSIONS 4-11. Where this contradicts an older
-`plan/next-steps-*.md`, THIS file wins.
+One-file plan for the next clear context. Folds SESSION 13 (2026-07-28
+night: snake/valley Tseitin proof layout implemented — grid proof halved —
+but the grid-n400 arc is now CLOSED PERMANENTLY with a checker-side
+mechanism law: drat-trim's RAT check is a full literal-space scan, so ER
+verify cost is defs x maxVar, not proof length; st_659 identified as a
+digraph-kernel/stable-model encoding; zero promotions, zero gates spent,
+baseline stays 74/100) on top of SESSIONS 4-12. Where this contradicts an
+older `plan/next-steps-*.md`, THIS file wins.
 
-**START HERE:** read "SESSION 12" below, then "SESSION 11".
+**START HERE:** read "SESSION 13" below, then "SESSION 12".
+
+## SESSION 13 (2026-07-28 night) — grid-n400 CLOSED PERMANENTLY (RAT-scan law); snake proof layout landed default-off; st_659 identified; zero promotions
+
+HEAD 97d80a6 defaults byte-identical (rbsat 100k fingerprint
+100001/196258/17,758,017 digit-exact; MVRR 267,199 digit-exact; 735 unit
+tests (+2 snake tests, +php race fix); smoke 9/9). No 100-cell gate
+spent — correctly: the session's candidate died at triage tier 1.
+Artifacts: `log/tseitin-snake-2026-07-28/measurements.txt`.
+
+**1. `SAT_TSEITIN_SNAKE` (default-off groundwork) — the SESSION 12 #1
+item (grid proof shrink) implemented and it WORKS as a proof-size
+mechanism: grid_n400 ER proof 14,629,730 -> 7,622,504 lemmas (1.92x,
+238MB, gen 17.4s, cell wall 34.2s incl. dry-run, RSS 275MB).** Three
+structural levers, all in `gauss.rs tseitin_refute_mode`: (a)
+boustrophedon (snake) walk via an adjacent-to-last tie-break in the
+greedy frontier order — each grid row's cut is then consumed in exact
+LIFO order; (b) "valley" (bitonic next-use) chains consumed by
+single-slot TOP POPS (P holds one pointer per chain for its whole life;
+the `{z_end, z_base}` pair never opens; a bitonic window's earliest-due
+var is always at an end, so consumption never needs interior
+extraction); (c) raw compress target 1. Steady P width 5 -> 3. Emission
+model VALIDATED to the digit: per-step cost = one stage per shared var
+per combine, each stage ~2^(width-1) clauses (measured 91/step legacy,
+47.6/step snake — the model's 48). Mode selected by DETERMINISTIC
+DRY-RUN with sink emitters; irregular components (n188 expander needs
+~10 live chains = width cap) fall back to the byte-identical legacy
+layout (n188: 4,714,240 lemmas, VERIFIED 197s, solve wall 32.7s).
+
+**2. THE RAT-SCAN LAW (permanent, checker-side — the arc-killer):
+`drat-trim.c checkRAT` loops over the ENTIRE literal space
+`for (i = -maxVar..maxVar)` and walks every watch list, for EVERY
+core RAT lemma. ER-proof verify cost ~ #core-RAT-lemmas x (2 maxVar +
+live watch mass) — proof LENGTH is nearly irrelevant.** Measured on a
+synthetic grid ladder (same instance, both layouts, defs equal, RUP
+lemmas halved): n60 2.0 vs 2.75s; n120 34.8 vs 41.0s — HALVING the
+lemmas buys only -15%; n200 375s (5.0k lemmas/s vs 82k/s at n60).
+grid_n400 (7.62M lemmas, 637k core RAT lemmas over 319k instance vars):
+**idle drat-trim s VERIFIED in 13,327.8 s = 3.7x the 3,600 s in-gate
+verify budget** (so the OLD 14.6M proof, killed unfinished at 3,717 s,
+was only ~15% done — its total was ~26,000 s+). The snake proof is
+VALID; it is verifiability inside the gate that is refuted. Definition count is WALK-INDEPENDENT (~1 per grid
+vertex — every vertical edge must be chained once under any linear
+walk) and pure-resolution grid-Tseitin is exponential (Urquhart), so
+**no .rs-side proof shape can fix this. tseitin_grid_n400 is
+CHECKER-BOUND and PERMANENTLY CLOSED under `drat-trim <cnf> <proof>`.
+Do not revisit without a different checker (out of scope) — the
+SESSION 12 "~2.5x shrink restores the fast rate" hypothesis is REFUTED
+(rate is var-count-driven, not length-driven).** Corollary for ALL
+future ER families: viability metric = #definitions x instance maxVar
+(php/n188 verify fast because their var spaces are tiny, NOT because
+their proofs are short). Caps stay effectively legacy (snake flag off);
+with the flag on, caps are 200k/8M — safe only because the cell solves
+in 34s and verify failure would be a gate correctness FAIL, so the flag
+must stay OFF at 1800s.
+
+**3. RESIDUE/RETRY LAW (proof-emission trap, measured): an aborted ER
+attempt DELETES the axiom clauses it consumed, so a follow-up attempt
+streamed into the same live proof lacks its RUP premises — composite
+proof is `s NOT VERIFIED`** (n188: 365k-line snake residue + legacy
+retry). Any multi-layout ER engine must select the layout by dry-run
+with sink emitters (deterministic replay), never stream-and-retry.
+Also fixed: php.rs unit-test temp files raced under the parallel
+runner (plain vs shuffled rphp share (pid, nv) — now sequence-tagged;
+this was the source of rare flaky `s NOT VERIFIED` test failures).
+
+**4. st_659 IDENTIFIED (structure fully mapped, refutation hunt still
+closed): it is a digraph kernel / stable-model existence encoding.**
+1977 vars = 3 layers x 659 items (x=in-kernel, y=absorbed,
+z=unfounded-escape); digraph E, 11,833 edges, only 322 symmetric;
+x_a -> y_b for (a,b) in E (+ AMO => kernel independence);
+y_a -> OR_{b in succ(a)} x_b (ALL 655 support sets equal succ(a)
+exactly — absorption); z_a -> OR_{b in succ(a)} z_b (unfounded
+chains); x_a -> not z_b for (b,a) in E; covers: >=1 x overall, >=1 x
+and >=1 y among the 575 non-unit items; 84 forced units. Kernel
+non-existence is NP-complete with no known polynomial certificate
+family, so there is NO ER-refutation shape to implement without the
+generator's argument — and the instance may simply be SAT. 4h status
+probes (kissat --sat, solver12) launched; result recorded below when
+known. UNSAT-status-unknown stands.
+
+**5. What this changes in the ranking:** the last "concrete +1" from
+the 07-28c plan is gone. The special-refutation axis is now closed on
+ALL 14 hard-core cells with per-cell mechanism verdicts (ramsey:
+proof-size scale; grid n400: checker-bound; st_659: no certificate
+family known / status unknown; the rest: SAT-likely or no counting
+core). The search/inprocessing axis was closed in SESSIONS 9/10/12.
+The next +1 at 1800s needs either a genuinely new mechanism class or
+new suite cells.
 
 ## SESSION 12 (2026-07-28 evening) — starved-class kissat-pipeline bundle NEGATIVE (the last search-side axis closed); grid n400 verify measured; zero promotions, baseline stays 74/100
 
@@ -1025,39 +1115,39 @@ capability; wall coin = margin <=~120 s OR flipped across deals at an IDENTICAL
 conflict count), tiered triage (probe -> subset -> 100-cell gate for promotion
 only), and 4-arm sweeps (promote the best arm).
 
-## RANKED PLAN for next session (updated 2026-07-28c)
+## RANKED PLAN for next session (updated 2026-07-28d)
 
-0. **DONE in SESSION 12 (zero promotions, zero gates spent):** item 1
-   of the 07-28b ranking (refutation-family hunt) CLOSED — hard core
-   fully decoded, no tractable counting family (ramsey needs ~100M+
-   lemmas vs the ~6M cap; st_659 decoded, timetabling shape, status
-   unknown). The starved-cell kissat pipeline (tick rounds + fixed
-   sweep + subst + unarmed eliminate) implemented and screened
-   DEFINITIVELY NEGATIVE — the search/inprocessing axis is now closed
-   at 1800 s with the COMPLETE kissat design measured across sessions
-   9/10/12.
-1. **NEW #1 — grid-n400 proof shrink (`gauss.rs`
-   `tseitin_refute_with_proof` chain-machinery redesign).** The only
-   concrete, mechanism-backed +1 currently visible at 1800 s: the cell
-   solves in ~25 s with a valid 14.6M-lemma ER proof; verification
-   misses the 3600 s budget (>3717 s idle, unfinished), BUT checker throughput is
-   superlinearly length-dependent (n188: 25k lemmas/s vs grid ~4.1k/s)
-   so a ~2.5x shrink to ~6M lemmas likely verifies in ~240-600 s.
-   Shrink candidates: fuse the append combines (3.8M lemmas) into the
-   main additions; fuse shifts (2.5M) where the consumed var arrives in
-   the incoming constraint. Fat-margin, reroll-free (pre-search), the
-   4-for-4 promotion shape. High correctness bar — offline test loop
-   is 23 s gen + drat-trim. Measurements:
-   `log/starved-arc-2026-07-28/grid_n400_checker_measurements.txt`.
-2. **Giant memory diet (carried).** pj2008 RSS 10.4 GB vs kissat 1.4 GB;
-   BVE emits 1.7 GB discarded DRAT in 150 s. pj2008 is marginal even for
-   kissat (2866 s at 3600 s), so this is capability-adjacent, not urgent.
-3. **The 3600 s / competition-horizon bundle (carried, grown).** REDUCE
-   law + tick cadence + SWEEP_SUBST + low transitive thresholds + NOW
-   the SESSION 12 tick-round sweep/elim bundle — all measured real but
-   valueless (or coin-negative) at 1800 s; revisit only under a
-   >3000 s objective.
-4. **elim_def revisit ONLY behind the fallback fix (carried, low).**
+0. **DONE in SESSION 13 (zero promotions, zero gates spent):** the
+   07-28c #1 (grid-n400 proof shrink) implemented — the shrink WORKED
+   (1.92x, snake/valley layout, default-off `SAT_TSEITIN_SNAKE`) and
+   the arc is nonetheless CLOSED PERMANENTLY: verification is
+   checker-bound by the RAT-scan law (defs x maxVar, walk-independent
+   ~160k defs on a 319k-var instance — idle verify exceeds the 3600 s
+   budget even at half the lemmas). st_659 identified (digraph
+   kernel/stable-model existence — no known certificate family). DONE
+   in SESSION 12: refutation-family hunt closed; starved-cell pipeline
+   negative; search/inprocessing axis closed (sessions 9/10/12).
+1. **No concrete +1 is currently visible at 1800 s.** Both axes
+   (search/inprocessing, special refutation) are closed with per-cell
+   mechanism verdicts. The honest next moves, in order of expected
+   value:
+   a. **Watch for st_659 status** (probes this session; if kissat
+      finds SAT, the cell formally leaves the refutation-target list).
+   b. **Giant memory diet (carried).** pj2008 RSS 10.4 GB vs kissat
+      1.4 GB; capability-adjacent, not metric-moving at 1800 s.
+   c. **The 3600 s / competition-horizon bundle (carried, grown).**
+      REDUCE law + tick cadence + SWEEP_SUBST + low transitive
+      thresholds + tick-round sweep/elim — all measured real but
+      valueless at 1800 s; revisit only under a >3000 s objective.
+      NOTE: `SAT_TSEITIN_SNAKE=on` belongs here too ONLY IF a future
+      checker change lands (its 7.6M-lemma grid proof would need
+      ~2.5-3x more verify budget than 3600 s).
+   d. **elim_def revisit ONLY behind the fallback fix (carried, low).**
+2. **For any future ER family: budget by the RAT-scan law FIRST** —
+   #definitions x instance maxVar decides verifiability, not lemma
+   count. A family on a small-var instance (php-class, n188-class) is
+   fine; anything grid-n400-scale (10^5+ vars x 10^5+ defs) is dead on
+   arrival under drat-trim backward checking.
 
 Previous ranking (2026-07-28a), kept for provenance:
 
@@ -1186,7 +1276,16 @@ Historical detail of the promoted item (kept for provenance):
 
 ## Current state
 
-- HEAD: SESSION 12 groundwork commit — defaults byte-identical to
+- HEAD: 97d80a6 SESSION 13 groundwork commit — defaults byte-identical
+  to 1912628/d46f988 (rbsat 100k = 100001 conf / 196258 dec /
+  17,758,017 props; MVRR 267,199 digit-exact; 735 unit tests; smoke
+  9/9). New default-off flag SAT_TSEITIN_SNAKE (snake/valley ER proof
+  layout, dry-run mode selection, legacy caps when off); php.rs test
+  temp-file race fixed; new tests tseitin_proof_snake_grids_verified +
+  tseitin_snake_shrinks_grid_proof. Artifacts:
+  log/tseitin-snake-2026-07-28/. **Medium 1800 s baseline: 74/100,
+  unchanged.**
+- Prior HEAD: SESSION 12 groundwork commit — defaults byte-identical to
   d46f988 (rbsat 100k = 100001 conf / 196258 dec / 17,758,017 props;
   MVRR 267,199 digit-exact; 738 unit tests; smoke 9/9 both flag
   states). New default-off flags SAT_SWEEP_TICK_ROUNDS /
@@ -1277,6 +1376,17 @@ Historical detail of the promoted item (kept for provenance):
 
 ## Standing traps (carried + this session)
 
+- **SESSION 13:** `SAT_TSEITIN_SNAKE=on` raises the tseitin caps to
+  200k components / 8M lemmas — its grid_n400 proof GENERATES fine
+  (34 s) but CANNOT be verified inside the 3600 s harness budget
+  (checker-bound), so enabling it at 1800 s would convert that cell's
+  timeout into a gate-level correctness FAIL (checker-timeout). Keep it
+  OFF unless the checker changes. Never judge ER-proof viability by
+  lemma count — use #defs x maxVar (the RAT-scan law). And never
+  stream an aborted ER attempt into the live proof and retry: the
+  aborted attempt's deletions of consumed axioms break the retry's RUP
+  premises (`s NOT VERIFIED`, measured) — dry-run with sink emitters
+  to select a layout.
 - **SESSION 12:** `SAT_SWEEP_TICK_ROUNDS` / `SAT_ELIM_TICK_ROUNDS` are
   MEASURED NEGATIVE defaults at 1800 s (4-arm screen: 0-1/14 vs base
   3/14 — they reroll vex/oski15 coins away and flip nothing, confirmed
