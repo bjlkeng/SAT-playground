@@ -86,9 +86,11 @@ chains); x_a -> not z_b for (b,a) in E; covers: >=1 x overall, >=1 x
 and >=1 y among the 575 non-unit items; 84 forced units. Kernel
 non-existence is NP-complete with no known polynomial certificate
 family, so there is NO ER-refutation shape to implement without the
-generator's argument — and the instance may simply be SAT. 4h status
-probes (kissat --sat, solver12) launched; result recorded below when
-known. UNSAT-status-unknown stands.
+generator's argument — and the instance may simply be SAT. **4h idle
+status probes CONCLUDED (2026-07-29): BOTH kissat --sat and solver12
+TIMED OUT at 14,400 s with no verdict.** st_659's status remains
+UNKNOWN at 4x the gate wall; the kernel-existence identification is
+the only new fact. The cell stays in the hard core.
 
 **5. What this changes in the ranking:** the last "concrete +1" from
 the 07-28c plan is gone. The special-refutation axis is now closed on
