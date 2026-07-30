@@ -1,0 +1,32 @@
+warning: Missing auto-load script at offset 0 in section .debug_gdb_scripts
+of file /tmp/claude-1001/-home-bojji-code/abff133d-c472-4431-8808-eba381a727ab/scratchpad/sym-target/release/sat-solver.
+Use `info auto-load python-scripts [REGEXP]' to list them.
+SIGINT is used by the debugger.
+Are you sure you want to change it? (y or n) [answered Y; input not from terminal]
+
+This GDB supports auto-downloading debuginfo from the following URLs:
+  <https://debuginfod.ubuntu.com>
+Enable debuginfod for this session? (y or [n]) [answered N; input not from terminal]
+Debuginfod has been disabled.
+To make this setting permanent, add 'set debuginfod enabled off' to .gdbinit.
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+
+Program received signal SIGINT, Interrupt.
+hashbrown::raw::RawTableInner::find_inner () at /rust/deps/hashbrown-0.16.1/src/raw/mod.rs:2070
+warning: 2070	/rust/deps/hashbrown-0.16.1/src/raw/mod.rs: No such file or directory
+#0  hashbrown::raw::RawTableInner::find_inner () at /rust/deps/hashbrown-0.16.1/src/raw/mod.rs:2070
+#1  hashbrown::raw::RawTable::find<(u32, usize), alloc::alloc::Global, hashbrown::rustc_entry::{impl#0}::rustc_entry::{closure_env#0}<u32, usize, std::hash::random::RandomState, alloc::alloc::Global>> () at /rust/deps/hashbrown-0.16.1/src/raw/mod.rs:1236
+#2  hashbrown::map::HashMap::rustc_entry<u32, usize, std::hash::random::RandomState, alloc::alloc::Global> () at /rust/deps/hashbrown-0.16.1/src/rustc_entry.rs:36
+#3  std::collections::hash::map::HashMap::entry<u32, usize, std::hash::random::RandomState, alloc::alloc::Global> () at /rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd/library/std/src/collections/hash/map.rs:1009
+#4  sat_solver::gauss::min_degree_order () at src/gauss.rs:474
+#5  sat_solver::gauss::gaussian_unsat_with_proof () at src/gauss.rs:533
+#6  0x00005555556401a8 in sat_solver::Solver::try_gauss_refute () at src/main.rs:14506
+#7  sat_solver::Solver::solve_status_with_proof () at src/main.rs:17761
+#8  0x000055555559af60 in sat_solver::Solver::solve_to_output () at src/main.rs:14332
+#9  sat_solver::main () at src/main.rs:19313
+A debugging session is active.
+
+	Inferior 1 [process 3338019] will be killed.
+
+Quit anyway? (y or n) [answered Y; input not from terminal]

@@ -1,0 +1,33 @@
+warning: Missing auto-load script at offset 0 in section .debug_gdb_scripts
+of file /tmp/claude-1001/-home-bojji-code/abff133d-c472-4431-8808-eba381a727ab/scratchpad/sym-target/release/sat-solver.
+Use `info auto-load python-scripts [REGEXP]' to list them.
+SIGINT is used by the debugger.
+Are you sure you want to change it? (y or n) [answered Y; input not from terminal]
+
+This GDB supports auto-downloading debuginfo from the following URLs:
+  <https://debuginfod.ubuntu.com>
+Enable debuginfod for this session? (y or [n]) [answered N; input not from terminal]
+Debuginfod has been disabled.
+To make this setting permanent, add 'set debuginfod enabled off' to .gdbinit.
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+c factor_bva fresh_vars=13 clauses_removed=546 clauses_added=169 ticks=78156 completed=true sec=0.001
+
+Program received signal SIGINT, Interrupt.
+sat_solver::kitten::Kitten::propagate () at src/kitten.rs:297
+297	                    if self.lit_value(cand) != FALSE {
+#0  sat_solver::kitten::Kitten::propagate () at src/kitten.rs:297
+#1  0x000055555567e638 in sat_solver::kitten::Kitten::solve_budgeted () at src/kitten.rs:536
+#2  0x00005555555cc9a8 in sat_solver::sweep::prove_facts_budgeted () at src/sweep.rs:285
+#3  0x0000555555629a19 in sat_solver::sweep::prove_facts () at src/sweep.rs:256
+#4  sat_solver::Solver::sweep_round () at src/main.rs:11606
+#5  sat_solver::Solver::inprocess_round_pass () at src/main.rs:10336
+#6  0x00005555555d9230 in sat_solver::Solver::inprocess_round () at src/main.rs:10194
+#7  0x00005555556441df in sat_solver::Solver::solve_status_with_proof () at src/main.rs:18153
+#8  0x000055555559af60 in sat_solver::Solver::solve_to_output () at src/main.rs:14332
+#9  sat_solver::main () at src/main.rs:19313
+A debugging session is active.
+
+	Inferior 1 [process 3337859] will be killed.
+
+Quit anyway? (y or n) [answered Y; input not from terminal]

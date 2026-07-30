@@ -1,15 +1,96 @@
-# NEXT PLAN — 2026-07-28d (supersedes the 2026-07-28c revision)
+# NEXT PLAN — 2026-07-30 (supersedes the 2026-07-28d revision)
 
-One-file plan for the next clear context. Folds SESSION 13 (2026-07-28
-night: snake/valley Tseitin proof layout implemented — grid proof halved —
-but the grid-n400 arc is now CLOSED PERMANENTLY with a checker-side
-mechanism law: drat-trim's RAT check is a full literal-space scan, so ER
-verify cost is defs x maxVar, not proof length; st_659 identified as a
-digraph-kernel/stable-model encoding; zero promotions, zero gates spent,
-baseline stays 74/100) on top of SESSIONS 4-12. Where this contradicts an
-older `plan/next-steps-*.md`, THIS file wins.
+One-file plan for the next clear context. Folds SESSION 14 (2026-07-30:
+first-ever FULL-BENCH 3600 s comparison — solver12 261/400 vs kissat
+296/400; medium-100 inside the same run WON 76 v 75; the whole −35 is
+out-of-sample; three gap mechanisms identified with probes; ranked
+incremental ideas rebuilt from full-bench evidence) on top of
+SESSIONS 4-13. Where this contradicts an older `plan/next-steps-*.md`,
+THIS file wins.
 
-**START HERE:** read "SESSION 13" below, then "SESSION 12".
+**START HERE:** read "SESSION 14" below, then "RANKED PLAN (2026-07-30)",
+then "SESSION 13".
+
+## SESSION 14 (2026-07-30) — FULL-BENCH 3600 s GAP READ: solver12 261/400 vs kissat 296/400; medium-100 WON 76 v 75; the −35 is entirely out-of-sample; zero code changes
+
+Full deep-dive: `plan/gap-read-full-2026-07-30.md`. Artifacts:
+`log/gap-read-full-2026-07-30/` (gap_read.txt, analyze.py, analysis.txt),
+`log/seedgate-solver12-full3600-2026-07-29-21-07-58/results.tsv`,
+`log/kissat-full-20260729-210758/results.csv`. New tool:
+`tools/run_kissat_full.sh` (parallel kissat runner, `-d` suite /
+`-c` core-offset / `-j` jobs). Run shape: concurrent disjoint sockets
+(s12 18 jobs cores 0-17 WITH proofs+verify; kissat 14 jobs cores 18-31),
+3600 s / 16 GB, ~11.4 h. Zero correctness failures: 257 verified ok,
+0 FAIL, 0 contradictions on 232 both-solved.
+
+**Headline facts (all analysis-tier, NOT promotion evidence):**
+
+1. **solver12 261/400 (SAT 133 / UNSAT 128, PAR-2 1,136,656); kissat
+   296/400 (150/146, 923,215). Medium-100 inside the run: 76 v 75 WIN
+   (was 73 v 75 on 07-24). Non-medium-300: 185 v 221 (−36) — the
+   ENTIRE gap is out-of-sample.** Kissat leads the full-bench
+   truncation curve at every cutoff (+12@300 s → +27@1800 s →
+   +35@3600 s); 23 of its 64 exclusive cells solve in <=600 s, so this
+   is capability, not only tail.
+2. **The special-refutation + arming portfolio GENERALIZED: 29
+   solver12-only cells (13 on medium)** — roundrobin x8 (gate-BVE
+   class), cliquecoloring x7 (SAT_PHP_REFUTE fired on 5 never-seen
+   siblings, all <2 s), oddball-tto_zp SAT x4 (endgame rephase class),
+   xor_op x2, rphp x2, tseitin_n188, Kakuro-132, TT_C496, HCP-529,
+   frb80 (SAT 3325 s), valves-gates (UNSAT 3400 s, checker-timeout).
+   Zero false fires, zero proof failures out-of-sample.
+3. **Three gap mechanisms, probe-confirmed (kissat -s vs SAT_STATS_JSON
+   300 s probes, table in the gap-read doc):**
+   (a) *scoping over-fit* — kissat's always-on ELS-substitution/probing
+   units/round-BVE instantly collapse cells our scoped/off passes skip
+   (bv_ILA_Piccolo: kissat substitutes 35% of vars + 22% units and
+   finishes in 8 s / 8.4k conflicts; s12 grinds 9.07M conflicts, 994 s;
+   same story n320p5q2 16 s, uniqinv40 51 s via sweep-substitution 30%
+   of vars, blockpuzzle 25 s via ELS 46%);
+   (b) *long-horizon trajectory quality* — the REDUCE-law/tick-cadence
+   shape: on booth-bit29 kissat sustains 11.6k conf/s and finishes in
+   6.2M conflicts where s12 does 7.6k/s and >20M without solving; the
+   16x16 multiplier-miter family alone is 10 kissat-only cells (+4
+   both-timeout); oddball-ttf: kissat 49.5k conf/s vs our 10.4k;
+   (c) *walk/rephase SAT capability* — kissat walks 100-360M steps on
+   its SAT wins (Circuit_multiplier24/29, sted2_0x0_n219-342, ITC,
+   HCP-446); our armed walk fires 3-27M flips on the same cells.
+4. **Memory is now METRIC-MOVING: pj2016_k100 (8.8M vars) is a real
+   lost cell** — s12 rc-6 OOM-abort at 53 s (virtual >16 GB during
+   parse/setup; RSS 12.7 GB @150 s unlimited idle), kissat solves it
+   SAT 1568 s in-budget. Mirror win: pj2002_k500 — KISSAT OOM-aborts
+   (exit 134 @122 s) while s12 parses fine (giant-arena diet) and runs
+   full wall. 17.normalised (7.1 GB text): both abort.
+   tseitin_d3_n100000 (8.7 MB formula!): s12 OOM at 1711 s via a
+   LATE-phase explosion (RSS still 0.12 GB at 540 s idle re-run);
+   kissat times out too, so hygiene not +1.
+5. **TWO unbounded-pass bugs found and ROOT-CAUSED with gdb backtraces
+   (archived in `log/gap-read-full-2026-07-30/`):**
+   (a) *battleship-13-13 spin* = mid-search `sweep_round` →
+   `sweep::prove_facts` (unlimited-budget wrapper, sweep.rs:256) →
+   kitten `solve_budgeted`/`propagate` — ONE kitten sub-solve with no
+   effective budget ate the whole 3600 s (deterministic; proof frozen
+   at byte-identical 150,995,327 across runs). kissat solves the cell
+   in 21 s — bounding this may make it winnable.
+   (b) *tseitin_d3_n100000 rc-6 OOM* = pre-search `try_gauss_refute` →
+   `gauss::min_degree_order` (gauss.rs:474) — ~25 min of HashMap churn
+   on a 100k-equation XOR system, then unbounded elimination fill-in
+   (31.4 GB RSS measured); the bench cell got ZERO search time.
+   Neither path checks SAT_LIMIT_WALL_SEC (it lives in the CDCL loop
+   only). External `timeout` still bounds bench runs; gates are
+   unaffected, but SAT_LIMIT_WALL_SEC screens under-read any cell
+   entering these phases.
+6. **Regressions vs the 07-24 medium 3600 s run: net +3 (73→76), but
+   bp4_BC012_CSO_FPBEQ_FPBLE_ZR went SAT@205 s → TIMEOUT** — an
+   undocumented reroll casualty of the post-07-24 promotion chain
+   (sibling bp4_BC012_CSO_AM... is kissat-only at 2537 s). Bubble_7_6
+   also lost (was the documented 2880 s marginal).
+7. **php-detector near-misses in the both-timeout core:**
+   cliquecoloring_n14_k7_c6 declined while n15_k7_c6/n26_k7_c6 fired
+   (boundary condition?); clqcl_30_9_8 and clqcl_30_11_10 declined
+   (k>7 — likely the 3-7-longest-covers precheck or slot-count bound);
+   harder-fphp-016-015 (direct, non-relativized php) and rphp_p25_r25
+   unmatched. Five capability leads in the proven SESSION-11 shape.
 
 ## SESSION 13 (2026-07-28 night) — grid-n400 CLOSED PERMANENTLY (RAT-scan law); snake proof layout landed default-off; st_659 identified; zero promotions
 
@@ -1117,6 +1198,100 @@ capability; wall coin = margin <=~120 s OR flipped across deals at an IDENTICAL
 conflict count), tiered triage (probe -> subset -> 100-cell gate for promotion
 only), and 4-arm sweeps (promote the best arm).
 
+## RANKED PLAN (updated 2026-07-30 — rebuilt from the full-bench read)
+
+The medium-1800 s gate stays THE promotion metric (unchanged). But the
+full-bench read reopens ranked work that the medium suite could not see:
+out-of-sample capability, memory, and detector coverage. Items 1-3 are
+medium-gate-safe by construction (additive detection / correctness /
+memory — identity elsewhere); items 4+ are analysis or need new scoping.
+
+1. **php/counting-detector coverage pass (cheapest capability, proven
+   SESSION-11 shape, near-zero reroll risk).** Decode offline why these
+   both-timeout cells decline: cliquecoloring_n14_k7_c6 (n15/n26
+   siblings FIRE — boundary bug?), clqcl_30_9_8, clqcl_30_11_10 (k=9/11
+   — the histogram precheck allows 3-7 longest covers; check slot-count
+   generalization), harder-fphp-016-015 (direct php shape, not
+   relativized — new but simpler matcher), rphp_p25_r25 (P=H? then NOT
+   a counting core — check before building). Each decode is minutes
+   (SESSION-11 method: clause-length histogram + literal roles on the
+   shuffled instance). Expected +2-4 full-bench; medium unaffected;
+   gate = identity check + additive wins. NOTE: nobody (kissat incl.)
+   solves any of these at 3600 s — same unique-capability shape as
+   TSEITIN/PHP promotions.
+2. **Giant memory diet — NOW +1-METRIC-MOVING (full-bench), was
+   capability-adjacent.** Concrete target: pj2016_k100 parse/setup
+   virtual footprint (8.8M vars / 23M clauses: >16 GB virtual at 53 s,
+   RSS 12.7 GB @150 s; kissat solves SAT 1568 s in-budget). Measure the
+   parse→root-simp transient (VmPeak vs post-parse steady RSS) first;
+   the fix is likely a transient doubling (occurrence build / arena
+   growth policy), not steady-state. Secondary: the
+   tseitin_d3_n100000 late-phase explosion (RSS trajectory probe
+   running 2026-07-30; suspect learned-DB/inprocessing pass on an 8.7 MB
+   formula — hygiene + possibly protects other cells). pj2008-class RSS
+   (10.4 GB vs kissat 1.4 GB) is the same arc.
+3. **Bound the two runaway passes (bug fixes, root-caused, backtraces
+   archived).** (a) `sweep_round`'s legacy `prove_facts` path enters
+   kitten with an effectively unlimited budget (sweep.rs:256 wrapper) —
+   give it the same tick budget as the budgeted core and check
+   wall/limits between kitten solves; then re-probe battleship
+   (kissat 21 s / 665k conflicts — plausible +1 once the solver
+   actually searches). Identity risk: bounding CHANGES trajectories on
+   any cell whose sweep kitten call previously ran long — screen with
+   the digit-exact identity refs (rbsat/MVRR) plus the frontier suite;
+   cells where the old budget was effectively never hit stay
+   byte-identical. (b) `try_gauss_refute` needs a size cap (decline
+   >~30k XOR equations) and a tick budget + wall checks inside
+   `min_degree_order` and the elimination loop (gauss.rs:474/533) —
+   fixes the tseitin_d3_n100000 rc-6 and stops burning root time on
+   large XOR cells (grid_n250/n400 likely pay this tax too). Both are
+   correctness-adjacent (an OOM abort in a proofs-required setting is
+   a lost cell, and one is a whole-cell wall sink).
+4. **Out-of-sample scoping question — run the >3000 s bundle A/B on the
+   full bench (analysis-only, zero gate risk).** Arms: default vs
+   REDUCE_FRACTION+SWEEP_SUBST+TICK_CADENCE(+root ELS, +unscoped probe)
+   at 3600 s on a ~60-cell frontier subset (see item 5). The probes say
+   these exact mechanisms are why 20+ cells go to kissat (bv_ILA x2,
+   n320p5q2, uniqinv40, blockpuzzle, oddball-ttf x5, miter x14 class).
+   If the bundle recovers >=10, the promotion path is NOT enabling it
+   at 1800 s (measured negative there) but designing per-formula
+   STRUCTURAL scoping (e.g. arm by formula class detected at root, not
+   by suite-tuned yield thresholds) — the medium coins stay protected
+   by their existing byte-identity scopes.
+5. **Build `benchmarks/frontier-2026-07-30` (~60 cells) as the standing
+   out-of-sample triage suite:** the 23 kissat-only <=600 s cells + the
+   14-cell multiplier-miter class + oddball-ttf x5 + the 5 php
+   near-misses + 8-10 protected solver12-only cells (regression canary:
+   RoundRobin/clqcl/oddball-tto_zp/TT496 representatives). Purpose:
+   every future scoping decision gets an out-of-sample read, so we stop
+   overfitting medium-100 (three sessions of scope-tuning produced a
+   suite that we WIN 76v75 while losing the bench 261v296).
+6. **bp4_BC012_CSO_FPBEQ_FPBLE_ZR regression autopsy (medium cell,
+   gate-relevant).** Was SAT 205 s on 07-24; now 3600 s TIMEOUT at
+   3600 s idle-equivalent. Bisect the promotion chain (aa9f4d6 →
+   d46f988) on this cell at 3600 s; check its scoped-gbve dry-run
+   adoption decision. If it is a gbve adoption casualty like
+   bp4_TCO_CSO_ZR (SESSION 4), the two cells together justify
+   revisiting the adoption threshold/arming-time discriminator with a
+   2-cell recovery target.
+7. **Walk scale-up screen (SAT frontier class).** kissat walks 100-360M
+   steps on Circuit_multiplier24/29, sted2_0x0_n219-342, ITC2021,
+   HCP-446 SAT wins; our armed walk fires 3-27M on the same cells.
+   4-arm triage on those 6-8 SAT cells at 3600 s: default /
+   SAT_WALK unscoped / walk_effort x4 / + warmup. Known trap:
+   SAT_WALK_WARMUP measured negative on medium (kills TT-class
+   lottery) — scope any candidate away from decision-armed cells.
+8. **Checker-timeout proof-size risk (4 at-risk solves):** valves-gates
+   (3400 s), ncc_none_21015 (2950 s vs kissat 472 s), grs-160-48
+   (2046 s vs 1161 s), VexRiscv (1635 s vs 512 s). Mostly a downstream
+   symptom of item 4 (shorter search → smaller proof); no standalone
+   work beyond tracking, unless the objective becomes
+   proof-required competition scoring.
+9. **Class decodes for later:** b18/b19 (giant ISCAS UNSAT, kissat
+   360/820 s; s12 shows 24 decisions/conflict — density-armed shape),
+   sorting-networks (Bubble_8_4/9_4/8_6), grs-32/256, crypto-arith x4,
+   SGI/myciel/contest04 one-offs. Only after items 1-4.
+
 ## RANKED PLAN for next session (updated 2026-07-28d)
 
 0. **DONE in SESSION 13 (zero promotions, zero gates spent):** the
@@ -1378,6 +1553,23 @@ Historical detail of the promoted item (kept for provenance):
 
 ## Standing traps (carried + this session)
 
+- **SESSION 14:** the full-bench 3600 s numbers are ANALYSIS-ONLY — the
+  promotion metric stays medium-1800 s (a −35 full-bench read coexists
+  with a WON medium suite 76v75; do not "fix" full-bench cells by
+  rerolling medium coins without the frontier-suite canary). `ulimit
+  -v` kills on VIRTUAL memory — RSS readings understate the kill
+  criterion; measure with /usr/bin/time -v + VmPeak. rc-6 results in a
+  seedgate TSV = allocator abort (no `s` line), not a solver bug per
+  se. SAT_LIMIT_WALL_SEC is honored ONLY in the CDCL loop — the sweep
+  kitten path (sweep.rs:256 unlimited wrapper) and the gauss
+  refutation path (gauss.rs min_degree_order/elimination) can run
+  unbounded past it (battleship: whole 3600 s in one kitten solve;
+  tseitin_d3_n100000: 25 min ordering + 31 GB fill-in). Screens
+  relying on it under-read such cells; external `timeout` still
+  bounds gates.
+  `tools/run_kissat_full.sh` exists for full-bench kissat sweeps
+  (`-d`/`-c`/`-j`); marginal-cell WALL times from the 07-29 concurrent
+  run carry contention caveats, conflicts do not.
 - **SESSION 13:** `SAT_TSEITIN_SNAKE=on` raises the tseitin caps to
   200k components / 8M lemmas — its grid_n400 proof GENERATES fine
   (34 s) but CANNOT be verified inside the 3600 s harness budget

@@ -1,0 +1,181 @@
+======================================================================
+1. HEADLINE
+======================================================================
+solver12   solved=261/400  SAT=133  UNSAT=128  PAR-2=1,136,656
+kissat     solved=296/400  SAT=150  UNSAT=146  PAR-2=923,215
+
+======================================================================
+2. TRUNCATION CURVE (same-deal virtual cutoffs)
+======================================================================
+ cutoff   s12  kissat  delta
+   300s   154     166    +12
+   600s   195     209    +14
+   900s   211     229    +18
+  1200s   225     242    +17
+  1800s   239     266    +27
+  2400s   249     277    +28
+  3000s   257     287    +30
+  3600s   261     296    +35
+
+======================================================================
+3. MEDIUM-100 vs NON-MEDIUM-300 SPLIT
+======================================================================
+medium-100       n=100  s12= 76  kissat= 75  delta=-1
+non-medium-300   n=300  s12=185  kissat=221  delta=+36
+
+======================================================================
+4. EXCLUSIVE CELLS BY FAMILY
+======================================================================
+-- kissat-only (64) by family:
+  misc                        12   kissat times: 51, 62, 109, 217, 284, 303, 339, 739
+  multiplier-miter-16x16      10   kissat times: 580, 747, 1221, 1295, 1589, 1721, 2313, 2451
+  oddball                      5   kissat times: 26, 99, 783, 1226, 2841
+  crypto-arith                 4   kissat times: 178, 697, 1158, 1389
+  hwmcc-bmc                    4   kissat times: 523, 577, 1173, 1680
+  bitvector-bp                 4   kissat times: 835, 1278, 2537, 3466
+  circuit-multiplier           3   kissat times: 174, 512, 3382
+  pj-bmc-giant                 2   kissat times: 1157, 1568
+  sorting-networks             2   kissat times: 368, 1967
+  itc-timetable                2   kissat times: 114, 2164
+  fsf                          2   kissat times: 85, 134
+  grs-crypto                   2   kissat times: 767, 1772
+  rook                         1   kissat times: 1904
+  reconf                       1   kissat times: 845
+  giant-bmc                    1   kissat times: 360
+  hamiltonian                  1   kissat times: 3555
+  argumentation                1   kissat times: 579
+  timetable                    1   kissat times: 967
+  sqrt-miter                   1   kissat times: 1203
+  mp1                          1   kissat times: 25
+  channel-routing              1   kissat times: 1642
+  vdw                          1   kissat times: 1197
+  lockchart                    1   kissat times: 2816
+  battleship                   1   kissat times: 21
+-- solver12-only (29) by family:
+  roundrobin                   8   s12 times: 24, 66, 81, 246, 258, 259, 381, 453
+  cliquecoloring               7   s12 times: 0, 0, 0, 0, 0, 0, 2
+  oddball                      4   s12 times: 267, 332, 339, 572
+  xor_op                       2   s12 times: 1, 2
+  misc                         2   s12 times: 3325, 3400
+  php                          2   s12 times: 0, 0
+  kakuro                       1   s12 times: 271
+  tseitin                      1   s12 times: 44
+  timetable                    1   s12 times: 1130
+  hamiltonian                  1   s12 times: 62
+-- both-timeout (75) by family:
+  misc                        14
+  lockchart                    8
+  ramsey                       6
+  timetable                    5
+  multiplier-miter-16x16       4
+  roundrobin                   4
+  st-kernel                    3
+  bitvector-bp                 3
+  tseitin                      3
+  sports-sched                 3
+  cliquecoloring               3
+  rook                         2
+  oddball                      2
+  crypto-arith                 2
+  sorting-networks             2
+  giant-bmc                    2
+  php                          2
+  argumentation                2
+  sudoku                       2
+  pj-bmc-giant                 1
+  mchess                       1
+  vdw                          1
+
+======================================================================
+5. KISSAT-ONLY CELLS BY KISSAT TIME BAND (capability vs tail)
+======================================================================
+  kissat    0-600 s:  23 cells
+  kissat  600-1200s:  14 cells
+  kissat 1200-1800s:  12 cells
+  kissat 1800-2400s:   5 cells
+  kissat 2400-3000s:   5 cells
+  kissat 3000-3600s:   5 cells
+
+  Sharpest capability gaps (kissat <=600s, s12 dead at 3600s):
+    UNSAT    21.4s  [battleship              ] battleship-13-13-unsat
+    SAT      24.9s  [mp1                     ] mp1-blockpuzzle_9x9_s1_free9
+    UNSAT    26.2s  [oddball                 ] oddball_13_5_ttf.normalised
+    UNSAT    50.7s  [misc                    ] uniqinv40prop
+    UNSAT    61.9s  [misc                    ] gto_p60c238-sc2018
+    SAT      84.8s  [fsf                     ] fsf-300-354-2-2-3-2.35.opt
+    SAT      99.2s  [oddball                 ] oddball_112_5_ttf.normalised
+    UNSAT   109.2s  [misc                    ] shuffling-1-s1769330284-of-bench-sat04-422.used-as.sat04-561
+    SAT     114.5s  [itc-timetable           ] ITC2021_Early_12.xml
+    SAT     134.0s  [fsf                     ] fsf-300-354-2-2-3-2.9.opt
+    SAT     174.2s  [circuit-multiplier      ] Circuit_multiplier24
+    SAT     177.5s  [crypto-arith            ] mod2c-rand3bip-sat-250-3.shuffled-as.sat05-2535
+    SAT     216.7s  [misc                    ] case8.normalised
+    UNSAT   284.1s  [misc                    ] contest04-lksat-n1100-m7545-k4-l4-s310659001.sat05-524.reshuffled-07
+    SAT     303.3s  [misc                    ] sted2_0x0_n219-342
+    UNSAT   339.3s  [misc                    ] oisc-subrv-sll-nested-8
+    UNSAT   359.6s  [giant-bmc               ] b18
+    UNSAT   367.6s  [sorting-networks        ] BubbleVsPancakeSort_7_6
+    UNSAT   512.0s  [circuit-multiplier      ] lec_mult_CvW_11x10.sanitized
+    UNSAT   523.5s  [hwmcc-bmc               ] nla-digbench-scaling_dijkstra-u_valuebound1_step
+    UNSAT   576.7s  [hwmcc-bmc               ] x-epic_a19-p16_step
+    SAT     579.3s  [argumentation           ] ER_400_20_7.apx_1_DS-ST
+    UNSAT   580.0s  [multiplier-miter-16x16  ] 16_16_booth_wallace_origin_and_default_mapped_bit29
+
+======================================================================
+6. BOTH-SOLVED THROUGHPUT
+======================================================================
+both-solved=232  status-contradictions=0 []
+s12 faster on 74/232; total wall s12=124,341s kissat=98,334s
+
+  Worst s12/kissat wall ratios (both-solved, s12 >=300s):
+    128.4x  s12=  566.9 kis=    4.4  [giant-bmc             ] 170223547
+    123.5x  s12=  993.6 kis=    8.0  [misc                  ] bv_ILA_Piccolo_BEQ_sanity_transition
+     98.4x  s12=  388.4 kis=    3.9  [oddball               ] oddball_22_5_ttf.normalised
+     73.6x  s12=  597.8 kis=    8.1  [misc                  ] bv_ILA_Piccolo_JALR_sanity_transition
+     68.3x  s12= 1085.6 kis=   15.9  [misc                  ] n320p5q2_n.apx_16
+     40.6x  s12= 2830.9 kis=   69.7  [oddball               ] oddball_19_4_ttf.normalised
+     30.6x  s12=  472.6 kis=   15.4  [misc                  ] b21
+     30.2x  s12=  873.5 kis=   28.9  [misc                  ] sum_of_three_cubes_906_known_representation
+     15.2x  s12= 2560.5 kis=  167.9  [misc                  ] cfi-rigid-t2-0048-04-or_3_shuffle_all
+     14.6x  s12=  893.8 kis=   61.1  [misc                  ] homer11.shuffled
+     14.5x  s12=  393.2 kis=   27.1  [misc                  ] anbul-dated-5-15-u
+     13.6x  s12=  598.9 kis=   44.2  [misc                  ] Break_triple_16_70.xml
+     11.8x  s12=  419.3 kis=   35.6  [itc-timetable         ] ITC2021_Middle_9.xml
+     11.7x  s12=  557.2 kis=   47.7  [misc                  ] b22
+     11.5x  s12=  369.9 kis=   32.2  [misc                  ] velev-pipe-o-uns-1.1-6
+
+  Best s12/kissat wall ratios (kissat >=300s):
+     0.00x  s12=    0.0 kis=  404.0  [tseitin               ] tseitin_grid_n12_m12
+     0.00x  s12=    1.8 kis= 3432.3  [xor_op                ] xor_op_n38_d3
+     0.01x  s12=   29.3 kis= 2246.0  [misc                  ] gm16spctrc
+     0.02x  s12=   18.2 kis= 1096.1  [reconf                ] reconf10_73_queen13_2
+     0.03x  s12=   16.8 kis=  525.8  [misc                  ] case7.normalised
+     0.05x  s12=  177.3 kis= 3508.7  [misc                  ] Ptn-7824-b19
+     0.15x  s12=  150.3 kis=  997.7  [misc                  ] case11.normalised
+     0.20x  s12=  505.5 kis= 2565.1  [oddball               ] oddball_53_5_tto_zp.normalised
+     0.24x  s12=  858.5 kis= 3598.2  [misc                  ] sum_of_3_cubes_37_bits_87
+     0.25x  s12=  300.3 kis= 1199.9  [bitvector-bp          ] bp4_TCO_CSO_IXA_LP_ZR.normalised
+     0.28x  s12=  285.6 kis= 1038.2  [misc                  ] case1.normalised
+     0.28x  s12=  118.2 kis=  426.1  [misc                  ] EDP3-11000
+     0.30x  s12=   97.7 kis=  326.7  [kakuro                ] Kakuro-easy-112-ext.xml.hg_7
+     0.32x  s12=  153.6 kis=  483.4  [misc                  ] crusti_g2io_250_0.2_255_12.normalised
+     0.33x  s12=  882.7 kis= 2709.4  [oddball               ] oddball_29_4_ttf.normalised
+
+======================================================================
+7. MARGIN BANDS (what an extra hour would buy each solver)
+======================================================================
+s12 solves in 3000-3600s band: 4; kissat: 9
+s12 band cells: ['case6.normalised', 'frb80-14-1.used-as.sat04-879', 'valves-gates-1-k617-unsat.shuffled-as.sat03-412', 'lockchart-group1-L210-K303-p8d4j1.normalised']
+kissat band cells: ['HCP-446-105', 'Ptn-7824-b19', 'xor_op_n38_d3', 'SGI_30_60_20_50_3-dir.shuffled-as.sat03-114', 'sum_of_3_cubes_37_bits_87', 'lockchart-group1-L210-K303-p8d4j1.normalised', '16_16_booth_dadda_origin_and_and_dadda_mapped_bit28', 'Circuit_multiplier29', 'bp4_TCO_IXA_FPBLE_ZR.normalised']
+
+======================================================================
+8. STATUS ODDITIES
+======================================================================
+  pj2016_k100                                             s12=UNKNOWN_rc-6/skip@53s  kissat=SAT(ec=10)@1568s
+  pj2002_k500                                             s12=TIMEOUT/skip@3601s  kissat=UNKNOWN(ec=134)@122s
+  tseitin_d3_n100000                                      s12=UNKNOWN_rc-6/skip@1711s  kissat=TIMEOUT(ec=124)@3600s
+  17.normalised                                           s12=UNKNOWN/skip@124s  kissat=UNKNOWN(ec=134)@55s
+  valves-gates-1-k617-unsat.shuffled-as.sat03-412         s12=UNSATISFIABLE/checker-timeout@3400s  kissat=TIMEOUT(ec=124)@3600s
+  ncc_none_21015_5_3_3_0_0_11                             s12=UNSATISFIABLE/checker-timeout@2950s  kissat=UNSAT(ec=20)@472s
+  grs-160-48                                              s12=UNSATISFIABLE/checker-timeout@2046s  kissat=UNSAT(ec=20)@1161s
+  2018D_VexRiscv-regch0-20-p1_step                        s12=UNSATISFIABLE/checker-timeout@1635s  kissat=UNSAT(ec=20)@512s

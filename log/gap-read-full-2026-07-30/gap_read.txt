@@ -1,0 +1,182 @@
+# Gap read: solver12 vs kissat  (suite=400 instances, timeout=3600s)
+
+  solver12: 261/400 solved   (SAT=133 UNSAT=128)
+    kissat: 296/400 solved   (SAT=150 UNSAT=146)
+       gap: +35  (kissat minus solver12)
+
+PAR-2 solver12: 1136655.6
+PAR-2 kissat: 923214.7
+
+## kissat-only cells (64) — the gap to close:
+    UNSAT   1903.9s  062f58e44eb73f9274b57af5092cad90-rook-51-0-0
+    UNSAT    820.5s  0a4880c0e882e6a4a31943522573c394-b19_1
+    SAT     1158.4s  0ae917c2e0c1d39cbe411c29b2f5ff08-dislog_a14_x14_n24
+    SAT     1567.8s  0d8779c22e2caa8d676723701e5a0347-pj2016_k100
+    UNSAT    339.3s  113e692e379518bc3277855277dcc1b8-oisc-subrv-sll-nested-8
+    SAT      174.2s  115fa7f61704bc12b2373aa471bc434f-Circuit_multiplier24
+    UNSAT   1967.4s  1a92907cdec0528583a8f49a818b406d-BubbleVsPancakeSort_8_4
+    UNSAT    109.2s  21b173943af57eefaac5e88bfa2662ad-shuffling-1-s1769330284-of-bench-sat04-422.used-as.sat04-561
+    SAT     2164.0s  25390e9d1fa1926485db7eb2d5a20ea8-ITC2021_Late_10.xml
+    SAT      844.5s  27570c6780aaade3dc771c6a12534fb8-reconf10_22_queen20_3_8667
+    UNSAT    359.6s  29b573e0f7b922c4bd0a675db005265f-b18
+    SAT     2841.4s  2b4467a5ac4ac41b36d4c3432b07f767-oddball_69_5_tto_zp.normalised
+    UNSAT   1295.3s  321732c1a401ff109b2f2b447e3dbe5e-16_16_booth_wallace_mapped_and_default_origin_bit28
+    SAT     3555.4s  334aa882de28856fc8c75885285d2a3c-HCP-446-105
+    UNSAT    367.6s  389bb0a8f3568f4bd0e71771df9093c5-BubbleVsPancakeSort_7_6
+    UNSAT     61.9s  3f67f6767764855e516e5394be1145e5-gto_p60c238-sc2018
+    UNSAT   2575.5s  418b8aa42088cb0b1d85014dfa285b25-16_16_booth_wallace_origin_and_and_dadda_mapped_bit28
+    SAT      579.3s  43fbacb24ea30054dece1de179c4ca7e-ER_400_20_7.apx_1_DS-ST
+    SAT      216.7s  46a8727e27d848faafd83a990c2e01a7-case8.normalised
+    SAT       84.8s  474e9594ec7885cb1bebf66073eb2de2-fsf-300-354-2-2-3-2.35.opt
+    UNSAT   1867.8s  482295be38dc1d63a16f3cf649ef7ef6-myciel6-cn.used-as.sat04-319
+    SAT      134.0s  4c3001f8073986116d98084dde70da05-fsf-300-354-2-2-3-2.9.opt
+    UNSAT   1226.3s  4cf3505e5183c26bbd97d89fdaa93f8c-oddball_26_4_ttf.normalised
+    UNSAT   3080.4s  5c29ccca91235475f762f4b106f804f2-SGI_30_60_20_50_3-dir.shuffled-as.sat03-114
+    UNSAT    580.0s  5d7bc1fb0f3269d88f732d3fb81abe59-16_16_booth_wallace_origin_and_default_mapped_bit29
+    UNSAT    284.1s  6d35bab4302bc221fa2c9234547b848b-contest04-lksat-n1100-m7545-k4-l4-s310659001.sat05-524.reshuffled-07
+    UNSAT   1680.2s  818c585e5986431917605fca8d775034-g2-hwmcc15deep-oski15a10b10s-k20
+    SAT      808.5s  88849daabda2e712f659c6edbc142229-ncc_none_2_18_8_3_1_0_435991723
+    UNSAT   2450.7s  8e81131a0c4fbd01e90bb6e20d00c547-16_16_booth_dadda_origin_and_and_dadda_origin_bit28
+    SAT      966.7s  901fa244999d250bc8d8cce19cabc114-SC25_Timetable_C_492_E_48_Cl_33_D_7_T_58.normalised
+    UNSAT   1221.3s  91c429adc2dc8430461b6d87a9aef335-16_16_booth_wallace_mapped_and_and_wallace_origin_bit28
+    SAT      835.1s  9277f5d1bc65276294617e672c4f2443-bp4_BC012_CSO_FPBEQ_FPBLE_ZR.normalised
+    UNSAT   1277.6s  98a9352230efc411c092f1dcdcdedcfc-bp4_BC012_IXA_LPI_FPBLE.normalised
+    UNSAT   3161.5s  98a991c902324b02349e766ad357cdc6-16_16_booth_dadda_origin_and_and_dadda_mapped_bit28
+    UNSAT    697.3s  99718c1729a8de3347a9946f1836421d-bivium-39-200-0s0-0xdcfb6ab71951500b8e460045bd45afee15c87e08b0072eb174-43
+    UNSAT     50.7s  9b5f767eb5c14eb888d51acf70e045c8-uniqinv40prop
+    UNSAT   1202.8s  9dd565d002c343712eb5deda187e9034-sqrt-mitern169
+    SAT     3382.1s  9ea8deb8313d93e60743638909f37d6c-Circuit_multiplier29
+    SAT     1157.2s  a28f59752c160af22b6d04cb89ddf802-pj2008_k200
+    SAT       24.9s  a2fe3213d50b3bc297e3f7606c921128-mp1-blockpuzzle_9x9_s1_free9
+    UNSAT    766.8s  a49ec44c8d9972cda278d48b6dbef09e-grs-32-128
+    UNSAT   1720.7s  a932cd15aa770c7874b12476153b7df2-16_16_booth_dadda_origin_and_and_dadda_origin_bit29
+    UNSAT   1588.7s  ae9c53347ee8072745ed230992e164ee-16_16_and_wallace_origin_and_default_mapped_ultra_bit27
+    UNSAT   1642.2s  b27017cae233481c679e3c3be6f00af8-SAT_dat.k100-24_1_rule_2
+    SAT      177.5s  b5431f41e3264c64508c30da215c69c6-mod2c-rand3bip-sat-250-3.shuffled-as.sat05-2535
+    UNSAT    739.1s  b628043a07c5576dd6cd21c9d73a69e0-fixedbandwidth-eq-37_shuffled
+    SAT      114.5s  bc5a06872fa6dfc9acbc7f782f0a4439-ITC2021_Early_12.xml
+    UNSAT   1172.6s  c0bd86bd7ca2c65e44311de374168150-goldcrest-and-14
+    UNSAT    512.0s  c0e828fb967fc4f0935cf06c6a6b1055-lec_mult_CvW_11x10.sanitized
+    UNSAT     26.2s  c569d4b2b2e90a1a70bd23a1169355ef-oddball_13_5_ttf.normalised
+    SAT     1197.4s  ccc66f699505f84d67d7b4eaa78e5bd5-VanDerWaerden_pd_2-3-23_505
+    SAT      303.3s  cdd89d1b9259dcf26d4a53ba94041e93-sted2_0x0_n219-342
+    SAT     2816.1s  d2af3fde615d7c4d4a4574fc8839970e-lockchart-group1-L190-K276-p8d4j1.normalised
+    UNSAT     21.4s  d88c6afc13cdad0e2c8371a879692b39-battleship-13-13-unsat
+    UNSAT   1388.9s  d9320e4dbba0f8bd699085f61a98ff5c-mod4block_3vars_7gates
+    SAT     2537.3s  dbe12d6d2e341d7b4e4216142f29e170-bp4_BC012_CSO_AM_FPBEQ_FPBLE_ZR.normalised
+    UNSAT   2312.9s  de8c42d50f1dbf43a731f1916dc6bf01-16_16_booth_dadda_mapped_and_and_wallace_origin_bit28
+    UNSAT    523.5s  dff4ea0af62900ab4d404f3bf7649a4d-nla-digbench-scaling_dijkstra-u_valuebound1_step
+    UNSAT    782.7s  f1cd694d42891a20c96a65ee1c321edc-oddball_24_4_ttf.normalised
+    SAT     3465.6s  f37757b26c83935780be4f814f8ea401-bp4_TCO_IXA_FPBLE_ZR.normalised
+    SAT       99.2s  f406e2b8b28f205f16e8983bd522db13-oddball_112_5_ttf.normalised
+    UNSAT    576.7s  fcc4c4522c54db2f1cee86fe0fff5f4a-x-epic_a19-p16_step
+    UNSAT   1772.0s  fe851239cedd4197c5390cee55fee723-grs-256-64
+    UNSAT    747.4s  fea0f926e766ccba7c7dc261084ecbd0-16_16_default_mapped_ultra_and_and_dadda_mapped_bit28
+
+## solver12-only cells (29) — where we win:
+    UNSAT      1.9s  06d2ca2ee0b47f00d93090495f7fd4f4-clqcl_100_6_5.normalised
+    UNSAT      0.1s  08d56c03e6561f6b9bec2e3f344ea3de-cliquecoloring_n26_k7_c6
+    SAT      331.8s  0ec8c5e9084cbc8a326f8f37e1abf741-oddball_54_5_tto_zp.normalised
+    UNSAT      0.1s  110f8eb8b9b80204fe955ea0973bbb00-clqcl_30_7_6.normalised
+    UNSAT    380.9s  12820b981e6b199a1b1a8c896386a337-RoundRobin_n16_d14
+    SAT      266.5s  19951d43eff5fc4ef6fd07d7a5324fa0-oddball_80_5_tto_zp.normalised
+    SAT      571.9s  1b8806812861df2b7e91dc316ad1ef80-oddball_52_5_tto_zp.normalised
+    UNSAT      0.3s  21415e807689ea75536e846a24623de1-clqcl_50_6_5.normalised
+    UNSAT      2.1s  22c8d6aa86d51e15ef5ab37479eda22b-xor_op_n40_d3
+    UNSAT      0.1s  292bedf65cee7cc38fe8b2725eb50868-cliquecoloring_n32_k5_c4
+    SAT      271.3s  29b7d5a498eff7a98fcd03a273eaeba3-Kakuro-easy-132-ext.xml.hg_8
+    UNSAT    452.7s  3a1f1b4b9a521737cc760017fe9d8b43-MVRoundRobin_n16_d10_v3
+    SAT      338.8s  41915707d831e1365389d3cc47c7953f-oddball_51_5_tto_zp.normalised
+    UNSAT     44.3s  42f1311ce504db8cc0cb590a568da20a-tseitin_n188_d3
+    UNSAT     81.0s  6cb995b1c550beb579c53e27f6ca881a-RoundRobin_n16_d13
+    SAT     3325.2s  72a033a7a86f1b89b1bdd8e28a97ecdf-frb80-14-1.used-as.sat04-879
+    UNSAT    246.1s  78e8f5b0d59512cc4910fd63b4acb7fa-RoundRobin_n17_d14
+    UNSAT     65.8s  822cf4daaa4e1d16ad53d088ff567f32-RoundRobin_n15_d13
+    UNSAT   3399.6s  847df6bb7bd0a8fcedb57e012cfe0014-valves-gates-1-k617-unsat.shuffled-as.sat03-412
+    UNSAT      0.2s  8707ef793f0443b5804c56c2ffca322e-clqcl_40_6_5.normalised
+    UNSAT    258.6s  908433870bee8ba2c86f266d0b002fdb-MVRoundRobin_n20_d10_v2
+    SAT     1129.9s  95931bb010dba306e24c79c120044ff9-SC25_Timetable_C_496_E_48_Cl_33_D_7_T_50.normalised
+    SAT       61.8s  9da32436de386f3b4f8e6ec1db552349-HCP-529-420
+    UNSAT      0.1s  b1c8eaa002ac2fa1c8bfd1002738e78e-cliquecolouring_n15_k7_c6.sanitized
+    UNSAT      1.4s  bea83d274b1c57b2171b380e34fd645d-xor_op_n36_d3
+    UNSAT     24.0s  c05d4d3ecd06a2e3942fea09159dd27b-MVRoundRobin_n16_d10_v2
+    UNSAT    258.3s  cb66276897e4d1ff1368a4430598e11c-RoundRobin_n17_d13
+    UNSAT      0.1s  cb950b9accfb53eb98f77b0f995ac0ae-rphp5_050_shuffled
+    UNSAT      0.1s  e12874b16df577b301608d03731595d8-rphp5_085_shuffled
+
+## both-timeout cells (75):
+    00d5a43a481477fa4d56a2ce152a6cfb-st_890_86_9_572.normalised
+    04648cef5bed430ab6429991fa9e107d-ramsey_3_6_19.normalised
+    053e06424279f5cfec8bb14dfa9af23c-oisc-subrv-and-nested-15
+    0c9bcbc815cf0f109b7aeef3fbffc42d-par32-2.shuffled-as.sat03-1534
+    0dd928240a9559ab7e50d088e3f168ac-pj2002_k500
+    0ed8c06438673f179985a79b9d6a9fe4-cfi-rigid-s2-0064-04-or_2_shuffle_all
+    1b3c7ac17705be94daaddb5f5ae4816b-rook-56-0-0
+    1b84df53843ecd90ec8c3c7a01cada6c-ramsey_4_4_18.normalised
+    1b9f94befb5bc867c0e882f49973f793-bp4_BC012_AM_FPBEQ_ZR.normalised
+    1d90be3e37a42432d281cf6c1b8eae4b-multiplier_16bits__miter_22
+    207ebdf62e5ce54c8b4ddeeb17843a56-hhyp_cec_multi_2
+    30f64b3b0870ce5d22d4217782224dfe-lockchart-group1-L200-K289-p8d4j1.normalised
+    35b9091b90bd28a492c9556d6fc4348d-bp4_TCO_CSO_ZR.normalised
+    35ec95b9b2398fb522db178855016ae0-MVRoundRobin_n14_d10_v2
+    36ba44cf208034e2c8e84a1971b9bfd4-connm-ue-csp-sat-n1200-d-0.02-s405595518.shuffled-as.sat05-531
+    395829127ec213c2e69a6a13dda3623b-lockchart-group2-rnd0.3-L19-K38-P8D4J1_1.normalised
+    3c0db78733bb05b9d1e9d7627b2e8f38-rook-52-0-1
+    3cda1cbfbcabfc71ece7961d4d6ad1bb-lockchart-group2-rnd0.3-L19-K38-P8D4J1_3
+    41d14756a06872844577fc0abddb58aa-tseitin_d3_n100000
+    41f507717c7c4553d23cd0cd1fc40104-1-ET-512-K-120.sanitized
+    43ebdada6f6153b50a140ba908d5bf44-oddball_67_5_tto_zp.normalised
+    45742d067cc851edc1201d8a02586eac-mchess_20
+    465795fa2641c616ce76de8501672a19-VanDerWaerden_pd_2-3-27_663
+    4ba2c1aa580b6497df6baf5e7e2c87be-at-least-two-vmpc_28
+    526caead2f3c84c2918a2fc775dc3e97-ramsey_3_7_23.normalised
+    533017e0f42d8246c7ae140313a84161-baseballcover12with25_and5positions
+    539a1f4e4f7a95ab0ac55df50445cceb-multiplier_15bits__miter_23
+    53e347648553a2f2223614d3b4a07a4b-RoundRobin_n17_d15
+    5aed29ce52192a55ffbd2a6f340017e7-oisc-subrv-and-nested-12
+    5d62e4d7ab116c477c8d4f5bd36907de-lockchart-group2-rnd0.3-L19-K38-P8D4J1_2
+    60e39615d3af069932865a28b1bf6330-16_16_booth_dadda_mapped_and_and_wallace_mapped_bit28
+    65f7145996bbec02b90bd0fa64a20502-test_v7_r12_vr10_c1_s18160.smt2-stp212
+    69ad7473757d30d55fabab7882268483-BubbleVsPancakeSort_9_4
+    6ebe901234af9615bb85b688a26ef2c4-17.normalised
+    6f40bd5ac85e2a53b392d8f0369e7f1f-harder-fphp-016-015.sat05-1230.reshuffled-07
+    6f6a20cd654701b5e7fe9e9e0e5e7787-RoundRobin_n18_d15
+    6fab31665147f538da92dc16c3a239ad-stb_664_50.apx_2_DC-ST
+    72cec28d6e34efe366150066b71edc33-bp4_LPI_FPBEQ_ZR.normalised
+    77e655b23c0a50d911c0384ef8fe266d-SC25_Timetable_C_495_E_43_Cl_35_D_7_T_58.normalised
+    7e58b502cc9dbef5f76d5161fb9a09b2-mp1-Nb7T45
+    80d8c77f6cab179d469462221f3f624a-clqcl_30_11_10.normalised
+    847c8843ee292b9b31f0c346574af260-ramsey_4_4_19.normalised
+    87f093067622b91fa9dc0de149c8b92c-1-ET-512-K-102.sanitized
+    8b267f95678c90b2179944de7233b090-ER_500_20_4.apx_1_DC-AD
+    9118e76885506476cd50cef8b2ec5def-ramsey_3_6_18.normalised
+    967b58fea99a99b8da592d3e2fe7139b-dubois50.cnf.mis-99.debugged
+    96977e8e00a3728097861502a449e343-lockchart-group3-L13-K26-p4d3j1.normalised
+    981c4e83c5dd3694af4c367958e0ee5f-tseitin_grid_n250_m250
+    989ca6ab309ca52a6ff957b6896aa03e-16_16_booth_dadda_mapped_and_booth_wallace_mapped
+    99bd0555ca704df05fcaf6f9b84c7eef-ramsey_3_7_24.normalised
+    9f1cb42232335f84435126b5ae0fb701-SC25_Timetable_C_495_E_48_Cl_33_D_7_T_50.normalised
+    a09eb02bbaa7a0ae171123a782c2164d-RoundRobin_n18_d16
+    a8608545f9ae0462c7426e71a0e3e634-rbsat-v945c61409g3
+    aa5585572cc045a3c2209b083635d598-st_815_74_9_2860.normalised
+    acc0bc3ef52aa228cc35c2d9bb3ae249-BubbleVsPancakeSort_8_6
+    affe8884c8c744ab2f07683ed1cf0d1a-SC25_Timetable_C_498_E_46_Cl_34_D_7_T_50.normalised
+    b18b24418dd863c1d631698d7d45041f-div_miter_lec__2
+    b99ba7e9113280393c64863dfbfa2c3b-lockchart-group3-L15-K29-p4d3j1.normalised
+    c0074020a48535e6062421cea2850dd0-st_659_37_25_686.normalised
+    c8d21db50338d9d5743802bcae77a466-cliquecoloring_n14_k7_c6
+    cdd131110acc861a5a01fae6c4936c91-6g_6color_366_050_04
+    d35dfc38e1681b48ebceb4113d205a23-16_2
+    d5b11b0b73eb4ecebdbf6ee8143da689-oisc-subrv-and-nested-11
+    dbb42e010bed2259e4e27bc43e4d86c6-lockchart-group3-L11-K23-p4d3j1.normalised
+    ddf9620410e6a4351f64c745670ef5d4-oddball_57_5_tto_zp.normalised
+    de8988028668791f35a7b9f94353b5b9-sudoku-N30-16
+    e207ba2df64495327f715e08155a220f-fermat-834855329100173267
+    e430acf720b63044e5c825a00a76b0eb-rphp_p25_r25
+    e442248e155eb81a811edd1deca8a2cd-sudoku-N30-23
+    ea37a677b357328c1641ef2f6087bf66-clqcl_30_9_8.normalised
+    f0753a43fd48018b408d64ea68a4a924-Nb54T6
+    f3abc375afaf48c7eae21500b773bd21-tseitin_grid_n400_m400
+    f4ca5fca83e870d2ed56f2b00b074ed4-TT7F-33-24B
+    fae6cf26f3da1e7d8fc4926a9ca86b61-SC25_Timetable_C_495_E_50_Cl_33_D_7_T_50.normalised
+    fe9b9a35531e13dab41307e569386dab-lockchart-group1-L220-K317-p8d4j1.normalised

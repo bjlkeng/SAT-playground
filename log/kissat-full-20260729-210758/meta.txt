@@ -1,0 +1,1 @@
+kissat=4.0.4 suite=benchmarks/sat-comp-2025 instances=400 timeout=3600s mem=16000MB jobs=14 core_offset=18 out=/home/bojji/code/SAT-playground/log/kissat-full-20260729-210758
