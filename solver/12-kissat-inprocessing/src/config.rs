@@ -880,9 +880,7 @@ impl Default for SolverConfig {
 
             inprocess: false,
             vivify: false,
-            // SESSION 14 (2026-07-30): default ON — part of the full-bench horizon
-            // bundle (frontier screen: union 12/38 vs base 1/38 at 3600 s).
-            probe: true,
+            probe: false,
             hbr: false,
             transitive: true,
             forward_subsume: false,
@@ -896,8 +894,12 @@ impl Default for SolverConfig {
             factor: false,
             pair_abs_refute: false,
             php_refute: false,
-            // SESSION 14 (2026-07-30): default ON — part of the full-bench horizon
-            // bundle (kissat parity: root equivalent-literal substitution always on).
+            // SESSION 14 (2026-07-30): default ON with the percent-scale apply
+            // threshold (SAT_ELS_MIN_SUBST_PERMILLE, main.rs) — the root pass
+            // declines byte-identically below 5% merge mass, so banked cells are
+            // untouched while structural collapses (blockpuzzle/bv_ILA-class)
+            // still fire. Unthresholded root ELS measured NET-NEGATIVE on the
+            // 2026-07-31 full-bench A/B (rerolled oddball-tto_zp x4 etc.).
             els: true,
             congruence: false,
             congruence_xor: false,

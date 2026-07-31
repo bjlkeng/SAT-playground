@@ -3076,6 +3076,18 @@ struct Solver {
     eliminate_resolution_budget: u64,
     /// Mid-giant materialized-resolvent cap for root BVE (0 = off); see config.
     giant_elim_resolvent_budget: u64,
+    /// SAT_ELS_MIN_SUBST_PERMILLE (default 50 = 5%): the ROOT standalone ELS
+    /// pass applies its substitution only when the SCC merge mass reaches this
+    /// permille of live variables; below it the pass DECLINES byte-identically
+    /// (nothing is mutated before the check). SESSION 14: unthresholded root
+    /// ELS rerolled banked armed-class SAT cells (oddball-tto_zp x4 lost in the
+    /// union-bundle A/B; tiny 50-150-var edits = pure trajectory lottery),
+    /// while the structural wins carry percent-scale mass (blockpuzzle 10%,
+    /// bv_ILA 35%). Congruence/sweep/round substitution via try_els are NOT
+    /// gated (els_apply_min_permille stays 0 outside the root call).
+    els_root_min_subst_permille: u64,
+    /// Transient: threshold active for the current try_els call (0 = off).
+    els_apply_min_permille: u64,
     /// max per-polarity occurrences for a BVE candidate (kissat eliminateocclim); zero = unlimited
     eliminate_occurrence_limit: u64,
     /// diagnostic: elimination attempts rejected because resolvent count exceeded occ+grow
@@ -4291,9 +4303,7 @@ impl Solver {
                 .and_then(|s| s.parse().ok())
                 .filter(|&n: &u64| n > 0)
                 .unwrap_or(200_000_000),
-            // SESSION 14 (2026-07-30): default ON — part of the horizon bundle (root
-            // sweep + ELS + probe collapsed Circuit_multiplier24 to 192 s etc.).
-            sweep_root: env_bool_or_default("SAT_SWEEP_ROOT", true),
+            sweep_root: env_bool_or_default("SAT_SWEEP_ROOT", false),
             sweep_subst: env_bool_or_default("SAT_SWEEP_SUBST", false),
             sweep_subst_min_equivs: std::env::var("SAT_SWEEP_SUBST_MIN_EQUIVS")
                 .ok()
@@ -4403,6 +4413,11 @@ impl Solver {
             eliminate_ticks_budget: config.eliminate_ticks_budget,
             eliminate_resolution_budget: config.eliminate_resolution_budget,
             giant_elim_resolvent_budget: config.giant_elim_resolvent_budget,
+            els_root_min_subst_permille: std::env::var("SAT_ELS_MIN_SUBST_PERMILLE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(50),
+            els_apply_min_permille: 0,
             eliminate_occurrence_limit: config.eliminate_occurrence_limit,
             elim_reject_count_bound: 0,
             elim_reject_clslim: 0,
@@ -14933,6 +14948,25 @@ impl Solver {
             }
             return false;
         }
+        if self.els_apply_min_permille != 0 {
+            let live = active[1..].iter().filter(|&&b| b).count() as u64;
+            if (equivalences.len() as u64).saturating_mul(1000)
+                < live.saturating_mul(self.els_apply_min_permille)
+            {
+                // Below percent-scale mass: DECLINE. Nothing has been mutated or
+                // emitted yet, so the declining run is byte-identical to els=off.
+                if debug {
+                    eprintln!(
+                        "c els decline mass={} live={} (< {}permille, {:.4}s)",
+                        equivalences.len(),
+                        live,
+                        self.els_apply_min_permille,
+                        t0.elapsed().as_secs_f64()
+                    );
+                }
+                return false;
+            }
+        }
 
         let repr_of = |lit: i32| -> i32 {
             let var = lit.unsigned_abs() as usize;
@@ -15167,6 +15201,24 @@ impl Solver {
                 );
             }
             return false;
+        }
+        if self.els_apply_min_permille != 0 {
+            let live = active[1..].iter().filter(|&&b| b).count() as u64;
+            if (equivalences.len() as u64).saturating_mul(1000)
+                < live.saturating_mul(self.els_apply_min_permille)
+            {
+                // Below percent-scale mass: DECLINE byte-identically (see inner path).
+                if debug {
+                    eprintln!(
+                        "c els decline mass={} live={} (< {}permille, {:.4}s)",
+                        equivalences.len(),
+                        live,
+                        self.els_apply_min_permille,
+                        t0.elapsed().as_secs_f64()
+                    );
+                }
+                return false;
+            }
         }
 
         let repr_of = |lit: i32| -> i32 {
@@ -17829,8 +17881,16 @@ impl Solver {
         // downstream elimination on gate/equivalence circuit miters. Returns UNSAT (with a
         // drat-verified proof) when a literal is equivalent to its own negation; otherwise
         // it substitutes in place (recording the proof) and search/BVE continue.
-        if config.els && self.try_els(proof_log) {
-            return SolveOutcome::unsat();
+        if config.els {
+            // Root standalone ELS applies only at percent-scale merge mass
+            // (SAT_ELS_MIN_SUBST_PERMILLE); below the threshold it declines
+            // byte-identically. See els_root_min_subst_permille.
+            self.els_apply_min_permille = self.els_root_min_subst_permille;
+            let els_unsat = self.try_els(proof_log);
+            self.els_apply_min_permille = 0;
+            if els_unsat {
+                return SolveOutcome::unsat();
+            }
         }
         solve_checkpoint!("pair_abs_gauss_els");
 
@@ -20808,11 +20868,8 @@ mod tests {
     /// SAT_SWEEP_ROOT off (the default) must be a strict no-op: no stats, no edits.
     #[test]
     fn root_sweep_disabled_is_noop() {
-        // SESSION 14: SAT_SWEEP_ROOT defaults ON (horizon bundle); the noop
-        // contract is now over the explicit off state.
         let mut s = make_solver(3, vec![vec![-1, 2], vec![-2, 1], vec![1, 3]]);
-        assert!(s.sweep_root, "SAT_SWEEP_ROOT defaults on since SESSION 14");
-        s.sweep_root = false;
+        assert!(!s.sweep_root, "SAT_SWEEP_ROOT defaults off (SESSION 14 final shape)");
         let mut proof = ProofLog::disabled();
         assert!(s.try_root_sweep(&mut proof, false));
         assert_eq!(s.stats.sweep_root_envs, 0);
