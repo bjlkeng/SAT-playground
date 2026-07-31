@@ -709,6 +709,11 @@ pub(crate) struct SolverConfig {
     pub(crate) probe_ticks_budget: u64,
     pub(crate) eliminate_ticks_budget: u64,
     pub(crate) eliminate_resolution_budget: u64,
+    /// Mid-giant materialized-resolvent cap for the root BVE pass (SESSION 14).
+    /// 0 = off. Set post-parse in main.rs for 5-20M-var instances (below the
+    /// giant-light floor); not an env-parsed config key — the env override is
+    /// SAT_GIANT_ELIM_RESOLVENTS, read at the main.rs scope decision.
+    pub(crate) giant_elim_resolvent_budget: u64,
     pub(crate) eliminate_occurrence_limit: u64,
     pub(crate) transitive_max_depth: u32,
     pub(crate) transitive_ticks_per_source: u64,
@@ -875,7 +880,9 @@ impl Default for SolverConfig {
 
             inprocess: false,
             vivify: false,
-            probe: false,
+            // SESSION 14 (2026-07-30): default ON — part of the full-bench horizon
+            // bundle (frontier screen: union 12/38 vs base 1/38 at 3600 s).
+            probe: true,
             hbr: false,
             transitive: true,
             forward_subsume: false,
@@ -889,7 +896,9 @@ impl Default for SolverConfig {
             factor: false,
             pair_abs_refute: false,
             php_refute: false,
-            els: false,
+            // SESSION 14 (2026-07-30): default ON — part of the full-bench horizon
+            // bundle (kissat parity: root equivalent-literal substitution always on).
+            els: true,
             congruence: false,
             congruence_xor: false,
             congruence_iter: false,
@@ -901,6 +910,7 @@ impl Default for SolverConfig {
             probe_ticks_budget: 0,
             eliminate_ticks_budget: DEFAULT_ELIMINATE_TICKS_BUDGET,
             eliminate_resolution_budget: DEFAULT_ELIMINATE_RESOLUTION_BUDGET,
+            giant_elim_resolvent_budget: 0,
             eliminate_occurrence_limit: 2000,
             transitive_max_depth: 0,
             transitive_ticks_per_source: 0,

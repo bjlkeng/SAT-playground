@@ -483,7 +483,9 @@ fn test_profile_inprocess_conservative_enables_only_documented_features() {
     assert!(config.inprocess);
     assert_eq!(config.inprocess_interval_conflicts, 1_000_000);
     assert!(config.vivify);
-    assert!(!config.probe);
+    // SESSION 14: SAT_PROBE defaults ON (horizon bundle); the conservative
+    // preprocess axis does not turn it off.
+    assert!(config.probe);
     assert!(!config.hbr);
 }
 

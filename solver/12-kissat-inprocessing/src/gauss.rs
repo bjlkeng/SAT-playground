@@ -455,9 +455,32 @@ fn combine_rows(
     Some((c_vars, a_rhs ^ b_rhs))
 }
 
+/// Work budget for [`min_degree_order`]'s fill-in simulation and for the
+/// elimination's combine loop, in touched row entries. The ordering rebuilds a
+/// degree map over every active row per eliminated variable and materializes
+/// fill-in row sets, which is quadratic-plus on large systems: on
+/// tseitin_d3_n100000 (100k XOR rows, SESSION 14) it spun ~25 minutes and the
+/// densified HashSets then drove RSS past 31 GB — with no wall/limit checks on
+/// the path. Legit fallback consumers (xor_op-class, hundreds of rows) touch a
+/// few million entries end-to-end, so a 100M budget is orders of magnitude
+/// clear of every proof that ever succeeded while bounding the pathological
+/// case to seconds. Overridable via SAT_GAUSS_ORDER_WORK.
+fn gauss_order_work_budget() -> u64 {
+    std::env::var("SAT_GAUSS_ORDER_WORK")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n: &u64| n > 0)
+        .unwrap_or(100_000_000)
+}
+
 /// Greedy min-degree elimination order over the XOR variable/row incidence,
 /// simulating fill-in via symmetric difference. Returns the variable order.
-fn min_degree_order(xors: &[XorConstraint]) -> Vec<u32> {
+/// `work_budget` bounds total touched row entries (degree scans + materialized
+/// fill-in); on exhaustion the order built so far is returned. A partial order
+/// is safe: the elimination that consumes it either still derives the empty
+/// clause (sound — every emitted line is checked DRAT) or fails to complete and
+/// the caller reports "no proof" exactly as for any other incomplete attempt.
+fn min_degree_order(xors: &[XorConstraint], mut work_budget: u64) -> Vec<u32> {
     use std::collections::{HashMap, HashSet};
     let mut rows: Vec<HashSet<u32>> =
         xors.iter().map(|x| x.vars.iter().copied().collect()).collect();
@@ -469,11 +492,14 @@ fn min_degree_order(xors: &[XorConstraint]) -> Vec<u32> {
     let mut order = Vec::new();
     while !all.is_empty() {
         let mut deg: HashMap<u32, usize> = HashMap::new();
+        let mut scanned: u64 = 0;
         for &ri in &active {
+            scanned += rows[ri].len() as u64;
             for &v in &rows[ri] {
                 *deg.entry(v).or_insert(0) += 1;
             }
         }
+        work_budget = work_budget.saturating_sub(scanned);
         if deg.is_empty() {
             break;
         }
@@ -491,6 +517,7 @@ fn min_degree_order(xors: &[XorConstraint]) -> Vec<u32> {
             for &ri in others {
                 let merged: HashSet<u32> =
                     rows[ri].symmetric_difference(&piv_set).copied().collect();
+                work_budget = work_budget.saturating_sub(merged.len() as u64);
                 rows[ri] = merged;
             }
             active.retain(|&ri| ri != piv);
@@ -498,6 +525,9 @@ fn min_degree_order(xors: &[XorConstraint]) -> Vec<u32> {
         all.remove(&v);
         for &ri in &active {
             rows[ri].remove(&v);
+        }
+        if work_budget == 0 {
+            break;
         }
     }
     order
@@ -530,7 +560,14 @@ pub(crate) fn gaussian_unsat_with_proof(
         }
     }
 
-    let order = min_degree_order(xors);
+    let order = min_degree_order(xors, gauss_order_work_budget());
+
+    // Elimination work budget (same scale as the ordering budget): charges the
+    // per-pivot bucket scans plus the 2^(width-1) clause materialization of every
+    // combine, so a large system aborts in bounded time/memory instead of
+    // filling the caller's proof buffer. Legit fallback proofs (xor_op-class)
+    // consume a few million units end-to-end and never trip it.
+    let mut elim_work = gauss_order_work_budget();
 
     // Active rows as (sorted var set, rhs).
     let mut remaining: Vec<(Vec<u32>, bool)> =
@@ -543,6 +580,11 @@ pub(crate) fn gaussian_unsat_with_proof(
             .filter(|(_, (vars, _))| vars.binary_search(&v).is_ok())
             .map(|(i, _)| i)
             .collect();
+        elim_work = elim_work.saturating_sub(remaining.len() as u64);
+        if elim_work == 0 {
+            // Budget exhausted: abandon proof (safe; no UNSAT claim).
+            return false;
+        }
         if bucket.is_empty() {
             continue;
         }
@@ -556,6 +598,11 @@ pub(crate) fn gaussian_unsat_with_proof(
                 // Width guard tripped: abandon proof (safe; no UNSAT claim).
                 return false;
             };
+            elim_work = elim_work
+                .saturating_sub(1u64 << (cvars.len().saturating_sub(1)).min(63));
+            if elim_work == 0 {
+                return false;
+            }
             if cvars.is_empty() {
                 if crhs {
                     empty_found = true;

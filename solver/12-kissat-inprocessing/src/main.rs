@@ -2836,6 +2836,16 @@ struct Solver {
     sweep_completed: u32,
     /// Env SAT_SWEEP_SEED_BUDGET: seeds actually swept per round.
     sweep_seed_budget: usize,
+    /// Env SAT_SWEEP_KITTEN_TICKS: kitten tick budget shared by all environments of one
+    /// inprocessing `sweep_round` invocation. The legacy path gave every kitten call an
+    /// UNLIMITED budget, and one pathological environment (battleship-13-13-unsat,
+    /// SESSION 14) sat in a single exponential kitten solve for the cell's entire
+    /// 3600 s — no wall/limit checks live inside kitten. Healthy rounds measure ~30
+    /// ticks/solve x <=2000 solves x <=512 seeds (~31M worst case), so the 200M default
+    /// is ~6x clear of every observed productive round and behaviorally identical there
+    /// (`prove_facts_budgeted` is decision-identical while the budget never exhausts);
+    /// a stuck environment now costs a bounded few seconds instead of the whole run.
+    sweep_kitten_ticks: u64,
     /// Env SAT_SWEEP_ROOT (default off): run the escalating, tick-budgeted root sweep
     /// pass after the other root passes. See `try_root_sweep`.
     sweep_root: bool,
@@ -3064,6 +3074,8 @@ struct Solver {
     eliminate_ticks_budget: u64,
     /// variable-elimination resolution attempts allowed; zero means unlimited
     eliminate_resolution_budget: u64,
+    /// Mid-giant materialized-resolvent cap for root BVE (0 = off); see config.
+    giant_elim_resolvent_budget: u64,
     /// max per-polarity occurrences for a BVE candidate (kissat eliminateocclim); zero = unlimited
     eliminate_occurrence_limit: u64,
     /// diagnostic: elimination attempts rejected because resolvent count exceeded occ+grow
@@ -4180,7 +4192,11 @@ impl Solver {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(24),
             decision_search_armed: false,
-            reduce_fraction_enabled: env_bool_or_default("SAT_REDUCE_FRACTION", false),
+            // SESSION 14 (2026-07-30): default ON — kissat reduce.c deletion law; the
+            // frontier screen at 3600 s flipped 8-9 kissat-only cells (gto/contest04/
+            // oddball-ttf/battleship 119 s...). Scoping unchanged (>=1.3M conflicts,
+            // never on armed cells), so banked armed cells are untouched by construction.
+            reduce_fraction_enabled: env_bool_or_default("SAT_REDUCE_FRACTION", true),
             reduce_fraction_min_conflicts: std::env::var("SAT_REDUCE_FRACTION_MIN_CONFLICTS")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -4270,7 +4286,14 @@ impl Solver {
                 .and_then(|s| s.parse().ok())
                 .filter(|&n: &usize| n > 0)
                 .unwrap_or(SWEEP_SEED_BUDGET),
-            sweep_root: env_bool_or_default("SAT_SWEEP_ROOT", false),
+            sweep_kitten_ticks: std::env::var("SAT_SWEEP_KITTEN_TICKS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&n: &u64| n > 0)
+                .unwrap_or(200_000_000),
+            // SESSION 14 (2026-07-30): default ON — part of the horizon bundle (root
+            // sweep + ELS + probe collapsed Circuit_multiplier24 to 192 s etc.).
+            sweep_root: env_bool_or_default("SAT_SWEEP_ROOT", true),
             sweep_subst: env_bool_or_default("SAT_SWEEP_SUBST", false),
             sweep_subst_min_equivs: std::env::var("SAT_SWEEP_SUBST_MIN_EQUIVS")
                 .ok()
@@ -4379,6 +4402,7 @@ impl Solver {
             bve_clause_limit: DEFAULT_BVE_CLAUSE_LIMIT,
             eliminate_ticks_budget: config.eliminate_ticks_budget,
             eliminate_resolution_budget: config.eliminate_resolution_budget,
+            giant_elim_resolvent_budget: config.giant_elim_resolvent_budget,
             eliminate_occurrence_limit: config.eliminate_occurrence_limit,
             elim_reject_count_bound: 0,
             elim_reject_clslim: 0,
@@ -11346,7 +11370,7 @@ impl Solver {
     /// Returns false if the formula is proven UNSAT.
     fn sweep_round(&mut self, proof_log: &mut ProofLog) -> bool {
         use crate::sweep::{
-            build_environment, prove_facts, prove_facts_budgeted, SWEEP_DEPTH,
+            build_environment, prove_facts_budgeted, SWEEP_DEPTH,
             SWEEP_MAX_CLAUSES, SWEEP_MAX_VARS,
         };
         if self.current_level() != 0 || self.has_empty_clause || !self.solver_ok {
@@ -11569,12 +11593,23 @@ impl Solver {
             1
         };
         let seed_budget = self.sweep_seed_budget;
+        // Round-wide kitten tick budget (SESSION 14 fix): bounds the pathological
+        // single-environment exponential kitten solve without touching healthy rounds
+        // (budget ~6x above the worst measured productive round; the budgeted core is
+        // decision-identical while it never exhausts).
+        let mut round_kitten_ticks: u64 = self.sweep_kitten_ticks;
         if self.sweep_retire_enabled && self.sweep_done.len() != nvars + 1 {
             self.sweep_done = vec![false; nvars + 1];
         }
         let mut scanned = 0usize;
         while scanned < nvars {
             if seeds_done >= seed_budget {
+                break;
+            }
+            // Kitten tick budget exhausted (facts already proven remain sound; they were
+            // each established by a completed UNSAT call). End the round rather than
+            // paying environment-build cost for solves that can no longer run.
+            if round_kitten_ticks == 0 {
                 break;
             }
             let sv = if use_cursor_start {
@@ -11603,7 +11638,7 @@ impl Solver {
                 sweep_max_vars,
                 sweep_max_clauses,
             );
-            let facts = prove_facts(&mut env, SWEEP_SOLVE_BUDGET);
+            let facts = prove_facts_budgeted(&mut env, SWEEP_SOLVE_BUDGET, &mut round_kitten_ticks);
             seeds_done += 1;
 
             if facts.env_unsat {
@@ -14309,6 +14344,25 @@ impl Solver {
         let mut proof_log = ProofLog::disabled();
         let config = SolverConfig::default();
         self.solve_with_proof(&mut proof_log, &config)
+    }
+
+    /// Test-only: solve under the pre-SESSION-14 default surface (horizon-bundle
+    /// root passes off), for trajectory tests whose subject is CDCL search
+    /// mechanics — root probe/ELS/sweep would otherwise solve their tiny
+    /// formulas before a single conflict happens.
+    #[cfg(test)]
+    fn solve_pre_bundle(&mut self) -> bool {
+        let mut proof_log = ProofLog::disabled();
+        let config = SolverConfig {
+            probe: false,
+            els: false,
+            ..SolverConfig::default()
+        };
+        let saved_sweep_root = self.sweep_root;
+        self.sweep_root = false;
+        let r = self.solve_with_proof(&mut proof_log, &config);
+        self.sweep_root = saved_sweep_root;
+        r
     }
 
     fn solve_to_output(
@@ -18820,6 +18874,12 @@ fn mb_ceil(bytes: u64) -> u64 {
 
 const GIANT_LIGHT_MIN_VARS: usize = 20_000_000;
 const GIANT_LIGHT_MIN_CLAUSES: usize = 50_000_000;
+/// Mid-giant elimination-resolvent scope (SESSION 14): instances above this
+/// many declared variables (but below the giant-light floor) get their root-BVE
+/// MATERIALIZED-resolvent count capped at [`GIANT_ELIM_RESOLVENT_BUDGET`] so
+/// the no-GC-inside-eliminate arena transient stays under the 16 GB `ulimit -v`.
+const GIANT_ELIM_BUDGET_MIN_VARS: usize = 5_000_000;
+const GIANT_ELIM_RESOLVENT_BUDGET: u64 = 50_000_000;
 
 const GIANT_LIGHT_BLOCKING_ENV: &[&str] = &[
     "SAT_PROFILE",
@@ -19144,6 +19204,35 @@ fn main() {
             num_vars, original_clause_count, original_lits_initial
         );
         apply_giant_light_profile(&mut config);
+    } else if num_vars > GIANT_ELIM_BUDGET_MIN_VARS {
+        // Mid-giant RESOLVENT cap (SESSION 14): on 5-20M-var instances the
+        // 100M-attempt root BVE can materialize ~100M resolvents while deleting
+        // ~100M originals with NO garbage collection inside the pass (occurrence
+        // lists hold raw clause ids, so mid-pass GC would dangle them). The arena
+        // doubles into an exactly-8-GiB mapping and peak VmSize hits 17.9 GB on
+        // pj2016_k100 (8.8M vars / 23M clauses) — crossing the 16 GB `ulimit -v`
+        // at t=53 s, before search ever starts (rc-6 abort on the 2026-07-29
+        // full-bench run; kissat solves the same cell SAT in 1568 s in-budget).
+        // The cap counts MATERIALIZED resolvents, not attempts, because attempts
+        // do not separate the classes: the solved 5-20M-var cells
+        // (4/16/18/20.normalised, GP_100 x2, 6s299b685) all exhaust the 100M
+        // attempt budget too, but materialize only 8-33M resolvents (probed
+        // 2026-07-30) — they stay byte-identical under a 50M resolvent cap by
+        // construction, while the OOM class (pj2016 ~100M) is stopped around a
+        // ~12 GB peak. Cells the cap can touch are all currently unsolved
+        // (pj2016/pj2008/oisc x3/nla-digbench). SAT_GIANT_ELIM_RESOLVENTS
+        // overrides (0 = off).
+        let cap: u64 = std::env::var("SAT_GIANT_ELIM_RESOLVENTS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(GIANT_ELIM_RESOLVENT_BUDGET);
+        if cap != 0 {
+            eprintln!(
+                "c giant_elim_resolvent_cap enabled vars={} clauses={} cap={}",
+                num_vars, original_clause_count, cap
+            );
+            config.giant_elim_resolvent_budget = cap;
+        }
     }
     // Phase 1+2 validation hook for the XOR/parity Gaussian engine (bead
     // SAT-playground-qld). Detect-only: extracts XOR constraints and reports whether
@@ -20041,6 +20130,8 @@ mod tests {
         let config = SolverConfig {
             transitive: true,
             probe_inprocess: true,
+            // SESSION 14: probe defaults on; this test isolates the ROUND probe.
+            probe: false,
             ..Default::default()
         };
         assert!(!config.probe, "root SAT_PROBE stays off");
@@ -20102,6 +20193,8 @@ mod tests {
         let config = SolverConfig {
             transitive: true,
             probe_inprocess_gbve: true,
+            // SESSION 14: probe defaults on; this test isolates the ROUND probe.
+            probe: false,
             ..Default::default()
         };
         assert!(!config.probe, "root SAT_PROBE stays off");
@@ -20381,20 +20474,31 @@ mod tests {
         // hook firing during search) must not change the search trajectory at all:
         // identical result AND identical conflict count vs the default-off run.
         let clauses = php_clauses(6, 5);
-        let off = SolverConfig::default();
+        // SESSION 14: pin the horizon-bundle root passes off in BOTH arms — the
+        // test's subject is empty-round neutrality, and the Baseline profile of
+        // the 'on' arm resets bundle flags the default profile now enables.
+        let off = SolverConfig {
+            probe: false,
+            els: false,
+            ..Default::default()
+        };
         let on = SolverConfig {
             profile: SolverProfile::Baseline,
             inprocess: true,
             inprocess_interval_conflicts: 1, // fire at every level-0 visit
+            probe: false,
+            els: false,
             ..Default::default()
         };
         let nvars = 6 * 5;
 
         let mut s_off = make_solver_with_config(nvars, clauses.clone(), &off);
+        s_off.sweep_root = false; // SESSION 14 default; pinned off, see above
         let mut p_off = ProofLog::disabled();
         let r_off = s_off.solve_with_proof(&mut p_off, &off);
 
         let mut s_on = make_solver_with_config(nvars, clauses.clone(), &on);
+        s_on.sweep_root = false; // SESSION 14 default; pinned off, see above
         let mut p_on = ProofLog::disabled();
         let r_on = s_on.solve_with_proof(&mut p_on, &on);
 
@@ -20703,9 +20807,12 @@ mod tests {
 
     /// SAT_SWEEP_ROOT off (the default) must be a strict no-op: no stats, no edits.
     #[test]
-    fn root_sweep_default_off_is_noop() {
+    fn root_sweep_disabled_is_noop() {
+        // SESSION 14: SAT_SWEEP_ROOT defaults ON (horizon bundle); the noop
+        // contract is now over the explicit off state.
         let mut s = make_solver(3, vec![vec![-1, 2], vec![-2, 1], vec![1, 3]]);
-        assert!(!s.sweep_root, "SAT_SWEEP_ROOT must default off");
+        assert!(s.sweep_root, "SAT_SWEEP_ROOT defaults on since SESSION 14");
+        s.sweep_root = false;
         let mut proof = ProofLog::disabled();
         assert!(s.try_root_sweep(&mut proof, false));
         assert_eq!(s.stats.sweep_root_envs, 0);
@@ -21582,9 +21689,12 @@ mod tests {
     }
 
     #[test]
-    fn els_disabled_by_default_does_not_substitute() {
-        let cfg = SolverConfig::default();
-        assert!(!cfg.els);
+    fn els_disabled_does_not_substitute() {
+        // SESSION 14: SAT_ELS defaults ON (horizon bundle); the no-ELS contract
+        // is now over the explicit off state.
+        let mut cfg = SolverConfig::default();
+        assert!(cfg.els, "SAT_ELS defaults on since SESSION 14");
+        cfg.els = false;
         let mut s = make_solver_with_config(5, vec![vec![-1, 2], vec![1, -2], vec![1, 3, 4]], &cfg);
         let mut proof = ProofLog::disabled();
         let _ = s.solve_with_proof(&mut proof, &cfg);
@@ -26574,7 +26684,7 @@ mod tests {
         let clauses = vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]];
         let mut s = make_solver(2, clauses);
         s.use_elim = false;
-        assert!(!s.solve());
+        assert!(!s.solve_pre_bundle());
         assert_eq!(
             s.learned_clause_count(),
             0,
@@ -27069,12 +27179,17 @@ mod tests {
             }
         }
         // Parses the proof as text; pin ASCII DRAT (binary is the default).
+        // SESSION 14: pin the horizon-bundle root passes off — the test's
+        // subject is the chrono-aware analyze walk, which needs real search.
         let config = SolverConfig {
             proof_policy: ProofPolicy::Drat,
+            probe: false,
+            els: false,
             ..chrono_config(0)
         };
         let proof_dir = make_temp_dir("chrono-php-unsat");
         let mut s = make_solver_with_config(pigeons * holes, clauses, &config);
+        s.sweep_root = false; // SESSION 14 default; pinned off, see above
         let outcome = s
             .solve_to_output(proof_dir.to_str().expect("utf8 temp dir"), &config)
             .0;
@@ -27961,7 +28076,7 @@ mod tests {
         let mut s = make_solver(2, clauses);
         s.use_elim = false;
 
-        assert!(!s.solve());
+        assert!(!s.solve_pre_bundle());
         assert!(s.activity[1] > 0.0);
         assert!(s.activity[2] > 0.0);
     }

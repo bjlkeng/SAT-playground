@@ -260,6 +260,16 @@ impl Solver {
             self.note_preprocess_budget_hit(PreprocessBudgetKind::Resolution);
             return false;
         }
+        // Mid-giant resolvent cap (SESSION 14): stop the pass once MATERIALIZED
+        // resolvents cross the cap, bounding the no-GC arena transient on
+        // 5-20M-var formulas (see the scope decision in main.rs). 0 = off; cells
+        // that never reach the cap are byte-identical by construction.
+        if self.giant_elim_resolvent_budget != 0
+            && self.stats.preprocess_resolvents >= self.giant_elim_resolvent_budget
+        {
+            self.note_preprocess_budget_hit(PreprocessBudgetKind::Resolution);
+            return false;
+        }
         if !self.consume_eliminate_tick() {
             return false;
         }
@@ -4335,15 +4345,26 @@ mod tests {
         let run = |ext_on: bool| {
             let config = SolverConfig {
                 full_bsr: false,
+                // SESSION 14: ELS defaults on and would substitute the x≡a
+                // equivalence away before BVE ever sees it, and root probe
+                // seeds construction-time state; pin both off — the test's
+                // subject is EQ-aware BVE.
+                els: false,
+                probe: false,
                 ..SolverConfig::default()
             };
             let mut s = Solver::new_with_config(9, clauses.clone(), &config);
+            // SESSION 14: root sweep defaults on and proves x≡a itself; pin it
+            // off so the equivalence survives for EQ-aware BVE to find.
+            s.sweep_root = false;
             s.elim_gates_ext = ext_on;
             s.inprocess_aggressive = true;
             for var in 2..=9 {
                 s.frozen[var] = true;
             }
-            let sat = s.solve();
+            // solve() would rebuild a default config (ELS back on since
+            // SESSION 14); the pre-bundle helper keeps the root passes off.
+            let sat = s.solve_pre_bundle();
             (s, sat)
         };
 
