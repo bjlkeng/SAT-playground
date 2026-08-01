@@ -1,4 +1,4 @@
-# NEXT PLAN — 2026-07-31 (supersedes 2026-07-30; PRUNED)
+# NEXT PLAN — 2026-08-01 (supersedes 2026-07-31; PRUNED)
 
 One-file plan for the next clear context. SESSIONS 4-13 bodies were pruned
 from this file — their full text lives in git history (`git log -p
@@ -6,8 +6,57 @@ plan/next-plan.md`, revisions up to 52a8f95) and their verdicts survive in
 "Standing traps", "Closed lines", and the memory files. Where this file
 contradicts an older plan revision, THIS file wins.
 
-**START HERE:** read "SESSION 14b" below, then "RANKED PLAN", then
-"Standing traps".
+**START HERE:** read "SESSION 14c" below, then "SESSION 14b", then
+"RANKED PLAN", then "Standing traps".
+
+## SESSION 14c (2026-07-31/08-01) — php-detector coverage: FIVE more first-ever solves, full-bench 271 → 277/400 (confirmation run, verify_fail=0, ZERO losses); inductive PHP proof engine lands
+
+Confirmation run `log/seedgate-s14c-confirm-2026-08-01-00-07-44/results.tsv`:
+**277/400 solved, verify ok=274 / checker-timeout=3 / FAIL=0; +6 vs the
+271 baseline (5 php first-evers + lockchart-L210's returning wall coin),
+LOST 0. solver12-only vs kissat now 37 cells; gap 277 v 296 = −19.**
+
+The five new cells — cliquecoloring_n14_k7_c6, clqcl_30_9_8,
+clqcl_30_11_10, harder-fphp-016-015, rphp_p25_r25 — are all both-timeout
+hard-core cells NOBODY solves at 3600 s; each now refutes in <=0.3 s with
+a drat-trim-VERIFIED ER counting proof (verify 0.2 s - 2744 s, all inside
+the 7200 s in-gate budget). Mechanisms (commit 6d4b7cc):
+
+1. **Inductive PHP proof engine (`php.rs inductive_blocks`)** — Cook's
+   PHP(k)->PHP(k-1) ER reduction closes the counting core in ~3/4·H^4
+   lines where the old DFS closer is factorial (~e·H!): clqcl_30_11_10's
+   proof fell 10.39M -> 534k lines and its drat-trim time 4044 s -> 16 s.
+   DFS kept for H<=8 so every banked family proof is byte-identical;
+   relay path switches closer at H>8; direct path always inductive. The
+   6-lemma AMO helper chain makes every line single-pass RUP; fresh
+   AND/OR definition vars are RAT with pivot first.
+2. **Direct-php detection** (harder-fphp class): P var-disjoint covers
+   whose columns form verified per-hole AMO cliques with P > H — the
+   covers+cliques ARE the counting core; no W/G layer (it collapses to
+   the pigeon literals).
+3. **Longest-class partition by AMO-connectivity voting w/ seed retry**
+   (rphp_p25_r25: N==H+1 makes the used->hole covers the SAME length as
+   pigeon covers, and both kinds are var-disjoint so var-sharing cannot
+   split them; a shuffle can put a hole cover first, hence seed retry).
+4. **Parse-time structure stash** (cliquecoloring_n14_k7_c6): parser
+   normalization strengthens one cover 14->13, breaking the solve-time
+   histogram precheck; detection now runs once on the pristine parse and
+   the stashed structure is emitted against the original axioms (valid:
+   solver-side strengthening only subsumes them).
+5. Precheck widened (covers 3..=60, second <=12; bench scan: +2
+   non-family cells pay one declining exact scan), estimator now models
+   both closers, proof-line cap 5M -> 8M (RAT-scan-law-safe: php var
+   spaces are n188-scale). SAT_DEBUG_PHP decline tracing throughout.
+
+Also measured: **SAT_SWEEP_SUBST=on flips 0/6 miters+uniqinv at 3600 s
+idle — the miter family needs a new mechanism, not the substitution
+flag (arc stays closed).** rook-52/56 + mchess decode: rook52 has 52
+len-52 covers but P==H (not a counting core; hardness is in 421k aux
+ternaries), rook56/mchess use ladder AMO encodings — a ladder-aware
+counting detector is a possible future arc, distinct from php.rs.
+Validation: 749 tests (+9 php: direct/collision/inductive shapes,
+plain+shuffled, drat-trim end-to-end), smoke 9/9, rbsat/MVRR
+fingerprints digit-exact, 9-cell family regression all VERIFIED.
 
 ## SESSION 14b (2026-07-31) — FULL-BENCH PROMOTION: 261 → 271/400 at 3600 s (gate WIN +10); three first-ever solves; two runaway-pass bugs fixed; root-pass scoping law confirmed out-of-sample
 
@@ -143,13 +192,13 @@ kissat run joined with A/B2 cand):
 
 ## RANKED PLAN (2026-07-31)
 
-1. **php/counting-detector coverage pass (cheapest capability, proven
-   SESSION-11 shape, zero reroll risk).** Decode why these both-timeout
-   cells decline: cliquecoloring_n14_k7_c6 (n15/n26 siblings FIRE),
-   clqcl_30_9_8, clqcl_30_11_10 (k=9/11 — check the 3-7-longest-covers
-   precheck and slot generalization), harder-fphp-016-015 (direct php
-   shape), rphp_p25_r25 (check P>H holds first). Nobody solves any at
-   3600 s. Expected +2-4 full-bench; medium byte-identical.
+1. **DONE (SESSION 14c, +5):** php-detector coverage — all five
+   near-misses now solve with verified proofs. Remaining detector leads:
+   (a) ladder/commander-encoded AMO counting cores (rook-56, mchess_20 —
+   needs chain tracing, a genuinely new detector); (b) larger clqcl/rphp
+   members now reachable thanks to the inductive closer if new suites
+   arrive (H up to ~40 is proof-size-viable; verify cost scales as
+   defs x maxVar per the RAT-scan law).
 2. **Multiplier-miter mechanism hunt (the #1 family, 10-14 cells).**
    Offline first: decompose WHERE kissat's 6.2M-conflict refutation
    beats our >20M (tier limits? vivify quality? reduce law interplay
