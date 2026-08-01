@@ -49,6 +49,12 @@ pub(crate) struct PhpStructure {
     /// `hole[r][h]`: literal "place r maps to hole h" (N x H, hole-aligned
     /// across places).
     pub(crate) hole: Vec<Vec<i32>>,
+    /// Direct pigeonhole (SESSION 14c): `a[p][h]` maps pigeons straight to
+    /// holes — no relay/place layer. `hole` is empty; holes() = places() =
+    /// the cover width. Refutation runs the inductive reduction directly on
+    /// the `a` literals (the formula's own covers + AMO cliques are the
+    /// level-H axioms).
+    pub(crate) direct: bool,
 }
 
 impl PhpStructure {
@@ -56,10 +62,18 @@ impl PhpStructure {
         self.a.len()
     }
     pub(crate) fn places(&self) -> usize {
-        self.hole.len()
+        if self.direct {
+            self.a.first().map_or(0, |r| r.len())
+        } else {
+            self.hole.len()
+        }
     }
     pub(crate) fn holes(&self) -> usize {
-        self.hole.first().map_or(0, |h| h.len())
+        if self.direct {
+            self.a.first().map_or(0, |r| r.len())
+        } else {
+            self.hole.first().map_or(0, |h| h.len())
+        }
     }
 }
 
@@ -94,7 +108,16 @@ pub(crate) fn histogram_precheck(lengths: impl Iterator<Item = usize>) -> bool {
             second = len;
         }
     }
-    lmax >= MIN_PLACES && (3..=7).contains(&lmax_count) && second <= 8
+    // SESSION 14c: cover count widened 7 -> 60 (clqcl_30_9_8/11_10 have 9/11
+    // slot covers; harder-fphp-016-015 has 16 direct covers; rphp_p25_r25 has
+    // 25 pigeon + 25 hole covers at the SAME length because N == H+1) and the
+    // second-longest cap 8 -> 12 (the unconditional c-color covers reach
+    // length c). Selectivity guard: the second-longest class must still sit
+    // strictly below the covers; detection stays all-or-nothing exact
+    // regardless (bench scan 2026-07-31: the widened precheck admits the 15
+    // family cells plus 3 non-family cells, which pay one declining exact
+    // scan each).
+    lmax >= MIN_PLACES && (3..=60).contains(&lmax_count) && second <= 12
 }
 
 /// Parse-time probe: does this formula carry a refutable pigeonhole structure?
@@ -103,6 +126,14 @@ pub(crate) fn histogram_precheck(lengths: impl Iterator<Item = usize>) -> bool {
 /// solve-time refutation).
 pub(crate) fn formula_matches(clauses: &[Vec<i32>]) -> bool {
     histogram_precheck(clauses.iter().map(Vec::len)) && detect(clauses, MIN_PLACES).is_some()
+}
+
+/// SAT_DEBUG_PHP=1: decline-point tracing for the detector (one-shot pass,
+/// env check per call is fine). Used to decode near-miss family members.
+fn php_dbg(msg: &str) {
+    if std::env::var("SAT_DEBUG_PHP").is_ok() {
+        eprintln!("c php_dbg {msg}");
+    }
 }
 
 fn sorted_clause(lits: &[i32]) -> Vec<i32> {
@@ -172,31 +203,120 @@ pub(crate) fn detect(clauses: &[Vec<i32>], min_places: usize) -> Option<PhpStruc
         .filter(|&l| l < lmax)
         .max()
         .unwrap_or(0);
-    let p_total = long_idx.len();
-    if lmax < min_places || !(3..=7).contains(&p_total) || second > 8 || lmax <= second {
+    if lmax < min_places || !(3..=60).contains(&long_idx.len()) || second > 12 || lmax <= second {
+        php_dbg(&format!(
+            "decline long-select lmax={lmax} count={} second={second}",
+            long_idx.len()
+        ));
         return None;
     }
 
-    // Pigeon literals: `a_info[lit] = (pigeon, position)`. All long-clause
-    // variables must be distinct (no var reuse across or within pigeons).
-    let mut a_info: HashMap<i32, (usize, usize)> = HashMap::new();
-    let mut a_vars: HashSet<i32> = HashSet::new();
-    let pigeon_clauses: Vec<&Vec<i32>> = long_idx.iter().map(|&i| &uniq[i]).collect();
-    for (p, c) in pigeon_clauses.iter().enumerate() {
-        for (pos, &l) in c.iter().enumerate() {
-            if !a_vars.insert(l.abs()) {
-                return None;
+    // Partition the longest class (SESSION 14c): when N == H+1 the rphp
+    // used->hole covers ({-s} ∪ per-place holes, length H+1) collide with the
+    // pigeon covers (length N) — rphp_p25_r25 — and BOTH kinds are
+    // var-disjoint, so var-sharing cannot separate them. The working oracle
+    // is AMO-connectivity: with the first longest clause as the seed cover,
+    // a longest clause is a pigeon cover iff EVERY seed literal has an
+    // at-most-one binary partner inside it (pigeon covers are pairwise fully
+    // AMO-linked place by place; a hole cover is reachable from at most one
+    // seed literal via its {-a, s} binary). Families whose longest class is
+    // pure pigeon covers partition to the identity.
+    let index_all = ClauseIndex::new(&uniq);
+    // A shuffled instance can put a HOLE cover first in the longest class, so
+    // the partition retries every longest clause as the seed until one yields
+    // a detecting pigeon set. Bounded (<=60 seeds, exact scans each) and
+    // deterministic; families whose first seed works behave as before.
+    for (seed_no, &seed) in long_idx.iter().enumerate() {
+        let mut pigeon_idx: Vec<usize> = vec![seed];
+        for &i in &long_idx {
+            if i == seed {
+                continue;
             }
-            a_info.insert(l, (p, pos));
+            let fully_linked = uniq[seed].iter().all(|&l0| {
+                uniq[i]
+                    .iter()
+                    .any(|&l| l != l0 && index_all.contains(&[-l0, -l]))
+            });
+            if fully_linked {
+                pigeon_idx.push(i);
+            }
+        }
+        let p_total = pigeon_idx.len();
+        if !(3..=60).contains(&p_total) {
+            continue;
+        }
+        // Pigeon literals: `a_info[lit] = (pigeon, position)`. All pigeon-cover
+        // variables must be distinct (no var reuse across or within pigeons).
+        let mut a_info: HashMap<i32, (usize, usize)> = HashMap::new();
+        let mut a_vars: HashSet<i32> = HashSet::new();
+        let mut reuse = false;
+        let pigeon_clauses: Vec<&Vec<i32>> = pigeon_idx.iter().map(|&i| &uniq[i]).collect();
+        'build: for (p, c) in pigeon_clauses.iter().enumerate() {
+            for (pos, &l) in c.iter().enumerate() {
+                if !a_vars.insert(l.abs()) {
+                    reuse = true;
+                    break 'build;
+                }
+                a_info.insert(l, (p, pos));
+            }
+        }
+        if reuse {
+            continue;
+        }
+        if let Some(st) = detect_with_pigeons(&uniq, &index_all, &pigeon_clauses, &a_info, &a_vars)
+        {
+            if seed_no > 0 {
+                php_dbg(&format!("partition succeeded at seed {seed_no}"));
+            }
+            return Some(st);
         }
     }
+    php_dbg("decline all-seeds");
+    None
+}
 
-    let index = ClauseIndex::new(&uniq);
-    let cliques = place_cliques(&index, &pigeon_clauses, &a_info)?;
-    if let Some(s) = detect_rphp(&index, &pigeon_clauses, &a_info, &a_vars, &cliques) {
+/// Detection past the pigeon-cover partition: place cliques, then the three
+/// shape detectors in order (relay rphp, clique-coloring, direct php).
+fn detect_with_pigeons(
+    uniq: &[Vec<i32>],
+    index: &ClauseIndex,
+    pigeon_clauses: &[&Vec<i32>],
+    a_info: &HashMap<i32, (usize, usize)>,
+    a_vars: &HashSet<i32>,
+) -> Option<PhpStructure> {
+    let _ = uniq;
+    let p_total = pigeon_clauses.len();
+    let Some(cliques) = place_cliques(index, pigeon_clauses, a_info) else {
+        php_dbg("decline place_cliques");
+        return None;
+    };
+    if let Some(s) = detect_rphp(index, pigeon_clauses, a_info, a_vars, &cliques) {
         return Some(s);
     }
-    detect_clqcl(&index, &pigeon_clauses, &a_vars, &cliques)
+    php_dbg("rphp declined; trying clqcl");
+    if let Some(st) = detect_clqcl(index, pigeon_clauses, a_vars, &cliques) {
+        return Some(st);
+    }
+    php_dbg("clqcl declined; trying direct");
+    // Direct pigeonhole (SESSION 14c, harder-fphp-016-015 class): P pigeon
+    // covers over P x N pairwise-distinct variables whose columns form
+    // verified per-hole AMO cliques (place_cliques above), with more pigeons
+    // than holes. The covers + cliques ARE the counting core; extra clauses
+    // only strengthen the formula, so P > N alone certifies UNSAT.
+    let n = cliques.len();
+    if p_total > n && n >= 2 {
+        php_dbg(&format!("direct php matched pigeons={p_total} holes={n}"));
+        let a: Vec<Vec<i32>> = (0..p_total)
+            .map(|p| (0..n).map(|r| cliques[r][p]).collect())
+            .collect();
+        return Some(PhpStructure {
+            a,
+            hole: Vec::new(),
+            direct: true,
+        });
+    }
+    php_dbg("decline direct");
+    None
 }
 
 /// Group the pigeon literals into N place cliques of size P: pigeon 0's r-th
@@ -233,15 +353,35 @@ fn place_cliques(
                 match partner[p2] {
                     None => partner[p2] = Some(-other),
                     Some(existing) if existing == -other => {}
-                    Some(_) => return None, // ambiguous partner
+                    Some(existing) => {
+                        php_dbg(&format!(
+                            "place_cliques ambiguous lit0={lit0} p2={p2} existing={existing} new={}",
+                            -other
+                        ));
+                        return None; // ambiguous partner
+                    }
                 }
             }
         }
-        let clique: Vec<i32> = (0..p_total).map(|p| partner[p]).collect::<Option<_>>()?;
+        let clique: Vec<i32> = match (0..p_total).map(|p| partner[p]).collect::<Option<_>>() {
+            Some(c) => c,
+            None => {
+                let missing: Vec<usize> =
+                    (0..p_total).filter(|&p| partner[p].is_none()).collect();
+                php_dbg(&format!(
+                    "place_cliques missing-partner lit0={lit0} missing={missing:?}"
+                ));
+                return None;
+            }
+        };
         // Full pairwise clique of at-most-one binaries.
         for i in 0..p_total {
             for j in (i + 1)..p_total {
                 if !index.contains(&[-clique[i], -clique[j]]) {
+                    php_dbg(&format!(
+                        "place_cliques missing-amo {} {}",
+                        clique[i], clique[j]
+                    ));
                     return None;
                 }
             }
@@ -394,7 +534,7 @@ fn detect_rphp(
     let a: Vec<Vec<i32>> = (0..p_total)
         .map(|p| (0..n).map(|r| cliques[r][p]).collect())
         .collect();
-    Some(PhpStructure { a, hole })
+    Some(PhpStructure { a, hole, direct: false })
 }
 
 /// Clique-coloring shape: chosen vertices force edge literals via ternary
@@ -592,7 +732,7 @@ fn detect_clqcl(
     let a: Vec<Vec<i32>> = (0..p_total)
         .map(|p| (0..n).map(|r| cliques[r][p]).collect())
         .collect();
-    Some(PhpStructure { a, hole })
+    Some(PhpStructure { a, hole, direct: false })
 }
 
 /// Collapse union-find classes over the (place, position) hole grid into an
@@ -662,12 +802,44 @@ impl UnionFind {
 }
 
 /// Upper bound on emitted proof lines, for the checker-size guard.
+/// Closing-stage line count: factorial DFS for H <= 8 (byte-identical proofs
+/// for the banked family cells), polynomial inductive reduction above (the
+/// missing factorial term let the 5M cap silently under-gate: H=10 measured
+/// 10,389,802 DFS lines on clqcl_30_11_10, SESSION 14c).
+fn closing_lines(h: u64) -> u64 {
+    if h <= 8 {
+        let mut dfs: u64 = 0;
+        let mut falling: u64 = 1;
+        for k in 0..h {
+            falling = falling.saturating_mul(h - k);
+            dfs = dfs.saturating_add(falling);
+        }
+        dfs
+    } else {
+        let mut total: u64 = 1; // the final empty clause
+        let mut k = h;
+        while k >= 2 {
+            let pairs = k * (k - 1) / 2;
+            total = total
+                .saturating_add(6 * k * (k - 1)) // t/b definitions
+                .saturating_add(k) // reduced covers
+                .saturating_add(6 * pairs * (k - 1)); // AMO helper chain
+            k -= 1;
+        }
+        total
+    }
+}
+
 pub(crate) fn estimated_proof_lines(s: &PhpStructure) -> u64 {
     let h = s.holes() as u64;
     let n = s.places() as u64;
     let pp = (h + 1).min(s.pigeons() as u64);
     let pairs = pp * (pp - 1) / 2;
+    if s.direct {
+        return closing_lines(h) + 4096;
+    }
     3 * pp * n * h + pp * h * (n + 1) + h * pairs * n * n + h * pairs * n + h * pairs + pp * (n + 1)
+        + closing_lines(h)
         + 4096
 }
 
@@ -680,6 +852,13 @@ pub(crate) fn refute_with_proof(s: &PhpStructure, num_vars: usize, emit: &mut dy
     let pp = (h + 1).min(s.pigeons());
     debug_assert!(s.pigeons() > h && pp == h + 1);
     let base = num_vars as i32;
+    if s.direct {
+        // Direct pigeonhole: the formula's own covers and per-hole AMO
+        // cliques ARE the level-H axioms; no W/G layer is needed. Run the
+        // inductive reduction straight on the pigeon literals.
+        inductive_blocks(&|p, hh| s.a[p][hh], h, base, emit);
+        return;
+    }
     let w = |p: usize, r: usize, hh: usize| -> i32 { base + 1 + ((p * n + r) * h + hh) as i32 };
     let g = |p: usize, hh: usize| -> i32 { base + 1 + (pp * n * h) as i32 + (p * h + hh) as i32 };
 
@@ -762,12 +941,116 @@ pub(crate) fn refute_with_proof(s: &PhpStructure, num_vars: usize, emit: &mut dy
         let c: Vec<i32> = (0..h).map(|hh| g(p, hh)).collect();
         emit(&c);
     }
-    // Injective-assignment DFS over the G matrix, post-order, ending with the
-    // empty clause. Block(sigma) is RUP: extension blocks and L3 binaries
-    // falsify all of pigeon |sigma|'s L5 cover.
-    let mut sigma: Vec<usize> = Vec::with_capacity(h);
-    let mut used = vec![false; h];
-    dfs_blocks(&g, h, &mut sigma, &mut used, emit);
+    // Close the counting core over the G matrix. The DFS scheme emits one
+    // block per injective-assignment prefix (~e * H! lines) — fine up to
+    // H ~ 8, infeasible beyond (H=10 measured 10.39M lines on
+    // clqcl_30_11_10). Larger H uses the polynomial inductive
+    // PHP(k) -> PHP(k-1) reduction (~3/4 * H^4 lines). Small H keeps the
+    // DFS so every previously-banked family cell's proof stays
+    // byte-identical.
+    if h <= 8 {
+        let mut sigma: Vec<usize> = Vec::with_capacity(h);
+        let mut used = vec![false; h];
+        dfs_blocks(&g, h, &mut sigma, &mut used, emit);
+    } else {
+        let fresh_base = base + (pp * n * h) as i32 + (pp * h) as i32;
+        inductive_blocks(&|p, hh| g(p, hh), h, fresh_base, emit);
+    }
+}
+
+/// Polynomial closure of the pigeonhole counting core (SESSION 14c): given
+/// level-H literals `cur[p][h]` (p in 0..=H, h in 0..H) whose covers
+/// `OR_h cur[p][h]` and per-hole at-most-one binaries `{-cur[p1][h],
+/// -cur[p2][h]}` are already present (as axioms for the direct shape, as
+/// L3/L5 lemmas for the relay shape), emit Cook's inductive reduction
+/// PHP(k) -> PHP(k-1) down to the empty clause. Every line is RAT (fresh
+/// definition vars, pivot first) or RUP in a single unit-propagation pass:
+///
+///   b[p][h] := cur[p][h] OR (cur[p][last_h] AND cur[last_p][h])
+///
+/// with per-level derived covers and AMOs; the AMO derivation goes through
+/// the 6-lemma helper chain (t/cur cross pairs, then cur-vs-b, t-vs-b,
+/// b-vs-b), each step RUP against the previous ones plus the level-k
+/// axioms. Terminates at k=1: two unit covers + one AMO binary -> empty.
+fn inductive_blocks(
+    cur0: &dyn Fn(usize, usize) -> i32,
+    h: usize,
+    fresh_base: i32,
+    emit: &mut dyn FnMut(&[i32]),
+) {
+    // cur[p][hh] literal matrix for the current level (k holes, k+1 pigeons).
+    let mut cur: Vec<Vec<i32>> = (0..=h)
+        .map(|p| (0..h).map(|hh| cur0(p, hh)).collect())
+        .collect();
+    let mut fresh = fresh_base;
+    let mut k = h;
+    while k >= 2 {
+        let last_p = k; // pigeon index dropped by this reduction
+        let last_h = k - 1; // hole index dropped by this reduction
+        // Fresh t/b per surviving (pigeon, hole) cell.
+        let mut t = vec![vec![0i32; last_h]; k];
+        let mut b = vec![vec![0i32; last_h]; k];
+        for (p, tp) in t.iter_mut().enumerate() {
+            for (hh, tv) in tp.iter_mut().enumerate() {
+                fresh += 1;
+                *tv = fresh;
+                let x = cur[p][last_h];
+                let y = cur[last_p][hh];
+                // t <-> x & y (RAT on t, pivot first).
+                emit(&[*tv, -x, -y]);
+                emit(&[-*tv, x]);
+                emit(&[-*tv, y]);
+            }
+        }
+        for (p, bp) in b.iter_mut().enumerate() {
+            for (hh, bv) in bp.iter_mut().enumerate() {
+                fresh += 1;
+                *bv = fresh;
+                // b <-> cur[p][hh] | t[p][hh] (RAT on b, pivot first).
+                emit(&[*bv, -cur[p][hh]]);
+                emit(&[*bv, -t[p][hh]]);
+                emit(&[-*bv, cur[p][hh], t[p][hh]]);
+            }
+        }
+        // Reduced covers: OR_hh b[p][hh] (RUP: b-defs force -cur/-t, the
+        // level cover forces cur[p][last_h], the t-defs then force
+        // -cur[last_p][hh] for all hh, last_p's cover forces
+        // cur[last_p][last_h], and the last_h-column AMO closes it).
+        for (p, bp) in b.iter().enumerate() {
+            let cover: Vec<i32> = bp.clone();
+            let _ = p;
+            emit(&cover);
+        }
+        // Reduced AMOs via the helper chain, per hole and pigeon pair.
+        for hh in 0..last_h {
+            for p1 in 0..k {
+                for p2 in (p1 + 1)..k {
+                    // (ii) cur1 vs t2: t2 -> cur[p2][last_h] & cur[last_p][hh];
+                    //      cur1 + column-hh AMO vs last_p closes.
+                    emit(&[-cur[p1][hh], -t[p2][hh]]);
+                    // (iii) symmetric.
+                    emit(&[-t[p1][hh], -cur[p2][hh]]);
+                    // (iv) t1 vs t2 via the last_h column AMO.
+                    emit(&[-t[p1][hh], -t[p2][hh]]);
+                    // (v) cur1 vs b2: level AMO gives -cur2, b2-def forces t2,
+                    //     then (t2 ->) cur[last_p][hh] conflicts with cur1.
+                    emit(&[-cur[p1][hh], -b[p2][hh]]);
+                    // (vi) t1 vs b2: t1 forces cur[p1][last_h] + cur[last_p][hh],
+                    //      column AMO gives -cur2, b2-def forces t2 ->
+                    //      cur[p2][last_h], last_h column AMO closes.
+                    emit(&[-t[p1][hh], -b[p2][hh]]);
+                    // (vii) b1 vs b2 via (v) and (vi).
+                    emit(&[-b[p1][hh], -b[p2][hh]]);
+                }
+            }
+        }
+        // Descend: the b matrix is the next level's cur (k-1 holes, k pigeons).
+        cur = b;
+        k -= 1;
+    }
+    // k == 1: covers are the units cur[0][0], cur[1][0]; with the AMO
+    // binary the empty clause is RUP.
+    emit(&[]);
 }
 
 fn dfs_blocks(
@@ -1109,6 +1392,91 @@ mod tests {
     fn extra_pigeons_still_refute() {
         // Six pigeons into three holes: proof uses only the first four.
         check_full_proof(&build_rphp(6, 7, 3));
+    }
+
+    /// Direct pigeonhole (SESSION 14c, harder-fphp class): p pigeons straight
+    /// into h holes, per-hole AMO across pigeons plus per-pigeon AMO (the
+    /// "functional" extras fphp carries; they must not confuse detection).
+    fn build_direct_php(p: usize, h: usize) -> Vec<Vec<i32>> {
+        let x = |pi: usize, hh: usize| (pi * h + hh + 1) as i32;
+        let mut cls: Vec<Vec<i32>> = Vec::new();
+        for pi in 0..p {
+            cls.push((0..h).map(|hh| x(pi, hh)).collect());
+        }
+        for hh in 0..h {
+            for p1 in 0..p {
+                for p2 in (p1 + 1)..p {
+                    cls.push(vec![-x(p1, hh), -x(p2, hh)]);
+                }
+            }
+        }
+        for pi in 0..p {
+            for h1 in 0..h {
+                for h2 in (h1 + 1)..h {
+                    cls.push(vec![-x(pi, h1), -x(pi, h2)]);
+                }
+            }
+        }
+        cls
+    }
+
+    #[test]
+    fn detects_direct_php_plain() {
+        let s = detect(&build_direct_php(5, 4), 4).expect("direct php detected");
+        assert!(s.direct);
+        assert_eq!((s.pigeons(), s.places(), s.holes()), (5, 4, 4));
+    }
+
+    #[test]
+    fn detects_direct_php_shuffled_and_flipped() {
+        let cls = shuffle_flip(&build_direct_php(5, 4), 0xd1ec7);
+        let s = detect(&cls, 4).expect("shuffled direct php detected");
+        assert!(s.direct);
+        assert_eq!((s.pigeons(), s.places(), s.holes()), (5, 4, 4));
+    }
+
+    #[test]
+    fn direct_php_proof_is_valid_drat() {
+        check_full_proof(&build_direct_php(5, 4));
+    }
+
+    #[test]
+    fn direct_php_shuffled_proof_is_valid_drat() {
+        check_full_proof(&shuffle_flip(&build_direct_php(5, 4), 0xfab));
+    }
+
+    /// N == H+1 collision (rphp_p25_r25 class): the used->hole covers have
+    /// the SAME length as the pigeon covers, so detection must partition the
+    /// longest class by AMO connectivity before building the pigeon set.
+    #[test]
+    fn detects_rphp_hole_cover_length_collision() {
+        let cls = build_rphp(4, 4, 3);
+        let s = detect(&cls, 4).expect("collision rphp detected");
+        assert!(!s.direct);
+        assert_eq!((s.pigeons(), s.places(), s.holes()), (4, 4, 3));
+    }
+
+    #[test]
+    fn rphp_hole_cover_collision_proof_is_valid_drat() {
+        check_full_proof(&build_rphp(4, 4, 3));
+    }
+
+    #[test]
+    fn rphp_hole_cover_collision_shuffled_proof_is_valid_drat() {
+        check_full_proof(&shuffle_flip(&build_rphp(4, 4, 3), 0xc0de));
+    }
+
+    /// H > 8 routes the closing stage through the polynomial inductive
+    /// reduction instead of the factorial DFS (SESSION 14c); both the relay
+    /// and direct shapes must stay drat-trim-valid there.
+    #[test]
+    fn inductive_relay_proof_is_valid_drat() {
+        check_full_proof(&build_rphp(11, 12, 10));
+    }
+
+    #[test]
+    fn inductive_direct_proof_is_valid_drat() {
+        check_full_proof(&build_direct_php(11, 10));
     }
 
     /// End-to-end drat-trim verification when the checker binary is present

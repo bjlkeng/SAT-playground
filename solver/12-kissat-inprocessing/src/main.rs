@@ -3088,6 +3088,10 @@ struct Solver {
     els_root_min_subst_permille: u64,
     /// Transient: threshold active for the current try_els call (0 = off).
     els_apply_min_permille: u64,
+    /// Pigeonhole structure detected on the PRISTINE parsed formula (SESSION
+    /// 14c): parse normalization can strengthen a cover and hide the shape
+    /// from the solve-time re-detection, so try_php_refute prefers this.
+    php_parse_structure: Option<php::PhpStructure>,
     /// max per-polarity occurrences for a BVE candidate (kissat eliminateocclim); zero = unlimited
     eliminate_occurrence_limit: u64,
     /// diagnostic: elimination attempts rejected because resolvent count exceeded occ+grow
@@ -4418,6 +4422,7 @@ impl Solver {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(50),
             els_apply_min_permille: 0,
+            php_parse_structure: None,
             eliminate_occurrence_limit: config.eliminate_occurrence_limit,
             elim_reject_count_bound: 0,
             elim_reject_clslim: 0,
@@ -14606,6 +14611,9 @@ impl Solver {
             return false;
         }
         let t0 = Instant::now();
+        if let Some(structure) = self.php_parse_structure.take() {
+            return self.php_emit_refutation(structure, proof_log, t0);
+        }
         // Histogram precheck without gathering (shared shape filter): exits in
         // one cheap length pass on ordinary formulas.
         let live_lens = self
@@ -14615,6 +14623,15 @@ impl Solver {
             .filter(|&cid| cid < self.arena.len() && !self.clause_is_deleted(cid))
             .map(|cid| self.clause_slice(cid).len());
         if !php::histogram_precheck(live_lens) {
+            if std::env::var("SAT_DEBUG_PHP").is_ok() {
+                let mut hist: std::collections::BTreeMap<usize, usize> = Default::default();
+                for cid in self.original_clause_ids.iter().map(|&c| c as usize) {
+                    if cid < self.arena.len() && !self.clause_is_deleted(cid) {
+                        *hist.entry(self.clause_len(cid)).or_default() += 1;
+                    }
+                }
+                eprintln!("c php_refute decline live-histogram {hist:?}");
+            }
             return false;
         }
         let clauses: Vec<Vec<i32>> = self
@@ -14634,9 +14651,34 @@ impl Solver {
             }
             return false;
         };
+        self.php_emit_refutation(structure, proof_log, t0)
+    }
+
+    /// Emit the pigeonhole ER refutation for a detected structure (shared by
+    /// the parse-time stash path and the solve-time re-detection path).
+    fn php_emit_refutation(
+        &mut self,
+        structure: php::PhpStructure,
+        proof_log: &mut ProofLog,
+        t0: Instant,
+    ) -> bool {
         // Keep the emitted proof well inside drat-trim's practical range.
-        const PHP_MAX_PROOF_LINES: u64 = 5_000_000;
+        // SESSION 14c: 5M -> 8M. The php family's variable spaces are tiny, so
+        // by the RAT-scan law (verify cost ~ defs x maxVar) an 8M-lemma php
+        // proof sits at n188-scale (4.71M lemmas VERIFIED in 187 s);
+        // rphp_p25_r25's relay proof is ~5.3M lines and was clipped by the old
+        // cap. Grid-scale var spaces never reach here (detection bounds).
+        const PHP_MAX_PROOF_LINES: u64 = 8_000_000;
         if php::estimated_proof_lines(&structure) > PHP_MAX_PROOF_LINES {
+            if std::env::var("SAT_DEBUG_PHP").is_ok() {
+                eprintln!(
+                    "c php_refute decline proof-size est={} pigeons={} places={} holes={}",
+                    php::estimated_proof_lines(&structure),
+                    structure.pigeons(),
+                    structure.places(),
+                    structure.holes()
+                );
+            }
             return false;
         }
         let num_vars = self.assignment.len().saturating_sub(1);
@@ -19422,12 +19464,26 @@ fn main() {
     // holding factoring off them is strictly sound; non-matching formulas pay
     // one histogram pass (and detection only when that passes) and behave
     // byte-identically.
-    let mut php_structure_present = false;
-    if config.php_refute && config.factor && num_vars <= factor::FACTOR_MAX_VARS {
+    // SESSION 14c: detect ONCE on the pristine parsed formula and STASH the
+    // structure. Parse-time normalization can strengthen a pigeon cover (a
+    // root unit falsifying one literal shrinks it 14->13 on
+    // cliquecoloring_n14_k7_c6), which breaks the solve-time histogram
+    // precheck (second-longest 13 > 8) even though the structure was
+    // detectable — the cell then times out instead of refuting in
+    // milliseconds. The stashed structure is emitted against the ORIGINAL
+    // axioms, which drat-trim checks verbatim from the input file, and any
+    // solver-side strengthening only subsumes those axioms, so the proof
+    // stays valid. Detection is no longer gated on the factor config (the
+    // histogram precheck bounds cost on ordinary formulas either way).
+    let mut php_parse_structure: Option<php::PhpStructure> = None;
+    if config.php_refute {
         if let ParsedFormula::Nested(clauses) = &solver_formula {
-            php_structure_present = php::formula_matches(clauses);
+            if php::histogram_precheck(clauses.iter().map(Vec::len)) {
+                php_parse_structure = php::detect(clauses, php::MIN_PLACES);
+            }
         }
     }
+    let php_structure_present = php_parse_structure.is_some();
     if config.factor && !php_structure_present && num_vars <= factor::FACTOR_MAX_VARS {
         // FACTOR_MAX_VARS (10^4) is far below the giant-arena threshold, so the
         // giant path never reaches this block; the match is type plumbing only.
@@ -19457,6 +19513,7 @@ fn main() {
     checkpoint("frontend_done");
     let mut solver = Solver::new_with_config_formula(solver_num_vars, solver_formula, &config);
     solver.pre_search_proof_steps = bva_steps;
+    solver.php_parse_structure = php_parse_structure;
     checkpoint("solver_new_done");
 
     let (outcome, proof_stats) = solver.solve_to_output(output_dir, &config);
