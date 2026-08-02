@@ -260,6 +260,16 @@ pub(crate) struct SolverStats {
     pub(crate) els_inprocess_rounds: u64,
     /// inprocessing-round failed-literal probe passes run (SAT_PROBE_INPROCESS)
     pub(crate) probe_inprocess_rounds: u64,
+    /// mid-search backbone pass invocations (SAT_BACKBONE)
+    pub(crate) backbone_computations: u64,
+    /// stacked-probe rounds run across all backbone computations (SAT_BACKBONE)
+    pub(crate) backbone_rounds: u64,
+    /// backbone probe decisions attempted (SAT_BACKBONE)
+    pub(crate) backbone_probes: u64,
+    /// failed-literal units learned by the backbone pass (SAT_BACKBONE)
+    pub(crate) backbone_units: u64,
+    /// binary-propagation ticks spent by the backbone pass (SAT_BACKBONE)
+    pub(crate) backbone_ticks: u64,
     /// root failed-literal probe attempts (SESSION 14d: real counter — this
     /// was emitted as a hardcoded zero before)
     pub(crate) probe_attempts: u64,
@@ -891,6 +901,11 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
         "factor_inprocess_clauses_removed",
         ctx.stats.factor_inprocess_clauses_removed,
     );
+    json.u64("backbone_computations", ctx.stats.backbone_computations);
+    json.u64("backbone_rounds", ctx.stats.backbone_rounds);
+    json.u64("backbone_probes", ctx.stats.backbone_probes);
+    json.u64("backbone_units", ctx.stats.backbone_units);
+    json.u64("backbone_ticks", ctx.stats.backbone_ticks);
     json.u64("probe_attempts", ctx.stats.probe_attempts);
     json.u64("probe_failed_literals", ctx.stats.probe_units);
     json.u64("probe_units", ctx.stats.probe_units);

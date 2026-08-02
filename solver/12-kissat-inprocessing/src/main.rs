@@ -11,6 +11,7 @@ use std::cell::Cell;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+mod backbone;
 mod branch;
 mod check;
 mod config;
@@ -2708,6 +2709,35 @@ struct Solver {
     /// count (late-arming density/miter class; the banked early armers stay
     /// byte-identical).
     reduce_fraction_armed_min: u64,
+    /// SAT_BACKBONE (default off): mid-search backbone probing over the binary
+    /// implication graph, kissat backbone.c port (src/backbone.rs). Runs in the
+    /// inprocessing round between congruence/ELS and vivify, kissat probe.c
+    /// order parity.
+    backbone_enabled: bool,
+    /// SAT_BACKBONE_SCOPE=all lifts the armed scope: run the pass on every
+    /// inprocessing round. Default "armed": only `inprocess_aggressive`
+    /// formulas whose arming latched at >= `backbone_armed_min` conflicts (the
+    /// SESSION 14d reduce-law band — banked early armers stay byte-identical).
+    backbone_scope_all: bool,
+    /// SAT_BACKBONE_ARMED_MIN (default 500_000), see `backbone_scope_all`.
+    backbone_armed_min: u64,
+    /// SAT_BACKBONE_EFFORT per mille of search ticks since the last backbone
+    /// call (kissat backboneeffort=20 = 2%).
+    backbone_effort_permille: u64,
+    /// SAT_BACKBONE_TICKS: absolute per-call tick budget override (0 = use the
+    /// proportional effort budget).
+    backbone_ticks_override: u64,
+    /// SAT_BACKBONE_ROUNDS (kissat backbonerounds=100): per-computation round
+    /// allowance, scaled by the number of computations so far.
+    backbone_rounds_opt: u64,
+    /// SAT_BACKBONE_MAX_ROUNDS (kissat backbonemaxrounds cap, default 1000).
+    backbone_max_rounds: u64,
+    /// search-tick watermark at the last backbone call (effort denominator).
+    backbone_last_search_ticks: u64,
+    /// persistent per-literal candidate flags (kissat flags.backbone0/1):
+    /// leftover candidates are prioritized in the next computation. Lazily
+    /// sized on first use.
+    backbone_cand_flags: Vec<bool>,
     /// kissat-parity cadence for congruence-productive gate circuits: rounds start
     /// early and interleave congruence/vivify/sweep with mid-search elimination
     /// (see CONGRUENCE_PRODUCTIVE_MIN_MERGES). Off on all other formulas so their
@@ -4260,6 +4290,32 @@ impl Solver {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(500_000),
+            backbone_enabled: env_bool_or_default("SAT_BACKBONE", false),
+            backbone_scope_all: std::env::var("SAT_BACKBONE_SCOPE")
+                .map(|s| s == "all")
+                .unwrap_or(false),
+            backbone_armed_min: std::env::var("SAT_BACKBONE_ARMED_MIN")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(500_000),
+            backbone_effort_permille: std::env::var("SAT_BACKBONE_EFFORT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(20),
+            backbone_ticks_override: std::env::var("SAT_BACKBONE_TICKS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            backbone_rounds_opt: std::env::var("SAT_BACKBONE_ROUNDS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(100),
+            backbone_max_rounds: std::env::var("SAT_BACKBONE_MAX_ROUNDS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1000),
+            backbone_last_search_ticks: 0,
+            backbone_cand_flags: Vec::new(),
             inprocess_aggressive: false,
             inprocess_aggressive_interval: INPROCESS_AGGRESSIVE_FIRST_INTERVAL,
             endgame_enabled: env_bool_or_default("SAT_ENDGAME", true),
@@ -6922,6 +6978,162 @@ impl Solver {
             return false;
         }
         true
+    }
+
+    /// Mid-search backbone probing (SAT_BACKBONE — kissat backbone.c port; the
+    /// algorithm, round structure, and RUP soundness argument live in
+    /// src/backbone.rs). One call = one "computation": build the binary
+    /// implication graph once, then run stacked-probe rounds under a shared
+    /// tick budget, applying each round's failed-literal units to the REAL
+    /// solver (RUP unit + full root propagation) between rounds — the full
+    /// propagation is what keeps cross-level binary conflicts impossible in
+    /// the next round. Returns false when the pass proves UNSAT.
+    fn try_backbone(&mut self, proof_log: &mut ProofLog, config: &SolverConfig) -> bool {
+        const BACKBONE_MIN_EFFORT_TICKS: u64 = 2_000_000;
+        if self.binary_fast_path
+            || self.current_level() != 0
+            || self.has_empty_clause
+            || !self.solver_ok
+        {
+            return true;
+        }
+        let num_vars = self.assignment.len().saturating_sub(1);
+        if num_vars == 0 {
+            return true;
+        }
+        self.stats.backbone_computations += 1;
+
+        // Effort budget: permille of the search ticks accumulated since the
+        // last call (kissat SET_EFFORT_LIMIT with backboneeffort=20), floored
+        // so the first armed round gets a real allowance.
+        let since = self
+            .stats
+            .search_ticks
+            .saturating_sub(self.backbone_last_search_ticks);
+        self.backbone_last_search_ticks = self.stats.search_ticks;
+        let budget = if self.backbone_ticks_override > 0 {
+            self.backbone_ticks_override
+        } else {
+            (since.saturating_mul(self.backbone_effort_permille) / 1000)
+                .max(BACKBONE_MIN_EFFORT_TICKS)
+        };
+        let round_limit = self
+            .backbone_rounds_opt
+            .saturating_mul(self.stats.backbone_computations)
+            .min(self.backbone_max_rounds);
+
+        // Live binary clauses (original + learned) over unassigned,
+        // non-eliminated variables: every graph node is then live, so every
+        // derived unit lands on a live variable.
+        let mut bins: Vec<(i32, i32)> = Vec::new();
+        let collect = |solver: &Self, cid: usize, bins: &mut Vec<(i32, i32)>| {
+            if solver.clause_is_deleted(cid) || solver.clause_len(cid) != 2 {
+                return;
+            }
+            let a = solver.clause_lit(cid, 0);
+            let b = solver.clause_lit(cid, 1);
+            let (va, vb) = (a.unsigned_abs() as usize, b.unsigned_abs() as usize);
+            if va == vb {
+                return;
+            }
+            if solver.lit_value(a) != UNASSIGNED || solver.lit_value(b) != UNASSIGNED {
+                return;
+            }
+            if solver.eliminated[va] || solver.eliminated[vb] {
+                return;
+            }
+            bins.push((a, b));
+        };
+        for i in 0..self.original_clause_ids.len() {
+            let cid = self.original_clause_ids[i] as usize;
+            collect(self, cid, &mut bins);
+        }
+        for i in 0..self.learned_clause_ids.len() {
+            let cid = self.learned_clause_ids[i];
+            collect(self, cid, &mut bins);
+        }
+        if bins.is_empty() {
+            return true;
+        }
+        let graph = backbone::BinaryGraph::build(num_vars, &bins);
+        drop(bins);
+
+        if self.backbone_cand_flags.len() != num_vars * 2 {
+            self.backbone_cand_flags = vec![false; num_vars * 2];
+        }
+        let mut cand_flags = std::mem::take(&mut self.backbone_cand_flags);
+        let mut candidates = backbone::schedule_candidates(num_vars, &cand_flags, |var| {
+            self.unassigned_decision_candidate(var + 1)
+        });
+        let mut scratch = backbone::BackboneScratch::new(num_vars);
+
+        let mut ticks_total = 0u64;
+        let mut rounds = 0u64;
+        let mut units_total = 0u64;
+        let mut ok = true;
+        while rounds < round_limit && !candidates.is_empty() && ticks_total <= budget {
+            rounds += 1;
+            scratch.reseed((1..=num_vars).filter_map(|v| match self.assignment[v] {
+                TRUE => Some(lit_to_index(v as i32)),
+                FALSE => Some(lit_to_index(-(v as i32))),
+                _ => None,
+            }));
+            let before = candidates.len();
+            let round = backbone::backbone_round(
+                &graph,
+                &mut scratch,
+                &mut candidates,
+                &mut cand_flags,
+                &mut ticks_total,
+                budget,
+            );
+            self.stats.backbone_probes += round.probes;
+            if !round.units.is_empty() {
+                units_total += round.units.len() as u64;
+                self.stats.backbone_units += round.units.len() as u64;
+                if !self.learn_lucky_failed_literal_units(&round.units, proof_log) {
+                    ok = false;
+                    break;
+                }
+                if self.propagate().is_some() {
+                    self.has_empty_clause = true;
+                    ok = false;
+                    break;
+                }
+            }
+            if round.inconsistent {
+                // The forced unit's own binary propagation conflicted, so the
+                // real full propagation above must have conflicted too (binary
+                // propagation is a subset) — this line is only reachable if it
+                // somehow did not. Defensive break; the applied units stay
+                // sound either way.
+                debug_assert!(false, "backbone inconsistency must surface in real propagation");
+                break;
+            }
+            if round.probes == 0 && candidates.len() >= before {
+                // Defensive: no probe ran and nothing was resolved (exhausted
+                // budget on arrival) — a repeat round would be identical.
+                break;
+            }
+        }
+        backbone::keep_candidates(&candidates, &mut cand_flags);
+        self.backbone_cand_flags = cand_flags;
+        self.stats.backbone_rounds += rounds;
+        self.stats.backbone_ticks += ticks_total;
+        if config.trace_preprocess {
+            eprintln!(
+                "c backbone computation={} rounds={} probes={} units={} ticks={} budget={} edges={} candidates_left={}",
+                self.stats.backbone_computations,
+                rounds,
+                self.stats.backbone_probes,
+                units_total,
+                ticks_total,
+                budget,
+                graph.num_edges(),
+                candidates.len(),
+            );
+        }
+        ok
     }
 
     /// Root binary-implication transitive reduction (SAT_TRANSITIVE — kissat
@@ -10436,6 +10648,22 @@ impl Solver {
             if self.try_els(proof_log) {
                 ok = false;
             }
+        }
+        // Mid-search backbone probing (SAT_BACKBONE, kissat backbone.c port;
+        // probe.c order parity — after congruence/substitution, before
+        // vivify). Default scope is the LATE-ARMED band (the SESSION 14d
+        // reduce-law discriminator): only formulas whose aggressive arming
+        // latched at >= SAT_BACKBONE_ARMED_MIN conflicts run the pass, so the
+        // banked early armers (TT/vex/oski class) and never-armed formulas
+        // keep byte-identical trajectories. SAT_BACKBONE_SCOPE=all lifts the
+        // band for screening.
+        if ok
+            && self.backbone_enabled
+            && (self.backbone_scope_all
+                || (self.inprocess_aggressive
+                    && self.stats.inprocess_armed_at_conflict >= self.backbone_armed_min))
+        {
+            ok = self.try_backbone(proof_log, config);
         }
         if ok && self.should_vivify_inprocess_round() {
             // Kissat tier schedule on ARMED formulas only (SAT_VIVIFY_TIER_SPLIT);
@@ -20364,6 +20592,110 @@ mod tests {
         assert!(
             s.solve_with_proof(&mut proof, &config),
             "formula is satisfiable"
+        );
+    }
+
+    #[test]
+    fn backbone_pass_learns_uip_unit() {
+        // 1→2, 2→3, 2→¬3: probing 1 (or 2) conflicts at 3 with UIP 2, so the
+        // pass learns the unit ¬2 and root propagation follows through.
+        let mut s = make_solver(
+            4,
+            vec![
+                vec![-1, 2],
+                vec![-2, 3],
+                vec![-2, -3],
+                vec![1, 4], // keep the formula satisfiable via 4
+            ],
+        );
+        s.backbone_enabled = true;
+        s.backbone_scope_all = true;
+        let config = SolverConfig::default();
+        let mut proof = ProofLog::disabled();
+        assert!(s.try_backbone(&mut proof, &config));
+        assert!(s.stats.backbone_computations == 1);
+        assert!(
+            s.stats.backbone_units >= 1,
+            "expected a failed-literal unit, stats: probes={} units={}",
+            s.stats.backbone_probes,
+            s.stats.backbone_units
+        );
+        assert_eq!(s.assignment[2], FALSE, "unit ¬2 must be applied at root");
+        assert_eq!(s.assignment[1], FALSE, "root propagation forces ¬1 via 1→2");
+        assert!(
+            s.solve_with_proof(&mut proof, &config),
+            "formula is satisfiable"
+        );
+    }
+
+    #[test]
+    fn backbone_pass_detects_unsat_binaries() {
+        // (1∨2)(1∨¬2)(¬1∨2)(¬1∨¬2): both polarities of 1 fail — UNSAT.
+        let mut s = make_solver(
+            2,
+            vec![vec![1, 2], vec![1, -2], vec![-1, 2], vec![-1, -2]],
+        );
+        s.backbone_enabled = true;
+        s.backbone_scope_all = true;
+        let config = SolverConfig::default();
+        let mut proof = ProofLog::disabled();
+        assert!(!s.try_backbone(&mut proof, &config), "pass must prove UNSAT");
+        assert!(s.has_empty_clause);
+    }
+
+    #[test]
+    fn backbone_round_scope_requires_armed_band() {
+        // Default scope: unarmed formulas (and early armers below the band)
+        // never run the pass — byte-identical trajectories by construction.
+        let clauses = vec![vec![-1, 2], vec![-2, 3], vec![-2, -3], vec![1, 4]];
+        let config = SolverConfig::default();
+        let mut proof = ProofLog::disabled();
+
+        let mut unarmed = make_solver(4, clauses.clone());
+        unarmed.backbone_enabled = true;
+        assert!(unarmed.inprocess_round_pass(&mut proof, &config));
+        assert_eq!(unarmed.stats.backbone_computations, 0, "unarmed: no pass");
+
+        let mut early_armed = make_solver(4, clauses.clone());
+        early_armed.backbone_enabled = true;
+        early_armed.inprocess_aggressive = true;
+        early_armed.stats.inprocess_armed_at_conflict = 1;
+        assert!(early_armed.inprocess_round_pass(&mut proof, &config));
+        assert_eq!(
+            early_armed.stats.backbone_computations, 0,
+            "below the armed band: no pass"
+        );
+
+        let mut late_armed = make_solver(4, clauses);
+        late_armed.backbone_enabled = true;
+        late_armed.inprocess_aggressive = true;
+        late_armed.stats.inprocess_armed_at_conflict = 800_000;
+        assert!(late_armed.inprocess_round_pass(&mut proof, &config));
+        assert_eq!(
+            late_armed.stats.backbone_computations, 1,
+            "late armer runs the pass"
+        );
+        assert!(late_armed.stats.backbone_units >= 1);
+    }
+
+    #[test]
+    fn backbone_candidate_flags_persist_across_computations() {
+        // A tick-starved first computation leaves candidates; the leftovers are
+        // re-flagged so the next computation prioritizes them.
+        let mut s = make_solver(
+            4,
+            vec![vec![-1, 2], vec![-2, 3], vec![-3, 4], vec![1, -4]],
+        );
+        s.backbone_enabled = true;
+        s.backbone_scope_all = true;
+        s.backbone_ticks_override = 1; // starve: one probe per round at most
+        s.backbone_rounds_opt = 1;
+        let config = SolverConfig::default();
+        let mut proof = ProofLog::disabled();
+        assert!(s.try_backbone(&mut proof, &config));
+        assert!(
+            s.backbone_cand_flags.iter().any(|&f| f),
+            "starved computation must re-flag leftover candidates"
         );
     }
 
