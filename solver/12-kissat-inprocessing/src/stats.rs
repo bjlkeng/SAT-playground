@@ -260,6 +260,11 @@ pub(crate) struct SolverStats {
     pub(crate) els_inprocess_rounds: u64,
     /// inprocessing-round failed-literal probe passes run (SAT_PROBE_INPROCESS)
     pub(crate) probe_inprocess_rounds: u64,
+    /// root failed-literal probe attempts (SESSION 14d: real counter — this
+    /// was emitted as a hardcoded zero before)
+    pub(crate) probe_attempts: u64,
+    /// root probe forced units APPLIED (post-threshold; declines count zero)
+    pub(crate) probe_units: u64,
     /// variables removed by equivalent-literal substitution (SAT_ELS)
     pub(crate) els_substituted_vars: u64,
     /// clauses rewritten by equivalent-literal substitution (SAT_ELS)
@@ -886,9 +891,9 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
         "factor_inprocess_clauses_removed",
         ctx.stats.factor_inprocess_clauses_removed,
     );
-    json.u64("probe_attempts", 0);
-    json.u64("probe_failed_literals", 0);
-    json.u64("probe_units", 0);
+    json.u64("probe_attempts", ctx.stats.probe_attempts);
+    json.u64("probe_failed_literals", ctx.stats.probe_units);
+    json.u64("probe_units", ctx.stats.probe_units);
     json.u64("hbr_added_binary", 0);
     json.u64("gate_equivalences_detected", 0);
     json.u64("transitive_probes", ctx.stats.transitive_probes);

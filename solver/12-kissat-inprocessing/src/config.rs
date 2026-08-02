@@ -768,6 +768,9 @@ pub(crate) struct SolverConfig {
     /// adopters (SAT_PROBE_INPROCESS_GBVE), exactly like
     /// `transitive_inprocess_gbve`.
     pub(crate) probe_inprocess_gbve: bool,
+    /// SAT_PROBE_INPROCESS_ARMED (default off, SESSION 14d): run the
+    /// failed-literal probe round on inprocess_aggressive-armed formulas.
+    pub(crate) probe_inprocess_armed: bool,
     pub(crate) rcheck_ticks_budget: u64,
 
     pub(crate) replay_overridden: bool,
@@ -925,6 +928,7 @@ impl Default for SolverConfig {
             els_inprocess: false,
             transitive_inprocess_gbve: false,
             probe_inprocess_gbve: false,
+            probe_inprocess_armed: false,
             // Default-on since the 2026-07-27 promotion (gate WIN 72v72
             // identical solved sets, both-solved conflicts -121,608:
             // log/abtest-cand-vs-base-2026-07-27-11-58-13). Root-adopter
@@ -1834,6 +1838,12 @@ impl SolverConfig {
             &key_set,
             "SAT_PROBE_INPROCESS_GBVE",
             self.probe_inprocess_gbve,
+        );
+        self.probe_inprocess_armed = parse_bool_selected(
+            env_map,
+            &key_set,
+            "SAT_PROBE_INPROCESS_ARMED",
+            self.probe_inprocess_armed,
         );
         self.rcheck_ticks_budget = parse_u64_selected(
             env_map,

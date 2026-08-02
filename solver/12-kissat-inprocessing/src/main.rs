@@ -2108,6 +2108,9 @@ struct Solver {
     /// walk effort budget in permille of search ticks since the last walk
     /// (kissat `walkeffort`, default 50)
     walk_effort_permille: u64,
+    /// SAT_WALK_EFFORT_UNARMED (0 = use walk_effort_permille): walk effort
+    /// override for never-armed formulas only; see the budget site.
+    walk_effort_unarmed_permille: u64,
     /// warm the walker's starting assignment before each walk by completing the
     /// root assignment via decide + propagate-beyond-conflicts, kissat warmup.c
     /// parity (SAT_WALK_WARMUP, default off)
@@ -2695,6 +2698,16 @@ struct Solver {
     reduce_fraction_active: bool,
     /// runtime latch: the activate-or-not decision has been taken for this run.
     reduce_fraction_decided: bool,
+    /// SAT_REDUCE_FRACTION_ARMED (default off): allow the fraction law to
+    /// activate on inprocess_aggressive-armed formulas too (see the scope
+    /// decision). Reroll surface = every armed cell past 1.3M conflicts
+    /// (vex/oski/TT/oddball banked class) — screen before any default flip.
+    reduce_fraction_armed: bool,
+    /// SAT_REDUCE_FRACTION_ARMED_MIN (default 500_000): the armed variant
+    /// applies only to formulas whose arming latched at or past this conflict
+    /// count (late-arming density/miter class; the banked early armers stay
+    /// byte-identical).
+    reduce_fraction_armed_min: u64,
     /// kissat-parity cadence for congruence-productive gate circuits: rounds start
     /// early and interleave congruence/vivify/sweep with mid-search elimination
     /// (see CONGRUENCE_PRODUCTIVE_MIN_MERGES). Off on all other formulas so their
@@ -3092,6 +3105,10 @@ struct Solver {
     /// 14c): parse normalization can strengthen a cover and hide the shape
     /// from the solve-time re-detection, so try_php_refute prefers this.
     php_parse_structure: Option<php::PhpStructure>,
+    /// SAT_PROBE_MIN_UNITS_PERMILLE (default 50 = 5%): root failed-literal
+    /// probing applies its forced units only at percent-scale mass; below the
+    /// threshold the pass declines byte-identically. See the apply site.
+    probe_min_units_permille: u64,
     /// max per-polarity occurrences for a BVE candidate (kissat eliminateocclim); zero = unlimited
     eliminate_occurrence_limit: u64,
     /// diagnostic: elimination attempts rejected because resolvent count exceeded occ+grow
@@ -3981,6 +3998,10 @@ impl Solver {
             rephase_armed_only: config.rephase_armed_only,
             walk_enabled: config.walk,
             walk_effort_permille: config.walk_effort_permille,
+            walk_effort_unarmed_permille: std::env::var("SAT_WALK_EFFORT_UNARMED")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
             walk_warmup: config.walk_warmup,
             walk_last_search_ticks: 0,
             decision_level: vec![0; num_vars + 1],
@@ -4229,6 +4250,11 @@ impl Solver {
                 .unwrap_or(900),
             reduce_fraction_active: false,
             reduce_fraction_decided: false,
+            reduce_fraction_armed: env_bool_or_default("SAT_REDUCE_FRACTION_ARMED", false),
+            reduce_fraction_armed_min: std::env::var("SAT_REDUCE_FRACTION_ARMED_MIN")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(500_000),
             inprocess_aggressive: false,
             inprocess_aggressive_interval: INPROCESS_AGGRESSIVE_FIRST_INTERVAL,
             endgame_enabled: env_bool_or_default("SAT_ENDGAME", true),
@@ -4423,6 +4449,10 @@ impl Solver {
                 .unwrap_or(50),
             els_apply_min_permille: 0,
             php_parse_structure: None,
+            probe_min_units_permille: std::env::var("SAT_PROBE_MIN_UNITS_PERMILLE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(50),
             eliminate_occurrence_limit: config.eliminate_occurrence_limit,
             elim_reject_count_bound: 0,
             elim_reject_clslim: 0,
@@ -6841,10 +6871,41 @@ impl Solver {
                 budget_ticks,
             );
         }
+        self.stats.probe_attempts = self.stats.probe_attempts.saturating_add(probes);
 
         if forced_units.is_empty() {
             return true;
         }
+
+        // Percent-scale apply threshold (SESSION 14d, mirrors the root-ELS
+        // gate): apply the forced units only when they reach
+        // SAT_PROBE_MIN_UNITS_PERMILLE of live variables; below that DECLINE
+        // byte-identically (probing is read-only until the units are applied,
+        // so a declining run's trajectory is untouched — only bounded probe
+        // wall is paid). Rationale: the 123-timeout-cell scan (2026-08-01)
+        // puts the rook family at 93-126 permille forced units while every
+        // other cell sits <=46 permille — tiny unit sets are the same
+        // SAT-lottery reroll surface the unscoped ELS A/B measured
+        // net-negative, while percent-scale mass is mechanism.
+        if self.probe_min_units_permille != 0 {
+            let live = (1..self.assignment.len())
+                .filter(|&v| self.assignment[v] == UNASSIGNED && !self.eliminated[v])
+                .count() as u64;
+            if (forced_units.len() as u64).saturating_mul(1000)
+                < live.saturating_mul(self.probe_min_units_permille)
+            {
+                if config.trace_preprocess {
+                    eprintln!(
+                        "c probe decline units={} live={} (< {}permille)",
+                        forced_units.len(),
+                        live,
+                        self.probe_min_units_permille
+                    );
+                }
+                return true;
+            }
+        }
+        self.stats.probe_units = self.stats.probe_units.saturating_add(forced_units.len() as u64);
 
         // Re-apply the forced units to the real (restored) solver, recording each
         // as a RUP unit in the DRAT proof, then propagate them at root.
@@ -9142,7 +9203,18 @@ impl Solver {
             .search_ticks
             .saturating_sub(self.walk_last_search_ticks)
             .max(WALK_MIN_EFFORT_TICKS);
-        let step_limit = since.saturating_mul(self.walk_effort_permille) / 1000;
+        // SESSION 14d: unarmed formulas can carry their own walk effort
+        // (SAT_WALK_EFFORT_UNARMED). The frontier walk screen won +2 SAT cells
+        // with a 4x effort boost, but a GLOBAL boost rerolls armed banked
+        // cells (TT496 lost in the bundle arm of the 2026-08-01 miterarmed2
+        // screen); scoping the boost to never-armed formulas keeps every
+        // armed cell's walk budget — and therefore trajectory — untouched.
+        let effort = if !self.inprocess_aggressive && self.walk_effort_unarmed_permille != 0 {
+            self.walk_effort_unarmed_permille
+        } else {
+            self.walk_effort_permille
+        };
+        let step_limit = since.saturating_mul(effort) / 1000;
         self.walk_last_search_ticks = self.stats.search_ticks;
 
         self.stats.walks = self.stats.walks.saturating_add(1);
@@ -10294,10 +10366,14 @@ impl Solver {
         let gbve_adopter = self.stats.gate_bve_scoped_adopted == 1;
         // Probe first: failed-literal probing forces backbone units, so vivification
         // then runs against an already-simplified root.
+        // SESSION 14d: SAT_PROBE_INPROCESS_ARMED extends the probe round to
+        // armed formulas (kissat parity on the miter class: 51 probing rounds
+        // / 2.62G probing ticks on boothbit29 while we run zero there).
         if ok
             && (config.probe
                 || (config.probe_inprocess && root_adopter)
-                || (config.probe_inprocess_gbve && gbve_adopter))
+                || (config.probe_inprocess_gbve && gbve_adopter)
+                || (config.probe_inprocess_armed && self.inprocess_aggressive))
         {
             if !config.probe {
                 self.stats.probe_inprocess_rounds += 1;
@@ -12880,7 +12956,22 @@ impl Solver {
             return;
         }
         self.reduce_fraction_decided = true;
-        self.reduce_fraction_active = !self.inprocess_aggressive;
+        // SESSION 14d: SAT_REDUCE_FRACTION_ARMED lifts the armed exclusion,
+        // banded by ARMING TIME (the endgame promotion's discriminator law).
+        // The blanket !armed insurance (SESSION 5) also switches the law off
+        // on the armed UNSAT grinder classes — the 16x16 multiplier miters
+        // arm at ~800k conflicts and then grind >20M conflicts under the
+        // legacy budget law (kissat finishes them in ~6M under the fraction
+        // law; boothbit29 profile 2026-08-01: reduce_fraction_activated_at=0;
+        // with the law active it flips FIRST-EVER at 3062 s / 9.0M). The
+        // banked armed SAT classes arm EARLY (TT ~200k, vex/oski instant), so
+        // the >=500k min-armed-at band keeps every one of them byte-identical
+        // by construction while admitting the late-arming density/miter class
+        // (~800k) — the unbanded variant traded boothbit29 for TT496 in the
+        // 2026-08-01 miterarmed screen.
+        self.reduce_fraction_active = !self.inprocess_aggressive
+            || (self.reduce_fraction_armed
+                && self.stats.inprocess_armed_at_conflict >= self.reduce_fraction_armed_min);
         if self.reduce_fraction_active {
             self.stats.reduce_fraction_activated_at = self.stats.conflicts.max(1);
             // Warm-start the 31-step counters: legacy semantics leave most
