@@ -3998,10 +3998,12 @@ impl Solver {
             rephase_armed_only: config.rephase_armed_only,
             walk_enabled: config.walk,
             walk_effort_permille: config.walk_effort_permille,
+            // SESSION 14d: default 200 (4x) — part of the A/B3 winning arm;
+            // armed cells keep walk_effort_permille (50) by construction.
             walk_effort_unarmed_permille: std::env::var("SAT_WALK_EFFORT_UNARMED")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
+                .unwrap_or(200),
             walk_warmup: config.walk_warmup,
             walk_last_search_ticks: 0,
             decision_level: vec![0; num_vars + 1],
@@ -4250,7 +4252,10 @@ impl Solver {
                 .unwrap_or(900),
             reduce_fraction_active: false,
             reduce_fraction_decided: false,
-            reduce_fraction_armed: env_bool_or_default("SAT_REDUCE_FRACTION_ARMED", false),
+            // SESSION 14d: default ON — A/B3 full-bench WIN 280v276 (gained
+            // boothbit29/sqrt-mitern169/lec_mult/shuffling-1, lost none; the
+            // 500k arming-time band keeps banked early-armers byte-identical).
+            reduce_fraction_armed: env_bool_or_default("SAT_REDUCE_FRACTION_ARMED", true),
             reduce_fraction_armed_min: std::env::var("SAT_REDUCE_FRACTION_ARMED_MIN")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -27907,7 +27912,10 @@ mod tests {
             ..focused_stable_config()
         };
         let mut s = make_solver_with_config(2, vec![], &config);
-        assert!(s.rephase_armed_only, "yield-armed scope is the default");
+        // SESSION 14d: rephase_armed_only defaults OFF; the test's subject is
+        // the armed-only GATING, so pin the scope on explicitly.
+        assert!(!s.rephase_armed_only, "unarmed rephase is the default since SESSION 14d");
+        s.rephase_armed_only = true;
         s.search_mode = SearchMode::Stable;
         s.stats.conflicts = 10;
 

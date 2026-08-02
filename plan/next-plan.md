@@ -1,4 +1,4 @@
-# NEXT PLAN — 2026-08-01 (supersedes 2026-07-31; PRUNED)
+# NEXT PLAN — 2026-08-02 (supersedes 2026-08-01; PRUNED)
 
 One-file plan for the next clear context. SESSIONS 4-13 bodies were pruned
 from this file — their full text lives in git history (`git log -p
@@ -6,8 +6,51 @@ plan/next-plan.md`, revisions up to 52a8f95) and their verdicts survive in
 "Standing traps", "Closed lines", and the memory files. Where this file
 contradicts an older plan revision, THIS file wins.
 
-**START HERE:** read "SESSION 14c" below, then "SESSION 14b", then
-"RANKED PLAN", then "Standing traps".
+**START HERE:** read "SESSION 14d" below, then 14c/14b, then "RANKED
+PLAN", then "Standing traps".
+
+## SESSION 14d (2026-08-01/02) — the armed-exclusion discovery: full-bench 277 → 280/400 (A/B WIN 280v276, +4 gained / 0 lost); FIRST-EVER 16x16 miter solve; reduce law un-blinded on the circuit-miter class
+
+A/B3 (`log/abtest-cand-vs-base-2026-08-01-20-32-12`, 400x2, proofs
+verified): **cand 280 v base 276 WIN; gained boothbit29 (16_16 booth
+wallace bit29, UNSAT 3376 s — the FIRST 16x16 multiplier-miter solver12
+has ever solved), sqrt-mitern169 (UNSAT 3211 s), lec_mult_CvW_11x10
+(UNSAT 2358 s), shuffling-1 (UNSAT 720 s); LOST ZERO; zero
+contradictions; verify ok=276/checker-TO=4/FAIL=0.** The gains are 3/4
+circuit-miter-class cells — the #1 family gap finally moved. Baked
+defaults = the winning arm verbatim (commit after b5abbc8).
+
+**The discovery (kissat -s vs SAT_STATS_JSON profile on boothbit29):
+`reduce_fraction_activated_at = 0` — the SESSION-5 blanket "never on
+armed formulas" insurance silently excluded the reduce law from the
+ENTIRE armed class, which contains every 16x16 miter (they arm at
+~800k conflicts) — the exact deep-UNSAT grinders the law exists for.**
+The fix is the ARMING-TIME BAND (the endgame promotion's discriminator
+reused): `SAT_REDUCE_FRACTION_ARMED=on` + `_MIN=500_000` activates the
+law only where arming latched at >=500k conflicts. Banked early armers
+(TT ~200k, vex/oski instant) stay byte-identical BY CONSTRUCTION —
+miterarmed2 screen: TT496/oski15b20s/vex conflict-EXACT identical while
+boothbit29 flips at 8,974,657 conflicts (deterministic across screen
+and A/B). The UNBANDED variant traded boothbit29 for TT496 — measured,
+not hypothetical.
+
+Second baked default: `SAT_REPHASE_ARMED_ONLY=off` +
+`SAT_WALK_EFFORT_UNARMED=200` — rephase/walk on never-armed formulas at
+4x effort, with armed cells keeping effort 50 byte-identically (a
+GLOBAL effort boost rerolled TT496 away in the bundle arm; the
+unarmed-scoped split is the fix). Frontier screen: walkfx4 11/38 v base
+9/38 (Circuit_multiplier24 genuinely walk-solved at 3.6M conflicts;
+mod2c). At bench scale the walk side cost nothing (0 losses) and the
+reduce side carried the +4.
+
+**Measured NEGATIVE this session (closed):** SAT_SWEEP_SUBST on miters
+(0/6 flips at 3600 s idle); root-probe units on the rook family (the
+123-cell probe-mass scan found rooks at 93-126 permille forced units —
+an order of magnitude above everything else — but applying 18k units
+flips 0/3 rooks; groundwork banked: SAT_PROBE_MIN_UNITS_PERMILLE
+decline-is-identity threshold + REAL probe_attempts/probe_units stats,
+which were hardcoded zeros); SAT_PROBE_INPROCESS_ARMED screened neutral
+(default off).
 
 ## SESSION 14c (2026-07-31/08-01) — php-detector coverage: FIVE more first-ever solves, full-bench 271 → 277/400 (confirmation run, verify_fail=0, ZERO losses); inductive PHP proof engine lands
 
@@ -199,11 +242,18 @@ kissat run joined with A/B2 cand):
    members now reachable thanks to the inductive closer if new suites
    arrive (H up to ~40 is proof-size-viable; verify cost scales as
    defs x maxVar per the RAT-scan law).
-2. **Multiplier-miter mechanism hunt (the #1 family, 10-14 cells).**
-   Offline first: decompose WHERE kissat's 6.2M-conflict refutation
-   beats our >20M (tier limits? vivify quality? reduce law interplay
-   now that it ships? re-probe boothbit29 with the new defaults). Any
-   flip here generalizes across the family.
+2. **Multiplier-miter arc OPENED (SESSION 14d): 3 circuit-miter cells
+   flipped via the banded reduce-on-armed law.** Remaining miter-class
+   timeouts (~9: ultra28, wallm28, boothwm28, wall27, dadda-origin
+   bit28/29, booth_dadda_mapped x2, multiplier_15/16bit miters): the
+   law is now active there but they need more than the DB shape —
+   kissat's edge decomposes to sustained rate + 115 backbone rounds +
+   51 probing rounds mid-search (boothbit29 profile). Next lever
+   candidates: mid-search backbone pass (kissat backbone.c port, 2%
+   effort) scoped to the late-armed band; vivify volume parity (kissat
+   vivifies ~8x more clauses); SAT_PROBE_INPROCESS_ARMED re-screen on
+   the remaining miters WITH the reduce law now active (it screened
+   neutral pre-activation).
 3. **SWEEP_SUBST behind a percent-mass threshold (uniqinv40-class).**
    Same decline-is-identity shape as the ELS threshold; uniqinv40 needs
    30% sweep-substitution mass (kissat gets it mid-search). Screen on

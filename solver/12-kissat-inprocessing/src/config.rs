@@ -852,7 +852,9 @@ impl Default for SolverConfig {
             watch_compact_enabled: false,
             vmtf: VmtfMode::Off,
             rephase: false,
-            rephase_armed_only: true,
+            // SESSION 14d: default OFF (rephase/walk on unarmed cells too) — part
+            // of the A/B3 full-bench winning arm (280v276, zero losses).
+            rephase_armed_only: false,
             walk: true,
             walk_effort_permille: DEFAULT_WALK_EFFORT_PERMILLE,
             walk_warmup: false,
