@@ -2541,6 +2541,11 @@ struct Solver {
     /// checks strengthen on the density cells vs our 18% with prefix-shrink.
     /// Armed-scoped like ALE (non-armed trajectories stay byte-identical).
     vivify_deduce: bool,
+    /// SAT_VIVIFY_DEDUCE_ARMED_MIN (default 500_000): deduce applies only on
+    /// formulas whose arming latched at or past this conflict count — the
+    /// SESSION 14d late-armed band. 0 = unbanded armed scope (the 2026-07-15
+    /// screen shape, which lost on early armers).
+    vivify_deduce_armed_min: u64,
     /// stamp buffer for the vivify-deduce reason-cone walk (by variable)
     vivify_seen: Vec<u32>,
     /// current stamp value for `vivify_seen`
@@ -4210,6 +4215,10 @@ impl Solver {
             vivify_armed: env_bool_or_default("SAT_VIVIFY_ARMED", true),
             vivify_ale: env_bool_or_default("SAT_VIVIFY_ALE", true),
             vivify_deduce: env_bool_or_default("SAT_VIVIFY_DEDUCE", false),
+            vivify_deduce_armed_min: std::env::var("SAT_VIVIFY_DEDUCE_ARMED_MIN")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(500_000),
             vivify_seen: Vec::new(),
             vivify_seen_stamp: 0,
             vivify_sort: env_bool_or_default("SAT_VIVIFY_SORT", false),
@@ -11372,8 +11381,16 @@ impl Solver {
         // Deduce (reason-cone shrink + implied-TRUE strengthen) shares ALE's
         // armed scope: it changes which edits happen, so non-armed formulas must
         // keep byte-identical trajectories (the unscoped-ALE A/B rolled two
-        // solved SAT cells; same fragility class applies here).
-        let vivify_deduce = self.vivify_deduce && self.inprocess_aggressive;
+        // solved SAT cells; same fragility class applies here). SESSION 15
+        // additionally BANDS the scope by arming time (the SESSION 14d
+        // reduce-law discriminator): the 2026-07-15 unbanded-armed screen lost
+        // on EARLY armers (ibm +133% conflicts, oski20 +146 s) while the
+        // mechanism's target — the 16x16 miter class, hit rate 15% vs kissat
+        // 34% — arms late (~800k). SAT_VIVIFY_DEDUCE_ARMED_MIN=0 restores the
+        // unbanded armed scope.
+        let vivify_deduce = self.vivify_deduce
+            && self.inprocess_aggressive
+            && self.stats.inprocess_armed_at_conflict >= self.vivify_deduce_armed_min;
         // Kissat vivify.c literal ordering (SAT_VIVIFY_SORT, default off): count each
         // literal's occurrences across this round's candidates and assume the
         // most-frequent literals first. Frequent literals propagate the most shared
@@ -21876,9 +21893,10 @@ mod tests {
         assert!(control.vivify_round(&mut proof));
         assert_eq!(control.clause_len(target), 4, "prefix rule keeps all literals");
 
-        // Deduce on (armed): strengthened to the cone assumptions.
-        let mut s = make_solver_with_config(5, clauses, &cfg);
+        // Deduce on (late-armed): strengthened to the cone assumptions.
+        let mut s = make_solver_with_config(5, clauses.clone(), &cfg);
         s.inprocess_aggressive = true;
+        s.stats.inprocess_armed_at_conflict = 800_000;
         s.vivify_deduce = true;
         let target = s.original_clause_ids[2] as usize;
         let mut proof = ProofLog::disabled();
@@ -21886,6 +21904,21 @@ mod tests {
         assert_eq!(s.clause_len(target), 2);
         assert_eq!(s.clause_slice(target), &[3, 4]);
         s.validate_watch_invariants();
+
+        // SESSION 15 band: an EARLY armer (below SAT_VIVIFY_DEDUCE_ARMED_MIN)
+        // keeps the no-deduce edit shape byte-identical.
+        let mut early = make_solver_with_config(5, clauses, &cfg);
+        early.inprocess_aggressive = true;
+        early.stats.inprocess_armed_at_conflict = 200_000;
+        early.vivify_deduce = true;
+        let target = early.original_clause_ids[2] as usize;
+        let mut proof = ProofLog::disabled();
+        assert!(early.vivify_round(&mut proof));
+        assert_eq!(
+            early.clause_len(target),
+            4,
+            "early armer below the band must keep the prefix-rule shape"
+        );
     }
 
     #[test]
@@ -21906,6 +21939,7 @@ mod tests {
 
         let mut s = make_solver_with_config(3, clauses, &cfg);
         s.inprocess_aggressive = true;
+        s.stats.inprocess_armed_at_conflict = 800_000;
         s.vivify_deduce = true;
         let target = s.original_clause_ids[1] as usize;
         let mut proof = ProofLog::disabled();

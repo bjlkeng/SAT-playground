@@ -3277,6 +3277,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_VIVIFY",
         "SAT_PROBE",
         "SAT_HBR",
+        "SAT_VIVIFY_DEDUCE_ARMED_MIN",
         "SAT_BACKBONE",
         "SAT_BACKBONE_SCOPE",
         "SAT_BACKBONE_ARMED_MIN",
