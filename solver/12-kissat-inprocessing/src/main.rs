@@ -2532,7 +2532,8 @@ struct Solver {
     /// budget the 2026-07-14 gate flipped VexRiscv and oski15a01b40s (both
     /// kissat-only cells before) and medium moved 64 -> 67.
     vivify_ale: bool,
-    /// Kissat vivify.c `vivify_deduce` parity (SAT_VIVIFY_DEDUCE, default off):
+    /// Kissat vivify.c `vivify_deduce` parity (SAT_VIVIFY_DEDUCE, default ON
+    /// since the SESSION 15 promotion, scoped to the late-armed band):
     /// on a conflicting assumption walk, analyze the reason cone and strengthen
     /// the candidate to the subset of assumed literals actually needed for the
     /// conflict (instead of the full assumed prefix), and on an implied-TRUE
@@ -4214,7 +4215,13 @@ impl Solver {
                 .unwrap_or(1),
             vivify_armed: env_bool_or_default("SAT_VIVIFY_ARMED", true),
             vivify_ale: env_bool_or_default("SAT_VIVIFY_ALE", true),
-            vivify_deduce: env_bool_or_default("SAT_VIVIFY_DEDUCE", false),
+            // SESSION 15: default ON — full-bench 3600 s A/B WIN 279 v 276
+            // (gate PASS, log/abtest-cand-vs-base-2026-08-03-10-13-35; gained
+            // Circuit_multiplier24 + BubbleVsPancakeSort_7_6 fat-margin plus
+            // bp4/valves retentions, lost MVRR-n14 thin coin + sum_of_3_cubes
+            // SAT reroll; tier-2 conflicts −14.7M). Only active inside the
+            // >=500k late-armed band below.
+            vivify_deduce: env_bool_or_default("SAT_VIVIFY_DEDUCE", true),
             vivify_deduce_armed_min: std::env::var("SAT_VIVIFY_DEDUCE_ARMED_MIN")
                 .ok()
                 .and_then(|s| s.parse().ok())

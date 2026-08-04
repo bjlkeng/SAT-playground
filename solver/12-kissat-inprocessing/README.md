@@ -15,6 +15,38 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **Full-bench default promotion (2026-08-03, SESSION 15): banded vivify-deduce
+> (`SAT_VIVIFY_DEDUCE` default ON inside the late-armed band).** The kissat
+> `vivify_deduce` mechanism (reason-cone shrink on conflict, implied-TRUE
+> strengthen — built 2026-07-15, shelved after the UNBANDED armed screen lost on
+> early armers) is promoted behind `SAT_VIVIFY_DEDUCE_ARMED_MIN=500_000`: it
+> fires only on formulas whose `inprocess_aggressive` arming latched at >=500k
+> conflicts (the SESSION 14d reduce-law discriminator), so every early-armed
+> banked cell (TT/oski/vex/oddball class) keeps a byte-identical trajectory by
+> construction. Mechanism (tier-1 probe, boothdadda29 @2.5M conflicts): vivify
+> hit rate 14.8% -> 28.5% (kissat 34%), strengthened 27,491 -> 53,823, wall
+> 318 -> 311 s. Miterded screen (23 cells, 4 arms, 3600 s,
+> `log/abtest-ded-vs-bbded-vs-bb-vs-base-2026-08-02-17-45-21`): ded 8/23 v base
+> 7/23, boothbit29 conflicts 8.97M -> 8.01M, lec_mult 8.46M -> 7.35M, all five
+> early-armed canaries conflict-EXACT. Full-bench A/B
+> (`log/abtest-cand-vs-base-2026-08-03-10-13-35`, 400x2 @3600 s, gate PASS,
+> zero contradictions/correctness failures): **cand 279 v base 276 WIN; gained
+> Circuit_multiplier24 (SAT 1917 s, fat margin) + BubbleVsPancakeSort_7_6
+> (UNSAT 2274 s, fat margin) + bp4_BC012/bp4_TCO/valves retentions; lost
+> MVRoundRobin_n14_d10_v2 (82 s base margin = documented-thin wall coin) +
+> sum_of_3_cubes_37_bits_87 (SAT reroll; base solved at its stable 894,247-
+> conflict trajectory, cand's changed deal lost it); tier-2 conflicts −14.7M
+> across the 37 changed both-solved cells, PAR-2 1.041M v 1.057M.** Also landed
+> (default OFF): `SAT_BACKBONE` — a full kissat backbone.c port
+> (`src/backbone.rs`: stacked-probe binary-implication-graph failed-literal
+> rounds, RUP units); tier-1 measured ZERO units on the miter class (kissat's
+> own backbone finds 2 there), re-confirming the 2026-07-15 "killed without
+> building" verdict — kept as a zero-mutation groundwork rider with
+> `SAT_BACKBONE_SCOPE/_ARMED_MIN/_EFFORT/_TICKS/_ROUNDS/_MAX_ROUNDS` knobs.
+> Validation: 756+5 tests, smoke 9/9, identity refs digit-exact both flag
+> states (rbsat 100001/196258/17,758,017; MVRR 267,199). Detail:
+> `plan/next-plan.md` SESSION 15.
+
 > **Medium-suite default promotion (2026-07-28): pigeonhole-counting ER refutation (`SAT_PHP_REFUTE`).**
 > Detects two relativized-pigeonhole clause shapes at the root — the `rphp` family
 > (P pigeons -> N resting places -> H holes with used-place guards) and the `clqcl`

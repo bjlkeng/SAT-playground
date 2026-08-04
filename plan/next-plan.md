@@ -1,374 +1,223 @@
-# NEXT PLAN — 2026-08-02 (supersedes 2026-08-01; PRUNED)
+# NEXT PLAN — 2026-08-04 (supersedes 2026-08-02; PRUNED)
 
-One-file plan for the next clear context. SESSIONS 4-13 bodies were pruned
-from this file — their full text lives in git history (`git log -p
-plan/next-plan.md`, revisions up to 52a8f95) and their verdicts survive in
-"Standing traps", "Closed lines", and the memory files. Where this file
-contradicts an older plan revision, THIS file wins.
+One-file plan for the next clear context. SESSIONS 4-13 bodies live in git
+history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
+bodies were pruned this revision — full text in revisions up to 93ab682, and
+their verdicts survive in "Standing traps", "Closed lines", and the solver
+README "Current State" entries. Where this file contradicts an older revision,
+THIS file wins.
 
-**START HERE:** read "SESSION 14d" below, then 14c/14b, then "RANKED
-PLAN", then "Standing traps".
+**START HERE:** read "SESSION 15" below, then "RANKED PLAN", then "Standing
+traps".
 
-## SESSION 14d (2026-08-01/02) — the armed-exclusion discovery: full-bench 277 → 280/400 (A/B WIN 280v276, +4 gained / 0 lost); FIRST-EVER 16x16 miter solve; reduce law un-blinded on the circuit-miter class
+## SESSION 15 (2026-08-02/04) — banded vivify-deduce PROMOTED: full-bench 276 → 279/400 (gate PASS, A/B WIN +5/−2); backbone.c port landed and measured a no-op (free rider, default off)
 
-A/B3 (`log/abtest-cand-vs-base-2026-08-01-20-32-12`, 400x2, proofs
-verified): **cand 280 v base 276 WIN; gained boothbit29 (16_16 booth
-wallace bit29, UNSAT 3376 s — the FIRST 16x16 multiplier-miter solver12
-has ever solved), sqrt-mitern169 (UNSAT 3211 s), lec_mult_CvW_11x10
-(UNSAT 2358 s), shuffling-1 (UNSAT 720 s); LOST ZERO; zero
-contradictions; verify ok=276/checker-TO=4/FAIL=0.** The gains are 3/4
-circuit-miter-class cells — the #1 family gap finally moved. Baked
-defaults = the winning arm verbatim (commit after b5abbc8).
+Full-bench A/B `log/abtest-cand-vs-base-2026-08-03-10-13-35` (400x2 @3600 s
+/16 GB/32 cores, simultaneous start, proofs verified, gate PASS, zero
+contradictions / zero correctness failures):
 
-**The discovery (kissat -s vs SAT_STATS_JSON profile on boothbit29):
-`reduce_fraction_activated_at = 0` — the SESSION-5 blanket "never on
-armed formulas" insurance silently excluded the reduce law from the
-ENTIRE armed class, which contains every 16x16 miter (they arm at
-~800k conflicts) — the exact deep-UNSAT grinders the law exists for.**
-The fix is the ARMING-TIME BAND (the endgame promotion's discriminator
-reused): `SAT_REDUCE_FRACTION_ARMED=on` + `_MIN=500_000` activates the
-law only where arming latched at >=500k conflicts. Banked early armers
-(TT ~200k, vex/oski instant) stay byte-identical BY CONSTRUCTION —
-miterarmed2 screen: TT496/oski15b20s/vex conflict-EXACT identical while
-boothbit29 flips at 8,974,657 conflicts (deterministic across screen
-and A/B). The UNBANDED variant traded boothbit29 for TT496 — measured,
-not hypothetical.
+| arm | solved | conf(own solved) | PAR-2 |
+|---|:--:|--:|--:|
+| cand (`SAT_VIVIFY_DEDUCE=on`, banded) | **279/400** | 532.9M | 1,041,267 |
+| base (SESSION 14d defaults) | 276/400 | 554.7M | 1,057,324 |
 
-Second baked default: `SAT_REPHASE_ARMED_ONLY=off` +
-`SAT_WALK_EFFORT_UNARMED=200` — rephase/walk on never-armed formulas at
-4x effort, with armed cells keeping effort 50 byte-identically (a
-GLOBAL effort boost rerolled TT496 away in the bundle arm; the
-unarmed-scoped split is the fix). Frontier screen: walkfx4 11/38 v base
-9/38 (Circuit_multiplier24 genuinely walk-solved at 3.6M conflicts;
-mod2c). At bench scale the walk side cost nothing (0 losses) and the
-reduce side carried the +4.
+**Gained (+5):** Circuit_multiplier24 (SAT 1917 s, FAT margin — a named
+walk-scale gap cell), BubbleVsPancakeSort_7_6 (UNSAT 2274 s, FAT margin — gap
+family), valves-gates + bp4_TCO_IXA_FPBLE_ZR + bp4_BC012_IXA_LPI (banked cells
+base dropped this deal; retained/recovered). **Lost (−2):**
+MVRoundRobin_n14_d10_v2 (base margin 82 s = thin wall coin) and
+sum_of_3_cubes_37_bits_87 (REAL SAT reroll: base solved at its stable
+894,247-conflict trajectory — identical in 3 prior deals — while deduce
+changed cand's deal; expect it to flip back some deals). Tier-2: −14.7M
+conflicts across the 37 changed both-solved cells; the mechanism cells all
+shortened 10-30% (sqrt-mitern169 −1.43M, lec_mult −1.10M, boothbit29 −0.96M,
+oddball_19 −3.94M, PancakeVsSelection_6_8 −3.61M, ER_400 −3.28M; worst
+regression case11 +5.0M, still solved).
 
-**Measured NEGATIVE this session (closed):** SAT_SWEEP_SUBST on miters
-(0/6 flips at 3600 s idle); root-probe units on the rook family (the
-123-cell probe-mass scan found rooks at 93-126 permille forced units —
-an order of magnitude above everything else — but applying 18k units
-flips 0/3 rooks; groundwork banked: SAT_PROBE_MIN_UNITS_PERMILLE
-decline-is-identity threshold + REAL probe_attempts/probe_units stats,
-which were hardcoded zeros); SAT_PROBE_INPROCESS_ARMED screened neutral
-(default off).
+**What shipped (commits a1bbb5f, 2549801, + the promotion commit):**
 
-## SESSION 14c (2026-07-31/08-01) — php-detector coverage: FIVE more first-ever solves, full-bench 271 → 277/400 (confirmation run, verify_fail=0, ZERO losses); inductive PHP proof engine lands
+1. **`SAT_VIVIFY_DEDUCE` default ON, banded** (the promotion). The kissat
+   `vivify_deduce` reason-cone mechanism was built 2026-07-15 and shelved
+   after the UNBANDED armed screen lost on EARLY armers (ibm +133% conflicts,
+   oski20 +146 s). SESSION 15 added `SAT_VIVIFY_DEDUCE_ARMED_MIN=500_000`
+   (the SESSION 14d reduce-law arming-time discriminator): deduce fires only
+   where `inprocess_armed_at_conflict >= 500k`, so TT/oski/vex/oddball-class
+   banked early armers are byte-identical BY CONSTRUCTION (miterded screen:
+   all five canaries conflict-EXACT; identity refs digit-exact). Mechanism:
+   boothdadda29 probe @2.5M conflicts — vivify hit rate 14.8% → 28.5%
+   (kissat 34%), strengthened 27,491 → 53,823, wall 318 → 311 s.
+2. **`src/backbone.rs` — full kissat backbone.c port, default OFF.**
+   Stacked-probe failed-literal rounds over a private binary-implication-graph
+   propagator, BIG-UIP analysis, RUP units through the learn_lucky path,
+   kissat-parity flags/rounds/2%-effort. Tier-1 on the miter class: **ZERO
+   units found — and kissat's own backbone finds 2 units there** (its 341k
+   backbone ticks are cadence, not content). This re-confirms the 2026-07-15
+   "killed without building" verdict buried in commit 038f9c1 — the ranked
+   backbone item in earlier plan revisions was STALE. The pass is a
+   zero-mutation zero-cost rider (bb arm conflict-identical to base on all
+   23 screen cells): keep OFF; only re-arm if a family with a RICH binary
+   implication graph (large edge count + failed-literal yield) shows up.
+3. **Tier decomposition that found the real lever (boothdadda29, identical
+   2.5M-conflict horizon):** solver12 318 s / 23.9G search ticks vs kissat
+   145 s / 6.97G — 3.4x ticks (49 v 26 ticks/prop AND 194 v 108
+   props/conflict) with kissat vivifying 6.5x more clauses (179,349 v
+   27,491) and walking only 0.12% of wall. Deduce closes part of the
+   hit-rate hole; the residual rate gap (still ~2x wall on miters) is the
+   #1 remaining mechanism target.
 
-Confirmation run `log/seedgate-s14c-confirm-2026-08-01-00-07-44/results.tsv`:
-**277/400 solved, verify ok=274 / checker-timeout=3 / FAIL=0; +6 vs the
-271 baseline (5 php first-evers + lockchart-L210's returning wall coin),
-LOST 0. solver12-only vs kissat now 37 cells; gap 277 v 296 = −19.**
+Screens: miterded 4-arm (`log/abtest-ded-vs-bbded-vs-bb-vs-base-2026-08-02-
+17-45-21`, 23 cells @3600 s): ded 8/23 v base 7/23 (gained sqrt-mitern169;
+boothbit29 8.97M → 8.01M conf), bb ≡ base conflict-exact, bbded ≡ ded
+conflict-exact (no antagonism, no backbone contribution). New suite:
+`benchmarks/miterded-2026-08-02` (23 cells = miterarmed-2026-08-01 + sqrt169
++ lec_mult + boothdadda28/29 + mult16_22). Validation: 756+5 tests (+13 this
+session), smoke 9/9, rbsat 100001/196258/17,758,017 + MVRR 267,199
+digit-exact both flag states.
 
-The five new cells — cliquecoloring_n14_k7_c6, clqcl_30_9_8,
-clqcl_30_11_10, harder-fphp-016-015, rphp_p25_r25 — are all both-timeout
-hard-core cells NOBODY solves at 3600 s; each now refutes in <=0.3 s with
-a drat-trim-VERIFIED ER counting proof (verify 0.2 s - 2744 s, all inside
-the 7200 s in-gate budget). Mechanisms (commit 6d4b7cc):
+## SESSIONS 14b/14c/14d (2026-07-29..08-02) — pruned summaries
 
-1. **Inductive PHP proof engine (`php.rs inductive_blocks`)** — Cook's
-   PHP(k)->PHP(k-1) ER reduction closes the counting core in ~3/4·H^4
-   lines where the old DFS closer is factorial (~e·H!): clqcl_30_11_10's
-   proof fell 10.39M -> 534k lines and its drat-trim time 4044 s -> 16 s.
-   DFS kept for H<=8 so every banked family proof is byte-identical;
-   relay path switches closer at H>8; direct path always inductive. The
-   6-lemma AMO helper chain makes every line single-pass RUP; fresh
-   AND/OR definition vars are RAT with pivot first.
-2. **Direct-php detection** (harder-fphp class): P var-disjoint covers
-   whose columns form verified per-hole AMO cliques with P > H — the
-   covers+cliques ARE the counting core; no W/G layer (it collapses to
-   the pigeon literals).
-3. **Longest-class partition by AMO-connectivity voting w/ seed retry**
-   (rphp_p25_r25: N==H+1 makes the used->hole covers the SAME length as
-   pigeon covers, and both kinds are var-disjoint so var-sharing cannot
-   split them; a shuffle can put a hole cover first, hence seed retry).
-4. **Parse-time structure stash** (cliquecoloring_n14_k7_c6): parser
-   normalization strengthens one cover 14->13, breaking the solve-time
-   histogram precheck; detection now runs once on the pristine parse and
-   the stashed structure is emitted against the original axioms (valid:
-   solver-side strengthening only subsumes them).
-5. Precheck widened (covers 3..=60, second <=12; bench scan: +2
-   non-family cells pay one declining exact scan), estimator now models
-   both closers, proof-line cap 5M -> 8M (RAT-scan-law-safe: php var
-   spaces are n188-scale). SAT_DEBUG_PHP decline tracing throughout.
+- **14d (280/400, +4/−0):** banded `SAT_REDUCE_FRACTION_ARMED` (+ `_MIN=500k`
+  arming-time band — the discriminator SESSION 15 reused) un-blinded the
+  reduce law on late-armed miters: FIRST-EVER 16x16 miter solve (boothbit29),
+  + sqrt-mitern169/lec_mult/shuffling-1. Also `SAT_REPHASE_ARMED_ONLY=off` +
+  `SAT_WALK_EFFORT_UNARMED=200`. Full text: rev 93ab682.
+- **14c (277/400, +6/−0):** php-detector coverage — inductive PHP proof
+  engine (Cook's ER reduction, ~H^4 lines v factorial), direct-php detection,
+  AMO-connectivity partition voting, parse-time structure stash: 5 first-ever
+  both-timeout hard-core cells (cliquecoloring/clqcl/fphp/rphp). Full text:
+  rev d838757.
+- **14b (271/400, +10/−4):** three runaway-pass bugs fixed (sweep-kitten
+  unlimited budget, gauss ordering spin + 31 GB fill-in, mid-giant BVE 8 GiB
+  arena doubling) + `SAT_REDUCE_FRACTION` default ON + thresholded `SAT_ELS`
+  ON + root-pass scoping law (percent-mass decline-is-identity gates are the
+  ONLY shippable root-pass shape). Full text: rev 416adae.
 
-Also measured: **SAT_SWEEP_SUBST=on flips 0/6 miters+uniqinv at 3600 s
-idle — the miter family needs a new mechanism, not the substitution
-flag (arc stays closed).** rook-52/56 + mchess decode: rook52 has 52
-len-52 covers but P==H (not a counting core; hardness is in 421k aux
-ternaries), rook56/mchess use ladder AMO encodings — a ladder-aware
-counting detector is a possible future arc, distinct from php.rs.
-Validation: 749 tests (+9 php: direct/collision/inductive shapes,
-plain+shuffled, drat-trim end-to-end), smoke 9/9, rbsat/MVRR
-fingerprints digit-exact, 9-cell family regression all VERIFIED.
+## RANKED PLAN (2026-08-04)
 
-## SESSION 14b (2026-07-31) — FULL-BENCH PROMOTION: 261 → 271/400 at 3600 s (gate WIN +10); three first-ever solves; two runaway-pass bugs fixed; root-pass scoping law confirmed out-of-sample
-
-**Objective (user /goal): improve the FULL-bench (sat-comp-2025, 400
-cells) solve count at 3600 s / 16 GB / 32 cores. The medium-1800 s gate
-remains the repo's promotion metric for ordinary sessions; this session
-promoted on a full-bench 3600 s paired A/B by explicit instruction.**
-
-Final A/B (`log/abtest-cand-vs-base-2026-07-31-06-41-31`, 400 cells x 2
-arms, simultaneous start, proofs verified both arms):
-
-| arm | solved | PAR-2 | verdict |
-|---|:--:|--:|---|
-| cand (new defaults @ f125734) | **271/400** | 1,094,782 | **WIN (+10)** |
-| base (fixes only, bundle off) | 261/400 | 1,143,378 | — |
-
-Zero SAT/UNSAT contradictions, zero proof/model failures (267 verified
-ok; 4 checker-timeouts, same historical cells). The base arm reproduced
-the 2026-07-29 baseline count exactly (261). vs kissat 4.0.4 (296/400 on
-the same bench 07-29): gap −35 → **−25**.
-
-**Cells gained (+14 vs the 07-29 baseline):** THREE first-evers that
-NOBODY (kissat included) solves at 3600 s — MVRoundRobin_n14_d10_v2
-(UNSAT 3465 s), RoundRobin_n18_d15 (UNSAT 2981 s), at-least-two-vmpc_28
-(SAT 1534 s) — plus battleship-13-13 (UNSAT 122 s, bug fix + reduce law;
-kissat 21 s), bivium-39 (UNSAT 2671 s), gto_p60 (612 s), contest04
-(942 s), oddball_13_5_ttf (429 s), bp4_BC012_IXA_LPI (3335 s),
-bp4_TCO_IXA_FPBLE_ZR (SAT 3453 s; kissat needs 3466 s), reconf10_22
-(2094 s), blockpuzzle (272 s), VdW-23 (1341 s), sted2_0x0_n219-342
-(670 s). **Lost (−4):** rbsat (documented coin flipper), case6 (3421 s
-thin-margin wall cell), 170223547 + lockchart-group1-L210 (deep-SAT/wall
-lottery; lockchart lost in BOTH arms = pure wall coin). Trade: 3
-unique-capability first-evers + 10 mechanism-backed flips vs ~2 real
-reroll losses + 2 coins — clean under any reading of the trade rule.
-
-### What shipped (all in `.rs`, commits 0f12bd0 + f125734)
-
-1. **`sweep_round` kitten tick budget (`SAT_SWEEP_KITTEN_TICKS`, 200M
-   per round).** The legacy `prove_facts` wrapper gave every mid-search
-   sweep kitten call an UNLIMITED budget; one environment on
-   battleship-13-13 sat in a single exponential kitten solve for the
-   cell's whole 3600 s (gdb-confirmed; proof frozen at byte-identical
-   150,995,327 bytes across runs). Healthy rounds measure ~31M ticks
-   worst-case, so 200M is inert there (budgeted core is
-   decision-identical while unexhausted; rbsat/MVRR fingerprints
-   digit-exact). battleship: timeout → UNSAT 950-1037 s on the fix
-   alone, 122 s with the reduce law.
-2. **Gauss work budgets (`SAT_GAUSS_ORDER_WORK`, 100M "touched row
-   entries" for min-degree ordering + same-scale combine budget).**
-   `try_gauss_refute` fell through to the resolution-only fallback on
-   100k-equation XOR systems: `min_degree_order` (gauss.rs:474) spun
-   ~25 min in HashMap churn, then elimination fill-in allocated 31.4 GB
-   (gdb-confirmed) — tseitin_d3_n100000's rc-6 abort; the cell got zero
-   search time. Now declines in ~5.6 s, search runs, peak 1.6 GB.
-   xor_op n36/n40 proofs still emit + drat-trim VERIFIED.
-3. **Mid-giant BVE resolvent cap (5-20M-var instances, 50M MATERIALIZED
-   resolvents, `SAT_GIANT_ELIM_RESOLVENTS`).** Root BVE has no GC inside
-   the pass (occurrence lists hold raw clause ids), so pj2016_k100's
-   100M-resolvent pass doubled the arena into an exactly-8-GiB mapping,
-   peak 17.9 GB virtual → `ulimit -v` kill at 53 s. Attempts do NOT
-   separate the classes (solved band cells also exhaust 100M attempts)
-   but materialized resolvents DO: solved 5-20M-var cells peak at 8-33M
-   resolvents (probed, all byte-identical under the cap by
-   construction); pj2016 trips at 50M → peak 9.8 GB, search at 39 s.
-   pj2016/pj2008 still don't SOLVE (kissat's SAT wins there are search
-   quality, not survival) — the cap is hygiene + enabler.
-4. **`SAT_REDUCE_FRACTION` default ON (kissat reduce.c deletion law).**
-   Unchanged scoping: activates at first reduce ≥1.3M conflicts AND
-   never on `inprocess_aggressive`-armed cells — banked armed cells
-   untouched by construction. This carried most of the +10: the
-   SESSION-5 "value at >3000 s horizons only" prediction confirmed
-   out-of-sample (frontier screen: reduce arm 9/38 vs base 2/38).
-5. **`SAT_ELS` default ON with a percent-scale apply threshold
-   (`SAT_ELS_MIN_SUBST_PERMILLE`, default 50 = 5%).** The ROOT
-   standalone ELS pass computes SCCs, then applies ONLY when merge mass
-   ≥ 5% of live vars; below that it declines with ZERO mutation —
-   byte-identical to els=off (odd51: declines at 28/44,908 = 0.6‰;
-   blockpuzzle: applies at 3,426/50k = 6.9%). Congruence/sweep/round
-   substitution through try_els are NOT gated. This is the
-   decline-is-identity dry-run shape (gbve/congruence/transitive), NOT
-   a ranking threshold — the THRESHOLD-LAW objection does not apply.
-6. **`SAT_PROBE` and `SAT_SWEEP_ROOT` stay default OFF.** The union
-   bundle's first full-bench A/B (killed at ~9.5 h, 253 paired cells,
-   `log/abtest-cand-vs-base-2026-07-30-21-11-*` + log
-   `fullbench-ab-final-20260730-211120.log`) measured them NET-NEGATIVE:
-   cand 155 v base 168, with base's 23 exclusive wins ALL SATISFIABLE —
-   including banked TT496 + all four oddball-tto_zp cells. Rescue
-   probes: the oddballs solve again with root passes off. Find-mass
-   probes: the root-arm "wins" (Circuit24: 54 edits) and the banked
-   losses (TT496: 145 edits) are the SAME tiny-edit phase-lottery —
-   only percent-scale mass (blockpuzzle 6.9%, bv_ILA 35%) is mechanism.
-   **ROOT-PASS SCOPING LAW (out-of-sample confirmation of
-   REROLL-VARIANCE): an unscoped root pass that edits O(100) variables
-   on cells where it finds nothing structural is a net-negative SAT
-   lottery at ANY wall; only decline-is-identity mass thresholds make
-   root passes shippable.**
-
-Validation: 740 tests green (default-expectation tests updated;
-`solve_pre_bundle` helper for trajectory tests), smoke 9/9, identity
-refs digit-exact after fixes (rbsat 100001/196258/17,758,017; MVRR
-267,199). New suite `benchmarks/frontier-2026-07-30` (38 out-of-sample
-cells; screens: 4-arm `log/abtest-reduce-vs-inproc-vs-root-vs-base-...`,
-union `log/abtest-union-vs-reduce-vs-base-...`).
-
-### Remaining gap analysis (271 vs kissat 296, −25)
-
-Kissat-only classes after this session (approximate, from the 07-29
-kissat run joined with A/B2 cand):
-
-- **16x16 multiplier miters (~10 cells + 4 both-timeout): the #1 family
-  gap, UNTOUCHED** — no arm flipped any at 3600 s. Probe: kissat wins
-  via 74% BVE collapse + sustained 11.6k conf/s over 6.2M conflicts +
-  359M walk steps; our elimination parity exists but we need >20M
-  conflicts at 7.6k/s. Needs a genuine trajectory-quality mechanism,
-  not a flag.
-- **Walk-scale SAT cells (~6: Circuit_multiplier24/29, ITC x2, HCP-446,
-  ER_400, shuffling-1):** kissat walks 100-360M steps; our armed walk
-  does 3-27M. The A/B1 root-arm "wins" here were rerolls, not walk. A
-  walk-effort screen is plausible but reroll-lottery-adjacent — use the
-  frontier canaries.
-- **Starved hwmcc/BMC (goldcrest, fixedbandwidth, x-epic, nla-digbench,
-  b18/b19, g2-oski):** tick-cadence inprocessing measured negative at
-  1800 s AND the inproc arm flipped none at 3600 s. Genuinely hard.
-- **pj SAT giants (pj2016/pj2008):** survive memory now, need SAT
-  search luck/quality. **uniqinv40:** needs kissat-scale sweep
-  SUBSTITUTION mid-search (SWEEP_SUBST exists; try a percent-mass
-  threshold like ELS?). **grs x2, sqrt-mitern169, myciel6, SGI, rook-51,
-  lec_mult, SAT_dat.k100, oddball_24_4/26_4/112_5, Bubble_8_4/9_4,
-  Timetable_C_492, lockchart-group1 x2, dislog, mod2c/mod4block,
-  fsf x2, case8, b19_1, ncc, ER_500, ITC_Late, HCP-446, myciel,
-  x-epic...** — long tail, mostly needing the miter/rate mechanisms.
-- Both-timeout hard core: ~71 cells (was 75; −3 first-evers, −bivium).
-
-## RANKED PLAN (2026-07-31)
-
-1. **DONE (SESSION 14c, +5):** php-detector coverage — all five
-   near-misses now solve with verified proofs. Remaining detector leads:
-   (a) ladder/commander-encoded AMO counting cores (rook-56, mchess_20 —
-   needs chain tracing, a genuinely new detector); (b) larger clqcl/rphp
-   members now reachable thanks to the inductive closer if new suites
-   arrive (H up to ~40 is proof-size-viable; verify cost scales as
-   defs x maxVar per the RAT-scan law).
-2. **Multiplier-miter arc OPENED (SESSION 14d): 3 circuit-miter cells
-   flipped via the banded reduce-on-armed law.** Remaining miter-class
-   timeouts (~9: ultra28, wallm28, boothwm28, wall27, dadda-origin
-   bit28/29, booth_dadda_mapped x2, multiplier_15/16bit miters): the
-   law is now active there but they need more than the DB shape —
-   kissat's edge decomposes to sustained rate + 115 backbone rounds +
-   51 probing rounds mid-search (boothbit29 profile). Next lever
-   candidates: mid-search backbone pass (kissat backbone.c port, 2%
-   effort) scoped to the late-armed band; vivify volume parity (kissat
-   vivifies ~8x more clauses); SAT_PROBE_INPROCESS_ARMED re-screen on
-   the remaining miters WITH the reduce law now active (it screened
-   neutral pre-activation).
-3. **SWEEP_SUBST behind a percent-mass threshold (uniqinv40-class).**
-   Same decline-is-identity shape as the ELS threshold; uniqinv40 needs
-   30% sweep-substitution mass (kissat gets it mid-search). Screen on
-   frontier before any default talk.
-4. **Medium-1800 re-baseline (bookkeeping, next ordinary session).**
-   The new defaults change the medium gate's baseline; run the standard
-   medium single-seed A/B (new defaults vs f125734-with-bundle-off) at
-   1800 s to re-anchor the 74/100 lineage before any medium-metric
-   session. Exposure is small (reduce ≥1.3M conflicts; ELS declines on
-   ~all medium cells — verify with the identity refs) but must be
-   measured, not assumed.
-5. **Walk-effort screen on the SAT frontier cells** (4-arm, frontier
-   canaries in every arm; expect lottery — demand mechanism evidence
-   like walk-step parity, not just flips).
-6. **Giant memory diet phase 2 (17.normalised parse; pj-class search
-   RSS)** — only relevant under a 30 GB objective; park.
-7. **Checker-timeout proof-size arc (4 at-risk solves)** — downstream
-   of trajectory quality; track only.
+1. **Miter rate parity, phase 2 (the #1 family: ~9 kissat-only 16x16 cells +
+   Circuit_multiplier29 + both-timeout siblings).** Deduce landed; the
+   residual is still ~2x wall at equal conflicts. Ordered candidate levers,
+   all bandable to the late-armed class: (a) `SAT_VIVIFY_SORT` (built,
+   default off, never screened post-deduce — shares deduce's scope and
+   raises implied-density per attempt); (b) vivify tier3 volume — kissat's
+   3:3:1:3 split vivifies tier3+irredundant which we never touch;
+   SAT_VIVIFY_TIER_SPLIT is a CLOSED LINE from a pre-deduce screen, so
+   re-measure ONLY as "deduce+tier3" with the band, screen on miterded; (c)
+   ticks/prop diet — 49 v kissat 26 at identical conflicts is watch/DB
+   mechanics, needs a fresh profile probe (gdb SIGINT sampler) on
+   boothdadda29 to find where the 2x per-prop cost sits.
+2. **Deal-variance recapture (free +1-2 some deals):** sum_of_3_cubes and
+   MVRR-n14 are now coin/reroll cells (see traps); no work — judge them as
+   coins in future A/Bs. valves-gates/bp4 pair flips the other way.
+3. **SWEEP_SUBST behind a percent-mass threshold (uniqinv40-class).** Same
+   decline-is-identity shape as the ELS threshold; uniqinv40 needs ~30%
+   sweep-substitution mass. Screen on frontier + miterded canaries.
+4. **Medium-1800 re-baseline (bookkeeping, OVERDUE — two promotions since
+   74/100 at c469b03).** Run the standard medium single-seed A/B (current
+   defaults vs 14d-with-deduce-off) at 1800 s before any medium-metric work.
+   Exposure: deduce needs >=500k-conflict arming — most medium cells never
+   get there; verify with the identity refs.
+5. **Walk-scale SAT cells (~5 left: Circuit_multiplier29, ITC x2, HCP-446,
+   ER_400.apx_1):** Circuit24 fell to deduce (not walk). Re-read the walk
+   ledger before any effort tuning; lottery-adjacent.
+6. **Starved hwmcc/BMC class (b18/b19, goldcrest, fixedbandwidth, x-epic,
+   nla-digbench, oski15a10b10s, oisc):** CLOSED at current mechanism level
+   (tick-cadence pipeline measured negative twice). Needs a genuinely new
+   idea, not a flag.
+7. **Checker-timeout proof-size arc (5 at-risk solves: boothbit29,
+   valves-gates, ncc, grs-160-48, VexRiscv)** — track only; valves-gates
+   joined the class this session.
 
 ## Current state
 
-- HEAD: f125734 (SESSION 14b final shape; 0f12bd0 same session).
-  **Full-bench 3600 s baseline: 271/400** (A/B2 cand arm TSV =
-  `log/abtest-cand-vs-base-2026-07-31-06-41-31/cand/results.tsv`).
-  kissat 4.0.4 reference: 296/400 (`log/kissat-full-20260729-210758`).
-- **Medium-1800 s baseline: NEEDS RE-MEASUREMENT under the new defaults
-  (ranked item 4); last measured 74/100 at c469b03 (pre-bundle).**
-  Medium-3600 inside A/B2: cand 75 v base 76 (noise band).
-- Default surface added this session: SAT_SWEEP_KITTEN_TICKS=200M,
-  SAT_GAUSS_ORDER_WORK=100M, SAT_GIANT_ELIM_RESOLVENTS=50M (5-20M-var
-  scope), SAT_REDUCE_FRACTION=on (scoping unchanged), SAT_ELS=on +
-  SAT_ELS_MIN_SUBST_PERMILLE=50, SAT_PROBE=off, SAT_SWEEP_ROOT=off.
-- Full gap read (07-30) of the pre-session state:
-  `plan/gap-read-full-2026-07-30.md` + `log/gap-read-full-2026-07-30/`.
-- Tools: `tools/run_kissat_full.sh` (-d suite, -c core offset, -j jobs);
-  suite `benchmarks/frontier-2026-07-30` (38 cells).
+- HEAD: SESSION 15 promotion commit (after 2549801).
+  **Full-bench 3600 s baseline: 279/400** (cand TSV =
+  `log/abtest-cand-vs-base-2026-08-03-10-13-35/cand/results.tsv`).
+  kissat 4.0.4 reference: 296/400 (`log/kissat-full-20260729-210758`) —
+  **gap −17** (was −25 at 14b). kissat-only 53 / solver12-only 36 /
+  both-timeout 68.
+- **Same-defaults deal variance at 3600 s full bench is ±2-4 solved**: the
+  14d defaults scored 280 (08-01 deal) and 276 (08-03 deal) on identical
+  config — weigh raw full-bench solved deltas accordingly (the paired A/B
+  inside ONE deal is the real signal).
+- **Medium-1800 s baseline: still NEEDS RE-MEASUREMENT (ranked item 4);
+  last measured 74/100 at c469b03 (pre-bundle, pre-deduce).**
+- Default surface added this session: SAT_VIVIFY_DEDUCE=on +
+  SAT_VIVIFY_DEDUCE_ARMED_MIN=500000; SAT_BACKBONE=off (+ SCOPE/ARMED_MIN/
+  EFFORT/TICKS/ROUNDS/MAX_ROUNDS knobs, all inert by default).
+- Suites: `benchmarks/miterded-2026-08-02` (23 cells, miter targets + banked
+  canaries — the standard screen for late-armed-band candidates),
+  `benchmarks/frontier-2026-07-30` (38 cells), miterarmed-2026-08-01 (18).
 
-## Standing traps (updated 2026-07-31 + carried)
+## Standing traps (updated 2026-08-04 + carried)
 
-- **SESSION 14b:** NEVER `cargo build` the solver dir while ANY
-  feature_ablation run is live — later-launched cells silently pick up
-  the new binary (this contaminated and killed A/B1's tail). Build to a
-  scratch `CARGO_TARGET_DIR` instead. `pkill -f` with a pattern that
-  appears in your own command line kills your own shell (exit 144) —
-  use the `[b]racket` trick in the PATTERN itself. The ELS threshold
-  gates ONLY the root standalone pass via the transient
-  `els_apply_min_permille`; congruence/sweep/round substitution must
-  never be gated. `SAT_WALK` env name is PARKED (denylist) — walk tuning
-  goes through SAT_WALK_EFFORT / SAT_REPHASE_ARMED_ONLY.
-- **SESSION 14b:** reduce-law deep-cell coin exposure at 3600 s is
-  real but small: rbsat/case6/170223547-class (deep unarmed cells past
-  1.3M conflicts). Judge those as coins, not capability, in any future
-  full-bench A/B.
-- **SESSION 14:** full-bench 3600 s numbers vs medium-1800 s gate —
-  keep both ledgers separate; a −35 full-bench read coexisted with a
-  WON medium 76v75. `ulimit -v` kills on VIRTUAL memory (RSS
-  understates; use /usr/bin/time -v + VmPeak). rc-6 in a seedgate TSV =
-  allocator abort. SAT_LIMIT_WALL_SEC is honored ONLY in the CDCL loop
-  (sweep-kitten and gauss paths now bounded by ticks/work instead).
-- **Carried (from SESSIONS 4-13, verdicts still binding):** deal noise
-  is ±2 solved cells (medium); conflicts deterministic across load,
-  wall is not; marginal-cell TIMEOUT untrustworthy under 32-way
-  contention (solves are trustworthy); wall-coin flipper list rbsat /
-  vex / oski15 / VdW-22 (+case6, 170223547 at 3600 s); activity proxies
-  mislead — never optimize them; FEATURES.md/CONFIG_SCHEMA.csv are
-  STALE — read src/config.rs + env reads in main.rs; results.tsv is
-  written only at run END; stats JSON goes to stderr and timed-out runs
-  emit none (use SAT_LIMIT_CONFLICTS probes); `pgrep -f
-  feature_ablation` in monitors matches itself; heredoc scratch writes
-  flake — use the Write tool; perf is blocked (use the gdb
-  SIGINT-sampler with `handle SIGINT stop print nopass`; `noprint`
-  implies `nostop`); build to scratch CARGO_TARGET_DIR when anything is
-  running; `rm -rf` guarded in scratch scripts — use timestamped dirs.
-- **Carried ER/proof laws:** RAT-scan law — ER-proof verify cost =
-  #definitions x instance maxVar, NOT lemma count (grid_n400
-  checker-bound, PERMANENTLY CLOSED under drat-trim). Residue/retry law
-  — never stream an aborted ER attempt into the live proof (deletions
-  break the retry's RUP; dry-run with sink emitters). Deletions are
-  load-bearing for definition-var recycling (no-del proofs do NOT
-  verify). tseitin caps stay legacy; SAT_TSEITIN_SNAKE stays OFF at
-  1800 s (checker-timeout = gate correctness FAIL).
+- **SESSION 15:** the ranked-plan backbone item was STALE — commit 038f9c1
+  (2026-07-15) had already killed it with kissat -s profiles; CHECK COMMIT
+  MESSAGES of groundwork commits before re-ranking an old idea. Coin list
+  additions: sum_of_3_cubes_37_bits_87 (SAT; stable 894,247-conflict
+  trajectory when deduce-untouched, rerolls under any late-armed-band
+  feature), MVRR_n14_d10_v2 (82-720 s margins at 3600 s, deep grinder at the
+  wall). valves-gates is now ALSO a checker-timeout cell (verify caveat).
+  4-arm screens at 3600 s on 23 cells run ~10.5 h wall, not ~3 h — plan
+  accordingly; 400x2 full A/B ran ~15 h with verification.
+- **SESSION 14b (carried):** NEVER `cargo build` the solver dir while ANY
+  feature_ablation run is live — build to a scratch CARGO_TARGET_DIR or copy
+  the binary out first. `pkill -f` with a self-matching pattern kills your
+  own shell — use the `[b]racket` trick. ELS threshold gates ONLY the root
+  standalone pass. `SAT_WALK` env name is PARKED (denylist).
+- **SESSION 14b (carried):** reduce-law deep-cell coin exposure at 3600 s:
+  rbsat/case6/170223547-class. Judge as coins, not capability.
+- **SESSION 14 (carried):** full-bench 3600 s and medium-1800 s are separate
+  ledgers. `ulimit -v` kills on VIRTUAL memory. rc-6 = allocator abort.
+  SAT_LIMIT_WALL_SEC honored only in the CDCL loop.
+- **Carried (SESSIONS 4-13):** deal noise ±2 medium; conflicts deterministic
+  across load, wall is not; marginal-cell TIMEOUT untrustworthy under 32-way
+  contention (solves ARE trustworthy); flipper list rbsat / vex / oski15 /
+  VdW-22 (+case6, 170223547, sum_of_3_cubes, MVRR-n14 at 3600 s); activity
+  proxies mislead; FEATURES.md/CONFIG_SCHEMA.csv are STALE (read
+  src/config.rs + main.rs env reads); results.tsv written at run END; stats
+  JSON on stderr, timed-out runs emit none (SAT_LIMIT_CONFLICTS probes);
+  heredoc scratch writes flake — use the Write tool; perf blocked (gdb
+  SIGINT sampler); `rm -rf` guarded — timestamped scratch dirs.
+- **Carried ER/proof laws:** RAT-scan law (verify cost = #definitions x
+  maxVar); residue/retry law (never stream an aborted ER attempt);
+  deletions are load-bearing; tseitin caps legacy; SAT_TSEITIN_SNAKE off.
 - **Carried closed lines (do not reopen without new mechanism):**
-  starved-cell tick-cadence pipeline (negative at 1800 s AND no flips
-  at 3600 s); unscoped root ELS/PROBE/SWEEP_ROOT defaults (SESSION 14b
-  A/B1 net-negative — threshold variants only); SAT_ELIM_DEF at any
-  budget (fallback bug documented); vivify tier-split; gbve-adopter
-  rounds; units-only transitive; per-mille RANKING thresholds for
-  adopting root passes (THRESHOLD LAW — decline-is-identity mass gates
-  are the exception that works); ramsey ER emission (research-scale);
-  st_659 (no certificate family; status UNKNOWN at 4x wall).
+  starved-cell tick-cadence pipeline; unscoped root ELS/PROBE/SWEEP_ROOT
+  defaults; SAT_ELIM_DEF; vivify tier-split AS A STANDALONE (SESSION 15
+  exception: may re-screen as deduce+tier3 inside the late-armed band,
+  ranked item 1b); gbve-adopter rounds; units-only transitive; per-mille
+  RANKING thresholds (percent-mass decline-is-identity gates are the
+  exception); ramsey ER emission; st_659; SAT_BACKBONE default-on (zero
+  yield everywhere measured — miters, and 07-15 Bubble/fixedband profiles).
 
 ## solver12's capability edge (protect in rerolls)
 
-First-evers banked this session (nobody else solves at 3600 s):
-**MVRoundRobin_n14_d10_v2, RoundRobin_n18_d15, at-least-two-vmpc_28.**
-Carried: rphp5_050/085, clqcl_40/50_6_5 + 5 cliquecoloring siblings
-(SAT_PHP_REFUTE, pre-search, reroll-immune), xor_op x2 (SAT_GAUSS),
-tseitin_n188_d3, RoundRobin_n15-n17 class + MVRR x3 (gate-BVE),
-oddball-tto_zp x4 + TT_C496 + TT_C406 (endgame/arming — CONFIRMED
-protected by the final shape; they died under unscoped root passes),
-Kakuro-132, HCP-529, frb80-14-1, valves-gates (checker-timeout caveat),
-oddball_13_5_ttf + battleship + bivium + gto + contest04 + reconf10_22 +
-blockpuzzle + VdW-23 + sted2var + bp4_BC012_IXA + bp4_TCO_IXA (SESSION
-14b, reduce/els/fix-backed).
+New this session: **Circuit_multiplier24** (SAT 1917 s; kissat-only before),
+**BubbleVsPancakeSort_7_6** (UNSAT 2274 s, fat margin). Carried first-evers:
+MVRoundRobin_n14_d10_v2 (NOW A COIN — protect but expect flips),
+RoundRobin_n18_d15, at-least-two-vmpc_28, rphp5_050/085, clqcl_40/50_6_5 + 5
+cliquecoloring siblings (SAT_PHP_REFUTE, reroll-immune), xor_op x2
+(SAT_GAUSS), tseitin_n188_d3, RoundRobin_n15-n17 + MVRR x3 (gate-BVE),
+oddball-tto_zp x4 + TT_C496 + TT_C406 (endgame/arming; protected by the
+500k bands), Kakuro-132, HCP-529, frb80-14-1, valves-gates (checker-timeout
+caveat), oddball_13_5_ttf, battleship, bivium, gto_p60, contest04,
+reconf10_22, blockpuzzle, VdW-23, sted2var, bp4_BC012_IXA + bp4_TCO_IXA
+(deal-marginal), boothbit29 + sqrt-mitern169 + lec_mult_CvW + shuffling-1
+(14d, now deduce-accelerated 10-16%).
 
 ## Where the evidence lives
 
-- This session: `log/abtest-cand-vs-base-2026-07-31-06-41-31` (A/B2,
-  THE verdict), `log/abtest-cand-vs-base-2026-07-30-21-11-*` via
-  `log/fullbench-ab-final-20260730-211120.log` (A/B1 union bundle,
-  killed, attribution data), frontier screens
-  `log/abtest-reduce-vs-inproc-vs-root-vs-base-2026-07-30-11-56-05` and
-  `log/abtest-union-vs-reduce-vs-base-*`, backtraces + probes in
-  `log/gap-read-full-2026-07-30/`.
-- Pre-session full-bench gap read: `plan/gap-read-full-2026-07-30.md`.
-- Mechanism deep dives: `plan/kissat-gaps.md`,
-  `plan/gap-read-2026-07-21.md`.
-- SESSIONS 4-13 full text: git history of this file (up to 52a8f95).
+- SESSION 15: `log/abtest-cand-vs-base-2026-08-03-10-13-35` (THE verdict),
+  `log/abtest-ded-vs-bbded-vs-bb-vs-base-2026-08-02-17-45-21` (miterded
+  screen), `log/miterded-screen-20260802-174521.log`,
+  `log/fullbench-ded-ab-20260803-101334.log`; tier-1 probes in scratch were
+  transient — key numbers recorded above and in the solver README entry.
+- SESSION 14d/14c/14b: `log/abtest-cand-vs-base-2026-08-01-20-32-12`,
+  `log/seedgate-s14c-confirm-2026-08-01-00-07-44`,
+  `log/abtest-cand-vs-base-2026-07-31-06-41-31`.
+- Mechanism deep dives: `plan/kissat-gaps.md` (NOTE: its backbone/probing
+  "small ports" ranking is now measured-refuted for the miter class),
+  `plan/gap-read-full-2026-07-30.md`, `plan/gap-read-2026-07-21.md`.
+- SESSIONS 4-13 full text: git history of this file (up to 52a8f95);
+  14b/c/d full text up to 93ab682.
