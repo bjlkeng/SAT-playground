@@ -10287,6 +10287,18 @@ impl Solver {
             if self.restart_armed_margin > 0.0 {
                 self.restart_margin = self.restart_armed_margin;
             }
+            // SESSION 16: banded trail reuse applies to the yield-armed class
+            // too. The 16x16 miters arm through THIS path (congruence_merges
+            // = 0 there), so the congruence-path-only wiring left the reuse
+            // knob structurally inert on its target family — the 2026-08-05
+            // reuse screen arm was conflict-identical to base on all 23
+            // miterded cells because of exactly this gap.
+            if self.restart_armed_reuse_trail
+                && self.stats.inprocess_armed_at_conflict >= self.restart_reuse_armed_min
+            {
+                self.restart_reuse_trail_focused = true;
+                self.restart_reuse_trail_stable = true;
+            }
         }
         if self.trace_preprocess_details {
             let nvars = self.assignment.len().saturating_sub(1).max(1);
