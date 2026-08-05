@@ -2547,6 +2547,16 @@ struct Solver {
     /// SESSION 14d late-armed band. 0 = unbanded armed scope (the 2026-07-15
     /// screen shape, which lost on early armers).
     vivify_deduce_armed_min: u64,
+    /// SAT_VIVIFY_SORT_ARMED_MIN (default 500_000): vivify-sort band. 0 =
+    /// legacy GLOBAL scope (the 2026-07-14 loser shape).
+    vivify_sort_armed_min: u64,
+    /// SAT_VIVIFY_TIER_SPLIT_ARMED_MIN (default 500_000): tier-split band.
+    /// 0 = the plain armed scope (the closed-line screen shape).
+    vivify_tier_split_armed_min: u64,
+    /// SAT_RESTART_REUSE_TRAIL_ARMED_MIN (default 500_000): armed trail-reuse
+    /// band, checked at arming time. 0 = any armed formula (the 2026-07-12/14
+    /// loser shape).
+    restart_reuse_armed_min: u64,
     /// stamp buffer for the vivify-deduce reason-cone walk (by variable)
     vivify_seen: Vec<u32>,
     /// current stamp value for `vivify_seen`
@@ -4223,6 +4233,18 @@ impl Solver {
             // >=500k late-armed band below.
             vivify_deduce: env_bool_or_default("SAT_VIVIFY_DEDUCE", true),
             vivify_deduce_armed_min: std::env::var("SAT_VIVIFY_DEDUCE_ARMED_MIN")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(500_000),
+            vivify_sort_armed_min: std::env::var("SAT_VIVIFY_SORT_ARMED_MIN")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(500_000),
+            vivify_tier_split_armed_min: std::env::var("SAT_VIVIFY_TIER_SPLIT_ARMED_MIN")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(500_000),
+            restart_reuse_armed_min: std::env::var("SAT_RESTART_REUSE_TRAIL_ARMED_MIN")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(500_000),
@@ -10470,7 +10492,15 @@ impl Solver {
             if self.restart_armed_margin > 0.0 {
                 self.restart_margin = self.restart_armed_margin;
             }
-            if self.restart_armed_reuse_trail {
+            if self.restart_armed_reuse_trail
+                && self.stats.inprocess_armed_at_conflict >= self.restart_reuse_armed_min
+            {
+                // SESSION 15 phase 2 band: the 2026-07-12/14 armed reuse
+                // screens lost on vex/ibm (EARLY armers); the late-armed
+                // miter class restarts every ~154 conflicts on ~1-2k-level
+                // trails with zero reuse (boothdadda29: 16,194 restarts /
+                // 2.5M conflicts, reused_trails=0) — the re-descent props are
+                // part of the 194-v-108 props/conflict gap vs kissat.
                 self.restart_reuse_trail_focused = true;
                 self.restart_reuse_trail_stable = true;
             }
@@ -10573,6 +10603,14 @@ impl Solver {
     /// Number of variables still participating in search: unassigned at root and not
     /// eliminated/substituted away. The armed multi-round inprocess loop uses this as
     /// its progress measure (kissat `solver->active` analog).
+    /// The SESSION 14d/15 arming-time band: true when this formula's
+    /// aggressive arming latched at or past `min` conflicts. `min == 0`
+    /// degrades to the plain armed scope. Early armers (TT ~200k, vex/oski
+    /// instant) sit below the standard 500k band by construction.
+    fn late_armed_at_least(&self, min: u64) -> bool {
+        self.inprocess_aggressive && self.stats.inprocess_armed_at_conflict >= min
+    }
+
     fn count_active_vars(&self) -> usize {
         let nvars = self.assignment.len().saturating_sub(1);
         (1..=nvars)
@@ -10682,9 +10720,13 @@ impl Solver {
             ok = self.try_backbone(proof_log, config);
         }
         if ok && self.should_vivify_inprocess_round() {
-            // Kissat tier schedule on ARMED formulas only (SAT_VIVIFY_TIER_SPLIT);
-            // everything else keeps the shipped single-pass round byte-identical.
-            ok = if self.vivify_tier_split && self.inprocess_aggressive {
+            // Kissat tier schedule, banded to the LATE-ARMED class (SESSION 15
+            // phase 2; SAT_VIVIFY_TIER_SPLIT_ARMED_MIN=0 restores the plain
+            // armed scope); everything else keeps the shipped single-pass
+            // round byte-identical.
+            ok = if self.vivify_tier_split
+                && self.late_armed_at_least(self.vivify_tier_split_armed_min)
+            {
                 self.vivify_round_tiered(proof_log)
             } else {
                 self.vivify_round(proof_log)
@@ -11395,9 +11437,8 @@ impl Solver {
         // mechanism's target — the 16x16 miter class, hit rate 15% vs kissat
         // 34% — arms late (~800k). SAT_VIVIFY_DEDUCE_ARMED_MIN=0 restores the
         // unbanded armed scope.
-        let vivify_deduce = self.vivify_deduce
-            && self.inprocess_aggressive
-            && self.stats.inprocess_armed_at_conflict >= self.vivify_deduce_armed_min;
+        let vivify_deduce =
+            self.vivify_deduce && self.late_armed_at_least(self.vivify_deduce_armed_min);
         // Kissat vivify.c literal ordering (SAT_VIVIFY_SORT, default off): count each
         // literal's occurrences across this round's candidates and assume the
         // most-frequent literals first. Frequent literals propagate the most shared
@@ -11405,7 +11446,15 @@ impl Solver {
         // (TRUE => redundant, FALSE => ALE-removable) before the budget is spent.
         // Only the LOCAL walk order changes; stored clauses are never reordered.
         // Skipped on giants (counts would be ~8B/var; giants never reach vivify).
-        let vivify_sort = self.vivify_sort && self.assignment.len() <= 20_000_000;
+        // SESSION 15 phase 2: sort is banded to the late-armed class. The
+        // 2026-07-14 GLOBAL screen measured it a loser everywhere tested (ibm/
+        // bp4/vex/oski — all early armers), and noted kissat pairs sorting
+        // with deduce-style analysis; deduce is now ON for exactly this band,
+        // so the pairing exists only here. SAT_VIVIFY_SORT_ARMED_MIN=0
+        // restores the legacy global scope.
+        let vivify_sort = self.vivify_sort
+            && self.assignment.len() <= 20_000_000
+            && self.late_armed_at_least(self.vivify_sort_armed_min);
         let counts: Vec<u32> = if vivify_sort {
             let mut counts = vec![0u32; self.assignment.len() * 2];
             for &(_, c) in &candidates {
