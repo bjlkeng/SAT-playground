@@ -1,13 +1,51 @@
-# NEXT PLAN — 2026-08-06 (supersedes 2026-08-04; PRUNED)
+# NEXT PLAN — 2026-08-06b (supersedes 2026-08-06; PRUNED)
 
 One-file plan for the next clear context. SESSIONS 4-13 bodies live in git
 history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
 bodies were pruned earlier — full text in revisions up to 93ab682. Where this
 file contradicts an older revision, THIS file wins.
 
-**START HERE:** read "SESSION 16" (a no-promotion mapping session whose
-negatives are load-bearing), then "SESSION 15", then "RANKED PLAN", then
+**START HERE:** read "SESSION 16b" (the promotion), then "SESSION 16" (the
+mapping session whose negatives set it up), then "RANKED PLAN", then
 "Standing traps".
+
+## SESSION 16b (2026-08-06) — deep-unarmed rephase/walk latch PROMOTED: full-bench 281 → 286/400 (gate PASS, +9/−4, tier-2 −81.8M); SEVEN former kissat-only cells captured
+
+**The discovery:** never-armed formulas structurally could not rephase or
+walk — `config.rephase` defaults off and ONLY the arming/endgame paths set
+`rephase_enabled`, so the walk-scale SAT class ran ZERO walk steps at any
+depth (ITC_Early_12 / ITC_Late_10 / ER_400.apx_1 measured `rephases=0,
+walk_steps=0` at 1.2M conflicts while kissat walks 100-360M steps there).
+Corollary: `SAT_WALK_EFFORT_UNARMED=200` (promoted 14d) was DEAD CODE —
+every rephase-enabled cell is `inprocess_aggressive`, so the unarmed branch
+never executed anywhere.
+
+**The promoted shape (commit after d6ea413):**
+`SAT_REPHASE_UNARMED_MIN=1_000_000` default ON — enable the kissat-parity
+rephase/walk cycle once a never-armed formula reaches 1M conflicts (the
+endgame philosophy: perturb only losing trajectories; every unarmed cell
+finishing below 1M is byte-identical BY CONSTRUCTION — rbsat
+100001/196258/17,758,017 and MVRR 267,199 digit-exact) — plus
+`SAT_WALK_EFFORT_UNARMED` default 200 → **50** (kissat walkeffort parity;
+the screen measured 200 OVERWALKING: e50 9/14 v e200 6/14 v base 6/14 —
+e200 lost vmpc/mod2c/sted2 that e50 wins).
+
+**Full-bench A/B `log/abtest-cand-vs-base-2026-08-06-03-28-37`** (400x2
+@3600 s, gate PASS, zero contradictions/correctness failures,
+checker-timeouts 5→4): **cand 286 v base 281. Gained 9 (all SAT, all the
+deep-unarmed class): ER_400_20_7.apx_1, sted2_0x0_n219, mod2c-rand3bip,
+case8, fsf-300-354 x2 — all six former KISSAT-ONLY — plus 170223547
+(walk-solves in 51 s right at the latch, was a coin timeout), bp4_BC012_AM,
+mp1-Nb7T45. Lost 4: bp4_TCO (184 s, the documented deal coin), VdW-23
+(walk-reroll — solved in the screen deal at 3358 s), reconf10_22 + frb80
+(reroll losses inside the allowance). Tier-2 conflicts −81.8M across 47
+changed both-solved cells; PAR-2 987,867 v 1,028,679.**
+
+Screen (`log/abtest-e200-vs-e50-vs-base-2026-08-06-01-37-34`, suite
+`benchmarks/unarmedwalk-2026-08-06`: 5 walk targets + 9 deep-unarmed
+coin-class canaries): e50 9/14 v base 6/14, zero losses. ITC x2 and dislog
+did NOT fall (still kissat-only) — the latch walks them now but they need
+more than phase luck. Validation: 756+5 tests, smoke 9/9.
 
 ## SESSION 16 (2026-08-04/06) — NO PROMOTION: the late-armed re-screen space is now mapped; trail reuse PARKED after full evidence; five arms closed with data
 
@@ -148,44 +186,45 @@ digit-exact both flag states.
   ON + root-pass scoping law (percent-mass decline-is-identity gates are the
   ONLY shippable root-pass shape). Full text: rev 416adae.
 
-## RANKED PLAN (2026-08-06)
+## RANKED PLAN (2026-08-06b)
 
-1. **Medium-1800 re-baseline (bookkeeping, NOW THE CHEAPEST REAL ITEM —
-   two promotions since 74/100 at c469b03).** Run the standard medium
-   single-seed A/B (current defaults vs deduce-off) at 1800 s before any
-   medium-metric work. Exposure is small (deduce needs >=500k-conflict
-   arming; most medium cells never get there).
-2. **Cardinality proof engine research arc (mchess_20 + rook-51/52/56 +
-   any future counting-UNSAT family).** SESSION 16 decoded mchess_20 as
-   direct-php P=200/H=198 with short covers — the blocker is proof SIZE,
-   not detection (inductive closer is H^4). Design work needed ON PAPER
-   first: a DRAT-emittable cardinality argument (totalizer with per-merge
-   RUP lemmas + an injective-mapping core, or a cutting-planes simulation).
-   Potential +2-4 first-evers, zero reroll risk (pre-search). Do not start
-   the code before the proof shape is written down and sized.
-3. **Miter family, remaining levers.** The band-re-screen space is
-   EXHAUSTED (deduce promoted; sort/tier3/cadence/reuse all measured — see
-   SESSION 16). What is left is genuinely structural: props/conflict 194 v
-   108 net of restarts (trail reuse only recovered ~6 levels/restart —
-   most of the gap is elsewhere: DB composition and decision quality), or
-   an elimination-depth mechanism. Requires a new decomposition probe, not
-   a flag. Expected slope here is now LOW; deprioritized below item 2.
-4. **Walk-scale SAT cells (~5: Circuit_multiplier29, ITC x2, HCP-446,
-   ER_400.apx_1):** lottery-adjacent; re-read the walk ledger first.
+1. **Medium-1800 re-baseline (bookkeeping, OVERDUE — THREE promotions since
+   74/100 at c469b03).** Run the standard medium single-seed A/B (current
+   defaults vs all-three-off) at 1800 s before any medium-metric work.
+   Exposure: deduce needs >=500k arming, the walk latch needs 1M conflicts
+   unarmed — most medium cells reach neither; verify with identity refs.
+2. **Walk-latch second wave.** The latch captured 7 kissat-only cells but
+   ITC x2 / dislog / Circuit_multiplier29 still stand, and VdW-23 +
+   reconf10 + frb80 became walk-reroll flippers. Candidate refinements to
+   SCREEN (unarmedwalk suite + the three new flippers as canaries): latch
+   threshold sweep (500k / 2M — is 1M optimal?), rephase-cycle delta for
+   the unarmed class, walk size cap (ITC at 208k vars may be
+   warmup-bound — profile ONE ITC walk first). Lottery-adjacent: demand
+   walk-step/improvement evidence, not just flips.
+3. **Cardinality proof engine research arc (mchess_20 + rook-51/52/56).**
+   mchess_20 decoded as direct-php P=200/H=198 — blocked on proof SIZE
+   (closer is H^4; RAT-scan law kills even H^3 variants at maxVar~2.6M).
+   Needs a genuinely new DRAT-emittable cardinality argument designed ON
+   PAPER first. Potential +2-4 first-evers, zero reroll risk.
+4. **Miter family, remaining levers:** band-re-screen space EXHAUSTED
+   (SESSION 16); residual is structural (props/conflict net of restarts,
+   DB/decision quality). New decomposition probe required; LOW slope.
 5. **Starved hwmcc/BMC class:** CLOSED at current mechanism level.
-6. **Checker-timeout proof-size arc (5 at-risk solves)** — track only.
+6. **Checker-timeout proof-size arc (4 at-risk solves)** — track only.
 
 ## Current state
 
-- HEAD: SESSION 16 final (59b64e7 + this plan commit; defaults unchanged
-  since the SESSION 15 promotion bc4417c).
-  **Full-bench 3600 s baseline: 279/400 promoted** (cand TSV =
-  `log/abtest-cand-vs-base-2026-08-03-10-13-35/cand/results.tsv`); the
-  same defaults scored 281 as the base arm of the 08-05 A/B
-  (`log/abtest-cand-vs-base-2026-08-05-08-46-46/base/results.tsv`) — use
-  either as a paired-baseline TSV, never compare across deals.
+- HEAD: SESSION 16b promotion commit (after d6ea413).
+  **Full-bench 3600 s baseline: 286/400 promoted** (cand TSV =
+  `log/abtest-cand-vs-base-2026-08-06-03-28-37/cand/results.tsv`).
   kissat 4.0.4 reference: 296/400 (`log/kissat-full-20260729-210758`) —
-  **gap −17**. kissat-only 53 / solver12-only 36 / both-timeout 68.
+  **gap −10** (was −25 at 14b, −17 at SESSION 15). kissat-only 48 /
+  solver12-only 38 / both-timeout 66. Lineage this month: 261 → 271 →
+  277 → 280 → 279* → 286 (*deal variance; paired A/Bs all WINs).
+- Default surface added SESSIONS 15-16b: SAT_VIVIFY_DEDUCE=on +
+  _ARMED_MIN=500k; SAT_REPHASE_UNARMED_MIN=1_000_000;
+  SAT_WALK_EFFORT_UNARMED=50 (was 200 = dead code); SAT_BACKBONE=off;
+  banded sort/tier3/reuse knobs off (closed).
 - **Same-defaults deal variance at 3600 s full bench is ±2-4 solved**: the
   14d defaults scored 280 (08-01 deal) and 276 (08-03 deal) on identical
   config — weigh raw full-bench solved deltas accordingly (the paired A/B
@@ -199,8 +238,17 @@ digit-exact both flag states.
   canaries — the standard screen for late-armed-band candidates),
   `benchmarks/frontier-2026-07-30` (38 cells), miterarmed-2026-08-01 (18).
 
-## Standing traps (updated 2026-08-06 + carried)
+## Standing traps (updated 2026-08-06b + carried)
 
+- **SESSION 16b:** REACHABILITY-AUDIT LAW — before tuning any knob, trace
+  its enable chain to the class it targets; three separate features this
+  week (trail reuse, walk-effort-unarmed, unarmed rephase) were dead code
+  on their target class because an upstream gate (arming path,
+  rephase_enabled) never fired there. A `*_steps=0` or `rephases=0` stat
+  on a cell the feature should touch is the tell. New walk-reroll flipper
+  cells at 3600 s: VdW-23, reconf10_22, frb80-14-1 (join bp4_TCO/rbsat/
+  case6/170223547* in the coin list; *170223547 now deterministically
+  walk-solves at the latch — protect it).
 - **SESSION 16:** when a knob screens conflict-IDENTICAL to base across a
   whole suite, suspect WIRING before verdict — trail reuse was only wired
   into the congruence arming path while its target family arms via the

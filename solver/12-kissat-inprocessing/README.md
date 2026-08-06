@@ -15,6 +15,31 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **Full-bench default promotion (2026-08-06, SESSION 16b): deep-unarmed
+> rephase/walk latch (`SAT_REPHASE_UNARMED_MIN=1_000_000` default ON,
+> `SAT_WALK_EFFORT_UNARMED` default 200→50).** DISCOVERY: never-armed formulas
+> structurally could not rephase or walk — `config.rephase` defaults off and
+> only the arming/endgame paths enable the cycle, so the walk-scale SAT class
+> ran ZERO walk steps forever (ITC/ER_400/mod2c measured rephases=0 at 1.2M
+> conflicts; kissat walks 100-360M steps there), and the previously-promoted
+> effort-200 unarmed knob was dead code (every rephase-enabled cell is
+> `inprocess_aggressive`). The latch enables the kissat-parity rephase/walk
+> cycle once a never-armed formula reaches 1M conflicts; unarmed cells
+> finishing earlier stay byte-identical by construction (rbsat
+> 100001/196258/17,758,017 and MVRR 267,199 digit-exact). Effort 50 is
+> kissat walkeffort parity — the unarmedwalk screen measured 200 overwalking
+> (e50 9/14 v e200 6/14 v base 6/14). Full-bench A/B
+> (`log/abtest-cand-vs-base-2026-08-06-03-28-37`, 400x2 @3600 s, gate PASS,
+> zero contradictions/correctness failures, checker-timeouts 5→4): **cand 286
+> v base 281 WIN (+9/−4); gained ER_400_20_7.apx_1, sted2_0x0_n219, mchess-
+> class mod2c, case8, fsf-300 x2 (ALL former kissat-only), 170223547
+> (walk-solves in 51 s at the latch), bp4_BC012_AM_FPBEQ_ZR, mp1-Nb7T45;
+> lost bp4_TCO (184 s coin), VdW-23 (walk-reroll, solved in the screen
+> deal), reconf10_22, frb80; tier-2 conflicts −81.8M over the 47 changed
+> both-solved cells, PAR-2 987,867 v 1,028,679.** Full-bench lineage
+> 279 → 286/400; gap to kissat 4.0.4 (296) now −10. Detail:
+> `plan/next-plan.md` SESSION 16b.
+
 > **Full-bench default promotion (2026-08-03, SESSION 15): banded vivify-deduce
 > (`SAT_VIVIFY_DEDUCE` default ON inside the late-armed band).** The kissat
 > `vivify_deduce` mechanism (reason-cone shrink on conflict, implied-TRUE

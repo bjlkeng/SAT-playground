@@ -4058,14 +4058,26 @@ impl Solver {
             walk_effort_permille: config.walk_effort_permille,
             // SESSION 14d: default 200 (4x) — part of the A/B3 winning arm;
             // armed cells keep walk_effort_permille (50) by construction.
+            // SESSION 16b: default 50 (kissat walkeffort parity). The old 200
+            // default was DEAD CODE (every rephase-enabled cell was
+            // inprocess_aggressive, so the unarmed branch never ran); the
+            // deep-unarmed latch below is its first real exercise, and the
+            // unarmedwalk screen measured 200 overwalking (lost vmpc/mod2c/
+            // sted2 vs effort 50).
             walk_effort_unarmed_permille: std::env::var("SAT_WALK_EFFORT_UNARMED")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(200),
+                .unwrap_or(50),
+            // SESSION 16b: default ON at 1M — full-bench A/B WIN 286 v 281
+            // (gate PASS, log/abtest-cand-vs-base-2026-08-06-03-28-37; +9/−4,
+            // tier-2 −81.8M: gained ER_400.apx_1 / sted2 / mod2c / case8 /
+            // fsf x2 (all former kissat-only) + 170223547 + bp4_BC012_AM +
+            // mp1-Nb7T45; lost bp4_TCO coin, VdW-23 walk-reroll, reconf10,
+            // frb80).
             rephase_unarmed_min: std::env::var("SAT_REPHASE_UNARMED_MIN")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
+                .unwrap_or(1_000_000),
             walk_warmup: config.walk_warmup,
             walk_last_search_ticks: 0,
             decision_level: vec![0; num_vars + 1],
