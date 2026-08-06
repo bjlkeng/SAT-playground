@@ -2267,9 +2267,13 @@ struct Solver {
     /// Armed-only restart margin override (SAT_RESTART_ARMED_MARGIN, default 0.0 =
     /// off). Kissat parity is 1.10 vs the shipped 1.20.
     restart_armed_margin: f64,
-    /// Armed-only restart trail reuse (SAT_RESTART_REUSE_TRAIL_ARMED, default off).
-    /// Enables focused+stable trail reuse only after the congruence signal arms.
+    /// Armed-only restart trail reuse (SAT_RESTART_REUSE_TRAIL_ARMED, default
+    /// off; "on" = focused+stable, "focused" = focused-only). Enabled at
+    /// arming time (congruence or yield path) inside the late-armed band.
     restart_armed_reuse_trail: bool,
+    /// false when SAT_RESTART_REUSE_TRAIL_ARMED=focused: stable-mode reuse
+    /// stays off so walk/rephase-guided SAT descents are never perturbed.
+    restart_armed_reuse_stable_too: bool,
     /// Set when maybe_arm_congruence_productive_search fired on the congruence
     /// signal (as opposed to elimination yield); scopes armed restart knobs to
     /// deep-trail BMC/miter cells.
@@ -4117,7 +4121,20 @@ impl Solver {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.0),
-            restart_armed_reuse_trail: env_bool_or_default("SAT_RESTART_REUSE_TRAIL_ARMED", false),
+            restart_armed_reuse_trail: match std::env::var("SAT_RESTART_REUSE_TRAIL_ARMED") {
+                Ok(v) if v == "focused" => true,
+                Ok(_) | Err(_) => env_bool_or_default("SAT_RESTART_REUSE_TRAIL_ARMED", false),
+            },
+            // "focused" = reuse in focused mode only, leaving stable-mode
+            // (walk/rephase-guided SAT descent) untouched. The 2026-08-05
+            // full A/B measured both-modes reuse: UNSAT miters deterministic
+            // WIN (boothdadda29 first-ever, every miter −10-15% conflicts, 96%
+            // of reuse events focused) but late-armed SAT cells regressed
+            // (Circuit24/DLTM lost, oddball/ER_400 +2-11M conflicts) — the
+            // stable-mode perturbation is the damage surface.
+            restart_armed_reuse_stable_too: std::env::var("SAT_RESTART_REUSE_TRAIL_ARMED")
+                .map(|v| v != "focused")
+                .unwrap_or(true),
             congruence_search_armed: false,
             restart_floor_armed: false,
             yield_search_armed: false,
@@ -10297,7 +10314,7 @@ impl Solver {
                 && self.stats.inprocess_armed_at_conflict >= self.restart_reuse_armed_min
             {
                 self.restart_reuse_trail_focused = true;
-                self.restart_reuse_trail_stable = true;
+                self.restart_reuse_trail_stable = self.restart_armed_reuse_stable_too;
             }
         }
         if self.trace_preprocess_details {
@@ -10514,7 +10531,7 @@ impl Solver {
                 // 2.5M conflicts, reused_trails=0) — the re-descent props are
                 // part of the 194-v-108 props/conflict gap vs kissat.
                 self.restart_reuse_trail_focused = true;
-                self.restart_reuse_trail_stable = true;
+                self.restart_reuse_trail_stable = self.restart_armed_reuse_stable_too;
             }
         }
     }
