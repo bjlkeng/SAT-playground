@@ -1,14 +1,70 @@
-# NEXT PLAN — 2026-08-04 (supersedes 2026-08-02; PRUNED)
+# NEXT PLAN — 2026-08-06 (supersedes 2026-08-04; PRUNED)
 
 One-file plan for the next clear context. SESSIONS 4-13 bodies live in git
 history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
-bodies were pruned this revision — full text in revisions up to 93ab682, and
-their verdicts survive in "Standing traps", "Closed lines", and the solver
-README "Current State" entries. Where this file contradicts an older revision,
-THIS file wins.
+bodies were pruned earlier — full text in revisions up to 93ab682. Where this
+file contradicts an older revision, THIS file wins.
 
-**START HERE:** read "SESSION 15" below, then "RANKED PLAN", then "Standing
-traps".
+**START HERE:** read "SESSION 16" (a no-promotion mapping session whose
+negatives are load-bearing), then "SESSION 15", then "RANKED PLAN", then
+"Standing traps".
+
+## SESSION 16 (2026-08-04/06) — NO PROMOTION: the late-armed re-screen space is now mapped; trail reuse PARKED after full evidence; five arms closed with data
+
+**Verdict: defaults unchanged (identity fingerprints digit-exact all
+session). The full-bench baseline stays 279/400 promoted; same-config deals
+this week scored 276/279/280/281 — the ±2-4 variance calibration holds.**
+
+What was measured (all screens on `benchmarks/miterded-2026-08-02` or
+`benchmarks/reusefocused-2026-08-06`, full A/B on sat-comp-2025 400x2):
+
+1. **Profile (gdb SIGINT sampler, boothdadda29 @2.5M conflicts): ~72% of
+   wall is `propagate_impl`**; walk negligible; analysis ~14%. Wall/prop is
+   only ~1.2x kissat (654 v 537 ns) — the earlier 49-v-26 "ticks/prop" read
+   overstated (different accounting units). The real gap is props/conflict
+   (194 v 108), dominated by restart re-descent (16,194 restarts / 2.5M
+   conflicts, zero reuse) and DB/trajectory quality. SAT_WATCH_POOL and
+   SAT_WATCH_INLINE_BIN are ALREADY default-on (stale doc comments say off).
+2. **Banded vivify-sort and banded tier3: CLOSED** (screen
+   `log/abtest-reuse-vs-sort-vs-tier3-vs-base-2026-08-05-00-20-53`: 7/23
+   each v base 8/23 — rerolls without gains, even inside the 500k band with
+   deduce active).
+3. **Trail reuse (kissat restartreusetrail): PARKED with full evidence.**
+   Wiring gap found+fixed (the miters arm via the VIVIFY-YIELD path,
+   congruence_merges=0 — the knob only wired through the congruence path;
+   commit a726262). Once live: screen WIN 9/23 v 8/23 (boothdadda29
+   FIRST-EVER, every UNSAT miter −10-15% conflicts, canaries exact) but the
+   full A/B (`log/abtest-cand-vs-base-2026-08-05-08-46-46`) LOST 280 v 281
+   with tier-2 +10.9M: the SAME determinism that wins the UNSAT miters
+   (boothdadda29 8,759,563 conflicts EXACT across two deals) deterministically
+   REROLLS late-armed SAT cells (Circuit_multiplier24 — stable 4,992,637-conf
+   trajectory in two deals — and DLTM_twitter774, both fat-margin losses;
+   oddball_ttf/ER_400 +2-11M conflicts). The =focused variant (96% of miter
+   reuse events are focused-mode) does NOT separate them
+   (`log/abtest-focused-vs-both-vs-base-2026-08-05-22-30-51`): Circuit24
+   still dies, boothdadda29's gain NEEDS stable-mode reuse, and the miters
+   land between base and both. **Law: reuse's per-cell effect is
+   deterministic but its sign is per-cell — there is no runtime discriminator
+   separating late-armed UNSAT grinders from late-armed SAT-capable cells.
+   Shipping it trades ~2 stable SAT cells for ~1 first-ever miter. Knobs
+   banked: SAT_RESTART_REUSE_TRAIL_ARMED=on|focused (+_MIN band), both
+   paths wired.** The aggressive cadence bundle (floor=1, margin=1.10 +
+   reuse) is CLOSED outright (7/23).
+4. **Ranked-item hygiene:** SWEEP_SUBST percent-mass (old item 3) PRUNED —
+   SESSION 14c already measured SAT_SWEEP_SUBST=on flipping 0/6 on
+   miters+uniqinv at 3600 s idle; a safety threshold cannot rescue a
+   mechanism that does not fire on its target. mchess_20/rook decode
+   (below) moved to a research arc.
+5. **mchess_20 decoded (760 domino vars, pairwise AMO, 398 exactly-once
+   cells): it IS the direct-php shape** — 200 var-disjoint black-cell covers
+   v 198 white-cell AMO holes — but the counting core is PHP(200,198) and
+   the inductive closer is ~3/4·H^4 ≈ 1.15G proof lines at H=198:
+   infeasible. The family (mchess_20, rook-51/52/56, all nobody-solves
+   except rook-51=kissat-only) needs a CARDINALITY-STYLE proof engine
+   (totalizer/pseudo-Boolean simulation in DRAT) — a genuine research arc;
+   naive totalizer LB/UB groupings do not compose in RUP (the LB needs the
+   injective-mapping argument = php again). Park until someone designs the
+   proof shape on paper first.
 
 ## SESSION 15 (2026-08-02/04) — banded vivify-deduce PROMOTED: full-bench 276 → 279/400 (gate PASS, A/B WIN +5/−2); backbone.c port landed and measured a no-op (free rider, default off)
 
@@ -92,50 +148,44 @@ digit-exact both flag states.
   ON + root-pass scoping law (percent-mass decline-is-identity gates are the
   ONLY shippable root-pass shape). Full text: rev 416adae.
 
-## RANKED PLAN (2026-08-04)
+## RANKED PLAN (2026-08-06)
 
-1. **Miter rate parity, phase 2 (the #1 family: ~9 kissat-only 16x16 cells +
-   Circuit_multiplier29 + both-timeout siblings).** Deduce landed; the
-   residual is still ~2x wall at equal conflicts. Ordered candidate levers,
-   all bandable to the late-armed class: (a) `SAT_VIVIFY_SORT` (built,
-   default off, never screened post-deduce — shares deduce's scope and
-   raises implied-density per attempt); (b) vivify tier3 volume — kissat's
-   3:3:1:3 split vivifies tier3+irredundant which we never touch;
-   SAT_VIVIFY_TIER_SPLIT is a CLOSED LINE from a pre-deduce screen, so
-   re-measure ONLY as "deduce+tier3" with the band, screen on miterded; (c)
-   ticks/prop diet — 49 v kissat 26 at identical conflicts is watch/DB
-   mechanics, needs a fresh profile probe (gdb SIGINT sampler) on
-   boothdadda29 to find where the 2x per-prop cost sits.
-2. **Deal-variance recapture (free +1-2 some deals):** sum_of_3_cubes and
-   MVRR-n14 are now coin/reroll cells (see traps); no work — judge them as
-   coins in future A/Bs. valves-gates/bp4 pair flips the other way.
-3. **SWEEP_SUBST behind a percent-mass threshold (uniqinv40-class).** Same
-   decline-is-identity shape as the ELS threshold; uniqinv40 needs ~30%
-   sweep-substitution mass. Screen on frontier + miterded canaries.
-4. **Medium-1800 re-baseline (bookkeeping, OVERDUE — two promotions since
-   74/100 at c469b03).** Run the standard medium single-seed A/B (current
-   defaults vs 14d-with-deduce-off) at 1800 s before any medium-metric work.
-   Exposure: deduce needs >=500k-conflict arming — most medium cells never
-   get there; verify with the identity refs.
-5. **Walk-scale SAT cells (~5 left: Circuit_multiplier29, ITC x2, HCP-446,
-   ER_400.apx_1):** Circuit24 fell to deduce (not walk). Re-read the walk
-   ledger before any effort tuning; lottery-adjacent.
-6. **Starved hwmcc/BMC class (b18/b19, goldcrest, fixedbandwidth, x-epic,
-   nla-digbench, oski15a10b10s, oisc):** CLOSED at current mechanism level
-   (tick-cadence pipeline measured negative twice). Needs a genuinely new
-   idea, not a flag.
-7. **Checker-timeout proof-size arc (5 at-risk solves: boothbit29,
-   valves-gates, ncc, grs-160-48, VexRiscv)** — track only; valves-gates
-   joined the class this session.
+1. **Medium-1800 re-baseline (bookkeeping, NOW THE CHEAPEST REAL ITEM —
+   two promotions since 74/100 at c469b03).** Run the standard medium
+   single-seed A/B (current defaults vs deduce-off) at 1800 s before any
+   medium-metric work. Exposure is small (deduce needs >=500k-conflict
+   arming; most medium cells never get there).
+2. **Cardinality proof engine research arc (mchess_20 + rook-51/52/56 +
+   any future counting-UNSAT family).** SESSION 16 decoded mchess_20 as
+   direct-php P=200/H=198 with short covers — the blocker is proof SIZE,
+   not detection (inductive closer is H^4). Design work needed ON PAPER
+   first: a DRAT-emittable cardinality argument (totalizer with per-merge
+   RUP lemmas + an injective-mapping core, or a cutting-planes simulation).
+   Potential +2-4 first-evers, zero reroll risk (pre-search). Do not start
+   the code before the proof shape is written down and sized.
+3. **Miter family, remaining levers.** The band-re-screen space is
+   EXHAUSTED (deduce promoted; sort/tier3/cadence/reuse all measured — see
+   SESSION 16). What is left is genuinely structural: props/conflict 194 v
+   108 net of restarts (trail reuse only recovered ~6 levels/restart —
+   most of the gap is elsewhere: DB composition and decision quality), or
+   an elimination-depth mechanism. Requires a new decomposition probe, not
+   a flag. Expected slope here is now LOW; deprioritized below item 2.
+4. **Walk-scale SAT cells (~5: Circuit_multiplier29, ITC x2, HCP-446,
+   ER_400.apx_1):** lottery-adjacent; re-read the walk ledger first.
+5. **Starved hwmcc/BMC class:** CLOSED at current mechanism level.
+6. **Checker-timeout proof-size arc (5 at-risk solves)** — track only.
 
 ## Current state
 
-- HEAD: SESSION 15 promotion commit (after 2549801).
-  **Full-bench 3600 s baseline: 279/400** (cand TSV =
-  `log/abtest-cand-vs-base-2026-08-03-10-13-35/cand/results.tsv`).
+- HEAD: SESSION 16 final (59b64e7 + this plan commit; defaults unchanged
+  since the SESSION 15 promotion bc4417c).
+  **Full-bench 3600 s baseline: 279/400 promoted** (cand TSV =
+  `log/abtest-cand-vs-base-2026-08-03-10-13-35/cand/results.tsv`); the
+  same defaults scored 281 as the base arm of the 08-05 A/B
+  (`log/abtest-cand-vs-base-2026-08-05-08-46-46/base/results.tsv`) — use
+  either as a paired-baseline TSV, never compare across deals.
   kissat 4.0.4 reference: 296/400 (`log/kissat-full-20260729-210758`) —
-  **gap −17** (was −25 at 14b). kissat-only 53 / solver12-only 36 /
-  both-timeout 68.
+  **gap −17**. kissat-only 53 / solver12-only 36 / both-timeout 68.
 - **Same-defaults deal variance at 3600 s full bench is ±2-4 solved**: the
   14d defaults scored 280 (08-01 deal) and 276 (08-03 deal) on identical
   config — weigh raw full-bench solved deltas accordingly (the paired A/B
@@ -149,8 +199,19 @@ digit-exact both flag states.
   canaries — the standard screen for late-armed-band candidates),
   `benchmarks/frontier-2026-07-30` (38 cells), miterarmed-2026-08-01 (18).
 
-## Standing traps (updated 2026-08-04 + carried)
+## Standing traps (updated 2026-08-06 + carried)
 
+- **SESSION 16:** when a knob screens conflict-IDENTICAL to base across a
+  whole suite, suspect WIRING before verdict — trail reuse was only wired
+  into the congruence arming path while its target family arms via the
+  vivify-yield path. Check WHICH arming path a family takes
+  (congruence_merges in the stats JSON) before scoping anything to
+  "armed". Screen wins on UNSAT-grind suites do NOT transfer to the full
+  bench when the mechanism also touches late-armed SAT cells — put
+  known SAT casualties in the screen suite (reusefocused-2026-08-06 is
+  the template). Stale doc comments lie about defaults (WATCH_POOL and
+  WATCH_INLINE_BIN say "default off", both are ON) — trust env reads in
+  Solver::new only.
 - **SESSION 15:** the ranked-plan backbone item was STALE — commit 038f9c1
   (2026-07-15) had already killed it with kissat -s profiles; CHECK COMMIT
   MESSAGES of groundwork commits before re-ranking an old idea. Coin list
@@ -189,7 +250,12 @@ digit-exact both flag states.
   ranked item 1b); gbve-adopter rounds; units-only transitive; per-mille
   RANKING thresholds (percent-mass decline-is-identity gates are the
   exception); ramsey ER emission; st_659; SAT_BACKBONE default-on (zero
-  yield everywhere measured — miters, and 07-15 Bubble/fixedband profiles).
+  yield everywhere measured — miters, and 07-15 Bubble/fixedband profiles);
+  **SESSION 16 additions:** banded vivify-sort; banded tier3; armed restart
+  cadence bundle (floor=1/margin=1.10); trail reuse default-on in ANY mode
+  (both-modes AND focused measured — deterministic per-cell sign flips, no
+  runtime discriminator); SWEEP_SUBST for uniqinv/miters (0/6 at 3600 s
+  idle, 14c — threshold variants pointless when the mechanism never fires).
 
 ## solver12's capability edge (protect in rerolls)
 
