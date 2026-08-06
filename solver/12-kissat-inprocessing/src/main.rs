@@ -2109,6 +2109,14 @@ struct Solver {
     /// walk effort budget in permille of search ticks since the last walk
     /// (kissat `walkeffort`, default 50)
     walk_effort_permille: u64,
+    /// SAT_REPHASE_UNARMED_MIN (default 0 = off): enable the rephase/walk
+    /// cycle on NEVER-ARMED formulas once they reach this many conflicts.
+    /// Without it the cycle is only reachable through the arming/endgame
+    /// paths, so never-armed cells run zero walk steps forever (SESSION 16:
+    /// ITC/ER_400 measured rephases=0 at 1.2M conflicts while kissat walks
+    /// 100-360M steps there). Unarmed cells finishing below the threshold
+    /// stay byte-identical by construction.
+    rephase_unarmed_min: u64,
     /// SAT_WALK_EFFORT_UNARMED (0 = use walk_effort_permille): walk effort
     /// override for never-armed formulas only; see the budget site.
     walk_effort_unarmed_permille: u64,
@@ -4054,6 +4062,10 @@ impl Solver {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(200),
+            rephase_unarmed_min: std::env::var("SAT_REPHASE_UNARMED_MIN")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
             walk_warmup: config.walk_warmup,
             walk_last_search_ticks: 0,
             decision_level: vec![0; num_vars + 1],
@@ -18727,6 +18739,31 @@ impl Solver {
                                 >= self.endgame_min_armed_at_conflict
                         {
                             self.enter_endgame();
+                        }
+                        // SESSION 16 deep-unarmed rephase latch
+                        // (SAT_REPHASE_UNARMED_MIN, 0 = off): NEVER-ARMED
+                        // formulas structurally cannot rephase or walk — the
+                        // machinery is only enabled by the arming/endgame
+                        // paths (config.rephase defaults off), so the
+                        // walk-scale SAT gap cells (ITC/ER_400 class,
+                        // kissat: 100-360M walk steps) run ZERO walk steps
+                        // (measured: rephases=0 at 1.2M conflicts). Enable
+                        // the kissat-parity rephase/walk cycle once an
+                        // unarmed formula is this deep; unarmed cells that
+                        // finish earlier stay byte-identical by
+                        // construction.
+                        if self.rephase_unarmed_min > 0
+                            && !self.rephase_enabled
+                            && !self.inprocess_aggressive
+                            && self.stats.conflicts >= self.rephase_unarmed_min
+                        {
+                            self.rephase_enabled = true;
+                            self.rephase_at_conflicts = self
+                                .stats
+                                .conflicts
+                                .saturating_add(self.rephase_conflicts.max(1));
+                            self.stats.rephase_unarmed_enabled_at =
+                                self.stats.conflicts.max(1);
                         }
                         // Inprocessing scheduler hook: at root, periodically run an
                         // interleaved clause-simplification / formula-rewriting round

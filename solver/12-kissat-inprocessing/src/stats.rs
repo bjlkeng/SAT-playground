@@ -260,6 +260,9 @@ pub(crate) struct SolverStats {
     pub(crate) els_inprocess_rounds: u64,
     /// inprocessing-round failed-literal probe passes run (SAT_PROBE_INPROCESS)
     pub(crate) probe_inprocess_rounds: u64,
+    /// conflict count when the deep-unarmed rephase latch fired
+    /// (SAT_REPHASE_UNARMED_MIN; 0 = never fired)
+    pub(crate) rephase_unarmed_enabled_at: u64,
     /// mid-search backbone pass invocations (SAT_BACKBONE)
     pub(crate) backbone_computations: u64,
     /// stacked-probe rounds run across all backbone computations (SAT_BACKBONE)
@@ -901,6 +904,7 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
         "factor_inprocess_clauses_removed",
         ctx.stats.factor_inprocess_clauses_removed,
     );
+    json.u64("rephase_unarmed_enabled_at", ctx.stats.rephase_unarmed_enabled_at);
     json.u64("backbone_computations", ctx.stats.backbone_computations);
     json.u64("backbone_rounds", ctx.stats.backbone_rounds);
     json.u64("backbone_probes", ctx.stats.backbone_probes);
