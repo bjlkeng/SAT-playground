@@ -2124,6 +2124,10 @@ struct Solver {
     /// root assignment via decide + propagate-beyond-conflicts, kissat warmup.c
     /// parity (SAT_WALK_WARMUP, default off)
     walk_warmup: bool,
+    /// SAT_WALK_WARMUP_UNARMED (default off): warm walks only on never-armed
+    /// formulas (the SESSION 16b latch class); armed walkers keep the shipped
+    /// no-warmup behavior (the 2026-07-17 negative class).
+    walk_warmup_unarmed: bool,
     /// search-tick snapshot at the last walk (effort reference)
     walk_last_search_ticks: u64,
     /// decision level of each variable assignment
@@ -4079,6 +4083,7 @@ impl Solver {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(1_000_000),
             walk_warmup: config.walk_warmup,
+            walk_warmup_unarmed: env_bool_or_default("SAT_WALK_WARMUP_UNARMED", false),
             walk_last_search_ticks: 0,
             decision_level: vec![0; num_vars + 1],
             reason: vec![NO_REASON; num_vars + 1],
@@ -9421,7 +9426,14 @@ impl Solver {
         if !self.walk_enabled || self.current_level() != 0 || self.has_empty_clause {
             return;
         }
-        if self.walk_warmup {
+        if self.walk_warmup || (self.walk_warmup_unarmed && !self.inprocess_aggressive) {
+            // SAT_WALK_WARMUP=unarmed (SESSION 17): kissat warms 100% of
+            // walks; the 2026-07-17 global screen measured warmup NEGATIVE on
+            // the ARMED walkers (TT/lockchart phase-evolution lottery), but
+            // the never-armed latch class (ITC/ER/mod2c) could not even walk
+            // then — the unarmed scope gives warmup to exactly the class the
+            // negative never covered while the armed classes keep their
+            // shipped no-warmup walks byte-identical.
             self.warmup_walk_phases();
         }
         const WALK_MIN_EFFORT_TICKS: u64 = 10_000_000;
