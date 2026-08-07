@@ -15,6 +15,31 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **Full-bench default promotion (2026-08-07, SESSION 17): walk-latch second
+> wave — `SAT_WALK_WARMUP_UNARMED` default ON + `SAT_REPHASE_UNARMED_MIN`
+> 1M → 500k.** Warmup (kissat warmup.c parity: complete the root assignment
+> by decide+propagate-beyond-conflicts before each walk) was measured
+> negative 2026-07-17 ON ARMED walkers only — the never-armed latch class
+> could not walk then; the unarmed scope gives it to exactly the class the
+> negative never covered, byte-identical armed walkers by construction. The
+> 500k latch gives deep-unarmed cells more walk runway (ITC_Early_12 falls
+> at 408-834 s from a 1.0-1.8M-conflict trajectory). Screen
+> (`log/abtest-warm-vs-thresh-vs-warmthresh-vs-base-2026-08-06-23-35-05`):
+> warmthresh 12/16 v base 9/16, each mechanism confirmed alone. Full-bench
+> A/B (`log/abtest-cand-vs-base-2026-08-07-01-51-08`, gate PASS, zero
+> contradictions): **cand 290 v base 285 WIN (+11/−6, PAR-2 955,537 v
+> 993,612); gained ITC2021_Early_12 + bp4_BC012_CSO_FPBEQ (kissat-only),
+> VanDerWaerden_pd_2-3-27_663 + lockchart-group2 x2 (FIRST-EVERS,
+> both-timeout before), rbsat-v1375 (the flagship wall-coin flipper, now
+> walk-solved in 4 consecutive deals/arms), reconf10 + frb80 (the 16b
+> reroll losses recovered) + sum_of_3_cubes + valves + oddball_57; lost 6
+> walk-lottery classmates (ER_400.apx_2, vmpc_28, oddball_56, bp4_IXA_LPI,
+> mod2c, oddball_19_4 — all documented rebalance members, class-level net
+> +9 across SESSIONS 16b+17). Checker-timeouts 3→7 (big-proof UNSAT cells,
+> drat-trim budget — caveat class, none rejected.** Full-bench lineage
+> 286 → 290/400; gap to kissat 4.0.4 (296) now −6. Identity refs
+> digit-exact below the latch. Detail: `plan/next-plan.md` SESSION 17.
+
 > **Full-bench default promotion (2026-08-06, SESSION 16b): deep-unarmed
 > rephase/walk latch (`SAT_REPHASE_UNARMED_MIN=1_000_000` default ON,
 > `SAT_WALK_EFFORT_UNARMED` default 200→50).** DISCOVERY: never-armed formulas

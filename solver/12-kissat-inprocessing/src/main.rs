@@ -4078,12 +4078,16 @@ impl Solver {
             // fsf x2 (all former kissat-only) + 170223547 + bp4_BC012_AM +
             // mp1-Nb7T45; lost bp4_TCO coin, VdW-23 walk-reroll, reconf10,
             // frb80).
+            // SESSION 17: 1M → 500k, part of the walkwave2 winning arm (the
+            // earlier latch is what captures ITC_Early_12 at 408-834 s).
             rephase_unarmed_min: std::env::var("SAT_REPHASE_UNARMED_MIN")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(1_000_000),
+                .unwrap_or(500_000),
             walk_warmup: config.walk_warmup,
-            walk_warmup_unarmed: env_bool_or_default("SAT_WALK_WARMUP_UNARMED", false),
+            // SESSION 17: default ON — part of the walkwave2 winning arm
+            // (A/B log/abtest-cand-vs-base-2026-08-07-01-51-08, 290 v 285).
+            walk_warmup_unarmed: env_bool_or_default("SAT_WALK_WARMUP_UNARMED", true),
             walk_last_search_ticks: 0,
             decision_level: vec![0; num_vars + 1],
             reason: vec![NO_REASON; num_vars + 1],

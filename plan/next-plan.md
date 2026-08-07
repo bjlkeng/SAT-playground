@@ -1,13 +1,42 @@
-# NEXT PLAN — 2026-08-06b (supersedes 2026-08-06; PRUNED)
+# NEXT PLAN — 2026-08-07 (supersedes 2026-08-06b; PRUNED)
 
 One-file plan for the next clear context. SESSIONS 4-13 bodies live in git
 history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
 bodies were pruned earlier — full text in revisions up to 93ab682. Where this
 file contradicts an older revision, THIS file wins.
 
-**START HERE:** read "SESSION 16b" (the promotion), then "SESSION 16" (the
-mapping session whose negatives set it up), then "RANKED PLAN", then
-"Standing traps".
+**START HERE:** read "SESSION 17" and "SESSION 16b" (the walk-latch arc),
+then "RANKED PLAN", then "Standing traps".
+
+## SESSION 17 (2026-08-06/07) — walk-latch second wave PROMOTED: full-bench 285 → 290/400 (gate PASS, +11/−6); gap to kissat −6; rbsat walk-solved
+
+**Promoted defaults: `SAT_WALK_WARMUP_UNARMED=on` (new knob — kissat
+warmup.c, scoped to never-armed walkers; the 2026-07-17 warmup NEGATIVE was
+measured entirely on ARMED walkers, which stay byte-identical) +
+`SAT_REPHASE_UNARMED_MIN` 1M → 500k (earlier latch = more walk runway).**
+
+Full-bench A/B `log/abtest-cand-vs-base-2026-08-07-01-51-08` (gate PASS,
+zero contradictions/correctness failures): **290 v 285. Gained 11:
+ITC2021_Early_12 (834 s; solves in all 4 measured deals/arms since the
+latch) + bp4_BC012_CSO_FPBEQ (both former kissat-only);
+VanDerWaerden_pd_2-3-27_663 + lockchart-group2 x2 (FIRST-EVERS — nobody
+solved these at 3600 s); rbsat-v1375 (the flagship wall-coin flipper of the
+whole project, now WALK-SOLVED at ~7.5M conflicts in 4 consecutive
+deals/arms — no longer a coin); reconf10 + frb80 (the 16b reroll losses
+recovered); sum_of_3_cubes, valves-gates, oddball_57. Lost 6 walk-lottery
+classmates (ER_400.apx_2, vmpc_28, oddball_56, bp4_IXA_LPI, mod2c,
+oddball_19_4 — every one a documented member of the deep-unarmed rebalance
+class; class-level net across 16b+17 = +9). PAR-2 955,537 v 993,612;
+tier-2 conflicts flat. Checker-timeouts 3→7 — all big-proof UNSAT solves,
+drat-trim BUDGET (none rejected); caveat class, watch it.**
+
+Screen `log/abtest-warm-vs-thresh-vs-warmthresh-vs-base-2026-08-06-23-35-05`
+(16 cells): warmthresh 12/16 v base 9/16 with each mechanism confirmed
+alone (warm recovered frb80+VdW-23-accel; thresh captured ITC_Early_12 at
+408 s + case6). dislog is NOT a latch target (it ARMS and already walks
+4.3G steps — its gap is elsewhere). ITC_Late_10 still stands (walks but
+does not convert). Validation: 756+5 tests, smoke 9/9, rbsat/MVRR
+fingerprints digit-exact (both below the 500k latch).
 
 ## SESSION 16b (2026-08-06) — deep-unarmed rephase/walk latch PROMOTED: full-bench 281 → 286/400 (gate PASS, +9/−4, tier-2 −81.8M); SEVEN former kissat-only cells captured
 
@@ -186,45 +215,51 @@ digit-exact both flag states.
   ON + root-pass scoping law (percent-mass decline-is-identity gates are the
   ONLY shippable root-pass shape). Full text: rev 416adae.
 
-## RANKED PLAN (2026-08-06b)
+## RANKED PLAN (2026-08-07)
 
-1. **Medium-1800 re-baseline (bookkeeping, OVERDUE — THREE promotions since
-   74/100 at c469b03).** Run the standard medium single-seed A/B (current
-   defaults vs all-three-off) at 1800 s before any medium-metric work.
-   Exposure: deduce needs >=500k arming, the walk latch needs 1M conflicts
-   unarmed — most medium cells reach neither; verify with identity refs.
-2. **Walk-latch second wave.** The latch captured 7 kissat-only cells but
-   ITC x2 / dislog / Circuit_multiplier29 still stand, and VdW-23 +
-   reconf10 + frb80 became walk-reroll flippers. Candidate refinements to
-   SCREEN (unarmedwalk suite + the three new flippers as canaries): latch
-   threshold sweep (500k / 2M — is 1M optimal?), rephase-cycle delta for
-   the unarmed class, walk size cap (ITC at 208k vars may be
-   warmup-bound — profile ONE ITC walk first). Lottery-adjacent: demand
-   walk-step/improvement evidence, not just flips.
-3. **Cardinality proof engine research arc (mchess_20 + rook-51/52/56).**
-   mchess_20 decoded as direct-php P=200/H=198 — blocked on proof SIZE
-   (closer is H^4; RAT-scan law kills even H^3 variants at maxVar~2.6M).
-   Needs a genuinely new DRAT-emittable cardinality argument designed ON
-   PAPER first. Potential +2-4 first-evers, zero reroll risk.
-4. **Miter family, remaining levers:** band-re-screen space EXHAUSTED
-   (SESSION 16); residual is structural (props/conflict net of restarts,
-   DB/decision quality). New decomposition probe required; LOW slope.
-5. **Starved hwmcc/BMC class:** CLOSED at current mechanism level.
-6. **Checker-timeout proof-size arc (4 at-risk solves)** — track only.
+1. **Medium-1800 re-baseline (bookkeeping, OVERDUE — FOUR promotions since
+   74/100 at c469b03).** Standard medium single-seed A/B (current defaults
+   vs the four new flags off) at 1800 s before any medium-metric work.
+   Walk-latch exposure on medium: cells solving unarmed past 500k
+   conflicts reroll — measure, don't assume.
+2. **Checker-timeout proof-size watch (7 at-risk solves after SESSION
+   17).** Now carries real solved-count exposure: goldcrest-and-11,
+   BubbleVsPancake_7_6, boothbit29, valves, ncc, sqrt-mitern169, VexRiscv
+   all verify past the in-gate budget. If a future run flips one to FAIL,
+   that is a gate correctness stop. Consider a proof-size diet for
+   walk-era UNSAT trajectories or a bigger verify budget study BEFORE the
+   next promotion attempt.
+3. **Walk-latch third wave (diminishing but non-zero).** Remaining
+   walk-class stands: ITC_Late_10 (walks, does not convert),
+   Circuit_multiplier29, HCP-446 (armed walkers — different lever),
+   ER_400.apx_2/mod2c-class rebalance recapture. Candidates: per-formula
+   walk restarts/cycle tuning, unsat-floor-guided rephase slot choice.
+   Lottery-adjacent — the class-level net is what matters, and the easy
+   +5s are taken.
+4. **Cardinality proof engine research arc (mchess_20 + rook family).**
+   Blocked on proof size (H^4 closer; RAT-scan law). Design ON PAPER
+   first. Potential +2-4 first-evers, zero reroll risk.
+5. **Miter family:** band space EXHAUSTED; structural probe required.
+6. **Starved hwmcc/BMC class:** CLOSED at current mechanism level.
 
 ## Current state
 
-- HEAD: SESSION 16b promotion commit (after d6ea413).
-  **Full-bench 3600 s baseline: 286/400 promoted** (cand TSV =
-  `log/abtest-cand-vs-base-2026-08-06-03-28-37/cand/results.tsv`).
+- HEAD: SESSION 17 promotion commit (after 19dbd5c).
+  **Full-bench 3600 s baseline: 290/400 promoted** (cand TSV =
+  `log/abtest-cand-vs-base-2026-08-07-01-51-08/cand/results.tsv`).
   kissat 4.0.4 reference: 296/400 (`log/kissat-full-20260729-210758`) —
-  **gap −10** (was −25 at 14b, −17 at SESSION 15). kissat-only 48 /
-  solver12-only 38 / both-timeout 66. Lineage this month: 261 → 271 →
-  277 → 280 → 279* → 286 (*deal variance; paired A/Bs all WINs).
-- Default surface added SESSIONS 15-16b: SAT_VIVIFY_DEDUCE=on +
-  _ARMED_MIN=500k; SAT_REPHASE_UNARMED_MIN=1_000_000;
-  SAT_WALK_EFFORT_UNARMED=50 (was 200 = dead code); SAT_BACKBONE=off;
-  banded sort/tier3/reuse knobs off (closed).
+  **gap −6** (was −25 at 14b). kissat-only 47 / solver12-only 41 /
+  both-timeout 63. Lineage this month: 261 → 271 → 277 → 280 → 286 → 290
+  (paired gated A/Bs, all WINs).
+- Default surface SESSIONS 15-17: SAT_VIVIFY_DEDUCE=on + _ARMED_MIN=500k;
+  SAT_REPHASE_UNARMED_MIN=500_000; SAT_WALK_EFFORT_UNARMED=50;
+  SAT_WALK_WARMUP_UNARMED=on; SAT_BACKBONE=off; banded sort/tier3/reuse
+  knobs off (closed).
+- The deep-unarmed walk class is now a managed LOTTERY SURFACE: ~15 SAT
+  cells rebalance on every phase-engine change (current OUT set:
+  ER_400.apx_2, vmpc_28, oddball_56/19_4, bp4_IXA_LPI, mod2c, VdW-23,
+  bp4_TCO). Class-level net must be positive for any future walk change;
+  judge members as class rebalance, not individual capability.
 - **Same-defaults deal variance at 3600 s full bench is ±2-4 solved**: the
   14d defaults scored 280 (08-01 deal) and 276 (08-03 deal) on identical
   config — weigh raw full-bench solved deltas accordingly (the paired A/B
