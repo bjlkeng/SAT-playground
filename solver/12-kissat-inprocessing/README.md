@@ -15,6 +15,30 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **Full-bench default promotion (2026-08-09, SESSION 18): adaptive walk
+> giveup (`SAT_WALK_STALL_GIVEUP` default 16).** Walking cannot refute UNSAT,
+> but the SESSION 16b/17 latch gave walks to a class that mixes SAT
+> walk-targets with UNSAT near-misses (RoundRobin/lockchart). The giveup
+> abandons walking on the latch class once the best walk min-unsat stalls for
+> K=16 consecutive walks (rate-based: a walk must lower it by ≥1/64 of the
+> current best to count as progress, so an UNSAT-bound cell's marginal
+> local-minimum creep still counts as a stall), returning the walk budget to
+> CDCL, which is what actually refutes it. Byte-identical on SAT cells by
+> construction (they drive min-unsat toward 0 and never stall) — the mechanism
+> can only ever affect UNSAT-plateau walk waste, so the SESSION-17 SAT wins are
+> untouched. Screen (`log/abtest-k4-vs-k8-vs-k16-vs-base-2026-08-09-04-16-51`):
+> k8/k16 both 14/19 v base 13/19, K=16 the gentler winner. Full-bench A/B
+> (`log/abtest-cand-vs-base-2026-08-09-06-42-44`, gate PASS, zero
+> contradictions/correctness failures, NO SAT regressions): **cand 292 v base
+> 291 WIN; gained RoundRobin_n17_d15 (UNSAT 2942 s — a FIRST-EVER, was
+> both-timeout, kissat cannot solve it either) + mod2c-rand3bip; lost
+> RoundRobin_n18_d15 (a same-family ~43M-conflict UNSAT grinder, 355 s
+> thin-margin wall swap — both siblings land at the 3600 s wall and the
+> walk-budget change flips which one makes it). PAR-2 945,714 v 949,626.**
+> Full-bench lineage 290 → 292/400; gap to kissat 4.0.4 (296) now −4. Identity
+> refs digit-exact (the giveup never trips on SAT/early-refuting cells).
+> Detail: `plan/next-plan.md` SESSION 18.
+
 > **Full-bench default promotion (2026-08-07, SESSION 17): walk-latch second
 > wave — `SAT_WALK_WARMUP_UNARMED` default ON + `SAT_REPHASE_UNARMED_MIN`
 > 1M → 500k.** Warmup (kissat warmup.c parity: complete the root assignment

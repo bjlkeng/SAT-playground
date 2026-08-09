@@ -1,12 +1,46 @@
-# NEXT PLAN — 2026-08-07 (supersedes 2026-08-06b; PRUNED)
+# NEXT PLAN — 2026-08-09 (supersedes 2026-08-07; PRUNED)
 
 One-file plan for the next clear context. SESSIONS 4-13 bodies live in git
 history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
 bodies were pruned earlier — full text in revisions up to 93ab682. Where this
 file contradicts an older revision, THIS file wins.
 
-**START HERE:** read "SESSION 17" and "SESSION 16b" (the walk-latch arc),
-then "RANKED PLAN", then "Standing traps".
+**START HERE:** read "SESSION 18" (the walk-arc close + the exhaustion map),
+then "SESSION 17"/"16b" (the walk-latch arc), then "RANKED PLAN", then
+"Standing traps".
+
+## SESSION 18 (2026-08-08/09) — adaptive walk giveup PROMOTED: full-bench 291 → 292/400 (gate PASS, +1, a both-timeout first-ever); the walk vein is now CLOSED and the miter/near-miss levers are mapped exhausted
+
+**Promoted: `SAT_WALK_STALL_GIVEUP=16`.** Walk cannot refute UNSAT; the
+latch class mixes SAT walk-targets with UNSAT near-misses. Giveup abandons
+walking once the best walk min-unsat stalls K=16 walks (RATE-based: must drop
+≥1/64 to count as progress — marginal UNSAT creep counts as a stall),
+returning the budget to CDCL. Byte-identical on SAT cells by construction.
+A/B `log/abtest-cand-vs-base-2026-08-09-06-42-44` (gate PASS, zero
+correctness failures, no SAT regressions): **292 v 291; +RoundRobin_n17_d15
+(FIRST-EVER, both-timeout, kissat can't either) +mod2c; −RoundRobin_n18_d15
+(same-family 355 s thin-margin wall swap).** Modest (+1, noise-band-adjacent)
+but the gain is a deterministic first-ever and the mechanism is safe. Gap to
+kissat now −4.
+
+**THE EXHAUSTION MAP (this session's real deliverable — do not re-run these):**
+- **Miter family (9 cells, biggest gap): SATURATED for flags.** Mid-search
+  PROBE finds 0 units (23,480 attempts); BACKBONE 0; gate-BVE already on;
+  vivify volume already at kissat parity (182k attempts) via deduce. Residual
+  is pure CDCL trajectory quality (kissat refutes in 6M conflicts, we need
+  >20M) — needs a decision/learning-quality mechanism, not a pass.
+- **RoundRobin/near-miss via ELIM-ARMING: DANGEROUS, closed.** Forcing
+  elim-yield arming (SAT_ELIM_PRODUCTIVE_MIN_PCT=10) on RoundRobin caused an
+  UNBOUNDED non-CDCL runaway — probes ran ~14 h with SAT_LIMIT_WALL_SEC never
+  firing (wall limit is CDCL-loop-only). Confirms the 2026-07-14 lottery +
+  runaway warning; do not re-open without an elimination bound.
+- **Walk latch 1M vs 500k: 500k CONFIRMED optimal.** A biased-subset screen
+  favored 1M (14/19) but the full bench LOST 286 v 291 — the classic
+  screen-doesn't-transfer trap. 500k stays.
+- **tseitin_grid: research-scale.** The tseitin engine detects the full
+  62,500-node grid component but proved=false — refuting 2D grid cycle
+  structure is a proof-engine extension, with checker-cost risk (grid_n400
+  already closed under the RAT-scan law).
 
 ## SESSION 17 (2026-08-06/07) — walk-latch second wave PROMOTED: full-bench 285 → 290/400 (gate PASS, +11/−6); gap to kissat −6; rbsat walk-solved
 
@@ -215,51 +249,58 @@ digit-exact both flag states.
   ON + root-pass scoping law (percent-mass decline-is-identity gates are the
   ONLY shippable root-pass shape). Full text: rev 416adae.
 
-## RANKED PLAN (2026-08-07)
+## RANKED PLAN (2026-08-09)
 
-1. **Medium-1800 re-baseline (bookkeeping, OVERDUE — FOUR promotions since
+The flag-level frontier is now genuinely mined (SESSIONS 15-18 took 279→292,
+gap −17→−4). The remaining items are either bookkeeping or research-scale —
+the era of cheap reachability-audit wins is over. Set expectations: the next
++1 likely needs a NEW capability (proof engine) or a CDCL-quality change, not
+a scoped flag.
+
+1. **Medium-1800 re-baseline (bookkeeping, OVERDUE — FIVE promotions since
    74/100 at c469b03).** Standard medium single-seed A/B (current defaults
-   vs the four new flags off) at 1800 s before any medium-metric work.
-   Walk-latch exposure on medium: cells solving unarmed past 500k
-   conflicts reroll — measure, don't assume.
-2. **Checker-timeout proof-size watch (7 at-risk solves after SESSION
-   17).** Now carries real solved-count exposure: goldcrest-and-11,
-   BubbleVsPancake_7_6, boothbit29, valves, ncc, sqrt-mitern169, VexRiscv
-   all verify past the in-gate budget. If a future run flips one to FAIL,
-   that is a gate correctness stop. Consider a proof-size diet for
-   walk-era UNSAT trajectories or a bigger verify budget study BEFORE the
-   next promotion attempt.
-3. **Walk-latch third wave (diminishing but non-zero).** Remaining
-   walk-class stands: ITC_Late_10 (walks, does not convert),
-   Circuit_multiplier29, HCP-446 (armed walkers — different lever),
-   ER_400.apx_2/mod2c-class rebalance recapture. Candidates: per-formula
-   walk restarts/cycle tuning, unsat-floor-guided rephase slot choice.
-   Lottery-adjacent — the class-level net is what matters, and the easy
-   +5s are taken.
-4. **Cardinality proof engine research arc (mchess_20 + rook family).**
-   Blocked on proof size (H^4 closer; RAT-scan law). Design ON PAPER
-   first. Potential +2-4 first-evers, zero reroll risk.
-5. **Miter family:** band space EXHAUSTED; structural probe required.
-6. **Starved hwmcc/BMC class:** CLOSED at current mechanism level.
+   vs all-new-flags-off) at 1800 s before any medium-metric work.
+2. **Checker-timeout proof-size watch (3-7 at-risk UNSAT solves).** Real
+   solved-count exposure now: several walk-era UNSAT solves verify near/past
+   the in-gate drat-trim budget. A future flip to FAIL is a gate correctness
+   stop. Study a proof-size diet or a larger verify budget BEFORE the next
+   UNSAT-heavy promotion. (This is the highest-RISK item, not highest-reward.)
+3. **Cardinality proof engine research arc (mchess_20 + rook family; ~4
+   cells).** THE main remaining capability lead. mchess_20 = direct-php
+   P=200/H=198, blocked on proof SIZE (H^4 closer; RAT-scan law kills naive
+   variants). Needs a NEW DRAT-emittable cardinality argument (totalizer with
+   per-merge RUP + injective core, or cutting-planes) designed ON PAPER
+   first. Zero reroll risk (pre-search). Do not code before the proof shape
+   is written and sized.
+4. **Miter CDCL trajectory quality (9 cells; hardest, highest ceiling).**
+   Flag levers EXHAUSTED (probe/backbone/vivify/gate-BVE all dead or at
+   parity — SESSION 18 map). Only a decision-heuristic or clause-learning
+   change closes the 6M-vs-20M-conflict gap. Deep, risky, no clean probe.
+5. **Walk vein: CLOSED.** Latch (500k), warmup, effort (50), giveup (K=16)
+   all promoted and tuned; 1M refuted; sort/tier3/reuse/cadence closed. The
+   deep-unarmed lottery is a managed surface — do not re-tune blindly.
+6. **Starved hwmcc/BMC + RoundRobin elim-arming:** CLOSED.
 
 ## Current state
 
-- HEAD: SESSION 17 promotion commit (after 19dbd5c).
-  **Full-bench 3600 s baseline: 290/400 promoted** (cand TSV =
-  `log/abtest-cand-vs-base-2026-08-07-01-51-08/cand/results.tsv`).
+- HEAD: SESSION 18 promotion commit (after 65d0d9a).
+  **Full-bench 3600 s baseline: 292/400 promoted** (cand TSV =
+  `log/abtest-cand-vs-base-2026-08-09-06-42-44/cand/results.tsv`).
   kissat 4.0.4 reference: 296/400 (`log/kissat-full-20260729-210758`) —
-  **gap −6** (was −25 at 14b). kissat-only 47 / solver12-only 41 /
-  both-timeout 63. Lineage this month: 261 → 271 → 277 → 280 → 286 → 290
-  (paired gated A/Bs, all WINs).
-- Default surface SESSIONS 15-17: SAT_VIVIFY_DEDUCE=on + _ARMED_MIN=500k;
+  **gap −4** (was −25 at 14b). Lineage this month: 261 → 271 → 277 → 280 →
+  286 → 290 → 292 (paired gated A/Bs; SESSION 18 marginal +1).
+- Default surface SESSIONS 15-18: SAT_VIVIFY_DEDUCE=on + _ARMED_MIN=500k;
   SAT_REPHASE_UNARMED_MIN=500_000; SAT_WALK_EFFORT_UNARMED=50;
-  SAT_WALK_WARMUP_UNARMED=on; SAT_BACKBONE=off; banded sort/tier3/reuse
-  knobs off (closed).
-- The deep-unarmed walk class is now a managed LOTTERY SURFACE: ~15 SAT
-  cells rebalance on every phase-engine change (current OUT set:
-  ER_400.apx_2, vmpc_28, oddball_56/19_4, bp4_IXA_LPI, mod2c, VdW-23,
-  bp4_TCO). Class-level net must be positive for any future walk change;
-  judge members as class rebalance, not individual capability.
+  SAT_WALK_WARMUP_UNARMED=on; SAT_WALK_STALL_GIVEUP=16; SAT_BACKBONE=off;
+  banded sort/tier3/reuse knobs off (closed).
+- The deep-unarmed walk class is a managed LOTTERY SURFACE; the giveup
+  (K=16) added a UNSAT-aware guard but the RoundRobin n17/n18 pair remains
+  a wall-margin swap (~43M conflicts, both at the 3600 s wall). Judge walk
+  members as class rebalance, not individual capability.
+- **Same-config full-bench deal variance is now measured at 290-292** (four
+  A/Bs this week: base arms scored 285/291/291, cand arms 290/286/292).
+  A raw +1 is inside noise; the paired in-deal delta + a deterministic
+  first-ever is the real signal.
 - **Same-defaults deal variance at 3600 s full bench is ±2-4 solved**: the
   14d defaults scored 280 (08-01 deal) and 276 (08-03 deal) on identical
   config — weigh raw full-bench solved deltas accordingly (the paired A/B
@@ -273,8 +314,18 @@ digit-exact both flag states.
   canaries — the standard screen for late-armed-band candidates),
   `benchmarks/frontier-2026-07-30` (38 cells), miterarmed-2026-08-01 (18).
 
-## Standing traps (updated 2026-08-06b + carried)
+## Standing traps (updated 2026-08-09 + carried)
 
+- **SESSION 18:** WALL-LIMIT-ONLY-IN-CDCL bites hard — SAT_ELIM_PRODUCTIVE_
+  MIN_PCT arming on RoundRobin ran 14 h with no wall stop (stuck in a
+  non-CDCL elimination path). Any new mid-search-elimination trigger MUST
+  carry a tick/resolvent bound or it can hang the whole bench. When probing
+  at a wall limit, sanity-check `ps -o etimes` — a probe past its wall is
+  wedged, kill it (bracket-trick pkill: `pkill -9 -f '[s]s pattern'`).
+  Biased screens: a subset built from lottery cells will favor the config
+  that helps THAT subset (1M latch 14/19) and mislead vs the full bench
+  (1M LOST 286 v 291) — screen subsets must include the config's KNOWN
+  casualties, and only the full 400-cell A/B decides.
 - **SESSION 16b:** REACHABILITY-AUDIT LAW — before tuning any knob, trace
   its enable chain to the class it targets; three separate features this
   week (trail reuse, walk-effort-unarmed, unarmed rephase) were dead code

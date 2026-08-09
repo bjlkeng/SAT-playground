@@ -4097,10 +4097,15 @@ impl Solver {
             // SESSION 17: default ON — part of the walkwave2 winning arm
             // (A/B log/abtest-cand-vs-base-2026-08-07-01-51-08, 290 v 285).
             walk_warmup_unarmed: env_bool_or_default("SAT_WALK_WARMUP_UNARMED", true),
+            // SESSION 18: default 16 — full-bench A/B WIN 292 v 291 (gate PASS,
+            // log/abtest-cand-vs-base-2026-08-09-06-42-44; +RoundRobin_n17_d15
+            // FIRST-EVER (both-timeout, beats kissat) + mod2c, −RoundRobin_
+            // n18_d15 same-family 355 s thin-margin wall swap; byte-identical
+            // on SAT cells by construction, zero correctness failures).
             walk_stall_giveup: std::env::var("SAT_WALK_STALL_GIVEUP")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
+                .unwrap_or(16),
             walk_best_min_unsat: u32::MAX,
             walk_stall_rounds: 0,
             walk_last_search_ticks: 0,
