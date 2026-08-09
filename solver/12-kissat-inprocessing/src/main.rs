@@ -2128,6 +2128,15 @@ struct Solver {
     /// formulas (the SESSION 16b latch class); armed walkers keep the shipped
     /// no-warmup behavior (the 2026-07-17 negative class).
     walk_warmup_unarmed: bool,
+    /// SAT_WALK_STALL_GIVEUP (SESSION 18, default 0 = off): consecutive
+    /// non-improving walks on the deep-unarmed latch class after which walking
+    /// is abandoned for the run (walk cannot refute UNSAT; give the budget
+    /// back to CDCL). See `rephase_walk`.
+    walk_stall_giveup: u32,
+    /// lowest min-unsat any walk has reached this run (giveup signal).
+    walk_best_min_unsat: u32,
+    /// consecutive walks that did not lower `walk_best_min_unsat`.
+    walk_stall_rounds: u32,
     /// search-tick snapshot at the last walk (effort reference)
     walk_last_search_ticks: u64,
     /// decision level of each variable assignment
@@ -4088,6 +4097,12 @@ impl Solver {
             // SESSION 17: default ON — part of the walkwave2 winning arm
             // (A/B log/abtest-cand-vs-base-2026-08-07-01-51-08, 290 v 285).
             walk_warmup_unarmed: env_bool_or_default("SAT_WALK_WARMUP_UNARMED", true),
+            walk_stall_giveup: std::env::var("SAT_WALK_STALL_GIVEUP")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            walk_best_min_unsat: u32::MAX,
+            walk_stall_rounds: 0,
             walk_last_search_ticks: 0,
             decision_level: vec![0; num_vars + 1],
             reason: vec![NO_REASON; num_vars + 1],
@@ -9430,6 +9445,25 @@ impl Solver {
         if !self.walk_enabled || self.current_level() != 0 || self.has_empty_clause {
             return;
         }
+        // Adaptive walk giveup (SAT_WALK_STALL_GIVEUP, SESSION 18; 0 = off):
+        // walking cannot refute an UNSAT formula, so on the deep-unarmed
+        // LATCH class (the cells the SESSION 16b/17 latch newly gave walks to
+        // — which mixes SAT walk-targets with UNSAT near-misses like
+        // RoundRobin/lockchart) keep walking only while it makes SAT progress.
+        // Once the best min-unsat has stalled for K consecutive walks the cell
+        // is UNSAT-bound (or walk-hopeless): stop walking and return the walk
+        // budget to CDCL, which is what actually refutes it. SAT cells keep
+        // reducing min-unsat (to 0 = solved) and never trip the counter, so
+        // their trajectories are untouched. Scoped to the latch class only:
+        // armed walkers and naturally-rephasing cells are byte-identical.
+        if self.walk_stall_giveup > 0
+            && self.stats.rephase_unarmed_enabled_at > 0
+            && !self.inprocess_aggressive
+            && self.walk_stall_rounds >= self.walk_stall_giveup
+        {
+            self.stats.walk_giveup_skips = self.stats.walk_giveup_skips.saturating_add(1);
+            return;
+        }
         if self.walk_warmup || (self.walk_warmup_unarmed && !self.inprocess_aggressive) {
             // SAT_WALK_WARMUP=unarmed (SESSION 17): kissat warms 100% of
             // walks; the 2026-07-17 global screen measured warmup NEGATIVE on
@@ -9545,6 +9579,23 @@ impl Solver {
 
         self.stats.walk_steps = self.stats.walk_steps.saturating_add(result.steps);
         self.stats.walk_flips = self.stats.walk_flips.saturating_add(result.flips);
+        // Track the best (lowest) min-unsat this cell's walks have ever reached.
+        // A walk counts as SAT progress — and resets the stall counter — only
+        // when it lowers the best by a MEANINGFUL margin (>= 1/64 of the
+        // current best, min 1). A cell genuinely heading for a model makes
+        // large relative drops toward 0; an UNSAT-bound cell's walk creeps its
+        // local minimum down by a clause or two per call forever (RoundRobin /
+        // lockchart), which must count as a stall or the giveup never trips.
+        let threshold = (self.walk_best_min_unsat >> 6).max(1);
+        if result.minimum_unsat.saturating_add(threshold) <= self.walk_best_min_unsat {
+            self.walk_best_min_unsat = result.minimum_unsat;
+            self.walk_stall_rounds = 0;
+        } else {
+            if result.minimum_unsat < self.walk_best_min_unsat {
+                self.walk_best_min_unsat = result.minimum_unsat;
+            }
+            self.walk_stall_rounds = self.walk_stall_rounds.saturating_add(1);
+        }
         if result.improved {
             self.stats.walk_improved = self.stats.walk_improved.saturating_add(1);
             for var in 1..=num_vars {

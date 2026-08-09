@@ -3283,6 +3283,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_RESTART_REUSE_TRAIL_ARMED_MIN",
         "SAT_REPHASE_UNARMED_MIN",
         "SAT_WALK_WARMUP_UNARMED",
+        "SAT_WALK_STALL_GIVEUP",
         "SAT_BACKBONE",
         "SAT_BACKBONE_SCOPE",
         "SAT_BACKBONE_ARMED_MIN",
