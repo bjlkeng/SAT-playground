@@ -103,20 +103,67 @@ def current_solver(default: str | None = None) -> str:
 
 S11 = current_solver()
 S10 = os.environ.get("SAT_REFERENCE_SOLVER", "solver/10-bve-subsume")
-CORES = [0, 1, 2, 3]            # default worker cores; overridden to range(--jobs) by preflight()
+CORES = [0, 1, 2, 3]            # default worker cores; overridden by preflight()
 TOL = 0.03                      # 3% noise band for the repeat rule
 
 
-def preflight(args) -> None:
-    """Pin workers to cores 0..jobs-1 and warn about contention / memory before a sweep.
+def numa_balanced_cores(jobs: int) -> list:
+    """Worker-core order balanced across CPU sockets.
 
-    --jobs sets BOTH the worker count and the physical cores used (taskset 0..jobs-1), so
-    `--jobs 5 --seeds 5` runs 5 threads (cores 0-4) with 5 seeds/instance. We do NOT prompt here
+    Alternates sockets over PHYSICAL cpus first (one hyperthread per core),
+    then SMT siblings, so any prefix of the list splits evenly across the
+    packages. The old `range(jobs)` pin put 18 workers on socket 0 and only
+    14 on socket 1 for --jobs 32 on the 2x18-core host, loading one memory
+    domain harder than the other. Topology from `lscpu -p=CPU,CORE,SOCKET`;
+    falls back to range(jobs) if parsing fails (e.g. single-socket VMs,
+    missing lscpu). Mirrored by tools/run_kissat_full.sh — keep in sync.
+    """
+    try:
+        out = subprocess.run(["lscpu", "-p=CPU,CORE,SOCKET"],
+                             stdout=subprocess.PIPE, text=True, check=True).stdout
+        first, rest = {}, {}
+        for line in out.splitlines():
+            if line.startswith("#") or not line.strip():
+                continue
+            cpu, core, sock = (int(x) for x in line.split(",")[:3])
+            key = (sock, core)
+            if key not in first:
+                first[key] = cpu
+            else:
+                rest.setdefault(key, []).append(cpu)
+        sockets = sorted({s for s, _ in first})
+        phys = {s: sorted(c for (sk, _), c in first.items() if sk == s) for s in sockets}
+        sibs = {s: sorted(c for (sk, _), cs in rest.items() if sk == s for c in cs)
+                for s in sockets}
+        order = []
+        for pool in (phys, sibs):
+            idx = {s: 0 for s in sockets}
+            remaining = sum(len(v) for v in pool.values())
+            while remaining:
+                for s in sockets:
+                    if idx[s] < len(pool[s]):
+                        order.append(pool[s][idx[s]])
+                        idx[s] += 1
+                        remaining -= 1
+        if 0 < jobs <= len(order):
+            return order[:jobs]
+    except Exception:
+        pass
+    return list(range(max(1, jobs)))
+
+
+def preflight(args) -> None:
+    """Pin workers to a socket-balanced core list and warn about contention / memory.
+
+    --jobs sets BOTH the worker count and the cores used: taskset over
+    `numa_balanced_cores(jobs)` — physical cpus split evenly across the sockets
+    (16+16 for --jobs 32 on the 2x18 host), SMT siblings only past the physical
+    count. We do NOT prompt here
     (sweeps usually run backgrounded); we print loud warnings. The agent-facing rule (CLAUDE.md)
     is to check `ps`/`pgrep` and ASK the user before launching when other solver jobs are running.
     """
     global CORES
-    CORES = list(range(max(1, args.jobs)))
+    CORES = numa_balanced_cores(max(1, args.jobs))
     # memory sanity: jobs x per-job cap must fit physical RAM or the OOM-killer reaps workers
     try:
         total_mb = next(int(l.split()[1]) for l in open("/proc/meminfo")
