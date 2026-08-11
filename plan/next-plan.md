@@ -1,13 +1,42 @@
-# NEXT PLAN — 2026-08-09 (supersedes 2026-08-07; PRUNED)
+# NEXT PLAN — 2026-08-11 (supersedes 2026-08-09; PRUNED)
 
 One-file plan for the next clear context. SESSIONS 4-13 bodies live in git
 history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
 bodies were pruned earlier — full text in revisions up to 93ab682. Where this
 file contradicts an older revision, THIS file wins.
 
-**START HERE:** read "SESSION 18" (the walk-arc close + the exhaustion map),
-then "SESSION 17"/"16b" (the walk-latch arc), then "RANKED PLAN", then
+**START HERE:** read "HEAD-TO-HEAD RE-BASELINE" below, then "SESSION 18"
+(the walk-arc close + the exhaustion map), then "RANKED PLAN", then
 "Standing traps".
+
+## HEAD-TO-HEAD RE-BASELINE (2026-08-10, user-requested double-check) — solver12 292 v kissat 294 same-host same-deal; gap −2; NUMA-balanced pinning landed
+
+Sequential full-bench runs, 3600 s / 16 GB / 32 NUMA-balanced cores (no
+contention between arms):
+
+| solver | solved | PAR-2 | unique | TSV |
+|---|:--:|--:|:--:|---|
+| solver12 (promoted defaults) | 292/400 | 944,307 | 42 | `log/abtest-solver12-2026-08-10-00-01-22/solver12/results.tsv` |
+| kissat 4.0.4 | 294/400 | 930,904 | 44 | `log/kissat-full-20260810-073149/results.csv` |
+
+- **solver12 REPRODUCED its promoted 292 exactly** (verify 288 ok / 4
+  checker-timeout / 0 fail — the promotion deal's 7-timeout scare did not
+  recur). **kissat scored 294 v its recorded 296** (its own ±2 deal
+  variance). Use THIS pair as the reference gap (−2) for same-host
+  same-deal comparisons; the 07-29 kissat 296 run predates the balanced
+  pinning and is a different deal.
+- Unique-set shapes: solver12's 42 = engineered capabilities (php/counting
+  x11, RoundRobin/MVRR gate-BVE x10 incl. the walk-giveup first-ever
+  n17_d15, oddball_tto_zp x6, xor/tseitin x3, VdW x2, walk-era gains).
+  kissat's 44 = 16x16 miters x9 (boothbit29/boothdadda29 flipped BACK to
+  kissat this deal — wall-margin swing cells), starved BMC x7, pj giants
+  x2, lottery tail. Both-timeout 64.
+- **Tooling (commit 2cf3aec): NUMA-balanced worker pinning in
+  feature_ablation.py (`numa_balanced_cores`) + run_kissat_full.sh
+  (CORE_ORDER_STR, offset = window shift).** Old `range(jobs)` put 18/32
+  workers on socket 0; new order alternates sockets over physical cpus
+  (16+16 at 32 jobs), SMT spill only past 36. Verified live (taskset
+  affinities one-per-socket; order recorded in kissat meta.txt).
 
 ## SESSION 18 (2026-08-08/09) — adaptive walk giveup PROMOTED: full-bench 291 → 292/400 (gate PASS, +1, a both-timeout first-ever); the walk vein is now CLOSED and the miter/near-miss levers are mapped exhausted
 
@@ -283,12 +312,16 @@ a scoped flag.
 
 ## Current state
 
-- HEAD: SESSION 18 promotion commit (after 65d0d9a).
-  **Full-bench 3600 s baseline: 292/400 promoted** (cand TSV =
-  `log/abtest-cand-vs-base-2026-08-09-06-42-44/cand/results.tsv`).
-  kissat 4.0.4 reference: 296/400 (`log/kissat-full-20260729-210758`) —
-  **gap −4** (was −25 at 14b). Lineage this month: 261 → 271 → 277 → 280 →
-  286 → 290 → 292 (paired gated A/Bs; SESSION 18 marginal +1).
+- HEAD: head-to-head re-baseline commit (after 2cf3aec).
+  **Full-bench 3600 s baseline: 292/400 promoted, REPRODUCED 2026-08-10 on
+  NUMA-balanced cores** (freshest TSV =
+  `log/abtest-solver12-2026-08-10-00-01-22/solver12/results.tsv`; promotion
+  TSV = `log/abtest-cand-vs-base-2026-08-09-06-42-44/cand/results.tsv`).
+  kissat 4.0.4 reference: **294/400 same-host same-deal 2026-08-10**
+  (`log/kissat-full-20260810-073149/results.csv`; the 07-29 run scored 296
+  on a different deal + unbalanced pinning) — **gap −2** (was −25 at 14b).
+  Lineage this month: 261 → 271 → 277 → 280 → 286 → 290 → 292 (paired
+  gated A/Bs; SESSION 18 marginal +1).
 - Default surface SESSIONS 15-18: SAT_VIVIFY_DEDUCE=on + _ARMED_MIN=500k;
   SAT_REPHASE_UNARMED_MIN=500_000; SAT_WALK_EFFORT_UNARMED=50;
   SAT_WALK_WARMUP_UNARMED=on; SAT_WALK_STALL_GIVEUP=16; SAT_BACKBONE=off;
