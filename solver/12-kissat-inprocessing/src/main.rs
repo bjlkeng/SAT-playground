@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod backbone;
 mod branch;
+mod sweepcount;
 mod check;
 mod config;
 mod congruence;
@@ -2128,6 +2129,11 @@ struct Solver {
     /// formulas (the SESSION 16b latch class); armed walkers keep the shipped
     /// no-warmup behavior (the 2026-07-17 negative class).
     walk_warmup_unarmed: bool,
+    /// SAT_SWEEPCOUNT (SESSION 19, default on): frontier-sweep counting
+    /// refutation for exactly-one bipartite cover imbalance (mutilated
+    /// chessboard class). Pre-search, all-or-nothing detector —
+    /// decline-is-identity on everything else.
+    sweepcount_enabled: bool,
     /// SAT_WALK_STALL_GIVEUP (SESSION 18, default 0 = off): consecutive
     /// non-improving walks on the deep-unarmed latch class after which walking
     /// is abandoned for the run (walk cannot refute UNSAT; give the budget
@@ -4102,6 +4108,7 @@ impl Solver {
             // FIRST-EVER (both-timeout, beats kissat) + mod2c, −RoundRobin_
             // n18_d15 same-family 355 s thin-margin wall swap; byte-identical
             // on SAT cells by construction, zero correctness failures).
+            sweepcount_enabled: env_bool_or_default("SAT_SWEEPCOUNT", true),
             walk_stall_giveup: std::env::var("SAT_WALK_STALL_GIVEUP")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -15034,7 +15041,17 @@ impl Solver {
         // parity-structured (Tseitin-like). On formulas with only incidental XOR
         // structure this skips a doomed elimination and its large proof buffer.
         let coverage = consumed.len() as f64 / total as f64;
-        if coverage < GAUSS_MIN_COVERAGE {
+        // SAT_GAUSS_MIN_COVERAGE (permille, default 900): the attempt gate.
+        // Coverage is a cost heuristic, not a soundness condition — the XOR
+        // subsystem's refutation is valid at any coverage. par32-class parity
+        // formulas sit at ~80% coverage (units + chained binaries are outside
+        // the 2^(k-1) groups) and refute from the subsystem alone.
+        let min_coverage = std::env::var("SAT_GAUSS_MIN_COVERAGE")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|p| p as f64 / 1000.0)
+            .unwrap_or(GAUSS_MIN_COVERAGE);
+        if coverage < min_coverage {
             if std::env::var("SAT_DEBUG_GAUSS").is_ok() {
                 eprintln!(
                     "c gauss_refute skip coverage={:.3} xors={} extract_sec={:.4}",
@@ -15116,6 +15133,87 @@ impl Solver {
         }
         for clause in &buffer {
             proof_log.record_clause(clause);
+        }
+        true
+    }
+
+    /// Frontier-sweep counting refutation (SAT_SWEEPCOUNT — see
+    /// src/sweepcount.rs for the shape, proof, and soundness argument).
+    /// Returns true when the formula was refuted (proof emitted, ending in
+    /// the empty clause).
+    fn try_sweepcount_refute(&mut self, proof_log: &mut ProofLog) -> bool {
+        if !proof_log.is_enabled() {
+            return false;
+        }
+        let t0 = Instant::now();
+        // Cheap gate: the shape is all-positive covers + all-negative
+        // binaries; any clause > 8 lits or any mixed clause declines. Scan
+        // lengths/polarities first without gathering.
+        let mut cover_count = 0usize;
+        for &cid in self.original_clause_ids.iter() {
+            let cid = cid as usize;
+            if cid >= self.arena.len() || self.clause_is_deleted(cid) {
+                continue;
+            }
+            let c = self.clause_slice(cid);
+            if c.len() > 8 {
+                return false;
+            }
+            let pos = c.iter().filter(|&&l| l > 0).count();
+            if pos == c.len() {
+                cover_count += 1;
+            } else if !(c.len() == 2 && pos == 0) {
+                return false;
+            }
+        }
+        if cover_count < 4 || cover_count > sweepcount::MAX_CELLS {
+            return false;
+        }
+        let clauses: Vec<Vec<i32>> = self
+            .original_clause_ids
+            .iter()
+            .map(|&cid| cid as usize)
+            .filter(|&cid| cid < self.arena.len() && !self.clause_is_deleted(cid))
+            .map(|cid| self.clause_slice(cid).to_vec())
+            .collect();
+        let Some(structure) = sweepcount::detect(&clauses) else {
+            if std::env::var("SAT_DEBUG_SWEEPCOUNT").is_ok() {
+                eprintln!(
+                    "c sweepcount no-structure covers={} sec={:.4}",
+                    cover_count,
+                    t0.elapsed().as_secs_f64()
+                );
+            }
+            return false;
+        };
+        const SWEEPCOUNT_MAX_PROOF_LINES: u64 = 8_000_000;
+        if sweepcount::estimated_proof_lines(&structure) > SWEEPCOUNT_MAX_PROOF_LINES {
+            if std::env::var("SAT_DEBUG_SWEEPCOUNT").is_ok() {
+                eprintln!(
+                    "c sweepcount decline est-lines={} cells={} width={}",
+                    sweepcount::estimated_proof_lines(&structure),
+                    structure.cells.len(),
+                    structure.width
+                );
+            }
+            return false;
+        }
+        let num_vars = self.assignment.len().saturating_sub(1);
+        let mut lines = 0u64;
+        sweepcount::refute_with_proof(&structure, num_vars, &mut |c| {
+            proof_log.record_clause(c);
+            lines += 1;
+        });
+        self.has_empty_clause = true;
+        if std::env::var("SAT_DEBUG_SWEEPCOUNT").is_ok() {
+            eprintln!(
+                "c sweepcount REFUTED cells={} width={} imbalance={} proof_lines={} sec={:.3}",
+                structure.cells.len(),
+                structure.width,
+                structure.imbalance,
+                lines,
+                t0.elapsed().as_secs_f64()
+            );
         }
         true
     }
@@ -18437,6 +18535,15 @@ impl Solver {
         // with a counting DRAT proof; a strict all-or-nothing detector, so
         // non-matching formulas are untouched.
         if config.php_refute && self.try_php_refute(proof_log) {
+            return SolveOutcome::unsat();
+        }
+
+        // Frontier-sweep counting refutation (SAT_SWEEPCOUNT — SESSION 19,
+        // src/sweepcount.rs): exactly-one bipartite cover imbalance, the
+        // mutilated-chessboard class. Strict all-or-nothing partition
+        // detector — ordinary formulas decline on the first mixed-polarity
+        // clause, so non-matching trajectories are byte-identical.
+        if self.sweepcount_enabled && self.try_sweepcount_refute(proof_log) {
             return SolveOutcome::unsat();
         }
 
