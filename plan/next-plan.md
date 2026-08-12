@@ -1,13 +1,51 @@
-# NEXT PLAN — 2026-08-11 (supersedes 2026-08-09; PRUNED)
+# NEXT PLAN — 2026-08-12 (supersedes 2026-08-11; PRUNED)
 
 One-file plan for the next clear context. SESSIONS 4-13 bodies live in git
 history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
 bodies were pruned earlier — full text in revisions up to 93ab682. Where this
 file contradicts an older revision, THIS file wins.
 
-**START HERE:** read "HEAD-TO-HEAD RE-BASELINE" below, then "SESSION 18"
-(the walk-arc close + the exhaustion map), then "RANKED PLAN", then
-"Standing traps".
+**START HERE:** read "SESSION 19" (the sweepcount engine — the cardinality
+arc DELIVERED), then "HEAD-TO-HEAD RE-BASELINE", then "SESSION 18" (the
+exhaustion map), then "RANKED PLAN", then "Standing traps".
+
+## SESSION 19 (2026-08-11/12) — frontier-sweep counting engine PROMOTED: mchess_20 FIRST-EVER (0.011 s refute, drat-trim VERIFIED); ranked research arc 3 delivered
+
+**Shipped (commit 09a271b + promotion): `src/sweepcount.rs` + SAT_SWEEPCOUNT
+default ON.** Pre-search refutation of exactly-one bipartite cover imbalance
+(mutilated-chessboard class). The proof design that unblocked the arc: NOT
+the H^4 inductive php closer (1.15G lines at H=198, RAT-scan-dead) but a
+FRONTIER SWEEP — order cells by bandwidth, keep banded unary counters over
+the open-edge frontier (width 21 for mchess_20, not H=198!), advance the
+invariant FB−FW=δ per cell via single-pass-RUP lemma batteries, empty
+clause when the frontier sweeps out with δ=2. 291k lines, 2.5 MB, verify
+115.7 s. The battery engineering (all validated by drat-trim forward
+checking on synthetic 4x4/8x8/20x20): definitions RAT-pivot-first; extend
+E1-E3 + reverse H0/H1/REV + level-monotone M on the append side; bridge
+D1-D5 + per-removed-edge transfer T on the removal side; two-direction
+banded invariant on top. KEY LEMMA-ENGINEERING LAWS learned (for the next
+proof engine): (1) a lemma is single-pass-RUP only if every case branch is
+resolved by an EARLIER lemma — emit per-edge helper batteries BEFORE their
+OR-lifted forms; (2) negation of a constant-false counter level is
+constant-TRUE (vacuous lemma), never "drop the literal" — conflating these
+emits false claims; (3) band saturation needs a 4-state level type
+(true/false/var/UNTRACKED) — untracked levels must skip the lemma entirely.
+
+**A/B `log/abtest-cand-vs-base-2026-08-11-19-37-55`:** +mchess_20 (UNSAT
+0.05 s in-gate, proof verified ok); ALL 291 shared solved cells
+conflict-IDENTICAL — the decline-is-identity claim proven at bench scale;
+raw 293 v 294 solely from two documented thin-margin flippers
+(valves-gates 33 s, oddball_19_4 103 s) swapping on wall under contention.
+Judged per the trade rule: 2 wall coins (test 1, ≤120 s margins, identical
+conflicts) v a deterministic first-ever — PROMOTED. Zero contradictions,
+zero correctness failures.
+
+**Also measured this session (negatives, recorded):** par32-2's pure-XOR
+subsystem is CONSISTENT (gauss's coverage decline at 0.798 was honest —
+SAT_GAUSS_MIN_COVERAGE env added, default unchanged); dubois50's clauses
+all sit on DISTINCT var sets (transformed instance — no XOR groups to
+extract; both stay both-timeout). rook-51/52/56 do NOT fit sweepcount
+(P==H balanced rook constraints; their hardness is not color imbalance).
 
 ## HEAD-TO-HEAD RE-BASELINE (2026-08-10, user-requested double-check) — solver12 292 v kissat 294 same-host same-deal; gap −2; NUMA-balanced pinning landed
 
@@ -278,54 +316,49 @@ digit-exact both flag states.
   ON + root-pass scoping law (percent-mass decline-is-identity gates are the
   ONLY shippable root-pass shape). Full text: rev 416adae.
 
-## RANKED PLAN (2026-08-09)
+## RANKED PLAN (2026-08-12)
 
-The flag-level frontier is now genuinely mined (SESSIONS 15-18 took 279→292,
-gap −17→−4). The remaining items are either bookkeeping or research-scale —
-the era of cheap reachability-audit wins is over. Set expectations: the next
-+1 likely needs a NEW capability (proof engine) or a CDCL-quality change, not
-a scoped flag.
+SESSIONS 15-19 took the bench 279 → 292-294-class with the gap to kissat at
+−1 to −4 depending on deal. The flag frontier is mined; SESSION 19 proved
+the "new capability engine" path works. Next leads, in order:
 
-1. **Medium-1800 re-baseline (bookkeeping, OVERDUE — FIVE promotions since
-   74/100 at c469b03).** Standard medium single-seed A/B (current defaults
-   vs all-new-flags-off) at 1800 s before any medium-metric work.
-2. **Checker-timeout proof-size watch (3-7 at-risk UNSAT solves).** Real
-   solved-count exposure now: several walk-era UNSAT solves verify near/past
-   the in-gate drat-trim budget. A future flip to FAIL is a gate correctness
-   stop. Study a proof-size diet or a larger verify budget BEFORE the next
-   UNSAT-heavy promotion. (This is the highest-RISK item, not highest-reward.)
-3. **Cardinality proof engine research arc (mchess_20 + rook family; ~4
-   cells).** THE main remaining capability lead. mchess_20 = direct-php
-   P=200/H=198, blocked on proof SIZE (H^4 closer; RAT-scan law kills naive
-   variants). Needs a NEW DRAT-emittable cardinality argument (totalizer with
-   per-merge RUP + injective core, or cutting-planes) designed ON PAPER
-   first. Zero reroll risk (pre-search). Do not code before the proof shape
-   is written and sized.
+1. **Sweepcount generalization (the fresh vein).** The engine handles
+   perfect-matching color imbalance. Natural extensions, each a
+   detector+battery delta on the now-proven core: (a) relaxed cells
+   (at-most-one holes on the minority side); (b) odd-component parity
+   (non-bipartite perfect matching — same frontier sweep, parity
+   invariant); (c) exactly-k cells via wider bands. Scan any new bench for
+   EO-cover shapes before building blind — THIS bench held only mchess_20.
+2. **Medium-1800 re-baseline (bookkeeping, OVERDUE — six promotions since
+   74/100 at c469b03).** Standard medium A/B, current defaults vs
+   all-new-flags-off.
+3. **Checker-timeout proof-size watch (4 at-risk UNSAT solves).** Watch
+   only; sweepcount adds no exposure (291k lines verify in ~116 s).
 4. **Miter CDCL trajectory quality (9 cells; hardest, highest ceiling).**
-   Flag levers EXHAUSTED (probe/backbone/vivify/gate-BVE all dead or at
-   parity — SESSION 18 map). Only a decision-heuristic or clause-learning
-   change closes the 6M-vs-20M-conflict gap. Deep, risky, no clean probe.
-5. **Walk vein: CLOSED.** Latch (500k), warmup, effort (50), giveup (K=16)
-   all promoted and tuned; 1M refuted; sort/tier3/reuse/cadence closed. The
-   deep-unarmed lottery is a managed surface — do not re-tune blindly.
-6. **Starved hwmcc/BMC + RoundRobin elim-arming:** CLOSED.
+   Flag levers EXHAUSTED (SESSION 18 map). Needs decision/learning-quality
+   work. Deep, risky, no clean probe.
+5. **Walk vein: CLOSED** (latch 500k + warmup + effort 50 + giveup 16
+   promoted; the deep-unarmed lottery is a managed surface).
+6. **Starved hwmcc/BMC + RoundRobin elim-arming + par32/dubois XOR
+   recovery:** CLOSED (SESSION 19: par32 honest-decline, dubois structure
+   destroyed by transformation; rooks are balanced — not sweepcount-shaped).
 
 ## Current state
 
-- HEAD: head-to-head re-baseline commit (after 2cf3aec).
-  **Full-bench 3600 s baseline: 292/400 promoted, REPRODUCED 2026-08-10 on
-  NUMA-balanced cores** (freshest TSV =
-  `log/abtest-solver12-2026-08-10-00-01-22/solver12/results.tsv`; promotion
-  TSV = `log/abtest-cand-vs-base-2026-08-09-06-42-44/cand/results.tsv`).
-  kissat 4.0.4 reference: **294/400 same-host same-deal 2026-08-10**
-  (`log/kissat-full-20260810-073149/results.csv`; the 07-29 run scored 296
-  on a different deal + unbalanced pinning) — **gap −2** (was −25 at 14b).
-  Lineage this month: 261 → 271 → 277 → 280 → 286 → 290 → 292 (paired
-  gated A/Bs; SESSION 18 marginal +1).
-- Default surface SESSIONS 15-18: SAT_VIVIFY_DEDUCE=on + _ARMED_MIN=500k;
+- HEAD: SESSION 19 promotion (after 09a271b).
+  **Full-bench 3600 s baseline: 293/400-class** (freshest TSV =
+  `log/abtest-cand-vs-base-2026-08-11-19-37-55/cand/results.tsv`: 293 with
+  mchess_20 in and two thin coins out that deal; the same defaults are
+  292-294 across recent deals). kissat 4.0.4 reference: **294/400
+  same-host same-deal 2026-08-10**
+  (`log/kissat-full-20260810-073149/results.csv`) — **gap ≈ −1**
+  (was −25 at 14b). kissat can NEVER solve mchess_20, so the unique-set
+  edge is now 43 v 43-ish. Lineage: 261 → 271 → 277 → 280 → 286 → 290 →
+  292 → +mchess (paired gated A/Bs).
+- Default surface SESSIONS 15-19: SAT_VIVIFY_DEDUCE=on + _ARMED_MIN=500k;
   SAT_REPHASE_UNARMED_MIN=500_000; SAT_WALK_EFFORT_UNARMED=50;
-  SAT_WALK_WARMUP_UNARMED=on; SAT_WALK_STALL_GIVEUP=16; SAT_BACKBONE=off;
-  banded sort/tier3/reuse knobs off (closed).
+  SAT_WALK_WARMUP_UNARMED=on; SAT_WALK_STALL_GIVEUP=16; SAT_SWEEPCOUNT=on;
+  SAT_BACKBONE=off; banded sort/tier3/reuse knobs off (closed).
 - The deep-unarmed walk class is a managed LOTTERY SURFACE; the giveup
   (K=16) added a UNSAT-aware guard but the RoundRobin n17/n18 pair remains
   a wall-margin swap (~43M conflicts, both at the 3600 s wall). Judge walk

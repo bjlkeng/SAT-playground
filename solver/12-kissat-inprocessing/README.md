@@ -15,6 +15,35 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **Full-bench default promotion (2026-08-12, SESSION 19): frontier-sweep
+> counting engine (`SAT_SWEEPCOUNT` default ON, `src/sweepcount.rs`).** A new
+> pre-search refutation engine for exactly-one bipartite cover imbalance —
+> the mutilated-chessboard class, exponentially hard for resolution/CDCL
+> (neither solver12 nor kissat has ever solved mchess_20 at 3600 s). Detect:
+> all-positive cover clauses + complete pairwise AMO binaries, every var in
+> exactly two cells, 2-colorable cell graph, unequal color classes. Refute:
+> sweep cells in a low-bandwidth order (input order first, BFS fallback)
+> maintaining banded unary counters over the open-edge frontier; each cell's
+> exactly-one advances the invariant FB−FW=δ by single-pass RUP through nine
+> explicit lemma batteries (extend E1-E3, reverse H0/H1/REV, level-monotone
+> M, removal bridge D1-D5, transfer T), ending in the empty clause at the
+> swept-out boundary. Validated bottom-up with drat-trim forward checking on
+> 4x4/8x8/20x20 synthetic boards (all s VERIFIED in-tests). **Real mchess_20:
+> REFUTED in 0.011 s, 291,102-line proof, drat-trim VERIFIED (115.7 s
+> standalone; verified 'ok' in-gate).** A/B
+> `log/abtest-cand-vs-base-2026-08-11-19-37-55`: +mchess_20; ALL 291 shared
+> solved cells conflict-IDENTICAL (the decline-is-identity construction
+> proven at bench scale); raw count 293 v 294 because two documented
+> thin-margin flippers (valves-gates 33 s, oddball_19_4 103 s) flipped on
+> wall under contention — judged wall coins per the trade rule (N=2
+> allowance, mechanism-validated capability gained; zero
+> contradictions/correctness failures). Gap analysis vs kissat unchanged
+> except mchess_20 moves from both-timeout to solver12-only. Also landed:
+> `SAT_GAUSS_MIN_COVERAGE` env (default 900 unchanged; par32-2 measured
+> honest-decline — its pure-XOR subsystem is consistent). 761+5 tests,
+> smoke 9/9, identity refs digit-exact. Detail: `plan/next-plan.md`
+> SESSION 19.
+
 > **Full-bench default promotion (2026-08-09, SESSION 18): adaptive walk
 > giveup (`SAT_WALK_STALL_GIVEUP` default 16).** Walking cannot refute UNSAT,
 > but the SESSION 16b/17 latch gave walks to a class that mixes SAT
