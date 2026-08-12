@@ -12015,10 +12015,49 @@ impl Solver {
             return true;
         }
 
+        // SESSION 20b (yield-armed only): in-round representative map — the
+        // kissat sweep_repr cascade. Environments built LATER in the round
+        // see the merges proven EARLIER (literals mapped through `repr`), so
+        // one round keeps collapsing the region instead of waiting for the
+        // end-of-round ELS application. Literal-level union-find with sign
+        // composition; identity (empty) when the latch is off, making
+        // `clauses_of` byte-identical to the legacy closure.
+        let repr: std::cell::RefCell<std::collections::HashMap<i32, i32>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+        let repr_find = |l: i32| -> i32 {
+            let map = repr.borrow();
+            let mut cur = l;
+            for _ in 0..64 {
+                let v = cur.abs();
+                match map.get(&v) {
+                    Some(&p) => {
+                        cur = if cur > 0 { p } else { -p };
+                    }
+                    None => break,
+                }
+            }
+            cur
+        };
         let clauses_of = |var: i32| -> Vec<Vec<i32>> {
             let v = var as usize;
+            let mapped = |c: &Vec<i32>| -> Option<Vec<i32>> {
+                if repr.borrow().is_empty() {
+                    return Some(c.clone());
+                }
+                let mut out: Vec<i32> = Vec::with_capacity(c.len());
+                for &l in c {
+                    let m = repr_find(l);
+                    if out.contains(&-m) {
+                        return None; // tautology after mapping
+                    }
+                    if !out.contains(&m) {
+                        out.push(m);
+                    }
+                }
+                Some(out)
+            };
             match occ.get(v) {
-                Some(list) => list.iter().map(|&si| snap[si].clone()).collect(),
+                Some(list) => list.iter().filter_map(|&si| mapped(&snap[si])).collect(),
                 None => Vec::new(),
             }
         };
@@ -12211,6 +12250,15 @@ impl Solver {
                 sweep_max_vars,
                 sweep_max_clauses,
             );
+            // SESSION 20b: a mapped environment's clauses are not DB
+            // clauses; ground them in the proof first (each is RUP via the
+            // original snapshot clause + the streamed equivalence binaries;
+            // unchanged clauses are harmless DB duplicates).
+            if self.sweep_yield_armed && !repr.borrow().is_empty() {
+                for c in &env.outer_clauses {
+                    proof_log.record_clause(c);
+                }
+            }
             let facts = crate::sweep::prove_facts_budgeted_opts(
                 &mut env,
                 SWEEP_SOLVE_BUDGET,
@@ -12237,6 +12285,20 @@ impl Solver {
             // Emit the RUP lemmas that justify this environment's facts, then collect them.
             for lemma in env.proof_lemmas_outer() {
                 proof_log.record_clause(&lemma);
+            }
+            // SESSION 20b: stream each proven equivalence into the in-round
+            // repr map (binaries proof-emitted IMMEDIATELY so later mapped
+            // environments' justification lemmas are RUP-grounded).
+            if self.sweep_yield_armed {
+                for &(a, b) in &facts.equivalences {
+                    let (ra, rb) = (repr_find(a), repr_find(b));
+                    if ra.abs() == rb.abs() {
+                        continue;
+                    }
+                    proof_log.record_clause(&[-ra, rb]);
+                    proof_log.record_clause(&[ra, -rb]);
+                    repr.borrow_mut().insert(rb.abs(), if rb > 0 { ra } else { -ra });
+                }
             }
             self.sweep_facts_this_pass = self.sweep_facts_this_pass.saturating_add(
                 (facts.backbones.len() + facts.equivalences.len()) as u64,
