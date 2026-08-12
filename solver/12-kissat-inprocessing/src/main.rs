@@ -2926,6 +2926,20 @@ struct Solver {
     sweep_completed: u32,
     /// Env SAT_SWEEP_SEED_BUDGET: seeds actually swept per round.
     sweep_seed_budget: usize,
+    /// SAT_SWEEP_YIELD_ESCALATE (permille of live vars, 0 = off): once a
+    /// conflict-cadence sweep round proves equivalences >= max(100,
+    /// live_vars * permille / 1000), latch kissat-parity sweep completion for
+    /// the rest of the run: retire-mode scan, escalation ladder, seed budget
+    /// >= 2048, and equivalence SUBSTITUTION (kissat substitutes every proven
+    /// equivalence). Low-yield formulas (miters ~45 equivs, VexRiscv 10k of
+    /// 723k vars) never trip the latch and keep the shipped legacy round
+    /// byte-identically — the same decline-is-identity mass-threshold shape
+    /// as the promoted ELS/probe gates. Target class: uniqinv40-like
+    /// equivalence-rich formulas (kissat: 3,799 equivalences = 30% of vars,
+    /// solves in 51 s; our legacy budget: 375 = 3%, timeout).
+    sweep_yield_escalate_permille: u64,
+    /// runtime latch for SAT_SWEEP_YIELD_ESCALATE (see above).
+    sweep_yield_armed: bool,
     /// Env SAT_SWEEP_KITTEN_TICKS: kitten tick budget shared by all environments of one
     /// inprocessing `sweep_round` invocation. The legacy path gave every kitten call an
     /// UNLIMITED budget, and one pathological environment (battleship-13-13-unsat,
@@ -4499,6 +4513,11 @@ impl Solver {
             sweep_unproductive_passes: 0,
             sweep_cursor: 1,
             sweep_completed: 0,
+            sweep_yield_escalate_permille: std::env::var("SAT_SWEEP_YIELD_ESCALATE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            sweep_yield_armed: false,
             sweep_seed_budget: std::env::var("SAT_SWEEP_SEED_BUDGET")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -11935,7 +11954,9 @@ impl Solver {
         // pass doubles the environment variable/clause bounds and adds one to depth,
         // capped. Shift amount is clamped so the doubling cannot overflow; the caps are
         // raised to any explicit env override so a manual bound is never reduced.
-        if (self.sweep_cursor_enabled || tick_engine) && self.sweep_completed > 0 {
+        if (self.sweep_cursor_enabled || tick_engine || self.sweep_yield_armed)
+            && self.sweep_completed > 0
+        {
             let steps = self.sweep_completed.min(16) as usize;
             sweep_max_vars = sweep_max_vars
                 .checked_shl(steps as u32).unwrap_or(usize::MAX)
@@ -12120,19 +12141,24 @@ impl Solver {
         // past un-retired productive seeds would strand them until a full wrap and would
         // reintroduce exactly the regression the bare cursor showed on VexRiscv/oski/bp4.
         // Retired seeds are skipped cheaply, so the budget flows to the frontier.
-        let use_cursor_start = self.sweep_cursor_enabled && !self.sweep_retire_enabled;
+        let retire = self.sweep_retire_enabled || self.sweep_yield_armed;
+        let use_cursor_start = self.sweep_cursor_enabled && !retire;
         let scan_start = if use_cursor_start {
             self.sweep_cursor.clamp(1, nvars)
         } else {
             1
         };
-        let seed_budget = self.sweep_seed_budget;
+        let seed_budget = if self.sweep_yield_armed {
+            self.sweep_seed_budget.max(2048)
+        } else {
+            self.sweep_seed_budget
+        };
         // Round-wide kitten tick budget (SESSION 14 fix): bounds the pathological
         // single-environment exponential kitten solve without touching healthy rounds
         // (budget ~6x above the worst measured productive round; the budgeted core is
         // decision-identical while it never exhausts).
         let mut round_kitten_ticks: u64 = self.sweep_kitten_ticks;
-        if self.sweep_retire_enabled && self.sweep_done.len() != nvars + 1 {
+        if retire && self.sweep_done.len() != nvars + 1 {
             self.sweep_done = vec![false; nvars + 1];
         }
         let mut scanned = 0usize;
@@ -12162,7 +12188,7 @@ impl Solver {
             // Retire policy: skip seeds already proven barren at the current bounds, so the
             // budget goes to unexamined variables while productive seeds (never marked
             // done) stay in rotation and keep exploiting the ELS merge cascade.
-            if self.sweep_retire_enabled && self.sweep_done[sv] {
+            if retire && self.sweep_done[sv] {
                 continue;
             }
             let mut env = build_environment(
@@ -12185,7 +12211,7 @@ impl Solver {
             }
             if facts.backbones.is_empty() && facts.equivalences.is_empty() {
                 // Barren at these bounds — retire it until the next escalation.
-                if self.sweep_retire_enabled {
+                if retire {
                     self.sweep_done[sv] = true;
                 }
                 continue;
@@ -12209,7 +12235,7 @@ impl Solver {
         // covers only its slice — so a pass is complete when this round's scan crosses the
         // end of the range, not when a single round happens to scan everything. Crossing
         // increments `sweep_completed`, which escalates the environment bounds next round.
-        if self.sweep_cursor_enabled {
+        if self.sweep_cursor_enabled || self.sweep_yield_armed {
             // In retire mode `scan_start` is always 1, so this reduces to "did this round
             // walk the whole range" — which, with barren seeds skipped, means everything is
             // either retired or examined: a completed pass.
@@ -12222,7 +12248,7 @@ impl Solver {
                 // kissat re-flags every variable when it escalates a bound, so the larger
                 // environment gets a fresh crack at seeds that were barren at the smaller
                 // one. Without this the retire flags would permanently starve the scan.
-                if self.sweep_retire_enabled {
+                if retire {
                     self.sweep_done.iter_mut().for_each(|d| *d = false);
                     if self.sweep_facts_this_pass == 0 {
                         self.sweep_unproductive_passes =
@@ -12238,8 +12264,54 @@ impl Solver {
                 }
             }
         }
+        // SAT_SWEEP_YIELD_ESCALATE arming: a conflict-cadence round whose
+        // equivalence yield reaches percent-scale mass latches kissat-parity
+        // completion mode for the rest of the run. Checked before facts are
+        // applied; the CURRENT round still applies its facts under the shipped
+        // shape, so the arming round itself stays trajectory-compatible and
+        // escalation begins at the next round.
+        if !self.sweep_yield_armed && self.sweep_yield_escalate_permille > 0 {
+            let live = self.count_active_vars() as u64;
+            let found = all_equivalences.len() as u64;
+            if found >= 100.max(live.saturating_mul(self.sweep_yield_escalate_permille) / 1000) {
+                self.sweep_yield_armed = true;
+                // Kissat sweeps this class every ~23k conflicts; our flat 1M
+                // cadence would give the sweep→substitute cascade ~3 rounds
+                // per hour. Join the aggressive-cadence class (the same
+                // machinery the congruence/vivify-yield arms use): early
+                // doubling rounds + the armed technique set.
+                if !self.inprocess_aggressive {
+                    if self.stats.inprocess_armed_at_conflict == 0 {
+                        self.stats.inprocess_armed_at_conflict = self.stats.conflicts.max(1);
+                    }
+                    self.inprocess_aggressive = true;
+                    self.inprocess_aggressive_interval = INPROCESS_AGGRESSIVE_FIRST_INTERVAL;
+                    self.next_inprocess_conflicts = self
+                        .stats
+                        .conflicts
+                        .saturating_add(INPROCESS_AGGRESSIVE_FIRST_INTERVAL);
+                }
+                if std::env::var("SAT_DEBUG_SWEEP").is_ok() {
+                    eprintln!(
+                        "c sweep yield-escalate ARMED equivs={} live={} conflicts={}",
+                        found, live, self.stats.conflicts
+                    );
+                }
+            }
+        }
         }
 
+        if std::env::var("SAT_DEBUG_SWEEP").is_ok() {
+            eprintln!(
+                "c sweep round done conflicts={} backbones={} equivs={} completed={} armed={} live={}",
+                self.stats.conflicts,
+                all_backbones.len(),
+                all_equivalences.len(),
+                self.sweep_completed,
+                self.sweep_yield_armed,
+                self.count_active_vars(),
+            );
+        }
         // Apply the proven facts. Backbones become root units (enqueued + propagated);
         // equivalences become implication binaries. Their proof lines were emitted above.
         if !all_backbones.is_empty() {
@@ -12257,12 +12329,12 @@ impl Solver {
         // Tick-engine rounds always substitute (any distinct pair): the starved class is
         // exactly where the sweep->ELS merge cascade has to fire for the formula to
         // collapse, and the class fires no other sweep shape to protect.
-        let subst_min_equivs = if tick_engine {
+        let subst_min_equivs = if tick_engine || self.sweep_yield_armed {
             1
         } else {
             self.sweep_subst_min_equivs.max(1)
         };
-        let subst_active = (self.sweep_subst || tick_engine) && {
+        let subst_active = (self.sweep_subst || tick_engine || self.sweep_yield_armed) && {
             let mut seen: std::collections::HashSet<(i32, i32)> =
                 std::collections::HashSet::new();
             let mut distinct: u64 = 0;
