@@ -12259,12 +12259,18 @@ impl Solver {
                     proof_log.record_clause(c);
                 }
             }
+            let prove_t0 = Instant::now();
             let facts = crate::sweep::prove_facts_budgeted_opts(
                 &mut env,
                 SWEEP_SOLVE_BUDGET,
                 &mut round_kitten_ticks,
                 self.sweep_yield_armed,
             );
+            self.stats.sweep_solves = self.stats.sweep_solves.saturating_add(facts.solves_spent);
+            self.stats.sweep_prove_nanos = self
+                .stats
+                .sweep_prove_nanos
+                .saturating_add(prove_t0.elapsed().as_nanos() as u64);
             seeds_done += 1;
 
             if facts.env_unsat {

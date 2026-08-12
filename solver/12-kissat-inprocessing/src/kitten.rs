@@ -119,6 +119,20 @@ pub(crate) struct Kitten {
     /// Phase 4). Accumulates across incremental `solve` calls on the same environment.
     proof: Vec<Vec<i32>>,
 
+    /// Indices of length-1 clauses (input + learned), maintained on add/learn
+    /// so solves enqueue units without scanning the whole clause list.
+    units: Vec<usize>,
+    /// Decision scan cursor: lowest var possibly unassigned. Reset on
+    /// backtrack; picking still always chooses the LOWEST unassigned var, so
+    /// behavior is identical to the linear scan — only the wall changes.
+    decide_from: usize,
+    /// Fast mode (yield-armed sweeps): phase saving — decisions reuse each
+    /// var's last assigned polarity, so re-solves repair the previous model
+    /// instead of re-deriving it. CHANGES search trajectories; off keeps the
+    /// shipped decide-positive behavior byte-identically.
+    fast_mode: bool,
+    /// last assigned polarity per var (TRUE/FALSE; UNASSIGNED = never)
+    saved_phase: Vec<i8>,
     /// Work counter for budgeted solves: one tick per watched-clause visit during
     /// propagation (kissat kitten-ticks analog). Reset at the start of each
     /// `solve_budgeted` call.
@@ -138,6 +152,10 @@ impl Kitten {
             num_input: 0,
             value: Vec::new(),
             level: Vec::new(),
+            units: Vec::new(),
+            decide_from: 0,
+            fast_mode: false,
+            saved_phase: Vec::new(),
             reason: Vec::new(),
             trail: Vec::new(),
             propagated: 0,
@@ -176,6 +194,7 @@ impl Kitten {
         while self.num_vars <= var {
             self.value.push(UNASSIGNED);
             self.level.push(0);
+            self.saved_phase.push(UNASSIGNED);
             self.reason.push(Reason::Decision);
             self.seen.push(false);
             self.watches.push(Vec::new()); // positive literal
@@ -219,6 +238,8 @@ impl Kitten {
         if lits.len() >= 2 {
             self.watches[lits[0] as usize].push(idx);
             self.watches[lits[1] as usize].push(idx);
+        } else {
+            self.units.push(idx);
         }
         self.clauses.push(lits);
         self.antecedents.push(Vec::new());
@@ -258,8 +279,11 @@ impl Kitten {
         let target_len = self.trail_lim[level];
         while self.trail.len() > target_len {
             let l = self.trail.pop().unwrap();
-            self.value[lit_var(l)] = UNASSIGNED;
+            let var = lit_var(l);
+            self.saved_phase[var] = self.value[var];
+            self.value[var] = UNASSIGNED;
         }
+        self.decide_from = 0;
         self.propagated = target_len;
         self.trail_lim.truncate(level);
     }
@@ -418,20 +442,34 @@ impl Kitten {
         if lits.len() >= 2 {
             self.watches[lits[0] as usize].push(idx);
             self.watches[lits[1] as usize].push(idx);
+        } else if lits.len() == 1 {
+            self.units.push(idx);
         }
         self.clauses.push(lits);
         self.antecedents.push(antecedents);
         idx
     }
 
-    fn pick_decision(&self) -> Option<Lit> {
-        // Simple static order over variables; sufficient for bounded environments.
-        for v in 0..self.num_vars {
+    fn pick_decision(&mut self) -> Option<Lit> {
+        // Lowest unassigned var (identical order to the historical scan); the
+        // cursor only skips the known-assigned prefix. Polarity: positive
+        // (shipped) or the saved phase in fast mode.
+        let mut v = self.decide_from;
+        while v < self.num_vars {
             if self.value[v] == UNASSIGNED {
-                return Some((v as u32) << 1); // decide positive
+                self.decide_from = v;
+                let neg = self.fast_mode && self.saved_phase[v] == FALSE;
+                return Some(((v as u32) << 1) | (neg as u32));
             }
+            v += 1;
         }
+        self.decide_from = v;
         None
+    }
+
+    /// Enable fast mode (phase saving) — yield-armed sweeps only.
+    pub(crate) fn set_fast_mode(&mut self, on: bool) {
+        self.fast_mode = on;
     }
 
     /// Reset all search state (trail/levels) but keep clauses. Learned clauses are kept
@@ -439,11 +477,14 @@ impl Kitten {
     /// cleared — root units are re-enqueued at the start of the next `solve`.
     fn reset_search(&mut self) {
         while let Some(l) = self.trail.pop() {
-            self.value[lit_var(l)] = UNASSIGNED;
+            let var = lit_var(l);
+            self.saved_phase[var] = self.value[var];
+            self.value[var] = UNASSIGNED;
         }
         self.propagated = 0;
         self.trail_lim.clear();
         self.core.clear();
+        self.decide_from = 0;
     }
 
     /// Solve the current formula under `assumptions` (signed DIMACS lits). Returns
@@ -475,8 +516,10 @@ impl Kitten {
 
         // Enqueue all unit clauses (input + learned) at the root; they carry no watches
         // (a 1-literal clause has nothing to watch) so propagation cannot discover them.
-        for i in 0..self.clauses.len() {
-            if self.clauses[i].len() == 1 {
+        // Maintained `units` index list: same clause order as the historical full scan.
+        for k in 0..self.units.len() {
+            let i = self.units[k];
+            {
                 let u = self.clauses[i][0];
                 match self.lit_value(u) {
                     TRUE => {}

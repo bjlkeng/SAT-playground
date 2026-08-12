@@ -224,6 +224,10 @@ where
 /// Facts proven within a sweeping environment, expressed in OUTER literals.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct SweepFacts {
+    /// kitten solve calls spent in this environment (throughput metric)
+    pub(crate) solves_spent: u64,
+    /// kitten flip calls spent
+    pub(crate) flips_spent: u64,
     /// The whole environment is unsatisfiable — the outer formula is UNSAT.
     pub(crate) env_unsat: bool,
     /// Backbone literals: each is entailed true by the environment (a forced unit).
@@ -289,6 +293,10 @@ pub(crate) fn prove_facts_budgeted_opts(
     if n == 0 {
         return facts;
     }
+    // Fast kitten mode (phase saving) for yield-armed sweeps: re-solves
+    // repair the previous model instead of re-deriving it, which is where
+    // the 28x per-solve wall gap to kissat's kitten was measured.
+    env.kitten.set_fast_mode(skip_transitive);
     let mut solves = 0usize;
 
     // One budgeted kitten call: charge consumed ticks against the remaining budget and
@@ -462,6 +470,7 @@ pub(crate) fn prove_facts_budgeted_opts(
         }
     }
 
+    facts.solves_spent = solves as u64;
     facts
 }
 

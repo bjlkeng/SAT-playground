@@ -265,6 +265,10 @@ pub(crate) struct SolverStats {
     pub(crate) rephase_unarmed_enabled_at: u64,
     /// walks skipped by the adaptive stall-giveup gate (SAT_WALK_STALL_GIVEUP)
     pub(crate) walk_giveup_skips: u64,
+    /// kitten solve calls spent by the conflict-cadence sweep (throughput)
+    pub(crate) sweep_solves: u64,
+    /// wall nanoseconds spent inside sweep prove_facts (throughput)
+    pub(crate) sweep_prove_nanos: u64,
     /// mid-search backbone pass invocations (SAT_BACKBONE)
     pub(crate) backbone_computations: u64,
     /// stacked-probe rounds run across all backbone computations (SAT_BACKBONE)
@@ -908,6 +912,8 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     );
     json.u64("rephase_unarmed_enabled_at", ctx.stats.rephase_unarmed_enabled_at);
     json.u64("walk_giveup_skips", ctx.stats.walk_giveup_skips);
+    json.u64("sweep_solves", ctx.stats.sweep_solves);
+    json.u64("sweep_prove_nanos", ctx.stats.sweep_prove_nanos);
     json.u64("backbone_computations", ctx.stats.backbone_computations);
     json.u64("backbone_rounds", ctx.stats.backbone_rounds);
     json.u64("backbone_probes", ctx.stats.backbone_probes);
