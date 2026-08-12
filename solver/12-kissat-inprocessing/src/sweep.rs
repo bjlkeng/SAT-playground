@@ -267,6 +267,22 @@ pub(crate) fn prove_facts_budgeted(
     solve_budget: usize,
     tick_budget: &mut u64,
 ) -> SweepFacts {
+    prove_facts_budgeted_opts(env, solve_budget, tick_budget, false)
+}
+
+/// `skip_transitive`: maintain a union-find over the environment's variables
+/// and skip candidate pairs already in one proven class. A k-variable
+/// equivalence class then costs k−1 pair proofs instead of k(k−1)/2 — the
+/// kissat class-chain shape. Off for the shipped legacy sweep (emitting the
+/// transitively-implied pairs is part of its byte-exact trajectory);
+/// yield-armed rounds (SAT_SWEEP_YIELD_ESCALATE) turn it on, which is where
+/// equivalence-rich formulas (uniqinv class) burn the quadratic waste.
+pub(crate) fn prove_facts_budgeted_opts(
+    env: &mut SweepEnv,
+    solve_budget: usize,
+    tick_budget: &mut u64,
+    skip_transitive: bool,
+) -> SweepFacts {
     use crate::kitten::KittenResult;
     let mut facts = SweepFacts::default();
     let n = env.to_outer.len();
@@ -303,6 +319,15 @@ pub(crate) fn prove_facts_budgeted(
     // Candidate value for each var (its value in the first model) and whether it has been
     // observed with both polarities across models (=> not a backbone).
     let mut models: Vec<Vec<bool>> = vec![env.model_snapshot()];
+    // Union-find for skip_transitive (indices 0..n over kitten vars).
+    let mut uf: Vec<usize> = (0..n).collect();
+    fn uf_find(uf: &mut Vec<usize>, mut x: usize) -> usize {
+        while uf[x] != x {
+            uf[x] = uf[uf[x]];
+            x = uf[x];
+        }
+        x
+    }
 
     // --- Backbone detection ---
     // A var is a backbone candidate if it holds the same value in every model seen. Probe
@@ -360,6 +385,12 @@ pub(crate) fn prove_facts_budgeted(
                 }
                 let ai = (a - 1) as usize;
                 let bi = (b - 1) as usize;
+                if skip_transitive {
+                    let (ra, rb) = (uf_find(&mut uf, ai), uf_find(&mut uf, bi));
+                    if ra == rb {
+                        continue; // already in one proven class this round
+                    }
+                }
                 // Determine the candidate relation from the first model, then require it
                 // to hold in ALL models; otherwise a,b cannot be equivalent.
                 let same0 = models[0][ai] == models[0][bi];
@@ -393,6 +424,10 @@ pub(crate) fn prove_facts_budgeted(
                     // outer equivalence: (a) <-> (target-signed b)
                     let ob_signed = if same0 { ob } else { -ob };
                     facts.equivalences.push((oa, ob_signed));
+                    if skip_transitive {
+                        let (ra, rb) = (uf_find(&mut uf, ai), uf_find(&mut uf, bi));
+                        uf[ra] = rb;
+                    }
                 } else {
                     models.push(env.model_snapshot());
                 }

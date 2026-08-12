@@ -1,13 +1,51 @@
-# NEXT PLAN — 2026-08-12 (supersedes 2026-08-11; PRUNED)
+# NEXT PLAN — 2026-08-12b (supersedes 2026-08-12; PRUNED)
 
 One-file plan for the next clear context. SESSIONS 4-13 bodies live in git
 history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
 bodies were pruned earlier — full text in revisions up to 93ab682. Where this
 file contradicts an older revision, THIS file wins.
 
-**START HERE:** read "SESSION 19" (the sweepcount engine — the cardinality
-arc DELIVERED), then "HEAD-TO-HEAD RE-BASELINE", then "SESSION 18" (the
-exhaustion map), then "RANKED PLAN", then "Standing traps".
+**START HERE:** read "SESSION 20" (the uniqinv/sweep mechanism map — four
+layers deep, no promotion), then "SESSION 19" (sweepcount), then "RANKED
+PLAN", then "Standing traps".
+
+## SESSION 20 (2026-08-12) — NO PROMOTION: the uniqinv40/sweep-equivalence arc mapped to its root; miter-congruence definitively killed; yield-escalate latch banked default-off
+
+**Flagship target: uniqinv40prop (kissat 51 s UNSAT, we timeout — a 70x
+structural gap).** kissat's measured recipe there: 3,799 sweep equivalences
+(30% of vars) over 24 sweeps / 130k kitten solves + 3,108 congruence
+matches, then 549k conflicts. Layer-by-layer findings (all measured, none
+speculative):
+
+1. **Congruence matching is NOT the entry point:** every one of our 12,092
+   extracted AND gates has a DISTINCT input pair — 0 syntactic merges exist
+   pristine. kissat's 261 initial congruent vars only arise after its
+   substitute→re-extract cascade reaches critical mass. (Also killed for
+   the miter class: pristine boothdadda29 extraction = 5,162 gates but 1
+   merge — booth/dadda halves share no syntactic gate structure; the plan's
+   'congruence blind on miters' hypothesis is DEAD, and the stats-only-
+   on-apply artifact that suggested it is noted below.)
+2. **SAT_SWEEP_YIELD_ESCALATE latch built (default OFF, commit 9b78fa8):**
+   percent-scale equivalence yield latches retire-scan + escalation +
+   seed budget 2048 + substitution + aggressive cadence. On uniqinv40 it
+   arms at round 1 (375 equivs) and substitutes ~113 distinct vars — then
+   the cascade STALLS (~500 distinct equivalences total vs kissat 3,799).
+3. **Environment size is NOT the residual:** depth-8/8192-var environments
+   yield ZERO (the 2000-solve budget dilutes; pairs are LOCAL).
+4. **Transitive pair-waste is NOT the residual:** a union-find skip
+   (prove_facts_budgeted_opts, yield-armed rounds only) changed nothing —
+   yields identical. The residual is (a) duplicate proving across
+   OVERLAPPING environments (whole-env retirement exists only in the tick
+   engine) and, deeper, (b) kissat's per-sweep candidate mechanics
+   sustaining high yield across 24 sweeps where ours dries up after 2.
+   **Closing this needs a faithful kissat sweep.c pair-mechanics port — a
+   full session, promoted to ranked item 1.**
+
+par32-2/dubois50 XOR recovery also closed this session (par32's pure-XOR
+subsystem is consistent — SAT_GAUSS_MIN_COVERAGE env banked; dubois50's
+clause var-sets are all distinct post-transformation). Validation: 761+5
+tests, smoke 9/9, rbsat fingerprint digit-exact (all new knobs default
+off; defaults byte-identical to the SESSION 19 promotion).
 
 ## SESSION 19 (2026-08-11/12) — frontier-sweep counting engine PROMOTED: mchess_20 FIRST-EVER (0.011 s refute, drat-trim VERIFIED); ranked research arc 3 delivered
 
@@ -322,7 +360,12 @@ SESSIONS 15-19 took the bench 279 → 292-294-class with the gap to kissat at
 −1 to −4 depending on deal. The flag frontier is mined; SESSION 19 proved
 the "new capability engine" path works. Next leads, in order:
 
-1. **Sweepcount generalization (the fresh vein).** The engine handles
+1. **kissat sweep.c pair-mechanics port (uniqinv40-class; the measured
+   5x-yield ceiling).** See SESSION 20: latch + skip-transitive banked;
+   the remaining delta is whole-environment retirement outside the tick
+   engine + sustained per-sweep candidate yield. uniqinv40 is the
+   acceptance test (kissat 51 s). Also re-screen the latch WITH the port.
+2. **Sweepcount generalization (the fresh vein).** The engine handles
    perfect-matching color imbalance. Natural extensions, each a
    detector+battery delta on the now-proven core: (a) relaxed cells
    (at-most-one holes on the minority side); (b) odd-component parity

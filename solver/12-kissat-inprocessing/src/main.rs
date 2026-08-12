@@ -12198,7 +12198,12 @@ impl Solver {
                 sweep_max_vars,
                 sweep_max_clauses,
             );
-            let facts = prove_facts_budgeted(&mut env, SWEEP_SOLVE_BUDGET, &mut round_kitten_ticks);
+            let facts = crate::sweep::prove_facts_budgeted_opts(
+                &mut env,
+                SWEEP_SOLVE_BUDGET,
+                &mut round_kitten_ticks,
+                self.sweep_yield_armed,
+            );
             seeds_done += 1;
 
             if facts.env_unsat {
