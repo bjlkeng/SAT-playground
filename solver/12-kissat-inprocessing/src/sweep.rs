@@ -319,6 +319,9 @@ pub(crate) fn prove_facts_budgeted_opts(
     // Candidate value for each var (its value in the first model) and whether it has been
     // observed with both polarities across models (=> not a backbone).
     let mut models: Vec<Vec<bool>> = vec![env.model_snapshot()];
+    // Whether the kitten currently holds a full SAT model (flips are only
+    // meaningful then; an UNSAT probe invalidates it until the next SAT).
+    let mut model_valid = true;
     // Union-find for skip_transitive (indices 0..n over kitten vars).
     let mut uf: Vec<usize> = (0..n).collect();
     fn uf_find(uf: &mut Vec<usize>, mut x: usize) -> usize {
@@ -342,15 +345,25 @@ pub(crate) fn prove_facts_budgeted_opts(
             var += 1;
             continue;
         }
+        // kissat kitten_flip parity (skip_transitive mode): a successful flip
+        // is a FREE disproof — the model itself witnesses the candidate's
+        // other polarity, and the flipped model prunes later candidates.
+        if skip_transitive && model_valid && env.kitten.flip_literal(var as usize) {
+            models.push(env.model_snapshot());
+            var += 1;
+            continue;
+        }
         // Probe the opposite polarity.
         let probe = if v0 { -var } else { var };
         match budgeted_solve!(&[probe]) {
             Some(KittenResult::Unsat) => {
                 let outer_var = env.to_outer[idx];
                 facts.backbones.push(if v0 { outer_var } else { -outer_var });
+                model_valid = false;
             }
             Some(KittenResult::Sat) => {
                 models.push(env.model_snapshot());
+                model_valid = true;
             }
             None => return facts,
         }
@@ -363,6 +376,7 @@ pub(crate) fn prove_facts_budgeted_opts(
     // model of the whole environment only after an unassumed SAT solve).
     if solves < solve_budget && budgeted_solve!(&[]) == Some(KittenResult::Sat) {
         solves += 1;
+        model_valid = true;
         // --- Equivalence detection via model partition refinement ---
         // Two non-backbone variables a, b are equivalence candidates if in every model
         // either a==b (a<->b) or a!=b (a<->¬b). Refine candidate pairs against all models,
@@ -397,6 +411,17 @@ pub(crate) fn prove_facts_budgeted_opts(
                 if !models.iter().all(|m| (m[ai] == m[bi]) == same0) {
                     continue;
                 }
+                // kissat kitten_flip parity: try to flip either side first —
+                // a successful flip distinguishes the pair for free and the
+                // new model refines every later candidate pair at zero solves.
+                if skip_transitive && model_valid {
+                    if env.kitten.flip_literal(a as usize)
+                        || env.kitten.flip_literal(b as usize)
+                    {
+                        models.push(env.model_snapshot());
+                        continue;
+                    }
+                }
                 // Prove a <-> (b if same else ¬b): both (a & ¬target) and (¬a & target)
                 // must be UNSAT.
                 let target = if same0 { b } else { -b };
@@ -405,6 +430,7 @@ pub(crate) fn prove_facts_budgeted_opts(
                     None => return facts,
                 };
                 solves += 1;
+                model_valid = !unsat_ab;
                 if !unsat_ab {
                     // record the distinguishing model to prune future pairs
                     models.push(env.model_snapshot());
@@ -418,6 +444,7 @@ pub(crate) fn prove_facts_budgeted_opts(
                     None => return facts,
                 };
                 solves += 1;
+                model_valid = !unsat_ba;
                 if unsat_ba {
                     let oa = env.to_outer[ai];
                     let ob = env.to_outer[bi];

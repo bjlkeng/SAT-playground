@@ -11950,6 +11950,16 @@ impl Solver {
         let mut sweep_depth = env_usize("SAT_SWEEP_DEPTH", SWEEP_DEPTH);
         let mut sweep_max_vars = env_usize("SAT_SWEEP_MAX_VARS", SWEEP_MAX_VARS);
         let mut sweep_max_clauses = env_usize("SAT_SWEEP_MAX_CLAUSES", SWEEP_MAX_CLAUSES);
+        // Yield-armed base bounds (SESSION 20 probe: 4096/16384/depth-5 with
+        // a 64-seed round budget raised uniqinv40's round-1 yield 375 → 704
+        // and SUSTAINED the cascade where the small-env ladder died —
+        // equivalence-rich formulas need the wide environments, and the flip
+        // primitive keeps them affordable).
+        if self.sweep_yield_armed {
+            sweep_max_vars = sweep_max_vars.max(4096);
+            sweep_max_clauses = sweep_max_clauses.max(16384);
+            sweep_depth = sweep_depth.max(5);
+        }
         // Bead SAT-playground-5b2.3.38.1: kissat's escalation ladder. Each COMPLETED seed
         // pass doubles the environment variable/clause bounds and adds one to depth,
         // capped. Shift amount is clamped so the doubling cannot overflow; the caps are
@@ -12148,8 +12158,11 @@ impl Solver {
         } else {
             1
         };
+        // Yield-armed rounds use FEW seeds over WIDE environments (each env
+        // covers a big region; 64 seeds x 4096-var envs sweep more formula
+        // than 2048 x 256 and leave kitten budget for the pair proofs).
         let seed_budget = if self.sweep_yield_armed {
-            self.sweep_seed_budget.max(2048)
+            64
         } else {
             self.sweep_seed_budget
         };

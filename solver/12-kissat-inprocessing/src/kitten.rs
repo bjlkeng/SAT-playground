@@ -586,6 +586,75 @@ impl Kitten {
         }
     }
 
+    /// kissat `kitten_flip_literal` parity: with the last solve SATISFIED (a
+    /// full model held), try to flip `dimacs_var` while keeping the
+    /// assignment a model. Walks the watch list of the variable's
+    /// currently-true literal: every watching clause must be satisfied by
+    /// another literal (rewatched to it in place — the completed rewatches
+    /// preserve the watch invariant whether or not the flip succeeds), else
+    /// the flip fails. Never flips root-fixed variables. The trail keeps the
+    /// stale literal polarity, which is safe: backtrack unassigns by var and
+    /// the next solve re-decides. O(watchlist); ticks charged per clause.
+    pub(crate) fn flip_literal(&mut self, dimacs_var: usize) -> bool {
+        let var = dimacs_var - 1;
+        if var >= self.num_vars || self.value[var] == UNASSIGNED {
+            return false;
+        }
+        if self.level[var] == 0 {
+            return false; // root-fixed
+        }
+        let lit: Lit = ((var as u32) << 1) | ((self.value[var] == FALSE) as u32);
+        debug_assert!(self.lit_value(lit) == TRUE);
+        // Walk lit's watch list; rewatch each clause to another true literal.
+        let list = std::mem::take(&mut self.watches[lit as usize]);
+        let mut kept: Vec<usize> = Vec::with_capacity(list.len());
+        let mut ok = true;
+        let mut moved: Vec<(Lit, usize)> = Vec::new();
+        for (pos, &ci) in list.iter().enumerate() {
+            self.ticks += 1;
+            let (w0, w1) = (self.clauses[ci][0], self.clauses[ci][1]);
+            let other = if w0 == lit { w1 } else { w0 };
+            if self.lit_value(other) == TRUE {
+                kept.push(ci);
+                continue;
+            }
+            // find a true replacement among the tail literals
+            let mut replacement: Option<(usize, Lit)> = None;
+            for (ri, &r) in self.clauses[ci].iter().enumerate().skip(2) {
+                if self.lit_value(r) == TRUE {
+                    replacement = Some((ri, r));
+                    break;
+                }
+            }
+            match replacement {
+                Some((ri, r)) => {
+                    // rewatch: watches become (other, r); lit moves to the tail
+                    let c = &mut self.clauses[ci];
+                    c[0] = other;
+                    c[1] = r;
+                    c[ri] = lit;
+                    moved.push((r, ci));
+                }
+                None => {
+                    // lit is this clause's only satisfying literal: flip fails.
+                    // Keep this clause and the unvisited rest watched by lit.
+                    kept.push(ci);
+                    kept.extend_from_slice(&list[pos + 1..]);
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        self.watches[lit as usize] = kept;
+        for (r, ci) in moved {
+            self.watches[r as usize].push(ci);
+        }
+        if ok {
+            self.value[var] = if self.value[var] == TRUE { FALSE } else { TRUE };
+        }
+        ok
+    }
+
     /// The input-clause indices participating in the most recent refutation.
     pub(crate) fn core(&self) -> &[usize] {
         &self.core

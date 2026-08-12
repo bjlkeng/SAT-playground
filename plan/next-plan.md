@@ -40,6 +40,21 @@ speculative):
    sustaining high yield across 24 sweeps where ours dries up after 2.
    **Closing this needs a faithful kissat sweep.c pair-mechanics port — a
    full session, promoted to ranked item 1.**
+5. **SESSION 20b continuation (same day): kitten `flip_literal` PORTED
+   (kitten.rs, kissat parity: rewatch-or-fail walk of the true literal's
+   watch list; free model-space disproof of backbone/equivalence
+   candidates) and wired into the yield-armed sweep (flip pre-tests before
+   every solve). Wide-env armed bounds folded into the latch (4096 vars /
+   16384 clauses / depth 5 / 64 seeds — probe: round-1 yield 375 → 704 and
+   the cascade SUSTAINS ~50/round instead of dying). uniqinv40 still does
+   NOT convert at 3600 s (~10x short of kissat's 3,799-equivalence
+   critical mass). THE REMAINING PORT CHUNK, precisely: (a) kissat
+   `sweep_repr` — substitute proven representatives INSIDE the kitten
+   environment mid-sweep so the region collapses while being swept (ours
+   applies equivalences only after the round via ELS); (b) kitten solve
+   throughput (kissat ~18 µs/solve; profile ours). Acceptance test
+   unchanged: uniqinv40 at 3600 s. All SESSION 20/20b knobs default-off;
+   defaults byte-identical to SESSION 19.**
 
 par32-2/dubois50 XOR recovery also closed this session (par32's pure-XOR
 subsystem is consistent — SAT_GAUSS_MIN_COVERAGE env banked; dubois50's
