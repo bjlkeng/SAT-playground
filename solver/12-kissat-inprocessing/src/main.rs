@@ -12359,7 +12359,23 @@ impl Solver {
         if !self.sweep_yield_armed && self.sweep_yield_escalate_permille > 0 {
             let live = self.count_active_vars() as u64;
             let found = all_equivalences.len() as u64;
-            if found >= 100.max(live.saturating_mul(self.sweep_yield_escalate_permille) / 1000) {
+            // SESSION 20f calibration (measured arming yields of every cell
+            // the first full A/B flipped): winners HCP-446 = 1,490 equivs and
+            // dislog = 111,962; latch-caused losers all sit at 114-957
+            // (boothbit29 114, bivium 542, bp4 562, bv_ILA 665, Circuit24
+            // 957 — the Circuit24/29 pair is a same-family walk wash). An
+            // ABSOLUTE floor of 1000 separates them exactly; permille does
+            // not (Circuit24 sits at 929‰ of its tiny live set). The 500k
+            // conflict floor additionally excludes ultra-early armers whose
+            // healthy trajectories the armed treatment would reroll (bv_ILA
+            // armed at 31k conflicts, base solves it at 1216 s).
+            let min_abs: u64 = std::env::var("SAT_SWEEP_YIELD_MIN_EQUIVS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1000);
+            if self.stats.conflicts >= 500_000
+                && found >= min_abs.max(live.saturating_mul(self.sweep_yield_escalate_permille) / 1000)
+            {
                 self.sweep_yield_armed = true;
                 // Kissat sweeps this class every ~23k conflicts; our flat 1M
                 // cadence would give the sweep→substitute cascade ~3 rounds
