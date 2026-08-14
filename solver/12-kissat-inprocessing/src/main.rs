@@ -2940,6 +2940,15 @@ struct Solver {
     sweep_yield_escalate_permille: u64,
     /// runtime latch for SAT_SWEEP_YIELD_ESCALATE (see above).
     sweep_yield_armed: bool,
+    /// SAT_SWEEP_YIELD_PROBE (conflicts, default 150_000; 0 = off): one
+    /// early sweep-only probe on unarmed formulas. Facts are APPLIED only
+    /// when the probe arms the latch; a declining probe discards them, so
+    /// non-arming trajectories are byte-identical (proof-only bloat). Buys
+    /// the equivalence-rich class ~700k conflicts of cascade runway — the
+    /// margin HCP-446 needs to land inside the in-gate wall.
+    sweep_yield_probe_conflicts2: u64,
+    /// probe fired (once per run)
+    sweep_yield_probe_done: bool,
     /// Env SAT_SWEEP_KITTEN_TICKS: kitten tick budget shared by all environments of one
     /// inprocessing `sweep_round` invocation. The legacy path gave every kitten call an
     /// UNLIMITED budget, and one pathological environment (battleship-13-13-unsat,
@@ -4518,6 +4527,11 @@ impl Solver {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0),
             sweep_yield_armed: false,
+            sweep_yield_probe_conflicts2: std::env::var("SAT_SWEEP_YIELD_PROBE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(150_000),
+            sweep_yield_probe_done: false,
             sweep_seed_budget: std::env::var("SAT_SWEEP_SEED_BUDGET")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -10191,6 +10205,163 @@ impl Solver {
         self.stats.search_ticks >= self.next_inprocess_ticks
     }
 
+    /// Early yield-latch probe (SAT_SWEEP_YIELD_PROBE): one sweep-only scan
+    /// on a still-unarmed formula. Facts and their kitten proof lemmas are
+    /// BUFFERED; if total distinct equivalences reach the latch band the
+    /// probe applies everything, arms the latch + aggressive cadence, and the
+    /// cascade starts ~850k conflicts earlier than the first regular round —
+    /// the wall margin the HCP-446 class needs. A declining probe discards
+    /// every buffer: no proof lines, no solver mutation — byte-identical
+    /// trajectory, bounded kitten wall only. Returns false on UNSAT.
+    fn sweep_yield_probe_round(&mut self, proof_log: &mut ProofLog) -> bool {
+        use crate::sweep::{build_environment, prove_facts_budgeted_opts, SWEEP_DEPTH,
+            SWEEP_MAX_CLAUSES, SWEEP_MAX_VARS};
+        if self.current_level() != 0 || self.has_empty_clause || !self.solver_ok {
+            return true;
+        }
+        let nvars = self.assignment.len().saturating_sub(1);
+        if nvars == 0 || nvars > 2_000_000 {
+            return true; // giant guard: snapshot cost
+        }
+        let mut snap: Vec<Vec<i32>> = Vec::new();
+        let mut occ: Vec<Vec<usize>> = vec![Vec::new(); nvars + 1];
+        let ids = self.original_clause_ids.clone();
+        for cid in ids {
+            let cid = cid as usize;
+            if self.clause_is_deleted(cid) {
+                continue;
+            }
+            let len = self.clause_len(cid);
+            if len < 2 {
+                continue;
+            }
+            let mut lits = Vec::with_capacity(len);
+            for pp in 0..len {
+                lits.push(self.clause_lit(cid, pp));
+            }
+            let si = snap.len();
+            for &l in &lits {
+                let v = l.unsigned_abs() as usize;
+                if v >= 1 && v <= nvars {
+                    occ[v].push(si);
+                }
+            }
+            snap.push(lits);
+        }
+        let clauses_of = |var: i32| -> Vec<Vec<i32>> {
+            let v = var as usize;
+            match occ.get(v) {
+                Some(list) => list.iter().map(|&si| snap[si].clone()).collect(),
+                None => Vec::new(),
+            }
+        };
+        let mut ticks: u64 = self.sweep_kitten_ticks;
+        let mut buffered: Vec<(Vec<Vec<i32>>, Vec<i32>, Vec<(i32, i32)>)> = Vec::new();
+        let mut total_units = 0usize;
+        let mut distinct: std::collections::HashSet<(i32, i32)> = Default::default();
+        let mut seeds = 0usize;
+        for sv in 1..=nvars {
+            if seeds >= 512 || ticks == 0 {
+                break;
+            }
+            if self.assignment[sv] != UNASSIGNED || self.eliminated[sv] || occ[sv].is_empty() {
+                continue;
+            }
+            let mut env = build_environment(
+                sv as i32,
+                &clauses_of,
+                SWEEP_DEPTH,
+                SWEEP_MAX_VARS,
+                SWEEP_MAX_CLAUSES,
+            );
+            let facts = prove_facts_budgeted_opts(&mut env, SWEEP_SOLVE_BUDGET, &mut ticks, true);
+            seeds += 1;
+            if facts.env_unsat {
+                for lemma in env.proof_lemmas_outer() {
+                    proof_log.record_clause(&lemma);
+                }
+                proof_log.record_clause(&[]);
+                self.has_empty_clause = true;
+                return false;
+            }
+            if facts.backbones.is_empty() && facts.equivalences.is_empty() {
+                continue;
+            }
+            total_units += facts.backbones.len();
+            for &(a, b) in &facts.equivalences {
+                let (x, y) = if a.unsigned_abs() <= b.unsigned_abs() { (a, b) } else { (b, a) };
+                distinct.insert(if x < 0 { (-x, -y) } else { (x, y) });
+            }
+            buffered.push((env.proof_lemmas_outer(), facts.backbones, facts.equivalences));
+        }
+        let live = self.count_active_vars() as u64;
+        let found = distinct.len() as u64;
+        let min_abs: u64 = std::env::var("SAT_SWEEP_YIELD_MIN_EQUIVS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1000);
+        let arm = found
+            >= min_abs.max(live.saturating_mul(self.sweep_yield_escalate_permille) / 1000);
+        if std::env::var("SAT_DEBUG_SWEEP").is_ok() {
+            eprintln!(
+                "c sweep yield-probe conflicts={} seeds={} units={} distinct_equivs={} live={} arm={}",
+                self.stats.conflicts, seeds, total_units, found, live, arm
+            );
+        }
+        if !arm {
+            return true; // discard: byte-identical trajectory
+        }
+        // Apply: lemmas first, then units and equivalence binaries; arm the
+        // latch + aggressive cadence so the next rounds cascade.
+        let mut all_units: Vec<i32> = Vec::new();
+        let mut pairs: std::collections::HashSet<(i32, i32)> = Default::default();
+        for (lemmas, backbones, equivalences) in buffered {
+            for lemma in lemmas {
+                proof_log.record_clause(&lemma);
+            }
+            all_units.extend(backbones);
+            for &(a, b) in &equivalences {
+                let (x, y) = if a.unsigned_abs() <= b.unsigned_abs() { (a, b) } else { (b, a) };
+                let key = if x < 0 { (-x, -y) } else { (x, y) };
+                if pairs.insert(key) {
+                    proof_log.record_clause(&[-key.0, key.1]);
+                    proof_log.record_clause(&[key.0, -key.1]);
+                    let c1 = self.add_clause_from_slice(&[-key.0, key.1]);
+                    let _ = c1;
+                    let c2 = self.add_clause_from_slice(&[key.0, -key.1]);
+                    let _ = c2;
+                }
+            }
+        }
+        if !all_units.is_empty() {
+            self.stats.sweep_backbones = self
+                .stats
+                .sweep_backbones
+                .saturating_add(all_units.len() as u64);
+            if !self.inprocess_add_root_units(&all_units, proof_log) {
+                self.has_empty_clause = true;
+                return false;
+            }
+        }
+        if self.propagate().is_some() {
+            self.has_empty_clause = true;
+            return false;
+        }
+        self.sweep_yield_armed = true;
+        if !self.inprocess_aggressive {
+            if self.stats.inprocess_armed_at_conflict == 0 {
+                self.stats.inprocess_armed_at_conflict = self.stats.conflicts.max(1);
+            }
+            self.inprocess_aggressive = true;
+            self.inprocess_aggressive_interval = INPROCESS_AGGRESSIVE_FIRST_INTERVAL;
+            self.next_inprocess_conflicts = self
+                .stats
+                .conflicts
+                .saturating_add(INPROCESS_AGGRESSIVE_FIRST_INTERVAL);
+        }
+        true
+    }
+
     fn should_vivify_inprocess_round(&self) -> bool {
         if !self.vivify {
             return false;
@@ -12373,7 +12544,7 @@ impl Solver {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(1000);
-            if self.stats.conflicts >= 500_000
+            if self.stats.conflicts >= 100_000
                 && found >= min_abs.max(live.saturating_mul(self.sweep_yield_escalate_permille) / 1000)
             {
                 self.sweep_yield_armed = true;
@@ -19134,6 +19305,21 @@ impl Solver {
                         // interleaved clause-simplification / formula-rewriting round
                         // (probing + vivification). Default-off, so performance-neutral
                         // unless SAT_INPROCESS plus a technique flag is set.
+                        // Early yield-latch probe (SAT_SWEEP_YIELD_PROBE):
+                        // sweep-only, apply-on-arm, discard-on-decline.
+                        if !self.sweep_yield_probe_done
+                            && self.sweep_yield_probe_conflicts2 > 0
+                            && self.sweep_yield_escalate_permille > 0
+                            && !self.inprocess_aggressive
+                            && self.sweep
+                            && self.stats.conflicts >= self.sweep_yield_probe_conflicts2
+                        {
+                            self.sweep_yield_probe_done = true;
+                            if !self.sweep_yield_probe_round(proof_log) {
+                                self.finish_search_timing(search_start);
+                                return SolveOutcome::unsat();
+                            }
+                        }
                         if self.should_inprocess() && !self.inprocess_round(proof_log, config) {
                             self.finish_search_timing(search_start);
                             return SolveOutcome::unsat();

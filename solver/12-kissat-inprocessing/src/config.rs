@@ -3288,6 +3288,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_SWEEPCOUNT",
         "SAT_SWEEP_YIELD_ESCALATE",
         "SAT_SWEEP_YIELD_MIN_EQUIVS",
+        "SAT_SWEEP_YIELD_PROBE",
         "SAT_DEBUG_SWEEP",
         "SAT_DEBUG_SWEEPCOUNT",
         "SAT_BACKBONE",

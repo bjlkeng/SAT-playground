@@ -5,9 +5,35 @@ history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
 bodies were pruned earlier — full text in revisions up to 93ab682. Where this
 file contradicts an older revision, THIS file wins.
 
-**START HERE:** read "SESSION 20" (the uniqinv/sweep mechanism map — four
-layers deep, no promotion), then "SESSION 19" (sweepcount), then "RANKED
-PLAN", then "Standing traps".
+**START HERE:** read "SESSION 20 FINAL VERDICT" below, then "SESSION 19"
+(sweepcount), then "RANKED PLAN", then "Standing traps".
+
+## SESSION 20 FINAL VERDICT (2026-08-13) — yield-latch arc closed as a BENCH-WASH after two full A/Bs and per-cell calibration; two standalone first-evers banked as evidence
+
+The complete arc (all default-off in tree, commits 9b78fa8..978cbd6+):
+latch + aggressive cadence + wide envs + kitten flips + repr streaming +
+fast kitten + calibrated band (abs >= 1000 equivs) + early probe
+(SAT_SWEEP_YIELD_PROBE, declines byte-identically).
+
+**Measured outcomes:** STANDALONE conversions of two kissat-only cells —
+HCP-446-105 (SAT 2730 s, model independently verified vs all 247,657
+clauses; formula collapsed 51% by the cascade) and dislog_a14 (SAT
+~2400-2500 s, reproduced in-gate in BOTH A/B deals). But the FULL-BENCH
+A/Bs: 20-permille band LOSE 290 v 295
+(log/abtest-cand-vs-base-2026-08-12-18-25-30: armed too widely);
+calibrated band LOSE 292 v 293
+(log/abtest-cand-vs-base-2026-08-13-07-58-47: dislog + bp4 gained, but
+HCP cannot beat the in-gate wall — 2730 s standalone + 32-way contention
+> 3600 — and sqrt169/oddball-class collateral persists). HCP's yield
+develops too late for the early probe (103 equivs at 150k conflicts v
+1490 at 810k). Tightening the band further would select exactly dislog =
+one-cell overfit, forbidden. **VERDICT: the latch is a deal-wash on THIS
+bench (net −1..+1). Keep default-off. It becomes valuable when (a) a
+bench carries more equivalence-rich cells, (b) contention drops (fewer
+jobs → HCP lands), or (c) the whole-loop sweep port closes the remaining
+kitten-throughput gap and pulls solve times down across the class.**
+Per-cell arming-yield table and all probes recorded in SESSION 20 items
+1-7 above.
 
 ## SESSION 20 (2026-08-12) — NO PROMOTION: the uniqinv40/sweep-equivalence arc mapped to its root; miter-congruence definitively killed; yield-escalate latch banked default-off
 
