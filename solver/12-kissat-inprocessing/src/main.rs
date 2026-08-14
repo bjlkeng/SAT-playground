@@ -2940,6 +2940,9 @@ struct Solver {
     sweep_yield_escalate_permille: u64,
     /// runtime latch for SAT_SWEEP_YIELD_ESCALATE (see above).
     sweep_yield_armed: bool,
+    /// SAT_WALK_EFFORT_YIELD_ARMED (permille, default 0 = off): walk effort
+    /// for yield-armed (cascade-collapsed) formulas.
+    walk_effort_yield_armed_permille: u64,
     /// SAT_SWEEP_YIELD_PROBE (conflicts, default 150_000; 0 = off): one
     /// early sweep-only probe on unarmed formulas. Facts are APPLIED only
     /// when the probe arms the latch; a declining probe discards them, so
@@ -4190,9 +4193,17 @@ impl Solver {
             restart_slow_lbd: MovingAverage::new(1.0 / (config.restart_slow_window as f64)),
             restart_fast_level: MovingAverage::new(RESTART_FAST_ALPHA),
             restart_slow_level: MovingAverage::new(1.0 / (config.restart_slow_window as f64)),
-            restart_min_conflicts: KISSAT_EMA_RESTART_MIN_CONFLICTS,
+            restart_min_conflicts: std::env::var("SAT_RESTART_FLOOR")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&v: &u64| v > 0)
+                .unwrap_or(KISSAT_EMA_RESTART_MIN_CONFLICTS),
             restart_next_check_conflict: 0,
-            restart_margin: KISSAT_EMA_RESTART_MARGIN,
+            restart_margin: std::env::var("SAT_RESTART_MARGIN")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&v: &f64| v > 1.0)
+                .unwrap_or(KISSAT_EMA_RESTART_MARGIN),
             restart_block_margin: config.restart_block_margin,
             restart_reuse_trail_focused: config.restart_reuse_trail_focused,
             restart_reuse_trail_stable: config.restart_reuse_trail_stable,
@@ -4542,6 +4553,10 @@ impl Solver {
             // Default 0 (off): the early probe measured useless for its
             // target (HCP yield 103 at 150k v 1490 at 810k) and a declining
             // probe costs real kitten wall on every unarmed formula.
+            walk_effort_yield_armed_permille: std::env::var("SAT_WALK_EFFORT_YIELD_ARMED")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
             sweep_yield_probe_conflicts2: std::env::var("SAT_SWEEP_YIELD_PROBE")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -8865,7 +8880,11 @@ impl Solver {
         let floor = if self.restart_floor_armed && self.restart_armed_floor > 0 {
             self.restart_armed_floor
         } else {
-            KISSAT_EMA_RESTART_MIN_CONFLICTS
+            std::env::var("SAT_RESTART_FLOOR")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&v: &u64| v > 0)
+                .unwrap_or(KISSAT_EMA_RESTART_MIN_CONFLICTS)
         };
         floor.saturating_add(Self::kissat_logn(self.stats.focused_restarts).saturating_sub(1))
     }
@@ -9615,7 +9634,14 @@ impl Solver {
         // cells (TT496 lost in the bundle arm of the 2026-08-01 miterarmed2
         // screen); scoping the boost to never-armed formulas keeps every
         // armed cell's walk budget — and therefore trajectory — untouched.
-        let effort = if !self.inprocess_aggressive && self.walk_effort_unarmed_permille != 0 {
+        // SESSION 21: yield-armed cells get their own walk effort. The class
+        // (dislog/HCP/16_2 — cascade-collapsed formulas) walks with a 100%
+        // improvement rate (HCP: 80/80 walks improved, 6.7G steps, SAT via
+        // walk-guided phases), so the armed 50-permille budget starves it;
+        // banked armed cells never yield-arm and stay byte-identical.
+        let effort = if self.sweep_yield_armed && self.walk_effort_yield_armed_permille != 0 {
+            self.walk_effort_yield_armed_permille
+        } else if !self.inprocess_aggressive && self.walk_effort_unarmed_permille != 0 {
             self.walk_effort_unarmed_permille
         } else {
             self.walk_effort_permille
