@@ -4522,15 +4522,30 @@ impl Solver {
             sweep_unproductive_passes: 0,
             sweep_cursor: 1,
             sweep_completed: 0,
+            // SESSION 20g: default ON at 20 permille with the calibrated
+            // abs-1000 floor. Trade (A/B log/abtest-cand-vs-base-2026-08-13-
+            // 07-58-47, judged per "Judging Trades"): gained dislog_a14
+            // (kissat-only, mechanism-validated — 8256-permille arming
+            // yield, cascade-solved in-gate 2398 s and 2481 s in BOTH
+            // deals) + bp4_BC012 return; lost 3 cells ALL PROVEN
+            // NON-ARMING (sqrt169 probe = 7 equivs v the 1000 floor,
+            // oddball_19_4 and reconf10 zero ARMED lines) — byte-identical
+            // trajectories, pure contention coins, written justification
+            // per the N=3 allowance. Non-arming formulas pay nothing (the
+            // yield check is a post-round comparison; the probe below is
+            // default-off).
             sweep_yield_escalate_permille: std::env::var("SAT_SWEEP_YIELD_ESCALATE")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
+                .unwrap_or(20),
             sweep_yield_armed: false,
+            // Default 0 (off): the early probe measured useless for its
+            // target (HCP yield 103 at 150k v 1490 at 810k) and a declining
+            // probe costs real kitten wall on every unarmed formula.
             sweep_yield_probe_conflicts2: std::env::var("SAT_SWEEP_YIELD_PROBE")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(150_000),
+                .unwrap_or(0),
             sweep_yield_probe_done: false,
             sweep_seed_budget: std::env::var("SAT_SWEEP_SEED_BUDGET")
                 .ok()

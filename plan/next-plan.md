@@ -27,13 +27,21 @@ HCP cannot beat the in-gate wall — 2730 s standalone + 32-way contention
 > 3600 — and sqrt169/oddball-class collateral persists). HCP's yield
 develops too late for the early probe (103 equivs at 150k conflicts v
 1490 at 810k). Tightening the band further would select exactly dislog =
-one-cell overfit, forbidden. **VERDICT: the latch is a deal-wash on THIS
-bench (net −1..+1). Keep default-off. It becomes valuable when (a) a
-bench carries more equivalence-rich cells, (b) contention drops (fewer
-jobs → HCP lands), or (c) the whole-loop sweep port closes the remaining
-kitten-throughput gap and pulls solve times down across the class.**
-Per-cell arming-yield table and all probes recorded in SESSION 20 items
-1-7 above.
+one-cell overfit, forbidden. **VERDICT REVISED (SESSION 20g, same day): PROMOTED after the
+non-arming verification.** The three calibrated-A/B losses were each
+PROVEN non-arming (sqrt169 probe = 7 equivs v the 1000 floor;
+oddball_19_4 and reconf10 zero ARMED lines through 3M conflicts) —
+byte-identical AND wall-identical trajectories in the cand arm, i.e.
+pure contention coins by construction, all three documented flippers.
+Under "Judging Trades" (N=3 coins with written justification v
+mechanism-validated capability) the trade PROMOTES:
+SAT_SWEEP_YIELD_ESCALATE=20 + SAT_SWEEP_YIELD_MIN_EQUIVS=1000 default
+ON (probe stays off). dislog_a14 (kissat-only) is the durable capture —
+1680 s at the shipped default, in-gate both A/B deals; HCP-446 remains
+a standalone-only capability (2676-2730 s, wall-borderline in-gate) and
+16_2-class collapses are upside. Fingerprints digit-exact under the
+default. Next-session notes unchanged: whole-loop sweep port (uniqinv40
+acceptance) and lower-contention scheduling would both convert HCP.
 
 ## SESSION 20 (2026-08-12) — NO PROMOTION: the uniqinv40/sweep-equivalence arc mapped to its root; miter-congruence definitively killed; yield-escalate latch banked default-off
 

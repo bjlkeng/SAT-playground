@@ -15,6 +15,34 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **Full-bench default promotion (2026-08-13, SESSION 20g): sweep
+> yield-escalate latch (`SAT_SWEEP_YIELD_ESCALATE=20`,
+> `SAT_SWEEP_YIELD_MIN_EQUIVS=1000`).** Once a conflict-cadence sweep round
+> proves >= max(1000, 2% of live vars) distinct equivalences past 100k
+> conflicts, the run latches kissat-parity sweep completion: retire-mode
+> scanning, the escalation ladder, wide environments (4096/16384/depth-5,
+> 64 seeds), equivalence SUBSTITUTION, the fast kitten (phase saving +
+> flip-literal candidate pruning + in-round repr streaming), and the
+> aggressive inprocess cadence. Non-arming formulas pay nothing — the check
+> is a post-round comparison, and rbsat/MVRR fingerprints are digit-exact
+> under the default. **Capability: dislog_a14_x14_n24 (kissat-only,
+> discrete-log) is cascade-solved — arming yield 111,962 equivalences
+> (8256 permille), SAT at 1680/2398/2481 s across three runs, in-gate in
+> BOTH full A/B deals.** HCP-446-105 additionally solves STANDALONE (SAT
+> 2676-2730 s, model verified against all 247,657 clauses; formula
+> collapsed 51%) but is wall-borderline under 32-way in-gate contention.
+> Promotion trade (A/B `log/abtest-cand-vs-base-2026-08-13-07-58-47`,
+> judged per "Judging Trades" with written justification): gained dislog +
+> bp4_BC012 return; the raw 292 v 293 deficit is carried entirely by THREE
+> PROVEN-NON-ARMING cells (sqrt-mitern169 probe = 7 equivs v the 1000
+> floor; oddball_19_4 and reconf10 zero ARMED lines — byte-identical
+> trajectories, pure contention coins, all documented flippers; N=3
+> allowance). The 20-permille un-floored variant measured LOSE 290 v 295
+> (`log/abtest-cand-vs-base-2026-08-12-18-25-30`) — the abs-1000
+> calibration is load-bearing. SAT_SWEEP_YIELD_PROBE stays default-off
+> (measured useless for HCP; costs wall on decliners). 761+5 tests, smoke
+> 9/9. Detail: `plan/next-plan.md` SESSION 20 items 1-8.
+
 > **Full-bench default promotion (2026-08-12, SESSION 19): frontier-sweep
 > counting engine (`SAT_SWEEPCOUNT` default ON, `src/sweepcount.rs`).** A new
 > pre-search refutation engine for exactly-one bipartite cover imbalance —
