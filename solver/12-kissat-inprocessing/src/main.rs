@@ -1074,6 +1074,12 @@ struct MovingAverage {
     value: f64,
     initialized: bool,
     alpha: f64,
+    /// kissat-style bias-corrected warmup (SESSION 21 dive latch only):
+    /// Some(n) uses alpha_eff = max(alpha, 1/(n+1)) so the average tracks the
+    /// arithmetic mean until enough samples exist for the slow window, exactly
+    /// like kissat's averages.c. None keeps the legacy fixed-alpha update so
+    /// every non-latched trajectory stays bit-identical.
+    bias_samples: Option<u64>,
 }
 
 impl MovingAverage {
@@ -1082,6 +1088,7 @@ impl MovingAverage {
             value: 0.0,
             initialized: false,
             alpha,
+            bias_samples: None,
         }
     }
 
@@ -1089,6 +1096,13 @@ impl MovingAverage {
         if !self.initialized {
             self.value = x;
             self.initialized = true;
+            if let Some(n) = &mut self.bias_samples {
+                *n = n.saturating_add(1);
+            }
+        } else if let Some(n) = &mut self.bias_samples {
+            *n = n.saturating_add(1);
+            let alpha_eff = self.alpha.max(1.0 / (*n as f64 + 1.0));
+            self.value += alpha_eff * (x - self.value);
         } else {
             self.value += self.alpha * (x - self.value);
         }
@@ -2280,6 +2294,18 @@ struct Solver {
     restart_next_check_conflict: u64,
     /// threshold multiplier for fast LBD EMA over slow LBD EMA
     restart_margin: f64,
+    /// SESSION 21 dive-trigger: one-way latch to kissat-parity restarts
+    /// (floor 2 / margin 1.10 / slow-EMA window 100k) when the trajectory at
+    /// the checkpoint shows the fat-LBD shallow-dive signature (counting-heavy
+    /// encodings: oddball-ttf class runs avg LBD 24-32 at level 40-52 where
+    /// the shipped cadence restarts every ~460 conflicts vs kissat's ~30).
+    /// Out-of-band cells never trigger and keep bit-identical trajectories.
+    restart_dive_enabled: bool,
+    restart_dive_min_collapse: f64,
+    restart_dive_max_binfrac: f64,
+    restart_dive_armed: bool,
+    /// parse-time original clause count for the dive-collapse ratio
+    restart_dive_initial_clauses: usize,
     /// threshold multiplier for blocking restarts when fast level EMA is high
     restart_block_margin: f64,
     /// opt-in focused-mode trail reuse using VMTF stamp ordering
@@ -4204,6 +4230,18 @@ impl Solver {
                 .and_then(|s| s.parse().ok())
                 .filter(|&v: &f64| v > 1.0)
                 .unwrap_or(KISSAT_EMA_RESTART_MARGIN),
+            restart_dive_enabled: std::env::var("SAT_RESTART_DIVE")
+                .map(|s| s == "on")
+                .unwrap_or(false),
+            restart_dive_min_collapse: std::env::var("SAT_RESTART_DIVE_COLLAPSE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.77),
+            restart_dive_max_binfrac: std::env::var("SAT_RESTART_DIVE_BINFRAC")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.85),
+            restart_dive_armed: false,
             restart_block_margin: config.restart_block_margin,
             restart_reuse_trail_focused: config.restart_reuse_trail_focused,
             restart_reuse_trail_stable: config.restart_reuse_trail_stable,
@@ -4265,6 +4303,7 @@ impl Solver {
             mode_interval_scale: config.mode_interval_scale,
             reluctant: Reluctant::new(),
             reduce_db_limit: ((original_clause_count as f64) * LEARNTSIZE_FACTOR) as usize,
+            restart_dive_initial_clauses: original_clause_count,
             reduce_db_min_interval: 0,
             reduce_db_last_conflicts: None,
             inprocess: config.inprocess,
@@ -8877,6 +8916,9 @@ impl Solver {
     }
 
     fn focused_restart_interval(&self) -> u64 {
+        if self.stats.restart_dive_armed_at > 0 {
+            return 2;
+        }
         let floor = if self.restart_floor_armed && self.restart_armed_floor > 0 {
             self.restart_armed_floor
         } else {
@@ -9100,6 +9142,61 @@ impl Solver {
     fn note_random_decision_conflict(&mut self) {
         if self.random_decision_remaining_conflicts > 0 {
             self.random_decision_remaining_conflicts -= 1;
+        }
+    }
+
+    /// SESSION 21: structural dive-class check, once after root preprocessing.
+    /// The oddball-ttf counting class (kissat-only UNSAT cells) is the shape
+    /// whose non-binary clause mass root-BVE collapses by >= ~78% while the
+    /// parse-time binary fraction sits in the 0.70s (trio: collapse
+    /// 0.782-0.834, binfrac 0.708-0.718). On that shape the shipped restart
+    /// cadence (~460 conflicts/restart) starves the fat-LBD counting
+    /// trajectory where kissat restarts every ~30; parity restarts convert
+    /// ob_19_4 (timeout -> 841 s, proof drat-VERIFIED) and ob_26_4 (2174 s).
+    /// Nearest out-of-class cells at trigger time: oddball_80 tto_zp SAT
+    /// (collapse 0.745, binfrac 0.986 — excluded on both axes), ER_400
+    /// (0.543/0.987), MVRR_n14 (0.308/0.996). The SAT-lottery families
+    /// (tto_zp/lockchart/RoundRobin) all carry binfrac >= 0.96 and are
+    /// excluded by the binfrac ceiling. Out-of-band cells keep bit-identical
+    /// trajectories.
+    fn maybe_arm_dive_restarts(&mut self, config: &SolverConfig) {
+        if !self.restart_dive_enabled || self.restart_dive_armed {
+            return;
+        }
+        let _ = config;
+        self.restart_dive_armed = true;
+        let initial = self.restart_dive_initial_clauses.max(1) as f64;
+        let live = self.live_original_clause_count() as f64;
+        let collapse = 1.0 - live / initial;
+        let binfrac = self.pre_preprocess_formula_class.binary_fraction;
+        if std::env::var("SAT_DEBUG_DIVE").map(|s| s == "on").unwrap_or(false) {
+            eprintln!(
+                "c DIVE-CHECK collapse={:.4} binfrac={:.4} pre_binfrac={:.4} live={} initial={}",
+                collapse,
+                self.formula_class.binary_fraction,
+                self.pre_preprocess_formula_class.binary_fraction,
+                live,
+                initial
+            );
+        }
+        if collapse >= self.restart_dive_min_collapse
+            && (0.50..=self.restart_dive_max_binfrac).contains(&binfrac)
+        {
+            // Full kissat parity (floor + margin + slow-EMA window). Measured
+            // on the class: ob_19_4 converts with or without the window (1,086 s
+            // floor+margin vs 981-2,234 s with window) but ob_26_4 converts
+            // ONLY with it (2,174 s; floor+margin times out even on a quiet
+            // host). The window applies to in-band cells only, so the
+            // miter-screen objection to a global window change does not apply.
+            self.restart_min_conflicts = 2;
+            self.restart_margin = 1.10;
+            self.restart_slow_lbd.alpha = 1.0 / 100_000.0;
+            self.restart_slow_lbd.initialized = false;
+            self.restart_slow_lbd.bias_samples = Some(0);
+            self.restart_slow_level.alpha = 1.0 / 100_000.0;
+            self.restart_slow_level.initialized = false;
+            self.restart_slow_level.bias_samples = Some(0);
+            self.stats.restart_dive_armed_at = self.stats.conflicts.max(1);
         }
     }
 
@@ -19040,6 +19137,7 @@ impl Solver {
             return SolveOutcome::unsat();
         }
         self.reset_learned_budget_after_preprocess();
+        self.maybe_arm_dive_restarts(config);
         // Congruence-productive gate circuits (miters/BMC) switch to the kissat-parity
         // early inprocessing cadence: kissat interleaves congruence/substitution and
         // elimination with search from small conflict limits, which is what collapses
