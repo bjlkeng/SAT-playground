@@ -3230,6 +3230,7 @@ fn allowed_env_vars() -> Vec<&'static str> {
         "SAT_RESTART",
         "SAT_RESTART_BLOCK_MARGIN",
         "SAT_RESTART_DIVE",
+        "SAT_RESTART_DIVE2",
         "SAT_DEBUG_DIVE",
         "SAT_RESTART_DIVE_COLLAPSE",
         "SAT_RESTART_DIVE_BINFRAC",

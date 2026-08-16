@@ -136,6 +136,7 @@ pub(crate) struct SolverStats {
     pub(crate) reluctant_restarts: u64,
     pub(crate) restarts_blocked_by_level: u64,
     pub(crate) restart_dive_armed_at: u64,
+    pub(crate) restart_dive2_armed_at: u64,
     pub(crate) restarts_reused_trails: u64,
     pub(crate) restarts_reused_levels: u64,
     pub(crate) restarts_reused_trails_focused: u64,
@@ -693,6 +694,7 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
         ctx.stats.restarts_blocked_by_level,
     );
     json.u64("restart_dive_armed_at", ctx.stats.restart_dive_armed_at);
+    json.u64("restart_dive2_armed_at", ctx.stats.restart_dive2_armed_at);
     json.u64("restarts_reused_trails", ctx.stats.restarts_reused_trails);
     json.u64("restarts_reused_levels", ctx.stats.restarts_reused_levels);
     json.u64(

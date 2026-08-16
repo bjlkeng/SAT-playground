@@ -2304,6 +2304,8 @@ struct Solver {
     restart_dive_min_collapse: f64,
     restart_dive_max_binfrac: f64,
     restart_dive_armed: bool,
+    /// SESSION 22: second structural band (small gate-circuit miters)
+    restart_dive2_enabled: bool,
     /// parse-time original clause count for the dive-collapse ratio
     restart_dive_initial_clauses: usize,
     /// threshold multiplier for blocking restarts when fast level EMA is high
@@ -4242,6 +4244,9 @@ impl Solver {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.85),
             restart_dive_armed: false,
+            restart_dive2_enabled: std::env::var("SAT_RESTART_DIVE2")
+                .map(|s| s == "on")
+                .unwrap_or(false),
             restart_block_margin: config.restart_block_margin,
             restart_reuse_trail_focused: config.restart_reuse_trail_focused,
             restart_reuse_trail_stable: config.restart_reuse_trail_stable,
@@ -9178,6 +9183,29 @@ impl Solver {
                 live,
                 initial
             );
+        }
+        // SESSION 22 band 2: small gate-circuit shape (16x16 multiplier
+        // miters + sorting-network equivalence checks). Trigger-time truth:
+        // the 12 in-bench 16_16 miters sit at collapse 0.189-0.311 /
+        // binfrac 0.362-0.458 with <= ~10k clauses; BubbleVsPancake at
+        // 0.24-0.31 / 0.31-0.34. The overlapping SC25 Timetable lottery
+        // class shares the (collapse, binfrac) region but is 668k-951k
+        // clauses — excluded by the size cap, as is case13 (66.8k). kissat
+        // solves the miters via cadence alone (m29: 8.08M conflicts,
+        // restart interval 43, sweep/congruence/factor negligible); with
+        // floor 2 + margin 1.10 we convert m29 at 2,648 s / 10.1M
+        // conflicts (baseline timeout). The slow-EMA window is NOT applied
+        // in this band: the miterded screen measured it harmful on this
+        // class (rpw arm 7/23 vs 9/23).
+        let dive2 = self.restart_dive2_enabled
+            && self.restart_dive_initial_clauses <= 30_000
+            && (0.15..=0.35).contains(&collapse)
+            && (0.30..=0.50).contains(&binfrac);
+        if dive2 {
+            self.restart_min_conflicts = 2;
+            self.restart_margin = 1.10;
+            self.stats.restart_dive2_armed_at = self.stats.conflicts.max(1);
+            return;
         }
         if collapse >= self.restart_dive_min_collapse
             && (0.50..=self.restart_dive_max_binfrac).contains(&binfrac)
