@@ -1,12 +1,77 @@
-# NEXT PLAN — 2026-08-12b (supersedes 2026-08-12; PRUNED)
+# NEXT PLAN — 2026-08-16 (supersedes 2026-08-12b; PRUNED)
 
 One-file plan for the next clear context. SESSIONS 4-13 bodies live in git
 history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
 bodies were pruned earlier — full text in revisions up to 93ab682. Where this
 file contradicts an older revision, THIS file wins.
 
-**START HERE:** read "SESSION 20 FINAL VERDICT" below, then "SESSION 19"
-(sweepcount), then "RANKED PLAN", then "Standing traps".
+**START HERE:** read "SESSION 21" below (dive-restart latch — the restart
+cadence audit is the session's core finding), then "SESSION 20 FINAL
+VERDICT", then "SESSION 19" (sweepcount), then "RANKED PLAN", then
+"Standing traps".
+
+## SESSION 21 (2026-08-14..16) — dive-restart latch PROMOTED: full-bench 293 → 294/400 (gate PASS, +1/−0, oddball_19_4 FIRST-EVER); the restart-cadence gap vs kissat is now MAPPED and the global form is measured DEAD
+
+**Core finding (mechanism, durable):** our focused-mode glucose-EMA
+restart constants are all tamer than kissat 4.0.4 — interval floor 50+log
+vs ~1, margin 1.20 vs 1.10, slow-EMA window 4096 vs 100,000. On fat-LBD
+counting trajectories (oddball-ttf class: avg LBD 24-32 at level 40-52)
+this yields ~460 conflicts/restart where kissat runs ~30, deep dives with
+59-lit learned clauses, and 37x per-conflict tick cost — the entire 57x
+wall gap on oddball_19_4 (kissat 63 s / 2.75M conflicts). Restart parity
+closes the trajectory gap to conflict-parity (3.0-3.5M).
+
+**Global parity is DEAD as a default — measured, do not retry:** the
+full-bench A/B (log/abtest-rpmf-vs-base-2026-08-14-16-30-16) LOST 286 v
+294 (+8/−16). The gains included real targets (HCP-446, oddball_19/56/67,
+lockchart-L190, TT495) but the losses gutted the SAT lottery bank
+(bp4/lockchart/fsf/RoundRobin/bivium/VDW/mod2c/TT496). LBD fingerprints
+at 100k conflicts show NO clean separation between gained and lost SAT
+cells (TT495 63.9 in / TT496 61.1 out; lockchart-g1 83 in / g2 115 out;
+oddball_56 137 in / _80 128 out) — pure trajectory lottery. Early-window
+(100k-conflict) LBD also fails as a discriminator (ob_19_4 measures 20.6
+there; the fat signature develops by ~1M).
+
+**What PROMOTED (commit chain e8676d4 → 18aa624 → this): the structural
+dive latch, SAT_RESTART_DIVE=on by default.** One-shot check after root
+preprocessing: non-binary clause-mass collapse >= 0.77 AND parse-time
+binary fraction in [0.50, 0.85]. Trigger-time truth (SAT_DEBUG_DIVE=on):
+trio at collapse 0.782-0.834 / binfrac 0.708-0.718; nearest non-members
+oddball_80 tto 0.745/0.986, ER_400 0.543/0.987, MVRR 0.308/0.996 — the
+SAT-lottery families all carry binfrac >= 0.96 and are excluded by the
+ceiling. Full-bench shape-scan (scripted, 400 cells): EXACTLY 10 in band
+= 3 target timeouts (ob_19/24/26_4) + baseballcover12 (kissat-unsolved
+too) + 3 SAT-at-0-conflicts cells + linked_list (6k conf) + ttf siblings
+13_5/17_5. Latch = floor 2 + margin 1.10 + slow window 100k + kissat-style
+bias-corrected EMA warmup (alpha_eff = max(alpha, 1/(n+1)), latch-only;
+without warmup the pinned slow EMA thrashes: 6.9M vs 3.18M conflicts on
+ob_19_4). **Gate (log/abtest-dive-vs-base-2026-08-15-12-18-53): WIN
+294 v 293, +1/−0, promotion_gate=PASS, zero correctness failures, 396/400
+cells conflict-identical; oddball_19_4 first-ever UNSAT in-gate (3.18M
+conflicts), 13_5 improves 1.84M→1.69M, linked_list 6004→3248, 17_5
+119k→826k (still 16-24 s, priced).**
+
+Recorded negatives (do not repeat):
+- ob_26_4 converts ONLY with latch + unarmed walk-min (2,174 s once);
+  floor+margin and full-parity latches both time out even quiet. Walk-min
+  as default endangers the walk bank — left out. It remains in-band
+  upside on lucky deals.
+- ob_24_4 never converted under any variant (kissat 789 s).
+- HCP-446 walk-effort bracket (SAT_WALK_EFFORT_YIELD_ARMED, inert knob
+  banked): shipped yield-armed effort 50 is already optimal — 1 fails,
+  100 = 3,060 s, 250 = timeout vs 2,676 s at 50. The HCP conversion lever
+  is NOT walk effort; it remains contention-margin (lower-contention
+  scheduling or a faster collapse).
+- myciel6 (12.0 LBD) and grs-32-128 (level 483) sit OUTSIDE the band and
+  converted only under the global-parity env (standalone 2,690-3,391 s);
+  candidates for a second, different discriminator if one exists — do NOT
+  widen this band to chase them (VDW at 22.0/33.1 is adjacent).
+
+Free riders in tree (inert): SAT_RESTART_FLOOR / SAT_RESTART_MARGIN
+(global restart knobs, defaults unchanged), SAT_WALK_EFFORT_YIELD_ARMED,
+SAT_DEBUG_DIVE + SAT_RESTART_DIVE_COLLAPSE/BINFRAC tuning knobs.
+Validation: 761+5 tests, smoke 9/9, rbsat 100001/196258/17,758,017
+digit-exact dive on AND off, no-fire verified on VDW/MVRR/TT496.
 
 ## SESSION 20 FINAL VERDICT (2026-08-13) — yield-latch arc closed as a BENCH-WASH after two full A/Bs and per-cell calibration; two standalone first-evers banked as evidence
 
@@ -403,74 +468,83 @@ digit-exact both flag states.
   ON + root-pass scoping law (percent-mass decline-is-identity gates are the
   ONLY shippable root-pass shape). Full text: rev 416adae.
 
-## RANKED PLAN (2026-08-12)
+## RANKED PLAN (2026-08-16)
 
-SESSIONS 15-19 took the bench 279 → 292-294-class with the gap to kissat at
-−1 to −4 depending on deal. The flag frontier is mined; SESSION 19 proved
-the "new capability engine" path works. Next leads, in order:
+SESSIONS 15-21 took the bench 279 → 294 with the gap to kissat now ~0 on
+paired deals (dive deal: we 294, kissat same-host 08-10 run 294; unique
+sets 43 v 43, both-timeout 63). The flag frontier is mined; SESSIONS 19
+and 21 prove the two productive shapes: NEW ENGINES (sweepcount) and
+SCOPED-PARITY LATCHES (dive-restart). Next leads, in order:
 
-1. **kissat sweep.c pair-mechanics port (uniqinv40-class; the measured
-   5x-yield ceiling).** See SESSION 20: latch + skip-transitive banked;
-   the remaining delta is whole-environment retirement outside the tick
-   engine + sustained per-sweep candidate yield. uniqinv40 is the
-   acceptance test (kissat 51 s). Also re-screen the latch WITH the port.
-2. **Sweepcount generalization (the fresh vein).** The engine handles
-   perfect-matching color imbalance. Natural extensions, each a
-   detector+battery delta on the now-proven core: (a) relaxed cells
-   (at-most-one holes on the minority side); (b) odd-component parity
-   (non-bipartite perfect matching — same frontier sweep, parity
-   invariant); (c) exactly-k cells via wider bands. Scan any new bench for
-   EO-cover shapes before building blind — THIS bench held only mchess_20.
-2. **Medium-1800 re-baseline (bookkeeping, OVERDUE — six promotions since
-   74/100 at c469b03).** Standard medium A/B, current defaults vs
+1. **16x16 multiplier miters — 9 kissat-only cells, the single biggest
+   family (was ranked "hardest, no clean probe"; SESSION 21's method
+   makes it approachable).** kissat solves them at 692-3,569 s via
+   trajectory quality, not flags (SESSION 18 map: flag levers EXHAUSTED).
+   Apply the SESSION 21 method: profile kissat's stats on one cell
+   (`kissat -s`), diff restart/vivify/eliminate/factor cadences vs ours,
+   find the mechanism delta, scope it structurally (miters have a
+   distinctive gate-heavy shape — the congruence-productive latch already
+   discriminates them), gate it. The dive-latch infrastructure
+   (bias-corrected EMA, structural triggers, per-class cadence overrides)
+   is reusable directly.
+2. **kissat factor.c port (bounded variable addition).** kissat factored
+   823 vars / 18,439 literals on oddball_19_4 for 0.06 s and factoring
+   fires broadly on cardinality-heavy encodings (oddball/Timetable/
+   lockchart classes all in the kissat-only set). We have NO factoring.
+   A faithful port is a new-engine arc with a measured target list; probe
+   yield on the kissat-only SAT cells before wiring into the default.
+3. **kissat sweep.c pair-mechanics port (uniqinv40-class).** Carried from
+   SESSION 20 (residual: whole-loop interleave; cascade dries ~10x short
+   of kissat's 3,799 equivalences). uniqinv40 (kissat 51 s) is the
+   acceptance test. Also re-screen the yield latch WITH the port.
+4. **Dive-band second discriminator (myciel6/grs class).** Both convert
+   under global parity (2,690 s / 3,391 s standalone) but sit OUTSIDE the
+   promoted band (myciel6 LBD 12, grs level 483). If a second clean
+   structural shape exists (myciel = graph coloring, grs = ?), a sibling
+   latch captures +2. Do NOT widen the existing band (VDW adjacent).
+5. **Medium-1800 re-baseline (bookkeeping, OVERDUE — seven promotions
+   since 74/100 at c469b03).** Standard medium A/B, current defaults vs
    all-new-flags-off.
-3. **Checker-timeout proof-size watch (4 at-risk UNSAT solves).** Watch
-   only; sweepcount adds no exposure (291k lines verify in ~116 s).
-4. **Miter CDCL trajectory quality (9 cells; hardest, highest ceiling).**
-   Flag levers EXHAUSTED (SESSION 18 map). Needs decision/learning-quality
-   work. Deep, risky, no clean probe.
-5. **Walk vein: CLOSED** (latch 500k + warmup + effort 50 + giveup 16
-   promoted; the deep-unarmed lottery is a managed surface).
-6. **Starved hwmcc/BMC + RoundRobin elim-arming + par32/dubois XOR
-   recovery:** CLOSED (SESSION 19: par32 honest-decline, dubois structure
-   destroyed by transformation; rooks are balanced — not sweepcount-shaped).
+6. **Checker-timeout proof-size watch (4 at-risk UNSAT solves).** Watch
+   only; dive adds one 875 MB proof (ob_19_4, verifies 899 s — fine).
+7. **Sweepcount generalization: PARKED** (this bench held only mchess_20;
+   revisit on a new bench). **Walk vein: CLOSED. Starved-BMC/XOR
+   recovery: CLOSED.**
 
 ## Current state
 
-- HEAD: SESSION 19 promotion (after 09a271b).
-  **Full-bench 3600 s baseline: 293/400-class** (freshest TSV =
-  `log/abtest-cand-vs-base-2026-08-11-19-37-55/cand/results.tsv`: 293 with
-  mchess_20 in and two thin coins out that deal; the same defaults are
-  292-294 across recent deals). kissat 4.0.4 reference: **294/400
-  same-host same-deal 2026-08-10**
-  (`log/kissat-full-20260810-073149/results.csv`) — **gap ≈ −1**
-  (was −25 at 14b). kissat can NEVER solve mchess_20, so the unique-set
-  edge is now 43 v 43-ish. Lineage: 261 → 271 → 277 → 280 → 286 → 290 →
-  292 → +mchess (paired gated A/Bs).
-- Default surface SESSIONS 15-19: SAT_VIVIFY_DEDUCE=on + _ARMED_MIN=500k;
+- HEAD: SESSION 21 promotion. **Full-bench 3600 s baseline: 294/400**
+  (freshest TSV = `log/abtest-dive-vs-base-2026-08-15-12-18-53/dive/results.tsv`).
+  kissat 4.0.4 reference: **294/400 same-host 2026-08-10**
+  (`log/kissat-full-20260810-073149/results.csv`) — **gap ≈ 0** (was −25
+  at 14b). Unique sets 43 v 43; both-timeout 63. Remaining kissat-only
+  families: 16x16 miters (9!), oddball residue (4: 24_4/26_4 + 2 tto_zp),
+  TT (2), lockchart (2), grs (2), pj (2), b18/b19 BMC (2), singletons
+  (rook-51, par32-2, cfi-rigid, oisc, ER_400, ...). Lineage: 261 → 271 →
+  277 → 280 → 286 → 290 → 292 → 293 (+mchess/dislog) → 294 (+ob_19_4),
+  all paired gated A/Bs.
+- Default surface SESSIONS 15-21: SAT_VIVIFY_DEDUCE=on + _ARMED_MIN=500k;
   SAT_REPHASE_UNARMED_MIN=500_000; SAT_WALK_EFFORT_UNARMED=50;
   SAT_WALK_WARMUP_UNARMED=on; SAT_WALK_STALL_GIVEUP=16; SAT_SWEEPCOUNT=on;
-  SAT_BACKBONE=off; banded sort/tier3/reuse knobs off (closed).
-- The deep-unarmed walk class is a managed LOTTERY SURFACE; the giveup
-  (K=16) added a UNSAT-aware guard but the RoundRobin n17/n18 pair remains
-  a wall-margin swap (~43M conflicts, both at the 3600 s wall). Judge walk
-  members as class rebalance, not individual capability.
-- **Same-config full-bench deal variance is now measured at 290-292** (four
-  A/Bs this week: base arms scored 285/291/291, cand arms 290/286/292).
-  A raw +1 is inside noise; the paired in-deal delta + a deterministic
-  first-ever is the real signal.
-- **Same-defaults deal variance at 3600 s full bench is ±2-4 solved**: the
-  14d defaults scored 280 (08-01 deal) and 276 (08-03 deal) on identical
-  config — weigh raw full-bench solved deltas accordingly (the paired A/B
-  inside ONE deal is the real signal).
-- **Medium-1800 s baseline: still NEEDS RE-MEASUREMENT (ranked item 4);
-  last measured 74/100 at c469b03 (pre-bundle, pre-deduce).**
-- Default surface added this session: SAT_VIVIFY_DEDUCE=on +
-  SAT_VIVIFY_DEDUCE_ARMED_MIN=500000; SAT_BACKBONE=off (+ SCOPE/ARMED_MIN/
-  EFFORT/TICKS/ROUNDS/MAX_ROUNDS knobs, all inert by default).
-- Suites: `benchmarks/miterded-2026-08-02` (23 cells, miter targets + banked
-  canaries — the standard screen for late-armed-band candidates),
-  `benchmarks/frontier-2026-07-30` (38 cells), miterarmed-2026-08-01 (18).
+  SAT_SWEEP_YIELD_ESCALATE=20 + SAT_SWEEP_YIELD_MIN_EQUIVS=1000;
+  **SAT_RESTART_DIVE=on (SESSION 21)**; SAT_BACKBONE=off; banded
+  sort/tier3/reuse knobs off (closed).
+- The deep-unarmed walk class is a managed LOTTERY SURFACE (unchanged);
+  the global-restart-parity A/B is the freshest, sharpest measurement of
+  that surface: +8/−16 on identical mechanisms. Judge walk members as
+  class rebalance, not individual capability.
+- **Same-defaults deal variance at 3600 s full bench is ±2-4 solved**;
+  the paired A/B inside ONE deal is the real signal. SESSION 21's gate
+  is maximally clean by construction: 396/400 cells conflict-identical,
+  the delta is exactly the in-band cells.
+- **Medium-1800 s baseline: still NEEDS RE-MEASUREMENT (ranked item 5);
+  last measured 74/100 at c469b03.**
+- Suites: `benchmarks/miterded-2026-08-02` (23 cells, the standard screen
+  for late-armed-band candidates — used to pick rpmf in SESSION 21),
+  `benchmarks/frontier-2026-07-30` (38), miterarmed-2026-08-01 (18).
+- In-band dive cells for future deals (upside, no action needed):
+  oddball_24_4 (kissat 789 s), oddball_26_4 (needs walk-min too),
+  baseballcover12 (kissat-unsolved; a first-ever candidate).
 
 ## Standing traps (updated 2026-08-09 + carried)
 

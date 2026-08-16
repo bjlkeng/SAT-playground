@@ -15,6 +15,37 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **Full-bench default promotion (2026-08-16, SESSION 21): dive-restart
+> latch (`SAT_RESTART_DIVE=on` by default).** A restart-cadence audit vs
+> kissat 4.0.4 on oddball_19_4 (kissat 63 s, we timed out — 57x gap)
+> found our focused glucose-EMA restarts fire every ~460 conflicts where
+> kissat fires every ~30 (floor 50+log vs ~1, margin 1.20 vs 1.10,
+> slow-EMA window 4096 vs 100k), starving fat-LBD counting trajectories
+> (level 40, LBD 30, 59-lit learned clauses, 37x ticks/conflict vs
+> kissat). Global parity LOST the full bench 286v294 (+8/−16 — it
+> rerolls the SAT lottery surface; TT495 in / TT496 out at identical
+> signatures). The promoted form is a one-shot **structural latch**:
+> after root preprocessing, if non-binary clause mass collapsed >= 77%
+> and parse-time binary fraction is in [0.50, 0.85] (the counting-class
+> shape; full-bench shape-scan = exactly 10/400 cells in band), switch to
+> kissat-parity cadence (floor 2, margin 1.10, slow window 100k) with
+> kissat-style bias-corrected EMA warmup (latch-only; legacy EMA update
+> untouched). Out-of-band cells are bit-identical by construction
+> (rbsat/MVRR digit-exact, dive on and off; no-fire verified on
+> VDW/MVRR/TT496). **Gate 2026-08-15 (`log/abtest-dive-vs-base-2026-08-15-12-18-53`,
+> 3600 s/16 GB/32 cores): WIN 294/400 v 293, +1/−0
+> (oddball_19_4 first-ever UNSAT, 3.18M conflicts vs kissat's 2.75M —
+> trajectory parity; proof drat-VERIFIED 899 s), 396/400 cells
+> conflict-identical, banked ttf siblings improve (13_5 1.84M→1.69M,
+> linked_list 6004→3248), promotion_gate=PASS, zero correctness
+> failures.** Upside in band on future deals: oddball_24_4/26_4 and
+> baseballcover12 (also kissat-unsolved). ob_26_4 additionally needs
+> unarmed walk-min and stays out (recorded). Groundwork commits e8676d4 +
+> 18aa624; promotion this commit. Free riders this session (inert):
+> `SAT_RESTART_FLOOR`/`SAT_RESTART_MARGIN` global knobs,
+> `SAT_WALK_EFFORT_YIELD_ARMED` (HCP-446 bracket showed shipped effort 50
+> already optimal — 1/100/250 all worse).
+
 > **Full-bench default promotion (2026-08-13, SESSION 20g): sweep
 > yield-escalate latch (`SAT_SWEEP_YIELD_ESCALATE=20`,
 > `SAT_SWEEP_YIELD_MIN_EQUIVS=1000`).** Once a conflict-cadence sweep round

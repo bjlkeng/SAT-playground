@@ -4232,7 +4232,7 @@ impl Solver {
                 .unwrap_or(KISSAT_EMA_RESTART_MARGIN),
             restart_dive_enabled: std::env::var("SAT_RESTART_DIVE")
                 .map(|s| s == "on")
-                .unwrap_or(false),
+                .unwrap_or(true),
             restart_dive_min_collapse: std::env::var("SAT_RESTART_DIVE_COLLAPSE")
                 .ok()
                 .and_then(|s| s.parse().ok())
