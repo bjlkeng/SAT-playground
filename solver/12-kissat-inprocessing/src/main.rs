@@ -4246,7 +4246,7 @@ impl Solver {
             restart_dive_armed: false,
             restart_dive2_enabled: std::env::var("SAT_RESTART_DIVE2")
                 .map(|s| s == "on")
-                .unwrap_or(false),
+                .unwrap_or(true),
             restart_block_margin: config.restart_block_margin,
             restart_reuse_trail_focused: config.restart_reuse_trail_focused,
             restart_reuse_trail_stable: config.restart_reuse_trail_stable,

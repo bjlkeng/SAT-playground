@@ -15,7 +15,32 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
-> **Full-bench default promotion (2026-08-16, SESSION 21): dive-restart
+> **Full-bench default promotion (2026-08-17, SESSION 22): band-2
+> dive-restart latch (`SAT_RESTART_DIVE2=on` by default) — the small
+> gate-circuit miter class.** Second application of the SESSION 21
+> method. kissat's profile on the easiest kissat-only 16x16 miter (m29 =
+> booth_dadda_origin_and_and_dadda_origin_bit29, kissat 587 s) shows a
+> pure cadence solve: 8.08M conflicts, restart interval 43,
+> sweep/congruence/factor all negligible. With floor 2 + margin 1.10 we
+> convert m29 standalone at 2,648 s / 10.1M conflicts (trajectory
+> parity) and booth_wallace_origin_bit29 at 2,987 s under 13-way load.
+> Band 2 = collapse in [0.15, 0.35] AND parse binfrac in [0.30, 0.50]
+> AND initial clauses <= 30k: exactly the 12 in-bench 16_16 miters + 3
+> BubbleVsPancake (all base timeouts) + 5 solved small cells, of which 4
+> solve at 0 conflicts pre-trigger and PancakeVsSelection_6_6 arms and
+> IMPROVES (2.24M -> 1.70M conflicts in-gate). The overlapping SC25
+> Timetable lottery class is excluded by the size cap. No slow-EMA
+> window in this band (miterded screen: harmful on miters); walk
+> suppression measured worse and rejected. **Gate 2026-08-16
+> (`log/abtest-dive2-vs-base-2026-08-16-13-17-06`): WIN 292/400 v 291,
+> promotion_gate=PASS, zero correctness failures. Trade note: the
+> solved +2/-1 (valves-gates +, bp4_BC012_IXA +, MVRoundRobin_n14 -)
+> are ALL out-of-band identical-trajectory wall coins (MVRR baseline
+> margin 64 s, documented flipper family); the mechanism wins are the
+> PvS tier-2 conflict drop and the banked miter capability, which
+> flips in-gate on quieter deals exactly as dislog did.** m29/bwo_bit29
+> did not convert under THIS deal's 32-way contention (2,648-2,987 s
+> standalone vs 3,600 wall) — they are the band's standing upside.
 > latch (`SAT_RESTART_DIVE=on` by default).** A restart-cadence audit vs
 > kissat 4.0.4 on oddball_19_4 (kissat 63 s, we timed out — 57x gap)
 > found our focused glucose-EMA restarts fire every ~460 conflicts where

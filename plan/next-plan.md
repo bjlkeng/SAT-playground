@@ -5,10 +5,44 @@ history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
 bodies were pruned earlier — full text in revisions up to 93ab682. Where this
 file contradicts an older revision, THIS file wins.
 
-**START HERE:** read "SESSION 21" below (dive-restart latch — the restart
-cadence audit is the session's core finding), then "SESSION 20 FINAL
-VERDICT", then "SESSION 19" (sweepcount), then "RANKED PLAN", then
-"Standing traps".
+**START HERE:** read "SESSION 22" and "SESSION 21" below (the two
+dive-restart latches — the restart-cadence audit is the arc's core
+finding), then "SESSION 20 FINAL VERDICT", then "SESSION 19"
+(sweepcount), then "RANKED PLAN", then "Standing traps".
+
+## SESSION 22 (2026-08-16/17) — band-2 dive latch PROMOTED (gate PASS 292 v 291): the 16x16 miter class now runs kissat-parity restarts; miter conversions banked standalone, in-gate blocked only by contention wall
+
+Second application of the SESSION 21 method, on ranked item 1 (the 9
+kissat-only 16x16 miters). Mechanism measured on m29
+(booth_dadda_origin_and_and_dadda_origin_bit29, kissat 587 s / 8.08M
+conflicts / restart interval 43, sweep+congruence+factor all negligible):
+pure cadence gap. floor 2 + margin 1.10 converts m29 standalone 2,648 s /
+10.1M conflicts (trajectory parity) and booth_wallace_origin_bit29
+2,987 s under 13-way load. **Band 2** (in maybe_arm_dive_restarts):
+collapse in [0.15,0.35] AND parse binfrac in [0.30,0.50] AND initial
+clauses <= 30k — exactly 12 in-bench 16_16 miters + 3 BubbleVsPancake
+(all base timeouts) + 5 solved small cells (4 solve at 0 conflicts
+pre-trigger; PancakeVsSelection_6_6 arms and improves 2.24M -> 1.70M).
+SC25 Timetable excluded by the size cap. No slow-EMA window in band 2
+(screen: harmful on miters). **Gate
+log/abtest-dive2-vs-base-2026-08-16-13-17-06: WIN 292 v 291, PASS, zero
+correctness failures. Honest trade note: the solved +2/−1 (valves +,
+bp4_BC012_IXA +, MVRR_n14 −) are ALL out-of-band identical-trajectory
+wall coins (MVRR baseline margin 64 s, documented flipper family); the
+mechanism content is the PvS tier-2 drop + the banked miter class.**
+
+Measured and rejected this session: walk suppression on band-2 armed
+cells (m29 3,157 s / 11.0M vs 2,648 s / 10.1M — the walk's warm phases
+guide circuit search); slow-EMA window in band 2. dmu28 (kissat 716 s)
+does not convert even quiet — the family ratio (~4x kissat wall) puts
+kissat<=700s members at our wall; **the next miter lever is throughput,
+not cadence** (m29: 191 props/conf vs kissat 107, 22.7k ticks/conf,
+180k live learned clauses on a 2.5k-var formula; kissat eliminates 74%
+of vars vs our 57%).
+
+STANDING UPSIDE (no action needed): m29 and bwo_bit29 flip in-gate on
+quieter deals (the dislog pattern); ob_24_4/26_4, baseballcover12,
+3x BubbleVsPancake are additional in-band rolls.
 
 ## SESSION 21 (2026-08-14..16) — dive-restart latch PROMOTED: full-bench 293 → 294/400 (gate PASS, +1/−0, oddball_19_4 FIRST-EVER); the restart-cadence gap vs kissat is now MAPPED and the global form is measured DEAD
 
@@ -476,17 +510,14 @@ sets 43 v 43, both-timeout 63). The flag frontier is mined; SESSIONS 19
 and 21 prove the two productive shapes: NEW ENGINES (sweepcount) and
 SCOPED-PARITY LATCHES (dive-restart). Next leads, in order:
 
-1. **16x16 multiplier miters — 9 kissat-only cells, the single biggest
-   family (was ranked "hardest, no clean probe"; SESSION 21's method
-   makes it approachable).** kissat solves them at 692-3,569 s via
-   trajectory quality, not flags (SESSION 18 map: flag levers EXHAUSTED).
-   Apply the SESSION 21 method: profile kissat's stats on one cell
-   (`kissat -s`), diff restart/vivify/eliminate/factor cadences vs ours,
-   find the mechanism delta, scope it structurally (miters have a
-   distinctive gate-heavy shape — the congruence-productive latch already
-   discriminates them), gate it. The dive-latch infrastructure
-   (bias-corrected EMA, structural triggers, per-class cadence overrides)
-   is reusable directly.
+1. **16x16 miter THROUGHPUT (cadence now DONE — SESSION 22 banked the
+   class; the residual is the ~4x wall ratio).** m29 numbers vs kissat:
+   191 props/conf v 107, 22.7k ticks/conf, 180k live learned clauses on
+   2.5k vars, eliminate 57% v 74%. Levers to probe (band-2-scoped, so
+   zero out-of-band risk): tighter reduce cadence / DB budget on armed
+   cells, deeper armed elimination rounds, vivify throughput. Every
+   ~800 s trimmed converts one more family member in-gate (m29 2,648 s,
+   bwo 2,987 s, dmu28 needs ~2x).
 2. **kissat factor.c port (bounded variable addition).** kissat factored
    823 vars / 18,439 literals on oddball_19_4 for 0.06 s and factoring
    fires broadly on cardinality-heavy encodings (oddball/Timetable/
@@ -513,7 +544,10 @@ SCOPED-PARITY LATCHES (dive-restart). Next leads, in order:
 
 ## Current state
 
-- HEAD: SESSION 21 promotion. **Full-bench 3600 s baseline: 294/400**
+- HEAD: SESSION 22 promotion (band-2 dive latch default on). Freshest
+  deal: 292/400 (log/abtest-dive2-vs-base-2026-08-16-13-17-06/dive2/,
+  a low-variance deal — base scored 291 same deal). 294-class defaults.
+- SESSION 21 reference: **Full-bench 3600 s baseline: 294/400**
   (freshest TSV = `log/abtest-dive-vs-base-2026-08-15-12-18-53/dive/results.tsv`).
   kissat 4.0.4 reference: **294/400 same-host 2026-08-10**
   (`log/kissat-full-20260810-073149/results.csv`) — **gap ≈ 0** (was −25
