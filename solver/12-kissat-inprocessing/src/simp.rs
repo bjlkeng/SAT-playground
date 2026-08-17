@@ -3525,6 +3525,7 @@ impl Solver {
             }
         }
         self.assignment.clone_from(&model);
+        self.rebuild_lit_vals();
         self.sat_model = Some(model);
     }
 }

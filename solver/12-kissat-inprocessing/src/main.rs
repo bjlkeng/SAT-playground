@@ -2066,6 +2066,13 @@ struct Solver {
     /// assignment[v] for variable v (1-based, index 0 unused)
     /// 0 = unassigned, 1 = true, 2 = false
     assignment: Vec<u8>,
+    /// SESSION 23: per-LITERAL value mirror of `assignment` (kissat values[]
+    /// parity). lit_value() becomes a single indexed load instead of
+    /// abs+load+two-branch recompute — the hottest read in the solver.
+    /// Updated at the 4 assignment-mutation sites; positive/negative literal
+    /// slots are adjacent (lit_to_index: (var-1)*2 + neg), so an assign
+    /// writes idx and idx^1.
+    lit_vals: Vec<u8>,
     /// last assigned polarity for each variable, reused when branching after backtrack/restart
     saved_phase: Vec<u8>,
     /// target assignment polarity captured from the deepest unconflicted prefix in this phase block
@@ -4096,6 +4103,7 @@ impl Solver {
             watch_pool_active,
             watch_scratch: Vec::new(),
             assignment: vec![UNASSIGNED; num_vars + 1],
+            lit_vals: vec![UNASSIGNED; (num_vars + 1) * 2],
             saved_phase: vec![initial_saved_phase; num_vars + 1],
             target_phase: if phase_buffers_enabled {
                 vec![UNASSIGNED; num_vars + 1]
@@ -6761,18 +6769,51 @@ impl Solver {
         // Lazy detach: deleted clauses are compacted out of watch lists during propagation or GC.
     }
 
+    /// Rebuild the per-literal value mirror from `assignment` after a bulk
+    /// overwrite (model capture / lucky-phase trials / test resets).
+    fn rebuild_lit_vals(&mut self) {
+        let n = self.assignment.len();
+        if self.lit_vals.len() < n * 2 {
+            self.lit_vals.resize(n * 2, UNASSIGNED);
+        }
+        for var in 1..n {
+            let base = (var - 1) * 2;
+            match self.assignment[var] {
+                TRUE => {
+                    self.lit_vals[base] = TRUE;
+                    self.lit_vals[base + 1] = FALSE;
+                }
+                FALSE => {
+                    self.lit_vals[base] = FALSE;
+                    self.lit_vals[base + 1] = TRUE;
+                }
+                _ => {
+                    self.lit_vals[base] = UNASSIGNED;
+                    self.lit_vals[base + 1] = UNASSIGNED;
+                }
+            }
+        }
+    }
+
     #[inline(always)]
     fn lit_value(&self, lit: i32) -> u8 {
-        let var = lit.unsigned_abs() as usize;
-        let val = self.assignment[var];
-        if val == UNASSIGNED {
-            return UNASSIGNED;
-        }
-        if (lit > 0) == (val == TRUE) {
-            TRUE
-        } else {
-            FALSE
-        }
+        // SAFETY: lit_to_index(lit) = (|lit|-1)*2 + neg <= 2*num_vars - 1 and
+        // lit_vals is sized (num_vars+1)*2 at construction (rebuild_lit_vals
+        // re-asserts the size); every caller passes a live formula literal.
+        debug_assert!(lit_to_index(lit) < self.lit_vals.len());
+        let v = unsafe { *self.lit_vals.get_unchecked(lit_to_index(lit)) };
+        debug_assert_eq!(v, {
+            let var = lit.unsigned_abs() as usize;
+            let val = self.assignment[var];
+            if val == UNASSIGNED {
+                UNASSIGNED
+            } else if (lit > 0) == (val == TRUE) {
+                TRUE
+            } else {
+                FALSE
+            }
+        });
+        v
     }
 
     #[inline(always)]
@@ -6832,6 +6873,11 @@ impl Solver {
             let lit = self.trail.pop().expect("temporary trail underflow");
             let var = lit.unsigned_abs() as usize;
             self.assignment[var] = UNASSIGNED;
+            {
+                let base = (var - 1) * 2;
+                self.lit_vals[base] = UNASSIGNED;
+                self.lit_vals[base + 1] = UNASSIGNED;
+            }
             self.decision_level[var] = 0;
             self.set_reason_ref(var, ReasonRef::None);
             self.push_branch_var(var);
@@ -7673,6 +7719,7 @@ impl Solver {
         if unsatisfied.is_empty() {
             self.sat_model = Some(trial.clone());
             self.assignment.clone_from(&trial);
+            self.rebuild_lit_vals();
             return true;
         }
 
@@ -7724,6 +7771,7 @@ impl Solver {
             if unsatisfied.is_empty() {
                 self.sat_model = Some(trial.clone());
                 self.assignment.clone_from(&trial);
+                self.rebuild_lit_vals();
                 return true;
             }
         }
@@ -7756,6 +7804,7 @@ impl Solver {
                 self.stats.lucky_solved += 1;
                 if let Some(model) = self.sat_model.take() {
                     self.assignment.clone_from(&model);
+                    self.rebuild_lit_vals();
                     self.sat_model = Some(model);
                 }
                 return true;
@@ -7946,6 +7995,11 @@ impl Solver {
                 current_level
             };
             self.assignment[var] = target_value;
+            {
+                let idx = lit_to_index(lit);
+                self.lit_vals[idx] = TRUE;
+                self.lit_vals[idx ^ 1] = FALSE;
+            }
             if NORMAL_SEARCH || self.accounting_mode.update_phase() {
                 self.saved_phase[var] = target_value;
             }
@@ -9857,6 +9911,11 @@ impl Solver {
                     write += 1;
                 } else {
                     self.assignment[var] = UNASSIGNED;
+            {
+                let base = (var - 1) * 2;
+                self.lit_vals[base] = UNASSIGNED;
+                self.lit_vals[base + 1] = UNASSIGNED;
+            }
                     self.decision_level[var] = 0;
                     self.set_reason_ref(var, ReasonRef::None);
                     self.heap_reinsert_unassigned_decision_var(var);
@@ -9877,6 +9936,11 @@ impl Solver {
             let lit = self.trail.pop().expect("trail underflow");
             let var = lit.unsigned_abs() as usize;
             self.assignment[var] = UNASSIGNED;
+            {
+                let base = (var - 1) * 2;
+                self.lit_vals[base] = UNASSIGNED;
+                self.lit_vals[base + 1] = UNASSIGNED;
+            }
             self.decision_level[var] = 0;
             self.set_reason_ref(var, ReasonRef::None);
             self.heap_reinsert_unassigned_decision_var(var);
@@ -24428,6 +24492,7 @@ mod tests {
         reason_overrides: &[(usize, usize)],
     ) {
         s.assignment.fill(UNASSIGNED);
+        s.lit_vals.fill(UNASSIGNED);
         s.decision_level.fill(0);
         s.reason.fill(NO_REASON);
         s.trail.clear();
@@ -24446,6 +24511,9 @@ mod tests {
 
             let var = lit.unsigned_abs() as usize;
             s.assignment[var] = if lit > 0 { TRUE } else { FALSE };
+            let idx = lit_to_index(lit);
+            s.lit_vals[idx] = TRUE;
+            s.lit_vals[idx ^ 1] = FALSE;
             s.decision_level[var] = level as u32;
         }
 
@@ -24903,6 +24971,7 @@ mod tests {
         let live = s.add_clause(vec![3, 1]);
 
         s.assignment[3] = TRUE;
+        s.rebuild_lit_vals();
         s.saved_phase[3] = TRUE;
         s.decision_level[3] = 1;
         s.set_reason_ref(3, ReasonRef::Clause(live));
@@ -24989,6 +25058,7 @@ mod tests {
 
         s.set_reason_ref(4, ReasonRef::Clause(live));
         s.assignment[4] = TRUE;
+        s.rebuild_lit_vals();
         s.mark_clause_deleted(dead);
 
         let old_reason = s.reason_ref(4);
@@ -26260,6 +26330,7 @@ mod tests {
         let mut s = make_solver(3, vec![]);
         let reason_clause = s.add_clause(vec![2, 1, 3]);
         s.assignment[1] = TRUE;
+        s.rebuild_lit_vals();
         s.set_reason_ref(1, ReasonRef::Clause(reason_clause));
 
         let pins = s.rebuild_reason_pinset();
@@ -26272,6 +26343,7 @@ mod tests {
         let mut s = make_solver(3, vec![]);
         let binary_id = s.add_binary_reason_for_test([2, -1]);
         s.assignment[2] = TRUE;
+        s.rebuild_lit_vals();
         s.set_reason_ref(2, ReasonRef::Binary(binary_id));
 
         let pins = s.rebuild_reason_pinset();
@@ -26286,6 +26358,7 @@ mod tests {
         let pinned = s.add_clause(vec![4, 1, 2, 3]);
         set_lbd_meta_for_test(&mut s, pinned, 12, 0);
         s.assignment[1] = TRUE;
+        s.rebuild_lit_vals();
         s.set_reason_ref(1, ReasonRef::Clause(pinned));
 
         s.reduce_db();
@@ -26300,6 +26373,7 @@ mod tests {
         let dead = s.add_clause(vec![4, 1, 2]);
         let pinned = s.add_clause(vec![3, 1, 2]);
         s.assignment[1] = TRUE;
+        s.rebuild_lit_vals();
         s.set_reason_ref(1, ReasonRef::Clause(pinned));
         s.mark_clause_deleted(dead);
 
@@ -26341,6 +26415,7 @@ mod tests {
         let reason = s.add_clause(vec![4, 1, 2, 3]);
         set_lbd_meta_for_test(&mut s, reason, 20, 0);
         s.assignment[4] = TRUE;
+        s.rebuild_lit_vals();
         s.set_reason_ref(4, ReasonRef::Clause(reason));
 
         s.reduce_db();
@@ -26593,6 +26668,7 @@ mod tests {
         set_lbd_meta_for_test(&mut s, binary, 1, 0);
         set_lbd_meta_for_test(&mut s, locked, 1, 0);
         s.assignment[4] = TRUE;
+        s.rebuild_lit_vals();
         s.set_reason_ref(4, ReasonRef::Clause(locked));
 
         s.reduce_db();
@@ -27510,6 +27586,7 @@ mod tests {
         s.set_learnt_lbd(reason, 3);
         s.last_conflict_lbd = 1;
         s.assignment[3] = TRUE;
+        s.rebuild_lit_vals();
         s.decision_level[3] = 1;
         s.set_reason_ref(3, ReasonRef::Clause(reason));
         s.trail.push(3);
@@ -27637,6 +27714,7 @@ mod tests {
         let reason = s.add_clause(vec![3, 1, 2]);
         // Variable 3 is assigned with this clause as its reason — clause is "locked".
         s.assignment[3] = TRUE;
+        s.rebuild_lit_vals();
         s.decision_level[3] = 1;
         s.set_reason_ref(3, ReasonRef::Clause(reason));
         s.trail.push(3);
@@ -27754,6 +27832,7 @@ mod tests {
         let live = s.add_clause(vec![3, 1]);
 
         s.assignment[4] = TRUE;
+        s.rebuild_lit_vals();
         s.saved_phase[4] = TRUE;
         s.decision_level[4] = 1;
         s.set_reason_ref(4, ReasonRef::Clause(live));
@@ -27871,6 +27950,7 @@ mod tests {
         assert_eq!(s.branch_heap[0] as usize, 1);
 
         s.assignment[1] = TRUE;
+        s.rebuild_lit_vals();
         s.stats.decision_heap_pops = 0;
         s.stats.decision_heap_stale_pops = 0;
 
@@ -28014,6 +28094,7 @@ mod tests {
         s.set_clause_activity(locked, 10.0);
 
         s.assignment[3] = TRUE;
+        s.rebuild_lit_vals();
         s.saved_phase[3] = TRUE;
         s.decision_level[3] = 1;
         s.set_reason_ref(3, ReasonRef::Clause(locked));
