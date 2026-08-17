@@ -513,11 +513,15 @@ SCOPED-PARITY LATCHES (dive-restart). Next leads, in order:
 1. **16x16 miter THROUGHPUT (cadence now DONE — SESSION 22 banked the
    class; the residual is the ~4x wall ratio).** m29 numbers vs kissat:
    191 props/conf v 107, 22.7k ticks/conf, 180k live learned clauses on
-   2.5k vars, eliminate 57% v 74%. Levers to probe (band-2-scoped, so
-   zero out-of-band risk): tighter reduce cadence / DB budget on armed
-   cells, deeper armed elimination rounds, vivify throughput. Every
-   ~800 s trimmed converts one more family member in-gate (m29 2,648 s,
-   bwo 2,987 s, dmu28 needs ~2x).
+   2.5k vars, eliminate 57% v 74%. **Reduce cadence measured FLAT
+   (SESSION 22b): the LbdTiered default interval is already 1000;
+   int300 harmful (3,637 s / 14.2M), int2000 trades fewer conflicts for
+   worse wall — do not re-probe reduce knobs.** Remaining levers
+   (band-2-scoped, zero out-of-band risk): deeper armed elimination
+   rounds (57% v 74% is the biggest structural delta), vivify
+   throughput, propagation micro-cost. Every ~800 s trimmed converts a
+   family member in-gate (m29/bwo at ~2,300-2,990 s across deals; dmu28
+   needs ~2x).
 2. **kissat factor.c port (bounded variable addition).** kissat factored
    823 vars / 18,439 literals on oddball_19_4 for 0.06 s and factoring
    fires broadly on cardinality-heavy encodings (oddball/Timetable/
