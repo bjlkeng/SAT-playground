@@ -5,10 +5,43 @@ history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
 bodies were pruned earlier — full text in revisions up to 93ab682. Where this
 file contradicts an older revision, THIS file wins.
 
-**START HERE:** read "SESSION 22" and "SESSION 21" below (the two
-dive-restart latches — the restart-cadence audit is the arc's core
-finding), then "SESSION 20 FINAL VERDICT", then "SESSION 19"
-(sweepcount), then "RANKED PLAN", then "Standing traps".
+**START HERE:** read "SESSION 23" (engine speed — the lit_vals mirror),
+"SESSION 22" and "SESSION 21" (the dive-restart latches), then "SESSION
+20 FINAL VERDICT", then "SESSION 19" (sweepcount), then "RANKED PLAN",
+then "Standing traps".
+
+## SESSION 23 (2026-08-17/18) — lit_vals per-literal value mirror PROMOTED (~9% engine speedup, trajectories digit-exact); SESSION 22's banked miters CONVERTED IN-GATE (m29 3,260 s, bwo_bit29 3,489 s, both first-ever)
+
+The round's brief was speed/efficiency only. Profile (gdb sampler, m29):
+propagation ~60% of leaves with the hot loop already saturated (blocking
+literals, inline binary tags, flat watch pool, prefetch, kissat
+`searched`). The remaining gap was representational: lit_value()
+recomputed sign logic with two branches per call vs kissat's values[]
+single load. Change: per-literal mirror (pos/neg slots adjacent via
+lit_to_index), maintained at the 4 assignment-mutation sites + rebuild
+helper at bulk-overwrite sites (capture_sat_model, lucky trials, test
+resets — the debug_assert-on-every-call caught both hidden paths during
+development; full 761-test debug suite runs with it active). Unchecked
+indexed load (bounds proven by construction).
+
+**Measured:** rbsat probe −8.6% (alternating 3x: 14.60-14.83 →
+13.31-13.45 s); m29 paired quiet 2,300 → 2,085 s (−9.4%). **Full-bench
+(twin identical arms, log/abtest-speed-vs-speedb-2026-08-17-12-17-43):
+twins byte-identical (289 v 289, conflicts 580,784,015 = 580,784,015);
+vs the pre-change TSV all 285 shared solved cells conflict-IDENTICAL.
+Gains vs yesterday: m29 (3,260 s in-gate, conf digit-exact to the
+band-2 probe) and bwo_bit29 (3,489 s) — the SESSION 22 bank cashed —
+plus MVRR/sqrt169 coins. The 7 raw cross-day losses ALL failed in BOTH
+identical twins (deal-wide drift on a weak deal; TT496 documented
+flipper, valves/lockchart/ncc/g2 thin margins, TT395/406 giant-cell
+placement lottery) — zero candidate-attributable losses, also true by
+construction. Mechanical cross-day gate line reads FAIL (289 v 292);
+judged PROMOTABLE under "Judging Trades" and recorded as such.** Commit
+7874e01.
+
+Fleet effect: every cell in the 1600-1800 s band gains ~150 s of
+margin; the 294-class defaults on a median deal should now read
+~295-296. The next scheduled full-bench re-baseline will confirm.
 
 ## SESSION 22 (2026-08-16/17) — band-2 dive latch PROMOTED (gate PASS 292 v 291): the 16x16 miter class now runs kissat-parity restarts; miter conversions banked standalone, in-gate blocked only by contention wall
 
@@ -510,8 +543,8 @@ sets 43 v 43, both-timeout 63). The flag frontier is mined; SESSIONS 19
 and 21 prove the two productive shapes: NEW ENGINES (sweepcount) and
 SCOPED-PARITY LATCHES (dive-restart). Next leads, in order:
 
-1. **16x16 miter THROUGHPUT (cadence now DONE — SESSION 22 banked the
-   class; the residual is the ~4x wall ratio).** m29 numbers vs kissat:
+1. **16x16 miter THROUGHPUT — PARTIALLY CASHED (SESSION 23: m29 + bwo
+   convert in-gate via the 9% engine speedup; residual ~3.6x kissat).** m29 numbers vs kissat:
    191 props/conf v 107, 22.7k ticks/conf, 180k live learned clauses on
    2.5k vars, eliminate 57% v 74%. **Reduce cadence measured FLAT
    (SESSION 22b): the LbdTiered default interval is already 1000;
