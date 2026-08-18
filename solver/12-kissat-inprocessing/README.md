@@ -15,6 +15,35 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **Engine promotion (2026-08-18, SESSION 23): per-literal value mirror
+> (`lit_vals`, kissat values[] parity) — ~9% engine speedup, trajectories
+> digit-exact; first-ever IN-GATE conversions of the band-2 miters.**
+> `lit_value()` (the most-executed read: blocker checks, replacement
+> scans, enqueue, analysis) dropped from abs+load+two-branches to one
+> unchecked indexed load off a per-literal mirror maintained at the 4
+> assignment-mutation sites (+ rebuild at bulk-overwrite sites; a
+> debug_assert recomputes the legacy value on every call in debug
+> builds). Measured: rbsat 100k probe −8.6% (alternating 3x), m29 paired
+> quiet 2,300 → 2,085 s (−9.4%). **Full-bench evidence
+> (`log/abtest-speed-vs-speedb-2026-08-17-12-17-43`, twin identical
+> arms): the twins are byte-identical (289 v 289, conflicts equal to the
+> digit: 580,784,015), and vs the pre-change TSV
+> (`log/abtest-dive2-vs-base-2026-08-16-13-17-06/dive2`) all 285 shared
+> solved cells are conflict-IDENTICAL — the change is provably
+> pure-wall. Gains: 16_16_booth_dadda_origin_and_and_dadda_origin_bit29
+> (3,260 s, conf 9,036,983 — digit-exact to the band-2 probe trajectory)
+> and 16_16_booth_wallace_origin_and_default_mapped_bit29 (3,489 s) —
+> the SESSION 22 banked miters, now cashed in-gate — plus MVRR/sqrt169
+> flipper coins. The raw cross-day solved count (289 v 292) reads as a
+> mechanical gate FAIL, but every one of the 7 raw losses ALSO failed in
+> BOTH identical twin arms (deal-wide drift on a weak deal, 5/7
+> thin-margin or documented flippers: TT496, valves 3,282 s, lockchart
+> 3,527 s, ncc 3,450 s, g2 2,415 s; TT395/406 are giant-cell placement
+> lottery) — zero candidate-attributable losses, which is also true BY
+> CONSTRUCTION for an identical-trajectory speedup. Judged promotable
+> under "Judging Trades" (mechanism-validated capability, coin-only
+> losses). Commit 7874e01.**
+
 > **Full-bench default promotion (2026-08-17, SESSION 22): band-2
 > dive-restart latch (`SAT_RESTART_DIVE2=on` by default) — the small
 > gate-circuit miter class.** Second application of the SESSION 21
