@@ -41,7 +41,20 @@ judged PROMOTABLE under "Judging Trades" and recorded as such.** Commit
 
 Fleet effect: every cell in the 1600-1800 s band gains ~150 s of
 margin; the 294-class defaults on a median deal should now read
-~295-296. The next scheduled full-bench re-baseline will confirm.
+~295-296.
+
+**MEASUREMENT-HYGIENE TRAP (2026-08-18, add to standing traps): host
+drift under continuous benching.** Same-defaults full-bench scores over
+three consecutive days of back-to-back ~10 h 32-core gates: 292/291
+(08-16) → 289/289 (08-17, twins byte-identical) → 285/285 (08-18,
+twins cell-DIVERGENT — own-solved conflict sums 553.4M v 562.4M, i.e.
+wall coins WITHIN a same-binary twin pair). A −7 absolute drift on
+identical configs is host-state (heat-soak/cache), not solver. Rule:
+NEVER compare absolute solved counts across days; only within-deal
+paired arms are evidence. Re-baseline the absolute level only after the
+host has been quiet for hours. The 08-18 re-baseline TSVs
+(log/abtest-rebase-vs-rebaseb-2026-08-18-*) are archived as
+drift-documentation, not as the defaults' level.
 
 ## SESSION 22 (2026-08-16/17) — band-2 dive latch PROMOTED (gate PASS 292 v 291): the 16x16 miter class now runs kissat-parity restarts; miter conversions banked standalone, in-gate blocked only by contention wall
 
