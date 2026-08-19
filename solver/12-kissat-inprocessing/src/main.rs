@@ -11530,6 +11530,12 @@ impl Solver {
         let n1 = new_num_vars + 1;
         let n2 = new_num_vars * 2;
         self.assignment.resize(n1, UNASSIGNED);
+        // SESSION 23 fix: the per-literal value mirror must grow with every
+        // other var-indexed array — missing this made lit_value() read OOB
+        // (get_unchecked UB) on factor-introduced fresh variables, killing
+        // the SC25 Timetable class (TT395 89.7 s -> crash) in the first
+        // lit_vals build.
+        self.lit_vals.resize(n1 * 2, UNASSIGNED);
         // Var slot 0 is unused and still holds each phase buffer's constructor fill
         // value (initial_saved_phase / default_phase), so it is the right fill for
         // fresh variables too.
