@@ -43,18 +43,37 @@ Fleet effect: every cell in the 1600-1800 s band gains ~150 s of
 margin; the 294-class defaults on a median deal should now read
 ~295-296.
 
-**MEASUREMENT-HYGIENE TRAP (2026-08-18, add to standing traps): host
-drift under continuous benching.** Same-defaults full-bench scores over
-three consecutive days of back-to-back ~10 h 32-core gates: 292/291
-(08-16) → 289/289 (08-17, twins byte-identical) → 285/285 (08-18,
-twins cell-DIVERGENT — own-solved conflict sums 553.4M v 562.4M, i.e.
-wall coins WITHIN a same-binary twin pair). A −7 absolute drift on
-identical configs is host-state (heat-soak/cache), not solver. Rule:
-NEVER compare absolute solved counts across days; only within-deal
-paired arms are evidence. Re-baseline the absolute level only after the
-host has been quiet for hours. The 08-18 re-baseline TSVs
-(log/abtest-rebase-vs-rebaseb-2026-08-18-*) are archived as
-drift-documentation, not as the defaults' level.
+**SESSION 23 FINAL (2026-08-19) — the "host drift" was mostly a BUG,
+now FIXED (feeea27); the corrected same-deal old-vs-new A/B confirms
+the engine win.** The first lit_vals build missed growing the mirror in
+grow_variables: factor-introduced fresh vars made lit_value read OOB
+via get_unchecked (UB) and killed the factoring-heavy SC25 Timetable
+class — which is why the 08-17/08-18 twin runs (both the buggy binary)
+"lost" TT395/406/496/g2 deal-wide and absolute scores read
+292 → 289 → 285. Detection: the same-deal old-vs-new A/B
+(log/abtest-new-vs-s22-2026-08-18-13-39-28) showed new losing TT395
+which s22 solved in 147 s — impossible for a strictly-faster
+identical-trajectory binary; quiet reruns confirmed crashes.
+
+**Corrected A/B (log/abtest-newfix-vs-s22-2026-08-19-03-09-59,
+same-deal simultaneous, frozen 2d0d071 snapshot as baseline): 290 v
+290 solved, 289 both-solved cells with ZERO conflict diffs, newfix
+6.4% faster wall (faster on 211/289), PAR-2 WIN 973,924 v 986,228;
+bug-class all recovered and faster (TT395 158 v 160 s, TT406 347 v
+354, TT496 1,306 v 1,376, g2 3,195 v 3,408); +MVRR (3,397 s, its
+second reproduction) / −ncc (92 s-margin coin).** Across the two
+same-deal A/Bs the speed change converted in-gate: MVRR (twice),
+RoundRobin_n17 (3,244 s), bp4_BC012 (3,393 s), manthey (3,330 s,
+kissat-only FIRST-EVER), plus m29 (3,260 s) and bwo_bit29 (3,489 s) on
+the 08-17 comparison — all near-wall cells the old engine cannot reach.
+
+**Measurement rules going forward:** (1) same-deal paired arms are the
+only valid comparison (the frozen-snapshot method: build old commit in
+a git worktree, place binary in an untracked solver/00-*-snapshot dir
+with a no-op build.sh, add a temporary CONFIG_MAP entry — the entry is
+NOT committed; recreate on demand). (2) Absolute cross-day counts
+remain suspect until a quiet-host re-baseline; the pre-bug paired
+lineage stands at the 294-class with the S23 engine strictly faster.
 
 ## SESSION 22 (2026-08-16/17) — band-2 dive latch PROMOTED (gate PASS 292 v 291): the 16x16 miter class now runs kissat-parity restarts; miter conversions banked standalone, in-gate blocked only by contention wall
 
