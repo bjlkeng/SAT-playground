@@ -647,11 +647,45 @@ enum BinaryImplications {
         offsets: Vec<u32>,
         dirty: bool,
     },
+    /// SESSION 25: pooled per-literal edge lists over ONE shared arena
+    /// (WatchPool design: per-list start/len/cap, relocate-with-doubling on
+    /// overflow). edges_for stays a single contiguous slice, per-list order
+    /// and contents evolve byte-identically to Nested (push appends at the
+    /// list end; relocation copies in order), so trajectories are unchanged —
+    /// only addresses and cache behavior differ. Replaces the per-list heap
+    /// Vec pointer-chase that scattered the binary graph across the
+    /// allocator.
+    Pool {
+        data: Vec<BinaryEdge>,
+        meta: Vec<BinMeta>,
+        wasted: usize,
+    },
 }
+
+#[derive(Clone, Copy, Debug, Default)]
+struct BinMeta {
+    start: usize,
+    len: u32,
+    cap: u32,
+}
+
+const BIN_POOL_MIN_CAP: u32 = 4;
+const BIN_POOL_PAD: BinaryEdge = BinaryEdge {
+    implied: 0,
+    clause_id: BinaryClauseId(u32::MAX),
+};
 
 impl BinaryImplications {
     fn nested(lit_count: usize) -> Self {
         Self::Nested(vec![Vec::new(); lit_count])
+    }
+
+    fn pool(lit_count: usize) -> Self {
+        Self::Pool {
+            data: Vec::new(),
+            meta: vec![BinMeta::default(); lit_count],
+            wasted: 0,
+        }
     }
 
     fn lit_index(lit: i32) -> usize {
@@ -669,6 +703,12 @@ impl BinaryImplications {
                 };
                 let end = offsets.get(idx + 1).copied().unwrap_or(edges.len() as u32);
                 &edges[start as usize..end as usize]
+            }
+            Self::Pool { data, meta, .. } => {
+                let Some(m) = meta.get(idx) else {
+                    return &[];
+                };
+                &data[m.start..m.start + m.len as usize]
             }
         }
     }
@@ -708,6 +748,32 @@ impl BinaryImplications {
                 }
                 *dirty = true;
             }
+            Self::Pool { data, meta, wasted } => {
+                if idx >= meta.len() {
+                    meta.resize(idx + 1, BinMeta::default());
+                }
+                let m = meta[idx];
+                if (m.len as usize) < m.cap as usize {
+                    data[m.start + m.len as usize] = edge;
+                    meta[idx].len += 1;
+                } else {
+                    // relocate to the arena end with doubled capacity,
+                    // copying entries in order (list contents unchanged).
+                    let new_cap = (m.cap as usize * 2).max(BIN_POOL_MIN_CAP as usize);
+                    let new_start = data.len();
+                    data.resize(new_start + new_cap, BIN_POOL_PAD);
+                    for i in 0..m.len as usize {
+                        data[new_start + i] = data[m.start + i];
+                    }
+                    data[new_start + m.len as usize] = edge;
+                    *wasted += m.cap as usize;
+                    meta[idx] = BinMeta {
+                        start: new_start,
+                        len: m.len + 1,
+                        cap: new_cap as u32,
+                    };
+                }
+            }
         }
     }
 
@@ -734,6 +800,12 @@ impl BinaryImplications {
                 };
                 let end = offsets.get(idx + 1).copied().unwrap_or(edges.len() as u32);
                 &mut edges[start as usize..end as usize]
+            }
+            Self::Pool { data, meta, .. } => {
+                let Some(m) = meta.get(idx) else {
+                    return;
+                };
+                &mut data[m.start..m.start + m.len as usize]
             }
         };
         for edge in list {
@@ -2311,6 +2383,9 @@ struct Solver {
     restart_dive_min_collapse: f64,
     restart_dive_max_binfrac: f64,
     restart_dive_armed: bool,
+    /// SESSION 25: trail reuse on focused restarts for dive-latched cells
+    /// (SAT_DIVE_REUSE_TRAIL).
+    dive_reuse_trail: bool,
     /// SESSION 22: second structural band (small gate-circuit miters)
     restart_dive2_enabled: bool,
     /// parse-time original clause count for the dive-collapse ratio
@@ -4182,10 +4257,16 @@ impl Solver {
             reason: vec![NO_REASON; num_vars + 1],
             binary_reason_lits: Vec::new(),
             binary_clauses: Vec::new(),
-            binary_implications: if lean_giant {
-                BinaryImplications::Nested(Vec::new())
+            binary_implications: if !env_bool_or_default("SAT_BIN_POOL", false) {
+                if lean_giant {
+                    BinaryImplications::Nested(Vec::new())
+                } else {
+                    BinaryImplications::nested(num_vars.saturating_mul(2))
+                }
+            } else if lean_giant {
+                BinaryImplications::pool(0)
             } else {
-                BinaryImplications::nested(num_vars.saturating_mul(2))
+                BinaryImplications::pool(num_vars.saturating_mul(2))
             },
             binary_id_by_clause: Vec::new(),
             hotloop_ptr_fast: env_bool_or_default("SAT_HOTLOOP_PTR", true),
@@ -4252,6 +4333,9 @@ impl Solver {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.85),
             restart_dive_armed: false,
+            dive_reuse_trail: std::env::var("SAT_DIVE_REUSE_TRAIL")
+                .map(|s| s == "on")
+                .unwrap_or(false),
             restart_dive2_enabled: std::env::var("SAT_RESTART_DIVE2")
                 .map(|s| s == "on")
                 .unwrap_or(true),
@@ -10103,9 +10187,19 @@ impl Solver {
             return 0;
         }
 
+        // SESSION 25: dive-latched cells (kissat-parity floor-2 restarts,
+        // 15-30x the shipped restart rate) reuse the agreeing trail prefix on
+        // focused restarts — the global form was parked in SESSION 16 as a
+        // bench-wash, but under the latch cadence the re-propagation waste
+        // dominates (m29: 191 props/conflict vs kissat 107; with reuse
+        // 2,085 -> 1,823 s / 9.04M -> 8.59M conflicts, ob_19_4 1,008 ->
+        // 930 s). Out-of-band cells never arm and stay bit-identical.
+        let dive_reuse = self.dive_reuse_trail
+            && (self.stats.restart_dive_armed_at > 0 || self.stats.restart_dive2_armed_at > 0);
+
         match self.search_mode {
             SearchMode::Focused => {
-                if !self.restart_reuse_trail_focused {
+                if !self.restart_reuse_trail_focused && !dive_reuse {
                     return 0;
                 }
                 if !self.vmtf_branching_active() {
@@ -10114,7 +10208,7 @@ impl Solver {
                 self.reuse_focused_trail_level(current_level)
             }
             SearchMode::Stable => {
-                if !self.restart_reuse_trail_stable {
+                if !self.restart_reuse_trail_stable && !dive_reuse {
                     return 0;
                 }
                 self.reuse_stable_trail_level(current_level)
@@ -11573,8 +11667,14 @@ impl Solver {
             self.watchers.resize(n2, Vec::new());
         }
         self.n_occ.resize(n2, 0);
-        if let BinaryImplications::Nested(edges) = &mut self.binary_implications {
-            edges.resize(n2, Vec::new());
+        match &mut self.binary_implications {
+            BinaryImplications::Nested(edges) => edges.resize(n2, Vec::new()),
+            BinaryImplications::Pool { meta, .. } => {
+                if meta.len() < n2 {
+                    meta.resize(n2, BinMeta::default());
+                }
+            }
+            BinaryImplications::Flat { .. } => {}
         }
         if let Some(queue) = self.vmtf_queue.as_mut() {
             queue.grow(new_num_vars);
