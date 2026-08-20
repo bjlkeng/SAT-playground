@@ -11,6 +11,27 @@ closed), then "SESSION 23" (engine speed — the lit_vals mirror),
 20 FINAL VERDICT", then "SESSION 19" (sweepcount), then "RANKED PLAN",
 then "Standing traps".
 
+## SESSION 24 FINAL (2026-08-20) — CLEAN RE-BASELINE 294/400 CONFIRMED with the strongest cell composition ever recorded; elimination-flag vein closed
+
+**The clean single-arm quiet re-baseline
+(log/abtest-clean-2026-08-19-21-00-35): 294/400** — matching the
+best-ever count with, for the FIRST time, every promoted capability on
+one deal simultaneously: ob_19_4 1,396 s (S21 latch), **both S22 miters
+in-gate (m29 3,389 s, bwo_bit29 3,283 s)**, manthey 3,248 s (S23 speed
+capture), MVRR 3,365 s, RoundRobin_n17 2,999 s, bp4_BC012 3,195 s,
+dislog 2,424 s, sqrt169, full TT bank (TT395 129 s / TT496 1,108 s —
+bug-free). Head-to-head: ours 294 v kissat 294 same-suite, unique sets
+43 v 43; the kissat-only miter family is down from 9 to 7. The 285-289
+readings of 08-17/18 are CONFIRMED as bug + queue-pressure artifacts.
+
+Next-session lever prepped: **Flat binary-implication layout**
+(BinaryImplications::Flat exists, complete for reads, order-identical =
+trajectory-safe, but never constructed in production — Nested
+pointer-chase runs everywhere). Needs a hybrid overflow segment to cap
+Flat add_edge O(n) inserts for learned binaries. Expected 2-6% on
+binary-heavy cells; also SAT_BUMP_SORT_CACHE default-off (unmeasured
+recently). Combine with a re-profile after lit_vals.
+
 ## SESSION 24 NEGATIVES (2026-08-19) — the elimination-depth flag vein is CLOSED; three dead ends measured and recorded
 
 1. **Band-3 dive latch (myciel6/grs/mod4block): KILLED as gerrymander.**
