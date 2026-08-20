@@ -5,10 +5,41 @@ history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
 bodies were pruned earlier — full text in revisions up to 93ab682. Where this
 file contradicts an older revision, THIS file wins.
 
-**START HERE:** read "SESSION 23" (engine speed — the lit_vals mirror),
+**START HERE:** read "SESSION 24 NEGATIVES" (elimination-flag vein
+closed), then "SESSION 23" (engine speed — the lit_vals mirror),
 "SESSION 22" and "SESSION 21" (the dive-restart latches), then "SESSION
 20 FINAL VERDICT", then "SESSION 19" (sweepcount), then "RANKED PLAN",
 then "Standing traps".
+
+## SESSION 24 NEGATIVES (2026-08-19) — the elimination-depth flag vein is CLOSED; three dead ends measured and recorded
+
+1. **Band-3 dive latch (myciel6/grs/mod4block): KILLED as gerrymander.**
+   Trigger-time shapes are heterogeneous (myciel6 density 3.9, mod4block
+   206, grs 2.9; grs pre_binfrac is 0.299 not 0.09) and sted2 (the
+   never-perturb cell, 0.677/0.004) sits 0.007-collapse from myciel6
+   (0.658/0.011). No clean structural band exists. Do not retry without
+   a NEW discriminating axis.
+2. **Root gate-aware BVE (SAT_GATE_BVE_SCOPED): ALREADY DEFAULT-ACTIVE**
+   on small formulas via profile selection — plain-default runs show
+   gate_bve_scoped_adopted=1 (m29 e0=963 -> e1=1000 root elims). The
+   87-adopter full-bench scan measured the STATUS QUO, not a candidate.
+   Trap: config-struct literal defaults are NOT the shipped defaults;
+   check profile overrides before re-measuring any flag.
+3. **SAT_ELIM_DEF (kitten semantic definitions in armed rounds): DEAD as
+   default.** Full probes: uniqinv40prop still TIMEOUT (the definition
+   hammer does NOT crack the SESSION-20 flagship), RoundRobin_n18 still
+   TIMEOUT, m29 +5% conflicts (9.51M v 9.04M, no gain), HCP-446 rerolled
+   (23.5M v 21.9M, still SAT), bp4_BC012's apparent conversion is its
+   known near-wall trajectory (conflicts 8,749,492 digit-identical to
+   the speed-A/B gain — not an elim_def effect), and **dislog TIMED OUT
+   (fragile-bank kill)**. Default-off re-confirmed with fresh evidence.
+4. Elimination-depth conclusion: the m29 57% v kissat 74% gap is NOT
+   closable by existing flags (root gates on, armed ext-gates on,
+   definitions harmful). kissat's depth comes from its
+   eliminate/substitute/vivify whole-loop interleave — the ranked
+   sweep-port arc, not a knob. BVE-reject trace confirms 100% of
+   rejections are the resolvent-count bound (SAT_TRACE_PREPROCESS_DETAILS
+   elim_round lines: reject_count_bound=all, clslim/defcap/budget=0).
 
 ## SESSION 23 (2026-08-17/18) — lit_vals per-literal value mirror PROMOTED (~9% engine speedup, trajectories digit-exact); SESSION 22's banked miters CONVERTED IN-GATE (m29 3,260 s, bwo_bit29 3,489 s, both first-ever)
 
