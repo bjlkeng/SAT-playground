@@ -2583,6 +2583,28 @@ struct Solver {
     /// there (kissat times out on TT406 with --eliminatebound=0). Separate knob
     /// from the yield scope so each class gates independently.
     elim_bound_complete_decision: bool,
+    /// SAT_ELIM_BOUND_DIVE2 (default off groundwork, SESSION 26): kissat-parity
+    /// COMPLETE-round bound escalation scoped to BAND-2 DIVE-LATCHED formulas
+    /// (the 16x16 miter / sorting-network shape, `restart_dive2_armed_at > 0`).
+    /// Causal evidence (2026-08-21, m29 @2.5M-conflict horizon): kissat
+    /// default eliminates 73% of vars; kissat --eliminatebound=0 drops to 46%
+    /// = exactly our shipped 47%, with props 270M -> 571M (2.1x) and wall
+    /// +30% — the doubling additional-clauses bound IS kissat's elimination
+    /// depth on this class (definitions are worth only ~5pp). Our shipped
+    /// zero-yield-only rule stalls the armed bound at 0-2 through 2.2M
+    /// conflicts on m29 (trace: 8 rounds, 16k cumulative count-bound rejects,
+    /// effort budget never exhausted). The 2026-07-18 escalation negatives
+    /// (QG7/Pancake density class +96% conflicts, TT406/TT492 wash) are all
+    /// OUT of band 2 by construction; the only solved in-band cell that runs
+    /// armed rounds is PancakeVsSelection_6_6 (screened).
+    elim_bound_dive2: bool,
+    /// SAT_ELIM_BOUND_DIVE2_MAX (default 16 = kissat eliminatebound): cap for
+    /// the dive2-scoped escalation. The 2026-08-21 m29 standalone pair showed
+    /// bound 16 densifies (+43% post-elim literals) and REROLLS m29 worse
+    /// (8.59M -> 10.16M conflicts) while bwo_bit29 improves 25%; the trace
+    /// shows most of the depth (1,458 of 1,661 eliminations) is already
+    /// reached at bound 8, so a lower cap is the densification hedge.
+    elim_bound_dive2_max: isize,
     /// SAT_ELIM_UNARMED (default off): unarmed formulas also run the bounded
     /// mid-search elimination in their inprocess rounds (kissat parity — kissat
     /// eliminates on every formula; measured g2: kissat 88% eliminated, our
@@ -4449,6 +4471,12 @@ impl Solver {
                 "SAT_ELIM_BOUND_COMPLETE_DECISION",
                 false,
             ),
+            elim_bound_dive2: env_bool_or_default("SAT_ELIM_BOUND_DIVE2", false),
+            elim_bound_dive2_max: std::env::var("SAT_ELIM_BOUND_DIVE2_MAX")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&v: &isize| (1..=16).contains(&v))
+                .unwrap_or(16),
             elim_unarmed: env_bool_or_default("SAT_ELIM_UNARMED", false),
             congruence_fastidx: env_bool_or_default("SAT_CONGRUENCE_FASTIDX", true),
             elim_unarmed_flywheel: env_bool_or_default("SAT_ELIM_UNARMED_FLYWHEEL", false),
@@ -11470,17 +11498,26 @@ impl Solver {
                 // (vex, oski, ibm — the wire cells) and decision-armed (Timetable)
                 // trajectories stay byte-identical to shipped.
                 let complete_scope = (self.elim_bound_complete && self.yield_search_armed)
-                    || (self.elim_bound_complete_decision && self.decision_search_armed);
+                    || (self.elim_bound_complete_decision && self.decision_search_armed)
+                    || (self.elim_bound_dive2 && self.stats.restart_dive2_armed_at > 0);
                 let escalate = if complete_scope {
                     !self.preprocess_budget_exhausted
                 } else {
                     self.stats.preprocess_eliminated_vars == eliminated_before
                 };
                 if escalate {
+                    // The dive2 scope carries its own cap (SAT_ELIM_BOUND_DIVE2_MAX,
+                    // densification hedge); the other scopes keep the kissat max.
+                    let max_bound = if self.elim_bound_dive2 && self.stats.restart_dive2_armed_at > 0
+                    {
+                        self.elim_bound_dive2_max.min(ARMED_BVE_BOUND_MAX)
+                    } else {
+                        ARMED_BVE_BOUND_MAX
+                    };
                     self.armed_bve_bound = if self.armed_bve_bound == 0 {
                         1
                     } else {
-                        (self.armed_bve_bound * 2).min(ARMED_BVE_BOUND_MAX)
+                        (self.armed_bve_bound * 2).min(max_bound)
                     };
                 }
             } else {
@@ -23592,6 +23629,45 @@ mod tests {
         assert!(s.unarmed_elim_flywheel_round(&mut proof));
         assert!(s.unarmed_elim_stopped, "second dry round at max bound stops the schedule");
         assert!(!s.should_unarmed_elim_flywheel());
+    }
+
+    #[test]
+    fn elim_bound_dive2_escalates_on_complete_round_with_yield() {
+        // SESSION 26 scope: a band-2 dive-latched armed formula escalates the
+        // armed BVE bound after a COMPLETE round even when the round yielded
+        // eliminations (the kissat set_next_elimination_bound rule); the
+        // shipped zero-yield-only rule keeps the bound at 0 on trickle-yield
+        // rounds. var 1 (1 pos / 1 neg occurrence) is eliminable at bound 0,
+        // so the round below always yields >= 1.
+        let cfg = SolverConfig {
+            inprocess: true,
+            congruence: false,
+            vivify: false,
+            els: false,
+            ..Default::default()
+        };
+        for (flag, latched, expect_bound) in
+            [(false, true, 0), (true, false, 0), (true, true, 1)]
+        {
+            let mut s =
+                make_solver_with_config(4, vec![vec![1, 2], vec![-1, 3], vec![2, 3, 4]], &cfg);
+            s.sweep = false;
+            s.use_elim = true;
+            s.inprocess_aggressive = true;
+            s.elim_armed_bounds = true;
+            s.elim_bound_dive2 = flag;
+            s.stats.restart_dive2_armed_at = if latched { 1 } else { 0 };
+            let mut proof = ProofLog::disabled();
+            assert!(s.inprocess_round_pass(&mut proof, &cfg));
+            assert!(
+                s.stats.preprocess_eliminated_vars > 0,
+                "round must yield at least one elimination for the test to discriminate"
+            );
+            assert_eq!(
+                s.armed_bve_bound, expect_bound,
+                "flag={flag} latched={latched}: dive2 complete-round escalation"
+            );
+        }
     }
 
     #[test]
