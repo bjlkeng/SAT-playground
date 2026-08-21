@@ -5,11 +5,30 @@ history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
 bodies were pruned earlier — full text in revisions up to 93ab682. Where this
 file contradicts an older revision, THIS file wins.
 
-**START HERE:** read "SESSION 24 NEGATIVES" (elimination-flag vein
-closed), then "SESSION 23" (engine speed — the lit_vals mirror),
+**START HERE:** read "SESSION 25" (dive-scoped trail reuse PROMOTED),
+then "SESSION 24 NEGATIVES" (elimination-flag vein closed), then "SESSION 23" (engine speed — the lit_vals mirror),
 "SESSION 22" and "SESSION 21" (the dive-restart latches), then "SESSION
 20 FINAL VERDICT", then "SESSION 19" (sweepcount), then "RANKED PLAN",
 then "Standing traps".
+
+## SESSION 25 (2026-08-20/21) — dive-scoped trail reuse PROMOTED: gate WIN 292 v 290 (+3/−1, m29 captured IN-BAND); the S16-parked lever revived for the floor-2 latch classes
+
+Speed-round follow-ups measured: pooled binary-implication arena
+(WatchPool design, order-identical) = NULL (−0.8% on rbsat; Nested
+per-list Vecs are parse-order-localized already; banked default-off as
+SAT_BIN_POOL), watch min-cap 16 = null. The WIN: the dive latches
+restart every ~30 conflicts, so trail re-propagation dominates
+(m29 191 props/conf v kissat 107). SAT_DIVE_REUSE_TRAIL=on (now
+default) enables reuse on focused AND stable restarts for latched cells
+only — the focused-only form measured a wash; the both-mode form
+reproduces the global-reuse trajectories DIGIT-EXACT (m29 8,588,278,
+ob19 3,173,688). Standalone: m29 −9-13% wall −5% conflicts, bwo_bit29
+3,283 -> 2,069 s, ob_19_4 -> 930-979 s. Gate
+log/abtest-reuse-vs-base-2026-08-20-19-30-08: WIN 292 v 290, PASS,
++m29 (in-band, 3,317 s in-gate) +cfi-rigid-t2/+ncc coins −RR_n17 coin,
+6 in-band conflict-diff cells only. WATCH: m29/bwo reuse-proofs hit
+verify=checker-timeout under gate load (valid proofs, drat budget) —
+the standing proof-size watch now covers the miter class.
 
 ## SESSION 24 FINAL (2026-08-20) — CLEAN RE-BASELINE 294/400 CONFIRMED with the strongest cell composition ever recorded; elimination-flag vein closed
 

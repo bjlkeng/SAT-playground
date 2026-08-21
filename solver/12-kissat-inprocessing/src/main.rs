@@ -4335,7 +4335,7 @@ impl Solver {
             restart_dive_armed: false,
             dive_reuse_trail: std::env::var("SAT_DIVE_REUSE_TRAIL")
                 .map(|s| s == "on")
-                .unwrap_or(false),
+                .unwrap_or(true),
             restart_dive2_enabled: std::env::var("SAT_RESTART_DIVE2")
                 .map(|s| s == "on")
                 .unwrap_or(true),

@@ -15,6 +15,28 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **Full-bench default promotion (2026-08-21, SESSION 25): dive-scoped
+> trail reuse (`SAT_DIVE_REUSE_TRAIL=on` by default).** The dive latches
+> (SESSIONS 21/22) restart every ~30 conflicts — 15-30x the shipped
+> cadence — so re-propagating the shared trail prefix dominates their
+> wall (m29: 191 props/conflict vs kissat 107). Trail reuse on restarts
+> (parked as a global bench-wash in SESSION 16, long before this class
+> existed) is now enabled exactly for dive-latched cells, both search
+> modes; out-of-band cells never arm and stay bit-identical (rbsat
+> fingerprint digit-exact env on/off). Standalone: m29 2,085 ->
+> 1,823-1,998 s / 9.04M -> 8.59M conflicts, bwo_bit29 3,283 -> 2,069 s,
+> ob_19_4 1,008 -> 930-979 s. **Gate 2026-08-20
+> (`log/abtest-reuse-vs-base-2026-08-20-19-30-08`, 3600 s/16 GB/32
+> cores): WIN 292/400 v 290, +3/−1 (m29 gained IN-BAND at 3,317 s with
+> conflicts digit-exact to the probe trajectory; cfi-rigid-t2 + ncc
+> coin gains; RoundRobin_n17 coin loss at 326 s baseline margin —
+> documented flipper family), promotion_gate=PASS, zero correctness
+> failures, only the 6 in-band cells conflict-differ.** Watch item: the
+> reuse trajectories keep m29/bwo proofs near the in-gate drat budget
+> (verify=checker-timeout under load; proofs are valid — ob_19_4's
+> verified 899 s quiet). Free riders (inert): SAT_BIN_POOL pooled
+> binary-implication arena (measured −0.8% null, default off).
+
 > **Engine promotion (2026-08-18, SESSION 23): per-literal value mirror
 > (`lit_vals`, kissat values[] parity) — ~9% engine speedup, trajectories
 > digit-exact; first-ever IN-GATE conversions of the band-2 miters.**
