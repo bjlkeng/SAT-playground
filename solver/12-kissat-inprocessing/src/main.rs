@@ -2602,6 +2602,22 @@ struct Solver {
     /// OUT of band 2 by construction; the only solved in-band cell that runs
     /// armed rounds is PancakeVsSelection_6_6 (screened).
     elim_bound_dive2: bool,
+    /// SAT_ELIM_BOUND_COMPLETE_ALL (SESSION 27, default off groundwork):
+    /// kissat-parity COMPLETE-round bound escalation for EVERY armed
+    /// elimination round regardless of arming path — the full
+    /// set_next_elimination_bound semantics. The narrower scopes
+    /// (yield-armed / decision-armed / dive2) date from eras when the
+    /// mechanism was unvalidated; the 2026-08-22 kissat ablation map shows
+    /// the b18 BMC class (congruence-armed here, so NO existing scope
+    /// covers it) needs elimination depth outright (kissat --eliminate=0
+    /// = TIMEOUT from 375 s), and b18's armed trace reproduces the S26
+    /// stall verbatim (bve_grow=0 through 1.5M conflicts, 523k count-bound
+    /// rejects, trickle yield every round). Values: 0 = off, 1 = every armed
+    /// round ("on", pure kissat parity), 2 = every armed round EXCEPT
+    /// decision-armed ("nodecision" — shields the Timetable bank from the
+    /// 2026-07-18 TT406/TT492 trade while the BMC/congruence-armed class
+    /// still escalates).
+    elim_bound_complete_all: u8,
     /// SAT_ELIM_BOUND_DIVE2_MAX (default 16 = kissat eliminatebound): cap for
     /// the dive2-scoped escalation. The 2026-08-21 m29 standalone pair showed
     /// bound 16 densifies (+43% post-elim literals) and REROLLS m29 worse
@@ -2645,6 +2661,19 @@ struct Solver {
     /// The bound counter is separate from `armed_bve_bound` so a formula that
     /// arms later starts the armed schedule exactly as shipped.
     elim_unarmed_flywheel: bool,
+    /// SAT_UNARMED_FLYWHEEL_VIVIFY (default on; only read while the flywheel
+    /// itself is on): flywheel rounds run a vivify pass after the bounded
+    /// eliminate, waiving the 6M-conflict learned-vivify delay for the
+    /// never-armed class. Kissat ablation map 2026-08-22: novivify costs
+    /// kissat 1.9-3.0x on the flywheel target cells.
+    unarmed_flywheel_vivify: bool,
+    /// SAT_UNARMED_FLYWHEEL_MAX_BINFRAC (default 0.90): parse-time binary-
+    /// fraction ceiling for flywheel rounds. The deep-unarmed SAT-lottery
+    /// walk bank (rbsat/ITC/fsf/tto_zp/lockchart/RoundRobin families) all
+    /// carry pre_binfrac >= 0.96 (SESSION 21 truth) and must keep their
+    /// walk-era trajectories; the flywheel's structured-UNSAT targets sit
+    /// well below the ceiling.
+    unarmed_flywheel_max_binfrac: f64,
     /// current escalation bound for unarmed flywheel eliminate rounds
     unarmed_bve_bound: isize,
     /// next conflicts checkpoint for an unarmed flywheel eliminate round
@@ -4476,6 +4505,14 @@ impl Solver {
                 false,
             ),
             elim_bound_dive2: env_bool_or_default("SAT_ELIM_BOUND_DIVE2", true),
+            elim_bound_complete_all: match std::env::var("SAT_ELIM_BOUND_COMPLETE_ALL")
+                .unwrap_or_default()
+                .as_str()
+            {
+                "on" | "true" | "1" | "all" => 1,
+                "nodecision" => 2,
+                _ => 0,
+            },
             elim_bound_dive2_max: std::env::var("SAT_ELIM_BOUND_DIVE2_MAX")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -4484,6 +4521,12 @@ impl Solver {
             elim_unarmed: env_bool_or_default("SAT_ELIM_UNARMED", false),
             congruence_fastidx: env_bool_or_default("SAT_CONGRUENCE_FASTIDX", true),
             elim_unarmed_flywheel: env_bool_or_default("SAT_ELIM_UNARMED_FLYWHEEL", false),
+            unarmed_flywheel_vivify: env_bool_or_default("SAT_UNARMED_FLYWHEEL_VIVIFY", true),
+            unarmed_flywheel_max_binfrac: std::env::var("SAT_UNARMED_FLYWHEEL_MAX_BINFRAC")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&v: &f64| (0.0..=1.0).contains(&v))
+                .unwrap_or(0.90),
             unarmed_bve_bound: 0,
             unarmed_elim_next_conflicts: 0,
             unarmed_elim_last_search_ticks: 0,
@@ -11501,7 +11544,9 @@ impl Solver {
                 // formulas (density/refutation-churn class): root/congruence-armed
                 // (vex, oski, ibm — the wire cells) and decision-armed (Timetable)
                 // trajectories stay byte-identical to shipped.
-                let complete_scope = (self.elim_bound_complete && self.yield_search_armed)
+                let complete_scope = (self.elim_bound_complete_all == 1)
+                    || (self.elim_bound_complete_all == 2 && !self.decision_search_armed)
+                    || (self.elim_bound_complete && self.yield_search_armed)
                     || (self.elim_bound_complete_decision && self.decision_search_armed)
                     || (self.elim_bound_dive2 && self.stats.restart_dive2_armed_at > 0);
                 let escalate = if complete_scope {
@@ -11573,6 +11618,19 @@ impl Solver {
         {
             return false;
         }
+        // SESSION 27 structural protection for the SAT-lottery walk bank: the
+        // deep-unarmed SAT families (rbsat/ITC/fsf/tto_zp/lockchart/RoundRobin
+        // class) all carry parse-time binary fraction >= 0.96 (the SESSION 21
+        // dive-band truth), while the flywheel's target class — the unarmed
+        // structured-UNSAT cells kissat cracks with eliminate+vivify (b18,
+        // goldcrest, SAT_dat.k100, x-epic, oisc, fixedbandwidth, ncc; kissat
+        // ablation map 2026-08-22: noelim TIMEOUT on b18, novivify 2-3x on
+        // fixedbandwidth/ncc/goldcrest/oisc) — sits well below it. Formulas at
+        // or above the ceiling never run a flywheel round and keep their
+        // walk-era trajectories byte-identical.
+        if self.pre_preprocess_formula_class.binary_fraction >= self.unarmed_flywheel_max_binfrac {
+            return false;
+        }
         // Near-complete phase prefixes signal a SAT trajectory close to a model;
         // never rewrite the formula under it (shared guard with sweep/congruence).
         if self.should_skip_sweep_for_deep_phase() {
@@ -11613,7 +11671,7 @@ impl Solver {
         self.unarmed_elim_last_search_ticks = self.stats.search_ticks;
         let eliminated_before = self.stats.preprocess_eliminated_vars;
         self.unarmed_flywheel_round_active = true;
-        let ok = self.eliminate(true, proof_log);
+        let mut ok = self.eliminate(true, proof_log);
         self.unarmed_flywheel_round_active = false;
         self.bve_grow = saved_grow;
         self.eliminate_ticks_budget = saved_ticks_budget;
@@ -11649,6 +11707,21 @@ impl Solver {
                 self.unarmed_elim_dry_rounds,
                 self.unarmed_elim_stopped,
             );
+        }
+        // SESSION 27: kissat vivifies EVERY formula on its probe interval; our
+        // unarmed cells otherwise wait for the 6M-conflict learned-vivify
+        // delay, which the flywheel's target class (BMC/step structured UNSAT,
+        // ~2-4k conflicts/s here) never reaches inside the wall. The kissat
+        // ablation map (2026-08-22) shows novivify costing kissat 1.9-3.0x on
+        // exactly these cells (fixedbandwidth 3.0x, ncc 2.6x, goldcrest 2.0x,
+        // oisc 2.0x, b18 1.9x). Run vivify AFTER eliminate so it strengthens
+        // the escalated-bound resolvents (the S26 densification) too. The
+        // flywheel's own scope guards (never-armed, >= inprocess point,
+        // dec/conf > 3, binfrac ceiling, deep-phase) already bound the blast
+        // radius; SAT_UNARMED_FLYWHEEL_VIVIFY=off restores the eliminate-only
+        // round.
+        if ok && self.unarmed_flywheel_vivify && self.vivify {
+            ok = self.vivify_round(proof_log);
         }
         ok
     }
