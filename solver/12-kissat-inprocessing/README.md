@@ -15,6 +15,49 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **Full-bench default promotion (2026-08-22, SESSION 26): dive2-scoped
+> kissat elimination-bound escalation (`SAT_ELIM_BOUND_DIVE2=on` by
+> default).** Causal find of the session (m29, paired 2.5M-conflict
+> horizons, host = 36-core dual-socket Xeon Gold 6154 / 512 GB): our
+> whole miter wall gap vs kissat is props/conflict, and props-per-
+> active-var is IDENTICAL — the gap is elimination depth (we 47%,
+> kissat 73%). Kissat's own ablation pins the cause: with
+> `--eliminatebound=0` kissat drops to 46% eliminated (= exactly our
+> 47%) with 2.1x props and +30% wall, while `--definitions=0` costs it
+> only ~5pp — **the doubling additional-clauses bound
+> (`set_next_elimination_bound`) IS kissat's elimination depth on this
+> class.** Our armed bound stalled at 0-2 forever because the shipped
+> rule escalates only on zero-yield rounds and miters trickle-yield
+> every round. The promoted scope: COMPLETE-round escalation
+> (0→1→2→4→8→16, effort-budget-complete rounds, kissat parity) for
+> BAND-2 DIVE-LATCHED formulas only — the 2026-07-18 escalation
+> casualties (QG7/Pancake yield-armed, TT decision-armed) are out of
+> band by construction, and BubbleVsPancake_7_6 (S15 capture) does not
+> latch (pre_binfrac 0.283 < 0.30 floor). Standalone paired screens:
+> bwo_bit29 1,550 s/7.31M v 2,008 s/8.46M (−23% wall, −14% conflicts),
+> dmu28 UNSAT 1,970 s FIRST-EVER (S22: "does not convert even quiet"),
+> m29 2,269 s/10.16M v 1,959 s/8.59M (deterministic in-band reroll
+> loss; max-bound 4/8 hedges measured no rescue), PvS_6_6 308 v 180 s
+> (3,290 s margin). **Gate 2026-08-21
+> (`log/abtest-dive2elim-vs-base-2026-08-21-12-43-45`, 400x2 @ 3600 s/
+> 16 GB/32 NUMA-balanced cores): WIN 291/400 v 288, promotion_gate=
+> PASS, zero correctness failures, zero contradictions, PAR-2 975,122 v
+> 985,472. 285 of 286 both-solved cells conflict-IDENTICAL (the only
+> diff: PvS_6_6 +1.47M conf, solved 412 s). Mechanism cells: +dmu28
+> (UNSAT 2,528 s, 1,072 s margin, FIRST-EVER, conflicts digit-exact to
+> the screen), +bwo_bit29 (3,035 s, digit-exact), +sqrt-mitern169
+> (3,600.0 s at-wall convert), −m29 (in-band reroll; remains in-band
+> upside on quiet deals). Coins: +MVRR_n14 +ncc −bp4_BC012 (127 s
+> margin, documented family) = +1.** Depth mechanics: eliminated
+> 1,214→1,669 vars on m29, props −17%, post-elim literals +43%, per-
+> prop cost +22% — the win is FEWER conflicts on the collapsed formula
+> (bwo/dmu), not cheaper conflicts. Also measured and banked as
+> negatives this session: definitions dead even under bound 16 (+4
+> eliminations, defcap rejects all 8.3k found); vivify armed budget 3x
+> = trajectory-NULL on m29 (conflicts digit-identical at 5.4x
+> attempts). Kissat-only miter family: 7 → 5. Free rider (inert
+> hedge knob): `SAT_ELIM_BOUND_DIVE2_MAX` (default 16).
+
 > **Full-bench default promotion (2026-08-21, SESSION 25): dive-scoped
 > trail reuse (`SAT_DIVE_REUSE_TRAIL=on` by default).** The dive latches
 > (SESSIONS 21/22) restart every ~30 conflicts — 15-30x the shipped

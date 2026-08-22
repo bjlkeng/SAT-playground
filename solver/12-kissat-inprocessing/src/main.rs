@@ -2583,7 +2583,11 @@ struct Solver {
     /// there (kissat times out on TT406 with --eliminatebound=0). Separate knob
     /// from the yield scope so each class gates independently.
     elim_bound_complete_decision: bool,
-    /// SAT_ELIM_BOUND_DIVE2 (default off groundwork, SESSION 26): kissat-parity
+    /// SAT_ELIM_BOUND_DIVE2 (default ON since the SESSION 26 promotion,
+    /// gate PASS 291 v 288 — log/abtest-dive2elim-vs-base-2026-08-21-12-43-45:
+    /// +dmu28 FIRST-EVER 2,528 s, +bwo_bit29 3,035 s, +sqrt-mitern169, −m29
+    /// in-band reroll; 285/286 both-solved cells conflict-identical, the only
+    /// diff PancakeVsSelection_6_6 +1.47M conf at 412 s): kissat-parity
     /// COMPLETE-round bound escalation scoped to BAND-2 DIVE-LATCHED formulas
     /// (the 16x16 miter / sorting-network shape, `restart_dive2_armed_at > 0`).
     /// Causal evidence (2026-08-21, m29 @2.5M-conflict horizon): kissat
@@ -4471,7 +4475,7 @@ impl Solver {
                 "SAT_ELIM_BOUND_COMPLETE_DECISION",
                 false,
             ),
-            elim_bound_dive2: env_bool_or_default("SAT_ELIM_BOUND_DIVE2", false),
+            elim_bound_dive2: env_bool_or_default("SAT_ELIM_BOUND_DIVE2", true),
             elim_bound_dive2_max: std::env::var("SAT_ELIM_BOUND_DIVE2_MAX")
                 .ok()
                 .and_then(|s| s.parse().ok())

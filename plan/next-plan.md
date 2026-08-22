@@ -1,15 +1,73 @@
-# NEXT PLAN — 2026-08-16 (supersedes 2026-08-12b; PRUNED)
+# NEXT PLAN — 2026-08-22 (supersedes 2026-08-16; PRUNED)
 
 One-file plan for the next clear context. SESSIONS 4-13 bodies live in git
 history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
 bodies were pruned earlier — full text in revisions up to 93ab682. Where this
 file contradicts an older revision, THIS file wins.
 
-**START HERE:** read "SESSION 25" (dive-scoped trail reuse PROMOTED),
-then "SESSION 24 NEGATIVES" (elimination-flag vein closed), then "SESSION 23" (engine speed — the lit_vals mirror),
-"SESSION 22" and "SESSION 21" (the dive-restart latches), then "SESSION
-20 FINAL VERDICT", then "SESSION 19" (sweepcount), then "RANKED PLAN",
-then "Standing traps".
+**START HERE:** read "SESSION 26" (dive2-scoped elimination-bound
+escalation PROMOTED — the causal-ablation method that found it), then
+"SESSION 25" (dive-scoped trail reuse), then "SESSION 24 NEGATIVES",
+then "SESSION 23" (engine speed — the lit_vals mirror), "SESSION 22"
+and "SESSION 21" (the dive-restart latches), then "RANKED PLAN", then
+"Standing traps".
+
+## SESSION 26 (2026-08-21/22) — dive2-scoped kissat elimination-bound escalation PROMOTED: gate WIN 291 v 288 (PASS, zero correctness failures); dmu28 FIRST-EVER; the elimination-depth gap on miters is CLOSED at its root
+
+**The method that cracked it (reuse this): ablate KISSAT, not just us.**
+S24 closed the "elimination-flag vein" saying depth needed a whole-loop
+port. Wrong — one causal probe pair settled it in 10 minutes: at a paired
+2.5M-conflict horizon on m29, kissat `--eliminatebound=0` drops to 46%
+eliminated = EXACTLY our shipped 47%, props 2.1x, wall +30%;
+`--definitions=0` costs only ~5pp. The doubling additional-clauses bound
+(`set_next_elimination_bound`) IS kissat's depth. Our own machinery
+(SAT_ELIM_BOUND_COMPLETE, built 2026-07-18, default off after the
+QG7/Pancake/TT casualties) only needed the RIGHT SCOPE: the band-2 dive
+latch, which excludes every July casualty by construction. Second
+supporting identity: our props-per-active-var equals kissat's (0.147 v
+0.155/conf) — the whole miter props gap was active variables.
+
+**Shipped (9a6807e groundwork + promotion): `SAT_ELIM_BOUND_DIVE2=on`
+default.** COMPLETE-round escalation 0→1→2→4→8→16 for formulas with
+`restart_dive2_armed_at > 0`. Shipped zero-yield rule stalls at 0-2 on
+miters (trace: 8 rounds to 2.2M conflicts, 16k count-bound rejects,
+budget never exhausted). With escalation m29 eliminates 1,214→1,669 of
+2,575 vars (65%; kissat 73%), props −17%, post-elim literals +43%,
+per-prop +22% → wall FLAT at fixed conflicts; the win is trajectory
+(fewer conflicts on the collapsed formula).
+
+**Gate (`log/abtest-dive2elim-vs-base-2026-08-21-12-43-45`, 400x2 @
+3600 s/16 GB/32 NUMA-balanced): WIN 291 v 288, PASS, PAR-2 975,122 v
+985,472, zero contradictions. 285/286 both-solved conflict-IDENTICAL —
+the delta is exactly the band.** Mechanism: +dmu28 (UNSAT 2,528 s,
+1,072 s margin, FIRST-EVER anywhere; S22 verdict "does not convert even
+quiet" now dead), +bwo_bit29 (3,035 s; screen conflicts digit-exact
+7,308,747), +sqrt-mitern169 (3,600.0 s at-wall), −m29 (in-band
+deterministic reroll 8.59M→10.16M conf; keeps converting standalone
+2,269 s ⇒ in-band coin upside on quiet deals). Coins +MVRR +ncc
+−bp4_BC012 (127 s margin). PvS_6_6 the only conflict-diff both-solved
+cell (+1.47M conf, 412 s, 3,188 s margin). 4 checker-timeouts — the
+standing miter proof-size watch class, proofs valid.
+
+**Killed this session (do not re-run):**
+- Definitions under bound 16 (SAT_ELIM_DEF + DIVE2): +4 eliminations,
+  def_gate_eliminated=0, reject_defcap 8,318 — S24's dead verdict holds
+  in the new context too.
+- Bound caps 4/8 (SAT_ELIM_BOUND_DIVE2_MAX, knob banked in tree): no
+  m29 rescue (max4 2,710 s/9.60M; max8 timeout@4,000 under load) — 16
+  is the shape; m29's loss is trajectory reroll, not densification.
+- Vivify-throughput on miters: 3x armed budget = 5.4x attempts, 3.6x
+  strengthened, conflicts DIGIT-IDENTICAL (10,156,558) — vivify volume
+  is trajectory-null on this class; kissat's 179k vivified there is not
+  load-bearing. Closes ranked-lever "vivify throughput".
+- gdb -p sampling: blocked (ptrace_scope=1); run gdb as parent.
+
+**Band-2 membership truth (SAT_DEBUG_DIVE census, 2026-08-21):** all 12
+in-bench 16_16 miters latch; BvP_8_4/9_4/8_6 latch; **BvP_7_6 does NOT
+(pre_binfrac 0.283 < 0.30)** — the S15 capture is out of scope by
+construction; PvS_6_6 latches (the only solved armed in-band cell).
+Trap: the DIVE-CHECK line's second field is post-preprocess binfrac; the
+latch reads the THIRD (pre_binfrac). Timeout runs emit no stats JSON.
 
 ## SESSION 25 (2026-08-20/21) — dive-scoped trail reuse PROMOTED: gate WIN 292 v 290 (+3/−1, m29 captured IN-BAND); the S16-parked lever revived for the floor-2 latch classes
 
@@ -638,71 +696,67 @@ digit-exact both flag states.
   ON + root-pass scoping law (percent-mass decline-is-identity gates are the
   ONLY shippable root-pass shape). Full text: rev 416adae.
 
-## RANKED PLAN (2026-08-16)
+## RANKED PLAN (2026-08-22)
 
-SESSIONS 15-21 took the bench 279 → 294 with the gap to kissat now ~0 on
-paired deals (dive deal: we 294, kissat same-host 08-10 run 294; unique
-sets 43 v 43, both-timeout 63). The flag frontier is mined; SESSIONS 19
-and 21 prove the two productive shapes: NEW ENGINES (sweepcount) and
-SCOPED-PARITY LATCHES (dive-restart). Next leads, in order:
+SESSIONS 15-26 took the bench 279 → ~295-class. SESSION 26 proves a
+third productive shape besides NEW ENGINES (sweepcount) and
+SCOPED-PARITY LATCHES (dive-restart): **CAUSAL KISSAT ABLATION** — when
+a mechanism gap is suspected, ablate the corresponding kissat option at
+a paired conflict horizon BEFORE building anything; it converts
+"architecture, needs a port" hypotheses into knob-scope questions in
+minutes. Next leads, in order:
 
-1. **16x16 miter THROUGHPUT — PARTIALLY CASHED (SESSION 23: m29 + bwo
-   convert in-gate via the 9% engine speedup; residual ~3.6x kissat).** m29 numbers vs kissat:
-   191 props/conf v 107, 22.7k ticks/conf, 180k live learned clauses on
-   2.5k vars, eliminate 57% v 74%. **Reduce cadence measured FLAT
-   (SESSION 22b): the LbdTiered default interval is already 1000;
-   int300 harmful (3,637 s / 14.2M), int2000 trades fewer conflicts for
-   worse wall — do not re-probe reduce knobs.** Remaining levers
-   (band-2-scoped, zero out-of-band risk): deeper armed elimination
-   rounds (57% v 74% is the biggest structural delta), vivify
-   throughput, propagation micro-cost. Every ~800 s trimmed converts a
-   family member in-gate (m29/bwo at ~2,300-2,990 s across deals; dmu28
-   needs ~2x).
-2. **kissat factor.c port (bounded variable addition).** kissat factored
-   823 vars / 18,439 literals on oddball_19_4 for 0.06 s and factoring
-   fires broadly on cardinality-heavy encodings (oddball/Timetable/
-   lockchart classes all in the kissat-only set). We have NO factoring.
-   A faithful port is a new-engine arc with a measured target list; probe
-   yield on the kissat-only SAT cells before wiring into the default.
-3. **kissat sweep.c pair-mechanics port (uniqinv40-class).** Carried from
-   SESSION 20 (residual: whole-loop interleave; cascade dries ~10x short
-   of kissat's 3,799 equivalences). uniqinv40 (kissat 51 s) is the
-   acceptance test. Also re-screen the yield latch WITH the port.
-4. **Dive-band second discriminator (myciel6/grs class).** Both convert
-   under global parity (2,690 s / 3,391 s standalone) but sit OUTSIDE the
-   promoted band (myciel6 LBD 12, grs level 483). If a second clean
-   structural shape exists (myciel = graph coloring, grs = ?), a sibling
-   latch captures +2. Do NOT widen the existing band (VDW adjacent).
-5. **Medium-1800 re-baseline (bookkeeping, OVERDUE — seven promotions
-   since 74/100 at c469b03).** Standard medium A/B, current defaults vs
-   all-new-flags-off.
-6. **Checker-timeout proof-size watch (4 at-risk UNSAT solves).** Watch
-   only; dive adds one 875 MB proof (ob_19_4, verifies 899 s — fine).
-7. **Sweepcount generalization: PARKED** (this bench held only mchess_20;
-   revisit on a new bench). **Walk vein: CLOSED. Starved-BMC/XOR
-   recovery: CLOSED.**
+1. **Miter family residual (5 kissat-only left).** Elimination depth is
+   now CLOSED (65% v 73%, S26); trail reuse CLOSED (S25); cadence
+   CLOSED (S22); vivify volume measured trajectory-NULL (S26); reduce
+   cadence FLAT (S22b); definitions DEAD (S24+S26). The residual per-
+   conflict gap is ~1.55x props/conf (active vars 906 v 698 + DB size)
+   x ~1.35x per-prop (densified core). Next honest probes: (a) kissat
+   ablation of sweep/congruence ON THE REMAINING FAMILY members (not
+   m29), (b) the last 8pp of depth = kissat's definition extraction —
+   OUR defcap/kitten-env implementation differs from kissat
+   definition.c; a faithful re-port is the only untried piece. m29
+   re-conversion rides on any further wall trim (needs ~1.59x load
+   factor at 10.16M conf).
+2. **Dive-band second discriminator (myciel6/grs class).** Unchanged
+   from 08-16 (both convert under global parity standalone; need a NEW
+   structural axis — do NOT widen existing bands).
+3. **kissat sweep.c pair-mechanics port (uniqinv40-class).** Carried
+   from SESSION 20. NOTE: screen with a kissat `--sweep=0` /
+   `--congruence=0` causal ablation on uniqinv40 FIRST (the S26
+   method) to size the real prize before porting.
+4. **Medium-1800 re-baseline (bookkeeping, OVERDUE — eight promotions
+   since 74/100 at c469b03).**
+5. **Checker-timeout proof-size watch (now standing on the miter
+   class: 4 cells this gate, incl. dmu28/bwo).** Watch only; all
+   proofs valid, drat budget.
+6. **Sweepcount generalization: PARKED. Walk vein: CLOSED.
+   Starved-BMC/XOR recovery: CLOSED. factor.c: DONE (in tree since
+   S23-era; SC25 Timetable class is factoring-heavy).**
 
 ## Current state
 
-- HEAD: SESSION 22 promotion (band-2 dive latch default on). Freshest
-  deal: 292/400 (log/abtest-dive2-vs-base-2026-08-16-13-17-06/dive2/,
-  a low-variance deal — base scored 291 same deal). 294-class defaults.
-- SESSION 21 reference: **Full-bench 3600 s baseline: 294/400**
-  (freshest TSV = `log/abtest-dive-vs-base-2026-08-15-12-18-53/dive/results.tsv`).
-  kissat 4.0.4 reference: **294/400 same-host 2026-08-10**
-  (`log/kissat-full-20260810-073149/results.csv`) — **gap ≈ 0** (was −25
-  at 14b). Unique sets 43 v 43; both-timeout 63. Remaining kissat-only
-  families: 16x16 miters (9!), oddball residue (4: 24_4/26_4 + 2 tto_zp),
-  TT (2), lockchart (2), grs (2), pj (2), b18/b19 BMC (2), singletons
-  (rook-51, par32-2, cfi-rigid, oisc, ER_400, ...). Lineage: 261 → 271 →
-  277 → 280 → 286 → 290 → 292 → 293 (+mchess/dislog) → 294 (+ob_19_4),
+- HEAD: SESSION 26 promotion (dive2-scoped elimination-bound escalation
+  default on). Freshest deal: **291/400 v base 288 same deal**
+  (`log/abtest-dive2elim-vs-base-2026-08-21-12-43-45/dive2elim/results.tsv`)
+  — a weak deal for both arms (S24 clean re-baseline read 294); the
+  promoted class is ~295-296 on a median deal (294-class + net
+  mechanism +2).
+- kissat 4.0.4 reference: **294/400 same-host 2026-08-10**
+  (`log/kissat-full-20260810-073149/results.csv`). Remaining kissat-only
+  families after S26: 16x16 miters (5, was 7: dmu28/bwo29/sqrt169 out,
+  m29 back in), oddball residue (4), TT (2), lockchart (2), grs (2),
+  pj (2), b18/b19 BMC (2), singletons (rook-51, par32-2, cfi-rigid,
+  oisc, ER_400, uniqinv40, ...). Lineage: 261 → 271 → 277 → 280 → 286 →
+  290 → 292 → 293 → 294 → ~295-class (S26 +dmu28/+bwo/+sqrt169 −m29),
   all paired gated A/Bs.
-- Default surface SESSIONS 15-21: SAT_VIVIFY_DEDUCE=on + _ARMED_MIN=500k;
+- Default surface SESSIONS 15-26: SAT_VIVIFY_DEDUCE=on + _ARMED_MIN=500k;
   SAT_REPHASE_UNARMED_MIN=500_000; SAT_WALK_EFFORT_UNARMED=50;
   SAT_WALK_WARMUP_UNARMED=on; SAT_WALK_STALL_GIVEUP=16; SAT_SWEEPCOUNT=on;
   SAT_SWEEP_YIELD_ESCALATE=20 + SAT_SWEEP_YIELD_MIN_EQUIVS=1000;
-  **SAT_RESTART_DIVE=on (SESSION 21)**; SAT_BACKBONE=off; banded
-  sort/tier3/reuse knobs off (closed).
+  SAT_RESTART_DIVE=on (S21); SAT_RESTART_DIVE2=on (S22);
+  SAT_DIVE_REUSE_TRAIL=on (S25); **SAT_ELIM_BOUND_DIVE2=on (S26)**;
+  SAT_BACKBONE=off; banded sort/tier3/reuse knobs off (closed).
 - The deep-unarmed walk class is a managed LOTTERY SURFACE (unchanged);
   the global-restart-parity A/B is the freshest, sharpest measurement of
   that surface: +8/−16 on identical mechanisms. Judge walk members as
@@ -799,8 +853,15 @@ SCOPED-PARITY LATCHES (dive-restart). Next leads, in order:
 
 ## solver12's capability edge (protect in rerolls)
 
-New this session: **Circuit_multiplier24** (SAT 1917 s; kissat-only before),
-**BubbleVsPancakeSort_7_6** (UNSAT 2274 s, fat margin). Carried first-evers:
+New SESSION 26: **dmu28 = 16_16_default_mapped_ultra_and_and_dadda_mapped_bit28**
+(UNSAT 2,528 s in-gate, 1,072 s margin, FIRST-EVER), **bwo_bit29** and
+**sqrt-mitern169** (in-gate miter converts; sqrt169 at-wall). **m29 is now
+the in-band COIN** (converts standalone 2,269 s; needs a quiet deal
+in-gate) — do not read an m29 timeout as a capability loss while
+SAT_ELIM_BOUND_DIVE2 is on. Carried: **Circuit_multiplier24** (SAT 1917 s;
+kissat-only before), **BubbleVsPancakeSort_7_6** (UNSAT 2274 s, fat
+margin; does NOT latch band 2 — protected from dive2-scoped features by
+construction). Carried first-evers:
 MVRoundRobin_n14_d10_v2 (NOW A COIN — protect but expect flips),
 RoundRobin_n18_d15, at-least-two-vmpc_28, rphp5_050/085, clqcl_40/50_6_5 + 5
 cliquecoloring siblings (SAT_PHP_REFUTE, reroll-immune), xor_op x2
