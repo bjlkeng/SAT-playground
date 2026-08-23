@@ -326,7 +326,65 @@ pub(crate) fn prove_facts_budgeted_opts(
 
     // Candidate value for each var (its value in the first model) and whether it has been
     // observed with both polarities across models (=> not a backbone).
-    let mut models: Vec<Vec<bool>> = vec![env.model_snapshot()];
+    //
+    // SESSION 27b (2026-08-23): the model store is INCREMENTAL partition
+    // refinement instead of a Vec<Vec<bool>> of full snapshots. The legacy
+    // representation rescanned every stored model per backbone candidate and
+    // per equivalence PAIR (O(n^2 pairs x #models), with models growing on
+    // every successful flip) — a gdb-parent profile put 89% of
+    // bp4_BC012_CSO's 3,45x s wall (134/150 samples) inside this function,
+    // almost all of it in the `models.iter().all(..)` closures. The two
+    // questions the loops ever ask are (a) "does var agree with model 0 in
+    // every model" and (b) "is (m[a]==m[b]) == (m0[a]==m0[b]) in every
+    // model"; (b) is equivalent to sig(a) == sig(b) where sig(v) is v's
+    // value sequence XOR-normalized by its model-0 value. Both are O(1)
+    // against `same_as_m0` / `class_id`, refined in O(n) per new model —
+    // identical booleans at every decision point, so control flow, kitten
+    // call sequence, yields, and trajectories are bit-for-bit unchanged.
+    struct ModelClasses {
+        m0: Vec<bool>,
+        /// partition id of each var's XOR-normalized value signature
+        class_id: Vec<u32>,
+        /// var agrees with model 0 in every model seen so far
+        same_as_m0: Vec<bool>,
+    }
+    impl ModelClasses {
+        fn new(m0: Vec<bool>) -> Self {
+            let n = m0.len();
+            Self {
+                m0,
+                class_id: vec![0; n],
+                same_as_m0: vec![true; n],
+            }
+        }
+        fn add_model(&mut self, m: &[bool]) {
+            debug_assert_eq!(m.len(), self.m0.len());
+            // Refine the signature partition by this model's normalized bit.
+            // Ids are assigned in first-encounter order over the fixed 0..n
+            // scan, so the refinement is deterministic.
+            let mut map: crate::fxhash::FxHashMap<(u32, bool), u32> =
+                crate::fxhash::FxHashMap::default();
+            let mut next = 0u32;
+            for i in 0..self.class_id.len() {
+                let bit = m[i] != self.m0[i];
+                if bit {
+                    self.same_as_m0[i] = false;
+                }
+                let key = (self.class_id[i], bit);
+                let id = match map.get(&key) {
+                    Some(&id) => id,
+                    None => {
+                        let id = next;
+                        next += 1;
+                        map.insert(key, id);
+                        id
+                    }
+                };
+                self.class_id[i] = id;
+            }
+        }
+    }
+    let mut models = ModelClasses::new(env.model_snapshot());
     // Whether the kitten currently holds a full SAT model (flips are only
     // meaningful then; an UNSAT probe invalidates it until the next SAT).
     let mut model_valid = true;
@@ -348,16 +406,16 @@ pub(crate) fn prove_facts_budgeted_opts(
     while var <= n as i32 && solves < solve_budget {
         let idx = (var - 1) as usize;
         // Same value in all models?
-        let v0 = models[0][idx];
-        if !models.iter().all(|m| m[idx] == v0) {
+        if !models.same_as_m0[idx] {
             var += 1;
             continue;
         }
+        let v0 = models.m0[idx];
         // kissat kitten_flip parity (skip_transitive mode): a successful flip
         // is a FREE disproof — the model itself witnesses the candidate's
         // other polarity, and the flipped model prunes later candidates.
         if skip_transitive && model_valid && env.kitten.flip_literal(var as usize) {
-            models.push(env.model_snapshot());
+            models.add_model(&env.model_snapshot());
             var += 1;
             continue;
         }
@@ -370,7 +428,7 @@ pub(crate) fn prove_facts_budgeted_opts(
                 model_valid = false;
             }
             Some(KittenResult::Sat) => {
-                models.push(env.model_snapshot());
+                models.add_model(&env.model_snapshot());
                 model_valid = true;
             }
             None => return facts,
@@ -415,8 +473,10 @@ pub(crate) fn prove_facts_budgeted_opts(
                 }
                 // Determine the candidate relation from the first model, then require it
                 // to hold in ALL models; otherwise a,b cannot be equivalent.
-                let same0 = models[0][ai] == models[0][bi];
-                if !models.iter().all(|m| (m[ai] == m[bi]) == same0) {
+                // (Signature-partition equality is exactly "the model-0
+                // relation holds in every model" — see ModelClasses.)
+                let same0 = models.m0[ai] == models.m0[bi];
+                if models.class_id[ai] != models.class_id[bi] {
                     continue;
                 }
                 // kissat kitten_flip parity: try to flip either side first —
@@ -426,7 +486,7 @@ pub(crate) fn prove_facts_budgeted_opts(
                     if env.kitten.flip_literal(a as usize)
                         || env.kitten.flip_literal(b as usize)
                     {
-                        models.push(env.model_snapshot());
+                        models.add_model(&env.model_snapshot());
                         continue;
                     }
                 }
@@ -441,7 +501,7 @@ pub(crate) fn prove_facts_budgeted_opts(
                 model_valid = !unsat_ab;
                 if !unsat_ab {
                     // record the distinguishing model to prune future pairs
-                    models.push(env.model_snapshot());
+                    models.add_model(&env.model_snapshot());
                     continue;
                 }
                 if solves >= solve_budget {
@@ -464,7 +524,7 @@ pub(crate) fn prove_facts_budgeted_opts(
                         uf[ra] = rb;
                     }
                 } else {
-                    models.push(env.model_snapshot());
+                    models.add_model(&env.model_snapshot());
                 }
             }
         }
