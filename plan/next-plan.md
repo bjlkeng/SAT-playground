@@ -1,16 +1,60 @@
-# NEXT PLAN — 2026-08-22 (supersedes 2026-08-16; PRUNED)
+# NEXT PLAN — 2026-08-23 (supersedes 2026-08-16; PRUNED)
 
 One-file plan for the next clear context. SESSIONS 4-13 bodies live in git
 history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
 bodies were pruned earlier — full text in revisions up to 93ab682. Where this
 file contradicts an older revision, THIS file wins.
 
-**START HERE:** read "SESSION 26" (dive2-scoped elimination-bound
-escalation PROMOTED — the causal-ablation method that found it), then
-"SESSION 25" (dive-scoped trail reuse), then "SESSION 24 NEGATIVES",
-then "SESSION 23" (engine speed — the lit_vals mirror), "SESSION 22"
-and "SESSION 21" (the dive-restart latches), then "RANKED PLAN", then
-"Standing traps".
+**START HERE:** read "SESSION 27" (the kissat causal-ablation GRID +
+the decisive unscoped-escalation NEGATIVE), then "SESSION 26"
+(dive2-scoped elimination-bound escalation PROMOTED — the
+causal-ablation method that found it), then "SESSION 25" (dive-scoped
+trail reuse), then "SESSION 24 NEGATIVES", then "SESSION 23" (engine
+speed — the lit_vals mirror), "SESSION 22" and "SESSION 21" (the
+dive-restart latches), then "RANKED PLAN", then "Standing traps".
+
+## SESSION 27 (2026-08-22/23) — NO PROMOTION: the kissat mechanism GRID mapped (the session's durable deliverable); unscoped COMPLETE-round escalation measured a decisive bench-scale LOSER (call 286 / cnod 285 v base 291); two standalone first-evers banked
+
+**The grid (reuse it before believing any "needs a port" claim):** 16
+kissat-only cells x 12 kissat single-mechanism ablations
+(scratch grid_results.tsv; key rows preserved here). ELIMINATE depth is
+load-bearing on 9+ cells: b18 / grs-32-128 / pj2016 noelim=TIMEOUT,
+SAT_dat 4.8x, goldcrest 2.4x, myciel6 1.8x, oisc/x-epic 1.5x. VIVIFY
+secondary (fixedbandwidth 3.0x, ncc_21015 2.6x, goldcrest/oisc 2.0x,
+b18 1.9x). CHRONO: nla-dijkstra 2.9x, x-epic 2.2x, pj TO — but OUR
+guarded SAT_CHRONO=on does NOT reproduce it (4 standalone probes all
+timeout; a faithful chrono re-port is the prerequisite to even test).
+uniqinv40 = nosweep 28.5x + nosubst 4.1x (the S20 sweep-port arc,
+confirmed and sized). pj2016 is composite (noelim AND nocongr AND
+nochrono all TO). oddball_24_4: every kissat mechanism REMOVED makes
+kissat FASTER (novivify 0.1x) — over-inprocessed there; not our story.
+
+**The negative (do not re-run — this closes the July question at bench
+scale):** SAT_ELIM_BOUND_COMPLETE_ALL (complete-round escalation for
+every armed round; b18's congruence-armed trace reproduces the S26
+bve_grow=0 stall verbatim, and the mechanism probe was spectacular —
+bound 16, 85% eliminated, wall −34% at 2M conflicts). Standalone it
+converted ncc_21015 (2,714 s) and grs-32-128 (3,606 s) FIRST-EVER, and
+in-gate it converted cfi-rigid-t2 (2,893 s, first-ever). But the 3-arm
+gate (log/abtest-call-vs-cnod-vs-base-2026-08-22-12-20-56, 400x3 @
+3600 s/16 GB/32 cores) is unambiguous: call +2/−7 = 286, cnod (TT
+shielded) +1/−7 = 285, base 291. The losses are the banked fragile
+surface itself: VexRiscv (base 2,131 s FAT margin — the wire-cell
+casualty July predicted), dislog, sqrt-mitern169 (the S26 capture),
+TT496 (call only — the cnod shield DID work), goldcrest-11, ncc-2_17,
+RR_n17/bp4 coins. 64/284 both-solved cells conflict-differ (v S26's
+1/286). **Law: complete-round escalation is shippable ONLY inside
+narrow structural bands; the armed surface at large carries too many
+banked captures. The knob stays in tree (on|nodecision) for future
+band-scoped reuse.** ncc/grs remain standalone-only capabilities
+(wall-marginal in-gate); cfi-rigid-t2 is a one-cell prize with no
+structural band yet — do NOT gerrymander one.
+
+Also closed this session: the unarmed-inprocessing hypothesis for the
+BMC class — b18 arms at 200k conflicts, SAT_dat at 1, goldcrest arms
+too; the flywheel never fires there. Flywheel vivify + binfrac-ceiling
+knobs (SAT_UNARMED_FLYWHEEL_VIVIFY / _MAX_BINFRAC) are in tree,
+default-inert. TT392 canary byte-identical-fast under escalation.
 
 ## SESSION 26 (2026-08-21/22) — dive2-scoped kissat elimination-bound escalation PROMOTED: gate WIN 291 v 288 (PASS, zero correctness failures); dmu28 FIRST-EVER; the elimination-depth gap on miters is CLOSED at its root
 
@@ -696,52 +740,51 @@ digit-exact both flag states.
   ON + root-pass scoping law (percent-mass decline-is-identity gates are the
   ONLY shippable root-pass shape). Full text: rev 416adae.
 
-## RANKED PLAN (2026-08-22)
+## RANKED PLAN (2026-08-23)
 
-SESSIONS 15-26 took the bench 279 → ~295-class. SESSION 26 proves a
-third productive shape besides NEW ENGINES (sweepcount) and
-SCOPED-PARITY LATCHES (dive-restart): **CAUSAL KISSAT ABLATION** — when
-a mechanism gap is suspected, ablate the corresponding kissat option at
-a paired conflict horizon BEFORE building anything; it converts
-"architecture, needs a port" hypotheses into knob-scope questions in
-minutes. Next leads, in order:
+SESSIONS 15-26 took the bench 279 → ~295-class; SESSION 27 mapped the
+remaining kissat-only set mechanism-by-mechanism and killed the
+unscoped-escalation shortcut. The three productive shapes stand: NEW
+ENGINES (sweepcount), SCOPED-PARITY LATCHES (dive-restart, dive2-elim),
+and CAUSAL KISSAT ABLATION (grid first, build second). Next leads:
 
-1. **Miter family residual (5 kissat-only left).** Elimination depth is
-   now CLOSED (65% v 73%, S26); trail reuse CLOSED (S25); cadence
-   CLOSED (S22); vivify volume measured trajectory-NULL (S26); reduce
-   cadence FLAT (S22b); definitions DEAD (S24+S26). The residual per-
-   conflict gap is ~1.55x props/conf (active vars 906 v 698 + DB size)
-   x ~1.35x per-prop (densified core). Next honest probes: (a) kissat
-   ablation of sweep/congruence ON THE REMAINING FAMILY members (not
-   m29), (b) the last 8pp of depth = kissat's definition extraction —
-   OUR defcap/kitten-env implementation differs from kissat
-   definition.c; a faithful re-port is the only untried piece. m29
-   re-conversion rides on any further wall trim (needs ~1.59x load
-   factor at 10.16M conf).
-2. **Dive-band second discriminator (myciel6/grs class).** Unchanged
-   from 08-16 (both convert under global parity standalone; need a NEW
-   structural axis — do NOT widen existing bands).
-3. **kissat sweep.c pair-mechanics port (uniqinv40-class).** Carried
-   from SESSION 20. NOTE: screen with a kissat `--sweep=0` /
-   `--congruence=0` causal ablation on uniqinv40 FIRST (the S26
-   method) to size the real prize before porting.
-4. **Medium-1800 re-baseline (bookkeeping, OVERDUE — eight promotions
+1. **Faithful chrono re-port (kissat backtrack.c/decide.c parity).**
+   The grid's cleanest untried multi-cell lever: kissat loses 2.9x on
+   nla-dijkstra, 2.2x on x-epic, TO on pj2016 without chrono; our
+   guarded SAT_CHRONO does not reproduce it (S27: 4 probes dead). A
+   faithful port (chronolevels=100 semantics, reuse rather than our
+   current−1 guard) is a bounded engine arc with a measured 3-cell
+   target list; probe nla/x-epic standalone as acceptance.
+2. **kissat sweep.c pair-mechanics port (uniqinv40-class).** Sized by
+   the grid: nosweep 28.5x + nosubst 4.1x. uniqinv40 (kissat 51 s) is
+   the acceptance test; sweep_repr mid-environment substitution is the
+   known missing piece (S20b).
+3. **Band-scoped escalation reuse.** The COMPLETE_ALL knob is in tree;
+   if a NEW structural discriminator emerges for the b18/grs/ncc
+   class (congruence-armed BMC shape: b18 binfrac 0.25, 167k vars),
+   escalate inside it only — the S26 shape. Do not re-run unscoped.
+4. **Miter family residual (5 kissat-only).** All single-mechanism
+   levers now closed (S26/S27). Residual = composite throughput;
+   revisit only with a genuinely new engine idea.
+5. **Medium-1800 re-baseline (bookkeeping, OVERDUE — eight promotions
    since 74/100 at c469b03).**
-5. **Checker-timeout proof-size watch (now standing on the miter
-   class: 4 cells this gate, incl. dmu28/bwo).** Watch only; all
-   proofs valid, drat budget.
-6. **Sweepcount generalization: PARKED. Walk vein: CLOSED.
-   Starved-BMC/XOR recovery: CLOSED. factor.c: DONE (in tree since
-   S23-era; SC25 Timetable class is factoring-heavy).**
+6. **Checker-timeout proof-size watch (standing, miter class).**
+   dmu28's in-gate proofs verified in S27's gate (35+ min each under
+   load) — still valid, still slow.
+7. **PARKED/CLOSED: sweepcount generalization; walk vein;
+   starved-BMC/XOR; factor.c (DONE, in tree); unscoped escalation
+   (S27); definitions (S24+S26); vivify volume on miters (S26);
+   flywheel for BMC (S27 — the class arms).**
 
 ## Current state
 
-- HEAD: SESSION 26 promotion (dive2-scoped elimination-bound escalation
-  default on). Freshest deal: **291/400 v base 288 same deal**
-  (`log/abtest-dive2elim-vs-base-2026-08-21-12-43-45/dive2elim/results.tsv`)
-  — a weak deal for both arms (S24 clean re-baseline read 294); the
-  promoted class is ~295-296 on a median deal (294-class + net
-  mechanism +2).
+- HEAD: SESSION 27 groundwork (default surface unchanged since the
+  SESSION 26 promotion). Freshest baseline deal: **291/400**
+  (base arm of BOTH the S26 gate and the S27 3-arm gate — two
+  independent deals reading 291 under 2-arm and 3-arm contention);
+  the promoted class is ~295-296 on a median quiet deal. S27 gate:
+  `log/abtest-call-vs-cnod-vs-base-2026-08-22-12-20-56` (base 291,
+  call 286, cnod 285 — the negative).
 - kissat 4.0.4 reference: **294/400 same-host 2026-08-10**
   (`log/kissat-full-20260810-073149/results.csv`). Remaining kissat-only
   families after S26: 16x16 miters (5, was 7: dmu28/bwo29/sqrt169 out,

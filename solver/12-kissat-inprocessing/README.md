@@ -15,6 +15,26 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **SESSION 27 (2026-08-22/23): NO PROMOTION — defaults unchanged.**
+> The kissat causal-ablation grid (16 kissat-only cells x 12 kissat
+> single-mechanism ablations) is the durable deliverable: eliminate
+> depth load-bearing on 9+ cells (b18/grs/pj2016 noelim=TIMEOUT),
+> vivify secondary, chrono 2.2-2.9x on nla/x-epic (our guarded chrono
+> does not reproduce it), uniqinv40 = sweep 28.5x. The tempting
+> shortcut — `SAT_ELIM_BOUND_COMPLETE_ALL` (complete-round bound
+> escalation for every armed round; in tree, `on|nodecision`, default
+> off) — measured a decisive bench-scale LOSER despite converting
+> ncc_21015 (2,714 s) and grs-32-128 (3,606 s) standalone FIRST-EVER
+> and cfi-rigid-t2 (2,893 s) in-gate: 3-arm gate
+> `log/abtest-call-vs-cnod-vs-base-2026-08-22-12-20-56` read call
+> 286 / cnod 285 / base 291 (+2/−7 and +1/−7; VexRiscv fat-margin,
+> dislog, sqrt-mitern169, TT496 among the losses; 64/284 both-solved
+> cells conflict-differ). Law: complete-round escalation ships only
+> inside narrow structural bands (the S26 shape). Flywheel knobs
+> (`SAT_UNARMED_FLYWHEEL_VIVIFY`, `_MAX_BINFRAC`) in tree,
+> default-inert — the BMC class arms, so the flywheel never fires
+> there.
+
 > **Full-bench default promotion (2026-08-22, SESSION 26): dive2-scoped
 > kissat elimination-bound escalation (`SAT_ELIM_BOUND_DIVE2=on` by
 > default).** Causal find of the session (m29, paired 2.5M-conflict
