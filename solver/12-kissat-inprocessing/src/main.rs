@@ -3477,6 +3477,19 @@ struct Solver {
     chrono_backtrack: bool,
     /// minimum current/assertion-level gap required for chronological backtracking
     chrono_max_delta: usize,
+    /// SESSION 28: faithful kissat chrono port (SAT_CHRONO_STRICT). Replaces the
+    /// guarded choose_backtrack_level with kissat_determine_new_level semantics
+    /// (learn.c: backjump discarding more than chronolevels levels backtracks
+    /// exactly ONE level, no asserting guard), reuses a conflict clause with a
+    /// single conflict-level literal as the driving clause without learning
+    /// (analyze.c one_literal_on_conflict_level, including the two-highest-level
+    /// watch repositioning), and assigns learned units at level 0 without
+    /// abandoning the trail (assign.c kissat_learned_unit out-of-order root
+    /// assignment). Implies chrono_backtrack.
+    chrono_strict: bool,
+    /// kissat chronolevels analog for strict mode (SAT_CHRONO_STRICT_LEVELS,
+    /// default 100 = kissat options.h).
+    chrono_strict_levels: usize,
     /// opt-in reason-side variable activity bump after each conflict analysis
     /// (Kissat analyze_reason_side_literals equivalent). See bd SAT-playground-5b2.2.37.
     bump_reasons: bool,
@@ -4966,8 +4979,14 @@ impl Solver {
             update_reason_lbd: config.update_reason_lbd,
             update_propagation_reason_lbd: config.update_propagation_reason_lbd,
             reduce_policy: config.reduce_policy,
-            chrono_backtrack: config.chrono_backtrack,
+            chrono_backtrack: config.chrono_backtrack
+                || env_bool_or_default("SAT_CHRONO_STRICT", false),
             chrono_max_delta: config.chrono_max_delta,
+            chrono_strict: env_bool_or_default("SAT_CHRONO_STRICT", false),
+            chrono_strict_levels: std::env::var("SAT_CHRONO_STRICT_LEVELS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(100),
             bump_reasons: config.bump_reasons,
             bump_reasons_limit_multiplier: config.bump_reasons_limit_multiplier,
             lbd_seen: if lean_giant {
@@ -9335,6 +9354,10 @@ impl Solver {
 
     fn note_kissat_ema_conflict(&mut self) {
         self.update_restart_ema();
+        self.note_kissat_ema_conflict_tail();
+    }
+
+    fn note_kissat_ema_conflict_tail(&mut self) {
         self.restart_conflicts_since_last = self.restart_conflicts_since_last.saturating_add(1);
         if !self.kissat_ema_restart_candidate_due() {
             return;
@@ -10083,6 +10106,12 @@ impl Solver {
             }
             self.trail.truncate(write);
             self.trail_limits.truncate(target_level);
+            if self.chrono_strict && target_level == 0 {
+                // Every literal kept by the compaction has level 0 here, so fold the
+                // out-of-order root assignments (kissat_learned_unit analog) into the
+                // root prefix; root passes and the simplify trigger then see them.
+                self.root_trail_len = write;
+            }
             // Re-propagate the reassigned literals (eager reimplication): propagation
             // resumes at the decision boundary so any implications lost with the
             // unassigned higher-level literals are re-derived. Mirrors kissat setting
@@ -10162,6 +10191,203 @@ impl Solver {
             self.stats.chrono_skipped_levels += (chrono_level - assertion_level) as u64;
         }
         chrono_level
+    }
+
+    /// kissat_determine_new_level (learn.c): with back = level-1, a backjump
+    /// discarding more than chronolevels levels is "considered inefficient" and
+    /// becomes a chronological backtrack of exactly one level. No asserting
+    /// guard — the learned/driving clause is asserting at back by construction
+    /// (all non-forced literals sit at levels <= jump < back).
+    fn strict_chrono_new_level(&mut self, jump_level: usize) -> usize {
+        let current_level = self.current_level();
+        debug_assert!(current_level > 0);
+        let back = current_level - 1;
+        debug_assert!(jump_level <= back);
+        let delta = back - jump_level;
+        if delta == 0 {
+            jump_level
+        } else if delta > self.chrono_strict_levels {
+            self.stats.chrono_strict_backtracks += 1;
+            self.stats.chrono_skipped_levels += delta as u64;
+            back
+        } else {
+            jump_level
+        }
+    }
+
+    /// kissat_learned_unit under chrono (assign.c): assign a derived unit at
+    /// level 0 without abandoning the current decision level. The literal joins
+    /// the root prefix on the next backtrack-to-0 compaction (see backtrack()).
+    fn enqueue_out_of_order_root_unit(&mut self, lit: i32) -> bool {
+        debug_assert!(self.chrono_strict && self.current_level() > 0);
+        let var = lit.unsigned_abs() as usize;
+        let target_value = if lit > 0 { TRUE } else { FALSE };
+        let current = self.assignment[var];
+        if current != UNASSIGNED {
+            return current == target_value;
+        }
+        self.assignment[var] = target_value;
+        {
+            let idx = lit_to_index(lit);
+            self.lit_vals[idx] = TRUE;
+            self.lit_vals[idx ^ 1] = FALSE;
+        }
+        self.saved_phase[var] = target_value;
+        self.decision_level[var] = 0;
+        self.set_reason_ref(var, ReasonRef::None);
+        self.trail.push(lit);
+        self.stats.chrono_strict_oo_units += 1;
+        true
+    }
+
+    /// Restart bookkeeping for a conflict reused as its own driving clause
+    /// (no learned clause): kissat ticks the conflict counter and the level
+    /// average for every conflict but only updates the glue EMAs through
+    /// kissat_update_learned, which the reuse path never reaches.
+    fn note_conflict_reused(&mut self) {
+        if !self.accounting_mode.update_restart_stats() {
+            return;
+        }
+        self.note_random_decision_conflict();
+        if self.restart_pending {
+            return;
+        }
+        match self.effective_restart_policy() {
+            RestartPolicy::LegacyLuby => self.note_legacy_luby_conflict(),
+            RestartPolicy::KissatEma => {
+                let level = self.current_level().max(1) as f64;
+                self.restart_fast_level.update(level);
+                self.restart_slow_level.update(level);
+                self.note_kissat_ema_conflict_tail();
+            }
+            RestartPolicy::Reluctant => self.note_reluctant_conflict(),
+        }
+    }
+
+    /// kissat analyze.c one_literal_on_conflict_level: after the pre-analysis
+    /// backtrack has made the conflict level current, a conflict clause with
+    /// exactly ONE literal on the conflict level needs no learning — backtrack
+    /// per kissat_determine_new_level and reuse the conflict as the driving
+    /// clause of that literal. Also repositions the two highest-level literals
+    /// of every long conflict into the watched slots (watch hygiene for
+    /// out-of-order trails), which kissat applies whether or not it reuses.
+    /// Returns true when the conflict was consumed (skip analysis/learning).
+    fn try_reuse_conflict_as_driving_clause(&mut self, conflict: Conflict) -> bool {
+        let conflict_level = self.current_level();
+        debug_assert!(conflict_level > 0);
+        match conflict {
+            Conflict::RootUnit => false,
+            Conflict::Binary(binary_id) => {
+                let lits = *self
+                    .binary_reason_lits
+                    .get(binary_id.0 as usize)
+                    .expect("invalid binary conflict id");
+                let level0 = self.decision_level[lits[0].unsigned_abs() as usize] as usize;
+                let level1 = self.decision_level[lits[1].unsigned_abs() as usize] as usize;
+                let (forced_lit, jump_level) = if level0 == conflict_level
+                    && level1 < conflict_level
+                {
+                    (lits[0], level1)
+                } else if level1 == conflict_level && level0 < conflict_level {
+                    (lits[1], level0)
+                } else {
+                    return false;
+                };
+                self.note_conflict_reused();
+                if self.reduce_db_enabled() {
+                    self.note_learnt_budget_conflict();
+                }
+                let new_level = self.strict_chrono_new_level(jump_level);
+                self.backtrack(new_level);
+                self.stats.chrono_strict_reused_conflicts += 1;
+                let inserted = self.enqueue(forced_lit, ReasonRef::Binary(binary_id));
+                debug_assert!(inserted, "reused binary conflict must assert");
+                // The backtrack already happened; the conflict is consumed either way.
+                true
+            }
+            Conflict::Clause(clause_idx) => {
+                let len = self.clause_len(clause_idx);
+                let mut on_conflict_level = 0usize;
+                let mut forced_lit = 0i32;
+                let mut jump_level = 0usize;
+                for pos in 0..len {
+                    let lit = self.clause_lit(clause_idx, pos);
+                    let level = self.decision_level[lit.unsigned_abs() as usize] as usize;
+                    if level == conflict_level {
+                        on_conflict_level += 1;
+                        forced_lit = lit;
+                        if on_conflict_level > 1 {
+                            break;
+                        }
+                    } else if level > jump_level {
+                        jump_level = level;
+                    }
+                }
+                // kissat repositions every long conflict, even when it goes on
+                // to full analysis (literals_on_conflict_level > 1).
+                if len > 2 {
+                    self.reposition_conflict_watches(clause_idx, len);
+                }
+                if on_conflict_level != 1 {
+                    return false;
+                }
+                self.note_conflict_reused();
+                if self.reduce_db_enabled() {
+                    self.note_learnt_budget_conflict();
+                }
+                let new_level = self.strict_chrono_new_level(jump_level);
+                self.backtrack(new_level);
+                self.stats.chrono_strict_reused_conflicts += 1;
+                let inserted = self.enqueue(forced_lit, self.reason_ref_for_clause(clause_idx));
+                debug_assert!(inserted, "reused conflict clause must assert");
+                // The backtrack already happened; the conflict is consumed either way.
+                true
+            }
+        }
+    }
+
+    /// kissat one_literal_on_conflict_level watch repositioning: move the two
+    /// highest-level literals of a (fully false) long conflict clause into the
+    /// watched slots 0/1, rewatching when a literal comes from an unwatched
+    /// position. The clause cannot be a reason (all its literals are false), so
+    /// permuting it is safe.
+    fn reposition_conflict_watches(&mut self, clause_idx: usize, len: usize) {
+        debug_assert!(len > 2);
+        for i in 0..2 {
+            let watched_lit = self.clause_lit(clause_idx, i);
+            let mut highest_pos = i;
+            let mut highest_lit = watched_lit;
+            let mut highest_level =
+                self.decision_level[watched_lit.unsigned_abs() as usize] as usize;
+            for j in (i + 1)..len {
+                let other = self.clause_lit(clause_idx, j);
+                let level = self.decision_level[other.unsigned_abs() as usize] as usize;
+                if level > highest_level {
+                    highest_pos = j;
+                    highest_lit = other;
+                    highest_level = level;
+                }
+            }
+            if highest_pos == i {
+                continue;
+            }
+            if highest_pos > 1 {
+                self.detach_clause_watcher_strict(watched_lit, clause_idx);
+            }
+            self.set_clause_lit(clause_idx, highest_pos, watched_lit);
+            self.set_clause_lit(clause_idx, i, highest_lit);
+            if highest_pos > 1 {
+                let blocker = self.clause_lit(clause_idx, if i == 0 { 1 } else { 0 });
+                let watch_idx = self.lit_index(highest_lit);
+                self.watch_push(
+                    watch_idx,
+                    Watcher {
+                        clause_idx: clause_idx as u32,
+                        blocker,
+                    },
+                );
+            }
+        }
     }
 
     fn debug_assert_clause_asserting_after_backtrack(
@@ -19612,6 +19838,23 @@ impl Solver {
                         );
                         next_search_trace = next_search_trace.saturating_add(trace_search_interval);
                     }
+                    if self.chrono_strict
+                        && self.try_reuse_conflict_as_driving_clause(conflict_event)
+                    {
+                        // kissat one_literal_on_conflict_level: conflict consumed as
+                        // its own driving clause — no analysis, no learning, no bumps.
+                        conflict = self.propagate();
+                        if limits_active {
+                            if let Some(limit) =
+                                self.limit_hit(&runtime_limits, solve_start, proof_log)
+                            {
+                                self.finish_search_timing(search_start);
+                                let _class = limit.class.as_str();
+                                return SolveOutcome::unknown(limit.reason);
+                            }
+                        }
+                        continue;
+                    }
                     let assertion_level = self.analyze_conflict_to_scratch(conflict_event);
                     let bumped_variable_scores = self.bump_analyzed_variable_activity();
                     if bumped_variable_scores {
@@ -19630,9 +19873,28 @@ impl Solver {
                     proof_log.record_clause(&learned_clause);
                     if learned_clause.len() == 1 {
                         debug_assert_eq!(assertion_level, 0);
-                        self.backtrack(0);
-                        let inserted = self.enqueue(asserting_lit, ReasonRef::None);
+                        if self.chrono_strict && self.current_level() > 0 {
+                            // kissat learn_unit: even a learned unit goes through
+                            // kissat_determine_new_level — a deep trail backtracks
+                            // only one level and the unit is assigned at level 0
+                            // out of order, keeping the trail warm.
+                            let new_level = self.strict_chrono_new_level(0);
+                            self.backtrack(new_level);
+                        } else {
+                            self.backtrack(0);
+                        }
+                        let inserted = if self.current_level() == 0 {
+                            self.enqueue(asserting_lit, ReasonRef::None)
+                        } else {
+                            self.enqueue_out_of_order_root_unit(asserting_lit)
+                        };
                         if !inserted {
+                            debug_assert_eq!(
+                                self.current_level(),
+                                0,
+                                "out-of-order unit cannot conflict: its variable was \
+                                 unassigned by the post-analysis backtrack"
+                            );
                             self.finish_search_timing(search_start);
                             return SolveOutcome::unsat();
                         }
@@ -19641,7 +19903,9 @@ impl Solver {
                         self.scratch_conflict_clause = learned_clause;
                         self.scratch_conflict_clause.clear();
                     } else {
-                        let backtrack_level = if self.chrono_backtrack {
+                        let backtrack_level = if self.chrono_strict {
+                            self.strict_chrono_new_level(assertion_level)
+                        } else if self.chrono_backtrack {
                             self.choose_backtrack_level(assertion_level, &learned_clause)
                         } else {
                             assertion_level
@@ -22203,6 +22467,81 @@ mod tests {
         s.watch_list(s.lit_index(lit))
             .iter()
             .any(|w| w.clause_idx as usize == clause_idx)
+    }
+
+    #[test]
+    fn strict_chrono_new_level_kissat_rules() {
+        // kissat learn.c: back = level-1; delta = back-jump; delta==0 -> jump,
+        // delta > chronolevels -> back (one level), else jump. No asserting guard.
+        let mut s = make_solver(200, vec![vec![1, 2, 3]]);
+        s.chrono_strict = true;
+        s.chrono_backtrack = true;
+        s.chrono_strict_levels = 100;
+        for v in 4..=153 {
+            s.trail_limits.push(s.trail.len());
+            assert!(s.enqueue(v, ReasonRef::None));
+        }
+        assert_eq!(s.current_level(), 150);
+        assert_eq!(s.strict_chrono_new_level(149), 149, "delta 0 keeps jump");
+        assert_eq!(
+            s.strict_chrono_new_level(49),
+            49,
+            "delta == chronolevels stays a backjump"
+        );
+        assert_eq!(
+            s.strict_chrono_new_level(48),
+            149,
+            "delta > chronolevels backtracks exactly one level"
+        );
+        assert_eq!(s.stats.chrono_strict_backtracks, 1);
+    }
+
+    #[test]
+    fn strict_oo_root_unit_survives_backtrack_and_absorbs_into_root_prefix() {
+        let mut s = make_solver(4, vec![vec![1, 2, 3, -4]]);
+        s.chrono_strict = true;
+        s.chrono_backtrack = true;
+        s.trail_limits.push(s.trail.len());
+        assert!(s.enqueue(1, ReasonRef::None));
+        s.trail_limits.push(s.trail.len());
+        assert!(s.enqueue(2, ReasonRef::None));
+        assert_eq!(s.current_level(), 2);
+
+        assert!(s.enqueue_out_of_order_root_unit(3));
+        assert_eq!(s.decision_level[3], 0, "unit assigned at level 0");
+        assert_eq!(s.current_level(), 2, "current level untouched");
+        assert_eq!(s.root_trail_len, 0, "root prefix grows only on backtrack");
+
+        s.backtrack(0);
+        assert_eq!(s.current_level(), 0);
+        assert_eq!(s.assignment[3], TRUE, "unit survives the compaction");
+        assert_eq!(s.assignment[1], UNASSIGNED);
+        assert_eq!(s.assignment[2], UNASSIGNED);
+        assert_eq!(
+            s.root_trail_len,
+            s.trail.len(),
+            "compacted level-0 literals absorbed into the root prefix"
+        );
+        assert!(s.trail.contains(&3));
+    }
+
+    #[test]
+    fn reposition_conflict_watches_moves_two_highest_levels_into_watch_slots() {
+        let mut s = make_solver(4, vec![vec![1, 2, 3, 4]]);
+        let cidx = s.original_clause_ids[0] as usize;
+        assert!(watches_clause(&s, 1, cidx) && watches_clause(&s, 2, cidx));
+        s.decision_level[1] = 1;
+        s.decision_level[2] = 2;
+        s.decision_level[3] = 5;
+        s.decision_level[4] = 4;
+
+        s.reposition_conflict_watches(cidx, 4);
+
+        assert_eq!(s.clause_slice(cidx), &[3, 4, 1, 2]);
+        assert!(watches_clause(&s, 3, cidx), "highest level watched");
+        assert!(watches_clause(&s, 4, cidx), "second highest watched");
+        assert!(!watches_clause(&s, 1, cidx), "displaced literal unwatched");
+        assert!(!watches_clause(&s, 2, cidx), "displaced literal unwatched");
     }
 
     #[test]

@@ -161,6 +161,9 @@ pub(crate) struct SolverStats {
     pub(crate) chrono_rejected_not_asserting: u64,
     pub(crate) chrono_rejected_delta_small: u64,
     pub(crate) chrono_skipped_levels: u64,
+    pub(crate) chrono_strict_backtracks: u64,
+    pub(crate) chrono_strict_reused_conflicts: u64,
+    pub(crate) chrono_strict_oo_units: u64,
     pub(crate) binary_props: u64,
     pub(crate) binary_stale_skips: u64,
     pub(crate) long_props: u64,
@@ -743,6 +746,15 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
         ctx.stats.chrono_rejected_delta_small,
     );
     json.u64("chrono_skipped_levels", ctx.stats.chrono_skipped_levels);
+    json.u64(
+        "chrono_strict_backtracks",
+        ctx.stats.chrono_strict_backtracks,
+    );
+    json.u64(
+        "chrono_strict_reused_conflicts",
+        ctx.stats.chrono_strict_reused_conflicts,
+    );
+    json.u64("chrono_strict_oo_units", ctx.stats.chrono_strict_oo_units);
 
     json.f64("avg_decision_level", average_decision_level(ctx.stats));
     json.u64("max_decision_level", ctx.stats.max_decision_level);
