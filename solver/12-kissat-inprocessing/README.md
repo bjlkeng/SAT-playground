@@ -15,6 +15,26 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **Engine promotion (2026-08-24, SESSION 27b): sweep-prover quadratic
+> KILLED — flagless, identity-proven (commit 5027737).** A gdb-parent
+> profile put 89% of bp4_BC012_CSO's wall inside
+> `sweep::prove_facts_budgeted_opts`: the Vec<Vec<bool>> model store
+> was rescanned per backbone candidate and per equivalence pair
+> (O(n² pairs × #models), models growing on every kitten flip).
+> Replaced with incremental partition refinement over XOR-normalized
+> model signatures (O(1) per query, O(n) per new model, no stored
+> models) — identical booleans at every decision point, so kitten call
+> sequences, yields, and trajectories are bit-exact. **Gate
+> (frozen-snapshot A/B v pre-fix binary,
+> `log/abtest-sweepfix-vs-s27old-2026-08-23-10-44-21`): PASS — 296 v
+> 296 solved (BOTH arms the best count ever recorded on this bench;
+> prior best 294), ALL 295 both-solved cells conflict-IDENTICAL,
+> PAR-2 −1.9%, median wall −4.9% over the 182 identical-trajectory
+> cells >100 s.** Standouts: manthey −79% (3,256→694 s), bv_ILA −76%,
+> bp4_CSO −60% (3,431→1,367 s), oski15 −35%, sted1/grs/oddball/bp4
+> band −16-28%. The 3,100-3,500 s coin band (manthey/bp4/bwo/sqrt169/
+> RR_n17) now carries real margins; dmu28 reproduced in-gate 2,453 s.
+
 > **SESSION 27 (2026-08-22/23): NO PROMOTION — defaults unchanged.**
 > The kissat causal-ablation grid (16 kissat-only cells x 12 kissat
 > single-mechanism ablations) is the durable deliverable: eliminate

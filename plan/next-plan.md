@@ -1,17 +1,64 @@
-# NEXT PLAN — 2026-08-23 (supersedes 2026-08-16; PRUNED)
+# NEXT PLAN — 2026-08-24 (supersedes 2026-08-16; PRUNED)
 
 One-file plan for the next clear context. SESSIONS 4-13 bodies live in git
 history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
 bodies were pruned earlier — full text in revisions up to 93ab682. Where this
 file contradicts an older revision, THIS file wins.
 
-**START HERE:** read "SESSION 27" (the kissat causal-ablation GRID +
-the decisive unscoped-escalation NEGATIVE), then "SESSION 26"
+**START HERE:** read "SESSION 27b" (the sweep-prover quadratic KILL —
+promoted, new absolute record 296/400), then "SESSION 27" (the kissat
+causal-ablation GRID + the decisive unscoped-escalation NEGATIVE),
+then "SESSION 26"
 (dive2-scoped elimination-bound escalation PROMOTED — the
 causal-ablation method that found it), then "SESSION 25" (dive-scoped
 trail reuse), then "SESSION 24 NEGATIVES", then "SESSION 23" (engine
 speed — the lit_vals mirror), "SESSION 22" and "SESSION 21" (the
 dive-restart latches), then "RANKED PLAN", then "Standing traps".
+
+## SESSION 27b (2026-08-23/24) — sweep-prover QUADRATIC KILLED, PROMOTED (flagless, identity-proven); NEW ABSOLUTE RECORD 296/400 both arms; the 3,100-3,500 s coin band converted to solid margin
+
+**The find:** gdb-as-parent sampling (ptrace_scope=1 workaround; sampler
+in scratch, method now proven) on wall-band cell bp4_BC012_CSO put 89%
+of its wall (134/150 samples) inside `sweep::prove_facts_budgeted_opts`
+— the model store was Vec<Vec<bool>> full snapshots, rescanned per
+backbone candidate AND per equivalence pair (O(n² pairs × #models),
+models growing on every kitten flip). This engine runs on EVERY
+yield-armed sweep cell (the S20 latch class).
+
+**The fix (commit 5027737):** incremental partition refinement over
+XOR-normalized model signatures — `same_as_m0` answers the backbone
+question, `class_id` equality answers the pair question, O(1) each,
+O(n) refinement per new model, no stored models. Identical booleans at
+every decision point ⇒ identical kitten call sequence ⇒ bit-exact
+yields and trajectories. Flagless (identity-proven, S23 lit_vals
+precedent).
+
+**Paired quiet identity+speed proof:** bp4 conflicts/backbones/equivs/
+solves ALL digit-identical (1,508,168 / 11 / 373 / 252,872); sweep-
+prove wall 1,650 s → 60 s (27.5x); bp4 total 2,415 → 759 s (−69%).
+dislog 1,547 s on its digit-exact 4.94M trajectory (−45% v in-gate
+2,825 s). HCP-446 2,568 s standalone (−4%; small sweep share).
+
+**Gate (frozen-snapshot method, pre-fix 95f6289 binary as baseline arm;
+log/abtest-sweepfix-vs-s27old-2026-08-23-10-44-21, 400x2 @ 3600 s/
+16 GB/32 cores): PASS. 296 v 296 solved — BOTH ARMS the highest count
+ever recorded on this bench (previous best 294) — with ALL 295
+both-solved cells conflict-IDENTICAL (100%), PAR-2 915,096 v 932,820
+(−1.9%), zero correctness failures.** Median wall −4.9% (mean −6.1%)
+across the 182 identical-trajectory cells >100 s. Monster margins:
+manthey 3,256→694 s (−79%), bv_ILA_Piccolo_JALR 2,377→581 (−76%),
+bp4_CSO 3,431→1,367 (−60%), oski15 −35%, sted1 −28%, grs-32-64 −26%,
+oddball_29/19 −26/−16%, bp4 family −22-23%, RR_n17 3,110→2,868. Wall
+coins +reconf10_22 / −valves (net 0). dmu28 reproduced in-gate
+(2,453 s). The band cells that flipped as coins in every recent deal
+(manthey/bp4/bwo/sqrt169/RR_n17) now carry 400-2,900 s margins —
+solved-count on median deals should read ~296-297.
+
+**Method law (add to the toolbox):** profile the WALL BAND, not just
+the gap cells — a quadratic in a niche pass taxed 15+ solved cells
+invisibly for months (sweep_prove_nanos existed as a stat all along;
+nobody compared it to wall). Check `*_nanos` stats against elapsed
+before hunting micro-optimizations.
 
 ## SESSION 27 (2026-08-22/23) — NO PROMOTION: the kissat mechanism GRID mapped (the session's durable deliverable); unscoped COMPLETE-round escalation measured a decisive bench-scale LOSER (call 286 / cnod 285 v base 291); two standalone first-evers banked
 
@@ -778,13 +825,14 @@ and CAUSAL KISSAT ABLATION (grid first, build second). Next leads:
 
 ## Current state
 
-- HEAD: SESSION 27 groundwork (default surface unchanged since the
-  SESSION 26 promotion). Freshest baseline deal: **291/400**
-  (base arm of BOTH the S26 gate and the S27 3-arm gate — two
-  independent deals reading 291 under 2-arm and 3-arm contention);
-  the promoted class is ~295-296 on a median quiet deal. S27 gate:
-  `log/abtest-call-vs-cnod-vs-base-2026-08-22-12-20-56` (base 291,
-  call 286, cnod 285 — the negative).
+- HEAD: SESSION 27b promotion (sweep-prover quadratic fix, flagless).
+  Freshest deal: **296/400 — the best count ever recorded**
+  (`log/abtest-sweepfix-vs-s27old-2026-08-23-10-44-21/sweepfix/results.tsv`;
+  the pre-fix arm read 296 same deal too — the fix's contribution is
+  the −4.9% median wall / the coin band converted to margin; PAR-2
+  915,096). kissat same-host reference: 294 (2026-08-10). WE ARE NOW
+  AHEAD of kissat on paired-deal counts. Lineage: 261 → 271 → 277 →
+  280 → 286 → 290 → 292 → 293 → 294 → ~295 (S26) → 296 (S27b deal).
 - kissat 4.0.4 reference: **294/400 same-host 2026-08-10**
   (`log/kissat-full-20260810-073149/results.csv`). Remaining kissat-only
   families after S26: 16x16 miters (5, was 7: dmu28/bwo29/sqrt169 out,
