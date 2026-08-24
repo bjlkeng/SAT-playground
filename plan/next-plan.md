@@ -1,5 +1,57 @@
 # NEXT PLAN — 2026-08-24 (supersedes 2026-08-16; PRUNED)
 
+## SESSION 28 (2026-08-24, IN PROGRESS) — faithful kissat chrono port built (SAT_CHRONO_STRICT); full 400x2 gate RUNNING
+
+**Status: gate `log/abtest-strict-vs-base-2026-08-24-14-46-54` (400x2 @
+3600 s/16 GB/32 cores, launched 14:46, PID 1532696) decides.** Groundwork
+commit 62f865d (default off, byte-identical off by construction).
+
+**What was built (ranked item 1, the S27 prerequisite):** all 5 measured
+divergences from kissat chrono closed, behind SAT_CHRONO_STRICT=on
+(+SAT_CHRONO_STRICT_LEVELS, default 100 = kissat chronolevels):
+(1) determine_new_level parity — backjump >levels ⇒ backtrack exactly ONE
+level, no asserting guard (shipped guard delta=5000 never fired);
+(2) one_literal_on_conflict_level reuse — single-conflict-level conflicts
+become their own driving clause, no learning/bumps/glue-EMA + kissat's
+two-highest-level watch repositioning on every long conflict;
+(3) learn_unit parity — learned units go through determine_new_level(0),
+assigned level-0 OUT OF ORDER on deep trails, absorbed into the root
+prefix at the next backtrack-to-0 (this is the big one on unit-rich BMC);
+(4) reuse-path cadence ticks conflicts+level-EMA, not glue EMAs.
+761+5 tests, smoke 9/9, regrandom strict UNSAT proof drat-trim VERIFIED
+(1,207 strict backtracks + 1,911 reused conflicts exercised in debug).
+
+**Tier-1 probes (quiet paired, scratch):** ibm-2004 −23% conflicts
+(368,273 v 479,896) −13% wall — the July "delta-100 derails ibm" verdict
+belonged to the UNfaithful port; VexRiscv −6.7% conf (2,775,717 v
+2,975,066 digit-exact base) −8.5% wall; nla-dijkstra_step 3x conflict
+throughput at 3600 s (493k v 163k) with learned length HALVED (26 v 53
+avg lits); pj2016 +7% conf, learned lits halved; **x-epic_p16_step
+PATHOLOGICAL — avg learned clause 879 lits (v base 161), 30x
+ticks/conflict, OOM-abort at 2,320 s (7.3 GB alloc under 16 GB cap;
+lands as UNKNOWN_rc134 = priced unsolved, NOT a gate correctness fail).**
+
+**Why kissat survives x-epic at chronolevels=100 (measured, kissat -s):**
+its chronological rate there is IDENTICAL to ours (28% of conflicts) but
+it restarts every 34 conflicts v our 230 — the frequent-focused-restart
+cadence resets the deep trail so cones stay glue-2/3. The x-epic
+pathology is strict-chrono x TAME-RESTART interaction, not chrono
+itself. UNMEASURED COMBINATION for a future arc: strict chrono +
+kissat-parity restart cadence (S21's restart-parity negative predates
+strict chrono; kissat couples the two by design).
+
+**Tier-2 screen (benchmarks/chronoscreen-2026-08-24, 15 cells = 5
+mechanism + 10 casualty canaries, 4 arms,
+log/abtest-strict100-vs-strict300-vs-strict1000-vs-base-2026-08-24-11-34-52):**
+strict100 9/15, strict300 8/15, strict1000 11/15, base 12/15.
+strict100 wins the grind — m29 UNSAT 3,443 s IN-CONTENTION (the S26
+in-band coin banked!), bwo −182 s, MVRR −656 s, manthey −86 s, ibm −12 s
+— and loses the SAT walk bank: rbsat/sum_of_3_cubes/dislog TIMEOUT,
+TT496 +442 s, oddball_19_4 +549 s. strict300 strictly worse. strict1000
+≈ base+noise (fires too rarely; dislog −310 s its only distinctive win).
+Screen is deliberately casualty-stacked and contended — the 400-cell
+gate decides; even a FAIL yields the full casualty map for band-scoping.
+
 One-file plan for the next clear context. SESSIONS 4-13 bodies live in git
 history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
 bodies were pruned earlier — full text in revisions up to 93ab682. Where this
