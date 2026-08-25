@@ -3490,6 +3490,15 @@ struct Solver {
     /// kissat chronolevels analog for strict mode (SAT_CHRONO_STRICT_LEVELS,
     /// default 100 = kissat options.h).
     chrono_strict_levels: usize,
+    /// SAT_CHRONO_STRICT=auto — strict chrono latches ON only at the dive2
+    /// band-2 arming (16x16 miter class) or at congruence-productive arming
+    /// (>=1000 root merges: the deep-trail BMC class, same scope as
+    /// chrono_productive_delta). The SESSION 28 unscoped gate measured the
+    /// full-bench trade: strict-everywhere LOSES 284 v 297 by forfeiting the
+    /// SAT walk-lottery bank (21 losses, 19 of them lottery SAT cells) while
+    /// winning the gate-rich grind class (m29 + ibm/vex/nla/pj mechanism).
+    /// Out-of-scope formulas never latch and stay byte-identical to base.
+    chrono_strict_auto: bool,
     /// opt-in reason-side variable activity bump after each conflict analysis
     /// (Kissat analyze_reason_side_literals equivalent). See bd SAT-playground-5b2.2.37.
     bump_reasons: bool,
@@ -4987,6 +4996,9 @@ impl Solver {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(100),
+            chrono_strict_auto: std::env::var("SAT_CHRONO_STRICT")
+                .map(|v| v == "auto")
+                .unwrap_or(false),
             bump_reasons: config.bump_reasons,
             bump_reasons_limit_multiplier: config.bump_reasons_limit_multiplier,
             lbd_seen: if lean_giant {
@@ -9441,6 +9453,13 @@ impl Solver {
             self.restart_min_conflicts = 2;
             self.restart_margin = 1.10;
             self.stats.restart_dive2_armed_at = self.stats.conflicts.max(1);
+            if self.chrono_strict_auto {
+                // SESSION 28 scoped strict chrono: the band-2 miter class is a
+                // measured strict winner (m29 UNSAT 3,028 s in the unscoped
+                // gate + 3,443 s in the screen deal, both base timeouts).
+                self.chrono_strict = true;
+                self.chrono_backtrack = true;
+            }
             return;
         }
         if collapse >= self.restart_dive_min_collapse
@@ -11424,6 +11443,15 @@ impl Solver {
         // only pick up trajectory risk.
         if congruence_productive && self.chrono_backtrack && self.chrono_productive_delta > 0 {
             self.chrono_max_delta = self.chrono_max_delta.min(self.chrono_productive_delta);
+        }
+        if congruence_productive && self.chrono_strict_auto {
+            // SESSION 28 scoped strict chrono: congruence-productive deep-trail
+            // BMC cells are measured strict winners (ibm-2004 −23% conflicts,
+            // VexRiscv −7%, nla-dijkstra 3x throughput, pj2016 +7% — quiet
+            // paired probes), while the gateless walk-lottery bank (the 21
+            // unscoped-gate losses) never arms this signal.
+            self.chrono_strict = true;
+            self.chrono_backtrack = true;
         }
         // Armed restart-cadence knobs share the congruence-only scoping rationale:
         // they target conflict density on deep-trail BMC/miter cells and stay inert
@@ -22467,6 +22495,39 @@ mod tests {
         s.watch_list(s.lit_index(lit))
             .iter()
             .any(|w| w.clause_idx as usize == clause_idx)
+    }
+
+    #[test]
+    fn chrono_strict_auto_latches_on_congruence_productive_arming() {
+        let cfg = SolverConfig {
+            congruence: true,
+            inprocess: true,
+            chrono_backtrack: true,
+            ..Default::default()
+        };
+        let mut s = make_solver_with_config(4, vec![vec![1, 2], vec![-1, 3], vec![2, 3, 4]], &cfg);
+        s.chrono_strict_auto = true;
+        s.chrono_strict = false;
+        s.stats.congruence_merges = CONGRUENCE_PRODUCTIVE_MIN_MERGES;
+        s.maybe_arm_congruence_productive_search(&cfg);
+        assert!(s.chrono_strict, "auto mode latches strict at productive arming");
+        assert!(s.chrono_backtrack);
+    }
+
+    #[test]
+    fn chrono_strict_auto_stays_off_without_scope_signal() {
+        let cfg = SolverConfig {
+            congruence: true,
+            inprocess: true,
+            chrono_backtrack: true,
+            ..Default::default()
+        };
+        let mut s = make_solver_with_config(4, vec![vec![1, 2], vec![-1, 3], vec![2, 3, 4]], &cfg);
+        s.chrono_strict_auto = true;
+        s.chrono_strict = false;
+        s.stats.congruence_merges = CONGRUENCE_PRODUCTIVE_MIN_MERGES - 1;
+        s.maybe_arm_congruence_productive_search(&cfg);
+        assert!(!s.chrono_strict, "no latch below the productive threshold");
     }
 
     #[test]
