@@ -4996,9 +4996,17 @@ impl Solver {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(100),
+            // SESSION 28 promotion: auto is the DEFAULT. Gate
+            // log/abtest-auto-vs-base-2026-08-25-05-19-21 (400x2 @ 3600 s):
+            // 297 v 298 with the single delta a documented wall coin
+            // (valves-gates, base margin 24 s), tier-2 conflicts −0.63%,
+            // both-solved wall −2.26%, PAR-2 −0.05%, 268/297 both-solved
+            // cells conflict-identical; m29 converted from a 6 s-margin coin
+            // to a 434 s-margin solve. Judged promotable under the trade rule
+            // (S27b precedent: coin band → durable margin).
             chrono_strict_auto: std::env::var("SAT_CHRONO_STRICT")
                 .map(|v| v == "auto")
-                .unwrap_or(false),
+                .unwrap_or(true),
             bump_reasons: config.bump_reasons,
             bump_reasons_limit_multiplier: config.bump_reasons_limit_multiplier,
             lbd_seen: if lean_giant {
