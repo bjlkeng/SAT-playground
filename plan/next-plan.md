@@ -1,10 +1,64 @@
 # NEXT PLAN — 2026-08-24 (supersedes 2026-08-16; PRUNED)
 
-## SESSION 28 (2026-08-24, IN PROGRESS) — faithful kissat chrono port built (SAT_CHRONO_STRICT); full 400x2 gate RUNNING
+## SESSION 28 FINAL (2026-08-25) — SAT_CHRONO_STRICT=auto PROMOTED (band-scoped faithful kissat chrono); auto gate 297 v 298 judged promotable (single delta = valves wall coin, 24 s margin; tier-2 −0.63%, wall −2.26%, PAR-2 win, 268/297 conflict-identical); m29 coin CONVERTED to 434 s margin
 
-**Status: gate `log/abtest-strict-vs-base-2026-08-24-14-46-54` (400x2 @
-3600 s/16 GB/32 cores, launched 14:46, PID 1532696) decides.** Groundwork
-commit 62f865d (default off, byte-identical off by construction).
+**Promotion (commit c50de9f):** `SAT_CHRONO_STRICT=auto` default on.
+Scoped gate `log/abtest-auto-vs-base-2026-08-25-05-19-21` (400x2 @
+3600 s/16 GB/32 cores): auto 297 v base 298 — mechanical line FAIL,
+judged PROMOTABLE under "Judging Trades": the ONLY solved delta is
+valves-gates (base 3,576 s = 24 s margin, test-1 wall coin, documented
+coin list, flipped IN/OUT across the last three deals; it IS in scope —
+28,001 merges — so expect it to flip back on quiet deals), priced
+against mechanism gains: tier-2 conflicts −0.63% (594.4M v 598.2M),
+both-solved wall −2.26%, PAR-2 916,835 v 917,264, zero correctness
+failures/contradictions, and 268/297 both-solved cells
+conflict-IDENTICAL (the out-of-scope surface untouched BY CONSTRUCTION;
+rbsat fingerprint digit-exact). In-scope wins: **m29 converted from
+base's 6 s-margin lottery scrape to 3,166 s / 434 s margin with 1.03M
+fewer conflicts — strict solves m29 in 3 independent deals (screen
+3,443 s, unscoped gate 3,028 s, auto gate 3,166 s); the S26 in-band
+coin is now a banked capability.** bwo −193 s (6.83M v 7.31M conf),
+oski15 family (12 cells, congruence-productive) up to −1,072 s,
+VexRiscv −151 s / −7% conf, ibm-2004 −16 s / −23% conf. Both arms at
+record counts (base 298 = highest single-arm ever; the S27b margin
+conversion keeps paying).
+
+**The three-deal record lineage this session: 296 (S27b) → 297/298 —
+the S27b prediction ("median deals should read ~296-297") confirmed.**
+
+### S28 evidence trail (unscoped arm + probes + screen)
+
+**Unscoped gate `log/abtest-strict-vs-base-2026-08-24-14-46-54` (400x2 @
+3600 s/16 GB/32 cores): strict 284 v base 297 — LOSE.** Zero
+correctness failures; 1 crash (x-epic OOM = UNKNOWN_rc-6, priced).
+**The per-cell map is the deliverable:** GAINED 8 = m29 (UNSAT 3,028 s
+— the S26 in-band coin, ALSO solved 3,443 s in the screen deal: strict
+converts it reliably) + 7 lottery coins (vmpc, oddball_56, lockchart-
+L220, 6g_6color, ncc, Circuit_mult29, bp4_TCO_IXA). LOST 21 = the SAT
+walk-lottery bank almost wholesale (5 oddball_tto/ttf, 2 lockchart, 2
+sum-of-cubes, rbsat, dislog, ER_400, ITC_Early_12, VdW-27, frb80, fsf,
+sted2, velev-pipe-sat, 2 bp4-SAT, valves+bp4_BC012 near-wall UNSAT).
+Var-count does NOT separate (lockchart-L220 gained at 2.25M vars,
+L210 lost at 2.05M — family lottery). The winners' shared trait is
+gate-rich UNSAT-grind structure (miters=dive2 band; ibm/vex/nla/pj BMC),
+the losers' is the gateless walk/rephase lottery surface. **Same law as
+S21 restart-parity and S27 escalation: global trajectory changes forfeit
+the SAT bank. Band-scope it.**
+
+**Scope-signal truth table (measured, scratch probes):** ALL 10 probed
+unscoped-gate losses have ZERO congruence merges and no dive2 latch
+(dislog, velev-pipe, bp4_TCO_CSO, ITC, ER_400, fsf, oddball_51, rbsat,
+sted2, sum_of_3_cubes) — out of scope, recovered byte-identical. The
+winners latch hard: ibm-2004 merges=144,967 (armed at conflict 1),
+VexRiscv 18,360, x-epic 50,166, valves 28,001; m29/bwo via dive2
+band 2. **nla-dijkstra and pj2016 have ZERO merges — the two giant BMC
+step cells with measured strict upside (3x throughput / halved learned
+lits) are OUTSIDE the auto scope**; they need a different discriminator
+(future arc below). ncc_none_2_18: 0 merges — its unscoped-gate 233 s
+solve was global-trajectory luck on a documented coin cell.
+
+Commits: 62f865d (groundwork, off default), 1b843d9 (auto scope),
+c50de9f (promotion, auto default).
 
 **What was built (ranked item 1, the S27 prerequisite):** all 5 measured
 divergences from kissat chrono closed, behind SAT_CHRONO_STRICT=on
@@ -57,8 +111,11 @@ history (`git log -p plan/next-plan.md` up to 52a8f95); SESSIONS 14b/14c/14d
 bodies were pruned earlier — full text in revisions up to 93ab682. Where this
 file contradicts an older revision, THIS file wins.
 
-**START HERE:** read "SESSION 27b" (the sweep-prover quadratic KILL —
-promoted, new absolute record 296/400), then "SESSION 27" (the kissat
+**START HERE:** read "SESSION 28 FINAL" (faithful kissat chrono port —
+scoped SAT_CHRONO_STRICT=auto PROMOTED; the unscoped 284-v-297 negative
+and the restart-cadence coupling discovery), then "SESSION 27b" (the
+sweep-prover quadratic KILL — promoted, record 296/400), then
+"SESSION 27" (the kissat
 causal-ablation GRID + the decisive unscoped-escalation NEGATIVE),
 then "SESSION 26"
 (dive2-scoped elimination-bound escalation PROMOTED — the
@@ -839,67 +896,79 @@ digit-exact both flag states.
   ON + root-pass scoping law (percent-mass decline-is-identity gates are the
   ONLY shippable root-pass shape). Full text: rev 416adae.
 
-## RANKED PLAN (2026-08-23)
+## RANKED PLAN (2026-08-25, post-SESSION 28)
 
-SESSIONS 15-26 took the bench 279 → ~295-class; SESSION 27 mapped the
-remaining kissat-only set mechanism-by-mechanism and killed the
-unscoped-escalation shortcut. The three productive shapes stand: NEW
-ENGINES (sweepcount), SCOPED-PARITY LATCHES (dive-restart, dive2-elim),
-and CAUSAL KISSAT ABLATION (grid first, build second). Next leads:
+SESSIONS 15-28 took the bench 279 → 297/298-class. The four productive
+shapes stand: NEW ENGINES (sweepcount), SCOPED-PARITY LATCHES
+(dive-restart, dive2-elim, chrono-strict-auto), CAUSAL KISSAT ABLATION
+(grid first, build second), and WALL-BAND PROFILING (S27b). S28 closed
+ranked item 1 (chrono re-port: built faithful, measured both unscoped
+and scoped, promoted the scoped form). Next leads:
 
-1. **Faithful chrono re-port (kissat backtrack.c/decide.c parity).**
-   The grid's cleanest untried multi-cell lever: kissat loses 2.9x on
-   nla-dijkstra, 2.2x on x-epic, TO on pj2016 without chrono; our
-   guarded SAT_CHRONO does not reproduce it (S27: 4 probes dead). A
-   faithful port (chronolevels=100 semantics, reuse rather than our
-   current−1 guard) is a bounded engine arc with a measured 3-cell
-   target list; probe nla/x-epic standalone as acceptance.
-2. **kissat sweep.c pair-mechanics port (uniqinv40-class).** Sized by
+1. **kissat sweep.c pair-mechanics port (uniqinv40-class).** Sized by
    the grid: nosweep 28.5x + nosubst 4.1x. uniqinv40 (kissat 51 s) is
    the acceptance test; sweep_repr mid-environment substitution is the
    known missing piece (S20b).
-3. **Band-scoped escalation reuse.** The COMPLETE_ALL knob is in tree;
-   if a NEW structural discriminator emerges for the b18/grs/ncc
-   class (congruence-armed BMC shape: b18 binfrac 0.25, 167k vars),
-   escalate inside it only — the S26 shape. Do not re-run unscoped.
-4. **Miter family residual (5 kissat-only).** All single-mechanism
-   levers now closed (S26/S27). Residual = composite throughput;
-   revisit only with a genuinely new engine idea.
-5. **Medium-1800 re-baseline (bookkeeping, OVERDUE — eight promotions
+2. **Strict-chrono x restart-cadence coupling (the S28 discovery, a
+   NEW unmeasured combination).** kissat's chrono works on x-epic
+   because it restarts every 34 conflicts (our 230) — its chrono RATE
+   there is identical to ours (28%) but frequent focused restarts keep
+   analysis cones at glue 2-3 while ours grow to 879-lit monsters
+   (30x tick cost, OOM). S21's restart-parity negative predates strict
+   chrono; kissat couples the two BY DESIGN. A scoped experiment:
+   in-scope (auto-latched) cells get kissat-parity focused cadence
+   (floor 1-2/margin 1.10) WITH strict chrono — the chrono one-level
+   backtracks absorb the re-descent cost that killed global parity.
+   Acceptance: x-epic no-OOM + wall drop; nla/pj need a scope signal
+   first (item 3).
+3. **Scope discriminator for the giant BMC step class (nla-dijkstra/
+   pj2016).** Both have measured strict upside (nla 3x conflict
+   throughput, halved learned length) but ZERO congruence merges — the
+   auto scope misses them. Candidate signals: giant-arena + unit-rich
+   (oo-unit rate), BMC step naming is cheating — find the structural
+   axis. Gate risk is low (both are never-solved cells; the danger is
+   only pulling in lottery giants like sum_of_three_cubes_42).
+4. **Band-scoped escalation reuse (S26 shape, unchanged).** The
+   COMPLETE_ALL knob is in tree; needs a NEW structural discriminator
+   for the b18/grs/ncc class. Do not re-run unscoped.
+5. **Miter family residual (4 kissat-only after m29).** All
+   single-mechanism levers closed (S26/S27/S28); residual = composite
+   throughput.
+6. **Medium-1800 re-baseline (bookkeeping, OVERDUE — nine promotions
    since 74/100 at c469b03).**
-6. **Checker-timeout proof-size watch (standing, miter class).**
-   dmu28's in-gate proofs verified in S27's gate (35+ min each under
-   load) — still valid, still slow.
-7. **PARKED/CLOSED: sweepcount generalization; walk vein;
+7. **Checker-timeout proof-size watch (standing, miter class).**
+8. **PARKED/CLOSED: sweepcount generalization; walk vein;
    starved-BMC/XOR; factor.c (DONE, in tree); unscoped escalation
-   (S27); definitions (S24+S26); vivify volume on miters (S26);
-   flywheel for BMC (S27 — the class arms).**
+   (S27); UNSCOPED strict chrono (S28: 284 v 297, do not re-run —
+   the walk bank is the casualty surface); definitions (S24+S26);
+   vivify volume on miters (S26); flywheel for BMC (S27).**
 
 ## Current state
 
-- HEAD: SESSION 27b promotion (sweep-prover quadratic fix, flagless).
-  Freshest deal: **296/400 — the best count ever recorded**
-  (`log/abtest-sweepfix-vs-s27old-2026-08-23-10-44-21/sweepfix/results.tsv`;
-  the pre-fix arm read 296 same deal too — the fix's contribution is
-  the −4.9% median wall / the coin band converted to margin; PAR-2
-  915,096). kissat same-host reference: 294 (2026-08-10). WE ARE NOW
-  AHEAD of kissat on paired-deal counts. Lineage: 261 → 271 → 277 →
-  280 → 286 → 290 → 292 → 293 → 294 → ~295 (S26) → 296 (S27b deal).
+- HEAD: SESSION 28 promotion (SAT_CHRONO_STRICT=auto, c50de9f).
+  Freshest deals: **auto 297 / base 298
+  (`log/abtest-auto-vs-base-2026-08-25-05-19-21`)** — base 298 is the
+  highest single-arm count ever recorded; the auto arm carries m29 at
+  434 s margin and the oski/vex/ibm wall gains. kissat same-host
+  reference: 294 (2026-08-10). WE LEAD kissat by ~3-4 on paired-deal
+  counts. Lineage: 261 → 271 → 277 → 280 → 286 → 290 → 292 → 293 →
+  294 → ~295 (S26) → 296 (S27b) → 297/298 (S28 deals).
 - kissat 4.0.4 reference: **294/400 same-host 2026-08-10**
   (`log/kissat-full-20260810-073149/results.csv`). Remaining kissat-only
-  families after S26: 16x16 miters (5, was 7: dmu28/bwo29/sqrt169 out,
-  m29 back in), oddball residue (4), TT (2), lockchart (2), grs (2),
-  pj (2), b18/b19 BMC (2), singletons (rook-51, par32-2, cfi-rigid,
-  oisc, ER_400, uniqinv40, ...). Lineage: 261 → 271 → 277 → 280 → 286 →
-  290 → 292 → 293 → 294 → ~295-class (S26 +dmu28/+bwo/+sqrt169 −m29),
-  all paired gated A/Bs.
-- Default surface SESSIONS 15-26: SAT_VIVIFY_DEDUCE=on + _ARMED_MIN=500k;
+  families after S28: 16x16 miters (4 — m29 now OURS via strict-auto),
+  oddball residue (~4), TT (2), lockchart (2), grs (2), pj (2), b18/b19
+  BMC (2), singletons (rook-51, par32-2, cfi-rigid, oisc, ER_400,
+  uniqinv40, x-epic/nla-step class, ...).
+- Default surface SESSIONS 15-28: SAT_VIVIFY_DEDUCE=on + _ARMED_MIN=500k;
   SAT_REPHASE_UNARMED_MIN=500_000; SAT_WALK_EFFORT_UNARMED=50;
   SAT_WALK_WARMUP_UNARMED=on; SAT_WALK_STALL_GIVEUP=16; SAT_SWEEPCOUNT=on;
   SAT_SWEEP_YIELD_ESCALATE=20 + SAT_SWEEP_YIELD_MIN_EQUIVS=1000;
   SAT_RESTART_DIVE=on (S21); SAT_RESTART_DIVE2=on (S22);
-  SAT_DIVE_REUSE_TRAIL=on (S25); **SAT_ELIM_BOUND_DIVE2=on (S26)**;
-  SAT_BACKBONE=off; banded sort/tier3/reuse knobs off (closed).
+  SAT_DIVE_REUSE_TRAIL=on (S25); SAT_ELIM_BOUND_DIVE2=on (S26);
+  **SAT_CHRONO_STRICT=auto (S28: dive2-band ∨ congruence-productive
+  latch; on = global strict = measured bench loser; off = legacy
+  guarded chrono only)**; SAT_BACKBONE=off; banded sort/tier3/reuse
+  knobs off (closed).
 - The deep-unarmed walk class is a managed LOTTERY SURFACE (unchanged);
   the global-restart-parity A/B is the freshest, sharpest measurement of
   that surface: +8/−16 on identical mechanisms. Judge walk members as
@@ -996,12 +1065,17 @@ and CAUSAL KISSAT ABLATION (grid first, build second). Next leads:
 
 ## solver12's capability edge (protect in rerolls)
 
-New SESSION 26: **dmu28 = 16_16_default_mapped_ultra_and_and_dadda_mapped_bit28**
+New SESSION 28: **m29 (booth_dadda bit29) is now a BANKED capability,
+no longer a coin** — strict-auto solves it in 3 independent deals
+(3,443 / 3,028 / 3,166 s, 434 s margin in the auto gate) with 1.03M
+fewer conflicts than base's trajectory. Also margin-banked: bwo −193 s,
+oski15 family (12 cells, up to −1,072 s), VexRiscv, ibm-2004.
+**valves-gates is a two-way in-scope coin under strict-auto** (28k
+merges; base margin 24 s) — do not read a valves flip as capability
+movement in either direction.
+Carried SESSION 26: **dmu28 = 16_16_default_mapped_ultra_and_and_dadda_mapped_bit28**
 (UNSAT 2,528 s in-gate, 1,072 s margin, FIRST-EVER), **bwo_bit29** and
-**sqrt-mitern169** (in-gate miter converts; sqrt169 at-wall). **m29 is now
-the in-band COIN** (converts standalone 2,269 s; needs a quiet deal
-in-gate) — do not read an m29 timeout as a capability loss while
-SAT_ELIM_BOUND_DIVE2 is on. Carried: **Circuit_multiplier24** (SAT 1917 s;
+**sqrt-mitern169** (in-gate miter converts; sqrt169 at-wall). Carried: **Circuit_multiplier24** (SAT 1917 s;
 kissat-only before), **BubbleVsPancakeSort_7_6** (UNSAT 2274 s, fat
 margin; does NOT latch band 2 — protected from dive2-scoped features by
 construction). Carried first-evers:
@@ -1018,6 +1092,14 @@ reconf10_22, blockpuzzle, VdW-23, sted2var, bp4_BC012_IXA + bp4_TCO_IXA
 
 ## Where the evidence lives
 
+- SESSION 28: `log/abtest-auto-vs-base-2026-08-25-05-19-21` (the
+  promotion gate), `log/abtest-strict-vs-base-2026-08-24-14-46-54`
+  (the unscoped negative + per-cell casualty map),
+  `log/abtest-strict100-vs-strict300-vs-strict1000-vs-base-2026-08-24-11-34-52`
+  (4-arm chronolevels screen on `benchmarks/chronoscreen-2026-08-24`),
+  `log/fullbench-chronostrict-ab-*.log` / `log/fullbench-chronoauto-ab-*.log`
+  (launch logs). Scope-signal probes and x-epic diagnostics were scratch;
+  key numbers recorded in the SESSION 28 section and the solver README.
 - SESSION 15: `log/abtest-cand-vs-base-2026-08-03-10-13-35` (THE verdict),
   `log/abtest-ded-vs-bbded-vs-bb-vs-base-2026-08-02-17-45-21` (miterded
   screen), `log/miterded-screen-20260802-174521.log`,

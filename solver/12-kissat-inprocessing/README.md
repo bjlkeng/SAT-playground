@@ -15,6 +15,47 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **Search promotion (2026-08-25, SESSION 28): SAT_CHRONO_STRICT=auto
+> default on — faithful kissat chrono port, band-scoped (commits
+> 62f865d groundwork, 1b843d9 auto scope, c50de9f promotion).** The
+> port closes all 5 measured divergences from kissat chrono (learn.c/
+> analyze.c/backtrack.c/assign.c): chronolevels=100 one-level
+> backtracks with no asserting guard, the one_literal_on_conflict_level
+> reuse path (conflict becomes its own driving clause — no learning,
+> no bumps, no glue-EMA — plus two-highest-level watch repositioning
+> on every long conflict), learned units assigned at level 0 OUT OF
+> ORDER on deep trails (kissat_learned_unit; absorbed into the root
+> prefix at the next backtrack-to-0), and reuse-path cadence that
+> ticks conflicts + level EMA but not glue EMAs. `auto` latches strict
+> semantics only at the dive2 band-2 arming (miters) or
+> congruence-productive arming (>=1000 root merges — ibm-2004 144,967,
+> VexRiscv 18,360, x-epic 50,166); every one of the unscoped gate's 21
+> losses has ZERO merges and stays byte-identical to base (rbsat
+> fingerprint 100001/196258/17,758,017 digit-exact under the default).
+> **Unscoped strict measured first: 284 v 297 LOSE
+> (`log/abtest-strict-vs-base-2026-08-24-14-46-54`) — wins the
+> gate-rich grind class, forfeits the SAT walk-lottery bank (19 of 21
+> losses lottery SAT cells). Scoped gate
+> (`log/abtest-auto-vs-base-2026-08-25-05-19-21`, 400x2 @ 3600 s/16 GB/
+> 32 cores): auto 297 v base 298 — judged PROMOTABLE under the trade
+> rule: the single delta is valves-gates (base margin 24 s = test-1
+> wall coin, flipped IN/OUT across the last three deals), against
+> tier-2 conflicts −0.63%, both-solved wall −2.26%, PAR-2 win, zero
+> correctness failures, 268/297 both-solved cells conflict-IDENTICAL.**
+> In-scope wins: m29 converted from base's 6 s-margin coin to a 434 s-
+> margin solve (9.13M v 10.16M conflicts; strict converts m29 in 3
+> independent deals), bwo −193 s (6.83M v 7.31M), the 12-cell oski15
+> family up to −1,072 s, VexRiscv −151 s / −7% conflicts, ibm-2004
+> −16 s / −23% conflicts. Quiet-probe mechanism evidence: nla-dijkstra
+> 3x conflict throughput with learned length halved; pj2016 learned
+> lits halved. Known wart: x-epic_p16 (in scope, 50k merges) OOM-aborts
+> ~2,300-3,000 s under strict — avg learned clause 879 lits v base 161
+> (the strict-chrono x tame-restart interaction; kissat's chrono rate
+> there is identical to ours at 28% but it restarts every 34 conflicts
+> v our 230, keeping cones glue-2/3) — metric-neutral (base times out
+> there too). The strict-everywhere trade and the restart-cadence
+> coupling are recorded in `plan/next-plan.md` SESSION 28.
+
 > **Engine promotion (2026-08-24, SESSION 27b): sweep-prover quadratic
 > KILLED — flagless, identity-proven (commit 5027737).** A gdb-parent
 > profile put 89% of bp4_BC012_CSO's wall inside
