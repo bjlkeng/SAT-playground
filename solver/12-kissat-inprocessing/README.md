@@ -15,6 +15,28 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **Engine promotion (2026-08-26, SESSION 28c): WatchPool hot-path
+> tightening — flagless, identity-proven (commit 4a3207d).** The S28b
+> gdb-parent leaf profile put WatchPool::push at 10% of m29's wall (the
+> watch-move machinery on learned-heavy cells). push now does one meta
+> load + one unchecked slot write under the materialization invariant
+> (grow() eagerly resizes data to start+cap, so start+len < data.len()
+> always); swap_remove is unchecked under pos < len <= cap. Both
+> preserve list ORDER exactly, so watcher sequences and trajectories
+> are byte-identical by construction. Paired quiet timing: m29 1M-
+> conflict horizon −4.3% (111.3 → 106.5 s), rbsat 100k −3.7%.
+> **Gate (frozen-snapshot method, pre-change 51579f2 binary as
+> baseline arm; `log/abtest-poolfast-vs-s28old-2026-08-25-23-30-47`,
+> 400x2 @ 3600 s/16 GB/32 cores): PASS, WIN 293 v 292 — ALL 291
+> both-solved cells conflict-IDENTICAL (100%), both-solved wall −1.52%
+> under contention, zero correctness failures. +cfi-rigid-t2 (SAT
+> 3,340 s, a kissat-only cell) +sqrt-mitern169 (3,418 s) at the wall,
+> −ncc_21015 (base margin 30 s = identical-trajectory wall coin).**
+> Also measured this arc: kitten throughput 9.3 µs/solve on uniqinv40
+> (2x faster than kissat's 18 µs — the S20b "kitten throughput" lever
+> is closed), and the wall band is fully search-bound (search_sec
+> >= 99.5% on 8 band cells — no hidden pass tax remains post-S27b).
+
 > **Search promotion (2026-08-25, SESSION 28): SAT_CHRONO_STRICT=auto
 > default on — faithful kissat chrono port, band-scoped (commits
 > 62f865d groundwork, 1b843d9 auto scope, c50de9f promotion).** The

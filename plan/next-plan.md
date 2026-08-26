@@ -1,5 +1,32 @@
 # NEXT PLAN — 2026-08-24 (supersedes 2026-08-16; PRUNED)
 
+## SESSION 28c (2026-08-26) — WatchPool hot-path tightening PROMOTED (flagless, identity-proven): gate PASS WIN 293 v 292, ALL 291 shared cells conflict-identical, +cfi-rigid-t2 FIRST-EVER-in-gate +sqrt169 at the wall
+
+**The find (gdb-parent leaf profile, 400 samples, symbolized binary):
+WatchPool::push = 10% of m29's wall** — the swap_remove+push pair runs
+on every long-clause watch move, and push carried a double meta load
+plus a checked slot write. Fix (commit 4a3207d): one meta load + one
+unchecked write under the materialization invariant (grow() eagerly
+resizes data to start+cap); swap_remove unchecked under pos<len<=cap.
+Order-preserving ⇒ trajectory-identical BY CONSTRUCTION.
+
+**Paired quiet: m29 1M-conflict −4.3%, rbsat 100k −3.7% (conflicts
+digit-identical). Gate (frozen-snapshot 51579f2 arm,
+`log/abtest-poolfast-vs-s28old-2026-08-25-23-30-47`, 400x2 @ 3600 s):
+PASS, WIN 293 v 292 — 291/291 both-solved cells conflict-IDENTICAL,
+wall −1.52% in-contention, zero correctness failures. +cfi-rigid-t2
+(SAT 3,340 s — the S27 one-cell prize, now converted by pure speed)
++sqrt-mitern169 (3,418 s); −ncc_21015 (base margin 30 s,
+identical-trajectory wall coin).** The deal itself was weak (both arms
+in the low 290s — deal variance); the paired signal is the verdict.
+
+Also closed this arc: kitten throughput measured 9.3 µs/solve on
+uniqinv40 — 2x FASTER than kissat's 18 µs (S20b's "kitten throughput"
+chunk is NOT a lever); wall band fully search-bound (>=99.5%
+search_sec on 8 band cells). Snapshot dir solver/00-s28-snapshot/
+(untracked) holds the frozen 51579f2 binary; recreate the temporary
+CONFIG_MAP entry on demand (NOT committed).
+
 ## SESSION 28 FINAL (2026-08-25) — SAT_CHRONO_STRICT=auto PROMOTED (band-scoped faithful kissat chrono); auto gate 297 v 298 judged promotable (single delta = valves wall coin, 24 s margin; tier-2 −0.63%, wall −2.26%, PAR-2 win, 268/297 conflict-identical); m29 coin CONVERTED to 434 s margin
 
 **Promotion (commit c50de9f):** `SAT_CHRONO_STRICT=auto` default on.
