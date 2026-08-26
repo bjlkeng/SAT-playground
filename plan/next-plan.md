@@ -46,6 +46,19 @@ the S27b prediction ("median deals should read ~296-297") confirmed.**
    now failed (S20b wide-envs, S20b flips, S28b occ-merge): do not
    nibble a fourth time.
 
+3. **Wall-band tax hunt: CLEAN (the S27b method re-applied).** 8 wall-band
+   cells (dmu28/bvp76/ncc21015/goldcrest/rr17/mvrr/bivium/sqrt169) at an
+   1800 s stats horizon: search_sec >= 99.5% of elapsed on every one,
+   sweep_prove <= 32 s, unexplained share <= 0.7%. No hidden pass tax
+   remains post-S27b — the band is pure CDCL search; further wall gains
+   need engine or trajectory work, not pass fixes.
+4. **Mapped-miter upside map: NOT close.** The 4 unsolved 16_16
+   bit27/28 MAPPED variants all dive2-latch and get the full
+   strict+dive2+elim stack, and still run 12.5-13.4M conflicts at
+   3600 s QUIET without solving — unlike pre-conversion m29 (which
+   solved standalone at 2,269 s). The mapped-family residual is
+   composite throughput, not a missing latch.
+
 **Remaining-gap aggregate (auto-gate union vs kissat 08-10 same-host):
 our union 298/400 v kissat 294; we-only 43, kissat-only 39,
 both-timeout 63.** The kissat-only 39 decompose: 7 additional 16_16
