@@ -26,6 +26,38 @@ conversion keeps paying).
 **The three-deal record lineage this session: 296 (S27b) → 297/298 —
 the S27b prediction ("median deals should read ~296-297") confirmed.**
 
+### SESSION 28b (2026-08-25 evening) — two follow-up arcs measured NEGATIVE and banked; the remaining-gap aggregate rebuilt from the freshest 400-cell data
+
+1. **Strict-chrono x armed-restart-cadence coupling: KILLED** (details in
+   ranked item 2 below — ibm +79% / vex +9% / oski06 +15% conflicts;
+   x-epic stops OOMing but does not convert).
+2. **SAT_SWEEP_OCC_MERGE (kissat substitute_connected_clauses reach
+   analog): KILLED as default, knob banked off (commit 8925f63).**
+   uniqinv40 acceptance failed — 1,642 equivalences with the merge v
+   1,655 without: the plateau is IDENTICAL, so environment reach is NOT
+   the sweep residual (re-confirms S20 finding 3 from a new angle;
+   kissat reaches 3,799). And dislog_a14 TIMED OUT under the merge
+   (base SAT ~2,430 s) — the standing fragile-bank kill. HCP-446 par
+   (2,680 s, 1,880 equivs). What remains of the uniqinv40 arc, sharpened:
+   the residual is kissat's PER-SWEEP CANDIDATE MECHANICS + its
+   continuous ~23k-conflict sweep cadence + the substitute→congruence
+   re-extract interleave on the REAL clause DB — a full faithful
+   sweep.c port, not a reach or environment tweak. Three nibbles have
+   now failed (S20b wide-envs, S20b flips, S28b occ-merge): do not
+   nibble a fourth time.
+
+**Remaining-gap aggregate (auto-gate union vs kissat 08-10 same-host):
+our union 298/400 v kissat 294; we-only 43, kissat-only 39,
+both-timeout 63.** The kissat-only 39 decompose: 7 additional 16_16
+miter bit27/28 MAPPED variants (in-band strict-auto rolls — upside),
+5 BMC (b18, b19_1, SAT_dat.k100, pj2008_k200, pj2016_k100), 2 giant
+steps (nla-dijkstra, x-epic — strict helps, scope misses, see item 3),
+2 grs, ~11 structural singletons (uniqinv40, myciel6, mod4block,
+fixedbandwidth, goldcrest, oisc, SGI_30, cfi-rigid, rook-51, par32-2,
+BvP_8_4), and ~12 lottery/deal cells that swap sides across deals
+(HCP-446, ncc, case6, oddball residue, ER_400.apx_2, lockchart,
+Timetable, bp4).
+
 ### S28 evidence trail (unscoped arm + probes + screen)
 
 **Unscoped gate `log/abtest-strict-vs-base-2026-08-24-14-46-54` (400x2 @
@@ -905,22 +937,25 @@ shapes stand: NEW ENGINES (sweepcount), SCOPED-PARITY LATCHES
 ranked item 1 (chrono re-port: built faithful, measured both unscoped
 and scoped, promoted the scoped form). Next leads:
 
-1. **kissat sweep.c pair-mechanics port (uniqinv40-class).** Sized by
-   the grid: nosweep 28.5x + nosubst 4.1x. uniqinv40 (kissat 51 s) is
-   the acceptance test; sweep_repr mid-environment substitution is the
-   known missing piece (S20b).
-2. **Strict-chrono x restart-cadence coupling (the S28 discovery, a
-   NEW unmeasured combination).** kissat's chrono works on x-epic
-   because it restarts every 34 conflicts (our 230) — its chrono RATE
-   there is identical to ours (28%) but frequent focused restarts keep
-   analysis cones at glue 2-3 while ours grow to 879-lit monsters
-   (30x tick cost, OOM). S21's restart-parity negative predates strict
-   chrono; kissat couples the two BY DESIGN. A scoped experiment:
-   in-scope (auto-latched) cells get kissat-parity focused cadence
-   (floor 1-2/margin 1.10) WITH strict chrono — the chrono one-level
-   backtracks absorb the re-descent cost that killed global parity.
-   Acceptance: x-epic no-OOM + wall drop; nla/pj need a scope signal
-   first (item 3).
+1. **kissat sweep.c FULL faithful port (uniqinv40-class) — no more
+   nibbles.** Sized by the grid: nosweep 28.5x + nosubst 4.1x.
+   uniqinv40 (kissat 51 s) is the acceptance test. S28b eliminated
+   environment reach as the residual (occ-merge: yield identical at
+   1,642 v 1,655; kissat 3,799); what remains is the whole shape —
+   real-DB substitution mid-sweep, per-sweep candidate mechanics,
+   ~23k-conflict continuous cadence, and the substitute→congruence
+   re-extract interleave. Budget a full session; expect the fragile
+   bank (dislog) to need the yield-armed scoping preserved exactly.
+2. **KILLED 2026-08-25 (measured, do not re-run): strict-chrono x
+   armed-restart-cadence coupling.** Probes (quiet, auto +
+   SAT_RESTART_ARMED_FLOOR=2 + SAT_RESTART_ARMED_MARGIN=1.10): ibm
+   659k v 368k conflicts (+79%), vex 3.02M v 2.78M (+9%), oski06
+   3.02M v 2.63M (+15%) — every solved canary in the congruence class
+   regresses; x-epic stops OOMing (the cadence DOES cap clause growth,
+   confirming the mechanism) but still no conversion; b18 unchanged.
+   The miter band wins with floor-2 + strict because those cells are
+   tiny pure-trajectory gaps; the large congruence-armed cells pay
+   real re-descent/inprocessing-rhythm costs. The knobs stay inert.
 3. **Scope discriminator for the giant BMC step class (nla-dijkstra/
    pj2016).** Both have measured strict upside (nla 3x conflict
    throughput, halved learned length) but ZERO congruence merges — the
