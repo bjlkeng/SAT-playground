@@ -1483,14 +1483,22 @@ impl WatchPool {
     }
 
     #[inline]
+    #[inline(always)]
     fn push(&mut self, idx: usize, w: Watcher) {
-        let m = self.meta[idx];
+        // Hot path (S28b profile: 10% of m29 wall lives here): one meta load,
+        // one meta store, one unchecked data write. The slot is in bounds by
+        // the materialization invariant — grow() eagerly resizes `data` to
+        // start+cap with pad entries, so start+len < start+cap <= data.len().
+        let mut m = self.meta[idx];
         if m.len == m.cap {
             self.grow(idx, m.len as usize);
+            m = self.meta[idx];
         }
-        let m = self.meta[idx];
         let slot = m.start + m.len as usize;
-        self.data[slot] = w;
+        debug_assert!(slot < self.data.len());
+        unsafe {
+            *self.data.get_unchecked_mut(slot) = w;
+        }
         self.meta[idx].len = m.len + 1;
     }
 
@@ -1517,12 +1525,19 @@ impl WatchPool {
         self.wasted += old.cap as usize;
     }
 
-    /// `Vec::swap_remove` semantics on list `idx`.
+    /// `Vec::swap_remove` semantics on list `idx`. Unchecked data access under
+    /// the same materialization invariant as `push` (pos < len <= cap and
+    /// start+cap <= data.len()).
+    #[inline(always)]
     fn swap_remove(&mut self, idx: usize, pos: usize) {
         let m = self.meta[idx];
         let len = m.len as usize;
         debug_assert!(pos < len);
-        self.data[m.start + pos] = self.data[m.start + len - 1];
+        debug_assert!(m.start + len <= self.data.len());
+        unsafe {
+            *self.data.get_unchecked_mut(m.start + pos) =
+                *self.data.get_unchecked(m.start + len - 1);
+        }
         self.meta[idx].len = (len - 1) as u32;
     }
 
