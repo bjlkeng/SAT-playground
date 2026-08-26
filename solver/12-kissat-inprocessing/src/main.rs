@@ -3105,6 +3105,13 @@ struct Solver {
     sweep_yield_escalate_permille: u64,
     /// runtime latch for SAT_SWEEP_YIELD_ESCALATE (see above).
     sweep_yield_armed: bool,
+    /// SESSION 28b (SAT_SWEEP_OCC_MERGE): kissat substitute_connected_clauses
+    /// reach semantics for the yield-armed sweep — a proven equivalence merges
+    /// the absorbed variable's snapshot occurrence list into the
+    /// representative's, so later environments this round BFS into the merged
+    /// region, and absorbed variables stop being seeds. Off = S20b behavior
+    /// (virtual repr mapping only).
+    sweep_occ_merge: bool,
     /// SAT_WALK_EFFORT_YIELD_ARMED (permille, default 0 = off): walk effort
     /// for yield-armed (cascade-collapsed) formulas.
     walk_effort_yield_armed_permille: u64,
@@ -4783,6 +4790,7 @@ impl Solver {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(20),
             sweep_yield_armed: false,
+            sweep_occ_merge: env_bool_or_default("SAT_SWEEP_OCC_MERGE", false),
             // Default 0 (off): the early probe measured useless for its
             // target (HCP yield 103 at 150k v 1490 at 810k) and a declining
             // probe costs real kitten wall on every unarmed formula.
@@ -12869,8 +12877,10 @@ impl Solver {
         // Snapshot the live original clauses (len >= 2; units are already root facts) as
         // DIMACS literals plus a variable -> snapshot-index occurrence map. Owned locals so
         // the BFS closure does not borrow `self` while we later mutate it to apply facts.
+        // The occurrence map lives in a RefCell because the yield-armed repr cascade
+        // MERGES occurrence lists mid-round (see below) while `clauses_of` reads them.
         let mut snap: Vec<Vec<i32>> = Vec::new();
-        let mut occ: Vec<Vec<usize>> = vec![Vec::new(); nvars + 1];
+        let mut occ_fill: Vec<Vec<usize>> = vec![Vec::new(); nvars + 1];
         let ids = self.original_clause_ids.clone();
         for cid in ids {
             let cid = cid as usize;
@@ -12889,7 +12899,7 @@ impl Solver {
             for &l in &lits {
                 let v = l.unsigned_abs() as usize;
                 if v >= 1 && v <= nvars {
-                    occ[v].push(si);
+                    occ_fill[v].push(si);
                 }
             }
             snap.push(lits);
@@ -12897,6 +12907,7 @@ impl Solver {
         if snap.is_empty() {
             return true;
         }
+        let occ: std::cell::RefCell<Vec<Vec<usize>>> = std::cell::RefCell::new(occ_fill);
 
         // SESSION 20b (yield-armed only): in-round representative map — the
         // kissat sweep_repr cascade. Environments built LATER in the round
@@ -12939,7 +12950,8 @@ impl Solver {
                 }
                 Some(out)
             };
-            match occ.get(v) {
+            let o = occ.borrow();
+            match o.get(v) {
                 Some(list) => list.iter().filter_map(|&si| mapped(&snap[si])).collect(),
                 None => Vec::new(),
             }
@@ -12974,7 +12986,7 @@ impl Solver {
                 if self.assignment[sv] != UNASSIGNED || self.eliminated[sv] {
                     continue;
                 }
-                if occ[sv].is_empty() || self.sweep_done[sv] {
+                if occ.borrow()[sv].is_empty() || self.sweep_done[sv] {
                     continue;
                 }
                 let mut env = build_environment(
@@ -13117,13 +13129,22 @@ impl Solver {
             if self.assignment[sv] != UNASSIGNED || self.eliminated[sv] {
                 continue;
             }
-            if occ[sv].is_empty() {
+            if occ.borrow()[sv].is_empty() {
                 continue;
             }
             // Retire policy: skip seeds already proven barren at the current bounds, so the
             // budget goes to unexamined variables while productive seeds (never marked
             // done) stay in rotation and keep exploiting the ELS merge cascade.
             if retire && self.sweep_done[sv] {
+                continue;
+            }
+            // kissat sweep.c candidate rule: a variable already absorbed by a
+            // proven equivalence (sweep_repr(lit) != lit) is no longer a seed —
+            // its region is swept through the representative.
+            if self.sweep_yield_armed
+                && self.sweep_occ_merge
+                && repr_find(seed).unsigned_abs() as usize != sv
+            {
                 continue;
             }
             let mut env = build_environment(
@@ -13187,6 +13208,24 @@ impl Solver {
                     proof_log.record_clause(&[-ra, rb]);
                     proof_log.record_clause(&[ra, -rb]);
                     repr.borrow_mut().insert(rb.abs(), if rb > 0 { ra } else { -ra });
+                    // kissat substitute_connected_clauses analog on the snapshot:
+                    // the absorbed variable's occurrences JOIN the representative's,
+                    // so environments built later this round REACH the merged
+                    // region. The virtual repr map alone rewrites literals but
+                    // leaves occ[repr] blind to the absorbed clauses — the BFS
+                    // then never co-locates pairs that the merge just created,
+                    // which is exactly where kissat's cascade keeps yielding.
+                    let (ra_v, rb_v) =
+                        (ra.unsigned_abs() as usize, rb.unsigned_abs() as usize);
+                    if self.sweep_occ_merge && ra_v != rb_v && ra_v <= nvars && rb_v <= nvars {
+                        let mut o = occ.borrow_mut();
+                        let moved = std::mem::take(&mut o[rb_v]);
+                        if !moved.is_empty() {
+                            o[ra_v].extend(moved);
+                            o[ra_v].sort_unstable();
+                            o[ra_v].dedup();
+                        }
+                    }
                 }
             }
             self.sweep_facts_this_pass = self.sweep_facts_this_pass.saturating_add(
