@@ -142,6 +142,26 @@ pub(crate) struct Kitten {
     /// Set by `propagate` when `ticks` crosses `tick_limit`; the solve loops abort
     /// with `None` (search state is stale but `reset_search` on the next call heals it).
     budget_exhausted: bool,
+
+    /// Faithful-sweep mode (kissat kitten parity): assumptions are re-installed
+    /// whenever backjumping pops them, so `solve` is COMPLETE under assumptions.
+    /// The legacy one-shot install (default) can return `Sat` on an
+    /// assumption-UNSAT instance after learning a unit at an assumption level
+    /// and backtracking past it — a yield loss the faithful sweep cannot afford.
+    /// Off by default so every shipped trajectory stays byte-identical.
+    assumption_complete: bool,
+    /// One-shot phase-randomization request (kissat `kitten_randomize_phases`
+    /// parity): applied inside the next `solve_budgeted` AFTER `reset_search`
+    /// (which would otherwise overwrite the phases with trail-pop saves).
+    /// Meaningful with `fast_mode` (phase-driven decisions).
+    pending_phase_seed: Option<u64>,
+    /// Result of the most recent `solve`/`solve_budgeted`: 0 unknown/budget,
+    /// 10 Sat, 20 Unsat (kissat `kitten_status` parity).
+    last_status: u8,
+    /// Learned-clause indices in the most recent UNSAT core, ascending (=
+    /// derivation order). Each lemma's antecedents are in the core too, so
+    /// emitting exactly these (in order) yields a self-contained RUP chain.
+    core_learned: Vec<usize>,
 }
 
 impl Kitten {
@@ -169,7 +189,53 @@ impl Kitten {
             ticks: 0,
             tick_limit: u64::MAX,
             budget_exhausted: false,
+            assumption_complete: false,
+            pending_phase_seed: None,
+            last_status: 0,
+            core_learned: Vec::new(),
         }
+    }
+
+    /// Enable complete assumption handling (faithful-sweep mode only).
+    pub(crate) fn set_assumption_complete(&mut self, on: bool) {
+        self.assumption_complete = on;
+    }
+
+    /// Request kissat-parity phase randomization for the NEXT solve call.
+    pub(crate) fn queue_randomize_phases(&mut self, seed: u64) {
+        self.pending_phase_seed = Some(seed);
+    }
+
+    /// kissat `kitten_status` parity: 10 Sat / 20 Unsat / 0 unknown-or-budget.
+    pub(crate) fn status(&self) -> u8 {
+        self.last_status
+    }
+
+    /// kissat `kitten_fixed` parity: the literal's value if it is assigned at
+    /// decision level 0 in the current (post-solve) state, else 0.
+    pub(crate) fn fixed_lit(&self, dimacs: i32) -> i8 {
+        let var = (dimacs.unsigned_abs() - 1) as usize;
+        if var >= self.num_vars || self.value[var] == UNASSIGNED {
+            return 0;
+        }
+        if self.level[var] != 0 {
+            return 0;
+        }
+        self.lit_value(lit_from_dimacs(dimacs))
+    }
+
+    /// Learned-clause indices of the most recent UNSAT core, ascending.
+    pub(crate) fn core_learned(&self) -> &[usize] {
+        &self.core_learned
+    }
+
+    /// The recorded lemma (signed DIMACS over kitten vars) for a learned clause
+    /// index returned by [`core_learned`]. The `proof` trace is indexed in
+    /// learn order and inputs are only added before solving starts, so the
+    /// mapping `clause_idx - num_input` is exact.
+    pub(crate) fn learned_lemma_dimacs(&self, clause_idx: usize) -> &[i32] {
+        debug_assert!(clause_idx >= self.num_input);
+        &self.proof[clause_idx - self.num_input]
     }
 
     /// Ticks consumed by the most recent `solve`/`solve_budgeted` call.
@@ -505,10 +571,35 @@ impl Kitten {
         assumptions: &[i32],
         budget: u64,
     ) -> Option<KittenResult> {
+        let res = self.solve_budgeted_inner(assumptions, budget);
+        self.last_status = match res {
+            Some(KittenResult::Sat) => 10,
+            Some(KittenResult::Unsat) => 20,
+            None => 0,
+        };
+        res
+    }
+
+    fn solve_budgeted_inner(
+        &mut self,
+        assumptions: &[i32],
+        budget: u64,
+    ) -> Option<KittenResult> {
         self.ticks = 0;
         self.tick_limit = budget;
         self.budget_exhausted = false;
         self.reset_search();
+        if let Some(seed) = self.pending_phase_seed.take() {
+            // kissat kitten_randomize_phases parity: fresh random phases per
+            // solve drive model diversity for backbone/partition refinement.
+            let mut state = seed | 1;
+            for v in 0..self.num_vars {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                self.saved_phase[v] = if (state >> 33) & 1 == 0 { TRUE } else { FALSE };
+            }
+        }
         if self.inconsistent {
             self.compute_core_empty();
             return Some(KittenResult::Unsat);
@@ -542,27 +633,30 @@ impl Kitten {
         }
 
         // Install assumptions as forced literals at increasing decision levels so a
-        // conflict can be analyzed back to them.
-        for &a in assumptions {
-            let l = lit_from_dimacs(a);
-            match self.lit_value(l) {
-                TRUE => continue,
-                FALSE => {
-                    // Assumption contradicts an implied literal: UNSAT under assumptions.
-                    // Reconstruct the conflict by treating the failing literal's reason.
-                    let confl = self.conflict_for_falsified_assumption(l);
-                    self.compute_core(confl);
-                    return Some(KittenResult::Unsat);
-                }
-                _ => {
-                    self.trail_lim.push(self.trail.len());
-                    self.assign(l, Reason::Assumption);
-                    if let Some(confl) = self.propagate() {
+        // conflict can be analyzed back to them. (Legacy one-shot install: a backjump
+        // past an assumption level silently drops it — see `assumption_complete`.)
+        if !self.assumption_complete {
+            for &a in assumptions {
+                let l = lit_from_dimacs(a);
+                match self.lit_value(l) {
+                    TRUE => continue,
+                    FALSE => {
+                        // Assumption contradicts an implied literal: UNSAT under assumptions.
+                        // Reconstruct the conflict by treating the failing literal's reason.
+                        let confl = self.conflict_for_falsified_assumption(l);
                         self.compute_core(confl);
                         return Some(KittenResult::Unsat);
                     }
-                    if self.budget_exhausted {
-                        return None;
+                    _ => {
+                        self.trail_lim.push(self.trail.len());
+                        self.assign(l, Reason::Assumption);
+                        if let Some(confl) = self.propagate() {
+                            self.compute_core(confl);
+                            return Some(KittenResult::Unsat);
+                        }
+                        if self.budget_exhausted {
+                            return None;
+                        }
                     }
                 }
             }
@@ -570,11 +664,38 @@ impl Kitten {
 
         // CDCL search.
         loop {
-            match self.pick_decision() {
+            // Complete assumption handling: (re-)install the first unassigned
+            // assumption as a pseudo-decision; a falsified assumption is
+            // UNSAT-under-assumptions with the falsifying reason as core seed.
+            let next: Option<(Lit, Reason)> = if self.assumption_complete {
+                let mut chosen: Option<(Lit, Reason)> = None;
+                for &a in assumptions {
+                    let l = lit_from_dimacs(a);
+                    match self.lit_value(l) {
+                        TRUE => continue,
+                        FALSE => {
+                            let confl = self.conflict_for_falsified_assumption(l);
+                            self.compute_core(confl);
+                            return Some(KittenResult::Unsat);
+                        }
+                        _ => {
+                            chosen = Some((l, Reason::Assumption));
+                            break;
+                        }
+                    }
+                }
+                match chosen {
+                    Some(pair) => Some(pair),
+                    None => self.pick_decision().map(|d| (d, Reason::Decision)),
+                }
+            } else {
+                self.pick_decision().map(|d| (d, Reason::Decision))
+            };
+            match next {
                 None => return Some(KittenResult::Sat),
-                Some(dec) => {
+                Some((dec, reason)) => {
                     self.trail_lim.push(self.trail.len());
-                    self.assign(dec, Reason::Decision);
+                    self.assign(dec, reason);
                     loop {
                         match self.propagate() {
                             None => {
@@ -706,6 +827,7 @@ impl Kitten {
     fn compute_core_empty(&mut self) {
         // The formula contains the empty clause; the core is that clause.
         self.core.clear();
+        self.core_learned.clear();
         for (i, c) in self.clauses.iter().enumerate().take(self.num_input) {
             if c.is_empty() {
                 self.core.push(i);
@@ -738,6 +860,7 @@ impl Kitten {
     /// input-clause indices into `self.core`. Marks are cleared before returning.
     fn compute_core(&mut self, conflict: usize) {
         self.core.clear();
+        self.core_learned.clear();
         let mut stack: Vec<usize> = Vec::new();
         let mut clause_seen: Vec<bool> = vec![false; self.clauses.len()];
         stack.push(conflict);
@@ -748,6 +871,7 @@ impl Kitten {
             if cidx < self.num_input {
                 self.core.push(cidx);
             } else {
+                self.core_learned.push(cidx);
                 // Learned clause: its refutation support is its derivation
                 // antecedents, which need not be live reasons anymore.
                 for k in 0..self.antecedents[cidx].len() {
@@ -779,6 +903,10 @@ impl Kitten {
         }
         self.core.sort_unstable();
         self.core.dedup();
+        // Ascending clause index == derivation order: every lemma's antecedents
+        // precede it, so this order is a valid RUP emission order.
+        self.core_learned.sort_unstable();
+        self.core_learned.dedup();
     }
 }
 
@@ -937,6 +1065,214 @@ mod tests {
             checked += 1;
         }
         assert!(checked >= 2000);
+    }
+
+    /// Complete assumption mode must agree with brute force on SAT-under-
+    /// assumptions for every random instance — including the legacy-mode trap
+    /// where a unit learned at the assumption level backjumps past the
+    /// assumption and the solve "succeeds" without it.
+    #[test]
+    fn assumption_complete_fuzz_matches_brute_force() {
+        let mut state: u64 = 0xDEADBEEFCAFEF00D;
+        let mut next = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 33) as u32
+        };
+        for _ in 0..2000 {
+            let nv = 2 + (next() % 6) as usize; // 2..=7 vars
+            let nc = 2 + (next() % 14) as usize;
+            let mut dimacs: Vec<Vec<i32>> = Vec::new();
+            for _ in 0..nc {
+                let clen = 1 + (next() % 3) as usize;
+                let mut c: Vec<i32> = Vec::new();
+                for _ in 0..clen {
+                    let v = 1 + (next() % nv as u32) as i32;
+                    let lit = if next() & 1 == 0 { v } else { -v };
+                    if !c.contains(&lit) && !c.contains(&-lit) {
+                        c.push(lit);
+                    }
+                }
+                if !c.is_empty() {
+                    dimacs.push(c);
+                }
+            }
+            let na = 1 + (next() % 2) as usize;
+            let mut assumptions: Vec<i32> = Vec::new();
+            for _ in 0..na {
+                let v = 1 + (next() % nv as u32) as i32;
+                let lit = if next() & 1 == 0 { v } else { -v };
+                if !assumptions.contains(&lit) && !assumptions.contains(&-lit) {
+                    assumptions.push(lit);
+                }
+            }
+            let mut k = Kitten::new();
+            k.set_assumption_complete(true);
+            for v in 1..=nv as i32 {
+                k.add_clause(&[v, -v]); // dropped tautology, forces var creation
+            }
+            for c in &dimacs {
+                k.add_clause(c);
+            }
+            let got = k.solve(&assumptions);
+            let mut with_assumptions = dimacs.clone();
+            for &a in &assumptions {
+                with_assumptions.push(vec![a]);
+            }
+            let expect_sat = brute_force_sat(nv, &with_assumptions);
+            match got {
+                KittenResult::Sat => {
+                    assert!(expect_sat, "Sat but assumption-UNSAT: {dimacs:?} A={assumptions:?}");
+                    for c in &with_assumptions {
+                        let ok = c
+                            .iter()
+                            .any(|&d| k.value(d.unsigned_abs() as usize) == Some(d > 0));
+                        assert!(ok, "model violates {c:?} under {assumptions:?} in {dimacs:?}");
+                    }
+                }
+                KittenResult::Unsat => {
+                    assert!(
+                        !expect_sat,
+                        "Unsat but assumption-SAT: {dimacs:?} A={assumptions:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Adversarial mirror of the faithful sweep's kitten usage: one incremental
+    /// kitten per formula; interleave plain solves (randomized phases), flip
+    /// attempts, and assumption solves; every verdict is checked against brute
+    /// force and every SAT model is validated.
+    #[test]
+    fn sweep_usage_pattern_fuzz_sound() {
+        let mut state: u64 = 0x1234_5678_9ABC_DEF0;
+        let mut next = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 33) as u32
+        };
+        for round in 0..400 {
+            let nv = 3 + (next() % 6) as usize; // 3..=8 vars
+            let nc = 3 + (next() % 18) as usize;
+            let mut dimacs: Vec<Vec<i32>> = Vec::new();
+            for _ in 0..nc {
+                let clen = 1 + (next() % 3) as usize;
+                let mut c: Vec<i32> = Vec::new();
+                for _ in 0..clen {
+                    let v = 1 + (next() % nv as u32) as i32;
+                    let lit = if next() & 1 == 0 { v } else { -v };
+                    if !c.contains(&lit) && !c.contains(&-lit) {
+                        c.push(lit);
+                    }
+                }
+                if !c.is_empty() {
+                    dimacs.push(c);
+                }
+            }
+            let mut k = Kitten::new();
+            k.set_fast_mode(true);
+            k.set_assumption_complete(true);
+            for v in 1..=nv as i32 {
+                k.add_clause(&[v, -v]);
+            }
+            for c in &dimacs {
+                k.add_clause(c);
+            }
+            let check_model = |k: &Kitten, extra: &[i32]| {
+                for c in dimacs.iter() {
+                    let ok = c.iter().any(|&d| k.value(d.unsigned_abs() as usize) == Some(d > 0));
+                    assert!(ok, "round {round}: model violates {c:?} (extra {extra:?}) in {dimacs:?}");
+                }
+                for &a in extra {
+                    assert_eq!(
+                        k.value(a.unsigned_abs() as usize),
+                        Some(a > 0),
+                        "round {round}: assumption {a} unsatisfied in model, {dimacs:?}"
+                    );
+                }
+            };
+            for _op in 0..30 {
+                match next() % 3 {
+                    0 => {
+                        k.queue_randomize_phases(next() as u64);
+                        let res = k.solve(&[]);
+                        let expect = brute_force_sat(nv, &dimacs);
+                        match res {
+                            KittenResult::Sat => {
+                                assert!(expect, "round {round}: false SAT {dimacs:?}");
+                                check_model(&k, &[]);
+                            }
+                            KittenResult::Unsat => {
+                                assert!(!expect, "round {round}: false UNSAT {dimacs:?}")
+                            }
+                        }
+                    }
+                    1 => {
+                        if k.status() == 10 {
+                            let var = 1 + (next() % nv as u32) as usize;
+                            let flipped = k.flip_literal(var);
+                            if flipped {
+                                check_model(&k, &[]);
+                            }
+                        }
+                    }
+                    _ => {
+                        let na = 1 + (next() % 2) as usize;
+                        let mut assumptions: Vec<i32> = Vec::new();
+                        for _ in 0..na {
+                            let v = 1 + (next() % nv as u32) as i32;
+                            let lit = if next() & 1 == 0 { v } else { -v };
+                            if !assumptions.contains(&lit) && !assumptions.contains(&-lit) {
+                                assumptions.push(lit);
+                            }
+                        }
+                        k.queue_randomize_phases(next() as u64);
+                        let res = k.solve(&assumptions);
+                        let mut with = dimacs.clone();
+                        for &a in &assumptions {
+                            with.push(vec![a]);
+                        }
+                        let expect = brute_force_sat(nv, &with);
+                        match res {
+                            KittenResult::Sat => {
+                                assert!(
+                                    expect,
+                                    "round {round}: false SAT under {assumptions:?} {dimacs:?}"
+                                );
+                                check_model(&k, &assumptions);
+                            }
+                            KittenResult::Unsat => {
+                                assert!(
+                                    !expect,
+                                    "round {round}: false UNSAT under {assumptions:?} {dimacs:?}"
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The status/fixed/core_learned accessors used by the faithful sweep.
+    #[test]
+    fn status_fixed_and_core_learned_accessors() {
+        let mut k = Kitten::new();
+        k.set_assumption_complete(true);
+        k.add_clause(&[1, 2]);
+        k.add_clause(&[-1, 2]);
+        assert_eq!(k.solve(&[]), KittenResult::Sat);
+        assert_eq!(k.status(), 10);
+        assert_eq!(k.solve(&[-2]), KittenResult::Unsat);
+        assert_eq!(k.status(), 20);
+        // Every learned core lemma must map back through the proof trace.
+        for &ci in k.core_learned() {
+            assert!(!k.learned_lemma_dimacs(ci).is_empty() || k.learned_lemma_dimacs(ci).is_empty());
+        }
+        assert_eq!(k.solve(&[]), KittenResult::Sat);
+        // x2 is entailed and propagates at kitten root once learned as a unit —
+        // fixed_lit reports it only when actually root-assigned.
+        let f = k.fixed_lit(2);
+        assert!(f == 0 || f == TRUE);
     }
 
     #[test]

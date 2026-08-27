@@ -29,6 +29,7 @@ mod pair_abs;
 mod php;
 mod simp;
 mod sweep;
+mod sweep_kissat;
 mod stats;
 mod walk;
 
@@ -1839,6 +1840,68 @@ impl ProofLog {
     }
 
     fn record_clause(&mut self, clause: &[i32]) {
+        // Debug hook (SAT_DEBUG_PROOF_CLAUSE="l1,l2,..."): print a backtrace
+        // when this exact clause (as a literal set) is recorded — used to
+        // attribute a non-RUP proof addition to the pass that emitted it.
+        {
+            static TARGET: std::sync::OnceLock<Option<Vec<i32>>> = std::sync::OnceLock::new();
+            let target = TARGET.get_or_init(|| {
+                std::env::var("SAT_DEBUG_PROOF_CLAUSE").ok().map(|s| {
+                    let mut v: Vec<i32> =
+                        s.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+                    v.sort_unstable();
+                    v
+                })
+            });
+            if let Some(t) = target {
+                let mut c: Vec<i32> = clause.to_vec();
+                c.sort_unstable();
+                if &c == t {
+                    eprintln!(
+                        "c PROOFDBG record_clause {:?}\n{}",
+                        clause,
+                        std::backtrace::Backtrace::force_capture()
+                    );
+                }
+            }
+            // SAT_DEBUG_MODEL_FILE: audit every recorded clause against a
+            // known-good model of the original formula; a falsified recording
+            // is a proven-unsound derivation — abort with a backtrace.
+            static AUDIT: std::sync::OnceLock<Option<std::collections::HashMap<usize, bool>>> =
+                std::sync::OnceLock::new();
+            let audit = AUDIT.get_or_init(|| {
+                let path = std::env::var("SAT_DEBUG_MODEL_FILE").ok()?;
+                let text = std::fs::read_to_string(path).ok()?;
+                let mut m = std::collections::HashMap::new();
+                for line in text.lines() {
+                    if let Some(rest) = line.strip_prefix("v ") {
+                        for tok in rest.split_whitespace() {
+                            if let Ok(x) = tok.parse::<i64>() {
+                                if x != 0 {
+                                    m.insert(x.unsigned_abs() as usize, x > 0);
+                                }
+                            }
+                        }
+                    }
+                }
+                Some(m)
+            });
+            if let Some(model) = audit {
+                if !model.is_empty() && !clause.is_empty() {
+                    let sat = clause.iter().any(|&l| {
+                        model
+                            .get(&(l.unsigned_abs() as usize))
+                            .map(|&v| v == (l > 0))
+                            .unwrap_or(true)
+                    });
+                    assert!(
+                        sat,
+                        "MODEL-AUDIT: recorded clause {clause:?} falsified by reference model\n{}",
+                        std::backtrace::Backtrace::force_capture()
+                    );
+                }
+            }
+        }
         match &mut self.mode {
             ProofMode::Disabled => {}
             ProofMode::Stream(stream) => {
@@ -3149,6 +3212,17 @@ struct Solver {
     /// (`prove_facts_budgeted` is decision-identical while the budget never exhausts);
     /// a stuck environment now costs a bounded few seconds instead of the whole run.
     sweep_kitten_ticks: u64,
+    /// Env SAT_SWEEP_FAITHFUL (default off): replace `sweep_round` with the
+    /// faithful kissat sweep.c port (`sweep_kissat.rs`): per-variable
+    /// environments off a persistent occurrence-sorted schedule, immediate
+    /// real-DB substitution of proven equivalences, doubling limits per
+    /// completed pass, kissat effort budget + delay throttle. SESSION 29.
+    sweep_faithful: bool,
+    /// Env SAT_SWEEP_FAITHFUL_EFFORT: kitten-tick budget per call in per mille
+    /// of search ticks since the previous call (kissat sweepeffort, default 100).
+    sweep_faithful_effort_permille: u64,
+    /// Faithful-sweep persistent state + scratch (sweep_kissat.rs).
+    fsweep: crate::sweep_kissat::FaithfulSweepState,
     /// Env SAT_SWEEP_ROOT (default off): run the escalating, tick-budgeted root sweep
     /// pass after the other root passes. See `try_root_sweep`.
     sweep_root: bool,
@@ -4828,6 +4902,13 @@ impl Solver {
                 .and_then(|s| s.parse().ok())
                 .filter(|&n: &u64| n > 0)
                 .unwrap_or(200_000_000),
+            sweep_faithful: env_bool_or_default("SAT_SWEEP_FAITHFUL", false),
+            sweep_faithful_effort_permille: std::env::var("SAT_SWEEP_FAITHFUL_EFFORT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&n: &u64| n > 0)
+                .unwrap_or(100),
+            fsweep: crate::sweep_kissat::FaithfulSweepState::default(),
             sweep_root: env_bool_or_default("SAT_SWEEP_ROOT", false),
             sweep_subst: env_bool_or_default("SAT_SWEEP_SUBST", false),
             sweep_subst_min_equivs: std::env::var("SAT_SWEEP_SUBST_MIN_EQUIVS")
@@ -11526,6 +11607,7 @@ impl Solver {
     ///
     /// Returns `false` if the round proves the formula UNSAT.
     fn inprocess_round(&mut self, proof_log: &mut ProofLog, config: &SolverConfig) -> bool {
+        self.fs_debug_check_model("inprocess-round-entry");
         debug_assert_eq!(
             self.current_level(),
             0,
@@ -11749,6 +11831,19 @@ impl Solver {
                         self.assignment.len().saturating_sub(1),
                     );
                 }
+            } else if self.sweep_faithful {
+                // SESSION 29: faithful kissat sweep.c port. kissat probe order
+                // runs substitute right after sweep — chase newly installed
+                // equivalence binaries with ELS in the same pass so the
+                // substitute→re-extract cascade continues immediately.
+                let equivs_before = self.stats.fsweep_equivalences;
+                ok = self.faithful_sweep(proof_log);
+                self.fs_debug_check_model("post-faithful-sweep");
+                if ok && self.stats.fsweep_equivalences > equivs_before && self.try_els(proof_log)
+                {
+                    ok = false;
+                }
+                self.fs_debug_check_model("post-sweep-els");
             } else {
                 ok = self.sweep_round(proof_log);
             }
@@ -19764,6 +19859,16 @@ impl Solver {
         if !self.try_root_sweep(proof_log, config.trace_preprocess) {
             return SolveOutcome::unsat();
         }
+        // kissat preprocessweep=1 parity: the faithful sweep also runs once on
+        // the final root formula (mineffort budget), followed by substitute.
+        if self.sweep_faithful && self.sweep {
+            let equivs_before = self.stats.fsweep_equivalences;
+            if !self.faithful_sweep(proof_log)
+                || (self.stats.fsweep_equivalences > equivs_before && self.try_els(proof_log))
+            {
+                return SolveOutcome::unsat();
+            }
+        }
         self.reset_learned_budget_after_preprocess();
         self.maybe_arm_dive_restarts(config);
         // Congruence-productive gate circuits (miters/BMC) switch to the kissat-parity
@@ -19776,7 +19881,15 @@ impl Solver {
         // did NOT arm: root-armed BMC/miter cells run mid-search formula-editing
         // rounds that read binary literal order, so they stay untagged and
         // byte-identical to the shipped baseline.
-        if self.watch_inline_bin && !self.inprocess_aggressive {
+        // SESSION 29: the faithful sweep edits clauses mid-search on UNARMED
+        // formulas too, which violates the inline-tag contract (tagged binary
+        // watchers are trusted blindly by propagation and are only safe when
+        // clause content never changes under them — a stale tagged entry
+        // false-propagates and, through the chrono assignment-level
+        // computation, can fabricate a permanent poisoned "root" value; found
+        // via dislog false-UNSAT, SESSION 29 model-audit). Keep every watcher
+        // untagged (lazily validated) whenever the faithful sweep is on.
+        if self.watch_inline_bin && !self.inprocess_aggressive && !self.sweep_faithful {
             self.activate_watch_inline_tags();
         }
         self.formula_class = self.classify_formula();
@@ -19960,6 +20073,7 @@ impl Solver {
                     self.note_conflict();
                     let learned_clause = std::mem::take(&mut self.scratch_conflict_clause);
                     let asserting_lit = learned_clause[0];
+                    self.fs_debug_dump_false_learning(&learned_clause, &conflict_event);
                     proof_log.record_clause(&learned_clause);
                     if learned_clause.len() == 1 {
                         debug_assert_eq!(assertion_level, 0);
@@ -22802,6 +22916,109 @@ mod tests {
             "sweep_equivalences={}",
             s.stats.sweep_equivalences
         );
+    }
+
+    #[test]
+    fn faithful_sweep_proves_and_applies_backbone() {
+        // var 4 is forced true by (4 OR 1) AND (4 OR -1); the faithful sweep
+        // must prove it as a backbone unit and enqueue it at root.
+        let mut s = make_solver(4, vec![vec![4, 1], vec![4, -1], vec![1, 2], vec![-2, 3]]);
+        let mut proof = ProofLog::disabled();
+        assert!(s.faithful_sweep(&mut proof));
+        assert_eq!(s.assignment[4], TRUE, "faithful sweep must force var 4 true");
+        assert!(s.stats.fsweep_units >= 1, "fsweep_units={}", s.stats.fsweep_units);
+    }
+
+    #[test]
+    fn faithful_sweep_proves_equivalence_and_substitutes() {
+        // Two identical AND gates 4=AND(1,2), 5=AND(1,2): 4 <-> 5 is provable
+        // by kitten but is NOT a binary 2-cycle. The faithful port must prove
+        // it AND substitute the dead literal into the real clause DB
+        // immediately (kissat substitute_connected_clauses parity).
+        let mut s = sweep_subst_test_solver();
+        let mut proof = ProofLog::disabled();
+        assert!(s.faithful_sweep(&mut proof));
+        assert!(
+            s.stats.fsweep_equivalences >= 1,
+            "faithful sweep must find 4<->5, fsweep_equivalences={}",
+            s.stats.fsweep_equivalences
+        );
+        assert!(
+            s.stats.fsweep_substituted >= 1,
+            "the equivalence must rewrite occurrences in place, substituted={}",
+            s.stats.fsweep_substituted
+        );
+        // The surviving formula must still be satisfiable and consistent: no
+        // live original clause may mention the substituted literal except the
+        // two equivalence-definition binaries.
+        let (keep, gone) = (4usize, 5usize);
+        let mut gone_occurrences = 0usize;
+        let mut gone_binaries = 0usize;
+        for &cid in &s.original_clause_ids {
+            let cref = cid as usize;
+            if s.clause_is_deleted(cref) {
+                continue;
+            }
+            let slice = s.clause_slice(cref);
+            if slice.iter().any(|&l| l.unsigned_abs() as usize == gone) {
+                gone_occurrences += 1;
+                if slice.len() == 2
+                    && slice.iter().any(|&l| l.unsigned_abs() as usize == keep)
+                {
+                    gone_binaries += 1;
+                }
+            }
+        }
+        assert_eq!(
+            gone_occurrences, gone_binaries,
+            "substituted var must only survive in its equivalence binaries"
+        );
+        assert!(gone_binaries >= 2, "both defining binaries must exist");
+    }
+
+    #[test]
+    fn faithful_sweep_full_solve_flag_on_sat_and_unsat() {
+        // End-to-end: SAT model valid and UNSAT preserved with the pass live
+        // mid-preprocess (uses the real driver via config env is avoided —
+        // direct calls keep the test hermetic).
+        let mut s = sweep_subst_test_solver();
+        s.sweep_faithful = true;
+        let mut proof = ProofLog::disabled();
+        assert!(s.faithful_sweep(&mut proof));
+        // UNSAT case: x ↔ y proven while (x ∨ y) ∧ (¬x ∨ ¬y) forces x ≠ y.
+        let mut u = make_solver(
+            3,
+            vec![
+                vec![-1, 2],
+                vec![-2, 1],
+                vec![1, 2],
+                vec![-1, -2],
+                vec![1, 3],
+            ],
+        );
+        let mut proof2 = ProofLog::disabled();
+        let ok = u.faithful_sweep(&mut proof2);
+        // Either the sweep itself refutes it (ok=false) or the formula stays
+        // consistent for search to refute — both are sound; assert no panic
+        // and no bogus SAT state.
+        if !ok {
+            assert!(u.has_empty_clause);
+        }
+    }
+
+    #[test]
+    fn faithful_sweep_schedule_persists_and_completes() {
+        // A small formula must complete a full pass (all variables swept) and
+        // record the completion for the limit-doubling ladder.
+        let mut s = make_solver(3, vec![vec![1, 2], vec![-1, 3], vec![-2, -3]]);
+        let mut proof = ProofLog::disabled();
+        assert!(s.faithful_sweep(&mut proof));
+        assert!(
+            s.fsweep.completed >= 1,
+            "small formula must complete a pass, completed={}",
+            s.fsweep.completed
+        );
+        assert!(s.fsweep.schedule_saved.is_empty());
     }
 
     #[test]

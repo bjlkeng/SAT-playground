@@ -98,6 +98,22 @@ pub(crate) struct SolverStats {
     pub(crate) sweep_root_applied_units: u64,
     pub(crate) sweep_root_applied_equivs: u64,
     pub(crate) sweep_root_ticks: u64,
+    /// SAT_SWEEP_FAITHFUL (SESSION 29): faithful kissat sweep.c port — calls,
+    /// variables swept, environments built + clauses encoded, kitten solves,
+    /// flip pre-tests (+successes), units/equivalences proven, clauses
+    /// substituted in place, completed full passes, lifetime kitten ticks.
+    pub(crate) fsweep_calls: u64,
+    pub(crate) fsweep_vars: u64,
+    pub(crate) fsweep_envs: u64,
+    pub(crate) fsweep_env_clauses: u64,
+    pub(crate) fsweep_solves: u64,
+    pub(crate) fsweep_flip_tests: u64,
+    pub(crate) fsweep_flipped: u64,
+    pub(crate) fsweep_units: u64,
+    pub(crate) fsweep_equivalences: u64,
+    pub(crate) fsweep_substituted: u64,
+    pub(crate) fsweep_completed: u64,
+    pub(crate) fsweep_ticks: u64,
     /// SAT_SWEEP_TICK_ROUNDS: tick-cadence-round sweep engine — rounds run,
     /// environments swept, and kitten ticks spent.
     pub(crate) sweep_tick_rounds: u64,
@@ -914,6 +930,18 @@ pub(crate) fn json_stats_line(ctx: &StatsJsonContext<'_>) -> String {
     json.u64("sweep_root_applied_units", ctx.stats.sweep_root_applied_units);
     json.u64("sweep_root_applied_equivs", ctx.stats.sweep_root_applied_equivs);
     json.u64("sweep_root_ticks", ctx.stats.sweep_root_ticks);
+    json.u64("fsweep_calls", ctx.stats.fsweep_calls);
+    json.u64("fsweep_vars", ctx.stats.fsweep_vars);
+    json.u64("fsweep_envs", ctx.stats.fsweep_envs);
+    json.u64("fsweep_env_clauses", ctx.stats.fsweep_env_clauses);
+    json.u64("fsweep_solves", ctx.stats.fsweep_solves);
+    json.u64("fsweep_flip_tests", ctx.stats.fsweep_flip_tests);
+    json.u64("fsweep_flipped", ctx.stats.fsweep_flipped);
+    json.u64("fsweep_units", ctx.stats.fsweep_units);
+    json.u64("fsweep_equivalences", ctx.stats.fsweep_equivalences);
+    json.u64("fsweep_substituted", ctx.stats.fsweep_substituted);
+    json.u64("fsweep_completed", ctx.stats.fsweep_completed);
+    json.u64("fsweep_ticks", ctx.stats.fsweep_ticks);
     json.u64("sweep_tick_rounds", ctx.stats.sweep_tick_rounds);
     json.u64("sweep_tick_envs", ctx.stats.sweep_tick_envs);
     json.u64("sweep_tick_ticks", ctx.stats.sweep_tick_ticks);
