@@ -186,11 +186,10 @@ impl Solver {
             return true;
         }
         // Inline-tag contract: this pass rewrites clauses in place, which is
-        // unsound under blindly-trusted tagged binary watchers. The activation
-        // site never tags when sweep_faithful is on; this guard is
-        // defense-in-depth against future flag interactions.
+        // unsound under blindly-trusted tagged binary watchers — strip the
+        // tags (lazy untagged validation takes over) before the first edit.
         if self.watch_inline_tags_active {
-            return true;
+            self.deactivate_watch_inline_tags();
         }
         // kissat DELAYING(sweep)
         if self.fsweep.delay_count > 0 {

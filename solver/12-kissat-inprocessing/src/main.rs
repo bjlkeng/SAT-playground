@@ -3217,7 +3217,14 @@ struct Solver {
     /// environments off a persistent occurrence-sorted schedule, immediate
     /// real-DB substitution of proven equivalences, doubling limits per
     /// completed pass, kissat effort budget + delay throttle. SESSION 29.
+    /// `on` = global (root preprocess sweep + every inprocessing round);
+    /// `armed` = ARMED (inprocess_aggressive) rounds only, no root sweep —
+    /// the unarmed walk-lottery bank keeps the shipped sweep byte-identically
+    /// (the SESSION 29 screen measured the global form forfeiting rbsat/
+    /// Circuit24/TT496/dislog: the S21/S27/S28 global-trajectory law again).
     sweep_faithful: bool,
+    /// SAT_SWEEP_FAITHFUL=armed: restrict the faithful sweep to armed rounds.
+    sweep_faithful_armed_only: bool,
     /// Env SAT_SWEEP_FAITHFUL_EFFORT: kitten-tick budget per call in per mille
     /// of search ticks since the previous call (kissat sweepeffort, default 100).
     sweep_faithful_effort_permille: u64,
@@ -4902,7 +4909,15 @@ impl Solver {
                 .and_then(|s| s.parse().ok())
                 .filter(|&n: &u64| n > 0)
                 .unwrap_or(200_000_000),
-            sweep_faithful: env_bool_or_default("SAT_SWEEP_FAITHFUL", false),
+            sweep_faithful: std::env::var("SAT_SWEEP_FAITHFUL")
+                .map(|v| {
+                    let v = v.trim().to_ascii_lowercase();
+                    v == "on" || v == "1" || v == "true" || v == "armed"
+                })
+                .unwrap_or(false),
+            sweep_faithful_armed_only: std::env::var("SAT_SWEEP_FAITHFUL")
+                .map(|v| v.trim().eq_ignore_ascii_case("armed"))
+                .unwrap_or(false),
             sweep_faithful_effort_permille: std::env::var("SAT_SWEEP_FAITHFUL_EFFORT")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -5349,6 +5364,36 @@ impl Solver {
     /// legacy path to drop). No blockers are rewritten, so knob-on trajectories
     /// on never-armed formulas stay byte-identical to legacy up to this point
     /// and the inline path takes over from here.
+    /// Inverse of [`activate_watch_inline_tags`]: strip the inline-binary tag
+    /// bits from every watcher entry and turn the tagged fast path off.
+    /// Untagged entries are validated lazily against the clause body, so any
+    /// staleness introduced by later clause edits becomes harmless. Called by
+    /// the faithful sweep before its first mid-search formula edit (SESSION
+    /// 29: a stale TAGGED entry is trusted blindly and can false-propagate).
+    fn deactivate_watch_inline_tags(&mut self) {
+        if !self.watch_inline_tags_active {
+            return;
+        }
+        let num_lists = self.watch_lists_len();
+        for watch_idx in 0..num_lists {
+            let n = self.watch_list_len(watch_idx);
+            for pos in 0..n {
+                let w = self.watch_entry(watch_idx, pos);
+                if w.clause_idx & WATCH_TAG_MASK != 0 {
+                    self.watch_entry_set(
+                        watch_idx,
+                        pos,
+                        Watcher {
+                            clause_idx: w.clause_idx & !WATCH_TAG_MASK,
+                            blocker: w.blocker,
+                        },
+                    );
+                }
+            }
+        }
+        self.watch_inline_tags_active = false;
+    }
+
     fn activate_watch_inline_tags(&mut self) {
         self.watch_inline_tags_active = true;
         let num_lists = self.watch_lists_len();
@@ -11831,7 +11876,9 @@ impl Solver {
                         self.assignment.len().saturating_sub(1),
                     );
                 }
-            } else if self.sweep_faithful {
+            } else if self.sweep_faithful
+                && (!self.sweep_faithful_armed_only || self.inprocess_aggressive)
+            {
                 // SESSION 29: faithful kissat sweep.c port. kissat probe order
                 // runs substitute right after sweep — chase newly installed
                 // equivalence binaries with ELS in the same pass so the
@@ -19861,7 +19908,8 @@ impl Solver {
         }
         // kissat preprocessweep=1 parity: the faithful sweep also runs once on
         // the final root formula (mineffort budget), followed by substitute.
-        if self.sweep_faithful && self.sweep {
+        // The armed-only scope skips it — unarmed cells stay byte-identical.
+        if self.sweep_faithful && !self.sweep_faithful_armed_only && self.sweep {
             let equivs_before = self.stats.fsweep_equivalences;
             if !self.faithful_sweep(proof_log)
                 || (self.stats.fsweep_equivalences > equivs_before && self.try_els(proof_log))
@@ -19881,15 +19929,15 @@ impl Solver {
         // did NOT arm: root-armed BMC/miter cells run mid-search formula-editing
         // rounds that read binary literal order, so they stay untagged and
         // byte-identical to the shipped baseline.
-        // SESSION 29: the faithful sweep edits clauses mid-search on UNARMED
-        // formulas too, which violates the inline-tag contract (tagged binary
-        // watchers are trusted blindly by propagation and are only safe when
-        // clause content never changes under them — a stale tagged entry
-        // false-propagates and, through the chrono assignment-level
-        // computation, can fabricate a permanent poisoned "root" value; found
-        // via dislog false-UNSAT, SESSION 29 model-audit). Keep every watcher
-        // untagged (lazily validated) whenever the faithful sweep is on.
-        if self.watch_inline_bin && !self.inprocess_aggressive && !self.sweep_faithful {
+        // SESSION 29 inline-tag contract: tags are only safe while clause
+        // content never changes under them (a stale tagged entry is trusted
+        // blindly, false-propagates, and via the chrono assignment-level
+        // computation can mint a permanent poisoned "root" value — found via
+        // dislog false-UNSAT + model-audit). The faithful sweep therefore
+        // DEACTIVATES tags before its first mid-search edit; activation here
+        // stays unchanged so never-swept formulas keep the tagged fast path
+        // byte-identically.
+        if self.watch_inline_bin && !self.inprocess_aggressive {
             self.activate_watch_inline_tags();
         }
         self.formula_class = self.classify_formula();
