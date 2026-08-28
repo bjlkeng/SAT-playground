@@ -3225,6 +3225,14 @@ struct Solver {
     sweep_faithful: bool,
     /// SAT_SWEEP_FAITHFUL=armed: restrict the faithful sweep to armed rounds.
     sweep_faithful_armed_only: bool,
+    /// SAT_SWEEP_FAITHFUL=yield: restrict further to cells whose shipped
+    /// sweep has fired the S20g yield latch (>= max(1000, 2%·live) distinct
+    /// equivalences). SESSION 29c: the armed-scope gate lost Circuit24 /
+    /// BvP_7_6 / sqrt169 / m29 — cells where the faithful sweep found only
+    /// 8-58 equivalences yet paid full trajectory reroll. Below the latch the
+    /// shipped sweep runs byte-identically; above it the mass-equivalence
+    /// structure is proven and the faithful cascade takes over.
+    sweep_faithful_yield_only: bool,
     /// Env SAT_SWEEP_FAITHFUL_EFFORT: kitten-tick budget per call in per mille
     /// of search ticks since the previous call (kissat sweepeffort, default 100).
     sweep_faithful_effort_permille: u64,
@@ -4912,11 +4920,17 @@ impl Solver {
             sweep_faithful: std::env::var("SAT_SWEEP_FAITHFUL")
                 .map(|v| {
                     let v = v.trim().to_ascii_lowercase();
-                    v == "on" || v == "1" || v == "true" || v == "armed"
+                    v == "on" || v == "1" || v == "true" || v == "armed" || v == "yield"
                 })
                 .unwrap_or(false),
             sweep_faithful_armed_only: std::env::var("SAT_SWEEP_FAITHFUL")
-                .map(|v| v.trim().eq_ignore_ascii_case("armed"))
+                .map(|v| {
+                    let v = v.trim().to_ascii_lowercase();
+                    v == "armed" || v == "yield"
+                })
+                .unwrap_or(false),
+            sweep_faithful_yield_only: std::env::var("SAT_SWEEP_FAITHFUL")
+                .map(|v| v.trim().eq_ignore_ascii_case("yield"))
                 .unwrap_or(false),
             sweep_faithful_effort_permille: std::env::var("SAT_SWEEP_FAITHFUL_EFFORT")
                 .ok()
@@ -11878,6 +11892,7 @@ impl Solver {
                 }
             } else if self.sweep_faithful
                 && (!self.sweep_faithful_armed_only || self.inprocess_aggressive)
+                && (!self.sweep_faithful_yield_only || self.fsweep_yield_scope_met())
             {
                 // SESSION 29: faithful kissat sweep.c port. kissat probe order
                 // runs substitute right after sweep — chase newly installed

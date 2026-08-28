@@ -1,6 +1,108 @@
-# NEXT PLAN — 2026-08-24 (supersedes 2026-08-16; PRUNED)
+# NEXT PLAN — 2026-08-28 (supersedes 2026-08-24; PRUNED)
 
-## SESSION 28c (2026-08-26) — WatchPool hot-path tightening PROMOTED (flagless, identity-proven): gate PASS WIN 293 v 292, ALL 291 shared cells conflict-identical, +cfi-rigid-t2 FIRST-EVER-in-gate +sqrt169 at the wall
+## SESSION 29 (2026-08-26..28) — faithful kissat sweep.c port BUILT + BANKED default-OFF (ranked item 1 closed as an ENGINE); uniqinv40 + b18 FIRST-EVERS delivered standalone; NO default promotion (armed gate 293 v 297); the inline-tag soundness contract found and fixed; the MODEL-AUDIT debug method added to the toolbox
+
+**What was built (commits 3abd708, be91624, + this): the no-more-nibbles
+full sweep.c port, `src/sweep_kissat.rs` + kitten upgrades, behind
+`SAT_SWEEP_FAITHFUL=on|armed|yield` (default OFF, flag-off byte-identical
+— rbsat fingerprint digit-exact).** Per-variable kitten environments off
+a persistent occurrence-sorted doubly-linked schedule (incomplete
+schedules resume across calls; completed passes double env limits
+256→8192 vars / 1024→32768 clauses / depth 2+c cap 3), backbone +
+equivalence partition refined by models and kitten flip pre-tests
+(sweepfliprounds=1), equivalences PROVEN by paired implication solves
+and substituted into the REAL clause DB IMMEDIATELY
+(substitute_connected_clauses parity: in-place rewrite, tautology
+delete, unit-break, definition binaries kept, occ lists maintained,
+repr union-find), kissat effort budget (100‰ of search ticks since last
+call, floor 10M kitten ticks) + BUMP/REDUCE delay throttle, and
+core-lemma-only RUP proof emission (kitten tracks antecedent closures;
+lemmas emitted once, ascending). Kitten gained faithful-mode-gated
+COMPLETE assumption handling (the legacy one-shot install can return
+Sat on assumption-UNSAT after backjumping past the assumption — a
+measured yield hole), per-solve phase randomization, status/fixed_lit/
+core_learned accessors, plus an adversarial usage-pattern fuzz.
+
+**THE ACCEPTANCE RESULT: uniqinv40prop CONVERTED FIRST-EVER — UNSAT in
+136 s (global), 170 s / 558 s (armed variants), 754 s in-gate; kissat
+51 s; proof drat-trim VERIFIED every time.** 1,594 equivalences + 56
+units with 43k in-place rewrites collapse it; CDCL refutes in 0.9-3.4M
+conflicts. The S20 arc's residual is now PROVEN to have been the
+apply-after-round shape (ELS-deferred substitution), not environment
+reach or kitten throughput: immediate substitution alone sustains the
+cascade at HALF kissat's equivalence count. **b18 (BMC, kissat-only
+since forever) also CONVERTED FIRST-EVER under the global form (UNSAT
+3,126 s screen / 3,477 s 3-arm screen; needs the root-sweep head start
+— the armed scope misses it).**
+
+**THE GATE (log/abtest-fsarmed-vs-base-2026-08-27-09-09-03, 400x2 @
+3600 s/16 GB/32 cores, armed scope): 293 v 297, ZERO correctness
+failures, judged NOT PROMOTABLE.** Gained: uniqinv40 (754 s), TT495
+(SAT 2,858 s — kissat times out), lockchart-L190, ncc_2_18 + valves
+coins. Lost: Circuit24 (2,864 s margin), traffic_kkb (2,488 s), TT496
+(2,468 s — TT-family swap with TT495, net 0), dislog (1,079 s),
+BvP_7_6 (932 s), ncc_21015 (489 s coin), m29 (450 s in-band reroll —
+fsweep m29 standalone is FASTER: 2,386 s v the 3,166 s strict-auto
+bank), sqrt169 (444 s flipper), lockchart-L210 (88 s coin/family).
+Tier-2: conflicts −3.76% over 288 both-solved (219 conflict-identical),
+oski15 family −30-50%, bv_ILA −63%, VexRiscv −54%, sted2 −63%,
+case11/grs/DLTM big wins; PAR-2 LOSE 936k v 916k.
+
+**THE LAW (fresh data, joins S16-reuse/S21-parity/S27-escalation): the
+faithful sweep's per-cell sign is deterministic with NO clean runtime
+discriminator on the armed surface.** Measured discriminator attempts:
+(a) per-round yield latch — uniqinv40 finds only 375/round, never
+fires; (b) CUMULATIVE old-sweep equivalences — orders WRONGLY
+(uniqinv40 641 < Circuit24 1,162 at a 2.5M-conflict horizon; casualties
+BvP 0, sqrt169 109, m29 168 — but Circuit24 poisons any threshold);
+(c) walk_steps — no separation (uniqinv40 walks 1.35G steps, dislog
+2.88G, Circuit24 1.76G); (d) congruence merges — 0 on winners AND
+casualties. The winners' fsweep yields are 1,594+ where the casualties'
+are 8-58, but that is only knowable AFTER paying the reroll.
+Global-scope screen (log/abtest-fs-vs-base-2026-08-27-01-14-23) loses
+the walk bank wholesale (dislog/rbsat/TT496/Circuit24); armed scope
+(log/abtest-fsa-vs-fsg-vs-base-2026-08-27-03-44-12) recovers Circuit24
+in-screen but not in-gate. Do NOT re-gate a scope variant without a NEW
+discriminating axis; the engine + per-cell map wait in tree.
+
+**THE SOUNDNESS FIND (fixed; a standing contract for ANY mid-search
+formula editor): inline-binary-tag safety.** Tagged binary watchers
+(SAT_WATCH_INLINE_BIN) are trusted BLINDLY by propagation — no arena
+validation, that is the whole optimization. A clause rewritten in place
+under a live tagged watcher leaves a stale entry that FALSE-PROPAGATES;
+the guarded-chrono assignment-level computation (max over antecedent
+levels) then read a stale unassigned var's decision_level=0 and minted
+a PERMANENT poisoned "root" value (survives every backtrack) → false
+UNSAT on dislog. Base is safe by construction (tags activate only on
+never-arming cells that never edit); the sweep violated the contract.
+Fix: `deactivate_watch_inline_tags` — the faithful sweep strips all tag
+bits before its first edit; lazy untagged validation absorbs any
+staleness; never-swept cells keep the tagged path byte-identically.
+
+**THE METHOD (add to the toolbox, next to S27b wall-band profiling):
+REFERENCE-MODEL AUDITING.** Debug an intermittent false-UNSAT by (1)
+solving the cell once at base defaults and saving the model; (2)
+re-running the candidate with `SAT_DEBUG_MODEL_FILE=<model>` — every
+recorded proof clause is checked against the model and the FIRST false
+derivation panics with a backtrace naming the pass; (3)
+`SAT_DEBUG_PROOF_CLAUSE=<lits>` backtrace-hooks any specific recording;
+(4) `SAT_DEBUG_FSWEEP_VARS=<vars>` logs sweep facts/rewrites touching
+listed vars. This localized the tag bug through FOUR layers (vivify →
+search learning → poisoned trail → stale tagged watcher) in one
+evening; drat-trim forward mode alone had stalled at
+true-but-unverifiable lines. Also banked: binary-DRAT python parsing
+snippets and the earliest-false-clause model-scan (scratch).
+
+**Remaining-gap aggregate (armed-gate deal, base arm vs kissat
+08-10): base 297 v kissat 294, we-only 43, kissat-only 40, both-timeout
+63.** kissat-only 40 = 6 mapped miters (bit27/28) + 5 BMC (b18, b19_1,
+SAT_dat.k100, pj2008, pj2016) + 2 giant steps (nla-dijkstra, x-epic) +
+2 grs + structural singletons (uniqinv40*, myciel6, mod4block,
+fixedbandwidth, goldcrest, oisc, SGI_30, cfi-rigid, rook-51, par32-2,
+BvP_8_4) + lottery tail (HCP-446, case6, ER_400, oddball x4, lockchart
+x2, Timetable x2, valves/ncc coins, bp4). *uniqinv40 and b18 are now
+OURS-capable (fsweep standalone) — the first cracks in the kissat-only
+core; they need the discriminator, not new mechanisms.
 
 **The find (gdb-parent leaf profile, 400 samples, symbolized binary):
 WatchPool::push = 10% of m29's wall** — the swap_remove+push pair runs
@@ -968,66 +1070,73 @@ digit-exact both flag states.
   ON + root-pass scoping law (percent-mass decline-is-identity gates are the
   ONLY shippable root-pass shape). Full text: rev 416adae.
 
-## RANKED PLAN (2026-08-25, post-SESSION 28)
+## RANKED PLAN (2026-08-28, post-SESSION 29)
 
 SESSIONS 15-28 took the bench 279 → 297/298-class. The four productive
 shapes stand: NEW ENGINES (sweepcount), SCOPED-PARITY LATCHES
 (dive-restart, dive2-elim, chrono-strict-auto), CAUSAL KISSAT ABLATION
-(grid first, build second), and WALL-BAND PROFILING (S27b). S28 closed
-ranked item 1 (chrono re-port: built faithful, measured both unscoped
-and scoped, promoted the scoped form). Next leads:
+(grid first, build second), and WALL-BAND PROFILING (S27b) + now
+REFERENCE-MODEL AUDITING (S29). S29 closed ranked item 1 as an ENGINE
+(faithful sweep built, correct, capabilities proven) but NOT as a
+default (no runtime discriminator — see the S29 section). Next leads:
 
-1. **kissat sweep.c FULL faithful port (uniqinv40-class) — no more
-   nibbles.** Sized by the grid: nosweep 28.5x + nosubst 4.1x.
-   uniqinv40 (kissat 51 s) is the acceptance test. S28b eliminated
-   environment reach as the residual (occ-merge: yield identical at
-   1,642 v 1,655; kissat 3,799); what remains is the whole shape —
-   real-DB substitution mid-sweep, per-sweep candidate mechanics,
-   ~23k-conflict continuous cadence, and the substitute→congruence
-   re-extract interleave. Budget a full session; expect the fragile
-   bank (dislog) to need the yield-armed scoping preserved exactly.
-2. **KILLED 2026-08-25 (measured, do not re-run): strict-chrono x
-   armed-restart-cadence coupling.** Probes (quiet, auto +
-   SAT_RESTART_ARMED_FLOOR=2 + SAT_RESTART_ARMED_MARGIN=1.10): ibm
-   659k v 368k conflicts (+79%), vex 3.02M v 2.78M (+9%), oski06
-   3.02M v 2.63M (+15%) — every solved canary in the congruence class
-   regresses; x-epic stops OOMing (the cadence DOES cap clause growth,
-   confirming the mechanism) but still no conversion; b18 unchanged.
-   The miter band wins with floor-2 + strict because those cells are
-   tiny pure-trajectory gaps; the large congruence-armed cells pay
-   real re-descent/inprocessing-rhythm costs. The knobs stay inert.
+1. **A discriminator for SAT_SWEEP_FAITHFUL (the highest-leverage open
+   question).** The engine converts uniqinv40 (any scope) and b18
+   (global only) and cuts armed-class conflicts 30-60%, but every
+   tried scope forfeits walk-bank capability. Measured-dead axes:
+   per-round yield, cumulative equivs, walk_steps, congruence merges,
+   dive2 latch (S29 section — do NOT re-gate variants on these).
+   Untried axes with mechanism content: (a) decline-is-identity FIRST
+   CALL — prove-only probe pass, commit the engine only if its OWN
+   first-call yield crosses a floor (S14b root-pass law shape; needs
+   per-call yield data: winners' first calls vs casualties'); (b) a
+   post-substitution REVERSAL bound — cap fsweep to N rewrites until
+   productivity confirms; (c) UNSAT-refutation-progress signals
+   (learned-clause LBD trend under fsweep vs not). Budget probes
+   BEFORE any gate.
+2. **b18-class root sweep (global-mode-only capability).** b18 needs
+   the preprocess-time faithful sweep (armed misses it at 3600 s). A
+   ROOT-ONLY scope (sweep once at preprocess, never mid-search) is
+   unmeasured as its own arm — it may keep most of the walk bank
+   (mid-search rerolls are the bigger casualty channel) while keeping
+   b18 + part of uniqinv40's head start. One screen answers it.
 3. **Scope discriminator for the giant BMC step class (nla-dijkstra/
-   pj2016).** Both have measured strict upside (nla 3x conflict
-   throughput, halved learned length) but ZERO congruence merges — the
-   auto scope misses them. Candidate signals: giant-arena + unit-rich
-   (oo-unit rate), BMC step naming is cheating — find the structural
-   axis. Gate risk is low (both are never-solved cells; the danger is
-   only pulling in lottery giants like sum_of_three_cubes_42).
-4. **Band-scoped escalation reuse (S26 shape, unchanged).** The
-   COMPLETE_ALL knob is in tree; needs a NEW structural discriminator
-   for the b18/grs/ncc class. Do not re-run unscoped.
-5. **Miter family residual (4 kissat-only after m29).** All
-   single-mechanism levers closed (S26/S27/S28); residual = composite
-   throughput.
-6. **Medium-1800 re-baseline (bookkeeping, OVERDUE — nine promotions
-   since 74/100 at c469b03).**
+   pj2016).** Unchanged from S28: measured strict upside, ZERO
+   congruence merges, auto scope misses them.
+4. **Band-scoped escalation reuse (S26 shape, unchanged).** COMPLETE_ALL
+   knob in tree; needs a NEW structural discriminator for b18/grs/ncc.
+5. **Miter family residual (4-6 kissat-only mapped miters).** All
+   single-mechanism levers closed (S26/S27/S28); fsweep on the miter
+   band is a measured in-gate LOSER (m29/sqrt169 rerolls) despite
+   standalone m29 2,386 s — composite throughput remains the story.
+6. **Medium-1800 re-baseline (bookkeeping, OVERDUE).**
 7. **Checker-timeout proof-size watch (standing, miter class).**
-8. **PARKED/CLOSED: sweepcount generalization; walk vein;
-   starved-BMC/XOR; factor.c (DONE, in tree); unscoped escalation
-   (S27); UNSCOPED strict chrono (S28: 284 v 297, do not re-run —
-   the walk bank is the casualty surface); definitions (S24+S26);
-   vivify volume on miters (S26); flywheel for BMC (S27).**
+8. **PARKED/CLOSED: strict-chrono x armed-restart coupling (S28b,
+   measured dead); sweepcount generalization; walk vein;
+   starved-BMC/XOR; factor.c (in tree); unscoped escalation (S27);
+   UNSCOPED strict chrono (S28); definitions (S24+S26); vivify volume
+   on miters (S26); flywheel for BMC (S27); sweep-faithful scope
+   variants on the four dead axes (S29).**
 
 ## Current state
 
-- HEAD: SESSION 28 promotion (SAT_CHRONO_STRICT=auto, c50de9f).
-  Freshest deals: **auto 297 / base 298
-  (`log/abtest-auto-vs-base-2026-08-25-05-19-21`)** — base 298 is the
-  highest single-arm count ever recorded; the auto arm carries m29 at
-  434 s margin and the oski/vex/ibm wall gains. kissat same-host
-  reference: 294 (2026-08-10). WE LEAD kissat by ~3-4 on paired-deal
-  counts. Lineage: 261 → 271 → 277 → 280 → 286 → 290 → 292 → 293 →
-  294 → ~295 (S26) → 296 (S27b) → 297/298 (S28 deals).
+- HEAD: SESSION 29 (faithful sweep banked default-off). Defaults
+  unchanged since S28c. Freshest deal: **base 297
+  (`log/abtest-fsarmed-vs-base-2026-08-27-09-09-03`)** — the 297/298
+  class holds; kissat same-host reference 294 (2026-08-10); base-vs-
+  kissat this deal: we-only 43, kissat-only 40, both-timeout 63. WE
+  LEAD kissat by ~3-4 on paired-deal counts. Lineage: 261 → 271 → 277
+  → 280 → 286 → 290 → 292 → 293 → 294 → ~295 (S26) → 296 (S27b) →
+  297/298 (S28+ deals).
+- **SAT_SWEEP_FAITHFUL (S29, default OFF, modes on|armed|yield):** the
+  full kissat sweep.c engine in `src/sweep_kissat.rs`. Standalone-only
+  capabilities: uniqinv40prop (UNSAT 136-754 s, verified, any mode) and
+  b18 (UNSAT ~3,100-3,500 s, global mode only). Casualty map and dead
+  discriminator axes in the S29 section — do not re-gate without a new
+  axis. Debug tooling riding along (env-gated, inert):
+  SAT_DEBUG_MODEL_FILE / SAT_DEBUG_PROOF_CLAUSE / SAT_DEBUG_FSWEEP_VARS
+  / SAT_FSWEEP_INVARIANTS / SAT_SWEEP_FAITHFUL_NOSUBST /
+  SAT_SWEEP_FAITHFUL_EFFORT.
 - kissat 4.0.4 reference: **294/400 same-host 2026-08-10**
   (`log/kissat-full-20260810-073149/results.csv`). Remaining kissat-only
   families after S28: 16x16 miters (4 — m29 now OURS via strict-auto),
@@ -1061,7 +1170,27 @@ and scoped, promoted the scoped form). Next leads:
   oddball_24_4 (kissat 789 s), oddball_26_4 (needs walk-min too),
   baseballcover12 (kissat-unsolved; a first-ever candidate).
 
-## Standing traps (updated 2026-08-09 + carried)
+## Standing traps (updated 2026-08-28 + carried)
+
+- **SESSION 29: THE INLINE-TAG CONTRACT.** Any pass that edits clause
+  content mid-search MUST either run only where inline binary tags
+  never activated (armed-at-preprocess cells) or call
+  `deactivate_watch_inline_tags()` first. A stale TAGGED watcher is
+  trusted blindly → false propagation → (via chrono assignment-level
+  max) a PERMANENT poisoned level-0 value → false UNSAT. The failure is
+  silent in release (debug_asserts catch it only in debug builds) and
+  surfaces hundreds of seconds later in unrelated passes.
+- **SESSION 29: false-verdict debugging order.** drat-trim backward
+  says only NOT VERIFIED; forward mode stops at the first
+  UNVERIFIABLE line, which can be TRUE (vivify through stale learned
+  clauses over ELS-eliminated vars is legitimately unverifiable-but-
+  sound). To find the first FALSE derivation, use the reference-model
+  audit (SAT_DEBUG_MODEL_FILE) — see the S29 method note. Deletions
+  "that do not occur" in drat-trim warnings are pre-existing ELS noise
+  (value-aware virtual binaries), not the bug.
+- **SESSION 29: 180 s implication-oracle timeouts are useless on cells
+  whose SAT side takes 2,000+ s** (the dislog bisection dead-end) —
+  get one model once, then model-check candidate clauses at O(1).
 
 - **SESSION 18:** WALL-LIMIT-ONLY-IN-CDCL bites hard — SAT_ELIM_PRODUCTIVE_
   MIN_PCT arming on RoundRobin ran 14 h with no wall stop (stuck in a
@@ -1140,6 +1269,9 @@ and scoped, promoted the scoped form). Next leads:
 
 ## solver12's capability edge (protect in rerolls)
 
+New SESSION 29: **uniqinv40prop and b18 are OURS-capable via
+SAT_SWEEP_FAITHFUL (standalone-only until the discriminator exists)** —
+the first two members of the kissat-only core we can solve at all.
 New SESSION 28: **m29 (booth_dadda bit29) is now a BANKED capability,
 no longer a coin** — strict-auto solves it in 3 independent deals
 (3,443 / 3,028 / 3,166 s, 434 s margin in the auto gate) with 1.03M

@@ -176,6 +176,32 @@ struct FsLimits {
 }
 
 impl Solver {
+    /// SAT_SWEEP_FAITHFUL=yield scope test: the faithful engine takes over
+    /// only once the cell has PROVEN mass-equivalence structure — the shipped
+    /// sweep's CUMULATIVE distinct equivalences (or its per-round yield latch)
+    /// reach the S20g-calibrated floor max(1000, 20‰·live). The measured
+    /// separation (S20g + the SESSION 29 armed-gate probes): winners uniqinv40
+    /// 1,642 / dislog 111,962 / HCP 1,490 vs casualties Circuit24 58 /
+    /// sqrt169 51 / BvP_7_6 8 / boothbit29 114 / bivium 542 / bp4 562.
+    pub(crate) fn fsweep_yield_scope_met(&self) -> bool {
+        if self.sweep_yield_armed {
+            return true;
+        }
+        let found = self.stats.sweep_equivalences + self.stats.fsweep_equivalences;
+        if found < 1000 {
+            return false;
+        }
+        let min_abs: u64 = std::env::var("SAT_SWEEP_YIELD_MIN_EQUIVS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1000);
+        let live = self.count_active_vars() as u64;
+        found
+            >= min_abs.max(
+                live.saturating_mul(self.sweep_yield_escalate_permille) / 1000,
+            )
+    }
+
     /// One faithful sweep call (kissat `kissat_sweep`). Returns `false` iff
     /// the formula was proven UNSAT during the call.
     pub(crate) fn faithful_sweep(&mut self, proof_log: &mut ProofLog) -> bool {

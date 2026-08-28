@@ -15,6 +15,57 @@ MiniSat `SimpSolver` design described in
 
 ## Current State
 
+> **SESSION 29 (2026-08-26..28): faithful kissat sweep.c port BANKED
+> default-OFF (`SAT_SWEEP_FAITHFUL=on|armed|yield`, commits 3abd708 /
+> be91624 / this); NO default promotion — the armed-scope gate measured
+> 293 v 297 (`log/abtest-fsarmed-vs-base-2026-08-27-09-09-03`, 400x2 @
+> 3600 s/16 GB/32 cores, ZERO correctness failures).** The port is the
+> ranked-item-1 "no more nibbles" full sweep engine (`src/sweep_kissat.rs`):
+> per-variable kitten environments off a persistent occurrence-sorted
+> schedule, backbone + equivalence partition with flip pre-tests,
+> IMMEDIATE real-DB substitution (kissat substitute_connected_clauses
+> parity), doubling env limits per completed pass, 100‰-of-search-ticks
+> effort budget + kissat delay throttle, core-lemma-only RUP emission.
+> **Capabilities delivered (standalone/banked): uniqinv40prop
+> FIRST-EVER (UNSAT 136-754 s across 4 independent runs, kissat 51 s,
+> drat-trim VERIFIED — the S20 flagship 70x gap closed by immediate
+> substitution; the old sweep's 1,642-equivalence plateau was the
+> apply-after-round shape, not reach) and b18 FIRST-EVER (UNSAT
+> 3,126-3,477 s, global mode only — needs the root-sweep head start).
+> Tier-2 on the armed gate: conflicts −3.76% over 288 both-solved,
+> oski15 family −30-50%, bv_ILA −63%, VexRiscv −54%, sted2 −63%, TT495
+> gained (kissat times out there).**
+> **Why not default: every scope tried (global / armed / yield-latched)
+> forfeits more banked capability than it gains — global loses the walk
+> bank wholesale (screen: dislog, rbsat, Circuit24, TT496); armed still
+> loses Circuit24 (its fsweep finds only 58 equivs), BvP_7_6 (8),
+> sqrt169 (51), m29, dislog, traffic_kkb. The per-cell sign is
+> deterministic with NO clean runtime discriminator — measured:
+> per-round yield misses uniqinv40 (375/round < 1000), cumulative
+> equivs order WRONGLY (uniqinv40 641 < Circuit24 1,162 at 2.5M conf),
+> walk steps do not separate (uniqinv40 walks 1.35G like the
+> casualties), congruence merges are 0 on both sides. Same law as S16
+> trail-reuse / S21 restart-parity / S27 escalation.**
+> **Soundness find (fixed in tree; applies to ANY future mid-search
+> formula editor): the inline-binary-tag contract.** Tagged binary
+> watchers are trusted blindly by propagation; a clause rewritten in
+> place under a live tagged watcher false-propagates, and the chrono
+> assignment-level computation (max over antecedent levels, reading a
+> stale unassigned var's level-0) minted a PERMANENT poisoned root
+> value → false UNSAT on dislog (caught before any commit reached a
+> gate). Diagnosed with a NEW method now banked as env-gated tooling:
+> reference-model auditing (`SAT_DEBUG_MODEL_FILE` — every recorded
+> proof clause checked against a known-good model, panic + backtrace at
+> the first false derivation), proof-clause backtrace hook
+> (`SAT_DEBUG_PROOF_CLAUSE`), fsweep event log
+> (`SAT_DEBUG_FSWEEP_VARS`). Fix: the faithful sweep deactivates tags
+> (strip bits; lazy untagged validation takes over) before its first
+> edit; never-swept cells keep the tagged fast path byte-identically
+> (rbsat fingerprint 100001/196258/17,758,017 digit-exact under
+> `=armed` and with the flag off). Kitten gained faithful-mode-gated
+> complete assumption handling, phase randomization, and core-lemma
+> extraction (all inert for the shipped path; 776+5 tests).
+
 > **Engine promotion (2026-08-26, SESSION 28c): WatchPool hot-path
 > tightening — flagless, identity-proven (commit 4a3207d).** The S28b
 > gdb-parent leaf profile put WatchPool::push at 10% of m29's wall (the
