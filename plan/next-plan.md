@@ -1120,12 +1120,21 @@ default (no runtime discriminator — see the S29 section). Next leads:
 
 ## Current state
 
+- **FRESH HEAD-TO-HEAD RE-BASELINE (2026-08-28/29, sequential quiet
+  runs, 3600 s/16 GB/32 NUMA-balanced cores): solver12 296/400 PAR-2
+  922,514 v kissat 4.0.4 292/400 PAR-2 939,548 — WE LEAD +4 SOLVED AND
+  ON PAR-2** (`log/abtest-solver12-2026-08-28-08-59-09/solver12/
+  results.tsv` v `log/kissat-full-20260828-162018/results.csv`; zero
+  contradictions; 292 proofs verified ok + 4 checker-timeouts = the
+  standing miter watch class). Unique sets 44 v 40, both-timeout 64.
+  On the 252 both-solved cells kissat is wall-faster on 188 — kissat
+  remains quicker per shared cell; we solve MORE (the engineered
+  capability classes: php/counting x11, RoundRobin/MVRR x10, oddball
+  tto_zp x6, xor/tseitin, VdW, lockchart-g2, TT496, frb80, HCP-529...).
+  The 2026-08-10 reference read 292 v 294 (−2): the S26-S28c
+  promotions flipped the head-to-head to +4.
 - HEAD: SESSION 29 (faithful sweep banked default-off). Defaults
-  unchanged since S28c. Freshest deal: **base 297
-  (`log/abtest-fsarmed-vs-base-2026-08-27-09-09-03`)** — the 297/298
-  class holds; kissat same-host reference 294 (2026-08-10); base-vs-
-  kissat this deal: we-only 43, kissat-only 40, both-timeout 63. WE
-  LEAD kissat by ~3-4 on paired-deal counts. Lineage: 261 → 271 → 277
+  unchanged since S28c. Armed-gate deal 2026-08-27: base 297. Lineage: 261 → 271 → 277
   → 280 → 286 → 290 → 292 → 293 → 294 → ~295 (S26) → 296 (S27b) →
   297/298 (S28+ deals).
 - **SAT_SWEEP_FAITHFUL (S29, default OFF, modes on|armed|yield):** the
