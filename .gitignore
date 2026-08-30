@@ -59,3 +59,5 @@ benchmarks/reference-solvers/*
 # Python bytecode caches
 __pycache__/
 *.pyc
+benchmarks/sat-comp-2026/*
+!benchmarks/sat-comp-2026/MANIFEST.txt

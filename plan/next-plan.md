@@ -1120,6 +1120,38 @@ default (no runtime discriminator — see the S29 section). Next leads:
 
 ## Current state
 
+- **2026-HOLDOUT GENERALIZATION TEST (2026-08-29/30, THE overfit
+  answer — read this before planning any new band): solver12 160/400
+  PAR-2 1,841,674 v kissat 197/400 PAR-2 1,575,285 on the SAT
+  Competition 2026 main track (never seen by the tuning loop; only
+  8/400 hashes overlap 2025).** Zero contradictions; 159 proofs
+  verified ok + 1 checker-timeout. Runs:
+  `log/abtest-solver12-2026-08-29-10-22-36` v
+  `log/kissat-full-20260829-202806`; suite downloaded to
+  `benchmarks/sat-comp-2026/` (gitignored, MANIFEST.txt tracked).
+  **The 2025 lead (+4) does NOT generalize: −37 out of distribution.**
+  Decomposition: we-only 15 = 6 engine solves (php detector fired on
+  the BRAND-NEW php_sudoku family + new clqcl sizes + rphp/xor — the
+  engines ARE general detectors, their families are just rarer in
+  2026) + 9 search wins (incl. Circuit_multiplier36 — family transfer
+  from the 24-variant). kissat-only 52 = broad NEW families we have no
+  machinery for (schooltt x6, lightsout x5, cabp x5, SDP x3,
+  polyomino-pair x6, hitag2 x2, adv_gc, stable, atco, ER_500) PLUS the
+  standing miter/BvP gap on fresh members (sqrt-mitern168,
+  booth_dadda_mapped bit28-class, BvP_7_7/8_5). Both-solved 145:
+  kissat wall-faster on 112 (77% — same shared-cell ratio as 2025).
+  **Law: our 296-class number is a 2025-DISTRIBUTION number. The
+  engineered families (RoundRobin/MVRR, oddball tto_zp, lockchart,
+  VdW, TT) are largely ABSENT from 2026, so the fitted upside
+  evaporates while the general-search deficit (~12 net on 2025 shared
+  ground) persists and compounds. The guards mostly DECLINE cleanly
+  out of distribution (no misfire disasters found) — the problem is
+  not that the bands hurt, it is that the underlying general-purpose
+  search+inprocessing is behind kissat's, which the 2025 suite masked.
+  This re-ranks the roadmap: general-search/inprocessing quality (the
+  continuous-inprocessing re-tune, the fsweep discriminator, the
+  restart/trail-reuse ecology) is worth more than any further
+  2025-family band.**
 - **FRESH HEAD-TO-HEAD RE-BASELINE (2026-08-28/29, sequential quiet
   runs, 3600 s/16 GB/32 NUMA-balanced cores): solver12 296/400 PAR-2
   922,514 v kissat 4.0.4 292/400 PAR-2 939,548 — WE LEAD +4 SOLVED AND
