@@ -26,6 +26,11 @@ esac
 # proof.out is only meaningful for UNSAT; drop it otherwise so validators
 # never see a partial proof next to a SAT/UNKNOWN answer.
 if [[ "$STATUS" != "UNSAT" ]]; then rm -f "$OUTDIR/proof.out"; fi
+# model.txt: the v-line literals, one whitespace-separated stream (repo
+# output contract; the solver binary itself is a faithful kissat CLI).
+if [[ "$STATUS" == "SAT" ]]; then
+  grep '^v ' "$STDOUT_TMP" | sed 's/^v //' | tr '\n' ' ' | sed 's/ $/\n/' > "$OUTDIR/model.txt"
+fi
 rm -f "$STDOUT_TMP"
 
 printf '%s\n' "$STATUS" > "$OUTDIR/status.txt"
