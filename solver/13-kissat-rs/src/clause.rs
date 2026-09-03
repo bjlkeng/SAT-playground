@@ -301,7 +301,10 @@ impl<'a> ClauseMut<'a> {
     }
     #[inline]
     pub fn set_lit(&mut self, i: u32, lit: u32) {
-        debug_assert!(i < self.size());
+        // No `i < size` assert: C legally writes past the current size within
+        // the original allocation — the shrunken-terminator idiom stores
+        // INVALID_LIT at old_size-1 AFTER size was reduced (strengthen.c,
+        // shrink paths).  The slice bound still protects the arena.
         self.words[LITS_OFFSET + i as usize] = lit;
     }
 }
