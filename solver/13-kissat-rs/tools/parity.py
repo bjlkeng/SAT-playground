@@ -33,15 +33,15 @@ STAT_RE = re.compile(r"^c ([a-z_0-9]+):\s+(\d+)")
 IGNORED = set()
 
 
-def run(binary, cnf, extra):
+def run(binary, cnf, extra, timeout):
     cmd = [binary, "-n", "-s"] + extra + [cnf]
     try:
         p = subprocess.run(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, timeout=600,
+            text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        return None, {}, "TIMEOUT-600s"
+        return None, {}, f"TIMEOUT-{timeout}s"
     status = None
     stats = {}
     in_stats = False
@@ -66,6 +66,7 @@ def main():
     ap.add_argument("--decisions", type=int)
     ap.add_argument("--options", default="", help="extra options for both")
     ap.add_argument("--corpus", choices=["default"], help="use built-in corpus")
+    ap.add_argument("--timeout", type=int, default=600, help="per-run seconds")
     args = ap.parse_args()
 
     cnfs = list(args.cnfs)
@@ -86,8 +87,8 @@ def main():
 
     failures = 0
     for cnf in cnfs:
-        ks, kstats, kerr = run(KISSAT, cnf, extra)
-        ss, sstats, serr = run(SOLVER13, cnf, extra)
+        ks, kstats, kerr = run(KISSAT, cnf, extra, args.timeout)
+        ss, sstats, serr = run(SOLVER13, cnf, extra, args.timeout)
         name = os.path.basename(cnf)
         if kerr or serr:
             print(f"FAIL {name}: kissat={kerr or 'ok'} solver13={serr or 'ok'}")

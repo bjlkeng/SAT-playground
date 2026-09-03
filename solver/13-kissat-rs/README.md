@@ -28,3 +28,22 @@ evidence):
   restarts over 10k conflicts of real search. The other 2 cells hit the
   harness 600 s cap in BOTH binaries (no divergence observed; scratchpad
   disc_parity.log of session 2026-08-30).
+- 2026-09-03 sweep-substitute divergence found and fixed: kissat's
+  `substitute_connected_clauses` new_size>2 path ends in a `q--` that
+  decrements a *shadowed* inner lits cursor, not the outer watch pointer, so
+  the reference keeps a stale occurrence of the substituted clause in the old
+  literal's list (later garbage-collected via dense propagation). Our port
+  had implemented the intended move semantics; now matches the C behavior
+  (see PORT NOTE in `src/sweep.rs`). Isolated via SWEEP_DEBUG watch-list
+  hash dumps + per-ref tracing on
+  `benchmarks/discriminating/*brocard_problem_large.cnf.xz`.
+- 2026-09-03 parity, brocard_problem_large **full default-config run to
+  completion** (no limits): both `s UNSATISFIABLE`, all 80 `-s` counters
+  exact including probing_ticks 100764057 (was +5 drift pre-fix), ~150 s of
+  real search with 3 sweeps, full inprocessing.
+- 2026-09-03 parity, `benchmarks/discriminating` (20 xz instances),
+  **full default config** `--conflicts=10000`: **20/20 at exact 80-counter
+  parity** (statuses match; includes 2 SAT and 2 UNSAT full solves within
+  the limit). All inprocessing engines active. Command:
+  `python3 solver/13-kissat-rs/tools/parity.py --conflicts 10000
+  --timeout 900 benchmarks/discriminating/*.xz`.

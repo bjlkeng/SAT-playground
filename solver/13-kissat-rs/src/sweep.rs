@@ -1007,7 +1007,18 @@ fn substitute_connected_clauses(
                     solver.delayed.push(head);
                 }
                 solver.clause.clear();
-                q -= 1;
+                // PORT NOTE (faithful C quirk): the C ends this branch with
+                // `q--`, but that decrements the *inner* `unsigned *q` lits
+                // cursor of the shrink copy above, which SHADOWS the outer
+                // `watch *q` — dead code in practice.  The outer watch
+                // pointer is NOT decremented, so the (stale) occurrence of
+                // the substituted clause stays in `lit`'s list while a copy
+                // is pushed onto `repr`'s list via `delayed`.  Dense
+                // propagation later revisits the stale entry and may mark
+                // the clause garbage there; removing the entry here (the
+                // "intended" move semantics) diverges watch words and
+                // probing ticks from the reference (brocard sweep=2,
+                // 2026-09-03).  So: no `q -= 1` here.
             }
         }
         while p != end_watches {
