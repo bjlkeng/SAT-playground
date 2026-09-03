@@ -122,11 +122,6 @@ pub struct Termination {
     pub flagged: AtomicBool,
 }
 
-/// PORT NOTE: placeholder for `struct kitten` (kitten.c belongs to another
-/// agent; replace with the real type at integration).
-#[derive(Default)]
-pub struct KittenStub;
-
 // ---------------------------------------------------------------------------
 // struct kissat  →  pub struct Solver
 // ---------------------------------------------------------------------------
@@ -269,7 +264,7 @@ pub struct Solver {
     pub resolvents: Vec<u32>, // unsigneds resolvents;
     pub resolve_gate: bool,
 
-    pub kitten: Option<Box<KittenStub>>, // struct kitten *kitten;
+    pub kitten: Option<Box<crate::kitten::Kitten>>, // struct kitten *kitten;
     pub gate_eliminated: bool,           // non-METRICS variant
     pub sweep_incomplete: bool,
     pub sweep_schedule: Vec<u32>, // unsigneds sweep_schedule;
