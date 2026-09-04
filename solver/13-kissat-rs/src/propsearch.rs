@@ -116,7 +116,11 @@ fn watch_large_delayed(solver: &mut Solver) {
 /// PROPAGATE_LITERAL (proplit.h) — the shared inner propagation loop.
 /// `ignore` is only inspected under PROBING_PROPAGATION (pass INVALID_REF
 /// otherwise); C compares clause pointers, references are equivalent.
-#[inline]
+/// inline(always): the C template is textually inlined into each
+/// PROPAGATE_LITERAL user and gcc keeps the whole search-propagation loop in
+/// one frame; plain #[inline] left this out-of-line (one call per propagated
+/// literal, ~382M on brocard).
+#[inline(always)]
 pub(crate) fn propagate_literal<
     const PROBING_PROPAGATION: bool,
     const CONTINUE_PROPAGATING_AFTER_CONFLICT: bool,

@@ -48,6 +48,11 @@ evidence):
   `python3 solver/13-kissat-rs/tools/parity.py --conflicts 10000
   --timeout 900 benchmarks/discriminating/*.xz`.
 
+- 2026-09-03 parity, `benchmarks/discriminating` (20 xz instances), **full
+  default config `--conflicts=100000`**: **20/20 at exact 80-counter
+  parity** — 10x the previous horizon; multiple full solves inside the
+  limit (battleship SAT, Kakuro SAT, REGRandom UNSAT, brocard UNSAT).
+
 Performance notes (tier-1, brocard full default runs, quiet-ish host):
 
 - 2026-09-03 wall gap vs reference: ~8.5% slower overall (87.4 v 94.8 s

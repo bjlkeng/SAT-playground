@@ -1,5 +1,44 @@
 # NEXT PLAN — 2026-08-28 (supersedes 2026-08-24; PRUNED)
 
+## SESSION 2026-09-03 — solver13 sweep-substitute divergence KILLED (kissat's shadowed q-- quirk); 20/20 discriminating parity at FULL DEFAULT config, 10k AND 100k conflicts; brocard full-run 80-counter exact; honest perf baseline ~8.5%
+
+Commits e9e2ed8 (sweep fix), 52e1318 (getrusage clock), + this session's tail.
+
+**The sweep bug**: kissat 4.0.4 `substitute_connected_clauses` ends its
+new_size>2 branch with `q--` that decrements a SHADOWED inner lits cursor,
+not the outer watch pointer — dead code, so the reference KEEPS a stale
+occurrence of the substituted clause in the old literal's list.  Our port
+implemented the intended move semantics → 126 extra live-watched clauses,
++5 probing_ticks drift on brocard.  Fix: drop our `q -= 1` (PORT NOTE in
+src/sweep.rs).  Isolation method that worked: SWEEPDBG watch-list hash
+dumps at sweep boundaries → per-round GDBG garbage-mark streams with GSITE
+call-site tags → per-ref RDBG occurrence counts.  ~2.5 min per paired
+brocard rerun; whole chase ≈ one session.
+
+**Parity state (all tier-1)**: smoke corpus exact; discriminating 20/20
+exact at `--conflicts=10000` AND `--conflicts=100000`, FULL default config
+(all inprocessing live); brocard full unlimited run to UNSAT exact on all
+80 counters.  Next parity escalations: (a) full-run parity on more
+fast-solving cells, (b) medium-suite spot cells, (c) shuffled inputs.
+
+**Perf state**: honest gap ~8.5% wall on brocard (search +6%,
+probe/simplify/vivify/sweep +20-25%, parse 1.19x).  The 10x/7x/4x phase
+ratios previously seen at --profile=4 were artifacts of process_time()
+parsing /proc/self/stat per START/STOP — now libc getrusage (52e1318).
+REJECTED with paired evidence: next-clause software prefetch in
+propagate_literal (+3.4%); watch_large_delayed empty-guard (wash).
+KEPT: #[inline(always)] on propagate_literal (matches C textual
+inlining; ~1%, within noise).  **Blocked on real profiling**: host has
+perf_event_paranoid=4 and no valgrind — ask user for
+`sudo sysctl kernel.perf_event_paranoid=1` or `sudo apt install valgrind`
+before more propagate work; without it, micro-opts are dart-throwing.
+
+**Standing next steps**: (1) unlock profiler, close the 8.5% (propagate
+first — 74% of runtime); (2) longer/full-run parity escalations above;
+(3) once wall is within ~2-3%, first sat-comp-2025 400-instance
+acceptance run per plan/solver13-port-plan.md (3600s/16GB/32j paired
+vs kissat).
+
 ## SESSION 29 (2026-08-26..28) — faithful kissat sweep.c port BUILT + BANKED default-OFF (ranked item 1 closed as an ENGINE); uniqinv40 + b18 FIRST-EVERS delivered standalone; NO default promotion (armed gate 293 v 297); the inline-tag soundness contract found and fixed; the MODEL-AUDIT debug method added to the toolbox
 
 **What was built (commits 3abd708, be91624, + this): the no-more-nibbles
