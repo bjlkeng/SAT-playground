@@ -141,6 +141,22 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
   `parity.py --conflicts 100000` (20 discriminating cells, full default
   config) on the step-5 binary: 20/20 exact; every later step verified
   80-counter exact on brocard + circuit + Timetable.
+- 2026-09-04 wider paired check, step-11 v kissat, 10 `sat-comp-2025-medium`
+  cells at `--conflicts=100000` (all UNKNOWN at the limit, identical conflict
+  counts): ratios 1.137-1.201, i.e. **~1.17x on search-bound cells**;
+  brocard-class memory-bound cells sit at 1.00-1.01x. On SCPC-500-14
+  `perf stat`: instructions +6.6%, branches +14%, L1-icache misses 2.9x the
+  C's (30.6M v 10.7M), dcache misses equal; per-function instruction counts
+  put `search_propagate` EQUAL to the C (84557 v 84305 samples) — the
+  residual is the analyze cluster (+8%), kitten (+25%), sparse collect, and
+  front-end pressure.
+- 2026-09-04 REJECTED: `#[inline(never)]` on deduce_first_uip_clause /
+  bump_analyzed / shrink_clause / minimize_clause / learn_clause to mirror
+  kissat's no-LTO translation-unit boundaries (the icache profile put 30% of
+  RS misses in the fully-inlined `analyze`). Same-core `perf stat` on SCPC:
+  icache misses 27.5M → 28.8M (no reduction), cycles −1.3%; paired 4-cell
+  run circuit −0.8%, SCPC −1.5%, Timetable +1%, brocard flat — a wash, so
+  not kept. The icache excess is not from analyze's inlining.
   Whole-program `perf stat` at that point: cycles +3.4%, instructions
   +15.6% (253.8G v 219.6G), branches +27% (49.1G v 38.7G), L1/LLC misses
   equal — the residual is instruction overhead hiding under memory latency,

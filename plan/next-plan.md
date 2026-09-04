@@ -45,6 +45,11 @@ pointers under NDEBUG) plus out-of-line helpers the C has as header
 9. kitten's 8 arrays on UVec. Timetable −4%, circuit −1%.
 10. Heap stack/score/pos on UVec + inline(always) heap ops (C inlineheap.h).
    Timetable −9% (1.23x → 1.118x), circuit −1%, brocard 1.001x.
+11. kitten klauses on UVec + inline(always) on kitten.c's static-inline
+   helpers. Timetable −1.2%, brocard 1.007x, circuit flat.
+REJECTED too: inline(never) on the analyze cluster (deduce/bump/shrink/
+minimize/learn) to mirror kissat's no-LTO TU boundaries — icache misses did
+NOT drop (27.5M → 28.8M on SCPC), wall a wash.
 REJECTED (recorded in README): FAST_ASSIGN-style threading of raw
 values/assigned pointers through fast_assign — +2% wall, +1.06%
 instructions, worse LLVM codegen. Do not re-add.
@@ -69,7 +74,17 @@ binary was launched at session end (scratchpad/parity100k_step10b.log,
 PID recorded in the transcript) — CHECK IT before trusting the tree; every
 later step was verified 80-counter exact on brocard/circuit/Timetable.
 
-**Next**: (1) read parity100k_step10b.log; (2) the residual is now
+**Wider check (10 medium cells, step 11 v kissat, --conflicts=100000,
+identical conflict counts)**: ratios 1.137-1.201 — the honest number for
+search-bound cells is **~1.17x**; memory-bound giants are at 1.00-1.01x.
+SCPC-500-14 perf: instructions +6.6%, branches +14%, icache misses 2.9x,
+dcache equal; `search_propagate` instruction count now EQUAL to the C's;
+residual = analyze cluster +8% instructions, kitten +25%, sparse collect,
+plus front-end pressure whose source is NOT analyze's inlining (tested).
+Measurement trap found: pin only on cores whose SMT sibling is idle
+(`lscpu -p=CPU,CORE`); a run with siblings busy produced a 1.6x-slow C arm.
+
+**Next**: (1) read parity100k_step10b.log / parity100k_step11.log; (2) the residual is now
 per-engine: kitten (its own Vec<Vec<Katch>> watch lists + checked klause
 indexing), vivify_round, watch_large_clauses' remaining +20%, the heap
 ops (C inlines them into next_decision_variable — `#[inline(always)]` on
