@@ -281,6 +281,21 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
      exact on all five cells; `parity.py --conflicts 100000` on the 20
      discriminating cells: **20/20** for both the literal-loop (09fb200) and
      the watch-range (3843da7) transform binaries.
+- 2026-09-04 **loaded screen of the current tree (3843da7)**: 14 wide
+  medium cells + circuit/SCPC/Timetable/REGRandom, RS v kissat paired on
+  cores 2/4 under 28 background kissat Kakuro runs (scratch
+  `loadscreen.sh`, `loadout24/`): case7 1.016, clqcl_50 1.017, crusti 1.046,
+  DLTM 0.982, oddball_24 1.006, QG7 1.007, ramsey 1.000, reconf10 0.982,
+  RoundRobin 1.036, sudoku 1.029, tseitin_grid 0.981, VanDerWaerden 1.037,
+  velev 1.041, xor_op 1.039, circuit 1.006, SCPC 1.043, Timetable 1.032,
+  REGRandom 0.987 — geomean ≈ **1.02x under load**, no cell above 1.05x.
+  Kakuro quiet 1.077x (instructions 327.5 v 306.4 G, cycles 292 v 271 G).
+- 2026-09-04 REJECTED: unchecked `counts[lit]` in vivify's `count_literal`
+  and unchecked `dst[pos]` in `radix_scatter` (addr2line attribution had
+  them at 19% / 8% of their functions' instructions). Instructions −2 G on
+  Kakuro but wall +0.5% Kakuro / +1.2% Timetable, each variant alone also
+  slower (vivify-only +3.4%, radix-only +2.3% on a 4-way Timetable run) —
+  a code-layout effect; not kept.
 - 2026-09-03 REJECTED: kissat's FAST_ASSIGN shape — hoisting raw base
   pointers of arena/assigned/values/watch-stack into `propagate_literal`
   locals and threading `values`/`assigned` through `fast_assign` exactly as

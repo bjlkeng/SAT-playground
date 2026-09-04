@@ -71,12 +71,18 @@ loops as slice walks (circuit −1.8%, SCPC −2.2%); the 25 + 4 sites whose
 bodies mutate the arena or call `&mut Solver` methods were left as index
 loops. 20-cell discriminating parity at 100k: **20/20 on both transform
 binaries** (scratch parity23.log / parity24.log).
-**Next**: (1) DONE above — Kakuro to 1.07x; (2) the ~1% engines
-(sweep/factor/vivify/eliminate connect) — connect + factor done, others at
-noise; (2b) loaded-screen the whole 14-cell wide set (RS v C under the
-28-process load) to find the remaining load-sensitive engines, then cut
-instructions in those loops (the remaining index-loop sites, `ticks`
-bookkeeping, Range iterators);
+**Loaded screen of HEAD 3843da7** (18 cells under the 28-process load,
+README has the table): geomean ≈ 1.02x, max 1.046 (crusti), REGRandom
+0.987. Tools in scratch worth recreating: `attr.py` (perf-script IPs →
+addr2line -i, instructions by innermost inlined function — the method that
+found factor's Range-iterator overhead and vivify's checked counter),
+`loadscreen.sh`. REJECTED today: unchecked vivify count_literal / radix
+scatter (fewer instructions, slower wall — layout).
+**Next**: (1) DONE — Kakuro 1.077x quiet; (2) engines at noise under load;
+(2b) DONE — loaded screen, nothing above 1.05x; remaining instruction
+excess on Kakuro (+7%) sits in watch_large_clauses/inlined_connect pushes
+(miss-bound), vivify schedule/count, substitute_clauses, radix_sort v
+sort_pairs (+3 G) — all ≤1-2% each;
 (3) decide what solver13 is FOR now that it is a verified 1.01x kissat
 port: the solver12-style feature work (fsweep/chrono/etc.) can be re-based
 on it with counter-exact regression testing against the C.
