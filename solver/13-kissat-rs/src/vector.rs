@@ -458,3 +458,69 @@ pub fn release_vectors(solver: &mut Solver) {
     solver.vectors.capacity = 0;
     solver.vectors.usable = 0;
 }
+
+/// Hoisted state for a run of `push_vectors` calls (see the PERF NOTE in
+/// `watch::watch_large_clauses`).  `base`/`len` mirror `solver.vectors.stack`
+/// (`len` is written back with `set_len`), `dec_usable` accumulates the
+/// `kissat_dec_usable` calls; `store` (or a fallback) syncs them into the
+/// solver.  Invariant between `load` and `store`: the stack's Vec length is
+/// stale (<= `len`) but every element below `len` is initialized; no other
+/// code touches `solver.vectors` in between.
+pub struct PushCursor {
+    base: *mut u32,
+    len: usize,
+    cap: usize,
+    dec_usable: u64,
+}
+
+impl PushCursor {
+    #[inline(always)]
+    pub fn load(solver: &mut Solver) -> Self {
+        PushCursor {
+            base: solver.vectors.stack.as_mut_ptr(),
+            len: solver.vectors.stack.len(),
+            cap: solver.vectors.capacity(),
+            dec_usable: 0,
+        }
+    }
+
+    #[inline(always)]
+    pub fn store(&mut self, solver: &mut Solver) {
+        debug_assert!(self.len <= solver.vectors.stack.capacity());
+        unsafe { solver.vectors.stack.set_len(self.len) };
+        for _ in 0..self.dec_usable {
+            solver.vectors.dec_usable();
+        }
+        self.dec_usable = 0;
+    }
+
+    /// kissat_push_vectors (inlinevector.h) with the common cases inline.
+    #[inline(always)]
+    pub fn push(&mut self, solver: &mut Solver, lit: u32, e: u32) {
+        debug_assert!(e != INVALID_VECTOR_ELEMENT);
+        let v = solver.watches[lit as usize];
+        if v.begin != 0 {
+            let end = v.end;
+            if end == self.len {
+                if self.len != self.cap {
+                    // *stack->end++ = e
+                    unsafe { *self.base.add(end) = e };
+                    self.len += 1;
+                    solver.watches[lit as usize].end = end + 1;
+                    return;
+                }
+            } else if unsafe { *self.base.add(end) } == INVALID_VECTOR_ELEMENT {
+                unsafe { *self.base.add(end) = e };
+                self.dec_usable += 1;
+                solver.watches[lit as usize].end = end + 1;
+                return;
+            }
+        }
+        // Slow paths (null vector, full stack, hole exhausted): sync, run the
+        // reference implementation (may relocate the stack), reload.
+        self.store(solver);
+        crate::vector::push_vectors(solver, lit, e);
+        *self = PushCursor::load(solver);
+    }
+}
+

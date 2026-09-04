@@ -289,6 +289,7 @@ fn connect_large_counters(solver: &mut Solver, walker: &mut Walker, mut counter_
     // clause *last_irredundant = kissat_last_irredundant_clause (solver);
     let last_irredundant = solver.last_irredundant;
 
+    let mut cur = crate::vector::PushCursor::load(solver);
     let mut ref_: Reference = 0;
     while (ref_ as u64) < solver.arena.size_wards() {
         let next = solver.arena.next_clause_ref(ref_);
@@ -337,7 +338,7 @@ fn connect_large_counters(solver: &mut Solver, walker: &mut Walker, mut counter_
                 debug_assert!(walker.original_values[lit as usize] < 0);
                 continue;
             }
-            crate::watch::push_large_watch(solver, lit, counter_ref);
+            cur.push(solver, lit, crate::watch::large_watch(counter_ref)); // PUSH_WATCHES
             csize += 1;
             if value > 0 {
                 count += 1;
@@ -353,6 +354,7 @@ fn connect_large_counters(solver: &mut Solver, walker: &mut Walker, mut counter_
         walker.size += csize as f64;
         ref_ = next;
     }
+    cur.store(solver);
     let walks = solver.statistics.walks;
     crate::print::phase(
         solver,

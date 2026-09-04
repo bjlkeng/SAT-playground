@@ -197,11 +197,24 @@ pub fn connect_literal(solver: &mut Solver, lit: u32, ref_: Reference) {
 
 /// kissat_inlined_connect_clause (see module PORT NOTES for the signature).
 pub fn inlined_connect_clause(solver: &mut Solver, ref_: Reference) {
+    let mut cur = crate::vector::PushCursor::load(solver);
+    inlined_connect_clause_cur(&mut cur, solver, ref_);
+    cur.store(solver);
+}
+
+/// `inlined_connect_clause` with the watch-stack push state hoisted by the
+/// caller (see `vector::PushCursor`); loops over many clauses use this.
+#[inline(always)]
+pub fn inlined_connect_clause_cur(
+    cur: &mut crate::vector::PushCursor,
+    solver: &mut Solver,
+    ref_: Reference,
+) {
     debug_assert!(!solver.watching);
     let size = solver.arena.clause(ref_).size();
     for i in 0..size {
         let lit = solver.arena.clause(ref_).lit(i);
-        push_large_watch(solver, lit, ref_);
+        cur.push(solver, lit, large_watch(ref_)); // PUSH_WATCHES (large)
     }
 }
 
@@ -388,7 +401,7 @@ pub fn watch_large_clauses(solver: &mut Solver) {
     // stack) and re-syncing afterwards.  Semantics are exactly
     // kissat_push_vectors'; trajectory identical by construction.
     let end_words = solver.arena.words().len();
-    let mut cur = PushCursor::load(solver);
+    let mut cur = crate::vector::PushCursor::load(solver);
     let mut c: usize = 0;
     while c < end_words {
         debug_assert!(c + LITS_OFFSET <= end_words);
@@ -424,77 +437,13 @@ pub fn watch_large_clauses(solver: &mut Solver) {
     cur.store(solver);
 }
 
-/// Hoisted state for a run of `push_vectors` calls (see the PERF NOTE in
-/// `watch_large_clauses`).  `base`/`len` mirror `solver.vectors.stack`
-/// (`len` is written back with `set_len`), `dec_usable` accumulates the
-/// `kissat_dec_usable` calls; `store` (or a fallback) syncs them into the
-/// solver.  Invariant between `load` and `store`: the stack's Vec length is
-/// stale (<= `len`) but every element below `len` is initialized; no other
-/// code touches `solver.vectors` in between.
-struct PushCursor {
-    base: *mut u32,
-    len: usize,
-    cap: usize,
-    dec_usable: u64,
-}
-
-impl PushCursor {
-    #[inline(always)]
-    fn load(solver: &mut Solver) -> Self {
-        PushCursor {
-            base: solver.vectors.stack.as_mut_ptr(),
-            len: solver.vectors.stack.len(),
-            cap: solver.vectors.capacity(),
-            dec_usable: 0,
-        }
-    }
-
-    #[inline(always)]
-    fn store(&mut self, solver: &mut Solver) {
-        debug_assert!(self.len <= solver.vectors.stack.capacity());
-        unsafe { solver.vectors.stack.set_len(self.len) };
-        for _ in 0..self.dec_usable {
-            solver.vectors.dec_usable();
-        }
-        self.dec_usable = 0;
-    }
-
-    /// kissat_push_vectors (inlinevector.h) with the common cases inline.
-    #[inline(always)]
-    fn push(&mut self, solver: &mut Solver, lit: u32, e: u32) {
-        debug_assert!(e != INVALID_VECTOR_ELEMENT);
-        let v = solver.watches[lit as usize];
-        if v.begin != 0 {
-            let end = v.end;
-            if end == self.len {
-                if self.len != self.cap {
-                    // *stack->end++ = e
-                    unsafe { *self.base.add(end) = e };
-                    self.len += 1;
-                    solver.watches[lit as usize].end = end + 1;
-                    return;
-                }
-            } else if unsafe { *self.base.add(end) } == INVALID_VECTOR_ELEMENT {
-                unsafe { *self.base.add(end) = e };
-                self.dec_usable += 1;
-                solver.watches[lit as usize].end = end + 1;
-                return;
-            }
-        }
-        // Slow paths (null vector, full stack, hole exhausted): sync, run the
-        // reference implementation (may relocate the stack), reload.
-        self.store(solver);
-        crate::vector::push_vectors(solver, lit, e);
-        *self = PushCursor::load(solver);
-    }
-}
-
 /// kissat_connect_irredundant_large_clauses: connect every literal of every
 /// non-garbage irredundant large clause (up to last_irredundant), marking
 /// root-satisfied clauses garbage instead.
 pub fn connect_irredundant_large_clauses(solver: &mut Solver) {
     debug_assert!(!solver.watching);
     let last_irredundant = solver.last_irredundant; // C: NULL if INVALID_REF
+    let mut cur = crate::vector::PushCursor::load(solver);
     let mut ref_: Reference = 0;
     while (ref_ as u64) < solver.arena.size_wards() {
         let next = solver.arena.next_clause_ref(ref_);
@@ -526,9 +475,10 @@ pub fn connect_irredundant_large_clauses(solver: &mut Solver) {
             ref_ = next;
             continue;
         }
-        inlined_connect_clause(solver, ref_);
+        inlined_connect_clause_cur(&mut cur, solver, ref_);
         ref_ = next;
     }
+    cur.store(solver);
 }
 
 /// kissat_flush_large_connected: drop all large clause references from the
