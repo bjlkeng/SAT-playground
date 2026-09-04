@@ -2,7 +2,7 @@
 
 ## SESSION 2026-09-03b — solver13 PROFILER UNLOCKED; the "8.5% gap" was brocard's memory-bound best case (other cells 1.19-1.34x); ten structural fixes take brocard to 1.007x and cache-resident cells to ~1.15x kissat, all counters exact
 
-Commits 7a27474, 9e7f2f7, 9cfbb3f, c02632e, b9cc80b + the heap step (all pushed).
+Commits 7a27474 … 4b0ba3f (nine commits, all pushed).
 Host: perf_event_paranoid=1, perf + valgrind present — profiling works now.
 
 **Protocol that produced every number below**: simultaneous pinned-core
@@ -47,6 +47,9 @@ pointers under NDEBUG) plus out-of-line helpers the C has as header
    Timetable −9% (1.23x → 1.118x), circuit −1%, brocard 1.001x.
 11. kitten klauses on UVec + inline(always) on kitten.c's static-inline
    helpers. Timetable −1.2%, brocard 1.007x, circuit flat.
+12. The remaining Solver stacks (analyzed/levels/minimize/poisoned/promote/
+   removable/shrinkable/clause/shadow/delayed/etrail/units/sorter) on UVec.
+   circuit −1.6%, SCPC −1.9%, Timetable/brocard flat.
 REJECTED too: inline(never) on the analyze cluster (deduce/bump/shrink/
 minimize/learn) to mirror kissat's no-LTO TU boundaries — icache misses did
 NOT drop (27.5M → 28.8M on SCPC), wall a wash.
@@ -75,8 +78,11 @@ PID recorded in the transcript) — CHECK IT before trusting the tree; every
 later step was verified 80-counter exact on brocard/circuit/Timetable.
 
 **Wider check (10 medium cells, step 11 v kissat, --conflicts=100000,
-identical conflict counts)**: ratios 1.137-1.201 — the honest number for
-search-bound cells is **~1.17x**; memory-bound giants are at 1.00-1.01x.
+identical conflict counts)**: ratios 1.137-1.201 on the nine cells that
+reached the limit, geomean **1.148** over all ten (oisc-subrv-and-nested-11
+hit the 900 s wall in both arms at 9592 v 9645 conflicts — wall-limited,
+not a divergence); the honest number for search-bound cells is **~1.17x**
+before steps 11-12 and ~1.15x after; memory-bound giants are at 1.00-1.01x.
 SCPC-500-14 perf: instructions +6.6%, branches +14%, icache misses 2.9x,
 dcache equal; `search_propagate` instruction count now EQUAL to the C's;
 residual = analyze cluster +8% instructions, kitten +25%, sparse collect,
