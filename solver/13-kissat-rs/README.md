@@ -47,3 +47,18 @@ evidence):
   the limit). All inprocessing engines active. Command:
   `python3 solver/13-kissat-rs/tools/parity.py --conflicts 10000
   --timeout 900 benchmarks/discriminating/*.xz`.
+
+Performance notes (tier-1, brocard full default runs, quiet-ish host):
+
+- 2026-09-03 wall gap vs reference: ~8.5% slower overall (87.4 v 94.8 s
+  totals; search +6%, probe/simplify/vivify/sweep +20-25%, parse 1.19x).
+  Earlier `--profile=4` phase ratios (decide 10x, lucky 7x, parse 4x) were
+  measurement artifacts of the old `process_time()` reading and parsing
+  /proc/self/stat per profile START/STOP; resources.rs now uses libc
+  getrusage/gettimeofday exactly like the C. With the honest clock the
+  `--profile=4` totals differ by ~3.5% and counters remain exact.
+- 2026-09-03 REJECTED: software-prefetch of the next watched clause in
+  `propagate_literal` (solver12 bead 5b2.8.1 pattern). Paired simultaneous
+  brocard A/B: 99.50 s with prefetch v 96.25 s without (+3.4% regression),
+  counters identical. solver13's 2-word interleaved watch layout does not
+  benefit; do not re-add without new evidence.
