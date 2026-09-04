@@ -13,9 +13,13 @@ Goal: on `benchmarks/sat-comp-2025` (400 instances, 3600 s / 16 GB / 32
 cores), solved count and PAR-2 within 2% of kissat 4.0.4 in a fresh paired
 run, with all kissat features implemented.
 
-Status: foundation + core CDCL waves complete; inprocessing wave in
-progress. Measured results so far (all tier-1 probes, NOT promotion
-evidence):
+Status (2026-09-04): all engines ported; counter parity exact at
+`--conflicts=100000` on the 20 discriminating cells + 14 medium cells and on
+full brocard runs; wall ratio v kissat 1.00-1.06x (memory-bound giants
+1.00-1.02x, cache-resident search-bound cells 1.02-1.06x). The phase-8
+acceptance run (paired 400x2 @ 3600 s) was launched 2026-09-04 — see
+`plan/next-plan.md` for the log dirs and evaluation gate. Measured results
+(all tier-1 probes, NOT acceptance evidence):
 
 - 2026-08-30 `tools/smoke_test.sh`: 9/9 PASS — valid SAT models,
   drat-trim-verified UNSAT proofs, default options
