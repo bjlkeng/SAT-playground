@@ -85,29 +85,28 @@ fn move_smallest_literal_to_front(
                 u32::MAX
             };
 
-            let better;
-            if u < 0 && v > 0 {
-                better = true;
+            // PERF NOTE: written as selects (no `continue`) so LLVM emits
+            // the C's cmov chain (gcc -O3) instead of a data-dependent branch
+            // with the best/pos/u/k state spilled to the stack; the branchy
+            // form cost ~2.5 s of Kakuro's 80 s in watch_large_clauses alone.
+            let better = if u < 0 && v > 0 {
+                true
             } else if u > 0 && v < 0 {
-                better = false;
+                false
             } else if u < 0 {
                 debug_assert!(v < 0);
-                better = k < l;
+                k < l
             } else {
                 debug_assert!(u > 0);
                 debug_assert!(v > 0);
                 debug_assert!(!satisfied_is_enough);
-                better = k > l;
-            }
+                k > l
+            };
 
-            if !better {
-                continue;
-            }
-
-            best = b;
-            pos = idx;
-            u = v;
-            k = l;
+            best = if better { b } else { best };
+            pos = if better { idx } else { pos };
+            u = if better { v } else { u };
+            k = if better { l } else { k };
         }
     }
 
