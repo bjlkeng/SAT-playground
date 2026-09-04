@@ -16,9 +16,21 @@ run, with all kissat features implemented.
 Status (2026-09-04): all engines ported; counter parity exact at
 `--conflicts=100000` on the 20 discriminating cells + 14 medium cells and on
 full brocard runs; wall ratio v kissat 1.00-1.06x (memory-bound giants
-1.00-1.02x, cache-resident search-bound cells 1.02-1.06x). The phase-8
-acceptance run (paired 400x2 @ 3600 s) was launched 2026-09-04 — see
-`plan/next-plan.md` for the log dirs and evaluation gate. Measured results
+1.00-1.02x, cache-resident search-bound cells 1.02-1.06x). **Phase-8 acceptance run PASSED
+2026-09-04** (paired 400x2 @ 3600 s / 16 GB / 16+16 pinned physical cores,
+no proofs, `tools/run_kissat_full.sh`; logs
+`log/kissat-full-accept-20260904-072748` v
+`log/solver13-full-accept-20260904-072750`, report via
+`tools/compare_full_runs.py`): solved **312 v kissat 313** (floor 306.7),
+PAR-2 **792,489 v 786,872 = 1.0071x** (ceiling 1.02x), **zero SAT/UNSAT
+contradictions**; 284 both-solved cells wall geomean **1.013x** (158,884 v
+156,921 s). The one lost cell, lockchart-group3-L15-K29-p4, is a 53 s
+wall-coin (kissat UNSAT at 3546.6 s); the other two wall-band cells
+(frb80-14-1 3396 s, bp4_LPI_FPBEQ_ZR 3071 s) held. Both arms abort on
+memory (exit 134) on pj2002_k500 and 17.normalised. Residual by family:
+Kakuro 1.15-1.22x (4 cells; 490 MB CNFs, parse/giant-clause bound),
+REGRandom 1.15x, crusti 1.11x; the `N.normalised` family runs 0.81-0.94x
+(faster than the C). Measured results
 (all tier-1 probes, NOT acceptance evidence):
 
 - 2026-08-30 `tools/smoke_test.sh`: 9/9 PASS — valid SAT models,

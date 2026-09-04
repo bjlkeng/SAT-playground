@@ -34,7 +34,20 @@ tseitin_grid_n12 1.039, VanDerWaerden_27 1.005, xor_op_n40 1.058,
 reconf10_70 1.015, velev-pipe 1.035, sudoku-N30 ~1.0 (173 v 168 s wall,
 process-time reversed) — **all 14 counter-exact**, geomean ≈ 1.02x.
 
-**ACCEPTANCE RUN (phase 8) — RUNNING, launched 2026-09-04 07:27 local**:
+**ACCEPTANCE RUN (phase 8) — DONE 16:08 local, GATE PASS**: solved 312 v
+313 (floor 306.7), PAR-2 1.0071x (ceiling 1.02x), 0 contradictions, 284
+both-solved wall geomean 1.013x; lost only lockchart-group3-L15-K29-p4 (a
+53 s wall-coin, kissat 3546.6 s). Report:
+`python3 tools/compare_full_runs.py log/kissat-full-accept-20260904-072748
+log/solver13-full-accept-20260904-072750`. Residual families: Kakuro
+1.15-1.22x (490 MB CNFs — profile parse + giant-clause handling next),
+REGRandom 1.15x, crusti 1.11x; `N.normalised` 0.81-0.94x (we are faster).
+**Next**: (1) Kakuro-family profile (parse/arena/giant clauses) — the only
+family >1.1x; (2) the ~1% engines (sweep/factor/vivify/eliminate connect);
+(3) decide what solver13 is FOR now that it is a verified 1.01x kissat
+port: the solver12-style feature work (fsweep/chrono/etc.) can be re-based
+on it with counter-exact regression testing against the C.
+Launch details of the run:
 - kissat arm: `log/kissat-full-accept-20260904-072748` (pid of wrapper 245924, `log/accept-kissat-arm.out`),
   `tools/run_kissat_full.sh -t 3600 -m 16000 -j 16 -c 0`.
 - solver13 arm: `log/solver13-full-accept-20260904-072750` (wrapper pid 246205, `log/accept-solver13-arm.out`),
