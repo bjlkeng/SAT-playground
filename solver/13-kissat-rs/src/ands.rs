@@ -37,9 +37,7 @@ pub fn find_and_gate(solver: &mut Solver, lit: u32, negative: u32) -> bool {
         let ref_ = watch_ref(watch);
         debug_assert!(!solver.arena.clause(ref_).garbage());
         let mut candidate = true; // base = c
-        let size = solver.arena.clause(ref_).size();
-        for i in 0..size {
-            let other = solver.arena.clause(ref_).lit(i);
+        for &other in solver.arena.clause(ref_).lits() {
             if other == not_lit {
                 continue;
             }
@@ -71,9 +69,7 @@ pub fn find_and_gate(solver: &mut Solver, lit: u32, negative: u32) -> bool {
     }
 
     // Unmark the negations of the base clause literals.
-    let size = solver.arena.clause(base).size();
-    for i in 0..size {
-        let other = solver.arena.clause(base).lit(i);
+    for &other in solver.arena.clause(base).lits() {
         if other == not_lit {
             continue;
         }

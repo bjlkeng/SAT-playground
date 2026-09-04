@@ -22,9 +22,7 @@ fn get_ternary_clause(solver: &mut Solver, ref_: Reference) -> Option<(u32, u32,
     let mut b = INVALID;
     let mut c = INVALID;
     let mut found: u32 = 0;
-    let size = solver.arena.clause(ref_).size();
-    for i in 0..size {
-        let other = solver.arena.clause(ref_).lit(i);
+    for &other in solver.arena.clause(ref_).lits() {
         let value = solver.values[other as usize];
         if value > 0 {
             crate::eliminate::eliminate_clause(solver, ref_, INVALID);
@@ -59,9 +57,7 @@ fn match_ternary_ref(solver: &mut Solver, ref_: Reference, a: u32, b: u32, c: u3
         return false;
     }
     let mut found: u32 = 0;
-    let size = solver.arena.clause(ref_).size();
-    for i in 0..size {
-        let other = solver.arena.clause(ref_).lit(i);
+    for &other in solver.arena.clause(ref_).lits() {
         let value = solver.values[other as usize];
         if value > 0 {
             crate::eliminate::eliminate_clause(solver, ref_, INVALID);

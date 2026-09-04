@@ -310,8 +310,7 @@ fn connect_large_counters(solver: &mut Solver, walker: &mut Walker, mut counter_
             continue;
         }
         let mut continue_with_next_clause = false;
-        for i in 0..size {
-            let lit = solver.arena.clause(ref_).lit(i);
+        for &lit in solver.arena.clause(ref_).lits() {
             let value = walker.original_values[lit as usize];
             if value <= 0 {
                 continue;

@@ -54,12 +54,10 @@ fn non_watching_propagate_literal(solver: &mut Solver, lit: u32) -> bool {
             if solver.arena.clause(ref_).garbage() {
                 continue;
             }
-            let size = solver.arena.clause(ref_).size();
             let mut non_false: u32 = 0;
             let mut unit = INVALID;
             let mut satisfied = false;
-            for i in 0..size {
-                let other = solver.arena.clause(ref_).lit(i);
+            for &other in solver.arena.clause(ref_).lits() {
                 if other == not_lit {
                     continue;
                 }

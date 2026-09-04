@@ -126,8 +126,7 @@ fn resume_watching_large_clauses_after_elimination(solver: &mut Solver) {
         }
         let size = solver.arena.clause(ref_).size();
         let mut collect = false;
-        for i in 0..size {
-            let lit = solver.arena.clause(ref_).lit(i);
+        for &lit in solver.arena.clause(ref_).lits() {
             if solver.values[lit as usize] > 0 {
                 collect = true;
                 break;

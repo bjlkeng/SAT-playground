@@ -349,9 +349,7 @@ pub fn add_unit_to_proof(solver: &mut Solver, ilit: u32) {
 pub fn shrink_clause_in_proof(solver: &mut Solver, ref_: Reference, remove: u32, keep: u32) {
     let mut proof = solver.proof.take().expect("proof");
     debug_assert!(proof.line.is_empty());
-    let size = solver.arena.clause(ref_).size();
-    for i in 0..size {
-        let ilit = solver.arena.clause(ref_).lit(i);
+    for &ilit in solver.arena.clause(ref_).lits() {
         if ilit == remove {
             continue;
         }

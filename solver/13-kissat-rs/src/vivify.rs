@@ -83,9 +83,7 @@ fn count_literal(lit: u32, counts: &mut [u32]) {
 // static count_clause (reads the clause through the arena per literal so the
 // counts array can be vivifier-owned).
 fn count_clause(solver: &Solver, c_ref: Reference, counts: &mut [u32]) {
-    let size = solver.arena.clause(c_ref).size();
-    for i in 0..size {
-        let lit = solver.arena.clause(c_ref).lit(i);
+    for &lit in solver.arena.clause(c_ref).lits() {
         count_literal(lit, counts);
     }
 }
@@ -1090,9 +1088,7 @@ fn vivify_clause(solver: &mut Solver, vivifier: &mut Vivifier, cand_ref: Referen
     vivifier.sorted.clear();
 
     {
-        let size = solver.arena.clause(cand_ref).size();
-        for i in 0..size {
-            let lit = solver.arena.clause(cand_ref).lit(i);
+        for &lit in solver.arena.clause(cand_ref).lits() {
             let value = crate::internal::fixed(solver, lit);
             if value < 0 {
                 continue;
@@ -1120,9 +1116,7 @@ fn vivify_clause(solver: &mut Solver, vivifier: &mut Vivifier, cand_ref: Referen
 
     let mut unit = INVALID_LIT;
     {
-        let size = solver.arena.clause(cand_ref).size();
-        for i in 0..size {
-            let lit = solver.arena.clause(cand_ref).lit(i);
+        for &lit in solver.arena.clause(cand_ref).lits() {
             let value = solver.values[lit as usize];
             if value < 0 {
                 continue;

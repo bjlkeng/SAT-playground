@@ -67,11 +67,10 @@ fn compute_weights(solver: &mut Solver) -> Vec<f64> {
                 ref_ = next;
                 continue;
             }
-            let csize = c.size();
+            let _csize = c.size();
             let mut size: u32 = 0;
             let mut satisfied = false; // goto CONTINUE_WITH_NEXT_CLAUSE
-            for i in 0..csize {
-                let lit = solver.arena.clause(ref_).lit(i);
+            for &lit in solver.arena.clause(ref_).lits() {
                 let value = solver.values[lit as usize];
                 if value > 0 {
                     satisfied = true;
@@ -86,8 +85,7 @@ fn compute_weights(solver: &mut Solver) -> Vec<f64> {
             }
             if !satisfied {
                 let weight = table[size as usize];
-                for i in 0..csize {
-                    let lit = solver.arena.clause(ref_).lit(i);
+                for &lit in solver.arena.clause(ref_).lits() {
                     weights[lit as usize] += weight;
                 }
             }

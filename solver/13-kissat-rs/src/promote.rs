@@ -49,9 +49,7 @@ pub fn recompute_glue(solver: &mut Solver, ref_: Reference, limit: u32) -> u32 {
     debug_assert!(limit > 0);
     debug_assert!(solver.promote.is_empty());
     let mut res: u32 = 0;
-    let size = solver.arena.clause(ref_).size();
-    for i in 0..size {
-        let lit = solver.arena.clause(ref_).lit(i);
+    for &lit in solver.arena.clause(ref_).lits() {
         debug_assert!(solver.values[lit as usize] != 0);
         let level = solver.assigned[crate::literal::idx(lit) as usize].level; // LEVEL (lit)
         if solver.frames[level as usize].promote {

@@ -30,8 +30,7 @@ fn fast_forward_subsumed(solver: &mut Solver, c_ref: Reference) -> bool {
     let mut max_occurring = INVALID;
     let mut max_occurrence: usize = 0;
     let c_size = solver.arena.clause(c_ref).size();
-    for i in 0..c_size {
-        let other = solver.arena.clause(c_ref).lit(i);
+    for &other in solver.arena.clause(c_ref).lits() {
         let other_idx = crate::literal::idx(other);
         if !solver.flags[other_idx as usize].active {
             continue;
@@ -81,9 +80,7 @@ fn fast_forward_subsumed(solver: &mut Solver, c_ref: Reference) -> bool {
                 }
                 debug_assert!(!solver.arena.clause(d_ref).redundant());
                 subsumed = true;
-                let d_size = solver.arena.clause(d_ref).size();
-                for j in 0..d_size {
-                    let other2 = solver.arena.clause(d_ref).lit(j);
+                for &other2 in solver.arena.clause(d_ref).lits() {
                     if solver.values[other2 as usize] < 0 {
                         continue;
                     }
@@ -98,8 +95,7 @@ fn fast_forward_subsumed(solver: &mut Solver, c_ref: Reference) -> bool {
             break 'outer;
         }
     }
-    for i in 0..c_size {
-        let other = solver.arena.clause(c_ref).lit(i);
+    for &other in solver.arena.clause(c_ref).lits() {
         solver.marks[other as usize] = 0;
     }
     if subsumed {
@@ -247,9 +243,7 @@ fn do_fast_resolve_binary_large(solver: &mut Solver, pivot: u32, lit: u32, c_ref
     let mut satisfied = false;
     let mut tautological = false;
     let not_lit = crate::literal::not(lit);
-    let size = solver.arena.clause(c_ref).size();
-    for i in 0..size {
-        let other = solver.arena.clause(c_ref).lit(i);
+    for &other in solver.arena.clause(c_ref).lits() {
         let idx_other = crate::literal::idx(other);
         if idx_other == pivot {
             continue;
@@ -316,9 +310,7 @@ fn do_fast_resolve_large_large(
     debug_assert!(solver.clause.is_empty());
     let mut satisfied = false;
     let mut tautological = false;
-    let c_size = solver.arena.clause(c_ref).size();
-    for i in 0..c_size {
-        let other = solver.arena.clause(c_ref).lit(i);
+    for &other in solver.arena.clause(c_ref).lits() {
         let idx_other = crate::literal::idx(other);
         if idx_other == pivot {
             continue;
@@ -343,9 +335,7 @@ fn do_fast_resolve_large_large(
         return;
     }
     let marked = solver.clause.len();
-    let d_size = solver.arena.clause(d_ref).size();
-    for i in 0..d_size {
-        let other = solver.arena.clause(d_ref).lit(i);
+    for &other in solver.arena.clause(d_ref).lits() {
         let idx_other = crate::literal::idx(other);
         if idx_other == pivot {
             continue;
@@ -445,9 +435,7 @@ fn fast_delete_and_weaken_clauses(solver: &mut Solver, lit: u32) {
             let ref_ = watch_ref(watch);
             if !solver.arena.clause(ref_).garbage() {
                 let mut satisfied = false;
-                let size = solver.arena.clause(ref_).size();
-                for i in 0..size {
-                    let other = solver.arena.clause(ref_).lit(i);
+                for &other in solver.arena.clause(ref_).lits() {
                     if solver.values[other as usize] > 0 {
                         satisfied = true;
                         break;
@@ -563,9 +551,7 @@ fn can_fast_resolve_binary_large(
     }
     let not_lit = crate::literal::not(lit);
     let mut found_lit = false;
-    let size = solver.arena.clause(c_ref).size();
-    for i in 0..size {
-        let other = solver.arena.clause(c_ref).lit(i);
+    for &other in solver.arena.clause(c_ref).lits() {
         if other == lit {
             found_lit = true;
         }
@@ -580,9 +566,7 @@ fn can_fast_resolve_binary_large(
     }
     if found_lit {
         debug_assert!(solver.clause.is_empty());
-        let size = solver.arena.clause(c_ref).size();
-        for i in 0..size {
-            let other = solver.arena.clause(c_ref).lit(i);
+        for &other in solver.arena.clause(c_ref).lits() {
             let idx = crate::literal::idx(other);
             if idx == pivot {
                 continue;
@@ -637,9 +621,7 @@ fn can_fast_resolve_large_large(
     debug_assert!(!solver.arena.clause(d_ref).redundant());
     let mut satisfied = false;
     debug_assert!(solver.clause.is_empty());
-    let c_size = solver.arena.clause(c_ref).size();
-    for i in 0..c_size {
-        let other = solver.arena.clause(c_ref).lit(i);
+    for &other in solver.arena.clause(c_ref).lits() {
         let idx_other = crate::literal::idx(other);
         if idx_other == pivot {
             continue;
@@ -659,9 +641,7 @@ fn can_fast_resolve_large_large(
     }
     let mut tautological = false;
     if !satisfied {
-        let d_size = solver.arena.clause(d_ref).size();
-        for i in 0..d_size {
-            let other = solver.arena.clause(d_ref).lit(i);
+        for &other in solver.arena.clause(d_ref).lits() {
             let idx_other = crate::literal::idx(other);
             if idx_other == pivot {
                 continue;
@@ -689,9 +669,7 @@ fn can_fast_resolve_large_large(
         }
     }
     // for (all_literals_in_clause (other, c)) marks[other] = 0;
-    let c_size = solver.arena.clause(c_ref).size();
-    for i in 0..c_size {
-        let other = solver.arena.clause(c_ref).lit(i);
+    for &other in solver.arena.clause(c_ref).lits() {
         solver.marks[other as usize] = 0;
     }
     let mut strengthened = false;
@@ -721,9 +699,7 @@ fn can_fast_resolve_large_large(
                     solver.marks[other as usize] = 1;
                 }
                 let mut count: usize = 0;
-                let c_size = solver.arena.clause(c_ref).size();
-                for i in 0..c_size {
-                    let other = solver.arena.clause(c_ref).lit(i);
+                for &other in solver.arena.clause(c_ref).lits() {
                     if solver.marks[other as usize] != 0 {
                         count += 1;
                     }
@@ -739,9 +715,7 @@ fn can_fast_resolve_large_large(
                     }
                 }
                 let mut count: usize = 0;
-                let d_size = solver.arena.clause(d_ref).size();
-                for i in 0..d_size {
-                    let other = solver.arena.clause(d_ref).lit(i);
+                for &other in solver.arena.clause(d_ref).lits() {
                     if solver.marks[other as usize] != 0 {
                         count += 1;
                     }

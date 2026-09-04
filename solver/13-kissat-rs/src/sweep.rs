@@ -317,7 +317,7 @@ fn sweep_binary(solver: &mut Solver, sweeper: &mut Sweeper, depth: u32, lit: u32
 
 fn sweep_reference(solver: &mut Solver, sweeper: &mut Sweeper, depth: u32, ref_: Reference) {
     debug_assert!(sweeper.clause.is_empty());
-    let (swept, garbage, size) = {
+    let (swept, garbage, _size) = {
         let c = solver.arena.clause(ref_);
         (c.swept(), c.garbage(), c.size())
     };
@@ -327,8 +327,7 @@ fn sweep_reference(solver: &mut Solver, sweeper: &mut Sweeper, depth: u32, ref_:
     if garbage {
         return;
     }
-    for i in 0..size {
-        let lit = solver.arena.clause(ref_).lit(i);
+    for &lit in solver.arena.clause(ref_).lits() {
         let value = solver.values[lit as usize];
         if value > 0 {
             crate::clause::mark_clause_as_garbage(solver, ref_);
@@ -881,9 +880,7 @@ fn substitute_connected_clauses(
                 let mut satisfied = false;
                 let mut repr_already_watched = false;
                 let not_repr = NOT(repr);
-                let size = solver.arena.clause(ref_).size();
-                for i in 0..size {
-                    let other = solver.arena.clause(ref_).lit(i);
+                for &other in solver.arena.clause(ref_).lits() {
                     if other == lit {
                         solver.clause.push(repr);
                         continue;

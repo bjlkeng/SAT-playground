@@ -451,7 +451,7 @@ pub fn connect_irredundant_large_clauses(solver: &mut Solver) {
         if last_irredundant != crate::clause::INVALID_REF && ref_ > last_irredundant {
             break;
         }
-        let (redundant, garbage, size) = {
+        let (redundant, garbage, _size) = {
             let c = solver.arena.clause(ref_);
             (c.redundant(), c.garbage(), c.size())
         };
@@ -461,8 +461,7 @@ pub fn connect_irredundant_large_clauses(solver: &mut Solver) {
         }
         let mut satisfied = false;
         debug_assert!(solver.level == 0);
-        for i in 0..size {
-            let lit = solver.arena.clause(ref_).lit(i);
+        for &lit in solver.arena.clause(ref_).lits() {
             let value = solver.values[lit as usize];
             if value <= 0 {
                 continue;

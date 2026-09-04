@@ -155,8 +155,7 @@ fn find_forward_subsumption_candidates(solver: &mut Solver, candidates: &mut Vec
         }
         debug_assert!(size > 2);
         let mut subsume: u32 = 0;
-        for i in 0..size {
-            let lit = solver.arena.clause(ref_).lit(i);
+        for &lit in solver.arena.clause(ref_).lits() {
             let idx = crate::literal::idx(lit);
             let f = solver.flags[idx as usize];
             if f.subsume {
@@ -259,9 +258,7 @@ fn forward_literal(
 
             let mut candidate = INVALID;
 
-            let size = solver.arena.clause(ref_).size();
-            for i in 0..size {
-                let other = solver.arena.clause(ref_).lit(i);
+            for &other in solver.arena.clause(ref_).lits() {
                 if solver.marks[other as usize] != 0 {
                     continue;
                 }
@@ -362,9 +359,7 @@ fn forward_subsumed_clause(
     let mut non_false: u32 = 0;
     let mut unit = INVALID;
 
-    let size = solver.arena.clause(ref_).size();
-    for i in 0..size {
-        let lit = solver.arena.clause(ref_).lit(i);
+    for &lit in solver.arena.clause(ref_).lits() {
         let value = solver.values[lit as usize];
         if value < 0 {
             continue;
@@ -384,8 +379,7 @@ fn forward_subsumed_clause(
     }
 
     if solver.arena.clause(ref_).garbage() || non_false <= 1 {
-        for i in 0..size {
-            let lit = solver.arena.clause(ref_).lit(i);
+        for &lit in solver.arena.clause(ref_).lits() {
             solver.marks[lit as usize] = 0;
         }
     }
@@ -413,8 +407,7 @@ fn forward_subsumed_clause(
     let mut remove = INVALID;
     let subsume = forward_marked_clause(solver, ref_, &mut remove);
 
-    for i in 0..size {
-        let lit = solver.arena.clause(ref_).lit(i);
+    for &lit in solver.arena.clause(ref_).lits() {
         solver.marks[lit as usize] = 0;
     }
 
@@ -520,9 +513,7 @@ fn connect_subsuming(solver: &mut Solver, occlim: u32, ref_: Reference) {
 
     let mut subsume = true;
 
-    let size = solver.arena.clause(ref_).size();
-    for i in 0..size {
-        let lit = solver.arena.clause(ref_).lit(i);
+    for &lit in solver.arena.clause(ref_).lits() {
         let idx = crate::literal::idx(lit);
         let flags = solver.flags[idx as usize];
         if !flags.active {
@@ -675,9 +666,7 @@ fn forward_subsume_all_clauses(solver: &mut Solver) -> bool {
             continue;
         }
         remain += 1;
-        let size = solver.arena.clause(ref_).size();
-        for i in 0..size {
-            let lit = solver.arena.clause(ref_).lit(i);
+        for &lit in solver.arena.clause(ref_).lits() {
             let idx = crate::literal::idx(lit);
             let f = &mut solver.flags[idx as usize];
             if f.subsume {

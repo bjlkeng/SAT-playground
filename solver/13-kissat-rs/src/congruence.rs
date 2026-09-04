@@ -2132,9 +2132,7 @@ fn extract_and_gates_with_base_clause(solver: &mut Solver, closure: &mut Closure
     let mut size = 0u32;
     let mut max_negbincount = 0u32;
     closure.lits.clear();
-    let c_size = solver.arena.clause(c_ref).size();
-    for i in 0..c_size {
-        let l = solver.arena.clause(c_ref).lit(i);
+    for &l in solver.arena.clause(c_ref).lits() {
         let value = solver.values[l as usize];
         if value < 0 {
             continue;
@@ -2257,10 +2255,8 @@ fn find_large_xor_side_clause(solver: &mut Solver, closure: &mut Closure) -> Ref
         if (solver.arena.clause(d_ref).size() as usize) < size_lits {
             continue;
         }
-        let d_size = solver.arena.clause(d_ref).size();
         let mut found = 0usize;
-        for j in 0..d_size {
-            let other = solver.arena.clause(d_ref).lit(j);
+        for &other in solver.arena.clause(d_ref).lits() {
             let value = solver.values[other as usize];
             if value < 0 {
                 continue;
@@ -2300,9 +2296,7 @@ fn extract_xor_gates_with_base_clause(solver: &mut Solver, closure: &mut Closure
     let mut size = 0u32;
     closure.lits.clear();
     let mut first = true;
-    let c_size = solver.arena.clause(c_ref).size();
-    for i in 0..c_size {
-        let l = solver.arena.clause(c_ref).lit(i);
+    for &l in solver.arena.clause(c_ref).lits() {
         let value = solver.values[l as usize];
         if value < 0 {
             continue;
@@ -3506,8 +3500,7 @@ fn find_subsuming_clause(solver: &mut Solver, closure: &mut Closure, c_ref: Refe
     debug_assert!(!solver.arena.clause(c_ref).garbage());
     let c_size = solver.arena.clause(c_ref).size();
     let c_redundant = solver.arena.clause(c_ref).redundant();
-    for i in 0..c_size {
-        let l = solver.arena.clause(c_ref).lit(i);
+    for &l in solver.arena.clause(c_ref).lits() {
         debug_assert!(solver.values[l as usize] <= 0);
         let repr_lit = find_repr(closure, l);
         let value_repr_lit = solver.values[repr_lit as usize];
@@ -3542,9 +3535,7 @@ fn find_subsuming_clause(solver: &mut Solver, closure: &mut Closure, c_ref: Refe
             if !c_redundant && solver.arena.clause(d_ref).redundant() {
                 continue;
             }
-            let d_size = solver.arena.clause(d_ref).size();
-            for j in 0..d_size {
-                let other = solver.arena.clause(d_ref).lit(j);
+            for &other in solver.arena.clause(d_ref).lits() {
                 let value = solver.values[other as usize];
                 if value < 0 {
                     continue;
@@ -3560,8 +3551,7 @@ fn find_subsuming_clause(solver: &mut Solver, closure: &mut Closure, c_ref: Refe
         }
     }
     // FOUND_SUBSUMING:
-    for i in 0..c_size {
-        let l = solver.arena.clause(c_ref).lit(i);
+    for &l in solver.arena.clause(c_ref).lits() {
         let repr_lit = find_repr(closure, l);
         let value = solver.values[repr_lit as usize];
         if value == 0 {
@@ -3648,9 +3638,7 @@ fn forward_subsume_matching_clauses(solver: &mut Solver, closure: &mut Closure) 
         potential += 1;
         let mut contains_matchable = false;
         debug_assert!(solver.analyzed.is_empty());
-        let c_size = solver.arena.clause(ref_).size();
-        for i in 0..c_size {
-            let l = solver.arena.clause(ref_).lit(i);
+        for &l in solver.arena.clause(ref_).lits() {
             let value = solver.values[l as usize];
             if value < 0 {
                 continue;

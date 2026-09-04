@@ -138,9 +138,7 @@ fn binary_on_the_fly_strengthen(solver: &mut Solver, ref_: Reference, lit: u32) 
     debug_assert!(solver.antecedent_size == 3);
     let mut first = INVALID_LIT;
     let mut second = INVALID_LIT;
-    let size = solver.arena.clause(ref_).size();
-    for i in 0..size {
-        let other = solver.arena.clause(ref_).lit(i);
+    for &other in solver.arena.clause(ref_).lits() {
         if other == lit {
             continue;
         }

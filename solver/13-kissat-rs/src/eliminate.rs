@@ -294,10 +294,8 @@ fn weaken_clauses(solver: &mut Solver, lit: u32) {
             if solver.arena.clause(ref_).garbage() {
                 continue;
             }
-            let size = solver.arena.clause(ref_).size();
             let mut satisfied = false;
-            for i in 0..size {
-                let other = solver.arena.clause(ref_).lit(i);
+            for &other in solver.arena.clause(ref_).lits() {
                 let value = solver.values[other as usize];
                 if value <= 0 {
                     continue;
@@ -332,10 +330,8 @@ fn weaken_clauses(solver: &mut Solver, lit: u32) {
             if solver.arena.clause(ref_).garbage() {
                 continue;
             }
-            let size = solver.arena.clause(ref_).size();
             let mut satisfied = false;
-            for i in 0..size {
-                let other = solver.arena.clause(ref_).lit(i);
+            for &other in solver.arena.clause(ref_).lits() {
                 let value = solver.values[other as usize];
                 if value <= 0 {
                     continue;

@@ -30,7 +30,7 @@ fn no_all_negative_clauses(solver: &mut Solver) -> bool {
         if last_irredundant != INVALID_REF && ref_ > last_irredundant {
             break;
         }
-        let (redundant, garbage, size) = {
+        let (redundant, garbage, _size) = {
             let c = solver.arena.clause(ref_);
             (c.redundant(), c.garbage(), c.size())
         };
@@ -38,8 +38,7 @@ fn no_all_negative_clauses(solver: &mut Solver) -> bool {
             ref_ = next;
             continue;
         }
-        for i in 0..size {
-            let lit = solver.arena.clause(ref_).lit(i);
+        for &lit in solver.arena.clause(ref_).lits() {
             if crate::literal::negated(lit) == 0 && solver.values[lit as usize] >= 0 {
                 // goto CONTINUE_WITH_NEXT_CLAUSE
                 ref_ = next;
@@ -89,7 +88,7 @@ fn no_all_positive_clauses(solver: &mut Solver) -> bool {
         if last_irredundant != INVALID_REF && ref_ > last_irredundant {
             break;
         }
-        let (redundant, garbage, size) = {
+        let (redundant, garbage, _size) = {
             let c = solver.arena.clause(ref_);
             (c.redundant(), c.garbage(), c.size())
         };
@@ -97,8 +96,7 @@ fn no_all_positive_clauses(solver: &mut Solver) -> bool {
             ref_ = next;
             continue;
         }
-        for i in 0..size {
-            let lit = solver.arena.clause(ref_).lit(i);
+        for &lit in solver.arena.clause(ref_).lits() {
             if crate::literal::negated(lit) != 0 && solver.values[lit as usize] >= 0 {
                 // goto CONTINUE_WITH_NEXT_CLAUSE
                 ref_ = next;

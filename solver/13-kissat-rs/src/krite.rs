@@ -64,13 +64,12 @@ pub fn write_dimacs(solver: &mut Solver, file: &mut dyn std::io::Write) {
     let mut ref_: crate::reference::Reference = 0;
     while (ref_ as u64) < solver.arena.size_wards() {
         let next = solver.arena.next_clause_ref(ref_);
-        let (garbage, redundant, size) = {
+        let (garbage, redundant, _size) = {
             let c = solver.arena.clause(ref_);
             (c.garbage(), c.redundant(), c.size())
         };
         if !garbage && !redundant {
-            for i in 0..size {
-                let ilit = solver.arena.clause(ref_).lit(i);
+            for &ilit in solver.arena.clause(ref_).lits() {
                 let elit = crate::inline::export_literal(solver, ilit);
                 let _ = write!(file, "{} ", elit);
             }

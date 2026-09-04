@@ -994,9 +994,8 @@ fn connect_clauses_to_factor(solver: &mut Solver) {
             ref_ = next;
             continue;
         }
-        let c_size = c.size();
-        for j in 0..c_size {
-            let l = solver.arena.clause(ref_).lit(j);
+        let _c_size = c.size();
+        for &l in solver.arena.clause(ref_).lits() {
             largecount[l as usize] += 1;
         }
         initial_candidates += 1;
@@ -1033,16 +1032,14 @@ fn connect_clauses_to_factor(solver: &mut Solver) {
                 ref_ = next;
                 continue;
             }
-            let c_size = c.size();
-            for j in 0..c_size {
-                let l = solver.arena.clause(ref_).lit(j);
+            let _c_size = c.size();
+            for &l in solver.arena.clause(ref_).lits() {
                 if bincount[l as usize] + largecount[l as usize] < 2 {
                     ref_ = next;
                     continue 'clauses1; // goto CONTINUE_WITH_NEXT_CLAUSE1
                 }
             }
-            for j in 0..c_size {
-                let l = solver.arena.clause(ref_).lit(j);
+            for &l in solver.arena.clause(ref_).lits() {
                 newlargecount[l as usize] += 1;
             }
             new_candidates += 1;
@@ -1090,9 +1087,8 @@ fn connect_clauses_to_factor(solver: &mut Solver) {
             ref_ = next;
             continue;
         }
-        let c_size = c.size();
-        for j in 0..c_size {
-            let l = solver.arena.clause(ref_).lit(j);
+        let _c_size = c.size();
+        for &l in solver.arena.clause(ref_).lits() {
             if bincount[l as usize] + largecount[l as usize] < 2 {
                 ref_ = next;
                 continue 'clauses2; // goto CONTINUE_WITH_NEXT_CLAUSE2
