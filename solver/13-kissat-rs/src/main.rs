@@ -87,6 +87,7 @@ pub mod tiers;
 pub mod trail;
 pub mod transitive;
 pub mod utilities;
+mod uvec;
 pub mod value;
 pub mod vector;
 pub mod vivify;

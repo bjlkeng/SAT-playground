@@ -97,7 +97,7 @@ impl Vector {
 /// C `struct vectors`: the shared u32 stack backing every watch list plus the
 /// count of usable (INVALID-marked) holes.
 pub struct Vectors {
-    pub stack: Vec<u32>,
+    pub stack: crate::uvec::UVec<u32>,
     /// CAPACITY_STACK mirror (entries); see module PORT NOTES.
     capacity: usize,
     pub usable: u64, // C: size_t usable
@@ -112,7 +112,7 @@ impl Default for Vectors {
 impl Vectors {
     pub fn new() -> Self {
         Vectors {
-            stack: Vec::new(),
+            stack: crate::uvec::UVec::new(),
             capacity: 0,
             usable: 0,
         }
@@ -135,7 +135,8 @@ impl Vectors {
         } else {
             4 // ENLARGE_STACK quirk: BYTES_PER_ELEMENT == sizeof (unsigned)
         };
-        self.stack.reserve_exact(new_capacity - self.stack.len());
+        let len = self.stack.len();
+        self.stack.reserve_exact(new_capacity - len);
         self.capacity = new_capacity;
     }
 
@@ -155,7 +156,7 @@ impl Vectors {
         let old_bytes = self.capacity * 4;
         let old_size = self.stack.len();
         if old_size == 0 {
-            self.stack = Vec::new(); // kissat_free + INIT_STACK
+            self.stack = Default::default(); // kissat_free + INIT_STACK
             self.capacity = 0;
             return;
         }
@@ -453,7 +454,7 @@ pub fn defrag_vectors(solver: &mut Solver) {
 
 /// kissat_release_vectors.
 pub fn release_vectors(solver: &mut Solver) {
-    solver.vectors.stack = Vec::new(); // RELEASE_STACK
+    solver.vectors.stack = Default::default(); // RELEASE_STACK
     solver.vectors.capacity = 0;
     solver.vectors.usable = 0;
 }

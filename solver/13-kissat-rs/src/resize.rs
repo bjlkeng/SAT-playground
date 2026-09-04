@@ -43,7 +43,8 @@ pub fn increase_size(solver: &mut Solver, new_size: u32) {
     // array of `size` entries so PUSH_ARRAY is an unchecked store; keep the
     // Vec's capacity at >= size so assign.rs can push unchecked too.
     if solver.trail.capacity() < n {
-        solver.trail.reserve_exact(n - solver.trail.len());
+        let len = solver.trail.len();
+        solver.trail.reserve_exact(n - len);
     }
     debug_assert!(solver.trail.capacity() >= n);
     crate::heap::resize_heap(&mut solver.scores, new_size); // kissat_resize_heap (SCORES)

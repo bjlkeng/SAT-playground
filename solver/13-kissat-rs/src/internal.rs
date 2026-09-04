@@ -224,18 +224,18 @@ pub struct Solver {
     pub extend: Vec<Extension>, // extensions extend;
     pub witness: Vec<u32>,      // unsigneds witness;
 
-    pub assigned: Vec<Assigned>, // assigned *assigned;  (var-indexed)
-    pub flags: Vec<Flags>,       // flags *flags;        (var-indexed)
+    pub assigned: crate::uvec::UVec<Assigned>, // assigned *assigned;  (var-indexed)
+    pub flags: crate::uvec::UVec<Flags>,       // flags *flags;        (var-indexed)
 
-    pub marks: Vec<i8>, // mark *marks;  (lit-indexed)
+    pub marks: crate::uvec::UVec<i8>, // mark *marks;  (lit-indexed)
 
-    pub values: Vec<i8>, // value *values;  (lit-indexed)
+    pub values: crate::uvec::UVec<i8>, // value *values;  (lit-indexed)
     pub phases: Phases,
 
     pub eliminated: Vec<i8>, // eliminated = STACK (value)
     pub etrail: Vec<u32>,    // unsigneds etrail;
 
-    pub links: Vec<Links>, // links *links;  (var-indexed)
+    pub links: crate::uvec::UVec<Links>, // links *links;  (var-indexed)
     pub queue: Queue,
 
     pub scores: Heap,
@@ -245,13 +245,13 @@ pub struct Solver {
     pub scoreshift: f64,
 
     pub level: u32,
-    pub frames: Vec<Frame>, // frames frames;
+    pub frames: crate::uvec::UVec<Frame>, // frames frames;
 
     // PORT NOTE: C `unsigned_array trail` is a preallocated begin/end array of
     // `size` words; `unsigned *propagate` is a cursor pointer into it.  Ported
     // as a Vec plus an index (kissat_reset_propagate → solver.propagate = 0;
     // PUSH_ARRAY → push).  Capacity policy never affects semantics.
-    pub trail: Vec<u32>,
+    pub trail: crate::uvec::UVec<u32>,
     pub propagate: usize,
 
     pub best_assigned: u32,
@@ -291,7 +291,7 @@ pub struct Solver {
     pub vectors: Vectors,
     pub first_reducible: Reference,
     pub last_irredundant: Reference,
-    pub watches: Vec<Watches>, // watches *watches;  (lit-indexed)
+    pub watches: crate::uvec::UVec<Watches>, // watches *watches;  (lit-indexed)
 
     pub last_learned: [Reference; 4],
 

@@ -15,9 +15,9 @@ use crate::value::Value;
 
 #[derive(Default)]
 pub struct Phases {
-    pub best: Vec<Value>,
-    pub saved: Vec<Value>,
-    pub target: Vec<Value>,
+    pub best: crate::uvec::UVec<Value>,
+    pub saved: crate::uvec::UVec<Value>,
+    pub target: crate::uvec::UVec<Value>,
 }
 
 pub fn increase_phases(solver: &mut Solver, new_size: u32) {
@@ -37,9 +37,9 @@ pub fn decrease_phases(solver: &mut Solver, new_size: u32) {
 }
 
 pub fn release_phases(solver: &mut Solver) {
-    solver.phases.best = Vec::new();
-    solver.phases.saved = Vec::new();
-    solver.phases.target = Vec::new();
+    solver.phases.best = Default::default();
+    solver.phases.saved = Default::default();
+    solver.phases.target = Default::default();
 }
 
 // C static `save_phases`.

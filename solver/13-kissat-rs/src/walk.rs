@@ -487,7 +487,7 @@ fn release_walker(solver: &mut Solver, walker: Walker) {
     // kissat_dealloc table/refs/counters, RELEASE_STACK unsat/scores/trail,
     // kissat_free best_values: all handled by Drop.
     // solver->values = walker->original_values;
-    solver.values = walker.original_values;
+    solver.values = walker.original_values.into();
 }
 
 // static unsigned break_value (kissat *, walker *, value *, unsigned lit)

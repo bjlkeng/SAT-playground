@@ -99,9 +99,25 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
      the propagation path and the assign prefetch: 100.00 → 99.97 s (no
      measurable change; kept — it is the C's shape), kissat 95.25 s.
   Net: 109.5 → 99.2 s on the same deal, gap **+13.7% → +3.8%**.
-  Other discriminating cells, paired step-5 v kissat at `--conflicts=100000`
-  (identical conflict counts, statuses match): see the session note in
-  `plan/next-plan.md` for the per-cell wall ratios.
+- 2026-09-03 **brocard was the memory-bound best case.** Paired step-5 v
+  kissat at `--conflicts=100000` on other discriminating cells (identical
+  conflict counts, statuses match): circuit 4.35 v 3.24 s (**1.34x**),
+  Timetable_C_392 18.9 v 14.7 s (1.29x), Kakuro 92.7 v 71.9 s (1.29x),
+  REGRandom 6.5 v 5.4 s (1.19x), battleship 0.38 v 0.29 s. perf on those
+  cells: every engine 15-90% slower with the same trajectory — the crate's
+  checked indexing (+27% branches over the C) exposed once misses stop
+  hiding it. Two universal fixes, each paired on brocard + circuit +
+  Timetable with parity exact:
+  7. `ClauseRef`/`ClauseMut`/`arena.clause()` unchecked in release
+     (debug-asserted), like `kissat_dereference_clause` under NDEBUG:
+     circuit 4.31 → 4.19 s, Timetable 20.82 → 19.48 s, brocard 100.41 →
+     98.39 s (C 3.26 / 15.63 / 96.35).
+  8. `src/uvec.rs`: `UVec<T>`, a Vec newtype whose `[]` is unchecked in
+     release (range slicing stays checked); values, marks, assigned, flags,
+     links, watches, trail, frames, the three phase arrays and the shared
+     watch stack switched to it — ~800 index sites at once with no call-site
+     edits. circuit 4.20 → 3.92 s (**1.20x** C), Timetable 20.18 → 17.07 s
+     (**1.18x**), brocard 99.42 → 96.80 s (**1.000x**, C 96.83).
   Whole-program `perf stat` at that point: cycles +3.4%, instructions
   +15.6% (253.8G v 219.6G), branches +27% (49.1G v 38.7G), L1/LLC misses
   equal — the residual is instruction overhead hiding under memory latency,
