@@ -296,6 +296,22 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
   Kakuro but wall +0.5% Kakuro / +1.2% Timetable, each variant alone also
   slower (vivify-only +3.4%, radix-only +2.3% on a 4-way Timetable run) —
   a code-layout effect; not kept.
+- 2026-09-04 **crusti (1.046x loaded) → factor's `schedule_factorization`
+  scan, and the `Flags` struct.** crusti's gap is factor again (4.18 v
+  3.27 s, 1.28x; instructions 14.5 v 11.5 G) and the inlined-function
+  attribution put 44% of factor's cycles in `schedule_factorization`'s
+  `for idx in vars { if flags[idx].active ... }` scan (factor.rs:170-171).
+  Our `Flags` was 10 bytes (ten bools + a u8) v the C's 2-byte bitfield
+  struct, so every var-indexed scan (factor rounds, backbone, sweep,
+  eliminate scheduling) streamed 5x the cache lines.
+  20. `Flags` packed into a `#[repr(transparent)] u16` with `active()` /
+     `set_active(v)` / `factor()` / `factor_or(bits)` / `factor_and(bits)`
+     accessors (bit order = the C declaration order; compile-time size
+     guard); 124 access sites rewritten by regex over the receiver shapes
+     `flags[..]`, `f`, `flags`, `pivot_flags`, zero compile errors. Quiet
+     3-rep: crusti 15.92 → 15.58 s (C 14.97, **1.063 → 1.040x**), REGRandom
+     5.67 → 5.58 s (C 5.75), circuit 3.22 → 3.27 s (+1.6%, layout), Timetable
+     flat, Kakuro +1%; counters exact on all five; 20-cell parity below.
 - 2026-09-03 REJECTED: kissat's FAST_ASSIGN shape — hoisting raw base
   pointers of arena/assigned/values/watch-stack into `propagate_literal`
   locals and threading `values`/`assigned` through `fast_assign` exactly as
