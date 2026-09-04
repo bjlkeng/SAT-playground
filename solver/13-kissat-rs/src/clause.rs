@@ -122,9 +122,10 @@ pub struct ClauseRef<'a> {
 
 macro_rules! clause_getters {
     () => {
-        #[inline]
+        #[inline(always)]
         pub fn header(&self) -> u32 {
-            self.words[HEADER_OFFSET]
+            debug_assert!(self.words.len() > SIZE_OFFSET);
+            unsafe { *self.words.get_unchecked(HEADER_OFFSET) }
         }
         #[inline]
         pub fn glue(&self) -> u32 {
@@ -166,18 +167,21 @@ macro_rules! clause_getters {
         pub fn used(&self) -> u32 {
             (self.header() & USED_MASK) >> USED_SHIFT
         }
-        #[inline]
+        #[inline(always)]
         pub fn searched(&self) -> u32 {
-            self.words[SEARCHED_OFFSET]
+            debug_assert!(self.words.len() > SIZE_OFFSET);
+            unsafe { *self.words.get_unchecked(SEARCHED_OFFSET) }
         }
-        #[inline]
+        #[inline(always)]
         pub fn size(&self) -> u32 {
-            self.words[SIZE_OFFSET]
+            debug_assert!(self.words.len() > SIZE_OFFSET);
+            unsafe { *self.words.get_unchecked(SIZE_OFFSET) }
         }
-        #[inline]
+        #[inline(always)]
         pub fn lit(&self, i: u32) -> u32 {
             debug_assert!(i < self.size());
-            self.words[LITS_OFFSET + i as usize]
+            debug_assert!(LITS_OFFSET + (i as usize) < self.words.len());
+            unsafe { *self.words.get_unchecked(LITS_OFFSET + i as usize) }
         }
         /// kissat_actual_bytes_of_clause in u32 words (multiple of 4).
         /// For shrunken clauses this scans past END_LITS up to and including
@@ -187,7 +191,8 @@ macro_rules! clause_getters {
             let mut p = LITS_OFFSET + self.size() as usize;
             if self.shrunken() {
                 loop {
-                    let w = self.words[p];
+                    debug_assert!(p < self.words.len());
+                    let w = unsafe { *self.words.get_unchecked(p) };
                     p += 1;
                     if w == INVALID_LIT {
                         break;
@@ -208,10 +213,11 @@ impl<'a> ClauseRef<'a> {
     clause_getters!();
 
     /// BEGIN_LITS/END_LITS as a slice.
-    #[inline]
+    #[inline(always)]
     pub fn lits(&self) -> &'a [u32] {
-        let size = self.words[SIZE_OFFSET] as usize;
-        &self.words[LITS_OFFSET..LITS_OFFSET + size]
+        let size = self.size() as usize;
+        debug_assert!(LITS_OFFSET + size <= self.words.len());
+        unsafe { self.words.get_unchecked(LITS_OFFSET..LITS_OFFSET + size) }
     }
 }
 
@@ -226,31 +232,39 @@ impl<'a> ClauseMut<'a> {
     pub fn as_ref(&self) -> ClauseRef<'_> {
         ClauseRef { words: self.words }
     }
-    #[inline]
+    #[inline(always)]
     pub fn lits(&self) -> &[u32] {
-        let size = self.words[SIZE_OFFSET] as usize;
-        &self.words[LITS_OFFSET..LITS_OFFSET + size]
+        let size = self.size() as usize;
+        debug_assert!(LITS_OFFSET + size <= self.words.len());
+        unsafe { self.words.get_unchecked(LITS_OFFSET..LITS_OFFSET + size) }
     }
-    #[inline]
+    #[inline(always)]
     pub fn lits_mut(&mut self) -> &mut [u32] {
-        let size = self.words[SIZE_OFFSET] as usize;
-        &mut self.words[LITS_OFFSET..LITS_OFFSET + size]
+        let size = self.size() as usize;
+        debug_assert!(LITS_OFFSET + size <= self.words.len());
+        unsafe { self.words.get_unchecked_mut(LITS_OFFSET..LITS_OFFSET + size) }
     }
-    #[inline]
+    #[inline(always)]
+    fn header_mut(&mut self) -> &mut u32 {
+        debug_assert!(self.words.len() > SIZE_OFFSET);
+        unsafe { self.words.get_unchecked_mut(HEADER_OFFSET) }
+    }
+    #[inline(always)]
     pub fn set_header(&mut self, header: u32) {
-        self.words[HEADER_OFFSET] = header;
+        *self.header_mut() = header;
     }
     #[inline]
     pub fn set_glue(&mut self, glue: u32) {
         debug_assert!(glue <= MAX_GLUE);
-        self.words[HEADER_OFFSET] = (self.words[HEADER_OFFSET] & !GLUE_MASK) | (glue & GLUE_MASK);
+        let h = self.header();
+        *self.header_mut() = (h & !GLUE_MASK) | (glue & GLUE_MASK);
     }
     #[inline]
     fn set_bit(&mut self, bit: u32, value: bool) {
         if value {
-            self.words[HEADER_OFFSET] |= bit;
+            *self.header_mut() |= bit;
         } else {
-            self.words[HEADER_OFFSET] &= !bit;
+            *self.header_mut() &= !bit;
         }
     }
     #[inline]
@@ -288,24 +302,27 @@ impl<'a> ClauseMut<'a> {
     #[inline]
     pub fn set_used(&mut self, used: u32) {
         debug_assert!(used <= MAX_USED);
-        self.words[HEADER_OFFSET] =
-            (self.words[HEADER_OFFSET] & !USED_MASK) | (used << USED_SHIFT);
+        let h = self.header();
+        *self.header_mut() = (h & !USED_MASK) | (used << USED_SHIFT);
     }
-    #[inline]
+    #[inline(always)]
     pub fn set_searched(&mut self, searched: u32) {
-        self.words[SEARCHED_OFFSET] = searched;
+        debug_assert!(self.words.len() > SIZE_OFFSET);
+        unsafe { *self.words.get_unchecked_mut(SEARCHED_OFFSET) = searched };
     }
-    #[inline]
+    #[inline(always)]
     pub fn set_size(&mut self, size: u32) {
-        self.words[SIZE_OFFSET] = size;
+        debug_assert!(self.words.len() > SIZE_OFFSET);
+        unsafe { *self.words.get_unchecked_mut(SIZE_OFFSET) = size };
     }
     #[inline]
     pub fn set_lit(&mut self, i: u32, lit: u32) {
         // No `i < size` assert: C legally writes past the current size within
         // the original allocation — the shrunken-terminator idiom stores
         // INVALID_LIT at old_size-1 AFTER size was reduced (strengthen.c,
-        // shrink paths).  The slice bound still protects the arena.
-        self.words[LITS_OFFSET + i as usize] = lit;
+        // shrink paths).  The arena bound is debug-asserted only, as in C.
+        debug_assert!(LITS_OFFSET + (i as usize) < self.words.len());
+        unsafe { *self.words.get_unchecked_mut(LITS_OFFSET + i as usize) = lit };
     }
 }
 

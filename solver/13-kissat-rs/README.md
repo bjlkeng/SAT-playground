@@ -95,7 +95,13 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
      (−0.4%, within run noise; kept for structural fidelity), kissat 96.35 s.
   5. `substitute_clauses` literal loop read unchecked (it carried +73% of
      the C's branches): 100.38 → 99.17 s (**−1.2%**), kissat 95.52 s.
+  6. Unchecked `*propagate++` trail read and `WATCHES (not_lit)` lookups in
+     the propagation path and the assign prefetch: 100.00 → 99.97 s (no
+     measurable change; kept — it is the C's shape), kissat 95.25 s.
   Net: 109.5 → 99.2 s on the same deal, gap **+13.7% → +3.8%**.
+  Other discriminating cells, paired step-5 v kissat at `--conflicts=100000`
+  (identical conflict counts, statuses match): see the session note in
+  `plan/next-plan.md` for the per-cell wall ratios.
   Whole-program `perf stat` at that point: cycles +3.4%, instructions
   +15.6% (253.8G v 219.6G), branches +27% (49.1G v 38.7G), L1/LLC misses
   equal — the residual is instruction overhead hiding under memory latency,

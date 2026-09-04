@@ -48,7 +48,7 @@ pub fn assign(
     // watches watches = WATCHES (not_lit);
     // if (!kissat_empty_vector (&watches)) __builtin_prefetch (w, 0, 1);
     {
-        let w = solver.watches[not_lit as usize];
+        let w = unsafe { *solver.watches.get_unchecked(not_lit as usize) }; // WATCHES (not_lit)
         if !w.empty() {
             #[cfg(target_arch = "x86_64")]
             unsafe {

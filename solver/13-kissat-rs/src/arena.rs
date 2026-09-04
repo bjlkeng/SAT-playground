@@ -99,19 +99,25 @@ impl Arena {
     }
 
     /// kissat_dereference_clause (== unchecked variant under NDEBUG).
-    #[inline]
+    /// Like the C (`arena + ref`, unchecked under NDEBUG): the reference is
+    /// only range-checked in debug builds.  Every ClauseRef/ClauseMut
+    /// accessor is unchecked the same way — this pair of views is the
+    /// universal clause accessor and a checked slice plus a checked index
+    /// per literal read was the crate-wide +27% branch overhead
+    /// (perf 2026-09-03).
+    #[inline(always)]
     pub fn clause(&self, ref_: Reference) -> ClauseRef<'_> {
         debug_assert!((ref_ as u64) < self.size_wards());
         ClauseRef {
-            words: &self.words[ref_ as usize * WORDS_PER_WARD..],
+            words: unsafe { self.words.get_unchecked(ref_ as usize * WORDS_PER_WARD..) },
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn clause_mut(&mut self, ref_: Reference) -> ClauseMut<'_> {
         debug_assert!((ref_ as u64) < self.size_wards());
         ClauseMut {
-            words: &mut self.words[ref_ as usize * WORDS_PER_WARD..],
+            words: unsafe { self.words.get_unchecked_mut(ref_ as usize * WORDS_PER_WARD..) },
         }
     }
 

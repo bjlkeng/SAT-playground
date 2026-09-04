@@ -136,7 +136,7 @@ pub(crate) fn propagate_literal<
     let not_lit = crate::literal::not(lit);
     debug_assert!(not_lit < solver.lits());
 
-    let watches = solver.watches[not_lit as usize];
+    let watches = unsafe { *solver.watches.get_unchecked(not_lit as usize) }; // WATCHES (not_lit)
     let begin_watches = watches.begin;
     let end_watches = watches.end;
 
@@ -342,7 +342,7 @@ fn search_propagate_all(solver: &mut Solver) -> Option<Conflict> {
     let mut res: Option<Conflict> = None;
     let mut propagate = solver.propagate;
     while res.is_none() && propagate != solver.trail.len() {
-        let lit = solver.trail[propagate];
+        let lit = unsafe { *solver.trail.get_unchecked(propagate) }; // *propagate++
         propagate += 1;
         res = search_propagate_literal(solver, lit);
     }
