@@ -150,7 +150,7 @@ pub struct Kitten {
     eclause: Vec<u32>,
     export_: Vec<u32>,
     klause: Vec<u32>,
-    klauses: Vec<u32>,
+    klauses: crate::uvec::UVec<u32>,
     resolved: Vec<u32>,
     trail: Vec<u32>,
     units: Vec<u32>,
@@ -167,15 +167,15 @@ impl Kitten {
     fn k_aux(&self, r: u32) -> u32 {
         self.klauses[r as usize]
     }
-    #[inline]
+    #[inline(always)]
     fn k_size(&self, r: u32) -> u32 {
         self.klauses[r as usize + 1]
     }
-    #[inline]
+    #[inline(always)]
     fn k_flags(&self, r: u32) -> u32 {
         self.klauses[r as usize + 2]
     }
-    #[inline]
+    #[inline(always)]
     fn k_lit(&self, r: u32, i: u32) -> u32 {
         self.klauses[r as usize + 3 + i as usize]
     }
@@ -183,19 +183,19 @@ impl Kitten {
     fn k_set_lit(&mut self, r: u32, i: u32, lit: u32) {
         self.klauses[r as usize + 3 + i as usize] = lit;
     }
-    #[inline]
+    #[inline(always)]
     fn is_core_klause(&self, r: u32) -> bool {
         self.k_flags(r) & CORE_FLAG != 0
     }
-    #[inline]
+    #[inline(always)]
     fn is_learned_klause(&self, r: u32) -> bool {
         self.k_flags(r) & LEARNED_FLAG != 0
     }
-    #[inline]
+    #[inline(always)]
     fn set_core_klause(&mut self, r: u32) {
         self.klauses[r as usize + 2] |= CORE_FLAG;
     }
-    #[inline]
+    #[inline(always)]
     fn unset_core_klause(&mut self, r: u32) {
         self.klauses[r as usize + 2] &= !CORE_FLAG;
     }
@@ -483,6 +483,8 @@ pub fn kitten_shuffle_clauses(kitten: &mut Kitten) {
 
 /*------------------------------------------------------------------------*/
 
+#[inline(always)]
+
 fn watch_klause(kitten: &mut Kitten, lit: u32, ref_: u32) {
     let size = kitten.k_size(ref_);
     debug_assert!(lit == kitten.k_lit(ref_, 0) || lit == kitten.k_lit(ref_, 1));
@@ -492,6 +494,8 @@ fn watch_klause(kitten: &mut Kitten, lit: u32, ref_: u32) {
     let katch = Katch::new(blit, ref_, binary);
     kitten.watches[lit as usize].push(katch);
 }
+
+#[inline(always)]
 
 fn connect_new_klause(kitten: &mut Kitten, ref_: u32) {
     let size = kitten.k_size(ref_);
@@ -657,6 +661,8 @@ pub fn kitten_release(kitten: Box<Kitten>) {
 
 /*------------------------------------------------------------------------*/
 
+#[inline(always)]
+
 fn move_to_front(kitten: &mut Kitten, idx: u32) {
     if idx == kitten.queue.last {
         return;
@@ -665,6 +671,8 @@ fn move_to_front(kitten: &mut Kitten, idx: u32) {
     enqueue(kitten, idx);
     debug_assert!(kitten.values[2 * idx as usize] != 0);
 }
+
+#[inline(always)]
 
 fn assign(kitten: &mut Kitten, solver: &mut Solver, lit: u32, reason: u32) {
     let not_lit = lit ^ 1;
@@ -704,6 +712,8 @@ fn assign(kitten: &mut Kitten, solver: &mut Solver, lit: u32, reason: u32) {
     debug_assert!(kitten.unassigned != 0);
     kitten.unassigned -= 1;
 }
+
+#[inline(always)]
 
 fn propagate_literal(kitten: &mut Kitten, solver: &mut Solver, lit: u32) -> u32 {
     debug_assert!(kitten.values[lit as usize] > 0);
@@ -784,6 +794,8 @@ fn propagate_literal(kitten: &mut Kitten, solver: &mut Solver, lit: u32) -> u32 
     conflict
 }
 
+#[inline(always)]
+
 fn propagate(kitten: &mut Kitten, solver: &mut Solver) -> u32 {
     debug_assert!(kitten.inconsistent == INVALID);
     let mut propagated: u64 = 0;
@@ -806,6 +818,8 @@ fn bump(kitten: &mut Kitten) {
     }
     kitten.analyzed = analyzed;
 }
+
+#[inline(always)]
 
 fn unassign(kitten: &mut Kitten, lit: u32) {
     let not_lit = lit ^ 1;
