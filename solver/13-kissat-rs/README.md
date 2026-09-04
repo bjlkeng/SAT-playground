@@ -143,8 +143,9 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
      sorter) on `UVec`: circuit 1.160x → 1.142x, SCPC-500-14 1.203x →
      1.180x, Timetable/brocard flat (paired 4-cell run, parity exact).
   `parity.py --conflicts 100000` (20 discriminating cells, full default
-  config) on the step-5 binary: 20/20 exact; every later step verified
-  80-counter exact on brocard + circuit + Timetable.
+  config): 20/20 exact on the step-5, step-10 and step-11 binaries; every
+  step verified 80-counter exact on brocard + circuit + Timetable (+ SCPC
+  from step 13 on).
 - 2026-09-04 wider paired check, step-11 v kissat, 10 `sat-comp-2025-medium`
   cells at `--conflicts=100000` (all UNKNOWN at the limit, identical conflict
   counts): ratios 1.137-1.201, i.e. **~1.17x on search-bound cells**;

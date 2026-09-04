@@ -71,11 +71,11 @@ float formatting of report lines (`float_to_decimal_common_shortest` 0.6%
 — C printf is cheaper; only matters with reporting on), alloc/realloc
 churn 2x C's.
 
-**Parity**: `parity.py --conflicts 100000` 20/20 on step 5
-(scratchpad/parity100k_step5.log); the same run on the final step-10b
-binary was launched at session end (scratchpad/parity100k_step10b.log,
-PID recorded in the transcript) — CHECK IT before trusting the tree; every
-later step was verified 80-counter exact on brocard/circuit/Timetable.
+**Parity**: `parity.py --conflicts 100000` (20 discriminating cells, full
+default config): **20/20 on step 5, 20/20 on step 10b, 20/20 on step 11**;
+the step-14 (HEAD) run was 7/20 ok with no failures when this note was
+written (scratchpad/parity100k_step14.log) — every step after 11 was also
+verified 80-counter exact on brocard/circuit/Timetable/SCPC.
 
 **Wider check (10 medium cells, step 11 v kissat, --conflicts=100000,
 identical conflict counts)**: ratios 1.137-1.201 on the nine cells that
@@ -90,7 +90,7 @@ plus front-end pressure whose source is NOT analyze's inlining (tested).
 Measurement trap found: pin only on cores whose SMT sibling is idle
 (`lscpu -p=CPU,CORE`); a run with siblings busy produced a 1.6x-slow C arm.
 
-**Next**: (1) read parity100k_step10b.log / parity100k_step11.log; (2) the residual is now
+**Next**: (1) confirm the step-14 parity log reached 20/20; (2) the residual is now
 per-engine: kitten (its own Vec<Vec<Katch>> watch lists + checked klause
 indexing), vivify_round, watch_large_clauses' remaining +20%, the heap
 ops (C inlines them into next_decision_variable — `#[inline(always)]` on
