@@ -135,14 +135,14 @@ pub struct Kitten {
     size: usize,
     esize: usize,
 
-    vars: Vec<Kar>,     // capacity size/2
-    links: Vec<Kink>,   // capacity size/2
-    marks: Vec<i8>,     // capacity size/2
-    values: Vec<i8>,    // capacity size (per lit)
-    failed: Vec<bool>,  // capacity size (per lit)
-    phases: Vec<u8>,    // capacity size/2
-    import: Vec<u32>,   // capacity esize (per external var)
-    watches: Vec<Vec<Katch>>, // capacity size (per lit)
+    vars: crate::uvec::UVec<Kar>,     // capacity size/2
+    links: crate::uvec::UVec<Kink>,   // capacity size/2
+    marks: crate::uvec::UVec<i8>,     // capacity size/2
+    values: crate::uvec::UVec<i8>,    // capacity size (per lit)
+    failed: crate::uvec::UVec<bool>,  // capacity size (per lit)
+    phases: crate::uvec::UVec<u8>,    // capacity size/2
+    import: crate::uvec::UVec<u32>,   // capacity esize (per external var)
+    watches: crate::uvec::UVec<Vec<Katch>>, // capacity size (per lit)
 
     analyzed: Vec<u32>,
     assumptions: Vec<u32>,

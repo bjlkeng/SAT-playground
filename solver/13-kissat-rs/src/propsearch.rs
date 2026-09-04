@@ -133,6 +133,16 @@ pub(crate) fn propagate_literal<
     debug_assert!(solver.values[lit as usize] > 0);
     debug_assert!(solver.delayed.is_empty());
 
+    // ward *const arena = BEGIN_STACK (solver->arena); value *const values =
+    // solver->values; — loop-local base pointers, like the C's locals, so the
+    // loop does not reload the Vec headers after every store.  None of the
+    // three arrays is reallocated before watch_large_delayed (which goes
+    // through solver itself); assign/delay_watching_large touch only the
+    // trail, phases, flags, units, delayed and the watches headers.
+    let arena: *mut u32 = solver.arena.words_mut().as_mut_ptr();
+    let values: *const i8 = solver.values.as_ptr();
+    let stack: *mut Watch = solver.vectors.stack.as_mut_ptr();
+
     let not_lit = crate::literal::not(lit);
     debug_assert!(not_lit < solver.lits());
 
@@ -152,18 +162,18 @@ pub(crate) fn propagate_literal<
 
     while p != end_watches {
         // const watch head = *q++ = *p++;
-        let head = unsafe { *solver.vectors.stack.get_unchecked(p) };
-        unsafe { *solver.vectors.stack.get_unchecked_mut(q) = head };
+        let head = unsafe { *stack.add(p) };
+        unsafe { *stack.add(q) = head };
         q += 1;
         p += 1;
         let blocking = crate::watch::watch_lit(head); // head.blocking.lit
-        let blocking_value = unsafe { *solver.values.get_unchecked(blocking as usize) };
+        let blocking_value = unsafe { *values.add(blocking as usize) };
         let binary = crate::watch::watch_is_binary(head);
         let mut tail: Watch = 0;
         if !binary {
             // tail = *q++ = *p++;
-            tail = unsafe { *solver.vectors.stack.get_unchecked(p) };
-            unsafe { *solver.vectors.stack.get_unchecked_mut(q) = tail };
+            tail = unsafe { *stack.add(p) };
+            unsafe { *stack.add(q) = tail };
             q += 1;
             p += 1;
         }
@@ -184,42 +194,36 @@ pub(crate) fn propagate_literal<
         } else {
             let ref_: Reference = tail; // tail.raw
             debug_assert!((ref_ as u64) < solver.arena.size_wards());
-            let c = ref_ as usize * WORDS_PER_WARD; // clause word offset
+            let c: *mut u32 = unsafe { arena.add(ref_ as usize * WORDS_PER_WARD) }; // clause
             ticks += 1;
-            let header = unsafe { *solver.arena.words().get_unchecked(c + HEADER_OFFSET) };
+            let header = unsafe { *c.add(HEADER_OFFSET) };
             if header & GARBAGE_BIT != 0 {
                 q -= 2;
                 continue;
             }
-            let lits = c + LITS_OFFSET; // BEGIN_LITS (c)
-            let lit0 = unsafe { *solver.arena.words().get_unchecked(lits) };
-            let lit1 = unsafe { *solver.arena.words().get_unchecked(lits + 1) };
+            let lits: *mut u32 = unsafe { c.add(LITS_OFFSET) }; // BEGIN_LITS (c)
+            let lit0 = unsafe { *lits };
+            let lit1 = unsafe { *lits.add(1) };
             let other = lit0 ^ lit1 ^ not_lit;
             debug_assert!(lit0 != lit1);
             debug_assert!(not_lit != other);
             debug_assert!(lit != other);
-            let other_value = unsafe { *solver.values.get_unchecked(other as usize) };
+            let other_value = unsafe { *values.add(other as usize) };
             if other_value > 0 {
                 // q[-2].blocking.lit = other; (see module PORT NOTES)
-                unsafe {
-                    *solver.vectors.stack.get_unchecked_mut(q - 2) =
-                        crate::watch::blocking_watch(other)
-                };
+                unsafe { *stack.add(q - 2) = crate::watch::blocking_watch(other) };
                 continue;
             }
-            let size =
-                unsafe { *solver.arena.words().get_unchecked(c + SIZE_OFFSET) } as usize;
-            let searched =
-                unsafe { *solver.arena.words().get_unchecked(c + SEARCHED_OFFSET) } as usize;
+            let size = unsafe { *c.add(SIZE_OFFSET) } as usize;
+            let searched = unsafe { *c.add(SEARCHED_OFFSET) } as usize;
             debug_assert!(2 <= searched);
             debug_assert!(searched < size);
             let mut r = searched;
             let mut replacement: u32 = INVALID_LIT;
             let mut replacement_value: i8 = -1;
             while r != size {
-                replacement = unsafe { *solver.arena.words().get_unchecked(lits + r) };
-                replacement_value =
-                    unsafe { *solver.values.get_unchecked(replacement as usize) };
+                replacement = unsafe { *lits.add(r) };
+                replacement_value = unsafe { *values.add(replacement as usize) };
                 if replacement_value >= 0 {
                     break;
                 }
@@ -228,9 +232,8 @@ pub(crate) fn propagate_literal<
             if replacement_value < 0 {
                 r = 2;
                 while r != searched {
-                    replacement = unsafe { *solver.arena.words().get_unchecked(lits + r) };
-                    replacement_value =
-                        unsafe { *solver.values.get_unchecked(replacement as usize) };
+                    replacement = unsafe { *lits.add(r) };
+                    replacement_value = unsafe { *values.add(replacement as usize) };
                     if replacement_value >= 0 {
                         break;
                     }
@@ -240,15 +243,13 @@ pub(crate) fn propagate_literal<
 
             if replacement_value >= 0 {
                 // c->searched = r - lits;
-                unsafe {
-                    *solver.arena.words_mut().get_unchecked_mut(c + SEARCHED_OFFSET) = r as u32
-                };
+                unsafe { *c.add(SEARCHED_OFFSET) = r as u32 };
                 debug_assert!(replacement != INVALID_LIT);
                 q -= 2;
                 unsafe {
-                    *solver.arena.words_mut().get_unchecked_mut(lits) = other;
-                    *solver.arena.words_mut().get_unchecked_mut(lits + 1) = replacement;
-                    *solver.arena.words_mut().get_unchecked_mut(lits + r) = not_lit;
+                    *lits = other;
+                    *lits.add(1) = replacement;
+                    *lits.add(r) = not_lit;
                 }
                 delay_watching_large(solver, replacement, other, ref_);
                 ticks += 1;
@@ -277,8 +278,7 @@ pub(crate) fn propagate_literal<
 
     while p != end_watches {
         // *q++ = *p++;
-        let w = unsafe { *solver.vectors.stack.get_unchecked(p) };
-        unsafe { *solver.vectors.stack.get_unchecked_mut(q) = w };
+        unsafe { *stack.add(q) = *stack.add(p) };
         q += 1;
         p += 1;
     }

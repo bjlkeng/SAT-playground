@@ -118,6 +118,18 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
      watch stack switched to it — ~800 index sites at once with no call-site
      edits. circuit 4.20 → 3.92 s (**1.20x** C), Timetable 20.18 → 17.07 s
      (**1.18x**), brocard 99.42 → 96.80 s (**1.000x**, C 96.83).
+  9. Loop-local base pointers (arena / values / watch stack) inside
+     `propagate_literal` only — the C's `ward *const arena`, `value *const
+     values` locals — with `fast_assign` still taking `&mut Solver` (the
+     earlier rejected variant also threaded the pointers through assign).
+     4-way paired with step 8 and kissat: circuit 1.191x → 1.164x, brocard
+     1.015x → 1.009x, Timetable unchanged. Kept.
+  10. kitten's per-var/per-lit arrays (`vars`, `links`, `marks`, `values`,
+     `failed`, `phases`, `import`, `watches`) on `UVec`: Timetable 1.187x →
+     1.138x, circuit 1.164x → 1.152x, brocard 1.009x → 1.007x.
+  `parity.py --conflicts 100000` (20 discriminating cells, full default
+  config) on the step-5 binary: 20/20 exact; every later step verified
+  80-counter exact on brocard + circuit + Timetable.
   Whole-program `perf stat` at that point: cycles +3.4%, instructions
   +15.6% (253.8G v 219.6G), branches +27% (49.1G v 38.7G), L1/LLC misses
   equal — the residual is instruction overhead hiding under memory latency,
