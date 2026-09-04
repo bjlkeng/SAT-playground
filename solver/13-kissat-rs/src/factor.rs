@@ -329,8 +329,9 @@ fn next_factor(solver: &mut Solver, factoring: &mut Factoring) -> (u32, u32) {
             let q = watch_lit(quotient_watch);
             let qv = solver.watches[q as usize];
             ticks += 1 + cache_lines((qv.end - qv.begin) as u64, 4);
-            for wi in qv.begin..qv.end {
-                let next_watch = solver.vectors.stack[wi];
+            // PERF NOTE: slice walks (C pointer loops) — Range iterators
+            // were ~20% of factor's instructions on REGRandom.
+            for &next_watch in &solver.vectors.stack[qv.begin..qv.end] {
                 if !watch_is_binary(next_watch) {
                     continue;
                 }
@@ -357,9 +358,7 @@ fn next_factor(solver: &mut Solver, factoring: &mut Factoring) -> (u32, u32) {
             let mut factors = 0u32;
             let mut min_size = 0usize;
             ticks += 1;
-            let c_size = solver.arena.clause(c_ref).size();
-            for j in 0..c_size {
-                let other = solver.arena.clause(c_ref).lit(j);
+            for &other in solver.arena.clause(c_ref).lits() {
                 if solver.marks[other as usize] & FACTOR != 0 {
                     let prev = factors;
                     factors += 1;
@@ -384,8 +383,7 @@ fn next_factor(solver: &mut Solver, factoring: &mut Factoring) -> (u32, u32) {
                 debug_assert!(factoring.nounted.is_empty());
                 let mv = solver.watches[min_lit as usize];
                 ticks += 1 + cache_lines((mv.end - mv.begin) as u64, 4);
-                'min_watches: for wi in mv.begin..mv.end {
-                    let min_watch = solver.vectors.stack[wi];
+                'min_watches: for &min_watch in &solver.vectors.stack[mv.begin..mv.end] {
                     if watch_is_binary(min_watch) {
                         continue;
                     }
@@ -401,9 +399,7 @@ fn next_factor(solver: &mut Solver, factoring: &mut Factoring) -> (u32, u32) {
                         continue;
                     }
                     let mut next = INVALID;
-                    let d_size = solver.arena.clause(d_ref).size();
-                    for j in 0..d_size {
-                        let other = solver.arena.clause(d_ref).lit(j);
+                    for &other in solver.arena.clause(d_ref).lits() {
                         let mark = solver.marks[other as usize];
                         if mark & QUOTIENT != 0 {
                             continue;
@@ -441,9 +437,7 @@ fn next_factor(solver: &mut Solver, factoring: &mut Factoring) -> (u32, u32) {
                 clear_nounted(solver, &mut nounted);
                 factoring.nounted = nounted;
             }
-            let c_size2 = solver.arena.clause(c_ref).size();
-            for j in 0..c_size2 {
-                let other = solver.arena.clause(c_ref).lit(j);
+            for &other in solver.arena.clause(c_ref).lits() {
                 solver.marks[other as usize] &= !QUOTIENT;
             }
         }
@@ -544,9 +538,7 @@ fn factorize_next(solver: &mut Solver, factoring: &mut Factoring, next: u32, exp
             let mut factors = 0u32;
             let mut min_size = 0usize;
             ticks += 1;
-            let c_size = solver.arena.clause(c_ref).size();
-            for j in 0..c_size {
-                let other = solver.arena.clause(c_ref).lit(j);
+            for &other in solver.arena.clause(c_ref).lits() {
                 if solver.marks[other as usize] & FACTOR != 0 {
                     let prev = factors;
                     factors += 1;
@@ -570,8 +562,7 @@ fn factorize_next(solver: &mut Solver, factoring: &mut Factoring, next: u32, exp
                 let c_size_field = solver.arena.clause(c_ref).size();
                 let mv = solver.watches[min_lit as usize];
                 ticks += 1 + cache_lines((mv.end - mv.begin) as u64, 4);
-                'min_watches: for wi in mv.begin..mv.end {
-                    let min_watch = solver.vectors.stack[wi];
+                'min_watches: for &min_watch in &solver.vectors.stack[mv.begin..mv.end] {
                     if watch_is_binary(min_watch) {
                         continue;
                     }
@@ -586,9 +577,7 @@ fn factorize_next(solver: &mut Solver, factoring: &mut Factoring, next: u32, exp
                     if solver.arena.clause(d_ref).size() != c_size_field {
                         continue;
                     }
-                    let d_size = solver.arena.clause(d_ref).size();
-                    for j in 0..d_size {
-                        let other = solver.arena.clause(d_ref).lit(j);
+                    for &other in solver.arena.clause(d_ref).lits() {
                         let mark = solver.marks[other as usize];
                         if mark & QUOTIENT != 0 {
                             continue;
@@ -604,9 +593,7 @@ fn factorize_next(solver: &mut Solver, factoring: &mut Factoring, next: u32, exp
                     break;
                 }
             }
-            let c_size2 = solver.arena.clause(c_ref).size();
-            for j in 0..c_size2 {
-                let other = solver.arena.clause(c_ref).lit(j);
+            for &other in solver.arena.clause(c_ref).lits() {
                 solver.marks[other as usize] &= !QUOTIENT;
             }
         }
