@@ -252,6 +252,33 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
   `[vectors] enlarged`/defrag phase lines match the C's line for line) that
   no code-shape change so far recovers; the no-sort experiment showed the
   literal sort itself is ~2.5 s of Kakuro's 80 s in both arms.
+- 2026-09-04 **THE LOAD-SENSITIVITY LAW (REGRandom, factor).** The
+  acceptance run's REGRandom 1.15x is not reproducible on a quiet host: paired
+  quiet runs put step-21 at **0.98x** kissat (5.10 v 5.19 s), but with 28
+  background kissat Kakuro runs on other cores (the acceptance run is a
+  32-way load) it is **1.10-1.14x**, core-swap and 4-way layouts agreeing.
+  `perf stat` under load: identical offcore requests, L2 misses, LLC loads
+  and GHz; front-end fine (RS has fewer undelivered uops and 3x fewer branch
+  misses); but `cycle_activity.stalls_l3_miss` 8.98 v 7.27 G and instructions
+  +13% (38.4 v 34.1 G). Same misses, less overlap: the extra instructions
+  between misses fill the OOO window, so each miss costs more once latency
+  rises under load. **Screen perf candidates under load** (28 background
+  `kissat -n -q Kakuro.cnf` on cores 8-35, the pair on 2/4) — quiet paired
+  timing understates the metric-relevant gap. Instruction count in
+  miss-heavy loops is the lever, not miss count.
+  18. factor `next_factor`/`factorize_next`: the `for j in 0..size {
+     clause(ref).lit(j) }` and `for wi in begin..end { stack[wi] }` loops
+     rewritten as slice walks (addr2line attribution had Range::next + lt +
+     unchecked_add at ~21% of factor's retired instructions). Instructions
+     38.4 → **33.9 G (C 34.1)**; REGRandom **0.92x quiet, 0.96x under load**
+     (was 1.12x loaded). Counters exact.
+  19. The same two rewrites applied crate-wide by a compile-checked
+     transform (scratch `slicify.py`/`slicify2.py`: rewrite every syntactic
+     match, build, revert the sites the borrow checker rejects — bodies that
+     mutate the arena or call `&mut Solver` methods — and repeat): 55
+     literal loops in 19 files + 17 watch-range loops in 7 files. circuit
+     −1.8%, SCPC −2.2%, Timetable −0.8%, Kakuro/REGRandom flat; counters
+     exact on all five cells; 20-cell discriminating parity at 100k below.
 - 2026-09-03 REJECTED: kissat's FAST_ASSIGN shape — hoisting raw base
   pointers of arena/assigned/values/watch-stack into `propagate_literal`
   locals and threading `values`/`assigned` through `fast_assign` exactly as

@@ -53,8 +53,30 @@ found; measure with `perf stat -e cycle_activity.stalls_l3_miss` before
 trying more. Candidate next: `Flags` is 10 bytes v the C's 2-byte bitfield
 struct (var-indexed; 250 field accesses — pack via accessors), vivify
 (1.09x on Kakuro), walk's flip loop.
+**THE LOAD-SENSITIVITY LAW (later the same day, commits 8d34291..3843da7)**:
+the acceptance run's REGRandom 1.15x does not exist on a quiet host (0.98x)
+— it appears under a 28-process memory load (1.10-1.14x, core-swap
+verified) with IDENTICAL offcore traffic/L2 misses/LLC loads/GHz and a fine
+front-end; only `stalls_l3_miss` (+24%) and instructions (+13%) differ.
+Same misses, less overlap: extra instructions between misses fill the OOO
+window. The acceptance run is a 32-way load, so quiet paired timing
+understates the metric-relevant gap. Screen under load: `for i in $(seq 8
+35); do taskset -c $i kissat -n -q Kakuro.cnf & done`, pair on cores 2/4.
+Fix that proved it: factor's loops as slice walks → instructions 38.4 →
+33.9 G (below the C's 34.1), REGRandom 0.92x quiet / 0.96x loaded. Then a
+compile-checked crate-wide transform (scratch slicify.py / slicify2.py;
+recreate from the README description) rewrote 55 `for i in 0..size {
+clause(ref).lit(i) }` loops and 17 `for wi in begin..end { stack[wi] }`
+loops as slice walks (circuit −1.8%, SCPC −2.2%); the 25 + 4 sites whose
+bodies mutate the arena or call `&mut Solver` methods were left as index
+loops. 20-cell discriminating parity at 100k on both transform binaries:
+see below.
 **Next**: (1) DONE above — Kakuro to 1.07x; (2) the ~1% engines
-(sweep/factor/vivify/eliminate connect) — connect done, others open;
+(sweep/factor/vivify/eliminate connect) — connect + factor done, others at
+noise; (2b) loaded-screen the whole 14-cell wide set (RS v C under the
+28-process load) to find the remaining load-sensitive engines, then cut
+instructions in those loops (the remaining index-loop sites, `ticks`
+bookkeeping, Range iterators);
 (3) decide what solver13 is FOR now that it is a verified 1.01x kissat
 port: the solver12-style feature work (fsweep/chrono/etc.) can be re-based
 on it with counter-exact regression testing against the C.
