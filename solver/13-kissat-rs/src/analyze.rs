@@ -185,7 +185,7 @@ fn one_literal_on_conflict_level(
 fn mark_reason_side_literal(solver: &mut Solver, lit: u32) {
     let idx = literal::idx(lit);
     let a = &solver.assigned[idx as usize];
-    if a.level != 0 && !a.analyzed {
+    if a.level != 0 && !a.analyzed() {
         crate::inline::push_analyzed(solver, idx);
     }
 }
@@ -196,12 +196,12 @@ fn analyze_reason_side_literal(solver: &mut Solver, limit: usize, lit: u32) {
     let idx = literal::idx(lit);
     let a = solver.assigned[idx as usize];
     debug_assert!(a.level != 0);
-    debug_assert!(a.analyzed);
+    debug_assert!(a.analyzed());
     debug_assert!(a.reason != UNIT_REASON);
     if a.reason == DECISION_REASON {
         return;
     }
-    if a.binary {
+    if a.binary() {
         let other = a.reason;
         mark_reason_side_literal(solver, other);
     } else {
@@ -255,8 +255,8 @@ fn analyze_reason_side_literals(solver: &mut Solver) {
     if solver.analyzed.len() > limit {
         while solver.analyzed.len() > saved {
             let idx = solver.analyzed.pop().unwrap();
-            debug_assert!(solver.assigned[idx as usize].analyzed);
-            solver.assigned[idx as usize].analyzed = false;
+            debug_assert!(solver.assigned[idx as usize].analyzed());
+            solver.assigned[idx as usize].set_analyzed(false);
         }
         crate::kimits::bump_delay(solver, DelayId::Bumpreasons); // BUMP_DELAY
     } else {
@@ -355,10 +355,10 @@ pub fn reset_only_analyzed_literals(solver: &mut Solver) {
         let idx = solver.analyzed[i];
         debug_assert!(idx < solver.vars());
         let a = &mut solver.assigned[idx as usize];
-        debug_assert!(!a.poisoned);
-        debug_assert!(!a.removable);
-        debug_assert!(!a.shrinkable);
-        a.analyzed = false;
+        debug_assert!(!a.poisoned());
+        debug_assert!(!a.removable());
+        debug_assert!(!a.shrinkable());
+        a.set_analyzed(false);
     }
     solver.analyzed.clear();
 }
@@ -368,7 +368,7 @@ fn reset_removable(solver: &mut Solver) {
     for i in 0..solver.removable.len() {
         let idx = solver.removable[i];
         debug_assert!(idx < solver.vars());
-        solver.assigned[idx as usize].removable = false;
+        solver.assigned[idx as usize].set_removable(false);
     }
     solver.removable.clear();
 }
@@ -449,7 +449,7 @@ fn analyze_failed_literal(solver: &mut Solver, conflict: Conflict) {
                 t -= 1;
                 let l = solver.trail[t]; // lit = *--t
                 debug_assert!(solver.values[l as usize] > 0);
-                if solver.assigned[literal::idx(l) as usize].analyzed {
+                if solver.assigned[literal::idx(l) as usize].analyzed() {
                     lit = l;
                     break;
                 }
@@ -459,7 +459,7 @@ fn analyze_failed_literal(solver: &mut Solver, conflict: Conflict) {
                 solver.clause.push(unit); // PUSH_STACK (*units, unit)
             }
             let a = solver.assigned[literal::idx(lit) as usize];
-            if a.binary {
+            if a.binary() {
                 let other = a.reason;
                 debug_assert!(other != failed);
                 debug_assert!(other != unit);
@@ -469,7 +469,7 @@ fn analyze_failed_literal(solver: &mut Solver, conflict: Conflict) {
                 }
                 let idx = literal::idx(other);
                 debug_assert!(solver.assigned[idx as usize].level == 1);
-                if !solver.assigned[idx as usize].analyzed {
+                if !solver.assigned[idx as usize].analyzed() {
                     crate::inline::push_analyzed(solver, idx);
                     unresolved += 1;
                 }
@@ -497,7 +497,7 @@ fn analyze_failed_literal(solver: &mut Solver, conflict: Conflict) {
                         continue;
                     }
                     debug_assert!(solver.assigned[idx as usize].level == 1);
-                    if solver.assigned[idx as usize].analyzed {
+                    if solver.assigned[idx as usize].analyzed() {
                         continue;
                     }
                     crate::inline::push_analyzed(solver, idx);

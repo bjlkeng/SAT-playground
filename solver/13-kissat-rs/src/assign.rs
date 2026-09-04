@@ -34,7 +34,7 @@ use crate::internal::{Assigned, Solver, DECISION_REASON, UNIT_REASON};
 use crate::reference::Reference;
 
 /// kissat_assign (inlineassign.h) == kissat_fast_assign (fastassign.h).
-#[inline]
+#[inline(always)]
 pub fn assign(
     solver: &mut Solver,
     probing: bool,
@@ -100,16 +100,7 @@ pub fn assign(
         }
     }
 
-    let b = Assigned {
-        level,
-        trail,
-        analyzed: false,
-        binary,
-        poisoned: false,
-        removable: false,
-        shrinkable: false,
-        reason,
-    };
+    let b = Assigned::new(level, trail, binary, reason);
     unsafe {
         *solver.assigned.get_unchecked_mut(idx as usize) = b;
     }
@@ -150,7 +141,7 @@ pub fn assign_binary(solver: &mut Solver, lit: u32, mut other: u32) {
     let other_idx = crate::literal::idx(other);
     let a = solver.assigned[other_idx as usize];
     let level = a.level;
-    if solver.options.jumpreasons != 0 && level != 0 && a.binary {
+    if solver.options.jumpreasons != 0 && level != 0 && a.binary() {
         solver.statistics.jumped_reasons += 1; // INC (jumped_reasons)
         other = a.reason;
     }
@@ -162,7 +153,7 @@ pub fn assign_binary(solver: &mut Solver, lit: u32, mut other: u32) {
 /// kissat_assignment_level (inlineassign.h).  C signature is
 /// (solver, values, assigned, lit, clause *reason); values/assigned always
 /// alias solver's own arrays and the clause comes in as its reference.
-#[inline]
+#[inline(always)]
 pub fn assignment_level(solver: &Solver, lit: u32, ref_: Reference) -> u32 {
     let c = solver.arena.clause(ref_);
     let mut res: u32 = 0;
@@ -193,7 +184,7 @@ pub fn assign_reference(solver: &mut Solver, lit: u32, ref_: Reference) {
 /// kissat_fast_binary_assign (fastassign.h) — the propagation inner-loop
 /// binary assign.  NOTE: reason jumping here additionally requires
 /// solver.classification.bigbig (unlike kissat_assign_binary above).
-#[inline]
+#[inline(always)]
 pub fn fast_binary_assign(
     solver: &mut Solver,
     probing: bool,
@@ -204,7 +195,7 @@ pub fn fast_binary_assign(
     if solver.options.jumpreasons != 0 && level != 0 && solver.classification.bigbig {
         let other_idx = crate::literal::idx(other);
         let a = unsafe { *solver.assigned.get_unchecked(other_idx as usize) };
-        if a.binary {
+        if a.binary() {
             solver.statistics.jumped_reasons += 1; // INC (jumped_reasons)
             other = a.reason;
         }
@@ -213,7 +204,7 @@ pub fn fast_binary_assign(
 }
 
 /// kissat_fast_assign_reference (fastassign.h).
-#[inline]
+#[inline(always)]
 pub fn fast_assign_reference(solver: &mut Solver, lit: u32, ref_: Reference) {
     let level = assignment_level(solver, lit, ref_);
     debug_assert!(level <= solver.level);

@@ -22,8 +22,8 @@ pub fn export_literal(solver: &Solver, ilit: u32) -> i32 {
 #[inline]
 pub fn push_analyzed(solver: &mut Solver, idx: u32) {
     debug_assert!(idx < solver.vars());
-    debug_assert!(!solver.assigned[idx as usize].analyzed);
-    solver.assigned[idx as usize].analyzed = true;
+    debug_assert!(!solver.assigned[idx as usize].analyzed());
+    solver.assigned[idx as usize].set_analyzed(true);
     solver.analyzed.push(idx);
 }
 
@@ -31,8 +31,8 @@ pub fn push_analyzed(solver: &mut Solver, idx: u32) {
 #[inline]
 pub fn push_removable(solver: &mut Solver, idx: u32) {
     debug_assert!(idx < solver.vars());
-    debug_assert!(!solver.assigned[idx as usize].removable);
-    solver.assigned[idx as usize].removable = true;
+    debug_assert!(!solver.assigned[idx as usize].removable());
+    solver.assigned[idx as usize].set_removable(true);
     solver.removable.push(idx);
 }
 
@@ -40,8 +40,8 @@ pub fn push_removable(solver: &mut Solver, idx: u32) {
 #[inline]
 pub fn push_poisoned(solver: &mut Solver, idx: u32) {
     debug_assert!(idx < solver.vars());
-    debug_assert!(!solver.assigned[idx as usize].poisoned);
-    solver.assigned[idx as usize].poisoned = true;
+    debug_assert!(!solver.assigned[idx as usize].poisoned());
+    solver.assigned[idx as usize].set_poisoned(true);
     solver.poisoned.push(idx);
 }
 

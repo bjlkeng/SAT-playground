@@ -76,7 +76,7 @@ fn analyze_literal(solver: &mut Solver, lit: u32) -> bool {
         return false;
     }
     solver.antecedent_size += 1;
-    if solver.assigned[idx as usize].analyzed {
+    if solver.assigned[idx as usize].analyzed() {
         return false;
     }
     crate::inline::push_analyzed(solver, idx);
@@ -142,7 +142,7 @@ pub fn deduce_first_uip_clause(solver: &mut Solver, conflict: Conflict) -> Optio
             t -= 1;
             uip = solver.trail[t]; // uip = *--t
             let a = &solver.assigned[literal::idx(uip) as usize];
-            if a.analyzed && a.level == solver.level {
+            if a.analyzed() && a.level == solver.level {
                 break;
             }
         }
@@ -154,7 +154,7 @@ pub fn deduce_first_uip_clause(solver: &mut Solver, conflict: Conflict) -> Optio
         debug_assert!(a.level == solver.level);
         solver.antecedent_size = 1;
         resolved += 1;
-        if a.binary {
+        if a.binary() {
             let other = a.reason;
             if analyze_literal(solver, other) {
                 unresolved_on_current_level += 1;
@@ -179,7 +179,7 @@ pub fn deduce_first_uip_clause(solver: &mut Solver, conflict: Conflict) -> Optio
             && solver.antecedent_size > 2
             && solver.resolvent_size < solver.antecedent_size
         {
-            debug_assert!(!a.binary);
+            debug_assert!(!a.binary());
             debug_assert!(!solver.arena.clause(a.reason).garbage());
             let res = crate::strengthen::on_the_fly_strengthen(solver, a.reason, uip);
             if resolved == 1 && solver.resolvent_size < conflict_size {

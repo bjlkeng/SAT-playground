@@ -128,7 +128,7 @@ pub fn push_binary_watch(solver: &mut Solver, lit: u32, other: u32) {
 }
 
 /// kissat_push_blocking_watch.
-#[inline]
+#[inline(always)]
 pub fn push_blocking_watch(solver: &mut Solver, lit: u32, blocking: u32, ref_: Reference) {
     debug_assert!(solver.watching);
     let head = blocking_watch(blocking);
@@ -370,28 +370,34 @@ pub fn flush_large_watches(solver: &mut Solver) {
 /// sort_literals variant.
 pub fn watch_large_clauses(solver: &mut Solver) {
     debug_assert!(solver.watching);
-    let mut ref_: Reference = 0;
-    // for (all_clauses (c)) — successor computed before the body.
-    while (ref_ as u64) < solver.arena.size_wards() {
-        let next = solver.arena.next_clause_ref(ref_);
-        if !solver.arena.clause(ref_).garbage() {
-            {
-                let arena = &mut solver.arena;
-                let values = &solver.values;
-                let assigned = &solver.assigned;
-                let mut c = arena.clause_mut(ref_);
-                let size = c.size();
-                crate::sort::sort_literals_inline(values, assigned, size, c.lits_mut());
-                c.set_searched(2);
-            }
+    use crate::arena::WORDS_PER_WARD;
+    use crate::clause::{GARBAGE_BIT, HEADER_OFFSET, LITS_OFFSET, SEARCHED_OFFSET, SIZE_OFFSET};
+    // The C walks `clause *c` over the arena reading header/size/lits in
+    // place; here the same walk over word offsets with the successor computed
+    // before the body (all_clauses).  The arena is not resized by the pushes.
+    let end_words = solver.arena.words().len();
+    let mut c: usize = 0;
+    while c < end_words {
+        debug_assert!(c + LITS_OFFSET <= end_words);
+        let next = c + solver.arena.clause((c / WORDS_PER_WARD) as Reference).actual_words();
+        let header = unsafe { *solver.arena.words().get_unchecked(c + HEADER_OFFSET) };
+        if header & GARBAGE_BIT == 0 {
+            let ref_ = (c / WORDS_PER_WARD) as Reference;
             let (l0, l1) = {
-                let c = solver.arena.clause(ref_);
-                (c.lit(0), c.lit(1))
+                let size = unsafe { *solver.arena.words().get_unchecked(c + SIZE_OFFSET) };
+                let (arena, values, assigned) =
+                    (&mut solver.arena, &solver.values, &solver.assigned);
+                let words = arena.words_mut();
+                let lits = &mut words[c + LITS_OFFSET..c + LITS_OFFSET + size as usize];
+                crate::sort::sort_literals_inline(values, assigned, size, lits);
+                let (l0, l1) = (lits[0], lits[1]);
+                words[c + SEARCHED_OFFSET] = 2;
+                (l0, l1)
             };
             push_blocking_watch(solver, l0, l1, ref_);
             push_blocking_watch(solver, l1, l0, ref_);
         }
-        ref_ = next;
+        c = next;
     }
 }
 

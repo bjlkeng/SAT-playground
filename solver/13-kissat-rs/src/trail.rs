@@ -32,7 +32,7 @@ pub fn mark_reason_clauses(solver: &mut Solver, start: Reference) {
         let lit = solver.trail[i];
         let a = solver.assigned[crate::literal::idx(lit) as usize];
         debug_assert!(a.level > 0);
-        if a.binary {
+        if a.binary() {
             continue;
         }
         let ref_ = a.reason;
@@ -69,7 +69,7 @@ pub fn unmark_reason_clauses(solver: &mut Solver, start: Reference) {
         let lit = solver.trail[i];
         let a = solver.assigned[crate::literal::idx(lit) as usize];
         debug_assert!(a.level > 0);
-        if a.binary {
+        if a.binary() {
             continue;
         }
         let ref_ = a.reason;

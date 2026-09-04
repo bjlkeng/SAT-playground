@@ -33,7 +33,10 @@ use crate::value::Value;
 /*------------------------------------------------------------------------*/
 // sort.c
 
-// move_smallest_literal_to_front (static).
+// move_smallest_literal_to_front (static inline in C; inline(always) so the
+// INLINE_SORT users below keep it in their own loop — it was a separate
+// symbol at 0.6% of brocard samples, perf 2026-09-03).
+#[inline(always)]
 fn move_smallest_literal_to_front(
     values: &[Value],
     assigned: &[Assigned],
@@ -119,6 +122,7 @@ fn move_smallest_literal_to_front(
 
 /// kissat_sort_literals, INLINE_SORT variant (watch.c): explicit values and
 /// assigned arrays.
+#[inline(always)]
 pub fn sort_literals_inline(values: &[Value], assigned: &[Assigned], size: u32, lits: &mut [u32]) {
     let u = move_smallest_literal_to_front(values, assigned, false, 0, size, lits);
     if size > 2 {

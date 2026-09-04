@@ -81,7 +81,7 @@ pub fn binary_conflict(solver: &mut Solver, a: u32, b: u32) -> Conflict {
 // proplit.h template code (shared with propbeyond/propinitially/proprobe).
 
 /// kissat_delay_watching_large (proplit.h).
-#[inline]
+#[inline(always)]
 fn delay_watching_large(solver: &mut Solver, lit: u32, other: u32, ref_: Reference) {
     let watch = crate::watch::blocking_watch(other);
     solver.delayed.push(lit);
@@ -90,7 +90,7 @@ fn delay_watching_large(solver: &mut Solver, lit: u32, other: u32, ref_: Referen
 }
 
 /// kissat_watch_large_delayed (proplit.h).
-#[inline]
+#[inline(always)]
 fn watch_large_delayed(solver: &mut Solver) {
     let delayed = std::mem::take(&mut solver.delayed);
     let end_delayed = delayed.len();

@@ -209,7 +209,7 @@ fn update_large_reason(assigned: &mut [Assigned], forced: u32, dst_ref: Referenc
     debug_assert!(forced != INVALID_LIT);
     let forced_idx = crate::literal::idx(forced) as usize;
     let a = &mut assigned[forced_idx];
-    debug_assert!(!a.binary);
+    debug_assert!(!a.binary());
     if a.reason != dst_ref {
         a.reason = dst_ref;
     }
@@ -576,9 +576,9 @@ fn sparse_sweep_garbage_clauses(
 
                 let forced_idx = crate::literal::idx(forced) as usize;
                 let a = &mut solver.assigned[forced_idx];
-                debug_assert!(!a.binary);
+                debug_assert!(!a.binary());
 
-                a.binary = true;
+                a.set_binary(true);
                 a.reason = other;
             }
 

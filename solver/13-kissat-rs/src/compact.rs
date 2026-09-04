@@ -276,7 +276,7 @@ fn compact_trail(solver: &mut Solver) {
         debug_assert!(mlit != INVALID_LIT);
         solver.trail[i] = mlit;
         let idx = idx_of(ilit);
-        if !solver.assigned[idx as usize].binary {
+        if !solver.assigned[idx as usize].binary() {
             continue;
         }
         let other = solver.assigned[idx as usize].reason;

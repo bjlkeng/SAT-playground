@@ -66,19 +66,84 @@ pub const INVALID_LEVEL: u32 = u32::MAX;
 pub const INVALID_TRAIL: u32 = u32::MAX;
 
 /// Port of `struct assigned` (assign.h).  C packs the five bools as one-bit
-/// bitfields; plain bools here (layout does not affect trajectory).
+/// bitfields into one word, making the record 16 bytes; the port does the
+/// same in `flags` (five plain bools made it 20 bytes — a 25% larger
+/// var-indexed array on the hottest random-access path, perf 2026-09-03).
+/// Layout is repr(C) so the array matches the C byte for byte.
 #[derive(Clone, Copy, Default)]
+#[repr(C)]
 pub struct Assigned {
     pub level: u32,
     pub trail: u32,
-
-    pub analyzed: bool,
-    pub binary: bool,
-    pub poisoned: bool,
-    pub removable: bool,
-    pub shrinkable: bool,
-
+    flags: u32,
     pub reason: u32,
+}
+
+const _: () = assert!(std::mem::size_of::<Assigned>() == 16); // == sizeof (struct assigned)
+
+impl Assigned {
+    pub const ANALYZED: u32 = 1 << 0;
+    pub const BINARY: u32 = 1 << 1;
+    pub const POISONED: u32 = 1 << 2;
+    pub const REMOVABLE: u32 = 1 << 3;
+    pub const SHRINKABLE: u32 = 1 << 4;
+
+    /// `struct assigned b = {level, trail, analyzed=false, binary, ...}`:
+    /// the fresh record kissat_assign stores.
+    #[inline(always)]
+    pub fn new(level: u32, trail: u32, binary: bool, reason: u32) -> Self {
+        Assigned {
+            level,
+            trail,
+            flags: (binary as u32) << 1,
+            reason,
+        }
+    }
+
+    #[inline(always)]
+    pub fn analyzed(&self) -> bool {
+        self.flags & Self::ANALYZED != 0
+    }
+    #[inline(always)]
+    pub fn binary(&self) -> bool {
+        self.flags & Self::BINARY != 0
+    }
+    #[inline(always)]
+    pub fn poisoned(&self) -> bool {
+        self.flags & Self::POISONED != 0
+    }
+    #[inline(always)]
+    pub fn removable(&self) -> bool {
+        self.flags & Self::REMOVABLE != 0
+    }
+    #[inline(always)]
+    pub fn shrinkable(&self) -> bool {
+        self.flags & Self::SHRINKABLE != 0
+    }
+    #[inline(always)]
+    fn set_flag(&mut self, bit: u32, v: bool) {
+        self.flags = (self.flags & !bit) | if v { bit } else { 0 };
+    }
+    #[inline(always)]
+    pub fn set_analyzed(&mut self, v: bool) {
+        self.set_flag(Self::ANALYZED, v)
+    }
+    #[inline(always)]
+    pub fn set_binary(&mut self, v: bool) {
+        self.set_flag(Self::BINARY, v)
+    }
+    #[inline(always)]
+    pub fn set_poisoned(&mut self, v: bool) {
+        self.set_flag(Self::POISONED, v)
+    }
+    #[inline(always)]
+    pub fn set_removable(&mut self, v: bool) {
+        self.set_flag(Self::REMOVABLE, v)
+    }
+    #[inline(always)]
+    pub fn set_shrinkable(&mut self, v: bool) {
+        self.set_flag(Self::SHRINKABLE, v)
+    }
 }
 
 // ---------------------------------------------------------------------------

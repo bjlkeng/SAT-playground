@@ -24,14 +24,14 @@ fn minimized_index(solver: &Solver, minimizing: bool, idx: u32, depth: u32) -> i
     if a.level == 0 {
         return 1; // root level literal
     }
-    if a.removable && depth != 0 {
+    if a.removable() && depth != 0 {
         return 1; // already removable
     }
     debug_assert!(a.reason != UNIT_REASON);
     if a.reason == DECISION_REASON {
         return -1; // can not remove decision literal
     }
-    if a.poisoned {
+    if a.poisoned() {
         return -1; // can not remove poisoned literal
     }
     if minimizing || depth == 0 {
@@ -84,7 +84,7 @@ fn minimize_binary(solver: &mut Solver, minimizing: bool, lit: u32, depth: u32) 
         }
         solver.minimize.push(next_idx);
         let a = solver.assigned[next_idx as usize];
-        if !a.binary {
+        if !a.binary() {
             let next_depth = if depth == u32::MAX { depth } else { depth + 1 };
             res = minimize_reference(solver, minimizing, a.reason, next, next_depth);
             break;
@@ -123,7 +123,7 @@ fn minimize_literal_rec(solver: &mut Solver, minimizing: bool, lit: u32, depth: 
         return false;
     }
     let a = solver.assigned[idx as usize];
-    let res = if a.binary {
+    let res = if a.binary() {
         minimize_binary(solver, minimizing, a.reason, depth)
     } else {
         minimize_reference(solver, minimizing, a.reason, lit, depth)
@@ -133,7 +133,7 @@ fn minimize_literal_rec(solver: &mut Solver, minimizing: bool, lit: u32, depth: 
     }
     if !res {
         crate::inline::push_poisoned(solver, idx);
-    } else if !solver.assigned[idx as usize].removable {
+    } else if !solver.assigned[idx as usize].removable() {
         crate::inline::push_removable(solver, idx);
     }
     res
@@ -150,8 +150,8 @@ pub fn reset_poisoned(solver: &mut Solver) {
     for i in 0..solver.poisoned.len() {
         let idx = solver.poisoned[i];
         debug_assert!(idx < solver.vars());
-        debug_assert!(solver.assigned[idx as usize].poisoned);
-        solver.assigned[idx as usize].poisoned = false;
+        debug_assert!(solver.assigned[idx as usize].poisoned());
+        solver.assigned[idx as usize].set_poisoned(false);
     }
     solver.poisoned.clear();
 }

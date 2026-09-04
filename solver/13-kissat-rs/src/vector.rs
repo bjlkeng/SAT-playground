@@ -279,6 +279,7 @@ pub fn enlarge_vector(solver: &mut Solver, lit: u32) -> usize {
 }
 
 /// kissat_push_vectors (inlinevector.h): append `e` to solver.watches[lit].
+#[inline(always)]
 pub fn push_vectors(solver: &mut Solver, lit: u32, e: u32) {
     debug_assert!(e != INVALID_VECTOR_ELEMENT);
     if solver.watches[lit as usize].is_null() {

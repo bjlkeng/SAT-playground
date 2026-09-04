@@ -292,7 +292,7 @@ fn backbone_analyze(solver: &mut Solver, conflict: Conflict) -> u32 {
         let lit = solver.trail[t];
 
         let lit_idx = idx(lit);
-        if !solver.assigned[lit_idx as usize].analyzed {
+        if !solver.assigned[lit_idx as usize].analyzed() {
             continue;
         }
 
@@ -300,7 +300,7 @@ fn backbone_analyze(solver: &mut Solver, conflict: Conflict) -> u32 {
         debug_assert!(reason != UNIT_REASON);
         debug_assert!(reason != DECISION_REASON);
         let reason_idx = idx(reason);
-        if !solver.assigned[reason_idx as usize].analyzed {
+        if !solver.assigned[reason_idx as usize].analyzed() {
             crate::inline::push_analyzed(solver, reason_idx);
         } else {
             crate::analyze::reset_only_analyzed_literals(solver);

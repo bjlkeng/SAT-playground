@@ -24,18 +24,18 @@ use crate::reference::Reference;
 // C static `reset_shrinkable`.
 fn reset_shrinkable(solver: &mut Solver) {
     while let Some(idx) = solver.shrinkable.pop() {
-        debug_assert!(solver.assigned[idx as usize].shrinkable);
-        solver.assigned[idx as usize].shrinkable = false;
+        debug_assert!(solver.assigned[idx as usize].shrinkable());
+        solver.assigned[idx as usize].set_shrinkable(false);
     }
 }
 
 // C static `mark_shrinkable_as_removable`.
 fn mark_shrinkable_as_removable(solver: &mut Solver) {
     while let Some(idx) = solver.shrinkable.pop() {
-        debug_assert!(solver.assigned[idx as usize].shrinkable);
-        solver.assigned[idx as usize].shrinkable = false;
-        debug_assert!(!solver.assigned[idx as usize].poisoned);
-        if solver.assigned[idx as usize].removable {
+        debug_assert!(solver.assigned[idx as usize].shrinkable());
+        solver.assigned[idx as usize].set_shrinkable(false);
+        debug_assert!(!solver.assigned[idx as usize].poisoned());
+        if solver.assigned[idx as usize].removable() {
             continue;
         }
         crate::inline::push_removable(solver, idx);
@@ -52,11 +52,11 @@ fn shrink_literal(solver: &mut Solver, level: u32, lit: u32) -> i32 {
     if a.level == 0 {
         return 0; // root level assigned
     }
-    if a.shrinkable {
+    if a.shrinkable() {
         return 0; // already shrinkable
     }
     if a.level < level {
-        if a.removable {
+        if a.removable() {
             return 0; // removable thus shrinkable
         }
         let always_minimize_on_lower_level = solver.options.shrink > 2;
@@ -66,7 +66,7 @@ fn shrink_literal(solver: &mut Solver, level: u32, lit: u32) -> i32 {
         }
         return -1; // lower level, not removable/shrinkable
     }
-    solver.assigned[idx as usize].shrinkable = true;
+    solver.assigned[idx as usize].set_shrinkable(true);
     solver.shrinkable.push(idx);
     1
 }
@@ -99,7 +99,7 @@ fn shrunken_block(
     block_shrunken -= 1;
 
     let uip_idx = literal::idx(uip);
-    if !solver.assigned[uip_idx as usize].analyzed {
+    if !solver.assigned[uip_idx as usize].analyzed() {
         crate::inline::push_analyzed(solver, uip_idx);
     }
 
@@ -168,10 +168,10 @@ fn shrink_along_reason(
 ) -> u32 {
     let uip_idx = literal::idx(uip);
     let a = solver.assigned[uip_idx as usize];
-    debug_assert!(a.shrinkable);
+    debug_assert!(a.shrinkable());
     debug_assert!(a.level == level);
     debug_assert!(a.reason != DECISION_REASON);
-    if a.binary {
+    if a.binary() {
         let other = a.reason;
         shrink_along_binary(solver, level, uip, other)
     } else {
@@ -213,7 +213,7 @@ fn shrink_block(
             debug_assert!(t >= 0);
             uip = solver.trail[t as usize];
             t -= 1;
-            if solver.assigned[literal::idx(uip) as usize].shrinkable {
+            if solver.assigned[literal::idx(uip) as usize].shrinkable() {
                 break;
             }
         }

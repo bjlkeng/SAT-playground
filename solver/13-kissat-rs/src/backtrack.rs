@@ -29,8 +29,10 @@ use crate::print;
 fn unassign(solver: &mut Solver, lit: u32) {
     debug_assert!(solver.values[lit as usize] > 0);
     let not_lit = literal::not(lit);
-    solver.values[lit as usize] = 0;
-    solver.values[not_lit as usize] = 0;
+    unsafe {
+        *solver.values.get_unchecked_mut(lit as usize) = 0;
+        *solver.values.get_unchecked_mut(not_lit as usize) = 0;
+    }
     debug_assert!(solver.unassigned < solver.vars());
     solver.unassigned += 1;
 }
@@ -111,15 +113,16 @@ pub fn backtrack_without_updating_phases(solver: &mut Solver, new_level: u32) {
     let mut q = new_end;
     if solver.stable {
         for p in new_end..old_end {
-            let lit = solver.trail[p];
+            let lit = unsafe { *solver.trail.get_unchecked(p) };
             let idx = literal::idx(lit);
             debug_assert!(idx < solver.vars());
-            let level = solver.assigned[idx as usize].level;
+            let a = unsafe { solver.assigned.get_unchecked_mut(idx as usize) };
+            let level = a.level;
             if level <= new_level {
                 let new_trail = q as u32;
-                debug_assert!(new_trail <= solver.assigned[idx as usize].trail);
-                solver.assigned[idx as usize].trail = new_trail;
-                solver.trail[q] = lit;
+                debug_assert!(new_trail <= a.trail);
+                a.trail = new_trail;
+                unsafe { *solver.trail.get_unchecked_mut(q) = lit };
                 q += 1;
             } else {
                 unassign(solver, lit);
@@ -128,15 +131,16 @@ pub fn backtrack_without_updating_phases(solver: &mut Solver, new_level: u32) {
         }
     } else {
         for p in new_end..old_end {
-            let lit = solver.trail[p];
+            let lit = unsafe { *solver.trail.get_unchecked(p) };
             let idx = literal::idx(lit);
             debug_assert!(idx < solver.vars());
-            let level = solver.assigned[idx as usize].level;
+            let a = unsafe { solver.assigned.get_unchecked_mut(idx as usize) };
+            let level = a.level;
             if level <= new_level {
                 let new_trail = q as u32;
-                debug_assert!(new_trail <= solver.assigned[idx as usize].trail);
-                solver.assigned[idx as usize].trail = new_trail;
-                solver.trail[q] = lit;
+                debug_assert!(new_trail <= a.trail);
+                a.trail = new_trail;
+                unsafe { *solver.trail.get_unchecked_mut(q) = lit };
                 q += 1;
             } else {
                 unassign(solver, lit);

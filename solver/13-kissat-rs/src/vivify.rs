@@ -587,8 +587,8 @@ fn vivify_deduce(
         let not_implied = not(implied);
         let a = &mut solver.assigned[idx(not_implied) as usize];
         debug_assert!(a.level != 0);
-        debug_assert!(!a.analyzed);
-        a.analyzed = true;
+        debug_assert!(!a.analyzed());
+        a.set_analyzed(true);
         solver.analyzed.push(not_implied); // literal, not idx (see PORT NOTES)
         solver.clause.push(implied);
     } else {
@@ -609,8 +609,8 @@ fn vivify_deduce(
             debug_assert!(value == 0);
             let a = &mut solver.assigned[idx(other) as usize];
             debug_assert!(a.level != 0);
-            debug_assert!(!a.analyzed);
-            a.analyzed = true;
+            debug_assert!(!a.analyzed());
+            a.set_analyzed(true);
             solver.analyzed.push(other);
             if solver.marks[other as usize] <= 0 {
                 subsumes = false;
@@ -634,10 +634,10 @@ fn vivify_deduce(
         analyzed += 1;
         let a = solver.assigned[idx(lit) as usize];
         debug_assert!(a.level != 0);
-        debug_assert!(a.analyzed);
+        debug_assert!(a.analyzed());
         if a.reason == DECISION_REASON {
             solver.clause.push(not_lit);
-        } else if a.binary {
+        } else if a.binary() {
             let other = a.reason;
             if solver.marks[lit as usize] > 0 && solver.marks[other as usize] > 0 {
                 let subsuming = binary_conflict(solver, lit, other);
@@ -646,10 +646,10 @@ fn vivify_deduce(
             debug_assert!(solver.values[other as usize] < 0);
             let b_idx = idx(other) as usize;
             debug_assert!(solver.assigned[b_idx].level != 0);
-            if solver.assigned[b_idx].analyzed {
+            if solver.assigned[b_idx].analyzed() {
                 continue;
             }
-            solver.assigned[b_idx].analyzed = true;
+            solver.assigned[b_idx].set_analyzed(true);
             solver.analyzed.push(other);
         } else {
             let ref_ = a.reason;
@@ -674,10 +674,10 @@ fn vivify_deduce(
                 if solver.assigned[b_idx].level == 0 {
                     continue;
                 }
-                if solver.assigned[b_idx].analyzed {
+                if solver.assigned[b_idx].analyzed() {
                     continue;
                 }
-                solver.assigned[b_idx].analyzed = true;
+                solver.assigned[b_idx].set_analyzed(true);
                 solver.analyzed.push(other);
             }
             if reason_redundant {
@@ -697,7 +697,7 @@ fn reset_vivify_analyzed(solver: &mut Solver) {
     for i in 0..solver.analyzed.len() {
         let lit = solver.analyzed[i];
         let a = &mut solver.assigned[idx(lit) as usize];
-        a.analyzed = false;
+        a.set_analyzed(false);
     }
     solver.analyzed.clear();
     solver.clause.clear();
@@ -727,7 +727,7 @@ fn vivify_shrinkable(solver: &Solver, sorted: &[u32], conflict: bool) -> bool {
         } else {
             let a = &solver.assigned[idx(lit) as usize];
             debug_assert!(a.level != 0);
-            if !a.analyzed {
+            if !a.analyzed() {
                 return true; // non-analyzed thus shrinking
             }
             if a.reason != DECISION_REASON {
@@ -1142,7 +1142,7 @@ fn vivify_clause(solver: &mut Solver, vivifier: &mut Vivifier, cand_ref: Referen
     if unit != INVALID_LIT {
         let a = solver.assigned[idx(unit) as usize];
         debug_assert!(a.level != 0);
-        if a.binary {
+        if a.binary() {
             unit = INVALID_LIT;
         } else if a.reason != cand_ref {
             unit = INVALID_LIT;

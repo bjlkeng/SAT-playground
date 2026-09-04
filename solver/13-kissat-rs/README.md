@@ -67,3 +67,38 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
   brocard A/B: 99.50 s with prefetch v 96.25 s without (+3.4% regression),
   counters identical. solver13's 2-word interleaved watch layout does not
   benefit; do not re-add without new evidence.
+- 2026-09-03 **profiler unlocked** (perf_event_paranoid=1, perf + valgrind
+  present) and the propagation gap closed structurally, all measured with
+  the same protocol: simultaneous pinned-core brocard full default runs,
+  candidate v previous step v reference kissat, 80-counter parity checked on
+  every arm (exact throughout). Session start on this protocol: 109.5 s v
+  kissat 96.4 s (**+13.7%**).
+  1. `#[inline(always)]` on the fast-assign chain (`assign`,
+     `fast_binary_assign`, `fast_assign_reference`, `assignment_level`,
+     `push_vectors`, `push_blocking_watch`, `delay_watching_large`,
+     `watch_large_delayed`). perf showed C's `kissat_search_propagate` as one
+     73.7% frame while ours split into `search_propagate` 52.8% +
+     out-of-line `assign` 12.8% + `push_vectors` 10.6%; the C are all header
+     `static inline`. 109.53 → 102.60 s (**−6.3%**), kissat 96.36 s alongside.
+  2. `struct assigned` repacked to 16 bytes (`internal.rs`: the five bools as
+     bits of one `flags` word, `repr(C)`, compile-time size guard). Five
+     plain bools made it 20 bytes — a 25% larger var-indexed array on the
+     hottest random-access path. 102.14 → 100.39 s (**−1.7%**), kissat 95.17 s.
+  3. `sort_literals_inline`/`move_smallest_literal_to_front`
+     `#[inline(always)]` (C static inline; ours was a separate 0.6% symbol),
+     `watch_large_clauses` walked by word offset with unchecked reads, and
+     `backtrack_without_updating_phases` loops with unchecked trail/assigned
+     indexing. 102.00 → 99.76 s (**−2.2%**), kissat 95.80 s.
+  Net: 109.5 → 99.8 s on the same deal, gap **+13.7% → +4.1%**.
+  Whole-program `perf stat` at that point: cycles +3.4%, instructions
+  +15.6% (253.8G v 219.6G), branches +27% (49.1G v 38.7G), L1/LLC misses
+  equal — the residual is instruction overhead hiding under memory latency,
+  not extra misses.
+- 2026-09-03 REJECTED: kissat's FAST_ASSIGN shape — hoisting raw base
+  pointers of arena/assigned/values/watch-stack into `propagate_literal`
+  locals and threading `values`/`assigned` through `fast_assign` exactly as
+  `fastassign.h` does. Static solver-field reloads in the loop did drop
+  (111 → 91) but the paired run was 104.62 s v 102.60 s inline-only (+2%)
+  and `perf stat` showed +1.06% instructions and +2.9% LLC misses: LLVM's
+  codegen with the separate raw pointers is worse (more spills), so the C
+  idiom does not transfer. Do not re-add without new evidence.
