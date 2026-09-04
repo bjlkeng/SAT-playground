@@ -732,7 +732,13 @@ fn eagerly_remove_watch(solver: &mut Solver, watches_of: u32, needle: Watch) {
     if p != last {
         solver.vectors.stack.copy_within(p + 1..v.end, p);
     }
-    solver.watches[watches_of as usize].end = last; // SET_END_OF_WATCHES
+    // SET_END_OF_WATCHES == kissat_resize_vector: poisons the freed slot with
+    // INVALID and counts it in `usable`.  A plain `end = last` (the port until
+    // 2026-09-04) left the stale watch in the slot, so the next push into this
+    // list saw it occupied and relocated the whole vector: on crusti the watch
+    // stack grew 2^23 -> 2^27 entries (312 MB RSS v the C's 56 MB) during the
+    // first factor pass.  Invisible to the `-s` counters.
+    crate::vector::resize_vector(solver, watches_of, last - v.begin);
 }
 
 // static void eagerly_remove_binary

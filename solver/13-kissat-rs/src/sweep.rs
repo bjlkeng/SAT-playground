@@ -1024,7 +1024,9 @@ fn substitute_connected_clauses(
             q += 1;
             p += 1;
         }
-        solver.watches[lit as usize].end = q; // SET_END_OF_WATCHES
+        // SET_END_OF_WATCHES == kissat_resize_vector (poison + usable), not a
+        // plain end assignment — see eagerly_remove_watch in factor.rs.
+        crate::vector::resize_vector(solver, lit, q - begin_watches);
     }
     {
         let delayed = std::mem::take(&mut solver.delayed);
