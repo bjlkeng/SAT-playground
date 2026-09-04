@@ -2446,10 +2446,14 @@ fn init_xor_gate_extraction(solver: &mut Solver, closure: &mut Closure, candidat
     let size_limit = arity_limit + 1;
     let last_irredundant = solver.last_irredundant;
     let lits_count = solver.lits() as usize;
-    let mut largecount = vec![0u32; lits_count];
+    // PERF NOTE: the literal loops walk `clause.lits()` slices with the
+    // unchecked `values`/`largecount` (UVec) like the C's pointer walks —
+    // the per-literal `arena.clause(ref).lit(i)` + checked Vec index form
+    // cost ~2x the instructions of the C on long-clause cells (Kakuro).
+    let mut largecount: crate::uvec::UVec<u32> = vec![0u32; lits_count].into();
     // for (all_clauses (c))
     let mut ref_: Reference = 0;
-    'clauses: while (ref_ as u64) < solver.arena.size_wards() {
+    while (ref_ as u64) < solver.arena.size_wards() {
         let next = solver.arena.next_clause_ref(ref_);
         if solver.arena.clause(ref_).garbage() {
             ref_ = next;
@@ -2462,33 +2466,45 @@ fn init_xor_gate_extraction(solver: &mut Solver, closure: &mut Closure, candidat
             ref_ = next;
             continue;
         }
-        let c_size = solver.arena.clause(ref_).size();
-        let mut size = 0u32;
-        for i in 0..c_size {
-            let l = solver.arena.clause(ref_).lit(i);
-            let value = solver.values[l as usize];
-            if value < 0 {
-                continue;
+        // 0 = keep counting, 1 = satisfied (garbage), 2 = skip
+        let (size, outcome) = {
+            let lits = solver.arena.clause(ref_).lits();
+            let values = &solver.values;
+            let mut size = 0u32;
+            let mut outcome = 0u8;
+            for &l in lits {
+                let value = values[l as usize];
+                if value < 0 {
+                    continue;
+                }
+                if value > 0 {
+                    outcome = 1;
+                    break;
+                }
+                if size == size_limit {
+                    outcome = 2;
+                    break;
+                }
+                size += 1;
             }
-            if value > 0 {
-                crate::clause::mark_clause_as_garbage(solver, ref_);
-                ref_ = next;
-                continue 'clauses; // goto CONTINUE_COUNTING_NEXT_CLAUSE
-            }
-            if size == size_limit {
-                ref_ = next;
-                continue 'clauses;
-            }
-            size += 1;
+            (size, outcome)
+        };
+        if outcome == 1 {
+            crate::clause::mark_clause_as_garbage(solver, ref_);
+            ref_ = next;
+            continue; // goto CONTINUE_COUNTING_NEXT_CLAUSE
         }
-        if size < 3 {
+        if outcome == 2 || size < 3 {
             ref_ = next;
             continue;
         }
-        for i in 0..c_size {
-            let l = solver.arena.clause(ref_).lit(i);
-            if solver.values[l as usize] == 0 {
-                largecount[l as usize] += 1;
+        {
+            let lits = solver.arena.clause(ref_).lits();
+            let values = &solver.values;
+            for &l in lits {
+                if values[l as usize] == 0 {
+                    largecount[l as usize] += 1;
+                }
             }
         }
         candidates.push(ref_);
@@ -2508,16 +2524,16 @@ fn init_xor_gate_extraction(solver: &mut Solver, closure: &mut Closure, candidat
     let counting_rounds = solver.options.congruencexorcounts;
     for round in 1..=counting_rounds {
         let mut removed = 0usize;
-        let mut new_largecount = vec![0u32; lits_count];
+        let mut new_largecount: crate::uvec::UVec<u32> = vec![0u32; lits_count].into();
         let end_candidates = candidates.len();
         let mut q = 0usize;
+        let values = &solver.values;
         'candidates: for p in 0..end_candidates {
             let cand = candidates[p];
-            let c_size = solver.arena.clause(cand).size();
+            let lits = solver.arena.clause(cand).lits();
             let mut size = 0u32;
-            for i in 0..c_size {
-                let l = solver.arena.clause(cand).lit(i);
-                if solver.values[l as usize] == 0 {
+            for &l in lits {
+                if values[l as usize] == 0 {
                     size += 1;
                 }
             }
@@ -2525,16 +2541,14 @@ fn init_xor_gate_extraction(solver: &mut Solver, closure: &mut Closure, candidat
             debug_assert!(size <= size_limit);
             let arity = size - 1;
             let needed_clauses = 1u32 << (arity - 1);
-            for i in 0..c_size {
-                let l = solver.arena.clause(cand).lit(i);
+            for &l in lits {
                 if largecount[l as usize] < needed_clauses {
                     removed += 1;
                     continue 'candidates; // goto CONTINUE_WITH_NEXT_CANDIDATE_CLAUSE
                 }
             }
-            for i in 0..c_size {
-                let l = solver.arena.clause(cand).lit(i);
-                if solver.values[l as usize] == 0 {
+            for &l in lits {
+                if values[l as usize] == 0 {
                     new_largecount[l as usize] += 1;
                 }
             }
@@ -2564,7 +2578,7 @@ fn init_xor_gate_extraction(solver: &mut Solver, closure: &mut Closure, candidat
             ),
         );
     }
-    closure.largecount = largecount;
+    closure.largecount = largecount.0;
     for i in 0..candidates.len() {
         let cand = candidates[i];
         crate::clause::connect_referenced(solver, cand);
@@ -2594,10 +2608,10 @@ fn init_ite_gate_extraction(solver: &mut Solver, closure: &mut Closure, candidat
     debug_assert!(candidates.is_empty());
     let last_irredundant = solver.last_irredundant;
     let lits_count = solver.lits() as usize;
-    let mut largecount = vec![0u32; lits_count];
+    let mut largecount: crate::uvec::UVec<u32> = vec![0u32; lits_count].into();
     let mut ternary: Vec<Reference> = Vec::new();
     let mut ref_: Reference = 0;
-    'clauses: while (ref_ as u64) < solver.arena.size_wards() {
+    while (ref_ as u64) < solver.arena.size_wards() {
         let next = solver.arena.next_clause_ref(ref_);
         if solver.arena.clause(ref_).garbage() {
             ref_ = next;
@@ -2610,35 +2624,47 @@ fn init_ite_gate_extraction(solver: &mut Solver, closure: &mut Closure, candidat
             ref_ = next;
             continue;
         }
-        let c_size = solver.arena.clause(ref_).size();
-        let mut size = 0u32;
-        for i in 0..c_size {
-            let l = solver.arena.clause(ref_).lit(i);
-            let value = solver.values[l as usize];
-            if value < 0 {
-                continue;
+        // 0 = counted, 1 = satisfied (garbage), 2 = skip (see xor variant)
+        let (size, outcome) = {
+            let lits = solver.arena.clause(ref_).lits();
+            let values = &solver.values;
+            let mut size = 0u32;
+            let mut outcome = 0u8;
+            for &l in lits {
+                let value = values[l as usize];
+                if value < 0 {
+                    continue;
+                }
+                if value > 0 {
+                    outcome = 1;
+                    break;
+                }
+                if size == 3 {
+                    outcome = 2;
+                    break;
+                }
+                size += 1;
             }
-            if value > 0 {
-                crate::clause::mark_clause_as_garbage(solver, ref_);
-                ref_ = next;
-                continue 'clauses;
-            }
-            if size == 3 {
-                ref_ = next;
-                continue 'clauses;
-            }
-            size += 1;
+            (size, outcome)
+        };
+        if outcome == 1 {
+            crate::clause::mark_clause_as_garbage(solver, ref_);
+            ref_ = next;
+            continue;
         }
-        if size < 3 {
+        if outcome == 2 || size < 3 {
             ref_ = next;
             continue;
         }
         debug_assert!(size == 3);
         ternary.push(ref_);
-        for i in 0..c_size {
-            let l = solver.arena.clause(ref_).lit(i);
-            if solver.values[l as usize] == 0 {
-                largecount[l as usize] += 1;
+        {
+            let lits = solver.arena.clause(ref_).lits();
+            let values = &solver.values;
+            for &l in lits {
+                if values[l as usize] == 0 {
+                    largecount[l as usize] += 1;
+                }
             }
         }
         ref_ = next;
@@ -2660,9 +2686,8 @@ fn init_ite_gate_extraction(solver: &mut Solver, closure: &mut Closure, candidat
         let mut positive = 0u32;
         let mut negative = 0u32;
         let mut twice = 0u32;
-        let c_size = solver.arena.clause(cand).size();
-        for i in 0..c_size {
-            let l = solver.arena.clause(cand).lit(i);
+        let lits = solver.arena.clause(cand).lits();
+        for &l in lits {
             if solver.values[l as usize] != 0 {
                 continue;
             }
@@ -2710,7 +2735,7 @@ fn init_ite_gate_extraction(solver: &mut Solver, closure: &mut Closure, candidat
             connected
         ),
     );
-    closure.largecount = largecount;
+    closure.largecount = largecount.0;
     closure.condbin[0].clear();
     closure.condbin[1].clear();
     closure.condeq[0].clear();
