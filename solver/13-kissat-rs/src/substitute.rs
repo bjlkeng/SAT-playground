@@ -425,9 +425,16 @@ fn substitute_clauses(solver: &mut Solver, repr: &[u32]) {
         let mut substitute = false;
         let mut tautological = false;
         let size = solver.arena.clause(ref_).size();
-        for i in 0..size {
-            let lit = solver.arena.clause(ref_).lit(i);
-            let lit_value = solver.values[lit as usize];
+        // for (all_literals_in_clause (lit, c)): the C indexes lits/values/
+        // repr/marks raw; the clause is live (size words follow its header)
+        // and every literal is < LITS == repr.len(), so read them unchecked
+        // (this loop was +73% branches over the C, perf 2026-09-03).
+        let lits = ref_ as usize * crate::arena::WORDS_PER_WARD + crate::clause::LITS_OFFSET;
+        debug_assert!(lits + size as usize <= solver.arena.words().len());
+        debug_assert!(repr.len() == solver.lits() as usize);
+        for i in 0..size as usize {
+            let lit = unsafe { *solver.arena.words().get_unchecked(lits + i) };
+            let lit_value = unsafe { *solver.values.get_unchecked(lit as usize) };
             if lit_value < 0 {
                 shrink = true;
                 continue;
@@ -436,8 +443,8 @@ fn substitute_clauses(solver: &mut Solver, repr: &[u32]) {
                 satisfied = true;
                 break;
             }
-            let repr_lit = repr[lit as usize];
-            let repr_value = solver.values[repr_lit as usize];
+            let repr_lit = unsafe { *repr.get_unchecked(lit as usize) };
+            let repr_value = unsafe { *solver.values.get_unchecked(repr_lit as usize) };
             if repr_value < 0 {
                 shrink = true;
                 continue;
@@ -450,16 +457,16 @@ fn substitute_clauses(solver: &mut Solver, repr: &[u32]) {
                 debug_assert!(solver.values[repr_lit as usize] == 0);
                 substitute = true;
             }
-            if solver.marks[repr_lit as usize] != 0 {
+            if unsafe { *solver.marks.get_unchecked(repr_lit as usize) } != 0 {
                 shrink = true;
                 continue; // skipping duplicated
             }
             let not_repr_lit = crate::literal::not(repr_lit);
-            if solver.marks[not_repr_lit as usize] != 0 {
+            if unsafe { *solver.marks.get_unchecked(not_repr_lit as usize) } != 0 {
                 tautological = true;
                 break;
             }
-            solver.marks[repr_lit as usize] = 1; // marks[repr_lit] = true
+            unsafe { *solver.marks.get_unchecked_mut(repr_lit as usize) = 1 }; // marks[repr_lit] = true
             solver.clause.push(repr_lit);
         }
         if satisfied || tautological {

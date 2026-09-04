@@ -39,7 +39,13 @@ pub fn increase_size(solver: &mut Solver, new_size: u32) {
     // CREALLOC_LITERAL_INDEXED (watches, watches);
     solver.watches.resize(2 * n, Default::default());
 
-    // reallocate_trail (solver, old_size, new_size): no-op (see PORT NOTES).
+    // reallocate_trail (solver, old_size, new_size): the C trail is a fixed
+    // array of `size` entries so PUSH_ARRAY is an unchecked store; keep the
+    // Vec's capacity at >= size so assign.rs can push unchecked too.
+    if solver.trail.capacity() < n {
+        solver.trail.reserve_exact(n - solver.trail.len());
+    }
+    debug_assert!(solver.trail.capacity() >= n);
     crate::heap::resize_heap(&mut solver.scores, new_size); // kissat_resize_heap (SCORES)
     crate::phases::increase_phases(solver, new_size);
 

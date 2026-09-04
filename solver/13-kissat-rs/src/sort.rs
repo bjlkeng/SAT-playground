@@ -48,9 +48,10 @@ fn move_smallest_literal_to_front(
     debug_assert!(1 < size);
     debug_assert!(start < size);
 
-    let a = lits[start as usize];
+    debug_assert!(size as usize <= lits.len());
+    let a = unsafe { *lits.get_unchecked(start as usize) };
 
-    let mut u = values[a as usize];
+    let mut u = unsafe { *values.get_unchecked(a as usize) };
     if u == 0 || (u > 0 && satisfied_is_enough) {
         return u;
     }
@@ -61,14 +62,14 @@ fn move_smallest_literal_to_front(
     {
         let i = crate::literal::idx(a);
         let mut k = if u != 0 {
-            assigned[i as usize].level
+            unsafe { assigned.get_unchecked(i as usize) }.level
         } else {
             u32::MAX
         };
 
         for idx in (start + 1)..size {
-            let b = lits[idx as usize];
-            let v = values[b as usize];
+            let b = unsafe { *lits.get_unchecked(idx as usize) };
+            let v = unsafe { *values.get_unchecked(b as usize) };
 
             if v == 0 || (v > 0 && satisfied_is_enough) {
                 best = b;
@@ -79,7 +80,7 @@ fn move_smallest_literal_to_front(
 
             let j = crate::literal::idx(b);
             let l = if v != 0 {
-                assigned[j as usize].level
+                unsafe { assigned.get_unchecked(j as usize) }.level
             } else {
                 u32::MAX
             };
@@ -114,8 +115,10 @@ fn move_smallest_literal_to_front(
         return u;
     }
 
-    lits[start as usize] = best;
-    lits[pos as usize] = a;
+    unsafe {
+        *lits.get_unchecked_mut(start as usize) = best;
+        *lits.get_unchecked_mut(pos as usize) = a;
+    }
 
     u
 }

@@ -89,7 +89,13 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
      `watch_large_clauses` walked by word offset with unchecked reads, and
      `backtrack_without_updating_phases` loops with unchecked trail/assigned
      indexing. 102.00 → 99.76 s (**−2.2%**), kissat 95.80 s.
-  Net: 109.5 → 99.8 s on the same deal, gap **+13.7% → +4.1%**.
+  4. PUSH_ARRAY ported unchecked (`resize.rs` keeps `trail` capacity at
+     `size`, `assign` writes without the Vec grow check) plus unchecked
+     indexing in `move_smallest_literal_to_front`: 100.83 → 100.39 s
+     (−0.4%, within run noise; kept for structural fidelity), kissat 96.35 s.
+  5. `substitute_clauses` literal loop read unchecked (it carried +73% of
+     the C's branches): 100.38 → 99.17 s (**−1.2%**), kissat 95.52 s.
+  Net: 109.5 → 99.2 s on the same deal, gap **+13.7% → +3.8%**.
   Whole-program `perf stat` at that point: cycles +3.4%, instructions
   +15.6% (253.8G v 219.6G), branches +27% (49.1G v 38.7G), L1/LLC misses
   equal — the residual is instruction overhead hiding under memory latency,

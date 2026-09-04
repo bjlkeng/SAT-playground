@@ -8,6 +8,7 @@ deterministic first-column counters of the `-s` statistics block, plus the
 Usage:
   parity.py [--conflicts N] [--options '--probe=0 ...'] cnf [cnf ...]
   parity.py --corpus default [--conflicts N]
+  parity.py --solver /path/to/frozen/sat-solver ...   (test a copied binary)
 
 Exit 0 iff every instance matches on status + all counters.
 """
@@ -67,6 +68,8 @@ def main():
     ap.add_argument("--options", default="", help="extra options for both")
     ap.add_argument("--corpus", choices=["default"], help="use built-in corpus")
     ap.add_argument("--timeout", type=int, default=600, help="per-run seconds")
+    ap.add_argument("--solver", default=SOLVER13, help="solver 13 binary to test")
+    ap.add_argument("--kissat", default=KISSAT, help="reference kissat binary")
     args = ap.parse_args()
 
     cnfs = list(args.cnfs)
@@ -87,8 +90,8 @@ def main():
 
     failures = 0
     for cnf in cnfs:
-        ks, kstats, kerr = run(KISSAT, cnf, extra, args.timeout)
-        ss, sstats, serr = run(SOLVER13, cnf, extra, args.timeout)
+        ks, kstats, kerr = run(args.kissat, cnf, extra, args.timeout)
+        ss, sstats, serr = run(args.solver, cnf, extra, args.timeout)
         name = os.path.basename(cnf)
         if kerr or serr:
             print(f"FAIL {name}: kissat={kerr or 'ok'} solver13={serr or 'ok'}")

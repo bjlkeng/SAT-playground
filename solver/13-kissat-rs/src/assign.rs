@@ -86,7 +86,14 @@ pub fn assign(
     }
 
     let trail = solver.trail.len() as u32; // SIZE_ARRAY (solver->trail)
-    solver.trail.push(lit); // PUSH_ARRAY
+    // PUSH_ARRAY (solver->trail, lit): unchecked, like the C's `*end++ = lit`
+    // — resize.rs keeps capacity >= size and a variable is assigned at most
+    // once, so len < size <= capacity holds here.
+    debug_assert!((trail as usize) < solver.trail.capacity());
+    unsafe {
+        std::ptr::write(solver.trail.as_mut_ptr().add(trail as usize), lit);
+        solver.trail.set_len(trail as usize + 1);
+    }
 
     let idx = crate::literal::idx(lit);
 
