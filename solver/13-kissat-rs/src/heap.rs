@@ -47,9 +47,9 @@ pub struct Heap {
     pub tainted: bool,
     pub vars: u32,
     pub size: u32,
-    pub stack: Vec<u32>,   // unsigneds stack
-    pub score: Vec<f64>,   // double *score (len == size)
-    pub pos: Vec<u32>,     // unsigned *pos  (len == size)
+    pub stack: crate::uvec::UVec<u32>,   // unsigneds stack
+    pub score: crate::uvec::UVec<f64>,   // double *score (len == size)
+    pub pos: crate::uvec::UVec<u32>,     // unsigned *pos  (len == size)
 }
 
 impl Heap {
@@ -59,13 +59,13 @@ impl Heap {
 }
 
 /// kissat_heap_contains.
-#[inline]
+#[inline(always)]
 pub fn heap_contains(heap: &Heap, idx: u32) -> bool {
     idx < heap.vars && !discontained(heap.pos[idx as usize])
 }
 
 /// kissat_get_heap_pos.
-#[inline]
+#[inline(always)]
 pub fn get_heap_pos(heap: &Heap, idx: u32) -> u32 {
     if idx < heap.vars {
         heap.pos[idx as usize]
@@ -75,7 +75,7 @@ pub fn get_heap_pos(heap: &Heap, idx: u32) -> u32 {
 }
 
 /// kissat_get_heap_score.
-#[inline]
+#[inline(always)]
 pub fn get_heap_score(heap: &Heap, idx: u32) -> f64 {
     if idx < heap.vars {
         heap.score[idx as usize]
@@ -85,19 +85,19 @@ pub fn get_heap_score(heap: &Heap, idx: u32) -> f64 {
 }
 
 /// kissat_empty_heap.
-#[inline]
+#[inline(always)]
 pub fn empty_heap(heap: &Heap) -> bool {
     heap.stack.is_empty()
 }
 
 /// kissat_size_heap.
-#[inline]
+#[inline(always)]
 pub fn size_heap(heap: &Heap) -> usize {
     heap.stack.len()
 }
 
 /// kissat_max_heap.
-#[inline]
+#[inline(always)]
 pub fn max_heap(heap: &Heap) -> u32 {
     debug_assert!(!empty_heap(heap));
     heap.stack[0]
@@ -137,7 +137,7 @@ pub fn resize_heap(heap: &mut Heap, new_size: u32) {
         if old_size > 0 {
             // DEALLOC (heap->score, old_size);
         }
-        heap.score = vec![0.0; new_size as usize]; // kissat_calloc
+        heap.score = vec![0.0; new_size as usize].into(); // kissat_calloc
     }
     heap.size = new_size;
 }
@@ -167,6 +167,7 @@ pub fn enlarge_heap(heap: &mut Heap, new_vars: u32) {
 }
 
 /// kissat_bubble_up (inlineheap.h).
+#[inline(always)]
 pub fn bubble_up(heap: &mut Heap, idx: u32) {
     let mut idx_pos = heap.pos[idx as usize];
     let idx_score = heap.score[idx as usize];
@@ -185,6 +186,7 @@ pub fn bubble_up(heap: &mut Heap, idx: u32) {
 }
 
 /// kissat_bubble_down (inlineheap.h).
+#[inline(always)]
 pub fn bubble_down(heap: &mut Heap, idx: u32) {
     let end = heap.stack.len() as u32;
     let mut idx_pos = heap.pos[idx as usize];
@@ -227,6 +229,7 @@ fn heap_import(heap: &mut Heap, idx: u32) {
 }
 
 /// kissat_push_heap.
+#[inline(always)]
 pub fn push_heap(heap: &mut Heap, idx: u32) {
     debug_assert!(!heap_contains(heap, idx));
     heap_import(heap, idx);
@@ -236,6 +239,7 @@ pub fn push_heap(heap: &mut Heap, idx: u32) {
 }
 
 /// kissat_pop_heap: remove `idx` (not necessarily the maximum).
+#[inline(always)]
 pub fn pop_heap(heap: &mut Heap, idx: u32) {
     debug_assert!(heap_contains(heap, idx));
     let last = heap.stack.pop().unwrap(); // POP_STACK
@@ -252,6 +256,7 @@ pub fn pop_heap(heap: &mut Heap, idx: u32) {
 }
 
 /// kissat_pop_max_heap.
+#[inline(always)]
 pub fn pop_max_heap(heap: &mut Heap) -> u32 {
     debug_assert!(!empty_heap(heap));
     let idx = heap.stack[0];
@@ -270,6 +275,7 @@ pub fn pop_max_heap(heap: &mut Heap) -> u32 {
 
 /// kissat_adjust_heap: make sure `idx` fits (resize by doubling, then
 /// enlarge vars).
+#[inline(always)]
 pub fn adjust_heap(heap: &mut Heap, idx: u32) {
     let new_vars = idx + 1;
     let old_vars = heap.vars;
@@ -289,6 +295,7 @@ pub fn adjust_heap(heap: &mut Heap, idx: u32) {
 }
 
 /// kissat_update_heap: set a new score and restore the heap property.
+#[inline(always)]
 pub fn update_heap(heap: &mut Heap, idx: u32, new_score: f64) {
     let old_score = get_heap_score(heap, idx);
     if old_score == new_score {

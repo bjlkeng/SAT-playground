@@ -1,5 +1,85 @@
 # NEXT PLAN — 2026-08-28 (supersedes 2026-08-24; PRUNED)
 
+## SESSION 2026-09-03b — solver13 PROFILER UNLOCKED; the "8.5% gap" was brocard's memory-bound best case (other cells 1.19-1.34x); ten structural fixes take brocard to 1.007x and cache-resident cells to ~1.15x kissat, all counters exact
+
+Commits 7a27474, 9e7f2f7, 9cfbb3f, c02632e, b9cc80b + the heap step (all pushed).
+Host: perf_event_paranoid=1, perf + valgrind present — profiling works now.
+
+**Protocol that produced every number below**: simultaneous pinned-core
+runs (`taskset -c N`), candidate v previous step v reference kissat 4.0.4,
+each arm's 80 `-s` counters diffed against the C (exact on every step),
+brocard full default run + circuit_48in64out and Timetable_C_392 at
+`--conflicts=100000`. Decompressed cells and every step's binary are in
+this session's scratchpad (`stepN-sat-solver`); `parity.py --solver` now
+takes a frozen binary so the tree can keep changing during a 25-min run.
+
+**The finding**: brocard (1M vars, 5.6M clauses) is memory-bound — its
+misses hide instruction overhead. `perf stat` at the 4% point: cycles
++3.4%, instructions +15.6%, branches +27%, L1/LLC misses EQUAL. On
+cache-resident cells the same overhead is exposed: circuit 1.34x,
+Timetable 1.29x, Kakuro 1.29x, REGRandom 1.19x at identical conflict
+counts. Cause: checked Vec/slice indexing crate-wide (C indexes raw
+pointers under NDEBUG) plus out-of-line helpers the C has as header
+`static inline`.
+
+**Fixes, in order (README has the per-step numbers)**:
+1. `#[inline(always)]` on the fast-assign chain (assign, fast_binary_assign,
+   fast_assign_reference, assignment_level, push_vectors,
+   push_blocking_watch, delay_watching_large, watch_large_delayed) — perf
+   showed them as separate symbols totalling 24% while the C is one frame.
+   brocard −6.3%.
+2. `struct assigned` 16 bytes (flags word, repr(C), size guard). −1.7%.
+3. sort_literals_inline/move_smallest_literal_to_front inline(always) +
+   unchecked; watch_large_clauses word-offset walk; backtrack unchecked
+   indexing. −2.2%.
+4. PUSH_ARRAY trail push unchecked (resize.rs keeps capacity >= size). noise.
+5. substitute_clauses literal loop unchecked. −1.2%.
+6. ClauseRef/ClauseMut/arena.clause() unchecked in release (debug-asserted)
+   — the universal clause accessor. circuit −3%, Timetable −6%, brocard −2%.
+7. **`src/uvec.rs` UVec<T>**: Vec newtype, `[]` unchecked in release, range
+   slicing checked, Deref to Vec. values/marks/assigned/flags/links/
+   watches/trail/frames/phases/vectors.stack switched — ~800 sites, zero
+   call-site edits. Timetable −15%, circuit −7%, brocard → 1.000x.
+8. Loop-local arena/values/stack base pointers in propagate_literal only
+   (assign keeps &mut Solver). circuit −2.3%, brocard −0.6%.
+9. kitten's 8 arrays on UVec. Timetable −4%, circuit −1%.
+10. Heap stack/score/pos on UVec + inline(always) heap ops (C inlineheap.h).
+   Timetable −9% (1.23x → 1.118x), circuit −1%, brocard 1.001x.
+REJECTED (recorded in README): FAST_ASSIGN-style threading of raw
+values/assigned pointers through fast_assign — +2% wall, +1.06%
+instructions, worse LLVM codegen. Do not re-add.
+
+**State at handoff**: brocard 1.001x, circuit 1.16x, Timetable 1.12x
+(9-process paired run at the heap step; the Timetable arm swings ±0.05x
+between runs at this load — read paired ratios within one run only).
+circuit `perf stat`: instructions +13.9%, branches +15.7%, cycles +8.3%.
+Per-function cycle residual on circuit (RS v C samples): search_propagate
+5356 v 4919 (+9%), watch_large_clauses+connect 1115 v 917, kitten 1028 v
+850, vivify_round 986 v 852, sparse_sweep 303 v 230; analyze/minimize,
+probing_propagate, factor, substitute, forward are at or below the C.
+Branch long tail: RS functions under 1.2% carry 20.4k branch samples v
+13.8k in C — heap::bubble_up/down/update_heap (1.9k v C's inlined 458),
+float formatting of report lines (`float_to_decimal_common_shortest` 0.6%
+— C printf is cheaper; only matters with reporting on), alloc/realloc
+churn 2x C's.
+
+**Parity**: `parity.py --conflicts 100000` 20/20 on step 5
+(scratchpad/parity100k_step5.log); the same run on the final step-10b
+binary was launched at session end (scratchpad/parity100k_step10b.log,
+PID recorded in the transcript) — CHECK IT before trusting the tree; every
+later step was verified 80-counter exact on brocard/circuit/Timetable.
+
+**Next**: (1) read parity100k_step10b.log; (2) the residual is now
+per-engine: kitten (its own Vec<Vec<Katch>> watch lists + checked klause
+indexing), vivify_round, watch_large_clauses' remaining +20%, the heap
+ops (C inlines them into next_decision_variable — `#[inline(always)]` on
+bubble_up/bubble_down/update_heap is the obvious try), and propagate's
++9% on cache-resident cells (annotate on the circuit profile, not brocard);
+(3) wider paired timing on 10-15 medium cells at --conflicts=100000 before
+calling the port "within 2-3%"; (4) then the 400-instance acceptance run
+per plan/solver13-port-plan.md phase 8 (`tools/run_kissat_full.sh`
+methodology, 3600 s / 16 GB / 32 pinned cores, paired).
+
 ## SESSION 2026-09-03 — solver13 sweep-substitute divergence KILLED (kissat's shadowed q-- quirk); 20/20 discriminating parity at FULL DEFAULT config, 10k AND 100k conflicts; brocard full-run 80-counter exact; honest perf baseline ~8.5%
 
 Commits e9e2ed8 (sweep fix), 52e1318 (getrusage clock), + this session's tail.

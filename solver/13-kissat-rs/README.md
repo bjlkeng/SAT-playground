@@ -127,6 +127,12 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
   10. kitten's per-var/per-lit arrays (`vars`, `links`, `marks`, `values`,
      `failed`, `phases`, `import`, `watches`) on `UVec`: Timetable 1.187x →
      1.138x, circuit 1.164x → 1.152x, brocard 1.009x → 1.007x.
+  11. `Heap` arrays (`stack`, `score`, `pos`) on `UVec` and the heap
+     operations `#[inline(always)]` (C: `inlineheap.h` static inline, folded
+     into `kissat_next_decision_variable`; ours were three separate symbols
+     carrying 1.9k branch samples v the C's 458 on circuit). Paired 3-cell
+     run: Timetable 1.230x → 1.118x (**−9%**), circuit 1.172x → 1.160x,
+     brocard 1.014x → 1.001x.
   `parity.py --conflicts 100000` (20 discriminating cells, full default
   config) on the step-5 binary: 20/20 exact; every later step verified
   80-counter exact on brocard + circuit + Timetable.
