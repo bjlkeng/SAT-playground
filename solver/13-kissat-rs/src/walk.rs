@@ -207,7 +207,7 @@ fn import_decision_phases(solver: &mut Solver, walker: &mut Walker) {
     walker.best_values = vec![0i8; solver.vars as usize]; // kissat_calloc (VARS)
     let mut imported: u32 = 0;
     for idx in 0..solver.vars {
-        if !solver.flags[idx as usize].active {
+        if !solver.flags[idx as usize].active() {
             continue;
         }
         let value = crate::decide::decide_phase(solver, idx) as i8;

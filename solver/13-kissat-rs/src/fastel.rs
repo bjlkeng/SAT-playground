@@ -32,7 +32,7 @@ fn fast_forward_subsumed(solver: &mut Solver, c_ref: Reference) -> bool {
     let c_size = solver.arena.clause(c_ref).size();
     for &other in solver.arena.clause(c_ref).lits() {
         let other_idx = crate::literal::idx(other);
-        if !solver.flags[other_idx as usize].active {
+        if !solver.flags[other_idx as usize].active() {
             continue;
         }
         let other_occurrence = solver.watches[other as usize].size();
@@ -51,7 +51,7 @@ fn fast_forward_subsumed(solver: &mut Solver, c_ref: Reference) -> bool {
             continue;
         }
         let other_idx = crate::literal::idx(other);
-        if !solver.flags[other_idx as usize].active {
+        if !solver.flags[other_idx as usize].active() {
             continue;
         }
         let v = solver.watches[other as usize];
@@ -128,7 +128,7 @@ fn flush_occurrences(solver: &mut Solver, lit: u32) -> usize {
                 continue; // satisfied: keep the watch, do not count it
             }
             let other_idx = crate::literal::idx(other);
-            if solver.flags[other_idx as usize].eliminated {
+            if solver.flags[other_idx as usize].eliminated() {
                 q -= 1;
                 continue;
             }
@@ -177,8 +177,8 @@ fn flush_occurrences(solver: &mut Solver, lit: u32) -> usize {
 // static void do_fast_resolve_binary_binary (kissat *, unsigned pivot,
 //                                            unsigned clit, unsigned dlit)
 fn do_fast_resolve_binary_binary(solver: &mut Solver, _pivot: u32, clit: u32, dlit: u32) {
-    debug_assert!(!solver.flags[crate::literal::idx(clit) as usize].eliminated);
-    debug_assert!(!solver.flags[crate::literal::idx(dlit) as usize].eliminated);
+    debug_assert!(!solver.flags[crate::literal::idx(clit) as usize].eliminated());
+    debug_assert!(!solver.flags[crate::literal::idx(dlit) as usize].eliminated());
     if clit == crate::literal::not(dlit) {
         return; // resolvent tautological
     }
@@ -226,7 +226,7 @@ fn do_fast_resolve_binary_binary(solver: &mut Solver, _pivot: u32, clit: u32, dl
 // static void do_fast_resolve_binary_large (kissat *, unsigned pivot,
 //                                           unsigned lit, clause *c)
 fn do_fast_resolve_binary_large(solver: &mut Solver, pivot: u32, lit: u32, c_ref: Reference) {
-    debug_assert!(!solver.flags[crate::literal::idx(lit) as usize].eliminated);
+    debug_assert!(!solver.flags[crate::literal::idx(lit) as usize].eliminated());
     if solver.arena.clause(c_ref).garbage() {
         return;
     }
@@ -489,8 +489,8 @@ fn do_fast_eliminate(solver: &mut Solver, pivot: u32) {
 
 // static bool can_fast_resolve_binary_binary (kissat *, unsigned, unsigned)
 fn can_fast_resolve_binary_binary(solver: &mut Solver, clit: u32, dlit: u32) -> bool {
-    debug_assert!(!solver.flags[crate::literal::idx(clit) as usize].eliminated);
-    debug_assert!(!solver.flags[crate::literal::idx(dlit) as usize].eliminated);
+    debug_assert!(!solver.flags[crate::literal::idx(clit) as usize].eliminated());
+    debug_assert!(!solver.flags[crate::literal::idx(dlit) as usize].eliminated());
     if clit == crate::literal::not(dlit) {
         return false;
     }
@@ -539,7 +539,7 @@ fn can_fast_resolve_binary_large(
     lit: u32,
     c_ref: Reference,
 ) -> bool {
-    debug_assert!(!solver.flags[crate::literal::idx(lit) as usize].eliminated);
+    debug_assert!(!solver.flags[crate::literal::idx(lit) as usize].eliminated());
     if solver.arena.clause(c_ref).garbage() {
         return false;
     }
@@ -809,7 +809,7 @@ fn resolvents_limited(solver: &mut Solver, pivot: u32, limit: usize) -> bool {
 // static bool try_to_fast_eliminate (kissat *, unsigned pivot)
 fn try_to_fast_eliminate(solver: &mut Solver, pivot: u32) -> bool {
     debug_assert!(!solver.inconsistent);
-    if !solver.flags[pivot as usize].active {
+    if !solver.flags[pivot as usize].active() {
         return false;
     }
     let lit = crate::literal::lit(pivot);
@@ -857,7 +857,7 @@ fn flush_eliminated_binary_clauses_of_literal(solver: &mut Solver, lit: u32) {
         }
         let other = watch_lit(watch);
         let other_idx = crate::literal::idx(other);
-        if solver.flags[other_idx as usize].eliminated {
+        if solver.flags[other_idx as usize].eliminated() {
             q -= 1;
         }
     }
@@ -914,10 +914,10 @@ pub fn fast_variable_elimination(solver: &mut Solver) {
         debug_assert!(candidates.is_empty());
         for pivot in 0..solver.vars {
             let pivot_flags = solver.flags[pivot as usize];
-            if !pivot_flags.active {
+            if !pivot_flags.active() {
                 continue;
             }
-            if !pivot_flags.eliminate {
+            if !pivot_flags.eliminate() {
                 continue;
             }
             let lit = crate::literal::lit(pivot);
@@ -959,10 +959,10 @@ pub fn fast_variable_elimination(solver: &mut Solver) {
         for i in 0..candidates.len() {
             let pivot = candidates[i].pivot;
             let pivot_flags = solver.flags[pivot as usize];
-            if !pivot_flags.active {
+            if !pivot_flags.active() {
                 continue;
             }
-            if !pivot_flags.eliminate {
+            if !pivot_flags.eliminate() {
                 continue;
             }
             if terminated!(solver, fastel_terminated_1) {
@@ -976,7 +976,7 @@ pub fn fast_variable_elimination(solver: &mut Solver) {
                 done = true;
                 break;
             }
-            solver.flags[pivot as usize].eliminate = false;
+            solver.flags[pivot as usize].set_eliminate(false);
             crate::eliminate::flush_units_while_connected(solver);
             if solver.inconsistent {
                 done = true;
@@ -1005,7 +1005,7 @@ pub fn fast_variable_elimination(solver: &mut Solver) {
     }
     drop(candidates); // RELEASE_STACK
     for idx in 0..solver.vars {
-        solver.flags[idx as usize].eliminate = true;
+        solver.flags[idx as usize].set_eliminate(true);
     }
     flush_eliminated_binary_clauses(solver);
     crate::dense::resume_sparse_mode(solver, true, None);

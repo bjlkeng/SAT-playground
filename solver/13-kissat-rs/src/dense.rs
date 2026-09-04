@@ -105,8 +105,8 @@ fn resume_watching_irredundant_binaries(solver: &mut Solver, binaries: &[LitPair
         let first = litpair.lits[0];
         let second = litpair.lits[1];
 
-        debug_assert!(!solver.flags[(first >> 1) as usize].eliminated);
-        debug_assert!(!solver.flags[(second >> 1) as usize].eliminated);
+        debug_assert!(!solver.flags[(first >> 1) as usize].eliminated());
+        debug_assert!(!solver.flags[(second >> 1) as usize].eliminated());
 
         // watch first_watch = kissat_binary_watch (second);
         // PUSH_WATCHES (*first_watches, first_watch);
@@ -132,7 +132,7 @@ fn resume_watching_large_clauses_after_elimination(solver: &mut Solver) {
                 break;
             }
             let idx = lit >> 1;
-            if solver.flags[idx as usize].eliminated {
+            if solver.flags[idx as usize].eliminated() {
                 collect = true;
                 break;
             }

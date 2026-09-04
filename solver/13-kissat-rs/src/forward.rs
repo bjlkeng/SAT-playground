@@ -38,10 +38,10 @@ fn remove_duplicated_binaries_with_literal(solver: &mut Solver, lit: u32) -> u64
         debug_assert!(watch_is_binary(watch));
         let other = watch_lit(watch);
         let f = solver.flags[crate::literal::idx(other) as usize];
-        if !f.active {
+        if !f.active() {
             continue;
         }
-        if !f.subsume {
+        if !f.subsume() {
             continue;
         }
         let marked = solver.marks[other as usize];
@@ -84,10 +84,10 @@ fn remove_all_duplicated_binary_clauses(solver: &mut Solver) {
 
     for idx in 0..solver.vars {
         let flags = solver.flags[idx as usize];
-        if !flags.active {
+        if !flags.active() {
             continue;
         }
-        if !flags.subsume {
+        if !flags.subsume() {
             continue;
         }
         let lit = crate::literal::lit(idx);
@@ -157,7 +157,7 @@ fn find_forward_subsumption_candidates(solver: &mut Solver, candidates: &mut Vec
         for &lit in solver.arena.clause(ref_).lits() {
             let idx = crate::literal::idx(lit);
             let f = solver.flags[idx as usize];
-            if f.subsume {
+            if f.subsume() {
                 subsume += 1;
             }
             if solver.values[lit as usize] > 0 {
@@ -327,7 +327,7 @@ fn forward_marked_clause(solver: &mut Solver, ref_: Reference, remove: &mut u32)
     for i in 0..size {
         let lit = solver.arena.clause(ref_).lit(i);
         let idx = crate::literal::idx(lit);
-        if !solver.flags[idx as usize].active {
+        if !solver.flags[idx as usize].active() {
             continue;
         }
 
@@ -515,10 +515,10 @@ fn connect_subsuming(solver: &mut Solver, occlim: u32, ref_: Reference) {
     for &lit in solver.arena.clause(ref_).lits() {
         let idx = crate::literal::idx(lit);
         let flags = solver.flags[idx as usize];
-        if !flags.active {
+        if !flags.active() {
             continue;
         }
-        if !flags.subsume {
+        if !flags.subsume() {
             subsume = false;
             break;
         }
@@ -650,7 +650,7 @@ fn forward_subsume_all_clauses(solver: &mut Solver) -> bool {
     }
 
     for idx in 0..solver.vars {
-        solver.flags[idx as usize].subsume = false;
+        solver.flags[idx as usize].set_subsume(false);
     }
 
     let mut reactivated: u32 = 0;
@@ -668,10 +668,10 @@ fn forward_subsume_all_clauses(solver: &mut Solver) -> bool {
         for &lit in solver.arena.clause(ref_).lits() {
             let idx = crate::literal::idx(lit);
             let f = &mut solver.flags[idx as usize];
-            if f.subsume {
+            if f.subsume() {
                 continue;
             }
-            f.subsume = true;
+            f.set_subsume(true);
             debug_assert!(reactivated < u32::MAX);
             reactivated += 1;
         }
@@ -685,10 +685,10 @@ fn forward_subsume_all_clauses(solver: &mut Solver) -> bool {
             let lit = lits[i];
             let idx = crate::literal::idx(lit);
             let f = &mut solver.flags[idx as usize];
-            if f.subsume {
+            if f.subsume() {
                 continue;
             }
-            f.subsume = true;
+            f.set_subsume(true);
             debug_assert!(reactivated < u32::MAX);
             reactivated += 1;
         }

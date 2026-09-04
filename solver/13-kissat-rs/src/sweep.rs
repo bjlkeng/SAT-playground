@@ -187,7 +187,7 @@ fn init_sweeper(solver: &mut Solver) -> Sweeper {
 fn release_sweeper(solver: &mut Solver, sweeper: &mut Sweeper) -> u32 {
     let mut merged = 0u32;
     for idx in 0..solver.vars {
-        if !solver.flags[idx as usize].active {
+        if !solver.flags[idx as usize].active() {
             continue;
         }
         let lit = LIT(idx);
@@ -508,7 +508,7 @@ fn init_backbone_and_partition(solver: &mut Solver, sweeper: &mut Sweeper) {
     let kitten_ref: &Kitten = solver.kitten.as_ref().unwrap();
     for i in 0..sweeper.vars.len() {
         let idx = sweeper.vars[i];
-        if !solver.flags[idx as usize].active {
+        if !solver.flags[idx as usize].active() {
             continue;
         }
         let lit = LIT(idx);
@@ -723,7 +723,7 @@ fn scheduled_variable(sweeper: &Sweeper, idx: u32) -> bool {
 }
 
 fn schedule_inner(solver: &Solver, sweeper: &mut Sweeper, idx: u32) {
-    if !solver.flags[idx as usize].active {
+    if !solver.flags[idx as usize].active() {
         return;
     }
     let next = sweeper.next[idx as usize];
@@ -1284,7 +1284,7 @@ fn sweep_equivalence_candidates(
 
 fn sweep_variable(solver: &mut Solver, sweeper: &mut Sweeper, idx: u32) -> &'static str {
     debug_assert!(!solver.inconsistent);
-    if !solver.flags[idx as usize].active {
+    if !solver.flags[idx as usize].active() {
         return "inactive variable";
     }
     let start = LIT(idx);
@@ -1403,7 +1403,7 @@ fn sweep_variable(solver: &mut Solver, sweeper: &mut Sweeper, idx: u32) -> &'sta
                 break;
             }
             let lit = sweeper.backbone.pop().unwrap();
-            if !solver.flags[IDX(lit) as usize].active {
+            if !solver.flags[IDX(lit) as usize].active() {
                 continue;
             }
             if sweep_backbone_candidate(solver, sweeper, lit) {
@@ -1538,10 +1538,10 @@ fn schedule_all_other_not_scheduled_yet(solver: &mut Solver, sweeper: &mut Sweep
     let incomplete = solver.sweep_incomplete;
     for idx in 0..solver.vars {
         let f = &solver.flags[idx as usize];
-        if !f.active {
+        if !f.active() {
             continue;
         }
-        if incomplete && !f.sweep {
+        if incomplete && !f.sweep() {
             continue;
         }
         if scheduled_variable(sweeper, idx) {
@@ -1549,7 +1549,7 @@ fn schedule_all_other_not_scheduled_yet(solver: &mut Solver, sweeper: &mut Sweep
         }
         match scheduable_variable(solver, sweeper, idx) {
             None => {
-                solver.flags[idx as usize].sweep = false;
+                solver.flags[idx as usize].set_sweep(false);
                 continue;
             }
             Some(occ) => {
@@ -1575,7 +1575,7 @@ fn reschedule_previously_remaining(solver: &mut Solver, sweeper: &mut Sweeper) -
     let remaining = std::mem::take(&mut solver.sweep_schedule);
     for &idx in remaining.iter() {
         let f = &solver.flags[idx as usize];
-        if !f.active {
+        if !f.active() {
             continue;
         }
         if scheduled_variable(sweeper, idx) {
@@ -1583,7 +1583,7 @@ fn reschedule_previously_remaining(solver: &mut Solver, sweeper: &mut Sweeper) -
         }
         match scheduable_variable(solver, sweeper, idx) {
             None => {
-                solver.flags[idx as usize].sweep = false;
+                solver.flags[idx as usize].set_sweep(false);
                 continue;
             }
             Some(_) => {
@@ -1600,10 +1600,10 @@ fn incomplete_variables(solver: &Solver) -> u32 {
     let mut res = 0u32;
     for idx in 0..solver.vars {
         let f = &solver.flags[idx as usize];
-        if !f.active {
+        if !f.active() {
             continue;
         }
-        if f.sweep {
+        if f.sweep() {
             res += 1;
         }
     }
@@ -1616,8 +1616,8 @@ fn mark_incomplete(solver: &mut Solver, sweeper: &mut Sweeper) {
     let mut idx = sweeper.first;
     while idx != INVALID_IDX {
         let next = sweeper.next[idx as usize];
-        if !solver.flags[idx as usize].sweep {
-            solver.flags[idx as usize].sweep = true;
+        if !solver.flags[idx as usize].sweep() {
+            solver.flags[idx as usize].set_sweep(true);
             marked += 1;
         }
         idx = next;
@@ -1666,7 +1666,7 @@ fn unschedule_sweeping(solver: &mut Solver, sweeper: &mut Sweeper, swept: u32, s
     let mut idx = sweeper.first;
     while idx != INVALID_IDX {
         let next = sweeper.next[idx as usize];
-        if solver.flags[idx as usize].active {
+        if solver.flags[idx as usize].active() {
             solver.sweep_schedule.push(idx);
         }
         idx = next;
@@ -1747,7 +1747,7 @@ pub fn sweep(solver: &mut Solver) -> bool {
         if idx == INVALID_IDX {
             break;
         }
-        solver.flags[idx as usize].sweep = false;
+        solver.flags[idx as usize].set_sweep(false);
         let res = sweep_variable(solver, &mut sweeper, idx);
         crate::print::extremely_verbose(
             solver,

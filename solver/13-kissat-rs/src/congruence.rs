@@ -3188,7 +3188,7 @@ fn extract_ite_gates(solver: &mut Solver, closure: &mut Closure) {
     let gates_before = solver.statistics.congruent_gates_ites;
     // MERGE_CONDITIONAL_EQUIVALENCES:
     for i in 0..solver.vars {
-        if solver.flags[i as usize].active {
+        if solver.flags[i as usize].active() {
             extract_ite_gates_of_variable(solver, closure, i);
             if solver.inconsistent {
                 break;
@@ -3271,7 +3271,7 @@ fn find_units(solver: &mut Solver, closure: &mut Closure) {
     let mut units = 0usize;
     for i in 0..solver.vars {
         'restart: loop {
-            if !solver.flags[i as usize].active {
+            if !solver.flags[i as usize].active() {
                 break;
             }
             let base = make_lit(i);
@@ -3317,7 +3317,7 @@ fn find_equivalences(solver: &mut Solver, closure: &mut Closure) {
     debug_assert!(solver.analyzed.is_empty());
     for i in 0..solver.vars {
         'restart: loop {
-            if !solver.flags[i as usize].active {
+            if !solver.flags[i as usize].active() {
                 break;
             }
             let l = make_lit(i);
@@ -3585,7 +3585,7 @@ fn forward_subsume_matching_clauses(solver: &mut Solver, closure: &mut Closure) 
     let mut matchable = vec![false; vars];
     let mut count_matchable = 0usize;
     for i in 0..solver.vars {
-        if !solver.flags[i as usize].active {
+        if !solver.flags[i as usize].active() {
             continue;
         }
         let l = make_lit(i);

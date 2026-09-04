@@ -49,11 +49,11 @@ pub fn push_poisoned(solver: &mut Solver, idx: u32) {
 pub fn mark_removed_literal(solver: &mut Solver, ilit: u32) {
     let idx = literal::idx(ilit) as usize;
     let f = &mut solver.flags[idx];
-    if f.fixed {
+    if f.fixed() {
         return;
     }
-    if !f.eliminate {
-        f.eliminate = true;
+    if !f.eliminate() {
+        f.set_eliminate(true);
         solver.statistics.variables_eliminate += 1;
     }
 }
@@ -63,13 +63,13 @@ pub fn mark_added_literal(solver: &mut Solver, ilit: u32) {
     let idx = literal::idx(ilit) as usize;
     let negated = literal::negated(ilit);
     let f = &mut solver.flags[idx];
-    if !f.subsume {
-        f.subsume = true;
+    if !f.subsume() {
+        f.set_subsume(true);
         solver.statistics.variables_subsume += 1;
     }
     let bit: u8 = 1u8 << negated;
-    if f.factor & bit == 0 {
-        f.factor |= bit;
+    if f.factor() & bit == 0 {
+        f.factor_or(bit);
         solver.statistics.literals_factor += 1;
     }
 }

@@ -37,16 +37,16 @@ fn schedule_backbone_candidates(solver: &mut Solver, candidates: &mut Vec<u32>) 
     let mut not_rescheduled: u32 = 0;
     for idx in 0..solver.vars {
         let f = solver.flags[idx as usize];
-        if !f.active {
+        if !f.active() {
             continue;
         }
         let lit = lit_of_idx(idx);
-        if f.backbone0 {
+        if f.backbone0() {
             candidates.push(lit);
         } else {
             not_rescheduled += 1;
         }
-        if f.backbone1 {
+        if f.backbone1() {
             let not_lit = not(lit);
             candidates.push(not_lit);
         } else {
@@ -67,14 +67,14 @@ fn schedule_backbone_candidates(solver: &mut Solver, candidates: &mut Vec<u32>) 
     if not_rescheduled != 0 {
         for idx in 0..solver.vars {
             let f = solver.flags[idx as usize];
-            if !f.active {
+            if !f.active() {
                 continue;
             }
             let lit = lit_of_idx(idx);
-            if !f.backbone0 {
+            if !f.backbone0() {
                 candidates.push(lit);
             }
-            if !f.backbone1 {
+            if !f.backbone1() {
                 let not_lit = not(lit);
                 candidates.push(not_lit);
             }
@@ -99,14 +99,14 @@ fn keep_backbone_candidates(solver: &mut Solver, candidates: &[u32]) {
     for &lit in candidates.iter() {
         let i = idx(lit);
         let f = solver.flags[i as usize];
-        if !f.active {
+        if !f.active() {
             continue;
         }
         remain += 1;
         if negated(lit) != 0 {
-            prioritized += f.backbone1 as usize;
+            prioritized += f.backbone1() as usize;
         } else {
-            prioritized += f.backbone0 as usize;
+            prioritized += f.backbone0() as usize;
         }
     }
     debug_assert!(prioritized <= remain);
@@ -128,15 +128,15 @@ fn keep_backbone_candidates(solver: &mut Solver, candidates: &[u32]) {
     } else if prioritized == 0 {
         for &lit in candidates.iter() {
             let i = idx(lit);
-            if !solver.flags[i as usize].active {
+            if !solver.flags[i as usize].active() {
                 continue;
             }
             if negated(lit) != 0 {
-                debug_assert!(!solver.flags[i as usize].backbone1);
-                solver.flags[i as usize].backbone1 = true;
+                debug_assert!(!solver.flags[i as usize].backbone1());
+                solver.flags[i as usize].set_backbone1(true);
             } else {
-                debug_assert!(!solver.flags[i as usize].backbone0);
-                solver.flags[i as usize].backbone0 = true;
+                debug_assert!(!solver.flags[i as usize].backbone0());
+                solver.flags[i as usize].set_backbone0(true);
             }
         }
         crate::print::very_verbose(
@@ -370,9 +370,9 @@ fn compute_backbone(solver: &mut Solver) -> u32 {
                     q -= 1;
                     let i = idx(probe);
                     if negated(probe) != 0 {
-                        solver.flags[i as usize].backbone1 = false;
+                        solver.flags[i as usize].set_backbone1(false);
                     } else {
-                        solver.flags[i as usize].backbone0 = false;
+                        solver.flags[i as usize].set_backbone0(false);
                     }
                     continue;
                 }
@@ -465,9 +465,9 @@ fn compute_backbone(solver: &mut Solver) -> u32 {
                     q -= 1;
                     let i = idx(probe);
                     if negated(probe) != 0 {
-                        solver.flags[i as usize].backbone1 = false;
+                        solver.flags[i as usize].set_backbone1(false);
                     } else {
-                        solver.flags[i as usize].backbone0 = false;
+                        solver.flags[i as usize].set_backbone0(false);
                     }
                     continue;
                 }

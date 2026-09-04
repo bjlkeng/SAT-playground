@@ -100,7 +100,7 @@ pub fn bump_variable(solver: &mut Solver, idx: u32) {
 fn bump_analyzed_variable_scores(solver: &mut Solver) {
     for i in 0..solver.analyzed.len() {
         let idx = solver.analyzed[i];
-        if solver.flags[idx as usize].active {
+        if solver.flags[idx as usize].active() {
             bump_analyzed_variable_score(solver, idx);
         }
     }
@@ -123,7 +123,7 @@ fn move_analyzed_variables_to_front_of_queue(solver: &mut Solver) {
 
     for i in 0..solver.ranks.len() {
         let idx = solver.ranks[i].data;
-        if solver.flags[idx as usize].active {
+        if solver.flags[idx as usize].active() {
             crate::inlinequeue::move_to_front(solver, idx);
         }
     }
@@ -149,7 +149,7 @@ pub fn update_scores(solver: &mut Solver) {
     debug_assert!(solver.stable);
     for idx in 0..solver.vars() {
         // ACTIVE (idx) && !kissat_heap_contains (scores, idx)
-        if solver.flags[idx as usize].active && !heap::heap_contains(&solver.scores, idx) {
+        if solver.flags[idx as usize].active() && !heap::heap_contains(&solver.scores, idx) {
             heap::push_heap(&mut solver.scores, idx);
         }
     }

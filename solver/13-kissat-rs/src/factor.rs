@@ -163,8 +163,8 @@ fn update_candidate(solver: &mut Solver, factoring: &mut Factoring, lit: u32) {
 // static void schedule_factorization
 fn schedule_factorization(solver: &mut Solver, factoring: &mut Factoring) {
     for i in 0..solver.vars {
-        if solver.flags[i as usize].active {
-            let f_factor = solver.flags[i as usize].factor;
+        if solver.flags[i as usize].active() {
+            let f_factor = solver.flags[i as usize].factor();
             let l = make_lit(i);
             let not_lit = not(l);
             if f_factor & 1 != 0 {
@@ -342,7 +342,7 @@ fn next_factor(solver: &mut Solver, factoring: &mut Factoring) -> (u32, u32) {
                     continue;
                 }
                 let next_idx = idx(next);
-                if !solver.flags[next_idx as usize].active {
+                if !solver.flags[next_idx as usize].active() {
                     continue;
                 }
                 if factoring.count[next as usize] == 0 {
@@ -419,7 +419,7 @@ fn next_factor(solver: &mut Solver, factoring: &mut Factoring) -> (u32, u32) {
                         continue;
                     }
                     let next_idx = idx(next);
-                    if !solver.flags[next_idx as usize].active {
+                    if !solver.flags[next_idx as usize].active() {
                         continue;
                     }
                     debug_assert!(solver.marks[next as usize] & (FACTOR | NOUNTED) == 0);
@@ -893,7 +893,7 @@ fn run_factorization(solver: &mut Solver, limit: u64) -> bool {
     while !done && !crate::heap::empty_heap(&factoring.schedule) {
         let first = crate::heap::pop_max_heap(&mut factoring.schedule);
         let first_idx = idx(first);
-        if !solver.flags[first_idx as usize].active {
+        if !solver.flags[first_idx as usize].active() {
             continue;
         }
         if solver.statistics.factor_ticks > limit {
@@ -904,10 +904,10 @@ fn run_factorization(solver: &mut Solver, limit: u64) -> bool {
             break;
         }
         let bit = 1u8 << negated(first);
-        if solver.flags[first_idx as usize].factor & bit == 0 {
+        if solver.flags[first_idx as usize].factor() & bit == 0 {
             continue;
         }
-        solver.flags[first_idx as usize].factor &= !bit;
+        solver.flags[first_idx as usize].factor_and(!bit);
         let first_count = first_factor(solver, &mut factoring, first);
         if first_count > 1 {
             loop {
@@ -956,7 +956,7 @@ fn connect_clauses_to_factor(solver: &mut Solver) {
     let lits_count = solver.lits() as usize;
     let mut bincount = vec![0u32; lits_count];
     for l in 0..solver.lits() {
-        if !solver.flags[idx(l) as usize].active {
+        if !solver.flags[idx(l) as usize].active() {
             continue;
         }
         let v = solver.watches[l as usize];

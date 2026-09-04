@@ -51,7 +51,7 @@ fn no_all_negative_clauses(solver: &mut Solver) -> bool {
     debug_assert!(solver.watching);
     // for (all_variables (idx))
     for idx in 0..solver.vars {
-        if !solver.flags[idx as usize].active {
+        if !solver.flags[idx as usize].active() {
             continue;
         }
         let lit = crate::literal::lit(idx);
@@ -68,7 +68,7 @@ fn no_all_negative_clauses(solver: &mut Solver) -> bool {
             }
             let other = crate::watch::watch_lit(watch); // watch.binary.lit
             if crate::literal::negated(other) != 0
-                && solver.flags[crate::literal::idx(other) as usize].active
+                && solver.flags[crate::literal::idx(other) as usize].active()
             {
                 crate::print::verbose(solver, "found all negative binary clause");
                 return false;
@@ -108,7 +108,7 @@ fn no_all_positive_clauses(solver: &mut Solver) -> bool {
     }
     debug_assert!(solver.watching);
     for idx in 0..solver.vars {
-        if !solver.flags[idx as usize].active {
+        if !solver.flags[idx as usize].active() {
             continue;
         }
         let lit = crate::literal::lit(idx);
@@ -123,7 +123,7 @@ fn no_all_positive_clauses(solver: &mut Solver) -> bool {
             }
             let other = crate::watch::watch_lit(watch); // watch.binary.lit
             if crate::literal::negated(other) == 0
-                && solver.flags[crate::literal::idx(other) as usize].active
+                && solver.flags[crate::literal::idx(other) as usize].active()
             {
                 crate::print::verbose(solver, "found all positive binary clause");
                 return false;
@@ -148,7 +148,7 @@ fn forward_false_satisfiable(solver: &mut Solver) -> i32 {
         }
         let lit = import.lit;
         let idx = crate::literal::idx(lit);
-        if !solver.flags[idx as usize].active {
+        if !solver.flags[idx as usize].active() {
             continue;
         }
         if solver.values[lit as usize] != 0 {
@@ -211,7 +211,7 @@ fn forward_true_satisfiable(solver: &mut Solver) -> i32 {
         }
         let lit = import.lit;
         let idx = crate::literal::idx(lit);
-        if !solver.flags[idx as usize].active {
+        if !solver.flags[idx as usize].active() {
             continue;
         }
         if solver.values[lit as usize] != 0 {
@@ -274,7 +274,7 @@ fn backward_false_satisfiable(solver: &mut Solver) -> i32 {
         }
         let lit = import.lit;
         let idx = crate::literal::idx(lit);
-        if !solver.flags[idx as usize].active {
+        if !solver.flags[idx as usize].active() {
             continue;
         }
         if solver.values[lit as usize] != 0 {
@@ -336,7 +336,7 @@ fn backward_true_satisfiable(solver: &mut Solver) -> i32 {
         }
         let lit = import.lit;
         let idx = crate::literal::idx(lit);
-        if !solver.flags[idx as usize].active {
+        if !solver.flags[idx as usize].active() {
             continue;
         }
         if solver.values[lit as usize] != 0 {
@@ -411,7 +411,7 @@ pub fn lucky(solver: &mut Solver) -> i32 {
 
     if no_all_negative_clauses(solver) {
         for idx in 0..solver.vars {
-            if !solver.flags[idx as usize].active {
+            if !solver.flags[idx as usize].active() {
                 continue;
             }
             let lit = crate::literal::lit(idx);
@@ -431,7 +431,7 @@ pub fn lucky(solver: &mut Solver) -> i32 {
 
     if res == 0 && no_all_positive_clauses(solver) {
         for idx in 0..solver.vars {
-            if !solver.flags[idx as usize].active {
+            if !solver.flags[idx as usize].active() {
                 continue;
             }
             let lit = crate::literal::lit(idx);

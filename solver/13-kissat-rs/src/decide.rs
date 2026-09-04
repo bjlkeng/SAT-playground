@@ -143,7 +143,7 @@ fn next_random_decision(solver: &mut Solver) -> u32 {
 
     loop {
         let idx = crate::random::next_random32(&mut solver.random) % solver.vars;
-        if !solver.flags[idx as usize].active {
+        if !solver.flags[idx as usize].active() {
             continue;
         }
         let l = lit(idx);

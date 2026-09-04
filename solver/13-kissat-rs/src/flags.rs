@@ -17,30 +17,70 @@
 
 use crate::internal::Solver;
 
-#[derive(Clone, Copy, Default)]
-pub struct Flags {
-    pub active: bool,
-    pub backbone0: bool,
-    pub backbone1: bool,
-    pub eliminate: bool,
-    pub eliminated: bool,
-    /// 2-bit field in C (`unsigned factor : 2`).
-    pub factor: u8,
-    pub fixed: bool,
-    pub subsume: bool,
-    pub sweep: bool,
-    pub transitive: bool,
+/// C `struct flags` (12 one/two-bit bitfields, sizeof == 2).  Packed into a
+/// u16 with accessors: the earlier one-bool-per-field layout was 10 bytes,
+/// so every var-indexed scan (factor's schedule_factorization, backbone,
+/// sweep, eliminate) streamed 5x the C's cache lines (crusti: 44% of
+/// factor's cycles in that scan). Bit layout mirrors the C declaration
+/// order; `factor` is the 2-bit mask (bit 0 = positive literal marked,
+/// bit 1 = negated literal marked; see kissat_mark_added_literal).
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct Flags(u16);
+
+macro_rules! flag_bit {
+    ($get:ident, $set:ident, $bit:expr) => {
+        #[inline(always)]
+        pub fn $get(&self) -> bool {
+            self.0 & (1 << $bit) != 0
+        }
+        #[inline(always)]
+        pub fn $set(&mut self, v: bool) {
+            self.0 = (self.0 & !(1 << $bit)) | ((v as u16) << $bit);
+        }
+    };
 }
+
+impl Flags {
+    flag_bit!(active, set_active, 0);
+    flag_bit!(backbone0, set_backbone0, 1);
+    flag_bit!(backbone1, set_backbone1, 2);
+    flag_bit!(eliminate, set_eliminate, 3);
+    flag_bit!(eliminated, set_eliminated, 4);
+    // bits 5-6: `unsigned factor : 2`
+    flag_bit!(fixed, set_fixed, 7);
+    flag_bit!(subsume, set_subsume, 8);
+    flag_bit!(sweep, set_sweep, 9);
+    flag_bit!(transitive, set_transitive, 10);
+    #[inline(always)]
+    pub fn factor(&self) -> u8 {
+        ((self.0 >> 5) & 3) as u8
+    }
+    #[inline(always)]
+    pub fn set_factor(&mut self, v: u8) {
+        debug_assert!(v < 4);
+        self.0 = (self.0 & !(3 << 5)) | (((v & 3) as u16) << 5);
+    }
+    #[inline(always)]
+    pub fn factor_or(&mut self, bits: u8) {
+        self.set_factor(self.factor() | bits);
+    }
+    #[inline(always)]
+    pub fn factor_and(&mut self, bits: u8) {
+        self.set_factor(self.factor() & bits);
+    }
+}
+const _: () = assert!(std::mem::size_of::<Flags>() == 2);
 
 // C static inline `activate_literal` (renamed to avoid colliding with the
 // public kissat_activate_literal wrapper below after prefix-dropping).
 fn activate_literal_inner(solver: &mut Solver, lit: u32) {
     let idx = crate::literal::idx(lit);
-    if solver.flags[idx as usize].active {
+    if solver.flags[idx as usize].active() {
         return;
     }
     let lit = crate::literal::strip(lit);
-    solver.flags[idx as usize].active = true;
+    solver.flags[idx as usize].set_active(true);
     solver.active += 1;
     solver.statistics.variables_activated += 1;
     crate::inlinequeue::enqueue(solver, idx);
@@ -60,11 +100,11 @@ fn activate_literal_inner(solver: &mut Solver, lit: u32) {
 // C static inline `deactivate_variable` (flags pointer argument dropped,
 // see PORT NOTE above).
 fn deactivate_variable(solver: &mut Solver, idx: u32) {
-    debug_assert!(solver.flags[idx as usize].active);
+    debug_assert!(solver.flags[idx as usize].active());
     debug_assert!(
-        solver.flags[idx as usize].eliminated || solver.flags[idx as usize].fixed
+        solver.flags[idx as usize].eliminated() || solver.flags[idx as usize].fixed()
     );
-    solver.flags[idx as usize].active = false;
+    solver.flags[idx as usize].set_active(false);
     debug_assert!(solver.active > 0);
     solver.active -= 1;
     crate::inlinequeue::dequeue(solver, idx);
@@ -86,10 +126,10 @@ pub fn activate_literals(solver: &mut Solver, size: u32, lits: &[u32]) {
 pub fn mark_fixed_literal(solver: &mut Solver, lit: u32) {
     debug_assert!(solver.values[lit as usize] > 0);
     let idx = crate::literal::idx(lit);
-    debug_assert!(solver.flags[idx as usize].active);
-    debug_assert!(!solver.flags[idx as usize].eliminated);
-    debug_assert!(!solver.flags[idx as usize].fixed);
-    solver.flags[idx as usize].fixed = true;
+    debug_assert!(solver.flags[idx as usize].active());
+    debug_assert!(!solver.flags[idx as usize].eliminated());
+    debug_assert!(!solver.flags[idx as usize].fixed());
+    solver.flags[idx as usize].set_fixed(true);
     deactivate_variable(solver, idx);
     solver.statistics.units += 1;
     let elit = crate::inline::export_literal(solver, lit);
@@ -100,10 +140,10 @@ pub fn mark_fixed_literal(solver: &mut Solver, lit: u32) {
 pub fn mark_eliminated_variable(solver: &mut Solver, idx: u32) {
     let lit = crate::literal::lit(idx);
     debug_assert!(solver.values[lit as usize] == 0);
-    debug_assert!(solver.flags[idx as usize].active);
-    debug_assert!(!solver.flags[idx as usize].eliminated);
-    debug_assert!(!solver.flags[idx as usize].fixed);
-    solver.flags[idx as usize].eliminated = true;
+    debug_assert!(solver.flags[idx as usize].active());
+    debug_assert!(!solver.flags[idx as usize].eliminated());
+    debug_assert!(!solver.flags[idx as usize].fixed());
+    solver.flags[idx as usize].set_eliminated(true);
     deactivate_variable(solver, idx);
     let elit = crate::inline::export_literal(solver, lit);
     debug_assert!(elit != 0);

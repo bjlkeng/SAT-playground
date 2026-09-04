@@ -40,7 +40,7 @@ fn non_watching_propagate_literal(solver: &mut Solver, lit: u32) -> bool {
                 return false; // conflicting binary
             }
             let other_idx = crate::literal::idx(other);
-            if solver.flags[other_idx as usize].eliminated {
+            if solver.flags[other_idx as usize].eliminated() {
                 continue;
             }
             debug_assert!(solver.level == 0);

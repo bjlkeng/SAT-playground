@@ -272,8 +272,8 @@ fn less_stable_transitive(
 ) -> bool {
     let i = crate::literal::idx(a);
     let j = crate::literal::idx(b);
-    let p = flags[i as usize].transitive;
-    let q = flags[j as usize].transitive;
+    let p = flags[i as usize].transitive();
+    let q = flags[j as usize].transitive();
     if !p && q {
         return true;
     }
@@ -301,8 +301,8 @@ fn less_focused_transitive(
 ) -> bool {
     let i = crate::literal::idx(a);
     let j = crate::literal::idx(b);
-    let p = flags[i as usize].transitive;
-    let q = flags[j as usize].transitive;
+    let p = flags[i as usize].transitive();
+    let q = flags[j as usize].transitive();
     if !p && q {
         return true;
     }
@@ -340,7 +340,7 @@ fn sort_transitive(solver: &mut Solver, probes: &mut Vec<u32>) {
 fn schedule_transitive(solver: &mut Solver, probes: &mut Vec<u32>) {
     debug_assert!(probes.is_empty());
     for idx in 0..solver.vars {
-        if solver.flags[idx as usize].active {
+        if solver.flags[idx as usize].active() {
             probes.push(idx);
         }
     }
@@ -388,8 +388,8 @@ pub fn transitive_reduction(solver: &mut Solver) {
     let mut terminate = false;
     while !terminate && !probes.is_empty() {
         let idx = probes.pop().unwrap(); // POP_STACK (probes)
-        solver.flags[idx as usize].transitive = false;
-        if !solver.flags[idx as usize].active {
+        solver.flags[idx as usize].set_transitive(false);
+        if !solver.flags[idx as usize].active() {
             continue;
         }
         let mut sign = 0;
@@ -420,7 +420,7 @@ pub fn transitive_reduction(solver: &mut Solver) {
                 format_args!("dropping remaining {} transitive candidates", remain),
             );
             while let Some(idx) = probes.pop() {
-                solver.flags[idx as usize].transitive = false;
+                solver.flags[idx as usize].set_transitive(false);
             }
         }
     } else {

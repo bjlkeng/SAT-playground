@@ -50,12 +50,12 @@ pub fn compact_literals(solver: &mut Solver) -> (u32, u32) {
     let mut vars: u32 = 0;
     for iidx in 0..solver.vars {
         let flags = solver.flags[iidx as usize];
-        if flags.eliminated {
+        if flags.eliminated() {
             continue;
         }
         let ilit = lit_of(iidx);
         let mut mlit: u32;
-        if flags.fixed {
+        if flags.fixed() {
             let value = crate::internal::fixed(solver, ilit);
             debug_assert!(value != 0);
             if mfixed == INVALID_LIT {
@@ -70,7 +70,7 @@ pub fn compact_literals(solver: &mut Solver) -> (u32, u32) {
             } else {
                 mlit = mfixed;
             }
-        } else if flags.active {
+        } else if flags.active() {
             mlit = lit_of(vars);
             vars += 1;
         } else {
@@ -338,7 +338,7 @@ fn compact_best_and_target_values(solver: &mut Solver, vars: u32) {
     let mut target_assigned: u32 = 0;
 
     for idx in 0..vars as usize {
-        if !solver.flags[idx].active {
+        if !solver.flags[idx].active() {
             continue;
         }
         if solver.phases.target[idx] != 0 {
@@ -370,9 +370,9 @@ pub fn finalize_compacting(solver: &mut Solver, vars: u32, mfixed: u32) {
     let mut first = true;
     for iidx in 0..solver.vars {
         let flags = solver.flags[iidx as usize];
-        if flags.fixed && first {
+        if flags.fixed() && first {
             first = false;
-        } else if !flags.active {
+        } else if !flags.active() {
             solver.export_[iidx as usize] = 0;
         }
     }

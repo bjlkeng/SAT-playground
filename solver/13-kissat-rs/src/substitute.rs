@@ -67,7 +67,7 @@ fn determine_representatives(solver: &mut Solver, repr: &mut [u32]) {
             continue;
         }
         // if (!ACTIVE (IDX (root))) continue;
-        if !solver.flags[crate::literal::idx(root) as usize].active {
+        if !solver.flags[crate::literal::idx(root) as usize].active() {
             continue;
         }
         debug_assert!(scc.is_empty());
@@ -98,7 +98,7 @@ fn determine_representatives(solver: &mut Solver, repr: &mut [u32]) {
                     }
                     let other = watch_lit(watch);
                     let idx_other = crate::literal::idx(other);
-                    if !solver.flags[idx_other as usize].active {
+                    if !solver.flags[idx_other as usize].active() {
                         continue;
                     }
                     debug_assert!(mark[other as usize] != 0);
@@ -186,7 +186,7 @@ fn determine_representatives(solver: &mut Solver, repr: &mut [u32]) {
                     }
                     let other = watch_lit(watch);
                     let idx_other = crate::literal::idx(other);
-                    if !solver.flags[idx_other as usize].active {
+                    if !solver.flags[idx_other as usize].active() {
                         continue;
                     }
                     if mark[other as usize] == 0 {
@@ -227,7 +227,7 @@ fn add_representative_equivalences(solver: &mut Solver, repr: &[u32]) -> Option<
     }
     let mut eliminate = vec![false; solver.vars as usize]; // kissat_calloc
     for idx in 0..solver.vars {
-        if !solver.flags[idx as usize].active {
+        if !solver.flags[idx as usize].active() {
             continue;
         }
         let lit = crate::literal::lit(idx);
@@ -267,7 +267,7 @@ fn remove_representative_equivalences(
                 continue;
             }
 
-            debug_assert!(solver.flags[idx as usize].active);
+            debug_assert!(solver.flags[idx as usize].active());
 
             let lit = crate::literal::lit(idx);
             let other = repr[lit as usize];

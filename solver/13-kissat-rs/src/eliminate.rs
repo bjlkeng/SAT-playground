@@ -99,10 +99,10 @@ fn update_after_removing_variable(solver: &mut Solver, idx: u32) {
     }
     debug_assert!(!solver.probing);
     let f = solver.flags[idx as usize];
-    if f.fixed {
+    if f.fixed() {
         return;
     }
-    debug_assert!(!f.eliminated);
+    debug_assert!(!f.eliminated());
     update_variable_score(solver, idx);
     if !crate::heap::heap_contains(&solver.schedule, idx) {
         crate::heap::push_heap(&mut solver.schedule, idx);
@@ -147,10 +147,10 @@ fn schedule_variables(solver: &mut Solver) -> u32 {
     let mut scheduled: u64 = 0; // size_t
     for idx in 0..solver.vars {
         let flags = solver.flags[idx as usize];
-        if !flags.active {
+        if !flags.active() {
             continue;
         }
-        if !flags.eliminate {
+        if !flags.eliminate() {
             continue;
         }
         scheduled += 1;
@@ -356,7 +356,7 @@ fn weaken_clauses(solver: &mut Solver, lit: u32) {
 // static void try_to_eliminate_all_variables_again (kissat *)
 fn try_to_eliminate_all_variables_again(solver: &mut Solver) {
     for idx in 0..solver.vars {
-        solver.flags[idx as usize].eliminate = true;
+        solver.flags[idx as usize].set_eliminate(true);
     }
     solver.limits.eliminate.variables.eliminate = 0;
 }
@@ -415,10 +415,10 @@ fn set_next_elimination_bound(solver: &mut Solver, complete: bool) {
 fn can_eliminate_variable(solver: &Solver, idx: u32) -> bool {
     let flags = solver.flags[idx as usize];
 
-    if !flags.active {
+    if !flags.active() {
         return false;
     }
-    if !flags.eliminate {
+    if !flags.eliminate() {
         return false;
     }
 
@@ -430,7 +430,7 @@ fn eliminate_variable(solver: &mut Solver, idx: u32) -> bool {
     debug_assert!(!solver.inconsistent);
     debug_assert!(can_eliminate_variable(solver, idx));
 
-    solver.flags[idx as usize].eliminate = false;
+    solver.flags[idx as usize].set_eliminate(false);
 
     let mut lit: u32 = 0;
     if !crate::resolve::generate_resolvents(solver, idx, &mut lit) {
@@ -622,8 +622,8 @@ fn eliminate_variables(solver: &mut Solver) {
             let mut dropped: u32 = 0;
             for idx in 0..solver.vars {
                 let f = &mut solver.flags[idx as usize];
-                if f.eliminate {
-                    f.eliminate = false;
+                if f.eliminate() {
+                    f.set_eliminate(false);
                     dropped += 1;
                 }
             }

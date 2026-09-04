@@ -99,7 +99,7 @@ fn compute_weights(solver: &mut Solver) -> Vec<f64> {
         let lits = solver.lits();
         for lit in 0..lits {
             let idx = crate::literal::idx(lit);
-            if !solver.flags[idx as usize].active {
+            if !solver.flags[idx as usize].active() {
                 continue;
             }
             // for (all_binary_blocking_watches (watch, *watches))
@@ -117,7 +117,7 @@ fn compute_weights(solver: &mut Solver) -> Vec<f64> {
                     continue;
                 }
                 let other_idx = crate::literal::idx(other);
-                if !solver.flags[other_idx as usize].active {
+                if !solver.flags[other_idx as usize].active() {
                     continue;
                 }
                 weights[lit as usize] += weight;
@@ -126,7 +126,7 @@ fn compute_weights(solver: &mut Solver) -> Vec<f64> {
         }
     }
     for idx in 0..solver.vars {
-        if !solver.flags[idx as usize].active {
+        if !solver.flags[idx as usize].active() {
             continue;
         }
         let lit = crate::literal::lit(idx);
@@ -182,7 +182,7 @@ fn less_stable_order(a: u32, b: u32, scores: &crate::heap::Heap, weights: &[f64]
 fn sort_active_variables_by_weight(solver: &mut Solver, weights: &[f64]) -> Vec<u32> {
     let mut sorted: Vec<u32> = Vec::new(); // INIT_STACK (*sorted)
     for idx in 0..solver.vars {
-        if solver.flags[idx as usize].active {
+        if solver.flags[idx as usize].active() {
             sorted.push(idx);
         }
     }
@@ -216,7 +216,7 @@ fn reorder_focused(solver: &mut Solver) {
     let sorted = sort_active_variables_by_weight(solver, &weights);
     drop(weights); // kissat_dealloc (weights)
     for idx in sorted {
-        debug_assert!(solver.flags[idx as usize].active);
+        debug_assert!(solver.flags[idx as usize].active());
         crate::inlinequeue::move_to_front(solver, idx);
     }
     // RELEASE_STACK (sorted) — Drop.
@@ -231,7 +231,7 @@ fn reorder_stable(solver: &mut Solver) {
     let mut sorted = sort_active_variables_by_weight(solver, &weights);
     // heap *scores = SCORES;
     while let Some(idx) = sorted.pop() {
-        debug_assert!(solver.flags[idx as usize].active);
+        debug_assert!(solver.flags[idx as usize].active());
         let old_score = crate::heap::get_heap_score(&solver.scores, idx);
         let weight = weights[idx as usize];
         let new_score = old_score + weight;
