@@ -375,7 +375,20 @@ pub fn watch_large_clauses(solver: &mut Solver) {
     // The C walks `clause *c` over the arena reading header/size/lits in
     // place; here the same walk over word offsets with the successor computed
     // before the body (all_clauses).  The arena is not resized by the pushes.
+    //
+    // PERF NOTE (2026-09-04): the two blocking-watch pushes per clause are the
+    // memory-bound core of this pass (one DRAM miss per push on the watch
+    // stack slot).  Through `&mut Solver` LLVM had to reload the stack base,
+    // length, capacity and `usable` around every store, so the loop carried
+    // ~2x the C's loads and lost memory-level parallelism (Kakuro: 74 G v 54 G
+    // cycles at +7% instructions).  The C keeps them in registers (its
+    // `watches`/`arena` locals plus strict aliasing).  We mirror that with a
+    // `PushCursor`: raw stack base + length + usable-decrement mirror, hoisted
+    // across the loop, falling back to `push_vectors` (which may relocate the
+    // stack) and re-syncing afterwards.  Semantics are exactly
+    // kissat_push_vectors'; trajectory identical by construction.
     let end_words = solver.arena.words().len();
+    let mut cur = PushCursor::load(solver);
     let mut c: usize = 0;
     while c < end_words {
         debug_assert!(c + LITS_OFFSET <= end_words);
@@ -388,16 +401,91 @@ pub fn watch_large_clauses(solver: &mut Solver) {
                 let (arena, values, assigned) =
                     (&mut solver.arena, &solver.values, &solver.assigned);
                 let words = arena.words_mut();
-                let lits = &mut words[c + LITS_OFFSET..c + LITS_OFFSET + size as usize];
+                debug_assert!(c + LITS_OFFSET + size as usize <= words.len());
+                let lits = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        words.as_mut_ptr().add(c + LITS_OFFSET),
+                        size as usize,
+                    )
+                };
                 crate::sort::sort_literals_inline(values, assigned, size, lits);
                 let (l0, l1) = (lits[0], lits[1]);
-                words[c + SEARCHED_OFFSET] = 2;
+                unsafe { *words.get_unchecked_mut(c + SEARCHED_OFFSET) = 2 };
                 (l0, l1)
             };
-            push_blocking_watch(solver, l0, l1, ref_);
-            push_blocking_watch(solver, l1, l0, ref_);
+            // kissat_push_blocking_watch (solver, watches + l0, l1, ref)
+            cur.push(solver, l0, blocking_watch(l1));
+            cur.push(solver, l0, large_watch(ref_));
+            cur.push(solver, l1, blocking_watch(l0));
+            cur.push(solver, l1, large_watch(ref_));
         }
         c = next;
+    }
+    cur.store(solver);
+}
+
+/// Hoisted state for a run of `push_vectors` calls (see the PERF NOTE in
+/// `watch_large_clauses`).  `base`/`len` mirror `solver.vectors.stack`
+/// (`len` is written back with `set_len`), `dec_usable` accumulates the
+/// `kissat_dec_usable` calls; `store` (or a fallback) syncs them into the
+/// solver.  Invariant between `load` and `store`: the stack's Vec length is
+/// stale (<= `len`) but every element below `len` is initialized; no other
+/// code touches `solver.vectors` in between.
+struct PushCursor {
+    base: *mut u32,
+    len: usize,
+    cap: usize,
+    dec_usable: u64,
+}
+
+impl PushCursor {
+    #[inline(always)]
+    fn load(solver: &mut Solver) -> Self {
+        PushCursor {
+            base: solver.vectors.stack.as_mut_ptr(),
+            len: solver.vectors.stack.len(),
+            cap: solver.vectors.capacity(),
+            dec_usable: 0,
+        }
+    }
+
+    #[inline(always)]
+    fn store(&mut self, solver: &mut Solver) {
+        debug_assert!(self.len <= solver.vectors.stack.capacity());
+        unsafe { solver.vectors.stack.set_len(self.len) };
+        for _ in 0..self.dec_usable {
+            solver.vectors.dec_usable();
+        }
+        self.dec_usable = 0;
+    }
+
+    /// kissat_push_vectors (inlinevector.h) with the common cases inline.
+    #[inline(always)]
+    fn push(&mut self, solver: &mut Solver, lit: u32, e: u32) {
+        debug_assert!(e != INVALID_VECTOR_ELEMENT);
+        let v = solver.watches[lit as usize];
+        if v.begin != 0 {
+            let end = v.end;
+            if end == self.len {
+                if self.len != self.cap {
+                    // *stack->end++ = e
+                    unsafe { *self.base.add(end) = e };
+                    self.len += 1;
+                    solver.watches[lit as usize].end = end + 1;
+                    return;
+                }
+            } else if unsafe { *self.base.add(end) } == INVALID_VECTOR_ELEMENT {
+                unsafe { *self.base.add(end) = e };
+                self.dec_usable += 1;
+                solver.watches[lit as usize].end = end + 1;
+                return;
+            }
+        }
+        // Slow paths (null vector, full stack, hole exhausted): sync, run the
+        // reference implementation (may relocate the stack), reload.
+        self.store(solver);
+        crate::vector::push_vectors(solver, lit, e);
+        *self = PushCursor::load(solver);
     }
 }
 
