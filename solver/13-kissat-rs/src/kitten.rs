@@ -301,6 +301,8 @@ fn clear_kitten(kitten: &mut Kitten) {
 
 /// enlarge_internal: RESIZE1 (var-indexed) / RESIZE2 (lit-indexed) with
 /// power-of-two capacity doubling; see module PORT NOTE on zero-fill.
+#[cold]
+#[inline(never)]
 fn enlarge_internal(kitten: &mut Kitten, new_lits: usize) {
     let old_lits = kitten.lits;
     debug_assert!(old_lits < new_lits);
@@ -539,6 +541,8 @@ fn new_original_klause(kitten: &mut Kitten, solver: &mut Solver, id: u32) {
     kitten.end_original_ref = kitten.klauses.len();
 }
 
+#[cold]
+#[inline(never)]
 fn enlarge_external(kitten: &mut Kitten, eidx: usize) {
     let old_size = kitten.esize;
     let old_evars = kitten.evars;
@@ -555,6 +559,7 @@ fn enlarge_external(kitten: &mut Kitten, eidx: usize) {
     kitten.evars = new_evars;
 }
 
+#[inline(always)]
 fn import_literal(kitten: &mut Kitten, elit: u32) -> u32 {
     let eidx = (elit / 2) as usize;
     if eidx >= kitten.evars {
