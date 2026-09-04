@@ -189,7 +189,7 @@ pub fn scale_delta(solver: &mut Solver, pretty: &str, delta: u64) -> u64 {
     debug_assert!(delta <= scaled);
     crate::print::very_verbose(
         solver,
-        &format!(
+        &format_args!(
             "scaled {} delta {} = {} * {} = (4.5 (log10({}) - 5)^2 + 25) * {}",
             pretty, scaled, fff, delta, c, delta
         ),
@@ -214,7 +214,7 @@ fn init_enabled(solver: &mut Solver) {
     };
     crate::print::very_verbose(
         solver,
-        &format!("probing {}abled", if probe { "en" } else { "dis" }),
+        &format_args!("probing {}abled", if probe { "en" } else { "dis" }),
     );
     solver.enabled.probe = probe;
 
@@ -227,7 +227,7 @@ fn init_enabled(solver: &mut Solver) {
     };
     crate::print::very_verbose(
         solver,
-        &format!("eliminate {}abled", if eliminate { "en" } else { "dis" }),
+        &format_args!("eliminate {}abled", if eliminate { "en" } else { "dis" }),
     );
     solver.enabled.eliminate = eliminate;
 }
@@ -243,7 +243,7 @@ fn init_conflict_limit(solver: &mut Solver, name: &str, delta: u64, scale: bool)
     let limit = solver.statistics.conflicts + scaled;
     crate::print::very_verbose(
         solver,
-        &format!("initial {} limit of {} conflicts", name, limit),
+        &format_args!("initial {} limit of {} conflicts", name, limit),
     );
     limit
 }
@@ -328,7 +328,7 @@ fn delay_description(which: DelayId) -> &'static str {
 
 // VERY_VERBOSE_IF_NOT_BUMPREASONS: for bumpreasons the C macro degrades to
 // LOG (a no-op in this build), so bumpreasons prints nothing.
-fn very_verbose_if_not_bumpreasons(solver: &mut Solver, which: DelayId, msg: &str) {
+fn very_verbose_if_not_bumpreasons(solver: &mut Solver, which: DelayId, msg: impl std::fmt::Display) {
     if which == DelayId::Bumpreasons {
         return; // LOG (...) — no-op without LOGGING
     }
@@ -347,7 +347,7 @@ pub fn reduce_delay(solver: &mut Solver, which: DelayId) {
     very_verbose_if_not_bumpreasons(
         solver,
         which,
-        &format!(
+        format_args!(
             "{} delay interval decreased to {}",
             delay_description(which),
             current
@@ -364,7 +364,7 @@ pub fn bump_delay(solver: &mut Solver, which: DelayId) {
     very_verbose_if_not_bumpreasons(
         solver,
         which,
-        &format!(
+        format_args!(
             "{} delay interval increased to {}",
             delay_description(which),
             current
@@ -381,7 +381,7 @@ pub fn delaying(solver: &mut Solver, which: DelayId) -> bool {
         very_verbose_if_not_bumpreasons(
             solver,
             which,
-            &format!(
+            format_args!(
                 "{} still delayed ({} more times)",
                 delay_description(which),
                 current
@@ -392,7 +392,7 @@ pub fn delaying(solver: &mut Solver, which: DelayId) -> bool {
         very_verbose_if_not_bumpreasons(
             solver,
             which,
-            &format!("{} not delayed", delay_description(which)),
+            format_args!("{} not delayed", delay_description(which)),
         );
         false
     }
@@ -431,7 +431,7 @@ macro_rules! update_conflict_limit {
                 $solver,
                 stringify!($name),
                 count,
-                &format!("new limit of {} after {} conflicts", limit, scaled),
+                &format_args!("new limit of {} after {} conflicts", limit, scaled),
             );
         }
     }};
@@ -460,7 +460,7 @@ macro_rules! set_effort_limit {
             reference = mineffort;
             $crate::print::extremely_verbose(
                 $solver,
-                &format!(
+                &format_args!(
                     concat!(stringify!($name), " effort reference {} set to 'mineffort'"),
                     reference
                 ),
@@ -468,7 +468,7 @@ macro_rules! set_effort_limit {
         } else {
             $crate::print::extremely_verbose(
                 $solver,
-                &format!(
+                &format_args!(
                     concat!(
                         stringify!($name),
                         " effort reference {} = {} - {} 'search_ticks'"
@@ -481,7 +481,7 @@ macro_rules! set_effort_limit {
         let delta: u64 = (effort * reference as f64) as u64;
         $crate::print::extremely_verbose(
             $solver,
-            &format!(
+            &format_args!(
                 concat!(
                     stringify!($name),
                     " effort delta {} = {} * {} '",
@@ -494,7 +494,7 @@ macro_rules! set_effort_limit {
         let new_limit: u64 = old_limit + delta;
         $crate::print::very_verbose(
             $solver,
-            &format!(
+            &format_args!(
                 concat!(
                     stringify!($name),
                     " effort limit {} = {} + {} '",

@@ -39,7 +39,7 @@ pub fn init_mode_limit(solver: &mut Solver) {
 
         crate::print::very_verbose(
             solver,
-            &format!(
+            &format_args!(
                 "initial {} mode switching limit at {} after {} conflicts",
                 mode_string(solver),
                 conflicts_limit,
@@ -53,7 +53,7 @@ pub fn init_mode_limit(solver: &mut Solver) {
         solver.mode.entered = crate::resources::process_time();
         crate::print::very_verbose(
             solver,
-            &format!(
+            &format_args!(
                 "starting {} mode at {:.2} seconds ({} conflicts, {} ticks)",
                 mode_string(solver),
                 solver.mode.entered,
@@ -64,7 +64,7 @@ pub fn init_mode_limit(solver: &mut Solver) {
     } else {
         crate::print::very_verbose(
             solver,
-            &format!(
+            &format_args!(
                 "no need to set mode limit (only {} mode enabled)",
                 mode_string(solver)
             ),
@@ -92,7 +92,7 @@ fn update_mode_limit(solver: &mut Solver, delta_ticks: u64) {
             solver,
             "stable",
             count,
-            &format!(
+            &format_args!(
                 "new stable mode switching limit of {} after {} ticks",
                 limit, delta_ticks
             ),
@@ -113,7 +113,7 @@ fn update_mode_limit(solver: &mut Solver, delta_ticks: u64) {
             solver,
             "focused",
             count,
-            &format!(
+            &format_args!(
                 "new focused mode switching limit of {} after {} conflicts",
                 limit, scaled
             ),
@@ -147,7 +147,7 @@ fn report_switching_from_mode(solver: &mut Solver) -> u64 {
     let stable = if solver.stable { "stable" } else { "focused" };
     crate::print::very_verbose(
         solver,
-        &format!(
+        &format_args!(
             "{} mode took {:.2} seconds ({} conflicts, {} ticks)",
             stable, delta_time, delta_conflicts, delta_ticks
         ),
@@ -170,7 +170,7 @@ fn switch_to_focused_mode(solver: &mut Solver) {
         solver,
         "focus",
         count,
-        &format!("switching to focused mode after {} conflicts", conflicts),
+        &format_args!("switching to focused mode after {} conflicts", conflicts),
     );
     solver.stable = false;
     update_mode_limit(solver, delta);
@@ -196,7 +196,7 @@ fn switch_to_stable_mode(solver: &mut Solver) {
         solver,
         "stable",
         count,
-        &format!("switched to stable mode after {} conflicts", conflicts),
+        &format_args!("switched to stable mode after {} conflicts", conflicts),
     );
     update_mode_limit(solver, delta);
     crate::profile::start(solver, crate::profile::Prof::stable); // START (stable)

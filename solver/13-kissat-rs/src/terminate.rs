@@ -63,7 +63,7 @@ pub mod bits {
 pub fn report_termination(solver: &Solver, name: &str, file: &str, lineno: u32) {
     crate::print::very_verbose(
         solver,
-        format!("{}:{}: 'TERMINATED ({})' triggered", file, lineno, name),
+        format_args!("{}:{}: 'TERMINATED ({})' triggered", file, lineno, name),
     );
 }
 

@@ -72,7 +72,7 @@ pub fn compute_and_set_tier_limits(solver: &mut Solver) {
         solver,
         "retiered",
         solver.statistics.retiered, // GET (retiered)
-        format!(
+        format_args!(
             "recomputed {} tier1 limit {} and tier2 limit {} after {} conflicts",
             if stable { "stable" } else { "focused" },
             tier1,

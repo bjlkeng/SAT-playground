@@ -25,7 +25,7 @@ pub fn classify(solver: &mut Solver) {
     }
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "formula classified as having a {} total number of clauses",
             if solver.classification.small {
                 "small"
@@ -36,7 +36,7 @@ pub fn classify(solver: &mut Solver) {
     );
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "formula classified to have a {} binary clauses fraction",
             if solver.classification.bigbig {
                 "large"

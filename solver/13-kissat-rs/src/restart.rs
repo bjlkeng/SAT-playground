@@ -35,7 +35,7 @@ pub fn restarting(solver: &mut Solver) -> bool {
     let limit = margin * slow;
     crate::print::extremely_verbose(
         solver,
-        format!(
+        format_args!(
             "restart glue limit {} = {:.2} * {} (slow glue) {} {} (fast glue)",
             limit,
             margin,
@@ -65,7 +65,7 @@ pub fn update_focused_restart_limit(solver: &mut Solver) {
     solver.limits.restart.conflicts = solver.statistics.conflicts + delta;
     crate::print::extremely_verbose(
         solver,
-        format!(
+        format_args!(
             "focused restart limit at {} after {} conflicts ",
             solver.limits.restart.conflicts, delta
         ),
@@ -140,7 +140,7 @@ pub fn restart(solver: &mut Solver) {
     let level = reuse_trail(solver);
     crate::print::extremely_verbose(
         solver,
-        format!(
+        format_args!(
             "restarting after {} conflicts (limit {})",
             solver.statistics.conflicts, solver.limits.restart.conflicts
         ),

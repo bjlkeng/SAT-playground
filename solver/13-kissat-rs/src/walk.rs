@@ -186,13 +186,13 @@ fn init_score_table(solver: &mut Solver, walker: &mut Walker) {
         solver,
         "walk",
         walks,
-        format!("CB {:.2} with inverse {:.2} as base", cb, base),
+        format_args!("CB {:.2} with inverse {:.2} as base", cb, base),
     );
     crate::print::phase(
         solver,
         "walk",
         walks,
-        format!("table size {} and epsilon {}", exponents, epsilon),
+        format_args!("table size {} and epsilon {}", exponents, epsilon),
     );
 }
 
@@ -225,7 +225,7 @@ fn import_decision_phases(solver: &mut Solver, walker: &mut Walker) {
         solver,
         "walk",
         walks,
-        format!(
+        format_args!(
             "imported {} decision phases {:.0}%",
             imported,
             percent(imported as f64, active as f64)
@@ -268,7 +268,7 @@ fn connect_binary_counters(solver: &mut Solver, walker: &mut Walker, binaries: &
         solver,
         "walk",
         walks,
-        format!(
+        format_args!(
             "initially {} unsatisfied binary clauses {:.0}% out of {}",
             unsat,
             percent(unsat as f64, counter_ref as f64),
@@ -358,7 +358,7 @@ fn connect_large_counters(solver: &mut Solver, walker: &mut Walker, mut counter_
         solver,
         "walk",
         walks,
-        format!(
+        format_args!(
             "initially {} unsatisfied large clauses {:.0}% out of {}",
             unsat,
             percent(unsat as f64, large as f64),
@@ -373,7 +373,7 @@ fn report_initial_minimum(solver: &Solver, walker: &mut Walker) {
     walker.report_minimum = walker.minimum;
     crate::print::very_verbose(
         solver,
-        format!("initial minimum of {} unsatisfied clauses", walker.minimum),
+        format_args!("initial minimum of {} unsatisfied clauses", walker.minimum),
     );
 }
 
@@ -382,7 +382,7 @@ fn report_minimum(type_: &str, solver: &Solver, walker: &mut Walker) {
     debug_assert!(walker.minimum <= walker.report_minimum);
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "{} minimum of {} unsatisfied clauses after {} flipped literals",
             type_, walker.minimum, walker.flipped
         ),
@@ -447,7 +447,7 @@ fn init_walker(solver: &mut Solver, binaries: &[LitPair]) -> Walker {
         solver,
         "walk",
         walks,
-        format!(
+        format_args!(
             "initially {} unsatisfied irredundant clauses {:.0}% out of {}",
             walker.initial,
             percent(walker.initial as f64, clauses64 as f64),
@@ -460,7 +460,7 @@ fn init_walker(solver: &mut Solver, binaries: &[LitPair]) -> Walker {
         solver,
         "walk",
         walks,
-        format!("average clause size {:.2}", walker.size),
+        format_args!("average clause size {:.2}", walker.size),
     );
 
     walker.minimum = walker.current;
@@ -767,11 +767,11 @@ fn local_search_round(solver: &mut Solver, walker: &mut Walker, binaries: &[LitP
     let steps = solver.statistics.walk_steps - walker.start;
     crate::print::very_verbose(
         solver,
-        format!("walking ends with {} unsatisfied clauses", walker.current),
+        format_args!("walking ends with {} unsatisfied clauses", walker.current),
     );
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "flipping {} literals took {} steps ({:.2} per flipped)",
             walker.flipped,
             steps,
@@ -784,7 +784,7 @@ fn local_search_round(solver: &mut Solver, walker: &mut Walker, binaries: &[LitP
         solver,
         "walk",
         walks,
-        format!(
+        format_args!(
             "{} minimum {} after {} flips",
             if after < before { "new" } else { "unchanged" },
             after,
@@ -818,7 +818,7 @@ fn save_final_minimum(solver: &mut Solver, walker: &mut Walker) -> bool {
         solver,
         "walk",
         walks,
-        format!(
+        format_args!(
             "saving improved assignment of {} unsatisfied clauses",
             walker.minimum
         ),
@@ -861,7 +861,7 @@ pub fn walking(solver: &Solver) -> bool {
     if last_irredundant > MAX_WALK_REF as u64 {
         crate::print::extremely_verbose(
             solver,
-            format!(
+            format_args!(
                 "can not walk since last irredundant clause reference {} too large",
                 last_irredundant
             ),
@@ -873,7 +873,7 @@ pub fn walking(solver: &Solver) -> bool {
     if clauses > MAX_WALK_REF as u64 {
         crate::print::extremely_verbose(
             solver,
-            format!(
+            format_args!(
                 "can not walk due to way too many irredundant clauses {}",
                 clauses
             ),
@@ -902,7 +902,7 @@ pub fn walk(solver: &mut Solver) {
             solver,
             "walk",
             walks,
-            format!(
+            format_args!(
                 "last irredundant clause reference {} too large",
                 last_irredundant
             ),
@@ -917,7 +917,7 @@ pub fn walk(solver: &mut Solver) {
             solver,
             "walk",
             walks,
-            format!("way too many irredundant clauses {}", clauses),
+            format_args!("way too many irredundant clauses {}", clauses),
         );
         return;
     }

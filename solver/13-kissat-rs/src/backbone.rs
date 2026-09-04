@@ -58,7 +58,7 @@ fn schedule_backbone_candidates(solver: &mut Solver, candidates: &mut Vec<u32>) 
     let active_literals = 2u64 * solver.active as u64;
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "rescheduled {} backbone candidate literals {:.0}%",
             rescheduled,
             percent(rescheduled as f64, active_literals as f64)
@@ -84,7 +84,7 @@ fn schedule_backbone_candidates(solver: &mut Solver, candidates: &mut Vec<u32>) 
     let total = candidates.len();
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "scheduled {} backbone candidate literals {:.0}% in total",
             total,
             percent(total as f64, active_literals as f64)
@@ -119,7 +119,7 @@ fn keep_backbone_candidates(solver: &mut Solver, candidates: &[u32]) {
     if prioritized == remain {
         crate::print::very_verbose(
             solver,
-            format!(
+            format_args!(
                 "keeping all remaining {} backbone candidates {:.0}% prioritized (all were)",
                 remain,
                 percent(remain as f64, active_literals as f64)
@@ -141,7 +141,7 @@ fn keep_backbone_candidates(solver: &mut Solver, candidates: &[u32]) {
         }
         crate::print::very_verbose(
             solver,
-            format!(
+            format_args!(
                 "keeping all remaining {} backbone candidates {:.0}% prioritized (none was)",
                 remain,
                 percent(remain as f64, active_literals as f64)
@@ -150,7 +150,7 @@ fn keep_backbone_candidates(solver: &mut Solver, candidates: &[u32]) {
     } else {
         crate::print::very_verbose(
             solver,
-            format!(
+            format_args!(
                 "keeping {} backbone candidates {:.0}% prioritized ({:.0}% of remaining {})",
                 prioritized,
                 percent(prioritized as f64, active_literals as f64),
@@ -335,14 +335,14 @@ fn compute_backbone(solver: &mut Solver) -> u32 {
 
     loop {
         if round >= round_limit {
-            crate::print::very_verbose(solver, format!("backbone round limit {} hit", round));
+            crate::print::very_verbose(solver, format_args!("backbone round limit {} hit", round));
             break;
         }
         let ticks = solver.statistics.backbone_ticks;
         if ticks > ticks_limit {
             crate::print::very_verbose(
                 solver,
-                format!("backbone ticks limit {} hit after {} ticks", ticks_limit, ticks),
+                format_args!("backbone ticks limit {} hit after {} ticks", ticks_limit, ticks),
             );
             break;
         }
@@ -426,7 +426,7 @@ fn compute_backbone(solver: &mut Solver) -> u32 {
             if remain != 0 {
                 crate::print::extremely_verbose(
                     solver,
-                    format!(
+                    format_args!(
                         "backbone round {} aborted with {} candidates {:.0}% remaining",
                         round,
                         remain,
@@ -436,7 +436,7 @@ fn compute_backbone(solver: &mut Solver) -> u32 {
             } else {
                 crate::print::extremely_verbose(
                     solver,
-                    format!(
+                    format_args!(
                         "backbone round {} completed with all {} scheduled candidates tried",
                         round, scheduled
                     ),
@@ -503,7 +503,7 @@ fn compute_backbone(solver: &mut Solver) -> u32 {
         let left = candidates.len();
         crate::print::very_verbose(
             solver,
-            format!(
+            format_args!(
                 "backbone round {} produced {} failed literals {} implied ({} candidates left {:.0}%)",
                 round,
                 failed - previous,

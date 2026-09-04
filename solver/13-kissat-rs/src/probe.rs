@@ -41,7 +41,7 @@ fn probe_round(solver: &mut Solver) {
         solver,
         "probe",
         solver.statistics.probings, // GET (probings)
-        format!(
+        format_args!(
             "probing limit hit after {} conflicts",
             solver.limits.probe.conflicts
         ),

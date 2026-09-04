@@ -343,7 +343,7 @@ fn schedule_vivification_candidates(solver: &mut Solver, vivifier: &mut Vivifier
             solver,
             vivifier.mode,
             solver.statistics.vivifications, // GET (vivifications)
-            format!(
+            format_args!(
                 "prioritized {} clauses {:.0}%",
                 prioritized,
                 percent(prioritized as f64, scheduled as f64)
@@ -354,7 +354,7 @@ fn schedule_vivification_candidates(solver: &mut Solver, vivifier: &mut Vivifier
             solver,
             vivifier.mode,
             solver.statistics.vivifications,
-            format!("prioritizing all {} scheduled clauses", scheduled),
+            format_args!("prioritizing all {} scheduled clauses", scheduled),
         );
         for i in 0..vivifier.schedule.len() {
             let ref_ = vivifier.schedule[i];
@@ -528,7 +528,7 @@ fn sort_vivification_candidates(solver: &mut Solver, vivifier: &mut Vivifier) {
     if vivifier.tier != 0 {
         crate::print::extremely_verbose(
             solver,
-            format!(
+            format_args!(
                 "sorting {} vivification candidates precisely",
                 vivifier.name
             ),
@@ -538,7 +538,7 @@ fn sort_vivification_candidates(solver: &mut Solver, vivifier: &mut Vivifier) {
     } else {
         crate::print::extremely_verbose(
             solver,
-            format!(
+            format_args!(
                 "sorting {} vivification candidates imprecisely by first {} literals",
                 vivifier.name, COUNTREF_COUNTS as u32
             ),
@@ -1408,7 +1408,7 @@ fn vivify_round(solver: &mut Solver, vivifier: &mut Vivifier, limit: u64) {
         } else {
             crate::print::extremely_verbose(
                 solver,
-                format!("not sorting {} vivification candidates", vivifier.name),
+                format_args!("not sorting {} vivification candidates", vivifier.name),
             );
         }
     }
@@ -1420,7 +1420,7 @@ fn vivify_round(solver: &mut Solver, vivifier: &mut Vivifier, limit: u64) {
     let delta = limit.wrapping_sub(start);
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "vivification {} effort limit {} = {} + {} 'probing_ticks'",
             vivifier.name, limit, start, delta
         ),
@@ -1435,7 +1435,7 @@ fn vivify_round(solver: &mut Solver, vivifier: &mut Vivifier, limit: u64) {
         solver,
         vivifier.mode,
         solver.statistics.vivifications, // GET (vivifications)
-        format!(
+        format_args!(
             "scheduled {} clauses {:.0}% of {}",
             scheduled,
             percent(scheduled as f64, total as f64),
@@ -1450,7 +1450,7 @@ fn vivify_round(solver: &mut Solver, vivifier: &mut Vivifier, limit: u64) {
         if probing_ticks > limit {
             crate::print::extremely_verbose(
                 solver,
-                format!(
+                format_args!(
                     "vivification {} ticks limit {} hit after {} 'probing_ticks'",
                     vivifier.name, limit, probing_ticks
                 ),
@@ -1479,7 +1479,7 @@ fn vivify_round(solver: &mut Solver, vivifier: &mut Vivifier, limit: u64) {
         solver,
         vivifier.mode,
         solver.statistics.vivifications,
-        format!(
+        format_args!(
             "vivified {} clauses {:.0}% out of {} tried",
             vivifier.vivified,
             percent(vivifier.vivified as f64, vivifier.tried as f64),
@@ -1493,7 +1493,7 @@ fn vivify_round(solver: &mut Solver, vivifier: &mut Vivifier, limit: u64) {
                 solver,
                 vivifier.mode,
                 solver.statistics.vivifications,
-                format!(
+                format_args!(
                     "{} clauses remain {:.0}% out of {} scheduled",
                     remain,
                     percent(remain as f64, scheduled as f64),
@@ -1519,7 +1519,7 @@ fn vivify_round(solver: &mut Solver, vivifier: &mut Vivifier, limit: u64) {
                     solver,
                     vivifier.mode,
                     solver.statistics.vivifications,
-                    format!(
+                    format_args!(
                         "keeping all {} remaining clauses prioritized {:.0}%",
                         prioritized,
                         percent(prioritized as f64, remain as f64)
@@ -1663,7 +1663,7 @@ pub fn vivify(solver: &mut Solver) {
             solver,
             "vivify-limit",
             solver.statistics.vivifications, // GET (vivifications)
-            format!(
+            format_args!(
                 "has {} ticks left {:.2}%",
                 delta,
                 percent(delta as f64, total as f64)
@@ -1675,7 +1675,7 @@ pub fn vivify(solver: &mut Solver) {
             solver,
             "vivify-limit",
             solver.statistics.vivifications,
-            format!(
+            format_args!(
                 "exceeded by {} ticks {:.2}%",
                 delta,
                 percent(delta as f64, total as f64)

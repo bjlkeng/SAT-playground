@@ -73,7 +73,7 @@ pub fn start_random_sequence(solver: &mut Solver) {
             crate::format::format_count(&mut solver.format, solver.statistics.conflicts);
         crate::print::very_verbose(
             solver,
-            format!(
+            format_args!(
                 "continuing random decision sequence at {} conflicts",
                 conflicts
             ),
@@ -87,7 +87,7 @@ pub fn start_random_sequence(solver: &mut Solver) {
         let length_str = crate::format::format_count(&mut solver.format, length as u64);
         crate::print::very_verbose(
             solver,
-            format!(
+            format_args!(
                 "starting random decision sequence at {} conflicts for {} conflicts",
                 conflicts_str, length_str
             ),

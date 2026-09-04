@@ -254,7 +254,7 @@ pub fn reorder(solver: &mut Solver) {
         solver,
         "reorder",
         reordered,
-        format!(
+        format_args!(
             "reorder limit {} hit a after {} conflicts in {} mode ",
             limit,
             conflicts,
@@ -270,7 +270,7 @@ pub fn reorder(solver: &mut Solver) {
         solver,
         "reorder",
         reordered,
-        format!(
+        format_args!(
             "reordered decisions in {} search mode",
             if solver.stable { "stable" } else { "focused" }
         ),

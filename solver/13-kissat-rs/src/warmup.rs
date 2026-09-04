@@ -31,7 +31,7 @@ pub fn warmup(solver: &mut Solver) {
 
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "warming-up needed {} decisions and {} propagations",
             decisions, propagations
         ),
@@ -41,7 +41,7 @@ pub fn warmup(solver: &mut Solver) {
     if solver.unassigned != 0 {
         crate::print::verbose(
             solver,
-            format!(
+            format_args!(
                 "reached decision level {} during warming-up saved phases",
                 level
             ),
@@ -49,7 +49,7 @@ pub fn warmup(solver: &mut Solver) {
     } else {
         crate::print::verbose(
             solver,
-            format!(
+            format_args!(
                 "all variables assigned at decision level {} during warming-up saved phases",
                 level
             ),

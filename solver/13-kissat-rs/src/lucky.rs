@@ -172,7 +172,7 @@ fn forward_false_satisfiable(solver: &mut Solver) -> i32 {
             }
             crate::print::verbose(
                 solver,
-                format!(
+                format_args!(
                     "inconsistency after {} conflicts \
                      forward assigning {} variables to false",
                     conflicts, solver.level
@@ -235,7 +235,7 @@ fn forward_true_satisfiable(solver: &mut Solver) -> i32 {
             }
             crate::print::verbose(
                 solver,
-                format!(
+                format_args!(
                     "inconsistency after {} conflicts \
                      forward assigning {} variables to true",
                     conflicts, solver.level
@@ -298,7 +298,7 @@ fn backward_false_satisfiable(solver: &mut Solver) -> i32 {
             }
             crate::print::verbose(
                 solver,
-                format!(
+                format_args!(
                     "inconsistency after {} conflicts \
                      backward assigning {} variables to false",
                     conflicts, solver.level
@@ -360,7 +360,7 @@ fn backward_true_satisfiable(solver: &mut Solver) -> i32 {
             }
             crate::print::verbose(
                 solver,
-                format!(
+                format_args!(
                     "inconsistency after {} conflicts \
                      backward assigning {} variables to true",
                     conflicts, solver.level

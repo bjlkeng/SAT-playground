@@ -20,7 +20,7 @@ fn reset_best_assigned(solver: &mut Solver) {
     let best_assigned = solver.best_assigned;
     crate::print::extremely_verbose(
         solver,
-        format!(
+        format_args!(
             "resetting best assigned trail height {} to 0",
             best_assigned
         ),
@@ -36,7 +36,7 @@ fn reset_target_assigned(solver: &mut Solver) {
     let target_assigned = solver.target_assigned;
     crate::print::extremely_verbose(
         solver,
-        format!(
+        format_args!(
             "resetting target assigned trail height {} to 0",
             target_assigned
         ),
@@ -139,7 +139,7 @@ fn reset_phases(solver: &mut Solver) -> char {
         solver,
         "rephase",
         rephased,
-        format!(
+        format_args!(
             "{} phases in {} search mode",
             rephase_type_as_string(type_),
             if solver.stable { "stable" } else { "focused" }

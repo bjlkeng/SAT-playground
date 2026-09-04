@@ -263,7 +263,7 @@ fn resize_gate_hash_table(solver: &mut Solver, closure: &mut Closure) {
     let old_entries = closure.hash_entries;
     crate::print::extremely_verbose(
         solver,
-        format!(
+        format_args!(
             "resizing gate table of size {} filled with {} entries {:.0}%",
             old_size,
             old_entries,
@@ -293,7 +293,7 @@ fn resize_gate_hash_table(solver: &mut Solver, closure: &mut Closure) {
     }
     crate::print::extremely_verbose(
         solver,
-        format!(
+        format_args!(
             "flushed {} entries {:.0}% resizing table of size {}",
             flushed,
             percent(flushed as f64, old_size as f64),
@@ -306,7 +306,7 @@ fn resize_gate_hash_table(solver: &mut Solver, closure: &mut Closure) {
     closure.hash_entries = new_entries;
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "resized gate table to {} with {} entries {:.0}%",
             new_size,
             new_entries,
@@ -2012,7 +2012,7 @@ fn extract_binaries(solver: &mut Solver, closure: &mut Closure) {
     solver.statistics.congruent_binaries += (extracted - duplicated) as u64;
     crate::print::verbose(
         solver,
-        format!(
+        format_args!(
             "extracted {} binaries (plus {} duplicated)",
             extracted, duplicated
         ),
@@ -2428,7 +2428,7 @@ fn init_and_gate_extraction(solver: &mut Solver, closure: &mut Closure) {
         crate::watch::watch_binary(solver, l, other);
     }
     let connected = closure.binaries.len();
-    crate::print::very_verbose(solver, format!("connected {} binary clauses", connected));
+    crate::print::very_verbose(solver, format_args!("connected {} binary clauses", connected));
     closure.negbincount = negbincount;
 }
 
@@ -2498,7 +2498,7 @@ fn init_xor_gate_extraction(solver: &mut Solver, closure: &mut Closure, candidat
     let original_candidates = candidates.len();
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "{} original candidate XOR base clauses ({:.0}% of {} irredundant clauses)",
             original_candidates,
             percent(original_candidates as f64, considered_clauses as f64),
@@ -2556,7 +2556,7 @@ fn init_xor_gate_extraction(solver: &mut Solver, closure: &mut Closure, candidat
         };
         crate::print::very_verbose(
             solver,
-            format!(
+            format_args!(
                 "{} XOR base clause candidates remain ({:.0}% original candidates) after counting {}",
                 remaining_candidates,
                 percent(remaining_candidates as f64, original_candidates as f64),
@@ -2572,7 +2572,7 @@ fn init_xor_gate_extraction(solver: &mut Solver, closure: &mut Closure, candidat
     let connected = candidates.len();
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "connected {} large clauses {:.0}%",
             connected,
             percent(
@@ -2646,7 +2646,7 @@ fn init_ite_gate_extraction(solver: &mut Solver, closure: &mut Closure, candidat
     let counted = ternary.len();
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "counted {} ternary ITE clauses ({:.0}% of {} irredundant clauses)",
             counted,
             percent(counted as f64, solver.statistics.clauses_irredundant as f64),
@@ -2693,7 +2693,7 @@ fn init_ite_gate_extraction(solver: &mut Solver, closure: &mut Closure, candidat
     }
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "connected {} ITE clauses ({:.0}% of {} counted clauses)",
             connected,
             percent(connected as f64, counted as f64),
@@ -2703,7 +2703,7 @@ fn init_ite_gate_extraction(solver: &mut Solver, closure: &mut Closure, candidat
     let size_candidates = candidates.len();
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "{} candidates ITE base clauses ({:.0}% of {} connected)",
             size_candidates,
             percent(size_candidates as f64, connected as f64),
@@ -3292,7 +3292,7 @@ fn find_units(solver: &mut Solver, closure: &mut Closure) {
         }
     }
     debug_assert!(solver.analyzed.is_empty());
-    crate::print::very_verbose(solver, format!("found {} units", units));
+    crate::print::very_verbose(solver, format_args!("found {} units", units));
 }
 
 // static void find_equivalences
@@ -3372,7 +3372,7 @@ fn find_equivalences(solver: &mut Solver, closure: &mut Closure) {
     }
     debug_assert!(solver.analyzed.is_empty());
     let found = closure.schedule.len();
-    crate::print::very_verbose(solver, format!("found {} equivalences", found));
+    crate::print::very_verbose(solver, format_args!("found {} equivalences", found));
 }
 
 /*------------------------------------------------------------------------*/
@@ -3465,10 +3465,10 @@ fn propagate_units_and_equivalences(solver: &mut Solver, closure: &mut Closure) 
         }
     }
     let units = closure.units;
-    crate::print::very_verbose(solver, format!("propagated {} congruence units", units));
+    crate::print::very_verbose(solver, format_args!("propagated {} congruence units", units));
     crate::print::very_verbose(
         solver,
-        format!("propagated {} congruence equivalences", propagated),
+        format_args!("propagated {} congruence equivalences", propagated),
     );
     crate::profile::stop_checked(solver, Prof::merge);
     propagated
@@ -3673,7 +3673,7 @@ fn forward_subsume_matching_clauses(solver: &mut Solver, closure: &mut Closure) 
     let size_candidates = candidates.len();
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "considering {} matchable subsumption candidates {:.0}%",
             size_candidates,
             percent(size_candidates as f64, potential as f64)

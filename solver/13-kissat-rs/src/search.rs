@@ -44,7 +44,7 @@ fn start_search(solver: &mut Solver) {
         solver,
         "search",
         searches,
-        format!(
+        format_args!(
             "initializing {} search after {} conflicts",
             if stable { "stable" } else { "focus" },
             conflicts
@@ -78,7 +78,7 @@ fn start_search(solver: &mut Solver) {
     } else if limited_conflicts && !limited_decisions {
         crate::print::very_verbose(
             solver,
-            format!(
+            format_args!(
                 "starting search with conflicts limited to {}",
                 conflicts_limit
             ),
@@ -86,7 +86,7 @@ fn start_search(solver: &mut Solver) {
     } else if !limited_conflicts && limited_decisions {
         crate::print::very_verbose(
             solver,
-            format!(
+            format_args!(
                 "starting search with decisions limited to {}",
                 decisions_limit
             ),
@@ -94,7 +94,7 @@ fn start_search(solver: &mut Solver) {
     } else {
         crate::print::very_verbose(
             solver,
-            format!(
+            format_args!(
                 "starting search with decisions limited to {} and conflicts limited to {}",
                 decisions_limit, conflicts_limit
             ),
@@ -174,7 +174,7 @@ fn conflict_limit_hit(solver: &mut Solver) -> bool {
     let conflicts = solver.statistics.conflicts;
     crate::print::very_verbose(
         solver,
-        format!("conflict limit {} hit after {} conflicts", limit, conflicts),
+        format_args!("conflict limit {} hit after {} conflicts", limit, conflicts),
     );
     true
 }
@@ -191,7 +191,7 @@ fn decision_limit_hit(solver: &mut Solver) -> bool {
     let decisions = solver.statistics.decisions;
     crate::print::very_verbose(
         solver,
-        format!("decision limit {} hit after {} decisions", limit, decisions),
+        format_args!("decision limit {} hit after {} decisions", limit, decisions),
     );
     true
 }

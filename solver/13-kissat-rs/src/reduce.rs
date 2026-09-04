@@ -146,7 +146,7 @@ fn mark_less_useful_clauses_as_garbage(solver: &mut Solver, reds: &[Reducible]) 
             solver,
             "reduce",
             solver.statistics.reductions, // GET (reductions)
-            format!(
+            format_args!(
                 "reducing {} ({:.0}%) out of {} ({:.0}%) reducible clauses",
                 target,
                 crate::format::percent(target as f64, size as f64),
@@ -200,7 +200,7 @@ pub fn reduce(solver: &mut Solver) -> i32 {
         solver,
         "reduce",
         solver.statistics.reductions,
-        format!(
+        format_args!(
             "reduce limit {} hit after {} conflicts",
             solver.limits.reduce.conflicts, solver.statistics.conflicts
         ),
@@ -218,14 +218,14 @@ pub fn reduce(solver: &mut Solver) -> i32 {
                 solver,
                 "reduce",
                 solver.statistics.reductions,
-                format!("reducing clauses after offset {} in arena", start),
+                format_args!("reducing clauses after offset {} in arena", start),
             );
             let bytes_str = crate::format::format_bytes(&mut solver.format, bytes_to_sweep);
             crate::print::phase(
                 solver,
                 "reduce",
                 solver.statistics.reductions,
-                format!(
+                format_args!(
                     "reducing {} words {} {:.0}%",
                     words_to_sweep,
                     bytes_str,

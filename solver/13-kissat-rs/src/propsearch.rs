@@ -375,7 +375,7 @@ pub fn search_propagate(solver: &mut Solver) -> Option<Conflict> {
                 crate::format::format_count(&mut solver.format, solver.randec as u64);
             crate::print::very_verbose(
                 solver,
-                format!("{} more random decision conflicts to go", count),
+                format_args!("{} more random decision conflicts to go", count),
             );
         }
     }

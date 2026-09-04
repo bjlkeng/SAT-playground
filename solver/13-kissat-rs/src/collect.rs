@@ -321,7 +321,7 @@ fn move_redundant_clauses_to_the_end(solver: &mut Solver, ref_: Reference) {
         solver,
         "move",
         u64::MAX, // GET (moved): METRIC
-        format!("moving redundant clauses of {} to the end", bytes_str),
+        format_args!("moving redundant clauses of {} to the end", bytes_str),
     );
     crate::trail::mark_reason_clauses(solver, ref_);
     // clause *redundant = kissat_malloc (solver, bytes_redundant);
@@ -659,7 +659,7 @@ fn sparse_sweep_garbage_clauses(
                 solver,
                 "collect",
                 u64::MAX, // GET (garbage_collections): METRIC
-                format!("flushed {} falsified literals in large clauses", flushed),
+                format_args!("flushed {} falsified literals in large clauses", flushed),
             );
         }
         let flushed_clauses = flushed_satisfied_clauses + flushed_garbage_clauses;
@@ -668,7 +668,7 @@ fn sparse_sweep_garbage_clauses(
                 solver,
                 "collect",
                 u64::MAX,
-                format!(
+                format_args!(
                     "flushed {} satisfied large clauses {:.0}%",
                     flushed_satisfied_clauses,
                     crate::format::percent(
@@ -683,7 +683,7 @@ fn sparse_sweep_garbage_clauses(
                 solver,
                 "collect",
                 u64::MAX,
-                format!(
+                format_args!(
                     "flushed {} large garbage clauses {:.0}%",
                     flushed_garbage_clauses,
                     crate::format::percent(
@@ -698,7 +698,7 @@ fn sparse_sweep_garbage_clauses(
             solver,
             "collect",
             u64::MAX,
-            format!("collected {} in total", bytes_str),
+            format_args!("collected {} in total", bytes_str),
         );
     }
     // ADD (flushed, flushed): METRIC, no-op.
@@ -858,14 +858,14 @@ fn dense_sweep_garbage_clauses(solver: &mut Solver) {
         solver,
         "collect",
         u64::MAX, // GET (garbage_collections): METRIC
-        format!("flushed {} large garbage clauses", flushed_garbage_clauses),
+        format_args!("flushed {} large garbage clauses", flushed_garbage_clauses),
     );
     let bytes_str = crate::format::format_bytes(&mut solver.format, bytes);
     crate::print::phase(
         solver,
         "collect",
         u64::MAX,
-        format!("collected {} in total", bytes_str),
+        format_args!("collected {} in total", bytes_str),
     );
 
     // SET_END_OF_STACK (solver->arena, (ward *) dst);

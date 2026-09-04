@@ -40,7 +40,7 @@ pub fn compact_literals(solver: &mut Solver) -> (u32, u32) {
         solver,
         "compact",
         u64::MAX, // GET (compacted) — METRIC
-        format!(
+        format_args!(
             "compacting garbage collection ({} inactive variables {:.2}%)",
             inactive,
             percent(inactive as f64, total_vars as f64)

@@ -347,7 +347,7 @@ fn schedule_transitive(solver: &mut Solver, probes: &mut Vec<u32>) {
     sort_transitive(solver, probes);
     crate::print::very_verbose(
         solver,
-        format!("scheduled {} transitive probes", probes.len()),
+        format_args!("scheduled {} transitive probes", probes.len()),
     );
 }
 
@@ -379,7 +379,7 @@ pub fn transitive_reduction(solver: &mut Solver) {
     let old_ticks = solver.statistics.transitive_ticks;
     crate::print::extremely_verbose(
         solver,
-        format!("starting with {} transitive ticks", old_ticks),
+        format_args!("starting with {} transitive ticks", old_ticks),
     );
     let mut probed: u32 = 0;
 
@@ -417,7 +417,7 @@ pub fn transitive_reduction(solver: &mut Solver) {
         if solver.options.transitivekeep == 0 {
             crate::print::very_verbose(
                 solver,
-                format!("dropping remaining {} transitive candidates", remain),
+                format_args!("dropping remaining {} transitive candidates", remain),
             );
             while let Some(idx) = probes.pop() {
                 solver.flags[idx as usize].transitive = false;
@@ -433,7 +433,7 @@ pub fn transitive_reduction(solver: &mut Solver) {
     let delta_ticks = new_ticks - old_ticks;
     crate::print::extremely_verbose(
         solver,
-        format!(
+        format_args!(
             "finished at {} after {} transitive ticks",
             new_ticks, delta_ticks
         ),
@@ -442,7 +442,7 @@ pub fn transitive_reduction(solver: &mut Solver) {
         solver,
         "transitive",
         solver.statistics.probings, // GET (probings)
-        format!(
+        format_args!(
             "probed {} ({:.0}%): reduced {}, units {}",
             probed,
             percent(probed as f64, (2 * active) as f64),

@@ -178,7 +178,7 @@ fn schedule_factorization(solver: &mut Solver, factoring: &mut Factoring) {
     let size_cands = crate::heap::size_heap(&factoring.schedule);
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "scheduled {} factorization candidate literals {:.0} %",
             size_cands,
             percent(size_cands as f64, solver.lits() as f64)
@@ -900,7 +900,7 @@ fn run_factorization(solver: &mut Solver, limit: u64) -> bool {
     let mut factored = 0u32;
     crate::print::extremely_verbose(
         solver,
-        format!(
+        format_args!(
             "factorization limit of {} ticks",
             limit.wrapping_sub(solver.statistics.factor_ticks)
         ),
@@ -965,7 +965,7 @@ fn connect_clauses_to_factor(solver: &mut Solver) {
     }
     crate::print::very_verbose(
         solver,
-        format!("factorizing clauses of maximum size {}", size_limit),
+        format_args!("factorizing clauses of maximum size {}", size_limit),
     );
     let last_irredundant = solver.last_irredundant;
     let lits_count = solver.lits() as usize;
@@ -1017,7 +1017,7 @@ fn connect_clauses_to_factor(solver: &mut Solver) {
     }
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "initially found {} large clause candidates",
             initial_candidates
         ),
@@ -1065,7 +1065,7 @@ fn connect_clauses_to_factor(solver: &mut Solver) {
         if candidates == new_candidates {
             crate::print::very_verbose(
                 solver,
-                format!(
+                format_args!(
                     "no large factorization candidate clauses reduction in round {}",
                     round
                 ),
@@ -1075,7 +1075,7 @@ fn connect_clauses_to_factor(solver: &mut Solver) {
         candidates = new_candidates;
         crate::print::very_verbose(
             solver,
-            format!(
+            format_args!(
                 "reduced to {} large factorization candidate clauses {:.0}% in round {}",
                 candidates,
                 percent(candidates as f64, initial_candidates as f64),
@@ -1119,7 +1119,7 @@ fn connect_clauses_to_factor(solver: &mut Solver) {
     drop(bincount);
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "connected {} large factorization candidate clauses {:.0}%",
             connected,
             percent(candidates as f64, initial_candidates as f64)
@@ -1145,7 +1145,7 @@ fn factoring(solver: &mut Solver) -> bool {
     }
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "delaying factorization as '{} = log10(variables) = log10 ({})  > eliminations + delay = {} + {} = {}",
             log_active, active, eliminations, delay, limit
         ),
@@ -1165,7 +1165,7 @@ pub fn factor(solver: &mut Solver) {
     if solver.limits.factor.marked >= solver.statistics.literals_factor {
         crate::print::extremely_verbose(
             solver,
-            format!(
+            format_args!(
                 "factorization skipped as no literals have been marked to be added ({} < {}",
                 solver.limits.factor.marked, solver.statistics.literals_factor
             ),
@@ -1188,7 +1188,7 @@ pub fn factor(solver: &mut Solver) {
     } else {
         crate::print::very_verbose(
             solver,
-            format!(
+            format_args!(
                 "initially limiting to {} million factorization ticks",
                 limit
             ),
@@ -1217,7 +1217,7 @@ pub fn factor(solver: &mut Solver) {
     let delta_ticks = after_ticks - before_ticks;
     crate::print::very_verbose(
         solver,
-        format!(
+        format_args!(
             "used {:.6} million factorization ticks",
             delta_ticks as f64 * 1e-6
         ),

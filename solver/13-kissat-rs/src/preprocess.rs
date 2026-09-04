@@ -48,14 +48,14 @@ pub fn preprocess(solver: &mut Solver) -> i32 {
     let clauses_originally = solver.statistics.clauses_original;
     crate::print::verbose(
         solver,
-        format!(
+        format_args!(
             "[preprocess] running at most {} preprocesing rounds",
             max_rounds
         ),
     );
     crate::print::verbose(
         solver,
-        format!(
+        format_args!(
             "[preprocess] initially {} variables {:.0}% and {} clauses {:.0}%",
             variables_initially,
             percent(variables_initially as f64, variables_originally as f64),
@@ -77,7 +77,7 @@ pub fn preprocess(solver: &mut Solver) -> i32 {
         let clauses_before = solver.statistics.binirr_clauses();
         crate::print::verbose(
             solver,
-            format!(
+            format_args!(
                 "[preprocess-{}] started preprocessing round {}",
                 round, round
             ),
@@ -95,7 +95,7 @@ pub fn preprocess(solver: &mut Solver) -> i32 {
             let removed = variables_before - variables_after;
             crate::print::verbose(
                 solver,
-                format!(
+                format_args!(
                     "[preprocess-{}] removed {} variables {:.0}% in round {}",
                     round,
                     removed,
@@ -107,7 +107,7 @@ pub fn preprocess(solver: &mut Solver) -> i32 {
             let added = variables_after - variables_before;
             crate::print::verbose(
                 solver,
-                format!(
+                format_args!(
                     "[preprocess-{}] added {} variables {:.0}% in round {}",
                     round,
                     added,
@@ -118,7 +118,7 @@ pub fn preprocess(solver: &mut Solver) -> i32 {
         } else {
             crate::print::verbose(
                 solver,
-                format!(
+                format_args!(
                     "[preprocess-{}] number variables {} unchanged in round {}",
                     round, variables_before, round
                 ),
@@ -128,7 +128,7 @@ pub fn preprocess(solver: &mut Solver) -> i32 {
             let removed = clauses_before - clauses_after;
             crate::print::verbose(
                 solver,
-                format!(
+                format_args!(
                     "[preprocess-{}] removed {} irredundant and binary clauses {:.0}% in round {}",
                     round,
                     removed,
@@ -140,7 +140,7 @@ pub fn preprocess(solver: &mut Solver) -> i32 {
             let added = clauses_after - clauses_before;
             crate::print::verbose(
                 solver,
-                format!(
+                format_args!(
                     "[preprocess-{}] added {} irredundant and binary clauses {:.0}% in round {}",
                     round,
                     added,
@@ -151,7 +151,7 @@ pub fn preprocess(solver: &mut Solver) -> i32 {
         } else {
             crate::print::verbose(
                 solver,
-                format!(
+                format_args!(
                     "[preprocess-{}] number irredundant and binary clauses {} unchanged in round {}",
                     round, clauses_before, round
                 ),
@@ -171,13 +171,13 @@ pub fn preprocess(solver: &mut Solver) -> i32 {
     let clauses_finally = solver.statistics.binirr_clauses();
     crate::print::verbose(
         solver,
-        format!("[preprocess] finished after {} rounds", round),
+        format_args!("[preprocess] finished after {} rounds", round),
     );
     if variables_finally < variables_initially {
         let removed = variables_initially - variables_finally;
         crate::print::verbose(
             solver,
-            format!(
+            format_args!(
                 "[preprocess] removed {} variables {:.0}% ({} remain {:.0}%)",
                 removed,
                 percent(removed as f64, variables_initially as f64),
@@ -189,7 +189,7 @@ pub fn preprocess(solver: &mut Solver) -> i32 {
         let added = variables_finally - variables_initially;
         crate::print::verbose(
             solver,
-            format!(
+            format_args!(
                 "[preprocess] added {} variables {:.0}% ({} remain {:.0}%)",
                 added,
                 percent(added as f64, variables_initially as f64),
@@ -200,7 +200,7 @@ pub fn preprocess(solver: &mut Solver) -> i32 {
     } else {
         crate::print::verbose(
             solver,
-            format!(
+            format_args!(
                 "[preprocess] number variables {} unchanged ({} remain {:.0}%)",
                 variables_initially,
                 variables_finally,
@@ -212,7 +212,7 @@ pub fn preprocess(solver: &mut Solver) -> i32 {
         let removed = clauses_initially - clauses_finally;
         crate::print::verbose(
             solver,
-            format!(
+            format_args!(
                 "[preprocess] removed {} irredundant and binary clauses {:.0}% ({} remain {:.0}%)",
                 removed,
                 percent(removed as f64, clauses_initially as f64),
@@ -224,7 +224,7 @@ pub fn preprocess(solver: &mut Solver) -> i32 {
         let added = clauses_finally - clauses_initially;
         crate::print::verbose(
             solver,
-            format!(
+            format_args!(
                 "[preprocess] added {} irredundant and binary clauses {:.0}% ({} remain {:.0}%)",
                 added,
                 percent(added as f64, clauses_initially as f64),
@@ -235,7 +235,7 @@ pub fn preprocess(solver: &mut Solver) -> i32 {
     } else {
         crate::print::verbose(
             solver,
-            format!(
+            format_args!(
                 "[preprocess] number irredundant and binary clauses {} unchanged ({} remain {:.0}%)",
                 clauses_initially,
                 clauses_finally,

@@ -146,7 +146,7 @@ fn init_sweeper(solver: &mut Solver) -> Sweeper {
     sweeper.limit.vars = vars_limit as u32;
     crate::print::extremely_verbose(
         solver,
-        format!("sweeper variable limit {}", sweeper.limit.vars),
+        format_args!("sweeper variable limit {}", sweeper.limit.vars),
     );
 
     let mut depth_limit: u64 = solver.statistics.sweep_completed;
@@ -158,7 +158,7 @@ fn init_sweeper(solver: &mut Solver) -> Sweeper {
     sweeper.limit.depth = depth_limit as u32;
     crate::print::extremely_verbose(
         solver,
-        format!("sweeper depth limit {}", sweeper.limit.depth),
+        format_args!("sweeper depth limit {}", sweeper.limit.depth),
     );
 
     let mut clause_limit: u64 = solver.options.sweepclauses as u64;
@@ -170,7 +170,7 @@ fn init_sweeper(solver: &mut Solver) -> Sweeper {
     sweeper.limit.clauses = clause_limit as u32;
     crate::print::extremely_verbose(
         solver,
-        format!("sweeper clause limit {}", sweeper.limit.clauses),
+        format_args!("sweeper clause limit {}", sweeper.limit.clauses),
     );
 
     if solver.options.sweepcomplete != 0 {
@@ -1366,7 +1366,7 @@ fn sweep_variable(solver: &mut Solver, sweeper: &mut Sweeper, idx: u32) -> &'sta
     solver.statistics.sweep_environment += sweeper.vars.len() as u64; // ADD — STATISTIC
     crate::print::extremely_verbose(
         solver,
-        format!(
+        format_args!(
             "sweeping variable {} environment of {} variables {} clauses depth {}",
             crate::inline::export_literal(solver, LIT(idx)),
             sweeper.vars.len(),
@@ -1419,7 +1419,7 @@ fn sweep_variable(solver: &mut Solver, sweeper: &mut Sweeper, idx: u32) -> &'sta
             let solved = solver.statistics.sweep_solved - solved0;
             crate::print::extremely_verbose(
                 solver,
-                format!(
+                format_args!(
                     "complete swept variable {} backbone with {} units in {} solver calls",
                     crate::inline::export_literal(solver, LIT(idx)),
                     units,
@@ -1472,7 +1472,7 @@ fn sweep_variable(solver: &mut Solver, sweeper: &mut Sweeper, idx: u32) -> &'sta
                 if equivalences != 0 {
                     crate::print::extremely_verbose(
                         solver,
-                        format!(
+                        format_args!(
                             "complete swept variable {} partition with {} \
                              equivalences in {} solver calls",
                             crate::inline::export_literal(solver, LIT(idx)),
@@ -1628,7 +1628,7 @@ fn mark_incomplete(solver: &mut Solver, sweeper: &mut Sweeper) {
     solver.sweep_incomplete = true;
     crate::print::extremely_verbose(
         solver,
-        format!("marked {} scheduled sweeping variables as incomplete", marked),
+        format_args!("marked {} scheduled sweeping variables as incomplete", marked),
     );
 }
 
@@ -1677,7 +1677,7 @@ fn unschedule_sweeping(solver: &mut Solver, sweeper: &mut Sweeper, swept: u32, s
     let retained = solver.sweep_schedule.len();
     crate::print::extremely_verbose(
         solver,
-        format!(
+        format_args!(
             "retained {} variables {:.0}% to be swept next time",
             retained,
             crate::utilities::percent(retained as f64, solver.active as f64)
@@ -1687,7 +1687,7 @@ fn unschedule_sweeping(solver: &mut Solver, sweeper: &mut Sweeper, swept: u32, s
     if incomplete != 0 {
         crate::print::extremely_verbose(
             solver,
-            format!(
+            format_args!(
                 "need to sweep {} more variables {:.0}% for completion",
                 incomplete,
                 crate::utilities::percent(incomplete as f64, solver.active as f64)
@@ -1754,7 +1754,7 @@ pub fn sweep(solver: &mut Solver) -> bool {
         let res = sweep_variable(solver, &mut sweeper, idx);
         crate::print::extremely_verbose(
             solver,
-            format!(
+            format_args!(
                 "swept[{}] external variable {} {}",
                 swept,
                 crate::inline::export_literal(solver, LIT(idx)),
@@ -1765,7 +1765,7 @@ pub fn sweep(solver: &mut Solver) -> bool {
         if swept == limit {
             crate::print::very_verbose(
                 solver,
-                format!(
+                format_args!(
                     "found {} equivalences and {} units after sweeping {} variables ",
                     solver.statistics.sweep_equivalences - equivalences0,
                     solver.statistics.sweep_units - units0,
@@ -1775,7 +1775,7 @@ pub fn sweep(solver: &mut Solver) -> bool {
             limit *= 10;
         }
     }
-    crate::print::very_verbose(solver, format!("swept {} variables", swept));
+    crate::print::very_verbose(solver, format_args!("swept {} variables", swept));
     let equivalences = solver.statistics.sweep_equivalences - equivalences0;
     let units = solver.statistics.sweep_units - units0;
     crate::print::phase(
