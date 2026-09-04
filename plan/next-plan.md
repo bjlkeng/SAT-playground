@@ -69,8 +69,8 @@ recreate from the README description) rewrote 55 `for i in 0..size {
 clause(ref).lit(i) }` loops and 17 `for wi in begin..end { stack[wi] }`
 loops as slice walks (circuit −1.8%, SCPC −2.2%); the 25 + 4 sites whose
 bodies mutate the arena or call `&mut Solver` methods were left as index
-loops. 20-cell discriminating parity at 100k on both transform binaries:
-see below.
+loops. 20-cell discriminating parity at 100k: **20/20 on both transform
+binaries** (scratch parity23.log / parity24.log).
 **Next**: (1) DONE above — Kakuro to 1.07x; (2) the ~1% engines
 (sweep/factor/vivify/eliminate connect) — connect + factor done, others at
 noise; (2b) loaded-screen the whole 14-cell wide set (RS v C under the

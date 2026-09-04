@@ -278,7 +278,9 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
      mutate the arena or call `&mut Solver` methods — and repeat): 55
      literal loops in 19 files + 17 watch-range loops in 7 files. circuit
      −1.8%, SCPC −2.2%, Timetable −0.8%, Kakuro/REGRandom flat; counters
-     exact on all five cells; 20-cell discriminating parity at 100k below.
+     exact on all five cells; `parity.py --conflicts 100000` on the 20
+     discriminating cells: **20/20** for both the literal-loop (09fb200) and
+     the watch-range (3843da7) transform binaries.
 - 2026-09-03 REJECTED: kissat's FAST_ASSIGN shape — hoisting raw base
   pointers of arena/assigned/values/watch-stack into `propagate_literal`
   locals and threading `values`/`assigned` through `fast_assign` exactly as
