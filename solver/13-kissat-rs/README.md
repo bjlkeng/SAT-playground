@@ -167,6 +167,41 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
   +15.6% (253.8G v 219.6G), branches +27% (49.1G v 38.7G), L1/LLC misses
   equal — the residual is instruction overhead hiding under memory latency,
   not extra misses.
+- 2026-09-04 **the icache/fmt residual found and fixed: eager verbose-message
+  formatting.** `print::extremely_verbose/very_verbose/verbose/phase` take
+  `impl Display`, and ~160 call sites built the message with `format!(...)`
+  BEFORE the verbosity check — so every restart (`restarting`), every
+  `kimits::delaying` and every inprocessing phase formatted floats and
+  malloc'd a String at verbosity 0 (the C's `kissat_extremely_verbose` is a
+  macro that tests verbosity first). perf: `float_to_decimal_common_shortest`
+  0.75% of circuit cycles, `format_inner`+`malloc` 5.5% of the L1-icache
+  misses. Fix: `format!` → `format_args!` inside those calls (arguments are
+  still evaluated, formatting is not; `fmt::Arguments` is `Display`), and
+  `very_verbose_if_not_bumpreasons` takes `impl Display`. Paired 3-rep runs
+  (s15/s16 v kissat v step-13, pinned, idle siblings): SCPC-500-14 5.03 →
+  4.51 s (C 4.32: **1.16x → 1.044x**), circuit 3.58 → 3.26 s (C 3.17:
+  **1.13x → 1.03x**), Timetable 16.9 → 16.4 s (C 15.3: 1.11x → 1.07x),
+  brocard 93.4 v 91.9 s (1.017x); counters exact on all four. SCPC `perf
+  stat`: icache misses 27.9M → 20.8M (C 10.0M), instructions +3.0%, branches
+  +6.4%, cycles +6.6% (C reference).
+- 2026-09-04 kitten `import_literal` `#[inline(always)]` (C static, inlined
+  into `kitten_clause_with_id_and_exception`; ours was an out-of-line call
+  with the +0x0/+0x7 prologue visible in the profile) and `enlarge_external/
+  enlarge_internal` `#[cold] #[inline(never)]`. 4-way paired: Timetable
+  −1.8%, circuit +1.2%, SCPC +0.9% — a wash, kept for the C's shape. Also
+  inlining new_reference/new_original_klause/export_literal was no better.
+- 2026-09-04 Timetable phase split (`--profile=2`, both binaries; note
+  `--profile=4` doubles the runtime of BOTH arms and hides the gap): search
+  0.983x, simplify 1.104x (eliminate **1.161x**, +0.57 s of the +0.88 s
+  total), probe 1.068x (sweep 1.12x, factor 1.11x). The remaining excess is
+  in elimination (kitten definition extraction, `inlined_connect_clause`
+  2x — its cost sits on the `*end != INVALID` watch-slot read in
+  `push_vectors`, same instruction the C pays for), not in search.
+- 2026-09-04 wider paired check (step-17b = HEAD 7d46c4c, 14
+  `sat-comp-2025-medium` cells, `--conflicts=100000`, 7 pairs at a time on
+  physical cores with idle siblings; scratchpad `wideout/`): see the plan
+  handoff for the table — ratios 0.99-1.06 on the 11 search-bound cells,
+  counters exact everywhere.
 - 2026-09-03 REJECTED: kissat's FAST_ASSIGN shape — hoisting raw base
   pointers of arena/assigned/values/watch-stack into `propagate_literal`
   locals and threading `values`/`assigned` through `fast_assign` exactly as

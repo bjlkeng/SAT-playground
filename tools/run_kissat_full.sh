@@ -7,6 +7,10 @@
 #
 # Usage: bash tools/run_kissat_full.sh [-t timeout_s] [-m mem_mb] [-j jobs]
 #                                      [-c core_offset] [-d suite_dir]
+#                                      [-k solver_binary] [-n run_name]
+# -k runs another kissat-CLI-compatible binary (e.g. solver/13-kissat-rs's
+#    sat-solver) under the identical methodology; -n names the log dir
+#    (log/<run_name>-<timestamp>, default kissat-full).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,6 +20,7 @@ JOBS=14
 CORE_OFFSET=18
 SUITE="$REPO_ROOT/benchmarks/sat-comp-2025"
 KISSAT="$REPO_ROOT/benchmarks/reference-solvers/kissat-latest/build/kissat"
+RUN_NAME=kissat-full
 SCRATCH="${SAT_KISSAT_SCRATCH:-/tmp/kissat-full-work-$$}"
 
 while [[ $# -gt 0 ]]; do
@@ -25,6 +30,8 @@ while [[ $# -gt 0 ]]; do
         -j) JOBS="$2"; shift 2 ;;
         -c) CORE_OFFSET="$2"; shift 2 ;;
         -d) SUITE="$2"; shift 2 ;;
+        -k) KISSAT="$2"; shift 2 ;;
+        -n) RUN_NAME="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 1 ;;
     esac
 done
@@ -33,11 +40,12 @@ done
 KVER="$(cat "$REPO_ROOT/benchmarks/reference-solvers/kissat-latest/VERSION" 2>/dev/null || echo unknown)"
 
 TS="$(date +%Y%m%d-%H%M%S)"
-OUT="$REPO_ROOT/log/kissat-full-${TS}"
+OUT="$REPO_ROOT/log/${RUN_NAME}-${TS}"
 mkdir -p "$OUT/cells" "$SCRATCH"
 MEM_KB=$((MEM_MB * 1024))
 
-echo "kissat=$KVER suite=$SUITE instances=$(ls "$SUITE"/*.cnf.xz | wc -l) timeout=${TIMEOUT}s mem=${MEM_MB}MB jobs=${JOBS} core_offset=${CORE_OFFSET} out=$OUT" > "$OUT/meta.txt"
+echo "binary=$KISSAT sha256=$(sha256sum "$KISSAT" | cut -c1-16)" > "$OUT/meta.txt"
+echo "kissat=$KVER suite=$SUITE instances=$(ls "$SUITE"/*.cnf.xz | wc -l) timeout=${TIMEOUT}s mem=${MEM_MB}MB jobs=${JOBS} core_offset=${CORE_OFFSET} out=$OUT" >> "$OUT/meta.txt"
 cat "$OUT/meta.txt"
 
 # Socket-balanced core order (mirrors feature_ablation.py numa_balanced_cores
@@ -87,7 +95,18 @@ run_one() {
     local idx="$1" cnf="$2"
     local name; name="$(basename "$cnf" .cnf.xz)"
     local -a _ord=($CORE_ORDER_STR)
-    local core=${_ord[$(( (CORE_OFFSET + idx % JOBS) % ${#_ord[@]} ))]}
+    # Acquire a free pinning slot (mkdir is atomic). Pinning by idx % JOBS
+    # doubled solvers up on one core whenever xargs refilled a freed slot
+    # with an index congruent to a still-running one (found 2026-09-04);
+    # a slot pool guarantees exactly one solver per pinned core.
+    local slot="" s
+    while [[ -z "$slot" ]]; do
+        for ((s = 0; s < JOBS; s++)); do
+            if mkdir "$SCRATCH/slot.$s" 2>/dev/null; then slot=$s; break; fi
+        done
+        [[ -z "$slot" ]] && sleep 0.2
+    done
+    local core=${_ord[$(( (CORE_OFFSET + slot) % ${#_ord[@]} ))]}
     local work="$SCRATCH/$name.cnf"
     local cell="$OUT/cells/$name.csv"
 
@@ -100,6 +119,7 @@ run_one() {
     end=$(date +%s.%N)
     elapsed=$(awk "BEGIN{printf \"%.3f\", $end-$start}")
     rm -f "$work"
+    rmdir "$SCRATCH/slot.$slot"
 
     local sline result
     sline=$(printf '%s\n' "$output" | grep -m1 '^s ' || true)

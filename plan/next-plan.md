@@ -1,5 +1,66 @@
 # NEXT PLAN — 2026-08-28 (supersedes 2026-08-24; PRUNED)
 
+## SESSION 2026-09-04 — solver13 icache/fmt residual KILLED (eager verbose formatting); cache-resident cells 1.03-1.06x, 14-cell wide check geomean ~1.02x; PHASE-8 ACCEPTANCE RUN LAUNCHED (paired, 400x2 @ 3600 s / 16 GB / 16+16 pinned cores)
+
+Commits 1276cba (lazy format_args), 7d46c4c (kitten import inline), + this.
+
+**The find**: `print::extremely_verbose/very_verbose/verbose/phase` took a
+pre-built `format!` String at ~160 call sites — every restart, every
+`kimits::delaying`, every phase formatted floats + malloc'd at verbosity 0
+(C's macro tests verbosity first). Fix `format!` → `format_args!` inside
+those calls (mechanical script, 158 sites; `very_verbose_if_not_bumpreasons`
+now `impl Display`). Paired 3-rep, pinned, idle siblings: SCPC 1.16x →
+1.044x, circuit 1.13x → 1.03x, Timetable 1.11x → 1.07x, brocard 1.017x;
+icache misses 27.9M → 20.8M (C 10.0M). Counters exact on all cells.
+
+**Where the rest is (Timetable `--profile=2`, both arms)**: search 0.983x
+(we are AT the C on search), simplify 1.104x — eliminate 1.161x is +0.57 s
+of the +0.88 s total; probe 1.068x (sweep 1.12x, factor 1.11x). Do NOT use
+`--profile=4` for this: it doubles both arms' runtime and hides the gap.
+Per-function comparisons are muddied by inlining differences (C keeps
+`get_ternary_clause`, `kissat_resize_vector` etc. as separate symbols) —
+compare phases, or perf-script IP histograms (`-F ip,sym,symoff`; `perf
+annotate` on the C binary hangs for minutes). Candidate next targets, each
+1-3% of wall: kitten clause import (+11%), `inlined_connect_clause` (2x,
+cost on the `*end != INVALID` slot read in push_vectors — same instruction
+the C pays, unexplained), `watch_large_clauses` (+15%), vivify (+10%).
+Kitten `import_literal` inline(always) + cold enlarge_* was a wash (kept).
+
+**Wide check (step-17b = HEAD 7d46c4c v kissat, 14 medium cells,
+`--conflicts=100000`, 7 pairs at a time, cores with idle siblings; scratch
+`wideout/`)**: case7 1.029, clqcl_50 1.022, crusti 1.029, DLTM 0.988,
+oddball_24 1.000, QG7 1.020, ramsey_3_6_19 1.017, RoundRobin 1.030,
+tseitin_grid_n12 1.039, VanDerWaerden_27 1.005, xor_op_n40 1.058,
+reconf10_70 1.015, velev-pipe 1.035, sudoku-N30 ~1.0 (173 v 168 s wall,
+process-time reversed) — **all 14 counter-exact**, geomean ≈ 1.02x.
+
+**ACCEPTANCE RUN (phase 8) — RUNNING, launched 2026-09-04 07:27 local**:
+- kissat arm: `log/kissat-full-accept-20260904-072748` (pid of wrapper 245924, `log/accept-kissat-arm.out`),
+  `tools/run_kissat_full.sh -t 3600 -m 16000 -j 16 -c 0`.
+- solver13 arm: `log/solver13-full-accept-20260904-072750` (wrapper pid 246205, `log/accept-solver13-arm.out`),
+  same script with `-k ~/.cache/sat13-accept/sat-solver` (frozen copy of
+  HEAD 7d46c4c's release binary, sha256 eafd8dfa37b34306) `-c 16`.
+- Both arms simultaneous on disjoint physical cores (kissat: socket-balanced
+  order[0..16) = cpus 0-7,18-25; solver13: order[16..32) = cpus 8-15,26-33),
+  32 solvers live = the reference methodology's load. No proof emission in
+  either arm (kissat CLI form `binary cnf`), `ulimit -v` 16 GB, `timeout
+  3600`. Expected duration ~10-12 h. Each arm writes `results.csv` + `DONE`.
+- **Harness fix this session** (`tools/run_kissat_full.sh`): pinning by
+  `idx % JOBS` doubled two solvers on one core whenever xargs refilled a
+  slot with a congruent index (observed live: two kissats on cpu 0); now a
+  mkdir slot pool guarantees one solver per core. Added `-k binary` and
+  `-n run_name`. The 2026-08-28 reference run had the doubling flaw, so
+  compare arms of THIS run only, not against that log.
+- The first launch (07:25) was killed for the pinning bug; its partial dirs
+  are `log/ABORTED-pinning-*` (left in place — rm needs a human).
+- **Evaluation**: gate = solved ≥ 0.98×kissat, PAR-2 ≤ 1.02×kissat, zero
+  correctness failures (SAT/UNSAT contradictions between arms; the run
+  emits no proofs/models, so re-verify any contradiction cell with
+  `run.sh` + drat-trim). Then per-cell wall ratios on both-solved cells,
+  and the timeout-band cells (kissat-solved 3000-3600 s) where the
+  residual wall gap converts to lost cells.
+
+
 ## SESSION 2026-09-03b — solver13 PROFILER UNLOCKED; the "8.5% gap" was brocard's memory-bound best case (other cells 1.19-1.34x); ten structural fixes take brocard to 1.007x and cache-resident cells to ~1.15x kissat, all counters exact
 
 Commits 7a27474 … 4b0ba3f (nine commits, all pushed).
