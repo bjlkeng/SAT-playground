@@ -2032,8 +2032,7 @@ fn find_first_and_gate(solver: &mut Solver, closure: &mut Closure, lhs: u32) -> 
     let mut matched = 0u32;
     debug_assert!(arity > 1);
     let v = solver.watches[not_lhs as usize];
-    for i in v.begin..v.end {
-        let w = solver.vectors.stack[i];
+    for &w in &solver.vectors.stack[v.begin..v.end] {
         debug_assert!(watch_is_binary(w));
         let other = watch_lit(w);
         let tmp = solver.marks[other as usize];
@@ -2061,8 +2060,7 @@ fn find_remaining_and_gate(solver: &mut Solver, closure: &mut Closure, lhs: u32)
     debug_assert!(arity > 1);
     {
         let v = solver.watches[not_lhs as usize];
-        for i in v.begin..v.end {
-            let w = solver.vectors.stack[i];
+        for &w in &solver.vectors.stack[v.begin..v.end] {
             debug_assert!(watch_is_binary(w));
             let other = watch_lit(w);
             let mark = solver.marks[other as usize];
@@ -2760,8 +2758,7 @@ fn unmark_all(solver: &mut Solver) {
 fn copy_conditional_equivalences(solver: &Solver, lit: u32, condbin: &mut Vec<LitPair>) {
     debug_assert!(condbin.is_empty());
     let v = solver.watches[lit as usize];
-    for i in v.begin..v.end {
-        let w = solver.vectors.stack[i];
+    for &w in &solver.vectors.stack[v.begin..v.end] {
         if watch_is_binary(w) {
             break;
         }
@@ -3282,8 +3279,7 @@ fn find_units(solver: &mut Solver, closure: &mut Closure) {
                 let l = base + sign;
                 let v = solver.watches[l as usize];
                 debug_assert!(solver.analyzed.is_empty());
-                for wi in v.begin..v.end {
-                    let w = solver.vectors.stack[wi];
+                for &w in &solver.vectors.stack[v.begin..v.end] {
                     if !watch_is_binary(w) {
                         break;
                     }
@@ -3328,8 +3324,7 @@ fn find_equivalences(solver: &mut Solver, closure: &mut Closure) {
             {
                 let v = solver.watches[l as usize];
                 debug_assert!(solver.analyzed.is_empty());
-                for wi in v.begin..v.end {
-                    let w = solver.vectors.stack[wi];
+                for &w in &solver.vectors.stack[v.begin..v.end] {
                     if !watch_is_binary(w) {
                         break;
                     }
@@ -3351,8 +3346,7 @@ fn find_equivalences(solver: &mut Solver, closure: &mut Closure) {
             let mut restart = false;
             {
                 let v = solver.watches[not_lit as usize];
-                for wi in v.begin..v.end {
-                    let w = solver.vectors.stack[wi];
+                for &w in &solver.vectors.stack[v.begin..v.end] {
                     if !watch_is_binary(w) {
                         break;
                     }
@@ -3526,8 +3520,7 @@ fn find_subsuming_clause(solver: &mut Solver, closure: &mut Closure, c_ref: Refe
             count_least_occurring = count;
             least_occurring_literal = repr_lit;
         }
-        'watches: for wi in v.begin..v.end {
-            let w = solver.vectors.stack[wi];
+        'watches: for &w in &solver.vectors.stack[v.begin..v.end] {
             debug_assert!(!watch_is_binary(w));
             let d_ref = watch_ref(w);
             debug_assert!(c_ref != d_ref);

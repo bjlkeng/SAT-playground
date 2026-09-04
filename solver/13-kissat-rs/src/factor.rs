@@ -205,8 +205,7 @@ fn first_factor(solver: &mut Solver, factoring: &mut Factoring, factor: u32) -> 
     let quotient = new_quotient(solver, factoring, factor);
     let mut ticks: u64 = 0;
     let v = solver.watches[factor as usize];
-    for wi in v.begin..v.end {
-        let watch = solver.vectors.stack[wi];
+    for &watch in &solver.vectors.stack[v.begin..v.end] {
         factoring.quotients[quotient].clauses.push(watch);
         ticks += 1;
     }
@@ -523,8 +522,7 @@ fn factorize_next(solver: &mut Solver, factoring: &mut Factoring, next: u32, exp
             let q = watch_lit(last_watch);
             let qv = solver.watches[q as usize];
             ticks += 1 + cache_lines((qv.end - qv.begin) as u64, 4);
-            for wi in qv.begin..qv.end {
-                let q_watch = solver.vectors.stack[wi];
+            for &q_watch in &solver.vectors.stack[qv.begin..qv.end] {
                 if watch_is_binary(q_watch) && watch_lit(q_watch) == next {
                     factoring.quotients[next_quotient].clauses.push(last_watch);
                     factoring.quotients[next_quotient].matches.push(i);
@@ -962,8 +960,7 @@ fn connect_clauses_to_factor(solver: &mut Solver) {
             continue;
         }
         let v = solver.watches[l as usize];
-        for wi in v.begin..v.end {
-            let watch = solver.vectors.stack[wi];
+        for &watch in &solver.vectors.stack[v.begin..v.end] {
             debug_assert!(watch_is_binary(watch));
             let other = watch_lit(watch);
             if l > other {

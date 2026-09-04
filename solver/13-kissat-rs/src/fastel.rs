@@ -59,8 +59,7 @@ fn fast_forward_subsumed(solver: &mut Solver, c_ref: Reference) -> bool {
         if size_other_watches > fasteloccs {
             continue;
         }
-        for p in v.begin..v.end {
-            let watch = solver.vectors.stack[p];
+        for &watch in &solver.vectors.stack[v.begin..v.end] {
             if watch_is_binary(watch) {
                 let other2 = watch_lit(watch); // watch.type.lit
                 if solver.marks[other2 as usize] != 0 {

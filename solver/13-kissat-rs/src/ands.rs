@@ -84,8 +84,7 @@ pub fn find_and_gate(solver: &mut Solver, lit: u32, negative: u32) -> bool {
     // Binary watches of `lit` still marked are NOT part of the gate; the
     // unmarked ones are the gate binaries.
     let v = solver.watches[lit as usize];
-    for p in v.begin..v.end {
-        let watch = solver.vectors.stack[p];
+    for &watch in &solver.vectors.stack[v.begin..v.end] {
         if !watch_is_binary(watch) {
             continue;
         }

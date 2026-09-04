@@ -18,8 +18,7 @@ use crate::watch::{watch_is_binary, watch_lit};
 pub fn mark_binaries(solver: &mut Solver, lit: u32) -> u64 {
     let mut res: u64 = 0;
     let v = solver.watches[lit as usize];
-    for p in v.begin..v.end {
-        let watch = solver.vectors.stack[p];
+    for &watch in &solver.vectors.stack[v.begin..v.end] {
         if !watch_is_binary(watch) {
             continue;
         }
@@ -37,8 +36,7 @@ pub fn mark_binaries(solver: &mut Solver, lit: u32) -> u64 {
 /// Port of `kissat_unmark_binaries`.
 pub fn unmark_binaries(solver: &mut Solver, lit: u32) {
     let v = solver.watches[lit as usize];
-    for p in v.begin..v.end {
-        let watch = solver.vectors.stack[p];
+    for &watch in &solver.vectors.stack[v.begin..v.end] {
         if watch_is_binary(watch) {
             solver.marks[watch_lit(watch) as usize] = 0;
         }
@@ -84,8 +82,7 @@ fn get_antecedents_one(solver: &mut Solver, lit: u32, negative: u32) {
 
     let v = solver.watches[lit as usize];
     let mut g = 0usize; // cursor into solver.gates[negative]
-    for p in v.begin..v.end {
-        let watch = solver.vectors.stack[p];
+    for &watch in &solver.vectors.stack[v.begin..v.end] {
         if g != solver.gates[negative].len() && solver.gates[negative][g] == watch {
             g += 1;
         } else {

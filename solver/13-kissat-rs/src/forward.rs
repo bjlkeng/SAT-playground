@@ -62,8 +62,7 @@ fn remove_duplicated_binaries_with_literal(solver: &mut Solver, lit: u32) -> u64
     }
 
     // for (const watch *r = begin; r != q; r++) marks[r->binary.lit] = 0;
-    for r in begin..q {
-        let watch = solver.vectors.stack[r];
+    for &watch in &solver.vectors.stack[begin..q] {
         solver.marks[watch_lit(watch) as usize] = 0;
     }
 

@@ -17,8 +17,7 @@ pub fn find_equivalence_gate(solver: &mut Solver, lit: u32) -> bool {
     let not_lit = crate::literal::not(lit);
     let mut replace = INVALID;
     let v = solver.watches[not_lit as usize];
-    for p in v.begin..v.end {
-        let watch = solver.vectors.stack[p];
+    for &watch in &solver.vectors.stack[v.begin..v.end] {
         if !watch_is_binary(watch) {
             continue;
         }
