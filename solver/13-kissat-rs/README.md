@@ -218,6 +218,40 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
   physical cores with idle siblings; scratchpad `wideout/`): see the plan
   handoff for the table — ratios 0.99-1.06 on the 11 search-bound cells,
   counters exact everywhere.
+- 2026-09-04 **Kakuro family (post-acceptance item 1).** Paired
+  `--profile=2` on Kakuro-easy-112 (490 MB CNF, 18.8M irredundant clauses):
+  total 1.152x — probe 1.20x (congruence 1.24x, vivify 1.24x, sweep 1.23x,
+  walking 1.20x), preprocess 1.24x, search 1.07x. `perf stat`: instructions
+  +10.6%, LLC misses +9%, memory-stall cycles +14%; per function
+  `watch_large_clauses` 74.4 v 53.5 G cycles at only +7% instructions (its
+  cost is the DRAM miss on the watch-stack slot read in `push_vectors`),
+  `extract_gates` +52% instructions (`init_xor_gate_extraction` alone 26 G:
+  per-literal `arena.clause(ref).lit(i)` + checked `Vec` counter indexing),
+  `walk` +56% (the same push in `connect_large_counters`).
+  Fixes, each paired (RS new v kissat v RS previous, pinned, counters exact
+  on Kakuro + Timetable + circuit + SCPC):
+  14. `vector::PushCursor` — the watch-stack base pointer, length, capacity
+     and `usable` decrement hoisted across a clause loop with the generic
+     `push_vectors` as the slow path (enlarge relocates the stack, so the
+     cursor re-syncs after it). Through `&mut Solver` LLVM reloaded all four
+     around every store. Used by `watch_large_clauses`,
+     `connect_irredundant_large_clauses`/`inlined_connect_clause` and walk's
+     `connect_large_counters`. Kakuro 84.8 → 82.6 s (`watch_large_clauses`
+     74.4 → 64.1 G cycles), circuit −1.8%.
+  15. Congruence XOR/ITE counting passes walk `clause.lits()` slices with
+     `UVec` counters (C pointer walks): −6 G instructions, −0.9% cycles;
+     `extract_gates` cycles now equal to the C's congruence cluster.
+  16. `move_smallest_literal_to_front` best-update in select form (the C's
+     cmov chain): a wash — LLVM still branches; kept for shape.
+  17. Verbose-format laziness (above) had already taken restart/delay cost.
+  State: Kakuro **1.152x → 1.072x** (78.2 v 73.0 s, `--profile=2` split:
+  congruence 1.13x +2.1 s, preprocess 1.14x +1.4 s, vivify 1.09x +1.1 s,
+  walking 1.15x +0.8 s, search 1.05x); Timetable **1.026x** (eliminate 1.04x,
+  sweep 1.07x, factor 1.09x, backbone 1.17x). The residual in the push
+  loops is memory-stall time on identical accesses (layout verified: the
+  `[vectors] enlarged`/defrag phase lines match the C's line for line) that
+  no code-shape change so far recovers; the no-sort experiment showed the
+  literal sort itself is ~2.5 s of Kakuro's 80 s in both arms.
 - 2026-09-03 REJECTED: kissat's FAST_ASSIGN shape — hoisting raw base
   pointers of arena/assigned/values/watch-stack into `propagate_literal`
   locals and threading `values`/`assigned` through `fast_assign` exactly as

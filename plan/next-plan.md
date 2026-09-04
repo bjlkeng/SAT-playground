@@ -42,8 +42,19 @@ both-solved wall geomean 1.013x; lost only lockchart-group3-L15-K29-p4 (a
 log/solver13-full-accept-20260904-072750`. Residual families: Kakuro
 1.15-1.22x (490 MB CNFs — profile parse + giant-clause handling next),
 REGRandom 1.15x, crusti 1.11x; `N.normalised` 0.81-0.94x (we are faster).
-**Next**: (1) Kakuro-family profile (parse/arena/giant clauses) — the only
-family >1.1x; (2) the ~1% engines (sweep/factor/vivify/eliminate connect);
+**Post-acceptance (same day, commits f363ca9..25a4c5c)**: Kakuro profiled
+and taken 1.152x → 1.072x (PushCursor hoisting in the watch-stack push
+loops, congruence counting passes on literal slices; README steps 14-16);
+Timetable now 1.026x. Remaining Kakuro split: congruence 1.13x, preprocess
+1.14x, vivify 1.09x, walking 1.15x, search 1.05x. The push-loop residual is
+memory-stall time on identical accesses (vectors layout verified line for
+line via the `[vectors] enlarged`/defrag phase lines) — no code-shape fix
+found; measure with `perf stat -e cycle_activity.stalls_l3_miss` before
+trying more. Candidate next: `Flags` is 10 bytes v the C's 2-byte bitfield
+struct (var-indexed; 250 field accesses — pack via accessors), vivify
+(1.09x on Kakuro), walk's flip loop.
+**Next**: (1) DONE above — Kakuro to 1.07x; (2) the ~1% engines
+(sweep/factor/vivify/eliminate connect) — connect done, others open;
 (3) decide what solver13 is FOR now that it is a verified 1.01x kissat
 port: the solver12-style feature work (fsweep/chrono/etc.) can be re-based
 on it with counter-exact regression testing against the C.
