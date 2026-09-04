@@ -138,6 +138,10 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
      propagate_literal, propagate, move_to_front, unassign, the klause
      accessors). Timetable 1.140x → 1.126x, brocard 1.016x → 1.007x,
      circuit flat.
+  13. The remaining Solver stacks (analyzed, levels, minimize, poisoned,
+     promote, removable, shrinkable, clause, shadow, delayed, etrail, units,
+     sorter) on `UVec`: circuit 1.160x → 1.142x, SCPC-500-14 1.203x →
+     1.180x, Timetable/brocard flat (paired 4-cell run, parity exact).
   `parity.py --conflicts 100000` (20 discriminating cells, full default
   config) on the step-5 binary: 20/20 exact; every later step verified
   80-counter exact on brocard + circuit + Timetable.

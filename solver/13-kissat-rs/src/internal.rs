@@ -219,7 +219,7 @@ pub struct Solver {
     pub randec: u32,
 
     pub export_: Vec<i32>,      // ints export;
-    pub units: Vec<i32>,        // ints units;
+    pub units: crate::uvec::UVec<i32>,        // ints units;
     pub import_: Vec<Import>,   // imports import;
     pub extend: Vec<Extension>, // extensions extend;
     pub witness: Vec<u32>,      // unsigneds witness;
@@ -233,7 +233,7 @@ pub struct Solver {
     pub phases: Phases,
 
     pub eliminated: Vec<i8>, // eliminated = STACK (value)
-    pub etrail: Vec<u32>,    // unsigneds etrail;
+    pub etrail: crate::uvec::UVec<u32>,    // unsigneds etrail;
 
     pub links: crate::uvec::UVec<Links>, // links *links;  (var-indexed)
     pub queue: Queue,
@@ -259,7 +259,7 @@ pub struct Solver {
     pub unflushed: u32,
     pub unassigned: u32,
 
-    pub delayed: Vec<u32>, // unsigneds delayed;
+    pub delayed: crate::uvec::UVec<u32>, // unsigneds delayed;
 
     // resolvent stack is (LOGGING || !NDEBUG)-only — omitted.
     pub resolvent_size: u32,
@@ -267,13 +267,13 @@ pub struct Solver {
 
     pub ranks: Vec<Datarank>, // dataranks ranks;
 
-    pub analyzed: Vec<u32>,   // unsigneds analyzed;
-    pub levels: Vec<u32>,     // unsigneds levels;
-    pub minimize: Vec<u32>,   // unsigneds minimize;
-    pub poisoned: Vec<u32>,   // unsigneds poisoned;
-    pub promote: Vec<u32>,    // unsigneds promote;
-    pub removable: Vec<u32>,  // unsigneds removable;
-    pub shrinkable: Vec<u32>, // unsigneds shrinkable;
+    pub analyzed: crate::uvec::UVec<u32>,   // unsigneds analyzed;
+    pub levels: crate::uvec::UVec<u32>,     // unsigneds levels;
+    pub minimize: crate::uvec::UVec<u32>,   // unsigneds minimize;
+    pub poisoned: crate::uvec::UVec<u32>,   // unsigneds poisoned;
+    pub promote: crate::uvec::UVec<u32>,    // unsigneds promote;
+    pub removable: crate::uvec::UVec<u32>,  // unsigneds removable;
+    pub shrinkable: crate::uvec::UVec<u32>, // unsigneds shrinkable;
 
     /// PORT NOTE: C embeds a `clause` header here (`clause conflict;`) used as
     /// the fake binary-conflict clause; kissat_init sets conflict.size = 2.
@@ -284,8 +284,8 @@ pub struct Solver {
     pub clause_shrink: bool,
     pub clause_trivial: bool,
 
-    pub clause: Vec<u32>, // unsigneds clause;
-    pub shadow: Vec<u32>, // unsigneds shadow;
+    pub clause: crate::uvec::UVec<u32>, // unsigneds clause;
+    pub shadow: crate::uvec::UVec<u32>, // unsigneds shadow;
 
     pub arena: Arena,
     pub vectors: Vectors,
@@ -295,7 +295,7 @@ pub struct Solver {
 
     pub last_learned: [Reference; 4],
 
-    pub sorter: Vec<usize>, // sizes sorter;  (STACK (size_t))
+    pub sorter: crate::uvec::UVec<usize>, // sizes sorter;  (STACK (size_t))
 
     pub random: u64, // generator random;
     pub averages: [Averages; 2],
