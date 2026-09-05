@@ -392,6 +392,27 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
   Timetable 1.02. A first (invalid) quiet screen had the two legs of each
   pair sharing a core mid-run and read 1.10 — check `ps -o psr` before
   trusting a screen.
+- 2026-09-05 **THE BUILD FLAG: `-C target-cpu=native` costs 8-11% on this
+  crate.** The second paired 400-instance run
+  (`log/kissat-full-accept2-20260905-074218` v
+  `log/solver13-full-accept2-20260905-074220`, parity tree 2a2bd42, native
+  build) came back WORSE than the first: 311 v 313 solved, PAR-2 1.0202x,
+  both-solved wall geomean **1.047x** (first run 1.013x), while the kissat
+  arm reproduced the first run to 0.07%. Per-cell join: the RS arm was
+  uniformly +3.4-4.2% slower on every cell above 10 s and unchanged below.
+  Quiet full runs confirmed it (bp4_CSO_AM_IXA_LP 140 v 131 s, crafted 117
+  v 109 s, identical conflicts), and a 14-binary bisect put every
+  intermediate step binary at 128-130 s but the frozen binary at 138 s —
+  same source as step 30. The difference was the build: the step binaries
+  came from `cargo build --release` with `RUSTFLAGS` unset (generic
+  x86-64), the frozen ones from `build.sh` (`target-cpu=native`, 797 zmm
+  instructions). Controlled rebuilds of HEAD: crafted generic 106.2 /
+  x86-64-v3 108.0 / native 114.9 s (C 105.5); SCPC 4.28 / 4.30 / 4.75 (C
+  4.33); x86-64-v2 +6% on crafted. `build.sh` now builds generic (the
+  reference kissat is also generic `-O3`). Every screen number in this
+  README was measured on generic binaries; both full runs used native ones.
+  Third paired run launched with the generic binary
+  (`~/.cache/sat13-accept3/sat-solver`).
 - 2026-09-03 REJECTED: kissat's FAST_ASSIGN shape — hoisting raw base
   pointers of arena/assigned/values/watch-stack into `propagate_literal`
   locals and threading `values`/`assigned` through `fast_assign` exactly as

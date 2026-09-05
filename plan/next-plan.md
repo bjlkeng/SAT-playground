@@ -1,6 +1,22 @@
 # NEXT PLAN — 2026-08-28 (supersedes 2026-08-24; PRUNED)
 
-## SESSION 2026-09-05 — second full paired run LAUNCHED on the parity tree (2a2bd42)
+## SESSION 2026-09-05 — second full run: 311 v 313, wall 1.047x → ROOT CAUSE = `target-cpu=native` (AVX-512 codegen 8-11% slower); build.sh now generic; THIRD run launched
+
+Run 2 (native binary): PAR-2 1.0202x, both-solved geomean 1.047x; kissat arm
+identical to run 1 (r2/r1 1.0007), RS arm uniformly +3.4-4.2% on cells
+>10 s. Bisect over the saved step binaries: all generic builds 128-130 s on
+crafted, the native frozen one 138 s from the SAME source. Controlled: HEAD
+generic 106.2 s / v3 108.0 / native 114.9 (C 105.5). `build.sh` fixed
+(generic; the C is generic -O3 too). All screen numbers were generic;
+both full runs were native.
+- THIRD run (generic binary `~/.cache/sat13-accept3/sat-solver`):
+  kissat arm `log/kissat-full-accept3-20260905-164711`, solver13 arm `log/solver13-full-accept3-20260905-164713`; evaluate with
+  `python3 tools/compare_full_runs.py log/kissat-full-accept3-20260905-164711 log/solver13-full-accept3-20260905-164713`. Expect both-solved wall
+  ≈ 1.00x, PAR-2 within noise, no contradictions.
+- Method note: a per-cell join of two runs (`kissat r2/r1` v `rs r2/r1`)
+  separates host drift from a binary change in one table.
+
+### (superseded) second full paired run LAUNCHED on the parity tree (2a2bd42)
 
 Same methodology as the 2026-09-04 acceptance run (`tools/run_kissat_full.sh`,
 3600 s / 16 GB, 16+16 disjoint pinned physical cores, no proofs, slot-pool
