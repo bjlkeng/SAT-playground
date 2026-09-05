@@ -102,16 +102,20 @@ impl WClause {
             WClause::Ref(ref_) => solver.arena.clause(ref_).garbage(),
         }
     }
-    fn size(&self, solver: &Solver) -> u32 {
-        match *self {
-            WClause::Tmp(_) => 2,
-            WClause::Ref(ref_) => solver.arena.clause(ref_).size(),
-        }
-    }
-    fn lit(&self, solver: &Solver, i: u32) -> u32 {
-        match *self {
-            WClause::Tmp(lits) => lits[i as usize],
-            WClause::Ref(ref_) => solver.arena.clause(ref_).lit(i),
+    /// The C's `all_literals_in_clause (other, c)` pointer walk: base and
+    /// size, uniform for the tmp view and the arena clause.  Resolving one
+    /// enum + one clause view per literal (the `lit(i)` form) was +41%
+    /// instructions v the C in generate_resolvents on Timetable.  The arena
+    /// is not reallocated inside these loops (eliminate_clause only marks
+    /// garbage, and every such call is followed by `break`).
+    #[inline(always)]
+    fn lits_ptr(&self, solver: &Solver) -> (*const u32, usize) {
+        match self {
+            WClause::Tmp(lits) => (lits.as_ptr(), 2),
+            WClause::Ref(ref_) => {
+                let l = solver.arena.clause(*ref_).lits();
+                (l.as_ptr(), l.len())
+            }
         }
     }
 }
@@ -143,9 +147,9 @@ fn generate_resolvents_static(
 
         let mut first_antecedent_satisfied = false;
 
-        let c_size = c.size(solver);
-        for i in 0..c_size {
-            let other = c.lit(solver, i);
+        let (c_lits, c_n) = c.lits_ptr(solver);
+        for i in 0..c_n {
+            let other = unsafe { *c_lits.add(i) };
             if other == lit {
                 continue;
             }
@@ -166,8 +170,8 @@ fn generate_resolvents_static(
             continue;
         }
 
-        for i in 0..c_size {
-            let other = c.lit(solver, i);
+        for i in 0..c_n {
+            let other = unsafe { *c_lits.add(i) };
             if other == lit {
                 continue;
             }
@@ -188,9 +192,9 @@ fn generate_resolvents_static(
 
             solver.statistics.eliminate_resolutions += 1; // INC
 
-            let d_size = d.size(solver);
-            for i in 0..d_size {
-                let other = d.lit(solver, i);
+            let (d_lits, d_n) = d.lits_ptr(solver);
+            for i in 0..d_n {
+                let other = unsafe { *d_lits.add(i) };
                 if other == not_lit {
                     continue;
                 }
@@ -227,8 +231,8 @@ fn generate_resolvents_static(
                 break;
             }
 
-            for i in 0..c_size {
-                let other = c.lit(solver, i);
+            for i in 0..c_n {
+                let other = unsafe { *c_lits.add(i) };
                 if other == lit {
                     continue;
                 }
@@ -273,8 +277,8 @@ fn generate_resolvents_static(
             solver.resolvents.push(INVALID); // PUSH_STACK (INVALID_LIT)
         }
 
-        for i in 0..c_size {
-            let other = c.lit(solver, i);
+        for i in 0..c_n {
+            let other = unsafe { *c_lits.add(i) };
             if other == lit {
                 continue;
             }
