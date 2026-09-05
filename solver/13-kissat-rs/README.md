@@ -330,8 +330,9 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
   the fix (a118aa9): crusti maxrss 72 MB, faults 55k, and the
   `[vectors]`/`[defrag]`/`[arena]` sequences identical to the C on crusti,
   REGRandom, Timetable, circuit, SCPC, velev, sudoku and Kakuro; counters
-  exact on all. All 80 `-s` counters had been exact throughout — the bug
-  only changed memory layout, RSS and wall.
+  exact on all; `parity.py --conflicts 100000` on the 20 discriminating
+  cells: **20/20** (a118aa9 + packed Flags). All 80 `-s` counters had been
+  exact throughout — the bug only changed memory layout, RSS and wall.
   **New oracle: `parity.py --phases`** runs both binaries with `-v` and
   diffs the bracketed phase lines (numeric tokens at 1e-5 relative
   tolerance, report rows/options skipped); the pre-fix binary fails crusti
