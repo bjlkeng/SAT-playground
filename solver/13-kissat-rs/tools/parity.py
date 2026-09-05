@@ -63,15 +63,29 @@ def phase_lines(stdout):
     return out
 
 
+POW2_RE = re.compile(r"^2\^(\d+)$")
+
+
+def token_value(t):
+    """Numeric value of a token, accepting kissat's FORMAT_COUNT forms
+    (`2^10`, `1e3`) and percentages; None if not numeric."""
+    m = POW2_RE.match(t)
+    if m:
+        return float(2 ** int(m.group(1)))
+    m = NUM_RE.match(t)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
 def tokens_equal(a, b):
     if a == b:
         return True
-    ma, mb = NUM_RE.match(a), NUM_RE.match(b)
-    if not (ma and mb):
-        return False
-    try:
-        x, y = float(ma.group(1)), float(mb.group(1))
-    except ValueError:
+    x, y = token_value(a), token_value(b)
+    if x is None or y is None:
         return False
     return abs(x - y) <= 1e-5 * max(abs(x), abs(y), 1e-300)
 
