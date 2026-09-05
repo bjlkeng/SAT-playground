@@ -1,5 +1,20 @@
 # NEXT PLAN — 2026-08-28 (supersedes 2026-08-24; PRUNED)
 
+## SESSION 2026-09-05 — second full paired run LAUNCHED on the parity tree (2a2bd42)
+
+Same methodology as the 2026-09-04 acceptance run (`tools/run_kissat_full.sh`,
+3600 s / 16 GB, 16+16 disjoint pinned physical cores, no proofs, slot-pool
+pinning), frozen binary `~/.cache/sat13-accept2/sat-solver` (sha256
+30bd297fb83a96e7, built from 2a2bd42; counters exact v C on SCPC before
+launch), started 2026-09-05 ~00:50 local:
+- kissat arm: `log/kissat-full-accept2-20260905-074218` (`log/accept2-kissat-arm.out`)
+- solver13 arm: `log/solver13-full-accept2-20260905-074220` (`log/accept2-solver13-arm.out`)
+Evaluate with `python3 tools/compare_full_runs.py log/kissat-full-accept2-20260905-074218 log/solver13-full-accept2-20260905-074220`; the previous
+run was 312 v 313 solved, PAR-2 1.0071x, both-solved wall geomean 1.013x —
+the expectation for this tree is both-solved wall ≈ 1.00x and PAR-2 within
+noise, no contradictions. ~10-12 h.
+
+
 ## SESSION 2026-09-04 — solver13 icache/fmt residual KILLED (eager verbose formatting); cache-resident cells 1.03-1.06x, 14-cell wide check geomean ~1.02x; PHASE-8 ACCEPTANCE RUN LAUNCHED (paired, 400x2 @ 3600 s / 16 GB / 16+16 pinned cores)
 
 Commits 1276cba (lazy format_args), 7d46c4c (kitten import inline), + this.
