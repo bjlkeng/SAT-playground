@@ -342,6 +342,16 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
   Remaining cosmetic `-v` differences: `format_count` prints `1000` where
   the C prints `1e3`, and `{}` floats print full expansions where the C
   uses `%g` (values identical).
+- 2026-09-04 loaded screen of the layout-fix + packed-Flags tree
+  (a118aa9/83236e6; 28 background kissat Kakuro runs, pairs on cores 2/4):
+  case7 1.031, clqcl 1.017, DLTM 0.989, oddball 1.003, QG7 1.016, ramsey
+  1.013, reconf10 0.979, RoundRobin 1.030, sudoku 1.026, tseitin_grid 1.000,
+  velev 1.006, xor_op 1.037, circuit 1.015, REGRandom 0.982; clean re-runs
+  (2 reps): **crusti 1.017** (was 1.046 before the layout fix),
+  VanDerWaerden 1.046, SCPC 1.044, Timetable 1.039. Geomean ≈ 1.02x; the
+  residual under load is now the search-bound cells at ~1.04x (SCPC,
+  Timetable, VanDerWaerden), i.e. the analyze cluster's +8% instructions
+  and propagation's extra loads, not inprocessing.
 - 2026-09-03 REJECTED: kissat's FAST_ASSIGN shape — hoisting raw base
   pointers of arena/assigned/values/watch-stack into `propagate_literal`
   locals and threading `values`/`assigned` through `fast_assign` exactly as

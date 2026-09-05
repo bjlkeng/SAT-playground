@@ -89,6 +89,12 @@ vectors/watches/arena/clause allocation needs `parity.py --phases` in
 addition to the counter check; check `maxrss` v the C on a factor-heavy
 cell (crusti/REGRandom) too.** Cosmetic `-v` diffs left: `format_count`
 1000 v 1e3, `{}` v `%g` floats.
+**Loaded screen after the fix**: crusti 1.017 (from 1.046), geomean ≈
+1.02; the residual under load is the search-bound cells at ~1.04x (SCPC
+1.044, Timetable 1.039, VanDerWaerden 1.046) — next lever is instruction
+count in search: analyze cluster (+8% v C), propagate's extra loads
+(`&mut Solver` reloads around stores — a PushCursor-style hoist for the
+watch-list rewrite in propagate_literal is the obvious try), decide/heap.
 **Next**: (1) DONE — Kakuro 1.077x quiet; (2) engines at noise under load;
 (2b) DONE — loaded screen, nothing above 1.05x; remaining instruction
 excess on Kakuro (+7%) sits in watch_large_clauses/inlined_connect pushes
