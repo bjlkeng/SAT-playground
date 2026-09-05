@@ -403,10 +403,11 @@ fn next_factor(solver: &mut Solver, factoring: &mut Factoring) -> (u32, u32) {
                         if mark & QUOTIENT != 0 {
                             continue;
                         }
-                        if mark & FACTOR != 0 {
-                            continue 'min_watches;
-                        }
-                        if mark & NOUNTED != 0 {
+                        // One data-dependent branch for both bits (gcc's
+                        // `and $5` shape); two separate tests mispredicted
+                        // ~25% more on VanDerWaerden (factor.rs:403 carried
+                        // 39% of factor's branch misses).
+                        if mark & (FACTOR | NOUNTED) != 0 {
                             continue 'min_watches;
                         }
                         if next != INVALID {
