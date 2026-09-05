@@ -312,6 +312,35 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
      3-rep: crusti 15.92 → 15.58 s (C 14.97, **1.063 → 1.040x**), REGRandom
      5.67 → 5.58 s (C 5.75), circuit 3.22 → 3.27 s (+1.6%, layout), Timetable
      flat, Kakuro +1%; counters exact on all five; 20-cell parity below.
+- 2026-09-04 **LAYOUT DIVERGENCE FOUND AND FIXED (invisible to the counters):
+  two `SET_END_OF_WATCHES` ports set `watches[lit].end` directly.** The C
+  macro is `kissat_resize_vector`: it also memsets the freed tail to
+  INVALID and adds it to `vectors.usable`. Without the poison the next push
+  into that list saw an occupied slot and relocated the whole vector
+  (doubling it, leaving holes), and with `usable` undercounted the defrag
+  never triggered. Found via crusti's page faults (119k v the C's 53k) →
+  `/usr/bin/time` maxrss **320 MB v 74 MB** → massif (portable build; the
+  native one SIGILLs valgrind) putting 512 MB in `enlarge_stack` under
+  factor's `new_binary_clause` → `-v` logs: RS `[vectors] enlarged` 2^23 →
+  2^27 during factorization-1 where the C stays at 2^23, then `[defrag]
+  freed 71M usable 98%` v `5.6M 82%`. Sites: `factor::eagerly_remove_watch`
+  (factor.rs:735) and `sweep::substitute_connected_clauses` (sweep.rs:1027);
+  every other SET_END_OF_WATCHES port already used `vector::resize_vector`
+  (the `watch.c` `end -= 1/2` decrements are faithful as written). After
+  the fix (a118aa9): crusti maxrss 72 MB, faults 55k, and the
+  `[vectors]`/`[defrag]`/`[arena]` sequences identical to the C on crusti,
+  REGRandom, Timetable, circuit, SCPC, velev, sudoku and Kakuro; counters
+  exact on all. All 80 `-s` counters had been exact throughout — the bug
+  only changed memory layout, RSS and wall.
+  **New oracle: `parity.py --phases`** runs both binaries with `-v` and
+  diffs the bracketed phase lines (numeric tokens at 1e-5 relative
+  tolerance, report rows/options skipped); the pre-fix binary fails crusti
+  at phase line 73 (`[vectors] enlarged to 2^24` where the C prints the
+  factorization summary). Run it alongside the counter check for any
+  change touching vectors, watches, arena growth or clause allocation.
+  Remaining cosmetic `-v` differences: `format_count` prints `1000` where
+  the C prints `1e3`, and `{}` floats print full expansions where the C
+  uses `%g` (values identical).
 - 2026-09-03 REJECTED: kissat's FAST_ASSIGN shape — hoisting raw base
   pointers of arena/assigned/values/watch-stack into `propagate_literal`
   locals and threading `values`/`assigned` through `fast_assign` exactly as

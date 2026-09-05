@@ -78,6 +78,17 @@ addr2line -i, instructions by innermost inlined function — the method that
 found factor's Range-iterator overhead and vivify's checked counter),
 `loadscreen.sh`. REJECTED today: unchecked vivify count_literal / radix
 scatter (fewer instructions, slower wall — layout).
+**LAYOUT BUG (a118aa9, later the same day)**: crusti's 1.28x factor traced
+to two `SET_END_OF_WATCHES` ports that set `end` without the C's
+`kissat_resize_vector` poison + `usable` accounting → runaway watch-stack
+relocation (320 MB RSS v 74 MB, 2.2x page faults), counters exact
+throughout. Fixed; `parity.py --phases` (verbose phase-line diff) is the
+oracle for this class — the pre-fix binary fails it, HEAD passes on 8
+cells. Packed `Flags` (83236e6) is also in. **Standing rule: any change to
+vectors/watches/arena/clause allocation needs `parity.py --phases` in
+addition to the counter check; check `maxrss` v the C on a factor-heavy
+cell (crusti/REGRandom) too.** Cosmetic `-v` diffs left: `format_count`
+1000 v 1e3, `{}` v `%g` floats.
 **Next**: (1) DONE — Kakuro 1.077x quiet; (2) engines at noise under load;
 (2b) DONE — loaded screen, nothing above 1.05x; remaining instruction
 excess on Kakuro (+7%) sits in watch_large_clauses/inlined_connect pushes
