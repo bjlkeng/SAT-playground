@@ -95,6 +95,16 @@ cell (crusti/REGRandom) too.** Cosmetic `-v` diffs left: `format_count`
 count in search: analyze cluster (+8% v C), propagate's extra loads
 (`&mut Solver` reloads around stores — a PushCursor-style hoist for the
 watch-list rewrite in propagate_literal is the obvious try), decide/heap.
+**PARITY REACHED (evening, commits 8796698..1ee63cd)**: push_vectors
+appends unchecked under the capacity mirror + watch_large_delayed through
+PushCursor → SCPC 1.045x → 0.99x; quiet 19-cell screen geomean **0.9996**,
+loaded 18-cell screen **0.994** (tables in README). REJECTED and reverted:
+generate_resolvents raw-pointer walk (case7 +11%, RoundRobin +10% — a wash
+on Timetable hid it; the 19-cell quiet screen is the gate for structural
+rewrites, `scratch quietscreen.sh`: simultaneous swapped pairs, never let
+two legs share a core). Outliers left: Kakuro 1.06 (push-loop stalls),
+VanDerWaerden 1.06 (+25% branch misses on factor's inner literal loop
+exit — same loop as the C, predictor/layout), sudoku/Timetable 1.02.
 **Next**: (1) DONE — Kakuro 1.077x quiet; (2) engines at noise under load;
 (2b) DONE — loaded screen, nothing above 1.05x; remaining instruction
 excess on Kakuro (+7%) sits in watch_large_clauses/inlined_connect pushes

@@ -15,8 +15,9 @@ run, with all kissat features implemented.
 
 Status (2026-09-04): all engines ported; counter parity exact at
 `--conflicts=100000` on the 20 discriminating cells + 14 medium cells and on
-full brocard runs; wall ratio v kissat 1.00-1.06x (memory-bound giants
-1.00-1.02x, cache-resident search-bound cells 1.02-1.06x). **Phase-8 acceptance run PASSED
+full brocard runs; wall ratio v kissat at parity: 19-cell quiet screen geomean
+0.9996, 18-cell loaded screen 0.994 (per-cell 0.94-1.06; Kakuro and
+VanDerWaerden 1.06 are the outliers). **Phase-8 acceptance run PASSED
 2026-09-04** (paired 400x2 @ 3600 s / 16 GB / 16+16 pinned physical cores,
 no proofs, `tools/run_kissat_full.sh`; logs
 `log/kissat-full-accept-20260904-072748` v
@@ -376,6 +377,19 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
 - 2026-09-04 **loaded screen, step-30 tree**: geomean **0.994x** over 18
   cells (crusti 0.999, SCPC 0.991, circuit 0.988, REGRandom 0.939, DLTM
   0.957; worst VanDerWaerden 1.051, sudoku 1.028, Timetable 1.022).
+- 2026-09-04 **QUIET SCREEN, final tree (1ee63cd = the step-30 source)**: 19
+  cells, each cell run as two simultaneous RS/C pairs with the cores
+  swapped (scratch `quietscreen.sh`, `quietout3/`), ratio of the two-run
+  means: clqcl 1.006, case7 0.985, crusti 0.993, oddball 0.992, QG7 0.977,
+  DLTM 0.971, RoundRobin 1.012, ramsey 0.971, reconf10 0.986, tseitin_grid
+  0.990, VanDerWaerden 1.059, sudoku 1.024, circuit 1.000, xor_op 1.013,
+  velev 1.009, SCPC 0.993, REGRandom 0.935, Timetable 1.023, Kakuro 1.062 —
+  **geomean 0.9996**. Loaded screen of the same source (above): **0.994**.
+  Outliers left: Kakuro 1.06 (memory-bound giant; push-loop stall time),
+  VanDerWaerden 1.06 (branch misses in factor's inner loop), sudoku/
+  Timetable 1.02. A first (invalid) quiet screen had the two legs of each
+  pair sharing a core mid-run and read 1.10 — check `ps -o psr` before
+  trusting a screen.
 - 2026-09-03 REJECTED: kissat's FAST_ASSIGN shape — hoisting raw base
   pointers of arena/assigned/values/watch-stack into `propagate_literal`
   locals and threading `values`/`assigned` through `fast_assign` exactly as
