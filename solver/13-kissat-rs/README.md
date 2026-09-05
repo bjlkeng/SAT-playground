@@ -352,6 +352,30 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
   residual under load is now the search-bound cells at ~1.04x (SCPC,
   Timetable, VanDerWaerden), i.e. the analyze cluster's +8% instructions
   and propagation's extra loads, not inprocessing.
+- 2026-09-04 **search-bound cells → propagate's delayed re-watching.** SCPC
+  instructions were +17% v the C (`search_propagate` +14%, attribution:
+  `push_vectors` 17% of it — `Vec::push`'s grow check on every append even
+  though the capacity mirror guarantees room, plus the per-push reloads).
+  21. `Vectors::push_unchecked` for the `*stack->end++ = e` cases of
+     `push_vectors`, and `watch_large_delayed` pushing through a hoisted
+     `PushCursor`. 3-rep paired: **SCPC 1.045x → 0.99x**, circuit 0.995x,
+     Timetable 1.026x; instructions −2.8%; counters exact. Under load: SCPC
+     0.994, xor_op 1.013, Timetable 1.027.
+- 2026-09-04 REJECTED (reverted, 1ee63cd): `generate_resolvents` walking the
+  `WClause` literals by raw pointer (the C's tmp-clause shape). Timetable
+  instructions −2% and wall a wash, but **case7 +11% and RoundRobin +10%**
+  (quiet 5-arm paired, both reps) — the elimination-heavy small cells lose
+  badly; not understood (likely codegen of the enum + pointer pair), not
+  kept. Lesson: a wash on one cell is not evidence; the quiet 19-cell screen
+  is the gate for structural rewrites.
+- 2026-09-04 VanDerWaerden (1.05x): fewer instructions than the C (65.3 v
+  67.6 G) but +5% cycles from **+25% branch misses** (543M v 435M), 39% of
+  factor's misses on the inner literal loop's exit in `next_factor` — the
+  same loop as the C's; a predictor/layout effect. Combining the
+  FACTOR|NOUNTED test (b699908) changed nothing (kept for shape).
+- 2026-09-04 **loaded screen, step-30 tree**: geomean **0.994x** over 18
+  cells (crusti 0.999, SCPC 0.991, circuit 0.988, REGRandom 0.939, DLTM
+  0.957; worst VanDerWaerden 1.051, sudoku 1.028, Timetable 1.022).
 - 2026-09-03 REJECTED: kissat's FAST_ASSIGN shape — hoisting raw base
   pointers of arena/assigned/values/watch-stack into `propagate_literal`
   locals and threading `values`/`assigned` through `fast_assign` exactly as
