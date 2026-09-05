@@ -94,6 +94,7 @@ fn delay_watching_large(solver: &mut Solver, lit: u32, other: u32, ref_: Referen
 fn watch_large_delayed(solver: &mut Solver) {
     let delayed = std::mem::take(&mut solver.delayed);
     let end_delayed = delayed.len();
+    let mut cur = crate::vector::PushCursor::load(solver);
     let mut d = 0;
     while d != end_delayed {
         let lit = delayed[d];
@@ -106,8 +107,12 @@ fn watch_large_delayed(solver: &mut Solver) {
         let ref_ = delayed[d];
         d += 1;
         let blocking = crate::watch::watch_lit(watch); // watch.blocking.lit
-        crate::watch::push_blocking_watch(solver, lit, blocking, ref_);
+        // kissat_push_blocking_watch through the hoisted push state (see
+        // vector::PushCursor): head then tail.
+        cur.push(solver, lit, crate::watch::blocking_watch(blocking));
+        cur.push(solver, lit, crate::watch::large_watch(ref_));
     }
+    cur.store(solver);
     let mut delayed = delayed;
     delayed.clear(); // CLEAR_STACK (*delayed)
     solver.delayed = delayed;

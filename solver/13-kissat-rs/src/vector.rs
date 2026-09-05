@@ -140,6 +140,19 @@ impl Vectors {
         self.capacity = new_capacity;
     }
 
+    /// `*stack->end++ = e` when `!full()`: the capacity mirror guarantees
+    /// room, so skip Vec::push's grow check (it was a visible share of
+    /// propagate's instructions through watch_large_delayed).
+    #[inline(always)]
+    pub fn push_unchecked(&mut self, e: u32) {
+        let len = self.stack.len();
+        debug_assert!(len < self.capacity && len < self.stack.capacity());
+        unsafe {
+            std::ptr::write(self.stack.as_mut_ptr().add(len), e);
+            self.stack.set_len(len + 1);
+        }
+    }
+
     /// PUSH_STACK on the shared stack (sentinel push only).
     fn push_stack(&mut self, e: u32) {
         if self.full() {
@@ -296,7 +309,7 @@ pub fn push_vectors(solver: &mut Solver, lit: u32, e: u32) {
             // *(vector->begin = stack->end++) = e;
             let begin = solver.vectors.stack.len();
             solver.watches[lit as usize].begin = begin;
-            solver.vectors.stack.push(e);
+            solver.vectors.push_unchecked(e);
         }
         // vector->end = vector->begin;
         let begin = solver.watches[lit as usize].begin;
@@ -310,7 +323,7 @@ pub fn push_vectors(solver: &mut Solver, lit: u32, e: u32) {
                 solver.vectors.stack[end] = e;
                 solver.vectors.dec_usable();
             } else {
-                solver.vectors.stack.push(e); // *stack->end++ = e
+                solver.vectors.push_unchecked(e); // *stack->end++ = e
             }
         } else {
             let end = if solver.vectors.stack[end] != INVALID_VECTOR_ELEMENT {
