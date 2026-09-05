@@ -385,6 +385,8 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
   0.990, VanDerWaerden 1.059, sudoku 1.024, circuit 1.000, xor_op 1.013,
   velev 1.009, SCPC 0.993, REGRandom 0.935, Timetable 1.023, Kakuro 1.062 —
   **geomean 0.9996**. Loaded screen of the same source (above): **0.994**.
+  `parity.py --phases --conflicts 100000` on the 20 discriminating cells
+  with this binary: **20/20** counters and phase lines.
   Outliers left: Kakuro 1.06 (memory-bound giant; push-loop stall time),
   VanDerWaerden 1.06 (branch misses in factor's inner loop), sudoku/
   Timetable 1.02. A first (invalid) quiet screen had the two legs of each
