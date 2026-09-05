@@ -9,6 +9,14 @@ Usage:
   parity.py [--conflicts N] [--options '--probe=0 ...'] cnf [cnf ...]
   parity.py --corpus default [--conflicts N]
   parity.py --solver /path/to/frozen/sat-solver ...   (test a copied binary)
+  parity.py --phases ...   (also run both with -v and diff the bracketed
+                            phase lines: catches watch-stack layout
+                            divergences the counters cannot see — the
+                            2026-09-04 SET_END_OF_WATCHES bug showed only
+                            as a different "[vectors] enlarged"/"[defrag]"
+                            sequence and 4x RSS; numeric tokens compare
+                            with 1e-5 relative tolerance, report rows and
+                            option/banner lines are skipped)
 
 Exit 0 iff every instance matches on status + all counters.
 """
@@ -34,6 +42,52 @@ STAT_RE = re.compile(r"^c ([a-z_0-9]+):\s+(\d+)")
 IGNORED = set()
 
 
+PHASE_RE = re.compile(r"^c \[([a-z]+)(?:-\d+)?\] (.*)$")
+NUM_RE = re.compile(r"^[-+]?(\d+\.?\d*(?:e[-+]?\d+)?|\.\d+(?:e[-+]?\d+)?)%?$", re.I)
+
+
+def phase_lines(stdout):
+    """Bracketed verbose lines as (name, tokens); layout-sensitive messages
+    (vectors/defrag/arena) included, options/banner excluded."""
+    out = []
+    for line in stdout.splitlines():
+        m = PHASE_RE.match(line)
+        if not m:
+            continue
+        name, rest = m.group(1), m.group(2)
+        if name in ("options", "banner", "kissat"):
+            continue
+        rest = rest.replace(" (moved)", "").replace(" (in place)", "")
+        rest = rest.replace("18446744073709551615", "N")  # IGNOREd METRIC count
+        out.append((name, rest.split()))
+    return out
+
+
+def tokens_equal(a, b):
+    if a == b:
+        return True
+    ma, mb = NUM_RE.match(a), NUM_RE.match(b)
+    if not (ma and mb):
+        return False
+    try:
+        x, y = float(ma.group(1)), float(mb.group(1))
+    except ValueError:
+        return False
+    return abs(x - y) <= 1e-5 * max(abs(x), abs(y), 1e-300)
+
+
+def diff_phases(ours, ref):
+    """Return the first mismatching (index, ours, ref) or None."""
+    n = min(len(ours), len(ref))
+    for i in range(n):
+        (na, ta), (nb, tb) = ours[i], ref[i]
+        if na != nb or len(ta) != len(tb) or not all(tokens_equal(x, y) for x, y in zip(ta, tb)):
+            return i, ours[i], ref[i]
+    if len(ours) != len(ref):
+        return n, ours[n] if n < len(ours) else None, ref[n] if n < len(ref) else None
+    return None
+
+
 def run(binary, cnf, extra, timeout):
     cmd = [binary, "-n", "-s"] + extra + [cnf]
     try:
@@ -42,7 +96,7 @@ def run(binary, cnf, extra, timeout):
             text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        return None, {}, f"TIMEOUT-{timeout}s"
+        return None, {}, f"TIMEOUT-{timeout}s", ""
     status = None
     stats = {}
     in_stats = False
@@ -57,7 +111,7 @@ def run(binary, cnf, extra, timeout):
             m = STAT_RE.match(line)
             if m and m.group(1) not in IGNORED:
                 stats[m.group(1)] = int(m.group(2))
-    return status, stats, None
+    return status, stats, None, p.stdout
 
 
 def main():
@@ -70,6 +124,9 @@ def main():
     ap.add_argument("--timeout", type=int, default=600, help="per-run seconds")
     ap.add_argument("--solver", default=SOLVER13, help="solver 13 binary to test")
     ap.add_argument("--kissat", default=KISSAT, help="reference kissat binary")
+    ap.add_argument("--phases", action="store_true",
+                    help="also run with -v and diff the bracketed phase lines "
+                         "(layout oracle: [vectors]/[defrag]/[arena] sequences)")
     args = ap.parse_args()
 
     cnfs = list(args.cnfs)
@@ -87,11 +144,13 @@ def main():
         extra.append(f"--conflicts={args.conflicts}")
     if args.decisions is not None:
         extra.append(f"--decisions={args.decisions}")
+    if args.phases:
+        extra.append("-v")
 
     failures = 0
     for cnf in cnfs:
-        ks, kstats, kerr = run(args.kissat, cnf, extra, args.timeout)
-        ss, sstats, serr = run(args.solver, cnf, extra, args.timeout)
+        ks, kstats, kerr, kout = run(args.kissat, cnf, extra, args.timeout)
+        ss, sstats, serr, sout = run(args.solver, cnf, extra, args.timeout)
         name = os.path.basename(cnf)
         if kerr or serr:
             print(f"FAIL {name}: kissat={kerr or 'ok'} solver13={serr or 'ok'}")
@@ -110,6 +169,19 @@ def main():
             print(f"FAIL {name}: status={ks}, {len(diffs)} counter diffs")
             print("\n".join(diffs[:40]))
             failures += 1
+            continue
+        if args.phases:
+            kp, sp = phase_lines(kout), phase_lines(sout)
+            mism = diff_phases(sp, kp)
+            if mism is not None:
+                i, ours, ref = mism
+                print(f"FAIL {name}: status={ks}, counters match, phase line {i} differs "
+                      f"({len(sp)} v {len(kp)} lines)")
+                print(f"    solver13: {ours}")
+                print(f"    kissat:   {ref}")
+                failures += 1
+                continue
+            print(f"ok   {name}: status={ks}, {len(kstats)} counters match, {len(kp)} phase lines match")
         else:
             print(f"ok   {name}: status={ks}, {len(kstats)} counters match")
     print(f"\n{len(cnfs) - failures}/{len(cnfs)} instances at parity")
