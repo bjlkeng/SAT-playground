@@ -17,8 +17,12 @@ Status (2026-09-04): all engines ported; counter parity exact at
 `--conflicts=100000` on the 20 discriminating cells + 14 medium cells and on
 full brocard runs; wall ratio v kissat at parity: 19-cell quiet screen geomean
 0.9996, 18-cell loaded screen 0.994 (per-cell 0.94-1.06; Kakuro and
-VanDerWaerden 1.06 are the outliers). **Phase-8 acceptance run PASSED
-2026-09-04** (paired 400x2 @ 3600 s / 16 GB / 16+16 pinned physical cores,
+VanDerWaerden 1.06 are the outliers). **Third paired run (generic build, 2026-09-05/06): solver 13 AHEAD —
+solved 313 v kissat 312, PAR-2 785,779 v 791,180 (0.993x), both-solved
+wall geomean 0.9875x over 284 cells, zero contradictions** (logs
+`log/kissat-full-accept3-20260905-164711` v
+`log/solver13-full-accept3-20260905-164713`; details below). **Phase-8
+acceptance run PASSED 2026-09-04** (paired 400x2 @ 3600 s / 16 GB / 16+16 pinned physical cores,
 no proofs, `tools/run_kissat_full.sh`; logs
 `log/kissat-full-accept-20260904-072748` v
 `log/solver13-full-accept-20260904-072750`, report via
@@ -413,6 +417,19 @@ Performance notes (tier-1, brocard full default runs, quiet-ish host):
   README was measured on generic binaries; both full runs used native ones.
   Third paired run launched with the generic binary
   (`~/.cache/sat13-accept3/sat-solver`).
+- 2026-09-06 **THIRD PAIRED 400-RUN (generic binary
+  `~/.cache/sat13-accept3/sat-solver`, sha256 0bf3e08a30981590, tree
+  2a2bd42 + generic build.sh 5e758d5)**: solved **313 v 312** (we convert
+  lockchart-group3-L15-K29-p4 UNSAT at 3595 s where kissat times out — the
+  same cell we lost as a wall-coin in run 1; nothing lost), PAR-2 **785,779
+  v 791,180 = 0.9932x**, both-solved wall geomean **0.9875x** (284 cells,
+  155,779 v 157,575 s), zero SAT/UNSAT contradictions, the two memory-abort
+  cells identical in both arms. Wall-band cells: frb80-14-1 3279 v 3424 s,
+  bp4_LPI_FPBEQ_ZR 3047 v 3118 s (both ours faster). Residual families:
+  Kakuro 1.09-1.15x (memory-bound push loops), oddball_67 1.12x; the
+  `N.normalised` family 0.80-0.91x, tseitin_grid 0.90x. This is the
+  acceptance-quality evidence for the wall-parity claim: run 1 (native
+  build) 1.013x, run 2 (native) 1.047x, run 3 (generic) 0.9875x.
 - 2026-09-03 REJECTED: kissat's FAST_ASSIGN shape — hoisting raw base
   pointers of arena/assigned/values/watch-stack into `propagate_literal`
   locals and threading `values`/`assigned` through `fast_assign` exactly as

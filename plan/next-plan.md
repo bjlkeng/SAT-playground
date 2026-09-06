@@ -9,6 +9,10 @@ crafted, the native frozen one 138 s from the SAME source. Controlled: HEAD
 generic 106.2 s / v3 108.0 / native 114.9 (C 105.5). `build.sh` fixed
 (generic; the C is generic -O3 too). All screen numbers were generic;
 both full runs were native.
+- THIRD run DONE 2026-09-06 10:14: **313 v 312 solved, PAR-2 0.9932x,
+  both-solved wall geomean 0.9875x, 0 contradictions** — solver13 ahead of
+  kissat 4.0.4 on the full 2025 track under identical conditions. Only
+  Kakuro (1.09-1.15x) and oddball_67 (1.12x) remain above 1.05.
 - THIRD run (generic binary `~/.cache/sat13-accept3/sat-solver`):
   kissat arm `log/kissat-full-accept3-20260905-164711`, solver13 arm `log/solver13-full-accept3-20260905-164713`; evaluate with
   `python3 tools/compare_full_runs.py log/kissat-full-accept3-20260905-164711 log/solver13-full-accept3-20260905-164713`. Expect both-solved wall
