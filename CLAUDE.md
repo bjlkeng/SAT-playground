@@ -100,10 +100,12 @@ Runs:
 python3 tools/feature_ablation.py --arm 'cand:...' --arm 'base:' \
   --suite sat-comp-2025-medium --seeds 1 --jobs 32 --mem-mb 16000
 
-# 400-cell paired run against kissat (-k our binary, -n names the log dir)
-bash tools/run_kissat_full.sh -k solver/13-kissat-rs/target/release/sat-solver \
-  -n solver13-<tag> -t 3600 -m 16000
-python3 tools/compare_full_runs.py <baseline_log_dir> <candidate_log_dir>
+# 400-cell paired run against kissat: two arms, disjoint pinned cores
+# (-k picks the binary, -n names log/<name>-<timestamp>, -c is the core offset)
+bash tools/run_kissat_full.sh -n kissat-<tag>   -j 16 -c 0  -t 3600 -m 16000 &
+bash tools/run_kissat_full.sh -n solver13-<tag> -j 16 -c 18 -t 3600 -m 16000 \
+  -k solver/13-kissat-rs/target/release/sat-solver &
+python3 tools/compare_full_runs.py <kissat_log_dir> <solver13_log_dir>
 ```
 
 Solver 13 has **no `SAT_*` feature toggles** — it is a kissat CLI port and
@@ -181,8 +183,11 @@ block's conservative default does not apply here.
 2. Run the gates for whatever changed (`bash tools/smoke_test.sh
    solver/13-kissat-rs`, `cargo test`).
 3. Run the Codex review loop below until it is clean.
-4. `git pull --rebase && git push && git status`, plus `bd dolt push` if
-   beads changed.
+4. If beads changed, refresh the git-tracked export:
+   `bd export -o .beads/issues.jsonl` and stage it. There is **no Dolt
+   remote** here — the tracker syncs through git, and the hooks that used to
+   run the export were removed in `0af6b68`, so this step is manual.
+5. `git pull --rebase && git push && git status`.
 
 Work is not done until `git push` succeeds. Never stop at "ready to push when
 you are".
