@@ -76,17 +76,23 @@ if every original clause is satisfied.
 The decision metric, in order:
 
 1. **Solved instances.**
-2. **Tick PAR-2** — PAR-2 over `statistics.search_ticks`: ticks for a solved
-   cell, twice the tick budget for an unsolved one. Ticks are exactly
-   deterministic and load-independent, so this axis reproduces at full
-   parallelism and is immune to deal noise and host drift.
+2. **Tick PAR-2** — the same PAR-2 sum, but counted in work units instead
+   of seconds: a solved cell costs the work it used, an unsolved cell costs
+   twice the work budget it was given. A work unit is the plan's work clock
+   **W = `statistics.ticks` + k_res × `eliminate_resolutions`** (plan §3.4).
+   Use W, **not `search_ticks`**: search ticks leave out probing and
+   elimination, which are exactly the passes the scheduler is allowed to
+   move, so a policy could look cheap just by pushing work out of search.
+   W is deterministic, so this number comes out the same on a loaded host
+   and an idle one.
 3. **Wall PAR-2** — the competition metric, reported alongside.
 
-Ticks are not in the harness output yet. Plan step A′ adds per-cell ticks to
+W is not in the harness output yet. Plan step A′ adds per-cell W to
 `feature_ablation.py`'s results TSV and to `run_kissat_full.sh`'s
 `results.csv`; do that before the first RL comparison, and add
-`SAT_LIMIT_TICKS` (plan step A) so a tick budget can be enforced the way
-`--conflicts` is.
+`SAT_LIMIT_TICKS` (plan step A), which limits W, so a work budget can be
+enforced the way `--conflicts` is. Note `statistics.ticks` is never printed
+by kissat today and `k_res` has to be fitted once from the stock traces.
 
 **Splits** (plan §8). `benchmarks/sat-comp-2025-medium` (100 cells) and the
 full `benchmarks/sat-comp-2025` (400) are training / in-distribution. Hold a
@@ -191,7 +197,11 @@ block's conservative default does not apply here.
 2. Run the gates for whatever changed (`bash tools/smoke_test.sh
    solver/13-kissat-rs`, `cargo test`).
 3. Run the Codex review loop below until it is clean.
-4. If beads changed, run `bd export -o .beads/issues.jsonl` and stage it.
+4. If beads changed, export twice and stage both files:
+   `bd export -o .beads/issues.jsonl` (the live tracker; this is the file bd
+   reads back) and `bd export --all -o .beads/beads-full.jsonl` (issues plus
+   `bd remember` memories — plain `bd export` drops memories, so without
+   this they are not in git at all and a fresh clone loses them).
    There is **no Dolt remote** here — the tracker syncs through git.
    Auto-export is on, but it is throttled to once a minute, so **always
    export by hand after deleting**: bd reads this file back into the
