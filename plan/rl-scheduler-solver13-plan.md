@@ -914,16 +914,29 @@ Realistic cost of step 1-8: 2-3 sessions, not 1.
 
 ## 10. Sequencing and rough cost
 
-| step | deliverable | cost |
-|---|---|---|
-| A′ | ticks per cell in every `feature_ablation.py` results TSV (tier-2 axis becomes deterministic for all future A/Bs) | small |
-| 0 | `SAT_EXTRA_ARGS` passthrough; constant-multiplier sweeps on the existing CLI knobs (baseline 2); headroom estimate | 1 line + 2-3 multi-arm sweeps |
-| A | `policy.rs`, chokepoints, epoch hook, static features, logger, fork mode, counter audit, `SAT_LIMIT_TICKS`, `SAT_WALL_LIMIT`; parity 20/20 both ways | 2-3 sessions |
-| B | `rl_collect.py`; stock traces on 2025 + 2026 (+ band at 3600 s); X_d sweep on tier 2; normalization, runtime predictor, `B_cell`, peak RSS | 1-2 suite passes |
-| C | round 0: perturbation dataset (stratified tick budgets, fork branching, timeout band) | ~2 days of host |
-| D | baselines ladder (2)-(3); cloned policy passes parity / ~0 % deviation | 1 tick-deterministic run |
-| E | ranking policy from round 0; DAgger rounds 1-3; validation-split selection; 400-cell wall check; medium gate; 2026 holdout once | ~3 days + 2-3 gates |
-| F | stage-2 dataset + heads; ablations; promotion note | 2-4 gates |
+| step | deliverable | cost | bead |
+|---|---|---|---|
+| A′ | ticks per cell in every `feature_ablation.py` results TSV (tier-2 axis becomes deterministic for all future A/Bs) | small | `SAT-playground-p9m.4` |
+| 0 | `SAT_EXTRA_ARGS` passthrough; constant-multiplier sweeps on the existing CLI knobs (baseline 2); headroom estimate | 1 line + 2-3 multi-arm sweeps | `SAT-playground-p9m.5` |
+| A | `policy.rs`, chokepoints, epoch hook, static features, logger, fork mode, counter audit, `SAT_LIMIT_TICKS`, `SAT_WALL_LIMIT`; parity 20/20 both ways | 2-3 sessions | `SAT-playground-p9m.6` |
+| B | `rl_collect.py`; stock traces on 2025 + 2026 (+ band at 3600 s); X_d sweep on tier 2; normalization, runtime predictor, `B_cell`, peak RSS | 1-2 suite passes | `SAT-playground-p9m.7` |
+| C | round 0: perturbation dataset (stratified tick budgets, fork branching, timeout band) | ~2 days of host | `SAT-playground-p9m.8` |
+| D | baselines ladder (2)-(3); cloned policy passes parity / ~0 % deviation | 1 tick-deterministic run | `SAT-playground-p9m.9` |
+| E | ranking policy from round 0; DAgger rounds 1-3; validation-split selection; 400-cell wall check; medium gate; 2026 holdout once | ~3 days + 2-3 gates | `SAT-playground-p9m.10` |
+| F | stage-2 dataset + heads; ablations; promotion note | 2-4 gates | `SAT-playground-p9m.11` |
+
+**Beads (2026-09-15).** The whole plan is in the tracker under the root
+epic `SAT-playground-p9m`: one child epic per step above, one task per
+deliverable, one bead per long host run. `SAT-playground-p9m.1` holds the
+evaluation rules of §8 and is linked from every gate bead.
+`SAT-playground-p9m.2` is the chore that reconciles this document's stale
+numbers (2^25 v 2^27, 4 × 3 branching, `SAT_POLICY_HOLD`) with the
+decisions in §15. `SAT-playground-p9m.3` is the parking lot for the ideas
+§9 and §13 defer. Decisions the plan leaves to data are
+`SAT-playground-p9m.12` to `.19` (X_d, menu freeze, knob triage, deploy
+target, go/no-go after round 1, margin, delay counters, D−1). `bd show <id>`
+gives the details; `bd ready` lists what can start. This document stays the
+source of truth; every bead points back to its section.
 
 ---
 
