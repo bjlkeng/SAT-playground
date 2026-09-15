@@ -80,6 +80,18 @@ c workclock ticks=… search_ticks=… probing_ticks=… backbone_ticks=… tran
   first pass with the earlier k_res = 20 binary
   (`log/abtest-cand-vs-base-2026-09-15-15-02-57`) gave the same 20/20 identity.
 
+**`SAT_EXTRA_ARGS` (plan step 0, 2026-09-15).** `run.sh` expands
+`SAT_EXTRA_ARGS` (word-split) as kissat options before the CNF in both of
+its paths, e.g. `SAT_EXTRA_ARGS='--eliminateint=1000' bash run.sh x.cnf out/`.
+Unset or empty adds no words, so the command is unchanged. Every interval and
+effort knob is a kissat option, so this is the whole constant-knob experiment
+of the RL plan (§7 step 5b). `tools/feature_ablation.py` forwards an arm's
+`SAT_EXTRA_ARGS` to the binary itself, so `--arm 'x:SAT_EXTRA_ARGS=--probeint=50'`
+works without the wrapper; `tools/parity.py` calls the binary directly and is
+unaffected. Checked 2026-09-15 on SCPC-500-1 at `--conflicts=300000`:
+eliminations 6 (stock) v 4 (`--eliminateint=1000`) v 8 (`--eliminateint=250`);
+unset v empty give identical `s` and `c workclock` lines; smoke test 9/9.
+
 Status (2026-09-04): all engines ported; counter parity exact at
 `--conflicts=100000` on the 20 discriminating cells + 14 medium cells and on
 full brocard runs; wall ratio v kissat at parity: 19-cell quiet screen geomean

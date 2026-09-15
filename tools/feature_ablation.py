@@ -141,21 +141,34 @@ def parse_workclock(stdout_text: str) -> dict[str, str]:
 
 
 TSV_HEADER = ("config\tinstance\tseed\tresult\ttime_s\tconflicts\tpropagations\tdecisions\ttimeout"
-              "\tverified\tticks\teliminate_resolutions\twork\n")
+              "\tverified\tticks\teliminate_resolutions\twork\tnote\n")
 NA_WORK = ("NA", "NA", "NA")
+# Why a run ended without an answer, from its stderr: a Rust panic (solver 13 aborts on panic, the
+# same SIGABRT as an allocation failure, so only this line tells them apart) or an out-of-memory
+# abort. Recorded in the TSV's `note` column so rl_sweep_report.py can class the exit.
+DEATH_NOTE_RE = re.compile(r"panicked at|memory allocation of .* failed|out of memory|fatal error|"
+                           r"error: ", re.I)
+
+
+def death_note(stderr_text: str) -> str:
+    for ln in stderr_text.splitlines():
+        if DEATH_NOTE_RE.search(ln):
+            return " ".join(ln.split())[:160].replace("\t", " ")
+    return ""
 
 
 def write_results_tsv(tsv: Path, tag: str, rows, timeout: int) -> None:
-    """Gate-compatible per-cell TSV. rows: (stem, seed, res, dt, cf, pr, dc, ver, (ticks, elim, work)).
+    """Gate-compatible per-cell TSV. rows: (stem, seed, res, dt, cf, pr, dc, ver, (ticks, elim, work), note).
 
     The three work-clock columns come from the solver's exit line and are NA (never 0) when a cell
-    printed none: a crash, a hard kill, or a binary older than plan step A'.
+    printed none: a crash, a hard kill, or a binary older than plan step A'. `note` is the stderr
+    line that explains a run with no answer (panic v out-of-memory), else empty.
     """
     with open(tsv, "w") as f:
         f.write(TSV_HEADER)
-        for stem, seed, res, dt, cf, pr, dc, ver, wc in sorted(rows):
+        for stem, seed, res, dt, cf, pr, dc, ver, wc, note in sorted(rows):
             f.write(f"{tag}\t{stem}\t{seed}\t{res}\t{dt:.3f}\t{cf}\t{pr}\t{dc}\t{timeout}\t{ver}"
-                    f"\t{wc[0]}\t{wc[1]}\t{wc[2]}\n")
+                    f"\t{wc[0]}\t{wc[1]}\t{wc[2]}\t{note}\n")
 CORES = [0, 1, 2, 3]            # default worker cores; overridden by preflight()
 TOL = 0.03                      # 3% noise band for the repeat rule
 
@@ -721,12 +734,12 @@ def seedgate(args) -> int:
             idx, stem, seed = job
             core = core_pool.get()
             try:
-                res, dt, cf, pr, dc, ver, wc = _solve_one(
+                res, dt, cf, pr, dc, ver, wc, note = _solve_one(
                     core, solver_dir, env_extra, cnf_for[stem], work_root / f"{idx}",
                     args.timeout, args.mem_mb, seed, verify=args.verify)
             finally:
                 core_pool.put(core)
-            return (stem, seed, res, dt, cf, pr, dc, ver, wc)
+            return (stem, seed, res, dt, cf, pr, dc, ver, wc, note)
 
         results = []
         with ThreadPoolExecutor(max_workers=len(CORES)) as ex:
@@ -847,7 +860,8 @@ def _solve_one(core: int, solver_dir: str, env_extra: dict, cnf_path: Path, odir
     """Run the solver on one (instance,seed) pinned to `core`.
 
     Returns (result, secs, conflicts, propagations, decisions, verified, (ticks, eliminate_resolutions,
-    work)). Mirrors seedgate()'s inner run: ulimit -v address-space cap; conflicts scraped from the
+    work), note). `note` is the stderr diagnostic of a run that panicked or aborted (a panic, an
+    out-of-memory abort, an abnormal exit code behind a status line), else empty. Mirrors seedgate()'s inner run: ulimit -v address-space cap; conflicts scraped from the
     SAT_STATS_JSON stderr line (solvers 10-12) or from the `c workclock` exit line (solver 13+, which
     ignores SAT_STATS_JSON). The work-clock triple is the per-cell tick axis (CLAUDE.md 'Evaluation')
     and is NA, never 0, when the solver printed no exit line. When `verify` is set, the SAT model /
@@ -895,9 +909,18 @@ def _solve_one(core: int, solver_dir: str, env_extra: dict, cnf_path: Path, odir
             else:
                 counts = (w("conflicts"), w("propagations"), w("decisions"))
             ver = _verify_result(res, cnf_path, odir, p.stdout, timeout) if verify else "off"
-            return (res, dt, *counts, ver, (w("ticks"), w("eliminate_resolutions"), w("work")))
+            # Always keep the stderr diagnostic: a panic or an allocation failure AFTER the status
+            # line (kissat prints `s` before the model) would otherwise pass as a solve. Any status
+            # line (SAT, UNSAT or UNKNOWN) followed by an abnormal exit code (kissat exits 10/20/0
+            # only) is recorded as `exit rc=<n> after the status line[; <stderr reason>]` so the
+            # report can class the stop: an incomplete answer is never a solve, and an UNKNOWN
+            # that then crashed is not a budget stop.
+            note = death_note(p.stderr)
+            if res != "TIMEOUT" and not res.startswith("UNKNOWN_rc") and p.returncode not in (0, 10, 20):
+                note = f"exit rc={p.returncode} after the status line" + (f"; {note}" if note else "")
+            return (res, dt, *counts, ver, (w("ticks"), w("eliminate_resolutions"), w("work")), note)
         except subprocess.TimeoutExpired:
-            return ("TIMEOUT", time.time() - t0, "NA", "NA", "NA", "skip", NA_WORK)
+            return ("TIMEOUT", time.time() - t0, "NA", "NA", "NA", "skip", NA_WORK, "")
     finally:
         shutil.rmtree(odir, ignore_errors=True)
 
@@ -931,13 +954,14 @@ def abtest(args) -> int:
     seeds = list(range(args.seeds))
     insts = instances(args.half if getattr(args, "half", None) else None)
     ts = time.strftime("%Y-%m-%d-%H-%M-%S")
-    camp = ROOT / "log" / f"abtest-{('-vs-'.join(tags))[:48]}-{ts}"
+    label = (getattr(args, "name", "") or "").strip() or ("-vs-".join(tags))[:48]
+    camp = ROOT / "log" / f"abtest-{label}-{ts}"
     camp.mkdir(parents=True, exist_ok=True)
 
     for sd in sorted({s for _, s, _ in arms}):
         build(sd)
 
-    tmp_ctx = tempfile.TemporaryDirectory(prefix=f"abtest-{('-vs-'.join(tags))[:32]}-", dir=temp_parent())
+    tmp_ctx = tempfile.TemporaryDirectory(prefix=f"abtest-{label[:32]}-", dir=temp_parent())
     tmp_root = Path(tmp_ctx.name)
     scratch = tmp_root / "cnf"
     work_root = tmp_root / "work"
@@ -967,12 +991,12 @@ def abtest(args) -> int:
             jidx, tag, sdir, env_extra, stem, seed = job
             core = core_pool.get()
             try:
-                res, dt, cf, pr, dc, ver, wc = _solve_one(
+                res, dt, cf, pr, dc, ver, wc, note = _solve_one(
                     core, sdir, env_extra, cnf_for[stem], work_root / f"{jidx}",
                     args.timeout, args.mem_mb, seed, verify=args.verify)
             finally:
                 core_pool.put(core)
-            return (tag, stem, seed, res, dt, cf, pr, dc, ver, wc)
+            return (tag, stem, seed, res, dt, cf, pr, dc, ver, wc, note)
 
         results = []
         with ThreadPoolExecutor(max_workers=len(CORES)) as ex:
@@ -1189,6 +1213,9 @@ def main() -> int:
                          "bare CONFIG_MAP tag. Repeat for N-way. Triggers a simultaneous-start, "
                          "interleaved, fair shared-core seedgate across all arms (defaults: 32 cores, "
                          "16GB/job, 1800s; one gate-compatible results.tsv per arm + inline verdict).")
+    ap.add_argument("--name", default="",
+                    help="label for an --arm run's directory, log/abtest-<name>-<timestamp> (default: the arm "
+                         "tags joined by -vs-, cut to 48 chars; unreadable for a many-arm sweep)")
     ap.add_argument("--baseline", default="",
                     help="arm tag used as the A/B reference (default: an arm named "
                          "base/baseline/default/prev/previous, else the last --arm).")

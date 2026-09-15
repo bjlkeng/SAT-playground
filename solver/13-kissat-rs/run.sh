@@ -7,14 +7,22 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CNF="$1"
 OUTDIR="${2:-}"
+# SAT_EXTRA_ARGS: extra kissat options for the binary, word-split (e.g.
+# SAT_EXTRA_ARGS='--eliminateint=1000'); every interval and effort knob is a
+# kissat option, so this is the whole constant-knob experiment (RL plan section
+# 7 item 5b). Unset or empty expands to no words, so the command is unchanged.
+# The parity oracle (tools/parity.py) calls the binary directly and is unaffected.
+EXTRA_ARGS=${SAT_EXTRA_ARGS:-}
 
 if [[ -z "$OUTDIR" ]]; then
-  exec "$SCRIPT_DIR/target/release/sat-solver" "$CNF"
+  # shellcheck disable=SC2086  # word-splitting is the point
+  exec "$SCRIPT_DIR/target/release/sat-solver" $EXTRA_ARGS "$CNF"
 fi
 
 mkdir -p "$OUTDIR"
 STDOUT_TMP="$OUTDIR/solver_stdout.tmp"
-"$SCRIPT_DIR/target/release/sat-solver" "$CNF" "$OUTDIR/proof.out" | tee "$STDOUT_TMP"
+# shellcheck disable=SC2086  # word-splitting is the point
+"$SCRIPT_DIR/target/release/sat-solver" $EXTRA_ARGS "$CNF" "$OUTDIR/proof.out" | tee "$STDOUT_TMP"
 EXIT_CODE=${PIPESTATUS[0]}
 
 SLINE=$(grep -m1 '^s ' "$STDOUT_TMP" || true)
