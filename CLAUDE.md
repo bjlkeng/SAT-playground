@@ -1,8 +1,8 @@
 # CLAUDE.md — SAT-playground
 
 High-signal contract for coding agents. It carries only what is *not*
-derivable from the repo: the current project, the invariants, and the rules
-for judging a change. Everything else is a pointer.
+derivable from the repo: the current project, the decision metric, and the
+working rules. Everything else is a pointer.
 
 ## What this repo is
 
@@ -15,11 +15,15 @@ work is **solver 13** and the RL scheduler on top of it.
 
 - **`solver/13-kissat-rs`** — faithful Rust reimplementation of kissat 4.0.4
   (reference: `benchmarks/reference-solvers/kissat-latest/`). All engines
-  ported, exact counter parity. Third paired 400-instance run (2026-09-06):
+  ported. Third paired 400-instance run (2026-09-06):
   **313 v 312 solved, PAR-2 0.9932x, both-solved wall geomean 0.9875x, zero
   contradictions** — i.e. at or slightly ahead of the C. Details, log paths
   and residual families: `solver/13-kissat-rs/README.md`.
   `solver/13-kissat-rs/CONVENTIONS.md` is **binding** for any port edit.
+  Exact counter parity with the C was the port's acceptance criterion and is
+  now a *starting point*, not a standing invariant — the RL scheduler changes
+  the trajectory on purpose. `solver/13-kissat-rs/tools/parity.py` is still
+  the tool to reach for when the stock path regresses unintentionally.
 - **`plan/rl-scheduler-solver13-plan.md`** — the active project. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a
@@ -29,8 +33,6 @@ work is **solver 13** and the RL scheduler on top of it.
   decision log and review passes. Read it before starting any
   `src/policy.rs` work — that module does not exist yet; plan step A
   creates it.
-- **`plan/next-plan.md`** — running session log and handoff notes (newest
-  session at the top).
 
 ## Build, run, test
 
@@ -61,110 +63,53 @@ space-separated literals terminated by `0`, ≤4096 chars per line),
 `s UNKNOWN`. `c` comments allowed anywhere; partial SAT assignments are fine
 if every original clause is satisfied.
 
-## Parity is the solver-13 invariant
-
-`python3 solver/13-kissat-rs/tools/parity.py --corpus default --conflicts N`
-diffs every deterministic `-s` counter and the status line against the
-reference binary; `--phases` also diffs the `-v` phase lines, which is what
-catches watch-stack *layout* divergence the counters cannot see. A faithful
-tree matches exactly.
-
-Consequences for new work:
-
-- Any change that is not meant to alter the trajectory must keep 20/20
-  parity. RL work is additive and default-off: **policy-off, and policy-on
-  with `act == STOCK`, must both stay at exact parity.**
-- Do not add counters to the printed `-s` block — `parity.py` compares every
-  line, so a new counter breaks the oracle. Put observation counters behind a
-  flag or outside that block.
-- Port behavior, not intent: where kissat's C does something that looks like
-  a bug, reproduce the behavior and leave a `PORT NOTE`.
-
 ## Evaluation
 
-The decision metric is lexicographic: **solved count → total conflicts on
-tied solved cells → PAR-2** as a supplemental tie-break. Escalate candidates;
-never quote a cheap tier as a promotion decision, and always say which tier a
-number came from.
+The decision metric, in order:
 
-1. **Probe (minutes).** 1-15 cells from `benchmarks/discriminating`, short
-   walls, mechanism counters from the binary's own `-s` block under
-   `--conflicts=N` / `--time=N`. Answers "does it do anything at all".
-2. **Triage subset (tens of minutes).** `benchmarks/discriminating`, a
-   hand-picked ~15-cell set, or the timeout cells from the newest medium
-   results. Match the subset to the mechanism. Answers "which variant, and is
-   it worth a gate".
-3. **Gate (hours).** 100-instance `benchmarks/sat-comp-2025-medium` single
-   default seed, 1800 s / 16 GB / 32 pinned cores:
+1. **Solved instances.**
+2. **Tick PAR-2** — PAR-2 over `statistics.search_ticks`: ticks for a solved
+   cell, twice the tick budget for an unsolved one. Ticks are exactly
+   deterministic and load-independent, so this axis reproduces at full
+   parallelism and is immune to deal noise and host drift.
+3. **Wall PAR-2** — the competition metric, reported alongside.
 
-   ```bash
-   python3 tools/feature_ablation.py --arm 'cand:SAT_EXTRA_ARGS=--eliminateint=1000' \
-     --arm 'base:' --suite sat-comp-2025-medium --seeds 1 --jobs 32 --mem-mb 16000
-   python3 tools/check_promotion_gate.py --multiseed --candidate <cand.tsv> \
-     --baseline <base.tsv> --timeout 1800 --memory-mb 16000
-   ```
+Ticks are not in the harness output yet. Plan step A′ adds per-cell ticks to
+`feature_ablation.py`'s results TSV and to `run_kissat_full.sh`'s
+`results.csv`; do that before the first RL comparison, and add
+`SAT_LIMIT_TICKS` (plan step A) so a tick budget can be enforced the way
+`--conflicts` is.
 
-   Both arms start simultaneously on shared pinned cores, so there is no host
-   drift between them. Up to 4 arms (3 candidates + a mandatory `base:`),
-   varying **one** axis per sweep.
+**Splits** (plan §8). `benchmarks/sat-comp-2025-medium` (100 cells) and the
+full `benchmarks/sat-comp-2025` (400) are training / in-distribution. Hold a
+family-stratified validation split out of all fitting and select checkpoints
+on it. `benchmarks/sat-comp-2026` is the true holdout, consulted **at most
+once per promoted candidate** — solver 12 scored 296 v 292 on 2025 and 160 v
+197 on 2026, which is what an over-fitted candidate looks like.
 
-   Note: solver 13 has **no `SAT_*` feature toggles** — it is a kissat CLI
-   port, and every knob is a kissat option. An arm's env therefore does
-   nothing until the one-line `SAT_EXTRA_ARGS` passthrough in `run.sh` lands
-   (plan §7 step 5b / §10 step 0); the older `--arm 'x:SAT_FEATURE=on'` form
-   in the git history targeted solvers 11-12.
+Every RL comparison carries three arms: stock (policy off), policy-on with
+`act == STOCK` (isolates logging and inference overhead), and the candidate.
+Report per-family. ±2 solved is deal noise on 100 cells, so the decision
+evidence is the 400-cell run plus the tick-deterministic comparison, not a
+single medium-suite delta.
 
-4. **Paired 400-cell run** — the solver-13-scale check against kissat:
-   `tools/run_kissat_full.sh` (`-k` to run our binary, `-n` to name the log
-   dir) for each arm on disjoint pinned cores, then
-   `python3 tools/compare_full_runs.py <baseline_dir> <candidate_dir>`.
-   ~10-12 h at 3600 s.
+Runs:
 
-For RL candidates specifically (plan §8): ±2 solved is noise on 100 cells, so
-a +3 policy is invisible on the medium suite — decide on the 400-cell run
-plus a **tick-budgeted deterministic comparison** (`SAT_LIMIT_TICKS`, to be
-built in plan step A), and keep the medium gate as the in-distribution
-check. The medium suite is 100% inside sat-comp-2025 and therefore a
-*training-set* gate;
-`benchmarks/sat-comp-2026` is the true holdout and is consulted **at most
-once per promoted candidate**. (Solver 12's lesson: 296 v 292 on 2025, 160 v
-197 on 2026.) Every RL gate carries three arms: stock, policy-on-with-STOCK
-(isolates logging/inference overhead), and the candidate.
+```bash
+# A/B or N-way, simultaneous start on shared pinned cores (no host drift)
+python3 tools/feature_ablation.py --arm 'cand:...' --arm 'base:' \
+  --suite sat-comp-2025-medium --seeds 1 --jobs 32 --mem-mb 16000
 
-## Judging trades
+# 400-cell paired run against kissat (-k our binary, -n names the log dir)
+bash tools/run_kissat_full.sh -k solver/13-kissat-rs/target/release/sat-solver \
+  -n solver13-<tag> -t 3600 -m 16000
+python3 tools/compare_full_runs.py <baseline_log_dir> <candidate_log_dir>
+```
 
-A raw lexicographic regression does not automatically mean revert. Classify
-every changed cell first:
-
-- **Wall-coin cell** — either test qualifies it: the baseline solved within
-  ~120 s of the timeout, *or* the cell is a documented flipper (observed to
-  flip solved/unsolved across deals at an *identical conflict count*).
-  Conflicts are exactly deterministic across load while wall is not, so
-  identical conflicts with a different outcome is proof of pure wall luck
-  whatever the margin. The flipper list lives in `plan/next-plan.md`
-  "Standing traps".
-- **Capability cell** — a solve with real margin and a stable trajectory, or
-  a first-ever solve. Signal.
-
-Calibration: three gates on one host on 2026-07-24 scored the *same* baseline
-67, 69, and 71. **±2 solved cells is deal noise.**
-
-> A candidate may lose up to **2** wall-coin cells (3 with written
-> justification) and still be promotable, **provided** it gains
-> mechanism-validated capability elsewhere.
-
-"Mechanism-validated" means explained and reproducible: a first-ever solve, a
-fat margin, a digit-exact identity check on untouched cells, or a measured
-mechanism (elimination depth, propagation rate, proof size) that accounts for
-the win. Fails the rule: losing a large-margin cell (real capability loss);
-winning only wall coins while conflicts and wall regress (a reroll lottery).
-
-Do not revert on any loss — judge the trade explicitly and write it into the
-promotion note (cells gained, cells lost with baseline margins, mechanism
-evidence, conflicts/PAR-2 movement). If genuinely ambiguous, say so and ask.
-Validate suspicious wins against variable-renamed / clause-shuffled copies
-(`tools/shuffle_cnf.py`, `tools/shuffle_sensitivity.py`) before believing
-them; do not promote hard-coded guards or one-family classifiers.
+Solver 13 has **no `SAT_*` feature toggles** — it is a kissat CLI port and
+every knob is a kissat option, so an arm's env does nothing until the
+one-line `SAT_EXTRA_ARGS` passthrough in `run.sh` lands (plan §7 step 5b /
+§10 step 0).
 
 ## Correctness is absolute
 
@@ -175,8 +120,16 @@ budget-consuming `UNKNOWN`s are priced into the metric and are not bugs.
 
 ## Benchmarking operations
 
+**Resource cap: at most 32 concurrent solver processes and 16 GB per
+process.** The host has 36 physical cores (72 threads) and 502 GB RAM; the
+4-core and RAM headroom keeps the machine usable and keeps marginal-cell
+timing honest. `--jobs 32 --mem-mb 16000` for `feature_ablation.py`, `-j`/`-m`
+for the `run_kissat_*` scripts; the memory number is a per-process ulimit, not
+a reservation. Two paired arms split the budget (16 + 16 on disjoint pinned
+physical cores), never 32 each.
+
 - Check for live solver/bench processes before launching anything parallel,
-  and ask if a sweep is already running. Cap memory so `jobs * mem` fits RAM.
+  and ask if a sweep is already running.
 - **Marginal-cell timing is invalid while another 32-way sweep runs.** Under
   contention a SOLVE is trustworthy but a TIMEOUT is not. Schedule margin and
   wall measurements on a quiet host.
@@ -220,7 +173,69 @@ instances plus twice the timeout for each unsolved one, lower better.
 
 ## Session completion
 
-Work is not done until `git push` succeeds. Run the gates for whatever
-changed (smoke test, `cargo test`), commit, then `git pull --rebase &&
-git push && git status`. Never stop at "ready to push when you are". Record
-follow-up work in `plan/next-plan.md`.
+This repo is **team-maintainer** in the Beads sense: closing beads, running
+the gates, committing, and pushing are part of session close, and the Beads
+block's conservative default does not apply here.
+
+1. File beads for remaining work; close what is finished.
+2. Run the gates for whatever changed (`bash tools/smoke_test.sh
+   solver/13-kissat-rs`, `cargo test`).
+3. Run the Codex review loop below until it is clean.
+4. `git pull --rebase && git push && git status`, plus `bd dolt push` if
+   beads changed.
+
+Work is not done until `git push` succeeds. Never stop at "ready to push when
+you are".
+
+## Code review
+
+**No manual PR review happens here.** Every change is reviewed by Codex on
+GPT-6-Astra at maximum reasoning effort, and Claude applies the fixes:
+
+```bash
+codex review --uncommitted -c model="gpt-6-astra" -c model_reasoning_effort="max"
+# or, against a base branch / a commit:
+codex review --base main   -c model="gpt-6-astra" -c model_reasoning_effort="max"
+codex review --commit <sha> -c model="gpt-6-astra" -c model_reasoning_effort="max"
+```
+
+Loop: review → Claude fixes the findings → re-review, until a pass returns no
+significant findings. What counts as significant, in priority order:
+
+1. **Correctness** — anything that could produce a wrong SAT/UNSAT answer, an
+   invalid model or proof, UB, a data race, or a panic on a valid instance.
+2. **Metric impact** — anything that could move solved count, tick PAR-2, or
+   wall PAR-2 the wrong way, including accidental trajectory changes in
+   code that is supposed to be behavior-neutral.
+3. Everything else (style, naming, taste) is optional; do not spend loop
+   iterations on it.
+
+Record the review verdict in the bead for the work and in the commit message
+when the review changed the patch.
+
+
+<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
+## Beads Issue Tracker
+
+This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+
+### Quick Reference
+
+```bash
+bd ready              # Find available work
+bd show <id>          # View issue details
+bd update <id> --claim  # Claim work
+bd close <id>         # Complete work
+```
+
+### Rules
+
+- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- Run `bd prime` for detailed command reference and session close protocol
+- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+
+**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
+
+Profile for this repo: **team-maintainer** — see "Session completion" above,
+which overrides the Beads block's conservative git default.
+<!-- END BEADS INTEGRATION -->
