@@ -39,7 +39,7 @@ Before launching a parallel sweep, check for competing solver/bench processes (t
 contention warning at startup; the agent must `ps`/`pgrep` and ASK the user first per CLAUDE.md).
 """
 from __future__ import annotations
-import argparse, csv, gzip, lzma, os, shutil, subprocess, sys, tempfile, time
+import argparse, csv, gzip, lzma, os, re, shlex, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -103,6 +103,59 @@ def current_solver(default: str | None = None) -> str:
 
 S11 = current_solver()
 S10 = os.environ.get("SAT_REFERENCE_SOLVER", "solver/10-bve-subsume")
+
+
+def kissat_cli(solver_dir: str) -> bool:
+    """True for solvers whose binary takes the kissat command line.
+
+    Solver 13 onward are kissat ports: `sat-solver [options] <cnf> [<proof file>]`. The second
+    positional argument is a DRAT proof FILE (a directory there is an error), the seed and every
+    other knob are kissat options (`--seed=N`, `--eliminateint=N`, ...), and SAT_* env toggles are
+    ignored. Solvers 10-12 take `<cnf> <outdir>` and read SAT_SEED / SAT_STATS_JSON from the env.
+    """
+    try:
+        return int(Path(solver_dir).name.split("-", 1)[0]) >= 13
+    except ValueError:
+        return False
+
+
+WORKCLOCK_RE = re.compile(r"^c workclock (.*)$", re.M)
+
+
+def parse_workclock(stdout_text: str) -> dict[str, str]:
+    """The solver's `c workclock ...` exit line as {key: value}; {} when there is none.
+
+    Solver 13 prints it on every exit, including the SIGTERM from `timeout`, so a TIMEOUT cell
+    still reports the work it consumed. `work` is the work clock W = ticks + k_res x
+    eliminate_resolutions (CLAUDE.md 'Evaluation'); k_res lives in the solver and is echoed back.
+    """
+    found = WORKCLOCK_RE.findall(stdout_text)
+    if not found:
+        return {}
+    out: dict[str, str] = {}
+    for tok in found[-1].split():
+        if "=" in tok:
+            k, v = tok.split("=", 1)
+            out[k] = v
+    return out
+
+
+TSV_HEADER = ("config\tinstance\tseed\tresult\ttime_s\tconflicts\tpropagations\tdecisions\ttimeout"
+              "\tverified\tticks\teliminate_resolutions\twork\n")
+NA_WORK = ("NA", "NA", "NA")
+
+
+def write_results_tsv(tsv: Path, tag: str, rows, timeout: int) -> None:
+    """Gate-compatible per-cell TSV. rows: (stem, seed, res, dt, cf, pr, dc, ver, (ticks, elim, work)).
+
+    The three work-clock columns come from the solver's exit line and are NA (never 0) when a cell
+    printed none: a crash, a hard kill, or a binary older than plan step A'.
+    """
+    with open(tsv, "w") as f:
+        f.write(TSV_HEADER)
+        for stem, seed, res, dt, cf, pr, dc, ver, wc in sorted(rows):
+            f.write(f"{tag}\t{stem}\t{seed}\t{res}\t{dt:.3f}\t{cf}\t{pr}\t{dc}\t{timeout}\t{ver}"
+                    f"\t{wc[0]}\t{wc[1]}\t{wc[2]}\n")
 CORES = [0, 1, 2, 3]            # default worker cores; overridden by preflight()
 TOL = 0.03                      # 3% noise band for the repeat rule
 
@@ -668,12 +721,12 @@ def seedgate(args) -> int:
             idx, stem, seed = job
             core = core_pool.get()
             try:
-                res, dt, cf, pr, dc, ver = _solve_one(
+                res, dt, cf, pr, dc, ver, wc = _solve_one(
                     core, solver_dir, env_extra, cnf_for[stem], work_root / f"{idx}",
                     args.timeout, args.mem_mb, seed, verify=args.verify)
             finally:
                 core_pool.put(core)
-            return (stem, seed, res, dt, cf, pr, dc, ver)
+            return (stem, seed, res, dt, cf, pr, dc, ver, wc)
 
         results = []
         with ThreadPoolExecutor(max_workers=len(CORES)) as ex:
@@ -688,10 +741,7 @@ def seedgate(args) -> int:
         tmp_ctx.cleanup()
 
     tsv = camp / "results.tsv"
-    with open(tsv, "w") as f:
-        f.write("config\tinstance\tseed\tresult\ttime_s\tconflicts\tpropagations\tdecisions\ttimeout\tverified\n")
-        for stem, seed, res, dt, cf, pr, dc, ver in sorted(results):
-            f.write(f"{tag}\t{stem}\t{seed}\t{res}\t{dt:.3f}\t{cf}\t{pr}\t{dc}\t{args.timeout}\t{ver}\n")
+    write_results_tsv(tsv, tag, results, args.timeout)
     (camp / "DONE").write_text("seedgate complete\n")
     solved = sum(1 for r in results if r[2].upper() in ("SAT", "UNSAT", "SATISFIABLE", "UNSATISFIABLE"))
     fails = [r for r in results if r[7] == "FAIL"]
@@ -794,20 +844,34 @@ def _verify_result(result: str, cnf_path: Path, odir: Path, stdout_text: str,
 
 def _solve_one(core: int, solver_dir: str, env_extra: dict, cnf_path: Path, odir: Path,
                timeout: int, mem_mb: int, seed: int, verify: bool = True) -> tuple:
-    """Run the solver on one (instance,seed) pinned to `core`; return (result, secs, conf, props, decs, verified).
+    """Run the solver on one (instance,seed) pinned to `core`.
 
-    Mirrors seedgate()'s inner run: ulimit -v address-space cap, SAT_STATS_JSON conflicts scraped from
-    stderr. When `verify` is set, the SAT model / UNSAT DRAT proof is independently checked (see
-    _verify_result) BEFORE the per-run scratch is deleted; verification runs off the timed path so it
-    does not inflate time_s. The scratch (multi-GB proof on hard-UNSAT) is always deleted in `finally`
-    — left to accumulate it fills the disk and kills the sweep.
+    Returns (result, secs, conflicts, propagations, decisions, verified, (ticks, eliminate_resolutions,
+    work)). Mirrors seedgate()'s inner run: ulimit -v address-space cap; conflicts scraped from the
+    SAT_STATS_JSON stderr line (solvers 10-12) or from the `c workclock` exit line (solver 13+, which
+    ignores SAT_STATS_JSON). The work-clock triple is the per-cell tick axis (CLAUDE.md 'Evaluation')
+    and is NA, never 0, when the solver printed no exit line. When `verify` is set, the SAT model /
+    UNSAT DRAT proof is independently checked (see _verify_result) BEFORE the per-run scratch is
+    deleted; verification runs off the timed path so it does not inflate time_s. The scratch
+    (multi-GB proof on hard-UNSAT) is always deleted in `finally` — left to accumulate it fills the
+    disk and kills the sweep.
+
+    kissat-CLI solvers (solver 13+) get `--seed=N`, then the arm's SAT_EXTRA_ARGS split shell-style
+    (plan section 7 step 5b: every interval/effort knob is a kissat option), then the CNF and, only
+    when the answer will be checked, the proof file `<odir>/proof.out` (a proof costs time and disk).
     """
-    import re
     odir.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, **env_extra, "SAT_SEED": str(seed), "SAT_STATS_JSON": "on"}
+    binary = ROOT / solver_dir / "target/release/sat-solver"
+    if kissat_cli(solver_dir):
+        argv = [str(binary), f"--seed={seed}", *shlex.split(env.get("SAT_EXTRA_ARGS", "")),
+                str(cnf_path)]
+        if verify:
+            argv.append(str(odir / "proof.out"))
+    else:
+        argv = [str(binary), str(cnf_path), str(odir)]
     cmd = ["taskset", "-c", str(core), "bash", "-c",
-           f'ulimit -v {mem_mb*1024}; exec timeout {timeout} '
-           f'"{ROOT/solver_dir}/target/release/sat-solver" "{cnf_path}" "{odir}"']
+           f"ulimit -v {mem_mb*1024}; exec timeout {timeout} " + " ".join(shlex.quote(a) for a in argv)]
     t0 = time.time()
     try:
         try:
@@ -824,10 +888,16 @@ def _solve_one(core: int, solver_dir: str, env_extra: dict, cnf_path: Path, odir
                     if br >= 0:
                         js = ln[br:]
             g = lambda k: (re.search(rf'"{k}":([0-9.eE+-]+)', js) or [None, "NA"])[1]
+            wc = parse_workclock(p.stdout)
+            w = lambda k: wc.get(k, "NA")
+            if js:
+                counts = (g("conflicts"), g("propagations"), g("decisions"))
+            else:
+                counts = (w("conflicts"), w("propagations"), w("decisions"))
             ver = _verify_result(res, cnf_path, odir, p.stdout, timeout) if verify else "off"
-            return (res, dt, g("conflicts"), g("propagations"), g("decisions"), ver)
+            return (res, dt, *counts, ver, (w("ticks"), w("eliminate_resolutions"), w("work")))
         except subprocess.TimeoutExpired:
-            return ("TIMEOUT", time.time() - t0, "NA", "NA", "NA", "skip")
+            return ("TIMEOUT", time.time() - t0, "NA", "NA", "NA", "skip", NA_WORK)
     finally:
         shutil.rmtree(odir, ignore_errors=True)
 
@@ -897,12 +967,12 @@ def abtest(args) -> int:
             jidx, tag, sdir, env_extra, stem, seed = job
             core = core_pool.get()
             try:
-                res, dt, cf, pr, dc, ver = _solve_one(
+                res, dt, cf, pr, dc, ver, wc = _solve_one(
                     core, sdir, env_extra, cnf_for[stem], work_root / f"{jidx}",
                     args.timeout, args.mem_mb, seed, verify=args.verify)
             finally:
                 core_pool.put(core)
-            return (tag, stem, seed, res, dt, cf, pr, dc, ver)
+            return (tag, stem, seed, res, dt, cf, pr, dc, ver, wc)
 
         results = []
         with ThreadPoolExecutor(max_workers=len(CORES)) as ex:
@@ -925,10 +995,7 @@ def abtest(args) -> int:
         adir = camp / tag
         adir.mkdir(parents=True, exist_ok=True)
         tsv = adir / "results.tsv"
-        with open(tsv, "w") as f:
-            f.write("config\tinstance\tseed\tresult\ttime_s\tconflicts\tpropagations\tdecisions\ttimeout\tverified\n")
-            for tag_, stem, seed, res, dt, cf, pr, dc, ver in sorted(by_arm[tag]):
-                f.write(f"{tag}\t{stem}\t{seed}\t{res}\t{dt:.3f}\t{cf}\t{pr}\t{dc}\t{args.timeout}\t{ver}\n")
+        write_results_tsv(tsv, tag, [r[1:] for r in by_arm[tag]], args.timeout)
         arm_tsv[tag] = tsv
 
     (camp / "DONE").write_text("abtest complete\n")
@@ -980,6 +1047,7 @@ def _ab_verdict(arm_tsv: dict, tags: list[str], baseline: str, timeout: int, mem
                   flush=True)
     print("* conf(own solved) sums that arm's own solved cells; the WIN/LOSE decision compares conflicts "
           "only over cells BOTH arms solve (as the gate does).", flush=True)
+    _print_tick_par2(cells, tags, baseline)
 
     for tag in tags:
         if tag == baseline:
@@ -987,6 +1055,68 @@ def _ab_verdict(arm_tsv: dict, tags: list[str], baseline: str, timeout: int, mem
         print(f"\ngate[{tag} vs {baseline}]: python3 tools/check_promotion_gate.py --multiseed \\\n"
               f"  --candidate {arm_tsv[tag]} \\\n  --baseline {arm_tsv[baseline]} \\\n"
               f"  --timeout {timeout} --memory-mb {mem_mb}", flush=True)
+
+
+def tick_par2(cells: dict, tags: list[str]) -> tuple[dict[str, dict], int, int]:
+    """Tick PAR-2 per arm on the work clock W (CLAUDE.md 'Evaluation', plan section 3.4).
+
+    A solved cell costs its W; an unsolved cell costs twice the W it consumed before it was stopped
+    (the wall limit, or the SAT_LIMIT_TICKS budget once that exists). Only cells where EVERY arm
+    reported W are priced, so all arms are scored on the same cells. Returns
+    ({arm: {"total", "unsolved_part", "unsolved"}}, cells priced, cells dropped for a missing line).
+    The solved part is deterministic; the unsolved part under a WALL limit is not (the kill point
+    depends on ticks/s), which is why it is reported separately.
+    """
+    keys = set.intersection(*(set(cells[t]) for t in tags)) if tags else set()
+    has_w = lambda c: c.get("work", "NA") not in ("", "NA")
+    priced = [k for k in sorted(keys) if all(has_w(cells[t][k]) for t in tags)]
+    totals: dict[str, dict] = {}
+    for t in tags:
+        total = unsolved_part = 0.0
+        unsolved = 0
+        for k in priced:
+            c = cells[t][k]
+            w = float(c["work"])
+            if compare_bench.is_solved(c["result"]):
+                total += w
+            else:
+                total += 2.0 * w
+                unsolved_part += 2.0 * w
+                unsolved += 1
+        totals[t] = {"total": total, "unsolved_part": unsolved_part, "unsolved": unsolved}
+    return totals, len(priced), len(keys) - len(priced)
+
+
+def _print_tick_par2(cells: dict, tags: list[str], baseline: str) -> None:
+    """The deterministic axis next to wall PAR-2: solver 13's work clock, printed per arm.
+
+    Reported, not decided on, here: the WIN/LOSE line above is the promotion gate's own rule. W is
+    load-independent for solved cells; an unsolved cell under a WALL limit is priced at the W it
+    reached before the kill, which does depend on ticks/s, so a strictly deterministic comparison
+    needs a tick budget (SAT_LIMIT_TICKS, plan step A).
+    """
+    totals, priced, dropped = tick_par2(cells, tags)
+    if not priced:
+        print("\ntick PAR-2: unavailable (no cell has a work clock in every arm; only solver-13 "
+              "binaries from plan step A' print the `c workclock` exit line)", flush=True)
+        return
+    print(f"\ntick PAR-2 on W = ticks + k_res x eliminate_resolutions: {priced} cells priced"
+          + (f", {dropped} dropped (no work line in some arm)" if dropped else "")
+          + " — solved cell = its W, unsolved cell = 2 x the W it consumed", flush=True)
+    print(f"{'arm':<22} {'tick PAR-2':>16} {'unsolved part':>16} {'(cells)':>8}   vs baseline", flush=True)
+    for tag in tags:
+        t = totals[tag]
+        line = f"{tag:<22} {t['total']:>16.4g} {t['unsolved_part']:>16.4g} {t['unsolved']:>8}"
+        if tag == baseline:
+            print(line + "   —  (reference)", flush=True)
+        elif totals[baseline]["total"] > 0:
+            print(line + f"   {t['total'] / totals[baseline]['total']:.4f}x", flush=True)
+        else:
+            print(line, flush=True)
+    print("* the solved part of tick PAR-2 is deterministic; the unsolved part of a WALL-limited run "
+          "is the W each arm reached before its kill, which moves with host load (an A/A run differs "
+          "only there). A load-free comparison needs a tick budget (SAT_LIMIT_TICKS, plan step A).",
+          flush=True)
 
 
 def validate(args) -> int:

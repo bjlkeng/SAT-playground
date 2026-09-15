@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """Paired comparison of two run_kissat_full.sh runs (results.csv schema:
-instance,result,time_s,timeout,exit_code). Works on finished runs
-(results.csv) or in-progress ones (cells/*.csv), pairing only cells present
-in both arms.
+instance,result,time_s,timeout,exit_code and, since plan step A',
+search_ticks,probing_ticks,eliminate_resolutions,ticks,work). Works on
+finished runs (results.csv) or in-progress ones (cells/*.csv), pairing only
+cells present in both arms; the five work-clock columns default to NA when a
+run predates them.
+
+Tick PAR-2 (CLAUDE.md 'Evaluation') is reported when BOTH arms carry the work
+clock W = ticks + k_res x eliminate_resolutions: a solved cell costs its W,
+an unsolved cell twice the W it consumed before the kill. The C kissat never
+prints statistics.ticks, so kissat v solver-13 pairs report W as unavailable;
+the tick comparison is between solver-13 arms.
 
   python3 tools/compare_full_runs.py <baseline_run_dir> <candidate_run_dir>
         [--solved-floor 0.98] [--par2-ceiling 1.02] [--band 3000]
@@ -20,6 +28,7 @@ import os
 import sys
 
 SOLVED = {"SAT", "UNSAT"}
+WORK_COLUMNS = ["search_ticks", "probing_ticks", "eliminate_resolutions", "ticks", "work"]
 
 
 def read_run(d):
@@ -32,8 +41,75 @@ def read_run(d):
                 if not r or r[0] == "instance":
                     continue
                 name, result, t, to, code = r[0], r[1], float(r[2]), float(r[3]), int(r[4])
-                rows[name] = {"result": result, "time": t, "timeout": to, "exit": code}
+                row = {"result": result, "time": t, "timeout": to, "exit": code}
+                for k, v in zip(WORK_COLUMNS, r[5:]):
+                    row[k] = v
+                for k in WORK_COLUMNS:
+                    row.setdefault(k, "NA")
+                rows[name] = row
     return rows
+
+
+def work(row):
+    """The cell's work clock W as a float, or None when the arm did not report one."""
+    v = row.get("work", "NA")
+    if v in ("", "NA"):
+        return None
+    return float(v)
+
+
+def tick_par2(rows, names):
+    """Solved cell = its W; unsolved cell = 2 x the W it consumed before it was stopped.
+
+    Returns (total, unsolved part, unsolved cells): the solved part is deterministic, the
+    unsolved part of a WALL-limited run moves with host load (the kill point depends on ticks/s).
+    """
+    total = unsolved_part = 0.0
+    unsolved = 0
+    for n in names:
+        r = rows[n]
+        if r["result"] in SOLVED:
+            total += work(r)
+        else:
+            total += 2 * work(r)
+            unsolved_part += 2 * work(r)
+            unsolved += 1
+    return total, unsolved_part, unsolved
+
+
+def report_tick_par2(b, c, common, show):
+    priced = [n for n in common if work(b[n]) is not None and work(c[n]) is not None]
+    if not priced:
+        missing = [arm for arm, rows in (("baseline", b), ("candidate", c))
+                   if not any(work(rows[n]) is not None for n in common)]
+        print(f"\ntick PAR-2: unavailable — {' and '.join(missing) or 'neither'} arm has no work clock "
+              "(the C kissat never prints statistics.ticks; only solver-13 binaries from plan step A' "
+              "print the `c workclock` exit line)")
+        return
+    (tb, ub, nb), (tc, uc, nc) = tick_par2(b, priced), tick_par2(c, priced)
+    dropped = len(common) - len(priced)
+    print(f"\ntick PAR-2 on W = ticks + k_res x eliminate_resolutions ({len(priced)} cells priced"
+          + (f", {dropped} dropped for a missing work line" if dropped else "")
+          + "; solved = its W, unsolved = 2 x the W consumed):")
+    print(f"         baseline {tb:.4g}   candidate {tc:.4g}   ratio {tc/tb if tb else float('nan'):.4f}")
+    print(f"         of which unsolved cells: baseline {ub:.4g} ({nb} cells)   candidate {uc:.4g} ({nc} cells)"
+          " — the solved part is deterministic, the unsolved part of a wall-limited run moves with load")
+    # Per-cell ratios need W > 0 in BOTH arms (a trivial formula can legitimately report W = 0;
+    # that is a real reading, kept in the totals above, not a missing one). Zero-work cells are
+    # only left out of the geomean, and counted.
+    solved_both = [n for n in priced if b[n]["result"] in SOLVED and c[n]["result"] in SOLVED]
+    both = [n for n in solved_both if work(b[n]) > 0 and work(c[n]) > 0]
+    zero = len(solved_both) - len(both)
+    if both:
+        ratios = [work(c[n]) / work(b[n]) for n in both]
+        gm = math.exp(sum(math.log(r) for r in ratios) / len(ratios))
+        print(f"  both-solved W ratio geomean over {len(both)} cells: {gm:.4f}   "
+              f"total {sum(work(c[n]) for n in both):.4g} / {sum(work(b[n]) for n in both):.4g}"
+              + (f"   ({zero} zero-work cells left out of the geomean)" if zero else ""))
+        worst = sorted(both, key=lambda n: work(c[n]) / work(b[n]), reverse=True)
+        print("  largest W ratios:")
+        for n in worst[:show]:
+            print(f"   {n[:60]:60s} {work(b[n]):12.4g} -> {work(c[n]):12.4g}  {work(c[n])/work(b[n]):.3f}")
 
 
 def par2(rows, names):
@@ -73,6 +149,7 @@ def main():
             print(f"   {n[:60]:60s} base {b[n]['result']:8s} exit {b[n]['exit']:3d} {b[n]['time']:8.1f}s | cand {c[n]['result']:8s} exit {c[n]['exit']:3d} {c[n]['time']:8.1f}s")
     gate = (not contra) and cs >= a.solved_floor * bs and (bp == 0 or cp <= a.par2_ceiling * bp)
     print(f"GATE: {'PASS' if gate else 'FAIL'}")
+    report_tick_par2(b, c, common, a.show)
 
     both = [n for n in common if b[n]["result"] in SOLVED and c[n]["result"] in SOLVED and b[n]["time"] >= 1.0]
     if both:

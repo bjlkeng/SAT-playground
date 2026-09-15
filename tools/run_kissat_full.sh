@@ -2,8 +2,12 @@
 # run_kissat_full.sh — parallel kissat-latest sweep over an arbitrary suite,
 # generalized from run_kissat_medium.sh with a core-offset so it can share the
 # host with a concurrent feature_ablation run on disjoint physical cores.
-# No proof emission (reference arm). Produces results.csv in the same schema
-# as log/kissat-medium-* runs.
+# No proof emission (reference arm). Produces results.csv in the schema of
+# log/kissat-medium-* runs plus five work-clock columns (plan step A', CLAUDE.md
+# 'Evaluation'): search_ticks, probing_ticks, eliminate_resolutions from the
+# `-s` block of either binary, and ticks + work (W = ticks + k_res x
+# eliminate_resolutions) from solver 13's `c workclock` exit line. The C kissat
+# never prints statistics.ticks, so its arm records NA (never 0) for those two.
 #
 # Usage: bash tools/run_kissat_full.sh [-t timeout_s] [-m mem_mb] [-j jobs]
 #                                      [-c core_offset] [-d suite_dir]
@@ -115,7 +119,7 @@ run_one() {
     local start end elapsed exit_code=0 output=""
     start=$(date +%s.%N)
     output=$( ulimit -v "$MEM_KB" 2>/dev/null
-              taskset -c "$core" timeout "$TIMEOUT" "$KISSAT" "$work" 2>/dev/null ) || exit_code=$?
+              taskset -c "$core" timeout "$TIMEOUT" "$KISSAT" -s "$work" 2>/dev/null ) || exit_code=$?
     end=$(date +%s.%N)
     elapsed=$(awk "BEGIN{printf \"%.3f\", $end-$start}")
     rm -f "$work"
@@ -132,10 +136,40 @@ run_one() {
     else
         result=UNKNOWN
     fi
-    printf '%s,%s,%s,%s,%s\n' "$name" "$result" "$elapsed" "$TIMEOUT" "$exit_code" > "$cell"
+    # Work clock. Solver 13 prints one `c workclock k=v ...` line on every exit,
+    # including the SIGTERM from `timeout`, so a TIMEOUT cell records the work it
+    # consumed. Without that line (C kissat, or a solver killed hard) fall back to
+    # the `-s` block for what it offers and leave ticks/work as NA.
+    local wc search_ticks=NA probing_ticks=NA elim=NA ticks=NA work=NA
+    wc=$(printf '%s\n' "$output" | grep '^c workclock ' | tail -n1 || true)
+    if [[ -n "$wc" ]]; then
+        search_ticks=$(wc_field "$wc" search_ticks)
+        probing_ticks=$(wc_field "$wc" probing_ticks)
+        elim=$(wc_field "$wc" eliminate_resolutions)
+        ticks=$(wc_field "$wc" ticks)
+        work=$(wc_field "$wc" work)
+    else
+        search_ticks=$(stat_field "$output" search_ticks)
+        probing_ticks=$(stat_field "$output" probing_ticks)
+        elim=$(stat_field "$output" eliminate_resolutions)
+    fi
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "$name" "$result" "$elapsed" "$TIMEOUT" "$exit_code" \
+        "$search_ticks" "$probing_ticks" "$elim" "$ticks" "$work" > "$cell"
     printf '[%3d] %-55s %-8s %8ss  (exit %s)\n' "$idx" "$name" "$result" "$elapsed" "$exit_code"
 }
-export -f run_one
+# `key=value` from the workclock line, or NA.
+wc_field() {
+    local v
+    v=$(printf '%s\n' "$1" | sed -n "s/.*[[:space:]]$2=\([0-9][0-9]*\).*/\1/p" | head -n1)
+    printf '%s\n' "${v:-NA}"
+}
+# First-column value of a `c name:` row in the `-s` block, or NA.
+stat_field() {
+    local v
+    v=$(printf '%s\n' "$1" | awk -v k="c $2:" '$1" "$2 == k {print $3; exit}')
+    printf '%s\n' "${v:-NA}"
+}
+export -f run_one wc_field stat_field
 export OUT SCRATCH KISSAT MEM_KB TIMEOUT JOBS CORE_OFFSET CORE_ORDER_STR
 
 # Feed instances (deterministic sorted order) to the worker pool.
@@ -146,7 +180,7 @@ for cnf in $(ls "$SUITE"/*.cnf.xz | sort); do
 done | xargs -P "$JOBS" -I{} bash -c 'IFS=$'"'"'\t'"'"' read -r idx cnf <<< "{}"; run_one "$idx" "$cnf"'
 
 # Aggregate cells -> results.csv (sorted for stable diff)
-echo "instance,result,time_s,timeout,exit_code" > "$OUT/results.csv"
+echo "instance,result,time_s,timeout,exit_code,search_ticks,probing_ticks,eliminate_resolutions,ticks,work" > "$OUT/results.csv"
 cat "$OUT"/cells/*.csv | sort >> "$OUT/results.csv"
 
 rm -rf "$SCRATCH"

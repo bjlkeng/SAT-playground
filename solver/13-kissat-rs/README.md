@@ -13,6 +13,73 @@ Goal: on `benchmarks/sat-comp-2025` (400 instances, 3600 s / 16 GB / 32
 cores), solved count and PAR-2 within 2% of kissat 4.0.4 in a fresh paired
 run, with all kissat features implemented.
 
+**Work clock (plan step A′, 2026-09-15).** The binary prints one extra
+line at every exit, after the `[ resources ]` section:
+
+```
+c workclock ticks=… search_ticks=… probing_ticks=… backbone_ticks=… transitive_ticks=… factor_ticks=… substitute_ticks=… kitten_ticks=… eliminate_resolutions=… forward_steps=… walk_steps=… flipped=… conflicts=… decisions=… propagations=… k_res=11 work=…
+```
+
+- `work` is the work clock W = `ticks` + `k_res` × `eliminate_resolutions`
+  (plan §3.4): the deterministic unit the harness prices cells in (tick
+  PAR-2, CLAUDE.md "Evaluation") and the unit `SAT_LIMIT_TICKS` will limit
+  (plan step A). `ticks` is kissat's all-propagation counter, which kissat
+  itself never prints. The other keys are the work kinds the RL reward
+  weights (plan §4). `vivify_ticks` is not on the line: kissat counts it
+  only in a METRICS build, so it is always 0 here; vivify's propagation is
+  inside `probing_ticks`.
+- Printed on every exit path kissat prints statistics on: the normal exit
+  and the signal handler, so a run killed by the harness `timeout`
+  (SIGTERM) still reports the work it consumed. Not printed under `-q`. It
+  sits outside the `-s` block, so `tools/parity.py` never sees it, and it
+  has no `name:` token, so the parity regex cannot match it.
+- **Checked against the C (2026-09-15).** A kissat 4.0.4 built with
+  `./configure --statistics` prints the STATISTIC-tier counters (`ticks`,
+  `flipped`) in its `-s` block. On the 20 discriminating cells at
+  `--conflicts=100000`, all 15 counters on our line equal that build's rows
+  on 20/20 cells, and that build's 80 default counters equal ours, so it is
+  the same trajectory. `tools/parity.py --conflicts 100000` against the
+  reference binary: 20/20 with the line in place. The statistics build was
+  a scratch copy of `benchmarks/reference-solvers/kissat-latest` (about a
+  minute to build); the reference build is untouched.
+- **`k_res` is provisional (= 11).** From the same 20-cell run with
+  `--profile=2`: eliminate wall time per resolution, converted to search-tick
+  units with each cell's own search ticks per second, over the 13 cells
+  with at least 0.05 s in both phases: median 11.5, geomean 10.8, range 3.3
+  (circuit) to 22 (SCPC). Ticks per second itself ranged 3.1e7 to 6.7e7
+  across cells. The eliminate time includes forward subsumption and
+  definition extraction, so `k_res` also charges those to the resolution
+  count. Plan step B refits it from the stock traces. The constant is
+  `K_RES` in `src/statistics.rs`; the harness reads it from the line and
+  never hard-codes it. Changing `k_res` changes only `work`, so old results
+  can be re-priced offline from `ticks` and `eliminate_resolutions`.
+- Harness: `tools/feature_ablation.py` records `ticks`,
+  `eliminate_resolutions` and `work` per cell and prints tick PAR-2 (a
+  solved cell costs its W, an unsolved cell twice the W it reached before
+  the kill; that unsolved part of a wall-limited run moves with host load
+  and is printed separately). `tools/run_kissat_full.sh` records the same
+  plus `search_ticks` and `probing_ticks` (both arms now run with `-s`; the
+  C arm records NA, never 0, for `ticks` and `work`), and
+  `tools/compare_full_runs.py` prints tick PAR-2 for solver-13 pairs. Since
+  2026-09-15 `feature_ablation.py` calls this binary the kissat way
+  (`--seed=N`, the arm's `SAT_EXTRA_ARGS` split into options, the CNF, and
+  the proof file only when verifying); before that it passed the output
+  directory as the proof path and every solver-13 cell exited 1.
+- Checking by hand: `timeout 5 sat-solver x.cnf | grep workclock` shows
+  nothing and the shell reports `Terminated` (the `timeout` signal takes
+  the pipeline down with it); redirect to a file instead. The harness paths
+  (a Python pipe, `$(...)`) are unaffected and were checked on TIMEOUT cells.
+- **Acceptance A/A run (2026-09-15, k_res = 11 binary):**
+  `feature_ablation.py --arm cand: --arm base: --suite benchmarks/discriminating
+  --seeds 1 --jobs 28 --timeout 300` (`log/abtest-cand-vs-base-2026-09-15-15-17-20`):
+  20/20 solved in both arms, and `ticks`, `eliminate_resolutions`, `work` and
+  `conflicts` identical on all 20 cells, so tick PAR-2 is 4.398e10 in both
+  arms (ratio 1.0000) while wall PAR-2 differs by 2% (1405.5 v 1380.5 s,
+  timing noise). No NA cell. Two UNSAT proofs hit the checker's 2x-timeout
+  budget (`verified=checker-timeout`, a checker budget, not a failure). A
+  first pass with the earlier k_res = 20 binary
+  (`log/abtest-cand-vs-base-2026-09-15-15-02-57`) gave the same 20/20 identity.
+
 Status (2026-09-04): all engines ported; counter parity exact at
 `--conflicts=100000` on the 20 discriminating cells + 14 medium cells and on
 full brocard runs; wall ratio v kissat at parity: 19-cell quiet screen geomean

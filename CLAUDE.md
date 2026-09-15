@@ -83,16 +83,26 @@ The decision metric, in order:
    Use W, **not `search_ticks`**: search ticks leave out probing and
    elimination, which are exactly the passes the scheduler is allowed to
    move, so a policy could look cheap just by pushing work out of search.
-   W is deterministic, so this number comes out the same on a loaded host
-   and an idle one.
+   W is deterministic, so the solved part of this number comes out the
+   same on a loaded host and an idle one.
 3. **Wall PAR-2** — the competition metric, reported alongside.
 
-W is not in the harness output yet. Plan step A′ adds per-cell W to
-`feature_ablation.py`'s results TSV and to `run_kissat_full.sh`'s
-`results.csv`; do that before the first RL comparison, and add
-`SAT_LIMIT_TICKS` (plan step A), which limits W, so a work budget can be
-enforced the way `--conflicts` is. Note `statistics.ticks` is never printed
-by kissat today and `k_res` has to be fitted once from the stock traces.
+W is in the harness output since plan step A′ (2026-09-15). Solver 13
+prints one `c workclock ...` line at every exit, including the SIGTERM
+from `timeout`, with `ticks`, `eliminate_resolutions`, every other work
+kind, `k_res` and `work` (= W). `feature_ablation.py`'s results TSV
+carries `ticks`, `eliminate_resolutions` and `work` per cell and its
+verdict prints tick PAR-2 next to wall PAR-2; `run_kissat_full.sh`'s
+`results.csv` carries the same plus `search_ticks` and `probing_ticks`,
+and `compare_full_runs.py` prints tick PAR-2 for solver-13 pairs. The C
+kissat never prints `statistics.ticks`, so its arm records NA, never 0,
+and so does any cell whose solver printed no line. A solved cell costs its
+W; an unsolved cell costs twice the W it reached before the kill, so under
+a wall limit only the solved part of tick PAR-2 is load-independent (the
+reports print the unsolved part separately). `SAT_LIMIT_TICKS` (plan step
+A), which limits W, makes the whole number deterministic. `k_res` is a
+provisional constant in `solver/13-kissat-rs/src/statistics.rs` (details
+in the solver README, "Work clock"), refit from the stock traces in step B.
 
 **Splits** (plan §8). `benchmarks/sat-comp-2025-medium` (100 cells) and the
 full `benchmarks/sat-comp-2025` (400) are training / in-distribution. Hold a
@@ -123,9 +133,12 @@ python3 tools/compare_full_runs.py <kissat_log_dir> <solver13_log_dir>
 ```
 
 Solver 13 has **no `SAT_*` feature toggles** — it is a kissat CLI port and
-every knob is a kissat option, so an arm's env does nothing until the
-one-line `SAT_EXTRA_ARGS` passthrough in `run.sh` lands (plan §7 step 5b /
-§10 step 0).
+every knob is a kissat option. `feature_ablation.py` calls the solver-13
+binary directly (`--seed=N`, the arm's `SAT_EXTRA_ARGS` split into kissat
+options, then the CNF and the proof file), so
+`--arm 'x:SAT_EXTRA_ARGS=--eliminateint=1000'` works; the matching
+one-line passthrough in `run.sh` for the competition wrapper is plan §7
+step 5b / §10 step 0.
 
 ## Correctness is absolute
 

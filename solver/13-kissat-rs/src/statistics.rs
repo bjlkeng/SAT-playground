@@ -450,3 +450,112 @@ mod tests {
         assert_eq!(ext, "               1.50");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Work clock — NOT in kissat. RL scheduler plan §3.4 / §10 step A′.
+//
+// W = ticks + K_RES × eliminate_resolutions is the deterministic work unit the
+// harness prices cells in (tick PAR-2, CLAUDE.md "Evaluation") and the unit
+// SAT_LIMIT_TICKS will limit (plan step A). `ticks` is kissat's never-printed
+// all-propagation counter (search, probing, backbone, beyond, initially,
+// transitive and the dense propagation inside eliminate all add to it);
+// eliminate's own effort has no tick equivalent, so its resolutions are
+// weighted in with K_RES.
+//
+// K_RES is PROVISIONAL. It was set 2026-09-15 from a `--profile=2` run of
+// the 20 discriminating cells (README, "Work clock"): eliminate wall time
+// per resolution, converted to search-tick units with each cell's own
+// search ticks per second (median 11.5, geomean 10.8 over 13 cells). Plan
+// step B refits it from the stock traces. Keep it here, in one place; the
+// harness reads it back from the `c workclock` line and never hard-codes it.
+pub const K_RES: u64 = 11;
+
+impl Statistics {
+    /// W = ticks + K_RES × eliminate_resolutions (plan §3.4).
+    pub fn work_clock(&self) -> u64 {
+        self.ticks
+            .saturating_add(K_RES.saturating_mul(self.eliminate_resolutions))
+    }
+}
+
+/// The `c workclock ...` exit line: every work kind the RL reward weights
+/// (plan §4), the three headline search counters, K_RES and W itself, as
+/// `key=value` pairs. No colon after the first word, so `tools/parity.py`'s
+/// counter regex (`^c name:`) can never mistake it for an `-s` row.
+pub fn work_clock_line(st: &Statistics, prefix: &str) -> String {
+    format!(
+        "{}workclock ticks={} search_ticks={} probing_ticks={} backbone_ticks={} \
+         transitive_ticks={} factor_ticks={} substitute_ticks={} kitten_ticks={} \
+         eliminate_resolutions={} forward_steps={} walk_steps={} flipped={} \
+         conflicts={} decisions={} propagations={} k_res={} work={}",
+        prefix,
+        st.ticks,
+        st.search_ticks,
+        st.probing_ticks,
+        st.backbone_ticks,
+        st.transitive_ticks,
+        st.factor_ticks,
+        st.substitute_ticks,
+        st.kitten_ticks,
+        st.eliminate_resolutions,
+        st.forward_steps,
+        st.walk_steps,
+        st.flipped,
+        st.conflicts,
+        st.decisions,
+        st.propagations,
+        K_RES,
+        st.work_clock(),
+    )
+}
+
+/// Print the work-clock line. Called at the end of
+/// `internal::print_statistics`, i.e. on every exit path kissat prints its
+/// statistics on (normal exit and the signal handler, so a run killed by the
+/// harness `timeout` still reports the work it consumed), after the
+/// `[ resources ]` section and therefore OUTSIDE the `-s` statistics block
+/// that `tools/parity.py` diffs against the C binary.
+pub fn print_work_clock(solver: &Solver) {
+    let line = work_clock_line(&solver.statistics, &solver.prefix);
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let _ = out.write_all(line.as_bytes());
+    let _ = out.write_all(b"\n");
+    let _ = out.flush();
+}
+
+#[cfg(test)]
+mod work_clock_tests {
+    use super::*;
+
+    #[test]
+    fn work_clock_weights_resolutions() {
+        let mut st = Statistics::default();
+        st.ticks = 1000;
+        st.eliminate_resolutions = 7;
+        assert_eq!(st.work_clock(), 1000 + K_RES * 7);
+        st.ticks = u64::MAX;
+        assert_eq!(st.work_clock(), u64::MAX, "saturates instead of wrapping");
+    }
+
+    #[test]
+    fn work_clock_line_is_key_value_and_not_a_stat_row() {
+        let mut st = Statistics::default();
+        st.ticks = 1000;
+        st.search_ticks = 600;
+        st.eliminate_resolutions = 7;
+        st.conflicts = 3;
+        let line = work_clock_line(&st, "c ");
+        assert!(line.starts_with("c workclock ticks=1000 search_ticks=600 "));
+        assert!(line.ends_with(&format!(" k_res={} work={}", K_RES, 1000 + K_RES * 7)));
+        assert!(line.contains(" eliminate_resolutions=7 "));
+        assert!(line.contains(" conflicts=3 "));
+        // parity.py's STAT_RE is `^c ([a-z_0-9]+):\s+(\d+)`; the line has no
+        // `name:` token, so it can never be read as an `-s` counter.
+        assert!(!line.split_whitespace().any(|tok| tok.ends_with(':')));
+        for tok in line.split_whitespace().skip(2) {
+            let (_, v) = tok.split_once('=').expect("key=value");
+            assert!(v.parse::<u64>().is_ok(), "{tok}");
+        }
+    }
+}

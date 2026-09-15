@@ -521,6 +521,9 @@ pub fn print_statistics(solver: &mut Solver) {
     crate::statistics::print_glue_usage(solver);
     crate::print::section(solver, "resources");
     crate::resources::print_resources(solver);
+    // Not in kissat: the `c workclock` exit line for the harness (plan §3.4,
+    // step A′). Outside the `-s` block, so the parity oracle never sees it.
+    crate::statistics::print_work_clock(solver);
 }
 
 /// Port of `kissat_add` — external clause addition.
