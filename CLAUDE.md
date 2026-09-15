@@ -197,18 +197,16 @@ block's conservative default does not apply here.
 2. Run the gates for whatever changed (`bash tools/smoke_test.sh
    solver/13-kissat-rs`, `cargo test`).
 3. Run the Codex review loop below until it is clean.
-4. If beads changed, export twice and stage both files:
-   `bd export -o .beads/issues.jsonl` (the live tracker; this is the file bd
-   reads back) and `bd export --all -o .beads/beads-full.jsonl` (issues plus
-   `bd remember` memories — plain `bd export` drops memories, so without
-   this they are not in git at all and a fresh clone loses them).
-   There is **no Dolt remote** here — the tracker syncs through git.
-   Auto-export is on, but it is throttled to once a minute, so **always
-   export by hand after deleting**: bd reads this file back into the
-   database, so a stale export silently restores issues you just deleted
-   (measured 2026-09-14 — 309 deleted issues came straight back on the next
-   command). No git hooks: they were removed in `0af6b68` and again after
-   `bd init` re-added them.
+4. Nothing to do for beads: the `pre-commit` git hook exports the tracker
+   to `.beads/issues.jsonl` and stages it on every commit. Auto-export alone
+   is not enough — it is throttled to once a minute, so between exports the
+   file lags the database (measured 2026-09-15: database 5 issues, file 2).
+   bd also reads that file back in, so a stale export silently restores
+   issues you deleted (measured 2026-09-14: 309 deleted issues came
+   straight back). There is no Dolt remote; the tracker syncs through git.
+   `bd remember` memories are **not** exported at all — if a lesson matters,
+   write it into `plan/` or a solver README, which is where this project's
+   durable knowledge lives.
 5. `git pull --rebase && git push && git status`.
 
 Work is not done until `git push` succeeds. Never stop at "ready to push when
@@ -263,35 +261,17 @@ bd close <id>         # Complete work
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 
-## Agent Context Profiles
+Profile for this repo: **team-maintainer** — see "Session completion"
+above, which overrides the Beads block's conservative git default.
 
-The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
+The bd git hooks are installed (`bd hooks install --beads`; scripts live in
+`.beads/hooks` and `core.hooksPath` points there). `pre-commit` exports the
+tracker and stages it, `post-merge` and `post-checkout` import it back. If
+you pull this repo into an older checkout and bd reports `workspace identity
+mismatch`, that local database predates the 2026-09-15 re-init: delete
+`.beads/embeddeddolt` and let bd rebuild it from `.beads/issues.jsonl`.
 
-- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
-- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
-- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
-
-## Session Completion
-
-This protocol applies when ending a Beads implementation workflow. It is subordinate to explicit user, repository, and orchestrator instructions.
-
-1. **File issues for remaining work** - Create beads for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **Handle git/sync by active profile**:
-   ```bash
-   # Conservative/minimal/default: report status and proposed commands; wait for approval.
-   git status
-
-   # Team-maintainer opt-in only, unless current instructions forbid it:
-   git pull --rebase
-   git push
-   git status
-   ```
-5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
-
-**Critical rules:**
-- Explicit user or orchestrator instructions override this Beads block.
-- Do not commit or push without clear authority from the active profile or the current user request.
-- If a required sync or push is blocked, stop and report the exact command and error.
+Note that `bd setup claude` and `bd init` rewrite this block and
+`.codex/hooks.json`. After running either, re-check this section and the
+Codex `SessionStart` matcher (it must include `compact`).
 <!-- END BEADS INTEGRATION -->
