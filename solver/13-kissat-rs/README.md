@@ -92,6 +92,83 @@ unaffected. Checked 2026-09-15 on SCPC-500-1 at `--conflicts=300000`:
 eliminations 6 (stock) v 4 (`--eliminateint=1000`) v 8 (`--eliminateint=250`);
 unset v empty give identical `s` and `c workclock` lines; smoke test 9/9.
 
+**Step-0 constant-knob sweeps: headroom (2026-09-16).** Baseline 2 of the
+RL plan's ladder (§6.1): for each knob the scheduler will move, does one
+constant other than stock win on average, and how much is there to gain if
+every cell got its best constant? Stage 1 (the intervals, the restart
+margin, sweep effort) is done; stage 2 (per-pass effort, reduce fraction)
+is running and gets its own note. Setup: `tools/rl_step0_sweeps.sh`,
+18 arms × the 100 cells of `benchmarks/sat-comp-2025-medium`, 1800 s,
+16 GB, 32 pinned cores, one seed, no proofs (the cross-arm SAT/UNSAT
+check is the oracle), frozen binary of tree d8d41eb (sha256
+`be2103771bcddf30`), 2026-09-15 16:54 to 2026-09-16 05:21 on an otherwise
+idle host. Run dir `log/abtest-rl-step0-stage1-2026-09-15-16-54-40`
+(per-arm `results.tsv`; `report/report.txt` and `report/per_family.tsv`
+from `tools/rl_sweep_report.py`). No failed rows, no contradictions.
+
+Per arm (stock 73/100, wall PAR-2 124 812 s, tick PAR-2 3.69e12 W):
+
+| arm | solved | tick PAR-2 v stock | wall PAR-2 v stock | +solved / −solved |
+|---|---:|---:|---:|---:|
+| reorderint 20000 (stock 10000) | **76** | **0.983** | **0.949** | +5 / −2 |
+| reorderint 5000 | 74 | 1.000 | 0.956 | +4 / −3 |
+| eliminateint 1000 (stock 500) | 74 | 1.002 | 0.980 | +3 / −2 |
+| sweep off (`--sweep=0`) | 72 | 1.050 | 1.018 | +1 / −2 |
+| modeint 2000 (stock 1000) | 71 | 1.051 | 1.036 | +3 / −5 |
+| probeint 50 (stock 100) | 71 | 1.070 | 1.058 | +4 / −6 |
+| sweepeffort 200 / 50 (stock 100) | 71 / 71 | 1.022 / 1.053 | 1.037 / 1.051 | +1 / −3 |
+| probeint 200 | 70 | 1.088 | 1.072 | +3 / −6 |
+| rephaseint 500 / 2000 (stock 1000) | 70 / 70 | 1.091 / 1.124 | 1.050 / 1.085 | +3 / −6 |
+| reduceint 500 / 2000 (stock 1000) | 69 / 69 | 1.114 / 1.064 | 1.064 / 1.089 | +2 / −6, +3 / −7 |
+| modeint 500 | 69 | 1.070 | 1.061 | +2 / −6 |
+| restartmargin 20 / 5 (stock 10) | 69 / 68 | 1.117 / 1.103 | 1.062 / 1.107 | +2 / −6, +2 / −7 |
+| eliminateint 250 | 67 | 1.152 | 1.118 | +2 / −8 |
+
+- **Best global constant.** `reorderint=20000` beats stock on all three
+  metrics. `reorderint=5000` and `eliminateint=1000` each solve one cell
+  more than stock at even tick PAR-2 (1.000× and 1.002×), which is inside
+  the noise. The other fourteen constants lose solved cells. ±2 solved is
+  noise on 100 cells (CLAUDE.md), so even the +3 of reorderint 20000 needs
+  the 400-cell check before it means anything. Nothing here says "retune
+  kissat"; it says stock's constants are near a local optimum for this
+  suite, which is what a global retune of a mature solver should find.
+- **Per-cell sensitivity is large and two-sided.** For every knob, a
+  non-stock constant beats stock (solves what stock does not, or W lower
+  by > 5 %) on 25-41 of the 100 cells and loses on 33-42 — nearly
+  symmetric. Half or double of one interval changes the trajectory the way
+  a different seed would, so the per-cell oracle below is inflated by that
+  chaos: it is the maximum over 2-3 noisy draws per cell, not a promise.
+- **Headroom (upper bounds).** Every cell at its best constant of one knob
+  (that knob's oracle): tick PAR-2 gain 8-16 %, +2 to +6 solved. Every
+  cell at its best arm over all 17 constants (the joint oracle): **81 v 73
+  solved, tick PAR-2 0.678×, wall PAR-2 0.696×.** That is the bound the
+  epoch policy must be measured against, and the two-sidedness above
+  means the reachable part is smaller: a policy can only cash in the
+  fraction of this sensitivity that is predictable from the observation
+  vector.
+- **Knob ranking for triage** (plan §6.1b; per-knob oracle tick gain,
+  solved gain in brackets): reduceint 16.0 % [+4], modeint 15.9 % [+5],
+  reorderint 15.5 % [+6], eliminateint 14.4 % [+5], probeint 14.3 % [+4],
+  rephaseint 12.9 % [+4], restartmargin 12.4 % [+3], sweepeffort 8.4 %
+  [+2]. Sweep effort is clearly last (the pass is throttled by its own
+  delay counter already); the other seven are within a few points of each
+  other, so round 0 should weight them by this list and the top 3-4 for
+  rounds 1-3 are reorderint, modeint, eliminateint and reduceint, subject
+  to round-0 effect sizes.
+- **Per family** (first name token; full table in the TSV). `bp` (8
+  cells, stock 6): reduceint 500 solves one more (7/8 at 0.79× the work),
+  five constants tie stock at 0.92-0.95×, the rest lose 1-2 cells. `sc`
+  (7, stock 5): reorderint 20000 +1 (0.63×), eliminateint 1000 and
+  reorderint 5000 tie, the other constants −1. `kakuro` (3, stock 2):
+  twelve of the seventeen constants solve the third cell at 0.13-0.52× the
+  work — a cell stock is simply unlucky on. `roundrobin` (1, stock 0):
+  seven constants solve it. `rbsat` (2, stock 1): rephaseint 2000 +1,
+  eleven constants −1. `xor`, `tseitin`, `g` (5 cells): most constants
+  cost a cell; reorderint 20000 and eliminateint 1000 hold stock's count
+  on all three. The families where constants win are the ones where the
+  win looks like perturbation rather than tuning — the same lesson as the
+  two-sided counts.
+
 Status (2026-09-04): all engines ported; counter parity exact at
 `--conflicts=100000` on the 20 discriminating cells + 14 medium cells and on
 full brocard runs; wall ratio v kissat at parity: 19-cell quiet screen geomean

@@ -957,6 +957,23 @@ source of truth; every bead points back to its section.
   branch-off; observation epoch 2^23 with decision epoch 2^25; pre-search
   handled as D0 (conditioning + initial-interval multipliers, stage 1) and
   D−1 (preprocess control, stage 2, fork-at-parse data).
+- 2026-09-16 (step 0, stage 1 done; `SAT-playground-p9m.5.2/.5.3/.5.5`):
+  constant sweeps of the eight stage-1 knobs on the medium suite at 1800 s
+  (18 arms, no proofs, frozen binary; solver README "Step-0 constant-knob
+  sweeps"). Best global constant: `reorderint=20000` beats stock on
+  solved, tick and wall (76 v 73, 0.983×, 0.949×); `reorderint=5000` and
+  `eliminateint=1000` solve 74 at even tick PAR-2 (noise); the other
+  fourteen constants lose cells, so stock is near a local optimum and
+  baseline 2 is "reorderint 20000, pending the 400-cell check". Joint
+  per-cell oracle
+  over all 17 constants: 81 v 73 solved, tick PAR-2 0.678× — the upper
+  bound for the policy, inflated by chaotic sensitivity (each knob beats
+  stock on 25-41 cells and loses on 33-42). Knob triage order from the
+  per-knob oracle gain: reduceint, modeint, reorderint, eliminateint,
+  probeint, rephaseint, restartmargin, then sweepeffort far last (8 %).
+  Stage-2 (per-pass effort) sweep running. kissat 4.0.4 has no
+  `reducefraction`: the §2.2 reduce-fraction knob is `reducelow`/`reducehigh`
+  (500/900 ‰), scaled together.
 
 ---
 
