@@ -169,6 +169,64 @@ Per arm (stock 73/100, wall PAR-2 124 812 s, tick PAR-2 3.69e12 W):
   win looks like perturbation rather than tuning — the same lesson as the
   two-sided counts.
 
+**Stage 2 (per-pass effort, reduce fraction; 2026-09-16).** Same setup,
+16 arms, 2026-09-16 05:21 to 16:10, run dir
+`log/abtest-rl-step0-stage2-2026-09-16-05-21-33`; no failed rows, no
+contradictions. This stage's stock arm solved 72 where stage 1's solved
+73: two identical stock runs differ by one wall-limit cell, which is the
+noise floor for the solved count. Per arm (stock 72/100, wall PAR-2
+126 654 s, tick PAR-2 3.74e12 W; stock efforts in ‰: vivify 100,
+eliminate 100, backbone 20, factor 50, forward 100, transitive 20,
+walk 50; reduce fraction reducelow/reducehigh 500/900):
+
+| arm | solved | tick PAR-2 v stock | wall PAR-2 v stock | +solved / −solved |
+|---|---:|---:|---:|---:|
+| forwardeffort 200 | **75** | **0.962** | **0.946** | +3 / −0 |
+| backboneeffort 10 | **74** | **0.957** | **0.947** | +3 / −1 |
+| eliminateeffort 50 | 73 | 0.990 | 0.980 | +1 / −0 |
+| forwardeffort 50 | 73 | 0.990 | 0.975 | +1 / −0 |
+| walkeffort 25 | 73 | 1.017 | 0.993 | +5 / −4 |
+| reduce fraction halved (250/450) | 72 | **0.953** | 0.984 | +5 / −5 |
+| walkeffort 100 | 72 | 0.993 | 0.986 | +4 / −4 |
+| vivifyeffort 50 | 72 | 0.992 | 0.996 | +2 / −2 |
+| transitiveeffort 40 | 72 | 1.014 | 0.978 | +2 / −2 |
+| backboneeffort 40 | 72 | 1.022 | 1.019 | +1 / −1 |
+| vivifyeffort 200 | 71 | 1.057 | 0.999 | +4 / −5 |
+| eliminateeffort 200 | 71 | 1.015 | 1.018 | +0 / −1 |
+| factoreffort 100 / 25 | 71 / 71 | 1.009 / 1.045 | 0.999 / 1.031 | +1 / −2, +2 / −3 |
+| transitiveeffort 10 | 70 | 1.049 | 1.044 | +1 / −3 |
+
+- **Effort knobs perturb the trajectory less than intervals** (an effort
+  limit only truncates a pass): the per-cell beats/loses counts are 11-40
+  v 12-38, against 25-41 v 33-42 for the intervals, and the low-count
+  knobs show a consistent direction rather than chaos. Three constants
+  beat stock on every metric: double forward-subsumption effort
+  (forwardeffort 200: +3/−0), half backbone effort (backboneeffort 10:
+  +3/−1) and half eliminate effort (eliminateeffort 50: +1/−0); halving
+  the reduce fraction keeps the solved count and cuts tick PAR-2 by 5 %.
+  All within ±2-3 solved on 100 cells, so each needs the 400-cell check
+  before it is a retune; but the direction (spend less in backbone and
+  eliminate, more in forward subsumption) is the first real tuning signal
+  of step 0.
+- **Headroom.** Per-knob oracle tick gain: reducefrac 18.5 % [+5],
+  walkeffort 16.0 % [+6], vivifyeffort 14.2 % [+4], transitiveeffort
+  8.2 % [+2], backboneeffort 8.1 % [+3], forwardeffort 7.0 % [+3],
+  factoreffort 6.7 % [+2], eliminateeffort 2.3 % [+1]. Joint oracle over
+  the 15 constants: 81 v 72 solved, tick PAR-2 0.690×, wall 0.706×. The
+  top of this ranking (reduce fraction, walk, vivify) is again the
+  chaos-prone end — the knobs with the highest beats *and* loses counts —
+  while the knobs with a clear best constant (forward, backbone) rank
+  low. For stage 2 (plan §2.2) both matter: the ranking says where a
+  per-cell choice has room, the global constants say where the menu's
+  centre should move.
+- **Per family.** `kakuro`'s third cell is solved by 11 of 15 constants
+  (0.18-0.56× the work), as in stage 1. `sc` (7, stock 5): factoreffort
+  25 and forwardeffort 200 +1, eliminateeffort 200, reducefrac half and
+  walkeffort 100 −1. `bp` (8, stock 6): backboneeffort 10 +1; factor,
+  transitive 10 and both walk efforts −1. `lockchart` (3, stock 1):
+  reducefrac half and walkeffort 100 +1. `xor` (3, stock 1): both vivify
+  efforts and walkeffort 100 −1.
+
 Status (2026-09-04): all engines ported; counter parity exact at
 `--conflicts=100000` on the 20 discriminating cells + 14 medium cells and on
 full brocard runs; wall ratio v kissat at parity: 19-cell quiet screen geomean

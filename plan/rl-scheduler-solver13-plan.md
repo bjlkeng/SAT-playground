@@ -971,9 +971,18 @@ source of truth; every bead points back to its section.
   stock on 25-41 cells and loses on 33-42). Knob triage order from the
   per-knob oracle gain: reduceint, modeint, reorderint, eliminateint,
   probeint, rephaseint, restartmargin, then sweepeffort far last (8 %).
-  Stage-2 (per-pass effort) sweep running. kissat 4.0.4 has no
-  `reducefraction`: the §2.2 reduce-fraction knob is `reducelow`/`reducehigh`
-  (500/900 ‰), scaled together.
+  kissat 4.0.4 has no `reducefraction`: the §2.2 reduce-fraction knob is
+  `reducelow`/`reducehigh` (500/900 ‰), scaled together.
+- 2026-09-16 (step 0, stage 2 done; `SAT-playground-p9m.5.4`): the eight
+  stage-2 knobs, 16 arms, same setup. Effort knobs perturb less than
+  intervals (beats/loses 11-40 v 12-38 per cell) and three constants beat
+  stock on every metric: forwardeffort 200 (75 v 72, tick 0.962×),
+  backboneeffort 10 (74, 0.957×), eliminateeffort 50 (73, 0.990×); the
+  reduce fraction halved keeps 72 solved at tick 0.953×. Per-knob oracle
+  ranking for stage 2: reducefrac, walkeffort, vivifyeffort, then
+  transitive, backbone, forward, factor, eliminateeffort (2 %). Joint
+  oracle 81 v 72, tick 0.690×. Two stock arms 12 h apart solved 73 and 72:
+  one wall-limit cell is the solved-count noise floor on 100 cells.
 
 ---
 
