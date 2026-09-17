@@ -168,6 +168,11 @@ fn signal_handler(sig: i32) {
     if !ptr.is_null() {
         // SAFETY: mirrors the C handler's access to the static solver.
         let solver = unsafe { &mut *ptr };
+        // Not in kissat: close the RL log (final row, footer) first. The
+        // prints below take the stdout lock, which the interrupted code may
+        // hold (a blocked model write), so they can fail; the log must be
+        // sealed before anything that can.
+        crate::policy::finish_log(solver, 0, "signal");
         crate::print::signal_msg(solver, "caught", sig, signal_name(sig));
         crate::internal::print_statistics(solver);
         crate::print::signal_msg(solver, "raising", sig, signal_name(sig));
@@ -986,10 +991,23 @@ fn run_application(solver: &mut Solver, args: &[String], cancel_alarm_ptr: &mut 
         }
     }
     // Not in kissat: the RL scheduler configuration (SAT_POLICY*, step A.2).
-    if let Err(text) = crate::policy::init_from_env(solver) {
+    // The log may not alias a file this run owns (input, proof, output).
+    let mut taken: Vec<(&str, &str)> = Vec::new();
+    if let Some(p) = app.input_path.as_deref() {
+        taken.push(("input", p));
+    }
+    if let Some(p) = app.proof_path.as_deref() {
+        taken.push(("proof", p));
+    }
+    if let Some(p) = app.output_path.as_deref() {
+        taken.push(("output", p));
+    }
+    if let Err(text) = crate::policy::init_from_env(solver, &taken) {
         crate::error::error(format_args!("{}", text));
         return 1;
     }
+    solver.policy.cnf_path = app.input_path.clone().unwrap_or_else(|| "<stdin>".to_string());
+    crate::policy::prepare_log(solver); // not in kissat: the RL log header
     // #ifndef QUIET — kept:
     crate::print::section(solver, "banner");
     if solver.options.quiet == 0 {
@@ -1058,11 +1076,19 @@ fn run_application(solver: &mut Solver, args: &[String], cancel_alarm_ptr: &mut 
                         "could not write DIMACS file '{}'",
                         path
                     ));
+                    // Not in kissat: the RL log ends with reason
+                    // "output-error", never as a normal "solve" record.
+                    crate::policy::finish_log(solver, res, "output-error");
                     return 0;
                 }
             }
         }
     }
+    // Not in kissat: seal the RL log only after every required output (the
+    // proof is closed, the `s` line, the model and any `-o` file are out),
+    // so a signal during output still ends the log as "signal", never as a
+    // successful record of an incomplete run.
+    crate::policy::finish_log(solver, res, "solve");
     crate::internal::print_statistics(solver);
     // #ifndef QUIET — kept:
     crate::print::section(solver, "shutting down");

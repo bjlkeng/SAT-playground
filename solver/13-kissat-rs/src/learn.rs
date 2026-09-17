@@ -131,6 +131,11 @@ pub fn update_learned(solver: &mut Solver, glue: u32, size: u32) {
         crate::reluctant::tick_reluctant(&mut solver.reluctant);
     }
     solver.statistics.literals_learned += size as u64; // ADD (literals_learned, size): METRIC, re-enabled
+    // Not in kissat: the RL log's per-epoch learned-clause histogram
+    // (policy_log.rs); pure accumulators read by nothing else.
+    if solver.policy.on {
+        crate::policy::note_learned(solver, glue, size);
+    }
     let stable = solver.stable as usize;
     // UPDATE_AVERAGE (size, size)  (#ifndef QUIET — kept):
     crate::smooth::update_smooth(&mut solver.averages[stable].size, size as f64);

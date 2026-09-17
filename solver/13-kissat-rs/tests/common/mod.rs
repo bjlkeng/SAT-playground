@@ -219,6 +219,33 @@ pub fn run(cnf: &Path, options: &[&str], env: &[(&str, &str)]) -> Run {
     }
 }
 
+/// Like `run`, with a DRAT proof file as the second positional argument.
+pub fn run_with_proof(cnf: &Path, proof: &Path, env: &[(&str, &str)]) -> Run {
+    let mut cmd = Command::new(solver_bin());
+    cmd.arg("-n").arg("-s").arg(cnf).arg(proof);
+    for key in SOLVER_ENV_VARS {
+        cmd.env_remove(key);
+    }
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("run sat-solver");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let status = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("s ").map(|s| s.trim().to_string()))
+        .unwrap_or_default();
+    Run {
+        status,
+        stats: BTreeMap::new(),
+        workclock: BTreeMap::new(),
+        stdout,
+        stderr,
+        exit_code: out.status.code().unwrap_or(-1),
+    }
+}
+
 /// Assert two runs took the same trajectory: same status, same `-s`
 /// counters and same work-clock line.
 pub fn assert_same_trajectory(a: &Run, b: &Run, what: &str) {

@@ -49,6 +49,7 @@ pub mod options;
 pub mod parse;
 pub mod phases;
 pub mod policy;
+pub mod policy_log;
 pub mod preprocess;
 pub mod print;
 pub mod probe;

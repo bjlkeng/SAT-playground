@@ -73,6 +73,13 @@ macro_rules! statistics_fields {
             pub fn values(&self) -> Vec<u64> {
                 vec![$(self.$name,)*]
             }
+
+            /// Visit every counter as (name, value) in `NAMES` order without
+            /// allocating (the RL log's row writer runs from the signal
+            /// handler and must not touch the allocator).
+            pub fn each(&self, mut f: impl FnMut(&'static str, u64)) {
+                $(f(stringify!($name), self.$name);)*
+            }
         }
     };
 }

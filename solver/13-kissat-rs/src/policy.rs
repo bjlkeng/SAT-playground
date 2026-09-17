@@ -44,8 +44,13 @@
 //                                    uniform (1.0).
 //   SAT_POLICY_SEGMENT=m             mean sticky segment length in decision
 //                                    epochs (5).
+//   SAT_POLICY_LOG=path              raw-state log, one row per observation
+//                                    epoch (policy_log.rs); with SAT_POLICY
+//                                    unset it turns the policy on in stock
+//                                    mode.
 
 use crate::internal::Solver;
+use crate::policy_log::GLUE_BINS;
 
 // ---------------------------------------------------------------------------
 // Timers, efforts, the action and its menus (plan §2.1, §2.2)
@@ -188,6 +193,16 @@ pub enum Mode {
     Jitter,
 }
 
+impl Mode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Stock => "stock",
+            Mode::Random => "random",
+            Mode::Jitter => "jitter",
+        }
+    }
+}
+
 /// Per-timer bookkeeping (plan §2.1): the clock reading at the last fire
 /// (conflicts, or search ticks for the mode timer in stable mode) and the
 /// delta stock computed then, so that `last_fire + stock_delta` is the stock
@@ -216,6 +231,10 @@ pub struct Policy {
     pub obs_epochs: u64,
     pub decisions: u64,
     pub act: Action,
+    /// The action as decided (after masking) at the last decision, never
+    /// modified afterwards: `act` loses a one-shot `m = 0` at the fire that
+    /// consumes it, so the log records both (plan §5.1, "the action taken").
+    pub decided: Action,
     pub timers: [TimerState; N_TIMERS],
     /// The policy's own generator (random.rs LCG, separate state).
     pub rng: u64,
@@ -228,6 +247,20 @@ pub struct Policy {
     /// re-issued (then masked) at every decision of the segment. Kept apart
     /// from `act`, which masking and a consumed one-shot modify.
     pub segment_act: Action,
+    /// The raw-state log (`SAT_POLICY_LOG`, policy_log.rs), if any.
+    pub log: Option<Box<crate::policy_log::Logger>>,
+    /// The input path, for the log header.
+    pub cnf_path: String,
+    /// The static features as a JSON object text (step A.7), written into
+    /// the log footer; "{}" until computed. Preformatted on the normal path
+    /// so the footer needs no allocation.
+    pub static_json: String,
+    /// Per-epoch learned-clause quality, fed by `note_learned` and reset
+    /// after every log row: glue histogram, count, summed size and glue.
+    pub epoch_glue: [u64; GLUE_BINS],
+    pub epoch_learned: u64,
+    pub epoch_learned_size: u64,
+    pub epoch_learned_glue: u64,
 }
 
 impl Default for Policy {
@@ -242,6 +275,7 @@ impl Default for Policy {
             obs_epochs: 0,
             decisions: 0,
             act: STOCK,
+            decided: STOCK,
             timers: [TimerState::default(); N_TIMERS],
             rng: 0,
             seed: 0,
@@ -249,6 +283,13 @@ impl Default for Policy {
             segment_mean: 5.0,
             segment_left: 0,
             segment_act: STOCK,
+            log: None,
+            cnf_path: String::new(),
+            static_json: String::from("{}"),
+            epoch_glue: [0; GLUE_BINS],
+            epoch_learned: 0,
+            epoch_learned_size: 0,
+            epoch_learned_glue: 0,
         }
     }
 }
@@ -267,16 +308,35 @@ fn env_nonempty(name: &str) -> Option<String> {
 /// Parse the `SAT_POLICY*` variables into `solver.policy`. `Ok(())` with the
 /// policy off when `SAT_POLICY` is unset or empty; `Err(text)` for a value
 /// the solver cannot honour, so the caller exits 1 the way it does for a bad
-/// option.
-pub fn init_from_env(solver: &mut Solver) -> Result<(), String> {
+/// option. `taken` names the files the run already owns (the CNF, the
+/// proof, a `-o` output), which the log may not alias.
+pub fn init_from_env(solver: &mut Solver, taken: &[(&str, &str)]) -> Result<(), String> {
     let mut p = Policy::default();
+    let log_path = env_nonempty("SAT_POLICY_LOG");
     let mode = match env_nonempty("SAT_POLICY") {
+        // A log alone means "stock trace with logging" (plan §5.2).
+        None if log_path.is_some() => "stock".to_string(),
         None => {
             solver.policy = p;
             return Ok(());
         }
         Some(m) => m,
     };
+    if let Some(path) = &log_path {
+        // SAT_POLICY_LOG_RESERVED: extra files the log may not alias, one
+        // per line, set by run.sh for its capture and result files and the
+        // targets of its own redirected stdout/stderr, which this process
+        // cannot see behind the wrapper's pipe. Same rules as the rest.
+        let reserved = std::env::var("SAT_POLICY_LOG_RESERVED").unwrap_or_default();
+        let mut all: Vec<(&str, &str)> = taken.to_vec();
+        for line in reserved.lines() {
+            let line = line.trim();
+            if !line.is_empty() {
+                all.push(("wrapper-reserved", line));
+            }
+        }
+        p.log = Some(Box::new(crate::policy_log::Logger::open(path, &all)?));
+    }
     p.mode = match mode.as_str() {
         "stock" => Mode::Stock,
         "random" => Mode::Random,
@@ -362,6 +422,9 @@ pub fn print_configuration(solver: &mut Solver) {
             solver.policy.obs_ticks, solver.policy.dec_ticks
         ),
     );
+    if let Some(log) = &solver.policy.log {
+        crate::print::message(solver, format!("policy log: {}", log.path()));
+    }
     if solver.policy.mode != Mode::Stock {
         crate::print::message(
             solver,
@@ -427,6 +490,58 @@ pub fn effective_limit(solver: &Solver, t: Timer) -> u64 {
         scaled.max(interval_floor(st.stock_delta))
     };
     st.last_fire.saturating_add(delta)
+}
+
+/// Stock's "would fire now" flag for timer `t`: the stock deadline
+/// `last_fire + stock_delta` tested with the same comparison kissat's fire
+/// predicate uses, on the timer's own clock (search ticks for the mode
+/// timer in stable mode). The other conditions of each predicate (level,
+/// mode, enabled passes, the reduce coincidence test) are in the log as
+/// state and are not folded in here.
+pub fn stock_would_fire(solver: &Solver, t: Timer) -> bool {
+    let st = &solver.policy.timers[t as usize];
+    let deadline = st.last_fire.saturating_add(st.stock_delta);
+    let conflicts = solver.statistics.conflicts;
+    match t {
+        Timer::Reduce | Timer::Reorder => conflicts >= deadline,
+        Timer::Rephase | Timer::Probe => conflicts > deadline,
+        Timer::Eliminate => deadline <= conflicts,
+        Timer::Mode => {
+            if solver.limits.mode.count & 1 != 0 {
+                solver.statistics.search_ticks >= deadline
+            } else {
+                conflicts >= deadline
+            }
+        }
+    }
+}
+
+/// Per-epoch learned-clause accumulators for the log (called from
+/// `learn::update_learned` under `policy.on`; pure counters).
+#[inline]
+pub fn note_learned(solver: &mut Solver, glue: u32, size: u32) {
+    let p = &mut solver.policy;
+    p.epoch_glue[crate::policy_log::glue_bin(glue)] += 1;
+    p.epoch_learned += 1;
+    p.epoch_learned_size += size as u64;
+    p.epoch_learned_glue += glue as u64;
+}
+
+/// Write the log header now (after the options and input path are known,
+/// before parsing), so a kill at any later point still yields a complete
+/// file; a no-op without a log.
+pub fn prepare_log(solver: &mut Solver) {
+    if solver.policy.log.is_some() {
+        crate::policy_log::prepare(solver);
+    }
+}
+
+/// Close the log (final row, footer); safe to call more than once and
+/// when there is no log.
+pub fn finish_log(solver: &mut Solver, res: i32, reason: &str) {
+    if solver.policy.log.is_some() {
+        crate::policy_log::finish(solver, res, reason);
+    }
 }
 
 /// `restartmargin` scaled by the action (focused mode; plan §2.1). Returns
@@ -631,6 +746,7 @@ pub fn decide(solver: &mut Solver) {
     let act = choose(solver);
     let act = mask(solver, act);
     solver.policy.act = act;
+    solver.policy.decided = act;
     solver.policy.decisions += 1;
     if crate::print::verbosity(solver) >= 2 {
         report_decision(solver);
@@ -655,10 +771,15 @@ fn report_decision(solver: &Solver) {
     );
 }
 
-/// One observation row (step A.5 fills this in). Must stay pure with respect
-/// to solver state: no RNG draws, no allocation the arena can see, no
-/// counter a heuristic reads.
-pub fn log_row(_solver: &mut Solver) {}
+/// One observation row (policy_log.rs). Pure with respect to solver state:
+/// no RNG draws, no allocation the arena can see, no counter a heuristic
+/// reads; a no-op without `SAT_POLICY_LOG`.
+#[inline]
+pub fn log_row(solver: &mut Solver) {
+    if solver.policy.log.is_some() {
+        crate::policy_log::row(solver, false);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tests

@@ -96,12 +96,12 @@ unset v empty give identical `s` and `c workclock` lines; smoke test 9/9.
 **RL scheduler plumbing, step A (2026-09-16; plan §7, beads
 `SAT-playground-p9m.6.*`).** The solver can now run under an external
 scheduler that moves kissat's timing decisions while every mechanism stays
-byte-identical. Done in this pass: the work-clock limit (A.1), the policy
-module with its epoch clock and action (A.2), the stage-1 chokepoints
-(A.3), random and jitter modes with a replay test (A.4), and the counter
-audit (A.6). Still open: the logger (A.5), static features (A.7), fork mode
-(A.8), `observe()` (A.9), the net loader (A.10), the overhead check (A.11)
-and the final docs pass (A.12). Everything is off by default: with no
+byte-identical. Done so far (2026-09-16): the work-clock limit (A.1), the
+policy module with its epoch clock and action (A.2), the stage-1
+chokepoints (A.3), random and jitter modes with a replay test (A.4), the
+raw-state logger (A.5) and the counter audit (A.6). Still open: static
+features (A.7), fork mode (A.8), `observe()` (A.9), the net loader (A.10),
+the overhead check (A.11) and the final docs pass (A.12). Everything is off by default: with no
 `SAT_POLICY*` and no `SAT_LIMIT_TICKS` in the environment the only added
 work on the search path is one bool test per chokepoint.
 
@@ -116,6 +116,8 @@ Environment (read by the binary itself, so `run.sh`, the harness and
 | `SAT_POLICY_SEED` | integer | the policy's own generator seed (default 0); never touches the solver's `--seed` stream |
 | `SAT_POLICY_TEMP` | number > 0 | spread of the random menus around stock: weight exp(−distance/temp), so 0.2 is almost always stock and 100 is uniform (default 1.0) |
 | `SAT_POLICY_SEGMENT` | number ≥ 1 | mean sticky segment length in decision epochs (default 5) |
+| `SAT_POLICY_LOG` | path | raw-state log, one row per observation epoch plus a terminal row (A.5, below); with `SAT_POLICY` unset it turns the policy on in stock mode, i.e. a stock trace with logging; an unwritable path, or one that aliases the CNF, the proof, a `-o` output, a standard stream or a wrapper-reserved file, is a usage error |
+| `SAT_POLICY_LOG_RESERVED` | paths, one per line | extra files the log may not alias; set by `run.sh` for its capture and result files and its redirected stdout/stderr |
 
 - **Work-clock limit.** `limited.ticks` / `limits.ticks` sit next to
   kissat's conflict and decision limits. The check lives in
@@ -205,6 +207,81 @@ Environment (read by the binary itself, so `run.sh`, the harness and
   `parity.py --phases` relies on. Nothing reads a re-enabled counter, so
   they cannot move the trajectory; parity on the audited binary:
   20/20 both ways (the runs above are on the audited, committed binary). Wall cost of the extra increments: paired timing of the pre-audit v audited binary on the 20 discriminating cells at `--conflicts=100000` (identical `c workclock` line per cell, 3 alternating reps each, medians, the two binaries pinned to two idle physical cores while the parity runs and the review sat on other cores): geomean 1.0045, per cell 0.984-1.021 with both signs (`log/pair_time-stepA-audit-2026-09-16.log`), inside the ±2 % run-to-run wall noise the 2026-09-15 A/A run showed. The formal overhead measurement of logging and observe() is bead A.11.
+- **Logger (A.5, `src/policy_log.rs`).** `SAT_POLICY_LOG=path` writes
+  one row per observation epoch (D0 first) and one terminal row at exit,
+  then a sentinel row and a footer. One file, self-describing: line 1 is
+  `SAT13POLICYLOG 1`, line 2 a JSON header (format, solver, `k_res`, the
+  CNF path, pid, the policy settings, all 158 options, the column names,
+  a `kinds` string with one `u`/`f` per column, `row_bytes`), written
+  before parsing so that a kill at any later point still yields a
+  complete file; then fixed-width rows of little-endian u64 (an `f`
+  column is an f64 stored as its bit pattern), a row whose first word is
+  2^64−1, and a JSON footer (result, exit code, reason `solve`, `signal`
+  or `output-error` for a run whose `-o` file could not be written,
+  rows, wall and CPU nanoseconds, peak RSS from `getrusage`,
+  work, conflicts, and a `static` object that A.7 fills, since the static
+  features exist only after preprocessing). 691 columns, 5528 bytes per row: every
+  `Statistics` counter by name plus the two 128-bin clause-use glue
+  histograms (`used_f_glue*`, `used_s_glue*`), both averages blocks, every limit and the
+  three limit flags, the four delay counters, the elimination bound, the
+  tier glue limits, the search state (mode, level, trail, propagate
+  cursor, unassigned, active, arena and watch-stack sizes, best/target
+  assigned, reluctant state, `last.*`), the per-epoch learned-clause
+  histogram (8 glue bins, count, summed size and glue; fed from
+  `update_learned` under `policy.on` and reset after each row), per
+  timer `last_fire`, `stock_delta`, fires, the effective limit and
+  stock's would-fire flag, the action in force (`act_*`) and the action
+  as decided at the last decision (`dec_*`, the training label: a
+  consumed one-shot reads 1 in `act_*` but keeps its 0 in `dec_*`; a row
+  is written at a boundary before that boundary's decision, so it
+  describes the epoch that just ended and the decision that governed
+  it), the policy RNG state and the segment counter, plus `work`, the monotonic wall clock and the
+  process CPU clock per row. The footer is also written from the signal
+  handler, so a `timeout` kill leaves a complete file; SIGINT, SIGTERM and
+  SIGALRM are blocked while a row or the footer is being written, so a
+  signal can never land between the logger being taken out of the solver
+  and put back (checked six times per test run with a SIGTERM into a
+  fine-grained log). Because the handler may interrupt the solver inside
+  `malloc`, the row and footer path allocates nothing once the header
+  exists: column names are formatted only for the header, the counters
+  are visited in place, the row buffer keeps its capacity and the footer
+  is formatted into a preallocated string, and a write error is kept as
+  its OS error code (no text); a kill during parsing or preprocessing
+  therefore still ends with a terminal row (the work and peak RSS so far)
+  and a footer. On the normal path the footer is sealed only after every
+  required output is out (proof closed, `s` line, model, `-o` file), so a
+  kill during output still ends the file as `signal`/`UNKNOWN`, never as
+  a successful record of an incomplete run. A log path that names the
+  CNF, the proof or the
+  `-o` output (by string, by resolved path with symlinks followed by
+  hand so a dangling link to a future proof file still counts, or by
+  inode), or that is the file behind the process's stdin, stdout or
+  stderr (a CNF read through `< input.cnf` has no positional path), is
+  refused with exit 1, so the log can never truncate the input, share the
+  proof or clobber redirected output. `run.sh` hands the binary its own
+  files (`solver_stdout.tmp`, `proof.out`, `model.txt`, `status.txt`,
+  `result.json`) and the files behind the wrapper's redirected stdout or
+  stderr (a caller's `> out.txt`) in `SAT_POLICY_LOG_RESERVED`, one path
+  per line, and the binary refuses those with the same normalization and
+  alias rules; it cannot see them by itself because the wrapper's stdout
+  is a pipe, and a wrapper-side copy of the rules is how review rounds
+  found trimming and hard-link gaps. In the signal handler the log is
+  sealed before any diagnostic
+  print, since the interrupted code may hold the stdout lock, and the
+  logger itself never prints from that path. A write
+  or flush failure (a full disk, `/dev/full`) stops the log, prints one
+  `c warning: policy log ... incomplete` line and withholds the footer,
+  which is how a reader learns the trace is unusable; the answer and the
+  exit code are unaffected. Size: at the
+  default 2^23-tick observation epoch a cell runs about 4 rows per
+  second, so an 1800 s trace is about 40 MB (the plan's 35 MB estimate
+  was generous). `tools/policy_log.py` reads it (`read(path)` returns
+  header, rows, footer; the CLI prints a tail). `tests/policy_log.rs`:
+  logging on v off is trajectory-identical; the terminal row equals the
+  run's `-s` counters and its `c workclock` work; the per-epoch learned
+  counts sum to `clauses_learned`; the D0 row carries the tick limit
+  when one is set; a log alone runs the stock policy; an unwritable path
+  exits 1. Parity with logging on (`--solver-env SAT_POLICY=stock --solver-env SAT_POLICY_LOG=...`, 20 discriminating cells, `--conflicts 100000`): 20/20 on the final search-path binary of this change set (sha256 `77dd6360a5150d46`), and 20/20 on each of the five earlier binaries of the review rounds; the row writer touches no solver state, so logging on is trajectory-identical to logging off (also checked per run by `tests/policy_log.rs`).
 - `tools/parity.py --solver-env KEY=VALUE` (repeatable) sets environment
   for the solver-13 run only, e.g. `--solver-env SAT_POLICY=stock` for the
   policy-on-STOCK check; kissat never sees it.

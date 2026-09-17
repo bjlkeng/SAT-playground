@@ -21,6 +21,24 @@ fi
 
 mkdir -p "$OUTDIR"
 STDOUT_TMP="$OUTDIR/solver_stdout.tmp"
+# The RL log (SAT_POLICY_LOG, plan step A.5) may not name one of the files
+# this wrapper writes, nor the file behind the wrapper's own stdout or
+# stderr (a caller's `> out.txt`): the binary refuses the CNF, the proof and
+# its own standard streams by itself, but its stdout here is a pipe to tee,
+# so it cannot see the capture file, the result files or our redirects.
+# They are handed to the binary in SAT_POLICY_LOG_RESERVED (one path per
+# line) and refused there with the same normalization and alias rules as
+# every other path (a wrapper-side re-implementation of those rules is how
+# review rounds found trimming and hard-link gaps).
+if [[ -n "${SAT_POLICY_LOG:-}" ]]; then
+  RESERVED=("$STDOUT_TMP" "$OUTDIR/proof.out" "$OUTDIR/model.txt" "$OUTDIR/status.txt" "$OUTDIR/result.json")
+  for fd in 1 2; do
+    target=$(readlink -f "/proc/$$/fd/$fd" 2>/dev/null || true)
+    if [[ -n "$target" && -f "$target" ]]; then RESERVED+=("$target"); fi
+  done
+  SAT_POLICY_LOG_RESERVED=$(printf '%s\n' "${RESERVED[@]}")
+  export SAT_POLICY_LOG_RESERVED
+fi
 # shellcheck disable=SC2086  # word-splitting is the point
 "$SCRIPT_DIR/target/release/sat-solver" $EXTRA_ARGS "$CNF" "$OUTDIR/proof.out" | tee "$STDOUT_TMP"
 EXIT_CODE=${PIPESTATUS[0]}

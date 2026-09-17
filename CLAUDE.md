@@ -40,8 +40,9 @@ work is **solver 13** and the RL scheduler on top of it.
   first. §10 is the work order, §8 the evaluation discipline, §11-15 the
   decision log and review passes. Read it before touching
   `src/policy.rs` (created in step A, 2026-09-16: tick limit, epoch clock,
-  stage-1 chokepoints, random modes, counter audit; the solver README lists
-  what is done and what is still open in that step).
+  stage-1 chokepoints, random modes, counter audit, and the raw-state
+  logger in `src/policy_log.rs`; the solver README lists what is done and
+  what is still open in that step).
 
 ## Build, run, test
 
