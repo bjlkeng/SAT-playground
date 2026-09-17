@@ -31,7 +31,14 @@ pub fn restarting(solver: &mut Solver) -> bool {
     let averages = &solver.averages[solver.stable as usize];
     let fast = averages.fast_glue.value; // AVERAGE (fast_glue)
     let slow = averages.slow_glue.value; // AVERAGE (slow_glue)
-    let margin = (100.0 + solver.options.restartmargin as f64) / 100.0;
+    // Not in kissat: RL scheduler chokepoint, the restart margin knob
+    // (plan §2.1; the stock action reads the option value exactly).
+    let restartmargin = if solver.policy.on {
+        crate::policy::restart_margin(solver)
+    } else {
+        solver.options.restartmargin as f64
+    };
+    let margin = (100.0 + restartmargin) / 100.0;
     let limit = margin * slow;
     crate::print::extremely_verbose(
         solver,
@@ -136,7 +143,12 @@ pub fn restart(solver: &mut Solver) {
     crate::profile::start_checked(solver, Prof::restart); // START (restart)
     solver.statistics.restarts += 1; // INC (restarts)
     solver.statistics.restarts_levels += solver.level as u64; // ADD (restarts_levels)
-    // INC (stable_restarts) / INC (focused_restarts): METRIC, no-op.
+    // METRIC, re-enabled (never printed):
+    if solver.stable {
+        solver.statistics.stable_restarts += 1; // INC (stable_restarts)
+    } else {
+        solver.statistics.focused_restarts += 1; // INC (focused_restarts)
+    }
     let level = reuse_trail(solver);
     crate::print::extremely_verbose(
         solver,

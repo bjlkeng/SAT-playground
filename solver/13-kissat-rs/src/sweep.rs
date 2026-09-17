@@ -16,7 +16,7 @@
 //    CHECKING_OR_PROVING is defined (NPROOFS off), so clear_core's deletion
 //    loop and substitute_connected_clauses' added/removed clearing are in.
 //  - `kissat_propagated` (inline.h) is inlined here as a private helper.
-//  - ADD (arena_garbage, ...) is METRIC — compiled out.
+//  - ADD (arena_garbage, ...) is METRIC — compiled out. [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 //  - sweep_depth/sweep_clauses/sweep_environment/sweep_variables and the
 //    sat/unsat/flip breakdown counters are STATISTIC tier: real (unprinted)
 //    fields, incremented 1:1.  sweep, sweep_completed, sweep_equivalences,
@@ -177,7 +177,14 @@ fn init_sweeper(solver: &mut Solver) -> Sweeper {
         sweeper.limit.ticks = u64::MAX;
         crate::print::extremely_verbose(solver, "unlimited sweeper ticks limit");
     } else {
-        let ticks_limit = crate::set_effort_limit!(solver, sweep, sweepeffort, kitten_ticks);
+        let mut ticks_limit = crate::set_effort_limit!(solver, sweep, sweepeffort, kitten_ticks);
+        // Not in kissat: RL scheduler chokepoint, the sweep effort knob
+        // scales the delta of the effort limit (plan §2.1).
+        if solver.policy.on {
+            let start = solver.statistics.kitten_ticks;
+            ticks_limit =
+                crate::policy::scale_effort_limit(solver, crate::policy::Effort::Sweep, start, ticks_limit);
+        }
         sweeper.limit.ticks = ticks_limit;
     }
     set_kitten_ticks_limit(solver, &sweeper);
@@ -965,7 +972,9 @@ fn substitute_connected_clauses(
                     solver.statistics.clauses_binary += 1;
                     let dst = binary_watch(other); // dst.binary.lit = other
                     solver.delayed.push(dst);
-                    // ADD (arena_garbage, bytes): METRIC, compiled out.
+                    // ADD (arena_garbage, bytes): METRIC, re-enabled.
+                    let bytes = solver.arena.clause(ref_).actual_words() as u64 * 4;
+                    solver.statistics.arena_garbage = solver.statistics.arena_garbage.wrapping_add(bytes);
                     solver.arena.clause_mut(ref_).set_garbage(true);
                     q -= 1;
                     continue;
@@ -1723,6 +1732,11 @@ pub fn sweep(solver: &mut Solver) -> bool {
         return false;
     }
     if crate::kimits::delaying(solver, DelayId::Sweep) {
+        return false;
+    }
+    // Not in kissat: RL scheduler chokepoint; sweep effort 0 skips this
+    // round after the stock delay test has run (plan §2.1).
+    if solver.policy.on && crate::policy::skip_effort(solver, crate::policy::Effort::Sweep) {
         return false;
     }
     debug_assert!(solver.level == 0);

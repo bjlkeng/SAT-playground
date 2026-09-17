@@ -90,3 +90,38 @@ vs the reference binary at fixed `--conflicts=N` limits.
   reorganize other modules to make yours compile.
 - Every ported module starts with a header comment:
   `// Port of src/<file>.c (kissat 4.0.4).` plus any PORT NOTEs.
+
+## RL scheduler code (`src/policy.rs`; plan step A) — BINDING
+
+The scheduler (plan/rl-scheduler-solver13-plan.md) moves kissat's *timing*
+decisions; the mechanisms stay a faithful port. Rules for any edit that
+touches the policy or a counter it logs:
+
+- **Off means off.** With `SAT_POLICY` unset nothing of the policy runs on
+  the search path beyond the `if solver.policy.on` test at each chokepoint.
+  Never add policy work outside that branch.
+- **Chokepoints are two-line branches.** A fire predicate reads
+  `if solver.policy.on { policy::effective_limit(..) } else { limits.X }`
+  and keeps kissat's own comparison operator and every other condition.
+  The stock limit math (`INIT_CONFLICT_LIMIT`, `UPDATE_CONFLICT_LIMIT`,
+  `update_mode_limit`, `SET_EFFORT_LIMIT`) is never edited; the policy only
+  records the delta those macros compute.
+- **STOCK must be exact.** With the policy on and the stock action every
+  predicate equals the stock value; `last_fire + 1 × stock_delta ==
+  limits[T]` after every fire. `tools/parity.py --solver-env SAT_POLICY=stock`
+  (20/20 at 100 k conflicts) is the oracle; run it after every chokepoint
+  change together with the plain parity run.
+- **`observe()` and `log_row()` are pure.** No draw from `solver.random`,
+  no allocation the arena or watch layout can see, no increment of a
+  counter a heuristic reads. The policy's generator is `policy.rng`, never
+  `solver.random`.
+- **New counters stay out of the `-s` block.** `parity.py` compares every
+  printed counter and `--phases` every `c [name]` line against the C. A
+  re-enabled METRIC counter is a never-printed field; the `GET` message
+  sites of METRIC counters keep printing `u64::MAX` as the reference build
+  does. Counters are declared once, in `statistics_fields!`.
+- **`K_RES` lives in `src/statistics.rs` only.** The harness reads it back
+  from the `c workclock` line; nothing else hard-codes it.
+- Mark every line that is not in kissat with a `// Not in kissat` (or
+  `METRIC, re-enabled`) comment, so a port audit can still tell the C from
+  the additions.

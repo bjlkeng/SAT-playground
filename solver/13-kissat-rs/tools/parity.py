@@ -102,12 +102,13 @@ def diff_phases(ours, ref):
     return None
 
 
-def run(binary, cnf, extra, timeout):
+def run(binary, cnf, extra, timeout, env_extra=None):
     cmd = [binary, "-n", "-s"] + extra + [cnf]
+    env = {**os.environ, **(env_extra or {})}
     try:
         p = subprocess.run(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, timeout=timeout,
+            text=True, timeout=timeout, env=env,
         )
     except subprocess.TimeoutExpired:
         return None, {}, f"TIMEOUT-{timeout}s", ""
@@ -141,7 +142,17 @@ def main():
     ap.add_argument("--phases", action="store_true",
                     help="also run with -v and diff the bracketed phase lines "
                          "(layout oracle: [vectors]/[defrag]/[arena] sequences)")
+    ap.add_argument("--solver-env", action="append", default=[], metavar="KEY=VALUE",
+                    help="environment for the solver-13 run only (repeatable), e.g. "
+                         "--solver-env SAT_POLICY=stock for the policy-on-STOCK "
+                         "parity check of the RL plan (step A); kissat never sees it")
     args = ap.parse_args()
+    solver_env = {}
+    for item in args.solver_env:
+        if "=" not in item:
+            ap.error(f"--solver-env expects KEY=VALUE, got {item!r}")
+        key, value = item.split("=", 1)
+        solver_env[key] = value
 
     cnfs = list(args.cnfs)
     if args.corpus == "default":
@@ -164,7 +175,7 @@ def main():
     failures = 0
     for cnf in cnfs:
         ks, kstats, kerr, kout = run(args.kissat, cnf, extra, args.timeout)
-        ss, sstats, serr, sout = run(args.solver, cnf, extra, args.timeout)
+        ss, sstats, serr, sout = run(args.solver, cnf, extra, args.timeout, solver_env)
         name = os.path.basename(cnf)
         if kerr or serr:
             print(f"FAIL {name}: kissat={kerr or 'ok'} solver13={serr or 'ok'}")

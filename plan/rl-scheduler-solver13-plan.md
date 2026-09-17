@@ -141,8 +141,8 @@ loop:                                             # search.rs
     if policy.on and search_ticks >= next_obs:                      # every X_o
         log_row(raw counters, averages, limits, delays, act, stock_would_fire[])
         push_snapshot(); next_obs += X_o
-        if search_ticks >= next_decision:                            # every X_d = 4 X_o (and at D0)
-            obs = observe(last 4 snapshots + static)                 # §3
+        if search_ticks >= next_decision:                            # every X_d = 16 X_o (and at D0)
+            obs = observe(last 16 snapshots + static)                # §3
             act = match mode { Stock => STOCK, Random => sample(), Net => mlp(obs) }
             if branch_due(): fork_children(one knob varied)          # §5.3
             next_decision += X_d                                     # X_d = 16 X_o
@@ -434,8 +434,8 @@ characterize the instance's response before any policy deviation.
 So the D0 actor vector is: the one-pass shape/occurrence/locality/BIG
 groups, SCCs, congruence/backbone/sweep/kitten yields, and a bounded BFS
 depth. Gate-extraction counts arrive at the first eliminate and the early
-fingerprint at D0 + 2; the decision at X_d = 2^25 (four observation epochs
-in) sees both.
+fingerprint at D0 + 2; the decision at X_d = 2^27 (sixteen observation
+epochs in) sees both.
 
 **Critic-only, not for the actor.** file compression ratio (a regularity
 proxy: the CNFs are already xz), header comment fingerprints (generator
@@ -719,8 +719,9 @@ where a child buys the most information.
    The loop, plainly: round 0's parent is stock (policy off), branch
    points uniform over the run plus one before each stock timer is due,
    and the first net is a behaviour clone of stock trained on round-0
-   labels. Each later round: run the current net as parent, fork 4
-   children at each of 3 branch points, each holding one deviation for
+   labels. Each later round: run the current net as parent, fork the
+   whole menu of one knob at each of ~16 branch points (§5.3), each child
+   holding one deviation for
    one decision epoch then returning control to the net, run each to its tick budget,
    label by outcome ranking, add to *all* previous rounds' data (nothing
    is discarded — the aggregation is the point), retrain, repeat. Round
@@ -747,7 +748,7 @@ count, would-fire}), per-pass recency block (~12 × 5), global dynamics
 (~30) as deltas over the last 1, 4 and 16 observation epochs (multi-scale
 trend). Trunk 150 → 128 → 64, ReLU. Heads: five 5-way interval heads, mode 3-way,
 restart margin 3-way, sweep effort 4-way (~30 scores); stage-2 heads
-later. ~30 k multiply-adds per decision at 2^25 ticks: negligible;
+later. ~30 k multiply-adds per decision at 2^27 ticks: negligible;
 measure once. Children at a branch point vary **one knob** from the
 parent's action so each ranking label lands on exactly one head.
 
@@ -797,12 +798,14 @@ Additive and off by default; policy-off stays at exact parity.
    `vivifyeffort`, ...) are already kissat CLI options, which makes the
    constant-multiplier baseline (§6.1 step 2) a zero-code experiment
    through `feature_ablation.py --arm 'x:SAT_EXTRA_ARGS=--eliminateint=1000'`.
-6. Env: `SAT_POLICY=stock|random|<file>`, `SAT_POLICY_LOG`,
+6. Env: `SAT_POLICY=stock|random|jitter|<file>`, `SAT_POLICY_LOG`,
    `SAT_POLICY_EPOCH_TICKS`, `SAT_POLICY_TEMP`, `SAT_POLICY_SEED`,
-   `SAT_POLICY_HOLD`, `SAT_POLICY_MARGIN`, `SAT_POLICY_BRANCH`,
+   `SAT_POLICY_SEGMENT`, `SAT_POLICY_MARGIN`, `SAT_POLICY_BRANCH`,
    `SAT_POLICY_BRANCH_ACTIONS`, `SAT_POLICY_DELAYS`, `SAT_POLICY_HORIZON`,
    `SAT_WALL_LIMIT`, `SAT_LIMIT_TICKS`. `run.sh` forwards the environment
-   already.
+   already. (No hold-length variable: the decision epoch is the segment,
+   §6.3. The first six and `SAT_LIMIT_TICKS` exist since step A,
+   2026-09-16; the solver README has the table.)
 6b. **`SAT_LIMIT_TICKS`** (new; the solver has only `--conflicts` and
    `--decisions`): a `limited.ticks` alongside them, checked where the
    conflict limit is and inside the inprocessing effort loops,
@@ -906,7 +909,9 @@ Realistic cost of step 1-8: 2-3 sessions, not 1.
   masked.
 - **X for the giant-cell regime**: fixed X first; adaptive X (scaled by
   ticks/conflict measured in the first epochs) only if fixed X fails.
-- Open: hold length `k` at inference (§6.3); `k = 1` at X_d = 2^25 first.
+- Hold length at inference: resolved 2026-09-14, the decision epoch
+  (X_d = 2^27) is the segment and there is no separate hold parameter
+  (§6.3).
 - D−1 (preprocess rounds/effort) is **skipped for now** (decision
   2026-09-12); the design in §2.4 stays on record for later.
 
@@ -929,9 +934,10 @@ Realistic cost of step 1-8: 2-3 sessions, not 1.
 epic `SAT-playground-p9m`: one child epic per step above, one task per
 deliverable, one bead per long host run. `SAT-playground-p9m.1` holds the
 evaluation rules of §8 and is linked from every gate bead.
-`SAT-playground-p9m.2` is the chore that reconciles this document's stale
-numbers (2^25 v 2^27, 4 × 3 branching, `SAT_POLICY_HOLD`) with the
-decisions in §15. `SAT-playground-p9m.3` is the parking lot for the ideas
+`SAT-playground-p9m.2` was the chore that reconciled this document's
+stale values (the earlier decision epoch, the earlier branching layout,
+the dropped hold-length variable) with the decisions in §15; done
+2026-09-16. `SAT-playground-p9m.3` is the parking lot for the ideas
 §9 and §13 defer. Decisions the plan leaves to data are
 `SAT-playground-p9m.12` to `.19` (X_d, menu freeze, knob triage, deploy
 target, go/no-go after round 1, margin, delay counters, D−1). `bd show <id>`
@@ -954,7 +960,8 @@ source of truth; every bead points back to its section.
 - Delay counters on in stage 1, evaluated both ways in stage 2.
 - 2026-09-11: restart margin and mode switching both learned in stage 1;
   sweep effort promoted to stage 1; stock-other-seed runs replaced by
-  branch-off; observation epoch 2^23 with decision epoch 2^25; pre-search
+  branch-off; observation epoch 2^23 with a decision epoch four
+  observation epochs long (raised to sixteen, 2^27, on 2026-09-14); pre-search
   handled as D0 (conditioning + initial-interval multipliers, stage 1) and
   D−1 (preprocess control, stage 2, fork-at-parse data).
 - 2026-09-16 (step 0, stage 1 done; `SAT-playground-p9m.5.2/.5.3/.5.5`):
@@ -1026,7 +1033,9 @@ source of truth; every bead points back to its section.
 13. **Fork enables a simpler first learner** than IQL: per-branch-point
     advantage regression with counterfactual labels. (§6.2)
 14. **Train/inference action-persistence mismatch** (segments in data,
-    per-epoch flips at inference). Added a minimum hold length. (§6.3)
+    per-epoch flips at inference). Added a minimum hold length. (§6.3;
+    superseded 2026-09-14: the decision epoch is the segment and the hold
+    parameter is gone.)
 15. **Harness gap.** `feature_ablation.py` cannot account for fork
     children, stratified walls, or flavour bookkeeping; a dedicated
     collector is now a deliverable. (§7)
@@ -1035,14 +1044,17 @@ source of truth; every bead points back to its section.
 
 **Resolved 2026-09-11** (see §11): restart + mode both in stage 1; sweep
 effort promoted to stage 1; stock-other-seed runs → branch-off; X_o = 2^23
-with X_d = 2^25; pre-search as D0/D−1 (§2.4).
+with a decision epoch four observation epochs long (raised to sixteen,
+X_d = 2^27, on 2026-09-14, §1); pre-search as D0/D−1 (§2.4).
 
-**Still open**
+**Formerly open, since resolved**
 
-- **Children per parent v branch points per parent** trade coverage of
-  actions against coverage of states; start 4 × 3 and measure.
-- **Log volume at fork scale**: 5 parents × 12 children per cell adds
-  ~60 logs per cell, tens of GB compressed. The one-time converter to the
+- **Children per parent v branch points per parent**: resolved
+  2026-09-15 (§5.3, §15) — one parent per cell, ~16 branch points, and
+  the whole menu of one knob forked at each point; branch points are the
+  cheap lever (§6.1b).
+- **Log volume at fork scale**: 1 parent + ~60 children per cell (§5.4),
+  tens of GB compressed for the dataset. The one-time converter to the
   compact per-decision feature table (a few MB per run) processes one run
   at a time and is resumable; the compact tables fit in memory for
   training. Not a design item.
@@ -1232,7 +1244,7 @@ with X_d = 2^25; pre-search as D0/D−1 (§2.4).
 
 Open after this pass (updated 2026-09-15): none of the earlier items;
 the runtime rail is **dropped** — one-shot `m = 0` plus the interval
-floor cover the thrash case it was meant for. Resolved: 4 × 3 branching; converter is a resumable one-time
+floor cover the thrash case it was meant for. Resolved: the branching layout (one parent per cell, ~16 branch points, the whole menu of one knob at each); converter is a resumable one-time
 pass; hold length eliminated by making X_d the segment (2^27); curriculum
 rejected; simple per-knob rankers adopted before the net; shuffle
 augmentation parked.

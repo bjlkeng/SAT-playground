@@ -3,7 +3,7 @@
 // PORT NOTES:
 //  - INC (score_decisions), INC (target_decisions), INC (saved_decisions),
 //    INC (initial_decisions), INC (stable_decisions), INC (focused_decisions)
-//    are METRIC counters: no-ops in the reference build.
+//    are METRIC counters: no-ops in the reference build. [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 //    INC (queue_decisions) / INC (random_decisions) are STATISTIC-tier fields
 //    (kept, never printed); decisions / warming_decisions / random_sequences
 //    are COUNTERs.
@@ -160,7 +160,7 @@ pub fn next_decision_variable(solver: &mut Solver) -> u32 {
     if res == INVALID_IDX {
         if solver.stable {
             res = largest_score_unassigned_variable(solver);
-            // INC (score_decisions): METRIC, no-op.
+            solver.statistics.score_decisions += 1; // INC (score_decisions): METRIC, re-enabled
         } else {
             res = last_enqueued_unassigned_variable(solver);
             solver.statistics.queue_decisions += 1; // INC (queue_decisions)
@@ -201,17 +201,21 @@ pub fn decide_phase(solver: &mut Solver, idx: u32) -> i32 {
 
     if res == 0 && use_target {
         res = solver.phases.target[idx as usize];
-        // if (res) INC (target_decisions): METRIC, no-op.
+        if res != 0 {
+            solver.statistics.target_decisions += 1; // INC (target_decisions): METRIC, re-enabled
+        }
     }
 
     if res == 0 && use_saved {
         res = solver.phases.saved[idx as usize];
-        // if (res) INC (saved_decisions): METRIC, no-op.
+        if res != 0 {
+            solver.statistics.saved_decisions += 1; // INC (saved_decisions): METRIC, re-enabled
+        }
     }
 
     if res == 0 {
         res = initial_phase(solver);
-        // INC (initial_decisions): METRIC, no-op.
+        solver.statistics.initial_decisions += 1; // INC (initial_decisions): METRIC, re-enabled
     }
     debug_assert!(res != 0);
 
@@ -230,7 +234,12 @@ pub fn decide(solver: &mut Solver) {
         solver.statistics.warming_decisions += 1; // INC (warming_decisions)
     } else {
         solver.statistics.decisions += 1; // INC (decisions)
-        // INC (stable_decisions) / INC (focused_decisions): METRIC, no-op.
+        // METRIC, re-enabled (never printed):
+        if solver.stable {
+            solver.statistics.stable_decisions += 1; // INC (stable_decisions)
+        } else {
+            solver.statistics.focused_decisions += 1; // INC (focused_decisions)
+        }
     }
     solver.level += 1;
     debug_assert!(solver.level != crate::internal::INVALID_LEVEL);

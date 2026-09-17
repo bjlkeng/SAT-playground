@@ -35,9 +35,20 @@ fn update_probing_propagation_statistics(solver: &mut Solver, propagated: u64) {
     let ticks = solver.ticks;
 
     solver.statistics.propagations += propagated; // ADD (propagations, ...)
-    // ADD (probing_propagations, propagated): METRIC, compiled out.
+    solver.statistics.probing_propagations += propagated; // ADD (probing_propagations, ...): METRIC, re-enabled
 
-    // #if defined(METRICS) backbone/vivify propagations/ticks: compiled out.
+    // #if defined(METRICS) block, re-enabled for the RL observation except
+    // for `backbone_ticks`: that one is a printed COUNTER whose reference
+    // value comes from backbone.rs alone, so adding to it here would break
+    // `-s` parity. `vivify_ticks` / `vivify_propagations` are STATISTIC
+    // (never printed) and were always 0 in the port until now.
+    if solver.backbone_computing {
+        solver.statistics.backbone_propagations += propagated; // ADD (backbone_propagations, ...)
+    }
+    if solver.vivifying {
+        solver.statistics.vivify_propagations += propagated; // ADD (vivify_propagations, ...)
+        solver.statistics.vivify_ticks += ticks; // ADD (vivify_ticks, ...)
+    }
 
     solver.statistics.probing_ticks += ticks; // ADD (probing_ticks, ...)
     solver.statistics.ticks += ticks; // ADD (ticks, ...)

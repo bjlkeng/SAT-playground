@@ -10,6 +10,13 @@ path = "src/main.rs"
 [dependencies]
 libc = "0.2"
 
+# The integration tests under tests/ run the solver binary on formulas with
+# tens of thousands of conflicts; unoptimized that is a minute per test file.
+# Keep debug assertions on (they are the port's cheap self-checks).
+[profile.test]
+opt-level = 2
+debug-assertions = true
+
 [profile.release]
 opt-level = 3
 lto = "fat"

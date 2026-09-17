@@ -6,7 +6,7 @@
 //    (matching the collect.rs call site).
 //  - kissat_map_literal (inline.h) is duplicated here as a private fn (it is
 //    also private in collect.rs) — same body, same INVALID_LIT propagation.
-//  - INC (compacted) is METRIC (no-op) and GET (compacted) yields u64::MAX
+//  - INC (compacted) is METRIC (no-op) and GET (compacted) yields u64::MAX [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 //    (kissat_phase then prints no count).
 //  - `solver->compacting` only exists under LOGGING — omitted.
 //  - compact_queue's C `unsigned *p` cursor (pointing either at queue.first
@@ -33,7 +33,7 @@ fn reimport_literal(solver: &mut Solver, eidx: u32, mlit: u32) {
 
 /// Port of `kissat_compact_literals` (mfixed out-parameter returned).
 pub fn compact_literals(solver: &mut Solver) -> (u32, u32) {
-    // INC (compacted) — METRIC, no-op.
+    solver.statistics.compacted += 1; // INC (compacted): METRIC, re-enabled (the GET below stays u64::MAX)
     let inactive = solver.vars - solver.active;
     let total_vars = solver.vars;
     crate::print::phase(

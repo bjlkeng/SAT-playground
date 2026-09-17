@@ -241,7 +241,7 @@ pub fn enlarge_vector(solver: &mut Solver, lit: u32) -> usize {
             }
         }
         if enlarged != 0 {
-            // INC (vectors_enlarged): METRIC, compiled out.
+            solver.statistics.vectors_enlarged += 1; // INC (vectors_enlarged): METRIC, re-enabled
             let moved = solver.vectors.stack.as_ptr() != old_ptr;
             let count_str = crate::format::format_count(&mut solver.format, capacity as u64);
             let bytes_str = crate::format::format_bytes(&mut solver.format, capacity as u64 * 4);
@@ -399,7 +399,7 @@ pub fn defrag_vectors(solver: &mut Solver) {
     }
     // START (defrag).
     crate::profile::start_checked(solver, crate::profile::Prof::defrag);
-    // INC (defragmentations): METRIC, compiled out.
+    solver.statistics.defragmentations += 1; // INC (defragmentations): METRIC, re-enabled (GET stays u64::MAX)
     let size_unsorted = solver.watches.len(); // C: LITS
     let mut sorted: Vec<u32> = Vec::with_capacity(size_unsorted); // kissat_malloc
     for i in 0..size_unsorted {

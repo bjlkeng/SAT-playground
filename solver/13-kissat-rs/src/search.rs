@@ -100,6 +100,14 @@ fn start_search(solver: &mut Solver) {
             ),
         );
     }
+    // Not in kissat: the work-clock limit (SAT_LIMIT_TICKS, plan step A.1).
+    if solver.limited.ticks {
+        let limit = solver.limits.ticks;
+        crate::print::very_verbose(
+            solver,
+            format_args!("starting search with work clock limited to {}", limit),
+        );
+    }
     if stable {
         crate::profile::start_checked(solver, Prof::stable); // START (stable)
         crate::report::report(solver, false, '['); // REPORT (0, '[')
@@ -117,6 +125,11 @@ fn stop_search(solver: &mut Solver) {
 
     if solver.limited.decisions {
         solver.limited.decisions = false;
+    }
+
+    // Not in kissat: SAT_LIMIT_TICKS is a one-search limit like the others.
+    if solver.limited.ticks {
+        solver.limited.ticks = false;
     }
 
     if solver
@@ -217,6 +230,12 @@ fn searching(solver: &mut Solver) -> bool {
     if conflict_limit_hit(solver) {
         return false;
     }
+    // Not in kissat: preprocessing may already have spent the work-clock
+    // limit (SAT_LIMIT_TICKS, plan step A.1); then search does not start.
+    if crate::kimits::ticks_limit_hit(solver) {
+        crate::kimits::report_ticks_limit_hit(solver);
+        return false;
+    }
     true
 }
 
@@ -251,6 +270,11 @@ pub fn search(solver: &mut Solver) -> i32 {
                 res = 10;
             } else if terminated!(solver, search_terminated_1) {
                 break;
+            } else if solver.policy.on && crate::policy::epoch_due(solver) {
+                // Not in kissat: the RL scheduler's epoch hook (plan §2.3),
+                // at the head of the if-chain so a decision is in force
+                // before the fire predicates below are polled.
+                crate::policy::epoch(solver);
             } else if crate::reduce::reducing(solver) {
                 res = crate::reduce::reduce(solver);
             } else if crate::mode::switching_search_mode(solver) {

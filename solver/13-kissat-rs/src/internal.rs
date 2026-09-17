@@ -211,6 +211,13 @@ pub struct Solver {
 
     pub large_clauses_watched_after_binary_clauses: bool,
 
+    /// C `backbone_computing` / `vivifying`: `!NDEBUG || METRICS`-only flags
+    /// in kissat, re-enabled (2026-09-16, RL plan step A.6) so proprobe.rs
+    /// can attribute probing propagations and ticks to backbone and vivify
+    /// for the RL observation. Read nowhere else.
+    pub backbone_computing: bool,
+    pub vivifying: bool,
+
     pub termination: Termination,
 
     pub vars: u32,
@@ -309,6 +316,9 @@ pub struct Solver {
     pub enabled: Enabled,
     pub limited: Limited,
     pub limits: Limits,
+    /// Not in kissat: the RL scheduler state (policy.rs, plan step A). Off
+    /// by default; `policy.on` is the one bool every chokepoint tests.
+    pub policy: crate::policy::Policy,
     pub last: Remember, // remember last;
     pub walked: u32,
 
@@ -496,6 +506,15 @@ pub fn set_conflict_limit(solver: &mut Solver, limit: u32) {
     solver.limited.conflicts = true;
     debug_assert!(u64::MAX - limit as u64 >= solver.statistics.conflicts);
     solver.limits.conflicts = solver.statistics.conflicts + limit as u64;
+}
+
+/// Not in kissat. Limit the work clock W = ticks + K_RES × eliminate
+/// resolutions (`SAT_LIMIT_TICKS`, RL plan §3.4, step A.1), relative to the
+/// work already done, like the conflict and decision limits. The limit is
+/// polled in `terminate::terminated`; the run then stops with `s UNKNOWN`.
+pub fn set_ticks_limit(solver: &mut Solver, limit: u64) {
+    solver.limited.ticks = true;
+    solver.limits.ticks = solver.statistics.work_clock().saturating_add(limit);
 }
 
 /// Port of `kissat_print_statistics` (QUIET off, NDEBUG on: checker part

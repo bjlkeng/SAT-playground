@@ -7,7 +7,7 @@
 // kept as u32 for the exact truncation semantics.
 // PORT NOTE: ADD (ticks, ...) targets the STATISTIC-tier `ticks` counter
 // (kept as a real, never-printed field); ADD (dense_ticks, ...) and
-// ADD (dense_propagations, ...) are METRIC — compiled out.
+// ADD (dense_propagations, ...) are METRIC — compiled out. [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 
 use crate::internal::{Solver, INVALID};
 use crate::profile::Prof;
@@ -92,7 +92,7 @@ fn non_watching_propagate_literal(solver: &mut Solver, lit: u32) -> bool {
     }
 
     solver.statistics.ticks += ticks as u64; // ADD (ticks, ticks): STATISTIC kept
-    // ADD (dense_ticks, ticks): METRIC, compiled out.
+    solver.statistics.dense_ticks += ticks as u64; // ADD (dense_ticks, ticks): METRIC, re-enabled
 
     true
 }
@@ -112,7 +112,7 @@ pub fn dense_propagate(solver: &mut Solver) -> bool {
     }
     let propagated = (propagate - solver.propagate) as u64;
     solver.propagate = propagate;
-    // ADD (dense_propagations, propagated): METRIC, compiled out.
+    solver.statistics.dense_propagations += propagated; // ADD (dense_propagations, ...): METRIC, re-enabled
     solver.statistics.propagations += propagated; // ADD (propagations, ...)
     if !res {
         debug_assert!(!solver.inconsistent);

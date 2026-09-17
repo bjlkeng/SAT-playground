@@ -30,7 +30,13 @@ pub fn reordering(solver: &mut Solver) -> bool {
     if solver.level != 0 {
         return false;
     }
-    solver.statistics.conflicts >= solver.limits.reorder.conflicts
+    // Not in kissat: RL scheduler chokepoint (plan §2.3, `due(reorder)`).
+    let limit = if solver.policy.on {
+        crate::policy::effective_limit(solver, crate::policy::Timer::Reorder)
+    } else {
+        solver.limits.reorder.conflicts
+    };
+    solver.statistics.conflicts >= limit
 }
 
 // static double *compute_weights (kissat *solver)

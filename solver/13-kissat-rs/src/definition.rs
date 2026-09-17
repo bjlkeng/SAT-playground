@@ -15,7 +15,7 @@
 // PORT NOTE: the `#if !defined(NDEBUG) || !defined(NPROOFS)` lemma-extractor
 // block is compiled (NPROOFS off); its `GET_OPTION (check) > 1` disjunct is
 // NDEBUG-only, so the condition reduces to `solver->proof`.
-// PORT NOTE: definitions_checked / definitions_extracted are METRIC (no-op);
+// PORT NOTE: definitions_checked / definitions_extracted are METRIC (no-op); [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 // definition_units is STATISTIC (kept as a real, never-printed field).
 
 use crate::internal::{Solver, INVALID};
@@ -73,7 +73,7 @@ pub fn find_definition(solver: &mut Solver, lit: u32) -> bool {
         }
     }
     let mut res = false;
-    // INC (definitions_checked): METRIC, compiled out.
+    solver.statistics.definitions_checked += 1; // INC (definitions_checked): METRIC, re-enabled
     let limit = solver.options.definitionticks as u64;
     crate::kitten::kitten_set_ticks_limit(&mut kitten, solver, limit);
     let status = crate::kitten::kitten_solve(&mut kitten, solver);
@@ -98,7 +98,7 @@ pub fn find_definition(solver: &mut Solver, lit: u32) -> bool {
             i += 1;
         }
         if !aborted {
-            // INC (definitions_extracted): METRIC, compiled out.
+            solver.statistics.definitions_extracted += 1; // INC (definitions_extracted): METRIC, re-enabled
             // kitten_traverse_core_ids (kitten, &extractor,
             //                           traverse_definition_core);
             let size_watches0 = solver.watches[lit as usize].size();

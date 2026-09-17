@@ -16,7 +16,7 @@
 //  - Statistics tiers: backbone_computations / backbone_ticks are COUNTERs,
 //    backbone_units is STATISTIC (real, never-printed field per statistics.rs
 //    policy); backbone_implied / backbone_probes / backbone_propagations /
-//    backbone_rounds are METRIC — compiled out, their INC/ADD sites dropped.
+//    backbone_rounds are METRIC — compiled out, their INC/ADD sites dropped. [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 //  - The `#if defined(METRICS)` implied_before/total_implied phase message at
 //    the end of compute_backbone is compiled out; the plain (non-METRICS)
 //    build prints no success phase line there.
@@ -242,8 +242,9 @@ fn backbone_propagate(solver: &mut Solver) -> Option<Conflict> {
     let propagated = (propagate - solver.propagate) as u64;
     solver.propagate = propagate;
 
-    // ADD (backbone_propagations, ...) / ADD (probing_propagations, ...):
-    // METRIC, compiled out.
+    // METRIC, re-enabled (never printed):
+    solver.statistics.backbone_propagations += propagated; // ADD (backbone_propagations, ...)
+    solver.statistics.probing_propagations += propagated; // ADD (probing_propagations, ...)
     solver.statistics.propagations += propagated; // ADD (propagations, ...)
 
     let ticks = solver.ticks;
@@ -352,7 +353,7 @@ fn compute_backbone(solver: &mut Solver) -> u32 {
             break;
         }
         round += 1;
-        // INC (backbone_rounds): METRIC, compiled out.
+        solver.statistics.backbone_rounds += 1; // INC (backbone_rounds): METRIC, re-enabled
         debug_assert!(solver.level == 0);
         let active_before = solver.active;
         {
@@ -396,7 +397,7 @@ fn compute_backbone(solver: &mut Solver) -> u32 {
                 let saved = solver.trail.len();
                 debug_assert!(level != u32::MAX);
                 solver.level = level + 1;
-                // INC (backbone_probes): METRIC, compiled out.
+                solver.statistics.backbone_probes += 1; // INC (backbone_probes): METRIC, re-enabled
                 backbone_assign(solver, probe, DECISION_REASON);
                 let conflict = backbone_propagate(solver);
                 if conflict.is_none() {
@@ -498,7 +499,7 @@ fn compute_backbone(solver: &mut Solver) -> u32 {
         }
         debug_assert!(solver.active <= active_before);
         let implied = active_before - solver.active;
-        // ADD (backbone_implied, implied): METRIC, compiled out.
+        solver.statistics.backbone_implied += implied as u64; // ADD (backbone_implied, implied): METRIC, re-enabled
         // #ifndef QUIET
         let left = candidates.len();
         crate::print::very_verbose(
@@ -558,7 +559,13 @@ pub fn binary_clauses_backbone(solver: &mut Solver) {
     debug_assert!(solver.level == 0);
     crate::profile::start_checked(solver, Prof::backbone); // START (backbone)
     solver.statistics.backbone_computations += 1; // INC (backbone_computations)
+    // `backbone_computing` is a METRICS-only flag in C; re-enabled here so
+    // proprobe.rs can attribute probing propagations to backbone.
+    debug_assert!(!solver.backbone_computing);
+    solver.backbone_computing = true;
     let failed = compute_backbone(solver);
     crate::report::report(solver, failed == 0, 'b'); // REPORT (!failed, 'b')
+    debug_assert!(solver.backbone_computing);
+    solver.backbone_computing = false;
     crate::profile::stop_checked(solver, Prof::backbone); // STOP (backbone)
 }

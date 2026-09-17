@@ -22,12 +22,13 @@ c workclock ticks=… search_ticks=… probing_ticks=… backbone_ticks=… tran
 
 - `work` is the work clock W = `ticks` + `k_res` × `eliminate_resolutions`
   (plan §3.4): the deterministic unit the harness prices cells in (tick
-  PAR-2, CLAUDE.md "Evaluation") and the unit `SAT_LIMIT_TICKS` will limit
-  (plan step A). `ticks` is kissat's all-propagation counter, which kissat
+  PAR-2, CLAUDE.md "Evaluation") and the unit `SAT_LIMIT_TICKS` limits
+  (plan step A.1, below). `ticks` is kissat's all-propagation counter, which kissat
   itself never prints. The other keys are the work kinds the RL reward
   weights (plan §4). `vivify_ticks` is not on the line: kissat counts it
-  only in a METRICS build, so it is always 0 here; vivify's propagation is
-  inside `probing_ticks`.
+  only in a METRICS build (since the step-A counter audit the port fills
+  it as a never-printed field for the RL log); vivify's propagation is
+  inside `probing_ticks` either way.
 - Printed on every exit path kissat prints statistics on: the normal exit
   and the signal handler, so a run killed by the harness `timeout`
   (SIGTERM) still reports the work it consumed. Not printed under `-q`. It
@@ -91,6 +92,126 @@ works without the wrapper; `tools/parity.py` calls the binary directly and is
 unaffected. Checked 2026-09-15 on SCPC-500-1 at `--conflicts=300000`:
 eliminations 6 (stock) v 4 (`--eliminateint=1000`) v 8 (`--eliminateint=250`);
 unset v empty give identical `s` and `c workclock` lines; smoke test 9/9.
+
+**RL scheduler plumbing, step A (2026-09-16; plan §7, beads
+`SAT-playground-p9m.6.*`).** The solver can now run under an external
+scheduler that moves kissat's timing decisions while every mechanism stays
+byte-identical. Done in this pass: the work-clock limit (A.1), the policy
+module with its epoch clock and action (A.2), the stage-1 chokepoints
+(A.3), random and jitter modes with a replay test (A.4), and the counter
+audit (A.6). Still open: the logger (A.5), static features (A.7), fork mode
+(A.8), `observe()` (A.9), the net loader (A.10), the overhead check (A.11)
+and the final docs pass (A.12). Everything is off by default: with no
+`SAT_POLICY*` and no `SAT_LIMIT_TICKS` in the environment the only added
+work on the search path is one bool test per chokepoint.
+
+Environment (read by the binary itself, so `run.sh`, the harness and
+`parity.py --solver-env` all reach it):
+
+| variable | values | meaning |
+|---|---|---|
+| `SAT_LIMIT_TICKS` | integer | stop with `s UNKNOWN` (exit 0) once the work clock W = `ticks` + `k_res` × `eliminate_resolutions` reaches this; unset or empty = no limit; `0` is a real (zero) limit |
+| `SAT_POLICY` | `stock`, `random`, `jitter` | policy on with the stock action every epoch (the overhead arm), segmented sticky random actions, or per-decision jitter; unset or empty = off; a weights-file path is step A.10 |
+| `SAT_POLICY_EPOCH_TICKS` | `X_o[,X_d]` | observation and decision epochs in `search_ticks`; default `8388608,134217728` (2^23, 2^27); `X_d` defaults to 16 × `X_o` and must be an integer multiple of it (decisions are checked at observation boundaries) |
+| `SAT_POLICY_SEED` | integer | the policy's own generator seed (default 0); never touches the solver's `--seed` stream |
+| `SAT_POLICY_TEMP` | number > 0 | spread of the random menus around stock: weight exp(−distance/temp), so 0.2 is almost always stock and 100 is uniform (default 1.0) |
+| `SAT_POLICY_SEGMENT` | number ≥ 1 | mean sticky segment length in decision epochs (default 5) |
+
+- **Work-clock limit.** `limited.ticks` / `limits.ticks` sit next to
+  kissat's conflict and decision limits. The check lives in
+  `terminate::terminated`, which is what every inprocessing effort loop and
+  the search loop already poll for external termination; on a hit it raises
+  the same flag `--time` (SIGALRM) does, so the current pass winds down
+  exactly as it does on a signal and the search loop stops. A run also
+  refuses to start searching when preprocessing alone spent the budget,
+  and the lucky passes (which kissat's own conflict and decision limits
+  never bound) poll the budget before every assumption and unwind to level
+  0 on a hit, so a cell lucky would solve outright is still `s UNKNOWN`
+  under a budget smaller than lucky's work. Tests (`tests/limit_ticks.rs`):
+  two runs at the same limit stop at identical `-s` counters and
+  `c workclock` line; on the random 3-SAT fixture (several probe and two
+  eliminate rounds) limits at 10/25/50/75 % of the full run overrun by
+  under 10 %; on a lucky-solved cell of 100 k clause pairs limits of 0, 100
+  and 50 000 all stop with `s UNKNOWN` within a tenth of the full work; a
+  non-binding limit and an empty value are trajectory-identical to unset;
+  `0` gives `s UNKNOWN` before search; a non-integer is a usage error
+  (exit 1).
+- **Policy core (`src/policy.rs`).** Per timer (probe, eliminate, reduce,
+  rephase, reorder, mode) the module keeps `last_fire` and `stock_delta`,
+  recorded at every `INIT_CONFLICT_LIMIT` / `UPDATE_CONFLICT_LIMIT` and at
+  both mode-limit updates (the mode timer is on conflicts in focused mode
+  and on search ticks in stable mode, as kissat keeps it). Each fire
+  predicate compares against `last_fire + max(0.1 × stock_delta, m ×
+  stock_delta)` instead of `limits[T]`; `m = 1` reproduces `limits[T]`
+  exactly, `m = 0` is one-shot (fires at `last_fire + 0.1 × stock_delta`,
+  then reverts to 1 at that fire). The restart margin multiplies
+  `restartmargin` in focused mode; the sweep effort multiplies the delta of
+  sweep's `SET_EFFORT_LIMIT` and `0` skips the round after kissat's own
+  delay test has run. The hook sits at the head of the search-loop
+  if-chain: every `X_o` a row (logger pending), every `X_d` a decision, and
+  one decision D0 before the first `decide()`. Decisions are masked to
+  stock where a knob cannot act (rephase in focused mode, the margin in
+  stable mode, reorder per `reorder`, mode switching only with
+  `stable=1`, disabled passes). Unit tests in `policy.rs` check the
+  `last_fire + stock_delta == limits[T]` invariant after `init_limits` and
+  after every timer's real update macro, the floor, the one-shot, masking,
+  the epoch arithmetic and the sampling distribution.
+- **Random modes.** `random`: geometric segments (mean `SAT_POLICY_SEGMENT`
+  decision epochs); at each segment start the action is stock with
+  probability ½, else every knob is drawn from a categorical centred on
+  its stock entry at the run's temperature, with the one-shot `m = 0`
+  entry capped at 5 %. `jitter`: a fresh draw every decision. Both use the
+  policy's own LCG (same algorithm as `random.rs`, separate state).
+  `tests/policy.rs`: policy-on-STOCK is trajectory-identical to policy-off
+  on php9 under `--conflicts` and on the random 3-SAT cell at default and at
+  tiny epochs (hundreds of rows, dozens of decisions); a seeded random or
+  jitter run replays to identical counters, a different seed differs, and
+  wild random runs (temperature 100) still answer SAT/UNSAT correctly;
+  every bad setting is a usage error.
+- **Parity (`tools/parity.py --conflicts 100000`, 20 discriminating cells
+  v the reference kissat).** 20/20 policy-off and 20/20 policy-on-STOCK (`--solver-env SAT_POLICY=stock`) on the committed binary (sha256 `d91f33850ab1e0a1`, 2026-09-16, 4 pinned cores per run); the same pair also passed on the pre-audit binary and after each Codex review fix (four pairs in all, every one 20/20).
+- **Counter audit (A.6).** `Statistics` is now declared from one field list
+  (`statistics_fields!`) with `Statistics::NAMES` / `values()` for the
+  logger. 64 kissat METRIC counters are re-enabled as never-printed fields
+  at exactly their C `INC`/`ADD` sites: `ands_extracted`, `arena_enlarged`,
+  `arena_garbage` (bytes, unsigned wrap as in C), `arena_resized`,
+  `arena_shrunken`, `backbone_implied`, `backbone_probes`,
+  `backbone_propagations`, `backbone_rounds`, `best_saved`, `compacted`,
+  `definitions_checked`, `definitions_extracted`, `defragmentations`,
+  `dense_garbage_collections`, `dense_propagations`, `dense_ticks`,
+  `duplicated`, `equivalences_extracted`, `flushed`, `focused_decisions`,
+  `focused_modes`, `focused_propagations`, `focused_restarts`,
+  `focused_ticks`, `forward_subsumptions`, `garbage_collections`,
+  `gates_checked`, `gates_extracted`, `if_then_else_extracted`,
+  `initial_decisions`, `literals_bumped`, `literals_deduced`,
+  `literals_learned`, `literals_minimized`, `literals_minshrunken`,
+  `literals_shrunken`, `moved`, `probing_propagations`, `rephased_best`,
+  `rephased_inverted`, `rephased_original`, `rephased_walking`, `rescaled`,
+  `saved_decisions`, `score_decisions`, `search_propagations`, `sparse_gcs`,
+  `stable_decisions`, `stable_modes`, `stable_propagations`,
+  `stable_restarts`, `stable_ticks`, `target_decisions`, `target_saved`,
+  `transitive_probes`, `transitive_propagations`, `transitive_reduced`,
+  `transitive_reductions`, `transitive_units`, `vectors_defrags_needed`,
+  `vectors_enlarged`, `walk_decisions`, `weakened`. The METRICS-only flags
+  `backbone_computing` and `vivifying` are back on `Solver` so
+  `proprobe.rs` attributes probing propagations to backbone and, for the
+  first time in the port, fills the STATISTIC fields `vivify_ticks` and
+  `vivify_propagations`; that block does **not** add to `backbone_ticks`,
+  which is a printed counter whose reference value comes from
+  `backbone.rs` alone. Not re-enabled: `allocated_*` (malloc accounting
+  the port has no equivalent of), `extensions` and `walk_previous` (no
+  `INC` site in kissat 4.0.4). Every `GET (metric)` message site keeps
+  printing `u64::MAX` (no count) as the reference build does, which
+  `parity.py --phases` relies on. Nothing reads a re-enabled counter, so
+  they cannot move the trajectory; parity on the audited binary:
+  20/20 both ways (the runs above are on the audited, committed binary). Wall cost of the extra increments: paired timing of the pre-audit v audited binary on the 20 discriminating cells at `--conflicts=100000` (identical `c workclock` line per cell, 3 alternating reps each, medians, the two binaries pinned to two idle physical cores while the parity runs and the review sat on other cores): geomean 1.0045, per cell 0.984-1.021 with both signs (`log/pair_time-stepA-audit-2026-09-16.log`), inside the ±2 % run-to-run wall noise the 2026-09-15 A/A run showed. The formal overhead measurement of logging and observe() is bead A.11.
+- `tools/parity.py --solver-env KEY=VALUE` (repeatable) sets environment
+  for the solver-13 run only, e.g. `--solver-env SAT_POLICY=stock` for the
+  policy-on-STOCK check; kissat never sees it.
+- `Cargo.toml` gives the `test` profile `opt-level = 2` (debug assertions
+  kept): the integration tests run the binary on formulas with tens of
+  thousands of conflicts, a minute per test file unoptimized and about ten
+  seconds at level 2. `build.sh` and the release profile are unchanged.
 
 **Step-0 constant-knob sweeps: headroom (2026-09-16).** Baseline 2 of the
 RL plan's ladder (§6.1): for each knob the scheduler will move, does one

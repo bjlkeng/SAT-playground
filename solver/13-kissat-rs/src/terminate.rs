@@ -68,10 +68,22 @@ pub fn report_termination(solver: &Solver, name: &str, file: &str, lineno: u32) 
 }
 
 /// Port of the inline `kissat_terminated` (terminate.h).
+///
+/// Not in kissat: the work-clock limit (`SAT_LIMIT_TICKS`, RL plan §3.4 and
+/// step A.1) is polled here, because this is exactly where kissat polls for
+/// external termination: once per search-loop iteration and inside every
+/// inprocessing effort loop. When W reaches the limit the termination flag
+/// is raised, so the current pass winds down the same way it does for
+/// `--time` (SIGALRM) and the search loop stops with `s UNKNOWN`. With the
+/// limit unset the added cost is one bool load on the not-flagged path.
 pub fn terminated(solver: &mut Solver, bit: i32, name: &str, file: &str, lineno: u32) -> bool {
     debug_assert!((0..64).contains(&bit));
     if !solver.termination.flagged.load(Ordering::SeqCst) {
-        return false;
+        if !crate::kimits::ticks_limit_hit(solver) {
+            return false;
+        }
+        crate::kimits::report_ticks_limit_hit(solver);
+        solver.termination.flagged.store(true, Ordering::SeqCst);
     }
     report_termination(solver, name, file, lineno);
     let _ = bit; // (void) bit — non-COVERAGE build.

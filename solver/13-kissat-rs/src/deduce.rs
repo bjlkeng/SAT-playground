@@ -14,7 +14,7 @@
 //    (identical effect order).
 //  - The `resolvent` stack is (LOGGING || !NDEBUG)-only and omitted;
 //    resolvent_size/antecedent_size bookkeeping is kept exactly.
-//  - ADD (literals_deduced, ..) is METRIC — no-op.
+//  - ADD (literals_deduced, ..) is METRIC — no-op. [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 
 use crate::analyze::{conflict_lit, conflict_size};
 use crate::internal::{Solver, DECISION_REASON};
@@ -194,7 +194,8 @@ pub fn deduce_first_uip_clause(solver: &mut Solver, conflict: Conflict) -> Optio
     debug_assert!(solver.clause[0] == INVALID_LIT);
     solver.clause[0] = literal::not(uip); // POKE_STACK (solver->clause, 0, NOT (uip))
     if !solver.probing {
-        // ADD (literals_deduced, SIZE_STACK (solver->clause)): METRIC — no-op.
+        // ADD (literals_deduced, SIZE_STACK (solver->clause)): METRIC, re-enabled.
+        solver.statistics.literals_deduced += solver.clause.len() as u64;
     }
     profile::stop_checked(solver, Prof::deduce); // STOP (deduce)
     None

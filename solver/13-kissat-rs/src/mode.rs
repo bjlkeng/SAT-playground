@@ -37,6 +37,12 @@ pub fn init_mode_limit(solver: &mut Solver) {
         solver.limits.mode.ticks = 0;
         solver.limits.mode.count = 0;
 
+        // Not in kissat: RL scheduler bookkeeping (plan §2.4, D0).
+        if solver.policy.on {
+            let conflicts = solver.statistics.conflicts;
+            crate::policy::record_limit(solver, crate::policy::Timer::Mode, conflicts, conflicts_delta, false);
+        }
+
         crate::print::very_verbose(
             solver,
             &format_args!(
@@ -84,6 +90,12 @@ fn update_mode_limit(solver: &mut Solver, delta_ticks: u64) {
     if solver.limits.mode.count & 1 != 0 {
         solver.limits.mode.ticks = solver.statistics.search_ticks + delta_ticks;
         debug_assert!(solver.stable);
+        // Not in kissat: RL scheduler bookkeeping; the stable-mode deadline
+        // is on search ticks (plan §2.1).
+        if solver.policy.on {
+            let ticks = solver.statistics.search_ticks;
+            crate::policy::record_limit(solver, crate::policy::Timer::Mode, ticks, delta_ticks, true);
+        }
         let limit = solver.limits.mode.ticks;
         // GET (stable_modes) on a METRIC counter yields UINT64_MAX in the
         // reference (non-METRICS) build, which suppresses the phase count.
@@ -106,6 +118,12 @@ fn update_mode_limit(solver: &mut Solver, delta_ticks: u64) {
         let scaled = (interval as f64 * crate::kimits::nlogpown(count, 4)) as u64;
         solver.limits.mode.conflicts = solver.statistics.conflicts + scaled;
         debug_assert!(!solver.stable);
+        // Not in kissat: RL scheduler bookkeeping (focused deadline on
+        // conflicts, plan §2.1).
+        if solver.policy.on {
+            let conflicts = solver.statistics.conflicts;
+            crate::policy::record_limit(solver, crate::policy::Timer::Mode, conflicts, scaled, true);
+        }
         let limit = solver.limits.mode.conflicts;
         // GET (focused_modes): METRIC → UINT64_MAX in the reference build.
         let count = u64::MAX;
@@ -162,7 +180,7 @@ fn switch_to_focused_mode(solver: &mut Solver) {
     let delta = report_switching_from_mode(solver);
     crate::report::report(solver, false, ']'); // REPORT (0, ']')
     crate::profile::stop(solver, crate::profile::Prof::stable); // STOP (stable)
-    // INC (focused_modes) is METRIC-only: no-op in the reference build.
+    solver.statistics.focused_modes += 1; // INC (focused_modes): METRIC, re-enabled (never printed)
     // GET (focused_modes): METRIC → UINT64_MAX in the reference build.
         let count = u64::MAX;
     let conflicts = solver.statistics.conflicts;
@@ -186,7 +204,7 @@ fn switch_to_stable_mode(solver: &mut Solver) {
     let delta = report_switching_from_mode(solver);
     crate::report::report(solver, false, '}'); // REPORT (0, '}')
     crate::profile::stop(solver, crate::profile::Prof::focused); // STOP (focused)
-    // INC (stable_modes) is METRIC-only: no-op in the reference build.
+    solver.statistics.stable_modes += 1; // INC (stable_modes): METRIC, re-enabled (never printed)
     solver.stable = true;
     // GET (stable_modes) on a METRIC counter yields UINT64_MAX in the
         // reference (non-METRICS) build, which suppresses the phase count.
@@ -213,10 +231,22 @@ pub fn switching_search_mode(solver: &Solver) -> bool {
         return false;
     }
 
+    // Not in kissat: under the RL scheduler the deadline is
+    // last switch + m x stock delta on the same clock (plan §2.3).
     if solver.limits.mode.count & 1 != 0 {
-        solver.statistics.search_ticks >= solver.limits.mode.ticks
+        let limit = if solver.policy.on {
+            crate::policy::effective_limit(solver, crate::policy::Timer::Mode)
+        } else {
+            solver.limits.mode.ticks
+        };
+        solver.statistics.search_ticks >= limit
     } else {
-        solver.statistics.conflicts >= solver.limits.mode.conflicts
+        let limit = if solver.policy.on {
+            crate::policy::effective_limit(solver, crate::policy::Timer::Mode)
+        } else {
+            solver.limits.mode.conflicts
+        };
+        solver.statistics.conflicts >= limit
     }
 }
 

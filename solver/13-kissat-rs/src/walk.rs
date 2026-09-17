@@ -17,7 +17,7 @@
 //  - `walker->offset` exists in the C struct but is never used — omitted.
 //  - Statistics tiers: walks/walk_steps are COUNTERs (real); flipped and
 //    walk_improved are STATISTIC-tier (real fields, never printed);
-//    walk_decisions/walk_previous are METRIC (no-op); GET (walks) is real.
+//    walk_decisions/walk_previous are METRIC (no-op); GET (walks) is real. [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 //  - %g in kissat_phase messages is approximated with `{}` Display
 //    (message-only, verbosity >= 1) as in restart.rs.
 //  - CHECK_WALK code is not compiled in the reference build — omitted.
@@ -203,7 +203,7 @@ fn currently_unsatified(walker: &Walker) -> u32 {
 
 // static void import_decision_phases (walker *walker)
 fn import_decision_phases(solver: &mut Solver, walker: &mut Walker) {
-    // INC (walk_decisions) — METRIC, no-op.
+    solver.statistics.walk_decisions += 1; // INC (walk_decisions): METRIC, re-enabled
     walker.best_values = vec![0i8; solver.vars as usize]; // kissat_calloc (VARS)
     let mut imported: u32 = 0;
     for idx in 0..solver.vars {

@@ -13,7 +13,7 @@
 //    equivalent to `start == 0` (first = begin iff start == 0).
 //  - INC (garbage_collections) / INC (sparse_gcs) /
 //    INC (dense_garbage_collections) / INC (moved) / ADD (flushed) are
-//    METRIC counters: no-ops; GET of them in kissat_phase prints as
+//    METRIC counters: no-ops; GET of them in kissat_phase prints as [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 //    "no count" (u64::MAX).  kissat_check_statistics is a no-op (NDEBUG).
 //  - CHECKING_OR_PROVING is defined in this build (NPROOFS undefined); the
 //    solver->added/removed bookkeeping is compiled in and gated at runtime
@@ -54,7 +54,7 @@ pub fn defrag_watches_if_needed(solver: &mut Solver) {
     if usable <= usable_limit {
         return;
     }
-    // INC (vectors_defrags_needed) is METRIC-only: no-op in the reference build.
+    solver.statistics.vectors_defrags_needed += 1; // INC (vectors_defrags_needed): METRIC, re-enabled
     defrag_watches(solver);
 }
 
@@ -310,7 +310,7 @@ pub fn update_last_irredundant(solver: &mut Solver, irredundant: Reference) {
 
 // static move_redundant_clauses_to_the_end
 fn move_redundant_clauses_to_the_end(solver: &mut Solver, ref_: Reference) {
-    // INC (moved): METRIC, no-op.
+    solver.statistics.moved += 1; // INC (moved): METRIC, re-enabled (the GET stays u64::MAX)
     debug_assert!(ref_ != INVALID_REF);
     let end = solver.arena.size_wards();
     debug_assert!(ref_ as u64 <= end);
@@ -701,7 +701,7 @@ fn sparse_sweep_garbage_clauses(
             format_args!("collected {} in total", bytes_str),
         );
     }
-    // ADD (flushed, flushed): METRIC, no-op.
+    solver.statistics.flushed += flushed as u64; // ADD (flushed, flushed): METRIC, re-enabled
 
     let mut res: Reference = INVALID_REF;
 
@@ -761,7 +761,9 @@ fn rewatch_clauses(solver: &mut Solver, start: Reference) {
 pub fn sparse_collect(solver: &mut Solver, compact: bool, start: Reference) {
     debug_assert!(solver.watching);
     crate::profile::start_checked(solver, Prof::collect); // START (collect)
-    // INC (garbage_collections) / INC (sparse_gcs): METRIC, no-op.
+    // METRIC, re-enabled (never printed; the GETs stay u64::MAX):
+    solver.statistics.garbage_collections += 1; // INC (garbage_collections)
+    solver.statistics.sparse_gcs += 1; // INC (sparse_gcs)
     crate::report::report(solver, true, 'G'); // REPORT (1, 'G')
     let (vars, mfixed) = if compact {
         crate::compact::compact_literals(solver)
@@ -878,7 +880,9 @@ pub fn dense_collect(solver: &mut Solver) {
     debug_assert!(!solver.watching);
     debug_assert!(solver.level == 0);
     crate::profile::start_checked(solver, Prof::collect); // START (collect)
-    // INC (garbage_collections) / INC (dense_garbage_collections): METRIC.
+    // METRIC, re-enabled (never printed):
+    solver.statistics.garbage_collections += 1; // INC (garbage_collections)
+    solver.statistics.dense_garbage_collections += 1; // INC (dense_garbage_collections)
     crate::report::report(solver, true, 'G'); // REPORT (1, 'G')
     dense_sweep_garbage_clauses(solver);
     crate::report::report(solver, true, 'C'); // REPORT (1, 'C')

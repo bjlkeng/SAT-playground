@@ -50,7 +50,7 @@ pub fn find_gates(solver: &mut Solver, lit: u32) -> bool {
     if solver.options.extract == 0 {
         return false;
     }
-    // INC (gates_checked): METRIC, compiled out.
+    solver.statistics.gates_checked += 1; // INC (gates_checked): METRIC, re-enabled
     let not_lit = crate::literal::not(lit);
     if solver.watches[not_lit as usize].empty() {
         return false;
@@ -69,7 +69,9 @@ pub fn find_gates(solver: &mut Solver, lit: u32) -> bool {
     } else if crate::definition::find_definition(solver, lit) {
         res = true;
     }
-    // if (res) INC (gates_extracted): METRIC, compiled out.
+    if res {
+        solver.statistics.gates_extracted += 1; // INC (gates_extracted): METRIC, re-enabled
+    }
     res
 }
 

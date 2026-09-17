@@ -43,211 +43,306 @@ impl Default for Used {
     }
 }
 
-#[derive(Default)]
-pub struct Statistics {
-    pub ands_eliminated: u64, // STATISTIC
-    pub backbone_computations: u64,
-    pub backbone_ticks: u64,
-    pub backbone_units: u64, // STATISTIC
-    pub chronological: u64,
-    pub clauses_added: u64,
-    pub clauses_binary: u64,
-    pub clauses_deleted: u64,  // STATISTIC
-    pub clauses_factored: u64, // STATISTIC
-    pub clauses_improved: u64, // STATISTIC
-    pub clauses_irredundant: u64,
-    pub clauses_kept1: u64, // STATISTIC
-    pub clauses_kept2: u64, // STATISTIC
-    pub clauses_kept3: u64, // STATISTIC
-    pub clauses_learned: u64,
-    pub clauses_original: u64,
-    pub clauses_promoted1: u64,     // STATISTIC
-    pub clauses_promoted2: u64,     // STATISTIC
-    pub clauses_reduced: u64,       // STATISTIC
-    pub clauses_reduced_tier1: u64, // STATISTIC
-    pub clauses_reduced_tier2: u64, // STATISTIC
-    pub clauses_reduced_tier3: u64, // STATISTIC
-    pub clauses_redundant: u64,
-    pub clauses_unfactored: u64, // STATISTIC
-    pub clauses_used: u64,
-    pub clauses_used_focused: u64,
-    pub clauses_used_stable: u64,
-    pub closures: u64,
-    pub conflicts: u64,
-    pub congruent: u64,
-    pub congruent_ands: u64,               // STATISTIC
-    pub congruent_arity: u64,              // STATISTIC
-    pub congruent_arity_ands: u64,         // STATISTIC
-    pub congruent_arity_xors: u64,         // STATISTIC
-    pub congruent_binaries: u64,           // STATISTIC
-    pub congruent_ites: u64,               // STATISTIC
-    pub congruent_collisions: u64,         // STATISTIC
-    pub congruent_collisions_find: u64,    // STATISTIC
-    pub congruent_collisions_index: u64,   // STATISTIC
-    pub congruent_collisions_removed: u64, // STATISTIC
-    pub congruent_equivalences: u64,       // STATISTIC
-    pub congruent_gates: u64,
-    pub congruent_gates_ands: u64,
-    pub congruent_gates_ites: u64,
-    pub congruent_gates_xors: u64,
-    pub congruent_indexed: u64,         // STATISTIC
-    pub congruent_lookups: u64,         // STATISTIC
-    pub congruent_lookups_find: u64,    // STATISTIC
-    pub congruent_lookups_removed: u64, // STATISTIC
-    pub congruent_matched: u64,
-    pub congruent_matched_ands: u64,
-    pub congruent_matched_ites: u64,
-    pub congruent_matched_xors: u64,
-    pub congruent_rewritten: u64,        // STATISTIC
-    pub congruent_rewritten_ands: u64,   // STATISTIC
-    pub congruent_rewritten_ites: u64,   // STATISTIC
-    pub congruent_rewritten_xors: u64,   // STATISTIC
-    pub congruent_simplified: u64,       // STATISTIC
-    pub congruent_simplified_ands: u64,  // STATISTIC
-    pub congruent_simplified_ites: u64,  // STATISTIC
-    pub congruent_simplified_xors: u64,  // STATISTIC
-    pub congruent_subsumed: u64,         // STATISTIC
-    pub congruent_trivial_ite: u64,      // STATISTIC
-    pub congruent_unary: u64,            // STATISTIC
-    pub congruent_unary_ands: u64,       // STATISTIC
-    pub congruent_unary_ites: u64,       // STATISTIC
-    pub congruent_unary_xors: u64,       // STATISTIC
-    pub congruent_units: u64,            // STATISTIC
-    pub congruent_xors: u64,             // STATISTIC
-    pub decisions: u64,
-    pub definitions_eliminated: u64, // STATISTIC
-    pub definition_units: u64,       // STATISTIC
-    pub eagerly_subsumed: u64,       // STATISTIC
-    pub eliminate_attempted: u64,    // STATISTIC
-    pub eliminated: u64,
-    pub eliminate_resolutions: u64,
-    pub eliminate_units: u64, // STATISTIC
-    pub eliminations: u64,
-    pub equivalences_eliminated: u64, // STATISTIC
-    pub factored: u64,
-    pub factorizations: u64,
-    pub factor_ticks: u64,
-    pub fast_eliminated: u64,
-    pub fast_strengthened: u64,
-    pub fast_subsumed: u64,
-    pub fresh: u64,   // STATISTIC
-    pub flipped: u64, // STATISTIC
-    pub forward_checks: u64,
-    pub forward_steps: u64,
-    pub forward_strengthened: u64,    // STATISTIC
-    pub forward_subsumed: u64,        // STATISTIC
-    pub gates_eliminated: u64,        // STATISTIC
-    pub if_then_else_eliminated: u64, // STATISTIC
-    pub iterations: u64,
-    pub jumped_reasons: u64,   // STATISTIC
-    pub kitten_conflicts: u64, // STATISTIC
-    pub kitten_decisions: u64, // STATISTIC
-    pub kitten_flip: u64,      // STATISTIC
-    pub kitten_flipped: u64,   // STATISTIC
-    pub kitten_propagations: u64,
-    pub kitten_sat: u64, // STATISTIC
-    pub kitten_solved: u64,
-    pub kitten_ticks: u64,
-    pub kitten_unknown: u64, // STATISTIC
-    pub kitten_unsat: u64,   // STATISTIC
-    pub literals_factor: u64,
-    pub literals_factored: u64,       // STATISTIC
-    pub literals_unfactored: u64,     // STATISTIC
-    pub on_the_fly_strengthened: u64, // STATISTIC
-    pub on_the_fly_subsumed: u64,     // STATISTIC
-    pub probings: u64,
-    pub probing_ticks: u64,
-    pub propagations: u64,
-    pub queue_decisions: u64,  // STATISTIC
-    pub random_decisions: u64, // STATISTIC
-    pub random_sequences: u64,
-    pub reductions: u64,
-    pub reordered: u64,
-    pub reordered_focused: u64, // STATISTIC
-    pub reordered_stable: u64,  // STATISTIC
-    pub rephased: u64,
-    pub restarts: u64,
-    pub restarts_levels: u64,        // STATISTIC
-    pub restarts_reused_levels: u64, // STATISTIC
-    pub restarts_reused_trails: u64, // STATISTIC
-    pub retiered: u64,
-    pub searches: u64,
-    pub search_ticks: u64,
-    pub strengthened: u64,
-    pub substituted: u64,
-    pub substitute_ticks: u64,
-    pub substitute_units: u64, // STATISTIC
-    pub substitutions: u64,    // STATISTIC
-    pub subsumed: u64,
-    pub subsumption_checks: u64,
-    pub sweep: u64,
-    pub sweep_clauses: u64, // STATISTIC
-    pub sweep_completed: u64,
-    pub sweep_depth: u64,       // STATISTIC
-    pub sweep_environment: u64, // STATISTIC
-    pub sweep_equivalences: u64,
-    pub sweep_fixed_backbone: u64,        // STATISTIC
-    pub sweep_flip_backbone: u64,         // STATISTIC
-    pub sweep_flipped_backbone: u64,      // STATISTIC
-    pub sweep_flip_equivalences: u64,     // STATISTIC
-    pub sweep_flipped_equivalences: u64,  // STATISTIC
-    pub sweep_sat: u64,                   // STATISTIC
-    pub sweep_sat_backbone: u64,          // STATISTIC
-    pub sweep_sat_equivalences: u64,      // STATISTIC
-    pub sweep_solved: u64,
-    pub sweep_solved_backbone: u64,     // STATISTIC
-    pub sweep_solved_equivalences: u64, // STATISTIC
-    pub sweep_unknown_backbone: u64,    // STATISTIC
-    pub sweep_unknown_equivalences: u64, // STATISTIC
-    pub sweep_units: u64,
-    pub sweep_unsat: u64,              // STATISTIC
-    pub sweep_unsat_backbone: u64,     // STATISTIC
-    pub sweep_unsat_equivalences: u64, // STATISTIC
-    pub sweep_variables: u64,          // STATISTIC
-    pub switched: u64,
-    pub ticks: u64, // STATISTIC (NOTE: distinct from solver.ticks in internal.h)
-    pub transitive_ticks: u64,
-    pub units: u64,
-    pub variables_activated: u64,
-    pub variables_eliminate: u64,
-    pub variables_extension: u64,
-    pub variables_factor: u64,
-    pub variables_original: u64,
-    pub variables_subsume: u64,
-    pub vivifications: u64,
-    pub vivified: u64,
-    pub vivified_asym: u64,         // STATISTIC
-    pub vivified_implied: u64,      // STATISTIC
-    pub vivified_instantiated: u64, // STATISTIC
-    pub vivified_instirr: u64,      // STATISTIC
-    pub vivified_instred: u64,      // STATISTIC
-    pub vivified_irredundant: u64,  // STATISTIC
-    pub vivified_promoted: u64,     // STATISTIC
-    pub vivified_shrunken: u64,     // STATISTIC
-    pub vivified_shrunkirr: u64,    // STATISTIC
-    pub vivified_shrunkred: u64,    // STATISTIC
-    pub vivified_subirr: u64,       // STATISTIC
-    pub vivified_subred: u64,       // STATISTIC
-    pub vivified_subsumed: u64,     // STATISTIC
-    pub vivified_tier1: u64,        // STATISTIC
-    pub vivified_tier2: u64,        // STATISTIC
-    pub vivified_tier3: u64,        // STATISTIC
-    pub vivified_unlearn: u64,      // STATISTIC
-    pub vivify_checks: u64,
-    pub vivify_probes: u64,
-    pub vivify_propagations: u64, // STATISTIC
-    pub vivify_reused: u64,
-    pub vivify_ticks: u64, // STATISTIC
-    pub vivify_units: u64, // STATISTIC
-    pub walk_improved: u64, // STATISTIC
-    pub walks: u64,
-    pub walk_steps: u64,
-    pub warming_conflicts: u64, // STATISTIC
-    pub warming_decisions: u64,
-    pub warming_propagations: u64,
-    pub warmups: u64,
+/// Declares `Statistics` from one list, so the RL logger (policy.rs, plan
+/// step A.5) can dump every counter by name (`Statistics::NAMES`,
+/// `Statistics::values`) without a second hand-written list that would
+/// drift. Fields are in statistics.h table order. Tiers: unmarked =
+/// COUNTER (printed by `-s`); `STATISTIC` = kept as a real field, never
+/// printed (see the PORT NOTE above); `METRIC (re-enabled)` = a kissat
+/// METRICS-only counter re-enabled 2026-09-16 for the RL observation (plan
+/// §5.1, step A.6). Re-enabled counters are pure increments at exactly the C
+/// `INC`/`ADD` sites, are never printed, and are never read by a heuristic,
+/// so they cannot change the trajectory; the `GET (...)` message sites of
+/// METRIC counters keep printing `u64::MAX` (no count) exactly as the
+/// reference build does, which tools/parity.py --phases relies on. Not
+/// re-enabled: `allocated_*` (malloc accounting the port has no equivalent
+/// of), `extensions` and `walk_previous` (no `INC` site in kissat 4.0.4).
+macro_rules! statistics_fields {
+    ($($name:ident,)*) => {
+        #[derive(Default)]
+        pub struct Statistics {
+            $(pub $name: u64,)*
+            pub used: [Used; 2],
+        }
 
-    pub used: [Used; 2],
+        impl Statistics {
+            /// Every counter's name, in field order.
+            pub const NAMES: &'static [&'static str] = &[$(stringify!($name),)*];
+
+            /// Every counter's value, in `NAMES` order.
+            pub fn values(&self) -> Vec<u64> {
+                vec![$(self.$name,)*]
+            }
+        }
+    };
+}
+
+statistics_fields! {
+    ands_eliminated, // STATISTIC
+    ands_extracted, // METRIC (re-enabled)
+    arena_enlarged, // METRIC (re-enabled)
+    arena_garbage, // METRIC (re-enabled)
+    arena_resized, // METRIC (re-enabled)
+    arena_shrunken, // METRIC (re-enabled)
+    backbone_computations,
+    backbone_implied, // METRIC (re-enabled)
+    backbone_probes, // METRIC (re-enabled)
+    backbone_propagations, // METRIC (re-enabled)
+    backbone_rounds, // METRIC (re-enabled)
+    backbone_ticks,
+    backbone_units, // STATISTIC
+    best_saved, // METRIC (re-enabled)
+    chronological,
+    clauses_added,
+    clauses_binary,
+    clauses_deleted, // STATISTIC
+    clauses_factored, // STATISTIC
+    clauses_improved, // STATISTIC
+    clauses_irredundant,
+    clauses_kept1, // STATISTIC
+    clauses_kept2, // STATISTIC
+    clauses_kept3, // STATISTIC
+    clauses_learned,
+    clauses_original,
+    clauses_promoted1, // STATISTIC
+    clauses_promoted2, // STATISTIC
+    clauses_reduced, // STATISTIC
+    clauses_reduced_tier1, // STATISTIC
+    clauses_reduced_tier2, // STATISTIC
+    clauses_reduced_tier3, // STATISTIC
+    clauses_redundant,
+    clauses_unfactored, // STATISTIC
+    clauses_used,
+    clauses_used_focused,
+    clauses_used_stable,
+    closures,
+    compacted, // METRIC (re-enabled)
+    conflicts,
+    congruent,
+    congruent_ands, // STATISTIC
+    congruent_arity, // STATISTIC
+    congruent_arity_ands, // STATISTIC
+    congruent_arity_xors, // STATISTIC
+    congruent_binaries, // STATISTIC
+    congruent_ites, // STATISTIC
+    congruent_collisions, // STATISTIC
+    congruent_collisions_find, // STATISTIC
+    congruent_collisions_index, // STATISTIC
+    congruent_collisions_removed, // STATISTIC
+    congruent_equivalences, // STATISTIC
+    congruent_gates,
+    congruent_gates_ands,
+    congruent_gates_ites,
+    congruent_gates_xors,
+    congruent_indexed, // STATISTIC
+    congruent_lookups, // STATISTIC
+    congruent_lookups_find, // STATISTIC
+    congruent_lookups_removed, // STATISTIC
+    congruent_matched,
+    congruent_matched_ands,
+    congruent_matched_ites,
+    congruent_matched_xors,
+    congruent_rewritten, // STATISTIC
+    congruent_rewritten_ands, // STATISTIC
+    congruent_rewritten_ites, // STATISTIC
+    congruent_rewritten_xors, // STATISTIC
+    congruent_simplified, // STATISTIC
+    congruent_simplified_ands, // STATISTIC
+    congruent_simplified_ites, // STATISTIC
+    congruent_simplified_xors, // STATISTIC
+    congruent_subsumed, // STATISTIC
+    congruent_trivial_ite, // STATISTIC
+    congruent_unary, // STATISTIC
+    congruent_unary_ands, // STATISTIC
+    congruent_unary_ites, // STATISTIC
+    congruent_unary_xors, // STATISTIC
+    congruent_units, // STATISTIC
+    congruent_xors, // STATISTIC
+    decisions,
+    definitions_checked, // METRIC (re-enabled)
+    definitions_eliminated, // STATISTIC
+    definitions_extracted, // METRIC (re-enabled)
+    definition_units, // STATISTIC
+    defragmentations, // METRIC (re-enabled)
+    dense_garbage_collections, // METRIC (re-enabled)
+    dense_propagations, // METRIC (re-enabled)
+    dense_ticks, // METRIC (re-enabled)
+    duplicated, // METRIC (re-enabled)
+    eagerly_subsumed, // STATISTIC
+    eliminate_attempted, // STATISTIC
+    eliminated,
+    eliminate_resolutions,
+    eliminate_units, // STATISTIC
+    eliminations,
+    equivalences_eliminated, // STATISTIC
+    equivalences_extracted, // METRIC (re-enabled)
+    factored,
+    factorizations,
+    factor_ticks,
+    fast_eliminated,
+    fast_strengthened,
+    fast_subsumed,
+    fresh, // STATISTIC
+    flipped, // STATISTIC
+    flushed, // METRIC (re-enabled)
+    focused_decisions, // METRIC (re-enabled)
+    focused_modes, // METRIC (re-enabled)
+    focused_propagations, // METRIC (re-enabled)
+    focused_restarts, // METRIC (re-enabled)
+    focused_ticks, // METRIC (re-enabled)
+    forward_checks,
+    forward_steps,
+    forward_strengthened, // STATISTIC
+    forward_subsumed, // STATISTIC
+    forward_subsumptions, // METRIC (re-enabled)
+    garbage_collections, // METRIC (re-enabled)
+    gates_checked, // METRIC (re-enabled)
+    gates_eliminated, // STATISTIC
+    gates_extracted, // METRIC (re-enabled)
+    if_then_else_eliminated, // STATISTIC
+    if_then_else_extracted, // METRIC (re-enabled)
+    initial_decisions, // METRIC (re-enabled)
+    iterations,
+    jumped_reasons, // STATISTIC
+    kitten_conflicts, // STATISTIC
+    kitten_decisions, // STATISTIC
+    kitten_flip, // STATISTIC
+    kitten_flipped, // STATISTIC
+    kitten_propagations,
+    kitten_sat, // STATISTIC
+    kitten_solved,
+    kitten_ticks,
+    kitten_unknown, // STATISTIC
+    kitten_unsat, // STATISTIC
+    literals_bumped, // METRIC (re-enabled)
+    literals_deduced, // METRIC (re-enabled)
+    literals_factor,
+    literals_factored, // STATISTIC
+    literals_learned, // METRIC (re-enabled)
+    literals_minimized, // METRIC (re-enabled)
+    literals_minshrunken, // METRIC (re-enabled)
+    literals_shrunken, // METRIC (re-enabled)
+    literals_unfactored, // STATISTIC
+    moved, // METRIC (re-enabled)
+    on_the_fly_strengthened, // STATISTIC
+    on_the_fly_subsumed, // STATISTIC
+    probing_propagations, // METRIC (re-enabled)
+    probings,
+    probing_ticks,
+    propagations,
+    queue_decisions, // STATISTIC
+    random_decisions, // STATISTIC
+    random_sequences,
+    reductions,
+    reordered,
+    reordered_focused, // STATISTIC
+    reordered_stable, // STATISTIC
+    rephased,
+    rephased_best, // METRIC (re-enabled)
+    rephased_inverted, // METRIC (re-enabled)
+    rephased_original, // METRIC (re-enabled)
+    rephased_walking, // METRIC (re-enabled)
+    rescaled, // METRIC (re-enabled)
+    restarts,
+    restarts_levels, // STATISTIC
+    restarts_reused_levels, // STATISTIC
+    restarts_reused_trails, // STATISTIC
+    retiered,
+    saved_decisions, // METRIC (re-enabled)
+    score_decisions, // METRIC (re-enabled)
+    searches,
+    search_propagations, // METRIC (re-enabled)
+    search_ticks,
+    sparse_gcs, // METRIC (re-enabled)
+    stable_decisions, // METRIC (re-enabled)
+    stable_modes, // METRIC (re-enabled)
+    stable_propagations, // METRIC (re-enabled)
+    stable_restarts, // METRIC (re-enabled)
+    stable_ticks, // METRIC (re-enabled)
+    strengthened,
+    substituted,
+    substitute_ticks,
+    substitute_units, // STATISTIC
+    substitutions, // STATISTIC
+    subsumed,
+    subsumption_checks,
+    sweep,
+    sweep_clauses, // STATISTIC
+    sweep_completed,
+    sweep_depth, // STATISTIC
+    sweep_environment, // STATISTIC
+    sweep_equivalences,
+    sweep_fixed_backbone, // STATISTIC
+    sweep_flip_backbone, // STATISTIC
+    sweep_flipped_backbone, // STATISTIC
+    sweep_flip_equivalences, // STATISTIC
+    sweep_flipped_equivalences, // STATISTIC
+    sweep_sat, // STATISTIC
+    sweep_sat_backbone, // STATISTIC
+    sweep_sat_equivalences, // STATISTIC
+    sweep_solved,
+    sweep_solved_backbone, // STATISTIC
+    sweep_solved_equivalences, // STATISTIC
+    sweep_unknown_backbone, // STATISTIC
+    sweep_unknown_equivalences, // STATISTIC
+    sweep_units,
+    sweep_unsat, // STATISTIC
+    sweep_unsat_backbone, // STATISTIC
+    sweep_unsat_equivalences, // STATISTIC
+    sweep_variables, // STATISTIC
+    switched,
+    target_decisions, // METRIC (re-enabled)
+    target_saved, // METRIC (re-enabled)
+    ticks, // STATISTIC
+    transitive_probes, // METRIC (re-enabled)
+    transitive_propagations, // METRIC (re-enabled)
+    transitive_reduced, // METRIC (re-enabled)
+    transitive_reductions, // METRIC (re-enabled)
+    transitive_ticks,
+    transitive_units, // METRIC (re-enabled)
+    units,
+    variables_activated,
+    variables_eliminate,
+    variables_extension,
+    variables_factor,
+    variables_original,
+    variables_subsume,
+    vectors_defrags_needed, // METRIC (re-enabled)
+    vectors_enlarged, // METRIC (re-enabled)
+    vivifications,
+    vivified,
+    vivified_asym, // STATISTIC
+    vivified_implied, // STATISTIC
+    vivified_instantiated, // STATISTIC
+    vivified_instirr, // STATISTIC
+    vivified_instred, // STATISTIC
+    vivified_irredundant, // STATISTIC
+    vivified_promoted, // STATISTIC
+    vivified_shrunken, // STATISTIC
+    vivified_shrunkirr, // STATISTIC
+    vivified_shrunkred, // STATISTIC
+    vivified_subirr, // STATISTIC
+    vivified_subred, // STATISTIC
+    vivified_subsumed, // STATISTIC
+    vivified_tier1, // STATISTIC
+    vivified_tier2, // STATISTIC
+    vivified_tier3, // STATISTIC
+    vivified_unlearn, // STATISTIC
+    vivify_checks,
+    vivify_probes,
+    vivify_propagations, // STATISTIC
+    vivify_reused,
+    vivify_ticks, // STATISTIC
+    vivify_units, // STATISTIC
+    walk_decisions, // METRIC (re-enabled)
+    walk_improved, // STATISTIC
+    walks,
+    walk_steps,
+    warming_conflicts, // STATISTIC
+    warming_decisions,
+    warming_propagations,
+    warmups,
+    weakened, // METRIC (re-enabled)
 }
 
 // statistics.h convenience macros (CLAUSES, BINIRR_CLAUSES etc.) as helpers.
@@ -435,6 +530,28 @@ pub fn statistics_print(solver: &mut Solver, verbose: bool) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn field_list_is_complete_unique_and_matches_values() {
+        let names = Statistics::NAMES;
+        let st = Statistics::default();
+        assert_eq!(names.len(), st.values().len());
+        let mut sorted: Vec<&str> = names.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len(), "duplicate counter name");
+        for must in ["conflicts", "ticks", "eliminate_resolutions", "literals_learned",
+                     "search_propagations", "vivify_ticks", "arena_garbage", "weakened"] {
+            assert!(names.contains(&must), "{} missing", must);
+        }
+        // Values follow the field order.
+        let mut st = Statistics::default();
+        st.conflicts = 7;
+        let i = names.iter().position(|n| *n == "conflicts").unwrap();
+        assert_eq!(st.values()[i], 7);
+    }
+
     #[test]
     fn print_stat_layout_matches_c() {
         // Manually verified against the C PRINT_STAT expansion:

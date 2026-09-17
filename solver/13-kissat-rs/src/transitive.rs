@@ -14,7 +14,7 @@
 //    remove_from_vector (solver, dst, word).
 //  - Statistics tiers: transitive_ticks is a COUNTER; transitive_probes /
 //    transitive_propagations / transitive_reduced / transitive_reductions /
-//    transitive_units are METRIC — compiled out, INC/ADD sites dropped.
+//    transitive_units are METRIC — compiled out, INC/ADD sites dropped. [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 //    ADD (propagations)/ADD (probing_ticks) are COUNTERs, ADD (ticks) is a
 //    kept STATISTIC field.
 //  - less_stable_transitive / less_focused_transitive apply IDX() to the
@@ -114,7 +114,7 @@ fn transitive_reduce(
     solver.statistics.transitive_ticks += src_ticks; // ADD (transitive_ticks, ...)
     solver.statistics.probing_ticks += src_ticks; // ADD (probing_ticks, ...)
     solver.statistics.ticks += src_ticks; // ADD (ticks, ...)
-    // INC (transitive_probes): METRIC, compiled out.
+    solver.statistics.transitive_probes += 1; // INC (transitive_probes): METRIC, re-enabled
     let not_src = crate::literal::not(src);
     let mut reduced: u32 = 0;
     let mut failed = false;
@@ -187,8 +187,9 @@ fn transitive_reduce(
         debug_assert!(solver.propagate <= propagate);
         let propagated = (propagate - solver.propagate) as u64;
 
-        // ADD (transitive_propagations, ...): METRIC, compiled out.
-        // ADD (probing_propagations, ...): METRIC, compiled out.
+        // METRIC, re-enabled (never printed):
+        solver.statistics.transitive_propagations += propagated; // ADD (transitive_propagations, ...)
+        solver.statistics.probing_propagations += propagated; // ADD (probing_propagations, ...)
         solver.statistics.propagations += propagated; // ADD (propagations, ...)
 
         solver.statistics.transitive_ticks += inner_ticks;
@@ -198,7 +199,7 @@ fn transitive_reduce(
         transitive_backtrack(solver, saved);
 
         if transitive {
-            // INC (transitive_reduced): METRIC, compiled out.
+            solver.statistics.transitive_reduced += 1; // INC (transitive_reduced): METRIC, re-enabled
             debug_assert!(watch_lit(src_watch) == dst);
             let dst_watch = binary_watch(src); // dst_watch.binary.lit = src
             crate::vector::remove_from_vector(solver, dst, dst_watch); // REMOVE_WATCHES
@@ -248,7 +249,7 @@ fn transitive_reduce(
     }
 
     if failed {
-        // INC (transitive_units): METRIC, compiled out.
+        solver.statistics.transitive_units += 1; // INC (transitive_units): METRIC, re-enabled
         *units += 1;
         res = true;
 
@@ -366,7 +367,7 @@ pub fn transitive_reduction(solver: &mut Solver) {
         return;
     }
     crate::profile::start_checked(solver, Prof::transitive); // START (transitive)
-    // INC (transitive_reductions): METRIC, compiled out.
+    solver.statistics.transitive_reductions += 1; // INC (transitive_reductions): METRIC, re-enabled
     prioritize_binaries(solver);
     let mut success = false;
     let mut reduced: u64 = 0;

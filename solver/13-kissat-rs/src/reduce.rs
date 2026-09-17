@@ -33,7 +33,13 @@ pub fn reducing(solver: &Solver) -> bool {
     if solver.statistics.clauses_redundant == 0 {
         return false;
     }
-    if solver.statistics.conflicts < solver.limits.reduce.conflicts {
+    // Not in kissat: RL scheduler chokepoint (plan §2.3, `due(reduce)`).
+    let limit = if solver.policy.on {
+        crate::policy::effective_limit(solver, crate::policy::Timer::Reduce)
+    } else {
+        solver.limits.reduce.conflicts
+    };
+    if solver.statistics.conflicts < limit {
         return false;
     }
     true

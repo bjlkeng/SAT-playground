@@ -98,6 +98,6 @@ pub fn find_and_gate(solver: &mut Solver, lit: u32, negative: u32) -> bool {
     }
     solver.gates[(1 ^ negative) as usize].push(large_watch(base)); // gates[!negative]
     solver.gate_eliminated = true; // GATE_ELIMINATED (ands)
-    // INC (ands_extracted): METRIC, compiled out.
+    solver.statistics.ands_extracted += 1; // INC (ands_extracted): METRIC, re-enabled (never printed)
     true
 }

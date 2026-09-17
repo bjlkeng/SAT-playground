@@ -335,11 +335,17 @@ fn update_search_propagation_statistics(solver: &mut Solver, saved_propagate: us
     solver.statistics.propagations += propagated; // ADD (propagations, ...)
     solver.statistics.ticks += solver.ticks; // ADD (ticks, ...)
 
-    // ADD (search_propagations, propagated): METRIC, compiled out.
+    solver.statistics.search_propagations += propagated; // ADD (search_propagations, ...): METRIC, re-enabled
     solver.statistics.search_ticks += solver.ticks; // ADD (search_ticks, ...)
 
-    // if (solver->stable) { ADD (stable_propagations/stable_ticks) } else
-    // { ADD (focused_propagations/focused_ticks) }: all METRIC, compiled out.
+    // METRIC, re-enabled (never printed):
+    if solver.stable {
+        solver.statistics.stable_propagations += propagated; // ADD (stable_propagations, ...)
+        solver.statistics.stable_ticks += solver.ticks; // ADD (stable_ticks, ...)
+    } else {
+        solver.statistics.focused_propagations += propagated; // ADD (focused_propagations, ...)
+        solver.statistics.focused_ticks += solver.ticks; // ADD (focused_ticks, ...)
+    }
 }
 
 /// C static `search_propagate` (renamed, see module PORT NOTES).

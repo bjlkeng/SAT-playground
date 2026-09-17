@@ -19,7 +19,7 @@
 //    pointer around the reallocation, mirroring the C begin-pointer compare.
 //    Vec/realloc may of course differ in when they move; output-only.
 //  - INC/GET on arena_resized/arena_enlarged/arena_shrunken are METRIC
-//    counters, compiled out in the reference build (neither METRICS nor
+//    counters, compiled out in the reference build (neither METRICS nor [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 //    STATISTICS defined); GET (arena_resized) therefore yields UINT64_MAX,
 //    which kissat_phase renders as "no count" — hardcoded as u64::MAX below.
 //  - kissat_clause_in_arena is !NDEBUG/LOGGING only: not ported.
@@ -237,7 +237,8 @@ pub fn allocate_clause(solver: &mut Solver, size: usize) -> Reference {
                 break;
             }
         }
-        // INC (arena_resized); INC (arena_enlarged): METRIC, compiled out.
+        solver.statistics.arena_resized += 1; // INC (arena_resized): METRIC, re-enabled
+        solver.statistics.arena_enlarged += 1; // INC (arena_enlarged): METRIC, re-enabled
         let moved = solver.arena.words.as_ptr() != old_ptr;
         report_resized(solver, "enlarged", moved);
         debug_assert!(capacity <= MAX_ARENA);
@@ -289,7 +290,8 @@ pub fn shrink_arena(solver: &mut Solver) {
         );
         return;
     }
-    // INC (arena_resized); INC (arena_shrunken): METRIC, compiled out.
+    solver.statistics.arena_resized += 1; // INC (arena_resized): METRIC, re-enabled
+    solver.statistics.arena_shrunken += 1; // INC (arena_shrunken): METRIC, re-enabled
     let old_ptr = solver.arena.words.as_ptr();
     solver.arena.shrink_stack();
     let moved = solver.arena.words.as_ptr() != old_ptr;

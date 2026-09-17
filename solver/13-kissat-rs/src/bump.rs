@@ -4,10 +4,10 @@
 //  - SORT_STACK / RADIX_STACK carry START/STOP (sort) / (radix) profile
 //    hooks (level 4) inside the C macros; they are hoisted around the calls
 //    here exactly once per sort, per the crate::sort convention.
-//  - INC (rescaled) is a METRIC counter — no-op; GET (rescaled) on a METRIC
+//  - INC (rescaled) is a METRIC counter — no-op; GET (rescaled) on a METRIC [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 //    yields u64::MAX, which kissat_phase renders as "no count" (the Rust
 //    print::phase does the same for u64::MAX).
-//  - ADD (literals_bumped, ..) is METRIC — no-op.
+//  - ADD (literals_bumped, ..) is METRIC — no-op. [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 //  - The heap ops go through crate::heap free functions on solver.scores
 //    (the C solver argument to kissat_update_heap etc. is LOG-only).
 
@@ -41,7 +41,7 @@ fn sort_bump(solver: &mut Solver) {
 
 /// Port of `kissat_rescale_scores`.
 pub fn rescale_scores(solver: &mut Solver) {
-    // INC (rescaled): METRIC — no-op.
+    solver.statistics.rescaled += 1; // INC (rescaled): METRIC, re-enabled (the GET below stays u64::MAX)
     let max_score = heap::max_score_on_heap(&solver.scores);
     print::phase(
         solver,
@@ -134,13 +134,13 @@ fn move_analyzed_variables_to_front_of_queue(solver: &mut Solver) {
 /// Port of `kissat_bump_analyzed`.
 pub fn bump_analyzed(solver: &mut Solver) {
     profile::start_checked(solver, Prof::bump);
-    let _bumped = solver.analyzed.len() as u64;
+    let bumped = solver.analyzed.len() as u64;
     if !solver.stable {
         move_analyzed_variables_to_front_of_queue(solver);
     } else {
         bump_analyzed_variable_scores(solver);
     }
-    // ADD (literals_bumped, bumped): METRIC — no-op.
+    solver.statistics.literals_bumped += bumped; // ADD (literals_bumped, bumped): METRIC, re-enabled
     profile::stop_checked(solver, Prof::bump);
 }
 

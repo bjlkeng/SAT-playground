@@ -4,7 +4,7 @@
 // are *static* in rephase.c despite the `kissat_` prefix; they keep their
 // names (minus prefix) as private fns here.
 // PORT NOTE: INC (rephased_best/_inverted/_original/_walking) are METRIC
-// counters — no-ops in the reference (non-METRICS) build.
+// counters — no-ops in the reference (non-METRICS) build. [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 // PORT NOTE: `kissat_walking`/`kissat_walk` live in the walk wave
 // (crate::walk, stubbed in stubs.rs until it lands).
 
@@ -52,7 +52,13 @@ pub fn rephasing(solver: &Solver) -> bool {
     if !solver.stable {
         return false;
     }
-    solver.statistics.conflicts > solver.limits.rephase.conflicts
+    // Not in kissat: RL scheduler chokepoint (plan §2.3, `due(rephase)`).
+    let limit = if solver.policy.on {
+        crate::policy::effective_limit(solver, crate::policy::Timer::Rephase)
+    } else {
+        solver.limits.rephase.conflicts
+    };
+    solver.statistics.conflicts > limit
 }
 
 // static char rephase_best (kissat *solver)
@@ -66,7 +72,7 @@ fn rephase_best(solver: &mut Solver) -> char {
             solver.phases.saved[i] = tmp;
         }
     }
-    // INC (rephased_best) — METRIC, no-op.
+    solver.statistics.rephased_best += 1; // INC (rephased_best): METRIC, re-enabled
     'B'
 }
 
@@ -78,7 +84,7 @@ fn rephase_original(solver: &mut Solver) -> char {
     for s in solver.phases.saved[..vars].iter_mut() {
         *s = initial_phase;
     }
-    // INC (rephased_original) — METRIC, no-op.
+    solver.statistics.rephased_original += 1; // INC (rephased_original): METRIC, re-enabled
     'O'
 }
 
@@ -89,7 +95,7 @@ fn rephase_inverted(solver: &mut Solver) -> char {
     for s in solver.phases.saved[..vars].iter_mut() {
         *s = inverted_initial_phase;
     }
-    // INC (rephased_inverted) — METRIC, no-op.
+    solver.statistics.rephased_inverted += 1; // INC (rephased_inverted): METRIC, re-enabled
     'I'
 }
 
@@ -99,7 +105,7 @@ fn rephase_walking(solver: &mut Solver) -> char {
     crate::profile::stop_checked(solver, Prof::rephase); // STOP (rephase)
     crate::walk::walk(solver);
     crate::profile::start_checked(solver, Prof::rephase); // START (rephase)
-    // INC (rephased_walking) — METRIC, no-op.
+    solver.statistics.rephased_walking += 1; // INC (rephased_walking): METRIC, re-enabled
     'W'
 }
 

@@ -38,9 +38,10 @@ work is **solver 13** and the RL scheduler on top of it.
   small CPU MLP consulted every X search ticks. Every mechanism stays
   byte-identical; train offline from logged and fork-branched trajectories
   first. §10 is the work order, §8 the evaluation discipline, §11-15 the
-  decision log and review passes. Read it before starting any
-  `src/policy.rs` work — that module does not exist yet; plan step A
-  creates it.
+  decision log and review passes. Read it before touching
+  `src/policy.rs` (created in step A, 2026-09-16: tick limit, epoch clock,
+  stage-1 chokepoints, random modes, counter audit; the solver README lists
+  what is done and what is still open in that step).
 
 ## Build, run, test
 

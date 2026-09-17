@@ -134,6 +134,19 @@ fn no_all_positive_clauses(solver: &mut Solver) -> bool {
     true
 }
 
+// Not in kissat. The work-clock limit (SAT_LIMIT_TICKS, RL plan step A.1)
+// also bounds lucky, which kissat's own conflict and decision limits never
+// do: polled at entry and before every assumption below, and on a hit the
+// trail is unwound to level 0 so the overrun is at most one propagation.
+fn over_budget(solver: &mut Solver) -> bool {
+    if !crate::kimits::ticks_limit_hit(solver) {
+        return false;
+    }
+    crate::kimits::report_ticks_limit_hit(solver);
+    crate::backtrack::backtrack_without_updating_phases(solver, 0);
+    true
+}
+
 fn forward_false_satisfiable(solver: &mut Solver) -> i32 {
     debug_assert!(solver.level == 0);
     let mut conflicts: u32 = 0; // #ifndef QUIET
@@ -155,6 +168,9 @@ fn forward_false_satisfiable(solver: &mut Solver) -> i32 {
             continue;
         }
         let not_lit = crate::literal::not(lit);
+        if over_budget(solver) {
+            return 0; // not in kissat: SAT_LIMIT_TICKS budget spent
+        }
         crate::decide::internal_assume(solver, not_lit);
         let c = crate::proprobe::probing_propagate(solver, INVALID_REF, true);
         let Some(c) = c else {
@@ -163,6 +179,9 @@ fn forward_false_satisfiable(solver: &mut Solver) -> i32 {
         conflicts += 1;
         if solver.level > 1 {
             crate::backtrack::backtrack_without_updating_phases(solver, solver.level - 1);
+            if over_budget(solver) {
+                return 0; // not in kissat: SAT_LIMIT_TICKS budget spent
+            }
             crate::decide::internal_assume(solver, lit);
             let d = crate::proprobe::probing_propagate(solver, INVALID_REF, true);
             if d.is_none() {
@@ -217,6 +236,9 @@ fn forward_true_satisfiable(solver: &mut Solver) -> i32 {
         if solver.values[lit as usize] != 0 {
             continue;
         }
+        if over_budget(solver) {
+            return 0; // not in kissat: SAT_LIMIT_TICKS budget spent
+        }
         crate::decide::internal_assume(solver, lit);
         let c = crate::proprobe::probing_propagate(solver, INVALID_REF, true);
         let Some(c) = c else {
@@ -226,6 +248,9 @@ fn forward_true_satisfiable(solver: &mut Solver) -> i32 {
         if solver.level > 1 {
             crate::backtrack::backtrack_without_updating_phases(solver, solver.level - 1);
             let not_lit = crate::literal::not(lit);
+            if over_budget(solver) {
+                return 0; // not in kissat: SAT_LIMIT_TICKS budget spent
+            }
             crate::decide::internal_assume(solver, not_lit);
             let d = crate::proprobe::probing_propagate(solver, INVALID_REF, true);
             if d.is_none() {
@@ -281,6 +306,9 @@ fn backward_false_satisfiable(solver: &mut Solver) -> i32 {
             continue;
         }
         let not_lit = crate::literal::not(lit);
+        if over_budget(solver) {
+            return 0; // not in kissat: SAT_LIMIT_TICKS budget spent
+        }
         crate::decide::internal_assume(solver, not_lit);
         let c = crate::proprobe::probing_propagate(solver, INVALID_REF, true);
         let Some(c) = c else {
@@ -289,6 +317,9 @@ fn backward_false_satisfiable(solver: &mut Solver) -> i32 {
         conflicts += 1;
         if solver.level > 1 {
             crate::backtrack::backtrack_without_updating_phases(solver, solver.level - 1);
+            if over_budget(solver) {
+                return 0; // not in kissat: SAT_LIMIT_TICKS budget spent
+            }
             crate::decide::internal_assume(solver, lit);
             let d = crate::proprobe::probing_propagate(solver, INVALID_REF, true);
             if d.is_none() {
@@ -342,6 +373,9 @@ fn backward_true_satisfiable(solver: &mut Solver) -> i32 {
         if solver.values[lit as usize] != 0 {
             continue;
         }
+        if over_budget(solver) {
+            return 0; // not in kissat: SAT_LIMIT_TICKS budget spent
+        }
         crate::decide::internal_assume(solver, lit);
         let c = crate::proprobe::probing_propagate(solver, INVALID_REF, true);
         let Some(c) = c else {
@@ -351,6 +385,9 @@ fn backward_true_satisfiable(solver: &mut Solver) -> i32 {
         if solver.level > 1 {
             crate::backtrack::backtrack_without_updating_phases(solver, solver.level - 1);
             let not_lit = crate::literal::not(lit);
+            if over_budget(solver) {
+                return 0; // not in kissat: SAT_LIMIT_TICKS budget spent
+            }
             crate::decide::internal_assume(solver, not_lit);
             let d = crate::proprobe::probing_propagate(solver, INVALID_REF, true);
             if d.is_none() {
@@ -401,6 +438,11 @@ pub fn lucky(solver: &mut Solver) -> i32 {
         return 0;
     }
 
+    // Not in kissat: nothing to try once the work budget is spent.
+    if crate::kimits::ticks_limit_hit(solver) {
+        return 0;
+    }
+
     crate::profile::start_checked(solver, Prof::lucky); // START (lucky)
     debug_assert!(solver.level == 0);
     debug_assert!(!solver.probing);
@@ -410,6 +452,7 @@ pub fn lucky(solver: &mut Solver) -> i32 {
     let mut res = 0;
 
     if no_all_negative_clauses(solver) {
+        let mut aborted = false;
         for idx in 0..solver.vars {
             if !solver.flags[idx as usize].active() {
                 continue;
@@ -418,18 +461,25 @@ pub fn lucky(solver: &mut Solver) -> i32 {
             if solver.values[lit as usize] != 0 {
                 continue;
             }
+            if over_budget(solver) {
+                aborted = true; // not in kissat: SAT_LIMIT_TICKS budget spent
+                break;
+            }
             crate::decide::internal_assume(solver, lit);
             let c = crate::proprobe::probing_propagate(solver, INVALID_REF, true);
             debug_assert!(c.is_none());
             let _ = c;
         }
-        crate::print::verbose(solver, "set all variables to true");
-        debug_assert!(propagated(solver));
-        debug_assert!(solver.unassigned == 0);
-        res = 10;
+        if !aborted {
+            crate::print::verbose(solver, "set all variables to true");
+            debug_assert!(propagated(solver));
+            debug_assert!(solver.unassigned == 0);
+            res = 10;
+        }
     }
 
     if res == 0 && no_all_positive_clauses(solver) {
+        let mut aborted = false;
         for idx in 0..solver.vars {
             if !solver.flags[idx as usize].active() {
                 continue;
@@ -439,15 +489,21 @@ pub fn lucky(solver: &mut Solver) -> i32 {
                 continue;
             }
             let not_lit = crate::literal::not(lit);
+            if over_budget(solver) {
+                aborted = true; // not in kissat: SAT_LIMIT_TICKS budget spent
+                break;
+            }
             crate::decide::internal_assume(solver, not_lit);
             let c = crate::proprobe::probing_propagate(solver, INVALID_REF, true);
             debug_assert!(c.is_none());
             let _ = c;
         }
-        crate::print::verbose(solver, "set all variables to false");
-        debug_assert!(propagated(solver));
-        debug_assert!(solver.unassigned == 0);
-        res = 10;
+        if !aborted {
+            crate::print::verbose(solver, "set all variables to false");
+            debug_assert!(propagated(solver));
+            debug_assert!(solver.unassigned == 0);
+            res = 10;
+        }
     }
 
     let active_before = solver.active;

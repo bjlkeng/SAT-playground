@@ -40,6 +40,6 @@ pub fn find_equivalence_gate(solver: &mut Solver, lit: u32) -> bool {
     let watch0 = binary_watch(crate::literal::not(replace));
     solver.gates[0].push(watch0);
     solver.gate_eliminated = true; // GATE_ELIMINATED (equivalences)
-    // INC (equivalences_extracted): METRIC, compiled out.
+    solver.statistics.equivalences_extracted += 1; // INC (equivalences_extracted): METRIC, re-enabled
     true
 }

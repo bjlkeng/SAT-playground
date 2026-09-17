@@ -10,7 +10,7 @@
 //    access (identical reads/writes, same order).
 //  - Recursion depth is capped by option `minimizedepth` exactly as in C
 //    (same recursion shape).
-//  - ADD (literals_minimized, ..) is METRIC — no-op.
+//  - ADD (literals_minimized, ..) is METRIC — no-op. [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 
 use crate::internal::{Solver, DECISION_REASON, UNIT_REASON};
 use crate::literal::{self, INVALID_LIT};
@@ -200,8 +200,7 @@ pub fn minimize_clause(solver: &mut Solver) {
     solver.clause.truncate(q); // SET_END_OF_STACK (solver->clause, q)
 
     debug_assert!(!solver.probing);
-    // ADD (literals_minimized, minimized): METRIC — no-op.
-    let _ = minimized;
+    solver.statistics.literals_minimized += minimized as u64; // ADD (literals_minimized, ...): METRIC, re-enabled
 
     reset_poisoned(solver);
 

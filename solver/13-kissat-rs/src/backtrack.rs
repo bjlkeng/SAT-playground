@@ -11,7 +11,7 @@
 //    `new_level + 1` readable through the (dangling-but-valid) C pointer
 //    `new_frame` after the truncation; the port reads `new_frame.trail`
 //    before truncating.
-//  - INC (target_saved) / INC (best_saved) are METRIC counters — no-ops in
+//  - INC (target_saved) / INC (best_saved) are METRIC counters — no-ops in [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 //    the reference build.
 //  - kissat_backtrack_propagate_and_flush_trail: the NDEBUG build drops the
 //    `clause *conflict =` binding and the trailing asserts but keeps the
@@ -78,7 +78,7 @@ fn update_target_and_best_phases(solver: &mut Solver) {
         );
         solver.target_assigned = assigned;
         crate::phases::save_target_phases(solver);
-        // INC (target_saved): METRIC — no-op.
+        solver.statistics.target_saved += 1; // INC (target_saved): METRIC, re-enabled
     }
 
     if solver.best_assigned < assigned {
@@ -91,7 +91,7 @@ fn update_target_and_best_phases(solver: &mut Solver) {
         );
         solver.best_assigned = assigned;
         crate::phases::save_best_phases(solver);
-        // INC (best_saved): METRIC — no-op.
+        solver.statistics.best_saved += 1; // INC (best_saved): METRIC, re-enabled
     }
 }
 

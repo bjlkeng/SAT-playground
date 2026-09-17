@@ -4,7 +4,7 @@
 //
 // PORT NOTE: GET (forward_subsumptions) is METRIC in this build — phase
 // messages pass u64::MAX so no count is printed; INC (forward_subsumptions)
-// is a no-op.  INC (duplicated) is METRIC (no-op); forward_subsumed /
+// is a no-op.  INC (duplicated) is METRIC (no-op); forward_subsumed / [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 // forward_strengthened are STATISTIC (kept as real, never-printed fields);
 // subsumed / strengthened / subsumption_checks / forward_checks /
 // forward_steps are COUNTERs (real).
@@ -49,7 +49,7 @@ fn remove_duplicated_binaries_with_literal(solver: &mut Solver, lit: u32) -> u64
             q -= 1;
             if lit < other {
                 crate::clause::delete_binary(solver, lit, other);
-                // INC (duplicated): METRIC, compiled out.
+                solver.statistics.duplicated += 1; // INC (duplicated): METRIC, re-enabled
             }
         } else {
             let not_other = crate::literal::not(other);
@@ -463,7 +463,9 @@ fn forward_subsumed_clause(
             } else {
                 debug_assert!(non_false == 3);
                 debug_assert!(!solver.arena.clause(ref_).garbage());
-                // ADD (arena_garbage, bytes): METRIC, compiled out.
+                // ADD (arena_garbage, bytes): METRIC, re-enabled.
+                let bytes = solver.arena.clause(ref_).actual_words() as u64 * 4;
+                solver.statistics.arena_garbage = solver.statistics.arena_garbage.wrapping_add(bytes);
                 solver.arena.clause_mut(ref_).set_garbage(true); // c->garbage = true
                 let mut first = INVALID;
                 let mut second = INVALID;
@@ -751,7 +753,7 @@ pub fn forward_subsume_during_elimination(solver: &mut Solver) -> bool {
     crate::profile::start_checked(solver, Prof::subsume); // START (subsume)
     crate::profile::start_checked(solver, Prof::forward); // START (forward)
     debug_assert!(solver.options.forward != 0);
-    // INC (forward_subsumptions): METRIC, compiled out.
+    solver.statistics.forward_subsumptions += 1; // INC (forward_subsumptions): METRIC, re-enabled
     debug_assert!(!solver.watching);
     remove_all_duplicated_binary_clauses(solver);
     let mut complete = true;

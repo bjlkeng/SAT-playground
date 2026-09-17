@@ -52,6 +52,12 @@ pub struct Limits {
     pub restart: ConflictLimit,
 
     pub glue: GlueLimits,
+
+    /// Not in kissat. The work-clock limit set by `SAT_LIMIT_TICKS` (RL plan
+    /// §3.4, step A.1): the run stops with `s UNKNOWN` once
+    /// `statistics.work_clock()` (W = ticks + K_RES × eliminate_resolutions)
+    /// reaches this value. Meaningful only while `limited.ticks` is set.
+    pub ticks: u64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -94,6 +100,37 @@ pub struct GlueLimits {
 pub struct Limited {
     pub conflicts: bool,
     pub decisions: bool,
+    /// Not in kissat: `SAT_LIMIT_TICKS` is in force (see `Limits::ticks`).
+    pub ticks: bool,
+}
+
+/// Not in kissat. True once the work clock W has reached the
+/// `SAT_LIMIT_TICKS` limit (RL plan §3.4, step A.1). Polled by
+/// `terminate::terminated`, i.e. wherever kissat polls for external
+/// termination: once per search-loop iteration and inside every
+/// inprocessing effort loop, so a long pass overruns the limit by at most
+/// the work between two of its own termination checks. With the limit
+/// unset this is one bool load.
+#[inline]
+pub fn ticks_limit_hit(solver: &Solver) -> bool {
+    solver.limited.ticks && solver.statistics.work_clock() >= solver.limits.ticks
+}
+
+/// Not in kissat. Very-verbose report for a work-clock limit hit, in the
+/// style of `conflict_limit_hit` (search.rs).
+pub fn report_ticks_limit_hit(solver: &Solver) {
+    let st = &solver.statistics;
+    crate::print::very_verbose(
+        solver,
+        format_args!(
+            "work clock limit {} hit at {} (ticks {} + {} x {} eliminate resolutions)",
+            solver.limits.ticks,
+            st.work_clock(),
+            st.ticks,
+            crate::statistics::K_RES,
+            st.eliminate_resolutions
+        ),
+    );
 }
 
 /// `struct enabled`.
@@ -245,6 +282,11 @@ fn init_conflict_limit(solver: &mut Solver, name: &str, delta: u64, scale: bool)
         solver,
         &format_args!("initial {} limit of {} conflicts", name, limit),
     );
+    // Not in kissat: the RL scheduler treats the initial limit like a fire
+    // and keeps the stock delta (plan §2.4, D0).
+    if solver.policy.on {
+        crate::policy::record_limit_by_name(solver, name, solver.statistics.conflicts, scaled, false);
+    }
     limit
 }
 
@@ -425,6 +467,17 @@ macro_rules! update_conflict_limit {
                 $crate::kimits::scale_delta($solver, stringify!($name), delta)
             };
             $solver.limits.$name.conflicts = $solver.statistics.conflicts + scaled;
+            // Not in kissat: the RL scheduler keeps the stock delta of every
+            // fire (plan §2.1); `randec` is not a timer and is ignored there.
+            if $solver.policy.on {
+                $crate::policy::record_limit_by_name(
+                    $solver,
+                    stringify!($name),
+                    $solver.statistics.conflicts,
+                    scaled,
+                    true,
+                );
+            }
             let count = $solver.statistics.$count;
             let limit = $solver.limits.$name.conflicts;
             $crate::print::phase(

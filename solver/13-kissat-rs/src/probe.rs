@@ -28,7 +28,13 @@ pub fn probing(solver: &mut Solver) -> bool {
     if solver.last.conflicts.reduce == conflicts {
         return false;
     }
-    solver.limits.probe.conflicts < conflicts
+    // Not in kissat: RL scheduler chokepoint (plan §2.3, `due(probe)`).
+    let limit = if solver.policy.on {
+        crate::policy::effective_limit(solver, crate::policy::Timer::Probe)
+    } else {
+        solver.limits.probe.conflicts
+    };
+    limit < conflicts
 }
 
 // static probe (renamed, see PORT NOTES).

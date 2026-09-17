@@ -1602,6 +1602,9 @@ pub fn vivify(solver: &mut Solver) {
 
     crate::profile::start_checked(solver, Prof::vivify); // START (vivify)
     solver.statistics.vivifications += 1; // INC (vivifications)
+    // `vivifying` is a METRICS-only flag in C; re-enabled for proprobe.rs.
+    debug_assert!(!solver.vivifying);
+    solver.vivifying = true;
 
     let mut limit = crate::set_effort_limit!(solver, vivify, vivifyeffort, probing_ticks);
     let total = limit - solver.statistics.probing_ticks;
@@ -1676,5 +1679,7 @@ pub fn vivify(solver: &mut Solver) {
             ),
         );
     }
+    debug_assert!(solver.vivifying);
+    solver.vivifying = false;
     crate::profile::stop_checked(solver, Prof::vivify); // STOP (vivify)
 }

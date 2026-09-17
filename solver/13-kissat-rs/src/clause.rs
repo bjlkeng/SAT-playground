@@ -36,7 +36,7 @@
 //  - C functions taking `clause *` take a `Reference` here (the C pointer is
 //    always derived from / convertible to a reference via the arena base).
 //  - CHECK_AND_ADD_* / REMOVE_CHECKER_* are compiled out (NDEBUG build).
-//  - ADD/SUB (arena_garbage) are METRIC counters: compiled out in the
+//  - ADD/SUB (arena_garbage) are METRIC counters: compiled out in the [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 //    reference build and omitted (comments mark the spots).
 //    INC (clauses_deleted) is STATISTIC-tier: also compiled out in C, but
 //    kept as a real counter per statistics.rs policy (never printed, never
@@ -525,7 +525,9 @@ pub fn mark_clause_as_garbage(solver: &mut Solver, ref_: Reference) {
     dec_clause(solver, redundant, false);
     solver.arena.clause_mut(ref_).set_garbage(true);
     // ADD (arena_garbage, kissat_actual_bytes_of_clause (c)): METRIC,
-    // compiled out in the reference build.
+    // re-enabled (never printed); bytes = aligned words x 4 as in clause.h.
+    let bytes = solver.arena.clause(ref_).actual_words() as u64 * 4;
+    solver.statistics.arena_garbage = solver.statistics.arena_garbage.wrapping_add(bytes);
 }
 
 /// kissat_delete_clause.  C returns the `clause *` following this one; the
@@ -537,7 +539,8 @@ pub fn delete_clause(solver: &mut Solver, ref_: Reference) -> Reference {
         debug_assert!(c.garbage());
         c.actual_words()
     };
-    // SUB (arena_garbage, bytes): METRIC, compiled out.
+    // SUB (arena_garbage, bytes): METRIC, re-enabled; unsigned wrap as in C.
+    solver.statistics.arena_garbage = solver.statistics.arena_garbage.wrapping_sub(words as u64 * 4);
     solver.statistics.clauses_deleted += 1; // INC (clauses_deleted): STATISTIC
     ref_ + (words / crate::arena::WORDS_PER_WARD) as u32
 }

@@ -212,7 +212,7 @@ pub fn find_if_then_else_gate(solver: &mut Solver, lit: u32, negative: u32) -> b
             solver.gates[negative as usize].push(w2);
             solver.gates[(1 ^ negative) as usize].push(w3);
             solver.gates[(1 ^ negative) as usize].push(w4);
-            // INC (if_then_else_extracted): METRIC, compiled out.
+            solver.statistics.if_then_else_extracted += 1; // INC (if_then_else_extracted): METRIC, re-enabled
             return true;
         }
         p1 += 1;

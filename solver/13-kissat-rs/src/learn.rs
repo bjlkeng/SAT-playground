@@ -4,7 +4,7 @@
 //  - kissat_assign_reference in C receives the dereferenced clause pointer
 //    alongside the reference; the Rust assign::assign_reference re-derives
 //    the clause from the reference (crate::assign convention).
-//  - ADD (literals_learned, size) is METRIC — no-op.  UPDATE_AVERAGE (size,
+//  - ADD (literals_learned, size) is METRIC — no-op.  UPDATE_AVERAGE (size, [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 //    size) is `#ifndef QUIET` — kept.
 //  - eagerly_subsume_last_learned ports the C quirk exactly: in
 //    `if (marks[lit] && !--needed) break; else if (--remain < needed) break;`
@@ -130,7 +130,7 @@ pub fn update_learned(solver: &mut Solver, glue: u32, size: u32) {
     if solver.stable {
         crate::reluctant::tick_reluctant(&mut solver.reluctant);
     }
-    // ADD (literals_learned, size): METRIC — no-op.
+    solver.statistics.literals_learned += size as u64; // ADD (literals_learned, size): METRIC, re-enabled
     let stable = solver.stable as usize;
     // UPDATE_AVERAGE (size, size)  (#ifndef QUIET — kept):
     crate::smooth::update_smooth(&mut solver.averages[stable].size, size as f64);

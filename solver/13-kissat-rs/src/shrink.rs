@@ -14,7 +14,7 @@
 //    can push poisoned/removable entries mid-shrink; kissat_reset_poisoned
 //    at the end of kissat_shrink_clause clears the poisoned ones, matching
 //    the C lifetime.
-//  - ADD (literals_shrunken / literals_minshrunken) are METRIC — no-ops.
+//  - ADD (literals_shrunken / literals_minshrunken) are METRIC — no-ops. [2026-09-16: METRIC counters re-enabled for the RL log, never printed; see statistics.rs]
 
 use crate::internal::{Solver, DECISION_REASON, INVALID_LEVEL};
 use crate::literal::{self, INVALID_LIT};
@@ -356,9 +356,9 @@ pub fn shrink_clause(solver: &mut Solver) {
     debug_assert!(q + total_shrunken as usize == end_lits);
     solver.clause.truncate(q); // SET_END_OF_STACK (solver->clause, q)
 
-    // ADD (literals_shrunken, total_shrunken): METRIC — no-op.
-    // ADD (literals_minshrunken, total_minimized): METRIC — no-op.
-    let _ = total_minimized;
+    // METRIC, re-enabled (never printed):
+    solver.statistics.literals_shrunken += total_shrunken as u64; // ADD (literals_shrunken, ...)
+    solver.statistics.literals_minshrunken += total_minimized as u64; // ADD (literals_minshrunken, ...)
 
     crate::minimize::reset_poisoned(solver);
 

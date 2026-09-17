@@ -267,6 +267,8 @@ struct App {
     time: i32,
     conflicts: i32,
     decisions: i32,
+    /// Not in kissat: the `SAT_LIMIT_TICKS` work-clock limit, if set.
+    ticks: Option<u64>,
     strict: Strictness,
     partial: bool,
     witness: bool,
@@ -284,6 +286,7 @@ fn init_app() -> App {
         time: 0,
         conflicts: -1,
         decisions: -1,
+        ticks: None,
         strict: NORMAL_PARSING,
         partial: false,
         witness: true,
@@ -879,15 +882,39 @@ fn print_options(solver: &mut Solver) {
     }
 }
 
+// Not in kissat. `SAT_LIMIT_TICKS=<n>` limits the work clock W = ticks +
+// K_RES x eliminate_resolutions (RL plan §3.4, step A.1). It is read from the
+// environment so the competition wrapper, the harness and the RL collector
+// set it without a command-line change; unset or empty means no limit.
+// Returns Err(text) for a value that is not a non-negative integer.
+fn ticks_limit_from_env() -> Result<Option<u64>, String> {
+    match std::env::var("SAT_LIMIT_TICKS") {
+        Err(_) => Ok(None),
+        Ok(value) => {
+            let value = value.trim();
+            if value.is_empty() {
+                return Ok(None);
+            }
+            match value.parse::<u64>() {
+                Ok(limit) => Ok(Some(limit)),
+                Err(_) => Err(format!(
+                    "invalid SAT_LIMIT_TICKS value '{}' (expected a non-negative integer)",
+                    value
+                )),
+            }
+        }
+    }
+}
+
 // static void print_limits (application *)
 fn print_limits(solver: &mut Solver, app: &App) {
     let verbosity = crate::print::verbosity(solver);
-    if verbosity < 1 && app.conflicts < 0 && app.decisions < 0 {
+    if verbosity < 1 && app.conflicts < 0 && app.decisions < 0 && app.ticks.is_none() {
         return;
     }
 
     crate::print::section(solver, "limits");
-    if app.time == 0 && app.conflicts < 0 && app.decisions < 0 {
+    if app.time == 0 && app.conflicts < 0 && app.decisions < 0 && app.ticks.is_none() {
         crate::print::message(solver, "no time, conflict nor decision limit set");
     } else {
         if app.time != 0 {
@@ -916,6 +943,19 @@ fn print_limits(solver: &mut Solver, app: &App) {
         } else if verbosity > 0 {
             crate::print::message(solver, "no decision limit");
         }
+
+        // Not in kissat (SAT_LIMIT_TICKS); printed only when set, so the
+        // output is unchanged otherwise.
+        if let Some(ticks) = app.ticks {
+            crate::print::message(
+                solver,
+                format!(
+                    "work clock limit set to {} (ticks + {} x eliminate resolutions)",
+                    ticks,
+                    crate::statistics::K_RES
+                ),
+            );
+        }
     }
 }
 
@@ -933,6 +973,23 @@ fn run_application(solver: &mut Solver, args: &[String], cancel_alarm_ptr: &mut 
     if !ok {
         return 1;
     }
+    // Not in kissat: the work-clock limit from the environment (step A.1).
+    match ticks_limit_from_env() {
+        Ok(None) => {}
+        Ok(Some(limit)) => {
+            crate::internal::set_ticks_limit(solver, limit);
+            app.ticks = Some(limit);
+        }
+        Err(text) => {
+            crate::error::error(format_args!("{}", text));
+            return 1;
+        }
+    }
+    // Not in kissat: the RL scheduler configuration (SAT_POLICY*, step A.2).
+    if let Err(text) = crate::policy::init_from_env(solver) {
+        crate::error::error(format_args!("{}", text));
+        return 1;
+    }
     // #ifndef QUIET — kept:
     crate::print::section(solver, "banner");
     if solver.options.quiet == 0 {
@@ -948,6 +1005,7 @@ fn run_application(solver: &mut Solver, args: &[String], cancel_alarm_ptr: &mut 
     }
     print_options(solver);
     print_limits(solver, &app);
+    crate::policy::print_configuration(solver); // not in kissat; silent when off
     crate::print::section(solver, "solving");
     let res = crate::internal::solve(solver);
     close_proof(solver, &mut app);
