@@ -804,8 +804,10 @@ Additive and off by default; policy-off stays at exact parity.
    `SAT_POLICY_BRANCH_ACTIONS`, `SAT_POLICY_DELAYS`, `SAT_POLICY_HORIZON`,
    `SAT_WALL_LIMIT`, `SAT_LIMIT_TICKS`. `run.sh` forwards the environment
    already. (No hold-length variable: the decision epoch is the segment,
-   §6.3. The first six and `SAT_LIMIT_TICKS` exist since step A,
-   2026-09-16; the solver README has the table.)
+   §6.3. All of these except `SAT_POLICY_DELAYS` (stage 2) exist since
+   step A, 2026-09-16/17, plus `SAT_POLICY_BRANCH_JOBS` for the fork
+   semaphore; fork mode also requires `SAT_LIMIT_TICKS`. The solver
+   README has the table and recipes.)
 6b. **`SAT_LIMIT_TICKS`** (new; the solver has only `--conflicts` and
    `--decisions`): a `limited.ticks` alongside them, checked where the
    conflict limit is and inside the inprocessing effort loops,

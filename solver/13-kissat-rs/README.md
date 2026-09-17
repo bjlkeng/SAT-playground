@@ -473,6 +473,31 @@ Environment (read by the binary itself, so `run.sh`, the harness and
   (`e9d29932e2ccd509` before the review and four more in between). Logs:
   `log/rl-stepA/parity20-{off,stock-log,net}-2026-09-17.log` (before the
   review) and `parity20-final-{off,stock-log,net}-2026-09-17.log`.
+- **Overhead check (A.11, 2026-09-17).** What the plumbing costs when it
+  does nothing: two arms on the 100 cells of `sat-comp-2025-medium`,
+  1800 s, 16 GB, 32 pinned cores (16 + 16), no proofs, frozen copy of the
+  committed binary (`305c22188e38d5dc`), launched by
+  `tools/rl_stepA_overhead.sh` on an otherwise idle host (13:05 to 14:43):
+  `base` (policy off) against `policylog` (`SAT_POLICY=stock`, a raw-state
+  log per cell into the run's scratch, so the static pass, `observe()` at
+  every observation epoch and the 981-column rows all ran, plus
+  `SAT_WALL_LIMIT=1800` for the wall horizon). Run dir
+  `log/abtest-rl-stepA11-overhead-2026-09-17-13-05-09` (per-arm
+  `results.tsv`, `report.txt` from `tools/rl_stepA_overhead_report.py`).
+  Both arms solved 72/100 with the same 300,310,928 conflicts on their
+  solved cells, no contradiction and no cell that flipped between solved
+  and timeout. The work clock W is identical on all 72 cells both arms
+  solved (the parity claim, now on the whole medium suite); on the 28
+  cells neither solved the W reached before the kill is 0.997x
+  (wall-dependent). Wall: PAR-2 126,370 v 126,308 (1.0005x); the per-cell
+  ratio policylog / base over the 72 both-solved cells has geomean 0.993,
+  median 1.000, and 0.999 over the 46 cells base took at least 60 s; the
+  extremes (0.65 and 1.18) are sub-second cells. That is inside the +-2 %
+  run-to-run wall noise the 2026-09-15 A/A run showed, so logging,
+  observation and the static pass cost nothing measurable and no
+  profiling bead is opened. The row width (7.8 KB every 2^23 search
+  ticks) is what the collector will pay in disk: about 60 MB per 1800 s
+  trace.
 - `tools/parity.py --solver-env KEY=VALUE` (repeatable) sets environment
   for the solver-13 run only, e.g. `--solver-env SAT_POLICY=stock` for the
   policy-on-STOCK check; kissat never sees it.
