@@ -157,6 +157,10 @@ pub const SOLVER_ENV_VARS: &[&str] = &[
     "SAT_POLICY_MARGIN",
     "SAT_POLICY_HORIZON",
     "SAT_WALL_LIMIT",
+    "SAT_POLICY_BRANCH",
+    "SAT_POLICY_BRANCH_ACTIONS",
+    "SAT_POLICY_BRANCH_JOBS",
+    "SAT_POLICY_LOG_RESERVED",
 ];
 
 /// Run the binary with `-n -s`, the given extra kissat options and the given

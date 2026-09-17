@@ -345,6 +345,10 @@ fn compute_backbone(solver: &mut Solver) -> u32 {
                 solver,
                 format_args!("backbone ticks limit {} hit after {} ticks", ticks_limit, ticks),
             );
+            // Not in kissat: the RL static block's budget-hit flag.
+            if solver.policy.on {
+                crate::policy_static::note_backbone_budget_hit(solver);
+            }
             break;
         }
         let previous = failed;
@@ -388,6 +392,10 @@ fn compute_backbone(solver: &mut Solver) -> u32 {
                     continue;
                 }
                 if solver.statistics.backbone_ticks > ticks_limit {
+                    // Not in kissat: the RL static block's budget-hit flag.
+                    if solver.policy.on {
+                        crate::policy_static::note_backbone_budget_hit(solver);
+                    }
                     break;
                 }
                 if terminated!(solver, backbone_terminated_2) {

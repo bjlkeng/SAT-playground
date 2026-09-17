@@ -173,6 +173,9 @@ fn signal_handler(sig: i32) {
         // hold (a blocked model write), so they can fail; the log must be
         // sealed before anything that can.
         crate::policy::finish_log(solver, 0, "signal");
+        // Not in kissat: a parent in fork mode takes its live children
+        // with it (kill(2) is async-signal-safe; nothing is waited for).
+        crate::policy_fork::kill_children(solver);
         crate::print::signal_msg(solver, "caught", sig, signal_name(sig));
         crate::internal::print_statistics(solver);
         crate::print::signal_msg(solver, "raising", sig, signal_name(sig));
@@ -212,6 +215,9 @@ extern "C" fn catch_alarm(sig: i32) {
     if !ptr.is_null() {
         let solver = unsafe { &mut *ptr };
         crate::internal::terminate(solver);
+        // Not in kissat: a parent in fork mode stops its live children too
+        // (they inherit no alarm); kill(2) is async-signal-safe.
+        crate::policy_fork::kill_children(solver);
     }
 }
 
@@ -1089,6 +1095,8 @@ fn run_application(solver: &mut Solver, args: &[String], cancel_alarm_ptr: &mut 
     // so a signal during output still ends the log as "signal", never as a
     // successful record of an incomplete run.
     crate::policy::finish_log(solver, res, "solve");
+    crate::policy_fork::wait_children(solver); // not in kissat; silent unless children were forked
+    crate::policy::print_summary(solver); // not in kissat; silent unless a net ran
     crate::internal::print_statistics(solver);
     // #ifndef QUIET — kept:
     crate::print::section(solver, "shutting down");

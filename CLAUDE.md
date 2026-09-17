@@ -38,11 +38,14 @@ work is **solver 13** and the RL scheduler on top of it.
   small CPU MLP consulted every X search ticks. Every mechanism stays
   byte-identical; train offline from logged and fork-branched trajectories
   first. §10 is the work order, §8 the evaluation discipline, §11-15 the
-  decision log and review passes. Read it before touching
-  `src/policy.rs` (created in step A, 2026-09-16: tick limit, epoch clock,
-  stage-1 chokepoints, random modes, counter audit, and the raw-state
-  logger in `src/policy_log.rs`; the solver README lists what is done and
-  what is still open in that step).
+  decision log and review passes. Read it before touching the policy
+  modules (step A, 2026-09-16/17): `src/policy.rs` (tick limit, epoch
+  clock, stage-1 chokepoints, random modes, counter audit),
+  `src/policy_log.rs` (raw-state logger), `src/policy_static.rs` (static
+  features), `src/policy_obs.rs` (the observation vector),
+  `src/policy_net.rs` (weights file, forward pass, margin) and
+  `src/policy_fork.rs` (fork mode). The solver README has the environment
+  table, recipes and what each step measured.
 
 ## Build, run, test
 

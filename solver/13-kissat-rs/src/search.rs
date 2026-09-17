@@ -257,6 +257,11 @@ pub fn search(solver: &mut Solver) -> i32 {
     }
     if res == 0 {
         crate::classify::classify(solver);
+        // Not in kissat: the RL scheduler's static features, one pass over
+        // the preprocessed formula (plan §3.6, step A.7); wall only.
+        if solver.policy.on {
+            crate::policy_static::compute(solver);
+        }
     }
     if res == 0 && searching(solver) {
         start_search(solver);

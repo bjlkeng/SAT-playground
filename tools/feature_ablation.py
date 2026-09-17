@@ -875,6 +875,11 @@ def _solve_one(core: int, solver_dir: str, env_extra: dict, cnf_path: Path, odir
     when the answer will be checked, the proof file `<odir>/proof.out` (a proof costs time and disk).
     """
     odir.mkdir(parents=True, exist_ok=True)
+    # `{odir}` in an arm's value is this run's scratch directory, so a per-run
+    # file such as the RL policy log (SAT_POLICY_LOG={odir}/policy.log, plan
+    # step A.11) gets its own path per cell; the scratch is deleted after the
+    # run, so this is for arms that need the file written, not kept.
+    env_extra = {k: v.replace("{odir}", str(odir)) for k, v in env_extra.items()}
     env = {**os.environ, **env_extra, "SAT_SEED": str(seed), "SAT_STATS_JSON": "on"}
     binary = ROOT / solver_dir / "target/release/sat-solver"
     if kissat_cli(solver_dir):

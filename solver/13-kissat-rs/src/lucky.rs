@@ -17,6 +17,7 @@
 //    wraps the assert; the propagate call itself is unconditional.
 
 use crate::internal::Solver;
+use crate::policy_static::LuckyPattern;
 use crate::profile::Prof;
 use crate::reference::{Reference, INVALID_REF};
 
@@ -195,6 +196,10 @@ fn forward_false_satisfiable(solver: &mut Solver) -> i32 {
                     conflicts, solver.level
                 ),
             );
+            if solver.policy.on {
+                // Not in kissat: the RL static block's lucky outcome.
+                crate::policy_static::note_lucky(solver, LuckyPattern::ForwardFalse, 1, solver.level, conflicts);
+            }
             crate::backtrack::backtrack_without_updating_phases(solver, 0);
             return 0;
         } else {
@@ -208,11 +213,17 @@ fn forward_false_satisfiable(solver: &mut Solver) -> i32 {
                     solver,
                     "lucky inconsistency forward assigning to false",
                 );
+                if solver.policy.on {
+                    crate::policy_static::note_lucky(solver, LuckyPattern::ForwardFalse, 3, 0, conflicts);
+                }
                 return 20;
             }
         }
     }
 
+    if solver.policy.on {
+        crate::policy_static::note_lucky(solver, LuckyPattern::ForwardFalse, 2, solver.level, conflicts);
+    }
     crate::print::message(solver, "lucky in forward setting literals to false");
     10
 }
@@ -264,6 +275,9 @@ fn forward_true_satisfiable(solver: &mut Solver) -> i32 {
                     conflicts, solver.level
                 ),
             );
+            if solver.policy.on {
+                crate::policy_static::note_lucky(solver, LuckyPattern::ForwardTrue, 1, solver.level, conflicts);
+            }
             crate::backtrack::backtrack_without_updating_phases(solver, 0);
             return 0;
         } else {
@@ -277,9 +291,15 @@ fn forward_true_satisfiable(solver: &mut Solver) -> i32 {
                     solver,
                     "lucky inconsistency forward assigning to true",
                 );
+                if solver.policy.on {
+                    crate::policy_static::note_lucky(solver, LuckyPattern::ForwardTrue, 3, 0, conflicts);
+                }
                 return 20;
             }
         }
+    }
+    if solver.policy.on {
+        crate::policy_static::note_lucky(solver, LuckyPattern::ForwardTrue, 2, solver.level, conflicts);
     }
     crate::print::message(solver, "lucky in forward setting literals to true");
     10
@@ -333,6 +353,9 @@ fn backward_false_satisfiable(solver: &mut Solver) -> i32 {
                     conflicts, solver.level
                 ),
             );
+            if solver.policy.on {
+                crate::policy_static::note_lucky(solver, LuckyPattern::BackwardFalse, 1, solver.level, conflicts);
+            }
             crate::backtrack::backtrack_without_updating_phases(solver, 0);
             return 0;
         } else {
@@ -346,9 +369,15 @@ fn backward_false_satisfiable(solver: &mut Solver) -> i32 {
                     solver,
                     "lucky inconsistency backward assigning to false",
                 );
+                if solver.policy.on {
+                    crate::policy_static::note_lucky(solver, LuckyPattern::BackwardFalse, 3, 0, conflicts);
+                }
                 return 20;
             }
         }
+    }
+    if solver.policy.on {
+        crate::policy_static::note_lucky(solver, LuckyPattern::BackwardFalse, 2, solver.level, conflicts);
     }
     crate::print::message(solver, "lucky in backward setting literals to false");
     10
@@ -401,6 +430,9 @@ fn backward_true_satisfiable(solver: &mut Solver) -> i32 {
                     conflicts, solver.level
                 ),
             );
+            if solver.policy.on {
+                crate::policy_static::note_lucky(solver, LuckyPattern::BackwardTrue, 1, solver.level, conflicts);
+            }
             crate::backtrack::backtrack_without_updating_phases(solver, 0);
             return 0;
         } else {
@@ -414,9 +446,15 @@ fn backward_true_satisfiable(solver: &mut Solver) -> i32 {
                     solver,
                     "lucky inconsistency backward assigning to true",
                 );
+                if solver.policy.on {
+                    crate::policy_static::note_lucky(solver, LuckyPattern::BackwardTrue, 3, 0, conflicts);
+                }
                 return 20;
             }
         }
+    }
+    if solver.policy.on {
+        crate::policy_static::note_lucky(solver, LuckyPattern::BackwardTrue, 2, solver.level, conflicts);
     }
     crate::print::message(solver, "lucky in backward setting literals to true");
     10
@@ -444,6 +482,10 @@ pub fn lucky(solver: &mut Solver) -> i32 {
     }
 
     crate::profile::start_checked(solver, Prof::lucky); // START (lucky)
+    // Not in kissat: the RL static block counts lucky passes.
+    if solver.policy.on {
+        crate::policy_static::note_lucky_run(solver);
+    }
     debug_assert!(solver.level == 0);
     debug_assert!(!solver.probing);
     solver.probing = true;
@@ -474,6 +516,10 @@ pub fn lucky(solver: &mut Solver) -> i32 {
             crate::print::verbose(solver, "set all variables to true");
             debug_assert!(propagated(solver));
             debug_assert!(solver.unassigned == 0);
+            if solver.policy.on {
+                // Not in kissat: the RL static block's lucky outcome.
+                crate::policy_static::note_lucky(solver, LuckyPattern::AllTrue, 2, solver.level, 0);
+            }
             res = 10;
         }
     }
@@ -502,6 +548,9 @@ pub fn lucky(solver: &mut Solver) -> i32 {
             crate::print::verbose(solver, "set all variables to false");
             debug_assert!(propagated(solver));
             debug_assert!(solver.unassigned == 0);
+            if solver.policy.on {
+                crate::policy_static::note_lucky(solver, LuckyPattern::AllFalse, 2, solver.level, 0);
+            }
             res = 10;
         }
     }

@@ -191,6 +191,9 @@ pub enum Mode {
     Random,
     /// Near-stock jitter: resample every decision (plan §5.3 flavour 3).
     Jitter,
+    /// A weights file (policy_net.rs): the learned policy with the margin
+    /// over stock.
+    Net,
 }
 
 impl Mode {
@@ -199,6 +202,7 @@ impl Mode {
             Mode::Stock => "stock",
             Mode::Random => "random",
             Mode::Jitter => "jitter",
+            Mode::Net => "net",
         }
     }
 }
@@ -251,10 +255,35 @@ pub struct Policy {
     pub log: Option<Box<crate::policy_log::Logger>>,
     /// The input path, for the log header.
     pub cnf_path: String,
-    /// The static features as a JSON object text (step A.7), written into
-    /// the log footer; "{}" until computed. Preformatted on the normal path
-    /// so the footer needs no allocation.
+    /// The actor-tier static features (policy_static.rs, step A.7),
+    /// computed once after preprocessing and `classify()`; `computed` is
+    /// false until then.
+    pub static_: crate::policy_static::StaticFeatures,
+    /// The same as a JSON object text, written into the log footer; "{}"
+    /// until computed. Preformatted on the normal path so the footer
+    /// needs no allocation.
     pub static_json: String,
+    /// Pure accumulators fed by the passes (lucky outcomes, warmup, budget
+    /// hits, SCC sizes) for the static block.
+    pub notes: crate::policy_static::Notes,
+    /// The observation state (policy_obs.rs, step A.9): snapshot ring,
+    /// per-pass recency, the last vector.
+    pub obs_state: crate::policy_obs::ObsState,
+    /// How the horizon feature is computed (`SAT_POLICY_HORIZON`,
+    /// `SAT_LIMIT_TICKS`, `SAT_WALL_LIMIT`).
+    pub horizon: crate::policy_obs::Horizon,
+    /// Monotonic clock reading when the policy was configured (before
+    /// parsing); the log's `wall_ns` and the wall horizon count from it.
+    pub wall0: u64,
+    /// The learned policy (`SAT_POLICY=<file>`, policy_net.rs) and its
+    /// margin over stock (`SAT_POLICY_MARGIN`, log-odds; infinite = stock).
+    pub net: Option<Box<crate::policy_net::Net>>,
+    pub margin: f64,
+    /// Net-mode decisions whose masked action was not stock.
+    pub net_deviations: u64,
+    /// Fork mode (policy_fork.rs, step A.8): the branch schedule, live
+    /// children, and a child's own identity.
+    pub branching: crate::policy_fork::Branching,
     /// Per-epoch learned-clause quality, fed by `note_learned` and reset
     /// after every log row: glue histogram, count, summed size and glue.
     pub epoch_glue: [u64; GLUE_BINS],
@@ -285,7 +314,16 @@ impl Default for Policy {
             segment_act: STOCK,
             log: None,
             cnf_path: String::new(),
+            static_: crate::policy_static::StaticFeatures::default(),
             static_json: String::from("{}"),
+            notes: crate::policy_static::Notes::default(),
+            obs_state: crate::policy_obs::ObsState::default(),
+            horizon: crate::policy_obs::Horizon::None,
+            wall0: 0,
+            net: None,
+            margin: 1.0,
+            net_deviations: 0,
+            branching: crate::policy_fork::Branching::default(),
             epoch_glue: [0; GLUE_BINS],
             epoch_learned: 0,
             epoch_learned_size: 0,
@@ -312,6 +350,7 @@ fn env_nonempty(name: &str) -> Option<String> {
 /// proof, a `-o` output), which the log may not alias.
 pub fn init_from_env(solver: &mut Solver, taken: &[(&str, &str)]) -> Result<(), String> {
     let mut p = Policy::default();
+    p.wall0 = crate::policy_log::wall_ns();
     let log_path = env_nonempty("SAT_POLICY_LOG");
     let mode = match env_nonempty("SAT_POLICY") {
         // A log alone means "stock trace with logging" (plan §5.2).
@@ -322,32 +361,62 @@ pub fn init_from_env(solver: &mut Solver, taken: &[(&str, &str)]) -> Result<(), 
         }
         Some(m) => m,
     };
-    if let Some(path) = &log_path {
-        // SAT_POLICY_LOG_RESERVED: extra files the log may not alias, one
-        // per line, set by run.sh for its capture and result files and the
-        // targets of its own redirected stdout/stderr, which this process
-        // cannot see behind the wrapper's pipe. Same rules as the rest.
-        let reserved = std::env::var("SAT_POLICY_LOG_RESERVED").unwrap_or_default();
-        let mut all: Vec<(&str, &str)> = taken.to_vec();
-        for line in reserved.lines() {
-            let line = line.trim();
-            if !line.is_empty() {
-                all.push(("wrapper-reserved", line));
+    // The mode first: a weights file is one more file the log (and the
+    // fork children's files) may not alias, and it must be reserved before
+    // the log is created, or the log would truncate the model.
+    let weights: Option<String> = match mode.as_str() {
+        "stock" | "random" | "jitter" => None,
+        path => {
+            // Anything else names a weights file; a name that is not a
+            // file is the usual typo and gets the usual message.
+            if !std::path::Path::new(path).is_file() {
+                return Err(format!(
+                    "SAT_POLICY='{}': expected stock, random, jitter or the path of a weights file",
+                    path
+                ));
             }
-        }
-        p.log = Some(Box::new(crate::policy_log::Logger::open(path, &all)?));
-    }
-    p.mode = match mode.as_str() {
-        "stock" => Mode::Stock,
-        "random" => Mode::Random,
-        "jitter" => Mode::Jitter,
-        other => {
-            return Err(format!(
-                "SAT_POLICY='{}': expected stock, random or jitter (a weights file is plan step A.10)",
-                other
-            ))
+            Some(path.to_string())
         }
     };
+    // Every file this run owns or reads, which the log and the fork
+    // children's files may not alias: the CNF, the proof, a `-o` output,
+    // the weights file, and SAT_POLICY_LOG_RESERVED (extra files, one per
+    // line, set by run.sh for its capture and result files and the
+    // targets of its own redirected stdout/stderr, which this process
+    // cannot see behind the wrapper's pipe).
+    let reserved_env = std::env::var("SAT_POLICY_LOG_RESERVED").unwrap_or_default();
+    let mut all: Vec<(&str, &str)> = taken.to_vec();
+    if let Some(w) = &weights {
+        all.push(("weights", w.as_str()));
+    }
+    for line in reserved_env.lines() {
+        let line = line.trim();
+        if !line.is_empty() {
+            all.push(("wrapper-reserved", line));
+        }
+    }
+    if let Some(path) = &log_path {
+        p.log = Some(Box::new(crate::policy_log::Logger::open(path, &all, p.wall0)?));
+    }
+    p.mode = match (mode.as_str(), &weights) {
+        ("stock", _) => Mode::Stock,
+        ("random", _) => Mode::Random,
+        ("jitter", _) => Mode::Jitter,
+        (_, Some(w)) => {
+            p.net = Some(Box::new(crate::policy_net::load(w)?));
+            Mode::Net
+        }
+        (_, None) => unreachable!("a mode is a name or a weights file"),
+    };
+    if let Some(v) = env_nonempty("SAT_POLICY_MARGIN") {
+        p.margin = crate::policy_net::parse_margin(&v)?;
+    }
+    // Fork mode (step A.8): needs the log, refuses a proof or output file;
+    // the children's files may alias none of the files above nor the log.
+    if let Some(path) = &log_path {
+        all.push(("log", path.as_str()));
+    }
+    crate::policy_fork::init_from_env(&mut p, &all, solver.limited.ticks)?;
     if let Some(v) = env_nonempty("SAT_POLICY_EPOCH_TICKS") {
         let mut it = v.split(',');
         let xo = it
@@ -396,6 +465,32 @@ pub fn init_from_env(solver: &mut Solver, taken: &[(&str, &str)]) -> Result<(), 
             .filter(|m| m.is_finite() && *m >= 1.0)
             .ok_or_else(|| format!("SAT_POLICY_SEGMENT='{}': expected a number >= 1", v))?;
     }
+    // The horizon (plan §3.4): an explicit tick budget wins, then a tick
+    // limit, then a wall limit, else the feature is absent.
+    let wall_limit = match env_nonempty("SAT_WALL_LIMIT") {
+        None => None,
+        Some(v) => Some(
+            v.parse::<f64>()
+                .ok()
+                .filter(|s| s.is_finite() && *s > 0.0)
+                .ok_or_else(|| format!("SAT_WALL_LIMIT='{}': expected a positive number of seconds", v))?,
+        ),
+    };
+    p.horizon = match env_nonempty("SAT_POLICY_HORIZON") {
+        Some(v) => {
+            let b = v
+                .strip_prefix("ticks:")
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .filter(|&b| b >= 1)
+                .ok_or_else(|| format!("SAT_POLICY_HORIZON='{}': expected ticks:<B> with B >= 1", v))?;
+            crate::policy_obs::Horizon::Ticks(b)
+        }
+        None if solver.limited.ticks => crate::policy_obs::Horizon::Limit(solver.limits.ticks),
+        None => match wall_limit {
+            Some(s) => crate::policy_obs::Horizon::Wall(s),
+            None => crate::policy_obs::Horizon::None,
+        },
+    };
     p.rng = p.seed;
     p.on = true;
     solver.policy = p;
@@ -413,8 +508,18 @@ pub fn print_configuration(solver: &mut Solver) {
         Mode::Stock => "stock action every epoch",
         Mode::Random => "segmented sticky random actions",
         Mode::Jitter => "per-decision jitter",
+        Mode::Net => "learned policy from a weights file",
     };
     crate::print::message(solver, format!("policy mode: {}", mode));
+    if let Some(net) = &solver.policy.net {
+        crate::print::message(
+            solver,
+            format!(
+                "policy net: {} ({} inputs, hidden {} x {}, margin {})",
+                net.path, net.n_in, net.h1, net.h2, solver.policy.margin
+            ),
+        );
+    }
     crate::print::message(
         solver,
         format!(
@@ -424,6 +529,21 @@ pub fn print_configuration(solver: &mut Solver) {
     );
     if let Some(log) = &solver.policy.log {
         crate::print::message(solver, format!("policy log: {}", log.path()));
+    }
+    let horizon = match solver.policy.horizon {
+        crate::policy_obs::Horizon::None => "none (no budget known)".to_string(),
+        crate::policy_obs::Horizon::Ticks(b) => format!("work over {} (SAT_POLICY_HORIZON)", b),
+        crate::policy_obs::Horizon::Limit(b) => format!("work over the tick limit {} (SAT_LIMIT_TICKS)", b),
+        crate::policy_obs::Horizon::Wall(s) => format!("wall over {} seconds (SAT_WALL_LIMIT)", s),
+    };
+    crate::print::message(solver, format!("policy horizon: {}", horizon));
+    let b = &solver.policy.branching;
+    if !b.schedule.is_empty() {
+        let points: Vec<String> = b.schedule.iter().map(|bp| format!("{}:{}", bp.decision, bp.knob.name())).collect();
+        crate::print::message(
+            solver,
+            format!("policy branch: {} points ({}), at most {} live children", b.schedule.len(), points.join(","), b.jobs),
+        );
     }
     if solver.policy.mode != Mode::Stock {
         crate::print::message(
@@ -527,6 +647,16 @@ pub fn note_learned(solver: &mut Solver, glue: u32, size: u32) {
     p.epoch_learned_glue += glue as u64;
 }
 
+/// Zero the per-epoch learned-clause histogram and sums (fed by
+/// `note_learned`); called at every observation boundary.
+pub fn reset_epoch_accumulators(solver: &mut Solver) {
+    let p = &mut solver.policy;
+    p.epoch_glue = [0; GLUE_BINS];
+    p.epoch_learned = 0;
+    p.epoch_learned_size = 0;
+    p.epoch_learned_glue = 0;
+}
+
 /// Write the log header now (after the options and input path are known,
 /// before parsing), so a kill at any later point still yields a complete
 /// file; a no-op without a log.
@@ -534,6 +664,24 @@ pub fn prepare_log(solver: &mut Solver) {
     if solver.policy.log.is_some() {
         crate::policy_log::prepare(solver);
     }
+}
+
+/// The one-line summary of a net-mode run, printed before the statistics
+/// (nothing in the other modes, so their output is unchanged).
+pub fn print_summary(solver: &Solver) {
+    if !solver.policy.on || solver.policy.mode != Mode::Net {
+        return;
+    }
+    let p = &solver.policy;
+    crate::print::message(
+        solver,
+        format!(
+            "policy net: {} decisions, {} not stock ({:.1}%)",
+            p.decisions,
+            p.net_deviations,
+            crate::utilities::percent(p.net_deviations as f64, p.decisions as f64)
+        ),
+    );
 }
 
 /// Close the log (final row, footer); safe to call more than once and
@@ -684,6 +832,15 @@ fn choose(solver: &mut Solver) -> Action {
     let p = &mut solver.policy;
     match p.mode {
         Mode::Stock => STOCK,
+        Mode::Net => {
+            // The observation for this boundary is fresh (epoch builds it
+            // before deciding); the net scores every head and the margin
+            // decides whether an entry beats stock (plan §6.4).
+            let Some(net) = p.net.as_mut() else { return STOCK };
+            net.forward(&p.obs_state.obs);
+            let choice = net.choose(p.margin);
+            crate::policy_net::action_from_choice(&choice)
+        }
         Mode::Jitter => sample_action(&mut p.rng, p.temp),
         Mode::Random => {
             if p.segment_left == 0 {
@@ -724,8 +881,30 @@ pub fn epoch_due(solver: &Solver) -> bool {
 /// up.
 pub fn epoch(solver: &mut Solver) {
     let ticks = solver.statistics.search_ticks;
-    log_row(solver);
-    solver.policy.obs_epochs += 1;
+    // Recency first (passes that ran since the last boundary), then the
+    // observation for this boundary, then the row that records both, then
+    // this boundary's snapshot; the decision below reads the observation.
+    let epoch = solver.policy.obs_epochs;
+    {
+        // The whole boundary update is one unit with respect to the
+        // handled signals: a handler that ran between the row and the
+        // snapshot or the reset would write a terminal row from the old
+        // history with this epoch's learned clauses counted twice (Codex
+        // review round 3, 2026-09-17). The row writer's own guard nests
+        // inside this one.
+        let _guard = crate::policy_log::SignalGuard::block();
+        crate::policy_obs::update_recency(solver, epoch);
+        let wall = crate::policy_log::wall_ns().saturating_sub(solver.policy.wall0);
+        crate::policy_obs::observe(solver, wall);
+        log_row(solver);
+        crate::policy_obs::push_snapshot(solver);
+        // The per-epoch learned-clause accumulators start fresh at every
+        // boundary, whether or not a row was written: the observation
+        // reads them, so a reset tied to logging would make logging change
+        // a net's decisions (Codex review round 1, 2026-09-17).
+        reset_epoch_accumulators(solver);
+        solver.policy.obs_epochs += 1;
+    }
     while solver.policy.next_obs <= ticks {
         solver.policy.next_obs = solver.policy.next_obs.saturating_add(solver.policy.obs_ticks);
     }
@@ -748,8 +927,15 @@ pub fn decide(solver: &mut Solver) {
     solver.policy.act = act;
     solver.policy.decided = act;
     solver.policy.decisions += 1;
+    if solver.policy.mode == Mode::Net && act != STOCK {
+        solver.policy.net_deviations += 1;
+    }
     if crate::print::verbosity(solver) >= 2 {
         report_decision(solver);
+    }
+    // Fork mode: the children of a branch point at this decision.
+    if !solver.policy.branching.schedule.is_empty() {
+        crate::policy_fork::maybe_branch(solver);
     }
 }
 

@@ -55,6 +55,11 @@ pub fn warmup(solver: &mut Solver) {
             ),
         );
     }
+    // Not in kissat: the RL static block notes the assigned fraction and
+    // level the warm-up reached (policy_static.rs); a pure read.
+    if solver.policy.on {
+        crate::policy_static::note_warmup(solver);
+    }
     crate::backtrack::backtrack_without_updating_phases(solver, 0);
     debug_assert!(solver.warming);
     solver.warming = false;

@@ -1757,6 +1757,10 @@ pub fn sweep(solver: &mut Solver) -> bool {
             break;
         }
         if solver.statistics.kitten_ticks > sweeper.limit.ticks {
+            // Not in kissat: the RL static block's budget-hit flag.
+            if solver.policy.on {
+                crate::policy_static::note_sweep_budget_hit(solver);
+            }
             break;
         }
         let idx = next_scheduled(&mut sweeper);

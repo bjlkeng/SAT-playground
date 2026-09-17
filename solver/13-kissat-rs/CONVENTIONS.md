@@ -122,6 +122,24 @@ touches the policy or a counter it logs:
   does. Counters are declared once, in `statistics_fields!`.
 - **`K_RES` lives in `src/statistics.rs` only.** The harness reads it back
   from the `c workclock` line; nothing else hard-codes it.
+- **Static features and hooks are pure too** (`src/policy_static.rs`,
+  `src/policy_obs.rs`). The one-pass feature computation reads the arena
+  and watch lists and writes only `solver.policy`; its BFS sample draws
+  from its own generator. A hook inside a pass (lucky, warmup, backbone,
+  sweep, substitute) is a two-line `if solver.policy.on` branch that
+  records a value into `policy.notes` and nothing else.
+- **Fork mode never touches the parent's files from the child**
+  (`src/policy_fork.rs`). Flush stdout, stderr and the log before every
+  `fork()`; in the child redirect the streams first, forget the parent's
+  log handle (its file offset is shared), open the child's own log with
+  the same alias rules, and `_exit` on any failure. Fork mode is refused
+  at start with a proof or `-o` file, and the signal handler only ever
+  `kill`s children, never waits or prints.
+- **A weights file must match this binary's observation layout.** The
+  file carries the input count and the FNV-1a hash of
+  `policy_obs::names()`; changing, adding or reordering an observation
+  entry changes the hash and every existing weights file is refused, on
+  purpose. Regenerate fixtures with `tools/rl/policy_net.py --fixture`.
 - Mark every line that is not in kissat with a `// Not in kissat` (or
   `METRIC, re-enabled`) comment, so a port audit can still tell the C from
   the additions.

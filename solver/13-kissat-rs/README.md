@@ -96,14 +96,32 @@ unset v empty give identical `s` and `c workclock` lines; smoke test 9/9.
 **RL scheduler plumbing, step A (2026-09-16; plan §7, beads
 `SAT-playground-p9m.6.*`).** The solver can now run under an external
 scheduler that moves kissat's timing decisions while every mechanism stays
-byte-identical. Done so far (2026-09-16): the work-clock limit (A.1), the
+byte-identical. Done (2026-09-16/17): the work-clock limit (A.1), the
 policy module with its epoch clock and action (A.2), the stage-1
 chokepoints (A.3), random and jitter modes with a replay test (A.4), the
-raw-state logger (A.5) and the counter audit (A.6). Still open: static
-features (A.7), fork mode (A.8), `observe()` (A.9), the net loader (A.10),
-the overhead check (A.11) and the final docs pass (A.12). Everything is off by default: with no
+raw-state logger (A.5), the counter audit (A.6), the static features
+(A.7), fork mode (A.8), `observe()` (A.9) and the net loader (A.10); the
+overhead check (A.11) is recorded below. Everything is off by default: with no
 `SAT_POLICY*` and no `SAT_LIMIT_TICKS` in the environment the only added
 work on the search path is one bool test per chokepoint.
+
+Recipes (every variable is in the table below):
+
+```bash
+B=solver/13-kissat-rs/target/release/sat-solver
+# a stock trace with logging (the collector's stock arm)
+SAT_POLICY_LOG=run.log $B x.cnf
+# a random-mode logged run: sticky segments, seed 7, tick budget 2^31
+SAT_POLICY=random SAT_POLICY_SEED=7 SAT_LIMIT_TICKS=2147483648 SAT_POLICY_LOG=run.log $B x.cnf
+# a fork run: at decisions 3 and 9 branch the reduce and mode menus, 4 live children
+SAT_POLICY_LOG=run.log SAT_POLICY_BRANCH=3:reduce,9:mode SAT_POLICY_BRANCH_JOBS=4 SAT_LIMIT_TICKS=2147483648 $B x.cnf
+# a learned policy at margin 1, with the wall budget the harness knows
+SAT_POLICY=net.bin SAT_POLICY_MARGIN=1 SAT_WALL_LIMIT=1800 $B x.cnf
+# read a log, recompute its observation vectors, make a fixture net from its layout
+python3 solver/13-kissat-rs/tools/policy_log.py run.log --tail 3
+python3 solver/13-kissat-rs/tools/policy_obs.py --check run.log
+python3 solver/13-kissat-rs/tools/rl/policy_net.py --fixture run.log net.bin --stock-bias 1000
+```
 
 Environment (read by the binary itself, so `run.sh`, the harness and
 `parity.py --solver-env` all reach it):
@@ -111,7 +129,13 @@ Environment (read by the binary itself, so `run.sh`, the harness and
 | variable | values | meaning |
 |---|---|---|
 | `SAT_LIMIT_TICKS` | integer | stop with `s UNKNOWN` (exit 0) once the work clock W = `ticks` + `k_res` × `eliminate_resolutions` reaches this; unset or empty = no limit; `0` is a real (zero) limit |
-| `SAT_POLICY` | `stock`, `random`, `jitter` | policy on with the stock action every epoch (the overhead arm), segmented sticky random actions, or per-decision jitter; unset or empty = off; a weights-file path is step A.10 |
+| `SAT_POLICY` | `stock`, `random`, `jitter`, or a file path | policy on with the stock action every epoch (the overhead arm), segmented sticky random actions, per-decision jitter, or the learned policy in a weights file (A.10, below); unset or empty = off |
+| `SAT_POLICY_MARGIN` | number ≥ 0 or `inf` | net mode only: a non-stock entry is taken only when its score beats the stock entry's by this much (log-odds; default 1; `inf` = always stock, which must pass parity) |
+| `SAT_POLICY_HORIZON` | `ticks:<B>` | the horizon feature (fraction of budget used) as work / B; the deterministic form for parity, replay and fork children; when unset a `SAT_LIMIT_TICKS` run uses work / limit, else `SAT_WALL_LIMIT` |
+| `SAT_WALL_LIMIT` | seconds > 0 | the wall budget the harness runs the cell under, for the horizon feature at inference (elapsed wall / limit; the one non-deterministic input); no effect on when the solver stops |
+| `SAT_POLICY_BRANCH` | `D:knob[,D:knob...]` | fork mode (A.8): at decision D (0 = D0, each D at most once) fork one child per alternative entry of the knob's menu (probe, eliminate, reduce, rephase, reorder, mode, margin, sweep); needs `SAT_POLICY_LOG` and `SAT_LIMIT_TICKS` (children stop on the inherited budget); refused with a proof or `-o` file |
+| `SAT_POLICY_BRANCH_ACTIONS` | `knob=e\|e[;knob=e\|e]` | restrict the entries forked per knob (menu values such as `0\|0.5\|2\|4`); the parent's own entry is allowed here (a stock child is the fork test) |
+| `SAT_POLICY_BRANCH_JOBS` | 1..64 | live children per parent (default 4); the parent blocks at a branch point until a child exits (wall, not ticks) |
 | `SAT_POLICY_EPOCH_TICKS` | `X_o[,X_d]` | observation and decision epochs in `search_ticks`; default `8388608,134217728` (2^23, 2^27); `X_d` defaults to 16 × `X_o` and must be an integer multiple of it (decisions are checked at observation boundaries) |
 | `SAT_POLICY_SEED` | integer | the policy's own generator seed (default 0); never touches the solver's `--seed` stream |
 | `SAT_POLICY_TEMP` | number > 0 | spread of the random menus around stock: weight exp(−distance/temp), so 0.2 is almost always stock and 100 is uniform (default 1.0) |
@@ -219,8 +243,9 @@ Environment (read by the binary itself, so `run.sh`, the harness and
   2^64−1, and a JSON footer (result, exit code, reason `solve`, `signal`
   or `output-error` for a run whose `-o` file could not be written,
   rows, wall and CPU nanoseconds, peak RSS from `getrusage`,
-  work, conflicts, and a `static` object that A.7 fills, since the static
-  features exist only after preprocessing). 691 columns, 5528 bytes per row: every
+  work, conflicts, the `static` object of A.7, the `branches` list and
+  `branch` block of A.8). 981 columns, 7848 bytes per row (691 before the
+  A.7-A.10 columns `row_boundary`, `horizon*`, `obs_*`, `net_*`): every
   `Statistics` counter by name plus the two 128-bin clause-use glue
   histograms (`used_f_glue*`, `used_s_glue*`), both averages blocks, every limit and the
   three limit flags, the four delay counters, the elimination bound, the
@@ -282,6 +307,172 @@ Environment (read by the binary itself, so `run.sh`, the harness and
   counts sum to `clauses_learned`; the D0 row carries the tick limit
   when one is set; a log alone runs the stock policy; an unwritable path
   exits 1. Parity with logging on (`--solver-env SAT_POLICY=stock --solver-env SAT_POLICY_LOG=...`, 20 discriminating cells, `--conflicts 100000`): 20/20 on the final search-path binary of this change set (sha256 `77dd6360a5150d46`), and 20/20 on each of the five earlier binaries of the review rounds; the row writer touches no solver state, so logging on is trajectory-identical to logging off (also checked per run by `tests/policy_log.rs`).
+- **Static features (A.7, `src/policy_static.rs`).** One pass over the
+  active variables and the non-garbage irredundant clauses, run once after
+  preprocessing and `classify()` when the policy is on, plus a snapshot of
+  the yields kissat's own passes already produced. 140 values in 15 named
+  groups: identity groups `shape` (sizes, clause-length histogram, the
+  share of literals in the longest 1 % of clauses), `occurrence`
+  (degree moments and entropy, near-singletons, pure literals, polarity
+  balance, Horn and reverse-Horn fractions), `big` (binary fraction and
+  the implication graph's degrees, roots, leaves), `locality` (clause
+  span over the variable index space: mean, median, small-span and
+  consecutive fractions; the one group that variable renaming destroys),
+  `classify`; response groups `scc` (the non-trivial SCCs substitute's
+  Tarjan walk found, from a pure hook in substitute.rs), `bfs` (a bounded
+  breadth-first implication walk from the 32 highest-degree literals plus
+  random ones until the mean reach's standard error is under 10 %, at
+  most 256, capped at 1 M edge visits: depth, reach, failed-literal
+  fraction), `gates` (the congruence census), `backbone`, `sweep`,
+  `kitten`, `fastel` (with budget-hit flags from hooks in backbone.rs and
+  sweep.rs), `lucky` (outcome, level fraction and conflicts per pattern,
+  from hooks in lucky.rs), `warmup`, `preprocess` (vars and clauses over
+  the original counts, units, ticks by pass). The header carries the
+  schema (`static_schema`: group, kind, feature names) so a tool can mask
+  a group; the values are in the footer (`static`), which the signal
+  handler also writes. Cost is wall only (no tick counter is charged; the
+  work clock is unchanged): Kakuro-easy-112 0.50 s against a 4.13 s
+  parse, brocard 0.14 s against 1.37 s, SCPC-500-1 0.5 ms (2026-09-16).
+  The BFS sample draws from a generator seeded from `SAT_POLICY_SEED`,
+  never from `solver.random`.
+- **`observe()` (A.9, `src/policy_obs.rs`).** The policy's input: 251
+  floats in five blocks, computed at every observation boundary before
+  the row and the decision and logged in the row as `obs_*` columns
+  (also on the terminal row, from the state then). Static block (63: a
+  subset of the static features, counts as log1p, fractions raw, plus a
+  validity flag); global block (45: log counts, ratios, the averages of
+  the current mode, the per-epoch learned-clause histogram, the
+  elimination bound, and the horizon with its validity flag); delta block
+  (3 × 17: the same dynamics over the last 1, 4 and 16 observation
+  epochs from a ring of boundary snapshots, zero with a validity flag
+  until enough exist); timer block (6 × 4: log stock delta, progress to
+  the stock deadline, fires, would-fire); pass block (12 × 5: for
+  congruence, substitute, backbone, vivify, sweep, transitive, factor,
+  eliminate, forward, reduce, rephase, walk: never-ran flag, epochs since
+  the last run, times run, yield and cost at the last run, from a
+  recency table updated at each boundary from the counter deltas).
+  Normalization is not applied here; it is in the weights file. Pure: no
+  generator, no solver container, nothing allocated after the first
+  call. Every input is in the row, the header (horizon mode and budget)
+  or the footer (static block), so `tools/policy_obs.py --check run.log`
+  recomputes every row's vector in float64 and compares it to the logged
+  float32 values: 0 mismatches on tick-limit, wall and explicit horizons
+  and in random mode (`tests/policy_obs.rs`; a fork child's log needs its
+  parent's rows replayed first, which the converter will do). The
+  horizon is `SAT_POLICY_HORIZON=ticks:B` (work / B), else work / the
+  `SAT_LIMIT_TICKS` limit, else elapsed wall / `SAT_WALL_LIMIT`, else 0
+  with the flag 0; the wall reading is taken once per boundary and shared
+  with the row's `wall_ns`, which is what makes the wall form recomputable.
+- **Net (A.10, `src/policy_net.rs`, `tools/rl/policy_net.py`).**
+  `SAT_POLICY=<file>` loads a flat little-endian file: magic
+  `SAT13POLICYNET`, format 1, the input count and an FNV-1a hash of the
+  observation names (a file trained on another layout is refused with
+  both hashes in the message), hidden sizes, eight heads (probe,
+  eliminate, reduce, rephase, reorder: 5-way; mode and restart margin:
+  3-way; sweep: 4-way; each with a kind, size and stock index checked
+  against the menus), then f32 arrays: mean, std, W1, b1, W2, b2 and per
+  head W, b. Head kinds: 0 = on the trunk, 1 = linear on the normalized
+  input, 2 = reserved for tree rankers (refused for now, plan step E.3).
+  The forward pass is hand-rolled, f64 accumulation in index order, no
+  FMA, so `tools/rl/policy_net.py --forward` (pure Python, float64) gives
+  the same bits: 16 cases over both head kinds match exactly in the unit
+  test. The same script also evaluates the net in PyTorch (float64 on the
+  same float32 weights, so only the summation order differs) when torch
+  is importable, and the test then requires agreement within 1e-6
+  relative: with PyTorch 2.14.0+cpu in a scratch venv (`uv venv` +
+  `uv pip install --index-url https://download.pytorch.org/whl/cpu
+  torch`, put first on `PATH` for `cargo test`) the largest relative
+  difference over the 16 cases was 1.6e-14 (2026-09-17). Cost measured
+  once: 50 µs per forward pass at 251 → 128 → 64 (test profile), which
+  at one decision per 2^27 search ticks (seconds) is nothing. Acting: per head the best entry is taken only when its score
+  beats stock by `SAT_POLICY_MARGIN`, then the action is masked as
+  usual; the row logs the 35 scores (`net_*`) and `net_deviations`, the
+  header the file, sizes, hash and margin, and the exit prints one
+  `c policy net: N decisions, M not stock` line. The weights file is one
+  more file the log may not alias (it is reserved before the log is
+  created, so `SAT_POLICY=net.bin SAT_POLICY_LOG=net.bin` exits 1 with
+  the model intact), and the per-epoch learned-clause features are reset
+  at every boundary by the epoch hook, not by the row writer, so a net
+  decides the same with or without a log (both from Codex review round
+  1, 2026-09-17). `tests/policy_net.rs`: a
+  stock-biased fixture at margins 1, 0.25 and `inf` is trajectory-identical
+  to policy-off; a fixture that prefers other entries at margin 0 moves
+  the trajectory, replays to identical counters and still answers
+  correctly; a name that is not a file, a non-weights file, a truncated
+  file and bad margins exit 1.
+- **Fork mode (A.8, `src/policy_fork.rs`).** `SAT_POLICY_BRANCH=D:knob,...`
+  forks, when the parent takes decision D, one child per alternative entry
+  of that knob's menu (or the entries listed in
+  `SAT_POLICY_BRANCH_ACTIONS`). A child holds its entry for that decision
+  epoch, then continues under the parent's policy with the inherited RNG
+  state, stops on the inherited `SAT_LIMIT_TICKS`, and writes
+  `<log>.b<D>.<k>` (its log; the header and footer carry a `branch` block:
+  parent pid and log, decision, boundary epoch, knob, entry, index, parent
+  rows, whether masking turned the entry back into the parent's action),
+  `<log>.b<D>.<k>.out` and `.err` (its streams, redirected with dup2
+  before anything else), so the harness sees one `s` line. Its first row
+  is the branch state under its own decision (`row_boundary` 0, the
+  parent already pushed that snapshot); the parent's log footer lists the
+  children (`branches`: decision, knob, entry, index, pid). At most
+  `SAT_POLICY_BRANCH_JOBS` children live per parent; the parent blocks at
+  a branch point until one exits, reaps all at exit and prints
+  `c policy branch: P points, F children forked, R reaped, A abnormal, U
+  points not reached`; a parent killed by a signal SIGTERMs its live
+  children from the handler. Hygiene: stdout, stderr and the log are
+  flushed before every fork; the child forgets the parent's log handle
+  (shared file offset), opens its own with the same alias rules, and a
+  child that cannot redirect or open its log `_exit`s 1; a proof file or
+  a `-o` output refuses fork mode at start (every child would write it).
+  Every file a child of the schedule could create (the whole menu per
+  point, log, `.out`, `.err`) is checked at start against the CNF, the
+  proof, the output, the weights file, the wrapper's reserved files, the
+  parent's log, the standard streams and each other (string, resolved
+  path with symlinks followed, inode), and again right before each fork
+  (an alias then skips that child with a warning); a decision listed
+  twice in the schedule is refused, since the file names carry only the
+  decision and the child index. SIGINT, SIGTERM and SIGALRM are blocked
+  from before `fork()` until the parent has registered the child and the
+  child has detached from the parent's files and forgotten its siblings
+  (the mask is inherited), so a signal in that window cannot run the
+  child's inherited handler against the parent's log or leave the parent
+  an untracked child; the parent's pid is captured before the fork
+  (Codex review round 1, 2026-09-17). Round 2 added: the alias check
+  runs over the whole schedule at once (a later point's file linked to an
+  earlier point's is refused), the footer's branch record is completed
+  while signals are still blocked (a kill between two forks could leave
+  `"branches":[...,]`), fork mode requires `SAT_LIMIT_TICKS` (children
+  inherit neither kissat's `--time` alarm nor any wall clock), and a
+  parent whose `--time` alarm fires or that is told to terminate SIGTERMs
+  its live children before waiting for them (`tests/policy_fork.rs`: a
+  `--time=1` parent with four live children exits within seconds with
+  every child gone and every log sealed). Round 3: the whole epoch
+  boundary (recency update, observation, row, snapshot, accumulator
+  reset) runs with the handled signals blocked, so a kill between the row
+  and the snapshot cannot leave a terminal row built from the old history
+  with the epoch's learned clauses counted twice. Round 4: the signal
+  guard is taken before the pre-fork flush of the parent's log (and the
+  logger's flush blocks on its own), so a kill during that flush cannot
+  re-enter the writer and duplicate bytes.
+  `tests/policy_fork.rs`: a stock child (`SAT_POLICY_BRANCH_ACTIONS=probe=1`)
+  has the parent's `-s` counters at the same tick limit, the parent's
+  stdout has one `s` line and its log no duplicated rows; the default
+  menus give 4 + 2 children for `1:reduce,3:mode`, all answering SAT like
+  the parent with most leaving its trajectory; a proof file, a missing
+  log and bad settings exit 1; a SIGTERM to a parent with 8 live children
+  leaves no child alive within seconds, every log sealed.
+- **Parity after A.7-A.10 (2026-09-17, committed binary sha256
+  `305c22188e38d5dc`, 20 discriminating cells, `--conflicts 100000`, one
+  pinned core per configuration, the three run side by side):** 20/20
+  policy off; 20/20 policy-on-STOCK with logging (`--solver-env
+  SAT_POLICY=stock --solver-env SAT_POLICY_LOG=...`, so the static pass,
+  `observe()` at every boundary and the 981-column rows all ran); 20/20
+  with the stock-biased fixture net at an infinite margin
+  (`--solver-env SAT_POLICY=net.bin --solver-env SAT_POLICY_MARGIN=inf`
+  plus logging, so the forward pass ran at every decision). The same
+  three runs passed 20/20 on the binary of every Codex review round
+  (`e9d29932e2ccd509` before the review and four more in between). Logs:
+  `log/rl-stepA/parity20-{off,stock-log,net}-2026-09-17.log` (before the
+  review) and `parity20-final-{off,stock-log,net}-2026-09-17.log`.
 - `tools/parity.py --solver-env KEY=VALUE` (repeatable) sets environment
   for the solver-13 run only, e.g. `--solver-env SAT_POLICY=stock` for the
   policy-on-STOCK check; kissat never sees it.

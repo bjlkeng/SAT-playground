@@ -100,12 +100,12 @@ pub struct Logger {
 /// middle of a write or finds the logger missing; the signal is delivered
 /// when the guard drops. The synchronous signals (SIGSEGV, SIGBUS, SIGABRT)
 /// are left alone.
-struct SignalGuard {
+pub(crate) struct SignalGuard {
     old: libc::sigset_t,
 }
 
 impl SignalGuard {
-    fn block() -> SignalGuard {
+    pub(crate) fn block() -> SignalGuard {
         // SAFETY: plain libc calls on stack-allocated signal sets.
         unsafe {
             let mut set: libc::sigset_t = std::mem::zeroed();
@@ -132,7 +132,7 @@ impl Drop for SignalGuard {
 /// The final absolute form of a path that may not exist yet: symlinks are
 /// followed by hand (so a dangling link still resolves to its target), then
 /// the parent is canonicalized and the file name re-attached.
-fn resolve(p: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn resolve(p: &str) -> Option<std::path::PathBuf> {
     let mut path = std::path::PathBuf::from(p);
     for _ in 0..64 {
         match std::fs::symlink_metadata(&path) {
@@ -223,7 +223,7 @@ impl Logger {
     /// (the CNF, the proof file, a `-o` output): a log that aliases one of
     /// them would truncate the input or put two writers on the proof, so
     /// it is refused before anything is created.
-    pub fn open(path: &str, taken: &[(&str, &str)]) -> Result<Logger, String> {
+    pub fn open(path: &str, taken: &[(&str, &str)], wall0: u64) -> Result<Logger, String> {
         for (what, other) in taken {
             if same_path(path, other) {
                 return Err(format!(
@@ -247,7 +247,7 @@ impl Logger {
             finished: false,
             rows: 0,
             row_width: 0,
-            wall0: wall_ns(),
+            wall0,
             buf: Vec::with_capacity(1024),
             footer: String::with_capacity(1024),
             error: None,
@@ -294,8 +294,12 @@ impl Logger {
         self.finished
     }
 
+    /// Flush the buffered rows (before a fork); the handled signals are
+    /// blocked meanwhile so the handler's footer cannot re-enter the
+    /// writer mid-flush.
     pub fn flush(&mut self) {
-        let _ = self.out.flush();
+        let _guard = SignalGuard::block();
+        self.flush_checked();
     }
 }
 
@@ -306,6 +310,9 @@ pub struct RowClock {
     pub row: u64,
     pub wall_ns: u64,
     pub cpu_ns: u64,
+    /// True when the row is an observation boundary (its snapshot is
+    /// pushed into the ring after the row).
+    pub boundary: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -472,6 +479,22 @@ fn columns(solver: &Solver, clock: &RowClock, want_names: bool, mut emit: impl F
     u!(p.epoch_learned_size, "epoch_learned_size");
     u!(p.epoch_learned_glue, "epoch_learned_glue");
 
+    // The observation (policy_obs.rs): whether this row is a boundary
+    // whose snapshot enters the ring (0 on the terminal row and on a fork
+    // child's first row), the horizon, and the vector itself.
+    u!(flag(clock.boundary), "row_boundary");
+    fl!(p.obs_state.horizon_value, "horizon");
+    u!(flag(p.obs_state.horizon_valid), "horizon_valid");
+    if want_names {
+        for (i, name) in crate::policy_obs::names().iter().enumerate() {
+            fl!(p.obs_state.obs.get(i).copied().unwrap_or(0.0) as f64, "obs_{}", name);
+        }
+    } else {
+        for v in p.obs_state.obs.iter() {
+            fl!(*v as f64, "");
+        }
+    }
+
     // Per-timer stock counterfactual and policy bookkeeping.
     for t in Timer::ALL {
         let ts = &p.timers[t as usize];
@@ -501,11 +524,31 @@ fn columns(solver: &Solver, clock: &RowClock, want_names: bool, mut emit: impl F
     }
     u!(p.rng, "policy_rng");
     u!(p.segment_left, "policy_segment_left");
+
+    // The net's scores at the last decision (policy_net.rs), head by head;
+    // zeros without a net. `net_deviations` counts decisions whose masked
+    // action was not stock.
+    {
+        let menus = crate::policy_net::head_menus();
+        let mut pos = 0;
+        for (k, (n, _)) in menus.iter().enumerate() {
+            for j in 0..*n {
+                let v = p.net.as_ref().map_or(0.0, |net| net.scores.get(pos + j).copied().unwrap_or(0.0));
+                fl!(v, "net_{}_{}", crate::policy_net::HEAD_NAMES[k], j);
+            }
+            pos += n;
+        }
+    }
+    u!(p.net_deviations, "net_deviations");
 }
 
 // ---------------------------------------------------------------------------
 // Header, rows, footer
 // ---------------------------------------------------------------------------
+
+pub fn json_escape_into(s: &str, out: &mut String) {
+    json_escape(s, out)
+}
 
 fn json_escape(s: &str, out: &mut String) {
     out.push('"');
@@ -533,15 +576,19 @@ fn header_json(solver: &Solver, columns: &[(String, Kind)]) -> String {
         crate::statistics::K_RES
     ));
     json_escape(&p.cnf_path, &mut s);
+    let horizon_budget = p.horizon.budget();
     s.push_str(&format!(
-        ",\"pid\":{},\"policy\":{{\"mode\":\"{}\",\"obs_ticks\":{},\"dec_ticks\":{},\"seed\":{},\"temp\":{},\"segment_mean\":{}}}",
+        ",\"pid\":{},\"policy\":{{\"mode\":\"{}\",\"obs_ticks\":{},\"dec_ticks\":{},\"seed\":{},\"temp\":{},\"segment_mean\":{},\"horizon\":\"{}\",\"horizon_budget\":{},\"k_res\":{}}}",
         std::process::id(),
         p.mode.name(),
         p.obs_ticks,
         p.dec_ticks,
         p.seed,
         p.temp,
-        p.segment_mean
+        p.segment_mean,
+        p.horizon.name(),
+        horizon_budget,
+        crate::statistics::K_RES
     ));
     s.push_str(",\"options\":{");
     for (i, o) in crate::options::OPTION_TABLE.iter().enumerate() {
@@ -554,7 +601,16 @@ fn header_json(solver: &Solver, columns: &[(String, Kind)]) -> String {
             crate::options::options_get(&solver.options, o.name)
         ));
     }
-    s.push_str("},\"columns\":[");
+    s.push_str("},\"branch\":");
+    s.push_str(&p.branching.child_json);
+    s.push_str(",\"net\":");
+    match &p.net {
+        Some(net) => s.push_str(&crate::policy_net::header_json(net, p.margin)),
+        None => s.push_str("null"),
+    }
+    s.push_str(",\"static_schema\":");
+    s.push_str(&crate::policy_static::schema_json());
+    s.push_str(",\"columns\":[");
     for (i, (name, _)) in columns.iter().enumerate() {
         if i > 0 {
             s.push(',');
@@ -633,10 +689,24 @@ pub fn row(solver: &mut Solver, safe_only: bool) {
         solver.policy.log = Some(log);
         return;
     }
+    // A fresh observation (built by `policy::epoch` for this boundary)
+    // supplies the wall reading; otherwise (the terminal row, a fork
+    // child's first row) the clock is read here and the observation is
+    // built from the current state, without touching the ring.
+    let boundary = solver.policy.obs_state.obs_fresh;
+    let wall = if boundary {
+        solver.policy.obs_state.obs_wall_ns
+    } else {
+        let w = wall_ns().saturating_sub(log.wall0);
+        crate::policy_obs::observe(solver, w);
+        w
+    };
+    solver.policy.obs_state.obs_fresh = false;
     let clock = RowClock {
         row: log.rows,
-        wall_ns: wall_ns().saturating_sub(log.wall0),
+        wall_ns: wall,
         cpu_ns: cpu_ns(),
+        boundary,
     };
     if !log.header_written {
         write_header(solver, &mut log);
@@ -654,11 +724,9 @@ pub fn row(solver: &mut Solver, safe_only: bool) {
         warn_once(solver, &mut log);
     }
     solver.policy.log = Some(log);
-    // The per-epoch learned-clause accumulators start fresh after each row.
-    solver.policy.epoch_glue = [0; GLUE_BINS];
-    solver.policy.epoch_learned = 0;
-    solver.policy.epoch_learned_size = 0;
-    solver.policy.epoch_learned_glue = 0;
+    // The per-epoch learned-clause accumulators are reset by
+    // `policy::epoch` at every boundary, with or without a log, so the
+    // observation (and a net's decisions) cannot depend on logging.
 }
 
 /// Final row, sentinel and footer. `reason` is "solve" on the normal exit
@@ -712,8 +780,14 @@ pub fn finish(solver: &mut Solver, res: i32, reason: &str) {
     }
     log.put(footer.as_bytes());
     // The static features (step A.7) are preformatted on the normal path
-    // into `policy.static_json`; "{}" until then.
+    // into `policy.static_json`; "{}" until then. So are the fork-mode
+    // records: the children this parent forked and, in a child, its own
+    // branch block.
     log.put(solver.policy.static_json.as_bytes());
+    log.put(b",\"branches\":[");
+    log.put(solver.policy.branching.json.as_bytes());
+    log.put(b"],\"branch\":");
+    log.put(solver.policy.branching.child_json.as_bytes());
     log.put(b"}\n");
     log.footer = footer;
     log.flush_checked();

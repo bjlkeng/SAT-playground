@@ -123,6 +123,11 @@ fn determine_representatives(solver: &mut Solver, repr: &mut [u32]) {
                 let end_scc = scc.len();
                 let size_scc = end_scc - begin_scc;
                 let mut min_lit = lit;
+                // Not in kissat: the RL static block counts the non-trivial
+                // SCCs of this walk (policy_static.rs); a pure increment.
+                if size_scc > 1 && solver.policy.on {
+                    crate::policy_static::note_scc(solver, size_scc);
+                }
                 if size_scc > 1 {
                     for &other in &scc[begin_scc..end_scc] {
                         if other < min_lit {
