@@ -17,7 +17,7 @@ run, with all kissat features implemented.
 line at every exit, after the `[ resources ]` section:
 
 ```
-c workclock ticks=… search_ticks=… probing_ticks=… backbone_ticks=… transitive_ticks=… factor_ticks=… substitute_ticks=… kitten_ticks=… eliminate_resolutions=… forward_steps=… walk_steps=… flipped=… conflicts=… decisions=… propagations=… k_res=11 work=…
+c workclock ticks=… search_ticks=… probing_ticks=… backbone_ticks=… transitive_ticks=… factor_ticks=… substitute_ticks=… kitten_ticks=… eliminate_resolutions=… forward_steps=… walk_steps=… flipped=… conflicts=… decisions=… propagations=… k_res=7 work=…
 ```
 
 - `work` is the work clock W = `ticks` + `k_res` × `eliminate_resolutions`
@@ -43,17 +43,19 @@ c workclock ticks=… search_ticks=… probing_ticks=… backbone_ticks=… tran
   reference binary: 20/20 with the line in place. The statistics build was
   a scratch copy of `benchmarks/reference-solvers/kissat-latest` (about a
   minute to build); the reference build is untouched.
-- **`k_res` is provisional (= 11).** From the same 20-cell run with
-  `--profile=2`: eliminate wall time per resolution, converted to search-tick
-  units with each cell's own search ticks per second, over the 13 cells
-  with at least 0.05 s in both phases: median 11.5, geomean 10.8, range 3.3
-  (circuit) to 22 (SCPC). Ticks per second itself ranged 3.1e7 to 6.7e7
-  across cells. The eliminate time includes forward subsumption and
-  definition extraction, so `k_res` also charges those to the resolution
-  count. Plan step B refits it from the stock traces. The constant is
-  `K_RES` in `src/statistics.rs`; the harness reads it from the line and
-  never hard-codes it. Changing `k_res` changes only `work`, so old results
-  can be re-priced offline from `ticks` and `eliminate_resolutions`.
+- **`k_res` = 7 since step B.5 (2026-09-18).** Fitted from the 2025
+  stock traces: the wall of each observation epoch regressed on the work
+  of each kind spent in it gives 29.7 ns per tick and 206 ns per
+  resolution (ratio 6.9; 8.1 with the tick kinds split), see "RL
+  scheduler step B" below. The provisional value was 11 (2026-09-15,
+  from a `--profile=2` run of the 20 discriminating cells: eliminate
+  wall per resolution over search ticks per second, median 11.5, range
+  3.3 to 22). The constant is `K_RES` in `src/statistics.rs`; the harness
+  reads it from the line and never hard-codes it. Changing `k_res`
+  changes only `work` (never a trajectory), so old results are re-priced
+  offline from `ticks` and `eliminate_resolutions`; the 2025 traces and
+  the 2026-09-05 acceptance runs printed `k_res=11`, and the RL tables
+  (`tools/rl_cells.py`) recompute W at 7 from the logged counters.
 - Harness: `tools/feature_ablation.py` records `ticks`,
   `eliminate_resolutions` and `work` per cell and prints tick PAR-2 (a
   solved cell costs its W, an unsolved cell twice the W it reached before
@@ -505,6 +507,246 @@ Environment (read by the binary itself, so `run.sh`, the harness and
   kept): the integration tests run the binary on formulas with tens of
   thousands of conflicts, a minute per test file unoptimized and about ten
   seconds at level 2. `build.sh` and the release profile are unchanged.
+
+**RL scheduler step B: the collector, the stock traces and the data tables
+(2026-09-17/18; plan §5, §7 item 7, §8, §10 step B; beads
+`SAT-playground-p9m.7.*`).** The tooling that turns the step-A solver into
+a dataset. Everything lives in `tools/` at the repo root; the offline
+tools that need numpy and pyarrow run in a venv
+(`tools/rl/requirements.txt`: `uv venv ~/.cache/sat13-rl/venv --python
+3.12 && uv pip install --python ~/.cache/sat13-rl/venv/bin/python -r
+tools/rl/requirements.txt`), the collector and the family table need
+only the system `python3`.
+
+- **`tools/rl_collect.py` (B.1), the collection harness.** One
+  invocation runs one *pass* over a job table: a job is one solver run
+  on one cell with a flavour (`stock`, `fork`, `random`, `jitter`), the
+  solver seed, a work-clock budget (`SAT_LIMIT_TICKS`) or a wall limit,
+  and extra policy environment (`SAT_POLICY_BRANCH=...` for fork
+  parents). `stock --suite X` builds the table itself; `table jobs.tsv`
+  runs one built from the per-cell budgets (round 0); `resume DIR`
+  continues a stopped pass (jobs with a record are skipped); `status
+  DIR` prints progress. A pass is `log/rl-<name>-<timestamp>/` with a
+  frozen copy of the binary (`bin/sat-solver`, sha256 in
+  `manifest.json`, so a rebuild during the pass changes nothing), the
+  policy log of every run (`logs/<stem>.<tag>.log`, children as
+  `.b<D>.<k>`), each run's stdout and stderr (`out/`), one JSON record
+  per finished job (`cells/`, the resume key) and `results.tsv`.
+  Process accounting: every job is its own session and process group,
+  pinned to as many cores as it has processes (a fork parent with 4
+  live children takes 5 of the 32 slots, CLAUDE.md's cap), under
+  `ulimit -v` and `timeout -k 30`; a SIGTERM to the collector SIGTERMs
+  every live group (each solver prints its `c workclock` line and seals
+  its log), SIGKILLs what is left after the grace, refuses to record the
+  killed jobs so a resume reruns them, and checks nothing survived.
+  Correctness: every SAT answer, parent or child, is checked with
+  `tools/verify_sat.py` before the scratch CNF is deleted; parent and
+  children of one branch point must agree on SAT v UNSAT; `--oracle
+  results.csv` adds the statuses of earlier runs. A disagreement, or a
+  model checker that could not finish, drains the pass (nothing new is
+  admitted, live jobs finish, exit 3), and a resumed pass keeps that
+  failure. A wall-limited job records TIMEOUT; a budgeted job that hits
+  its safety wall cap records an *anomaly*, not a result, and so does
+  each child the cap ended; a fork parent whose children kept the group
+  alive past the cap keeps its sealed answer (checked as usual) with the
+  cap noted as an anomaly of the job.
+  Checked on `benchmarks/discriminating`: a stock pass (3 cells, 20 s),
+  a table pass with a fork parent (6 children over two branch points,
+  all SAT, all models verified, siblings agree), a random and a jitter
+  run (`log/rl-t-stock-2026-09-17-22-56-04`,
+  `log/rl-t-table-2026-09-17-22-56-21`), and two kill tests: a SIGTERM
+  12 s into a fork parent with 4 live children left no process, no
+  record and every log sealed with reason `signal`
+  (`log/rl-t-kill2-2026-09-17-22-58-59`, `log/rl-t-kill3-2026-09-17-22-59-32`).
+- **`tools/rl_features.py` (B.8), family labels and critic-tier static
+  features.** `families` writes `benchmarks/rl/families.tsv`: one row
+  per cell of sat-comp-2025 and sat-comp-2026 with a family label from
+  an ordered rule table in the script (130 families over the 800 cells;
+  the competition manifests carry no family column, so the rules are
+  the metadata; the name-token heuristic of `rl_sweep_report.py` is the
+  fallback and is used by none of the 800), the family size, and
+  `also_in`: **8 files are in both suites under the same hash**
+  (`16_16_booth_dadda_mapped_and_and_wallace_origin_bit28`,
+  `bp5_CSO`, `case10`, `case19`, `homer11`, `oski15a01b15s_opt`,
+  `rphp_p25_r25`, `xor_op_n40_d3`), so the 2026 holdout is not disjoint
+  from 2025. `static` computes, per cell and cached per cell under
+  `log/rl-features-cache/`, what the actor never sees: the `p` line,
+  exact clause and literal counts, compressed and uncompressed size
+  (`xz --list`, no decompression) and their ratio, a fingerprint of the
+  comment lines before the `p` line, and two estimates on a 200 k-clause
+  reservoir sample of the variable-interaction graph: modularity of a
+  label-propagation partition and a min-degree treewidth bound over the
+  4000 highest-degree nodes, capped at 400 (the fill-in past that costs
+  minutes for a number that only says "dense"). Output
+  `benchmarks/rl/static_features.tsv`. The actor-tier features (140
+  values, step A.7) come from the log footers through the converter.
+- **`tools/rl_dataset.py` (B.7), logs to parquet.** `convert <pass>
+  [--stock <stock pass>]` parses each policy log with numpy straight
+  from its bytes and writes `<pass>/dataset/rows/<stem>.<tag>.parquet`
+  (the parent's rows and its children's: keys, every work-kind counter
+  and its delta since the previous row, the raw state, the 251-entry
+  observation vector, the action in force, the action chosen at a
+  decision row, the net scores, the stock counterfactual flags, and with
+  `--stock` the stock run's counters at the same tick-grid position,
+  refused when the two runs' `X_o` differ) and
+  `<pass>/dataset/runs.parquet` (one row per run: outcome, censoring,
+  budgets, anomaly, peak RSS, the footer's 140 static features as
+  `s_<group>_<name>`, family). Three facts of the log layout, checked on
+  real logs after the Codex review (2026-09-18), fix the row semantics:
+  the solver writes a boundary row and *then* decides, so `is_decision`
+  sits on the row whose observation chose the action and `act_taken_*`
+  on that row is the next row's action in force; a fork child's first
+  row is the parent's row `parent_rows − 1` (the child's epoch counter
+  is already one ahead), which is therefore the child's predecessor
+  (zero first deltas, `d_cpu_ns` zero by definition since CPU time
+  restarts at fork); and pairing with the stock trace is by
+  `search_ticks // X_o`, not by the observation count, because one
+  search step can cross several grid boundaries and the solver then
+  writes one row (brocard has five such rows). `work` is recomputed at
+  one `k_res` for every log in the pass (`--k-res`, default 7;
+  `work_logged` keeps the printed value), so k=11 traces pair with k=7
+  runs without a fake saving; and because every observation entry
+  derived from the work clock (the log of work, the search, probing and
+  eliminate fractions, the per-pass costs and their windowed deltas, the
+  preprocessing work) moves with k, a log written at another k gets
+  all its `obs_*` columns rebuilt by the reference implementation
+  (`solver/13-kissat-rs/tools/policy_obs.py`) on rows whose work is
+  re-priced, a child's after its parent's prefix rows. Checked: at the
+  logged k the rebuild reproduces the logged vectors bit for bit (0 of
+  545 k values differ on a stock trace, 0 on a fork child replayed
+  after 17 parent rows, 2147 without them); at k=7 the Kakuro-easy-115
+  search fraction becomes 0.5303 from the logged 0.4399, the value the
+  k=7 binary computes. The rebuild costs about 1.3 s per 2000 rows. The
+  collector's failure flags travel into the runs table (`failed`) and
+  every fitting script skips flagged runs. `MANIFEST.json` keys each job
+  on its log, the collector record, the child logs, the family table,
+  the stock pairing and the k_res, so a rerun skips only what is
+  unchanged. `selftest` converts a synthetic fixture with a parent, a
+  child and a stock trace with a skipped grid position and checks every
+  delta, label, flag and pairing. About 5.6 MB for a 16 k-row fork
+  family.
+- **`tools/rl_split.py` (B.11), the validation split.**
+  `benchmarks/rl/split_2025.tsv` labels every 2025 cell `train` (293),
+  `val` (99) or `shared` (the 8 files also in 2026: never fitted on,
+  never used for selection). Deterministic (seed 20260917), stratified
+  by family and, inside a family, by the status of the 2026-09-05
+  acceptance run (families under 4 cells share one stratum): train has
+  SAT 39 % / UNSAT 39 % / TIMEOUT 22 %, val 40 / 39 / 19. Training code
+  calls `rl_split.assert_training_only(stems)`, which raises on any
+  val, shared or unknown cell.
+- **`tools/rl_fit_work.py` (B.5), `tools/rl_cells.py` (B.6),
+  `tools/rl_normalize.py` (B.9), `tools/rl_xd_sweep.py` (B.10)** read
+  the converted stock pass; their results are in the paragraph below.
+
+**Step B results (2026-09-18).**
+
+- **Stock traces, sat-comp-2025 (B.2).** `python3 tools/rl_collect.py
+  stock --suite sat-comp-2025 --name stock2025 --timeout 1800 --jobs 32
+  --mem-mb 16000` with the 2026-09-05 acceptance results of both solver
+  13 and kissat as status oracles, frozen binary `305c22188e38d5dc`
+  (tree f3759bc), idle host, 2026-09-17 23:00 to 2026-09-18 01:41. Run
+  dir `log/rl-stock2025-2026-09-17-23-00-35`. 400/400 jobs: 140 SAT,
+  143 UNSAT (283 solved), 115 TIMEOUT, and 2 memory aborts under the 16
+  GB ulimit (`pj2002_k500`, `17.normalised`, the two cells the
+  acceptance run recorded UNKNOWN as well). Zero correctness failures:
+  every SAT model verified, every answer agrees with the oracle, no
+  anomaly, all 400 logs sealed with their footer and static block;
+  953,224 rows, 7.0 GB of logs. Against the acceptance run's 3600 s,
+  30 cells solved there time out at 1800 s (17 SAT, 13 UNSAT): the
+  rescuable part of the timeout band, whose 115 cells are listed in
+  `benchmarks/rl/band_2025.txt` for the 3600 s pass (B.4). Peak RSS:
+  median 87 MB, 10 cells above 4 GB, max 13.6 GB (`oisc-subrv-*` and
+  the Kakuro cells), which is what caps fork children per parent.
+- **k_res and the wall weights (B.5, `tools/rl_fit_work.py`,
+  `benchmarks/rl/work_fit.json`).** 952,463 observation-epoch rows;
+  fitted on the 693,459 rows of the 257 training cells that have rows,
+  validation rows as the check; nonnegative least squares without an
+  intercept, the top 1 % of |residual| trimmed once. Aggregate fit
+  (wall per epoch on ticks, resolutions, kitten ticks, walk steps,
+  forward steps): 29.7 ns per tick, 206 ns per resolution, 52 ns per
+  kitten tick, 1.5 ns per walk step, 21 ns per forward step, so
+  **k_res = 6.9**; train R² 0.72, |residual| / wall 0.33 on train and
+  0.32 on validation (a per-epoch wall is noisy: median |residual| 57 ms
+  on a 310 ms epoch). With the tick kinds split: search 29.8 ns (81 % of
+  all wall), vivify 23, kitten 33, transitive 43, factor 65, substitute
+  254, resolution 242 (ratio 8.1 to a search tick), walk 1.4, forward
+  19; `probing_ticks`, `backbone_ticks` and `dense_ticks` get weight 0
+  because `probing_ticks` is an umbrella containing the probe sub-passes
+  (the sub-kinds sum to 114 % of `ticks`) and the other two are tiny; R²
+  0.85. Worst families by |residual| / wall: scpc 0.91, x9 0.74,
+  crypto-cipher 0.73, gensys 0.70, kakuro 0.68 (median residual +334 ms:
+  parse-bound giants), oisc 0.56. **Decision: `K_RES` = 7** (between
+  the two fits). The tick-limit tests pass unchanged; the frozen k=11
+  binary of the traces is kept for the remaining stock passes (a stock
+  pass has no budget, so K changes nothing it does), and every table
+  recomputes W at 7.
+- **Per-cell table (B.6, `tools/rl_cells.py`,
+  `benchmarks/rl/cells_2025.tsv`).** Family, split, status, stock time,
+  W at exit (k = 7), conflicts, rows, decisions at X_d = 2^27 (median 70
+  per run; 97 cells take fewer than 5), W per second (median 3.0e7,
+  range 1.1e7 to 6.4e7 on solved cells), B_cell (median 2.3e10, max
+  1.0e11) and peak RSS. `band` marks the 117 cells stock did not solve
+  (the 115 timeouts plus the 2 memory aborts); the band columns fill in
+  from the 3600 s pass.
+- **Normalization and the runtime predictor (B.9,
+  `tools/rl_normalize.py`).** `benchmarks/rl/obs_norm_2025.json`: mean
+  and std of the 251 observation entries over the 693,723 boundary rows
+  of the 293 training cells (layout hash `cd89e6212810b8c7`); 17 entries
+  are constant on stock traces (`s_valid`, `s_len_hist0`,
+  `s_fast_eliminated_per_var`, the lucky outcome and level flags) and get
+  std 1. A stock-biased fixture net carrying them loads in the solver at
+  `SAT_POLICY_MARGIN=inf` (the acceptance check: layout hash and array
+  lengths validated). The predictor: ridge on 119 standardized static
+  features (113 actor-tier from the footers, 6 critic-tier) for log10
+  stock time on the solved cells, strength by 5-fold CV inside train:
+  validation RMSE 1.19 decades against 1.30 for the constant (R² 0.17;
+  train 1.06 v 1.32); the largest weights are compression ratio (+0.44),
+  log clauses (+0.40), the lucky-level fraction, the BFS failed fraction,
+  modularity and the Horn fraction (each about 0.2). A logistic
+  solves-within-1800 s classifier reaches 0.77 on validation against
+  0.71 for the majority class. Static features carry weak signal; the
+  critic's variance reduction has to come from the dynamics.
+  `benchmarks/rl/runtime_predictor.json`. The runs table carries the
+  collector's failure flags (`premature`, `crash`, `contradiction`,
+  `failed`); every fitting script skips flagged runs, and the 2025 pass
+  has none (its two memory aborts are honest resource stops).
+- **The X_d sweep (B.10, `tools/rl_xd_sweep.py`; decision bead
+  `SAT-playground-p9m.12`).** Two measurements, no wall in either. (1)
+  From the stock traces alone (392 cells: the 8 shared with the 2026
+  holdout are left out of every tuning number): a decision epoch at X_d
+  = 2^27 holds, on the median cell, 0.38 probe fires, 0.12 eliminate,
+  3.6 reduce, 0.38 rephase, 0.25 reorder and 0.52 mode switches (half
+  that at 2^26, double at 2^28), and a run takes a median 69 decisions
+  (138 at 2^26, 35 at 2^28; 115 of the 392 cells take fewer than 10 at
+  2^27). Decisions are counted as the distinct positions the boundary
+  rows occupy on the decision grid, D0 included, which equals the
+  solver's own decision counter on all 392 cells at the logged X_d. The
+  plan's "about 3 probe fires per epoch" described the two calibration
+  cells, not the median: at every X_d an interval multiplier on probe
+  or eliminate mostly shifts the next fire, and reduce is the one timer
+  that fires several times per epoch. (2) A fork pass on the 20
+  discriminating cells, one parent per cell and X_d, branch points for
+  the probe, reduce and mode menus at about 20/40/60 % of the run's
+  decisions, budgets min(B_cell, 2e9) in the frozen k=11 binary's units,
+  tick-deterministic (`log/rl-xdsweep-2026-09-18-01-43-23`, 21 min, 60
+  parents, 328 children, all siblings agree, every SAT model verified).
+  A child that holds one knob entry for one decision epoch and then
+  returns to stock diverges from its parent in over 92 % of cases at
+  every X_d (no-ops: 12 of 148 at 2^26, 9 of 120 at 2^27, 0 of 60 at
+  2^28), ends with a work clock a median 0.2 % but a 90th percentile
+  1.2 to 1.6× away from the parent's, and loses the parent's solve
+  within the budget in about a third of the parent-solved pairs (28 of
+  66, 17 of 49, 10 of 32). The deviation size does not separate the
+  three epochs; the number of labelled states per run does.
+  Recommendation, recorded in the decision bead: freeze X_d = 2^27, the
+  default.
+- **Critic-tier static features (B.8).** `benchmarks/rl/static_features.tsv`,
+  800 rows, no errors, 34 minutes on 4 cores (the slowest cell 570 s,
+  `17.normalised`). Compression ratio 0.006 to 0.40 (median 0.095),
+  modularity −0.50 to 0.97 (median 0.48), treewidth bound 1 to 400 with
+  278 cells at the cap; no cell has a comment line before its `p` line
+  (the benchmark database strips them), so the header fingerprint is one
+  constant value and carries nothing.
 
 **Step-0 constant-knob sweeps: headroom (2026-09-16).** Baseline 2 of the
 RL plan's ladder (§6.1): for each knob the scheduler will move, does one

@@ -1,0 +1,570 @@
+{
+ "run": "/home/bojji/code/SAT-playground/log/rl-stock2025-2026-09-17-23-00-35",
+ "rows": 952463,
+ "fit_rows": 693459,
+ "fit_cells": 257,
+ "trim": 0.01,
+ "unit": "ns per unit of work",
+ "aggregate": {
+  "weights_ns": {
+   "ticks": 29.657661093041686,
+   "eliminate_resolutions": 205.77202552987544,
+   "kitten_ticks": 52.36620709775398,
+   "walk_steps": 1.500550599211685,
+   "forward_steps": 20.628297585028342
+  },
+  "r2_train": 0.7190016757233448,
+  "k_res": 6.938241855429183,
+  "resid_over_wall_train": 0.3338025674163222,
+  "resid_over_wall_val": 0.3223247130045772
+ },
+ "per_kind": {
+  "weights_ns": {
+   "search_ticks": 29.77951254886197,
+   "probing_ticks": 0.0,
+   "backbone_ticks": 0.0,
+   "transitive_ticks": 42.63529457301794,
+   "factor_ticks": 64.89532985645914,
+   "substitute_ticks": 253.5473709887867,
+   "vivify_ticks": 23.10783474087119,
+   "dense_ticks": 0.0,
+   "other_ticks": 298.4257559157555,
+   "eliminate_resolutions": 241.65991526086506,
+   "kitten_ticks": 32.75328803630205,
+   "walk_steps": 1.4404562896475535,
+   "forward_steps": 19.05523992846472
+  },
+  "r2_train": 0.8492287549754722,
+  "share_of_ticks_in_subkinds": 1.1449669808831335
+ },
+ "per_family": [
+  {
+   "family": "scpc",
+   "rows": 1073,
+   "abs_resid_over_wall": 0.9057094443579321,
+   "median_resid_ms": -118.61101540954115
+  },
+  {
+   "family": "x9",
+   "rows": 179,
+   "abs_resid_over_wall": 0.7416588746325824,
+   "median_resid_ms": -103.52255417580163
+  },
+  {
+   "family": "anon-id",
+   "rows": 12,
+   "abs_resid_over_wall": 0.7306628351629967,
+   "median_resid_ms": -108.7352368970533
+  },
+  {
+   "family": "crypto-cipher",
+   "rows": 4254,
+   "abs_resid_over_wall": 0.7255469036108095,
+   "median_resid_ms": -104.15801654061384
+  },
+  {
+   "family": "gensys",
+   "rows": 1391,
+   "abs_resid_over_wall": 0.6981824722276357,
+   "median_resid_ms": -100.3266443822439
+  },
+  {
+   "family": "kakuro",
+   "rows": 2176,
+   "abs_resid_over_wall": 0.6774257658094603,
+   "median_resid_ms": 333.9208783875347
+  },
+  {
+   "family": "crusti-g2io",
+   "rows": 907,
+   "abs_resid_over_wall": 0.6475555517267962,
+   "median_resid_ms": 219.9075269162784
+  },
+  {
+   "family": "lksat",
+   "rows": 1287,
+   "abs_resid_over_wall": 0.616167788909149,
+   "median_resid_ms": -92.25822812345898
+  },
+  {
+   "family": "tseitin",
+   "rows": 14381,
+   "abs_resid_over_wall": 0.5751563189864073,
+   "median_resid_ms": 13.100362597279489
+  },
+  {
+   "family": "oisc",
+   "rows": 7080,
+   "abs_resid_over_wall": 0.5566500750928968,
+   "median_resid_ms": 360.7717710765913
+  },
+  {
+   "family": "hwmcc-iter",
+   "rows": 136,
+   "abs_resid_over_wall": 0.5397828743689469,
+   "median_resid_ms": 135.71979194222283
+  },
+  {
+   "family": "arith-xor-misc",
+   "rows": 3313,
+   "abs_resid_over_wall": 0.5283949706377256,
+   "median_resid_ms": -88.1939765527552
+  },
+  {
+   "family": "manthey",
+   "rows": 678,
+   "abs_resid_over_wall": 0.516199554405513,
+   "median_resid_ms": -80.26626916493022
+  },
+  {
+   "family": "dimacs-coloring",
+   "rows": 7605,
+   "abs_resid_over_wall": 0.5049582753045687,
+   "median_resid_ms": -68.10646409888855
+  },
+  {
+   "family": "brocard",
+   "rows": 194,
+   "abs_resid_over_wall": 0.4971917375495471,
+   "median_resid_ms": 228.07597605885954
+  },
+  {
+   "family": "lec-mult",
+   "rows": 1173,
+   "abs_resid_over_wall": 0.4970430104501567,
+   "median_resid_ms": -78.71483625448516
+  },
+  {
+   "family": "oddball",
+   "rows": 37953,
+   "abs_resid_over_wall": 0.49703672391182846,
+   "median_resid_ms": 11.590145162716835
+  },
+  {
+   "family": "spg",
+   "rows": 243,
+   "abs_resid_over_wall": 0.4687063459536898,
+   "median_resid_ms": 88.78909160983437
+  },
+  {
+   "family": "battleship",
+   "rows": 105,
+   "abs_resid_over_wall": 0.46718931926242296,
+   "median_resid_ms": -80.67872623554784
+  },
+  {
+   "family": "fsf",
+   "rows": 969,
+   "abs_resid_over_wall": 0.46459553001041737,
+   "median_resid_ms": -85.03584760216266
+  },
+  {
+   "family": "pj",
+   "rows": 2469,
+   "abs_resid_over_wall": 0.462876363611351,
+   "median_resid_ms": 147.48384709276127
+  },
+  {
+   "family": "shuffling-sat04",
+   "rows": 479,
+   "abs_resid_over_wall": 0.4522296992774778,
+   "median_resid_ms": -70.1715353229801
+  },
+  {
+   "family": "parity",
+   "rows": 10216,
+   "abs_resid_over_wall": 0.4511689058840518,
+   "median_resid_ms": -88.46337057425698
+  },
+  {
+   "family": "velev-pipe",
+   "rows": 421,
+   "abs_resid_over_wall": 0.4469803410716807,
+   "median_resid_ms": 122.4042701131514
+  },
+  {
+   "family": "ncc",
+   "rows": 5141,
+   "abs_resid_over_wall": 0.4459608642812157,
+   "median_resid_ms": 117.61932434402755
+  },
+  {
+   "family": "edp",
+   "rows": 229,
+   "abs_resid_over_wall": 0.44167835793318677,
+   "median_resid_ms": 137.06728088018883
+  },
+  {
+   "family": "lockchart",
+   "rows": 51769,
+   "abs_resid_over_wall": 0.44111779469949847,
+   "median_resid_ms": 25.89316717572522
+  },
+  {
+   "family": "sat03-nw",
+   "rows": 165,
+   "abs_resid_over_wall": 0.44085062668099106,
+   "median_resid_ms": -67.13075024003079
+  },
+  {
+   "family": "hwmc-step-transition",
+   "rows": 1657,
+   "abs_resid_over_wall": 0.4404732375213024,
+   "median_resid_ms": 149.72086460702138
+  },
+  {
+   "family": "goldcrest",
+   "rows": 2819,
+   "abs_resid_over_wall": 0.4396566712056406,
+   "median_resid_ms": 162.0183649840325
+  },
+  {
+   "family": "mp1",
+   "rows": 7886,
+   "abs_resid_over_wall": 0.43709445678515396,
+   "median_resid_ms": 125.35671706466509
+  },
+  {
+   "family": "bits-fast",
+   "rows": 10,
+   "abs_resid_over_wall": 0.4344067407815786,
+   "median_resid_ms": -102.15215112781596
+  },
+  {
+   "family": "circuit-gates",
+   "rows": 413,
+   "abs_resid_over_wall": 0.42814050794160885,
+   "median_resid_ms": -69.89153974299445
+  },
+  {
+   "family": "circuit-multiplier",
+   "rows": 10074,
+   "abs_resid_over_wall": 0.4265492267704705,
+   "median_resid_ms": -69.98712499629335
+  },
+  {
+   "family": "timetable",
+   "rows": 21591,
+   "abs_resid_over_wall": 0.4127938583683585,
+   "median_resid_ms": 176.8424594498351
+  },
+  {
+   "family": "grs",
+   "rows": 6748,
+   "abs_resid_over_wall": 0.4113360521808918,
+   "median_resid_ms": 154.05066519614982
+  },
+  {
+   "family": "valves",
+   "rows": 1974,
+   "abs_resid_over_wall": 0.4006314716063667,
+   "median_resid_ms": 185.92029224867355
+  },
+  {
+   "family": "singletons",
+   "rows": 30661,
+   "abs_resid_over_wall": 0.38939582697134956,
+   "median_resid_ms": -50.025509472316536
+  },
+  {
+   "family": "snw",
+   "rows": 482,
+   "abs_resid_over_wall": 0.37654888154657595,
+   "median_resid_ms": 158.3620111301385
+  },
+  {
+   "family": "sudoku",
+   "rows": 9390,
+   "abs_resid_over_wall": 0.3751856862986678,
+   "median_resid_ms": 151.5686309166196
+  },
+  {
+   "family": "aprove",
+   "rows": 5,
+   "abs_resid_over_wall": 0.37488053852513403,
+   "median_resid_ms": -102.67419091564668
+  },
+  {
+   "family": "sum-of-cubes",
+   "rows": 6992,
+   "abs_resid_over_wall": 0.3560411256183131,
+   "median_resid_ms": -61.6166854304677
+  },
+  {
+   "family": "hwmcc-bob",
+   "rows": 217,
+   "abs_resid_over_wall": 0.3460799961429754,
+   "median_resid_ms": -51.59110210760185
+  },
+  {
+   "family": "case",
+   "rows": 22513,
+   "abs_resid_over_wall": 0.3424515026460563,
+   "median_resid_ms": -59.80361303515643
+  },
+  {
+   "family": "g2-t",
+   "rows": 5341,
+   "abs_resid_over_wall": 0.32720747378368237,
+   "median_resid_ms": 86.74110232329187
+  },
+  {
+   "family": "mis-debugged",
+   "rows": 8445,
+   "abs_resid_over_wall": 0.3237084676391045,
+   "median_resid_ms": -67.94547223718823
+  },
+  {
+   "family": "planning",
+   "rows": 635,
+   "abs_resid_over_wall": 0.32341459667381117,
+   "median_resid_ms": -46.8652481966092
+  },
+  {
+   "family": "chess-puzzles",
+   "rows": 20111,
+   "abs_resid_over_wall": 0.3233977811437006,
+   "median_resid_ms": 39.7742293030594
+  },
+  {
+   "family": "cfi-rigid",
+   "rows": 4065,
+   "abs_resid_over_wall": 0.32291910536372165,
+   "median_resid_ms": 51.35645866578194
+  },
+  {
+   "family": "crafted-n",
+   "rows": 644,
+   "abs_resid_over_wall": 0.3153203734131174,
+   "median_resid_ms": -55.44639544102946
+  },
+  {
+   "family": "reconf",
+   "rows": 6800,
+   "abs_resid_over_wall": 0.30428412913446795,
+   "median_resid_ms": -38.99925327924985
+  },
+  {
+   "family": "linked-list",
+   "rows": 47,
+   "abs_resid_over_wall": 0.30145938715151577,
+   "median_resid_ms": 58.01094825350013
+  },
+  {
+   "family": "oski",
+   "rows": 16901,
+   "abs_resid_over_wall": 0.2941130651065826,
+   "median_resid_ms": 50.33776904456249
+  },
+  {
+   "family": "hcp",
+   "rows": 20521,
+   "abs_resid_over_wall": 0.2908779717963213,
+   "median_resid_ms": -37.76146991168624
+  },
+  {
+   "family": "itc2021",
+   "rows": 4589,
+   "abs_resid_over_wall": 0.28438540578173865,
+   "median_resid_ms": 79.20537526337304
+  },
+  {
+   "family": "et-tc",
+   "rows": 11122,
+   "abs_resid_over_wall": 0.2823319176037929,
+   "median_resid_ms": 47.31915408934526
+  },
+  {
+   "family": "argumentation",
+   "rows": 47763,
+   "abs_resid_over_wall": 0.2808346991036801,
+   "median_resid_ms": -53.90294137396261
+  },
+  {
+   "family": "multiplier-16x16",
+   "rows": 72478,
+   "abs_resid_over_wall": 0.2799943848070858,
+   "median_resid_ms": -53.07051434495685
+  },
+  {
+   "family": "mult-miter-bits",
+   "rows": 16794,
+   "abs_resid_over_wall": 0.2794362138634175,
+   "median_resid_ms": -56.097105672021016
+  },
+  {
+   "family": "roundrobin",
+   "rows": 94278,
+   "abs_resid_over_wall": 0.27201601157508987,
+   "median_resid_ms": -57.42382526505034
+  },
+  {
+   "family": "ramsey",
+   "rows": 33414,
+   "abs_resid_over_wall": 0.26101493078138355,
+   "median_resid_ms": 23.746678809732945
+  },
+  {
+   "family": "itc99",
+   "rows": 2840,
+   "abs_resid_over_wall": 0.2599331635797483,
+   "median_resid_ms": 22.473987279865234
+  },
+  {
+   "family": "vdw",
+   "rows": 19171,
+   "abs_resid_over_wall": 0.2572256427690262,
+   "median_resid_ms": -55.603570444508556
+  },
+  {
+   "family": "iscas",
+   "rows": 11,
+   "abs_resid_over_wall": 0.25647933844392257,
+   "median_resid_ms": -88.31176512291104
+  },
+  {
+   "family": "smt2",
+   "rows": 3765,
+   "abs_resid_over_wall": 0.251529072321277,
+   "median_resid_ms": 99.19020350500536
+  },
+  {
+   "family": "break-scheduling",
+   "rows": 678,
+   "abs_resid_over_wall": 0.24007750240442705,
+   "median_resid_ms": -12.61468303640835
+  },
+  {
+   "family": "div-sqrt-miter",
+   "rows": 8800,
+   "abs_resid_over_wall": 0.24002929077770233,
+   "median_resid_ms": 17.657815781510486
+  },
+  {
+   "family": "sat-dat",
+   "rows": 1151,
+   "abs_resid_over_wall": 0.22663349115085857,
+   "median_resid_ms": 62.01310923030546
+  },
+  {
+   "family": "connm-csp",
+   "rows": 8372,
+   "abs_resid_over_wall": 0.21703573997887113,
+   "median_resid_ms": -44.3232014849691
+  },
+  {
+   "family": "frb",
+   "rows": 8087,
+   "abs_resid_over_wall": 0.21643132412579952,
+   "median_resid_ms": -40.83895058444863
+  },
+  {
+   "family": "rbsat",
+   "rows": 10226,
+   "abs_resid_over_wall": 0.212261519091156,
+   "median_resid_ms": -39.67255034981333
+  },
+  {
+   "family": "bp",
+   "rows": 53933,
+   "abs_resid_over_wall": 0.20893532568389714,
+   "median_resid_ms": -1.8697697555135786
+  },
+  {
+   "family": "jkkk",
+   "rows": 1137,
+   "abs_resid_over_wall": 0.20822866233173787,
+   "median_resid_ms": 52.934239020740094
+  },
+  {
+   "family": "clique-coloring",
+   "rows": 28823,
+   "abs_resid_over_wall": 0.20183557582891168,
+   "median_resid_ms": -28.862569217805536
+  },
+  {
+   "family": "em",
+   "rows": 2379,
+   "abs_resid_over_wall": 0.18752057164484753,
+   "median_resid_ms": 18.845626837608545
+  },
+  {
+   "family": "anon-pair",
+   "rows": 7226,
+   "abs_resid_over_wall": 0.18635405374403058,
+   "median_resid_ms": -29.195392479468286
+  },
+  {
+   "family": "baseballcover",
+   "rows": 4236,
+   "abs_resid_over_wall": 0.18246116168697707,
+   "median_resid_ms": -32.79298339714444
+  },
+  {
+   "family": "sgi",
+   "rows": 4167,
+   "abs_resid_over_wall": 0.17842768590106545,
+   "median_resid_ms": -30.67816739983535
+  },
+  {
+   "family": "ktf",
+   "rows": 120,
+   "abs_resid_over_wall": 0.17381440882280172,
+   "median_resid_ms": -48.97876809555325
+  },
+  {
+   "family": "php",
+   "rows": 22021,
+   "abs_resid_over_wall": 0.17370631689775065,
+   "median_resid_ms": -22.976424612018974
+  },
+  {
+   "family": "sort-equivalence",
+   "rows": 22956,
+   "abs_resid_over_wall": 0.1736711990966657,
+   "median_resid_ms": -30.17406822785367
+  },
+  {
+   "family": "xor-op",
+   "rows": 11000,
+   "abs_resid_over_wall": 0.17308609458452248,
+   "median_resid_ms": 20.184554113295107
+  },
+  {
+   "family": "clqcl",
+   "rows": 37250,
+   "abs_resid_over_wall": 0.17170209329552952,
+   "median_resid_ms": 11.28278020034945
+  },
+  {
+   "family": "sted",
+   "rows": 3126,
+   "abs_resid_over_wall": 0.1566263400075004,
+   "median_resid_ms": -12.48211180272685
+  },
+  {
+   "family": "at-least-two",
+   "rows": 7591,
+   "abs_resid_over_wall": 0.1399262352514281,
+   "median_resid_ms": -3.0381895539785027
+  },
+  {
+   "family": "gm-sparrc",
+   "rows": 4264,
+   "abs_resid_over_wall": 0.128997340549695,
+   "median_resid_ms": -3.7184708322763145
+  },
+  {
+   "family": "factoring",
+   "rows": 7123,
+   "abs_resid_over_wall": 0.12265854927400427,
+   "median_resid_ms": -11.23490021304983
+  },
+  {
+   "family": "dltm",
+   "rows": 1741,
+   "abs_resid_over_wall": 0.11989424199104684,
+   "median_resid_ms": -16.55499019465247
+  }
+ ]
+}

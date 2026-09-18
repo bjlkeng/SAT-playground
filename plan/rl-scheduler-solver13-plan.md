@@ -836,7 +836,10 @@ Additive and off by default; policy-off stays at exact parity.
    walls, seed/flavour bookkeeping, and a manifest per pass. Offline:
    `tools/rl_features.py` (critic-tier static features), `tools/rl_dataset.py`
    (log → parquet with deltas, pairing, censoring), and the training code
-   under `tools/rl/`.
+   under `tools/rl/`. (All three exist since step B, 2026-09-17/18, plus
+   `tools/rl_split.py`, `tools/rl_cells.py`, `tools/rl_fit_work.py`,
+   `tools/rl_normalize.py` and `tools/rl_xd_sweep.py`; the solver README
+   "RL scheduler step B" has what each does and what it measured.)
 8. Tests: MLP forward matches a PyTorch reference on a fixed weights file;
    smoke test unchanged; parity 20/20 policy-off and policy-on-STOCK;
    seeded random-mode replay to identical counters; a fork test that a
@@ -856,7 +859,11 @@ Realistic cost of step 1-8: 2-3 sessions, not 1.
   in-distribution promotion check; (c) sat-comp-2026 as the true holdout,
   consulted at most once per promoted candidate so it does not become a
   second training set (the solver 12 lesson: 296 v 292 on 2025, 160 v 197
-  on 2026).
+  on 2026). The split is `benchmarks/rl/split_2025.tsv` (step B.11,
+  2026-09-18: 293 train, 99 val, and 8 cells marked `shared` because the
+  same files are in sat-comp-2026 under the same hash; those are fitted
+  on and selected on by nothing). `tools/rl_split.py` draws and checks
+  it; training code calls `rl_split.assert_training_only`.
 - **Gate arms.** Every gate carries three arms: stock (policy off),
   policy-on with `act == STOCK` (measures logging/inference overhead and
   the wall-horizon nondeterminism alone), and the candidate.

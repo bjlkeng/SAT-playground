@@ -1,0 +1,10 @@
+# Python packages for the offline RL tools (tools/rl_dataset.py and the
+# training code under tools/rl/). The system python3 has none of them; the
+# collector (tools/rl_collect.py) and tools/rl_features.py `families` need
+# only the standard library, `static` needs numpy.
+#
+#   uv venv ~/.cache/sat13-rl/venv --python 3.12
+#   uv pip install --python ~/.cache/sat13-rl/venv/bin/python -r tools/rl/requirements.txt
+#   ~/.cache/sat13-rl/venv/bin/python tools/rl_dataset.py selftest
+numpy>=2.0
+pyarrow>=14

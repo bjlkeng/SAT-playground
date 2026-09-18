@@ -586,13 +586,17 @@ mod tests {
 // eliminate's own effort has no tick equivalent, so its resolutions are
 // weighted in with K_RES.
 //
-// K_RES is PROVISIONAL. It was set 2026-09-15 from a `--profile=2` run of
-// the 20 discriminating cells (README, "Work clock"): eliminate wall time
-// per resolution, converted to search-tick units with each cell's own
-// search ticks per second (median 11.5, geomean 10.8 over 13 cells). Plan
-// step B refits it from the stock traces. Keep it here, in one place; the
-// harness reads it back from the `c workclock` line and never hard-codes it.
-pub const K_RES: u64 = 11;
+// K_RES = 7 since plan step B.5 (2026-09-18): the wall spent per
+// observation epoch of the 2025 stock traces (693 k epochs, 257 training
+// cells) regressed on the work of each kind spent in it gives 29.7 ns per
+// tick and 206 ns per resolution (ratio 6.9); with the tick kinds split the
+// ratio is 8.1 (README, "RL scheduler step B"; benchmarks/rl/work_fit.json).
+// The provisional 11 (2026-09-15) came from a `--profile=2` run of the 20
+// discriminating cells. Keep it here, in one place; the harness reads it
+// back from the `c workclock` line and never hard-codes it, and the RL
+// tables recompute W from the logged ticks and resolutions, so traces made
+// with another value stay valid.
+pub const K_RES: u64 = 7;
 
 impl Statistics {
     /// W = ticks + K_RES × eliminate_resolutions (plan §3.4).
