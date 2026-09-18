@@ -45,7 +45,19 @@ work is **solver 13** and the RL scheduler on top of it.
   features), `src/policy_obs.rs` (the observation vector),
   `src/policy_net.rs` (weights file, forward pass, margin) and
   `src/policy_fork.rs` (fork mode). The solver README has the environment
-  table, recipes and what each step measured.
+  table, recipes and what each step measured. Step B (2026-09-18) added
+  the data tooling at the repo root, `tools/rl_collect.py` (the
+  collector: one pass = one job table, frozen binary, process groups,
+  model checks, resume), `tools/rl_dataset.py` (logs to parquet),
+  `tools/rl_features.py`, `tools/rl_split.py`, `tools/rl_cells.py`,
+  `tools/rl_fit_work.py`, `tools/rl_normalize.py`, `tools/rl_xd_sweep.py`,
+  and the committed tables under `benchmarks/rl/` (families, split,
+  cells with `B_cell`, static features, the work-clock fit, the
+  normalization). The offline tools run in the venv of
+  `tools/rl/requirements.txt`. The stock traces live in
+  `log/rl-stock2025-2026-09-17-23-00-35`, `log/rl-stock2026-2026-09-18-02-04-37`
+  (evaluation only) and `log/rl-band2025-2026-09-18-06-20-44`; every
+  fitting script reads only the 2025 training split.
 
 ## Build, run, test
 

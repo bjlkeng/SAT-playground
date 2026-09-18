@@ -692,14 +692,28 @@ only the system `python3`.
   binary of the traces is kept for the remaining stock passes (a stock
   pass has no budget, so K changes nothing it does), and every table
   recomputes W at 7.
+- **The timeout band at 3600 s (B.4).** The 115 cells stock did not
+  solve at 1800 s (`benchmarks/rl/band_2025.txt`; the 2 memory aborts
+  left out) rerun with the same command and frozen binary at 3600 s,
+  2026-09-18 06:20 to 09:53, run dir `log/rl-band2025-2026-09-18-06-20-44`.
+  115/115: 17 SAT, 12 UNSAT (29 solved, walls 1546 to 3400 s), 86
+  TIMEOUT; zero correctness failures (every model verified, all 29
+  answers agree with the 2026-09-05 acceptance run at 3600 s; one cell
+  that run solved UNSAT timed out here, the noise near the limit); 8.6
+  GB of logs; peak RSS median 149 MB, max 6.1 GB. So 29 band cells have
+  terminal signal at twice the gate's budget, and 86 produce only
+  censored rows.
 - **Per-cell table (B.6, `tools/rl_cells.py`,
-  `benchmarks/rl/cells_2025.tsv`).** Family, split, status, stock time,
-  W at exit (k = 7), conflicts, rows, decisions at X_d = 2^27 (median 70
-  per run; 97 cells take fewer than 5), W per second (median 3.0e7,
-  range 1.1e7 to 6.4e7 on solved cells), B_cell (median 2.3e10, max
-  1.0e11) and peak RSS. `band` marks the 117 cells stock did not solve
-  (the 115 timeouts plus the 2 memory aborts); the band columns fill in
-  from the 3600 s pass.
+  `benchmarks/rl/cells_2025.tsv`).** Family, split, seed, status,
+  `failed`, stock time, W at exit (k = 7), conflicts, rows, decisions at
+  X_d = 2^27 (median 70 per run; 97 cells take fewer than 5), W per
+  second (median 3.0e7, range 1.1e7 to 6.4e7 on solved cells), B_cell
+  (median 2.3e10, max 1.0e11) and peak RSS. `band` marks the 117 cells
+  stock did not solve (the 115 timeouts plus the 2 memory aborts); for
+  the 115 with a band record the band columns carry the 3600 s status,
+  time, W and `B_cell_band` = W at 3600 s (or W × 3600 / t for the 29
+  that solved): median 1.08e11, range 2.4e10 to 1.8e11. Rebuilt with
+  `--stock STOCK --band BAND`; a run the collector flagged gets no budget.
 - **Normalization and the runtime predictor (B.9,
   `tools/rl_normalize.py`).** `benchmarks/rl/obs_norm_2025.json`: mean
   and std of the 251 observation entries over the 693,723 boundary rows

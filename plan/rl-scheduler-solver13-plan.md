@@ -933,7 +933,7 @@ Realistic cost of step 1-8: 2-3 sessions, not 1.
 | A′ | ticks per cell in every `feature_ablation.py` results TSV (tier-2 axis becomes deterministic for all future A/Bs) | small | `SAT-playground-p9m.4` |
 | 0 | `SAT_EXTRA_ARGS` passthrough; constant-multiplier sweeps on the existing CLI knobs (baseline 2); headroom estimate | 1 line + 2-3 multi-arm sweeps | `SAT-playground-p9m.5` |
 | A | `policy.rs`, chokepoints, epoch hook, static features, logger, fork mode, counter audit, `SAT_LIMIT_TICKS`, `SAT_WALL_LIMIT`; parity 20/20 both ways | 2-3 sessions | `SAT-playground-p9m.6` |
-| B | `rl_collect.py`; stock traces on 2025 + 2026 (+ band at 3600 s); X_d sweep on tier 2; normalization, runtime predictor, `B_cell`, peak RSS | 1-2 suite passes | `SAT-playground-p9m.7` |
+| B | `rl_collect.py`; stock traces on 2025 + 2026 (+ band at 3600 s); X_d sweep on tier 2; normalization, runtime predictor, `B_cell`, peak RSS (done 2026-09-18: solver README "RL scheduler step B", tables under `benchmarks/rl/`) | 1-2 suite passes | `SAT-playground-p9m.7` |
 | C | round 0: perturbation dataset (stratified tick budgets, fork branching, timeout band) | ~2 days of host | `SAT-playground-p9m.8` |
 | D | baselines ladder (2)-(3); cloned policy passes parity / ~0 % deviation | 1 tick-deterministic run | `SAT-playground-p9m.9` |
 | E | ranking policy from round 0; DAgger rounds 1-3; validation-split selection; 400-cell wall check; medium gate; 2026 holdout once | ~3 days + 2-3 gates | `SAT-playground-p9m.10` |
