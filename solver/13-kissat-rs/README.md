@@ -657,6 +657,18 @@ only the system `python3`.
   `benchmarks/rl/band_2025.txt` for the 3600 s pass (B.4). Peak RSS:
   median 87 MB, 10 cells above 4 GB, max 13.6 GB (`oisc-subrv-*` and
   the Kakuro cells), which is what caps fork children per parent.
+- **Stock traces, sat-comp-2026 (B.3), evaluation only.** The same
+  command on the holdout suite with the same frozen k=11 binary, the
+  kissat 4.0.4 run of 2026-08-29 (3600 s) as the status oracle and
+  `--on-contradiction continue`, 2026-09-18 02:04 to 05:58. Run dir
+  `log/rl-stock2026-2026-09-18-02-04-37`. 400/400: 107 SAT, 83 UNSAT
+  (190 solved), 210 TIMEOUT; zero correctness failures (every SAT model
+  verified, all 190 answers agree with kissat, every log sealed); wall
+  PAR-2 821,530; 12 GB of logs; 7 cells kissat solved at 3600 s time out
+  at 1800 s. No fitting script reads this directory: it is the paired
+  stock reference for the holdout and a feature-range check. Codex
+  review builds and single-core conversions ran on the idle cores during
+  it, a load of at most a few processes.
 - **k_res and the wall weights (B.5, `tools/rl_fit_work.py`,
   `benchmarks/rl/work_fit.json`).** 952,463 observation-epoch rows;
   fitted on the 693,459 rows of the 257 training cells that have rows,
@@ -726,18 +738,25 @@ only the system `python3`.
   or eliminate mostly shifts the next fire, and reduce is the one timer
   that fires several times per epoch. (2) A fork pass on the 20
   discriminating cells, one parent per cell and X_d, branch points for
-  the probe, reduce and mode menus at about 20/40/60 % of the run's
-  decisions, budgets min(B_cell, 2e9) in the frozen k=11 binary's units,
-  tick-deterministic (`log/rl-xdsweep-2026-09-18-01-43-23`, 21 min, 60
-  parents, 328 children, all siblings agree, every SAT model verified).
-  A child that holds one knob entry for one decision epoch and then
-  returns to stock diverges from its parent in over 92 % of cases at
-  every X_d (no-ops: 12 of 148 at 2^26, 9 of 120 at 2^27, 0 of 60 at
-  2^28), ends with a work clock a median 0.2 % but a 90th percentile
-  1.2 to 1.6× away from the parent's, and loses the parent's solve
-  within the budget in about a third of the parent-solved pairs (28 of
-  66, 17 of 49, 10 of 32). The deviation size does not separate the
-  three epochs; the number of labelled states per run does.
+  the probe, reduce and mode menus at about 20/40/60 % of the run's own
+  decisions, budgets min(B_cell, 2e9) at k=7 on the k=7 binary
+  (`9defe8586fcdeadf`), tick-deterministic
+  (`log/rl-xdsweep2-2026-09-18-05-59-06`, 21 min, 60 parents, 422
+  children, all siblings agree, every SAT model verified; a first pass
+  with the branch points scaled by B_cell instead of the run's work,
+  `log/rl-xdsweep-2026-09-18-01-43-23`, gave the same picture). A child
+  that holds one knob entry for one decision epoch and then returns to
+  stock diverges from its parent in 88 to 98 % of cases (no-ops: 19 of
+  158 at 2^26, 9 of 144 at 2^27, 3 of 120 at 2^28); among the diverged
+  pairs whose parent solved, the child loses the solve within the budget
+  in 38 %, 35 % and 36 % of cases (28 of 74, 23 of 65, 17 of 47) and
+  wins one in 4, 3 and 4; the work clock at the end differs from the
+  parent's by a median 4 %, 1 % and 0 % and a 90th percentile 2.0×, 1.4×
+  and 0.37× (at 2^28 the reduce and mode children move it under 8 % at
+  the 90th percentile; the probe children 1.4× at every epoch). So the
+  outcome effect of a one-epoch deviation is the same at all three
+  epochs, the size of the work difference shrinks as the epoch grows,
+  and the number of labelled states per run halves with each doubling.
   Recommendation, recorded in the decision bead: freeze X_d = 2^27, the
   default.
 - **Critic-tier static features (B.8).** `benchmarks/rl/static_features.tsv`,
