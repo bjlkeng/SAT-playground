@@ -764,13 +764,15 @@ only the system `python3`.
   158 at 2^26, 9 of 144 at 2^27, 3 of 120 at 2^28); among the diverged
   pairs whose parent solved, the child loses the solve within the budget
   in 38 %, 35 % and 36 % of cases (28 of 74, 23 of 65, 17 of 47) and
-  wins one in 4, 3 and 4; the work clock at the end differs from the
-  parent's by a median 4 %, 1 % and 0 % and a 90th percentile 2.0×, 1.4×
-  and 0.37× (at 2^28 the reduce and mode children move it under 8 % at
-  the 90th percentile; the probe children 1.4× at every epoch). So the
-  outcome effect of a one-epoch deviation is the same at all three
-  epochs, the size of the work difference shrinks as the epoch grows,
-  and the number of labelled states per run halves with each doubling.
+  wins one in 4, 3 and 4; among the pairs where both solved, the work
+  clock at the end differs by a median 11 %, 22 % and 7 % and a 90th
+  percentile 1.2× at all three epochs (about half of the diverged pairs
+  end at the budget on both sides, where the work is equal by
+  construction and the conflict counts differ by 2 % at the median, so
+  the all-pairs figure the report prints understates the deviation
+  unevenly across epochs). So neither the outcome effect nor the size
+  of a one-epoch deviation separates the three epochs; only the number
+  of labelled states per run does, halving with each doubling.
   Recommendation, recorded in the decision bead: freeze X_d = 2^27, the
   default.
 - **Critic-tier static features (B.8).** `benchmarks/rl/static_features.tsv`,
