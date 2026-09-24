@@ -8,3 +8,8 @@
 #   ~/.cache/sat13-rl/venv/bin/python tools/rl_dataset.py selftest
 numpy>=2.0
 pyarrow>=14
+# The training scaffold (tools/rl/model.py, clone.py, roundtrip.py) needs
+# CPU-only PyTorch, which is not on PyPI's default index:
+#   uv pip install --python ~/.cache/sat13-rl/venv/bin/python torch --index-url https://download.pytorch.org/whl/cpu
+# (2.14.0+cpu installed 2026-09-18)
+torch>=2.4

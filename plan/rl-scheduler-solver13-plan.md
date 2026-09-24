@@ -583,8 +583,8 @@ it is logged as an anomaly, not a result. Requires `SAT_LIMIT_TICKS`
 |---|--:|--:|--:|--:|
 | stock traces 2025 + 2026 | 800 | 1800 s | 1 each | ~10 h |
 | stock traces, timeout band at the band's budget (defines `B_cell` there) | ~90 | 3600 s | 1 | ~3 h |
-| round 0: perturbation, 2025 train split | ~300 | stratified work budgets | 1 parent + ~60 children + 3 wild runs per cell | ~15-25 h |
-| round 0: perturbation, timeout band | ~90 | 3600 s-equivalent work | same | ~30 h |
+| round 0: perturbation, 2025 train split (as launched 2026-09-18: the 179 cells stock solves and that take a decision, points scaled to the cell's decisions; §11) | 179 | B_cell | 1 parent + 2-92 children (median 31 on the 60-1800 s cells) + 2 wild runs per cell | ~1500 core-h |
+| round 0: perturbation, timeout band (as launched: the 85 train band cells, only at the 3600 s budget) | 85 | B_cell_band | 1 parent + 22-62 children + 2 wild runs per cell | ~1700 core-h |
 | DAgger rounds 1-3 (branch-off only, net as parent) | ~390 | same work budgets | 1 parent + ~60 children per cell, concentrated on the top knobs | ~1 day each |
 | candidate gates + holdout | 100 / 400 | 1800 s | per candidate | 2-6 h each |
 
@@ -934,8 +934,8 @@ Realistic cost of step 1-8: 2-3 sessions, not 1.
 | 0 | `SAT_EXTRA_ARGS` passthrough; constant-multiplier sweeps on the existing CLI knobs (baseline 2); headroom estimate | 1 line + 2-3 multi-arm sweeps | `SAT-playground-p9m.5` |
 | A | `policy.rs`, chokepoints, epoch hook, static features, logger, fork mode, counter audit, `SAT_LIMIT_TICKS`, `SAT_WALL_LIMIT`; parity 20/20 both ways | 2-3 sessions | `SAT-playground-p9m.6` |
 | B | `rl_collect.py`; stock traces on 2025 + 2026 (+ band at 3600 s); X_d sweep on tier 2; normalization, runtime predictor, `B_cell`, peak RSS (done 2026-09-18: solver README "RL scheduler step B", tables under `benchmarks/rl/`) | 1-2 suite passes | `SAT-playground-p9m.7` |
-| C | round 0: perturbation dataset (stratified tick budgets, fork branching, timeout band) | ~2 days of host | `SAT-playground-p9m.8` |
-| D | baselines ladder (2)-(3); cloned policy passes parity / ~0 % deviation | 1 tick-deterministic run | `SAT-playground-p9m.9` |
+| C | round 0: perturbation dataset (stratified tick budgets, fork branching, timeout band); run 2026-09-18 to 09-22 (`tools/rl_round0.py`, `log/rl-round0-2026-09-18-17-23-27`: 7808 children, sibling agreement 100 %, zero correctness failures; the "2 days" assumed 16 uniform points on every cell); C.4 (the dataset build) in progress | 3.6 days of host at 28 slots | `SAT-playground-p9m.8` |
+| D | baselines ladder (2)-(3); cloned policy passes parity / ~0 % deviation. Done 2026-09-22: the clone picks stock on every one of 58 k decision rows and is trajectory-identical to the plain solver on all 99 validation cells (D.3); baseline 3 (`tools/rl_baseline3.py`) captures nothing (69 v 70 solved, 1.008×), **baseline 2 = reorderint 20000 is the bar: 72 v 70, 0.946× on the validation split** | 1 tick-deterministic run | `SAT-playground-p9m.9` |
 | E | ranking policy from round 0; DAgger rounds 1-3; validation-split selection; 400-cell wall check; medium gate; 2026 holdout once | ~3 days + 2-3 gates | `SAT-playground-p9m.10` |
 | F | stage-2 dataset + heads; ablations; promotion note | 2-4 gates | `SAT-playground-p9m.11` |
 
@@ -999,6 +999,107 @@ source of truth; every bead points back to its section.
   transitive, backbone, forward, factor, eliminateeffort (2 %). Joint
   oracle 81 v 72, tick 0.690×. Two stock arms 12 h apart solved 73 and 72:
   one wall-limit cell is the solved-count noise floor on 100 cells.
+- 2026-09-18 (decision `SAT-playground-p9m.12`): **X_d frozen at 2^27**,
+  the default. The X_d sweep (step B.10; solver README "The X_d sweep")
+  found that neither the stock fires an epoch spans, nor the size of a
+  one-epoch deviation, nor its outcome effect separates 2^26, 2^27 and
+  2^28; only the labelled states per run do (median 138 / 69 / 35). 2^26
+  doubles the states but each label covers half of a timer's cadence and
+  12 % of children are no-ops; 2^28 halves the states and its reduce and
+  mode deviations barely move the work clock. On hard cells, which hold
+  69 % of all epochs, a probe fires every 5 epochs and eliminate every 16
+  at 2^27, so the interval knobs act as fire-now / not-yet gates repeated
+  over many epochs: the epoch sets how finely a fire is timed, not how
+  many fires the policy controls (about 3 probe fires per epoch, the §1
+  premise, would need 2^30 and leave hard cells about 47 decisions per
+  run). `SAT_POLICY_EPOCH_TICKS` default unchanged.
+- 2026-09-18 (decision `SAT-playground-p9m.13`): **stage-1 menu frozen as
+  §2.1**: all eight knobs, intervals {0, 0.5, 1, 2, 4}, mode {0.5, 1, 2},
+  restart margin {0.5, 1, 2}, sweep effort {0, 0.5, 1, 2}, one-shot
+  `m = 0`, the 0.1 floor and the masking. Nothing pruned: step 0 found no
+  entry that never wins (every constant beat stock on 25-41 of 100 cells),
+  and sweep effort stays in the menu despite its 8 % effect size because
+  the round-0 point weights carry the triage. Round-0 branch points are
+  weighted by the step-0 per-knob oracle gains, and half of them sit at
+  states where the branched knob's timer fires within the coming epoch in
+  the stock trace, so the delay entries (2×, 4×) get labels where they
+  act (deep in a hard run a one-epoch 2× or 4× on probe or eliminate acts
+  only when the stock fire falls inside the epoch, about 1 epoch in 5 and
+  1 in 16). Recoding probe and eliminate as fire-now / not-yet entries,
+  and holding a delay entry for several epochs in fork children, are
+  parked (§9). The solver's `SAT_POLICY_BRANCH_ACTIONS` default (every
+  entry but the parent's) matches.
+- 2026-09-18 (round-0 design, the owner's choice among three costed
+  options; `SAT-playground-p9m.8.1`): the run mix of §5.4 as written
+  costs about 9 host-days, not 2, because a child runs from its branch
+  point to the cell's budget and the band's 3600 s budgets dominate.
+  Chosen: the **hard-focus** mix, train split only. Cells stock solves in
+  60-1800 s get branch points scaled to their decision count (decisions
+  / 8, clamped to 4-24) at B_cell; the 85 train band cells run **only at
+  the 3600 s budget** (the 1800 s run is a prefix of the same
+  deterministic trajectory), 16 points on the 19 that stock solves there
+  and 8 points at 30-90 % of the run on the 66 timeouts, where a child
+  solve is the only label; cells solved under 60 s get at most 3 points
+  (64 have any decision at all); one segmented-sticky and one jitter run
+  per cell instead of three wild runs. Half of every cell's points are
+  timer-due for the branched knob, knobs weighted by the step-0 gains.
+  Totals: 264 cells, 2274 points, 7808 children, 3185 core-hours, about
+  5.5 days at 28 slots (`benchmarks/rl/round0_jobs.tsv` and its
+  `.schedule.tsv`; solver README "RL scheduler steps C and D"). Round 0
+  takes 28 of the 32 slots so step D's tick-deterministic checks run on
+  the other 4 at the same time (budgeted in ticks, so load cannot change
+  their result).
+- 2026-09-22 (step D results; `SAT-playground-p9m.9.1`, `.9.3`): the
+  stock clone is trajectory-identical to the plain solver on all 99
+  validation cells at B_cell (three arms, identical W per cell), so the
+  policy plumbing is neutral. Baseline 3, one constant per instance
+  chosen at D0 from the 113 actor-tier static features (ridge per arm on
+  the step-0 sweeps, leave-one-out selection, the arms that act during
+  preprocessing left out), captures none of the headroom: on the
+  validation split 69 v 70 solved at 1.008× tick PAR-2, worse than the
+  single constant it mostly picks (reducefrachalf: 70, 0.974×). Baseline
+  2, `reorderint=20000` on every cell, beats stock there too: **72 v 70
+  solved, 0.946× tick PAR-2** (+1 oddball, lockchart, hcp, kakuro,
+  at-least-two; −1 ncc, circuit-multiplier, timetable). The ladder's bar
+  for the epoch policy is therefore reorderint 20000, not stock, and the
+  400-cell check of that constant (pending since step 0) is worth
+  running before the first candidate gate.
+- 2026-09-23 (round-0 dataset, step C.4; `SAT-playground-p9m.8.4`;
+  `tools/rl_round0_report.py`, tables `benchmarks/rl/round0_children.tsv`
+  and `round0_knobs.tsv`): 7808 children in 2274 sibling sets on 264
+  training cells, converted with the band cells paired to the 3600 s
+  band pass. **Labels:** 1763 sets carry a terminal ordering (some member
+  solved); the 511 all-censored sets are all but 34 of the 528 on the 66
+  band timeouts, where only a child solve labels a set (63 of 1804
+  children solved, 3.5 %). They stay in the table for the offline-RL
+  side line and are no ranking label. **Effect sizes** (child against the
+  parent's continuation, a 1 % work margin for a tie): a one-epoch
+  deviation moves the outcome or the work on 87 % of the ordered pairs
+  for reduce, 83 % margin, 75 % rephase, 69 % mode, 66 % probe, 60 %
+  eliminate, 48 % reorder and **9 % sweep effort**; children beat the
+  parent on 20-35 % of ordered pairs and lose on 25-55 % (they lose the
+  parent's solve 621 times and gain one 75 times), kissat's equilibrium
+  as §9 expected. Rescues on parent-unsolved sets: probe 7.6 %, reduce
+  5.3 %, rephase 4.1 %, reorder 3.0 %, eliminate 2.7 %, mode 2.2 %,
+  margin 2.0 %, sweep 0. Among both-solved pairs the total work moves by
+  a 10th-to-90th percentile band of about 0.75-1.45× for the entries
+  that act. **The timer-due placement did its job:** the delay entries
+  (2×, 4×) are mostly no-ops at uniform points (probe 2× ties on 63 %,
+  eliminate 62 %, reorder 69 %, rephase 65 %) and act at due points
+  (probe 2× moves 90 %, reorder 92 %). **Flavours:** the segmented and
+  jitter runs change the outcome of 62-72 % of runs and move the work by
+  a median 0.11-0.16 in log ratio, against 49 % and 0.025 for a fork
+  child, at about the same cost per run (0.35 v 0.21 cpu-hours), so per
+  run they are the bigger perturbation but they are not same-state
+  counterfactuals; rounds 1-3 stay branch-off only (§6.2 item 4) and the
+  wild runs (11 % of round 0's cost) are kept only if the offline-RL
+  side line is pursued. Knob triage for rounds 1-3 (decision
+  `SAT-playground-p9m.14`, from these effect sizes and the step-0 oracle
+  gains): reduce, probe, rephase and mode act most and rescue most;
+  sweep effort is dropped; reorder's per-epoch multipliers rarely act
+  (the timer fires rarely) although its interval as a global constant is
+  baseline 2; margin moves the work a lot but mostly for the worse. The
+  ranking learners of E.1 decide what is predictable.
 
 ---
 

@@ -70,7 +70,11 @@ default) and hitting it is an ANOMALY in the record, not a result.
 Job table (TSV, header row; `stock` writes one too). Columns:
     stem         instance stem (the file name without .cnf.xz)
     tag          a label unique per (stem, tag) in the pass: stock, fork3, ...
-    flavour      stock | fork | random | jitter
+    flavour      stock | fork | random | jitter | off | net
+                 (off: the policy off and no log, the plain solver; net: the
+                 learned policy, env carries SAT_POLICY=<weights file> and
+                 SAT_POLICY_MARGIN; both are arms of the three-arm gates,
+                 plan section 8)
     seed         the solver's --seed (every flavour uses the paired stock
                  run's seed, plan §5.4)
     limit_ticks  work-clock budget (SAT_LIMIT_TICKS), or empty = wall-limited
@@ -78,7 +82,10 @@ Job table (TSV, header row; `stock` writes one too). Columns:
     procs        processes the job may have alive (1 + SAT_POLICY_BRANCH_JOBS)
     peak_rss_mb  the cell's peak RSS from the stock trace (memory
                  admission for fork jobs), or empty
-    env          extra environment, `KEY=VALUE` pairs separated by spaces
+    env          extra environment, `KEY=VALUE` pairs separated by spaces;
+                 SAT_EXTRA_ARGS=<kissat options> goes on the command line
+                 instead, several options separated by commas
+                 (SAT_EXTRA_ARGS=--reducelow=250,--reducehigh=450)
                  (SAT_POLICY_BRANCH=3:reduce,9:mode SAT_POLICY_BRANCH_JOBS=4);
                  a value may hold `;` (SAT_POLICY_BRANCH_ACTIONS=probe=0|4;reduce=2)
 """
@@ -106,7 +113,7 @@ from feature_ablation import death_note, numa_balanced_cores, parse_workclock  #
 
 SOLVER_DIR = ROOT / "solver" / "13-kissat-rs"
 VERIFY_SAT = ROOT / "tools" / "verify_sat.py"
-FLAVOURS = ("stock", "fork", "random", "jitter")
+FLAVOURS = ("stock", "fork", "random", "jitter", "off", "net")
 PROC_CAP = 32            # CLAUDE.md: at most 32 concurrent solver processes
 KILL_GRACE_S = 30        # timeout -k and the shutdown grace: let the solver seal its log
 TSV_COLUMNS = ("tag", "stem", "flavour", "seed", "result", "wall_s", "exit", "limit_ticks",
@@ -303,6 +310,10 @@ class Job:
             raise SystemExit(f"job {self.stem}/{self.tag}: a fork job needs limit_ticks (children stop on it)")
         if self.flavour == "fork":
             self.procs = max(self.procs, 1 + int(self.env.get("SAT_POLICY_BRANCH_JOBS", "4")))
+        if self.flavour == "net" and not self.env.get("SAT_POLICY"):
+            raise SystemExit(f"job {self.stem}/{self.tag}: a net job needs SAT_POLICY=<weights file> in env")
+        if self.flavour == "off" and any(k.startswith("SAT_POLICY") for k in self.env):
+            raise SystemExit(f"job {self.stem}/{self.tag}: an off job runs the plain solver and cannot carry SAT_POLICY* env")
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", self.tag):
             raise SystemExit(f"job {self.stem}/{self.tag}: tag must be [A-Za-z0-9_.-]+")
 
@@ -319,14 +330,17 @@ class Job:
 
     def solver_env(self, run: "Run") -> dict[str, str]:
         """The SAT_* environment for this job (plan §7 item 6; solver README table)."""
-        env = {"SAT_POLICY_LOG": str(run.log_path(self))}
+        # `off` is the plain solver: no policy, no log (the record comes from
+        # stdout: the `s` line and the `c workclock` line)
+        env = {} if self.flavour == "off" else {"SAT_POLICY_LOG": str(run.log_path(self))}
         if self.flavour == "stock":
             env["SAT_POLICY"] = "stock"
         elif self.flavour == "random":
             env["SAT_POLICY"] = "random"
         elif self.flavour == "jitter":
             env["SAT_POLICY"] = "jitter"
-        # fork: the parent's policy is whatever the env says (stock when unset)
+        # fork: the parent's policy is whatever the env says (stock when unset);
+        # net: SAT_POLICY is the weights file the table's env names
         if self.limit_ticks is not None:
             env["SAT_LIMIT_TICKS"] = str(self.limit_ticks)
         else:
@@ -492,7 +506,12 @@ class Run:
             rec["env"] = env_job
             base_env = {k: v for k, v in os.environ.items() if not k.startswith("SAT_")}
             env = {**base_env, **env_job}
-            argv = [str(self.binary), "-s", f"--seed={job.seed}", str(cnf)]
+            # SAT_EXTRA_ARGS in a job's env are kissat options for the command
+            # line (as run.sh and feature_ablation.py pass them), not
+            # environment; the table's env column has no spaces, so several
+            # options are separated by commas
+            extra = [a for a in env.pop("SAT_EXTRA_ARGS", "").replace(",", " ").split() if a]
+            argv = [str(self.binary), "-s", f"--seed={job.seed}", *extra, str(cnf)]
             rec["argv"] = argv
             inner = f"ulimit -v {self.mem_mb * 1024}; exec timeout -k {KILL_GRACE_S} {job.wall_s} " \
                     + " ".join(shlex.quote(a) for a in argv)
@@ -565,10 +584,13 @@ class Run:
         res, wc_line = status_of(self.out_path(job))
         wc = parse_workclock(wc_line) if wc_line else {}
         rec["workclock"] = wc
-        ls = log_summary(self.log_path(job))
+        ls = log_summary(self.log_path(job)) if job.flavour != "off" else {}
         ft = ls.get("footer") or {}
         capped = rec["exit"] in (124, 137)
-        answered = (res in SOLVED and ft.get("reason") == "solve"
+        # An `off` job writes no log, so nothing proves its output was complete
+        # when the cap fired; with no children to keep the group alive, a cap
+        # on it means the solver itself was still running, so it is a TIMEOUT.
+        answered = (res in SOLVED and job.flavour != "off" and ft.get("reason") == "solve"
                     and ft.get("result") == {"SAT": "SATISFIABLE", "UNSAT": "UNSATISFIABLE"}[res])
         if capped and answered:
             # timeout(1) expired after the solver had answered and sealed its log:
@@ -613,7 +635,7 @@ class Run:
         rec["oom"] = oom
         # the log
         rec["log_rows"] = ls.get("rows")
-        rec["log_footer"] = ls.get("footer") is not None
+        rec["log_footer"] = None if job.flavour == "off" else ls.get("footer") is not None
         rec["log_reason"] = ft.get("reason")
         rec["log_result"] = ft.get("result")
         rec["peak_rss_mb"] = round(ft["peak_rss_bytes"] / 2**20, 1) if ft.get("peak_rss_bytes") else None
@@ -622,7 +644,7 @@ class Run:
         rec["static"] = bool(ft.get("static"))
         if ls.get("error"):
             rec["note"] = (rec["note"] + f"; log: {ls['error']}").strip("; ")
-        if res in SOLVED and not rec["log_footer"]:
+        if res in SOLVED and rec["log_footer"] is False:
             rec["note"] = (rec["note"] + "; log has no footer").strip("; ")
         # the model
         if self.verify and res == "SAT":
@@ -809,7 +831,7 @@ class Run:
             flags.append("PREMATURE UNKNOWN")
         if rec.get("crash") or any(c.get("crash") for c in rec.get("children") or []):
             flags.append("CRASH")
-        if not rec.get("log_footer", True):
+        if rec.get("log_footer", True) is False:
             flags.append("no-footer")
         kids = f" children={len(rec['children'])}" if rec.get("children") else ""
         print(f"  [{done}/{len(self.jobs)}] {job.key[:48]:<48} {rec.get('result', '?'):<9} "
@@ -840,7 +862,8 @@ class Run:
                     "limit_ticks": "" if r.get("limit_ticks") is None else r["limit_ticks"],
                     "ticks": wc.get("ticks", "NA"), "eliminate_resolutions": wc.get("eliminate_resolutions", "NA"),
                     "work": wc.get("work", "NA"), "conflicts": wc.get("conflicts", "NA"),
-                    "rows": r.get("log_rows"), "footer": int(bool(r.get("log_footer"))),
+                    "rows": "" if r.get("log_rows") is None else r.get("log_rows"),
+                    "footer": "" if r.get("log_footer") is None else int(bool(r.get("log_footer"))),
                     "peak_rss_mb": "" if r.get("peak_rss_mb") is None else r["peak_rss_mb"],
                     "verify": r.get("verify"), "oracle": r.get("oracle"),
                     "children": len(r.get("children") or []), "agree": r.get("agree"),
@@ -946,7 +969,7 @@ def summarize(run_dir: Path) -> None:
         counts[r["result"]] = counts.get(r["result"], 0) + 1
     bad = [r for r in rows if r.get("failed", "0") == "1" or r["verify"] not in ("ok", "skip", "off")
            or r["oracle"].startswith("CONTRADICTION") or r["agree"] == "FAIL"]
-    nofoot = [r for r in rows if r["footer"] != "1"]
+    nofoot = [r for r in rows if r["footer"] not in ("1", "")]      # "" = an off job, which writes no log
     anomalies = [r for r in rows if r["anomaly"]]
     manifest = json.loads((run_dir / "manifest.json").read_text()) if (run_dir / "manifest.json").is_file() else {}
     total = manifest.get("n_jobs", n)

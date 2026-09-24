@@ -783,6 +783,195 @@ only the system `python3`.
   (the benchmark database strips them), so the header fingerprint is one
   constant value and carries nothing.
 
+**RL scheduler steps C and D (2026-09-18; plan §5.3-5.4, §6.1-6.4, §10).**
+Decisions first: X_d stays 2^27 and the stage-1 menu is frozen as plan
+§2.1 with nothing pruned (plan §11, beads `SAT-playground-p9m.12/.13`).
+
+- **Round-0 schedule (C.1, `tools/rl_round0.py`,
+  `benchmarks/rl/round0_jobs.tsv` + `.schedule.tsv`).** One stock parent
+  per training cell carries every branch point; a point forks the whole
+  menu of one knob (4 children for a 5-entry knob, 2 for mode and the
+  margin, 3 for sweep effort), each child holding its entry for one
+  decision epoch and then running stock to the cell's work budget. The
+  points come from the cell's stock trace: half are "timer-due" (the
+  branched knob's timer fires within the coming epoch, so the 2× and 4×
+  entries act), half uniform over the window; knobs are drawn with the
+  step-0 per-knob oracle gains as weights (reduce 16.0 ... sweep 8.4);
+  rephase is only placed in stable mode and the margin only in focused
+  mode, where the solver would not mask them. Hard-cell mix (owner's
+  choice, costed in plan §11): cells solved in 60-1800 s get decisions / 8
+  points (4-24) at B_cell; the 85 train band cells run only at
+  B_cell_band, 16 points on the 19 stock solves at 3600 s and 8 late
+  points (30-90 %) on the 66 timeouts; cells under 60 s at most 3 points;
+  one segmented (temperature 1, mean segment 5 epochs) and one jitter
+  run (temperature 0.5) per cell. 28 of the 293 training cells have no
+  decision at all (solved before the first observation epoch) and get
+  nothing. Totals: 264 cells, 2274 points (1097 timer-due), 7808
+  children (per cell: fast median 8, slow 31, band solvers 54, band
+  timeouts 28), plus 528 wild runs; points per knob reduce 368, mode
+  356, eliminate 321, probe 333, reorder 315, rephase 204, margin 199,
+  sweep 178. Projected 3185 core-hours: the plan's "about 2 days" assumed
+  16 uniform points on every cell, and a child costs the budget left
+  after its branch point (about 0.8 B_cell on a solved cell, since the
+  parent ends at a third of it). Two-cell rehearsal through the
+  collector: `log/rl-round0test-2026-09-18-17-14-42`, 6 jobs, all
+  siblings agree, every model verified, converted with `--stock` pairing.
+- **Round 0 (C.2 + C.3 in one pass), done 2026-09-22.**
+  `python3 tools/rl_collect.py table benchmarks/rl/round0_jobs.tsv --suite
+  sat-comp-2025 --name round0 --jobs 28 --mem-mb 16000 --mem-total-mb
+  420000 --oracle <the two 2026-09-05 acceptance results>`, started
+  2026-09-18 17:23, run dir `log/rl-round0-2026-09-18-17-23-27`
+  (collector pid 2511078, its stdout in
+  `log/round0-collector-2026-09-18.out`), frozen binary
+  `9defe8586fcdeadf` (k_res 7, the X_d-sweep binary), 792 jobs, 6 live
+  children per parent (`SAT_POLICY_BRANCH_JOBS=6`, so a fork job holds 7
+  of the 28 slots and four parents run at once), cores 0-13 and 18-31.
+  Projected 5.5 days at 28 slots; it took 3 d 15 h (ended 2026-09-22
+  08:14), 181 GB of logs. **Result:** 792/792 jobs, sibling agreement
+  100 % (all 264 parents agree with every child), 7808 children expected
+  and forked, none missing, every child ended on its own budget or
+  answer (2193 SAT, every model verified; 3179 UNSAT; 2436 UNKNOWN at
+  the budget); parents 98 SAT / 99 UNSAT / 67 UNKNOWN; wild runs 160
+  SAT / 192 UNSAT / 175 UNKNOWN. Zero correctness failures. One anomaly:
+  the jitter run of `oisc-subrv-and-nested-12` hit its wall cap (2× the
+  stock wall + 600 s) at 70 % of its budget, running at 250 ns per work
+  unit against stock's 87 on that memory-bound 4.7 GB cell under the
+  28-process load (28 % of its ticks in kitten); the wild runs' caps are
+  tight on such cells, the fork parents' caps carry a (1 + waves) factor
+  and none fired. Conversion (C.4) by `log/round0-convert-2026-09-22.sh`:
+  the band cells paired with the band pass, the rest with the stock pass.
+- **Round-0 dataset (C.4, 2026-09-23; `tools/rl_round0_report.py`,
+  `benchmarks/rl/round0_children.tsv` one row per child with its sibling
+  set and label, `round0_knobs.tsv` the effect sizes).** Conversion:
+  `log/round0-convert-2026-09-22.sh` (12 minutes for 181 GB of logs,
+  7.6 GB of parquet, 8600 runs; band cells paired with the band pass).
+  2274 sibling sets: 1763 labeled (some member solved), 511 all-censored,
+  of which 494 are on the 66 band timeouts (63 of their 1804 children
+  solved). Per knob, the share of ordered pairs where a one-epoch
+  deviation moved the outcome or the total work by over 1 %: reduce 87,
+  margin 83, rephase 75, mode 69, probe 66, eliminate 60, reorder 48,
+  sweep 9 %; children beat the parent's continuation on 20-35 % of
+  ordered pairs and lose on 25-55 % (621 solves lost, 75 gained); rescue
+  rates on parent-unsolved sets: probe 7.6 %, reduce 5.3 %, rephase 4.1
+  %, reorder 3.0 %, eliminate 2.7 %, mode 2.2 %, margin 2.0 %, sweep 0.
+  The delay entries act at timer-due points and are mostly no-ops at
+  uniform ones (probe 2×: 90 % v 37 % moved), which is what the
+  schedule's due half was for. Flavours: a segmented or jitter run
+  changes the outcome of 62-72 % of runs (work moved by a median 0.11-
+  0.16 log ratio) against 49 % (0.025) for a fork child at similar cost
+  per run; the fork children are the same-state counterfactuals the
+  ranking learner needs, the wild runs a side line. Plan §11 (2026-09-23)
+  has the triage reading.
+- **Training scaffold and the stock clone (D.2, `tools/rl/`).** PyTorch
+  2.14 CPU in the RL venv (`tools/rl/requirements.txt` has the index
+  line). `data.py` loads the decision rows of a converted pass as a
+  float32 matrix in the normalization's entry order (train, val or all,
+  never the 8 shared cells; `assert_training_only` on train), `model.py`
+  is the net (251 → 128 → 64 ReLU trunk, eight heads, head kind 0 on the
+  trunk or 1 linear on the standardized input; export through the
+  solver's `policy_net.write_net`, import with `from_file`, the
+  pairwise-logistic loss, `choose` and the mode mask as the solver
+  applies them), `clone.py` trains the clone and `roundtrip.py` checks
+  an exported file against the solver. Clone: stock bias 3, five epochs
+  of Adam on the 43,518 decision rows of the 264 training cells with
+  decisions (46 s to load, seconds to train; `log/rl-stepD-clone-2026-09-18.log`).
+  Loss 0.0499 → 0.0000; the exported net (`benchmarks/rl/clone_stock.net.bin`,
+  173 KB) picks stock on **100.000 % of decision rows** at margins 0,
+  0.5, 1 and 2 on both the training rows and the 14,559 validation rows,
+  every head; stock's lead over the best alternative is at least 7.7
+  log-odds (median 15). Round trip: the solver run with the clone on a
+  discriminating cell at a 3e9 budget took 18 decisions, 0 off stock,
+  and its logged `net_*` scores equal the pure-Python reference **bit
+  for bit** on all 18 decision rows (PyTorch in float64 on the same
+  float32 weights within 7e-16 relative); a row's `net_*` columns hold
+  the scores of the *last* decision, so the scores of the decision made
+  from row j are read from row j + 1.
+- **Collector arms and the N-arm report (`tools/rl_collect.py`,
+  `tools/rl_arms.py`).** Two more job flavours: `off` runs the plain
+  solver (no policy, no log; the record comes from the `s` and
+  `c workclock` lines, so its `rows`/`footer` columns are empty and the
+  status counts do not treat that as a cut log) and `net` runs a weights
+  file named by `SAT_POLICY=` in the job's env. `rl_arms.py make` writes
+  an N-arm table on per-cell budgets (`--split val`, B_cell or
+  `--band-budget`), `report` prints solved and tick PAR-2 per arm and per
+  family and the per-cell W comparison against the first arm. One-cell
+  rehearsal `log/rl-armstest-2026-09-18-17-24-46`: off, stock and clone
+  identical (W 334274015, SAT, 2 decisions, 0 off stock).
+- **Baseline 3, the per-instance constant (D.1, `tools/rl_baseline3.py`,
+  `benchmarks/rl/baseline3.json`).** For each of the 25 step-0 constants
+  whose option acts after preprocessing (the 7 sweep, backbone-effort and
+  factor-effort arms are left out: kissat's preprocessing runs
+  congruence, backbone, sweep, substitute, factor and fast elimination,
+  and the features exist only after it, so a D0 choice could not
+  reproduce those arms' sweep outcomes; `--all-arms` puts them back as a
+  diagnostic) a ridge regression of log(tick cost at k_res 7 / stock) on
+  the 113 actor-tier static features (the block the solver computes
+  itself; the critic-tier estimates are offline-only and stay out unless
+  `--critic` asks for a diagnostic), fitted on the 78 training cells of
+  the medium suite; the selector takes the arm with the lowest predicted ratio when
+  it beats stock by a margin, else stock; ridge strength and margin
+  chosen by leave-one-out over the 78 cells with the realized sweep
+  costs, solved count first, then tick PAR-2 (the feature hygiene is
+  refitted inside every fold, so a held-out cell shapes nothing about
+  its own prediction). On train the per-cell
+  oracle is 62 v 55 solved at 0.698× and the best global constant
+  (reorderint 20000) 58 v 55 at 0.986×. LOO picked ridge 1000 with a 0.2
+  margin (0.909×, 58 v 55, 38 of 78 cells moved off stock; the same
+  choices with the 7 preprocessing-time arms offered, none of which it
+  picked): at that
+  strength each arm's regression is close to its intercept, so the
+  selector is mostly the constant with the best mean log ratio on the
+  training cells (reducefrachalf) plus a few others (on the validation
+  split, 65 of 99 cells move: reducefrachalf 42, walkeffort100 14,
+  vivifyeffort50 6, restartmargin5 2, rephaseint500 1). The honest check,
+  the 19 validation medium cells realized from the sweeps: **16 v 16
+  solved, tick PAR-2 1.07× stock** (reorderint 20000 there: 16 v 16,
+  0.97×); with the critic-tier features added the same procedure lost
+  two solves there (14 v 16, 1.19×). The static features carry no
+  per-instance signal at this data size (largest weights about 0.01);
+  the LOO figure is a selection over 48 grid points on the same 78 cells
+  and does not transfer. One constant per cell, not one per knob: only
+  single-constant arms were measured in step 0. The validation-split run
+  (`benchmarks/rl/baseline3_jobs.tsv`: the 65 moved cells with their
+  constant, and all 99 cells with reorderint 20000 and with
+  reducefrachalf, at B_cell, the plain solver with the constant on its
+  command line through the collector's new `SAT_EXTRA_ARGS` passthrough,
+  comma-separated options; stock from the D.3 pass) is queued behind
+  D.3 on the same four cores by `log/b3-waiter-2026-09-18.sh`;
+  `rl_baseline3.py report` prints solved and tick PAR-2 v stock per
+  family when it lands.
+- **D.3 done (2026-09-19).** `log/rl-d3clone-2026-09-18-17-26-05`: the
+  99 validation cells × {off = the plain solver, stock = policy-on-STOCK
+  with logging, clone at margin 1} at `SAT_LIMIT_TICKS = B_cell`, frozen
+  binary `9defe8586fcdeadf`, 4 slots on cores 14-17 next to round 0
+  (tick-budgeted, so the load does not touch the result). **Identical W
+  and identical result on all 99 cells for all three arms** (70 solved
+  each, tick PAR-2 3.6697e12 on every arm); no failure, no anomaly. The
+  plumbing (log, `observe()`, the net's forward pass, margin and mask)
+  is trajectory-neutral before any real learner
+  (`python3 tools/rl_arms.py report log/rl-d3clone-2026-09-18-17-26-05`).
+- **Baseline 3 on the validation split (D.1 result, 2026-09-22).**
+  `log/rl-b3-2026-09-19-08-41-11` (263 jobs, no failure, no anomaly),
+  stock taken from the D.3 pass, 99 cells at B_cell, tick-deterministic:
+
+  | arm | solved | tick PAR-2 v stock |
+  |---|---:|---:|
+  | stock | 70 | 1.000 |
+  | baseline 3: the per-instance constant (65 cells moved) | 69 | 1.008 |
+  | its modal constant, reducefrachalf on every cell | 70 | 0.974 |
+  | **baseline 2: reorderint 20000 on every cell** | **72** | **0.946** |
+
+  The per-instance choice is worse than the single constant it mostly
+  picks (cheaper on 16 of the 65 moved cells, dearer on 27; solved +2,
+  −3), so static features capture none of the step-0 headroom at this
+  data size. The best global constant of step 0 beats stock on the
+  validation split as it did on the medium suite (+2 solved, −5.4 % tick
+  PAR-2; per family +1 on oddball, lockchart, hcp, kakuro and
+  at-least-two, −1 on ncc, circuit-multiplier and timetable): **the
+  epoch policy has to beat reorderint 20000, not stock.**
+  `~/.cache/sat13-rl/venv/bin/python tools/rl_baseline3.py report --d3
+  log/rl-d3clone-2026-09-18-17-26-05 --run log/rl-b3-2026-09-19-08-41-11`.
+
 **Step-0 constant-knob sweeps: headroom (2026-09-16).** Baseline 2 of the
 RL plan's ladder (§6.1): for each knob the scheduler will move, does one
 constant other than stock win on average, and how much is there to gain if
