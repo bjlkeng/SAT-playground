@@ -13,3 +13,7 @@ pyarrow>=14
 #   uv pip install --python ~/.cache/sat13-rl/venv/bin/python torch --index-url https://download.pytorch.org/whl/cpu
 # (2.14.0+cpu installed 2026-09-18)
 torch>=2.4
+# tools/rl/rank.py (E.1) ranks with gradient-boosted trees as well; the
+# XGBRanker wrapper needs scikit-learn, which plain xgboost does not pull in
+xgboost>=3.0
+scikit-learn>=1.4

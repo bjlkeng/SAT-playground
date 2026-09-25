@@ -862,6 +862,89 @@ Decisions first: X_d stays 2^27 and the stage-1 menu is frozen as plan
   per run; the fork children are the same-state counterfactuals the
   ranking learner needs, the wild runs a side line. Plan §11 (2026-09-23)
   has the triage reading.
+- **Per-knob rankers (E.1, 2026-09-24; `tools/rl/rank.py`,
+  `benchmarks/rl/round0_rankers.tsv`, `round0_importance.tsv`).** On the
+  round-0 sibling sets, the state being the parent's observation at the
+  branch decision (cached as `dataset/branch_states.npz`), 5-fold
+  cross-validation grouped by cell inside the training split; per knob
+  the stock-always reference, a bias-only entry order, per-entry linear
+  rankers at five L2 strengths and xgboost rank:pairwise at three sizes
+  (trained on the same ordered pairs as the linear model, one two-item
+  query per pair; a tied score gets half credit for every model, as in
+  the stock-always reference). Held-out pairwise accuracy, best of each
+  family:
+
+  | knob | sets / pairs | stock-always | bias-only | linear | xgboost |
+  |---|---:|---:|---:|---:|---:|
+  | probe | 253 / 1713 | 53.2 | 58.2 | 54.8 | 54.4 |
+  | eliminate | 208 / 1351 | 55.5 | 55.8 | 50.6 | 52.8 |
+  | reduce | 274 / 2162 | 55.6 | 55.2 | 55.1 | 54.8 |
+  | rephase | 151 / 1026 | 53.1 | 49.3 | 51.9 | 51.9 |
+  | **reorder** | 201 / 1247 | 53.2 | 48.2 | **57.4** | **56.8** |
+  | mode | 220 / 566 | 56.0 | 53.9 | 55.3 | 52.5 |
+  | margin | 141 / 368 | 59.2 | 60.6 | 54.6 | 62.8 |
+
+  Sweep effort has 18 labeled sets and is skipped. Another fold draw
+  (the first run, before the folds were tied to the seed and the knob
+  alone) moved single numbers by up to three points, which is the noise
+  of 100-cell folds; reorder is the one knob above both references in
+  every draw. Acting greedily at margin 1 on held-out states, the linear
+  rankers move on 0-6 states per knob except reorder (99 states at
+  L2 = 0.01: 24 better, 26 worse); the trees never clear the margin. The
+  bootstrap ensembles (10 members per knob, in the run's
+  `dataset/rankers_ensemble.npz`) disagree on an alternative's gap over
+  stock by about as much as the gap. The pooled importance is flat (top
+  input 1 % of the weight). **At round-0 size the outcome of a one-epoch
+  deviation is not predictable from the state**, except a small signal on
+  reorder; plan §11 (2026-09-24) lists the options for the go/no-go. The
+  round-1 parent, `benchmarks/rl/round0_rankers.net.bin` (sha256
+  `0c8dfd57c2211ddf...`), was exported by an earlier linear-only run in
+  which every knob's chosen strength was L2 = 1.0; it is kept as the file
+  round 1 ran, and the next round's parent is re-exported from rounds 0
+  and 1 together.
+- **Round 1 (E.5, started 2026-09-24; `tools/rl_round1.py`).** The plan's
+  DAgger loop: the round-0 linear rankers exported as the parent
+  (`tools/rl/rank.py --export`, `benchmarks/rl/round0_rankers.net.bin`,
+  kind-1 heads on the standardized input, 38 KB; it loads, round-trips
+  bit-exact and at margin 0.5 moves off stock on 5 of 17 decisions of a
+  test cell, 0 at margin 1). Cells that yield labels only
+  (`benchmarks/rl/round1_cells.tsv`, 157): the 118 training cells stock
+  solves in 60-1800 s at B_cell, the 19 band solvers at B_cell_band, the
+  12 band timeouts a **7200 s stock probe** solved
+  (`log/rl-band7200-2026-09-24-10-01-29`: 17 of the 86 band timeouts
+  solve at twice the band budget, 12 train and 5 validation, walls
+  3302-6955 s; 69 do not) at 1.5× the probe's work at the solve, and the 8
+  remaining timeouts a round-0 child or wild run solved at 1.5× the band
+  budget with late points. The 52 timeouts nothing ever solved leave
+  fork collection: a child costs the budget left after its fork, so a
+  longer budget doubles the cost there for no label. Steps: the parent's
+  dry run on every cell (`benchmarks/rl/round1_dryrun_jobs.tsv`,
+  `log/rl-r1dry-2026-09-24-16-44-58`, 32 slots, about 93 core-hours),
+  its conversion, the active schedule (per decision and knob the
+  round-0 ensembles' disagreement, the spread across members of each
+  alternative's gap over stock, times the stakes, 1 when the knob's
+  timer fires in the coming epoch else 0.2; three quarters of a cell's
+  points are active and shared equally among the knobs, each taking its
+  highest-scoring free decisions, since the ensembles' regularization
+  differs and raw disagreement is not comparable across knobs, and the
+  last quarter is random; knobs reorder, reduce, probe, rephase, mode;
+  twice round 0's points per cell), then the fork pass with the same
+  parent at 28 slots. The dry run finished 2026-09-24 18:57 (157/157: 58
+  SAT, 73 UNSAT, 26 at the budget, no failure). The first schedule at
+  twice round 0's points projected 9.1 days and was held by the queue's
+  5-day guard; with the point targets trimmed (slow cells decisions/7 in
+  8-32, band solvers 20, probe-solved 12, rescuable 16) the pass is 154
+  cells, 2333 points (reduce 499, mode 491, probe 484, reorder 476,
+  rephase 383), 8350 children, 3601 core-hours, **6.3 projected days at
+  28 slots** (round 0 ran at 0.65 of its projection, so about 4 real
+  days). Launched 2026-09-24 19:01: `log/rl-round1-2026-09-24-19-01-06`,
+  frozen binary `9defe8586fcdeadf`, the parent's weights checksum carried
+  in every job's environment. The committed `benchmarks/rl/round1_jobs.tsv`
+  is the table the pass runs (checked against the run's own copy); the
+  round-0 ensemble it was drawn from was regenerated afterwards (folds
+  and bootstrap on separate streams), so a fresh draw differs in its
+  points, and the launched table is the record. Results go into the E.5
+  bead and here when it ends.
 - **Training scaffold and the stock clone (D.2, `tools/rl/`).** PyTorch
   2.14 CPU in the RL venv (`tools/rl/requirements.txt` has the index
   line). `data.py` loads the decision rows of a converted pass as a

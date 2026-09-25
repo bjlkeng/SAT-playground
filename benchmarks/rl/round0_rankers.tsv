@@ -1,0 +1,72 @@
+# E.1 per-knob rankers on rl-round0-2026-09-18-17-23-27: 5-fold CV grouped by cell (training split only); tools/rl/rank.py
+knob	family	config	sets	cells	pairs	pair_accuracy	acted	better	worse
+probe	stock-always		253	128	1713	0.5321	0	0	0
+probe	bias-only		253	128	1713	0.582	0	0	0
+probe	linear	L2=1.0	253	128	1713	0.5476	6	2	3
+probe	linear	L2=0.3	253	128	1713	0.4921	8	3	4
+probe	linear	L2=0.1	253	128	1713	0.4857	23	6	14
+probe	linear	L2=0.03	253	128	1713	0.4804	77	15	45
+probe	linear	L2=0.01	253	128	1713	0.4839	109	22	60
+probe	xgb	depth=2,rounds=100	253	128	1713	0.5438	0	0	0
+probe	xgb	depth=3,rounds=200	253	128	1713	0.5254	0	0	0
+probe	xgb	depth=3,rounds=400	253	128	1713	0.5044	0	0	0
+eliminate	stock-always		208	116	1351	0.5555	0	0	0
+eliminate	bias-only		208	116	1351	0.5581	0	0	0
+eliminate	linear	L2=1.0	208	116	1351	0.5063	1	0	1
+eliminate	linear	L2=0.3	208	116	1351	0.4967	2	0	2
+eliminate	linear	L2=0.1	208	116	1351	0.4819	7	0	4
+eliminate	linear	L2=0.03	208	116	1351	0.4848	29	8	15
+eliminate	linear	L2=0.01	208	116	1351	0.4907	59	19	26
+eliminate	xgb	depth=2,rounds=100	208	116	1351	0.51	0	0	0
+eliminate	xgb	depth=3,rounds=200	208	116	1351	0.5263	0	0	0
+eliminate	xgb	depth=3,rounds=400	208	116	1351	0.5278	0	0	0
+reduce	stock-always		274	126	2162	0.5564	0	0	0
+reduce	bias-only		274	126	2162	0.5518	0	0	0
+reduce	linear	L2=1.0	274	126	2162	0.5513	0	0	0
+reduce	linear	L2=0.3	274	126	2162	0.5389	1	0	1
+reduce	linear	L2=0.1	274	126	2162	0.5167	9	2	6
+reduce	linear	L2=0.03	274	126	2162	0.5125	24	6	14
+reduce	linear	L2=0.01	274	126	2162	0.5254	67	21	36
+reduce	xgb	depth=2,rounds=100	274	126	2162	0.5476	0	0	0
+reduce	xgb	depth=3,rounds=200	274	126	2162	0.5305	0	0	0
+reduce	xgb	depth=3,rounds=400	274	126	2162	0.5347	0	0	0
+rephase	stock-always		151	89	1026	0.5312	0	0	0
+rephase	bias-only		151	89	1026	0.4932	0	0	0
+rephase	linear	L2=1.0	151	89	1026	0.5195	3	2	1
+rephase	linear	L2=0.3	151	89	1026	0.5166	11	5	5
+rephase	linear	L2=0.1	151	89	1026	0.5146	26	14	12
+rephase	linear	L2=0.03	151	89	1026	0.4951	40	17	19
+rephase	linear	L2=0.01	151	89	1026	0.4737	65	23	34
+rephase	xgb	depth=2,rounds=100	151	89	1026	0.5107	0	0	0
+rephase	xgb	depth=3,rounds=200	151	89	1026	0.5175	0	0	0
+rephase	xgb	depth=3,rounds=400	151	89	1026	0.5195	0	0	0
+reorder	stock-always		201	118	1247	0.5321	0	0	0
+reorder	bias-only		201	118	1247	0.482	0	0	0
+reorder	linear	L2=1.0	201	118	1247	0.5589	2	1	1
+reorder	linear	L2=0.3	201	118	1247	0.5509	6	3	1
+reorder	linear	L2=0.1	201	118	1247	0.5678	20	9	4
+reorder	linear	L2=0.03	201	118	1247	0.5694	62	18	20
+reorder	linear	L2=0.01	201	118	1247	0.5742	99	24	26
+reorder	xgb	depth=2,rounds=100	201	118	1247	0.5642	0	0	0
+reorder	xgb	depth=3,rounds=200	201	118	1247	0.5682	0	0	0
+reorder	xgb	depth=3,rounds=400	201	118	1247	0.5621	0	0	0
+mode	stock-always		220	120	566	0.5601	0	0	0
+mode	bias-only		220	120	566	0.5389	0	0	0
+mode	linear	L2=1.0	220	120	566	0.553	1	0	1
+mode	linear	L2=0.3	220	120	566	0.5247	10	3	5
+mode	linear	L2=0.1	220	120	566	0.5442	24	8	11
+mode	linear	L2=0.03	220	120	566	0.5459	48	15	24
+mode	linear	L2=0.01	220	120	566	0.5318	66	22	33
+mode	xgb	depth=2,rounds=100	220	120	566	0.5247	0	0	0
+mode	xgb	depth=3,rounds=200	220	120	566	0.5247	0	0	0
+mode	xgb	depth=3,rounds=400	220	120	566	0.5106	0	0	0
+margin	stock-always		141	83	368	0.5924	0	0	0
+margin	bias-only		141	83	368	0.606	0	0	0
+margin	linear	L2=1.0	141	83	368	0.5462	1	0	1
+margin	linear	L2=0.3	141	83	368	0.5272	3	0	3
+margin	linear	L2=0.1	141	83	368	0.4946	12	1	11
+margin	linear	L2=0.03	141	83	368	0.5027	34	11	22
+margin	linear	L2=0.01	141	83	368	0.5	42	14	26
+margin	xgb	depth=2,rounds=100	141	83	368	0.6277	0	0	0
+margin	xgb	depth=3,rounds=200	141	83	368	0.5734	0	0	0
+margin	xgb	depth=3,rounds=400	141	83	368	0.5679	0	0	0

@@ -1,0 +1,8 @@
+{
+ "net": "/home/bojji/code/SAT-playground/benchmarks/rl/round0_rankers.net.bin",
+ "net_sha256": "0c8dfd57c2211ddf8a5202a2f86f070695971769193987131f66a141cffe4355",
+ "margin": 0.5,
+ "cells": "/home/bojji/code/SAT-playground/benchmarks/rl/round1_cells.tsv",
+ "cells_sha256": "37adb77325c3ac6441df57d0ec7a428f0eb790611316c6762c98793ce8e3080e",
+ "epochs": null
+}

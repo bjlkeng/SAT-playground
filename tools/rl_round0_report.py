@@ -9,9 +9,12 @@ SAT-playground-p9m.14 and the ranking labels of E.1.
 
 From a converted round-0 pass (tools/rl_dataset.py) this writes one row per
 fork child, `<out>_children.tsv`, with its sibling set, the parent's own
-outcome at the same budget (the parent IS the stock continuation from the
-branch point: same seed, same trajectory) and the child's label against
-it, and prints:
+outcome at the same budget (in round 0 the parent IS the stock
+continuation from the branch point: same seed, same trajectory; in later
+rounds it runs a learned policy, so the table also records the entry the
+parent itself took at the branch decision, `parent_entry`, read from its
+`act_taken_*` value at that decision row: the fork mode forks every other
+entry of the menu) and the child's label against it, and prints:
 
   1. Labels. Per cell class, the sibling sets and how many carry a
      terminal ordering (some member solved). A set where the parent and
@@ -33,8 +36,10 @@ it, and prints:
      and the median work ratio among both-solved pairs; plus the rescue
      rate on sets whose parent did not solve. Reported separately for
      the timer-due and the uniform branch points (the schedule marks the
-     due ones), which is the check that the delay entries act where the
-     schedule put them.
+     due ones with `*`; a round-1 schedule marks its actively chosen
+     points the same way, so there the split reads active v random),
+     which is the check that the delay entries act where the schedule
+     put them.
   3. Flavours. The segmented and jitter runs of a cell against its fork
      parent (the stock run at the same budget): outcome changes and the
      spread of the work ratio, next to the same numbers for the children
@@ -61,10 +66,16 @@ sys.path.insert(0, str(ROOT / "tools"))
 from rl_split import load_split  # noqa: E402
 
 KNOBS = ("probe", "eliminate", "reduce", "rephase", "reorder", "mode", "margin", "sweep")
+# round 0's classes in report order; a later round's classes (round 1 adds
+# rescuable and probe_solved) follow in name order
 CLASSES = ("fast", "slow", "band_solved", "band_timeout")
-CHILD_COLUMNS = ("stem", "family", "cls", "set_id", "decision", "knob", "due", "entry", "child_run",
+CHILD_COLUMNS = ("stem", "family", "cls", "set_id", "decision", "knob", "due", "entry", "parent_entry", "child_run",
                  "child_solved", "child_work", "child_cpu_s", "parent_solved", "parent_work", "budget",
                  "labeled", "label", "work_ratio")
+ACT_COLUMN = {"probe": "act_taken_interval_probe", "eliminate": "act_taken_interval_eliminate",
+              "reduce": "act_taken_interval_reduce", "rephase": "act_taken_interval_rephase",
+              "reorder": "act_taken_interval_reorder", "mode": "act_taken_interval_mode",
+              "margin": "act_taken_restart_margin", "sweep": "act_taken_effort_sweep"}
 KNOB_COLUMNS = ("knob", "entry", "n", "better", "worse", "tie", "censored", "beat_frac", "lose_frac", "rescued",
                 "parent_unsolved", "ratio_median", "ratio_p10", "ratio_p90")
 
@@ -187,6 +198,21 @@ def main(argv: list[str]) -> int:
         return 1
 
     # --- 1. the children table -------------------------------------------
+    # the entry the parent itself took at each branch decision (stock in
+    # round 0; a learned parent's choice later), from its decision rows
+    parent_taken: dict[tuple[str, int, str], float] = {}
+    by_parent: dict[str, set] = defaultdict(set)
+    for i in range(n):
+        if r["is_child"][i]:
+            by_parent[r["parent_run_id"][i].split("/")[-1]].add((r["stem"][i], int(r["branch_decision"][i]),
+                                                                  r["branch_knob"][i]))
+    for key, want in sorted(by_parent.items()):
+        cols = ["is_decision", "is_child"] + sorted({ACT_COLUMN[k] for _, _, k in want})
+        t = pq.read_table(run / "dataset" / "rows" / f"{key}.parquet", columns=cols).to_pydict()
+        idx = np.nonzero(np.array(t["is_decision"], dtype=bool) & ~np.array(t["is_child"], dtype=bool))[0]
+        for stem, d, knob in want:
+            if d < len(idx):
+                parent_taken[(stem, d, knob)] = float(t[ACT_COLUMN[knob]][idx[d]])
     children = []
     sets: dict[tuple[str, int], list[dict]] = defaultdict(list)
     for i in range(n):
@@ -198,7 +224,9 @@ def main(argv: list[str]) -> int:
         row = {
             "stem": stem, "family": r["family"][i], "cls": cls_of.get(stem, "?"), "set_id": f"{stem}:{d}",
             "decision": d, "knob": r["branch_knob"][i], "due": int(bool(due_of.get((stem, d), False))),
-            "entry": r["branch_entry"][i], "child_run": r["run_id"][i].split("/")[-1],
+            "entry": r["branch_entry"][i],
+            "parent_entry": parent_taken.get((stem, d, r["branch_knob"][i]), ""),
+            "child_run": r["run_id"][i].split("/")[-1],
             "child_solved": int(bool(r["solved"][i]) and r["run_id"][i] not in resource_stops),
             "child_work": finite_int(r["work_end"][i]),
             "child_cpu_s": round(finite_int(r["cpu_ns_end"][i]) / 1e9, 1),
@@ -254,7 +282,7 @@ def main(argv: list[str]) -> int:
         per_cls[c]["parent_unsolved"] += 0 if rows[0]["parent_solved"] else 1
         per_cls[c]["children"] += len(rows)
         per_cls[c]["child_solved"] += sum(x["child_solved"] for x in rows if x["label"] != "capped")
-    for c in CLASSES:
+    for c in list(CLASSES) + sorted(set(per_cls) - set(CLASSES)):
         s = per_cls.get(c)
         if not s:
             continue

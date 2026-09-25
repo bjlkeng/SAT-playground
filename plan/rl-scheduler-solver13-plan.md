@@ -1100,6 +1100,72 @@ source of truth; every bead points back to its section.
   (the timer fires rarely) although its interval as a global constant is
   baseline 2; margin moves the work a lot but mostly for the worse. The
   ranking learners of E.1 decide what is predictable.
+- 2026-09-24 (E.1, `SAT-playground-p9m.10.1`; `tools/rl/rank.py`,
+  `benchmarks/rl/round0_rankers.tsv`, `round0_importance.tsv`): per-knob
+  rankers on the round-0 sibling sets (141-274 labeled sets, 368-2162
+  ordered pairs per knob; sweep effort has 18 and is skipped), the state
+  being the parent's 251-entry observation at the branch decision,
+  5-fold cross-validation grouped by cell inside the training split
+  (round 0 has no validation-split cells). Held-out pairwise accuracy:
+  **stock-always 53-59 %, bias-only (an entry order, no state) 48-61 %,
+  the best per-entry linear ranker 51-57 %, the best xgboost
+  rank:pairwise 52-63 %**, i.e. no state-based model beats the state-free
+  references beyond noise on probe, eliminate, reduce, rephase, mode or
+  margin (another fold draw moves single numbers by up to three points);
+  **reorder is the one knob where the state helps** (linear 57.4 v 53.2
+  stock-always v 48.2 bias-only; xgboost 56.8, in every draw). Acting
+  greedily at margin 1 on held-out states, the linear rankers move on 0-6
+  states per knob except reorder (99 states, 24 better v 26 worse) and
+  the trees never clear the margin; the bootstrap ensembles (10 members,
+  saved as `dataset/rankers_ensemble.npz` in the run) disagree on an
+  alternative's gap over stock by about as much as the gap itself. The
+  pooled importance is flat (the top input,
+  the BFS failed-literal fraction, carries 1 % of the weight). Reading:
+  **at round-0 size the outcome of a one-epoch deviation is not
+  predictable from the state**; the labels are dominated by kissat's
+  equilibrium and chaotic sensitivity (§9). Baseline 2 (reorderint 20000,
+  72 v 70 solved and 0.946× on the validation split) stands as the bar
+  and nothing learned so far approaches it. Options for the go/no-go
+  (`SAT-playground-p9m.16`, brought forward from "after round 1"): (a) a
+  round 1 with the stock parent (the clone is stock) and twice the
+  branch points on the knobs with signal or effect (reorder, reduce,
+  probe, rephase, mode) on the labeled cell classes only (the 60-1800 s
+  solves and the band solvers; the band timeouts gave 494 all-censored
+  sets of 528), about 1.5 host-days, to test whether accuracy rises with
+  data; (b) narrow the target to reorder, the one knob with a learnable
+  signal and the one whose global constant already wins; (c) stop the
+  epoch-policy line and promote baseline 2 through the 400-cell check.
+- 2026-09-24 (owner's decision, `SAT-playground-p9m.16` and `.10.5`): the
+  DAgger loop continues as §6.2 item 4 says, decision after round 1, not
+  after round 0. Round 1 = the round-0 linear rankers as the parent
+  (`benchmarks/rl/round0_rankers.net.bin`, kind-1 heads) at margin 0.5
+  so it visits its own states; branch points chosen offline from the
+  parent's dry run by the round-0 ensembles' disagreement times timer-due
+  stakes, an equal share of the active points per knob (raw disagreement
+  is not comparable across ensembles of different regularization), a
+  quarter random (§6.1c); knobs reorder, reduce, probe, rephase, mode;
+  only cells that yield labels. **The band timeouts, probed:** a
+  7200 s stock pass on the 86 band timeouts
+  (`log/rl-band7200-2026-09-24-10-01-29`, 162 core-hours) solves 17 (12
+  train, 5 validation; walls 3302-6955 s), 69 stay unsolved. Rerunning
+  all 66 train timeouts at a longer budget was rejected: a child costs the
+  budget left after its fork, so the cost doubles, and on the 52 cells no
+  child, wild run or longer stock run ever solved there is no label at
+  any affordable budget. Instead the 12 probe solves join round 1 at 1.5×
+  the probe's work at the solve, the 8 remaining band timeouts some
+  round-0 child or wild run solved join at 1.5× the band budget with late
+  points (the round-0 rescues came at 48-100 % of it), and the 52 others
+  leave fork collection. Round-1 cells: 157 (118 slow solves, 19 band
+  solvers, 12 probe-solved, 8 rescuable; `benchmarks/rl/round1_cells.tsv`,
+  `tools/rl_round1.py`). **Launched 2026-09-24 19:01**
+  (`log/rl-round1-2026-09-24-19-01-06`): after the dry run, the schedule
+  at twice round 0's points projected 9.1 host-days and was held by the
+  queue's guard; trimmed to slow decisions/7 (8-32 points), band solvers
+  20, probe-solved 12, rescuable 16, it is 154 cells, 2333 points, 8350
+  children, 3601 core-hours, 6.3 projected days at 28 slots (about 4 real
+  days at round 0's ratio). After it: convert, label with
+  `tools/rl_round0_report.py` against the round-1 schedule, re-run
+  `tools/rl/rank.py` on rounds 0 + 1, and decide (`SAT-playground-p9m.16`).
 
 ---
 
