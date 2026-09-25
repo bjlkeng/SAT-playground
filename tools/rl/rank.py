@@ -41,6 +41,9 @@ and pooled over knobs are written as a table.
     ~/.cache/sat13-rl/venv/bin/python tools/rl/rank.py log/rl-round0-<ts> \\
         [--children benchmarks/rl/round0_children.tsv] [--out benchmarks/rl/round0] [--folds 5] [--boot 10]
         [--knobs probe,reduce,...] [--no-xgb]
+    # rounds aggregated (plan §6.2 item 4): one run per --children table, in order
+    ~/.cache/sat13-rl/venv/bin/python tools/rl/rank.py log/rl-round0-<ts> log/rl-round1-<ts> \\
+        --children benchmarks/rl/round0_children.tsv --children benchmarks/rl/round1_children.tsv --out benchmarks/rl/round01
 
 Writes <out>_rankers.tsv (per knob and model, the cross-validated numbers),
 <out>_importance.tsv (top inputs), and <run>/dataset/rankers_ensemble.npz.
@@ -155,16 +158,18 @@ def better(a, b, margin: float) -> bool:
 
 
 def build_groups(children: list[dict], knob: str, key: dict, margin: float):
-    """Per labeled sibling set of the knob: (state index, items [(entry index, outcome)], ordered pairs, stem)."""
+    """Per labeled sibling set of the knob: (state index, items [(entry index, outcome)], ordered pairs, stem).
+    A set is one branch decision of one run (rows carry `run_idx` when
+    several rounds are aggregated; the same cell appears in each round)."""
     menu = MENU[knob]
     stock_i = menu.index(1.0)
-    sets: dict[tuple[str, int], list[dict]] = defaultdict(list)
+    sets: dict[tuple[int, str, int], list[dict]] = defaultdict(list)
     for r in children:
         if r["knob"] == knob and r["labeled"] == "1" and r["label"] != "capped":
-            sets[(r["stem"], int(r["decision"]))].append(r)
+            sets[(int(r.get("run_idx", 0)), r["stem"], int(r["decision"]))].append(r)
     groups = []
-    for (stem, d), rs in sets.items():
-        si = key.get((stem, d))
+    for (ri, stem, d), rs in sets.items():
+        si = key.get((ri, stem, d))
         if si is None:
             continue
         # the parent's continuation carries the entry the parent took there
@@ -284,8 +289,9 @@ def stock_always(groups: list, stock_i: int):
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("run_dir")
-    ap.add_argument("--children", default=str(ROOT / "benchmarks" / "rl" / "round0_children.tsv"))
+    ap.add_argument("run_dirs", nargs="+", metavar="run_dir", help="converted pass(es), one per --children table")
+    ap.add_argument("--children", action="append", default=None,
+                    help="children table of the matching run (default benchmarks/rl/round0_children.tsv for one run)")
     ap.add_argument("--out", default=str(ROOT / "benchmarks" / "rl" / "round0"))
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--boot", type=int, default=10, help="bootstrap rankers per knob (0 = none)")
@@ -296,14 +302,34 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--export", help="write the chosen linear rankers as a solver weights file (the next round's parent)")
     args = ap.parse_args(argv)
-    run = Path(args.run_dir).resolve()
+    runs = [Path(d).resolve() for d in args.run_dirs]
+    tables = args.children or [str(ROOT / "benchmarks" / "rl" / "round0_children.tsv")]
+    if len(tables) != len(runs):
+        raise SystemExit(f"{len(runs)} run(s) but {len(tables)} --children table(s): give one table per run, in order")
+    run = runs[0]                     # the ensemble and the cache of the first run name the outputs
     torch.set_num_threads(4)
     norm = load_norm()
-    with open(args.children, newline="") as f:
-        children = [r for r in csv.DictReader((ln for ln in f if not ln.startswith("#")), dialect="excel-tab")]
+    # every run's states are its own (a branch decision of round 1 is a
+    # state of the round-1 parent); the rows carry the run index and the
+    # state key is (run index, stem, decision)
+    children: list[dict] = []
+    Z_parts, key = [], {}
+    offset = 0
+    for ri, (rd, table) in enumerate(zip(runs, tables)):
+        with open(table, newline="") as f:
+            rows = [r for r in csv.DictReader((ln for ln in f if not ln.startswith("#")), dialect="excel-tab")]
+        for r in rows:
+            r["run_idx"] = ri
+        st = branch_states(rd, rows, norm.names)
+        for (stem, d), i in st["key"].items():
+            key[(ri, stem, d)] = offset + i
+        Z_parts.append(((st["X"].astype(np.float64) - norm.mean) / norm.std).astype(np.float32))
+        offset += len(st["X"])
+        children += rows
+        print(f"  {rd.name}: {len(rows)} children, {len(st['X'])} branch-point states")
     assert_training_only(sorted({r["stem"] for r in children}))
-    st = branch_states(run, children, norm.names)
-    Z = ((st["X"].astype(np.float64) - norm.mean) / norm.std).astype(np.float32)
+    Z = np.concatenate(Z_parts, axis=0)
+    st = {"key": key}
     n_in = Z.shape[1]
     # two random streams: the folds depend on the seed and the knob only,
     # the bootstrap resamples on a second stream, so turning the ensemble
@@ -314,7 +340,7 @@ def main(argv: list[str]) -> int:
     importance: dict[str, np.ndarray] = {}
     ensemble: dict[str, np.ndarray] = {}
     exported: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-    print(f"{run.name}: {len(children)} children, {len(Z)} branch-point states, {n_in} inputs; "
+    print(f"{' + '.join(r.name for r in runs)}: {len(children)} children, {len(Z)} branch-point states, {n_in} inputs; "
           f"{args.folds}-fold cross-validation grouped by cell inside the training split")
     for knob in args.knobs.split(","):
         groups, stock_i, E = build_groups(children, knob, st["key"], args.margin)
@@ -394,8 +420,8 @@ def main(argv: list[str]) -> int:
         print("nothing fitted (every requested knob below the minimum set count): no table written")
         return 2
     with open(f"{out}_rankers.tsv", "w", newline="") as f:
-        f.write(f"# E.1 per-knob rankers on {run.name}: {args.folds}-fold CV grouped by cell (training split only); "
-                f"tools/rl/rank.py\n")
+        f.write(f"# E.1 per-knob rankers on {' + '.join(r.name for r in runs)}: {args.folds}-fold CV grouped by cell "
+                f"(training split only); tools/rl/rank.py\n")
         w = csv.DictWriter(f, fieldnames=list(RANKER_COLUMNS), dialect="excel-tab", lineterminator="\n")
         w.writeheader()
         for r in rows_out:
