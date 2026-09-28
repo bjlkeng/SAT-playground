@@ -943,8 +943,43 @@ Decisions first: X_d stays 2^27 and the stage-1 menu is frozen as plan
   is the table the pass runs (checked against the run's own copy); the
   round-0 ensemble it was drawn from was regenerated afterwards (folds
   and bootstrap on separate streams), so a fresh draw differs in its
-  points, and the launched table is the record. Results go into the E.5
-  bead and here when it ends.
+  points, and the launched table is the record. **Done 2026-09-28
+  00:14 (3 d 5 h)**: 154/154 parents (55 SAT, 73 UNSAT, 26 at the
+  budget), 8350 children (2067 SAT, every model verified; 4048 UNSAT;
+  2235 at the budget), zero failures, zero anomalies. Labels
+  (`tools/rl_round0_report.py` against the round-1 schedule;
+  `benchmarks/rl/round1_children.tsv`, `round1_knobs.tsv`): 2333 sibling
+  sets, 1882 labeled (81 %, against 78 % in round 0; the rescuable
+  timeouts 68 of 128, the probe-solved 128 of 144). A child beats the
+  parent on 27-40 % of ordered pairs and loses on 36-47 %, as in round 0;
+  rescues probe 76 of 456 parent-unsolved sets, reduce 57 of 536,
+  rephase 46 of 372, reorder 43 of 476, mode 32 of 242. **The active
+  selection worked as a selector of informative states**: a deviation
+  moved the outcome on 83 % of the ordered pairs at actively chosen
+  points against 55 % at the random quarter. The parent left stock at
+  1-2 % of the branch points (rephase at 0.5 on 43 sets, the rest a
+  handful), so round 1's states are close to stock's. **Retraining on
+  rounds 0 + 1** (`tools/rl/rank.py` on both passes;
+  `benchmarks/rl/round01_rankers.tsv`, `round01_importance.tsv`,
+  `round01_rankers.net.bin`; 16,158 children, 4607 branch-point states,
+  the same cell-grouped 5-fold cross-validation): held-out pairwise
+  accuracy, stock-always / bias-only / best linear / best xgboost:
+
+  | knob | sets, pairs (round 0 → 0 + 1) | stock-always | bias-only | linear | xgboost |
+  |---|---:|---:|---:|---:|---:|
+  | probe | 253 → 641, 4499 | 51.4 | 53.9 | 53.5 | 53.7 |
+  | reduce | 274 → 664, 5201 | 54.1 | 55.2 | 54.4 | 54.8 |
+  | rephase | 151 → 438, 3009 | 52.2 | 51.3 | 53.3 | 51.7 |
+  | reorder | 201 → 535, 3439 | 53.1 | 52.6 | 53.8 | 54.8 |
+  | mode | 220 → 579, 1497 | 53.6 | 53.2 | 54.6 | 55.4 |
+
+  Eliminate, margin and sweep had no round-1 points and are unchanged.
+  **With 2.5-3× the labels, no state-based ranker beats the state-free
+  references beyond noise on any knob, and reorder's round-0 lead (57.4
+  v 53.2) shrank to 53.8 v 53.1.** The only ranker acting at margin 1 on
+  more than a handful of held-out states is rephase at the weakest
+  regularization (122 states: 56 better, 44 worse, not significant).
+  Plan §11 (2026-09-28) records this as the §9 decision point.
 - **Training scaffold and the stock clone (D.2, `tools/rl/`).** PyTorch
   2.14 CPU in the RL venv (`tools/rl/requirements.txt` has the index
   line). `data.py` loads the decision rows of a converted pass as a

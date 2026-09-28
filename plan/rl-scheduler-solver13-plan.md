@@ -1166,6 +1166,32 @@ source of truth; every bead points back to its section.
   days at round 0's ratio). After it: convert, label with
   `tools/rl_round0_report.py` against the round-1 schedule, re-run
   `tools/rl/rank.py` on rounds 0 + 1, and decide (`SAT-playground-p9m.16`).
+- 2026-09-28 (round 1 done and the retraining; `SAT-playground-p9m.10.5`):
+  round 1 ran 3 d 5 h (`log/rl-round1-2026-09-24-19-01-06`: 154 parents,
+  8350 children, every SAT model verified, zero failures, zero
+  anomalies), 2333 sibling sets of which 1882 labeled; a child beats the
+  parent on 27-40 % of ordered pairs and loses on 36-47 %, as in round 0;
+  the actively chosen points moved the outcome on 83 % of their pairs
+  against 55 % at the random quarter, so the disagreement × stakes rule
+  does select informative states; the parent left stock on 1-2 % of its
+  branch points. **Retraining on rounds 0 + 1** (`benchmarks/rl/
+  round01_rankers.tsv`; 16,158 children, 4607 states; per knob 2.5-3×
+  round 0's sets and pairs): held-out pairwise accuracy, stock-always /
+  bias-only / best linear / best xgboost: probe 51.4 / 53.9 / 53.5 /
+  53.7, reduce 54.1 / 55.2 / 54.4 / 54.8, rephase 52.2 / 51.3 / 53.3 /
+  51.7, reorder 53.1 / 52.6 / 53.8 / 54.8, mode 53.6 / 53.2 / 54.6 / 55.4
+  (eliminate and margin had no round-1 points and are unchanged). **More
+  data did not help: no knob's state-based ranker beats the state-free
+  references beyond noise, and reorder's round-0 lead (57.4 v 53.2)
+  shrank to 53.8 v 53.1 with 2.7× the pairs.** The only ranker that acts
+  at margin 1 on more than a handful of held-out states is rephase at
+  the weakest regularization (122 states, 56 better v 44 worse, not
+  significant). This is the §9 decision point ("if the ranking learner
+  does not beat baseline (2)/(3) after round 1, narrow the target"):
+  after two rounds, 16 k children and 4.6 k labeled states, the outcome
+  of a one-epoch deviation is not predictable from the observation
+  vector by a linear or a tree ranker, on any of the five knobs. Options
+  recorded in `SAT-playground-p9m.16`.
 
 ---
 
