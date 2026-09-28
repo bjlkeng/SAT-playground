@@ -1192,6 +1192,31 @@ source of truth; every bead points back to its section.
   of a one-epoch deviation is not predictable from the observation
   vector by a linear or a tree ranker, on any of the five knobs. Options
   recorded in `SAT-playground-p9m.16`.
+- 2026-09-28 (owner's decision on the go/no-go, first step): not another
+  one-epoch round. The one plan option the data supports is the parked
+  "hold delay entries for several epochs" (§9): a one-epoch change is a
+  nudge whose outcome is a coin flip, while the segmented runs, which
+  hold changes for many epochs, changed 62-72 % of outcomes against
+  49 % for a one-epoch child. Before any round 2, a **hold-length pilot**
+  (`SAT-playground-p9m.10.14` E.6): the solver's fork mode gains
+  `SAT_POLICY_BRANCH_HOLD=K` (a child puts its entry back at each of its
+  next K−1 decisions, masked for the mode of that moment, then returns
+  to the parent's policy; default 1, the previous behaviour; a child's
+  header records `hold`), and 20 training cells (one per family, 30-263
+  decisions, B_cell ≤ 6e10) fork two nearby points per knob for probe,
+  reduce and mode (30/34, 50/54, 70/74 % of the stock run's decisions)
+  at holds 1, 4 and 16, 60 fork jobs and 1200 children
+  (`tools/rl_hold_pilot.py`, `benchmarks/rl/holdpilot_jobs.tsv`, about
+  7 hours). The readout is the agreement of the label between the two
+  nearby points of one cell and knob per hold, **above its chance
+  level**: the same agreement after re-pairing the second point's
+  children across the cells of the same knob, which keeps how often the
+  entry helps or hurts at that hold (a hold that hurts more often raises
+  raw agreement by itself, so raw agreement is not the readout). If the
+  excess over chance rises with the hold, a held change has a consistent
+  direction and a full round at that hold is worth its 3 days; if it
+  stays near zero at every hold, the epoch-policy line stops there and
+  baseline 2 goes through the gates.
 
 ---
 

@@ -206,6 +206,8 @@ fn fork_mode_is_refused_with_a_proof_or_without_a_log_and_bad_settings_are_error
         ("SAT_POLICY_BRANCH_ACTIONS", "probe=3"),
         ("SAT_POLICY_BRANCH_JOBS", "0"),
         ("SAT_POLICY_BRANCH_JOBS", "1000"),
+        ("SAT_POLICY_BRANCH_HOLD", "0"),
+        ("SAT_POLICY_BRANCH_HOLD", "many"),
     ] {
         let mut env = vec![("SAT_POLICY_LOG", log.to_str().unwrap()), ("SAT_POLICY_BRANCH", "0:probe"), ("SAT_LIMIT_TICKS", TICKS)];
         env.retain(|(key, _)| *key != k);
@@ -353,4 +355,59 @@ fn a_killed_parent_takes_its_children_with_it() {
             assert!(cf.contains("\"reason\":\"signal\"") || cf.contains("\"reason\":\"solve\""), "child {}.{}: {}", d, i, cf);
         }
     }
+}
+
+/// A column of f64 rows (`act_*`, `dec_*`): policy_log.py prints them as floats.
+fn frows_of(log: &Path, col: &str) -> Vec<f64> {
+    let py = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/policy_log.py");
+    let o = std::process::Command::new("python3")
+        .arg(py)
+        .arg(log)
+        .arg("--tail")
+        .arg("100000")
+        .arg("--columns")
+        .arg(col)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&o.stdout).into_owned();
+    text.lines().skip_while(|l| !l.starts_with(col)).skip(1).filter_map(|l| l.trim().parse::<f64>().ok()).collect()
+}
+
+#[test]
+fn a_child_keeps_its_entry_for_the_hold_and_the_parent_is_untouched() {
+    // Decision 2 forks one reduce child at 2x; hold 1 (the default) covers
+    // the branch epoch only, hold 3 the next two decisions as well. X_d is
+    // four X_o here, so an epoch is four boundary rows: the child's row 0
+    // is the branch state, then rows 1-4 the branch epoch, 5-8 the next
+    // decision's epoch, and so on; `act_interval_reduce` is the action in
+    // force during the epoch ending at each row.
+    let fx = Fixture::new("policy-fork-hold");
+    let cnf = fx.path("r3.cnf");
+    random_3sat(250, 4.26, 1, &cnf);
+    let mut acts = Vec::new();
+    let mut parents = Vec::new();
+    for (name, hold) in [("h1", "1"), ("h3", "3")] {
+        let log = fx.path(&format!("{}.log", name));
+        let env = [
+            ("SAT_POLICY", "stock"),
+            ("SAT_POLICY_EPOCH_TICKS", EPOCHS),
+            ("SAT_POLICY_LOG", log.to_str().unwrap()),
+            ("SAT_LIMIT_TICKS", "30000000"),
+            ("SAT_POLICY_BRANCH", "2:reduce"),
+            ("SAT_POLICY_BRANCH_ACTIONS", "reduce=2"),
+            ("SAT_POLICY_BRANCH_HOLD", hold),
+        ];
+        parents.push(run(&cnf, &[], &env));
+        let child_log = fx.path(&format!("{}.log.b2.0", name));
+        let (h, _) = header_and_footer(&child_log);
+        assert!(h.contains(&format!("\"masked_to_parent\":false,\"hold\":{}}}", hold)), "{}", h);
+        acts.push(frows_of(&child_log, "act_interval_reduce"));
+    }
+    common::assert_same_trajectory(&parents[0], &parents[1], "the hold is a child property: parents identical");
+    let (h1, h3) = (&acts[0], &acts[1]);
+    assert!(h1.len() > 20 && h3.len() > 20, "{} {}", h1.len(), h3.len());
+    let doubled = |v: &Vec<f64>| v.iter().take_while(|&&a| a == 2.0).count();
+    assert_eq!(doubled(h1), 5, "hold 1: the branch row and the branch epoch's four rows: {:?}", &h1[..12]);
+    assert_eq!(doubled(h3), 13, "hold 3: the branch row and three epochs of four rows: {:?}", &h3[..16]);
+    assert!(h1[5..].iter().all(|&a| a == 1.0) && h3[13..].iter().all(|&a| a == 1.0), "stock after the hold");
 }

@@ -138,6 +138,7 @@ Environment (read by the binary itself, so `run.sh`, the harness and
 | `SAT_POLICY_BRANCH` | `D:knob[,D:knob...]` | fork mode (A.8): at decision D (0 = D0, each D at most once) fork one child per alternative entry of the knob's menu (probe, eliminate, reduce, rephase, reorder, mode, margin, sweep); needs `SAT_POLICY_LOG` and `SAT_LIMIT_TICKS` (children stop on the inherited budget); refused with a proof or `-o` file |
 | `SAT_POLICY_BRANCH_ACTIONS` | `knob=e\|e[;knob=e\|e]` | restrict the entries forked per knob (menu values such as `0\|0.5\|2\|4`); the parent's own entry is allowed here (a stock child is the fork test) |
 | `SAT_POLICY_BRANCH_JOBS` | 1..64 | live children per parent (default 4); the parent blocks at a branch point until a child exits (wall, not ticks) |
+| `SAT_POLICY_BRANCH_HOLD` | 1..1024 | decision epochs a child keeps its entry in force (default 1: the branch epoch only); at each of its next K−1 decisions the child puts the same entry back, masked for the mode of that moment, whatever the parent's policy would choose, then returns to the parent's policy; recorded as `hold` in the child's header |
 | `SAT_POLICY_EPOCH_TICKS` | `X_o[,X_d]` | observation and decision epochs in `search_ticks`; default `8388608,134217728` (2^23, 2^27); `X_d` defaults to 16 × `X_o` and must be an integer multiple of it (decisions are checked at observation boundaries) |
 | `SAT_POLICY_SEED` | integer | the policy's own generator seed (default 0); never touches the solver's `--seed` stream |
 | `SAT_POLICY_TEMP` | number > 0 | spread of the random menus around stock: weight exp(−distance/temp), so 0.2 is almost always stock and 100 is uniform (default 1.0) |
@@ -980,6 +981,26 @@ Decisions first: X_d stays 2^27 and the stage-1 menu is frozen as plan
   more than a handful of held-out states is rephase at the weakest
   regularization (122 states: 56 better, 44 worse, not significant).
   Plan §11 (2026-09-28) records this as the §9 decision point.
+- **Hold-length pilot (E.6, `SAT-playground-p9m.10.14`, 2026-09-28; `SAT_POLICY_BRANCH_HOLD`,
+  `tools/rl_hold_pilot.py`, `benchmarks/rl/holdpilot_jobs.tsv`).** After
+  round 1, the one plan option the data supports is a deviation held
+  for several epochs. Fork mode gained `SAT_POLICY_BRANCH_HOLD=K`
+  (environment table above; `tests/policy_fork.rs`: a hold-3 child keeps
+  a 2× reduce entry for the branch row and three epochs of rows, a
+  hold-1 child for the branch epoch only, the parents are identical, bad
+  values exit 1; the full suite and the smoke test pass on the rebuilt
+  binary `9e11c2b6e9f65485`). The pilot: 20 training cells, one per
+  family (30-263 decisions, B_cell ≤ 6e10), two nearby branch points per
+  knob for probe, reduce and mode at 30/34, 50/54 and 70/74 % of the
+  stock run's decisions, the same points at holds 1, 4 and 16: 60 fork
+  jobs, 1200 children. Readout per hold: effect size (moved share, beat
+  and lose rates, work-ratio spread) and the agreement of the label
+  between the two nearby points of one cell and knob, printed with its
+  chance level (the same agreement after re-pairing the second point's
+  children across the cells of the same knob, 2000 re-pairings, which
+  keeps how often the entry helps or hurts at that hold) and the excess
+  over it; a hold that hurts more often raises raw agreement by itself,
+  so the excess is the readout. Results below when the pass ends.
 - **Training scaffold and the stock clone (D.2, `tools/rl/`).** PyTorch
   2.14 CPU in the RL venv (`tools/rl/requirements.txt` has the index
   line). `data.py` loads the decision rows of a converted pass as a

@@ -922,7 +922,17 @@ pub fn epoch(solver: &mut Solver) {
 /// Take a decision: choose an action, mask it for the current mode and
 /// configuration, and put it in force.
 pub fn decide(solver: &mut Solver) {
-    let act = choose(solver);
+    let mut act = choose(solver);
+    // A fork child keeps its branch entry in force for `hold` decision
+    // epochs counted from its branch decision (policy_fork.rs); after that
+    // the parent's policy decides. With the default hold of 1 the entry
+    // covered only the branch epoch, so this never fires.
+    if let Some(c) = solver.policy.branching.child.as_ref() {
+        if solver.policy.decisions < c.decision.saturating_add(c.hold) {
+            let (knob, entry) = (c.knob, c.entry);
+            knob.set(&mut act, entry);
+        }
+    }
     let act = mask(solver, act);
     solver.policy.act = act;
     solver.policy.decided = act;

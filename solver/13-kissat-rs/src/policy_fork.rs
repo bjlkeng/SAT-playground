@@ -11,7 +11,11 @@
 // decision D it forks one child per alternative entry of that knob's
 // menu (every entry but the parent's own, or the entries listed for the
 // knob in SAT_POLICY_BRANCH_ACTIONS=<knob>=<e>|<e>[;<knob>=...]). A child
-// holds its entry for that one decision epoch and then returns control
+// holds its entry for one decision epoch by default, or for
+// SAT_POLICY_BRANCH_HOLD=<K> consecutive decision epochs (the same entry
+// is put in force again at each of its next K-1 decisions, masked for
+// the mode of that moment, whatever the parent's policy would choose;
+// a one-shot entry fires once per epoch), and then returns control
 // to the parent's policy (stock, random or the net; the RNG state is
 // inherited on purpose so a random-mode child continues the parent's
 // segment), stops on the tick limit it inherited (`SAT_LIMIT_TICKS`,
@@ -51,6 +55,8 @@ use crate::policy::{
 
 pub const MAX_JOBS: usize = 64;
 pub const DEFAULT_JOBS: usize = 4;
+/// The longest hold: 1024 decision epochs at 2^27 ticks is far past any budget.
+pub const MAX_HOLD: u64 = 1024;
 
 /// The knobs a branch point can vary, in policy_net::HEAD_NAMES order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -143,6 +149,8 @@ pub struct ChildInfo {
     pub parent_rows: u64,
     /// True when masking turned the entry back into the parent's action.
     pub masked_to_parent: bool,
+    /// Decision epochs the entry stays in force (SAT_POLICY_BRANCH_HOLD).
+    pub hold: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -152,6 +160,8 @@ pub struct Branching {
     /// Entries to fork per knob; `None` = every entry but the parent's.
     pub actions: [Option<Vec<f32>>; N_KNOBS],
     pub jobs: usize,
+    /// Decision epochs a child keeps its entry (default 1).
+    pub hold: u64,
     /// Live children (pids) of this parent.
     pub live: [libc::pid_t; MAX_JOBS],
     pub n_live: usize,
@@ -179,6 +189,7 @@ impl Default for Branching {
             schedule: Vec::new(),
             actions: Default::default(),
             jobs: DEFAULT_JOBS,
+            hold: 1,
             live: [0; MAX_JOBS],
             n_live: 0,
             points: 0,
@@ -383,6 +394,13 @@ pub fn init_from_env(p: &mut crate::policy::Policy, taken: &[(&str, &str)], tick
             .filter(|&j| (1..=MAX_JOBS).contains(&j))
             .ok_or_else(|| format!("SAT_POLICY_BRANCH_JOBS='{}': expected 1..{}", v, MAX_JOBS))?;
     }
+    if let Some(v) = env("SAT_POLICY_BRANCH_HOLD") {
+        b.hold = v
+            .parse::<u64>()
+            .ok()
+            .filter(|&h| (1..=MAX_HOLD).contains(&h))
+            .ok_or_else(|| format!("SAT_POLICY_BRANCH_HOLD='{}': expected 1..{}", v, MAX_HOLD))?;
+    }
     b.reserved = taken.iter().map(|(w, p)| (w.to_string(), p.to_string())).collect();
     // Every file a child of this schedule could create is checked now,
     // before any work is done: the whole menu per point, since the entries
@@ -414,14 +432,15 @@ fn child_json(c: &ChildInfo) -> String {
     s.push_str(&format!("{{\"parent_pid\":{},\"parent_log\":", c.parent_pid));
     crate::policy_log::json_escape_into(&c.parent_log, &mut s);
     s.push_str(&format!(
-        ",\"decision\":{},\"epoch\":{},\"knob\":\"{}\",\"entry\":{},\"index\":{},\"parent_rows\":{},\"masked_to_parent\":{}}}",
+        ",\"decision\":{},\"epoch\":{},\"knob\":\"{}\",\"entry\":{},\"index\":{},\"parent_rows\":{},\"masked_to_parent\":{},\"hold\":{}}}",
         c.decision,
         c.epoch,
         c.knob.name(),
         menu_value(c.entry),
         c.index,
         c.parent_rows,
-        c.masked_to_parent
+        c.masked_to_parent,
+        c.hold
     ));
     s
 }
@@ -637,6 +656,7 @@ fn become_child(
         index,
         parent_rows,
         masked_to_parent: act == parent_act,
+        hold: solver.policy.branching.hold,
     };
     solver.policy.branching.child_json = child_json(&info);
     solver.policy.branching.child = Some(info);
