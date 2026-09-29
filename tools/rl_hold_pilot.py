@@ -35,8 +35,18 @@ Each agreement is printed with its chance level (the same statistic after
 re-pairing the second point's rows across the cells of the same knob,
 which keeps how often the entry helps or hurts at that hold) and the
 excess over it, because a hold that hurts more often raises raw agreement
-by itself. If the excess rises with the hold, a longer hold produces
-learnable labels; if it stays near zero, it does not.
+by itself. The last section separates the entry's consistency from the
+parent's: every child is compared with the same parent continuation,
+which is one draw, so a lucky or unlucky parent makes every child of the
+cell land on the same side at both points whatever the entry (the same
+statistic between different entries, and between entries on opposite
+sides of stock, shows that part); the entry's own part is the ordering
+of every pair of sibling entries at a point (a solve beats a timeout,
+else the lower work by more than the margin), compared between the two
+points, overall, per knob and by run length, against relabelings of the
+entries within the cell. That pair agreement is the readout: if its
+excess over chance rises with the hold, a longer hold produces learnable
+labels; if it stays near zero, it does not.
 
     ~/.cache/sat13-rl/venv/bin/python tools/rl_hold_pilot.py make --stock log/rl-stock2025-<ts> \\
         --out benchmarks/rl/holdpilot_jobs.tsv
@@ -222,7 +232,7 @@ def cmd_report(args) -> int:
         cw, pw = finite(r["work_end"][i]), finite(r["work_end"][p])
         rows[key] = {"label": label(child_solved, cw, parent_solved, pw),
                      "ratio": math.log(cw / pw) if child_solved and parent_solved and cw > 0 and pw > 0 else None,
-                     "parent_solved": parent_solved}
+                     "parent_solved": parent_solved, "solved": child_solved, "work": cw}
     print(f"{run.name}: {len(rows)} children with a known outcome, {len({k[1] for k in rows})} cells\n")
     # 1. effect size per hold
     print(f"{'hold':>4s} {'children':>8s} {'moved%':>7s} {'better%':>8s} {'worse%':>7s} {'tie%':>5s} {'cens%':>6s} "
@@ -319,6 +329,156 @@ def cmd_report(args) -> int:
     print("\nreading: 'excess' is the agreement the two nearby points have beyond what the hold's own helps/hurts "
           "rates give at random. Near zero (p not small) at every hold means the two points disagree at random on "
           "whether the entry helps; an excess that grows with the hold means a held change has a consistent direction.")
+    # 3. Is the consistency the entry's or the parent's? Every child of a
+    # cell is compared with the same parent continuation, and that
+    # continuation is one draw: a lucky parent makes every child look worse
+    # at both points, whatever the entry, and an unlucky one makes every
+    # child look better. So the same statistic is taken between DIFFERENT
+    # entries of the two points (and between entries on opposite sides of
+    # stock): agreement there is the parent's, not the entry's. Then the
+    # entry's own part, free of the parent and of any shared shape of a
+    # point's outcomes: every pair of sibling entries is ordered at each
+    # point (a solve beats a timeout, else the lower work by more than the
+    # margin; equal or two timeouts is undecided), and the two points agree
+    # on a pair when they order it the same way. Its chance level shuffles
+    # the entries of the second point WITHIN the cell (`--shuffles` random
+    # relabelings), which keeps that point's outcomes and asks only whether
+    # the entries are attached to them the same way at both points; `p` is
+    # the share of relabelings at or above the observed value. The last
+    # block splits the pair statistic by the cell's stock decision count
+    # (median of the cells present), since a hold is a larger share of a
+    # short run.
+    def sign_of(v):
+        if v["ratio"] is None:
+            return {"worse": 1, "better": -1}.get(v["label"], 0)
+        return 1 if v["ratio"] > log_margin else (-1 if v["ratio"] < -log_margin else 0)
+
+    def order(x, e1, e2):
+        """+1 if entry e1 beats e2 at point x, -1 the reverse, 0 undecided"""
+        a, b = x[e1], x[e2]
+        if a["solved"] != b["solved"]:
+            return 1 if a["solved"] else -1
+        if not a["solved"] or a["work"] <= 0 or b["work"] <= 0:
+            return 0
+        d = math.log(a["work"] / b["work"])
+        return 1 if d < -log_margin else (-1 if d > log_margin else 0)
+
+    def pair_orders(a, b, relabel=None):
+        """(order at A, order at B) for every pair of entries at both points; relabel maps B's entries"""
+        es = sorted(set(a) & set(b))
+        m = relabel or {e: e for e in es}
+        return [(order(a, es[i], es[j]), order(b, m[es[i]], m[es[j]]))
+                for i in range(len(es)) for j in range(i + 1, len(es))]
+
+    def agreement(pairs):
+        both = [(x, y) for x, y in pairs if x and y]
+        return (sum(x == y for x, y in both) / len(both) if both else float("nan")), len(both)
+
+    def parent_stats(pairs):
+        same, diff, opp = [], [], []
+        for a, b in pairs:
+            es = sorted(set(a) & set(b))
+            for e in es:
+                same.append((sign_of(a[e]), sign_of(b[e])))
+                for e2 in es:
+                    if e2 != e:
+                        diff.append((sign_of(a[e]), sign_of(b[e2])))
+                        if (e < 1) != (e2 < 1):
+                            opp.append((sign_of(a[e]), sign_of(b[e2])))
+        return {"same entry, A v B (section 2)": agreement(same), "different entries, A v B": agreement(diff),
+                "opposite-side entries, A v B": agreement(opp)}
+
+    def pair_stat(pairs, relabels=None):
+        out = []
+        for i, (a, b) in enumerate(pairs):
+            out.extend(pair_orders(a, b, relabels[i] if relabels else None))
+        return agreement(out)
+
+    def relabeling(a, b):
+        es = sorted(set(a) & set(b))
+        to = es[:]
+        rng.shuffle(to)
+        return dict(zip(es, to))
+
+    def print_row(hold, name, o, cnt, ch):
+        if not cnt:
+            return
+        mean = sum(ch) / len(ch) if ch else float("nan")
+        pv = sum(1 for x in ch if x >= o) / len(ch) if ch else float("nan")
+        print(f"{hold:4d} {name:<47s} {cnt:5d} {100 * o:9.1f} {100 * mean:8.1f} {100 * (o - mean):+7.1f} {pv:6.2f}")
+
+    def pair_block(hold, name, pairs):
+        o, cnt = pair_stat(pairs)
+        ch = []
+        for _ in range(args.shuffles):
+            x, c = pair_stat(pairs, [relabeling(a, b) for a, b in pairs])
+            if c:
+                ch.append(x)
+        print_row(hold, name, o, cnt, ch)
+
+    print(f"\nis the consistency the entry's or the parent's?")
+    print(f"{'hold':>4s} {'statistic':<47s} {'n':>5s} {'observed%':>9s} {'chance%':>8s} {'excess':>7s} {'p':>6s}")
+    decisions = {}
+    if Path(args.cells).is_file():
+        decisions = {stem: int(c["decisions"]) for stem, c in load_cells(Path(args.cells)).items() if c.get("decisions")}
+    for hold in HOLDS:
+        by = defaultdict(dict)
+        for (h, stem, d, knob, e), v in rows.items():
+            if h == hold:
+                by[(stem, knob)].setdefault(d, {})[e] = v
+        groups = defaultdict(list)          # knob -> [(A, B)] per cell
+        cell_of = defaultdict(list)         # knob -> [stem] in the same order
+        for (stem, knob), decs in by.items():
+            ds = sorted(decs)
+            if len(ds) >= 2:
+                groups[knob].append((decs[ds[0]], decs[ds[1]]))
+                cell_of[knob].append(stem)
+        if not groups:
+            continue
+        # the parent's part: chance by re-pairing across cells within a knob, as in section 2
+        pairs = [ab for g in groups.values() for ab in g]
+        obs = parent_stats(pairs)
+        acc = defaultdict(list)
+        for _ in range(args.shuffles):
+            re_paired = []
+            for g in groups.values():
+                seconds = [b for _, b in g]
+                rng.shuffle(seconds)
+                re_paired.extend(zip((a for a, _ in g), seconds))
+            for name, (val, cnt) in parent_stats(re_paired).items():
+                if cnt:
+                    acc[name].append(val)
+        for name, (o, cnt) in obs.items():
+            print_row(hold, name, o, cnt, acc[name])
+        # the entry's part: sibling pair orderings, chance by relabeling within the cell
+        pair_block(hold, "sibling pair order, A v B", pairs)
+        for knob in sorted(groups):
+            pair_block(hold, f"  {knob}: sibling pair order, A v B", groups[knob])
+        stems = sorted({stem for k in cell_of for stem in cell_of[k]})
+        if decisions and all(stem in decisions for stem in stems) and len(stems) >= 4:
+            med = sorted(decisions[stem] for stem in stems)[len(stems) // 2]
+            for prefix, keep in ((f"  runs under {med} decisions: ", lambda st: decisions[st] < med),
+                                 (f"  runs of {med}+ decisions: ", lambda st: decisions[st] >= med)):
+                sub = [ab for k, g in groups.items() for ab, st in zip(g, cell_of[k]) if keep(st)]
+                if sub:
+                    pair_block(hold, prefix + "sibling pair order", sub)
+        # the parent's common mode: the mean log ratio over all of a cell's children
+        means = {}
+        for (h, stem, d, knob, e), v in rows.items():
+            if h == hold and v["ratio"] is not None:
+                means.setdefault(stem, []).append(v["ratio"])
+        cm = sorted((sum(x) / len(x), stem) for stem, x in means.items())
+        if cm:
+            med_abs = sorted(abs(m) for m, _ in cm)[len(cm) // 2]
+            short = lambda stem: stem.split("-", 1)[-1][:20]
+            print(f"     per-cell mean log ratio of all children: median |mean| {med_abs:.3f}; lowest "
+                  + ", ".join(f"{m:+.2f} {short(stem)}" for m, stem in cm[:2]) + "; highest "
+                  + ", ".join(f"{m:+.2f} {short(stem)}" for m, stem in cm[-2:]))
+    print("\nreading: if 'different entries' and 'opposite-side entries' agree as often as the same entry, the "
+          "agreement is the parent's luck (every child lands on the same side of one parent continuation), not "
+          "the entry's direction. 'sibling pair order' is the entry's own part, free of the parent: whether the "
+          "two points rank the same pairs of entries the same way, against relabelings within the cell. It is "
+          "the readout of the pilot.")
     return 0
 
 
@@ -336,6 +496,7 @@ def main(argv: list[str]) -> int:
     m.set_defaults(func=cmd_make)
     r = sub.add_parser("report")
     r.add_argument("run_dir")
+    r.add_argument("--cells", default=str(CELLS), help="cells table for the decision counts (the run-length split)")
     r.add_argument("--partial", action="store_true", help="peek at a pass that is not DONE (jobs still missing)")
     r.add_argument("--shuffles", type=int, default=2000, help="re-pairings for the chance level (default 2000)")
     r.add_argument("--seed", type=int, default=1, help="seed of the re-pairings (default 1)")

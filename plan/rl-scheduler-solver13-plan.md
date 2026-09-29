@@ -1219,6 +1219,67 @@ source of truth; every bead points back to its section.
   baseline 2 goes through the gates.
 
 ---
+- 2026-09-28 (hold-length pilot result, E.6 `SAT-playground-p9m.10.14`;
+  `log/rl-holdpilot-2026-09-28-14-21-33`, 14:21 to 19:06, 60 fork jobs,
+  1200 children on 20 cells of 31-263 decisions, zero failures and
+  anomalies, every parent solved; `log/holdpilot-report-2026-09-28.txt`
+  from `tools/rl_hold_pilot.py report`). The effect grows with the hold
+  as expected: a child's work differs from the parent's by more than
+  1 % on 67 / 86 / 89 % of children at holds 1 / 4 / 16, the median
+  |log work ratio| is 0.026 / 0.051 / 0.058, and the share that loses
+  rises from 34 to 52 %. The agreement of the label between the two
+  nearby points of one cell and knob is far above chance at every hold
+  (same entry, same sign: +22 / +18 / +25 points over chance), but it is
+  not the entry's: different entries of the same knob, and entries on
+  opposite sides of stock, agree just as often (+24 / +17 / +16 and
+  +24 / +18 / +14). Every child is compared with the same parent
+  continuation, which is one draw, so a lucky parent makes every child
+  look worse at both points and an unlucky one makes every child look
+  better (per cell, the mean log ratio over all children runs from −0.43
+  to +0.54 at hold 16: case8 and jkkk are unlucky parents, ER_400 and
+  oski15a lucky ones). That common part is what labels against the
+  parent carry; the rankers' sibling-pairwise labels do not carry it,
+  which fits their finding nothing at one epoch. The entry's own part is
+  the ordering of sibling pairs (a solve beats a timeout, else the lower
+  work by more than 1 %) compared between the two points, against
+  relabelings of the entries within the cell: at chance at holds 1 and
+  4 (−1 / +3 points, p 0.53 / 0.28) and **+9 points at hold 16** (59 v
+  50 %, p 0.03, 201 pairs): probe +5 (p 0.21), reduce +11 (p 0.04),
+  mode +17 (p 0.16, 15 pairs); runs under 72 decisions (hold 16 is
+  24-52 % of the run) +6 (p 0.15), runs of 72+ decisions (6-22 %) +11
+  (p 0.04). Synthetic checks of the report (independent labels; a
+  per-cell offset; a per-entry direction; a skewed sign balance with the
+  winner drawn afresh at each point) give the expected signatures: raw
+  agreement rises under the offset and the direction, pair agreement
+  under the direction only. **Reading.** A deviation held for one or
+  four epochs has no repeatable preference among the entries; one held
+  for sixteen epochs has a small one: a nearby state orders 59 % of
+  sibling pairs the same way, against 50 % by chance. A caveat of the
+  design: the two points are 4 % of the run apart (1-10 epochs), so at
+  hold 16 their held windows overlap by 6-15 epochs and part of the
+  agreement can be two children running nearly the same experiment; the
+  longer runs, where the overlap is smaller, show the larger agreement,
+  so the overlap does not drive the result, but a second pilot should
+  put the points a hold apart. **What it means for the line.** The
+  one-epoch labels rounds 0 and 1 trained on carry no repeatable
+  preference, which is the mechanism behind E.1's null result; a held
+  entry carries a small one at sixteen epochs. That is thin evidence for
+  a three-host-day round: a ranker that learned the local preference
+  perfectly would order 59 % of pairs right at a nearby state, before
+  any loss from generalizing across cells (E.1's rankers reached 53 % on
+  one-epoch labels against 53 % for the state-free references).
+  **Options** (`SAT-playground-p9m.16`, owner's decision): (a) a second
+  pilot with the points a hold apart, 30-40 training cells of 150+
+  decisions, holds 4, 16 and 32, about 12 h: if the pair agreement at
+  32 clears 65 %, round 2 at that hold; if it stays near 59 % or below,
+  the line closes on two pilots; (b) round 2 at hold 16 now: the round-0
+  design with each child holding its entry for an eighth of the
+  parent's decisions (at least 16; `SAT_POLICY_BRANCH_HOLD` per job),
+  about 3 host-days, then the sibling-pairwise rankers as in E.1; (c)
+  close the epoch-policy line now with the pilot as the answer. The
+  400-cell check of baseline 2 runs either way (launched 2026-09-28,
+  next entry). Recommendation: (a) if the line is to continue, else (c);
+  not (b) on a p 0.03 signal from 20 cells.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

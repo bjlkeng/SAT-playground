@@ -1000,7 +1000,37 @@ Decisions first: X_d stays 2^27 and the stage-1 menu is frozen as plan
   children across the cells of the same knob, 2000 re-pairings, which
   keeps how often the entry helps or hurts at that hold) and the excess
   over it; a hold that hurts more often raises raw agreement by itself,
-  so the excess is the readout. Results below when the pass ends.
+  so the excess is the readout. The report's last section separates the
+  entry's consistency from the parent's (every child is compared with
+  one parent continuation, a single draw): the same agreement between
+  different entries and between entries on opposite sides of stock
+  shows the parent's part; the entry's own part is the ordering of
+  sibling pairs (a solve beats a timeout, else the lower work by more
+  than 1 %) compared between the two points, against relabelings of the
+  entries within the cell.
+  **Result (2026-09-28, `log/rl-holdpilot-2026-09-28-14-21-33`, 14:21
+  to 19:06, zero failures and anomalies, every parent solved;
+  `log/holdpilot-report-2026-09-28.txt`):**
+
+  | hold | moved | better / worse | \|log W ratio\| median | same entry, same sign: excess over chance | different entries | sibling pair order (the entry's own) |
+  |---:|---:|---:|---:|---:|---:|---:|
+  | 1 | 67 % | 33 / 34 % | 0.026 | +22 | +24 | −1 (p 0.53) |
+  | 4 | 86 % | 41 / 46 % | 0.051 | +18 | +17 | +3 (p 0.28) |
+  | 16 | 89 % | 36 / 52 % | 0.058 | +25 | +16 | **+9 (p 0.03)** |
+
+  The raw agreement is the parent's luck: entries on opposite sides of
+  stock agree as often as the same entry (+24 / +18 / +14), and per cell
+  the mean log ratio of all children runs from −0.43 (jkkk, an unlucky
+  parent) to +0.54 (ER_400, a lucky one) at hold 16. Free of that, a
+  deviation held for one or four epochs has no repeatable preference
+  among the entries, and one held for sixteen epochs has a small one
+  (59 v 50 % of sibling pairs ordered the same way at the two points;
+  probe +5, reduce +11, mode +17; runs under 72 decisions +6, runs of 72
+  or more +11). Synthetic checks (independent labels, a per-cell offset,
+  a per-entry direction, a skewed sign balance) give the expected four
+  signatures. Reading, the design caveat (the two points' held windows
+  overlap at hold 16), options and the recommendation: plan §11,
+  2026-09-28.
 - **Training scaffold and the stock clone (D.2, `tools/rl/`).** PyTorch
   2.14 CPU in the RL venv (`tools/rl/requirements.txt` has the index
   line). `data.py` loads the decision rows of a converted pass as a
