@@ -1280,6 +1280,29 @@ source of truth; every bead points back to its section.
   400-cell check of baseline 2 runs either way (launched 2026-09-28,
   next entry). Recommendation: (a) if the line is to continue, else (c);
   not (b) on a p 0.03 signal from 20 cells.
+- 2026-09-28, late evening (owner's decision on the pilot: option (a),
+  `SAT-playground-p9m.10.16` E.6b). The 400-cell check of baseline 2 was
+  stopped at the owner's request thirty minutes in (no results;
+  `SAT-playground-p9m.10.15` stays open, the recipe is in the bead) so
+  the host goes to a second hold-length pilot that asks what longer
+  holds do. Design "apart" of `tools/rl_hold_pilot.py make`: the 28
+  training cells that stock solves with 150 or more decisions (153-524
+  decisions, 8-30 min, B_cell 4.8e10-1.0e11, at most four per family,
+  18 families), one first point per knob at 20 % (probe), 30 % (reduce)
+  and 40 % (mode) of the stock run's decisions and the second point one
+  hold plus four epochs later, so the two held windows never overlap
+  (the first pilot's caveat), at holds 16, 32 and 64: 84 fork jobs, 20
+  children each, seven live children per parent on 32 slots
+  (`benchmarks/rl/holdpilot2_jobs.tsv`, about 540 core-hours if every
+  child ran to the budget, 12-17 h expected). Hold 4 is dropped (at
+  chance on 20 cells in the first pilot); hold 16 is the bridge to the
+  first pilot at the new placement. The readout is the same report: the
+  sibling pair order agreement between the two points against
+  relabelings within the cell, per hold, per knob and by run length.
+  Rule agreed with the owner: if the pair agreement at hold 32 or 64
+  clears 65 %, round 2 at that hold; if it stays near 59 % or below,
+  the epoch-policy line closes on two pilots and baseline 2 goes
+  through its 400-cell check.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

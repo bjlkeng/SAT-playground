@@ -24,6 +24,9 @@ the sweep ends) and prints, in the project's metric order (CLAUDE.md 'Evaluation
   1. per arm: solved and wall PAR-2 on every common cell; tick PAR-2 on the work clock W
      (solved part and unsolved part shown separately) on the cells where every arm reported
      W; each ratio against the base arm.
+  1b. with --split <table>: the same per arm on the train, validation and shared cells of the
+     plan's split table (tools/rl_split.py), so a candidate's validation numbers come off the
+     same run.
   2. per family (first name token after the hash prefix, the repo's usual heuristic): the
      same per arm, written to <run>/report/per_family.tsv and printed for families where
      some arm differs from base.
@@ -221,7 +224,22 @@ def best_arm(arms: dict[str, dict[Key, dict]], tags: list[str], k: Key, cost) ->
     return min(tags, key=lambda t: (not is_solved(arms[t][k]), cost(arms[t][k]), tags.index(t)))
 
 
-def report(run: Path, base: str, margin: float, min_family: int, memory_aborts: set[str] | None = None) -> str:
+def load_split(path: Path) -> dict[str, str]:
+    """stem -> split (train / val / shared) from a tools/rl_split.py table (comment lines skipped)"""
+    with path.open(newline="") as f:
+        rows = list(csv.DictReader((ln for ln in f if not ln.startswith("#")), delimiter="\t"))
+    return {r["stem"]: r["split"] for r in rows}
+
+
+def stem_of(instance: str) -> str:
+    for suffix in (".cnf.xz", ".cnf", ".xz"):
+        if instance.endswith(suffix):
+            instance = instance[: -len(suffix)]
+    return instance
+
+
+def report(run: Path, base: str, margin: float, min_family: int, memory_aborts: set[str] | None = None,
+           split: Path | None = None) -> str:
     MEMORY_ABORTS.clear()
     MEMORY_ABORTS.update(memory_aborts or ())
     arms = load_arms(run)
@@ -276,6 +294,37 @@ def report(run: Path, base: str, margin: float, min_family: int, memory_aborts: 
         out.append(f"{t:<20} {s['solved']:>4}/{s['n']:<3} {s['wall']:>11.1f} {ratio(s['wall'], b['wall']):>7} "
                    f"{s['tick']:>12.4g} {ratio(s['tick'], b['tick']):>7} {s['tick_unsolved']:>14.4g}   +{won}/-{lost}"
                    + ("   (base)" if t == base else ""))
+
+    # 1b. per split (train / validation / shared cells of the plan's split table), the same per arm,
+    # so a candidate's validation-split numbers are read off the same run (plan section 8)
+    if split is not None:
+        split_of = load_split(split)
+        groups: dict[str, list[Key]] = defaultdict(list)
+        unlisted = 0
+        for k in common:
+            # the exact key first: two real stems end in ".cnf"
+            sp = split_of.get(k[0], split_of.get(stem_of(k[0])))
+            if sp is None:
+                unlisted += 1
+            else:
+                groups[sp].append(k)
+        priced_set = set(priced)
+        out += ["", f"per split ({split}; {unlisted} common cell(s) not in the table)",
+                f"{'split':<8} {'arm':<20} {'solved':>8} {'wall PAR-2':>11} {'ratio':>7} {'tick PAR-2':>12} {'ratio':>7}   +solved/-solved v base"]
+        order = ["train", "val", "shared"] + sorted(g for g in groups if g not in ("train", "val", "shared"))
+        for sp in order:
+            keys = groups.get(sp)
+            if not keys:
+                continue
+            keys_priced = [k for k in keys if k in priced_set]
+            sb = score(arms[base], keys, keys_priced)
+            for t in tags:
+                st = score(arms[t], keys, keys_priced)
+                won = sum(1 for k in keys if is_solved(arms[t][k]) and not is_solved(arms[base][k]))
+                lost = sum(1 for k in keys if is_solved(arms[base][k]) and not is_solved(arms[t][k]))
+                out.append(f"{sp:<8} {t:<20} {st['solved']:>4}/{st['n']:<3} {st['wall']:>11.1f} "
+                           f"{ratio(st['wall'], sb['wall']):>7} {st['tick']:>12.4g} {ratio(st['tick'], sb['tick']):>7}"
+                           f"   +{won}/-{lost}" + ("   (base)" if t == base else ""))
 
     # 2. per family
     fam_all, fam_priced = defaultdict(list), defaultdict(list)
@@ -485,6 +534,8 @@ def main() -> int:
     ap.add_argument("--memory-aborts", default="",
                     help="comma-separated instances whose SIGABRT exits were checked by hand and were the memory "
                          "limit (an honest stop), for TSVs without a `note` column")
+    ap.add_argument("--split", type=Path, default=None,
+                    help="a tools/rl_split.py table (stem, split): also report per train / val / shared split")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
     if a.self_test:
@@ -493,7 +544,7 @@ def main() -> int:
     if a.run is None:
         ap.error("run directory required (or --self-test)")
     aborts = {x.strip() for x in a.memory_aborts.split(",") if x.strip()}
-    print(report(a.run, a.baseline, a.margin, a.min_family, aborts), end="")
+    print(report(a.run, a.baseline, a.margin, a.min_family, aborts, a.split), end="")
     return 0
 
 

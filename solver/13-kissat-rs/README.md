@@ -1031,6 +1031,21 @@ Decisions first: X_d stays 2^27 and the stage-1 menu is frozen as plan
   signatures. Reading, the design caveat (the two points' held windows
   overlap at hold 16), options and the recommendation: plan §11,
   2026-09-28.
+- **Hold-length pilot 2, longer holds with the points a hold apart (E.6b,
+  `SAT-playground-p9m.10.16`, 2026-09-28; `benchmarks/rl/holdpilot2_jobs.tsv`).**
+  Owner's option (a) after the first pilot. `tools/rl_hold_pilot.py make
+  --design apart`: the 28 training cells stock solves with 150+
+  decisions (153-524, 8-30 min, at most four per family, 18 families),
+  the first point per knob at 20 / 30 / 40 % of the decisions (probe,
+  reduce, mode) and the second point one hold plus four epochs later, so
+  the held windows never overlap, at holds 16, 32 and 64: 84 fork jobs,
+  20 children each, seven live children per parent on 32 slots. The
+  first pilot's recipe (`--design nearby`, the default) still reproduces
+  its committed table byte for byte. Same report, same readout (the
+  sibling pair order agreement). Launched 2026-09-28 night; result below
+  when the pass ends. The 400-cell check of baseline 2 that was running
+  (`SAT-playground-p9m.10.15`) was stopped for it after thirty minutes,
+  no results.
 - **Training scaffold and the stock clone (D.2, `tools/rl/`).** PyTorch
   2.14 CPU in the RL venv (`tools/rl/requirements.txt` has the index
   line). `data.py` loads the decision rows of a converted pass as a

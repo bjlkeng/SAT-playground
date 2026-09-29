@@ -13,15 +13,20 @@ larger effect (the segmented runs changed 62-72 % of outcomes against 49 %
 for a one-epoch child), and its sign may be consistent for a kind of
 state. This pilot measures that before any full round.
 
-`make`: 20 training cells stock solves in 60-1800 s with at least
---min-decisions decisions and a budget at most --max-budget, one per
-family (the cell whose decision count is nearest the median of its
-family), each with the same six branch points: two nearby points per knob
-for probe, reduce and mode (at 30 and 34, 50 and 54, 70 and 74 % of the
-stock run's decisions), and three fork jobs per cell holding the entry
-for 1, 4 and 16 decision epochs (`SAT_POLICY_BRANCH_HOLD`). Same stock
-parent, same budget B_cell, so the three holds differ only in how long a
-child keeps its entry.
+`make`: training cells stock solves in 60-1800 s with at least
+--min-decisions decisions and a budget at most --max-budget, up to
+--per-family per family (those nearest the family's median decision
+count), one fork job per cell and hold (`SAT_POLICY_BRANCH_HOLD`), same
+stock parent and budget B_cell, so the holds differ only in how long a
+child keeps its entry. Two designs. "nearby" (the first pilot, 2026-09-28):
+the same six branch points at every hold, two nearby points per knob for
+probe, reduce and mode at 30 and 34, 50 and 54, 70 and 74 % of the stock
+run's decisions, holds 1, 4 and 16; at hold 16 the two held windows
+overlap. "apart" (the second pilot): one first point per knob at 20, 30
+and 40 % of the decisions and the second point one hold plus --gap
+epochs later, so the windows never overlap, holds 16, 32 and 64; a hold
+whose second point would fall in the last tenth of the run is skipped on
+that cell.
 
 `report`: from the converted pass (refused unless the pass is DONE, every
 job has its run and every forked child its row in the dataset, so that a
@@ -49,7 +54,9 @@ excess over chance rises with the hold, a longer hold produces learnable
 labels; if it stays near zero, it does not.
 
     ~/.cache/sat13-rl/venv/bin/python tools/rl_hold_pilot.py make --stock log/rl-stock2025-<ts> \\
-        --out benchmarks/rl/holdpilot_jobs.tsv
+        --out benchmarks/rl/holdpilot_jobs.tsv                       # the first pilot
+    ~/.cache/sat13-rl/venv/bin/python tools/rl_hold_pilot.py make --design apart --min-decisions 150 \\
+        --max-budget 1.1e11 --cells-n 40 --per-family 4 --branch-jobs 7 --out benchmarks/rl/holdpilot2_jobs.tsv
     python3 tools/rl_collect.py table benchmarks/rl/holdpilot_jobs.tsv --suite sat-comp-2025 --name holdpilot --jobs 28 ...
     ~/.cache/sat13-rl/venv/bin/python tools/rl_dataset.py convert log/rl-holdpilot-<ts>
     ~/.cache/sat13-rl/venv/bin/python tools/rl_hold_pilot.py report log/rl-holdpilot-<ts>
@@ -71,10 +78,13 @@ from rl_split import assert_training_only, training_cells  # noqa: E402
 
 CELLS = ROOT / "benchmarks" / "rl" / "cells_2025.tsv"
 JOB_COLUMNS = ("stem", "tag", "flavour", "seed", "limit_ticks", "wall_s", "procs", "peak_rss_mb", "env")
-HOLDS = (1, 4, 16)
+HOLDS = (1, 4, 16)                       # the first pilot's holds (design "nearby")
 POINTS = (("probe", 0.30), ("probe", 0.34), ("reduce", 0.50), ("reduce", 0.54), ("mode", 0.70), ("mode", 0.74))
+APART_HOLDS = (16, 32, 64)               # the second pilot's holds (design "apart")
+APART_FIRST = (("probe", 0.20), ("reduce", 0.30), ("mode", 0.40))   # first point per knob, as a share of the decisions
 ALT_ENTRIES = {"probe": 4, "reduce": 4, "mode": 2}
 SOLVED = ("SATISFIABLE", "UNSATISFIABLE", "SAT", "UNSAT")
+MAX_HOLD = 1024                          # policy_fork.rs MAX_HOLD
 
 
 def load_cells(path: Path) -> dict[str, dict]:
@@ -92,34 +102,65 @@ def cmd_make(args) -> int:
     by_family: dict[str, list[dict]] = defaultdict(list)
     for c in pool:
         by_family[c["family"]].append(c)
-    # one cell per family, the one nearest its family's median decision count;
-    # families with the most candidates first, up to --cells
+    # up to --per-family cells per family, those nearest the family's median
+    # decision count; families with the most candidates first, up to --cells-n
     chosen = []
     for fam, cs in sorted(by_family.items(), key=lambda kv: (-len(kv[1]), kv[0])):
         med = statistics.median(int(c["decisions"]) for c in cs)
-        chosen.append(min(cs, key=lambda c: (abs(int(c["decisions"]) - med), c["stem"])))
+        near = sorted(cs, key=lambda c: (abs(int(c["decisions"]) - med), c["stem"]))
+        chosen.extend(near[:args.per_family])
         if len(chosen) >= args.cells_n:
             break
+    chosen = chosen[:args.cells_n]
     assert_training_only([c["stem"] for c in chosen])
+    holds = tuple(int(h) for h in args.holds.split(",")) if args.holds else (HOLDS if args.design == "nearby" else APART_HOLDS)
+    if any(h < 1 or h > MAX_HOLD for h in holds):
+        raise SystemExit(f"--holds {args.holds}: every hold must be 1..{MAX_HOLD} (SAT_POLICY_BRANCH_HOLD)")
     jobs = []
+    skipped = []
     for c in chosen:
         n_dec = int(c["decisions"])
         budget = int(c["B_cell"])
         rate = float(c.get("work_per_s") or 0) or 3e7
-        used = set()
-        points = []
-        for knob, frac in POINTS:
-            d = max(1, min(n_dec - 1, round(frac * n_dec)))
-            while d in used:
-                d += 1
-            used.add(d)
-            points.append((d, knob))
-        points.sort()
-        branch = ",".join(f"{d}:{k}" for d, k in points)
-        n_children = sum(ALT_ENTRIES[k] for _, k in points)
-        waves = math.ceil(n_children / args.branch_jobs)
-        cap = int(2.0 * (1 + waves) * budget / rate) + 600
-        for hold in HOLDS:
+        for hold in holds:
+            # the points of this job. "nearby": the six fixed shares of the
+            # run, the same at every hold (the two points of a knob are 4 %
+            # of the run apart, so at a long hold their held windows
+            # overlap). "apart": one first point per knob, and the second
+            # point one hold plus --gap epochs later, so the windows never
+            # overlap; a hold whose second point would fall in the last
+            # tenth of the parent's run is skipped on that cell.
+            used = set()
+            points = []
+
+            def place(d):
+                # each decision carries at most one point: the next free decision
+                while d in used:
+                    d += 1
+                used.add(d)
+                return d
+
+            ok = True
+            if args.design == "nearby":
+                for knob, frac in POINTS:
+                    points.append((place(max(1, min(n_dec - 1, round(frac * n_dec)))), knob))
+            else:
+                for knob, frac in APART_FIRST:
+                    # the first point is settled before its partner is computed from
+                    # it, so the partner is always hold + gap epochs later
+                    first = place(max(1, round(frac * n_dec)))
+                    second = place(first + hold + args.gap)
+                    if second > round(0.9 * n_dec):
+                        ok = False
+                    points += [(first, knob), (second, knob)]
+            if not ok:
+                skipped.append((c["stem"], hold))
+                continue
+            points.sort()
+            branch = ",".join(f"{d}:{k}" for d, k in points)
+            n_children = sum(ALT_ENTRIES[k] for _, k in points)
+            waves = math.ceil(n_children / args.branch_jobs)
+            cap = int(2.0 * (1 + waves) * budget / rate) + 600
             jobs.append({"stem": c["stem"], "tag": f"h{hold}", "flavour": "fork", "seed": int(c.get("seed") or 0),
                          "limit_ticks": budget, "wall_s": cap, "procs": 1 + args.branch_jobs,
                          "peak_rss_mb": c.get("peak_rss_mb", ""),
@@ -132,9 +173,12 @@ def cmd_make(args) -> int:
             w.writerow(j)
     core_h = sum(int(j["limit_ticks"]) * (1 + 0.6 * 20) / (float(cells[j["stem"]].get("work_per_s") or 3e7))
                  for j in jobs) / 3600
+    n_points = 2 * len(APART_FIRST) if args.design == "apart" else len(POINTS)
     print(f"wrote {args.out}: {len(jobs)} fork jobs on {len(chosen)} cells ({len(pool)} candidates in "
-          f"{len(by_family)} families), holds {HOLDS}, {len(POINTS)} points and 20 children per job; "
-          f"about {core_h:.0f} core-hours if every child ran to the budget")
+          f"{len(by_family)} families), design {args.design}, holds {holds}, {n_points} points and 20 children "
+          f"per job; about {core_h:.0f} core-hours if every child ran to the budget"
+          + (f"; {len(skipped)} (cell, hold) pair(s) skipped, second point too late: "
+             + ", ".join(f"{st[33:53]}@{h}" for st, h in skipped[:6]) if skipped else ""))
     for c in chosen:
         print(f"  {c['family']:22s} {c['stem'][:40]:40s} dec {int(c['decisions']):4d} t {float(c['stock_time_s']):6.0f} s "
               f"B {float(c['B_cell']):.1e}")
@@ -233,11 +277,12 @@ def cmd_report(args) -> int:
         rows[key] = {"label": label(child_solved, cw, parent_solved, pw),
                      "ratio": math.log(cw / pw) if child_solved and parent_solved and cw > 0 and pw > 0 else None,
                      "parent_solved": parent_solved, "solved": child_solved, "work": cw}
-    print(f"{run.name}: {len(rows)} children with a known outcome, {len({k[1] for k in rows})} cells\n")
+    holds = sorted({k[0] for k in rows})
+    print(f"{run.name}: {len(rows)} children with a known outcome, {len({k[1] for k in rows})} cells, holds {holds}\n")
     # 1. effect size per hold
     print(f"{'hold':>4s} {'children':>8s} {'moved%':>7s} {'better%':>8s} {'worse%':>7s} {'tie%':>5s} {'cens%':>6s} "
           f"{'|logW| median':>14s} {'p90':>6s} {'rescue':>9s}")
-    for hold in HOLDS:
+    for hold in holds:
         sel = [v for k, v in rows.items() if k[0] == hold]
         if not sel:
             continue
@@ -298,7 +343,7 @@ def cmd_report(args) -> int:
     print(f"\nconsistency of the label between the two nearby points of one cell and knob (same entry), "
           f"against chance ({args.shuffles} re-pairings across cells within a knob):")
     print(f"{'hold':>4s} {'statistic':<19s} {'n':>5s} {'observed%':>9s} {'chance%':>8s} {'excess':>7s} {'p':>6s}")
-    for hold in HOLDS:
+    for hold in holds:
         by = defaultdict(dict)   # (stem, knob) -> {decision: {entry: row}}
         for (h, stem, d, knob, e), v in rows.items():
             if h == hold:
@@ -421,7 +466,7 @@ def cmd_report(args) -> int:
     decisions = {}
     if Path(args.cells).is_file():
         decisions = {stem: int(c["decisions"]) for stem, c in load_cells(Path(args.cells)).items() if c.get("decisions")}
-    for hold in HOLDS:
+    for hold in holds:
         by = defaultdict(dict)
         for (h, stem, d, knob, e), v in rows.items():
             if h == hold:
@@ -489,9 +534,16 @@ def main(argv: list[str]) -> int:
     m.add_argument("--cells", default=str(CELLS))
     m.add_argument("--stock", help="unused; the stock pass's cells table is read (kept for the recipe)")
     m.add_argument("--cells-n", dest="cells_n", type=int, default=20)
+    m.add_argument("--per-family", type=int, default=1, help="cells per family, nearest its median decisions (default 1)")
     m.add_argument("--min-decisions", type=int, default=30)
     m.add_argument("--max-budget", type=float, default=2e10)
     m.add_argument("--branch-jobs", type=int, default=6)
+    m.add_argument("--design", choices=("nearby", "apart"), default="nearby",
+                   help="nearby: the six fixed points of the first pilot; apart: the second point of a knob one hold "
+                        "plus --gap epochs after the first (default nearby)")
+    m.add_argument("--holds", default="", help="comma-separated holds (default 1,4,16 for nearby, 16,32,64 for apart)")
+    m.add_argument("--gap", type=int, default=4, help="apart: epochs between the end of the first point's hold and the "
+                                                      "second point (default 4)")
     m.add_argument("--out", required=True)
     m.set_defaults(func=cmd_make)
     r = sub.add_parser("report")
