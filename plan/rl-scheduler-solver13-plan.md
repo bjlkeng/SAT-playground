@@ -1343,6 +1343,46 @@ source of truth; every bead points back to its section.
   the existing data (plan §11, 2026-09-28 options) stays the only
   optional learning attempt, at compute cost only. Owner's call to
   restart the check.
+- 2026-09-30 (regime-selection idea, check 1; `tools/rl_early_signal.py`
+  on pilot 2, `log/early-signal-2026-09-30.txt`). The owner asked how a
+  policy could replicate kissat's own regime changes (the focused /
+  stable alternation, the rephase schedule) rather than nudge
+  inprocessing timing: decide only at kissat's mode switches, an action
+  is a bundle of existing options held for the whole stint, and the
+  selector uses within-run feedback, keeping what is working on this
+  instance (a bandit over regimes with the ranker as a prior). Its
+  precondition is that a few epochs into a regime the state already
+  says whether the regime will pay, so this check measures that on the
+  pilot's children before any solver work: the child's state k epochs
+  after the fork minus the parent's decision row nearest in work
+  (within 5 %; decisions follow search ticks, so equal decision counts
+  are not equal work), 13 raw counters and the 183 dynamic observation
+  entries, 6673 child-epoch samples from 28 cells, a logistic model
+  under cell-grouped 5-fold CV with standardization fitted on the
+  training fold; the pass has no correctness failure or wall-capped
+  run. Target A, the child ends worse than its parent: accuracy equals
+  the majority rate (55-58 %) at every hold and k from 2 to 16 (best
+  58.3 v 58.0, hold 16 read at the end of its own window). Target B,
+  which of two siblings wins: hold 16 at or under 50 % at every k,
+  hold 32 at 53-55 %, hold 64 at 60 % read two epochs in (AUC 0.61)
+  falling to 52 % at k = 16; per knob at k = 8, reduce 59-61 % at holds
+  32 and 64 (about 550 pairs), mode 66 % at hold 64 (96 pairs), probe
+  47-50 %. Single signals at k = 8: a child that has found more units
+  than the parent ends worse 27 % of the time against 59 % (129 of 1663
+  samples), more redundant clauses 60 v 54 %, more propagations 54 v
+  60 %; the rest are flat. **Reading.** Within-run feedback at regime
+  scale exists only for the longest hold and only weakly: at hold 64
+  the two-epoch footprint of a change picks the better of two siblings
+  60 % of the time, the reduce and mode knobs reach about 60-66 % at
+  eight epochs, probe never, and hold 16 nothing. A regime selector
+  would be choosing on 55-65 % feedback against a blind alternation
+  that never needs to predict, and the strong signal, early units, is
+  rare and already what kissat's inprocessing acts on. That is thin for
+  the solver work (regime bundles, boundary decision points) and a day
+  of host time for a fork pass; a full bundle at a real mode switch may
+  leave a larger footprint than these single-knob changes, which is the
+  one untested reason to try. Owner's call; the recommendation stands:
+  close the line, run baseline 2's 400-cell check.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

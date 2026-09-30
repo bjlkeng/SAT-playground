@@ -1065,6 +1065,18 @@ Decisions first: X_d stays 2^27 and the stage-1 menu is frozen as plan
   length mostly hurts: 55-57 % lose and one child in five fails to
   solve within the 3× budget. **The epoch-policy line closes on two
   pilots; baseline 2 goes through its gates** (plan §11, 2026-09-29).
+- **Within-run feedback at regime scale (check 1 of the regime-selection
+  idea, 2026-09-30; `tools/rl_early_signal.py`, `log/early-signal-2026-09-30.txt`).**
+  On pilot 2's children: the child's state k epochs after the fork minus
+  the parent's row nearest in work, under cell-grouped CV, predicts
+  whether the child ends worse than its parent no better than the
+  majority rate (k 2-16, holds 16-64), and which of two siblings wins at
+  50 % or less at hold 16, 53-55 % at hold 32 and 60 % at hold 64 read
+  two epochs in (per knob at k = 8: reduce 59-61 % at holds 32 and 64,
+  mode 66 % at hold 64 on 96 pairs, probe 47-50 %). Early units are the
+  one strong signal (27 % worse v 59 %) and rare. Weak feedback for a
+  regime selector to beat kissat's blind alternation; plan §11,
+  2026-09-30.
 - **Training scaffold and the stock clone (D.2, `tools/rl/`).** PyTorch
   2.14 CPU in the RL venv (`tools/rl/requirements.txt` has the index
   line). `data.py` loads the decision rows of a converted pass as a
