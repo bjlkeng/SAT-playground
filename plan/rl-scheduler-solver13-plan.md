@@ -1303,6 +1303,46 @@ source of truth; every bead points back to its section.
   clears 65 %, round 2 at that hold; if it stays near 59 % or below,
   the epoch-policy line closes on two pilots and baseline 2 goes
   through its 400-cell check.
+- 2026-09-29 (hold-length pilot 2 result, E.6b `SAT-playground-p9m.10.16`;
+  `log/rl-holdpilot2-2026-09-28-23-35-39`, launched 2026-09-28 23:35,
+  interrupted by a host reboot at 10:34 with 52 of 84 jobs done, resumed
+  17:52 with `rl_collect.py resume`, done 22:58; 84 fork jobs, 1680
+  children on 28 cells of 153-524 decisions, zero failures and anomalies,
+  every parent solved; `log/holdpilot2-report-2026-09-29.txt`). With
+  the two points a hold apart (no overlap of the held windows), the
+  effect of a held entry is large and flat across holds 16 / 32 / 64:
+  93-95 % of children move by more than 1 %, the median |log work
+  ratio| is 0.09, 55-57 % lose and one child in five (113 of 560 at
+  every hold) does not solve within the 3× budget its parent solved
+  in. The raw agreement between the two points is again the parent's:
+  same entry +17 / +12 / +14 points over chance, different entries
+  +15 / +9 / +9, opposite-side entries +16 / +9 / +9. **The entry's own
+  part, the sibling pair order agreement, is +3 / +7 / +6 points over
+  chance (53 / 57 / 56 v 50 %; p 0.25 / 0.04 / 0.05; 254-272 pairs).**
+  Per knob at hold 32: mode +23 (22 pairs, p 0.03), probe +5, reduce +5.
+  By run length: runs under 266 decisions +1 / +13 / +16 (p 0.42 / 0.01
+  / 0.00), runs of 266+ decisions +5 / +1 / −6. The first pilot's hold-16
+  figure (+9 with overlapping windows) falls to +3 once the windows are
+  apart, so part of it was the two children running nearly the same
+  experiment. **Reading.** A held entry of 16 to 64 epochs has almost no
+  repeatable preference among the entries at a nearby state: the best
+  case, 57 %, is far under the 65 % agreed as the bar, and even the
+  raw label against the parent stays a coin flip dominated by the
+  parent's luck. The one pocket of consistency is holds that cover a
+  quarter to a half of a short run (hold 64 on runs under 266
+  decisions, +16, p < 0.001), which is the per-instance-constant regime
+  baseline 3 already measured as worthless from static features. What a
+  held entry does reliably is hurt: it moves nearly every outcome and
+  loses more than it wins at every hold. **Decision by the agreed
+  rule: the epoch-policy line closes on two pilots.** Rounds 0 and 1
+  (one-epoch labels) and pilots 1 and 2 (holds 1 to 64) find no
+  state-local preference a ranker could learn beyond the state-free
+  references. Baseline 2 (reorderint 20000) goes through its 400-cell
+  check (`SAT-playground-p9m.10.15`, rerun on the quiet host), the
+  medium gate and the 2026 holdout once; the offline-RL side line on
+  the existing data (plan §11, 2026-09-28 options) stays the only
+  optional learning attempt, at compute cost only. Owner's call to
+  restart the check.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

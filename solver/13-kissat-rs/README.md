@@ -1042,10 +1042,29 @@ Decisions first: X_d stays 2^27 and the stage-1 menu is frozen as plan
   20 children each, seven live children per parent on 32 slots. The
   first pilot's recipe (`--design nearby`, the default) still reproduces
   its committed table byte for byte. Same report, same readout (the
-  sibling pair order agreement). Launched 2026-09-28 night; result below
-  when the pass ends. The 400-cell check of baseline 2 that was running
-  (`SAT-playground-p9m.10.15`) was stopped for it after thirty minutes,
-  no results.
+  sibling pair order agreement). The 400-cell check of baseline 2 that
+  was running (`SAT-playground-p9m.10.15`) was stopped for it after
+  thirty minutes, no results.
+  **Result (`log/rl-holdpilot2-2026-09-28-23-35-39`, 2026-09-28 23:35 to
+  2026-09-29 22:58 with a host reboot in between, resumed with
+  `rl_collect.py resume`; 1680 children, zero failures and anomalies;
+  `log/holdpilot2-report-2026-09-29.txt`):**
+
+  | hold | moved | better / worse | unsolved children | same entry, same sign: excess over chance | opposite-side entries | sibling pair order (the entry's own) |
+  |---:|---:|---:|---:|---:|---:|---:|
+  | 16 | 95 % | 37 / 57 % | 113 / 560 | +17 | +16 | +3 (p 0.25) |
+  | 32 | 95 % | 39 / 55 % | 111 / 560 | +12 | +9 | +7 (p 0.04) |
+  | 64 | 93 % | 36 / 56 % | 113 / 560 | +14 | +9 | +6 (p 0.05) |
+
+  With the windows apart, the entry's own consistency is 53-57 % against
+  50 % by chance at every hold (the first pilot's hold-16 figure of 59 %
+  had overlapping windows), far under the 65 % bar; the raw agreement is
+  the parent's luck again. The only pocket is hold 64 on runs under 266
+  decisions (+16, p < 0.001), a quarter to a half of the run, the
+  per-instance-constant regime baseline 3 covers. A held entry of any
+  length mostly hurts: 55-57 % lose and one child in five fails to
+  solve within the 3× budget. **The epoch-policy line closes on two
+  pilots; baseline 2 goes through its gates** (plan §11, 2026-09-29).
 - **Training scaffold and the stock clone (D.2, `tools/rl/`).** PyTorch
   2.14 CPU in the RL venv (`tools/rl/requirements.txt` has the index
   line). `data.py` loads the decision rows of a converted pass as a
