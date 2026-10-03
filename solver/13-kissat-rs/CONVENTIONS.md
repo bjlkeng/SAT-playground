@@ -135,6 +135,16 @@ touches the policy or a counter it logs:
   the same alias rules, and `_exit` on any failure. Fork mode is refused
   at start with a proof or `-o` file, and the signal handler only ever
   `kill`s children, never waits or prints.
+- **Regimes belong to a fork child only** (`policy::regime_start`, the regime
+  points of `src/policy_fork.rs`; plan §11, 2026-10-03). A regime child may
+  set the four options `target`, `restartint`, `restartmargin` and
+  `reluctantint`, hold or hand over the mode switch through
+  `effective_limit` (the switch itself stays kissat's `switch_search_mode`,
+  `mode.rs` is not edited), re-initialise the reluctant sequence, and, for
+  `reroll`, re-seed `solver.random` once. Nothing else: no new mechanism,
+  and no path to `regime_start` from a parent, a random mode or the net.
+  With no regime in force `effective_limit` and `record_limit` behave as
+  before; both parity runs are the check after any edit here.
 - **A weights file must match this binary's observation layout.** The
   file carries the input count and the FNV-1a hash of
   `policy_obs::names()`; changing, adding or reordering an observation

@@ -30,7 +30,9 @@
 //
 // Purity. Nothing here draws from `solver.random`, touches the arena, or
 // increments a counter a heuristic reads. The policy has its own generator
-// (`Policy::rng`, same LCG as random.rs, separate state).
+// (`Policy::rng`, same LCG as random.rs, separate state). The one exception
+// is a regime child (below): it sets a few options, and its reroll regime
+// re-seeds `solver.random` once, on purpose.
 //
 // Environment (plan §7 item 6; the solver README has the table):
 //   SAT_POLICY=stock|random|jitter   on, with the stock action / segmented
@@ -48,6 +50,15 @@
 //                                    epoch (policy_log.rs); with SAT_POLICY
 //                                    unset it turns the policy on in stock
 //                                    mode.
+//
+// Regimes (fork mode only; plan §11, 2026-10-03). A branch child can run a
+// whole search regime in place of kissat's own choice while its hold lasts
+// (`Regime`, below): one mode only, kissat's `--sat` dials, eager or lazy
+// restarts, or kissat unchanged with the solver's random stream re-seeded
+// (the luck control). This is the one place the policy goes past timing.
+// It is reachable only from a branch child (`regime_start`, called by
+// policy_fork.rs), never from a parent, a random mode or the net, so the
+// invariants above hold for every other run as before.
 
 use crate::internal::Solver;
 use crate::policy_log::GLUE_BINS;
@@ -178,6 +189,100 @@ pub const SWEEP_STOCK: usize = 2;
 pub const ZERO_CAP: f64 = 0.05;
 
 // ---------------------------------------------------------------------------
+// Regimes (fork mode only; plan §11, 2026-10-03)
+// ---------------------------------------------------------------------------
+
+/// A search regime a fork child runs in place of kissat's own choice while
+/// its hold lasts (policy_fork.rs, `SAT_POLICY_BRANCH_REGIMES`). Every one
+/// is built from kissat's own modes and options; `None` is no regime.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Regime {
+    #[default]
+    None,
+    /// Focused mode only: no stable stint (the shape of `--unsat`).
+    Focused,
+    /// Stable mode only.
+    Stable,
+    /// The mode the solver is in when the regime starts, and no switch.
+    Stay,
+    /// kissat's own alternation with its `--sat` dials: target phases in
+    /// focused mode too, `restartint` 50.
+    Sat,
+    /// kissat's alternation with eager restarts: half the focused restart
+    /// margin and a quarter of the stable reluctant period.
+    Eager,
+    /// The reverse: twice the margin, four times the period.
+    Lazy,
+    /// kissat unchanged; the solver's random stream is re-seeded once, so
+    /// the run takes another trajectory under the same regime (the luck
+    /// control of the regime experiment).
+    Reroll,
+}
+
+impl Regime {
+    pub const ALL: [Regime; 7] = [
+        Regime::Focused,
+        Regime::Stable,
+        Regime::Stay,
+        Regime::Sat,
+        Regime::Eager,
+        Regime::Lazy,
+        Regime::Reroll,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Regime::None => "none",
+            Regime::Focused => "focused",
+            Regime::Stable => "stable",
+            Regime::Stay => "stay",
+            Regime::Sat => "sat",
+            Regime::Eager => "eager",
+            Regime::Lazy => "lazy",
+            Regime::Reroll => "reroll",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<Regime> {
+        Regime::ALL.iter().copied().find(|r| r.name() == s)
+    }
+}
+
+/// What a regime does to the mode switch (`effective_limit`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ModeForce {
+    #[default]
+    None,
+    /// Only this mode runs (`true` = stable): a switch into it is due at
+    /// once, a switch out of it never.
+    Hold(bool),
+    /// The regime is over: one switch is due at once, after which kissat's
+    /// own limits decide again.
+    Handover,
+}
+
+/// The regime in force in a fork child and what it needs to undo itself.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RegimeState {
+    pub regime: Regime,
+    pub force: ModeForce,
+    /// The option values the regime replaced: target, restartint,
+    /// restartmargin, reluctantint.
+    pub saved: [i32; 4],
+    /// The tick budget of the last stable stint kissat sized itself
+    /// (recorded in every policy-on run, used only at a handover): the
+    /// stable stint a focused block hands over to gets this budget, not
+    /// one as long as the block.
+    pub last_stable_delta: u64,
+}
+
+/// The ends of the two option ranges a regime scales (options.rs:
+/// `restartmargin` 0..25, `reluctantint` 2..2^15).
+const RESTARTMARGIN_MAX: i32 = 25;
+const RELUCTANTINT_MIN: i32 = 2;
+const RELUCTANTINT_MAX: i32 = 1 << 15;
+
+// ---------------------------------------------------------------------------
 // Policy state
 // ---------------------------------------------------------------------------
 
@@ -284,6 +389,8 @@ pub struct Policy {
     /// Fork mode (policy_fork.rs, step A.8): the branch schedule, live
     /// children, and a child's own identity.
     pub branching: crate::policy_fork::Branching,
+    /// The regime of a regime child (fork mode; inert everywhere else).
+    pub regime: RegimeState,
     /// Per-epoch learned-clause quality, fed by `note_learned` and reset
     /// after every log row: glue histogram, count, summed size and glue.
     pub epoch_glue: [u64; GLUE_BINS],
@@ -324,6 +431,7 @@ impl Default for Policy {
             margin: 1.0,
             net_deviations: 0,
             branching: crate::policy_fork::Branching::default(),
+            regime: RegimeState::default(),
             epoch_glue: [0; GLUE_BINS],
             epoch_learned: 0,
             epoch_learned_size: 0,
@@ -539,7 +647,7 @@ pub fn print_configuration(solver: &mut Solver) {
     crate::print::message(solver, format!("policy horizon: {}", horizon));
     let b = &solver.policy.branching;
     if !b.schedule.is_empty() {
-        let points: Vec<String> = b.schedule.iter().map(|bp| format!("{}:{}", bp.decision, bp.knob.name())).collect();
+        let points: Vec<String> = b.schedule.iter().map(|bp| format!("{}:{}", bp.decision, bp.kind.name())).collect();
         crate::print::message(
             solver,
             format!("policy branch: {} points ({}), at most {} live children", b.schedule.len(), points.join(","), b.jobs),
@@ -576,6 +684,25 @@ pub fn record_limit(solver: &mut Solver, t: Timer, base: u64, delta: u64, fired:
         if p.act.interval_mult[i] == 0.0 {
             p.act.interval_mult[i] = 1.0;
         }
+        // The mode switch and regimes (below). kissat gives a stable stint
+        // the ticks the focused stint before it took; that budget is kept,
+        // and the stable stint a focused block hands over to gets the last
+        // such budget instead of one as long as the block. A handover is
+        // one switch: it ends here.
+        if t == Timer::Mode {
+            let into_stable = solver.limits.mode.count & 1 != 0;
+            let p = &mut solver.policy;
+            if into_stable {
+                if p.regime.force == ModeForce::Handover && p.regime.last_stable_delta != 0 {
+                    p.timers[i].stock_delta = p.regime.last_stable_delta;
+                } else {
+                    p.regime.last_stable_delta = delta;
+                }
+            }
+            if p.regime.force == ModeForce::Handover {
+                p.regime.force = ModeForce::None;
+            }
+        }
     }
 }
 
@@ -599,6 +726,20 @@ pub fn interval_floor(stock_delta: u64) -> u64 {
 #[inline]
 pub fn effective_limit(solver: &Solver, t: Timer) -> u64 {
     let i = t as usize;
+    // A regime child's hold on the mode switch (regimes, below): the held
+    // mode never switches out and is switched into at once, and a handover
+    // is due at once. `None` in every other run.
+    if t == Timer::Mode && solver.policy.regime.force != ModeForce::None {
+        return match solver.policy.regime.force {
+            ModeForce::Hold(stable) if stable == solver.stable => u64::MAX,
+            // A forced switch waits for the first search tick: a stable
+            // stint that starts at zero ticks would get the deadline zero,
+            // which kissat's limit math reads as "never been stable"
+            // (mode.rs, `update_mode_limit`).
+            _ if solver.statistics.search_ticks == 0 => u64::MAX,
+            _ => 0,
+        };
+    }
     let st = &solver.policy.timers[i];
     let m = solver.policy.act.interval_mult[i];
     let delta = if m == 1.0 {
@@ -753,6 +894,96 @@ pub fn mask(solver: &Solver, mut act: Action) -> Action {
         act.effort_mult[Effort::Sweep as usize] = 1.0;
     }
     act
+}
+
+// ---------------------------------------------------------------------------
+// Regimes in force (fork mode only)
+// ---------------------------------------------------------------------------
+
+/// Put regime `r` in force: called once, in a branch child, at its branch
+/// decision (policy_fork.rs). `salt` tells reroll children apart.
+///
+/// A held mode acts through `effective_limit` on the mode switch, so the
+/// switch itself is kissat's own, with all its bookkeeping. The dial
+/// regimes set the options kissat reads at each use (`target` in
+/// `decide_phase`, `restartint` in `update_focused_restart_limit`,
+/// `restartmargin` in `restarting`); the reluctant period is read when a
+/// stable stint starts, so in stable mode it is re-initialised here.
+pub fn regime_start(solver: &mut Solver, r: Regime, salt: u64) {
+    if r == Regime::None {
+        return;
+    }
+    let o = &solver.options;
+    let saved = [o.target, o.restartint, o.restartmargin, o.reluctantint];
+    let mut force = ModeForce::None;
+    match r {
+        Regime::None => {}
+        Regime::Focused => force = ModeForce::Hold(false),
+        Regime::Stable => force = ModeForce::Hold(true),
+        Regime::Stay => force = ModeForce::Hold(solver.stable),
+        Regime::Sat => {
+            solver.options.target = crate::options::TARGET_SAT;
+            solver.options.restartint = crate::options::RESTARTINT_SAT;
+        }
+        Regime::Eager => {
+            solver.options.restartmargin = saved[2] / 2;
+            solver.options.reluctantint = (saved[3] / 4).max(RELUCTANTINT_MIN);
+        }
+        Regime::Lazy => {
+            solver.options.restartmargin = saved[2].saturating_mul(2).min(RESTARTMARGIN_MAX);
+            solver.options.reluctantint = saved[3].saturating_mul(4).min(RELUCTANTINT_MAX);
+        }
+        Regime::Reroll => {
+            // The one write to the solver's own generator from policy
+            // code: another stream from here on, the same regime.
+            solver.random ^= 0x9E37_79B9_7F4A_7C15u64.wrapping_mul(salt.wrapping_add(1));
+        }
+    }
+    if solver.options.stable != 1 {
+        // Only one mode is enabled: there is no switch to hold.
+        force = ModeForce::None;
+    }
+    let st = &mut solver.policy.regime;
+    st.regime = r;
+    st.force = force;
+    st.saved = saved;
+    if matches!(r, Regime::Eager | Regime::Lazy) && solver.stable {
+        crate::reluctant::init_reluctant(solver);
+    }
+}
+
+/// The four options a regime can replace, as they are now (the regime
+/// messages of a child's output).
+pub fn regime_options(solver: &Solver) -> String {
+    let o = &solver.options;
+    format!(
+        "target {} restartint {} restartmargin {} reluctantint {}",
+        o.target, o.restartint, o.restartmargin, o.reluctantint
+    )
+}
+
+/// End the regime in force: the options it replaced come back, and a held
+/// mode hands over to kissat's alternation with one switch due at once
+/// (`record_limit` sizes the stint that follows and ends the handover).
+pub fn regime_end(solver: &mut Solver) {
+    let st = solver.policy.regime;
+    match st.regime {
+        Regime::None | Regime::Reroll => {}
+        Regime::Focused | Regime::Stable | Regime::Stay => {
+            solver.policy.regime.force =
+                if st.force == ModeForce::None { ModeForce::None } else { ModeForce::Handover };
+        }
+        Regime::Sat | Regime::Eager | Regime::Lazy => {
+            solver.options.target = st.saved[0];
+            solver.options.restartint = st.saved[1];
+            solver.options.restartmargin = st.saved[2];
+            solver.options.reluctantint = st.saved[3];
+            if st.regime != Regime::Sat && solver.stable {
+                crate::reluctant::init_reluctant(solver);
+            }
+        }
+    }
+    solver.policy.regime.regime = Regime::None;
 }
 
 // ---------------------------------------------------------------------------
@@ -927,11 +1158,28 @@ pub fn decide(solver: &mut Solver) {
     // epochs counted from its branch decision (policy_fork.rs); after that
     // the parent's policy decides. With the default hold of 1 the entry
     // covered only the branch epoch, so this never fires.
+    // A regime child changes no knob: its regime was put in force at the
+    // branch decision (policy_fork.rs) and ends at the first decision past
+    // its hold.
+    let mut regime_over = false;
     if let Some(c) = solver.policy.branching.child.as_ref() {
-        if solver.policy.decisions < c.decision.saturating_add(c.hold) {
-            let (knob, entry) = (c.knob, c.entry);
-            knob.set(&mut act, entry);
+        let in_force = solver.policy.decisions < c.decision.saturating_add(c.hold);
+        match c.knob {
+            Some(knob) => {
+                if in_force {
+                    knob.set(&mut act, c.entry);
+                }
+            }
+            None => regime_over = !in_force && solver.policy.regime.regime != Regime::None,
         }
+    }
+    if regime_over {
+        let name = solver.policy.regime.regime.name();
+        regime_end(solver);
+        crate::print::message(
+            solver,
+            format!("policy regime: {} over at decision {} ({})", name, solver.policy.decisions, regime_options(solver)),
+        );
     }
     let act = mask(solver, act);
     solver.policy.act = act;

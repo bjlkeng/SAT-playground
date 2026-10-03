@@ -21,6 +21,7 @@
 // segment), stops on the tick limit it inherited (`SAT_LIMIT_TICKS`,
 // B_cell or twice it on the timeout band), and writes to its own files
 // named after the parent's log, the branch point and the child index:
+// (regime points, further down, fork whole search regimes instead)
 //
 //   <log>.b<D>.<k>       the child's policy log (its header carries a
 //                        `branch` block: parent pid, parent log, decision,
@@ -47,16 +48,34 @@
 // Solver 13 is single-threaded and libc is a dependency already, so
 // fork(2) is a plain call; the children of file.rs (decompressors) are
 // reaped before search, so waitpid(-1) only ever sees branch children.
+//
+// Regime points (plan §11, 2026-10-03). `<D>:regime` forks one child per
+// item of
+//
+//   SAT_POLICY_BRANCH_REGIMES=<regime>[@<hold>][,<regime>[@<hold>]...]
+//
+// where a regime is one of focused, stable, stay, sat, eager, lazy and
+// reroll (policy.rs, `Regime`) and the hold is in decision epochs (default
+// SAT_POLICY_BRANCH_HOLD). Such a child changes no knob: it runs its
+// regime in place of kissat's own choice from the branch decision for
+// its hold, then kissat's alternation resumes. Its header reads
+// `"knob":"regime"`, the entry is its index in the list, and a `regime`
+// field names it. The same regime may be listed more than once (two
+// holds, or several rerolls, which differ by their index).
 
 use crate::internal::Solver;
 use crate::policy::{
-    Action, Effort, Timer, INTERVAL_MENU, MARGIN_MENU, MODE_MENU, SWEEP_MENU,
+    Action, Effort, Regime, Timer, INTERVAL_MENU, MARGIN_MENU, MODE_MENU, SWEEP_MENU,
 };
 
 pub const MAX_JOBS: usize = 64;
 pub const DEFAULT_JOBS: usize = 4;
 /// The longest hold: 1024 decision epochs at 2^27 ticks is far past any budget.
 pub const MAX_HOLD: u64 = 1024;
+/// The most children one regime point forks.
+pub const MAX_REGIMES: usize = 32;
+/// The name a regime point and its children carry where a knob has its own.
+pub const REGIME_KNOB: &str = "regime";
 
 /// The knobs a branch point can vary, in policy_net::HEAD_NAMES order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -130,10 +149,43 @@ impl Knob {
     }
 }
 
+/// What a branch point varies: one knob's menu, or the regimes listed in
+/// `SAT_POLICY_BRANCH_REGIMES`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    Knob(Knob),
+    Regime,
+}
+
+impl Kind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Knob(k) => k.name(),
+            Kind::Regime => REGIME_KNOB,
+        }
+    }
+}
+
+/// What one child changes: one knob entry, or a regime with its own hold.
+#[derive(Clone, Copy, Debug)]
+enum Spec {
+    Knob(Knob, f32),
+    Regime(Regime, u64),
+}
+
+impl Spec {
+    fn knob_name(&self) -> &'static str {
+        match self {
+            Spec::Knob(k, _) => k.name(),
+            Spec::Regime(..) => REGIME_KNOB,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct BranchPoint {
     pub decision: u64,
-    pub knob: Knob,
+    pub kind: Kind,
 }
 
 /// What a child knows about itself (also the header's `branch` block).
@@ -143,14 +195,21 @@ pub struct ChildInfo {
     pub parent_log: String,
     pub decision: u64,
     pub epoch: u64,
-    pub knob: Knob,
+    /// The knob the child changes; `None` in a regime child.
+    pub knob: Option<Knob>,
+    /// The knob's name, or `regime`.
+    pub knob_name: &'static str,
+    /// The menu entry, or a regime child's index in the regime list.
     pub entry: f32,
     pub index: usize,
     pub parent_rows: u64,
     /// True when masking turned the entry back into the parent's action.
     pub masked_to_parent: bool,
-    /// Decision epochs the entry stays in force (SAT_POLICY_BRANCH_HOLD).
+    /// Decision epochs the entry or the regime stays in force
+    /// (SAT_POLICY_BRANCH_HOLD, or the regime's own `@hold`).
     pub hold: u64,
+    /// The regime of a regime child, else `Regime::None`.
+    pub regime: Regime,
 }
 
 #[derive(Clone, Debug)]
@@ -162,6 +221,8 @@ pub struct Branching {
     pub jobs: usize,
     /// Decision epochs a child keeps its entry (default 1).
     pub hold: u64,
+    /// The children of a regime point, in order: the regime and its hold.
+    pub regimes: Vec<(Regime, u64)>,
     /// Live children (pids) of this parent.
     pub live: [libc::pid_t; MAX_JOBS],
     pub n_live: usize,
@@ -190,6 +251,7 @@ impl Default for Branching {
             actions: Default::default(),
             jobs: DEFAULT_JOBS,
             hold: 1,
+            regimes: Vec::new(),
             live: [0; MAX_JOBS],
             n_live: 0,
             points: 0,
@@ -226,20 +288,24 @@ pub fn parse_schedule(v: &str) -> Result<Vec<BranchPoint>, String> {
             .trim()
             .parse::<u64>()
             .map_err(|_| format!("SAT_POLICY_BRANCH='{}': '{}' is not a decision index", v, d.trim()))?;
-        let knob = Knob::from_name(k.trim()).ok_or_else(|| {
-            format!(
-                "SAT_POLICY_BRANCH='{}': '{}' is not a knob (probe, eliminate, reduce, rephase, reorder, mode, margin, sweep)",
-                v,
-                k.trim()
-            )
-        })?;
+        let kind = if k.trim() == REGIME_KNOB {
+            Kind::Regime
+        } else {
+            Kind::Knob(Knob::from_name(k.trim()).ok_or_else(|| {
+                format!(
+                    "SAT_POLICY_BRANCH='{}': '{}' is not a knob (probe, eliminate, reduce, rephase, reorder, mode, margin, sweep) or 'regime'",
+                    v,
+                    k.trim()
+                )
+            })?)
+        };
         if out.iter().any(|bp| bp.decision == decision) {
             // One knob per point: the children's file names carry the
             // decision and the child index, so a second point at the same
             // decision would truncate the first point's files.
             return Err(format!("SAT_POLICY_BRANCH='{}': decision {} is listed twice", v, decision));
         }
-        out.push(BranchPoint { decision, knob });
+        out.push(BranchPoint { decision, kind });
     }
     if out.is_empty() {
         return Err(format!("SAT_POLICY_BRANCH='{}': no branch points", v));
@@ -309,6 +375,44 @@ fn check_files(files: &[String], reserved: &[(String, String)], others: &[String
         }
     }
     Ok(())
+}
+
+/// `SAT_POLICY_BRANCH_REGIMES`: `regime[@hold][,regime[@hold]...]`; an item
+/// without a hold takes `default_hold`. One child per item, in order.
+pub fn parse_regimes(v: &str, default_hold: u64) -> Result<Vec<(Regime, u64)>, String> {
+    let mut out: Vec<(Regime, u64)> = Vec::new();
+    for item in v.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let (name, hold) = match item.split_once('@') {
+            Some((n, h)) => (n.trim(), Some(h.trim())),
+            None => (item, None),
+        };
+        let regime = Regime::from_name(name).ok_or_else(|| {
+            format!(
+                "SAT_POLICY_BRANCH_REGIMES='{}': '{}' is not a regime (focused, stable, stay, sat, eager, lazy, reroll)",
+                v, name
+            )
+        })?;
+        let hold = match hold {
+            None => default_hold,
+            Some(h) => h
+                .parse::<u64>()
+                .ok()
+                .filter(|&h| (1..=MAX_HOLD).contains(&h))
+                .ok_or_else(|| format!("SAT_POLICY_BRANCH_REGIMES='{}': hold '{}' is not in 1..{}", v, h, MAX_HOLD))?,
+        };
+        out.push((regime, hold));
+    }
+    if out.is_empty() {
+        return Err(format!("SAT_POLICY_BRANCH_REGIMES='{}': no regimes", v));
+    }
+    if out.len() > MAX_REGIMES {
+        return Err(format!("SAT_POLICY_BRANCH_REGIMES='{}': more than {} regimes", v, MAX_REGIMES));
+    }
+    Ok(out)
 }
 
 /// `SAT_POLICY_BRANCH_ACTIONS`: `knob=e|e[;knob=e|e...]`, entries as the
@@ -401,6 +505,16 @@ pub fn init_from_env(p: &mut crate::policy::Policy, taken: &[(&str, &str)], tick
             .filter(|&h| (1..=MAX_HOLD).contains(&h))
             .ok_or_else(|| format!("SAT_POLICY_BRANCH_HOLD='{}': expected 1..{}", v, MAX_HOLD))?;
     }
+    match env("SAT_POLICY_BRANCH_REGIMES") {
+        Some(v) => b.regimes = parse_regimes(&v, b.hold)?,
+        None => {
+            if b.schedule.iter().any(|bp| bp.kind == Kind::Regime) {
+                return Err(
+                    "SAT_POLICY_BRANCH has a regime point: SAT_POLICY_BRANCH_REGIMES must list its children".to_string()
+                );
+            }
+        }
+    }
     b.reserved = taken.iter().map(|(w, p)| (w.to_string(), p.to_string())).collect();
     // Every file a child of this schedule could create is checked now,
     // before any work is done: the whole menu per point, since the entries
@@ -409,7 +523,11 @@ pub fn init_from_env(p: &mut crate::policy::Policy, taken: &[(&str, &str)], tick
     let parent_log = p.log.as_ref().map(|l| l.path().to_string()).unwrap_or_default();
     let mut all: Vec<String> = Vec::new();
     for bp in &b.schedule {
-        for k in 0..bp.knob.menu().len() {
+        let children = match bp.kind {
+            Kind::Knob(knob) => knob.menu().len(),
+            Kind::Regime => b.regimes.len(),
+        };
+        for k in 0..children {
             all.extend(child_files(&child_stem(&parent_log, bp.decision, k)));
         }
     }
@@ -432,16 +550,21 @@ fn child_json(c: &ChildInfo) -> String {
     s.push_str(&format!("{{\"parent_pid\":{},\"parent_log\":", c.parent_pid));
     crate::policy_log::json_escape_into(&c.parent_log, &mut s);
     s.push_str(&format!(
-        ",\"decision\":{},\"epoch\":{},\"knob\":\"{}\",\"entry\":{},\"index\":{},\"parent_rows\":{},\"masked_to_parent\":{},\"hold\":{}}}",
+        ",\"decision\":{},\"epoch\":{},\"knob\":\"{}\",\"entry\":{},\"index\":{},\"parent_rows\":{},\"masked_to_parent\":{},\"hold\":{}",
         c.decision,
         c.epoch,
-        c.knob.name(),
+        c.knob_name,
         menu_value(c.entry),
         c.index,
         c.parent_rows,
         c.masked_to_parent,
         c.hold
     ));
+    // A regime child names its regime; a knob child's block is as before.
+    if c.regime != Regime::None {
+        s.push_str(&format!(",\"regime\":\"{}\"", c.regime.name()));
+    }
+    s.push('}');
     s
 }
 
@@ -460,16 +583,19 @@ pub fn maybe_branch(solver: &mut Solver) {
     solver.policy.branching.schedule.retain(|bp| bp.decision != decision);
     let parent_act = solver.policy.act;
     for bp in due {
-        let entries: Vec<f32> = match &solver.policy.branching.actions[bp.knob as usize] {
-            Some(list) => list.clone(),
-            None => {
-                let own = bp.knob.get(&parent_act);
-                bp.knob.menu().iter().copied().filter(|&e| e != own).collect()
-            }
+        let specs: Vec<Spec> = match bp.kind {
+            Kind::Knob(knob) => match &solver.policy.branching.actions[knob as usize] {
+                Some(list) => list.iter().map(|&e| Spec::Knob(knob, e)).collect(),
+                None => {
+                    let own = knob.get(&parent_act);
+                    knob.menu().iter().copied().filter(|&e| e != own).map(|e| Spec::Knob(knob, e)).collect()
+                }
+            },
+            Kind::Regime => solver.policy.branching.regimes.iter().map(|&(r, h)| Spec::Regime(r, h)).collect(),
         };
         solver.policy.branching.points += 1;
-        for (k, entry) in entries.into_iter().enumerate() {
-            fork_one(solver, decision, bp.knob, entry, k, parent_act);
+        for (k, spec) in specs.into_iter().enumerate() {
+            fork_one(solver, decision, spec, k, parent_act);
             if solver.policy.branching.child.is_some() {
                 // This is the child: it takes no part in the rest of the
                 // parent's branching.
@@ -488,7 +614,12 @@ fn flush_before_fork(solver: &mut Solver) {
     }
 }
 
-fn fork_one(solver: &mut Solver, decision: u64, knob: Knob, entry: f32, index: usize, parent_act: Action) {
+fn fork_one(solver: &mut Solver, decision: u64, spec: Spec, index: usize, parent_act: Action) {
+    // A regime child's entry is its index in the regime list.
+    let (knob_name, entry) = match spec {
+        Spec::Knob(_, e) => (spec.knob_name(), e),
+        Spec::Regime(..) => (spec.knob_name(), index as f32),
+    };
     if solver.proof.is_some() {
         crate::print::warning(solver, "not forking: a proof file is open");
         return;
@@ -538,7 +669,7 @@ fn fork_one(solver: &mut Solver, decision: u64, knob: Knob, entry: f32, index: u
         return;
     }
     if pid == 0 {
-        become_child(solver, parent_pid, &stem, decision, knob, entry, index, parent_act);
+        become_child(solver, parent_pid, &stem, decision, spec, index, parent_act);
         drop(guard);
         return;
     }
@@ -553,7 +684,7 @@ fn fork_one(solver: &mut Solver, decision: u64, knob: Knob, entry: f32, index: u
         "{}{{\"decision\":{},\"knob\":\"{}\",\"entry\":{},\"index\":{},\"pid\":{}}}",
         if b.json.is_empty() { "" } else { "," },
         decision,
-        knob.name(),
+        knob_name,
         menu_value(entry),
         index,
         pid
@@ -565,7 +696,7 @@ fn fork_one(solver: &mut Solver, decision: u64, knob: Knob, entry: f32, index: u
         format_args!(
             "policy branch: decision {} knob {} entry {} child {} pid {}",
             decision,
-            knob.name(),
+            knob_name,
             menu_value(entry),
             index,
             pid
@@ -600,8 +731,7 @@ fn become_child(
     parent_pid: u32,
     stem: &str,
     decision: u64,
-    knob: Knob,
-    entry: f32,
+    spec: Spec,
     index: usize,
     parent_act: Action,
 ) {
@@ -642,21 +772,31 @@ fn become_child(
         }
     }
     // The child's decision: the parent's action with one knob changed,
-    // masked like any other; one-shot entries re-arm as usual.
+    // masked like any other; one-shot entries re-arm as usual. A regime
+    // child keeps the parent's action and changes the regime instead.
     let mut act = parent_act;
-    knob.set(&mut act, entry);
+    let (knob, entry, regime, hold) = match spec {
+        Spec::Knob(knob, entry) => {
+            knob.set(&mut act, entry);
+            (Some(knob), entry, Regime::None, solver.policy.branching.hold)
+        }
+        Spec::Regime(regime, hold) => (None, index as f32, regime, hold),
+    };
     let act = crate::policy::mask(solver, act);
+    let masked_to_parent = knob.is_some() && act == parent_act;
     let info = ChildInfo {
         parent_pid,
         parent_log,
         decision,
         epoch: solver.policy.obs_epochs.saturating_sub(1),
         knob,
+        knob_name: spec.knob_name(),
         entry,
         index,
         parent_rows,
-        masked_to_parent: act == parent_act,
-        hold: solver.policy.branching.hold,
+        masked_to_parent,
+        hold,
+        regime,
     };
     solver.policy.branching.child_json = child_json(&info);
     solver.policy.branching.child = Some(info);
@@ -672,13 +812,28 @@ fn become_child(
         format!(
             "policy branch child: decision {} knob {} entry {} index {} of parent {} (masked to parent: {})",
             decision,
-            knob.name(),
+            spec.knob_name(),
             menu_value(entry),
             index,
             parent_pid,
-            act == parent_act
+            masked_to_parent
         ),
     );
+    // The regime goes in force last: the header and the branch row above
+    // show the state the parent forked at, with its options.
+    if regime != Regime::None {
+        crate::policy::regime_start(solver, regime, index as u64);
+        crate::print::message(
+            solver,
+            format!(
+                "policy regime: {} in force at decision {} for {} decision epochs ({})",
+                regime.name(),
+                decision,
+                hold,
+                crate::policy::regime_options(solver)
+            ),
+        );
+    }
 }
 
 /// Reap one child; `blocking` waits for one to exit. Returns false when
@@ -802,7 +957,11 @@ mod tests {
     fn schedule_and_actions_parse() {
         let s = parse_schedule("0:probe, 12:mode ,3:sweep").unwrap();
         assert_eq!(s.len(), 3);
-        assert_eq!(s[1], BranchPoint { decision: 12, knob: Knob::Mode });
+        assert_eq!(s[1], BranchPoint { decision: 12, kind: Kind::Knob(Knob::Mode) });
+        let s = parse_schedule("4:regime,9:reduce").unwrap();
+        assert_eq!(s[0], BranchPoint { decision: 4, kind: Kind::Regime });
+        assert_eq!(s[0].kind.name(), "regime");
+        assert_eq!(s[1].kind.name(), "reduce");
         assert!(parse_schedule("").is_err());
         assert!(parse_schedule("x:probe").unwrap_err().contains("not a decision index"));
         assert!(parse_schedule("1:vivify").unwrap_err().contains("not a knob"));
@@ -815,6 +974,24 @@ mod tests {
         assert!(parse_actions("probe=3").unwrap_err().contains("not in the probe menu"));
         assert!(parse_actions("mode=0").unwrap_err().contains("not in the mode menu"));
         assert!(parse_actions("probe").unwrap_err().contains("expected"));
+    }
+
+    #[test]
+    fn regimes_parse() {
+        let r = parse_regimes("focused@3, stay ,reroll,reroll@1,lazy@1024", 7).unwrap();
+        assert_eq!(
+            r,
+            vec![(Regime::Focused, 3), (Regime::Stay, 7), (Regime::Reroll, 7), (Regime::Reroll, 1), (Regime::Lazy, 1024)]
+        );
+        for name in ["focused", "stable", "stay", "sat", "eager", "lazy", "reroll"] {
+            assert_eq!(Regime::from_name(name).map(|x| x.name()), Some(name));
+        }
+        assert!(Regime::from_name("none").is_none(), "no regime is not a child");
+        assert!(parse_regimes("", 1).unwrap_err().contains("no regimes"));
+        assert!(parse_regimes("warm", 1).unwrap_err().contains("not a regime"));
+        assert!(parse_regimes("sat@0", 1).unwrap_err().contains("not in 1.."));
+        assert!(parse_regimes("sat@1025", 1).unwrap_err().contains("not in 1.."));
+        assert!(parse_regimes(&vec!["reroll"; MAX_REGIMES + 1].join(","), 1).unwrap_err().contains("more than"));
     }
 
     #[test]

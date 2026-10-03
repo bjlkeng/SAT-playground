@@ -1383,6 +1383,71 @@ source of truth; every bead points back to its section.
   leave a larger footprint than these single-knob changes, which is the
   one untested reason to try. Owner's call; the recommendation stands:
   close the line, run baseline 2's 400-cell check.
+- 2026-10-03 (owner's go: the regime experiment, `SAT-playground-p9m.10.17`
+  E.14). After check 1 the owner chose to test regimes directly, with two
+  steers: a child runs its regime for one kissat stint and then hands back
+  to kissat's own choice, and stint lengths stay kissat's. Two facts from
+  the stock traces shape the design. (1) Kissat switches mode 49-142 times
+  per run on the pilot-2 cells; a stint is 1-4 decision epochs at the
+  median (4-18 in the last quarter of a run; the largest stint is 3-11 %
+  of the run), so one stint is the size of the hold-1 and hold-4 children
+  that were coin flips. (2) Kissat gives every stable stint the ticks of
+  the focused stint before it, so both modes get 48-53 % of the ticks
+  whatever the schedule: choosing "the other mode" for a slot is the same
+  thing as changing how long each mode runs. So every regime runs at two
+  window lengths, one kissat stint (the owner's design) and a block of a
+  quarter of the run, each followed by a hand-back to kissat's alternation
+  with normal-size stints. **Solver** (fork mode only; `src/policy.rs`
+  "Regimes", the regime points of `src/policy_fork.rs`; `mode.rs` is not
+  edited): `SAT_POLICY_BRANCH=D:regime` forks one child per item of
+  `SAT_POLICY_BRANCH_REGIMES=regime[@hold],...`: `focused` / `stable`
+  (that mode only: through `effective_limit` the held mode never switches
+  out and is switched into at once, by kissat's own switch), `stay` (the
+  mode of the moment: the swap of the coming stint), `sat` (kissat's
+  `--sat` dials, target 2 and restartint 50), `eager` / `lazy` (restart
+  margin 5 / 20, reluctant period 256 / 4096), and `reroll` (kissat
+  unchanged with `solver.random` re-seeded: the luck control). When a
+  held mode's hold ends one switch is due at once, and the stable stint a
+  focused block hands over to gets the tick budget of the last stable
+  stint kissat sized itself (else kissat would give it the whole block's
+  ticks and undo the split). A forced switch waits for the first search
+  tick (a stable stint started at zero ticks would trip kissat's own
+  limit math). Tests: five new fork tests (a mode regime holds its mode
+  for exactly its hold, hands back at the next row, and the handover
+  stint matches the parent's last stable stint to a row; a regime at
+  decision 0; the dial regimes print their options in force and
+  restored; every regime child agrees on the answer and two rerolls
+  differ; bad settings are errors); 102 tests in release and debug
+  builds, the smoke test (9 of 9) and both parity runs (20 of 20 at
+  100 k conflicts, policy off and policy on with the stock action) pass;
+  a three-cell end-to-end pass (`log/rl-regimesmoke-2026-10-03-13-30-30`,
+  42 children, every answer agreeing) went through the collector, the
+  converter and the report. **Design** (`tools/rl_regime.py make`,
+  `benchmarks/rl/regime_jobs.tsv` and its `.schedule.tsv`): 95 training
+  cells in 50 families (46 that stock solves in 300 s or more with 60+
+  decisions, at most three per family; all 19 band cells that solve at
+  the band budget; 30 band cells that do not: the 12 a 7200 s stock run
+  solves, then one per other family), one regime point per cell at the
+  last decision before the first mode switch at or after 30 % of the
+  parent's decisions (the mode there is focused on 48 cells, stable on
+  47), 14 children: `stay`, `sat`, `eager`, `lazy` for the length of the
+  coming stock stint (1-20 epochs, median 6), `focused`, `stable`, `sat`,
+  `eager`, `lazy` for a quarter of the parent's decisions (16-288 epochs,
+  median 78), and five rerolls. **Readout** (`tools/rl_regime.py
+  report`): per class and overall, solved and tick PAR-2 for the parent,
+  each regime as a constant, the best of a group's regimes or the parent
+  per cell (the regime oracle) and the best of as many rerolls or the
+  parent (the luck oracle); the regime oracle against the luck oracle on
+  tick PAR-2, the per-cell cost ratio and solved, each with a relabeling
+  p value (within every cell the regime and the reroll children are
+  shuffled). Synthetic check: a null pass reads p 0.13-0.9; a pass where
+  one block regime per cell halves the work reads a per-cell cost ratio
+  of 0.71 at p < 0.001. Projected 20 h at 32 slots (25 h if every child
+  ran to its budget). **Rule.** Regimes have alpha only where the regime
+  oracle beats the luck oracle beyond the relabeling noise; if it does
+  for the block and not for the stint, the alpha needs persistence and
+  the next step is the hold length at stint granularity; if for neither,
+  regime selection closes with the epoch-policy line.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

@@ -135,10 +135,11 @@ Environment (read by the binary itself, so `run.sh`, the harness and
 | `SAT_POLICY_MARGIN` | number ≥ 0 or `inf` | net mode only: a non-stock entry is taken only when its score beats the stock entry's by this much (log-odds; default 1; `inf` = always stock, which must pass parity) |
 | `SAT_POLICY_HORIZON` | `ticks:<B>` | the horizon feature (fraction of budget used) as work / B; the deterministic form for parity, replay and fork children; when unset a `SAT_LIMIT_TICKS` run uses work / limit, else `SAT_WALL_LIMIT` |
 | `SAT_WALL_LIMIT` | seconds > 0 | the wall budget the harness runs the cell under, for the horizon feature at inference (elapsed wall / limit; the one non-deterministic input); no effect on when the solver stops |
-| `SAT_POLICY_BRANCH` | `D:knob[,D:knob...]` | fork mode (A.8): at decision D (0 = D0, each D at most once) fork one child per alternative entry of the knob's menu (probe, eliminate, reduce, rephase, reorder, mode, margin, sweep); needs `SAT_POLICY_LOG` and `SAT_LIMIT_TICKS` (children stop on the inherited budget); refused with a proof or `-o` file |
+| `SAT_POLICY_BRANCH` | `D:knob[,D:knob...]` | fork mode (A.8): at decision D (0 = D0, each D at most once) fork one child per alternative entry of the knob's menu (probe, eliminate, reduce, rephase, reorder, mode, margin, sweep), or, for `D:regime`, one child per regime of `SAT_POLICY_BRANCH_REGIMES`; needs `SAT_POLICY_LOG` and `SAT_LIMIT_TICKS` (children stop on the inherited budget); refused with a proof or `-o` file |
 | `SAT_POLICY_BRANCH_ACTIONS` | `knob=e\|e[;knob=e\|e]` | restrict the entries forked per knob (menu values such as `0\|0.5\|2\|4`); the parent's own entry is allowed here (a stock child is the fork test) |
 | `SAT_POLICY_BRANCH_JOBS` | 1..64 | live children per parent (default 4); the parent blocks at a branch point until a child exits (wall, not ticks) |
 | `SAT_POLICY_BRANCH_HOLD` | 1..1024 | decision epochs a child keeps its entry in force (default 1: the branch epoch only); at each of its next K−1 decisions the child puts the same entry back, masked for the mode of that moment, whatever the parent's policy would choose, then returns to the parent's policy; recorded as `hold` in the child's header |
+| `SAT_POLICY_BRANCH_REGIMES` | `regime[@hold][,regime[@hold]...]` | the children of a regime point (`SAT_POLICY_BRANCH=D:regime`, plan §11 2026-10-03): one child per item, in order (at most 32). A regime runs in place of kissat's own choice from the branch decision for its hold (decision epochs; default `SAT_POLICY_BRANCH_HOLD`), then kissat's alternation resumes: `focused` / `stable` (that mode only), `stay` (the mode of the moment, no switch), `sat` (kissat's `--sat` dials: target 2, restartint 50), `eager` / `lazy` (half / twice the restart margin and a quarter / four times the reluctant period), `reroll` (kissat unchanged with the solver's random stream re-seeded: the luck control). A held mode ends with one switch due at once, and the stable stint a focused block hands over to gets the tick budget of the last stable stint kissat sized itself, not one as long as the block. The child's header reads `"knob":"regime"`, `entry` is its index in the list and `regime` its name; its output prints the four options when the regime starts and when it ends |
 | `SAT_POLICY_EPOCH_TICKS` | `X_o[,X_d]` | observation and decision epochs in `search_ticks`; default `8388608,134217728` (2^23, 2^27); `X_d` defaults to 16 × `X_o` and must be an integer multiple of it (decisions are checked at observation boundaries) |
 | `SAT_POLICY_SEED` | integer | the policy's own generator seed (default 0); never touches the solver's `--seed` stream |
 | `SAT_POLICY_TEMP` | number > 0 | spread of the random menus around stock: weight exp(−distance/temp), so 0.2 is almost always stock and 100 is uniform (default 1.0) |
@@ -1077,6 +1078,31 @@ Decisions first: X_d stays 2^27 and the stage-1 menu is frozen as plan
   one strong signal (27 % worse v 59 %) and rare. Weak feedback for a
   regime selector to beat kissat's blind alternation; plan §11,
   2026-09-30.
+- **Regime experiment (E.14, `SAT-playground-p9m.10.17`, 2026-10-03;
+  `SAT_POLICY_BRANCH_REGIMES`, `tools/rl_regime.py`, `benchmarks/rl/regime_jobs.tsv`).**
+  The question one level above timing: kissat alternates two search
+  regimes blindly, about half the ticks each (48-53 % stable on the
+  pilot-2 cells, 49-142 switches per run, a stint of 1-4 decision
+  epochs); would another regime, chosen per instance, have paid? Fork
+  mode gained regime points (environment table above): a child runs one
+  regime in place of kissat's own choice for its hold and then hands
+  back to kissat's alternation with normal-size stints. `mode.rs` is not
+  edited: a held mode acts through `policy::effective_limit` and the
+  switch is kissat's own; the dial regimes set four options and put them
+  back. `tests/policy_fork.rs` has five regime tests (the mode held row
+  by row and the size of the handover stint, a regime at decision 0, the
+  options in force and restored, answers agreeing, bad settings); the
+  suite (102 tests, release and debug builds), the smoke test and both
+  parity runs (20 of 20, policy off and policy-on stock) pass on the
+  binary with regimes. The pass: 95 training cells
+  (46 slow solves, 19 band cells that solve at the band budget, 30 that
+  do not), one point per cell at 30 % of the run, 14 children: four
+  regimes for one kissat stint (the owner's design), five for a block of
+  a quarter of the run, five rerolls (kissat unchanged on another random
+  stream: the luck control). The report compares the best regime per
+  cell with the best of as many rerolls, with a within-cell relabeling p
+  value. Result below when the pass ends; design and rule in plan §11,
+  2026-10-03.
 - **Training scaffold and the stock clone (D.2, `tools/rl/`).** PyTorch
   2.14 CPU in the RL venv (`tools/rl/requirements.txt` has the index
   line). `data.py` loads the decision rows of a converted pass as a
