@@ -1101,8 +1101,32 @@ Decisions first: X_d stays 2^27 and the stage-1 menu is frozen as plan
   a quarter of the run, five rerolls (kissat unchanged on another random
   stream: the luck control). The report compares the best regime per
   cell with the best of as many rerolls, with a within-cell relabeling p
-  value. Result below when the pass ends; design and rule in plan §11,
-  2026-10-03.
+  value; design and rule in plan §11, 2026-10-03.
+  **Result (`log/rl-regime-2026-10-03-14-19-53`, 2026-10-03 14:19 to
+  2026-10-04 15:23, 1330 children, zero failures and anomalies;
+  `log/regime-report-2026-10-04.txt`).** A child's fair baseline is a
+  reroll, not its parent (parents were picked by outcome): stock solves
+  64 of 95, one reroll 56.0, the best of five rerolls or the parent 71.
+
+  | window | cells | solved, regime oracle v luck oracle | tick PAR-2 ratio |
+  |---|---|---:|---:|
+  | one stint | all 95 | 74 v 70.4 (p 0.06) | 0.918 (p 0.025) |
+  | one stint | 65 stock solves | 65 v 65 | 1.07 slow (p 0.98), 0.98 band (p 0.39) |
+  | one stint | 30 stock does not | 9 v 5.4 (p 0.06) | 0.876 (p 0.013) |
+  | block | all 95 | 74 v 71 (p 0.15) | 0.965 (p 0.22) |
+  | block | 65 stock solves | 65 v 65 | 1.01 slow (p 0.65), 1.09 band (p 0.89) |
+  | block | 30 stock does not | 9 v 6 (p 0.15) | 0.932 (p 0.14) |
+
+  No alpha on the cells stock solves. On the cells it does not, the
+  matched-count gaps close when pooled: 13 of 31 unsolved parents are
+  rescued by some regime child (nine children), 11.7 by nine children
+  drawn by relabeling (p 0.22), and per child a regime rescues as often
+  as a reroll (11.5 v 11.0 %). As constants against a reroll, `focused`
+  for a quarter of the run loses 6 solved, `stable` for a quarter is the
+  best arm (+5, p 0.06), `eager` for one stint +4 (p 0.13). A hint, not
+  alpha; what is established is that focused-only stretches hurt and
+  that trajectory luck is large. Options and the reading: plan §11,
+  2026-10-04.
 - **Training scaffold and the stock clone (D.2, `tools/rl/`).** PyTorch
   2.14 CPU in the RL venv (`tools/rl/requirements.txt` has the index
   line). `data.py` loads the decision rows of a converted pass as a

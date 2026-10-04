@@ -50,9 +50,13 @@ Regimes have alpha only where the regime oracle clears the luck oracle;
 the comparison (tick PAR-2 ratio, the per-cell cost ratio, the solved
 difference) comes with a relabeling p value: within every cell, which
 children count as regimes and which as rerolls is shuffled, which is what
-the three would read if a regime were only another reroll. A per-family
-table follows (solved and tick PAR-2 of the two oracles), and every
-cell's arms go to <run>/report/regime_per_cell.tsv.
+the three would read if a regime were only another reroll. Then each
+regime against a reroll (a child leaves the trajectory of a parent that
+was picked for its outcome, so a reroll is its fair baseline, not the
+parent), the cells the parent does not solve (who rescues which, and
+the regime children pooled against as many children drawn by
+relabeling), a per-family table (solved and tick PAR-2 of the two
+oracles), and every cell's arms in <run>/report/regime_per_cell.tsv.
 
     ~/.cache/sat13-rl/venv/bin/python tools/rl_regime.py make --stock log/rl-stock2025-<ts> \\
         --band log/rl-band2025-<ts> [--rescue log/rl-band7200-<ts>/results.tsv] --out benchmarks/rl/regime_jobs.tsv
@@ -487,6 +491,81 @@ def cmd_report(args) -> int:
             print(f"  {group}: regime oracle v luck oracle: tick PAR-2 ratio {ratio:.3f} (p {p_ratio:.3f}); "
                   f"cost ratio per cell, geometric mean {math.exp(mlog):.3f} (p {p_log:.3f}); solved {ds:+.1f} "
                   f"(p {p_solved:.3f}); cells cheaper {better}, dearer {worse}, within 1 % {len(stems) - better - worse}")
+    # each arm against a reroll. A child, like a reroll, leaves the trajectory
+    # of a parent that was picked for its outcome (the slow and band-solved
+    # parents solve, the band-timeout parents do not), so the fair baseline
+    # of a constant regime is a reroll, not the parent.
+    arm_names = [f"{g}: {n}" for g, names in (("stint", STINT_REGIMES), ("block", BLOCK_REGIMES)) for n in names]
+    print(f"\neach regime against a reroll (solved v the mean reroll; tick PAR-2 as a share of the mean reroll's; "
+          f"p = share of {args.perms} relabelings of the regime among itself and the rerolls that do at least as well)")
+    for cls in classes:
+        stems = sorted(s for s, c in cells.items() if cls == "all" or c["class"] == cls)
+        if not stems or not all(cell_arms[s]["reroll"] for s in stems):
+            continue
+        n_r = min(len(cell_arms[s]["reroll"]) for s in stems)
+        each = [sum(cell_arms[s]["reroll"][k][0] for s in stems) for k in range(n_r)]
+        r_solved = sum(per_cell[s]["one reroll (mean)"][0] for s in stems)
+        r_cost = sum(per_cell[s]["one reroll (mean)"][1] for s in stems)
+        print(f"  {cls}: {len(stems)} cells; the parent solves {sum(per_cell[s]['stock (the parent)'][0] for s in stems):.0f}, "
+              f"each reroll {each} (mean {r_solved:.1f})")
+        for arm in arm_names:
+            group, name = arm.split(": ")
+            if not all(name in cell_arms[s][group] for s in stems):
+                continue
+            so = sum(cell_arms[s][group][name][0] for s in stems)
+            co = sum(cell_arms[s][group][name][1] for s in stems)
+            ge_s = ge_c = 0
+            for _ in range(args.perms):
+                ps = pc = 0.0
+                for s in stems:
+                    pool = [cell_arms[s][group][name]] + cell_arms[s]["reroll"]
+                    x = pool[rng.randrange(len(pool))]
+                    ps, pc = ps + x[0], pc + x[1]
+                ge_s += ps >= so
+                ge_c += pc <= co
+            p_s = ge_s / args.perms if args.perms else float("nan")
+            p_c = ge_c / args.perms if args.perms else float("nan")
+            print(f"    {arm:<16s} solved {so:5.0f} ({so - r_solved:+5.1f}, p {p_s:.3f})   "
+                  f"tick PAR-2 {co / r_cost if r_cost else float('nan'):.3f} (p {p_c:.3f})")
+
+    # the cells the parent does not solve: who rescues which, and all the
+    # regime children pooled against as many children drawn from all of a
+    # cell's children by relabeling (more children rescue more cells by
+    # themselves, so the count of regime children is kept)
+    unsolved = sorted(s for s in cells if not cell_arms[s]["parent"][0])
+    if unsolved:
+        print(f"\ncells the parent does not solve ({len(unsolved)}): rescues")
+        by_regime = by_reroll = both = 0
+        tot_reg = tot_rer = n_reg = n_rer = 0          # rescues and children, summed over the cells
+        for s in unsolved:
+            a = cell_arms[s]
+            regs = [f"{g}: {n}" for g in ("stint", "block") for n, v in a[g].items() if v[0]]
+            rr = sum(1 for x in a["reroll"] if x[0])
+            tot_reg, tot_rer = tot_reg + len(regs), tot_rer + rr
+            n_reg, n_rer = n_reg + sum(len(a[g]) for g in ("stint", "block")), n_rer + len(a["reroll"])
+            by_regime, by_reroll, both = by_regime + bool(regs), by_reroll + bool(rr), both + bool(regs and rr)
+            if regs or rr:
+                print(f"  {s.split('-', 1)[-1][:30]:<30s} {cells[s]['family'][:16]:<16s} rerolls {rr}/{len(a['reroll'])}  "
+                      f"regimes: {', '.join(regs) if regs else '-'}")
+        ge = 0
+        mean = 0.0
+        for _ in range(args.perms):
+            cnt = 0
+            for s in unsolved:
+                a = cell_arms[s]
+                pool = [v[0] for g in ("stint", "block") for v in a[g].values()] + [x[0] for x in a["reroll"]]
+                rng.shuffle(pool)
+                cnt += any(pool[:sum(len(a[g]) for g in ("stint", "block"))])
+            mean += cnt
+            ge += cnt >= by_regime
+        print(f"  rescued by some regime {by_regime} cells, by some reroll {by_reroll}, by both {both}; per child: regimes "
+              f"{tot_reg}/{n_reg} = {100 * tot_reg / max(n_reg, 1):.1f} %, rerolls "
+              f"{tot_rer}/{n_rer} = {100 * tot_rer / max(n_rer, 1):.1f} %")
+        if args.perms:
+            print(f"  pooled: {by_regime} cells rescued by the regime children ({n_reg} over the {len(unsolved)} cells, "
+                  f"of {n_reg + n_rer} children); as many children per cell drawn from all of that cell's children "
+                  f"by relabeling rescue {mean / args.perms:.2f} cells on average (p {ge / args.perms:.3f})")
+
     # per family (the project's reporting rule): where the totals come from.
     # Solved counts and tick PAR-2 of the parent and of the two oracles of
     # each group, so a gain that is one family's win and another's loss shows.
@@ -555,6 +634,8 @@ def main(argv: list[str]) -> int:
     r.add_argument("--seed", type=int, default=1)
     r.set_defaults(func=cmd_report)
     args = ap.parse_args(argv)
+    if getattr(args, "perms", 0) < 0:
+        ap.error("--perms must not be negative")
     return args.func(args)
 
 

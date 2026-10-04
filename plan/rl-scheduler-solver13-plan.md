@@ -1448,6 +1448,74 @@ source of truth; every bead points back to its section.
   for the block and not for the stint, the alpha needs persistence and
   the next step is the hold length at stint granularity; if for neither,
   regime selection closes with the epoch-policy line.
+- 2026-10-04 (regime experiment result, E.14 `SAT-playground-p9m.10.17`;
+  `log/rl-regime-2026-10-03-14-19-53`, 2026-10-03 14:19 to 2026-10-04
+  15:23, 95 fork jobs, 1330 children, zero failures and anomalies;
+  `log/regime-report-2026-10-04.txt` from `tools/rl_regime.py report`,
+  per cell in the run's `report/regime_per_cell.tsv`). **The baseline
+  first.** The parents were picked by their outcome (the slow and
+  band-solved parents solve, the band-timeout parents do not), and a
+  child leaves the parent's trajectory, so the fair baseline of a child
+  is a reroll, not the parent: stock solves 64 of 95, one reroll 56.0
+  (the five: 56, 54, 58, 57, 55) at 1.065× tick PAR-2, and the best of
+  five rerolls or the parent 71 at 0.833×. Trajectory luck alone is
+  worth that much; a regime has to beat it. **Regime oracle against
+  luck oracle** (best of a group's regimes or the parent per cell,
+  against the best of as many rerolls or the parent; p from relabeling
+  the children within each cell):
+
+  | window | cells | solved, regime v luck | tick PAR-2 ratio | per-cell cost ratio |
+  |---|---|---:|---:|---:|
+  | one stint | all 95 | 74 v 70.4 (p 0.06) | 0.918 (p 0.025) | 0.952 (p 0.14) |
+  | one stint | 46 slow | 46 v 46 | 1.069 (p 0.98) | 1.061 (p 0.97) |
+  | one stint | 19 band, solved | 19 v 19 | 0.984 (p 0.39) | 0.911 (p 0.14) |
+  | one stint | 30 band, unsolved | 9 v 5.4 (p 0.06) | 0.876 (p 0.013) | 0.828 (p 0.03) |
+  | block | all 95 | 74 v 71 (p 0.15) | 0.965 (p 0.22) | 0.981 (p 0.31) |
+  | block | 46 slow | 46 v 46 | 1.013 (p 0.65) | 1.019 (p 0.69) |
+  | block | 19 band, solved | 19 v 19 | 1.091 (p 0.89) | 1.009 (p 0.55) |
+  | block | 30 band, unsolved | 9 v 6 (p 0.15) | 0.932 (p 0.14) | 0.910 (p 0.15) |
+
+  On the cells stock solves the regimes do not beat rerolls at either
+  window (the one-stint oracle on the slow cells is worse than luck). On
+  the cells stock does not solve the one-stint regimes rescue 9 against
+  5.4 by luck and the block regimes 9 against 6. **Pooled, the gap
+  closes:** of the 31 parents that do not solve, 13 are rescued by some
+  regime child (nine children) and 7 by some reroll (five), every one of
+  the 7 also by a regime; nine children drawn from all fourteen by
+  relabeling rescue 11.7 on average (p 0.22), and per child a regime
+  rescues as often as a reroll (32 of 279, 11.5 %, against 17 of 155,
+  11.0 %). Most of the matched-count gap is the spread any extra
+  children bring. Two cells (oddball_80, bp4_TCO_CSO_ZR) are rescued by
+  exactly `stay`, `eager` (one stint) and `stable` (block) and by none
+  of five rerolls, a coherent "more stable time now" signature, but two
+  cells. **Each regime as a constant, against a reroll** (all 95 cells):
+  `focused` for a quarter of the run loses 6 solved (p 0.99 on the wrong
+  side; 1.30× tick PAR-2 on the slow cells), `stable` for a quarter of
+  the run is the best arm at +5 (p 0.06; +3.8 on the band-solved cells,
+  p 0.03), `eager` for one stint +4 (p 0.13), `stay` +2, the rest −1 to
+  −3; with 36 arm-by-class tests two at p < 0.05 are expected by chance.
+  Per family the oracle gaps are spread (bp, oddball, roundrobin,
+  timetable, connm-csp, xor-op for the regimes; chess-puzzles,
+  lockchart, factoring for luck), no family carries them. **Reading by
+  the rule of 2026-10-03.** The block does not clear the luck oracle
+  (p 0.15-0.22). The one-stint window clears it on one statistic (tick
+  PAR-2, p 0.025) and not on the per-cell ratio (p 0.14) or pooled
+  (p 0.22), and only on the cells stock does not solve. That is a hint,
+  not alpha: regime selection is not established at either window, and
+  on the cells stock already solves it is a clean null. What the pass
+  does establish: focused-only stretches hurt, and trajectory luck is
+  large (best of five rerolls: 71 v 64 solved), which a selector cannot
+  use without predicting the lucky run. **Options** (owner's decision,
+  `SAT-playground-p9m.16`): (a) replicate where the hint is, the 36
+  band-timeout training cells not yet run, same design and the same
+  statistic fixed in advance (regime oracle v luck oracle, and the
+  pooled count), about 14 h; (b) the whole-run version on training
+  cells, kissat's presets (`--stable=2`, `--stable=0`, `--sat`) against
+  three seeds, the classic portfolio measure with no fork machinery,
+  about 11 h; (c) close regime selection with the epoch-policy line.
+  Baseline 2's 400-cell check (`SAT-playground-p9m.10.15`) is due under
+  every option. Recommendation: (c), or (a) if the hint is to be
+  settled rather than left; not a selector on this evidence.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 
