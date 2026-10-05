@@ -1516,6 +1516,51 @@ source of truth; every bead points back to its section.
   Baseline 2's 400-cell check (`SAT-playground-p9m.10.15`) is due under
   every option. Recommendation: (c), or (a) if the hint is to be
   settled rather than left; not a selector on this evidence.
+- 2026-10-05 (the 400-cell check of baseline 2, `SAT-playground-p9m.10.15`;
+  `log/abtest-rl-b2-400-2026-10-04-17-52-54`, 2026-10-04 17:53 to
+  2026-10-05 02:37 on an otherwise idle host, `reorderint=20000` v stock
+  on all 400 cells of sat-comp-2025 at 1800 s, 16 GB, 32 shared pinned
+  cores, one seed, proofs checked, binary of tree f5ee67f;
+  `log/b2-400-report-2026-10-04.txt` from `tools/rl_sweep_report.py
+  --split`). No failed row, no contradiction; every SAT model verified,
+  239 UNSAT proofs verified and 44 left unchecked when the proof checker
+  ran out of its budget (23 stock, 21 candidate, on 24 cells; the other
+  arm gives the same answer on 22 of them and times out on 2).
+
+  | cells | solved, stock v 20000 | +solved / −solved | wall PAR-2 | tick PAR-2 |
+  |---|---:|---:|---:|---:|
+  | all 400 | 281 v 288 | +18 / −11 | 0.967× | 0.982× |
+  | 293 train | 206 v 209 | +12 / −9 | 0.987× | 1.005× |
+  | 99 validation | 70 v 73 | +5 / −2 | 0.927× | 0.936× |
+  | 8 shared | 5 v 6 | +1 / −0 | 0.796× | 0.778× |
+
+  The gain is +6 SAT (146 v 140) and +1 UNSAT (142 v 141). Per family:
+  lockchart +3, booth +2 and eleven families +1; bp −2 and seven
+  families −1. On the 270 cells both arms solve the median work ratio
+  is 1.000 and the geometric mean 0.971 (0.878 on the 153 where stock
+  takes 60 s or more): the typical cell does not move and the average
+  is a tail of large wins against a few large losses. **Reading.** The
+  sign holds on every aggregate and matches the medium suite (76 v 73)
+  and the tick-budgeted validation run (72 v 70), which are subsets of
+  these cells. It does not clear the noise: 29 cells change side, 18
+  for and 11 against (one-sided sign test p 0.13), and 94 cells get
+  cheaper by over 5 % against 79 dearer (p 0.14). The regime experiment
+  (2026-10-04) showed how large trajectory luck is, and a changed
+  constant is a reroll of every cell. So baseline 2 is a small
+  candidate retune that one seed cannot confirm, not a result. The
+  check a promotion needs is the luck control the plan already lists
+  (§8 "Shuffled copies"): both arms on several scrambled copies, where
+  a real gain repeats and luck does not. The 2026 holdout stays unspent
+  until then. **Where the RL project stands.** Timing (rounds 0-1, the
+  two hold pilots, check 1) and regime selection (2026-10-04) found no
+  learnable signal beyond trajectory luck; the best global constant is
+  a +7 of 400 that is not yet separated from luck. Options for the
+  owner (`SAT-playground-p9m.16`): the regime options of 2026-10-04
+  (replicate the hint on the 36 untouched unsolved cells; kissat's
+  presets against seeds; or close), and for baseline 2 the
+  scrambled-copy check (both arms on five scrambled copies of the 99
+  validation cells under their tick budgets, about 6 h) before any
+  holdout run.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

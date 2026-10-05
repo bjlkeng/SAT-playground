@@ -1127,6 +1127,29 @@ Decisions first: X_d stays 2^27 and the stage-1 menu is frozen as plan
   alpha; what is established is that focused-only stretches hurt and
   that trajectory luck is large. Options and the reading: plan §11,
   2026-10-04.
+- **Baseline 2 on all 400 cells (`SAT-playground-p9m.10.15`, 2026-10-05;
+  `log/abtest-rl-b2-400-2026-10-04-17-52-54`, `log/b2-400-report-2026-10-04.txt`).**
+  `reorderint=20000` against stock at 1800 s, 16 GB, 32 shared pinned
+  cores, one seed, proofs checked, idle host: no failed row, no
+  contradiction (44 UNSAT proofs left unchecked at the checker's budget,
+  on 24 cells, with no disagreement between the arms on any).
+
+  | cells | solved, stock v 20000 | +solved / −solved | wall PAR-2 | tick PAR-2 |
+  |---|---:|---:|---:|---:|
+  | all 400 | 281 v 288 | +18 / −11 | 0.967× | 0.982× |
+  | 293 train | 206 v 209 | +12 / −9 | 0.987× | 1.005× |
+  | 99 validation | 70 v 73 | +5 / −2 | 0.927× | 0.936× |
+
+  The sign holds everywhere and matches the medium suite and the
+  tick-budgeted validation run, but it does not clear the noise: 29
+  cells change side, 18 for and 11 against (sign test p 0.13), and the
+  median work ratio on the 270 cells both solve is 1.000. A changed
+  constant rerolls every cell, and the regime experiment showed how
+  large that luck is, so this is a candidate retune one seed cannot
+  confirm. Next for a promotion: both arms on several scrambled copies
+  (plan §8); the 2026 holdout stays unspent. Plan §11, 2026-10-05.
+  `python3 tools/rl_sweep_report.py log/abtest-rl-b2-400-2026-10-04-17-52-54
+  --baseline stock --split benchmarks/rl/split_2025.tsv`.
 - **Training scaffold and the stock clone (D.2, `tools/rl/`).** PyTorch
   2.14 CPU in the RL venv (`tools/rl/requirements.txt` has the index
   line). `data.py` loads the decision rows of a converted pass as a
