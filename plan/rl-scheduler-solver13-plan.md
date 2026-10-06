@@ -1561,6 +1561,50 @@ source of truth; every bead points back to its section.
   scrambled-copy check (both arms on five scrambled copies of the 99
   validation cells under their tick budgets, about 6 h) before any
   holdout run.
+- 2026-10-06 (structure census of the 400 cells, `SAT-playground-p9m.20`;
+  `tools/rl_structure.py`, `benchmarks/rl/structure_2025.tsv`,
+  `log/structure-report-2026-10-06.txt`,
+  `log/structure-verify-2026-10-06.tsv`). **Question.** The rewriting
+  review of 2026-10-05 said the large competition gains of the last
+  years came from recognising structure (symmetry, counting, parity,
+  circuits) and rewriting the formula, not from search. Which
+  structures do our 400 cells carry, including the 47 families with
+  one or two cells? **Method.** Three sources per cell: cheap detectors
+  on the CNF (XOR constraints, at-most-one and exactly-one groups,
+  time-step unrolling, uniform-random shape), the solver's gate census
+  from the stock pass, and Satsuma 1.4 (the symmetry preprocessor of the
+  2026 winner) in `fix` mode. Every cell Satsuma decided was re-run with
+  a VeriPB proof and checked with VeriPB 3. **Result.** Symmetry fixing
+  alone decides 37 cells in 0.0-4.7 s each; 26 are cells we time out on
+  at 1800 s and 25 of the 37 are unsolved by both solver 13 and the C
+  kissat at 3600 s. VeriPB verifies 33 of the 37 (22 unsolved:
+  roundrobin 8, clqcl 6, php 4, clique-coloring 3, tseitin 1); the four
+  `MVRoundRobin` proofs are rejected at a redundance step and stay
+  claimed, not verified. All five Tseitin cells (four unsolved) are pure
+  XOR systems where adding every constraint gives 0 = 1. So 25 verified
+  unsolved cells fall to a seconds-long rewrite, against the +7 of the
+  best search-side candidate, all in crafted UNSAT families (pigeonhole,
+  clique-colouring, round-robin, Tseitin). Over all 400: symmetry on 173
+  cells (interchangeable rows on 55), at-most-one or exactly-one groups
+  on 131, XOR constraints on 130 (23 with half or more of the clauses
+  in them, the 5 Tseitin cells nearly all), gates
+  on 30 % of the variables on 235, unrolling on 53, nothing recognised
+  on 30 (7 unsolved). The small families almost all share a signature
+  with a larger one (arithmetic singletons with the multipliers,
+  puzzle pairs with the timetables, hardware singletons with
+  oddball/pj/iscas); twelve cells stand alone. Detection cost is small:
+  detectors median 2.5 s per cell (p90 30 s), Satsuma median 0.6 s (p90
+  20 s, 4 timeouts at 120 s, 18 cells over 60 MB skipped). **Reading.**
+  These families have no short resolution proofs, so the answers cannot
+  come with DRAT proofs: using them means the correctness gate accepts
+  SR or VeriPB proofs for symmetry and parity steps, which the SAT
+  Competition does since 2026. The 2026 holdout has none of these family
+  names, so the gain is on the 2025 distribution; the structure classes
+  (orbitopes, XOR systems) are general and the detectors are exact.
+  **Decision for the owner.** Whether to add structure rewriting to
+  solver 13 (symmetry fixing and a parity check first, with a proof
+  format the gate can check), given the project's rule of no external
+  solver dependencies and a DRAT-only gate today.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

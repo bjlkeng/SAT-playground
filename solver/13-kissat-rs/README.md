@@ -1150,6 +1150,68 @@ Decisions first: X_d stays 2^27 and the stage-1 menu is frozen as plan
   (plan §8); the 2026 holdout stays unspent. Plan §11, 2026-10-05.
   `python3 tools/rl_sweep_report.py log/abtest-rl-b2-400-2026-10-04-17-52-54
   --baseline stock --split benchmarks/rl/split_2025.tsv`.
+- **Structure census of the 400 cells (`SAT-playground-p9m.20`, 2026-10-06;
+  `tools/rl_structure.py`, `benchmarks/rl/structure_2025.tsv`,
+  `log/structure-report-2026-10-06.txt`, `log/structure-verify-2026-10-06.tsv`).**
+  What kind of structure each instance carries, from three sources: cheap
+  detectors on the CNF (XOR constraints, at-most-one and exactly-one
+  groups, time-step unrolling, uniform-random shape; the first 3M clauses
+  on 79 big cells), the solver's own gate census from the stock pass, and
+  Satsuma 1.4 (the symmetry preprocessor of the SAT Competition 2026
+  winner, built from source) in `fix` mode on 378 cells (18 skipped over
+  60 MB compressed, 4 timed out at 120 s). Costs: the detectors take a
+  median 2.5 s per cell (p90 30 s, max 241 s, Python), Satsuma a median
+  0.6 s (p90 20 s, max 105 s). The stock pass at 1800 s solves 283 of the
+  400; 115 time out.
+
+  | structure | all 400 | of the 115 unsolved | unsolved families |
+  |---|---:|---:|---|
+  | any symmetry (generators or interchangeable rows) | 173 | 65 | roundrobin 12, lockchart 11, clqcl 6, ramsey 6, timetable 5 |
+  | interchangeable rows (orbitopes) | 55 | 33 | roundrobin 12, clqcl 6, php 4, clique-coloring 4, ramsey 4 |
+  | decided by symmetry fixing alone | 37 | 26 | roundrobin 12, clqcl 6, php 4, clique-coloring 3, tseitin 1 |
+  | at-most-one / exactly-one groups | 131 | 50 | roundrobin, clqcl, clique-coloring, php, timetable, argumentation |
+  | XOR constraints (10 or more) | 130 | 27 | bp 4, tseitin 4, multiplier-16x16 3, oisc 3 |
+  | half or more of the clauses in XOR constraints | 23 | 7 | tseitin 4, grs 1, parity 1, one singleton |
+  | nearly every clause in an XOR constraint (98 %+) | 5 | 4 | tseitin 4 |
+  | gates on 30 % of the variables | 235 | 62 | oddball 8, roundrobin 8, multipliers, bp |
+  | time-step unrolling (copies of a clause shape at one period) | 53 | 10 | mult-miter-bits 2, tseitin 2, xor-op 2 |
+  | nothing recognised | 30 | 7 | chess-puzzles 3, baseballcover, connm-csp, dubois50-mis |
+
+  **The finding.** Symmetry fixing alone decides 37 cells in 0.0 to 4.7 s
+  each, 26 of them cells we time out on at 1800 s, and 25 of the 37 are
+  still unsolved by both solver 13 and the C kissat at 3600 s in the
+  third paired run. VeriPB 3 checks Satsuma's proofs (the `verify`
+  command; Satsuma writes VeriPB 2, the rewrite only renames and drops
+  deletions, which cannot make a refutation unsound) and verifies 33 of
+  the 37, 22 of them unsolved cells (roundrobin 8, clqcl 6, php 4,
+  clique-coloring 3, tseitin 1). The four `MVRoundRobin` proofs are
+  rejected at a redundance step; the 2026 winner solved these with the
+  same tool, but they stay claimed, not verified, here. On top of that,
+  all five Tseitin cells (four unsolved) are pure XOR systems with every
+  variable in exactly two constraints, so adding every constraint gives
+  0 = 1: UNSAT in under 7 s of Python with no search at all. Together
+  that is 25 verified unsolved cells (22 by symmetry, 3 more by one XOR
+  sum) that a seconds-long rewrite decides, against the +7 of the best
+  search-side candidate. All are crafted UNSAT families (pigeonhole,
+  clique-colouring, round-robin, Tseitin), which have no short resolution
+  proofs: these answers cannot come with a DRAT proof, so the correctness
+  gate would have to accept SR or VeriPB proofs for them. The 2026 holdout
+  has none of the family names, so a gain there is not implied.
+
+  **Patterns across families.** The 47 one- and two-cell families almost
+  all share a signature with a larger family: the arithmetic singletons
+  (aprove, jkkk, manthey, spg, lec-mult, linked-list, valves, brocard,
+  circuit-multiplier) look like multiplier-16x16 / bp / sort-equivalence
+  (XOR gates inside a circuit); battleship, crafted-n, dimacs-coloring and
+  mod4block look like break-scheduling / timetable / sudoku (at-most-one
+  groups with symmetry); goldcrest like bp and oisc; the hardware
+  singletons like oddball / pj / iscas / itc99; rbsat, frb, sgi, snw and
+  the planning cell like case / crusti-g2io (exactly-one groups). Twelve
+  cells have a signature no larger family shares (the two goldcrest and
+  the two mult-miter-bits cells, uniqinv40, myciel6, g2-T49, em_11,
+  gensys, shuffling-sat04, velev-pipe-sat, one xits-miter). The unsolved
+  "nothing recognised" cells are three rook puzzles, baseballcover,
+  connm-csp, dubois50-mis and Ptn-7824. Plan §11, 2026-10-06.
 - **Training scaffold and the stock clone (D.2, `tools/rl/`).** PyTorch
   2.14 CPU in the RL venv (`tools/rl/requirements.txt` has the index
   line). `data.py` loads the decision rows of a converted pass as a
