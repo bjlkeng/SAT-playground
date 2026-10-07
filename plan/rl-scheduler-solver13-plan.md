@@ -1605,6 +1605,44 @@ source of truth; every bead points back to its section.
   solver 13 (symmetry fixing and a parity check first, with a proof
   format the gate can check), given the project's rule of no external
   solver dependencies and a DRAT-only gate today.
+- 2026-10-06 (LymphoSAT's specialists on our cells; `tools/lymphosat_probe.py`,
+  `log/lymphosat-2026-10-06/`). **Question.** LymphoSAT (2026) ships
+  126 family specialists with structural detectors; which of its
+  patterns do our 400 cells carry, beyond the census above? **Method.**
+  Every published specialist (116 C++ compiled, 7 Python) on every cell
+  under 60 MB compressed, 10 s and 8 GB each (46,986 runs); every answer
+  on a cell our stock pass did not solve re-run with a proof and checked
+  (models against every clause, UNSAT proofs with VeriPB). Specialists
+  that answered a known cell wrongly (three) are dropped; seventeen that
+  are general solvers inside are not counted as matches. **Result.** 41
+  of our 115 unsolved cells get a verified answer within 10 s: 38 from a
+  specialist for the same problem (oddball 8, clqcl 6, clique-coloring
+  4, MVRoundRobin 4, php 4, tseitin 2, xor-op 2, ramsey 2, and six
+  singletons and pairs: a Simon cipher, Pythagorean triples, a factoring
+  cell, a kakuro, an frb, the mutilated chessboard) and 3 (lockchart 2,
+  one mp1) only from the general local search other specialists carry
+  as a fallback; three rook cells are claimed with a proof that is a
+  bare assertion. With the census the union is 48 of the
+  115 unsolved cells decided by a structural method with a checked
+  answer (51 with the three fallback-search cells); 23 only LymphoSAT,
+  10 only the census. The detectors' patterns
+  that the census lacked: direct-encoded finite-domain CSPs, graphs read
+  back from binary clauses, Hall-type counting proofs, bit-blasted
+  arithmetic solved by number theory, circuits rebuilt and simulated,
+  truth-table blocks as GF(2)/GF(3) equations, decoded cardinality
+  encodings, generator fingerprints, planted-solution signatures, and
+  stored witnesses. Nothing targeted fires on the industrial, hardware
+  and arithmetic families (bp, oski, multipliers, timetable, itc99,
+  hwmc, sort-equivalence, pj, scpc, sudoku, ...). **Reading.** The SAT
+  side of the gain comes from decoding the encoding and solving the
+  original problem; the UNSAT side from counting, parity and symmetry
+  proofs. Both are family-specific code paths with their own soundness
+  risk (three of 123 answered wrongly outside their family, 307 runs
+  crashed), which is the memorisation-versus-generality trade the
+  organisers flagged. For us the actionable general classes stay the
+  census's (symmetry, parity, cardinality counting) plus CSP decoding;
+  the per-family decoders are the LymphoSAT bet, and the owner's
+  decision in `SAT-playground-p9m.21` now covers both.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

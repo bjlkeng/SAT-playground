@@ -1212,6 +1212,81 @@ Decisions first: X_d stays 2^27 and the stage-1 menu is frozen as plan
   gensys, shuffling-sat04, velev-pipe-sat, one xits-miter). The unsolved
   "nothing recognised" cells are three rook puzzles, baseballcover,
   connm-csp, dubois50-mis and Ptn-7824. Plan §11, 2026-10-06.
+- **LymphoSAT's specialists on our cells (2026-10-06; `tools/lymphosat_probe.py`,
+  `log/lymphosat-2026-10-06/` with the registry JSON, `matrix.tsv`,
+  `claims.tsv`, `report.txt`).** LymphoSAT (SAT Competition 2026) is 126
+  family specialists, each a detector plus a method for one problem
+  family, with kissat as the fallback; the registry page publishes every
+  specialist's source. 116 of the 119 C++ ones compiled (two need data
+  files that were not published, one needs an AVX-512 extension this
+  host lacks) and ran with the 7 Python ones on the 382 cells under 60 MB
+  compressed, 10 s and 8 GB each: 46,986 runs, 13,776 timeouts, 307
+  crashes, 950 answers. Every answer on a cell our stock pass did not
+  solve was re-run with a proof file and checked: SAT models against
+  every clause, UNSAT proofs with VeriPB.
+
+  *What the detectors look for* that our census did not: finite-domain
+  CSPs in direct encoding (one-hot or binary-coded value blocks plus
+  negative binary clauses as forbidden pairs), graphs recovered from the
+  binary clauses and solved as graphs (colouring, cliques, matchings,
+  tours, independent sets, treewidth), Hall-type counting arguments with
+  cutting-planes proofs (pigeonhole variants, clique-colouring, rooks,
+  mutilated chessboard), bit-blasted arithmetic read back from unit
+  clauses and comparator or adder gadgets and solved with number theory
+  (factoring, discrete log, subset sum, sums of cubes), Tseitin or
+  lookup-table circuits rebuilt and simulated instead of searched,
+  complete truth-table blocks turned into GF(2) or GF(3) equations,
+  cardinality encodings (Sinz counters, totalizers) decoded back to
+  their bounds, generator fingerprints (the header's variable count as a
+  formula of the parameters, exact clause counts, regenerating the
+  expected clause stream), random-formula signatures (ratio, balanced
+  occurrences, a planted solution in the first clauses' signs), ordering
+  and transitivity blocks, time-step planning encodings, and stored
+  witnesses (a 13,000-term discrepancy sequence, known tours, schedules).
+  The `c detected` lines are not reliable (several specialists print one
+  on every input), so only an answer counts.
+
+  *Soundness.* Three specialists answered cells with a known status
+  wrongly (random-planted-solution 44 of 75 answers, station-repacking
+  4 of 16, phnf 1 of 14) and are dropped from every count; LymphoSAT
+  itself only routes to a specialist whose detector fires, so this is
+  what running them outside their family looks like. Seventeen more are
+  general solvers in disguise (a from-scratch CDCL or local search that
+  answered 15 or more cells over 8 or more families, all easy).
+
+  *What matched.* A specialist for the same problem (the tool carries
+  the name map) answered cells in: oddball (10 of 20, eight of them our
+  timeouts, SAT models in 2-4 s), clqcl 6 of 6, clique-coloring 4 of 4,
+  php 4 of 4, roundrobin 4 of 12 (the MV cells, by the pigeonhole
+  specialist), tseitin 3 of 5, xor-op 3 of 3, ramsey 2 of 6,
+  chess-puzzles 4 of 4, kakuro 4 of 4, frb 2 of 2, battleship, em, sted,
+  gp (graceful production, 4 of 7), bits-fast, reconf, et-tc, ncc,
+  sum-of-cubes, ktf, fsf, factoring, and the singletons dislog, 16_2 (a
+  Simon cipher) and Ptn-7824 (Pythagorean triples). The lock-chart
+  specialist answered none of our 12 lockchart cells. No targeted answer at all for bp 20, multiplier-16x16 12,
+  oski 12, timetable 12, crusti-g2io 9, itc99 9, hwmc-step-transition 8,
+  sort-equivalence 7, pj 6, div-sqrt-miter 5, grs 5, scpc 5, sudoku 5
+  and the rest of the industrial, hardware and arithmetic cells, where
+  LymphoSAT is plain kissat.
+
+  *The count.* 41 of our 115 unsolved cells got a verified answer from a
+  specialist within 10 s: oddball 8 (SAT), clqcl 6, clique-coloring 4,
+  MVRoundRobin 4 (this settles the four Satsuma proofs VeriPB rejected),
+  php 4, tseitin 2, xor-op 2, ramsey 2, 16_2, Ptn-7824, fermat,
+  Kakuro-132, frb80 and mchess_20 from a specialist for the same problem
+  (38), plus lockchart 2 and mp1-Nb7T45 from the general local search
+  that other specialists carry as a fallback (a search result, not a
+  structural one). The three rook cells are claimed only (the proof is
+  a bare assertion). With the census (22 by symmetry fixing, 4 Tseitin
+  by one XOR sum) the union is **48 of the 115 unsolved cells decided by
+  a seconds-long structural method with a checked answer** (51 counting
+  the three fallback-search cells); 23 come only from LymphoSAT's
+  structure, 10 only from the census (eight plain RoundRobin cells its
+  pigeonhole detector does not recognise, two Tseitin cells too big for
+  10 s). All are crafted families; the SAT side (oddball,
+  puzzles, ciphers) comes from decoding the encoding and solving the
+  original problem, the UNSAT side from counting, parity and symmetry
+  proofs that have no short DRAT form. Plan §11, 2026-10-06.
 - **Training scaffold and the stock clone (D.2, `tools/rl/`).** PyTorch
   2.14 CPU in the RL venv (`tools/rl/requirements.txt` has the index
   line). `data.py` loads the decision rows of a converted pass as a

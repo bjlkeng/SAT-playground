@@ -584,10 +584,9 @@ def verify_one(stem: str, satsuma: str, veripb: str, timeout: float, tmpdir: str
         t1 = time.time()
         try:
             r = subprocess.run([veripb, "-u", plain, fixed], capture_output=True, text=True, timeout=timeout)
-            text = (r.stdout or "") + (r.stderr or "")
-            m = re.search(r"s VERIFIED [A-Z]+", text)
-            tail = [l.strip() for l in text.splitlines() if l.strip()]
-            out["veripb"] = m.group(0)[2:] if m else "REJECTED: " + (tail[-1] if tail else "")[:120]
+            verified = r.returncode == 0 and any(l.strip() == "s VERIFIED UNSATISFIABLE" for l in (r.stdout or "").splitlines())
+            tail = [l.strip() for l in ((r.stdout or "") + (r.stderr or "")).splitlines() if l.strip()]
+            out["veripb"] = "VERIFIED UNSATISFIABLE" if verified else "REJECTED: " + (tail[-1] if tail else "")[:120]
         except subprocess.TimeoutExpired:
             out["veripb"] = "timeout"
         out["veripb_s"] = round(time.time() - t1, 1)
