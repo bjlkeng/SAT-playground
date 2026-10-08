@@ -25,3 +25,17 @@ else
     make
     echo "drat-trim built: $CHECKERS_DIR/drat-trim/drat-trim"
 fi
+
+# --- VeriPB (the structure pass's stage-1 checker, plan section 11 2026-10-07) ---
+if [[ -x "$CHECKERS_DIR/VeriPB/target/release/veripb" ]]; then
+    echo "VeriPB already built at $CHECKERS_DIR/VeriPB/target/release/veripb"
+else
+    echo "Cloning and building VeriPB (needs cargo)..."
+    cd "$CHECKERS_DIR"
+    if [[ ! -d VeriPB ]]; then
+        git clone https://gitlab.com/MIAOresearch/software/VeriPB.git
+    fi
+    cd VeriPB
+    cargo build --release
+    echo "VeriPB built: $CHECKERS_DIR/VeriPB/target/release/veripb"
+fi

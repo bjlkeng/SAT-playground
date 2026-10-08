@@ -426,7 +426,7 @@ fn parse_dimacs_(
             parsed += 1;
             lit = 0;
         }
-        crate::internal::add(solver, lit);
+        crate::structure::sink(solver, lit); // not in kissat: buffers when a structure pass is on
     }
     if lit != 0 {
         return Some("trailing zero missing");

@@ -153,3 +153,16 @@ touches the policy or a counter it logs:
 - Mark every line that is not in kissat with a `// Not in kissat` (or
   `METRIC, re-enabled`) comment, so a port audit can still tell the C from
   the additions.
+
+## The structure pass (`src/structure.rs`, `src/structproof.rs`, `src/structsym.rs`) — BINDING
+
+Not in kissat. Off means off: with every `struct*` option at 0 the parser
+hands literals to `internal::add` as before and no code of the pass
+runs, so `tools/parity.py` stays exact. A pass may only add clauses to
+the input (units, binaries, the empty clause), never remove or rewrite
+one, so a model of the extended formula is a model of the input and the
+search's DRAT proof is a proof of the extended formula. Every added
+clause is logged in the VeriPB proof before it is added; a derivation
+the proof cannot express is not made. Detection may guess, the
+verification that follows may not: a symmetry is used only after it was
+applied to every affected clause and found in the clause set.

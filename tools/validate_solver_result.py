@@ -174,22 +174,16 @@ def maybe_decompress_cnf(cnf: Path, temp_dir: Path) -> Path:
 
 
 def verify_drat(cnf: Path, proof: Path) -> None:
-    checker = find_drat_trim()
-    if checker is None:
+    """The UNSAT check of tools/proof_gate.py: drat-trim on a stock proof, or
+    VeriPB plus drat-trim when the structure pass left its artifacts next to
+    the proof (plan section 11, 2026-10-07)."""
+    if find_drat_trim() is None:
         raise ValueError("proof-policy=drat requires drat-trim, but none was found")
-    with tempfile.TemporaryDirectory() as tmp:
-        cnf_for_checker = maybe_decompress_cnf(cnf, Path(tmp))
-        proc = subprocess.run(
-            [checker, str(cnf_for_checker), str(proof)],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
-    normalized = [line.strip().replace("\r", "") for line in proc.stdout.splitlines()]
-    if not any(line in {"s VERIFIED", "s ACCEPTED"} for line in normalized):
-        tail = "\n".join(normalized[-10:])
-        raise ValueError(f"drat-trim rejected proof {proof}:\n{tail}")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import proof_gate
+    verdict = proof_gate.check_unsat(cnf, proof)
+    if verdict != "ok":
+        raise ValueError(f"proof check failed for {proof}: {verdict}")
 
 
 def check_json_stats(out_dir: Path, payload: dict) -> None:

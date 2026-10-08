@@ -800,6 +800,8 @@ def pick_baseline(tags: list[str], explicit: str) -> str:
 
 
 VERIFY_SAT = ROOT / "tools" / "verify_sat.py"
+sys.path.insert(0, str(ROOT / "tools"))
+import proof_gate  # noqa: E402  (the UNSAT checker, shared with validate_solver_result.py)
 
 
 def _find_drat_trim() -> str | None:
@@ -836,17 +838,14 @@ def _verify_result(result: str, cnf_path: Path, odir: Path, stdout_text: str,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
             return "ok" if p.returncode == 0 else "FAIL"
         if r in ("UNSAT", "UNSATISFIABLE"):
-            proof = odir / "proof.out"
-            if not proof.is_file():
-                return "no-proof"
-            if not DRAT_TRIM:
-                return "no-checker"
-            p = subprocess.run([DRAT_TRIM, str(cnf_path), str(proof)],
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                               timeout=2 * solver_timeout)
-            out = p.stdout or ""
-            if any(ln.strip() in ("s VERIFIED", "s ACCEPTED") for ln in out.splitlines()):
-                return "ok"
+            # tools/proof_gate.py: drat-trim on a stock proof; with the structure
+            # pass's artifacts next to it, VeriPB on the pass's proof and drat-trim
+            # on the extended formula (plan section 11, 2026-10-07)
+            verdict = proof_gate.check_unsat(cnf_path, odir / "proof.out", timeout=2 * solver_timeout)
+            if verdict == "ok" or verdict in ("no-proof", "no-checker", "checker-timeout"):
+                return verdict
+            if verdict.startswith("checker-error"):
+                return "checker-error"
             return "FAIL"
     except subprocess.TimeoutExpired:
         return "checker-timeout"

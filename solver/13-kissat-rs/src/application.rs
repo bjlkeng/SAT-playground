@@ -1008,6 +1008,15 @@ fn run_application(solver: &mut Solver, args: &[String], cancel_alarm_ptr: &mut 
     if let Some(p) = app.output_path.as_deref() {
         taken.push(("output", p));
     }
+    // Not in kissat: the structure pass's sidecar names next to the proof
+    // are reserved too, so no log can be mistaken for a structure proof.
+    let sidecar_names: Vec<String> = match app.proof_path.as_deref() {
+        Some(p) if p != "-" => vec![format!("{}.pbp", p), format!("{}.derived.cnf", p)],
+        _ => Vec::new(),
+    };
+    for name in &sidecar_names {
+        taken.push(("structure sidecar", name.as_str()));
+    }
     if let Err(text) = crate::policy::init_from_env(solver, &taken) {
         crate::error::error(format_args!("{}", text));
         return 1;
@@ -1023,9 +1032,24 @@ fn run_application(solver: &mut Solver, args: &[String], cancel_alarm_ptr: &mut 
     if !write_proof(solver, &mut app) {
         return 1;
     }
+    crate::structure::prepare(solver); // not in kissat; nothing with every struct option off
     if !parse_input(solver, &mut app) {
         close_proof(solver, &mut app);
         return 1;
+    }
+    {
+        // not in kissat: the structure pass, with the files the artifacts may not alias
+        let owned: Vec<(&str, String)> = [("input", &app.input_path), ("proof", &app.proof_path), ("output", &app.output_path)]
+            .iter()
+            .filter_map(|(what, p)| p.as_ref().map(|p| (*what, p.clone())))
+            .collect();
+        let taken: Vec<(&str, &str)> = owned.iter().map(|(w, p)| (*w, p.as_str())).collect();
+        let proof_path = app.proof_path.clone();
+        if let Err(text) = crate::structure::run(solver, proof_path.as_deref(), &taken) {
+            crate::error::error(format_args!("{}", text));
+            close_proof(solver, &mut app);
+            return 1;
+        }
     }
     print_options(solver);
     print_limits(solver, &app);

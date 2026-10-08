@@ -72,7 +72,7 @@ pub enum Kind {
 }
 
 pub struct Logger {
-    path: String,
+    pub path: String,
     out: std::io::BufWriter<std::fs::File>,
     header_written: bool,
     finished: bool,

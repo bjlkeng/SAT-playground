@@ -319,6 +319,8 @@ pub struct Solver {
     /// Not in kissat: the RL scheduler state (policy.rs, plan step A). Off
     /// by default; `policy.on` is the one bool every chokepoint tests.
     pub policy: crate::policy::Policy,
+    /// Not in kissat: the structure pass (plan section 11, 2026-10-07).
+    pub structure: crate::structure::State,
     pub last: Remember, // remember last;
     pub walked: u32,
 

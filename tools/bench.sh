@@ -349,11 +349,20 @@ print(f("status"), f("status_file"), f("model_check_result"), f("termination_rea
                 local checker_status=""
                 # Checker budget: 2x the solver time limit (matches feature_ablation.py's
                 # _verify_result policy; verification runs off the timed path).
-                checker_output=$("$TIMEOUT_CMD" $((TIMEOUT * 2)) "$DRAT_TRIM" "$solver_input" "$proof_dir/proof.out" 2>&1) || true
+                if [[ -f "$proof_dir/proof.out.pbp" || -f "$proof_dir/proof.out.derived.cnf" ]]; then
+                    # the structure pass left its sidecars: the two-stage gate
+                    # (VeriPB on the pass's proof, drat-trim on the extended
+                    # formula; plan section 11, 2026-10-07)
+                    checker_output=$("$TIMEOUT_CMD" $((TIMEOUT * 2)) python3 "$REPO_ROOT/tools/proof_gate.py" "$solver_input" "$proof_dir/proof.out" --timeout $((TIMEOUT * 2)) 2>&1) || true
+                else
+                    checker_output=$("$TIMEOUT_CMD" $((TIMEOUT * 2)) "$DRAT_TRIM" "$solver_input" "$proof_dir/proof.out" 2>&1) || true
+                fi
                 checker_status=$(printf '%s\n' "$checker_output" | tr -d '\r')
                 if echo "$checker_status" | grep -qx "s VERIFIED"; then
                     verified="ok"
                 elif echo "$checker_status" | grep -qx "s ACCEPTED"; then
+                    verified="ok"
+                elif echo "$checker_status" | grep -qx "ok"; then
                     verified="ok"
                 else
                     verified="FAIL"

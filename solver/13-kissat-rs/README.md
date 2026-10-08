@@ -147,6 +147,87 @@ Environment (read by the binary itself, so `run.sh`, the harness and
 | `SAT_POLICY_LOG` | path | raw-state log, one row per observation epoch plus a terminal row (A.5, below); with `SAT_POLICY` unset it turns the policy on in stock mode, i.e. a stock trace with logging; an unwritable path, or one that aliases the CNF, the proof, a `-o` output, a standard stream or a wrapper-reserved file, is a usage error |
 | `SAT_POLICY_LOG_RESERVED` | paths, one per line | extra files the log may not alias; set by `run.sh` for its capture and result files and its redirected stdout/stderr |
 
+## The structure pass (plan §11, 2026-10-07; epic `SAT-playground-1v2`)
+
+Not in kissat. Before the solver sees the formula, a pre-solve pass looks
+for structure that search handles badly and settles what it can in
+seconds. Each pass is a kissat-style option, default off until its
+measurement promotes it, so it can be turned off later:
+
+| option | pass | status |
+|---|---|---|
+| `--structsym=1` | symmetry: interchangeable rows and fixing (`src/structsym.rs`) | step one in, measured on the 400 cells (below) |
+| `--structparity=1` | XOR constraints and Gaussian elimination | bead S.1, not yet |
+| `--structcount=1` | pigeonhole-shaped counting | bead S.3, not yet |
+| `--structcsp=1` | one-hot CSP decoding, SAT only | bead S.4, not yet |
+| `--structsymext=1` | general automorphisms through an external tool (measurement only) | bead S.2 step two, not yet |
+| `--structclauses=N` | the pass buffers at most N clauses (default 10M); past that it is off for the run | |
+| `--structticks=N` | work budget of the passes in thousands of literal visits (default 1M, about 10-20 s) | |
+
+With every option off nothing runs: the parser's literals go straight to
+the solver as before, the proof path is the stock one and
+`tools/parity.py --corpus default` stays at 9 of 9. With a pass on, the
+parser buffers the formula (`src/structure.rs`), the passes derive
+clauses (units, binaries, at most the empty clause) and the solver
+receives the derived clauses first and the formula after, so it solves
+F' = F plus derived; a model of F' is a model of F, and the search's DRAT
+proof is a proof of F'.
+
+**Proofs.** The pass writes a VeriPB 3 proof next to the DRAT path:
+`<proof>.pbp` over the input's clause numbering (clause i is constraint i,
+duplicates and tautologies included), and `<proof>.derived.cnf` with the
+derived clauses. A fixed literal is logged as Satsuma logs orbitopal
+fixing: one `red (l* v ~l_i) : swap` step per other literal of the clause
+with the row swap as witness, then `rup l*`, then every propagated unit as
+`rup`; the empty clause ends the proof with `conclusion UNSAT`, otherwise
+the proof ends with `output EQUISATISFIABLE FILE` naming F'. The gate
+(`tools/proof_gate.py`, used by `feature_ablation.py` and
+`validate_solver_result.py`) checks stage 1 with VeriPB (both formulas
+handed over as OPB, since VeriPB 3 reads CNF input but not CNF output
+files) and stage 2 with drat-trim on F'; a proof that ends in the empty
+clause needs stage 1 only. `tools/setup_checkers.sh` builds VeriPB into
+`tools/checkers/VeriPB`; `tools/bench.sh` uses the gate when the sidecars
+are present. `tools/smoke_test.sh` checks proofs with plain drat-trim
+against the input, which is right for the default (every pass off) and
+fails on a pass-extended proof: `SAT_EXTRA_ARGS='--structsym=1' bash
+tools/smoke_test.sh` reports the pigeonhole cell as rejected although
+the gate accepts it; that script is not edited without being asked, and
+a promotion of a pass to default on has to settle it first (bead S.5).
+Solver-side tests: `tests/structure.rs` (off means off, a pigeonhole
+refutation through the gate, a tampered proof rejected, an unchecked
+extension rejected, the pass's work in the work clock, a model of the
+input on a satisfiable formula). The gate also runs a negative control:
+the same proof against the extended formula plus one underived clause
+must be rejected, which shows VeriPB compared the output file.
+
+**The symmetry pass, step one.** Colour refinement on the clause-literal
+graph (literals, because competition cells carry flipped polarities and
+a symmetry may map x to not-y) gives classes of literals that look alike.
+Individualizing one literal of a class and refining again splits the
+class into candidate anchor sets, one anchor per row; the row of an
+anchor is the set of literals whose colour under its individualization
+differs from their colour under the other anchors' (with four or more
+other anchors, a literal shared by two rows, an edge variable, is allowed
+to agree with one of them). Cells correspond across rows by colour;
+entries inside a cell are paired by a binary clause between the rows
+when that is unique, else by one more refinement per entry of row 0 with
+anchor 0 and the entry individualized. Every row swap is then applied to
+every clause and checked against the clause set, so the refinement only
+guesses and a wrong symmetry cannot get through. Fixing: the longest
+active clause whose literals all lie in one column of one matrix, one
+per row, gets its lowest-row literal fixed; the units propagate; every
+matrix keeps the rows that still swap (verified again); when no matrix
+has a column clause, detection runs once more. Measured 2026-10-07 on
+the cells the census had marked, every answer through the gate: php 4
+of 4 (0.1-5 s), clique-coloring 4 of 4 (1-7 s), the eight plain
+RoundRobin cells (0.5-1.5 s), homer11 (0.1 s), rphp 3 of 3. Not yet:
+the six clqcl cells (the 100-vertex ones spend the budget in detection;
+a refinement that only recolours the touched part of the partition is
+the follow-up), the four MVRoundRobin cells (no interchangeable rows
+found; Satsuma's proofs for them were rejected by VeriPB too), ramsey
+(Johnson structure, not rows), the Tseitin cells (literal-flip
+symmetries, which the parity pass covers instead).
+
 - **Work-clock limit.** `limited.ticks` / `limits.ticks` sit next to
   kissat's conflict and decision limits. The check lives in
   `terminate::terminated`, which is what every inprocessing effort loop and

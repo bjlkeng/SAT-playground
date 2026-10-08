@@ -209,6 +209,17 @@ kissat_options! {
     (smallclauses, 100_000, 0, i32::MAX, "small clauses limit"),
     (stable, STABLE_DEFAULT, 0, 2, "enable stable search mode"),
     (statistics, 0, 0, 1, "print complete statistics"),
+    // Not in kissat: the structure pass (plan section 11, 2026-10-07; epic
+    // SAT-playground-1v2). Each pass is its own switch, default off until
+    // its measurement promotes it. With every switch off nothing of the
+    // pass runs and the proof path is the stock one.
+    (structclauses, 10_000_000, 0, i32::MAX, "structure pass clause limit"),
+    (structcount, 0, 0, 1, "structure pass: pigeonhole counting"),
+    (structcsp, 0, 0, 1, "structure pass: CSP decoding"),
+    (structparity, 0, 0, 1, "structure pass: XOR elimination"),
+    (structsym, 0, 0, 1, "structure pass: symmetry fixing"),
+    (structsymext, 0, 0, 1, "structure pass: external symmetry tool"),
+    (structticks, 1_000_000, 0, i32::MAX, "structure pass work limit (K)"),
     (substitute, 1, 0, 1, "equivalent literal substitution"),
     (substituteeffort, 10, 1, 1000, "effort in per mille"),
     (substituterounds, 2, 1, 100, "maximum substitution rounds"),
@@ -675,8 +686,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn table_has_all_158_options() {
-        assert_eq!(OPTION_TABLE.len(), 158);
+    fn table_has_all_158_options_plus_the_structure_pass() {
+        // kissat's 158 plus the seven struct* options (plan section 11, 2026-10-07)
+        assert_eq!(OPTION_TABLE.len(), 158 + 7);
     }
 
     #[test]
