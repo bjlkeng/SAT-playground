@@ -200,6 +200,25 @@ input on a satisfiable formula). The gate also runs a negative control:
 the same proof against the extended formula plus one underived clause
 must be rejected, which shows VeriPB compared the output file.
 
+**Preview on the 400 cells (2026-10-08;
+`log/abtest-struct-sym-400-2026-10-07-23-24-29`,
+`log/struct-sym-400-report-2026-10-07.txt`).** `--structsym=1` against
+the same binary with the pass off, 1800 s, 14 GB, 32 shared pinned
+cores, one seed, proofs through the gate, on the pre-review frozen
+binary (sha256 63476afc; solved counts valid, its tick numbers not,
+since that binary kept the pass's work out of the work clock): no failed
+row, no contradiction, 47 answers unchecked at the checker's budget (24
+on the pass arm, 23 on stock). Solved **294 v 282 (+18 / −6)**, wall
+PAR-2 0.923×; validation split 74 v 70 (+5/−1). Gained, all with checked
+proofs: the eight plain RoundRobin cells (0.5-1.7 s), clique-coloring 4
+of 4 (1.4-6.5 s), rphp 3 of 3 (2-9 s), fphp (0.1 s), clqcl_30_7_6
+(1011 s, the pass plus search) and one timetable SAT cell. Lost six SAT
+cells that stock solves in 200-1400 s (two argumentation, sum-of-cubes,
+reconf, sted, one anon-pair): fixed literals change the search path on
+satisfiable cells, the same trajectory luck the regime experiment
+measured. The run of record on the committed binary (`6b4bec6`,
+`log/struct-sym-400b-2026-10-08.sh`) is the decision evidence.
+
 **The symmetry pass, step one.** Colour refinement on the clause-literal
 graph (literals, because competition cells carry flipped polarities and
 a symmetry may map x to not-y) gives classes of literals that look alike.

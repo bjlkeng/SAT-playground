@@ -1665,6 +1665,18 @@ source of truth; every bead points back to its section.
   against the C kissat and against solver 13 with the passes off), S.6
   XOR reasoning inside search as a follow-up. Defaults stay off until
   the measurement promotes a pass. Beads carry the acceptance criteria.
+- 2026-10-08 (S.0 and S.2 step one in, commit `6b4bec6`; preview of
+  the symmetry pass on the 400 cells). The pass, its VeriPB proof and
+  the two-stage gate are in the solver README. Preview run on the
+  pre-review binary (solved counts valid, ticks not): **294 v 282
+  (+18 / −6)**, wall PAR-2 0.923×, no wrong answer; the gains are the
+  predicted symmetric UNSAT cells (RoundRobin 8, clique-coloring 4,
+  rphp 3, fphp, clqcl_30_7_6) plus one SAT cell, the losses six SAT
+  cells stock solves late, which is trajectory luck on satisfiable
+  cells (plan §8). The run of record on the committed binary is
+  launched (`log/struct-sym-400b-2026-10-08.sh`); the clqcl cells
+  beyond 30 vertices, the MVRoundRobin cells, ramsey and Tseitin are
+  the open ends of step one (see the README).
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 
