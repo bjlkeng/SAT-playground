@@ -1643,6 +1643,28 @@ source of truth; every bead points back to its section.
   census's (symmetry, parity, cardinality counting) plus CSP decoding;
   the per-family decoders are the LymphoSAT bet, and the owner's
   decision in `SAT-playground-p9m.21` now covers both.
+- 2026-10-07 (decision: the structure pass goes in; epic
+  `SAT-playground-1v2`). The owner chose patterns 1-4 of the 2026-10-06
+  proposal as a pre-solve structure pass in solver 13, each behind its
+  own kissat-style option so it can be turned off later: S.0 proof
+  infrastructure (the pass writes the simplified formula and a VeriPB 3
+  proof deriving it; the search's DRAT proof is a proof of the
+  simplified formula; the gate checks stage 1 with VeriPB and stage 2
+  with drat-trim; with every pass off the proof path is unchanged), S.1
+  parity (`structparity`: XOR constraint extraction, Gaussian
+  elimination, logged derivation), S.2 symmetry (`structsym`:
+  interchangeable rows and orbitopal fixing with redundance steps;
+  general automorphisms through a wrapped Satsuma behind `structsymext`
+  for measurement only), S.3 counting (`structcount`: pigeonhole-shaped
+  blocks refuted by cutting planes), S.4 CSP decoding (`structcsp`:
+  one-hot blocks and binary nogoods solved by local search, SAT only),
+  S.5 measurement (per pass a 400-cell run with the pass off and on,
+  scored by solved count first, every answer through the two-stage
+  gate, the delta compared with the census and probe predictions; then
+  one paired run on the 2026 holdout with every promoted pass on,
+  against the C kissat and against solver 13 with the passes off), S.6
+  XOR reasoning inside search as a follow-up. Defaults stay off until
+  the measurement promotes a pass. Beads carry the acceptance criteria.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 
