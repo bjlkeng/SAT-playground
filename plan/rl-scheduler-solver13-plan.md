@@ -1673,10 +1673,15 @@ source of truth; every bead points back to its section.
   predicted symmetric UNSAT cells (RoundRobin 8, clique-coloring 4,
   rphp 3, fphp, clqcl_30_7_6) plus one SAT cell, the losses six SAT
   cells stock solves late, which is trajectory luck on satisfiable
-  cells (plan §8). The run of record on the committed binary is
-  launched (`log/struct-sym-400b-2026-10-08.sh`); the clqcl cells
-  beyond 30 vertices, the MVRoundRobin cells, ramsey and Tseitin are
-  the open ends of step one (see the README).
+  cells (plan §8). **Run of record** on the committed binary
+  (`log/abtest-struct-sym-400b-2026-10-08-08-44-21`): 294 v 282
+  (+18 / −6), wall PAR-2 0.924×, tick PAR-2 0.903× with the pass's work
+  counted, validation 74 v 70, the same cells as the preview, every
+  pass-arm answer checked, no contradiction. The first pass that moves
+  the solved count by more than the noise band, and all of its gain is
+  on cells the census predicted. The clqcl cells beyond 30 vertices,
+  the MVRoundRobin cells, ramsey and Tseitin are the open ends of step
+  one (see the README); the 2026 holdout stays for the end.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

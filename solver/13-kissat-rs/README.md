@@ -216,8 +216,17 @@ of 4 (1.4-6.5 s), rphp 3 of 3 (2-9 s), fphp (0.1 s), clqcl_30_7_6
 cells that stock solves in 200-1400 s (two argumentation, sum-of-cubes,
 reconf, sted, one anon-pair): fixed literals change the search path on
 satisfiable cells, the same trajectory luck the regime experiment
-measured. The run of record on the committed binary (`6b4bec6`,
-`log/struct-sym-400b-2026-10-08.sh`) is the decision evidence.
+measured. **Run of record** on the committed binary (`6b4bec6`,
+`log/abtest-struct-sym-400b-2026-10-08-08-44-21`,
+`log/struct-sym-400b-report-2026-10-08.txt`, 2026-10-08 08:44 to
+17:31, same setting): **294 v 282 (+18 / −6)**, wall PAR-2 0.924×,
+tick PAR-2 0.903× with the pass's work in the clock; train 213 v 206
+(+12/−5), validation 74 v 70 (+5/−1); the same 18 gains and 6 losses as
+the preview, cell for cell; every pass-arm answer verified (24 at the
+checker's budget on each arm), no failed row, no contradiction. That is
+the decision evidence for step one of the symmetry pass (plan §8: the
+400-cell run, per family, every answer checked); the 2026 holdout stays
+unspent until the other passes are in.
 
 **The symmetry pass, step one.** Colour refinement on the clause-literal
 graph (literals, because competition cells carry flipped polarities and
