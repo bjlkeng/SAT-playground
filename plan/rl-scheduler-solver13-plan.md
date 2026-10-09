@@ -1682,6 +1682,15 @@ source of truth; every bead points back to its section.
   on cells the census predicted. The clqcl cells beyond 30 vertices,
   the MVRoundRobin cells, ramsey and Tseitin are the open ends of step
   one (see the README); the 2026 holdout stays for the end.
+- 2026-10-09 (S.1 parity step one in, commit `2b61e4f`, run of
+  record). Closed XOR systems fixed by cycle flips with redundance
+  steps (the README has the mechanism). On the 400 cells: **286 v 282
+  (+4 / −0)**, wall PAR-2 0.971×, the four gains exactly the four
+  unsolved Tseitin cells with checked proofs, no loss, median wall
+  ratio 1.001 where both arms solve: the pass is free where it finds
+  nothing. Together with the symmetry pass that is +22 of the 25 cells
+  the census had marked as structural; the parity step two (mixed XOR
+  systems), the counting pass and CSP decoding follow.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

@@ -244,9 +244,18 @@ the symmetry pass cannot see it (no two literals are exchanged).
 Measured with the gate: all five Tseitin cells, `tseitin_n188_d3`
 0.0 s, `grid_n12` 0.0 s, `grid_n250` 2 s, `d3_n100000` 1.5 s (proof 31
 MB, checked in 15 s), `grid_n400` 13 s (proof 1.2 GB, 160k redundance
-steps, checked in 293 s). Not covered: XOR systems that mix with other
-clauses (par32, grs, 16_2, xor-op), which need general elimination with
-a certified sum (bead S.1 step two: Gocht and Nordström's PB
+steps, checked in 293 s). **Run of record on the 400 cells**
+(2026-10-09; `log/abtest-struct-par-400-2026-10-08-20-54-17`,
+`log/struct-par-400-report-2026-10-08.txt`; the setting of the
+symmetry run, binary of commit `2b61e4f`): **286 v 282 (+4 / −0)**,
+wall PAR-2 0.971×, tick PAR-2 0.985×; the four gains are exactly the
+four unsolved Tseitin cells, all with checked proofs; no loss; on the
+225 cells both arms solve in 10 s or more the wall ratio's median is
+1.001 (the pass costs nothing where it finds nothing); every pass-arm
+answer verified (23 at the checker's budget on each arm), no
+contradiction. Not covered: XOR systems that mix with other clauses
+(par32, grs, 16_2, xor-op), which need general elimination with a
+certified sum (bead S.1 step two: Gocht and Nordström's PB
 certification, or DRAT with extension variables).
 
 **The symmetry pass, step one.** Colour refinement on the clause-literal
