@@ -45,6 +45,10 @@ pub struct Formula {
     pub lits: Vec<i32>,
     pub start: Vec<u32>,
     pub taut: Vec<bool>,
+    /// The DIMACS clause had a repeated literal: its proof constraint
+    /// carries a coefficient above 1, so a proof step that adds it by id
+    /// must not assume the deduplicated form.
+    pub dup: Vec<bool>,
     pub vars: i32,
 }
 
@@ -127,7 +131,7 @@ fn flush(solver: &mut Solver) {
 }
 
 fn build_formula(lits: &[i32], max_var: i32) -> Formula {
-    let mut f = Formula { lits: Vec::with_capacity(lits.len()), start: vec![0], taut: Vec::new(), vars: max_var };
+    let mut f = Formula { lits: Vec::with_capacity(lits.len()), start: vec![0], taut: Vec::new(), dup: Vec::new(), vars: max_var };
     let mut seen: Vec<u8> = vec![0; max_var as usize + 1]; // 1 = positive seen, 2 = negative, 3 = both
     let mut cur: Vec<i32> = Vec::new();
     for &l in lits {
@@ -155,6 +159,7 @@ fn build_formula(lits: &[i32], max_var: i32) -> Formula {
             f.lits.extend_from_slice(&out);
         }
         f.taut.push(taut);
+        f.dup.push(out.len() < cur.len());
         f.start.push(f.lits.len() as u32);
         cur.clear();
     }
@@ -300,6 +305,9 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
         let stop_ref: &std::sync::atomic::AtomicBool = unsafe { &*stop };
         if solver.options.structparity != 0 && !derived.refuted {
             crate::structparity::run(&formula, &mut derived, budget, &mut solver.statistics.ticks, stop_ref);
+        }
+        if solver.options.structcount != 0 && !derived.refuted {
+            crate::structcount::run(&formula, &mut derived, budget, &mut solver.statistics.ticks, stop_ref);
         }
         if solver.options.structsym != 0 && !derived.refuted {
             crate::structsym::run(&formula, &mut derived, budget, &mut solver.statistics.ticks, stop_ref);

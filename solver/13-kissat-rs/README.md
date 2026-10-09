@@ -158,7 +158,7 @@ measurement promotes it, so it can be turned off later:
 |---|---|---|
 | `--structsym=1` | symmetry: interchangeable rows and fixing (`src/structsym.rs`) | step one in, measured on the 400 cells (below) |
 | `--structparity=1` | parity: closed XOR systems fixed by cycle flips (`src/structparity.rs`) | step one in (below); general elimination is step two |
-| `--structcount=1` | pigeonhole-shaped counting | bead S.3, not yet |
+| `--structcount=1` | counting: demand clauses against pairwise at-most-one groups, a Hall violation proved by cutting planes (`src/structcount.rs`) | step one in (below); sequential-counter groups are step two |
 | `--structcsp=1` | one-hot CSP decoding, SAT only | bead S.4, not yet |
 | `--structsymext=1` | general automorphisms through an external tool (measurement only) | bead S.2 step two, not yet |
 | `--structclauses=N` | the pass buffers at most N clauses (default 10M); past that it is off for the run | |
@@ -257,6 +257,26 @@ contradiction. Not covered: XOR systems that mix with other clauses
 (par32, grs, 16_2, xor-op), which need general elimination with a
 certified sum (bead S.1 step two: Gocht and Nordström's PB
 certification, or DRAT with extension variables).
+
+**The counting pass, step one (2026-10-09).** A clause of two or more
+literals demands at least one of them; a set of literals pairwise
+forbidden by binary clauses allows at most one. For every literal of a
+demand clause the pass takes the largest such group through it that
+holds no other literal of that clause (a hole for a pigeon, the other
+square of a domino), two-colours the demand clauses by shared literals,
+and in each colour looks for a set of demand clauses that reaches fewer
+groups than its size (an alternating search from a clause a maximum
+matching cannot place). The refutation is pure cutting planes over the
+input clause ids: each group's at-most-one constraint is built one
+literal at a time from its pair clauses (sum, multiply, divide), then
+the demand clauses and the group constraints are added; every literal
+cancels against its negation and what is left cannot reach the
+right-hand side. Refutes the pigeonhole formulas with a proof the gate
+checks (php12 0.0 s). Not yet: at-most-one groups in sequential-counter
+form (Sinz), which `mchess_20` uses for some squares, so that cell
+stays open; the rook cells encode their count as a decision diagram and
+need another decoder. No separate 400-cell run yet: on the 2025 cells
+the pass adds nothing beyond the symmetry pass (bead S.3).
 
 **The symmetry pass, step one.** Colour refinement on the clause-literal
 graph (literals, because competition cells carry flipped polarities and

@@ -233,3 +233,18 @@ fn parity_pass_refutes_tseitin_with_a_checked_proof() {
     assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
     assert!(!stdout.contains("refuted"), "{}", stdout);
 }
+
+#[test]
+fn counting_pass_refutes_pigeonhole_by_cutting_planes() {
+    let fx = Fixture::new("structure_count");
+    let cnf = fx.path("php8.cnf");
+    php(8, &cnf);
+    let proof = fx.path("c.drat");
+    let stdout = run_options_with_proof(&cnf, &proof, &["--structcount=1"]);
+    assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+    assert!(stdout.contains("structure pass: counting:") && stdout.contains("refuted"), "{}", stdout);
+    assert_eq!(gate(&cnf, &proof), "ok");
+    // the proof is cutting planes over the input ids: no redundance step
+    let pbp = std::fs::read_to_string(fx.path("c.drat.pbp")).unwrap();
+    assert!(pbp.contains("pol ") && !pbp.contains("red "), "{}", pbp);
+}
