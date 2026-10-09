@@ -60,6 +60,7 @@ pub mod probe;
 pub mod profile;
 pub mod promote;
 pub mod proof;
+pub mod structparity;
 pub mod structproof;
 pub mod structsym;
 pub mod structure;

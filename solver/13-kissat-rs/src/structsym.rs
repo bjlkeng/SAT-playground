@@ -148,6 +148,10 @@ impl<'a> Work<'a> {
     fn rebuild_clause_set(&mut self) -> bool {
         self.clause_set.clear();
         for i in 0..self.f.len() {
+            if i % 1024 == 0 && self.over() {
+                self.clause_set.clear();
+                return false;
+            }
             if self.satisfied[i] {
                 continue;
             }
@@ -155,10 +159,6 @@ impl<'a> Work<'a> {
             self.work += c.len() as u64 + 1;
             canon(&mut c);
             self.clause_set.insert(c, i as u32);
-            if i % 1024 == 0 && self.over() {
-                self.clause_set.clear();
-                return false;
-            }
         }
         !self.over()
     }
@@ -717,6 +717,9 @@ fn positions(m: &Matrix, nl: usize) -> Vec<(u32, u32)> {
 fn best_column_clause(w: &mut Work, pos: &[(u32, u32)]) -> Option<(usize, Vec<i32>)> {
     let mut best: Option<(usize, Vec<i32>)> = None;
     for i in 0..w.f.len() {
+        if i % 1024 == 0 && w.over() {
+            break;
+        }
         if w.satisfied[i] {
             continue;
         }
@@ -862,7 +865,20 @@ fn shrink(m: &Matrix, w: &mut Work) -> Option<Matrix> {
 /// it happens, and `budget` is the tick count it may reach.
 pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, stop: &std::sync::atomic::AtomicBool) {
     let mut w = Work::new(f, budget, ticks as *mut u64, stop);
-    // the formula's own units first, so the rows are detected on the reduced
+    // the units an earlier pass derived come first (they are logged already;
+    // what they propagate is logged here), so every symmetry this pass
+    // uses is a symmetry of the formula with those units, as the proof
+    // checker will require
+    let earlier: Vec<i32> = derived.clauses.iter().filter(|c| c.len() == 1).map(|c| c[0]).collect();
+    for u in earlier {
+        if derived.refuted || w.over() {
+            break;
+        }
+        if !w.assign_and_propagate(u, derived) {
+            break;
+        }
+    }
+    // the formula's own units next, so the rows are detected on the reduced
     // formula; an empty clause in the input ends the pass at once
     for i in 0..f.len() {
         if w.satisfied[i] || derived.refuted || w.over() {

@@ -157,7 +157,7 @@ measurement promotes it, so it can be turned off later:
 | option | pass | status |
 |---|---|---|
 | `--structsym=1` | symmetry: interchangeable rows and fixing (`src/structsym.rs`) | step one in, measured on the 400 cells (below) |
-| `--structparity=1` | XOR constraints and Gaussian elimination | bead S.1, not yet |
+| `--structparity=1` | parity: closed XOR systems fixed by cycle flips (`src/structparity.rs`) | step one in (below); general elimination is step two |
 | `--structcount=1` | pigeonhole-shaped counting | bead S.3, not yet |
 | `--structcsp=1` | one-hot CSP decoding, SAT only | bead S.4, not yet |
 | `--structsymext=1` | general automorphisms through an external tool (measurement only) | bead S.2 step two, not yet |
@@ -227,6 +227,27 @@ checker's budget on each arm), no failed row, no contradiction. That is
 the decision evidence for step one of the symmetry pass (plan §8: the
 400-cell run, per family, every answer checked); the 2026 holdout stays
 unspent until the other passes are in.
+
+**The parity pass, step one (2026-10-08).** An XOR constraint over k
+variables is the 2^(k-1) clauses that forbid one parity (k up to 8, the
+census detector). When a set of such constraints is closed (its
+variables occur nowhere else) and every variable sits in exactly two
+constraints, the constraints are the vertices and the variables the
+edges of a graph, and flipping every variable on a cycle keeps the
+parity at every vertex: a symmetry that maps each flipped variable to
+its own negation, so any of them can be fixed by one redundance step
+with the flip as witness. The pass takes a breadth-first spanning forest
+(short cycles, small witnesses), fixes every non-tree edge true, then
+unit propagation settles the tree from the leaves up and an odd total
+parity falsifies the root. This is Tseitin's formula on any graph and
+the symmetry pass cannot see it (no two literals are exchanged).
+Measured with the gate: all five Tseitin cells, `tseitin_n188_d3`
+0.0 s, `grid_n12` 0.0 s, `grid_n250` 2 s, `d3_n100000` 1.5 s (proof 31
+MB, checked in 15 s), `grid_n400` 13 s (proof 1.2 GB, 160k redundance
+steps, checked in 293 s). Not covered: XOR systems that mix with other
+clauses (par32, grs, 16_2, xor-op), which need general elimination with
+a certified sum (bead S.1 step two: Gocht and Nordström's PB
+certification, or DRAT with extension variables).
 
 **The symmetry pass, step one.** Colour refinement on the clause-literal
 graph (literals, because competition cells carry flipped polarities and

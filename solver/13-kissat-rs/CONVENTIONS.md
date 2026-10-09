@@ -154,7 +154,7 @@ touches the policy or a counter it logs:
   `METRIC, re-enabled`) comment, so a port audit can still tell the C from
   the additions.
 
-## The structure pass (`src/structure.rs`, `src/structproof.rs`, `src/structsym.rs`) — BINDING
+## The structure pass (`src/structure.rs`, `src/structproof.rs`, `src/structsym.rs`, `src/structparity.rs`) — BINDING
 
 Not in kissat. Off means off: with every `struct*` option at 0 the parser
 hands literals to `internal::add` as before and no code of the pass

@@ -296,9 +296,12 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
     if proof_ok {
         let formula = build_formula(&lits, solver.structure.max_var);
         let stop: *const std::sync::atomic::AtomicBool = &solver.termination.flagged;
+        // SAFETY: the flag outlives the pass and is only read through it
+        let stop_ref: &std::sync::atomic::AtomicBool = unsafe { &*stop };
+        if solver.options.structparity != 0 && !derived.refuted {
+            crate::structparity::run(&formula, &mut derived, budget, &mut solver.statistics.ticks, stop_ref);
+        }
         if solver.options.structsym != 0 && !derived.refuted {
-            // SAFETY: the flag outlives the pass and is only read through it
-            let stop_ref: &std::sync::atomic::AtomicBool = unsafe { &*stop };
             crate::structsym::run(&formula, &mut derived, budget, &mut solver.statistics.ticks, stop_ref);
         }
     }

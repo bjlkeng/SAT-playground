@@ -189,3 +189,47 @@ fn gate_rejects_an_unchecked_extension_and_counts_the_pass_in_the_work_clock() {
         }
     }
 }
+
+/// Tseitin's formula on a cycle of n vertices with one odd charge: every
+/// edge variable sits in exactly two XOR constraints, the sum of all
+/// constraints is 0 = 1.
+fn tseitin_cycle(n: usize, path: &Path) {
+    let edge = |i: usize| (i + 1) as i64; // edge i joins vertex i and vertex (i+1) mod n
+    let mut clauses: Vec<Vec<i64>> = Vec::new();
+    for v in 0..n {
+        let (a, b) = (edge((v + n - 1) % n), edge(v));
+        let charge = if v == 0 { 1 } else { 0 };
+        // a xor b = charge: forbid the two patterns of the other parity
+        if charge == 1 {
+            clauses.push(vec![a, b]);
+            clauses.push(vec![-a, -b]);
+        } else {
+            clauses.push(vec![a, -b]);
+            clauses.push(vec![-a, b]);
+        }
+    }
+    let mut text = format!("p cnf {} {}\n", n, clauses.len());
+    for c in &clauses {
+        for l in c {
+            text.push_str(&format!("{} ", l));
+        }
+        text.push_str("0\n");
+    }
+    std::fs::write(path, text).unwrap();
+}
+
+#[test]
+fn parity_pass_refutes_tseitin_with_a_checked_proof() {
+    let fx = Fixture::new("structure_tseitin");
+    let cnf = fx.path("tseitin.cnf");
+    tseitin_cycle(40, &cnf);
+    let proof = fx.path("p.drat");
+    let stdout = run_options_with_proof(&cnf, &proof, &["--structparity=1"]);
+    assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+    assert!(stdout.contains("structure pass: parity:") && stdout.contains("refuted"), "{}", stdout);
+    assert_eq!(gate(&cnf, &proof), "ok");
+    // the symmetry pass alone sees no interchangeable rows here
+    let stdout = run_options_with_proof(&cnf, &proof, &["--structsym=1"]);
+    assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+    assert!(!stdout.contains("refuted"), "{}", stdout);
+}
