@@ -1691,6 +1691,16 @@ source of truth; every bead points back to its section.
   nothing. Together with the symmetry pass that is +22 of the 25 cells
   the census had marked as structural; the parity step two (mixed XOR
   systems), the counting pass and CSP decoding follow.
+- 2026-10-09 (S.3 counting step one in, commit `49bec65`, no 2025 gain
+  beyond symmetry; the combined measurement). Both passes on against
+  both off: **298 v 282 (+22 / −6)**, wall PAR-2 0.893×, validation 75
+  v 70, the gains exactly the union of the two runs of record, every
+  answer checked, no contradiction. That is the candidate set for the
+  holdout: `--structsym=1 --structparity=1`, consulted once on
+  `sat-comp-2026` (`log/struct-holdout-2026-2026-10-09.sh`, 3600 s,
+  both arms through the gate). The counting pass is not in the set: it
+  adds nothing on 2025 beyond symmetry until its step two (sequential
+  counters, decision diagrams).
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

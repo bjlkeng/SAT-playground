@@ -228,6 +228,24 @@ the decision evidence for step one of the symmetry pass (plan §8: the
 400-cell run, per family, every answer checked); the 2026 holdout stays
 unspent until the other passes are in.
 
+**Combined passes on the 400 cells (2026-10-09;
+`log/abtest-struct-both-400-2026-10-09-06-25-50`,
+`log/struct-both-400-report-2026-10-09.txt`; `--structparity=1
+--structsym=1` against the same frozen binary with both off, the
+setting of the runs of record).** Solved **298 v 282 (+22 / −6)**, wall
+PAR-2 0.893×, tick PAR-2 0.882×; train 216 v 206 (+15/−5), validation
+75 v 70 (+6/−1). The 22 gains are exactly the union of the two passes'
+gains (the 18 of the symmetry run and the 4 Tseitin cells), all with
+checked proofs; the 6 losses are the same SAT cells as in the symmetry
+run. Every pass-arm answer verified (22 at the checker's budget, 24 on
+stock), no failed row, no contradiction. One cell, `st_890_86_9_572`,
+shows rc-15 on both arms: a debugging `kill` of this session hit the
+sweep's two processes for it (stock never solves that cell, so the
+counts stand). Where both arms solve in 10 s or more the wall ratio's
+median is 1.015 and its p90 1.80: the symmetry pass's detection budget
+costs up to about 15 s on cells it does not crack, and fixed literals
+move the search on others.
+
 **The parity pass, step one (2026-10-08).** An XOR constraint over k
 variables is the 2^(k-1) clauses that forbid one parity (k up to 8, the
 census detector). When a set of such constraints is closed (its
