@@ -246,6 +246,30 @@ median is 1.015 and its p90 1.80: the symmetry pass's detection budget
 costs up to about 15 s on cells it does not crack, and fixed literals
 move the search on others.
 
+**Holdout (2026-10-10; `log/abtest-struct-holdout-2026-2026-10-09-15-51-57`,
+`log/struct-holdout-2026-report-2026-10-09.txt`).** The single
+consultation of `sat-comp-2026` for the candidate set `--structsym=1
+--structparity=1` (plan §8): both passes against the same frozen binary
+with both off, 3600 s, 14 GB, 32 shared pinned cores, one seed, every
+answer through the gate; nothing in this project had seen these 400
+cells. Solved **212 v 203 (+16 / −7)**, wall PAR-2 0.961×, tick PAR-2
+0.959×; no failed row, no contradiction, every pass-arm answer verified
+(3 at the checker's budget on each arm). Ten of the gains are the
+structural kind, UNSAT in seconds on families the 2025 suite does not
+have: `chnl` 4 of 6 (channel routing, 2-6 s), `php_sudoku` 2 (0 s),
+`DSC125` (12 s), `exam_75_70` (19 s), plus `clqcl_25_7_6` (10 s) and
+`rphp_p25_r25` (1 s), which share generators with 2025. The other six
+gains and all seven losses are satisfiable cells solved late by one
+arm or the other (450-3600 s), the trajectory luck of the 2025 runs
+again, netting −1 on the SAT side. So the structure classes transfer:
+what the passes decide, they decide on unseen families, and what they
+cost is the same pattern as before. Cost noted for a follow-up: on tiny
+cells (the `medium` family, stock 0.4-1.1 s) the symmetry pass spends
+its whole detection budget, 14-27 s, and finds nothing; the budget
+should be capped relative to the formula's size. Compare solver 12's
+holdout (296 v 292 on 2025, 160 v 197 on 2026): this candidate set's
+2025 gain (+22/−6) carries to 2026 (+16/−7) in kind and in size.
+
 **The parity pass, step one (2026-10-08).** An XOR constraint over k
 variables is the 2^(k-1) clauses that forbid one parity (k up to 8, the
 census detector). When a set of such constraints is closed (its

@@ -1701,6 +1701,20 @@ source of truth; every bead points back to its section.
   both arms through the gate). The counting pass is not in the set: it
   adds nothing on 2025 beyond symmetry until its step two (sequential
   counters, decision diagrams).
+- 2026-10-10 (the holdout, consulted once for {structsym,
+  structparity}). On `sat-comp-2026`, 3600 s, every answer checked:
+  **212 v 203 (+16 / −7)**, wall PAR-2 0.961×. Ten gains are UNSAT in
+  seconds on families 2025 does not have (chnl 4, php_sudoku 2, DSC125,
+  exam) plus two generator-shared cells; six gains and seven losses are
+  late SAT solves, luck as on 2025. The structure classes transfer;
+  the overfit pattern of solver 12 (a 2025 lead lost on 2026) does not
+  appear. Known cost: the symmetry pass burns its full budget (14-27 s)
+  on tiny cells where it finds nothing; cap the budget by formula size
+  before a default-on promotion. Decision for the owner: promote the
+  two passes to default on (with the smoke test's plain drat-trim
+  check settled), and whether the open ends (clqcl beyond 30 vertices,
+  MVRoundRobin, mixed XOR systems, sequential-counter groups, CSP
+  decoding) are worth their own steps.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 
