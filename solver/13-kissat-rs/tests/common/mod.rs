@@ -168,7 +168,21 @@ pub const SOLVER_ENV_VARS: &[&str] = &[
 /// Run the binary with `-n -s`, the given extra kissat options and the given
 /// environment additions (a value of "" is passed through as an empty
 /// variable, which the solver must treat as unset).
+/// Options that put the solver on the stock kissat path: the structure
+/// passes (on by default since 2026-10-10) off. The test corpus's hard
+/// formulas are pigeonhole, which the symmetry pass settles at once, so
+/// every test of the search runs through `run`/`run_with_proof` with these;
+/// `run_shipped` is for tests of the shipped defaults.
+pub const STOCK_PATH: &[&str] = &["--structsym=0", "--structparity=0", "--structcount=0"];
+
 pub fn run(cnf: &Path, options: &[&str], env: &[(&str, &str)]) -> Run {
+    let mut all: Vec<&str> = STOCK_PATH.to_vec();
+    all.extend_from_slice(options);
+    run_shipped(cnf, &all, env)
+}
+
+/// Like `run`, with the binary's own defaults (the structure passes on).
+pub fn run_shipped(cnf: &Path, options: &[&str], env: &[(&str, &str)]) -> Run {
     let mut cmd = Command::new(solver_bin());
     cmd.arg("-n").arg("-s");
     for o in options {
@@ -228,7 +242,7 @@ pub fn run(cnf: &Path, options: &[&str], env: &[(&str, &str)]) -> Run {
 /// Like `run`, with a DRAT proof file as the second positional argument.
 pub fn run_with_proof(cnf: &Path, proof: &Path, env: &[(&str, &str)]) -> Run {
     let mut cmd = Command::new(solver_bin());
-    cmd.arg("-n").arg("-s").arg(cnf).arg(proof);
+    cmd.arg("-n").arg("-s").args(STOCK_PATH).arg(cnf).arg(proof);
     for key in SOLVER_ENV_VARS {
         cmd.env_remove(key);
     }

@@ -158,7 +158,15 @@ touches the policy or a counter it logs:
 
 Not in kissat. Off means off: with every `struct*` option at 0 the parser
 hands literals to `internal::add` as before and no code of the pass
-runs, so `tools/parity.py` stays exact. A pass may only add clauses to
+runs, so `tools/parity.py` stays exact. Since 2026-10-10 `structsym` and
+`structparity` are on by default (promoted after the 2025 runs and the
+single 2026 holdout): the stock kissat path is `--structsym=0
+--structparity=0`, which `tools/parity.py` adds unless told
+`--structure` and the test helpers' `run`/`run_with_proof` add always
+(`tests/common/mod.rs`, `STOCK_PATH`); a test of the shipped defaults
+uses `run_shipped`. A promoted default is exactly the measured
+configuration; a change to a pass's budget or detection is a new
+candidate and is measured before it ships. A pass may only add clauses to
 the input (units, binaries, the empty clause), never remove or rewrite
 one, so a model of the extended formula is a model of the input and the
 search's DRAT proof is a proof of the extended formula. Every added

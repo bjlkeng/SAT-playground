@@ -1715,6 +1715,16 @@ source of truth; every bead points back to its section.
   check settled), and whether the open ends (clqcl beyond 30 vertices,
   MVRoundRobin, mixed XOR systems, sequential-counter groups, CSP
   decoding) are worth their own steps.
+- 2026-10-10 (promotion). The owner promoted the candidate set:
+  `structsym=1` and `structparity=1` are the defaults, exactly the
+  measured configuration. `tools/smoke_test.sh` checks a pass-extended
+  proof through the gate (edited with permission); `tools/parity.py`
+  and the test helpers run the stock path. The size-relative budget
+  cap proposed on 2026-10-10 was built, measured and dropped: the
+  structural gains use up to the whole budget on small formulas while
+  the slow tiny cells are large dense formulas, so a cap by size takes
+  from the gains first; the tiny-cell cost is bead 1v2.8 with the
+  measured work of every gain and the probe-first idea.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

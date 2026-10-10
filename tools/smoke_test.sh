@@ -182,7 +182,14 @@ run_one_test() {
             local checker_output=""
             local checker_exit=0
             local checker_status=""
-            checker_output=$("$DRAT_TRIM" "$cnf" "$test_dir/proof.out" 2>&1) || checker_exit=$?
+            if [[ -f "$test_dir/proof.out.pbp" || -f "$test_dir/proof.out.derived.cnf" ]]; then
+                # the structure pass left its sidecars: the two-stage gate
+                # (VeriPB on the pass's proof, drat-trim on the extended
+                # formula; tools/proof_gate.py, plan section 11 2026-10-07)
+                checker_output=$(python3 "$REPO_ROOT/tools/proof_gate.py" "$cnf" "$test_dir/proof.out" 2>&1) || checker_exit=$?
+            else
+                checker_output=$("$DRAT_TRIM" "$cnf" "$test_dir/proof.out" 2>&1) || checker_exit=$?
+            fi
             echo "$checker_output" > "$test_dir/checker.log"
             echo "$checker_exit" > "$test_dir/checker_exit.log"
             checker_status=$(printf '%s\n' "$checker_output" | tr -d '\r')
@@ -191,6 +198,8 @@ run_one_test() {
                 log "  PASS  $name (proof verified by drat-trim)"
             elif echo "$checker_status" | grep -qx "s ACCEPTED"; then
                 log "  PASS  $name (proof accepted by drat-trim)"
+            elif echo "$checker_status" | grep -qx "ok"; then
+                log "  PASS  $name (structure proof and extended-formula proof verified by the gate)"
             else
                 log "  FAIL  $name — drat-trim rejected proof"
                 echo "REASON: drat-trim rejected proof (exit=$checker_exit)" > "$test_dir/failure.log"

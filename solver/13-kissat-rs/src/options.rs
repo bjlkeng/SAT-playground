@@ -210,14 +210,18 @@ kissat_options! {
     (stable, STABLE_DEFAULT, 0, 2, "enable stable search mode"),
     (statistics, 0, 0, 1, "print complete statistics"),
     // Not in kissat: the structure pass (plan section 11, 2026-10-07; epic
-    // SAT-playground-1v2). Each pass is its own switch, default off until
-    // its measurement promotes it. With every switch off nothing of the
-    // pass runs and the proof path is the stock one.
+    // SAT-playground-1v2). Each pass is its own switch. structsym and
+    // structparity are on by default since 2026-10-10 (measured on the
+    // 400 cells of 2025, 298 v 282, and once on the 2026 holdout, 212 v
+    // 203, every answer checked); the stock path is both at 0. The
+    // promoted configuration is exactly the measured one: structticks
+    // 1,000,000 K and no size-relative cap (the gains use the whole
+    // budget; bead SAT-playground-1v2.8 holds the tiny-cell cost).
     (structclauses, 10_000_000, 0, i32::MAX, "structure pass clause limit"),
     (structcount, 0, 0, 1, "structure pass: pigeonhole counting"),
     (structcsp, 0, 0, 1, "structure pass: CSP decoding"),
-    (structparity, 0, 0, 1, "structure pass: XOR elimination"),
-    (structsym, 0, 0, 1, "structure pass: symmetry fixing"),
+    (structparity, 1, 0, 1, "structure pass: XOR systems"),
+    (structsym, 1, 0, 1, "structure pass: symmetry fixing"),
     (structsymext, 0, 0, 1, "structure pass: external symmetry tool"),
     (structticks, 1_000_000, 0, i32::MAX, "structure pass work limit (K)"),
     (substitute, 1, 0, 1, "equivalent literal substitution"),

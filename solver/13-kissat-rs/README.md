@@ -151,13 +151,19 @@ Environment (read by the binary itself, so `run.sh`, the harness and
 
 Not in kissat. Before the solver sees the formula, a pre-solve pass looks
 for structure that search handles badly and settles what it can in
-seconds. Each pass is a kissat-style option, default off until its
-measurement promotes it, so it can be turned off later:
+seconds. Each pass is a kissat-style option; a pass is off until its
+measurement promotes it, and stays a switch after. **Promoted 2026-10-10:
+`structsym` and `structparity` are on by default** (the combined 2025 run
+298 v 282 and the single 2026 holdout 212 v 203, below); the stock kissat
+path is `--structsym=0 --structparity=0`, which `tools/parity.py` passes
+unless told `--structure`, and the test helpers' `run` too
+(`tests/common/mod.rs`, `STOCK_PATH`). The promoted configuration is
+exactly the measured one (budget 1M K, no size-relative cap):
 
 | option | pass | status |
 |---|---|---|
-| `--structsym=1` | symmetry: interchangeable rows and fixing (`src/structsym.rs`) | step one in, measured on the 400 cells (below) |
-| `--structparity=1` | parity: closed XOR systems fixed by cycle flips (`src/structparity.rs`) | step one in (below); general elimination is step two |
+| `--structsym=1` | symmetry: interchangeable rows and fixing (`src/structsym.rs`) | **default on** since 2026-10-10; measured on the 400 cells and the holdout (below) |
+| `--structparity=1` | parity: closed XOR systems fixed by cycle flips (`src/structparity.rs`) | **default on** since 2026-10-10 (below); general elimination is step two |
 | `--structcount=1` | counting: demand clauses against pairwise at-most-one groups, a Hall violation proved by cutting planes (`src/structcount.rs`) | step one in (below); sequential-counter groups are step two |
 | `--structcsp=1` | one-hot CSP decoding, SAT only | bead S.4, not yet |
 | `--structsymext=1` | general automorphisms through an external tool (measurement only) | bead S.2 step two, not yet |
@@ -187,12 +193,10 @@ handed over as OPB, since VeriPB 3 reads CNF input but not CNF output
 files) and stage 2 with drat-trim on F'; a proof that ends in the empty
 clause needs stage 1 only. `tools/setup_checkers.sh` builds VeriPB into
 `tools/checkers/VeriPB`; `tools/bench.sh` uses the gate when the sidecars
-are present. `tools/smoke_test.sh` checks proofs with plain drat-trim
-against the input, which is right for the default (every pass off) and
-fails on a pass-extended proof: `SAT_EXTRA_ARGS='--structsym=1' bash
-tools/smoke_test.sh` reports the pigeonhole cell as rejected although
-the gate accepts it; that script is not edited without being asked, and
-a promotion of a pass to default on has to settle it first (bead S.5).
+are present. `tools/smoke_test.sh` checks a proof with plain drat-trim
+against the input when the run left no sidecar, and through the gate
+when it did (edited 2026-10-10 for the promotion, with the owner's
+permission); its four UNSAT cells now report "verified by the gate".
 Solver-side tests: `tests/structure.rs` (off means off, a pigeonhole
 refutation through the gate, a tampered proof rejected, an unchecked
 extension rejected, the pass's work in the work clock, a model of the
@@ -269,6 +273,22 @@ its whole detection budget, 14-27 s, and finds nothing; the budget
 should be capped relative to the formula's size. Compare solver 12's
 holdout (296 v 292 on 2025, 160 v 197 on 2026): this candidate set's
 2025 gain (+22/−6) carries to 2026 (+16/−7) in kind and in size.
+
+**Known cost after the promotion (2026-10-10; bead
+SAT-playground-1v2.8).** Six 2026 cells of the `Medium-result` family
+(3,896 variables, 2.9M binary clauses) take 13-27 s against 0.4-1.1 s
+stock: the symmetry pass's first six anchors each cost a full
+refinement over the 2.9M clauses (160M work each), find no matrix, and
+exhaust the budget. A budget relative to the formula's size does not
+separate them from the gains: `clqcl_30`, `cliquecoloring_n26` and
+`clqcl_25` need 990-1000M of the 1000M budget on far smaller formulas
+(the pass work of every structural gain, 2025 and 2026, measured
+2026-10-10: php_sudoku 7-10M, the Tseitin cells 0.02-96M, RoundRobin
+69-246M, rphp 238-502M, chnl 287-688M, DSC125 706M, exam 970M). Two
+levers remain, both unmeasured: a short stock search before the pass
+(a probe of a few hundred million ticks decides these cells and costs
+every hard cell well under a second), or a cheaper refinement on dense
+binary formulas. The promoted configuration is the measured one.
 
 **The parity pass, step one (2026-10-08).** An XOR constraint over k
 variables is the 2^(k-1) clauses that forbid one parity (k up to 8, the

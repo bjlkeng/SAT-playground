@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{php, run, run_with_proof, solver_bin, Fixture};
+use common::{php, run, run_shipped, run_with_proof, solver_bin, Fixture};
 use std::path::Path;
 use std::process::Command;
 
@@ -29,9 +29,12 @@ fn solver_command() -> Command {
     cmd
 }
 
+/// The stock path plus `options`, so a test of one pass sees only that pass
+/// (the shipped defaults have structsym and structparity on).
 fn run_options_with_proof(cnf: &Path, proof: &Path, options: &[&str]) -> String {
     let out = solver_command()
         .arg("-n")
+        .args(common::STOCK_PATH)
         .args(options)
         .arg(cnf)
         .arg(proof)
@@ -45,8 +48,10 @@ fn every_pass_off_leaves_the_stock_trajectory_and_no_artifacts() {
     let fx = Fixture::new("structure_off");
     let cnf = fx.path("php7.cnf");
     php(7, &cnf);
+    // `run` puts every pass off (common::STOCK_PATH); the same with the
+    // budget option set is the same trajectory
     let stock = run(&cnf, &[], &[]);
-    let again = run(&cnf, &["--structsym=0", "--structparity=0"], &[]);
+    let again = run(&cnf, &["--structticks=1"], &[]);
     common::assert_same_trajectory(&stock, &again, "struct options off");
     let proof = fx.path("off.drat");
     let out = run_with_proof(&cnf, &proof, &[]);
@@ -54,6 +59,24 @@ fn every_pass_off_leaves_the_stock_trajectory_and_no_artifacts() {
     assert!(!fx.path("off.drat.pbp").exists(), "no VeriPB proof with every pass off");
     assert!(!fx.path("off.drat.derived.cnf").exists());
     assert!(!out.stdout.contains("structure pass"));
+}
+
+#[test]
+fn the_shipped_defaults_run_the_promoted_passes() {
+    let fx = Fixture::new("structure_default");
+    let cnf = fx.path("php7.cnf");
+    php(7, &cnf);
+    let proof = fx.path("default.drat");
+    let out = solver_command().arg("-n").arg(&cnf).arg(&proof).output().expect("run sat-solver");
+    let out = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.contains("\ns UNSATISFIABLE"), "{}", out);
+    assert!(fx.path("default.drat.pbp").exists(), "the symmetry pass is on by default");
+    assert!(out.contains("symmetry:"), "{}", out);
+    assert_eq!(gate(&cnf, &proof), "ok");
+    // with no budget the pass finds nothing and the stock search decides
+    let capped = run_shipped(&cnf, &["--structticks=0"], &[]);
+    assert_eq!(capped.status, "UNSATISFIABLE");
+    assert!(!capped.stdout.contains("symmetry:"), "no fixing with no budget");
 }
 
 #[test]

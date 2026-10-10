@@ -31,7 +31,10 @@ work is **solver 13** and the RL scheduler on top of it.
   Exact counter parity with the C was the port's acceptance criterion and is
   now a *starting point*, not a standing invariant — the RL scheduler changes
   the trajectory on purpose. `solver/13-kissat-rs/tools/parity.py` is still
-  the tool to reach for when the stock path regresses unintentionally.
+  the tool to reach for when the stock path regresses unintentionally;
+  it runs the solver with the structure passes off (`structsym` and
+  `structparity` are on by default since 2026-10-10, solver README
+  "The structure pass"), as do the test helpers.
 - **`plan/rl-scheduler-solver13-plan.md`** — the active project. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a
