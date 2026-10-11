@@ -27,7 +27,7 @@
 //! VeriPB checks every proof goal by unit propagation.
 
 use crate::structure::{Derived, Formula};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// One interchangeable-row matrix: `rows[i]` lists the literals of row i
 /// in column order, every row the same length.
@@ -163,68 +163,171 @@ impl<'a> Work<'a> {
         !self.over()
     }
 
-    /// Colour refinement to a fixed point from the given start colours per
-    /// literal. Canonical: the same formula and start give the same
-    /// colours, and literals that a symmetry exchanges get the same colour.
-    fn refine(&mut self, start: &[u32]) -> Vec<u32> {
-        let nl = start.len();
+    /// The base colouring: colour refinement to a fixed point from one
+    /// class of all active literals and one of all active clauses.
+    /// Canonical: the same formula gives the same labels, and literals
+    /// that a symmetry exchanges get the same label.
+    fn refine_base(&mut self) -> Colouring {
+        let nl = 2 * self.value.len();
         let m = self.f.len();
-        let mut cl: Vec<u32> = start.to_vec();
-        let mut cc: Vec<u32> = vec![0; m];
-        let mut classes = count_classes(&cl);
+        let clauses: Vec<u32> = (0..m).filter(|&i| !self.satisfied[i]).map(|i| i as u32).collect();
+        let lits: Vec<u32> = (2..nl).filter(|&li| self.lit_value(lit_of(li)) == 0).map(|li| li as u32).collect();
+        let mut col = Colouring {
+            cl: vec![0; nl],
+            cc: vec![1; m],
+            size: vec![lits.len() as u32, clauses.len() as u32],
+            next: 2,
+        };
+        // every active clause and literal is hashed in the first round:
+        // clauses of one length are one class until their literals differ,
+        // and literals differ by what they occur in
+        self.refine_rounds(&mut col, clauses, lits, Vec::new());
+        col
+    }
+
+    /// `base` with the given literals each in a fresh class of its own,
+    /// refined to a fixed point. Only what the split reaches is re-hashed:
+    /// a clause when a literal of it changed class, a literal when a clause
+    /// of it or its negation did. The fixed point is the one a refinement
+    /// from scratch reaches, at the cost of the part that changes.
+    fn refine_from(&mut self, base: &Colouring, lits: &[i32]) -> Vec<u32> {
+        let mut col = base.clone();
+        let mut changed: Vec<u32> = Vec::with_capacity(lits.len());
+        for &l in lits {
+            let li = idx(l);
+            let old = col.cl[li] as usize;
+            if col.size[old] > 0 {
+                col.size[old] -= 1;
+            }
+            col.cl[li] = col.next;
+            col.size.push(1);
+            col.next += 1;
+            changed.push(li as u32);
+        }
+        self.refine_rounds(&mut col, Vec::new(), Vec::new(), changed);
+        col.cl
+    }
+
+    /// Rounds of refinement until nothing changes: re-hash the touched
+    /// clauses, split their classes, re-hash the touched literals, split
+    /// theirs. `clauses` and `lits` are re-hashed in the first round
+    /// whatever their neighbours did; `changed` are the literals whose
+    /// label changed before. Returns early at the budget (the colouring is
+    /// then partial, and the caller checks `over`).
+    fn refine_rounds(&mut self, col: &mut Colouring, clauses: Vec<u32>, lits: Vec<u32>, changed: Vec<u32>) {
+        let m = self.f.len();
+        let nl = col.cl.len();
+        let mut cmark: Vec<bool> = vec![false; m];
+        let mut lmark: Vec<bool> = vec![false; nl];
+        let mut touched_c: Vec<u32> = clauses;
+        for &i in &touched_c {
+            cmark[i as usize] = true;
+        }
+        let mut first_lits: Vec<u32> = lits;
+        let mut changed_l: Vec<u32> = changed;
+        let (w0, mut rounds, mut hashed) = (self.work, 0u32, 0u64);
         loop {
-            // clauses: old colour + multiset of literal colours
-            let mut hc: Vec<u64> = vec![0; m];
-            for i in 0..m {
-                if i % 4096 == 0 && self.over() {
-                    return cl;
+            rounds += 1;
+            // the clauses a changed literal is in
+            for (n, &li) in changed_l.iter().enumerate() {
+                if n % 1024 == 0 && self.over() {
+                    return;
                 }
-                if self.satisfied[i] {
-                    continue;
+                for &i in &self.occ[li as usize] {
+                    if !self.satisfied[i as usize] && !cmark[i as usize] {
+                        cmark[i as usize] = true;
+                        touched_c.push(i);
+                    }
                 }
-                let mut h: u64 = mix(cc[i] as u64 + 1);
+                self.work += self.occ[li as usize].len() as u64 + 1;
+            }
+            // their new hash: the old label and the multiset of literal labels
+            let mut keys: Vec<(u32, u64, u32)> = Vec::with_capacity(touched_c.len());
+            for (n, &i) in touched_c.iter().enumerate() {
+                if n % 4096 == 0 && self.over() {
+                    return;
+                }
+                let i = i as usize;
+                let mut h: u64 = mix(col.cc[i] as u64 + 1);
                 let mut len = 0u64;
                 for &l in self.f.clause(i) {
                     if self.lit_value(l) != 0 {
                         continue;
                     }
                     len += 1;
-                    h = h.wrapping_add(mix(cl[idx(l)] as u64 + 7));
+                    h = h.wrapping_add(mix(col.cl[idx(l)] as u64 + 7));
                 }
-                hc[i] = mix(h ^ mix(len + 3));
                 self.work += len + 1;
+                keys.push((col.cc[i], mix(h ^ mix(len + 3)), i as u32));
             }
-            cc = relabel(&hc);
-            // literals: own colour, the negation's colour, multiset of clause colours
-            let mut hl: Vec<u64> = vec![0; nl];
-            for li in 2..nl {
-                if li % 4096 == 0 {
-                    self.work += 4096; // the scan itself, sparse numbering included
-                    if self.over() {
-                        return cl;
+            hashed += touched_c.len() as u64;
+            for &i in &touched_c {
+                cmark[i as usize] = false;
+            }
+            touched_c.clear();
+            self.work += keys.len() as u64;
+            let changed_c = split(&mut keys, &mut col.cc, &mut col.size, &mut col.next);
+            // the literals of a changed clause, the negations of changed literals
+            let mut touched_l: Vec<u32> = std::mem::take(&mut first_lits);
+            for &li in &touched_l {
+                lmark[li as usize] = true;
+            }
+            for (n, &i) in changed_c.iter().enumerate() {
+                if n % 1024 == 0 && self.over() {
+                    return;
+                }
+                for &l in self.f.clause(i as usize) {
+                    if self.lit_value(l) != 0 {
+                        continue;
+                    }
+                    let li = idx(l);
+                    if !lmark[li] {
+                        lmark[li] = true;
+                        touched_l.push(li as u32);
                     }
                 }
-                let l = lit_of(li);
-                if self.lit_value(l) != 0 {
-                    continue;
+                self.work += self.f.clause(i as usize).len() as u64 + 1;
+            }
+            for &li in &changed_l {
+                let n = (li ^ 1) as usize;
+                if self.lit_value(lit_of(n)) == 0 && !lmark[n] {
+                    lmark[n] = true;
+                    touched_l.push(n as u32);
                 }
-                let mut h: u64 = mix(cl[li] as u64 + 11).wrapping_add(mix(cl[li ^ 1] as u64 + 101) << 1);
+            }
+            changed_l.clear();
+            if touched_l.is_empty() {
+                break;
+            }
+            // their new hash: own label, the negation's, the multiset of clause labels
+            let mut keys: Vec<(u32, u64, u32)> = Vec::with_capacity(touched_l.len());
+            for (n, &li) in touched_l.iter().enumerate() {
+                if n % 4096 == 0 && self.over() {
+                    return;
+                }
+                let li = li as usize;
+                let mut h: u64 = mix(col.cl[li] as u64 + 11).wrapping_add(mix(col.cl[li ^ 1] as u64 + 101) << 1);
                 for &i in &self.occ[li] {
                     if self.satisfied[i as usize] {
                         continue;
                     }
-                    h = h.wrapping_add(mix(cc[i as usize] as u64 + 5));
+                    h = h.wrapping_add(mix(col.cc[i as usize] as u64 + 5));
                 }
-                hl[li] = mix(h);
                 self.work += self.occ[li].len() as u64 + 1;
+                keys.push((col.cl[li], mix(h), li as u32));
             }
-            let next = relabel(&hl);
-            let k = count_classes(&next);
-            cl = next;
-            if k == classes || self.over() {
-                return cl;
+            hashed += touched_l.len() as u64;
+            for &li in &touched_l {
+                lmark[li as usize] = false;
             }
-            classes = k;
+            self.work += keys.len() as u64;
+            changed_l = split(&mut keys, &mut col.cl, &mut col.size, &mut col.next);
+            if changed_l.is_empty() || self.over() {
+                break;
+            }
+        }
+        if debug() {
+            eprintln!("structsym: refinement: {} rounds, {} elements hashed, {}K work, {} classes", rounds, hashed, (self.work - w0) / 1000, col.size.iter().filter(|&&s| s > 0).count());
         }
     }
 
@@ -339,18 +442,6 @@ impl<'a> Work<'a> {
     }
 }
 
-/// `base` with the given literals given fresh colours (each its own), so a
-/// refinement from it converges in a few rounds instead of recomputing the
-/// base partition.
-fn individualize(base: &[u32], lits: &[i32]) -> Vec<u32> {
-    let mut start = base.to_vec();
-    let top = base.iter().copied().max().unwrap_or(0);
-    for (k, &l) in lits.iter().enumerate() {
-        start[idx(l)] = top + 1 + k as u32;
-    }
-    start
-}
-
 /// The literal map of swapping rows a and b, both polarities, or None when
 /// the rows are inconsistent (a literal mapped two ways) or an assigned
 /// entry would move to a different value.
@@ -383,20 +474,62 @@ fn canon(c: &mut Vec<i32>) {
     c.sort_unstable_by_key(|&l| (l.abs(), l < 0));
 }
 
-fn count_classes(c: &[u32]) -> usize {
-    let mut v: Vec<u32> = c.to_vec();
-    v.sort_unstable();
-    v.dedup();
-    v.len()
+/// A stable colouring of the reduced formula: a label per literal and per
+/// clause (one label space; literals start at 0, clauses at 1), the number
+/// of active members of every label, and the next fresh label. Labels
+/// only ever split; an element keeps its label until its class splits
+/// under it.
+#[derive(Clone)]
+struct Colouring {
+    cl: Vec<u32>,
+    cc: Vec<u32>,
+    size: Vec<u32>,
+    next: u32,
 }
 
-/// Canonical colours from hashes: equal hashes get equal colours, colours
-/// are ranks of the sorted distinct hashes.
-fn relabel(h: &[u64]) -> Vec<u32> {
-    let mut distinct: Vec<u64> = h.to_vec();
-    distinct.sort_unstable();
-    distinct.dedup();
-    h.iter().map(|x| distinct.binary_search(x).unwrap() as u32).collect()
+/// Split the classes of the re-hashed elements, `keys` = (old label, new
+/// hash, element): elements with the same old label and hash stay
+/// together. A class whose active members were all re-hashed keeps its
+/// label for the fragment with the smallest hash; every other fragment
+/// gets a fresh label, in hash order, so the labels are canonical. A
+/// re-hashed element never rejoins members that were not re-hashed: it
+/// has a neighbour with a label that did not exist when they were
+/// labelled, and they do not. Returns the elements whose label changed.
+fn split(keys: &mut [(u32, u64, u32)], label: &mut [u32], size: &mut Vec<u32>, next: &mut u32) -> Vec<u32> {
+    keys.sort_unstable();
+    let mut changed: Vec<u32> = Vec::new();
+    let mut s = 0;
+    while s < keys.len() {
+        let old = keys[s].0;
+        let mut e = s;
+        while e < keys.len() && keys[e].0 == old {
+            e += 1;
+        }
+        let whole = (e - s) as u32 == size[old as usize];
+        let mut fs = s;
+        let mut first = true;
+        while fs < e {
+            let h = keys[fs].1;
+            let mut fe = fs;
+            while fe < e && keys[fe].1 == h {
+                fe += 1;
+            }
+            if !(whole && first) {
+                let fresh = *next;
+                *next += 1;
+                size.push((fe - fs) as u32);
+                size[old as usize] -= (fe - fs) as u32;
+                for k in &keys[fs..fe] {
+                    label[k.2 as usize] = fresh;
+                    changed.push(k.2);
+                }
+            }
+            first = false;
+            fs = fe;
+        }
+        s = e;
+    }
+    changed
 }
 
 /// Cells of a colouring restricted to unassigned literals: colour -> literals.
@@ -416,7 +549,8 @@ fn cells(colours: &[u32], value: &[i8]) -> HashMap<u32, Vec<i32>> {
 fn find_matrices(w: &mut Work) -> Vec<Matrix> {
     let nl = 2 * w.value.len();
     let mut found: Vec<Matrix> = Vec::new();
-    let base = w.refine(&vec![0; nl]);
+    let base_col = w.refine_base();
+    let base = base_col.cl.clone();
     let base_cells = cells(&base, &w.value);
     let mut classes: Vec<(u32, Vec<i32>)> = base_cells.into_iter().filter(|(_, vs)| vs.len() >= 2).collect();
     classes.sort_by_key(|(c, vs)| (std::cmp::Reverse(vs.len()), *c));
@@ -432,16 +566,23 @@ fn find_matrices(w: &mut Work) -> Vec<Matrix> {
     if debug() {
         eprintln!("structsym: {} literal classes, sizes {:?}", classes.len(), classes.iter().take(12).map(|(_, v)| v.len()).collect::<Vec<_>>());
     }
-    // candidate anchor sets from every class, smallest first
+    // candidate anchor sets from every class, smallest first; the negation
+    // of a class is a class, and its candidate sets are the negations of
+    // this one's (deduplicated below), so one of the two is enough
     let mut candidates: Vec<Vec<i32>> = Vec::new();
-    for (_, class) in classes.iter().take(MAX_CLASSES) {
+    let mut done: HashSet<u32> = HashSet::new();
+    for (c, class) in classes.iter().take(MAX_CLASSES) {
         if w.over() {
             break;
         }
+        if done.contains(&base[idx(-class[0])]) {
+            continue;
+        }
+        done.insert(*c);
         // individualize the first member: the cells its class splits into
         // are the candidate anchor sets (one anchor per row)
         let x = class[0];
-        let alpha = w.refine(&individualize(&base, &[x]));
+        let alpha = w.refine_from(&base_col, &[x]);
         let mut by_colour: HashMap<u32, Vec<i32>> = HashMap::new();
         for &l in class.iter() {
             if l != x && l != -x {
@@ -479,7 +620,7 @@ fn find_matrices(w: &mut Work) -> Vec<Matrix> {
             continue;
         }
         tried.push(anchors.clone());
-        if let Some(m) = rows_from_anchors(w, &anchors, &base, &base_size) {
+        if let Some(m) = rows_from_anchors(w, &anchors, &base_col, &base_size) {
             found.push(m);
         }
     }
@@ -493,7 +634,8 @@ fn find_matrices(w: &mut Work) -> Vec<Matrix> {
 /// anchors (a literal outside rows i, j, k keeps its colour across the
 /// three, a literal in row i does not); with two anchors the old
 /// equal-parts rule splits their union.
-fn rows_from_anchors(w: &mut Work, anchors: &[i32], base: &[u32], base_size: &[usize]) -> Option<Matrix> {
+fn rows_from_anchors(w: &mut Work, anchors: &[i32], base_col: &Colouring, base_size: &[usize]) -> Option<Matrix> {
+    let base = &base_col.cl;
     let nl = 2 * w.value.len();
     let r = anchors.len();
     let mut is_anchor = vec![false; nl];
@@ -501,21 +643,34 @@ fn rows_from_anchors(w: &mut Work, anchors: &[i32], base: &[u32], base_size: &[u
         is_anchor[idx(a)] = true;
         is_anchor[idx(-a)] = true;
     }
-    let mut alphas: Vec<Vec<u32>> = Vec::with_capacity(r);
-    for &a in anchors {
-        alphas.push(w.refine(&individualize(base, &[a])));
-        if w.over() {
-            return None;
-        }
-    }
     let mut anchors_in_class: HashMap<u32, usize> = HashMap::new();
     for &a in anchors {
         *anchors_in_class.entry(base[idx(a)]).or_default() += 1;
         *anchors_in_class.entry(base[idx(-a)]).or_default() += 1;
     }
-    // row i as cells keyed by the colour under its own individualization
+    // one refinement per anchor, the first six first: rows 0 and 1 compare
+    // with anchors 1-5 only, and when their shapes disagree the rest is
+    // not computed
+    let mut alphas: Vec<Vec<u32>> = Vec::with_capacity(r);
     let mut rows: Vec<Vec<(u32, Vec<i32>)>> = Vec::with_capacity(r);
+    let mut shape: Vec<(u32, usize)> = Vec::new();
+    let first = r.min(6);
+    for &a in &anchors[..first] {
+        alphas.push(w.refine_from(base_col, &[a]));
+        if w.over() {
+            return None;
+        }
+    }
+    // row i as cells keyed by the colour under its own individualization
     for i in 0..r {
+        if i == 2 && r > first {
+            for &a in &anchors[first..] {
+                alphas.push(w.refine_from(base_col, &[a]));
+                if w.over() {
+                    return None;
+                }
+            }
+        }
         let mut by: HashMap<u32, Vec<i32>> = HashMap::new();
         // compare with up to four other anchors; a literal of row i differs
         // from all of them, or from all but one when it is shared with that
@@ -553,23 +708,22 @@ fn rows_from_anchors(w: &mut Work, anchors: &[i32], base: &[u32], base_size: &[u
             row.push((c, vs));
         }
         row.sort_by_key(|(c, _)| *c);
-        rows.push(row);
-    }
-    let shape: Vec<(u32, usize)> = rows[0].iter().map(|(c, vs)| (*c, vs.len())).collect();
-    if debug() {
-        eprintln!("structsym:   {} anchors, row 0 cells {:?}", r, shape.iter().map(|s| s.1).collect::<Vec<_>>());
-    }
-    if shape.is_empty() {
-        return None;
-    }
-    for row in &rows {
         let s: Vec<(u32, usize)> = row.iter().map(|(c, vs)| (*c, vs.len())).collect();
-        if s != shape {
+        if i == 0 {
+            shape = s;
             if debug() {
-                eprintln!("structsym:   a row has another shape {:?}", s.iter().map(|s| s.1).collect::<Vec<_>>());
+                eprintln!("structsym:   {} anchors, row 0 cells {:?}", r, shape.iter().map(|s| s.1).collect::<Vec<_>>());
+            }
+            if shape.is_empty() {
+                return None;
+            }
+        } else if s != shape {
+            if debug() {
+                eprintln!("structsym:   row {} has another shape {:?}", i, s.iter().map(|s| s.1).collect::<Vec<_>>());
             }
             return None;
         }
+        rows.push(row);
     }
     // pair the entries of each cell across rows: a singleton pairs itself,
     // a bigger cell by binary clauses between the rows when that is unique,
@@ -594,7 +748,7 @@ fn rows_from_anchors(w: &mut Work, anchors: &[i32], base: &[u32], base_size: &[u
             // binary-clause pairing in every row
             let mut partners: Vec<Option<i32>> = (1..r).map(|ri| pair_by_binary(w, u, &rows[ri][ci].1)).collect();
             if partners.iter().any(|p| p.is_none()) {
-                let gamma = w.refine(&individualize(base, &[anchors[0], u]));
+                let gamma = w.refine_from(base_col, &[anchors[0], u]);
                 if w.over() {
                     return None;
                 }

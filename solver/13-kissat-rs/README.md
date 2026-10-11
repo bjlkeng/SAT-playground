@@ -284,11 +284,52 @@ separate them from the gains: `clqcl_30`, `cliquecoloring_n26` and
 `clqcl_25` need 990-1000M of the 1000M budget on far smaller formulas
 (the pass work of every structural gain, 2025 and 2026, measured
 2026-10-10: php_sudoku 7-10M, the Tseitin cells 0.02-96M, RoundRobin
-69-246M, rphp 238-502M, chnl 287-688M, DSC125 706M, exam 970M). Two
-levers remain, both unmeasured: a short stock search before the pass
-(a probe of a few hundred million ticks decides these cells and costs
-every hard cell well under a second), or a cheaper refinement on dense
-binary formulas. The promoted configuration is the measured one.
+69-246M, rphp 238-502M, chnl 287-688M, DSC125 706M, exam 970M). The
+cost was larger than the tiny cells showed: on 2025, 62 of the 275
+cells both arms solve had the pass spend its whole budget for nothing,
++7,185 s of wall against stock, and single cells went from 8.6 s to
+116 s (`case19`), 5.9 s to 91 s (`veer_axi`), 2.3 s to 54 s
+(`6s299b685`). A stock probe before the pass would have recovered
+about 430 s of that; the refinement below recovered most of it.
+
+**Split-driven refinement (2026-10-10;
+`log/abtest-struct-refine-400-2026-10-10-14-27-48`,
+`log/struct-refine-400-report-2026-10-10.txt`; bead
+SAT-playground-1v2.8).** The symmetry pass's colour refinement was the
+naive kind: every round re-hashed every clause and every literal, and
+ran until the class count stopped changing, so individualizing one
+anchor in a circuit cost 20-36 rounds of the whole formula (184M work
+on `veer_axi` for a split of 60 classes). Now a round re-hashes only
+the clauses with a literal whose class split and the literals with a
+clause whose class split (or whose negation split), labels are stable
+(a class keeps its label until it splits; fresh labels in hash order,
+so they stay canonical and comparable across the refinements of two
+anchors), and the base colouring is computed once per detection. Two
+more cuts: a class whose negation class was individualized is skipped
+(its candidate sets are the negations), and a candidate's rows are
+checked after the first six anchor refinements, not after all of them.
+Same fixed point; on the gains the old refinement finished, the derived
+clauses are byte-identical (19 of 31) or the same count in another
+order; where the old budget cut it off, detection now finishes.
+Paired run against the promoted binary, both with the shipped
+defaults, 1800 s, every answer through the gate: **299 v 297 (+3 /
+−1)**, wall PAR-2 0.973×, tick PAR-2 0.978×, validation 76 v 75, no
+contradiction. Gains `clqcl_50_6_5` (3 s) and `clqcl_40_6_5` (42 s),
+two of the clqcl cells beyond 30 vertices the step-one detector could
+not afford, and one late SAT cell; the loss is `booth_dadda`, UNSAT at
+1785 s on the old arm. `clqcl_30` goes from 1015 s to 1.8 s,
+`cliquecoloring_n26` from 6.8 s to 1.2 s (W 1010M to 167M). Against
+stock: full-budget cells among the both-solved 62 → 31, their wall
+excess +7,185 → +4,723 s, the cells stock solves under 10 s cost +416 →
++76 s (p90 +34 → +3 s), `case19` 116 → 45 s, `veer_axi` 91 → 20 s,
+`6s299b685` 54 → 5 s, `x-epic` 42 → 1 s; where both arms solve, the
+wall ratio new/old has median 0.98, p10 0.63, p90 1.04. What stays
+expensive is a dense formula (the `Medium-result` cells, 2.9M binary
+clauses): one anchor there genuinely splits tens of thousands of
+classes, so a refinement touches the whole formula, and a candidate
+with many rows costs one refinement per row until the budget ends;
+the budget (1000M; the gains now need at most 420M) is the remaining
+knob, to be measured on its own.
 
 **The parity pass, step one (2026-10-08).** An XOR constraint over k
 variables is the 2^(k-1) clauses that forbid one parity (k up to 8, the

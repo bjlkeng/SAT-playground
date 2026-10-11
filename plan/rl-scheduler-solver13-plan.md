@@ -1725,6 +1725,16 @@ source of truth; every bead points back to its section.
   the slow tiny cells are large dense formulas, so a cap by size takes
   from the gains first; the tiny-cell cost is bead 1v2.8 with the
   measured work of every gain and the probe-first idea.
+- 2026-10-10 (bead 1v2.8, the refinement). The pass's cost was the
+  naive colour refinement (every round over the whole formula); the
+  split-driven version re-hashes only what a split reaches, with
+  stable canonical labels. Paired 400-cell run against the promoted
+  binary: **299 v 297 (+3 / −1)**, wall PAR-2 0.973×, tick 0.978×,
+  every answer checked; `clqcl_40` and `clqcl_50` now solve (two of
+  the step-two targets), `clqcl_30` 1015 → 1.8 s; against stock the
+  no-find full-budget cells halve (62 → 31) and the cost on cells stock
+  solves under 10 s drops from +416 s to +76 s. Shipped as the default.
+  Open: the budget (1000M, gains need ≤ 420M) and dense formulas.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 
