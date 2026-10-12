@@ -220,6 +220,7 @@ kissat_options! {
     (structclauses, 10_000_000, 0, i32::MAX, "structure pass clause limit"),
     (structcount, 0, 0, 1, "structure pass: pigeonhole counting"),
     (structcsp, 0, 0, 1, "structure pass: CSP decoding"),
+    (structmore, 2_000_000, 0, i32::MAX, "structure pass work limit (K) after a find"),
     (structparity, 1, 0, 1, "structure pass: XOR systems"),
     (structsym, 1, 0, 1, "structure pass: symmetry fixing"),
     (structsymext, 0, 0, 1, "structure pass: external symmetry tool"),
@@ -691,8 +692,8 @@ mod tests {
 
     #[test]
     fn table_has_all_158_options_plus_the_structure_pass() {
-        // kissat's 158 plus the seven struct* options (plan section 11, 2026-10-07)
-        assert_eq!(OPTION_TABLE.len(), 158 + 7);
+        // kissat's 158 plus the eight struct* options (plan section 11, 2026-10-07)
+        assert_eq!(OPTION_TABLE.len(), 158 + 8);
     }
 
     #[test]

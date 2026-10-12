@@ -260,12 +260,20 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
     }
     solver.structure.buffering = false;
     let lits = std::mem::take(&mut solver.structure.lits);
-    // the pass's work counts in the work clock and against the tick limit
-    let mut budget = solver.structure.work_limit;
-    if solver.limited.ticks {
-        let w = solver.statistics.work_clock();
-        budget = budget.min(solver.limits.ticks.saturating_sub(w));
-    }
+    // the pass's work counts in the work clock and against the tick limit:
+    // the budgets are the tick counts the passes may reach, the base one
+    // for looking, the larger one (structmore) once a symmetry matrix has
+    // been found and verified, so a cell with structure gets more
+    let cap = |allowance: u64, solver: &Solver| -> u64 {
+        let mut a = allowance;
+        if solver.limited.ticks {
+            let w = solver.statistics.work_clock();
+            a = a.min(solver.limits.ticks.saturating_sub(w));
+        }
+        solver.statistics.ticks.saturating_add(a)
+    };
+    let budget = cap(solver.structure.work_limit, solver);
+    let more = cap((solver.options.structmore as u64).saturating_mul(1000), solver).max(budget);
     let mut proof: Option<Writer> = None;
     let mut proof_ok = true;
     if proof_path == Some("-") {
@@ -310,7 +318,7 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
             crate::structcount::run(&formula, &mut derived, budget, &mut solver.statistics.ticks, stop_ref);
         }
         if solver.options.structsym != 0 && !derived.refuted {
-            crate::structsym::run(&formula, &mut derived, budget, &mut solver.statistics.ticks, stop_ref);
+            crate::structsym::run(&formula, &mut derived, budget, more, &mut solver.statistics.ticks, stop_ref);
         }
     }
     let work = solver.statistics.ticks.saturating_sub(start);

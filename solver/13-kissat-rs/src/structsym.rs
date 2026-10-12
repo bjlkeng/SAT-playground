@@ -63,8 +63,14 @@ struct Work<'a> {
     clause_set: HashMap<Vec<i32>, u32>,
     /// Work so far, counted live into the solver's tick counter.
     work: u64,
-    /// The tick count the pass must not exceed.
+    /// The tick count the pass must not exceed; `more` once a matrix has
+    /// been verified (a cell with structure is worth more work), which
+    /// carries the detection in progress and its fixings to the end, while
+    /// a further detection starts only within `base`.
     budget: u64,
+    base: u64,
+    more: u64,
+    extended: bool,
     /// The solver's termination flag (a time limit or a signal).
     stop: &'a std::sync::atomic::AtomicBool,
     /// The solver's tick counter, updated at every budget check.
@@ -97,7 +103,7 @@ fn mix(mut h: u64) -> u64 {
 }
 
 impl<'a> Work<'a> {
-    fn new(f: &'a Formula, budget: u64, ticks: *mut u64, stop: &'a std::sync::atomic::AtomicBool) -> Work<'a> {
+    fn new(f: &'a Formula, budget: u64, more: u64, ticks: *mut u64, stop: &'a std::sync::atomic::AtomicBool) -> Work<'a> {
         let work = unsafe { *ticks };
         let nl = 2 * (f.vars as usize + 1);
         let mut occ: Vec<Vec<u32>> = vec![Vec::new(); nl];
@@ -114,6 +120,9 @@ impl<'a> Work<'a> {
             clause_set: HashMap::new(),
             work,
             budget,
+            base: budget,
+            more,
+            extended: false,
             stop,
             ticks,
             trail: Vec::new(),
@@ -374,7 +383,12 @@ impl<'a> Work<'a> {
     /// the reduced formula? Only clauses touching a moved variable are
     /// checked; the rest map to themselves.
     fn verify_swap(&mut self, a: &[i32], b: &[i32]) -> bool {
-        let Some(map) = swap_map(a, b, &self.value) else { return false };
+        let Some(map) = swap_map(a, b, &self.value) else {
+            if debug() && std::env::var_os("SAT_STRUCT_DEBUG_SWAP").is_some() {
+                eprintln!("structsym:     swap fails: no consistent map for rows {:?} and {:?}", &a[..a.len().min(6)], &b[..b.len().min(6)]);
+            }
+            return false;
+        };
         let mut seen_clause: HashMap<u32, ()> = HashMap::new();
         for &l in a.iter().chain(b.iter()) {
             for li in [idx(l), idx(-l)] {
@@ -394,6 +408,9 @@ impl<'a> Work<'a> {
                     self.work += img.len() as u64 + 1;
                     canon(&mut img);
                     if !self.clause_set.contains_key(&img) || self.over() {
+                        if debug() && std::env::var_os("SAT_STRUCT_DEBUG_SWAP").is_some() {
+                            eprintln!("structsym:     swap fails: clause {:?} (reduced) maps to {:?}, not in the set", self.reduced(i as usize), img);
+                        }
                         return false;
                     }
                 }
@@ -760,6 +777,11 @@ fn try_candidates(w: &mut Work, mut candidates: Vec<Vec<i32>>, tried: &mut Vec<V
             found.push(m);
             worked.push(neg);
             worked.push(anchors);
+            if !w.extended {
+                // structure: the larger limit, once, for this detection and its fixings
+                w.extended = true;
+                w.budget = w.budget.max(w.more);
+            }
         }
     }
     worked
@@ -1417,23 +1439,31 @@ fn shrink(m: &Matrix, w: &mut Work) -> Option<Matrix> {
     if live_cols.is_empty() {
         return None;
     }
-    let rows: Vec<Vec<i32>> = m
-        .rows
-        .iter()
-        .map(|r| live_cols.iter().map(|&k| r[k]).collect::<Vec<i32>>())
-        .filter(|row| row.iter().any(|&l| unassigned(l, w)))
-        .collect();
-    if rows.len() < 2 {
+    let live_rows: Vec<usize> = (0..m.rows.len()).filter(|&ri| live_cols.iter().any(|&k| unassigned(m.rows[ri][k], w))).collect();
+    if live_rows.len() < 2 {
         return None;
     }
-    for reference in 0..rows.len().min(2) {
-        let mut kept: Vec<Vec<i32>> = vec![rows[reference].clone()];
-        for (ri, row) in rows.iter().enumerate() {
+    // the columns are aligned to row 0: an entry two rows share sits in
+    // the column of row 0's entry it is the image of, so for another
+    // reference the rows are re-aligned as images of the reference under
+    // the exchange composed through row 0 (a literal map, whatever the
+    // assignment; the verification then checks it on the reduced formula)
+    let free = vec![0i8; w.value.len()];
+    for &reference in live_rows.iter().take(2) {
+        let base: Vec<i32> = live_cols.iter().map(|&k| m.rows[reference][k]).collect();
+        let mut kept: Vec<Vec<i32>> = vec![base.clone()];
+        for &ri in &live_rows {
             if ri == reference {
                 continue;
             }
-            if w.verify_swap(&rows[reference], row) {
-                kept.push(row.clone());
+            let row: Vec<i32> = if reference == 0 {
+                live_cols.iter().map(|&k| m.rows[ri][k]).collect()
+            } else {
+                let Some(map) = row_exchange(m, reference, ri, &free) else { continue };
+                base.iter().map(|l| *map.get(l).unwrap_or(l)).collect()
+            };
+            if w.verify_swap(&base, &row) {
+                kept.push(row);
             }
             if w.over() {
                 return None;
@@ -1447,9 +1477,10 @@ fn shrink(m: &Matrix, w: &mut Work) -> Option<Matrix> {
 }
 
 /// `ticks` is the solver's tick counter: the pass's work is added to it as
-/// it happens, and `budget` is the tick count it may reach.
-pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, stop: &std::sync::atomic::AtomicBool) {
-    let mut w = Work::new(f, budget, ticks as *mut u64, stop);
+/// it happens, `budget` is the tick count it may reach, and `more` the
+/// one it may reach once a matrix has been verified.
+pub fn run(f: &Formula, derived: &mut Derived, budget: u64, more: u64, ticks: &mut u64, stop: &std::sync::atomic::AtomicBool) {
+    let mut w = Work::new(f, budget, more, ticks as *mut u64, stop);
     // the units an earlier pass derived come first (they are logged already;
     // what they propagate is logged here), so every symmetry this pass
     // uses is a symmetry of the formula with those units, as the proof
@@ -1497,6 +1528,12 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
         if pool.is_empty() {
             if fixed_at_detection == fixed {
                 break; // nothing was fixed since the last detection: it would find the same
+            }
+            // the extension finishes a detection and its fixings, it does
+            // not start another: the base limit again from here on
+            w.budget = w.base;
+            if w.over() {
+                break;
             }
             fixed_at_detection = fixed;
             detections += 1;
@@ -1547,8 +1584,19 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
         // keep the rows of every matrix that stay symmetric
         let old = std::mem::take(&mut pool);
         for m in old {
-            if let Some(s) = shrink(&m, &mut w) {
-                pool.push(s);
+            let before = (m.rows.len(), m.rows[0].len());
+            match shrink(&m, &mut w) {
+                Some(s) => {
+                    if debug() {
+                        eprintln!("structsym:   matrix {}x{} shrinks to {}x{}", before.0, before.1, s.rows.len(), s.rows[0].len());
+                    }
+                    pool.push(s);
+                }
+                None => {
+                    if debug() {
+                        eprintln!("structsym:   matrix {}x{} dropped", before.0, before.1);
+                    }
+                }
             }
             if w.over() {
                 break;

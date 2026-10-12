@@ -1744,6 +1744,20 @@ source of truth; every bead points back to its section.
   cells, every answer checked. Shipped. Still open on 2025: the three
   clqcl cells (row-and-column breaking), the chess cells (counting step
   two), ramsey (Johnson), one CSP cell.
+- 2026-10-12 (the clqcl cells, bead 1v2.3). The reading above was
+  wrong: they did not need another kind of breaking. A matrix dropped
+  its vertex rows after the first fixing, because rows that share
+  entries were compared column by column against a new reference
+  without re-aligning them. With the re-alignment the pass refutes
+  `clqcl_30_9_8` and `clqcl_30_11_10` alone in 1-2 s; `clqcl_100_6_5`
+  needed budget, given by a one-time second tier (`structmore`, 2G once
+  a matrix is verified). Paired 400-cell run against the shipped
+  binary: **306 v 303 (+4 / −1)**, wall PAR-2 0.977×, tick 0.976×,
+  every answer checked. Shipped. The default configuration now solves
+  all 26 cells that stock leaves unsolved and the census found decided
+  by symmetry breaking (checked against the run). Stock was 282 on
+  this suite; the default configuration is at 303-306 depending on the
+  near-timeout cells of the run.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

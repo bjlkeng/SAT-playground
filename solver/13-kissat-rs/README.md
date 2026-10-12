@@ -168,7 +168,8 @@ exactly the measured one (budget 1M K, no size-relative cap):
 | `--structcsp=1` | one-hot CSP decoding, SAT only | bead S.4, not yet |
 | `--structsymext=1` | general automorphisms through an external tool (measurement only) | bead S.2 step two, not yet |
 | `--structclauses=N` | the pass buffers at most N clauses (default 10M); past that it is off for the run | |
-| `--structticks=N` | work budget of the passes in thousands of literal visits (default 1M, about 10-20 s) | |
+| `--structticks=N` | work budget of the passes in thousands of literal visits (default 1M, 10-100 s depending on the formula) | |
+| `--structmore=N` | the symmetry pass's budget (thousands) once a matrix has been verified: the detection in progress and its fixings run to this limit, once (default 2M); a later detection starts only within `structticks` | since 2026-10-12 |
 
 With every option off nothing runs: the parser's literals go straight to
 the solver as before, the proof path is the stock one and
@@ -356,10 +357,55 @@ median 1.00 and p90 1.31, the tail being the `oski` family's search
 swinging both ways (±6-19 G work); on the 78 cells the old arm solves
 under 10 s the new one costs +10 s in all (p90 +0.1 s), the price of the
 extra candidates (RoundRobin_n16_d13's detection 10M → 23M). The three
-`clqcl` cells are not covered: with row fixing alone the pass fixes 73
-literals on `clqcl_30_11_10` and search does not finish, and a 20×
-budget changes nothing; they need the row-and-column (double-lex)
-breaking Satsuma used, a derivation of its own.
+`clqcl` cells were not covered by this step: the pass fixed 73 literals
+on `clqcl_30_11_10`, search did not finish, and a 20× budget changed
+nothing. The reading written here on 2026-10-11, that they need the
+row-and-column (double-lex) breaking Satsuma used, was wrong; the cause
+was a defect in how a matrix keeps its rows (next paragraph).
+
+**The clqcl cells (2026-10-12;
+`log/abtest-struct-clqcl-400-2026-10-12-09-36-43`,
+`log/struct-clqcl-400-report-2026-10-12.txt`; bead SAT-playground-1v2.3).**
+A clique-colouring formula has a matrix whose rows are the vertices,
+and two vertex rows share an entry, their edge variable. The columns of
+a matrix are aligned to its first row: the shared entry of rows i and j
+sits, in row j, in the column of the first row's entry it is the image
+of. After the first vertex was fixed, that row was no longer symmetric,
+and the rows were re-checked against the second row with the old
+alignment; no consistent swap exists that way, so the whole vertex
+matrix was dropped after one fixing, and only the small position and
+colour matrices went on. Now the other rows are re-aligned as images of
+the new reference under the exchange composed through the first row,
+and verified as before. With the vertex matrix kept, the pass alone
+refutes `clqcl_30_9_8` and `clqcl_30_11_10` (380 and 497 derived
+clauses, 1-2 s). `clqcl_100_6_5` then needed only budget: its 100-row
+candidate costs 1.6G of work to detect, over the 1G limit. A second
+tier, `--structmore` (default 2M K): when a matrix has been verified,
+the detection in progress and its fixings may run to that limit, once;
+a later detection starts only within `structticks`, so a cell with no
+matrix pays nothing more, and the repeated detections of a cell that
+has one (`MVRoundRobin_n16_d10_v3`, 27 s) are not stretched. Paired run
+against the shipped binary (241b2bf), both with the shipped defaults,
+1800 s, every answer through the gate: **306 v 303 (+4 / −1)**, wall
+PAR-2 0.977×, tick PAR-2 0.976×, validation 76 v 75. Gains: the three
+cells (`clqcl_30_9_8` 1.3 s, `clqcl_30_11_10` 2.3 s, `clqcl_100_6_5`
+14.8 s; timeouts before) and one satisfiable cell at 1753 s; the loss
+is `booth_dadda`, UNSAT at 1753 s on the old arm, the cell that has
+gone either way in each of the last three runs. The whole family costs
+less: `clqcl_30_7_6` 7.8 → 0.7 s (W 554M → 92M), `clqcl_50` 880M →
+197M, `clqcl_40` 523M → 129M, `cliquecoloring_n26` 271M → 64M. Every
+other structural gain has the same work as before (MVRoundRobin,
+RoundRobin, rphp, Tseitin, php: identical W). Where both arms solve,
+the wall ratio has median 1.000, p90 1.15, p10 0.93, and the work summed
+over those cells is 0.9993×. With this the default configuration solves
+every one of the 26 cells that stock leaves unsolved and the census
+found decided by symmetry breaking (`benchmarks/rl/structure_2025.tsv`,
+column `sym_decided`: round robin 12, clqcl 6, php 4, clique-coloring
+3, Tseitin 1; checked against this run's results). Two cells end in
+an allocation failure under the 14 GB limit of these runs
+(`pj2002_k500`, `17.normalised`) on every arm, the passes off included
+(`log/abtest-struct-both-400-2026-10-09-06-25-50/stock`); they count as
+unsolved.
 
 **The parity pass, step one (2026-10-08).** An XOR constraint over k
 variables is the 2^(k-1) clauses that forbid one parity (k up to 8, the
@@ -447,8 +493,13 @@ steps deleted (`del id`) so no later witness has to map them. A unit is
 assigned and propagated; a longer clause joins the symmetry checks, so
 the rows it breaks drop out at the next verification. A transported
 form an earlier derived clause subsumes is skipped. Every matrix keeps
-the rows that still swap (verified again); when nothing transports,
-detection runs once more. Measured 2026-10-07 on
+the rows that still swap (verified again): the columns are aligned to
+the matrix's first row, and when that row is no longer symmetric the
+other rows are re-aligned as images of the new reference under the
+exchange composed through the first row (2026-10-12; without this the
+vertex rows of a clique colouring, which share their edge variables,
+were dropped after the first vertex was fixed). When nothing
+transports, detection runs once more. Measured 2026-10-07 on
 the cells the census had marked, every answer through the gate: php 4
 of 4 (0.1-5 s), clique-coloring 4 of 4 (1-7 s), the eight plain
 RoundRobin cells (0.5-1.5 s), homer11 (0.1 s), rphp 3 of 3. Not yet:

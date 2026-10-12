@@ -299,6 +299,91 @@ fn round_robin(n: usize, days: usize, path: &Path) {
     std::fs::write(path, text).unwrap();
 }
 
+/// A k-clique in a free graph on n vertices, c-coloured: positions hold
+/// distinct vertices, clique members are adjacent, adjacent vertices
+/// differ in colour. The vertices are interchangeable rows that share
+/// their edge variables; with c < k the clique cannot be coloured.
+fn clique_colouring(n: usize, k: usize, c: usize, path: &Path) {
+    let mut nv = 0i64;
+    let mut edge = std::collections::HashMap::new();
+    for u in 0..n {
+        for v in u + 1..n {
+            nv += 1;
+            edge.insert((u, v), nv);
+            edge.insert((v, u), nv);
+        }
+    }
+    let y = |v: usize, p: usize| (nv as usize + v * k + p + 1) as i64;
+    let x = |v: usize, q: usize| (nv as usize + n * k + v * c + q + 1) as i64;
+    let mut clauses: Vec<Vec<i64>> = Vec::new();
+    for p in 0..k {
+        clauses.push((0..n).map(|v| y(v, p)).collect());
+        for u in 0..n {
+            for v in u + 1..n {
+                clauses.push(vec![-y(u, p), -y(v, p)]);
+            }
+        }
+    }
+    for v in 0..n {
+        for p in 0..k {
+            for q in p + 1..k {
+                clauses.push(vec![-y(v, p), -y(v, q)]);
+            }
+        }
+    }
+    for p in 0..k {
+        for q in p + 1..k {
+            for u in 0..n {
+                for v in 0..n {
+                    if u != v {
+                        clauses.push(vec![-y(u, p), -y(v, q), edge[&(u, v)]]);
+                    }
+                }
+            }
+        }
+    }
+    for v in 0..n {
+        clauses.push((0..c).map(|q| x(v, q)).collect());
+        for a in 0..c {
+            for b in a + 1..c {
+                clauses.push(vec![-x(v, a), -x(v, b)]);
+            }
+        }
+    }
+    for u in 0..n {
+        for v in u + 1..n {
+            for q in 0..c {
+                clauses.push(vec![-edge[&(u, v)], -x(u, q), -x(v, q)]);
+            }
+        }
+    }
+    let total = nv as usize + n * k + n * c;
+    let mut text = format!("p cnf {} {}\n", total, clauses.len());
+    for cl in &clauses {
+        for l in cl {
+            text.push_str(&format!("{} ", l));
+        }
+        text.push_str("0\n");
+    }
+    std::fs::write(path, text).unwrap();
+}
+
+#[test]
+fn symmetry_pass_refutes_clique_colouring_through_rows_that_share_entries() {
+    let fx = Fixture::new("structure_cliquecolouring");
+    let cnf = fx.path("cc.cnf");
+    clique_colouring(7, 4, 3, &cnf);
+    let proof = fx.path("cc.drat");
+    let stdout = run_options_with_proof(&cnf, &proof, &["--structsym=1"]);
+    assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+    // the vertex rows share their edge variables; after the first vertex is
+    // fixed the others must still be found interchangeable (the rows are
+    // re-aligned to the new reference), and the positions, then the
+    // colours, fix down to the empty clause
+    assert!(stdout.contains("structure pass: symmetry:") && stdout.contains("refuted"), "{}", stdout);
+    assert_eq!(gate(&cnf, &proof), "ok");
+}
+
 #[test]
 fn symmetry_pass_breaks_day_symmetry_with_clauses_not_units() {
     let fx = Fixture::new("structure_roundrobin");

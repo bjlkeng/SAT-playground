@@ -167,10 +167,37 @@ single 2026 holdout): the stock kissat path is `--structsym=0
 uses `run_shipped`. A promoted default is exactly the measured
 configuration; a change to a pass's budget or detection is a new
 candidate and is measured before it ships. A pass may only add clauses to
-the input (units, binaries, the empty clause), never remove or rewrite
-one, so a model of the extended formula is a model of the input and the
-search's DRAT proof is a proof of the extended formula. Every added
-clause is logged in the VeriPB proof before it is added; a derivation
-the proof cannot express is not made. Detection may guess, the
-verification that follows may not: a symmetry is used only after it was
-applied to every affected clause and found in the clause set.
+the input (of any length since the transport fixing of 2026-10-11, the
+empty clause included), never remove or rewrite one, so a model of the
+extended formula is a model of the input and the search's DRAT proof is
+a proof of the extended formula. Every added clause is logged in the
+VeriPB proof before it is added; a derivation the proof cannot express
+is not made. Detection may guess, the verification that follows may
+not: a symmetry is used only after it was applied to every affected
+clause and found in the clause set.
+
+Rules the symmetry pass's later steps added (2026-10-11/12):
+
+- **The clause set is the input plus what this pass derived.** A unit is
+  an assignment; a longer derived clause goes into `Work::extra` and from
+  then on every swap must map it onto the formula too, which is what the
+  proof checker will demand of the witness. A symmetry of the input
+  alone is not enough once a clause has been added.
+- **The steps of a fixing are deleted from the proof** (`del id`) once
+  its clause is derived, so no later witness has to map them. Only the
+  kept clause stays in the core.
+- **A matrix's columns are aligned to its first row.** An entry two rows
+  share sits in the column of the first row's entry it is the image of.
+  Any code that takes another row as the reference re-aligns the rows
+  through `row_exchange` first (`shrink` does); comparing two rows
+  column by column without that is wrong whenever rows share entries.
+- **Budgets are tick counts the pass may reach, not allowances**, capped
+  by the tick limit. `structmore` raises the symmetry pass's limit once,
+  when a matrix is verified, for that detection and its fixings; a new
+  detection starts only within `structticks`. Every loop that can run
+  long charges its work and polls `over()`, which also publishes the
+  work for the signal handler.
+- **A guess is allowed only where a verification follows it** (the
+  pairing of entries refinement cannot tell apart, the rows a second
+  anchor sorts). A guessed matrix that fails is retried once with the
+  refinement before the guesses, never used unverified.
