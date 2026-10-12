@@ -257,6 +257,68 @@ fn parity_pass_refutes_tseitin_with_a_checked_proof() {
     assert!(!stdout.contains("refuted"), "{}", stdout);
 }
 
+/// A round robin with sides: n teams, D days, every pair plays at least
+/// once on some day on one of two sides, a team plays at most one game a
+/// day, and the two sides are told apart by a second binary between the
+/// side-0 literals of two games sharing a team (as MVRoundRobin has). With
+/// D < n - 1 the days cannot hold every pair.
+fn round_robin(n: usize, days: usize, path: &Path) {
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    for i in 0..n {
+        for j in i + 1..n {
+            pairs.push((i, j));
+        }
+    }
+    let var = |p: usize, d: usize, s: usize| (1 + (p * days + d) * 2 + s) as i64;
+    let mut clauses: Vec<Vec<i64>> = Vec::new();
+    for p in 0..pairs.len() {
+        clauses.push((0..days).flat_map(|d| [var(p, d, 0), var(p, d, 1)]).collect());
+    }
+    for d in 0..days {
+        for t in 0..n {
+            let mine: Vec<usize> = (0..pairs.len()).filter(|&p| pairs[p].0 == t || pairs[p].1 == t).collect();
+            for (k, &a) in mine.iter().enumerate() {
+                for &b in &mine[k + 1..] {
+                    for sa in 0..2 {
+                        for sb in 0..2 {
+                            clauses.push(vec![-var(a, d, sa), -var(b, d, sb)]);
+                        }
+                    }
+                    clauses.push(vec![-var(a, d, 0), -var(b, d, 0)]);
+                }
+            }
+        }
+    }
+    let mut text = format!("p cnf {} {}\n", pairs.len() * days * 2, clauses.len());
+    for c in &clauses {
+        for l in c {
+            text.push_str(&format!("{} ", l));
+        }
+        text.push_str("0\n");
+    }
+    std::fs::write(path, text).unwrap();
+}
+
+#[test]
+fn symmetry_pass_breaks_day_symmetry_with_clauses_not_units() {
+    let fx = Fixture::new("structure_roundrobin");
+    let cnf = fx.path("rr.cnf");
+    round_robin(6, 4, &cnf);
+    let proof = fx.path("rr.drat");
+    let stdout = run_options_with_proof(&cnf, &proof, &["--structsym=1"]);
+    assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+    // the days are interchangeable rows, but no clause lies in one column
+    // (a game's clause holds both sides on every day): the fixings are
+    // clauses, "game k plays on a day at most k", and the search finishes
+    assert!(stdout.contains("structure pass: symmetry: 1 matrix") && stdout.contains("3 fixings"), "{}", stdout);
+    assert!(stdout.contains("3 derived clauses (0 units)"), "{}", stdout);
+    assert_eq!(gate(&cnf, &proof), "ok");
+    let pbp = std::fs::read_to_string(fx.path("rr.drat.pbp")).unwrap();
+    assert_eq!(pbp.lines().filter(|l| l.starts_with("del id")).count(), 3, "the steps of each fixing are deleted");
+    let derived = std::fs::read_to_string(fx.path("rr.drat.derived.cnf")).unwrap();
+    assert!(derived.lines().filter(|l| !l.starts_with('p') && !l.starts_with('c')).all(|l| l.split_whitespace().count() >= 3), "{}", derived);
+}
+
 #[test]
 fn counting_pass_refutes_pigeonhole_by_cutting_planes() {
     let fx = Fixture::new("structure_count");

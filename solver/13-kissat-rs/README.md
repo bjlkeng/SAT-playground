@@ -331,6 +331,36 @@ with many rows costs one refinement per row until the budget ends;
 the budget (1000M; the gains now need at most 420M) is the remaining
 knob, to be measured on its own.
 
+**Symmetry step two (2026-10-11;
+`log/abtest-struct-sym2-400-2026-10-11-12-23-05`,
+`log/struct-sym2-400-report-2026-10-11.txt`; bead SAT-playground-1v2.3).**
+The targets were the seven unsolved 2025 cells the census had shown
+symmetry fixing decides: the four `MVRoundRobin` cells and three `clqcl`
+cells. MVRoundRobin needed three things, each general (the method text
+above): a cell of anchor images sorted into rows by a second anchor
+(its side flip puts both sides of a game on another day into one cell);
+pairing by any shared clause and the links to the anchors, with a
+one-to-one guess among entries refinement cannot tell apart and a retry
+with refinement first when a guessed matrix fails; and the transport
+fixing, which derives "game k plays on a day ≤ k" as a clause where no
+clause lies in one column. With those ten clauses the stock search
+refutes `MVRoundRobin_n14_d10_v2` in 0.05 s. Paired run against the
+shipped binary (451cd66), both with the shipped defaults, 1800 s, every
+answer through the gate: **302 v 300 (+4 / −2)**, wall PAR-2 0.981×,
+tick PAR-2 0.969×; the four gains are exactly the four MVRoundRobin
+cells (3, 4, 13 and 30 s; old arm timeouts), the two losses UNSAT cells
+at 1742 s on the old arm (`booth_dadda`, `oddball_29`); no structural
+gain of the runs of record lost; validation 75 v 75 (wall 1.011×, tick
+1.019×, no cell changed). Where both arms solve, the wall ratio has
+median 1.00 and p90 1.31, the tail being the `oski` family's search
+swinging both ways (±6-19 G work); on the 78 cells the old arm solves
+under 10 s the new one costs +10 s in all (p90 +0.1 s), the price of the
+extra candidates (RoundRobin_n16_d13's detection 10M → 23M). The three
+`clqcl` cells are not covered: with row fixing alone the pass fixes 73
+literals on `clqcl_30_11_10` and search does not finish, and a 20×
+budget changes nothing; they need the row-and-column (double-lex)
+breaking Satsuma used, a derivation of its own.
+
 **The parity pass, step one (2026-10-08).** An XOR constraint over k
 variables is the 2^(k-1) clauses that forbid one parity (k up to 8, the
 census detector). When a set of such constraints is closed (its
@@ -391,14 +421,34 @@ differs from their colour under the other anchors' (with four or more
 other anchors, a literal shared by two rows, an edge variable, is allowed
 to agree with one of them). Cells correspond across rows by colour;
 entries inside a cell are paired by a binary clause between the rows
-when that is unique, else by one more refinement per entry of row 0 with
-anchor 0 and the entry individualized. Every row swap is then applied to
-every clause and checked against the clause set, so the refinement only
-guesses and a wrong symmetry cannot get through. Fixing: the longest
-active clause whose literals all lie in one column of one matrix, one
-per row, gets its lowest-row literal fixed; the units propagate; every
-matrix keeps the rows that still swap (verified again); when no matrix
-has a column clause, detection runs once more. Measured 2026-10-07 on
+when that is unique, else by the entries sharing any clause with it,
+told apart by their clauses with the anchors (rows 0 and i exchanged),
+else by one more refinement per entry of row 0 with anchor 0 and the
+entry individualized. Every row swap is then applied to every clause
+(the input's and the clauses this pass derived) and checked against the
+clause set, so the refinement only guesses and a wrong symmetry cannot
+get through. Candidate anchor sets (step two, 2026-10-11): a second
+symmetry can put several literals of one row into the cell of the
+anchor's images (a round robin's side flip puts both sides of the same
+game on another day there); the cell holds (R−1)·v members, v per row,
+and with the anchor and a member individualized that member's v−1
+row-mates lie in cells of at most v−1 while the other rows' members lie
+in cells of a multiple of R−2, so the factorization that fits sorts the
+cell into rows and the candidate takes one member per row. Fixing (step
+two): over every matrix, the active clause whose *transported* form is
+shortest, where transporting carries every entry of the clause onto the
+lowest row it touches (that row's entries in the clause's columns, plus
+the literals outside the matrix); a clause in one column, one entry per
+row, transports to a unit, a game's "plays on some day on some side"
+clause to "plays on day 1" and later "on day 1 or 2", and so on. The
+derivation is the same for both: a `red` step per moved entry with the
+row exchange as witness, `rup` for the transported clause, and the
+steps deleted (`del id`) so no later witness has to map them. A unit is
+assigned and propagated; a longer clause joins the symmetry checks, so
+the rows it breaks drop out at the next verification. A transported
+form an earlier derived clause subsumes is skipped. Every matrix keeps
+the rows that still swap (verified again); when nothing transports,
+detection runs once more. Measured 2026-10-07 on
 the cells the census had marked, every answer through the gate: php 4
 of 4 (0.1-5 s), clique-coloring 4 of 4 (1-7 s), the eight plain
 RoundRobin cells (0.5-1.5 s), homer11 (0.1 s), rphp 3 of 3. Not yet:

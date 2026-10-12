@@ -1735,6 +1735,15 @@ source of truth; every bead points back to its section.
   no-find full-budget cells halve (62 → 31) and the cost on cells stock
   solves under 10 s drops from +416 s to +76 s. Shipped as the default.
   Open: the budget (1000M, gains need ≤ 420M) and dense formulas.
+- 2026-10-11 (S.2 step two, bead 1v2.3). Cells of anchor images sorted
+  into rows by a second anchor; pairing by any shared clause and the
+  anchor links (guess, then retry with refinement); the transport fixing
+  (a clause, not only a unit). The four MVRoundRobin cells solve (3-30
+  s). Paired 400-cell run against the shipped binary: **302 v 300 (+4 /
+  −2)**, wall PAR-2 0.981×, tick 0.969×, the losses two 1742-s UNSAT
+  cells, every answer checked. Shipped. Still open on 2025: the three
+  clqcl cells (row-and-column breaking), the chess cells (counting step
+  two), ramsey (Johnson), one CSP cell.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

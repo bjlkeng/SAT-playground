@@ -115,6 +115,26 @@ impl Writer {
         Ok(self.constraints)
     }
 
+    /// Delete derived constraints the proof no longer needs (the steps of
+    /// a fixing once its clause is derived), so no later witness has to
+    /// map them.
+    pub fn delete(&mut self, ids: &[u64]) -> std::io::Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut line = String::from("del id");
+        for id in ids {
+            line.push(' ');
+            line.push_str(&id.to_string());
+        }
+        if let Err(e) = writeln!(self.out, "{} ;", line) {
+            self.failed = true;
+            return Err(e);
+        }
+        self.steps += 1;
+        Ok(())
+    }
+
     /// Mark a derived constraint as part of F' (it is added to the solver's
     /// formula by the caller).
     pub fn keep(&mut self, id: u64) {

@@ -73,10 +73,16 @@ struct Work<'a> {
     trail: Vec<i32>,
     /// Propagation marks, kept across calls and reset per literal queued.
     queued: Vec<bool>,
+    /// The clauses this pass derived that are not units: a symmetry used
+    /// from then on must map them onto the formula too.
+    extra: Vec<Vec<i32>>,
+    extra_occ: Vec<Vec<u32>>,
 }
 
 const MAX_CLASSES: usize = 6;
 const MAX_ROWS: usize = 256;
+/// A cell of x's class up to this size is sorted by a second anchor.
+const SUBCELL_MAX: usize = 64;
 
 fn debug() -> bool {
     std::env::var_os("SAT_STRUCT_DEBUG").is_some()
@@ -112,6 +118,8 @@ impl<'a> Work<'a> {
             ticks,
             trail: Vec::new(),
             queued: vec![false; nl],
+            extra: Vec::new(),
+            extra_occ: vec![Vec::new(); nl],
         };
         for i in 0..f.len() {
             if f.taut[i] {
@@ -119,6 +127,29 @@ impl<'a> Work<'a> {
             }
         }
         w
+    }
+
+    /// Record a derived clause that is not a unit, for every later
+    /// symmetry check.
+    fn add_extra(&mut self, clause: &[i32]) {
+        let k = self.extra.len() as u32;
+        for &l in clause {
+            self.extra_occ[idx(l)].push(k);
+        }
+        self.extra.push(clause.to_vec());
+    }
+
+    /// The active literals of derived clause k, or None when it is satisfied.
+    fn reduced_extra(&self, k: usize) -> Option<Vec<i32>> {
+        let mut out: Vec<i32> = Vec::with_capacity(self.extra[k].len());
+        for &l in &self.extra[k] {
+            match self.lit_value(l) {
+                0 => out.push(l),
+                v if v > 0 => return None,
+                _ => {}
+            }
+        }
+        Some(out)
     }
 
     fn over(&mut self) -> bool {
@@ -159,6 +190,14 @@ impl<'a> Work<'a> {
             self.work += c.len() as u64 + 1;
             canon(&mut c);
             self.clause_set.insert(c, i as u32);
+        }
+        let m = self.f.len() as u32;
+        for k in 0..self.extra.len() {
+            if let Some(mut c) = self.reduced_extra(k) {
+                self.work += c.len() as u64 + 1;
+                canon(&mut c);
+                self.clause_set.insert(c, m + k as u32);
+            }
         }
         !self.over()
     }
@@ -358,6 +397,21 @@ impl<'a> Work<'a> {
                         return false;
                     }
                 }
+                for oi in 0..self.extra_occ[li].len() {
+                    let k = self.extra_occ[li][oi] as usize;
+                    let key = self.f.len() as u32 + k as u32;
+                    if seen_clause.contains_key(&key) {
+                        continue;
+                    }
+                    seen_clause.insert(key, ());
+                    let Some(c) = self.reduced_extra(k) else { continue };
+                    let mut img: Vec<i32> = c.iter().map(|x| *map.get(x).unwrap_or(x)).collect();
+                    self.work += img.len() as u64 + 1;
+                    canon(&mut img);
+                    if !self.clause_set.contains_key(&img) || self.over() {
+                        return false;
+                    }
+                }
             }
         }
         true
@@ -474,6 +528,42 @@ fn canon(c: &mut Vec<i32>) {
     c.sort_unstable_by_key(|&l| (l.abs(), l < 0));
 }
 
+/// The members per row, v, of a cell of (R-1)v members under the second
+/// anchor y (index `yi`), from the cell sizes within the rest: v-1
+/// members in cells of at most v-1, the other (R-2)v in cells of a
+/// multiple of R-2, with R >= 4 and v >= 2; the fit with the most rows,
+/// or None when no factorization fits.
+fn row_mates_per_row(sizes: &[usize], yi: usize) -> Option<usize> {
+    let n = sizes.len(); // (R-1)v members, y among them
+    let mut best: Option<(usize, usize)> = None; // (R, v)
+    for v in 2..=n / 2 {
+        if n % v != 0 {
+            continue;
+        }
+        let rows = n / v + 1; // R
+        if rows < 4 {
+            continue;
+        }
+        let mut mates = 0usize;
+        let mut ok = true;
+        for (zi, &sz) in sizes.iter().enumerate() {
+            if zi == yi {
+                continue;
+            }
+            if sz <= v - 1 {
+                mates += 1;
+            } else if sz % (rows - 2) != 0 {
+                ok = false;
+                break;
+            }
+        }
+        if ok && mates == v - 1 && best.map_or(true, |(r, _)| rows > r) {
+            best = Some((rows, v));
+        }
+    }
+    best.map(|(_, v)| v)
+}
+
 /// A stable colouring of the reduced formula: a label per literal and per
 /// clause (one label space; literals start at 0, clauses at 1), the number
 /// of active members of every label, and the next fresh label. Labels
@@ -565,11 +655,18 @@ fn find_matrices(w: &mut Work) -> Vec<Matrix> {
     };
     if debug() {
         eprintln!("structsym: {} literal classes, sizes {:?}", classes.len(), classes.iter().take(12).map(|(_, v)| v.len()).collect::<Vec<_>>());
+        for (_, v) in classes.iter().take(6) {
+            eprintln!("structsym:   class of {}: first members {:?}", v.len(), v.iter().take(8).collect::<Vec<_>>());
+        }
     }
     // candidate anchor sets from every class, smallest first; the negation
     // of a class is a class, and its candidate sets are the negations of
-    // this one's (deduplicated below), so one of the two is enough
+    // this one's (deduplicated below), so one of the two is enough. The
+    // plain candidates (x and one cell) go first; the cells are kept, and
+    // the cells whose plain candidate gave no matrix are then sorted into
+    // rows by a second anchor (below), which costs a refinement per row
     let mut candidates: Vec<Vec<i32>> = Vec::new();
+    let mut kept: Vec<(i32, Vec<i32>, Vec<i32>)> = Vec::new(); // (x, class, cell)
     let mut done: HashSet<u32> = HashSet::new();
     for (c, class) in classes.iter().take(MAX_CLASSES) {
         if w.over() {
@@ -602,15 +699,49 @@ fn find_matrices(w: &mut Work) -> Vec<Matrix> {
             anchors.extend(rest.iter().copied());
             anchors.sort_unstable_by_key(|l| (l.abs(), *l < 0));
             candidates.push(anchors);
+            if rest.len() >= 2 && rest.len() <= SUBCELL_MAX {
+                kept.push((x, class.clone(), rest));
+            }
         }
     }
-    candidates.sort_by_key(|c| c.len());
     let mut tried: Vec<Vec<i32>> = Vec::new();
+    let worked = try_candidates(w, candidates, &mut tried, &base_col, &base_size, &mut found);
+    if !w.over() {
+        let mut candidates: Vec<Vec<i32>> = Vec::new();
+        for (x, class, rest) in kept {
+            if w.over() {
+                break;
+            }
+            // the cell's plain candidate, as tried: a matrix from it needs
+            // no sorting
+            let mut plain = vec![x];
+            plain.extend(rest.iter().copied());
+            plain.sort_unstable_by_key(|l| (l.abs(), *l < 0));
+            if worked.contains(&plain) {
+                continue;
+            }
+            for members in sort_cell_into_rows(w, &base_col, x, &class, &rest) {
+                let mut anchors = vec![x];
+                anchors.extend(members.iter().copied());
+                anchors.sort_unstable_by_key(|l| (l.abs(), *l < 0));
+                candidates.push(anchors);
+            }
+        }
+        let _ = try_candidates(w, candidates, &mut tried, &base_col, &base_size, &mut found);
+    }
+    found
+}
+
+/// Try candidate anchor sets, smallest first, each once (a set and its
+/// negation are the same matrix). Returns the sets that gave a matrix
+/// (a set tried earlier counts when it did).
+fn try_candidates(w: &mut Work, mut candidates: Vec<Vec<i32>>, tried: &mut Vec<Vec<i32>>, base_col: &Colouring, base_size: &[usize], found: &mut Vec<Matrix>) -> Vec<Vec<i32>> {
+    candidates.sort_by_key(|c| c.len());
+    let mut worked: Vec<Vec<i32>> = Vec::new();
     for anchors in candidates {
         if w.over() {
             break;
         }
-        // the same anchor set by negation is the same matrix
         let neg: Vec<i32> = {
             let mut n: Vec<i32> = anchors.iter().map(|l| -l).collect();
             n.sort_unstable_by_key(|l| (l.abs(), *l < 0));
@@ -620,11 +751,83 @@ fn find_matrices(w: &mut Work) -> Vec<Matrix> {
             continue;
         }
         tried.push(anchors.clone());
-        if let Some(m) = rows_from_anchors(w, &anchors, &base_col, &base_size) {
+        let (mut matrix, guessed) = rows_from_anchors(w, &anchors, base_col, base_size, false);
+        if matrix.is_none() && guessed && !w.over() {
+            // a guessed pairing failed: once more, refinement before guesses
+            matrix = rows_from_anchors(w, &anchors, base_col, base_size, true).0;
+        }
+        if let Some(m) = matrix {
             found.push(m);
+            worked.push(neg);
+            worked.push(anchors);
         }
     }
-    found
+    worked
+}
+
+/// Sort a cell of x's images into rows by a second anchor; the groups of
+/// members, one anchor per row to be chosen from each, or nothing when
+/// the cell stays one group.
+fn sort_cell_into_rows(w: &mut Work, base_col: &Colouring, x: i32, class: &[i32], rest: &[i32]) -> Vec<Vec<i32>> {
+    // a second symmetry can put several literals of one row into the cell
+    // of x's images (a round robin's home/away flip puts both sides of the
+    // same game on another day there), and then one anchor per row is one
+    // per group of row-mates. The cell holds (R-1)v members, v per row.
+    // With x and a member y individualized, y's v-1 row-mates lie in cells
+    // of at most v-1 members (nothing moves them to another row), while
+    // the other R-2 rows' members lie in cells of a multiple of R-2 (those
+    // rows still exchange); the factorization that fits gives y's row.
+    // Rows are taken in turn: the first member not yet placed is refined
+    // with x, its row is read off, and the next unplaced member follows,
+    // so a cell of R-1 rows costs R-1 refinements. Members whose
+    // refinement gives x's class another shape are sorted apart as well.
+    let mut row_of: Vec<Option<usize>> = vec![None; rest.len()];
+    let mut groups: Vec<(Vec<usize>, Vec<i32>)> = Vec::new(); // (shape, representatives)
+    let mut rows = 0usize;
+    for yi in 0..rest.len() {
+        if row_of[yi].is_some() {
+            continue;
+        }
+        let y = rest[yi];
+        let gamma = w.refine_from(base_col, &[x, y]);
+        if w.over() {
+            return Vec::new();
+        }
+        let mut count: HashMap<u32, usize> = HashMap::new();
+        for &l in class.iter() {
+            *count.entry(gamma[idx(l)]).or_default() += 1;
+        }
+        // the size of each member's cell within the rest
+        let mut within: HashMap<u32, usize> = HashMap::new();
+        for (zi, &z) in rest.iter().enumerate() {
+            if zi != yi {
+                *within.entry(gamma[idx(z)]).or_default() += 1;
+            }
+        }
+        let sizes: Vec<usize> = rest.iter().map(|&z| within.get(&gamma[idx(z)]).copied().unwrap_or(0)).collect();
+        row_of[yi] = Some(rows);
+        if let Some(v) = row_mates_per_row(&sizes, yi) {
+            for (zi, &sz) in sizes.iter().enumerate() {
+                if zi != yi && sz <= v - 1 && row_of[zi].is_none() {
+                    row_of[zi] = Some(rows);
+                }
+            }
+        }
+        rows += 1;
+        let mut shape: Vec<usize> = count.into_values().collect();
+        shape.sort_unstable();
+        match groups.iter_mut().find(|(g, _)| *g == shape) {
+            Some((_, members)) => members.push(y),
+            None => groups.push((shape, vec![y])),
+        }
+    }
+    if rows == rest.len() && groups.len() == 1 {
+        return Vec::new(); // every member its own row: the plain candidate again
+    }
+    if debug() {
+        eprintln!("structsym:   the cell of {} sorts into {} rows, groups {:?}, under a second anchor", rest.len(), rows, groups.iter().map(|(_, m)| m.len()).collect::<Vec<_>>());
+    }
+    groups.into_iter().map(|(_, m)| m).collect()
 }
 
 /// Build the rows anchored at `anchors` (one literal per row), pair the
@@ -634,7 +837,8 @@ fn find_matrices(w: &mut Work) -> Vec<Matrix> {
 /// anchors (a literal outside rows i, j, k keeps its colour across the
 /// three, a literal in row i does not); with two anchors the old
 /// equal-parts rule splits their union.
-fn rows_from_anchors(w: &mut Work, anchors: &[i32], base_col: &Colouring, base_size: &[usize]) -> Option<Matrix> {
+fn rows_from_anchors(w: &mut Work, anchors: &[i32], base_col: &Colouring, base_size: &[usize], careful: bool) -> (Option<Matrix>, bool) {
+    let mut guessed = false;
     let base = &base_col.cl;
     let nl = 2 * w.value.len();
     let r = anchors.len();
@@ -658,7 +862,7 @@ fn rows_from_anchors(w: &mut Work, anchors: &[i32], base_col: &Colouring, base_s
     for &a in &anchors[..first] {
         alphas.push(w.refine_from(base_col, &[a]));
         if w.over() {
-            return None;
+            return (None, guessed);
         }
     }
     // row i as cells keyed by the colour under its own individualization
@@ -667,7 +871,7 @@ fn rows_from_anchors(w: &mut Work, anchors: &[i32], base_col: &Colouring, base_s
             for &a in &anchors[first..] {
                 alphas.push(w.refine_from(base_col, &[a]));
                 if w.over() {
-                    return None;
+                    return (None, guessed);
                 }
             }
         }
@@ -682,7 +886,7 @@ fn rows_from_anchors(w: &mut Work, anchors: &[i32], base_col: &Colouring, base_s
             if li % 4096 == 0 {
                 w.work += 4096;
                 if w.over() {
-                    return None;
+                    return (None, guessed);
                 }
             }
             let l = lit_of(li);
@@ -715,13 +919,13 @@ fn rows_from_anchors(w: &mut Work, anchors: &[i32], base_col: &Colouring, base_s
                 eprintln!("structsym:   {} anchors, row 0 cells {:?}", r, shape.iter().map(|s| s.1).collect::<Vec<_>>());
             }
             if shape.is_empty() {
-                return None;
+                return (None, guessed);
             }
         } else if s != shape {
             if debug() {
                 eprintln!("structsym:   row {} has another shape {:?}", i, s.iter().map(|s| s.1).collect::<Vec<_>>());
             }
-            return None;
+            return (None, guessed);
         }
         rows.push(row);
     }
@@ -744,14 +948,41 @@ fn rows_from_anchors(w: &mut Work, anchors: &[i32], base_col: &Colouring, base_s
         let first: Vec<i32> = rows[0][ci].1.clone();
         matrix[0].extend(first.iter().copied());
         let mut paired: Vec<Vec<i32>> = vec![Vec::with_capacity(size); r];
+        // refinements that singled out none of the link matches: after a
+        // few in one cell the ambiguity is a symmetry of its own, and the
+        // refinement is not tried again there
+        let mut futile = 0usize;
+        let (cell_work, mut refinements) = (w.work, 0usize);
         for &u in &first {
-            // binary-clause pairing in every row
+            // binary-clause pairing in every row; else the entries sharing
+            // any clause with u, told apart by their links to the anchors;
+            // several left over go to the refinement below, and only when
+            // that singles out none is the smallest not yet paired taken
             let mut partners: Vec<Option<i32>> = (1..r).map(|ri| pair_by_binary(w, u, &rows[ri][ci].1)).collect();
-            if partners.iter().any(|p| p.is_none()) {
-                let gamma = w.refine_from(base_col, &[anchors[0], u]);
-                if w.over() {
-                    return None;
+            let mut leftover: Vec<Vec<i32>> = vec![Vec::new(); r];
+            for ri in 1..r {
+                if partners[ri - 1].is_none() && !rows[ri][ci].1.contains(&u) {
+                    match pair_by_clause_and_links(w, u, &rows[ri][ci].1, anchors, ri) {
+                        Linked::One(v) => partners[ri - 1] = Some(v),
+                        Linked::Several(vs) => leftover[ri] = vs,
+                        Linked::None => {}
+                    }
                 }
+                if w.over() {
+                    return (None, guessed);
+                }
+            }
+            if partners.iter().any(|p| p.is_none()) {
+                // the guess first unless `careful` (a retry after a guessed
+                // matrix failed): then the refinement, until it has been
+                // futile a few times in this cell
+                let only_leftovers = (1..r).all(|ri| partners[ri - 1].is_some() || !leftover[ri].is_empty() || rows[ri][ci].1.contains(&u));
+                let refine = !(only_leftovers && (!careful || futile >= 3));
+                let gamma = if refine { refinements += 1; w.refine_from(base_col, &[anchors[0], u]) } else { Vec::new() };
+                if w.over() {
+                    return (None, guessed);
+                }
+                let mut singled = false;
                 for ri in 1..r {
                     if partners[ri - 1].is_some() {
                         continue;
@@ -761,23 +992,37 @@ fn rows_from_anchors(w: &mut Work, anchors: &[i32], base_col: &Colouring, base_s
                         partners[ri - 1] = Some(u);
                         continue;
                     }
-                    let mut before: HashMap<u32, usize> = HashMap::new();
-                    let mut now: HashMap<u32, usize> = HashMap::new();
-                    for &v in cell {
-                        *before.entry(beta[idx(v)]).or_default() += 1;
-                        *now.entry(gamma[idx(v)]).or_default() += 1;
-                    }
                     let mut single: Option<i32> = None;
-                    for &v in cell {
-                        if now[&gamma[idx(v)]] == 1 && before[&beta[idx(v)]] > 1 {
-                            if single.is_some() {
-                                single = None;
-                                break;
-                            }
-                            single = Some(v);
+                    if refine {
+                        let mut before: HashMap<u32, usize> = HashMap::new();
+                        let mut now: HashMap<u32, usize> = HashMap::new();
+                        for &v in cell {
+                            *before.entry(beta[idx(v)]).or_default() += 1;
+                            *now.entry(gamma[idx(v)]).or_default() += 1;
                         }
+                        for &v in cell {
+                            if now[&gamma[idx(v)]] == 1 && before[&beta[idx(v)]] > 1 {
+                                if single.is_some() {
+                                    single = None;
+                                    break;
+                                }
+                                single = Some(v);
+                            }
+                        }
+                        singled |= single.is_some();
+                    }
+                    if single.is_none() && !leftover[ri].is_empty() {
+                        guessed = true;
+                        // entries refinement and links cannot tell apart are
+                        // usually exchanged by a symmetry of their own, so
+                        // any one-to-one choice pairs them, and the swap
+                        // verification rejects the matrix when it does not
+                        single = leftover[ri].iter().copied().filter(|v| !paired[ri].contains(v)).min_by_key(|&v| (v.abs(), v < 0));
                     }
                     partners[ri - 1] = single;
+                }
+                if refine && !singled && only_leftovers {
+                    futile += 1;
                 }
             }
             for ri in 1..r {
@@ -785,18 +1030,21 @@ fn rows_from_anchors(w: &mut Work, anchors: &[i32], base_col: &Colouring, base_s
                     Some(v) if !paired[ri].contains(&v) => paired[ri].push(v),
                     other => {
                         if debug() {
-                            eprintln!("structsym:   pairing failed for {} in row {} ({:?})", u, ri, other);
+                            eprintln!("structsym:   pairing failed for {} in row {} ({:?}); anchors {:?}; the cell {:?}; row 0's {:?}", u, ri, other, &anchors[..anchors.len().min(10)], &rows[ri][ci].1[..rows[ri][ci].1.len().min(8)], &first[..first.len().min(8)]);
                         }
-                        return None;
+                        return (None, guessed);
                     }
                 }
             }
             if w.over() {
-                return None;
+                return (None, guessed);
             }
         }
         for ri in 1..r {
             matrix[ri].extend(paired[ri].iter().copied());
+        }
+        if debug() {
+            eprintln!("structsym:   cell {} of {} entries paired: {} refinements, {} futile, {}K work", ci, size, refinements, futile, (w.work - cell_work) / 1000);
         }
     }
     // verify every swap with row 0 (these generate all row permutations)
@@ -806,13 +1054,13 @@ fn rows_from_anchors(w: &mut Work, anchors: &[i32], base_col: &Colouring, base_s
             if debug() {
                 eprintln!("structsym:   swap 0 <-> {} is not a symmetry", ri);
             }
-            return None;
+            return (None, guessed);
         }
     }
     if debug() {
         eprintln!("structsym:   matrix {} x {} verified", r, matrix[0].len());
     }
-    Some(Matrix { rows: matrix })
+    (Some(Matrix { rows: matrix }), guessed)
 }
 
 /// The entry of `cell` (in another row) sharing a binary clause with
@@ -847,7 +1095,113 @@ fn pair_by_binary(w: &mut Work, u: i32, cell: &[i32]) -> Option<i32> {
     }
 }
 
-/// Positions of the matrix entries: literal index -> (row, column).
+/// The clauses a literal shares with the anchors, as a sorted list of
+/// (length, the literal's polarity, the anchors in the clause as (row,
+/// polarity)) with rows `a` and `b` exchanged: what the swap of rows a
+/// and b must map a's entry's links onto.
+fn anchor_links(w: &mut Work, u: i32, anchors: &[i32], a: usize, b: usize) -> Vec<(usize, bool, Vec<(usize, bool)>)> {
+    // an anchor's row, and whether the anchor is the positive literal: a
+    // clause's polarity is recorded relative to the anchor's own sign,
+    // since the exchange carries the anchor onto the other row's anchor
+    // whatever their signs
+    let mut row_of: HashMap<i32, (usize, bool)> = HashMap::new();
+    for (k, &x) in anchors.iter().enumerate() {
+        let k = if k == a { b } else if k == b { a } else { k };
+        row_of.insert(x.abs(), (k, x > 0));
+    }
+    let mut out: Vec<(usize, bool, Vec<(usize, bool)>)> = Vec::new();
+    for li in [idx(u), idx(-u)] {
+        for &i in &w.occ[li] {
+            if w.satisfied[i as usize] {
+                continue;
+            }
+            let c = w.f.clause(i as usize);
+            w.work += c.len() as u64;
+            let mut hits: Vec<(usize, bool)> = Vec::new();
+            let mut len = 0;
+            for &l in c {
+                if w.lit_value(l) != 0 {
+                    continue;
+                }
+                len += 1;
+                if let Some(&(k, positive)) = row_of.get(&l.abs()) {
+                    hits.push((k, (l > 0) == positive));
+                }
+            }
+            if !hits.is_empty() {
+                hits.sort_unstable();
+                out.push((len, li == idx(u), hits));
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+enum Linked {
+    One(i32),
+    Several(Vec<i32>),
+    None,
+}
+
+/// The entries of `cell` (row `ri`) that share a clause of any length with
+/// `u` at the same polarity (a game's "plays once" clause spans the days),
+/// and among several the ones whose links to the anchors are what the
+/// swap of rows 0 and ri carries `u`'s links onto: one, or several for
+/// the caller to tell apart.
+fn pair_by_clause_and_links(w: &mut Work, u: i32, cell: &[i32], anchors: &[i32], ri: usize) -> Linked {
+    let mut in_cell: HashSet<i32> = cell.iter().copied().collect();
+    let mut hits: Vec<i32> = Vec::new();
+    for li in [idx(u), idx(-u)] {
+        let sign = if li == idx(u) { 1 } else { -1 };
+        for &i in &w.occ[li] {
+            if w.satisfied[i as usize] {
+                continue;
+            }
+            let c = w.f.clause(i as usize);
+            w.work += c.len() as u64;
+            for &l in c {
+                let v = l * sign;
+                if w.lit_value(l) == 0 && l.abs() != u.abs() && in_cell.remove(&v) {
+                    hits.push(v);
+                }
+            }
+        }
+        if w.over() {
+            return Linked::None;
+        }
+    }
+    match hits.len() {
+        0 => Linked::None,
+        1 => Linked::One(hits[0]),
+        _ => {
+            let want = anchor_links(w, u, anchors, 0, 0);
+            let mut matching: Vec<i32> = Vec::new();
+            if want.is_empty() {
+                matching = hits;
+            } else {
+                for &v in &hits {
+                    if anchor_links(w, v, anchors, 0, ri) == want {
+                        matching.push(v);
+                    }
+                    if w.over() {
+                        return Linked::None;
+                    }
+                }
+            }
+            match matching.len() {
+                0 => Linked::None,
+                1 => Linked::One(matching[0]),
+                _ => Linked::Several(matching),
+            }
+        }
+    }
+}
+
+/// Positions of the matrix entries: literal index -> (row, column); an
+/// entry shared by two rows has no single position, (SHARED, SHARED).
+const SHARED: u32 = u32::MAX - 1;
+
 fn positions(m: &Matrix, nl: usize) -> Vec<(u32, u32)> {
     let mut pos: Vec<(u32, u32)> = vec![(u32::MAX, u32::MAX); nl];
     let mut count: Vec<u8> = vec![0; nl];
@@ -857,19 +1211,65 @@ fn positions(m: &Matrix, nl: usize) -> Vec<(u32, u32)> {
             count[idx(l)] = count[idx(l)].saturating_add(1);
         }
     }
-    // an entry shared by two rows has no single position
     for li in 0..nl {
         if count[li] > 1 {
-            pos[li] = (u32::MAX, u32::MAX);
+            pos[li] = (SHARED, SHARED);
         }
     }
     pos
 }
 
-/// The longest active clause whose literals all lie in one column of the
-/// matrix, one per row: (clause index, its active literals).
-fn best_column_clause(w: &mut Work, pos: &[(u32, u32)]) -> Option<(usize, Vec<i32>)> {
-    let mut best: Option<(usize, Vec<i32>)> = None;
+/// What a clause becomes when the matrix's row swaps carry every entry
+/// of it onto the lowest row it touches: that row's entries in the
+/// columns the clause uses, plus the literals outside the matrix. None
+/// when the clause has an entry shared by two rows (no single swap
+/// carries it), touches no row but one, or does not get shorter. A
+/// clause in one column, one entry per row, becomes a unit.
+fn transported(m: &Matrix, pos: &[(u32, u32)], c: &[i32]) -> Option<Vec<i32>> {
+    let mut target = u32::MAX;
+    for &l in c {
+        let (r, _) = pos[idx(l)];
+        if r == SHARED {
+            return None;
+        }
+        if r != u32::MAX && r < target {
+            target = r;
+        }
+    }
+    if target == u32::MAX {
+        return None;
+    }
+    let mut out: Vec<i32> = Vec::with_capacity(c.len());
+    let mut rows = 0usize;
+    let mut moved = false;
+    for &l in c {
+        let (r, k) = pos[idx(l)];
+        if r == u32::MAX {
+            out.push(l);
+        } else {
+            if r != target {
+                moved = true;
+            }
+            rows += 1;
+            out.push(m.rows[target as usize][k as usize]);
+        }
+    }
+    if rows < 2 || !moved {
+        return None;
+    }
+    out.sort_unstable_by_key(|l| (l.abs(), *l < 0));
+    out.dedup();
+    if out.len() >= c.len() || out.windows(2).any(|p| p[0] == -p[1]) {
+        return None; // not shorter, or both signs of a variable (always true)
+    }
+    Some(out)
+}
+
+/// The clause to fix through the matrix: the one whose transported form
+/// is shortest (a unit before a binary), the longest clause among those.
+/// Returns (clause index, its active literals, the transported form).
+fn best_transport_clause(w: &mut Work, m: &Matrix, pos: &[(u32, u32)]) -> Option<(usize, Vec<i32>, Vec<i32>)> {
+    let mut best: Option<(usize, Vec<i32>, Vec<i32>)> = None;
     for i in 0..w.f.len() {
         if i % 1024 == 0 && w.over() {
             break;
@@ -882,22 +1282,23 @@ fn best_column_clause(w: &mut Work, pos: &[(u32, u32)]) -> Option<(usize, Vec<i3
         if c.len() < 2 {
             continue;
         }
-        let col = pos[idx(c[0])].1;
-        if col == u32::MAX {
-            continue;
+        if c.len() >= 4096 && w.over() {
+            break;
         }
-        let mut rows_seen: Vec<u32> = Vec::with_capacity(c.len());
-        let mut ok = true;
-        for &l in &c {
-            let (r, k) = pos[idx(l)];
-            if k != col || rows_seen.contains(&r) {
-                ok = false;
-                break;
+        if let Some(t) = transported(m, pos, &c) {
+            w.work += t.len() as u64;
+            // a form an earlier derived clause subsumes adds nothing
+            // (t is sorted, so each check is a merge)
+            if w.extra.iter().any(|e| e.iter().all(|l| t.binary_search_by_key(&(l.abs(), *l < 0), |x| (x.abs(), *x < 0)).is_ok())) {
+                continue;
             }
-            rows_seen.push(r);
-        }
-        if ok && best.as_ref().map_or(true, |(_, b)| c.len() > b.len()) {
-            best = Some((i, c));
+            let better = match &best {
+                None => true,
+                Some((_, bc, bt)) => (t.len(), std::cmp::Reverse(c.len())) < (bt.len(), std::cmp::Reverse(bc.len())),
+            };
+            if better {
+                best = Some((i, c, t));
+            }
         }
         if w.over() {
             break;
@@ -927,35 +1328,65 @@ fn row_exchange(m: &Matrix, a: usize, b: usize, value: &[i8]) -> Option<HashMap<
     Some(out)
 }
 
-/// Fix the lowest-row literal of a column clause through the matrix:
-/// redundance steps for the other literals, the unit by propagation.
-/// Returns false on a conflict, or when a witness could not be built.
-fn fix_clause(w: &mut Work, m: &Matrix, pos: &[(u32, u32)], clause: &[i32], derived: &mut Derived) -> bool {
-    let mut lits = clause.to_vec();
-    lits.sort_by_key(|&l| pos[idx(l)].0);
-    let target = lits[0];
-    let trow = pos[idx(target)].0 as usize;
-    for &l in &lits[1..] {
-        let lrow = pos[idx(l)].0 as usize;
-        let Some(map) = row_exchange(m, trow, lrow, &w.value) else { return false };
-        if *map.get(&l).unwrap_or(&l) != target {
-            return false; // the exchange does not carry l to the target
+/// Derive the transported form `t` of `clause` through the matrix: for
+/// every entry of the clause in another row, a redundance step with the
+/// row exchange as witness gives (t or not the entry); the clause then
+/// gives t by propagation, and the steps are deleted. A unit is assigned
+/// and propagated; a longer clause joins the symmetry checks. Returns
+/// false on a conflict, or when a witness could not be built.
+fn fix_transport(w: &mut Work, m: &Matrix, pos: &[(u32, u32)], clause: &[i32], t: &[i32], derived: &mut Derived) -> bool {
+    let trow = clause.iter().map(|&l| pos[idx(l)].0).filter(|&r| r != u32::MAX).min().unwrap_or(u32::MAX) as usize;
+    let mut steps: Vec<u64> = Vec::new();
+    // the exchange with the target row, built once per source row
+    let mut exchanges: HashMap<u32, (HashMap<i32, i32>, Vec<(i32, i32)>)> = HashMap::new();
+    for &l in clause {
+        let lrow = pos[idx(l)].0;
+        if lrow == u32::MAX || lrow as usize == trow {
+            continue;
         }
-        let mut witness: Vec<(i32, i32)> = Vec::with_capacity(map.len());
-        for (&from, &to) in &map {
-            if from > 0 {
-                // the map holds both polarities; one entry per variable
-                witness.push((from, to));
+        if !exchanges.contains_key(&lrow) {
+            let Some(map) = row_exchange(m, trow, lrow as usize, &w.value) else { return false };
+            let mut witness: Vec<(i32, i32)> = Vec::with_capacity(map.len());
+            for (&from, &to) in &map {
+                if from > 0 {
+                    // the map holds both polarities; one entry per variable
+                    witness.push((from, to));
+                }
+            }
+            witness.sort_unstable();
+            w.work += 2 * map.len() as u64 + 1;
+            exchanges.insert(lrow, (map, witness));
+        }
+        let (map, witness) = &exchanges[&lrow];
+        let carried = *map.get(&l).unwrap_or(&l);
+        if !t.contains(&carried) {
+            return false; // the exchange does not carry l into t
+        }
+        if t.contains(&-l) {
+            continue; // (t or not l) would be a tautology
+        }
+        let mut step: Vec<i32> = t.to_vec();
+        step.push(-l);
+        w.work += step.len() as u64 + witness.len() as u64;
+        if let Some(pw) = derived.proof.as_mut() {
+            if let Ok(id) = pw.red(&step, witness) {
+                steps.push(id);
             }
         }
-        witness.sort_unstable();
-        if let Some(pw) = derived.proof.as_mut() {
-            let _ = pw.red(&[target, -l], &witness);
+        if w.over() {
+            return false;
         }
     }
-    let id = derived.proof.as_mut().map(|pw| pw.rup(&[target]).unwrap_or(0)).unwrap_or(0);
-    derived.add(&[target], id);
-    w.assign_and_propagate(target, derived)
+    let id = derived.proof.as_mut().map(|pw| pw.rup(t).unwrap_or(0)).unwrap_or(0);
+    if let Some(pw) = derived.proof.as_mut() {
+        let _ = pw.delete(&steps);
+    }
+    derived.add(t, id);
+    if t.len() == 1 {
+        return w.assign_and_propagate(t[0], derived);
+    }
+    w.add_extra(t);
+    true
 }
 
 /// Matrices with the same variables in their first row are the same symmetry.
@@ -1079,29 +1510,33 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
                 break;
             }
         }
-        // the longest column clause over every matrix
-        let mut choice: Option<(usize, Vec<i32>)> = None;
+        // over every matrix, the clause whose transported form is shortest
+        let mut choice: Option<(usize, Vec<i32>, Vec<i32>)> = None;
         for (mi, m) in pool.iter().enumerate() {
             let pos = positions(m, nl);
-            if let Some((_, c)) = best_column_clause(&mut w, &pos) {
-                if choice.as_ref().map_or(true, |(_, b)| c.len() > b.len()) {
-                    choice = Some((mi, c));
+            if let Some((_, c, t)) = best_transport_clause(&mut w, m, &pos) {
+                let better = match &choice {
+                    None => true,
+                    Some((_, bc, bt)) => (t.len(), std::cmp::Reverse(c.len())) < (bt.len(), std::cmp::Reverse(bc.len())),
+                };
+                if better {
+                    choice = Some((mi, c, t));
                 }
             }
             if w.over() {
                 break;
             }
         }
-        let Some((mi, clause)) = choice else {
+        let Some((mi, clause, t)) = choice else {
             pool.clear();
             continue; // nothing to fix through these matrices: detect again, once
         };
         let pos = positions(&pool[mi], nl);
         let before = w.work;
-        let ok = fix_clause(&mut w, &pool[mi], &pos, &clause, derived);
+        let ok = fix_transport(&mut w, &pool[mi], &pos, &clause, &t, derived);
         fixed += 1;
         if debug() {
-            eprintln!("structsym: fix {} through matrix {} ({} rows) with a {}-literal clause, {}K work, trail {}", fixed, mi, pool[mi].rows.len(), clause.len(), (w.work - before) / 1000, w.trail.len());
+            eprintln!("structsym: fix {} through matrix {} ({} rows): a {}-literal clause becomes {:?}, {}K work, trail {}", fixed, mi, pool[mi].rows.len(), clause.len(), t, (w.work - before) / 1000, w.trail.len());
         }
         if !ok {
             break;
@@ -1123,7 +1558,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
     *ticks = w.work;
     if fixed > 0 || matrices > 0 {
         derived.notes.push(format!(
-            "symmetry: {} matri{} with interchangeable rows, {} literal{} fixed, {} propagated{}",
+            "symmetry: {} matri{} with interchangeable rows, {} fixing{}, {} propagated{}",
             matrices,
             if matrices == 1 { "x" } else { "ces" },
             fixed,
