@@ -18,8 +18,25 @@
 //!
 //! Proof: `red x : x -> ~x for every x on the cycle` per fixed edge,
 //! then every propagated unit as `rup`, then the empty clause as `rup`.
-//! General elimination (sums of constraints that mix with other clauses)
-//! is step two of the bead.
+//!
+//! Step two (2026-10-12): flip symmetries of any formula. Negating every
+//! variable of a set S maps the formula onto itself when, for every set V
+//! of variables that some clauses are written over, the sign patterns of
+//! those clauses are closed under flipping S within V. The flips that
+//! keep one such group of patterns form a linear space over GF(2), so the
+//! sets S are the solutions of a sparse linear system, one unknown per
+//! variable: a variable alone in its group of clauses cannot be flipped,
+//! the two variables of `a xor b` substituted for a variable must be
+//! flipped together, a Tseitin vertex must be met an even number of
+//! times. Solving it leaves free variables, and for each free variable f
+//! one flip symmetry that holds f and no other free variable; that
+//! symmetry fixes f (the same redundance step as above), and since it
+//! leaves the other free variables alone, all of them can be fixed. A
+//! formula whose variables were each replaced by the XOR of two fresh
+//! ones becomes the formula it was built from. The algebra only
+//! proposes: every flip is checked against every clause it touches
+//! before it is used. Sums of XOR constraints that mix with other
+//! clauses (Gaussian elimination with a proof) are not done here.
 
 use crate::structure::{Derived, Formula};
 use std::collections::HashMap;
@@ -229,6 +246,510 @@ impl<'a> Prop<'a> {
 }
 
 pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, stop: &std::sync::atomic::AtomicBool) {
+    closed_systems(f, derived, budget, ticks, stop);
+    if !derived.refuted {
+        flips(f, derived, budget, ticks, stop);
+    }
+}
+
+/// Variables in a group of clauses over one variable set (one mask word).
+const FLIP_MAX_K: usize = 64;
+/// Clauses in one such group.
+const FLIP_MAX_GROUP: usize = 1 << 16;
+
+#[inline]
+fn mix(mut h: u64) -> u64 {
+    h = h.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    h = (h ^ (h >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    h ^ (h >> 31)
+}
+
+/// The clauses written over one set of variables: the variables in
+/// ascending order and the distinct sign patterns (bit j set when
+/// `vars[j]` is negated), sorted.
+struct Group {
+    vars: Vec<i32>,
+    masks: Vec<u64>,
+}
+
+/// The number of bits of n: what one search in a sorted list of n costs.
+#[inline]
+fn depth(n: usize) -> u64 {
+    64 - (n as u64).leading_zeros() as u64
+}
+
+/// Step two: the flip symmetries of the formula, one per free variable of
+/// the linear system described in the module text; each fixes its free
+/// variable to true.
+fn flips(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, stop: &std::sync::atomic::AtomicBool) {
+    let mut work = *ticks;
+    let mut polled = work; // the work when it was last published
+    // No piece of work starts unless the limit still covers its cost (a
+    // clause to scan, a sort, a table per variable); it is charged as it
+    // starts, and the count is published every few thousand units for a
+    // signal during the step. Nothing is derived before the last loop, so
+    // stopping early anywhere above it leaves the formula as it was.
+    let covers = |work: u64, cost: u64| work.saturating_add(cost) <= budget && !stop.load(std::sync::atomic::Ordering::Relaxed);
+    macro_rules! spend {
+        ($cost:expr) => {{
+            let cost: u64 = $cost;
+            if !covers(work, cost) {
+                *ticks = work;
+                return;
+            }
+            work += cost;
+            if work - polled >= 4096 {
+                polled = work;
+                *ticks = work;
+            }
+        }};
+    }
+    macro_rules! spend_or_leave {
+        ($cost:expr, $label:lifetime) => {{
+            let cost: u64 = $cost;
+            if !covers(work, cost) {
+                break $label;
+            }
+            work += cost;
+            if work - polled >= 4096 {
+                polled = work;
+                *ticks = work;
+            }
+        }};
+    }
+    let nv = f.vars as usize + 1;
+    // the tables per variable of the whole step (two counts, three marks)
+    // and its last scan over the variables
+    spend!(6 * nv as u64);
+    // a flip maps the clauses holding x onto the clauses holding not x, so
+    // a variable it can move occurs as often in either sign; what an
+    // earlier step or pass derived stays as it is
+    let mut count: Vec<u32> = vec![0; 2 * nv];
+    for i in 0..f.len() {
+        spend!(f.clause(i).len() as u64 + 1);
+        if f.taut[i] {
+            continue;
+        }
+        for &l in f.clause(i) {
+            count[idx(l)] += 1;
+        }
+    }
+    let mut open: Vec<bool> = (0..nv).map(|v| v > 0 && count[2 * v] > 0 && count[2 * v] == count[2 * v + 1]).collect();
+    drop(count);
+    for c in &derived.clauses {
+        spend!(c.len() as u64 + 1);
+        for &l in c {
+            open[l.unsigned_abs() as usize] = false;
+        }
+    }
+    if !open.iter().any(|&o| o) {
+        *ticks = work;
+        return;
+    }
+    // the clauses holding such a variable, keyed by a hash of their
+    // variable set; equal sets are then runs of the sorted list (sorted
+    // by hash, then clause number: the same input gives the same order)
+    let mut keyed: Vec<(u64, u32)> = Vec::new();
+    for i in 0..f.len() {
+        spend!(f.clause(i).len() as u64 + 1);
+        if f.taut[i] {
+            continue;
+        }
+        let c = f.clause(i);
+        if !c.iter().any(|l| open[l.unsigned_abs() as usize]) {
+            continue;
+        }
+        let mut h: u64 = 0;
+        for &l in c {
+            h = h.wrapping_add(mix(l.unsigned_abs() as u64));
+        }
+        keyed.push((mix(h ^ ((c.len() as u64) << 48)), i as u32));
+    }
+    spend!(keyed.len() as u64 * depth(keyed.len()));
+    keyed.sort_unstable();
+    // every run becomes a group, or closes its variables: a clause alone
+    // over its variable set has no image under any flip of them
+    let mut groups: Vec<Group> = Vec::new();
+    let mut equations: Vec<Vec<i32>> = Vec::new();
+    let mut reference: Vec<i32> = Vec::new();
+    let mut scratch: Vec<i32> = Vec::new();
+    let mut a = 0usize;
+    while a < keyed.len() {
+        let mut b = a + 1;
+        while b < keyed.len() && keyed[b].0 == keyed[a].0 {
+            b += 1;
+        }
+        spend!(1);
+        // (a clause holds a variable once, so its length is the size of
+        // its variable set; a wide one is turned away before anything of
+        // it is copied or sorted)
+        let k = f.clause(keyed[a].1 as usize).len();
+        let mut usable = b - a >= 2 && k <= FLIP_MAX_K && b - a <= 4 * FLIP_MAX_GROUP;
+        let mut masks: Vec<u64> = Vec::new();
+        reference.clear();
+        if usable {
+            reference.extend(f.clause(keyed[a].1 as usize).iter().map(|l| l.abs()));
+            reference.sort_unstable();
+            masks.reserve(b - a);
+            for m in a..b {
+                spend!(k as u64 + 1);
+                let c = f.clause(keyed[m].1 as usize);
+                if c.len() != k {
+                    usable = false; // two variable sets with one hash: neither is looked at
+                    break;
+                }
+                scratch.clear();
+                scratch.extend(c.iter().map(|l| l.abs()));
+                scratch.sort_unstable();
+                if scratch != reference {
+                    usable = false;
+                    break;
+                }
+                let mut mask: u64 = 0;
+                for &l in c {
+                    if l < 0 {
+                        mask |= 1 << reference.binary_search(&l.abs()).unwrap();
+                    }
+                }
+                masks.push(mask);
+            }
+        }
+        if usable {
+            spend!(masks.len() as u64 * depth(masks.len()));
+            masks.sort_unstable();
+            masks.dedup();
+            usable = masks.len() >= 2 && masks.len() <= FLIP_MAX_GROUP;
+        }
+        if !usable {
+            for m in a..b {
+                let c = f.clause(keyed[m].1 as usize);
+                spend!(c.len() as u64 + 1);
+                for &l in c {
+                    open[l.unsigned_abs() as usize] = false;
+                }
+            }
+            a = b;
+            continue;
+        }
+        a = b;
+        let mut open_mask: u64 = 0;
+        for (j, &v) in reference.iter().enumerate() {
+            if open[v as usize] {
+                open_mask |= 1 << j;
+            }
+        }
+        // the flips of open variables that keep the patterns: every one
+        // maps the first pattern onto another, so the candidates are the
+        // differences from it; the kept ones as a basis, each with a
+        // pivot bit that no other basis vector has. A flip keeps a set of
+        // patterns exactly when it keeps the patterns outside it, so when
+        // more than half of all patterns are present the few absent ones
+        // are looked at instead (none absent: every flip keeps the group).
+        let mut basis: Vec<(u64, u64)> = Vec::new();
+        let absent: Vec<u64>;
+        let probe: &[u64] = if k <= 17 && (masks.len() as u64) * 2 > 1u64 << k {
+            spend!((1u64 << k) * depth(masks.len()));
+            absent = (0..1u64 << k).filter(|x| masks.binary_search(x).is_err()).collect();
+            &absent
+        } else {
+            &masks
+        };
+        if probe.is_empty() {
+            for j in 0..k {
+                if open_mask >> j & 1 == 1 {
+                    basis.push((1 << j, 1 << j));
+                }
+            }
+        }
+        let first = probe.first().copied().unwrap_or(0);
+        let deep = depth(probe.len());
+        for n in 1..probe.len() {
+            spend!(1);
+            let mut t = first ^ probe[n];
+            if t & !open_mask != 0 {
+                continue;
+            }
+            for &(v, pivot) in &basis {
+                if t & pivot != 0 {
+                    t ^= v;
+                }
+            }
+            if t == 0 {
+                continue;
+            }
+            // the check of one candidate may look at every pattern, and
+            // stops at the first it does not keep: covered in full,
+            // charged for what it looked at
+            if !covers(work, probe.len() as u64 * deep) {
+                *ticks = work;
+                return;
+            }
+            let mut checked = 0u64;
+            let keeps = probe.iter().all(|&x| {
+                checked += 1;
+                probe.binary_search(&(x ^ t)).is_ok()
+            });
+            work += checked * deep;
+            if keeps {
+                let pivot = t & t.wrapping_neg();
+                for entry in basis.iter_mut() {
+                    if entry.0 & pivot != 0 {
+                        entry.0 ^= t;
+                    }
+                }
+                basis.push((t, pivot));
+            }
+        }
+        // what the basis says about each open variable of the group: in no
+        // basis vector, it cannot be flipped; a pivot, it is free here;
+        // otherwise it is flipped exactly when an odd number of the pivots
+        // whose vectors hold it are (one equation)
+        spend!((k * (basis.len() + 1)) as u64);
+        let pivots: u64 = basis.iter().fold(0, |acc, e| acc | e.1);
+        for (j, &v) in reference.iter().enumerate() {
+            let bit = 1u64 << j;
+            if open_mask & bit == 0 || pivots & bit != 0 {
+                continue;
+            }
+            let mut equation: Vec<i32> = vec![v];
+            for &(vector, pivot) in &basis {
+                if vector & bit != 0 {
+                    equation.push(reference[pivot.trailing_zeros() as usize]);
+                }
+            }
+            if equation.len() == 1 {
+                open[v as usize] = false;
+            } else {
+                equation.sort_unstable();
+                equations.push(equation);
+            }
+        }
+        groups.push(Group { vars: reference.clone(), masks });
+    }
+    drop(keyed);
+    // the system: closed variables are zero, equal equations are one
+    let mut entries: u64 = 0;
+    for e in equations.iter_mut() {
+        spend!(e.len() as u64 + 1);
+        e.retain(|&v| open[v as usize]);
+        entries += e.len() as u64 + 1;
+    }
+    equations.retain(|e| !e.is_empty());
+    spend!(entries * depth(equations.len()));
+    equations.sort_unstable();
+    equations.dedup();
+    // elimination, shortest equation first, pivot the variable of it in the
+    // fewest equations: the pivot is removed from every other equation, so
+    // an equation chosen later holds no earlier pivot, and what is left of
+    // a chosen equation says what its pivot is the sum of. An equation of
+    // one variable closes it (the sum of nothing).
+    let mut uses: HashMap<i32, Vec<u32>> = HashMap::new();
+    for (ei, e) in equations.iter().enumerate() {
+        spend!(2 * e.len() as u64 + 2); // its entries here, and its place in the queue below
+        for &v in e {
+            uses.entry(v).or_default().push(ei as u32);
+        }
+    }
+    let mut alive: Vec<bool> = vec![true; equations.len()];
+    let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<(usize, u32)>> =
+        equations.iter().enumerate().map(|(ei, e)| std::cmp::Reverse((e.len(), ei as u32))).collect();
+    let mut order: Vec<(i32, u32)> = Vec::new(); // (pivot variable, its equation)
+    let mut is_pivot: Vec<bool> = vec![false; nv];
+    while let Some(std::cmp::Reverse((len, ei))) = heap.pop() {
+        let e = ei as usize;
+        if !alive[e] || equations[e].len() != len {
+            continue; // consumed, or changed since it was queued (queued again then)
+        }
+        alive[e] = false;
+        if len == 0 {
+            continue;
+        }
+        spend!(len as u64 + 1);
+        let mut pivot = equations[e][0];
+        let mut fewest = usize::MAX;
+        for &v in &equations[e] {
+            let n = uses.get(&v).map_or(0, |u| u.len());
+            if n < fewest {
+                fewest = n;
+                pivot = v;
+            }
+        }
+        spend!(fewest.min(1 << 40) as u64 + 1);
+        let users: Vec<u32> = uses.get(&pivot).cloned().unwrap_or_default();
+        for &oi in &users {
+            let o = oi as usize;
+            if o == e || !alive[o] || equations[o].binary_search(&pivot).is_err() {
+                continue; // itself, consumed, or a stale entry
+            }
+            spend!((equations[o].len() + equations[e].len()) as u64 + 1);
+            // the symmetric difference of two sorted lists
+            let (x, y) = (&equations[o], &equations[e]);
+            let mut sum: Vec<i32> = Vec::with_capacity(x.len() + y.len());
+            let (mut i, mut j) = (0, 0);
+            while i < x.len() && j < y.len() {
+                if x[i] == y[j] {
+                    i += 1;
+                    j += 1;
+                } else if x[i] < y[j] {
+                    sum.push(x[i]);
+                    i += 1;
+                } else {
+                    sum.push(y[j]);
+                    uses.entry(y[j]).or_default().push(oi);
+                    j += 1;
+                }
+            }
+            sum.extend_from_slice(&x[i..]);
+            for &v in &y[j..] {
+                sum.push(v);
+                uses.entry(v).or_default().push(oi);
+            }
+            heap.push(std::cmp::Reverse((sum.len(), oi)));
+            equations[o] = sum;
+        }
+        is_pivot[pivot as usize] = true;
+        order.push((pivot, ei));
+    }
+    drop(uses);
+    // the pivots each variable is part of the sum of (a pivot's sum holds
+    // free variables and later pivots only)
+    let mut part_of: HashMap<i32, Vec<u32>> = HashMap::new();
+    for (oi, &(pivot, ei)) in order.iter().enumerate() {
+        spend!(equations[ei as usize].len() as u64 + 1);
+        for &v in &equations[ei as usize] {
+            if v != pivot {
+                part_of.entry(v).or_default().push(oi as u32);
+            }
+        }
+    }
+    let mut groups_of: HashMap<i32, Vec<u32>> = HashMap::new();
+    for (gi, g) in groups.iter().enumerate() {
+        spend!(g.vars.len() as u64 + 1);
+        for &v in &g.vars {
+            if open[v as usize] {
+                groups_of.entry(v).or_default().push(gi as u32);
+            }
+        }
+    }
+    spend!((2 * order.len() + groups.len()) as u64 + 1);
+    // one flip per free variable f: f, and every pivot whose sum holds an
+    // odd number of flipped variables, settled from the last pivot back
+    let mut in_flip: Vec<u32> = vec![0; nv]; // the stamp of the flip holding the variable
+    let mut odd: Vec<bool> = vec![false; order.len()];
+    let mut queued: Vec<bool> = vec![false; order.len()];
+    let mut seen_group: Vec<u32> = vec![0; groups.len()];
+    let (mut found, mut fixed, mut largest, mut rejected) = (0usize, 0usize, 0usize, 0usize);
+    let mut stamp = 0u32;
+    // (leaving this loop early leaves the flip in hand unfinished and
+    // unused; the ones before it stand)
+    'fixing: for v in 1..nv {
+        if !open[v] || is_pivot[v] {
+            continue;
+        }
+        stamp += 1;
+        let free = v as i32;
+        let mut flip: Vec<i32> = vec![free];
+        in_flip[v] = stamp;
+        let mut pending: std::collections::BinaryHeap<u32> = std::collections::BinaryHeap::new();
+        let mut touched: Vec<u32> = Vec::new();
+        if let Some(list) = part_of.get(&free) {
+            spend_or_leave!(list.len() as u64 + 1, 'fixing);
+            for &oi in list {
+                odd[oi as usize] ^= true;
+                if !queued[oi as usize] {
+                    queued[oi as usize] = true;
+                    touched.push(oi);
+                    pending.push(oi);
+                }
+            }
+        }
+        while let Some(oi) = pending.pop() {
+            spend_or_leave!(2, 'fixing);
+            if !odd[oi as usize] {
+                continue;
+            }
+            let pivot = order[oi as usize].0;
+            flip.push(pivot);
+            in_flip[pivot as usize] = stamp;
+            if let Some(list) = part_of.get(&pivot) {
+                spend_or_leave!(list.len() as u64, 'fixing);
+                for &pi in list {
+                    odd[pi as usize] ^= true;
+                    if !queued[pi as usize] {
+                        queued[pi as usize] = true;
+                        touched.push(pi);
+                        pending.push(pi);
+                    }
+                }
+            }
+        }
+        for &oi in &touched {
+            odd[oi as usize] = false;
+            queued[oi as usize] = false;
+        }
+        // the check: every group a flipped variable is in keeps its patterns
+        let mut keeps = true;
+        'check: for &x in &flip {
+            let Some(list) = groups_of.get(&x) else {
+                keeps = false; // a flipped variable in no group: not open after all
+                break;
+            };
+            for &gi in list {
+                if seen_group[gi as usize] == stamp {
+                    continue;
+                }
+                seen_group[gi as usize] = stamp;
+                let g = &groups[gi as usize];
+                // a search per pattern, charged with its depth
+                spend_or_leave!(g.vars.len() as u64 + g.masks.len() as u64 * depth(g.masks.len()), 'fixing);
+                let mut t: u64 = 0;
+                for (j, &u) in g.vars.iter().enumerate() {
+                    if in_flip[u as usize] == stamp {
+                        t |= 1 << j;
+                    }
+                }
+                if !g.masks.iter().all(|&m| g.masks.binary_search(&(m ^ t)).is_ok()) {
+                    keeps = false;
+                    break 'check;
+                }
+            }
+        }
+        if !keeps {
+            rejected += 1;
+            continue;
+        }
+        spend_or_leave!(flip.len() as u64 * (depth(flip.len()) + 1), 'fixing);
+        found += 1;
+        largest = largest.max(flip.len());
+        flip.sort_unstable();
+        let witness: Vec<(i32, i32)> = flip.iter().map(|&x| (x, -x)).collect();
+        // (to true: the value search tries first by default, and what the
+        // first step fixes its edges to; either value is sound)
+        let id = match derived.proof.as_mut() {
+            Some(w) => w.red(&[free], &witness).unwrap_or(0),
+            None => 0,
+        };
+        derived.add(&[free], id);
+        fixed += 1;
+    }
+    *ticks = work;
+    if found > 0 || rejected > 0 {
+        derived.notes.push(format!(
+            "parity: {} flip symmetr{} (of up to {} variable{}), {} variable{} fixed{}",
+            found,
+            if found == 1 { "y" } else { "ies" },
+            largest,
+            if largest == 1 { "" } else { "s" },
+            fixed,
+            if fixed == 1 { "" } else { "s" },
+            if rejected > 0 { format!(", {} proposed and rejected", rejected) } else { String::new() }
+        ));
+    }
+}
+
+/// Step one: closed XOR systems as graphs (the module text).
+fn closed_systems(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, stop: &std::sync::atomic::AtomicBool) {
     let mut work = *ticks;
     let xors = extract(f, &mut work, budget, ticks, stop);
     *ticks = work;

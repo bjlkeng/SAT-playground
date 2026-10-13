@@ -355,61 +355,61 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, ticks: &mut u64, sto
     // the proof: per group the at-most-one constraint from its pairs
     // (sum the pairs of every (k-1)-subset, divide by k-2, and so on up),
     // then the sum of the demand clauses and the group constraints
-    let Some(w) = derived.proof.as_mut() else {
-        // without a proof file the answer would be unchecked: refuse
-        derived.notes.push("counting: a Hall violation found, but no proof file to write it to".to_string());
-        return;
-    };
-    let mut group_ids: Vec<u64> = Vec::new();
-    for &g in &touched {
-        let lits = &groups[g].lits;
-        let k = lits.len();
-        // C_2 is the pair clause; C_{m+1} = (pair(1,m+1) + ... + pair(m,m+1)
-        // + (m-1) C_m) / m, which is sum(~l) >= m over the first m+1 literals
-        let mut current: u64 = groups[g].pair_id[&pair_key(lits[0], lits[1])];
-        for m in 2..k {
-            let mut expr = String::new();
-            for i in 0..m {
-                let id = groups[g].pair_id[&pair_key(lits[i], lits[m])];
-                if expr.is_empty() {
-                    expr = id.to_string();
-                } else {
-                    expr.push_str(&format!(" {} +", id));
+    // (without a proof file the arithmetic above is the whole check, as
+    // the verified swaps are for the symmetry pass)
+    let mut id = 0u64;
+    if let Some(w) = derived.proof.as_mut() {
+        let mut group_ids: Vec<u64> = Vec::new();
+        for &g in &touched {
+            let lits = &groups[g].lits;
+            let k = lits.len();
+            // C_2 is the pair clause; C_{m+1} = (pair(1,m+1) + ... + pair(m,m+1)
+            // + (m-1) C_m) / m, which is sum(~l) >= m over the first m+1 literals
+            let mut current: u64 = groups[g].pair_id[&pair_key(lits[0], lits[1])];
+            for m in 2..k {
+                let mut expr = String::new();
+                for i in 0..m {
+                    let id = groups[g].pair_id[&pair_key(lits[i], lits[m])];
+                    if expr.is_empty() {
+                        expr = id.to_string();
+                    } else {
+                        expr.push_str(&format!(" {} +", id));
+                    }
                 }
+                if m > 1 {
+                    expr.push_str(&format!(" {} {} * +", current, m - 1));
+                }
+                expr.push_str(&format!(" {} d", m));
+                current = match w.pol(&expr) {
+                    Ok(id) => id,
+                    Err(_) => return,
+                };
+                work += m as u64;
             }
-            if m > 1 {
-                expr.push_str(&format!(" {} {} * +", current, m - 1));
+            group_ids.push(current);
+            if stopped(work) {
+                *ticks = work;
+                return;
             }
-            expr.push_str(&format!(" {} d", m));
-            current = match w.pol(&expr) {
-                Ok(id) => id,
-                Err(_) => return,
-            };
-            work += m as u64;
         }
-        group_ids.push(current);
-        if stopped(work) {
-            *ticks = work;
+        let mut expr = String::new();
+        for &d in &set {
+            let id = d as u64 + 1;
+            if expr.is_empty() {
+                expr = id.to_string();
+            } else {
+                expr.push_str(&format!(" {} +", id));
+            }
+        }
+        for &gid in &group_ids {
+            expr.push_str(&format!(" {} +", gid));
+        }
+        if w.pol(&expr).is_err() {
             return;
         }
+        // the sum is contradictory: the empty clause follows by propagation of nothing
+        id = w.rup(&[]).unwrap_or(0);
     }
-    let mut expr = String::new();
-    for &d in &set {
-        let id = d as u64 + 1;
-        if expr.is_empty() {
-            expr = id.to_string();
-        } else {
-            expr.push_str(&format!(" {} +", id));
-        }
-    }
-    for &gid in &group_ids {
-        expr.push_str(&format!(" {} +", gid));
-    }
-    if w.pol(&expr).is_err() {
-        return;
-    }
-    // the sum is contradictory: the empty clause follows by propagation of nothing
-    let id = w.rup(&[]).unwrap_or(0);
     derived.add(&[], id);
     *ticks = work;
     derived.notes.push(format!(

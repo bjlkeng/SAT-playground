@@ -314,11 +314,16 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
         if solver.options.structparity != 0 && !derived.refuted {
             crate::structparity::run(&formula, &mut derived, budget, &mut solver.statistics.ticks, stop_ref);
         }
-        if solver.options.structcount != 0 && !derived.refuted {
-            crate::structcount::run(&formula, &mut derived, budget, &mut solver.statistics.ticks, stop_ref);
-        }
         if solver.options.structsym != 0 && !derived.refuted {
             crate::structsym::run(&formula, &mut derived, budget, more, &mut solver.statistics.ticks, stop_ref);
+        }
+        if solver.options.structcount != 0 && !derived.refuted {
+            // last, with a limit of its own (structcountticks from where
+            // the other passes stopped): it refutes from the input clauses
+            // alone, whatever the earlier passes derived, and on a formula
+            // without the structure it would spend whatever it is given
+            let own = cap((solver.options.structcountticks as u64).saturating_mul(1000), solver);
+            crate::structcount::run(&formula, &mut derived, own, &mut solver.statistics.ticks, stop_ref);
         }
     }
     let work = solver.statistics.ticks.saturating_sub(start);

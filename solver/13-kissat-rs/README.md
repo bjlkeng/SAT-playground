@@ -154,17 +154,20 @@ for structure that search handles badly and settles what it can in
 seconds. Each pass is a kissat-style option; a pass is off until its
 measurement promotes it, and stays a switch after. **Promoted 2026-10-10:
 `structsym` and `structparity` are on by default** (the combined 2025 run
-298 v 282 and the single 2026 holdout 212 v 203, below); the stock kissat
-path is `--structsym=0 --structparity=0`, which `tools/parity.py` passes
-unless told `--structure`, and the test helpers' `run` too
-(`tests/common/mod.rs`, `STOCK_PATH`). The promoted configuration is
-exactly the measured one (budget 1M K, no size-relative cap):
+298 v 282 and the single 2026 holdout 212 v 203, below); **2026-10-13:
+`structcount`** (309 v 306 on 2025 with the parity pass's flip step;
+not seen on the holdout). The stock kissat path is `--structsym=0
+--structparity=0 --structcount=0`, which `tools/parity.py` passes unless
+told `--structure`, and the test helpers' `run` too
+(`tests/common/mod.rs`, `STOCK_PATH`). A promoted configuration is
+exactly the measured one:
 
 | option | pass | status |
 |---|---|---|
 | `--structsym=1` | symmetry: interchangeable rows and fixing (`src/structsym.rs`) | **default on** since 2026-10-10; measured on the 400 cells and the holdout (below) |
-| `--structparity=1` | parity: closed XOR systems fixed by cycle flips (`src/structparity.rs`) | **default on** since 2026-10-10 (below); general elimination is step two |
-| `--structcount=1` | counting: demand clauses against pairwise at-most-one groups, a Hall violation proved by cutting planes (`src/structcount.rs`) | step one in (below); sequential-counter groups are step two |
+| `--structparity=1` | parity: closed XOR systems fixed by cycle flips, and the flip symmetries of any formula (`src/structparity.rs`) | **default on** since 2026-10-10; the flip step since 2026-10-13 (below) |
+| `--structcount=1` | counting: demand clauses against pairwise at-most-one groups, a Hall violation proved by cutting planes (`src/structcount.rs`); runs last, within `structcountticks` | **default on** since 2026-10-13 (below); sequential-counter and decision-diagram counts are step two |
+| `--structcountticks=N` | the counting pass's own work limit in thousands (default 20K, 20M), counted from where the other passes stopped | since 2026-10-13 |
 | `--structcsp=1` | one-hot CSP decoding, SAT only | bead S.4, not yet |
 | `--structsymext=1` | general automorphisms through an external tool (measurement only) | bead S.2 step two, not yet |
 | `--structclauses=N` | the pass buffers at most N clauses (default 10M); past that it is off for the run | |
@@ -451,11 +454,116 @@ literal at a time from its pair clauses (sum, multiply, divide), then
 the demand clauses and the group constraints are added; every literal
 cancels against its negation and what is left cannot reach the
 right-hand side. Refutes the pigeonhole formulas with a proof the gate
-checks (php12 0.0 s). Not yet: at-most-one groups in sequential-counter
-form (Sinz), which `mchess_20` uses for some squares, so that cell
-stays open; the rook cells encode their count as a decision diagram and
-need another decoder. No separate 400-cell run yet: on the 2025 cells
-the pass adds nothing beyond the symmetry pass (bead S.3).
+checks (php12 0.0 s). The rook cells encode their count as a decision
+diagram and need another decoder. What was written here on 2026-10-09,
+that `mchess_20` has at-most-one groups in sequential-counter form and
+stays open, was wrong: the cell is plain pairwise (398 demand clauses,
+2154 negative binaries, no auxiliary variable), and the pass refutes it
+in 0.01 s (81K work) with a proof the gate checks. It had not been run
+again after the review fixes of that week.
+
+**The counting pass, placement (2026-10-12).** The pass ran between the
+parity and the symmetry pass on their shared limit. On a circuit that
+is wrong twice: every gate looks like a demand clause with groups, the
+pass spends whatever it is given (`veer_axi`: the whole 1G, nothing
+found), and the symmetry pass then has nothing left (its 65,950 units
+on that cell were lost). It now runs last, when the other passes did
+not refute, within a limit of its own (`--structcountticks`, 20M,
+counted from where they stopped): it refutes from the input clauses
+alone, so what the earlier passes derived does not matter to it, and
+every measured path of theirs is unchanged. It also refutes when no
+proof file is asked for (it used to decline then; the other passes
+never did). Alone, the pass also refutes `harder-fphp` (0.9M), the
+plain RoundRobin cells (5.6M on n15) and `MVRoundRobin_n14` (817M, over
+the limit; the symmetry pass has those first anyway).
+Measured in the three-arm run described under the parity pass's step
+two (count against flips: the same binary with and without this pass):
+**309 v 305 (+4 / −0)**: `mchess_20` in 0.1 s (2M work), and the three
+near-timeout cells that the flips arm ran slowly. Against the shipped
+binary 309 v 306 (+3 / −0), wall PAR-2 0.977×, tick PAR-2 0.964×,
+every answer checked. Where the pass finds nothing it costs its limit:
++14.6M work at the median, +20M at most. Promoted: `structcount` is on
+by default since 2026-10-13; the new default reproduces the count arm's
+work to the unit on the seven cells checked (`mchess_20` 2310197,
+`xor_op_n36_d3` 55341145, `veer_axi` 243393370, ...).
+
+**The parity pass, step two: flip symmetries (2026-10-12; bead
+SAT-playground-1v2.2).** Negating every variable of a set S maps the
+formula onto itself when, for every set V of variables that clauses are
+written over, the sign patterns of those clauses are closed under
+flipping S inside V. The flips that keep one such group of patterns are
+a linear space over GF(2), so the sets S are the solutions of a sparse
+linear system with one unknown per variable: a variable in a clause
+that is alone over its variable set cannot be flipped; the two
+variables of `a xor b` substituted for a variable must be flipped
+together; a Tseitin vertex must be met an even number of times. The
+pass groups the clauses by variable set (a sort by a hash of the set;
+only clauses holding a variable that occurs equally often in both
+signs), finds each group's flips (the candidates are the differences
+from one pattern; when more than half of all patterns are present, the
+absent ones are looked at instead), turns them into equations, and
+eliminates, shortest equation first. That leaves free variables, and
+for each free variable f one flip that holds f and no other free
+variable; `red f` with that flip as witness fixes f (to true; either
+value is sound), and since the flip leaves the other free variables
+alone, every one of them is fixed. The algebra only proposes: each flip is checked against every
+group it touches before it is logged. Variables an earlier step or
+pass already fixed are left out; the units are propagated by the
+symmetry pass or the solver. A formula whose variables were each
+replaced by the XOR of two fresh ones (`xor_op_n36_d3`: 1260 blocks,
+all clauses of 6 literals, no XOR constraint for step one to see)
+becomes the formula it was built from, the sparse ordering principle,
+which search refutes in 0.2 s. Step one is unchanged and runs first;
+what it refutes never reaches step two.
+Measured in a three-arm run on the 400 cells (2026-10-12/13;
+`log/abtest-struct-flips-400-2026-10-12-21-46-59`, reports
+`log/struct-flips-400-report-2026-10-12.txt` and
+`log/struct-flips-400-report-count-v-flips-2026-10-12.txt`; base = the
+shipped binary 7a76a71, flips = the candidate's defaults, count = the
+same with the counting pass on; 1800 s, every answer through the gate,
+no contradiction): flips against base **305 v 306 (+2 / −3)**, wall
+PAR-2 0.995×, tick PAR-2 0.990×. The gains are `xor_op_n36_d3` (0.6 s)
+and `xor_op_n40_d3` (0.9 s); `xor_op_n38_d3` goes from 1492 s to 1 s.
+The three losses are not the step's. `bp4_BC012_CSO_FPBEQ_FPBLE_ZR`
+(1750 s on base), `16_16_and_wallace_origin_and_default_mapped` (1730 s)
+and `ncc_none_2_17_4_3` (1799.6 s) need the same work in every arm: the
+count arm, the same binary and the same search, solves all three at
+base's work plus the passes' 1-30M. This arm's processes ran them at
+76%, 83% and 99% of base's speed and were cut at 1800 s. Speed between
+arms that run side by side differs that much per cell (cells all arms
+solve at equal work: wall ratio p10 0.76, p90 1.10; work reached on the
+89 cells no arm solves: median 1.001), so cells that need 1716-1800 s
+fall on either side. The step fires on 25 cells: the three xor_op
+cells, twelve `oski` cells (69-77 flips each), four hwmc step and
+transition cells (53-5612), two `6s299b685` cells, `SAT_dat.k100`
+(8611 flips), `summle`, and the two `ramsey_4_4` cells (one flip of all
+153 and 171 variables, the swap of the two colours; still unsolved). The
+21 of them that base solves all stay solved. Their search moves: the
+twelve oski cells took 15% more work in sum, between 0.77× and 1.88×
+per cell. The run fixed the free variables to false. Fixed to true
+instead (the same cells one per core on an idle host, deterministic
+work, `log/struct-flips-polarity-2026-10-13.tsv`) the twelve took
+1.00× base's work in sum, between 0.48× and 1.88× per cell; true was
+the lighter value on 8 of the 12 and the heavier on 4, a geometric
+mean of 0.86× false's work with a standard error that leaves it short
+of significant (t about 1.4): mostly this family moving under any
+change, with a lean toward true. True is also the value search tries
+first by default and what step one fixes its edges to, so the step
+ships fixing to true. The value can only matter where a flip is found,
+so the 400-cell picture with true is the count arm's on 375 cells (the
+shipped binary reproduces that arm's work to the unit where no flip
+fires) plus these runs on the 23 fire cells that are not ramsey: all
+21 that base solves are solved (most work `oski15a01b15s` 34.7G,
+against 39.9G with false), the three xor_op cells in under a second,
+proofs through the gate. Where the step finds nothing it costs its
+scans: the work ratio where both arms solve has median 1.0001. Review:
+seven Codex rounds; five found one thing each, all of one kind (work
+done past the work limit: a check after an early `continue`, a sort
+charged after it ran, and the like), after which the step's accounting
+was rewritten under one rule (no piece of work starts unless the limit
+covers it) and two rounds were clean. A fuzz of 3 × 600 small formulas
+with planted parity structure against the stock path, models checked
+and every proof through the gate, had no mismatch.
 
 **The symmetry pass, step one.** Colour refinement on the clause-literal
 graph (literals, because competition cells carry flipped polarities and

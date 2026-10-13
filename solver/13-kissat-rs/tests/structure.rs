@@ -257,6 +257,126 @@ fn parity_pass_refutes_tseitin_with_a_checked_proof() {
     assert!(!stdout.contains("refuted"), "{}", stdout);
 }
 
+/// Pigeonhole clauses (`pigeons` into `holes`) with every variable replaced
+/// by the XOR of `arity` fresh ones: a literal is false on half of the
+/// assignments of its block, and a clause forbids every combination of
+/// those, so a clause of w literals becomes (2^(arity-1))^w clauses.
+/// Returns the clauses as written.
+fn xorified_php(pigeons: usize, holes: usize, arity: usize, path: &Path) -> Vec<Vec<i64>> {
+    let var = |p: usize, h: usize| p * holes + h; // the substituted variable, from 0
+    let mut original: Vec<Vec<(usize, bool)>> = Vec::new(); // (variable, positive)
+    for p in 0..pigeons {
+        original.push((0..holes).map(|h| (var(p, h), true)).collect());
+    }
+    for h in 0..holes {
+        for a in 0..pigeons {
+            for b in a + 1..pigeons {
+                original.push(vec![(var(a, h), false), (var(b, h), false)]);
+            }
+        }
+    }
+    let mut clauses: Vec<Vec<i64>> = Vec::new();
+    for c in &original {
+        // per literal, the sign patterns of its block that falsify it
+        let mut parts: Vec<Vec<Vec<i64>>> = Vec::new();
+        for &(x, positive) in c {
+            let mut options: Vec<Vec<i64>> = Vec::new();
+            for bits in 0..1u32 << arity {
+                // the block's assignment `bits` has parity = the value of x;
+                // the literal is false when that value is not its sign
+                let value = bits.count_ones() % 2 == 1;
+                if value == positive {
+                    continue;
+                }
+                options.push((0..arity).map(|j| {
+                    let v = (x * arity + j + 1) as i64;
+                    if bits >> j & 1 == 1 { -v } else { v } // the clause forbids this assignment
+                }).collect());
+            }
+            parts.push(options);
+        }
+        let mut product: Vec<Vec<i64>> = vec![Vec::new()];
+        for options in &parts {
+            let mut next = Vec::new();
+            for prefix in &product {
+                for o in options {
+                    let mut clause = prefix.clone();
+                    clause.extend(o);
+                    next.push(clause);
+                }
+            }
+            product = next;
+        }
+        clauses.extend(product);
+    }
+    let mut text = format!("p cnf {} {}\n", pigeons * holes * arity, clauses.len());
+    for c in &clauses {
+        for l in c {
+            text.push_str(&format!("{} ", l));
+        }
+        text.push_str("0\n");
+    }
+    std::fs::write(path, text).unwrap();
+    clauses
+}
+
+#[test]
+fn parity_pass_undoes_an_xor_substitution_by_flip_symmetries() {
+    let fx = Fixture::new("structure_xorified");
+    // 5 pigeons, 4 holes, every variable the XOR of two: 20 blocks, and
+    // flipping both variables of a block maps the formula onto itself
+    let cnf = fx.path("xphp2.cnf");
+    xorified_php(5, 4, 2, &cnf);
+    let proof = fx.path("xphp2.drat");
+    let stdout = run_options_with_proof(&cnf, &proof, &["--structparity=1"]);
+    assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+    assert!(stdout.contains("parity: 20 flip symmetries (of up to 2 variables), 20 variables fixed"), "{}", stdout);
+    assert!(stdout.contains("20 derived clauses (20 units)"), "{}", stdout);
+    assert_eq!(gate(&cnf, &proof), "ok");
+    let pbp = std::fs::read_to_string(fx.path("xphp2.drat.pbp")).unwrap();
+    assert_eq!(pbp.lines().filter(|l| l.starts_with("red ")).count(), 20, "one redundance step per block");
+    // the XOR of three: two free variables in every block, each with a flip
+    // of its own (the free variable and the block's third)
+    let cnf = fx.path("xphp3.cnf");
+    xorified_php(3, 2, 3, &cnf);
+    let proof = fx.path("xphp3.drat");
+    let stdout = run_options_with_proof(&cnf, &proof, &["--structparity=1"]);
+    assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+    assert!(stdout.contains("parity: 12 flip symmetries (of up to 2 variables), 12 variables fixed"), "{}", stdout);
+    assert_eq!(gate(&cnf, &proof), "ok");
+    // with the step off nothing is derived
+    let stdout = run_options_with_proof(&cnf, &proof, &[]);
+    assert!(!stdout.contains("structure pass"), "{}", stdout);
+}
+
+#[test]
+fn flip_symmetries_keep_a_model_of_the_input_and_stop_at_a_work_limit() {
+    let fx = Fixture::new("structure_xorified_sat");
+    // 4 pigeons, 5 holes: satisfiable, and so is the substituted formula
+    let cnf = fx.path("xphp_sat.cnf");
+    let clauses = xorified_php(4, 5, 2, &cnf);
+    let out = solver_command().arg("--structparity=1").arg("--structsym=0").arg(&cnf).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("s SATISFIABLE"), "{}", stdout);
+    assert!(stdout.contains("parity: 20 flip symmetries"), "{}", stdout);
+    let model: Vec<i64> = stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix("v "))
+        .flat_map(|l| l.split_whitespace().map(|t| t.parse::<i64>().unwrap()))
+        .filter(|&l| l != 0)
+        .collect();
+    for c in &clauses {
+        assert!(c.iter().any(|l| model.contains(l)), "clause {:?} unsatisfied", c);
+    }
+    // any work limit: the step stops where it is, and what it derived by
+    // then is sound (a status line, no panic)
+    for limit in ["1", "50", "200", "500", "1000", "2000", "3000", "5000", "10000"] {
+        let r = run_shipped(&cnf, &["--structsym=0"], &[("SAT_LIMIT_TICKS", limit)]);
+        assert!(matches!(r.status.as_str(), "UNKNOWN" | "SATISFIABLE"), "limit {}: {}\n{}", limit, r.status, r.stderr);
+        assert_eq!(r.exit_code, if r.status == "SATISFIABLE" { 10 } else { 0 }, "limit {}: {}", limit, r.stderr);
+    }
+}
+
 /// A round robin with sides: n teams, D days, every pair plays at least
 /// once on some day on one of two sides, a team plays at most one game a
 /// day, and the two sides are told apart by a second binary between the
@@ -402,6 +522,74 @@ fn symmetry_pass_breaks_day_symmetry_with_clauses_not_units() {
     assert_eq!(pbp.lines().filter(|l| l.starts_with("del id")).count(), 3, "the steps of each fixing are deleted");
     let derived = std::fs::read_to_string(fx.path("rr.drat.derived.cnf")).unwrap();
     assert!(derived.lines().filter(|l| !l.starts_with('p') && !l.starts_with('c')).all(|l| l.split_whitespace().count() >= 3), "{}", derived);
+}
+
+/// An n x n board without two opposite corners, covered by dominoes: one
+/// variable per domino, every square in at least one and in no two. The
+/// removed corners have one colour, so the squares of the other colour
+/// outnumber the dominoes that can cover them.
+fn mutilated_board(n: usize, path: &Path) {
+    let removed = |r: usize, c: usize| (r == 0 && c == 0) || (r == n - 1 && c == n - 1);
+    let mut dominoes: Vec<((usize, usize), (usize, usize))> = Vec::new();
+    for r in 0..n {
+        for c in 0..n {
+            if removed(r, c) {
+                continue;
+            }
+            if c + 1 < n && !removed(r, c + 1) {
+                dominoes.push(((r, c), (r, c + 1)));
+            }
+            if r + 1 < n && !removed(r + 1, c) {
+                dominoes.push(((r, c), (r + 1, c)));
+            }
+        }
+    }
+    let mut clauses: Vec<Vec<i64>> = Vec::new();
+    for r in 0..n {
+        for c in 0..n {
+            if removed(r, c) {
+                continue;
+            }
+            let on: Vec<i64> = dominoes.iter().enumerate().filter(|(_, d)| d.0 == (r, c) || d.1 == (r, c)).map(|(i, _)| (i + 1) as i64).collect();
+            clauses.push(on.clone());
+            for a in 0..on.len() {
+                for b in a + 1..on.len() {
+                    clauses.push(vec![-on[a], -on[b]]);
+                }
+            }
+        }
+    }
+    let mut text = format!("p cnf {} {}\n", dominoes.len(), clauses.len());
+    for c in &clauses {
+        for l in c {
+            text.push_str(&format!("{} ", l));
+        }
+        text.push_str("0\n");
+    }
+    std::fs::write(path, text).unwrap();
+}
+
+#[test]
+fn counting_pass_refutes_a_mutilated_board_after_the_other_passes() {
+    let fx = Fixture::new("structure_board");
+    let cnf = fx.path("board.cnf");
+    mutilated_board(8, &cnf);
+    let proof = fx.path("board.drat");
+    // the shipped defaults: the other passes first (they find no way to
+    // settle it), then the counting pass within its own limit
+    let out = solver_command().arg("-n").arg(&cnf).arg(&proof).output().expect("run sat-solver");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+    assert!(stdout.contains("structure pass: counting:") && stdout.contains("refuted"), "{}", stdout);
+    assert_eq!(gate(&cnf, &proof), "ok");
+    // the same answer when no proof file is asked for
+    let r = run_shipped(&cnf, &[], &[]);
+    assert_eq!(r.status, "UNSATISFIABLE");
+    assert!(r.stdout.contains("structure pass: counting:") && r.stdout.contains("refuted"), "{}", r.stdout);
+    // with no room of its own the pass derives nothing, and nothing is lost
+    let out = solver_command().arg("-n").arg("--structcountticks=0").arg(&cnf).arg(&proof).output().expect("run sat-solver");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("s UNSATISFIABLE") && !stdout.contains("counting:"), "{}", stdout);
 }
 
 #[test]

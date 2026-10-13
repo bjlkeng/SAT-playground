@@ -160,9 +160,10 @@ Not in kissat. Off means off: with every `struct*` option at 0 the parser
 hands literals to `internal::add` as before and no code of the pass
 runs, so `tools/parity.py` stays exact. Since 2026-10-10 `structsym` and
 `structparity` are on by default (promoted after the 2025 runs and the
-single 2026 holdout): the stock kissat path is `--structsym=0
---structparity=0`, which `tools/parity.py` adds unless told
-`--structure` and the test helpers' `run`/`run_with_proof` add always
+single 2026 holdout), since 2026-10-13 `structcount` too: the stock
+kissat path is `--structsym=0 --structparity=0 --structcount=0`, which
+`tools/parity.py` adds unless told `--structure` and the test helpers'
+`run`/`run_with_proof` add always
 (`tests/common/mod.rs`, `STOCK_PATH`); a test of the shipped defaults
 uses `run_shipped`. A promoted default is exactly the measured
 configuration; a change to a pass's budget or detection is a new
@@ -197,6 +198,18 @@ Rules the symmetry pass's later steps added (2026-10-11/12):
   detection starts only within `structticks`. Every loop that can run
   long charges its work and polls `over()`, which also publishes the
   work for the signal handler.
+- **Pass order: parity, symmetry, counting.** The parity pass's red steps
+  all come before any propagation of their units (a propagated unit on a
+  variable a later flip moves would break that flip's witness), and a
+  variable in any clause derived so far is never flipped. The counting
+  pass is last, within `structcountticks` counted from where the others
+  stopped: on a formula without its structure it spends whatever it is
+  given, and it refutes from the input clauses alone.
+- **Work in one piece is done only when the limit covers it.** A sort
+  or a table per variable is charged when done and skipped (the step
+  returns) when the remaining budget is smaller than its cost; a loop
+  looks at the limits by work done since the last look, before any
+  early `continue`.
 - **A guess is allowed only where a verification follows it** (the
   pairing of entries refinement cannot tell apart, the rows a second
   anchor sorts). A guessed matrix that fails is retried once with the

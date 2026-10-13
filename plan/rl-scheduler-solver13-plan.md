@@ -1758,6 +1758,27 @@ source of truth; every bead points back to its section.
   by symmetry breaking (checked against the run). Stock was 282 on
   this suite; the default configuration is at 303-306 depending on the
   near-timeout cells of the run.
+- 2026-10-13 (parity step two and the counting pass; beads 1v2.2, 1v2.4).
+  Two wrong notes of mine were in the way. The README said `mchess_20`
+  needs sequential-counter groups; it is plain pairwise and the counting
+  pass refutes it in 0.01 s. The pass could not be switched on as it
+  stood: between the other passes, on their limit, it spent everything a
+  circuit gave it. It now runs last within its own 20M. And the two
+  unsolved `xor_op` cells are a formula with every variable replaced by
+  the XOR of two: the parity pass now finds the flip symmetries of any
+  formula as the solutions of a linear system over GF(2) and fixes one
+  variable per free solution; search then refutes them in under a
+  second. Three-arm run on the 400 cells: flips 305 v 306 (+2 / −3, the
+  three losses being cells that need 1716-1800 s and the same work in
+  every arm), count 309 v 306 (+3 / −0), wall PAR-2 0.977×, tick PAR-2
+  0.964×, every answer checked. Both shipped; `structcount` is on by
+  default. The flip step moves the search of the `oski` family: fixed
+  to false as in the run, 15% more work in sum; fixed to true, 1.00×
+  (0.48-1.88× per cell either way). It ships fixing to true, measured
+  on the 23 cells where the value can matter. Stock 282, default now
+  306-309 on this suite. Found on the way and taken up next (bead
+  1v2.9): 8 of the 94 unsolved cells are satisfiable ones that kissat's
+  own local search solves when it is given a real share of the run.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

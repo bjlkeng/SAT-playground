@@ -213,12 +213,14 @@ kissat_options! {
     // SAT-playground-1v2). Each pass is its own switch. structsym and
     // structparity are on by default since 2026-10-10 (measured on the
     // 400 cells of 2025, 298 v 282, and once on the 2026 holdout, 212 v
-    // 203, every answer checked); the stock path is both at 0. The
-    // promoted configuration is exactly the measured one: structticks
-    // 1,000,000 K and no size-relative cap (the gains use the whole
-    // budget; bead SAT-playground-1v2.8 holds the tiny-cell cost).
+    // 203, every answer checked), structcount since 2026-10-13 (309 v 306
+    // with the parity pass's flip step, on 2025); the stock path is all
+    // three at 0. A promoted configuration is exactly the measured one:
+    // structticks 1,000,000 K, structmore 2,000,000 K once a matrix is
+    // verified, structcountticks 20,000 K for the counting pass alone.
     (structclauses, 10_000_000, 0, i32::MAX, "structure pass clause limit"),
-    (structcount, 0, 0, 1, "structure pass: pigeonhole counting"),
+    (structcount, 1, 0, 1, "structure pass: pigeonhole counting"),
+    (structcountticks, 20_000, 0, i32::MAX, "structure pass: counting work limit (K)"),
     (structcsp, 0, 0, 1, "structure pass: CSP decoding"),
     (structmore, 2_000_000, 0, i32::MAX, "structure pass work limit (K) after a find"),
     (structparity, 1, 0, 1, "structure pass: XOR systems"),
@@ -692,8 +694,8 @@ mod tests {
 
     #[test]
     fn table_has_all_158_options_plus_the_structure_pass() {
-        // kissat's 158 plus the eight struct* options (plan section 11, 2026-10-07)
-        assert_eq!(OPTION_TABLE.len(), 158 + 8);
+        // kissat's 158 plus the nine struct* options (plan section 11, 2026-10-07)
+        assert_eq!(OPTION_TABLE.len(), 158 + 9);
     }
 
     #[test]
