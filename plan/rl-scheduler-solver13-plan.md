@@ -1779,6 +1779,20 @@ source of truth; every bead points back to its section.
   306-309 on this suite. Found on the way and taken up next (bead
   1v2.9): 8 of the 94 unsolved cells are satisfiable ones that kissat's
   own local search solves when it is given a real share of the run.
+- 2026-10-13 (the local-search share, bead 1v2.9). kissat's walks get
+  5% of the recent search ticks, a few times per run; rounds 0-1 of
+  this plan tried `walkeffort` at 0.5× and 2× and saw nothing. At
+  2000× eight unsolved satisfiable cells fall within 300 s. Options
+  `walkshare` (walks may use a share of the work clock, a step counted
+  as 1/8 tick) and `walkstall` (a walk ends after a long wait for a
+  better assignment), both off by default, committed with tests. A
+  10% share solved 8 of 27 satisfiable-looking unsolved cells at 1800
+  s; a variant whose long walk only looked for a model, leaving the
+  search as stock, solved 2 of 12: the gain is in the phases the long
+  walk hands back, and so every cell's search moves. That makes this a
+  change to the timing layer this plan is about, measured as such:
+  three-arm 400-cell run started 11:35. W gains a term when the share
+  is on (walk steps over eight); stock numbers do not change.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

@@ -618,6 +618,69 @@ found; Satsuma's proofs for them were rejected by VeriPB too), ramsey
 (Johnson structure, not rows), the Tseitin cells (literal-flip
 symmetries, which the parity pass covers instead).
 
+## The local-search share (2026-10-13; bead `SAT-playground-1v2.9`)
+
+Not in kissat. Two options, both off by default; with both at 0 the walk
+is kissat's own (the binary reproduces the shipped one's work to the
+unit, and `tools/parity.py` stays exact):
+
+| option | what it does |
+|---|---|
+| `--walkshare=N` | local search may use N per mille of the work clock: a walk runs past kissat's own limit until the walks so far have used that share. A walk step is counted as 1/8 tick into `statistics.ticks`, so tick PAR-2 sees the walking; the tick limit ends a walk |
+| `--walkstall=N` | a walk ends when, since its best assignment, it has made N times the flips it took to reach it (never before 65,536 flips) |
+
+**Why.** kissat walks at some rephases and gives a walk 5% of the
+search ticks since the last inprocessing, in walk steps that cost about
+an eighth of a tick: half a million steps, a few times in a run. Of the
+94 cells the default configuration leaves unsolved, the same walker
+given real time solves eight satisfiable ones (probe of 2026-10-12, 300
+s each, every model checked,
+`log/walkshare-proto-2026-10-12/probe-unsolved-300s.tsv`): with
+`--walkeffort=100000` `Ptn-7824-b19` in 0.8 s (one walk of 154M steps),
+`mp1-Nb7T45` 12 s, `lockchart-group2` L18 24 s, `ER_400_20_7` apx_1 86 s
+and apx_2 246 s, `reconf10_70_queen14_2` 162 s, `oddball_57_5` 287 s;
+with `--walkeffort=1000000` lockchart L19_3 28 s. (`walkinitially` is
+declared in kissat 4.0.4 and never read, there or here.) As constants
+those settings make the solver a local-search solver and are no
+candidate; the share gives the walker a bounded part of every run.
+
+**First results** (four free cores during a sweep, so a solve counts and
+a wall time does not): with `--walkshare=100` seven of the eight solve
+within 600 s (`Ptn-7824-b19` 3 s, `mp1-Nb7T45` 75 s, `ER_400` 116 and
+253 s, `oddball_57_5` 291 s, `reconf10_70` 332 s, lockchart L19_3 518
+s). Over the 27 satisfiable-looking unsolved cells at 1800 s,
+`--walkshare=100 --walkstall=16` solves 8 and `--walkshare=200
+--walkstall=16` 6, and only two cells are in both lists: which cell
+falls is partly luck. Cost on 40 solved cells in deterministic work,
+against the same binary with the share off: 24 unsatisfiable cells sum
+1.059× (median 1.010) with share 100 and stall 16, 1.105× without the
+stall rule; 16 satisfiable cells 1.195×; the cells far from 1 (one at
+2.9×) spend 1-8% of their work walking, so they are searches that took
+another path, not walk cost
+(`log/walkshare-proto-2026-10-12/screen-results.tsv`,
+`screen2-results.tsv`).
+
+**What the long walk hands back is the point.** A walk ends by making
+its best assignment the saved phases, and the search goes on from
+there. A variant that kept the long walk for finding a model only (at
+the end it handed back what the walk had at kissat's own limit, so the
+search was the stock search to the tick) solved 2 of 12 target cells in
+1800 s on an idle host (`Ptn-7824-b19` 7 s, `ER_400` apx_2 1777 s) where
+the plain share had solved 8 of the same 12. Rejected
+(`walk-v2-side-effect-free.patch`, `screen3-results.tsv` in the same
+directory): the gain is the exchange between the two searches, not a
+lucky walk, and it comes with every cell's search taking another path.
+
+**Paired run**: `log/struct-walk-400-2026-10-13.sh` (base, share 100
+and share 50, both with stall 16; 400 cells, 1800 s, every answer
+checked), started 2026-10-13 11:35; the result goes here. Tests:
+`tests/walkshare.rs` (the share off is the stock trajectory; on, a walk
+is longer and its steps are in the clock exactly; a work limit set half
+way into a walk ends the run there; a stalled walk ends early). Review:
+three Codex rounds (the stall rule's floor counted kissat's flip
+counter, which advances twice a step; the limit test stopped before any
+walk; the stall interval was counted from the walk's start), then clean.
+
 - **Work-clock limit.** `limited.ticks` / `limits.ticks` sit next to
   kissat's conflict and decision limits. The check lives in
   `terminate::terminated`, which is what every inprocessing effort loop and

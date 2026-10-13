@@ -263,6 +263,12 @@ kissat_options! {
     (vivifytier3, 1, 0, 100, "relative tier3 effort"),
     (walkeffort, 50, 0, 1_000_000, "effort in per mille"),
     (walkinitially, 0, 0, 1, "initial local search"),
+    // Not in kissat (2026-10-13): local search may use this share of the
+    // work clock (per mille; 0 is kissat's own limit alone), and a walk
+    // ends when it has gone walkstall times as long as it took to reach
+    // its best assignment without a better one (0: never).
+    (walkshare, 0, 0, 1000, "local search share of the work (per mille)"),
+    (walkstall, 0, 0, 1_000_000, "end a walk after this multiple without a new minimum"),
     (warmup, 1, 0, 1, "initialize phases by unit propagation"),
 }
 
@@ -694,8 +700,9 @@ mod tests {
 
     #[test]
     fn table_has_all_158_options_plus_the_structure_pass() {
-        // kissat's 158 plus the nine struct* options (plan section 11, 2026-10-07)
-        assert_eq!(OPTION_TABLE.len(), 158 + 9);
+        // kissat's 158 plus the nine struct* options (plan section 11,
+        // 2026-10-07) and walkshare, walkstall (2026-10-13)
+        assert_eq!(OPTION_TABLE.len(), 158 + 11);
     }
 
     #[test]

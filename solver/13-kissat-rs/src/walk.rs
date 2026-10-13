@@ -60,6 +60,13 @@ struct Counter {
 
 const INVALID_BEST_TRAIL_POS: u32 = u32::MAX;
 
+/// Not in kissat: how many walk steps cost what one tick costs (measured
+/// 2026-10-12: 4-8 ns a step against 30-40 ns a tick on the cells of the
+/// suite), for the walks that the walkshare option lengthens.
+const WALK_STEPS_PER_TICK: u64 = 8;
+/// With walkstall on, a walk is never ended before this many flips.
+const WALK_STALL_MIN_FLIPS: u64 = 1 << 16;
+
 // struct walker
 struct Walker {
     best_trail_pos: u32,
@@ -88,6 +95,9 @@ struct Walker {
 
     limit: u64,
     flipped: u64,
+    // Not in kissat (walkshare): the walk steps already counted in the
+    // work clock.
+    charged: u64,
     // #ifndef QUIET — kept:
     start: u64,
     report_flipped: u64,
@@ -419,6 +429,7 @@ fn init_walker(solver: &mut Solver, binaries: &[LitPair]) -> Walker {
         epsilon: 0.0,
         limit: 0,
         flipped: 0,
+        charged: 0,
         start: 0,
         report_flipped: 0,
         report_minimum: 0,
@@ -474,9 +485,21 @@ fn init_walker(solver: &mut Solver, binaries: &[LitPair]) -> Walker {
 // static void init_walker_limit (kissat *solver, walker *walker)
 fn init_walker_limit(solver: &mut Solver, walker: &mut Walker) {
     // SET_EFFORT_LIMIT (limit, walk, walk_steps);
-    let limit = crate::set_effort_limit!(solver, walk, walkeffort, walk_steps);
+    let mut limit = crate::set_effort_limit!(solver, walk, walkeffort, walk_steps);
+    // Not in kissat: with walkshare on, local search may use that share of
+    // the work clock. A walk step is counted as 1/WALK_STEPS_PER_TICK of a
+    // tick (it is that much cheaper), all walks so far are counted, and
+    // this walk may go on until the share is used up.
+    if solver.options.walkshare != 0 {
+        let work = solver.statistics.work_clock();
+        let share = (work as u128 * solver.options.walkshare as u128 / 1000) as u64;
+        let used = solver.statistics.walk_steps / WALK_STEPS_PER_TICK;
+        let more = share.saturating_sub(used).saturating_mul(WALK_STEPS_PER_TICK);
+        limit = limit.max(solver.statistics.walk_steps.saturating_add(more));
+    }
     walker.limit = limit;
     walker.flipped = 0;
+    walker.charged = solver.statistics.walk_steps;
     // #ifndef QUIET:
     walker.start = solver.statistics.walk_steps;
     walker.report_minimum = u32::MAX;
@@ -756,11 +779,40 @@ fn local_search_step(solver: &mut Solver, walker: &mut Walker, binaries: &[LitPa
 fn local_search_round(solver: &mut Solver, walker: &mut Walker, binaries: &[LitPair]) {
     // #ifndef QUIET:
     let before = walker.minimum;
+    // Not in kissat: with walkshare on the walk's steps count in the work
+    // clock as they are made (a signal reads the clock), the tick limit
+    // ends the walk, and with walkstall on so does a long wait for a
+    // better assignment. The flips are counted here, one per step
+    // (`walker.flipped` is kissat's counter and advances twice a step).
+    let shared = solver.options.walkshare != 0;
+    let stall = solver.options.walkstall as u64;
+    let (mut flips, mut best_at) = (0u64, 0u64);
     while walker.minimum != 0 && walker.limit > solver.statistics.walk_steps {
         if terminated!(solver, walk_terminated_1) {
             break;
         }
+        let minimum = walker.minimum;
         local_search_step(solver, walker, binaries);
+        flips += 1;
+        if walker.minimum < minimum {
+            best_at = flips;
+        }
+        if shared && solver.statistics.walk_steps - walker.charged >= 1 << 16 {
+            let steps = solver.statistics.walk_steps - walker.charged;
+            solver.statistics.ticks += steps / WALK_STEPS_PER_TICK;
+            walker.charged += steps - steps % WALK_STEPS_PER_TICK;
+            if solver.limited.ticks && solver.statistics.work_clock() >= solver.limits.ticks {
+                break;
+            }
+        }
+        if stall != 0 && flips >= WALK_STALL_MIN_FLIPS && flips - best_at > stall.saturating_mul(best_at.max(1)) {
+            break; // that many times the flips to its best, and nothing better since
+        }
+    }
+    if shared {
+        let steps = solver.statistics.walk_steps - walker.charged;
+        solver.statistics.ticks += steps / WALK_STEPS_PER_TICK;
+        walker.charged += steps - steps % WALK_STEPS_PER_TICK;
     }
     // #ifndef QUIET:
     report_minimum("last", solver, walker);
