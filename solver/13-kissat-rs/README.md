@@ -454,8 +454,28 @@ literal at a time from its pair clauses (sum, multiply, divide), then
 the demand clauses and the group constraints are added; every literal
 cancels against its negation and what is left cannot reach the
 right-hand side. Refutes the pigeonhole formulas with a proof the gate
-checks (php12 0.0 s). The rook cells encode their count as a decision
-diagram and need another decoder. What was written here on 2026-10-09,
+checks (php12 0.0 s). The rook cells (decoded 2026-10-14, scratch
+decoder in the session notes): an n×n board (n = 51, 56, 52) with
+pairwise at-most-one clauses on every row and column, and a decision
+diagram of one-directional nodes `n -> (x ? hi : lo)` (135-179K of them,
+one board variable per level, rows visited mostly in descending order
+but interleaved) whose root, a unit clause, admits exactly n+1 true
+board variables; `rook-52-0-1` also asks for a rook in every column.
+n+1 rooks on n rows: refuted by counting. The proof is the hard part.
+Each node's meaning, "n implies at least q of the board variables
+below it are true", has to be derived from its two children, and that
+is a case split on the node's variable, which cutting planes does in
+about q steps per node (one step lowers the variable's coefficient by
+one; a sum of the two child constraints rounded once cannot do it for
+q ≥ 3, and an MIR cut of it gains no more), about 3.5M
+`pol` lines and 4.6G term operations for VeriPB on `rook-51-0-0`; a
+proof by contradiction (`pbc`) would be three steps but must spell out
+each node's constraint, about 175M terms. The one-line derivation noted
+in bead S.3 on 2026-10-13 assumed a fact (a node implies its weaker
+child) that the one-directional encoding does not give. No cell in
+the 2026 suite is a rook, ramsey or chess puzzle, so this is parked
+until the owner decides it is worth building for three 2025 cells.
+What was written here on 2026-10-09,
 that `mchess_20` has at-most-one groups in sequential-counter form and
 stays open, was wrong: the cell is plain pairwise (398 demand clauses,
 2154 negative binaries, no auxiliary variable), and the pass refutes it
