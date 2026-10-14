@@ -162,6 +162,32 @@ told `--structure`, and the test helpers' `run` too
 (`tests/common/mod.rs`, `STOCK_PATH`). A promoted configuration is
 exactly the measured one:
 
+**Second seed (2026-10-14).** The shipped set (4ac5870) against stock,
+both with `--seed=1` (`log/abtest-struct-seed1-400-2026-10-14-08-19-45`,
+`log/struct-seed1-400-report-2026-10-14.txt`; 400 cells, 1800 s, every
+answer checked, no contradiction): **313 v 284 (+34 / −5)**, wall PAR-2
+0.783×, tick PAR-2 0.757×, validation 76 v 71. Seed 0 gave 311 v 282.
+30 of the 34 gains are cells the passes refute in under a minute in
+both seeds and stock never solves (Tseitin 4, pigeonhole variants 4,
+clique colouring 4, RoundRobin 6, clqcl 6, MVRoundRobin 4,
+`mchess_20`, `xor_op_n40_d3`); the other four are three satisfiable
+cells that come and go with the seed and one unsatisfiable cell at
+1793 s. The five losses are satisfiable cells where the search took a
+longer path (cut at 1.06-7× stock's work: three `bp4`,
+`sum_of_3_cubes_37`, `HCP-446-105`). Where both solve, the passes leave
+the search exactly as it was on 166 of 279 cells (same conflicts and
+decisions; the work differs only by the passes' own, median 2.4M, at
+most 1.02G): spending the budget without a find does not move the
+search. On the other 113 they derived something and the search went
+another way, and the work summed over those cells and the rest is
+0.93× on satisfiable and 0.91× on unsatisfiable cells. The ship arm
+also reran an earlier arm with the same binary and seed (the base arm
+of `log/abtest-struct-walk-400-seed1-2026-10-13-23-29-21`): one cell
+differs (`16_16_and_wallace...` at 1793 s against a timeout), the work
+is identical on all 312 cells both solve, the wall ratio median is
+0.994. So wall noise moves one cell where the seed moves 31, and the
+structure set's gain, +29 in both seeds, is a deterministic one.
+
 | option | pass | status |
 |---|---|---|
 | `--structsym=1` | symmetry: interchangeable rows and fixing (`src/structsym.rs`) | **default on** since 2026-10-10; measured on the 400 cells and the holdout (below) |

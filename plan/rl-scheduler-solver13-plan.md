@@ -1816,6 +1816,15 @@ source of truth; every bead points back to its section.
   unsatisfiable cells refuted in seconds, the same under any seed). The
   same holds for this plan's RL candidates: evaluate them over at least
   two seeds, or on unsatisfiable cells and tick-deterministic work.
+- 2026-10-14 (the structure set at seed 1). Shipped against stock, both
+  `--seed=1`: 313 v 284 (+34 / −5), tick PAR-2 0.757×; seed 0 gave 311
+  v 282. 30 of the gains are the passes' refutations in under a minute,
+  the same in both seeds; the losses are five satisfiable cells on
+  longer paths. A rerun of the same binary and seed differs on one
+  near-timeout cell with identical work on every cell both solve, so
+  the run is deterministic up to the wall limit. The passes change the
+  search only where they derive something (113 of 279 cells both
+  solve); spending their budget without a find leaves it untouched.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 
