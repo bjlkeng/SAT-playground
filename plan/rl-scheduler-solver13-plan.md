@@ -1793,6 +1793,17 @@ source of truth; every bead points back to its section.
   change to the timing layer this plan is about, measured as such:
   three-arm 400-cell run started 11:35. W gains a term when the share
   is on (walk steps over eight); stock numbers do not change.
+- 2026-10-13, result (`log/abtest-struct-walk-400-2026-10-13-11-35-06`):
+  `--walkshare=100 --walkstall=16` **322 v 311 (+17 / −6)**, wall PAR-2
+  0.926×, tick PAR-2 0.947× (walk steps counted), validation 80 v 77;
+  16 of the gains satisfiable (5 of the 8 probe cells and 11 others),
+  the unsatisfiable losses two near-timeout cells; `--walkshare=50` 317
+  v 311 (+17 / −11). The largest single step since the port's
+  acceptance, from a timing knob of exactly the kind this plan's policy
+  was meant to learn: kissat under-walks by orders of magnitude on the
+  satisfiable cells it cannot crack. Not yet the default: satisfiable
+  results swing per cell, so a seed-1 replicate of the 10% share
+  against base runs first.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

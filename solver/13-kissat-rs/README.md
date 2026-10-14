@@ -671,9 +671,37 @@ the plain share had solved 8 of the same 12. Rejected
 directory): the gain is the exchange between the two searches, not a
 lucky walk, and it comes with every cell's search taking another path.
 
-**Paired run**: `log/struct-walk-400-2026-10-13.sh` (base, share 100
-and share 50, both with stall 16; 400 cells, 1800 s, every answer
-checked), started 2026-10-13 11:35; the result goes here. Tests:
+**Paired run** (2026-10-13; `log/abtest-struct-walk-400-2026-10-13-11-35-06`,
+`log/struct-walk-400-report-2026-10-13.txt`; base = the shipped binary
+4ac5870, 400 cells, 1800 s, seed 0, every answer through the gate, no
+contradiction):
+
+| arm | solved | SAT / UNSAT | +/− v base | wall PAR-2 | tick PAR-2 | validation |
+|---|---:|---:|---:|---:|---:|---:|
+| base | 311 | 136 / 175 | | 1.000× | 1.000× | 77 |
+| `--walkshare=100 --walkstall=16` | **322** | 148 / 174 | **+17 / −6** | 0.926× | 0.947× | 80 |
+| `--walkshare=50 --walkstall=16` | 317 | 145 / 172 | +17 / −11 | 0.946× | 0.949× | 81 |
+
+With the 10% share, 16 of the 17 gains are satisfiable cells: five of
+the eight probe cells (`Ptn-7824-b19` 14 s, `oddball_57_5` 449 s,
+`mp1-Nb7T45` 967 s, lockchart L18 1031 s and L19_3 1057 s) and eleven
+others the probe had not named (`HCP-529-420` 188 s, `oddball_53_5`,
+`sum_of_3_cubes_37_bits_87`, `bp4_TCO_IXA_FPBLE_ZR`, the `fermat`
+factoring cell, two `lockchart-group1` cells, a timetable, `sted2`,
+`at-least-two-vmpc_28`, `bp4_BC012_AM`); the 17th is an unsatisfiable
+cell at 1749 s. Of the six losses, the two unsatisfiable ones and one
+satisfiable one are near-timeout cells (base 1773-1793 s; the arm was
+cut below base's work, so slow on the wall), and three satisfiable ones
+took a longer path (cut at 1.6-9.9× base's work: `SC25_Timetable_C_406`,
+`SC25_Timetable_C_492`, `oddball_56_5`). Where both solve, satisfiable
+cells: wall ratio median 0.90 (p10 0.42, p90 4.06), work summed 0.97×;
+unsatisfiable cells: wall median 1.01, p90 1.50, work summed 1.06× (the
+walking, mostly). The 5% share gains as many and loses more (four of its
+eleven losses unsatisfiable, all near-timeout); nine cells are gained by
+both settings. Satisfiable results move a lot from cell to cell, so the
+default waits for a second seed of the 10% share against base
+(`log/struct-walk-400-seed1-2026-10-14.sh`); the options stay off until
+then. Tests:
 `tests/walkshare.rs` (the share off is the stock trajectory; on, a walk
 is longer and its steps are in the clock exactly; a work limit set half
 way into a walk ends the run there; a stalled walk ends early). Review:
