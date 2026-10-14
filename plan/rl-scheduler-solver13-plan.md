@@ -1804,6 +1804,18 @@ source of truth; every bead points back to its section.
   satisfiable cells it cannot crack. Not yet the default: satisfiable
   results swing per cell, so a seed-1 replicate of the 10% share
   against base runs first.
+- 2026-10-14 (the replicate). Seed 1: the 10% share 311 v 312 (+13 /
+  −14), tick PAR-2 1.023×. Not promoted. The finding that matters more:
+  the shipped binary differs between seeds 0 and 1 on 31 of the 400
+  cells (27 satisfiable) while solving 311 and 312, and with seed 1 it
+  solves four of the eight "local search only" probe cells itself. On
+  this suite a candidate that moves every search reshuffles about 30
+  cells, mostly satisfiable, so one seed's net count says little about
+  it (the share over both seeds: 633 v 623, +5 a seed);
+  the structure passes were not exposed to this (their gains are
+  unsatisfiable cells refuted in seconds, the same under any seed). The
+  same holds for this plan's RL candidates: evaluate them over at least
+  two seeds, or on unsatisfiable cells and tick-deterministic work.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

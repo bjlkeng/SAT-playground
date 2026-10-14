@@ -698,10 +698,34 @@ cells: wall ratio median 0.90 (p10 0.42, p90 4.06), work summed 0.97×;
 unsatisfiable cells: wall median 1.01, p90 1.50, work summed 1.06× (the
 walking, mostly). The 5% share gains as many and loses more (four of its
 eleven losses unsatisfiable, all near-timeout); nine cells are gained by
-both settings. Satisfiable results move a lot from cell to cell, so the
-default waits for a second seed of the 10% share against base
-(`log/struct-walk-400-seed1-2026-10-14.sh`); the options stay off until
-then. Tests:
+both settings.
+
+**The replicate does not agree** (2026-10-14; seed 1 for both arms,
+`log/abtest-struct-walk-400-seed1-2026-10-13-23-29-21`,
+`log/struct-walk-400-seed1-report-2026-10-14.txt`): the 10% share
+against base **311 v 312 (+13 / −14)**, wall PAR-2 1.007×, tick PAR-2
+1.023×, every answer checked. Twelve of the 14 losses are satisfiable,
+eight of them longer paths (cut at 1.8-14× base's work); only three
+cells are gained in both seeds (lockchart L18, `sum_of_3_cubes_37`,
+`bp4_TCO_IXA_FPBLE_ZR`), and none is lost in both. The reason is in the
+base arms: the shipped binary itself, seed 0 against seed 1, solves 311
+v 312 but differs on 31 cells, 27 of them satisfiable; 23 of the 31 are
+solved by one seed well before the limit (median 578 s) and not at all
+by the other, so this is the seed, not wall noise. With seed 1 it
+solves four of the eight probe cells on its own (`Ptn-7824-b19`,
+`mp1-Nb7T45`, `ER_400` apx_2, `reconf10_70_queen14_2`): those were cells
+seed 0 happened to miss, not cells kissat cannot reach. Over both seeds
+the stock binary solves 327 cells at least once and the share 329; 13
+cells only the share reaches (oddball tto 52, 53, 57, the lockchart
+group-2 L18 and L19 and group-1 L200, `at-least-two-vmpc_28`, ...) and
+11 only stock; over the two seeds the share solves 633 v 623, +5 a
+seed, which is inside what the seed alone moves. So the share changes
+which satisfiable cells fall more than how many, it costs 2-6% work on
+unsatisfiable cells, and most of its seed-0 lead was the luck of one
+seed. **Not promoted**; the options
+stay in the tree, off. What would move this is a way to spend
+satisfiable-side luck better (more seeds per run, or a schedule that
+diversifies), measured over at least two seeds. Tests:
 `tests/walkshare.rs` (the share off is the stock trajectory; on, a walk
 is longer and its steps are in the clock exactly; a work limit set half
 way into a walk ends the run there; a stalled walk ends early). Review:

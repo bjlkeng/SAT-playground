@@ -136,7 +136,12 @@ Every RL comparison carries three arms: stock (policy off), policy-on with
 `act == STOCK` (isolates logging and inference overhead), and the candidate.
 Report per-family. ±2 solved is deal noise on 100 cells, so the decision
 evidence is the 400-cell run plus the tick-deterministic comparison, not a
-single medium-suite delta.
+single medium-suite delta. A candidate that moves every cell's search
+also needs a second seed (pass `--seed=1` in the arm's `SAT_EXTRA_ARGS`; the
+later option wins): on the 400 cells the same stock binary under seeds 0
+and 1 solves 311 v 312 but differs on 31 cells, 27 of them satisfiable
+(2026-10-14), so a net gain of about 6 cells on one seed can be luck alone
+(the local-search share: +11 on seed 0, −1 on seed 1).
 
 Runs:
 
