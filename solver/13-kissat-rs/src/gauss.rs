@@ -42,10 +42,13 @@
 //! With `gauss=0` nothing here runs and the solver is the stock one.
 
 use crate::internal::Solver;
-use crate::literal::{idx, lit as lit_of, not};
+use crate::literal::{idx, not};
 use crate::propsearch::Conflict;
 
 const INVALID: u32 = u32::MAX;
+
+/// The engine's work between two checks of its yield (ticks).
+const YIELD_WINDOW: u64 = 1 << 26;
 
 /// What inspecting a row finds.
 enum Status {
@@ -94,8 +97,16 @@ pub struct State {
     col_mixed: Vec<bool>,
     /// How far along the trail the engine has read.
     pub cursor: usize,
+    /// Per internal variable index: its column, for the variables the
+    /// solver still has at the build (INVALID for the rest).
     col_of: Vec<u32>,
-    var_of: Vec<u32>,
+    /// Per column: the external variable, and the internal literal of its
+    /// positive side (a fixed variable's may be shared with other fixed
+    /// ones after a compaction, which is why `col_of` is not its inverse).
+    ext_of: Vec<i32>,
+    lit_of: Vec<u32>,
+    /// The external literals of the clause being built (the proof's copy).
+    proof_clause: Vec<i32>,
     words: usize,
     rows: Vec<Row>,
     bits: Vec<u64>,
@@ -112,6 +123,8 @@ pub struct State {
     work: u64,
     /// The work of building the matrix, outside the effort cap.
     build_ticks: u64,
+    /// The engine's work at which the yield is next checked.
+    next_yield_check: u64,
     // statistics for the exit report
     pub propagations: u64,
     pub conflicts: u64,
@@ -251,9 +264,11 @@ fn fits(solver: &Solver, rows: usize, cols: usize) -> bool {
     bits <= limit
 }
 
-/// Called once the formula is in the solver and before preprocessing:
-/// decide whether the engine runs and freeze its variables. The XORs
-/// themselves were handed over by the structure pass (`xors`).
+/// Called once the formula is in the solver: whether the engine is wanted
+/// (option on, at least two XORs). Nothing is frozen and nothing is
+/// mapped yet: preprocessing runs as it would without the engine, and the
+/// matrix is built after it over the variables that are left (an XOR
+/// variable preprocessing removed is pivoted out and its row dropped).
 pub fn init(solver: &mut Solver) {
     let g = &mut solver.gauss;
     g.on = false;
@@ -262,61 +277,9 @@ pub fn init(solver: &mut Solver) {
         g.mixed = Vec::new();
         return;
     }
-    // the columns: every variable of an XOR, in internal indices
-    let nvars = solver.vars() as usize;
-    let mut col_of: Vec<u32> = vec![INVALID; nvars];
-    let mut var_of: Vec<u32> = Vec::new();
-    let xors = std::mem::take(&mut solver.gauss.xors);
-    for (vars, _) in &xors {
-        for &ev in vars {
-            let ilit = crate::import::import_literal(solver, ev);
-            let v = idx(ilit) as usize;
-            if col_of[v] == INVALID {
-                col_of[v] = var_of.len() as u32;
-                var_of.push(v as u32);
-            }
-        }
-    }
-    if !fits(solver, xors.len(), var_of.len()) {
-        crate::print::message(
-            solver,
-            format_args!(
-                "parity engine off: {} XORs over {} variables exceed gausslimit={}M bits",
-                xors.len(),
-                var_of.len(),
-                solver.options.gausslimit
-            ),
-        );
-        return;
-    }
-    let mut frozen = vec![false; nvars];
-    for &v in &var_of {
-        frozen[v as usize] = true;
-    }
-    let words = (var_of.len() + 63) / 64;
-    let mixed = std::mem::take(&mut solver.gauss.mixed);
-    let mut col_mixed: Vec<bool> = vec![false; var_of.len()];
-    for (vars, _) in &xors {
-        for &ev in vars {
-            let ilit = crate::import::import_literal(solver, ev);
-            let col = col_of[idx(ilit) as usize] as usize;
-            col_mixed[col] = mixed.get(ev as usize).copied().unwrap_or(true);
-        }
-    }
-    let g = &mut solver.gauss;
-    g.col_mixed = col_mixed;
-    g.col_of = col_of;
-    g.var_of = var_of;
-    g.frozen = frozen;
-    g.xors = xors;
-    g.words = words;
-    g.assigned = vec![0; words];
-    g.truth = vec![0; words];
-    g.scanned = vec![0; words];
-    g.on = true;
     crate::print::message(
         solver,
-        format_args!("parity engine: {} XOR constraints over {} variables, frozen", solver.gauss.xors.len(), solver.gauss.var_of.len()),
+        format_args!("parity engine: {} XOR constraints in the input, the matrix is built after preprocessing", solver.gauss.xors.len()),
     );
 }
 
@@ -325,32 +288,74 @@ pub fn init(solver: &mut Solver) {
 /// yields at level zero. Returns false when the matrix refutes the
 /// formula (the solver is then inconsistent).
 pub fn build(solver: &mut Solver) -> bool {
-    if !solver.gauss.on {
+    if solver.gauss.xors.len() < 2 || solver.gauss.built {
         return true;
     }
     let xors = std::mem::take(&mut solver.gauss.xors);
-    let cols = solver.gauss.var_of.len();
+    let mixed = std::mem::take(&mut solver.gauss.mixed);
+    // the columns: every variable of an XOR; one preprocessing removed
+    // (eliminated or substituted) is "gone", one fixed at level zero is
+    // a column assigned for good, the rest map to their internal index
+    let nvars = solver.vars() as usize;
+    let mut col_of: Vec<u32> = vec![INVALID; nvars];
+    let mut ext_of: Vec<i32> = Vec::new();
+    let mut lit_of_col: Vec<u32> = Vec::new();
+    let mut gone: Vec<bool> = Vec::new();
+    let mut col_mixed: Vec<bool> = Vec::new();
+    let mut col_index: std::collections::HashMap<i32, u32> = std::collections::HashMap::new();
+    let mut fixed = 0usize;
+    for (vars, _) in &xors {
+        for &ev in vars {
+            if col_index.contains_key(&ev) {
+                continue;
+            }
+            let col = ext_of.len() as u32;
+            col_index.insert(ev, col);
+            ext_of.push(ev);
+            col_mixed.push(mixed.get(ev as usize).copied().unwrap_or(true));
+            let entry = solver.import_[ev as usize];
+            if !entry.imported || entry.eliminated {
+                gone.push(true);
+                lit_of_col.push(crate::literal::INVALID_LIT);
+                continue;
+            }
+            let ilit = entry.lit;
+            gone.push(false);
+            lit_of_col.push(ilit);
+            if solver.values[ilit as usize] != 0 {
+                fixed += 1; // assigned for good; never notified
+            } else {
+                col_of[idx(ilit) as usize] = col;
+            }
+        }
+    }
+    let cols = ext_of.len();
+    if !fits(solver, xors.len(), cols) {
+        crate::print::message(
+            solver,
+            format_args!("parity engine off: {} XORs over {} variables exceed gausslimit={}M bits", xors.len(), cols, solver.options.gausslimit),
+        );
+        return true;
+    }
     let mut g = std::mem::take(&mut solver.gauss);
-    let words = g.words;
+    let words = (cols + 63) / 64;
+    g.words = words;
+    g.col_of = col_of;
+    g.ext_of = ext_of;
+    g.lit_of = lit_of_col;
+    g.col_mixed = col_mixed;
+    g.assigned = vec![0; words];
+    g.truth = vec![0; words];
+    g.scanned = vec![0; words];
     g.watch = vec![Vec::new(); cols];
-    // rows, with duplicates merged
+    // rows
     let mut rows: Vec<Row> = Vec::new();
     let mut bits: Vec<u64> = Vec::new();
     for (vars, parity) in &xors {
         let start = bits.len();
         bits.resize(start + words, 0);
         for &ev in vars {
-            let ilit = crate::import::import_literal(solver, ev);
-            let col = g.col_of.get(idx(ilit) as usize).copied().unwrap_or(INVALID);
-            if col == INVALID {
-                // the variable is gone (eliminated or substituted despite
-                // the freeze): the engine cannot run on this formula
-                crate::print::message(solver, format_args!("parity engine off: variable {} is no longer a column", ev));
-                g.on = false;
-                g.frozen = Vec::new();
-                solver.gauss = g;
-                return true;
-            }
+            let col = col_index[&ev];
             bits[start + (col as usize >> 6)] |= 1u64 << (col & 63);
         }
         let p = *parity;
@@ -362,11 +367,14 @@ pub fn build(solver: &mut Solver) -> bool {
     if solver.gaussproof.active() {
         solver.gaussproof.rows(g.rows.len());
     }
-    // the engine's view of the assignment: whatever is fixed at level zero
+    // the engine's view of the assignment: whatever is fixed at level
+    // zero; a gone column counts as unassigned until it is pivoted out
     debug_assert!(solver.level == 0);
     for col in 0..cols as u32 {
-        let v = g.var_of[col as usize];
-        let val = solver.values[lit_of(v) as usize];
+        if gone[col as usize] {
+            continue;
+        }
+        let val = solver.values[g.lit_of[col as usize] as usize];
         State::set(&mut g.assigned, col, val != 0);
         State::set(&mut g.truth, col, val > 0);
         State::set(&mut g.scanned, col, val != 0);
@@ -391,9 +399,46 @@ pub fn build(solver: &mut Solver) -> bool {
     // XORs the chains encode, as CryptoMiniSat's "xor together" does.
     // Other pure variables keep their rows: a variable the solver decides
     // on must stay in the matrix for the propagation to be complete
-    let helper: Vec<bool> = (0..cols).map(|c| !g.col_mixed[c] && occ[c] <= 2).collect();
+    // A variable preprocessing removed is pivoted first of all and its
+    // row dropped too: the rows left are over the solver's variables, and
+    // still sums of input XORs. A helper is judged on the solver's
+    // clauses as they are now, not the input's: a candidate (pure in the
+    // input, in at most two XORs) stays one only if every clause of the
+    // solver that holds it lies within one of its XORs' variable sets; a
+    // variable that stands in for a substituted one carries that one's
+    // clauses (an error bit's at-most-one clauses, say) and is no helper
+    let candidate: Vec<bool> = (0..cols).map(|c| !gone[c] && !g.col_mixed[c] && occ[c] <= 2).collect();
+    let mut own: Vec<Vec<u32>> = vec![Vec::new(); cols];
+    for (i, (vars, _)) in xors.iter().enumerate() {
+        for &ev in vars {
+            let c = col_index[&ev] as usize;
+            if candidate[c] {
+                own[c].push(i as u32);
+            }
+        }
+    }
+    let xor_cols: Vec<Vec<u32>> = xors.iter().map(|(vars, _)| vars.iter().map(|&ev| col_index[&ev]).collect()).collect();
+    let (outside, scanned) = clauses_outside(solver, &g.col_of, &candidate, &own, &xor_cols);
+    g.work += scanned;
+    {
+        // the scan of the formula is charged like the reduction's work,
+        // and the limits are polled before the reduction starts
+        let work = std::mem::take(&mut g.work);
+        g.build_ticks += work;
+        solver.statistics.gauss_ticks += work;
+        solver.statistics.ticks += work;
+        let over = solver.limited.ticks && solver.statistics.work_clock() >= solver.limits.ticks;
+        if over || solver.termination.flagged.load(std::sync::atomic::Ordering::Relaxed) {
+            crate::print::message(solver, "parity engine off: the work limit or a termination request ended the build".to_string());
+            g.rows = Vec::new();
+            g.bits = Vec::new();
+            solver.gauss = g;
+            return true;
+        }
+    }
+    let helper: Vec<bool> = (0..cols).map(|c| gone[c] || (candidate[c] && !outside[c])).collect();
     let mut order: Vec<u32> = (0..cols as u32).collect();
-    order.sort_by_key(|&c| (!helper[c as usize], occ[c as usize], c));
+    order.sort_by_key(|&c| (!gone[c as usize], !helper[c as usize], occ[c as usize], c));
     // a column whose turn finds every row holding it a pivot row already
     // is skipped; a later addition can carry it into a row that has no
     // pivot yet, so the pass repeats until no such row is left, and then
@@ -457,7 +502,7 @@ pub fn build(solver: &mut Solver) -> bool {
         }
     }
     // rows without a pivot are zero rows: a parity of one refutes; a row
-    // whose pivot is a helper variable is dropped (see above)
+    // whose pivot is a helper or a gone variable is dropped (see above)
     let mut refuted = false;
     let mut dropped = 0usize;
     for r in 0..n {
@@ -476,9 +521,22 @@ pub fn build(solver: &mut Solver) -> bool {
             dropped += 1;
         }
     }
+    debug_assert!((0..n).all(|r| !g.rows[r].live || (0..cols as u32).all(|c| !gone[c as usize] || !g.has(r, c))));
+    // the live rows' variables stay the solver's from here on: no
+    // elimination, no substitution (src/eliminate.rs, fastel.rs,
+    // substitute.rs), no compaction (src/collect.rs)
+    let mut frozen = vec![false; nvars];
+    for col in 0..cols {
+        if !gone[col] {
+            frozen[idx(g.lit_of[col]) as usize] = true;
+        }
+    }
+    g.frozen = frozen;
+    g.on = true;
     g.work += (n as u64) * (words as u64);
     let work = std::mem::take(&mut g.work);
     g.build_ticks += work;
+    g.next_yield_check = YIELD_WINDOW;
     solver.statistics.gauss_ticks += work;
     solver.statistics.ticks += work;
     solver.gauss = g;
@@ -543,9 +601,11 @@ pub fn build(solver: &mut Solver) -> bool {
     crate::print::message(
         solver,
         format_args!(
-            "parity engine on: {} rows over {} variables ({} words a row), {} row additions to reduce, {} rows of helper variables dropped",
+            "parity engine on: {} rows over {} variables ({} fixed, {} gone, {} words a row), {} row additions to reduce, {} rows of helper and gone variables dropped",
             live,
             cols,
+            fixed,
+            gone.iter().filter(|&&x| x).count(),
             words,
             solver.gauss.additions,
             dropped
@@ -572,8 +632,8 @@ fn latest_col(solver: &mut Solver, r: usize, skip: u32) -> u32 {
             if col == skip {
                 continue;
             }
-            let v = solver.gauss.var_of[col as usize];
-            let a = solver.assigned[v as usize];
+            let l = solver.gauss.lit_of[col as usize];
+            let a = solver.assigned[idx(l) as usize];
             let key = (a.level, a.trail);
             if best == INVALID || key > best_key {
                 best = col;
@@ -584,26 +644,120 @@ fn latest_col(solver: &mut Solver, r: usize, skip: u32) -> u32 {
     best
 }
 
-/// The literal of column `col` with value `value`.
+/// Per candidate helper column, whether some irredundant clause of the
+/// solver holds its variable and does not lie within one of its XORs'
+/// variable sets (`own` names the XORs, `xor_cols` their columns);
+/// binary clauses through the watches, large ones through the arena,
+/// garbage and redundant clauses left out. Also the work of the scan (one
+/// per watch and per literal visited).
+fn clauses_outside(solver: &Solver, col_of: &[u32], candidate: &[bool], own: &[Vec<u32>], xor_cols: &[Vec<u32>]) -> (Vec<bool>, u64) {
+    let cols = candidate.len();
+    let mut outside = vec![false; cols];
+    let mut work: u64 = 0;
+    let mut mark: Vec<u32> = vec![u32::MAX; cols];
+    // the clause's columns are in `buf` (INVALID for a variable that is
+    // no column); each candidate among them is checked
+    let check = |buf: &[u32], outside: &mut Vec<bool>, mark: &mut Vec<u32>| {
+        for &c in buf {
+            if c == INVALID || !candidate[c as usize] || outside[c as usize] {
+                continue;
+            }
+            let mut within = false;
+            for &x in &own[c as usize] {
+                let set = &xor_cols[x as usize];
+                for &m in set {
+                    mark[m as usize] = x;
+                }
+                if buf.iter().all(|&b| b != INVALID && mark[b as usize] == x) {
+                    within = true;
+                    break;
+                }
+            }
+            if !within {
+                outside[c as usize] = true;
+            }
+        }
+    };
+    let vars = solver.vars() as usize;
+    let mut buf: Vec<u32> = Vec::new();
+    for i in 0..vars {
+        let col = col_of[i];
+        if col == INVALID || !candidate[col as usize] {
+            continue;
+        }
+        for lit in [2 * i as u32, 2 * i as u32 + 1] {
+            let w = solver.watches[lit as usize];
+            let mut p = w.begin;
+            while p != w.end {
+                let watch = solver.vectors.stack[p];
+                let binary = crate::watch::watch_is_binary(watch);
+                p += if binary { 1 } else { 2 };
+                work += 1;
+                if binary {
+                    let other = crate::watch::watch_lit(watch);
+                    buf.clear();
+                    buf.push(col);
+                    buf.push(col_of[idx(other) as usize]);
+                    check(&buf, &mut outside, &mut mark);
+                }
+            }
+        }
+    }
+    let last_irredundant = solver.last_irredundant;
+    let mut ref_: crate::reference::Reference = 0;
+    while (ref_ as u64) < solver.arena.size_wards() {
+        let next = solver.arena.next_clause_ref(ref_);
+        if last_irredundant != crate::reference::INVALID_REF && ref_ > last_irredundant {
+            break;
+        }
+        let c = solver.arena.clause(ref_);
+        work += 1;
+        if !c.redundant() && !c.garbage() {
+            work += c.size() as u64;
+            buf.clear();
+            let mut any = false;
+            for &lit in c.lits() {
+                let col = col_of[idx(lit) as usize];
+                any |= col != INVALID && candidate[col as usize];
+                buf.push(col);
+            }
+            if any {
+                check(&buf, &mut outside, &mut mark);
+            }
+        }
+        ref_ = next;
+    }
+    (outside, work)
+}
+
+/// The internal literal of column `col` with value `value`.
 #[inline]
 fn literal(g: &State, col: u32, value: bool) -> u32 {
-    let v = g.var_of[col as usize];
+    let l = g.lit_of[col as usize];
     if value {
-        lit_of(v)
+        l
     } else {
-        not(lit_of(v))
+        not(l)
     }
 }
 
 /// The row's clause, false under the assignment except `propagated`
 /// (INVALID for a conflict), which takes `value`: every variable of the
-/// row with its value negated, the propagated literal first.
+/// row with its value negated, the propagated literal first. The proof's
+/// copy (external literals) holds every variable of the row; the solver's
+/// leaves out those fixed at level zero: kissat drops root-false literals
+/// itself, and after a compaction every fixed variable shares one
+/// internal literal, which a clause may hold only once (the DRAT addition
+/// of the shorter clause is implied by the proved one and the units).
 fn clause_of(solver: &mut Solver, r: usize, propagated: u32, value: bool) {
     solver.clause.clear();
+    solver.gauss.proof_clause.clear();
     let words = solver.gauss.words;
     if propagated != INVALID {
         let lit = literal(&solver.gauss, propagated, value);
         solver.clause.push(lit);
+        let ev = solver.gauss.ext_of[propagated as usize];
+        solver.gauss.proof_clause.push(if value { ev } else { -ev });
     }
     for i in 0..words {
         let mut w = solver.gauss.bits[r * words + i];
@@ -613,11 +767,16 @@ fn clause_of(solver: &mut Solver, r: usize, propagated: u32, value: bool) {
             if col == propagated {
                 continue;
             }
-            let v = solver.gauss.var_of[col as usize];
-            let val = solver.values[lit_of(v) as usize];
+            let l = solver.gauss.lit_of[col as usize];
+            let val = solver.values[l as usize];
             debug_assert!(val != 0);
+            let ev = solver.gauss.ext_of[col as usize];
+            solver.gauss.proof_clause.push(if val > 0 { -ev } else { ev });
+            if solver.assigned[idx(l) as usize].level == 0 {
+                continue;
+            }
             // the literal that is false now
-            let lit = if val > 0 { not(lit_of(v)) } else { lit_of(v) };
+            let lit = if val > 0 { not(l) } else { l };
             solver.clause.push(lit);
         }
     }
@@ -629,8 +788,9 @@ fn prove_clause(solver: &mut Solver, r: usize) {
     if !solver.gaussproof.active() {
         return;
     }
-    let ext: Vec<i32> = solver.clause.iter().map(|&l| crate::inline::export_literal(solver, l)).collect();
+    let ext = std::mem::take(&mut solver.gauss.proof_clause);
     solver.gaussproof.clause(r, &ext);
+    solver.gauss.proof_clause = ext;
 }
 
 /// Put the clause on `solver.clause` into the arena as a redundant clause
@@ -696,7 +856,8 @@ fn settle(solver: &mut Solver, r: usize, status: Status) -> Option<Conflict> {
             let size = solver.clause.len();
             solver.gauss.propagations += 1;
             if size == 1 {
-                // the row has this one variable: a unit, fixed at level zero
+                // the row's other variables are all fixed: a unit, assigned
+                // at level zero
                 solver.gauss.units += 1;
                 solver.gauss.rows[r].live = false;
                 solver.clause.clear();
@@ -720,7 +881,8 @@ fn settle(solver: &mut Solver, r: usize, status: Status) -> Option<Conflict> {
             solver.gauss.conflicts += 1;
             let size = solver.clause.len();
             if size == 0 {
-                // an empty row of parity one: the XOR system is inconsistent
+                // an empty row of parity one, or a row false under the
+                // level-zero assignment alone: the formula is refuted
                 solver.gauss.rows[r].live = false;
                 if solver.level > 0 && !solver.inconsistent {
                     // at level zero the caller's conflict handling does this
@@ -988,6 +1150,31 @@ pub fn propagate(solver: &mut Solver) -> Option<Conflict> {
     let work = std::mem::take(&mut solver.gauss.work);
     solver.statistics.gauss_ticks += work;
     solver.statistics.ticks += work;
+    // the yield guard: at every window of the engine's work, its
+    // propagations and conflicts per million ticks since the build must
+    // reach gaussyield, else it stops for the run (the clauses it added
+    // stay valid); on a cell it helps the yield is in the hundreds, on
+    // one where it only burns work below one
+    let min_yield = solver.options.gaussyield as u64;
+    if min_yield != 0 && solver.gauss.on {
+        let spent = solver.statistics.gauss_ticks.saturating_sub(solver.gauss.build_ticks);
+        if spent >= solver.gauss.next_yield_check {
+            solver.gauss.next_yield_check = spent.saturating_add(YIELD_WINDOW);
+            let events = solver.gauss.propagations + solver.gauss.conflicts;
+            let per_million = events.saturating_mul(1_000_000) / spent.max(1);
+            if per_million < min_yield {
+                solver.gauss.on = false;
+                solver.gauss.frozen = Vec::new();
+                crate::print::message(
+                    solver,
+                    format_args!(
+                        "parity engine off: {} propagations and conflicts in {} ticks, {} per million, under gaussyield={}",
+                        events, spent, per_million, min_yield
+                    ),
+                );
+            }
+        }
+    }
     // the effort cap: the engine may use gausseffort per mille of the
     // search ticks (plus a start allowance); past that it stops for the
     // run, and the clauses it added stay valid
@@ -1055,10 +1242,13 @@ pub fn resync(solver: &mut Solver) {
         return;
     }
     debug_assert!(solver.level == 0);
-    let cols = solver.gauss.var_of.len();
+    let cols = solver.gauss.ext_of.len();
     for col in 0..cols as u32 {
-        let v = solver.gauss.var_of[col as usize];
-        let val = solver.values[lit_of(v) as usize];
+        let l = solver.gauss.lit_of[col as usize];
+        if l == crate::literal::INVALID_LIT {
+            continue; // a gone column: in no live row
+        }
+        let val = solver.values[l as usize];
         State::set(&mut solver.gauss.assigned, col, val != 0);
         State::set(&mut solver.gauss.truth, col, val > 0);
         State::set(&mut solver.gauss.scanned, col, val != 0);
@@ -1120,7 +1310,7 @@ pub fn report(solver: &Solver) {
     println!(
         "c gauss rows={} columns={} propagations={} conflicts={} units={} pivots={} additions={} ticks={}",
         g.rows.iter().filter(|r| r.live).count(),
-        g.var_of.len(),
+        g.ext_of.len(),
         g.propagations,
         g.conflicts,
         g.units,

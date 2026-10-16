@@ -305,7 +305,7 @@ fn chains_are_reduced_and_the_model_holds() {
     write(&cnf, next as usize, &clauses);
     let on = run(&cnf, &["--gauss=1", "--gausseffort=0"], &[]);
     assert_eq!(on.status, "SATISFIABLE");
-    assert!(on.stdout.contains("rows of helper variables dropped"), "{}", on.stdout);
+    assert!(on.stdout.contains("rows of helper and gone variables dropped"), "{}", on.stdout);
     run_and_check_model(&cnf, &clauses, &["--gauss=1", "--gausseffort=0"]);
 }
 

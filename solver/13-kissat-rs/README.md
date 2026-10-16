@@ -793,19 +793,33 @@ clauses, during search. Options, all off until measured:
 | option | what it does |
 |---|---|
 | `--gauss=1` | the engine on |
-| `--gausseffort=N` | the engine may use N per mille of the search ticks (plus a start allowance); past that it stops for the run (default 200; 0 for no cap) |
-| `--gausslimit=N` | the matrix may hold N million bits, rows times columns (default 256); a larger system leaves the engine off |
+| `--gaussyield=N` | at every window of 67M ticks of its work, the engine's propagations and conflicts per million ticks since the build must reach N, else it stops for the run (default 20; par32-2 runs at about 560, a cell where it only burns work under 1; 0 for no guard) |
+| `--gausslimit=N` | the matrix may hold N million bits, rows times columns, plus the proof's table of row sets (default 256); a larger system leaves the engine off |
+| `--gausseffort=N` | the engine may use N per mille of the search ticks (plus a start allowance); past that it stops for the run (default 0, no cap: a cell the engine solves takes more engine work than search work) |
 
 **How it works.** The XOR constraints the parity pass extracts from the
 input (groups of 2^(k-1) clauses over one variable set, k up to 8) are
-rows of a matrix over GF(2): one bit per variable plus the parity. A
-variable that is in at most two XORs and in no other clause is a helper
-of an encoding (the chain variables of a long XOR); the reduction
-pivots on helpers first and drops their rows, so the matrix holds the
-long XORs the chains encode. Every other variable, including those that
-occur only in XOR clauses, keeps its row: a variable the solver decides
-on must be in the matrix for the propagation to be complete (dropping
-them all cost par32-2 most of the engine's effect). The matrix is kept
+rows of a matrix over GF(2): one bit per variable plus the parity. The
+matrix is built when the search starts, after preprocessing, which runs
+as it would without the engine: a variable preprocessing removed
+(eliminated or substituted) is pivoted first and its row dropped, so
+the rows left are over the solver's variables and still sums of input
+XORs; a variable fixed at level zero is a column assigned for good. (An
+earlier build froze every XOR variable before preprocessing; on
+`jkkk-one-one`, 5,595 frozen variables crippled preprocessing before
+the engine had run.) A variable that is in at most two XORs, in no
+other clause of the input, and in no clause of the solver outside its
+XORs' variable sets is a helper of an encoding (the chain variables of
+a long XOR); the reduction pivots on helpers too and drops their rows,
+so the matrix holds the long XORs the chains encode. The third
+condition is checked on the solver's clauses at the build: a chain's
+end that stands in for a substituted error bit carries the error bit's
+clauses and is no helper (judged by counts instead, such a variable
+was dropped and a 65-sample case lost every row). Every other variable,
+including one that occurs only in XOR clauses, keeps its row: a
+variable the solver decides on must be in the matrix for the
+propagation to be complete (dropping them all cost par32-2 most of the
+engine's effect). The matrix is kept
 in reduced row echelon form: each row has a basic variable that occurs
 in no other row. A row watches its basic variable and one other
 unassigned one. After clause propagation reaches a fixpoint the engine
@@ -824,10 +838,18 @@ one) into the arena as a redundant clause, the reason or the conflict
 for analyze; a row of one variable is a unit, assigned at level zero. A
 zero row of parity one at the reduction refutes the formula.
 
-**What the solver gives up while the engine is on.** Its variables are
-frozen (never eliminated, never substituted), so the columns stay live;
-and there is no compaction (which renumbers variables) for the run. Its
-work goes into the work clock as `gauss_ticks`.
+**What the solver gives up while the engine is on.** From the build on
+its variables are frozen (never eliminated, never substituted), so the
+columns stay live, and there is no compaction (which renumbers
+variables; the first bug found: fixed variables merged into one
+column). Its work goes into the work clock as `gauss_ticks`. **Guards:**
+the yield guard above (on `Carry_Bits_Fast_19` the engine made one
+propagation in 491M ticks; on `jkkk-one-one` 22K in 34G ticks and the
+run took 144 s against 4 s; both stop within 67M ticks now), the matrix
+size cap, and the effort cap as an option. A cell the engine stops on
+early still takes another path afterwards (the clauses it added, the
+few propagations), which on a satisfiable cell is luck either way
+(`jkkk-one-one`: 4, 21 and 277 s for the stock solver's seeds 0-2).
 
 **Measured so far** (X.1, no proof yet): `par32-2` (parity learning,
 3176 variables; never solved by the stock solver, CryptoMiniSat 5.8

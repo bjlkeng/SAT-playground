@@ -152,11 +152,17 @@ kissat_options! {
     // Not in kissat (2026-10-15, bead SAT-playground-1v2.7): the parity
     // engine, XOR reasoning inside search (src/gauss.rs); off until
     // measured. gausslimit caps the matrix (rows times columns, in
-    // millions of bits); gausseffort caps the engine's work at this share
-    // of the search ticks (per mille), 0 for no cap.
+    // millions of bits); gaussyield stops the engine for the run when,
+    // at a window of its work, its propagations and conflicts per
+    // million ticks of its work fall below this (on par32-2 the yield is
+    // about 560, on the cells where it only burns work below 1);
+    // gausseffort caps the engine's work at this share of the search
+    // ticks (per mille), 0 for no cap: a cell the engine solves takes
+    // more engine work than search work, so this is a guard, not a default.
     (gauss, 0, 0, 1, "parity engine: XOR reasoning inside search"),
-    (gausseffort, 200, 0, 100_000, "parity engine work cap (per mille of search ticks)"),
+    (gausseffort, 0, 0, 100_000, "parity engine work cap (per mille of search ticks, 0 none)"),
     (gausslimit, 256, 1, 100_000, "parity engine matrix size cap (M bits)"),
+    (gaussyield, 20, 0, 1_000_000, "parity engine minimum yield (propagations per M ticks, 0 none)"),
     (ifthenelse, 1, 0, 1, "extract and eliminate if-then-else gates"),
     (incremental, 0, 0, 1, "enable incremental solving"),
     (jumpreasons, 1, 0, 1, "jump binary reasons"),
@@ -710,8 +716,8 @@ mod tests {
     fn table_has_all_158_options_plus_the_structure_pass() {
         // kissat's 158 plus the nine struct* options (plan section 11,
         // 2026-10-07), walkshare, walkstall (2026-10-13) and gauss, gausseffort,
-        // gausslimit (2026-10-15)
-        assert_eq!(OPTION_TABLE.len(), 158 + 14);
+        // gausslimit, gaussyield (2026-10-15/16)
+        assert_eq!(OPTION_TABLE.len(), 158 + 15);
     }
 
     #[test]
