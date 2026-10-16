@@ -871,6 +871,39 @@ watch on the one assigned at the highest level, so a backtrack frees it
 with any other; assignments kissat keeps across a chronological
 backtrack are read again), the sixth clean.
 
+**Paired run** (2026-10-16; `log/abtest-struct-gauss-400-2026-10-16-01-47-56`,
+`log/struct-gauss-400-report-2026-10-16.txt`; one frozen binary, commit
+e8b0bad, `--gauss=1` against `--gauss=0` at seeds 0 and 1, 400 cells,
+1800 s, every answer through the gate, no contradiction; the engine
+builds a matrix on 107 of the 400 cells, 46 of them over equivalences
+only):
+
+| arm | solved | +/− v its base | wall PAR-2 | tick PAR-2 | both seeds |
+|---|---:|---:|---:|---:|---:|
+| base, seed 0 | 309 | | 1.000× | 1.000× | |
+| gauss, seed 0 | 310 | +5 / −4 | 0.997× | 0.982× | |
+| base, seed 1 | 311 | | 0.974× | 0.978× | 620 |
+| gauss, seed 1 | 311 | +4 / −4 | 0.984× | 0.981× | 621 |
+
+The one gain that holds on both seeds is `par32-2` (12 and 34 s, never
+solved by stock). The other gains and losses are satisfiable cells on
+other paths (timetables, ER, HCP; `SC25_Timetable_C_496` is gained on
+one seed and lost on the other) and two multiplier cells at 1714 and
+1740 s, near-timeout noise. One loss repeats: `bivium-39-200`
+(unsatisfiable, a cipher, 462 XORs): 707 and 838 s for stock, a
+timeout and 1785 s with the engine. `jkkk-one-one` (satisfiable, 4,630
+XORs) took 197 and 217 s against 5 and 26 s, inside the stock solver's
+own spread across seeds (4, 21, 277 s), but twice on the wrong side.
+On the 107 cells the engine touches, where both arms solve, the work
+summed is 1.05× and 1.03× (medians 1.02 and 1.00); on the other 293
+cells the search is identical (the work differs by the scan for XORs,
+0.01% in the median). **Not promoted**: the option stays off. What it
+would take: the engine's cost on XOR-rich cells it cannot crack
+(bivium) understood, and a second cell it does crack; the 46 cells
+with equivalences only should not build a matrix at all (kissat's
+substitution handles those). The engine's proofs cost two checker
+timeouts more than stock's over the run (24 v 22 at seed 1).
+
 **Proof** (X.2, `src/gaussproof.rs`). The structure pass's VeriPB
 stream stays open through the search and the engine writes into it, so
 the gate's first stage proves every clause the engine added from the

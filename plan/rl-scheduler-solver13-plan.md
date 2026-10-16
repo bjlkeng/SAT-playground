@@ -1850,6 +1850,17 @@ source of truth; every bead points back to its section.
   harness reports as checker timeouts; a lazy proof (only the 7% of
   clauses in drat-trim's core) is blocked by kissat rewriting clauses
   it owns. The engine now runs with a proof path.
+- 2026-10-16 (X.3, the guards and the paired run). The matrix is built
+  after preprocessing (freezing XOR variables first crippled it),
+  helpers are judged on the solver's clauses, and a yield guard stops
+  an engine that only burns work. Four arms on the 400 cells (gauss on
+  and off, seeds 0 and 1): 310 v 309 and 311 v 311, tick PAR-2 0.98×;
+  par32-2 is the one gain on both seeds, bivium (an unsatisfiable
+  cipher) the one repeated loss, the rest luck; the search on the 293
+  cells without a matrix is identical. Not promoted; `gauss` stays an
+  option. For this plan: an engine that changes the search on a
+  quarter of the cells moves about ±5 cells a seed by luck alone, so
+  the two-seed rule of 2026-10-14 was the right bar.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 
