@@ -789,6 +789,12 @@ pub fn compacting(solver: &mut Solver) -> bool {
     if solver.options.compact == 0 {
         return false;
     }
+    // Not in kissat: compaction renumbers the internal variables, which
+    // the parity engine's columns are tied to (src/gauss.rs); no
+    // compaction while it is on
+    if solver.gauss.on {
+        return false;
+    }
     let inactive = solver.vars - solver.active;
     // unsigned limit = GET_OPTION (compactlim) / 1e2 * solver->vars;
     let limit = (solver.options.compactlim as f64 / 1e2 * solver.vars as f64) as u32;
@@ -801,7 +807,7 @@ pub fn initial_sparse_collect(solver: &mut Solver) {
     debug_assert!(!solver.inconsistent);
     debug_assert!(solver.watching);
     if solver.statistics.units != 0 {
-        let compact = solver.options.compact != 0;
+        let compact = solver.options.compact != 0 && !solver.gauss.on; // not in kissat: see compacting
         sparse_collect(solver, compact, 0);
     }
     crate::report::report(solver, false, '.'); // REPORT (0, '.')

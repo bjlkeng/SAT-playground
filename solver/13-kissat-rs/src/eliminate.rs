@@ -428,6 +428,10 @@ fn can_eliminate_variable(solver: &Solver, idx: u32) -> bool {
     if !flags.eliminate() {
         return false;
     }
+    // Not in kissat: a column of the parity engine stays (src/gauss.rs)
+    if solver.gauss.frozen.get(idx as usize).copied().unwrap_or(false) {
+        return false;
+    }
 
     true
 }

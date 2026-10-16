@@ -779,6 +779,87 @@ three Codex rounds (the stall rule's floor counted kissat's flip
 counter, which advances twice a step; the limit test stopped before any
 walk; the stall interval was counted from the walk's start), then clean.
 
+## The parity engine (2026-10-15; bead `SAT-playground-1v2.7`)
+
+Not in kissat. XOR reasoning inside search (`src/gauss.rs`), the way
+CryptoMiniSat does it (Han and Jiang, "When Boolean Satisfiability Meets
+Gaussian Elimination in a Simplex Way", 2012). An XOR constraint says an
+odd (or even) number of its variables are true. Clauses handle a long
+XOR badly: a clause propagates only when one literal is left, and the
+sum of two XORs has no short clause form. The parity pass settles closed
+XOR systems before search; this engine works on XORs mixed with other
+clauses, during search. Options, all off until measured:
+
+| option | what it does |
+|---|---|
+| `--gauss=1` | the engine on |
+| `--gausseffort=N` | the engine may use N per mille of the search ticks (plus a start allowance); past that it stops for the run (default 200; 0 for no cap) |
+| `--gausslimit=N` | the matrix may hold N million bits, rows times columns (default 256); a larger system leaves the engine off |
+
+**How it works.** The XOR constraints the parity pass extracts from the
+input (groups of 2^(k-1) clauses over one variable set, k up to 8) are
+rows of a matrix over GF(2): one bit per variable plus the parity. A
+variable that is in at most two XORs and in no other clause is a helper
+of an encoding (the chain variables of a long XOR); the reduction
+pivots on helpers first and drops their rows, so the matrix holds the
+long XORs the chains encode. Every other variable, including those that
+occur only in XOR clauses, keeps its row: a variable the solver decides
+on must be in the matrix for the propagation to be complete (dropping
+them all cost par32-2 most of the engine's effect). The matrix is kept
+in reduced row echelon form: each row has a basic variable that occurs
+in no other row. A row watches its basic variable and one other
+unassigned one. After clause propagation reaches a fixpoint the engine
+reads the new part of the trail, all of it before it inspects a row (a
+row judged on part of the trail once assigned a variable the clauses
+had already assigned, which overran the trail). A row whose other watch
+was assigned moves it, or propagates its basic variable, or is
+satisfied or a conflict; a row whose basic variable was assigned takes a
+new basic variable among its unassigned ones and adds itself to every
+other row holding it (the Jordan step), which keeps the propagation
+complete. Backtracking undoes nothing in the matrix; the engine's
+per-variable bits are cleared as the solver unassigns, and after
+inprocessing (probe, eliminate) it re-reads every row. A propagation or
+conflict puts the row's clause (every literal false but the propagated
+one) into the arena as a redundant clause, the reason or the conflict
+for analyze; a row of one variable is a unit, assigned at level zero. A
+zero row of parity one at the reduction refutes the formula.
+
+**What the solver gives up while the engine is on.** Its variables are
+frozen (never eliminated, never substituted), so the columns stay live;
+and there is no compaction (which renumbers variables) for the run. Its
+work goes into the work clock as `gauss_ticks`.
+
+**Measured so far** (X.1, no proof yet): `par32-2` (parity learning,
+3176 variables; never solved by the stock solver, CryptoMiniSat 5.8
+takes 7 s) is **satisfiable in 0.7 s** with 4,518 conflicts, the model
+checked against every clause; the matrix is 513 rows after 2,111 helper
+rows are dropped. `16_2` (a cipher key search) is not an XOR cell:
+neither this engine nor CryptoMiniSat solves it in 15 minutes. Small
+parity-learning formulas (`tests/gauss.rs`) fall in 1-20 conflicts
+where the stock solver passes 20,000. A fixed basis of derived XORs
+written as chain clauses, without an engine, did not solve par32-2 in
+15 minutes: the re-pivoting in search is what matters. Fuzz: 4,600
+random formulas mixing XORs of 2-5 variables with clauses (up to 160
+variables), gauss on against off, every model checked, no mismatch.
+Review: six Codex rounds (the forward SCC walk of substitution had to
+skip frozen variables too; the engine stays off when a proof is
+written until X.2; the reduction and the batch poll the work limit and
+charge their scans; a row with no unassigned variable to watch keeps a
+watch on the one assigned at the highest level, so a backtrack frees it
+with any other; assignments kissat keeps across a chronological
+backtrack are read again), the sixth clean.
+
+**Proof.** Not yet (X.2): with `--gauss=1` an UNSAT answer's DRAT proof
+holds the engine's clauses without their derivation, so the gate
+rejects it; the option stays off by default until the VeriPB stream of
+bead X.2 is in. The design, checked on a toy with VeriPB 3.0.2: each
+input XOR becomes two linear inequalities "sum of its literals − 2 ×
+(carries) ≥ parity" and "≤" through a chain of fresh xor/and variables;
+a row addition is two `pol` lines; a reason or conflict clause of a row
+is one `pol` line (the row's "≤" side plus the clause's literal axioms,
+divided by two and doubled, plus the "≥" side: the odd right-hand side
+is what the division cuts).
+
 - **Work-clock limit.** `limited.ticks` / `limits.ticks` sit next to
   kissat's conflict and decision limits. The check lives in
   `terminate::terminated`, which is what every inprocessing effort loop and

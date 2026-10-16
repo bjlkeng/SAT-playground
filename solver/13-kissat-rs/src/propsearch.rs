@@ -371,7 +371,21 @@ pub fn search_propagate(solver: &mut Solver) -> Option<Conflict> {
 
     solver.ticks = 0;
     let saved_propagate = solver.propagate;
-    let conflict = search_propagate_all(solver);
+    let mut conflict = search_propagate_all(solver);
+    // Not in kissat: the parity engine (src/gauss.rs) reads the trail once
+    // the clauses are at a fixpoint; what it assigns is propagated in turn
+    if solver.gauss.on && conflict.is_none() {
+        loop {
+            conflict = crate::gauss::propagate(solver);
+            if conflict.is_some() || solver.propagate == solver.trail.len() {
+                break;
+            }
+            conflict = search_propagate_all(solver);
+            if conflict.is_some() {
+                break;
+            }
+        }
+    }
     update_search_propagation_statistics(solver, saved_propagate);
     update_conflicts_and_trail::<false>(solver, conflict, true);
     if conflict.is_some() && solver.randec != 0 {

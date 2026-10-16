@@ -23,6 +23,8 @@ pub fn flush_trail(solver: &mut Solver) {
     solver.trail.clear(); // CLEAR_ARRAY (solver->trail)
     solver.propagate = 0; // kissat_reset_propagate
     solver.unflushed = 0;
+    // Not in kissat: the parity engine's trail cursor (src/gauss.rs)
+    solver.gauss.cursor = 0;
 }
 
 /// kissat_mark_reason_clauses.

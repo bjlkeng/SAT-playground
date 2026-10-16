@@ -1825,6 +1825,21 @@ source of truth; every bead points back to its section.
   the run is deterministic up to the wall limit. The passes change the
   search only where they derive something (113 of 279 cells both
   solve); spending their budget without a find leaves it untouched.
+- 2026-10-15 (the parity engine, bead 1v2.7, step X.1). XOR reasoning
+  inside search, option `gauss`, off by default: the XORs the parity
+  pass extracts become a matrix in reduced row echelon form with two
+  watched variables a row and the Jordan step on a pivot's assignment
+  (Han and Jiang 2012, as CryptoMiniSat), reason and conflict clauses
+  materialized into the arena. Before any code: CryptoMiniSat 5.8
+  solves par32-2 in 7 s and a fixed basis of derived XORs as clauses
+  does not in 15 minutes, so the in-search engine was the target, and
+  the proof recipe was checked on a toy with VeriPB. Result: par32-2
+  (never solved by stock) satisfiable in 0.7 s, model checked; helper
+  variables of chain encodings are dropped from the matrix as in
+  CryptoMiniSat, but every other variable stays, since dropping those
+  the solver decides on lost most of the effect. Fuzz of 2,800 mixed
+  formulas against stock: no mismatch. Proof logging is step X.2; until
+  it is in, the engine stays off when a proof is written.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

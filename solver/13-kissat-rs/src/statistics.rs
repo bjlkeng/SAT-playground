@@ -200,6 +200,7 @@ statistics_fields! {
     forward_checks,
     forward_steps,
     forward_strengthened, // STATISTIC
+    gauss_ticks, // not in kissat: the parity engine's work (src/gauss.rs)
     forward_subsumed, // STATISTIC
     forward_subsumptions, // METRIC (re-enabled)
     garbage_collections, // METRIC (re-enabled)
@@ -614,7 +615,7 @@ pub fn work_clock_line(st: &Statistics, prefix: &str) -> String {
     format!(
         "{}workclock ticks={} search_ticks={} probing_ticks={} backbone_ticks={} \
          transitive_ticks={} factor_ticks={} substitute_ticks={} kitten_ticks={} \
-         eliminate_resolutions={} forward_steps={} walk_steps={} flipped={} \
+         gauss_ticks={} eliminate_resolutions={} forward_steps={} walk_steps={} flipped={} \
          conflicts={} decisions={} propagations={} k_res={} work={}",
         prefix,
         st.ticks,
@@ -625,6 +626,7 @@ pub fn work_clock_line(st: &Statistics, prefix: &str) -> String {
         st.factor_ticks,
         st.substitute_ticks,
         st.kitten_ticks,
+        st.gauss_ticks,
         st.eliminate_resolutions,
         st.forward_steps,
         st.walk_steps,

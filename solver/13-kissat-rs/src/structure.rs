@@ -88,7 +88,7 @@ impl Derived {
 
 pub fn enabled(solver: &Solver) -> bool {
     let o = &solver.options;
-    o.structsym != 0 || o.structsymext != 0 || o.structparity != 0 || o.structcount != 0 || o.structcsp != 0
+    o.structsym != 0 || o.structsymext != 0 || o.structparity != 0 || o.structcount != 0 || o.structcsp != 0 || o.gauss != 0
 }
 
 /// Called once before the parse: turn buffering on when a pass is enabled.
@@ -325,6 +325,13 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
             let own = cap((solver.options.structcountticks as u64).saturating_mul(1000), solver);
             crate::structcount::run(&formula, &mut derived, own, &mut solver.statistics.ticks, stop_ref);
         }
+        if solver.options.gauss != 0 && !derived.refuted {
+            // the parity engine's XOR constraints (src/gauss.rs), read
+            // from the input within the base budget
+            let (xors, mixed) = crate::structparity::xors(&formula, budget, &mut solver.statistics.ticks, stop_ref);
+            solver.gauss.xors = xors;
+            solver.gauss.mixed = mixed;
+        }
     }
     let work = solver.statistics.ticks.saturating_sub(start);
     solver.structure.work = work;
@@ -370,6 +377,9 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
     for note in &derived.notes {
         crate::print::message(solver, format!("structure pass: {}", note));
     }
+    // the parity engine, once its variables are in the solver and before
+    // preprocessing can touch them
+    crate::gauss::init(solver);
     if k > 0 {
         let units = derived.clauses.iter().filter(|c| c.len() == 1).count();
         crate::print::message(

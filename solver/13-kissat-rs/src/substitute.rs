@@ -70,6 +70,11 @@ fn determine_representatives(solver: &mut Solver, repr: &mut [u32]) {
         if !solver.flags[crate::literal::idx(root) as usize].active() {
             continue;
         }
+        // Not in kissat: a column of the parity engine is never
+        // substituted and never a representative (src/gauss.rs)
+        if solver.gauss.frozen.get(crate::literal::idx(root) as usize).copied().unwrap_or(false) {
+            continue;
+        }
         debug_assert!(scc.is_empty());
         debug_assert!(work.is_empty());
         work.push(root);
@@ -98,6 +103,9 @@ fn determine_representatives(solver: &mut Solver, repr: &mut [u32]) {
                     }
                     let other = watch_lit(watch);
                     let idx_other = crate::literal::idx(other);
+                    if solver.gauss.frozen.get(idx_other as usize).copied().unwrap_or(false) {
+                        continue; // not in kissat: a parity engine column (src/gauss.rs)
+                    }
                     if !solver.flags[idx_other as usize].active() {
                         continue;
                     }
@@ -193,6 +201,9 @@ fn determine_representatives(solver: &mut Solver, repr: &mut [u32]) {
                     let idx_other = crate::literal::idx(other);
                     if !solver.flags[idx_other as usize].active() {
                         continue;
+                    }
+                    if solver.gauss.frozen.get(idx_other as usize).copied().unwrap_or(false) {
+                        continue; // not in kissat: a parity engine column (src/gauss.rs)
                     }
                     if mark[other as usize] == 0 {
                         work.push(other);

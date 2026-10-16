@@ -63,6 +63,8 @@ pub mod proof;
 pub mod structcount;
 pub mod structparity;
 pub mod structproof;
+pub mod gauss;
+pub mod gaussproof;
 pub mod structsym;
 pub mod structure;
 pub mod propbeyond;

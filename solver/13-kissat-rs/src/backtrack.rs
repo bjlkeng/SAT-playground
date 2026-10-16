@@ -35,6 +35,10 @@ fn unassign(solver: &mut Solver, lit: u32) {
     }
     debug_assert!(solver.unassigned < solver.vars());
     solver.unassigned += 1;
+    // Not in kissat: the parity engine's per-variable bits (src/gauss.rs)
+    if solver.gauss.on {
+        crate::gauss::unassigned(solver, lit);
+    }
 }
 
 // C static `add_unassigned_variable_back_to_queue`.
@@ -151,6 +155,11 @@ pub fn backtrack_without_updating_phases(solver: &mut Solver, new_level: u32) {
     solver.trail.truncate(q); // SET_END_OF_ARRAY (solver->trail, q)
 
     solver.level = new_level;
+
+    // Not in kissat: the parity engine's trail cursor (src/gauss.rs)
+    if solver.gauss.on {
+        crate::gauss::backtracked(solver, new_end);
+    }
 
     // solver->propagate = new_end (propagation resumes there).
     debug_assert!(new_end <= solver.trail.len());

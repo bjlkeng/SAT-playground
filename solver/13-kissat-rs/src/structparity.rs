@@ -53,6 +53,8 @@ fn idx(l: i32) -> usize {
 struct Xor {
     vars: Vec<i32>,
     clauses: Vec<u32>,
+    /// The number of true variables the constraint allows, mod 2.
+    parity: u32,
 }
 
 /// The XOR constraints of the formula: groups of clauses over one variable
@@ -131,12 +133,54 @@ fn extract(f: &Formula, work: &mut u64, budget: u64, ticks: &mut u64, stop: &std
         }
         for parity in 0..2 {
             if by_parity[parity].len() == need {
-                out.push(Xor { vars: vars.clone(), clauses: by_parity[parity].clone() });
+                // these clauses forbid every pattern with `parity` trues
+                out.push(Xor { vars: vars.clone(), clauses: by_parity[parity].clone(), parity: 1 - parity as u32 });
                 break;
             }
         }
     }
     out
+}
+
+/// The XOR constraints of the formula for the parity engine
+/// (`src/gauss.rs`): each as its variables and the parity it allows, and
+/// per variable whether it occurs in a clause outside those XORs (a
+/// variable that does not is the engine's to drop once it has pivoted on
+/// it: the XOR clauses themselves still fix it).
+pub fn xors(f: &Formula, budget: u64, ticks: &mut u64, stop: &std::sync::atomic::AtomicBool) -> (Vec<(Vec<i32>, u32)>, Vec<bool>) {
+    // as closed_systems counts: `work` is the absolute tick count
+    let mut work = *ticks;
+    let xors = extract(f, &mut work, budget, ticks, stop);
+    *ticks = work;
+    if xors.len() < 2 || work > budget || stop.load(std::sync::atomic::Ordering::Relaxed) {
+        // nothing for the engine, or the budget is spent: no second scan
+        return (Vec::new(), Vec::new());
+    }
+    let mut in_xor: Vec<bool> = vec![false; f.len()];
+    for x in &xors {
+        for &c in &x.clauses {
+            in_xor[c as usize] = true;
+        }
+    }
+    let mut mixed: Vec<bool> = vec![false; f.vars as usize + 1];
+    for i in 0..f.len() {
+        if i % 4096 == 0 {
+            *ticks = work;
+            if work > budget || stop.load(std::sync::atomic::Ordering::Relaxed) {
+                return (Vec::new(), Vec::new());
+            }
+        }
+        if in_xor[i] || f.taut[i] {
+            continue;
+        }
+        let c = f.clause(i);
+        work += c.len() as u64 + 1;
+        for &l in c {
+            mixed[l.unsigned_abs() as usize] = true;
+        }
+    }
+    *ticks = work;
+    (xors.into_iter().map(|x| (x.vars, x.parity)).collect(), mixed)
 }
 
 struct Prop<'a> {

@@ -321,6 +321,7 @@ pub struct Solver {
     pub policy: crate::policy::Policy,
     /// Not in kissat: the structure pass (plan section 11, 2026-10-07).
     pub structure: crate::structure::State,
+    pub gauss: crate::gauss::State, // not in kissat: the parity engine (src/gauss.rs)
     pub last: Remember, // remember last;
     pub walked: u32,
 
@@ -545,6 +546,9 @@ pub fn print_statistics(solver: &mut Solver) {
     // Not in kissat: the `c workclock` exit line for the harness (plan §3.4,
     // step A′). Outside the `-s` block, so the parity oracle never sees it.
     crate::statistics::print_work_clock(solver);
+    // Not in kissat: the parity engine's exit line (src/gauss.rs); nothing
+    // when it did not run
+    crate::gauss::report(solver);
 }
 
 /// Port of `kissat_add` — external clause addition.

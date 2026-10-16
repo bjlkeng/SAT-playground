@@ -103,6 +103,37 @@ impl Writer {
         Ok(self.constraints)
     }
 
+    /// A linear constraint implied by unit propagation over the current
+    /// constraints: `terms` are (coefficient, literal) pairs, the
+    /// constraint their sum >= `rhs`. Returns its constraint id.
+    pub fn rup_terms(&mut self, terms: &[(i64, i32)], rhs: i64) -> std::io::Result<u64> {
+        let mut line = String::from("rup");
+        for &(c, l) in terms {
+            line.push_str(&format!(" {} {}", c, lit_str(l)));
+        }
+        line.push_str(&format!(" >= {} ;", rhs));
+        if let Err(e) = writeln!(self.out, "{}", line) {
+            self.failed = true;
+            return Err(e);
+        }
+        self.constraints += 1;
+        self.steps += 1;
+        Ok(self.constraints)
+    }
+
+    /// A clause redundant under the witness that sets `var` to `value`:
+    /// the definition of a fresh variable (the clause holds the variable,
+    /// which occurs nowhere else or only in clauses the witness satisfies).
+    pub fn red_const(&mut self, clause: &[i32], var: i32, value: bool) -> std::io::Result<u64> {
+        if let Err(e) = writeln!(self.out, "red {} : x{} -> {} ;", clause_str(clause), var, if value { 1 } else { 0 }) {
+            self.failed = true;
+            return Err(e);
+        }
+        self.constraints += 1;
+        self.steps += 1;
+        Ok(self.constraints)
+    }
+
     /// A cutting-planes derivation in reverse Polish notation, e.g.
     /// "12 13 + 2 d". Returns the id of the derived constraint.
     pub fn pol(&mut self, expr: &str) -> std::io::Result<u64> {

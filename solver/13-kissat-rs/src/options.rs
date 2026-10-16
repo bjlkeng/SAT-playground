@@ -149,6 +149,14 @@ kissat_options! {
     (forcephase, 0, 0, 1, "force initial phase"),
     (forward, 1, 0, 1, "forward subsumption in BVE"),
     (forwardeffort, 100, 0, 1_000_000, "effort in per mille"),
+    // Not in kissat (2026-10-15, bead SAT-playground-1v2.7): the parity
+    // engine, XOR reasoning inside search (src/gauss.rs); off until
+    // measured. gausslimit caps the matrix (rows times columns, in
+    // millions of bits); gausseffort caps the engine's work at this share
+    // of the search ticks (per mille), 0 for no cap.
+    (gauss, 0, 0, 1, "parity engine: XOR reasoning inside search"),
+    (gausseffort, 200, 0, 100_000, "parity engine work cap (per mille of search ticks)"),
+    (gausslimit, 256, 1, 100_000, "parity engine matrix size cap (M bits)"),
     (ifthenelse, 1, 0, 1, "extract and eliminate if-then-else gates"),
     (incremental, 0, 0, 1, "enable incremental solving"),
     (jumpreasons, 1, 0, 1, "jump binary reasons"),
@@ -701,8 +709,9 @@ mod tests {
     #[test]
     fn table_has_all_158_options_plus_the_structure_pass() {
         // kissat's 158 plus the nine struct* options (plan section 11,
-        // 2026-10-07) and walkshare, walkstall (2026-10-13)
-        assert_eq!(OPTION_TABLE.len(), 158 + 11);
+        // 2026-10-07), walkshare, walkstall (2026-10-13) and gauss, gausseffort,
+        // gausslimit (2026-10-15)
+        assert_eq!(OPTION_TABLE.len(), 158 + 14);
     }
 
     #[test]

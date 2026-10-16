@@ -920,6 +920,10 @@ pub fn fast_variable_elimination(solver: &mut Solver) {
             if !pivot_flags.eliminate() {
                 continue;
             }
+            // Not in kissat: a column of the parity engine stays (src/gauss.rs)
+            if solver.gauss.frozen.get(pivot as usize).copied().unwrap_or(false) {
+                continue;
+            }
             let lit = crate::literal::lit(pivot);
             let pos = flush_occurrences(solver, lit);
             if pos > fasteloccs {
@@ -963,6 +967,10 @@ pub fn fast_variable_elimination(solver: &mut Solver) {
                 continue;
             }
             if !pivot_flags.eliminate() {
+                continue;
+            }
+            // Not in kissat: a column of the parity engine stays (src/gauss.rs)
+            if solver.gauss.frozen.get(pivot as usize).copied().unwrap_or(false) {
                 continue;
             }
             if terminated!(solver, fastel_terminated_1) {

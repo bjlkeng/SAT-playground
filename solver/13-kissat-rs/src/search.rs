@@ -263,6 +263,10 @@ pub fn search(solver: &mut Solver) -> i32 {
             crate::policy_static::compute(solver);
         }
     }
+    // Not in kissat: the parity engine's matrix, after preprocessing
+    if res == 0 && !crate::gauss::build(solver) {
+        res = 20;
+    }
     if res == 0 && searching(solver) {
         start_search(solver);
         while res == 0 {
@@ -291,9 +295,27 @@ pub fn search(solver: &mut Solver) -> i32 {
             } else if crate::rephase::rephasing(solver) {
                 crate::rephase::rephase(solver);
             } else if crate::probe::probing(solver) {
+                // Not in kissat: the parity engine stands aside during
+                // inprocessing and re-reads the assignment after it
+                solver.gauss.suspended = true;
                 res = crate::probe::probe(solver);
+                solver.gauss.suspended = false;
+                if res == 0 {
+                    crate::gauss::resync(solver);
+                    if solver.inconsistent {
+                        res = 20;
+                    }
+                }
             } else if crate::eliminate::eliminating(solver) {
+                solver.gauss.suspended = true;
                 res = crate::eliminate::eliminate(solver);
+                solver.gauss.suspended = false;
+                if res == 0 {
+                    crate::gauss::resync(solver);
+                    if solver.inconsistent {
+                        res = 20;
+                    }
+                }
             } else if conflict_limit_hit(solver) {
                 break;
             } else if decision_limit_hit(solver) {
