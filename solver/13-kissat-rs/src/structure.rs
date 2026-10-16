@@ -335,9 +335,38 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
     }
     let work = solver.statistics.ticks.saturating_sub(start);
     solver.structure.work = work;
+    // with the parity engine about to run, its proof continues the pass's
+    // stream through the search (src/gaussproof.rs): the writer and the
+    // derived clauses go to it, and the files are finished at exit
+    let mut k = derived.clauses.len();
+    let engine = solver.options.gauss != 0 && !derived.refuted && solver.gauss.xors.len() >= 2;
+    if engine && derived.proof.is_some() {
+        if let Some((pbp, der)) = &sidecars {
+            let w = derived.proof.take().unwrap();
+            if w.failed {
+                crate::print::message(solver, "structure pass dropped: a proof step could not be written; the parity engine stays off".to_string());
+                derived.clauses.clear();
+                k = 0;
+                solver.gauss.xors = Vec::new();
+                let _ = std::fs::remove_file(pbp);
+                let _ = std::fs::remove_file(der);
+            } else {
+                match solver.gaussproof.take_over(w, pbp, der, &derived.clauses, solver.structure.max_var, &solver.gauss.xors) {
+                    Ok(()) => println!("c structure proof {} derived {} (continued by the parity engine)", pbp, der),
+                    Err(e) => {
+                        crate::print::message(solver, format!("structure pass dropped: cannot write {}: {}", der, e));
+                        derived.clauses.clear();
+                        k = 0;
+                        solver.gauss.xors = Vec::new();
+                        let _ = std::fs::remove_file(pbp);
+                        let _ = std::fs::remove_file(der);
+                    }
+                }
+            }
+        }
+    }
     // the proof must be complete before its clauses are used; a failed
     // proof drops the derived clauses and the solver sees the input alone
-    let mut k = derived.clauses.len();
     if let Some((pbp, der)) = &sidecars {
         let (pbp, der) = (pbp.clone(), der.clone());
         match derived.proof.take() {

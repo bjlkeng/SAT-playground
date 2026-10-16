@@ -849,16 +849,50 @@ watch on the one assigned at the highest level, so a backtrack frees it
 with any other; assignments kissat keeps across a chronological
 backtrack are read again), the sixth clean.
 
-**Proof.** Not yet (X.2): with `--gauss=1` an UNSAT answer's DRAT proof
-holds the engine's clauses without their derivation, so the gate
-rejects it; the option stays off by default until the VeriPB stream of
-bead X.2 is in. The design, checked on a toy with VeriPB 3.0.2: each
-input XOR becomes two linear inequalities "sum of its literals − 2 ×
-(carries) ≥ parity" and "≤" through a chain of fresh xor/and variables;
-a row addition is two `pol` lines; a reason or conflict clause of a row
-is one `pol` line (the row's "≤" side plus the clause's literal axioms,
-divided by two and doubled, plus the "≥" side: the odd right-hand side
-is what the division cuts).
+**Proof** (X.2, `src/gaussproof.rs`). The structure pass's VeriPB
+stream stays open through the search and the engine writes into it, so
+the gate's first stage proves every clause the engine added from the
+input alone and its second stage (drat-trim) sees those clauses as part
+of the extended formula. Each input XOR becomes two linear inequalities
+"sum of its literals − 2 × (carries) ≥ parity" and "≤" through a chain
+of fresh xor/and variables (seven `red` clauses, three `rup` and two
+`pol` lines a link; the parity of the chain's end from the XOR's
+clauses level by level, three `rup` lines a clause). A row is the sum
+of the input XORs in its set, derived (two balanced `pol` sums) when a
+clause is first needed from it after the set changed; a row addition
+itself costs nothing in the proof. A clause of a row is one `pol` line:
+the row's "≤" side plus the clause's literal axioms (summed first among
+themselves), divided by two and doubled, plus the "≥" side; the odd
+right-hand side is what the division cuts, and what is left is the
+clause. Replaced row forms are deleted. The derived clauses are
+streamed to `<proof>.derived.cnf` (the header patched at exit) and the
+stream is finished at every exit. Checked on a toy with VeriPB 3.0.2
+before the code (equality checks that the derived constraints are the
+clauses), then by `tests/gauss.rs` (an UNSAT found in search with the
+engine's reasons in it, a refutation at the build, a satisfiable run
+with a proof path) and a fuzz of 600 random mixed formulas with proofs:
+272 UNSAT answers through the gate, 328 models checked, no failure.
+A proof step that cannot be written ends the run with an error, as
+the DRAT writer's does (a reviewer's case: a file size limit left an
+UNSAT answer whose DRAT depended on clauses the dropped sidecars no
+longer proved); the table of row sets counts with the matrix against
+`gausslimit`. Review: two Codex rounds, the second clean.
+
+**Cost of checking.** A parity-learning formula of 3,250 variables
+refuted in 0.4 s with 914 engine clauses: 113K proof lines, the gate
+3.3 s. par32-2 itself (satisfiable, 6 s with the proof written, 80K
+engine clauses): 836 MB of proof, VeriPB 64 s, 92% of it in constraint
+additions (the row sums; written as a left-to-right chain they took 31 s
+on the small case, a balanced tree 3 s). Keeping a row's form
+incrementally (two short lines per addition) cut the file to 72 MB but
+the check ran past eight minutes: the forms grow terms that never
+cancel. So an UNSAT answer from a run that leaned on the engine for
+long is checked at ten times the solve time; the harness reports those
+as checker timeouts (unverified, not failures). Only 64 of the 913
+engine clauses of the small case are in drat-trim's core: deriving a
+clause only when conflict analysis touches it would cut the proof
+tenfold, but a clause kissat later rewrites (vivify, collection) would
+then have no derivation, so every clause is proved when it is made.
 
 - **Work-clock limit.** `limited.ticks` / `limits.ticks` sit next to
   kissat's conflict and decision limits. The check lives in

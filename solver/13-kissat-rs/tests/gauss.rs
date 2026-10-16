@@ -133,8 +133,20 @@ fn gauss_off_is_the_stock_trajectory_and_on_without_xors_too() {
 /// error planted. The engine solves it in a few conflicts; the stock
 /// solver cannot within the conflict limit.
 fn parity_learning(n: usize, m: usize, rng: &mut Rng) -> (usize, Vec<Vec<i64>>) {
+    parity_learning_bad(n, m, 1, rng)
+}
+
+/// The same with `wrong` samples wrong: with two or more and at most one
+/// error allowed the formula is unsatisfiable.
+fn parity_learning_bad(n: usize, m: usize, wrong: usize, rng: &mut Rng) -> (usize, Vec<Vec<i64>>) {
     let x: Vec<bool> = (0..n).map(|_| rng.below(2) == 1).collect();
-    let bad = rng.below(m as u64) as usize;
+    let mut bad: Vec<usize> = Vec::new();
+    while bad.len() < wrong {
+        let j = rng.below(m as u64) as usize;
+        if !bad.contains(&j) {
+            bad.push(j);
+        }
+    }
     let mut next = n as i64;
     let mut clauses: Vec<Vec<i64>> = Vec::new();
     let mut errors: Vec<i64> = Vec::new();
@@ -147,7 +159,7 @@ fn parity_learning(n: usize, m: usize, rng: &mut Rng) -> (usize, Vec<Vec<i64>>) 
         let e = next;
         errors.push(e);
         let mut b = sub.iter().filter(|&&v| x[v as usize - 1]).count() as u32 % 2;
-        if j == bad {
+        if bad.contains(&j) {
             b ^= 1;
         }
         next += 1;
@@ -188,12 +200,10 @@ fn the_engine_solves_what_clause_search_cannot() {
 /// random cubic graph with an odd charge), mixed with clauses so the parity
 /// pass's closed-system step is not what settles it: the engine refutes it
 /// when it builds the matrix.
-#[test]
-fn an_inconsistent_system_is_refuted_at_once() {
-    let fx = Fixture::new("gauss-tseitin");
-    let cnf = fx.path("tseitin.cnf");
-    let mut rng = Rng(20261015 + 4);
-    let n = 60usize; // vertices, cubic: 90 edges
+/// A Tseitin formula on a random cubic graph of `n` vertices with an odd
+/// charge (unsatisfiable), plus clauses on the edge variables so the
+/// system is not closed. Returns the variable count and the clauses.
+fn tseitin_mixed(n: usize, rng: &mut Rng) -> (usize, Vec<Vec<i64>>) {
     // a random cubic graph by pairing 3n stubs; multi-edges are fine
     let mut stubs: Vec<usize> = (0..n).flat_map(|v| [v, v, v]).collect();
     for i in (1..stubs.len()).rev() {
@@ -225,6 +235,15 @@ fn an_inconsistent_system_is_refuted_at_once() {
         let c = rng.below(m as u64) as i64 + 1;
         clauses.push(vec![a, -b, c]);
     }
+    (m, clauses)
+}
+
+#[test]
+fn an_inconsistent_system_is_refuted_at_once() {
+    let fx = Fixture::new("gauss-tseitin");
+    let cnf = fx.path("tseitin.cnf");
+    let mut rng = Rng(20261015 + 4);
+    let (m, clauses) = tseitin_mixed(60, &mut rng);
     write(&cnf, m, &clauses);
     let on = run(&cnf, &["--gauss=1", "--gausseffort=0"], &[]);
     assert_eq!(on.status, "UNSATISFIABLE", "{}", on.stdout);
@@ -308,4 +327,81 @@ fn the_work_limit_covers_the_engine() {
     let b = run(&cnf, &["--gauss=1", "--gausseffort=0"], &[("SAT_LIMIT_TICKS", &limit)]);
     assert_same_trajectory(&a, &b, "two runs at the same tick limit");
     assert!(a.work() <= full.work());
+}
+
+/// The gate on an UNSAT answer: tools/proof_gate.py checks the structure
+/// pass's VeriPB stream (continued by the engine) and the DRAT proof of
+/// the extended formula.
+fn gate(cnf: &Path, proof: &Path) -> String {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = std::process::Command::new("python3")
+        .arg(root.join("tools/proof_gate.py"))
+        .arg(cnf)
+        .arg(proof)
+        .output()
+        .expect("run proof_gate.py");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn run_with_proof_options(cnf: &Path, proof: &Path, options: &[&str]) -> String {
+    let mut cmd = std::process::Command::new(common::solver_bin());
+    cmd.arg("-n").args(common::STOCK_PATH).args(options).arg(cnf).arg(proof);
+    for key in common::SOLVER_ENV_VARS {
+        cmd.env_remove(key);
+    }
+    let out = cmd.output().unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Two samples wrong with at most one error allowed: unsatisfiable, and
+/// only by search with the engine's reasons and conflicts in it. The
+/// gate accepts the answer: every clause the engine added is proved from
+/// the input in the VeriPB stream, the DRAT proof holds against the
+/// extended formula.
+#[test]
+fn an_unsat_answer_found_in_search_passes_the_gate() {
+    let fx = Fixture::new("gauss-gate");
+    let cnf = fx.path("par-unsat.cnf");
+    let proof = fx.path("proof.out");
+    let mut rng = Rng(20261016);
+    let (vars, clauses) = parity_learning_bad(24, 40, 2, &mut rng);
+    write(&cnf, vars, &clauses);
+    let out = run_with_proof_options(&cnf, &proof, &["--gauss=1", "--gausseffort=0"]);
+    assert!(out.lines().any(|l| l == "s UNSATISFIABLE"), "{}", out);
+    assert!(out.contains("parity engine on"), "{}", out);
+    assert!(out.contains("continued by the parity engine"), "{}", out);
+    let conflicts: u64 = out.lines().find(|l| l.starts_with("c conflicts:")).map(|l| l.split_whitespace().nth(2).unwrap().parse().unwrap()).unwrap();
+    assert!(conflicts > 0, "{}", out);
+    assert!(fx.path("proof.out.pbp").is_file() && fx.path("proof.out.derived.cnf").is_file());
+    assert_eq!(gate(&cnf, &proof), "ok");
+}
+
+/// An XOR system inconsistent on its own: the engine refutes it when it
+/// builds the matrix, with the empty clause derived in the stream.
+#[test]
+fn a_refutation_at_the_build_passes_the_gate() {
+    let fx = Fixture::new("gauss-gate-build");
+    let cnf = fx.path("tseitin.cnf");
+    let proof = fx.path("proof.out");
+    let mut rng = Rng(20261016 + 1);
+    let (m, clauses) = tseitin_mixed(40, &mut rng);
+    write(&cnf, m, &clauses);
+    let out = run_with_proof_options(&cnf, &proof, &["--gauss=1", "--gausseffort=0"]);
+    assert!(out.lines().any(|l| l == "s UNSATISFIABLE"), "{}", out);
+    assert_eq!(gate(&cnf, &proof), "ok");
+}
+
+/// A satisfiable run leaves finished sidecars too (the harness ignores
+/// them), and the model holds.
+#[test]
+fn a_sat_answer_with_a_proof_path_keeps_its_model() {
+    let fx = Fixture::new("gauss-gate-sat");
+    let cnf = fx.path("par.cnf");
+    let proof = fx.path("proof.out");
+    let mut rng = Rng(20261016 + 2);
+    let (vars, clauses) = parity_learning(24, 40, &mut rng);
+    write(&cnf, vars, &clauses);
+    let out = run_with_proof_options(&cnf, &proof, &["--gauss=1", "--gausseffort=0"]);
+    assert!(out.lines().any(|l| l == "s SATISFIABLE"), "{}", out);
+    run_and_check_model(&cnf, &clauses, &["--gauss=1", "--gausseffort=0"]);
 }

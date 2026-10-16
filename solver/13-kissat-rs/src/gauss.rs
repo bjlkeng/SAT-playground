@@ -240,10 +240,15 @@ impl State {
 }
 
 /// Which part of the solver's columns the engine may hold: the matrix
-/// takes rows x columns bits, capped by `gausslimit` (millions of bits).
+/// takes rows x columns bits, and with a proof the table of row sets
+/// rows x rows bits more; both within `gausslimit` (millions of bits).
 fn fits(solver: &Solver, rows: usize, cols: usize) -> bool {
     let limit = (solver.options.gausslimit as u64).saturating_mul(1 << 20);
-    (rows as u64).saturating_mul(cols as u64) <= limit
+    let mut bits = (rows as u64).saturating_mul(cols as u64);
+    if solver.proof.is_some() {
+        bits = bits.saturating_add(crate::gaussproof::State::table_bytes(rows).saturating_mul(8));
+    }
+    bits <= limit
 }
 
 /// Called once the formula is in the solver and before preprocessing:
@@ -255,15 +260,6 @@ pub fn init(solver: &mut Solver) {
     if solver.options.gauss == 0 || g.xors.len() < 2 {
         g.xors = Vec::new();
         g.mixed = Vec::new();
-        return;
-    }
-    if solver.proof.is_some() {
-        // until the engine's VeriPB stream is in (bead SAT-playground-1v2.7.2)
-        // the clauses it adds have no derivation, so a DRAT proof of a run
-        // with the engine on would be rejected: the engine stays off
-        g.xors = Vec::new();
-        g.mixed = Vec::new();
-        crate::print::message(solver, "parity engine off: a proof is being written and the engine's proof logging is not in yet".to_string());
         return;
     }
     // the columns: every variable of an XOR, in internal indices
@@ -362,6 +358,10 @@ pub fn build(solver: &mut Solver) -> bool {
     }
     g.rows = rows;
     g.bits = bits;
+    // the proof: row i starts as input XOR i
+    if solver.gaussproof.active() {
+        solver.gaussproof.rows(g.rows.len());
+    }
     // the engine's view of the assignment: whatever is fixed at level zero
     debug_assert!(solver.level == 0);
     for col in 0..cols as u32 {
@@ -424,6 +424,9 @@ pub fn build(solver: &mut Solver) -> bool {
                 for r in 0..n {
                     if r != src && g.has(r, col) {
                         g.add_row(r, src);
+                        if solver.gaussproof.active() {
+                            solver.gaussproof.added(r, src);
+                        }
                     }
                 }
                 g.pivots += 1;
@@ -461,6 +464,10 @@ pub fn build(solver: &mut Solver) -> bool {
         if !pivot_of_row[r] {
             debug_assert!(g.row_bits(r).iter().all(|&w| w == 0));
             if g.rows[r].parity == 1 {
+                if !refuted {
+                    // the proof of the empty clause, from this row alone
+                    solver.gaussproof.clause(r, &[]);
+                }
                 refuted = true;
             }
             g.rows[r].live = false;
@@ -616,6 +623,16 @@ fn clause_of(solver: &mut Solver, r: usize, propagated: u32, value: bool) {
     }
 }
 
+/// The proof of the clause on `solver.clause` (a clause of row `r`), as
+/// external literals, and its place in the extended formula.
+fn prove_clause(solver: &mut Solver, r: usize) {
+    if !solver.gaussproof.active() {
+        return;
+    }
+    let ext: Vec<i32> = solver.clause.iter().map(|&l| crate::inline::export_literal(solver, l)).collect();
+    solver.gaussproof.clause(r, &ext);
+}
+
 /// Put the clause on `solver.clause` into the arena as a redundant clause
 /// with the propagated literal first and the highest-level false literal
 /// second (the watches, as for a learned clause), or as a binary clause.
@@ -675,6 +692,7 @@ fn settle(solver: &mut Solver, r: usize, status: Status) -> Option<Conflict> {
             }
             clause_of(solver, r, col, value);
             debug_assert!(solver.clause[0] == lit);
+            prove_clause(solver, r);
             let size = solver.clause.len();
             solver.gauss.propagations += 1;
             if size == 1 {
@@ -698,6 +716,7 @@ fn settle(solver: &mut Solver, r: usize, status: Status) -> Option<Conflict> {
         }
         Status::Falsified => {
             clause_of(solver, r, INVALID, false);
+            prove_clause(solver, r);
             solver.gauss.conflicts += 1;
             let size = solver.clause.len();
             if size == 0 {

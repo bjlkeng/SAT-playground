@@ -1840,6 +1840,16 @@ source of truth; every bead points back to its section.
   the solver decides on lost most of the effect. Fuzz of 2,800 mixed
   formulas against stock: no mismatch. Proof logging is step X.2; until
   it is in, the engine stays off when a proof is written.
+- 2026-10-16 (X.2, the engine's proof). The pass's VeriPB stream stays
+  open through the search; input XORs become linear inequalities
+  through chains of fresh carries, rows are the sums of their input
+  XORs (derived when a clause needs them), a clause of a row is one
+  cutting-planes line. Every UNSAT answer of a 600-formula fuzz passed
+  the gate. Checking costs about ten times the solve time on runs that
+  lean on the engine (par32-2's 80K clauses: VeriPB 64 s), which the
+  harness reports as checker timeouts; a lazy proof (only the 7% of
+  clauses in drat-trim's core) is blocked by kissat rewriting clauses
+  it owns. The engine now runs with a proof path.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

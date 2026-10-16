@@ -1056,6 +1056,17 @@ fn run_application(solver: &mut Solver, args: &[String], cancel_alarm_ptr: &mut 
     crate::policy::print_configuration(solver); // not in kissat; silent when off
     crate::print::section(solver, "solving");
     let res = crate::internal::solve(solver);
+    // not in kissat: the parity engine's proof stream ends with the run;
+    // an UNSAT answer whose proof could not be finished is no answer
+    if let Err(e) = solver.gaussproof.finish() {
+        solver.gaussproof.discard();
+        if res == 20 {
+            crate::error::error(format_args!("parity engine: the proof could not be finished: {}", e));
+            close_proof(solver, &mut app);
+            return 1;
+        }
+        crate::print::message(solver, format!("parity engine: the proof could not be finished: {}", e));
+    }
     close_proof(solver, &mut app);
     crate::print::section(solver, "result");
     if app.output_path.as_deref() == Some("-") {

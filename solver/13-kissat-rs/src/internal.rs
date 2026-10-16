@@ -322,6 +322,7 @@ pub struct Solver {
     /// Not in kissat: the structure pass (plan section 11, 2026-10-07).
     pub structure: crate::structure::State,
     pub gauss: crate::gauss::State, // not in kissat: the parity engine (src/gauss.rs)
+    pub gaussproof: crate::gaussproof::State, // not in kissat: its proof (src/gaussproof.rs)
     pub last: Remember, // remember last;
     pub walked: u32,
 
