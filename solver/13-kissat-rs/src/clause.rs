@@ -498,6 +498,14 @@ pub fn new_redundant_clause(solver: &mut Solver, glue: u32) -> Reference {
     res
 }
 
+/// Not in kissat: a redundant clause from the given literals, as
+/// `new_redundant_clause` makes one from solver.clause; for the parity
+/// engine (src/gauss.rs), whose clauses are built inside conflict analysis
+/// while solver.clause holds the clause being learned.
+pub fn new_redundant_clause_from(solver: &mut Solver, glue: u32, lits: &[u32]) -> Reference {
+    new_clause(solver, false, true, glue, lits)
+}
+
 /// kissat_mark_clause_as_garbage.  The C static helper of the same name is
 /// folded in: its only extra effect in the public wrapper was
 /// ADD (arena_garbage, bytes), a METRIC counter compiled out in the

@@ -87,6 +87,10 @@ impl Assigned {
     pub const POISONED: u32 = 1 << 2;
     pub const REMOVABLE: u32 = 1 << 3;
     pub const SHRINKABLE: u32 = 1 << 4;
+    /// Not in kissat: the reason is a row of the parity engine's matrix
+    /// (`reason` holds the row index), to be made into a clause when
+    /// conflict analysis asks (src/gauss.rs, `materialize`).
+    pub const GAUSS: u32 = 1 << 5;
 
     /// `struct assigned b = {level, trail, analyzed=false, binary, ...}`:
     /// the fresh record kissat_assign stores.
@@ -121,6 +125,10 @@ impl Assigned {
         self.flags & Self::SHRINKABLE != 0
     }
     #[inline(always)]
+    pub fn gauss(&self) -> bool {
+        self.flags & Self::GAUSS != 0
+    }
+    #[inline(always)]
     fn set_flag(&mut self, bit: u32, v: bool) {
         self.flags = (self.flags & !bit) | if v { bit } else { 0 };
     }
@@ -139,6 +147,10 @@ impl Assigned {
     #[inline(always)]
     pub fn set_removable(&mut self, v: bool) {
         self.set_flag(Self::REMOVABLE, v)
+    }
+    #[inline(always)]
+    pub fn set_gauss(&mut self, v: bool) {
+        self.set_flag(Self::GAUSS, v)
     }
     #[inline(always)]
     pub fn set_shrinkable(&mut self, v: bool) {

@@ -166,8 +166,8 @@ fn shrink_along_reason(
     resolve_large_clauses: bool,
     failed: &mut bool,
 ) -> u32 {
-    let uip_idx = literal::idx(uip);
-    let a = solver.assigned[uip_idx as usize];
+    // not in kissat: a reason that is a parity-engine row becomes a clause here
+    let a = crate::gauss::assigned_with_reason(solver, uip);
     debug_assert!(a.shrinkable());
     debug_assert!(a.level == level);
     debug_assert!(a.reason != DECISION_REASON);

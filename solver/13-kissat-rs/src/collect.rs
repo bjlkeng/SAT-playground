@@ -577,6 +577,7 @@ fn sparse_sweep_garbage_clauses(
                 let forced_idx = crate::literal::idx(forced) as usize;
                 let a = &mut solver.assigned[forced_idx];
                 debug_assert!(!a.binary());
+                debug_assert!(!a.gauss()); // a row as reason is never marked (src/trail.rs)
 
                 a.set_binary(true);
                 a.reason = other;

@@ -47,8 +47,11 @@ use crate::propsearch::Conflict;
 
 const INVALID: u32 = u32::MAX;
 
-/// The engine's work between two checks of its yield (ticks).
-const YIELD_WINDOW: u64 = 1 << 26;
+/// The engine's work between two checks of its yield (ticks): the option
+/// gausswindow, in thousands.
+fn yield_window(solver: &Solver) -> u64 {
+    (solver.options.gausswindow as u64).saturating_mul(1000)
+}
 
 /// What inspecting a row finds.
 enum Status {
@@ -105,8 +108,16 @@ pub struct State {
     /// ones after a compaction, which is why `col_of` is not its inverse).
     ext_of: Vec<i32>,
     lit_of: Vec<u32>,
-    /// The external literals of the clause being built (the proof's copy).
+    /// The clause being built (internal literals) and the proof's copy of
+    /// it (external literals, every variable of the row). Not the solver's
+    /// own clause stack: a clause is also built inside conflict analysis,
+    /// while that stack holds the clause being learned.
+    clause_buf: Vec<u32>,
     proof_clause: Vec<i32>,
+    /// Propagations recorded as a row (no clause yet) and those made into
+    /// a clause when analysis asked.
+    pub lazy: u64,
+    pub materialized: u64,
     words: usize,
     rows: Vec<Row>,
     bits: Vec<u64>,
@@ -536,7 +547,7 @@ pub fn build(solver: &mut Solver) -> bool {
     g.work += (n as u64) * (words as u64);
     let work = std::mem::take(&mut g.work);
     g.build_ticks += work;
-    g.next_yield_check = YIELD_WINDOW;
+    g.next_yield_check = yield_window(solver);
     solver.statistics.gauss_ticks += work;
     solver.statistics.ticks += work;
     solver.gauss = g;
@@ -750,12 +761,12 @@ fn literal(g: &State, col: u32, value: bool) -> u32 {
 /// internal literal, which a clause may hold only once (the DRAT addition
 /// of the shorter clause is implied by the proved one and the units).
 fn clause_of(solver: &mut Solver, r: usize, propagated: u32, value: bool) {
-    solver.clause.clear();
+    solver.gauss.clause_buf.clear();
     solver.gauss.proof_clause.clear();
     let words = solver.gauss.words;
     if propagated != INVALID {
         let lit = literal(&solver.gauss, propagated, value);
-        solver.clause.push(lit);
+        solver.gauss.clause_buf.push(lit);
         let ev = solver.gauss.ext_of[propagated as usize];
         solver.gauss.proof_clause.push(if value { ev } else { -ev });
     }
@@ -777,12 +788,37 @@ fn clause_of(solver: &mut Solver, r: usize, propagated: u32, value: bool) {
             }
             // the literal that is false now
             let lit = if val > 0 { not(l) } else { l };
-            solver.clause.push(lit);
+            solver.gauss.clause_buf.push(lit);
         }
     }
 }
 
-/// The proof of the clause on `solver.clause` (a clause of row `r`), as
+/// The highest level among the row's variables other than `skip` (zero
+/// when every other one is fixed): the level a propagation from the row
+/// is assigned at.
+fn row_level(solver: &Solver, r: usize, skip: u32) -> u32 {
+    let words = solver.gauss.words;
+    let mut level = 0u32;
+    for i in 0..words {
+        let mut w = solver.gauss.bits[r * words + i];
+        while w != 0 {
+            let col = (i as u32) * 64 + w.trailing_zeros();
+            w &= w - 1;
+            if col == skip {
+                continue;
+            }
+            let l = solver.gauss.lit_of[col as usize];
+            debug_assert!(solver.values[l as usize] != 0);
+            let a = solver.assigned[idx(l) as usize];
+            if a.level > level {
+                level = a.level;
+            }
+        }
+    }
+    level
+}
+
+/// The proof of the clause in the buffer (a clause of row `r`), as
 /// external literals, and its place in the extended formula.
 fn prove_clause(solver: &mut Solver, r: usize) {
     if !solver.gaussproof.active() {
@@ -793,13 +829,14 @@ fn prove_clause(solver: &mut Solver, r: usize) {
     solver.gauss.proof_clause = ext;
 }
 
-/// Put the clause on `solver.clause` into the arena as a redundant clause
+/// Put the clause in the buffer into the arena as a redundant clause
 /// with the propagated literal first and the highest-level false literal
 /// second (the watches, as for a learned clause), or as a binary clause.
 /// Returns the reference (INVALID_REF for a binary clause) and the
 /// clause's first two literals.
 fn materialize(solver: &mut Solver, propagated: bool) -> (crate::reference::Reference, u32, u32) {
-    let size = solver.clause.len();
+    let mut lits = std::mem::take(&mut solver.gauss.clause_buf);
+    let size = lits.len();
     debug_assert!(size >= 2);
     let start = if propagated { 1 } else { 0 };
     // the false literal with the highest level goes to the first watch
@@ -808,29 +845,106 @@ fn materialize(solver: &mut Solver, propagated: bool) -> (crate::reference::Refe
     let end = (start + 2).min(size);
     for slot in start..end {
         let mut best = slot;
-        let mut best_level = solver.assigned[idx(solver.clause[slot]) as usize].level;
+        let mut best_level = solver.assigned[idx(lits[slot]) as usize].level;
         for p in slot + 1..size {
-            let level = solver.assigned[idx(solver.clause[p]) as usize].level;
+            let level = solver.assigned[idx(lits[p]) as usize].level;
             if level > best_level {
                 best_level = level;
                 best = p;
             }
         }
-        solver.clause.swap(slot, best);
+        lits.swap(slot, best);
     }
-    let a = solver.clause[0];
-    let b = solver.clause[1];
-    if size == 2 {
-        let _ = crate::clause::new_redundant_clause(solver, 1);
-        return (crate::reference::INVALID_REF, a, b);
-    }
-    // the glue is the number of distinct levels
-    let mut levels: Vec<u32> = solver.clause.iter().map(|&l| solver.assigned[idx(l) as usize].level).collect();
-    levels.sort_unstable();
-    levels.dedup();
-    let glue = levels.len() as u32;
-    let reference = crate::clause::new_redundant_clause(solver, glue);
+    let a = lits[0];
+    let b = lits[1];
+    let reference = if size == 2 {
+        let _ = crate::clause::new_redundant_clause_from(solver, 1, &lits);
+        crate::reference::INVALID_REF
+    } else {
+        // the glue is the number of distinct levels
+        let mut levels: Vec<u32> = lits.iter().map(|&l| solver.assigned[idx(l) as usize].level).collect();
+        levels.sort_unstable();
+        levels.dedup();
+        let glue = levels.len() as u32;
+        crate::clause::new_redundant_clause_from(solver, glue, &lits)
+    };
+    solver.gauss.clause_buf = lits;
     (reference, a, b)
+}
+
+/// A propagation recorded as its row: the literal is assigned with the
+/// row index as its reason and the GAUSS flag, at the highest level of the
+/// row's other variables. No clause and no proof until conflict analysis
+/// asks (`materialize_reason`). Sound because a row that propagated has
+/// every variable assigned, and the Jordan step only adds rows into rows
+/// that hold the new, unassigned pivot: the row is the same when the
+/// clause is built later, as long as the literal is still assigned.
+fn assign_lazy(solver: &mut Solver, r: usize, col: u32, value: bool, level: u32) {
+    let lit = literal(&solver.gauss, col, value);
+    debug_assert!(level > 0 && level <= solver.level);
+    let probing = solver.probing;
+    crate::assign::assign(solver, probing, level, false, lit, r as u32);
+    solver.assigned[idx(lit) as usize].set_gauss(true);
+    solver.gauss.lazy += 1;
+}
+
+/// The clause of a tagged reason (the GAUSS flag on `lit`'s record):
+/// built from the row, proved, put into the arena, and the record now
+/// points at it (a binary reason when two literals are left).
+pub fn materialize_reason(solver: &mut Solver, lit: u32) {
+    let v = idx(lit) as usize;
+    let a = solver.assigned[v];
+    debug_assert!(a.gauss() && !a.binary());
+    debug_assert!(solver.values[lit as usize] > 0);
+    let r = a.reason as usize;
+    let col = solver.gauss.col_of[v];
+    debug_assert!(col != INVALID && solver.gauss.has(r, col));
+    let value = crate::literal::negated(lit) == 0;
+    clause_of(solver, r, col, value);
+    debug_assert!(solver.gauss.clause_buf[0] == lit);
+    debug_assert!(solver.gauss.clause_buf.len() >= 2);
+    prove_clause(solver, r);
+    solver.gauss.materialized += 1;
+    let (reference, _, other) = materialize(solver, true);
+    let a = &mut solver.assigned[v];
+    a.set_gauss(false);
+    if reference == crate::reference::INVALID_REF {
+        a.set_binary(true);
+        a.reason = other;
+    } else {
+        a.reason = reference;
+    }
+}
+
+/// The record of the assignment of `lit`'s variable, with its reason made
+/// into a clause if it was a row: what every reader of a reason as a
+/// clause calls. `lit` may be either side of the variable (analysis walks
+/// the false literals of a clause as often as the true ones on the trail);
+/// the clause is built for the assigned one.
+#[inline]
+pub fn assigned_with_reason(solver: &mut Solver, lit: u32) -> crate::internal::Assigned {
+    let v = idx(lit) as usize;
+    let a = solver.assigned[v];
+    if !a.gauss() {
+        return a;
+    }
+    let assigned_lit = if solver.values[lit as usize] > 0 { lit } else { not(lit) };
+    materialize_reason(solver, assigned_lit);
+    solver.assigned[v]
+}
+
+/// Every tagged reason on the trail made into a clause: before the engine
+/// stops for the run (its rows would no longer be kept), before anything
+/// that remaps clause references (compaction) may run again, and before
+/// the analysis of a conflict at level one, which learns units on the
+/// strength of the whole level's propagation (src/analyze.rs).
+pub fn materialize_all(solver: &mut Solver) {
+    for i in 0..solver.trail.len() {
+        let lit = solver.trail[i];
+        if solver.assigned[idx(lit) as usize].gauss() {
+            materialize_reason(solver, lit);
+        }
+    }
 }
 
 /// Act on a row's status: propagate its unit or return its conflict;
@@ -850,26 +964,19 @@ fn settle(solver: &mut Solver, r: usize, status: Status) -> Option<Conflict> {
                 }
                 return settle(solver, r, Status::Falsified);
             }
-            clause_of(solver, r, col, value);
-            debug_assert!(solver.clause[0] == lit);
-            prove_clause(solver, r);
-            let size = solver.clause.len();
             solver.gauss.propagations += 1;
-            if size == 1 {
+            let level = row_level(solver, r, col);
+            if level == 0 {
                 // the row's other variables are all fixed: a unit, assigned
-                // at level zero
+                // at level zero, with its clause and proof now
+                clause_of(solver, r, col, value);
+                debug_assert!(solver.gauss.clause_buf.len() == 1 && solver.gauss.clause_buf[0] == lit);
+                prove_clause(solver, r);
                 solver.gauss.units += 1;
                 solver.gauss.rows[r].live = false;
-                solver.clause.clear();
                 crate::assign::learned_unit(solver, lit);
             } else {
-                let (reference, _, other) = materialize(solver, true);
-                solver.clause.clear();
-                if reference == crate::reference::INVALID_REF {
-                    crate::assign::assign_binary(solver, lit, other);
-                } else {
-                    crate::assign::assign_reference(solver, lit, reference);
-                }
+                assign_lazy(solver, r, col, value, level);
             }
             State::set(&mut solver.gauss.assigned, col, true);
             State::set(&mut solver.gauss.truth, col, value);
@@ -879,7 +986,7 @@ fn settle(solver: &mut Solver, r: usize, status: Status) -> Option<Conflict> {
             clause_of(solver, r, INVALID, false);
             prove_clause(solver, r);
             solver.gauss.conflicts += 1;
-            let size = solver.clause.len();
+            let size = solver.gauss.clause_buf.len();
             if size == 0 {
                 // an empty row of parity one, or a row false under the
                 // level-zero assignment alone: the formula is refuted
@@ -898,8 +1005,7 @@ fn settle(solver: &mut Solver, r: usize, status: Status) -> Option<Conflict> {
                 // the row is a unit the assignment contradicts: at level
                 // zero the formula is refuted; above it the unit holds, so
                 // the solver backtracks to level zero and assigns it
-                let lit = solver.clause[0];
-                solver.clause.clear();
+                let lit = solver.gauss.clause_buf[0];
                 let level = solver.assigned[idx(lit) as usize].level;
                 solver.gauss.units += 1;
                 solver.gauss.rows[r].live = false;
@@ -915,7 +1021,6 @@ fn settle(solver: &mut Solver, r: usize, status: Status) -> Option<Conflict> {
                 return None;
             }
             let (reference, a, b) = materialize(solver, false);
-            solver.clause.clear();
             if reference == crate::reference::INVALID_REF {
                 Some(crate::propsearch::binary_conflict(solver, a, b))
             } else {
@@ -1069,6 +1174,7 @@ fn over_limit(solver: &mut Solver) -> bool {
     solver.statistics.ticks += work;
     let over = solver.limited.ticks && solver.statistics.work_clock() >= solver.limits.ticks;
     if over || solver.termination.flagged.load(std::sync::atomic::Ordering::Relaxed) {
+        materialize_all(solver);
         solver.gauss.on = false;
         solver.gauss.frozen = Vec::new();
         crate::print::message(solver, "parity engine off: the work limit or a termination request".to_string());
@@ -1159,10 +1265,12 @@ pub fn propagate(solver: &mut Solver) -> Option<Conflict> {
     if min_yield != 0 && solver.gauss.on {
         let spent = solver.statistics.gauss_ticks.saturating_sub(solver.gauss.build_ticks);
         if spent >= solver.gauss.next_yield_check {
-            solver.gauss.next_yield_check = spent.saturating_add(YIELD_WINDOW);
+            let window = yield_window(solver);
+            solver.gauss.next_yield_check = spent.saturating_add(window);
             let events = solver.gauss.propagations + solver.gauss.conflicts;
             let per_million = events.saturating_mul(1_000_000) / spent.max(1);
             if per_million < min_yield {
+                materialize_all(solver);
                 solver.gauss.on = false;
                 solver.gauss.frozen = Vec::new();
                 crate::print::message(
@@ -1183,6 +1291,7 @@ pub fn propagate(solver: &mut Solver) -> Option<Conflict> {
         let allowed = (solver.statistics.search_ticks / 1000).saturating_mul(effort).saturating_add(10_000_000);
         let spent = solver.statistics.gauss_ticks.saturating_sub(solver.gauss.build_ticks);
         if spent > allowed {
+            materialize_all(solver);
             solver.gauss.on = false;
             solver.gauss.frozen = Vec::new();
             crate::print::message(
@@ -1308,10 +1417,12 @@ pub fn report(solver: &Solver) {
         return;
     }
     println!(
-        "c gauss rows={} columns={} propagations={} conflicts={} units={} pivots={} additions={} ticks={}",
+        "c gauss rows={} columns={} propagations={} lazy={} materialized={} conflicts={} units={} pivots={} additions={} ticks={}",
         g.rows.iter().filter(|r| r.live).count(),
         g.ext_of.len(),
         g.propagations,
+        g.lazy,
+        g.materialized,
         g.conflicts,
         g.units,
         g.pivots,

@@ -405,3 +405,47 @@ fn a_sat_answer_with_a_proof_path_keeps_its_model() {
     assert!(out.lines().any(|l| l == "s SATISFIABLE"), "{}", out);
     run_and_check_model(&cnf, &clauses, &["--gauss=1", "--gausseffort=0"]);
 }
+
+/// Lazy reasons: a propagation of the engine is recorded as its row and
+/// becomes a clause only when conflict analysis asks. Most never do: the
+/// exit line counts them. The proof covers exactly the clauses made, and
+/// the gate accepts the answer.
+#[test]
+fn lazy_reasons_are_few_and_the_gate_accepts() {
+    let fx = Fixture::new("gauss-lazy");
+    let cnf = fx.path("par-unsat.cnf");
+    let proof = fx.path("proof.out");
+    let mut rng = Rng(20261017);
+    let (vars, clauses) = parity_learning_bad(32, 56, 2, &mut rng);
+    write(&cnf, vars, &clauses);
+    let out = run_with_proof_options(&cnf, &proof, &["--gauss=1"]);
+    assert!(out.lines().any(|l| l == "s UNSATISFIABLE"), "{}", out);
+    let line = out.lines().find(|l| l.starts_with("c gauss ")).expect("the engine's exit line");
+    let field = |key: &str| -> u64 { line.split_whitespace().find_map(|t| t.strip_prefix(key)).unwrap().parse().unwrap() };
+    let (propagations, lazy, materialized) = (field("propagations="), field("lazy="), field("materialized="));
+    assert!(propagations > 0 && lazy == propagations, "{}", line);
+    assert!(materialized < lazy, "{}", line);
+    assert_eq!(gate(&cnf, &proof), "ok");
+}
+
+/// The engine stopped by its yield guard with tagged reasons still on the
+/// trail (a tiny window and an impossible bar): every one becomes a clause
+/// before it stops, and the run's answer and proof hold.
+#[test]
+fn an_engine_stopped_mid_search_leaves_no_tagged_reason_behind() {
+    let fx = Fixture::new("gauss-stop");
+    let cnf = fx.path("par-unsat.cnf");
+    let proof = fx.path("proof.out");
+    let mut rng = Rng(20261017 + 1);
+    let (vars, clauses) = parity_learning_bad(22, 36, 2, &mut rng);
+    write(&cnf, vars, &clauses);
+    let out = run_with_proof_options(&cnf, &proof, &["--gauss=1", "--gausswindow=1", "--gaussyield=1000000"]);
+    assert!(out.lines().any(|l| l == "s UNSATISFIABLE"), "{}", out);
+    assert!(out.contains("parity engine off:") && out.contains("under gaussyield"), "{}", out);
+    assert_eq!(gate(&cnf, &proof), "ok");
+    // the same with chronological backtracking, where a kept assignment
+    // may sit above the backtrack point
+    let out = run_with_proof_options(&cnf, &proof, &["--gauss=1", "--chronolevels=0"]);
+    assert!(out.lines().any(|l| l == "s UNSATISFIABLE"), "{}", out);
+    assert_eq!(gate(&cnf, &proof), "ok");
+}

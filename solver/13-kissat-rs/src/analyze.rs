@@ -193,8 +193,8 @@ fn mark_reason_side_literal(solver: &mut Solver, lit: u32) {
 // C static inline `analyze_reason_side_literal`.
 #[inline]
 fn analyze_reason_side_literal(solver: &mut Solver, limit: usize, lit: u32) {
-    let idx = literal::idx(lit);
-    let a = solver.assigned[idx as usize];
+    // not in kissat: a reason that is a parity-engine row becomes a clause here
+    let a = crate::gauss::assigned_with_reason(solver, lit);
     debug_assert!(a.level != 0);
     debug_assert!(a.analyzed());
     debug_assert!(a.reason != UNIT_REASON);
@@ -415,6 +415,15 @@ fn analyze_failed_literal(solver: &mut Solver, conflict: Conflict) {
     debug_assert!(solver.level == 1);
     let failed = solver.frames[1].decision; // FRAME (1).decision
 
+    // Not in kissat: this analysis learns the decision's negation as a unit
+    // as soon as a clause holds it, on the strength of the whole level-one
+    // propagation having reached a conflict; the proof checker replays
+    // that propagation from clauses, so every propagation of the parity
+    // engine on this level gets its clause now (src/gauss.rs).
+    if solver.gauss.on {
+        crate::gauss::materialize_all(solver);
+    }
+
     // unsigneds *units = &solver->clause (alias).
     debug_assert!(solver.clause.is_empty());
     debug_assert!(solver.analyzed.is_empty());
@@ -458,7 +467,8 @@ fn analyze_failed_literal(solver: &mut Solver, conflict: Conflict) {
                 unit = literal::not(lit);
                 solver.clause.push(unit); // PUSH_STACK (*units, unit)
             }
-            let a = solver.assigned[literal::idx(lit) as usize];
+            // not in kissat: a reason that is a parity-engine row becomes a clause here
+            let a = crate::gauss::assigned_with_reason(solver, lit);
             if a.binary() {
                 let other = a.reason;
                 debug_assert!(other != failed);

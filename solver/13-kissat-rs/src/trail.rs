@@ -34,8 +34,8 @@ pub fn mark_reason_clauses(solver: &mut Solver, start: Reference) {
         let lit = solver.trail[i];
         let a = solver.assigned[crate::literal::idx(lit) as usize];
         debug_assert!(a.level > 0);
-        if a.binary() {
-            continue;
+        if a.binary() || a.gauss() {
+            continue; // (a parity-engine row as reason has no clause: not in kissat)
         }
         let ref_ = a.reason;
         debug_assert!(ref_ != UNIT_REASON);
@@ -71,8 +71,8 @@ pub fn unmark_reason_clauses(solver: &mut Solver, start: Reference) {
         let lit = solver.trail[i];
         let a = solver.assigned[crate::literal::idx(lit) as usize];
         debug_assert!(a.level > 0);
-        if a.binary() {
-            continue;
+        if a.binary() || a.gauss() {
+            continue; // (a parity-engine row as reason has no clause: not in kissat)
         }
         let ref_ = a.reason;
         debug_assert!(ref_ != UNIT_REASON);

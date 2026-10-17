@@ -279,6 +279,7 @@ fn compact_trail(solver: &mut Solver) {
         if !solver.assigned[idx as usize].binary() {
             continue;
         }
+        debug_assert!(!solver.assigned[idx as usize].gauss()); // no compaction while the parity engine is on
         let other = solver.assigned[idx as usize].reason;
         let mother = map_literal(solver, other, true);
         debug_assert!(mother != INVALID_LIT);

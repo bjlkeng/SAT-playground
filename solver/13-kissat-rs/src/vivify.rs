@@ -633,6 +633,7 @@ fn vivify_deduce(
         let a = solver.assigned[idx(lit) as usize];
         debug_assert!(a.level != 0);
         debug_assert!(a.analyzed());
+        debug_assert!(!a.gauss()); // vivification assigns through its own propagation
         if a.reason == DECISION_REASON {
             solver.clause.push(not_lit);
         } else if a.binary() {

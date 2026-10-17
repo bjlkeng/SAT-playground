@@ -162,6 +162,7 @@ kissat_options! {
     (gauss, 0, 0, 1, "parity engine: XOR reasoning inside search"),
     (gausseffort, 0, 0, 100_000, "parity engine work cap (per mille of search ticks, 0 none)"),
     (gausslimit, 256, 1, 100_000, "parity engine matrix size cap (M bits)"),
+    (gausswindow, 65536, 1, i32::MAX, "parity engine yield check window (K ticks of its work)"),
     (gaussyield, 20, 0, 1_000_000, "parity engine minimum yield (propagations per M ticks, 0 none)"),
     (ifthenelse, 1, 0, 1, "extract and eliminate if-then-else gates"),
     (incremental, 0, 0, 1, "enable incremental solving"),
@@ -716,8 +717,8 @@ mod tests {
     fn table_has_all_158_options_plus_the_structure_pass() {
         // kissat's 158 plus the nine struct* options (plan section 11,
         // 2026-10-07), walkshare, walkstall (2026-10-13) and gauss, gausseffort,
-        // gausslimit, gaussyield (2026-10-15/16)
-        assert_eq!(OPTION_TABLE.len(), 158 + 15);
+        // gausslimit, gaussyield, gausswindow (2026-10-15/17)
+        assert_eq!(OPTION_TABLE.len(), 158 + 16);
     }
 
     #[test]

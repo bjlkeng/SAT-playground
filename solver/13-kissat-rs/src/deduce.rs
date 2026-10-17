@@ -149,7 +149,8 @@ pub fn deduce_first_uip_clause(solver: &mut Solver, conflict: Conflict) -> Optio
         if unresolved_on_current_level == 1 {
             break;
         }
-        let a = solver.assigned[literal::idx(uip) as usize];
+        // not in kissat: a reason that is a parity-engine row becomes a clause here
+        let a = crate::gauss::assigned_with_reason(solver, uip);
         debug_assert!(a.reason != DECISION_REASON);
         debug_assert!(a.level == solver.level);
         solver.antecedent_size = 1;

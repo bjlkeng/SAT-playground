@@ -83,7 +83,8 @@ fn minimize_binary(solver: &mut Solver, minimizing: bool, lit: u32, depth: u32) 
             break;
         }
         solver.minimize.push(next_idx);
-        let a = solver.assigned[next_idx as usize];
+        // not in kissat: a reason that is a parity-engine row becomes a clause here
+        let a = crate::gauss::assigned_with_reason(solver, next);
         if !a.binary() {
             let next_depth = if depth == u32::MAX { depth } else { depth + 1 };
             res = minimize_reference(solver, minimizing, a.reason, next, next_depth);
@@ -122,7 +123,8 @@ fn minimize_literal_rec(solver: &mut Solver, minimizing: bool, lit: u32, depth: 
     if tmp < 0 {
         return false;
     }
-    let a = solver.assigned[idx as usize];
+    // not in kissat: a reason that is a parity-engine row becomes a clause here
+    let a = crate::gauss::assigned_with_reason(solver, lit);
     let res = if a.binary() {
         minimize_binary(solver, minimizing, a.reason, depth)
     } else {

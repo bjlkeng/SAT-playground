@@ -914,6 +914,42 @@ substitution handles those), and a second cell the engine cracks. The
 engine's proofs cost two checker timeouts more than stock's over the
 run (24 v 22 at seed 1).
 
+**Lazy reasons** (X.4, 2026-10-17). A propagation of the engine is
+recorded as its row: the literal's assignment carries the row index and
+a flag (`Assigned::GAUSS`), at the highest level of the row's other
+variables, and no clause exists until conflict analysis asks for the
+reason. Then the clause is built from the row, proved, put into the
+arena and the record points at it. This is sound because a row that
+propagated has every variable assigned, and the Jordan step only adds
+rows into rows that hold the new, unassigned pivot: the row is the same
+when the clause is built, as long as the literal is still assigned (its
+level is the highest of the row's, so a backtrack that frees any of
+them frees it). Every reader of a reason as a clause (first-UIP
+deduction, minimization, shrinking, reason-side bumping) goes through
+one helper, which takes either side of the variable: minimization walks
+the false literals of a clause. Readers that only protect or remap
+reason clauses (reduce's marking, collection) skip the tag. Before the
+engine stops for the run every tagged reason on the trail becomes a
+clause (its rows would no longer be kept, and compaction may run again),
+and so before kissat's analysis of a conflict at level one, which learns
+the decision's negation as a unit as soon as a clause holds it, on the
+strength of the whole level's propagation having reached a conflict:
+the proof checker replays that propagation from clauses, so every
+propagation of the engine on the level needs its clause (found by the
+gate on a parity-learning formula: a unit with no derivation). Units
+(every other variable fixed) and conflicts are built at once. The exit
+line counts `lazy` and `materialized`. Measured: par32-2 2-7 s across
+seeds (the eager engine 4-8 s); bivium at seed 1 on an idle host, no
+proof written: **578 s against 842 s eager and 760 s stock**, with 3.5M
+of 27.6M propagations made into clauses (13%) and 146K conflicts
+against 2.7M eager and 16.0M stock. Tests: `tests/gauss.rs` (few
+clauses made and the gate accepts; the engine stopped mid-search by its
+yield guard with tagged reasons on the trail, and the same under
+chronological backtracking, through the gate); the proof fuzz, now with
+parity-learning formulas and the stop options, 600 formulas on the
+release build and 120 on the debug build with its assertions, every
+UNSAT through the gate; the whole test suite on both builds.
+
 **Proof** (X.2, `src/gaussproof.rs`). The structure pass's VeriPB
 stream stays open through the search and the engine writes into it, so
 the gate's first stage proves every clause the engine added from the

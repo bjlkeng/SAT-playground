@@ -1861,6 +1861,16 @@ source of truth; every bead points back to its section.
   option. For this plan: an engine that changes the search on a
   quarter of the cells moves about ±5 cells a seed by luck alone, so
   the two-seed rule of 2026-10-14 was the right bar.
+- 2026-10-17 (X.4, lazy reasons). A propagation of the engine is now
+  recorded as its row and becomes a clause only when conflict analysis
+  asks (CryptoMiniSat's way); every reader of a reason as a clause goes
+  through one helper, and before a level-one analysis (which learns
+  units on the strength of the whole level's propagation) or the
+  engine's stop every tagged reason gets its clause. bivium at seed 1
+  on an idle host: 578 s against 842 s eager and 760 s stock; par32-2
+  kept. 720 fuzz formulas with proofs (120 with debug assertions),
+  every UNSAT through the gate; two Codex rounds clean. Four-arm
+  400-cell run started.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 
