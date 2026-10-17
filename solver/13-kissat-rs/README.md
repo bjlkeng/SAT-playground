@@ -897,12 +897,22 @@ own spread across seeds (4, 21, 277 s), but twice on the wrong side.
 On the 107 cells the engine touches, where both arms solve, the work
 summed is 1.05× and 1.03× (medians 1.02 and 1.00); on the other 293
 cells the search is identical (the work differs by the scan for XORs,
-0.01% in the median). **Not promoted**: the option stays off. What it
-would take: the engine's cost on XOR-rich cells it cannot crack
-(bivium) understood, and a second cell it does crack; the 46 cells
-with equivalences only should not build a matrix at all (kissat's
-substitution handles those). The engine's proofs cost two checker
-timeouts more than stock's over the run (24 v 22 at seed 1).
+0.01% in the median). **Not promoted**: the option stays off. Why bivium
+is slower (a diagnostic run at seed 1 on an idle host, no proof
+written): the engine reasons there, 2.7M conflicts against 16.0M for
+stock, but it makes 16.8M propagations and every one puts a reason
+clause of a row's length into the arena, so the search's work per
+conflict is five times stock's and the run takes 842 s against 760;
+with the proof written, as in the paired run, every one of those
+clauses is also a line in the stream, and the run takes 1785 s. So the
+losses that are not noise come from eager reason clauses, which
+CryptoMiniSat avoids by making a reason only when conflict analysis
+asks for it (lazy reasons; what blocks that here is the proof, see
+below). What it would take: lazy reasons with a proof that covers
+them, no matrix for the 46 cells with equivalences only (kissat's
+substitution handles those), and a second cell the engine cracks. The
+engine's proofs cost two checker timeouts more than stock's over the
+run (24 v 22 at seed 1).
 
 **Proof** (X.2, `src/gaussproof.rs`). The structure pass's VeriPB
 stream stays open through the search and the engine writes into it, so
