@@ -1869,8 +1869,15 @@ source of truth; every bead points back to its section.
   engine's stop every tagged reason gets its clause. bivium at seed 1
   on an idle host: 578 s against 842 s eager and 760 s stock; par32-2
   kept. 720 fuzz formulas with proofs (120 with debug assertions),
-  every UNSAT through the gate; two Codex rounds clean. Four-arm
-  400-cell run started.
+  every UNSAT through the gate; two Codex rounds clean.
+- 2026-10-18 (the paired run with lazy reasons; promotion). gauss on
+  against off at seeds 0 and 1: 311 v 308 and 315 v 311, tick PAR-2
+  0.969× and 0.943×, no unsatisfiable loss on either seed; par32-2 and
+  Circuit_multiplier29 (never solved by stock) gained on both seeds,
+  16_2 on one; bivium within noise of stock. Promoted: `gauss` is on
+  by default, the stock path `--gauss=0` with the struct options at 0.
+  The two-seed rule did its job twice: it refused the eager engine
+  (621 v 620) and accepted the lazy one (626 v 619) on the same cells.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

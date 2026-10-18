@@ -169,11 +169,12 @@ pub const SOLVER_ENV_VARS: &[&str] = &[
 /// environment additions (a value of "" is passed through as an empty
 /// variable, which the solver must treat as unset).
 /// Options that put the solver on the stock kissat path: the structure
-/// passes (on by default since 2026-10-10) off. The test corpus's hard
+/// passes (on by default since 2026-10-10) and the parity engine (on by
+/// default since 2026-10-18) off. The test corpus's hard
 /// formulas are pigeonhole, which the symmetry pass settles at once, so
 /// every test of the search runs through `run`/`run_with_proof` with these;
 /// `run_shipped` is for tests of the shipped defaults.
-pub const STOCK_PATH: &[&str] = &["--structsym=0", "--structparity=0", "--structcount=0"];
+pub const STOCK_PATH: &[&str] = &["--structsym=0", "--structparity=0", "--structcount=0", "--gauss=0"];
 
 pub fn run(cnf: &Path, options: &[&str], env: &[(&str, &str)]) -> Run {
     let mut all: Vec<&str> = STOCK_PATH.to_vec();

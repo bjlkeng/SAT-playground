@@ -788,11 +788,13 @@ odd (or even) number of its variables are true. Clauses handle a long
 XOR badly: a clause propagates only when one literal is left, and the
 sum of two XORs has no short clause form. The parity pass settles closed
 XOR systems before search; this engine works on XORs mixed with other
-clauses, during search. Options, all off until measured:
+clauses, during search. Options (the engine on by default since 2026-10-18, after the paired
+run with lazy reasons below; a promoted default is exactly the measured
+configuration):
 
 | option | what it does |
 |---|---|
-| `--gauss=1` | the engine on |
+| `--gauss=1` | the engine; **default on since 2026-10-18** (the paired run with lazy reasons, below); `--gauss=0` is the stock path |
 | `--gaussyield=N` | at every window of 67M ticks of its work, the engine's propagations and conflicts per million ticks since the build must reach N, else it stops for the run (default 20; par32-2 runs at about 560, a cell where it only burns work under 1; 0 for no guard) |
 | `--gausslimit=N` | the matrix may hold N million bits, rows times columns, plus the proof's table of row sets (default 256); a larger system leaves the engine off |
 | `--gausseffort=N` | the engine may use N per mille of the search ticks (plus a start allowance); past that it stops for the run (default 0, no cap: a cell the engine solves takes more engine work than search work) |
@@ -949,6 +951,44 @@ chronological backtracking, through the gate); the proof fuzz, now with
 parity-learning formulas and the stop options, 600 formulas on the
 release build and 120 on the debug build with its assertions, every
 UNSAT through the gate; the whole test suite on both builds.
+
+**Paired run with lazy reasons** (2026-10-17;
+`log/abtest-struct-lazy-400-2026-10-17-08-31-04`,
+`log/struct-lazy-400-report-2026-10-17.txt`; one frozen binary, commit
+762d4c3, `--gauss=1` against `--gauss=0` at seeds 0 and 1, 400 cells,
+1800 s, every answer through the gate, no contradiction; the base arms
+are the stock trajectory to the unit, identical in work to the eager
+run's base arms on every cell both solve):
+
+| arm | solved | +/− v its base | wall PAR-2 | tick PAR-2 | both seeds |
+|---|---:|---:|---:|---:|---:|
+| base, seed 0 | 308 | | 1.000× | 1.000× | |
+| **gauss, seed 0** | 311 | +4 / −1 | 0.981× | 0.969× | |
+| base, seed 1 | 311 | | 0.967× | 0.981× | 619 |
+| **gauss, seed 1** | 315 | +6 / −2 | 0.950× | 0.943× | 626 |
+
+Two gains hold on both seeds: `par32-2` (11 and 4 s) and
+`Circuit_multiplier29` (1372 and 520 s), neither ever solved by stock;
+`16_2` (the cipher cell CryptoMiniSat did not solve in 15 minutes)
+falls on seed 1 at 1118 s. The other gains are satisfiable cells on
+other paths and two multiplier cells at the timeout's edge. **No
+unsatisfiable cell is lost on either seed.** The three losses are
+satisfiable cells on other paths (two timetables, where the engine
+builds a matrix of equivalences and can reason nothing; fermat, where
+the yield guard stops it within 0.1 s): coin flips, with the engine
+flipping the coin. bivium, the one repeated loss of the eager engine,
+is 887 and 889 s against 716 and 848 s for stock (1800 and 1785 s
+eager), with its proof written on a loaded host; on an idle host with
+no proof it is 578 s against 760. On the 107 cells where the engine
+builds a matrix the work where both arms solve is 1.04× summed on both
+seeds (medians 1.03 and 1.00); the other 293 cells are searched
+identically. Checker timeouts: 24 and 23 against 22 and 22, the
+engine's proofs on cells like bivium being slow to check (its 3.6 GB
+stream took 71 minutes, past the harness's budget: an unverified
+answer, not a failure). **Promoted** (2026-10-18): `gauss` is on by
+default; the stock path is `--gauss=0` with the struct options at 0.
+Left for a later candidate: no matrix for cells with equivalences only
+(46 of the 107), and the checking cost.
 
 **Proof** (X.2, `src/gaussproof.rs`). The structure pass's VeriPB
 stream stays open through the search and the engine writes into it, so

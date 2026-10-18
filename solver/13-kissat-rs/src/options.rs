@@ -150,8 +150,12 @@ kissat_options! {
     (forward, 1, 0, 1, "forward subsumption in BVE"),
     (forwardeffort, 100, 0, 1_000_000, "effort in per mille"),
     // Not in kissat (2026-10-15, bead SAT-playground-1v2.7): the parity
-    // engine, XOR reasoning inside search (src/gauss.rs); off until
-    // measured. gausslimit caps the matrix (rows times columns, in
+    // engine, XOR reasoning inside search (src/gauss.rs); on by default
+    // since 2026-10-18 (lazy reasons; the four-arm 400-cell run of
+    // 2026-10-17: 311 v 308 and 315 v 311, no unsatisfiable loss on
+    // either seed, par32-2 and Circuit_multiplier29 gained on both). The
+    // stock path is --gauss=0 with the struct* options at 0. gausslimit
+    // caps the matrix (rows times columns, in
     // millions of bits); gaussyield stops the engine for the run when,
     // at a window of its work, its propagations and conflicts per
     // million ticks of its work fall below this (on par32-2 the yield is
@@ -159,7 +163,7 @@ kissat_options! {
     // gausseffort caps the engine's work at this share of the search
     // ticks (per mille), 0 for no cap: a cell the engine solves takes
     // more engine work than search work, so this is a guard, not a default.
-    (gauss, 0, 0, 1, "parity engine: XOR reasoning inside search"),
+    (gauss, 1, 0, 1, "parity engine: XOR reasoning inside search"),
     (gausseffort, 0, 0, 100_000, "parity engine work cap (per mille of search ticks, 0 none)"),
     (gausslimit, 256, 1, 100_000, "parity engine matrix size cap (M bits)"),
     (gausswindow, 65536, 1, i32::MAX, "parity engine yield check window (K ticks of its work)"),

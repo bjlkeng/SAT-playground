@@ -160,10 +160,12 @@ Not in kissat. Off means off: with every `struct*` option at 0 the parser
 hands literals to `internal::add` as before and no code of the pass
 runs, so `tools/parity.py` stays exact. Since 2026-10-10 `structsym` and
 `structparity` are on by default (promoted after the 2025 runs and the
-single 2026 holdout), since 2026-10-13 `structcount` too: the stock
-kissat path is `--structsym=0 --structparity=0 --structcount=0`, which
-`tools/parity.py` adds unless told `--structure` and the test helpers'
-`run`/`run_with_proof` add always
+single 2026 holdout), since 2026-10-13 `structcount` too, and since
+2026-10-18 the parity engine `gauss` (`src/gauss.rs`, README "The
+parity engine"): the stock kissat path is `--structsym=0
+--structparity=0 --structcount=0 --gauss=0`, which `tools/parity.py`
+adds unless told `--structure` and the test helpers' `run`/`run_with_proof`
+add always
 (`tests/common/mod.rs`, `STOCK_PATH`); a test of the shipped defaults
 uses `run_shipped`. A promoted default is exactly the measured
 configuration; a change to a pass's budget or detection is a new
