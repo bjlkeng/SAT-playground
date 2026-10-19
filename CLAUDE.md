@@ -36,7 +36,15 @@ work is **solver 13** and the RL scheduler on top of it.
   (`structsym` and `structparity` are on by default since 2026-10-10,
   `structcount` since 2026-10-13, `gauss` since 2026-10-18; solver README
   "The structure pass" and "The parity engine"), as do the test helpers.
-- **`plan/rl-scheduler-solver13-plan.md`** — the active project. Replace
+- **Netlist recovery (epic `SAT-playground-skz`, 2026-10-19)** — the next
+  line after the structure pass and the parity engine: recover gates,
+  adder cells, words and arithmetic blocks from the CNF and feed them to
+  certified reasoning backends (a linear pass for multiplier miters first,
+  then counting, IC3 on de-unrolled BMC cells behind a probe). The ideas
+  are in the epic's beads; the measured facts behind them in the solver
+  README, "Next: netlist recovery". Work order: the recovery census
+  (`skz.1`) and the certificate toy check (`skz.2`) first, no solver code.
+- **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a
   small CPU MLP consulted every X search ticks. Every mechanism stays

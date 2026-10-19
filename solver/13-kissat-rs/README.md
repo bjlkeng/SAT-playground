@@ -1035,6 +1035,217 @@ clause only when conflict analysis touches it would cut the proof
 tenfold, but a clause kissat later rewrites (vivify, collection) would
 then have no derivation, so every clause is proved when it is made.
 
+## Next: netlist recovery (2026-10-19; epic `SAT-playground-skz`)
+
+What is left after every pass and the engine, read off the run of record
+(`log/abtest-struct-lazy-400-2026-10-17-08-31-04`, gauss arms, seeds 0
+and 1), and the measured facts behind the next line of work. The ideas
+themselves are in the epic's beads.
+
+**The 72 cells unsolved on both seeds**, by kind: about 40 industrial or
+arithmetic (16×16 multiplier miters 3, `multiplier_15/16bits__miter` 2,
+`div_miter_lec`, `hhyp_cec`, sorter miters 2, oisc 3, bp4 2, timetable 5,
+argumentation 5, sudoku 2, et-tc 2, singletons); 12 crafted combinatorics
+with no known short certificate (ramsey 6, vdw, cfi-rigid, 6-colouring,
+baseballcover, connm-csp, dubois50); about 20 with a known structural
+answer not built (rooks 3, oddball 6 satisfiable, lockchart 9, rbsat,
+sum-of-cubes); two that abort at 16 GB (`pj2002_k500`, anon-normalised 17;
+the C kissat aborts on both too, exit 134 in the September paired run).
+48 of the 72 carry pairwise at-most-one groups, but those are CSP-shaped
+exactly-one blocks (sudoku 90K groups, timetables 31-34K, lockchart,
+rbsat, cfi, argumentation); they propagate completely already, so native
+at-most-one would buy nothing there. The census has no detector for
+encoded at-most-k with k ≥ 2 (sequential counters, totalizers, adder
+popcounts, decision diagrams); the file headers are normalised, so that
+needs a detector run (bead `skz.5`).
+
+**The arithmetic cells sit at the edge.** Of the 12 `16_16` miters, 7-9
+are solved at **608-1707 s** and 3-5 time out depending on the seed;
+`BubbleVsPancakeSort` 7_6 and 8_4 take 257-670 s, 8_6 and 9_4 time out;
+`sqrt-mitern` 96-624 s; `oisc-subrv-sll-nested-8` 387 s, the three
+`and-nested` cells time out. A 2× search speedup would convert about four
+cells; a certified linear argument (after the partial products a
+multiplier is linear; bead `skz.3`) would take the family to seconds.
+The 2026 suite has two `16_16` booth-vs-and miters, `Circuit_multiplier36`,
+three `BubbleVsPancakeSort`, two `DivS`, a sqrt miter and `bp5` by file
+name, so the family recurs; it was not analysed further.
+
+**Seed switching does not harvest the luck** (scratch analysis of the
+same run). Single seeds solve 311 / 315, the union of the two is 328, and
+27 of the 30 one-seed-only cells are satisfiable. But a run that uses
+seed A from scratch for T seconds and seed B for the rest solves
+**299-306 at every T from 300 to 1500 s**, below either seed alone,
+because the one-seed-only solves are late (medians 785 and 1118 s) and
+need most of the budget. The 13-cell gap is real; only a second core
+(parallel track) reaches it, not a schedule. This closes the open
+question of the local-search share ("spend satisfiable-side luck
+better").
+
+**BMC-shaped cells.** About 30 of the 2025 cells are bounded unrollings
+of hardware designs (period in the census: VexRiscv 11881, veer_axi
+226432, x-epic 30399 and 30862, sat-dat 15562). Nearly all are solved;
+the slow unsatisfiable ones are `valves-gates-1-k617` (1533-1689 s; 985K
+variables, about 1.6K per frame), `g2-T49` (1207-1393 s), `SAT_dat.k100`
+(778-963 s), `oski15a01b06s_opt` (608-1150 s), `x-epic_a19-p16_step`,
+`dijkstra_step` and `VexRiscv_step` (284-566 s); unsolved:
+`g2-hwmcc15deep-oski15a10b10s-k20`, the three `oisc-and-nested` program
+unrollings, `pj2002_k500` (memory). An IC3 probe on de-unrolled copies
+is bead `skz.7`.
+
+**Recovery census, the multiplier slice (2026-10-19; bead `skz.1`;
+`tools/netlist_census.py`, `benchmarks/rl/netlist_2025_multipliers.tsv`).**
+The tool reads a CNF back as a circuit: gates by the definition test (a
+variable its clauses determine as a function of a few others; parity
+clause sets define every variable in them, so the direction is settled
+forward — a gate is accepted once its inputs are settled and none of
+its clauses is used by an accepted gate; a deadlock means a primary
+input), structural hashing, half and full adders by truth tables over
+2- and 3-input cuts (so an adder built from ANDs is found as well as
+one written with XOR clauses), weights by a union-find with offsets,
+the operand grid from the adder leaves, and the two cones of the miter
+from the compared variables. Checked on toy miters first (two 4- and
+6-bit multipliers with different adder trees, XOR3 gates or 2-input
+gates only, variables renumbered or not): 12 of 12 inputs, one network,
+the 6×6 grid, consistent weights. Three things the real cells taught
+the tool: control signals fan out to hundreds of clauses (an
+occurrence cap of 64 lost the Booth encoders, so the odd `b` bits came
+back as XORs of the encoder outputs); two real gates can imply a third
+"definition" between them (`37 = 36 ? 14 : 13` and `109 = 36 ? x : 14`
+give `14 = 36 ? 37 : 109`), which is why direction has to be settled
+globally; and an XOR gate is reversible, so with renumbered variables
+an input can only be told from an output by fan-out.
+
+On the 14 multiplier cells (gate coverage 97-99 % everywhere; `grid` is
+the AND partial-product grid; a side is one compared cone, `explained`
+the share of its gates inside recovered adder cells, `cpa` the sum bits
+of a final adder found by shape):
+
+| cell | fa | ha | weight conflicts | grid | side A | side B |
+|---|---:|---:|---:|---|---|---|
+| `multiplier_16bits__miter_22` | 445 | 503 | 0 | 16×16, 255 pp | 1.00 (391 cells) | 1.00 (412 cells) |
+| `multiplier_15bits__miter_23` | 387 | 441 | 0 | 15×15, 224 pp | 1.00 (374) | 1.00 (398) |
+| `16_16_and_wallace_origin_and_default_mapped_ultra_bit27` | 383 | 467 | 0 | 16×16, 243 pp | 0.95 (446) | 0.93 (404) |
+| `16_16_default_mapped_ultra_and_and_dadda_mapped_bit28` | 385 | 410 | 0 | 16×16, 244 pp | 0.92 (411) | 0.90 (390) |
+| booth-vs-and, `origin` Booth side (5 cells) | 285-295 | 339-385 | 10-12 | 16×16, 217-250 pp | Booth 0.50-0.53 (239-260) | AND 0.82-0.87 (387-437) |
+| booth-vs-and, `mapped` Booth side (4 cells) | 241-246 | 290-328 | 0-2 | 16×16, 230-247 pp | Booth 0.22-0.23 (113-119) | AND 0.91-0.95 (418-455) |
+| `16_16_booth_dadda_mapped_and_booth_wallace_mapped` | 148 | 205 | 10 | none (Booth both sides) | — | — |
+
+**Reading.** The two `multiplier_Nbits` miters (both-seed timeouts) are
+two multipliers over one shared 16×16 grid, every gate of both cones
+inside an adder cell, weights consistent: the linear pass as designed
+(bead `skz.3`) refutes them with no gap to close. The two AND-vs-AND
+`16_16` cells (608-1707 s today) are the same except for 5-10 % of each
+cone, which is the **final carry-propagate adder**: a parallel-prefix
+adder, not a ripple one — the half adders give propagate and generate,
+the unexplained AND trees are the prefix network, the last XORs the sum
+bits. That block needs its own step in the pass (the carry into each
+bit proven equal to the ripple carry by a SAT sub-call logged as `rup`,
+then the adder is virtual full adders; AMulet's adder substitution in
+certificate form). On the Booth-vs-AND cells the AND side is 82-95 %
+explained (the rest is the same prefix adder) and the Booth side's gap
+is its partial-product logic (digit encoder and row muxes), which is
+step two (`skz.4`); the mapped Booth trees also lose about half their
+adders to a cell shape the matcher does not know yet. A single-bit
+miter's cone holds the carry chain but not the lower sum bits, so the
+bit-equality argument will define them as extension variables. The
+weight conflicts on the Booth cells are rejected cells (an XOR and an
+AND over the same two encoder signals look like a half adder).
+
+**The certificate, checked on a toy (2026-10-19; bead `skz.2`;
+`tools/arith_toy_proof.py`, `log/arith-toy-proof-*`).** Two n×n
+multipliers over the same AND partial products, an array one against a
+column-wise one, the miter on one output bit, and a VeriPB 3 proof
+written the way the pass would write it: per adder cell the two sides of
+`la + lb (+ lc) = s + 2c` as `pbc` blocks with a case split in `rup`
+steps (nine for a full adder, two or three for a half adder); per side
+one weighted `pol` sum (the telescoping: every internal signal cancels,
+the partial products and the output bits remain); the two sides added so
+the shared partial products cancel; then per bit from the top, weaken
+the lower bits and divide by the bit's weight for the two equality
+clauses, and cancel the bit from the running constraints (a bit one side
+lacks, such as a dropped top carry, is proven zero the same way); one
+case split against the miter's compare. VeriPB accepts the proofs for
+4-bit miters in both gate styles (XOR3 and majority clauses; 2-input
+gates only), the 8-bit one, and the **16×16 one at the real cells' size:
+2,593 variables, 8,613 clauses, 480 cells, a 10,284-line (300 KB) proof
+checked in 0.03 s**, against 608-1707 s of search on the real `16_16`
+cells. A tampered proof (one adder's inequality off by one) is rejected
+each time. Three things learned writing it: moving `−s − 2c` to literal
+form adds 3 to the right-hand side whatever the number of inputs (a
+half adder's inequality off by one made every bit clause trivial); a
+`pbc` block consumes one constraint id for the negated constraint and
+one per subproof line; and the last step needs one case split, since
+four binary clauses with no unit do not propagate to conflict.
+
+**Recovery census, the whole 2025 suite (2026-10-19;
+`benchmarks/rl/netlist_2025.tsv` (a copy of the run under `log/netlist-census-2026-10-19/`), the family table from
+`tools/netlist_census.py report`).** 400 cells, 24 workers, about an
+hour; cells over 400K variables are skipped (`too-big`, 79 cells, among
+them `oisc`, `pj`, `oski`, the big `lockchart` and `sudoku` ones), 92
+cells have no gate structure (`no-gates`), and 9 cells over the gate cap
+got the gate pass only. The tool went through seven
+Codex rounds (17 findings, every one a metric or robustness defect in
+the measurement: a cell-wise weight check, aliases through buffers and
+inverters, the two sides of a miter found by walking from its unit
+through and/or gates to the compared signals with the compare cells
+told from adders by their inputs' cones, a non-overlapping cell cover,
+word grids only with distinct bit positions and no weight conflict,
+completion-order writes, degenerate toy tampers). What the suite looks
+like as circuits:
+
+- **Circuits with adder networks (50 cells or more): 67 cells** —
+  multiplier-16x16 12, bp 12 of 20, itc99 7, div-sqrt-miter 4,
+  hwmc-step 3, sat03-nw 3, grs 3, iscas 3, three singletons, mp1 2,
+  mult-miter-bits 2, bits-fast 2, circuit-multiplier 2, and one each of
+  reconf, parity, arith-xor-misc, sum-of-cubes, factoring, lec-mult,
+  jkkk, aprove, hwmcc-bob. **Word multiplier grids (8×8 or wider): 19
+  cells** — the 9 AND-array sides of the `16_16` cells, both
+  `multiplier_Nbits`, sat03-nw 3, bits-fast 2, and one each of
+  arith-xor-misc, hwmc-step and lec-mult.
+- **No gate structure at all** (`no-gates` or coverage under 5 %): the
+  combinatorial and CSP families — roundrobin, timetable, sudoku, arles,
+  ramsey, php, rooks, lockchart, oddball, kakuro, vdw, cfi, rbsat, frb,
+  et-tc, itc2021, clqcl. For those the netlist route is the wrong tool;
+  the clause-level detectors (bead `skz.5`) are the route.
+- **Two-cone miters:** 102 cells have two compared cones, 12 of them
+  with both cones 90 %+ inside adder cells (`16_16` 2, `multiplier_Nbits`
+  2, sat03-nw 3, bits-fast 2, and one each of grs, sum-of-cubes and
+  lec-mult).
+
+On the **72 cells unsolved on both seeds** the netlist reading is:
+`multiplier_16bits__miter_22` and `multiplier_15bits__miter_23` — two
+multipliers over one shared word grid, both cones 100 % adder cells,
+the linear pass as designed; `16_16_booth_dadda_origin_and_and_dadda_*`
+(2 cells) — AND side 0.88-0.94, Booth side 0.50, step two;
+`16_16_booth_dadda_mapped_and_booth_wallace_mapped` — both sides Booth,
+0.28-0.30; `fermat` (factoring) — 99 % gates, **3,508 full adders**, no
+operand grid (one input word squared and compared, not a miter: a
+number-theory cell, not a linear one); `sum_of_3_cubes_37` — 7,315 full
+adders (cubes are multipliers), not a miter; `div_miter_lec__2` — 92 %
+gates, 215 full, 498 half and 35 carry-in-one adders, but the two
+compared cones are 0-6 % explained: a divider's subtract-and-select
+loop is not an adder tree; `bp4` (4 cells) — 33-43 % gates, 183-258 full
+adders and **138-155 half adders with a constant carry-in** (the
+subtractor shape; the names `FPBEQ`, `FPBLE`, `ZR` read like
+floating-point compare units), sides 11-15 % explained;
+`BubbleVsPancakeSort` 8_6 and 9_4 — 88-91 % gates and **no adders at
+all** (comparators and muxes); `oddball` — no gate structure (0-0.2 %),
+so the counting backend must come from clause-level detection; the
+rest are the CSP and combinatorial families above, or too big for the
+Python pass.
+
+**Reading for the decision (bead `skz.11`).** The linear pass's step one
+has exactly two both-seed-unsolved targets on 2025 (`multiplier_Nbits`)
+plus the two AND-vs-AND `16_16` cells it would take from 10-28 minutes to
+seconds, and the holdout has two `16_16` miters and `k2mul` by name.
+Step two (Booth) adds the five `origin` and four `mapped` Booth-vs-AND
+cells (three of them both-seed-unsolved) and the Booth-vs-Booth one.
+Beyond multipliers the arithmetic cells need other backends: factoring
+and cubes are number theory, the divider needs the restoring-division
+argument, `bp4` needs subtractor and compare blocks, and the sorters
+need comparator-network reasoning. The counting families (oddball,
+timetables, rooks) have no circuit to recover.
+
 - **Work-clock limit.** `limited.ticks` / `limits.ticks` sit next to
   kissat's conflict and decision limits. The check lives in
   `terminate::terminated`, which is what every inprocessing effort loop and
