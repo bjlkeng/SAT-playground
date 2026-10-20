@@ -233,14 +233,16 @@ kissat_options! {
     // structparity are on by default since 2026-10-10 (measured on the
     // 400 cells of 2025, 298 v 282, and once on the 2026 holdout, 212 v
     // 203, every answer checked), structcount since 2026-10-13 (309 v 306
-    // with the parity pass's flip step, on 2025); the stock path is all
-    // three at 0. A promoted configuration is exactly the measured one:
+    // with the parity pass's flip step, on 2025); the stock path has every
+    // struct pass at 0. A promoted configuration is exactly the measured one:
     // structticks 1,000,000 K, structmore 2,000,000 K once a matrix is
     // verified, structcountticks 20,000 K for the counting pass alone.
     // the linear arithmetic pass (bead SAT-playground-skz.3, 2026-10-19):
-    // off until measured; structarithticks is its own work limit, counted
-    // from where the earlier passes stopped, as structcountticks is
-    (structarith, 0, 0, 1, "structure pass: linear arithmetic (multiplier miters)"),
+    // on by default since 2026-10-20 (313 v 312 on 2025: the two multiplier
+    // miters, no search changed elsewhere). structarithticks is its own
+    // work limit, counted from where the earlier passes stopped, as
+    // structcountticks is
+    (structarith, 1, 0, 1, "structure pass: linear arithmetic (multiplier miters)"),
     (structarithticks, 20_000, 0, i32::MAX, "structure pass: arithmetic work limit (K)"),
     (structclauses, 10_000_000, 0, i32::MAX, "structure pass clause limit"),
     (structcount, 1, 0, 1, "structure pass: pigeonhole counting"),

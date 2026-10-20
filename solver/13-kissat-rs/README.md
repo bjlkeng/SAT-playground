@@ -156,8 +156,11 @@ measurement promotes it, and stays a switch after. **Promoted 2026-10-10:
 `structsym` and `structparity` are on by default** (the combined 2025 run
 298 v 282 and the single 2026 holdout 212 v 203, below); **2026-10-13:
 `structcount`** (309 v 306 on 2025 with the parity pass's flip step;
-not seen on the holdout). The stock kissat path is `--structsym=0
---structparity=0 --structcount=0`, which `tools/parity.py` passes unless
+not seen on the holdout); **2026-10-20: `structarith`** (313 v 312 on
+2025, the two multiplier miters; not seen on the holdout; "The linear
+arithmetic pass" below). The stock kissat path is `--structsym=0
+--structparity=0 --structcount=0 --structarith=0` (and `--gauss=0`, the
+parity engine below), which `tools/parity.py` passes unless
 told `--structure`, and the test helpers' `run` too
 (`tests/common/mod.rs`, `STOCK_PATH`). A promoted configuration is
 exactly the measured one:
@@ -194,7 +197,7 @@ structure set's gain, +29 in both seeds, is a deterministic one.
 | `--structparity=1` | parity: closed XOR systems fixed by cycle flips, and the flip symmetries of any formula (`src/structparity.rs`) | **default on** since 2026-10-10; the flip step since 2026-10-13 (below) |
 | `--structcount=1` | counting: demand clauses against pairwise at-most-one groups, a Hall violation proved by cutting planes (`src/structcount.rs`); runs last, within `structcountticks` | **default on** since 2026-10-13 (below); sequential-counter and decision-diagram counts are step two |
 | `--structcountticks=N` | the counting pass's own work limit in thousands (default 20K, 20M), counted from where the other passes stopped | since 2026-10-13 |
-| `--structarith=1` | linear arithmetic: a miter of two multipliers over shared partial products refuted by summing their adder cells (`src/structarith.rs`); runs after symmetry, before counting, within `structarithticks` | off; bead `skz.3`, below ("The linear arithmetic pass") |
+| `--structarith=1` | linear arithmetic: a miter of two multipliers over shared partial products refuted by summing their adder cells (`src/structarith.rs`); runs after symmetry, before counting, within `structarithticks` | **default on** since 2026-10-20 (313 v 312; below, "The linear arithmetic pass") |
 | `--structarithticks=N` | the arithmetic pass's own work limit in thousands (default 20K, 20M), counted from where the earlier passes stopped | since 2026-10-19 |
 | `--structcsp=1` | one-hot CSP decoding, SAT only | bead S.4, not yet |
 | `--structsymext=1` | general automorphisms through an external tool (measurement only) | bead S.2 step two, not yet |
@@ -1302,7 +1305,8 @@ is the certificate (bead `1v2.4`).
 
 ## The linear arithmetic pass (2026-10-19; bead `SAT-playground-skz.3`)
 
-Not in kissat. `--structarith=1` (off until measured; `src/structarith.rs`,
+Not in kissat. `--structarith=1` (**default on since 2026-10-20**, after
+the paired run at the end of this section; `src/structarith.rs`,
 tests in `tests/structarith.rs`). After the partial products a multiplier
 is linear: every adder cell says `a + b (+ c) = s + 2 carry` over the
 integers, so two adder trees summing the same weighted bits give the same
@@ -1400,6 +1404,35 @@ structure stage's 10M-clause limit. Review: nine Codex rounds (round 1
 found the leaf and the encoding bugs above; rounds 2-8 the work limit and
 its accounting: polls by work done, live counting, affordability before
 allocation, the gate cap, checked sums; the ninth, on the commit, clean).
+
+**Paired run and promotion (2026-10-20).** The 400 cells of 2025, seed 0,
+1800 s, 32 jobs, the frozen build of 0782bf5, the pass on against off
+(`log/abtest-struct-arith-400-2026-10-19-21-28-07`, launch log
+`log/struct-arith-400-launch-2026-10-19b.txt`): **313 v 312 solved**,
+tick PAR-2 0.976x, wall PAR-2 0.986x, promotion gate PASS, no
+contradiction. The gain is the two multiplier miters
+(`multiplier_16bits__miter_22`, `multiplier_15bits__miter_23`: a timeout
+against UNSAT in 0 s, both proofs checked). All 310 cells both arms
+solved have the same conflict counts, so a declining pass changes no
+search, and one seed is enough. Three other cells flipped on the same
+search by wall-clock luck near the limit: `oddball_29_4` +1 (solved at
+1791 s), `dislog_a14_x14_n24` −1 (base solved at 1800 s) and
+`16_16_booth_wallace` bit 28 −1 (base 1476 s; the pass costs 0.04 s
+there). The census and the reviews shared the host, and wall times on
+identical searches moved by up to half. When the pass declines it costs
+0 to 20.0M work (median 7.8M; nothing on the 40 cells over the clause
+limit and the 41 solved before it runs) and at most about a second
+(`xor_op_n38_d3` 0.79 → 1.72 s at `--conflicts=1`). Per family:
+mult-miter-bits 0 → 2, oddball 11 → 12, multiplier-16x16 8 → 7 and
+singletons 9 → 8 (booth_wallace and dislog, the luck above), the other
+91 families equal (284 each). With the pass off the stock path is
+unchanged: `tools/parity.py` on its 9 corpus cells and on three 2025
+cells the pass fires or declines on (the 16-bit miter, booth_wallace,
+xor_op_n38; 50,000 conflicts) matches the C kissat on all 80 counters.
+No second seed was run: the pass changes no search, so on seed 1 it
+refutes the same two miters before search and leaves every other search
+as it is (CLAUDE.md asks for a second seed when a candidate moves every
+cell's search).
 
 - **Work-clock limit.** `limited.ticks` / `limits.ticks` sit next to
   kissat's conflict and decision limits. The check lives in
