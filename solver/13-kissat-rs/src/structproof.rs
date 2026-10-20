@@ -146,6 +146,34 @@ impl Writer {
         Ok(self.constraints)
     }
 
+    /// A linear constraint proven by contradiction (`pbc`): VeriPB adds the
+    /// negation and the subproof's `rup` clauses must reach the empty
+    /// clause. `terms` are (coefficient, literal) pairs, the constraint
+    /// their sum >= `rhs`; `subproof` is a list of clauses (an empty one
+    /// is the contradiction). The negation and every subproof line take a
+    /// constraint id of their own before the derived constraint gets the
+    /// next one; returns that id.
+    pub fn pbc(&mut self, terms: &[(i64, i32)], rhs: i64, subproof: &[Vec<i32>]) -> std::io::Result<u64> {
+        let mut line = String::from("pbc");
+        for &(c, l) in terms {
+            line.push_str(&format!(" {} {}", c, lit_str(l)));
+        }
+        line.push_str(&format!(" >= {} : subproof", rhs));
+        let mut body = String::new();
+        for clause in subproof {
+            body.push_str("    rup ");
+            body.push_str(&clause_str(clause));
+            body.push_str(" ;\n");
+        }
+        if let Err(e) = write!(self.out, "{}\n{}qed;\n", line, body) {
+            self.failed = true;
+            return Err(e);
+        }
+        self.constraints += 1 + subproof.len() as u64 + 1;
+        self.steps += 1;
+        Ok(self.constraints)
+    }
+
     /// Delete derived constraints the proof no longer needs (the steps of
     /// a fixing once its clause is derived), so no later witness has to
     /// map them.

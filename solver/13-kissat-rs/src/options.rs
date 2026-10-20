@@ -237,6 +237,11 @@ kissat_options! {
     // three at 0. A promoted configuration is exactly the measured one:
     // structticks 1,000,000 K, structmore 2,000,000 K once a matrix is
     // verified, structcountticks 20,000 K for the counting pass alone.
+    // the linear arithmetic pass (bead SAT-playground-skz.3, 2026-10-19):
+    // off until measured; structarithticks is its own work limit, counted
+    // from where the earlier passes stopped, as structcountticks is
+    (structarith, 0, 0, 1, "structure pass: linear arithmetic (multiplier miters)"),
+    (structarithticks, 20_000, 0, i32::MAX, "structure pass: arithmetic work limit (K)"),
     (structclauses, 10_000_000, 0, i32::MAX, "structure pass clause limit"),
     (structcount, 1, 0, 1, "structure pass: pigeonhole counting"),
     (structcountticks, 20_000, 0, i32::MAX, "structure pass: counting work limit (K)"),
@@ -720,9 +725,10 @@ mod tests {
     #[test]
     fn table_has_all_158_options_plus_the_structure_pass() {
         // kissat's 158 plus the nine struct* options (plan section 11,
-        // 2026-10-07), walkshare, walkstall (2026-10-13) and gauss, gausseffort,
-        // gausslimit, gaussyield, gausswindow (2026-10-15/17)
-        assert_eq!(OPTION_TABLE.len(), 158 + 16);
+        // 2026-10-07), walkshare, walkstall (2026-10-13), gauss, gausseffort,
+        // gausslimit, gaussyield, gausswindow (2026-10-15/17) and
+        // structarith, structarithticks (2026-10-19)
+        assert_eq!(OPTION_TABLE.len(), 158 + 18);
     }
 
     #[test]

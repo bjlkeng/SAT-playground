@@ -194,6 +194,8 @@ structure set's gain, +29 in both seeds, is a deterministic one.
 | `--structparity=1` | parity: closed XOR systems fixed by cycle flips, and the flip symmetries of any formula (`src/structparity.rs`) | **default on** since 2026-10-10; the flip step since 2026-10-13 (below) |
 | `--structcount=1` | counting: demand clauses against pairwise at-most-one groups, a Hall violation proved by cutting planes (`src/structcount.rs`); runs last, within `structcountticks` | **default on** since 2026-10-13 (below); sequential-counter and decision-diagram counts are step two |
 | `--structcountticks=N` | the counting pass's own work limit in thousands (default 20K, 20M), counted from where the other passes stopped | since 2026-10-13 |
+| `--structarith=1` | linear arithmetic: a miter of two multipliers over shared partial products refuted by summing their adder cells (`src/structarith.rs`); runs after symmetry, before counting, within `structarithticks` | off; bead `skz.3`, below ("The linear arithmetic pass") |
+| `--structarithticks=N` | the arithmetic pass's own work limit in thousands (default 20K, 20M), counted from where the earlier passes stopped | since 2026-10-19 |
 | `--structcsp=1` | one-hot CSP decoding, SAT only | bead S.4, not yet |
 | `--structsymext=1` | general automorphisms through an external tool (measurement only) | bead S.2 step two, not yet |
 | `--structclauses=N` | the pass buffers at most N clauses (default 10M); past that it is off for the run | |
@@ -1245,6 +1247,107 @@ and cubes are number theory, the divider needs the restoring-division
 argument, `bp4` needs subtractor and compare blocks, and the sorters
 need comparator-network reasoning. The counting families (oddball,
 timetables, rooks) have no circuit to recover.
+
+## The linear arithmetic pass (2026-10-19; bead `SAT-playground-skz.3`)
+
+Not in kissat. `--structarith=1` (off until measured; `src/structarith.rs`,
+tests in `tests/structarith.rs`). After the partial products a multiplier
+is linear: every adder cell says `a + b (+ c) = s + 2 carry` over the
+integers, so two adder trees summing the same weighted bits give the same
+integer, whatever their shape, and their output bits are equal bit by
+bit. Resolution has no short proof of that; cutting planes has one a page
+long, and the structure pass already writes cutting planes.
+
+**What the pass does.** It reads the buffered formula back as a circuit
+(gates by the definition test with the direction settled forward, the way
+`tools/netlist_census.py` does it), merges equal gates, finds half and
+full adders by truth tables over 2- and 3-input cuts, finds the two cones
+the formula compares (from its unit clauses, through the and/or gates of
+the compare), and gives every cell a weight (a sum keeps its inputs'
+weight, a carry doubles it). It then checks, as integers, that each
+cone's cells summed with their weights cancel every internal signal and
+leave only partial products both cones read the same way, plus the
+cone's output bits. Each cell has two readings (`a + b = s + 2c`, and with
+every literal complemented `~a + ~b + 1 = ~s + 2 ~c`); the pass picks
+them together so that every signal is the same literal where it is made
+and where it is read. When the check closes, it derives bit by bit from
+the top the two clauses "bit of A = bit of B" (or "this bit is zero" for
+a bit one side lacks) and hands them to the solver; unit propagation then
+finishes. The carries that leave the compared bit's cone (above it) are
+one block, proven equal on both sides and cancelled before the bit steps.
+When the check does not close (a gate in a cone outside the cells, such as
+a parallel-prefix final adder or Booth partial-product logic), the pass
+derives nothing and the search runs as without it.
+
+**Proof** (checked on toys first, `tools/arith_toy_proof.py`): merged
+gates proven equal to their representative by contradiction with a case
+split over the gate's inputs (plain unit propagation cannot do it for two
+copies of an xor); per cell the two sides of its equation as `pbc` blocks,
+each with a full case split over the cell's inputs (under a full
+assignment every gate of the cell propagates forward, whatever the
+encoding); per cone one weighted `pol` sum; the two cones added so the
+partial products cancel; the top block and then each bit by weakening the
+lower bits and dividing by the weight.
+
+**Three correctness bugs found before anything was committed**, each now
+a regression test that fails on the build that had it
+(`tests/structarith.rs`) and each caught by the fuzz below on that build:
+(1) the two sides' constants were not compared, so a miter where only one
+side folds in a `+1` (satisfiable: the products differ) was answered
+UNSAT; (2) the leaf comparison was keyed by literal, so a side reading one
+partial product twice matched a side reading it once, a wrong UNSAT again
+(found by Codex); the check now compares each side's whole leaf sum as a
+linear form, constants included, which covers both; (3) the cell
+subproofs were short case splits that relied on unit propagation running
+backwards through the cell's gates, which an adder with the right truth
+table but an unusual carry cone (`(a ∧ b) ∨ ((((a ∨ b) ∧ c) ⊕ b) ⊕ b)`)
+does not allow: VeriPB rejected the proof (found by Codex). Without a
+proof file the first two would have been wrong answers with nothing to
+catch them, which is why the pass is fuzzed against the stock answer.
+
+**Fuzz** (`tools/arith_fuzz.py`). Random miters of two 3-6 bit
+multipliers over shared AND partial products, random shapes (array or
+column-wise, reduction orders, a constant one folded into a random pair,
+complemented half adders, XOR3 and majority clauses, 2-input gates, the
+unusual carry) and on a quarter of them a fault that makes the sides
+differ (a constant on one side, a partial product dropped, duplicated,
+moved a column, inverted). Each is solved with the pass off, on, and on
+with a proof file: the three answers must agree, every model is checked,
+every UNSAT proof from a run where the pass fired goes through the gate.
+On the final build: 1,500 miters (`log/arith-fuzz-2026-10-19b.txt`), all
+agree, the pass fired on 609 UNSAT ones, every proof accepted; an earlier
+1,500 without the new shapes, the same. The same seeds on the build before
+the fixes: 45 proofs rejected and 6 wrong UNSAT answers in the first 300.
+
+**Measured so far.** The two cells of the 72 unsolved on both seeds that
+the recovery census marked as two multipliers over one shared grid,
+`multiplier_16bits__miter_22` and `multiplier_15bits__miter_23` (both
+timeouts at 1800 s in the run of record), are **UNSAT in 0.17 and 0.16 s**
+with the shipped defaults and the pass on (44 and 46 derived clauses,
+work 2.0M and 1.7M, proofs of 583 and 560 KB through the two-stage gate in
+half a second). The twelve `16_16` cells decline, as the census predicted:
+on the Booth-vs-AND ones the weights do not form one network (the Booth
+partial-product logic) or no consistent cell reading exists; on the
+AND-vs-AND `ultra` cell side B reads 14 signals side A does not (the
+prefix adder's carries). Seventeen hand-built toy miters through the
+gate: array against column-wise and column-wise against column-wise
+multipliers of 4-8 bits, XOR3 and majority clauses or 2-input gates only,
+variables renumbered, NAND partial products, a whole-word compare,
+columns shared by both sides (9-20 merged gates in the cones, xors
+included), a constant one folded into a different pair on each side (two
+constant-one cells), the unusual carry. Writing the proof also found two
+errors the gate caught at once: the merged-gate equivalence as a plain
+`rup` (fine for and gates, not for xors) and the right-hand sides of the
+constant-one cell (ge is 3 − 1, le is k + 1). A sweep of the pass alone
+over all 400 cells with the committed build (work clock capped at 30M,
+`log/structarith-fire-2026-10-19d/fire.tsv`) fires on exactly those two
+cells and on nothing else, with no panic; on the 342 cells where it runs
+and finds nothing it costs a median 19.4M work (at most 20.1M, about a
+second), the price of its limit; the other 56 cells are over the
+structure stage's 10M-clause limit. Review: nine Codex rounds (round 1
+found the leaf and the encoding bugs above; rounds 2-8 the work limit and
+its accounting: polls by work done, live counting, affordability before
+allocation, the gate cap, checked sums; the ninth, on the commit, clean).
 
 - **Work-clock limit.** `limited.ticks` / `limits.ticks` sit next to
   kissat's conflict and decision limits. The check lives in
