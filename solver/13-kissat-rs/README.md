@@ -1248,6 +1248,58 @@ argument, `bp4` needs subtractor and compare blocks, and the sorters
 need comparator-network reasoning. The counting families (oddball,
 timetables, rooks) have no circuit to recover.
 
+**Cardinality encoding census (2026-10-19/20; bead `skz.5`;
+`tools/card_census.py`, `benchmarks/rl/card_2025_unsolved72.tsv`, the run
+`log/card-census-2026-10-19/card_72_final5.tsv`).** Detectors for counts
+with k ≥ 2: Sinz counters and totalizers (merge nodes whose staircase of
+clauses is complete, linked into trees through their output vectors),
+comparator networks, counter decision diagrams (the bound is the range of
+totals a walk from the asserted root accepts) and direct subset encodings;
+popcount adder networks are reported as candidates only (gate recovery can
+orient a full adder backwards, so their inputs are not reliable). A
+bound comes from forward clauses only (a unit -r_m or overflow clauses)
+and **is proven before it counts**: solver 13 must refute the structure's
+own clauses plus the opposite count (at least k + 1 of the inputs), else
+the structure is reported free. On the 72 both-seed-unsolved cells (first
+3M clauses of each file, 16 workers on a quiet host, the proofs by the
+frozen snapshot binary, 60 s each) that is **153,385 bounds proven, none
+refuted, 3 unknown** (the three rook diagrams below). Only counts with
+2 ≤ k ≤ n − 2 are counted (at most one and single clauses are not), an
+input read twice makes a weighted sum (not counted), and an input with
+its negation in one count cancels. 77 toy checks (`python3
+tools/card_census.py selftest`); 15 Codex rounds on the tool, the bound
+check added after four findings in a row of the same kind (a false
+bound from a capped merge). Real counts sit in 8 cells: the five
+**timetables** (850-994 Sinz counters each, at most 2-5 over 6-7 or 50-58
+inputs, 19 % of the clauses), **ITC2021** (1,475 totalizers, all at most
+2, 1,440 of them over 57 inputs; 58 %), `baseballcover` (15 Sinz counters
+over the same 323 inputs: at least 12, at least 25 and at most 25; read
+on the first 3M clauses) and `dubois50 mis-99` (at most 99 of 150). The three **rooks** carry one counter diagram each
+(132-176K nodes over 2,599-3,134 squares, 76 % of the clauses), but the
+check of their bound times out at 60 s: refuting "the diagram plus n + 2
+rooks" is the counting argument CDCL cannot make, which is what makes the
+cells hard (the exact n + 1 comes from the decoding of 2026-10-14). The
+two **et-tc** cells hold one diagram each (511 levels, width 102 / 120,
+written both ways) whose walk accepts every total, so no bound is read.
+**oddball** has no counter at all (two cells read in full by a separate
+script; the cap shows only 6-16 % of the six big files): every implication
+of `oddball_51_5` sits in one of 19,128 big OR definitions (2 to 12,000
+inputs; the 4,701-literal clauses are their long halves), the equal number
+of coins on the two pans is a pairing (coin i on the left pan opposite
+coin j on the right, each coin in at most one pair per weighing through a
+commander-style at-most-one), and its guarded "at least 2 of 4" families
+are vacuous (each guard occurs elsewhere only in clauses a unit already
+satisfies). Small guarded "2 of 4" families also show in bp4 (120-291 per
+cell), `oddball_29_4` (2,088), vdw and the miters: threshold gates, not
+counts. Nothing in ramsey, lockchart, argumentation, sudoku, rbsat, cfi,
+the colouring and the oisc cells. **Reading for the counting backend
+(bead `skz.6`):** the counts in the unsolved cells are written as Sinz
+counters and totalizers, encodings that already propagate completely, so
+a native at-most-k engine would save work there but add no reasoning
+power; oddball, the cell family this was mainly for, has no count; the
+rooks stay the one case where counting decides a cell, and their obstacle
+is the certificate (bead `1v2.4`).
+
 ## The linear arithmetic pass (2026-10-19; bead `SAT-playground-skz.3`)
 
 Not in kissat. `--structarith=1` (off until measured; `src/structarith.rs`,
