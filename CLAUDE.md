@@ -25,8 +25,10 @@ work is **solver 13** and the RL scheduler on top of it.
   (reference: `benchmarks/reference-solvers/kissat-latest/`). All engines
   ported. Third paired 400-instance run (2026-09-06):
   **313 v 312 solved, PAR-2 0.9932x, both-solved wall geomean 0.9875x, zero
-  contradictions** — i.e. at or slightly ahead of the C. Details, log paths
-  and residual families: `solver/13-kissat-rs/README.md`.
+  contradictions** — i.e. at or slightly ahead of the C. With every
+  default on (run S.8, 2026-10-20): **344 v 313 solved, PAR-2 0.708x, zero
+  contradictions, every answer checked**. Details, log paths and residual
+  families: `solver/13-kissat-rs/README.md` ("Where it stands").
   `solver/13-kissat-rs/CONVENTIONS.md` is **binding** for any port edit.
   Exact counter parity with the C was the port's acceptance criterion and is
   now a *starting point*, not a standing invariant — the RL scheduler changes

@@ -13,6 +13,39 @@ Goal: on `benchmarks/sat-comp-2025` (400 instances, 3600 s / 16 GB / 32
 cores), solved count and PAR-2 within 2% of kissat 4.0.4 in a fresh paired
 run, with all kissat features implemented.
 
+**Where it stands (2026-10-20; run S.8, bead `1v2.10`).** Against the C
+kissat 4.0.4 in the acceptance setting (the 400 cells of 2025, 3600 s,
+16 GB, 16 + 16 pinned cores, no proofs, `tools/run_kissat_full.sh`),
+solver 13 with every default on (the structure passes, the parity engine
+and the arithmetic pass; commit 2928093, frozen copy sha256
+e3b035b91b1eecf4) solves **344 v 313**, PAR-2 **555,303 v 783,917
+(0.708x)**, no contradiction, both-solved wall geomean 0.894x over 282
+cells. Logs `log/kissat-s8-20261020-070218` v
+`log/solver13-s8-20261020-070218`; per family, with wall and tick PAR-2,
+in `log/s8-families-2026-10-20.txt`. Solver 13 alone solves 33 cells:
+31 that the structure pass and the parity engine settle in seconds
+(roundrobin 11, clqcl 6, php 4, tseitin 4, clique-coloring 3, mchess_20,
+a multiplier miter, xor_op_n36) and two search cells
+(BubbleVsPancakeSort_8_6 UNSAT at 3118 s, SC25_Timetable_C_496 SAT at
+1976 s). Kissat alone solves 2: ITC2021_Late_10 and
+lockchart-group3-L15-K29, the wall-coin cell of the earlier runs. Every
+answer is checked: 313 match the paired run of 2026-10-19/20, which ran
+this configuration with a proof for every answer (289 gated, 24 where the
+checker timed out), and the other 31 were rerun with proofs
+(`log/abtest-s8-verify-2026-10-20-15-39-45`: the same answers, 30 gated,
+1 checker timeout). The slowest cells are satisfiable ones where the
+structure pass's added units move the search, as a different seed would
+(SC25_Timetable_C_406 38 → 454 s, sted2 178 → 2095 s; the passes
+themselves cost about 5 s and 1.3 s there). One finding: the parity
+engine counts the proof's table in its memory limit (`fits` in
+`src/gauss.rs`), so with a proof file the engine can stay off where a run
+without one turns it on. On dislog_a14_x14_n24 the engine runs briefly
+without a proof (solved at 517 s) and never starts with one (1782 s). Of
+the 344 solved cells, 339 do the same work with and without a proof;
+three are cells the structure pass solves at once, where the proof adds a
+little work, and the other two are the parity cells dislog and
+sum_of_3_cubes_37_bits_87.
+
 **Work clock (plan step A′, 2026-09-15).** The binary prints one extra
 line at every exit, after the `[ resources ]` section:
 
