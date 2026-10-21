@@ -1467,6 +1467,134 @@ refutes the same two miters before search and leaves every other search
 as it is (CLAUDE.md asks for a second seed when a candidate moves every
 cell's search).
 
+## The final-adder step (2026-10-21; bead `SAT-playground-skz.12`)
+
+Step one needed every gate of a cone to be an adder cell. The two
+AND-against-AND 16x16 cells are not like that: both compare one output
+bit of two multipliers whose lower sum bits were removed as dead logic,
+and both end in a carry network. `16_16_and_wallace_origin_and_default_
+mapped_ultra_bit27` has a Wallace tree, a carry-skip adder (two chains
+over shared propagate signals, the carry handed over complemented by a nor
+chain) and an xor tree over the top column on one side, and on the other
+a prefix network of and/nor gates over generate/propagate half adders
+written as xor + nor pairs. `16_16_default_mapped_ultra_and_and_dadda_
+mapped_bit28` adds a mapped Dadda tree where 14 columns' half-adder
+carries are written over two *other* partial products of the same four
+inputs (`a_i b_j . a_k b_l = a_i b_l . a_k b_j`, the mapper sharing
+product nodes) and the sums as `nor(carry, nor(pp, pp))`. In S.8 these
+took 1582 s and 793 s (kissat 1616 and 742 s). Now both are refuted in
+**0.12 s**, with proofs of 35,607 and 28,625 lines the gate checks;
+`multiplier_1[56]bits__miter` still fire as before; nothing else on the
+400 cells fires (`log/structarith-fire-2026-10-21b`, no panic, the
+declining cost unchanged: median 19.8M work against the 20M cap, as the
+sweep of 2026-10-19 had 19.4M).
+
+How it works, in the order the pass runs it (`src/structarith.rs`):
+
+- **Lone sums and carries.** A gate with a sum's function over a cut and
+  no carry beside it (a top-column adder whose carry was dead logic), or
+  a carry's function with no sum (a ripple chain whose sum bits were),
+  becomes a cell with a *fresh* partner: a variable of the proof alone,
+  defined by its clauses with `red` under the witness that sets it (the
+  solver never sees it; VeriPB accepts that, checked on a toy first; the
+  numbers continue past the formula's and the parity engine, which takes
+  the proof stream over when the pass leaves work for search, takes its
+  own from there: `Derived::last_var`). A
+  lone sum reads each leaf as its producer writes it and may hang one
+  unweighted leaf on the others' weight (the network's carry); a lone
+  carry needs every leaf weighted, reads a written leaf as written and an
+  unwritten one plain, or takes the whole flipped reading when every leaf
+  disagrees, and is skipped on a mix. A gate strictly inside another
+  gate's possible carry cell, read by that path alone, is no cell of its
+  own (a mapped majority holds an and and a nor over the same two inputs).
+  Partial products no cell reads (a column whose sum bit is dead, the top
+  column's xor tree) get their weight from the operand grid: `pp(a, b)`
+  sits at `exp(a, b') + exp(a', b) - exp(a', b')`.
+- **Product cells.** For an uncovered gate with four primary inputs under
+  it, the three pairings into two products are tried; a sum and a carry
+  that read through the same pair make a cell whose proof splits over the
+  four inputs (a full assignment of the two products alone does not
+  propagate the gates). A carry some other gate reads is preferred (the
+  sum is built from the carry and a private nor over the pair), the
+  nearest by variable number among those.
+- **The chain and the lemma.** A leaf no cell of the side produces, a
+  gate over gates the other side does not read, is the carry network's
+  output, one per side at most and read by one cell (the lemma cancels
+  one read; a sum reading the carry twice is a wrong circuit, left to
+  search). A virtual ripple chain of fresh cells adds
+  up everything the side's cells leave over at or below that carry's
+  column (the output and the cells over the carry aside), with the two's
+  complement of the side's carry-in-one constants as fixed-one variables
+  (`red 1 x >= 1 : x -> 1`), so the sums are off by a multiple of
+  2^(K+1), which the top block absorbs. Kitten (the port's sub-solver,
+  antecedents tracked) proves the carry equal to the chain's bit at that
+  column, over **the side's whole cone** restated gate by gate over its
+  inputs plus the fresh definitions: the network alone, or with the cells
+  it reads, was not enough on the mapped Dadda cell, whose resynthesised
+  network leans on facts about the tree (signals never both one) that only
+  the tree's gates give. With the whole cone kitten's search was erratic
+  (0.2M ticks one run, 1.6 billion another) until the clauses went in
+  circuit order, inputs first: kitten decides the variables it met last
+  first, and deciding primary inputs first just simulates the tree. Now
+  the lemmas take 0.07M-0.6M ticks and 130-445 learned clauses. If the
+  plain lemma fails, the complement is tried; a nor chain hands the carry
+  over complemented, and the top cell (a lone sum of the pass's own) then
+  reads it so. The proof: every gate of the cone as `rup` lines (a full
+  assignment of a gate's inputs propagates its output), kitten's core
+  learned clauses in their order, the lemma's two clauses, and those two
+  cancel the carry against the chain's bit in the weighted sums; the fixed
+  ones become constants by the literal axiom one way and the unit the
+  other.
+- **Readings.** The rule that every reader of a leaf reads it the same way
+  is gone (the linear forms carry a negated reading as `1 - x`; only a
+  produced signal must be read as written). The real cells' readings are
+  settled first, the virtual cells read the final literals, and a side
+  that reads its leaves mostly negated is flipped whole when it shares no
+  cell with the other side (the two readings of a component are both
+  valid, and the sides must agree on the shared products). `find_adders`
+  pairs a sum with the carry some other gate reads, nearest by variable
+  number (two circuits over shared products each have their own; a
+  mapped xor is `or(and(a,~b), and(~a,b))`, and those and-nots are not
+  carries), and a side keeps one cell per leaf set (a merged sum gate
+  would otherwise bring the other circuit's cell along). A dead-end cell
+  is dropped only when no gate reads its outputs (the generate/propagate
+  half adders feed a network, not a cell).
+
+Tests (`tests/structarith.rs`): Kogge-Stone against Brent-Kung,
+Sklansky against ripple, pruned to the compared bit or not, generates
+and propagates plain or inverted, a ripple with dead sums against a
+prefix adder, every proof through the gate, one of them with every
+default on (the parity engine continues the proof) and the same work
+clock on three runs; a tampered chain lemma rejected by the gate; a
+prefix network with a wrong carry, and a sum reading the carry twice,
+left satisfiable. The lemma's clauses, the fixed ones and the product
+grid go in sorted order: kitten numbers variables as it meets them and
+its decisions follow, so a hash order there made the work clock vary
+from run to run (review, 2026-10-21). The review took six rounds and
+found three false-UNSAT cases on toys it built (a carry read twice by
+the compared sum; a fixed one alone at the chain's top column, see
+above; the pass's and the parity engine's proof variables numbered from
+the same start), the hash orders, kitten ignoring the live stop flag
+(now solved in pieces of a million ticks), a quadratic traversal
+without a budget check and an overflow in the constant sum; each has a
+test or a fuzz shape now. One more came from re-deriving the argument:
+the complemented lemma was proven over the top cell's old carry
+definition and written over the new one, so its learned clauses could
+have mentioned a variable the proof defines differently; the cell is
+now changed first and the lemma proven over what the proof writes. `tools/arith_fuzz.py` now draws two-row reductions with
+ripple, Kogge-Stone, Brent-Kung, Sklansky or carry-skip final adders,
+regrouped product carries, random gate polarities and dead-logic
+pruning: 3,000 miters on two seeds all agree with the stock solver, the
+pass fired with a checked proof on 1,156 (`log/arith-fuzz-2026-10-21*.txt`).
+On the toys the pass fires on about half the unsatisfiable miters of the
+new shapes; the rest decline for toy reasons (a pruned 5-bit cone has
+too few cells; the compare detection needs cones of 16 gates) or are
+left for later (a network read at two weights, Booth: bead `skz.4`).
+Debug switches: `SAT_STRUCT_DEBUG_GATES` (the gates no cell covers, with
+weights), `SAT_STRUCT_DEBUG_CELLS=all|v,..`, `SAT_STRUCT_DEBUG_VIRT=v`
+(trace one gate's virtual-cell attempt), `SAT_STRUCT_DEBUG_LEMMA=path`
+(the chain's columns, every cell, kitten's clauses and model on failure).
+
 - **Work-clock limit.** `limited.ticks` / `limits.ticks` sit next to
   kissat's conflict and decision limits. The check lives in
   `terminate::terminated`, which is what every inprocessing effort loop and

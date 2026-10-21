@@ -104,6 +104,7 @@ impl State {
         derived_path: &str,
         pass_clauses: &[Vec<i32>],
         max_var: i32,
+        last_var: i32,
         xors: &[(Vec<i32>, u32)],
     ) -> std::io::Result<()> {
         let file = std::fs::File::create(derived_path)?;
@@ -122,7 +123,9 @@ impl State {
         self.pbp_path = pbp_path.to_string();
         self.derived_path = derived_path.to_string();
         self.max_var = max_var;
-        self.fresh = max_var;
+        // the fresh variables continue after the structure pass's own
+        // (the arithmetic pass defines cells of the proof alone)
+        self.fresh = last_var.max(max_var);
         self.xors = xors.to_vec();
         self.base = vec![(0, 0); xors.len()];
         Ok(())

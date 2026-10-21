@@ -68,6 +68,11 @@ pub struct Derived {
     pub refuted: bool,
     /// One line per pass for the `c structure` report.
     pub notes: Vec<String>,
+    /// The last variable number the proof has used: the formula's highest
+    /// to begin with; a pass that introduces variables of the proof alone
+    /// (the arithmetic pass's fresh cells, then the parity engine's chains)
+    /// takes the next ones from here, so no two passes share a number.
+    pub last_var: i32,
 }
 
 impl Derived {
@@ -301,7 +306,7 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
         }
         return Ok(());
     }
-    let mut derived = Derived { clauses: Vec::new(), proof, refuted: false, notes: Vec::new() };
+    let mut derived = Derived { clauses: Vec::new(), proof, refuted: false, notes: Vec::new(), last_var: solver.structure.max_var };
     // the passes count their work straight into statistics.ticks, so a
     // signal during the pass reports it, and they stop on the termination
     // flag (a time limit or a signal)
@@ -364,7 +369,7 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
                 let _ = std::fs::remove_file(pbp);
                 let _ = std::fs::remove_file(der);
             } else {
-                match solver.gaussproof.take_over(w, pbp, der, &derived.clauses, solver.structure.max_var, &solver.gauss.xors) {
+                match solver.gaussproof.take_over(w, pbp, der, &derived.clauses, solver.structure.max_var, derived.last_var, &solver.gauss.xors) {
                     Ok(()) => println!("c structure proof {} derived {} (continued by the parity engine)", pbp, der),
                     Err(e) => {
                         crate::print::message(solver, format!("structure pass dropped: cannot write {}: {}", der, e));
