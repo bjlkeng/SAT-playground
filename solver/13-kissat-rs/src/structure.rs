@@ -327,9 +327,10 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
             // of its own from where the earlier passes stopped: it reads the
             // input clauses alone
             let own = cap((solver.options.structarithticks as u64).saturating_mul(1000), solver);
+            let hard = cap(u64::MAX, solver); // the tick limit itself: nothing runs past it
             let before = solver.statistics.ticks;
             let notes = derived.notes.len();
-            crate::structarith::run(&formula, &mut derived, own, &mut solver.statistics.ticks, stop_ref);
+            crate::structarith::run(&formula, &mut derived, own, hard, &mut solver.statistics.ticks, stop_ref);
             if derived.notes.len() == notes {
                 // what the pass cost where it found nothing, for the reports
                 derived.notes.push(format!("arithmetic: no adder miter, work {}K", solver.statistics.ticks.saturating_sub(before) / 1000));

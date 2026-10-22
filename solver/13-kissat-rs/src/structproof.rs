@@ -174,6 +174,37 @@ impl Writer {
         Ok(self.constraints)
     }
 
+    /// The id the next constraint will get (the negation of a `pbc` goal
+    /// takes it, then every subproof line the next ones).
+    pub fn next_id(&self) -> u64 {
+        self.constraints + 1
+    }
+
+    /// A linear constraint proven by contradiction with a subproof of
+    /// arbitrary lines (`rup ... ;`, `pol ... ;`), each written as given.
+    /// The negation and every line take a constraint id of their own
+    /// before the derived constraint gets the next one; returns that id.
+    pub fn pbc_raw(&mut self, terms: &[(i128, i32)], rhs: i128, lines: &[String]) -> std::io::Result<u64> {
+        let mut line = String::from("pbc");
+        for &(c, l) in terms {
+            line.push_str(&format!(" {} {}", c, lit_str(l)));
+        }
+        line.push_str(&format!(" >= {} : subproof", rhs));
+        let mut body = String::new();
+        for l in lines {
+            body.push_str("    ");
+            body.push_str(l);
+            body.push('\n');
+        }
+        if let Err(e) = write!(self.out, "{}\n{}qed;\n", line, body) {
+            self.failed = true;
+            return Err(e);
+        }
+        self.constraints += 1 + lines.len() as u64 + 1;
+        self.steps += 1;
+        Ok(self.constraints)
+    }
+
     /// Delete derived constraints the proof no longer needs (the steps of
     /// a fixing once its clause is derived), so no later witness has to
     /// map them.

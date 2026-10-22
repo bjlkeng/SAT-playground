@@ -1621,6 +1621,69 @@ are the same in both arms. The pass's own cost on the 396 cells where it
 declines is at most the 20M-work cap (the cells differ in W by that
 much), about 0.1 % of the suite's tick PAR-2.
 
+## Booth, step two (2026-10-22; bead `SAT-playground-skz.4`, in progress)
+
+Nine of the ten Booth cells of 2025 compare a radix-4 Booth multiplier
+with an AND-array one (the tenth is Booth against Booth); five have the
+Booth side in the generator's `origin` form, four in its `mapped` form.
+Their partial products are not shared with the AND side, so the pass's
+"same leaves" argument does not apply. What a Booth row adds is still
+linear in products: digit `d = -2 b_{2j+1} + b_{2j} + b_{2j-1}`, row
+`a * d * 4^j`, and summed over the digits (with the correction row
+`a * b_15 * 2^16` for an unsigned multiplier) the rows telescope to
+`a * b`. The design, checked on a toy first (`tools/booth_toy_proof.py`:
+VeriPB accepts the derivation, a tampered coefficient is rejected): a
+row's bits are *input leaves* (functions of five inputs: two bits of `a`
+and the digit's three bits of `b`), the digit's bits are the row's
+*selector set* (under each of their eight assignments every bit of the
+row is a constant or a literal of one `a` bit), and the row's weighted
+sum is proven equal to its linear form over products by a `pbc` with a
+case split over the selector set: per case the bits' values and the
+products' values are `rup` clauses, a weighted `pol` sum with literal
+axioms gives the identity plus a big-M multiple of the case's falsified
+literals, saturation gives the case's clause, and the eight resolve to
+the empty clause.
+
+What is in the solver after the first session (all of it behind the
+existing option, no behaviour change on the cells the pass fired on:
+the four cells of 2026-10-21 fire with checked proofs and the same work
+clock): the input leaves and their truth tables; the selector sets and
+the groups (on `16_16_booth_dadda_origin_and_and_dadda_origin_bit28`
+the groups are exactly the nine digits); the two sides compared as
+polynomials over the inputs instead of as leaf sets (the old
+comparison is the special case where every leaf is a product); the
+netlist's circuit-order judgement ignoring variables with several
+candidate definitions (two row muxes over one select "define" their
+shared `a` bit, which turned the odd `b` bits into gates); the digit
+encoder's xor+and (a half adder by function over two bare inputs that
+feeds no cell) dropped; a fused-leaf cell matcher (the `origin`
+generator folds the row bit's xnor into the adder reading it: the sum
+and carry over the cut are no adder's, but `sum + 2 carry` is a sum of
+leaves one of which is the xor of two cut signals, which becomes a
+fresh variable); weights that flow only through produced signals (a
+Booth sign bit is read at two columns, and the product `a_i b_15` sits
+at column 15 on the AND side and 16 in the correction row), the sides
+tied through the compared signals inside the lone-gate rounds; a side
+flipped whole when its real cells' leaf polynomial is the negative of
+the other side's; the lemmas with an allowance of ten times the pass
+budget (the `and_dadda_origin` carry-skip lemma needs about 19M ticks);
+and the chain pool taking what the network reads that no cell produces
+(products by the grid, row bits by their row's template shifted along
+the operand).
+
+Where it stands: on that cell the AND side's lemma passes and the two
+sides agree on every monomial but nineteen: the ones above the compared
+bit (multiples of `2^(K+1)`, which the block step can absorb once that
+path is exercised) and four at the lowest columns, the digit-0 row's
+bits 0 and 1 and the `+neg` handling, which the generator fuses into
+the final adder's and-not gates, so they are not signals the chain can
+sum. Open, in order: define the missing low row bits fresh from the
+row's template (the lower `a` input fixed to zero) and let the lemma
+verify them; write the group derivations into the proof; the `mapped`
+Booth trees (67 of some 250 cells found, a third shape); Booth against
+Booth (fresh products on both sides). Debug: `SAT_STRUCT_DEBUG_NOCHAIN=1`
+prints both sides' polynomials and their difference.
+
 - **Work-clock limit.** `limited.ticks` / `limits.ticks` sit next to
   kissat's conflict and decision limits. The check lives in
   `terminate::terminated`, which is what every inprocessing effort loop and

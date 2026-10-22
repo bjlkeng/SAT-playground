@@ -243,6 +243,69 @@ fn column_multiplier_dup(c: &mut Circuit, pp: &[Vec<i64>], two_input: bool, plus
     out
 }
 
+/// Column by column with half adders, every partial product first xored
+/// with the shared input `sign` (as a Booth row bit is with its digit's
+/// sign), the xor folded into the first adder of its column: that adder
+/// computes its sum and carry straight from (p, sign, the other addend)
+/// as one 3-input gate each, which is what a generator does when it folds
+/// the row bit into the adder (the fused-leaf cells of structarith).
+fn folded_sign_multiplier(c: &mut Circuit, pp: &[Vec<i64>], sign: i64) -> Vec<i64> {
+    let n = pp.len();
+    let mut cols: Vec<Vec<i64>> = vec![Vec::new(); 2 * n];
+    for (i, row) in pp.iter().enumerate() {
+        for (j, &p) in row.iter().enumerate() {
+            cols[i + j].push(p);
+        }
+    }
+    let mut raw: std::collections::HashSet<i64> = cols.iter().flatten().copied().collect();
+    fn table(c: &mut Circuit, ins: &[i64], f: &dyn Fn(&[bool]) -> bool) -> i64 {
+        let ins_v = ins.to_vec();
+        c.gate(ins, |c, o| {
+            for m in 0..(1u32 << ins_v.len()) {
+                let bits: Vec<bool> = (0..ins_v.len()).map(|i| (m >> i) & 1 == 1).collect();
+                let mut clause: Vec<i64> = ins_v.iter().zip(bits.iter()).map(|(&x, &b)| if b { -x } else { x }).collect();
+                clause.push(if f(&bits) { o } else { -o });
+                c.clauses.push(clause);
+            }
+        })
+    }
+    let mut out = Vec::new();
+    for k in 0..2 * n {
+        // every raw addend but the first of the column gets its xor as a
+        // signal (the first is folded into the adder reading it)
+        let mut first_raw = true;
+        let many = cols[k].len() > 1;
+        for idx in 0..cols[k].len() {
+            let x = cols[k][idx];
+            if raw.contains(&x) {
+                if first_raw && many {
+                    first_raw = false;
+                } else {
+                    let y = c.xor2(x, sign);
+                    raw.remove(&x);
+                    cols[k][idx] = y;
+                }
+            }
+        }
+        while cols[k].len() > 1 {
+            let (x, y) = (cols[k].remove(0), cols[k].remove(0));
+            let (s, cy) = if raw.remove(&x) {
+                let s = table(c, &[x, sign, y], &|b| b[0] ^ b[1] ^ b[2]);
+                let cy = table(c, &[x, sign, y], &|b| (b[0] ^ b[1]) && b[2]);
+                (s, cy)
+            } else {
+                c.half_adder(x, y)
+            };
+            cols[k].push(s);
+            if k + 1 < 2 * n {
+                cols[k + 1].push(cy);
+            }
+        }
+        out.push(cols[k][0]);
+    }
+    out
+}
+
 /// Column by column down to two rows, then a carry-propagate adder of the
 /// given kind over the rows: `ripple` (full adders), or generate and
 /// propagate per column and a parallel-prefix network (`kogge-stone`,
@@ -448,6 +511,10 @@ enum Miter {
     /// both column-wise, the same reduction below column K (written twice,
     /// so hashing merges gates, xors included, inside both cones)
     Shared(usize),
+    /// every partial product xored with a shared sign input: side A with
+    /// the xors as signals, side B with each folded into the first adder
+    /// reading it (fused-leaf cells)
+    FoldedSign,
 }
 
 /// A miter asserting that output bit `bit` of two n x n multipliers differs.
@@ -490,6 +557,11 @@ fn miter_pruned(kind: Miter, n: usize, bit: usize, two_input: bool, pruned: bool
             (oa, ob)
         }
         Miter::DoubleCarryRead => (rows_multiplier_at(&mut c, &pp, two_input, "kogge-stone", false, Some(bit)), column_multiplier(&mut c, &pp, two_input, None, 2 * n)),
+        Miter::FoldedSign => {
+            let sign = c.var();
+            let signed: Vec<Vec<i64>> = pp.iter().map(|row| row.iter().map(|&p| c.xor2(p, sign)).collect()).collect();
+            (column_multiplier(&mut c, &signed, two_input, None, 2 * n), folded_sign_multiplier(&mut c, &pp, sign))
+        }
         Miter::FaultyPrefix => {
             // the fault: the compared bit's sum xor(p, carry) reads
             // or(p, carry) in place of the carry, so the bit is wrong for
@@ -560,7 +632,7 @@ fn a_miter_whose_sides_add_different_constants_stays_satisfiable() {
     assert!(!without.stdout.contains("arithmetic: two adder networks"), "{}", without.stdout);
     // (the constant one side alone adds is caught by the constants' check,
     // which allows a difference of a multiple of 2^(K+1) only)
-    assert!(without.stderr.contains("the two sides' constants differ"), "{}", without.stderr);
+    assert!(without.stderr.contains("the two sides sum different polynomials"), "{}", without.stderr);
     let proof = fx.path("m.drat");
     let stdout = run_arith_with_proof(&cnf, &proof);
     assert!(stdout.contains("s SATISFIABLE"), "{}", stdout);
@@ -579,7 +651,7 @@ fn a_miter_reading_a_leaf_twice_on_one_side_stays_satisfiable() {
     assert!(!without.stdout.contains("arithmetic: two adder networks"), "{}", without.stdout);
     // and it is the leaf comparison that stops it (before the fix, an
     // earlier build answered UNSAT here)
-    assert!(without.stderr.contains("the two sides sum different leaves"), "{}", without.stderr);
+    assert!(without.stderr.contains("the two sides sum different"), "{}", without.stderr);
     let proof = fx.path("m.drat");
     let stdout = run_arith_with_proof(&cnf, &proof);
     assert!(stdout.contains("s SATISFIABLE"), "{}", stdout);
@@ -700,6 +772,36 @@ fn a_faulty_prefix_network_stays_satisfiable() {
     let proof = fx.path("m.drat");
     let stdout = run_arith_with_proof(&cnf, &proof);
     assert!(stdout.contains("s SATISFIABLE"), "{}", stdout);
+}
+
+#[test]
+fn fused_leaf_cells_are_proven_over_their_cut() {
+    // side B folds each addend's xor with a shared sign into the adder
+    // reading it (no xor signal); the matcher reads sum + 2 carry over the
+    // cut as a sum of leaves one of which is the xor, which side A has as
+    // a signal: both sides then sum the same variables. The cell's case
+    // split must run over the cut, where everything propagates (review of
+    // 2026-10-22: split over the leaves, the proof failed)
+    let fx = Fixture::new("structarith_fused");
+    // (a half-adder-only column reduction of five rows or more makes the
+    // sum of two exclusive carries, which the matcher takes for a full
+    // adder and leaves the always-zero carry beside it unread: those sizes
+    // are not of this test)
+    for (n, bit) in [(3usize, 3usize), (4, 5), (4, 4)] {
+        let cnf = fx.path(&format!("m{}_{}.cnf", n, bit));
+        miter(Miter::FoldedSign, n, bit, false, &cnf);
+        if let Ok(dir) = std::env::var("SAT_TEST_KEEP") {
+            let _ = std::fs::copy(&cnf, Path::new(&dir).join(format!("folded_sign_{}_{}.cnf", n, bit)));
+        }
+        let without = run(&cnf, &["--structarith=1"], &[("SAT_STRUCT_DEBUG", "1")]);
+        assert_eq!(without.status, "UNSATISFIABLE", "{}", without.stdout);
+        assert!(without.stdout.contains("arithmetic: two adder networks"), "{}", without.stdout);
+        assert!(without.stderr.contains("fused cell over"), "no fused cell was made: {}", without.stderr);
+        let proof = fx.path(&format!("m{}_{}.drat", n, bit));
+        let stdout = run_arith_with_proof(&cnf, &proof);
+        assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+        assert_eq!(gate(&cnf, &proof), "ok", "n={} bit={}: two-stage gate", n, bit);
+    }
 }
 
 #[test]
