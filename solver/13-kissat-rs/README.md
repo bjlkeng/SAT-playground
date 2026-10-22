@@ -1365,8 +1365,9 @@ a bit one side lacks) and hands them to the solver; unit propagation then
 finishes. The carries that leave the compared bit's cone (above it) are
 one block, proven equal on both sides and cancelled before the bit steps.
 When the check does not close (a gate in a cone outside the cells, such as
-a parallel-prefix final adder or Booth partial-product logic), the pass
-derives nothing and the search runs as without it.
+Booth partial-product logic), the pass derives nothing and the search
+runs as without it. Carry networks and lone gates are handled by the
+final-adder step below (2026-10-21).
 
 **Proof** (checked on toys first, `tools/arith_toy_proof.py`): merged
 gates proven equal to their representative by contradiction with a case
@@ -1594,6 +1595,31 @@ Debug switches: `SAT_STRUCT_DEBUG_GATES` (the gates no cell covers, with
 weights), `SAT_STRUCT_DEBUG_CELLS=all|v,..`, `SAT_STRUCT_DEBUG_VIRT=v`
 (trace one gate's virtual-cell attempt), `SAT_STRUCT_DEBUG_LEMMA=path`
 (the chain's columns, every cell, kitten's clauses and model on failure).
+
+**Paired run (2026-10-21).** The 400 cells of 2025, seed 0, 1800 s,
+16 GB, 32 pinned cores, the frozen binary
+`solver/13-j2-final-adder-snapshot` (sha256 `e57e0a8e507378b7`) with
+the pass off (`--structarith=0`) against on, every answer checked
+(`log/abtest-struct-final-adder-400-2026-10-21-15-19-20`):
+
+| arm | solved | PAR-2 | tick PAR-2 |
+|---|---|---|---|
+| pass off | 311 | 411,558 | 1.101e13 |
+| pass on | 313 | 400,978 | 1.062e13 (0.965x) |
+
+No contradiction. The two miters go from the 1800 s timeout to 0.35 s
+and 0.18 s; the two AND-against-AND cells from 1663 s and 865 s to 0.1 s
+each (under this run's 1800 s limit the pass-off arm solves them too,
+so they do not show in the count). Of the 312 cells both arms solve,
+310 have the same conflict count, the other two being those; the two
+status swaps are wall luck on an unchanged search: `oski15a01b15s_opt`
+was killed with the pass off at 96 % of the work the pass-on arm
+needed (33.2G of 34.7G), and `16_16_booth_dadda_mapped_and_and_wallace_
+mapped_bit28` was killed with the pass on at 82 % of what the pass-off
+arm needed (53.8G of 65.5G). The two cells that run out of the 16 GB
+are the same in both arms. The pass's own cost on the 396 cells where it
+declines is at most the 20M-work cap (the cells differ in W by that
+much), about 0.1 % of the suite's tick PAR-2.
 
 - **Work-clock limit.** `limited.ticks` / `limits.ticks` sit next to
   kissat's conflict and decision limits. The check lives in
