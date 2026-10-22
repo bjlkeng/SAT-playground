@@ -1671,18 +1671,37 @@ and the chain pool taking what the network reads that no cell produces
 (products by the grid, row bits by their row's template shifted along
 the operand).
 
-Where it stands: on that cell the AND side's lemma passes and the two
-sides agree on every monomial but nineteen: the ones above the compared
-bit (multiples of `2^(K+1)`, which the block step can absorb once that
-path is exercised) and four at the lowest columns, the digit-0 row's
-bits 0 and 1 and the `+neg` handling, which the generator fuses into
-the final adder's and-not gates, so they are not signals the chain can
-sum. Open, in order: define the missing low row bits fresh from the
-row's template (the lower `a` input fixed to zero) and let the lemma
-verify them; write the group derivations into the proof; the `mapped`
-Booth trees (67 of some 250 cells found, a third shape); Booth against
-Booth (fresh products on both sides). Debug: `SAT_STRUCT_DEBUG_NOCHAIN=1`
-prints both sides' polynomials and their difference.
+The second session added **addend synthesis**: when the network reads
+logic no template explains (the generator fuses the digit-0 row's bits
+0 and 1 and the sign's +1 into the final adder's and-not gates), the
+two sides' polynomial difference, at the scale of its lowest
+coefficient, is a function of a few inputs; split into unit addends
+(fresh variables of the proof, each a truth table over those inputs)
+and a constant carried by the fixed ones, it joins the chain, and the
+lemma checks the network against it. On that cell it fires (two
+addends at column 1 over `a_0 a_1 b_0 b_1`), but side B's lemma still
+fails in both polarities, and the counterexample says why it is not
+the low columns alone: evaluating side B's leaf polynomial on kitten's
+model gives a value that is not `a*b` modulo `2^29`, while the circuit's
+bit 28 is right. The nineteen-monomial difference had terms at `2^28`
+(`a_13 b_13 b_14`, `a_14 b_13`, `a_15 b_11 b_12`: degree-three parts of
+the rows' top bits at column 28, which in a full row cancel against
+lower bits of the same row sharing an `a` input), so a row is
+incomplete or mis-weighted at columns 26-28, or a sign-extension term
+is missing there. That is the next thing to check (rows 6-8's bits
+against their templates: support, weight, reading), then the group
+derivations in the proof, the `mapped` Booth trees (67 of some 250
+cells found, a third shape), and Booth against Booth (fresh products on
+both sides). The review of this session's work found and fixed four
+toy regressions of its own (both sides reading products negated; the
+fused matcher taking an xor of two deep carries; a leaf over more than
+six inputs ending the pass instead of staying a variable; an xor leaf's
+negative product term read as a complemented side) and two gaps in the
+new code (a shift past 128 bits; the synthesized and fused fresh
+variables' definitions missing from kitten's lemma clauses). Debug:
+`SAT_STRUCT_DEBUG_NOCHAIN=1` prints both sides' polynomials and their
+difference; `SAT_STRUCT_DEBUG_LEMMA=path` also prints a failing side's
+leaf polynomial, to evaluate on the dumped model.
 
 - **Work-clock limit.** `limited.ticks` / `limits.ticks` sit next to
   kissat's conflict and decision limits. The check lives in

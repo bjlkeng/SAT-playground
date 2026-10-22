@@ -490,6 +490,10 @@ enum Miter {
     Rows(&'static str, &'static str),
     /// as Rows, with side B's generates and propagates in inverted polarities
     RowsInverted(&'static str, &'static str),
+    /// as RowsInverted, with the products of the columns from J up read
+    /// negated on both sides (a mixed-sign reading: which side to flip is
+    /// then not a matter of counting)
+    RowsInvertedMixed(&'static str, &'static str, usize),
     /// a Kogge-Stone final adder on side A whose top prefix node takes the
     /// or of its propagates (a wrong carry): satisfiable
     FaultyPrefix,
@@ -553,6 +557,14 @@ fn miter_pruned(kind: Miter, n: usize, bit: usize, two_input: bool, pruned: bool
             let oa = rows_multiplier(&mut c, &pp, two_input, ka, false);
             c.inverted = true;
             let ob = rows_multiplier(&mut c, &pp, two_input, kb, true);
+            c.inverted = false;
+            (oa, ob)
+        }
+        Miter::RowsInvertedMixed(ka, kb, from) => {
+            let mixed: Vec<Vec<i64>> = pp.iter().enumerate().map(|(i, row)| row.iter().enumerate().map(|(j, &p)| if i + j >= from { -p } else { p }).collect()).collect();
+            let oa = rows_multiplier(&mut c, &mixed, two_input, ka, false);
+            c.inverted = true;
+            let ob = rows_multiplier(&mut c, &mixed, two_input, kb, true);
             c.inverted = false;
             (oa, ob)
         }
@@ -689,6 +701,11 @@ fn arithmetic_pass_refutes_prefix_adder_miters_with_checked_proofs() {
         ("kogge_stone_v_column_pruned", Miter::Rows("kogge-stone", "ripple"), 6, 8, false, true),
         ("brent_kung_v_sklansky_pruned", Miter::Rows("brent-kung", "sklansky"), 7, 10, false, true),
         ("inverted_pruned", Miter::RowsInverted("sklansky", "kogge-stone"), 6, 8, true, true),
+        ("inverted_mixed_pruned", Miter::RowsInvertedMixed("sklansky", "kogge-stone", 5), 6, 8, true, true),
+        // (with every product of a side negated, as RowsInvertedMixed(.., 2)
+        // has, the pass reads the side as the complement of a multiplier
+        // and flips it: a circuit summing the nands of all its products is
+        // no multiplier, and a side written in inverted logic is)
         ("ripple_dead_sums_v_brent_kung_pruned", Miter::Rows("ripple", "brent-kung"), 6, 9, false, true),
     ];
     for (name, kind, n, bit, two_input, pruned) in cases {
