@@ -230,6 +230,9 @@ struct Netlist {
     units: Vec<bool>,         // variables fixed by a unit clause
     rep: Vec<(i32, bool)>,    // structural hashing: representative, negated
     deadlocks: u64,
+    /// the xors of an xor collapsed by structural hashing: (a, g, y) for
+    /// v = a xor g where g = a xor y (v is y or its complement)
+    collapsed: Vec<(i32, i32, i32)>,
 }
 
 /// Gates from the clauses, settled forward (see the module notes).
@@ -461,7 +464,7 @@ fn recover_gates(f: &Formula, work: &mut u64, stop: &dyn Fn(u64) -> bool) -> Opt
         return None;
     }
     let rep: Vec<(i32, bool)> = (0..nv as i32).map(|v| (v, false)).collect();
-    Some(Netlist { gates, order, used, units, rep, deadlocks })
+    Some(Netlist { gates, order, used, units, rep, deadlocks, collapsed: Vec::new() })
 }
 
 /// Truth table over inputs whose polarities in negmask are flipped.
@@ -482,6 +485,21 @@ fn fold_negations(tt: u64, n: usize, negmask: u32) -> u64 {
 fn structural_hash(net: &mut Netlist, work: &mut u64, stop: &dyn Fn(u64) -> bool) -> Option<usize> {
     let mut key_to_rep: HashMap<(Vec<i32>, u64), (i32, bool)> = HashMap::new();
     let mut merged = 0usize;
+    // an xor of a signal with an xor of that signal and y is y or its
+    // complement (a Booth generator xors a row bit with its sign twice,
+    // bead skz.4). Only over the gates' own inputs, the very variables:
+    // the proof shows v = y by a case split over v's inputs, where the
+    // inner xor's clauses give y by unit propagation; through an alias
+    // (two copies of one xor merged) it would need that alias's proof,
+    // which the cones may no longer ask for once v is collapsed (review,
+    // 2026-10-23)
+    let xor_const = |g: &Gate| -> Option<bool> {
+        match (g.sup.len(), g.tt) {
+            (2, XOR2) => Some(false),
+            (2, XNOR2) => Some(true),
+            _ => None,
+        }
+    };
     let order = net.order.clone();
     for v in order {
         if stop(*work) {
@@ -525,6 +543,38 @@ fn structural_hash(net: &mut Netlist, work: &mut u64, stop: &dyn Fn(u64) -> bool
             net.rep[v as usize] = (rsup[0], neg); // buffer or inverter: alias the input
             merged += 1;
             continue;
+        }
+        if let Some(cv) = xor_const(g) {
+            // v = u xor w xor cv over its own inputs; w = u xor y0 xor cw
+            // over w's own: v = y0 xor cw xor cv
+            let mut found: Option<(i32, i32, i32, bool)> = None;
+            for (iu, iw) in [(0usize, 1usize), (1, 0)] {
+                let (u, w) = (g.sup[iu], g.sup[iw]);
+                // (u the very variable both gates read, and w's own clauses
+                // over u and y0: a case split over v's inputs gives y0 by
+                // unit propagation, aliases or not; a copy of this pair
+                // collapses the same way on its own; review, 2026-10-23)
+                let Some(gw) = net.gates[w as usize].as_ref() else { continue };
+                let Some(cw) = xor_const(gw) else { continue };
+                let Some(k) = gw.sup.iter().position(|&x| x == u) else { continue };
+                let y0 = gw.sup[1 - k];
+                found = Some((u, w, y0, cw != cv));
+                break;
+            }
+            // (onto a gate only: the proof restates a merged signal's
+            // equality when its representative is in a cone, and the cones
+            // hold no primary input; y0's own equality to its
+            // representative comes before v's, y0 being under v)
+            if let Some((u, w, y0, c)) = found.filter(|&(_, _, y0, _)| {
+                let ry = net.rep[y0 as usize].0;
+                net.gates[ry as usize].is_some() && !net.units[ry as usize]
+            }) {
+                let (ry, rneg) = net.rep[y0 as usize];
+                net.rep[v as usize] = (ry, rneg != c);
+                net.collapsed.push((u, w, y0));
+                merged += 1;
+                continue;
+            }
         }
         match key_to_rep.get(&(rsup.clone(), tt2)) {
             Some(&(r, rneg)) => {
@@ -1396,6 +1446,7 @@ fn leaf_function(l: i32, net: &Netlist, produced_all: &HashSet<i32>, memo: &mut 
     Some((InputLeaf { sup, tt }, gates))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn classify_input_leaves(
     cells: &[Cell],
     side_cells: &[Vec<usize>; 2],
@@ -1403,6 +1454,7 @@ fn classify_input_leaves(
     work: &mut u64,
     stopped: &dyn Fn(u64) -> bool,
     trace_var: i32,
+    transparent: &HashSet<i32>,
 ) -> (HashMap<i32, InputLeaf>, Vec<bool>) {
     let nv = net.rep.len();
     let mut input_logic = vec![false; nv];
@@ -1414,6 +1466,11 @@ fn classify_input_leaves(
                 set.insert(cells[ci].carry_var());
             }
         }
+        // (a re-read half adder's sum is a function of the inputs, and the
+        // leaf it reads is a function of that sum: walked through)
+        for t in transparent {
+            set.remove(t);
+        }
         set
     };
     let mut input_leaves: HashMap<i32, InputLeaf> = HashMap::new();
@@ -1421,7 +1478,7 @@ fn classify_input_leaves(
     for s in 0..2 {
         for &ci in &side_cells[s] {
             for &l in &cells[ci].leaves {
-                if l as usize >= nv || produced_all.contains(&l) || input_leaves.contains_key(&l) {
+                if l as usize >= nv || produced_all.contains(&l) || transparent.contains(&l) || input_leaves.contains_key(&l) {
                     continue;
                 }
                 if let Some((il, gates)) = leaf_function(l, net, &produced_all, &mut memo, work, trace_var) {
@@ -1710,7 +1767,7 @@ impl ParityUf {
 /// both ends, so that it cancels in the weighted sum. A leaf (a partial
 /// product) may be read either way by its readers: the linear forms carry
 /// a negated reading as `1 - x`. Returns false when no choice fits.
-fn resolve_polarities(cells: &mut [Cell], chosen: &[usize]) -> bool {
+fn resolve_polarities(cells: &mut [Cell], chosen: &[usize], doubled: &HashMap<i32, usize>) -> bool {
     let mut uf = ParityUf::new(cells.len());
     let mut producer: HashMap<i32, (usize, u8)> = HashMap::new(); // var -> (cell, produced negated)
     for &ci in chosen {
@@ -1718,12 +1775,20 @@ fn resolve_polarities(cells: &mut [Cell], chosen: &[usize]) -> bool {
         producer.insert(c.sum, (ci, c.sum_neg as u8));
         producer.insert(c.carry_var(), (ci, (c.carry < 0) as u8));
     }
+    // (a signal read doubled, by a cell one column above it, is read as it
+    // is written there and complemented by its other readers: 2x - x is x,
+    // and ~x is 1 - x, so the reads add up to x plus a constant)
+    let in_chosen: HashSet<usize> = chosen.iter().copied().collect();
     for &ci in chosen {
         for i in 0..cells[ci].leaves.len() {
             let x = cells[ci].leaves[i];
             let q = ((cells[ci].negmask >> i) & 1) as u8;
             if let Some(&(pc, p)) = producer.get(&x) {
-                if !uf.union(pc, ci, p ^ q) {
+                let opposite = match doubled.get(&x) {
+                    Some(&a) if in_chosen.contains(&a) => (a != ci) as u8,
+                    _ => 0,
+                };
+                if !uf.union(pc, ci, p ^ q ^ opposite) {
                     if debug() {
                         eprintln!("structarith: polarity conflict on signal {} between producer cell {:?} and reader cell {:?}", x, (pc, &cells[pc].leaves, cells[pc].negmask, cells[pc].sum, cells[pc].sum_neg, cells[pc].carry, cells[pc].fa), (ci, &cells[ci].leaves, cells[ci].negmask, cells[ci].sum, cells[ci].sum_neg, cells[ci].carry, cells[ci].fa));
                         // the cells of that component, with their flips
@@ -1801,9 +1866,6 @@ enum FreshDef {
     Xor(Vec<i32>),
     And(Vec<i32>),
     Maj(Vec<i32>),
-    /// any function of a few inputs, by its truth table (an addend the
-    /// polynomial difference of the two sides says a network sums)
-    Table(Vec<i32>, u64),
 }
 
 #[derive(Clone)]
@@ -1832,7 +1894,6 @@ fn fresh_clauses(fr: &Fresh) -> Vec<Vec<i32>> {
         FreshDef::Xor(l) => (l, 0u8),
         FreshDef::And(l) => (l, 1u8),
         FreshDef::Maj(l) => (l, 2u8),
-        FreshDef::Table(sup, tt) => return minterm_clauses(fr.var, sup, *tt),
     };
     let vars: Vec<i32> = lits.iter().map(|l| l.abs()).collect();
     let mut tt = 0u64;
@@ -2126,8 +2187,27 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             }
         }
         *work += net.order.len() as u64;
+        // an inner xor whose only reader was a collapsed xor is dead: its
+        // reads leave the counts (a carry built as (t xor b) xor b would
+        // give t a second reader that is not there; review, 2026-10-23)
+        // (each inner xor once, and only one counted above: a
+        // representative; review, 2026-10-23)
+        let mut discounted: HashSet<i32> = HashSet::new();
+        for &(_, w, _) in &net.collapsed {
+            if net.rep[w as usize] != (w, false) || !discounted.insert(w) {
+                continue;
+            }
+            if r[w as usize] == 0 {
+                for &u in &net.gates[w as usize].as_ref().unwrap().sup {
+                    let ru = net.rep[u as usize].0 as usize;
+                    r[ru] = r[ru].saturating_sub(1);
+                }
+            }
+        }
+        *work += net.collapsed.len() as u64;
         r
     };
+
     // the proof's fresh variables (a fused leaf's xor, a lone gate's
     // missing partner, a chain cell): their numbers continue from the last
     // the proof has used (shared with the parity engine's proof, which
@@ -2137,6 +2217,86 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
     let Some((mut cells, cuts)) = find_adders(&net, &readers, work, &stopped, &mut fresh, &mut next_fresh) else {
         return;
     };
+    // a half adder over (a, y) whose sum g only fed the xor a xor g, which
+    // structural hashing collapsed to y: the circuit adds g's complement
+    // and a, and the sum it reads is y (a Booth row bit and its sign, the
+    // sum the row's raw bit again: the generator's half adder for the
+    // row's +1). Read the same identity the other way round: a + y = g +
+    // 2c is a + ~g = ~y + 2c, the leaves a and g, the sum y; the proof
+    // still splits over (a, y), where everything propagates (bead skz.4)
+    let mut transparent: HashSet<i32> = HashSet::new(); // the re-read cells' sums: functions of the inputs, walked through when a leaf's function is read
+    // (the half adders by sum, once: a lookup per collapse, not a scan)
+    let mut ha_by_sum: HashMap<i32, usize> = HashMap::new();
+    if !net.collapsed.is_empty() {
+        for (ci, c) in cells.iter().enumerate() {
+            if !c.fa && !c.one && c.split.is_none() && c.leaves.len() == 2 {
+                ha_by_sum.entry(c.sum).or_insert(ci);
+            }
+        }
+        *work += cells.len() as u64;
+    }
+    for &(a, g, y) in &net.collapsed {
+        *work += 2;
+        if stopped(*work) {
+            return;
+        }
+        // (the half adder's cut, its sum and the leaves the split runs over
+        // all their own representatives: the gates read these very
+        // variables, so the split propagates them without an alias's
+        // proof; review, 2026-10-23)
+        if [a, g, y].iter().any(|&x| net.rep[x as usize] != (x, false)) {
+            continue;
+        }
+        let Some(&ci) = ha_by_sum.get(&g) else { continue };
+        let mut w = vec![a, y];
+        w.sort_unstable();
+        if !({
+            let mut l = cells[ci].leaves.clone();
+            l.sort_unstable();
+            l == w
+        }) {
+            continue;
+        }
+        // (the carry a gate over those variables or the sum itself: the
+        // split over the two propagates the sum, then the carry, through
+        // the gates' own inputs, no alias needed)
+        let cv = cells[ci].carry_var();
+        let Some(gc) = net.gates[cv as usize].as_ref() else { continue };
+        if net.rep[cv as usize] != (cv, false) || gc.sup.iter().any(|&x| x != a && x != y && x != g) {
+            continue;
+        }
+        // (and only when the sum fed nothing but the collapsed xor and the
+        // half adder's own carry: a sum another gate reads keeps its half
+        // adder; review, 2026-10-23)
+        if readers[g as usize] != gc.sup.contains(&g) as u32 {
+            continue;
+        }
+        let c = &cells[ci];
+        let ia = c.leaves.iter().position(|&l| l == a).unwrap();
+        let iy = 1 - ia;
+        let a_neg = (c.negmask >> ia) & 1 == 1;
+        let y_neg = (c.negmask >> iy) & 1 == 1;
+        let new_cell = Cell {
+            fa: false,
+            one: false,
+            leaves: vec![a, g],
+            negmask: (a_neg as u8) | ((!c.sum_neg as u8) << 1),
+            sum: y,
+            sum_neg: !y_neg,
+            carry: c.carry,
+            split: Some({
+                let mut l = c.leaves.clone();
+                l.sort_unstable();
+                l
+            }),
+        };
+        if dbg {
+            eprintln!("structarith: the half adder over {:?} with the collapsed sum {} read the other way round: leaves [{}, {}], sum {}", c.leaves, g, a, g, y);
+        }
+        cells[ci] = new_cell;
+        transparent.insert(y);
+        *work += 8;
+    }
     if dbg {
         if let Ok(v) = std::env::var("SAT_STRUCT_DEBUG_VAR") {
             let v: i32 = v.parse().unwrap_or(0);
@@ -2499,10 +2659,34 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         pos[v as usize] = i as u32;
     }
     let mut cell_order: Vec<usize> = (0..cells.len()).collect();
-    cell_order.sort_by_key(|&ci| (pos[net.rep[cells[ci].sum as usize].0 as usize], !cells[ci].fa, ci));
+    // (by the earlier of the sum and the carry: both outputs come after
+    // the cell's leaves, so a cell producing a signal is committed before
+    // every cell reading it; the sum alone can come after a reader of the
+    // carry, and the reader would then set the carry's weight)
+    let out_pos = |ci: usize| -> u32 {
+        let c = &cells[ci];
+        let p = |v: i32| -> u32 { if (v as usize) < nv { pos[net.rep[v as usize].0 as usize] } else { u32::MAX } };
+        p(c.sum).min(p(c.carry_var()))
+    };
+    cell_order.sort_by_key(|&ci| (out_pos(ci), !cells[ci].fa, ci));
     let mut rejected: Vec<usize> = Vec::new();
     let produced_any: HashSet<i32> = cells.iter().flat_map(|c| [c.sum, c.carry_var()]).collect();
     let mut by_leaves: [HashMap<Vec<i32>, (usize, u8)>; 2] = [HashMap::new(), HashMap::new()];
+    // a produced signal read by two cells, plain by one a column above it
+    // and complemented by the other at its own column (2x - x = x: a Booth
+    // Wallace tree moves a carry up this way, bead skz.4): the cell above
+    // reads it doubled. Keyed by the signal, the cell reading it doubled
+    let mut doubled: HashMap<i32, usize> = HashMap::new();
+    let cell_reads: HashMap<i32, usize> = {
+        let mut m: HashMap<i32, usize> = HashMap::new();
+        for c in &cells {
+            for &l in &c.leaves {
+                *m.entry(l).or_default() += 1;
+            }
+        }
+        m
+    };
+    *work += cells.len() as u64;
     for ci in cell_order {
         let c = &cells[ci];
         let (sv, cv) = (net.rep[c.sum as usize].0, net.rep[c.carry_var() as usize].0);
@@ -2525,7 +2709,34 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 (ra, rb, d - oa + ob)
             })
             .collect();
-        let ok = consistent(&eqs);
+        let mut ok = consistent(&eqs);
+        let mut doubled_here: Option<i32> = None;
+        if !ok {
+            // one produced leaf, read by another cell too, one column below
+            // the cell: read doubled
+            for (ti, &(x, _, _)) in trial.iter().enumerate() {
+                if x == cv || doubled.contains_key(&x) || cell_reads.get(&x).copied().unwrap_or(0) < 2 {
+                    continue;
+                }
+                let mut t2 = trial.clone();
+                t2[ti].2 = -1;
+                let eqs2: Vec<(i32, i32, i64)> = t2
+                    .iter()
+                    .map(|&(a, b, d)| {
+                        let (ra, oa) = uf.find(a);
+                        let (rb, ob) = uf.find(b);
+                        (ra, rb, d - oa + ob)
+                    })
+                    .collect();
+                *work += t2.len() as u64;
+                if consistent(&eqs2) {
+                    trial = t2;
+                    ok = true;
+                    doubled_here = Some(x);
+                    break;
+                }
+            }
+        }
         if !ok {
             if dbg {
                 eprintln!("structarith: cell {} leaves {:?} sum {} carry {} fa {} rejected: its weights contradict the cells before it (sides {}{})", ci, c.leaves, c.sum, c.carry, c.fa, if in_a { "A" } else { "" }, if in_b { "B" } else { "" });
@@ -2539,6 +2750,12 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         }
         for &(a, b, d) in &trial {
             uf.union(a, b, d);
+        }
+        if let Some(x) = doubled_here {
+            doubled.insert(x, ci);
+            if dbg {
+                eprintln!("structarith: cell {} reads {} doubled, a column above where it is made", ci, x);
+            }
         }
         // one cell per leaf set on a side: two circuits with a merged sum
         // gate each pair it with their own carry, and the cell with the
@@ -2588,7 +2805,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             v.dedup();
             v
         };
-        if !resolve_polarities(&mut cells, &real) {
+        if !resolve_polarities(&mut cells, &real, &doubled) {
             if dbg {
                 eprintln!("structarith: no consistent reading of the cells' polarities");
             }
@@ -2701,7 +2918,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
     // 2a. the gates in the cones of input leaves (a Booth digit's encoder
     //     and row muxes) are no adders: the lone-gate and product rules
     //     below leave them alone
-    let (input_leaves0, input_logic) = classify_input_leaves(&cells, &side_cells, &net, work, &stopped, trace_var);
+    let (input_leaves0, input_logic) = classify_input_leaves(&cells, &side_cells, &net, work, &stopped, trace_var, &transparent);
     if stopped(*work) {
         return;
     }
@@ -3651,7 +3868,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
     // 2c. the input leaves again, now with the virtual cells in place; a
     //     fused leaf (the xor of two signals, a fresh variable) is the xor
     //     of its signals' functions
-    let (mut input_leaves, _) = classify_input_leaves(&cells, &side_cells, &net, work, &stopped, trace_var);
+    let (mut input_leaves, _) = classify_input_leaves(&cells, &side_cells, &net, work, &stopped, trace_var, &transparent);
     if stopped(*work) {
         return;
     }
@@ -3924,7 +4141,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         v.dedup();
         v
     };
-    if !resolve_polarities(&mut cells, &chosen) {
+    if !resolve_polarities(&mut cells, &chosen, &doubled) {
         if dbg {
             eprintln!("structarith: no consistent reading of the cells' polarities");
             if let Ok(list) = std::env::var("SAT_STRUCT_DEBUG_CELLS") {
@@ -4083,7 +4300,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         {
             let mut memo: HashMap<i32, u64> = HashMap::new();
             let reads_here: HashSet<i32> = consumed.clone();
-            let produced_all: HashSet<i32> = (0..2).flat_map(|t| side_cells[t].iter().map(|&ci| (cells[ci].sum, cells[ci].carry_var()))).flat_map(|(a, b)| [a, b]).collect();
+            let produced_all: HashSet<i32> = (0..2).flat_map(|t| side_cells[t].iter().map(|&ci| (cells[ci].sum, cells[ci].carry_var()))).flat_map(|(a, b)| [a, b]).filter(|v| !transparent.contains(v)).collect();
             let mut found: Vec<(i32, InputLeaf)> = Vec::new();
             let mut seen: HashSet<i32> = HashSet::new();
             let mut stack: Vec<i32> = vec![n];
@@ -4845,6 +5062,20 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 leaf_form[s].add_constant(w);
                 poly[s].add(Vec::new(), w);
             }
+            // a signal this cell reads doubled: its reads add up to its
+            // production plus the constant of the complemented read, at the
+            // signal's own weight (half this cell's)
+            for &l in &c.leaves {
+                if doubled.get(&l) == Some(&ci) {
+                    let hw = w / 2;
+                    if hw == 0 {
+                        return; // (the lowest weight: no half of it)
+                    }
+                    expected[s].add_constant(hw);
+                    leaf_form[s].add_constant(hw);
+                    poly[s].add(Vec::new(), hw);
+                }
+            }
             forms[s].add_lit(c.sum_lit(), -w);
             forms[s].add_lit(c.carry_lit(), -2 * w);
             for (lit, wt) in [(c.sum_lit(), w), (c.carry_lit(), 2 * w)] {
@@ -5138,7 +5369,8 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                         })
                         .collect();
                     low.sort();
-                    for (e, t) in low.iter().take(6) {
+                    let range: Option<(i64, i64)> = std::env::var("SAT_STRUCT_DEBUG_RANGE").ok().and_then(|r| { let v: Vec<i64> = r.split(',').filter_map(|t| t.parse().ok()).collect(); (v.len() == 2).then(|| (v[0], v[1])) });
+                    for (e, t) in low.iter().filter(|(e, _)| range.map_or(true, |(lo, hi)| *e >= lo && *e <= hi)).take(if range.is_some() { 400 } else { 6 }) {
                         eprintln!("    side {} cell at {}: {}", s, e, t);
                     }
                 }
@@ -5708,6 +5940,51 @@ mod tests {
         h.add_constant(i128::MAX);
         h.add_constant(1);
         assert!(h.overflow);
+    }
+
+    fn xor_net(gates_def: &[(i32, [i32; 2], u64)], nv: usize) -> Netlist {
+        let mut gates: Vec<Option<Gate>> = (0..nv).map(|_| None).collect();
+        let mut order = Vec::new();
+        for &(v, sup, tt) in gates_def {
+            gates[v as usize] = Some(Gate { sup: sup.to_vec(), tt });
+            order.push(v);
+        }
+        Netlist { gates, order, used: Vec::new(), units: vec![false; nv], rep: (0..nv as i32).map(|v| (v, false)).collect(), deadlocks: 0, collapsed: Vec::new() }
+    }
+
+    #[test]
+    fn an_xor_of_an_xor_collapses_over_its_own_inputs_only() {
+        // inputs 1 (x), 2 (z), 3 (y). 4 = p = x xor z, 5 = q = x xor z (a
+        // copy), 6 = g = q xor y, 7 = v = p xor g: v is y, but only through
+        // the merge of q into p, whose proof the cones may no longer ask
+        // for once v is collapsed: no collapse (review, 2026-10-23)
+        let mut net = xor_net(&[(4, [1, 2], XOR2), (5, [1, 2], XOR2), (6, [3, 5], XOR2), (7, [4, 6], XOR2)], 8);
+        let mut work = 0u64;
+        structural_hash(&mut net, &mut work, &|_| false).unwrap();
+        assert_eq!(net.rep[5], (4, false), "the copy is merged");
+        assert_eq!(net.rep[7], (7, false), "no collapse through the merged copy");
+        assert!(net.collapsed.is_empty());
+        // the same over the gates' own inputs: 4 = y = and(2, 3), 5 = h =
+        // xnor(x, y) over x itself, 6 = v = x xor h: v is y complemented,
+        // by unit propagation over v's inputs and h's clauses
+        let mut net = xor_net(&[(4, [2, 3], 0b1000), (5, [1, 4], XNOR2), (6, [1, 5], XOR2)], 7);
+        structural_hash(&mut net, &mut work, &|_| false).unwrap();
+        assert_eq!(net.rep[6], (4, true), "x xor xnor(x, y) is not y");
+        assert_eq!(net.collapsed, vec![(1, 5, 4)]);
+        // two copies of the pair: the second inner xnor merges into the
+        // first, and the second outer xor still collapses on its own
+        // (its inner gate's clauses are its own; review, 2026-10-23)
+        let mut net = xor_net(&[(4, [2, 3], 0b1000), (5, [1, 4], XNOR2), (6, [1, 5], XOR2), (7, [1, 4], XNOR2), (8, [1, 7], XOR2)], 9);
+        structural_hash(&mut net, &mut work, &|_| false).unwrap();
+        assert_eq!(net.rep[7], (5, false), "the copy of the inner xnor is merged");
+        assert_eq!(net.rep[6], (4, true));
+        assert_eq!(net.rep[8], (4, true), "the copy collapses too");
+        // onto a primary input: declined (the proof's cones hold no input,
+        // and the equality would go unproven)
+        let mut net = xor_net(&[(5, [1, 3], XNOR2), (6, [1, 5], XOR2)], 7);
+        structural_hash(&mut net, &mut work, &|_| false).unwrap();
+        assert_eq!(net.rep[6], (6, false), "no collapse onto the input 3");
+        assert!(net.collapsed.is_empty());
     }
 
     #[test]

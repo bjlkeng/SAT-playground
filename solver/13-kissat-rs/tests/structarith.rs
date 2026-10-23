@@ -499,11 +499,27 @@ fn rows_multiplier_at(c: &mut Circuit, pp: &[Vec<i64>], two_input: bool, kind: &
 /// `a * b`. The columns reduce with full and half adders to two rows and
 /// a final adder of `kind` (`ripple`, or a prefix kind) adds them.
 fn booth_multiplier(c: &mut Circuit, a: &[i64], b: &[i64], two_input: bool, kind: &str) -> Vec<i64> {
+    booth_multiplier_with(c, a, b, two_input, kind, false, None)
+}
+
+/// As `booth_multiplier`, with two shapes a Booth Wallace generator makes:
+/// `plus_neg_ha` adds each row's bit 0 and its +neg (rows 1 up) in a half
+/// adder whose sum is computed back from the row bit, xor(xnor(raw, neg),
+/// neg), the raw bit again, and whose carry is neg and not raw; and
+/// `doubled_carry` sends the first carry out of column J to column J+1
+/// complemented and to column J+2 plain (x 2^(J+1) = ~x 2^(J+1) + x
+/// 2^(J+2) - 2^(J+1), the constant with the sign-extension ones; with
+/// `false` in the pair the constant is left out, a wrong multiplier).
+fn booth_multiplier_with(c: &mut Circuit, a: &[i64], b: &[i64], two_input: bool, kind: &str, plus_neg_ha: bool, doubled: Option<(usize, bool)>) -> Vec<i64> {
+    let doubled_carry = doubled.map(|(k, _)| k);
     let n = a.len();
     assert!(n % 2 == 0 && n >= 4);
     let width = 2 * n;
     let mut cols: Vec<Vec<i64>> = vec![Vec::new(); width + 2];
     let mut constant: i128 = 0;
+    if let Some((k, true)) = doubled {
+        constant -= 1i128 << (k + 1);
+    }
     for j in 0..n / 2 {
         let lo = if j == 0 { None } else { Some(b[2 * j - 1]) };
         let mid = b[2 * j];
@@ -524,12 +540,24 @@ fn booth_multiplier(c: &mut Circuit, a: &[i64], b: &[i64], two_input: bool, kind
                 (Some(x), None) | (None, Some(x)) => x,
                 (None, None) => unreachable!(),
             };
+            if plus_neg_ha && j > 0 && t == 0 {
+                // bit + neg = raw + 2 (neg and not raw): the half adder's
+                // sum xor(xnor(raw, neg), neg) is not raw, read complemented
+                let nbit = c.xor2(raw, -neg);
+                let s2 = c.xor2(nbit, neg);
+                let cy = c.and2(neg, -raw);
+                cols[2 * j].push(-s2);
+                cols[2 * j + 1].push(cy);
+                continue;
+            }
             let bit = c.xor2(raw, neg);
             if 2 * j + t < width {
                 cols[2 * j + t].push(bit);
             }
         }
-        cols[2 * j].push(neg); // the +1 of a negative digit
+        if !(plus_neg_ha && j > 0) {
+            cols[2 * j].push(neg); // the +1 of a negative digit
+        }
         if 2 * j + n + 1 < width {
             cols[2 * j + n + 1].push(-neg); // s~
         }
@@ -556,8 +584,18 @@ fn booth_multiplier(c: &mut Circuit, a: &[i64], b: &[i64], two_input: bool, kind
             cols[k + 1].push(-cy);
         }
     }
-    // the tree: every column down to two bits
+    // the tree: every column down to two bits (the doubled carry joins
+    // column J+2 last, after the carries out of J+1, so the adder reading
+    // it there reads produced signals beside it, as in the 2025 cells)
+    let mut deferred: Option<(usize, i64)> = None;
     for k in 0..width {
+        if let Some((kk, cy)) = deferred {
+            if kk == k {
+                cols[k].push(cy);
+                deferred = None;
+            }
+        }
+        let mut first = true;
         while cols[k].len() > 2 {
             let (s, cy) = if cols[k].len() >= 3 {
                 let (x, y, z) = (cols[k].remove(0), cols[k].remove(0), cols[k].remove(0));
@@ -566,7 +604,13 @@ fn booth_multiplier(c: &mut Circuit, a: &[i64], b: &[i64], two_input: bool, kind
                 unreachable!()
             };
             cols[k].push(s);
-            cols[k + 1].push(cy);
+            if first && doubled_carry == Some(k) {
+                cols[k + 1].push(-cy);
+                deferred = Some((k + 2, cy));
+            } else {
+                cols[k + 1].push(cy);
+            }
+            first = false;
         }
     }
     // the final adder
@@ -710,6 +754,9 @@ enum Miter {
     /// (row bits against products), the sign-extension constants built
     /// into complemented half adders, the complementary top bits
     Booth(&'static str),
+    /// as Booth, with the rows' +neg half adders computed back from the row
+    /// bit (`plus_neg_ha`) and a carry read at two columns (`doubled_carry`)
+    BoothShapes(&'static str, bool, Option<(usize, bool)>),
 }
 
 /// A miter asserting that output bit `bit` of two n x n multipliers differs.
@@ -761,6 +808,7 @@ fn miter_pruned(kind: Miter, n: usize, bit: usize, two_input: bool, pruned: bool
         }
         Miter::DoubleCarryRead => (rows_multiplier_at(&mut c, &pp, two_input, "kogge-stone", false, Some(bit)), column_multiplier(&mut c, &pp, two_input, None, 2 * n)),
         Miter::Booth(kind) => (booth_multiplier(&mut c, &a, &b, two_input, kind), column_multiplier(&mut c, &pp, two_input, None, 2 * n)),
+        Miter::BoothShapes(kind, ha, doubled) => (booth_multiplier_with(&mut c, &a, &b, two_input, kind, ha, doubled), column_multiplier(&mut c, &pp, two_input, None, 2 * n)),
         Miter::FoldedSign => {
             let sign = c.var();
             let signed: Vec<Vec<i64>> = pp.iter().map(|row| row.iter().map(|&p| c.xor2(p, sign)).collect()).collect();
@@ -1046,6 +1094,94 @@ fn booth_miters_are_refuted_with_checked_proofs() {
         assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
         assert_eq!(gate(&cnf, &proof), "ok", "{} n={} bit={}: two-stage gate", kind, n, bit);
     }
+}
+
+#[test]
+fn booth_wallace_shapes_are_refuted_with_checked_proofs() {
+    // two shapes of the 2025 Booth Wallace cells: a row's +neg added in a
+    // half adder whose sum is the raw bit again (xor(xnor(raw, neg), neg):
+    // structural hashing collapses the double xor, and the half adder is
+    // read the other way round, the row bit and neg its leaves), and a
+    // carry read complemented at its column and plain one column up (the
+    // upper reader reads it doubled)
+    let fx = Fixture::new("structarith_booth_shapes");
+    for (n, bit, ha, doubled) in [(6usize, 9usize, true, None), (6, 9, false, Some((5usize, true))), (8, 12, true, Some((6, true)))] {
+        let tag = format!("{}_{}_{}_{}", n, bit, ha, doubled.map_or("none".to_string(), |(k, _)| k.to_string()));
+        let cnf = fx.path(&format!("shapes_{}.cnf", tag));
+        miter_pruned(Miter::BoothShapes("ripple", ha, doubled), n, bit, true, false, &cnf);
+        if let Ok(dir) = std::env::var("SAT_TEST_KEEP") {
+            let _ = std::fs::copy(&cnf, Path::new(&dir).join(format!("booth_shapes_{}.cnf", tag)));
+        }
+        let r = run(&cnf, &["--structarith=1"], &[("SAT_STRUCT_DEBUG", "1")]);
+        assert_eq!(r.status, "UNSATISFIABLE", "n={} bit={} ha={} doubled={:?}: {}\n{}", n, bit, ha, doubled, r.stdout, r.stderr);
+        assert!(r.stdout.contains("arithmetic: two adder networks"), "n={} bit={} ha={} doubled={:?}: {}", n, bit, ha, doubled, r.stderr);
+        if ha {
+            assert!(r.stderr.contains("read the other way round"), "no re-read half adder: {}", r.stderr);
+        }
+        if doubled.is_some() {
+            assert!(r.stderr.contains("doubled, a column above"), "no doubled read: {}", r.stderr);
+        }
+        let proof = fx.path(&format!("shapes_{}.drat", tag));
+        let stdout = run_arith_with_proof(&cnf, &proof);
+        assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+        assert_eq!(gate(&cnf, &proof), "ok", "n={} bit={} ha={} doubled={:?}: two-stage gate", n, bit, ha, doubled);
+    }
+}
+
+#[test]
+fn an_xor_of_an_xor_through_a_merged_copy_keeps_a_checked_proof() {
+    // p and q two copies of x xor z, g = q xor y, v = p xor g: v is y, but
+    // only through the merge of p and q; side A reads v where side B reads
+    // the product y, and the proof has to pass the gate (review,
+    // 2026-10-23). (Gate recovery leaves v undefined here, so this checks
+    // the miter end to end; the collapse rule itself, own inputs only, is
+    // the unit test an_xor_of_an_xor_collapses_over_its_own_inputs_only)
+    let fx = Fixture::new("structarith_xor_copy");
+    let cnf = fx.path("xor_copy.cnf");
+    {
+        let mut c = Circuit::new();
+        let n = 4usize;
+        let a: Vec<i64> = (0..n).map(|_| c.var()).collect();
+        let b: Vec<i64> = (0..n).map(|_| c.var()).collect();
+        let x = c.var();
+        let z = c.var();
+        let pp: Vec<Vec<i64>> = (0..n).map(|i| (0..n).map(|j| c.and2(a[i], b[j])).collect()).collect();
+        let y = pp[1][2];
+        let p = c.xor2(x, z);
+        let q = c.xor2(x, z);
+        let g = c.xor2(q, y);
+        let v = c.xor2(p, g);
+        let mut ppa = pp.clone();
+        ppa[1][2] = v;
+        let oa = column_multiplier(&mut c, &ppa, false, None, 2 * n);
+        let ob = column_multiplier(&mut c, &pp, false, None, 0);
+        let bit = 5;
+        let m = c.xor2(oa[bit], ob[bit]);
+        c.clauses.push(vec![m]);
+        c.write(&cnf);
+    }
+    if let Ok(dir) = std::env::var("SAT_TEST_KEEP") {
+        let _ = std::fs::copy(&cnf, Path::new(&dir).join("xor_copy.cnf"));
+    }
+    let r = run(&cnf, &["--structarith=1"], &[("SAT_STRUCT_DEBUG", "1")]);
+    assert_eq!(r.status, "UNSATISFIABLE", "{}", r.stdout);
+    let proof = fx.path("xor_copy.drat");
+    let stdout = run_arith_with_proof(&cnf, &proof);
+    assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+    assert_eq!(gate(&cnf, &proof), "ok", "two-stage gate");
+}
+
+#[test]
+fn a_doubled_carry_without_its_constant_stays_satisfiable() {
+    // the carry read at two columns, but the constant the rewriting needs
+    // left out: the Booth side is off by 2^(J+1), the miter satisfiable,
+    // and the pass must not derive the bits' equality
+    let fx = Fixture::new("structarith_doubled_wrong");
+    let cnf = fx.path("doubled_wrong.cnf");
+    miter_pruned(Miter::BoothShapes("ripple", false, Some((5, false))), 6, 9, true, false, &cnf);
+    let r = run(&cnf, &["--structarith=1"], &[("SAT_STRUCT_DEBUG", "1")]);
+    assert_eq!(r.status, "SATISFIABLE", "{}\n{}", r.stdout, r.stderr);
+    assert!(!r.stdout.contains("arithmetic: two adder networks"), "the pass fired on a wrong multiplier: {}", r.stdout);
 }
 
 #[test]

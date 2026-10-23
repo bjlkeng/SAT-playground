@@ -1817,16 +1817,82 @@ clauses); round 15 was clean. In the 400-cell sweep (work limit 30M,
 `bit29` one needs about 115M for its Booth-side lemma and fires without
 the limit (4 s).
 
-Still open, in the order to take them: the two `booth_wallace_origin`
-sides ("no consistent reading of the cells' polarities": the Wallace
-tree reads one full adder's carry plain in one cell and complemented
-in another, and the pass's one-literal-per-signal model has no reading
-for that); the four `mapped` Booth trees (60-70 cells recognised of some
-250: the mapping folds the row bits into the adder cells, a shape the
-cut matcher does not see); Booth against Booth (fresh products on both
-sides). Debug: `SAT_STRUCT_DEBUG_POLY=1` prints the polynomial
-difference instead of the leaf check; `SAT_STRUCT_DEBUG_VAR=v` also
-lists the cells touching `v`.
+### The fourth cell: a Booth Wallace tree (2026-10-23)
+
+`booth_wallace_origin_and_and_dadda_mapped_bit28` is refuted in 0.3 s
+with a checked proof (our solver needed 1791 s for it in the skz.12
+paired run). The Booth Wallace "origin" tree has two shapes the Dadda one
+does not:
+
+- **A carry read at two columns.** The generator sends one carry to its
+  own column complemented and to the column above plain: x 2^(e) is
+  written ~x 2^(e) + x 2^(e+1) - 2^(e), the constant going with the
+  sign-extension ones. No reading of the cells as one polarity per
+  signal fits that (the three cells around it form an odd cycle). A cell
+  one column above a produced leaf that two cells read now reads it
+  *doubled*: at commit, when its other produced leaves place it there;
+  in the polarity resolution, the other reader must read the opposite
+  literal; the integer check adds the constant 2^(e). The proof needs
+  nothing new, the weighted sums cancel the signal on their own.
+- **A half adder hidden behind a double xor.** For a row's bit 0 and its
+  +neg the generator builds the row bit as xnor(raw, neg), xors it with
+  neg again (giving raw back) and computes the half adder's carry as
+  neg and not raw. Structural hashing now collapses xor(a, xnor(a, y)) to
+  y, but only over the gates' own input variables (through a merged copy
+  the proof would need an equality the cones may not ask for) and only
+  onto a gate (the proof restates a merged signal when its
+  representative is in a cone, and cones hold no primary input). The
+  half adder whose sum only fed the collapsed xor is then read the other
+  way round: a + y = g + 2c is a + ~g = ~y + 2c, so its leaves become the
+  row bit and the sign, its sum the raw bit, and the proof still splits
+  over the old cut, where everything propagates.
+
+Cells are now committed by the earlier of their two outputs, so a
+producer always comes before the cells reading it (the sum alone can
+come after a reader of the carry, which would then fix the carry's
+weight). The toy generator has both shapes (`Miter::BoothShapes`), and
+the tests check that a doubled carry without its constant stays
+satisfiable.
+
+**What is left: the mapped Booth trees** (bead `SAT-playground-skz.13`).
+In the four cells whose Booth side is in mapped form, and in the
+Booth-against-Booth cell, the pass finds 60 to 80 of the about 250
+adder cells. The mapper folds each row bit's xor with the digit's sign
+into the first adder level: in the bottom columns only the carries
+survive (the sums are dead logic in a cone pruned to one bit), and a
+carry is a mux, gate 1374 of `booth_wallace_mapped_and_and_wallace_
+origin_bit28` being not (p ? q : b3), which is the complement of
+MAJ(q, p xor b3, b3). Sums are built from their carries, and many
+unexplained signals depend on 7 to 12 inputs. Lifting two-signal sums
+into three-signal fused cells and fused lone carries with fresh sums
+were tried in a scratch build and gave 0 to 2 cells each; what likely
+works is recovering adders by function over the inputs, with virtual
+row-bit leaves. The tenth cell, `booth_wallace_origin_and_default_
+mapped_bit29`, is blocked on its AND side: two mapped gates no rule
+explains (2683 and 2788).
+
+Codex review of this part took five rounds (16-20). Round 16: the first
+collapse could lean on a merged copy (an invalid proof on a toy Codex
+built), and the collapsed-adder lookup scanned every cell per collapse,
+unmetered. Round 17: a collapse onto a primary input escapes the proof's
+equality list. Round 18: the re-read split over representatives while
+the gates read an alias (an invalid proof), a re-read while the sum
+still had other readers, and a dead inner xor still counted as a reader
+(`arith_fuzz.build(314177)`, a lost refutation). Round 19: a second copy
+of a collapsed pair no longer merged (`build(1700000248)`, 4x the work)
+and a dead inner xor discounted twice. The rule now: the shared input is
+the very variable both xors read, the target's representative is a
+gate, each copy collapses on its own, and the re-read needs its cut,
+sum and carry to be their own representatives over those variables and
+the sum read by nothing but its own carry. Round 20 was clean. Unit
+tests cover the collapse rule; the integration tests the shapes.
+Debug: `SAT_STRUCT_DEBUG_POLY=1` prints the polynomial difference
+instead of the leaf check; `SAT_STRUCT_DEBUG_VAR=v` also lists the cells
+touching `v`; `SAT_STRUCT_DEBUG_WATCH=a,b` reports the union that joins
+two signals' weight components; `SAT_STRUCT_DEBUG_NOSIM=1` lets kitten
+find a counterexample the simulation would have caught;
+`SAT_STRUCT_DEBUG_RANGE=lo,hi` lists the cells in an exponent range in
+the diagnosis mode.
 
 - **Work-clock limit.** `limited.ticks` / `limits.ticks` sit next to
   kissat's conflict and decision limits. The check lives in
