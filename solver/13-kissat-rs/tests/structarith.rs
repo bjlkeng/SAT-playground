@@ -194,18 +194,21 @@ fn array_multiplier(c: &mut Circuit, pp: &[Vec<i64>], two_input: bool) -> Vec<i6
 /// front or the back of the column); `reverse_from`: columns from there on
 /// are reduced in the other order.
 fn column_multiplier(c: &mut Circuit, pp: &[Vec<i64>], two_input: bool, plus_one: Option<(usize, bool)>, reverse_from: usize) -> Vec<i64> {
-    column_multiplier_dup(c, pp, two_input, plus_one, reverse_from, None)
+    column_multiplier_dup(c, pp, two_input, plus_one, reverse_from, None, &[])
 }
 
 /// As `column_multiplier`, with `duplicate`: pp[i][j] read twice (the
-/// product is then off by 2^(i+j)).
-fn column_multiplier_dup(c: &mut Circuit, pp: &[Vec<i64>], two_input: bool, plus_one: Option<(usize, bool)>, reverse_from: usize, duplicate: Option<(usize, usize)>) -> Vec<i64> {
+/// product is then off by 2^(i+j)); `extra`: more addends (column, literal).
+fn column_multiplier_dup(c: &mut Circuit, pp: &[Vec<i64>], two_input: bool, plus_one: Option<(usize, bool)>, reverse_from: usize, duplicate: Option<(usize, usize)>, extra: &[(usize, i64)]) -> Vec<i64> {
     let n = pp.len();
     let mut cols: Vec<Vec<i64>> = vec![Vec::new(); 2 * n];
     for (i, row) in pp.iter().enumerate() {
         for (j, &p) in row.iter().enumerate() {
             cols[i + j].push(p);
         }
+    }
+    for &(k, l) in extra {
+        cols[k].push(l);
     }
     if let Some((i, j)) = duplicate {
         // at the other end of the column from the original: the two copies
@@ -483,6 +486,189 @@ fn rows_multiplier_at(c: &mut Circuit, pp: &[Vec<i64>], two_input: bool, kind: &
     out
 }
 
+/// A radix-4 Booth multiplier of the unsigned `a` and `b` (n even), as the
+/// 2025 generator's `origin` form builds it: digit j is `-2 b_{2j+1} +
+/// b_{2j} + b_{2j-1}`; its row's bit t is `(one and a_t) or (two and
+/// a_{t-1})` xored with the sign `neg = b_{2j+1}`, the `+neg` bit at the
+/// row's lowest column, `~neg` at the column above the row (the sign
+/// extension's `s~`), and the constant ones that complete the sign
+/// extension (`-2^(2j+n+1)` for each row, as a positive constant modulo
+/// `2^2n`) built as the generator builds them: a half adder over two
+/// complemented bits of the column whose outputs are read complemented
+/// (`1 + x + y`). The correction row `a * b_{n-1} * 2^n` makes the sum
+/// `a * b`. The columns reduce with full and half adders to two rows and
+/// a final adder of `kind` (`ripple`, or a prefix kind) adds them.
+fn booth_multiplier(c: &mut Circuit, a: &[i64], b: &[i64], two_input: bool, kind: &str) -> Vec<i64> {
+    let n = a.len();
+    assert!(n % 2 == 0 && n >= 4);
+    let width = 2 * n;
+    let mut cols: Vec<Vec<i64>> = vec![Vec::new(); width + 2];
+    let mut constant: i128 = 0;
+    for j in 0..n / 2 {
+        let lo = if j == 0 { None } else { Some(b[2 * j - 1]) };
+        let mid = b[2 * j];
+        let hi = b[2 * j + 1];
+        // one: the digit is odd; two: the digit is +2 or -2
+        let one = match lo {
+            Some(lo) => c.xor2(mid, lo),
+            None => mid,
+        };
+        let differ = c.xor2(hi, mid);
+        let two = c.and2(differ, -one);
+        let neg = hi;
+        for t in 0..=n {
+            let first = if t < n { Some(c.and2(one, a[t])) } else { None };
+            let second = if t > 0 { Some(c.and2(two, a[t - 1])) } else { None };
+            let raw = match (first, second) {
+                (Some(x), Some(y)) => c.or2(x, y),
+                (Some(x), None) | (None, Some(x)) => x,
+                (None, None) => unreachable!(),
+            };
+            let bit = c.xor2(raw, neg);
+            if 2 * j + t < width {
+                cols[2 * j + t].push(bit);
+            }
+        }
+        cols[2 * j].push(neg); // the +1 of a negative digit
+        if 2 * j + n + 1 < width {
+            cols[2 * j + n + 1].push(-neg); // s~
+        }
+        constant -= 1i128 << (2 * j + n + 1);
+    }
+    // the correction row for an unsigned multiplicand's top digit
+    for i in 0..n {
+        if i + n < width {
+            let p = c.and2(a[i], b[n - 1]);
+            cols[i + n].push(p);
+        }
+    }
+    // the constant ones, each as a half adder over two complemented bits
+    // of its column read complemented
+    let constant = constant.rem_euclid(1i128 << width);
+    for k in 0..width {
+        if (constant >> k) & 1 == 1 {
+            assert!(cols[k].len() >= 2, "a constant one needs two bits in its column");
+            let x = cols[k].pop().unwrap();
+            let y = cols[k].pop().unwrap();
+            let s = c.xor2(-x, -y);
+            let cy = c.and2(-x, -y);
+            cols[k].push(-s);
+            cols[k + 1].push(-cy);
+        }
+    }
+    // the tree: every column down to two bits
+    for k in 0..width {
+        while cols[k].len() > 2 {
+            let (s, cy) = if cols[k].len() >= 3 {
+                let (x, y, z) = (cols[k].remove(0), cols[k].remove(0), cols[k].remove(0));
+                c.full_adder(x, y, z, two_input)
+            } else {
+                unreachable!()
+            };
+            cols[k].push(s);
+            cols[k + 1].push(cy);
+        }
+    }
+    // the final adder
+    let mut out = Vec::new();
+    match kind {
+        "ripple" => {
+            let mut carry: Option<i64> = None;
+            for k in 0..width {
+                let bits: Vec<i64> = cols[k].iter().copied().chain(carry).collect();
+                let (s, cy) = match bits.len() {
+                    0 => (0, None),
+                    1 => (bits[0], None),
+                    2 => {
+                        let (s, cy) = c.half_adder(bits[0], bits[1]);
+                        (s, Some(cy))
+                    }
+                    _ => {
+                        let (s, cy) = c.full_adder(bits[0], bits[1], bits[2], two_input);
+                        (s, Some(cy))
+                    }
+                };
+                out.push(s);
+                carry = cy;
+            }
+        }
+        _ => {
+            // two rows (a column with one bit gets a zero: the sum is that
+            // bit, the carry none), then the prefix adder of rows_multiplier
+            let rows: Vec<Vec<i64>> = cols[..width].to_vec();
+            return prefix_sum(c, &rows, kind);
+        }
+    }
+    out
+}
+
+/// The sum of columns of at most two bits by a prefix adder of `kind`
+/// (the final adders of `rows_multiplier`).
+fn prefix_sum(c: &mut Circuit, cols: &[Vec<i64>], kind: &str) -> Vec<i64> {
+    let width = cols.len();
+    let g: Vec<Option<i64>> = cols.iter().map(|col| if col.len() == 2 { Some(c.and2(col[0], col[1])) } else { None }).collect();
+    let p: Vec<Option<i64>> = cols.iter().map(|col| match col.len() { 2 => Some(c.xor2(col[0], col[1])), 1 => Some(col[0]), _ => None }).collect();
+    let gor = |c: &mut Circuit, x: Option<i64>, y: Option<i64>| match (x, y) {
+        (None, y) => y,
+        (x, None) => x,
+        (Some(x), Some(y)) => Some(c.or2(x, y)),
+    };
+    let pand = |c: &mut Circuit, x: Option<i64>, y: Option<i64>| match (x, y) {
+        (None, y) => y,
+        (x, None) => x,
+        (Some(x), Some(y)) => Some(c.and2(x, y)),
+    };
+    let op = |c: &mut Circuit, hi: (Option<i64>, Option<i64>), lo: (Option<i64>, Option<i64>)| -> (Option<i64>, Option<i64>) {
+        let (gh, ph) = hi;
+        let (gl, pl) = lo;
+        let t = match (ph, gl) {
+            (_, None) => None,
+            (None, Some(gl)) => Some(gl),
+            (Some(ph), Some(gl)) => Some(c.and2(ph, gl)),
+        };
+        (gor(c, gh, t), pand(c, ph, pl))
+    };
+    let mut nodes: Vec<(Option<i64>, Option<i64>)> = (0..width).map(|i| (g[i], p[i])).collect();
+    match kind {
+        "kogge-stone" => {
+            let mut span = 1;
+            while span < width {
+                let prev = nodes.clone();
+                for i in 0..width {
+                    if i >= span {
+                        nodes[i] = op(c, prev[i], prev[i - span]);
+                    }
+                }
+                span *= 2;
+            }
+        }
+        "sklansky" => {
+            let mut d = 1;
+            while d < width {
+                let prev = nodes.clone();
+                for i in 0..width {
+                    if (i / d) % 2 == 1 {
+                        nodes[i] = op(c, prev[i], prev[(i / d) * d - 1]);
+                    }
+                }
+                d *= 2;
+            }
+        }
+        _ => panic!("unknown adder {}", kind),
+    }
+    (0..width)
+        .map(|i| {
+            let carry_in = if i == 0 { None } else { nodes[i - 1].0 };
+            match (p[i], carry_in) {
+                (None, None) => 0,
+                (None, Some(x)) => x,
+                (Some(x), None) => x,
+                (Some(x), Some(y)) => c.xor2(x, y),
+            }
+        })
+        .collect()
+}
+
 enum Miter {
     /// an array multiplier against a column-wise one
     ArrayColumn,
@@ -519,6 +705,11 @@ enum Miter {
     /// the xors as signals, side B with each folded into the first adder
     /// reading it (fused-leaf cells)
     FoldedSign,
+    /// a radix-4 Booth multiplier with a final adder of the kind against
+    /// a column-wise AND multiplier: different leaves on the two sides
+    /// (row bits against products), the sign-extension constants built
+    /// into complemented half adders, the complementary top bits
+    Booth(&'static str),
 }
 
 /// A miter asserting that output bit `bit` of two n x n multipliers differs.
@@ -536,7 +727,7 @@ fn miter_pruned(kind: Miter, n: usize, bit: usize, two_input: bool, pruned: bool
     let (oa, ob) = match kind {
         Miter::ArrayColumn => (array_multiplier(&mut c, &pp, two_input), column_multiplier(&mut c, &pp, two_input, None, 2 * n)),
         Miter::DuplicateLeaf(i, j) => (
-            column_multiplier_dup(&mut c, &pp, two_input, None, 2 * n, Some((i, j))),
+            column_multiplier_dup(&mut c, &pp, two_input, None, 2 * n, Some((i, j)), &[]),
             column_multiplier(&mut c, &pp, two_input, None, 2 * n),
         ),
         Miter::Exotic => {
@@ -569,6 +760,7 @@ fn miter_pruned(kind: Miter, n: usize, bit: usize, two_input: bool, pruned: bool
             (oa, ob)
         }
         Miter::DoubleCarryRead => (rows_multiplier_at(&mut c, &pp, two_input, "kogge-stone", false, Some(bit)), column_multiplier(&mut c, &pp, two_input, None, 2 * n)),
+        Miter::Booth(kind) => (booth_multiplier(&mut c, &a, &b, two_input, kind), column_multiplier(&mut c, &pp, two_input, None, 2 * n)),
         Miter::FoldedSign => {
             let sign = c.var();
             let signed: Vec<Vec<i64>> = pp.iter().map(|row| row.iter().map(|&p| c.xor2(p, sign)).collect()).collect();
@@ -819,6 +1011,78 @@ fn fused_leaf_cells_are_proven_over_their_cut() {
         assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
         assert_eq!(gate(&cnf, &proof), "ok", "n={} bit={}: two-stage gate", n, bit);
     }
+}
+
+#[test]
+fn booth_miters_are_refuted_with_checked_proofs() {
+    // a radix-4 Booth multiplier against an AND multiplier: the sides'
+    // leaves are different variables (row bits against products), so the
+    // proof expands the leaves into monomial literals; the Booth side
+    // carries its sign-extension constants in complemented half adders
+    // (the chain keeps those ones); the two compared bits come out as
+    // complements as read (a top cell re-read with a one); the AND side's
+    // bit 0 is a bare product, which stands as its output there
+    let fx = Fixture::new("structarith_booth");
+    let cases: Vec<(&str, usize, usize, bool, bool)> = match std::env::var("SAT_TEST_BOOTH_CASES") {
+        Ok(spec) => spec.split(';').map(|c| { let f: Vec<&str> = c.split(',').collect(); (match f[0] { "ripple" => "ripple", "kogge-stone" => "kogge-stone", _ => "sklansky" }, f[1].parse().unwrap(), f[2].parse().unwrap(), f[3] == "1", f[4] == "1") }).collect(),
+        // (a pruned miter, or a prefix final adder, still declines on
+        // these toys: the lone carries of a pruned column multiplier's
+        // bottom and the weight of a top column read straight by the
+        // final adder's half adder; open, bead SAT-playground-skz.4)
+        Err(_) => vec![("ripple", 6usize, 9usize, true, false), ("ripple", 6, 10, false, false), ("ripple", 8, 13, false, false), ("ripple", 8, 12, true, false)],
+    };
+    for (kind, n, bit, two_input, pruned) in cases {
+        let cnf = fx.path(&format!("booth_{}_{}_{}.cnf", kind, n, bit));
+        miter_pruned(Miter::Booth(kind), n, bit, two_input, pruned, &cnf);
+        if let Ok(dir) = std::env::var("SAT_TEST_KEEP") {
+            let _ = std::fs::copy(&cnf, Path::new(&dir).join(format!("booth_{}_{}_{}.cnf", kind, n, bit)));
+        }
+        let r = run(&cnf, &["--structarith=1"], &[("SAT_STRUCT_DEBUG", "1")]);
+        assert_eq!(r.status, "UNSATISFIABLE", "{} {} {}: {}\n{}", kind, n, bit, r.stdout, r.stderr);
+        assert!(r.stdout.contains("arithmetic: two adder networks"), "{} {} {}: {}\n{}", kind, n, bit, r.stdout, r.stderr);
+        assert!(r.stderr.contains("leaf identities"), "no leaf identity on {} {} {}: {}", kind, n, bit, r.stderr);
+        let proof = fx.path(&format!("booth_{}_{}_{}.drat", kind, n, bit));
+        let stdout = run_arith_with_proof(&cnf, &proof);
+        assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+        assert_eq!(gate(&cnf, &proof), "ok", "{} n={} bit={}: two-stage gate", kind, n, bit);
+    }
+}
+
+#[test]
+fn a_booth_multiplier_with_a_wrong_sign_constant_stays_satisfiable() {
+    // the sign-extension constant short of one bit: the two sides compute
+    // different functions, and the pass must not derive their equality
+    let fx = Fixture::new("structarith_booth_wrong");
+    let cnf = fx.path("booth_wrong.cnf");
+    {
+        let mut c = Circuit::new();
+        let n = 6usize;
+        let a: Vec<i64> = (0..n).map(|_| c.var()).collect();
+        let b: Vec<i64> = (0..n).map(|_| c.var()).collect();
+        let pp: Vec<Vec<i64>> = (0..n).map(|i| (0..n).map(|j| c.and2(a[i], b[j])).collect()).collect();
+        let oa = booth_multiplier(&mut c, &a, &b, true, "ripple");
+        // the fault: one constant one of the Booth side spoilt (its
+        // complemented half adder's and reading one input plain)
+        // (the and of the complemented half adder: three clauses over two
+        // negative inputs; its first input read plain)
+        let gi = c.gates.iter().position(|g| g.1.len() == 2 && g.1[0] < 0 && g.1[1] < 0 && g.3 - g.2 == 3).expect("a complemented half adder's and");
+        let (_, ins, start, end) = c.gates[gi].clone();
+        let x = ins[0];
+        for i in start..end {
+            for l in c.clauses[i].iter_mut() {
+                if l.abs() == x.abs() {
+                    *l = -*l;
+                }
+            }
+        }
+        let ob = column_multiplier(&mut c, &pp, true, None, 2 * n);
+        let bit = 9;
+        let x = c.xor2(oa[bit], ob[bit]);
+        c.clauses.push(vec![x]);
+        c.write(&cnf);
+    }
+    let r = run(&cnf, &["--structarith=1"], &[("SAT_STRUCT_DEBUG", "1")]);
+    assert_eq!(r.status, "SATISFIABLE", "{}\n{}", r.stdout, r.stderr);
 }
 
 #[test]

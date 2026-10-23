@@ -1703,6 +1703,131 @@ variables' definitions missing from kitten's lemma clauses). Debug:
 difference; `SAT_STRUCT_DEBUG_LEMMA=path` also prints a failing side's
 leaf polynomial, to evaluate on the dumped model.
 
+### Session three (2026-10-23): the first Booth cells fire
+
+Three of the ten Booth cells are refuted with gate-checked proofs
+(VeriPB on the structure proof, drat-trim on the rest), each in under
+five seconds: `booth_dadda_origin_and_and_dadda_origin_bit28` (a
+timeout for the C kissat in every run so far), its `bit29` sibling
+(886 s for the C) and `booth_dadda_origin_and_and_dadda_mapped_bit28`
+(a timeout). What it took, in the order the failures came:
+
+- **The mis-weighted row was a wrong constant.** The Booth side's chain
+  summed to `a*b` minus `2^20 + 2^22 + 2^24 + 2^26` on kitten's
+  counterexample: the chain cancelled the ones of three *real* half
+  adders read with a one (`~x + ~y + 1 = ~s + 2 ~c`). Those ones are
+  not reading artifacts: a half adder over two complemented bits whose
+  outputs are consumed complemented adds `1 + x + y`, and a Booth
+  multiplier's sign-extension constants (the `1` of each row's `1 s~`
+  prefix) are built exactly so. The chain now complements only the
+  ones of the pass's own lone cells (an or gate read as the carry of
+  `x + y + 1`), and the Booth side's lemma passed at once.
+- **The leaf identities.** The sides' leaves are different variables (row
+  bits against products), so the proof expands every leaf the sides read
+  differently into its polynomial over the inputs, each monomial of two
+  or more inputs standing for one literal: the grid's product when there
+  is one, else a fresh and of the inputs (459 of them on the first cell;
+  a fresh copy of an input gets the identity `g = x` too). Each
+  expansion is two `pbc`s with a full case split over the leaf's inputs
+  (`1a` in the proof); the telescoping sums add them in with each leaf's
+  net weight on its side, and the sides then cancel monomial by
+  monomial as they do as polynomials. The polynomial check accepts
+  coefficient differences that are multiples of `2^(K+1)` (the block
+  step carries them) and a check on the literals the proof actually
+  cancels sits beside it.
+- **Complementary top bits.** With both sides right, the constants still
+  differed by exactly `2^K`: the two output bits are complements as
+  read. A lone top cell (an xor with a fresh carry) reads either way,
+  `x + y = s + 2 (x and y)` or `x + y + 1 = ~s + 2 (x or y)`; the second
+  reading adds `2^K` to that side and compares the complement, and the
+  two derived clauses `1167 = 2539` contradict the miter.
+- **The grid as the reference.** The mapped AND side reads two gates no
+  row holds (its bottom columns are folded into the final adder's
+  gates), and so does the Booth side, so neither could wait for the
+  other to settle the polynomial difference. The difference is now
+  taken against the grid's own polynomial: every input's position along
+  its operand comes from the weighted product gates (`exp(a_i b_k) =
+  pos(a_i) + pos(b_k)`, the operands the two colours of the pair
+  graph), the grid is every pair whether or not a gate computes it, and
+  the scale drops to the grid's lowest pair. Each monomial of the
+  difference, at each power of two of its coefficient, is one fresh
+  addend (an and of the monomial's inputs, complemented for a negative
+  coefficient, the constant to the fixed ones), in place of the unit
+  tables over the union support.
+- **The ladder.** Kitten could not prove the mapped network's carry
+  equal to the chain's bit in 200M ticks (the full solver does it in
+  40K by sweeping, 21M by search alone). The lemma's clause set is now
+  simulated on 64 random inputs first: the signatures say whether the
+  carry arrives plain or complemented (no failing run to find out, and
+  a mismatch declines at once), and which network signals equal which
+  chain carries; those are proven bottom-up, each a small kitten lemma
+  whose binary clauses join the clause set for the next (25 of 26
+  chain carries matched on the mapped cell; the last step then needs 18
+  learned clauses). The AND cells got cheaper too (`ultra27` 19M to
+  4.2M ticks).
+- **An or of two exclusive carries is their sum.** The `bit29` cell's
+  top column reads the carry of a full adder built as two half adders
+  and an or (the second half adder reads the first's sum, so the two
+  carries are never both one); read as a lone carry the or sat one
+  column too high. Such an or is now a sum cell at the carries' weight
+  with a fresh and (always zero) as its carry; the proof's case split
+  refutes the (1, 1) case from the gates.
+- **Sign extension reads a bit at two columns.** The same cell's top
+  xor chain reads row 6's bit 16 again at column 29. An input leaf's
+  weight is now weak evidence for a lone sum: a produced leaf or the
+  sum's own reader decides when it can, and a third round level
+  (`weak_ok`, after a relaxed round made nothing) takes an input leaf's
+  weight only when nothing else is left.
+
+Then a toy Booth generator for the tests (`tests/structarith.rs`,
+`Miter::Booth`: radix-4 digits, row bits as xor with the sign, the
+`+neg` bit, `s~`, the constant ones as complemented half adders, a
+column tree, a ripple or prefix final adder) found four more gaps that
+the real cells had stepped around: the half-adder matcher took the row
+bit `xor(raw, neg)` with the carry `and(bit, neg)` as a half adder over
+the deeper cut, leaving the real half adder's sum to no cell (half
+adders whose carry reads the cut directly come first now); a leaf's
+weight tied one side's network to the other's through a shared product
+(a Booth correction row reads `a_i b_15` one column above the AND side;
+a leaf never ties two networks now, in the weight stage, the lone-gate
+rounds and the grid rule alike, and the sides meet only through the
+compared signals); the grid's positions came from one union-find
+exponent per product (the correction row's again), so they come from
+the side reading the most products now, and place products no cell has
+reached (a pruned column multiplier's bottom half adders); and the AND
+side's bit 0 is the bare product `a_0 b_0`, no cell's, where the Booth
+side has a cell: a monomial one side's cells never read, at the weight
+of a bit only the other side produces, now stands as that side's
+output bit there (`residuals`), and the derived clause is `bit = p`.
+The toy miters with a ripple final adder fire with checked proofs;
+pruned ones and those with a prefix final adder still decline (the lone
+carries of a pruned column multiplier's bottom, and a top column the
+final adder's half adder reads straight), noted in the bead.
+
+The Codex review of this session (rounds 14-15) found a false leaf
+identity (the and/nand tables for a monomial read with masks over n
+bits instead of 2^n, so `x or ~y` passed for a nand: VeriPB caught the
+proof, now `monomial_reading` with a unit test), a stale snapshot of
+the produced signals in the weak-weight rule (and the rule applied to
+carries, where every leaf must agree: now xor sums only, so
+`arith_fuzz.build(48200090)` fires again), and the clause simulation
+running unmetered (now charged per clause and stopped every 16
+clauses); round 15 was clean. In the 400-cell sweep (work limit 30M,
+`log/structarith-fire-2026-10-23c`) the two cheap Booth cells fire; the
+`bit29` one needs about 115M for its Booth-side lemma and fires without
+the limit (4 s).
+
+Still open, in the order to take them: the two `booth_wallace_origin`
+sides ("no consistent reading of the cells' polarities": the Wallace
+tree reads one full adder's carry plain in one cell and complemented
+in another, and the pass's one-literal-per-signal model has no reading
+for that); the four `mapped` Booth trees (60-70 cells recognised of some
+250: the mapping folds the row bits into the adder cells, a shape the
+cut matcher does not see); Booth against Booth (fresh products on both
+sides). Debug: `SAT_STRUCT_DEBUG_POLY=1` prints the polynomial
+difference instead of the leaf check; `SAT_STRUCT_DEBUG_VAR=v` also
+lists the cells touching `v`.
+
 - **Work-clock limit.** `limited.ticks` / `limits.ticks` sit next to
   kissat's conflict and decision limits. The check lives in
   `terminate::terminated`, which is what every inprocessing effort loop and
