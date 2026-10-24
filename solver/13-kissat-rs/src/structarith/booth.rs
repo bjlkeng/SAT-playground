@@ -103,6 +103,37 @@ fn simulate_words(net: &Netlist, work: &mut u64, stop: &dyn Fn(u64) -> bool) -> 
     Some(val)
 }
 
+/// The bit of the product of the operands `a` and `b` (bit lists, lowest
+/// first) that `out` is on the stage's patterns, either polarity; None when
+/// it is none of them or the operands are too wide.
+fn product_column(net: &Netlist, val: &[Sig], a: &[i32], b: &[i32], out: i32, work: &mut u64) -> Option<usize> {
+    if a.is_empty() || b.is_empty() || a.len() + b.len() > 126 {
+        return None;
+    }
+    let word = |v: i32| -> Sig {
+        let (r, ng) = net.rep[v as usize];
+        sig_lit(val[r as usize], ng)
+    };
+    let (wa, wb): (Vec<Sig>, Vec<Sig>) = (a.iter().map(|&x| word(x)).collect(), b.iter().map(|&x| word(x)).collect());
+    let wo = word(out);
+    let mut product: Vec<u128> = Vec::with_capacity(64 * WORDS);
+    for w in 0..WORDS {
+        for t in 0..64 {
+            let x: u128 = wa.iter().enumerate().map(|(i, s)| (((s[w] >> t) & 1) as u128) << i).sum();
+            let y: u128 = wb.iter().enumerate().map(|(k, s)| (((s[w] >> t) & 1) as u128) << k).sum();
+            product.push(x.wrapping_mul(y));
+        }
+    }
+    *work += (64 * WORDS * (a.len() + b.len())) as u64;
+    (0..a.len() + b.len()).find(|&c| {
+        let mut sig: Sig = [0; WORDS];
+        for (n, p) in product.iter().enumerate() {
+            sig[n / 64] |= (((p >> c) & 1) as u64) << (n % 64);
+        }
+        sig == wo || sig == sig_not(wo)
+    })
+}
+
 /// The radix-4 Booth roles of a function's inputs: the digit's two low
 /// bits (unordered: one = lo xor mid and two = hi ~mid ~lo + ~hi mid lo
 /// are symmetric in them; the chain of digits orders them), its sign `hi`,
@@ -1599,7 +1630,16 @@ pub(super) fn booth_cells(net: &Netlist, readers: &[u32], cone: &HashSet<i32>, o
             None => (it.var as usize) < nv && net.gates[it.var as usize].is_some(),
         }
     };
-    let top_col = items.iter().filter(|it| gate_backed(it)).map(|it| it.col).max();
+    // (the compared signal's column by function, the product bit it is,
+    // when the operands are known: the highest column a row bit has a gate
+    // at is not the compared bit's at the product's top, where every row
+    // bit is folded or an input, bead skz.15)
+    let ops: Option<(Vec<i32>, Vec<i32>)> = match and_rows {
+        Some((a, b)) => Some((a.to_vec(), b.to_vec())),
+        None => operands_out.clone(),
+    };
+    let by_function = ops.as_ref().and_then(|(a, b)| product_column(net, &val, a, b, out, work)).filter(|&c| c < ncols);
+    let top_col = by_function.or_else(|| items.iter().filter(|it| gate_backed(it)).map(|it| it.col).max());
     if let (false, Some(kc)) = (made_out, top_col) {
         let consumed: HashSet<i32> = cells.iter().enumerate().filter(|&(ci, _)| alive_cell[ci]).flat_map(|(_, c)| c.leaves.iter().copied()).collect();
         let produced: HashSet<i32> = cells.iter().enumerate().filter(|&(ci, _)| alive_cell[ci]).flat_map(|(_, c)| [c.sum, c.carry_var()]).collect();

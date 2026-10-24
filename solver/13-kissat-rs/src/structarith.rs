@@ -1823,8 +1823,22 @@ fn resolve_polarities(cells: &mut [Cell], chosen: &[usize], doubled: &HashMap<i3
     let mut producer: HashMap<i32, (usize, u8)> = HashMap::new(); // var -> (cell, produced negated)
     for &ci in chosen {
         let c = &cells[ci];
-        producer.insert(c.sum, (ci, c.sum_neg as u8));
-        producer.insert(c.carry_var(), (ci, (c.carry < 0) as u8));
+        for (v, p) in [(c.sum, c.sum_neg as u8), (c.carry_var(), (c.carry < 0) as u8)] {
+            // (a signal two cells produce, the same cell found on both
+            // sides of two Booth multipliers whose row logic hashed into one:
+            // both write it alike, else one copy's readers on its side are
+            // read the other way round, bead skz.15)
+            if let Some(&(pc, pp)) = producer.get(&v) {
+                if pc != ci && !uf.union(pc, ci, pp ^ p) {
+                    if debug() {
+                        eprintln!("structarith: polarity conflict between two producers of signal {}: cells {} and {}", v, pc, ci);
+                    }
+                    return false;
+                }
+                continue;
+            }
+            producer.insert(v, (ci, p));
+        }
     }
     // (a signal read doubled, by a cell one column above it, is read as it
     // is written there and complemented by its other readers: 2x - x is x,
@@ -2720,6 +2734,12 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
     }
     if aborted.get() || stopped(*work) {
         return;
+    }
+    // (debug: the pair forced, "a,b")
+    if let Some((fa, fb)) = std::env::var("SAT_STRUCT_DEBUG_FORCE_PAIR").ok().and_then(|t| { let v: Vec<i32> = t.split(',').filter_map(|x| x.parse().ok()).collect(); (v.len() == 2).then(|| (v[0], v[1])) }) {
+        if dbg {
+            best = Some((net.rep[fa as usize].0, net.rep[fb as usize].0, 0));
+        }
     }
     let Some((side_a, side_b, _)) = best else {
         if dbg {
@@ -4255,6 +4275,26 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 }
                 grid_ops = [Some((xs.clone(), ys.clone())), Some((xs, ys))];
             }
+        } else if let (Some((a_ops, b_ops)), Some(&(c0, col0))) = (operands.as_ref(), booth_cols.first()) {
+            // (no side reads a grid of products, two Booth sides: the grid
+            // from the operands a Booth side's digits and data gave, each
+            // product a_i b_k at the column i + k of the stage's cells, which
+            // sit at their columns' weights; both sides must be one network
+            // by now, bead skz.15)
+            let (r0, e0) = uf.find(cells[c0].sum);
+            let tied_sides = (0..2).all(|t| side_cells[t].iter().all(|&ci| uf.find(cells[ci].sum).0 == r0));
+            *work += (side_cells[0].len() + side_cells[1].len()) as u64;
+            if tied_sides {
+                let off = e0 - col0;
+                let xs: Vec<(i32, i64)> = a_ops.iter().enumerate().map(|(i, &v)| (v, off + i as i64)).collect();
+                let ys: Vec<(i32, i64)> = b_ops.iter().enumerate().map(|(k, &v)| (v, k as i64)).collect();
+                if dbg {
+                    eprintln!("structarith: no side reads a full grid of products ({} and {} reads): the grid from the Booth operands, {} x {}", candidates[0].1.len(), other_len, xs.len(), ys.len());
+                }
+                grid_ops = [Some((xs.clone(), ys.clone())), Some((xs, ys))];
+            } else if dbg {
+                eprintln!("structarith: no side reads a full grid of products ({} and {} reads), and the sides are not one network", candidates[0].1.len(), other_len);
+            }
         } else if dbg {
             eprintln!("structarith: no side reads a full grid of products ({} and {} reads): the networks measure against each other", candidates[0].1.len(), other_len);
         }
@@ -4267,6 +4307,62 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         grid_min.map_or(cells_min, |g| g.min(cells_min))
     };
     let mut pre_poly: [Poly; 2] = [Poly::default(), Poly::default()];
+    if dbg && std::env::var_os("SAT_STRUCT_DEBUG_LEAFCHECK").is_some() {
+        // (debug: every primary leaf's recorded function against the
+        // simulation, fresh leaves through their definitions)
+        if let Some(sim) = simulate(&net, work, &stopped) {
+            let mut words: HashMap<i32, u64> = HashMap::new();
+            let word_net = |v: i32| -> u64 {
+                let (r, ng) = net.rep[v as usize];
+                if ng { !sim[r as usize] } else { sim[r as usize] }
+            };
+            for fr in &fresh {
+                let (FreshDef::Xor(l) | FreshDef::And(l) | FreshDef::Maj(l)) = &fr.def;
+                let ws: Option<Vec<u64>> = l.iter().map(|&x| {
+                    let w = if (x.abs() as usize) < nv { Some(word_net(x.abs())) } else { words.get(&x.abs()).copied() }?;
+                    Some(if x < 0 { !w } else { w })
+                }).collect();
+                let Some(ws) = ws else { continue };
+                let w = match &fr.def {
+                    FreshDef::Xor(_) => ws.iter().fold(0u64, |a, &x| a ^ x),
+                    FreshDef::And(_) => ws.iter().fold(u64::MAX, |a, &x| a & x),
+                    FreshDef::Maj(_) => (0..64).map(|b| { let ones = ws.iter().filter(|&&x| (x >> b) & 1 == 1).count(); ((2 * ones > ws.len()) as u64) << b }).sum(),
+                };
+                words.insert(fr.var, w);
+            }
+            for s in 0..2 {
+                let produced: HashSet<i32> = side_cells[s].iter().flat_map(|&ci| [cells[ci].sum, cells[ci].carry_var()]).collect();
+                let mut bad = 0usize;
+                for &ci in &side_cells[s] {
+                    for &l in &cells[ci].leaves {
+                        if produced.contains(&l) {
+                            continue;
+                        }
+                        let Some(il) = input_leaves.get(&l) else { continue };
+                        let wl = if (l as usize) < nv { Some(word_net(l)) } else { words.get(&l).copied() };
+                        let Some(wl) = wl else { continue };
+                        let mut wt = 0u64;
+                        for b in 0..64 {
+                            let mut m = 0usize;
+                            for (i, &x) in il.sup.iter().enumerate() {
+                                if (word_net(x) >> b) & 1 == 1 {
+                                    m |= 1 << i;
+                                }
+                            }
+                            wt |= ((il.tt >> m) & 1) << b;
+                        }
+                        if wt != wl {
+                            bad += 1;
+                            if bad <= 8 {
+                                eprintln!("structarith: side {}: leaf {} of cell {} at exponent {}: its recorded function over {:?} ({:#x}) is not its value", s, l, ci, uf.find(cells[ci].sum).1, il.sup, il.tt);
+                            }
+                        }
+                    }
+                }
+                eprintln!("structarith: side {}: {} primary leaves whose recorded function differs from the simulation", s, bad);
+            }
+        }
+    }
     if dbg && std::env::var_os("SAT_STRUCT_DEBUG_DIFF").is_some() {
         for s in 0..2 {
             let produced: HashSet<i32> = side_cells[s].iter().flat_map(|&ci| [cells[ci].sum, cells[ci].carry_var()]).collect();
@@ -5278,6 +5374,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         let mut sk_lit: Option<i32> = None;
         let mut chain_cells = 0usize;
         let mut chain_col: Vec<i64> = Vec::new(); // per chain cell, its column
+        let mut col_bits: Vec<(i64, Option<i32>)> = Vec::new(); // (debug) each column's bit after the chain
         for e in e_lo..=k {
             let mut items: Vec<i32> = pool.remove(&e).unwrap_or_default();
             if dbg && std::env::var_os("SAT_STRUCT_DEBUG_LEMMA").is_some() {
@@ -5378,6 +5475,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             if e == k {
                 sk_lit = items.first().copied();
             }
+            col_bits.push((e, items.first().copied()));
             if !items.is_empty() && e < k {
                 // the column's bit stays as it is (a leftover, or a chain sum)
             }
@@ -5395,6 +5493,65 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                     };
                     let _ = writeln!(fh, "fresh {} {} {}", fr.var, kind, l.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" "));
                 }
+            }
+        }
+        if dbg && std::env::var_os("SAT_STRUCT_DEBUG_CHAINCHECK").is_some() {
+            // (debug: the chain's bit at every column below k against the
+            // product's, on the simulation, when the grid gives positions)
+            if let (Some(sim), Some((xs, ys))) = (simulate(&net, work, &stopped), grid_ops[s].as_ref()) {
+                let word_net = |v: i32| -> u64 {
+                    let (r, ng) = net.rep[v as usize];
+                    if ng { !sim[r as usize] } else { sim[r as usize] }
+                };
+                let mut words: HashMap<i32, u64> = HashMap::new();
+                for &t in &trues {
+                    words.insert(t, u64::MAX);
+                }
+                for fr in fresh.iter() {
+                    let (FreshDef::Xor(l) | FreshDef::And(l) | FreshDef::Maj(l)) = &fr.def;
+                    let ws: Option<Vec<u64>> = l.iter().map(|&x| {
+                        let w = if (x.abs() as usize) < nv { Some(word_net(x.abs())) } else { words.get(&x.abs()).copied() }?;
+                        Some(if x < 0 { !w } else { w })
+                    }).collect();
+                    let Some(ws) = ws else { continue };
+                    let w = match &fr.def {
+                        FreshDef::Xor(_) => ws.iter().fold(0u64, |a, &x| a ^ x),
+                        FreshDef::And(_) => ws.iter().fold(u64::MAX, |a, &x| a & x),
+                        FreshDef::Maj(_) => (0..64).map(|b| { let ones = ws.iter().filter(|&&x| (x >> b) & 1 == 1).count(); ((2 * ones > ws.len()) as u64) << b }).sum(),
+                    };
+                    words.entry(fr.var).or_insert(w);
+                }
+                let lit_word = |l: i32| -> Option<u64> {
+                    let w = if (l.abs() as usize) < nv { Some(word_net(l.abs())) } else { words.get(&l.abs()).copied() }?;
+                    Some(if l < 0 { !w } else { w })
+                };
+                let px0 = xs.iter().map(|&(_, p)| p).min().unwrap_or(0);
+                let py0 = ys.iter().map(|&(_, p)| p).min().unwrap_or(0);
+                let mut prod = [0u128; 64];
+                for (t, pr) in prod.iter_mut().enumerate() {
+                    let x: u128 = xs.iter().map(|&(v, p)| (((word_net(v) >> t) & 1) as u128) << (p - px0)).sum();
+                    let y: u128 = ys.iter().map(|&(v, p)| (((word_net(v) >> t) & 1) as u128) << (p - py0)).sum();
+                    *pr = x.wrapping_mul(y);
+                }
+                let base = px0 + py0;
+                let mut first_bad: Option<i64> = None;
+                for &(e, bit) in &col_bits {
+                    if e >= k || e < base {
+                        continue;
+                    }
+                    let want: u64 = (0..64).map(|t| (((prod[t] >> (e - base)) & 1) as u64) << t).sum();
+                    let have = match bit {
+                        Some(l) => lit_word(if negated_domain { -l } else { l }),
+                        None => Some(0),
+                    };
+                    let ok = have.map(|h| if negated_domain { !h == want || h == want } else { h == want });
+                    let exact = have.map(|h| h == want);
+                    eprintln!("    chain check side {} exponent {}: bit {:?}, equal {:?}, complement {:?}", s, e, bit, exact, have.map(|h| !h == want));
+                    if ok == Some(false) && first_bad.is_none() {
+                        first_bad = Some(e);
+                    }
+                }
+                eprintln!("structarith: side {}: the chain's lowest column off the product: {:?} (negated domain {})", s, first_bad, negated_domain);
             }
         }
         // (the carries out of column k join the top block)

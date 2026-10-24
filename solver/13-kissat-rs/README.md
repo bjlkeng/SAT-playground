@@ -2294,6 +2294,79 @@ Debug: `SAT_STRUCT_DEBUG_LADDER=1` prints each rung as it is proven;
 `SAT_STRUCT_DEBUG=1`) build the chain in plain order and drop the xor
 rungs.
 
+## Booth, step five: Booth against Booth, one compared bit (2026-10-24; bead `SAT-playground-skz.15`)
+
+**Result.** No new cell refuted yet. On
+`booth_dadda_mapped_and_booth_wallace_mapped` (two mapped Booth
+multipliers compared on all 32 product bits, a timeout in every run) the
+pass now proves the top pair, bit 31, equal: 2 derived clauses in 4.4 s
+(144M work), and the VeriPB stage of the gate accepts them (the cell is
+not refuted, so the full gate never runs on it; the stage was run alone,
+with its negative control). The miter needs all 32 pairs, so the cell
+stays unsolved; what blocks the other 31 is measured below.
+
+**What changed:**
+
+1. *A grid from the Booth operands.* With no side reading plain
+   products, neither side was settled: each waited for the other's
+   polynomial, and the pass gave up. When a Booth stage found the
+   operands (its data bits and the bits its digits read), the grid now
+   comes from them: a_i b_k at column i + k of the stage's cells, at
+   those columns' weights. Both sides must already be one weighted
+   network.
+2. *The compared signal's column, by function.* The stage put its top at
+   the highest column where a row bit has a gate. At the product's top
+   bit every row bit is folded or an input, so the top sat a column low
+   (30 for bit 31) and the simulation separated the network's carry from
+   the chain's bit. The column is now the product bit the compared
+   signal is on the stage's 128 patterns, with the stage's operands; the
+   old rule only without them. (It also moves the AND side's top of
+   `dadda_mapped_and_and_wallace_mapped` from 29 to 28; that cell still
+   stops on its three unexplained gates.)
+3. *Two producers of one signal, tied.* Both Booth sides' stages found the
+   same two cells over the first row's sign bit: outputs hashed into one
+   gate on both sides, each side with its own fresh copy of a fused row
+   bit. The polarity reading kept one producer per signal, so the other
+   copy was flipped freely and its readers on its own side read its
+   outputs the other way round. The chain was then right on every random
+   pattern and wrong when a carry ran from column 17 to the top: kitten's
+   counterexample was a = 0x8ace, b = 0xec0f, a b = 0x7ffe0a12, bits 17 to
+   30 all ones. A second producer is now tied to the first (both write the
+   signal alike, or the reading fails).
+
+**What blocks the whole word.** Each compared pair forced in turn
+(`SAT_STRUCT_DEBUG_FORCE_PAIR=a,b`): bits 7, 12 and 16 stop early, since
+the cone of a middle bit holds that column's cells only in part (their
+carries leave the cone) and 12 to 14 signals stay at the top (the
+virtual top takes six); bits 24, 28 and 30 run out of the lemma
+allowance. Finding the cells on the whole multiplier, the union of every
+compared cone, gives tops of 1 to 5 signals at every bit, but the side's
+reading of its low columns comes out flipped (the cells far above the bit
+outvote them; at bit 12 the synthesized difference doubles every
+product, 84 monomials) and the lemmas still run out; keeping only the
+cells with an output in the bit's cone stops earlier still. Sides over
+the whole word leave 37 signals of the mapped final adder that no cell
+produces. A whole-word refutation needs one of these ways made reliable;
+bead skz.15 keeps that open.
+
+**Tests and runs.** All 152 tests pass. `tools/arith_fuzz.py` seed
+35000: 1,500 miters, all agree with the stock solver, the pass fired on
+769, every proof accepted (`log/arith-fuzz-2026-10-24-s35000.txt`). The
+seven refuted Booth cells keep their gate-checked proofs. The two toy
+grids of step four (200 miters): none lost. The 300M sweep against
+skz.13's build (`log/structarith-fire-2026-10-24-300M-skz15a`, frozen
+binary 90fe0c1b209260f8): 10 cells fire on the old build, 12 on this one
+(bit29, and the Booth-against-Booth bit-31 pair, which leaves the cell
+unsolved), none lost, no panic, no answer changed, no other cell's work
+moved.
+
+Debug: `SAT_STRUCT_DEBUG_FORCE_PAIR=a,b` (with `SAT_STRUCT_DEBUG=1`)
+forces the compared pair; `SAT_STRUCT_DEBUG_CHAINCHECK=1` compares the
+chain's bit at every column below the compared one with the product's
+bit on the simulation (it found the column-17 flip);
+`SAT_STRUCT_DEBUG_LEAFCHECK=1` checks every primary leaf's recorded
+function against the simulation. Codex review, round 27: clean.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.
