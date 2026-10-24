@@ -1854,6 +1854,36 @@ weight). The toy generator has both shapes (`Miter::BoothShapes`), and
 the tests check that a doubled carry without its constant stays
 satisfiable.
 
+**Paired run (2026-10-23/24).** The 400 cells of 2025, 1800 s, 16 GB,
+32 pinned cores, the frozen build `solver/13-j3-booth-snapshot` (commit
+`1b93815`, sha256 `5b60c038ad1cd670`) with the arithmetic pass off
+(`--structarith=0`) against on, at seeds 0 and 1, every answer checked
+(`log/abtest-struct-booth-400-2026-10-23-15-34-11`):
+
+| seed | arm | solved | PAR-2 | tick PAR-2 |
+|---|---|---|---|---|
+| 0 | pass off | 312 | 409,159 | 1.099e13 |
+| 0 | pass on | 316 | 388,992 (0.951x) | 1.025e13 (0.933x) |
+| 1 | pass off | 315 | 398,750 | 1.067e13 |
+| 1 | pass on | 319 | 378,985 (0.950x) | 9.99e12 (0.936x) |
+
+No contradiction; 1,166 answers checked ok, 96 proof checks hit the
+checker's time limit (as in earlier runs), the rest timeouts. On both
+seeds the same four cells go from the timeout to solved: the two
+multiplier miters of step one (0.2 s each) and two of the new Booth
+cells, `booth_dadda_origin_and_and_dadda_origin_bit28` (0.4 s) and
+`booth_dadda_origin_and_and_dadda_mapped_bit28` (0.3 s). Four cells both
+arms solve get much faster: `booth_dadda_origin_..._bit29` 904 s and
+815 s to 5.5 s, `booth_wallace_origin_and_and_dadda_mapped_bit28` 1767 s
+and 1741 s to 0.3 s, and the two AND-against-AND cells of the
+final-adder step, 1632/1699 s and 803/783 s to 0.1 and 0.2 s. Of the
+cells both arms solve (311 at seed 0, 315 at seed 1), all but those four
+have the same conflict count: the search is unchanged elsewhere. Seed 0
+also has two swaps at the wall limit with the search unchanged:
+`dislog_a14_x14_n24` was killed with the pass on at 96 % of the work the
+other arm needed (78.1G of 81.0G), and `case6.normalised` with the pass
+off at 84 % (57.2G of 68.0G).
+
 **What is left: the mapped Booth trees** (bead `SAT-playground-skz.13`).
 In the four cells whose Booth side is in mapped form, and in the
 Booth-against-Booth cell, the pass finds 60 to 80 of the about 250
