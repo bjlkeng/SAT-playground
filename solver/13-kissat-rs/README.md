@@ -1924,6 +1924,191 @@ find a counterexample the simulation would have caught;
 `SAT_STRUCT_DEBUG_RANGE=lo,hi` lists the cells in an exponent range in
 the diagnosis mode.
 
+## Booth, step three: the mapped trees, by function (2026-10-24; bead `SAT-playground-skz.13`)
+
+Two more Booth cells of 2025 are refuted with gate-checked proofs:
+`booth_wallace_mapped_and_and_wallace_origin_bit28` and
+`booth_wallace_mapped_and_default_origin_bit28`, each in 0.6 s (search
+alone took 1228 to 1452 s in the last paired run), with proofs of about
+79,000 lines (4 MB) the gate checks in under 2 s. Both read the same
+mapped Booth Wallace tree against two AND sides. With the four
+origin-form cells of step two, six of the ten Booth cells are now
+refuted before search. The four left are listed at the end, with the
+reason measured on each.
+
+**What a mapper does to a Booth tree.** No gate computes a row bit (the
+select part xor the digit's sign): the first adder level reads the select
+gate and the sign straight. A carry is then a mux (gate 1374 of the
+wallace cell is `not (p ? q : b3)`, the complement of the majority of
+`q`, `p xor b3` and `b3`), and a sum is re-associated (the xor of the
+select parts, xored with the xor of the signs, as one structure). The
+mapper also uses don't-cares: a gate may read a digit's `one` and `two`
+signals together, which are never both one, and take any value on that
+case. Over any small cut such gates are no adder's; over the inputs they
+are.
+
+**The cells by function** (`src/structarith/booth.rs`, run on each side
+once the two cones are known):
+
+- *Row bits from truth tables.* Every gate over four or five inputs whose
+  table is a row bit or its select part (either polarity) gives a digit
+  (its three bits; the two low ones are told apart by the chain of
+  digits, each digit's sign being the next one's low bit) and two
+  neighbouring bits of the other operand. From these the stage rebuilds
+  every row bit as a function of the inputs, with its column. A row bit
+  is a gate when one computes it, else the xor of its select gate and the
+  sign (a fresh variable of the proof, as the fused cells of step two
+  have), and the correction row's products are fresh ands where no gate
+  computes them.
+- *Matching on simulation, level by level.* Each gate of the side is
+  checked, in circuit order, as the carry or the sum of three (or two)
+  row signals of one column whose inputs are exactly the gate's: the
+  majority or the xor on 128 random patterns. A round reads only what
+  there was when it began, and tries full adders with both outputs gates
+  first, then half adders, then full adders whose sum is no gate (a dead
+  product bit at the bottom, or a sum the mapper folded into the next
+  level: a fresh sum), then whose carry is no gate (a dead carry at the
+  top: a fresh carry). A gate inside a cell already made is no other
+  cell's output; two leaves of a full adder whose carry is a gate are not
+  taken by a half adder first; a carry some gate outside its cell reads
+  can be read once more a column up (the Booth Wallace generator's
+  `x 2^e = ~x 2^e + x 2^(e+1) - 2^e`, which the mapped tree keeps).
+- *An exact check over a minimum cut.* Each match is checked exactly over
+  the smallest set of signals that determines its outputs and its leaves
+  by forward propagation (a minimum vertex cut, at most 10 signals),
+  which is the set the proof's case split runs over. Nothing strictly
+  above the leaves is cut. When the cell fails on some assignment of the
+  cut (a don't-care: two cut signals the inputs never give together), the
+  smallest set of cut signals that the inputs cannot give in the failing
+  combination is pushed under, and the cut is found again. A cell whose
+  leaves do not take every combination over the cut (the and and the nor
+  of one pair beside the pair: a final adder's generate and kill) is
+  rejected.
+- *Readings.* The cells must read every produced signal as written, up to
+  flipping a whole cell. An odd cycle of such constraints means one of
+  its cells is no cell of the tree; the one highest in the tree is
+  dropped (one with a fresh partner first), with every cell reading what
+  it made, until no cycle is left. On the wallace cell this drops two
+  cells at column 26, where the mapper merged the tree's last full adder
+  into the final adder.
+- *The top.* When no cell computes the compared bit, the carry into its
+  column is the network's output: a fresh variable `n`, the compared
+  signal xor what the cells leave at that column, read by lone sums of
+  the pass's own whose last sum is the compared signal. The final-adder
+  step's lemma then proves `n` equal to its chain's bit, as for a real
+  network carry. The top cells read each leftover as its producer writes
+  it under the cells' reading (a complemented read only complements `n`,
+  which the lemma takes either way).
+
+When the stage finds more cells on a side than the structural matcher
+did, its cells replace that side's structural ones (all of them: what
+the stage leaves is the carry network's). It does not run when the
+structural cells already number three quarters of the side's row items
+(0.89 to 0.93 on the origin-form cells, 0.42 on the mapped ones).
+
+**What the rest of the pass needed.** A cell's sum or carry may now be a
+fresh variable read by other cells (the netlist lookups take a fresh
+variable as its own representative), and a cell is pinned to the side it
+was made for (two fresh outputs put it in no cone). The stage's cells
+come with their columns, which tie them into one weighted network where
+no signal does (a bottom cell whose outputs only the network reads). A
+side found by function reads its rows in whichever reading its carries
+chose, so the whole-side flip now turns such a side when nearly all its
+products read negated. In the chain: the fixed ones are the complement
+of the side's polynomial constant (every reading with a one, every
+negated leaf and every complemented addend counted), less 2^e for each
+signal read doubled; when that needs fewer fixed ones the chain sums the
+complements of its items (`~S = -S - 1`: each chain cell is then the
+complement reading of its cell, and the chain's carries are the
+network's own, complemented, instead of two per column); the row bits
+no cell reads go to the pool at their columns (a fresh copy for one the
+other side reads at another weight, as `a_9 b_15` is: column 24 on the
+AND side, 25 in the correction row); and a fresh and over two inputs
+gets its function as a leaf. In the ladder, a column whose two chain
+carries match no network signal one by one is matched by their xor (a
+fresh variable whose equality kitten proves): on the wallace cell 19 of
+33 rungs, many of them pairs, then the last step. In the proof, a fixed
+one read negated is zero (the unit one way, the literal axiom the
+other), and the top cell's carry, re-read when the network hands the
+carry over complemented, is defined by its own sign.
+
+**Bugs found on the way, each caught before it could reach an answer.**
+A fresh definition over more than six literals (the network carry `n`
+over seven) was written from a 64-bit table, so its clauses defined
+another function; kitten then had `n` free and the lemma failed. The
+mapped toy caught it, and `fresh_clauses` now writes each row's value from
+the definition's kind. The top cells first read every leftover plain,
+which the cells' reading contradicted (the toy's second miter). The first
+cut was the minimum cut alone, which on mapped gates sat above the
+leaves (an invalid identity over free signals, rejected by the exact
+check, so no wrong cell was ever kept).
+
+**Tests and runs.** `a_mapped_booth_multiplier_is_read_by_function`
+(`tests/structarith.rs`): a toy Booth multiplier as a mapper writes one
+(no row-bit gate, the first full adder reading a row bit one gate each
+for its sum and carry over the select, the sign and the two others),
+against an AND multiplier, two miters, both refuted with proofs through
+the gate; `two_mapped_booth_sides_are_both_read_by_function` (below). All
+other tests pass unchanged. `tools/arith_fuzz.py`: 3,000
+miters on seeds 19000 and 21000, all agree with the stock solver, the
+pass fired on 774 and 757 of them, every proof accepted
+(`log/arith-fuzz-2026-10-24-s19000.txt`, `-s21000.txt`; the fuzz has no
+Booth shapes, so this checks the shared changes). The fourteen 2025
+cells the pass fires on or nearly does, each with a proof through the
+gate: the eight cells of steps one and two unchanged, the two new ones
+added. The sweep of the pass alone over the 400 cells (work clock capped
+at 30M, `log/structarith-fire-2026-10-24b/fire.tsv`) fires on those
+nine of them that fit the cap and nothing else, with no panic; against
+the sweep of 2026-10-23 the only change is the two new cells. The work
+clock is the same from run to run. Where the stage runs and is not used
+it costs 0.2M to 1.7M work (the AND miters and the origin-form Booth
+cells); on the dadda cell above it spends the lemma's allowance.
+
+**What is left, per cell.**
+
+- `booth_dadda_mapped_and_and_wallace_origin_bit28` (the mapped Booth
+  Dadda tree, solved by search near 1500 s): the stage finds 113 cells,
+  but columns 22 to 27 keep three to six signals each, the last Dadda
+  levels merged into the final adder in shapes that are no full or half
+  adder. The ladder proves 22 of 24 rungs, then kitten runs out of the
+  lemma's allowance (200M ticks, about 7 s) on the last step.
+- `booth_dadda_mapped_and_and_wallace_mapped_bit28` (the same Booth side,
+  solved by search near 1600 s): stops before the lemmas, on its AND
+  side, a mapped Wallace AND tree: a product cell contradicts the
+  weights, and the two compared signals end one weight apart.
+- `booth_dadda_mapped_and_booth_wallace_mapped` (Booth against Booth, a
+  timeout): a whole-word compare. The pass takes one compared pair, the
+  widest, two middle bits; the stage replaces the structural cells on one
+  side only (56 cells against 52; 57 against 59 on the other), the tops
+  keep 14 and 11 signals (the virtual top takes at most six), and the two
+  compared signals end one weight apart.
+- `booth_wallace_origin_and_default_mapped_bit29`: unchanged, its AND
+  side reads two mapped gates no rule explains (2683, 2788).
+
+Codex review of this part took two rounds (21-22). Round 21: with both
+sides read by function, the second side's removal of its structural
+cells shifted the first side's new cells under their recorded columns
+(both removals now come before either side's cells are placed; the test
+`two_mapped_booth_sides_are_both_read_by_function` builds two mapped toys
+with opposite compressor orders); a copy of a negated row bit at another
+weight took the literal's sign into its definition while its function
+stayed the variable's (the copy is now of the variable, the literal keeps
+its sign); and the row-gate scan skipped its only limit check on every
+rejection (4.41M work under a 4.27M limit; now about 14K over, the
+tables reserved before they are built). Round 22 was clean.
+
+Debug: `SAT_STRUCT_DEBUG_BOOTH=1` prints every cell the stage makes with
+its cut, the cells dropped and why, and the top; `SAT_STRUCT_DEBUG_DIFF=1`
+prints the polynomial difference behind the synthesized addends and
+where the leftover row bits went; `SAT_STRUCT_DEBUG_POOL=path` writes the
+chain's pool, the fixed ones, the fresh definitions and the chain's bit
+(to check the arithmetic outside); `SAT_STRUCT_DEBUG_BOOTH_MAXCOL=c`
+leaves the columns above `c` to the network.
+
+## Notes from the RL scheduler's first steps (plan §10)
+
+These were written under the top heading before the sections above.
+
 - **Work-clock limit.** `limited.ticks` / `limits.ticks` sit next to
   kissat's conflict and decision limits. The check lives in
   `terminate::terminated`, which is what every inprocessing effort loop and

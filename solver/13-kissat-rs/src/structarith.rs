@@ -63,6 +63,8 @@
 use crate::structure::{Derived, Formula};
 use std::collections::{HashMap, HashSet};
 
+mod booth;
+
 const MAX_OCC: usize = 2048; // a variable with more occurrences is not tried as a gate output
 const MAX_SUPPORT: usize = 6; // the truth table of a cell fits in a u64
 const MAX_STARTS: usize = 32; // distinct start clauses tried per variable
@@ -1895,21 +1897,24 @@ fn fresh_clauses(fr: &Fresh) -> Vec<Vec<i32>> {
         FreshDef::And(l) => (l, 1u8),
         FreshDef::Maj(l) => (l, 2u8),
     };
-    let vars: Vec<i32> = lits.iter().map(|l| l.abs()).collect();
-    let mut tt = 0u64;
-    for m in 0..(1u32 << vars.len()) {
+    // (one clause per row, the value from the definition's kind: a table
+    // in a u64 holds six inputs, and a mapped Booth side's network carry
+    // is an xor of seven, bead skz.13)
+    let n = lits.len();
+    let mut out = Vec::with_capacity(1 << n);
+    for m in 0..(1u64 << n) {
         let vals: Vec<bool> = lits.iter().enumerate().map(|(i, &l)| (((m >> i) & 1) == 1) != (l < 0)).collect();
         let ones = vals.iter().filter(|&&b| b).count();
         let f = match kind {
             0 => ones % 2 == 1,
-            1 => ones == vals.len(),
-            _ => 2 * ones > vals.len(),
+            1 => ones == n,
+            _ => 2 * ones > n,
         };
-        if f {
-            tt |= 1 << m;
-        }
+        let mut c: Vec<i32> = (0..n).map(|i| if (m >> i) & 1 == 1 { -lits[i].abs() } else { lits[i].abs() }).collect();
+        c.push(if f { fr.var } else { -fr.var });
+        out.push(c);
     }
-    minterm_clauses(fr.var, &vars, tt)
+    out
 }
 
 /// The equivalence of two literals, proven by kitten over the clauses
@@ -2624,15 +2629,78 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
     if dbg {
         eprintln!("structarith: sides {} ({} gates) and {} ({} gates)", side_a, cone_a.len(), side_b, cone_b.len());
     }
+    // a variable's representative; a fresh variable (a cell's output the
+    // netlist does not compute) is its own
+    let rep_of = |v: i32| -> i32 { if (v as usize) < nv { net.rep[v as usize].0 } else { v } };
+    // bead SAT-playground-skz.13: a technology-mapped Booth side's cells by
+    // function. They replace the side's structural cells when they are
+    // more; a structural cell that shares a leaf or an output with them,
+    // or has an output inside one, is dropped
+    let mut virtual_net: [Option<i32>; 2] = [None, None];
+    let mut booth_rows: [Vec<(i32, i64)>; 2] = [Vec::new(), Vec::new()]; // a side's row bits no cell reads, with their columns
+    let mut booth_cols: Vec<(usize, i64)> = Vec::new(); // a cell by function, its column
+    let mut booth_side: HashMap<usize, usize> = HashMap::new(); // a cell by function, its side (a top cell's outputs may both be fresh)
+    // (both sides first, then the structural cells of the sides taken are
+    // dropped in one pass, then the new cells appended: their indices are
+    // recorded once nothing moves them any more; review, 2026-10-24)
+    let in_cone_of = |c: &Cell, cone_s: &HashSet<i32>| cone_s.contains(&rep_of(c.sum)) || cone_s.contains(&rep_of(c.carry_var()));
+    let mut taken: [Option<booth::BoothCells>; 2] = [None, None];
+    for s in 0..2 {
+        let cone_s = if s == 0 { &cone_a } else { &cone_b };
+        let out_s = if s == 0 { side_a } else { side_b };
+        let structural = cells.iter().filter(|c| in_cone_of(c, cone_s)).count();
+        *work += cells.len() as u64;
+        let Some(bc) = booth::booth_cells(&net, &readers, cone_s, out_s, structural, next_fresh, work, &stopped, dbg) else {
+            if stopped(*work) {
+                return;
+            }
+            continue;
+        };
+        if dbg {
+            eprintln!("structarith: booth: side {}: {} cells by function ({} row gates) against {} structural ones", s, bc.cells.len(), bc.row_gates, structural);
+        }
+        if bc.cells.len() <= structural {
+            continue;
+        }
+        // (its fresh numbers are spent: the other side's continue past them)
+        if let Some(m) = bc.fresh.iter().map(|fr| fr.var).max() {
+            next_fresh = next_fresh.max(m + 1);
+        }
+        taken[s] = Some(bc);
+    }
+    if taken.iter().any(|t| t.is_some()) {
+        // (all of a taken side's structural cells: what the new ones leave
+        // is the carry network's, a structural cell there would read
+        // inside it)
+        let before = cells.len();
+        cells.retain(|c| !((taken[0].is_some() && in_cone_of(c, &cone_a)) || (taken[1].is_some() && in_cone_of(c, &cone_b))));
+        *work += before as u64;
+        if dbg {
+            eprintln!("structarith: booth: {} structural cells dropped", before - cells.len());
+        }
+        for s in 0..2 {
+            let Some(bc) = taken[s].take() else { continue };
+            virtual_net[s] = bc.virtual_net;
+            booth_rows[s] = bc.rows_left;
+            fresh.extend(bc.fresh);
+            booth_cols.extend((cells.len()..).zip(bc.cols.iter().copied()));
+            booth_side.extend((cells.len()..cells.len() + bc.cells.len()).map(|ci| (ci, s)));
+            cells.extend(bc.cells);
+        }
+    }
     // the cells of each side: those with an output in the side's cone, and
     // then every cell that consumes an output of a cell the side alone has
     // (a miter on one bit has cells above that bit; without them two
     // carries would dangle at one weight)
     let mut in_side: [Vec<bool>; 2] = [vec![false; cells.len()], vec![false; cells.len()]];
     for (ci, c) in cells.iter().enumerate() {
-        let (sv, cv) = (net.rep[c.sum as usize].0, net.rep[c.carry_var() as usize].0);
+        let (sv, cv) = (rep_of(c.sum), rep_of(c.carry_var()));
         in_side[0][ci] = cone_a.contains(&sv) || cone_a.contains(&cv);
         in_side[1][ci] = cone_b.contains(&sv) || cone_b.contains(&cv);
+        if let Some(&s) = booth_side.get(&ci) {
+            in_side[s][ci] = true;
+            in_side[1 - s][ci] = false;
+        }
     }
     // no closure beyond the cones: the cells above the compared bit may be
     // a different adder, even a faulty one (the miter's fault may be there),
@@ -2644,6 +2712,15 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
     }
     *work += 3 * nv as u64;
     let mut uf = WeightedUf::new(nv);
+    // (the cells by function come with their columns: one network, even
+    // where no signal ties two of them, a cell over row bits whose outputs
+    // only the carry network reads)
+    if let Some(&(c0, e0)) = booth_cols.first() {
+        for &(ci, e) in &booth_cols {
+            uf.union(cells[ci].sum, cells[c0].sum, e - e0);
+        }
+        *work += booth_cols.len() as u64;
+    }
     if let Ok(w) = std::env::var("SAT_STRUCT_DEBUG_WATCH") {
         // (debug: "a,b" watches two signals, anything else the compared ones)
         let parts: Vec<i32> = w.split(',').filter_map(|t| t.trim().parse().ok()).collect();
@@ -2689,7 +2766,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
     *work += cells.len() as u64;
     for ci in cell_order {
         let c = &cells[ci];
-        let (sv, cv) = (net.rep[c.sum as usize].0, net.rep[c.carry_var() as usize].0);
+        let (sv, cv) = (rep_of(c.sum), rep_of(c.carry_var()));
         let in_a = in_side[0][ci];
         let in_b = in_side[1][ci];
         if !in_a && !in_b {
@@ -3048,9 +3125,14 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         // (every product negated: the complement reading of the whole;
         // most of them negated is a sum with genuinely negated addends,
         // left as it is. A retry of the other reading when the pass later
-        // fails would be the robust rule: not built yet)
-        if negated > 0 && plain == 0 {
+        // fails would be the robust rule: not built yet. A side found by
+        // function, a mapped Booth tree, reads its rows in whichever of its
+        // readings the cells' carries chose: there all but a few negated is
+        // the complement reading too, bead skz.13)
+        let by_function = !booth_cols.is_empty();
+        if negated > 0 && (plain == 0 || (by_function && negated > 4 * plain)) {
             flip = [!flip[0], !flip[1]];
+            std::mem::swap(&mut plain, &mut negated);
         }
         if dbg {
             eprintln!("structarith: {} leaves read by both sides ({} agree as read, {} with side B turned), products plain/negated {:?}: reading {:?} ({} plain, {} negated under it)", common.len(), keep, turned, votes, flip, plain, negated);
@@ -3876,7 +3958,13 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         let produced_all: HashSet<i32> = (0..2).flat_map(|t| side_cells[t].iter().map(|&ci| (cells[ci].sum, cells[ci].carry_var()))).flat_map(|(a, b)| [a, b]).collect();
         let mut memo: HashMap<i32, u64> = HashMap::new();
         for fr in &fresh {
-            let FreshDef::Xor(sig) = &fr.def else { continue };
+            // (a mapped Booth side's last row reads its products as fresh
+            // ands when no gate computes them, bead skz.13)
+            let (sig, is_and) = match &fr.def {
+                FreshDef::Xor(sig) => (sig, false),
+                FreshDef::And(sig) => (sig, true),
+                _ => continue,
+            };
             if sig.len() != 2 || (fr.var as usize) < nv || input_leaves.contains_key(&fr.var) {
                 continue;
             }
@@ -3918,7 +4006,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             let ta = lift(a, sig[0] < 0);
             let tb = lift(b, sig[1] < 0);
             *work += 2 << sup.len();
-            input_leaves.insert(fr.var, InputLeaf { sup, tt: ta ^ tb });
+            input_leaves.insert(fr.var, InputLeaf { sup, tt: if is_and { ta & tb } else { ta ^ tb } });
         }
     }
     // each side's leaf polynomial as it stands (the cells' readings, the
@@ -3969,6 +4057,29 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         grid_min.map_or(cells_min, |g| g.min(cells_min))
     };
     let mut pre_poly: [Poly; 2] = [Poly::default(), Poly::default()];
+    if dbg && std::env::var_os("SAT_STRUCT_DEBUG_DIFF").is_some() {
+        for s in 0..2 {
+            let produced: HashSet<i32> = side_cells[s].iter().flat_map(|&ci| [cells[ci].sum, cells[ci].carry_var()]).collect();
+            let mut with = 0;
+            let mut without: Vec<i32> = Vec::new();
+            for &ci in &side_cells[s] {
+                for &l in &cells[ci].leaves {
+                    if produced.contains(&l) {
+                        continue;
+                    }
+                    if input_leaves.contains_key(&l) {
+                        with += 1;
+                    } else {
+                        without.push(l);
+                    }
+                }
+            }
+            eprintln!("structarith: side {}: {} unproduced leaves with a function, {} without {:?}", s, with, without.len(), &without[..without.len().min(12)]);
+            let mut ex: Vec<(i32, i32, i64)> = side_cells[s].iter().take(400).map(|&ci| { let (r, e) = uf.find(cells[ci].sum); (cells[ci].sum, r, e) }).collect();
+            ex.sort_by_key(|x| x.2);
+            eprintln!("    side {} cells (sum, root, exponent) from {:?} to {:?}; min_exp0 {}", s, &ex[..ex.len().min(3)], &ex[ex.len().saturating_sub(3)..], min_exp0);
+        }
+    }
     for s in 0..2 {
         let produced: HashSet<i32> = side_cells[s].iter().flat_map(|&ci| [cells[ci].sum, cells[ci].carry_var()]).collect();
         for &ci in &side_cells[s] {
@@ -4113,6 +4224,15 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             }
         }
         *work += side_cells[s].len() as u64;
+        // (a mapped Booth side's top read as part of its network: the carry
+        // into the compared column is a fresh variable its top cell reads,
+        // bead skz.13)
+        if let Some(vn) = virtual_net[s] {
+            if found.is_empty() && side_cells[s].iter().any(|&ci| cells[ci].leaves.contains(&vn)) {
+                found.push(vn);
+                reads.insert(vn, side_cells[s].iter().filter(|&&ci| cells[ci].leaves.contains(&vn)).count());
+            }
+        }
         if found.len() > 1 {
             if dbg {
                 eprintln!("structarith: side {} reads {} signals no cell produces: {:?}", s, found.len(), &found[..found.len().min(6)]);
@@ -4303,7 +4423,9 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             let produced_all: HashSet<i32> = (0..2).flat_map(|t| side_cells[t].iter().map(|&ci| (cells[ci].sum, cells[ci].carry_var()))).flat_map(|(a, b)| [a, b]).filter(|v| !transparent.contains(v)).collect();
             let mut found: Vec<(i32, InputLeaf)> = Vec::new();
             let mut seen: HashSet<i32> = HashSet::new();
-            let mut stack: Vec<i32> = vec![n];
+            // (a virtual carry has no gate: the network is under the
+            // compared signal, bead skz.13)
+            let mut stack: Vec<i32> = if (n as usize) < nv { vec![n] } else { net.gates[o as usize].as_ref().map(|g| g.sup.clone()).unwrap_or_default() };
             while let Some(u) = stack.pop() {
                 let u = if (u as usize) < nv { net.rep[u as usize].0 } else { u };
                 if !seen.insert(u) {
@@ -4326,6 +4448,108 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 }
             }
             found.sort_by_key(|(u, _)| *u);
+            // (a side found by function: its row bits no cell reads go to
+            // the pool at their columns, the walk's leaves are theirs or
+            // their parts, and the polynomial difference below covers the
+            // rest, bead skz.13)
+            let by_function = booth_side.values().any(|&t| t == s);
+            if by_function {
+                found.clear();
+                let anchor = booth_cols.iter().find(|&&(ci, _)| booth_side.get(&ci) == Some(&s)).copied();
+                if let Some((c0, col0)) = anchor {
+                    let (_, e0) = uf.find(cells[c0].sum);
+                    let rows = booth_rows[s].clone();
+                    for (lit, col) in rows {
+                        let e = e0 + (col - col0);
+                        if e > k || e < min_exp0 {
+                            continue;
+                        }
+                        let v = lit.abs();
+                        let il = if (v as usize) < nv {
+                            leaf_function(v, &net, &HashSet::new(), &mut memo, work, trace_var).map(|(il, _)| il)
+                        } else {
+                            // (a fused row bit: the xor of its select gate and the sign)
+                            match fresh.iter().find(|fr| fr.var == v).map(|fr| fr.def.clone()) {
+                                Some(FreshDef::Xor(sig)) if sig.len() == 2 => {
+                                    let parts: Vec<Option<InputLeaf>> = sig.iter().map(|&l| leaf_function(l.abs(), &net, &HashSet::new(), &mut memo, work, trace_var).map(|(il, _)| il)).collect();
+                                    match (&parts[0], &parts[1]) {
+                                        (Some(a), Some(b)) => {
+                                            let mut sup: Vec<i32> = a.sup.iter().chain(b.sup.iter()).copied().collect();
+                                            sup.sort_unstable();
+                                            sup.dedup();
+                                            let lift = |il: &InputLeaf, negated: bool| -> u64 {
+                                                let mut out = 0u64;
+                                                for m in 0..(1usize << sup.len()) {
+                                                    let mut sm = 0usize;
+                                                    for (i, x) in il.sup.iter().enumerate() {
+                                                        if (m >> sup.iter().position(|y| y == x).unwrap()) & 1 == 1 {
+                                                            sm |= 1 << i;
+                                                        }
+                                                    }
+                                                    if ((il.tt >> sm) & 1 == 1) != negated {
+                                                        out |= 1u64 << m;
+                                                    }
+                                                }
+                                                out
+                                            };
+                                            (sup.len() <= MAX_SUPPORT).then(|| InputLeaf { tt: lift(a, sig[0] < 0) ^ lift(b, sig[1] < 0), sup: sup.clone() })
+                                        }
+                                        _ => None,
+                                    }
+                                }
+                                _ => None,
+                            }
+                        };
+                        let Some(il) = il else {
+                            if dbg && std::env::var_os("SAT_STRUCT_DEBUG_DIFF").is_some() {
+                                eprintln!("    row bit {} at column {}: no function", lit, col);
+                            }
+                            continue;
+                        };
+                        *work += 8;
+                        uf.reserve(v);
+                        let (_, ea) = uf.find(cells[c0].sum);
+                        let placed = if !weighted.contains(&v) && uf.union(v, cells[c0].sum, e - ea) {
+                            weighted.insert(v);
+                            true
+                        } else {
+                            uf.find(v).1 == e
+                        };
+                        // (a signal at another weight already, a product the
+                        // other side reads one column lower than the
+                        // correction row: a fresh copy of it at this one)
+                        // (the copy is of the variable, x = v, so the leaf's
+                        // function stays v's; the literal keeps its sign:
+                        // review, 2026-10-24)
+                        let (v, lit) = if placed {
+                            (v, lit)
+                        } else {
+                            let x = next_fresh;
+                            next_fresh += 1;
+                            fresh.push(Fresh { var: x, def: FreshDef::Xor(vec![v]) });
+                            uf.reserve(x);
+                            if !uf.union(x, cells[c0].sum, e - ea) {
+                                continue;
+                            }
+                            weighted.insert(x);
+                            if dbg && std::env::var_os("SAT_STRUCT_DEBUG_DIFF").is_some() {
+                                eprintln!("    row bit {} at column {}: weighted elsewhere, a copy {}", lit, col, x);
+                            }
+                            (x, if lit < 0 { -x } else { x })
+                        };
+                        if dbg && std::env::var_os("SAT_STRUCT_DEBUG_DIFF").is_some() {
+                            eprintln!("    row bit {} at column {} (exponent {}) to the pool", lit, col, e);
+                        }
+                        pool.entry(e).or_default().push(lit);
+                        pool_vars.push(v);
+                        e_lo = e_lo.min(e);
+                        if (0..MAX_BITS as i64).contains(&(e - min_exp0)) {
+                            pre_poly[s].add_tt(&il.sup, il.tt, 1i128 << (e - min_exp0), lit < 0);
+                        }
+                        input_leaves.entry(v).or_insert(il);
+                    }
+                }
+            }
             // the row templates: per selector set, the cell-read leaves
             // with their weights
             let mut templates: HashMap<Vec<i32>, Vec<(i32, i64)>> = HashMap::new(); // selector set -> (leaf, exponent)
@@ -4484,13 +4708,13 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             // lemma below checks the network against it. Only the side
             // whose other side is settled (no network, or its chain made)
             // reads the difference as its own
-            if !unplaced.is_empty() {
+            if !unplaced.is_empty() || by_function {
                 let other = 1 - s;
                 let settled = grid_pairs[s] > 0 || foreign[other].is_none() || lemmas[other].is_some();
                 if !settled {
                     if !retried && side_queue.iter().any(|&(t, _)| t == other) {
                         if dbg {
-                            eprintln!("structarith: side {}: the network reads {} gates no row holds (for example {}); the other side first", s, unplaced.len(), unplaced[0].0);
+                            eprintln!("structarith: side {}: the network reads {} gates no row holds (for example {:?}); the other side first", s, unplaced.len(), unplaced.first().map(|u| u.0));
                             for (u, il) in &unplaced {
                                 eprintln!("    gate {} over {:?} table {:#x}", u, il.sup, il.tt);
                             }
@@ -4500,7 +4724,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                         continue;
                     }
                     if dbg {
-                        eprintln!("structarith: side {}: the network reads {} gates no row holds (for example {}), and the other side is not settled", s, unplaced.len(), unplaced[0].0);
+                        eprintln!("structarith: side {}: the network reads {} gates no row holds (for example {:?}), and the other side is not settled", s, unplaced.len(), unplaced.first().map(|u| u.0));
                     }
                     return;
                 }
@@ -4541,7 +4765,18 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                     }
                 }
                 diff.sort(); // (a fixed order: the fresh numbers and the pool must not vary from run to run)
-                if too_wide || diff.is_empty() {
+                if dbg && std::env::var_os("SAT_STRUCT_DEBUG_DIFF").is_some() {
+                    eprintln!("structarith: side {}: min_exp0 {} k {} difference:", s, min_exp0, k);
+                    for (m, d) in &diff {
+                        eprintln!("    diff {:?} {}", m, d);
+                    }
+                    for (u, il) in &unplaced {
+                        eprintln!("    unplaced {} over {:?} table {:#x}", u, il.sup, il.tt);
+                    }
+                }
+                if diff.is_empty() && !too_wide && unplaced.is_empty() {
+                    // (a side found by function whose rows the pool holds in full)
+                } else if too_wide || diff.is_empty() {
                     if dbg {
                         eprintln!("structarith: side {}: the network reads {} gates no row holds, and the sides' difference has {} monomials{}", s, unplaced.len(), diff.len(), if too_wide { ", one too wide" } else { "" });
                     }
@@ -4636,6 +4871,60 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             let scaled = if min_exp0 >= e_lo { synthesized_constant << (min_exp0 - e_lo) } else { synthesized_constant >> (e_lo - min_exp0) };
             complement = (complement + scaled).rem_euclid(modulus);
         }
+        // (a side found by function, a mapped Booth tree, may leave some of
+        // the multiplier's constants to the network, folded into its top:
+        // its fixed ones are what makes the side's polynomial the grid's,
+        // the complement of its constant term, which counts every reading
+        // with a one, every negated leaf and every complemented addend,
+        // bead skz.13)
+        // (and a signal read doubled leaves 2^e of its own in the sums: x is
+        // read as ~x at its column and as x a column above, 2x + (1 - x) is
+        // x + 1, bead skz.4)
+        if booth_side.values().any(|&t| t == s) && grid_pairs[s] > 0 && min_exp0 >= e_lo {
+            let pc = pre_poly[s].terms.get(&Vec::new()).copied().unwrap_or(0);
+            let scaled = pc.checked_shl((min_exp0 - e_lo) as u32).unwrap_or(0);
+            let mut extra: i128 = 0;
+            let mut twice: Vec<i32> = doubled.iter().filter(|(_, &ci)| side_cells[s].contains(&ci)).map(|(&x, _)| x).collect();
+            twice.sort_unstable();
+            for x in twice {
+                let (_, ex) = uf.find(x);
+                if ex >= e_lo && ex <= k {
+                    extra = (extra + (1i128 << (ex - e_lo))) % modulus;
+                }
+            }
+            complement = (-scaled - extra).rem_euclid(modulus);
+        }
+        if dbg && std::env::var_os("SAT_STRUCT_DEBUG_POOL").is_some() {
+            let pc = pre_poly[s].terms.get(&Vec::new()).copied().unwrap_or(0);
+            eprintln!("structarith: side {}: e_lo {} min_exp0 {} k {}: lone ones {} complement {} synthesized {} polynomial constant {} (mod 2^{} that is {})", s, e_lo, min_exp0, k, constant, complement, synthesized_constant, pc, k - min_exp0 + 1, pc.rem_euclid(1i128 << (k - min_exp0 + 1)));
+        }
+        // (the chain in the complemented domain when that needs fewer fixed
+        // ones: a side whose leftovers its cells write complemented, as a
+        // mapped Booth side's are once its products read plain, needs a
+        // fixed one at nearly every column in the plain domain, and its
+        // carries are then none of the network's. Summing the complements
+        // instead, ~S = -S - 1 is the sum of the ~items plus K' = -W - K - 1,
+        // W the items' weights: few fixed ones, and the chain's carries are
+        // the network's own, complemented. Each chain cell is the
+        // complement reading of its cell over the complements, so it reads
+        // the items as written, bead skz.13)
+        let mut negated_domain = false;
+        if booth_side.values().any(|&t| t == s) {
+            let mut wsum: i128 = 0;
+            for (&e, items) in &pool {
+                if e >= e_lo && e <= k {
+                    wsum = (wsum + (items.len() as i128 % modulus) * ((1i128 << (e - e_lo)) % modulus)) % modulus;
+                }
+            }
+            let k_alt = (-wsum - complement - 1).rem_euclid(modulus);
+            if k_alt.count_ones() < complement.count_ones() {
+                if dbg {
+                    eprintln!("structarith: side {}: the chain sums the complements ({} fixed ones instead of {})", s, k_alt.count_ones(), complement.count_ones());
+                }
+                negated_domain = true;
+                complement = k_alt;
+            }
+        }
         let (root, _) = uf.find(cells[reader].sum); // the side's one component
         for j in 0..(k - e_lo + 1) {
             if (complement >> j) & 1 == 1 {
@@ -4648,7 +4937,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 if !uf.union(t, root, e_lo + j) {
                     return;
                 }
-                pool.entry(e_lo + j).or_default().push(t);
+                pool.entry(e_lo + j).or_default().push(if negated_domain { -t } else { t });
             }
         }
         if dbg && std::env::var_os("SAT_STRUCT_DEBUG_LEMMA").is_some() {
@@ -4659,10 +4948,41 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 eprintln!("    side {} {} cell at {}: {:?} (+{}) = {} + 2*{}", s, if c.sum > f.vars || c.carry_var() > f.vars { "virtual" } else { "real" }, e, lits, c.one as u8, c.sum_lit(), c.carry_lit());
             }
         }
+        if let Ok(path) = std::env::var("SAT_STRUCT_DEBUG_POOL") {
+            // (debug: the chain's pool, the fixed ones and every fresh
+            // definition, to check the arithmetic outside)
+            use std::io::Write;
+            if let Ok(mut fh) = std::fs::File::create(format!("{}.{}", path, s)) {
+                let _ = writeln!(fh, "k {} e_lo {} min_exp0 {} n {} o {}", k, e_lo, min_exp0, n_lit, o);
+                for (e, items) in &pool {
+                    for &l in items {
+                        let _ = writeln!(fh, "pool {} {}", e, l);
+                    }
+                }
+                for &t in &trues {
+                    let _ = writeln!(fh, "true {}", t);
+                }
+                for fr in &fresh {
+                    let (kind, l) = match &fr.def {
+                        FreshDef::Xor(l) => ("xor", l),
+                        FreshDef::And(l) => ("and", l),
+                        FreshDef::Maj(l) => ("maj", l),
+                    };
+                    let _ = writeln!(fh, "fresh {} {} {}", fr.var, kind, l.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" "));
+                }
+                for &ci in &side_cells[s] {
+                    let c = &cells[ci];
+                    let (_, e) = uf.find(c.sum);
+                    let lits: Vec<String> = (0..c.leaves.len()).map(|i| c.leaf_lit(i).to_string()).collect();
+                    let _ = writeln!(fh, "cell {} {} {} {} {} {}", e, c.one as u8, c.sum_lit(), c.carry_lit(), lits.len(), lits.join(" "));
+                }
+            }
+        }
         // the chain, column by column
         let mut carries: Vec<i32> = Vec::new();
         let mut sk_lit: Option<i32> = None;
         let mut chain_cells = 0usize;
+        let mut chain_col: Vec<i64> = Vec::new(); // per chain cell, its column
         for e in e_lo..=k {
             let mut items: Vec<i32> = pool.remove(&e).unwrap_or_default();
             if dbg && std::env::var_os("SAT_STRUCT_DEBUG_LEMMA").is_some() {
@@ -4675,8 +4995,10 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 let sigma = next_fresh;
                 let kappa = next_fresh + 1;
                 next_fresh += 2;
-                fresh.push(Fresh { var: sigma, def: FreshDef::Xor(lits.clone()) });
-                fresh.push(Fresh { var: kappa, def: if take == 3 { FreshDef::Maj(lits.clone()) } else { FreshDef::And(lits.clone()) } });
+                // (over the complements in the complemented domain)
+                let def_lits: Vec<i32> = if negated_domain { lits.iter().map(|&l| -l).collect() } else { lits.clone() };
+                fresh.push(Fresh { var: sigma, def: FreshDef::Xor(def_lits.clone()) });
+                fresh.push(Fresh { var: kappa, def: if take == 3 { FreshDef::Maj(def_lits.clone()) } else { FreshDef::And(def_lits.clone()) } });
                 let leaves: Vec<i32> = lits.iter().map(|l| l.abs()).collect();
                 let negmask: u8 = lits.iter().enumerate().map(|(i, &l)| ((l < 0) as u8) << i).sum();
                 let base = leaves[0];
@@ -4698,11 +5020,14 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                     }
                     return;
                 }
-                cells.push(Cell { fa: take == 3, one: false, leaves, negmask, sum: sigma, sum_neg: false, carry: kappa, split: None });
+                // (the complement reading: ~a + ~b (+ ~c) = sigma + 2 kappa is
+                // a + b (+ c) (+ 1) = ~sigma + 2 ~kappa)
+                cells.push(Cell { fa: take == 3, one: negated_domain && take == 2, leaves, negmask, sum: sigma, sum_neg: negated_domain, carry: if negated_domain { -kappa } else { kappa }, split: None });
                 side_cells[s].push(cells.len() - 1);
                 chain_cells += 1;
-                items.push(sigma);
-                carries.push(kappa);
+                chain_col.push(e);
+                items.push(if negated_domain { -sigma } else { sigma });
+                carries.push(if negated_domain { -kappa } else { kappa });
                 *work += 8;
             }
             if e == k {
@@ -4710,6 +5035,21 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             }
             if !items.is_empty() && e < k {
                 // the column's bit stays as it is (a leftover, or a chain sum)
+            }
+        }
+        if let (Ok(path), Some(skl)) = (std::env::var("SAT_STRUCT_DEBUG_POOL"), sk_lit) {
+            // (debug: the chain as built, its bit at the compared weight)
+            use std::io::Write;
+            if let Ok(mut fh) = std::fs::OpenOptions::new().append(true).open(format!("{}.{}", path, s)) {
+                let _ = writeln!(fh, "sk {} negated_domain {}", skl, negated_domain);
+                for fr in fresh.iter().rev().take(2 * chain_cells) {
+                    let (kind, l) = match &fr.def {
+                        FreshDef::Xor(l) => ("xor", l),
+                        FreshDef::And(l) => ("and", l),
+                        FreshDef::Maj(l) => ("maj", l),
+                    };
+                    let _ = writeln!(fh, "fresh {} {} {}", fr.var, kind, l.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" "));
+                }
             }
         }
         // (the carries out of column k join the top block)
@@ -4892,7 +5232,26 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 let c = &cells[top];
                 (0..c.leaves.len()).map(|j| if j == i { -c.leaf_lit(j) } else { c.leaf_lit(j) }).collect()
             };
-            let new_def = if lits.len() == 2 { FreshDef::And(lits) } else { FreshDef::Maj(lits) };
+            // (the fresh carry's definition as the cell's carry literal
+            // needs it: the majority of the leaves, the and of a half
+            // adder's, the or of one read with a one; a carry literal read
+            // negated is the complement, the majority of the complements
+            // or the and of the complements. A top cell made before the
+            // reading of its side was settled may be read so, bead skz.13)
+            let (fa, one, carry_neg) = (cells[top].fa, cells[top].one, cells[top].carry < 0);
+            let neg_lits: Vec<i32> = lits.iter().map(|&l| -l).collect();
+            let new_def = match (fa, one, carry_neg) {
+                (true, _, false) => FreshDef::Maj(lits),
+                (true, _, true) => FreshDef::Maj(neg_lits),
+                (false, false, false) => FreshDef::And(lits),
+                (false, true, true) => FreshDef::And(neg_lits),
+                _ => {
+                    if dbg {
+                        eprintln!("structarith: side {}: the top cell's carry cannot be read so", s);
+                    }
+                    return;
+                }
+            };
             {
                 let c = &mut cells[top];
                 c.negmask ^= 1 << i;
@@ -4924,11 +5283,26 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             for v in by_sig.values_mut() {
                 v.sort_unstable();
             }
-            // (the chain's carries in the order the chain made them)
+            // (the chain's carries in the order the chain made them, each
+            // column's after the one before; a column whose two carries
+            // match no network signal one by one may match by their xor:
+            // under a network with one carry per column the chain's two
+            // are never both one when the bottom gives it two, and their
+            // xor is the network's carry, bead skz.13)
             let carries: Vec<i32> = cells[cells.len() - chain_cells..].iter().map(|c| c.carry_var()).collect();
             let mut proven = 0usize;
             let mut tried = 0usize;
-            for kv in carries {
+            let mut col_carries: Vec<(i64, Vec<i32>)> = Vec::new();
+            for (i, &kv) in carries.iter().enumerate() {
+                match col_carries.last_mut() {
+                    Some((e, v)) if *e == chain_col[i] => v.push(kv),
+                    _ => col_carries.push((chain_col[i], vec![kv])),
+                }
+            }
+            let pair_rungs = booth_side.values().any(|&t| t == s);
+            for (_, col_kvs) in col_carries {
+            let mut matched_here = false;
+            for &kv in &col_kvs {
                 let Some(&(val, kn)) = sig.get(&kv) else { continue };
                 if kn != u64::MAX || val == 0 || val == u64::MAX {
                     continue; // (a constant signature matches everything and nothing)
@@ -4955,7 +5329,49 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 clauses.push(vec![kv, -lit_m]);
                 steps.push((kv, lit_m, core));
                 proven += 1;
+                matched_here = true;
                 let _ = m;
+            }
+            if !pair_rungs || matched_here || col_kvs.len() != 2 {
+                continue;
+            }
+            let (Some(&(v1, k1)), Some(&(v2, k2))) = (sig.get(&col_kvs[0]), sig.get(&col_kvs[1])) else { continue };
+            if k1 != u64::MAX || k2 != u64::MAX {
+                continue;
+            }
+            let val = v1 ^ v2;
+            if val == 0 || val == u64::MAX {
+                continue;
+            }
+            let lit_m = match (by_sig.get(&val).and_then(|v| v.first()), by_sig.get(&!val).and_then(|v| v.first())) {
+                (Some(&m), _) => m,
+                (None, Some(&m)) => -m,
+                (None, None) => continue,
+            };
+            // the xor as a fresh variable of the proof, its definition in
+            // the clause set
+            let d = next_fresh;
+            next_fresh += 1;
+            let fr = Fresh { var: d, def: FreshDef::Xor(vec![col_kvs[0], col_kvs[1]]) };
+            clauses.extend(fresh_clauses(&fr));
+            fresh.push(fr);
+            tried += 1;
+            let before = *work;
+            let core = kitten_equivalence(&clauses, d, lit_m, lemma_budget, work, stop);
+            extra.set(extra.get() + (*work - before));
+            let Some(core) = core else {
+                if dbg {
+                    eprintln!("structarith: side {}: the xor {} of the chain's carries {:?} is not the network's {} (or the budget ran out at {})", s, d, col_kvs, lit_m, *work);
+                }
+                if *work >= lemma_budget || stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                continue;
+            };
+            clauses.push(vec![-d, lit_m]);
+            clauses.push(vec![d, -lit_m]);
+            steps.push((d, lit_m, core));
+            proven += 1;
             }
             if dbg && tried > 0 {
                 eprintln!("structarith: side {}: {} of {} chain carries matched a network signal and were proven equal, work {}", s, proven, tried, *work);
@@ -5042,8 +5458,12 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 if !produced.contains(&c.leaves[i]) {
                     expected[s].add_lit(l, w);
                     if trues.contains(&c.leaves[i]) {
-                        leaf_form[s].add_constant(w); // a fresh variable fixed to one
-                        poly[s].add(Vec::new(), w);
+                        // a fresh variable fixed to one (read negated, a
+                        // complemented chain's, it is zero)
+                        if l > 0 {
+                            leaf_form[s].add_constant(w);
+                            poly[s].add(Vec::new(), w);
+                        }
                     } else if foreign[s] != Some(c.leaves[i]) {
                         leaf_form[s].add_lit(l, w); // (the network's carry is the chain's bit, below)
                         match input_leaves.get(&c.leaves[i]) {
@@ -5747,25 +6167,39 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         }
         // 1c. the fixed ones: a leaf t of weight w in the sums is the
         //     constant w, by t <= 1 (the literal axiom ~t >= 0) one way and
-        //     the unit t >= 1 the other
-        let mut true_terms: [String; 2] = [String::new(), String::new()];
-        let mut true_units: [Vec<(u64, i128)>; 2] = [Vec::new(), Vec::new()];
+        //     the unit t >= 1 the other; a leaf ~t (a complemented chain's)
+        //     is zero, the unit one way and the axiom the other
+        let mut true_terms: [String; 2] = [String::new(), String::new()]; // (axioms) for the ge sum
+        let mut true_units: [Vec<(u64, i128)>; 2] = [Vec::new(), Vec::new()]; // (units) for the le sum
+        let mut false_terms: [String; 2] = [String::new(), String::new()]; // (axioms) for the le sum
+        let mut false_units: [Vec<(u64, i128)>; 2] = [Vec::new(), Vec::new()]; // (units) for the ge sum
         for s in 0..2 {
-            let mut by_true: HashMap<i32, i128> = HashMap::new();
+            let mut by_true: HashMap<i32, (i128, i128)> = HashMap::new();
             for &ci in &side_cells[s] {
                 let c = &cells[ci];
                 let wt = weight_of(ci, &cells, &mut uf);
-                for &l in &c.leaves {
+                for (i, &l) in c.leaves.iter().enumerate() {
                     if trues.contains(&l) {
-                        *by_true.entry(l).or_default() += wt;
+                        let e = by_true.entry(l).or_default();
+                        if c.leaf_lit(i) > 0 {
+                            e.0 += wt;
+                        } else {
+                            e.1 += wt;
+                        }
                     }
                 }
             }
-            let mut by_true: Vec<(i32, i128)> = by_true.into_iter().collect();
+            let mut by_true: Vec<(i32, (i128, i128))> = by_true.into_iter().collect();
             by_true.sort_unstable();
-            for (t, wt) in by_true {
-                true_terms[s].push_str(&format!(" ~x{} {} * +", t, wt));
-                true_units[s].push((true_ids[&t], wt));
+            for (t, (wp, wn)) in by_true {
+                if wp > 0 {
+                    true_terms[s].push_str(&format!(" ~x{} {} * +", t, wp));
+                    true_units[s].push((true_ids[&t], wp));
+                }
+                if wn > 0 {
+                    false_terms[s].push_str(&format!(" ~x{} {} * +", t, wn));
+                    false_units[s].push((true_ids[&t], wn));
+                }
             }
         }
         // 2. the telescoping sums, one per side and direction
@@ -5804,12 +6238,16 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         let Ok(mut ge_b) = weighted(w, &ge_ids[1]) else { return };
         let Ok(mut le_b) = weighted(w, &le_ids[1]) else { return };
         for s in 0..2 {
-            if true_units[s].is_empty() {
+            if true_units[s].is_empty() && false_units[s].is_empty() {
                 continue;
             }
             let (ge, le) = if s == 0 { (&mut ge_a, &mut le_a) } else { (&mut ge_b, &mut le_b) };
-            let Ok(g2) = w.pol(&format!("{}{}", ge, true_terms[s])) else { return };
-            let mut expr = le.to_string();
+            let mut gexpr = format!("{}{}", ge, true_terms[s]);
+            for &(id, wt) in &false_units[s] {
+                gexpr.push_str(&format!(" {} {} * +", id, wt));
+            }
+            let Ok(g2) = w.pol(&gexpr) else { return };
+            let mut expr = format!("{}{}", le, false_terms[s]);
             for &(id, wt) in &true_units[s] {
                 expr.push_str(&format!(" {} {} * +", id, wt));
             }

@@ -136,6 +136,18 @@ impl Circuit {
     fn half_adder(&mut self, a: i64, b: i64) -> (i64, i64) {
         (self.xor2(a, b), self.and2(a, b))
     }
+    /// A gate given by its function over `ins`, one clause per row.
+    fn table(&mut self, ins: &[i64], f: &dyn Fn(&[bool]) -> bool) -> i64 {
+        let ins_v = ins.to_vec();
+        self.gate(ins, |c, o| {
+            for m in 0..(1u32 << ins_v.len()) {
+                let bits: Vec<bool> = (0..ins_v.len()).map(|i| (m >> i) & 1 == 1).collect();
+                let mut clause: Vec<i64> = ins_v.iter().zip(bits.iter()).map(|(&x, &b)| if b { -x } else { x }).collect();
+                clause.push(if f(&bits) { o } else { -o });
+                c.clauses.push(clause);
+            }
+        })
+    }
     fn write(&self, path: &Path) {
         let mut text = format!("p cnf {} {}\n", self.vars, self.clauses.len());
         for c in &self.clauses {
@@ -646,6 +658,134 @@ fn booth_multiplier_with(c: &mut Circuit, a: &[i64], b: &[i64], two_input: bool,
     out
 }
 
+/// A radix-4 Booth multiplier as a technology mapper writes one (bead
+/// SAT-playground-skz.13): no gate computes a row bit, the select part
+/// xor the digit's sign; the first full adder reading a row bit takes its
+/// two parts, its sum the xor of four signals and its carry the majority
+/// of the row bit and the two others, each one gate over the four. The
+/// constant ones are complemented half adders, the final adder a ripple.
+fn booth_multiplier_mapped(c: &mut Circuit, a: &[i64], b: &[i64]) -> Vec<i64> {
+    booth_multiplier_mapped_with(c, a, b, false)
+}
+
+/// As `booth_multiplier_mapped`; `reverse` takes each column's adders from
+/// its last signals first (another compressor order).
+fn booth_multiplier_mapped_with(c: &mut Circuit, a: &[i64], b: &[i64], reverse: bool) -> Vec<i64> {
+    #[derive(Clone, Copy)]
+    enum Item {
+        Lit(i64),
+        Row(i64, i64), // (select, sign): the row bit select xor sign, no gate of its own
+    }
+    let n = a.len();
+    assert!(n % 2 == 0 && n >= 4);
+    let width = 2 * n;
+    let mut cols: Vec<Vec<Item>> = vec![Vec::new(); width + 2];
+    let mut constant: i128 = 0;
+    for j in 0..n / 2 {
+        let lo = if j == 0 { None } else { Some(b[2 * j - 1]) };
+        let mid = b[2 * j];
+        let hi = b[2 * j + 1];
+        let one = match lo {
+            Some(lo) => c.xor2(mid, lo),
+            None => mid,
+        };
+        let differ = c.xor2(hi, mid);
+        let two = c.and2(differ, -one);
+        for t in 0..=n {
+            let first = if t < n { Some(c.and2(one, a[t])) } else { None };
+            let second = if t > 0 { Some(c.and2(two, a[t - 1])) } else { None };
+            let raw = match (first, second) {
+                (Some(x), Some(y)) => c.or2(x, y),
+                (Some(x), None) | (None, Some(x)) => x,
+                (None, None) => unreachable!(),
+            };
+            if 2 * j + t < width {
+                cols[2 * j + t].push(Item::Row(raw, hi));
+            }
+        }
+        cols[2 * j].push(Item::Lit(hi));
+        if 2 * j + n + 1 < width {
+            cols[2 * j + n + 1].push(Item::Lit(-hi));
+        }
+        constant -= 1i128 << (2 * j + n + 1);
+    }
+    for i in 0..n {
+        if i + n < width {
+            let p = c.and2(a[i], b[n - 1]);
+            cols[i + n].push(Item::Lit(p));
+        }
+    }
+    let lit = |c: &mut Circuit, it: Item| -> i64 {
+        match it {
+            Item::Lit(x) => x,
+            Item::Row(r, s) => c.xor2(r, s),
+        }
+    };
+    let constant = constant.rem_euclid(1i128 << width);
+    for k in 0..width {
+        if (constant >> k) & 1 == 1 {
+            assert!(cols[k].len() >= 2, "a constant one needs two bits in its column");
+            let x = cols[k].pop().unwrap();
+            let y = cols[k].pop().unwrap();
+            let (x, y) = (lit(c, x), lit(c, y));
+            let s = c.xor2(-x, -y);
+            let cy = c.and2(-x, -y);
+            cols[k].push(Item::Lit(-s));
+            cols[k + 1].push(Item::Lit(-cy));
+        }
+    }
+    for k in 0..width {
+        while cols[k].len() > 2 {
+            let (x, y, z) = if reverse {
+                (cols[k].pop().unwrap(), cols[k].pop().unwrap(), cols[k].pop().unwrap())
+            } else {
+                (cols[k].remove(0), cols[k].remove(0), cols[k].remove(0))
+            };
+            // a row bit folded into the adder: its select and sign read
+            // straight, the other two as signals
+            let (s, cy) = match (x, y, z) {
+                (Item::Row(r, sg), y, z) | (y, Item::Row(r, sg), z) | (y, z, Item::Row(r, sg)) => {
+                    let (y, z) = (lit(c, y), lit(c, z));
+                    let s = c.table(&[r, sg, y, z], &|v| v[0] ^ v[1] ^ v[2] ^ v[3]);
+                    let cy = c.table(&[r, sg, y, z], &|v| {
+                        let p = v[0] ^ v[1];
+                        (p && v[2]) || (p && v[3]) || (v[2] && v[3])
+                    });
+                    (s, cy)
+                }
+                (x, y, z) => {
+                    let (x, y, z) = (lit(c, x), lit(c, y), lit(c, z));
+                    c.full_adder(x, y, z, false)
+                }
+            };
+            cols[k].push(Item::Lit(s));
+            cols[k + 1].push(Item::Lit(cy));
+        }
+    }
+    let mut out = Vec::new();
+    let mut carry: Option<i64> = None;
+    for k in 0..width {
+        let col: Vec<Item> = cols[k].clone();
+        let mut bits: Vec<i64> = col.into_iter().map(|it| lit(c, it)).collect();
+        bits.extend(carry);
+        let (s, cy) = match bits.len() {
+            0 => (0, None),
+            1 => (bits[0], None),
+            2 => {
+                let (s, cy) = c.half_adder(bits[0], bits[1]);
+                (s, Some(cy))
+            }
+            _ => {
+                let (s, cy) = c.full_adder(bits[0], bits[1], bits[2], false);
+                (s, Some(cy))
+            }
+        };
+        out.push(s);
+        carry = cy;
+    }
+    out
+}
+
 /// The sum of columns of at most two bits by a prefix adder of `kind`
 /// (the final adders of `rows_multiplier`).
 fn prefix_sum(c: &mut Circuit, cols: &[Vec<i64>], kind: &str) -> Vec<i64> {
@@ -754,6 +894,11 @@ enum Miter {
     /// (row bits against products), the sign-extension constants built
     /// into complemented half adders, the complementary top bits
     Booth(&'static str),
+    /// a Booth multiplier as a mapper writes it (no gate per row bit)
+    /// against an AND multiplier
+    BoothMapped,
+    /// two such Booth multipliers, their compressors in opposite orders
+    BoothMappedBoth,
     /// as Booth, with the rows' +neg half adders computed back from the row
     /// bit (`plus_neg_ha`) and a carry read at two columns (`doubled_carry`)
     BoothShapes(&'static str, bool, Option<(usize, bool)>),
@@ -808,6 +953,8 @@ fn miter_pruned(kind: Miter, n: usize, bit: usize, two_input: bool, pruned: bool
         }
         Miter::DoubleCarryRead => (rows_multiplier_at(&mut c, &pp, two_input, "kogge-stone", false, Some(bit)), column_multiplier(&mut c, &pp, two_input, None, 2 * n)),
         Miter::Booth(kind) => (booth_multiplier(&mut c, &a, &b, two_input, kind), column_multiplier(&mut c, &pp, two_input, None, 2 * n)),
+        Miter::BoothMapped => (booth_multiplier_mapped(&mut c, &a, &b), column_multiplier(&mut c, &pp, two_input, None, 2 * n)),
+        Miter::BoothMappedBoth => (booth_multiplier_mapped_with(&mut c, &a, &b, false), booth_multiplier_mapped_with(&mut c, &a, &b, true)),
         Miter::BoothShapes(kind, ha, doubled) => (booth_multiplier_with(&mut c, &a, &b, two_input, kind, ha, doubled), column_multiplier(&mut c, &pp, two_input, None, 2 * n)),
         Miter::FoldedSign => {
             let sign = c.var();
@@ -1093,6 +1240,57 @@ fn booth_miters_are_refuted_with_checked_proofs() {
         let stdout = run_arith_with_proof(&cnf, &proof);
         assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
         assert_eq!(gate(&cnf, &proof), "ok", "{} n={} bit={}: two-stage gate", kind, n, bit);
+    }
+}
+
+#[test]
+fn a_mapped_booth_multiplier_is_read_by_function() {
+    // bead SAT-playground-skz.13: no gate computes a row bit; the first
+    // full adder reading one takes the select part and the sign straight,
+    // its sum and carry one gate each over four signals. The cells come by
+    // function over the inputs (row bits from the select gates' truth
+    // tables, matched on simulation, checked exactly over a minimum cut)
+    let fx = Fixture::new("structarith_booth_mapped");
+    for (n, bit) in [(8usize, 12usize), (8, 13)] {
+        let cnf = fx.path(&format!("booth_mapped_{}_{}.cnf", n, bit));
+        miter_pruned(Miter::BoothMapped, n, bit, false, false, &cnf);
+        if let Ok(dir) = std::env::var("SAT_TEST_KEEP") {
+            let _ = std::fs::copy(&cnf, Path::new(&dir).join(format!("booth_mapped_{}_{}.cnf", n, bit)));
+        }
+        let r = run(&cnf, &["--structarith=1"], &[("SAT_STRUCT_DEBUG", "1")]);
+        assert_eq!(r.status, "UNSATISFIABLE", "{} {}: {}\n{}", n, bit, r.stdout, r.stderr);
+        assert!(r.stderr.contains("cells by function"), "the cells by function did not run on {} {}: {}", n, bit, r.stderr);
+        assert!(r.stdout.contains("arithmetic: two adder networks"), "{} {}: {}\n{}", n, bit, r.stdout, r.stderr);
+        let proof = fx.path(&format!("booth_mapped_{}_{}.drat", n, bit));
+        let stdout = run_arith_with_proof(&cnf, &proof);
+        assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+        assert_eq!(gate(&cnf, &proof), "ok", "mapped Booth n={} bit={}: two-stage gate", n, bit);
+    }
+}
+
+#[test]
+fn two_mapped_booth_sides_are_both_read_by_function() {
+    // both sides by function: their structural cells are dropped before
+    // either side's new cells are placed, so the cells' indices and
+    // columns stay theirs (review, 2026-10-24: a second side's removal
+    // shifted the first side's cells under their recorded columns). The
+    // answer must be right; when the pass fires, its proof must pass
+    let fx = Fixture::new("structarith_booth_mapped_both");
+    let (n, bit) = (8usize, 12usize);
+    let cnf = fx.path("booth_mapped_both.cnf");
+    miter_pruned(Miter::BoothMappedBoth, n, bit, false, false, &cnf);
+    if let Ok(dir) = std::env::var("SAT_TEST_KEEP") {
+        let _ = std::fs::copy(&cnf, Path::new(&dir).join("booth_mapped_both.cnf"));
+    }
+    let r = run(&cnf, &["--structarith=1"], &[("SAT_STRUCT_DEBUG", "1")]);
+    assert_eq!(r.status, "UNSATISFIABLE", "{}\n{}", r.stdout, r.stderr);
+    assert_eq!(r.stderr.matches("cells by function (").count(), 2, "both sides by function: {}", r.stderr);
+    assert!(!r.stderr.contains("contradict the cells before it"), "a cell by function rejected for its weights: {}", r.stderr);
+    if r.stdout.contains("arithmetic: two adder networks") {
+        let proof = fx.path("booth_mapped_both.drat");
+        let stdout = run_arith_with_proof(&cnf, &proof);
+        assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+        assert_eq!(gate(&cnf, &proof), "ok", "two mapped Booth sides: two-stage gate");
     }
 }
 
