@@ -1621,7 +1621,7 @@ are the same in both arms. The pass's own cost on the 396 cells where it
 declines is at most the 20M-work cap (the cells differ in W by that
 much), about 0.1 % of the suite's tick PAR-2.
 
-## Booth, step two (2026-10-22; bead `SAT-playground-skz.4`, in progress)
+## Booth, step two (2026-10-22 to 24; bead `SAT-playground-skz.4`, closed on the origin-form Booth cells; the mapped trees are bead `SAT-playground-skz.13`)
 
 Nine of the ten Booth cells of 2025 compare a radix-4 Booth multiplier
 with an AND-array one (the tenth is Booth against Booth); five have the
