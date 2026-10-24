@@ -72,6 +72,8 @@ const MAX_GROW: usize = 4;
 const MAX_CUTS: usize = 16; // cuts kept per node
 const MAX_GATES: usize = 300_000; // beyond this the pass declines
 const MIN_COMPARE_CONE: usize = 16; // a compare's two inputs each have a cone at least this large
+const XOR_RUNG_SHARE: u64 = 32; // an xor rung of the ladder gets at most this fraction of the lemma allowance
+const RUNG_SHARE: u64 = 3; // a rung of the ladder (one carry) gets at most this fraction of the lemma allowance
 const COMPARE_OVERLAP: (usize, usize) = (3, 4); // two cones sharing less than 3/4 of the smaller are apart
 const MAX_BITS: usize = 120; // weights are powers of two in an i128
 
@@ -1166,6 +1168,43 @@ fn cone(rt: i32, net: &Netlist, work: &mut u64) -> HashSet<i32> {
     seen
 }
 
+/// The bit of the product of the operands `a` and `b` (bit lists, lowest
+/// first) that `out` is on the random patterns, either polarity; None when
+/// it is none of them, the operands are too wide, or past the budget.
+fn product_bit_of(net: &Netlist, a: &[i32], b: &[i32], out: i32, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Option<usize> {
+    if a.len() + b.len() > 126 || a.is_empty() || b.is_empty() {
+        return None;
+    }
+    let sim = simulate(net, work, stopped)?;
+    let word = |v: i32| -> u64 {
+        let (r, ng) = net.rep[v as usize];
+        if ng { !sim[r as usize] } else { sim[r as usize] }
+    };
+    let (wa, wb): (Vec<u64>, Vec<u64>) = (a.iter().map(|&x| word(x)).collect(), b.iter().map(|&x| word(x)).collect());
+    let wo = word(out);
+    if wo == 0 || wo == u64::MAX {
+        return None;
+    }
+    let mut product = [0u128; 64];
+    for (t, p) in product.iter_mut().enumerate() {
+        let x: u128 = wa.iter().enumerate().map(|(i, &w)| (((w >> t) & 1) as u128) << i).sum();
+        let y: u128 = wb.iter().enumerate().map(|(k, &w)| (((w >> t) & 1) as u128) << k).sum();
+        *p = x.wrapping_mul(y);
+    }
+    *work += 64 * (a.len() + b.len()) as u64;
+    (0..a.len() + b.len()).find(|&c| {
+        let w: u64 = (0..64).map(|t| (((product[t] >> c) & 1) as u64) << t).sum();
+        w == wo || w == !wo
+    })
+}
+
+/// A leaf's function negated: the table's complement over its inputs.
+fn negated_leaf(il: &InputLeaf) -> InputLeaf {
+    let n = il.sup.len();
+    let mask = if n >= 6 { u64::MAX } else { (1u64 << (1u32 << n)) - 1 };
+    InputLeaf { sup: il.sup.clone(), tt: il.tt ^ mask }
+}
+
 fn apart(a: &HashSet<i32>, b: &HashSet<i32>) -> bool {
     let shared = a.intersection(b).count();
     let small = a.len().min(b.len()).max(1);
@@ -1695,7 +1734,17 @@ fn operand_positions(pairs: &[(i32, i32, i64)], work: &mut u64) -> Option<HashMa
 /// exponent (the side's own view: a product may sit at another column
 /// on the other side).
 fn side_product_pairs(cells: &[Cell], side: &[usize], pps: &HashMap<(i32, i32), i32>, uf: &mut WeightedUf, work: &mut u64) -> (Vec<(i32, i32, i64)>, Option<i32>) {
-    let by_var: HashMap<i32, (i32, i32)> = pps.iter().map(|(&(a, b), &v)| (v, (a, b))).collect();
+    side_product_pairs_with(cells, side, pps, None, uf, work)
+}
+
+/// As `side_product_pairs`, with the fused products too when `fused` is
+/// given (a fresh and of two inputs: a mapped AND side read by function
+/// folds most of its products into its cells, bead skz.14).
+fn side_product_pairs_with(cells: &[Cell], side: &[usize], pps: &HashMap<(i32, i32), i32>, fused: Option<&HashMap<i32, (i32, i32)>>, uf: &mut WeightedUf, work: &mut u64) -> (Vec<(i32, i32, i64)>, Option<i32>) {
+    let mut by_var: HashMap<i32, (i32, i32)> = pps.iter().map(|(&(a, b), &v)| (v, (a, b))).collect();
+    if let Some(f) = fused {
+        by_var.extend(f.iter().map(|(&v, &ab)| (v, ab)));
+    }
     let mut out: Vec<(i32, i32, i64)> = Vec::new();
     let mut seen: HashMap<i32, i64> = HashMap::new();
     let mut anchor: Option<i32> = None; // a cell's sum of the side: the component to place into
@@ -2589,11 +2638,68 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         });
     }
     // the two sides: the widest compare pair whose cones are apart, else
-    // the two largest compared cones that are apart
+    // the widest two compared signals that are one function (equal or
+    // complementary on the random patterns) with cones apart: a miter
+    // whose compares are written one-sided has no xor gates to walk, and
+    // the two largest cones may be different bits of the two words (bit 16
+    // of one, bit 15 of the other, bead skz.14); else the two largest
+    // compared cones that are apart
     let mut candidates: Vec<i32> = Vec::new();
     if let Some(&(a, b)) = compare_pairs.iter().max_by_key(|&&(a, b)| cone_of(a, &net, work).len().min(cone_of(b, &net, work).len())) {
         candidates.push(a);
         candidates.push(b);
+    } else {
+        let Some(sim) = simulate(&net, work, &stopped) else { return };
+        if stopped(*work + compared.len() as u64) {
+            return;
+        }
+        let mut groups: std::collections::BTreeMap<u64, Vec<i32>> = std::collections::BTreeMap::new();
+        for &v in &compared {
+            let (r, ng) = net.rep[v as usize];
+            let w = if ng { !sim[r as usize] } else { sim[r as usize] };
+            if w == 0 || w == u64::MAX || net.gates[r as usize].is_none() {
+                continue;
+            }
+            let key = w.min(!w);
+            let g = groups.entry(key).or_default();
+            if !g.contains(&r) {
+                g.push(r);
+            }
+        }
+        *work += compared.len() as u64;
+        let mut best_pair: Option<(i32, i32, usize)> = None;
+        for members in groups.values() {
+            if members.len() < 2 || members.len() > 8 {
+                continue;
+            }
+            for i in 0..members.len() {
+                for j in i + 1..members.len() {
+                    let ca = cone_of(members[i], &net, work);
+                    let cb = cone_of(members[j], &net, work);
+                    if ca.len().min(cb.len()) < MIN_COMPARE_CONE || !apart(&ca, &cb) {
+                        continue;
+                    }
+                    let size = ca.len().min(cb.len());
+                    if best_pair.map_or(true, |(_, _, s)| size > s) {
+                        // (the larger cone first, as the fallback below
+                        // orders them: which side goes first moves the
+                        // lemma's numbering, and kitten's cost with it)
+                        let (x, y) = if cb.len() > ca.len() { (members[j], members[i]) } else { (members[i], members[j]) };
+                        best_pair = Some((x, y, size));
+                    }
+                }
+            }
+            if aborted.get() || stopped(*work) {
+                return;
+            }
+        }
+        if let Some((a, b, _)) = best_pair {
+            if dbg {
+                eprintln!("structarith: no compare gate; the widest pair of compared signals with one function: {} and {}", a, b);
+            }
+            candidates.push(a);
+            candidates.push(b);
+        }
     }
     let mut rest: Vec<i32> = compared.iter().copied().filter(|v| !candidates.contains(v)).take(64).collect();
     rest.sort_by_key(|&v| std::cmp::Reverse(cone_of(v, &net, work).len()));
@@ -2645,28 +2751,78 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
     // recorded once nothing moves them any more; review, 2026-10-24)
     let in_cone_of = |c: &Cell, cone_s: &HashSet<i32>| cone_s.contains(&rep_of(c.sum)) || cone_s.contains(&rep_of(c.carry_var()));
     let mut taken: [Option<booth::BoothCells>; 2] = [None, None];
-    for s in 0..2 {
-        let cone_s = if s == 0 { &cone_a } else { &cone_b };
-        let out_s = if s == 0 { side_a } else { side_b };
-        let structural = cells.iter().filter(|c| in_cone_of(c, cone_s)).count();
-        *work += cells.len() as u64;
-        let Some(bc) = booth::booth_cells(&net, &readers, cone_s, out_s, structural, next_fresh, work, &stopped, dbg) else {
-            if stopped(*work) {
-                return;
+    // (first the Booth rows on both sides; then, on a side that has none,
+    // the products of the operands a Booth side read: a technology-mapped
+    // AND tree folds products into its cells as the Booth one folds row
+    // bits, bead skz.14)
+    let mut operands: Option<(Vec<i32>, Vec<i32>)> = None;
+    let mut booth_found = [false; 2];
+    for pass in 0..2 {
+        for s in 0..2 {
+            let and_rows: Option<(&[i32], &[i32])> = if pass == 0 {
+                None
+            } else {
+                match operands.as_ref() {
+                    Some((a, b)) if !booth_found[s] && taken[s].is_none() => Some((a.as_slice(), b.as_slice())),
+                    _ => continue,
+                }
+            };
+            let cone_s = if s == 0 { &cone_a } else { &cone_b };
+            let out_s = if s == 0 { side_a } else { side_b };
+            let structural = cells.iter().filter(|c| in_cone_of(c, cone_s)).count();
+            *work += cells.len() as u64;
+            // (the product rows only when they could beat the structural
+            // cells by the margin below: no more cells than products under
+            // the compared bit, so a side whose structural cells are nearly
+            // as many is left as it is; on a 28-bit Booth miter they found 1
+            // cell against 755 and spent the pass's budget, review round
+            // 24. The compared bit's place is the product bit the compared
+            // signal is on the random patterns; with none, no product rows:
+            // a mid bit of a 22-bit miter counts 331 products, not 484,
+            // review round 25)
+            if let Some((a, b)) = and_rows {
+                let Some(c) = product_bit_of(&net, a, b, out_s, work, &stopped) else {
+                    if stopped(*work) {
+                        return;
+                    }
+                    continue;
+                };
+                let under = (0..a.len()).map(|i| (0..b.len()).filter(|&k| i + k <= c).count()).sum::<usize>();
+                *work += (a.len() * b.len()) as u64;
+                if 9 * structural >= 8 * under {
+                    continue;
+                }
             }
-            continue;
-        };
-        if dbg {
-            eprintln!("structarith: booth: side {}: {} cells by function ({} row gates) against {} structural ones", s, bc.cells.len(), bc.row_gates, structural);
+            let mut ops: Option<(Vec<i32>, Vec<i32>)> = None;
+            let found = booth::booth_cells(&net, &readers, cone_s, out_s, structural, next_fresh, and_rows, &mut ops, work, &stopped, dbg);
+            if ops.is_some() {
+                booth_found[s] = true;
+                if operands.is_none() {
+                    operands = ops;
+                }
+            }
+            let Some(bc) = found else {
+                if stopped(*work) {
+                    return;
+                }
+                continue;
+            };
+            if dbg {
+                eprintln!("structarith: booth: side {}: {} cells by function ({} row gates{}) against {} structural ones", s, bc.cells.len(), bc.row_gates, if pass == 1 { ", products" } else { "" }, structural);
+            }
+            // (the product rows only by a clear margin: on an AND tree in
+            // the generator's form they find the structural cells and a few
+            // with a fresh partner, 238 against 233, and on a mapped one far
+            // more, 235 against 193, bead skz.14)
+            if bc.cells.len() <= structural || (pass == 1 && 8 * bc.cells.len() <= 9 * structural) {
+                continue;
+            }
+            // (its fresh numbers are spent: the other side's continue past them)
+            if let Some(m) = bc.fresh.iter().map(|fr| fr.var).max() {
+                next_fresh = next_fresh.max(m + 1);
+            }
+            taken[s] = Some(bc);
         }
-        if bc.cells.len() <= structural {
-            continue;
-        }
-        // (its fresh numbers are spent: the other side's continue past them)
-        if let Some(m) = bc.fresh.iter().map(|fr| fr.var).max() {
-            next_fresh = next_fresh.max(m + 1);
-        }
-        taken[s] = Some(bc);
     }
     if taken.iter().any(|t| t.is_some()) {
         // (all of a taken side's structural cells: what the new ones leave
@@ -3046,10 +3202,24 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         // product in any polarity: an and of two input literals, or the
         // or of two, which is the and of their complements negated); with
         // no product, every leaf by its literal
+        // (a copy of a product, a correction product of a Booth side that
+        // the other side reads too, votes as the product, bead skz.14)
+        let copy_of: HashMap<i32, i32> = fresh
+            .iter()
+            .filter_map(|fr| match &fr.def {
+                FreshDef::Xor(l) if l.len() == 1 => Some((fr.var, l[0])),
+                _ => None,
+            })
+            .collect();
+        *work += fresh.len() as u64;
         let mut votes: [(usize, usize); 2] = [(0, 0); 2];
         for s in 0..2 {
             let (mut positive, mut negative) = (0usize, 0usize);
             for (&v, &coef) in &forms[s] {
+                let (v, coef) = match copy_of.get(&v) {
+                    Some(&l) => (l.abs(), if l < 0 { -coef } else { coef }),
+                    None => (v, coef),
+                };
                 let Some(il) = input_leaves0.get(&v) else { continue };
                 if il.sup.len() != 2 {
                     continue;
@@ -3068,6 +3238,9 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                     positive += 1;
                 } else {
                     negative += 1;
+                }
+                if dbg && std::env::var_os("SAT_STRUCT_DEBUG_VOTES").is_some() {
+                    eprintln!("    side {} vote: leaf {} over {:?} table {:#x} coefficient sign {} flipped {}", s, v, il.sup, il.tt, coef.signum(), flipped);
                 }
             }
             if positive + negative == 0 {
@@ -3109,6 +3282,15 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         };
         let (keep, turned) = (agree_b(false), agree_b(true));
         let mut flip = [false, turned > keep];
+        // (no leaf both sides read, a Booth side against an AND side whose
+        // shared products are copies: side B's flip relative to side A is
+        // what its own products say against A's, bead skz.14)
+        if common.is_empty() && booth_side.values().any(|&t| t == 0) != booth_side.values().any(|&t| t == 1) {
+            let negated_mostly = |v: (usize, usize)| v.1 > v.0;
+            if votes[0].0 + votes[0].1 > 0 && votes[1].0 + votes[1].1 > 0 {
+                flip[1] = negated_mostly(votes[0]) != negated_mostly(votes[1]);
+            }
+        }
         let (mut plain, mut negated) = (votes[0].0 + if flip[1] { votes[1].1 } else { votes[1].0 }, votes[0].1 + if flip[1] { votes[1].0 } else { votes[1].1 });
         if plain + negated == 0 {
             // no product to vote: every leaf by its literal
@@ -3497,6 +3679,12 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                             if !consistent(&eqs) {
                                 if dbg {
                                     eprintln!("structarith: product cell {:?} = {} + 2*{} contradicts the weights", pair, sv, cv);
+                                    if std::env::var_os("SAT_STRUCT_DEBUG_LEMMA").is_some() {
+                                        for &x in [pair[0], pair[1], sv, cv].iter() {
+                                            let (r, o) = uf.find(x);
+                                            eprintln!("    {} at root {} exponent {} (weighted {})", x, r, o, weighted.contains(&x));
+                                        }
+                                    }
                                 }
                                 continue;
                             }
@@ -3965,11 +4153,25 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 FreshDef::And(sig) => (sig, true),
                 _ => continue,
             };
-            if sig.len() != 2 || (fr.var as usize) < nv || input_leaves.contains_key(&fr.var) {
+            if !(1..=2).contains(&sig.len()) || (fr.var as usize) < nv || input_leaves.contains_key(&fr.var) {
                 continue;
             }
             if !side_cells.iter().any(|sc| sc.iter().any(|&ci| cells[ci].leaves.contains(&fr.var))) {
                 continue; // (a chain cell's sum: produced, not a leaf)
+            }
+            if sig.len() == 1 {
+                // (a copy of a signal, a Booth side's correction product the
+                // other side reads at its own weight: the signal's function,
+                // bead skz.14)
+                let l = sig[0];
+                let il = match input_leaves.get(&l.abs()) {
+                    Some(il) => Some(il.clone()),
+                    None => leaf_function(l.abs(), &net, &produced_all, &mut memo, work, trace_var).map(|(il, _)| il),
+                };
+                if let Some(il) = il {
+                    input_leaves.insert(fr.var, if l < 0 { negated_leaf(&il) } else { il });
+                }
+                continue;
             }
             let parts: Vec<Option<InputLeaf>> = sig
                 .iter()
@@ -4030,7 +4232,15 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
     // 2^15). The same grid serves both sides; two Booth sides have none)
     let mut grid_ops: [Option<(Vec<(i32, i64)>, Vec<(i32, i64)>)>; 2] = [None, None];
     {
-        let mut candidates: Vec<(usize, Vec<(i32, i32, i64)>)> = (0..2).map(|s| (s, side_product_pairs(&cells, &side_cells[s], &pps, &mut uf, work).0)).collect();
+        let fused: HashMap<i32, (i32, i32)> = fresh
+            .iter()
+            .filter_map(|fr| match &fr.def {
+                FreshDef::And(l) if l.len() == 2 && l[0] > 0 && l[1] > 0 && is_input(l[0]) && is_input(l[1]) => Some((fr.var, (l[0].min(l[1]), l[0].max(l[1])))),
+                _ => None,
+            })
+            .collect();
+        *work += fresh.len() as u64;
+        let mut candidates: Vec<(usize, Vec<(i32, i32, i64)>)> = (0..2).map(|s| (s, side_product_pairs_with(&cells, &side_cells[s], &pps, Some(&fused), &mut uf, work).0)).collect();
         candidates.sort_by_key(|(s, pairs)| (std::cmp::Reverse(pairs.len()), *s));
         let (full, _) = (candidates[0].0, ());
         let other_len = candidates[1].1.len();
@@ -4470,6 +4680,8 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                         } else {
                             // (a fused row bit: the xor of its select gate and the sign)
                             match fresh.iter().find(|fr| fr.var == v).map(|fr| fr.def.clone()) {
+                                // (a copy: its signal's function, bead skz.14)
+                                Some(FreshDef::Xor(sig)) if sig.len() == 1 => leaf_function(sig[0].abs(), &net, &HashSet::new(), &mut memo, work, trace_var).map(|(il, _)| if sig[0] < 0 { negated_leaf(&il) } else { il }),
                                 Some(FreshDef::Xor(sig)) if sig.len() == 2 => {
                                     let parts: Vec<Option<InputLeaf>> = sig.iter().map(|&l| leaf_function(l.abs(), &net, &HashSet::new(), &mut memo, work, trace_var).map(|(il, _)| il)).collect();
                                     match (&parts[0], &parts[1]) {
@@ -4978,6 +5190,89 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 }
             }
         }
+        // (a side found by function: the chain takes first, column by
+        // column, the triples and pairs whose carry is a signal of the
+        // side's cone on the netlist's simulation, so that its carries are
+        // the network's own where the network adds as cells do, and the
+        // ladder below matches them; bead skz.14)
+        let mut guide: Option<(HashSet<u64>, HashMap<i32, u64>)> = None;
+        if booth_side.values().any(|&t| t == s) && !(dbg && std::env::var_os("SAT_STRUCT_DEBUG_NO_GUIDE").is_some()) {
+            let Some(sim64) = simulate(&net, work, &stopped) else { return };
+            if stopped(*work + (fresh.len() + 2 * nv) as u64) {
+                return; // (the tables below are not affordable)
+            }
+            let cone_s = if s == 0 { &cone_a } else { &cone_b };
+            let mut net_sigs: HashSet<u64> = HashSet::new();
+            let mut gates_in: Vec<i32> = cone_s.iter().copied().collect();
+            gates_in.sort_unstable();
+            for v in gates_in {
+                let w = sim64[v as usize];
+                if w != 0 && w != u64::MAX {
+                    net_sigs.insert(w);
+                    net_sigs.insert(!w);
+                }
+            }
+            // the words of the fresh variables, from their definitions
+            let defs: HashMap<i32, &FreshDef> = fresh.iter().map(|fr| (fr.var, &fr.def)).collect();
+            let mut words: HashMap<i32, u64> = HashMap::new();
+            for &t in &trues {
+                words.insert(t, u64::MAX);
+            }
+            for fr in &fresh {
+                // (definitions read only earlier ones: in order)
+                let lits = match fr.def {
+                    FreshDef::Xor(ref l) | FreshDef::And(ref l) | FreshDef::Maj(ref l) => l,
+                };
+                let ws: Option<Vec<u64>> = lits
+                    .iter()
+                    .map(|&l| {
+                        let v = l.abs();
+                        let w = if (v as usize) < nv {
+                            let (r, ng) = net.rep[v as usize];
+                            Some(if ng { !sim64[r as usize] } else { sim64[r as usize] })
+                        } else {
+                            words.get(&v).copied()
+                        }?;
+                        Some(if l < 0 { !w } else { w })
+                    })
+                    .collect();
+                let Some(ws) = ws else { continue };
+                let w = match defs[&fr.var] {
+                    FreshDef::Xor(_) => ws.iter().fold(0u64, |a, &x| a ^ x),
+                    FreshDef::And(_) => ws.iter().fold(u64::MAX, |a, &x| a & x),
+                    FreshDef::Maj(_) => {
+                        let mut r = 0u64;
+                        for b in 0..64 {
+                            let ones = ws.iter().filter(|&&x| (x >> b) & 1 == 1).count();
+                            if 2 * ones > ws.len() {
+                                r |= 1u64 << b;
+                            }
+                        }
+                        r
+                    }
+                };
+                words.insert(fr.var, w);
+            }
+            for (v, w) in sim64.iter().enumerate().skip(1) {
+                if net.rep[v].0 == v as i32 {
+                    words.entry(v as i32).or_insert(*w);
+                }
+            }
+            *work += (fresh.len() + 2 * nv) as u64;
+            guide = Some((net_sigs, words));
+        }
+        let word_of_lit = |l: i32, guide: &Option<(HashSet<u64>, HashMap<i32, u64>)>| -> Option<u64> {
+            let (_, words) = guide.as_ref()?;
+            let v = l.abs();
+            let w = if (v as usize) < nv {
+                let (r, ng) = net.rep[v as usize];
+                let w = *words.get(&r)?;
+                if ng { !w } else { w }
+            } else {
+                *words.get(&v)?
+            };
+            Some(if l < 0 { !w } else { w })
+        };
         // the chain, column by column
         let mut carries: Vec<i32> = Vec::new();
         let mut sk_lit: Option<i32> = None;
@@ -4990,8 +5285,48 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             }
             items.append(&mut carries);
             while items.len() >= 2 {
-                let take = if items.len() >= 3 { 3 } else { 2 };
-                let lits: Vec<i32> = items.drain(..take).collect();
+                // (a triple or a pair whose written carry the network has:
+                // the majority, a half adder's and, or its or in the
+                // complemented domain)
+                let mut pick: Option<Vec<usize>> = None;
+                if guide.is_some() {
+                    let ws: Vec<Option<u64>> = items.iter().map(|&l| word_of_lit(l, &guide)).collect();
+                    let sigs = &guide.as_ref().unwrap().0;
+                    'triples: for a in 0..items.len() {
+                        for b in a + 1..items.len() {
+                            for c in b + 1..items.len() {
+                                let (Some(x), Some(y), Some(z)) = (ws[a], ws[b], ws[c]) else { continue };
+                                *work += 1;
+                                if sigs.contains(&((x & y) | (x & z) | (y & z))) {
+                                    pick = Some(vec![a, b, c]);
+                                    break 'triples;
+                                }
+                            }
+                        }
+                    }
+                    if pick.is_none() && items.len() == 2 {
+                        if let (Some(x), Some(y)) = (ws[0], ws[1]) {
+                            let cw = if negated_domain { x | y } else { x & y };
+                            if sigs.contains(&cw) {
+                                pick = Some(vec![0, 1]);
+                            }
+                        }
+                    }
+                }
+                let lits: Vec<i32> = match pick {
+                    Some(idx) => {
+                        let lits: Vec<i32> = idx.iter().map(|&i| items[i]).collect();
+                        for &i in idx.iter().rev() {
+                            items.remove(i);
+                        }
+                        lits
+                    }
+                    None => {
+                        let take = if items.len() >= 3 { 3 } else { 2 };
+                        items.drain(..take).collect()
+                    }
+                };
+                let take = lits.len();
                 let sigma = next_fresh;
                 let kappa = next_fresh + 1;
                 next_fresh += 2;
@@ -4999,6 +5334,16 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 let def_lits: Vec<i32> = if negated_domain { lits.iter().map(|&l| -l).collect() } else { lits.clone() };
                 fresh.push(Fresh { var: sigma, def: FreshDef::Xor(def_lits.clone()) });
                 fresh.push(Fresh { var: kappa, def: if take == 3 { FreshDef::Maj(def_lits.clone()) } else { FreshDef::And(def_lits.clone()) } });
+                if guide.is_some() {
+                    let dws: Option<Vec<u64>> = def_lits.iter().map(|&l| word_of_lit(l, &guide)).collect();
+                    if let Some(dws) = dws {
+                        let xw = dws.iter().fold(0u64, |a, &x| a ^ x);
+                        let kw = if take == 3 { (dws[0] & dws[1]) | (dws[0] & dws[2]) | (dws[1] & dws[2]) } else { dws[0] & dws[1] };
+                        let g = guide.as_mut().unwrap();
+                        g.1.insert(sigma, xw);
+                        g.1.insert(kappa, kw);
+                    }
+                }
                 let leaves: Vec<i32> = lits.iter().map(|l| l.abs()).collect();
                 let negmask: u8 = lits.iter().enumerate().map(|(i, &l)| ((l < 0) as u8) << i).sum();
                 let base = leaves[0];
@@ -5299,8 +5644,12 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                     _ => col_carries.push((chain_col[i], vec![kv])),
                 }
             }
-            let pair_rungs = booth_side.values().any(|&t| t == s);
-            for (_, col_kvs) in col_carries {
+            let pair_rungs = booth_side.values().any(|&t| t == s) && !(dbg && std::env::var_os("SAT_STRUCT_DEBUG_NO_XOR_RUNG").is_some());
+            let mut failed_spend: u64 = 0; // the work of the rungs that failed so far
+            for (col_e, col_kvs) in col_carries {
+            if col_e >= k {
+                continue; // (the carries out of the compared column go above it)
+            }
             let mut matched_here = false;
             for &kv in &col_kvs {
                 let Some(&(val, kn)) = sig.get(&kv) else { continue };
@@ -5314,8 +5663,20 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 };
                 tried += 1;
                 let before = *work;
-                let core = kitten_equivalence(&clauses, kv, lit_m, lemma_budget, work, stop);
+                // (a rung gets at most a third of the allowance, and once
+                // failed rungs have spent that much, a thirty-second: one
+                // that is false on few inputs, or hard after a failed rung
+                // below it, would spend all of it, 186M of 200M on one
+                // build of a Booth cell whose dearest true rung costs 48M,
+                // and two in a row 133M on another; the steps above still
+                // have the rest, review round 23)
+                let share = if failed_spend >= lemma_allowance / RUNG_SHARE { XOR_RUNG_SHARE } else { RUNG_SHARE };
+                let rung_budget = lemma_budget.min((*work).saturating_add(lemma_allowance / share));
+                let core = kitten_equivalence(&clauses, kv, lit_m, rung_budget, work, stop);
                 extra.set(extra.get() + (*work - before));
+                if core.is_none() {
+                    failed_spend += *work - before;
+                }
                 let Some(core) = core else {
                     if dbg {
                         eprintln!("structarith: side {}: the chain's carry {} is not the network's {} (or the budget ran out at {})", s, kv, lit_m, *work);
@@ -5327,19 +5688,25 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 };
                 clauses.push(vec![-kv, lit_m]);
                 clauses.push(vec![kv, -lit_m]);
+                if dbg && std::env::var_os("SAT_STRUCT_DEBUG_LADDER").is_some() {
+                    eprintln!("structarith: side {}: rung at exponent {}: the chain's carry {} = the network's {} ({} learned clauses, work {})", s, col_e, kv, lit_m, core.len(), *work - before);
+                }
                 steps.push((kv, lit_m, core));
                 proven += 1;
                 matched_here = true;
                 let _ = m;
             }
-            if !pair_rungs || matched_here || col_kvs.len() != 2 {
+            // (all of a column's carries, two to six: the network's one
+            // carry is their parity, or its complement, when the chain's
+            // bottom hands every column above the same surplus of carries)
+            if !pair_rungs || matched_here || col_kvs.len() < 2 || col_kvs.len() > 6 {
                 continue;
             }
-            let (Some(&(v1, k1)), Some(&(v2, k2))) = (sig.get(&col_kvs[0]), sig.get(&col_kvs[1])) else { continue };
-            if k1 != u64::MAX || k2 != u64::MAX {
+            let sigs: Vec<(u64, u64)> = col_kvs.iter().filter_map(|kv| sig.get(kv).copied()).collect();
+            if sigs.len() != col_kvs.len() || sigs.iter().any(|&(_, kn)| kn != u64::MAX) {
                 continue;
             }
-            let val = v1 ^ v2;
+            let val = sigs.iter().fold(0u64, |a, &(v, _)| a ^ v);
             if val == 0 || val == u64::MAX {
                 continue;
             }
@@ -5352,13 +5719,22 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             // the clause set
             let d = next_fresh;
             next_fresh += 1;
-            let fr = Fresh { var: d, def: FreshDef::Xor(vec![col_kvs[0], col_kvs[1]]) };
+            let fr = Fresh { var: d, def: FreshDef::Xor(col_kvs.clone()) };
             clauses.extend(fresh_clauses(&fr));
             fresh.push(fr);
             tried += 1;
             let before = *work;
-            let core = kitten_equivalence(&clauses, d, lit_m, lemma_budget, work, stop);
+            // (an xor rung gets a small share of the allowance: kitten's cost
+            // on one varies tenfold with the chain's grouping, 5040 learned
+            // clauses on one chain and 46505 on another over the same pool,
+            // and a rung that fails costs only the step above it, bead
+            // skz.14)
+            let rung_budget = lemma_budget.min((*work).saturating_add(lemma_allowance / XOR_RUNG_SHARE));
+            let core = kitten_equivalence(&clauses, d, lit_m, rung_budget, work, stop);
             extra.set(extra.get() + (*work - before));
+            if core.is_none() {
+                failed_spend += *work - before;
+            }
             let Some(core) = core else {
                 if dbg {
                     eprintln!("structarith: side {}: the xor {} of the chain's carries {:?} is not the network's {} (or the budget ran out at {})", s, d, col_kvs, lit_m, *work);
@@ -5370,6 +5746,9 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             };
             clauses.push(vec![-d, lit_m]);
             clauses.push(vec![d, -lit_m]);
+            if dbg && std::env::var_os("SAT_STRUCT_DEBUG_LADDER").is_some() {
+                eprintln!("structarith: side {}: rung at exponent {}: the xor of the chain's carries {:?} = the network's {} ({} learned clauses, work {})", s, col_e, col_kvs, lit_m, core.len(), *work - before);
+            }
             steps.push((d, lit_m, core));
             proven += 1;
             }

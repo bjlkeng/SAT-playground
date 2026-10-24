@@ -642,7 +642,7 @@ fn find_cut(net: &Netlist, targets: &[i32], basis: &[i32], val: &[Sig], check: &
 /// The cells of a mapped Booth side, by function (see the module notes);
 /// None when the side is no Booth tree this reads, or past the budget.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn booth_cells(net: &Netlist, readers: &[u32], cone: &HashSet<i32>, out: i32, structural: usize, first_fresh: i32, work: &mut u64, stopped: &dyn Fn(u64) -> bool, dbg: bool) -> Option<BoothCells> {
+pub(super) fn booth_cells(net: &Netlist, readers: &[u32], cone: &HashSet<i32>, out: i32, structural: usize, first_fresh: i32, and_rows: Option<(&[i32], &[i32])>, operands_out: &mut Option<(Vec<i32>, Vec<i32>)>, work: &mut u64, stopped: &dyn Fn(u64) -> bool, dbg: bool) -> Option<BoothCells> {
     let nv = net.rep.len();
     if stopped(*work + net.order.len() as u64) {
         return None; // (not affordable: the scan below is not started)
@@ -689,6 +689,12 @@ pub(super) fn booth_cells(net: &Netlist, readers: &[u32], cone: &HashSet<i32>, o
         v.sort_unstable();
         v
     };
+    // (an AND side: its rows are the products of the operands another
+    // side's digits and data gave, each at the sum of its places, bead
+    // skz.14; else the Booth rows, read from the side's gates)
+    let (row_gates, digits, data) = if and_rows.is_some() {
+        (0usize, Vec::new(), Vec::new())
+    } else {
     // the gates that compute a row bit or its select part
     let mut memo: HashMap<i32, u64> = HashMap::new();
     let mut digit_keys: HashMap<([Option<i32>; 2], Option<i32>), usize> = HashMap::new();
@@ -786,6 +792,12 @@ pub(super) fn booth_cells(net: &Netlist, readers: &[u32], cone: &HashSet<i32>, o
     if data.len() != data_vars.len() || data.len() < 4 || digits.len() < 3 {
         return None;
     }
+    // (the operands, for an AND side: the data bits in order, and the
+    // multiplier's bits as the digits read them, two per digit)
+    let b_bits: Vec<i32> = digits[..digits.len() - 1].iter().flat_map(|&(_, mid, hi)| [mid, hi]).flatten().collect();
+    *operands_out = Some((data.clone(), b_bits));
+    (row_gates, digits, data)
+    };
     let val = simulate_words(net, work, stopped)?;
     let word_of = |v: i32| -> Sig {
         let (r, ng) = net.rep[v as usize];
@@ -801,14 +813,60 @@ pub(super) fn booth_cells(net: &Netlist, readers: &[u32], cone: &HashSet<i32>, o
         by_word.entry(sig_not(w)).or_insert((v, true));
     }
     *work += 2 * order.len() as u64;
-    let n = data.len();
-    let ncols = n + 2 * digits.len() + 4;
+    let n = match and_rows {
+        Some((a, _)) => a.len(),
+        None => data.len(),
+    };
+    let ncols = match and_rows {
+        Some((a, b)) => a.len() + b.len() + 2,
+        None => n + 2 * digits.len() + 4,
+    };
+    // the signals some gate outside this side's cone reads (a product of
+    // the correction row, the multiplier's top bit times a data bit, may
+    // be the other side's own product gate, hashed into one: the other
+    // side adds it a column lower, bead skz.14)
+    let mut read_outside: HashSet<i32> = HashSet::new();
+    if stopped(*work + nv as u64) {
+        return None; // (not affordable: the scan is not started, review round 24)
+    }
+    for v in 1..nv {
+        if net.rep[v].0 != v as i32 || cone.contains(&(v as i32)) {
+            continue;
+        }
+        if let Some(g) = net.gates[v].as_ref() {
+            read_outside.extend(g.sup.iter().map(|&u| net.rep[u as usize].0));
+        }
+    }
+    *work += nv as u64;
     let mut items: Vec<Item> = Vec::new();
     let mut by_col: Vec<Vec<usize>> = vec![Vec::new(); ncols];
     let mut item_vars: HashSet<i32> = HashSet::new();
     let mut row_roots: Vec<i32> = Vec::new(); // the gates computing row bits or their select parts
     let input_bit = |x: Option<i32>| -> u128 { x.map_or(0, |x| input_index.get(&x).map_or(0, |&i| 1u128 << i)) };
     let w_opt = |x: Option<i32>| -> Sig { x.map_or(zero, word_of) };
+    if let Some((a, b)) = and_rows {
+        // the products: the side's gate when it has one, else a fresh and
+        // (a mapped tree folds a product into the cell that reads it)
+        for (i, &ai) in a.iter().enumerate() {
+            for (k, &bk) in b.iter().enumerate() {
+                if !input_index.contains_key(&ai) || !input_index.contains_key(&bk) {
+                    continue; // (no gate of the side reads it)
+                }
+                let pp = sig_and(word_of(ai), word_of(bk));
+                let col = i + k;
+                let item = match by_word.get(&pp) {
+                    Some(&(g, gneg)) => Item { var: g, make: None, word: val[g as usize], supp: supp[&g], alive: true, produced: false, second: false, col, is_carry: false, complement: gneg },
+                    None => Item { var: 0, make: Some(FreshDef::And(vec![ai, bk])), word: pp, supp: input_bit(Some(ai)) | input_bit(Some(bk)), alive: true, produced: false, second: false, col, is_carry: false, complement: false },
+                };
+                if item.var != 0 {
+                    item_vars.insert(item.var);
+                    row_roots.push(item.var);
+                }
+                by_col[col].push(items.len());
+                items.push(item);
+            }
+        }
+    }
     for (j, &(lo, mid, hi)) in digits.iter().enumerate() {
         let (wl, wm, wh) = (w_opt(lo), w_opt(mid), w_opt(hi));
         let one = sig_xor(wl, wm);
@@ -827,7 +885,13 @@ pub(super) fn booth_cells(net: &Netlist, readers: &[u32], cone: &HashSet<i32>, o
             // input its formula names, and the gates over it read what it
             // reads)
             let item = if let Some(&(g, gneg)) = by_word.get(&pp) {
-                Item { var: g, make: None, word: val[g as usize], supp: supp[&g], alive: true, produced: false, second: false, col, is_carry: false, complement: gneg }
+                if mid.is_none() && hi.is_none() && read_outside.contains(&g) {
+                    // (a correction product the other side reads too: a
+                    // copy of its own, so that each side weights it)
+                    Item { var: 0, make: Some(FreshDef::Xor(vec![if gneg { -g } else { g }])), word: pp, supp: supp[&g], alive: true, produced: false, second: false, col, is_carry: false, complement: false }
+                } else {
+                    Item { var: g, make: None, word: val[g as usize], supp: supp[&g], alive: true, produced: false, second: false, col, is_carry: false, complement: gneg }
+                }
             } else if let (Some(&(g, neg)), Some(h)) = (by_word.get(&sel), hi) {
                 Item { var: 0, make: Some(FreshDef::Xor(vec![if neg { -g } else { g }, h])), word: pp, supp: supp[&g] | input_bit(hi), alive: true, produced: false, second: false, col, is_carry: false, complement: false }
             } else if let (Some(l), None, None, Some(d)) = (lo, mid, hi, dhi) {
@@ -867,7 +931,7 @@ pub(super) fn booth_cells(net: &Netlist, readers: &[u32], cone: &HashSet<i32>, o
     // (a side whose cells the structural matcher found, a Booth tree in
     // the generator's own form, has nearly as many as row items, 0.89 of
     // them on the 2025 cells: nothing to do here; a mapped one has 0.42)
-    if 4 * structural >= 3 * items.len() {
+    if and_rows.is_none() && 4 * structural >= 3 * items.len() {
         if dbg {
             eprintln!("structarith: booth: {} structural cells for {} row items: left as they are", structural, items.len());
         }
@@ -941,7 +1005,14 @@ pub(super) fn booth_cells(net: &Netlist, readers: &[u32], cone: &HashSet<i32>, o
             break;
         }
         let mut made = 0usize;
-        for phase in 0..4u8 {
+        for phase in 0..6u8 {
+        // (the half adders with a fresh partner only in a round where the
+        // others made nothing: each phase scans every gate over every
+        // column, and two more in every round cost an 18-bit mapped Booth
+        // miter its budget; review round 23)
+        if phase >= 4 && made > 0 {
+            break;
+        }
         for col in by_col.iter_mut() {
             col.retain(|&i| items[i].alive);
             *work += col.len() as u64;
@@ -962,13 +1033,22 @@ pub(super) fn booth_cells(net: &Netlist, readers: &[u32], cone: &HashSet<i32>, o
             }
             let mut found: Option<Cand> = None;
             'cols: for col in 0..ncols {
+                // (and only where more than two signals are left)
+                if phase >= 4 && by_col[col].len() <= 2 {
+                    *work += 1;
+                    continue;
+                }
                 *work += by_col[col].len() as u64;
-                let cands: Vec<usize> = by_col[col].iter().copied().filter(|&i| items[i].alive && born[i] < round && items[i].supp & !sg == 0).collect();
+                // (a second read only by a cell with both outputs gates:
+                // the generator's doubled carries are read by full adders,
+                // and a lone cell over two copies took a piece of the
+                // network's own sum for an adder, bead skz.14)
+                let cands: Vec<usize> = by_col[col].iter().copied().filter(|&i| items[i].alive && born[i] < round && items[i].supp & !sg == 0 && (phase <= 1 || !items[i].second)).collect();
                 if cands.len() < 2 || cands.iter().fold(0u128, |a, &i| a | items[i].supp) != sg {
                     continue;
                 }
                 *work += cands.len() as u64;
-                if phase != 1 {
+                if phase == 0 || phase == 2 || phase == 3 {
                     // full adders
                     for a in 0..cands.len() {
                         for b in a + 1..cands.len() {
@@ -1016,7 +1096,12 @@ pub(super) fn booth_cells(net: &Netlist, readers: &[u32], cone: &HashSet<i32>, o
                     }
                     continue;
                 }
-                // half adders (both outputs gates), with or without a one
+                // half adders (both outputs gates), with or without a one;
+                // one with a fresh partner only in a column the tree has
+                // not yet brought down to the final adder's two rows
+                if (phase == 4 || phase == 5) && by_col[col].iter().filter(|&&i| items[i].alive).count() <= 2 {
+                    continue;
+                }
                 for a in 0..cands.len() {
                     for b in a + 1..cands.len() {
                         let (ia, ib) = (cands[a], cands[b]);
@@ -1030,27 +1115,46 @@ pub(super) fn booth_cells(net: &Netlist, readers: &[u32], cone: &HashSet<i32>, o
                             let s = sig_xor(x, y);
                             let leaves = vec![(ia, pol & 1 != 0), (ib, pol & 2 != 0)];
                             let mut cand: Option<Cand> = None;
+                            // (phase 1 both outputs gates; phase 4 an xor
+                            // whose carry no gate computes, a final adder's
+                            // propagate whose generate it folds away; phase
+                            // 5 a carry whose sum no gate computes, a dead
+                            // low bit: each a fresh partner, bead skz.14)
+                            let and_p = partner(sig_and(x, y), g, true, &claimed, &item_vars, &inside_all);
+                            let or_p = partner(sig_or(x, y), g, true, &claimed, &item_vars, &inside_all);
                             if sig_and(x, y) == wg {
-                                if let Some(sum) = partner(s, g, false, &claimed, &item_vars, &inside_all) {
-                                    if !inner(g, sum.0, work) {
-                                        cand = Some(Cand { col, leaves, one: false, sum: Some(sum), carry: Some(g) });
+                                match partner(s, g, false, &claimed, &item_vars, &inside_all) {
+                                    Some(sum) if phase == 1 => {
+                                        if !inner(g, sum.0, work) {
+                                            cand = Some(Cand { col, leaves, one: false, sum: Some(sum), carry: Some(g) });
+                                        }
                                     }
+                                    None if phase == 5 => cand = Some(Cand { col, leaves, one: false, sum: None, carry: Some(g) }),
+                                    _ => {}
                                 }
                             } else if sig_or(x, y) == wg {
-                                if let Some(sum) = partner(sig_not(s), g, false, &claimed, &item_vars, &inside_all) {
-                                    if !inner(g, sum.0, work) {
-                                        cand = Some(Cand { col, leaves, one: true, sum: Some(sum), carry: Some(g) });
+                                match partner(sig_not(s), g, false, &claimed, &item_vars, &inside_all) {
+                                    Some(sum) if phase == 1 => {
+                                        if !inner(g, sum.0, work) {
+                                            cand = Some(Cand { col, leaves, one: true, sum: Some(sum), carry: Some(g) });
+                                        }
                                     }
+                                    None if phase == 5 => cand = Some(Cand { col, leaves, one: true, sum: None, carry: Some(g) }),
+                                    _ => {}
                                 }
                             } else if s == wg || s == ng {
-                                if let Some((h, _)) = partner(sig_and(x, y), g, true, &claimed, &item_vars, &inside_all) {
-                                    if !inner(h, g, work) {
-                                        cand = Some(Cand { col, leaves, one: false, sum: Some((g, s == ng)), carry: Some(h) });
+                                if phase == 1 {
+                                    if let Some((h, _)) = and_p {
+                                        if !inner(h, g, work) {
+                                            cand = Some(Cand { col, leaves, one: false, sum: Some((g, s == ng)), carry: Some(h) });
+                                        }
+                                    } else if let Some((h, _)) = or_p {
+                                        if !inner(h, g, work) {
+                                            cand = Some(Cand { col, leaves, one: true, sum: Some((g, s == wg)), carry: Some(h) });
+                                        }
                                     }
-                                } else if let Some((h, _)) = partner(sig_or(x, y), g, true, &claimed, &item_vars, &inside_all) {
-                                    if !inner(h, g, work) {
-                                        cand = Some(Cand { col, leaves, one: true, sum: Some((g, s == wg)), carry: Some(h) });
-                                    }
+                                } else if phase == 4 && and_p.is_none() && or_p.is_none() {
+                                    cand = Some(Cand { col, leaves, one: false, sum: Some((g, s == ng)), carry: None });
                                 }
                             }
                             let Some(cand) = cand else { continue };
@@ -1467,6 +1571,11 @@ pub(super) fn booth_cells(net: &Netlist, readers: &[u32], cone: &HashSet<i32>, o
             let c = &cells[pick];
             let lits: Vec<i32> = (0..c.leaves.len()).map(|i| c.leaf_lit(i)).collect();
             eprintln!("structarith: booth: an odd cycle of {} cells; the cell at column {} {:?} = {} + 2*{} dropped", cycle.len(), cell_cols[pick], lits, c.sum_lit(), c.carry_lit());
+            for &cj in &cycle {
+                let d = &cells[cj];
+                let l: Vec<i32> = (0..d.leaves.len()).map(|i| d.leaf_lit(i)).collect();
+                eprintln!("    cycle cell {} at column {}: {:?} (+{}) = {} + 2*{} second reads {:#b}", cj, cell_cols[cj], l, d.one as u8, d.sum_lit(), d.carry_lit(), second_reads[cj]);
+            }
         }
     }
     let dropped = alive_cell.iter().filter(|&&a| !a).count();

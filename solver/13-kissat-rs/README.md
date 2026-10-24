@@ -2105,6 +2105,195 @@ chain's pool, the fixed ones, the fresh definitions and the chain's bit
 (to check the arithmetic outside); `SAT_STRUCT_DEBUG_BOOTH_MAXCOL=c`
 leaves the columns above `c` to the network.
 
+(The four cells listed above as left continue in the next section.)
+
+## Booth, step four: the cells left after skz.13 (2026-10-24; bead `SAT-playground-skz.14`)
+
+**Result.** One of the four cells is now refuted:
+`booth_wallace_origin_and_default_mapped_bit29` (search solves it near
+600 s) in 0.6 s, with a proof through the gate (3.1 s to check). That
+makes seven of the ten Booth cells of 2025. The other three are not
+refuted; each has a new, measured reason at the end of this section.
+
+**What changed**, in order of what it did:
+
+1. *An AND side read by function.* The stage of step three reads a mapped
+   Booth tree's cells by function. It now reads a mapped AND tree's too.
+   When one side's digits and data give the two operands, the other
+   side's rows are the products a_i·b_j at column i + j: the side's own
+   gate when one computes the product, else a fresh and (a mapped tree
+   folds products into the cells that read them). The matcher, the exact
+   check and the top are the same. The caller tries the Booth rows on
+   both sides first, then the product rows on a side that has none. It
+   keeps product-row cells only when they are more than an eighth more
+   than the structural ones: on an AND tree in the generator's form the
+   product rows find the structural cells and a few with a fresh partner
+   (238 against 233, 260 against 259), which only costs work, and on a
+   mapped one far more. On bit29 the AND side gets 235 cells against 193
+   structural. The two gates no rule explained before are plain cells by
+   function: 2683 is a column-3 full adder's carry whose third leaf is
+   the column-2 half adder's carry, and the mapper wrote that carry as
+   2680 = a0·b1·(a1·b2), over other products. The operand grid (each
+   input's place along its operand) now also counts a side's fused
+   products, the fresh ands of two inputs: a mapped AND tree that folds
+   nearly every product gave a grid with an input missing (the toy below,
+   7 by 7 of 8 by 8).
+2. *Correction products the two sides share.* An unsigned Booth
+   multiplier adds b15·a_i at column 16 + i (its last row); an AND
+   multiplier adds the same function at column 15 + i. When the two
+   sides' gates were hashed into one, one variable had two weights and
+   the whole AND side moved up one column: the "two compared signals one
+   weight apart" of `dadda_mapped_and_and_wallace_mapped`. Now such a
+   product, when a gate outside the Booth side reads it, is a fresh copy
+   on the Booth side (x = g) with its own weight. The main pass reads a
+   copy as its signal's function: in the leaf polynomial, in the pool
+   placement of row bits no cell reads, and in the vote that decides
+   whether a side's reading is flipped. With no leaf shared by the two
+   sides, side B's flip now comes from its own products against side
+   A's (the code added the two sides' votes into one decision).
+3. *The compared pair by function.* A miter whose compares are written
+   one-sided (z is implied by x ≡ y, an and-chain of such z) has no xor
+   gate for the pass to walk, and the fallback took the two largest
+   compared cones. On Booth against Booth that was product bit 16 of one
+   side against bit 15 of the other. Without a compare gate the pass now
+   takes the widest two compared signals that are one function on the
+   random patterns (equal or complementary), with cones apart.
+4. *A chain that follows the network* (on a side read by function). In
+   each column the chain first adds a triple whose majority, or a last
+   pair whose and (its or in the complemented domain), is a signal of
+   the side's cone on the simulation, so its carries are the network's
+   and the ladder can match them. Without this, bit29 runs out of the
+   allowance (207M work, no lemma). An xor
+   rung (a column's carries against one network carry) now takes two to
+   six carries (was two), and gets at most 1/32 of the lemma allowance:
+   kitten's cost on one varies tenfold with the chain's grouping (5,040
+   learned clauses on one chain and 46,505 on another over the same
+   pool), and a rung that fails only makes the step above it harder. A
+   rung over one carry gets at most a third of the allowance, and once the
+   rungs that failed have spent a third, a thirty-second (the dearest true
+   rung costs 48M; on builds along the way one rung spent 186M of 200M,
+   and two in a row 133M, true but stuck: a second simulation on other
+   patterns kept them). The ladder skips the carries out of the compared
+   column (they go above it).
+5. *Half adders with a fresh partner* in the stage (two more phases): a
+   half adder whose carry, or whose sum, no gate computes, only in a
+   column with more than two signals left and only in a round where the
+   other phases made nothing (each phase scans every gate over every
+   column); and a second read (the copy of a carry one column up) only by
+   cells whose outputs are both gates. A
+   cell with a fresh partner over such a copy took a piece of the
+   network's own sum for an adder: an odd cycle of readings on the dadda
+   cell.
+**Tests and runs.** Two new tests in `tests/structarith.rs`:
+`a_mapped_and_multiplier_is_read_by_function` (a toy AND multiplier with
+no gate for any product its tree reads, the first full adder over a
+product reading its two inputs straight, against a Booth multiplier;
+bits 12 and 13 of 8 by 8: the answer right, the product rows the AND
+side's reading, and a proof through the gate whenever the pass writes
+one; the pass does not fire on these toys yet, see the end of this
+section) and
+`a_one_sided_compare_is_paired_by_function` (the compare written as z
+implied by bit A = bit B with z false, on an array-against-column miter
+and a mapped Booth one). All 20 tests pass.
+`tools/arith_fuzz.py`: 9,000 miters on seeds 23000 to 33000, all agree
+with the stock solver; the pass fired on 747 to 794 of each 1,500 (757 on
+the last build), every proof accepted (`log/arith-fuzz-2026-10-24-s*.txt`;
+seed 33000 on the final build). The seven refuted Booth cells, each with
+a proof through the gate on the final build. The sweep of the pass alone
+over the 400 cells, skz.13's build against the final one, the work clock
+limited to 300M, enough for the lemma allowance
+(`log/structarith-fire-2026-10-24-300M-old`, `-final5`; frozen binaries
+4ee655fca41e3341 and 04e999a62ce22b0a): 10 cells fire on the old build,
+11 on the final (bit29 added), none lost, no panic, no answer changed,
+and no other cell's work moved. Pass work on the Booth cells that fired
+before went up on four of them: 8.6M to 38.1M on
+`wallace_origin_and_and_dadda_mapped`; 17-18M to 40-41M (1.2 s) on the
+two mapped Wallace cells (the chain that follows the network costs them
+work: in plain order 14M, without xor rungs 32M); and 8.4M to 122M
+(4.0 s) on `dadda_origin_and_and_dadda_mapped`, whose AND side the
+product rows now read (222 cells against 193) with two rungs stuck at
+the per-rung cap.
+The allowance is 200M. Under the 30M cap of the earlier sweeps those
+cells no longer fit (`log/structarith-fire-2026-10-24c`), so that sweep
+is no longer the check. A regression a 300M sweep caught on the way:
+`dadda_origin_and_and_dadda_origin_bit29` stopped refuting when the
+pairing by function gave the two sides in the other order (the same
+pair; the AND side's last step then needed more than the allowance
+instead of 112M); the pair now comes larger cone first, as the old
+fallback had it.
+
+Codex review of this part: round 23 found one problem. The two new
+phases ran in every round and cost an 18-bit mapped Booth toy miter
+(bit 33) its 20M pass budget, which skz.13's build refutes in 18.4M. The
+phases now run only in a round where the others made nothing, and only
+on columns with more than two signals; deferring them changed one
+cell's chain (`dadda_origin_and_and_dadda_mapped`, 220 product-row cells
+instead of 222), where a rung then spent 186M, hence the limits on
+rungs (with only the per-rung cap that cell took 183M of the 220M its
+pass may use; with the limit on failed rungs, 122M). Both cells refute
+now. Round 24 found two. The product rows ran on an AND side whose
+structural cells were nearly as many as its products (a 28-bit Booth
+toy miter: 1 cell found against 755) and spent the pass's budget, which
+skz.13's build refutes in 17.5M; they now run only when they could beat
+the structural cells by the margin (9 × structural below 8 × products).
+And the scan for signals read outside the side neither reserved its cost
+nor looked at the limit (6.52M under a 6.3M limit on a formula with a
+far-numbered tautology); it is now not started when the limit does not
+cover it, like the guide's tables and the pairing's scan. Round 25: that
+bound counted every product, also those above a middle compared bit (a
+22-bit mapped Booth toy at bit 25: 484 products, 331 under the bit; the
+product rows found nothing and the pass, 19.0M on skz.13's build, ran
+out); the bound now counts the products under the compared bit, whose
+place is the product bit the compared signal is on the random patterns.
+Since the review kept finding toy miters that skz.13's build refutes
+just under its budget, two grids of toy miters were compared, old build
+against new (mapped Booth, Booth with kogge-stone and ripple final
+adders, Booth against the mapped AND toy; 12 to 28 bits, several bits
+each; 200 miters): none lost on the final build, one gained. That scan
+also showed a rule added along the way (no cell whose output one of its
+leaves reads, which made the mapped AND toy refute) losing a mapped
+Booth toy the old build refutes (14 bits, bit 7): there the structural
+pass's re-reading of that half adder covers it. The rule is out; reading
+such a cell the other way round in the stage, as the structural pass
+does, is the way to have both. Round 26 was clean.
+
+**What is left, per cell** (measured on the final build):
+
+- `booth_dadda_mapped_and_and_wallace_origin_bit28` (search near 1500 s).
+  The ladder proves all of its 25 rungs for 8M work; the last step does
+  not close within 1000M (five times the allowance, 38 s). On builds
+  along the way it closed at 787M (the chain that follows the network,
+  no xor rung) and at about 950M spent on one four-carry xor rung (the
+  chain in plain order); kitten's cost here moves with every change of
+  numbering.
+  What blocks a cheap top: the network adds
+  row 4's top bit (gate 92) at columns 24 and 25, and at column 25 its
+  half adder over (148, 167), both outputs gates, loses to a full adder
+  over (171, 148, 167) whose carry 175 is a gate but whose sum the
+  network never computes (the rule that a full adder's third leaf wins).
+  Requiring a gate sum for that rule dropped two cells to odd cycles and
+  stalled a middle rung for the whole allowance (tried, reverted).
+- `booth_dadda_mapped_and_and_wallace_mapped_bit28` (search near 1600 s).
+  The pair and the weights are right now. Its AND side, a mapped Wallace
+  AND tree, leaves three gates no cell produces: 2060 (a2·b15 and not an
+  other term), 1589 (a11·b15·¬1587) and 3097 (under the compared bit):
+  products folded into the final adder's logic. The product rows give
+  201 cells against 224 structural (21 matches, most of them in columns
+  20 to 23, fail the exact check on cuts of ten signals), so the
+  structural cells stay.
+- `booth_dadda_mapped_and_booth_wallace_mapped` (a timeout). The pair is
+  now bit 30 of both sides, both read by function (132 and 121 cells).
+  It stops with neither side settled: with no product grid on either
+  side, each waits for the other's polynomial. A grid built from the
+  Booth operands would settle both. And the miter compares all 32 bits,
+  so a refutation needs every pair proven (the pass proves one).
+
+Debug: `SAT_STRUCT_DEBUG_LADDER=1` prints each rung as it is proven;
+`SAT_STRUCT_DEBUG_VOTES=1` the leaves that vote on a side's flip;
+`SAT_STRUCT_DEBUG_NO_GUIDE=1` and `SAT_STRUCT_DEBUG_NO_XOR_RUNG=1` (with
+`SAT_STRUCT_DEBUG=1`) build the chain in plain order and drop the xor
+rungs.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.

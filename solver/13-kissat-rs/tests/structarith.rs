@@ -786,6 +786,76 @@ fn booth_multiplier_mapped_with(c: &mut Circuit, a: &[i64], b: &[i64], reverse: 
     out
 }
 
+/// An AND multiplier as a mapper writes it: no gate computes a product the
+/// tree reads; the first full adder reading one takes its two inputs
+/// straight, its sum and carry one gate each over four signals (bead
+/// skz.14). A product that reaches the final adder is an and gate.
+fn and_multiplier_mapped(c: &mut Circuit, a: &[i64], b: &[i64]) -> Vec<i64> {
+    #[derive(Clone, Copy)]
+    enum Item {
+        Lit(i64),
+        Prod(i64, i64), // a_i and b_j, no gate of its own
+    }
+    let n = a.len();
+    let width = 2 * n;
+    let mut cols: Vec<Vec<Item>> = vec![Vec::new(); width + 2];
+    for i in 0..n {
+        for j in 0..n {
+            cols[i + j].push(Item::Prod(a[i], b[j]));
+        }
+    }
+    let lit = |c: &mut Circuit, it: Item| -> i64 {
+        match it {
+            Item::Lit(x) => x,
+            Item::Prod(x, y) => c.and2(x, y),
+        }
+    };
+    for k in 0..width {
+        while cols[k].len() > 2 {
+            let (x, y, z) = (cols[k].remove(0), cols[k].remove(0), cols[k].remove(0));
+            let (s, cy) = match (x, y, z) {
+                (Item::Prod(p, q), y, z) | (y, Item::Prod(p, q), z) | (y, z, Item::Prod(p, q)) => {
+                    let (y, z) = (lit(c, y), lit(c, z));
+                    let s = c.table(&[p, q, y, z], &|v| (v[0] && v[1]) ^ v[2] ^ v[3]);
+                    let cy = c.table(&[p, q, y, z], &|v| {
+                        let m = v[0] && v[1];
+                        (m && v[2]) || (m && v[3]) || (v[2] && v[3])
+                    });
+                    (s, cy)
+                }
+                (x, y, z) => {
+                    let (x, y, z) = (lit(c, x), lit(c, y), lit(c, z));
+                    c.full_adder(x, y, z, false)
+                }
+            };
+            cols[k].push(Item::Lit(s));
+            cols[k + 1].push(Item::Lit(cy));
+        }
+    }
+    let mut out = Vec::new();
+    let mut carry: Option<i64> = None;
+    for k in 0..width {
+        let col: Vec<Item> = cols[k].clone();
+        let mut bits: Vec<i64> = col.into_iter().map(|it| lit(c, it)).collect();
+        bits.extend(carry);
+        let (s, cy) = match bits.len() {
+            0 => (0, None),
+            1 => (bits[0], None),
+            2 => {
+                let (s, cy) = c.half_adder(bits[0], bits[1]);
+                (s, Some(cy))
+            }
+            _ => {
+                let (s, cy) = c.full_adder(bits[0], bits[1], bits[2], false);
+                (s, Some(cy))
+            }
+        };
+        out.push(s);
+        carry = cy;
+    }
+    out
+}
+
 /// The sum of columns of at most two bits by a prefix adder of `kind`
 /// (the final adders of `rows_multiplier`).
 fn prefix_sum(c: &mut Circuit, cols: &[Vec<i64>], kind: &str) -> Vec<i64> {
@@ -899,6 +969,9 @@ enum Miter {
     BoothMapped,
     /// two such Booth multipliers, their compressors in opposite orders
     BoothMappedBoth,
+    /// a Booth multiplier with a final adder of the kind against a mapped
+    /// AND multiplier (no gate per product the tree reads)
+    BoothAndMapped(&'static str),
     /// as Booth, with the rows' +neg half adders computed back from the row
     /// bit (`plus_neg_ha`) and a carry read at two columns (`doubled_carry`)
     BoothShapes(&'static str, bool, Option<(usize, bool)>),
@@ -912,6 +985,12 @@ fn miter(kind: Miter, n: usize, bit: usize, two_input: bool, path: &Path) {
 /// As `miter`; `pruned` keeps only the gates under the two compared bits
 /// (the lower sum bits gone, only the carry into the compared column).
 fn miter_pruned(kind: Miter, n: usize, bit: usize, two_input: bool, pruned: bool, path: &Path) {
+    miter_top(kind, n, bit, two_input, pruned, false, path)
+}
+
+/// As `miter_pruned`; `one_sided` writes the compare as a miter generator
+/// may: z implied by (bit A = bit B), two clauses and no gate, and z false.
+fn miter_top(kind: Miter, n: usize, bit: usize, two_input: bool, pruned: bool, one_sided: bool, path: &Path) {
     let mut c = Circuit::new();
     let a: Vec<i64> = (0..n).map(|_| c.var()).collect();
     let b: Vec<i64> = (0..n).map(|_| c.var()).collect();
@@ -955,6 +1034,7 @@ fn miter_pruned(kind: Miter, n: usize, bit: usize, two_input: bool, pruned: bool
         Miter::Booth(kind) => (booth_multiplier(&mut c, &a, &b, two_input, kind), column_multiplier(&mut c, &pp, two_input, None, 2 * n)),
         Miter::BoothMapped => (booth_multiplier_mapped(&mut c, &a, &b), column_multiplier(&mut c, &pp, two_input, None, 2 * n)),
         Miter::BoothMappedBoth => (booth_multiplier_mapped_with(&mut c, &a, &b, false), booth_multiplier_mapped_with(&mut c, &a, &b, true)),
+        Miter::BoothAndMapped(kind) => (booth_multiplier(&mut c, &a, &b, two_input, kind), and_multiplier_mapped(&mut c, &a, &b)),
         Miter::BoothShapes(kind, ha, doubled) => (booth_multiplier_with(&mut c, &a, &b, two_input, kind, ha, doubled), column_multiplier(&mut c, &pp, two_input, None, 2 * n)),
         Miter::FoldedSign => {
             let sign = c.var();
@@ -987,8 +1067,15 @@ fn miter_pruned(kind: Miter, n: usize, bit: usize, two_input: bool, pruned: bool
     if pruned {
         c.prune(&[oa[bit], ob[bit]]);
     }
-    let x = c.xor2(oa[bit], ob[bit]);
-    c.clauses.push(vec![x]);
+    if one_sided {
+        let z = c.var();
+        c.clauses.push(vec![z, -oa[bit], -ob[bit]]);
+        c.clauses.push(vec![z, oa[bit], ob[bit]]);
+        c.clauses.push(vec![-z]);
+    } else {
+        let x = c.xor2(oa[bit], ob[bit]);
+        c.clauses.push(vec![x]);
+    }
     c.write(path);
 }
 
@@ -1265,6 +1352,63 @@ fn a_mapped_booth_multiplier_is_read_by_function() {
         let stdout = run_arith_with_proof(&cnf, &proof);
         assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
         assert_eq!(gate(&cnf, &proof), "ok", "mapped Booth n={} bit={}: two-stage gate", n, bit);
+    }
+}
+
+#[test]
+fn a_mapped_and_multiplier_is_read_by_function() {
+    // bead SAT-playground-skz.14: no gate computes a product the AND
+    // side's tree reads (the first full adder reading one takes a_i and
+    // b_j straight); the Booth side's digits and data give the operands,
+    // and the AND side's cells come by function over the products. The
+    // answer must be right, the product rows must be the AND side's
+    // reading, and a proof the pass writes must pass the gate. (The pass
+    // does not fire on these toys yet: their Booth side, read by function
+    // too, has the generator's +1 half adder over a row bit and its sign
+    // whose sum is the product the row bit reads, which the structural
+    // pass reads the other way round and the stage does not; solver
+    // README, "Booth, step four".)
+    let fx = Fixture::new("structarith_and_mapped");
+    for (n, bit) in [(8usize, 12usize), (8, 13)] {
+        let cnf = fx.path(&format!("and_mapped_{}_{}.cnf", n, bit));
+        miter_top(Miter::BoothAndMapped("ripple"), n, bit, true, true, false, &cnf);
+        if let Ok(dir) = std::env::var("SAT_TEST_KEEP") {
+            let _ = std::fs::copy(&cnf, Path::new(&dir).join(format!("and_mapped_{}_{}.cnf", n, bit)));
+        }
+        let r = run(&cnf, &["--structarith=1"], &[("SAT_STRUCT_DEBUG", "1")]);
+        assert_eq!(r.status, "UNSATISFIABLE", "{} {}: {}\n{}", n, bit, r.stdout, r.stderr);
+        // "booth: side S: N cells by function (0 row gates, products) against M structural ones"
+        let line = r.stderr.lines().find(|l| l.contains("products) against")).unwrap_or("");
+        let nums: Vec<usize> = line.split(|c: char| !c.is_ascii_digit()).filter_map(|t| t.parse().ok()).collect();
+        assert!(nums.len() >= 4, "the product rows did not run on {} {}: {}", n, bit, r.stderr);
+        let (found, structural) = (nums[1], nums[nums.len() - 1]);
+        assert!(8 * found > 9 * structural, "{} {}: the product rows found {} cells against {} structural: {}", n, bit, found, structural, line);
+        if r.stdout.contains("arithmetic: two adder networks") {
+            let proof = fx.path(&format!("and_mapped_{}_{}.drat", n, bit));
+            let stdout = run_arith_with_proof(&cnf, &proof);
+            assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+            assert_eq!(gate(&cnf, &proof), "ok", "mapped AND n={} bit={}: two-stage gate", n, bit);
+        }
+    }
+}
+
+#[test]
+fn a_one_sided_compare_is_paired_by_function() {
+    // bead SAT-playground-skz.14: the compare written one-sided (z implied
+    // by bit A = bit B, z false) is no xor gate to walk; the pass pairs
+    // the two compared signals that are one function
+    let fx = Fixture::new("structarith_one_sided");
+    for (kind, name, n, bit) in [(Miter::ArrayColumn, "array_column", 6usize, 8usize), (Miter::BoothMapped, "booth_mapped", 8, 12)] {
+        let cnf = fx.path(&format!("one_sided_{}.cnf", name));
+        miter_top(kind, n, bit, false, false, true, &cnf);
+        let r = run(&cnf, &["--structarith=1"], &[("SAT_STRUCT_DEBUG", "1")]);
+        assert_eq!(r.status, "UNSATISFIABLE", "{}: {}\n{}", name, r.stdout, r.stderr);
+        assert!(r.stderr.contains("with one function"), "{}: the pairing by function did not run: {}", name, r.stderr);
+        assert!(r.stdout.contains("arithmetic: two adder networks"), "{}: {}\n{}", name, r.stdout, r.stderr);
+        let proof = fx.path(&format!("one_sided_{}.drat", name));
+        let stdout = run_arith_with_proof(&cnf, &proof);
+        assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+        assert_eq!(gate(&cnf, &proof), "ok", "one-sided {}: two-stage gate", name);
     }
 }
 
