@@ -74,6 +74,8 @@ const MAX_GATES: usize = 300_000; // beyond this the pass declines
 const MIN_COMPARE_CONE: usize = 16; // a compare's two inputs each have a cone at least this large
 const XOR_RUNG_SHARE: u64 = 32; // an xor rung of the ladder gets at most this fraction of the lemma allowance
 const RUNG_SHARE: u64 = 3; // a rung of the ladder (one carry) gets at most this fraction of the lemma allowance
+const SOLVER_STEP_CONFLICTS: u32 = 500_000; // the full solver's conflict limit on a last step kitten did not settle, per direction
+const SOLVER_STEP_SHARE: u64 = 2; // the full solver's work on such a step, in lemma allowances, both directions
 const COMPARE_OVERLAP: (usize, usize) = (3, 4); // two cones sharing less than 3/4 of the smaller are apart
 const MAX_BITS: usize = 120; // weights are powers of two in an i128
 
@@ -1196,6 +1198,83 @@ fn product_bit_of(net: &Netlist, a: &[i32], b: &[i32], out: i32, work: &mut u64,
         let w: u64 = (0..64).map(|t| (((product[t] >> c) & 1) as u64) << t).sum();
         w == wo || w == !wo
     })
+}
+
+/// The equivalence a = b over `clauses` by the full solver, for a lemma step
+/// kitten's allowance did not settle (bead skz.19): two runs, one with a and
+/// ~b as units, one with ~a and b, each with variable addition off (the
+/// clauses it adds are not implied by unit propagation) and no structure
+/// pass. A run's added clauses, each widened by its two negated units,
+/// follow one by one from `clauses` and the widened clauses before them by
+/// unit propagation (under the units the widened set is the run's own), and
+/// the widened empty clause is the equivalence's clause. Returns them in
+/// order, both runs; None when a run does not end in a refutation within
+/// `conflicts`, or the two runs' work passes `ticks`.
+fn solver_equivalence(clauses: &[Vec<i32>], a: i32, b: i32, conflicts: u32, ticks: u64, work: &mut u64, stop: &std::sync::atomic::AtomicBool) -> Option<Vec<Vec<i32>>> {
+    let mut out: Vec<Vec<i32>> = Vec::new();
+    let start = *work;
+    for (x, y) in [(a, -b), (-a, b)] {
+        let left = ticks.saturating_sub(*work - start);
+        if left == 0 || stop.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        let mut sub = Box::new(crate::internal::init());
+        for (name, value) in [
+            ("quiet", 1),
+            ("factor", 0),
+            ("preprocessfactor", 0),
+            ("structsym", 0),
+            ("structsymext", 0),
+            ("structparity", 0),
+            ("structcount", 0),
+            ("structcsp", 0),
+            ("structarith", 0),
+            ("gauss", 0),
+        ] {
+            crate::internal::set_option(&mut sub, name, value);
+        }
+        crate::internal::set_conflict_limit(&mut sub, conflicts);
+        crate::internal::set_ticks_limit(&mut sub, left);
+        crate::proof::init_captured_proof(&mut sub);
+        // (the parent's alarm stops it; its work reaches the parent's tick
+        // counter as it goes, for the parent's signal-time statistics)
+        sub.parent_stop = stop as *const std::sync::atomic::AtomicBool as usize;
+        sub.parent_ticks_base = *work;
+        sub.parent_ticks = work as *mut u64 as usize;
+        for c in clauses {
+            for &l in c {
+                crate::internal::add(&mut sub, l);
+            }
+            crate::internal::add(&mut sub, 0);
+        }
+        for u in [x, y] {
+            crate::internal::add(&mut sub, u);
+            crate::internal::add(&mut sub, 0);
+        }
+        let res = crate::internal::solve(&mut sub);
+        *work = sub.parent_ticks_base.saturating_add(sub.statistics.work_clock());
+        let lemmas = crate::proof::take_captured_proof(&mut sub);
+        crate::internal::release(*sub);
+        if res != 20 {
+            return None;
+        }
+        let widen = [-x, -y];
+        let had = out.len();
+        for mut c in lemmas {
+            if c.iter().any(|&l| l == x || l == y) {
+                continue; // (satisfied by a unit: no step under the units needs it)
+            }
+            c.extend_from_slice(&widen);
+            c.sort_unstable();
+            c.dedup();
+            out.push(c);
+        }
+        let mut last = widen.to_vec();
+        last.sort_unstable();
+        out.push(last);
+        *work += (out.len() - had) as u64; // (this run's clauses only: review round 29)
+    }
+    Some(out)
 }
 
 /// A leaf's function negated: the table's complement over its inputs.
@@ -5914,7 +5993,23 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             }
         }
         let before = *work;
-        let core = kitten_equivalence(&clauses, n_lit, sk_lit, lemma_budget, work, stop);
+        // (debug and tests: the last step straight to the full solver)
+        let solver_first = dbg && std::env::var_os("SAT_STRUCT_DEBUG_SOLVER_STEP").is_some();
+        let mut core = if solver_first { None } else { kitten_equivalence(&clauses, n_lit, sk_lit, lemma_budget, work, stop) };
+        // (kitten out of its allowance on the last step: the full solver
+        // on the same clauses, bounded by its own conflict limit, bead
+        // skz.19; on the dadda cell kitten ran out at 1000M work where the
+        // solver needs 3.4 s)
+        if core.is_none() && (*work >= lemma_budget || solver_first) && !stop.load(std::sync::atomic::Ordering::Relaxed) && SOLVER_STEP_CONFLICTS > 0 {
+            let at = *work;
+            // (at most two more lemma allowances for both runs, within the
+            // solver's own limit: the dadda cell's two runs take 214M)
+            let ticks = lemma_allowance.saturating_mul(SOLVER_STEP_SHARE).min(hard.saturating_sub(*work));
+            core = solver_equivalence(&clauses, n_lit, sk_lit, SOLVER_STEP_CONFLICTS, ticks, work, stop);
+            if dbg {
+                eprintln!("structarith: side {}: the solver on the last step: {} ({} clauses, work {})", s, if core.is_some() { "proven" } else { "not proven" }, core.as_ref().map_or(0, |c| c.len()), *work - at);
+            }
+        }
         extra.set(extra.get() + (*work - before));
         if dbg {
             eprintln!("structarith: side {}: work {} after the lemma ({} in all)", s, *work, *work - before_all);
@@ -5922,6 +6017,17 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         let Some(core) = core else {
             if dbg {
                 eprintln!("structarith: side {}: the network's carry {} is not the chain's bit {} ({} gate clauses, {} in all)", s, n_lit, sk_lit, gate_clauses.len(), clauses.len());
+                if let Ok(path) = std::env::var("SAT_STRUCT_DEBUG_HANDOFF") {
+                    // (debug, bead skz.19: the lemma's clause set as it stands,
+                    // the side's gates, the fresh definitions, the chain and
+                    // the proven rungs, with the open step's two literals)
+                    let mut text = format!("c handoff side {} carry {} chain {} rungs {}\n", s, n_lit, sk_lit, steps.len());
+                    for c in &clauses {
+                        text.push_str(&c.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(" "));
+                        text.push_str(" 0\n");
+                    }
+                    let _ = std::fs::write(format!("{}.{}", path, s), text);
+                }
             }
             return;
         };

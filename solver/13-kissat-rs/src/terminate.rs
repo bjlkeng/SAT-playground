@@ -78,6 +78,21 @@ pub fn report_termination(solver: &Solver, name: &str, file: &str, lineno: u32) 
 /// limit unset the added cost is one bool load on the not-flagged path.
 pub fn terminated(solver: &mut Solver, bit: i32, name: &str, file: &str, lineno: u32) -> bool {
     debug_assert!((0..64).contains(&bit));
+    // Not in kissat (bead skz.19): a nested solver's parent links.
+    if solver.parent_ticks != 0 {
+        // SAFETY: the parent's counter outlives the nested solve, and the
+        // parent's own reference to it is not used until the solve returns.
+        unsafe {
+            *(solver.parent_ticks as *mut u64) = solver.parent_ticks_base.saturating_add(solver.statistics.work_clock());
+        }
+    }
+    if solver.parent_stop != 0 {
+        // SAFETY: the parent's flag outlives the nested solve.
+        let parent = unsafe { &*(solver.parent_stop as *const std::sync::atomic::AtomicBool) };
+        if parent.load(Ordering::SeqCst) {
+            solver.termination.flagged.store(true, Ordering::SeqCst);
+        }
+    }
     if !solver.termination.flagged.load(Ordering::SeqCst) {
         if !crate::kimits::ticks_limit_hit(solver) {
             return false;

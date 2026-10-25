@@ -231,6 +231,16 @@ pub struct Solver {
     pub vivifying: bool,
 
     pub termination: Termination,
+    /// Not in kissat (bead skz.19): a solver the arithmetic pass runs on a
+    /// lemma step polls its parent's termination flag (a `*const
+    /// AtomicBool` as an address, 0 for none) and publishes its work so far
+    /// into its parent's tick counter (a `*mut u64` as an address, written
+    /// as `parent_ticks_base` plus its own work clock), both in
+    /// `terminate::terminated`, so the parent's alarm stops it and the
+    /// parent's signal-time statistics count its work.
+    pub parent_stop: usize,
+    pub parent_ticks: usize,
+    pub parent_ticks_base: u64,
 
     pub vars: u32,
     pub size: u32,

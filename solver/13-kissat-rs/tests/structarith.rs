@@ -39,6 +39,26 @@ fn run_arith_with_proof(cnf: &Path, proof: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// As `run_arith_with_proof`, with extra environment variables.
+fn run_arith_with_proof_env(cnf: &Path, proof: &Path, env: &[(&str, &str)]) -> String {
+    let mut cmd = Command::new(solver_bin());
+    for key in common::SOLVER_ENV_VARS {
+        cmd.env_remove(key);
+    }
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd
+        .arg("-n")
+        .args(common::STOCK_PATH)
+        .arg("--structarith=1")
+        .arg(cnf)
+        .arg(proof)
+        .output()
+        .expect("run sat-solver");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
 /// A circuit written as CNF, gate by gate (Tseitin clauses).
 struct Circuit {
     vars: i64,
@@ -1389,6 +1409,28 @@ fn a_mapped_and_multiplier_is_read_by_function() {
             assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
             assert_eq!(gate(&cnf, &proof), "ok", "mapped AND n={} bit={}: two-stage gate", n, bit);
         }
+    }
+}
+
+#[test]
+fn a_lemma_step_by_the_full_solver_is_checked() {
+    // bead SAT-playground-skz.19: the full solver proves a lemma's last
+    // step (here forced, kitten skipped), twice with the two literals as
+    // units; its added clauses, widened by the negated units, are logged as
+    // rup steps and the proof passes the gate
+    let fx = Fixture::new("structarith_solver_step");
+    let env = [("SAT_STRUCT_DEBUG", "1"), ("SAT_STRUCT_DEBUG_SOLVER_STEP", "1")];
+    for (kind, name, n, bit, two_input) in [(Miter::Rows("kogge-stone", "ripple"), "rows", 6usize, 8usize, false), (Miter::BoothMapped, "booth_mapped", 8, 12, false)] {
+        let cnf = fx.path(&format!("solver_step_{}.cnf", name));
+        miter(kind, n, bit, two_input, &cnf);
+        let r = run(&cnf, &["--structarith=1"], &env);
+        assert_eq!(r.status, "UNSATISFIABLE", "{}: {}\n{}", name, r.stdout, r.stderr);
+        assert!(r.stderr.contains("the solver on the last step: proven"), "{}: the full solver did not prove the step: {}", name, r.stderr);
+        assert!(r.stdout.contains("arithmetic: two adder networks"), "{}: {}\n{}", name, r.stdout, r.stderr);
+        let proof = fx.path(&format!("solver_step_{}.drat", name));
+        let stdout = run_arith_with_proof_env(&cnf, &proof, &env);
+        assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+        assert_eq!(gate(&cnf, &proof), "ok", "{}: two-stage gate with the solver's step", name);
     }
 }
 

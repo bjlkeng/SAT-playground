@@ -2367,6 +2367,71 @@ bit on the simulation (it found the column-17 flip);
 `SAT_STRUCT_DEBUG_LEAFCHECK=1` checks every primary leaf's recorded
 function against the simulation. Codex review, round 27: clean.
 
+## A lemma's last step by the full solver (2026-10-24; bead `SAT-playground-skz.19`)
+
+**Result.** `booth_dadda_mapped_and_and_wallace_origin_bit28` (search
+alone near 1,167 s on this host) is refuted in 11.4 s, with a proof
+through the gate (29.5 MB of VeriPB, 187 s to check). Eight of the ten
+Booth cells of 2025 now refute.
+
+**The bead's idea, measured first, does not work.** The bead proposed
+handing search what a failed lemma had proven: on this cell the ladder
+proves all 25 rungs (chain carries equal to network signals) and only
+the last step fails. The lemma's clauses that mention a fresh variable
+(the chain's definitions and the rungs, 1,926 clauses) were added to the
+formula and timed, four runs at once: 1,167 s unchanged and 1,180 s with
+the facts in the default configuration, 1,155 s and 1,199 s with every
+structure pass off. Search gains nothing: the facts tie side A's carries
+to a chain of the pass's own, and side B stays unrelated to it.
+
+**What works: the full solver on the last step.** The last step alone,
+written as a CNF (the lemma's 7,910 clauses and "the carry differs from
+the chain's bit"), takes the solver 3.97 s with every structure pass
+off, where kitten gave up at 1,000M work (38 s). So when kitten runs out
+of its allowance on a lemma's last step, the pass now runs the full
+solver on the same clauses, twice: once with the carry and the
+complemented chain bit as unit clauses, once the other way round, each
+with variable addition off and no structure pass. Every clause a run
+adds, with its two negated units added to it, follows from the lemma's
+clauses and the clauses logged before it by unit propagation (under the
+units the widened set is the run's own clause set), and the widened empty
+clause is the step's equivalence clause; the pass logs them as `rup`
+steps, as it logs kitten's learned clauses. Variable addition is off
+because its clauses are not implied by unit propagation: with it the
+solver's proof of this step held 426 RAT lemmas in drat-trim's core,
+without it none; VeriPB checks every logged clause, not only a core, and
+accepted all 208,451. The two runs get at most two lemma allowances of
+work (400M), within the solver's own work limit, and 500,000 conflicts
+each; on this cell they take 214M. Kitten keeps its full allowance
+first, so every lemma that works today is unchanged. The nested solver
+polls its parent's termination flag and writes its work so far into its
+parent's tick counter, both from its own termination poll: under
+`--time=9` the cell stops at 9.0 s, and a SIGTERM during the nested
+search prints a work clock that counts it (Codex review round 28 found
+both missing; round 29, that the first run's clauses were charged twice).
+
+**Tests and runs.** `a_lemma_step_by_the_full_solver_is_checked`
+(`tests/structarith.rs`): with `SAT_STRUCT_DEBUG_SOLVER_STEP=1` the last
+step goes straight to the full solver; a parallel-prefix toy and a mapped
+Booth toy are refuted and their proofs pass the gate. All 153 tests
+pass. `tools/arith_fuzz.py` seed 37000: 1,500 miters all agree with the
+stock solver, the pass fired on 777. The eight refuted Booth cells, each
+with a proof through the gate. The two toy grids of step four: none
+lost. The sweep of the pass alone over the 400 cells with the work clock
+limited to 700M, enough for the new allowance
+(`log/structarith-fire-2026-10-24-700M-skz19`, frozen binary
+d81a7528e0b6620b): 13 cells fire (10 on skz.13's build at 300M), the
+full solver ran on a last step in one cell only, the dadda cell, no
+panic, no answer changed.
+
+Debug: `SAT_STRUCT_DEBUG_HANDOFF=path` (with `SAT_STRUCT_DEBUG=1`) writes
+a failed lemma's clause set, with the open step's two literals, to
+`path.side`; `SAT_STRUCT_DEBUG_SOLVER_STEP=1` skips kitten on the last
+step. Codex review: rounds 28 and 29 changed the patch (above), round 30
+clean; the dadda cell's proof passes the gate on the final build (11.8 s
+to solve, 183 s to check). Open: the two-seed paired 400-cell run that
+decides whether this stays on by default.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.

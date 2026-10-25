@@ -35,6 +35,10 @@ pub struct Proof {
     deleted: u64,
     lines: u64,
     literals: u64,
+    /// (not in the C) the added lines kept in memory instead of written:
+    /// a solver the arithmetic pass runs on a lemma step reads its proof
+    /// back this way (deletions dropped), bead skz.19
+    capture: Option<Vec<Vec<i32>>>,
 }
 
 /// Port of `kissat_init_proof`.
@@ -49,8 +53,33 @@ pub fn init_proof(solver: &mut Solver, file: File, binary: bool) {
         deleted: 0,
         lines: 0,
         literals: 0,
+        capture: None,
     });
     solver.proof = Some(proof);
+}
+
+/// (not in the C) A proof whose added lines are kept in memory, read back
+/// by `take_captured_proof`; nothing is written (bead skz.19).
+pub fn init_captured_proof(solver: &mut Solver) {
+    debug_assert!(solver.proof.is_none());
+    let proof = Box::new(Proof {
+        buffer: Vec::new(),
+        binary: false,
+        file: File::new(),
+        line: Vec::new(),
+        added: 0,
+        deleted: 0,
+        lines: 0,
+        literals: 0,
+        capture: Some(Vec::new()),
+    });
+    solver.proof = Some(proof);
+}
+
+/// (not in the C) The added lines of a captured proof, in order; the proof
+/// is released.
+pub fn take_captured_proof(solver: &mut Solver) -> Vec<Vec<i32>> {
+    solver.proof.take().and_then(|mut p| p.capture.take()).unwrap_or_default()
 }
 
 // flush_buffer (static)
@@ -279,6 +308,11 @@ fn print_proof_line(solver: &Solver, proof: &mut Proof) {
 // print_added_proof_line (static)
 fn print_added_proof_line(solver: &Solver, proof: &mut Proof) {
     proof.added += 1;
+    if let Some(cap) = proof.capture.as_mut() {
+        proof.lines += 1;
+        cap.push(std::mem::take(&mut proof.line));
+        return;
+    }
     // check_repeated_proof_lines: assert-only (see header PORT NOTE).
     if proof.binary {
         write_char(proof, b'a');
@@ -289,6 +323,11 @@ fn print_added_proof_line(solver: &Solver, proof: &mut Proof) {
 // print_delete_proof_line (static)
 fn print_delete_proof_line(solver: &Solver, proof: &mut Proof) {
     proof.deleted += 1;
+    if proof.capture.is_some() {
+        proof.lines += 1;
+        proof.line.clear();
+        return;
+    }
     write_char(proof, b'd');
     if !proof.binary {
         write_char(proof, b' ');
