@@ -526,6 +526,17 @@ fn the_sorter_pass_stays_within_the_tick_limit() {
         let r = run(&cnf, &["--structsort=1"], &[("SAT_LIMIT_TICKS", &value)]);
         assert!(r.work() <= limit + limit / 10, "limit {}: work {} ({})", limit, r.work(), r.status);
     }
+    // Codex review round 3: 300,000 copies of a unit on an unused variable
+    // made the constants scan go past a limit of 1,220,000 (to 1,521,592)
+    let (vars, mut clauses) = toy("bubble", "pancake", 4, 3, false);
+    let z = vars + 1;
+    for _ in 0..300_000 {
+        clauses.push(vec![-z]);
+    }
+    let cnf = fx.path("units.cnf");
+    write_cnf(&cnf, z, &clauses);
+    let r = run(&cnf, &["--structsort=1"], &[("SAT_LIMIT_TICKS", "1220000")]);
+    assert!(r.work() <= 1_220_000 + 122_000, "work {} ({})", r.work(), r.status);
 }
 
 #[test]

@@ -399,6 +399,9 @@ fn read_top(f: &Formula, groups: &Groups, work: &mut u64, stopped: &dyn Fn(u64) 
             }
         }
         let cg = gate_at(cv, work)?;
+        if cg.arity() > MAX_WIDTH {
+            return None; // (before its inputs are read)
+        }
         let mut xors: Vec<(i32, bool)> = Vec::new();
         let mut leaf_value: HashMap<i32, bool> = HashMap::new();
         for x in cg.vars() {
@@ -492,7 +495,13 @@ fn read_sorter(f: &Formula, groups: &Groups, top: &Top, work: &mut u64, stopped:
             return Err("budget".into());
         }
     }
-    // constants and the root
+    // constants and the root: a visit per literal and clause, and the
+    // table of variables, reserved in full first (Codex review round 3)
+    let scan = f.lits.len() as u64 + f.len() as u64 + 2 * nv as u64;
+    if stopped(work.saturating_add(scan)) {
+        return Err("budget".into());
+    }
+    *work += f.len() as u64 + 2 * nv as u64;
     let mut constant: HashMap<i32, bool> = HashMap::new();
     let mut present = vec![false; nv];
     for i in 0..f.len() {
@@ -768,6 +777,9 @@ fn read_sorter(f: &Formula, groups: &Groups, top: &Top, work: &mut u64, stopped:
             val[v] = g.eval(&val);
             *work += 1u64 << g.arity().min(MAX_SUPPORT);
         }
+        if v % 1024 == 0 && stopped(*work) {
+            return Err("budget".into());
+        }
     }
     if stopped(*work) {
         return Err("budget".into());
@@ -820,11 +832,15 @@ fn read_sorter(f: &Formula, groups: &Groups, top: &Top, work: &mut u64, stopped:
 
 /// The clauses of every gate in the cone of a side's outputs, and the
 /// units of the constants it reads.
-fn side_clauses(f: &Formula, groups: &Groups, s: &Sorter, si: usize, work: &mut u64) -> Vec<Vec<i32>> {
+fn side_clauses(f: &Formula, groups: &Groups, s: &Sorter, si: usize, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Option<Vec<Vec<i32>>> {
     let mut seen: HashSet<i32> = HashSet::new();
     let mut stack: Vec<i32> = s.sides[si].1.iter().flat_map(|&wid| s.words[wid].iter().copied()).collect();
     let mut out: Vec<Vec<i32>> = Vec::new();
     while let Some(v) = stack.pop() {
+        *work += 1;
+        if stopped(*work) {
+            return None;
+        }
         if !seen.insert(v) {
             continue;
         }
@@ -840,7 +856,7 @@ fn side_clauses(f: &Formula, groups: &Groups, s: &Sorter, si: usize, work: &mut 
             stack.extend(g.vars());
         }
     }
-    out
+    Some(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -1176,7 +1192,7 @@ fn refute(f: &Formula, groups: &Groups, s: &Sorter, mut proof: Option<&mut Write
     let mut sorted: Vec<Vec<u64>> = vec![Vec::new(), Vec::new()];
     let mut lemma_clauses = 0usize;
     for si in 0..2 {
-        let base = side_clauses(f, groups, s, si, work);
+        let base = side_clauses(f, groups, s, si, work, &stopped)?;
         let order = s.sides[si].1.clone();
         for k in 0..s.n - 1 {
             if stopped(*work) {
