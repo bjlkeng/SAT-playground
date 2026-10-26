@@ -2429,8 +2429,35 @@ a failed lemma's clause set, with the open step's two literals, to
 `path.side`; `SAT_STRUCT_DEBUG_SOLVER_STEP=1` skips kitten on the last
 step. Codex review: rounds 28 and 29 changed the patch (above), round 30
 clean; the dadda cell's proof passes the gate on the final build (11.8 s
-to solve, 183 s to check). Open: the two-seed paired 400-cell run that
-decides whether this stays on by default.
+to solve, 183 s to check).
+
+**The paired run (2026-10-25/26).** Two seeds, 400 cells, 1,800 s, 32
+jobs, every answer checked, one frozen build of everything through this
+bead (`solver/13-j4-lemma-snapshot`, commit 6cbb4eb), the arithmetic
+pass off and on (`log/abtest-struct-lemma-400-2026-10-25-17-34-31`),
+compared with the same run of skz.4's build
+(`log/abtest-struct-booth-400-2026-10-23-15-34-11`):
+
+| | seed 0 | seed 1 |
+|---|---|---|
+| solved, pass off / on | 313 / 316 | 314 / 319 |
+| skz.4's build, pass off / on | 312 / 316 | 315 / 319 |
+| wall PAR-2, pass on (skz.4's) | 384,563 (388,992) | 374,380 (378,985) |
+| tick PAR-2, pass on (skz.4's) | 9.994e12 (1.0250e13) | 9.717e12 (9.987e12) |
+| its solved part (skz.4's) | 2.385e12 (2.585e12) | 2.359e12 (2.566e12) |
+
+No answer contradicts another, no check failed (1,169 verified, 93
+checker timeouts). The solved count is skz.4's: the cells skz.13, 14 and
+19 refute were solved by search within 1,800 s before, now in seconds
+(seed 0 / seed 1): `wallace_mapped_and_default_origin_bit28` 1,339 / 1,229
+s to 1 / 2 s, `wallace_mapped_and_and_wallace_origin_bit28` 1,453 / 1,446
+s to 2 / 2 s, bit29 601 / 648 s to 1 / 1 s, and the dadda cell 1,487 /
+1,525 s to 14 / 14 s; against skz.4's pass-on arms the only status
+changes are one each way on seed 0, both at the limit (`oddball_29_4_ttf`
+solved at 1,772 s, `bp4_BC012_CSO_FPBEQ_FPBLE_ZR`, solved at 1,738 s
+before, a timeout), none on seed 1. Wall PAR-2 1.1 and 1.2% lower, tick
+PAR-2 2.5 and 2.7% lower, its deterministic solved part 7.7 and 8.1%
+lower. The fallback stays on by default.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 
