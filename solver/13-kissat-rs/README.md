@@ -1281,7 +1281,9 @@ cells (three of them both-seed-unsolved) and the Booth-vs-Booth one.
 Beyond multipliers the arithmetic cells need other backends: factoring
 and cubes are number theory, the divider needs the restoring-division
 argument, `bp4` needs subtractor and compare blocks, and the sorters
-need comparator-network reasoning. The counting families (oddball,
+need comparator-network reasoning (done 2026-10-26: both sides are
+networks of swap units, so a certificate counts by thresholds; see
+"Sorter miters: census and certificate"). The counting families (oddball,
 timetables, rooks) have no circuit to recover.
 
 **Cardinality encoding census (2026-10-19/20; bead `skz.5`;
@@ -2458,6 +2460,195 @@ solved at 1,772 s, `bp4_BC012_CSO_FPBEQ_FPBLE_ZR`, solved at 1,738 s
 before, a timeout), none on seed 1. Wall PAR-2 1.1 and 1.2% lower, tick
 PAR-2 2.5 and 2.7% lower, its deterministic solved part 7.7 and 8.1%
 lower. The fallback stays on by default.
+
+## Sorter miters: census and certificate (2026-10-26; bead `SAT-playground-skz.18`)
+
+**Result.** The seven sorter miters of 2025 are two sorting programs on
+the same N words of W bits, built only from *swap units*. A swap unit is
+W pairs of 2-to-1 multiplexers under one select signal s, over two words
+X and Y: the outputs are C = s ? Y : X and D = s ? X : Y. Whatever s is,
+{C, D} = {X, Y}, so each side's output is a rearrangement of its input by
+construction. What is left to prove is that each side's output is
+sorted, and that part is easy for CDCL: at most 1.5 s per adjacent output
+pair. The hard part for search is the counting ("same multiset"), and
+in a pseudo-Boolean proof it is local, unit by unit. A Python prototype
+of the certificate, with no solver code, refutes all seven cells. That
+includes the two cells that time out on both seeds today. The prototype
+takes 1.4-3.3 s of solver sub-calls per cell, and VeriPB checks each proof
+in 2.6-22 s, through `tools/proof_gate.py`. Today's search takes 148-682 s
+on these cells, or times out. **Decision:** build this certificate as a
+structure pass in solver 13 (bead `SAT-playground-skz.22`).
+
+**The census** (`tools/sorter_census.py`, table
+`benchmarks/rl/sorter_2025.tsv`). The files list every gate after its
+inputs, so the clauses whose largest variable is v are v's gate. Every
+such group is a definition (checked by truth table). The unit clauses on
+variables no group defines are constants (index bits that are known to be
+0). The input words are variables 1..N·W, least significant bit first.
+
+| cell | side A | side B | search today (s, seed 0 / 1) |
+|---|---|---|---|
+| `BubbleVsPancakeSort_8_4` | bubble: 28 compare-exchanges | pancake: 50 swaps, 112 compares, 743 index gates | 594 / 682 |
+| `BubbleVsPancakeSort_7_6` | bubble: 21 | pancake: 34 swaps, 75 compares, 503 index gates | 314 / 258 |
+| `BubbleVsPancakeSort_9_4` | bubble: 36 | pancake: 70 swaps, 157 compares, 1,100 index gates | timeout / timeout |
+| `BubbleVsPancakeSort_8_6` | bubble: 28 | pancake: 50 swaps, 112 compares, 785 index gates | timeout / timeout |
+| `PancakeVsSelectionSort_6_6` | selection: 15 swaps, 54 compares, 339 index gates | pancake: 22 swaps, 48 compares, 297 index gates | 204 / 148 |
+| `PancakeVsSelectionSort_6_7` | selection: 15, 54, 349 | pancake: 22, 48, 307 | 256 / 276 |
+| `PancakeVsSelectionSort_6_8` | selection: 15, 54, 359 | pancake: 22, 48, 317 | 592 / 521 |
+
+(Search times: `log/abtest-struct-lemma-400-2026-10-25-17-34-31`, every
+pass on, 1,800 s.) What each side is:
+
+- **Bubble sort** is a pure comparator network: N(N−1)/2 compare-exchange
+  units, where each select is the comparison X > Y of the unit's own two
+  words. There is nothing else on that side. The comparators are written as
+  an OR chain of "a_i and not b_i and the higher bits equal".
+- **Pancake sort**, per pass over the first `size` words: the index of the
+  first maximum is kept in a binary register (⌈log2 N⌉ bits). "x_j > x[m]"
+  is read as an OR over i of "m = i and x_j > x_i", so the side compares
+  every pair of current words (the 112 compares). Then come the two flips,
+  as conditional swaps: under "m = c" the swaps of flip(0..c), and under
+  "m ≠ size−1" the swaps of the second flip, flip(0..size−1). The circuit
+  merges the second flip with the first flip's c = size−1 case, since two
+  equal flips cancel. Of the 50 swaps on 8 words, 7 have a select that
+  simulation finds equal to a comparison of the unit's own two words.
+  Those are the last swap of a pass. The index logic computes them anyway.
+- **Selection sort**, per position i: the index of the first minimum of the
+  rest, the same way, then one conditional swap of words i and j under
+  "m = j" for each later j (15 swaps on 6 words).
+- **The miter** has an XOR per output bit pair (position k of one side
+  against position k of the other), an OR per word, and an OR of those,
+  asserted.
+
+Every multiplexer belongs to a swap unit. No multiplexer could copy a
+value. Within a side, every word feeds exactly one unit. Simulation on 512
+random inputs, a third of them with many equal words, finds both sides
+sorting ascending in every cell. This explains the netlist census of
+2026-10-19, which found 88-91 % gates and no adders in these cells.
+
+**Where the difficulty is** (`log/sorter-lemmas-2026-10-26`; solver 13,
+every default on, 16 runs at once, 300 s each). Each side alone, plus
+"out_k > out_k+1" asserted for one adjacent pair:
+
+| cell | bubble or selection side: worst pair / all pairs (s) | pancake side (s) | the miter on output position k alone, k = 0, 1, ... (s) |
+|---|---|---|---|
+| `BubbleVsPancakeSort_7_6` | 0.12 / 0.6 | 0.85 / 2.4 | 46, 164, 153, 97, 27, 6, 1 |
+| `BubbleVsPancakeSort_8_4` | 0.08 / 0.6 | 0.46 / 1.7 | 28, 93, 108, 69, 25, 9, 3, 0 |
+| `BubbleVsPancakeSort_8_6` | 0.23 / 1.0 | 1.50 / 4.4 | 263, >300, >300, >300, >300, 66, 17, 1 |
+| `BubbleVsPancakeSort_9_4` | 0.09 / 0.7 | 0.83 / 3.0 | 83, >300, >300, >300, 155, 70, 16, 5, 1 |
+| `PancakeVsSelectionSort_6_6` | 0.43 / 1.2 | 0.37 / 1.1 | 9, 34, 56, 61, 33, 8 |
+| `PancakeVsSelectionSort_6_7` | 0.71 / 1.6 | 0.59 / 1.5 | 21, 70, 143, 130, 71, 17 |
+| `PancakeVsSelectionSort_6_8` | 1.03 / 2.2 | 1.11 / 2.4 | 29, 109, 259, 233, 119, 37 |
+
+"Sorted" is easy for every side. Comparing one output position is hard,
+hardest in the middle, because that is where the multiset matters.
+Splitting the miter by position would not help.
+
+**The certificate** (`tools/sorter_proof.py`, a VeriPB 3 refutation over
+the input's clause numbering). Here W-bit words are integers
+value(x) = Σ 2^i x_i, and M = 2^W − 1.
+
+1. *Sorted, per side and adjacent pair (k, k+1).* Fresh carry variables
+   compute out_k + ~out_k+1 as a ripple carry chain (a majority per bit,
+   added by `red` steps). Its carry out says out_k > out_k+1. Solver 13
+   refutes the side's cone of clauses plus that carry. This is the stock
+   path with variable addition off (`--factor=false`), so every DRAT
+   addition is a RUP clause over the lemma's own variables. The lemmas
+   become the `rup` steps of one `pbc`, which gives "no carry out". Each
+   carry cell's three "at least two inputs → carry" clauses, summed and
+   divided by 2, give one inequality. Their sum weighted by 2^i, plus 2^W
+   times "no carry out", is value(out_k+1) − value(out_k) ≥ 0.
+2. *Thresholds.* For every word w and every t in 1..M, a fresh g(w,t) with
+   g → value(w) ≥ t and ¬g → value(w) ≤ t − 1 (two `red` steps).
+3. *Per swap unit and t*, the count is kept:
+   g(C,t) + g(D,t) = g(X,t) + g(Y,t). The multiplexer clauses summed by
+   bit give "s → C = Y" and the other three cases as word inequalities.
+   Each of the eight "case and g(src,t) → g(dst,t)" clauses is then one
+   `pol` line (a word inequality plus two threshold definitions, divided
+   by M). The two count inequalities are one `pbc` each, with a four-step
+   case split on s.
+4. *Per side and t*, the units' count inequalities summed: every inner
+   word cancels, so the number of outputs ≥ t equals the number of inputs
+   ≥ t. The two sides' sums are then subtracted.
+5. *Per side, t and k*, the clause g(out_k,t) → g(out_k+1,t), from step 1
+   (one `pol` line). Then per t and k, one `rup` step each way gives
+   g(A_k,t) = g(B_k,t). Two sorted 0-1 vectors with the same count are
+   equal, and unit propagation finds that: one side's ones run to the top,
+   the other side's zeros run to the bottom, and the count constraint
+   breaks.
+6. *Bits from thresholds*, per output word, top bit first. For bit i and
+   each value h of the higher bits, one `rup` clause at the threshold
+   h + 2^i, then a binary tree of `rup` steps that removes h (about
+   2^(W+2) lines per word).
+7. The miter's XORs are false (two `rup` steps each), so the asserted OR
+   is false, which ends the refutation.
+
+The proof never trusts the reading. A wrong swap unit, position or side
+makes some step fail in VeriPB. The prover also checks before writing
+that each side's units telescope from the N inputs to the N outputs.
+
+**Toy check first** (`log/sorter-toy-proof/`, summary
+`log/sorter-toy-proof-summary.txt`). The toys are generated in the real
+cells' gate shapes: the same comparator gates, binary index registers,
+the merged pancake flips, and an inverter where a select is negated. They
+are read back with the census code, not with the generator's own data.
+Every pair of bubble, pancake and selection was tried, at 4×3 up to 6×4
+(N words × W bits), plus 4×2, 3×2 and 2×1. All 10 proofs are accepted by
+VeriPB and by `tools/proof_gate.py`. On the 6×4 toys the direct solve
+takes 7-12 s, the certificate 0.4-0.6 s of sub-calls and 0.2-0.4 s of
+checking. On each of the nine toys with N ≥ 3 and W ≥ 2, three tampered
+proofs are rejected (27 rejections):
+
+- one unit's count inequality off by one;
+- one unit left out of a side's sum;
+- a carry cell summed at the wrong weight.
+
+Below that size, unit propagation over the rest implies the tampered step,
+so the tool refuses to run the tamper checks there. As a negative control,
+a toy whose side A skips its first exchange is a satisfiable miter. On it
+the solver finds the false "pair k is in order" claim satisfiable, and no
+proof is written (two such toys).
+
+Two things were learned writing the proof:
+
+- Kissat 4's `factor` pass (bounded variable addition) puts RAT clauses on
+  fresh variables into the DRAT. Those are not `rup` steps, and VeriPB
+  rejected the 6×4 toys until `--factor=false`. skz.19 found the same for
+  its lemma step. The prover now refuses any DRAT addition with a
+  variable outside the lemma.
+- The sortedness facts must come before the thresholds in the proof.
+  VeriPB checks every `rup` step over the whole database, and the DRAT
+  lemmas are most of the proof's steps.
+
+**The seven real cells** (`log/sorter-proof-2026-10-26/<cell>`; this host,
+72 threads, the seven cells at once):
+
+| cell | sub-calls (s) | DRAT lemmas | proof lines (MB) | VeriPB (s) | search today (s) |
+|---|---:|---:|---:|---:|---|
+| `BubbleVsPancakeSort_8_4` | 1.4 | 61,490 | 92,043 (4.9) | 2.6 | 594 / 682 |
+| `BubbleVsPancakeSort_7_6` | 1.7 | 88,243 | 177,230 (10.2) | 7.0 | 314 / 258 |
+| `BubbleVsPancakeSort_9_4` | 2.0 | 102,901 | 144,028 (8.3) | 5.7 | timeout |
+| `BubbleVsPancakeSort_8_6` | 3.3 | 170,486 | 295,219 (18.9) | 19.9 | timeout |
+| `PancakeVsSelectionSort_6_6` | 1.5 | 74,938 | 135,899 (8.3) | 5.3 | 204 / 148 |
+| `PancakeVsSelectionSort_6_7` | 1.9 | 98,719 | 220,722 (13.1) | 10.5 | 256 / 276 |
+| `PancakeVsSelectionSort_6_8` | 3.0 | 161,878 | 405,851 (24.6) | 21.7 | 592 / 521 |
+
+Every proof passes `tools/proof_gate.py`, and every cell's three tampered
+proofs are rejected. The threshold part grows with 2^W (W = 8 is the
+largest here). Sixteen-bit words would need a per-bit argument instead,
+but no sorter cell has them.
+
+**What the census does not cover.** The prototype assumes:
+
+- every data move is a swap unit (a sorter that copies values through
+  plain multiplexers, such as merging into a new array, would need a
+  different count argument; the census found none);
+- the order is ascending;
+- N ≤ 2^W, so that simulation can name the positions; otherwise it would
+  use the lanes.
+
+All seven cells meet all three. The 2026 suite has three
+`BubbleVsPancakeSort` cells by file name; they were not analysed.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 
