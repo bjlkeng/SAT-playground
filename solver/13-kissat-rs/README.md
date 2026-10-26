@@ -2626,17 +2626,24 @@ Two things were learned writing the proof:
 | cell | sub-calls (s) | DRAT lemmas | proof lines (MB) | VeriPB (s) | search today (s) |
 |---|---:|---:|---:|---:|---|
 | `BubbleVsPancakeSort_8_4` | 1.4 | 61,490 | 92,043 (4.9) | 2.6 | 594 / 682 |
-| `BubbleVsPancakeSort_7_6` | 1.7 | 88,243 | 177,230 (10.2) | 7.0 | 314 / 258 |
+| `BubbleVsPancakeSort_7_6` | 1.8 | 88,243 | 177,230 (10.2) | 7.2 | 314 / 258 |
 | `BubbleVsPancakeSort_9_4` | 2.0 | 102,901 | 144,028 (8.3) | 5.7 | timeout |
-| `BubbleVsPancakeSort_8_6` | 3.3 | 170,486 | 295,219 (18.9) | 19.9 | timeout |
+| `BubbleVsPancakeSort_8_6` | 3.3 | 170,486 | 295,219 (18.9) | 19.1 | timeout |
 | `PancakeVsSelectionSort_6_6` | 1.5 | 74,938 | 135,899 (8.3) | 5.3 | 204 / 148 |
-| `PancakeVsSelectionSort_6_7` | 1.9 | 98,719 | 220,722 (13.1) | 10.5 | 256 / 276 |
-| `PancakeVsSelectionSort_6_8` | 3.0 | 161,878 | 405,851 (24.6) | 21.7 | 592 / 521 |
+| `PancakeVsSelectionSort_6_7` | 1.9 | 98,719 | 220,722 (13.1) | 10.1 | 256 / 276 |
+| `PancakeVsSelectionSort_6_8` | 3.0 | 161,878 | 405,851 (24.6) | 21.9 | 592 / 521 |
 
 Every proof passes `tools/proof_gate.py`, and every cell's three tampered
 proofs are rejected. The threshold part grows with 2^W (W = 8 is the
 largest here). Sixteen-bit words would need a per-bit argument instead,
 but no sorter cell has them.
+
+Codex review: rounds 1 to 3 changed the tools. The CNF reader now reads
+clauses as the gate does (a clause may span lines). The multiplexer sums
+reuse an input clause only when its literals are distinct. The
+broken-sorter control passes only on the solver's refutation, not on a
+timeout. A unit is counted by its distinct literals. Round 4 was clean.
+Every number above comes from the final version.
 
 **What the census does not cover.** The prototype assumes:
 
