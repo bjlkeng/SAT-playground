@@ -232,6 +232,8 @@ structure set's gain, +29 in both seeds, is a deterministic one.
 | `--structcountticks=N` | the counting pass's own work limit in thousands (default 20K, 20M), counted from where the other passes stopped | since 2026-10-13 |
 | `--structarith=1` | linear arithmetic: a miter of two multipliers over shared partial products refuted by summing their adder cells (`src/structarith.rs`); runs after symmetry, before counting, within `structarithticks` | **default on** since 2026-10-20 (313 v 312; below, "The linear arithmetic pass") |
 | `--structarithticks=N` | the arithmetic pass's own work limit in thousands (default 20K, 20M), counted from where the earlier passes stopped | since 2026-10-19 |
+| `--structsort=1` | sorters: a miter of two networks of swap units over the same words, refuted by sortedness lemmas and a count by thresholds (`src/structsort.rs`); runs after the arithmetic pass, before counting, within `structsortticks` | off by default; bead `SAT-playground-skz.22` (below, "The sorter pass") |
+| `--structsortticks=N` | the sorter pass's own work limit in thousands (default 2M, 2G), counted from where the earlier passes stopped | since 2026-10-26 |
 | `--structcsp=1` | one-hot CSP decoding, SAT only | bead S.4, not yet |
 | `--structsymext=1` | general automorphisms through an external tool (measurement only) | bead S.2 step two, not yet |
 | `--structclauses=N` | the pass buffers at most N clauses (default 10M); past that it is off for the run | |
@@ -2656,6 +2658,93 @@ Every number above comes from the final version.
 
 All seven cells meet all three. The 2026 suite has three
 `BubbleVsPancakeSort` cells by file name; they were not analysed.
+
+## The sorter pass (2026-10-26; bead `SAT-playground-skz.22`)
+
+**Result.** `--structsort=1` refutes the seven 2025 sorter miters in
+1.3-3.4 s each, including the two that time out on both seeds today.
+Every proof passes `tools/proof_gate.py`. The pass is the prototype of
+the section above, ported to the solver (`src/structsort.rs`); it is off
+by default until the paired run below.
+
+**What it does.** It runs after the arithmetic pass and before the
+counting pass, within its own limit `structsortticks` (default 2M
+thousand, counted from where the earlier passes stopped):
+
+1. It reads the formula as a circuit in file order: the clauses whose
+   largest variable is v are v's gate, and each group must define v (a
+   truth table over at most six inputs, or a wide and/or). A unit on any
+   other variable is a constant, and the one unit on a gate is the
+   miter's root. Under the root there must be N gates of W xors each, and
+   with every xor "equal" the root must be false. Every clause belongs to
+   a gate or is a unit, so the reading is exact: an extra constraint
+   anywhere makes some group fail, and the pass declines.
+2. It finds the swap units, the two sides and the compared words, checks
+   that each side's units telescope from the N input words to its N
+   output words, and takes the output positions from simulation (from
+   the lanes when N words of W bits cannot all differ).
+3. Per side and adjacent output pair, the full solver (variable addition
+   and every structure pass off) refutes "out_k > out_k+1". Each lemma is
+   renumbered 1..k for the sub-solver, so its tables are the lemma's size.
+   Its clauses are the `rup` steps of one `pbc`.
+4. With a proof file it writes the count by thresholds (steps 2-7 of the
+   prototype) and ends in the empty clause. Without one, steps 1-3 are
+   the whole check.
+
+**Kitten was tried first and dropped.** The bead asked for kitten with
+the full solver as fallback, as skz.19 does. On these lemmas kitten is
+slower and its core clauses are long: `BubbleVsPancakeSort_8_4` took 6.4 s
+with a 33 MB proof, the full solver 1.2 s and 4 MB. The pass uses the
+full solver alone.
+
+**Tests** (`tests/structsort.rs`, 10 tests). The toy generator is
+`tools/sorter_proof.py`'s, gate for gate. Seven toy shapes are refuted
+with proofs through the gate. A tampered proof fails the gate. A broken
+sorter is not refuted. A pigeonhole formula sees the stock search. A
+refutation without a proof file needs no search. Repeated literals and a
+doubled constant unit keep a checked proof. The rest are the budget
+cases the review found (below), each run under tick limits that it may
+pass by at most 10%.
+
+**The seven cells** (this host, the seven at once, every other default
+on; `log/structsort-cells-2026-10-26`, rerun after review round 7):
+
+| cell | time (s) | proof (MB) | search today (s, seed 0 / 1) |
+|---|---:|---:|---|
+| `BubbleVsPancakeSort_8_4` | 1.25 | 3.9 | 594 / 682 |
+| `BubbleVsPancakeSort_7_6` | 1.88 | 8.8 | 314 / 258 |
+| `BubbleVsPancakeSort_9_4` | 2.12 | 6.9 | timeout / timeout |
+| `BubbleVsPancakeSort_8_6` | 3.21 | 16 | timeout / timeout |
+| `PancakeVsSelectionSort_6_6` | 1.43 | 6.2 | 204 / 148 |
+| `PancakeVsSelectionSort_6_7` | 2.20 | 12 | 256 / 276 |
+| `PancakeVsSelectionSort_6_8` | 3.39 | 23 | 592 / 521 |
+
+The gate checks these proofs in 2.5-21 s (VeriPB;
+`log/structsort-cells-2026-10-26/gate_times_final.tsv`).
+
+**On the other cells** (`log/structsort-sweep-2026-10-26`: every other
+pass off, `--conflicts=1`, the 400 cells). The pass fires on the seven
+sorter cells and no others. On 337 cells it declines at a median of 568K
+work (largest 44M). The other 56 have more than 10M clauses, where the
+structure pass is off.
+
+**The paired run** (two seeds, 400 cells, 1,800 s, 32 jobs, every answer
+checked; frozen build `solver/13-j5-sort-snapshot`, commit 769e818;
+`log/abtest-struct-sort-400-2026-10-26-18-39-26`): to be filled in when
+it ends.
+
+**Codex review.** Rounds 1-7 changed the patch. Every finding was work
+accounting: a step charged its work only after it ran, or ran without a
+look at the limit, so a tick limit could be passed. The fixes:
+
+- every read, scan, table and walk reserves its cost first or polls as
+  it goes (`reserve()`);
+- each lemma's proof block is reserved whole, since a `pbc` block cannot
+  stop halfway;
+- root detection stops at the second root (it was quadratic);
+- buffer chains resolve in one lookup (they were walked again each time);
+- the sub-solver sees each lemma numbered densely (a stray variable
+  2,000,000 gave every sub-call a two-million-entry table).
 
 ## Notes from the RL scheduler's first steps (plan §10)
 
