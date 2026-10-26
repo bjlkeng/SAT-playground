@@ -537,6 +537,20 @@ fn the_sorter_pass_stays_within_the_tick_limit() {
     write_cnf(&cnf, z, &clauses);
     let r = run(&cnf, &["--structsort=1"], &[("SAT_LIMIT_TICKS", "1220000")]);
     assert!(r.work() <= 1_220_000 + 122_000, "work {} ({})", r.work(), r.status);
+    // Codex review round 4: one unused unit on variable 2,000,000 makes
+    // every table of the reading two million long; each is reserved before
+    // it is built, so no limit is passed by more than the 10% the others
+    // allow
+    let (vars, mut clauses) = toy("bubble", "pancake", 4, 3, false);
+    assert!(vars < 2_000_000);
+    clauses.push(vec![-2_000_000]);
+    let cnf = fx.path("sparse.cnf");
+    write_cnf(&cnf, 2_000_000, &clauses);
+    for limit in [6_100_000u64, 12_100_000, 14_100_000, 20_100_000] {
+        let value = limit.to_string();
+        let r = run(&cnf, &["--structsort=1"], &[("SAT_LIMIT_TICKS", &value)]);
+        assert!(r.work() <= limit + limit / 10, "limit {}: work {} ({})", limit, r.work(), r.status);
+    }
 }
 
 #[test]

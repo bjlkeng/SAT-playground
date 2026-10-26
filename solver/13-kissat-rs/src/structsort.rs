@@ -432,6 +432,15 @@ fn read_top(f: &Formula, groups: &Groups, work: &mut u64, stopped: &dyn Fn(u64) 
     Some(Top { root, groups: out })
 }
 
+/// Work in one piece: charged when the limit covers it, else Err.
+fn reserve(work: &mut u64, cost: u64, stopped: &dyn Fn(u64) -> bool) -> Result<(), String> {
+    if stopped(work.saturating_add(cost)) {
+        return Err("budget".into());
+    }
+    *work += cost;
+    Ok(())
+}
+
 struct Unit {
     sel: i32,
     x: usize,
@@ -556,14 +565,16 @@ fn read_sorter(f: &Formula, groups: &Groups, top: &Top, work: &mut u64, stopped:
         s.made_by.push(None);
     }
     // a buffer copies its input's representative: the inputs come first,
-    // so one lookup resolves any chain
+    // so one lookup resolves any chain. (This scan and the multiplexer
+    // scan below are one piece of work: a visit per variable each and four
+    // per multiplexer at most, reserved here; Codex review round 4.)
+    reserve(work, 6 * nv as u64, stopped)?;
     for v in 1..nv as i32 {
         if let Some(u) = s.gates[v as usize].as_ref().and_then(|g| g.is_buf()) {
             let r = s.alias.get(&u).copied().unwrap_or(u);
             s.alias.insert(v, r);
         }
     }
-    *work += nv as u64;
     // multiplexers by select and data pair: then-variable -> gate
     let mut slices: HashMap<(i32, i32, i32), HashMap<i32, i32>> = HashMap::new();
     let mut order: Vec<(i32, i32, i32)> = Vec::new();
@@ -579,7 +590,6 @@ fn read_sorter(f: &Formula, groups: &Groups, top: &Top, work: &mut u64, stopped:
             order.push(key);
         }
         entry.insert(t, v);
-        *work += 4;
     }
     let mut pending: HashMap<(i32, usize, usize), HashMap<usize, (i32, i32)>> = HashMap::new();
     let mut todo: Vec<(i32, i32, i32)> = order.into_iter().filter(|k| slices[k].len() == 2).collect();
@@ -737,8 +747,10 @@ fn read_sorter(f: &Formula, groups: &Groups, top: &Top, work: &mut u64, stopped:
             return Err(format!("side {}: the units do not telescope from the inputs to the outputs", si));
         }
     }
-    // the output positions by simulation: 64 patterns of distinct words
-    *work += nv as u64;
+    // the output positions by simulation: 64 patterns of distinct words;
+    // the table and every gate's evaluation reserved up front
+    let eval_cost: u64 = s.gates.iter().flatten().map(|g| 1u64 << g.arity().min(MAX_SUPPORT)).sum();
+    reserve(work, nv as u64 + eval_cost, stopped)?;
     let mut val = vec![0u64; nv];
     let mut state = 0x9E37_79B9_7F4A_7C15u64;
     let mut next = || -> u64 {
@@ -775,10 +787,6 @@ fn read_sorter(f: &Formula, groups: &Groups, top: &Top, work: &mut u64, stopped:
     for v in 1..nv {
         if let Some(g) = &s.gates[v] {
             val[v] = g.eval(&val);
-            *work += 1u64 << g.arity().min(MAX_SUPPORT);
-        }
-        if v % 1024 == 0 && stopped(*work) {
-            return Err("budget".into());
         }
     }
     if stopped(*work) {
@@ -1003,6 +1011,7 @@ fn write_count(
         for wid in [un.c, un.d] {
             for &v in &s.words[wid] {
                 for &ci in groups.of(v) {
+                    *work += f.clause(ci as usize).len() as u64 + 1;
                     if !f.dup[ci as usize] {
                         let mut c = f.clause(ci as usize).to_vec();
                         c.sort_unstable();
@@ -1010,6 +1019,9 @@ fn write_count(
                     }
                 }
             }
+        }
+        if stopped(*work) {
+            return Ok(None);
         }
     }
     // the thresholds of every word of either side
@@ -1023,6 +1035,11 @@ fn write_count(
     used.sort_unstable();
     used.dedup();
     let slot: HashMap<usize, usize> = used.iter().enumerate().map(|(i, &wid)| (wid, i)).collect();
+    let tables = 3 * (used.len() * t_max) as u64;
+    if stopped(work.saturating_add(tables)) {
+        return Ok(None);
+    }
+    *work += tables;
     let mut gv = vec![0i32; used.len() * t_max];
     let mut g1 = vec![0u64; used.len() * t_max];
     let mut g2 = vec![0u64; used.len() * t_max];
@@ -1200,11 +1217,15 @@ fn refute(f: &Formula, groups: &Groups, s: &Sorter, mut proof: Option<&mut Write
             }
             let a: Vec<i32> = s.words[order[k]].clone();
             let b: Vec<i32> = s.words[order[k + 1]].clone();
+            let size: u64 = base.iter().map(|c| c.len() as u64 + 1).sum::<u64>() + 64 * s.w as u64;
+            if stopped(work.saturating_add(size)) {
+                return None;
+            }
+            *work += size;
             let (cs, defs) = carry_chain(&a, &b, next_var);
             let carry_out = cs[s.w - 1];
             let mut clauses = base.clone();
             clauses.extend(defs.iter().map(|(c, _, _)| c.clone()));
-            *work += clauses.len() as u64;
             // (the full solver, not kitten: on the 2025 cells it is five
             // times faster here and its clauses are an eighth of the bytes,
             // BubbleVsPancakeSort_8_4 1.2 s and 4 MB against 6.4 s and 33 MB)
