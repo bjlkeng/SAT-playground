@@ -568,6 +568,35 @@ fn the_sorter_pass_stays_within_the_tick_limit() {
 }
 
 #[test]
+fn the_sub_solver_sees_the_lemma_numbered_densely() {
+    // Codex review round 7: the carries come after every variable of the
+    // formula, so one unused unit on variable 2,000,000 gave each nested
+    // solve a two-million-entry import table nobody charged. The lemma is
+    // renumbered 1..k for the sub-solver: the toy refutes, with a checked
+    // proof, in the same work as without the stray variable plus the
+    // reading's tables
+    let fx = Fixture::new("structsort_dense");
+    let (vars, clauses) = toy("bubble", "bubble", 12, 2, false);
+    let plain = fx.path("plain.cnf");
+    write_cnf(&plain, vars, &clauses);
+    let mut sparse_clauses = clauses.clone();
+    sparse_clauses.push(vec![-2_000_000]);
+    let sparse = fx.path("sparse.cnf");
+    write_cnf(&sparse, 2_000_000, &sparse_clauses);
+    let (sa, wa) = sort_work(&plain, None, None);
+    let (sb, wb) = sort_work(&sparse, None, None);
+    assert_eq!(sa, "UNSATISFIABLE");
+    assert_eq!(sb, "UNSATISFIABLE");
+    // the reading's tables are about a dozen visits per variable; the
+    // sub-solves add nothing that grows with the variable numbers
+    assert!(wb < wa + 16 * 2_000_000, "the sparse formula's work {} against {}", wb, wa);
+    let proof = fx.path("sparse.drat");
+    let (sc, _) = sort_work(&sparse, Some(&proof), None);
+    assert_eq!(sc, "UNSATISFIABLE");
+    assert_eq!(gate(&sparse, &proof), "ok");
+}
+
+#[test]
 fn the_reading_charges_its_tables() {
     // Codex review round 1: the per-variable tables of a formula with a
     // large variable number are work, which the clock must show

@@ -895,11 +895,30 @@ enum Verdict {
 
 /// The full solver on the clauses plus the unit `assume`, with variable
 /// addition and every structure pass off: its added clauses (each implied
-/// by unit propagation under the unit), then the empty clause.
+/// by unit propagation under the unit), then the empty clause. The
+/// sub-solver sees the lemma's variables numbered 1..k in order of first
+/// use, so its tables are the lemma's size whatever the formula's numbers
+/// are (the carries come after every variable of the formula; Codex
+/// review round 7), and its clauses are mapped back.
 fn solver_refute(clauses: &[Vec<i32>], assume: i32, conflicts: u32, ticks: u64, work: &mut u64, stop: &AtomicBool) -> Verdict {
     if ticks == 0 || stop.load(Ordering::Relaxed) {
         return Verdict::Unknown;
     }
+    let mut dense: HashMap<i32, i32> = HashMap::new();
+    let mut back: Vec<i32> = vec![0];
+    let rename = |l: i32, dense: &mut HashMap<i32, i32>, back: &mut Vec<i32>| -> i32 {
+        let v = *dense.entry(l.abs()).or_insert_with(|| {
+            back.push(l.abs());
+            back.len() as i32 - 1
+        });
+        if l < 0 {
+            -v
+        } else {
+            v
+        }
+    };
+    let renamed: Vec<Vec<i32>> = clauses.iter().map(|c| c.iter().map(|&l| rename(l, &mut dense, &mut back)).collect()).collect();
+    let unit = rename(assume, &mut dense, &mut back);
     let mut sub = Box::new(crate::internal::init());
     for (name, value) in [
         ("quiet", 1),
@@ -924,13 +943,13 @@ fn solver_refute(clauses: &[Vec<i32>], assume: i32, conflicts: u32, ticks: u64, 
     sub.parent_stop = stop as *const AtomicBool as usize;
     sub.parent_ticks_base = *work;
     sub.parent_ticks = work as *mut u64 as usize;
-    for c in clauses {
+    for c in &renamed {
         for &l in c {
             crate::internal::add(&mut sub, l);
         }
         crate::internal::add(&mut sub, 0);
     }
-    crate::internal::add(&mut sub, assume);
+    crate::internal::add(&mut sub, unit);
     crate::internal::add(&mut sub, 0);
     let res = crate::internal::solve(&mut sub);
     *work = sub.parent_ticks_base.saturating_add(sub.statistics.work_clock());
@@ -938,9 +957,16 @@ fn solver_refute(clauses: &[Vec<i32>], assume: i32, conflicts: u32, ticks: u64, 
     crate::internal::release(*sub);
     match res {
         20 => {
-            // a clause the unit satisfies is never needed under it
-            let mut out: Vec<Vec<i32>> = lemmas.into_iter().filter(|c| !c.contains(&assume) && !c.is_empty()).collect();
-            *work += out.len() as u64;
+            // a clause the unit satisfies is never needed under it; the
+            // others in the formula's numbers
+            let mut out: Vec<Vec<i32>> = Vec::with_capacity(lemmas.len() + 1);
+            for c in lemmas {
+                if c.is_empty() || c.contains(&unit) {
+                    continue;
+                }
+                *work += c.len() as u64 + 1;
+                out.push(c.iter().map(|&l| if l < 0 { -back[(-l) as usize] } else { back[l as usize] }).collect());
+            }
             out.push(Vec::new());
             Verdict::Refuted(out)
         }
