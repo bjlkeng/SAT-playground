@@ -556,7 +556,8 @@ def cone_clauses(net, wd, out_vars):
         seen.add(u)
         stack.extend(net.gates[u][0])
     ids = [i for v in seen for i in net.group[v]]
-    ids += [i for i, c in enumerate(net.clauses) if len(c) == 1 and abs(c[0]) in net.const]
+    # a unit is a clause with one distinct literal (Netlist reads "-13 -13" as one too)
+    ids += [i for i, c in enumerate(net.clauses) if len(set(c)) == 1 and abs(c[0]) in net.const]
     return sorted(ids)
 
 
@@ -619,7 +620,7 @@ def cmd_lemmas(args):
             write_cnf(out / f"side{si}_sorted{k}.cnf", nv, base + cls + [[g]])
     # per-position miters: drop the root unit, assert the OR over word k's XORs
     root = next(iter(net.roots))
-    keep = [c for c in net.clauses if not (len(c) == 1 and abs(c[0]) == root)]
+    keep = [c for c in net.clauses if not (len(set(c)) == 1 and abs(c[0]) == root)]
     lane_pairs = []
     for a, b in full_pairs:
         lane_pairs.append((wd.lane[a], a, b))
