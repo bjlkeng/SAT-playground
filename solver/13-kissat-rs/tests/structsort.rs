@@ -572,3 +572,53 @@ fn the_reading_charges_its_tables() {
     let r = run(&big, &["--structsort=1"], &[("SAT_LIMIT_TICKS", "4100000")]);
     assert!(r.work() <= 4_100_000 + 410_000, "work {} past the limit ({})", r.work(), r.status);
 }
+
+/// The work-clock total of a run with the sorter pass on, with or without a
+/// proof file, under an optional tick limit.
+fn sort_work(cnf: &Path, proof: Option<&Path>, limit: Option<u64>) -> (String, u64) {
+    let mut cmd = Command::new(solver_bin());
+    for key in common::SOLVER_ENV_VARS {
+        cmd.env_remove(key);
+    }
+    if let Some(l) = limit {
+        cmd.env("SAT_LIMIT_TICKS", l.to_string());
+    }
+    cmd.arg("-n").args(common::STOCK_PATH).arg("--structsort=1").arg(cnf);
+    if let Some(p) = proof {
+        cmd.arg(p);
+    }
+    let out = cmd.output().expect("run sat-solver");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let status = stdout.lines().find_map(|l| l.strip_prefix("s ").map(|s| s.trim().to_string())).unwrap_or_default();
+    let work = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("c workclock ").and_then(|r| r.split_whitespace().find_map(|t| t.strip_prefix("work=")).and_then(|v| v.parse().ok())))
+        .expect("work= on the workclock line");
+    (status, work)
+}
+
+#[test]
+fn every_step_of_the_pass_keeps_to_the_tick_limit() {
+    // Codex review round 5: the data-cone walks of a large network and the
+    // threshold proof's loops (a whole unit's thresholds, a bit's whole
+    // tree) ran past the limit in one unchecked batch. A wide-word toy and
+    // a many-word toy, with and without a proof file, each stopped at
+    // fractions of its own total: no limit is passed by more than 10%
+    let fx = Fixture::new("structsort_limits");
+    for &(a, b, n, w) in &[("bubble", "pancake", 2usize, 10usize), ("bubble", "selection", 24, 2)] {
+        let cnf = fx.path(&format!("{}_{}_{}x{}.cnf", a, b, n, w));
+        let (vars, clauses) = toy(a, b, n, w, false);
+        write_cnf(&cnf, vars, &clauses);
+        for with_proof in [false, true] {
+            let proof = fx.path(&format!("{}_{}_{}x{}.drat", a, b, n, w));
+            let p = if with_proof { Some(proof.as_path()) } else { None };
+            let (status, total) = sort_work(&cnf, p, None);
+            assert_eq!(status, "UNSATISFIABLE", "{} {}x{} proof {}", a, n, w, with_proof);
+            for frac in [10u64, 30, 50, 70, 90] {
+                let limit = total * frac / 100;
+                let (st, work) = sort_work(&cnf, p, Some(limit));
+                assert!(work <= limit + limit / 10, "{} {}x{} proof {}: limit {} of {}: work {} ({})", a, n, w, with_proof, limit, total, work, st);
+            }
+        }
+    }
+}

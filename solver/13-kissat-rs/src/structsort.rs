@@ -675,10 +675,15 @@ fn read_sorter(f: &Formula, groups: &Groups, top: &Top, work: &mut u64, stopped:
         compared.push((a, b, by_bit.into_iter().map(|x| x.unwrap()).collect()));
     }
     // the sides: the data cone of each compared word
-    let data_cone = |wid: usize| -> HashSet<usize> {
+    // (each walk charges a visit per word and polls: Codex review round 5)
+    fn data_cone(s: &Sorter, wid: usize, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Option<HashSet<usize>> {
         let mut cone = HashSet::new();
         let mut stack = vec![wid];
         while let Some(x) = stack.pop() {
+            *work += 1;
+            if stopped(*work) {
+                return None;
+            }
             if let Some(u) = s.made_by[x] {
                 if cone.insert(u) {
                     stack.push(s.units[u].x);
@@ -686,13 +691,13 @@ fn read_sorter(f: &Formula, groups: &Groups, top: &Top, work: &mut u64, stopped:
                 }
             }
         }
-        cone
-    };
+        Some(cone)
+    }
     let mut side_units: Vec<HashSet<usize>> = Vec::new();
     let mut side_of: HashMap<usize, usize> = HashMap::new();
     for &(a, b, _) in &compared {
         for wid in [a, b] {
-            let cone = data_cone(wid);
+            let Some(cone) = data_cone(&s, wid, work, stopped) else { return Err("budget".into()) };
             if cone.is_empty() {
                 return Err("a compared word is an input".into());
             }
@@ -709,7 +714,6 @@ fn read_sorter(f: &Formula, groups: &Groups, top: &Top, work: &mut u64, stopped:
             }
         }
     }
-    *work += (compared.len() * s.units.len()) as u64;
     if side_units.len() != 2 || compared.iter().any(|(a, b, _)| side_of[a] == side_of[b]) || side_units[0].intersection(&side_units[1]).next().is_some() {
         return Err("not two separate sides".into());
     }
@@ -1004,6 +1008,16 @@ fn write_count(
     let wd = s.w;
     let m = (1i64 << wd) - 1;
     let t_max = m as usize;
+    // every loop below looks at the limit after each step it charges
+    // (a threshold, a unit's count at one threshold, a node of a bit's
+    // tree: Codex review round 5)
+    macro_rules! poll {
+        () => {
+            if stopped(*work) {
+                return Ok(None);
+            }
+        };
+    }
     // the input clauses a sum may add by id: the multiplexers', with their
     // literals as written (a clause with a repeated literal is derived)
     let mut clause_id: HashMap<Vec<i32>, u64> = HashMap::new();
@@ -1058,9 +1072,7 @@ fn write_count(
             terms.push((m - t as i64 + 1, g));
             g2[i] = w.red_terms(&terms, m - t as i64 + 1, g, true)?;
             *work += 2 * (wd as u64 + 1);
-        }
-        if stopped(*work) {
-            return Ok(None);
+            poll!();
         }
     }
     // per unit and t: the count is kept
@@ -1093,11 +1105,15 @@ fn write_count(
                     };
                     per_j[j].push((id, 1i64 << i));
                 }
+                *work += 8 * 4;
+                poll!();
             }
             let mut l = [0u64; 8];
             for j in 0..8 {
                 l[j] = w.pol(&sum_expr(&per_j[j]))?;
             }
+            *work += 8 * wd as u64;
+            poll!();
             for t in 1..=t_max {
                 let (ix, iy, ic, id) = (at(un.x, t), at(un.y, t), at(un.c, t), at(un.d, t));
                 // "case and g(src) -> g(dst)": G1(src) + L_j + G2(dst), divided by M
@@ -1114,9 +1130,7 @@ fn write_count(
                     w.pbc(&[(1, -gc), (1, -gd), (1, gx), (1, gy)], 2, &[vec![sel, gx], vec![sel], vec![gx], vec![]])?,
                 );
                 *work += 40;
-            }
-            if stopped(*work) {
-                return Ok(None);
+                poll!();
             }
         }
     }
@@ -1133,6 +1147,7 @@ fn write_count(
         }
         w.pol(&format!("{} {} +", cnt[0].0, cnt[1].1))?;
         w.pol(&format!("{} {} +", cnt[1].0, cnt[0].1))?;
+        poll!();
         for si in 0..2 {
             let o = pos_word[si];
             for k in 0..s.n - 1 {
@@ -1144,19 +1159,21 @@ fn write_count(
             w.rup(&[-gv[at(b, t)], gv[at(a, t)]])?;
         }
         *work += 4 * s.n as u64;
-        if stopped(*work) {
-            return Ok(None);
-        }
+        poll!();
     }
     // the bits from the thresholds, top bit first, over the values of the higher bits
-    fn tree(w: &mut Writer, a: &[i32], b: &[i32], i: usize, fixed: &mut Vec<(usize, bool)>, work: &mut u64) -> std::io::Result<()> {
+    /// Ok(false) when the limit stopped it.
+    fn tree(w: &mut Writer, a: &[i32], b: &[i32], i: usize, fixed: &mut Vec<(usize, bool)>, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> std::io::Result<bool> {
         let wd = a.len();
         if fixed.len() < wd - 1 - i {
             let j = wd - 1 - fixed.len();
             for v in [false, true] {
                 fixed.push((j, v));
-                tree(w, a, b, i, fixed, work)?;
+                let done = tree(w, a, b, i, fixed, work, stopped)?;
                 fixed.pop();
+                if !done {
+                    return Ok(false);
+                }
             }
         }
         let mut base: Vec<i32> = fixed.iter().map(|&(j, v)| if v { -a[j] } else { a[j] }).collect();
@@ -1167,15 +1184,14 @@ fn write_count(
         base[k - 1] = -b[i];
         w.rup(&base)?;
         *work += 2 * k as u64;
-        Ok(())
+        Ok(!stopped(*work))
     }
     for &(_, a, b, _) in &s.pairs {
         let (aw, bw) = (&s.words[a], &s.words[b]);
         for i in (0..wd).rev() {
-            tree(w, aw, bw, i, &mut Vec::new(), work)?;
-        }
-        if stopped(*work) {
-            return Ok(None);
+            if !tree(w, aw, bw, i, &mut Vec::new(), work, stopped)? {
+                return Ok(None);
+            }
         }
     }
     // the compares are false, and with them the root
@@ -1189,7 +1205,9 @@ fn write_count(
                 w.rup(&[-x, abit])?;
                 w.rup(&[-x])?;
             }
+            *work += 4;
         }
+        poll!();
     }
     Ok(Some(w.rup(&[])?))
 }
