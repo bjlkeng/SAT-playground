@@ -134,6 +134,25 @@ impl Writer {
         Ok(self.constraints)
     }
 
+    /// A linear constraint redundant under the witness that sets `var` to
+    /// `value`: one half of the definition of a fresh variable as a
+    /// threshold, `var -> sum >= k` or `~var -> sum <= k - 1` (bead
+    /// SAT-playground-skz.22). `terms` are (coefficient, literal) pairs.
+    pub fn red_terms(&mut self, terms: &[(i64, i32)], rhs: i64, var: i32, value: bool) -> std::io::Result<u64> {
+        let mut line = String::from("red");
+        for &(c, l) in terms {
+            line.push_str(&format!(" {} {}", c, lit_str(l)));
+        }
+        line.push_str(&format!(" >= {} : x{} -> {} ;", rhs, var, if value { 1 } else { 0 }));
+        if let Err(e) = writeln!(self.out, "{}", line) {
+            self.failed = true;
+            return Err(e);
+        }
+        self.constraints += 1;
+        self.steps += 1;
+        Ok(self.constraints)
+    }
+
     /// A cutting-planes derivation in reverse Polish notation, e.g.
     /// "12 13 + 2 d". Returns the id of the derived constraint.
     pub fn pol(&mut self, expr: &str) -> std::io::Result<u64> {

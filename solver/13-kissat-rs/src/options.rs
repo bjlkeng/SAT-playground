@@ -250,6 +250,11 @@ kissat_options! {
     (structcsp, 0, 0, 1, "structure pass: CSP decoding"),
     (structmore, 2_000_000, 0, i32::MAX, "structure pass work limit (K) after a find"),
     (structparity, 1, 0, 1, "structure pass: XOR systems"),
+    // the sorter pass (bead SAT-playground-skz.22, 2026-10-26): off until
+    // measured on the 400 cells at two seeds; structsortticks is its own
+    // work limit, counted from where the earlier passes stopped
+    (structsort, 0, 0, 1, "structure pass: sorter miters"),
+    (structsortticks, 2_000_000, 0, i32::MAX, "structure pass: sorter work limit (K)"),
     (structsym, 1, 0, 1, "structure pass: symmetry fixing"),
     (structsymext, 0, 0, 1, "structure pass: external symmetry tool"),
     (structticks, 1_000_000, 0, i32::MAX, "structure pass work limit (K)"),
@@ -728,9 +733,10 @@ mod tests {
     fn table_has_all_158_options_plus_the_structure_pass() {
         // kissat's 158 plus the nine struct* options (plan section 11,
         // 2026-10-07), walkshare, walkstall (2026-10-13), gauss, gausseffort,
-        // gausslimit, gaussyield, gausswindow (2026-10-15/17) and
-        // structarith, structarithticks (2026-10-19)
-        assert_eq!(OPTION_TABLE.len(), 158 + 18);
+        // gausslimit, gaussyield, gausswindow (2026-10-15/17),
+        // structarith, structarithticks (2026-10-19) and structsort,
+        // structsortticks (2026-10-26)
+        assert_eq!(OPTION_TABLE.len(), 158 + 20);
     }
 
     #[test]
