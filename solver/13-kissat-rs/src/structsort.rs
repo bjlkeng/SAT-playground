@@ -726,6 +726,7 @@ fn read_sorter(f: &Formula, groups: &Groups, top: &Top, work: &mut u64, stopped:
     for si in 0..2 {
         let mut balance: HashMap<usize, i64> = HashMap::new();
         let mut readers: HashMap<usize, u32> = HashMap::new();
+        reserve(work, 4 * side_units[si].len() as u64 + 2 * n as u64, stopped)?;
         for &u in &side_units[si] {
             let un = &s.units[u];
             *balance.entry(un.c).or_default() += 1;
@@ -754,7 +755,7 @@ fn read_sorter(f: &Formula, groups: &Groups, top: &Top, work: &mut u64, stopped:
     // the output positions by simulation: 64 patterns of distinct words;
     // the table and every gate's evaluation reserved up front
     let eval_cost: u64 = s.gates.iter().flatten().map(|g| 1u64 << g.arity().min(MAX_SUPPORT)).sum();
-    reserve(work, nv as u64 + eval_cost, stopped)?;
+    reserve(work, nv as u64 + s.constant.len() as u64 + eval_cost, stopped)?;
     let mut val = vec![0u64; nv];
     let mut state = 0x9E37_79B9_7F4A_7C15u64;
     let mut next = || -> u64 {
@@ -763,6 +764,9 @@ fn read_sorter(f: &Formula, groups: &Groups, top: &Top, work: &mut u64, stopped:
         state ^= state >> 27;
         state.wrapping_mul(0x2545_F491_4F6C_DD1D)
     };
+    // (the 64 samples: drawing N words, packing their bits, decoding and
+    // sorting each side's outputs)
+    reserve(work, 64 * n as u64 * (n as u64 + 4 * w as u64 + 8), stopped)?;
     let mut inputs: Vec<Vec<u64>> = vec![vec![0; 64]; n];
     for j in 0..64 {
         let mut chosen: Vec<u64> = Vec::with_capacity(n);
@@ -861,9 +865,14 @@ fn side_clauses(f: &Formula, groups: &Groups, s: &Sorter, si: usize, work: &mut 
             continue;
         }
         if let Some(g) = &s.gates[v as usize] {
+            // (a group may hold many copies of a clause: polled per clause,
+            // Codex review round 6)
             for &ci in groups.of(v) {
+                *work += f.clause(ci as usize).len() as u64 + 1;
+                if stopped(*work) {
+                    return None;
+                }
                 out.push(f.clause(ci as usize).to_vec());
-                *work += f.clause(ci as usize).len() as u64;
             }
             stack.extend(g.vars());
         }
@@ -1026,6 +1035,7 @@ fn write_count(
             for &v in &s.words[wid] {
                 for &ci in groups.of(v) {
                     *work += f.clause(ci as usize).len() as u64 + 1;
+                    poll!();
                     if !f.dup[ci as usize] {
                         let mut c = f.clause(ci as usize).to_vec();
                         c.sort_unstable();
@@ -1235,7 +1245,8 @@ fn refute(f: &Formula, groups: &Groups, s: &Sorter, mut proof: Option<&mut Write
             }
             let a: Vec<i32> = s.words[order[k]].clone();
             let b: Vec<i32> = s.words[order[k + 1]].clone();
-            let size: u64 = base.iter().map(|c| c.len() as u64 + 1).sum::<u64>() + 64 * s.w as u64;
+            // (the copy here and the sub-solver's import of it)
+            let size: u64 = 2 * base.iter().map(|c| c.len() as u64 + 1).sum::<u64>() + 64 * s.w as u64;
             if stopped(work.saturating_add(size)) {
                 return None;
             }
@@ -1272,7 +1283,14 @@ fn refute(f: &Formula, groups: &Groups, s: &Sorter, mut proof: Option<&mut Write
             lemma_clauses += steps.len();
             if let Some(w) = proof.as_deref_mut() {
                 // the carry chain's definitions, then "no carry out" by
-                // contradiction with the solver's clauses, then the linear sum
+                // contradiction with the solver's clauses, then the linear
+                // sum; written whole or not at all, so its cost is reserved
+                // before the first line (a pbc block cannot stop halfway)
+                let block: u64 = steps.iter().map(|c| c.len() as u64 + 1).sum::<u64>() + 4 * defs.len() as u64 + 4 * s.w as u64;
+                if stopped(work.saturating_add(block)) {
+                    return None;
+                }
+                *work += block;
                 let mut ids: Vec<u64> = Vec::with_capacity(defs.len());
                 for (clause, var, value) in &defs {
                     ids.push(w.red_const(clause, *var, *value).ok()?);
@@ -1287,7 +1305,6 @@ fn refute(f: &Formula, groups: &Groups, s: &Sorter, mut proof: Option<&mut Write
                 let mut weights: Vec<(u64, i64)> = cells.iter().enumerate().map(|(i, &id)| (id, 1i64 << i)).collect();
                 weights.push((no_carry, 1i64 << s.w));
                 sorted[si].push(w.pol(&sum_expr(&weights)).ok()?);
-                *work += (defs.len() + steps.len() + s.w + 2) as u64;
             }
         }
     }

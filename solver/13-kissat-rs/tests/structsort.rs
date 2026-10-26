@@ -551,6 +551,20 @@ fn the_sorter_pass_stays_within_the_tick_limit() {
         let r = run(&cnf, &["--structsort=1"], &[("SAT_LIMIT_TICKS", &value)]);
         assert!(r.work() <= limit + limit / 10, "limit {}: work {} ({})", limit, r.work(), r.status);
     }
+    // Codex review round 6: 100,000 copies of one of a gate's clauses went
+    // 13% past a limit of 1,530,000 while a side's cone was copied
+    let (vars, mut clauses) = toy("bubble", "pancake", 4, 3, false);
+    let copy = clauses.iter().find(|c| c.len() == 2 && c.iter().map(|l| l.abs()).max().unwrap() > 12).unwrap().clone();
+    for _ in 0..100_000 {
+        clauses.push(copy.clone());
+    }
+    let cnf = fx.path("repeated.cnf");
+    write_cnf(&cnf, vars, &clauses);
+    for limit in [1_530_000u64, 3_000_000, 6_000_000] {
+        let value = limit.to_string();
+        let r = run(&cnf, &["--structsort=1"], &[("SAT_LIMIT_TICKS", &value)]);
+        assert!(r.work() <= limit + limit / 10, "repeated: limit {}: work {} ({})", limit, r.work(), r.status);
+    }
 }
 
 #[test]
