@@ -378,6 +378,10 @@ def positions_by_simulation(net, wd, outs, N, W, rnd):
     return order
 
 
+class NotSorted(Exception):
+    """The solver finds a side's "out_k > out_k+1" satisfiable: the side does not sort."""
+
+
 def run_solver(solver, cnf, drat, timeout):
     t0 = time.time()
     try:
@@ -453,9 +457,13 @@ def write_proof(cnf_path, out, pbp, solver, timeout, tamper=None, cache=None, or
         pairs.append((pos_of[0][a], a, b))
     pairs.sort()
 
+    # input clauses the multiplexer sums may reuse: only those with distinct
+    # literals (a repeated literal is a coefficient 2 in the OPB, which the
+    # weighted sums do not expect); any other clause is derived by rup
     clause_id = {}
     for i, c in enumerate(net.clauses):
-        clause_id.setdefault(frozenset(c), i + 1)
+        if len(set(c)) == len(c):
+            clause_id.setdefault(frozenset(c), i + 1)
     P = Proof(pbp, len(net.clauses))
     next_var = [net.n_vars]
 
@@ -503,6 +511,8 @@ def write_proof(cnf_path, out, pbp, solver, timeout, tamper=None, cache=None, or
                 st, dt = run_solver(solver, lemma_cnf, drat, timeout)
                 if cache is not None:
                     cache[key] = (st, dt)
+            if st == "s SATISFIABLE":
+                raise NotSorted(f"side {si} pair {k}: the solver finds out_k > out_k+1 satisfiable")
             if st != "s UNSATISFIABLE":
                 raise SystemExit(f"side {si} pair {k}: solver says {st}")
             adds = drat_additions(drat)
@@ -721,9 +731,12 @@ def cmd_toy(args):
             return 1
         try:
             write_proof(cnf, out, out / "proof.pbp", args.solver, args.timeout, order_from="lanes")
-        except SystemExit as e:
+        except NotSorted as e:
             print(f"  no proof written, as it should be: {e}")
             return 0
+        except SystemExit as e:
+            print(f"  INCONCLUSIVE: the run stopped before the solver refuted a sortedness claim: {e}")
+            return 1
         print("  MISMATCH: a proof was written for a satisfiable miter")
         return 1
     if st != "s UNSATISFIABLE":
@@ -761,7 +774,11 @@ def main(argv):
     p.add_argument("--out")
     p.set_defaults(func=cmd_prove)
     args = ap.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except NotSorted as e:
+        print(f"no proof: {e}")
+        return 1
 
 
 if __name__ == "__main__":
