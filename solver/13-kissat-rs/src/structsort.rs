@@ -165,6 +165,7 @@ impl Groups {
 
 fn group_clauses(f: &Formula, work: &mut u64) -> Groups {
     let nv = f.vars as usize + 1;
+    *work += 3 * nv as u64 + f.len() as u64; // the tables: counts, starts, cursors, and one slot per clause
     let mut count = vec![0u32; nv + 1];
     let mut top = vec![0u32; f.len()];
     for i in 0..f.len() {
@@ -280,9 +281,16 @@ fn wide_gate(v: i32, clause_ids: &[u32], f: &Formula, work: &mut u64) -> Option<
     }
 }
 
-fn read_gate(v: i32, groups: &Groups, f: &Formula, work: &mut u64) -> Option<Gate> {
+/// v's gate from its group, or None (not a definition, or the work it
+/// would take is past the limit: a group is read only when the limit
+/// covers it, and so is its truth table).
+fn read_gate(v: i32, groups: &Groups, f: &Formula, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Option<Gate> {
     let ids = groups.of(v);
     if ids.is_empty() {
+        return None;
+    }
+    let size: u64 = ids.iter().map(|&ci| f.clause(ci as usize).len() as u64).sum::<u64>() + ids.len() as u64;
+    if stopped(work.saturating_add(size)) {
         return None;
     }
     let mut sup: Vec<i32> = Vec::new();
@@ -300,7 +308,14 @@ fn read_gate(v: i32, groups: &Groups, f: &Formula, work: &mut u64) -> Option<Gat
         return None;
     }
     if sup.len() <= MAX_SUPPORT {
+        let scan = size.saturating_add((1u64 << sup.len()).saturating_mul(ids.len() as u64));
+        if stopped(work.saturating_add(scan)) {
+            return None;
+        }
         return definition_tt(v, ids, f, &sup, work).map(|tt| Gate::Table { sup, tt });
+    }
+    if stopped(work.saturating_add(2 * size)) {
+        return None;
     }
     wide_gate(v, ids, f, work)
 }
@@ -339,28 +354,29 @@ struct Top {
     groups: Vec<Vec<(i32, bool)>>,
 }
 
-fn read_top(f: &Formula, groups: &Groups, work: &mut u64) -> Option<Top> {
-    // the one unit on a variable with a group
-    let mut roots: Vec<i32> = Vec::new();
+fn read_top(f: &Formula, groups: &Groups, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Option<Top> {
+    // the one unit on a variable with a group (a second one ends the look)
+    let mut root: Option<i32> = None;
+    *work += f.len() as u64;
     for i in 0..f.len() {
         if !f.taut[i] && f.clause(i).len() == 1 {
             let l = f.clause(i)[0];
-            if !groups.of(l.abs()).is_empty() && !roots.contains(&l) {
-                roots.push(l);
+            if !groups.of(l.abs()).is_empty() {
+                match root {
+                    None => root = Some(l),
+                    Some(r) if r == l => {}
+                    Some(_) => return None,
+                }
             }
         }
     }
-    *work += f.len() as u64;
-    if roots.len() != 1 {
-        return None;
-    }
-    let root = roots[0];
+    let root = root?;
     let mut memo: HashMap<i32, Option<Gate>> = HashMap::new();
     let mut gate_at = |v: i32, work: &mut u64| -> Option<Gate> {
         if let Some(g) = memo.get(&v) {
             return g.clone();
         }
-        let g = read_gate(v, groups, f, work);
+        let g = read_gate(v, groups, f, work, stopped);
         memo.insert(v, g.clone());
         g
     };
@@ -467,14 +483,14 @@ fn read_sorter(f: &Formula, groups: &Groups, top: &Top, work: &mut u64, stopped:
         if groups.of(v).is_empty() {
             continue;
         }
-        let Some(g) = read_gate(v, groups, f, work) else {
-            return Err(format!("the clauses of {} do not define it", v));
+        let Some(g) = read_gate(v, groups, f, work, stopped) else {
+            return Err(if stopped(*work) { "budget".into() } else { format!("the clauses of {} do not define it", v) });
         };
         if g.vars().iter().any(|&u| u >= v) {
             return Err(format!("gate {} reads a later variable", v));
         }
         gates[v as usize] = Some(g);
-        if v % 256 == 0 && stopped(*work) {
+        if stopped(*work) {
             return Err("budget".into());
         }
     }
@@ -711,6 +727,7 @@ fn read_sorter(f: &Formula, groups: &Groups, top: &Top, work: &mut u64, stopped:
         }
     }
     // the output positions by simulation: 64 patterns of distinct words
+    *work += nv as u64;
     let mut val = vec![0u64; nv];
     let mut state = 0x9E37_79B9_7F4A_7C15u64;
     let mut next = || -> u64 {
@@ -1246,7 +1263,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, _hard: u64, work: &m
         return;
     }
     let groups = group_clauses(f, work);
-    let Some(top) = read_top(f, &groups, work) else {
+    let Some(top) = read_top(f, &groups, work, &stopped) else {
         if dbg {
             eprintln!("structsort: no miter of xor compares at the root");
         }

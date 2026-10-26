@@ -504,3 +504,42 @@ fn sorter_pass_without_a_sorter_leaves_the_search_unchanged() {
     }
     assert!(with.work() >= stock.work(), "the pass's work is in the work clock");
 }
+
+#[test]
+fn the_sorter_pass_stays_within_the_tick_limit() {
+    // Codex review round 1: a toy with 30,000 copies of an unused and
+    // gate's clauses went to work 1,309,800 under a limit of 450,000; a
+    // group is now read only when the limit covers it, and the gate table
+    // polls by work done
+    let fx = Fixture::new("structsort_limit");
+    let (vars, mut clauses) = toy("bubble", "pancake", 4, 3, false);
+    let g = vars + 1;
+    for _ in 0..30_000 {
+        clauses.push(vec![-g, 1]);
+        clauses.push(vec![-g, 2]);
+        clauses.push(vec![g, -1, -2]);
+    }
+    let cnf = fx.path("m.cnf");
+    write_cnf(&cnf, g, &clauses);
+    for limit in [450_000u64, 2_000_000] {
+        let value = limit.to_string();
+        let r = run(&cnf, &["--structsort=1"], &[("SAT_LIMIT_TICKS", &value)]);
+        assert!(r.work() <= limit + limit / 10, "limit {}: work {} ({})", limit, r.work(), r.status);
+    }
+}
+
+#[test]
+fn the_reading_charges_its_tables() {
+    // Codex review round 1: the per-variable tables of a formula with a
+    // large variable number are work, which the clock must show
+    let fx = Fixture::new("structsort_tables");
+    let small = fx.path("small.cnf");
+    write_cnf(&small, 2, &[vec![1, 2], vec![-1, -2], vec![1]]);
+    let big = fx.path("big.cnf");
+    write_cnf(&big, 2_000_000, &[vec![1, 2_000_000], vec![-1, -2_000_000], vec![1]]);
+    let a = run(&small, &["--structsort=1"], &[]);
+    let b = run(&big, &["--structsort=1"], &[]);
+    assert_eq!(a.status, "SATISFIABLE");
+    assert_eq!(b.status, "SATISFIABLE");
+    assert!(b.work() >= a.work() + 2 * 2_000_000, "the tables of 2M variables are not in the clock: {} v {}", b.work(), a.work());
+}
