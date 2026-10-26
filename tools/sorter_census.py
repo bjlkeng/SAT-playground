@@ -44,12 +44,15 @@ from __future__ import annotations
 
 import argparse
 import csv
-import lzma
+import os
 import random
 import re
 import sys
 from collections import defaultdict
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from proof_gate import iter_clauses  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITE = ROOT / "benchmarks" / "sat-comp-2025"
@@ -66,22 +69,17 @@ MAX_COMPARE_CONE = 400  # a compare's cone between its two words has at most thi
 
 
 def read_cnf(path):
-    opener = lzma.open if str(path).endswith(".xz") else open
+    """(header variable count, clauses), read with the solver's DIMACS rules
+    (tools/proof_gate.py), so that clause i here is constraint i of the
+    gate's OPB: a clause may span lines or share one, and duplicate
+    literals and tautologies are kept."""
+    gen = iter_clauses(path)
     clauses = []
-    n_vars = 0
-    with opener(path, "rt") as f:
-        for line in f:
-            if not line.strip() or line[0] in "c%":
-                continue
-            if line[0] == "p":
-                n_vars = int(line.split()[2])
-                continue
-            lits = [int(x) for x in line.split()]
-            if lits and lits[-1] == 0:
-                lits.pop()
-            if lits:
-                clauses.append(tuple(lits))
-    return n_vars, clauses
+    while True:
+        try:
+            clauses.append(tuple(next(gen)))
+        except StopIteration as stop:
+            return stop.value or 0, clauses
 
 
 def definition_tt(v, cls, sup):
@@ -112,15 +110,19 @@ def definition_tt(v, cls, sup):
 
 class Netlist:
     def __init__(self, n_vars, clauses):
-        self.n_vars = n_vars
+        # fresh variables start above every variable in use, whatever the header says
+        self.n_vars = max([n_vars] + [abs(l) for c in clauses for l in c])
         self.clauses = clauses
         groups = defaultdict(list)
         units = {}
         for i, c in enumerate(clauses):
-            if len(c) == 1:
+            lits = set(c)
+            if not lits or any(-l in lits for l in lits):
+                continue  # the empty clause is no gate; a tautology constrains nothing
+            if len(lits) == 1:
                 units[abs(c[0])] = c[0] > 0
             else:
-                groups[max(abs(l) for l in c)].append(i)
+                groups[max(abs(l) for l in lits)].append(i)
         self.group = groups
         self.gates = {}
         self.not_gates = []

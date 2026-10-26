@@ -380,8 +380,11 @@ def positions_by_simulation(net, wd, outs, N, W, rnd):
 
 def run_solver(solver, cnf, drat, timeout):
     t0 = time.time()
-    p = subprocess.run([str(solver), "-q", "--binary=false", *STOCK, str(cnf), str(drat)], capture_output=True, text=True,
-                       timeout=timeout)
+    try:
+        p = subprocess.run([str(solver), "-q", "--binary=false", *STOCK, str(cnf), str(drat)], capture_output=True,
+                           text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return "s TIMEOUT", time.time() - t0
     st = [l for l in p.stdout.splitlines() if l.startswith("s ")]
     return (st[0] if st else "s ?"), time.time() - t0
 
@@ -404,7 +407,10 @@ def write_proof(cnf_path, out, pbp, solver, timeout, tamper=None, cache=None, or
     positions come from simulation; order_from="lanes" takes them from the
     lanes instead (the negative control, so that the solver is what refuses
     a side that does not sort)."""
-    row, net, wd, sides, full_pairs, side_of_word = census_cell(cnf_path)
+    try:
+        row, net, wd, sides, full_pairs, side_of_word = census_cell(cnf_path)
+    except ValueError as e:
+        raise SystemExit(f"the reading failed: {e}")
     N, W = wd.N, wd.W
     M = (1 << W) - 1
     if len(sides) != 2 or len(full_pairs) != N or row["mux_bits"] or row["max_data_readers"] != 1:
@@ -630,11 +636,15 @@ def write_proof(cnf_path, out, pbp, solver, timeout, tamper=None, cache=None, or
     return pbp, net, stats
 
 
-def write_opb(net, path):
-    with open(path, "w") as f:
-        f.write(f"* #variable= {net.n_vars} #constraint= {len(net.clauses)}\n")
-        for c in net.clauses:
-            f.write(" ".join(f"+1 {lit(l)}" for l in c) + " >= 1 ;\n")
+def write_opb(cnf, net, out):
+    """The input as OPB, written by the gate's own code (clause i is constraint i)."""
+    from proof_gate import cnf_to_opb_and_copy, fix_headers  # noqa: E402
+    opb, plain = out / "input.opb", out / "input.cnf"
+    nvars, n = cnf_to_opb_and_copy(cnf, opb, plain, [])
+    fix_headers(opb, plain, max(nvars, net.n_vars), n)
+    if n != len(net.clauses):
+        raise SystemExit(f"the gate reads {n} clauses, the census {len(net.clauses)}")
+    return opb
 
 
 def veripb_check(veripb, opb, pbp, timeout=3600):
@@ -662,8 +672,7 @@ def prove_and_check(cnf, out, args, log=print):
     t0 = time.time()
     pbp, net, stats = write_proof(cnf, out, out / "proof.pbp", args.solver, args.timeout, cache=cache)
     t_write = time.time() - t0
-    opb = out / "input.opb"
-    write_opb(net, opb)
+    opb = write_opb(cnf, net, out)
     ok, dt, last = veripb_check(args.veripb, opb, pbp)
     log(f"{Path(cnf).name}: N={stats['N']} W={stats['W']} units {stats['units']}; sortedness calls {stats['lemma_s']:.1f} s, "
         f"{stats['lemma_lemmas']} DRAT lemmas; proof {stats['lines']} lines ({stats['bytes'] / 1e6:.1f} MB, "
