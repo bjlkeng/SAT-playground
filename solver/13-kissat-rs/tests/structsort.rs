@@ -542,4 +542,8 @@ fn the_reading_charges_its_tables() {
     assert_eq!(a.status, "SATISFIABLE");
     assert_eq!(b.status, "SATISFIABLE");
     assert!(b.work() >= a.work() + 2 * 2_000_000, "the tables of 2M variables are not in the clock: {} v {}", b.work(), a.work());
+    // Codex review round 2: and they are reserved before they are built, so
+    // a limit below their cost stops the pass before it starts
+    let r = run(&big, &["--structsort=1"], &[("SAT_LIMIT_TICKS", "4100000")]);
+    assert!(r.work() <= 4_100_000 + 410_000, "work {} past the limit ({})", r.work(), r.status);
 }

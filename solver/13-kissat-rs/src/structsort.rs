@@ -456,11 +456,9 @@ struct Sorter {
 }
 
 impl Sorter {
-    fn res(&self, mut v: i32) -> i32 {
-        while let Some(&u) = self.alias.get(&v) {
-            v = u;
-        }
-        v
+    /// The variable a buffer chain copies (the table holds the chain's end).
+    fn res(&self, v: i32) -> i32 {
+        self.alias.get(&v).copied().unwrap_or(v)
     }
 }
 
@@ -548,11 +546,15 @@ fn read_sorter(f: &Formula, groups: &Groups, top: &Top, work: &mut u64, stopped:
         s.lane.push(k);
         s.made_by.push(None);
     }
+    // a buffer copies its input's representative: the inputs come first,
+    // so one lookup resolves any chain
     for v in 1..nv as i32 {
         if let Some(u) = s.gates[v as usize].as_ref().and_then(|g| g.is_buf()) {
-            s.alias.insert(v, u);
+            let r = s.alias.get(&u).copied().unwrap_or(u);
+            s.alias.insert(v, r);
         }
     }
+    *work += nv as u64;
     // multiplexers by select and data pair: then-variable -> gate
     let mut slices: HashMap<(i32, i32, i32), HashMap<i32, i32>> = HashMap::new();
     let mut order: Vec<(i32, i32, i32)> = Vec::new();
@@ -1258,7 +1260,10 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, _hard: u64, work: &m
     }
     let start = *work;
     let dbg = debug();
-    let cost = f.lits.len() as u64 + 2 * f.vars as u64 + f.len() as u64;
+    // the grouping and the root's scan in one piece: their tables (three
+    // per variable, one slot per clause), a visit per literal and clause,
+    // and the scan for units
+    let cost = 3 * (f.vars as u64 + 1) + 3 * f.len() as u64 + f.lits.len() as u64;
     if stopped(work.saturating_add(cost)) {
         return;
     }
