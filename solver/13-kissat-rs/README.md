@@ -1282,7 +1282,10 @@ Step two (Booth) adds the five `origin` and four `mapped` Booth-vs-AND
 cells (three of them both-seed-unsolved) and the Booth-vs-Booth one.
 Beyond multipliers the arithmetic cells need other backends: factoring
 and cubes are number theory, the divider needs the restoring-division
-argument, `bp4` needs subtractor and compare blocks, and the sorters
+argument (measured 2026-10-27: both sides follow the restoring rows, and
+proving the rows equal one by one decides all five div and sqrt cells;
+see "Divider and square-root miters: census and certificate"), `bp4`
+needs subtractor and compare blocks, and the sorters
 need comparator-network reasoning (done 2026-10-26: both sides are
 networks of swap units, so a certificate counts by thresholds; see
 "Sorter miters: census and certificate"). The counting families (oddball,
@@ -2784,6 +2787,212 @@ look at the limit, so a tick limit could be passed. The fixes:
 - buffer chains resolve in one lookup (they were walked again each time);
 - the sub-solver sees each lemma numbered densely (a stray variable
   2,000,000 gave every sub-call a two-million-entry table).
+
+## Divider and square-root miters: census and certificate (2026-10-27; bead `SAT-playground-skz.17`)
+
+**Result.** Each of the five div and sqrt miters of 2025 compares one
+output bit of two versions of an EPFL arithmetic circuit: a 64-bit
+divider or a 128-bit square root. Both versions compute that bit the
+textbook way, row by row (long division, or the digit-by-digit square
+root), so each row's quotient bit and remainder bits exist as signals on
+both sides. Proving those signals equal, one row at a time, takes far
+less work than search. On the four cells search solves today (42-578 s),
+the chain of proofs costs 11 to 61 times less work than search (0.18G to
+0.41G against 2.1G to 22.4G on the work clock), and then the miter
+follows with no search at all. On `div_miter_lec__2`, which neither
+solver 13 nor the C kissat finishes in 3,600 s, the chain proves 1,591
+of its 1,600 pairs with 2.9M conflicts, and the miter again follows with
+no search. One DRAT proof of the whole chain passes `tools/proof_gate.py`
+on each small cell (8-16 MB, checked in 11-27 s), and three kinds of
+broken proof are rejected. On `div_miter_lec__2` the stitched proof is
+1.01 GB and passes the gate too, after 39 minutes of checking; its
+sub-calls take 30.6G on the work clock, where search reaches 85.6G at
+3,600 s without an answer. ABC's general-purpose sweeping
+(`iprove`, run here as a measurement only) proves the four small cells
+in 7-49 s and does not finish `div_miter_lec__2` in 30 minutes. The
+multiplier pass does not fit these cells: a divider's output bit is not
+a sum of partial products.
+
+**Where they come from.** The files match the SAT Competition 2022
+description "Equivalence Checking of EPFL Benchmarks" (Huawei Noah's Ark
+Lab and Shanghai Jiao Tong University): each EPFL arithmetic circuit
+against the best 6-input-LUT version from the EPFL results, made into a
+miter with ABC, one output per file, written by ABC's `write_cnf`. The
+2026 suite has `sqrt-mitern168` and two `DivS` cells by file name; they
+were not analysed.
+
+**Reading the files** (`tools/divsqrt_census.py`, table
+`benchmarks/rl/divsqrt_2025.tsv`). Every clause starts with the literal of
+the gate it belongs to. Each gate is a function of at most four inputs,
+written as the clauses of its true and false cases (the shape of ABC's
+`write_cnf`). Read that way, every clause group is a definition, every
+gate lies under the miter's root, and the root is the XOR of one signal
+from each side. The arithmetic pass reads gates from the clauses alone,
+and on these files it finds 83 to 178 gates it cannot order (3,735 out
+of order on `div_miter_lec__2` with a larger budget; bead notes of
+2026-10-25). The likely cause: 254 to 5,700 gates per cell are XOR-like
+tables whose clauses also define one of their inputs, so the clauses
+leave their direction open, and the numbering does not settle it (some
+gates are numbered below all their inputs, others above).
+
+| cell | the compared bit | inputs | gates: side A / side B / shared | gates with open direction | search today (s, seed 0 / 1) |
+|---|---|---:|---|---:|---|
+| `div-mitern172` | quotient bit 49 of a 64 / 64 divider | 79 | 902 / 1,885 / 18 | 254 | 77 / 42 |
+| `div_miter_lec__2` | quotient bit 5 | 123 | 12,953 / 36,669 / 88 | 5,700 | timeout / timeout |
+| `sqrt-mitern169` | root bit 46 of a 128-bit square root | 36 | 755 / 3,217 / 32 | 445 | 578 / 507 |
+| `sqrt-mitern170` | root bit 47 | 34 | 677 / 2,802 / 30 | 389 | 217 / 224 |
+| `sqrt-mitern171` | root bit 48 | 32 | 602 / 2,432 / 28 | 341 | 143 / 102 |
+
+(Search: `log/abtest-struct-sort-400-2026-10-26-18-39-26`, every pass on,
+1,800 s.) Quotient bit k depends only on the dividend's top 64 − k bits
+and all 64 divisor bits, hence 79 and 123 inputs; root bit k depends on
+the radicand's top 128 − 2k bits. The tool finds each input's role by
+probes (one input set at a time) and checks the reading on 2,048 random
+inputs. The inputs are numbered in the text order of their names (b[0],
+b[10], ..., b[19], b[1], b[20], ...). In both divider cells the compared
+signal is the quotient bit's complement, and division by zero gives all
+ones, as a restoring array does.
+
+**Both sides follow the recurrence.** In long division, row j brings down
+dividend bit j, compares the partial remainder with the divisor, and
+subtracts when it fits; that comparison is quotient bit j. The tool runs
+the recurrence next to the circuit and counts, per side, the row values
+that some signal computes (the same or the complemented values on 2,048
+random inputs, divisors of random bit length):
+
+| cell | quotient or root bits, side A / side B | remainder bits, side A / side B | pairs |
+|---|---|---|---:|
+| `div-mitern172` | 11 / 11 of 15 | 92 / 67 of 120 | 77 |
+| `div_miter_lec__2` | 55 / 55 of 59 | 1,654 / 1,552 of 1,770 | 1,600 |
+| `sqrt-mitern169` | 18 / 18 of 18 | 151 / 121 of 189 | 130 |
+| `sqrt-mitern170` | 17 / 17 of 17 | 133 / 98 of 170 | 107 |
+| `sqrt-mitern171` | 16 / 16 of 16 | 117 / 81 of 152 | 90 |
+
+A pair is one signal from each side for the same value, the shallowest
+one; a value that a gate both sides share already computes needs no
+pair. A match is only a candidate. A first version drew the divisors
+uniformly below 2^(64−k), so the top rows' quotient bits were almost
+always 0, and their near-constant values matched unrelated signals: 26
+of its 93 pairs on `div-mitern172` were false, and over 800 on
+`div_miter_lec__2`.
+
+**The chain** (`divsqrt_census.py chain`;
+`log/divsqrt-census-2026-10-27/chain-*`). Rows go top down; within a row
+the quotient (root) bit first, then the remainder bits from the lowest.
+Solver 13 (stock path) proves each pair equal on the circuit without the
+miter's assertion, assuming every pair before it. A pair it does not
+prove is dropped. A failed check also gives a model: the circuit is
+simulated on that input, and every pending pair that differs there is
+dropped as well. Last, the miter itself with every proven pair added:
+
+| cell | pairs proven | conflicts, all pairs | the costliest pair | the miter after, conflicts | search today, conflicts |
+|---|---|---:|---|---:|---:|
+| `div-mitern172` | 77 of 77 | 72K | q49, 26K | 0 | 0.78M-0.89M |
+| `sqrt-mitern169` | 130 of 130 | 147K | r46, 32K | 0 | 6.3M-7.4M |
+| `sqrt-mitern170` | 107 of 107 | 127K | r47, 40K | 0 | 3.0M |
+| `sqrt-mitern171` | 90 of 90 | 145K | r48, 44K | 0 | 1.6M |
+| `div_miter_lec__2` | 1,591 of 1,600 | 2.63M | q5, 579K | 0 | 5.7M-7.3M at the 1,800 s limit, unsolved |
+
+The costliest pair is always the compared bit itself. On the square
+roots the chain stays about flat as the width grows (127K to 147K
+conflicts), while search grows from 1.6M to 7.4M. On `div_miter_lec__2`
+the 1,812 checks, each on the whole 49,660-variable circuit, take 3,537 s
+of solver time in all (18 minutes on 24 cores); the compared bit's own
+check is 579K of the 2.9M conflicts. Search does 5.7M to 7.3M conflicts on this cell in
+1,800 s without finishing, and at 3,600 s it is still unsolved (85.6G on
+the work clock, run S.8).
+
+**The certificate** (`tools/divsqrt_proof.py`). Per pair (x, y), the
+solver refutes the circuit, the earlier pairs and the units x and ¬y,
+with variable addition off (`--factor=false`: its clauses on fresh
+variables are not unit-propagation steps). Every clause of that run's
+DRAT proof, with ¬x and y added, follows by unit propagation from the
+input and the lines before it, and its empty clause becomes (¬x ∨ y).
+The same run with ¬x and y gives (x ∨ ¬y). The miter's own run comes
+last, as it is. This is skz.19's widening, in DRAT instead of VeriPB.
+The sub-calls run without pre- and inprocessing (`--plain`). On the
+small cells that keeps about the same conflicts (110K against 100K on
+`div-mitern172`, 181K against 178K on `sqrt-mitern171`) and leaves the
+proof little more than the learned clauses: 3.5 to 3.8 times fewer lines
+than with the default solver. On `div_miter_lec__2` it takes twice the
+conflicts (5.9M against 2.9M) but less solver time in all (2,049 s
+against 3,537 s).
+
+Toys came first. `divsqrt_proof.py toy` builds quotient bit k of an n by
+n divider: a full-width restoring array against a narrow array of adders
+over the low divisor bits. With `--shortcut`, the narrow side's rows
+ignore the high divisor bits and only its output checks them, so its
+inner rows are right only for small divisors, as in the real cells. On
+six toys (n = 6 to 12) every proof passes the gate, and three broken
+proofs are rejected on each: the last pair's derivation left out, the
+whole chain left out with the pairs kept, and a middle pair concluded as
+x = ¬y without its derivation. Then the real cells
+(`log/divsqrt-census-2026-10-27/prove-*-plain`; each pair check is two
+sub-calls):
+
+| cell | pair checks | conflicts | work | search's work (run S.8, 3,600 s) | proof lines (MB) | gate | check time (s) |
+|---|---:|---:|---:|---:|---:|---|---:|
+| `div-mitern172` | 77 | 110K | 0.18G | 2.06G | 194K (8.5) | ok | 11 |
+| `sqrt-mitern169` | 130 | 209K | 0.37G | 22.4G | 303K (16) | ok | 21 |
+| `sqrt-mitern170` | 107 | 201K | 0.41G | 8.61G | 280K (15) | ok | 27 |
+| `sqrt-mitern171` | 90 | 181K | 0.32G | 4.07G | 248K (12) | ok | 20 |
+| `div_miter_lec__2` | 1,812 | 5.9M | 30.6G | 85.6G, unsolved | 13.6M (1,013) | ok | 2,317 |
+
+The three broken proofs are rejected on each of the four small cells as
+well; on `div_miter_lec__2` they were not run, since each check of its
+proof takes 39 minutes. A fourth
+control, the last pair's conclusion replaced by (x ∨ y), was accepted on
+the real cells. That is right, not a hole: the last pair is the two
+compared bits, and the miter's own assertion that they differ makes
+(x ∨ y) follow by unit propagation. It was dropped as a control.
+
+**ABC as a measuring stick** (external, never shipped:
+`divsqrt_census.py blif`, then `abc -c "read_blif X; strash; iprove"`;
+logs in `log/divsqrt-census-2026-10-27/abc`). `iprove` (rewriting plus
+SAT sweeping) proves `div-mitern172` in 6.7 s, `sqrt-mitern171` in 29 s,
+`sqrt-mitern170` in 31 s and `sqrt-mitern169` in 49 s. On
+`div_miter_lec__2` it hits its 30-minute limit: five rounds of sweeping
+take the circuit from 90,845 to 84,000 nodes.
+
+**What the census does not cover.** The candidates come from the
+restoring recurrence and from EPFL's answer for division by zero. A pass
+would also need the input bit positions found by probes, not by the names'
+text order, which only these files guarantee (the tool checks it by
+simulation on every cell). The 2026 cells of the family were not
+looked at.
+
+**Decision (the owner's call; bead `skz.17`).** Three ways on:
+
+- **(a) Build the chain as a structure pass in solver 13** (a new bead;
+  an option, off until measured on the 400 cells at two seeds). It reads
+  the gates by first literal (the general reader when that fails),
+  recognises a one-output divider or square-root miter by probes, places
+  each input bit by probes, runs the recurrence for candidates, proves
+  the pairs by sub-calls of the full solver (pre- and inprocessing off,
+  the lines widened into the DRAT proof as above), drops pairs by
+  models, and hands the miter with its proven pairs to search. On 2025:
+  the four cells at 11 to 61 times less work than their 42-578 s of
+  search, and `div_miter_lec__2` from a timeout to a solve: its
+  sub-calls take 30.6G on the work clock, less than search spends in
+  1,800 s (40G-45G) without an answer. Two parts need engineering: a
+  check that does not reload the whole circuit each time (this tool
+  writes and parses 1,812 files of 219K clauses for that cell), and the
+  compared bit's own check (579K conflicts there). On 2026: three cells
+  by file name, not analysed. It is a pass for one family of generated
+  benchmarks, with the over-fitting risk that brings (plan section 8).
+- **(b) General sweeping first** (bead `skz.10`): candidates from random
+  simulation of any miter, with no knowledge of the function, proven by
+  the same sub-calls. Wider reach (every equivalence-checking miter in
+  the suite) and a bigger job. ABC's general sweeping does not finish
+  `div_miter_lec__2` in 30 minutes and the recurrence's candidates do, so
+  the recurrence would stay as one source of candidates.
+- **(c) Park.** The four small cells are solved today; what a pass adds
+  there is about 1,000 s of PAR-2 a seed. The gain in solved cells is
+  `div_miter_lec__2` alone.
+
+Recommendation: (a), with the sub-call proof engine (the widening, the
+model-based dropping) written so that (b) can reuse it with other
+sources of candidates.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 
