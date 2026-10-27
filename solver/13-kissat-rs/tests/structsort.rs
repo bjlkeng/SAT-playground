@@ -665,3 +665,27 @@ fn every_step_of_the_pass_keeps_to_the_tick_limit() {
         }
     }
 }
+
+#[test]
+fn the_shipped_defaults_run_the_sorter_pass() {
+    // on by default since 2026-10-27 (the owner's call after the paired
+    // run): with no option at all a sorter miter is refuted by the pass,
+    // with a proof the gate accepts, and --structsort=0 turns it off
+    let fx = Fixture::new("structsort_default");
+    let cnf = fx.path("m.cnf");
+    let (vars, clauses) = toy("bubble", "pancake", 5, 3, false);
+    write_cnf(&cnf, vars, &clauses);
+    let proof = fx.path("m.drat");
+    let mut cmd = Command::new(solver_bin());
+    for key in common::SOLVER_ENV_VARS {
+        cmd.env_remove(key);
+    }
+    let out = cmd.arg("-n").arg(&cnf).arg(&proof).output().expect("run sat-solver");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("\ns UNSATISFIABLE"), "{}", stdout);
+    assert!(stdout.contains("sorter: two swap networks"), "the sorter pass is on by default: {}", stdout);
+    assert_eq!(gate(&cnf, &proof), "ok");
+    let off = common::run_shipped(&cnf, &["--structsort=0"], &[]);
+    assert_eq!(off.status, "UNSATISFIABLE");
+    assert!(!off.stdout.contains("sorter: two swap networks"), "{}", off.stdout);
+}
