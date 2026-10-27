@@ -14,7 +14,8 @@ dropped, and every line is checked by drat-trim through
 tools/proof_gate.py.  Last, the miter with every proven pair added: its
 DRAT lines as they are.  The solver runs the stock path with variable
 addition off (--factor=false: its clauses on fresh variables are RAT, not
-unit propagation steps).
+unit propagation steps).  A sub-call that crashes or answers with the
+wrong exit code stops the run; a timeout or memory-out drops the pair.
 
 Subcommands:
   toy --n N --k K --out FILE [--shortcut]
@@ -27,14 +28,16 @@ Subcommands:
         cells.  The inputs a[k..n-1] and b[0..n-1] are numbered in the text
         order of their names; every clause starts with its gate's literal.
   prove CNF --solver BIN --out DIR [--jobs N] [--limit S] [--window W]
-        [--subcall-args=OPTS] [--progress] [--tamper]
+        [--subcall-args=OPTS] [--mem-mb MB] [--progress] [--tamper]
         the chain with its proof (pairs checked in windows as in the
         census's chain; --subcall-args=--plain runs every sub-call without
         pre- and inprocessing, which keeps the proof to about the learned
-        clauses), then tools/proof_gate.py on it; --tamper
-        also checks three broken proofs: the last pair's derivation left out
-        (its conclusions kept), the whole chain left out (the pairs kept),
-        and a middle pair concluded as x = -y without its derivation.
+        clauses; every sub-call runs under --mem-mb, default 16,000), then
+        tools/proof_gate.py on it.  --tamper also checks three broken
+        proofs: the last pair's derivation left out (its conclusions kept),
+        the whole chain left out (the pairs kept), and a middle pair
+        concluded as x = -y without its derivation.  The run fails when one
+        of them is accepted, as on cells too small for these controls.
 """
 from __future__ import annotations
 
@@ -207,16 +210,11 @@ def widen(lines, extra):
     return out
 
 
-def subcall(solver, cnf_path, proof_path, limit, extra=()):
+def subcall(solver, cnf_path, proof_path, limit, extra=(), mem_mb=census.MEM_MB):
     """(status, seconds, conflicts, true variables of the model or None, work)"""
-    t = time.time()
-    p = subprocess.run(["timeout", str(limit), solver] + SUBCALL + list(extra) + [str(cnf_path), str(proof_path)],
-                       capture_output=True, text=True)
-    m = re.search(r"^s (\S+)", p.stdout, re.M)
-    st = m.group(1) if m else "TIMEOUT"
-    confl, work = census.workclock(p.stdout)
-    return (st, time.time() - t, confl,
-            census.model_of(p.stdout) if st == "SATISFIABLE" else None, work)
+    st, el, out = census.run_solver(solver, SUBCALL + list(extra) + [str(cnf_path), str(proof_path)], limit, mem_mb)
+    confl, work = census.workclock(out)
+    return st, el, confl, census.model_of(out) if st == "SATISFIABLE" else None, work
 
 
 def cmd_prove(args):
@@ -241,18 +239,20 @@ def cmd_prove(args):
         """Both directions of pair i: (status, seconds, conflicts, model, lines, work)."""
         _, x, y = pairs[i]
         base = circuit + [c for j in assumed for c in eq(j)]
-        lines, secs, confl, work = [], 0.0, 0, 0
+        lines, secs, confls, works = [], 0.0, [], []
         for units, extra in (([(x,), (-y,)], [-x, y]), ([(-x,), (y,)], [x, -y])):
             f, pf = tmp / f"p{i:05d}.cnf", tmp / f"p{i:05d}.drat"
             census.write_cnf(f, n_vars, base + units)
-            st, el, cf, model, wk = subcall(args.solver, f, pf, args.limit, args.subcall_args.split())
+            st, el, cf, model, wk = subcall(args.solver, f, pf, args.limit, args.subcall_args.split(), args.mem_mb)
             secs += el
-            confl += max(cf, 0)
-            work += max(wk, 0)
+            confls.append(cf)
+            works.append(wk)
             drat = read_drat(pf) if st == "UNSATISFIABLE" else []
             f.unlink()
             if pf.exists():
                 pf.unlink()
+            confl, work = census.total(confls), census.total(works)
+            confl, work = (-1 if confl is None else confl), (-1 if work is None else work)
             if st != "UNSATISFIABLE":
                 return st, secs, confl, model, None, work
             lines += widen(drat, extra) + [extra]
@@ -268,7 +268,7 @@ def cmd_prove(args):
     # the miter with every proven pair
     f, pf = tmp / "miter.cnf", tmp / "miter.drat"
     census.write_cnf(f, n_vars, list(net.clauses) + [c for i in proven for c in eq(i)])
-    fin = subcall(args.solver, f, pf, args.limit, args.subcall_args.split())
+    fin = subcall(args.solver, f, pf, args.limit, args.subcall_args.split(), args.mem_mb)
     final = read_drat(pf) if fin[0] == "UNSATISFIABLE" else None
     f.unlink()
     if pf.exists():
@@ -306,7 +306,7 @@ def cmd_prove(args):
     summary = dict(cell=path.name, pairs=len(pairs), proven=len(proven), dropped=len(dropped),
                    dropped_by_model=len(by_model),
                    proven_seconds=round(sum(res[i][1] for i in proven), 2),
-                   proven_conflicts=sum(res[i][2] for i in proven), all_checks=spent,
+                   proven_conflicts=census.total(res[i][2] for i in proven), all_checks=spent,
                    miter_conflicts=fin[2], miter_work=fin[4], subcall_args=args.subcall_args, proof_lines=n_lines,
                    proof_mb=round(proof.stat().st_size / 1e6, 1), gate=verdict,
                    gate_seconds=round(check_s, 1), wall_seconds=round(time.time() - t0, 1))
@@ -336,7 +336,15 @@ def cmd_prove(args):
                        dropped_by_model=[pairs[i] for i in by_model],
                        results={pairs[i][0]: res[i][:3] for i in res}), fh, indent=1)
     print(json.dumps(summary))
-    return 0 if verdict == "ok" else 1
+    if verdict != "ok":
+        return 1
+    if args.tamper:
+        accepted = [k for k, v in summary.get("tamper", {}).items() if not v.startswith("FAIL:")]
+        if accepted or not proven:
+            print(f"{path.name}: broken proofs not rejected ({accepted or 'no pair proven'}): "
+                  f"this cell cannot exercise the controls", file=sys.stderr)
+            return 1
+    return 0
 
 
 def main(argv):
@@ -356,6 +364,7 @@ def main(argv):
     p.add_argument("--window", type=int, default=32)
     p.add_argument("--progress", action="store_true")
     p.add_argument("--subcall-args", default="", help="extra solver options for every sub-call, e.g. --plain")
+    p.add_argument("--mem-mb", type=int, default=census.MEM_MB)
     p.add_argument("--check-timeout", type=float, default=3600)
     p.add_argument("--tamper", action="store_true")
     args = ap.parse_args(argv)

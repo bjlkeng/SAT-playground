@@ -50,7 +50,9 @@ Subcommands:
         input the circuit is simulated on, and every pending pair that
         differs there is dropped as well.  Then the miter itself with
         every proven pair added.  The solver runs the stock path (every
-        structure pass off).
+        structure pass off) under the time limit and --mem-mb (default
+        16,000); a crash or an answer with the wrong exit code stops the
+        run, a timeout or memory-out drops the pair.
 
   blif FILE --out FILE.blif              the netlist as BLIF, one output (the
                                         miter asserted), for measurements with
@@ -87,6 +89,7 @@ MAX_SUPPORT = 8          # largest gate support read by truth table
 SAMPLES = 2048           # random samples for the function check and the rows
 STOCK = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0",
          "--structsort=0", "--gauss=0"]
+MEM_MB = 16000           # memory cap per solver process (the repo's 16 GB rule)
 
 
 # ---------------------------------------------------------------------------
@@ -547,16 +550,42 @@ def workclock(stdout):
     return int(c.group(1)) if c else -1, int(w.group(1)) if w else -1
 
 
-def solve(solver, path, limit, extra=()):
-    """(status, seconds, conflicts, true variables of the model or None, work)"""
+def run_solver(solver, args, limit, mem_mb=MEM_MB):
+    """The solver under a time limit and a memory cap.  (status, seconds,
+    stdout): status is the answer of its s line, or TIMEOUT or MEMOUT for a
+    budget stop.  Any other exit, or an answer whose exit code disagrees,
+    raises: a broken run must not pass for a budget stop."""
+    cmd = ["prlimit", f"--as={mem_mb * 1000000}", "--", "timeout", str(limit), solver] + list(args)
     t = time.time()
-    p = subprocess.run(["timeout", str(limit), solver] + STOCK + list(extra) + [str(path)],
-                       capture_output=True, text=True)
+    p = subprocess.run(cmd, capture_output=True, text=True)
     el = time.time() - t
+    rc = p.returncode
     m = re.search(r"^s (\S+)", p.stdout, re.M)
-    st = m.group(1) if m else "TIMEOUT"
-    confl, work = workclock(p.stdout)
-    return st, el, confl, model_of(p.stdout) if st == "SATISFIABLE" else None, work
+    if m:
+        st = m.group(1)
+        codes = {"SATISFIABLE": (10,), "UNSATISFIABLE": (20,), "UNKNOWN": (124,)}.get(st, ())
+        if rc not in codes:
+            raise RuntimeError(f"solver answered {st} with exit code {rc}: {p.stderr[-300:]}")
+        return ("TIMEOUT" if st == "UNKNOWN" else st), el, p.stdout
+    if rc == 124:
+        return "TIMEOUT", el, p.stdout
+    if "memory allocation of" in p.stderr:
+        return "MEMOUT", el, p.stdout
+    raise RuntimeError(f"solver exit code {rc} without an answer: {p.stderr[-300:]}")
+
+
+def total(values):
+    """The sum, or None when any value is missing (-1): a missing counter is
+    reported as missing, never as zero."""
+    values = list(values)
+    return None if any(v < 0 for v in values) else sum(values)
+
+
+def solve(solver, path, limit, extra=(), mem_mb=MEM_MB):
+    """(status, seconds, conflicts, true variables of the model or None, work)"""
+    st, el, out = run_solver(solver, STOCK + list(extra) + [str(path)], limit, mem_mb)
+    confl, work = workclock(out)
+    return st, el, confl, model_of(out) if st == "SATISFIABLE" else None, work
 
 
 def run_chain(net, pairs, check, jobs, window, progress=False):
@@ -568,10 +597,12 @@ def run_chain(net, pairs, check, jobs, window, progress=False):
     model is an input on which some pair differs: the circuit is simulated
     on it and every pending pair that differs there is dropped too.
     Returns (proven in order, dropped by a check, dropped by a model, results,
-    spent): spent counts every check run, the ones run again included."""
+    spent): spent counts every check run, the ones run again included; a
+    check without counters (killed before it printed them) is counted in
+    missing_counters and left out of the totals."""
     proven, dropped, by_model, results = [], [], [], {}
     proven_set = set()
-    spent = dict(calls=0, seconds=0.0, conflicts=0, work=0)
+    spent = dict(calls=0, seconds=0.0, conflicts=0, work=0, missing_counters=0)
     alive = [True] * len(pairs)
     t0 = time.time()
 
@@ -597,8 +628,11 @@ def run_chain(net, pairs, check, jobs, window, progress=False):
                 for r in got:
                     spent["calls"] += 1
                     spent["seconds"] += r[1]
-                    spent["conflicts"] += max(r[2], 0)
-                    spent["work"] += max(r[5], 0)
+                    if r[2] < 0 or r[5] < 0:
+                        spent["missing_counters"] += 1   # the totals then leave this check out
+                    else:
+                        spent["conflicts"] += r[2]
+                        spent["work"] += r[5]
                 bad = [t for t, r in enumerate(got) if r[0] != "UNSATISFIABLE"]
                 first = bad[0] if bad else len(todo)
                 for t in range(first):
@@ -645,7 +679,7 @@ def cmd_chain(args):
         nm, x, y = pairs[i]
         f = tmp / f"lemma{i:05d}.cnf"
         write_cnf(f, n_vars, circuit + [c for j in assumed for c in eq(pairs[j])] + [(x, y), (-x, -y)])
-        r = solve(args.solver, f, args.limit)
+        r = solve(args.solver, f, args.limit, mem_mb=args.mem_mb)
         f.unlink()
         return r[0], r[1], r[2], r[3], None, r[4]
 
@@ -654,12 +688,12 @@ def cmd_chain(args):
     os.rmdir(tmp)
     final = out / "miter_with_pairs.cnf"
     write_cnf(final, n_vars, list(net.clauses) + [c for i in proven for c in eq(pairs[i])])
-    fin = solve(args.solver, final, args.limit)
+    fin = solve(args.solver, final, args.limit, mem_mb=args.mem_mb)
     final.unlink()
     summary = dict(cell=path.name, pairs=len(pairs), proven=len(proven), dropped=len(dropped),
                    dropped_by_model=len(by_model), dropped_kinds=sorted({results[i][0] for i in dropped}),
                    proven_seconds=round(sum(results[i][1] for i in proven), 2),
-                   proven_conflicts=sum(results[i][2] for i in proven),
+                   proven_conflicts=total(results[i][2] for i in proven),
                    dropped_seconds=round(sum(results[i][1] for i in dropped), 2), all_checks=spent,
                    costliest=[(pairs[i][0], round(results[i][1], 2), results[i][2])
                               for i in sorted(proven, key=lambda i: -results[i][2])[:5]],
@@ -708,6 +742,7 @@ def main(argv):
     ch.add_argument("--limit", type=float, default=300)
     ch.add_argument("--window", type=int, default=32)
     ch.add_argument("--progress", action="store_true")
+    ch.add_argument("--mem-mb", type=int, default=MEM_MB)
     bl = sub.add_parser("blif")
     bl.add_argument("file")
     bl.add_argument("--out", required=True)
