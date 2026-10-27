@@ -51,8 +51,9 @@ Subcommands:
         differs there is dropped as well.  Then the miter itself with
         every proven pair added.  The solver runs the stock path (every
         structure pass off) under the time limit and --mem-mb (default
-        16,000); a crash or an answer with the wrong exit code stops the
-        run, a timeout or memory-out drops the pair.
+        16,000); a crash, an UNKNOWN with no budget set, or an answer with
+        the wrong exit code stops the run; a timeout, a memory-out or the
+        solver's own budget (SAT_LIMIT_TICKS, --conflicts) drops the pair.
 
   blif FILE --out FILE.blif              the netlist as BLIF, one output (the
                                         miter asserted), for measurements with
@@ -550,12 +551,19 @@ def workclock(stdout):
     return int(c.group(1)) if c else -1, int(w.group(1)) if w else -1
 
 
+BUDGET_OPTIONS = ("--conflicts=", "--decisions=", "--time=")
+
+
 def run_solver(solver, args, limit, mem_mb=MEM_MB):
     """The solver under a time limit and a memory cap.  (status, seconds,
-    stdout): status is the answer of its s line, or TIMEOUT or MEMOUT for a
-    budget stop.  Any other exit, or an answer whose exit code disagrees,
-    raises: a broken run must not pass for a budget stop."""
+    stdout): status is the answer of its s line, or TIMEOUT, MEMOUT or
+    BUDGET (the solver's own limit: SAT_LIMIT_TICKS or a --conflicts,
+    --decisions or --time option, after which it answers UNKNOWN with exit
+    code 0) for a budget stop.  Any other exit, an UNKNOWN with no budget
+    set, or an answer whose exit code disagrees raises: a broken run must
+    not pass for a budget stop."""
     cmd = ["prlimit", f"--as={mem_mb * 1000000}", "--", "timeout", str(limit), solver] + list(args)
+    budget = bool(os.environ.get("SAT_LIMIT_TICKS")) or any(a.startswith(BUDGET_OPTIONS) for a in args)
     t = time.time()
     p = subprocess.run(cmd, capture_output=True, text=True)
     el = time.time() - t
@@ -563,10 +571,14 @@ def run_solver(solver, args, limit, mem_mb=MEM_MB):
     m = re.search(r"^s (\S+)", p.stdout, re.M)
     if m:
         st = m.group(1)
-        codes = {"SATISFIABLE": (10,), "UNSATISFIABLE": (20,), "UNKNOWN": (124,)}.get(st, ())
+        if st == "UNKNOWN" and rc == 124:
+            return "TIMEOUT", el, p.stdout
+        if st == "UNKNOWN" and rc == 0 and budget:
+            return "BUDGET", el, p.stdout
+        codes = {"SATISFIABLE": (10,), "UNSATISFIABLE": (20,)}.get(st, ())
         if rc not in codes:
             raise RuntimeError(f"solver answered {st} with exit code {rc}: {p.stderr[-300:]}")
-        return ("TIMEOUT" if st == "UNKNOWN" else st), el, p.stdout
+        return st, el, p.stdout
     if rc == 124:
         return "TIMEOUT", el, p.stdout
     if "memory allocation of" in p.stderr:

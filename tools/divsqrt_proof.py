@@ -14,8 +14,9 @@ dropped, and every line is checked by drat-trim through
 tools/proof_gate.py.  Last, the miter with every proven pair added: its
 DRAT lines as they are.  The solver runs the stock path with variable
 addition off (--factor=false: its clauses on fresh variables are RAT, not
-unit propagation steps).  A sub-call that crashes or answers with the
-wrong exit code stops the run; a timeout or memory-out drops the pair.
+unit propagation steps).  A sub-call that crashes, answers UNKNOWN with
+no budget set, or answers with the wrong exit code stops the run; a
+timeout, a memory-out or the solver's own budget drops the pair.
 
 Subcommands:
   toy --n N --k K --out FILE [--shortcut]
