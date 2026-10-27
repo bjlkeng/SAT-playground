@@ -250,10 +250,13 @@ kissat_options! {
     (structcsp, 0, 0, 1, "structure pass: CSP decoding"),
     (structmore, 2_000_000, 0, i32::MAX, "structure pass work limit (K) after a find"),
     (structparity, 1, 0, 1, "structure pass: XOR systems"),
-    // the sorter pass (bead SAT-playground-skz.22, 2026-10-26): off until
-    // measured on the 400 cells at two seeds; structsortticks is its own
-    // work limit, counted from where the earlier passes stopped
-    (structsort, 0, 0, 1, "structure pass: sorter miters"),
+    // the sorter pass (bead SAT-playground-skz.22, 2026-10-26): on by
+    // default since 2026-10-27, the owner's call after the two-seed
+    // 400-cell run (317/316 and 318/320 off/on: the two BubbleVsPancakeSort
+    // timeouts refuted on both seeds, the same search on every other cell;
+    // the 2026 holdout not consulted). structsortticks is its own work
+    // limit, counted from where the earlier passes stopped
+    (structsort, 1, 0, 1, "structure pass: sorter miters"),
     (structsortticks, 2_000_000, 0, i32::MAX, "structure pass: sorter work limit (K)"),
     (structsym, 1, 0, 1, "structure pass: symmetry fixing"),
     (structsymext, 0, 0, 1, "structure pass: external symmetry tool"),

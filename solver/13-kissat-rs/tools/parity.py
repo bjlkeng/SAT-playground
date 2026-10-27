@@ -138,7 +138,7 @@ def main():
     ap.add_argument("--structure", action="store_true",
                     help="leave the structure passes and the parity engine at their defaults "
                          "(on since 2026-10-10 and 2026-10-18); without it the solver runs with "
-                         "--structsym=0 --structparity=0 --structcount=0 --structarith=0 --gauss=0, the stock "
+                         "--structsym=0 --structparity=0 --structcount=0 --structarith=0 --structsort=0 --gauss=0, the stock "
                          "path this tool compares to the C kissat")
     ap.add_argument("--corpus", choices=["default"], help="use built-in corpus")
     ap.add_argument("--timeout", type=int, default=600, help="per-run seconds")
@@ -182,7 +182,7 @@ def main():
         # the C kissat has no struct* or gauss options; solver 13 gets them
         # off unless --structure asks for its defaults
         sextra = extra if args.structure else [
-            "--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--gauss=0"] + extra
+            "--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0", "--gauss=0"] + extra
         ks, kstats, kerr, kout = run(args.kissat, cnf, extra, args.timeout)
         ss, sstats, serr, sout = run(args.solver, cnf, sextra, args.timeout, solver_env)
         name = os.path.basename(cnf)

@@ -162,8 +162,10 @@ runs, so `tools/parity.py` stays exact. Since 2026-10-10 `structsym` and
 `structparity` are on by default (promoted after the 2025 runs and the
 single 2026 holdout), since 2026-10-13 `structcount` too, and since
 2026-10-18 the parity engine `gauss` (`src/gauss.rs`, README "The
-parity engine"): the stock kissat path is `--structsym=0
---structparity=0 --structcount=0 --gauss=0`, which `tools/parity.py`
+parity engine"), since 2026-10-20 `structarith` and since 2026-10-27
+`structsort`: the stock kissat path is `--structsym=0
+--structparity=0 --structcount=0 --structarith=0 --structsort=0
+--gauss=0`, which `tools/parity.py`
 adds unless told `--structure` and the test helpers' `run`/`run_with_proof`
 add always
 (`tests/common/mod.rs`, `STOCK_PATH`); a test of the shipped defaults

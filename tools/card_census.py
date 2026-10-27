@@ -1776,7 +1776,7 @@ def _implies(clauses, cids, lits, kind, k):
         # bp4's 33,908 checks)
         p = subprocess.run(["timeout", "-s", "KILL", "65", "prlimit", f"--as={16000 << 20}", "--",
                             str(SOLVER), "-q", "-n", "--structsym=0", "--structparity=0", "--structcount=0",
-                            "--structarith=0", "--gauss=0", path], capture_output=True, timeout=70)
+                            "--structarith=0", "--structsort=0", "--gauss=0", path], capture_output=True, timeout=70)
         return {20: True, 10: False}.get(p.returncode)
     except (OSError, subprocess.TimeoutExpired):
         return None

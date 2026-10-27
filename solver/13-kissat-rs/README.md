@@ -232,7 +232,7 @@ structure set's gain, +29 in both seeds, is a deterministic one.
 | `--structcountticks=N` | the counting pass's own work limit in thousands (default 20K, 20M), counted from where the other passes stopped | since 2026-10-13 |
 | `--structarith=1` | linear arithmetic: a miter of two multipliers over shared partial products refuted by summing their adder cells (`src/structarith.rs`); runs after symmetry, before counting, within `structarithticks` | **default on** since 2026-10-20 (313 v 312; below, "The linear arithmetic pass") |
 | `--structarithticks=N` | the arithmetic pass's own work limit in thousands (default 20K, 20M), counted from where the earlier passes stopped | since 2026-10-19 |
-| `--structsort=1` | sorters: a miter of two networks of swap units over the same words, refuted by sortedness lemmas and a count by thresholds (`src/structsort.rs`); runs after the arithmetic pass, before counting, within `structsortticks` | off by default; bead `SAT-playground-skz.22` (below, "The sorter pass") |
+| `--structsort=1` | sorters: a miter of two networks of swap units over the same words, refuted by sortedness lemmas and a count by thresholds (`src/structsort.rs`); runs after the arithmetic pass, before counting, within `structsortticks` | **default on** since 2026-10-27 (317/316 and 318/320 off/on; below, "The sorter pass") |
 | `--structsortticks=N` | the sorter pass's own work limit in thousands (default 2M, 2G), counted from where the earlier passes stopped | since 2026-10-26 |
 | `--structcsp=1` | one-hot CSP decoding, SAT only | bead S.4, not yet |
 | `--structsymext=1` | general automorphisms through an external tool (measurement only) | bead S.2 step two, not yet |
@@ -2664,8 +2664,9 @@ All seven cells meet all three. The 2026 suite has three
 **Result.** `--structsort=1` refutes the seven 2025 sorter miters in
 1.3-3.4 s each, including the two that time out on both seeds today.
 Every proof passes `tools/proof_gate.py`. The pass is the prototype of
-the section above, ported to the solver (`src/structsort.rs`); it is off
-by default until the paired run below.
+the section above, ported to the solver (`src/structsort.rs`). **On by
+default since 2026-10-27**, the owner's call after the paired run below;
+the 2026 holdout was not consulted (it is kept for a later candidate).
 
 **What it does.** It runs after the arithmetic pass and before the
 counting pass, within its own limit `structsortticks` (default 2M

@@ -59,7 +59,7 @@ DEFAULT_VERIPB = ROOT / "tools" / "checkers" / "VeriPB" / "target" / "release" /
 DEFAULT_SOLVER = ROOT / "solver" / "13-kissat-rs" / "target" / "release" / "sat-solver"
 # the sub-calls run the stock path without bounded variable addition, so
 # every DRAT addition is a RUP clause over the lemma's own variables
-STOCK = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--gauss=0", "--factor=false"]
+STOCK = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0", "--gauss=0", "--factor=false"]
 
 # ---------------------------------------------------------------------------
 # the toy generator: the real cells' gate shapes
