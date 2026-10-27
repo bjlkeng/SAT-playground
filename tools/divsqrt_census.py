@@ -568,22 +568,21 @@ def run_solver(solver, args, limit, mem_mb=MEM_MB):
     p = subprocess.run(cmd, capture_output=True, text=True)
     el = time.time() - t
     rc = p.returncode
-    m = re.search(r"^s (\S+)", p.stdout, re.M)
-    if m:
-        st = m.group(1)
-        if st == "UNKNOWN" and rc == 124:
-            return "TIMEOUT", el, p.stdout
-        if st == "UNKNOWN" and rc == 0 and budget:
-            return "BUDGET", el, p.stdout
-        codes = {"SATISFIABLE": (10,), "UNSATISFIABLE": (20,)}.get(st, ())
-        if rc not in codes:
-            raise RuntimeError(f"solver answered {st} with exit code {rc}: {p.stderr[-300:]}")
-        return st, el, p.stdout
+    # a run the limit killed counts as a timeout even when it had printed an
+    # answer: its model or its proof may be cut short
     if rc == 124:
         return "TIMEOUT", el, p.stdout
     if "memory allocation of" in p.stderr:
         return "MEMOUT", el, p.stdout
-    raise RuntimeError(f"solver exit code {rc} without an answer: {p.stderr[-300:]}")
+    m = re.search(r"^s (\S+)", p.stdout, re.M)
+    if not m:
+        raise RuntimeError(f"solver exit code {rc} without an answer: {p.stderr[-300:]}")
+    st = m.group(1)
+    if st == "UNKNOWN" and rc == 0 and budget:
+        return "BUDGET", el, p.stdout
+    if rc != {"SATISFIABLE": 10, "UNSATISFIABLE": 20}.get(st):
+        raise RuntimeError(f"solver answered {st} with exit code {rc}: {p.stderr[-300:]}")
+    return st, el, p.stdout
 
 
 def total(values):
