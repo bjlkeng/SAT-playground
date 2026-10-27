@@ -2728,10 +2728,48 @@ sorter cells and no others. On 337 cells it declines at a median of 568K
 work (largest 44M). The other 56 have more than 10M clauses, where the
 structure pass is off.
 
-**The paired run** (two seeds, 400 cells, 1,800 s, 32 jobs, every answer
-checked; frozen build `solver/13-j5-sort-snapshot`, commit 769e818;
-`log/abtest-struct-sort-400-2026-10-26-18-39-26`): to be filled in when
-it ends.
+**The paired run** (2026-10-26/27; two seeds, 400 cells, 1,800 s, 32
+jobs, every answer checked; frozen build `solver/13-j5-sort-snapshot`,
+commit 769e818; `log/abtest-struct-sort-400-2026-10-26-18-39-26`):
+
+| | seed 0 | seed 1 |
+|---|---|---|
+| solved, pass off / on | 317 / 316 | 318 / 320 |
+| wall PAR-2, off / on | 381,594 / 379,786 | 375,831 / 366,174 |
+| tick PAR-2, off / on | 9.911e12 / 9.711e12 | 9.757e12 / 9.457e12 |
+
+No answer contradicts another and no check failed (per arm 155-157
+UNSAT proofs verified, 23-24 checker timeouts).
+
+- **The sorter cells.** With the pass on, all seven take 1.5-4.9 s on
+  both seeds. With it off they take 157-701 s, and
+  `BubbleVsPancakeSort_9_4` and `_8_6` time out. That is +2 cells per
+  seed. On the work clock, the five cells search solves go from 74.5G to
+  0.33G, and the two timeouts (killed at about 66G) are solved at 60M and
+  110M.
+- **Everything else: the same search.** On the other cells both arms
+  solve (308 on seed 0, 312 on seed 1), the conflict counts are equal.
+  The pass adds 0.05% to their work; the largest single addition is 53M,
+  on `velev-pipe-sat-1.0-b7`, where reading the big formula costs that.
+- **The other status changes are cells at the wall limit.** Seed 0 loses
+  four: `dislog_a14` (solved at 1,727 s with the pass off), `HCP-446-105`
+  (1,418 s), `16_16_booth_dadda_mapped_and_and_wallace_mapped_bit28`
+  (1,555 s) and `bp5_CSO` (1,513 s). It gains `oddball_29_4_ttf` (1,782
+  s). Seed 1 loses `Kakuro-easy-132` (1,728 s) and gains
+  `lockchart-group1-L190` (1,671 s). The search is the same in both arms,
+  so each lost run is one that went slower per conflict. `HCP-446-105`
+  reached 22.3M conflicts by the kill, against the 26.1M its twin needed
+  at 1,418 s. On the other seed these cells take the same time in both
+  arms, or swing the other way. **Rerun on a quiet host** (the frozen
+  binary, one run per core, nothing else running;
+  `log/structsort-noise-recheck-2026-10-27`), all five lost cells solve
+  with the pass on, within 1% of the time without it: `HCP-446-105`
+  1,336 s against 1,336, `16_16_booth_dadda_mapped_bit28` 1,414 against
+  1,418, `bp5_CSO` 1,183 against 1,191, `dislog_a14` 1,598 against 1,610,
+  `Kakuro-easy-132` 1,533 against 1,526.
+
+So the pass is +2 cells on each seed, five cells from minutes to seconds,
+and the same search everywhere else, for 0.05% more work.
 
 **Codex review.** Rounds 1-7 changed the patch. Every finding was work
 accounting: a step charged its work only after it ran, or ran without a
