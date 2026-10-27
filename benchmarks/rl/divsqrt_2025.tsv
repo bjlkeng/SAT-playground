@@ -1,0 +1,6 @@
+stem	vars	clauses	gates	inputs	direction_open	numbered_down	numbered_up	side_a_gates	side_b_gates	shared_gates	function	sides_agree	bits_a	bits_b	rem_a	rem_b	pairs	error
+16ff47a05b769ed6a04c7175cfc6da55-sqrt-mitern170	3486	15368	3450	34	389	518	1094	677	2802	30	root bit 47 of 128	True	17/17	17/17	133/170	98/170	107	
+31e843c53a76ff3961935ad55b953298-sqrt-mitern171	3041	13408	3007	32	341	457	931	602	2432	28	root bit 48 of 128	True	16/16	16/16	117/152	81/152	90	
+9dd565d002c343712eb5deda187e9034-sqrt-mitern169	3979	17456	3941	36	445	586	1283	755	3217	32	root bit 46 of 128	True	18/18	18/18	151/189	121/189	130	
+b18b24418dd863c1d631698d7d45041f-div_miter_lec__2	49660	219272	49535	123	5700	14176	11440	12953	36669	88	quotient bit 5 of 64/64 (negated)	True	55/59	55/59	1654/1770	1552/1770	1600	
+f0bafebdcce23ccfbaf6c27a7522069b-div-mitern172	2851	12113	2770	79	254	930	614	902	1885	18	quotient bit 49 of 64/64 (negated)	True	11/15	11/15	92/120	67/120	77	
