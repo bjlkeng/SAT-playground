@@ -53,7 +53,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const MAX_SUPPORT: usize = 6; // a gate's truth table fits in a u64
-const MAX_VARS: i32 = 1 << 21; // beyond this the pass does not read
+const MAX_VARS: i32 = 1 << 18; // beyond this the pass does not read (the simulation keeps 32 words a variable)
 const MAX_INPUTS: usize = 512;
 const MAX_WIDTH: usize = 64; // divider operands of at most 64 bits (the rows fit in u128)
 const MAX_SQRT_INPUTS: usize = 124; // radicand bits (the rows fit in u128)
@@ -110,11 +110,21 @@ struct Net {
     level: Vec<u32>,
     /// 1 in a's cone, 2 in b's, 3 in both.
     side: Vec<u8>,
+    /// The simulation's slot of each variable the circuit uses (inputs,
+    /// constants, gates), so its tables are the circuit's size whatever the
+    /// formula's numbers are; `consts` the constant variables.
+    pos: Vec<u32>,
+    slots: usize,
+    consts: Vec<i32>,
 }
 
 impl Net {
     fn shared(&self, v: i32) -> bool {
         self.side[v as usize] == 3
+    }
+    /// The simulation slot of a variable the circuit uses.
+    fn at(&self, v: i32) -> usize {
+        self.pos[v as usize] as usize
     }
 }
 
@@ -300,6 +310,10 @@ fn read_net(f: &Formula, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Resul
     }
     let (a, b) = (rg.sup[0], rg.sup[1]);
     let invert = (rg.tt == 0b1001) == (root > 0); // an xnor asserted, or an xor denied: a == b asserted
+    // the levels and the two cones: a visit per gate input, three times, and
+    // two tables
+    let edges: u64 = order.iter().map(|&v| gates[v as usize].as_ref().unwrap().sup.len() as u64).sum();
+    reserve(work, 3 * edges + 2 * nv as u64, stopped)?;
     let mut level = vec![0u32; nv];
     for &v in &order {
         let g = gates[v as usize].as_ref().unwrap();
@@ -319,8 +333,19 @@ fn read_net(f: &Formula, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Resul
             }
         }
     }
-    *work += 2 * nv as u64;
-    Ok(Net { nv, gates, order, constant, inputs, root_unit, a, b, invert, level, side })
+    let mut pos = vec![u32::MAX; nv];
+    let mut slots = 0usize;
+    let mut consts: Vec<i32> = Vec::new();
+    for v in 1..nv {
+        if gates[v].is_some() || constant[v] != 0 || (present[v] && gates[v].is_none()) {
+            pos[v] = slots as u32;
+            slots += 1;
+            if constant[v] != 0 {
+                consts.push(v as i32);
+            }
+        }
+    }
+    Ok(Net { nv, gates, order, constant, inputs, root_unit, a, b, invert, level, side, pos, slots, consts })
 }
 
 // ---------------------------------------------------------------------------
@@ -330,14 +355,16 @@ fn read_net(f: &Formula, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Resul
 /// Every signal's value on `words * 64` input patterns; `set(v, out)`
 /// writes input v's words.
 fn simulate(net: &Net, words: usize, set: &dyn Fn(i32, &mut [u64]), work: &mut u64) -> Vec<u64> {
-    let mut val = vec![0u64; net.nv * words];
+    let mut val = vec![0u64; net.slots * words];
     for &v in &net.inputs {
-        set(v, &mut val[v as usize * words..(v as usize + 1) * words]);
+        let p = net.at(v);
+        set(v, &mut val[p * words..(p + 1) * words]);
     }
-    for v in 1..net.nv {
-        if net.constant[v] == 1 {
+    for &v in &net.consts {
+        if net.constant[v as usize] == 1 {
+            let p = net.at(v);
             for w in 0..words {
-                val[v * words + w] = u64::MAX;
+                val[p * words + w] = u64::MAX;
             }
         }
     }
@@ -350,20 +377,20 @@ fn simulate(net: &Net, words: usize, set: &dyn Fn(i32, &mut [u64]), work: &mut u
                 if (g.tt >> m) & 1 == 1 {
                     let mut term = u64::MAX;
                     for (i, &u) in g.sup.iter().enumerate() {
-                        let x = val[u as usize * words + w];
+                        let x = val[net.at(u) * words + w];
                         term &= if (m >> i) & 1 == 1 { x } else { !x };
                     }
                     out |= term;
                 }
             }
-            val[v as usize * words + w] = out;
+            val[net.at(v) * words + w] = out;
         }
     }
     val
 }
 
 fn sim_cost(net: &Net, words: usize) -> u64 {
-    net.order.iter().map(|&v| (words as u64) << net.gates[v as usize].as_ref().unwrap().sup.len()).sum::<u64>() + (net.nv * words) as u64
+    net.order.iter().map(|&v| (words as u64) << net.gates[v as usize].as_ref().unwrap().sup.len()).sum::<u64>() + (net.slots * words + net.consts.len()) as u64
 }
 
 /// splitmix64: the pass's own generator, seeded the same on every run.
@@ -503,7 +530,7 @@ fn output(func: &Func, (x, y): (u128, u128)) -> bool {
 /// Some(negated) when it equals the function or its complement.
 fn check(net: &Net, func: &Func, sig: i32, rng: &mut Rng, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Result<Option<bool>, String> {
     let words = CHECK_SAMPLES / 64;
-    reserve(work, sim_cost(net, words) + (CHECK_SAMPLES as u64) * 4, stopped)?;
+    reserve(work, sim_cost(net, words) + (CHECK_SAMPLES as u64) * (net.inputs.len() as u64 + 4), stopped)?;
     let s = samples(func, CHECK_SAMPLES, rng);
     let iw = input_words(func, &s);
     let val = simulate(net, words, &|v, out| {
@@ -517,7 +544,7 @@ fn check(net: &Net, func: &Func, sig: i32, rng: &mut Rng, work: &mut u64, stoppe
             want[i / 64] |= 1u64 << (i % 64);
         }
     }
-    let got = &val[sig as usize * words..(sig as usize + 1) * words];
+    let got = &val[net.at(sig) * words..(net.at(sig) + 1) * words];
     if got == &want[..] {
         return Ok(Some(false));
     }
@@ -537,7 +564,7 @@ fn recognize(net: &Net, rng: &mut Rng, work: &mut u64, stopped: &dyn Fn(u64) -> 
         let p = 1 + idx[&v];
         out[p / 64] |= 1u64 << (p % 64);
     }, &mut 0);
-    let bit = |p: usize| (val[net.a as usize * words + p / 64] >> (p % 64)) & 1 == 1;
+    let bit = |p: usize| (val[net.at(net.a) * words + p / 64] >> (p % 64)) & 1 == 1;
     let zero = bit(0);
     let a_like: Vec<i32> = net.inputs.iter().enumerate().filter(|&(i, _)| bit(1 + i) == zero).map(|(_, &v)| v).collect();
     let b_like: Vec<i32> = net.inputs.iter().enumerate().filter(|&(i, _)| bit(1 + i) != zero).map(|(_, &v)| v).collect();
@@ -638,7 +665,13 @@ fn row_values(func: &Func, s: &[(u128, u128)]) -> Vec<(String, Vec<u64>)> {
 /// the gates computing it, as (shared, level, literal): the literal is
 /// negative when the gate computes the complement.
 fn candidates(net: &Net, func: &Func, rng: &mut Rng, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Result<Vec<Pair>, String> {
-    reserve(work, sim_cost(net, WORDS) + 3 * (net.nv * WORDS) as u64 + (SAMPLES as u64) * 256, stopped)?;
+    // the simulation, the index (a signature per gate and side), the input
+    // words and the recurrence's values per sample
+    let values: u64 = match func {
+        Func::Div { width, k, .. } => ((*k..*width).map(|j| width - j + 2).sum::<usize>()) as u64,
+        Func::Sqrt { n, .. } => ((0..n / 2).map(|i| n / 2 - i + 3).sum::<usize>()) as u64,
+    };
+    reserve(work, sim_cost(net, WORDS) + 3 * (net.slots * WORDS) as u64 + net.nv as u64 + (SAMPLES as u64) * (net.inputs.len() as u64 + 4 * values), stopped)?;
     let s = samples(func, SAMPLES, rng);
     let iw = input_words(func, &s);
     let val = simulate(net, WORDS, &|v, out| {
@@ -646,7 +679,7 @@ fn candidates(net: &Net, func: &Func, rng: &mut Rng, work: &mut u64, stopped: &d
             out.copy_from_slice(w);
         }
     }, &mut 0);
-    let sig = |v: i32| &val[v as usize * WORDS..(v as usize + 1) * WORDS];
+    let sig = |v: i32| &val[net.at(v) * WORDS..(net.at(v) + 1) * WORDS];
     let canonical = |w: &[u64]| -> (Vec<u64>, bool) {
         if w[0] & 1 == 1 {
             (w.iter().map(|x| !x).collect(), true)
@@ -702,6 +735,66 @@ fn candidates(net: &Net, func: &Func, rng: &mut Rng, work: &mut u64, stopped: &d
 // the chain
 // ---------------------------------------------------------------------------
 
+/// The circuit as the sub-calls see it, renamed once: every variable the
+/// sub-calls use numbered 1..k in order of first use, so each sub-solver's
+/// tables are the circuit's size whatever the formula's numbers are (a
+/// stray unit on a high variable would size every one of them).
+struct Import {
+    /// the circuit's clauses without the root's units, renamed, each ended by 0
+    lits: Vec<i32>,
+    dense: Vec<i32>,
+    back: Vec<i32>,
+}
+
+impl Import {
+    fn new(f: &Formula, net: &Net) -> Import {
+        let mut dense = vec![0i32; net.nv];
+        let mut back = vec![0i32];
+        let mut lits: Vec<i32> = Vec::with_capacity(f.lits.len() + f.len());
+        for i in 0..f.len() {
+            if f.taut[i] || net.root_unit[i] {
+                continue;
+            }
+            for &l in f.clause(i) {
+                lits.push(Import::name(&mut dense, &mut back, l));
+            }
+            lits.push(0);
+        }
+        Import { lits, dense, back }
+    }
+    fn name(dense: &mut [i32], back: &mut Vec<i32>, l: i32) -> i32 {
+        let v = l.unsigned_abs() as usize;
+        if dense[v] == 0 {
+            back.push(v as i32);
+            dense[v] = back.len() as i32 - 1;
+        }
+        if l < 0 {
+            -dense[v]
+        } else {
+            dense[v]
+        }
+    }
+    /// A literal of the circuit in the sub-calls' numbers (every gate and
+    /// input the pairs name occurs in the circuit).
+    fn to_dense(&self, l: i32) -> i32 {
+        let d = self.dense[l.unsigned_abs() as usize];
+        debug_assert!(d != 0);
+        if l < 0 {
+            -d
+        } else {
+            d
+        }
+    }
+    fn to_formula(&self, l: i32) -> i32 {
+        let v = self.back[l.unsigned_abs() as usize];
+        if l < 0 {
+            -v
+        } else {
+            v
+        }
+    }
+}
+
 enum Verdict {
     /// The sub-call's clauses, each implied by unit propagation from the
     /// circuit, the proven pairs, "x and y differ" and the ones before it;
@@ -713,7 +806,7 @@ enum Verdict {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn sub_refute(f: &Formula, net: &Net, eqs: &[[i32; 2]], x: i32, y: i32, capture: bool, ticks: u64, work: &mut u64, stop: &AtomicBool) -> Verdict {
+fn sub_refute(imp: &Import, net: &Net, eqs: &[[i32; 2]], x: i32, y: i32, capture: bool, ticks: u64, work: &mut u64, stop: &AtomicBool) -> Verdict {
     if ticks == 0 || stop.load(Ordering::Relaxed) {
         return Verdict::Unknown;
     }
@@ -745,28 +838,22 @@ fn sub_refute(f: &Formula, net: &Net, eqs: &[[i32; 2]], x: i32, y: i32, capture:
     sub.parent_stop = stop as *const AtomicBool as usize;
     sub.parent_ticks_base = *work;
     sub.parent_ticks = work as *mut u64 as usize;
-    for i in 0..f.len() {
-        if i % 4096 == 0 && stop.load(Ordering::Relaxed) {
+    for (i, &l) in imp.lits.iter().enumerate() {
+        if i % 65536 == 0 && stop.load(Ordering::Relaxed) {
             crate::internal::release(*sub);
             return Verdict::Unknown;
         }
-        if f.taut[i] || net.root_unit[i] {
-            continue;
-        }
-        for &l in f.clause(i) {
-            crate::internal::add(&mut sub, l);
-        }
-        crate::internal::add(&mut sub, 0);
+        crate::internal::add(&mut sub, l);
     }
     for e in eqs {
         for &l in e {
-            crate::internal::add(&mut sub, l);
+            crate::internal::add(&mut sub, imp.to_dense(l));
         }
         crate::internal::add(&mut sub, 0);
     }
     for c in [[x, y], [-x, -y]] {
         for &l in &c {
-            crate::internal::add(&mut sub, l);
+            crate::internal::add(&mut sub, imp.to_dense(l));
         }
         crate::internal::add(&mut sub, 0);
     }
@@ -782,7 +869,7 @@ fn sub_refute(f: &Formula, net: &Net, eqs: &[[i32; 2]], x: i32, y: i32, capture:
                 for c in crate::proof::take_captured_proof(&mut sub) {
                     if !c.is_empty() {
                         *work += c.len() as u64 + 1;
-                        steps.push(c);
+                        steps.push(c.iter().map(|&l| imp.to_formula(l)).collect());
                     }
                 }
                 steps.push(Vec::new());
@@ -792,7 +879,7 @@ fn sub_refute(f: &Formula, net: &Net, eqs: &[[i32; 2]], x: i32, y: i32, capture:
         10 => {
             let mut on: Vec<i32> = Vec::new();
             for &v in &net.inputs {
-                if crate::internal::value(&mut sub, v) > 0 {
+                if imp.dense[v as usize] != 0 && crate::internal::value(&mut sub, imp.dense[v as usize]) > 0 {
                     on.push(v);
                 }
             }
@@ -821,6 +908,9 @@ fn chain(f: &Formula, net: &Net, pairs: &[Pair], mut proof: Option<&mut Writer>,
     let mut eqs: Vec<[i32; 2]> = Vec::new();
     let mut out = Outcome { clauses: Vec::new(), proven: 0, dropped: 0, by_model: 0 };
     let size: u64 = f.lits.len() as u64 + f.len() as u64;
+    // the renamed circuit: a visit per literal and clause, and two tables
+    reserve(work, size + 2 * net.nv as u64, &stopped)?;
+    let imp = Import::new(f, net);
     for i in 0..pairs.len() {
         if !alive[i] {
             continue;
@@ -833,7 +923,7 @@ fn chain(f: &Formula, net: &Net, pairs: &[Pair], mut proof: Option<&mut Writer>,
         let (x, y) = (pairs[i].x, pairs[i].y);
         let before = *work;
         let left = budget.saturating_sub(*work);
-        let verdict = sub_refute(f, net, &eqs, x, y, proof.is_some(), left, work, stop);
+        let verdict = sub_refute(&imp, net, &eqs, x, y, proof.is_some(), left, work, stop);
         match verdict {
             Verdict::Refuted(steps) => {
                 if let Some(w) = proof.as_deref_mut() {
@@ -879,7 +969,7 @@ fn chain(f: &Formula, net: &Net, pairs: &[Pair], mut proof: Option<&mut Writer>,
                     break;
                 }
                 let val = simulate(net, 1, &|v, w| w[0] = if on.binary_search(&v).is_ok() { 1 } else { 0 }, &mut 0);
-                let lit = |l: i32| (val[l.unsigned_abs() as usize] & 1 == 1) != (l < 0);
+                let lit = |l: i32| (val[net.at(l.abs())] & 1 == 1) != (l < 0);
                 for j in 0..pairs.len() {
                     if alive[j] && lit(pairs[j].x) != lit(pairs[j].y) {
                         if done[j] {

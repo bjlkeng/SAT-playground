@@ -478,3 +478,28 @@ fn repeated_root_units_keep_the_sub_calls_linear() {
     assert_eq!(r.status, "UNSATISFIABLE", "{}\n{}", r.stdout, r.stderr);
     assert!(r.stdout.contains("div/sqrt: quotient bit 2 of a 6/6 divider"), "{}", r.stdout);
 }
+
+#[test]
+fn the_sub_calls_see_the_circuit_numbered_densely() {
+    // one unused unit on variable 200,000: the sub-calls see the circuit
+    // renamed 1..k, so the toy refutes, with a checked proof, in the same
+    // work as without the stray variable plus the reading's tables (a dozen
+    // visits per variable), not a 200,000-entry table per sub-call
+    let fx = Fixture::new("structdiv_dense");
+    let (vars, clauses) = toy_divider(12, 4, false, false);
+    let plain = fx.path("plain.cnf");
+    write_cnf(&plain, vars, &clauses);
+    let mut sparse_clauses = clauses.clone();
+    sparse_clauses.insert(0, vec![-200_000]);
+    let sparse = fx.path("sparse.cnf");
+    write_cnf(&sparse, 200_000, &sparse_clauses);
+    let (sa, wa) = div_work(&plain, None, None);
+    let (sb, wb) = div_work(&sparse, None, None);
+    assert_eq!(sa, "UNSATISFIABLE");
+    assert_eq!(sb, "UNSATISFIABLE");
+    assert!(wb < wa + 16 * 200_000, "the sparse formula's work {} against {}", wb, wa);
+    let proof = fx.path("sparse.drat");
+    let (sc, _) = div_work(&sparse, Some(&proof), None);
+    assert_eq!(sc, "UNSATISFIABLE");
+    assert_eq!(gate(&sparse, &proof), "ok");
+}
