@@ -93,7 +93,7 @@ impl Derived {
 
 pub fn enabled(solver: &Solver) -> bool {
     let o = &solver.options;
-    o.structsym != 0 || o.structsymext != 0 || o.structparity != 0 || o.structcount != 0 || o.structcsp != 0 || o.gauss != 0 || o.structarith != 0 || o.structsort != 0
+    o.structsym != 0 || o.structsymext != 0 || o.structparity != 0 || o.structcount != 0 || o.structcsp != 0 || o.gauss != 0 || o.structarith != 0 || o.structsort != 0 || o.structdiv != 0
 }
 
 /// Called once before the parse: turn buffering on when a pass is enabled.
@@ -347,6 +347,19 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
             crate::structsort::run(&formula, &mut derived, own, hard, &mut solver.statistics.ticks, stop_ref);
             if derived.notes.len() == notes {
                 derived.notes.push(format!("sorter: no sorter miter, work {}K", solver.statistics.ticks.saturating_sub(before) / 1000));
+            }
+        }
+        if solver.options.structdiv != 0 && !derived.refuted {
+            // the divider and square-root pass (src/structdiv.rs), with a
+            // limit of its own from where the earlier passes stopped: it
+            // reads the input clauses alone
+            let own = cap((solver.options.structdivticks as u64).saturating_mul(1000), solver);
+            let hard = cap(u64::MAX, solver);
+            let before = solver.statistics.ticks;
+            let notes = derived.notes.len();
+            crate::structdiv::run(&formula, &mut derived, own, hard, &mut solver.statistics.ticks, stop_ref);
+            if derived.notes.len() == notes {
+                derived.notes.push(format!("div/sqrt: no divider or square-root miter, work {}K", solver.statistics.ticks.saturating_sub(before) / 1000));
             }
         }
         if solver.options.structcount != 0 && !derived.refuted {

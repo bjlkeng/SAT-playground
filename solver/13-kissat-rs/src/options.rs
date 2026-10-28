@@ -248,6 +248,12 @@ kissat_options! {
     (structcount, 1, 0, 1, "structure pass: pigeonhole counting"),
     (structcountticks, 20_000, 0, i32::MAX, "structure pass: counting work limit (K)"),
     (structcsp, 0, 0, 1, "structure pass: CSP decoding"),
+    // the divider and square-root pass (bead SAT-playground-skz.23,
+    // 2026-10-27): off until measured on the 400 cells at two seeds.
+    // structdivticks is its own work limit, counted from where the earlier
+    // passes stopped; a chain on div_miter_lec__2 takes about 30G
+    (structdiv, 0, 0, 1, "structure pass: divider and square-root miters"),
+    (structdivticks, 50_000_000, 0, i32::MAX, "structure pass: divider work limit (K)"),
     (structmore, 2_000_000, 0, i32::MAX, "structure pass work limit (K) after a find"),
     (structparity, 1, 0, 1, "structure pass: XOR systems"),
     // the sorter pass (bead SAT-playground-skz.22, 2026-10-26): on by
@@ -737,9 +743,10 @@ mod tests {
         // kissat's 158 plus the nine struct* options (plan section 11,
         // 2026-10-07), walkshare, walkstall (2026-10-13), gauss, gausseffort,
         // gausslimit, gaussyield, gausswindow (2026-10-15/17),
-        // structarith, structarithticks (2026-10-19) and structsort,
-        // structsortticks (2026-10-26)
-        assert_eq!(OPTION_TABLE.len(), 158 + 20);
+        // structarith, structarithticks (2026-10-19), structsort,
+        // structsortticks (2026-10-26) and structdiv, structdivticks
+        // (2026-10-27)
+        assert_eq!(OPTION_TABLE.len(), 158 + 22);
     }
 
     #[test]

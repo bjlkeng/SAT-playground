@@ -65,6 +65,7 @@ pub mod structcount;
 pub mod structparity;
 pub mod structproof;
 pub mod structsort;
+pub mod structdiv;
 pub mod gauss;
 pub mod gaussproof;
 pub mod structsym;

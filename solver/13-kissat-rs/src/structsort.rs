@@ -931,6 +931,7 @@ fn solver_refute(clauses: &[Vec<i32>], assume: i32, conflicts: u32, ticks: u64, 
         ("structcsp", 0),
         ("structarith", 0),
         ("structsort", 0),
+        ("structdiv", 0),
         ("gauss", 0),
     ] {
         crate::internal::set_option(&mut sub, name, value);

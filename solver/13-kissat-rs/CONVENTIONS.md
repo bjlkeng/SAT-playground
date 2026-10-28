@@ -169,7 +169,10 @@ parity engine"), since 2026-10-20 `structarith` and since 2026-10-27
 adds unless told `--structure` and the test helpers' `run`/`run_with_proof`
 add always
 (`tests/common/mod.rs`, `STOCK_PATH`); a test of the shipped defaults
-uses `run_shipped`. A promoted default is exactly the measured
+uses `run_shipped`. The divider and square-root pass (`src/structdiv.rs`,
+`structdiv`, 2026-10-27) is off by default until measured; its
+sub-solvers, like the sorter's and the arithmetic pass's, run with every
+`struct*` option and `gauss` off. A promoted default is exactly the measured
 configuration; a change to a pass's budget or detection is a new
 candidate and is measured before it ships. A pass may only add clauses to
 the input (of any length since the transport fixing of 2026-10-11, the
