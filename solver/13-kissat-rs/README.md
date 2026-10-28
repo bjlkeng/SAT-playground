@@ -3002,7 +3002,9 @@ every proof through `tools/proof_gate.py`: the four that search solves
 in 42-578 s take 3.2-7.8 s, and `div_miter_lec__2`, a timeout at
 3,600 s for solver 13 and the C kissat, takes 265 s. The pass is the
 census's chain (the section above) ported into solver 13
-(`src/structdiv.rs`). It is off by default until the paired run.
+(`src/structdiv.rs`). In the two-seed paired run (below) it is +1 solved
+cell on each seed with the same search everywhere else; off by default
+until the owner's call.
 
 **What it does**, after the earlier passes and before the counting pass,
 within its own limit `structdivticks` (default 50,000,000 K):
@@ -3082,10 +3084,40 @@ densely (a stray unit on variable 200,000 cost 40M work, now within the
 reading's tables), and every loop is reserved before it runs. Round 2
 was clean.
 
-**The paired run** (started 2026-10-27 21:14; the 400 cells, two seeds,
-the pass off and on, 1,800 s, 32 jobs, every answer checked; frozen build
+**The paired run** (2026-10-27/28; the 400 cells, two seeds, the pass off
+and on, 1,800 s, 32 jobs, every answer checked; frozen build
 `solver/13-j6-div-snapshot`, commit 0391e6f;
-`log/abtest-struct-div-400-2026-10-27-21-14-05`): in progress.
+`log/abtest-struct-div-400-2026-10-27-21-14-05`):
+
+| | seed 0 | seed 1 |
+|---|---|---|
+| solved, pass off / on | 319 / 321 | 321 / 323 |
+| wall PAR-2, off / on | 373,499 / 368,378 | 365,610 / 359,837 |
+| tick PAR-2, off / on | 9.599e12 / 9.396e12 | 9.362e12 / 9.276e12 |
+
+No answer contradicts another, no check failed (per arm 296-300 UNSAT
+proofs verified, 23-24 checker timeouts), and no cell is lost.
+
+- **The five cells.** With the pass on, `div_miter_lec__2` is solved on
+  both seeds (400 s and 385 s; the search then takes 630K and 465K
+  conflicts) and its proof passes the gate within the run. The four
+  others go from 44-562 s to 3.4-12.7 s with no search at all.
+- **Everything else: the same search.** On the other cells both arms
+  solve (315 on seed 0, 317 on seed 1), the conflict counts are equal,
+  and the pass adds 0.020% to their work; the largest single addition is
+  53M, on `velev-pipe-sat-1.0-b7`, where reading the big formula costs
+  that.
+- **The other gain on each seed is a cell at the wall limit.**
+  `dislog_a14_x14_n24` (seed 0): the pass-off run was killed at 1,800 s
+  after 10.5M conflicts, the pass-on run solved at 1,774 s after 11.3M;
+  on seed 1 both arms take exactly 6,453,014 conflicts. `bp5_CSO` (seed
+  1): killed after 1.51M conflicts against solved after 1.55M at 1,775 s;
+  on seed 0 both arms take exactly 1,317,283. The pass does not touch
+  either cell; these are timing.
+
+So the pass is +1 solved cell on each seed, four cells from minutes to
+seconds, and the same search everywhere else for 0.02% more work. Open:
+the owner's call on the default.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 
