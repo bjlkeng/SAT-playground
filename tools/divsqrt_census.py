@@ -89,7 +89,7 @@ CELL_RE = re.compile(r"(div-mitern|div_miter|sqrt-mitern)")
 MAX_SUPPORT = 8          # largest gate support read by truth table
 SAMPLES = 2048           # random samples for the function check and the rows
 STOCK = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0",
-         "--structsort=0", "--gauss=0"]
+         "--structsort=0", "--structdiv=0", "--gauss=0"]
 MEM_MB = 16000           # memory cap per solver process (the repo's 16 GB rule)
 
 

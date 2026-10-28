@@ -3003,8 +3003,9 @@ in 42-578 s take 3.2-7.8 s, and `div_miter_lec__2`, a timeout at
 3,600 s for solver 13 and the C kissat, takes 265 s. The pass is the
 census's chain (the section above) ported into solver 13
 (`src/structdiv.rs`). In the two-seed paired run (below) it is +1 solved
-cell on each seed with the same search everywhere else; off by default
-until the owner's call.
+cell on each seed with the same search everywhere else. **On by default
+since 2026-10-28**, the owner's call after that run; the 2026 holdout was
+not consulted (it is kept for a later candidate).
 
 **What it does**, after the earlier passes and before the counting pass,
 within its own limit `structdivticks` (default 50,000,000 K):
@@ -3116,8 +3117,9 @@ proofs verified, 23-24 checker timeouts), and no cell is lost.
   either cell; these are timing.
 
 So the pass is +1 solved cell on each seed, four cells from minutes to
-seconds, and the same search everywhere else for 0.02% more work. Open:
-the owner's call on the default.
+seconds, and the same search everywhere else for 0.02% more work. The
+owner's call (2026-10-28): on by default now, the 2026 holdout look kept
+for a later candidate; the stock path gains `--structdiv=0`.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 

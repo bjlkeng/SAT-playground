@@ -249,10 +249,13 @@ kissat_options! {
     (structcountticks, 20_000, 0, i32::MAX, "structure pass: counting work limit (K)"),
     (structcsp, 0, 0, 1, "structure pass: CSP decoding"),
     // the divider and square-root pass (bead SAT-playground-skz.23,
-    // 2026-10-27): off until measured on the 400 cells at two seeds.
-    // structdivticks is its own work limit, counted from where the earlier
-    // passes stopped; a chain on div_miter_lec__2 takes about 30G
-    (structdiv, 0, 0, 1, "structure pass: divider and square-root miters"),
+    // 2026-10-27): on by default since 2026-10-28, the owner's call after
+    // the two-seed 400-cell run (319/321 and 321/323 off/on: div_miter_lec__2
+    // solved on both seeds, the four other div and sqrt cells from minutes
+    // to seconds, the same search on every other cell; the 2026 holdout not
+    // consulted). structdivticks is its own work limit, counted from where
+    // the earlier passes stopped; div_miter_lec__2's chain takes about 9G
+    (structdiv, 1, 0, 1, "structure pass: divider and square-root miters"),
     (structdivticks, 50_000_000, 0, i32::MAX, "structure pass: divider work limit (K)"),
     (structmore, 2_000_000, 0, i32::MAX, "structure pass work limit (K) after a find"),
     (structparity, 1, 0, 1, "structure pass: XOR systems"),

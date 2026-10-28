@@ -424,15 +424,27 @@ fn every_step_of_the_div_pass_keeps_to_the_tick_limit() {
 }
 
 #[test]
-fn the_div_pass_is_off_by_default() {
-    // off until measured on the 400 cells at two seeds
+fn the_shipped_defaults_run_the_div_pass() {
+    // on by default since 2026-10-28 (the owner's call after the paired
+    // run): with no option at all a toy divider is decided through the pass,
+    // with a proof the gate accepts, and --structdiv=0 turns it off
     let fx = Fixture::new("structdiv_default");
     let cnf = fx.path("m.cnf");
-    let (vars, clauses) = toy_divider(8, 3, false, false);
+    let (vars, clauses) = toy_divider(12, 4, true, false);
     write_cnf(&cnf, vars, &clauses);
-    let r = common::run_shipped(&cnf, &[], &[]);
-    assert_eq!(r.status, "UNSATISFIABLE");
-    assert!(!r.stdout.contains("div/sqrt:"), "{}", r.stdout);
+    let proof = fx.path("m.drat");
+    let mut cmd = Command::new(solver_bin());
+    for key in common::SOLVER_ENV_VARS {
+        cmd.env_remove(key);
+    }
+    let out = cmd.arg("-n").arg(&cnf).arg(&proof).output().expect("run sat-solver");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("\ns UNSATISFIABLE"), "{}", stdout);
+    assert!(stdout.contains("div/sqrt: quotient bit 4 of a 12/12 divider"), "the pass is on by default: {}", stdout);
+    assert_eq!(gate(&cnf, &proof), "ok");
+    let off = common::run_shipped(&cnf, &["--structdiv=0"], &[]);
+    assert_eq!(off.status, "UNSATISFIABLE");
+    assert!(!off.stdout.contains("div/sqrt:"), "{}", off.stdout);
 }
 
 #[test]

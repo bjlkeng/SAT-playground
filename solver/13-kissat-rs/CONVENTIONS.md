@@ -162,17 +162,16 @@ runs, so `tools/parity.py` stays exact. Since 2026-10-10 `structsym` and
 `structparity` are on by default (promoted after the 2025 runs and the
 single 2026 holdout), since 2026-10-13 `structcount` too, and since
 2026-10-18 the parity engine `gauss` (`src/gauss.rs`, README "The
-parity engine"), since 2026-10-20 `structarith` and since 2026-10-27
-`structsort`: the stock kissat path is `--structsym=0
---structparity=0 --structcount=0 --structarith=0 --structsort=0
---gauss=0`, which `tools/parity.py`
+parity engine"), since 2026-10-20 `structarith`, since 2026-10-27
+`structsort` and since 2026-10-28 `structdiv`: the stock kissat path is
+`--structsym=0 --structparity=0 --structcount=0 --structarith=0
+--structsort=0 --structdiv=0 --gauss=0`, which `tools/parity.py`
 adds unless told `--structure` and the test helpers' `run`/`run_with_proof`
 add always
 (`tests/common/mod.rs`, `STOCK_PATH`); a test of the shipped defaults
 uses `run_shipped`. The divider and square-root pass (`src/structdiv.rs`,
-`structdiv`, 2026-10-27) is off by default until measured; its
-sub-solvers, like the sorter's and the arithmetic pass's, run with every
-`struct*` option and `gauss` off. A promoted default is exactly the measured
+`structdiv`) has sub-solvers that, like the sorter's and the arithmetic
+pass's, run with every `struct*` option and `gauss` off. A promoted default is exactly the measured
 configuration; a change to a pass's budget or detection is a new
 candidate and is measured before it ships. A pass may only add clauses to
 the input (of any length since the transport fixing of 2026-10-11, the

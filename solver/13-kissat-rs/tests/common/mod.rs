@@ -174,7 +174,7 @@ pub const SOLVER_ENV_VARS: &[&str] = &[
 /// formulas are pigeonhole, which the symmetry pass settles at once, so
 /// every test of the search runs through `run`/`run_with_proof` with these;
 /// `run_shipped` is for tests of the shipped defaults.
-pub const STOCK_PATH: &[&str] = &["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0", "--gauss=0"];
+pub const STOCK_PATH: &[&str] = &["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0", "--structdiv=0", "--gauss=0"];
 
 pub fn run(cnf: &Path, options: &[&str], env: &[(&str, &str)]) -> Run {
     let mut all: Vec<&str> = STOCK_PATH.to_vec();

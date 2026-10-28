@@ -37,8 +37,9 @@ work is **solver 13** and the RL scheduler on top of it.
   it runs the solver with the structure passes and the parity engine off
   (`structsym` and `structparity` are on by default since 2026-10-10,
   `structcount` since 2026-10-13, `gauss` since 2026-10-18, `structarith`
-  since 2026-10-20, `structsort` since 2026-10-27; solver README
-  "The structure pass" and "The parity engine"), as do the test helpers.
+  since 2026-10-20, `structsort` since 2026-10-27, `structdiv` since
+  2026-10-28; solver README "The structure pass" and "The parity
+  engine"), as do the test helpers.
 - **Netlist recovery (epic `SAT-playground-skz`, 2026-10-19)** — the next
   line after the structure pass and the parity engine: recover gates,
   adder cells, words and arithmetic blocks from the CNF and feed them to
