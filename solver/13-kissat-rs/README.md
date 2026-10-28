@@ -2992,7 +2992,100 @@ looked at.
 
 Recommendation: (a), with the sub-call proof engine (the widening, the
 model-based dropping) written so that (b) can reuse it with other
-sources of candidates.
+sources of candidates. **Decided 2026-10-27, the owner: (a)**; the pass is
+the next section.
+
+## The divider and square-root pass (2026-10-27; bead `SAT-playground-skz.23`)
+
+**Result.** `--structdiv=1` decides all five 2025 div and sqrt miters,
+every proof through `tools/proof_gate.py`: the four that search solves
+in 42-578 s take 3.2-7.8 s, and `div_miter_lec__2`, a timeout at
+3,600 s for solver 13 and the C kissat, takes 265 s. The pass is the
+census's chain (the section above) ported into solver 13
+(`src/structdiv.rs`). It is off by default until the paired run.
+
+**What it does**, after the earlier passes and before the counting pass,
+within its own limit `structdivticks` (default 50,000,000 K):
+
+1. It reads the formula as a circuit by first literal: every clause
+   belongs to the gate its first literal names, and each group must define
+   that gate by a truth table over at most six inputs. A unit on any other
+   variable is a constant; the one unit on a gate is the miter's root,
+   which must be an xor of one signal per side.
+2. It finds the function by probes. One input set at a time tells a
+   divider's dividend bits from its divisor bits; then simulation on 1,024
+   random inputs checks the first side against "bit k of floor(a / b)"
+   (b = 0 giving all ones) or "the low bit of isqrt(x)", with the input
+   bits in their own order or in the text order of their names. The pass
+   declines when neither fits.
+3. It runs the restoring recurrence next to the circuit on 2,048 random
+   inputs (divisors of random bit length) and takes, for each row value,
+   the shallowest gate of each side that computes it or its complement.
+4. It proves the pairs in row order. Each pair is one sub-call of the full
+   solver (variable addition, pre- and inprocessing off) on the circuit,
+   the pairs proven so far, and "the two signals differ", renamed 1..k so
+   each sub-solver's tables are the circuit's size. A model drops every
+   pending pair that differs on it. With a proof file, four `red` steps
+   define a fresh d = x xor y, the sub-call's clauses are the `rup` steps
+   of a `pbc` that proves ~d, and (~x | y) and (x | ~y) follow by `rup`.
+5. The proven pairs' clauses join F'. The search then decides the miter.
+
+**One sub-call per pair, in a scoped block.** The census's prover refuted
+each pair twice (under x, ~y, then under ~x, y). With d the pass refutes
+"x and y differ" once, which halves the sub-calls. VeriPB drops a `pbc`
+block's inner steps when the block ends, so each pair's lemmas are checked
+against the circuit and the proven pairs only. On `div-mitern172`'s census
+proof that made VeriPB 3.8 times faster (24 s against 90.6 s for the same
+lines written flat; drat-trim takes 11 s on them).
+
+**Plain sub-calls, 250K conflicts each.** Every row pair of
+`div_miter_lec__2` but one takes at most 95K conflicts, all but five under
+20K. The one is the compared bit itself, which is the miter: a plain
+sub-call does not finish it in 4M conflicts (21.6G of work), and the
+search, with every technique on and the 1,592 other pairs, finishes it in
+630K. So a pair gets 250K conflicts and the search does the last step:
+671 s became 265 s. On the four smaller cells the compared bit takes 44K
+to 67K conflicts in the chain, and the search then needs none.
+
+**The five cells** (this host, the five at once, the stock path plus
+`--structdiv=1`; search today from
+`log/abtest-struct-sort-400-2026-10-26-18-39-26`, every pass on, 1,800 s):
+
+| cell | time (s) | pairs proven | pass work | search conflicts after | VeriPB proof (MB) | gate (s) | search today (s, seed 0 / 1) |
+|---|---:|---|---:|---:|---:|---:|---|
+| `div-mitern172` | 3.2 | 77 of 77 | 0.16G | 0 | 11 | 42 | 77 / 42 |
+| `sqrt-mitern171` | 6.5 | 90 of 90 | 0.35G | 0 | 18 | 79 | 143 / 102 |
+| `sqrt-mitern170` | 7.8 | 107 of 107 | 0.41G | 0 | 20 | 116 | 217 / 224 |
+| `sqrt-mitern169` | 7.0 | 130 of 130 | 0.36G | 0 | 22 | 84 | 578 / 507 |
+| `div_miter_lec__2` | 265 | 1,592 of 1,599 | 9.3G | 629,662 | 226 | 771 | timeout / timeout |
+
+With every default on as well the pass finds the same pairs (the other
+passes find nothing on these cells and cost at most 20M of work), the
+times are 2.9-7.8 s and 262 s, and every proof passes the gate.
+
+**Tests** (`tests/structdiv.rs`, 11 tests). Toy dividers in the shape of
+`tools/divsqrt_proof.py toy` (6/2, 8/3, 12/4, with and without the
+shortcut) and toy square roots (8, 12 and 16 bits: a borrow chain against
+a carry chain) are decided with proofs through the gate. A tampered proof
+fails the gate. A broken divider or square root is answered SAT. A
+pigeonhole formula sees the stock search. The pass is off by default. The
+rest are the budget cases the review found (below), each run under tick
+limits that it may pass by at most 10%.
+
+**Codex review.** Round 1 changed the patch: the truth table's work was
+charged twice (a six-input and in 10,000 copies went to 9.7M work under a
+5.1M limit), and copies of the root's unit made every sub-call's import
+quadratic (300,000 copies: 14.4 s and UNKNOWN under `--time=3`, now
+0.06 s). Before round 2, the classes later sorter rounds found were
+built in: the sub-calls and the simulation see the circuit numbered
+densely (a stray unit on variable 200,000 cost 40M work, now within the
+reading's tables), and every loop is reserved before it runs. Round 2
+was clean.
+
+**The paired run** (started 2026-10-27 21:14; the 400 cells, two seeds,
+the pass off and on, 1,800 s, 32 jobs, every answer checked; frozen build
+`solver/13-j6-div-snapshot`, commit 0391e6f;
+`log/abtest-struct-div-400-2026-10-27-21-14-05`): in progress.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 
