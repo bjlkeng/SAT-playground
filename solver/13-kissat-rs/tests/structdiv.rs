@@ -434,3 +434,47 @@ fn the_div_pass_is_off_by_default() {
     assert_eq!(r.status, "UNSATISFIABLE");
     assert!(!r.stdout.contains("div/sqrt:"), "{}", r.stdout);
 }
+
+#[test]
+fn the_reading_keeps_to_the_tick_limit() {
+    // Codex review round 1: a six-input and written as 10,000 copies of its
+    // seven clauses went to work 9,740,088 under a limit of 5,100,000 (the
+    // truth table's work was reserved, then charged again)
+    let fx = Fixture::new("structdiv_read_limit");
+    let mut clauses: Vec<Vec<i64>> = Vec::new();
+    for _ in 0..10_000 {
+        for i in 1..=6 {
+            clauses.push(vec![-7, i]);
+        }
+        clauses.push(vec![7, -1, -2, -3, -4, -5, -6]);
+    }
+    clauses.push(vec![7]);
+    let cnf = fx.path("and6.cnf");
+    write_cnf(&cnf, 7, &clauses);
+    for limit in [5_100_000u64, 2_000_000] {
+        let value = limit.to_string();
+        let r = run(&cnf, &["--structdiv=1"], &[("SAT_LIMIT_TICKS", &value)]);
+        assert!(r.work() <= limit + limit / 10, "limit {}: work {} ({})", limit, r.work(), r.status);
+    }
+}
+
+#[test]
+fn repeated_root_units_keep_the_sub_calls_linear() {
+    // Codex review round 1: 300,000 copies of the miter's unit made every
+    // sub-call's import quadratic (14.4 s, UNKNOWN under --time=1, against
+    // 0.04 s with the pass off); the copies are now found by clause id and
+    // the import polls the termination flag
+    let fx = Fixture::new("structdiv_root_copies");
+    let (vars, mut clauses) = toy_divider(6, 2, false, false);
+    let root = clauses.last().unwrap().clone();
+    assert_eq!(root.len(), 1);
+    for _ in 0..300_000 {
+        clauses.push(root.clone());
+    }
+    let cnf = fx.path("m.cnf");
+    write_cnf(&cnf, vars, &clauses);
+    // (0.06 s now; the old import overran even --time=3 and answered UNKNOWN)
+    let r = run(&cnf, &["--structdiv=1", "--time=3"], &[("SAT_STRUCT_DEBUG", "1")]);
+    assert_eq!(r.status, "UNSATISFIABLE", "{}\n{}", r.stdout, r.stderr);
+    assert!(r.stdout.contains("div/sqrt: quotient bit 2 of a 6/6 divider"), "{}", r.stdout);
+}

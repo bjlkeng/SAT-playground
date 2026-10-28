@@ -100,8 +100,8 @@ struct Net {
     /// 1 true, -1 false, 0 no constant.
     constant: Vec<i8>,
     inputs: Vec<i32>,
-    /// The clause ids of the root's unit.
-    root_units: Vec<usize>,
+    /// Per clause id: a copy of the root's unit (left out of the sub-calls).
+    root_unit: Vec<bool>,
     /// The two side signals, and whether the root asserts a == b (so a
     /// refutation shows a is b's complement).
     a: i32,
@@ -163,7 +163,7 @@ fn read_net(f: &Formula, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Resul
     let nv = f.vars as usize + 1;
     // the grouping by first literal: three tables per variable, one slot per
     // clause, a visit per literal and clause
-    reserve(work, 3 * nv as u64 + 2 * f.len() as u64 + f.lits.len() as u64, stopped)?;
+    reserve(work, 3 * nv as u64 + 3 * f.len() as u64 + f.lits.len() as u64, stopped)?;
     let mut count = vec![0u32; nv + 1];
     let mut present = vec![false; nv];
     let mut units: Vec<(usize, i32)> = Vec::new();
@@ -220,14 +220,17 @@ fn read_net(f: &Formula, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Resul
         if sup.is_empty() || sup.len() > MAX_SUPPORT {
             return Err(format!("the clauses of {} read {} inputs", v, sup.len()));
         }
-        reserve(work, (1u64 << sup.len()) * (group.len() as u64 + 1), stopped)?;
-        let tt = definition_tt(v as i32, group, f, &sup, work).ok_or_else(|| format!("the clauses of {} do not define it", v))?;
+        // the table's work, reserved in full: a visit per literal, then every
+        // clause per minterm (definition_tt counts the same into a scratch
+        // counter; Codex review round 1)
+        reserve(work, size + (1u64 << sup.len()) * group.len() as u64, stopped)?;
+        let tt = definition_tt(v as i32, group, f, &sup, &mut 0).ok_or_else(|| format!("the clauses of {} do not define it", v))?;
         gates[v] = Some(Gate { sup, tt });
     }
     // units: the root on a gate, constants elsewhere
     let mut constant = vec![0i8; nv];
     let mut root: Option<i32> = None;
-    let mut root_units: Vec<usize> = Vec::new();
+    let mut root_unit = vec![false; f.len()];
     for &(i, l) in &units {
         let v = l.unsigned_abs() as usize;
         if gates[v].is_some() {
@@ -236,7 +239,7 @@ fn read_net(f: &Formula, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Resul
                 Some(r) if r == l => {}
                 Some(_) => return Err("a second unit on a gate".into()),
             }
-            root_units.push(i);
+            root_unit[i] = true;
         } else {
             let b: i8 = if l > 0 { 1 } else { -1 };
             if constant[v] == -b {
@@ -317,7 +320,7 @@ fn read_net(f: &Formula, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Resul
         }
     }
     *work += 2 * nv as u64;
-    Ok(Net { nv, gates, order, constant, inputs, root_units, a, b, invert, level, side })
+    Ok(Net { nv, gates, order, constant, inputs, root_unit, a, b, invert, level, side })
 }
 
 // ---------------------------------------------------------------------------
@@ -743,7 +746,11 @@ fn sub_refute(f: &Formula, net: &Net, eqs: &[[i32; 2]], x: i32, y: i32, capture:
     sub.parent_ticks_base = *work;
     sub.parent_ticks = work as *mut u64 as usize;
     for i in 0..f.len() {
-        if f.taut[i] || net.root_units.contains(&i) {
+        if i % 4096 == 0 && stop.load(Ordering::Relaxed) {
+            crate::internal::release(*sub);
+            return Verdict::Unknown;
+        }
+        if f.taut[i] || net.root_unit[i] {
             continue;
         }
         for &l in f.clause(i) {
