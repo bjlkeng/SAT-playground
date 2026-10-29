@@ -3121,6 +3121,108 @@ seconds, and the same search everywhere else for 0.02% more work. The
 owner's call (2026-10-28): on by default now, the 2026 holdout look kept
 for a later candidate; the stock path gains `--structdiv=0`.
 
+## Global sweeping: the measurement (2026-10-28; bead `SAT-playground-skz.10`)
+
+**Result.** On `hhyp_cec_multi_2`, the one unsolved cell this line was
+for, simulation-guided sweeping proves about 49,000 pairs of equal
+signals, 97% of them in the lowest 100 levels at 3 conflicts each, and
+the search with all of them added is as far from an answer as without
+them. The matched signals in the upper 1,300 levels, which are what the
+miter needs, cost tens of thousands of conflicts each to prove, a third
+fail at 50,000, and the chain stalls at level 369 of 1,418. **Sweeping
+does not decide this cell**; its top needs arithmetic reasoning, not pair
+proofs. No solver code was written; the measurement tool is
+`tools/sweep_census.py`.
+
+**Why it was tried.** A probe on 2026-10-28 (bead `skz.16` notes) found
+that the two sides of `hhyp_cec_multi_2` share many internal signals:
+read by first literal (194,410 gates, 256 inputs, one asserted xor of
+signals 3 and 92,166; side A 92,163 gates, side B 117,513, shared
+15,267), 30-63% of side A's own gates in each depth band (48% in the
+lowest) have a gate in side B with the same or the opposite values on 512
+random patterns. That
+is what SAT sweeping ("fraiging") is for: prove the matched pairs equal
+from the inputs up, each proof helping the next, until the compared pair
+itself is proven. kissat's own sweep looks only inside environments of
+256 variables and depth 2; the global version was bead `skz.10`.
+
+**The tool** (`tools/sweep_census.py sweep`, the census's `Netlist`
+reader plus the solver binary as the prover, as the div and sorter
+censuses did). The circuit is simulated on 2,048 random patterns;
+signals with the same or complementary values form a class whose
+shallowest member is its representative. Each other member is proven
+equal to the representative in depth order, with the pairs proven so
+far added as binary clauses: first on a window (the two signals' cones,
+breadth first, cut at 100, then 1,000, then 10,000 gates, the signals
+below the cut free; a subset of the circuit's clauses, so UNSAT is a
+proof and a model only widens the window), then on the whole cone. A
+whole-cone model is a real counterexample: the circuit is simulated on
+it and every class it separates splits. At the end the miter is solved
+with every proven pair added. Checked on `div-mitern172` first: 333
+pairs proven, 150 false candidates caught, the compared pair proven on
+its whole cone (6,189 conflicts), and the miter then refuted by
+propagation alone.
+
+**On hhyp** (three runs, 6 jobs each on the free cores;
+`log/sweep-probe-2026-10-28/`, the per-rung table in
+`benchmarks/rl/sweep_hhyp_2026-10-28.tsv`):
+
+| rung | run 2 (whole cone up to 60K gates, 250K conflicts) | run 3 (whole cone uncapped, 50K conflicts) |
+|---|---|---|
+| window of 100 gates | 46,473 proven, 3.2 conflicts a pair | 45,635 proven, 3.2 |
+| window of 1,000 gates | 2,597 proven, 125 | 2,524 proven, 126 |
+| window of 10,000 gates | 241 proven, 3,422 | 231 proven, 4,045 |
+| whole cone | 158 proven, 58,701 (cones of 3.9K-59K gates) | 108 proven, 27,220; **153 failed** at 50K (cones 10K-98K, median 29K) |
+| not tried | 1,743 pairs with cones over 60K gates | stopped at level 184 after the 153 failures |
+| false candidates | 176 | 175 |
+| highest level proven | 369 of 1,418 | 184 (stopped) |
+| miter + proven pairs, stock search | TIMEOUT 1,800 s, 11.4M conflicts | TIMEOUT 1,800 s, 11.4M conflicts |
+
+A first run with windows by depth (2, 4, 8 levels) and a cap of 120
+whole-cone calls gave the same picture (48,428 proven, 3,086 pairs left
+at the cap, the miter a timeout), and a variant whose windows stop at
+signals already proven equal (one row of a chain) closed nothing the
+size windows missed. Search alone times out on this cell at 1,800 s too
+(and the C kissat at 3,600 s), so the proven pairs change nothing.
+
+**Reading.** Of the proven pairs about 35,000 join the two sides and
+about 14,000 are duplicates inside side B alone (B is the larger copy);
+the lowest 140 levels hold 73,000 of side A's 77,000 own gates, and
+there nearly every pair is proven in a 100-gate window. Above that the
+circuit is a narrow chain, about three gates a level over 1,300 levels,
+with 30-63% of its signals matched by value. Those matches are real
+(the counterexamples stay at 175 as the runs climb) but each proof needs
+the deep cone. The reading, not checked: the cell is likely the EPFL
+hypotenuse (the square root of a² + b²; bead `skz.16`), the wide lower
+part the two squares and their sum, the chain the root; the two sides
+compute the chain's values by different arithmetic over the squares, so
+proving one matched signal equal is a small multiplier-equivalence
+problem, and the cost grows with the level as it does across the
+`16_16` miters' bits. At this cell's search rate
+(about 6,000 conflicts a second) the remaining 3,000 pairs at 30,000 to
+60,000 conflicts each are hours of work, ten times the budget, even
+before the failures. The wall times in the table are mostly process
+launches, file writes and the stock preprocessing of a 600,000-clause
+cone on every call, none of which an in-solver pass would pay (the
+structure stage already drives kitten incrementally in
+`src/structarith.rs`, and structdiv's sub-calls use the plain
+configuration); the conflict counts are the honest cost, and they are
+what rules the pass out here.
+
+**What a sweep pass could still be.** A speed feature on miters that
+search already solves: `b19_1` (745-811 s), `b18` (363-391 s) and
+`lec_mult_CvW_11x10` (276-461 s) in the run of record. The recovery
+census counts thousands of equivalence candidates on the ITC99 miters
+it read in full (b17: 41,163 of 51,309 gates; b22: 23,405) and 464 on
+lec_mult; b18 and b19_1 were over its gate cap. None of the three reads
+by first literal (in b18 variable 154,405, for one, has only
+`-154405 3806` and `-154405 -86346`: a gate written one way), so a
+reader for one-sided definitions would come first, and the gain is
+bounded by cells already solved on both seeds. Not built; the owner's call
+(recorded in bead `skz.10`). For hhyp the route is the arithmetic one:
+recognise the squarers (bead `skz.21`'s squarer shape), their sum, and
+the root chain over it, in the structdiv mould.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.

@@ -1,0 +1,23 @@
+run	setting	rung	pairs	calls	seconds	conflicts
+probe-hhyp-1	depth windows 2/4/8, whole cone capped at 120 calls	2	21959	21959	830.0	0
+probe-hhyp-1	depth windows 2/4/8, whole cone capped at 120 calls	4	21887	43774	1520.2	70050
+probe-hhyp-1	depth windows 2/4/8, whole cone capped at 120 calls	8	4497	13491	892.4	350432
+probe-hhyp-1	depth windows 2/4/8, whole cone capped at 120 calls	differs	35	140	8.0	0
+probe-hhyp-1	depth windows 2/4/8, whole cone capped at 120 calls	whole	85	340	26.4	19399
+probe-hhyp-1	depth windows 2/4/8, whole cone capped at 120 calls	capped	3086	9258	666.7	88667
+probe-hhyp-1	depth windows 2/4/8, whole cone capped at 120 calls	final_miter	48428	1	1800.0	9492727
+probe-hhyp-2	size windows 100/1K/10K gates, whole cone up to 60K gates, 250K conflicts	100	46473	46473	1330.3	147652
+probe-hhyp-2	size windows 100/1K/10K gates, whole cone up to 60K gates, 250K conflicts	differs	176	587	410.5	882617
+probe-hhyp-2	size windows 100/1K/10K gates, whole cone up to 60K gates, 250K conflicts	1000	2597	5194	353.9	323773
+probe-hhyp-2	size windows 100/1K/10K gates, whole cone up to 60K gates, 250K conflicts	10000	241	723	149.4	824631
+probe-hhyp-2	size windows 100/1K/10K gates, whole cone up to 60K gates, 250K conflicts	toobig	1743	5229	1004.4	596212
+probe-hhyp-2	size windows 100/1K/10K gates, whole cone up to 60K gates, 250K conflicts	whole	158	632	2786.8	9274727
+probe-hhyp-2	size windows 100/1K/10K gates, whole cone up to 60K gates, 250K conflicts	budget	3	12	215.0	755103
+probe-hhyp-2	size windows 100/1K/10K gates, whole cone up to 60K gates, 250K conflicts	final_miter	49469	1	1800.0	11381439
+probe-hhyp-3	size windows, whole cone uncapped, 50K conflicts, stop after 150 failures	100	45635	45635	1371.9	147103
+probe-hhyp-3	size windows, whole cone uncapped, 50K conflicts, stop after 150 failures	differs	175	583	412.9	773853
+probe-hhyp-3	size windows, whole cone uncapped, 50K conflicts, stop after 150 failures	1000	2524	5048	373.9	317807
+probe-hhyp-3	size windows, whole cone uncapped, 50K conflicts, stop after 150 failures	10000	231	693	148.7	934470
+probe-hhyp-3	size windows, whole cone uncapped, 50K conflicts, stop after 150 failures	budget	153	612	3736.6	8068344
+probe-hhyp-3	size windows, whole cone uncapped, 50K conflicts, stop after 150 failures	whole	108	432	856.7	2939702
+probe-hhyp-3	size windows, whole cone uncapped, 50K conflicts, stop after 150 failures	final_miter	48498	1	1800.0	11361922
