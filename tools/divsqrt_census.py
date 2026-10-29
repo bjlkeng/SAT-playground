@@ -21,14 +21,17 @@ sqrt-mitern169..171) read back as circuits.  Per cell:
              b[0..n-1], n = 64 in the real cells; b = 0 gives all ones, as a
              restoring array does) or a
              square-root output (bit k of isqrt(a) for a 128-bit a, the
-             inputs being a[2k..127]).  The inputs are numbered in the text
-             order of their names (b[0], b[10], ..., b[19], b[1], b[20], ...).
-             Checked on random samples; a cell that fits neither is
-             'unknown'.
+             inputs being a[2k..127]), or a hypotenuse output (bit k of
+             isqrt((a^2 + b^2) mod 2^256) for 128-bit a and b, the sum kept
+             to 256 bits; bead skz.16: hhyp_cec_multi_2 is bit 83).  The
+             inputs are numbered in the text order of their names (b[0],
+             b[10], ..., b[19], b[1], b[20], ...).  Checked on random
+             samples; a cell that fits none is 'unknown'.
   rows       the restoring recurrence simulated alongside the circuit.  For
              a divider, row j (n-1 down to k) brings down a_j, T = 2R + a_j,
              q_j = T >= b, R = q_j ? T - b : T.  For a square root, step i
-             gives Q = isqrt(a >> 2i) and R = (a >> 2i) - Q^2.  Per side,
+             gives Q = isqrt(a >> 2i) and R = (a >> 2i) - Q^2 (a hypotenuse:
+             the same over the 256-bit sum).  Per side,
              how many of the decided bits (q_j or the root bits) and of the
              remainder bits some signal computes: the same or the
              complemented signature over random samples, with divisors of
@@ -85,7 +88,7 @@ from proof_gate import iter_clauses  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 SUITE = ROOT / "benchmarks" / "sat-comp-2025"
 HOLDOUT = ROOT / "benchmarks" / "sat-comp-2026"
-CELL_RE = re.compile(r"(div-mitern|div_miter|sqrt-mitern)")
+CELL_RE = re.compile(r"(div-mitern|div_miter|sqrt-mitern|hhyp_cec)")
 MAX_SUPPORT = 8          # largest gate support read by truth table
 SAMPLES = 2048           # random samples for the function check and the rows
 STOCK = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0",
@@ -358,6 +361,42 @@ def sqrt_samples(rnd, lo, n=SAMPLES):
     return [{"a": rnd.getrandbits(128 - lo) << lo} for _ in range(n)]
 
 
+HYP_MOD = 1 << 256
+
+
+def hyp_sum(x):
+    return (x["a"] * x["a"] + x["b"] * x["b"]) % HYP_MOD
+
+
+def read_hyp(net, side, rnd):
+    """roles and k if the side is bit k of isqrt((a^2 + b^2) mod 2^256) for
+    128-bit a and b: the first 128 inputs a, the next 128 b, each word in
+    the text order of its names (measured on hhyp_cec_multi_2: the gates
+    compute bits 3-255 of both squares and 166-255 of the sum that way)."""
+    if len(net.inputs) != 256:
+        return None
+    order = text_order("a", 0, 128)
+    roles = {v: ("a", i) for v, i in zip(net.inputs[:128], order)}
+    roles.update({v: ("b", i) for v, i in zip(net.inputs[128:], order)})
+    samples = hyp_samples(rnd)
+    mask = (1 << len(samples)) - 1
+    got = net.simulate(to_inputs(net, roles, samples), mask)[side]
+    roots = [isqrt(hyp_sum(x)) for x in samples]
+    for k in range(128):
+        want = pack([(r >> k) & 1 for r in roots])
+        if want in (0, mask):
+            continue
+        if got == want:
+            return roles, k, False, 256
+        if got == ~want & mask:
+            return roles, k, True, 256
+    return None
+
+
+def hyp_samples(rnd, n=SAMPLES):
+    return [{"a": rnd.getrandbits(128), "b": rnd.getrandbits(128)} for _ in range(n)]
+
+
 def row_values(kind, k, width, samples):
     """name -> per-sample bit list, in chain order (rows top down, the
     decided bit first, then the remainder bits from the lowest)."""
@@ -378,13 +417,15 @@ def row_values(kind, k, width, samples):
                 for i in range(width - j + 1):
                     spec[f"R{j}.{i}"].append((r >> i) & 1)
     else:
-        steps = 64 - k
+        # (a square root of 128 bits has 64 root bits, a hypotenuse's of the
+        # 256-bit sum 128; the chain runs over the steps from the top to k)
+        steps = width // 2 - k
         for i in range(steps - 1, -1, -1):
             spec[f"r{k + i}"] = []
             for bit in range(steps - i + 2):
                 spec[f"R{k + i}.{bit}"] = []
         for x in samples:
-            a = x["a"] >> (2 * k)
+            a = (hyp_sum(x) if kind == "hyp" else x["a"]) >> (2 * k)
             for i in range(steps - 1, -1, -1):
                 part = a >> (2 * i)
                 q = isqrt(part)
@@ -409,7 +450,7 @@ def read_cell(path, seed=1):
     root, a, b, invert = miter_sides(net)
     rnd = random.Random(seed)
     kind, fit = None, None
-    for kd, reader in (("div", read_divider), ("sqrt", read_sqrt)):
+    for kd, reader in (("div", read_divider), ("sqrt", read_sqrt), ("hyp", read_hyp)):
         fit = reader(net, a, rnd)
         if fit is not None:
             kind = kd
@@ -418,7 +459,7 @@ def read_cell(path, seed=1):
     if kind is None:
         return cell
     roles, k, neg, width = fit
-    samples = div_samples(rnd, k, width) if kind == "div" else sqrt_samples(rnd, 128 - len(net.inputs))
+    samples = div_samples(rnd, k, width) if kind == "div" else hyp_samples(rnd) if kind == "hyp" else sqrt_samples(rnd, 128 - len(net.inputs))
     mask = (1 << len(samples)) - 1
     val = net.simulate(to_inputs(net, roles, samples), mask)
     cell["agree"] = val[a] == (val[b] ^ (mask if invert else 0))
@@ -452,6 +493,20 @@ def read_cell(path, seed=1):
     total_rem = sum(1 for nm, w in spec.items() if "." in nm and w not in (0, mask))
     cell.update(k=k, negated=neg, width=width, cone_a=cone_a, cone_b=cone_b, shared=shared, pairs=pairs,
                 found=found, total_bits=total_bits, total_rem=total_rem)
+    if kind == "hyp":
+        # the bits of the sum of the squares each side computes (the
+        # radicand's bits the chain's rows read): pairs a measurement may
+        # assume without proof (chain --assume-sums), since proving them is
+        # a squarer equivalence, not a row
+        sums = []
+        for bit in range(256):
+            w = pack([(hyp_sum(x) >> bit) & 1 for x in samples])
+            if w in (0, mask) or w not in index["A"] or w not in index["B"]:
+                continue
+            if any(abs(lit) in shared for lit in index["A"][w]):
+                continue
+            sums.append((f"s{bit}", index["A"][w][0], index["B"][w][0]))
+        cell["sum_pairs"] = sums
     return cell
 
 
@@ -488,6 +543,7 @@ def census_row(path):
                shared_gates=sum(1 for v in sh if v in gates))
     neg = " (negated)" if cell["negated"] else ""
     row["function"] = (f"quotient bit {cell['k']} of {cell['width']}/{cell['width']}{neg}" if cell["kind"] == "div"
+                       else f"hypotenuse bit {cell['k']} of 128/128{neg}" if cell["kind"] == "hyp"
                        else f"root bit {cell['k']} of {cell['width']}{neg}")
     row["sides_agree"] = cell["agree"]
     fa, fb = cell["found"]["A"], cell["found"]["B"]
@@ -673,7 +729,7 @@ def cmd_chain(args):
     refuse_holdout([path])
     cell = read_cell(path)
     if cell["kind"] is None:
-        sys.exit(f"{path.name}: no divider or square-root function found")
+        sys.exit(f"{path.name}: no divider, square-root or hypotenuse function found")
     net, pairs = cell["net"], cell["pairs"]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -686,19 +742,39 @@ def cmd_chain(args):
         _, x, y = p
         return [(-x, y), (x, -y)]
 
+    assumed = []
+    if getattr(args, "assume_sums", False):
+        # (a measurement of the rows alone: the sum bits taken as equal
+        # without proof, on a hypotenuse cell; the miter at the end assumes
+        # them too)
+        assumed = [c for p in cell.get("sum_pairs", []) for c in eq(p)]
+        circuit = circuit + assumed
+        print(f"assuming {len(assumed) // 2} sum-bit pairs without proof", file=sys.stderr)
+
+    # (the circuit rendered once: a check writes its bytes and the few
+    # clauses of its own; rendering 885K clauses per check held the
+    # interpreter's lock for ten seconds a check on hhyp, bead skz.16)
+    circuit_text = "".join(" ".join(map(str, c)) + " 0\n" for c in circuit).encode()
+
     def check(i, assumed):
         nm, x, y = pairs[i]
         f = tmp / f"lemma{i:05d}.cnf"
-        write_cnf(f, n_vars, circuit + [c for j in assumed for c in eq(pairs[j])] + [(x, y), (-x, -y)])
+        extra = [c for j in assumed for c in eq(pairs[j])] + [(x, y), (-x, -y)]
+        with open(f, "wb") as out_f:
+            out_f.write(f"p cnf {n_vars} {len(circuit) + len(extra)}\n".encode())
+            out_f.write(circuit_text)
+            out_f.write("".join(" ".join(map(str, c)) + " 0\n" for c in extra).encode())
         r = solve(args.solver, f, args.limit, mem_mb=args.mem_mb)
         f.unlink()
+        if args.progress:
+            print(f"  {nm}: {r[0]} {r[1]:.1f} s {r[2]} conflicts", file=sys.stderr, flush=True)
         return r[0], r[1], r[2], r[3], None, r[4]
 
     t0 = time.time()
     proven, dropped, by_model, results, spent = run_chain(net, pairs, check, args.jobs, args.window, args.progress)
     os.rmdir(tmp)
     final = out / "miter_with_pairs.cnf"
-    write_cnf(final, n_vars, list(net.clauses) + [c for i in proven for c in eq(pairs[i])])
+    write_cnf(final, n_vars, list(net.clauses) + assumed + [c for i in proven for c in eq(pairs[i])])
     fin = solve(args.solver, final, args.limit, mem_mb=args.mem_mb)
     final.unlink()
     summary = dict(cell=path.name, pairs=len(pairs), proven=len(proven), dropped=len(dropped),
@@ -753,6 +829,7 @@ def main(argv):
     ch.add_argument("--limit", type=float, default=300)
     ch.add_argument("--window", type=int, default=32)
     ch.add_argument("--progress", action="store_true")
+    ch.add_argument("--assume-sums", action="store_true", help="hypotenuse: take the sum-of-squares bits as equal without proof (a measurement of the rows alone)")
     ch.add_argument("--mem-mb", type=int, default=MEM_MB)
     bl = sub.add_parser("blif")
     bl.add_argument("file")

@@ -3433,6 +3433,131 @@ Not built as toys (no evidence they occur): a squarer compared with a
 multiplier whose second operand is tied to the first by equivalence
 clauses, and a multiplier with one operand fixed by unit clauses.
 
+## The hypotenuse cell, and lec_mult (2026-10-29; bead `SAT-playground-skz.16`)
+
+**Result.** `hhyp_cec_multi_2` (a timeout on both seeds, and for the C
+kissat) is the EPFL hypotenuse circuit against its 6-LUT-mapped
+version: **both compared signals are bit 83 of `isqrt((a² + b²) mod
+2^256)`** for two 128-bit operands, the sum of the squares kept to 256
+bits (the carry out dropped), which is why `isqrt(a² + b²)` itself
+matched no gate in the earlier guesses. Not refuted. Its proof would be
+two parts, and the measurements below put a price on each: the root
+chain is cheap once the sums are known equal, and the sums are a
+128-bit squarer equivalence against a LUT-mapped squarer, which nothing
+in the repo can read yet. `lec_mult_CvW_11x10` (search 276-461 s) was
+never read because its miter is asserted as one 21-literal clause; the
+compare walk now reads that, and the pass stops four signals short of
+the cell (a compressor shape the matcher misreads). No cell changes on
+the 400: the fire sweep of the pass alone at 700M on the final build
+(`log/structarith-fire-2026-10-29-700M-skz16d`) against the skz.21 sweep
+fires on the same 13 cells with the same status everywhere, no panic, no
+contradiction; the work clock moves by the new root scan's own charge
+(up to 91K on an 86M cell, `s38584`). Fuzz on the final build: 1,500
+miters (seed 45), all three answers agree, 722 fired with a checked
+proof.
+
+**The function** (`tools/divsqrt_census.py`, which now reads a third
+kind, `hyp`; `log/hyp-census-2026-10-29/census.tsv`). The inputs are
+the first 128 variables after the gates for `a` and the next 128 for
+`b`, each word in the text order of its names, as the div and sqrt
+cells. Under that order the gates compute bits 3-255 of `a²` and of
+`b²` and bits 168-255 of the wrapped sum on both sides, and the
+restoring square-root recurrence over the sum is followed by both
+sides: the 45 root bits `q_127..q_83` all exist on both sides, the
+remainder bits 947 of 1,080 on side A (the array version, 1,417 levels
+deep) and 922 on side B (the mapped one, 379 levels), 933 candidate
+pairs. The compared bit is the cone's bottom, so no step below 83
+exists.
+
+**The sum of the squares is the hard part.** A miter of the two sides'
+sum bit 255 alone, built from the circuit
+(`scratch hhyp_sum_miter.py`): the arithmetic pass reads 192,038 gates
+in 87 s (920M work), finds 11,513 cells on side A and 2,019 on side B,
+and declines with 2,774 signals no cell produces on side A (ABC
+restructured the array: 19 "or of two exclusive carries" shapes and
+1,527 three-input selector groups) and side B reading 14 product gates
+in all (its products are folded into 6-input tables). Search on that
+miter: no answer at 20G ticks. The skz.10 sweep's cheap pairs stop
+below it: of the squares' output bits it tied up to bit 150 (side A
+level 151), none of bits 200-255, and none of the sum bits (A levels
+172-278). So the sums are exactly a squarer equivalence, array against
+LUT-mapped, the class of problem the pass solves on the 16×16 miters
+and cannot read here.
+
+**The root chain, with the sums assumed.** The census's chain with the
+88 sum-bit pairs taken as true without proof (`chain --assume-sums`, a
+measurement only; `log/hyp-census-2026-10-29/chain-assume-sums*.log`):
+the first rows are cheap, remainder bits at 150-800 conflicts and root
+bits r127 4.7K, r126 10.8K, r125 13.6K, then r124 49K, R123.3 56K,
+r123 843K, R122.2 652K, and r122 and R123.2 time out at 300 s (1.4M
+conflicts): the fifth step of 45. Tying every copy of a row value on
+the mapped side (up to seven of a root bit) changed nothing. The
+diagnostic (`scratch hhyp_rowcost.py`), one pair r124 under four
+assumption sets:
+
+| assumed | r124 |
+|---|---|
+| the sums and every row before it (the chain) | 49K conflicts, 28 s |
+| the sums alone | 56K |
+| nothing | no answer at 900 s, 2.4M conflicts |
+| the sums, the rows, and **every signal equal on the samples below it** (35,423 pairs) | **2.9K conflicts, 2.5 s** |
+
+So the rows are not where the mapped side's logic cuts (it lacks 158 of
+the row values, among them bit 0 of nearly every remainder, and its
+step logic reaches below the rows), but a sweep-style cut makes a step
+trivial. The skz.10 sweep's upper-chain pairs cost 27-59K each for the
+same reason the chain's rows do: it never had the sums.
+
+**What a refutation would take.** (1) Read both squarers by function
+(a 6-LUT-mapped 128-bit squarer on side B, an ABC-restructured array on
+side A: the by-function stage's job, bead `skz.15`'s class, at eight
+times the width it was built for) and prove the 88 sum bits by the
+pass's argument; (2) the root with a sweep-style cut, candidates from
+simulation level by level (the skz.10 tool's reader), each proven by a
+sub-call as `structdiv` does, the sums as proven pairs. Part (2) is
+engineering over existing pieces; part (1) is the open problem, and it
+is the whole of the cell's hardness. Payoff: one cell. Left there.
+
+**`lec_mult_CvW_11x10`.** 2,543 gates, two 11×10 multipliers over 109
+shared products, the miter asserted as one 21-literal clause over the
+21 difference gates (`d_k = xor(A_k, B_k)`), no unit clause. The pass's
+compare walk started from the unit clauses alone, so it found "21
+compared signals and no two cones". When the walk from the units finds
+no two cones, a second attempt now also starts from the literals of a
+clause no gate uses whose variables are all gates (an or gate the file
+did not write), a root it expands leaves the compared set (else a
+difference gate, whose cone holds both sides, pairs with a side's bit by
+cone size), and two complementary binary clauses over gates, `(x ∨
+y)(¬x ∨ ¬y)`, are the compare pair itself and are not walked. The
+review shaped it in two rounds: a root from a clause that is an xor
+counts as a compare only when both its inputs have a side's worth of
+cone (16 gates), since a side's own sum bit is an xor of a propagate
+and a carry (a fuzz miter with the compare written as two binary
+clauses, where the pass paired the sum's inputs); and the clause walk
+is a second attempt, not a replacement, because an unused clause is not
+always an assertion: gate recovery may take a two-clause compare as a
+not gate and leave the real gate's clauses unused, and walking those
+lost the candidates the old selection had (the review's 10-bit case:
+16 clauses and a proof at 334M work before, nothing within 500M with
+the walk first); and the cone guard judges a unit on the unit's own
+variable, since the unit may sit on a buffer of the xor, which hashing
+aliases to it (a third round: 400 fuzz miters with the unit on such a
+buffer, the units-only attempt had stopped expanding the xor on toys
+with sides under 16 gates). On 400 fuzz miters with the compare as two
+binary clauses the final build keeps every fire of the committed one
+(47), adds 5, changes no answer, and 37 fired proofs pass the gate; on
+the 400 with the unit on a buffer it fires on the same 207 with the
+same answers and the same work; the cost is the second attempt on toys
+where the first finds nothing, at most 6× on a 44-variable toy. The
+pass then takes bit 19 (cones of 1,042
+and 1,081 gates, 119 shared), reads 99 and 112 cells, and declines on
+four signals no cell produces on side B: `and(a_i b_j, carry)` gates of
+a compressor written in two-input gates, which a full adder then reads
+as leaves (`cell 128 = FA(1467, 2007, 2238)` with `2007 = and(1456,
+1785)`, `1785` a half adder's carry): the matcher's cut fell one gate
+short. A speed gain of about 300 s a seed if finished; left as matcher
+work.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.

@@ -2530,6 +2530,46 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         s.into_iter().collect()
     };
     let unit_vars: Vec<i32> = (1..nv as i32).filter(|&v| net.units[v as usize]).collect();
+    // the walk's roots: the units, and the literals of a clause no gate
+    // uses whose variables are all gates (a miter asserted as one clause
+    // over its difference signals, 21 of them on lec_mult_CvW_11x10, is
+    // an or gate the file did not write; bead skz.16). Two binary clauses
+    // (x or y) and (not x or not y) over gates assert x != y: that pair is
+    // the compare itself and is not walked (a compared bit may be an xor
+    // over the other side's bit; review, 2026-10-29)
+    let (root_vars, clause_pairs): (Vec<i32>, Vec<(i32, i32)>) = {
+        let mut s: HashSet<i32> = unit_vars.iter().copied().collect();
+        let mut binary: HashSet<(i32, i32)> = HashSet::new(); // (x, y) as literals, x < y
+        for i in 0..f.len() {
+            if stopped(*work) {
+                return;
+            }
+            *work += 1;
+            let c = f.clause(i);
+            if !net.used[i] && !f.taut[i] && c.len() >= 2 {
+                *work += c.len() as u64; // (the test over its literals, taken or not)
+                if c.iter().all(|&l| (l.unsigned_abs() as usize) < nv && net.gates[l.unsigned_abs() as usize].is_some()) {
+                    s.extend(c.iter().map(|l| l.abs()));
+                    if c.len() == 2 {
+                        binary.insert((c[0].min(c[1]), c[0].max(c[1])));
+                    }
+                }
+            }
+        }
+        let mut pairs: Vec<(i32, i32)> = Vec::new();
+        for &(x, y) in &binary {
+            if x > 0 && y > 0 && binary.contains(&(-y, -x)) {
+                pairs.push((x, y));
+                s.remove(&x);
+                s.remove(&y);
+            }
+        }
+        *work += binary.len() as u64;
+        pairs.sort_unstable();
+        let mut v: Vec<i32> = s.into_iter().collect();
+        v.sort_unstable();
+        (v, pairs)
+    };
     let mut cone_cache: HashMap<i32, HashSet<i32>> = HashMap::new();
     // past the budget every cone comes back empty and `aborted` is set; each
     // phase that looks at cones checks it before using what it found
@@ -2552,6 +2592,19 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
     };
     let mut compared: Vec<i32> = Vec::new();
     let mut compare_pairs: Vec<(i32, i32)> = Vec::new();
+    // two attempts at the pair: first from the units alone, as before;
+    // when that finds no two cones, from the top-level clauses too (an
+    // unused clause is not always an assertion: gate recovery may take a
+    // two-clause compare as a not gate and leave the real gate's clauses
+    // unused, and walking those lost the candidates the first attempt
+    // has; review, 2026-10-29). The second attempt starts from the cells
+    // the first began with
+    let cells_before: Vec<Cell> = cells.clone();
+    let mut best: Option<(i32, i32, usize)> = None;
+    let clause_roots = root_vars.len() > unit_vars.len() || !clause_pairs.is_empty();
+    for attempt in 0..2u8 {
+    let roots: &Vec<i32> = if attempt == 0 { &unit_vars } else { &root_vars };
+    let from_clauses = attempt == 1;
     for _round in 0..3 {
         let mut cell_out: HashMap<i32, usize> = HashMap::new();
         for (ci, c) in cells.iter().enumerate() {
@@ -2560,8 +2613,18 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         }
         let mut cmp: HashSet<i32> = top_vars.iter().copied().filter(|v| !net.units[*v as usize]).collect();
         let mut pairs: Vec<(i32, i32)> = Vec::new();
+        if from_clauses {
+            for &(x, y) in &clause_pairs {
+                let (a, b) = (net.rep[x as usize].0, net.rep[y as usize].0);
+                if a != b {
+                    cmp.insert(a);
+                    cmp.insert(b);
+                    pairs.push((a, b));
+                }
+            }
+        }
         let mut reached: HashSet<i32> = HashSet::new();
-        let mut stack: Vec<(i32, u32)> = unit_vars.iter().map(|&u| (u, 0)).collect();
+        let mut stack: Vec<(i32, u32)> = roots.iter().map(|&u| (u, 0)).collect();
         while let Some((u0, depth)) = stack.pop() {
             *work += 1;
             if aborted.get() || stopped(*work) {
@@ -2586,7 +2649,24 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 let (a, b) = (net.rep[g.sup[0] as usize].0, net.rep[g.sup[1] as usize].0);
                 let ca = cone_of(a, &net, work);
                 let cb = cone_of(b, &net, work);
-                if apart(&ca, &cb) {
+                if dbg && depth == 0 {
+                    eprintln!("structarith: compare root {} = xor({}, {}): cones {} and {}, shared {}", u, a, b, ca.len(), cb.len(), ca.intersection(&cb).count());
+                }
+                // (a root from a clause may be a side's own sum bit, an xor
+                // of a propagate and a carry, asserted unequal to the other
+                // side's by two binary clauses: a compare only when both
+                // inputs have a side's worth of cone. A unit's root is
+                // always one, judged on the unit's own variable: the unit
+                // may sit on a buffer of the xor, which hashing aliases to
+                // it; review rounds 1 and 3, 2026-10-29)
+                let sides = !from_clauses || depth > 0 || net.units[u0 as usize] || ca.len().min(cb.len()) >= MIN_COMPARE_CONE;
+                if sides && apart(&ca, &cb) {
+                    // (a root the walk expands is no compared signal
+                    // itself: a difference gate under the assertion
+                    // clause would pair with a side's bit by cone size)
+                    if from_clauses {
+                        cmp.remove(&u);
+                    }
                     cmp.insert(a);
                     cmp.insert(b);
                     pairs.push((a, b));
@@ -2594,6 +2674,9 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                     cmp.insert(u);
                 }
             } else if two && (and_family(g.tt).is_some() || or_family(g.tt).is_some()) {
+                if from_clauses {
+                    cmp.remove(&u);
+                }
                 for &x in &g.sup {
                     stack.push((x, depth + 1));
                 }
@@ -2814,7 +2897,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
     let mut rest: Vec<i32> = compared.iter().copied().filter(|v| !candidates.contains(v)).take(64).collect();
     rest.sort_by_key(|&v| std::cmp::Reverse(cone_of(v, &net, work).len()));
     candidates.extend(rest.into_iter().take(8));
-    let mut best: Option<(i32, i32, usize)> = None;
+    best = None;
     for i in 0..candidates.len() {
         for j in i + 1..candidates.len() {
             let ca = cone_of(candidates[i], &net, work);
@@ -2836,6 +2919,15 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         if dbg {
             best = Some((net.rep[fa as usize].0, net.rep[fb as usize].0, 0));
         }
+    }
+    if best.is_some() || attempt == 1 || !clause_roots {
+        break;
+    }
+    if dbg {
+        eprintln!("structarith: no two cones from the units; the walk from the top-level clauses next");
+    }
+    cells = cells_before.clone();
+    *work += cells.len() as u64;
     }
     let Some((side_a, side_b, _)) = best else {
         if dbg {
