@@ -272,7 +272,6 @@ fn recover_gates(f: &Formula, work: &mut u64, stop: &dyn Fn(u64) -> bool) -> Opt
     }
     // candidates: (v, support, tt, clause ids), every definition found
     let mut cands: Vec<(i32, Vec<i32>, u64, Vec<u32>)> = Vec::new();
-    let mut cand_count = vec![0u32; nv];
     for v in 1..nv as i32 {
         *work += 1;
         if stop(*work) {
@@ -329,7 +328,6 @@ fn recover_gates(f: &Formula, work: &mut u64, stop: &dyn Fn(u64) -> bool) -> Opt
                     if !found.contains(&key) {
                         found.push(key.clone());
                         cands.push((v, support.clone(), tt, key));
-                        cand_count[v as usize] += 1;
                     }
                     break;
                 }
@@ -363,25 +361,42 @@ fn recover_gates(f: &Formula, work: &mut u64, stop: &dyn Fn(u64) -> bool) -> Opt
     }
     // is the file numbered in circuit order? judged on the clause sets that
     // define a single variable (and, majority, ite: no direction ambiguity)
-    // whose variable has no other definition (two muxes over one select
-    // sharing an input "define" that input, eight times over in a Booth
-    // multiplier, and those read as out of order: the primary inputs come
-    // first in the file)
+    // whose variable has no other such set. A gate an xor reads is
+    // "defined" by the xor's clause set too, but that set defines every
+    // one of its variables, so the gate still counts (judging only
+    // variables with no other definition at all left a small circuit
+    // written with xor3 and majority clauses too few to judge, and the
+    // deadlock below then read a multiply-accumulate's addend bits as
+    // gates and the sums as inputs, bead skz.21). Two muxes over one
+    // select sharing an input "define" that input by a single-variable
+    // set of their clauses: an input shared by two muxes has one such set,
+    // eight times over in a Booth multiplier, and those read as out of
+    // order (the primary inputs come first in the file); shared by more,
+    // several, and it is left out, as before. The line is nine in ten: on
+    // the 2025 cells the judged files sit at 0.93 ordered or more (the
+    // sorters' mux networks cost 5-7 %) or at 0.25 or less (shuffled),
+    // nothing between
     let mut sets_of: HashMap<&Vec<u32>, u32> = HashMap::new();
     for (_, _, _, key) in &cands {
         *sets_of.entry(key).or_default() += 1;
     }
+    let mut single_sets = vec![0u32; nv]; // per variable, its single-variable sets
+    for (v, _, _, key) in &cands {
+        if sets_of[key] == 1 {
+            single_sets[*v as usize] += 1;
+        }
+    }
     let mut single = 0usize;
     let mut ordered = 0usize;
     for (v, sup, _, key) in &cands {
-        if sets_of[key] == 1 && cand_count[*v as usize] == 1 {
+        if sets_of[key] == 1 && single_sets[*v as usize] == 1 {
             single += 1;
             if sup.iter().all(|&u| u < *v) {
                 ordered += 1;
             }
         }
     }
-    let topo_numbered = single >= 20 && ordered * 20 >= single * 19;
+    let topo_numbered = single >= 20 && ordered * 10 >= single * 9;
     if debug() {
         eprintln!("structarith: {} single-definition gates, {} numbered after their inputs: {}", single, ordered, if topo_numbered { "circuit order" } else { "not circuit order" });
     }
@@ -6532,7 +6547,9 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         }
     }
     for (s, w, m) in &residuals {
-        let lit = designate(&mut mono_lit, &mut fresh, &mut next_fresh, m);
+        // (a monomial of one input is that input: a shift-and-add
+        // multiplier's low bits are its operand's bits, bead skz.21)
+        let lit = if m.len() == 1 { m[0] } else { designate(&mut mono_lit, &mut fresh, &mut next_fresh, m) };
         bits[*s].entry(*w).or_default().push(lit);
         *work += 4;
         if dbg {
@@ -6610,7 +6627,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         // (a bit that is a monomial itself: the other side's leaves hold
         // the monomial, this side's sums hold it as the bit; balanced here)
         for (s, w, m) in &residuals {
-            let lit = mono_lit[m];
+            let lit = if m.len() == 1 { m[0] } else { mono_lit[m] };
             let e = lit_forms[*s].entry(lit.abs()).or_default();
             *e = e.saturating_add(if lit < 0 { -(1i128 << *w) } else { 1i128 << *w });
         }

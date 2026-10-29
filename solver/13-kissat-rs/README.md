@@ -3288,6 +3288,151 @@ line is closed in bead `skz.10`; untried with this tool are `b18` and
 `b19_1` (the general reader recovers 90% of their gates; both solved on
 both seeds, so a speed effect at most).
 
+## Multiplier shapes the 2025 cells lack (2026-10-29; bead `SAT-playground-skz.21`)
+
+**Result.** The arithmetic pass was built and measured on the two shapes
+the 2025 miters have, unsigned AND arrays and unsigned radix-4 Booth.
+Nineteen toy miters of the shapes they lack (signed multipliers three
+ways, squarers, multiply-accumulate, constant multipliers; each a true
+miter, so each is unsatisfiable) say how far it reaches: **15 of the 19
+are refuted with proofs the gate accepts**, 13 as the pass stood and 2
+after two small fixes below; of the 4 that decline, 3 are mapped forms
+(products folded into the adders reading them), which decline for
+reasons open elsewhere, and 1 is the top bit of a signed miter whose
+sides treat the top constant differently (a limit recorded below). On
+the 2025 cells nothing changes: the fire sweep of the pass alone over
+the 400 cells at 700M work on the final build
+(`log/structarith-fire-2026-10-29-700M-skz21c`, the other structure
+passes and the parity engine off) against the sweep of 2026-10-24
+(`...-700M-skz19`) fires on the same 13 cells with the same status
+everywhere, no panic, no contradiction; the work clock differs on the
+nine small cells the judgement newly reads (below) and on one Booth
+cell by 0.02 %, which the 2026-10-27 snapshot
+(`solver/13-j6-div-snapshot`) already has, so that moved with the
+sorter and divider passes, not here. Fuzz on the final
+build: 1,500 random miters (seed 41,
+`log/arith-fuzz-2026-10-29-s41.txt`), the three answers agree on all,
+753 fired with a checked proof (1,500 more on seed 39 during the work,
+785 fired, `log/arith-fuzz-2026-10-29-s39.txt`). The toys are the test
+`other_multiplier_shapes_are_read` in `tests/structarith.rs`, which also
+pins the four declines with their reason, so the table below stays true
+or the test fails.
+
+| shape (both sides over the same inputs) | generator's form | mapped form |
+|---|---|---|
+| **Baugh-Wooley** (two's complement n×n: the products with one sign bit as nands, `a_{n-1} b_{n-1}` plain, the constant `2^n + 2^(2n-1)` folded into complemented half adders or the inverted top bit) against another over the same products, ripple and Kogge-Stone final adders; a middle bit and the top bit | fires | declines (folded products) |
+| **signed radix-4 Booth** (no correction row; the multiplicand sign-extended into the row's top bit; the row's sign that top bit after the xor with the digit's sign, not the digit's sign) against Baugh-Wooley, ripple and Sklansky; a middle bit and the top bit | fires | declines (the stage's row model) |
+| **sign-extended product** (both operands extended to the output width, multiplied unsigned, truncated: what a synthesis flow makes of a signed product; each distinct product once, at every column it occurs in, two copies in a column one copy a column up) against Baugh-Wooley | fires on a middle bit; declines on the top bit (the top constant) | — |
+| **squarer** (`a_i` at column `2i`, `a_i a_j` once at `i + j + 1`) against another, ripple and Sklansky | fires | **fires** |
+| **multiply-accumulate** `a b + c` against another, ripple and Kogge-Stone | fires (ripple: after fix 1) | declines (folded products) |
+| **constant multiplier** `13 a` by shifts and adds in two orders, ripple and Sklansky; and against `16 a − 2 a − a` (complemented bits and a constant) | fires (the subtraction: after fix 2) | — |
+
+The generators (`tests/structarith.rs`): `baugh_wooley_columns`,
+`squarer_columns`, `sign_extended_columns`, `mac_columns`,
+`constant_columns`, summed by `column_sum` (constant ones folded as the
+Booth generator folds them, a column of one bit inverted and sent up, a
+one at the top column the inverted output bit; ripple or a prefix adder)
+or `mapped_column_sum` (the first full adder reading a product takes
+its inputs straight, plain or complemented); the Booth generators took
+a `signed` flag, and fold a constant one that meets a single row bit
+with the carries from below instead (a signed multiplier's top rows;
+folded before the tree, the bit sent up met its own complement, the row
+above's sign extension, and the toy had a full adder over a signal and
+its negation). The signed shapes are what the pass had never seen:
+nand leaves, constants in the top columns, a row whose sign is not the
+digit's, products read at several columns each (the sign-extended
+form: `a_{n-1} b_j` at every column from `n-1+j` to the top), and they
+all go through as the pass stood, because the sides are compared as
+polynomials over the inputs and a leaf read negated is `1 - x`.
+
+**Fix 1, the circuit-order judgement.** The ripple multiply-accumulate
+was read wrong before any cell was looked for. The netlist reader
+settles gate directions forward and, at a deadlock (an xor written as
+one clause set "defines" each of its variables), takes the
+smallest-numbered unsettled variable as a primary input when the file
+is numbered in circuit order, else the variable with the most
+definitions waiting on it. The judgement counted only clause sets
+defining a variable that has no other definition at all, which in a
+circuit written with xor3 and majority clauses leaves almost nothing
+(every and gate an xor3 reads is "defined" by that xor3 too): the 6-bit
+toy had 3 such gates, under the 20 the judgement needs, so the fallback
+rule ran and read the addend bits (inputs an xor3 reads straight) as
+gates and the sums as inputs; side B's cone stopped at column 4, 18
+cells against 29. Now a set counts when it defines a single variable
+and that variable has no *other* single-variable set: the xor's set
+defines four variables and does not count against the and gate it
+reads. The first version counted every single-variable set, whatever
+else defined the variable, and that let in the mux-pair definitions
+the old rule's condition was keeping out (two muxes over one select
+sharing an input "define" it by a single-variable set of their clauses;
+an input shared by eight rows has dozens): the Booth cells fell to
+0.94 ordered, under the 0.95 line, their deadlocks were resolved the
+other way, and **four of the thirteen firing cells were lost**
+(`log/structarith-fire-2026-10-29-700M-skz21`, the first sweep; the
+review built the top-bit miters that found the toy fault below in the
+same round). With the refined count the judged 2025 files sit at 0.93
+ordered or more (the sorters' mux networks cost 5-7 %, the Booth cells
+are back to 1.00) or at 0.25 or less (shuffled numberings), nothing
+between, so the line moved from 0.95 to 0.90: every file judged in
+circuit order before still is, and nine small files the old count could
+not judge (3 to 96 gates; now 47 to 800, 0.94 to 1.00 ordered: the
+`simon` cells, `bivium`, the two `WS_500` and `stb_664`) are judged so
+now; the pass declines on all nine as before (their work moves by a
+few thousand).
+
+**Fix 2, a low bit that is an input.** In the subtraction form side A's
+bit 1 is the input `a_1` itself, no cell's, and the polynomial
+difference found it (`a_1` at weight 1: "a bit that is a monomial
+itself", the final-adder step's rule for an array multiplier's bit 0);
+but the literal standing for a one-input monomial was a fresh and of
+one input, so the check on the literals after the leaf identities saw
+`a_1` with coefficients 12 against 13 and declined. A monomial of one
+input is that input (as the leaf identities already had it).
+
+**What declines, and why.**
+
+- *Baugh-Wooley mapped, multiply-accumulate mapped.* The mapped side's
+  folded product cells (a sum and a carry, one gate each over `a_i`,
+  `b_j` and two produced signals) are no structural cell: the cuts are
+  of three leaves, and the fused-leaf matcher reads an xor leaf, not an
+  and. The product rows by function (bead `skz.14`) are the reading for
+  them, and they run only from the operand order a Booth side gives;
+  these miters have none, so the side is left with 8 and 5 signals no
+  cell produces. The order is in fact there: the structural side's
+  product reads give the grid ("the grid has 6 x 6 inputs from side 0's
+  32 product reads"), which is the lead bead `skz.15` records for the
+  AND-against-AND reading. The mapped squarer fires because its folded
+  cells read inputs alone (the diagonal addends are the operand's own
+  bits), so the structural pass reads them as input leaves by function.
+- *Signed Booth mapped.* The by-function stage's row model is the
+  unsigned generator's: a correction digit, every row bit over two data
+  bits, the sign extension from the digit's sign. A signed row has no
+  correction digit, its top bit is one data bit under both selects, and
+  its sign is that bit; the stage finds 18 cells and leaves 20 signals
+  no cell produces. A signed row model in the stage is bead `skz.24`,
+  worth doing only if such a cell turns up: the Booth cells of 2025 and
+  2026 are the unsigned generator's by file name.
+- *The top bit, sign-extended against Baugh-Wooley.* Baugh-Wooley's top
+  constant `2^(2n-1)` is its inverted top output wire (one bit in the
+  top column); the sign-extended side has no constant. The two sides'
+  polynomials then differ by exactly the compared weight ("the two
+  sides sum different polynomials: constants 0 and 1024"), which means
+  the two top bits are complements as read, and the pass settles that
+  only when the side's top cell is a lone half adder it can re-read with
+  a one (the Booth sign-extension case); here the compared signal is a
+  full adder's carry. A general step would have to carry the complement
+  into the top block too (the carries above the compared bit then
+  differ between the sides by that same bit, and the proof's block step
+  cancels equal blocks): worked out by hand, not tried. Baugh-Wooley
+  against Baugh-Wooley and signed Booth against Baugh-Wooley fire on
+  their top bits (the constants match, or fold into cells). A whole-word
+  miter of a signed multiplier against the sign-extended form would meet
+  this; none is known in 2025 or 2026. Left as a recorded limit.
+
+Not built as toys (no evidence they occur): a squarer compared with a
+multiplier whose second operand is tied to the first by equivalence
+clauses, and a multiplier with one operand fixed by unit clauses.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.
