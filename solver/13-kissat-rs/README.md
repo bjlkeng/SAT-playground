@@ -3223,6 +3223,71 @@ bounded by cells already solved on both seeds. Not built; the owner's call
 recognise the squarers (bead `skz.21`'s squarer shape), their sum, and
 the root chain over it, in the structdiv mould.
 
+**Across the 400 (2026-10-29;
+`log/sweep-probe-2026-10-28/first-literal-scan-400.txt`).** 16 cells
+read by first literal (6 are miters), 74 are too big to try, 310 are
+other CNF shapes. Of the 16, every slow or unsolved one but hhyp is
+decided by a structure pass already (the div and sqrt miters, the
+sorters, `multiplier_Nbits`); `test_v7` (an STP bit-vector cell, 287K
+gates) reads but is no miter. So the tool as built reaches one undecided
+cell. With the recovery census's general reader, equivalence candidates
+sit in about 40 slow or unsolved cells, chiefly the 19 bp4 cells (4
+unsolved on both seeds, 4 on one), the three grs cells, `gm16spctrc`,
+`bp5_CSO`, `sted2` and `dislog`.
+
+**The general reader** (`--reader general`, 2026-10-29): the sweep over
+the circuit `tools/netlist_census.py` recovers from any CNF (a gate is a
+variable some of whose clauses determine it as a function of at most six
+others, the direction settled forward; the clauses no gate uses are
+constraints, which a window takes when they lie inside it). Its reading
+is the limit: on `div-mitern172` it declares 171 real gates primary
+inputs (XOR-like tables have no direction in the clauses), the candidate
+classes get noisy, and 68 pairs are proven against 333 by first literal.
+Measured on four bp4 cells and `grs-32-64`
+(`benchmarks/rl/sweep_general_2026-10-29.tsv`,
+`log/sweep-probe-2026-10-28/general-*`, `bp4-controls/`):
+
+- **bp4 is not a circuit in the main.** The reader finds 34-45K gates in
+  11-15 levels under 507-577K constraint clauses, with 39-52K "inputs";
+  21,756-28,812 of the gates are XNORs asserted true, that is equalities
+  of two variables, which kissat's equivalent-literal substitution merges
+  at the start. The sweep proves 1,194-2,633 pairs in 13-26 s, every one
+  by propagation alone (of `bp4_TCO`'s 1,247: 271 the same function over
+  the same inputs, 684 the same inputs with another table, equal only
+  under the formula's units, 292 with different supports).
+- **The pairs move the search like a seed does.** The stock path at
+  1,800 s with and without the proven pairs, both seeds:
+
+  | cell | run of record (every default on) | plain, seed 0 / 1 | with the pairs, seed 0 / 1 |
+  |---|---|---|---|
+  | `bp4_TCO_IXA_FPBLE_ZR` (SAT) | timeout / timeout | timeout / 1,582 s | 266 s / 1,215 s |
+  | `bp4_IXA_FPBEQ_ZR` (SAT) | 581 s / timeout | 363 s / 671 s | 122 s / 1,680 s |
+  | `bp4_AM_IXA_FPBLE` (UNSAT) | 738 s / 721 s | 640 s / 593 s | 536 s / 790 s |
+  | `bp4_BC012_AM_FPBEQ_ZR` | timeout / timeout | | timeout (seed 0) |
+
+  One seed faster, the other slower, the same formula 122 s on one seed
+  and 1,680 s on the other: the satisfiable-cell luck the two-seed rule
+  exists for (CLAUDE.md "Evaluation"), and no cell decided that the plain
+  path does not reach.
+- **grs-32-64** is a full circuit to the reader (75,483 gates, no
+  constraint clause, 204 levels) with 17,471 candidate pairs, of which
+  **4** are equivalences; the other 17,467 are refuted by real
+  counterexamples, signals that agree on 2,048 random patterns and
+  differ on a cheap model. The miter with the 4 pairs: 153 s against
+  127-144 s in the run of record.
+
+So the general reader adds no cell either: the bp4 pairs are what
+kissat's own preprocessing finds (structural duplicates and asserted
+equalities), the grs candidates are not equivalences, and hhyp's pairs
+are too costly. Three tool lessons for the next census of this kind: a
+level's counterexamples are simulated in one bit-parallel pass (one at
+a time, 75K gates in Python cost 10 s a pattern and a level with
+hundreds of false candidates took an hour); windows by gate count beat
+windows by depth; and a whole-cone cap by size, not by call count. The
+line is closed in bead `skz.10`; untried with this tool are `b18` and
+`b19_1` (the general reader recovers 90% of their gates; both solved on
+both seeds, so a speed effect at most).
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.

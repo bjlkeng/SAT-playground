@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Simulation-guided sweeping census (bead SAT-playground-skz.10).
 
-Measures, on one miter that reads as a circuit by first literal (the
-Netlist of tools/divsqrt_census.py), what a global SAT-sweeping pass would
-find and what it would cost:
+Measures, on one CNF read as a circuit, what a global SAT-sweeping pass
+would find and what it would cost.  Two readers: first-literal (ABC's
+write_cnf shape, every clause a gate's; the Netlist of
+tools/divsqrt_census.py; the cell must be a miter, one asserted xor of
+two signals) and general (the recovery census's reader,
+tools/netlist_census.py: a gate is a variable some of whose clauses
+determine it as a function of at most six others; the other clauses are
+constraints, which a window takes when they lie inside it; a miter is
+recognised when there is one, else the final solve is the measure).
 
   classes   the circuit is simulated on random inputs (bit-parallel, 2,048
             patterns by default); signals with the same or the complementary
@@ -20,11 +26,16 @@ find and what it would cost:
             model of the whole cone is a real counterexample: the circuit
             is simulated on it and every class it separates splits (a
             proven pair that differs on it stops the run: the solver or
-            the reading is wrong).
+            the reading is wrong).  With the general reader a whole-cone
+            model satisfies the constraint clauses inside its window only,
+            so it may break one outside that another pair's proof used:
+            such a model drops candidates (never a proof), and a proven
+            pair it separates is counted, not an error.
   final     the miter with every proven pair added, on the stock path.
 
 Subcommands:
-  sweep FILE --solver BIN --out DIR [--jobs N] [--patterns P]
+  sweep FILE --solver BIN --out DIR [--reader first-literal|general]
+        [--jobs N] [--patterns P]
         [--ladder 100,1000,10000] [--conflicts 2000,10000,50000,250000]
         [--limits 60,60,120,900] [--whole-gates G] [--whole-fails F]
         [--final-limit S] [--mem-mb M]
@@ -35,7 +46,7 @@ Subcommands:
         (the calls already running finish; the pairs after them are
         'stopped') and the sweep ends with the level.  Writes
         summary.json, proven.json and progress.log under DIR.
-  report FILE DIR...
+  report FILE DIR... [--reader first-literal|general]
         per rung the pairs, calls, seconds and conflicts (a check killed
         before it printed its counters is counted in missing_counters and
         left out of the totals, never counted as zero); the proven pairs
@@ -52,7 +63,11 @@ section 8: it is the holdout).
 Measured 2026-10-28 on hhyp_cec_multi_2 (solver README, "Global sweeping:
 the measurement"): 49,469 pairs proven, 97% of them in the lowest 100
 levels at 3 conflicts each, the rest tens of thousands of conflicts each,
-the chain stalled at level 369 of 1,418, the miter unchanged.
+the chain stalled at level 369 of 1,418, the miter unchanged.  With the
+general reader (2026-10-29) on four bp4 cells and grs-32-64: the bp4
+pairs are propagation-level duplicates and move the search like a seed
+change (one seed faster, the other slower); grs has 4 equivalences among
+17,471 candidates.  No cell gained either way.
 """
 from __future__ import annotations
 
@@ -68,8 +83,111 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from divsqrt_census import MEM_MB, Netlist, miter_sides, refuse_holdout, solve, write_cnf  # noqa: E402
+from netlist_census import recover_gates, topo_order  # noqa: E402
+from proof_gate import iter_clauses  # noqa: E402
 
 PATTERNS = 2048
+MAX_CLAUSES = 4_000_000   # the general reader reads at most this many clauses (and refuses a longer file)
+
+
+def read_capped(path, max_clauses):
+    """(header variable count, clauses) read with the solver's DIMACS rules
+    (tools/proof_gate.py), stopping as soon as the file has more than
+    max_clauses clauses (the rest is neither decompressed nor stored)."""
+    gen = iter_clauses(path)
+    clauses = []
+    while True:
+        try:
+            clauses.append(tuple(next(gen)))
+        except StopIteration as stop:
+            return stop.value or 0, clauses
+        if len(clauses) > max_clauses:
+            raise ValueError(f"more than {max_clauses} clauses")
+
+
+class GeneralNetlist:
+    """The circuit the recovery census's reader finds in any CNF
+    (tools/netlist_census.py recover_gates: a gate is a variable some of
+    whose clauses determine it as a function of at most six others, the
+    direction settled forward), with the interface of the first-literal
+    Netlist that the sweep uses.  The clauses no gate uses are constraints;
+    they stay in the formula and a window takes those lying inside it."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        # the formula as the solver reads it (every clause kept: the final
+        # solve must see the input, an empty clause included); the gate
+        # recovery sees a copy with repeated literals dropped and
+        # tautologies left out, its clause ids mapped back
+        self.header_vars, self.clauses = read_capped(path, MAX_CLAUSES)
+        if any(not c for c in self.clauses):
+            raise ValueError("empty clause")
+        norm, back = [], []
+        for i, c in enumerate(self.clauses):
+            lits = tuple(dict.fromkeys(c))
+            seen = set(lits)
+            if any(-lit in seen for lit in lits):
+                continue
+            norm.append(lits)
+            back.append(i)
+        n_vars = max([self.header_vars] + [abs(lit) for c in self.clauses for lit in c])
+        gates, used_norm, self.deadlocks, _ = recover_gates(norm, n_vars)
+        if not gates:
+            raise ValueError("no gate found")
+        self.gates = {v: (sup, tt) for v, (sup, tt, _) in gates.items()}
+        self.groups = {v: sorted(back[j] for j in cl) for v, (_, _, cl) in gates.items()}
+        used = {back[j] for j in used_norm}
+        self.used = used
+        units = {}
+        for c in self.clauses:
+            if len(c) == 1:
+                if abs(c[0]) in units and units[abs(c[0])] != (c[0] > 0):
+                    raise ValueError("contradicting units")
+                units[abs(c[0])] = c[0] > 0
+        self.roots = {v: b for v, b in units.items() if v in self.gates}
+        self.const = {v: b for v, b in units.items() if v not in self.gates}
+        present = {abs(lit) for c in self.clauses for lit in c}
+        self.inputs = sorted(present - set(self.gates) - set(self.const))
+        self.order = topo_order(gates)
+        # the constraint clauses by variable, for the windows
+        self.occ = defaultdict(list)
+        for i, c in enumerate(self.clauses):
+            if i not in used and len(c) > 1:
+                for lit in c:
+                    self.occ[abs(lit)].append(i)
+        self.constraints = sum(1 for i, c in enumerate(self.clauses) if i not in used and len(c) > 1)
+
+    def cone(self, v):
+        seen, stack = set(), [v]
+        while stack:
+            x = stack.pop()
+            if x in seen:
+                continue
+            seen.add(x)
+            if x in self.gates:
+                stack.extend(self.gates[x][0])
+        return seen
+
+    def simulate(self, inputs, mask):
+        val = dict(inputs)
+        for v, b in self.const.items():
+            val[v] = mask if b else 0
+        for v in self.order:
+            sup, tt = self.gates[v]
+            ins = [val[u] for u in sup]
+            out = 0
+            for m in range(1 << len(sup)):
+                if (tt >> m) & 1:
+                    term = mask
+                    for i, w in enumerate(ins):
+                        term &= w if (m >> i) & 1 else ~w & mask
+                    out |= term
+            val[v] = out
+        return val
+
+
+def read_net(path, reader):
+    return Netlist(path) if reader == "first-literal" else GeneralNetlist(path)
 
 
 def levels_of(net):
@@ -82,10 +200,16 @@ def levels_of(net):
 
 class Sweep:
     def __init__(self, path, args, tmp):
-        self.net = Netlist(path)
+        self.net = read_net(path, args.reader)
         self.args = args
         self.tmp = Path(tmp)
-        self.root, self.a, self.b, _ = miter_sides(self.net)
+        try:
+            self.root, self.a, self.b, _ = miter_sides(self.net)
+        except ValueError as e:
+            if args.reader == "first-literal":
+                raise
+            self.root = self.a = self.b = None   # no asserted xor of two signals: the final solve is the measure
+            self.no_miter = str(e)
         self.level = levels_of(self.net)
         self.ladder = [int(x) for x in args.ladder.split(",")] + [None]
         self.conflicts = [int(x) for x in args.conflicts.split(",")]
@@ -184,8 +308,20 @@ class Sweep:
             for i in net.groups[v]:
                 clauses.append(tuple(name(lit) for lit in net.clauses[i]))
         for v in seen:
-            if v in net.const:
-                clauses.append((name(v if net.const[v] else -v),))
+            if v in net.const or (v in net.roots and v != self.root):
+                # a unit on a signal in the window (never the miter's own assertion)
+                clauses.append((name(v if (net.const.get(v) if v in net.const else net.roots[v]) else -v),))
+        occ = getattr(net, "occ", None)
+        if occ:
+            # every constraint clause whose variables all lie in the window
+            # (a subset of the formula, so the window stays a sound cut)
+            inside = set()
+            for v in seen:
+                for i in occ.get(v, ()):
+                    if i not in inside and all(abs(lit) in seen for lit in net.clauses[i]):
+                        inside.add(i)
+            for i in sorted(inside):
+                clauses.append(tuple(name(lit) for lit in net.clauses[i]))
         for p, q in self.proven:
             if abs(p) in seen and abs(q) in seen:
                 clauses.append((name(-p), name(q)))
@@ -294,25 +430,37 @@ class Sweep:
                         self.proven.append((xl, y))
                         self.link(xl, y)
                         top_level = max(top_level, lv)
-                        if compared is None and self.related(self.a, self.b) is not None:
+                        if compared is None and self.a is not None and self.related(self.a, self.b) is not None:
                             # through this pair, directly or through a shared representative
                             compared = dict(level=lv, relation=self.related(self.a, self.b), rung=res["rung"],
                                             direct={abs(xl), y} == {self.a, self.b}, seconds=round(res["seconds"], 2), conflicts=res["conflicts"])
                     elif res["status"] == "differs":
                         patterns.append(res["model"])
                         pending.append(y)   # re-keyed after the split
-                for on in patterns:
-                    one = net.simulate({v: (1 if v in on else 0) for v in net.inputs}, 1)
-                    for v in self.val:
-                        self.val[v] = (self.val[v] << 1) | (one[v] & 1)
-                    self.width += 1
-                    self.mask = (self.mask << 1) | 1
                 if patterns:
+                    # the level's counterexamples simulated in one bit-parallel pass
+                    k = len(patterns)
+                    words = {v: 0 for v in net.inputs}
+                    for i, on in enumerate(patterns):
+                        for v in on:
+                            if v in words:
+                                words[v] |= 1 << i
+                    new = net.simulate(words, (1 << k) - 1)
+                    for v in self.val:
+                        self.val[v] = (self.val[v] << k) | new[v]
+                    self.width += k
+                    self.mask = (self.mask << k) | ((1 << k) - 1)
                     # appending bits only splits classes; the representatives stay
                     reps = {self.canon(r)[0]: r for r in reps.values()}
                     for (xl, y), res in zip(pairs, results):
                         if res["status"] == "proven" and self.canon(y)[0] != self.canon(abs(xl))[0]:
-                            raise RuntimeError(f"proven pair ({xl}, {y}) differs on a counterexample: the solver or the reading is wrong")
+                            if getattr(net, "constraints", 0) == 0:
+                                raise RuntimeError(f"proven pair ({xl}, {y}) differs on a counterexample: the solver or the reading is wrong")
+                            # with constraint clauses a whole-cone model may break a
+                            # constraint outside its window that this pair's proof
+                            # used: the pair stays proven, the model only dropped
+                            # candidates
+                            stats["proven_separated_by_a_model"] += 1
             if self.whole_fails >= self.args.whole_fails:
                 print(f"level {lv}: stopped after {self.whole_fails} failed whole-cone calls", file=self.log, flush=True)
                 stats["stopped_at_level"] = lv
@@ -320,7 +468,8 @@ class Sweep:
             if lv % 50 == 0 or lv == levels[-1]:
                 print(f"level {lv}/{levels[-1]}: proven {len(self.proven)}, {dict(stats)}, whole-cone calls {self.whole_calls}, {time.time() - t0:.0f} s", file=self.log, flush=True)
         return dict(
-            cell=self.net.path.name, gates=len(net.gates), inputs=len(net.inputs), levels=levels[-1] if levels else 0,
+            cell=self.net.path.name, reader=self.args.reader, gates=len(net.gates), inputs=len(net.inputs),
+            constraint_clauses=getattr(net, "constraints", 0), levels=levels[-1] if levels else 0,
             root=self.root, compared_signals=[self.a, self.b], patterns=self.width,
             stats=dict(stats), cost={k: dict(v, seconds=round(v["seconds"], 1)) for k, v in cost.items()},
             const_cands=const_cands, proven=len(self.proven), top_level=top_level, compared=compared,
@@ -345,11 +494,13 @@ def cmd_sweep(args):
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix="sweep-", dir=out))
+    t0 = time.time()
     try:
         sw = Sweep(path, args, tmp)
     except ValueError as e:
         sys.exit(f"{path.name}: {e}")
-    print(f"read {len(sw.net.gates)} gates, {len(sw.net.inputs)} inputs, root {sw.root} = cmp({sw.a}, {sw.b}), {max(sw.level.values())} levels", file=sw.log, flush=True)
+    what = f"root {sw.root} = cmp({sw.a}, {sw.b})" if sw.a is not None else f"no miter ({sw.no_miter})"
+    print(f"read {len(sw.net.gates)} gates, {len(sw.net.inputs)} inputs, {getattr(sw.net, 'constraints', 0)} constraint clauses, {what}, {max(sw.level.values())} levels, {time.time() - t0:.0f} s", file=sw.log, flush=True)
     summary = sw.run()
     summary["final"] = sw.final()
     with open(out / "proven.json", "w") as f:
@@ -366,13 +517,18 @@ def cmd_sweep(args):
 def cmd_report(args):
     path = Path(args.file)
     refuse_holdout([path])
-    net = Netlist(path)
-    _, a, b, _ = miter_sides(net)
-    ca, cb = net.cone(a), net.cone(b)
+    net = read_net(path, args.reader)
+    try:
+        _, a, b, _ = miter_sides(net)
+        ca, cb = net.cone(a), net.cone(b)
+    except ValueError:
+        ca = cb = set()
     level = levels_of(net)
     for run in args.dirs:
         d = json.load(open(Path(run) / "summary.json"))
         proven = json.load(open(Path(run) / "proven.json"))
+        if d.get("reader", "first-literal") != args.reader:
+            sys.exit(f"{run} was swept with the {d.get('reader', 'first-literal')} reader; pass --reader to match")
         print(f"== {run}: {d['proven']} proven, {d['stats']}, sweep {d['seconds']} s, {d['patterns']} patterns, {d['const_cands']} constant signals")
         for k, v in sorted(d["cost"].items(), key=lambda kv: -kv[1]["pairs"]):
             miss = f"  {v['missing_counters']} checks without counters" if v.get("missing_counters") else ""
@@ -383,7 +539,9 @@ def cmd_report(args):
         for x, y in proven:
             x, y = abs(x), abs(y)
             sides = {("A" if v in ca else "") + ("B" if v in cb else "") for v in (x, y)}
-            if sides == {"A", "B"}:
+            if not ca and not cb:
+                kinds["pairs (no miter)"] += 1
+            elif sides == {"A", "B"}:
                 kinds["joining the sides"] += 1
             elif sides == {"A"} or sides == {"B"}:
                 kinds[f"inside {sides.pop()}"] += 1
@@ -412,6 +570,8 @@ def main(argv):
     s.add_argument("file")
     s.add_argument("--solver", required=True)
     s.add_argument("--out", required=True)
+    s.add_argument("--reader", choices=("first-literal", "general"), default="first-literal",
+                   help="first-literal: ABC's write_cnf shape, every clause a gate's; general: the recovery census's reader")
     s.add_argument("--jobs", type=int, default=6)
     s.add_argument("--patterns", type=int, default=PATTERNS)
     s.add_argument("--seed", type=int, default=1)
@@ -425,6 +585,7 @@ def main(argv):
     r = sub.add_parser("report")
     r.add_argument("file")
     r.add_argument("dirs", nargs="+")
+    r.add_argument("--reader", choices=("first-literal", "general"), default="first-literal")
     args = ap.parse_args(argv)
     return {"sweep": cmd_sweep, "report": cmd_report}[args.cmd](args)
 
