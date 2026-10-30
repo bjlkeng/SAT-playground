@@ -3672,8 +3672,8 @@ it now refutes without search (661 to 7,468 conflicts before).
   below.
 - `16_16_booth_dadda_mapped_and_booth_wallace_mapped` (a timeout): the
   whole-word miter as before; the pass proves bit 31's pair (22 of 24
-  chain carries, the lemma) and the cell needs the other 31. Bead
-  `SAT-playground-skz.26`.
+  chain carries, the lemma) and the cell needs the other 31. Refuted
+  the next day: "Booth against Booth, the whole word" below.
 
 ## The mapped AND side's top: the product algebra (2026-10-30; bead `SAT-playground-skz.25`)
 
@@ -3795,6 +3795,96 @@ failing and the pass finds no miter at 246M work instead of 20M. An
 equivalent circuit with the bottom carry written as one gate
 (`G = a_0 b_0 . a_1 b_1`, `2953 = G . s_2`) fired with the and-leaf cells
 alone, which is how the three signals were separated from the bottom.
+
+## Booth against Booth, the whole word (2026-10-30; bead `SAT-playground-skz.26`)
+
+**Result.** `16_16_booth_dadda_mapped_and_booth_wallace_mapped`, two
+mapped Booth multipliers compared on all 32 product bits, a timeout in
+every run (and for the C kissat), is refuted in 31 s with a proof the
+gate accepts (VeriPB on the 26 MB structure proof, drat-trim on the
+rest; 33 s with every default on; 29 to 31 s and 630K to 690K conflicts
+under seeds 0, 1 and 2). The pass derives 46 clauses: the top pair as
+before and 22 of the 30 lower pairs, and the search settles the eight
+pairs left. The 400-cell fire sweep at 700M against the skz.25 build:
+the same 14 cells fire, nothing lost, no status change (this cell's
+search after the pass needs more than the sweep's 700M), no panic, no
+contradiction (`log/structarith-fire-2026-10-30-700M-skz26a`); fuzz,
+1,500 miters (seed 69), all answers agree, 766 fired with a checked
+proof; the 1,500 miters of seed 63 replayed against the skz.25 build
+match it on every one. A one-bit miter has no lower pair and takes the
+old path untouched.
+
+**What the whole word needed.** The pass reads one compared pair; here
+it took bit 31's and proved it, and the cell needs the other 31. The
+proof's last stage already derives the two sides' *chain bits* equal at
+every single weight from the top down (the bit-by-bit argument, step
+5); those equalities are over the chains' fresh variables and stayed in
+the proof. A lower pair's two outputs are those bits, or their
+complements, once each side's output is shown to be its chain's bit at
+its column: that is one lemma per output of the kind the top step
+runs (`kitten`, the ladder's rungs in hand), and the pair follows by
+`rup`. So:
+
+- the compare detection keeps every pair of a one-sided whole-word
+  compare (a group of two signals that are one function on the random
+  patterns, cones apart, at any cone size: the lowest bits' cones are a
+  few gates) and of an xor compare with several pairs, beside the pair
+  it reads; each pair's outputs go to the side whose cone holds more of
+  their own, and a pair with no side for an output is left out;
+- a side's lemma stage adds the word's outputs' gates down to the cone
+  to its clause set (a mapped xor is a few gates; an output deeper than
+  sixteen is left out), keeps them out of the network-signal index, and
+  after the top step proves each output equal to the chain's bit at the
+  column its signature names, lowest columns first, with a small share
+  of the allowance from kitten and then the full solver's step: the
+  outputs above an unmatched rung are hard (one of this cell's took
+  2,008M work to prove, the next was open at 416M), and one must not
+  starve the rest; those that run out are left to the search;
+- the proof writes each output's learned clauses and its two clauses
+  after the side's ladder, and after step 5 derives each pair with an
+  output on both sides by `rup`, equal or *complementary* as the two
+  outputs stand to their bits (a mapped word holds some bits
+  complemented and the miter compares them so: one of this cell's 22
+  pairs). A side with no network has no lemma: its final adder is
+  cells and its outputs are its bits as they are, so an output there
+  stands for itself at the other side's column.
+
+The polarity mattered: the first build derived every pair as equal and
+the search finished in 180 conflicts, on a clause that was false;
+VeriPB rejected the proof at that line. That is what the gate is for.
+
+**What is left to the search.** Side 1's outputs at bits 25 to 30 sit
+above the two rungs the ladder could not match (the chain's three
+carries into one column against the network's one), and proving them
+costs more than searching them: 650K conflicts, 25 s, stable over the
+seeds. A chain that groups those columns as the network does would
+make the cell instant; left.
+
+**Toys.** `whole_word_miters_are_refuted_bit_by_bit`: an array against a
+column multiplier on 6 bits (all pairs are cells' outputs: the main
+stage derives them, 0 conflicts), the same with side B's odd lower bits
+complemented (the flag implied by the pair differing), a Booth against a
+mapped AND multiplier on 8 bits (13 of 14 lower outputs by the lemma,
+234 conflicts after the pass), and the review's three: the 4-bit word
+whose lowest outputs are the columns' leftover items themselves, a
+Kogge-Stone against a Brent-Kung word on 5 bits whose weights sit in the
+top block (its pairs are rightly left to the search, 1,309 conflicts),
+and the 8-bit Booth word compared through duplicate gates outside the
+cones; each with a proof the gate accepts.
+
+**Review (Codex, gpt-6-astra, max).** Round 1 found three: an output
+that is its chain's bit itself appended a tautology to kitten's clauses
+(a panic on the 4-bit word); a pair at a weight the bit argument does
+not prove on its own (the top block's) was derived all the same (a
+rejected proof on the prefix word); and an output reading an alias whose
+representative lies outside both cones had its clauses restated over
+the representative while the proof's merge equalities covered the
+cones alone (a rejected proof on the aliased word). Now such an output
+is taken as it is, a pair needs its weight among the proven ones, and
+the merge equalities cover the representatives the outputs read. Round
+2 clean (the reviewer ran 300 whole-word fuzz miters of its own). The
+sweep and the replay were run again on the committed binary
+(`log/structarith-fire-2026-10-30-700M-skz26b`).
 
 ## Notes from the RL scheduler's first steps (plan §10)
 

@@ -3104,6 +3104,12 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
     };
     let mut compared: Vec<i32> = Vec::new();
     let mut compare_pairs: Vec<(i32, i32)> = Vec::new();
+    // every compared pair of a whole-word miter (one pair per output bit,
+    // the two signals one function on the random patterns), beside the
+    // pair the pass reads as the compared one: the proof of the top pair
+    // proves the two chains' bits equal at every weight below it too, and
+    // each lower pair's outputs are those bits (bead skz.26)
+    let mut word_pairs: Vec<(i32, i32)> = Vec::new();
     // two attempts at the pair: first from the units alone, as before;
     // when that finds no two cones, from the top-level clauses too (an
     // unused clause is not always an assertion: gate recovery may take a
@@ -3353,6 +3359,9 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
     if let Some(&(a, b)) = compare_pairs.iter().max_by_key(|&&(a, b)| cone_of(a, &net, work).len().min(cone_of(b, &net, work).len())) {
         candidates.push(a);
         candidates.push(b);
+        if compare_pairs.len() >= 2 {
+            word_pairs = compare_pairs.iter().copied().filter(|&(x, y)| x != y).collect();
+        }
     } else {
         let Some(sim) = simulate(&net, work, &stopped) else { return };
         if stopped(*work + compared.len() as u64) {
@@ -3373,6 +3382,21 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         }
         *work += compared.len() as u64;
         let mut best_pair: Option<(i32, i32, usize)> = None;
+        // (the pairs of a whole word: a group of exactly two whose cones
+        // are apart, at any size; the lowest bits' cones are a few gates)
+        if groups.values().filter(|m| m.len() == 2).count() >= 2 {
+            for members in groups.values() {
+                if members.len() != 2 {
+                    continue;
+                }
+                let ca = cone_of(members[0], &net, work);
+                let cb = cone_of(members[1], &net, work);
+                if !ca.is_empty() && !cb.is_empty() && apart(&ca, &cb) {
+                    word_pairs.push((members[0], members[1]));
+                }
+            }
+            *work += groups.len() as u64;
+        }
         for members in groups.values() {
             if members.len() < 2 || members.len() > 8 {
                 continue;
@@ -3455,6 +3479,42 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
     if dbg {
         eprintln!("structarith: sides {} ({} gates) and {} ({} gates)", side_a, cone_a.len(), side_b, cone_b.len());
     }
+    // the whole word's other pairs, each output put on the side whose
+    // cone holds more of its own (the compared pair's cones hold the
+    // whole multiplier below the top bit; a lower output bit's gates read
+    // into one of them); a pair with no side for one of its outputs is
+    // left out, and so is the compared pair itself
+    let word_outputs: [Vec<(usize, i32)>; 2] = {
+        let mut out: [Vec<(usize, i32)>; 2] = [Vec::new(), Vec::new()];
+        for (i, &(x, y)) in word_pairs.iter().enumerate() {
+            if x == side_a || x == side_b || y == side_a || y == side_b {
+                continue;
+            }
+            let mut side_of = |v: i32, work: &mut u64| -> Option<usize> {
+                let c = cone_of(v, &net, work);
+                let (ia, ib) = (c.intersection(&cone_a).count(), c.intersection(&cone_b).count());
+                *work += c.len() as u64;
+                if ia > ib { Some(0) } else if ib > ia { Some(1) } else { None }
+            };
+            let sx = side_of(x, work);
+            let sy = side_of(y, work);
+            match (sx, sy) {
+                (Some(0), Some(1)) => {
+                    out[0].push((i, x));
+                    out[1].push((i, y));
+                }
+                (Some(1), Some(0)) => {
+                    out[0].push((i, y));
+                    out[1].push((i, x));
+                }
+                _ => {}
+            }
+        }
+        if dbg && !word_pairs.is_empty() {
+            eprintln!("structarith: a whole-word compare: {} pairs beside the compared one, {} with an output on each side", word_pairs.len(), out[0].len());
+        }
+        out
+    };
     // a variable's representative; a fresh variable (a cell's output the
     // netlist does not compute) is its own
     let rep_of = |v: i32| -> i32 { if (v as usize) < nv { net.rep[v as usize].0 } else { v } };
@@ -5368,6 +5428,14 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         k: i64,                       // that weight's exponent
         gate_clauses: Vec<Vec<i32>>,  // the network and the cells it reads, each gate over its cut
         steps: Vec<(i32, i32, Vec<Vec<i32>>)>, // the equivalences proven on the way (a, b, kitten's learned clauses), the last one n_lit = sk_lit
+        /// A whole word's lower output bits of this side, each proven equal
+        /// to the chain's bit at its column: (the pair's index, the output,
+        /// the chain's bit, kitten's learned clauses). Bead skz.26.
+        outputs: Vec<(usize, i32, i32, Vec<Vec<i32>>)>,
+        /// The representatives the outputs' gates read outside the cone:
+        /// the proof's merge equalities must cover them too (review
+        /// 2026-10-30).
+        out_reps: Vec<i32>,
     }
     let mut lemmas: [Option<Lemma>; 2] = [None, None];
     let mut trues: HashSet<i32> = HashSet::new(); // fresh variables fixed to one
@@ -6450,6 +6518,48 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             };
             gate_clauses.extend(minterm_clauses(u, &cut, tt));
         }
+        // a whole word's lower output bits of this side: their gates down
+        // to the cone (an output reads the network's carry into its column
+        // and the column's signals; a mapped xor is a few gates), each over
+        // its inputs, so the simulation and the lemma below see them. An
+        // output whose gates run deeper than a few is left out
+        let mut word_out_vars: HashSet<i32> = HashSet::new();
+        let mut word_outs_here: Vec<(usize, i32)> = Vec::new();
+        let mut out_reps: HashSet<i32> = HashSet::new(); // (every representative the outputs' gates read, for the proof's merge equalities)
+        for &(pi, o) in &word_outputs[s] {
+            let mut stack: Vec<i32> = vec![o];
+            let mut seen: HashSet<i32> = HashSet::new();
+            let mut added: Vec<Vec<i32>> = Vec::new();
+            let mut reps_here: Vec<i32> = Vec::new();
+            let mut fine = true;
+            while let Some(u) = stack.pop() {
+                if !seen.insert(u) || cone_s.contains(&u) {
+                    continue;
+                }
+                *work += 1;
+                let Some(g) = net.gates[u as usize].as_ref() else { continue };
+                if seen.len() > 16 {
+                    fine = false;
+                    break;
+                }
+                let mut cut: Vec<i32> = g.sup.iter().map(|&x| net.rep[x as usize].0).collect();
+                cut.sort_unstable();
+                cut.dedup();
+                let Some(tt) = cut_truth_table(u, &cut, &net, &mut memo, work) else { fine = false; break };
+                added.extend(minterm_clauses(u, &cut, tt));
+                reps_here.push(u);
+                reps_here.extend(cut.iter().copied());
+                stack.extend(cut.iter().copied());
+            }
+            if fine {
+                gate_clauses.extend(added);
+                word_out_vars.extend(seen.iter().copied().filter(|&u| !cone_s.contains(&u)));
+                out_reps.extend(reps_here);
+                word_outs_here.push((pi, o));
+            } else if dbg {
+                eprintln!("structarith: side {}: the word's output {} runs too deep outside the cone; left out", s, o);
+            }
+        }
         // every cell of the side: its real outputs over its cut (a cell
         // may pair a gate from outside the cone, over shared partial
         // products; a product cell's outputs over the inputs under it)
@@ -6618,7 +6728,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             let mut by_sig: HashMap<u64, Vec<i32>> = HashMap::new();
             *work += sig.len() as u64;
             for (&v, &(val, kn)) in &sig {
-                if kn == u64::MAX && !chain_vars.contains(&v) && v != n_lit.abs() && v != sk_lit.abs() && !trues.contains(&v) {
+                if kn == u64::MAX && !chain_vars.contains(&v) && v != n_lit.abs() && v != sk_lit.abs() && !trues.contains(&v) && !word_out_vars.contains(&v) {
                     by_sig.entry(val).or_default().push(v);
                 }
             }
@@ -6796,7 +6906,92 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             eprintln!("structarith: side {}: carry {} = chain bit {} by {} learned clauses after {} steps ({} gate clauses, {} chain cells, constant {} of modulus {})", s, n_lit, sk_lit, core.len(), steps.len(), gate_clauses.len(), chain_cells, constant, modulus);
         }
         steps.push((n_lit, sk_lit, core));
-        lemmas[s] = Some(Lemma { n_lit, sk_lit, k, gate_clauses, steps });
+        // the whole word's lower outputs of this side: each is the chain's
+        // bit at one column (the column where its signature is the bit's,
+        // or the complement's), proven as the top step was, with the rungs
+        // in hand; each gets a rung's share of the allowance, and the ones
+        // that run out are left to the search (every pair proven is a fact
+        // of its own)
+        let mut outputs: Vec<(usize, i32, i32, Vec<Vec<i32>>)> = Vec::new();
+        if !word_outs_here.is_empty() {
+            let col_lit: Vec<(i64, i32)> = col_bits.iter().filter_map(|&(e, l)| l.map(|l| (e, l))).filter(|&(e, _)| e < k).collect();
+            // each output's column by signature, the lowest columns first
+            let mut targets: Vec<(i64, usize, i32, i32)> = Vec::new(); // (column, pair, output, the chain's bit)
+            let mut unmatched = 0usize;
+            for &(pi, o) in &word_outs_here {
+                let Some((so, kn_o)) = sig_of(o, &sig) else { unmatched += 1; continue };
+                let mut target: Option<(i64, i32)> = None;
+                for &(e, l) in &col_lit {
+                    let Some((sl, kn_l)) = sig_of(l, &sig) else { continue };
+                    let common = kn_o & kn_l;
+                    if common == 0 {
+                        continue;
+                    }
+                    if (so ^ sl) & common == 0 {
+                        target = Some((e, l));
+                        break;
+                    }
+                    if (so ^ !sl) & common == 0 {
+                        target = Some((e, -l));
+                        break;
+                    }
+                }
+                *work += col_lit.len() as u64;
+                match target {
+                    Some((e, l)) => targets.push((e, pi, o, l)),
+                    None => unmatched += 1,
+                }
+            }
+            targets.sort_unstable();
+            // (an output gets a small share of the allowance from kitten,
+            // then the full solver's step with its own conflict limit: the
+            // outputs above an unmatched rung are hard for kitten, 200M on
+            // one of this cell's, and one must not starve the rest)
+            let mut proven_outs = 0usize;
+            for &(e, pi, o, l) in &targets {
+                if *work >= lemma_budget || stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                if l == o {
+                    // (the output is the chain's bit itself, a leftover item
+                    // the column holds alone: nothing to prove, and no
+                    // tautology in kitten's clauses, which it refuses)
+                    outputs.push((pi, o, l, Vec::new()));
+                    proven_outs += 1;
+                    continue;
+                }
+                if l == -o {
+                    continue; // (its own complement: no reading)
+                }
+                let before = *work;
+                let rung_budget = lemma_budget.min((*work).saturating_add(lemma_allowance / XOR_RUNG_SHARE));
+                let mut core = kitten_equivalence(&clauses, o, l, rung_budget, work, stop);
+                if core.is_none() && !stop.load(std::sync::atomic::Ordering::Relaxed) && SOLVER_STEP_CONFLICTS > 0 {
+                    let ticks = (lemma_allowance / XOR_RUNG_SHARE).min(hard.saturating_sub(*work));
+                    core = solver_equivalence(&clauses, o, l, SOLVER_STEP_CONFLICTS, ticks, work, stop);
+                }
+                extra.set(extra.get() + (*work - before));
+                if dbg && std::env::var_os("SAT_STRUCT_DEBUG_LADDER").is_some() {
+                    eprintln!("structarith: side {}: the word's output {} at column {} against the chain's bit {}: {} (work {})", s, o, e, l, if core.is_some() { "proven" } else { "open" }, *work - before);
+                }
+                let Some(core) = core else {
+                    if dbg {
+                        eprintln!("structarith: side {}: the word's output {} at column {} is not the chain's bit {} (or the budget ran out at {})", s, o, e, l, *work);
+                    }
+                    continue;
+                };
+                clauses.push(vec![-o, l]);
+                clauses.push(vec![o, -l]);
+                outputs.push((pi, o, l, core));
+                proven_outs += 1;
+            }
+            if dbg {
+                eprintln!("structarith: side {}: {} of {} word outputs are the chain's bits at their columns ({} with no column), work {}", s, proven_outs, word_outs_here.len(), unmatched, *work);
+            }
+        }
+        let mut out_reps: Vec<i32> = out_reps.into_iter().collect();
+        out_reps.sort_unstable();
+        lemmas[s] = Some(Lemma { n_lit, sk_lit, k, gate_clauses, steps, outputs, out_reps });
     }
     phase("chains and lemmas", *work);
     derived.last_var = next_fresh - 1; // (also when the pass declines below: the numbers are spent)
@@ -7394,6 +7589,66 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         }
     }
     let bit_of = |s: usize, w: u32| -> Option<i32> { bits[s].get(&w).and_then(|v| v.first().copied()) };
+    // a whole word's lower pairs with an output proven on each side, as
+    // (side A's output, side B's, complementary), in the pairs' order:
+    // each output is its side's bit at the pair's weight or that bit's
+    // complement (a mapped word may hold a bit complemented, and the
+    // miter compares it so), and the two bits are equal below, so the
+    // outputs are equal, or complementary when one of them is read the
+    // other way round
+    // (a side with no network has no lemma: its final adder is cells and
+    // its outputs are its bits as they are, so an output there stands for
+    // itself at the column the other side's lemma gives)
+    let word_equal: Vec<(i32, i32, bool)> = {
+        let mut v: Vec<(usize, i32, i32, bool)> = Vec::new();
+        if lemmas[0].is_some() || lemmas[1].is_some() {
+            let steps: [HashMap<usize, (i32, i32)>; 2] = [0, 1].map(|s| lemmas[s].as_ref().map(|lm| lm.outputs.iter().map(|&(pi, o, l, _)| (pi, (o, l))).collect()).unwrap_or_default());
+            let outs: [HashMap<usize, i32>; 2] = [0, 1].map(|s| word_outputs[s].iter().copied().collect());
+            let mut pairs: Vec<usize> = outs[0].keys().copied().filter(|pi| outs[1].contains_key(pi)).collect();
+            pairs.sort_unstable();
+            for pi in pairs {
+                // each side's output and the literal it equals, with the
+                // column from a lemma's step
+                let mut lits: [Option<(i32, i32)>; 2] = [None, None];
+                let mut col: Option<i64> = None;
+                for s in 0..2 {
+                    if lemmas[s].is_some() {
+                        let Some(&(o, l)) = steps[s].get(&pi) else { break };
+                        let (_, e) = uf.find(l.abs());
+                        if col.map_or(false, |c| c != e) {
+                            break;
+                        }
+                        col = Some(e);
+                        lits[s] = Some((o, l));
+                    }
+                }
+                let Some(e) = col else { continue };
+                let w = (e - min_exp) as u32;
+                for s in 0..2 {
+                    if lemmas[s].is_none() {
+                        let o = outs[s][&pi];
+                        if bit_of(s, w).map_or(false, |b| b.abs() == o) {
+                            lits[s] = Some((o, o));
+                        }
+                    }
+                }
+                let (Some((oa, la_l)), Some((ob, lb_l))) = (lits[0], lits[1]) else { continue };
+                if !single.contains(&w) {
+                    continue; // (a weight the bit argument below does not prove on its own: the top block's)
+                }
+                let (Some(ba), Some(bb)) = (bit_of(0, w), bit_of(1, w)) else { continue };
+                if ba.abs() != la_l.abs() || bb.abs() != lb_l.abs() {
+                    continue;
+                }
+                let flip = (la_l == ba) != (lb_l == bb);
+                v.push((pi, oa, ob, flip));
+            }
+        }
+        v.into_iter().map(|(_, x, y, f)| (x, y, f)).collect()
+    };
+    if dbg && !word_equal.is_empty() {
+        eprintln!("structarith: {} lower pairs of the word with an output proven on both sides ({} complementary)", word_equal.len(), word_equal.iter().filter(|p| p.2).count());
+    }
     // the proof (nothing is derived without one when a proof file is asked
     // for; without a proof file the integer check above is the whole check)
     let mut equalities: Vec<(Vec<i32>, u64)> = Vec::new();
@@ -7404,9 +7659,12 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         //    split over the merged gate's inputs (under a full assignment of
         //    the inputs both definitions propagate and the functions agree;
         //    unit propagation alone cannot do it for an xor)
+        // (and the representatives a whole word's lower outputs read
+        // outside the cones, whose clauses the lemma restated over them)
+        let out_reps: HashSet<i32> = lemmas.iter().flatten().flat_map(|lm| lm.out_reps.iter().copied()).collect();
         for &v in &net.order {
             let (r, neg) = net.rep[v as usize];
-            if r == v || !(cone_a.contains(&r) || cone_b.contains(&r)) {
+            if r == v || !(cone_a.contains(&r) || cone_b.contains(&r) || out_reps.contains(&r)) {
                 continue;
             }
             let rl = if neg { -r } else { r };
@@ -7569,6 +7827,26 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             let wt = 1i128 << (k - min_exp);
             ge_ids[s].push((ge, wt));
             le_ids[s].push((le, wt));
+            // a whole word's lower outputs: each step's learned clauses,
+            // then the output as the chain's bit (two clauses); the pairs
+            // are derived once the bits are proven equal below
+            for (_, o, l, core) in &lm.outputs {
+                if *l == *o {
+                    continue; // (the output is the bit itself)
+                }
+                for clause in core {
+                    if w.rup(clause).is_err() {
+                        return;
+                    }
+                }
+                *work += core.len() as u64 * 2;
+                if w.rup(&[-o, *l]).is_err() || w.rup(&[*o, -l]).is_err() {
+                    return;
+                }
+                if stopped(*work) {
+                    return;
+                }
+            }
         }
         // 1c. the fixed ones: a leaf t of weight w in the sums is the
         //     constant w, by t <= 1 (the literal axiom ~t >= 0) one way and
@@ -7730,6 +8008,17 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             }
             *work += lower.len() as u64 + 4;
         }
+        // 6. a whole word's lower pairs: each output is its side's chain
+        //    bit at the column, and the two bits are equal (step 5), so
+        //    the two outputs are: a rup step each way
+        for &(x, y, flip) in &word_equal {
+            let (p, q) = if flip { (vec![x, y], vec![-x, -y]) } else { (vec![y, -x], vec![x, -y]) };
+            let Ok(c1) = w.rup(&p) else { return };
+            let Ok(c2) = w.rup(&q) else { return };
+            equalities.push((p, c1));
+            equalities.push((q, c2));
+            *work += 4;
+        }
     } else {
         for &bit in &weights_all {
             match (bit_of(0, bit), bit_of(1, bit)) {
@@ -7740,6 +8029,15 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 (None, Some(b)) => equalities.push((vec![-b], 0)),
                 (Some(a), None) => equalities.push((vec![-a], 0)),
                 (None, None) => {}
+            }
+        }
+        for &(x, y, flip) in &word_equal {
+            if flip {
+                equalities.push((vec![x, y], 0));
+                equalities.push((vec![-x, -y], 0));
+            } else {
+                equalities.push((vec![y, -x], 0));
+                equalities.push((vec![x, -y], 0));
             }
         }
     }

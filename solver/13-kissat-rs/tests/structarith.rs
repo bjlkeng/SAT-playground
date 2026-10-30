@@ -1538,6 +1538,86 @@ fn miter_pruned(kind: Miter, n: usize, bit: usize, two_input: bool, pruned: bool
 /// may: z implied by (bit A = bit B), two clauses and no gate, and z false.
 fn miter_top(kind: Miter, n: usize, bit: usize, two_input: bool, pruned: bool, one_sided: bool, path: &Path) {
     let mut c = Circuit::new();
+    let (oa, ob) = miter_sides(&mut c, kind, n, bit, two_input);
+    assert_ne!(oa[bit], ob[bit], "the compared bit is one signal on both sides");
+    if pruned {
+        c.prune(&[oa[bit], ob[bit]]);
+    }
+    if one_sided {
+        let z = c.var();
+        c.clauses.push(vec![z, -oa[bit], -ob[bit]]);
+        c.clauses.push(vec![z, oa[bit], ob[bit]]);
+        c.clauses.push(vec![-z]);
+    } else {
+        let x = c.xor2(oa[bit], ob[bit]);
+        c.clauses.push(vec![x]);
+    }
+    c.write(path);
+}
+
+/// A whole-word miter as a miter generator writes one (bead skz.26, the
+/// shape of `16_16_booth_dadda_mapped_and_booth_wallace_mapped`): every
+/// output bit of the two sides compared one-sided, a flag implied by the
+/// pair being equal, and one clause saying some flag is false. With
+/// `complement_odd`, side B's odd output bits are rewritten as the
+/// complement gate over the same inputs (an xnor for an xor) and compared
+/// as such (the flag implied by the pair differing), as a mapped word
+/// holds some bits complemented; the top bit stays, the pass reads that
+/// pair as the compared one.
+fn miter_word(kind: Miter, n: usize, two_input: bool, complement_odd: bool, alias_even: bool, path: &Path) {
+    let mut c = Circuit::new();
+    let (oa, mut ob) = miter_sides(&mut c, kind, n, 2 * n - 1, two_input);
+    let mut flipped: Vec<bool> = vec![false; ob.len()];
+    // (the lower bits only: the top pair stays as it is, the pass reads
+    // it as the compared one)
+    for k in 1..ob.len() - 1 {
+        let Some(gi) = c.gates.iter().position(|g| g.0 == ob[k]) else { continue };
+        let ins = c.gates[gi].1.clone();
+        if complement_odd && k % 2 == 1 {
+            let nb = match ins.len() {
+                2 => c.xor2(-ins[0], ins[1]),
+                3 => c.table(&ins, &|v| !(v[0] ^ v[1] ^ v[2])),
+                _ => continue,
+            };
+            ob[k] = nb;
+            flipped[k] = true;
+        } else if alias_even && k % 2 == 0 {
+            // a second gate with the output's function (a mapper's
+            // duplicate), compared in the output's place: the pass merges
+            // it into the output, outside the compared pair's cones
+            let nb = match ins.len() {
+                2 => c.xor2(ins[0], ins[1]),
+                3 => c.table(&ins, &|v| v[0] ^ v[1] ^ v[2]),
+                _ => continue,
+            };
+            ob[k] = nb;
+        }
+    }
+    let mut root: Vec<i64> = Vec::new();
+    for k in 0..oa.len() {
+        if oa[k] == ob[k] {
+            continue; // (one signal on both sides: nothing to compare)
+        }
+        let e = c.var();
+        if flipped[k] {
+            // e implied by (a != b)
+            c.clauses.push(vec![e, -oa[k], ob[k]]);
+            c.clauses.push(vec![e, oa[k], -ob[k]]);
+        } else {
+            // e implied by (a == b)
+            c.clauses.push(vec![e, -oa[k], -ob[k]]);
+            c.clauses.push(vec![e, oa[k], ob[k]]);
+        }
+        root.push(-e);
+    }
+    c.clauses.push(root);
+    c.write(path);
+}
+
+/// The two sides' output words of a miter of `kind` (`bit` is read by
+/// the faulty shape alone).
+fn miter_sides(c: &mut Circuit, kind: Miter, n: usize, bit: usize, two_input: bool) -> (Vec<i64>, Vec<i64>) {
+    let mut c = c; // (the arms below borrow it as `&mut c`, which coerces)
     let a: Vec<i64> = (0..n).map(|_| c.var()).collect();
     let b: Vec<i64> = (0..n).map(|_| c.var()).collect();
     // (the shapes of bead skz.21 make their own products, or none)
@@ -1696,20 +1776,7 @@ fn miter_top(kind: Miter, n: usize, bit: usize, two_input: bool, pruned: bool, o
             (oa, ob)
         }
     };
-    assert_ne!(oa[bit], ob[bit], "the compared bit is one signal on both sides");
-    if pruned {
-        c.prune(&[oa[bit], ob[bit]]);
-    }
-    if one_sided {
-        let z = c.var();
-        c.clauses.push(vec![z, -oa[bit], -ob[bit]]);
-        c.clauses.push(vec![z, oa[bit], ob[bit]]);
-        c.clauses.push(vec![-z]);
-    } else {
-        let x = c.xor2(oa[bit], ob[bit]);
-        c.clauses.push(vec![x]);
-    }
-    c.write(path);
+    (oa, ob)
 }
 
 #[test]
@@ -2376,6 +2443,54 @@ fn and_against_and_mapped_toys() {
         assert_eq!(r.status, "UNSATISFIABLE", "{}: {}\n{}", name, r.stdout, r.stderr);
         assert!(r.stderr.contains("operands from the structural cells"), "{}: no operands from the cells: {}", name, r.stderr);
         assert!(r.stdout.contains("arithmetic: two adder networks"), "{}: the pass did not fire: {}", name, r.stderr);
+        let proof = fx.path(&format!("{}.drat", name));
+        let stdout = run_arith_with_proof(&cnf, &proof);
+        assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+        assert_eq!(gate(&cnf, &proof), "ok", "{}: two-stage gate", name);
+    }
+}
+
+#[test]
+fn whole_word_miters_are_refuted_bit_by_bit() {
+    // bead SAT-playground-skz.26: every output bit compared, one-sided, as
+    // 16_16_booth_dadda_mapped_and_booth_wallace_mapped is written. The
+    // pass reads the top pair as before; the proof of the chains' bits at
+    // every weight below gives the lower pairs once each side's output is
+    // its chain's bit (a lemma per output, with the ladder's rungs in
+    // hand), equal or complementary as the word holds the bit. Each
+    // refutes with a proof the gate accepts, and the search after the pass
+    // is short
+    let fx = Fixture::new("structarith_word");
+    // (review 2026-10-30: a 4-bit word whose lowest outputs are the
+    // columns' leftover items themselves, a prefix-adder word with two
+    // bits at the weights above the compared cone's top, and a word whose
+    // outputs are compared through duplicate gates outside the cones)
+    // `pairs` says the lemma is expected to prove lower pairs: a side with
+    // a network whose chain has one bit per weight; the prefix-adder word
+    // keeps its weights in the top block, which the bit argument does not
+    // prove one by one, so its pairs are rightly left to the search
+    for (name, kind, n, two_input, complement_odd, alias_even, pairs) in [
+        ("array_column_6", Miter::ArrayColumn, 6usize, false, false, false, false),
+        ("array_column_6_complemented", Miter::ArrayColumn, 6, true, true, false, false),
+        ("booth_and_mapped_8", Miter::BoothAndMapped("ripple"), 8, false, false, false, true),
+        ("array_column_4", Miter::ArrayColumn, 4, false, false, false, false),
+        ("rows_kogge_stone_brent_kung_5", Miter::Rows("kogge-stone", "brent-kung"), 5, false, false, false, false),
+        ("booth_and_mapped_8_aliased", Miter::BoothAndMapped("ripple"), 8, false, false, true, true),
+    ] {
+        let cnf = fx.path(&format!("{}.cnf", name));
+        miter_word(kind, n, two_input, complement_odd, alias_even, &cnf);
+        if let Ok(dir) = std::env::var("SAT_TEST_KEEP") {
+            let _ = std::fs::copy(&cnf, Path::new(&dir).join(format!("word_{}.cnf", name)));
+        }
+        let r = run(&cnf, &["--structarith=1"], &[("SAT_STRUCT_DEBUG", "1")]);
+        assert_eq!(r.status, "UNSATISFIABLE", "{}: {}\n{}", name, r.stdout, r.stderr);
+        assert!(r.stdout.contains("arithmetic: two adder networks"), "{}: the pass did not fire: {}", name, r.stderr);
+        assert!(r.stderr.contains("a whole-word compare:"), "{}: the word's pairs were not read: {}", name, r.stderr);
+        if pairs {
+            assert!(r.stderr.contains("lower pairs of the word with an output proven on both sides"), "{}: no lower pair proven: {}", name, r.stderr);
+        }
+        let conflicts: u64 = r.stdout.lines().find(|l| l.starts_with("c conflicts:")).and_then(|l| l.split_whitespace().nth(2)).and_then(|t| t.parse().ok()).unwrap_or(u64::MAX);
+        assert!(conflicts < 2000, "{}: the search after the pass took {} conflicts", name, conflicts);
         let proof = fx.path(&format!("{}.drat", name));
         let stdout = run_arith_with_proof(&cnf, &proof);
         assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
