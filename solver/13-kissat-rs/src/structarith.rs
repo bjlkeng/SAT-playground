@@ -1655,6 +1655,7 @@ fn place_products(
     trace_var: i32,
     side_roots: Option<(&HashSet<i32>, &HashSet<i32>)>,
     side_positions: &[(Vec<(i32, i32, i64)>, Option<i32>)],
+    known: Option<&HashMap<i32, (i64, u8)>>,
 ) -> bool {
     // (a product already weighted in a component of one side's cells is
     // not tied into the other side's: the sides come to one scale through
@@ -1739,7 +1740,20 @@ fn place_products(
         if side_pairs.is_empty() {
             continue;
         }
-        let Some(pos) = operand_positions(side_pairs, work) else { continue };
+        // (the positions the operands give when they are known, every
+        // input of both words placed, on the side's scale through one of
+        // its reads and checked against the rest: a pruned cone's lowest
+        // products are read by no cell, so the side's own reads miss an
+        // input; else from the side's reads alone; bead skz.15)
+        let from_known = known.and_then(|k| {
+            let &(a0, b0, e0) = side_pairs.first()?;
+            let (&(pa0, _), &(pb0, _)) = (k.get(&a0)?, k.get(&b0)?);
+            let off = e0 - pa0 - pb0;
+            let pos: HashMap<i32, (i64, u8)> = k.iter().map(|(&v, &(p, c))| (v, (if c == 0 { p + off } else { p }, c))).collect();
+            *work += side_pairs.len() as u64;
+            side_pairs.iter().all(|&(a, b, e)| matches!((pos.get(&a), pos.get(&b)), (Some(&(pa, ca)), Some(&(pb, cb))) if ca != cb && pa + pb == e)).then_some(pos)
+        });
+        let Some(pos) = from_known.or_else(|| operand_positions(side_pairs, work)) else { continue };
         for &((a, b), v) in grid {
             if weighted.contains(&v) {
                 continue;
@@ -1785,6 +1799,328 @@ fn monomial_reading(tt: u64, n: usize) -> Option<bool> {
     } else {
         None
     }
+}
+
+/// Over a four-input table, the pair of inputs whose and is one addend of
+/// an adder with the other two (`(s_i and s_j) xor s_k xor s_l` for the
+/// sum, the majority of the three for the carry), either polarity: the
+/// cell a mapper writes when it folds a product into the adder reading it.
+fn folded_product_pair(tt: u64, carry: bool) -> Option<(usize, usize)> {
+    for (i, j) in [(0usize, 1usize), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
+        let (k, l) = match (i, j) {
+            (0, 1) => (2, 3),
+            (0, 2) => (1, 3),
+            (0, 3) => (1, 2),
+            (1, 2) => (0, 3),
+            (1, 3) => (0, 2),
+            _ => (0, 1),
+        };
+        let mut t = 0u64;
+        for m in 0..16u32 {
+            let b = |x: usize| (m >> x) & 1 == 1;
+            let pq = b(i) && b(j);
+            let f = if carry { (pq && b(k)) || (pq && b(l)) || (b(k) && b(l)) } else { pq ^ b(k) ^ b(l) };
+            if f {
+                t |= 1 << m;
+            }
+        }
+        if t == tt || (!t & 0xffff) == tt {
+            return Some((i, j));
+        }
+    }
+    None
+}
+
+/// The two operands of a multiplier, each in bit order, from a side's
+/// structural cells alone (bead SAT-playground-skz.15): quick weights over
+/// the side's cells (a sum at its leaves' exponent, a carry one above),
+/// every product gate (an and or a nand over two inputs) a cell of the
+/// largest weighted component reads at its exponent, and the inputs'
+/// positions along the two operands by `operand_positions`. The side
+/// reading the most products gives them. None when no side reads a grid,
+/// the pairs contradict, or a word has a gap or misses an input some
+/// product gate names (a pruned cone may leave an input with no read
+/// product; the rows by function need every bit).
+fn operands_from_cells(net: &Netlist, cells: &[Cell], cones: [&HashSet<i32>; 2], work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Option<(Vec<i32>, Vec<i32>)> {
+    let nv = net.rep.len();
+    // (the per-variable tables, one union-find per side, and the scans of
+    // every gate: charged when the limit covers them, else not started)
+    let tables = 2 * nv as u64 + 2 * net.order.len() as u64;
+    if stopped(*work + tables) {
+        return None;
+    }
+    *work += tables;
+    let rep_of = |v: i32| -> i32 { if (v as usize) < nv { net.rep[v as usize].0 } else { v } };
+    let bare = |v: i32| (v as usize) < nv && net.gates[v as usize].is_none() && !net.units[v as usize];
+    // the product gates, by variable
+    let mut pps: HashMap<i32, (i32, i32)> = HashMap::new();
+    let mut grid_inputs: HashSet<i32> = HashSet::new(); // every input some product names, gate or folded
+    for (i, &v) in net.order.iter().enumerate() {
+        if i % 1024 == 0 && stopped(*work) {
+            return None; // (charged above as one scan; polled as it goes)
+        }
+        if net.rep[v as usize].0 != v {
+            continue;
+        }
+        let g = net.gates[v as usize].as_ref().unwrap();
+        if g.sup.len() == 2 && (g.tt == 0b1000 || g.tt == 0b0111) {
+            let (a, b) = (rep_of(g.sup[0]), rep_of(g.sup[1]));
+            if a != b && bare(a) && bare(b) {
+                pps.insert(v, (a.min(b), a.max(b)));
+                grid_inputs.insert(a);
+                grid_inputs.insert(b);
+            }
+        }
+    }
+    let mut best: Option<(usize, Vec<(i32, i32, i64)>)> = None;
+    for cone in cones {
+        let side: Vec<usize> = (0..cells.len()).filter(|&ci| cone.contains(&rep_of(cells[ci].sum)) || cone.contains(&rep_of(cells[ci].carry_var()))).collect();
+        let mut uf = WeightedUf::new(nv); // (its table charged at entry)
+        *work += cells.len() as u64; // the side's cells picked above
+        if stopped(*work) {
+            return None;
+        }
+        for (i, &ci) in side.iter().enumerate() {
+            if i % 256 == 0 && stopped(*work) {
+                return None;
+            }
+            let c = &cells[ci];
+            let sum = rep_of(c.sum);
+            for &l in &c.leaves {
+                uf.union(rep_of(l), sum, 0); // (a contradiction is left to the pairs' check)
+            }
+            uf.union(rep_of(c.carry_var()), sum, 1);
+            *work += 4;
+        }
+        if stopped(*work) {
+            return None;
+        }
+        // the cells a mapper folds a product into (no product gate: a sum
+        // and a carry each one table over the two inputs and two signals),
+        // as cells of the quick weights with the product pair at theirs
+        let mut folded: Vec<(i32, i32, i32)> = Vec::new(); // (sum gate, input, input)
+        // (the four-input gates of the cone by their support, once: the
+        // carry of a folded cell is the majority over its sum's four)
+        let mut by_sup: HashMap<Vec<i32>, Vec<i32>> = HashMap::new();
+        for (i, &v) in net.order.iter().enumerate() {
+            if i % 1024 == 0 && stopped(*work) {
+                return None; // (one scan per side, charged at entry)
+            }
+            if net.rep[v as usize].0 != v || !cone.contains(&v) {
+                continue;
+            }
+            let g = net.gates[v as usize].as_ref().unwrap();
+            if g.sup.len() == 4 {
+                by_sup.entry(g.sup.iter().map(|&u| rep_of(u)).collect()).or_default().push(v);
+            }
+        }
+        let mut keys: Vec<&Vec<i32>> = by_sup.keys().collect();
+        keys.sort();
+        for sup in keys {
+            let members = &by_sup[sup];
+            *work += 16 * members.len() as u64;
+            if stopped(*work) {
+                return None;
+            }
+            for &v in members {
+                let g = net.gates[v as usize].as_ref().unwrap();
+                let Some((i, j)) = folded_product_pair(g.tt, false) else { continue };
+                if !bare(sup[i]) || !bare(sup[j]) || sup[i] == sup[j] {
+                    continue;
+                }
+                let (k, l): (usize, usize) = (0..4).filter(|&x| x != i && x != j).fold((4, 4), |(a, b), x| if a == 4 { (x, b) } else { (a, x) });
+                uf.union(sup[k], v, 0);
+                uf.union(sup[l], v, 0);
+                folded.push((v, sup[i].min(sup[j]), sup[i].max(sup[j])));
+                if let Some(&w) = members.iter().find(|&&w| w != v && folded_product_pair(net.gates[w as usize].as_ref().unwrap().tt, true) == Some((i, j))) {
+                    uf.union(w, v, 1);
+                }
+            }
+        }
+        // the largest component by cells, the folded ones counted
+        let mut by_root: HashMap<i32, usize> = HashMap::new();
+        for &ci in &side {
+            *by_root.entry(uf.find(rep_of(cells[ci].sum)).0).or_default() += 1;
+        }
+        for &(v, a, b) in &folded {
+            *by_root.entry(uf.find(v).0).or_default() += 1;
+            grid_inputs.insert(a);
+            grid_inputs.insert(b);
+        }
+        let Some((&root, _)) = by_root.iter().max_by_key(|(r, &n)| (n, std::cmp::Reverse(**r))) else { continue };
+        if debug() {
+            let mut sizes: Vec<usize> = by_root.values().copied().collect();
+            sizes.sort_unstable_by(|a, b| b.cmp(a));
+            let outside: Vec<(i32, i32, i32)> = folded.iter().filter(|&&(v, _, _)| uf.find(v).0 != root).copied().collect();
+            eprintln!("structarith: operands from the cells: components by cells {:?}; folded cells outside the largest: {:?}", sizes, outside.iter().take(6).collect::<Vec<_>>());
+        }
+        let mut pairs: Vec<(i32, i32, i64)> = Vec::new();
+        let mut seen: HashSet<i32> = HashSet::new();
+        // (the lone sums: a scan of the cone's gates, charged and polled)
+        if stopped(*work + cone.len() as u64) {
+            return None;
+        }
+        *work += cone.len() as u64;
+        let lone_sums: Vec<i32> = {
+            let produced: HashSet<i32> = side.iter().flat_map(|&ci| [rep_of(cells[ci].sum), rep_of(cells[ci].carry_var())]).collect();
+            let mut v: Vec<i32> = cone
+                .iter()
+                .copied()
+                .filter(|&v| net.rep[v as usize].0 == v && !produced.contains(&v) && matches!(net.gates[v as usize].as_ref().map(|g| g.tt), Some(XOR2) | Some(XNOR2) | Some(XOR3) | Some(0x69)))
+                .collect();
+            v.sort_unstable(); // (a fixed order: the chain's seeds must not vary with the hash)
+            v
+        };
+        for (i, &(v, a, b)) in folded.iter().enumerate() {
+            if i % 256 == 0 && stopped(*work) {
+                return None;
+            }
+            *work += 4;
+            let (r, e) = uf.find(v);
+            if r == root && seen.insert(v) {
+                pairs.push((a, b, e));
+                // (the two signals beside the folded product may be
+                // product gates: at the cell's column too)
+                for &u in &net.gates[v as usize].as_ref().unwrap().sup {
+                    let u = rep_of(u);
+                    if let Some(&(x, y)) = pps.get(&u) {
+                        if seen.insert(u) {
+                            pairs.push((x, y, e));
+                        }
+                    }
+                }
+            }
+        }
+        let produced: HashSet<i32> = side.iter().flat_map(|&ci| [rep_of(cells[ci].sum), rep_of(cells[ci].carry_var())]).collect();
+        // a leaf no cell produces that is a carry over products (an and or
+        // a majority): a cone pruned to one bit keeps the low columns'
+        // carries and loses their sums, and the products under such a
+        // carry sit one column below it; a carry's inputs may be the
+        // component's own signals (a column's last half adder reads a
+        // product and the sum below it) or more such carries (the final
+        // adder's chain, every sum of which is dead), followed down column
+        // by column. A lone sum over the component's signals (the compared
+        // bit of a pruned cone whose carry is dead) starts a chain too:
+        // its other inputs sit at its column
+        let mut chain: Vec<(i32, i64)> = Vec::new();
+        for (i, &ci) in side.iter().enumerate() {
+            if i % 256 == 0 && stopped(*work) {
+                return None;
+            }
+            let (r, e) = uf.find(rep_of(cells[ci].sum));
+            if r != root {
+                continue;
+            }
+            for &l in &cells[ci].leaves {
+                let l = rep_of(l);
+                if let Some(&(a, b)) = pps.get(&l) {
+                    if seen.insert(l) {
+                        pairs.push((a, b, e));
+                    }
+                } else if !produced.contains(&l) {
+                    chain.push((l, e));
+                }
+            }
+            *work += cells[ci].leaves.len() as u64;
+        }
+        for (i, &v) in lone_sums.iter().enumerate() {
+            if i % 256 == 0 && stopped(*work) {
+                return None;
+            }
+            let g = net.gates[v as usize].as_ref().unwrap();
+            let ins: Vec<i32> = g.sup.iter().map(|&u| rep_of(u)).collect();
+            *work += ins.len() as u64;
+            if let Some(&u) = ins.iter().find(|&&u| uf.find(u).0 == root) {
+                let (_, e) = uf.find(u);
+                for &w in &ins {
+                    if uf.find(w).0 != root {
+                        chain.push((w, e));
+                    }
+                }
+            }
+        }
+        if stopped(*work) {
+            return None;
+        }
+        {
+            while let Some((l, e)) = chain.pop() {
+                if (l as usize) >= nv || !seen.insert(l) {
+                    continue;
+                }
+                *work += 1;
+                if stopped(*work) {
+                    return None;
+                }
+                let Some(g) = net.gates[l as usize].as_ref() else { continue };
+                let carry_shaped = |u: i32| -> bool {
+                    net.gates[u as usize].as_ref().map_or(false, |h| match h.sup.len() {
+                        2 => and_family(h.tt).is_some(),
+                        3 => maj_family(h.tt).is_some(),
+                        _ => false,
+                    })
+                };
+                if !carry_shaped(l) {
+                    continue;
+                }
+                let ins: Vec<i32> = g.sup.iter().map(|&u| rep_of(u)).collect();
+                if !ins.iter().all(|&u| pps.contains_key(&u) || uf.find(u).0 == root || ((u as usize) < nv && carry_shaped(u) && !produced.contains(&u))) {
+                    continue;
+                }
+                for u in ins {
+                    if let Some(&(a, b)) = pps.get(&u) {
+                        if seen.insert(u) {
+                            pairs.push((a, b, e - 1));
+                        }
+                    } else if uf.find(u).0 != root {
+                        chain.push((u, e - 1));
+                    }
+                }
+            }
+        }
+        if stopped(*work) {
+            return None;
+        }
+        pairs.sort_unstable();
+        if debug() {
+            eprintln!("structarith: operands from the cells: a side with {} cells, {} folded product cells, {} product pairs read in its largest component", side.len(), folded.len(), pairs.len());
+        }
+        if best.as_ref().map_or(true, |(n, _)| pairs.len() > *n) {
+            best = Some((pairs.len(), pairs));
+        }
+    }
+    let (_, pairs) = best?;
+    let dbg = debug();
+    if pairs.len() < 4 {
+        return None;
+    }
+    let Some(pos) = operand_positions(&pairs, work) else {
+        if dbg {
+            eprintln!("structarith: operands from the cells: the {} product reads contradict", pairs.len());
+        }
+        return None;
+    };
+    let mut words: [Vec<(i64, i32)>; 2] = [Vec::new(), Vec::new()];
+    for (&v, &(p, colour)) in &pos {
+        words[colour as usize].push((p, v));
+    }
+    for w in words.iter_mut() {
+        w.sort_unstable();
+        if w.is_empty() || (w[w.len() - 1].0 - w[0].0 + 1) as usize != w.len() {
+            if dbg {
+                eprintln!("structarith: operands from the cells: a word of {} inputs over positions {:?} has a gap", w.len(), w.iter().map(|&(p, _)| p).collect::<Vec<_>>());
+            }
+            return None; // a gap, or two inputs at one position
+        }
+    }
+    if grid_inputs.iter().any(|v| !pos.contains_key(v)) {
+        if dbg {
+            let mut missing: Vec<i32> = grid_inputs.iter().filter(|v| !pos.contains_key(v)).copied().collect();
+            missing.sort_unstable();
+            eprintln!("structarith: operands from the cells: {} of the {} inputs some product names are unplaced: {:?}; {} pairs", missing.len(), grid_inputs.len(), missing, pairs.len());
+        }
+        return None; // an input with products that no weighted cell reads
+    }
+    Some((words[0].iter().map(|&(_, v)| v).collect(), words[1].iter().map(|&(_, v)| v).collect()))
 }
 
 /// Every input's position along its operand from weighted products
@@ -2284,7 +2620,13 @@ fn simulate_clauses(clauses: &[Vec<i32>], is_input: &dyn Fn(i32) -> bool, seed: 
     Some(vars.iter().map(|&v| (v, (value[&v] & keep, known[&v] & keep))).collect())
 }
 
-pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mut u64, stop: &std::sync::atomic::AtomicBool) {
+/// `rows_from_cells`: the product rows by function may take the operands
+/// from the structural cells when no Booth side gives them (bead skz.15).
+/// The stage runs the pass without it first and once more with it when
+/// the first run derived nothing: the rows can replace a side the
+/// structural reading handled, and then fail where it succeeded (review,
+/// 2026-10-29)
+pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mut u64, stop: &std::sync::atomic::AtomicBool, rows_from_cells: bool) {
     // the work goes straight into the statistics' tick counter, so a signal
     // during the pass reports it; with no allowance left nothing runs
     if *work >= budget || stop.load(std::sync::atomic::Ordering::Relaxed) {
@@ -2966,6 +3308,20 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
     let mut operands: Option<(Vec<i32>, Vec<i32>)> = None;
     let mut booth_found = [false; 2];
     for pass in 0..2 {
+        if pass == 1 && operands.is_none() && rows_from_cells {
+            // (no Booth side: the operands from the structural cells of
+            // the side that reads the products, for a mapped AND side
+            // against one in the generator's form, bead skz.15)
+            operands = operands_from_cells(&net, &cells, [&cone_a, &cone_b], work, &stopped);
+            if stopped(*work) {
+                return;
+            }
+            if dbg {
+                if let Some((a, b)) = operands.as_ref() {
+                    eprintln!("structarith: operands from the structural cells: {} and {} bits", a.len(), b.len());
+                }
+            }
+        }
         for s in 0..2 {
             let and_rows: Option<(&[i32], &[i32])> = if pass == 0 {
                 None
@@ -3032,12 +3388,28 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             taken[s] = Some(bc);
         }
     }
+    let mut retained_for: HashMap<(i32, i32), u8> = HashMap::new(); // a shared structural cell kept for one side: its mask
     if taken.iter().any(|t| t.is_some()) {
         // (all of a taken side's structural cells: what the new ones leave
         // is the carry network's, a structural cell there would read
-        // inside it)
+        // inside it. A cell the other side shares stays when that side
+        // keeps its structural cells: two trees over one grid share their
+        // lowest columns after hashing, and dropping the shared cell left
+        // the other side reading its carry as a leaf; bead skz.15)
         let before = cells.len();
-        cells.retain(|c| !((taken[0].is_some() && in_cone_of(c, &cone_a)) || (taken[1].is_some() && in_cone_of(c, &cone_b))));
+        cells.retain(|c| {
+            let (in_a, in_b) = (in_cone_of(c, &cone_a), in_cone_of(c, &cone_b));
+            let gone_a = in_a && taken[0].is_some();
+            let gone_b = in_b && taken[1].is_some();
+            let keep = rows_from_cells && !((gone_a || gone_b) && (!in_a || taken[0].is_some()) && (!in_b || taken[1].is_some())) || !(gone_a || gone_b);
+            if keep && (gone_a || gone_b) {
+                // (kept for the side not taken alone: on the taken side it
+                // would displace the cell by function over its leaves;
+                // review 2026-10-29)
+                retained_for.insert((c.sum, c.carry_var()), if gone_a { 2 } else { 1 });
+            }
+            keep
+        });
         *work += before as u64;
         if dbg {
             eprintln!("structarith: booth: {} structural cells dropped", before - cells.len());
@@ -3064,6 +3436,10 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         if let Some(&s) = booth_side.get(&ci) {
             in_side[s][ci] = true;
             in_side[1 - s][ci] = false;
+        }
+        if let Some(&mask) = retained_for.get(&(c.sum, c.carry_var())) {
+            in_side[0][ci] &= mask & 1 != 0;
+            in_side[1][ci] &= mask & 2 != 0;
         }
     }
     // no closure beyond the cones: the cells above the compared bit may be
@@ -3321,6 +3697,13 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
     //    logic, the top column with only an xor tree) gets its weight from
     //    the operand grid: pp(a, b) sits at exp(a, b') + exp(a', b) -
     //    exp(a', b') for three weighted products over the same inputs
+    // the operands' positions (a Booth side's digits and data, or the
+    // structural cells' grid), for the grid placement below
+    let known_positions: Option<HashMap<i32, (i64, u8)>> = operands.as_ref().filter(|_| rows_from_cells).map(|(a, b)| {
+        let mut m: HashMap<i32, (i64, u8)> = a.iter().enumerate().map(|(i, &v)| (v, (i as i64, 0u8))).collect();
+        m.extend(b.iter().enumerate().map(|(k, &v)| (v, (k as i64, 1u8))));
+        m
+    });
     let mut pps: HashMap<(i32, i32), i32> = HashMap::new(); // (input, input) -> partial product node
     let grid_data: Option<(Vec<((i32, i32), i32)>, HashMap<i32, Vec<i32>>)>;
     {
@@ -3346,7 +3729,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         loop {
             let (ra, rb) = (roots_of(0, &mut uf), roots_of(1, &mut uf));
             let side_pos: Vec<(Vec<(i32, i32, i64)>, Option<i32>)> = (0..2).map(|s| side_product_pairs(&cells, &side_cells[s], &pps, &mut uf, work)).collect();
-            if !place_products(&grid, &by_var, &pps, &net, &mut uf, &mut weighted, work, &stopped, trace_var, Some((&ra, &rb)), &side_pos) {
+            if !place_products(&grid, &by_var, &pps, &net, &mut uf, &mut weighted, work, &stopped, trace_var, Some((&ra, &rb)), &side_pos, known_positions.as_ref()) {
                 break;
             }
             if stopped(*work) {
@@ -3557,9 +3940,27 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
     //    carry a prefix network computes), which then takes the sum's
     //    weight; a lone carry needs every leaf weighted (the network's own
     //    and gates must not be taken for cells)
-    let mut covered: Vec<bool> = vec![false; nv];
+    // (per side, bit 0 side A and bit 1 side B: a gate inside one side's
+    // network, the top cell's fresh carry standing for the whole chain
+    // below it, may be a lone carry of the other side's cells where the
+    // two trees share their lowest columns; bead skz.15)
+    let mut covered: Vec<u8> = vec![0; nv];
+    // (the sides a new cell over the outputs sv and cv joins: those whose
+    // cone holds an output and whose cells cover neither; review 2026-10-29)
+    let open_sides = |sv: i32, cv: i32, covered: &Vec<u8>| -> u8 {
+        let bit = |s: u8, cone: &HashSet<i32>| -> u8 { ((cone.contains(&sv) || cone.contains(&cv)) && covered[sv as usize] & (1 << s) == 0 && covered[cv as usize] & (1 << s) == 0) as u8 };
+        bit(0, &cone_a) | (bit(1, &cone_b) << 1)
+    };
+    // (open on some side: the lone-gate rule alone reads a gate the other
+    // side's network holds; the product and internal rules keep to gates
+    // no side covers, as before: a product cell over a gate another side
+    // held read a 3-bit fuzz miter wrong, review 2026-10-29)
+    // (and only in the second attempt, with the rows from the cells: the
+    // first reads as before, a lone cell over a gate the other side held
+    // declined a 3-bit fuzz miter the old reading refuted)
+    let open = |v: i32, covered: &Vec<u8>| -> bool { if rows_from_cells { (cone_a.contains(&v) && covered[v as usize] & 1 == 0) || (cone_b.contains(&v) && covered[v as usize] & 2 == 0) } else { covered[v as usize] == 0 } };
     {
-        let mark = |c: &Cell, covered: &mut Vec<bool>, work: &mut u64| {
+        let mark = |c: &Cell, covered: &mut Vec<u8>, work: &mut u64, sides: u8| {
             let stop_at: HashSet<i32> = c.leaves.iter().copied().collect();
             let mut stack = vec![c.sum, c.carry_var()];
             while let Some(u) = stack.pop() {
@@ -3568,16 +3969,21 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                     continue; // a fresh variable
                 }
                 let r = net.rep[u as usize].0;
-                if stop_at.contains(&r) || covered[r as usize] {
+                if stop_at.contains(&r) || covered[r as usize] & sides == sides {
                     continue;
                 }
                 let Some(g) = net.gates[r as usize].as_ref() else { continue };
-                covered[r as usize] = true;
+                covered[r as usize] |= sides;
+                if r == trace_var {
+                    eprintln!("structarith: trace {}: covered on sides {:#b} by the cell {:?} = {} + 2*{}", r, sides, c.leaves, c.sum, c.carry);
+                }
                 stack.extend(g.sup.iter().copied());
             }
         };
-        for &ci in side_cells[0].iter().chain(side_cells[1].iter()) {
-            mark(&cells[ci], &mut covered, work);
+        for s in 0..2 {
+            for &ci in &side_cells[s] {
+                mark(&cells[ci], &mut covered, work, 1 << s);
+            }
         }
         let in_cones: Vec<i32> = net.order.iter().copied().filter(|&v| net.rep[v as usize].0 == v && (cone_a.contains(&v) || cone_b.contains(&v))).collect();
         let mut memo: HashMap<i32, u64> = HashMap::new();
@@ -3589,7 +3995,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
         // of its own, and either cut of an xor tree adds up.)
         let mut internal: Vec<bool> = vec![false; nv];
         for &v in &in_cones {
-            if covered[v as usize] {
+            if covered[v as usize] != 0 {
                 continue;
             }
             if stopped(*work) {
@@ -3616,7 +4022,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                         continue;
                     }
                     let Some(g) = net.gates[u as usize].as_ref() else { fine = false; break };
-                    if covered[u as usize] || readers[u as usize] != 1 {
+                    if covered[u as usize] != 0 || readers[u as usize] != 1 {
                         fine = false;
                         break;
                     }
@@ -3660,9 +4066,9 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             let trace: i32 = std::env::var("SAT_STRUCT_DEBUG_VIRT").ok().and_then(|t| t.parse().ok()).unwrap_or(0);
             for &v in &in_cones {
                 if v == trace {
-                    eprintln!("structarith: product trace {}: covered {} internal {}", v, covered[v as usize], internal[v as usize]);
+                    eprintln!("structarith: product trace {}: covered {:#b} internal {}", v, covered[v as usize], internal[v as usize]);
                 }
-                if covered[v as usize] || internal[v as usize] {
+                if covered[v as usize] != 0 || internal[v as usize] {
                     continue; // (a regrouped carry is an input leaf of the tree: fine, it is what a product cell is made of)
                 }
                 if stopped(*work) {
@@ -3813,7 +4219,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                     let ra: HashSet<i32> = side_cells[0].iter().map(|&ci| uf.find(cells[ci].sum).0).collect();
                     let rb: HashSet<i32> = side_cells[1].iter().map(|&ci| uf.find(cells[ci].sum).0).collect();
                     *work += (side_cells[0].len() + side_cells[1].len()) as u64;
-                    place_products(grid, by_var, &pps, &net, &mut uf, &mut weighted, work, &stopped, trace_var, Some((&ra, &rb)), &side_pos)
+                    place_products(grid, by_var, &pps, &net, &mut uf, &mut weighted, work, &stopped, trace_var, Some((&ra, &rb)), &side_pos, known_positions.as_ref())
                 } {
                     changed = true;
                     if stopped(*work) {
@@ -3856,7 +4262,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                             let Some(k) = carries
                                 .iter()
                                 .enumerate()
-                                .filter(|(_, &(cv, _, _))| !covered[cv as usize])
+                                .filter(|(_, &(cv, _, _))| covered[cv as usize] == 0)
                                 .min_by_key(|(_, &(cv, _, _))| (readers[cv as usize] <= 1, (cv - sv).abs()))
                                 .map(|(i, _)| i)
                             else {
@@ -3866,7 +4272,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                             if dbg && std::env::var_os("SAT_STRUCT_DEBUG_LEMMA").is_some() {
                                 eprintln!("    product cell try: sum {} carry {} (negmask {}, one {}, readers {}) covered {} {}", sv, cv, m, one, readers[cv as usize], covered[sv as usize], covered[cv as usize]);
                             }
-                            if covered[sv as usize] || covered[cv as usize] {
+                            if covered[sv as usize] != 0 || covered[cv as usize] != 0 {
                                 continue;
                             }
                             let flips = (m.count_ones() & 1) == 1;
@@ -3900,12 +4306,16 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                                 uf.union(a, b, d);
                             }
                             weighted.extend([pair[0], pair[1], sv, cv]);
-                            mark(&c, &mut covered, work); // the outputs and the gates between them and the pair
+                            let sides = open_sides(sv, cv, &covered);
+                            if sides == 0 {
+                                continue;
+                            }
+                            mark(&c, &mut covered, work, sides); // the outputs and the gates between them and the pair
                             let ci = cells.len();
-                            if cone_a.contains(&sv) || cone_a.contains(&cv) {
+                            if sides & 1 != 0 {
                                 side_cells[0].push(ci);
                             }
-                            if cone_b.contains(&sv) || cone_b.contains(&cv) {
+                            if sides & 2 != 0 {
                                 side_cells[1].push(ci);
                             }
                             produced_live.insert(c.sum);
@@ -3935,7 +4345,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 if v == trace {
                     eprintln!("structarith: trace {}: covered {} internal {} input logic {} weighted {} cuts {:?}", v, covered[v as usize], internal[v as usize], input_logic[v as usize], weighted.contains(&v), cuts[v as usize]);
                 }
-                if covered[v as usize] || internal[v as usize] || input_logic[v as usize] {
+                if !open(v, &covered) || internal[v as usize] || input_logic[v as usize] {
                     continue;
                 }
                 if !products_done && pairings.contains_key(&v) {
@@ -4181,12 +4591,14 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                     break;
                 }
                 let Some((c, base)) = made else { continue };
+                // (the sides the gate is open on: a side whose network
+                // already holds it keeps its reading, review 2026-10-29)
+                let sides = (cone_a.contains(&v) && covered[v as usize] & 1 == 0) as u8 | (((cone_b.contains(&v) && covered[v as usize] & 2 == 0) as u8) << 1);
                 // a signal a side's cell produces is read by one cell of
                 // that side: a second reader would count it twice
                 let mut twice = false;
                 for s in 0..2 {
-                    let in_cone = if s == 0 { cone_a.contains(&v) } else { cone_b.contains(&v) };
-                    if !in_cone {
+                    if sides & (1 << s) == 0 {
                         continue;
                     }
                     let produced: HashSet<i32> = side_cells[s].iter().flat_map(|&ci| [cells[ci].sum, cells[ci].carry_var()]).collect();
@@ -4235,13 +4647,13 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 if !c.fa && !c.one && c.leaves.len() == 2 {
                     half_of.entry(c.carry_var()).or_default().push(cells.len());
                 }
-                mark(&c, &mut covered, work); // the gate and those between it and the cut
-                covered[v as usize] = true;
+                mark(&c, &mut covered, work, sides); // the gate and those between it and the cut
+                covered[v as usize] |= sides;
                 let ci = cells.len();
-                if cone_a.contains(&v) {
+                if sides & 1 != 0 {
                     side_cells[0].push(ci);
                 }
-                if cone_b.contains(&v) {
+                if sides & 2 != 0 {
                     side_cells[1].push(ci);
                 }
                 cells.push(c);
@@ -5569,6 +5981,42 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 eprintln!("    side {} column {}: {:?} + carries {:?}", s, e, items, carries);
             }
             items.append(&mut carries);
+            // (a signal the column holds twice is the signal one column up:
+            // a cell over it twice would write a clause with a literal
+            // repeated, which kitten refuses; a signal beside its
+            // complement is a one, not made here; the first reads' order
+            // kept. Seen on a fuzz miter reading one product twice once
+            // the rows ran without a Booth side, bead skz.15)
+            {
+                let mut count: HashMap<i32, usize> = HashMap::new();
+                for &l in &items {
+                    *count.entry(l).or_default() += 1;
+                }
+                if count.values().any(|&c| c > 1) {
+                    let mut kept: Vec<i32> = Vec::new();
+                    let mut seen: HashSet<i32> = HashSet::new();
+                    for &l in &items {
+                        if !seen.insert(l) {
+                            continue;
+                        }
+                        let c = count[&l];
+                        if c % 2 == 1 {
+                            kept.push(l);
+                        }
+                        for _ in 0..c / 2 {
+                            carries.push(l);
+                        }
+                    }
+                    *work += items.len() as u64;
+                    items = kept;
+                }
+                if items.iter().any(|&l| items.contains(&-l)) {
+                    if dbg {
+                        eprintln!("structarith: side {}: column {} of the chain holds a signal and its complement", s, e);
+                    }
+                    return;
+                }
+            }
             while items.len() >= 2 {
                 // (a triple or a pair whose written carry the network has:
                 // the majority, a half adder's and, or its or in the

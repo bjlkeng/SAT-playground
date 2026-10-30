@@ -1000,7 +1000,13 @@ enum Addend {
 /// straight, its sum and carry one gate each over four signals (as
 /// `and_multiplier_mapped`); a product read by a half adder, by a constant
 /// one's half adder or by the final ripple adder is an and or a nand gate.
-fn mapped_column_sum(c: &mut Circuit, mut cols: Vec<Vec<Addend>>, constant: i128) -> Vec<i64> {
+fn mapped_column_sum(c: &mut Circuit, cols: Vec<Vec<Addend>>, constant: i128) -> Vec<i64> {
+    mapped_column_sum_with(c, cols, constant, false)
+}
+
+/// As `mapped_column_sum`; `reverse` takes each column's adders from its
+/// last signals first (another compressor order).
+fn mapped_column_sum_with(c: &mut Circuit, mut cols: Vec<Vec<Addend>>, constant: i128, reverse: bool) -> Vec<i64> {
     let width = cols.len();
     let constant = constant.rem_euclid(1i128 << width);
     let lit = |c: &mut Circuit, it: Addend| -> i64 {
@@ -1027,7 +1033,11 @@ fn mapped_column_sum(c: &mut Circuit, mut cols: Vec<Vec<Addend>>, constant: i128
             }
         }
         while cols[k].len() > 2 {
-            let (x, y, z) = (cols[k].remove(0), cols[k].remove(0), cols[k].remove(0));
+            let (x, y, z) = if reverse {
+                (cols[k].pop().unwrap(), cols[k].pop().unwrap(), cols[k].pop().unwrap())
+            } else {
+                (cols[k].remove(0), cols[k].remove(0), cols[k].remove(0))
+            };
             let (s, cy) = match (x, y, z) {
                 (Addend::Prod(p, q, ng), y, z) | (y, Addend::Prod(p, q, ng), z) | (y, z, Addend::Prod(p, q, ng)) => {
                     let (y, z) = (lit(c, y), lit(c, z));
@@ -1358,6 +1368,12 @@ enum Miter {
     /// `13 a` as `a + 4a + 8a` against `16a - 2a - a` (complemented bits
     /// and a constant)
     ConstantSub,
+    /// a column-wise AND multiplier in the generator's form against one a
+    /// mapper wrote (no gate per product the tree reads): no Booth side to
+    /// give the operand order (bead SAT-playground-skz.15)
+    AndMapped,
+    /// two mapped AND multipliers, their compressors in opposite orders
+    AndMappedBoth,
 }
 
 /// A miter asserting that output bit `bit` of two n x n multipliers differs.
@@ -1380,7 +1396,7 @@ fn miter_top(kind: Miter, n: usize, bit: usize, two_input: bool, pruned: bool, o
     // (the shapes of bead skz.21 make their own products, or none)
     let own_products = matches!(
         kind,
-        Miter::BaughWooley(_) | Miter::BaughWooleyMapped | Miter::BoothSigned(_) | Miter::BoothSignedMapped | Miter::SignExtended | Miter::Squarer(_) | Miter::SquarerMapped | Miter::Mac(_) | Miter::MacMapped | Miter::Constant(..) | Miter::ConstantSub
+        Miter::BaughWooley(_) | Miter::BaughWooleyMapped | Miter::BoothSigned(_) | Miter::BoothSignedMapped | Miter::SignExtended | Miter::Squarer(_) | Miter::SquarerMapped | Miter::Mac(_) | Miter::MacMapped | Miter::Constant(..) | Miter::ConstantSub | Miter::AndMapped | Miter::AndMappedBoth
     );
     let pp: Vec<Vec<i64>> = if own_products { Vec::new() } else { (0..n).map(|i| (0..n).map(|j| c.and2(a[i], b[j])).collect()).collect() };
     let (oa, ob) = match kind {
@@ -1441,6 +1457,17 @@ fn miter_top(kind: Miter, n: usize, bit: usize, two_input: bool, pruned: bool, o
             let (cols, _) = constant_columns(&a, n + 4, &shifts, &[]);
             let lits = as_literals(&mut c, &cols);
             (column_sum(&mut c, lits.clone(), 0, two_input, false, "ripple"), column_sum(&mut c, lits, 0, two_input, true, kind))
+        }
+        Miter::AndMapped => {
+            let cols = mac_columns(&mut c, &a, &b, &[], true);
+            let lits = as_literals(&mut c, &cols);
+            let mcols = mac_columns(&mut c, &a, &b, &[], false);
+            (column_sum(&mut c, lits, 0, two_input, false, "ripple"), mapped_column_sum(&mut c, mcols, 0))
+        }
+        Miter::AndMappedBoth => {
+            let m1 = mac_columns(&mut c, &a, &b, &[], false);
+            let m2 = mac_columns(&mut c, &a, &b, &[], false);
+            (mapped_column_sum_with(&mut c, m1, 0, false), mapped_column_sum_with(&mut c, m2, 0, true))
         }
         Miter::ConstantSub => {
             let (cols, _) = constant_columns(&a, n + 4, &[0, 2, 3], &[]);
@@ -2166,5 +2193,39 @@ fn other_multiplier_shapes_are_read() {
         } else {
             assert!(r.stderr.contains(decline), "{}: declined for another reason than \"{}\": {}", name, decline, r.stderr);
         }
+    }
+}
+
+#[test]
+fn and_against_and_mapped_toys() {
+    // bead SAT-playground-skz.15: a mapped AND multiplier with no Booth side
+    // to give the operand order (one side in the generator's form, then
+    // both folded), full and pruned to the compared bit. The operands come
+    // from the cells themselves (the product gates a side's cells read,
+    // the products its folded cells name, the lone carries of a pruned
+    // cone's low columns), the grid places the products no cell reads from
+    // them, and a cell both trees share stays with the side the stage did
+    // not take. Each refutes with a proof the gate accepts
+    let fx = Fixture::new("structarith_and_mapped_both");
+    for (name, kind, n, bit, pruned) in [
+        ("gen_v_mapped_8_9", Miter::AndMapped, 8usize, 9usize, false),
+        ("gen_v_mapped_8_12_pruned", Miter::AndMapped, 8, 12, true),
+        ("gen_v_mapped_12_18_pruned", Miter::AndMapped, 12, 18, true),
+        ("mapped_both_8_9", Miter::AndMappedBoth, 8, 9, false),
+        ("mapped_both_8_12_pruned", Miter::AndMappedBoth, 8, 12, true),
+    ] {
+        let cnf = fx.path(&format!("{}.cnf", name));
+        miter_pruned(kind, n, bit, false, pruned, &cnf);
+        if let Ok(dir) = std::env::var("SAT_TEST_KEEP") {
+            let _ = std::fs::copy(&cnf, Path::new(&dir).join(format!("andmapped_{}.cnf", name)));
+        }
+        let r = run(&cnf, &["--structarith=1"], &[("SAT_STRUCT_DEBUG", "1")]);
+        assert_eq!(r.status, "UNSATISFIABLE", "{}: {}\n{}", name, r.stdout, r.stderr);
+        assert!(r.stderr.contains("operands from the structural cells"), "{}: no operands from the cells: {}", name, r.stderr);
+        assert!(r.stdout.contains("arithmetic: two adder networks"), "{}: the pass did not fire: {}", name, r.stderr);
+        let proof = fx.path(&format!("{}.drat", name));
+        let stdout = run_arith_with_proof(&cnf, &proof);
+        assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+        assert_eq!(gate(&cnf, &proof), "ok", "{}: two-stage gate", name);
     }
 }

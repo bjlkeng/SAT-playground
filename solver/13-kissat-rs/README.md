@@ -3558,6 +3558,117 @@ as leaves (`cell 128 = FA(1467, 2007, 2238)` with `2007 = and(1456,
 short. A speed gain of about 300 s a seed if finished; left as matcher
 work.
 
+## Two mapped AND multipliers against each other (2026-10-29; bead `SAT-playground-skz.15`)
+
+**Result.** The by-function reading of a mapped AND tree no longer needs
+a Booth side. Five toy miters of two AND multipliers with no Booth side
+and no shared product grid, which all declined before, refute with
+proofs the gate accepts (`tests/structarith.rs`,
+`and_against_and_mapped_toys`): a column-wise multiplier in the
+generator's form against a mapped one, 8 bits whole and pruned to bit
+12, 12 bits pruned to bit 18; and two mapped multipliers in opposite
+compressor orders, 8 bits whole and pruned to bit 12. On the 2025 cells
+nothing changes: the same 13 fire, no status moves, no panic, no
+contradiction (`log/structarith-fire-2026-10-29-700M-skz15g`, the final
+build, against the skz.16 sweep), and the bead's two remaining cells
+keep their reasons (below). Fuzz on the final build: 1,500 miters (seed
+59), all three answers agree, 797 fired with a checked proof; an
+earlier run (seed 51) found one crash, below. The second attempt's
+price on the 400 cells: 101 cells spend more, 120M work in all over
+210.8G (0.06 %), at most 8.6M on one cell (`b14`) and at most double
+on cells where the first attempt stops at once (the `arles` cells,
+0.2M each).
+
+**What was missing.** The product rows by function (bead `skz.14`)
+build a side's cells from the products of two operand words, and the
+words came only from a Booth side's digits and data. Now, when no Booth
+side gives them, `operands_from_cells` reads them off the cells
+themselves, before the rows run, from the side reading the most
+products. This is a **second attempt**: the stage runs the pass as
+before and, when that derives nothing within the pass's own limit, once
+more with the rows from the cells (`run(.., rows_from_cells)`); the
+rows can replace a side the structural reading handled and then fail
+where it succeeded (the review's case: 0 conflicts before, 12,998
+with the rows first), so the first attempt reads exactly as the
+committed build, and everything below acts in the second alone. The
+operands:
+
+- quick weights over the side's structural cells (a sum at its leaves'
+  exponent, a carry one above), and every product gate (an and or a
+  nand over two inputs) a cell of the largest component reads, at its
+  exponent;
+- the cells a mapper folds a product into, found by their tables alone:
+  a four-input gate that is `(p ∧ q) ⊕ y ⊕ z` for two inputs `p`, `q`
+  and two signals (`folded_product_pair`; the majority over the same
+  four is its carry) joins the weights as a cell and names `p q` at its
+  column, and a product gate beside the folded one counts at the same
+  column;
+- a pruned cone's low columns: their sums are dead and their carries
+  stay, as lone and or majority gates over products, the component's
+  signals and more such carries (the final adder's chain); a cell's
+  leaf of that shape, or the inputs of a lone sum over the component
+  (the compared bit itself when its carry is dead), is followed down,
+  one column per carry, and the products under it placed;
+- then `operand_positions` as the grid does; the two words must be
+  gap-free and cover every input some product names, else no operands.
+
+Two more changes made the toys go through once the rows ran. The grid
+placement (`place_products`) now takes the known operands' positions as
+well as the side's own reads, calibrated on one read and checked
+against the rest, so a product no cell reads (a pruned bottom's) is
+placed even when the side's reads miss an input. And the coverage of
+gates by cells is per side: a mapped side's top cell reads a fresh
+carry standing for the whole final adder below it, which covered that
+chain for both sides, so the other tree's lone carry at the shared
+bottom column (two trees over one grid share their lowest columns after
+hashing) could not become its cell and was read as a four-input leaf
+instead; likewise a structural cell both sides share now stays with the
+side whose cells the stage did not replace.
+
+One latent crash came out once the rows ran on far more miters: a fuzz
+miter whose side reads one product twice put that signal twice into a
+column of the carry network's chain, the chain cell over it wrote a
+clause with a literal repeated, and kitten aborted the solver (exit
+134, no answer). Two reads of one signal at a column are now the signal
+one column up, and a column holding a signal beside its complement
+ends the lemma. The review's three rounds shaped the rest: a lone cell
+made from a gate open on one side only joins that side alone, and the
+repeated-reader check looks at those sides alone (added to the side
+whose network already held the gate, a cell changed that side's chain,
+0 to 129 conflicts on one fuzz miter, 0 to 4,440 on another); the
+product and internal rules keep to gates no side covers, as before (a
+product cell over a gate the other side held read a 3-bit miter wrong);
+a shared structural cell kept for the untaken side is that side's
+alone (on the taken side it displaced the cell by function over its
+leaves, 0 to 11,607 conflicts); the per-side opening itself is the
+second attempt's (a lone cell over a gate the other side held declined
+a 3-bit miter the old reading refuted); and the discovery's scans are
+indexed and charged (the folded cells' carries by support, the chain
+seeded once from every cell and lone sum, the per-side tables reserved
+at entry, the scans polled as they go: the pass stops within 134 work
+units of a tick limit set inside it, where it ran 10,000 past before;
+a fourth round had the lone-sum scan polled too).
+On 806 fuzz miters the final build matches the committed one in
+status, fire and conflicts on every one but six pruned miters, which
+it now refutes without search (661 to 7,468 conflicts before).
+
+**What still declines, and why.**
+
+- The mapped Baugh-Wooley and multiply-accumulate toys of bead `skz.21`
+  now get their operands (6 and 6 bits) but the rows do not run: the
+  rows are a plain product's, and `product_bit_of` finds the compared
+  bit is no bit of `a b` (a signed product, `a b + c`). The stage would
+  need the shape's polynomial; left, no cell is known to need it.
+- `16_16_booth_dadda_mapped_and_and_wallace_mapped_bit28` (search near
+  1,600 s): unchanged. Its Booth side gives the operands; the AND side's
+  rows find 200 cells against 224 structural ones, under the margin the
+  rows must beat (9 to 8), and the structural reading leaves the three
+  signals of bead `skz.14`'s notes (products folded into the final
+  adder's logic).
+- `16_16_booth_dadda_mapped_and_booth_wallace_mapped` (a timeout): the
+  whole-word miter as before; the pass proves bit 31's pair (22 of 24
+  chain carries, the lemma) and the cell needs the other 31.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.

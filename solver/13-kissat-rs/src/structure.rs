@@ -330,7 +330,13 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
             let hard = cap(u64::MAX, solver); // the tick limit itself: nothing runs past it
             let before = solver.statistics.ticks;
             let notes = derived.notes.len();
-            crate::structarith::run(&formula, &mut derived, own, hard, &mut solver.statistics.ticks, stop_ref);
+            crate::structarith::run(&formula, &mut derived, own, hard, &mut solver.statistics.ticks, stop_ref, false);
+            if derived.notes.len() == notes && !derived.refuted && solver.statistics.ticks < own && !stop_ref.load(std::sync::atomic::Ordering::Relaxed) {
+                // once more with the product rows taking their operands
+                // from the cells (a mapped AND tree against another, bead
+                // skz.15), within what is left of the pass's own limit
+                crate::structarith::run(&formula, &mut derived, own, hard, &mut solver.statistics.ticks, stop_ref, true);
+            }
             if derived.notes.len() == notes {
                 // what the pass cost where it found nothing, for the reports
                 derived.notes.push(format!("arithmetic: no adder miter, work {}K", solver.statistics.ticks.saturating_sub(before) / 1000));
