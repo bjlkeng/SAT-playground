@@ -806,6 +806,92 @@ fn find_adders(net: &Netlist, readers: &[u32], work: &mut u64, stop: &dyn Fn(u64
             return None;
         }
     }
+    // a node whose cone takes a partial product's two inputs one at a
+    // time (a mapper multiplied the product into the gate reading it:
+    // a_i and (b_j and x) for a_i b_j and x) has no cut with the product
+    // in it. Over the cut with the product gate in place of its two
+    // inputs it is a node like any other, when its function goes through
+    // the product; the fused cells below pair it so, and the proof's split
+    // keeps the two inputs (a split over the product alone does not
+    // propagate the gates when the product is zero). Bead skz.25.
+    let mut virtual_nodes: HashMap<Vec<i32>, Vec<(i32, u64)>> = HashMap::new();
+    let mut virtual_split: HashMap<(i32, Vec<i32>), (i32, i32, i32)> = HashMap::new(); // (node, cut) -> (the product, its two inputs)
+    // (the product gate over an input pair, looked up once per pair, a
+    // miss too, and the scan charged: thousands of gates may share a
+    // pair and none be its and; review 2026-10-30)
+    let mut product_of: HashMap<(i32, i32), Option<i32>> = HashMap::new();
+    for &v in &net.order {
+        if net.rep[v as usize].0 != v {
+            continue;
+        }
+        for c in &cuts[v as usize] {
+            if c.len() != 3 || c.contains(&v) {
+                continue;
+            }
+            let inputs: Vec<i32> = c.iter().copied().filter(|&x| net.gates[x as usize].is_none() && !net.units[x as usize]).collect();
+            if inputs.len() != 2 {
+                continue;
+            }
+            let (i1, i2) = (inputs[0], inputs[1]);
+            let g = c.iter().copied().find(|&x| net.gates[x as usize].is_some()).unwrap();
+            let gate = net.gates[g as usize].as_ref().unwrap();
+            if gate.sup.len() != 2 {
+                continue;
+            }
+            *work += 1;
+            let key = (i1.min(i2), i1.max(i2));
+            let p = match product_of.get(&key) {
+                Some(&p) => p,
+                None => {
+                    let found = by_cut.get(&vec![key.0, key.1]).and_then(|nodes| {
+                        *work += nodes.len() as u64;
+                        nodes.iter().find(|&&(_, t)| and_family(t) == Some(0)).map(|&(u, _)| u)
+                    });
+                    product_of.insert(key, found);
+                    found
+                }
+            };
+            let Some(p) = p else { continue };
+            let mut d: Vec<i32> = vec![i1, i2];
+            for &u in &gate.sup {
+                let ru = net.rep[u as usize].0;
+                if !d.contains(&ru) {
+                    d.push(ru);
+                }
+            }
+            d.sort_unstable();
+            if d.len() != 4 || d.contains(&v) || d.contains(&p) {
+                continue;
+            }
+            let Some(tt4) = cut_truth_table(v, &d, net, &mut memo, work) else { continue };
+            let (k1, k2) = (d.iter().position(|&x| x == i1).unwrap(), d.iter().position(|&x| x == i2).unwrap());
+            let others: Vec<usize> = (0..4).filter(|&k| k != k1 && k != k2).collect();
+            let mut e: Vec<i32> = vec![p, d[others[0]], d[others[1]]];
+            e.sort_unstable();
+            let pos = |x: i32| e.iter().position(|&y| y == x).unwrap();
+            let (ep, e0, e1) = (pos(p), pos(d[others[0]]), pos(d[others[1]]));
+            let mut tt3: [Option<bool>; 8] = [None; 8];
+            let mut through = true;
+            for m in 0..16u32 {
+                let bit = |x: usize| (m >> x) & 1 == 1;
+                let idx = (((bit(k1) && bit(k2)) as usize) << ep) | ((bit(others[0]) as usize) << e0) | ((bit(others[1]) as usize) << e1);
+                let val = (tt4 >> m) & 1 == 1;
+                match tt3[idx] {
+                    None => tt3[idx] = Some(val),
+                    Some(x) => through &= x == val,
+                }
+            }
+            if !through {
+                continue;
+            }
+            let t3: u64 = (0..8).map(|idx| (tt3[idx].unwrap_or(false) as u64) << idx).sum();
+            virtual_nodes.entry(e.clone()).or_default().push((v, t3));
+            virtual_split.insert((v, e), (p, i1, i2));
+        }
+        if stop(*work) {
+            return None;
+        }
+    }
     let mut cells: Vec<Cell> = Vec::new();
     let mut used: HashSet<i32> = HashSet::new();
     // full adders first
@@ -954,6 +1040,19 @@ fn find_adders(net: &Netlist, readers: &[u32], work: &mut u64, stop: &dyn Fn(u64
         small.insert(v, fine);
         fine
     };
+    let no_and_leaf = std::env::var_os("SAT_STRUCT_DEBUG_NOANDLEAF").is_some(); // (bisection knobs)
+    let no_virtual = std::env::var_os("SAT_STRUCT_DEBUG_NOVIRTUAL").is_some();
+    // (the and and nand gates over a pair, scanned once per pair and the
+    // scan charged, a miss too: many gates may share a cut and none be
+    // its and, and a scan per candidate pair made the pairing cubic,
+    // 0.48 s to 13 s on a 3,006-variable gate CNF; review 2026-10-30)
+    let mut and_cache: HashMap<(i32, i32), Vec<(i32, bool)>> = HashMap::new();
+    let is_product = |x: i32| -> bool {
+        match net.gates[x as usize].as_ref() {
+            Some(g) => g.sup.len() == 2 && g.sup.iter().all(|&u| { let r = net.rep[u as usize].0; net.gates[r as usize].is_none() && !net.units[r as usize] }),
+            None => false,
+        }
+    };
     for c in keys.iter() {
         if stop(*work) {
             return None;
@@ -962,7 +1061,12 @@ fn find_adders(net: &Netlist, readers: &[u32], work: &mut u64, stop: &dyn Fn(u64
             continue;
         }
         let nodes = &by_cut[*c];
-        let free: Vec<(i32, u64)> = nodes.iter().copied().filter(|&(v, _)| !used.contains(&v)).collect();
+        let mut free: Vec<(i32, u64)> = nodes.iter().copied().filter(|&(v, _)| !used.contains(&v)).collect();
+        if let Some(more) = virtual_nodes.get(*c).filter(|_| !no_virtual) {
+            // (a node with the cut itself is read over it, not virtually)
+            free.extend(more.iter().copied().filter(|&(v, _)| !used.contains(&v) && !nodes.iter().any(|&(u, _)| u == v)));
+            *work += more.len() as u64;
+        }
         if free.len() < 2 {
             continue;
         }
@@ -996,9 +1100,16 @@ fn find_adders(net: &Netlist, readers: &[u32], work: &mut u64, stop: &dyn Fn(u64
                             }
                         }
                     }
-                    // degree two at most, pair terms even
+                    // degree two at most; a pair term of two is an xor
+                    // leaf, one of one an and leaf (a mapper absorbs a
+                    // half adder's carry a_i b_j . a_k b_l into the full
+                    // adder reading it beside a_i b_l, which it writes as
+                    // a_i b_l . a_k b_j: the carry becomes a_i b_l (a_k b_j
+                    // or c), the sum (a_i b_l . not a_k b_j) xor c, and
+                    // sum + 2 carry is a_i b_l + c + a_i b_l . a_k b_j;
+                    // bead skz.25)
                     let mut ok = true;
-                    let mut pairs: Vec<((usize, usize), i128)> = Vec::new();
+                    let mut pairs: Vec<((usize, usize), i128, bool)> = Vec::new(); // (the pair, the count (negated when < 0), an and leaf)
                     let mut linear: Vec<i128> = vec![0; n];
                     for m in 1..width {
                         let coef = f[m];
@@ -1008,13 +1119,16 @@ fn find_adders(net: &Netlist, readers: &[u32], work: &mut u64, stop: &dyn Fn(u64
                         match m.count_ones() {
                             1 => linear[m.trailing_zeros() as usize] = coef,
                             2 => {
-                                if coef != 2 && coef != -2 {
-                                    ok = false;
-                                    break;
-                                }
                                 let a = m.trailing_zeros() as usize;
                                 let b = (m ^ (1 << a)).trailing_zeros() as usize;
-                                pairs.push(((a, b), -coef / 2)); // one x xor y leaf, negated when the term is +2xy
+                                match coef {
+                                    2 | -2 => pairs.push(((a, b), -coef / 2, false)), // one x xor y leaf, negated when the term is +2xy
+                                    1 | -1 if !no_and_leaf => pairs.push(((a, b), coef, true)), // one x and y leaf, negated when the term is -xy
+                                    _ => {
+                                        ok = false;
+                                        break;
+                                    }
+                                }
                             }
                             _ => {
                                 ok = false;
@@ -1025,16 +1139,18 @@ fn find_adders(net: &Netlist, readers: &[u32], work: &mut u64, stop: &dyn Fn(u64
                     if !ok || pairs.is_empty() {
                         continue;
                     }
-                    // leaves: per pair |e| xor leaves (negated when e < 0),
-                    // per signal the literal count left after the xor
-                    // leaves' linear parts
-                    let mut leaves: Vec<(Vec<i32>, bool)> = Vec::new(); // (signals, negated)
-                    for &((a, b), e) in &pairs {
+                    // leaves: per pair |e| xor or and leaves (negated when
+                    // e < 0), per signal the literal count left after the
+                    // xor leaves' linear parts
+                    let mut leaves: Vec<(Vec<i32>, bool, bool)> = Vec::new(); // (signals, negated, an and leaf)
+                    for &((a, b), e, and) in &pairs {
                         for _ in 0..e.abs() {
-                            leaves.push((vec![c[a], c[b]], e < 0));
+                            leaves.push((vec![c[a], c[b]], e < 0, and));
                         }
-                        linear[a] -= e;
-                        linear[b] -= e;
+                        if !and {
+                            linear[a] -= e;
+                            linear[b] -= e;
+                        }
                     }
                     for b in 0..n {
                         let d = linear[b];
@@ -1042,7 +1158,7 @@ fn find_adders(net: &Netlist, readers: &[u32], work: &mut u64, stop: &dyn Fn(u64
                             ok = false;
                         }
                         for _ in 0..d.abs() {
-                            leaves.push((vec![c[b]], d < 0));
+                            leaves.push((vec![c[b]], d < 0, false));
                         }
                     }
                     if !ok {
@@ -1056,13 +1172,44 @@ fn find_adders(net: &Netlist, readers: &[u32], work: &mut u64, stop: &dyn Fn(u64
                     // inputs; an xor over a tree signal or a carry
                     // network's gate is some other adder's sum, or would
                     // hide the network's carry inside a fresh leaf)
-                    if leaves.iter().any(|(sig, _)| sig.len() == 2 && !(sig.iter().any(|&x| net.gates[x as usize].is_none()) && sig.iter().all(|&x| net.gates[x as usize].is_none() || small_cone(x, work)))) {
+                    if leaves.iter().any(|(sig, _, and)| sig.len() == 2 && !and && !(sig.iter().any(|&x| net.gates[x as usize].is_none()) && sig.iter().all(|&x| net.gates[x as usize].is_none() || small_cone(x, work)))) {
+                        continue;
+                    }
+                    // (an and leaf is a gate the netlist has, some other
+                    // cell's carry: a fresh one nothing would produce; and
+                    // its two signals are products, gates over two bare
+                    // inputs each, which is the algebra's shape. Over two
+                    // bare inputs the and is a product, which the cells
+                    // read as a leaf as it is, and a Booth row's mux over
+                    // the inputs would pass for a cell with product leaves,
+                    // the other side's and gates in hand; over two tree
+                    // signals it is a final adder's propagate-and-carry,
+                    // and a cell over it would take the network's gates
+                    // from the lemma: 76 fuzz miters lost, 2026-10-30)
+                    let mut and_gate = |a: i32, b: i32, work: &mut u64| -> Option<(i32, bool)> {
+                        if !is_product(a) || !is_product(b) {
+                            return None;
+                        }
+                        let key = (a.min(b), a.max(b));
+                        if !and_cache.contains_key(&key) {
+                            let list: Vec<(i32, bool)> = match by_cut.get(&vec![key.0, key.1]) {
+                                Some(nodes) => {
+                                    *work += nodes.len() as u64;
+                                    nodes.iter().filter_map(|&(u, t)| if and_family(t) == Some(0) { Some((u, false)) } else if or_family(t) == Some(3) { Some((u, true)) } else { None }).collect()
+                                }
+                                None => Vec::new(),
+                            };
+                            and_cache.insert(key, list);
+                        }
+                        and_cache[&key].iter().copied().find(|&(u, _)| u != sv && u != cv)
+                    };
+                    if leaves.iter().any(|(sig, _, and)| *and && and_gate(sig[0], sig[1], work).is_none()) {
                         continue;
                     }
                     // the constant: each negated leaf is 1 - its signal, so
                     // the plain sum of leaves is f[0] minus the negations;
                     // what is left is the cell's carry-in (0 or 1)
-                    let negs = leaves.iter().filter(|(_, neg)| *neg).count() as i128;
+                    let negs = leaves.iter().filter(|(_, neg, _)| *neg).count() as i128;
                     let k = f[0] - negs;
                     if k != 0 && k != 1 {
                         continue;
@@ -1079,9 +1226,15 @@ fn find_adders(net: &Netlist, readers: &[u32], work: &mut u64, stop: &dyn Fn(u64
                     let mut cell_leaves: Vec<i32> = Vec::new();
                     let mut negmask: u8 = 0;
                     let mut made: Vec<Fresh> = Vec::new();
-                    for (idx, (sig, neg)) in leaves.iter().enumerate() {
+                    for (idx, (sig, neg, and)) in leaves.iter().enumerate() {
                         let mut neg = *neg;
-                        if sig.len() == 2 {
+                        if *and {
+                            let (u, nand) = and_gate(sig[0], sig[1], work).unwrap();
+                            cell_leaves.push(u);
+                            if nand {
+                                neg = !neg;
+                            }
+                        } else if sig.len() == 2 {
                             // the xor as a signal when the netlist has one
                             // (the other circuit may read it: then both
                             // sides sum one variable), else fresh
@@ -1117,15 +1270,32 @@ fn find_adders(net: &Netlist, readers: &[u32], work: &mut u64, stop: &dyn Fn(u64
                     } {
                         continue; // a signal twice: no cell
                     }
+                    // (the proof's case split runs over the cut: a full
+                    // assignment of the cut propagates the fresh xor and
+                    // the gates; one of the fresh variable alone does not.
+                    // A virtual node's product stands for its two inputs,
+                    // which the split keeps)
+                    let mut split: Vec<i32> = (*c).clone();
+                    for node in [sv, cv] {
+                        if nodes.iter().any(|&(u, _)| u == node) {
+                            continue; // (read over the cut itself)
+                        }
+                        if let Some(&(p, i1, i2)) = virtual_split.get(&(node, (*c).clone())) {
+                            split.retain(|&x| x != p);
+                            for i in [i1, i2] {
+                                if !split.contains(&i) {
+                                    split.push(i);
+                                }
+                            }
+                        }
+                    }
+                    split.sort_unstable();
                     if debug() {
-                        eprintln!("structarith: fused cell over {:?}: leaves {:?} (negmask {}, carry-in {}) = {}{} + 2*{}", c, leaves, negmask, k, if sigma { "-" } else { "" }, sv, cv);
+                        eprintln!("structarith: fused cell over {:?}: leaves {:?} (negmask {}, carry-in {}) = {}{} + 2*{}, split {:?}", c, leaves, negmask, k, if sigma { "-" } else { "" }, sv, cv, split);
                     }
                     *next_fresh += made.len() as i32;
                     fresh.extend(made);
-                    // (the proof's case split runs over the cut: a full
-                    // assignment of the cut propagates the fresh xor and
-                    // the gates; one of the fresh variable alone does not)
-                    cells.push(Cell { fa: leaves.len() == 3, one: k == 1, leaves: cell_leaves, negmask, sum: sv, sum_neg: sigma, carry: cv, split: Some((*c).clone()) });
+                    cells.push(Cell { fa: leaves.len() == 3, one: k == 1, leaves: cell_leaves, negmask, sum: sv, sum_neg: sigma, carry: cv, split: Some(split) });
                     used.insert(sv);
                     used.insert(cv);
                     continue 'pairs;
@@ -5616,7 +5786,34 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
             // lemma below checks the network against it. Only the side
             // whose other side is settled (no network, or its chain made)
             // reads the difference as its own
-            if !unplaced.is_empty() || by_function {
+            // (and a side with a grid reads its difference from the other
+            // side whenever there is one, once the other side is settled:
+            // a mapper may write a pruned column's carry a_i b_j . a_k b_l
+            // as a_i b_l . a_k b_j and fuse it into the carry chain, so the
+            // network reads no gate no row holds and the two products are
+            // still nowhere. The other side, not the grid: the two sides
+            // compute one function, and a signed side against the unsigned
+            // grid reads a difference that is real (a signed Booth side
+            // against a Baugh-Wooley one lost its fire measured against
+            // the grid). A side that fires adds up to the other and reads
+            // an empty difference. Bead skz.25)
+            let widened = unplaced.is_empty() && !by_function && grid_pairs[s] > 0 && std::env::var_os("SAT_STRUCT_DEBUG_NODIFF").is_none();
+            let mut widened = widened;
+            if widened {
+                let other = 1 - s;
+                if !(foreign[other].is_none() || lemmas[other].is_some()) {
+                    if !retried && side_queue.iter().any(|&(t, _)| t == other) {
+                        if dbg {
+                            eprintln!("structarith: side {}: the difference from the other side waits for it", s);
+                        }
+                        pre_poly[s].terms = pre_poly_at_entry;
+                        side_queue.push_back((s, true));
+                        continue;
+                    }
+                    widened = false; // (the other side is not settled: as before, no difference read)
+                }
+            }
+            if !unplaced.is_empty() || by_function || widened {
                 let other = 1 - s;
                 let settled = grid_pairs[s] > 0 || foreign[other].is_none() || lemmas[other].is_some();
                 if !settled {
@@ -5649,7 +5846,7 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 // (the grid's polynomial when there is one, else the other
                 // side's; the constant is left out either way, the chain's
                 // fixed ones settle it)
-                let reference: &HashMap<Vec<i32>, i128> = if grid_pairs[s] > 0 { &grid_poly[s].terms } else { &pre_poly[other].terms };
+                let reference: &HashMap<Vec<i32>, i128> = if grid_pairs[s] > 0 && !widened { &grid_poly[s].terms } else { &pre_poly[other].terms };
                 for m in reference.keys().chain(pre_poly[s].terms.keys()) {
                     *work += 2;
                     if !seen_m.insert(m) {
@@ -5684,6 +5881,13 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, hard: u64, work: &mu
                 }
                 if diff.is_empty() && !too_wide && unplaced.is_empty() {
                     // (a side found by function whose rows the pool holds in full)
+                } else if too_wide && widened {
+                    // (a difference the tables cannot hold: the side goes on
+                    // as it did without reading one)
+                    if dbg {
+                        eprintln!("structarith: side {}: the sides' difference has a monomial too wide; left as it is", s);
+                    }
+                    diff.clear();
                 } else if too_wide || diff.is_empty() {
                     if dbg {
                         eprintln!("structarith: side {}: the network reads {} gates no row holds, and the sides' difference has {} monomials{}", s, unplaced.len(), diff.len(), if too_wide { ", one too wide" } else { "" });

@@ -1601,7 +1601,11 @@ left for later (a network read at two weights, Booth: bead `skz.4`).
 Debug switches: `SAT_STRUCT_DEBUG_GATES` (the gates no cell covers, with
 weights), `SAT_STRUCT_DEBUG_CELLS=all|v,..`, `SAT_STRUCT_DEBUG_VIRT=v`
 (trace one gate's virtual-cell attempt), `SAT_STRUCT_DEBUG_LEMMA=path`
-(the chain's columns, every cell, kitten's clauses and model on failure).
+(the chain's columns, every cell, kitten's clauses and model on failure),
+and three bisection switches that turn one reading off
+(`SAT_STRUCT_DEBUG_NOANDLEAF`, `SAT_STRUCT_DEBUG_NOVIRTUAL`,
+`SAT_STRUCT_DEBUG_NODIFF`: the and leaves, the virtual nodes and the
+difference read with a grid, bead `skz.25`).
 
 **Paired run (2026-10-21).** The 400 cells of 2025, seed 0, 1800 s,
 16 GB, 32 pinned cores, the frozen binary
@@ -3660,14 +3664,137 @@ it now refutes without search (661 to 7,468 conflicts before).
   bit is no bit of `a b` (a signed product, `a b + c`). The stage would
   need the shape's polynomial; left, no cell is known to need it.
 - `16_16_booth_dadda_mapped_and_and_wallace_mapped_bit28` (search near
-  1,600 s): unchanged. Its Booth side gives the operands; the AND side's
-  rows find 200 cells against 224 structural ones, under the margin the
-  rows must beat (9 to 8), and the structural reading leaves the three
-  signals of bead `skz.14`'s notes (products folded into the final
-  adder's logic).
+  1,600 s): unchanged here. Its Booth side gives the operands; the AND
+  side's rows find 200 cells against 224 structural ones, under the
+  margin the rows must beat (9 to 8), and the structural reading leaves
+  the three signals of bead `skz.14`'s notes (products folded into the
+  final adder's logic). Read and refuted the next day: the section
+  below.
 - `16_16_booth_dadda_mapped_and_booth_wallace_mapped` (a timeout): the
   whole-word miter as before; the pass proves bit 31's pair (22 of 24
-  chain carries, the lemma) and the cell needs the other 31.
+  chain carries, the lemma) and the cell needs the other 31. Bead
+  `SAT-playground-skz.26`.
+
+## The mapped AND side's top: the product algebra (2026-10-30; bead `SAT-playground-skz.25`)
+
+**Result.** `16_16_booth_dadda_mapped_and_and_wallace_mapped_bit28`, the
+one Booth-against-AND cell of 2025 the pass did not refute (search near
+1,600 s, killed at the limit in one run), is refuted in 11.5 s with a
+proof the gate accepts (VeriPB on the 27 MB structure proof, drat-trim on
+the rest). The 400-cell fire sweep at 700M against the previous build:
+14 cells fire where 13 did, nothing lost, no status change on any other
+cell, no panic, no contradiction
+(`log/structarith-fire-2026-10-30-700M-skz25d`). The price: 52 cells
+spend more work, 94M in all over 210.9G, and 93.8M of it on one cell,
+`16_16_booth_dadda_origin_and_and_dadda_origin_bit29` (118M to 211M,
+3.5 s; it fires both ways, proof checked): its AND side now waits for
+the Booth side and reads a one-monomial difference from it, `a_0 b_0`,
+a bit-0 product the pruned cone never reads, and the addend reshapes
+the chain's bottom enough that kitten runs out on the last step and the
+full solver finishes it (6.5M work of its own). Fuzz: 1,500 miters (seed
+67), all three answers agree, 762 fired with a checked proof; the 1,500
+of seed 63 replayed against the previous build match it in status, fire
+and conflicts on every miter but one satisfiable one, where neither
+build derives anything. Two toys of the shape
+(`and_mapped_with_product_algebra_toys`, 8 bits whole and pruned to bit
+12) refute with proofs the gate accepts.
+
+**What the mapper did.** The three signals the structural reading could
+not explain are all one piece of algebra on products of the same four
+inputs, `a_i b_l . a_k b_j = a_i b_j . a_k b_l`:
+
+- Signal 2060 is `r . (q or c)` with `r = a_2 b_15` (weight 17), `c` the
+  carry of the full adder over `a_4 b_12`, `a_5 b_11`, `a_3 b_13` (weight
+  17), and `q = a_1 b_14` (weight 15, which no weight-18 signal should
+  read). The two weight-16 products `u = a_1 b_15`, `w = a_2 b_14` have
+  `u . w = r . q`: the mapper wrote their half adder's carry as `r . q`
+  (gate 2127), its sum as `nor(nor(u, w), r . q)` (2128), and the full
+  adder above over `r`, `c` and that carry *absorbed over r*, since `r .
+  q <= r`: sum `(r . not q) xor c` (2134), carry `maj(r, c, r q) = r . (q
+  or c)` (2060). Signal 1589 is the same shape on `a_11 b_15`, `a_10
+  b_14` and the column-25 carry, with the product `r` spread over the
+  carry's two gates, `a_11 . (b_15 . not nor(q, c))`, so no cut of the
+  carry holds the product. Every reader in the pass had seen half of it:
+  the input-logic rule found the half adder `u + w = 2128 + 2 . 2127`,
+  the lone-gate rule then made 2134 a half adder over `(not c, r . not
+  q)` with a fresh carry, a valid split that leaves 2060 to no cell; the
+  rows by function split the same column as `FA(u, w, x)` with a fresh
+  carry no gate matches.
+- At the bottom, bit 1's half-adder carry `a_0 b_1 . a_1 b_0` is written
+  `a_0 b_0 . a_1 b_1` and multiplied into bit 2's final-adder carry one
+  input at a time, `a_1 b_1 . (a_0 b_0 . s_2)`; bit 1's sum is outside
+  the compared bit's cone. So no gate equals that carry, the two bit-1
+  products are nowhere in the circuit, and the lemma's chain, built from
+  what the cells leave, has no carry below bit 8: all eleven of its
+  carries differ from the network's (kitten found a model for each),
+  and the last step ran out at 200M work. Signal 3097 was never a leaf:
+  it is the network's carry into the compared column, read complemented.
+
+**What was built.** Three things, each general:
+
+1. *And leaves in the fused cells.* `find_adders`'s fused reading takes a
+   pair of gates over a cut and reads the polynomial of `sum + 2 carry`;
+   a pair term with coefficient ±2 was an xor leaf. A pair term with
+   coefficient ±1 is now an *and leaf*, `x . y`, when the netlist has
+   the and (or nand) gate over the pair and both `x` and `y` are
+   products (gates over two bare inputs): the absorbed full adder is
+   `sum + 2 carry = r + c + r . q` over the cut `[r, q, c]`, the cell has
+   leaves `[r, c, r q]` and its proof splits over the cut, under which
+   the leaf, the sum and the carry all propagate forward. The two
+   restrictions came from measurement: with and leaves over bare inputs
+   the Booth side's row muxes over `[a_0, a_1, b_15]` passed for cells
+   with product leaves (the other side's and gates in hand) and five
+   firing cells of the 2025 suite were lost; with and leaves over two
+   tree signals a final adder's `propagate . carry` became a cell's leaf
+   and the lemma lost its network (76 fuzz miters lost).
+2. *Virtual nodes.* A carry whose cone takes a product's two inputs one
+   at a time has no cut with the product in it. A node whose 3-cut holds
+   two bare inputs with a product gate over them and one 2-input gate is
+   read over the 4-cut with that gate's inputs; when its table there goes
+   through the product it is entered over the 3-cut with the product in
+   the inputs' place, a node like any other for the fused pairing, and
+   its cell's split keeps the two inputs (a split over the product alone
+   does not propagate the gates when the product is zero). A node with
+   the cut itself is read over it, not virtually.
+3. *The difference read from the other side.* The pass already measured
+   a side's polynomial against a reference and summed what was missing
+   as fresh addends of the chain, but only when the network read an
+   input-logic gate no row held (a Booth generator's folded low rows) or
+   the side was read by function. Now a side with a grid reads its
+   difference *from the other side* whenever it has one, once the other
+   side is settled (its chain made, or no network; it waits for it
+   otherwise, as the folded-row case does): here `2 a_0 b_1 + 2 a_1 b_0`
+   (and a `2^23 a_7 a_8 b_14 b_15` the side has extra), three fresh
+   addends; the chain's carry into bit 2 then matched the fused gate
+   (`s_2 . (a_0 b_1 . a_1 b_0) = a_1 b_1 . (a_0 b_0 . s_2)`, kitten), 19
+   of 23 chain carries matched network signals and the last step closed.
+   The other side and not the grid: the two sides compute one function,
+   while a signed side against the unsigned grid reads a difference that
+   is real (measured against the grid, the signed Booth toy
+   `booth_signed_prefix` lost its fire; against the other side it keeps
+   it). A side that fires adds up to the other and reads an empty
+   difference, so firing cells are untouched; a difference with a
+   monomial too wide for the tables leaves the side as it was.
+
+**Review (Codex, gpt-6-astra, max).** Three rounds. Rounds 1 and 2 each
+found a lookup scanned once per candidate and charged one unit, the
+product gate over an input pair in the virtual nodes and the and gate
+over a pair in the fused cells: with thousands of gates sharing a cut
+and none the gate sought, the pairing loop went cubic (0.48 s to 13 s on
+a 3,006-variable gate CNF at the same reported work). Both are now
+looked up once per pair, misses included, with the scan charged. Round 3
+clean. The sweep and the replay were run again on the committed binary
+(`log/structarith-fire-2026-10-30-700M-skz25e`).
+
+**Measured on the way, and not kept.** Lowering the rows' margin to 7:8
+in the second attempt takes the AND side with 200 cells by function, and
+the chain then fails from column 8 up (the rows' 56 missing cells break
+it; the full solver on the last step does not prove it in 1.14G work).
+Raising the rows' cut limit from 10 to 14 signals leaves 15 matches
+failing and the pass finds no miter at 246M work instead of 20M. An
+equivalent circuit with the bottom carry written as one gate
+(`G = a_0 b_0 . a_1 b_1`, `2953 = G . s_2`) fired with the and-leaf cells
+alone, which is how the three signals were separated from the bottom.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 

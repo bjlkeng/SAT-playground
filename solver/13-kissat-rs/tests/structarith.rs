@@ -1086,6 +1086,150 @@ fn mapped_column_sum_with(c: &mut Circuit, mut cols: Vec<Vec<Addend>>, constant:
     out
 }
 
+/// As `mapped_column_sum` for a plain `a * b`, with the algebra a mapper
+/// does on products of the same four inputs (`a_i b_l . a_k b_j = a_i b_j
+/// . a_k b_l`), as found on the AND side of
+/// `16_16_booth_dadda_mapped_and_and_wallace_mapped_bit28` (bead
+/// skz.25):
+/// - a column's half adder over `u = a_i b_l` and `w = a_{i+1} b_{l-1}`
+///   writes its carry as `g = r . q` with `r = a_{i+1} b_l` (the column
+///   above's product) and `q = a_i b_{l-1}` (the column below's), and its
+///   sum as `nor(nor(u, w), g)`;
+/// - the column above adds `r`, `g` and a third signal `c` as one full
+///   adder absorbed over `r`: sum `(r . not q) xor c`, carry
+///   `r . (q or c)`; every other time the product `r` is spread over the
+///   carry's two gates, `a_{i+1} . (b_l . not nor(q, c))`;
+/// - at the bottom, bit 1's carry `a_0 b_1 . a_1 b_0` is written as
+///   `a_0 b_0 . a_1 b_1` and multiplied into bit 2's final-adder carry one
+///   input at a time, `a_1 b_1 . (a_0 b_0 . s_2)`, so once the cone is
+///   pruned to the compared bit no gate equals it and the two bit-1
+///   products are nowhere.
+/// `a` and `b` are the operand words the columns were made from.
+fn mapped_column_sum_absorbed(c: &mut Circuit, mut cols: Vec<Vec<Addend>>, a: &[i64], b: &[i64]) -> Vec<i64> {
+    let width = cols.len();
+    let n = a.len();
+    // (each product one gate, wherever it is read)
+    let mut products: HashMap<(i64, i64), i64> = HashMap::new();
+    fn product(c: &mut Circuit, products: &mut HashMap<(i64, i64), i64>, x: i64, y: i64) -> i64 {
+        *products.entry((x, y)).or_insert_with(|| c.and2(x, y))
+    }
+    fn lit(c: &mut Circuit, products: &mut HashMap<(i64, i64), i64>, it: Addend) -> i64 {
+        match it {
+            Addend::Lit(x) => x,
+            Addend::Prod(x, y, false) => product(c, products, x, y),
+            Addend::Prod(x, y, true) => -product(c, products, x, y),
+        }
+    }
+    let index = |w: &[i64], x: i64| w.iter().position(|&v| v == x);
+    let mut absorb: HashMap<i64, (i64, i64)> = HashMap::new(); // the carry g -> (r, q)
+    let mut spread = false;
+    for k in 0..width {
+        // the half adder whose carry is the other pairing's product
+        if cols[k].len() >= 3 {
+            let pair = cols[k].iter().take(2).map(|&it| match it {
+                Addend::Prod(x, y, false) => Some((x, y)),
+                _ => None,
+            });
+            let pair: Vec<Option<(i64, i64)>> = pair.collect();
+            if let (Some((ux, uy)), Some((wx, wy))) = (pair[0], pair[1]) {
+                if let (Some(i), Some(l), Some(i2), Some(l2)) = (index(a, ux), index(b, uy), index(a, wx), index(b, wy)) {
+                    if i2 == i + 1 && l >= 1 && l2 == l - 1 && k + 1 < width {
+                        let (u, w) = (product(c, &mut products, ux, uy), product(c, &mut products, wx, wy));
+                        let (r, q) = (product(c, &mut products, a[i + 1], b[l]), product(c, &mut products, a[i], b[l - 1]));
+                        let g = c.and2(r, q);
+                        let nor_uw = c.and2(-u, -w);
+                        let s = c.and2(-nor_uw, -g);
+                        cols[k].remove(0);
+                        cols[k].remove(0);
+                        cols[k].push(Addend::Lit(s));
+                        cols[k + 1].insert(0, Addend::Lit(g));
+                        absorb.insert(g, (r, q));
+                    }
+                }
+            }
+        }
+        // the full adder absorbed over the product r
+        let found = cols[k].iter().enumerate().find_map(|(gi, &it)| match it {
+            Addend::Lit(g) => absorb.get(&g).map(|&(r, q)| (gi, r, q)),
+            _ => None,
+        });
+        if let Some((gi, r, q)) = found {
+            let ri = cols[k].iter().position(|&it| matches!(it, Addend::Prod(x, y, false) if products.get(&(x, y)) == Some(&r)));
+            if let Some(ri) = ri {
+                if cols[k].len() >= 3 && k + 1 < width {
+                    let (rx, ry) = match cols[k][ri] {
+                        Addend::Prod(x, y, _) => (x, y),
+                        _ => unreachable!(),
+                    };
+                    let ci = (0..cols[k].len()).find(|&j| j != gi && j != ri).unwrap();
+                    let third = cols[k][ci];
+                    let cl = lit(c, &mut products, third);
+                    let t = c.and2(r, -q);
+                    let s = c.xor2(t, cl);
+                    let e = c.and2(-q, -cl);
+                    let cy = if spread { let inner = c.and2(ry, -e); c.and2(rx, inner) } else { c.and2(r, -e) };
+                    spread = !spread;
+                    let mut drop = vec![gi, ri, ci];
+                    drop.sort_unstable();
+                    for &j in drop.iter().rev() {
+                        cols[k].remove(j);
+                    }
+                    cols[k].push(Addend::Lit(s));
+                    cols[k + 1].push(Addend::Lit(cy));
+                }
+            }
+        }
+        while cols[k].len() > 2 {
+            let (x, y, z) = (cols[k].remove(0), cols[k].remove(0), cols[k].remove(0));
+            let (x, y, z) = (lit(c, &mut products, x), lit(c, &mut products, y), lit(c, &mut products, z));
+            let (s, cy) = c.full_adder(x, y, z, false);
+            cols[k].push(Addend::Lit(s));
+            if k + 1 < width {
+                cols[k + 1].push(Addend::Lit(cy));
+            }
+        }
+    }
+    // the final ripple adder, with bit 1's carry as the other pairing's
+    // product multiplied into bit 2's carry one input at a time
+    let mut out = Vec::new();
+    let mut carry: Option<i64> = None;
+    let mut fused: Option<(i64, i64)> = None; // bit 1's carry as (a_0 b_0, a_1 b_1)
+    for k in 0..width {
+        let col: Vec<Addend> = cols[k].clone();
+        let mut bits: Vec<i64> = col.into_iter().map(|it| lit(c, &mut products, it)).collect();
+        bits.extend(carry);
+        let (s, cy) = match bits.len() {
+            0 => (0, None),
+            1 => (bits[0], None),
+            2 if k == 1 && n >= 2 && carry.is_none() => {
+                let s = c.xor2(bits[0], bits[1]);
+                let (p00, p11) = (product(c, &mut products, a[0], b[0]), product(c, &mut products, a[1], b[1]));
+                let cy = c.and2(p00, p11);
+                fused = Some((p00, p11));
+                (s, Some(cy))
+            }
+            2 if k == 2 && fused.is_some() && carry == Some(bits[1]) => {
+                let (p00, p11) = fused.unwrap();
+                let s = c.xor2(bits[0], bits[1]);
+                let inner = c.and2(p00, bits[0]);
+                let cy = c.and2(p11, inner);
+                (s, Some(cy))
+            }
+            2 => {
+                let (s, cy) = c.half_adder(bits[0], bits[1]);
+                (s, Some(cy))
+            }
+            _ => {
+                let (s, cy) = c.full_adder(bits[0], bits[1], bits[2], false);
+                (s, Some(cy))
+            }
+        };
+        out.push(s);
+        carry = cy;
+    }
+    out
+}
+
 /// The columns of a modified Baugh-Wooley two's complement n x n
 /// multiplier: the products with one sign bit as nands (the and gates read
 /// complemented when `gates` is set, else folded addends), `a_{n-1}
@@ -1372,6 +1516,9 @@ enum Miter {
     /// mapper wrote (no gate per product the tree reads): no Booth side to
     /// give the operand order (bead SAT-playground-skz.15)
     AndMapped,
+    /// A generator-form AND multiplier against a mapped one with the
+    /// product algebra of bead skz.25 (`mapped_column_sum_absorbed`).
+    AndMappedAbsorbed,
     /// two mapped AND multipliers, their compressors in opposite orders
     AndMappedBoth,
 }
@@ -1396,7 +1543,7 @@ fn miter_top(kind: Miter, n: usize, bit: usize, two_input: bool, pruned: bool, o
     // (the shapes of bead skz.21 make their own products, or none)
     let own_products = matches!(
         kind,
-        Miter::BaughWooley(_) | Miter::BaughWooleyMapped | Miter::BoothSigned(_) | Miter::BoothSignedMapped | Miter::SignExtended | Miter::Squarer(_) | Miter::SquarerMapped | Miter::Mac(_) | Miter::MacMapped | Miter::Constant(..) | Miter::ConstantSub | Miter::AndMapped | Miter::AndMappedBoth
+        Miter::BaughWooley(_) | Miter::BaughWooleyMapped | Miter::BoothSigned(_) | Miter::BoothSignedMapped | Miter::SignExtended | Miter::Squarer(_) | Miter::SquarerMapped | Miter::Mac(_) | Miter::MacMapped | Miter::Constant(..) | Miter::ConstantSub | Miter::AndMapped | Miter::AndMappedBoth | Miter::AndMappedAbsorbed
     );
     let pp: Vec<Vec<i64>> = if own_products { Vec::new() } else { (0..n).map(|i| (0..n).map(|j| c.and2(a[i], b[j])).collect()).collect() };
     let (oa, ob) = match kind {
@@ -1468,6 +1615,12 @@ fn miter_top(kind: Miter, n: usize, bit: usize, two_input: bool, pruned: bool, o
             let m1 = mac_columns(&mut c, &a, &b, &[], false);
             let m2 = mac_columns(&mut c, &a, &b, &[], false);
             (mapped_column_sum_with(&mut c, m1, 0, false), mapped_column_sum_with(&mut c, m2, 0, true))
+        }
+        Miter::AndMappedAbsorbed => {
+            let cols = mac_columns(&mut c, &a, &b, &[], true);
+            let lits = as_literals(&mut c, &cols);
+            let mcols = mac_columns(&mut c, &a, &b, &[], false);
+            (column_sum(&mut c, lits, 0, two_input, false, "ripple"), mapped_column_sum_absorbed(&mut c, mcols, &a, &b))
         }
         Miter::ConstantSub => {
             let (cols, _) = constant_columns(&a, n + 4, &[0, 2, 3], &[]);
@@ -2222,6 +2375,42 @@ fn and_against_and_mapped_toys() {
         let r = run(&cnf, &["--structarith=1"], &[("SAT_STRUCT_DEBUG", "1")]);
         assert_eq!(r.status, "UNSATISFIABLE", "{}: {}\n{}", name, r.stdout, r.stderr);
         assert!(r.stderr.contains("operands from the structural cells"), "{}: no operands from the cells: {}", name, r.stderr);
+        assert!(r.stdout.contains("arithmetic: two adder networks"), "{}: the pass did not fire: {}", name, r.stderr);
+        let proof = fx.path(&format!("{}.drat", name));
+        let stdout = run_arith_with_proof(&cnf, &proof);
+        assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+        assert_eq!(gate(&cnf, &proof), "ok", "{}: two-stage gate", name);
+    }
+}
+
+#[test]
+fn and_mapped_with_product_algebra_toys() {
+    // bead SAT-playground-skz.25: the AND side of
+    // 16_16_booth_dadda_mapped_and_and_wallace_mapped_bit28 as the mapper
+    // wrote it (mapped_column_sum_absorbed): a half adder's carry over two
+    // products as the and of the other pairing's two, the full adder above
+    // absorbed over that product (compact and with the product spread over
+    // two gates), and bit 1's carry as the other pairing's product
+    // multiplied into bit 2's carry one input at a time. The fused cells
+    // read the and leaf, the virtual node over the product, and a side with
+    // a grid reads the two products it lacks as fresh addends. Each refutes
+    // with a proof the gate accepts; the pruned ones exercise the bottom
+    let fx = Fixture::new("structarith_and_mapped_absorbed");
+    // (the 8-bit cases hold six and ten such cells, three and four of
+    // them with the product spread; a 12-bit one fired too, with a
+    // VeriPB check of six minutes, and is left out)
+    for (name, n, bit, pruned) in [
+        ("absorbed_8_9", 8usize, 9usize, false),
+        ("absorbed_8_12_pruned", 8, 12, true),
+    ] {
+        let cnf = fx.path(&format!("{}.cnf", name));
+        miter_pruned(Miter::AndMappedAbsorbed, n, bit, false, pruned, &cnf);
+        if let Ok(dir) = std::env::var("SAT_TEST_KEEP") {
+            let _ = std::fs::copy(&cnf, Path::new(&dir).join(format!("absorbed_{}.cnf", name)));
+        }
+        let r = run(&cnf, &["--structarith=1"], &[("SAT_STRUCT_DEBUG", "1")]);
+        assert_eq!(r.status, "UNSATISFIABLE", "{}: {}\n{}", name, r.stdout, r.stderr);
+        assert!(r.stderr.contains("fused cell over"), "{}: no fused cell: {}", name, r.stderr);
         assert!(r.stdout.contains("arithmetic: two adder networks"), "{}: the pass did not fire: {}", name, r.stderr);
         let proof = fx.path(&format!("{}.drat", name));
         let stdout = run_arith_with_proof(&cnf, &proof);
