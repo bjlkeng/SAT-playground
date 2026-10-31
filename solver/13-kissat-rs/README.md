@@ -191,9 +191,11 @@ measurement promotes it, and stays a switch after. **Promoted 2026-10-10:
 `structcount`** (309 v 306 on 2025 with the parity pass's flip step;
 not seen on the holdout); **2026-10-20: `structarith`** (313 v 312 on
 2025, the two multiplier miters; not seen on the holdout; "The linear
-arithmetic pass" below). The stock kissat path is `--structsym=0
---structparity=0 --structcount=0 --structarith=0` (and `--gauss=0`, the
-parity engine below), which `tools/parity.py` passes unless
+arithmetic pass" below); then `structsort` (2026-10-27), `structdiv`
+(2026-10-28) and `structdd` (2026-10-31), each after its own paired
+run. The stock kissat path is `--structsym=0 --structparity=0
+--structcount=0 --structarith=0 --structsort=0 --structdiv=0
+--structdd=0` (and `--gauss=0`, the parity engine below), which `tools/parity.py` passes unless
 told `--structure`, and the test helpers' `run` too
 (`tests/common/mod.rs`, `STOCK_PATH`). A promoted configuration is
 exactly the measured one:
@@ -230,7 +232,7 @@ structure set's gain, +29 in both seeds, is a deterministic one.
 | `--structparity=1` | parity: closed XOR systems fixed by cycle flips, and the flip symmetries of any formula (`src/structparity.rs`) | **default on** since 2026-10-10; the flip step since 2026-10-13 (below) |
 | `--structcount=1` | counting: demand clauses against pairwise at-most-one groups, a Hall violation proved by cutting planes (`src/structcount.rs`); runs last, within `structcountticks` | **default on** since 2026-10-13 (below); sequential-counter and decision-diagram counts are step two |
 | `--structcountticks=N` | the counting pass's own work limit in thousands (default 20K, 20M), counted from where the other passes stopped | since 2026-10-13 |
-| `--structdd=1` | the counting pass, step two: a count written as a decision diagram over at-most-one groups (the rook cells), refuted when it asks for more trues than there are groups (`src/structdd.rs`); runs before the counting pass, within `structddticks` | **off** (default 0) until measured; "The counting pass, step two" below |
+| `--structdd=1` | the counting pass, step two: a count written as a decision diagram over at-most-one groups (the rook cells), refuted when it asks for more trues than there are groups (`src/structdd.rs`); runs before the counting pass, within `structddticks` | **default on** since 2026-10-31 (322/325 and 324/325 off/on; below, "The counting pass, step two") |
 | `--structddticks=N` | the decision-diagram step's own work limit in thousands (default 100K, 100M), counted from where the earlier passes stopped | since 2026-10-31 |
 | `--structarith=1` | linear arithmetic: a miter of two multipliers over shared partial products refuted by summing their adder cells (`src/structarith.rs`); runs after symmetry, before counting, within `structarithticks` | **default on** since 2026-10-20 (313 v 312; below, "The linear arithmetic pass") |
 | `--structarithticks=N` | the arithmetic pass's own work limit in thousands (default 20K, 20M), counted from where the earlier passes stopped | since 2026-10-19 |
@@ -3936,8 +3938,8 @@ rejected) on the real cells:
 | `rook-52-0-1` | 143,205 | 2,704 | 52 | 53 | 151,166 | 94 MB | 24.6 s |
 | `rook-56-0-0` | 178,637 | 3,136 | 56 | 57 | 187,882 | 124 MB | 35.0 s |
 
-**The pass** (`src/structdd.rs`, option `structdd`, default 0 until
-measured; `structddticks` its own work limit, 100M, counted from where
+**The pass** (`src/structdd.rs`, option `structdd`, on by default since
+2026-10-31; `structddticks` its own work limit, 100M, counted from where
 the earlier passes stopped; it runs before the counting pass and reads
 the input clauses alone):
 
@@ -4039,7 +4041,9 @@ unsolved).
 
 So the pass is +3 on each seed where it fires, the same search
 everywhere else for 0.09% more work, and the wall cells come and go
-as they did before. Promotion to default is the owner's call.
+as they did before. The owner's call (2026-10-31): on by default now,
+the 2026 holdout look kept for a later candidate; the stock path gains
+`--structdd=0`.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 

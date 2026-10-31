@@ -250,10 +250,14 @@ kissat_options! {
     (structcsp, 0, 0, 1, "structure pass: CSP decoding"),
     // the counting pass, step two (bead SAT-playground-skz.6, 2026-10-31):
     // a count written as a decision diagram over at-most-one groups (the
-    // rook cells), off until measured. structddticks is its own work
-    // limit, counted from where the earlier passes stopped: the three
-    // rook proofs take 30-43M, so 100M leaves room for a larger board
-    (structdd, 0, 0, 1, "structure pass: decision-diagram counting"),
+    // rook cells). On by default since 2026-10-31, the owner's call after
+    // the two-seed 400-cell run (322/325 and 324/325 off/on: the three
+    // rook cells in seconds against timeouts, the same search on every
+    // other cell both arms solve; the 2026 holdout not consulted).
+    // structddticks is its own work limit, counted from where the earlier
+    // passes stopped: the three rook proofs take 34-48M, so 100M leaves
+    // room for a larger board
+    (structdd, 1, 0, 1, "structure pass: decision-diagram counting"),
     (structddticks, 100_000, 0, i32::MAX, "structure pass: decision-diagram work limit (K)"),
     // the divider and square-root pass (bead SAT-playground-skz.23,
     // 2026-10-27): on by default since 2026-10-28, the owner's call after

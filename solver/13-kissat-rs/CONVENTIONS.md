@@ -165,7 +165,7 @@ single 2026 holdout), since 2026-10-13 `structcount` too, and since
 parity engine"), since 2026-10-20 `structarith`, since 2026-10-27
 `structsort` and since 2026-10-28 `structdiv`: the stock kissat path is
 `--structsym=0 --structparity=0 --structcount=0 --structarith=0
---structsort=0 --structdiv=0 --gauss=0`, which `tools/parity.py`
+--structsort=0 --structdiv=0 --structdd=0 --gauss=0`, which `tools/parity.py`
 adds unless told `--structure` and the test helpers' `run`/`run_with_proof`
 add always
 (`tests/common/mod.rs`, `STOCK_PATH`); a test of the shipped defaults
