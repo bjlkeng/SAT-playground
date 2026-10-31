@@ -248,6 +248,13 @@ kissat_options! {
     (structcount, 1, 0, 1, "structure pass: pigeonhole counting"),
     (structcountticks, 20_000, 0, i32::MAX, "structure pass: counting work limit (K)"),
     (structcsp, 0, 0, 1, "structure pass: CSP decoding"),
+    // the counting pass, step two (bead SAT-playground-skz.6, 2026-10-31):
+    // a count written as a decision diagram over at-most-one groups (the
+    // rook cells), off until measured. structddticks is its own work
+    // limit, counted from where the earlier passes stopped: the three
+    // rook proofs take 30-43M, so 100M leaves room for a larger board
+    (structdd, 0, 0, 1, "structure pass: decision-diagram counting"),
+    (structddticks, 100_000, 0, i32::MAX, "structure pass: decision-diagram work limit (K)"),
     // the divider and square-root pass (bead SAT-playground-skz.23,
     // 2026-10-27): on by default since 2026-10-28, the owner's call after
     // the two-seed 400-cell run (319/321 and 321/323 off/on: div_miter_lec__2
@@ -747,9 +754,9 @@ mod tests {
         // 2026-10-07), walkshare, walkstall (2026-10-13), gauss, gausseffort,
         // gausslimit, gaussyield, gausswindow (2026-10-15/17),
         // structarith, structarithticks (2026-10-19), structsort,
-        // structsortticks (2026-10-26) and structdiv, structdivticks
-        // (2026-10-27)
-        assert_eq!(OPTION_TABLE.len(), 158 + 22);
+        // structsortticks (2026-10-26), structdiv, structdivticks
+        // (2026-10-27) and structdd, structddticks (2026-10-31)
+        assert_eq!(OPTION_TABLE.len(), 158 + 24);
     }
 
     #[test]

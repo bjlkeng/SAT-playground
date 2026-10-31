@@ -230,6 +230,8 @@ structure set's gain, +29 in both seeds, is a deterministic one.
 | `--structparity=1` | parity: closed XOR systems fixed by cycle flips, and the flip symmetries of any formula (`src/structparity.rs`) | **default on** since 2026-10-10; the flip step since 2026-10-13 (below) |
 | `--structcount=1` | counting: demand clauses against pairwise at-most-one groups, a Hall violation proved by cutting planes (`src/structcount.rs`); runs last, within `structcountticks` | **default on** since 2026-10-13 (below); sequential-counter and decision-diagram counts are step two |
 | `--structcountticks=N` | the counting pass's own work limit in thousands (default 20K, 20M), counted from where the other passes stopped | since 2026-10-13 |
+| `--structdd=1` | the counting pass, step two: a count written as a decision diagram over at-most-one groups (the rook cells), refuted when it asks for more trues than there are groups (`src/structdd.rs`); runs before the counting pass, within `structddticks` | **off** (default 0) until measured; "The counting pass, step two" below |
+| `--structddticks=N` | the decision-diagram step's own work limit in thousands (default 100K, 100M), counted from where the earlier passes stopped | since 2026-10-31 |
 | `--structarith=1` | linear arithmetic: a miter of two multipliers over shared partial products refuted by summing their adder cells (`src/structarith.rs`); runs after symmetry, before counting, within `structarithticks` | **default on** since 2026-10-20 (313 v 312; below, "The linear arithmetic pass") |
 | `--structarithticks=N` | the arithmetic pass's own work limit in thousands (default 20K, 20M), counted from where the earlier passes stopped | since 2026-10-19 |
 | `--structsort=1` | sorters: a miter of two networks of swap units over the same words, refuted by sortedness lemmas and a count by thresholds (`src/structsort.rs`); runs after the arithmetic pass, before counting, within `structsortticks` | **default on** since 2026-10-27 (317/316 and 318/320 off/on; below, "The sorter pass") |
@@ -3885,6 +3887,121 @@ the merge equalities cover the representatives the outputs read. Round
 2 clean (the reviewer ran 300 whole-word fuzz miters of its own). The
 sweep and the replay were run again on the committed binary
 (`log/structarith-fire-2026-10-30-700M-skz26b`).
+
+## The counting pass, step two: counter decision diagrams (2026-10-31; bead `SAT-playground-skz.6`)
+
+**What it is for.** The three rook cells of 2025 (`rook-51-0-0`,
+`rook-52-0-1`, `rook-56-0-0`; unsolved by solver 13 and by the C kissat
+on both seeds) put n+1 rooks on an n×n board. Pairwise binary clauses
+allow at most one rook per row and per column, and the count is a
+decision diagram: 135-179K one-way ITE nodes `node -> (x ? hi : lo)`,
+one board variable per level, children on the next level, the root a
+unit (the decoding of 2026-10-14, under "The counting pass, step one").
+The argument is n+1 rooks on n rows; search cannot make it. The
+cardinality census (bead `skz.5`) found no other cell of 2025 with a
+count that decides it, so this step is the rook cells and the shape in
+general: a count written as a diagram over variables that at-most-one
+groups cover, refuted when the diagram asks for more trues than there
+are groups.
+
+**What blocked it, and the way round.** The 2026-10-14 notes priced the
+proof: each node's meaning, "node implies at least q trues among the
+board variables below it", needs a case split on the node's variable,
+about q cutting-planes steps a node (3.5M `pol` lines, 4.6G term
+operations on `rook-51-0-0`), or a proof by contradiction that spells
+out each node's board-wide sum (175M terms). The constraint here is a
+sum over *groups*, not board variables: one fresh variable per level,
+`w = x or w_next`, says "this level's row has a true variable here or
+below" (three `red` steps), so a node's constraint, "val(node) × ~node
++ the w of every row still open at its level >= val(node)", has at most
+n+1 terms. A node's constraint follows from its children's by a `pbc`
+of three lines: the lo child's constraint added to the negation (the lo
+child's sum is the node's or less, so it is impossible), the hi child's
+constraint added with the clauses "x -> w" and "x -> ~w_next" (x takes
+its row's slot and the pair clauses close the row below, so the hi
+child is impossible once x holds; one `rup` clause per level), and
+`rup >= 1` over the node's own clauses. At the root the sum has one
+term per row but asks for n+1: `pol` gives ~root, `rup` the empty
+clause. About 7M terms instead of 175M.
+
+**The prototype** (`tools/dd_toy_proof.py`, `selftest`: nine toys, six
+rook boards with shuffled level orders, two satisfiable boards that
+give no refutation, a diagram whose hi branch skips a level; a tampered
+proof, one node asking one more true than its subtree forces, is
+rejected) on the real cells:
+
+| cell | nodes | board | rows | root needs | proof lines | proof size | VeriPB |
+|---|---|---|---|---|---|---|---|
+| `rook-51-0-0` | 135,147 | 2,601 | 51 | 52 | 142,802 | 87 MB | 21.8 s |
+| `rook-52-0-1` | 143,205 | 2,704 | 52 | 53 | 151,166 | 94 MB | 24.6 s |
+| `rook-56-0-0` | 178,637 | 3,136 | 56 | 57 | 187,882 | 124 MB | 35.0 s |
+
+**The pass** (`src/structdd.rs`, option `structdd`, default 0 until
+measured; `structddticks` its own work limit, 100M, counted from where
+the earlier passes stopped; it runs before the counting pass and reads
+the input clauses alone):
+
+1. reads the diagram from a positive unit: a variable is a node when at
+   most three clauses hold it negated and those clauses, with the node
+   removed, are an ITE on one board variable; the other literals are
+   nodes read the same way, or board literals. A board variable holds
+   its level's nodes negated in their clauses, which is what ends the
+   reading of a board variable as a node;
+2. orders the board variables by level (a topological sort: a node's
+   variable before its clauses' other board variable and its children's;
+   a node with two board variables of one sign each reads on the earlier
+   one) and declines unless every child, node or board literal, sits
+   strictly below its parent;
+3. computes val(node), the least number of trues a node forces at its
+   level and below: val(hi)+1 or val(lo), whichever is smaller; a false
+   child counts as infinite, a true one as nothing, a board literal as
+   one or nothing;
+4. partitions the board variables into cliques of the pair clauses
+   (greedy in level order: the first partner by common neighbours, the
+   rest by intersection; a variable in no pair clause is a clique of its
+   own). With fewer cliques than val(root) the formula is unsatisfiable,
+   and that check is the whole refutation when no proof file is asked
+   for (as the counting pass refutes without one); with a proof file
+   the derivation above is written and a step that cannot be written
+   drops the refutation.
+
+On the three cells the pass refutes in 2-3 s on seeds 0 and 1, every
+proof through the gate (VeriPB 31-51 s on a loaded host); the work is
+in the sweep paragraph below. Tests: a 6×6 board with seven rooks
+refuted with a gate-checked proof, alone and after the shipped passes,
+the same answer without a proof file, a tampered proof rejected; a 5×5
+board with five rooks satisfiable with its model checked against every
+input clause, the pass reading the diagram and deriving nothing; no
+room of its own (`--structddticks=0`) derives nothing and the search
+answers; off leaves no trace.
+
+**The fire sweep** (the pass alone on the 400 cells, the other passes
+and the parity engine off, work clock capped at 200M;
+`log/structdd-fire-2026-10-31i/fire.tsv`, `run_one.sh` next to it, the
+committed binary frozen there; the sweeps `a`-`h` of the same day are
+the review rounds' builds, with the same verdict each time): it fires
+on the three rook cells and on nothing else, no panic, no wrong answer.
+Where it runs and finds nothing (341 cells; the other 56 are over the
+structure stage's 10M-clause limit) it costs a median 0.66M work, 12.9M
+at the 90th percentile, more than 50M on 12 cells and its 100M limit on
+six (`ibm-2004-23-k100`, `UR-15-10p0`, `anbul-dated-5-15-u`,
+`planning-ipc5-pathways-17-step20`, `SAT_dat.k100-24_1_rule_2`,
+`steps7_I1-2-2-4-4-8-25-100`): circuits and planning cells with
+hundreds of positive units whose cones read as tens of thousands of
+nodes before the order check declines them, the price of the limit, as
+the arithmetic pass pays its 20M. On the three cells without a proof
+file: 12.4M, 13.2M and 16.5M work, 0.7-0.9 s wall; with the proof
+34.0M, 36.5M and 47.6M, 2.0-2.8 s (the limit is 100M so that a larger
+board still fits). Review: nine Codex rounds, every finding on work
+metering and budget polling (the per-variable tables charged before
+they are made, scans polled by literals read, a node's clauses capped
+at three literals before its children are queued, a clause read whole
+and a list sorted only when the limit covers it, every table reserved
+before it is made, the open groups of a level computed rather than
+tabled) and four on the prototype (helper clauses written before a
+`pbc` takes its negation's id; a satisfiable toy wrongly refuted now
+fails the selftest; a compressed input decompressed for VeriPB; the
+clauses read as the gate reads them, split at zeros).
 
 ## Notes from the RL scheduler's first steps (plan §10)
 

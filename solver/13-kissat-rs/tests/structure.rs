@@ -606,3 +606,165 @@ fn counting_pass_refutes_pigeonhole_by_cutting_planes() {
     let pbp = std::fs::read_to_string(fx.path("c.drat.pbp")).unwrap();
     assert!(pbp.contains("pol ") && !pbp.contains("red "), "{}", pbp);
 }
+
+/// An n x n board with pairwise at-most-one clauses on rows and columns
+/// and a counter decision diagram asserting exactly k rooks, written as
+/// the rook cells write it (one-way ITE nodes, constants simplified, a
+/// node's subsumed clauses dropped; `tools/dd_toy_proof.py` is the
+/// reference). The level order is the rows from the last, shuffled when
+/// `seed` is not zero.
+fn rook_board(n: usize, k: usize, seed: u64, path: &Path) {
+    type Child = Option<Option<i64>>; // None: false; Some(None): true; Some(Some(l)): a literal
+    let v = |r: usize, c: usize| (r * n + c + 1) as i64;
+    let mut clauses: Vec<Vec<i64>> = Vec::new();
+    for r in 0..n {
+        for c1 in 0..n {
+            for c2 in c1 + 1..n {
+                clauses.push(vec![-v(r, c1), -v(r, c2)]);
+            }
+        }
+    }
+    for c in 0..n {
+        for r1 in 0..n {
+            for r2 in r1 + 1..n {
+                clauses.push(vec![-v(r1, c), -v(r2, c)]);
+            }
+        }
+    }
+    let mut levels: Vec<i64> = (0..n).rev().flat_map(|r| (0..n).map(move |c| v(r, c))).collect();
+    if seed != 0 {
+        let mut s = seed;
+        for i in (1..levels.len()).rev() {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let j = ((s >> 33) as usize) % (i + 1);
+            levels.swap(i, j);
+        }
+    }
+    fn node(i: usize, c: usize, levels: &[i64], next: &mut i64, memo: &mut std::collections::HashMap<(usize, usize), Child>, clauses: &mut Vec<Vec<i64>>) -> Child {
+        let rem = levels.len() - i;
+        if c > rem {
+            return None;
+        }
+        if rem == 0 {
+            return Some(None);
+        }
+        if let Some(&r) = memo.get(&(i, c)) {
+            return r;
+        }
+        let x = levels[i];
+        let r = if rem == 1 {
+            Some(Some(if c == 1 { x } else { -x }))
+        } else {
+            let hi = if c == 0 { None } else { node(i + 1, c - 1, levels, next, memo, clauses) };
+            let lo = node(i + 1, c, levels, next, memo, clauses);
+            *next += 1;
+            let nn = *next;
+            let mut cls: Vec<Vec<i64>> = Vec::new();
+            for (a, b) in [(Some(Some(-x)), hi), (Some(Some(x)), lo), (hi, lo)] {
+                let mut cl = vec![-nn];
+                let mut satisfied = false;
+                for t in [a, b] {
+                    match t {
+                        Some(None) => satisfied = true,
+                        None => {}
+                        Some(Some(l)) => cl.push(l),
+                    }
+                }
+                if satisfied || cl.iter().any(|&l| cl.contains(&-l)) {
+                    continue;
+                }
+                cls.push(cl);
+            }
+            for cl in &cls {
+                if !cls.iter().any(|o| o.len() < cl.len() && o.iter().all(|l| cl.contains(l))) {
+                    clauses.push(cl.clone());
+                }
+            }
+            Some(Some(nn))
+        };
+        memo.insert((i, c), r);
+        r
+    }
+    let mut next = (n * n) as i64;
+    let mut memo = std::collections::HashMap::new();
+    let root = node(0, k, &levels, &mut next, &mut memo, &mut clauses).flatten().expect("a root node");
+    assert!(root > (n * n) as i64);
+    clauses.insert(0, vec![root]);
+    let mut text = format!("p cnf {} {}\n", next, clauses.len());
+    for c in &clauses {
+        for l in c {
+            text.push_str(&format!("{} ", l));
+        }
+        text.push_str("0\n");
+    }
+    std::fs::write(path, text).unwrap();
+}
+
+#[test]
+fn decision_diagram_count_refutes_a_rook_board_with_a_checked_proof() {
+    let fx = Fixture::new("structure_dd");
+    let cnf = fx.path("rook6.cnf");
+    rook_board(6, 7, 3, &cnf);
+    let proof = fx.path("rook6.drat");
+    // the pass alone on the stock path
+    let stdout = run_options_with_proof(&cnf, &proof, &["--structdd=1"]);
+    assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+    assert!(stdout.contains("structure pass: decision-diagram count:") && stdout.contains("the root needs 7, refuted"), "{}", stdout);
+    assert_eq!(gate(&cnf, &proof), "ok");
+    let pbp = std::fs::read_to_string(fx.path("rook6.drat.pbp")).unwrap();
+    assert!(pbp.contains("pbc ") && pbp.contains("red ") && pbp.contains("conclusion UNSAT"), "{}", pbp);
+    // the same answer without a proof file
+    let r = run(&cnf, &["--structdd=1"], &[]);
+    assert_eq!(r.status, "UNSATISFIABLE");
+    assert!(r.stdout.contains("decision-diagram count:") && r.stdout.contains("refuted"), "{}", r.stdout);
+    // with the shipped passes on as well, which run first
+    let proof2 = fx.path("rook6b.drat");
+    let out = solver_command().arg("-n").arg("--structdd=1").arg(&cnf).arg(&proof2).output().expect("run sat-solver");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("s UNSATISFIABLE"), "{}", stdout);
+    assert_eq!(gate(&cnf, &proof2), "ok");
+    // a proof that asks one node for one more true than its subtree
+    // forces fails the gate
+    let mut lines: Vec<String> = pbp.lines().map(|l| l.to_string()).collect();
+    let idx = lines.iter().position(|l| l.starts_with("pbc ")).unwrap();
+    let mut parts: Vec<String> = lines[idx].split(' ').map(|t| t.to_string()).collect();
+    let ge = parts.iter().position(|t| t == ">=").unwrap();
+    parts[ge + 1] = (parts[ge + 1].parse::<i64>().unwrap() + 1).to_string();
+    lines[idx] = parts.join(" ");
+    std::fs::write(fx.path("rook6.drat.pbp"), lines.join("\n") + "\n").unwrap();
+    assert_ne!(gate(&cnf, &proof), "ok");
+}
+
+#[test]
+fn decision_diagram_count_leaves_a_satisfiable_board_and_stops_without_room() {
+    let fx = Fixture::new("structure_dd_sat");
+    // exactly n rooks on an n x n board is satisfiable: the diagram is read
+    // and nothing follows, and the model satisfies every input clause
+    let cnf = fx.path("rook5sat.cnf");
+    rook_board(5, 5, 1, &cnf);
+    let out = solver_command().args(common::STOCK_PATH).arg("--structdd=1").arg(&cnf).output().expect("run sat-solver");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("s SATISFIABLE"), "{}", stdout);
+    assert!(stdout.contains("decision-diagram count: nothing refuted") && !stdout.contains(", refuted"), "{}", stdout);
+    let model: Vec<i64> = stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix("v "))
+        .flat_map(|l| l.split_whitespace().map(|t| t.parse::<i64>().unwrap()))
+        .filter(|&l| l != 0)
+        .collect();
+    let text = std::fs::read_to_string(&cnf).unwrap();
+    for line in text.lines().skip(1) {
+        let c: Vec<i64> = line.split_whitespace().map(|t| t.parse::<i64>().unwrap()).filter(|&l| l != 0).collect();
+        assert!(c.iter().any(|l| model.contains(l)), "clause {:?} unsatisfied", c);
+    }
+    // the unsatisfiable board with no room of its own: the pass derives
+    // nothing and the search answers; off, the pass leaves no trace
+    let cnf = fx.path("rook5.cnf");
+    rook_board(5, 6, 2, &cnf);
+    let r = run(&cnf, &["--structdd=1", "--structddticks=0"], &[]);
+    assert_eq!(r.status, "UNSATISFIABLE", "{}", r.stdout);
+    assert!(!r.stdout.contains(", refuted"), "{}", r.stdout);
+    let r = run(&cnf, &[], &[]);
+    assert_eq!(r.status, "UNSATISFIABLE", "{}", r.stdout);
+    assert!(!r.stdout.contains("decision-diagram"), "{}", r.stdout);
+}

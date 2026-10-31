@@ -821,6 +821,7 @@ fn sub_refute(imp: &Import, net: &Net, eqs: &[[i32; 2]], x: i32, y: i32, capture
         ("structparity", 0),
         ("structcount", 0),
         ("structcsp", 0),
+        ("structdd", 0),
         ("structarith", 0),
         ("structsort", 0),
         ("structdiv", 0),
