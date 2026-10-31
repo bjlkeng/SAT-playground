@@ -4003,6 +4003,44 @@ tabled) and four on the prototype (helper clauses written before a
 fails the selftest; a compressed input decompressed for VeriPB; the
 clauses read as the gate reads them, split at zeros).
 
+**The paired run** (2026-10-31; the 400 cells, two seeds, the pass off
+and on, 1,800 s, 32 shared cores, every answer checked; frozen build
+`solver/13-j7-dd-snapshot`, commit 3602e70;
+`log/abtest-struct-dd-400-2026-10-31-02-15-28`, arms `base0`, `base1`,
+`cur0`, `cur1`):
+
+| | seed 0 | seed 1 |
+|---|---|---|
+| solved, pass off / on | 322 / 325 | 324 / 325 |
+| wall PAR-2, off / on | 361,827 / 350,754 | 353,771 / 346,732 |
+| tick PAR-2, off / on | 9.237e12 / 9.052e12 | 9.088e12 / 8.922e12 |
+
+No answer contradicts another and no check failed (per arm 299-301
+UNSAT proofs verified, 23-24 checker timeouts, the rest satisfiable or
+unsolved).
+
+- **The three rook cells.** Timeouts at 1,800 s with the pass off on
+  both seeds (5.8-12.2M conflicts); with it on, UNSAT in 7.6-9.9 s with
+  no search at all (the time is the parse, the pass and the 87-124 MB
+  proof), each proof verified within the run.
+- **Everything else: the same search.** On every other cell both arms
+  solve (321 on seed 0, 322 on seed 1) the conflict counts are equal.
+  The pass adds a median 0.19M work to those cells and 0.08-0.09% in
+  total; the largest additions are the six cells at its 100M limit.
+- **The other differences are cells at the wall.** Seed 0 gains
+  `ncc_none_2_17_4_3_0_0` (1,789 s against a kill at 1,800 s after fewer
+  conflicts) and loses `dislog_a14_x14_n24` (killed at 11.27M conflicts
+  against solved at 1,750 s after 11.30M); seed 1 loses
+  `Kakuro-easy-132-ext.xml.hg_8` (1,710 s against a kill at 691K
+  conflicts) and `bp5_CSO` (1,793 s against a kill at 1.50M). The pass
+  touches none of them (same conflicts per unit of time, no derived
+  clause); `dislog_a14` and `bp5_CSO` were the wall cells of the
+  divider pass's paired run too.
+
+So the pass is +3 on each seed where it fires, the same search
+everywhere else for 0.09% more work, and the wall cells come and go
+as they did before. Promotion to default is the owner's call.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.
