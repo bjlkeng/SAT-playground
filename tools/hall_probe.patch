@@ -1,0 +1,404 @@
+--- a/solver/13-kissat-rs/src/restart.rs
++++ b/solver/13-kissat-rs/src/restart.rs
+@@ -138,17 +138,393 @@
+     res
+ }
+ 
++/// Scratch probe, not part of the solver (tools/trail_probe.patch, bead
++/// SAT-playground-iin.1): the trail at a growing spacing of restarts, one
++/// line of external literals per snapshot, appended to the file that
++/// SAT_TRAIL_DUMP names. The census's `trail` command reads the lines.
++fn trail_probe(solver: &Solver) {
++    use std::io::Write as _;
++    use std::sync::atomic::{AtomicU64, Ordering};
++    static NEXT: AtomicU64 = AtomicU64::new(1);
++    if solver.parent_stop != 0 {
++        return; // a sub-solver of a structure pass
++    }
++    let restarts = solver.statistics.restarts;
++    if restarts < NEXT.load(Ordering::Relaxed) {
++        return;
++    }
++    NEXT.store(restarts + restarts / 32 + 1, Ordering::Relaxed);
++    let Ok(path) = std::env::var("SAT_TRAIL_DUMP") else { return };
++    let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else { return };
++    let mut out = std::io::BufWriter::new(file);
++    // the whole assignment, not the trail: root literals leave the trail when
++    // it is flushed and stay assigned
++    for ev in 1..solver.import_.len() {
++        let e = solver.import_[ev];
++        if e.imported && !e.eliminated {
++            let v = solver.values[e.lit as usize];
++            if v != 0 {
++                let _ = write!(out, "{} ", if v > 0 { ev as i64 } else { -(ev as i64) });
++            }
++        }
++    }
++    let _ = writeln!(out);
++}
++
++// ---------------------------------------------------------------------------
++// Scratch experiment, not part of the solver (tools/hall_probe.patch, bead
++// SAT-playground-iin.3): grids from `alldiff_census.py grids`, a Hall check of
++// the assignment at restarts, and the clause of each violation added at level
++// 0. No proof: this measures what the clauses do to the search, nothing else.
++// ---------------------------------------------------------------------------
++
++struct HallGrid {
++    rows: Vec<Vec<(i32, u32)>>,
++    labels: usize,
++}
++
++#[derive(Default)]
++struct HallState {
++    grids: Vec<HallGrid>,
++    every: u64,
++    max: usize,
++    removals: bool,
++    checks: u64,
++    violations: u64,
++    removed: u64,
++    added: u64,
++    units: u64,
++    lits: u64,
++    stats_path: String,
++    nanos: u128,
++    last_write: Option<std::time::Instant>,
++}
++
++static HALL: std::sync::Mutex<Option<HallState>> = std::sync::Mutex::new(None);
++
++fn hall_load() -> HallState {
++    let mut st = HallState { every: 8, max: 8, ..Default::default() };
++    let Ok(path) = std::env::var("SAT_HALL_GRIDS") else { return st };
++    st.every = std::env::var("SAT_HALL_EVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
++    st.max = std::env::var("SAT_HALL_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
++    st.removals = std::env::var("SAT_HALL_REMOVALS").is_ok();
++    st.stats_path = format!("{}.stats", std::env::var("SAT_HALL_STATS").unwrap_or(path.clone()));
++    let text = std::fs::read_to_string(&path).unwrap_or_default();
++    for line in text.lines() {
++        if line.starts_with('G') {
++            st.grids.push(HallGrid { rows: Vec::new(), labels: 0 });
++            continue;
++        }
++        let mut row = Vec::new();
++        let g = st.grids.last_mut().unwrap();
++        for tok in line.split_whitespace() {
++            let (l, a) = tok.split_once(':').unwrap();
++            let a: u32 = a.parse().unwrap();
++            g.labels = g.labels.max(a as usize + 1);
++            row.push((l.parse::<i32>().unwrap(), a));
++        }
++        g.rows.push(row);
++    }
++    st
++}
++
++/// (value, internal literal); value 2 for a literal no longer in the solver.
++fn hall_value(solver: &Solver, elit: i32) -> (i8, u32) {
++    let ev = elit.unsigned_abs() as usize;
++    if ev >= solver.import_.len() {
++        return (2, 0);
++    }
++    let e = solver.import_[ev];
++    if !e.imported || e.eliminated {
++        return (2, 0);
++    }
++    let lit = if elit > 0 { e.lit } else { e.lit ^ 1 };
++    (solver.values[lit as usize], lit)
++}
++
++fn hall_augment(u: usize, adj: &[Vec<u32>], seen: &mut [bool], pair_v: &mut [i32], pair_u: &mut [i32]) -> bool {
++    for &v in &adj[u] {
++        let v = v as usize;
++        if seen[v] {
++            continue;
++        }
++        seen[v] = true;
++        if pair_v[v] < 0 || hall_augment(pair_v[v] as usize, adj, seen, pair_v, pair_u) {
++            pair_v[v] = u as i32;
++            pair_u[u] = v as i32;
++            return true;
++        }
++    }
++    false
++}
++
++fn hall_check(solver: &Solver, st: &mut HallState) -> Vec<Vec<u32>> {
++    let mut out: Vec<Vec<u32>> = Vec::new();
++    for g in &st.grids {
++        let mut taken = vec![false; g.labels];
++        let mut holder = vec![0u32; g.labels]; // the true literal of a taken column
++        for row in &g.rows {
++            for &(e, a) in row {
++                let (v, lit) = hall_value(solver, e);
++                if v == 1 {
++                    taken[a as usize] = true;
++                    holder[a as usize] = lit;
++                }
++            }
++        }
++        // a literal outside the Hall set's values: itself when false, the
++        // negation of the true literal holding its column when propagation
++        // left it open (the two exclude each other); None when it is gone
++        let reason_lit = |e: i32, a: u32| -> Option<u32> {
++            let (v, lit) = hall_value(solver, e);
++            if v == 2 {
++                None
++            } else if v == 0 && taken[a as usize] {
++                Some(holder[a as usize] ^ 1)
++            } else {
++                Some(lit)
++            }
++        };
++        let mut adj: Vec<Vec<u32>> = Vec::new();
++        let mut open: Vec<usize> = Vec::new();
++        for (ri, row) in g.rows.iter().enumerate() {
++            let mut dom = Vec::with_capacity(row.len());
++            let mut done = false;
++            for &(e, a) in row {
++                let (v, _) = hall_value(solver, e);
++                if v == 1 {
++                    done = true;
++                    break;
++                }
++                if v == 2 || (v == 0 && !taken[a as usize]) {
++                    dom.push(a);
++                }
++            }
++            if !done {
++                adj.push(dom);
++                open.push(ri);
++            }
++        }
++        st.checks += 1;
++        if adj.len() < 2 {
++            continue;
++        }
++        let mut pair_v = vec![-1i32; g.labels];
++        let mut pair_u = vec![-1i32; adj.len()];
++        let mut seen = vec![false; g.labels];
++        let mut short = None;
++        for u in 0..adj.len() {
++            seen.iter_mut().for_each(|x| *x = false);
++            if !hall_augment(u, &adj, &mut seen, &mut pair_v, &mut pair_u) && short.is_none() {
++                short = Some(u);
++            }
++        }
++        if let Some(u) = short {
++            // the rows the alternating search reaches, the values they hold
++            let mut in_rows = vec![false; adj.len()];
++            let mut in_vals = vec![false; g.labels];
++            let mut stack = vec![u];
++            in_rows[u] = true;
++            while let Some(x) = stack.pop() {
++                for &v in &adj[x] {
++                    let v = v as usize;
++                    if !in_vals[v] {
++                        in_vals[v] = true;
++                        let w = pair_v[v];
++                        if w >= 0 && !in_rows[w as usize] {
++                            in_rows[w as usize] = true;
++                            stack.push(w as usize);
++                        }
++                    }
++                }
++            }
++            let mut clause = Vec::new();
++            let mut fine = true;
++            for (x, &ri) in open.iter().enumerate() {
++                if in_rows[x] {
++                    for &(e, a) in &g.rows[ri] {
++                        if !in_vals[a as usize] {
++                            match reason_lit(e, a) {
++                                Some(lit) => clause.push(lit),
++                                None => fine = false,
++                            }
++                        }
++                    }
++                }
++            }
++            st.violations += 1;
++            if fine {
++                clause.sort_unstable();
++                clause.dedup();
++                out.push(clause);
++            }
++        } else if st.removals {
++            // a free edge (u, v) whose value's matched row closes a Hall set without u
++            for u in 0..adj.len() {
++                for &v in &adj[u] {
++                    if pair_u[u] == v as i32 {
++                        continue;
++                    }
++                    let w = pair_v[v as usize];
++                    if w < 0 {
++                        continue;
++                    }
++                    let mut in_rows = vec![false; adj.len()];
++                    let mut in_vals = vec![false; g.labels];
++                    in_rows[w as usize] = true;
++                    let mut stack = vec![w as usize];
++                    let mut free = false;
++                    while let Some(x) = stack.pop() {
++                        for &y in &adj[x] {
++                            let y = y as usize;
++                            if !in_vals[y] {
++                                in_vals[y] = true;
++                                let z = pair_v[y];
++                                if z < 0 {
++                                    free = true;
++                                } else if !in_rows[z as usize] {
++                                    in_rows[z as usize] = true;
++                                    stack.push(z as usize);
++                                }
++                            }
++                        }
++                    }
++                    if free || in_rows[u] {
++                        continue;
++                    }
++                    // the literal of row u in column v, and the reason
++                    let row = &g.rows[open[u]];
++                    let Some(&(ev, _)) = row.iter().find(|&&(_, a)| a == v) else { continue };
++                    let (vv, vlit) = hall_value(solver, ev);
++                    if vv == 2 {
++                        continue;
++                    }
++                    let mut clause = vec![vlit ^ 1];
++                    let mut fine = true;
++                    for (x, &ri) in open.iter().enumerate() {
++                        if in_rows[x] {
++                            for &(e, a) in &g.rows[ri] {
++                                if !in_vals[a as usize] {
++                                    match reason_lit(e, a) {
++                                        Some(lit) => clause.push(lit),
++                                        None => fine = false,
++                                    }
++                                }
++                            }
++                        }
++                    }
++                    st.removed += 1;
++                    if fine {
++                        clause.sort_unstable();
++                        clause.dedup();
++                        out.push(clause);
++                    }
++                }
++            }
++        }
++    }
++    out.sort_by_key(|c| c.len());
++    out.truncate(st.max);
++    out
++}
++
++fn hall_at_restart(solver: &Solver) -> Vec<Vec<u32>> {
++    if solver.parent_stop != 0 {
++        return Vec::new();
++    }
++    let mut guard = HALL.lock().unwrap();
++    let st = guard.get_or_insert_with(hall_load);
++    if st.grids.is_empty() {
++        return Vec::new();
++    }
++    if !solver.stable && solver.statistics.restarts % st.every != 0 {
++        return Vec::new();
++    }
++    let t0 = std::time::Instant::now();
++    let out = hall_check(solver, st);
++    st.nanos += t0.elapsed().as_nanos();
++    if st.last_write.map_or(true, |w| w.elapsed().as_secs() >= 5) {
++        st.last_write = Some(std::time::Instant::now());
++        hall_write_stats(st, solver.statistics.conflicts);
++    }
++    out
++}
++
++fn hall_write_stats(st: &HallState, conflicts: u64) {
++    let text = format!(
++        "checks {} violations {} removals {} added {} units {} lits {} check_seconds {:.1} conflicts {}\n",
++        st.checks, st.violations, st.removed, st.added, st.units, st.lits, st.nanos as f64 / 1e9, conflicts
++    );
++    let _ = std::fs::write(&st.stats_path, text);
++}
++
++fn hall_add(solver: &mut Solver, clauses: Vec<Vec<u32>>) {
++    if clauses.is_empty() {
++        return;
++    }
++    if solver.level > 0 {
++        crate::backtrack::backtrack_in_consistent_state(solver, 0);
++    }
++    let mut added = 0u64;
++    let mut units = 0u64;
++    let mut lits = 0u64;
++    for c in clauses {
++        // the clause's literals are sorted, so a literal and its negation sit together
++        if c.windows(2).any(|w| w[0] ^ 1 == w[1]) {
++            continue;
++        }
++        let mut kept: Vec<u32> = Vec::with_capacity(c.len());
++        let mut sat = false;
++        for &l in &c {
++            let v = solver.values[l as usize];
++            if v > 0 {
++                sat = true;
++                break;
++            }
++            if v == 0 {
++                kept.push(l);
++            }
++        }
++        if sat {
++            continue;
++        }
++        if kept.is_empty() {
++            println!("c hall: a violation at the root");
++            println!("s UNSATISFIABLE");
++            crate::internal::print_statistics(solver);
++            std::process::exit(20);
++        }
++        if kept.len() == 1 {
++            crate::assign::learned_unit(solver, kept[0]);
++            units += 1;
++            continue;
++        }
++        lits += kept.len() as u64;
++        added += 1;
++        crate::clause::new_redundant_clause_from(solver, 2, &kept);
++    }
++    let mut guard = HALL.lock().unwrap();
++    if let Some(st) = guard.as_mut() {
++        st.added += added;
++        st.units += units;
++        st.lits += lits;
++        hall_write_stats(st, solver.statistics.conflicts);
++    }
++}
++
+ /// Port of `kissat_restart`.
+ pub fn restart(solver: &mut Solver) {
+     crate::profile::start_checked(solver, Prof::restart); // START (restart)
+     solver.statistics.restarts += 1; // INC (restarts)
+     solver.statistics.restarts_levels += solver.level as u64; // ADD (restarts_levels)
++    trail_probe(solver);
+     // METRIC, re-enabled (never printed):
+     if solver.stable {
+         solver.statistics.stable_restarts += 1; // INC (stable_restarts)
+     } else {
+         solver.statistics.focused_restarts += 1; // INC (focused_restarts)
+     }
++    let hall_clauses = hall_at_restart(solver);
+     let level = reuse_trail(solver);
+     crate::print::extremely_verbose(
+         solver,
+@@ -158,6 +534,7 @@
+         ),
+     );
+     crate::backtrack::backtrack_in_consistent_state(solver, level);
++    hall_add(solver, hall_clauses);
+     if !solver.stable {
+         update_focused_restart_limit(solver);
+     }

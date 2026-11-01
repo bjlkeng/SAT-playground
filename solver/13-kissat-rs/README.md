@@ -4073,6 +4073,169 @@ run with the pass. The owner's call (2026-10-31): on by default now,
 the 2026 holdout look kept for a later candidate; the stock path gains
 `--structdd=0`.
 
+## Alldifferent structure: census, certificate and a search test (2026-10-31; beads `SAT-playground-iin.1`, `iin.2`; epic `SAT-playground-d96`)
+
+**The question.** The first line of the general-structure epic is an
+in-search alldifferent propagator: Hall reasoning (k rows whose values fit
+in fewer than k columns) that CDCL cannot learn in a short proof. Before
+building it: where is that structure in the 400 cells of 2025, does it ever
+fire during a real search, and do its clauses help?
+
+**The short answer.** The structure is common and mostly does nothing. Hall
+reasoning fires on a few scheduling and combinatorial families. Where it
+fires, adding its clauses at restarts did not reduce conflicts on the
+unsatisfiable cells, moved the satisfiable ones only inside seed noise, and
+solved no unsolved cell. Recommendation in bead `iin.3`: do not build the
+propagator now.
+
+**How a formula is read** (`tools/alldiff_census.py`; `selftest` has 59
+checks, among them latin squares in three encodings, with signs flipped,
+sudoku, n-queens, graph colouring, pigeonhole, one-way exclusions, gates,
+and the filter against enumeration on 3,000 random grids). A row is any
+clause of three or more literals: at least one is true. It is taken as a
+finite-domain variable only when its own literals exclude each other all or
+next to not at all, which keeps gate clauses out by what they do: in
+`(o v ~a v ~b)` the literal `o` excludes the other two, and they do not
+exclude each other. Exclusion is read by unit propagation from one literal,
+either way round, so pairwise, ladder and commander encodings read alike and
+flipped signs do not matter. Two rows differ when at least two literals of
+each exclude literals of the other, sparsely. A grid is a set of rows around
+one row, plus a clique cover of their literals into columns, one literal per
+row in a column: n rows over d columns is an alldifferent, whatever other
+exclusions the rows have besides. A grid is *core* with three or more rows,
+three or more shared columns and no more private values than shared columns,
+and *big* with eight or more rows; tightness is rows over values. Each cell
+gets 150M propagation visits. A cell over the structure stage's 10M-clause
+limit is read as a 3M-clause prefix and marked, since no pass runs on it.
+
+| of the 400 cells (`benchmarks/rl/alldiff_2025.tsv`, run `log/alldiff-census-2026-10-31e`) | cells |
+|---|---|
+| over the clause limit, prefix only | 56 |
+| every candidate row read | 241 |
+| stopped by the budget | 226 |
+| with exact-one rows | 290 |
+| with rows that differ | 346 |
+| with a core grid | 259 |
+| with a big grid | 174 |
+| big grid of tightness 0.5 or more | 132 |
+| big grid of tightness 0.9 or more | 65 |
+
+Of the 60 cells unsolved on both seeds in the run of record
+(`log/abtest-struct-dd-400-2026-10-31-02-15-28`), 18 have a big grid, 8 of
+tightness 0.5 or more, 5 of 0.9 or more (`17.normalised`, over the limit;
+`smt2-stp212`, `sum_of_3_cubes_37`, `fermat`, `ITC2021_Late_10`). An earlier
+draft of this census, which looked for exact-one rows only and then read
+grids around them, saw far fewer grids and said the timetables and colouring
+had none; that was the detector, not the formulas. What it still cannot see:
+`sudoku-N30-*` (each literal's propagation is so wide that the budget reads
+about 220 of 733K rows; 1.5G visits on one of them read 2,131), and any row
+with fewer than two literals that propagate anything.
+
+**At the root** filtering finds almost nothing, as expected with full
+domains: 31,440 grids, a removal in 3 cells, a Hall violation in 14 (the
+twelve RoundRobin and MVRoundRobin cells, a pigeonhole variant and
+`homer11`). All 14 are solved on both seeds in the run of record, 13 of them
+with no conflicts at all.
+
+**On real search trails.** A scratch copy of the solver
+(`tools/hall_probe.patch`, not part of the solver) writes the assignment at
+a growing spacing of restarts, and the `trail` command runs the filter on 100
+snapshots and up to 200 grids per cell. A snapshot is at unit-propagation
+fixpoint, so a violation there is a contradiction propagation has not found.
+Of 38 cells chosen for tight big grids, violations appear on 9
+(`log/hall-probe-2026-10-31/reports`):
+
+| cell | run of record | snapshots with a violation | with a removal | Hall set rows, mean | reason literals, mean |
+|---|---|---|---|---|---|
+| `Break_triple_16_70` | SAT | 38 | 51 | 10.1 | 203 |
+| `em_8_4_5_cmp` | SAT | 29 | 66 | 7.0 | 110 |
+| `Break_triple_14_48` | SAT | 27 | 48 | 9.5 | 158 |
+| `em_11_3_4_cmp` | SAT | 21 | 36 | 15.0 | 277 |
+| `59-129706` | SAT | 11 | 37 | 6.1 | 57 |
+| `ITC2021_Late_10` | unsolved | 8 | 18 | 10.7 | 282 |
+| `crafted_n10_d6_c4_num8` | UNSAT | 8 | 80 | 9.3 | 809 |
+| `crafted_n10_d6_c4_num9` | UNSAT | 2 | 73 | 10.7 | 407 |
+| `ITC2021_Early_12` | SAT | 1 | 11 | 4.8 | 156 |
+
+These are lower bounds: the grids are those a budgeted read found, at most
+200 of them. To check the measurement itself, each of 35 sampled violations
+became a formula, the input plus its reason's literals as false units, and
+the solver decided it alone within 60 s: 32 unsatisfiable, 3 at the limit,
+none satisfiable. The other 29 cells show no violation in 100 snapshots,
+among them every circuit family measured (`grs`, `goldcrest`, `oski`, `b18`,
+`planning`, `spg`, `SAT_dat`, `brocard`, `linked_list`, `oisc`) and the
+unsolved `SC25_Timetable_C_495_E_48`, `6g_6color`, `fermat`,
+`sum_of_3_cubes_37`, `smt2-stp212` and `hhyp_cec_multi_2`. So a tight big grid
+says little by itself: in a circuit those rows rarely lose enough values.
+
+**Do the clauses help?** The same scratch copy can check the grids at
+restarts (every eighth in focused mode, all in stable mode) and add each
+violation's clause at level 0, as a redundant clause with low glue. Unlike a
+propagator it acts only at restarts, on grids a budgeted read found, and it
+writes no proof. On the 35 cells at seed 0 (limit 1,800 s), 28 had no
+violation in the whole run. On every one of those that finished, the conflict
+count is equal to the unit with the check on, which is also the control. On
+the cells that fire, more seeds, and a stronger arm that also adds removal
+clauses, at every restart, 64 clauses at most each time:
+
+| cell | arm | runs | solved | conflicts, geometric mean | wall, geometric mean |
+|---|---|---|---|---|---|
+| `crafted_n10_d6_c4_num8` (UNSAT) | off | 5 | 5 | 0.30M | 121 s |
+| | violations | 5 | 5 | 0.31M | 123 s |
+| | and removals | 4 | 4 | 0.31M | 794 s |
+| `crafted_n10_d6_c4_num9` (UNSAT) | off | 5 | 5 | 0.32M | 113 s |
+| | violations | 5 | 5 | 0.33M | 116 s |
+| | and removals | 4 | 4 | 0.32M | 881 s |
+| `Break_triple_14_48` | off | 5 | 5 | 1.54M | 115 s |
+| | violations | 5 | 5 | 0.63M | 80 s |
+| `Break_triple_16_70` | off | 4 | 4 | 1.16M | 96 s |
+| | violations | 4 | 4 | 1.10M | 137 s |
+| `em_11_3_4_cmp` | off | 5 | 5 | 0.61M | 54 s |
+| | violations | 5 | 5 | 1.63M | 189 s |
+| `em_8_4_5_cmp` | off | 5 | 5 | 2.42M | 191 s |
+| | violations | 5 | 5 | 1.45M | 170 s |
+| `ITC2021_Early_12` | off | 4 | 4 | 0.21M | 67 s |
+| | violations | 4 | 4 | 0.14M | 54 s |
+| `at-least-two-vmpc_28` | off | 5 | 2 | 8.10M | 849 s |
+| | violations | 5 | 2 | 7.96M | 985 s |
+
+The two unsatisfiable cells, where seed noise is small, do not move, even
+with 128,000 to 230,000 clauses added in a run. The satisfiable ones go both
+ways, inside a spread of up to seventeenfold between seeds of the same arm.
+`ITC2021_Late_10` stays unsolved at 1,800 s: with violations (660 clauses, seed
+0) and with removals too (about 50,000 clauses, seeds 0 and 1). The stronger
+arm spent almost all of its time in the check on the other cells (1,130 of
+1,200 s), so it finished only `ITC2021_Early_12` and one `em_8_4_5` run; that
+cost says nothing about a propagator built properly, but its conflict counts
+on the crafted cells do say something. Runs:
+`log/hall-probe-2026-10-31`.
+
+**The certificate** (bead `iin.2`, `tools/hall_toy_proof.py`) works, and it
+is cheap. A column's at-most-one is one linear constraint built once from its
+pair clauses (a pair the encoding does not write is a `rup` line first). A
+violation is then one `pol` line, the sum of the Hall set's rows, its columns'
+at-most-ones and an axiom for each other literal of those columns, and what
+is left is exactly the reason clause. A removal is the same line without the
+axiom of the removed literal. The clauses go where the parity engine's go,
+into the structure stream and `<proof>.derived.cnf`, and the toy passes
+through the real gate, which rejects the search's DRAT without the clause.
+On 1,000 random grids, mixed signs and ladder columns among them, 244
+violations and 965 removals found by matching all check in VeriPB, and the
+removals agree in number with the census's filter. A count needs none of this:
+on a Sinz counter the reason is a plain `rup` line, which the bead had not
+expected.
+
+**Review**: nine Codex rounds on the census, the toy and the patch, the ninth
+clean. The findings that mattered: a learned root unit leaves the trail, so
+snapshots now hold the whole assignment; a reason's literal left open in a
+column a true literal holds counts as that literal's negation, so a reason is
+false when written; a row interrupted by a quota was lost; exclusions must be
+read from both sides when looking for neighbours; a clause holding more than
+an at-most-one group does not make one of the group true. The experiment's
+grids were read before the last review fixes, so a grid with one-way
+exclusions may be missing from it, and its 35-cell run used the probe before
+the reason fix, which changes nothing on a cell with no violation.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.
