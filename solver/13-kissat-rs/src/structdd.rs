@@ -7,8 +7,10 @@
 //! on an n x n board: pairwise binary clauses allow at most one rook per
 //! row and per column, and the count is a decision diagram of one-way ITE
 //! nodes, `node -> (x ? hi : lo)`, one board variable per level, children
-//! on later levels, the root asserted by a unit (135-176K nodes). Search
-//! cannot make the counting argument (n+1 rooks on n rows); this pass does.
+//! on later levels, the root asserted by a unit (135-179K nodes). The
+//! argument is n+1 rooks on n rows. Search does not find it quickly: at
+//! 3,600 s solver 13 and the C kissat take about 2,000 and 2,600 s on two of
+//! the cells and time out on the third. This pass takes seconds.
 //!
 //! What the pass does, in order (`tools/dd_toy_proof.py` is the checked
 //! prototype):

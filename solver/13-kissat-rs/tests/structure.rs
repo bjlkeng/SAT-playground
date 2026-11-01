@@ -768,3 +768,99 @@ fn decision_diagram_count_leaves_a_satisfiable_board_and_stops_without_room() {
     assert_eq!(r.status, "UNSATISFIABLE", "{}", r.stdout);
     assert!(!r.stdout.contains("decision-diagram"), "{}", r.stdout);
 }
+
+/// A small XOR system over fresh variables, in the clause form the parity
+/// pass and the parity engine read: x1 + x2 + x3 = 1, x3 + x4 + x5 = 0, ...
+fn xor_chain_clauses(first: i64, links: usize) -> Vec<Vec<i64>> {
+    let mut out = Vec::new();
+    let mut a = first;
+    for i in 0..links {
+        let (x, y, z) = (a, a + 1, a + 2);
+        let odd = i % 2 == 0;
+        for mask in 0..8u32 {
+            let lits = [(x, mask & 1 != 0), (y, mask & 2 != 0), (z, mask & 4 != 0)];
+            let trues = lits.iter().filter(|l| l.1).count();
+            // the clause that forbids this assignment, for each wrong parity
+            if (trues % 2 == 1) != odd {
+                out.push(lits.iter().map(|&(v, t)| if t { -v } else { v }).collect());
+            }
+        }
+        a = z;
+    }
+    out
+}
+
+/// A budget that runs out inside the diagram's proof leaves unused lines in
+/// the stream. Whatever the passes around it derive, the gate has to accept
+/// the finished stream, with the search or the parity engine going on.
+#[test]
+fn decision_diagram_count_stopped_mid_proof_leaves_a_checkable_stream() {
+    let fx = Fixture::new("structure_dd_partial");
+    // a rook board plus two satisfiable parts over fresh variables: 4
+    // pigeons in 5 holes, which the symmetry pass fixes, and an XOR chain,
+    // which the parity engine builds a matrix from
+    let board = fx.path("board.cnf");
+    rook_board(5, 6, 2, &board);
+    let text = std::fs::read_to_string(&board).unwrap();
+    let mut lines = text.lines();
+    let header: Vec<i64> = lines.next().unwrap().split_whitespace().skip(2).map(|t| t.parse().unwrap()).collect();
+    let mut clauses: Vec<Vec<i64>> = lines.map(|l| l.split_whitespace().map(|t| t.parse::<i64>().unwrap()).filter(|&x| x != 0).collect()).collect();
+    let base = header[0];
+    let (pigeons, holes) = (4i64, 5i64);
+    let var = |p: i64, h: i64| base + p * holes + h + 1;
+    for p in 0..pigeons {
+        clauses.push((0..holes).map(|h| var(p, h)).collect());
+    }
+    for h in 0..holes {
+        for a in 0..pigeons {
+            for b in a + 1..pigeons {
+                clauses.push(vec![-var(a, h), -var(b, h)]);
+            }
+        }
+    }
+    let xor_base = base + pigeons * holes + 1;
+    let links = 6;
+    clauses.extend(xor_chain_clauses(xor_base, links));
+    let top = xor_base + 2 * links as i64;
+    let mut out = format!("p cnf {} {}\n", top, clauses.len());
+    for c in &clauses {
+        for l in c {
+            out.push_str(&format!("{} ", l));
+        }
+        out.push_str("0\n");
+    }
+    let cnf = fx.path("mixed.cnf");
+    std::fs::write(&cnf, out).unwrap();
+    let mut stopped_mid_proof = 0;
+    let mut refuted_by_the_pass = 0;
+    // the shipped defaults (every pass, the parity engine), then the
+    // symmetry pass alone next to the diagram step
+    let stock: Vec<&str> = common::STOCK_PATH.to_vec();
+    let mut sym_only: Vec<&str> = stock.clone();
+    sym_only.push("--structsym=1");
+    for options in [Vec::<&str>::new(), sym_only] {
+        for k in 0..64 {
+            let limit = format!("--structddticks={}", k);
+            let proof = fx.path("mixed.drat");
+            let out = solver_command()
+                .arg("-n")
+                .args(&options)
+                .arg("--structdd=1")
+                .arg(&limit)
+                .arg(&cnf)
+                .arg(&proof)
+                .output()
+                .expect("run sat-solver");
+            let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+            assert!(stdout.contains("s UNSATISFIABLE"), "{}: {}", limit, stdout);
+            assert_eq!(gate(&cnf, &proof), "ok", "{}: {}", limit, stdout);
+            if stdout.contains("the root needs 6, refuted") {
+                refuted_by_the_pass += 1;
+            } else if std::fs::read_to_string(fx.path("mixed.drat.pbp")).map_or(false, |p| p.contains("pbc ")) {
+                stopped_mid_proof += 1;
+            }
+        }
+    }
+    assert!(stopped_mid_proof > 0, "no limit stopped the pass inside its proof");
+    assert!(refuted_by_the_pass > 0, "no limit let the pass finish");
+}

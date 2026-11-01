@@ -3893,18 +3893,22 @@ sweep and the replay were run again on the committed binary
 ## The counting pass, step two: counter decision diagrams (2026-10-31; bead `SAT-playground-skz.6`)
 
 **What it is for.** The three rook cells of 2025 (`rook-51-0-0`,
-`rook-52-0-1`, `rook-56-0-0`; unsolved by solver 13 and by the C kissat
-on both seeds) put n+1 rooks on an n×n board. Pairwise binary clauses
-allow at most one rook per row and per column, and the count is a
-decision diagram: 135-179K one-way ITE nodes `node -> (x ? hi : lo)`,
-one board variable per level, children on the next level, the root a
-unit (the decoding of 2026-10-14, under "The counting pass, step one").
-The argument is n+1 rooks on n rows; search cannot make it. The
-cardinality census (bead `skz.5`) found no other cell of 2025 with a
-count that decides it, so this step is the rook cells and the shape in
-general: a count written as a diagram over variables that at-most-one
-groups cover, refuted when the diagram asks for more trues than there
-are groups.
+`rook-52-0-1`, `rook-56-0-0`) put n+1 rooks on an n×n board. Pairwise
+binary clauses allow at most one rook per row and per column, and the
+count is a decision diagram: 135-179K one-way ITE nodes `node -> (x ? hi
+: lo)`, one board variable per level, children on later levels, the root
+a unit (the decoding of 2026-10-14, under "The counting pass, step one").
+The argument is n+1 rooks on n rows, and search finds it slowly or not at
+all. At 1,800 s solver 13 times out on all three on both seeds. At 3,600 s
+solver 13 and the C kissat agree (`log/solver13-s8-20261020-070218`,
+`log/kissat-s8-20261020-070218`): `rook-51-0-0` in about 2,000 s,
+`rook-56-0-0` in about 2,600 s, `rook-52-0-1` a timeout. So at the
+competition-length limit the pass gains one cell and turns two from
+half an hour into seconds. The cardinality census (bead `skz.5`) found
+no other cell of 2025 with a count that decides it, so this step is the
+rook cells and the shape in general: a count written as a diagram over
+variables that at-most-one groups cover, refuted when the diagram asks
+for more trues than there are groups.
 
 **What blocked it, and the way round.** The 2026-10-14 notes priced the
 proof: each node's meaning, "node implies at least q trues among the
@@ -3924,11 +3928,13 @@ its row's slot and the pair clauses close the row below, so the hi
 child is impossible once x holds; one `rup` clause per level), and
 `rup >= 1` over the node's own clauses. At the root the sum has one
 term per row but asks for n+1: `pol` gives ~root, `rup` the empty
-clause. About 7M terms instead of 175M.
+clause. Counted on the `rook-51-0-0` proof: 6.9M terms in the 132,599
+`pbc` goals and 0.66M additions in the `pol` lines, against the 175M
+terms of the board-wide version.
 
 **The prototype** (`tools/dd_toy_proof.py`, `selftest`: nine toys, six
-rook boards with shuffled level orders, two satisfiable boards that
-give no refutation, a diagram whose hi branch skips a level; a tampered
+rook boards, three of them with shuffled level orders, two satisfiable
+boards that give no refutation, a diagram whose hi branch skips a level; a tampered
 proof, one node asking one more true than its subtree forces, is
 rejected) on the real cells:
 
@@ -4005,6 +4011,20 @@ tabled) and four on the prototype (helper clauses written before a
 fails the selftest; a compressed input decompressed for VeriPB; the
 clauses read as the gate reads them, split at zeros).
 
+**Fuzz and a stop inside the proof** (added 2026-10-31, after the
+promotion, which ran without them). `tools/dd_fuzz.py` builds small
+formulas with the pass's shape and with what can go wrong around it: groups
+missing a pair clause, levels that count a false, skipped levels, dropped
+or strengthened node clauses, renamed variables, noise, repeated literals
+and tautologies. Off, on with a proof and on without a proof must agree;
+every model is checked and every refutation by the pass goes through the
+gate. 5,000 formulas (seed 3): 2,214 satisfiable, 2,786 unsatisfiable, the
+pass fired on 1,169, no disagreement, no bad model, no failed proof. The
+test `decision_diagram_count_stopped_mid_proof_leaves_a_checkable_stream`
+stops the pass at each of 64 work limits next to the symmetry pass and the
+parity engine: a stream with the unused lines of a stopped proof passes the
+gate at every limit.
+
 **The paired run** (2026-10-31; the 400 cells, two seeds, the pass off
 and on, 1,800 s, 32 shared cores, every answer checked; frozen build
 `solver/13-j7-dd-snapshot`, commit 3602e70;
@@ -4017,31 +4037,39 @@ and on, 1,800 s, 32 shared cores, every answer checked; frozen build
 | wall PAR-2, off / on | 361,827 / 350,754 | 353,771 / 346,732 |
 | tick PAR-2, off / on | 9.237e12 / 9.052e12 | 9.088e12 / 8.922e12 |
 
-No answer contradicts another and no check failed (per arm 299-301
-UNSAT proofs verified, 23-24 checker timeouts, the rest satisfiable or
-unsolved).
+No answer contradicts another and no check failed. Per arm: 138-141
+models checked, 159-163 UNSAT proofs verified and 23-24 UNSAT answers
+not verified because the checker hit its time limit. Two cells
+(`pj2002_k500`, `17.normalised`) stop on the 16 GB limit in all four
+arms, before the structure stage matters.
 
 - **The three rook cells.** Timeouts at 1,800 s with the pass off on
   both seeds (5.8-12.2M conflicts); with it on, UNSAT in 7.6-9.9 s with
   no search at all (the time is the parse, the pass and the 87-124 MB
-  proof), each proof verified within the run.
+  proof), and all six proofs were verified within the run.
 - **Everything else: the same search.** On every other cell both arms
   solve (321 on seed 0, 322 on seed 1) the conflict counts are equal.
   The pass adds a median 0.19M work to those cells and 0.08-0.09% in
   total; the largest additions are the six cells at its 100M limit.
 - **The other differences are cells at the wall.** Seed 0 gains
-  `ncc_none_2_17_4_3_0_0` (1,789 s against a kill at 1,800 s after fewer
-  conflicts) and loses `dislog_a14_x14_n24` (killed at 11.27M conflicts
-  against solved at 1,750 s after 11.30M); seed 1 loses
-  `Kakuro-easy-132-ext.xml.hg_8` (1,710 s against a kill at 691K
-  conflicts) and `bp5_CSO` (1,793 s against a kill at 1.50M). The pass
-  touches none of them (same conflicts per unit of time, no derived
-  clause); `dislog_a14` and `bp5_CSO` were the wall cells of the
-  divider pass's paired run too.
+  `ncc_none_2_17_4_3_0_0` (1,789 s against a kill at 1,800 s) and loses
+  `dislog_a14_x14_n24` (solved at 1,750 s with the pass off, killed with
+  it on). Seed 1 loses `Kakuro-easy-132-ext.xml.hg_8` (1,710 s against a
+  kill) and `bp5_CSO` (1,793 s against a kill). The pass derives nothing
+  on any of them. It costs 1.1M to 33M work on three of them, a tiny part
+  of their budget, and `Kakuro` is over the structure stage's clause
+  limit, so the pass does not run there at all. The noise is the host's:
+  on the cells of 300 s or more that both arms solve with the same
+  search, the on/off wall ratio has a median of 0.995 and runs from 0.91
+  to 1.07 between the tenth and ninetieth percentiles, and those four
+  cells differ by 0.93 to 1.05 in conflicts per second. `dislog_a14` and
+  `bp5_CSO` were the wall cells of the divider pass's paired run too.
 
-So the pass is +3 on each seed where it fires, the same search
-everywhere else for 0.09% more work, and the wall cells come and go
-as they did before. The owner's call (2026-10-31): on by default now,
+So at 1,800 s the pass is +3 on each seed where it fires, the same
+search everywhere else for 0.09% more work, and the wall cells come and
+go as they did before. At 3,600 s the same pass would be +1 (`rook-52-0-1`)
+and two cells from about 2,000 and 2,600 s to seconds; that limit was not
+run with the pass. The owner's call (2026-10-31): on by default now,
 the 2026 holdout look kept for a later candidate; the stock path gains
 `--structdd=0`.
 
