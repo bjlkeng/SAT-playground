@@ -191,6 +191,9 @@ def solve(cnf, opts, proof=None):
 
 
 def check_model(clauses, model):
+    """Every clause holds a true literal, and no variable is true both ways."""
+    if any(-l in model for l in model):
+        return False
     return all(any(l in model for l in c) for c in clauses)
 
 
