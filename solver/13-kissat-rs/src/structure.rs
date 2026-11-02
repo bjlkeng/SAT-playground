@@ -93,7 +93,7 @@ impl Derived {
 
 pub fn enabled(solver: &Solver) -> bool {
     let o = &solver.options;
-    o.structsym != 0 || o.structsymext != 0 || o.structparity != 0 || o.structcount != 0 || o.structcsp != 0 || o.gauss != 0 || o.structarith != 0 || o.structsort != 0 || o.structdiv != 0 || o.structdd != 0
+    o.card != 0 || o.structsym != 0 || o.structsymext != 0 || o.structparity != 0 || o.structcount != 0 || o.structcsp != 0 || o.gauss != 0 || o.structarith != 0 || o.structsort != 0 || o.structdiv != 0 || o.structdd != 0
 }
 
 /// Called once before the parse: turn buffering on when a pass is enabled.
@@ -396,6 +396,31 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
             solver.gauss.xors = xors;
             solver.gauss.mixed = mixed;
         }
+        if solver.options.card != 0 && !derived.refuted {
+            // the count and alldifferent engine's constraints (src/card.rs), last,
+            // within a limit of their own from where the passes stopped: the limits
+            // above are tick counts to stop at, so reading first would use them up
+            let t0 = solver.statistics.ticks;
+            let own = cap((solver.options.cardreadticks as u64).saturating_mul(1000), solver);
+            let reading = crate::cardread::read(&formula, own, &mut solver.statistics.ticks, stop_ref);
+            let t1 = solver.statistics.ticks;
+            let own = cap((solver.options.cardreadticks as u64).saturating_mul(1000), solver);
+            let grids = crate::gridread::read(&formula, own, &mut solver.statistics.ticks, stop_ref);
+            let t2 = solver.statistics.ticks;
+            read_check(&formula, &reading, &grids, solver.structure.clauses, &all, &sidecars);
+            solver.card.s.counts_found = reading.found.len() as u64;
+            for c in &reading.found {
+                solver.card.s.forms_found[c.form as usize] += 1;
+            }
+            solver.card.s.grids_found = grids.len() as u64;
+            solver.card.reading = reading;
+            solver.card.grids = grids;
+            let own = cap((solver.options.cardreadticks as u64).saturating_mul(1000), solver);
+            crate::card::build(solver, &formula, own, stop_ref);
+            solver.card.s.count_read_ticks = t1 - t0;
+            solver.card.s.grid_read_ticks = t2 - t1;
+            solver.card.s.build_ticks = solver.statistics.ticks - t2;
+        }
     }
     let work = solver.statistics.ticks.saturating_sub(start);
     solver.structure.work = work;
@@ -403,15 +428,16 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
     // stream through the search (src/gaussproof.rs): the writer and the
     // derived clauses go to it, and the files are finished at exit
     let mut k = derived.clauses.len();
-    let engine = solver.options.gauss != 0 && !derived.refuted && solver.gauss.xors.len() >= 2;
+    let engine = !derived.refuted && ((solver.options.gauss != 0 && solver.gauss.xors.len() >= 2) || !solver.card.nets.is_empty());
     if engine && derived.proof.is_some() {
         if let Some((pbp, der)) = &sidecars {
             let w = derived.proof.take().unwrap();
             if w.failed {
-                crate::print::message(solver, "structure pass dropped: a proof step could not be written; the parity engine stays off".to_string());
+                crate::print::message(solver, "structure pass dropped: a proof step could not be written; the parity and card engines stay off".to_string());
                 derived.clauses.clear();
                 k = 0;
                 solver.gauss.xors = Vec::new();
+                solver.card.clear_for_lost_proof();
                 let _ = std::fs::remove_file(pbp);
                 let _ = std::fs::remove_file(der);
             } else {
@@ -422,6 +448,7 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
                         derived.clauses.clear();
                         k = 0;
                         solver.gauss.xors = Vec::new();
+                        solver.card.clear_for_lost_proof();
                         let _ = std::fs::remove_file(pbp);
                         let _ = std::fs::remove_file(der);
                     }
@@ -490,6 +517,58 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
     }
     Ok(())
 }
+/// The readers' test hook: with SAT_CARD_READ_CHECK=<file>, one line per thing
+/// read on stdout and every proof written to the file, for VeriPB to check.
+fn read_check(f: &Formula, reading: &crate::cardread::Reading, grids: &[crate::gridread::Grid], clauses: u64, all: &[(&str, &str)], sidecars: &Option<(String, String)>) {
+    let Some(path) = std::env::var_os("SAT_CARD_READ_CHECK") else { return };
+    for c in &reading.found {
+        println!("c cardread {:?} n={} need={} lits={:?}", c.form, c.lits.len(), c.need, c.lits);
+    }
+    for g in grids {
+        println!("c gridread rows={} cols={} rowlits={:?} collits={:?}", g.rows.len(), g.cols.len(), g.rows.iter().map(|r| &r.lits).collect::<Vec<_>>(), g.cols.iter().map(|c| &c.lits).collect::<Vec<_>>());
+    }
+    // never a file this run reads or writes: creating the file would empty it
+    let path_text = path.to_string_lossy().to_string();
+    let mut owned: Vec<(&str, &str)> = all.to_vec();
+    if let Some((pbp, der)) = sidecars {
+        owned.push(("structure proof", pbp.as_str()));
+        owned.push(("derived clauses", der.as_str()));
+    }
+    if let Some(why) = artifact_clash(&path_text, &owned) {
+        println!("c cardread cannot write the check file: {}", why);
+        return;
+    }
+    let Ok(mut w) = Writer::create(&path_text, clauses) else {
+        println!("c cardread cannot write the check file");
+        return;
+    };
+    let mut next_var = f.vars;
+    let mut work = 0u64;
+    let mut unproved = 0u64;
+    // proving remembers each proof's ids, and these belong to this file alone:
+    // the hook proves a copy, so the search writes its own proofs into its stream
+    let mut copy = reading.clone();
+    for i in 0..copy.found.len() {
+        if copy.prove(i, &mut w, &mut next_var, u64::MAX, &mut work).is_none() {
+            unproved += 1;
+        }
+    }
+    for g in grids {
+        for r in &g.rows {
+            if r.clause.is_none() && crate::gridread::prove_row(r, &mut w, u64::MAX, &mut work).is_none() {
+                unproved += 1;
+            }
+        }
+        for c in &g.cols {
+            if crate::gridread::prove_col(c, &mut w, u64::MAX, &mut work).is_none() {
+                unproved += 1;
+            }
+        }
+    }
+    let _ = w.finish_no_conclusion();
+    println!("c cardread unproved={}", unproved);
+}
+
 fn write_derived(path: &str, clauses: &[Vec<i32>], max_var: i32) -> std::io::Result<()> {
     use std::io::Write;
     let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);

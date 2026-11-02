@@ -374,6 +374,56 @@ impl State {
         self.clauses += 1;
     }
 
+    /// The writer and the last proof variable used, for the card engine's
+    /// constraints (src/card.rs), written into the same stream.
+    pub fn stream(&mut self) -> Option<(&mut Writer, &mut i32)> {
+        if self.failed {
+            return None;
+        }
+        let fresh = &mut self.fresh;
+        self.writer.as_mut().map(|w| (w, fresh))
+    }
+
+    /// One `pol` line for a card engine constraint.
+    pub fn pol_line(&mut self, expr: &str) -> u64 {
+        self.pol(expr)
+    }
+
+    /// A lemma of the card engine: the sum of these constraints, one `pol`
+    /// line, and the clause it implies, one `rup` line, kept in the extended
+    /// formula. The sum is deleted again: only the clause stays.
+    pub fn lemma(&mut self, ids: &[u64], clause: &[i32]) {
+        if !self.active() {
+            return;
+        }
+        let expr = sum_rpn(ids);
+        let sum = self.pol(&expr);
+        let terms: Vec<(i64, i32)> = clause.iter().map(|&l| (1, l)).collect();
+        let id = self.rup(&terms, 1);
+        if let Some(w) = self.writer.as_mut() {
+            if let Err(e) = w.delete(&[sum]) {
+                Self::fatal(e);
+            }
+            w.keep(id);
+            if clause.is_empty() {
+                w.refuted = true;
+            }
+        }
+        if let Some(out) = self.derived.as_mut() {
+            let mut line = String::new();
+            for &l in clause {
+                line.push_str(&l.to_string());
+                line.push(' ');
+            }
+            line.push_str("0\n");
+            if let Err(e) = out.write_all(line.as_bytes()) {
+                Self::fatal(e);
+            }
+        }
+        self.derived_count += 1;
+        self.clauses += 1;
+    }
+
     /// Finish the proof and the derived file; the solver's answer is
     /// checked against them. An error means the files are not a proof.
     pub fn finish(&mut self) -> std::io::Result<()> {

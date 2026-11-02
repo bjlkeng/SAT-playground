@@ -361,6 +361,33 @@ fn search_propagate_all(solver: &mut Solver) -> Option<Conflict> {
     res
 }
 
+/// Part of kissat_search_propagate: one conflict of a random-decision sequence.
+fn random_decision_conflict(solver: &mut Solver) {
+    // if (!--solver->randec) ...
+    solver.randec -= 1;
+    if solver.randec == 0 {
+        crate::print::very_verbose(solver, "last random decision conflict");
+    } else if solver.randec == 1 {
+        crate::print::very_verbose(solver, "one more random decision conflict to go");
+    } else {
+        let count =
+            crate::format::format_count(&mut solver.format, solver.randec as u64);
+        crate::print::very_verbose(
+            solver,
+            format_args!("{} more random decision conflicts to go", count),
+        );
+    }
+}
+
+/// Not in kissat: a conflict the card engine found (src/card.rs) counts as one from
+/// propagation does, for the limits, the schedules and the random decisions.
+pub fn engine_conflict(solver: &mut Solver, conflict: Conflict) {
+    update_conflicts_and_trail::<false>(solver, Some(conflict), false);
+    if solver.randec != 0 {
+        random_decision_conflict(solver);
+    }
+}
+
 /// kissat_search_propagate.
 pub fn search_propagate(solver: &mut Solver) -> Option<Conflict> {
     debug_assert!(!solver.probing);
@@ -389,20 +416,7 @@ pub fn search_propagate(solver: &mut Solver) -> Option<Conflict> {
     update_search_propagation_statistics(solver, saved_propagate);
     update_conflicts_and_trail::<false>(solver, conflict, true);
     if conflict.is_some() && solver.randec != 0 {
-        // if (!--solver->randec) ...
-        solver.randec -= 1;
-        if solver.randec == 0 {
-            crate::print::very_verbose(solver, "last random decision conflict");
-        } else if solver.randec == 1 {
-            crate::print::very_verbose(solver, "one more random decision conflict to go");
-        } else {
-            let count =
-                crate::format::format_count(&mut solver.format, solver.randec as u64);
-            crate::print::very_verbose(
-                solver,
-                format_args!("{} more random decision conflicts to go", count),
-            );
-        }
+        random_decision_conflict(solver);
     }
 
     crate::profile::stop_checked(solver, Prof::propagate); // STOP (propagate)

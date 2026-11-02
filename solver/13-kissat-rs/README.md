@@ -193,7 +193,8 @@ not seen on the holdout); **2026-10-20: `structarith`** (313 v 312 on
 2025, the two multiplier miters; not seen on the holdout; "The linear
 arithmetic pass" below); then `structsort` (2026-10-27), `structdiv`
 (2026-10-28) and `structdd` (2026-10-31), each after its own paired
-run. The stock kissat path is `--structsym=0 --structparity=0
+run. The count and alldifferent engine, `card`, is off by default ("Count and
+alldifferent lemmas" below). The stock kissat path is `--structsym=0 --structparity=0
 --structcount=0 --structarith=0 --structsort=0 --structdiv=0
 --structdd=0` (and `--gauss=0`, the parity engine below), which `tools/parity.py` passes unless
 told `--structure`, and the test helpers' `run` too
@@ -3902,11 +3903,13 @@ The argument is n+1 rooks on n rows, and search finds it slowly or not at
 all. At 1,800 s solver 13 times out on all three on both seeds. At 3,600 s
 solver 13 and the C kissat agree (`log/solver13-s8-20261020-070218`,
 `log/kissat-s8-20261020-070218`): `rook-51-0-0` in about 2,000 s,
-`rook-56-0-0` in about 2,600 s, `rook-52-0-1` a timeout. So at the
-competition-length limit the pass gains one cell and turns two from
-half an hour into seconds. The cardinality census (bead `skz.5`) found
-no other cell of 2025 with a count that decides it, so this step is the
-rook cells and the shape in general: a count written as a diagram over
+`rook-56-0-0` in about 2,600 s, `rook-52-0-1` a timeout. So at 3,600 s
+the pass gains one cell and turns two from half an hour into seconds. No
+run of `rook-52-0-1` past 3,600 s was found; the 2025 main track's limit
+was 5,000 s. The cardinality census (bead `skz.5`) covered the 72 unsolved
+cells of 2025 and asked only whether a count alone decides a formula. It
+found no other such cell among them, so this step is the rook cells and
+the shape in general: a count written as a diagram over
 variables that at-most-one groups cover, refuted when the diagram asks
 for more trues than there are groups.
 
@@ -4026,7 +4029,7 @@ parity engine: a stream with the unused lines of a stopped proof passes the
 gate at every limit.
 
 **The paired run** (2026-10-31; the 400 cells, two seeds, the pass off
-and on, 1,800 s, 32 shared cores, every answer checked; frozen build
+and on, 1,800 s, 32 shared cores, with the checks counted below; frozen build
 `solver/13-j7-dd-snapshot`, commit 3602e70;
 `log/abtest-struct-dd-400-2026-10-31-02-15-28`, arms `base0`, `base1`,
 `cur0`, `cur1`):
@@ -4086,7 +4089,8 @@ reasoning fires on a few scheduling and combinatorial families. Where it
 fires, adding its clauses at restarts did not reduce conflicts on the
 unsatisfiable cells, moved the satisfiable ones only inside seed noise, and
 solved no unsolved cell. Recommendation in bead `iin.3`: do not build the
-propagator now.
+propagator now. The owner decided otherwise on 2026-11-01, and it is built: see the
+next section, "Count and alldifferent lemmas".
 
 **How a formula is read** (`tools/alldiff_census.py`; `selftest` has 59
 checks, among them latin squares in three encodings, with signs flipped,
@@ -4235,6 +4239,270 @@ an at-most-one group does not make one of the group true. The experiment's
 grids were read before the last review fixes, so a grid with one-way
 exclusions may be missing from it, and its 35-cell run used the probe before
 the reason fix, which changes nothing on a cell with no violation.
+
+## Count and alldifferent lemmas (2026-11-01; epic `SAT-playground-iin`)
+
+The owner asked for every form of count and every variation of alldifferent to be
+read and proved, with lemmas where they help, effort guardrails, and a recommended
+setting from experiments (`plan/count-and-hall-lemmas-plan.md`). This section says
+what was built and what it measured. The engine is off by default (`--card=0`).
+
+**The short answer.** All seven forms of count and every variation of alldifferent
+read here, and every lemma is proved and checked. The lemmas help a little: one
+formula by a factor of about 20, a few timetable formulas possibly, and on the rest
+they neither help nor hurt beyond seed luck. The recommended setting, if the engine is
+on, is the options' defaults: `--card=1`, which means `cardminlen=3`, `cardgrow=8` and
+the rest as in the table below. The 400-cell result and the verdict on promotion are at
+the end of this section; promotion is the owner's call and the 2026 holdout has not
+been touched.
+
+**The idea.** A count says "at least d of these literals". A clause is d = 1, "at
+most K of these" is "at least n - K of their negations", and an alldifferent column
+is K = 1. So one engine handles both: a *Card* is "at least `need` of `lits`", and a
+*network* is some Cards used as rows, which want trues, and some used as caps, which
+allow few. When a row's literal meets its negation in a cap the two cancel in the
+sum. If the rows want more than the caps allow, the sum is a contradiction that unit
+propagation cannot see, because it reads one clause at a time.
+
+**What decides.** A matching between rows and caps only picks what to sum. The sum S
+of those Cards, with opposite literals cancelled, is a linear constraint the formula
+implies. The literals of S that are false now form the lemma. If the rest cannot
+reach the right-hand side, the lemma is a contradiction and goes to conflict
+analysis. If an open literal's coefficient is above the slack, it is forced, with the
+lemma as its reason. The engine checks this arithmetic before it uses anything. A
+wrong guess by the reader or the matching costs a lemma, never an answer.
+
+**Where it runs.** At a propagation fixpoint in the search loop, every `cardint`
+conflicts, on the networks whose literals went false since the last look. A root
+literal marks its networks as it leaves the trail. The engine's lemmas are ordinary
+redundant clauses to the solver. A contradiction counts as a conflict, for the
+conflict limit and the schedules alike.
+
+**Proofs.** Each lemma is one `pol` line for S and one `rup` line for the clause in
+the stream the structure pass and the parity engine share, and it is kept in the
+derived file. The sum is deleted again. Each Card is proved from the input clauses
+the first time a lemma uses it (`src/cardread.rs`, `src/gridread.rs`). The proof gate
+(`tools/proof_gate.py`) checks VeriPB from F to F' and drat-trim on F'.
+`check_stream` runs the VeriPB stage alone, for runs that stopped or ended
+satisfiable, so their lemmas are read too; it needs the stream to name F' as its
+checked output and repeats the gate's negative control. If the stream cannot start,
+the engine stays off, because a lemma with no line would break the DRAT proof.
+
+**Every form of count** (`src/cardread.rs`, checked reference
+`tools/card_toy_proof.py`, checks `tools/card_read_check.py`, `tests/card_read.rs`).
+
+What they find on the 400 cells of 2025, with the stage's limit of 100M ticks each
+(`benchmarks/rl/card_read_2025.tsv`, written by `census_final.py` in
+`log/count-hints-2026-11-01/`; 56 cells are over the structure stage's 10M-clause limit
+and are not read; 84 cells hold a count, 268 a grid, 271 a network):
+
+| Form | How it is written | Cells | Counts |
+|---|---|---:|---:|
+| Sinz counter | Columns of registers, both directions | 40 | 13,190 |
+| Totalizer | Merge nodes in a tree, direct leaves, capped or not | 13 | 4,167 |
+| One-way counter | From the asserted register down | 25 | 5,044 |
+| Subset family | Every m-subset of t literals as a clause | 8 | 3,938 |
+| Decision diagram | "if y then A else B" nodes, with or without the third clause | 9 | 21 |
+| Comparator network | Sorting or cardinality networks, half comparators too | 8 | 49 |
+| Binary adder | Cells a + b + c <= s + 2m and a compare on the outputs | 0 | 0 |
+
+Every form is proved by VeriPB on toys of every size and direction
+(`tools/card_read_check.py selftest`: 3,416 of 3,416, broken copies refused, the proof
+budget checked against what each form writes). Against the Python census of the same
+cells (`benchmarks/rl/card_2025_all.tsv`), what is not read, and why:
+- A count under a guard, such as `g or at least 2 of 4`. A Card has unit coefficients
+  and this needs 2g. The census finds these on 34 cells, mostly gates.
+- Two counters that share their registers. On the `arles_thres` cells the census
+  reads one and the reader reads none. All of them are solved with no conflicts in
+  under a second.
+- What the budget leaves out. `baseballcover12` needs 536M ticks for its 36 Sinz
+  counters, and `1-ET-512-K-120` needs 253M for its diagrams.
+Adders that compare two sums, not a constant, are in the census on two cells and are
+not a count over known inputs.
+
+A reader may guess. Each reading ends in a check that looks up every clause a proof
+line relies on, so a proof that was planned cannot fail. Comparator networks read
+from a unit on a wire: one unit on output k + 1 gives "at most k" only because the
+network sorts, so that is read from sorted vectors merged two at a time, or subset by
+subset for few inputs. Adders read as cells a + b + c <= s + 2m.
+
+**Every variation of alldifferent** (`src/gridread.rs`, reference
+`tools/alldiff_census.py` and `tools/hall_toy_proof.py`, checks
+`tools/grid_read_check.py`, `tests/grid_read.rs`). It is not tied to scheduling:
+any set of rows with values only one row may take. Rows: exact-one, plain at-least-one,
+guarded, partial, a clause that root units shortened, a resolvent, a whole split
+clause, any signs. Columns: any exclusion unit propagation can show, so pair clauses,
+ladder and commander encodings read alike. Capacity above one is what a count is: a
+count with the clauses over its literals is a network, and with `cardmulti` a group
+of tied counts is one network (a global cardinality constraint). A tight grid's
+"every column is used" clauses are the option `cardroot`. Against the census's
+table on the 344 cells both read (`tools/grid_read_check.py sweep`): big grids on 177
+cells against 157, tight big grids on 32 against 30 with all 30 found, 7 cells with a
+big grid only in the census (each one small, on formulas full of gates, where the
+budget ends the read) and 27 only in the reader. A cell past 5,000 grids loses its
+smallest: 29 cells reach that cap.
+
+**The guardrails**, all options.
+
+| Option | Default | What it limits |
+|---|---|---|
+| `cardreadticks` | 100,000 K | Ticks for each of three stages: counts, grids, building the networks |
+| `cardproofmax` | 200,000 K terms | The proof of one Card; a network holding a dearer one is not used |
+| `cardprooftotal` | 2,000,000 K terms | Proof terms over the run; decided the same with or without a proof file |
+| `cardeffort` | 50 per mille | Engine ticks as a share of search ticks, above a floor of 10M |
+| `cardlook` | 0, none | Ticks for one look |
+| `cardint` | 100 | Conflicts between looks |
+| `cardgrow` | 8 | Empty looks double the interval, up to 2^this |
+| `cardyield` | 8 | A network that keeps finding nothing sits out up to 2^this of its turns |
+| `cardmaxlen` | 64 | Longest lemma used |
+| `cardminlen` | 3 | Shortest reason for a forced literal; units and contradictions always stay |
+| `cardmaxper` | 8 | Forced literals per read of a network |
+| `cardminrows` | 0 | Fewest rows of a grid used |
+| `cardforced`, `cardkinds`, `cardmulti`, `cardroot`, `cardrootmax`, `cardrestart` | | What is delivered, which networks, and when |
+
+A read starts only when the look has room for what it last cost, and waiting costs
+nothing, so a limit that is nearly used up pays for whole reads later. A read larger
+than `cardlook` is not started. A read that reaches the limit ends with nothing. Reads
+poll the limit and the stop flag by work done, and a run under `SAT_LIMIT_TICKS` never
+reads past it. The engine's work goes on the work clock; its proof terms go on it at
+16 terms a tick by the plan, so the clock reads the same with a proof file or without.
+
+**The toys** (the final binary, default passes on, seeds 0 and 1, 120 s, conflicts;
+`toy_table.py`, formulas from `count_lemmas.py`; no answer is a timeout). A board with a
+count, in a shuffled order:
+
+| Situation, encoding | Engine off | Engine on | On, with `cardgrow=0` |
+|---|---|---|---|
+| Asks for more than the rows hold, Sinz | 4,489,681, no answer | 1, 1 | |
+| The same, totalizer | no answer, no answer | 1, 1 | |
+| Three rows left with two columns, diagram | 342,054, 366,239 | 13,758, 27,740 | 629, 59,275 |
+| The same, Sinz | 236,350, 243,445 | 24,521, 13,438 | 2,064, 8,833 |
+| The same, totalizer | 213,626, 224,604 | 185,242, 127,333 | 2,160, 1,133 |
+| Six rows left with three columns, Sinz | 25,662, 23,420 | 24,203, 23,420 | 24,704, 26,554 |
+
+The default trades the last column for a ninth of the work on real formulas (below).
+The slack board does not move: the engine finds next to no lemma there.
+
+**Fired on real formulas.** On an earlier build, 120 s, the 400 cells (`fire_400_120s.tsv`):
+233 cells with networks, 101 with a lemma, no wrong model. Two cells stop for other
+reasons, the same with the engine off (`baseballcover12` overruns `--time` in probing,
+`17.normalised` hits the memory limit). In the recommended setting's 126 runs below the
+lemmas are 563 units, 4 of two literals, 559 of 3-4, 92 of 5-8, 8,196 of 9-16 and 12,776
+of 17-64, and 96% of them come from grids.
+
+**The guardrails, measured.** Three sweeps, all with every model checked, none wrong:
+1,944 runs on 18 UNSAT cells at 4 seeds, 27 settings (`guard_unsat_300s.tsv`), 1,140 runs
+on 38 cells where the engine fires, 3 seeds, 10 settings (`guard_sat_300s.tsv`), and
+2,016 runs on the 42 cells of both with an answer in some run, plus `59-129706`, 3 seeds,
+16 settings (`guard_final_300s.tsv`; the build of review round 5: the later fixes are
+limits, and on all 42 cells the parity engine's XORs are the same as with the engine off,
+so the order fix of round 9 changes nothing there). All at 300 s and in one shuffled pool
+of 30 jobs, so that no setting ran on a quieter machine. The final table, where every arm
+but the first is `--card=1 --cardgrow=0 --cardminlen=0` with what its name says (m3:
+`cardminlen=3`), and the wall and tick ratios are PAR-2 sums against engine off:
+
+| Setting | Solved of 126 | + | - | Wall ratio | Tick ratio | Engine M ticks a run |
+|---|---:|---:|---:|---:|---:|---:|
+| engine off | 102 | | | 1.000 | 1.000 | 0 |
+| i100, all lemmas | 99 | 2 | 5 | 1.060 | 1.069 | 58.8 |
+| m3 | 101 | 3 | 4 | 1.018 | 1.028 | 59.3 |
+| **m3 and `cardgrow=8` (recommended)** | **101** | **3** | **4** | **0.981** | **1.003** | **6.6** |
+| `cardminlen=4` | 101 | 3 | 4 | 1.006 | 1.042 | 58.7 |
+| `cardminlen=6` | 101 | 3 | 4 | 1.009 | 1.040 | 59.4 |
+| m3, `cardint=10` | 98 | 1 | 5 | 1.072 | 1.065 | 110.7 |
+| m3, `cardmaxper=2` | 101 | 4 | 5 | 1.018 | 1.025 | 59.3 |
+| m3, `cardmaxlen=256` | 101 | 3 | 4 | 1.026 | 1.028 | 59.4 |
+| m3, `cardeffort=200` | 102 | 4 | 4 | 0.988 | 1.007 | 77.9 |
+| m3, `cardminrows=12` | 102 | 3 | 3 | 0.998 | 1.022 | 36.5 |
+| m3, counts only | 100 | 2 | 4 | 1.027 | 1.035 | 6.1 |
+| m3, grids only | 101 | 3 | 4 | 1.009 | 1.020 | 56.2 |
+| m3, `cardreadticks=10M` | 100 | 2 | 4 | 1.041 | 1.013 | 14.8 |
+| m3, `cardreadticks=400M` | 102 | 4 | 4 | 1.027 | 1.063 | 62.0 |
+| m3, proof limits 2M and 20M terms | 101 | 3 | 4 | 1.017 | 1.032 | 59.2 |
+
+Read this as: no setting beats off in solved count here, on the cells picked because
+the engine fires on them, and the differences between settings are seed luck. What can
+be said per guardrail, with the UNSAT sweep's conflict counts, which seeds move less:
+
+- **Lemma length.** `cardmaxlen` below 64 loses the one big win: battleship at 8 literals
+  gains nothing, at 16 literals conflicts are 0.60 of off, at 64 literals 0.01. Above 64
+  changes nothing measurable.
+- **Short lemmas.** Reasons of two literals gain nothing and move the search: on
+  `sum_of_three_cubes_906` every seed takes about 200K conflicts with them, where off
+  takes 10K, 20K and 207K, and `cardminlen=3` gives back off's search. Units always stay.
+- **Interval.** Battleship's conflicts are 0.01 of off or less from 1 to 100 between looks
+  and 0.21 at 1,000. `cardgrow=8` keeps its gain (time 0.06 of off, 0.04 without) at a
+  ninth of the work.
+- **Forced literals.** Needed: with `cardforced=0` battleship does not move (1.03).
+  `cardmaxper` of 1 is 0.20 where 8 is 0.01.
+- **Effort, backoff.** These change the cost and not the conflicts. With `cardgrow=8` the
+  effort share rarely binds (108 waits in 126 runs against 22,172), but it stays as the
+  limit for a formula where looks keep finding something.
+- **Read budget.** 100M costs about 1 to 2 s a cell. 10M loses most of the lemmas on the
+  satisfiable cells (643 against 3,598), and 400M costs a factor of 1.4 on these cells
+  (1.2 at 100M; geometric mean of time against off) and gains no cell on balance.
+- **Proof budget.** Nothing at the defaults; 2M and 20M terms change nothing here either.
+  It is there for a count whose proof would be huge. Plans are at least what each form
+  writes on the toys.
+- **Kinds.** Counts alone do little on real formulas (3,702 lemmas against 26,695), and
+  the grids hold the gains. `cardmulti` and `cardroot` stay off (see below).
+
+Cells where the engine clearly matters: `battleship-13-13-unsat` (725K conflicts to about
+10K, in every setting with forced literals). `ITC2021_Early_12` and
+`SC25_Timetable_C_392` are faster on most settings and seeds, in the range seeds also
+give. On cells of a few seconds the fixed read cost shows, a factor of 1.2 to 2. It is
+1 to 2 s.
+
+**Cost.** Memory: on the 16 cells with the most networks or the largest formulas read,
+the engine adds at most 723 MB (`baseballcover12`, 879 to 1,602 MB), and 100-200 MB on the
+timetables. The largest formulas are over the clause limit and add nothing (1 MB). Off
+is off: on 14 cells the final binary and the last commit agree on answer, conflicts and
+work, and `tools/parity.py` is at 9 of 9.
+
+**Proofs on real runs.** With the recommended setting, 41 cells, the final binary:
+26 UNSAT proofs through the whole gate, 13 satisfiable or stopped runs whose stream VeriPB
+accepted with the output and the negative control, and 2 with nothing to check (no
+network). Earlier builds: 20 more UNSAT and 9 more of the others, none refused.
+
+**Review.** Twelve Codex rounds on the whole change. The first ten had findings: a lemma
+with no proof when the stream could not start, a gate that accepted a stream with no
+checked output, a test hook that shared proof state and could overwrite its input,
+conflicts not counted, root units that never marked their networks, the parity engine's
+read starved by this one, and about a dozen limits that a large network could overrun.
+Every read now pays for each scan before it starts (`pay`). Rounds 11 and 12 had nothing.
+
+**Measured and rejected.**
+
+- **Reading a tight set more fully.** On `59-129706` an earlier reader's grouping of rows
+  found 56 root facts where the final one finds 31 (`hall_root.py` reproduces both counts
+  from the grid dumps), and that build solved the cell on all 3 seeds at 600 s
+  (230, 241, 543 s) where engine off or the final reader solve 1 of 3
+  (`root_facts_*.tsv`). So I measured the facts alone, written into the formula by hand,
+  plain solver (`root_facts_added_by_hand.txt`): 57 facts 3 of 3, 31 facts 1 of 3. On
+  `58-134003`, 9 facts 1 of 3 against 0 of 3. Ways to find more were tried and do not
+  get there: 6, 24 or 100 cliques grown per row, the same 31; preferring rows with
+  fewer choices, 35. It rests on one cell and a change of reader could lose it again.
+- **A tight column ruling out literals from outside the grid.** A tight set fills its
+  columns, so any literal that excludes a whole column is false: 31 to 48-50 facts on
+  `59-129706` and 9 to 55-75 on `58-134003` (`hall_fix.py`). Written into the formula by
+  hand it does no better than the 57 facts: `59-129706` 2 or 3 of 3 and `58-134003` 0 or
+  1 of 3. Not built.
+- **Root clauses** (`cardroot`, "every column of a tight grid is used"). Proved and in the
+  solver, off. They fire on 6 of the 38 cells of the SAT sweep (2,493 clauses in 114 runs)
+  and solve 44 against 46 without, wall ratio 1.035 against 1.015. Long clauses at the
+  root did nothing in the first test either (section above).
+- **Several counts as one network** (`cardmulti`). Proved and in the solver, off. It adds
+  125 lemmas in 114 runs on top of about 14,000 and solves 45 against 46.
+- **A hint with fresh variables for a group's count.** Only `dubois50` of the census's cells
+  has such groups. Not built.
+- **Grid reader, tried and dropped by measuring against the census:** linking only rows
+  already read during short slices lost nearly everything on some cells (`oski15a01b20s`
+  core grids 606 to 0, `grs-256-64` 32 to 0, `pj2013_k9` longest row set 152 to 3). A limit
+  of 1/2 on full reads cut `b15` to 466 rows; 3/4 stays.
+
+**The paired run** (bead `iin.5`) is the 400 cells at two seeds, off against `--card=1`,
+1,800 s, every answer checked. It runs from the commit that adds this section; the result
+goes here.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 

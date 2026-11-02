@@ -267,6 +267,10 @@ pub fn search(solver: &mut Solver) -> i32 {
     if res == 0 && !crate::gauss::build(solver) {
         res = 20;
     }
+    // Not in kissat: the card engine's networks, after preprocessing
+    if res == 0 {
+        crate::card::start(solver);
+    }
     if res == 0 && searching(solver) {
         start_search(solver);
         while res == 0 {
@@ -279,6 +283,13 @@ pub fn search(solver: &mut Solver) -> i32 {
                 res = 10;
             } else if terminated!(solver, search_terminated_1) {
                 break;
+            } else if crate::card::due(solver) {
+                // Not in kissat: the card engine at a fixpoint; what it
+                // assigns is propagated by the next turn of this loop
+                if let Some(conflict) = crate::card::check(solver) {
+                    crate::propsearch::engine_conflict(solver, conflict);
+                    res = crate::analyze::analyze(solver, conflict);
+                }
             } else if solver.policy.on && crate::policy::epoch_due(solver) {
                 // Not in kissat: the RL scheduler's epoch hook (plan §2.3),
                 // at the head of the if-chain so a decision is in force
@@ -289,7 +300,14 @@ pub fn search(solver: &mut Solver) -> i32 {
             } else if crate::mode::switching_search_mode(solver) {
                 crate::mode::switch_search_mode(solver);
             } else if crate::restart::restarting(solver) {
-                crate::restart::restart(solver);
+                // Not in kissat: the card engine may look first (src/card.rs)
+                let mut conflict = None;
+                if !crate::card::before_restart(solver, &mut conflict) {
+                    crate::restart::restart(solver);
+                } else if let Some(conflict) = conflict {
+                    crate::propsearch::engine_conflict(solver, conflict);
+                    res = crate::analyze::analyze(solver, conflict);
+                }
             } else if crate::reorder::reordering(solver) {
                 crate::reorder::reorder(solver);
             } else if crate::rephase::rephasing(solver) {

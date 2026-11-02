@@ -345,6 +345,7 @@ pub struct Solver {
     pub structure: crate::structure::State,
     pub gauss: crate::gauss::State, // not in kissat: the parity engine (src/gauss.rs)
     pub gaussproof: crate::gaussproof::State, // not in kissat: its proof (src/gaussproof.rs)
+    pub card: crate::card::State, // not in kissat: the card engine (src/card.rs)
     pub last: Remember, // remember last;
     pub walked: u32,
 
@@ -572,6 +573,7 @@ pub fn print_statistics(solver: &mut Solver) {
     // Not in kissat: the parity engine's exit line (src/gauss.rs); nothing
     // when it did not run
     crate::gauss::report(solver);
+    crate::card::report(solver);
 }
 
 /// Port of `kissat_add` — external clause addition.

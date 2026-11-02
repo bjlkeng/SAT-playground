@@ -163,7 +163,9 @@ runs, so `tools/parity.py` stays exact. Since 2026-10-10 `structsym` and
 single 2026 holdout), since 2026-10-13 `structcount` too, and since
 2026-10-18 the parity engine `gauss` (`src/gauss.rs`, README "The
 parity engine"), since 2026-10-20 `structarith`, since 2026-10-27
-`structsort` and since 2026-10-28 `structdiv`: the stock kissat path is
+`structsort`, since 2026-10-28 `structdiv` and since 2026-10-31 `structdd`
+(the count and alldifferent engine `card`, `src/card.rs`, is off by default):
+the stock kissat path is
 `--structsym=0 --structparity=0 --structcount=0 --structarith=0
 --structsort=0 --structdiv=0 --structdd=0 --gauss=0`, which `tools/parity.py`
 adds unless told `--structure` and the test helpers' `run`/`run_with_proof`
@@ -171,7 +173,7 @@ add always
 (`tests/common/mod.rs`, `STOCK_PATH`); a test of the shipped defaults
 uses `run_shipped`. The divider and square-root pass (`src/structdiv.rs`,
 `structdiv`) has sub-solvers that, like the sorter's and the arithmetic
-pass's, run with every `struct*` option and `gauss` off. A promoted default is exactly the measured
+pass's, run with every `struct*` option, `gauss` and `card` off. A promoted default is exactly the measured
 configuration; a change to a pass's budget or detection is a new
 candidate and is measured before it ships. A pass may only add clauses to
 the input (of any length since the transport fixing of 2026-10-11, the
@@ -216,6 +218,18 @@ Rules the symmetry pass's later steps added (2026-10-11/12):
   returns) when the remaining budget is smaller than its cost; a loop
   looks at the limits by work done since the last look, before any
   early `continue`.
+- **The card engine (`src/card.rs`, `src/cardread.rs`, `src/gridread.rs`).** Its
+  readers run last in the structure stage, because the stage's limits are tick
+  counts to stop at and a reader that went earlier would use them up. In a read,
+  each scan pays for its whole length first (`pay`) and a sum for its literals
+  (`sum_fits`); a read that cannot pay ends with nothing. A read starts only when the
+  look has room for what it last cost, and a network that must wait costs nothing.
+  Work goes on the clocks at each poll, so a signal loses none, and a look's report
+  numbers stay behind in `solver.card.s` while the state is out of the solver. A
+  conflict from the engine goes through `propsearch::engine_conflict`, as one from
+  propagation does. Root literals mark their networks in `card::flushing`, before they
+  leave the trail. A run with a proof file has the engine only while the stream is
+  alive. The proof budget is decided the same with a proof file or without one.
 - **A guess is allowed only where a verification follows it** (the
   pairing of entries refinement cannot tell apart, the rows a second
   anchor sorts). A guessed matrix that fails is retried once with the

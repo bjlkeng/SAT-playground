@@ -160,6 +160,10 @@ pub fn backtrack_without_updating_phases(solver: &mut Solver, new_level: u32) {
     if solver.gauss.on {
         crate::gauss::backtracked(solver, new_end);
     }
+    // Not in kissat: the card engine's trail cursor (src/card.rs)
+    if solver.card.on {
+        crate::card::backtracked(solver, new_end);
+    }
 
     // solver->propagate = new_end (propagation resumes there).
     debug_assert!(new_end <= solver.trail.len());

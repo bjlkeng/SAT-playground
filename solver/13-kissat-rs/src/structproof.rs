@@ -30,6 +30,9 @@ pub struct Writer {
     /// Set once the empty clause was derived.
     pub refuted: bool,
     pub steps: u64,
+    /// Terms written by `rup` and `pol` lines and in `pbc` blocks: literals, ids and
+    /// operators, which is what the card engine's proof budget plans for.
+    pub written: u64,
     /// A write failed; the proof is unusable and the caller drops the
     /// derived clauses.
     pub failed: bool,
@@ -63,6 +66,7 @@ impl Writer {
             core: Vec::new(),
             refuted: false,
             steps: 0,
+            written: 0,
             failed: false,
         };
         writeln!(w.out, "pseudo-Boolean proof version 3.0")?;
@@ -78,6 +82,7 @@ impl Writer {
         }
         self.constraints += 1;
         self.steps += 1;
+        self.written += clause.len() as u64 + 1;
         if clause.is_empty() {
             self.refuted = true;
         }
@@ -162,6 +167,7 @@ impl Writer {
         }
         self.constraints += 1;
         self.steps += 1;
+        self.written += 1 + expr.split_ascii_whitespace().count() as u64;
         Ok(self.constraints)
     }
 
@@ -190,6 +196,7 @@ impl Writer {
         }
         self.constraints += 1 + subproof.len() as u64 + 1;
         self.steps += 1;
+        self.written += 1 + terms.len() as u64 + subproof.iter().map(|c| c.len() as u64 + 1).sum::<u64>();
         Ok(self.constraints)
     }
 
@@ -221,6 +228,7 @@ impl Writer {
         }
         self.constraints += 1 + lines.len() as u64 + 1;
         self.steps += 1;
+        self.written += 1 + terms.len() as u64 + lines.iter().map(|l| l.split_ascii_whitespace().count() as u64).sum::<u64>();
         Ok(self.constraints)
     }
 
@@ -241,6 +249,7 @@ impl Writer {
             return Err(e);
         }
         self.steps += 1;
+        self.written += ids.len() as u64;
         Ok(())
     }
 
@@ -248,6 +257,15 @@ impl Writer {
     /// formula by the caller).
     pub fn keep(&mut self, id: u64) {
         self.core.push(id);
+    }
+
+    /// Finish a proof that adds no clause to the formula (the readers' test hook,
+    /// `SAT_CARD_READ_CHECK`): every line is checked, and nothing is concluded.
+    pub fn finish_no_conclusion(mut self) -> std::io::Result<()> {
+        writeln!(self.out, "output NONE ;")?;
+        writeln!(self.out, "conclusion NONE ;")?;
+        writeln!(self.out, "end pseudo-Boolean proof ;")?;
+        self.out.flush()
     }
 
     /// Finish the proof. With the empty clause derived the conclusion is

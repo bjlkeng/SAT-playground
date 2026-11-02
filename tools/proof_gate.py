@@ -167,6 +167,47 @@ def run_veripb(veripb, args, timeout):
     return p.returncode, lines, (tail[-1] if tail else "")
 
 
+def veripb_stage(cnf, pbp, derived, veripb, timeout, d):
+    """VeriPB reads the stream from F. The stream must refute F, or end with the
+    extended formula F' as its checked output. Returns (verdict, F' as CNF): the
+    verdict is empty when VeriPB checked F', so that the DRAT stage can follow."""
+    # the proof must end in a refutation or in the extended formula as
+    # its checked output (lines split on newline only, as VeriPB does;
+    # a comment cannot pass as a section line this way, and a second
+    # output section fails VeriPB's own parse)
+    tail = [l.rstrip("\r") for l in pbp.read_text(errors="replace").rstrip("\n").split("\n")[-4:]]
+    concluded_unsat = any(l.startswith("conclusion UNSAT") for l in tail)
+    names_output = any(l.startswith("output EQUISATISFIABLE FILE") or l.startswith("output DERIVABLE FILE") for l in tail)
+    if not concluded_unsat and not names_output:
+        return "FAIL:the structure proof neither refutes nor names the extended formula as its output", None
+    dvars, extra = read_derived(derived)
+    f_opb, fp_opb, fp_cnf = os.path.join(d, "f.opb"), os.path.join(d, "fprime.opb"), os.path.join(d, "fprime.cnf")
+    nvars, n0 = cnf_to_opb_and_copy(cnf, f_opb, os.path.join(d, "f.cnf"), [])
+    fix_headers(f_opb, os.path.join(d, "f.cnf"), max(nvars, dvars), n0)
+    nvars2, n1 = cnf_to_opb_and_copy(cnf, fp_opb, fp_cnf, extra)
+    fix_headers(fp_opb, fp_cnf, max(nvars2, dvars), n1)
+    if concluded_unsat:
+        code, lines, last = run_veripb(veripb, [f_opb, str(pbp)], timeout)
+        if code == 0 and "s VERIFIED UNSATISFIABLE" in lines:
+            return "ok", None
+        return f"FAIL:VeriPB rejected the structure proof ({last[:120]})", None
+    code, lines, last = run_veripb(veripb, [f_opb, str(pbp), fp_opb], timeout)
+    if code != 0 or "s VERIFIED NO CONCLUSION" not in lines:
+        return f"FAIL:VeriPB rejected the structure proof or the extended formula ({last[:120]})", None
+    # negative control: the same proof against F' plus one clause the
+    # proof never derived must be rejected; this shows VeriPB really
+    # compared the output file, whatever the proof's text says
+    bad_opb = os.path.join(d, "fprime-bad.opb")
+    with open(fp_opb) as src, open(bad_opb, "w") as dst:
+        for line in src:
+            dst.write(line)
+        dst.write(f"+1 x{max(nvars2, dvars) + 1} >= 1 ;\n")
+    code, lines, last = run_veripb(veripb, [f_opb, str(pbp), bad_opb], timeout)
+    if code == 0 and "s VERIFIED NO CONCLUSION" in lines:
+        return "FAIL:VeriPB did not check the extended formula (the proof's output section is not FILE)", None
+    return "", fp_cnf
+
+
 def check_unsat(cnf, proof, timeout: float = 3600.0, workdir=None) -> str:
     cnf, proof = Path(cnf), Path(proof)
     if not proof.is_file():
@@ -195,41 +236,10 @@ def check_unsat(cnf, proof, timeout: float = 3600.0, workdir=None) -> str:
             return "no-checker"
         if not derived.is_file():
             return "FAIL:VeriPB proof without the derived clauses"
-        # the proof must end in a refutation or in the extended formula as
-        # its checked output (lines split on newline only, as VeriPB does;
-        # a comment cannot pass as a section line this way, and a second
-        # output section fails VeriPB's own parse)
-        tail = [l.rstrip("\r") for l in pbp.read_text(errors="replace").rstrip("\n").split("\n")[-4:]]
-        concluded_unsat = any(l.startswith("conclusion UNSAT") for l in tail)
-        names_output = any(l.startswith("output EQUISATISFIABLE FILE") or l.startswith("output DERIVABLE FILE") for l in tail)
-        if not concluded_unsat and not names_output:
-            return "FAIL:the structure proof neither refutes nor names the extended formula as its output"
         with tempfile.TemporaryDirectory(prefix="proof-gate-", dir=workdir) as d:
-            dvars, extra = read_derived(derived)
-            f_opb, fp_opb, fp_cnf = os.path.join(d, "f.opb"), os.path.join(d, "fprime.opb"), os.path.join(d, "fprime.cnf")
-            nvars, n0 = cnf_to_opb_and_copy(cnf, f_opb, os.path.join(d, "f.cnf"), [])
-            fix_headers(f_opb, os.path.join(d, "f.cnf"), max(nvars, dvars), n0)
-            nvars2, n1 = cnf_to_opb_and_copy(cnf, fp_opb, fp_cnf, extra)
-            fix_headers(fp_opb, fp_cnf, max(nvars2, dvars), n1)
-            if concluded_unsat:
-                code, lines, last = run_veripb(veripb, [f_opb, str(pbp)], timeout)
-                if code == 0 and "s VERIFIED UNSATISFIABLE" in lines:
-                    return "ok"
-                return f"FAIL:VeriPB rejected the structure proof ({last[:120]})"
-            code, lines, last = run_veripb(veripb, [f_opb, str(pbp), fp_opb], timeout)
-            if code != 0 or "s VERIFIED NO CONCLUSION" not in lines:
-                return f"FAIL:VeriPB rejected the structure proof or the extended formula ({last[:120]})"
-            # negative control: the same proof against F' plus one clause the
-            # proof never derived must be rejected; this shows VeriPB really
-            # compared the output file, whatever the proof's text says
-            bad_opb = os.path.join(d, "fprime-bad.opb")
-            with open(fp_opb) as src, open(bad_opb, "w") as dst:
-                for line in src:
-                    dst.write(line)
-                dst.write(f"+1 x{max(nvars2, dvars) + 1} >= 1 ;\n")
-            code, lines, last = run_veripb(veripb, [f_opb, str(pbp), bad_opb], timeout)
-            if code == 0 and "s VERIFIED NO CONCLUSION" in lines:
-                return "FAIL:VeriPB did not check the extended formula (the proof's output section is not FILE)"
+            verdict, fp_cnf = veripb_stage(cnf, pbp, derived, veripb, timeout, d)
+            if verdict:
+                return verdict
             p = subprocess.run([drat, fp_cnf, str(proof)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                text=True, timeout=timeout)
             ok = any(l.strip() in ("s VERIFIED", "s ACCEPTED") for l in (p.stdout or "").splitlines())
@@ -239,6 +249,35 @@ def check_unsat(cnf, proof, timeout: float = 3600.0, workdir=None) -> str:
     except MalformedCnf as e:
         return f"FAIL:malformed CNF ({e})"
     except Exception as e:                       # a malformed artifact is a failure, not a crash
+        return f"checker-error:{e.__class__.__name__}"
+
+
+def check_stream(cnf, proof, timeout: float = 3600.0, workdir=None) -> str:
+    """The VeriPB stage alone, whatever the solver answered: every line of the
+    stream holds and VeriPB checked the extended formula as the stream's output, or
+    the stream refutes the input. For a run that stopped, or that ended SATISFIABLE,
+    where the search left no refutation to check but the lemmas it wrote can still
+    be wrong. Returns ok | FAIL:<why> | no-stream |
+    no-checker | checker-timeout | checker-error."""
+    cnf, proof = Path(cnf), Path(proof)
+    pbp = Path(str(proof) + ".pbp")
+    derived = Path(str(proof) + ".derived.cnf")
+    if not pbp.is_file():
+        return "no-stream"
+    veripb = find_veripb()
+    if not veripb:
+        return "no-checker"
+    if not derived.is_file():
+        return "FAIL:VeriPB proof without the derived clauses"
+    try:
+        with tempfile.TemporaryDirectory(prefix="proof-gate-", dir=workdir) as d:
+            verdict, _ = veripb_stage(cnf, pbp, derived, veripb, timeout, d)
+            return verdict or "ok"
+    except subprocess.TimeoutExpired:
+        return "checker-timeout"
+    except MalformedCnf as e:
+        return f"FAIL:malformed CNF ({e})"
+    except Exception as e:
         return f"checker-error:{e.__class__.__name__}"
 
 

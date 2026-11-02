@@ -20,6 +20,10 @@ pub fn flush_trail(solver: &mut Solver) {
     debug_assert!(!solver.inconsistent);
     debug_assert!(solver.propagate == solver.trail.len()); // kissat_propagated
     debug_assert!(solver.trail.len() == solver.unflushed as usize);
+    // Not in kissat: the card engine reads these literals before they go
+    if solver.card.on {
+        crate::card::flushing(solver);
+    }
     solver.trail.clear(); // CLEAR_ARRAY (solver->trail)
     solver.propagate = 0; // kissat_reset_propagate
     solver.unflushed = 0;

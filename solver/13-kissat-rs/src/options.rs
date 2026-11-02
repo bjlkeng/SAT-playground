@@ -98,6 +98,27 @@ kissat_options! {
     (bumpreasons, 1, 0, 1, "bump reason side literals too"),
     (bumpreasonslimit, 10, 1, i32::MAX, "relative reason literals limit"),
     (bumpreasonsrate, 10, 1, i32::MAX, "decision rate limit"),
+    // Not in kissat: the count and alldifferent engine (src/card.rs, plan
+    // plan/count-and-hall-lemmas-plan.md); off until measured.
+    (card, 0, 0, 1, "count and alldifferent lemmas in search"),
+    (cardeffort, 50, 0, 100_000, "card engine work cap (per mille of search ticks, 0 none)"),
+    (cardforced, 1, 0, 1, "card engine: forced literals as well as conflicts"),
+    (cardgrow, 8, 0, 30, "card engine: empty looks double the interval up to 2^this"),
+    (cardint, 100, 0, i32::MAX, "card engine: conflicts between looks"),
+    (cardkinds, 7, 0, 7, "card engine: networks used, 1 counts, 2 grids, 4 tied counts"),
+    (cardlook, 0, 0, i32::MAX, "card engine: most kiloticks for one look, 0 none"),
+    (cardmaxlen, 64, 1, i32::MAX, "card engine: longest lemma used"),
+    (cardmaxper, 8, 1, i32::MAX, "card engine: forced literals per network look"),
+    (cardminlen, 3, 0, i32::MAX, "card engine: shortest reason for a forced literal"),
+    (cardminrows, 0, 0, i32::MAX, "card engine: fewest rows of a grid used"),
+    (cardmulti, 0, 0, 1, "card engine: networks of several counts"),
+    (cardproofmax, 200_000, 0, i32::MAX, "card engine: proof terms for one constraint (K)"),
+    (cardprooftotal, 2_000_000, 0, i32::MAX, "card engine: proof terms for all constraints (K)"),
+    (cardreadticks, 100_000, 0, i32::MAX, "card engine: reading work limit (K)"),
+    (cardrestart, 0, 0, 1, "card engine: look just before a restart"),
+    (cardroot, 0, 0, 1, "card engine: root clauses from tight networks"),
+    (cardrootmax, 100_000, 0, i32::MAX, "card engine: most root clauses"),
+    (cardyield, 8, 0, 30, "card engine: a network finding nothing sits out up to 2^this looks"),
     (chrono, 1, 0, 1, "allow chronological backtracking"),
     (chronolevels, 100, 0, i32::MAX, "maximum jumped over levels"),
     (compact, 1, 0, 1, "enable compacting garbage collection"),
@@ -759,8 +780,9 @@ mod tests {
         // gausslimit, gaussyield, gausswindow (2026-10-15/17),
         // structarith, structarithticks (2026-10-19), structsort,
         // structsortticks (2026-10-26), structdiv, structdivticks
-        // (2026-10-27) and structdd, structddticks (2026-10-31)
-        assert_eq!(OPTION_TABLE.len(), 158 + 24);
+        // (2026-10-27), structdd, structddticks (2026-10-31) and the ten
+        // card* options (2026-11-01)
+        assert_eq!(OPTION_TABLE.len(), 158 + 43);
     }
 
     #[test]

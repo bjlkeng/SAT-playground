@@ -201,6 +201,7 @@ statistics_fields! {
     forward_steps,
     forward_strengthened, // STATISTIC
     gauss_ticks, // not in kissat: the parity engine's work (src/gauss.rs)
+    card_ticks, // not in kissat: the card engine's work (src/card.rs)
     forward_subsumed, // STATISTIC
     forward_subsumptions, // METRIC (re-enabled)
     garbage_collections, // METRIC (re-enabled)
