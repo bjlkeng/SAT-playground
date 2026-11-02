@@ -52,10 +52,11 @@ work is **solver 13** and the RL scheduler on top of it.
   six lines, each measured before it is built. G.1, counts and alldifferent in
   the search (epic `SAT-playground-iin`), is built and off by default (`card`):
   one engine (`src/card.rs`), readers for every count form and alldifferent
-  variation with proofs (`src/cardread.rs`, `src/gridread.rs`), effort guardrails
-  and a recommended setting; results in the solver README, "Count and
-  alldifferent lemmas", plan `plan/count-and-hall-lemmas-plan.md`. Promotion is
-  the owner's call. Tools: `tools/alldiff_census.py`, `tools/card_census.py`,
+  variation with proofs (`src/cardread.rs`, `src/gridread.rs`) and effort
+  guardrails. The 400-cell paired run (2026-11-02) solved 645 v 651 over two
+  seeds, so the recommended setting is off; results in the solver README, "Count
+  and alldifferent lemmas", plan `plan/count-and-hall-lemmas-plan.md`. Promotion
+  is the owner's call. Tools: `tools/alldiff_census.py`, `tools/card_census.py`,
   `tools/hall_toy_proof.py`, `tools/card_toy_proof.py`, `tools/card_read_check.py`,
   `tools/grid_read_check.py`, `tools/card_fuzz.py`.
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace

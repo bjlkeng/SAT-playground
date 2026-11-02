@@ -193,8 +193,8 @@ not seen on the holdout); **2026-10-20: `structarith`** (313 v 312 on
 2025, the two multiplier miters; not seen on the holdout; "The linear
 arithmetic pass" below); then `structsort` (2026-10-27), `structdiv`
 (2026-10-28) and `structdd` (2026-10-31), each after its own paired
-run. The count and alldifferent engine, `card`, is off by default ("Count and
-alldifferent lemmas" below). The stock kissat path is `--structsym=0 --structparity=0
+run. The count and alldifferent engine, `card`, is off by default: its paired run
+solved 645 v 651 over two seeds ("Count and alldifferent lemmas" below). The stock kissat path is `--structsym=0 --structparity=0
 --structcount=0 --structarith=0 --structsort=0 --structdiv=0
 --structdd=0` (and `--gauss=0`, the parity engine below), which `tools/parity.py` passes unless
 told `--structure`, and the test helpers' `run` too
@@ -4248,13 +4248,16 @@ setting from experiments (`plan/count-and-hall-lemmas-plan.md`). This section sa
 what was built and what it measured. The engine is off by default (`--card=0`).
 
 **The short answer.** All seven forms of count and every variation of alldifferent
-read here, and every lemma is proved and checked. The lemmas help a little: one
-formula by a factor of about 20, a few timetable formulas possibly, and on the rest
-they neither help nor hurt beyond seed luck. The recommended setting, if the engine is
-on, is the options' defaults: `--card=1`, which means `cardminlen=3`, `cardgrow=8` and
-the rest as in the table below. The 400-cell result and the verdict on promotion are at
-the end of this section; promotion is the owner's call and the 2026 holdout has not
-been touched.
+read here, and every lemma is proved and checked. The recommended setting is off, the
+default. On the 400 cells at two seeds the engine solves 645 against 651, and both
+PAR-2s are about 2% worse (the paired run, at the end of this section). The lemmas win
+big on a few formulas. A round-robin schedule takes 1 conflict instead of 674K and
+1.0M, battleship 28 to 74 times fewer, and a timetable about 4 times fewer. Elsewhere
+they change the run about as much as a new seed does, and a few cells do worse on both
+seeds (the oddball family, `oski15a01b01s_opt`). For a formula known to be made of
+counts or alldifferent, use `--card=1` with the options' defaults: `cardminlen=3`,
+`cardgrow=8` and the rest as in the table below. Promotion is the owner's call, and the
+2026 holdout has not been touched.
 
 **The idea.** A count says "at least d of these literals". A clause is d = 1, "at
 most K of these" is "at least n - K of their negations", and an alldifferent column
@@ -4500,9 +4503,57 @@ Every read now pays for each scan before it starts (`pay`). Rounds 11 and 12 had
   core grids 606 to 0, `grs-256-64` 32 to 0, `pj2013_k9` longest row set 152 to 3). A limit
   of 1/2 on full reads cut `b15` to 466 rows; 3/4 stays.
 
-**The paired run** (bead `iin.5`) is the 400 cells at two seeds, off against `--card=1`,
-1,800 s, every answer checked. It runs from the commit that adds this section; the result
-goes here.
+**The paired run** (bead `iin.5`; `log/abtest-struct-card-400-2026-11-01-22-15-59`,
+binary `solver/13-j8-card-snapshot` frozen from `8cc185f`). The 400 cells at seeds 0 and
+1, the engine off against `--card=1` with the defaults, 1,800 s, 32 jobs at 16 GB, every
+answer sent to the checker. The ratios are PAR-2 sums, on against off (`paired_view.py`,
+output in `paired_view_400.txt`).
+
+| Seed | Off solved | On solved | + | - | Wall PAR-2 ratio | Tick PAR-2 ratio |
+|---|---:|---:|---:|---:|---:|---:|
+| 0 | 325 | 320 | 1 | 6 | 1.034 | 1.039 |
+| 1 | 326 | 325 | 1 | 2 | 1.005 | 0.996 |
+| both | 651 | 645 | 2 | 8 | 1.020 | 1.018 |
+
+No two arms disagree on an answer, and the checker refused none. Models and proofs
+checked, then checker timeouts: off 301 and 24 on seed 0, 302 and 24 on seed 1; on 297
+and 23, 301 and 24. The two cells that stop at 16 GB (`pj2002_k500`, `17.normalised`)
+stop in all four arms, as in every 400-cell run since 2026-10-19.
+
+**What moved.** On the cells both settings solve, the conflicts are exactly the same on
+286 of 319 (seed 0) and 288 of 324 (seed 1). So the engine changes the search on about
+one solved cell in ten. Ten cells change status:
+
+- Four are timing at the limit: `reconf10_22_queen20`, `ncc_none_2_17`, `bp5_CSO` and
+  `case11`, one gain and three losses. The engine reads no network on them. The search
+  is the same with it on, to 300K conflicts (50K on `ncc`; `same_path.py`, output in
+  `same_path_*.txt`), and on the other seed both arms have the same conflicts.
+- Six are on cells where the engine changes the search: one gain
+  (`SC25_Timetable_C_496`, seed 0) and five losses (`HCP-446-105`,
+  `at-least-two-vmpc_28`, `oddball_26`, `oddball_29` on seed 0, `SC25_Timetable_C_406`
+  on seed 1). Two of the losses go the other way on the other seed: `HCP-446-105` takes
+  1,231 s against 1,562 and `SC25_Timetable_C_406` 311 s against 469.
+
+The cells that move the same way on both seeds, conflicts off then on:
+
+| Cell | Seed 0 | Seed 1 |
+|---|---|---|
+| `MVRoundRobin_n16_d10_v3` | 673,706 to 1 | 1,009,590 to 1 |
+| `battleship-13-13-unsat` | 665,483 to 8,935 | 832,665 to 30,068 |
+| `ITC2021_Early_12` | 410,060 to 90,020 | 427,642 to 116,786 |
+| `oski15a01b01s_opt` | 6,269,195 to 11,110,747 | 4,674,635 to 9,602,553 |
+| `oddball_26_4_ttf` | 31,276,139 to no answer | 30,079,313 to 34,248,327 |
+
+The read costs more on a busy machine. `b22_1` takes 26 s against 15 on both seeds in
+this run, and 14.9 s against 12.9 alone on the machine, proof file included.
+
+**Verdict: off**, the default. Two seeds lose 6 cells net and both PAR-2s are about 2%
+worse, and the guardrail sweeps above found no setting that beats off either. The
+engine stays in the solver as an option for formulas known to be made of counts and
+alldifferent, where `--card=1` can cut conflicts by a factor of 4 to a million. The
+epic's acceptance line "no unsatisfiable cell lost" is not met: seed 0 loses three
+(`oddball_26`, `oddball_29`, and `ncc_none_2_17` by timing). Promotion is the owner's
+call; the 2026 holdout has not been touched.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 
