@@ -193,8 +193,9 @@ not seen on the holdout); **2026-10-20: `structarith`** (313 v 312 on
 2025, the two multiplier miters; not seen on the holdout; "The linear
 arithmetic pass" below); then `structsort` (2026-10-27), `structdiv`
 (2026-10-28) and `structdd` (2026-10-31), each after its own paired
-run. The count and alldifferent engine, `card`, is off by default: its paired run
-solved 645 v 651 over two seeds ("Count and alldifferent lemmas" below). The stock kissat path is `--structsym=0 --structparity=0
+run. The count and alldifferent engine, `card`, is off by default because it is
+neutral: its paired run solved 645 v 651 over two seeds, and eight fresh seeds show
+that loss was luck ("Count and alldifferent lemmas" below). The stock kissat path is `--structsym=0 --structparity=0
 --structcount=0 --structarith=0 --structsort=0 --structdiv=0
 --structdd=0` (and `--gauss=0`, the parity engine below), which `tools/parity.py` passes unless
 told `--structure`, and the test helpers' `run` too
@@ -4249,15 +4250,19 @@ what was built and what it measured. The engine is off by default (`--card=0`).
 
 **The short answer.** All seven forms of count and every variation of alldifferent
 read here, and every lemma is proved and checked. The recommended setting is off, the
-default. On the 400 cells at two seeds the engine solves 645 against 651, and both
-PAR-2s are about 2% worse (the paired run, at the end of this section). The lemmas win
-big on a few formulas. A round-robin schedule takes 1 conflict instead of 674K and
-1.0M, battleship 28 to 74 times fewer, and a timetable about 4 times fewer. Elsewhere
-they change the run about as much as a new seed does, and a few cells do worse on both
-seeds (the oddball family, `oski15a01b01s_opt`). For a formula known to be made of
-counts or alldifferent, use `--card=1` with the options' defaults: `cardminlen=3`,
-`cardgrow=8` and the rest as in the table below. Promotion is the owner's call, and the
-2026 holdout has not been touched.
+default, because the engine is neutral on the 400 cells, not because it loses. The
+paired run solved 645 against 651 over two seeds. Eight fresh seeds on the 47 cells
+where the engine changes the search show that loss was luck: 346 against 341, under a
+work budget, so machine load plays no part ("Why it lost", at the end of this section).
+The lemmas win big on a few formulas. A round-robin schedule takes 1 conflict instead
+of 0.7M to 1.1M, battleship 27 times fewer (the median of eight seeds), and a small
+satisfiable formula 405 instead of 2,650 to 13,900. The solver finishes all three in
+under 40 s without the engine. Elsewhere the lemmas change the run about as much as a
+new seed does, and they do not slow the search. The cost is mostly the read that finds
+the networks, 0.3% of the PAR-2 sum. For a formula known to be made of counts or alldifferent, use
+`--card=1` with the options' defaults: `cardminlen=3`, `cardgrow=8` and the rest as in
+the table below. Promotion is the owner's call, and the 2026 holdout has not been
+touched.
 
 **The idea.** A count says "at least d of these literals". A clause is d = 1, "at
 most K of these" is "at least n - K of their negations", and an alldifferent column
@@ -4534,26 +4539,111 @@ one solved cell in ten. Ten cells change status:
   on seed 1). Two of the losses go the other way on the other seed: `HCP-446-105` takes
   1,231 s against 1,562 and `SC25_Timetable_C_406` 311 s against 469.
 
-The cells that move the same way on both seeds, conflicts off then on:
+The cells that move the same way on both seeds, conflicts off then on. The last column
+is the rerun below, the median of eight fresh seeds. Only the first two hold up.
 
-| Cell | Seed 0 | Seed 1 |
-|---|---|---|
-| `MVRoundRobin_n16_d10_v3` | 673,706 to 1 | 1,009,590 to 1 |
-| `battleship-13-13-unsat` | 665,483 to 8,935 | 832,665 to 30,068 |
-| `ITC2021_Early_12` | 410,060 to 90,020 | 427,642 to 116,786 |
-| `oski15a01b01s_opt` | 6,269,195 to 11,110,747 | 4,674,635 to 9,602,553 |
-| `oddball_26_4_ttf` | 31,276,139 to no answer | 30,079,313 to 34,248,327 |
+| Cell | Seed 0 | Seed 1 | Seeds 2 to 9, median |
+|---|---|---|---|
+| `MVRoundRobin_n16_d10_v3` | 673,706 to 1 | 1,009,590 to 1 | 918,989 to 1 |
+| `battleship-13-13-unsat` | 665,483 to 8,935 | 832,665 to 30,068 | 750,109 to 27,722 |
+| `ITC2021_Early_12` | 410,060 to 90,020 | 427,642 to 116,786 | 185,510 to 134,485 |
+| `oski15a01b01s_opt` | 6,269,195 to 11,110,747 | 4,674,635 to 9,602,553 | 7,061,462 to 6,347,696 |
+| `oddball_26_4_ttf` | 31,276,139 to no answer | 30,079,313 to 34,248,327 | 32,742,527 to 37,209,850; solved 7 and 8 of 8 |
 
 The read costs more on a busy machine. `b22_1` takes 26 s against 15 on both seeds in
 this run, and 14.9 s against 12.9 alone on the machine, proof file included.
 
-**Verdict: off**, the default. Two seeds lose 6 cells net and both PAR-2s are about 2%
-worse, and the guardrail sweeps above found no setting that beats off either. The
-engine stays in the solver as an option for formulas known to be made of counts and
-alldifferent, where `--card=1` can cut conflicts by a factor of 4 to a million. The
-epic's acceptance line "no unsatisfiable cell lost" is not met: seed 0 loses three
-(`oddball_26`, `oddball_29`, and `ncc_none_2_17` by timing). Promotion is the owner's
-call; the 2026 holdout has not been touched.
+**Why it lost: luck, the read, or the lemmas** (2026-11-02; scripts and output in
+`log/count-hints-2026-11-01/whyoff/`). There are three possible causes. Luck is timing
+at the limit or the path a seed happens to take. The read, the step before search that
+finds the networks, could be too slow. Or the lemmas could harm the search. The answer
+is mostly luck. The read is cheap, and the lemmas do no harm.
+
+The test reruns the 47 cells where the engine changed the search in the paired run:
+both settings solve with different conflicts, or the status flips on a cell the engine
+reads (`pick_cells.py`). It uses eight fresh seeds, 2 to 9, with the engine off and on,
+and each run stops at a work budget (`SAT_LIMIT_TICKS`). The budget is four times the
+most work any solved run of the cell took in the paired run, and at most the work of
+1,800 s. Under a work budget the outcome does not depend on machine load, so seed luck
+is all that is left. That is 752 runs (`multiseed.py`): the same frozen binary, 32 jobs
+at 16 GB, every model checked, no proofs written. No cell gets two answers. The four
+timing cells are left out: the engine does not change their search, so a work budget
+cannot flip them.
+
+| Run | Cells | Seeds | Off solved | On solved | + | - | Tick PAR-2 ratio |
+|---|---:|---|---:|---:|---:|---:|---:|
+| paired run, 1,800 s | 400 | 0, 1 | 651 | 645 | 2 | 8 | 1.018 |
+| rerun, work budget | 47 | 2 to 9 | 341 | 346 | 16 | 11 | 0.957 |
+
+- **Luck: yes, both kinds.** A new seed with the engine off flips 31 cells; the engine
+  flips 10 over two seeds (`why_view.py`). Four of the 10 are the same search ending
+  just inside or just outside 1,800 s. The other six flipped one gain and five losses.
+  On fresh seeds those six cells solve 31 of 48 runs with the engine off and 32 with it
+  on. Over all 47 cells the rerun is +5, seed by seed +1, +1, 0, +2, -1, 0, 0 and +2.
+  With on and off swapped at random within each pair, a net of 5 or more either way
+  has a 45% chance (`ms_view.py`). The tick PAR-2 gain rests on one cell: without
+  `hcp_CP18_18` the ratio is 0.99, and a bootstrap over the cells puts it between 0.89
+  and 1.03 (90% of draws; `ms_detail.py`). Two seeds also mislead cell by cell.
+  `oski15a01b01s_opt` doubled its conflicts on seeds 0 and 1, and on fresh seeds the
+  engine gives 10% fewer. A cell where the engine has no effect still moves the same
+  way on two seeds half the time.
+- **The read: cheap.** On the 400 cells it costs 29.4G ticks in all (`read_cost.py`: a
+  run to the first conflict with the engine off and on; `read_view.py`). Of that,
+  26.6G is on the 239 cells where it finds a network: a median of 115M each, at most
+  219M. All of it is 0.3% of the tick PAR-2 sum (9,045G for seed 0, engine off). At
+  this machine's 30M search ticks a second under load, it is about 1,000 s against a
+  wall PAR-2 sum of 351K s. It flipped none of the four timing cells. On each, the
+  engine-on run follows the same search as off, and the gap is the machine's speed,
+  not the read. On `reconf10_22_queen20` the engine-on run was at least 342 s behind,
+  on `ncc_none_2_17` it had 7% fewer conflicts at the limit, on `bp5_CSO` 2% fewer, and
+  on `case11` it was at least 183 s ahead. The read on those cells is 2M to 129M ticks,
+  a few seconds. In ticks, 8 cells look significantly worse with the engine on
+  (p < 0.05). Seven of them take at most 1.1G ticks, so a read of 18M to 128M is a
+  large part of their work. With each on run's read taken out they are at 0.87 to 1.10,
+  and none is significant. The eighth, `oddball_24_4`, is 1.21 with the read and 1.20
+  without it (p = 0.04, and 0.05 without). With 47 cells tested, about 2.4 pass
+  p < 0.05 by luck. With the read taken out, 3 cells are significantly better and none
+  worse (`ms_more.py`).
+- **The lemmas: no harm.** Take the 282 pairs where the search changed and both runs
+  reach 10K conflicts. With the engine on against off at the same seed, the counts per
+  conflict barely move at the median: search ticks, propagations, decisions, learned
+  clause length, variables bumped, restarts, reductions, variables eliminated, clauses
+  vivified. Each median is within 1%, and on is higher in about half the pairs. A new
+  seed with the engine off moves them as far (`ms_seedbase.py`). The table gives log2
+  of the ratio, so 0 is no change and +0.1 is 7% more: the median, then the range of
+  the middle 80% of pairs.
+
+  | Measure | Engine on/off, same seed | Seed change, engine off |
+  |---|---|---|
+  | search ticks per conflict | -0.001 (-0.18 to +0.12) | -0.018 (-0.17 to +0.17) |
+  | propagations per conflict | +0.006 (-0.16 to +0.32) | -0.004 (-0.35 to +0.27) |
+  | learned clause length | -0.001 (-0.23 to +0.17) | -0.013 (-0.25 to +0.20) |
+  | restarts per conflict | +0.009 (-0.19 to +0.35) | +0.009 (-0.35 to +0.33) |
+  | variables eliminated per conflict | +0.014 (-0.85 to +1.27) | +0.005 (-0.88 to +1.37) |
+  | seconds per search tick | +0.039 (-0.05 to +0.51) | +0.001 (-0.15 to +0.18) |
+
+  The one gap is seconds per search tick, and that is the read again. With each on
+  run's read seconds taken out, it is +0.006, and on pairs where the search stays the
+  same it is -0.001 (`ms_detail.py`). The engine's own looks take 0.16% of the search's
+  ticks in the median run and 8% in the costliest tenth. Unsatisfiable cells vary little from seed to seed
+  (sd 0.16 in log2 conflicts), and there the engine lowers the median conflicts on 13
+  of 19 cells. Satisfiable cells vary by about a factor of 2 (sd 0.94), and the
+  engine's effect is lost in that.
+
+**Verdict: off**, the default. The engine is neutral on these cells; it does not lose.
+The paired run's 6-cell loss is luck, and so is the rerun's 5-cell gain. What is not
+luck: three formulas win on every seed (`MVRoundRobin_n16_d10_v3`,
+`battleship-13-13-unsat`, `x9-06099`), but the solver finishes them in under 40 s
+without the engine. The read costs 0.3% of the PAR-2 sum, and the search runs the same
+per conflict. The one cell only the engine solved, `SC25_Timetable_C_496`, solves on 4
+of 8 fresh seeds either way. So nothing here earns the engine a place in the default,
+and the guardrail sweeps above found no setting that beats off either. It stays in the
+solver as an option for formulas known to be made of counts and alldifferent, where
+`--card=1` can cut conflicts by a factor of 20 to a million. The epic's acceptance line
+"no unsatisfiable cell lost" is not met: seed 0 loses three (`oddball_26`, `oddball_29`,
+and `ncc_none_2_17` by timing), and on fresh seeds `oddball_29` solves 2 of 8 against
+3 (`oddball_26` 8 against 7). Any change to the search flips cells at the budget edge
+like this. Promotion is the owner's call; the 2026 holdout has not been touched.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 
