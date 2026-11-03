@@ -69,7 +69,8 @@ work is **solver 13** and the RL scheduler on top of it.
   "Re-learned lessons and when a copy is safe") found that copying could replace at
   most about 4% of the learned clauses on any cell; where lessons come back often (`pj`,
   `DLTM`, `intel047`) they lean on the start or the goal and are not safe to copy. The
-  measured recommendation is to park the engine: decision bead `yv7.8`, the owner's.
+  owner closed the unrolling line on 2026-11-03 (epic `yv7`, the decision-order line
+  `d96.1` and the IC3 probe `skz.7` to `skz.9`).
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a

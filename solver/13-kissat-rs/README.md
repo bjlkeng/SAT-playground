@@ -4987,8 +4987,10 @@ have saved, if each copy saved one conflict.
   every clause and every simplification pass, copies in every frame under a budget,
   and a proof replay, for a few percent of the conflicts on 4 slow cells (about 50 s
   of `goldcrest-and-14`'s 1,228 s, 2 to 3 minutes of wall PAR-2 a seed in all). The
-  measured recommendation is to park `yv7.2` to `yv7.4`; the decision is the owner's
-  (bead `yv7.8`).
+  measured recommendation was to park `yv7.2` to `yv7.4`. The owner closed the whole
+  unrolling line on 2026-11-03 (bead `yv7.8`): the copy engine, the frame finder,
+  simplifying one frame, the decision-order ideas for unrolled circuits and the IC3
+  probe.
 - The lessons that come back on `pj`, `DLTM` and `intel047` lean on the start or the
   goal. Copying those needs an induction proof that they hold at every step, which is
   what IC3 finds. The IC3 probe with ABC's `pdr` (`skz.7`) stays the open line for
