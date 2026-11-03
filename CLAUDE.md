@@ -64,7 +64,12 @@ work is **solver 13** and the RL scheduler on top of it.
   across the frames of unrolled formulas (epic `SAT-playground-yv7`): the census is
   done (`yv7.1`, `tools/periodic_census.py`, `benchmarks/rl/periodic_2025.tsv`, solver
   README "Periodic structure"); 45 cells repeat at a frame shift, and the HWMCC `oski`
-  and `g2` cells do not repeat at all. Next is the certificate toy (`yv7.2`).
+  and `g2` cells do not repeat at all. The measurement before building (`yv7.5`,
+  `tools/relearn_census.py`, `benchmarks/rl/relearn_2025.tsv`, solver README
+  "Re-learned lessons and when a copy is safe") found that copying could replace at
+  most about 4% of the learned clauses on any cell; where lessons come back often (`pj`,
+  `DLTM`, `intel047`) they lean on the start or the goal and are not safe to copy. The
+  measured recommendation is to park the engine: decision bead `yv7.8`, the owner's.
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a

@@ -4797,7 +4797,8 @@ shuffling.
   20% in the steps, and 26% in `pj` and `DLTM` (`pj`: 21% in frames that differ).
 - **The solved count can move on few cells.** Of the 61 cells unsolved on both
   seeds, 12 are periodic at a frame shift or partly:
-  - `pj2002_k500` (memory-bound) and `17.normalised` (a giant);
+  - `pj2002_k500` and `17.normalised`, which run out of memory before search under
+    the 16 GB cap (checks below);
   - the three `oisc` and-nested program unrollings (38% repeat, 10 to 14 copies);
   - `sum_of_3_cubes_37` (4 copies);
   - `baseballcover`, `ITC2021_Late_10` and five timetables, which are grids, not
@@ -4810,15 +4811,191 @@ shuffling.
   - `grs-32-128` 1,102 s, `grs-256-64` 1,216 s (one seed) and `grs-160-48` 419 s;
   - `DLTM_twitter774` 832 s (285 and 1,379 s on the two seeds);
   - the `dijkstra` and `x-epic` step formulas, 559 and 438 s;
-  - `oisc-subrv-sll-nested-8` and the anonymous `5.normalised`, 372 s each.
+  - `oisc-subrv-sll-nested-8`, 372 s;
+  - `valves-gates-1-k617`, 1,488 and 1,623 s, which the census misses (shuffled).
+
+  The anonymous `5.normalised` also takes 372 s, but with no search (checks below).
 - **The renaming detector adds no unrolling a shift misses.** Where it finds frames,
   a shift exists too, and its offset now feeds the shift detector. The rest of what
   it finds is not frames: `gm-sparrc` maps by -2 for 85% of its variables.
 
-So the next step is the certificate toy (`yv7.2`): a shifted copy of a learned clause
-justified in DRAT, or in VeriPB, by replaying its derivation. Then the engine (`yv7.3`),
+The plan after the census was the certificate toy (`yv7.2`), then the engine (`yv7.3`),
 with one shift per formula from this census's detector. Its upside on 2025 is mostly
-wall time on the slow unrollings above, plus a handful of unsolved cells.
+wall time on the slow unrollings above, plus a handful of unsolved cells. Before
+building, `yv7.5` measured how much of the solver's learning copying could replace
+(next section).
+
+**Checks after the census (2026-11-03).**
+
+- *The giants read as a prefix.* The six anonymous giants read up to 1.5 GB are
+  byte-identical for their first 1.79 GB after the header, which is why their rows
+  match. Each is one circuit checked at 250, 300, 400, 460, 500 and 1,000 steps
+  (117,322 variables a frame, 315,656 clauses a step). The unread part is more frames
+  and a final 1,002 clauses: one check gate a step and one clause over all the checks.
+  Five of them, and the other giants, solve with no conflict: kissat's lucky check
+  (every variable false, in order) runs the circuit forward with all inputs off, and
+  that breaks the property (`1.normalised`: solved 2.6 s after a 53.6 s parse).
+  `17.normalised` and `pj2002_k500` run out of memory before search under the 16 GB
+  cap (epic `SAT-playground-qu3`), and `5.normalised` takes 370 s with no search
+  against 62 to 104 s for its siblings, cause unknown (bead `SAT-playground-e32`).
+- *Shuffled.* By name, `valves-gates-1-k617` is the only shuffled unrolling. Color
+  refinement on the clause-variable graph (every variable starts alike; each round a
+  clause takes the sorted labels of its variables and a variable the sorted labels of
+  its clauses, so numbering and file order do not matter), with signs ignored, puts
+  95% of its variables in groups of 608 to 612 by round 4: about 617 copies. With
+  signs kept every variable is alone by round 3, so the shuffle flipped signs too.
+  It solves in 1,488 and 1,623 s, a slow unrolled solve the census misses (frame
+  finder: bead `yv7.6`).
+- *HWMCC.* The same grouping leaves 73 to 82% of the variables of
+  `oski15a01b01s_opt`, `bob12s09-opt` and `6s268r_Iter94` with no look-alike by round
+  4, with or without signs, so their frames are not copies whatever the numbering.
+
+## Re-learned lessons and when a copy is safe (2026-11-03; bead `SAT-playground-yv7.5`, epic `yv7`)
+
+Copying a learned clause into every frame (`yv7.3`) can only save work if the solver
+learns the same lesson again in another frame. And a copy is only safe when the
+lesson is a fact of the step relation alone. The owner's point: facts from the start
+state reach later frames through propagation, so the frames are not alike, and a
+lesson that leans on such a fact is not true in another frame unless an invariant
+proof says so. Two measurements, no change to the solver. Tool
+`tools/relearn_census.py` (numpy: the RL venv), tables `benchmarks/rl/relearn_2025.tsv`
+and `benchmarks/rl/relearn_clean_2025.tsv` (per sampled lesson:
+`relearn_clean_detail_2025.tsv`), logs `log/relearn-2026-11-03-v2`.
+
+**How.**
+
+- *The run.* The 24 unrolled cells of 2025 that reach search: 15 slow searches
+  (`valves-gates-1-k617` waits for a frame finder that survives shuffling, `yv7.6`),
+  the 6 fast ones, and the three `oisc` and-nested cells that time out. One run each,
+  seed 0, 1,800 s, 16 GB, one pinned core, with a DRAT proof, from a scratch build of
+  HEAD whose proof lines for learned clauses start with `l` (search) or `p` (probing)
+  instead of `a` (`relearn_census.py build`). It changes nothing else: on `intel047`
+  and `pj2013_k9` the proofs equal the stock build's byte for byte once the tags read
+  `a`, and all 20 cells solved here and in the run of record have its seed-0 conflict
+  counts. (`grs-256-64` solved at 1,795 s, where the run of record timed out at 1,800 s
+  on the same search: a near miss on host speed.) A first run
+  (`log/relearn-2026-11-03`) missed the units learned from a conflict at decision
+  level one, which `analyze_failed_literal` adds directly (found by the review); they
+  are 0.02 to 0.2% of the learned clauses, and the rerun tags them.
+- *Same lesson, other frame.* Each learned clause is moved to frame 0 by the census
+  shift (its lowest frame taken off every variable). Two clauses with the same moved
+  form are the same lesson at different frames. A clause with a variable outside the
+  repeated part has no copy to speak of and is left out. Each learned clause is then
+  *new*, *shifted* (learned before, only at other frames: what copying could save),
+  or *again* (the same clause at the same frame, learned before).
+- *Is it a fact of the step relation?* The stock solver is asked whether a lesson
+  follows from the repeating clauses alone: in a window of one, then four frames
+  either side, then from the whole repeated part. If not, it is asked again with the
+  other clauses on one side added: those at or before the lesson's frames (*start*:
+  the start state, or frames that differ, before it) or at or after them (*goal*).
+  *Both*: neither side alone gives it. Three samples a cell: 30 *re-learns*, drawn
+  evenly over all the shifted re-learns and each tested at the frame where it was
+  learned; 30 lessons that come back, tested where each was first learned; 30 lessons
+  learned at one frame only. The re-learns give the bound: a copy made from a
+  derivation over repeating clauses follows from the repeating clauses where it
+  lands, so a re-learn that does not could not have been a copy. (The review caught
+  that the first-time sample is neither weighted by how often a lesson comes back nor
+  an upper bound, since a lesson can lean on the start where it is first learned and
+  not where it comes back.) Checks: input clauses that repeat come back implied by the
+  one-frame window, and the same clauses with a literal dropped do not; a toy
+  unrolling gives one lesson of each kind (self-test).
+
+**What the solver learns again.** One row per cell (`learned`: clauses learned from
+conflicts, in search and while probing; `movable`: share with every variable in the
+repeated part; `shifted`: share that repeats a lesson first learned at another frame).
+The three sample columns read *safe* (implied by the repeating clauses alone) /
+*start* / *goal* / *both* / *unknown* (a check ran past its limit: 10 s for a window,
+120 s for the rest); the first-time and one-frame samples have 15 lessons each on the
+three `oisc` and-nested cells. *Ceiling* is the shifted share times the safe share of
+the re-learns (the range counts the unknown checks as safe): the most copying could
+have saved, if each copy saved one conflict.
+
+| Cell | Answer, time | Learned | Movable % | Shifted % | Re-learns, at their own frame: safe / start / goal / both / unknown | Lessons that come back, where first learned | Lessons learned at one frame | Ceiling % |
+|---|---|---:|---:|---:|---|---|---|---:|
+| `goldcrest-and-14` | UNSAT 1,228 s | 2,014,380 | 64.3 | 3.98 | 28 / 1 / 0 / 0 / 1 | 29 / 0 / 0 / 0 / 1 | 19 / 0 / 0 / 0 / 11 | 3.71 to 3.84 |
+| `grs-256-64` | UNSAT 1,795 s | 7,535,771 | 5.9 | 0.10 | 28 / 0 / 0 / 2 / 0 | 26 / 0 / 0 / 4 / 0 | 7 / 1 / 4 / 18 / 0 | 0.09 |
+| `grs-32-128` | UNSAT 756 s | 4,769,416 | 2.9 | 0.10 | 24 / 4 / 0 / 2 / 0 | 20 / 5 / 0 / 5 / 0 | 3 / 4 / 0 / 23 / 0 | 0.08 |
+| `SAT_dat.k100-24` | UNSAT 753 s | 2,238,473 | 78.3 | 3.87 | 16 / 3 / 0 / 0 / 11 | 21 / 0 / 0 / 0 / 9 | 9 / 1 / 0 / 0 / 20 | 2.07 to 3.49 |
+| `dijkstra_step` | UNSAT 525 s | 51,285 | 18.3 | 1.52 | 27 / 2 / 0 / 1 / 0 | 27 / 2 / 0 / 1 / 0 | 28 / 0 / 0 / 2 / 0 | 1.37 |
+| `goldcrest-and-11` | UNSAT 442 s | 732,431 | 64.0 | 3.47 | 29 / 1 / 0 / 0 / 0 | 27 / 1 / 0 / 0 / 2 | 26 / 1 / 0 / 1 / 2 | 3.36 |
+| `x-epic_a19-p16_step` | UNSAT 461 s | 551,839 | 20.2 | 0.56 | 10 / 2 / 0 / 18 / 0 | 5 / 4 / 0 / 21 / 0 | 0 / 0 / 0 / 30 / 0 | 0.19 |
+| `oisc-subrv-sll-nested-8` | UNSAT 366 s | 63,361 | 0.2 | 0.09 | 30 / 0 / 0 / 0 / 0 | 8 / 4 / 0 / 0 / 0 (of 12) | 19 / 5 / 0 / 6 / 0 | 0.09 |
+| `grs-160-48` | UNSAT 509 s | 3,181,674 | 6.2 | 0.11 | 27 / 1 / 0 / 2 / 0 | 29 / 1 / 0 / 0 / 0 | 3 / 0 / 1 / 26 / 0 | 0.10 |
+| `2018D_VexRiscv_step` | UNSAT 306 s | 1,482,858 | 4.8 | 0.21 | 1 / 1 / 0 / 28 / 0 | 1 / 0 / 0 / 29 / 0 | 0 / 1 / 0 / 29 / 0 | 0.01 |
+| `pj2016_k100` | SAT 784 s | 128,171 | 16.8 | 2.67 | 10 / 20 / 0 / 0 / 0 | 9 / 20 / 0 / 1 / 0 | 19 / 10 / 0 / 1 / 0 | 0.89 |
+| `pj2008_k200` | SAT 1,205 s | 290,725 | 16.2 | 4.50 | 9 / 20 / 0 / 1 / 0 | 13 / 16 / 0 / 1 / 0 | 11 / 18 / 0 / 1 / 0 | 1.35 |
+| `pj2008_k80` | SAT 375 s | 68,095 | 26.5 | 19.30 | 1 / 28 / 0 / 1 / 0 | 2 / 23 / 0 / 5 / 0 | 4 / 17 / 0 / 9 / 0 | 0.64 |
+| `DLTM_twitter774_83_17` | SAT 279 s | 1,240,527 | 0.3 | 0.03 | 3 / 27 / 0 / 0 / 0 | 6 / 24 / 0 / 0 / 0 | 1 / 27 / 2 / 0 / 0 | 0.00 |
+| `pj2009_k80` | SAT 278 s | 98,800 | 15.4 | 5.57 | 6 / 23 / 0 / 1 / 0 | 14 / 12 / 0 / 4 / 0 | 14 / 13 / 0 / 3 / 0 | 1.11 |
+| `grs-32-64` | UNSAT 134 s | 1,492,789 | 2.8 | 0.09 | 18 / 10 / 0 / 2 / 0 | 26 / 2 / 0 / 2 / 0 | 10 / 3 / 1 / 16 / 0 | 0.05 |
+| `grs-64-48` | UNSAT 131 s | 1,304,227 | 3.0 | 0.09 | 19 / 10 / 0 / 1 / 0 | 21 / 8 / 0 / 1 / 0 | 14 / 2 / 1 / 13 / 0 | 0.06 |
+| `blocks-blocks-36` | SAT 137 s | 58,968 | 95.8 | 2.11 | 25 / 2 / 3 / 0 / 0 | 24 / 4 / 2 / 0 / 0 | 15 / 7 / 8 / 0 / 0 | 1.76 |
+| `DLTM_twitter845_79_19` | SAT 49 s | 152,890 | 3.3 | 0.11 | 0 / 30 / 0 / 0 / 0 | 0 / 30 / 0 / 0 / 0 | 0 / 30 / 0 / 0 / 0 | 0.00 |
+| `pj2013_k9` | UNSAT 41 s | 20,047 | 87.5 | 36.81 | 0 / 29 / 0 / 1 / 0 | 0 / 28 / 0 / 2 / 0 | 1 / 18 / 0 / 11 / 0 | 0.00 |
+| `intel047_Iter78` | SAT 15 s | 151,067 | 71.6 | 7.27 | 3 / 0 / 20 / 7 / 0 | 0 / 0 / 11 / 19 / 0 | 0 / 0 / 13 / 17 / 0 | 0.73 |
+| `oisc-subrv-and-nested-11` | timeout 1,800 s | 14,070 | 2.5 | 0.72 | 23 / 7 / 0 / 0 / 0 | 12 / 3 / 0 / 0 / 0 (of 15) | 10 / 5 / 0 / 0 / 0 (of 15) | 0.56 |
+| `oisc-subrv-and-nested-12` | timeout 1,800 s | 24,250 | 3.5 | 0.87 | 13 / 17 / 0 / 0 / 0 | 8 / 7 / 0 / 0 / 0 (of 15) | 9 / 6 / 0 / 0 / 0 (of 15) | 0.38 |
+| `oisc-subrv-and-nested-15` | timeout 1,801 s | 15,946 | 9.6 | 2.42 | 30 / 0 / 0 / 0 / 0 | 15 / 0 / 0 / 0 / 0 (of 15) | 12 / 3 / 0 / 0 / 0 (of 15) | 2.42 |
+
+**What it found.**
+
+- *Copies of earlier lessons are rare.* On 12 of the 24 cells, under 1% of the
+  learned clauses repeat a lesson the solver had learned at another frame: all five
+  `grs` cells (0.1%), both `DLTM` cells, `VexRiscv`, `x-epic`, `oisc-subrv-sll-nested-8`
+  and two of the three `oisc` and-nested cells. Nine cells are at 1.5 to 6%:
+  `goldcrest` 3.5 and 4.0%, `SAT_dat` 3.9%, the slower `pj` cells 2.7 to 5.6%,
+  `oisc-subrv-and-nested-15` 2.4%, the planning cell 2.1%, the `dijkstra` step 1.5%.
+  Only two fast `pj` cells and `intel047` are higher: `pj2013_k9` 37% and `pj2008_k80`
+  19% (41 and 375 s), `intel047` 7.3% (15 s). A lesson comes back late, a median of
+  1,300 to 1.3 million learned clauses after the first time (31 to 323 on three
+  `oisc` cells, which learn few), 2 to 55 frames away. On 21 cells, 97% or more of
+  them have 8 literals or fewer (79 and 90% on `goldcrest`, 41% on the planning cell).
+  The same clause learned again at the same frame is rarer still: under 1% everywhere
+  (`again` in the table file).
+- *On 18 of the 24 cells, most learned clauses cannot be moved at all.* They hold a
+  variable that is in no repeated clause. On `grs` (3 to 6% movable) and `DLTM` (0.3
+  and 3%) that variable sits inside the frames, where the frames differ (93% of
+  `grs-32-128`'s learned clauses, 99.6% of `DLTM774`'s). On `pj2016` it lies outside
+  the frames (70%). Variables the solver adds itself (factoring) matter little: under
+  4% of the learned clauses have only those outside the repeated part.
+- *Whether a lesson is safe depends on the family.* On the clean unrollings, most
+  sampled re-learns follow from the repeating clauses within one frame either side of
+  where they were learned: `goldcrest` 28 and 29 of 30, `grs` 18 to 28, the `dijkstra`
+  step 27, the planning cell 25, `oisc-subrv-sll-nested-8` 30, the `oisc` and-nested
+  cells 13 to 30, `SAT_dat` 16 (11 unknown). On the others few or none do:
+  `pj2013_k9` 0 and `pj2008_k80` 1 (the start side), `DLTM845` 0 and `DLTM774` 3
+  (start), `intel047` 3 (the goal side, or both), `VexRiscv` 1 and `x-epic` 10
+  (both), `pj2009_k80` 6, `pj2008_k200` 9, `pj2016` 10 (start). There the owner's
+  worry holds: the lessons are facts about the states the run can reach from its
+  start, or about the steps that can still reach the goal, and they change from frame
+  to frame. Testing each lesson only where it was first learned gives much the same
+  picture. On `grs` the lessons learned at one frame only are seldom safe (3 to 14 of
+  30): the ones that come back are the frame-independent ones.
+- *Simplification repeats itself too.* 3 to 72% of the non-learned proof lines are
+  shifted copies of earlier ones (72% of the `dijkstra` step's 40M lines, 58% of
+  `SAT_dat`'s, 54% of `goldcrest-11`'s). Their safety was not checked.
+
+**What it means.**
+
+- The most copying could save is the ceiling column: 3.7 to 3.8% of the learned
+  clauses on `goldcrest-and-14`, 3.4% on `goldcrest-and-11`, 2.1 to 3.5% on `SAT_dat`,
+  2.4% on `oisc-subrv-and-nested-15`, 1.1 to 1.8% on the planning cell, the `dijkstra`
+  step, `pj2008_k200` and `pj2009_k80`, and under 1% on the other 16 cells. That
+  assumes each copy saves one conflict. A copy can also cut search where the solver
+  never learned the lesson, which this does not measure.
+- At that size the engine (`yv7.3`) does not pay: a dependency bit carried through
+  every clause and every simplification pass, copies in every frame under a budget,
+  and a proof replay, for a few percent of the conflicts on 4 slow cells (about 50 s
+  of `goldcrest-and-14`'s 1,228 s, 2 to 3 minutes of wall PAR-2 a seed in all). The
+  measured recommendation is to park `yv7.2` to `yv7.4`; the decision is the owner's
+  (bead `yv7.8`).
+- The lessons that come back on `pj`, `DLTM` and `intel047` lean on the start or the
+  goal. Copying those needs an induction proof that they hold at every step, which is
+  what IC3 finds. The IC3 probe with ABC's `pdr` (`skz.7`) stays the open line for
+  these cells; `pj2013_k9` (UNSAT, 37% of its learned clauses come back, none safe) is
+  a good first target.
+- For simplifying one frame and copying the result (`yv7.7`), the repeated work is
+  real, but the same safety check comes first.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 
