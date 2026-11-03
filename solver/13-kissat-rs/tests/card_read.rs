@@ -418,7 +418,7 @@ struct Read {
 
 fn read(cnf: &Path, pbp: &Path, env: &[(&str, &str)]) -> Read {
     let mut cmd = Command::new(solver_bin());
-    cmd.arg("-q").arg("--card=1").args(STOCK_PATH).arg("--conflicts=0").arg(cnf);
+    cmd.arg("-q").args(STOCK_PATH).arg("--card=1").arg("--conflicts=0").arg(cnf);
     for key in SOLVER_ENV_VARS {
         cmd.env_remove(key);
     }
@@ -1216,7 +1216,8 @@ fn the_reader_stays_out_with_the_option_off_and_runs_with_the_shipped_defaults()
     assert_eq!(off.status, "SATISFIABLE");
     assert!(!off.stdout.contains("c cardread"), "{}", off.stdout);
     assert!(!pbp.exists());
-    let on = run_shipped(&cnf, &["--card=1"], &[("SAT_CARD_READ_CHECK", hook.as_str())]);
+    // no option: the engine is on by default since 2026-11-02
+    let on = run_shipped(&cnf, &[], &[("SAT_CARD_READ_CHECK", hook.as_str())]);
     assert_eq!(on.status, "SATISFIABLE");
     assert!(on.stdout.contains("c cardread unproved=0"), "{}", on.stdout);
 }

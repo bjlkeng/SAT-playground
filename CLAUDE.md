@@ -38,7 +38,7 @@ work is **solver 13** and the RL scheduler on top of it.
   (`structsym` and `structparity` are on by default since 2026-10-10,
   `structcount` since 2026-10-13, `gauss` since 2026-10-18, `structarith`
   since 2026-10-20, `structsort` since 2026-10-27, `structdiv` since
-  2026-10-28, `structdd` since 2026-10-31; solver README "The structure pass" and "The parity
+  2026-10-28, `structdd` since 2026-10-31, `card` since 2026-11-02; solver README "The structure pass" and "The parity
   engine"), as do the test helpers.
 - **Netlist recovery (epic `SAT-playground-skz`, 2026-10-19)** — the next
   line after the structure pass and the parity engine: recover gates,
@@ -50,15 +50,15 @@ work is **solver 13** and the RL scheduler on top of it.
   (`skz.1`) and the certificate toy check (`skz.2`) first, no solver code.
 - **General structure extraction (epic `SAT-playground-d96`, 2026-10-31)** —
   six lines, each measured before it is built. G.1, counts and alldifferent in
-  the search (epic `SAT-playground-iin`), is built and off by default (`card`):
+  the search (epic `SAT-playground-iin`, closed), is on by default since 2026-11-02
+  (`card`, the owner's call):
   one engine (`src/card.rs`), readers for every count form and alldifferent
   variation with proofs (`src/cardread.rs`, `src/gridread.rs`) and effort
   guardrails. The 400-cell paired run (2026-11-02) solved 645 v 651 over two
   seeds; eight fresh seeds on the cells it changes, under a work budget, show that
-  was luck (346 v 341). It is neutral, so the recommended setting stays off; results
-  in the solver README, "Count and alldifferent lemmas", plan
-  `plan/count-and-hall-lemmas-plan.md`. Promotion
-  is the owner's call. Tools: `tools/alldiff_census.py`, `tools/card_census.py`,
+  was luck (346 v 341). It is neutral in solved count and its read costs 0.3% of the
+  work; results in the solver README, "Count and alldifferent lemmas", plan
+  `plan/count-and-hall-lemmas-plan.md`. Tools: `tools/alldiff_census.py`, `tools/card_census.py`,
   `tools/hall_toy_proof.py`, `tools/card_toy_proof.py`, `tools/card_read_check.py`,
   `tools/grid_read_check.py`, `tools/card_fuzz.py`.
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace

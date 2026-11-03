@@ -93,14 +93,16 @@ in the solver README, "Count and alldifferent lemmas".
 ## Where it stands
 
 Steps 1 to 5 are done (2026-11-02). The engine, seven count forms and every
-alldifferent variation are in the solver with proofs, option `card`, off by default.
+alldifferent variation are in the solver with proofs, option `card` (on by default
+since 2026-11-02).
 The paired run (step 5) solved 645 against 651 over two seeds, with both PAR-2s about
 2% worse. Eight fresh seeds on the 47 cells where the engine changes the search, under
 a work budget, show that loss was luck: 346 against 341. The read before search costs
 0.3% of the PAR-2 sum, and the search runs the same per conflict. So the engine is
-neutral, and the recommended setting stays off. For a formula known to be made of counts,
-`--card=1` with the options' defaults is the setting to use. The experiments and the
-run are in the solver README. What was
+neutral, and the measured recommendation was off. The owner turned it on by default
+(2026-11-02). The default is the measured setting, `--card=1` with the options'
+defaults, and `--card=0` turns it off; the 2026 holdout was not consulted. The
+experiments and the run are in the solver README. What was
 planned and is not built, and why, is under "Measured and rejected" in that section;
 the sub-call route for "anything else with a known input set" was not needed, because
 every form the census reads as a plain count has its own proof.

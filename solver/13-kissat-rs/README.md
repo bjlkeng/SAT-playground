@@ -193,11 +193,12 @@ not seen on the holdout); **2026-10-20: `structarith`** (313 v 312 on
 2025, the two multiplier miters; not seen on the holdout; "The linear
 arithmetic pass" below); then `structsort` (2026-10-27), `structdiv`
 (2026-10-28) and `structdd` (2026-10-31), each after its own paired
-run. The count and alldifferent engine, `card`, is off by default because it is
-neutral: its paired run solved 645 v 651 over two seeds, and eight fresh seeds show
-that loss was luck ("Count and alldifferent lemmas" below). The stock kissat path is `--structsym=0 --structparity=0
+run. The count and alldifferent engine, `card`, is on by default since 2026-11-02, the
+owner's call: its paired run solved 645 v 651 over two seeds, eight fresh seeds show
+that loss was luck, and its read costs 0.3% of the work ("Count and alldifferent
+lemmas" below). The stock kissat path is `--structsym=0 --structparity=0
 --structcount=0 --structarith=0 --structsort=0 --structdiv=0
---structdd=0` (and `--gauss=0`, the parity engine below), which `tools/parity.py` passes unless
+--structdd=0` (and `--gauss=0`, the parity engine below, and `--card=0`), which `tools/parity.py` passes unless
 told `--structure`, and the test helpers' `run` too
 (`tests/common/mod.rs`, `STOCK_PATH`). A promoted configuration is
 exactly the measured one:
@@ -4246,12 +4247,14 @@ the reason fix, which changes nothing on a cell with no violation.
 The owner asked for every form of count and every variation of alldifferent to be
 read and proved, with lemmas where they help, effort guardrails, and a recommended
 setting from experiments (`plan/count-and-hall-lemmas-plan.md`). This section says
-what was built and what it measured. The engine is off by default (`--card=0`).
+what was built and what it measured. The engine is on by default since 2026-11-02, the
+owner's call; `--card=0` turns it off.
 
 **The short answer.** All seven forms of count and every variation of alldifferent
-read here, and every lemma is proved and checked. The recommended setting is off, the
-default, because the engine is neutral on the 400 cells, not because it loses. The
-paired run solved 645 against 651 over two seeds. Eight fresh seeds on the 47 cells
+read here, and every lemma is proved and checked. The engine is neutral on the 400
+cells: it does not lose, and it does not gain. The measured recommendation was off, and
+the owner turned it on by default (2026-11-02). The paired run solved 645 against 651
+over two seeds. Eight fresh seeds on the 47 cells
 where the engine changes the search show that loss was luck: 346 against 341, under a
 work budget, so machine load plays no part ("Why it lost", at the end of this section).
 The lemmas win big on a few formulas. A round-robin schedule takes 1 conflict instead
@@ -4259,10 +4262,9 @@ of 0.7M to 1.1M, battleship 27 times fewer (the median of eight seeds), and a sm
 satisfiable formula 405 instead of 2,650 to 13,900. The solver finishes all three in
 under 40 s without the engine. Elsewhere the lemmas change the run about as much as a
 new seed does, and they do not slow the search. The cost is mostly the read that finds
-the networks, 0.3% of the PAR-2 sum. For a formula known to be made of counts or alldifferent, use
-`--card=1` with the options' defaults: `cardminlen=3`, `cardgrow=8` and the rest as in
-the table below. Promotion is the owner's call, and the 2026 holdout has not been
-touched.
+the networks, 0.3% of the PAR-2 sum. The default is the measured setting, the options'
+defaults: `cardminlen=3`, `cardgrow=8` and the rest as in the table below. The 2026
+holdout has not been touched.
 
 **The idea.** A count says "at least d of these literals". A clause is d = 1, "at
 most K of these" is "at least n - K of their negations", and an alldifferent column
@@ -4630,20 +4632,28 @@ cannot flip them.
   of 19 cells. Satisfiable cells vary by about a factor of 2 (sd 0.94), and the
   engine's effect is lost in that.
 
-**Verdict: off**, the default. The engine is neutral on these cells; it does not lose.
+**Verdict: neutral.** The engine does not lose on these cells, and it does not gain.
 The paired run's 6-cell loss is luck, and so is the rerun's 5-cell gain. What is not
 luck: three formulas win on every seed (`MVRoundRobin_n16_d10_v3`,
 `battleship-13-13-unsat`, `x9-06099`), but the solver finishes them in under 40 s
 without the engine. The read costs 0.3% of the PAR-2 sum, and the search runs the same
 per conflict. The one cell only the engine solved, `SC25_Timetable_C_496`, solves on 4
-of 8 fresh seeds either way. So nothing here earns the engine a place in the default,
-and the guardrail sweeps above found no setting that beats off either. It stays in the
-solver as an option for formulas known to be made of counts and alldifferent, where
-`--card=1` can cut conflicts by a factor of 20 to a million. The epic's acceptance line
+of 8 fresh seeds either way. So the measured recommendation was off: nothing here
+earned the engine a place in the default, and the guardrail sweeps above found no
+setting that beats off either. On formulas made of counts and alldifferent the engine
+can cut conflicts by a factor of 20 to a million. The epic's acceptance line
 "no unsatisfiable cell lost" is not met: seed 0 loses three (`oddball_26`, `oddball_29`,
 and `ncc_none_2_17` by timing), and on fresh seeds `oddball_29` solves 2 of 8 against
 3 (`oddball_26` 8 against 7). Any change to the search flips cells at the budget edge
-like this. Promotion is the owner's call; the 2026 holdout has not been touched.
+like this.
+
+**On by default since 2026-11-02, the owner's call.** The default is exactly the
+measured setting, the on arm of the paired run: `--card=1` with the options' defaults
+above. `--card=0` turns it off, and the stock kissat path carries it (`tools/parity.py`,
+the test helpers' `STOCK_PATH`, the census and fuzz tools). With every default on, a
+toy that asks for more true cells than a 6 by 6 board has room for is refuted by the
+engine in one conflict, with a proof the gate accepts (`tests/card.rs`,
+`the_shipped_defaults_run_the_engine`). The 2026 holdout was not consulted.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 

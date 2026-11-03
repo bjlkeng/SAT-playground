@@ -1,5 +1,5 @@
 // The count and alldifferent engine (src/card.rs, epic SAT-playground-iin): lemmas
-// from sums of rows and caps, option card, off by default.
+// from sums of rows and caps, option card, on by default since 2026-11-02.
 mod common;
 
 use common::{assert_same_trajectory, run, Fixture};
@@ -199,7 +199,7 @@ fn long_board(n: i64) -> Cnf {
 }
 
 #[test]
-fn off_leaves_the_search_alone() {
+fn on_by_default_and_off_prints_nothing() {
     let fx = Fixture::new("card-off");
     let cnf = fx.path("f.cnf");
     let (mut f, table) = grid(5, 4);
@@ -207,10 +207,40 @@ fn off_leaves_the_search_alone() {
         f.ladder(&column(&table, j));
     }
     f.write(&cnf);
-    let default = run(&cnf, &[], &[]);
-    let off = run(&cnf, &["--card=0"], &[]);
-    assert_same_trajectory(&default, &off, "card=0 is the default");
-    assert!(!default.stdout.contains("c card "), "{}", default.stdout);
+    // the stock path less its --card=0, so the engine is at its default
+    let rest: Vec<&str> = common::STOCK_PATH.iter().copied().filter(|o| *o != "--card=0").collect();
+    assert_eq!(rest.len() + 1, common::STOCK_PATH.len());
+    let default = common::run_shipped(&cnf, &rest, &[]);
+    let on = run(&cnf, &["--card=1"], &[]);
+    assert_same_trajectory(&default, &on, "card=1 is the default");
+    assert!(number(&card_line(&default.stdout), "violations") >= 1, "{}", default.stdout);
+    let off = run(&cnf, &[], &[]);
+    assert_eq!(off.status, "UNSATISFIABLE");
+    assert!(!off.stdout.contains("c card "), "{}", off.stdout);
+}
+
+#[test]
+fn the_shipped_defaults_run_the_engine() {
+    // on by default since 2026-11-02, the owner's call after the paired run
+    // and the fresh-seed rerun: with no option at all, every other structure
+    // pass on, a count over its rows is refuted by the engine with a proof
+    // the gate accepts, and --card=0 turns it off
+    let fx = Fixture::new("card-default");
+    let cnf = fx.path("f.cnf");
+    over_full_board(6).write(&cnf);
+    let proof = fx.path("f.drat");
+    let mut cmd = Command::new(common::solver_bin());
+    for key in common::SOLVER_ENV_VARS {
+        cmd.env_remove(key);
+    }
+    let out = cmd.arg(&cnf).arg(&proof).output().expect("run sat-solver");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("\ns UNSATISFIABLE"), "{}", stdout);
+    assert!(number(&card_line(&stdout), "violations") >= 1, "the engine is on by default: {}", stdout);
+    assert_eq!(gate(&cnf, &proof), "ok", "the gate refused the proof\n{}", stdout);
+    let off = common::run_shipped(&cnf, &["--card=0"], &[]);
+    assert_eq!(off.status, "UNSATISFIABLE");
+    assert!(!off.stdout.contains("c card "), "{}", off.stdout);
 }
 
 #[test]

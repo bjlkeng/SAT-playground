@@ -315,7 +315,7 @@ fn numbers(text: &str) -> Vec<i64> {
 
 fn read(cnf: &Path, pbp: &Path, options: &[&str]) -> Read {
     let mut cmd = Command::new(solver_bin());
-    cmd.arg("-q").arg("--card=1").args(STOCK_PATH).args(options).arg("--conflicts=0").arg(cnf);
+    cmd.arg("-q").args(STOCK_PATH).arg("--card=1").args(options).arg("--conflicts=0").arg(cnf);
     for key in SOLVER_ENV_VARS {
         cmd.env_remove(key);
     }

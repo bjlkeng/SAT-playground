@@ -99,8 +99,12 @@ kissat_options! {
     (bumpreasonslimit, 10, 1, i32::MAX, "relative reason literals limit"),
     (bumpreasonsrate, 10, 1, i32::MAX, "decision rate limit"),
     // Not in kissat: the count and alldifferent engine (src/card.rs, plan
-    // plan/count-and-hall-lemmas-plan.md); off until measured.
-    (card, 0, 0, 1, "count and alldifferent lemmas in search"),
+    // plan/count-and-hall-lemmas-plan.md). On by default since 2026-11-02,
+    // the owner's call after the two-seed 400-cell run (651/645 off/on) and
+    // eight fresh seeds on the 47 cells it changes under a work budget
+    // (341/346): neutral in solved count, 0.3% of the work in its read, the
+    // same search per conflict; the 2026 holdout not consulted.
+    (card, 1, 0, 1, "count and alldifferent lemmas in search"),
     (cardeffort, 50, 0, 100_000, "card engine work cap (per mille of search ticks, 0 none)"),
     (cardforced, 1, 0, 1, "card engine: forced literals as well as conflicts"),
     (cardgrow, 8, 0, 30, "card engine: empty looks double the interval up to 2^this"),

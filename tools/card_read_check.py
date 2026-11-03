@@ -56,7 +56,7 @@ import card_toy_proof as ctp  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 VERIPB = ROOT / "tools" / "checkers" / "VeriPB" / "target" / "release" / "veripb"
 SOLVER = ROOT / "solver" / "13-kissat-rs" / "target" / "release" / "sat-solver"
-STOCK = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0", "--structdiv=0", "--structdd=0", "--gauss=0"]
+STOCK = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0", "--structdiv=0", "--structdd=0", "--gauss=0", "--card=0"]
 LINE = re.compile(r"^c cardread (\w+) n=(\d+) need=(-?\d+) lits=\[(.*)\]$")
 
 
@@ -103,7 +103,7 @@ def run_reader(cnf, pbp, env_extra=None, args_extra=None, timeout=600):
     env["SAT_CARD_READ_CHECK"] = str(pbp)
     if env_extra:
         env.update(env_extra)
-    cmd = [Cfg.solver, "-q", "--card=1", *STOCK, "--conflicts=0", *(args_extra or []), str(cnf)]
+    cmd = [Cfg.solver, "-q", *STOCK, "--card=1", "--conflicts=0", *(args_extra or []), str(cnf)]
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
     r = Read()
     r.code = p.returncode
