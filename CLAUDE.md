@@ -60,7 +60,11 @@ work is **solver 13** and the RL scheduler on top of it.
   work; results in the solver README, "Count and alldifferent lemmas", plan
   `plan/count-and-hall-lemmas-plan.md`. Tools: `tools/alldiff_census.py`, `tools/card_census.py`,
   `tools/hall_toy_proof.py`, `tools/card_toy_proof.py`, `tools/card_read_check.py`,
-  `tools/grid_read_check.py`, `tools/card_fuzz.py`.
+  `tools/grid_read_check.py`, `tools/card_fuzz.py`. G.2, replicating learned clauses
+  across the frames of unrolled formulas (epic `SAT-playground-yv7`): the census is
+  done (`yv7.1`, `tools/periodic_census.py`, `benchmarks/rl/periodic_2025.tsv`, solver
+  README "Periodic structure"); 45 cells repeat at a frame shift, and the HWMCC `oski`
+  and `g2` cells do not repeat at all. Next is the certificate toy (`yv7.2`).
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a

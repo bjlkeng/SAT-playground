@@ -4655,6 +4655,171 @@ toy that asks for more true cells than a 6 by 6 board has room for is refuted by
 engine in one conflict, with a proof the gate accepts (`tests/card.rs`,
 `the_shipped_defaults_run_the_engine`). The 2026 holdout was not consulted.
 
+## Periodic structure: census (2026-11-03; bead `SAT-playground-yv7.1`, epic `yv7`)
+
+The idea behind epic `yv7` (G.2): bounded model checking, planning steps, program
+unrollings and k-induction write one frame many times, each copy shifted, plus a few
+clauses for the start and the goal. A learned clause derived only from repeated
+clauses holds in every frame, shifted (Strichman's replication, 2001), so one
+conflict could teach the solver the same lesson in every frame. This census says
+which 2025 formulas have that shape, how much of each one repeats, and what is left
+over. No solver code. Tool `tools/periodic_census.py` (it needs numpy: run it with
+the RL venv's python), table `benchmarks/rl/periodic_2025.tsv`, solve results from
+the run of record `log/abtest-struct-card-400-2026-11-01-22-15-59` (every default on,
+1,800 s, seeds 0 and 1).
+
+**How it reads a formula.**
+
+- *The shift.* The variable offset d that maps the most clauses onto other clauses
+  of the formula (every variable moved by d, signs kept). Candidates are common
+  distances between clauses of the same shape, and each is scored exactly by
+  hashing every shifted clause. The winner is the one with the most clauses that
+  have a copy at +d. Counting copies either way would prefer a shift between the
+  two halves of a formula, which has only two frames (`grs-32-128` repeats 89% at
+  125,657 between its halves, and 88% at its frame shift 880).
+- *Copies.* For every repeated clause, how many times it appears along the shift,
+  counted exactly (each clause points to its copy at +d, and the chains are measured
+  by pointer doubling, with no cap on length). That is what replication would get
+  from one learned clause.
+- *Frames,* when d is 16 or more: blocks of d variables, with the block boundary
+  placed where it cuts the fewest repeated clauses. A block counts as a frame when
+  at least half of its clauses repeat. Repeated clauses are then *within* one
+  frame, *crossing* into the next, or reaching two frames or more (*reach2*). The
+  rest are *start* (at or before the second frame), *goal* (at or after the
+  second-to-last), *long* (three frames or more), *middle* (inside the frames,
+  where the frames differ) or *outside* (no variable inside the frames: all
+  before the first or after the last). A variable counts where its block is, even
+  when it sits only in clauses without a copy. Below 16 the shift is a bit slice
+  or a row of a grid, and these classes are left blank.
+- *A renaming,* for files written frame by frame whose numbering is not one
+  offset. It finds the clause period in file order, reads the renaming off the
+  matched clauses literal by literal, and measures the share of clauses the
+  renaming moves onto other clauses. Its most common offset also joins the shift
+  candidates. That is how `DLTM` was found: shift 2,519, 76% repeated, 10 copies.
+  The distances between same-shape clauses miss that shift, because the same shape
+  repeats inside a frame.
+- *Self-test,* 13 checks on hand-made unrollings: a random sequential circuit
+  unrolled 20 frames, numbered frame by frame, with an offset and a long-range
+  property, signal by signal, with uneven gaps, as two copies side by side,
+  shuffled, read as a prefix, and with duplicate clauses; plus random 3-SAT,
+  written in two orders. A shuffled file defeats both detectors.
+- Files over 1.5 GB of text are read up to that size (7 cells: six anonymous giants
+  and `pj2002_k500`). The shift and the frames come from the part read, and the
+  goal clauses at the end are not seen.
+
+Three things the first run got wrong and the final one fixes:
+- The best shift was first picked by copies in either direction, which chose
+  formula halves (`grs`, `veer_axi`).
+- A renaming that maps most variables to themselves maps every clause onto itself.
+  The first run therefore reported renamings covering 0.7 to 1.0 of random and CSP
+  formulas (`oddball`, `bp`, `REGRandom`). Variables whose image is themselves now get
+  no image.
+- For small shifts, frames counted along chains of variables came out as 1 on cells
+  with clear copies (`linked_list...unwind50`: 10 copies at shift 6). Small shifts now
+  report copies only.
+
+**What repeats.** Kinds of cell against the run of record:
+
+| Kind | Cells | Unsolved on both seeds | Solved on one seed |
+|---|---:|---:|---:|
+| Frame shift: d of 16 or more, half the clauses or more repeat, 3 or more frames and copies | 45 | 4 | 1 |
+| Partly: a frame shift where a quarter to a half of the clauses repeat | 23 | 8 | 3 |
+| Small shift: d under 16, half or more repeat (grid rows, bit slices) | 99 | 21 | 14 |
+| None of these | 233 | 28 | 15 |
+
+The frame-shift families (repeat, frame size and copies are medians over the cells,
+copies rounded; the crossing
+column is the share of the repeated clauses; "not repeated" is the share of all
+clauses as start / goal / long / middle / outside):
+
+| Family | What it is | Periodic of cells | Repeat | Variables a frame | Copies | Within / crossing / reach2 | Not repeated | Solved seeds | Median s |
+|---|---|---:|---:|---|---:|---|---|---:|---:|
+| anon-normalised | anonymous giants | 12 of 12 | 0.99 | 117,322 | 210 | 0.92 / 0.08 / 0.00 | 0.000 / 0.000 / 0.000 / 0.011 / 0.005 | 22/24 | 60 |
+| pj | BMC at depth k | 6 of 6 | 0.74 | 17,781 to 39,020 | 89 | 0.98 / 0.02 / 0.00 | 0.001 / 0.001 / 0.003 / 0.209 / 0.042 | 10/12 | 340 |
+| grs | two copies of a K-frame unrolling (`grs-W-K`) | 5 of 5 | 0.82 | 560 to 2,128 | 64 | 0.55 / 0.30 / 0.14 | 0.003 / 0.003 / 0.023 / 0.069 / 0.055 | 9/10 | 290 |
+| chess-puzzles | board rows | 3 of 4 | 0.80 | 20 to 29 | 17 | 0.06 / 0.03 / 0.91 | 0.001 / 0.000 / 0.233 / 0.049 / 0.000 | 6/6 | 7 |
+| xor-op | XOR chains | 3 of 3 | 0.99 | 72 to 80 | 19 | 0.00 / 0.04 / 0.96 | 0.002 / 0.000 / 0.002 / 0.001 / 0.000 | 6/6 | 2 |
+| dltm | `DLTM_twitter`, 10 copies | 2 of 2 | 0.73 | 1,914, 2,519 | 10 | 1.00 / 0.00 / 0.00 | 0.030 / 0.030 / 0.000 / 0.075 / 0.129 | 4/4 | 175 |
+| goldcrest | unrolled, by its numbers | 2 of 2 | 0.97 | 2,675, 2,942 | 202 | 0.90 / 0.10 / 0.00 | 0.001 / 0.000 / 0.014 / 0.006 / 0.009 | 4/4 | 881 |
+| hwmc-step-transition | k-induction step | 2 of 8 | 0.71 | 30,862, 85,955 | 27 | 1.00 / 0.00 / 0.00 | 0.006 / 0.006 / 0.000 / 0.155 / 0.030 | 4/4 | 509 |
+| singletons | `anbul-dated-5-15-u`, `UR-15-10p0` | 2 of 13 | 0.70 | 222, 600 | 407 | 0.80 / 0.13 / 0.07 | 0.000 / 0.000 / 0.015 / 0.102 / 0.159 | 4/4 | 144 |
+| tseitin |  | 2 of 5 | 0.71 | 23, 499 | 3 | 0.00 / 1.00 / 0.00 | 0.003 / 0.002 / 0.000 / 0.245 / 0.006 | 4/4 | 2 |
+| baseballcover | a grid, shift 21 | 1 of 1 | 0.56 | 21 | 4,860 | 0.00 / 0.00 / 1.00 | 0.000 / 0.000 / 0.434 / 0.004 / 0.002 | 0/2 |  |
+| hwmcc-iter | `intel047_Iter78` | 1 of 4 | 0.98 | 1,900 | 76 | 0.91 / 0.09 / 0.00 | 0.001 / 0.000 / 0.000 / 0.000 / 0.017 | 2/2 | 18 |
+| mp1 | | 1 of 6 | 1.00 | 91 | 81 | 0.52 / 0.02 / 0.46 | 0 | 2/2 | 44 |
+| planning | `blocks-36`, 150 steps | 1 of 2 | 1.00 | 4,069 | 150 | 0.87 / 0.13 / 0.00 | 0 | 2/2 | 88 |
+| sat-dat | BMC at depth 100 | 1 of 1 | 0.94 | 15,562 | 94 | 0.75 / 0.25 / 0.00 | 0.003 / 0.003 / 0.000 / 0.004 / 0.048 | 2/2 | 817 |
+| sum-of-cubes | | 1 of 3 | 0.69 | 2,701 | 4 | 0.95 / 0.05 / 0.00 | 0.047 / 0.051 / 0.010 / 0.188 / 0.015 | 0/2 |  |
+
+Partly periodic: the 12 SC25 timetables (blocks of 56 or 65 variables, 13/24 solved),
+the four `oisc` program unrollings (38%, 10 to 21 copies, 2/8 solved), three ITC2021
+timetables, `VexRiscv`'s step formula, and `ktf`, `lec_mult` and `spg`. `VexRiscv` is
+two 20-frame stretches with different frames (13,732 and 16,169 clauses a frame) next
+to about a million clauses that never repeat. The small shifts are mostly shift 1 (83
+of 99): `arles`, `lockchart`, `roundrobin`, `oddball`, `et-tc`, `reconf` and the like. Those
+are rows of grids and chains of counters, not frames. Of them, `lockchart` (3/24) and
+`oddball` (3/18) are the unsolved ones.
+
+**The unrolled families by name.** What each name promises, against what repeats:
+
+| Family | What the names say | Cells | At a frame shift | Partly | Median repeat |
+|---|---|---:|---:|---:|---:|
+| pj | BMC at depth k | 6 | 6 | 0 | 0.74 |
+| sat-dat | BMC at depth 100 | 1 | 1 | 0 | 0.94 |
+| hwmc-step-transition | k-induction steps and single transitions | 8 | 2 | 1 | 0.56 |
+| hwmcc-iter | HWMCC designs | 4 | 1 | 0 | 0.06 |
+| planning | planning steps | 2 | 1 | 0 | 1.00 |
+| oisc | program unrolling | 4 | 0 | 4 | 0.38 |
+| linked-list | program unrolling, unwind 50 | 1 | 0 (shift 6, 10 copies) | 0 | 0.73 |
+| oski | HWMCC15 designs, optimized | 12 | 0 | 0 | 0.12 |
+| g2-t | HWMCC15 deep, k20, and `g2-T49` | 2 | 0 | 0 | 0.26 |
+| hwmcc-bob | an HWMCC design, optimized | 1 | 0 | 0 | 0.18 |
+| xits-miters | HWMCC17 miters | 2 | 0 | 0 | 0.41, two halves |
+| valves | BMC at depth 617, shuffled | 1 | 0 | 0 | 0.00 |
+
+The `oski`, `g2`, `bob`, two of the `hwmcc-iter` and the `xits` cells do not repeat
+under any shift found (about 12% at shifts of 4 or 6), and the renaming finds none
+either (at most 17%). Most carry `_opt` in their names, which suggests the unroller
+simplified each frame, so their frames are not copies. Replication cannot use them.
+The single-transition cells (`veer_axi`, the `x-epic` and `dijkstra` transitions)
+are two frames, one copy each way. `valves-gates-1-k617` is an unrolling hidden by
+shuffling.
+
+**What it means for G.2.**
+
+- **Where the frames are clean,** 55 to 99% of the clauses repeat, with 8 to 500
+  copies each: `pj`, `sat-dat`, `goldcrest`, `grs`, the anonymous giants, `DLTM`,
+  `intel047`, the blocks planning cell, and two k-induction steps. One constant
+  shift per formula covers all of them. Of the clauses that repeat, 0 to 30% cross
+  into the next frame: none in `DLTM` and the steps, 30% in `grs` plus 14% two
+  frames over. Clauses that do not repeat are 0 to 6% in the anonymous giants,
+  `goldcrest`, `intel047`, the planning cell and `sat-dat`. They are 15% in `grs`,
+  20% in the steps, and 26% in `pj` and `DLTM` (`pj`: 21% in frames that differ).
+- **The solved count can move on few cells.** Of the 61 cells unsolved on both
+  seeds, 12 are periodic at a frame shift or partly:
+  - `pj2002_k500` (memory-bound) and `17.normalised` (a giant);
+  - the three `oisc` and-nested program unrollings (38% repeat, 10 to 14 copies);
+  - `sum_of_3_cubes_37` (4 copies);
+  - `baseballcover`, `ITC2021_Late_10` and five timetables, which are grids, not
+    frames.
+- **Wall time can move on 14 slow solves,** with medians of 340 to 1,321 s over
+  the solved seeds:
+  - `pj2008_k200` 1,027 s, `pj2016_k100` 891 s and `pj2008_k80` 340 s;
+  - `SAT_dat.k100` 817 s;
+  - `goldcrest-and-14` 1,321 s and `goldcrest-and-11` 436 s;
+  - `grs-32-128` 1,102 s, `grs-256-64` 1,216 s (one seed) and `grs-160-48` 419 s;
+  - `DLTM_twitter774` 832 s (285 and 1,379 s on the two seeds);
+  - the `dijkstra` and `x-epic` step formulas, 559 and 438 s;
+  - `oisc-subrv-sll-nested-8` and the anonymous `5.normalised`, 372 s each.
+- **The renaming detector adds no unrolling a shift misses.** Where it finds frames,
+  a shift exists too, and its offset now feeds the shift detector. The rest of what
+  it finds is not frames: `gm-sparrc` maps by -2 for 85% of its variables.
+
+So the next step is the certificate toy (`yv7.2`): a shifted copy of a learned clause
+justified in DRAT, or in VeriPB, by replaying its derivation. Then the engine (`yv7.3`),
+with one shift per formula from this census's detector. Its upside on 2025 is mostly
+wall time on the slow unrollings above, plus a handful of unsolved cells.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.
