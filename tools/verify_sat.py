@@ -15,7 +15,12 @@ import sys
 
 
 def parse_cnf(path):
-    """Parse DIMACS CNF file, return list of clauses (each a list of ints)."""
+    """Parse DIMACS CNF file, return list of clauses (each a list of ints).
+
+    Every 0 ends a clause, so a 0 with no literals before it is the empty
+    clause. It is kept: no assignment satisfies it, as the solver's parser
+    reads it too (it makes the formula unsatisfiable). Dropping it would let
+    any model of the other clauses pass."""
     opener = gzip.open if path.endswith(".gz") else open
     clauses = []
     current = []
@@ -27,9 +32,8 @@ def parse_cnf(path):
             for tok in line.split():
                 lit = int(tok)
                 if lit == 0:
-                    if current:
-                        clauses.append(current)
-                        current = []
+                    clauses.append(current)
+                    current = []
                 else:
                     current.append(lit)
     if current:
