@@ -242,7 +242,7 @@ structure set's gain, +29 in both seeds, is a deterministic one.
 | `--structsort=1` | sorters: a miter of two networks of swap units over the same words, refuted by sortedness lemmas and a count by thresholds (`src/structsort.rs`); runs after the arithmetic pass, before counting, within `structsortticks` | **default on** since 2026-10-27 (317/316 and 318/320 off/on; below, "The sorter pass") |
 | `--structsortticks=N` | the sorter pass's own work limit in thousands (default 2M, 2G), counted from where the earlier passes stopped | since 2026-10-26 |
 | `--structcsp=1` | one-hot CSP decoding, SAT only | bead S.4, not yet |
-| `--structsymext=1` | general automorphisms through an external tool (measurement only) | bead S.2 step two, not yet |
+| `--structsymext=1` | general automorphisms through an external tool (measurement only) | not built: measured instead with Satsuma in front of the solver (2026-11-04; below, "General symmetry breaking, measured with Satsuma"); a port is the owner's call |
 | `--structclauses=N` | the pass buffers at most N clauses (default 10M); past that it is off for the run | |
 | `--structticks=N` | work budget of the passes in thousands of literal visits (default 1M, 10-100 s depending on the formula) | |
 | `--structmore=N` | the symmetry pass's budget (thousands) once a matrix has been verified: the detection in progress and its fixings run to this limit, once (default 2M); a later detection starts only within `structticks` | since 2026-10-12 |
@@ -482,6 +482,143 @@ an allocation failure under the 14 GB limit of these runs
 (`pj2002_k500`, `17.normalised`) on every arm, the passes off included
 (`log/abtest-struct-both-400-2026-10-09-06-25-50/stock`); they count as
 unsolved.
+
+**General symmetry breaking, measured with Satsuma (2026-11-04;
+`log/symext-suite-2026-11-04`, `log/abtest-symext-2025-2026-11-04-07-37-10`,
+`benchmarks/rl/symext_2025.tsv`, `benchmarks/rl/symext_2025_check.tsv`,
+`tools/symext_probe.py`; bead SAT-playground-1v2.3.1).** The symmetry
+pass finds only rows that can be swapped. Before porting a general
+symmetry search, we measured how many cells one would add. Satsuma
+(commit 4f73975c, with dejavu f9844859) ran in front of the default
+solver (27eaaa8, frozen as `solver/13-j9-symext-snapshot`), for
+measurement only. It is built outside the repo with one g++ call (the
+recipe is in the tool's docstring) and is never shipped. The check uses a
+second copy, patched to write out the formula each round starts from
+(`tools/satsuma-round-dump.patch`, below). Its downloaded
+code was read before the build: it has no network, process or
+environment access, and it opens only the files named on its command
+line. It ran in both of its modes: `fix` (fixed literals and short
+clauses) and `lex` (lex-leader clauses). It ran on the 181 cells of 2025
+where the census found generators (159) or did not finish (22).
+Satsuma's seconds count against the 1800 s. Where it ran out of memory
+(16 cells in fix, 17 in lex) or crashed with a segmentation fault (2 and
+1), the cell keeps the record's result plus the seconds Satsuma spent.
+These were the huge `anon-normalised`, `pj`, `gp`, `oisc` and `xits`
+cells. Satsuma took a
+median of 3.4 s in fix and 1.6 s in lex, and at most 249 s. In fix mode
+it refuted 14 cells by itself (12 round robin, 2 Tseitin), all of which
+the default already solves. Two seeds, 1800 s, 32 jobs at 16 GB on the
+pinned cores, the same load as the run of record
+(`log/abtest-struct-card-400-2026-11-01-22-15-59`, arms `cur0` and
+`cur1`, 144 of these cells solved at each seed):
+
+| Mode | Seed | Solved | Gained | Lost | PAR-2 ratio | Work ratio, cells both solve |
+|---|---:|---:|---:|---:|---:|---:|
+| fix | 0 | 149 | 9 | 4 | 0.931 | 0.969 (111 cells) |
+| fix | 1 | 149 | 8 | 3 | 0.962 | 1.040 (112) |
+| lex | 0 | 151 | 10 | 3 | 0.895 | 1.131 (126) |
+| lex | 1 | 148 | 8 | 4 | 0.960 | 1.250 (125) |
+
+The PAR-2 ratio is the probe's PAR-2 sum over the record's on these
+cells, with Satsuma's seconds in. The work ratio is the geomean of the
+solver's W, the probe's over the record's, on the cells both solve.
+Satsuma's own work is not in W (it counts only as seconds, in the PAR-2
+ratio). The ratio leaves out the 14 cells Satsuma refuted. With them in,
+fix reads 0.185 and 0.199, which says only that a formula holding the
+empty clause is cheap to solve. So with fix the solver's work stays about
+the same on the cells both solve, and with lex it grows 13-25%. Satsuma's
+seconds are the main cost on some cells the default solves quickly. At
+seed 0, `xor_op_n40_d3` goes from 3 s to 148 s in fix (144 s of them
+Satsuma's), and `cfi-rigid-t2-0048-04-or_3_shuffle_all` from 93 s to
+329 s in fix (238 s Satsuma's) but down to 47 s in lex (44 s Satsuma's;
+the solver then needs under 0.05% of the record's work).
+
+Most of the movement is seed luck on satisfiable cells. The record's own
+two seeds differ on 10 of these cells. Gains that hold on one seed only:
+satisfiable lockchart, hcp, timetable, mp1, bp4, vmpc and sum-of-cubes
+cells, plus one UNSAT lockchart cell at 1667 s. Losses on one seed are the
+same kind: satisfiable lockchart and timetable cells, and one UNSAT
+valves cell the record solved at 1488 s.
+
+What holds on both seeds:
+- In lex, `cfi-rigid-s2-0064-04-or_2_shuffle_all` (184-191 s, Satsuma's
+  61 s included; 4096 generators). Also four ramsey cells:
+  `ramsey_3_6_18` and `ramsey_3_6_19` in about 1 s, `ramsey_3_7_24` in
+  64-75 s, `ramsey_3_7_23` in 294-352 s.
+- In fix, the same cfi-rigid cell (514-540 s, Satsuma's 249 s included)
+  and `ramsey_4_4_19` (448-601 s). Also one satisfiable lockchart cell,
+  `lockchart-group2-rnd0.3-L18-K36-P8D4J1` (1036-1132 s), where Satsuma
+  also added 217K at-most-one binary clauses.
+
+Taking the better mode for each cell, that is six UNSAT cells: cfi-rigid
+and five ramsey. The four ramsey gains in lex come from Satsuma's Johnson
+detection: the vertices of a graph permuted, which moves its edge
+variables. That step runs before any generator search (colour
+refinement, then candidate swaps checked against the formula;
+`detect_johnson_arity2` in its `symmetries.h`). On all four, Satsuma's
+log shows the step writing every lex clause (17 to 23) and dejavu then
+finding no generators. So these four gains need no graph automorphism
+search. The detection uses two things the symmetry pass already has:
+colour refinement, and swaps checked against the clauses. The lex-leader
+clauses, with their extra variables and proof steps, would be new. The
+other two gains come from the generator search: cfi-rigid (4096
+generators) and, in fix, `ramsey_4_4_19` (11 generators; Satsuma finds
+no Johnson structure there). The census of 2026-10-06 found that fixing
+alone refutes no ramsey cell, and the symmetry pass (below) leaves them
+alone as Johnson structure, not rows. With the solver behind Satsuma,
+lex decides four of them and fix one.
+
+One cell is lost on both seeds in both modes: `div_miter_lec__2`. The
+record solves it UNSAT in 373-390 s. On the original formula the div/sqrt
+pass reads it as quotient bit 5 of a 64/64 divider and proves 1592 of its
+1599 row pairs equal, and the search finishes after that (rerun at seed
+0: 317 s, while the check below ran). In lex, the only change Satsuma
+made is one added binary clause, `49653 -49655`. It breaks a swap of two
+circuit inputs, which feed only OR gates and feed them alike. In fix,
+Satsuma added the same clause and also propagated the miter's root unit.
+The pass reads every clause as part of the gate its first literal names,
+the way ABC writes a circuit (`read_net` in `src/structdiv.rs`). The
+added clause starts with one of the two inputs (49653 in lex, 49655 in
+fix), so the reader takes it for a gate of one clause on that input. One
+clause defines nothing, and the pass declines at once ("no divider or
+square-root miter" on both outputs). The search alone then does not
+finish. Breaking inside the solver would run after the structure passes
+have read the input. So this loss is a cost of running Satsuma outside
+the solver, not of breaking itself.
+
+All 35 gained answers were checked again end to end (`check`;
+`benchmarks/rl/symext_2025_check.tsv`, progress in
+`log/symext-suite-2026-11-04/check.out`). Each check runs Satsuma again
+and then the solver on Satsuma's output, at the same seed. Satsuma wrote
+the same output bytes as in the run every time. For a satisfiable
+answer, the model is checked against the original formula, so Satsuma's
+step needs no proof. An unsatisfiable answer needs two proofs. VeriPB
+checks Satsuma's proof, followed by every clause of its output, and
+drat-trim checks the solver's proof of that output. All 20 satisfiable
+answers hold on the original formula. Of the 15 unsatisfiable ones, 11
+pass both checks. The other four are the cfi-rigid cell, in both modes
+and at both seeds. Satsuma's proof passes there, but drat-trim did not
+finish the solver's proof of the 15-million-clause output in 7200 s. So
+those four count as solved but unverified, the way the harness counts a
+checker timeout.
+
+The first pass led to two fixes in the check. First, Satsuma's fix mode
+works in rounds and starts its proof again at each one, numbering the
+constraints against that round's formula. Read as one proof, the later
+rounds delete the wrong clauses. On `ramsey_4_4_19` in fix (both seeds),
+VeriPB then could not derive a clause of Satsuma's output that one such
+deletion had removed. A copy of Satsuma patched to write out each
+round's formula (`tools/satsuma-round-dump.patch`; the output and the
+proof stay the same bytes) lets the check renumber each round. VeriPB
+still checks every step, so a wrong dump can only cause a rejection.
+Renumbered, both `ramsey_4_4_19` answers pass. So does
+`lockchart-group3-L11` in fix, which had passed before only because its
+wrong deletions did no harm. A small toy, `ramsey(4,16)`, shows the same
+rejection (measured) and is in the self-test. The same flaw explains the
+census's four rejected MVRoundRobin proofs (below). Second, a
+satisfiable answer now reruns Satsuma without a proof. With one,
+`lockchart-group1-L220` in lex took 529 s and wrote 54 GB, over the
+300 s cap; without one it takes 97 s, and its model holds.
 
 **The parity pass, step one (2026-10-08).** An XOR constraint over k
 variables is the 2^(k-1) clauses that forbid one parity (k up to 8, the
@@ -6042,7 +6179,16 @@ Decisions first: X_d stays 2^27 and the stage-1 menu is frozen as plan
   the 37, 22 of them unsolved cells (roundrobin 8, clqcl 6, php 4,
   clique-coloring 3, tseitin 1). The four `MVRoundRobin` proofs are
   rejected at a redundance step; the 2026 winner solved these with the
-  same tool, but they stay claimed, not verified, here. On top of that,
+  same tool, but they stay claimed, not verified, here. (2026-11-04: the
+  rewrite caused the rejection, not the proofs. Satsuma's fix mode starts
+  its proof again at each round and numbers it against that round's
+  formula. Read as one proof, the later rounds delete the wrong clauses,
+  and a redundance step then has to cover clauses Satsuma had dropped.
+  With the current Satsuma, 4f73975c, the one-proof rewrite rejects the
+  same four at the same proof goals. Renumbered round by round
+  (`tools/symext_probe.py`, `tools/satsuma-round-dump.patch`, section
+  "General symmetry breaking, measured with Satsuma"), all four verify.
+  That makes 37 of 37, all 26 unsolved cells included.) On top of that,
   all five Tseitin cells (four unsolved) are pure XOR systems with every
   variable in exactly two constraints, so adding every constraint gives
   0 = 1: UNSAT in under 7 s of Python with no search at all. Together

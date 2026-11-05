@@ -53,7 +53,12 @@ conclusion. The rewrite keeps the first header, writes every deletion as
 `conclusion UNSAT`. Deletions never weaken a refutation, so the rewrite
 cannot make an unsound proof pass; VeriPB runs with unchecked deletion
 (-u), which is sound for an UNSAT conclusion. Output: a TSV with Satsuma's
-verdict, VeriPB's verdict and both times.
+verdict, VeriPB's verdict and both times. (2026-11-04: the "same clause
+deleted again" is not a dedup pass. Each round of fix mode starts its own
+numbering over, against that round's formula, so this one-stream rewrite
+deletes the wrong clauses in the later rounds, which is why VeriPB rejected
+the four MVRoundRobin proofs. Check Satsuma proofs with
+tools/symext_probe.py, which renumbers each round; with it all four verify.)
 
     ~/.cache/sat13-rl/venv/bin/python tools/rl_structure.py census --stock log/rl-stock2025-<ts> \\
         --satsuma <path>/satsuma --out benchmarks/rl/structure_2025.tsv --workers 24

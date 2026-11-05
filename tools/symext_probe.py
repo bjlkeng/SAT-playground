@@ -28,6 +28,16 @@ flags the CMake release build uses, runs no downloaded build script:
     cd ~/.cache/sat13-tools/satsuma && g++ -std=c++20 -O3 -Wall -march=native \\
         -DNDEBUG -DCLIQUES=0 -o satsuma src/satsuma.cpp
 
+check and selftest need a second binary, patched to write the formula each
+round of fix mode starts from (tools/satsuma-round-dump.patch says why; the
+output and the proof stay the same bytes), built from a copy of the same tree:
+
+    mkdir ~/.cache/sat13-tools/satsuma-rounds
+    cp -r ~/.cache/sat13-tools/satsuma/src ~/.cache/sat13-tools/satsuma-rounds/src
+    patch -p1 -d ~/.cache/sat13-tools/satsuma-rounds < tools/satsuma-round-dump.patch
+    cd ~/.cache/sat13-tools/satsuma-rounds && g++ -std=c++20 -O3 -Wall -march=native \\
+        -DNDEBUG -DCLIQUES=0 -o satsuma src/satsuma.cpp
+
 Subcommands (the RL venv, ~/.cache/sat13-rl/venv/bin/python, or python3):
 
   break     Satsuma MODE --add-reduced-as-unit on every target cell, under a
@@ -66,7 +76,11 @@ Subcommands (the RL venv, ~/.cache/sat13-rl/venv/bin/python, or python3):
             line per clause of Satsuma's output (every output clause follows
             from what the proof derived, so the output is satisfiable when the
             input is), and the gate (tools/proof_gate.py) on the solver's
-            proof of the output. Where Satsuma refuted the formula itself (its
+            proof of the output. Fix mode's proof comes in rounds, each
+            numbered against its own formula; the patched Satsuma writes those
+            formulas, and the stream renumbers each round by them
+            (stage_proof). Without them a proof of several rounds is
+            unverified. Where Satsuma refuted the formula itself (its
             output holds the empty clause), VeriPB alone settles it: the same
             stream ends in `conclusion UNSAT`, which VeriPB checks. A negative
             control, the same stream with a `pol` line on a constraint that
@@ -78,13 +92,14 @@ Subcommands (the RL venv, ~/.cache/sat13-rl/venv/bin/python, or python3):
             the whole path on two pigeonhole toys with negative controls.
 
     PY=~/.cache/sat13-rl/venv/bin/python; SAT=~/.cache/sat13-tools/satsuma/satsuma
-    $PY tools/symext_probe.py selftest --satsuma $SAT
+    CHK=~/.cache/sat13-tools/satsuma-rounds/satsuma     # the patched copy
+    $PY tools/symext_probe.py selftest --satsuma $CHK
     $PY tools/symext_probe.py break --satsuma $SAT --suite <scratch>/symext-suite --jobs 16
     nohup $PY tools/symext_probe.py run --suite <scratch>/symext-suite \\
         --solver solver/13-j9-symext-snapshot > <log> 2>&1 &
     $PY tools/symext_probe.py report --suite <scratch>/symext-suite --run log/abtest-symext-2025-<ts> \\
         --out benchmarks/rl/symext_2025.tsv
-    $PY tools/symext_probe.py check --satsuma $SAT --suite <scratch>/symext-suite \\
+    $PY tools/symext_probe.py check --satsuma $CHK --suite <scratch>/symext-suite \\
         --run log/abtest-symext-2025-<ts> --solver-bin solver/13-j9-symext-snapshot/target/release/sat-solver
 """
 from __future__ import annotations
@@ -92,6 +107,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import itertools
 import lzma
 import math
 import os
@@ -202,14 +218,15 @@ def clauses_of(path: Path):
         raise ValueError(f"{path}: the last clause has no closing 0")
 
 
-def run_limited(argv: list[str], log: Path, cap: float, mem_mb: int) -> tuple[int | None, float]:
+def run_limited(argv: list[str], log: Path, cap: float, mem_mb: int,
+                env: dict | None = None) -> tuple[int | None, float]:
     """argv under a memory limit (ulimit -v, as the harness sets it) and a wall
     cap; the process group is killed at the cap. (None, s) on the cap."""
     cmd = ["bash", "-c", f"ulimit -v {mem_mb * 1024}; exec " + shlex.join(argv)]
     t0 = time.monotonic()
     with open(log, "wb") as fh:
         p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
-                             start_new_session=True)
+                             start_new_session=True, env=env)
         try:
             rc = p.wait(timeout=cap)
         except subprocess.TimeoutExpired:
@@ -510,7 +527,7 @@ def join(break_rows: list[dict], record: list[dict], probe: list[dict] | None, l
                 missing.append(f"record:{RECORD_ARMS[seed]}:{stem}")
                 continue
             e = {"stem": stem, "family": b["family"], "mode": mode, "seed": seed, "status": b["status"],
-                 "satsuma_s": s, "base": outcome(base, 0.0, limit)}
+                 "decided": b.get("decided") or "", "satsuma_s": s, "base": outcome(base, 0.0, limit)}
             if b["status"] == "ok":
                 pr = probe[seed].get(f"{stem}.{mode}") if probe else None
                 if pr is None:
@@ -529,9 +546,14 @@ def summarize(entries: list[dict], mode: str, seed: int, limit: float) -> dict:
     es = [e for e in entries if e["mode"] == mode and e["seed"] == seed]
     gains = [e for e in es if e["probe"]["solved"] and not e["base"]["solved"]]
     losses = [e for e in es if e["base"]["solved"] and not e["probe"]["solved"]]
-    ratios = [e["probe"]["work"] / e["base"]["work"] for e in es
-              if e["base"]["solved"] and e["probe"]["solved"] and not e["fallback"]
-              and e["base"]["work"] and e["probe"]["work"]]
+    both = [e for e in es if e["base"]["solved"] and e["probe"]["solved"] and not e["fallback"]
+            and e["base"]["work"] and e["probe"]["work"]]
+    ratios = [e["probe"]["work"] / e["base"]["work"] for e in both]
+    # the cells Satsuma decided itself leave the solver a formula with the empty
+    # clause (a few work units): their ratios swamp the geomean, so it is also
+    # given over the cells Satsuma left to the solver
+    searched = [e["probe"]["work"] / e["base"]["work"] for e in both if not e["decided"]]
+    geo = lambda xs: math.exp(sum(math.log(x) for x in xs) / len(xs)) if xs else float("nan")
     return {
         "n": len(es),
         "base": sum(e["base"]["solved"] for e in es),
@@ -544,8 +566,8 @@ def summarize(entries: list[dict], mode: str, seed: int, limit: float) -> dict:
         "fallback": sum(e["fallback"] for e in es),
         "par2_base": sum(e["base"]["cost"] for e in es),
         "par2_probe": sum(e["probe"]["cost"] for e in es),
-        "work_geo": math.exp(sum(math.log(r) for r in ratios) / len(ratios)) if ratios else float("nan"),
-        "work_n": len(ratios),
+        "work_geo": geo(ratios), "work_n": len(ratios),
+        "work_geo_searched": geo(searched), "work_n_searched": len(searched),
     }
 
 
@@ -576,16 +598,18 @@ def cmd_report(args) -> int:
               f"{ts[len(ts) // 2] if ts else 0:.1f}, max {max(ts) if ts else 0:.1f}, total {sum(ts):.0f}; "
               f"decided {sum(r['decided'] == 'UNSAT' for r in mr)} UNSAT; with units "
               f"{sum(int(r['units'] or 0) > 0 for r in mr)}, with lex clauses {sum(int(r['lex'] or 0) > 0 for r in mr)}")
-    print("\nsolved on the targets (record = default solver on the original formula)")
+    print("\nsolved on the targets (record = default solver on the original formula; work geomean = "
+          "probe W / record W on the cells both solve, 'not decided' without the cells Satsuma decided itself)")
     print(f"{'mode':5} {'seed':>4} {'n':>4} {'record':>6} {'probe':>6} {'+':>3} {'-':>3} {'fallback':>8} "
-          f"{'PAR-2 ratio':>11} {'work geomean':>12} {'(n)':>5}")
+          f"{'PAR-2 ratio':>11} {'work geomean':>12} {'(n)':>5} {'not decided':>11} {'(n)':>5}")
     for m in modes:
         for seed in (0, 1):
             s = summarize(entries, m, seed, args.limit)
             par2 = s["par2_probe"] / s["par2_base"] if s["par2_base"] > 0 else float("nan")
             print(f"{m:5} {seed:>4} {s['n']:>4} {s['base']:>6} {s['probe']:>6} {len(s['gains']):>3} "
                   f"{len(s['losses']):>3} {s['fallback']:>8} {par2:>11.3f} "
-                  f"{s['work_geo']:>12.3f} {s['work_n']:>5}   probe solves by check: {dict(s['probe_checks'])}")
+                  f"{s['work_geo']:>12.3f} {s['work_n']:>5} {s['work_geo_searched']:>11.3f} "
+                  f"{s['work_n_searched']:>5}   probe solves by check: {dict(s['probe_checks'])}")
             for e in s["fails"]:
                 print(f"   FAIL {m} seed {seed} {e['family']} {short(e['stem'])}: {e['probe']['verified']}")
             for e in s["base_fails"]:
@@ -629,7 +653,7 @@ def write_table(path: Path, rows: list[dict], entries: list[dict]) -> None:
         cols += [f"record{seed}", f"record{seed}_s", f"record{seed}_work",
                  f"probe{seed}", f"probe{seed}_s", f"probe{seed}_work", f"probe{seed}_verified"]
     with open(path, "w", newline="") as fh:
-        w = csv.writer(fh, delimiter="\t")
+        w = csv.writer(fh, delimiter="\t", lineterminator="\n")
         w.writerow(cols)
         for r in sorted(rows, key=lambda r: (r["family"], r["stem"], r["mode"])):
             line = [r[c] for c in cols[:15]]
@@ -652,44 +676,155 @@ def write_table(path: Path, rows: list[dict], entries: list[dict]) -> None:
 # check
 
 BOGUS_ID = 999_999_999      # more constraints than any proof here has: VeriPB rejects a reference to it
+ROUND_DUMP = "SATSUMA_ROUND_DUMP"   # tools/satsuma-round-dump.patch writes each round's formula there
+COUNTED = ("rup", "red", "pol")     # the rules that add one constraint each (a red without a subproof)
 
 
-def stage_proof(src: Path, fprime: Path, dst: Path, control: bool = False, refuted: bool = False) -> None:
-    """Satsuma's proof as one VeriPB 3 stream: the first header only (Satsuma
-    writes one per round), every deletion once, its own ending dropped; then
-    one `rup` line per clause of its output and an ending: `conclusion UNSAT`
-    when Satsuma refuted the formula (refuted), no conclusion otherwise. The
-    negative control (control) adds `pol` on a constraint that does not exist
-    before the ending. VeriPB rejects that line whatever the database holds,
-    even after a contradiction, where any implied line passes (a unit on a
-    fresh variable included)."""
-    deleted: set[str] = set()
-    first = True
+class Unchecked(Exception):
+    """A proof the staging cannot renumber: no verdict on it either way."""
+
+
+def rup_clause(clause) -> str:
+    return "rup " + "".join(f"1 {'~' if l < 0 else ''}x{abs(l)} " for l in clause) + ">= 1 ;\n"
+
+
+def shift_pol(s: str, off: int) -> str:
+    """A `pol` line with its constraint numbers moved by off. Among its steps
+    (reverse Polish) a positive number is a constraint, except a factor (the
+    number before `*` or `d`); a negative one counts back from the newest
+    constraint and stays as it is."""
+    toks = s.rstrip(";").split()
+    for i in range(1, len(toks)):
+        if toks[i].isdigit() and not (i + 1 < len(toks) and toks[i + 1] in ("*", "d")):
+            toks[i] = str(int(toks[i]) + off)
+    return " ".join(toks) + " ;\n"
+
+
+def shift_hints(s: str, off: int) -> str:
+    """A `rup` line with its hints (the constraints after `:` that VeriPB
+    propagates on, and only on) moved by off; `~`, the negated constraint
+    itself, and negative numbers stay as they are."""
+    head, hints = s.rstrip().rstrip(";").split(":", 1)
+    return (head.rstrip() + " : " + " ".join(str(int(t) + off) if t.isdigit() else t for t in hints.split())
+            + " ;\n")
+
+
+def same_clauses(a: Path, b: Path) -> bool:
+    """The two machine-written DIMACS files (header on the first line) hold the
+    same clauses in the same order, each as the same set of literals."""
+    with open(a, "rb") as fa, open(b, "rb") as fb:
+        fa.readline()
+        fb.readline()
+        while True:
+            x, y = fa.read(1 << 24), fb.read(1 << 24)
+            if x != y:
+                break
+            if not x:
+                return True
+    return all(x is not None and y is not None and sorted(set(x)) == sorted(set(y))
+               for x, y in itertools.zip_longest(clauses_of(a), clauses_of(b)))
+
+
+def stage_proof(src: Path, fprime: Path, dst: Path, control: bool = False, refuted: bool = False,
+                plain: Path | None = None, rounds: str | None = None) -> None:
+    """Satsuma's proof as one VeriPB 3 stream over plain (the formula VeriPB
+    reads), its own ending dropped and no deletion twice; then one `rup` line
+    per clause of its output and an ending: `conclusion UNSAT` when Satsuma
+    refuted the formula (refuted), no conclusion otherwise. The negative
+    control (control) adds `pol` on a constraint that does not exist before
+    the ending. VeriPB rejects that line whatever the database holds, even
+    after a contradiction, where any implied line passes (a unit on a fresh
+    variable included).
+
+    In fix mode Satsuma works in rounds and starts the proof again at each one
+    (a header per round). A round numbers its constraints against that
+    round's formula, clause i being constraint i + 1, and what the round
+    derives comes after them. The first round's formula is the input, so its
+    numbers stand as they are (when its dump shows the same clauses in the
+    same order). For every other round the patched Satsuma (tools/satsuma-
+    round-dump.patch) writes the round's formula to <rounds>.<round>.cnf: the
+    stream derives each of its clauses again by `rup`, in its order, so that
+    they get consecutive numbers, deletes every older constraint, and moves
+    the round's own numbers by the same amount. Every step is still VeriPB's
+    to check, so a wrong dump can only make it reject. A later round without
+    its dump, or with a rule the staging cannot renumber, raises Unchecked."""
+    n = cnf_header(plain)[1] if plain is not None else None    # the stream's constraints so far
+    dead = bytearray((n or 0) + 1)      # dead[i]: the stream has deleted constraint i
+    gone: set[int] = set()              # the same for numbers past the end of dead
+    off = 0                             # the round's constraint i is the stream's off + i
+    uncounted = ""                      # a rule whose constraints the stream did not count
+    k = -1                              # the round
+
+    def delete(i: int) -> bool:         # False when the stream deleted it before
+        if i < len(dead):
+            if dead[i]:
+                return False
+            dead[i] = 1
+        elif i in gone:
+            return False
+        else:
+            gone.add(i)
+        return True
+
     with open(src, errors="replace") as fh, open(dst, "w") as out:
         for line in fh:
             s = line.strip()
             if s.startswith("pseudo-Boolean proof version"):
-                if first:
+                k += 1
+                if k == 0:
                     out.write(s + "\n")
-                    first = False
+                dump = Path(f"{rounds}.{k}.cnf") if rounds else None
+                if k == 0 and (dump is None or not dump.is_file() or plain is None or same_clauses(dump, plain)):
+                    continue
+                if dump is None or not dump.is_file():
+                    raise Unchecked(f"round {k} of Satsuma's proof has no dump to renumber it by")
+                if n is None or uncounted:
+                    raise Unchecked(f"round {k}: an earlier round has `{uncounted}`, which the staging does not count")
+                base = n
+                for clause in clauses_of(dump):
+                    out.write(rup_clause(clause))
+                    n += 1
+                old: list[int] = []
+                for i in range(1, base + 1):
+                    if delete(i):
+                        old.append(i)
+                    if len(old) == 4096 or (old and i == base):
+                        out.write("del id " + " ".join(map(str, old)) + " ;\n")
+                        old = []
+                dead.extend(bytes(n + 1 - len(dead)))
+                off = base
                 continue
-            if first and s:
-                raise ValueError("Satsuma's proof does not start with a header")
-            if s.startswith(("output ", "conclusion ", "end pseudo-Boolean proof")):
+            if k < 0:
+                if s:
+                    raise ValueError("Satsuma's proof does not start with a header")
                 continue
-            if s.startswith("delc ") or s.startswith("del id "):
-                ids = s.split()[2 if s.startswith("del id ") else 1:]
-                ids = [i.rstrip(";") for i in ids if i.rstrip(";")]
-                keep = [i for i in ids if i not in deleted]
-                deleted.update(keep)
+            if not s or s.startswith(("output ", "conclusion ", "end pseudo-Boolean proof")):
+                continue
+            rule = s.split()[0]
+            if rule == "delc" or s.startswith("del id "):
+                ids = [int(t.rstrip(";")) + off for t in s.split()[2 if rule == "del" else 1:] if t.rstrip(";")]
+                keep = [i for i in ids if delete(i)]
                 if keep:
-                    out.write("del id " + " ".join(keep) + " ;\n")
+                    out.write("del id " + " ".join(map(str, keep)) + " ;\n")
                 continue
-            out.write(line if line.endswith("\n") else line + "\n")
-        if first:
+            single = rule in COUNTED and "subproof" not in s and not s.rstrip(";").rstrip().endswith("begin")
+            if off and not single:
+                raise Unchecked(f"round {k}: `{rule}`, which the staging cannot renumber")
+            if not single:
+                uncounted = uncounted or rule
+            elif n is not None and not uncounted:
+                n += 1
+                dead.append(0)
+            if rule == "pol" and off:
+                out.write(shift_pol(s, off))
+            elif rule == "rup" and off and ":" in s:
+                out.write(shift_hints(s, off))
+            else:
+                out.write(line if line.endswith("\n") else line + "\n")
+        if k < 0:
             raise ValueError("Satsuma's proof is empty")
         for clause in clauses_of(fprime):
-            out.write("rup " + "".join(f"1 {'~' if l < 0 else ''}x{abs(l)} " for l in clause) + ">= 1 ;\n")
+            out.write(rup_clause(clause))
         if control:
             out.write(f"pol {BOGUS_ID} ;\n")
         out.write("output NONE ;\n" + ("conclusion UNSAT ;\n" if refuted else "conclusion NONE ;\n")
@@ -729,17 +864,20 @@ def veripb_run(veripb: str, plain: Path, proof: Path, timeout: float) -> tuple[i
 
 
 def satsuma_stage(plain: Path, pbp: Path, fprime: Path, veripb: str, timeout: float, d: Path,
-                  refuted: bool = False) -> str:
+                  refuted: bool = False, rounds: str | None = None) -> str:
     """ok when every clause of Satsuma's output follows from the input and
     what Satsuma's proof derived (refuted: and VeriPB itself concludes UNSAT),
     and the negative control is rejected. ok-weaker: VeriPB passed under its
     weaker guarantee (a deletion it could not check; satisfiability is still
-    preserved, which is what UNSAT needs)."""
+    preserved, which is what UNSAT needs). rounds: the prefix of the round
+    dumps (stage_proof); unchecked:<why> when the proof cannot be renumbered."""
     good, bad = d / "stage.pbp", d / "stage-bad.pbp"
     want = "s VERIFIED UNSATISFIABLE" if refuted else "s VERIFIED NO CONCLUSION"
     try:
-        stage_proof(pbp, fprime, good, refuted=refuted)
-        stage_proof(pbp, fprime, bad, control=True, refuted=refuted)
+        stage_proof(pbp, fprime, good, refuted=refuted, plain=plain, rounds=rounds)
+        stage_proof(pbp, fprime, bad, control=True, refuted=refuted, plain=plain, rounds=rounds)
+    except Unchecked as e:
+        return f"unchecked:{e}"
     except (OSError, ValueError) as e:
         return f"FAIL:{e}"
     try:
@@ -759,27 +897,37 @@ def satsuma_stage(plain: Path, pbp: Path, fprime: Path, veripb: str, timeout: fl
 def check_one(stem: str, mode: str, seed: int, cfg: dict, measured: str = "") -> dict:
     """The answer again, end to end. measured: the run's answer for this cell,
     mode and seed (empty when not known); a rerun that disagrees is a FAIL."""
-    out = check_rerun(stem, mode, seed, cfg)
+    # a model is checked against the original formula and needs no proof of
+    # Satsuma's step, which can cost far more than the step (lockchart-group1
+    # in lex: 97 s without one, 529 s and 54 GB with one)
+    out = check_rerun(stem, mode, seed, cfg, with_proof=measured != "SATISFIABLE")
     out["measured"] = measured or "n/a"
     if measured in SOLVED and out["result"] in SOLVED and out["result"] != measured:
         out["verdict"] = f"FAIL:the rerun answered {out['result']}, the measured run {measured}"
     return out
 
 
-def check_rerun(stem: str, mode: str, seed: int, cfg: dict) -> dict:
+def check_rerun(stem: str, mode: str, seed: int, cfg: dict, with_proof: bool = True) -> dict:
+    """with_proof False: Satsuma reruns without writing a proof (a SAT answer
+    needs none); an UNSAT answer of such a rerun fails, unchecked."""
     out = {"stem": stem, "mode": mode, "seed": seed, "same_output": "", "result": "", "satsuma_proof": "",
            "solver_proof": "", "model": "", "verdict": ""}
     d = Path(tempfile.mkdtemp(prefix="symext-check-", dir=cfg["tmp"]))
     try:
-        plain, fprime, pbp = d / "in.cnf", d / "out.cnf", d / "satsuma.pbp"
+        plain, fprime = d / "in.cnf", d / "out.cnf"
+        pbp = d / "satsuma.pbp" if with_proof else None
+        rounds = str(d / "round")                # the patched Satsuma's round dumps, with a proof
         decompress(cfg["source"] / f"{stem}.cnf.xz", plain)
         vplain = d / "in.veripb.cnf"            # the same clauses, laid out for VeriPB's reader
-        normalized_cnf(plain, vplain)
+        if with_proof:
+            normalized_cnf(plain, vplain)
         rc, _ = run_limited(satsuma_argv(cfg["satsuma"], mode, plain, fprime, pbp), d / "satsuma.log",
-                            cfg["cap"], cfg["mem_mb"])
+                            cfg["cap"], cfg["mem_mb"],
+                            env=dict(os.environ, **{ROUND_DUMP: rounds}) if with_proof else None)
         text = ANSI.sub("", (d / "satsuma.log").read_text(errors="replace"))
-        if classify(rc, text, fprime) != "ok":
-            out["verdict"] = "satsuma-failed"
+        cls = classify(rc, text, fprime)
+        if cls != "ok":
+            out["verdict"] = f"satsuma-failed:{cls}"
             return out
         ref = cfg["suite"] / f"{stem}.{mode}.cnf" if cfg["suite"] else None
         out["same_output"] = ("yes" if sha256_file(ref) == sha256_file(fprime) else "no") \
@@ -788,8 +936,12 @@ def check_rerun(stem: str, mode: str, seed: int, cfg: dict) -> dict:
             # Satsuma refuted the formula itself: its proof ends in the empty clause,
             # so the first stage settles it and there is nothing for the solver to do
             out["result"] = "UNSATISFIABLE"
+            if pbp is None:
+                out["satsuma_proof"] = "not-written"
+                out["verdict"] = "FAIL:UNSAT from a rerun without Satsuma's proof (the measured answer was SAT)"
+                return out
             out["satsuma_proof"] = satsuma_stage(vplain, pbp, fprime, cfg["veripb"], cfg["check_timeout"], d,
-                                                 refuted=True)
+                                                 refuted=True, rounds=rounds)
             out["solver_proof"] = "not-needed"
             out["verdict"] = "ok" if out["satsuma_proof"] in ("ok", "ok-weaker") else \
                 "FAIL" if out["satsuma_proof"].startswith("FAIL") else "unverified"
@@ -823,8 +975,12 @@ def check_rerun(stem: str, mode: str, seed: int, cfg: dict) -> dict:
                 out["verdict"] = "ok" if v.returncode == 0 else "FAIL:the model does not satisfy the original formula"
             except subprocess.TimeoutExpired:
                 out["model"], out["verdict"] = "checker-timeout", "unverified"
+        elif pbp is None:
+            out["satsuma_proof"] = "not-written"
+            out["verdict"] = "FAIL:UNSAT from a rerun without Satsuma's proof (the measured answer was SAT)"
         else:
-            out["satsuma_proof"] = satsuma_stage(vplain, pbp, fprime, cfg["veripb"], cfg["check_timeout"], d)
+            out["satsuma_proof"] = satsuma_stage(vplain, pbp, fprime, cfg["veripb"], cfg["check_timeout"], d,
+                                                 rounds=rounds)
             out["solver_proof"] = proof_gate.check_unsat(fprime, proof, cfg["check_timeout"], workdir=str(d))
             stages = (out["satsuma_proof"], out["solver_proof"])
             if any(s.startswith("FAIL") for s in stages) or out["solver_proof"] == "no-proof":
@@ -871,6 +1027,9 @@ def cmd_check(args) -> int:
     veripb = proof_gate.find_veripb()
     if not veripb or not proof_gate.find_drat_trim():
         raise SystemExit("VeriPB or drat-trim missing (tools/checkers)")
+    if not writes_round_dumps(args.satsuma, Path(args.tmp or tempfile.gettempdir())):
+        raise SystemExit(f"{args.satsuma} writes no round dumps: check needs the patched Satsuma "
+                         "(tools/satsuma-round-dump.patch, build steps at the top of this file)")
     cfg = {"source": Path(args.source), "suite": suite, "satsuma": args.satsuma, "solver_bin": args.solver_bin,
            "veripb": veripb, "cap": args.cap, "mem_mb": args.mem_mb, "solver_cap": args.solver_cap,
            "check_timeout": args.check_timeout, "tmp": args.tmp}
@@ -887,7 +1046,7 @@ def cmd_check(args) -> int:
                   flush=True)
     if args.out:
         with open(args.out, "w", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=CHECK_COLS, delimiter="\t")
+            w = csv.DictWriter(fh, fieldnames=CHECK_COLS, delimiter="\t", lineterminator="\n")
             w.writeheader()
             for r in sorted(results, key=lambda r: (r["stem"], r["mode"], r["seed"])):
                 w.writerow(r)
@@ -910,6 +1069,30 @@ def php(pigeons: int, holes: int) -> str:
             for q in range(p + 1, pigeons):
                 cls.append([-v(p, h), -v(q, h)])
     return f"p cnf {pigeons * holes} {len(cls)}\n" + "".join(" ".join(map(str, c)) + " 0\n" for c in cls)
+
+
+def ramsey(k: int, n: int) -> str:
+    """Two colours on the edges of n vertices, no k vertices with all their
+    edges one colour: unsatisfiable from n = 18 for k = 4."""
+    edge = {e: i + 1 for i, e in enumerate(itertools.combinations(range(n), 2))}
+    cls = []
+    for q in itertools.combinations(range(n), k):
+        es = [edge[e] for e in itertools.combinations(q, 2)]
+        cls += [es, [-e for e in es]]
+    return f"p cnf {len(edge)} {len(cls)}\n" + "".join(" ".join(map(str, c)) + " 0\n" for c in cls)
+
+
+def writes_round_dumps(satsuma: str, tmp: Path) -> bool:
+    """The binary is the patched Satsuma: with a proof, it writes round dumps."""
+    d = Path(tempfile.mkdtemp(prefix="symext-dumps-", dir=tmp))
+    try:
+        toy = d / "toy.cnf"
+        toy.write_text(php(3, 2))
+        rc, _ = run_limited(satsuma_argv(satsuma, "fix", toy, d / "out.cnf", d / "toy.pbp"), d / "toy.log",
+                            60.0, 4000, env=dict(os.environ, **{ROUND_DUMP: str(d / "round")}))
+        return rc == 0 and (d / "round.0.cnf").is_file()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def php_sat_twin(pigeons: int, holes: int) -> str:
@@ -999,6 +1182,15 @@ def selftest_report() -> None:
                               [{}, {"k.lex": rec("UNSATISFIABLE", 5)}], L)
     assert missing3 and len(entries3) == 1 and entries3[0]["contradiction"], entries3
     assert not entries3[0]["probe"]["solved"] and entries3[0]["probe"]["verified"].startswith("FAIL")
+    # a cell Satsuma decided (the solver then reads an empty clause) counts in the
+    # work geomean and is left out of the one over the cells Satsuma left to the solver
+    rows4 = [{"stem": "m", "family": "h", "mode": "fix", "status": "ok", "satsuma_s": "1", "decided": "UNSAT"},
+             {"stem": "n", "family": "h", "mode": "fix", "status": "ok", "satsuma_s": "1", "decided": ""}]
+    rec4 = {"m": rec("UNSATISFIABLE", 10, 1_000_000), "n": rec("SATISFIABLE", 10, 40)}
+    entries4, _ = join(rows4, [rec4, rec4], [{"m.fix": rec("UNSATISFIABLE", 1, 1), "n.fix": rec("SATISFIABLE", 5, 20)}] * 2, L)
+    u = summarize(entries4, "fix", 0, L)
+    assert u["work_n"] == 2 and abs(u["work_geo"] - math.sqrt(1e-6 * 0.5)) < 1e-12, u["work_geo"]
+    assert u["work_n_searched"] == 1 and abs(u["work_geo_searched"] - 0.5) < 1e-12, u["work_geo_searched"]
     # a limit longer than a side's budget is refused
     try:
         check_budget([{"a": {"timeout": "50"}}], L, "a toy run")
@@ -1014,6 +1206,8 @@ def selftest_toys(satsuma: str, solver_bin: str) -> None:
     assert veripb and proof_gate.find_drat_trim(), "VeriPB or drat-trim missing (tools/checkers)"
     with tempfile.TemporaryDirectory(prefix="symext-selftest-") as tmp:
         tmp = Path(tmp)
+        assert writes_round_dumps(satsuma, tmp), \
+            f"{satsuma} writes no round dumps: the toys need the patched Satsuma (tools/satsuma-round-dump.patch)"
         src = tmp / "src"
         src.mkdir()
         toys = {"php-6-5": (php(6, 5), "UNSATISFIABLE"), "php-5-5": (php(5, 5), "SATISFIABLE"),
@@ -1034,6 +1228,22 @@ def selftest_toys(satsuma: str, solver_bin: str) -> None:
         r = check_one("php-5-5", "lex", 0, cfg, measured="UNSATISFIABLE")
         assert r["verdict"].startswith("FAIL"), r
         print(f"  measured UNSAT, rerun SAT: {r['verdict']}")
+        # a measured SAT answer reruns Satsuma without a proof: the model is checked
+        # against the original; if the rerun answers UNSAT instead (php(6,5): in fix
+        # Satsuma refutes it, in lex the solver does), there is no proof, so it fails
+        for mode in MODES:
+            r = check_one("php-5-5", mode, 0, cfg, measured="SATISFIABLE")
+            assert r["verdict"] == "ok" and r["model"] == "ok" and not r["satsuma_proof"], r
+            r = check_one("php-6-5", mode, 0, cfg, measured="SATISFIABLE")
+            assert r["verdict"].startswith("FAIL") and r["satsuma_proof"] == "not-written", r
+            print(f"  {mode} measured SAT, rerun UNSAT without a proof: {r['verdict'][:70]}")
+        # a Satsuma that fails says how
+        bad_satsuma = tmp / "bad-satsuma.sh"
+        bad_satsuma.write_text("#!/bin/bash\nexit 3\n")
+        bad_satsuma.chmod(0o755)
+        r = check_one("php-6-5", "lex", 0, dict(cfg, satsuma=str(bad_satsuma)))
+        assert r["verdict"] == "satsuma-failed:exit3", r
+        print(f"  a failing Satsuma: {r['verdict']}")
         # a rerun that prints an answer and then exits abnormally fails
         fakes = {   # stand-in solvers: each one's rerun must FAIL
             "answer, then exit 3": ("php-5-5", f'"{solver_bin}" "$@"\nexit 3'),
@@ -1069,14 +1279,16 @@ def selftest_toys(satsuma: str, solver_bin: str) -> None:
         for mode in MODES:
             p66, f66, pbp = tmp / "php66.cnf", tmp / f"php66.{mode}.cnf", tmp / f"php66.{mode}.pbp"
             p66.write_text(php(6, 5))
-            rc, _ = run_limited(satsuma_argv(satsuma, mode, p66, f66, pbp), tmp / "s.log", 60.0, 4000)
+            r66 = str(tmp / f"r66-{mode}")
+            rc, _ = run_limited(satsuma_argv(satsuma, mode, p66, f66, pbp), tmp / "s.log", 60.0, 4000,
+                                env=dict(os.environ, **{ROUND_DUMP: r66}))
             assert rc == 0, rc
             d = tmp / f"neg-{mode}"
             d.mkdir()
             if any(not c for c in clauses_of(f66)):
                 twin = tmp / "php65-sat-twin.cnf"
                 twin.write_text(php_sat_twin(6, 5))
-                verdict = satsuma_stage(twin, pbp, f66, veripb, 120.0, d, refuted=True)
+                verdict = satsuma_stage(twin, pbp, f66, veripb, 120.0, d, refuted=True, rounds=r66)
                 what = "the refutation passed against a satisfiable formula"
             else:
                 with open(f66, "a") as fh:            # not implied: x1 alone
@@ -1084,10 +1296,46 @@ def selftest_toys(satsuma: str, solver_bin: str) -> None:
                 text = f66.read_text().split("\n", 1)
                 n, m = map(int, text[0].split()[2:4])
                 f66.write_text(f"p cnf {n} {m + 1}\n" + text[1])
-                verdict = satsuma_stage(p66, pbp, f66, veripb, 120.0, d)
+                verdict = satsuma_stage(p66, pbp, f66, veripb, 120.0, d, rounds=r66)
                 what = "an underived unit passed the Satsuma stage"
             assert verdict.startswith("FAIL"), f"{mode}: {what} ({verdict})"
             print(f"  negative control {mode} ({'refuted' if 'refutation' in what else 'unit'}): {verdict[:90]}")
+        # fix mode's rounds each number their constraints against their own formula: on
+        # ramsey(4,16) the deletions of the later rounds name other clauses in the numbers
+        # of the stream so far (that stream is rejected, measured), so it verifies only
+        # renumbered by the round dumps, and without them it is unverified, not failed
+        r16, f16, p16 = tmp / "ramsey-4-16.cnf", tmp / "ramsey-4-16.fix.cnf", tmp / "ramsey-4-16.fix.pbp"
+        r16.write_text(ramsey(4, 16))
+        rc, _ = run_limited(satsuma_argv(satsuma, "fix", r16, f16, p16), tmp / "s.log", 60.0, 4000,
+                            env=dict(os.environ, **{ROUND_DUMP: str(tmp / "r16")}))
+        assert rc == 0, rc
+        n_rounds = sum(1 for line in open(p16) if line.startswith("pseudo-Boolean proof version"))
+        assert n_rounds >= 3 and all((tmp / f"r16.{i}.cnf").is_file() for i in range(n_rounds)), n_rounds
+        v16 = tmp / "ramsey-4-16.veripb.cnf"
+        normalized_cnf(r16, v16)
+        for what, rounds, want in (("renumbered", str(tmp / "r16"), "ok"),
+                                   ("without its dumps", None, "unchecked")):
+            d = tmp / f"r16-{what.split()[0]}"
+            d.mkdir()
+            verdict = satsuma_stage(v16, p16, f16, veripb, 120.0, d, rounds=rounds)
+            assert verdict.startswith(want), (what, verdict)
+            print(f"  ramsey(4,16) fix, {n_rounds} rounds, {what}: {verdict[:90]}")
+        # a wrong dump cannot pass: the last round's formula with the empty clause
+        # added, which nothing implies (ramsey(4,16) is satisfiable)
+        for i in range(n_rounds):
+            shutil.copy(tmp / f"r16.{i}.cnf", tmp / f"r16bad.{i}.cnf")
+        last = tmp / f"r16bad.{n_rounds - 1}.cnf"
+        head, body = last.read_text().split("\n", 1)
+        nv, nc = map(int, head.split()[2:4])
+        last.write_text(f"p cnf {nv} {nc + 1}\n" + body + "0\n")
+        d = tmp / "r16-bad"
+        d.mkdir()
+        verdict = satsuma_stage(v16, p16, f16, veripb, 120.0, d, rounds=str(tmp / "r16bad"))
+        assert verdict.startswith("FAIL"), f"a dump with the empty clause passed ({verdict})"
+        print(f"  negative control, a wrong round dump: {verdict[:90]}")
+        # a pol line's constraint numbers move, its factors and relative numbers do not
+        assert shift_pol("pol 3 -1 + 2 * 5 d 7 +;", 10) == "pol 13 -1 + 2 * 5 d 17 + ;\n"
+        assert shift_hints("rup 1 x1 >= 1 : 5 -2 ~ 7;", 10) == "rup 1 x1 >= 1 : 15 -2 ~ 17 ;\n"
     print("selftest toys: ok")
 
 

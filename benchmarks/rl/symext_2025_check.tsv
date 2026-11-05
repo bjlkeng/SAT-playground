@@ -1,0 +1,36 @@
+stem	mode	seed	measured	same_output	result	satsuma_proof	solver_proof	model	verdict
+04648cef5bed430ab6429991fa9e107d-ramsey_3_6_19.normalised	lex	0	UNSATISFIABLE	yes	UNSATISFIABLE	ok	ok		ok
+04648cef5bed430ab6429991fa9e107d-ramsey_3_6_19.normalised	lex	1	UNSATISFIABLE	yes	UNSATISFIABLE	ok	ok		ok
+0ed8c06438673f179985a79b9d6a9fe4-cfi-rigid-s2-0064-04-or_2_shuffle_all	fix	0	UNSATISFIABLE	yes	UNSATISFIABLE	ok	checker-timeout		unverified
+0ed8c06438673f179985a79b9d6a9fe4-cfi-rigid-s2-0064-04-or_2_shuffle_all	fix	1	UNSATISFIABLE	yes	UNSATISFIABLE	ok	checker-timeout		unverified
+0ed8c06438673f179985a79b9d6a9fe4-cfi-rigid-s2-0064-04-or_2_shuffle_all	lex	0	UNSATISFIABLE	yes	UNSATISFIABLE	ok	checker-timeout		unverified
+0ed8c06438673f179985a79b9d6a9fe4-cfi-rigid-s2-0064-04-or_2_shuffle_all	lex	1	UNSATISFIABLE	yes	UNSATISFIABLE	ok	checker-timeout		unverified
+30f64b3b0870ce5d22d4217782224dfe-lockchart-group1-L200-K289-p8d4j1.normalised	fix	1	SATISFIABLE	yes	SATISFIABLE			ok	ok
+334aa882de28856fc8c75885285d2a3c-HCP-446-105	fix	0	SATISFIABLE	yes	SATISFIABLE			ok	ok
+334aa882de28856fc8c75885285d2a3c-HCP-446-105	lex	0	SATISFIABLE	yes	SATISFIABLE			ok	ok
+4ba2c1aa580b6497df6baf5e7e2c87be-at-least-two-vmpc_28	fix	0	SATISFIABLE	yes	SATISFIABLE			ok	ok
+4c037368864330bff3940837ac28ac14-lockchart-group2-rnd0.3-L18-K36-P8D4J1	fix	0	SATISFIABLE	yes	SATISFIABLE			ok	ok
+4c037368864330bff3940837ac28ac14-lockchart-group2-rnd0.3-L18-K36-P8D4J1	fix	1	SATISFIABLE	yes	SATISFIABLE			ok	ok
+4c037368864330bff3940837ac28ac14-lockchart-group2-rnd0.3-L18-K36-P8D4J1	lex	0	SATISFIABLE	yes	SATISFIABLE			ok	ok
+526caead2f3c84c2918a2fc775dc3e97-ramsey_3_7_23.normalised	lex	0	UNSATISFIABLE	yes	UNSATISFIABLE	ok	ok		ok
+526caead2f3c84c2918a2fc775dc3e97-ramsey_3_7_23.normalised	lex	1	UNSATISFIABLE	yes	UNSATISFIABLE	ok	ok		ok
+557d7d4db5399188f62bc39598c6d868-mp1-Nb7T46	fix	1	SATISFIABLE	yes	SATISFIABLE			ok	ok
+59825ed96dc3bbdbd8789a4870b323ec-hcp_CP18_18	fix	0	SATISFIABLE	yes	SATISFIABLE			ok	ok
+59825ed96dc3bbdbd8789a4870b323ec-hcp_CP18_18	lex	0	SATISFIABLE	yes	SATISFIABLE			ok	ok
+7a044c997ede14d00002f1db39d45170-sum_of_3_cubes_37_bits_87	fix	0	SATISFIABLE	yes	SATISFIABLE			ok	ok
+7e58b502cc9dbef5f76d5161fb9a09b2-mp1-Nb7T45	lex	0	SATISFIABLE	yes	SATISFIABLE			ok	ok
+847c8843ee292b9b31f0c346574af260-ramsey_4_4_19.normalised	fix	0	UNSATISFIABLE	yes	UNSATISFIABLE	ok-weaker	ok		ok
+847c8843ee292b9b31f0c346574af260-ramsey_4_4_19.normalised	fix	1	UNSATISFIABLE	yes	UNSATISFIABLE	ok-weaker	ok		ok
+9118e76885506476cd50cef8b2ec5def-ramsey_3_6_18.normalised	lex	0	UNSATISFIABLE	yes	UNSATISFIABLE	ok	ok		ok
+9118e76885506476cd50cef8b2ec5def-ramsey_3_6_18.normalised	lex	1	UNSATISFIABLE	yes	UNSATISFIABLE	ok	ok		ok
+9277f5d1bc65276294617e672c4f2443-bp4_BC012_CSO_FPBEQ_FPBLE_ZR.normalised	fix	1	SATISFIABLE	yes	SATISFIABLE			ok	ok
+9277f5d1bc65276294617e672c4f2443-bp4_BC012_CSO_FPBEQ_FPBLE_ZR.normalised	lex	1	SATISFIABLE	yes	SATISFIABLE			ok	ok
+99bd0555ca704df05fcaf6f9b84c7eef-ramsey_3_7_24.normalised	lex	0	UNSATISFIABLE	yes	UNSATISFIABLE	ok	ok		ok
+99bd0555ca704df05fcaf6f9b84c7eef-ramsey_3_7_24.normalised	lex	1	UNSATISFIABLE	yes	UNSATISFIABLE	ok	ok		ok
+d2af3fde615d7c4d4a4574fc8839970e-lockchart-group1-L190-K276-p8d4j1.normalised	fix	0	SATISFIABLE	yes	SATISFIABLE			ok	ok
+dbb42e010bed2259e4e27bc43e4d86c6-lockchart-group3-L11-K23-p4d3j1.normalised	fix	1	UNSATISFIABLE	yes	UNSATISFIABLE	ok-weaker	ok		ok
+f17dfbed8c18716a41b231702e127524-SC25_Timetable_C_406_E_45_Cl_26_D_7_T_50.normalised	lex	1	SATISFIABLE	yes	SATISFIABLE			ok	ok
+f1973c0a4e960a914ff12aa7e4e9293c-lockchart-group2-rnd0.3-L19-K38-P8D4J1_4	fix	1	SATISFIABLE	yes	SATISFIABLE			ok	ok
+f1973c0a4e960a914ff12aa7e4e9293c-lockchart-group2-rnd0.3-L19-K38-P8D4J1_4	lex	1	SATISFIABLE	yes	SATISFIABLE			ok	ok
+fae6cf26f3da1e7d8fc4926a9ca86b61-SC25_Timetable_C_495_E_50_Cl_33_D_7_T_50.normalised	fix	0	SATISFIABLE	yes	SATISFIABLE			ok	ok
+fe9b9a35531e13dab41307e569386dab-lockchart-group1-L220-K317-p8d4j1.normalised	lex	0	SATISFIABLE	yes	SATISFIABLE			ok	ok

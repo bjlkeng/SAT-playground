@@ -1,0 +1,50 @@
+sat13 check patch for Satsuma 4f73975c (tools/symext_probe.py, "check").
+
+In fix mode Satsuma works in rounds. It starts the proof again at every round
+with a fresh header and numbers the constraints against that round's formula:
+clause i of the round's clause store is constraint i + 1, and what the round
+derives comes after. The deletions of a later round therefore name clauses by
+their place in that round's formula, not by their number in the proof so far,
+and one VeriPB stream over the whole file deletes the wrong clauses. This
+patch writes each round's formula, in the store's order, to
+$SATSUMA_ROUND_DUMP.<round>.cnf when that variable is set, so the checker can
+renumber every round. Nothing else changes: the output and the proof are the
+same bytes with or without it (the check compares the output with the one
+measured).
+
+Apply to a copy of the audited tree, never to the measured binary's tree:
+    patch -p1 -d ~/.cache/sat13-tools/satsuma-rounds < tools/satsuma-round-dump.patch
+
+--- a/src/satsuma.h
++++ b/src/satsuma.h
+@@ -8,6 +8,9 @@
+ #define SATSUMA_VERSION_MAJOR 1
+ #define SATSUMA_VERSION_MINOR 4
+
++#include <cstdlib>
++#include <fstream>
++#include <string>
+ #include "dejavu/ds.h"
+ #include "dejavu/dejavu.h"
+ #include "cnf.h"
+@@ -672,6 +675,20 @@
+                 if(my_proof) my_proof->set_proof_dense_crossover(proof_dense_crossover);
+                 if(my_proof) my_proof->set_pol_logging(proof_pol_log);
+                 if(my_proof) my_proof->header(formula.n_clauses());
++                // sat13 check patch: the round's formula, clause i being constraint i + 1
++                if(my_proof && std::getenv("SATSUMA_ROUND_DUMP")) {
++                    const std::string dump_name = std::string(std::getenv("SATSUMA_ROUND_DUMP")) + "." +
++                                                  std::to_string(iteration) + ".cnf";
++                    std::ofstream dump(dump_name);
++                    dump << "p cnf " << formula.n_variables() << " " << formula.n_clauses() << "\n";
++                    for(int i = 0; i < formula.n_clauses(); ++i) {
++                        for(int j = 0; j < formula.clause_size(i); ++j)
++                            dump << formula.literal_at_clause_pos(i, j) << " ";
++                        dump << "0\n";
++                    }
++                    dump.close();
++                    if(!dump) terminate_with_error("unable to write the round dump '" + dump_name + "'");
++                }
+
+                 // apply rudimentary, symmetry-preserving CNF preprocessing
+                 if(preprocess_cnf_unit || preprocess_cnf_pure) {
