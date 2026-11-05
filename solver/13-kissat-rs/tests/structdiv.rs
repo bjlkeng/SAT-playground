@@ -515,3 +515,102 @@ fn the_sub_calls_see_the_circuit_numbered_densely() {
     assert_eq!(sc, "UNSATISFIABLE");
     assert_eq!(gate(&sparse, &proof), "ok");
 }
+
+// ---------------------------------------------------------------------------
+// clauses added to the circuit (bead SAT-playground-skz.27)
+// ---------------------------------------------------------------------------
+
+/// Clauses g | u for the first `count` gates g in number order, u the
+/// smallest input outside g's support: each joins g's group (its first
+/// literal) and has to be set aside for g to read as a gate.
+fn extra_on_gates(clauses: &[Vec<i64>], inputs: i64, count: usize) -> Vec<Vec<i64>> {
+    let mut sup: std::collections::BTreeMap<i64, std::collections::BTreeSet<i64>> = std::collections::BTreeMap::new();
+    for c in clauses.iter().filter(|c| c.len() > 1) {
+        let e = sup.entry(c[0].abs()).or_default();
+        e.extend(c[1..].iter().map(|l| l.abs()));
+    }
+    let out: Vec<Vec<i64>> = sup
+        .iter()
+        .filter(|(g, _)| **g > inputs)
+        .take(count)
+        .map(|(g, s)| vec![*g, (1..=inputs).find(|u| !s.contains(u)).expect("an input outside the support")])
+        .collect();
+    assert_eq!(out.len(), count, "the toy has {} gates", count);
+    out
+}
+
+#[test]
+fn div_pass_reads_a_divider_with_clauses_added() {
+    // a clause on two inputs, first literal an input (as Satsuma's lex mode
+    // adds 49653 -49655 to div_miter_lec__2), and clauses g | u on three
+    // gates: each is set aside, and the pass fires with a checked proof
+    let fx = Fixture::new("structdiv_extra");
+    let (vars, clauses) = toy_divider(8, 3, false, false);
+    let inputs = (8 - 3) + 8;
+    let mut more = clauses.clone();
+    more.push(vec![1, -2]);
+    more.extend(extra_on_gates(&clauses, inputs, 3));
+    let cnf = fx.path("m.cnf");
+    write_cnf(&cnf, vars, &more);
+    let proof = fx.path("m.drat");
+    let (stdout, stderr) = run_div_with_proof(&cnf, &proof, &[("SAT_STRUCT_DEBUG", "1")]);
+    assert!(stdout.contains("s UNSATISFIABLE"), "{}\n{}", stdout, stderr);
+    assert!(stdout.contains("div/sqrt: quotient bit 3 of a 8/8 divider"), "the pass did not fire: {}\n{}", stdout, stderr);
+    assert_eq!(gate(&cnf, &proof), "ok");
+}
+
+#[test]
+fn div_pass_reads_a_root_propagated_into_two_clauses() {
+    // the root's unit propagated into its xor, as Satsuma's fix mode leaves
+    // div_miter_lec__2: x | y and ~x | ~y where the xor's clauses were (both
+    // start with x, so they join the group of side one's output), the unit
+    // kept on a variable no clause defines any more
+    let fx = Fixture::new("structdiv_root");
+    let (vars, clauses) = toy_divider(8, 3, false, false);
+    let g = clauses.last().unwrap()[0];
+    assert!(clauses.last().unwrap().len() == 1 && g > 0, "the toy ends with the root's unit");
+    let xor: Vec<&Vec<i64>> = clauses.iter().filter(|c| c.len() == 3 && c[0].abs() == g).collect();
+    assert_eq!(xor.len(), 4, "the root is an xor of four clauses");
+    let mut out: Vec<Vec<i64>> = Vec::new();
+    for c in &clauses {
+        if c.len() == 3 && c[0].abs() == g {
+            if c[0] == -g {
+                out.push(c[1..].to_vec());
+            }
+            continue;
+        }
+        out.push(c.clone());
+    }
+    let cnf = fx.path("m.cnf");
+    write_cnf(&cnf, vars, &out);
+    let proof = fx.path("m.drat");
+    let (stdout, stderr) = run_div_with_proof(&cnf, &proof, &[("SAT_STRUCT_DEBUG", "1")]);
+    assert!(stdout.contains("s UNSATISFIABLE"), "{}\n{}", stdout, stderr);
+    assert!(stdout.contains("div/sqrt: quotient bit 3 of a 8/8 divider"), "the pass did not fire: {}\n{}", stdout, stderr);
+    assert_eq!(gate(&cnf, &proof), "ok");
+}
+
+#[test]
+fn the_reader_sets_aside_at_most_64_clauses() {
+    // 64 clauses g | u are a circuit with extras and the pass fires; 65 are
+    // past the limit, the pass declines and the search refutes the toy alone,
+    // both with a checked proof
+    let fx = Fixture::new("structdiv_aside");
+    let (vars, clauses) = toy_divider(8, 3, false, false);
+    let inputs = (8 - 3) + 8;
+    for (count, fires) in [(64usize, true), (65, false)] {
+        let mut more = clauses.clone();
+        more.extend(extra_on_gates(&clauses, inputs, count));
+        let cnf = fx.path(&format!("m{}.cnf", count));
+        write_cnf(&cnf, vars, &more);
+        let proof = fx.path(&format!("m{}.drat", count));
+        let (stdout, stderr) = run_div_with_proof(&cnf, &proof, &[("SAT_STRUCT_DEBUG", "1")]);
+        assert!(stdout.contains("s UNSATISFIABLE"), "{}: {}\n{}", count, stdout, stderr);
+        assert_eq!(stdout.contains("div/sqrt: quotient bit 3 of a 8/8 divider"), fires, "{}: {}\n{}", count, stdout, stderr);
+        if !fires {
+            assert!(stdout.contains("div/sqrt: no divider or square-root miter"), "{}: {}", count, stdout);
+            assert!(stderr.contains("structdiv: more than 64 clauses define no gate"), "{}: {}", count, stderr);
+        }
+        assert_eq!(gate(&cnf, &proof), "ok", "{}", count);
+    }
+}

@@ -21,7 +21,16 @@
 //!    to the gate its first literal names (the shape of ABC's write_cnf),
 //!    and each group must define its variable by a truth table over at most
 //!    six inputs; a unit on any other variable is a constant, and the one
-//!    unit on a gate is the miter's root, an xor of one signal per side;
+//!    unit on a gate is the miter's root, an xor of one signal per side.
+//!    A few clauses added to the circuit are set aside (bead skz.27, at
+//!    most MAX_ASIDE): a group that defines nothing gives up the clauses on
+//!    one of its variables when the rest define it, or all of them when
+//!    they are all on one variable (a symmetry-breaking clause on two
+//!    inputs, as Satsuma adds to div_miter_lec__2). Without a unit on a
+//!    gate, the root may be two such clauses, x | y and ~x | ~y over two
+//!    gates: a root unit propagated into its xor, as Satsuma's fix mode
+//!    leaves it. The clauses set aside stay in the sub-calls (but for the
+//!    root's); every gate read is still implied by the formula;
 //! 2. finds the function by probes: a divider (the first side's output is
 //!    bit k of floor(a / b) for n-bit a and b, b = 0 giving all ones as a
 //!    restoring array does; the inputs are a[k..n-1] and b[0..n-1], and one
@@ -100,7 +109,9 @@ struct Net {
     /// 1 true, -1 false, 0 no constant.
     constant: Vec<i8>,
     inputs: Vec<i32>,
-    /// Per clause id: a copy of the root's unit (left out of the sub-calls).
+    /// Per clause id: the root's clauses, left out of the sub-calls: a copy
+    /// of its unit, or the two binary clauses of a root propagated into
+    /// them (bead skz.27).
     root_unit: Vec<bool>,
     /// The two side signals, and whether the root asserts a == b (so a
     /// refutation shows a is b's complement).
@@ -169,6 +180,89 @@ fn definition_tt(v: i32, ids: &[u32], f: &Formula, support: &[i32], work: &mut u
     Some(tt)
 }
 
+/// The gate `ids` define on v, or Err with the size of their support when
+/// they do not define it (none, or more than MAX_SUPPORT variables, or no
+/// function of them). The table's work is reserved in full: a visit per
+/// literal, then every clause per minterm (definition_tt counts the same
+/// into a scratch counter; Codex review round 1).
+fn define(v: i32, ids: &[u32], f: &Formula, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Result<Result<Gate, usize>, String> {
+    let size: u64 = ids.iter().map(|&ci| f.clause(ci as usize).len() as u64 + 1).sum();
+    reserve(work, size, stopped)?;
+    let mut sup: Vec<i32> = Vec::new();
+    for &ci in ids {
+        for &l in f.clause(ci as usize) {
+            if l.abs() != v {
+                sup.push(l.abs());
+            }
+        }
+    }
+    sup.sort_unstable();
+    sup.dedup();
+    if sup.is_empty() || sup.len() > MAX_SUPPORT {
+        return Ok(Err(sup.len()));
+    }
+    reserve(work, size + (1u64 << sup.len()) * ids.len() as u64, stopped)?;
+    let n = sup.len();
+    Ok(definition_tt(v, ids, f, &sup, &mut 0).map(|tt| Gate { sup, tt }).ok_or(n))
+}
+
+/// At most this many clauses may be set aside as no part of any gate (a
+/// clause added after the circuit was written joins the group of its first
+/// literal; past this the formula is no circuit with a few extras).
+const MAX_ASIDE: usize = 64;
+
+/// A group of clauses that does not define its variable v (bead skz.27):
+/// the split that sets aside the clauses on one other variable u so that
+/// the rest define v (the fewest clauses aside, then the smallest u), else,
+/// when every clause of the group is on one u, the whole group (v is then
+/// no gate), else None. Only a gate's group with a clause or two more is
+/// tried: at most 2 * MAX_SUPPORT variables and a 6-input gate's clauses
+/// plus MAX_ASIDE. The clauses set aside stay in the formula and in the
+/// sub-calls; they are only not read as a gate. A gate read from part of
+/// its group is still implied by the formula, whose clauses those are.
+fn split_group(v: i32, group: &[u32], f: &Formula, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Result<Option<(Option<Gate>, Vec<u32>)>, String> {
+    if group.len() > (1 << MAX_SUPPORT) + MAX_ASIDE {
+        return Ok(None);
+    }
+    let size: u64 = group.iter().map(|&ci| f.clause(ci as usize).len() as u64 + 1).sum();
+    reserve(work, size, stopped)?;
+    let mut vars: Vec<i32> = Vec::new();
+    for &ci in group {
+        for &l in f.clause(ci as usize) {
+            if l.abs() != v {
+                vars.push(l.abs());
+            }
+        }
+    }
+    vars.sort_unstable();
+    vars.dedup();
+    if vars.len() > 2 * MAX_SUPPORT {
+        return Ok(None);
+    }
+    // a partition per variable: a visit per literal each
+    reserve(work, vars.len() as u64 * size, stopped)?;
+    let mut best: Option<(Gate, Vec<u32>)> = None;
+    let mut whole = false;
+    for &u in &vars {
+        let (aside, rest): (Vec<u32>, Vec<u32>) = group.iter().partition(|&&ci| f.clause(ci as usize).iter().any(|l| l.abs() == u));
+        if rest.is_empty() {
+            whole = true;
+            continue;
+        }
+        if best.as_ref().is_some_and(|(_, b)| b.len() <= aside.len()) {
+            continue;
+        }
+        if let Ok(g) = define(v, &rest, f, work, stopped)? {
+            best = Some((g, aside));
+        }
+    }
+    Ok(match best {
+        Some((g, aside)) => Some((Some(g), aside)),
+        None if whole => Some((None, group.to_vec())),
+        None => None,
+    })
+}
+
 fn read_net(f: &Formula, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Result<Net, String> {
     let nv = f.vars as usize + 1;
     // the grouping by first literal: three tables per variable, one slot per
@@ -208,34 +302,34 @@ fn read_net(f: &Formula, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Resul
         ids[pos[v] as usize] = i as u32;
         pos[v] += 1;
     }
-    // every group a definition
+    // every group a definition, but for a few clauses set aside (a clause
+    // added to the circuit, such as a symmetry-breaking one, or a root that
+    // was propagated into two binary clauses: bead skz.27)
     let mut gates: Vec<Option<Gate>> = vec![None; nv];
+    let mut aside: Vec<u32> = Vec::new();
     for v in 1..nv {
         let group = &ids[first[v] as usize..first[v + 1] as usize];
         if group.is_empty() {
             continue;
         }
-        let size: u64 = group.iter().map(|&ci| f.clause(ci as usize).len() as u64 + 1).sum();
-        reserve(work, size, stopped)?;
-        let mut sup: Vec<i32> = Vec::new();
-        for &ci in group {
-            for &l in f.clause(ci as usize) {
-                if l.unsigned_abs() as usize != v {
-                    sup.push(l.abs());
+        let support = match define(v as i32, group, f, work, stopped)? {
+            Ok(g) => {
+                gates[v] = Some(g);
+                continue;
+            }
+            Err(n) => n,
+        };
+        match split_group(v as i32, group, f, work, stopped)? {
+            Some((g, out)) => {
+                gates[v] = g;
+                aside.extend(out);
+                if aside.len() > MAX_ASIDE {
+                    return Err(format!("more than {} clauses define no gate", MAX_ASIDE));
                 }
             }
+            None if support == 0 || support > MAX_SUPPORT => return Err(format!("the clauses of {} read {} inputs", v, support)),
+            None => return Err(format!("the clauses of {} do not define it", v)),
         }
-        sup.sort_unstable();
-        sup.dedup();
-        if sup.is_empty() || sup.len() > MAX_SUPPORT {
-            return Err(format!("the clauses of {} read {} inputs", v, sup.len()));
-        }
-        // the table's work, reserved in full: a visit per literal, then every
-        // clause per minterm (definition_tt counts the same into a scratch
-        // counter; Codex review round 1)
-        reserve(work, size + (1u64 << sup.len()) * group.len() as u64, stopped)?;
-        let tt = definition_tt(v as i32, group, f, &sup, &mut 0).ok_or_else(|| format!("the clauses of {} do not define it", v))?;
-        gates[v] = Some(Gate { sup, tt });
     }
     // units: the root on a gate, constants elsewhere
     let mut constant = vec![0i8; nv];
@@ -258,7 +352,38 @@ fn read_net(f: &Formula, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Resul
             constant[v] = b;
         }
     }
-    let root = root.ok_or("no unit on a gate")?;
+    // without a unit on a gate, the root may be two binary clauses set
+    // aside, x | y and ~x | ~y over two gates: the root's unit propagated
+    // into its xor's clauses, as a preprocessor leaves it (bead skz.27).
+    // Both are the root's, left out of the sub-calls like its unit.
+    let mut root_pair: Option<(i32, i32)> = None;
+    if root.is_none() {
+        let bins: Vec<(u32, i32, i32)> = aside
+            .iter()
+            .filter_map(|&ci| {
+                let c = f.clause(ci as usize);
+                (c.len() == 2).then(|| (ci, c[0], c[1]))
+            })
+            .collect();
+        reserve(work, (bins.len() * bins.len()) as u64, stopped)?;
+        let gate = |l: i32| gates[l.unsigned_abs() as usize].is_some();
+        let mut found: Option<(u32, u32, i32, i32)> = None;
+        for (x, &(ci, p, q)) in bins.iter().enumerate() {
+            for &(cj, p2, q2) in &bins[x + 1..] {
+                let complement = (p2 == -p && q2 == -q) || (p2 == -q && q2 == -p);
+                if complement && p.abs() != q.abs() && gate(p) && gate(q) {
+                    if found.is_some() {
+                        return Err("two roots in clauses set aside".into());
+                    }
+                    found = Some((ci, cj, p, q));
+                }
+            }
+        }
+        let (ci, cj, p, q) = found.ok_or("no unit on a gate")?;
+        root_unit[ci as usize] = true;
+        root_unit[cj as usize] = true;
+        root_pair = Some((p, q));
+    }
     // the order, every gate after its inputs; a cycle ends the reading
     reserve(work, 4 * nv as u64, stopped)?;
     let mut order: Vec<i32> = Vec::new();
@@ -304,12 +429,20 @@ fn read_net(f: &Formula, work: &mut u64, stopped: &dyn Fn(u64) -> bool) -> Resul
     if inputs.is_empty() || inputs.len() > MAX_INPUTS {
         return Err(format!("{} inputs", inputs.len()));
     }
-    let rg = gates[root.unsigned_abs() as usize].as_ref().unwrap();
-    if rg.sup.len() != 2 || (rg.tt != 0b0110 && rg.tt != 0b1001) {
-        return Err("the root is no xor of two signals".into());
-    }
-    let (a, b) = (rg.sup[0], rg.sup[1]);
-    let invert = (rg.tt == 0b1001) == (root > 0); // an xnor asserted, or an xor denied: a == b asserted
+    let (a, b, invert) = match (root, root_pair) {
+        (Some(root), _) => {
+            let rg = gates[root.unsigned_abs() as usize].as_ref().unwrap();
+            if rg.sup.len() != 2 || (rg.tt != 0b0110 && rg.tt != 0b1001) {
+                return Err("the root is no xor of two signals".into());
+            }
+            // an xnor asserted, or an xor denied: a == b asserted
+            (rg.sup[0], rg.sup[1], (rg.tt == 0b1001) == (root > 0))
+        }
+        // p | q and ~p | ~q: p and q differ, so the variables agree when
+        // exactly one of the two literals is negative
+        (None, Some((p, q))) => (p.abs().min(q.abs()), p.abs().max(q.abs()), (p < 0) != (q < 0)),
+        (None, None) => unreachable!("the root was found above"),
+    };
     // the levels and the two cones: a visit per gate input, three times, and
     // two tables
     let edges: u64 = order.iter().map(|&v| gates[v as usize].as_ref().unwrap().sup.len() as u64).sum();
@@ -818,6 +951,7 @@ fn sub_refute(imp: &Import, net: &Net, eqs: &[[i32; 2]], x: i32, y: i32, capture
         ("preprocessfactor", 0),
         ("structsym", 0),
         ("structsymext", 0),
+        ("structpoints", 0),
         ("structparity", 0),
         ("structcount", 0),
         ("structcsp", 0),

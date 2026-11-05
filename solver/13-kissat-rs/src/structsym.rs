@@ -37,12 +37,12 @@ struct Matrix {
 
 /// Literal index: 2v for v, 2v+1 for not v.
 #[inline]
-fn idx(l: i32) -> usize {
+pub(crate) fn idx(l: i32) -> usize {
     (l.unsigned_abs() as usize) * 2 + (l < 0) as usize
 }
 
 #[inline]
-fn lit_of(i: usize) -> i32 {
+pub(crate) fn lit_of(i: usize) -> i32 {
     let v = (i / 2) as i32;
     if i & 1 == 1 {
         -v
@@ -51,18 +51,18 @@ fn lit_of(i: usize) -> i32 {
     }
 }
 
-struct Work<'a> {
-    f: &'a Formula,
+pub(crate) struct Work<'a> {
+    pub(crate) f: &'a Formula,
     /// Clauses containing each literal.
-    occ: Vec<Vec<u32>>,
+    pub(crate) occ: Vec<Vec<u32>>,
     /// Current assignment per variable: 0 unassigned, else the value.
-    value: Vec<i8>,
+    pub(crate) value: Vec<i8>,
     /// A clause satisfied by the assignment is ignored.
-    satisfied: Vec<bool>,
+    pub(crate) satisfied: Vec<bool>,
     /// Canonical forms of the active clauses (for symmetry verification).
-    clause_set: HashMap<Vec<i32>, u32>,
+    pub(crate) clause_set: HashMap<Vec<i32>, u32>,
     /// Work so far, counted live into the solver's tick counter.
-    work: u64,
+    pub(crate) work: u64,
     /// The tick count the pass must not exceed; `more` once a matrix has
     /// been verified (a cell with structure is worth more work), which
     /// carries the detection in progress and its fixings to the end, while
@@ -83,6 +83,18 @@ struct Work<'a> {
     /// from then on must map them onto the formula too.
     extra: Vec<Vec<i32>>,
     extra_occ: Vec<Vec<u32>>,
+    /// Check the budget at every item of the refinement and the clause set
+    /// rather than every 1024 or 4096 (the point step, whose own limit is
+    /// tighter; this pass keeps the coarse checks it was measured with).
+    pub(crate) fine: bool,
+    /// At most this many refinement rounds (0: until the fixed point, as
+    /// this pass refines); `capped` is set when the cap ended a refinement
+    /// before its fixed point (the point step then gives up).
+    pub(crate) round_cap: u32,
+    pub(crate) capped: bool,
+    /// Set when a fine reservation refused an item: the work stopped short
+    /// of the limit, and what was being built is incomplete.
+    pub(crate) refused: bool,
 }
 
 const MAX_CLASSES: usize = 6;
@@ -103,7 +115,7 @@ fn mix(mut h: u64) -> u64 {
 }
 
 impl<'a> Work<'a> {
-    fn new(f: &'a Formula, budget: u64, more: u64, ticks: *mut u64, stop: &'a std::sync::atomic::AtomicBool) -> Work<'a> {
+    pub(crate) fn new(f: &'a Formula, budget: u64, more: u64, ticks: *mut u64, stop: &'a std::sync::atomic::AtomicBool) -> Work<'a> {
         let work = unsafe { *ticks };
         let nl = 2 * (f.vars as usize + 1);
         let mut occ: Vec<Vec<u32>> = vec![Vec::new(); nl];
@@ -129,6 +141,10 @@ impl<'a> Work<'a> {
             queued: vec![false; nl],
             extra: Vec::new(),
             extra_occ: vec![Vec::new(); nl],
+            fine: false,
+            round_cap: 0,
+            capped: false,
+            refused: false,
         };
         for i in 0..f.len() {
             if f.taut[i] {
@@ -161,7 +177,39 @@ impl<'a> Work<'a> {
         Some(out)
     }
 
-    fn over(&mut self) -> bool {
+    /// Whether item n of a loop is a budget check: every item when `fine`.
+    #[inline]
+    fn check_at(&self, n: usize, coarse: usize) -> bool {
+        n % (if self.fine { 1 } else { coarse }) == 0
+    }
+
+    /// The tick count to stop at, from here on (the point step's phases have
+    /// limits of their own within its budget).
+    pub(crate) fn limit_to(&mut self, budget: u64) {
+        self.budget = budget;
+    }
+
+    /// Whether work of this cost fits the limit, without charging it: work
+    /// in one piece is done, and charged, only when it fits.
+    pub(crate) fn fits(&self, cost: u64) -> bool {
+        self.work.saturating_add(cost) <= self.budget && !self.stop.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// With `fine`, whether the next item (a clause scanned, an occurrence
+    /// list walked) fits before it is touched; when it does not, `refused`
+    /// is set and the caller stops (Codex review round 3: one clause of
+    /// 100,000 literals passed the limit by 18%). Without `fine`, true:
+    /// this pass charges after each item, as it was measured.
+    #[inline]
+    fn reserve_item(&mut self, cost: u64) -> bool {
+        if !self.fine || self.fits(cost) {
+            return true;
+        }
+        self.refused = true;
+        false
+    }
+
+    pub(crate) fn over(&mut self) -> bool {
         // publish the work so far (a signal handler reads the tick counter)
         // SAFETY: `ticks` points at the solver's counter, which outlives the pass
         unsafe { *self.ticks = self.work };
@@ -169,7 +217,7 @@ impl<'a> Work<'a> {
     }
 
     #[inline]
-    fn lit_value(&self, l: i32) -> i8 {
+    pub(crate) fn lit_value(&self, l: i32) -> i8 {
         let v = self.value[l.unsigned_abs() as usize];
         if l > 0 {
             v
@@ -179,21 +227,25 @@ impl<'a> Work<'a> {
     }
 
     /// The active (reduced) form of clause i: false literals dropped.
-    fn reduced(&self, i: usize) -> Vec<i32> {
+    pub(crate) fn reduced(&self, i: usize) -> Vec<i32> {
         self.f.clause(i).iter().copied().filter(|&l| self.lit_value(l) == 0).collect()
     }
 
     /// Returns false when the budget ran out part way (the set is then
     /// incomplete and no verification may use it).
-    fn rebuild_clause_set(&mut self) -> bool {
+    pub(crate) fn rebuild_clause_set(&mut self) -> bool {
         self.clause_set.clear();
         for i in 0..self.f.len() {
-            if i % 1024 == 0 && self.over() {
+            if self.check_at(i, 1024) && self.over() {
                 self.clause_set.clear();
                 return false;
             }
             if self.satisfied[i] {
                 continue;
+            }
+            if !self.reserve_item(self.f.clause(i).len() as u64 + 1) {
+                self.clause_set.clear();
+                return false;
             }
             let mut c = self.reduced(i);
             self.work += c.len() as u64 + 1;
@@ -215,7 +267,7 @@ impl<'a> Work<'a> {
     /// class of all active literals and one of all active clauses.
     /// Canonical: the same formula gives the same labels, and literals
     /// that a symmetry exchanges get the same label.
-    fn refine_base(&mut self) -> Colouring {
+    pub(crate) fn refine_base(&mut self) -> Colouring {
         let nl = 2 * self.value.len();
         let m = self.f.len();
         let clauses: Vec<u32> = (0..m).filter(|&i| !self.satisfied[i]).map(|i| i as u32).collect();
@@ -278,7 +330,10 @@ impl<'a> Work<'a> {
             rounds += 1;
             // the clauses a changed literal is in
             for (n, &li) in changed_l.iter().enumerate() {
-                if n % 1024 == 0 && self.over() {
+                if self.check_at(n, 1024) && self.over() {
+                    return;
+                }
+                if !self.reserve_item(self.occ[li as usize].len() as u64 + 1) {
                     return;
                 }
                 for &i in &self.occ[li as usize] {
@@ -292,7 +347,10 @@ impl<'a> Work<'a> {
             // their new hash: the old label and the multiset of literal labels
             let mut keys: Vec<(u32, u64, u32)> = Vec::with_capacity(touched_c.len());
             for (n, &i) in touched_c.iter().enumerate() {
-                if n % 4096 == 0 && self.over() {
+                if self.check_at(n, 4096) && self.over() {
+                    return;
+                }
+                if !self.reserve_item(self.f.clause(i as usize).len() as u64 + 1) {
                     return;
                 }
                 let i = i as usize;
@@ -313,6 +371,11 @@ impl<'a> Work<'a> {
                 cmark[i as usize] = false;
             }
             touched_c.clear();
+            // the point step reserves each round's split before running it
+            // (Codex review round 2); this pass splits as it was measured
+            if self.fine && !self.fits(keys.len() as u64) {
+                return;
+            }
             self.work += keys.len() as u64;
             let changed_c = split(&mut keys, &mut col.cc, &mut col.size, &mut col.next);
             // the literals of a changed clause, the negations of changed literals
@@ -321,7 +384,10 @@ impl<'a> Work<'a> {
                 lmark[li as usize] = true;
             }
             for (n, &i) in changed_c.iter().enumerate() {
-                if n % 1024 == 0 && self.over() {
+                if self.check_at(n, 1024) && self.over() {
+                    return;
+                }
+                if !self.reserve_item(self.f.clause(i as usize).len() as u64 + 1) {
                     return;
                 }
                 for &l in self.f.clause(i as usize) {
@@ -350,7 +416,10 @@ impl<'a> Work<'a> {
             // their new hash: own label, the negation's, the multiset of clause labels
             let mut keys: Vec<(u32, u64, u32)> = Vec::with_capacity(touched_l.len());
             for (n, &li) in touched_l.iter().enumerate() {
-                if n % 4096 == 0 && self.over() {
+                if self.check_at(n, 4096) && self.over() {
+                    return;
+                }
+                if !self.reserve_item(self.occ[li as usize].len() as u64 + 1) {
                     return;
                 }
                 let li = li as usize;
@@ -368,9 +437,16 @@ impl<'a> Work<'a> {
             for &li in &touched_l {
                 lmark[li as usize] = false;
             }
+            if self.fine && !self.fits(keys.len() as u64) {
+                return;
+            }
             self.work += keys.len() as u64;
             changed_l = split(&mut keys, &mut col.cl, &mut col.size, &mut col.next);
             if changed_l.is_empty() || self.over() {
+                break;
+            }
+            if self.round_cap != 0 && rounds >= self.round_cap {
+                self.capped = true;
                 break;
             }
         }
@@ -382,7 +458,7 @@ impl<'a> Work<'a> {
     /// Is swapping rows a and b (position-wise, as literals) a symmetry of
     /// the reduced formula? Only clauses touching a moved variable are
     /// checked; the rest map to themselves.
-    fn verify_swap(&mut self, a: &[i32], b: &[i32]) -> bool {
+    pub(crate) fn verify_swap(&mut self, a: &[i32], b: &[i32]) -> bool {
         let Some(map) = swap_map(a, b, &self.value) else {
             if debug() && std::env::var_os("SAT_STRUCT_DEBUG_SWAP").is_some() {
                 eprintln!("structsym:     swap fails: no consistent map for rows {:?} and {:?}", &a[..a.len().min(6)], &b[..b.len().min(6)]);
@@ -396,6 +472,9 @@ impl<'a> Work<'a> {
                     let i = self.occ[li][oi];
                     if self.satisfied[i as usize] || seen_clause.contains_key(&i) {
                         continue;
+                    }
+                    if !self.reserve_item(self.f.clause(i as usize).len() as u64 + 1) {
+                        return false;
                     }
                     seen_clause.insert(i, ());
                     let mut img: Vec<i32> = Vec::with_capacity(self.f.clause(i as usize).len());
@@ -437,7 +516,7 @@ impl<'a> Work<'a> {
     /// Assign a literal true and propagate units over the reduced formula,
     /// logging every propagated unit. Returns false on a conflict (the
     /// empty clause was logged).
-    fn assign_and_propagate(&mut self, lit: i32, derived: &mut Derived) -> bool {
+    pub(crate) fn assign_and_propagate(&mut self, lit: i32, derived: &mut Derived) -> bool {
         let mut queue = vec![lit];
         self.queued[idx(lit)] = true;
         let mut qi = 0;
@@ -471,6 +550,9 @@ impl<'a> Work<'a> {
                 let i = self.occ[idx(-l)][oi] as usize;
                 if self.satisfied[i] {
                     continue;
+                }
+                if !self.reserve_item(self.f.clause(i).len() as u64 + 1) {
+                    return true; // refused: the caller sees `refused` and stops
                 }
                 self.work += self.f.clause(i).len() as u64 + 1;
                 if self.over() {
@@ -541,7 +623,7 @@ fn swap_map(a: &[i32], b: &[i32], value: &[i8]) -> Option<HashMap<i32, i32>> {
     Some(map)
 }
 
-fn canon(c: &mut Vec<i32>) {
+pub(crate) fn canon(c: &mut Vec<i32>) {
     c.sort_unstable_by_key(|&l| (l.abs(), l < 0));
 }
 
@@ -587,8 +669,8 @@ fn row_mates_per_row(sizes: &[usize], yi: usize) -> Option<usize> {
 /// only ever split; an element keeps its label until its class splits
 /// under it.
 #[derive(Clone)]
-struct Colouring {
-    cl: Vec<u32>,
+pub(crate) struct Colouring {
+    pub(crate) cl: Vec<u32>,
     cc: Vec<u32>,
     size: Vec<u32>,
     next: u32,
@@ -640,7 +722,7 @@ fn split(keys: &mut [(u32, u64, u32)], label: &mut [u32], size: &mut Vec<u32>, n
 }
 
 /// Cells of a colouring restricted to unassigned literals: colour -> literals.
-fn cells(colours: &[u32], value: &[i8]) -> HashMap<u32, Vec<i32>> {
+pub(crate) fn cells(colours: &[u32], value: &[i8]) -> HashMap<u32, Vec<i32>> {
     let mut m: HashMap<u32, Vec<i32>> = HashMap::new();
     for li in 2..colours.len() {
         let l = lit_of(li);

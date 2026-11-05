@@ -233,6 +233,8 @@ structure set's gain, +29 in both seeds, is a deterministic one.
 |---|---|---|
 | `--structsym=1` | symmetry: interchangeable rows and fixing (`src/structsym.rs`) | **default on** since 2026-10-10; measured on the 400 cells and the holdout (below) |
 | `--structparity=1` | parity: closed XOR systems fixed by cycle flips, and the flip symmetries of any formula (`src/structparity.rs`) | **default on** since 2026-10-10; the flip step since 2026-10-13 (below) |
+| `--structpoints=1` | points: the lines between interchangeable points (the Ramsey cells), one lex-leader chain per swap of neighbouring points and one for the colour flip, proved by VeriPB's dominance rule (`src/structpoints.rs`, after Satsuma 1.4's Johnson step); runs first, and the parity and symmetry passes stay out once it has chains | off; since 2026-11-05 (below, "The point step") |
+| `--structpointsticks=N` | the point step's own work limit in thousands (default 1M, 1G) | since 2026-11-05 |
 | `--structcount=1` | counting: demand clauses against pairwise at-most-one groups, a Hall violation proved by cutting planes (`src/structcount.rs`); runs last, within `structcountticks` | **default on** since 2026-10-13 (below); sequential-counter and decision-diagram counts are step two |
 | `--structcountticks=N` | the counting pass's own work limit in thousands (default 20K, 20M), counted from where the other passes stopped | since 2026-10-13 |
 | `--structdd=1` | the counting pass, step two: a count written as a decision diagram over at-most-one groups (the rook cells), refuted when it asks for more trues than there are groups (`src/structdd.rs`); runs before the counting pass, within `structddticks` | **default on** since 2026-10-31 (322/325 and 324/325 off/on; below, "The counting pass, step two") |
@@ -242,7 +244,7 @@ structure set's gain, +29 in both seeds, is a deterministic one.
 | `--structsort=1` | sorters: a miter of two networks of swap units over the same words, refuted by sortedness lemmas and a count by thresholds (`src/structsort.rs`); runs after the arithmetic pass, before counting, within `structsortticks` | **default on** since 2026-10-27 (317/316 and 318/320 off/on; below, "The sorter pass") |
 | `--structsortticks=N` | the sorter pass's own work limit in thousands (default 2M, 2G), counted from where the earlier passes stopped | since 2026-10-26 |
 | `--structcsp=1` | one-hot CSP decoding, SAT only | bead S.4, not yet |
-| `--structsymext=1` | general automorphisms through an external tool (measurement only) | not built: measured instead with Satsuma in front of the solver (2026-11-04; below, "General symmetry breaking, measured with Satsuma"); a port is the owner's call |
+| `--structsymext=1` | general automorphisms through an external tool (measurement only) | not built: measured instead with Satsuma in front of the solver (2026-11-04; below, "General symmetry breaking, measured with Satsuma"). The owner chose a port (2026-11-05): the point shape is `--structpoints`, a general generator search is bead `1v2.3.5` |
 | `--structclauses=N` | the pass buffers at most N clauses (default 10M); past that it is off for the run | |
 | `--structticks=N` | work budget of the passes in thousands of literal visits (default 1M, 10-100 s depending on the formula) | |
 | `--structmore=N` | the symmetry pass's budget (thousands) once a matrix has been verified: the detection in progress and its fixings run to this limit, once (default 2M); a later detection starts only within `structticks` | since 2026-10-12 |
@@ -619,6 +621,139 @@ census's four rejected MVRoundRobin proofs (below). Second, a
 satisfiable answer now reruns Satsuma without a proof. With one,
 `lockchart-group1-L220` in lex took 529 s and wrote 54 GB, over the
 300 s cap; without one it takes 97 s, and its model holds.
+
+**The point step (2026-11-05; bead `SAT-playground-1v2.3.4`, option
+`structpoints`, off by default).** The owner chose to port Satsuma's
+symmetry breaking, the point shape first (bead `1v2.3.2`). In a Ramsey
+formula every variable is the line between two of n points, and any
+renumbering of the points maps the formula onto itself, so every
+colouring has up to n! renamed copies and the search refutes each dead
+end once per copy. The step (`src/structpoints.rs`) adds one lex-leader
+chain per swap of neighbouring points. Read the lines in a fixed order,
+(0,1), (0,2), ..., (1,2), ..., as a string of bits: the string must not
+come after the string of the copy with points p and p+1 swapped. The
+first copy of every colouring passes every chain, so a solution survives
+whenever there is one. When red and blue play the same part (the R(4,4)
+cells), flipping every line is a symmetry too, and one more chain makes
+the first line blue. Ported from Satsuma 1.4 (MIT, Markus Anders): the
+chains and the proof follow its Johnson step and its dense lex order; the
+detection is our own.
+
+- **Detection.** Colour refinement (the symmetry pass's, now shared
+  through `pub(crate)`), then a class of n(n-1)/2 literals (5 <= n <= 64),
+  one per variable, or both literals of n(n-1)/2 variables when red and
+  blue play the same part. How often two members share a clause tells
+  lines that meet from lines that do not; each point is rebuilt as a star
+  of n-1 lines; then every swap of neighbouring points is checked against
+  every clause (the n-1 swaps generate every renumbering).
+- **Chains.** As Satsuma writes them: helper variables a_i, "equal so far",
+  about three clauses a step. A line whose partner comes right after it
+  in the order needs a step for the partner too; without it the proof's
+  next `rup` fails.
+- **Proof** (three new steps in `src/structproof.rs`). One lex order as a
+  single linear constraint with powers of two (`def_order` with its
+  transitivity proof, `load_order`), a `dom` step per chain with the swap
+  as witness, `rup`, `red` and `pol` for the chain's clauses, and the order
+  unloaded at the end. The prototype `tools/lex_toy_proof.py` came first:
+  VeriPB accepts its proofs on R(3,4) on 9 points (also with flipped
+  literals, and with a clause derived before the order), R(3,5) on 14, and
+  rejects a wrong witness, a stronger chain clause and an F' with one more
+  clause. VeriPB checks 24 points (276 lines, coefficients up to 2^275,
+  348,128 clauses) in 7.3 s, so the extra-variable order Satsuma uses past
+  64 variables is not needed.
+- **Placement.** The step runs first. The parity and symmetry passes log
+  redundance steps with symmetries as witnesses, which would have to map
+  the chains, so they stay out once it has chains ("skipped after the
+  point step's chains"); otherwise they run as before, their limits
+  counted from where it stopped. The helper variables are variables of
+  F': the derived file's header now counts them (`derived_max_var` in
+  `src/structure.rs`, also for the parity engine's take-over), and the
+  printed model leaves them out.
+- **Cost.** Its limit is `structpointsticks` (1G), and each phase has a
+  smaller one: the formula's units at most 4 passes over the formula, the
+  refinement at most 8 passes and 8 rounds (the Ramsey cells settle in 1-2
+  rounds; without the caps, cells with no points spent the whole 1G there),
+  and a candidate class must pass a one-row test (one member's counts, from
+  its own clauses) before the full count, which then runs over the members'
+  clauses only. Every table and the chain block are reserved before they
+  are built, and the refinement checks the limit at every item
+  (`Work::fine`, `Work::round_cap`; the symmetry pass keeps its coarse
+  checks and its unbounded rounds).
+- **Toys** (seed 0, the stock path plus the step): R(3,5) on 14 points goes
+  from no answer in 300 s (6.6M conflicts) to 95 conflicts, R(3,4) on 9
+  from 9,463 to 0.
+
+**The six ramsey cells on two seeds** (2026-11-05; the shipped defaults
+plus `--structpoints=1`, the committed code frozen as
+`log/structpoints-2026-11-05/sat-solver-7`, 1,800 s, 16 GB, every answer a
+proof through the gate; `log/structpoints-2026-11-05/seeds7`; the earlier
+binaries of the same day give the same answers within seconds). The run of record
+(`log/abtest-struct-card-400-2026-11-01-22-15-59`) times out on all
+twelve; the Satsuma probe's best mode is in brackets:
+
+| Cell | Seed 0 | Seed 1 | Satsuma probe |
+|---|---:|---:|---|
+| `ramsey_3_6_18` | 0.5 s | 0.6 s | 1.1 s (lex) |
+| `ramsey_3_6_19` | 0.4 s | 0.5 s | 1.2-1.3 s (lex) |
+| `ramsey_3_7_23` | 199 s | 243 s | 294-352 s (lex) |
+| `ramsey_3_7_24` | 75 s | 56 s | 64-75 s (lex) |
+| `ramsey_4_4_18` | 0.7 s | 0.9 s | unsolved |
+| `ramsey_4_4_19` | 0.8 s | 0.7 s | 448-601 s (fix) |
+
+All twelve are UNSAT with a proof the gate accepts. The two R(4,4) cells
+need the colour-flip chain and the step running first: with the shipped
+order the parity pass fixes one line by the flip, the line class is no
+longer uniform, and the step stands down (`log/structpoints-2026-11-05/first`;
+the four R(3,t) cells were solved there as well, in 3.8-228 s at seed 0).
+
+**Where it fires, and what it costs elsewhere** (the step alone, every
+other pass and engine off, the work clock at 1.2G;
+`log/structpoints-2026-11-05/sweep7`, the committed code). It fires on the
+six ramsey cells and on no other cell of the 400, with no panic. On the
+338 cells where it looks and finds nothing it costs a median 4.5M work
+units (90th percentile 92M, 99th 351M, at most 406M on
+`ncc_none_2_18_8_3_1_0_435991723`), 11.3G in all. On the other 56 the
+structure pass is off (more than 10M clauses) or the 300 s cap came
+first. Before the phase limits the same 338 cells cost 41.9G (`sweep`)
+and 27.3G (`sweep2`: the round cap only), and six of them took the whole
+1G. Where it finds nothing, nothing else changes: the search is the
+stock one and the parity and symmetry passes run as they would without
+it (tests below), so on those cells the step adds only its look to the
+work clock. So with the step on the six ramsey cells move from timeouts
+to solved on both seeds, and on the other cells only the step's look is
+added: no paired 400-cell run was made, so whether that look (at most
+406M work, some seconds) moves a cell sitting at the wall limit is not
+measured (bead `1v2.3.7`, the owner's call on turning the step on).
+
+**Tests** (`tests/structpoints.rs`, 12 tests). Toy Ramsey formulas without
+a solution (R(3,4) on 9 points, R(3,5) on 14) are refuted with proofs the
+gate accepts; R(3,5) on 14 takes under 20,000 conflicts. R(3,4) on 8, which
+has solutions, keeps a model of the input that names no helper variable.
+Flipped literals are read. R(3,3) on 6 and R(4,4) on 9 get the colour-flip
+chain. A wrong witness in the proof fails the gate. A random formula sees
+the stock search. A pigeonhole formula sees the symmetry pass exactly as
+without the step. The parity and symmetry passes stay out once the step
+has chains, and identical runs take identical work. The rest are the
+budget cases (below), each run under tick limits it may pass by at most
+10%.
+
+**Codex review.** Round 1 found three problems. Which of two tying
+classes (the lines and their negations) was tried first came from a hash
+map's order, so identical runs could differ in work. Tables were charged
+when they did not fit (4M for a skipped table on R(3,3) on 64 points). The
+chain block was written without a reservation (19-25% past a limit on
+R(3,4) on 5 points). Round 2 found the refinement's splits running before
+their reservation: 100,000 declared variables and one clause gave 800,016
+work under a 650,000 limit. Round 3 found one clause scanned before its
+reservation: a single clause of 100,000 literals gave 600,006 under
+510,000. Every item the step touches is now reserved first, the
+refinement's included (`Work::reserve_item`, active only with
+`Work::fine`). The findings of rounds 1-3 each have a test, with the
+review's own reproduction where it gave one; the hash-order test fails on
+the old sort key. Round 4 found the candidate classes built without a
+reservation, and the work not published during the counts (a run killed
+there reported stale work); both are fixed without a new test, since
+neither shows in a run's output. Round 5 was clean.
 
 **The parity pass, step one (2026-10-08).** An XOR constraint over k
 variables is the 2^(k-1) clauses that forbid one parity (k up to 8, the
@@ -3268,6 +3403,43 @@ So the pass is +1 solved cell on each seed, four cells from minutes to
 seconds, and the same search everywhere else for 0.02% more work. The
 owner's call (2026-10-28): on by default now, the 2026 holdout look kept
 for a later candidate; the stock path gains `--structdiv=0`.
+
+**Clauses added to the circuit (2026-11-05; bead `SAT-playground-skz.27`).**
+In the Satsuma probe (above, "General symmetry breaking, measured with
+Satsuma") `div_miter_lec__2` was lost on both seeds in both modes. The
+cause, confirmed with `SAT_STRUCT_DEBUG=1`: the reader reads every clause
+as part of the gate its first literal names, and it gave up on the whole
+formula at the first group that defined nothing. Satsuma's lex mode adds
+one clause on two circuit inputs, `49653 -49655` ("the clauses of 49653
+do not define it"). Its fix mode also applies the miter's root unit,
+which turns the root's xor into two binary clauses, `3 12956` and `-3
+-12956`, and these join gate 3's group ("the clauses of 3 do not define
+it"). The reader now sets such clauses aside. A group that defines
+nothing gives up the clauses on one of its variables when the rest still
+define it (the fewest clauses, then the smallest variable), or all of
+them when they are all on one variable. Without a unit on a gate, two
+such clauses x | y and ~x | ~y over two gates are the root. At most 64
+clauses may be set aside; past that the formula is not a circuit with a
+few extras, and the reader declines as before. This is sound: every gate
+read this way is defined by clauses of the formula, the clauses set
+aside stay in the sub-calls (but for the root's), and every lemma the
+pass proves follows from the formula. Behind Satsuma's lex output the
+default solver now answers UNSAT in 372 s, behind its fix output in 380 s
+(seed 0; the run of record takes 373-390 s on the original), with 1,592
+of 1,599 row pairs proven as on the original, and both proofs pass the
+gate (`log/structdiv-read-2026-11-05/satsuma`). Three new tests, each one
+failing on the old reader: a clause on two inputs plus clauses g | u on
+three gates; a propagated root; 64 clauses set aside (the pass fires) and
+65 (it declines). The reader sweep over the 400 cells
+(`log/structdiv-read-2026-11-05`: the pass alone, the work clock at 2G,
+the old and the new binary) finds the same five cells read as a divider
+or square root, the same status on all 400 and no panic. The reason for
+declining changed on 32 cells (the reader gets further first, for
+example "no unit on a gate" on the Booth multipliers), and the pass's
+work over the 400 cells grew by 0.25% (3,952,644K to 3,962,453K), 9.4M of
+it on `tseitin_grid_n250_m250`. Codex reviewed it together with the point
+step (below): five rounds, every finding in the point step, the fifth
+clean.
 
 ## Global sweeping: the measurement (2026-10-28; bead `SAT-playground-skz.10`)
 

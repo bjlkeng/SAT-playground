@@ -93,7 +93,7 @@ impl Derived {
 
 pub fn enabled(solver: &Solver) -> bool {
     let o = &solver.options;
-    o.card != 0 || o.structsym != 0 || o.structsymext != 0 || o.structparity != 0 || o.structcount != 0 || o.structcsp != 0 || o.gauss != 0 || o.structarith != 0 || o.structsort != 0 || o.structdiv != 0 || o.structdd != 0
+    o.card != 0 || o.structsym != 0 || o.structpoints != 0 || o.structsymext != 0 || o.structparity != 0 || o.structcount != 0 || o.structcsp != 0 || o.gauss != 0 || o.structarith != 0 || o.structsort != 0 || o.structdiv != 0 || o.structdd != 0
 }
 
 /// Called once before the parse: turn buffering on when a pass is enabled.
@@ -316,10 +316,36 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
         let stop: *const std::sync::atomic::AtomicBool = &solver.termination.flagged;
         // SAFETY: the flag outlives the pass and is only read through it
         let stop_ref: &std::sync::atomic::AtomicBool = unsafe { &*stop };
-        if solver.options.structparity != 0 && !derived.refuted {
+        let (mut budget, mut more) = (budget, more);
+        let mut pointed = false;
+        if solver.options.structpoints != 0 && !derived.refuted {
+            // the point step (src/structpoints.rs) first, within a limit of
+            // its own: the parity and symmetry passes log redundance steps
+            // with symmetries as witnesses, which would have to map its
+            // chains, so once it has added chains they stay out; otherwise
+            // they run with their limits counted from where it stopped
+            let own = cap((solver.options.structpointsticks as u64).saturating_mul(1000), solver);
+            let before = solver.statistics.ticks;
+            let notes = derived.notes.len();
+            crate::structpoints::run(&formula, &mut derived, own, &mut solver.statistics.ticks, stop_ref);
+            if derived.notes.len() == notes {
+                derived.notes.push(format!("points: no point symmetry, work {}K", solver.statistics.ticks.saturating_sub(before) / 1000));
+            }
+            pointed = !derived.clauses.is_empty();
+            budget = cap(solver.structure.work_limit, solver);
+            more = cap((solver.options.structmore as u64).saturating_mul(1000), solver).max(budget);
+            if pointed {
+                for (on, what) in [(solver.options.structparity, "parity"), (solver.options.structsym, "symmetry")] {
+                    if on != 0 {
+                        derived.notes.push(format!("{}: skipped after the point step's chains", what));
+                    }
+                }
+            }
+        }
+        if solver.options.structparity != 0 && !derived.refuted && !pointed {
             crate::structparity::run(&formula, &mut derived, budget, &mut solver.statistics.ticks, stop_ref);
         }
-        if solver.options.structsym != 0 && !derived.refuted {
+        if solver.options.structsym != 0 && !derived.refuted && !pointed {
             crate::structsym::run(&formula, &mut derived, budget, more, &mut solver.statistics.ticks, stop_ref);
         }
         if solver.options.structarith != 0 && !derived.refuted {
@@ -441,7 +467,7 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
                 let _ = std::fs::remove_file(pbp);
                 let _ = std::fs::remove_file(der);
             } else {
-                match solver.gaussproof.take_over(w, pbp, der, &derived.clauses, solver.structure.max_var, derived.last_var, &solver.gauss.xors) {
+                match solver.gaussproof.take_over(w, pbp, der, &derived.clauses, derived_max_var(&derived.clauses, solver.structure.max_var), derived.last_var, &solver.gauss.xors) {
                     Ok(()) => println!("c structure proof {} derived {} (continued by the parity engine)", pbp, der),
                     Err(e) => {
                         crate::print::message(solver, format!("structure pass dropped: cannot write {}: {}", der, e));
@@ -463,7 +489,7 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
         match derived.proof.take() {
             Some(w) if k > 0 => {
                 let finished = if w.failed { Err("a proof step could not be written".to_string()) } else { w.finish().map_err(|e| e.to_string()) };
-                let written = finished.and_then(|_| write_derived(&der, &derived.clauses, solver.structure.max_var).map_err(|e| e.to_string()));
+                let written = finished.and_then(|_| write_derived(&der, &derived.clauses, derived_max_var(&derived.clauses, solver.structure.max_var)).map_err(|e| e.to_string()));
                 match written {
                     Ok(()) => println!("c structure proof {} derived {}", pbp, der),
                     Err(e) => {
@@ -567,6 +593,13 @@ fn read_check(f: &Formula, reading: &crate::cardread::Reading, grids: &[crate::g
     }
     let _ = w.finish_no_conclusion();
     println!("c cardread unproved={}", unproved);
+}
+
+/// The largest variable of the input and the derived clauses: the point
+/// step's helper variables are variables of F', so the derived file's
+/// header counts them (bead SAT-playground-1v2.3.4).
+fn derived_max_var(clauses: &[Vec<i32>], max_var: i32) -> i32 {
+    clauses.iter().flatten().map(|l| l.abs()).fold(max_var, i32::max)
 }
 
 fn write_derived(path: &str, clauses: &[Vec<i32>], max_var: i32) -> std::io::Result<()> {

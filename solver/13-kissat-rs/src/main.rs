@@ -67,6 +67,7 @@ pub mod structparity;
 pub mod structproof;
 pub mod structsort;
 pub mod structdiv;
+pub mod structpoints;
 pub mod card;
 pub mod cardread;
 pub mod gridread;

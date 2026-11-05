@@ -295,6 +295,13 @@ kissat_options! {
     (structdivticks, 50_000_000, 0, i32::MAX, "structure pass: divider work limit (K)"),
     (structmore, 2_000_000, 0, i32::MAX, "structure pass work limit (K) after a find"),
     (structparity, 1, 0, 1, "structure pass: XOR systems"),
+    // the point step (bead SAT-playground-1v2.3.4, 2026-11-05): the lines
+    // between interchangeable points (the Ramsey cells) get one lex-leader
+    // chain per swap of neighbouring points, proved by dominance; after
+    // Satsuma 1.4's Johnson step. Off until measured. structpointsticks is
+    // its own work limit, counted from where the earlier passes stopped
+    (structpoints, 0, 0, 1, "structure pass: point symmetry, lex-leader chains"),
+    (structpointsticks, 1_000_000, 0, i32::MAX, "structure pass: point step work limit (K)"),
     // the sorter pass (bead SAT-playground-skz.22, 2026-10-26): on by
     // default since 2026-10-27, the owner's call after the two-seed
     // 400-cell run (317/316 and 318/320 off/on: the two BubbleVsPancakeSort
@@ -784,9 +791,10 @@ mod tests {
         // gausslimit, gaussyield, gausswindow (2026-10-15/17),
         // structarith, structarithticks (2026-10-19), structsort,
         // structsortticks (2026-10-26), structdiv, structdivticks
-        // (2026-10-27), structdd, structddticks (2026-10-31) and the ten
-        // card* options (2026-11-01)
-        assert_eq!(OPTION_TABLE.len(), 158 + 43);
+        // (2026-10-27), structdd, structddticks (2026-10-31), the ten
+        // card* options (2026-11-01) and structpoints, structpointsticks
+        // (2026-11-05)
+        assert_eq!(OPTION_TABLE.len(), 158 + 45);
     }
 
     #[test]

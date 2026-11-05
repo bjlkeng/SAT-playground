@@ -13,7 +13,9 @@
 //!
 //! Steps used: `rup` (implied by unit propagation), `red C : witness` (the
 //! redundance rule, with a symmetry of the current formula as witness, as
-//! Satsuma logs orbitopal fixing), `pol` (cutting planes, for counting). The
+//! Satsuma logs orbitopal fixing), `pol` (cutting planes, for counting), and
+//! for the point step's lex-leader chains a lex order (`def_order`,
+//! `load_order`) with `dom` (dominance-based strengthening). The
 //! writer numbers derived constraints from m + 1, where m is the number of
 //! clauses in the file, so later steps can name earlier ones.
 
@@ -251,6 +253,94 @@ impl Writer {
         self.steps += 1;
         self.written += ids.len() as u64;
         Ok(())
+    }
+
+    /// A lex order over `n` variables (bead SAT-playground-1v2.3.4): u <= v
+    /// when sum 2^(n-i) (v_i - u_i) >= 0, u_1 the most significant, as one
+    /// linear constraint, with the proof that it is transitive (the sum of
+    /// the two premises and the negated goal is a contradiction), as
+    /// Satsuma 1.4 defines its dense order. The order is named `lex<n>` and
+    /// defines no constraint of the database.
+    pub fn def_lex_order(&mut self, n: usize, pow2: &[String]) -> std::io::Result<String> {
+        let name = format!("lex{}", n);
+        let mut s = format!("def_order {}\nvars\nleft", name);
+        for i in 1..=n {
+            s.push_str(&format!(" u{}", i));
+        }
+        s.push_str(" ;\nright");
+        for i in 1..=n {
+            s.push_str(&format!(" v{}", i));
+        }
+        s.push_str(" ;\naux ;\nend ;\ndef\n");
+        for i in 1..=n {
+            let k = &pow2[n - i];
+            s.push_str(&format!("-{} u{} {} v{} ", k, i, k, i));
+        }
+        s.push_str(">= 0 ;\nend ;\ntransitivity\nvars\nfresh_right");
+        for i in 1..=n {
+            s.push_str(&format!(" w{}", i));
+        }
+        s.push_str(" ;\nend ;\nproof\nproofgoal #1\npol 1 2 + 3 + ;\nqed : -1 ;\nqed ;\nend ;\nend ;\n");
+        if let Err(e) = self.out.write_all(s.as_bytes()) {
+            self.failed = true;
+            return Err(e);
+        }
+        self.steps += 1;
+        self.written += 4 * n as u64;
+        Ok(name)
+    }
+
+    /// Load a defined order on the given variables (the first is the most
+    /// significant), or with `vars` None unload the loaded one.
+    pub fn load_order(&mut self, name: &str, vars: Option<&[i32]>) -> std::io::Result<()> {
+        let mut s = String::from("load_order");
+        if let Some(vars) = vars {
+            s.push(' ');
+            s.push_str(name);
+            for &v in vars {
+                s.push_str(&format!(" x{}", v));
+            }
+        }
+        s.push_str(" ;\n");
+        if let Err(e) = self.out.write_all(s.as_bytes()) {
+            self.failed = true;
+            return Err(e);
+        }
+        self.steps += 1;
+        self.written += 1 + vars.map_or(0, |v| v.len() as u64);
+        Ok(())
+    }
+
+    /// Dominance-based strengthening under the loaded order: the linear
+    /// constraint sum coef * lit >= 0 (`terms`, coefficients as decimal
+    /// strings, which may be any size), with the witness, a literal
+    /// permutation given as (variable, literal) pairs, that maps the input
+    /// onto itself and makes every solution that violates the constraint
+    /// strictly smaller. The subproof proves the negated-order goal (the
+    /// negated constraint and the goal's premise add up to a contradiction);
+    /// VeriPB autoproves the others. Its three constraints take ids before
+    /// the derived one gets the next; returns that id.
+    pub fn dom(&mut self, terms: &[(&str, i32)], witness: &[(i32, i32)]) -> std::io::Result<u64> {
+        let mut s = String::from("dom");
+        for &(c, l) in terms {
+            s.push(' ');
+            s.push_str(c);
+            s.push(' ');
+            s.push_str(&lit_str(l));
+        }
+        s.push_str(" >= 0 :");
+        for &(from, to) in witness {
+            s.push_str(&format!(" x{} -> {}", from, lit_str(to)));
+        }
+        s.push_str(" : subproof\nproofgoal #2\npol -1 -2 + ;\nqed #2 : -1 ;\nqed ;\n");
+        if let Err(e) = self.out.write_all(s.as_bytes()) {
+            self.failed = true;
+            return Err(e);
+        }
+        self.constraints += 4;
+        self.steps += 1;
+        self.written += 1 + 2 * terms.len() as u64 + 2 * witness.len() as u64;
+        Ok(self.constraints)
     }
 
     /// Mark a derived constraint as part of F' (it is added to the solver's
