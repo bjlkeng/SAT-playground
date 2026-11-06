@@ -233,7 +233,7 @@ structure set's gain, +29 in both seeds, is a deterministic one.
 |---|---|---|
 | `--structsym=1` | symmetry: interchangeable rows and fixing (`src/structsym.rs`) | **default on** since 2026-10-10; measured on the 400 cells and the holdout (below) |
 | `--structparity=1` | parity: closed XOR systems fixed by cycle flips, and the flip symmetries of any formula (`src/structparity.rs`) | **default on** since 2026-10-10; the flip step since 2026-10-13 (below) |
-| `--structpoints=1` | points: the lines between interchangeable points (the Ramsey cells), one lex-leader chain per swap of neighbouring points and one for the colour flip, proved by VeriPB's dominance rule (`src/structpoints.rs`, after Satsuma 1.4's Johnson step); runs first, and the parity and symmetry passes stay out once it has chains | off; since 2026-11-05 (below, "The point step") |
+| `--structpoints=1` | points: the lines between interchangeable points (the Ramsey cells), one lex-leader chain per swap of neighbouring points and one for the colour flip, proved by VeriPB's dominance rule (`src/structpoints.rs`, after Satsuma 1.4's Johnson step); runs first, and the parity and symmetry passes stay out once it has chains | off; since 2026-11-05; its paired run solved 671 v 659 over two seeds, the six ramsey cells on both (below, "The point step") |
 | `--structpointsticks=N` | the point step's own work limit in thousands (default 1M, 1G) | since 2026-11-05 |
 | `--structcount=1` | counting: demand clauses against pairwise at-most-one groups, a Hall violation proved by cutting planes (`src/structcount.rs`); runs last, within `structcountticks` | **default on** since 2026-10-13 (below); sequential-counter and decision-diagram counts are step two |
 | `--structcountticks=N` | the counting pass's own work limit in thousands (default 20K, 20M), counted from where the other passes stopped | since 2026-10-13 |
@@ -721,9 +721,10 @@ stock one and the parity and symmetry passes run as they would without
 it (tests below), so on those cells the step adds only its look to the
 work clock. So with the step on the six ramsey cells move from timeouts
 to solved on both seeds, and on the other cells only the step's look is
-added: no paired 400-cell run was made, so whether that look (at most
-406M work, some seconds) moves a cell sitting at the wall limit is not
-measured (bead `1v2.3.7`, the owner's call on turning the step on).
+added. The paired run below measures that look: about 5 s at the most,
+and the two cells that change at the wall limit (one each way) make the
+same search in both arms. Turning the step on is the owner's call (bead
+`1v2.3.7`).
 
 **Tests** (`tests/structpoints.rs`, 12 tests). Toy Ramsey formulas without
 a solution (R(3,4) on 9 points, R(3,5) on 14) are refuted with proofs the
@@ -754,6 +755,83 @@ the old sort key. Round 4 found the candidate classes built without a
 reservation, and the work not published during the counts (a run killed
 there reported stale work); both are fixed without a new test, since
 neither shows in a run's output. Round 5 was clean.
+
+**The paired run** (2026-11-05/06; bead `1v2.3.7`;
+`log/abtest-struct-points-400-2026-11-05-16-07-19`, launch log
+`log/struct-points-400-launch-2026-11-05.txt`; binary
+`solver/13-j10-points-snapshot`, frozen from `b7a4c2a` and byte-identical
+to `sat-solver-7`). The 400 cells at seeds 0 and 1, the defaults against
+the defaults plus `--structpoints=1`, 1,800 s, 32 jobs at 16 GB, every
+answer sent to the checker. The ratios are PAR-2 sums, on against off
+(`log/structpoints-2026-11-05/paired400.py`, output in `paired400.txt`).
+
+| Seed | Off solved | On solved | + | - | Wall PAR-2 ratio | Tick PAR-2 ratio |
+|---|---:|---:|---:|---:|---:|---:|
+| 0 | 330 | 335 | 6 | 1 | 0.944 | 0.934 |
+| 1 | 329 | 336 | 7 | 0 | 0.932 | 0.916 |
+| both | 659 | 671 | 13 | 1 | 0.938 | 0.926 |
+
+- **What moved.** The six ramsey cells on both seeds, as in `seeds7`
+  (0.4 s to 237 s, the same conflicts; off, all twelve time out). Two
+  cells at the time limit, one each way: `bp4_IXA_FPBEQ_ZR` on seed 1 (on
+  1,768 s; off stopped at 1,800 s, 14,655 conflicts short of the same
+  answer) and `lockchart-group1-L190-K276-p8d4j1` on seed 0 (off 1,701 s;
+  on stopped 651 conflicts short). On their other seed both arms make the
+  same search: `bp4` in 525 and 526 s, `lockchart` in 1,400 and 1,510 s,
+  a search the card run took 1,769 s for.
+- **Elsewhere the search is the same.** On every cell both arms solve, 329
+  on each seed, the conflicts, decisions and propagations are equal. There
+  the step adds only its look to the work: a median of 1.9M work units, at
+  most 406M (`ncc_none_2_18_8_3_1_0_435991723`), 9.0G and 8.7G in all,
+  0.36% of the work on those cells. In wall time those cells took 0.65%
+  and 0.58% longer with the step on (the median difference per cell +0.03 s
+  and +0.01 s; 0.64% and 0.27% without the 22 SAT cells solved without a
+  conflict, whose times also measure the pipe, below). Timed
+  alone on the `ncc` cell (four runs each way, stopped at the first
+  conflict, on a core the run left free), it takes about 5 s: 37.2 s off,
+  42.1 s on.
+- **Answers.** No two arms disagree, nor with the card run's four arms, and
+  the checker refused none. `pj2002_k500` and `17.normalised` stop at
+  16 GB in all four arms, as in every run since 2026-10-19.
+- **A launch mistake, and the recheck.** The launch pinned the harness
+  itself to core 35 (`taskset -p -c 35 $$`; the div run's launch line
+  pinned another process). The harness pins each solver to its own core,
+  but its checkers inherit the harness's core, so all 32 jobs' checkers
+  shared one. 98 to 100 answers per arm reached the checker's limit (3,600 s
+  for a proof, 600 s for a model), against 23-24 in the earlier runs, and
+  the run took 22.4 hours instead of 14. The searches were not affected,
+  but the timings were, for both arms alike, in two ways. With the
+  checkers off their cores the solvers ran faster than usual: a median of
+  0.88 and 0.85 of the card run's time on the same searches of 300 s or
+  more. So this run's counts are high against earlier runs: the off arm
+  solved 14 cells the card run did not and lost none, all 14 after 1,220 s,
+  and the card run had stopped each at 85-98% of the conflicts it took
+  here. And the harness reads each answer through a pipe, on its own core,
+  so a SAT cell with a big model waited on that core while the model was
+  read: `11.normalised` (54 million variables, no conflicts) took 1,569 and
+  1,442 s, against 120 s in the recheck. Leaving out the 22 SAT cells
+  solved without a conflict moves the wall ratios by 0.001-0.002.
+
+  The recheck (`log/abtest-struct-points-recheck-2026-11-06-14-43-59`,
+  launch log `log/struct-points-recheck-launch-2026-11-06.txt`; the same
+  binary, the harness not pinned; the lists from
+  `log/structpoints-2026-11-05/recheck_list.py`, the comparison
+  `recheck_compare.py`, output in `recheck_compare.txt`) solved again the
+  step-on answers the checker had not finished, except the 23 on seed 0
+  and 24 on seed 1 whose proofs also ran out of checker time in the card
+  run, with the same search, and `ramsey_3_7_23`, checked in `seeds7`: 76
+  cells on seed 0 and 74 on seed 1. 144 came back with the same search and
+  passed the checker
+  (48 models, 96 proofs). The other six are the cells solved after 1,500 s
+  other than `11.normalised` (five cells, `cfi-rigid-s2-0064-04-or_2` on
+  both seeds), which ran out of time in the recheck 1-6% of the conflicts
+  short. On all five the off arm made the same search, so the step did not
+  touch them. After the recheck the step-on arms have 306 of 335 and 311
+  of 336 answers checked (`grs-32-128` on seed 1 passed too, run there
+  because it was on seed 0's list). Of the rest, 23 per seed ran out of
+  checker time in the card run too, one is `ramsey_3_7_23`, and five on
+  seed 0 and one on seed 1 are those late cells. The checker refused
+  nothing, and no two arms disagree.
 
 **The parity pass, step one (2026-10-08).** An XOR constraint over k
 variables is the 2^(k-1) clauses that forbid one parity (k up to 8, the
