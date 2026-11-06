@@ -56,7 +56,7 @@ import card_toy_proof as ctp  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 VERIPB = ROOT / "tools" / "checkers" / "VeriPB" / "target" / "release" / "veripb"
 SOLVER = ROOT / "solver" / "13-kissat-rs" / "target" / "release" / "sat-solver"
-STOCK = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0", "--structdiv=0", "--structdd=0", "--gauss=0", "--card=0"]
+STOCK = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0", "--structdiv=0", "--structdd=0", "--gauss=0", "--card=0", "--structpoints=0"]
 LINE = re.compile(r"^c cardread (\w+) n=(\d+) need=(-?\d+) lits=\[(.*)\]$")
 
 

@@ -45,7 +45,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from alldiff_census import Enc, flipped, toy_circuit, toy_colouring, toy_latin, toy_php, toy_sudoku, toy_xor  # noqa: E402
 
-STOCK = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0", "--structdiv=0", "--structdd=0", "--gauss=0", "--card=0"]
+STOCK = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0", "--structdiv=0", "--structdd=0", "--gauss=0", "--card=0", "--structpoints=0"]
 TABLE = ROOT / "benchmarks" / "rl" / "alldiff_2025.tsv"
 BIG = 8                 # a core grid of this many rows or more is a big one, as in the census
 

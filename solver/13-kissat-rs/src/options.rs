@@ -298,9 +298,13 @@ kissat_options! {
     // the point step (bead SAT-playground-1v2.3.4, 2026-11-05): the lines
     // between interchangeable points (the Ramsey cells) get one lex-leader
     // chain per swap of neighbouring points, proved by dominance; after
-    // Satsuma 1.4's Johnson step. Off until measured. structpointsticks is
-    // its own work limit, counted from where the earlier passes stopped
-    (structpoints, 0, 0, 1, "structure pass: point symmetry, lex-leader chains"),
+    // Satsuma 1.4's Johnson step. On by default since 2026-11-06, the
+    // owner's call after the two-seed 400-cell run (330/335 and 329/336
+    // off/on: the six ramsey cells on both seeds, the same search on every
+    // other cell both arms solve; the 2026 holdout not consulted).
+    // structpointsticks is its own work limit, counted from where the
+    // earlier passes stopped
+    (structpoints, 1, 0, 1, "structure pass: point symmetry, lex-leader chains"),
     (structpointsticks, 1_000_000, 0, i32::MAX, "structure pass: point step work limit (K)"),
     // the sorter pass (bead SAT-playground-skz.22, 2026-10-26): on by
     // default since 2026-10-27, the owner's call after the two-seed

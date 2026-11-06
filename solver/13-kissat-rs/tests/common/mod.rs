@@ -169,14 +169,14 @@ pub const SOLVER_ENV_VARS: &[&str] = &[
 /// environment additions (a value of "" is passed through as an empty
 /// variable, which the solver must treat as unset).
 /// Options that put the solver on the stock kissat path: the structure
-/// passes (on by default since 2026-10-10), the parity engine (on by
-/// default since 2026-10-18) and the count engine (on by default since
-/// 2026-11-02) off. A test that turns one of them on puts its option after
+/// passes (on by default since 2026-10-10, the point step since
+/// 2026-11-06), the parity engine (on by default since 2026-10-18) and the
+/// count engine (on by default since 2026-11-02) off. A test that turns one of them on puts its option after
 /// these, since the later option wins. The test corpus's hard
 /// formulas are pigeonhole, which the symmetry pass settles at once, so
 /// every test of the search runs through `run`/`run_with_proof` with these;
 /// `run_shipped` is for tests of the shipped defaults.
-pub const STOCK_PATH: &[&str] = &["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0", "--structdiv=0", "--structdd=0", "--gauss=0", "--card=0"];
+pub const STOCK_PATH: &[&str] = &["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0", "--structdiv=0", "--structdd=0", "--gauss=0", "--card=0", "--structpoints=0"];
 
 pub fn run(cnf: &Path, options: &[&str], env: &[(&str, &str)]) -> Run {
     let mut all: Vec<&str> = STOCK_PATH.to_vec();

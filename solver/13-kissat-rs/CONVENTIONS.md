@@ -163,11 +163,13 @@ runs, so `tools/parity.py` stays exact. Since 2026-10-10 `structsym` and
 single 2026 holdout), since 2026-10-13 `structcount` too, and since
 2026-10-18 the parity engine `gauss` (`src/gauss.rs`, README "The
 parity engine"), since 2026-10-20 `structarith`, since 2026-10-27
-`structsort`, since 2026-10-28 `structdiv`, since 2026-10-31 `structdd`
-and since 2026-11-02 the count and alldifferent engine `card` (`src/card.rs`):
+`structsort`, since 2026-10-28 `structdiv`, since 2026-10-31 `structdd`,
+since 2026-11-02 the count and alldifferent engine `card` (`src/card.rs`)
+and since 2026-11-06 the point step `structpoints` (`src/structpoints.rs`):
 the stock kissat path is
 `--structsym=0 --structparity=0 --structcount=0 --structarith=0
---structsort=0 --structdiv=0 --structdd=0 --gauss=0 --card=0`, which `tools/parity.py`
+--structsort=0 --structdiv=0 --structdd=0 --gauss=0 --card=0
+--structpoints=0`, which `tools/parity.py`
 adds unless told `--structure` and the test helpers' `run`/`run_with_proof`
 add always
 (`tests/common/mod.rs`, `STOCK_PATH`); a test of the shipped defaults

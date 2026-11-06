@@ -196,9 +196,12 @@ arithmetic pass" below); then `structsort` (2026-10-27), `structdiv`
 run. The count and alldifferent engine, `card`, is on by default since 2026-11-02, the
 owner's call: its paired run solved 645 v 651 over two seeds, eight fresh seeds show
 that loss was luck, and its read costs 0.3% of the work ("Count and alldifferent
-lemmas" below). The stock kissat path is `--structsym=0 --structparity=0
+lemmas" below). The point step, `structpoints`, is on by default since
+2026-11-06, the owner's call: its paired run solved 671 v 659 over two
+seeds, the six ramsey cells on both, and elsewhere the search is the same
+("The point step" below). The stock kissat path is `--structsym=0 --structparity=0
 --structcount=0 --structarith=0 --structsort=0 --structdiv=0
---structdd=0` (and `--gauss=0`, the parity engine below, and `--card=0`), which `tools/parity.py` passes unless
+--structdd=0 --structpoints=0` (and `--gauss=0`, the parity engine below, and `--card=0`), which `tools/parity.py` passes unless
 told `--structure`, and the test helpers' `run` too
 (`tests/common/mod.rs`, `STOCK_PATH`). A promoted configuration is
 exactly the measured one:
@@ -233,7 +236,7 @@ structure set's gain, +29 in both seeds, is a deterministic one.
 |---|---|---|
 | `--structsym=1` | symmetry: interchangeable rows and fixing (`src/structsym.rs`) | **default on** since 2026-10-10; measured on the 400 cells and the holdout (below) |
 | `--structparity=1` | parity: closed XOR systems fixed by cycle flips, and the flip symmetries of any formula (`src/structparity.rs`) | **default on** since 2026-10-10; the flip step since 2026-10-13 (below) |
-| `--structpoints=1` | points: the lines between interchangeable points (the Ramsey cells), one lex-leader chain per swap of neighbouring points and one for the colour flip, proved by VeriPB's dominance rule (`src/structpoints.rs`, after Satsuma 1.4's Johnson step); runs first, and the parity and symmetry passes stay out once it has chains | off; since 2026-11-05; its paired run solved 671 v 659 over two seeds, the six ramsey cells on both (below, "The point step") |
+| `--structpoints=1` | points: the lines between interchangeable points (the Ramsey cells), one lex-leader chain per swap of neighbouring points and one for the colour flip, proved by VeriPB's dominance rule (`src/structpoints.rs`, after Satsuma 1.4's Johnson step); runs first, and the parity and symmetry passes stay out once it has chains | **default on** since 2026-11-06 (added 2026-11-05); its paired run solved 671 v 659 over two seeds, the six ramsey cells on both (below, "The point step") |
 | `--structpointsticks=N` | the point step's own work limit in thousands (default 1M, 1G) | since 2026-11-05 |
 | `--structcount=1` | counting: demand clauses against pairwise at-most-one groups, a Hall violation proved by cutting planes (`src/structcount.rs`); runs last, within `structcountticks` | **default on** since 2026-10-13 (below); sequential-counter and decision-diagram counts are step two |
 | `--structcountticks=N` | the counting pass's own work limit in thousands (default 20K, 20M), counted from where the other passes stopped | since 2026-10-13 |
@@ -623,7 +626,7 @@ satisfiable answer now reruns Satsuma without a proof. With one,
 300 s cap; without one it takes 97 s, and its model holds.
 
 **The point step (2026-11-05; bead `SAT-playground-1v2.3.4`, option
-`structpoints`, off by default).** The owner chose to port Satsuma's
+`structpoints`, on by default since 2026-11-06).** The owner chose to port Satsuma's
 symmetry breaking, the point shape first (bead `1v2.3.2`). In a Ramsey
 formula every variable is the line between two of n points, and any
 renumbering of the points maps the formula onto itself, so every
@@ -723,8 +726,9 @@ work clock. So with the step on the six ramsey cells move from timeouts
 to solved on both seeds, and on the other cells only the step's look is
 added. The paired run below measures that look: about 5 s at the most,
 and the two cells that change at the wall limit (one each way) make the
-same search in both arms. Turning the step on is the owner's call (bead
-`1v2.3.7`).
+same search in both arms. The owner turned the step on by default on
+2026-11-06 (bead `1v2.3.7`); the 2026 holdout was not consulted.
+`--structpoints=0` turns it off.
 
 **Tests** (`tests/structpoints.rs`, 12 tests). Toy Ramsey formulas without
 a solution (R(3,4) on 9 points, R(3,5) on 14) are refuted with proofs the

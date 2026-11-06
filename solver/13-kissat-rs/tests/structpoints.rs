@@ -271,10 +271,12 @@ fn point_step_without_points_leaves_the_search_unchanged() {
 
 #[test]
 fn the_symmetry_passes_stay_out_once_the_point_step_has_chains() {
-    // five pigeons in five holes beside R(3,4) on 9 points: the point step
-    // goes first and adds its chains, and the parity and symmetry passes then
-    // stay out (their redundance steps would have to map the chains); the
-    // search refutes the formula with a proof the gate accepts
+    // five pigeons in five holes beside R(3,4) on 9 points, with the shipped
+    // defaults (the step on since 2026-11-06): the point step goes first and
+    // adds its chains, and the parity and symmetry passes then stay out
+    // (their redundance steps would have to map the chains); the search
+    // refutes the formula with a proof the gate accepts. --structpoints=0
+    // turns the step off and the other passes run
     let fx = Fixture::new("structpoints_first");
     let (vars, mut clauses) = ramsey(3, 4, 9, None);
     let (p, h) = (5i64, 5i64);
@@ -291,27 +293,31 @@ fn the_symmetry_passes_stay_out_once_the_point_step_has_chains() {
     }
     let cnf = fx.path("both.cnf");
     write_cnf(&cnf, vars + p * h, &clauses);
-    let r = run_shipped(&cnf, &["--structpoints=1"], &[]);
+    let r = run_shipped(&cnf, &[], &[]);
     assert_eq!(r.status, "UNSATISFIABLE", "{}", r.stdout);
     assert!(r.stdout.contains("points: 9 points, 8 lex-leader chains,"), "{}", r.stdout);
     assert!(r.stdout.contains("parity: skipped after the point step's chains"), "{}", r.stdout);
     assert!(r.stdout.contains("symmetry: skipped after the point step's chains"), "{}", r.stdout);
     let proof = fx.path("both.drat");
-    let out = Command::new(solver_bin()).arg("-n").arg("--structpoints=1").arg(&cnf).arg(&proof).output().expect("run sat-solver");
+    let out = Command::new(solver_bin()).arg("-n").arg(&cnf).arg(&proof).output().expect("run sat-solver");
     assert!(String::from_utf8_lossy(&out.stdout).contains("s UNSATISFIABLE"));
     assert_eq!(gate(&cnf, &proof), "ok");
+    let off = run_shipped(&cnf, &["--structpoints=0"], &[]);
+    assert_eq!(off.status, "UNSATISFIABLE", "{}", off.stdout);
+    assert!(!off.stdout.contains("structure pass: points:"), "{}", off.stdout);
+    assert!(!off.stdout.contains("skipped after the point step's chains"), "{}", off.stdout);
 }
 
 #[test]
 fn without_points_the_symmetry_passes_run_as_before() {
-    // a pigeonhole formula has rows but no points: with the step on, the
-    // symmetry pass refutes it exactly as it does without the step, and only
-    // the work clock grows by the step's look
+    // a pigeonhole formula has rows but no points: with the step on (the
+    // shipped default), the symmetry pass refutes it exactly as it does
+    // without the step, and only the work clock grows by the step's look
     let fx = Fixture::new("structpoints_rows");
     let cnf = fx.path("php.cnf");
     common::php(7, &cnf);
-    let off = run_shipped(&cnf, &[], &[]);
-    let on = run_shipped(&cnf, &["--structpoints=1"], &[]);
+    let off = run_shipped(&cnf, &["--structpoints=0"], &[]);
+    let on = run_shipped(&cnf, &[], &[]);
     assert_eq!(off.status, "UNSATISFIABLE");
     assert_eq!(on.status, off.status);
     assert!(on.stdout.contains("points: no point symmetry, work"), "{}", on.stdout);
