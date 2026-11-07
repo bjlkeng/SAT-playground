@@ -5650,11 +5650,23 @@ not name:
 
 | cell | full adders | what the census sees |
 |---|---|---|
-| `fermat-834855329100173267` | 3,540 | two 118-bit words compared, both reading the two 61-bit inputs at uneven rates. They match no product or square of the inputs tried by hand (x², y², x·y, x² − y², x² − N, y² + N, at shifts up to 7) |
+| `fermat-834855329100173267` | 3,540 | two 118-bit words compared over the two 61-bit inputs x and y. 58 of side B's 118 outputs are bits 2 to 59 of x² − N, each paired with one bit; of side A's, only one matches a bit of x², y², y² + N, x² − N, x² − y² or x² − y² − N (bit 60 of x²). So the cell is Fermat's method, x² − N = y², written in a form the library does not name. It is satisfiable, and easy once N is factored (below) |
 | `hhyp_cec_multi_2` | 14,324 | a one-bit miter over 256 inputs (read by first literal) |
 | `test_v7_r12_vr10_c1_s18160.smt2-stp212` | 18,105 | one cone of 18,484 inputs: too big to simulate |
 | `sum_of_3_cubes_37_bits_87` | 7,315 | the fixed word reads 3,035 inputs, because 35% of the variables define no gate |
 | seven `bp4` cells | 183 to 378 | floating-point logic; the named sides are the xors above |
+
+**`fermat` once N is factored** (2026-11-07, `log/function-census-2026-11-07/fermat-check/`:
+`check.sh` and `fermat_bits.py`, with their output). The cell times out on both
+seeds of the default. N = 834,855,329,100,173,267 is 502,974,467 × 1,659,836,401
+(Pollard's rho, well under a second). Fixing x = (p + q)/2 = 1,081,405,434 and
+y = (q − p)/2 = 578,430,967, low bit first in variables 1 to 61 and 62 to 122,
+leaves the solver 0.44 s of work. The model satisfies all 69,476 clauses, and
+x² − y² = N. The 15 other placements tried (x and y swapped, p and q in their
+place, high bit first, every bit flipped) were each unsatisfiable at once. So a
+reader for this equation plus factoring would decide one unsolved cell. The sum of
+cubes has no such shortcut: a quick search finds no x³ + y³ + z³ = 87 with |x|
+and |y| under 3,000.
 
 **What it means.**
 - The library's functions sit on cells the solver already solves: the multiplier
@@ -5663,8 +5675,9 @@ not name:
   networks.
 - For G.3.2 (`SAT-playground-uqt`), the general backend for adder-based cones has
   only the five cells above as its 2025 targets, and none of them is a plain word
-  function. `fermat` and the sum of cubes are number problems: a normalised word
-  gives the equation, not its answer. `hhyp` needs one bit of a square root. `smt2`
+  function. `fermat` and the sum of cubes are number problems. For `fermat`, once
+  the equation is read, factoring N gives the answer at once (above); for the sum of
+  cubes the equation does not give its answer. `hhyp` needs one bit of a square root. `smt2`
   and `bp4` need their own readers first. The shared definition layer (the passes
   reading one recovery instead of the clauses) still stands on its own, with the
   passes' fire sweeps as the oracle.
