@@ -118,11 +118,15 @@ def parse_prefix(path: Path, max_clauses: int):
     """(n_vars, n_clauses_header, clauses, truncated) with at most
     max_clauses clauses, each a tuple of ints with repeated literals dropped
     and tautologies skipped; comment and header lines skipped; `truncated`
-    says the file had more clauses than were read."""
+    says the file had more clauses than were read. The file is xz-compressed
+    or plain text, told apart by its first bytes."""
     clauses = []
     n_vars = n_cls = 0
     cur: list[int] = []
-    with lzma.open(path, "rt", encoding="ascii", errors="replace") as f:
+    with open(path, "rb") as fh:
+        xz = fh.read(6) == b"\xfd7zXZ\x00"
+    opener = lzma.open if xz else open
+    with opener(path, "rt", encoding="ascii", errors="replace") as f:
         for line in f:
             if not line or line[0] in "c%":
                 continue

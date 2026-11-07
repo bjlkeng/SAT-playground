@@ -5390,6 +5390,295 @@ have saved, if each copy saved one conflict.
 - For simplifying one frame and copying the result (`yv7.7`), the repeated work is
   real, but the same safety check comes first.
 
+## Function recovery: census (2026-11-06; bead `SAT-playground-i7h`, epic `SAT-playground-d96`)
+
+The arithmetic, sorter and divider passes each read their circuit their own way
+(gate patterns, the first literal, the generator's order). A reader keyed on how one
+encoder wrote a block stops working when another encoder writes it differently. This
+census asks instead what a block computes. It is measurement only, no solver code.
+Tool `tools/function_census.py`, table `benchmarks/rl/functions_2025.tsv` (a copy of
+`log/function-census-2026-11-07/census400.tsv`, with the run's log `census400.log`
+beside it). Solve results come from the point step's paired run
+(`log/abtest-struct-points-400-2026-11-05-16-07-19`, arms `pts0` and `pts1`: the
+shipped defaults, 1,800 s, seeds 0 and 1).
+
+**How a cell is read.** Three layers, each keyed on function:
+
+- **Gates.** The definition test of the recovery census (`tools/netlist_census.py`:
+  a variable its clauses fix as a function of up to six others). When every clause
+  group reads that way, the tool instead takes the gate named by each clause's first
+  literal. That is how ABC and STP write a circuit: the EPFL div, sqrt and hyp
+  miters, the two `multiplier_Nbits` miters, the `smt2` cell and three more read
+  exactly this way, where the definition test leaves hundreds of their xors
+  backwards. Then structural hashing, with constants folded and the inputs a gate
+  ignores dropped.
+- **Cuts.** Every node's cuts of up to six leaves, each with the node's truth table
+  over the cut. The tables are sorted into classes that do not depend on input order
+  or polarity (and/or, xor, majority, mux, symmetric, balanced, other). Nodes over
+  one cut form cells: a full adder is an xor3 and a majority over the same three
+  leaves, whatever gates build them.
+- **Cones.** The signals the formula observes: the two words a miter compares (from
+  the xors under its final or, from compares written as clauses, or one asserted
+  compare), single signals it observes, or the word its unit clauses fix. Each side
+  is simulated against a library of word functions. A function is reported only when
+  random simulation and the patterns each test builds confirm every output bit it
+  claims. Each match must then also hold on the check samples: 2n + 2 structured
+  patterns over the n inputs (all zero, all one, and every single flip from both),
+  the rare-value points, and the classifier's own two batches of 256 random
+  patterns. The arithmetic test pairs outputs with reference bits on its random
+  patterns and the check samples together, so an output that is rare on random
+  patterns (an incrementer's carry) still pairs. An output that keeps one value on
+  random patterns (an equality of many pairs, a wide and) gets its rare-value points
+  from the structured patterns, and from a search down its cone: each gate takes a
+  row of its table that gives the value asked of it. A side is `const` only when
+  none of these moves it. The count templates are
+  matched on all these samples at once, with the structured patterns taken over the
+  literals. The cipher-round test, whose outputs are balanced, is checked on random
+  patterns only. An arithmetic label with `-part` holds for at least 90% of the
+  side's outputs but not all of them:
+
+  | template | how the test reads the side |
+  |---|---|
+  | linear, parity | the outputs are affine over GF(2) |
+  | S-box layer, cipher round | the inputs fall into blocks. Each output reads one block (a layer), or reads two to four blocks and is a sum (xor) of functions of its blocks: the second difference across any two blocks is zero |
+  | popcount, threshold, sorter | every output is symmetric in the literals (polarity from an output that only moves one way with each input), then matched against the count's bits or its thresholds |
+  | add, sub, multiply, square, negate, increment, constants | bit p depends on operand bits 0 to p, so the operand bits come from the order in which the inputs first appear in the outputs' supports. Which input is which operand, and its polarity, is settled bit by bit against the reference |
+  | one bit of a word function | one to four outputs. The operands come from the cone's AND partial products (a bipartite graph) or are the inputs in variable order; the outputs are looked up among the bits of a × b, a + b and a − b |
+  | compare | with the higher pairs of inputs made equal, the next pair has the largest influence. Orientation and polarity per pair come from the two patterns where the pair differs. An equality pairs its inputs at a point where every pair is equal (a single flip changes the output, flipping both inputs of a pair restores it), then must hold on random patterns that make all, all but one, half or none of the pairs equal |
+  | mux tree, shifter | the inputs that change many outputs about half the time are the selects (the split is tried after each of the first six ranks, fewest selects first). For every select value each output copies one data input. In a shifter every output copies the data a fixed offset per select bit away, or the one fill value once that falls off the word |
+
+**Checked on toys first** (`function_census.py selftest`, 128 checks, 31 s). Each of
+the seven templates the bead names (adder, multiplier, comparator, popcount,
+shifter, mux tree, cipher round) is a miter of two different implementations:
+- ripple against Kogge-Stone;
+- array against a column tree of xor3 and majority gates;
+- a borrow chain against a comparator tree, and for equality of 16 pairs a chain of
+  ands against an or tree;
+- a full-adder tree against an incrementer chain;
+- a barrel shifter against a decoder;
+- a mux tree against an and-or decode;
+- the PRESENT S-box as a sum of minterms against a mux tree.
+
+Each is written as plain gates or mapped to lookup tables of four and of six inputs.
+The variables are taken as written, renumbered, and renumbered with every polarity
+flipped at random. Both sides of each come back as the template. More checks:
+- an adder with one wrong sum bit comes back as one adder and one unknown, and one
+  whose carry is wrong (always, only when every input is one, or on one pattern in
+  128) as `add-part`; incrementers of 7, 8 and 16 bits with their carry come back
+  as incrementers;
+- a random circuit comes back as unknown;
+- x × x fixed to a constant by unit clauses comes back as a squarer;
+- shifters of width 4, 5, 6 and 9 (their larger amounts shift every bit out) come
+  back as shifters, as does a shifter of 8 bits with a fourth amount bit that alone
+  shifts every bit out; neither one that loses a bit at one amount nor one whose
+  fill changes with the amount does;
+- popcounts of 16 and 32 inputs come back as popcounts (their top bit is one only
+  when every input is);
+- a plain, uncompressed file reads as the compressed one does;
+- equalities of 32 pairs, and of 24 with a third of the pairs negated (nearly
+  constant on random patterns), come back as equalities; an equality with a defect
+  on one input in eight does not; a 24-input and is neither constant nor linear,
+  nor is an output that is 0 on one pattern in 128 and on no structured pattern;
+  "all 24 inputs equal" is symmetric but not a threshold.
+
+Equality is checked on plain gates only. Mapped to lookup tables, two of the 16
+pair xors come back reversed. The other side's tables read the pair's own inputs,
+so the tie between the xor's variables, broken by fan-out, makes the xor's output
+the input. The turn-around below has no safe tell for it: the obvious one (a gate
+reads the xor's other input and its output) also fits an adder whose carry is a mux
+on the propagate signal. The same kind of limit hits the mapped key addition.
+
+Three things the toys taught the tool:
+- An xor's three variables can each be read as its output. The definition test
+  breaks such ties by the most-read variable when a file is not numbered in circuit
+  order, and that made an adder's propagate signal a primary input. The tell is the
+  half adder around it (an and over the same two signals as the xor), so such xors
+  are turned around. A mapped and renumbered key addition can still come back
+  reversed (the key bits as gates). The selftest leaves that combination out, as it
+  does mapped equality (above).
+- A compare of two sides that hashed to one signal disappears as a constant. The
+  side finder keeps that signal on both sides.
+- A structural support is wider than the function's when a gate's effect cancels
+  (x0·x2 added twice in a squarer's third column). So the arithmetic test reads up
+  to three positions out of one group of inputs.
+
+One fix was tried and dropped: breaking the definition test's ties by the
+variable read *least* (in `tools/netlist_census.py`) turned the compares' xors into
+inputs, and only 44 of the 84 toy checks of the time passed. That tool is unchanged.
+
+The first Codex review found three faults the toys had missed, and all three are
+fixed. Each now has a selftest check.
+- Two batches of random patterns called a rare value constant. Both sides of
+  `div-mitern172` were `const:1` in the first run, yet they take the value 0 on 16
+  of the 160 structured patterns.
+- The equality test never checked the pairs it found on random patterns, so
+  `(a == b) xor (a0 and a1 and a2)` passed as `eq:4`.
+- A plain `.cnf` file failed to load. `tools/rl_structure.py`'s reader now tells xz
+  from plain text by the first bytes.
+
+Its probes also showed two more faults, fixed the same way:
+- An adder whose carry was wrong still came back as `add` (9 of 10 outputs matched).
+  Such matches now carry `-part`.
+- Shifters whose width is not a power of two came back as mux networks.
+
+The second review found three more:
+- The count templates were matched on random patterns only. "All 24 inputs equal"
+  came back as a threshold, and popcounts of 16 and 32 inputs as just symmetric.
+- The shifter test checked only the outputs that copy data. A shifter that loses
+  bit 7 at amount 3 still passed.
+- The report listed the one-bit product miters as having no backend, though
+  `structarith` decides them.
+
+The third review found a shifter whose fill bit changed with the amount (1 at
+amount 3 only) still passing; the fill must now be one value at every amount. It
+also found that `toy --out x.cnf` wrote xz data under a plain name; the writer now
+follows the suffix. And it found the committed table older than these fixes.
+
+The fourth review found an adder whose carry is wrong only when all 32 inputs are
+one still passing as a full adder. So every test now checks its match on the
+structured patterns and the rare-value points. It also found that a shift control
+which alone shifts every bit out stopped a true shifter from matching. Such a
+control now counts as any amount of the width or more. The fifth review found only
+the stale table. The sixth found two more holes in the arithmetic test:
+- a carry wrong on one pattern in 128 passed, because the final check used a fresh
+  batch that missed it, though the classifier's own batches had hit it;
+- an incrementer's carry, zero on every random pattern, never paired, so a correct
+  incrementer came back `inc-part` (16 bits) or unknown (7 and 8).
+
+Both are fixed with the check samples described above.
+
+One more fault turned up when the new linear test was compared with the old one on
+an `oski` side. Nearly constant outputs (1 on 253 to 256 of 256 random patterns)
+passed as constants whenever the test's own random batch missed the rare value. The
+old test had the same weakness on other patterns. The linear test now also checks
+the classifier's two random batches (768 patterns in all). Linear and parity labels
+now count the inputs the function reads, not the structural support: one side of
+`tseitin_grid_n12_m12` is an xor tree over 120 inputs that reads 3. The table and
+the numbers below are from the run with the final code.
+
+**The run** (2026-11-07 00:59 to 02:24, the final code after the last review,
+nothing else running on the host; 24 workers, 3,000 s and 16 GB a cell, the first
+3 million clauses of each file):
+
+```
+python3 tools/function_census.py census --out log/function-census-2026-11-07/census400.tsv \
+  --workers 24 --seconds 3000 --mem-mb 16000
+python3 tools/function_census.py report benchmarks/rl/functions_2025.tsv \
+  --run log/abtest-struct-points-400-2026-11-05-16-07-19
+```
+
+- Every cell has a row.
+  - 6 cells are too big for the gate step (more than 1.5 million variables in the
+    part read): `pj2002_k500`, `baseballcover12with25_and5positions` and four
+    `lockchart-group1` cells.
+  - 6 ran out of time in the gate step: `g2-T49.2.0`, `valves-gates-1-k617`,
+    `6s299b685_Iter30`, `6s268r_Iter94`, `at-least-two-ibm-2004-23-k100` and
+    `tseitin_grid_n400_m400`. The recovery census found the first five too big and
+    spent 8,626 s on the last. None of the six is unsolved.
+  - 103 cells have no gates. 8 of them have gates, but every one folds into a
+    buffer or a constant.
+- 285 cells were read, 12 of them by first literal. 198 are circuits: 30% or more
+  of their variables are gates. The cut layer was skipped on 36 cells with more than
+  400,000 gates. The median cell took 44 s; the whole run took 23.2 CPU hours.
+- The run before the sixth review's fixes (`log/function-census-2026-11-06-final-r5/`)
+  gave the same rows in every column but the time.
+- The first run, before the review fixes (`log/function-census-2026-11-06/`, 20:00
+  to 21:24), differs from this one in nine cells' labels, each from a fix:
+  - three factoring cells went from `mul` to `mul-part`;
+  - `div-mitern172`'s two sides went from `const:1` to `unknown`;
+  - four Tseitin sides now count the inputs their function reads (`parity:120` to
+    `parity:3` on `tseitin_grid_n12_m12`);
+  - two small sides became mux networks (the select split is now searched).
+
+**What the circuits are made of** (the cut layer):
+- full adders on 84 cells, half adders on 92, muxes on 78;
+- S-box-like cells (three or more balanced nonlinear functions over the same four to
+  six leaves) on 23, 18 and 8 cells;
+- mux words (four or more muxes on one select) on 70 cells, and blocks of eight or
+  more joined xors on 77.
+
+**What the observed words compute.** 88 cells have a miter (two words compared), 138
+have single observed signals, and 93 have a word their unit clauses fix. 57 cells
+carry a named function on at least one side (table below). The other sides are
+unknown (269 sides on 159 cells) or too big to simulate (44 sides on 30 cells, most
+of them `oski`, `grs` and `oisc`). No adder, comparator, popcount, shifter or cipher
+round turned up outside the toys.
+
+| function | cells | where |
+|---|---|---|
+| product | 3 | `lec_mult_CvW_11x10` (11 × 10 on both sides). Factoring with the product fixed by units: `544707209399nc` (38 × 20) and `Carry_Bits_Fast_19` (44 × 23) |
+| product on all outputs but one (`mul-part`) | 3 | factoring cells whose fixed word has one bit more than the product: `2013113162201nw` (40 × 21), `544707209399nw` (38 × 20), `Wallace_Bits_Fast_8` (71 × 36) |
+| one bit of a product | 13 | 11 of the 12 `16_16` multiplier miters (bit 27, 28 or 29 on both sides; the operands are read from the partial products or as the two halves of the inputs), `multiplier_15bits__miter_23`, `multiplier_16bits__miter_22` |
+| linear, parity | 31 | `bp4` (17 sides), `reconf`, `tseitin`, `myciel6`, `at-least-two-vmpc_28`, `manthey`, `jkkk` |
+| mux network | 5 | `DLTM_twitter845` and `DLTM_twitter774` (25 and 27 outputs over 3 selects), `x-epic_a19-p15_transition` (32 outputs, one select); and two tiny copy networks, where each output is a data input or a constant, chosen by the selects: `stb_664_50.apx_2_DC-ST` (13 outputs, one data input under four selects) and `sum_of_3_cubes_37_bits_87` (2 outputs over 4 inputs: two and gates) |
+| S-box layer | 2 | the two `bv_ILA_Piccolo` transition cells: 2 outputs over 8 and 16 inputs, so the match says little |
+
+Where the reason a side is unknown is clear:
+- Word sorters (`sort-equivalence`, 20 sides) compare and swap whole words. There
+  is no template for that.
+- Simon (4 cells: rotate-and-AND rounds) and the stream cipher `bivium` (one cell)
+  have no template either.
+- The one-bit miters of div, sqrt and hyp (10 sides, and `hhyp`) are read exactly
+  by first literal. But one output over the whole input is not a word, and the bit
+  test knows only products, sums and differences. (`structdiv` decides div and
+  sqrt.)
+- `16_16_booth_dadda_mapped_and_booth_wallace_mapped` compares 60 inner signal
+  pairs, not the product.
+- `bp4` floating point, `mp1` and `Circuit_multiplier` (about a third of their
+  variables are gates) have no template.
+
+**The hard cells.** 80 cells are unsolved on seed 0 or 1 of the default (49 on both).
+- 27 have nothing to read: 5 too big (`baseballcover`, three `lockchart-group1`
+  cells, `pj2002_k500`) and 22 with no gates (`oddball`, `argumentation`, `rbsat`,
+  `sudoku`, `vdw` and others).
+- 28 have a few gates (under 30% of their variables): `lockchart`, `timetable`,
+  `oddball`, `et-tc`, `hcp`, `argumentation`. No function is named on them.
+- 25 are circuits, plus two `argumentation` cells whose gates fold away. 11 of them
+  carry a named function:
+  - Nine carry linear sides, one two-input xor per output: seven `bp4` cells (pairs
+    of bits their units fix equal or different), `reconf10_70_queen14_2` and
+    `at-least-two-vmpc_28`. The parity engine already reasons about xors.
+  - Two carry the tiny copy networks above (`stb_664_50`, `sum_of_3_cubes_37_bits_87`).
+    No pass reads those, and they are far too small for one to matter.
+
+  The other 14 carry only unknown or too-big sides.
+
+So the census's answer to the bead's question is: **apart from the two tiny copy
+networks, no unsolved 2025 cell carries a library function that has no backend
+yet.** Arithmetic does sit in five unsolved cells, but in forms the library does
+not name:
+
+| cell | full adders | what the census sees |
+|---|---|---|
+| `fermat-834855329100173267` | 3,540 | two 118-bit words compared, both reading the two 61-bit inputs at uneven rates. They match no product or square of the inputs tried by hand (x², y², x·y, x² − y², x² − N, y² + N, at shifts up to 7) |
+| `hhyp_cec_multi_2` | 14,324 | a one-bit miter over 256 inputs (read by first literal) |
+| `test_v7_r12_vr10_c1_s18160.smt2-stp212` | 18,105 | one cone of 18,484 inputs: too big to simulate |
+| `sum_of_3_cubes_37_bits_87` | 7,315 | the fixed word reads 3,035 inputs, because 35% of the variables define no gate |
+| seven `bp4` cells | 183 to 378 | floating-point logic; the named sides are the xors above |
+
+**What it means.**
+- The library's functions sit on cells the solver already solves: the multiplier
+  miters (`structarith`) and the factoring cells with a fixed product. On the
+  unsolved circuits the only named functions are the linear one and two tiny copy
+  networks.
+- For G.3.2 (`SAT-playground-uqt`), the general backend for adder-based cones has
+  only the five cells above as its 2025 targets, and none of them is a plain word
+  function. `fermat` and the sum of cubes are number problems: a normalised word
+  gives the equation, not its answer. `hhyp` needs one bit of a square root. `smt2`
+  and `bp4` need their own readers first. The shared definition layer (the passes
+  reading one recovery instead of the clauses) still stands on its own, with the
+  passes' fire sweeps as the oracle.
+- The census looks only at the observed words. A block inside a cone counts only
+  as cut cells (adders, muxes), so a backend that rewrites inner blocks would need
+  its own census.
+
+**Limits of the tool.**
+- A mapped and renumbered key addition, and a mapped equality's pair xors, can come
+  back reversed (both left out of the selftest).
+- Cones over 4,096 inputs or 300,000 gates are not simulated, and a side keeps at
+  most 512 outputs.
+- Units that fix inputs block definitions, as in the recovery census.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.

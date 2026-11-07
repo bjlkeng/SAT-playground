@@ -70,7 +70,13 @@ work is **solver 13** and the RL scheduler on top of it.
   most about 4% of the learned clauses on any cell; where lessons come back often (`pj`,
   `DLTM`, `intel047`) they lean on the start or the goal and are not safe to copy. The
   owner closed the unrolling line on 2026-11-03 (epic `yv7`, the decision-order line
-  `d96.1` and the IC3 probe `skz.7` to `skz.9`).
+  `d96.1` and the IC3 probe `skz.7` to `skz.9`). G.3, function recovery: the census
+  (`i7h`, 2026-11-06, `tools/function_census.py`, `benchmarks/rl/functions_2025.tsv`,
+  solver README "Function recovery: census") reads gates, cuts of up to six inputs and
+  the observed words by what they compute. It names products and linear sums on 2025
+  cells, but on the unsolved cells it finds no library function that lacks a backend
+  (apart from two tiny copy networks). The arithmetic left there (`fermat`, `hhyp`,
+  `smt2`, the sum of cubes, `bp4`) is in forms the library does not name.
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a
