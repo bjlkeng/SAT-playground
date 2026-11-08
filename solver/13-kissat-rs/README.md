@@ -5692,6 +5692,214 @@ and |y| under 3,000.
   most 512 outputs.
 - Units that fix inputs block definitions, as in the recovery census.
 
+## Free choices: census (2026-11-07; bead `SAT-playground-d96.2.1`, epic `SAT-playground-d96.2`)
+
+G.8 asks for a search over the real choices of a formula: a few multi-valued
+choices that fix every other variable through definitions, the way the keys fix a
+lockchart. Before building that search, this census asks which cells have that
+shape and how few choices they have. It is measurement only, no solver code. Tool
+`tools/free_census.py`, table `benchmarks/rl/free_2025.tsv` (a copy of
+`log/free-census-2026-11-07/census400.tsv`, with the run's log `census400.log` and
+the report `report.txt` beside it). Solve results come from the point step's paired
+run (`log/abtest-struct-points-400-2026-11-05-16-07-19`, arms `pts0` and `pts1`:
+the shipped defaults, 1,800 s, seeds 0 and 1).
+
+**How a cell is read.** Unit propagation first. Then every variable left gets one
+role:
+
+- **choice**: a member of a group. An *exactly-one* group is a clause whose
+  literals exclude each other, by a binary clause for each pair or through chains
+  of binary clauses (ladder, sequential, commander, product and binary encodings:
+  x excludes y when the binary implications from x reach ¬y). An *at-most-one*
+  group comes from a clause (g ∨ m1 ∨ … ∨ mk), g the only literal of its sign,
+  whose m exclude each other: the m take at most one value, and "none" is a value
+  too.
+- **def**: a two-way definition. A clause (x ∨ m1 ∨ … ∨ mk) with every binary
+  (¬x ∨ ¬mi) makes ¬x the OR of the mi, of any width (the AND form is the same
+  clause with the signs flipped). Or a small gate of up to four inputs (XOR, mux,
+  majority) whose clauses fix it for every input value.
+- **helper**: a one-way helper. Every clause holding a literal y of it has all its
+  other variables computed already, so y is set true exactly when one of those
+  clauses needs it. That keeps those clauses true, and any model stays a model when
+  a helper is reset this way. One-way (Plaisted-Greenbaum) gates and the lockchart
+  helpers (h → key, h → ¬lock) read this way.
+- **free**: anything else. A variable no role fits, or one freed to break a cycle
+  of definitions.
+
+Roles are settled forward from the groups. A definition or helper is taken once all
+of its inputs are settled (two-way definitions before helpers), so the reading
+cannot be circular. When nothing is ready, one variable is freed: in a file
+numbered in circuit order the lowest-numbered one (encoders number inputs, keys and
+values first), otherwise the one the most waiting definitions read (the rule of
+`tools/netlist_census.py`). The groups are taken biggest first while they share no variable,
+and a group with a member that a gate defines is not a choice (an OR gate whose
+inputs happen to exclude each other reads as exactly-one). The **constraint
+clauses** are what a search over the choices must satisfy: the clauses no role
+makes true.
+
+**The check.** Every reading is checked by simulation: 64 random choice
+assignments, everything else computed in order. A clause a role claims that comes
+out false is a bug in the reading (`sim_bad`, 0 on every cell). The mean number of
+constraint clauses left false is the cost a random choice starts from
+(`sim_false`).
+
+**Checked on toys first** (`free_census.py selftest`, 29 checks, under a second).
+Hand-written encodings, each with what the reading must give, and for the
+satisfiable ones a planted model: its choices (and its values on any free variable),
+pushed through the reading, must give a model of every clause.
+- A Tseitin circuit of 60 AND, OR and XOR gates over 12 inputs, its output fixed by
+  a unit: no group, the free variables are exactly the inputs in use, every gate
+  defined, no helper. Without the unit, no constraint clause at all.
+- The same circuit written one way (Plaisted-Greenbaum): the gates read as helpers,
+  and no more variables are free than inputs.
+- A direct-encoded CSP (14 variables over 5 values, pairwise at-most-one, random
+  nogoods): one group per variable, nothing defined, the nogoods exactly the
+  constraints. The same CSP with a sequential (ladder) at-most-one: one chained
+  group per variable, the ladder variables computed.
+- A small lockchart (10 keys, 8 locks, 4 pins, 3 depths): key groups, lock
+  definitions and helpers exactly as built; the constraints are the must-not-open
+  clauses and the adjacent-pin pairs.
+- Slots that take none or one of five values (a guard needs one): one at-most-one
+  group per slot.
+- A root conflict: unit propagation refutes it, and the row says so.
+- Negatives: random 3-SAT (no group, no definition, most clauses constraints) and a
+  cycle of definitions (one variable freed to break it, the rest defined).
+
+**The run** (2026-11-07, `workstation-Precision-7920-Tower`, 16 workers, 16 GB
+each). Cells with up to 50M clauses by their header are read whole, so all 20
+`oddball` cells (the `tto` ones hold 19-47M) are. The eight bigger cells (seven
+`anon-normalised` and `pj2002_k500`, 63-316M) are read from their first 5M clauses,
+like the other censuses. The run took 26 minutes (7.0 hours of cell time; the
+longest cell, `GP_100_1000_10`, 1,390 s). Eleven cells are refuted before any
+reading: nine `arles` cells by unit propagation alone, and two `xits-miters` cells
+(`6s163` and `6s299b685`) because they hold empty clauses, 292 and 1,096 lines of a
+lone `0` (`empty_scan.py` and `.out`). In the run of record all eleven are
+unsatisfiable with no conflict. On the other 389 cells the simulation found no
+claimed clause false. Two earlier runs of the reading (`census400-first.tsv`,
+`census400-second.tsv`; `compare_runs.py` and `.out`) differ from the final one only
+in the rows of the bugs fixed in between: the nine root conflicts (an error), memory
+in three cells of 40-45M clauses, and the two cells with empty clauses (read as if
+the empty clauses were not there). Every other cell reads the same in all three.
+
+**Lockchart: the three roles, exactly, on all 12 cells.** The hand reading of
+`log/structure-look-2026-11-07/lockchart_roles.py` and the census agree on every
+count (`log/free-census-2026-11-07/lockchart_check.py` and `.out`, which take the
+forbidden pairs from the hand reading's own count). Keys are the choices, locks the
+two-way definitions, helpers the one-way ones; nothing is free. A search over the
+keys must satisfy the forbidden adjacent-depth pairs and the must-not-open clauses,
+and nothing else:
+
+| cell | unsolved seeds | choices | locks (defs) | helpers | free | constraints (pairs + must-not-open) | false at a random choice |
+|---|---|---|---|---|---|---|---|
+| `lockchart-group1-L190-K276-p8d4j1` | 1 | 2,208 × 4 | 6,080 | 1,647,680 | 0 | 63,082 (11,592 + 51,490) | 6,742 (11%) |
+| `lockchart-group1-L200-K289-p8d4j1` | 2 | 2,312 × 4 | 6,400 | 1,817,600 | 0 | 68,938 (12,138 + 56,800) | 7,398 (11%) |
+| `lockchart-group1-L210-K303-p8d4j1` | 0 | 2,424 × 4 | 6,720 | 2,002,560 | 0 | 75,306 (12,726 + 62,580) | 8,093 (11%) |
+| `lockchart-group1-L220-K317-p8d4j1` | 2 | 2,536 × 4 | 7,040 | 2,196,480 | 0 | 81,954 (13,314 + 68,640) | 8,758 (11%) |
+| `lockchart-group2-rnd0.3-L18-K36-P8D4J1` | 2 | 288 × 4 | 576 | 14,016 | 0 | 1,950 (1,512 + 438) | 393 (20%) |
+| `lockchart-group2-rnd0.3-L19-K38-P8D4J1_1` | 2 | 304 × 4 | 608 | 15,968 | 0 | 2,095 (1,596 + 499) | 442 (21%) |
+| `lockchart-group2-rnd0.3-L19-K38-P8D4J1_2` | 2 | 304 × 4 | 608 | 16,416 | 0 | 2,109 (1,596 + 513) | 440 (21%) |
+| `lockchart-group2-rnd0.3-L19-K38-P8D4J1_3` | 2 | 304 × 4 | 608 | 16,448 | 0 | 2,110 (1,596 + 514) | 407 (19%) |
+| `lockchart-group2-rnd0.3-L19-K38-P8D4J1_4` | 1 | 304 × 4 | 608 | 16,416 | 0 | 2,109 (1,596 + 513) | 425 (20%) |
+| `lockchart-group3-L11-K23-p4d3j1` | 2 | 92 × 3 | 132 | 2,376 | 0 | 336 (138 + 198) | 131 (39%) |
+| `lockchart-group3-L13-K26-p4d3j1` | 2 | 104 × 3 | 156 | 3,276 | 0 | 429 (156 + 273) | 174 (41%) |
+| `lockchart-group3-L15-K29-p4d3j1` | 2 | 116 × 3 | 180 | 4,320 | 0 | 534 (174 + 360) | 225 (42%) |
+
+Group 3 is unsatisfiable, so no search over its keys decides it; of the nine
+satisfiable cells of groups 1 and 2, eight are unsolved on at least one seed.
+
+**The other families the bead names.**
+- **oddball `tto`** (9 cells, all unsolved on at least one seed): not a few clean
+  choices. Unit propagation fixes 8,613-20,558 variables and satisfies 49-72% of the
+  clauses. Then the leaves sit in at-most-one sets that overlap: 258 distinct
+  100-literal sets in `oddball_51_5`, under 24,720 guarded clauses, each leaf in
+  about two sets. So no disjoint set of big groups covers them. Taken biggest first,
+  only five 100-158-way groups fit per cell, and the rest of the leaves are read
+  through their commander pieces (5,460-11,134 five-way groups). That gives
+  5,655-11,989 choices (13,177-27,429 bits, 13% of the variables) and 112,116-175,633
+  constraint clauses (1.2-1.4% of what is left), of which a random choice leaves
+  17-18% false. The overlapping at-most-ones are themselves constraints.
+- **oddball `ttf`** (11 cells, 10 unsatisfiable): the same kind of encoding, smaller,
+  with constraint clauses at 31-89% of the clauses.
+- **timetable** (12 cells): the Sinz counters are one-way helpers (180,394-255,649
+  variables), not two-way definitions. The choices are 18,000-25,984 primary Boolean
+  variables per cell (numbered first; no clause defines them) and 292-476 small
+  groups. Another 2,723-5,500 counter registers per cell are freed to break cycles,
+  so 23,500-29,045 variables are free in all. Constraint clauses are 33-36% of the
+  clauses.
+- **mp1** (6 cells): `mp1-Nb7T45` and `Nb7T46` are circuits, 1,215 and 1,242 free
+  inputs with 55,419 and 56,693 definitions and gates, and only 2,548 constraint
+  clauses each. The two `klieber` cells have 23 and 32 free inputs and 36
+  constraints. `blockpuzzle_9x9` is 81 groups (483 bits) and 330,508 constraints.
+  `Nb54T6` is 1,290 free inputs and 1.25M constraints.
+- **The CSP cells of bead `1v2.5`**: `rbsat-v945` (45 × 21), `rbsat-v1375` (55 × 25),
+  `frb80-14-1` (80 × 14) and `case11` (40 × 19) read as groups and their forbidden
+  pairs, nothing defined, nothing free; `case20` reads the same as `rbsat-v945`.
+  `case6`, `7`, `9`, `10`, `16` and `17` are 62-77 groups of 4-6 values with
+  169-225 definitions.
+- **argumentation** (11 cells): the `ER` cells are half OR-defined, as expected
+  (388-390 free variables and 390-412 definitions). `WS`, `n320` and `stb` read
+  the same way (339-984 definitions over 388-621 free variables). The three `st_`
+  cells read as 550-743 three-way groups with nothing defined. Constraint clauses
+  are 55-97% of the clauses.
+
+**A few choices and what they fix, over the 400 cells.** Taken as: choices (groups
+plus free variables) under 5% of the variables, at least half of the variables
+computed (definitions, gates and helpers), and constraint clauses under 10% of the
+clauses. 69 cells fit. 49 of them are solved on both seeds: circuits and
+miters (`multiplier-16x16` 12, `itc99` 9, `pj` 5, `gm-sparrc` 4, two each of
+`hwmc-step-transition`, `goldcrest`, `mp1`, `bits-fast` and `mult-miter-bits`, and
+eight more one each) and `lockchart` L210. The 20 unsolved on at least one seed are
+the 11 unsolved lockchart cells and nine others:
+
+| cell | unsolved seeds | free | defs + gates + helpers | constraint clauses (of the clauses left) |
+|---|---|---|---|---|
+| `mp1-Nb7T45` | 1 | 1,215 | 55,419 | 2,548 (of 224,224) |
+| `mp1-Nb7T46` | 1 | 1,242 | 56,693 | 2,548 (of 229,320) |
+| `oisc-subrv-and-nested-11` | 2 | 21,256 | 6,996,209 | 78,910 (of 24.4M) |
+| `oisc-subrv-and-nested-12` | 2 | 24,256 | 8,295,995 | 90,354 (of 28.9M) |
+| `oisc-subrv-and-nested-15` | 2 | 33,874 | 12,823,752 | 127,158 (of 44.6M) |
+| `fermat-834855329100173267` | 2 | 357 | 11,901 | 6,152 (of 69,476) |
+| `sum_of_3_cubes_37_bits_87` | 1 | 858 | 18,550 | 6,748 (of 99,357) |
+| `dubois50.cnf.mis-99.debugged` | 2 | 132 | 14,671 (helpers) | 568 (of 29,556) |
+| `pj2002_k500` (its first 5M clauses) | 2 | 36,313 | 3,439,720 | 1,497 (of 4.4M) |
+
+**What it means for G.8.**
+- Lockchart is the clean case the epic describes. 288-2,536 choices of four values
+  fix every other variable in the satisfiable groups 1 and 2, and the search has
+  1,950-81,954 constraint clauses to satisfy, nothing else. A random key assignment
+  leaves 11-21% of them false. G.8.2's prototype can be written against these
+  readings directly.
+- Oddball `tto` is not that case. Its choices are 13% of its variables, and its
+  at-most-one sets overlap, so a move that changes one group's value can break the
+  overlapping sets (they are constraints in this reading). A search over the
+  oddball choices needs moves that respect the overlapping sets, or another reading
+  of the encoding. That is a question for G.8.2, which tries both families.
+- The other unsolved cells that fit the shape are circuits: free inputs and the
+  gates over them (table above). `mp1-Nb7T45` and `Nb7T46` stand out: about 1,200
+  free inputs and 2,548 constraint clauses. Both are satisfiable, and each is
+  solved in about 20 s on one seed of the default and times out on the other. The
+  local-search share (above) and the specialist portfolio's fallback local search
+  solved `Nb7T45` as well. A search over a circuit's inputs is local search on the
+  circuit, and the G.8.2 prototype can try these two as well. `oisc` belongs to
+  G.9 and `fermat` to G.10.
+- Timetable, argumentation and the CSP cells are mostly constraints (33-97% of the
+  clauses), so the reading removes little, and a search over their choices is close
+  to the solver's own walk over the clauses.
+
+**Limits of the tool.**
+- Exclusion is read through binary clauses only. An at-most-one group needs a clause
+  that lists its members (with one guard literal or none), so a pairwise clique with
+  no such clause is not a group.
+- Groups are taken biggest first while they share no variable. Overlapping
+  exactly-ones (a Latin square's rows and columns) leave all but one family as
+  constraints, and the greedy choice can miss a better disjoint set.
+- Which variable a dead lock frees is a heuristic (in circuit order the lowest
+  number, else the most waited for). It can free variables a better order would
+  compute, such as some of timetable's counter registers. The reading stays correct
+  either way, which the simulation checks.
+- Small gates are read up to four inputs, and helpers up to 64 literals in their
+  clauses. Units are propagated first, so the reading is of the formula after them.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.
