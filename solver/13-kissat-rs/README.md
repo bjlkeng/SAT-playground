@@ -6065,14 +6065,37 @@ On oddball, a walk would need moves that keep the overlapping at-most-ones whole
 or another reading.
 
 **Limits.**
-- One setting for all 20 cells, chosen on short runs on four of them (other seeds).
-  A better setting may exist, and the weighted and plain phases suit different
-  cells.
+- One setting for all 20 cells, chosen on short runs on five of them (other seeds;
+  on `mp1-Nb7T45` no setting helped). A better setting may exist, and the weighted
+  and plain phases suit different cells. The lockchart cells left out of the
+  tuning did as well as the tuned ones: L19_2 to L19_4 found a model in 9 of 9
+  runs (the tuned L18 and L19_1 in 6 of 6), L200 to L220 in 5 of 9 (the tuned L190
+  in 1 of 3). Each family's cells come from one generator, so this says the
+  setting is not fitted to single cells, not that it suits other families.
 - The walk prices each candidate by making the move and undoing it. That costs
   most where one move changes many helpers (lockchart group 1).
 - Times are wall seconds on an idle host, one core per run. The prototype's time
   leaves out the reading (column `read s`); with it, every model still came within
   1,800 s (at most 125 + 1,145 s).
+
+**The decision (G.8.3, bead `SAT-playground-d96.2.3`, 2026-11-09).** The owner
+chose to build it. Where it runs, which cells get it and how much of the work it
+gets are to be chosen by measurement on the 400 cells, not in advance: the build
+(`d96.2.4`, split into the reading `d96.2.4.1` and the walk `d96.2.4.2`) offers
+each as an option, and the run (`d96.2.5`) compares them in stages, then confirms
+the choice against off at fresh seeds. Two offline checks framed the options
+(`log/free-walk-2026-11-08/decision/`, each `.py` with its `.out`):
+- Pairing every prototype seed with every shipped seed, the lockchart cells solved
+  per seed at 1,800 s would be 2.00 for the solver alone and 7.00 for the walk
+  alone. With the two taking turns and the walk given 10%, 25%, 50% or 75% of the
+  work: 6.00, 6.56, 7.00 and 7.33. Group 2 falls at any of these shares; group 1
+  needs about half to beat the solver alone. This assumes the walk resumes where
+  it stopped and leaves the search alone.
+- On the census table, the strict shape test (groups, none overlapping, no free
+  variable, definitions on top) admits exactly the 12 lockchart cells of the 400,
+  the three unsatisfiable group 3 cells among them. Looser tests admit 135 cells
+  (groups and definitions, free variables and overlaps allowed), 185 (groups) and
+  335 (groups or definitions).
 
 ## Notes from the RL scheduler's first steps (plan §10)
 
