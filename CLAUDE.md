@@ -12,6 +12,19 @@ in a few words and move on. Say what happened and what it means, not how
 clever the method was. This applies everywhere: replies, commit messages,
 plan documents, READMEs, and code comments.
 
+**After every change, explain it with a small example, then give the results
+in its terms.** The owner should never have to ask for this. When you report a
+finished change, experiment or bead:
+1. Say in plain words what the change does.
+2. Walk through a small worked example, small enough to follow by hand: a toy
+   formula, a few variables, one step of the method. Show what happens at each
+   step, for example as a short table of what was tried and what came out.
+3. Give the results tied back to that example: what each number means, where
+   it won and where it lost, and why, in the example's terms. For example: in
+   the toy lockchart one move changes one door; in the big lockcharts one move
+   can change 190 locks, so the walk takes about 100 times longer per step.
+4. Then the caveats, and what it means for the next step.
+
 ## What this repo is
 
 Boolean SAT solvers built iteratively in Rust, one directory per iteration,
