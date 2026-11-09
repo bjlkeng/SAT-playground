@@ -41,7 +41,19 @@ pub fn print_witness(solver: &mut Solver, max_var: i32, partial: bool) {
     let stdout = std::io::stdout();
     let mut out = std::io::BufWriter::new(stdout.lock());
     let mut buffer: Vec<u8> = Vec::new();
+    // Not in kissat: a model of the free-choice walk (src/freewalk.rs), checked
+    // against every input clause, is printed as it is; a variable past it
+    // (declared, never used) is printed as kissat prints an unassigned one
+    let walked = solver.freewalk.model.take();
     for eidx in 1..=max_var {
+        if let Some(model) = &walked {
+            let i = eidx as usize;
+            let tmp = if i < model.len() { if model[i] { eidx } else { -eidx } } else if partial { 0 } else { eidx };
+            if tmp != 0 {
+                print_int(&mut out, &mut buffer, tmp);
+            }
+            continue;
+        }
         let mut tmp = crate::internal::value(solver, eidx);
         if tmp == 0 && !partial {
             tmp = eidx;
@@ -54,4 +66,6 @@ pub fn print_witness(solver: &mut Solver, max_var: i32, partial: bool) {
     debug_assert!(!buffer.is_empty());
     flush_buffer(&mut out, &mut buffer);
     let _ = out.flush();
+    drop(out);
+    solver.freewalk.model = walked;
 }

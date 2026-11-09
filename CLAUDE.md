@@ -105,7 +105,12 @@ work is **solver 13** and the RL scheduler on top of it.
   (`d96.2.4.1`, 2026-11-09, `src/freeread.rs`, `--freeread`, off by default; checked by
   `tools/free_read_check.py`, `benchmarks/rl/freeread_2025.tsv`, solver README "Free
   choices: the reading in the solver"): the census's counts on all 392 cells it reads; the
-  other 8 are the cells the census read only in part.
+  other 8 are the cells the census read only in part. The walk is in the solver too
+  (`d96.2.4.2`, 2026-11-09, `src/freewalk.rs`, `--freewalk`, off by default; solver README
+  "Free choices: the walk in the solver"): the prototype's walk, step for step the same
+  (`tools/free_walk_check.py`) and as fast, its work in the work clock, every model checked
+  against the input. Where it runs (first, turns, rephase slots), which cells (strict,
+  loose, broad) and its share are options for the 400-cell run (`d96.2.5`).
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a

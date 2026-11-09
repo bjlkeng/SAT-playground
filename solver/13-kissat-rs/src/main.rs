@@ -72,6 +72,7 @@ pub mod card;
 pub mod cardread;
 pub mod gridread;
 pub mod freeread;
+pub mod freewalk;
 pub mod gauss;
 pub mod gaussproof;
 pub mod structsym;

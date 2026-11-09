@@ -36,6 +36,10 @@ pub struct State {
     /// Work units spent by the passes (one per literal visited, roughly).
     pub work: u64,
     pub work_limit: u64,
+    /// Clauses buffered at most: `structclauses`, or with the free-choice
+    /// reading or walk on the larger `freereadclauses` (past `structclauses`
+    /// only the reading runs).
+    pub buffer_limit: u64,
 }
 
 /// The formula the passes see: clause i is `lits[start[i]..start[i+1]]`,
@@ -93,7 +97,12 @@ impl Derived {
 
 pub fn enabled(solver: &Solver) -> bool {
     let o = &solver.options;
-    o.card != 0 || o.structsym != 0 || o.structpoints != 0 || o.structsymext != 0 || o.structparity != 0 || o.structcount != 0 || o.structcsp != 0 || o.gauss != 0 || o.structarith != 0 || o.structsort != 0 || o.structdiv != 0 || o.structdd != 0 || o.freeread != 0
+    o.card != 0 || o.structsym != 0 || o.structpoints != 0 || o.structsymext != 0 || o.structparity != 0 || o.structcount != 0 || o.structcsp != 0 || o.gauss != 0 || o.structarith != 0 || o.structsort != 0 || o.structdiv != 0 || o.structdd != 0 || o.freeread != 0 || o.freewalk != 0
+}
+
+/// The free-choice reading runs (for its report or for the walk).
+fn reading_on(solver: &Solver) -> bool {
+    solver.options.freeread != 0 || solver.options.freewalk != 0
 }
 
 /// Called once before the parse: turn buffering on when a pass is enabled.
@@ -101,6 +110,11 @@ pub fn prepare(solver: &mut Solver) {
     if enabled(solver) {
         solver.structure.buffering = true;
         solver.structure.work_limit = (solver.options.structticks as u64).saturating_mul(1000);
+        let mut limit = solver.options.structclauses as u64;
+        if reading_on(solver) {
+            limit = limit.max(solver.options.freereadclauses as u64);
+        }
+        solver.structure.buffer_limit = limit;
     }
 }
 
@@ -114,7 +128,7 @@ pub fn sink(solver: &mut Solver, elit: i32) {
     solver.structure.lits.push(elit);
     if elit == 0 {
         solver.structure.clauses += 1;
-        if solver.structure.clauses > solver.options.structclauses as u64 {
+        if solver.structure.clauses > solver.structure.buffer_limit {
             flush(solver);
             solver.structure.overflow = true;
         }
@@ -261,9 +275,47 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
         if solver.structure.overflow {
             crate::print::message(solver, format!("structure pass off: more than {} clauses", solver.options.structclauses));
             if solver.options.freeread != 0 {
-                println!("c freeread status=overflow structclauses={}", solver.options.structclauses);
+                println!("c freeread status=overflow structclauses={} freereadclauses={}", solver.options.structclauses, solver.options.freereadclauses);
+            }
+            if solver.options.freewalk != 0 {
+                crate::freewalk::unread(solver, "overflow");
             }
         }
+        return Ok(());
+    }
+    if solver.structure.clauses > solver.options.structclauses as u64 {
+        // more clauses than the passes take, buffered only for the free-choice
+        // reading (freereadclauses): the passes stay off, as on an overflow,
+        // the reading and the walk run, and the formula goes to the solver in
+        // file order as it would have during the parse
+        solver.structure.buffering = false;
+        let lits = std::mem::take(&mut solver.structure.lits);
+        if let Some((pbp, der)) = &sidecars {
+            if let Some(why) = retire_sidecars(pbp, der, &all) {
+                return Err(format!("structure pass: {}", why));
+            }
+        }
+        crate::print::message(solver, format!("structure pass off: more than {} clauses", solver.options.structclauses));
+        let start = solver.statistics.ticks;
+        if proof_path == Some("-") {
+            if solver.options.freeread != 0 {
+                println!("c freeread status=off (the structure pass cannot write its proof)");
+            }
+            if solver.options.freewalk != 0 {
+                crate::freewalk::unread(solver, "off");
+            }
+        } else {
+            let formula = build_formula(&lits, solver.structure.max_var);
+            let stop: *const std::sync::atomic::AtomicBool = &solver.termination.flagged;
+            // SAFETY: the flag outlives the pass and is only read through it
+            let stop_ref: &std::sync::atomic::AtomicBool = unsafe { &*stop };
+            free_choices(solver, &formula, &lits, false, stop_ref);
+        }
+        solver.structure.work = solver.statistics.ticks.saturating_sub(start);
+        for &l in &lits {
+            crate::internal::add(solver, l);
+        }
+        keep_input(solver, lits);
         return Ok(());
     }
     solver.structure.buffering = false;
@@ -272,14 +324,6 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
     // the budgets are the tick counts the passes may reach, the base one
     // for looking, the larger one (structmore) once a symmetry matrix has
     // been found and verified, so a cell with structure gets more
-    let cap = |allowance: u64, solver: &Solver| -> u64 {
-        let mut a = allowance;
-        if solver.limited.ticks {
-            let w = solver.statistics.work_clock();
-            a = a.min(solver.limits.ticks.saturating_sub(w));
-        }
-        solver.statistics.ticks.saturating_add(a)
-    };
     let budget = cap(solver.structure.work_limit, solver);
     let more = cap((solver.options.structmore as u64).saturating_mul(1000), solver).max(budget);
     let mut proof: Option<Writer> = None;
@@ -305,6 +349,9 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
     if !proof_ok {
         if solver.options.freeread != 0 {
             println!("c freeread status=off (the structure pass cannot write its proof)");
+        }
+        if solver.options.freewalk != 0 {
+            crate::freewalk::unread(solver, "off");
         }
         // the formula goes to the solver as parsed
         for &l in &lits {
@@ -453,32 +500,8 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
             solver.card.s.grid_read_ticks = t2 - t1;
             solver.card.s.build_ticks = solver.statistics.ticks - t2;
         }
-        if solver.options.freeread != 0 {
-            // the free-choice reading (src/freeread.rs), last, within a limit
-            // of its own from where the passes stopped; it derives nothing
-            if derived.refuted {
-                println!("c freeread status=skipped (a pass refuted the formula)");
-            } else {
-                let own = cap((solver.options.freereadticks as u64).saturating_mul(1000), solver);
-                let before = solver.statistics.ticks;
-                let started = std::time::Instant::now();
-                let outcome = crate::freeread::read(&formula, own, &mut solver.statistics.ticks, stop_ref);
-                let work = solver.statistics.ticks - before;
-                let ms = started.elapsed().as_millis();
-                match &outcome {
-                    Ok(r) => {
-                        let mut line = format!("c freeread status=read work={} ms={} {}", work, ms, r.summary().line());
-                        if solver.options.freeread >= 2 {
-                            let t = std::time::Instant::now();
-                            let (bad, false_mean) = r.simulate(1);
-                            line.push_str(&format!(" sim_bad={} sim_false={:.2} sim_ms={}", bad, false_mean, t.elapsed().as_millis()));
-                        }
-                        println!("{}", line);
-                    }
-                    Err(crate::freeread::NotRead::Refuted) => println!("c freeread status=refuted work={} ms={}", work, ms),
-                    Err(crate::freeread::NotRead::Budget) => println!("c freeread status=budget work={} ms={}", work, ms),
-                }
-            }
+        if reading_on(solver) {
+            free_choices(solver, &formula, &lits, derived.refuted, stop_ref);
         }
     }
     let work = solver.statistics.ticks.saturating_sub(start);
@@ -553,6 +576,7 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
     for &l in &lits {
         crate::internal::add(solver, l);
     }
+    keep_input(solver, lits);
     for note in &derived.notes {
         crate::print::message(solver, format!("structure pass: {}", note));
     }
@@ -576,6 +600,78 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
     }
     Ok(())
 }
+/// A pass's budget: the tick count it may reach, `allowance` past the work
+/// done so far, within the tick limit.
+fn cap(allowance: u64, solver: &Solver) -> u64 {
+    let mut a = allowance;
+    if solver.limited.ticks {
+        let w = solver.statistics.work_clock();
+        a = a.min(solver.limits.ticks.saturating_sub(w));
+    }
+    solver.statistics.ticks.saturating_add(a)
+}
+
+/// The free-choice reading (src/freeread.rs) and walk (src/freewalk.rs),
+/// last, within a limit of their own from where the passes stopped; they
+/// derive nothing. With the walk's first placement it walks here, before the
+/// formula goes to the solver; `lits` is the input as parsed, which every
+/// model must satisfy.
+fn free_choices(solver: &mut Solver, formula: &Formula, lits: &[i32], refuted: bool, stop_ref: &std::sync::atomic::AtomicBool) {
+    if refuted {
+        if solver.options.freeread != 0 {
+            println!("c freeread status=skipped (a pass refuted the formula)");
+        }
+        if solver.options.freewalk != 0 {
+            crate::freewalk::unread(solver, "skipped");
+        }
+        return;
+    }
+    let own = cap((solver.options.freereadticks as u64).saturating_mul(1000), solver);
+    let before = solver.statistics.ticks;
+    let started = std::time::Instant::now();
+    let outcome = crate::freeread::read(formula, own, &mut solver.statistics.ticks, stop_ref);
+    let work = solver.statistics.ticks - before;
+    let ms = started.elapsed().as_millis();
+    if solver.options.freeread != 0 {
+        match &outcome {
+            Ok(r) => {
+                let mut line = format!("c freeread status=read work={} ms={} {}", work, ms, r.summary().line());
+                if solver.options.freeread >= 2 {
+                    let t = std::time::Instant::now();
+                    let (bad, false_mean) = r.simulate(1);
+                    line.push_str(&format!(" sim_bad={} sim_false={:.2} sim_ms={}", bad, false_mean, t.elapsed().as_millis()));
+                }
+                println!("{}", line);
+            }
+            Err(crate::freeread::NotRead::Refuted) => println!("c freeread status=refuted work={} ms={}", work, ms),
+            Err(crate::freeread::NotRead::Budget) => println!("c freeread status=budget work={} ms={}", work, ms),
+        }
+    }
+    if solver.options.freewalk == 0 {
+        return;
+    }
+    match outcome {
+        Ok(r) => {
+            // built within what is left of the reading's limit
+            crate::freewalk::build(solver, &r, own, stop_ref);
+            drop(r);
+            if solver.options.freewalk == 1 && solver.freewalk.walk.is_some() {
+                let budget = cap((solver.options.freewalkticks as u64).saturating_mul(1000), solver);
+                crate::freewalk::first(solver, budget, lits);
+            }
+        }
+        Err(crate::freeread::NotRead::Refuted) => crate::freewalk::unread(solver, "refuted"),
+        Err(crate::freeread::NotRead::Budget) => crate::freewalk::unread(solver, "budget"),
+    }
+}
+
+/// With a walk built, the input as parsed stays for the model check.
+fn keep_input(solver: &mut Solver, lits: Vec<i32>) {
+    if solver.freewalk.walk.is_some() {
+        solver.freewalk.original = lits;
+    }
+}
+
 /// The readers' test hook: with SAT_CARD_READ_CHECK=<file>, one line per thing
 /// read on stdout and every proof written to the file, for VeriPB to check.
 fn read_check(f: &Formula, reading: &crate::cardread::Reading, grids: &[crate::gridread::Grid], clauses: u64, all: &[(&str, &str)], sidecars: &Option<(String, String)>) {

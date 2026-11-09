@@ -246,6 +246,11 @@ pub fn search(solver: &mut Solver) -> i32 {
     if solver.inconsistent {
         res = 20;
     }
+    // Not in kissat: the free-choice walk's first placement found a model
+    // before the search, checked against the input (src/freewalk.rs)
+    if res == 0 && crate::freewalk::found(solver) {
+        res = 10;
+    }
     if res == 0 && solver.options.luckyearly != 0 {
         res = crate::lucky::lucky(solver);
     }
@@ -311,7 +316,13 @@ pub fn search(solver: &mut Solver) -> i32 {
             } else if crate::reorder::reordering(solver) {
                 crate::reorder::reorder(solver);
             } else if crate::rephase::rephasing(solver) {
+                let walks = solver.statistics.rephased_walking;
                 crate::rephase::rephase(solver);
+                // Not in kissat: the free-choice walk in kissat's walking
+                // slots (freewalk=3), after kissat's own walk
+                if solver.statistics.rephased_walking != walks && crate::freewalk::rephase_slot(solver) {
+                    res = 10;
+                }
             } else if crate::probe::probing(solver) {
                 // Not in kissat: the parity engine stands aside during
                 // inprocessing and re-reads the assignment after it
@@ -338,6 +349,13 @@ pub fn search(solver: &mut Solver) -> i32 {
                 break;
             } else if decision_limit_hit(solver) {
                 break;
+            } else if crate::freewalk::turn_due(solver) {
+                // Not in kissat: the free-choice walk's turn (freewalk=2); it
+                // changes nothing the search reads, so the search goes on as
+                // it would have, only later
+                if crate::freewalk::turn(solver) {
+                    res = 10;
+                }
             } else {
                 crate::decide::decide(solver);
             }

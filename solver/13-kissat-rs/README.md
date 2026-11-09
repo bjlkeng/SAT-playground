@@ -6149,7 +6149,179 @@ anonymous cells, 10.1-44.0G).
 **For the walk.** At the default `structclauses` (10M) the oddball `tto` cells
 (19-47M clauses) overflow the buffer and are not read. A bigger buffer reads them,
 but it also lets every other structure pass run on them, so the walk needs a
-buffer limit of its own, or the run must allow for that.
+buffer limit of its own, or the run must allow for that. The walk's bead
+(`d96.2.4.2`, next section) gave the reading that limit: `freereadclauses`
+(50M). With the reading or the walk on, the structure pass buffers up to it, and
+past `structclauses` only the reading runs; the other passes stay off, as on an
+overflow.
+
+## Free choices: the walk in the solver (2026-11-09; bead `SAT-playground-d96.2.4.2`, epic `SAT-playground-d96.2`)
+
+The prototype walk (`tools/free-walk`, "Free choices: the prototype search" above)
+is now in the solver: `src/freewalk.rs`, built from the solver's own reading
+(`src/freeread.rs`, the section before this one). It is the prototype's code with
+three changes. Its input is the solver's reading, not a file. Time is replaced by
+work: the weighted and plain phases are counted in the walk's own work, and the walk
+runs to a work budget. And it can stop between any two steps and later resume where
+it stopped. It is off by default.
+
+**Options.**
+- `freewalk`, where it runs: 0 off; 1 once before the search, within
+  `freewalkticks` (K); 2 in turns with the search, the walk keeping `freewalkshare`
+  per mille of the work clock, a turn once it is owed `freewalkturn` (K); 3 in
+  kissat's walking rephase slots, at that share.
+- `freewalktest`, which cells, the tests of the decision (G.8.3): 1 strict (groups,
+  none left out for overlapping, no free variable, a definition or gate: the 12
+  lockchart cells of the census), 2 loose (groups and a definition or gate: 135
+  cells), 3 broad (groups or a definition or gate: 335 cells). On a cell the test
+  turns down, only the reading runs.
+- The walk's own settings, the prototype's: `freewalkcands` 16 walks back a step,
+  `freewalknoise` 50 per mille random moves, `freewalkweights` 2 (every false clause
+  gets heavier when a move gains nothing), `freewalksmooth` 3, `freewalkphase`
+  575,000 K (the prototype's 30 s on group 2), `freewalksteps` a step limit (0 none).
+- `freereadclauses` 50,000,000: the reading's own buffer limit (see the last
+  paragraph of the reading's section).
+- Defaults for the run: `freewalkshare` 250, `freewalkturn` 10,000 K (about half a
+  second on group 2), `freewalkticks` 3,600,000 K (about a quarter of an 1,800 s run
+  of walking on group 1, about 190 s on group 2, where the prototype found every
+  model within 101 s).
+
+**What it keeps.** The walk never touches the search's assignment, phases, clauses
+or random numbers; it has its own generator, seeded from `--seed`. Its work goes into
+`statistics.ticks`, so it counts in the work clock W and against a tick limit, but
+no decision of the search reads that counter. So when the walk finds nothing, the
+search goes on as it would have, only later. A model is answered only after it
+satisfies every clause of the input as parsed (the structure pass's buffer, kept for
+this); one that fails is refused, never answered, and the walk is off for the rest
+of the run. A walk that reaches its step limit stops for good, so turns end. One
+`c freewalk` line at exit (also after a signal) gives the placement, the test, the
+outcome, the reading's shape and the walk's counts.
+
+**The work clock.** A step's work is counted in units: a flip and each place that
+reads the flipped variable, a node computed, a hop of a walk back, a clause weighed.
+8 units make a tick. The rate is measured so that a walk tick takes about as long as
+a search tick on lockchart. The walk does 153M units a second on group 2 and 65M on
+group 1. The shipped search does 23.5M and 7.3M ticks a second there (the median of
+the prototype comparison's shipped arm,
+`log/abtest-free-walk-solver-2026-11-09-00-33-57/ship`), so 6.5 and 8.9 units a tick.
+With 8, a walk tick takes 1.2 times a search tick on group 2 and 0.9 times on group 1.
+On oddball the walk does 364M units a second (`oddball_51_5`), so there its ticks are
+3-5 times quicker than the search's (9-17M a second): a share of the work is a smaller
+share of the time.
+
+**Checks.**
+- **Toys** (`cargo test freewalk`, eleven tests; `tests/fixtures/freewalk_toys.txt`,
+  written by `free_walk.py fixtures` from the toys of `free_walk.py selftest`). On
+  nine census toys the walk computes every variable exactly as the reading's own
+  evaluation does from the same choices (five seeds each). It finds a model on each
+  with its whole state recomputed and compared after every step, weighted walks
+  included, and every model satisfies the toy. Every trial's break is checked on the
+  break toy, and four pigeons in three holes end at the step limit with no model. A
+  model that fails the input is refused, and the walk stays off. A budget stops the
+  walk within a step, and 3,000 steps in turns of 50 ticks end in the same place, at
+  the same work, as 3,000 steps at once. Building the walk pays for every table
+  first.
+- **Step for step against the prototype** (`tools/free_walk_check.py same`, logs in
+  `log/free-walk-solver-2026-11-09/same/`). Ten cells, seeds 0 and 1, 3,000 steps
+  with weights on throughout: L18, L19_1, L190, `mp1-Nb7T45`, `Break_04_04`,
+  `Break_triple_04_06`, `gto_p60c238`, `shuffling-1`, `fixedbandwidth-eq-37` (gates)
+  and `tseitin_n188_d3` (136 gates, 146 free). Identical on every one: the counts of
+  steps, trials, flips, updates and pushes, the best and the step it came at, and the
+  final assignment (L190: 200M flips). So the solver's reading gives the walk the
+  census's reading in the census's order, and the port takes the same random draws.
+- **Off is unchanged** (`log/free-walk-solver-2026-11-09/offcheck/`). The new build
+  and the previous one (`a32df9e`), with the defaults, on the 9 smoke cells and 14
+  cells of 2025 at 20,000 conflicts: every `-s` counter and the work clock line the
+  same on all 23.
+- **In the solver** (`tests/freewalk.rs`, six tests). With the walk off, and on a cell
+  the file test turns down (random 3-SAT; pigeons in groups under the strict and
+  loose tests), every `-s` counter is the stock one. On pigeons in groups, where the
+  walk can never succeed, the search after the first pass, between turns, and around
+  the rephase slots is the stock search, counter for counter. The first pass stops
+  within a step of its budget, two runs give the same walk, turns take 20-26% of the
+  work at a share of 25%, and a walk that runs out of steps ends its turns. A model
+  the walk finds is answered and satisfies the input, also with a header that
+  declares more variables than the clauses use, and under a tick limit the walk and
+  the run stop at the limit.
+- **Speed.** The same per step: 200,000 steps on L18 side by side on two idle cores
+  take 11.03 s in the solver and 11.10 s in the prototype. Steps a second: L18
+  18,082 (the prototype 16,600-19,600), L190 136 (78-213), `oddball_51_5` 5,100
+  (3,900-4,300).
+- **Big cells.** `oddball_51_5` (18.9M clauses) is read past `structclauses` with the
+  passes off, in 3.2 s; the walk is built in 0.1 G of work; the run peaks at 1.7 GB.
+
+**The acceptance run** (`log/free-walk-solver-2026-11-09/accept/`, frozen binary
+`accept/sat-solver`, sha256 `3ef21d087bc0cf0c`; `run.py`, `compare.py`). The walk
+first, no budget limit (`--freewalk=1 --freewalkticks=2147483647`), every other
+option the shipped default, one core and 16 GB a run, 1,800 s, every model checked by
+`tools/verify_sat.py` against the original formula. Group 2 at seeds 0-2 ran 15 at a
+time on one socket (`g2/`); the first seed-0 run of all nine cells is `s0/`; group 1
+at seeds 0-2 under a step limit is `g1a/` and `g1b/`.
+
+Lockchart group 2, seconds and steps to a model (the prototype's from its run of
+record, `log/free-walk-2026-11-08/proto/`; its time is the walk's own, the solver's
+`walk s` too, and `total s` is the solver's whole run):
+
+| cell | seed | prototype steps | solver steps | prototype walk s | solver walk s | solver total s | model check |
+|---|---|---|---|---|---|---|---|
+| `L18-K36` | 0 | 350,294 | 350,294 (same) | 17.9 | 19.5 | 22.5 | ok |
+| `L18-K36` | 1 | 400,436 | 400,436 (same) | 20.5 | 22.1 | 25.0 | ok |
+| `L18-K36` | 2 | 699,898 | 575,246 | 36.7 | 32.0 | 34.8 | ok |
+| `L19-K38_1` | 0 | 586,697 | 1,637,414 | 32.5 | 104.3 | 107.4 | ok |
+| `L19-K38_1` | 1 | 886,546 | 758,799 | 53.5 | 48.3 | 51.5 | ok |
+| `L19-K38_1` | 2 | 1,743,024 | 1,783,766 | 100.8 | 112.3 | 115.4 | ok |
+| `L19-K38_2` | 0 | 719,689 | 569,451 | 41.9 | 35.2 | 38.3 | ok |
+| `L19-K38_2` | 1 | 589,255 | 595,587 | 33.5 | 37.4 | 40.5 | ok |
+| `L19-K38_2` | 2 | 654,968 | 571,134 | 37.7 | 35.5 | 38.7 | ok |
+| `L19-K38_3` | 0 | 901,606 | 849,879 | 49.7 | 54.2 | 57.3 | ok |
+| `L19-K38_3` | 1 | 899,338 | 680,546 | 53.9 | 43.3 | 46.4 | ok |
+| `L19-K38_3` | 2 | 682,571 | 635,160 | 39.8 | 41.0 | 44.2 | ok |
+| `L19-K38_4` | 0 | 546,789 | 512,448 | 30.8 | 31.6 | 34.8 | ok |
+| `L19-K38_4` | 1 | 536,601 | 582,158 | 29.7 | 35.6 | 38.8 | ok |
+| `L19-K38_4` | 2 | 266,139 | 266,139 (same) | 14.7 | 16.1 | 19.3 | ok |
+| all 15 | | 10,463,851 | 10,768,457 | 594 | 668 | 715 | |
+
+- **All 15 found, every model checked.** Over the 15 runs the walk needs 10.77M
+  steps against the prototype's 10.46M (3% more). It finds three at exactly the
+  prototype's step (L18 at seeds 0 and 1, L19_4 at seed 2): those models come before
+  the first phase switch, where the two walks are the same walk.
+- **Within the prototype's time at seed 0 on one cell of five (L19_2).** The bead
+  asked for all five. Three things make the rest slower. The switch from weighted to
+  plain is counted in work, as the bead asks, so it falls at a different step (on
+  L19_1 at about 507K steps, against the prototype's 563K), and after it the two
+  walks part: L19_1 then needs 1.64M steps against 0.59M (its seeds 1 and 2: 0.76M
+  and 1.78M, against 0.89M and 1.74M). The solver spends about 3 s before the walk
+  starts (the parse and the other structure passes, on by default). And in this run
+  the walk made 15,500-18,000 steps a second against the prototype run's 17,600 on
+  average; side by side the two are equally fast.
+- **Group 1** (`s0/`, `g1a/`, `g1b/`). At seed 0, run to 1,800 s, the walk found
+  none of the four; the prototype at seed 0 found L200 in 208 s and L220 in 1,145 s.
+  Each came within 1-2 constraints of a model, as the prototype's misses did. The
+  phases are longer here (about 71 s against the prototype's 30 s), so to tell luck
+  from a cost of that, all four cells ran at seeds 0-2 under a limit of 200,000
+  steps (about what the prototype walked in 1,800 s; its every model came within
+  197,591), with the default phase and with 244,000 K (30 s on group 1), 24 runs at
+  once:
+
+  | arm | models | cells ever |
+  |---|---|---|
+  | default phase (575,000 K) | 5 of 12 | 3 of 4 (L200, L210, L220) |
+  | 244,000 K | 5 of 12 | 3 of 4 (L190, L210, L220) |
+  | the prototype (1,800 s) | 6 of 12 | 4 of 4 |
+
+  The phase length makes no difference that three seeds can show, so the default
+  stays. Where both seed-0 runs walked, they agree step for step: the same best at
+  the same step on L190, L200 and L210. Over the 1,800 s runs the walk made 74-143
+  steps a second (the prototype 78-213) and 7.3-8.9M ticks a second, the search's
+  own rate on group 1.
+
+**For the run (G.8.5).** The walk is the prototype's walk at the prototype's speed,
+in the solver, with its work in the work clock and every model checked. The
+placements, file tests and shares are options, as G.8.3 decided; the run chooses them.
+Two things to read its results by. A share of the work is a smaller share of the
+time on oddball than on lockchart (the walk's ticks are 3-5 times quicker there).
+And the phases are about 71 s on group 1 against the prototype's 30 s, since a walk
+tick takes 2.4 times as long there as on group 2.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 

@@ -22,6 +22,9 @@ formula with tools/verify_sat.py, the gate's checker.
   selftest                  toys: the walker's computed values against the
                             census's own evaluation, and a model found and
                             checked on every satisfiable toy
+  fixtures OUT              write the selftest's toys for the solver's own walk
+                            (src/freewalk.rs tests): per toy `toy NAME`, `sat 0|1`,
+                            the DIMACS text and `end`
 
 The reading file is FWR1 and then 32-bit little-endian integers: nv; the
 units (count, then variable and value pairs); the groups (count, then per
@@ -565,11 +568,9 @@ def _agrees(rd, fixed, assign):
     return True, ""
 
 
-def cmd_selftest(_args):
-    if not WALKER.exists():
-        raise SystemExit(f"build the walker first: cargo build --release in {WALKER.parents[2]}")
-    ok = True
-    toys = [
+def selftest_toys():
+    """(name, (nv, clauses), satisfiable): the census's toys the selftest walks."""
+    return [
         ("tseitin", fc.toy_tseitin()[:2], True),
         ("tseitin-one-way", fc.toy_tseitin(one_way=True, seed=6)[:2], True),
         ("csp-pairwise", fc.toy_csp()[:2], True),
@@ -580,6 +581,57 @@ def cmd_selftest(_args):
         ("cycle", fc.toy_cycle(), True),
         ("random3-easy", fc.toy_random3(n=120, ratio=3.0, seed=9), True),
     ]
+
+
+def break_toy():
+    """A move's break: switching a group from value a to b leaves (x_a | x_b) true, though it is
+    false midway (x_a cleared before x_b is set).  Six 4-valued groups, each limited to two values
+    by such a clause, with nogoods between neighbours that spare a planted solution."""
+    rng = random.Random(13)
+    xs = [[4 * i + a + 1 for a in range(4)] for i in range(6)]
+    plant = [rng.randrange(4) for _ in range(6)]
+    cl = []
+    for r in xs:
+        cl.append(tuple(r))
+        cl += [(-r[a], -r[b]) for a in range(4) for b in range(a + 1, 4)]
+    for i, r in enumerate(xs):
+        other = rng.choice([a for a in range(4) if a != plant[i]])
+        cl.append((r[plant[i]], r[other]))
+        j = (i + 1) % 6
+        for a in range(4):
+            for b in range(4):
+                if (a, b) != (plant[i], plant[j]) and rng.random() < 0.3:
+                    cl.append((-r[a], -xs[j][b]))
+    return 24, cl
+
+
+def unsat_toy():
+    """Four pigeons, three holes: groups and their nogoods, no unit."""
+    x = [[3 * i + a + 1 for a in range(3)] for i in range(4)]
+    cl = [tuple(r) for r in x] + [(-r[a], -r[b]) for r in x for a in range(3) for b in range(a + 1, 3)]
+    cl += [(-x[i][a], -x[j][a]) for i in range(4) for j in range(i + 1, 4) for a in range(3)]
+    return 12, cl
+
+
+def cmd_fixtures(args):
+    toys = selftest_toys() + [("break", break_toy(), True), ("unsat", unsat_toy(), False)]
+    out = []
+    for name, (nv, cl), sat in toys:
+        out.append(f"toy {name}")
+        out.append(f"sat {1 if sat else 0}")
+        out.append(f"p cnf {nv} {len(cl)}")
+        out += [" ".join(map(str, c)) + " 0" for c in cl]
+        out.append("end")
+    Path(args.out).write_text("\n".join(out) + "\n")
+    print(f"wrote {len(toys)} toys to {args.out}")
+    return 0
+
+
+def cmd_selftest(_args):
+    if not WALKER.exists():
+        raise SystemExit(f"build the walker first: cargo build --release in {WALKER.parents[2]}")
+    ok = True
+    toys = selftest_toys()
     with tempfile.TemporaryDirectory() as tmp:
         for name, (nv, cl), sat in toys:
             # the start: the walker's values against the census's evaluation, over a few seeds
@@ -616,25 +668,9 @@ def cmd_selftest(_args):
             if found:
                 ok &= fc._check(f"weights {' '.join(wargs[1:])}: verify_sat.py accepts it",
                                 verify(path, os.path.join(tmp, "weights.out"), timeout=120) == "ok")
-        # a move's break: switching a group from value a to b leaves (x_a | x_b) true, though it
-        # is false midway (x_a cleared before x_b is set); every trial's break is checked against
-        # the clauses true before and false after.  Six 4-valued groups, each limited to two values
-        # by such a clause, with nogoods between neighbours that spare a planted solution.
-        rng = random.Random(13)
-        xs = [[4 * i + a + 1 for a in range(4)] for i in range(6)]
-        plant = [rng.randrange(4) for _ in range(6)]
-        cl = []
-        for r in xs:
-            cl.append(tuple(r))
-            cl += [(-r[a], -r[b]) for a in range(4) for b in range(a + 1, 4)]
-        for i, r in enumerate(xs):
-            other = rng.choice([a for a in range(4) if a != plant[i]])
-            cl.append((r[plant[i]], r[other]))
-            j = (i + 1) % 6
-            for a in range(4):
-                for b in range(4):
-                    if (a, b) != (plant[i], plant[j]) and rng.random() < 0.3:
-                        cl.append((-r[a], -xs[j][b]))
+        # a move's break (break_toy): every trial's break is checked against the clauses
+        # true before and false after
+        _nv, cl = break_toy()
         res, st, assign, rd, fixed, path, p = _walk_toy(24, cl, tmp, "break", ["--seed", "3", "--seconds", "20", "--check", "1",
                                                                              "--score", "break", "--weights", "none"])
         same = 0
@@ -648,10 +684,8 @@ def cmd_selftest(_args):
         ok &= fc._check("the break toy has constraint clauses over two members of one group", same == 6, str(same))
         ok &= fc._check("break scoring: every trial's break as the clauses true before and false after, a model found",
                         res == "SATISFIABLE" and p.returncode == 10, f"{res} rc {p.returncode} {p.stderr.strip()[-300:]}")
-        # a toy the walk cannot satisfy: four pigeons, three holes (groups and their nogoods, no unit)
-        x = [[3 * i + a + 1 for a in range(3)] for i in range(4)]
-        cl = [tuple(r) for r in x] + [(-r[a], -r[b]) for r in x for a in range(3) for b in range(a + 1, 3)]
-        cl += [(-x[i][a], -x[j][a]) for i in range(4) for j in range(i + 1, 4) for a in range(3)]
+        # a toy the walk cannot satisfy (unsat_toy)
+        _nv, cl = unsat_toy()
         res, st, assign, rd, fixed, path, p = _walk_toy(12, cl, tmp, "unsat", ["--seed", "1", "--steps", "20000"])
         ok &= fc._check("an unsatisfiable toy: UNKNOWN at the step limit, no model", res == "UNKNOWN" and p.returncode == 0,
                         f"{res} rc {p.returncode}")
@@ -699,9 +733,11 @@ def main(argv):
     p.add_argument("--readings", default=None, help="the run's readings folder: the read time per cell")
     p.add_argument("--tsv", default=None, help="also write the table, one row per cell, arm and seed")
     sub.add_parser("selftest")
+    p = sub.add_parser("fixtures")
+    p.add_argument("out")
     args = ap.parse_args(argv)
     return {"export": cmd_export, "walk": cmd_walk, "run": cmd_run, "report": cmd_report,
-            "selftest": cmd_selftest}[args.cmd](args)
+            "selftest": cmd_selftest, "fixtures": cmd_fixtures}[args.cmd](args)
 
 
 if __name__ == "__main__":
