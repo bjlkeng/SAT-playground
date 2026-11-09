@@ -5914,8 +5914,8 @@ table below).
 
 **Answer: yes on lockchart, no on oddball and on the `mp1` circuits.** Over the 20
 cells and three seeds, the prototype finds a model in 21 of 60 runs, the solver as
-shipped in 14, and the solver with kissat's walk given a thousand times its usual
-share in 17. All 21 of the prototype's runs are lockchart: every group 2 run (15 of
+shipped in 14, and the solver with `--walkeffort=1000000` in 17 (kissat's walk
+may then do a thousand times as much work as the search, against 5% by default). All 21 of the prototype's runs are lockchart: every group 2 run (15 of
 15, in 15-101 s) and half the group 1 runs (6 of 12). Lockchart L19_1 falls on
 every seed to the prototype and on none to either solver arm. On oddball `tto` and
 `mp1` the prototype finds nothing, while the solver arms find 8 and 3 models.
