@@ -1,0 +1,11 @@
+[package]
+name = "free-walk"
+version = "0.1.0"
+edition = "2021"
+description = "Local search over the free choices of a role reading (bead SAT-playground-d96.2.2); a standalone tool, no solver code"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+debug = false

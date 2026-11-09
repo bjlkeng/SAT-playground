@@ -82,6 +82,11 @@ work is **solver 13** and the RL scheduler on top of it.
   census") gives every variable a role (choice, two-way definition, one-way helper,
   free) and checks the reading by simulation. It reads all 12 lockchart cells exactly
   as by hand. Oddball `tto` comes out as overlapping at-most-ones, not a few choices.
+  The prototype walk (`d96.2.2`, 2026-11-08, `tools/free_walk.py` and the Rust walker
+  `tools/free-walk`, `benchmarks/rl/free_walk_2025.tsv`, solver README "Free choices: the
+  prototype search") searches over the choices only. On the 20 target cells over three
+  seeds it finds a model in 21 of 60 runs (the shipped solver 14, kissat's long walk 17):
+  every lockchart group 2 run, half the group 1 runs, nothing on oddball or `mp1`.
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a

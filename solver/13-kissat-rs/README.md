@@ -5900,6 +5900,180 @@ the 11 unsolved lockchart cells and nine others:
 - Small gates are read up to four inputs, and helpers up to 64 literals in their
   clauses. Units are propagated first, so the reading is of the formula after them.
 
+## Free choices: the prototype search (2026-11-08; bead `SAT-playground-d96.2.2`, epic `SAT-playground-d96.2`)
+
+G.8.2 asks whether a local search over the free choices finds models that the
+solver and its own walk do not. The census (above) reads every variable of a cell
+as a choice, a two-way definition, a one-way helper or free. This prototype
+searches over the choices only and computes everything else from them. It is a
+standalone tool, no solver code: the walk is `tools/free-walk` (Rust, `cargo build
+--release` there), and `tools/free_walk.py` exports the census's reading for it,
+runs it and checks every model. Table `benchmarks/rl/free_walk_2025.tsv` (one row
+per cell, arm and seed); logs in `log/free-walk-2026-11-08/` (`report.md` is the
+table below).
+
+**Answer: yes on lockchart, no on oddball and on the `mp1` circuits.** Over the 20
+cells and three seeds, the prototype finds a model in 21 of 60 runs, the solver as
+shipped in 14, and the solver with kissat's walk given a thousand times its usual
+share in 17. All 21 of the prototype's runs are lockchart: every group 2 run (15 of
+15, in 15-101 s) and half the group 1 runs (6 of 12). Lockchart L19_1 falls on
+every seed to the prototype and on none to either solver arm. On oddball `tto` and
+`mp1` the prototype finds nothing, while the solver arms find 8 and 3 models.
+
+**How the walk works.** The state is one value per group (which member is true,
+or none in an at-most-one group) and one bit per free variable. After every move,
+each computed variable is updated from the ones it reads, level by level, with
+counts of true inputs, so the cost (the constraint clauses left false) is exact at
+every step. A step:
+1. takes a false constraint clause at random;
+2. walks back from one of its literals through the definitions to a group or a
+   free bit whose change could make that literal true; 16 such walks give up to
+   16 candidates;
+3. tries every other value of each candidate (make the move, read the change in
+   cost, undo it) and takes the one that lowers the cost most, ties at random. In
+   5% of the steps it takes a random one instead.
+
+The walk alternates 30-second phases. In one, clauses carry weights: when the move
+taken does not lower the weighted cost, every false clause gets one heavier, and
+every third time every heavy clause gets one lighter. In the other, all weights are
+1.
+
+**How the settings were chosen.** Short runs with seeds 100 and 101 (the run of
+record uses 0-2) on L18, L19_1, L190, `oddball_51_5` and `mp1-Nb7T45`. The tables
+are in `log/free-walk-2026-11-08/tuning/`.
+- More candidates per step help most. On L18 the clauses left after 60 s went from
+  96-101 with one candidate to 5-6 with eight (`sweep_a`). With 16, most settings
+  solve L18 in 1.3-7 s and L19_1 in 7.5-26 s (`sweep_b`).
+- A tabu on going back hurt (tenure 30: 24-41 clauses left; none: 4-18; `sweep_a`).
+  Scoring a move only by the clauses it makes false, as WalkSAT does, lost
+  everywhere (`sweep_c`; rerun as `sweep_c2` after the review fixed how that score
+  counted a clause false only midway through a move: L18 solved in 1 of 8 runs, L190
+  left at 137-393 clauses, against 8 of 8 and 9-23 with the net change). Trying only
+  the value the walk asked for was no better than trying all of them (`sweep_c`).
+- Plain search is best on the small lockchart cells (L19_1 in 10 s) and on
+  `oddball_51_5`. But it leaves L190 at 2-7 clauses after 300-600 s. Weighting
+  every false clause solves L190 (7 of 10 runs, in 105-522 s) but stalls on L19_1 and `oddball_51_5`
+  (`sweep_e`, `sweep_f`). Alternating 30-second phases solved L19_1 on both seeds
+  (98-113 s) and L190 on one within 300 s, and matched plain search on
+  `oddball_51_5`. So that is the one setting, used on every cell.
+- On `mp1-Nb7T45` no setting got below 185 false clauses of 2,548 (`sweep_mp1`).
+
+**Checked on toys first** (`free_walk.py selftest`, 45 checks, 3 s). Nine toys from
+the census: circuits written both ways and one-way, CSPs with pairwise and ladder
+at-most-ones, two lockcharts, guarded slots, a cycle of definitions and random
+3-SAT.
+- On each, the walker computes every variable exactly as the census's own
+  evaluation does from the same choices (five random starts).
+- It finds a model with its whole state recomputed and compared after every step,
+  weighted runs included, and `verify_sat.py` accepts every model.
+- Under `--check`, every trial's break is compared with the clauses true before the
+  move and false after, on a toy where a group switch leaves a clause true that is
+  false midway (the counting before the review fix fails it).
+- An unsatisfiable toy (four pigeons, three holes) ends with no model, and broken
+  readings are refused.
+
+The binary of record (`proto/free-walk`) and the committed source give the same
+walk step for step on the run's setting (3,000 steps on L18, `mp1-Nb7T45` and
+`oddball_51_5`); the review fixes touched only the break-only score and the runner.
+
+**The run** (2026-11-08 23:26 to 2026-11-09 02:29, `workstation-Precision-7920-Tower`,
+2 × Xeon Gold 6154). Each arm ran alone on the host, one core and 16 GB per run,
+1,800 s, seeds 0, 1 and 2. The 20 cells are lockchart groups 1 and 2 (9), oddball
+`tto` (9) and the two `mp1` circuits the census named. Timetable is not in: the
+bead takes it only if its counters are definitions, and the census read them as
+one-way helpers. Every model in every arm was checked against the original formula
+by `tools/verify_sat.py`, and all passed.
+- **prototype**: `free_walk.py run` (`log/free-walk-2026-11-08/proto/`, walker binary
+  of record `proto/free-walk`). The time is the walk's own, start to model. Reading
+  the cell first (the census's Python reader) is the `read s` column.
+- **shipped**: the solver as shipped, through `tools/feature_ablation.py`
+  (`log/abtest-free-walk-solver-2026-11-09-00-33-57/ship`).
+- **long walk**: the same solver with `--walkeffort=1000000` (`.../walk`), kissat's
+  own walk over every variable.
+
+Seconds to a model per seed (— none in 1,800 s):
+
+| cell | read s | prototype (0/1/2) | shipped (0/1/2) | long walk (0/1/2) |
+|---|---|---|---|---|
+| `g1 L190-K276` | 92.1 | — / 247 / — | — / 1785 / — | — / — / — |
+| `g1 L200-K289` | 100.8 | 209 / 667 / — | — / — / 816 | — / — / — |
+| `g1 L210-K303` | 111.9 | — / 789 / 927 | — / 194 / — | — / — / — |
+| `g1 L220-K317` | 124.6 | 1145 / — / — | — / — / 185 | — / — / — |
+| `g2 L18-K36` | 0.9 | 18 / 21 / 37 | — / — / 887 | 22 / 10 / 13 |
+| `g2 L19-K38_1` | 1.1 | 32 / 54 / 101 | — / — / — | — / — / — |
+| `g2 L19-K38_2` | 1.1 | 42 / 33 / 38 | — / — / — | 448 / 16 / 488 |
+| `g2 L19-K38_3` | 1.1 | 50 / 54 / 40 | — / — / — | 31 / 9.3 / 23 |
+| `g2 L19-K38_4` | 1.1 | 31 / 30 / 15 | 1026 / — / — | 18 / 30 / 6.2 |
+| `mp1-Nb7T45` | 4.1 | — / — / — | — / 22 / 1376 | — / 1539 / — |
+| `mp1-Nb7T46` | 4.2 | — / — / — | 23 / — / — | 1533 / — / — |
+| `oddball_51_5` | 170.7 | — / — / — | — / — / — | — / — / 1130 |
+| `oddball_52_5` | 176.2 | — / — / — | — / — / — | — / — / 1240 |
+| `oddball_53_5` | 181.2 | — / — / — | — / — / — | — / — / — |
+| `oddball_54_5` | 187.7 | — / — / — | — / 1221 / — | — / — / — |
+| `oddball_56_5` | 199.3 | — / — / — | 804 / — / 289 | — / — / — |
+| `oddball_57_5` | 207.0 | — / — / — | — / — / — | — / — / — |
+| `oddball_67_5` | 270.4 | — / — / — | — / 1444 / — | — / — / — |
+| `oddball_69_5` | 284.0 | — / — / — | — / — / 254 | — / 1402 / — |
+| `oddball_80_5` | 358.3 | — / — / — | — / — / — | — / — / — |
+
+| family | cells | prototype: runs with a model, cells ever | shipped | long walk |
+|---|---|---|---|---|
+| lockchart group 1 | 4 | 6/12, 4 | 4/12, 4 | 0/12, 0 |
+| lockchart group 2 | 5 | 15/15, 5 | 2/15, 2 | 12/15, 4 |
+| mp1 | 2 | 0/6, 0 | 3/6, 2 | 2/6, 2 |
+| oddball tto | 9 | 0/27, 0 | 5/27, 4 | 3/27, 3 |
+| all | 20 | 21/60, 9 | 14/60, 12 | 17/60, 9 |
+
+**What the run says, family by family.**
+- **Lockchart group 2.** The prototype finds every model, in 15-101 s; the reading
+  takes about a second. kissat's long walk finds 12 of 15, in 6-488 s. It is faster
+  than the prototype on most seeds of L18, L19_3 and L19_4, but never solves L19_1. The shipped solver finds
+  2 (887 s and 1,026 s). So both walks beat the CDCL search here, and the walk over
+  the choices is the steadier one.
+- **Lockchart group 1.** The prototype finds 6 of 12 (209-1,145 s, plus 92-125 s of
+  reading), every cell at least once; the shipped solver 4 of 12 (185-1,785 s),
+  also every cell once; the long walk none. Four runs fall to the prototype alone
+  and two to the shipped solver alone, so together they would find 8 of 12. The
+  prototype's misses all ended 1-3 clauses short of a model. Its walk is slow here,
+  78-213 steps a second against 16,600-19,600 on group 2. One key opens all 190
+  locks of L190, and moving one of its pins can change the depth sets of all of
+  them, each read by 271 helpers. A trial (making a move and undoing it) flips about
+  5,500 variables, against 42 on group 2 (medians over the runs).
+- **Oddball `tto`.** The prototype finds nothing. Its runs ended 4-21 clauses short
+  (of 112,116-175,633 constraint clauses), at 3,900-4,300 steps a second. The shipped solver finds 5
+  models on 4 cells, the long walk 3 on 3, and 3 cells fall to no arm. As the census
+  said, oddball's at-most-one sets overlap, so the reading leaves most of them as
+  constraints. A move that changes a group's value breaks those, and the walk
+  spends its steps repairing them.
+- **mp1.** The prototype gets nowhere. It starts at 309-336 false clauses and stalls
+  at 194-199, while both solver arms solve both cells on some seeds (22-1,539 s). A
+  walk over a circuit's inputs alone is weaker than the solver on these cells.
+
+**What it means for G.8.3.** On lockchart the walk over the free choices finds
+models that neither the solver nor its own walk finds: L19_1 on every seed, and
+four group 1 runs. Lockchart groups 1 and 2 hold 8.7% of the run of record's PAR-2.
+A build would need three things the prototype does not have:
+- a fast reader inside the solver (this one is Python: 92-125 s on group 1, 171-358
+  s on oddball);
+- a cheaper move on cells like group 1, where one move changes thousands of
+  helpers;
+- a rule for which cells get the walk. The prototype helps where the census reads
+  few choices that fix everything else (lockchart), and not where the choices
+  overlap (oddball) or are a circuit's inputs (`mp1`).
+
+On oddball, a walk would need moves that keep the overlapping at-most-ones whole,
+or another reading.
+
+**Limits.**
+- One setting for all 20 cells, chosen on short runs on four of them (other seeds).
+  A better setting may exist, and the weighted and plain phases suit different
+  cells.
+- The walk prices each candidate by making the move and undoing it. That costs
+  most where one move changes many helpers (lockchart group 1).
+- Times are wall seconds on an idle host, one core per run. The prototype's time
+  leaves out the reading (column `read s`); with it, every model still came within
+  1,800 s (at most 125 + 1,145 s).
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.
