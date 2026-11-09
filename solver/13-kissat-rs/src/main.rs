@@ -71,6 +71,7 @@ pub mod structpoints;
 pub mod card;
 pub mod cardread;
 pub mod gridread;
+pub mod freeread;
 pub mod gauss;
 pub mod gaussproof;
 pub mod structsym;

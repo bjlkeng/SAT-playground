@@ -93,7 +93,7 @@ impl Derived {
 
 pub fn enabled(solver: &Solver) -> bool {
     let o = &solver.options;
-    o.card != 0 || o.structsym != 0 || o.structpoints != 0 || o.structsymext != 0 || o.structparity != 0 || o.structcount != 0 || o.structcsp != 0 || o.gauss != 0 || o.structarith != 0 || o.structsort != 0 || o.structdiv != 0 || o.structdd != 0
+    o.card != 0 || o.structsym != 0 || o.structpoints != 0 || o.structsymext != 0 || o.structparity != 0 || o.structcount != 0 || o.structcsp != 0 || o.gauss != 0 || o.structarith != 0 || o.structsort != 0 || o.structdiv != 0 || o.structdd != 0 || o.freeread != 0
 }
 
 /// Called once before the parse: turn buffering on when a pass is enabled.
@@ -135,7 +135,7 @@ fn flush(solver: &mut Solver) {
     }
 }
 
-fn build_formula(lits: &[i32], max_var: i32) -> Formula {
+pub(crate) fn build_formula(lits: &[i32], max_var: i32) -> Formula {
     let mut f = Formula { lits: Vec::with_capacity(lits.len()), start: vec![0], taut: Vec::new(), dup: Vec::new(), vars: max_var };
     let mut seen: Vec<u8> = vec![0; max_var as usize + 1]; // 1 = positive seen, 2 = negative, 3 = both
     let mut cur: Vec<i32> = Vec::new();
@@ -260,6 +260,9 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
         }
         if solver.structure.overflow {
             crate::print::message(solver, format!("structure pass off: more than {} clauses", solver.options.structclauses));
+            if solver.options.freeread != 0 {
+                println!("c freeread status=overflow structclauses={}", solver.options.structclauses);
+            }
         }
         return Ok(());
     }
@@ -300,6 +303,9 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
         }
     }
     if !proof_ok {
+        if solver.options.freeread != 0 {
+            println!("c freeread status=off (the structure pass cannot write its proof)");
+        }
         // the formula goes to the solver as parsed
         for &l in &lits {
             crate::internal::add(solver, l);
@@ -446,6 +452,33 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
             solver.card.s.count_read_ticks = t1 - t0;
             solver.card.s.grid_read_ticks = t2 - t1;
             solver.card.s.build_ticks = solver.statistics.ticks - t2;
+        }
+        if solver.options.freeread != 0 {
+            // the free-choice reading (src/freeread.rs), last, within a limit
+            // of its own from where the passes stopped; it derives nothing
+            if derived.refuted {
+                println!("c freeread status=skipped (a pass refuted the formula)");
+            } else {
+                let own = cap((solver.options.freereadticks as u64).saturating_mul(1000), solver);
+                let before = solver.statistics.ticks;
+                let started = std::time::Instant::now();
+                let outcome = crate::freeread::read(&formula, own, &mut solver.statistics.ticks, stop_ref);
+                let work = solver.statistics.ticks - before;
+                let ms = started.elapsed().as_millis();
+                match &outcome {
+                    Ok(r) => {
+                        let mut line = format!("c freeread status=read work={} ms={} {}", work, ms, r.summary().line());
+                        if solver.options.freeread >= 2 {
+                            let t = std::time::Instant::now();
+                            let (bad, false_mean) = r.simulate(1);
+                            line.push_str(&format!(" sim_bad={} sim_false={:.2} sim_ms={}", bad, false_mean, t.elapsed().as_millis()));
+                        }
+                        println!("{}", line);
+                    }
+                    Err(crate::freeread::NotRead::Refuted) => println!("c freeread status=refuted work={} ms={}", work, ms),
+                    Err(crate::freeread::NotRead::Budget) => println!("c freeread status=budget work={} ms={}", work, ms),
+                }
+            }
         }
     }
     let work = solver.statistics.ticks.saturating_sub(start);

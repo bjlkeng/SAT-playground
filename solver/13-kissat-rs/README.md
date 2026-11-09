@@ -6097,6 +6097,60 @@ the choice against off at fresh seeds. Two offline checks framed the options
   (groups and definitions, free variables and overlaps allowed), 185 (groups) and
   335 (groups or definitions).
 
+## Free choices: the reading in the solver (2026-11-09; bead `SAT-playground-d96.2.4.1`, epic `SAT-playground-d96.2`)
+
+The walk over the choices (`d96.2.4.2`) needs the census's reading inside the
+solver. `src/freeread.rs` is that reading: `tools/free_census.py` ported step by
+step, in the same order, reading the structure pass's buffered formula. It runs
+last in the structure pass with a work limit of its own, and derives nothing; for
+now it only reports. `--freeread=1` prints one `c freeread` line with the census's
+columns, and `--freeread=2` also checks the reading by simulation: 64 random choices,
+everything else computed, and every clause a role claims must come out true.
+`--freereadticks` is its work limit. It is off by default, so the stock path is
+unchanged.
+
+**Checked against the census, cell by cell** (`tools/free_read_check.py`):
+- **Toys** (`cargo test freeread`; fixture `tests/fixtures/freeread_toys.txt`,
+  written by `free_read_check.py fixtures`). There are 29: the eleven of the census's
+  selftest, the same encoders at 16 other seeds and sizes, and two copies with
+  repeated literals, tautologies and duplicate clauses. The census reads each one
+  as it reads files. On every toy the Rust reading gives the census's counts, the
+  simulation finds no claimed clause false, and each planted model's choices,
+  pushed through the reading, give a model.
+- **The 400 cells of 2025** (`free_read_check.py real`; table
+  `benchmarks/rl/freeread_2025.tsv`, logs and `report.txt` in
+  `log/free-read-check-2026-11-09/`, the final run `all2`). It ran 32 cells at once, one core and 16 GB
+  each, with the other structure passes off and `--structclauses=50000000`, so
+  that the cells the census read whole fit in the buffer. 392 cells give exactly
+  the census's counts in every column, the 11 the census refutes by unit
+  propagation among them. The other 8 are the cells the census read from a
+  5M-clause prefix (63-316M clauses): 7 overflow the buffer and are not read, and
+  `17.normalised` (117M variables) cannot be loaded within 16 GB at all. The
+  shipped solver fails on it the same way in the run of record (`pts0`: a failed
+  4 GB allocation). The simulation found no claimed clause false on any cell.
+- The same reading costs the same work: 16 cells read in two runs of the final
+  binary gave identical work (`try2` against `all2`).
+- Every table and loop is paid for before it is done, as `CONVENTIONS.md` asks.
+  Codex found two places where that was not so at first: tables per variable made
+  before they were paid for, and a test of whether a group member is defined
+  elsewhere that scanned every copy of a repeated group for every copy. Both are
+  fixed, with tests. The table and the numbers here come from the fixed binary.
+
+**Time and work.** The reading takes 75 ms at the median, 4.2 s at the 90th
+percentile and at most 46.7 s (`GP_100_1000_10`, 41.6M clauses). On lockchart it
+takes 2 ms to 3.3 s, 31 to 47 times faster than the census's Python role reading
+(up to 109 s, the stages column, parsing apart); on oddball 17 ms to 7.9 s (12 to
+29 times faster); on mp1 72-74 ms (47-49 times). The work is at most 0.64G on
+lockchart and 7.1G on oddball, 44.0G on the costliest cell, about 436K units a
+millisecond. The default limit, 10,000,000 K, covers every lockchart, oddball and
+mp1 cell and cuts 10 of the 381 cells read (six GP cells, `ncc_none` and three
+anonymous cells, 10.1-44.0G).
+
+**For the walk.** At the default `structclauses` (10M) the oddball `tto` cells
+(19-47M clauses) overflow the buffer and are not read. A bigger buffer reads them,
+but it also lets every other structure pass run on them, so the walk needs a
+buffer limit of its own, or the run must allow for that.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.

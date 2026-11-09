@@ -174,6 +174,17 @@ kissat_options! {
     (forcephase, 0, 0, 1, "force initial phase"),
     (forward, 1, 0, 1, "forward subsumption in BVE"),
     (forwardeffort, 100, 0, 1_000_000, "effort in per mille"),
+    // Not in kissat (2026-11-09, bead SAT-playground-d96.2.4.1): the
+    // free-choice reading (src/freeread.rs), the census's roles read in the
+    // structure pass, last, with a work limit of its own. Off by default; 1
+    // prints its counts, 2 also checks them by simulation
+    // (tools/free_read_check.py). The walk over the choices (bead
+    // d96.2.4.2) will read through it. freereadticks 10,000,000 K covers
+    // every lockchart (at most 0.64G), oddball (7.1G) and mp1 cell of 2025
+    // and cuts 10 of the 381 cells read (six GP cells, ncc_none and three
+    // anonymous cells, 10.1-44.0G)
+    (freeread, 0, 0, 2, "free-choice reading: 1 print its counts, 2 also simulate"),
+    (freereadticks, 10_000_000, 0, i32::MAX, "free-choice reading work limit (K)"),
     // Not in kissat (2026-10-15, bead SAT-playground-1v2.7): the parity
     // engine, XOR reasoning inside search (src/gauss.rs); on by default
     // since 2026-10-18 (lazy reasons; the four-arm 400-cell run of
@@ -796,9 +807,9 @@ mod tests {
         // structarith, structarithticks (2026-10-19), structsort,
         // structsortticks (2026-10-26), structdiv, structdivticks
         // (2026-10-27), structdd, structddticks (2026-10-31), the ten
-        // card* options (2026-11-01) and structpoints, structpointsticks
-        // (2026-11-05)
-        assert_eq!(OPTION_TABLE.len(), 158 + 45);
+        // card* options (2026-11-01), structpoints, structpointsticks
+        // (2026-11-05) and freeread, freereadticks (2026-11-09)
+        assert_eq!(OPTION_TABLE.len(), 158 + 47);
     }
 
     #[test]

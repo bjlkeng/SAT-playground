@@ -100,6 +100,12 @@ work is **solver 13** and the RL scheduler on top of it.
   prototype search") searches over the choices only. On the 20 target cells over three
   seeds it finds a model in 21 of 60 runs (the shipped solver 14, kissat's long walk 17):
   every lockchart group 2 run, half the group 1 runs, nothing on oddball or `mp1`.
+  The owner chose to build it, with where it runs, which cells get it and its share
+  chosen by measurement on the 400 cells (`d96.2.3`). The reading is in the solver
+  (`d96.2.4.1`, 2026-11-09, `src/freeread.rs`, `--freeread`, off by default; checked by
+  `tools/free_read_check.py`, `benchmarks/rl/freeread_2025.tsv`, solver README "Free
+  choices: the reading in the solver"): the census's counts on all 392 cells it reads; the
+  other 8 are the cells the census read only in part.
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a
