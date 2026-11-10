@@ -29,6 +29,9 @@ Usage:
   # A/B (or N-way) with a SIMULTANEOUS, interleaved, fair shared-core run (defaults: 32 cores, 16GB, 30min):
   python3 tools/feature_ablation.py --arm "cand:SAT_NEWFEAT=on" --arm "base:"            # A vs B, one shot
   python3 tools/feature_ablation.py --arm "cand:SAT_X=on" --arm "base:" --arm solver10   # N-way + s10 floor
+  # keep chosen solver lines of every run (one <run>/<arm>/kept.tsv each, appended as runs end):
+  python3 tools/feature_ablation.py --arm "on:SAT_EXTRA_ARGS=--freewalk=2" --arm "base:" \
+      --keep-lines "c freewalk " --keep-lines "c workclock "
   python3 tools/feature_ablation.py --smoke           # 2 configs x 2 instances, fast self-check
 
 Compressed suite CNFs used by --seedgate/--arm are expanded into a TemporaryDirectory and removed
@@ -39,7 +42,7 @@ Before launching a parallel sweep, check for competing solver/bench processes (t
 contention warning at startup; the agent must `ps`/`pgrep` and ASK the user first per CLAUDE.md).
 """
 from __future__ import annotations
-import argparse, csv, gzip, lzma, os, re, shlex, shutil, subprocess, sys, tempfile, time
+import argparse, csv, gzip, lzma, os, re, shlex, shutil, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -855,7 +858,8 @@ def _verify_result(result: str, cnf_path: Path, odir: Path, stdout_text: str,
 
 
 def _solve_one(core: int, solver_dir: str, env_extra: dict, cnf_path: Path, odir: Path,
-               timeout: int, mem_mb: int, seed: int, verify: bool = True) -> tuple:
+               timeout: int, mem_mb: int, seed: int, verify: bool = True,
+               keep: tuple = (), kept: list | None = None) -> tuple:
     """Run the solver on one (instance,seed) pinned to `core`.
 
     Returns (result, secs, conflicts, propagations, decisions, verified, (ticks, eliminate_resolutions,
@@ -872,6 +876,9 @@ def _solve_one(core: int, solver_dir: str, env_extra: dict, cnf_path: Path, odir
     kissat-CLI solvers (solver 13+) get `--seed=N`, then the arm's SAT_EXTRA_ARGS split shell-style
     (plan section 7 step 5b: every interval/effort knob is a kissat option), then the CNF and, only
     when the answer will be checked, the proof file `<odir>/proof.out` (a proof costs time and disk).
+
+    With `keep` (a tuple of line prefixes) and a list `kept`, the solver's stdout lines that start
+    with one of the prefixes are appended to `kept` (abtest's --keep-lines).
     """
     odir.mkdir(parents=True, exist_ok=True)
     # `{odir}` in an arm's value is this run's scratch directory, so a per-run
@@ -908,6 +915,8 @@ def _solve_one(core: int, solver_dir: str, env_extra: dict, cnf_path: Path, odir
             g = lambda k: (re.search(rf'"{k}":([0-9.eE+-]+)', js) or [None, "NA"])[1]
             wc = parse_workclock(p.stdout)
             w = lambda k: wc.get(k, "NA")
+            if keep and kept is not None:
+                kept.extend(ln for ln in p.stdout.splitlines() if ln.startswith(keep))
             if js:
                 counts = (g("conflicts"), g("propagations"), g("decisions"))
             else:
@@ -990,16 +999,30 @@ def abtest(args) -> int:
     for c in CORES:
         core_pool.put(c)
 
+    # --keep-lines: the solver's stdout lines with these prefixes, one file per arm,
+    # <camp>/<tag>/kept.tsv, a row per line (instance, seed, result, time_s, verified,
+    # line), appended as each run ends so a long run's lines survive a crash
+    keep = tuple(getattr(args, "keep_lines", None) or ())
+    kept_lock = threading.Lock()
+    if keep:
+        for tag in tags:
+            (camp / tag).mkdir(parents=True, exist_ok=True)
+
     try:
         def run(job):
             jidx, tag, sdir, env_extra, stem, seed = job
             core = core_pool.get()
+            kept = [] if keep else None
             try:
                 res, dt, cf, pr, dc, ver, wc, note = _solve_one(
                     core, sdir, env_extra, cnf_for[stem], work_root / f"{jidx}",
-                    args.timeout, args.mem_mb, seed, verify=args.verify)
+                    args.timeout, args.mem_mb, seed, verify=args.verify, keep=keep, kept=kept)
             finally:
                 core_pool.put(core)
+            if kept:
+                with kept_lock, open(camp / tag / "kept.tsv", "a") as fh:
+                    for ln in kept:
+                        fh.write(f"{stem}\t{seed}\t{res}\t{dt:.3f}\t{ver}\t{ln.replace(chr(9), ' ')}\n")
             return (tag, stem, seed, res, dt, cf, pr, dc, ver, wc, note)
 
         results = []
@@ -1223,6 +1246,10 @@ def main() -> int:
     ap.add_argument("--baseline", default="",
                     help="arm tag used as the A/B reference (default: an arm named "
                          "base/baseline/default/prev/previous, else the last --arm).")
+    ap.add_argument("--keep-lines", action="append", default=None, metavar="PREFIX",
+                    help="with --arm: keep the solver's stdout lines that start with PREFIX "
+                         "(repeatable, e.g. 'c workclock '), in <run>/<arm>/kept.tsv, one row per line "
+                         "(instance, seed, result, time_s, verified, line), appended as each run ends.")
     # None => resolve per mode below: A/B (--arm) wants 32 cores / 16GB / 30min; other modes keep 4/14000/300.
     ap.add_argument("--timeout", type=int, default=None)
     ap.add_argument("--mem-mb", type=int, default=None)
@@ -1234,6 +1261,10 @@ def main() -> int:
     if not SUITE.is_dir():
         ap.error(f"--suite {SUITE} is not a directory")
     arm_mode = bool(args.arm)
+    if args.keep_lines and not arm_mode:
+        ap.error("--keep-lines needs --arm")
+    if args.keep_lines and not all(args.keep_lines):
+        ap.error("--keep-lines needs a non-empty prefix")
     timeout_explicit = args.timeout is not None
     if args.jobs is None:
         args.jobs = 32 if arm_mode else 4

@@ -179,10 +179,11 @@ kissat_options! {
     // structure pass, last, with a work limit of its own. Off by default; 1
     // prints its counts, 2 also checks them by simulation
     // (tools/free_read_check.py). The walk over the choices (bead
-    // d96.2.4.2) will read through it. freereadticks 10,000,000 K covers
-    // every lockchart (at most 0.64G), oddball (7.1G) and mp1 cell of 2025
+    // d96.2.4.2) will read through it. Its work is counted 16 units to a
+    // tick (bead d96.2.5); freereadticks 625,000 K, 10G units, covers every
+    // lockchart (at most 0.64G units), oddball (7.1G) and mp1 cell of 2025
     // and cuts 10 of the 381 cells read (six GP cells, ncc_none and three
-    // anonymous cells, 10.1-44.0G)
+    // anonymous cells, 10.1-44.0G units)
     (freeread, 0, 0, 2, "free-choice reading: 1 print its counts, 2 also simulate"),
     // freereadclauses (2026-11-09, bead d96.2.4.2): the reading's own buffer
     // limit. With the reading or the walk on, the structure pass buffers up
@@ -190,7 +191,7 @@ kissat_options! {
     // on an overflow, and only the reading runs, so the oddball tto cells
     // (19-47M clauses) are read without turning the passes on for them
     (freereadclauses, 50_000_000, 0, i32::MAX, "free-choice reading clause limit"),
-    (freereadticks, 10_000_000, 0, i32::MAX, "free-choice reading work limit (K)"),
+    (freereadticks, 625_000, 0, i32::MAX, "free-choice reading work limit (K)"),
     // Not in kissat (2026-11-09, bead SAT-playground-d96.2.4.2): the
     // free-choice walk (src/freewalk.rs), the prototype tools/free-walk in
     // the solver. Off by default. Where it runs: 1 once before the search

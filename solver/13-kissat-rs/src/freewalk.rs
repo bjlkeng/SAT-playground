@@ -107,25 +107,40 @@ impl Rng {
     }
 }
 
-/// The work clock while the walk is built: work is paid for before it is done.
+/// The work clock while the walk is built: work is paid for before it is
+/// done, in the reading's units (`freeread::UNITS_PER_TICK` to a tick: the
+/// build runs at about the reading's speed, 225-546M units a second on the
+/// cells of bead SAT-playground-d96.2.5's pilot).
+const BUILD_UNITS_PER_TICK: u64 = crate::freeread::UNITS_PER_TICK;
+
 struct Clock<'a> {
     ticks: &'a mut u64,
     budget: u64,
     stop: &'a AtomicBool,
+    /// Units paid and not yet a whole tick.
+    units: u64,
     last: u64,
 }
 
-impl Clock<'_> {
-    /// Pay for `n` units of work (ticks while building). None when the limit
-    /// does not cover them or the run was told to stop.
+impl<'a> Clock<'a> {
+    fn new(ticks: &'a mut u64, budget: u64, stop: &'a AtomicBool) -> Clock<'a> {
+        let last = *ticks;
+        Clock { ticks, budget, stop, units: 0, last }
+    }
+
+    /// Pay for `n` units of work. None when the limit does not cover them or
+    /// the run was told to stop; nothing is charged for work not done.
     #[inline]
     fn pay(&mut self, n: u64) -> Option<()> {
-        let t = self.ticks.saturating_add(n);
+        let u = self.units.saturating_add(n);
+        let t = self.ticks.saturating_add(u / BUILD_UNITS_PER_TICK);
         if t > self.budget {
             return None;
         }
         *self.ticks = t;
-        if t - self.last >= 1024 {
+        self.units = u % BUILD_UNITS_PER_TICK;
+        // the stop flag once every 1,024 units
+        if t - self.last >= 1024 / BUILD_UNITS_PER_TICK {
             self.last = t;
             if self.stop.load(Ordering::Relaxed) {
                 return None;
@@ -1221,8 +1236,7 @@ impl Walk {
     /// stop at), every table paid for before it is made: the walk's tables,
     /// its state and the first assignment from the seed.
     pub fn build(r: &Reading, p: Params, budget: u64, ticks: &mut u64, stop: &AtomicBool) -> Result<Walk, NoWalk> {
-        let last = *ticks;
-        let mut ck = Clock { ticks, budget, stop, last };
+        let mut ck = Clock::new(ticks, budget, stop);
         let m = Model::build(r, &mut ck)?;
         let (nv, nn, nc, nh) = (m.nv as u64, m.nnodes() as u64, m.ncons() as u64, m.hc_node.len() as u64);
         let mut tot = 0usize;
@@ -1663,8 +1677,9 @@ pub fn unread(solver: &mut Solver, why: &'static str) {
 /// In the structure pass, after the reading: the file test, then the walk
 /// built within `budget` (what is left of the reading's own limit).
 pub fn build(solver: &mut Solver, r: &Reading, budget: u64, stop: &AtomicBool) {
-    // the file test looks at each settled variable once, paid for first
-    let look = r.order.len() as u64 + 1;
+    // the file test looks at each settled variable once, paid for first (in
+    // the build's units)
+    let look = (r.order.len() as u64 + 1).div_ceil(BUILD_UNITS_PER_TICK);
     if solver.statistics.ticks.saturating_add(look) > budget {
         solver.freewalk.status = "budget";
         return;

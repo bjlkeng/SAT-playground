@@ -6142,9 +6142,24 @@ takes 2 ms to 3.3 s, 31 to 47 times faster than the census's Python role reading
 (up to 109 s, the stages column, parsing apart); on oddball 17 ms to 7.9 s (12 to
 29 times faster); on mp1 72-74 ms (47-49 times). The work is at most 0.64G on
 lockchart and 7.1G on oddball, 44.0G on the costliest cell, about 436K units a
-millisecond. The default limit, 10,000,000 K, covers every lockchart, oddball and
+millisecond. The default limit, 10G units, covers every lockchart, oddball and
 mp1 cell and cuts 10 of the 381 cells read (six GP cells, `ncc_none` and three
 anonymous cells, 10.1-44.0G).
+
+**16 units a tick** (2026-11-09, bead `d96.2.5`). The reading first counted one
+unit as one tick of the work clock, but a unit is far quicker than a tick of the
+search: on the 225 cells of 2025 where both take at least a little time (the reading
+20 ms or more, the run 5 s or more; the search from the off arm of the point step's
+run), the reading does a median 435M units a second and the search 27M ticks a
+second, a median ratio of 15.6 (half the cells between 10.7 and 29.6). So the
+reading now counts 16 units to a tick, as the grid reader does, and the walk's build
+too (it runs at 225-546M units a second). Its limit, `--freereadticks`, is 625,000 K,
+the same 10G units, so it cuts the same cells. What went wrong before, on one cell
+(`crusti_g2io_175_0.2_511_32`, a 10 s search of 41M ticks): the reading counted
+1.21G and the build 0.36G, so a walk in turns at a quarter of the work clock was owed
+0.53G ticks and walked for 34-45 s; with 16 units a tick it walks 4.4 s and the run
+takes 19.9 s instead of 49.6 s (off: 11.7 s). Off is unchanged (every counter of the
+23 cells of the earlier check, against the frozen `22c66e7`).
 
 **For the walk.** At the default `structclauses` (10M) the oddball `tto` cells
 (19-47M clauses) overflow the buffer and are not read. A bigger buffer reads them,
@@ -6207,7 +6222,9 @@ the prototype comparison's shipped arm,
 With 8, a walk tick takes 1.2 times a search tick on group 2 and 0.9 times on group 1.
 On oddball the walk does 364M units a second (`oddball_51_5`), so there its ticks are
 3-5 times quicker than the search's (9-17M a second): a share of the work is a smaller
-share of the time.
+share of the time. Building the walk counts in the reading's units, 16 to a tick
+(since bead `d96.2.5`; the reading's section above has the measurement and the cell
+where the first count went wrong).
 
 **Checks.**
 - **Toys** (`cargo test freewalk`, eleven tests; `tests/fixtures/freewalk_toys.txt`,

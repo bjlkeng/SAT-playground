@@ -78,25 +78,42 @@ fn var(lit: i32) -> usize {
     lit.unsigned_abs() as usize
 }
 
+/// The reading counts its work in units, 16 to a tick, as the grid reader
+/// does, so that a tick of the reading takes about as long as a tick of the
+/// search: on the 2025 cells the reading does a median 435M units a second
+/// and the search 27M ticks a second (bead SAT-playground-d96.2.5). The
+/// walk's build counts the same way (src/freewalk.rs).
+pub const UNITS_PER_TICK: u64 = 16;
+
 /// The work clock: work is paid for before it is done.
 struct Clock<'a> {
     ticks: &'a mut u64,
     budget: u64,
     stop: &'a AtomicBool,
+    /// Units paid and not yet a whole tick.
+    units: u64,
     last: u64,
 }
 
-impl Clock<'_> {
+impl<'a> Clock<'a> {
+    fn new(ticks: &'a mut u64, budget: u64, stop: &'a AtomicBool) -> Clock<'a> {
+        let last = *ticks;
+        Clock { ticks, budget, stop, units: 0, last }
+    }
+
     /// Pay for `n` units of work. None when the limit does not cover them or
     /// the run was told to stop; nothing is charged for work not done.
     #[inline]
     fn pay(&mut self, n: u64) -> Option<()> {
-        let t = self.ticks.saturating_add(n);
+        let u = self.units.saturating_add(n);
+        let t = self.ticks.saturating_add(u / UNITS_PER_TICK);
         if t > self.budget {
             return None;
         }
         *self.ticks = t;
-        if t - self.last >= 1024 {
+        self.units = u % UNITS_PER_TICK;
+        // the stop flag once every 1,024 units
+        if t - self.last >= 1024 / UNITS_PER_TICK {
             self.last = t;
             if self.stop.load(Ordering::Relaxed) {
                 return None;
@@ -456,8 +473,7 @@ pub enum NotRead {
 /// Read the roles of the structure pass's formula within `budget` (the tick
 /// count to stop at), counting the work into `ticks`.
 pub fn read(f: &Formula, budget: u64, ticks: &mut u64, stop: &AtomicBool) -> Result<Reading, NotRead> {
-    let last = *ticks;
-    let mut ck = Clock { ticks, budget, stop, last };
+    let mut ck = Clock::new(ticks, budget, stop);
     let cnf = Cnf::from_formula(f, &mut ck).ok_or(NotRead::Budget)?;
     let clauses_read = cnf.m();
     let (red, root, satisfied) = match unit_propagate(cnf, &mut ck).ok_or(NotRead::Budget)? {
@@ -1879,7 +1895,34 @@ mod tests {
         assert!(ticks <= 1_000, "{}", ticks);
         let mut ticks = 0u64;
         assert!(read(&f, u64::MAX, &mut ticks, &stop).is_ok());
-        assert!(ticks >= 4 * 10_000_000, "{}", ticks);
+        assert!(ticks >= 4 * 10_000_000 / UNITS_PER_TICK, "{}", ticks);
+    }
+
+    #[test]
+    fn the_reading_counts_sixteen_units_to_a_tick() {
+        // 1,000 units paid one at a time are 62 ticks and 8 units over; a
+        // payment the limit does not cover charges nothing
+        let stop = AtomicBool::new(false);
+        let mut ticks = 5u64;
+        let mut ck = Clock::new(&mut ticks, 1_000, &stop);
+        for _ in 0..1_000 {
+            ck.pay(1).unwrap();
+        }
+        assert_eq!((*ck.ticks, ck.units), (5 + 62, 8));
+        assert!(ck.pay(16 * 10_000).is_none());
+        assert_eq!((*ck.ticks, ck.units), (5 + 62, 8));
+        ck.pay(16 * (1_000 - 67) - 8).unwrap();
+        assert_eq!((*ck.ticks, ck.units), (1_000, 0));
+        assert!(ck.pay(16).is_none());
+        // the stop flag ends a reading within 1,024 units
+        let stop = AtomicBool::new(true);
+        let mut ticks = 0u64;
+        let mut ck = Clock::new(&mut ticks, u64::MAX, &stop);
+        let mut paid = 0;
+        while ck.pay(1).is_some() {
+            paid += 1;
+        }
+        assert!(paid < 1_024, "{}", paid);
     }
 
     #[test]
