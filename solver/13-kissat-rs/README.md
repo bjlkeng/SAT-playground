@@ -6340,6 +6340,265 @@ time on oddball than on lockchart (the walk's ticks are 3-5 times quicker there)
 And the phases are about 71 s on group 1 against the prototype's 30 s, since a walk
 tick takes 2.4 times as long there as on group 2.
 
+## Free choices: the 400-cell run (2026-11-09 to 2026-11-12; bead `SAT-playground-d96.2.5`, epic `SAT-playground-d96.2`)
+
+The walk of the section above, run on the 400 cells of 2025 at 1,800 s to choose
+where it runs, which cells get it and how much work it gets (G.8.3 left all three to
+this run). Three stages: the placements, then the budget of the best one, then the
+choice against off at fresh seeds.
+
+**How it was run.** One frozen binary for all three stages,
+`solver/13-j11-freewalk-snapshot` (commit `ac66940`, sha256 `54e3dc820f04e52f`),
+through `tools/feature_ablation.py`: 32 jobs, 16 GB and 1,800 s a run, every model
+checked by `tools/verify_sat.py` and every proof by the proof gate. The launcher is
+`log/freewalk-400-2026-11-09/launch.sh` (`launch.sh STAGE SUITE TIMEOUT NAME`), with
+each stage's launch log beside it. `--keep-lines` kept each run's `c freewalk`,
+`c freeread` and `c workclock` lines (`kept.tsv` in each arm's folder). The tables
+below come from `tools/free_walk_score.py RUN... --families --tests --cells`; the
+walk's own figures (steps, ticks, its time) from its `c freewalk` lines, and stage
+3's check that the search is off's from the `c workclock` lines, both in `kept.tsv`.
+The scorer classes every stop as `tools/rl_sweep_report.py` does. A failed, missing
+or skipped check, a crash, a premature stop, or SAT against UNSAT between arms fails
+the comparison: there were none in any stage. Two cells abort at 16 GB in every arm, off
+included (`pj2002_k500`, `17.normalised`); the harness records the memory note, and
+they count as unsolved. A pilot on 8 cells found that the reading and the walk's build
+counted one unit of their work as one tick; since `ac66940` they count 16 to a tick
+(the reading's section above).
+
+**Stage 1, placements** (`log/abtest-freewalk-stage1-400-2026-11-09-20-59-47`,
+2026-11-09 21:00 to 2026-11-10 23:38). Off and three placements, each at seeds 0 and
+1. Every walk arm ran with the broad test, so that the narrower tests can be scored
+from the same runs (below), and with about a quarter of the work:
+- first: `--freewalk=1 --freewalkticks=3600000`, one walk of 3.6G ticks before the
+  search, about a quarter of an 1,800 s run on lockchart group 1 (the search does
+  13.2G ticks there);
+- turns: `--freewalk=2 --freewalkshare=250`;
+- rephase slots: `--freewalk=3 --freewalkshare=250`.
+
+| Arm (seeds 0, 1) | Solved | + | − | Walk found | Wall PAR-2 × off | Tick PAR-2 × off | W on cells both solve × off |
+|---|---|---|---|---|---|---|---|
+| off | 661 (329 + 332) | | | | 1 | 1 | 1 |
+| first | 660 (328 + 332) | 10 | 11 | 39 | 1.124 | 1.023 | 1.337 |
+| rephase slots | 645 (321 + 324) | 11 | 27 | 25 | 1.111 | 1.007 | 1.240 |
+| turns | 641 (320 + 321) | 11 | 31 | 26 | 1.130 | 1.007 | 1.263 |
+
+(+ and − are the cells an arm solves and off at the same seed does not, and the
+reverse. Walk found: runs where the walk itself found the model.)
+
+- **The gains** are the five lockchart group 2 cells (off solves one run in ten, L19_4
+  at seed 0 in 1,048 s; every walk run finds every model itself) and the argumentation
+  cell `ER_400_20_7.apx_2` at seed 0 (the walk first finds it in 118 s).
+- **The losses** are cells off solves late: case, oski, bp4 and bp5, dislog,
+  goldcrest, valves, `g2-T49`, `Circuit_multiplier29`. The walk finds nothing there and
+  takes its share. A small example: `case6.normalised` at seed 0 (satisfiable), off
+  1,463 s. First walks 175 s (its 3.6G ticks) and then runs the stock search: solved
+  at 1,690 s. In turns the walk keeps a quarter of the work, but its ticks are slower
+  than the search's there (about 20M a second against 47M), so it takes 782 s of the
+  1,800; the search does not finish. In the rephase slots it takes 710 s: lost too.
+  That is why first loses 11 cells and the others 27 and 31.
+
+**The file tests, scored from the broad runs.** A test changes only the cells it
+admits, so every test is scored without running it: the arm's own run on the cells
+the test admits, and off's run at the same seed on the others, plus the reading's
+time and work as that arm's run measured them (its `c freeread` line; the record of
+`d96.2.4.1`, `benchmarks/rl/freeread_2025.tsv`, where a run printed none). A cell
+whose off time plus the reading passes 1,800 s is unsolved. Whether a test admits a
+cell comes from the reading's shape on the arm's `c freewalk` line (from the record
+where the reading did not finish). The census's shares (the choice share, the free
+share, and the share of clauses false at a random start) come from the record. The
+first three tests are the solver's (strict, loose, broad); the others are the broad
+test with a limit on one share. The table has every placement and budget of stages 1
+and 2; each entry is solved over seeds 0 and 1 (off 661), the cells gained and lost,
+and wall PAR-2 against off:
+
+| Test | Cells | first 1.44G | first 3.6G | first 7.2G | rephase slots 25% | turns 25% |
+|---|---|---|---|---|---|---|
+| strict | 12 | 668 (+8 −1), 0.960x | 669 (+9 −1), 0.955x | 670 (+10 −1), 0.951x | 669 (+9 −1), 0.956x | 669 (+9 −1), 0.956x |
+| loose | 125 | 666 (+8 −3), 0.989x | 662 (+9 −8), 1.030x | 653 (+10 −18), 1.102x | 658 (+9 −12), 1.025x | 656 (+9 −14), 1.034x |
+| broad | 286 | 665 (+8 −4), 1.030x | 661 (+10 −10), 1.121x | 644 (+11 −28), 1.304x | 646 (+11 −26), 1.107x | 642 (+11 −30), 1.126x |
+| broad, choice share <= 0.02 | 50 | 668 (+8 −1), 0.970x | 668 (+9 −2), 0.982x | 667 (+10 −4), 1.005x | 665 (+9 −5), 0.974x | 663 (+9 −7), 0.980x |
+| broad, choice share <= 0.05 | 95 | 668 (+8 −1), 0.978x | 667 (+9 −3), 1.003x | 663 (+10 −8), 1.055x | 663 (+9 −7), 0.996x | 661 (+9 −9), 1.003x |
+| broad, choice share <= 0.1 | 146 | 667 (+8 −2), 0.995x | 665 (+9 −5), 1.044x | 651 (+10 −20), 1.156x | 656 (+9 −14), 1.047x | 653 (+9 −17), 1.060x |
+| broad, choice share <= 0.2 | 220 | 666 (+8 −3), 1.012x | 661 (+9 −9), 1.089x | 646 (+10 −25), 1.231x | 650 (+9 −20), 1.081x | 646 (+9 −24), 1.097x |
+| broad, free share <= 0 | 46 | 668 (+8 −1), 0.965x | 669 (+9 −1), 0.968x | 669 (+10 −2), 0.980x | 667 (+9 −3), 0.970x | 667 (+9 −3), 0.970x |
+| broad, free share <= 0.01 | 79 | 668 (+8 −1), 0.971x | 669 (+9 −1), 0.980x | 667 (+10 −4), 1.008x | 664 (+9 −6), 0.984x | 663 (+9 −7), 0.987x |
+| broad, free share <= 0.05 | 142 | 668 (+8 −1), 0.983x | 667 (+9 −3), 1.018x | 662 (+10 −9), 1.085x | 661 (+9 −9), 1.010x | 659 (+9 −11), 1.018x |
+| broad, false at start <= 0.1 | 88 | 659 (+0 −2), 1.020x | 657 (+0 −4), 1.044x | 654 (+0 −7), 1.082x | 651 (+0 −10), 1.058x | 649 (+0 −12), 1.066x |
+| broad, false at start <= 0.2 | 208 | 660 (+2 −3), 1.043x | 655 (+2 −8), 1.115x | 649 (+3 −15), 1.226x | 643 (+2 −20), 1.111x | 641 (+2 −22), 1.122x |
+| broad, false at start <= 0.3 | 254 | 666 (+8 −3), 1.019x | 663 (+10 −8), 1.095x | 651 (+11 −21), 1.246x | 650 (+11 −22), 1.086x | 647 (+11 −25), 1.101x |
+
+- **Strict admits only the 12 lockchart cells.** It keeps every lockchart group 2
+  gain and drops nearly every loss: 669 (+9 −1) in all three placements of stage 1.
+  Its one loss is lockchart group 1 L190 at seed 1, which off solves in 1,622 s and
+  every placement pushes past 1,800 s.
+- Wider tests add cells and no gains. "Free share 0" (46 cells) and "at most 0.01"
+  (79) also reach 669 first, at more cost. The "false at start" limits turn lockchart
+  down (its share is 0.10 to 0.43), so they gain nothing.
+- **Choice after stage 1: first, with the strict test.** The placements tie on solved
+  under strict. Their tick PAR-2 gap (turns 0.945, rephase slots 0.948, first 0.953)
+  comes from the work each had reached on unsolved cells when they were stopped; on
+  the cells both solve the work is within 0.2%. First loses the least wherever a test
+  admits a cell the walk cannot help, and it finds the group 2 models 2-3 times faster
+  (23-113 s, against 52-320 s in turns).
+
+**Stage 2, the budget** (`log/abtest-freewalk-stage2-400-2026-11-10-23-39-23`,
+2026-11-10 23:39 to 2026-11-11 14:07). The walk first at 10% and 50% of a group 1
+run's work (`--freewalkticks` 1,440,000 and 7,200,000), seeds 0 and 1, the broad
+test; scored with stage 1's off and its 25% arm.
+
+| Budget (ticks) | The arm, broad test | Wall × off | Strict test | Wall × off | Tick × off |
+|---|---|---|---|---|---|
+| 1.44G | 664 (+8 −5) | 1.032 | 668 (+8 −1) | 0.960 | 0.960 |
+| 3.6G (stage 1) | 660 (+10 −11) | 1.124 | 669 (+9 −1) | 0.955 | 0.953 |
+| 7.2G | 643 (+11 −29) | 1.306 | 670 (+10 −1) | 0.951 | 0.951 |
+
+With the same seed the walk takes exactly the same steps at every budget; the budget
+only decides where it stops. The work to each lockchart model (ticks, and steps):
+
+| Cell | Seed 0 | Seed 1 |
+|---|---|---|
+| group 2 L18 | 0.37G (350,294) | 0.43G (400,436) |
+| group 2 L19_1 | 2.03G (1,637,414) | 0.93G (758,799) |
+| group 2 L19_2 | 0.67G (569,451) | 0.71G (595,587) |
+| group 2 L19_3 | 1.05G (849,879) | 0.84G (680,546) |
+| group 2 L19_4 | 0.60G (512,448) | 0.69G (582,158) |
+| group 1 L200 | none within 7.2G (81,652) | 3.604G (55,352) |
+
+These are the step counts of the acceptance run above (L18 at seed 0, 350,294; L19_1
+at seed 0, 1,637,414), so the walk is the same in every stage. 1.44G misses L19_1 at
+seed 0. 3.6G finds every group 2 model and misses L200 at seed 1 by 22 steps (it
+stopped at step 55,330). Only 7.2G adds L200. The cost: the walk runs 1,029-1,206 s
+on group 1 at 7.2G (the walk makes about 6-7M ticks a second there) before the search
+starts, and 344-388 s on group 3. The one group 1 run off solves early (L210 at seed
+1, 185 s) still solves, at 1,304 s. With the broad test the bigger budget costs far
+more (643 against 664 at 1.44G), but the strict test admits only lockchart.
+
+**Choice for stage 3: the walk first, the strict test, 7.2G ticks**
+(`--freewalk=1 --freewalkticks=7200000 --freewalktest=1`), the best of the three
+budgets on solved, tick PAR-2 and wall PAR-2. Its one extra cell landed just past the
+3.6G budget, but group 1 models do come in that range. The prototype's six group 1
+finds came at 208, 247, 668, 789, 927 and 1,145 s of walking. On group 1, 3.6G ticks
+last 565-606 s of the solver's walking and 7.2G last 1,029-1,206 s, so in time the
+smaller budget covers two of those finds and the larger five or six (the two walks
+make about the same steps a second).
+
+**Stage 3, the choice against off at fresh seeds**
+(`log/abtest-freewalk-stage3-400-2026-11-11-14-11-56`, 2026-11-11 14:12 to
+2026-11-12 03:20). Off and the choice (`--freewalk=1 --freewalkticks=7200000
+--freewalktest=1`, with `--freeread=1` for the reading's line) at seeds 2 and 3,
+the four arms started together. The choice runs the strict test itself here, so
+nothing in this table is scored by substitution.
+
+| Arm (seeds 2, 3) | Solved | + | − | Walk found | Wall PAR-2 × off | Tick PAR-2 × off | W on cells both solve × off | Reading's share of tick PAR-2 |
+|---|---|---|---|---|---|---|---|---|
+| off | 673 (336 + 337) | | | | 1 | 1 | 1 | |
+| the choice | 681 (340 + 341) | 10 | 2 | 11 | 0.957 | 0.954 | 1.000 | 0.003 |
+
+- **Where the walk ran.** The strict test admitted the 12 lockchart cells at both
+  seeds, and no other cell. Group 2: the walk found the model in all 10 runs, in
+  17-277 s of walking (0.31G-4.42G ticks). L19_1 at seed 3 took 4.42G ticks
+  (3,604,869 steps), past the 3.6G budget of stage 1, so the fresh seeds land past
+  it too. Group 1: the walk found L220 at seed 3 (36,841 steps, 2.71G ticks, 472 s).
+  The other 7 group 1 runs walked the whole 7.2G (1,010-1,211 s) and then ran the
+  stock search. Group 3: the whole 7.2G (345-486 s, at best 1-6 clauses false), then
+  the search, unsolved as in off.
+- **Lockchart: off 5 of 24 runs, the choice 14, +9 −0.** The three group 1 runs off
+  solves where the walk finds nothing still solve, later: L220 at seed 2 in 1,355 s
+  (off 184 s), L190 at seed 3 in 1,196 s (off 214 s), L200 at seed 2 in 1,750 s (off
+  742 s, 50 s from the limit).
+- **Where the walk did not run** (388 cells a seed: turned down by the test, or no
+  reading), the search is off's, step for step. On all 332 and 334 cells both arms
+  solve, the conflicts, decisions, propagations and search ticks are the same. The
+  work differs only by the reading's and the test's (the test looks at each variable
+  once, a sixteenth of a tick each, at most 0.54M ticks here): a median of 1.0M ticks
+  a cell, at most 625M (the reading's limit); a median of 35 ms, at most 23 s
+  (`18.normalised`, where the reading reached its limit).
+- **The three cells that changed outside lockchart are host timing, not search.**
+  `grs-256-64` at seed 2: off solves it at 25.80G ticks in 1,564 s; the choice had
+  done 25.56G of the same search (99%) when it was stopped at 1,800 s, at 14.2M ticks
+  a second against off's 16.5M. `VanDerWaerden_pd_2-3-22_462` at seed 3: off solves
+  it at 65.82G in 1,763 s; the choice had done 64.02G. And the reverse,
+  `reconf10_22_queen20_3_8667` at seed 2: the choice solves it at 55.66G in 1,418 s,
+  and off had done 47.65G when stopped (26.5M ticks a second against 39.2M; at seed
+  3 both solve it in 34.5G, in 865 and 884 s). Scored the way the file tests are
+  (off's run on the 388 cells, plus the reading's measured time and work), the choice
+  is 682 (+9 −0), wall 0.952, tick 0.952.
+- **Over the four seeds at 7.2G** (stage 2's arm under the strict test at seeds 0
+  and 1, the choice at 2 and 3), lockchart is off 8 of 48 runs and the walk 26 (+19
+  −1). Group 2: the walk found the model in 20 of 20 runs. Group 1: in 2 of 16 (L200
+  at seed 1, L220 at seed 3). Group 3: in none of 12. The one loss is L190 at seed 1
+  (off 1,622 s).
+
+**Per family, stage 3** (solved; the families where the choice differs from off at
+the same seed):
+
+| Family | Cells | off s2 | choice s2 | off s3 | choice s3 |
+|---|---|---|---|---|---|
+| grs | 5 | 5 | 4 | 5 | 5 |
+| lockchart | 12 | 3 | 7 | 2 | 7 |
+| reconf | 4 | 3 | 4 | 4 | 4 |
+| vdw | 3 | 1 | 1 | 3 | 2 |
+
+**Per family, stages 1 and 2** (solved at seeds 0 and 1: off; the walk first at
+1.44G, 3.6G and 7.2G ticks; rephase slots and turns at 25%; every walk arm with the
+broad test; the families where an arm differs from off):
+
+| Family | Cells | off s0 | s1 | 1.44G s0 | s1 | 3.6G s0 | s1 | 7.2G s0 | s1 | rephase s0 | s1 | turns s0 | s1 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| argumentation | 11 | 5 | 5 | 5 | 5 | 6 | 5 | 6 | 5 | 6 | 6 | 6 | 6 |
+| bp | 20 | 16 | 12 | 16 | 12 | 15 | 11 | 15 | 10 | 15 | 10 | 14 | 10 |
+| case | 12 | 12 | 12 | 12 | 12 | 12 | 12 | 12 | 11 | 10 | 11 | 10 | 11 |
+| circuit-multiplier | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 1 | 2 | 1 | 2 |
+| dltm | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 1 | 2 | 1 | 2 | 1 |
+| frb | 2 | 1 | 2 | 1 | 2 | 1 | 2 | 1 | 2 | 1 | 2 | 1 | 2 |
+| g2-t | 2 | 1 | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| gm-sparrc | 4 | 4 | 4 | 4 | 4 | 4 | 4 | 4 | 4 | 3 | 4 | 3 | 3 |
+| goldcrest | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 1 | 1 | 1 | 1 | 1 | 1 |
+| grs | 5 | 4 | 5 | 4 | 5 | 4 | 5 | 4 | 4 | 4 | 5 | 4 | 4 |
+| hcp | 3 | 0 | 3 | 0 | 3 | 0 | 3 | 0 | 2 | 0 | 2 | 0 | 2 |
+| itc99 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 8 | 8 | 9 | 9 | 9 | 9 |
+| kakuro | 4 | 3 | 4 | 3 | 3 | 3 | 3 | 3 | 3 | 3 | 3 | 3 | 3 |
+| lockchart | 12 | 1 | 2 | 4 | 6 | 5 | 6 | 5 | 7 | 5 | 6 | 5 | 6 |
+| ncc | 3 | 3 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 |
+| oddball | 20 | 10 | 12 | 10 | 12 | 10 | 12 | 10 | 12 | 10 | 12 | 10 | 12 |
+| oski | 12 | 12 | 12 | 12 | 12 | 11 | 12 | 11 | 11 | 10 | 10 | 10 | 10 |
+| rbsat | 2 | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 |
+| reconf | 4 | 3 | 4 | 3 | 4 | 3 | 4 | 2 | 4 | 2 | 4 | 2 | 4 |
+| sat-dat | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 0 | 0 | 1 | 1 | 1 | 1 |
+| singletons | 13 | 9 | 11 | 8 | 11 | 8 | 11 | 8 | 11 | 8 | 9 | 8 | 9 |
+| sted | 3 | 2 | 3 | 2 | 3 | 2 | 3 | 2 | 3 | 2 | 3 | 2 | 3 |
+| sudoku | 5 | 3 | 3 | 3 | 3 | 3 | 3 | 0 | 1 | 3 | 3 | 3 | 2 |
+| timetable | 12 | 8 | 5 | 8 | 5 | 8 | 5 | 8 | 5 | 8 | 5 | 8 | 5 |
+| valves | 1 | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| vdw | 3 | 2 | 1 | 2 | 1 | 2 | 1 | 2 | 1 | 2 | 1 | 2 | 1 |
+
+**What to read the results by.**
+- The whole gain is lockchart, the cells the walk was built for: every group 2 model
+  at every seed, and some group 1 models with the larger budget. Groups 1 and 3 stay
+  mostly unsolved.
+- Under a wall limit, a cell close to the limit can flip with the speed of its core
+  even when the search is the same: three did in stage 3. The per-cell counters
+  (conflicts, search ticks) tell the two apart.
+- The strict test admits only lockchart on 2025. What it admits elsewhere is unknown
+  (the 2026 holdout was not consulted). A cell it admits where the walk cannot find a
+  model, such as an unsatisfiable lockchart, costs up to 7.2G ticks of walking before
+  the search: about 1,100 s at group 1's size, 350 s at group 3's.
+- A share of the work is not a share of the time. The walk's ticks are slower than
+  the search's on `case6` (20M against 47M a second) and on lockchart group 1, and
+  3-5 times quicker on oddball.
+- The walk's own timing moves with the load on the host: the same 1,637,414 steps
+  took 110 s in one stage and 169 s in another.
+
+**Promotion.** Recommended: the choice on by default (`freewalk=1`,
+`freewalkticks=7200000`, `freewalktest=1`). At fresh seeds it solves 8 more runs than
+off (681 v 673) at 4.3% less wall PAR-2 and 4.6% less tick PAR-2; with the timing
+flips taken out, +9 −0. Where the test turns a cell down, the search is the stock
+one and the reading costs 0.3% of the work. Against it: the whole gain is one family
+of 12 cells that the strict test was shaped around. What the test admits on other
+sets is unknown. A cell it admits where the walk finds nothing pays up to 7.2G ticks
+before the search, 1,000-1,200 s at group 1's size: one loss and one close call in
+four seeds. The owner's decision: pending (asked 2026-11-12).
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.

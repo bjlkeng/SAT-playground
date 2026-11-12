@@ -109,8 +109,11 @@ work is **solver 13** and the RL scheduler on top of it.
   (`d96.2.4.2`, 2026-11-09, `src/freewalk.rs`, `--freewalk`, off by default; solver README
   "Free choices: the walk in the solver"): the prototype's walk, step for step the same
   (`tools/free_walk_check.py`) and as fast, its work in the work clock, every model checked
-  against the input. Where it runs (first, turns, rephase slots), which cells (strict,
-  loose, broad) and its share are options for the 400-cell run (`d96.2.5`).
+  against the input. The 400-cell run (`d96.2.5`, 2026-11-12; solver README "Free
+  choices: the 400-cell run") chose the walk first, the strict test (on 2025 it admits
+  only the 12 lockchart cells) and 7.2G ticks: at fresh seeds 2 and 3 it solves 681 v
+  673, wall PAR-2 0.957x, the whole gain lockchart (+9 −0); on the cells the test turns
+  down, the search is off's, step for step. Promotion is the owner's call.
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a
