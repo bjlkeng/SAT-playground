@@ -199,9 +199,13 @@ that loss was luck, and its read costs 0.3% of the work ("Count and alldifferent
 lemmas" below). The point step, `structpoints`, is on by default since
 2026-11-06, the owner's call: its paired run solved 671 v 659 over two
 seeds, the six ramsey cells on both, and elsewhere the search is the same
-("The point step" below). The stock kissat path is `--structsym=0 --structparity=0
+("The point step" below). The free-choice walk, `freewalk`, is on by default since
+2026-11-12, the owner's call: first, with the strict test and a 7.2G-tick budget
+(`freewalktest=1`, `freewalkticks=7200000`). At fresh seeds it solved 681 v 673, the
+whole gain lockchart, and on the cells its test turns down the search is the same
+("Free choices: the 400-cell run" below). The stock kissat path is `--structsym=0 --structparity=0
 --structcount=0 --structarith=0 --structsort=0 --structdiv=0
---structdd=0 --structpoints=0` (and `--gauss=0`, the parity engine below, and `--card=0`), which `tools/parity.py` passes unless
+--structdd=0 --structpoints=0` (and `--gauss=0`, the parity engine below, `--card=0` and `--freewalk=0`), which `tools/parity.py` passes unless
 told `--structure`, and the test helpers' `run` too
 (`tests/common/mod.rs`, `STOCK_PATH`). A promoted configuration is
 exactly the measured one:
@@ -6107,7 +6111,9 @@ now it only reports. `--freeread=1` prints one `c freeread` line with the census
 columns, and `--freeread=2` also checks the reading by simulation: 64 random choices,
 everything else computed, and every clause a role claims must come out true.
 `--freereadticks` is its work limit. It is off by default, so the stock path is
-unchanged.
+unchanged. (The walk reads through it, so since the walk is on by default,
+2026-11-12, the reading runs whenever the walk is on; `--freeread` only prints its
+line.)
 
 **Checked against the census, cell by cell** (`tools/free_read_check.py`):
 - **Toys** (`cargo test freeread`; fixture `tests/fixtures/freeread_toys.txt`,
@@ -6178,7 +6184,8 @@ is now in the solver: `src/freewalk.rs`, built from the solver's own reading
 three changes. Its input is the solver's reading, not a file. Time is replaced by
 work: the weighted and plain phases are counted in the walk's own work, and the walk
 runs to a work budget. And it can stop between any two steps and later resume where
-it stopped. It is off by default.
+it stopped. It was off by default until the 400-cell run; since 2026-11-12 it is on,
+first, with the strict test and 7,200,000 K (the next section).
 
 **Options.**
 - `freewalk`, where it runs: 0 off; 1 once before the search, within
@@ -6199,7 +6206,8 @@ it stopped. It is off by default.
 - Defaults for the run: `freewalkshare` 250, `freewalkturn` 10,000 K (about half a
   second on group 2), `freewalkticks` 3,600,000 K (about a quarter of an 1,800 s run
   of walking on group 1, about 190 s on group 2, where the prototype found every
-  model within 101 s).
+  model within 101 s). Since 2026-11-12 the defaults are `freewalk` 1, `freewalktest`
+  1 and `freewalkticks` 7,200,000 K (the next section).
 
 **What it keeps.** The walk never touches the search's assignment, phases, clauses
 or random numbers; it has its own generator, seeded from `--seed`. Its work goes into
@@ -6597,7 +6605,20 @@ one and the reading costs 0.3% of the work. Against it: the whole gain is one fa
 of 12 cells that the strict test was shaped around. What the test admits on other
 sets is unknown. A cell it admits where the walk finds nothing pays up to 7.2G ticks
 before the search, 1,000-1,200 s at group 1's size: one loss and one close call in
-four seeds. The owner's decision: pending (asked 2026-11-12).
+four seeds.
+
+**The owner's decision (2026-11-12): promote.** The walk is on by default since then:
+`freewalk` 1, `freewalktest` 1, `freewalkticks` 7,200,000 (bead
+`SAT-playground-d96.2.6`). The stock kissat path adds `--freewalk=0`:
+`tools/parity.py`, the test helpers' `STOCK_PATH`, the sub-solvers of the structure
+passes and the stock lists of the repo's check and census tools pass it.
+`tools/free_walk_check.py` passes the broad test, so it still walks the cells the
+strict test turns down. Checked before the commit, at seed 0 on five cells
+(`ramsey_3_6_19`, `GP_216_290_40`, `gm24sparrc`, lockchart L18 and L19_4): the new
+build at its defaults gives the same `-s` counters, work clock line and walk line as
+the frozen run binary with the run's options. With `--freewalk=0` it gives the same
+as the frozen binary's stock run (on the two lockchart cells, up to 100,000
+conflicts). `cargo test`: 288 passed. Smoke: 9 of 9.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 

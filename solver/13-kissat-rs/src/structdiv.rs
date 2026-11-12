@@ -961,6 +961,7 @@ fn sub_refute(imp: &Import, net: &Net, eqs: &[[i32; 2]], x: i32, y: i32, capture
         ("structdiv", 0),
         ("gauss", 0),
         ("card", 0),
+        ("freewalk", 0),
     ] {
         crate::internal::set_option(&mut sub, name, value);
     }

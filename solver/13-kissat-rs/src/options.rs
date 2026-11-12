@@ -179,7 +179,8 @@ kissat_options! {
     // structure pass, last, with a work limit of its own. Off by default; 1
     // prints its counts, 2 also checks them by simulation
     // (tools/free_read_check.py). The walk over the choices (bead
-    // d96.2.4.2) will read through it. Its work is counted 16 units to a
+    // d96.2.4.2, on by default) reads through it, so the reading runs
+    // whenever the walk is on, printed or not. Its work is counted 16 units to a
     // tick (bead d96.2.5); freereadticks 625,000 K, 10G units, covers every
     // lockchart (at most 0.64G units), oddball (7.1G) and mp1 cell of 2025
     // and cuts 10 of the 381 cells read (six GP cells, ncc_none and three
@@ -194,7 +195,11 @@ kissat_options! {
     (freereadticks, 625_000, 0, i32::MAX, "free-choice reading work limit (K)"),
     // Not in kissat (2026-11-09, bead SAT-playground-d96.2.4.2): the
     // free-choice walk (src/freewalk.rs), the prototype tools/free-walk in
-    // the solver. Off by default. Where it runs: 1 once before the search
+    // the solver. On by default since 2026-11-12, the owner's call after the
+    // 400-cell run (bead d96.2.5): first, the strict test, 7,200,000 K; at
+    // fresh seeds 2 and 3 it solved 681 v 673, the whole gain lockchart, and
+    // on the cells the test turns down the search is the stock one. The
+    // stock kissat path adds --freewalk=0. Where it runs: 1 once before the search
     // within freewalkticks, 2 in turns with the search at freewalkshare of
     // the work clock (a turn once it is owed freewalkturn), 3 in kissat's
     // walking rephase slots at that share. freewalktest picks the cells: 1
@@ -203,19 +208,19 @@ kissat_options! {
     // every false clause weighted, smoothing every third bump, weighted and
     // plain phases of freewalkphase each: 575,000 K is the prototype's 30 s
     // on lockchart group 2 (about 71 s on group 1, where a walk tick takes
-    // 2.4 times as long). freewalkticks 3,600,000 K is about a quarter of an
-    // 1,800 s run of walking on group 1 (about 190 s on group 2, where the
-    // prototype found every model within 101 s); a turn of 10,000 K is about
-    // half a second on group 2
-    (freewalk, 0, 0, 3, "free-choice walk: 1 first, 2 turns, 3 rephase slots"),
+    // 2.4 times as long). freewalkticks 7,200,000 K is about 1,000-1,200 s of
+    // walking on group 1, where the walk found models at 2.71G and 3.60G
+    // ticks in the run (about 380 s on group 2, where every model took at
+    // most 4.42G); a turn of 10,000 K is about half a second on group 2
+    (freewalk, 1, 0, 3, "free-choice walk: 1 first, 2 turns, 3 rephase slots"),
     (freewalkcands, 16, 1, 1024, "free-choice walk candidates a step"),
     (freewalknoise, 50, 0, 1000, "free-choice walk random moves (per mille)"),
     (freewalkphase, 575_000, 0, i32::MAX, "free-choice walk phase length (K, 0 weighted only)"),
     (freewalkshare, 250, 1, 990, "free-choice walk share of the work (per mille)"),
     (freewalksmooth, 3, 0, 1_000_000, "free-choice walk weight smoothing interval"),
     (freewalksteps, 0, 0, i32::MAX, "free-choice walk step limit (0 none)"),
-    (freewalktest, 3, 1, 3, "free-choice walk cells: 1 strict, 2 loose, 3 broad"),
-    (freewalkticks, 3_600_000, 0, i32::MAX, "free-choice walk budget run first (K)"),
+    (freewalktest, 1, 1, 3, "free-choice walk cells: 1 strict, 2 loose, 3 broad"),
+    (freewalkticks, 7_200_000, 0, i32::MAX, "free-choice walk budget run first (K)"),
     (freewalkturn, 10_000, 1, i32::MAX, "free-choice walk turn length (K)"),
     (freewalkweights, 2, 0, 2, "free-choice walk weights: 1 clause, 2 all false"),
     // Not in kissat (2026-10-15, bead SAT-playground-1v2.7): the parity

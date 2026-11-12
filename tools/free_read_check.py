@@ -51,7 +51,7 @@ CENSUS = ROOT / "benchmarks" / "rl" / "free_2025.tsv"
 SUITE = ROOT / "benchmarks" / "sat-comp-2025"
 # every other structure pass off: the reading alone (it runs last anyway)
 OTHERS_OFF = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0",
-              "--structdiv=0", "--structdd=0", "--gauss=0", "--card=0", "--structpoints=0"]
+              "--structdiv=0", "--structdd=0", "--gauss=0", "--card=0", "--structpoints=0", "--freewalk=0"]
 # the count columns that must be equal, and the shares compared to rounding
 INT_FIELDS = ["clauses", "fixed", "satisfied", "present", "groups", "group_vars", "chain_groups", "amo_groups",
               "overlap_groups", "derived_groups", "defs", "wide_defs", "def_inputs_max", "gates", "helpers", "free",

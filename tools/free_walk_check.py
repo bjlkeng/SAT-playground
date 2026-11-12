@@ -6,10 +6,12 @@ SAT-playground-d96.2.4.2) against the prototype it ports (tools/free-walk).
       For each cell and seed: the census's reading exported for the prototype
       (tools/free_walk.py export), the prototype walked N steps with weights on
       throughout (--phase 0), and the solver's walk the same N steps
-      (--freewalk=1 --freewalksteps=N --freewalkphase=0). The two must agree
-      step for step: the same counts of steps, trials, flips, updates, pushes,
-      the same best and the step it came at, and the same assignment at the end
-      (the solver prints a hash of it; the prototype's is computed from its dump).
+      (--freewalk=1 --freewalktest=3 --freewalksteps=N --freewalkphase=0; the
+      broad test, so the cells the default strict test turns down are walked
+      too). The two must agree step for step: the same counts of steps,
+      trials, flips, updates, pushes, the same best and the step it came at,
+      and the same assignment at the end (the solver prints a hash of it; the
+      prototype's is computed from its dump).
       Exit 1 on any difference.
 
 The 2026 suite is not read (plan section 8: it is the holdout).
@@ -60,7 +62,7 @@ def prototype(fwr, seed, steps):
 
 
 def solver(path, cnf, seed, steps):
-    cmd = [str(path), "-n", "--conflicts=0", *OTHERS_OFF, f"--seed={seed}", "--freewalk=1", f"--freewalksteps={steps}", "--freewalkphase=0",
+    cmd = [str(path), "-n", "--conflicts=0", *OTHERS_OFF, f"--seed={seed}", "--freewalk=1", "--freewalktest=3", f"--freewalksteps={steps}", "--freewalkphase=0",
            "--freewalkticks=2147483647", str(cnf)]
     p = subprocess.run(cmd, stdout=subprocess.PIPE, text=True)
     for ln in p.stdout.splitlines():

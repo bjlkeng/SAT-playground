@@ -33,7 +33,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOLVER = Path(os.environ.get("CARD_FUZZ_SOLVER", str(ROOT / "solver" / "13-kissat-rs" / "target" / "release" / "sat-solver")))
 GATE = ROOT / "tools" / "proof_gate.py"
-STOCK = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0", "--structdiv=0", "--structdd=0", "--gauss=0", "--card=0", "--structpoints=0"]
+STOCK = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0", "--structdiv=0", "--structdd=0", "--gauss=0", "--card=0", "--structpoints=0", "--freewalk=0"]
 
 
 class Enc:

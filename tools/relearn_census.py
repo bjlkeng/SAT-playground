@@ -989,7 +989,7 @@ def cmd_selftest(args):
         if args.tagged:
             (tmp / "f.cnf").write_text("p cnf 4 4\n1 2 0\n-1 2 0\n3 4 0\n-3 4 0\n")
             stock_path = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0",
-                          "--structsort=0", "--structdiv=0", "--structdd=0", "--gauss=0", "--card=0", "--structpoints=0"]
+                          "--structsort=0", "--structdiv=0", "--structdd=0", "--gauss=0", "--card=0", "--structpoints=0", "--freewalk=0"]
             subprocess.run([args.tagged, "--lucky=0", "--preprocess=0", "--phase=0", "-q", *stock_path,
                             str(tmp / "f.cnf"), str(tmp / "f.drat")], stdout=subprocess.DEVNULL)
             got = []

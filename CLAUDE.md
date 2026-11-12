@@ -51,7 +51,7 @@ work is **solver 13** and the RL scheduler on top of it.
   (`structsym` and `structparity` are on by default since 2026-10-10,
   `structcount` since 2026-10-13, `gauss` since 2026-10-18, `structarith`
   since 2026-10-20, `structsort` since 2026-10-27, `structdiv` since
-  2026-10-28, `structdd` since 2026-10-31, `card` since 2026-11-02, `structpoints` since 2026-11-06; solver README "The structure pass" and "The parity
+  2026-10-28, `structdd` since 2026-10-31, `card` since 2026-11-02, `structpoints` since 2026-11-06, `freewalk` since 2026-11-12; solver README "The structure pass" and "The parity
   engine"), as do the test helpers.
 - **Netlist recovery (epic `SAT-playground-skz`, 2026-10-19)** — the next
   line after the structure pass and the parity engine: recover gates,
@@ -113,7 +113,8 @@ work is **solver 13** and the RL scheduler on top of it.
   choices: the 400-cell run") chose the walk first, the strict test (on 2025 it admits
   only the 12 lockchart cells) and 7.2G ticks: at fresh seeds 2 and 3 it solves 681 v
   673, wall PAR-2 0.957x, the whole gain lockchart (+9 −0); on the cells the test turns
-  down, the search is off's, step for step. Promotion is the owner's call.
+  down, the search is off's, step for step. On by default since 2026-11-12, the
+  owner's call (the stock path adds `--freewalk=0`).
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a

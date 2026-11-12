@@ -33,6 +33,10 @@ fn toy(name: &str) -> String {
     panic!("no toy {}", name);
 }
 
+/// The broad test: pigeonhole in groups has no definition, so only the broad
+/// test admits it (the default is the strict test since 2026-11-12).
+const BROAD: &str = "--freewalktest=3";
+
 /// Pigeonhole with n + 1 pigeons and n holes, each pigeon in exactly one hole
 /// (a group per pigeon) and at most one pigeon per hole: unsatisfiable, and
 /// the walk can never satisfy the holes' nogoods.
@@ -151,7 +155,7 @@ fn the_walk_first_stops_at_its_budget_and_the_search_after_it_is_stock() {
     let stock = run(&cnf, &[], &[]);
     assert_eq!(stock.status, "UNSATISFIABLE");
     assert!(stock.stats["conflicts"] > 1000, "the search has work to do");
-    let first = run(&cnf, &["--freewalk=1", "--freewalkticks=2000"], &[]);
+    let first = run(&cnf, &["--freewalk=1", BROAD, "--freewalkticks=2000"], &[]);
     assert_same_search(&stock, &first, "walk first, then search");
     let line = walk_line(&first);
     assert_eq!(line["status"], "walked");
@@ -160,7 +164,7 @@ fn the_walk_first_stops_at_its_budget_and_the_search_after_it_is_stock() {
     assert!(work >= 2_000_000 && work < 2_100_000, "the walk stops within a step of its budget ({})", work);
     assert!(first.workclock["ticks"] >= stock.workclock["ticks"] + work, "the walk's work is in the work clock");
     // the same run twice: the same walk
-    let again = run(&cnf, &["--freewalk=1", "--freewalkticks=2000"], &[]);
+    let again = run(&cnf, &["--freewalk=1", BROAD, "--freewalkticks=2000"], &[]);
     let (a, b) = (walk_line(&first), walk_line(&again));
     for k in ["steps", "trials", "flips", "units", "work", "best", "hash"] {
         assert_eq!(a[k], b[k], "{} differs between two runs", k);
@@ -174,7 +178,7 @@ fn turns_with_the_search_leave_the_search_as_it_was_and_take_their_share() {
     let cnf = fx.path("php.cnf");
     php_groups(8, &cnf);
     let stock = run(&cnf, &[], &[]);
-    let turns = run(&cnf, &["--freewalk=2", "--freewalkshare=250", "--freewalkturn=100"], &[]);
+    let turns = run(&cnf, &["--freewalk=2", BROAD, "--freewalkshare=250", "--freewalkturn=100"], &[]);
     assert_same_search(&stock, &turns, "turns");
     let line = walk_line(&turns);
     assert_eq!(line["status"], "walked");
@@ -183,7 +187,7 @@ fn turns_with_the_search_leave_the_search_as_it_was_and_take_their_share() {
     let share = num(&line, "work") as f64 / turns.workclock["work"] as f64;
     assert!(share > 0.2 && share < 0.26, "the walk's share of the work clock ({:.3})", share);
     // a walk that runs out of steps ends its turns, and the search goes on as before
-    let short = run(&cnf, &["--freewalk=2", "--freewalkshare=250", "--freewalkturn=100", "--freewalksteps=5"], &[]);
+    let short = run(&cnf, &["--freewalk=2", BROAD, "--freewalkshare=250", "--freewalkturn=100", "--freewalksteps=5"], &[]);
     assert_same_search(&stock, &short, "turns that run out of steps");
     assert_eq!(num(&walk_line(&short), "steps"), 5);
 }
@@ -197,13 +201,36 @@ fn rephase_slots_leave_the_search_as_it_was() {
     let early: &[&str] = &["--rephaseinit=10", "--rephaseint=10", "--stable=2"];
     let stock = run(&cnf, early, &[]);
     let mut on: Vec<&str> = early.to_vec();
-    on.extend(["--freewalk=3", "--freewalkshare=250"]);
+    on.extend(["--freewalk=3", BROAD, "--freewalkshare=250"]);
     let slots = run(&cnf, &on, &[]);
     assert_same_search(&stock, &slots, "rephase slots");
     let line = walk_line(&slots);
     assert_eq!(line["placement"], "rephase");
     assert!(num(&line, "runs") > 0, "the walk ran in a slot");
     assert!(num(&line, "work") > 0);
+}
+
+#[test]
+fn the_shipped_defaults_walk_first_with_the_strict_test() {
+    // on by default since 2026-11-12 (the owner's call after the 400-cell run,
+    // bead d96.2.5): first, the strict test, 7,200,000 K. The other passes off,
+    // the walk at its defaults
+    let others: Vec<&str> = common::STOCK_PATH.iter().copied().filter(|o| !o.starts_with("--freewalk")).collect();
+    assert_eq!(others.len() + 1, common::STOCK_PATH.len(), "the stock path turns the walk off");
+    let fx = Fixture::new("freewalk-defaults");
+    let cnf = fx.path("lockchart.cnf");
+    std::fs::write(&cnf, toy("lockchart-big")).unwrap();
+    let on = common::run_shipped(&cnf, &others, &[]);
+    let line = walk_line(&on);
+    assert_eq!((line["placement"].as_str(), line["test"].as_str(), line["status"].as_str()), ("first", "strict", "found"), "{}", on.stdout);
+    assert_eq!(on.status, "SATISFIABLE");
+    // random 3-SAT: the strict test turns it down, and the search is the stock one
+    let cnf = fx.path("random.cnf");
+    common::random_3sat(200, 4.26, 7, &cnf);
+    let shipped = common::run_shipped(&cnf, &others, &[]);
+    let line = walk_line(&shipped);
+    assert_eq!((line["test"].as_str(), line["status"].as_str()), ("strict", "declined"));
+    assert_same_search(&run(&cnf, &[], &[]), &shipped, "the shipped walk v the stock path");
 }
 
 #[test]
@@ -236,7 +263,7 @@ fn the_tick_limit_ends_the_walk_and_the_run() {
     let fx = Fixture::new("freewalk-limit");
     let cnf = fx.path("php.cnf");
     php_groups(8, &cnf);
-    let limited = run(&cnf, &["--freewalk=1", "--freewalkticks=2147483647"], &[("SAT_LIMIT_TICKS", "3000000")]);
+    let limited = run(&cnf, &["--freewalk=1", BROAD, "--freewalkticks=2147483647"], &[("SAT_LIMIT_TICKS", "3000000")]);
     assert_eq!(limited.status, "UNKNOWN");
     let w = limited.work();
     assert!(w >= 3_000_000 && w < 3_100_000, "the run stops at the limit, within a step ({})", w);
