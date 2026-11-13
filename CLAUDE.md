@@ -40,7 +40,8 @@ work is **solver 13** and the RL scheduler on top of it.
   **313 v 312 solved, PAR-2 0.9932x, both-solved wall geomean 0.9875x, zero
   contradictions** — i.e. at or slightly ahead of the C. With every
   default on (run S.8, 2026-10-20): **344 v 313 solved, PAR-2 0.708x, zero
-  contradictions, every answer checked**. Details, log paths and residual
+  contradictions, every answer checked**. On the 2026 holdout (2026-11-12/13):
+  **249 v 204**, zero contradictions. Details, log paths and residual
   families: `solver/13-kissat-rs/README.md` ("Where it stands").
   `solver/13-kissat-rs/CONVENTIONS.md` is **binding** for any port edit.
   Exact counter parity with the C was the port's acceptance criterion and is
@@ -208,8 +209,12 @@ in the solver README, "Work clock"), refit from the stock traces in step B.
 full `benchmarks/sat-comp-2025` (400) are training / in-distribution. Hold a
 family-stratified validation split out of all fitting and select checkpoints
 on it. `benchmarks/sat-comp-2026` is the true holdout, consulted **at most
-once per promoted candidate** — solver 12 scored 296 v 292 on 2025 and 160 v
-197 on 2026, which is what an over-fitted candidate looks like.
+once per promoted candidate** so it never becomes a second training set.
+Solver 12's 296 v 292 on 2025 and 160 v 197 on 2026, long read as over-fitting,
+were against August kissat runs that had solvers sharing cores (the pinning bug
+fixed 2026-09-04); run fairly kissat solves 312-313 and 204, so solver 12 trailed on
+both (solver README, "The 2026 holdout, second look"). Second look, 2026-11-12/13,
+the default set with the walk: **249 v kissat's 204**, our stock 203.
 
 Every RL comparison carries three arms: stock (policy off), policy-on with
 `act == STOCK` (isolates logging and inference overhead), and the candidate.

@@ -859,7 +859,9 @@ Realistic cost of step 1-8: 2-3 sessions, not 1.
   in-distribution promotion check; (c) sat-comp-2026 as the true holdout,
   consulted at most once per promoted candidate so it does not become a
   second training set (the solver 12 lesson: 296 v 292 on 2025, 160 v 197
-  on 2026). The split is `benchmarks/rl/split_2025.tsv` (step B.11,
+  on 2026; found 2026-11-13, both kissat numbers came from August runs that had
+  solvers sharing cores, and run fairly kissat solves 312-313 and 204, so solver 12
+  trailed on both suites; §11, 2026-11-13). The split is `benchmarks/rl/split_2025.tsv` (step B.11,
   2026-09-18: 293 train, 99 val, and 8 cells marked `shared` because the
   same files are in sat-comp-2026 under the same hash; those are fitted
   on and selected on by nothing). `tools/rl_split.py` draws and checks
@@ -1878,6 +1880,31 @@ source of truth; every bead points back to its section.
   by default, the stock path `--gauss=0` with the struct options at 0.
   The two-seed rule did its job twice: it refused the eager engine
   (621 v 620) and accepted the lazy one (626 v 619) on the same cells.
+- 2026-11-13 (the holdout, second look, for the default set of
+  2026-11-12; bead 1v2.11, the owner's go). The shipped set against the
+  same frozen binary (`solver/13-j12-holdout-snapshot`, 7403a13) with the
+  nine passes promoted since 2026-10-10 off (symmetry and parity on), on
+  `sat-comp-2026` at the first look's settings, every answer through the
+  gate: **249 v 234 (+18 / −3)**, wall PAR-2 0.914×, tick PAR-2 0.859×.
+  Fifteen gains are cells a pass decides in seconds, ten of them in
+  families 2025 has no cell of: mdp by the parity engine, colouring and a latin
+  square by counts, sbdp and a multiplier miter by arithmetic, count_p2 by
+  the point step, adv_gc by counting. Three gains and two losses are late
+  SAT solves; hitag2-7-60 is lost to the parity engine's 472-row matrix.
+  Re-run today, the first look's candidate solves 234 against its 212 of
+  2026-10-10 (+25 / −3, mostly symmetry step two), on an unchanged host (median 1.011 on 169
+  identical searches). Kissat run again on the same cores: **249 v 204
+  (+56 / −11)**, wall PAR-2 0.780×; our stock 203 v 204, times level
+  (median 1.006). The walk's strict test admits no 2026 cell. Found on the
+  way: the August kissat runs (292 on 2025, 197 on 2026) had solvers
+  sharing cores, the pinning bug fixed 2026-09-04 (616d6ac); every cell
+  they lost shared its core. Run fairly kissat solves 312-313 and 204, so
+  solver 12's 296 v 292 and 160 v 197 describe a solver behind kissat on
+  both suites, not a 2025 lead lost on 2026. The structure classes
+  transfer; the search gains nothing by itself. The per-family table for
+  the d96 epic's choice of line is in the solver README ("The 2026
+  holdout, second look"). This look is spent for the default set of
+  2026-11-12.
 
 ## 12. Fresh-eyes review (2026-09-11): fixes folded in, and gaps still open
 

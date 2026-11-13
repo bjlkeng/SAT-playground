@@ -46,6 +46,14 @@ three are cells the structure pass solves at once, where the proof adds a
 little work, and the other two are the parity cells dislog and
 sum_of_3_cubes_37_bits_87.
 
+**On the 2026 holdout (2026-11-12 and 13; bead `1v2.11`).** The default set of
+2026-11-12, every pass below on, solves **249 of the 400** cells of
+`benchmarks/sat-comp-2026`, which nothing in this project is fitted on. Kissat 4.0.4,
+run on the same cores right after, solves 204 (+56 / −11, wall PAR-2 0.780×). The same
+binary with the nine passes promoted since the first look off solves 234, the first
+look's candidate 212 and our stock 203. The kissat run used before (197) had solvers
+sharing cores. Details: "The 2026 holdout, second look".
+
 **Work clock (plan step A′, 2026-09-15).** The binary prints one extra
 line at every exit, after the `[ resources ]` section:
 
@@ -187,11 +195,11 @@ for structure that search handles badly and settles what it can in
 seconds. Each pass is a kissat-style option; a pass is off until its
 measurement promotes it, and stays a switch after. **Promoted 2026-10-10:
 `structsym` and `structparity` are on by default** (the combined 2025 run
-298 v 282 and the single 2026 holdout 212 v 203, below); **2026-10-13:
+298 v 282 and the first 2026 holdout look 212 v 203, below); **2026-10-13:
 `structcount`** (309 v 306 on 2025 with the parity pass's flip step;
-not seen on the holdout); **2026-10-20: `structarith`** (313 v 312 on
-2025, the two multiplier miters; not seen on the holdout; "The linear
-arithmetic pass" below); then `structsort` (2026-10-27), `structdiv`
+on the second holdout look it decides two adv_gc cells); **2026-10-20: `structarith`**
+(313 v 312 on 2025, the two multiplier miters; on the second holdout look sbdp4_65 and
+bwmdm_28_2; "The linear arithmetic pass" below); then `structsort` (2026-10-27), `structdiv`
 (2026-10-28) and `structdd` (2026-10-31), each after its own paired
 run. The count and alldifferent engine, `card`, is on by default since 2026-11-02, the
 owner's call: its paired run solved 645 v 651 over two seeds, eight fresh seeds show
@@ -358,7 +366,10 @@ cells (the `medium` family, stock 0.4-1.1 s) the symmetry pass spends
 its whole detection budget, 14-27 s, and finds nothing; the budget
 should be capped relative to the formula's size. Compare solver 12's
 holdout (296 v 292 on 2025, 160 v 197 on 2026): this candidate set's
-2025 gain (+22/−6) carries to 2026 (+16/−7) in kind and in size.
+2025 gain (+22/−6) carries to 2026 (+16/−7) in kind and in size. (Found
+2026-11-13: both kissat numbers in solver 12's verdict come from August runs that had
+solvers sharing cores. Run fairly kissat solves 312-313 and 204, so solver 12 trailed on
+both suites; see "The 2026 holdout, second look".)
 
 **Known cost after the promotion (2026-10-10; bead
 SAT-playground-1v2.8).** Six 2026 cells of the `Medium-result` family
@@ -6619,6 +6630,183 @@ build at its defaults gives the same `-s` counters, work clock line and walk lin
 the frozen run binary with the run's options. With `--freewalk=0` it gives the same
 as the frozen binary's stock run (on the two lockchart cells, up to 100,000
 conflicts). `cargo test`: 288 passed. Smoke: 9 of 9.
+
+## The 2026 holdout, second look (2026-11-12 to 13; bead `SAT-playground-1v2.11`)
+
+The 2026 suite (`benchmarks/sat-comp-2026`, 400 cells) is the holdout: nothing in
+this project is fitted or chosen on it, and it is looked at once per promoted
+candidate (plan §8). The first look (2026-10-10, "The structure pass" above) was for
+symmetry and parity: 212 v 203 against our own stock. Since then nine more passes were
+promoted on 2025 evidence alone (`structcount`, `gauss`, `structarith`, `structsort`,
+`structdiv`, `structdd`, `card`, `structpoints`, `freewalk`), and the symmetry and
+parity passes kept changing (the split-driven refinement, step two's rows that share
+entries, the parity pass's flip step). This second look is for the default set of
+2026-11-12, at the owner's request.
+
+**How it was run.**
+
+- Two paired arms on one frozen binary (`solver/13-j12-holdout-snapshot`, commit
+  7403a13, sha256 `ca096d749b92d40f`) at the first look's settings:
+  `tools/feature_ablation.py`, all 400 cells, 3600 s, 14 GB, 32 shared pinned cores
+  (0-15 and 18-33 of the 36), seed 0, every answer through the gate; 2026-11-12 10:11
+  to 2026-11-13 00:05. `default` is the shipped set. `symparity` turns the nine passes
+  off, so symmetry and parity stay on: it is the first look's candidate as it stands
+  today. Logs: `log/abtest-holdout-2026-defaults-2026-11-12-10-11-02` (each arm's pass
+  lines in `kept.tsv`), the script `log/holdout-2026-defaults-2026-11-12.sh`, the
+  report `log/holdout-2026-defaults-report-2026-11-12.txt`.
+- kissat 4.0.4, run again after the paired arms on the same 32 cores:
+  `bash tools/run_kissat_full.sh -n kissat-holdout-2026 -j 32 -c 0 -t 3600 -m 14000 -d
+  benchmarks/sat-comp-2026`, no proofs, 2026-11-13 00:14 to 07:39,
+  `log/kissat-holdout-2026-20261113-001426`. The kissat run used until now (2026-08-29)
+  had solvers sharing cores (below).
+- The comparison: `python3 tools/holdout_compare.py
+  log/abtest-holdout-2026-defaults-2026-11-12-10-11-02 --kissat 'kissat
+  (11-13)=log/kissat-holdout-2026-20261113-001426' --kissat 'kissat
+  (08-29)=log/kissat-full-20260829-202806'`, output in
+  `log/holdout-2026-compare-2026-11-13.txt`.
+
+| Arm | Run | Solved | SAT | UNSAT | Wall PAR-2 | Solves not checked |
+|---|---|---|---|---|---|---|
+| `default` (the shipped set) | 2026-11-12 | **249** | 115 | 134 | 1,181,110 | 4 |
+| `symparity` (the nine passes off) | 2026-11-12 | 234 | 112 | 122 | 1,292,785 | 3 |
+| `both` (the first look's candidate) | 2026-10-10 | 212 | 113 | 99 | 1,457,694 | 3 |
+| `stock` (every pass off) | 2026-10-10 | 203 | 114 | 89 | 1,517,555 | 3 |
+| kissat 4.0.4 | 2026-11-13 | 204 | 115 | 89 | 1,513,378 | no proofs |
+| kissat 4.0.4, cores shared | 2026-08-29 | 197 | 112 | 85 | 1,575,285 | no proofs |
+
+**The nine passes on cells they have never seen (default against symparity,
+paired).** 249 v 234 (+18 / −3), wall PAR-2 0.914×, tick PAR-2 0.859×. Fifteen of the
+18 gains are cells a pass decides in seconds. Ten of them are in families the 2025
+suite has no cell of (mdp, count, adv-gc, sbdp, mult-miter), four in families it has
+two cells of (dimacs-coloring, parity), and one is a single cell (latin_square):
+
+| Pass | Cells | What it found | Time |
+|---|---|---|---|
+| the parity engine (`gauss`) | mdp-32-11-sat, mdp-32-12-unsat, mdp-32-14-unsat, mdp-36-10-unsat, par32-4-c | XOR matrices of 236-340 rows | 1-42 s |
+| counts (`card`) | le450_25b.col.25, mulsol.i.1.48, fpsol2.i.2.29 (after symmetry fixing), latin_square_10.15 | a count violated at the root | 9-51 s |
+| arithmetic (`structarith`) | sbdp4_65, bwmdm_28_2 | two adder networks over shared partial products | 0-10 s |
+| the point step (`structpoints`) | count_p2_M41, count_p2_M45 | 41 and 45 points, lex-leader chains | 1 s |
+| counting (`structcount`) | adv_gc_n100_k13, adv_gc_n200_k15 | demand clauses against at-most-one groups | 0-1 s |
+
+The other three gains are satisfiable cells solved late (sha1 zeroOut_18 at 2,322 s,
+vdw_4_8_n145 at 1,390 s, as-p51 at 3,503 s). The three losses are of the same kind:
+knight_18 and QuasiGroup-4-12_c18 (SAT at 298 s and 1,677 s in symparity, the search
+moved), and hitag2-7-60 (UNSAT at 1,462 s in symparity), where the parity engine's
+472-row matrix slowed the default arm: at the hour it had done 12.68M conflicts, short
+of the 12.87M symparity needed.
+
+**The symmetry and parity passes since the first look (symparity against the first
+look's candidate).** 234 v 212 (+25 / −3), wall PAR-2 0.887×. Twenty gains are UNSAT
+cells the symmetry pass now settles in under a minute: 5 dimacs-coloring, 6
+exam-timetabling, 3 count_p2, 2 lattice, 2 chnl, clqcl_25_8_7 and DSC125.9.30 (step
+two's several matrices and rows that share entries). Two lightsout corner cells (264
+and 268 s) gain from the parity pass's flip symmetries, mexam_17_15_2 (3,169 s) from
+101 fixings, and two ntil cells are late SAT solves. The losses are ntil-90d-39 and
+vdwb_k6_n300 (SAT, the search moved) and a pair-packing cell the first look solved at
+3,556 s, stopped today just short of its conflicts.
+
+**The host has not moved since the first look.** On the 169 cells where symparity and
+the first look's candidate did exactly the same search (the same conflicts,
+propagations and decisions), today's time is the first look's times a median 1.011
+(p10 0.893, p90 1.035; the 137 cells at 10 s or more). On the 163 cells both stop at
+the hour, the conflicts reached are a median 0.989 of the first look's. So the two
+looks compare directly: the shipped set solves 249 where the first look's candidate
+solved 212 and our stock 203 (+57 / −11 against that stock, wall PAR-2 0.778×).
+
+**Against kissat.** Run again, kissat solves 204, one more than our stock (+0 / −1: a
+pair-packing cell kissat solves at 3,527 s). On the 167 cells both solve at 10 s or
+more, our stock's time is a median 1.006 of kissat's (p10 0.937, p90 1.072, geomean
+1.008), so the port and the C are level on 2026 as on 2025. The shipped set against
+it: **249 v 204 (+56 / −11), wall PAR-2 0.780×**. The 11 losses are ten satisfiable
+cells kissat solves at 269-3,271 s (three pair-packing, the two cabp bandwidth cells
+k290 and k297, ntil-90d-39, knight_18, vdwb_k6_n300, SDP_118 and QuasiGroup-4-12_c18)
+and hitag2-7-60. All but hitag2-7-60 and the cabp k290 cell ran past the conflicts our
+stock needed, so the search went another way; the cabp pair times out in all three
+arms with symmetry on, in both looks (bandwidth-mtx: stock 8, with the passes 6).
+
+**The August kissat runs had solvers sharing cores.** Before commit 616d6ac
+(2026-09-04), `tools/run_kissat_full.sh` pinned each job to the core of its index
+modulo the job count, so when a freed slot was refilled by an index equal (modulo 32)
+to a job still running, two solvers shared one core. The August runs record no cores,
+but the cell files' times and the index order give them back. On 2026
+(`log/kissat-full-20260829-202806`), 302 of the 400 cells shared their core for part
+of their run. On the 161 cells both it and our stock solve at 10 s or more, our stock's
+time is a median 0.47 of its time on the 84 cells that shared for more than 5% of
+their run, and 1.04 on the others. All six cells it lost against our stock shared for
+36-100% of their run. The 2025 run of the day before (`log/kissat-full-20260828-162018`,
+292 solved) has the same fault: it lost 20 cells against the acceptance run of
+2026-09-05 (312) and gained none, and all 20 shared their core. These two runs were
+the kissat side of solver 12's verdict (296 v 292 on 2025, 160 v 197 on 2026; solver
+12's own runs went through `feature_ablation.py`, which hands out free cores). Against
+kissat run fairly, 312-313 on 2025 (the acceptance runs, 16 jobs) and 204 on 2026,
+solver 12 trailed on both suites, by 16-17 cells and by 44. So solver 12's 2025 lead
+was the pinning bug's. The gap is still wider on 2026, so some of its 2025 tuning may
+not have carried over, but it is not the clean case of overfitting it was read as.
+
+**The walk.** The strict test admitted none of the 400 cells: 350 read and declined,
+38 already refuted by an earlier pass, 10 at the reading's work limit, 2 too large to
+read. On 2026 the walk is only the reading's cost.
+
+**What the passes cost where they find nothing.** On the 156 cells both arms solve with
+the same search, the default arm takes 472 s more in all: a median 1.3 s a cell, over
+10 s on 26 cells, at most 44 s (x9-10032, where the extra work is 0.01G ticks: host
+noise). The real costs are on dense cells, where about 1.1-1.2G extra ticks take
+Medium-result_b14 from 20 to 44 s, Large-result_b23 from 25 to 46 s and
+scc_7216_12_0.5 from 26 to 46 s.
+
+**Checks.** No failed row and no contradiction across the six arms. 245 of the
+default arm's 249 solves are checked; the other four are UNSAT proofs the checker ran
+out of time on. Two of them, grain-53 and hitag2-8-60, are checked in the symparity
+arm. The other two, dobdm_14_1 and E00X23, are unchecked in all four of our runs (UNSAT
+in each), and the fresh kissat run finds them UNSAT too (at 3,572 s and 2,468 s). No
+gain is among the four.
+
+**Per family**, where some arm differs (the August kissat run left out):
+
+| Family | Cells | default | symparity | both | stock | kissat |
+|---|---|---|---|---|---|---|
+| mdp | 4 | 4 | 0 | 0 | 0 | 0 |
+| dimacs-coloring | 9 | 8 | 5 | 0 | 0 | 0 |
+| count | 6 | 5 | 3 | 0 | 0 | 0 |
+| adv-gc | 12 | 11 | 9 | 9 | 9 | 9 |
+| parity | 4 | 4 | 3 | 3 | 2 | 2 |
+| as-p | 16 | 8 | 7 | 7 | 7 | 7 |
+| mult-miter | 12 | 2 | 1 | 1 | 1 | 1 |
+| sbdp | 6 | 1 | 0 | 0 | 0 | 0 |
+| crypto-hash | 5 | 4 | 3 | 3 | 4 | 4 |
+| vdw | 12 | 7 | 6 | 7 | 7 | 7 |
+| exam-timetabling | 12 | 9 | 9 | 2 | 1 | 1 |
+| chnl | 6 | 6 | 6 | 4 | 0 | 0 |
+| php | 3 | 3 | 3 | 3 | 0 | 0 |
+| clqcl | 2 | 2 | 2 | 1 | 0 | 0 |
+| dsc | 2 | 2 | 2 | 1 | 0 | 0 |
+| lattice | 2 | 2 | 2 | 0 | 0 | 0 |
+| lightsout | 7 | 7 | 7 | 5 | 5 | 5 |
+| ntil | 16 | 7 | 7 | 6 | 6 | 6 |
+| singletons | 24 | 12 | 12 | 12 | 11 | 11 |
+| pair-packing | 16 | 6 | 6 | 7 | 7 | 8 |
+| bandwidth-mtx | 17 | 6 | 6 | 6 | 8 | 8 |
+| chess-puzzles | 2 | 1 | 2 | 2 | 2 | 2 |
+| crypto-cipher | 5 | 4 | 5 | 5 | 5 | 5 |
+
+Eight 2026 cells are the same files as 2025 cells (`benchmarks/rl/split_2025.tsv`
+marks them `shared`). Only one of them, rphp_p25_r25, differs between arms: it is solved
+with symmetry on, as at the first look. So every gain above is on a cell this project
+had not seen.
+
+139 cells are solved by no arm. The largest groups: anon-sanitized 12 of 12, xorshift
+11 of 11 (the parity engine keeps a matrix of 882-1,174 rows on each and still times
+out), singletons 11 of 24, mult-miter 10 of 12, bandwidth-mtx 9 of 17, as-p and ntil 8
+of 16 each, pair-packing 6 of 16, sbdp 5 of 6.
+
+**What it means.** The 2025 gains carry over. The structure the passes look for shows
+up on 2026 in families the 2025 suite does not have (mdp, count, adv-gc,
+exam-timetabling, chnl, lattice, sbdp), and the passes decide those cells in seconds.
+Against kissat the shipped set is +45 on the holdout (249 v 204); on 2025 the default
+set of 2026-10-20 was +31 (344 v 313, run S.8). The search itself gains nothing: the
+losses are late satisfiable cells, as on 2025, and the walk admits nothing. These are
+holdout cells, so none of them is to be studied for tuning. This look is spent for the
+default set of 2026-11-12; the next promoted pass gets its own.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 
