@@ -320,25 +320,43 @@ def cmd_split(a):
     """Solve every assignment of the control inputs as its own run (cube and conquer
     from outside the solver): the file's clauses plus one unit per control input,
     streamed through a named pipe so no cube is written to disk.  The cell is
-    unsatisfiable exactly when every cube is; the first satisfiable cube stops the
-    run.  Results go to OUT/results.tsv (value, status, seconds, conflicts, work)."""
+    unsatisfiable exactly when every case is; the first satisfiable case stops the
+    run.  With --ticks every case runs under that work limit (SAT_LIMIT_TICKS, the
+    work clock W); with --then, a case that ends without an answer is split again on
+    the next group of inputs (groups separated by ';'), as and-nested-11's value 63
+    was by hand.  Results go to OUT/results.tsv (case, status, seconds, conflicts,
+    work), a case named by its value at each level joined by '/', e.g. 63/5."""
+    import json
     import re
     import subprocess
     import tempfile
     import threading
 
-    import json
+    def ints(text):
+        return [int(x) for x in text.split(",") if x.strip()]
 
-    inputs = [int(x) for x in a.inputs.split(",")]
-    fixed = [int(x) for x in a.fix.split(",")] if a.fix else []
-    if not a.sample and len(inputs) > 24:
-        sys.exit(f"{len(inputs)} inputs make {1 << len(inputs)} cubes: use --sample or fewer inputs")
+    levels = [ints(a.inputs)] + [ints(g) for g in a.then.split(";") if g.strip()]
+    fixed = ints(a.fix) if a.fix else []
+    for k, grp in enumerate(levels):
+        if not grp:
+            sys.exit(f"level {k} has no inputs")
+        if len(grp) > 24 and not (k == 0 and a.sample):
+            sys.exit(f"level {k}: {len(grp)} inputs make {1 << len(grp)} cases: "
+                     "use fewer inputs (or --sample at the first level)")
+    flat = [v for grp in levels for v in grp]
+    if any(v <= 0 for v in flat):
+        sys.exit("split inputs are variables (positive numbers)")
+    if len(set(flat)) != len(flat) or set(flat) & {abs(l) for l in fixed}:
+        sys.exit("the split inputs must be distinct across levels and not among --fix")
+    if a.ticks < 0:
+        sys.exit("--ticks must be 0 (no limit) or positive")
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     src = Path(a.file).resolve()
     st = src.stat()
     config = {"file": str(src), "size": st.st_size, "mtime_ns": st.st_mtime_ns,
-              "inputs": inputs, "fix": fixed, "seed": a.seed, "solver": str(Path(a.solver).resolve())}
+              "inputs": levels[0], "then": levels[1:], "fix": fixed, "seed": a.seed,
+              "ticks": a.ticks, "solver": str(Path(a.solver).resolve())}
     cfg_path = out / "config.json"
     body = out / "body.cnf"
     res_path = out / "results.tsv"
@@ -371,19 +389,43 @@ def cmd_split(a):
         cfg_path.write_text(json.dumps(config))
     header = (out / "header.txt").read_text().split()
     n_vars = int(header[2])
-    n_cls = int(header[3]) + len(inputs) + len(fixed)
+    base_cls = int(header[3]) + len(fixed)
+    if max(flat + [abs(l) for l in fixed]) > n_vars:
+        sys.exit(f"an input or fixed literal is past the header's {n_vars} variables")
+
+    def units_of(level, value):
+        return [v if (value >> i) & 1 else -v for i, v in enumerate(levels[level])]
+
+    answered = ("UNSATISFIABLE", "SATISFIABLE")
     done = {}
     if res_path.exists():
         for line in res_path.read_text().splitlines():
             q = line.split("\t")
-            done[int(q[0])] = q[1]
+            done[q[0]] = q[1]
+
+    # the work list: (name, units, level); a finished case without an answer is
+    # expanded into its sub-cases when a deeper level exists (also on a resume)
+    todo = []
+
+    def expand(name, units, level):
+        if name not in done:
+            todo.append((name, units, level))
+        elif done[name] not in answered and level + 1 < len(levels):
+            for w in range(1 << len(levels[level + 1])):
+                expand(f"{name}/{w}", units + units_of(level + 1, w), level + 1)
+
     if a.sample:
         import random
         rng = random.Random(a.sample_seed)
-        n = min(a.sample, 1 << len(inputs))
-        todo = sorted(v for v in rng.sample(range(1 << len(inputs)), n) if v not in done)
+        n = min(a.sample, 1 << len(levels[0]))
+        first = sorted(rng.sample(range(1 << len(levels[0])), n))
     else:
-        todo = [v for v in range(1 << len(inputs)) if v not in done]
+        first = range(1 << len(levels[0]))
+    for v in first:
+        expand(str(v), units_of(0, v), 0)
+    if any(s == "SATISFIABLE" for s in done.values()):
+        todo.clear()            # a model was found before: the cell is decided
+
     cores = []
     for part in a.cores.split(","):
         if "-" in part:
@@ -391,73 +433,96 @@ def cmd_split(a):
             cores += list(range(int(lo), int(hi) + 1))
         else:
             cores.append(int(part))
-    lock = threading.Lock()
+    cv = threading.Condition()
     stop = threading.Event()
+    in_flight = [0]
     tmp = Path(tempfile.mkdtemp(prefix="split-", dir=out))
     mem = a.mem_mb * 1024 * 1024
+    env = dict(os.environ)
+    env.pop("SAT_LIMIT_TICKS", None)
+    if a.ticks:
+        env["SAT_LIMIT_TICKS"] = str(a.ticks)
 
     def limit():
         resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
 
-    def feed(fifo, value):
-        units = "".join(f"{v if (value >> i) & 1 else -v} 0\n" for i, v in enumerate(inputs))
-        units += "".join(f"{l} 0\n" for l in fixed)
+    def feed(fifo, units):
+        tail = "".join(f"{l} 0\n" for l in units + fixed)
         try:
             with open(fifo, "w") as f, open(body) as fb:
-                f.write(f"p cnf {n_vars} {n_cls}\n")
+                f.write(f"p cnf {n_vars} {base_cls + len(units)}\n")
                 while True:
                     chunk = fb.read(1 << 22)
                     if not chunk:
                         break
                     f.write(chunk)
-                f.write(units)
+                f.write(tail)
         except BrokenPipeError:
             pass                # the solver stopped reading (it ended early)
 
-    def worker(core):
-        attempt = 0
-        while not stop.is_set():
-            with lock:
-                if not todo:
-                    return
-                value = todo.pop(0)
-            # a fresh pipe for every attempt, so a writer left over from an attempt
-            # whose solver never opened its input cannot write into the next one
-            attempt += 1
-            fifo = tmp / f"cube{core}_{attempt}.fifo"
-            os.mkfifo(fifo, 0o600)
-            t0 = time.time()
-            th = threading.Thread(target=feed, args=(fifo, value), daemon=True)
-            th.start()
-            cmd = ["timeout", str(a.timeout), "taskset", "-c", str(core), a.solver, f"--seed={a.seed}", str(fifo)]
-            p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                               preexec_fn=limit)
-            if th.is_alive():
-                # the writer may be blocked opening the pipe (the solver never opened
-                # it) or writing into it: open the read end ourselves and close it, so
-                # its open returns and its writes fail with a broken pipe
-                try:
-                    fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
-                    os.close(fd)
-                except OSError:
-                    pass
-                th.join(timeout=60)
+    def run_case(core, attempt, units):
+        # a fresh pipe for every attempt, so a writer left over from an attempt
+        # whose solver never opened its input cannot write into the next one
+        fifo = tmp / f"cube{core}_{attempt}.fifo"
+        os.mkfifo(fifo, 0o600)
+        t0 = time.time()
+        th = threading.Thread(target=feed, args=(fifo, units), daemon=True)
+        th.start()
+        cmd = ["timeout", str(a.timeout), "taskset", "-c", str(core), a.solver, f"--seed={a.seed}", str(fifo)]
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                           preexec_fn=limit, env=env)
+        if th.is_alive():
+            # the writer may be blocked opening the pipe (the solver never opened
+            # it) or writing into it: open the read end ourselves and close it, so
+            # its open returns and its writes fail with a broken pipe
             try:
-                os.unlink(fifo)
+                fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+                os.close(fd)
             except OSError:
                 pass
-            txt = p.stdout
-            m = re.search(r"^s (SATISFIABLE|UNSATISFIABLE|UNKNOWN)", txt, re.M)
-            status = m.group(1) if m else f"NONE(rc={p.returncode})"
-            m = re.search(r"^c workclock .*?\bconflicts=(\d+).*?\bwork=(\d+)", txt, re.M)
-            conflicts, work = (m.group(1), m.group(2)) if m else ("", "")
-            with lock:
-                with open(res_path, "a") as fr:
-                    fr.write(f"{value}\t{status}\t{time.time() - t0:.1f}\t{conflicts}\t{work}\n")
-                if status != "UNSATISFIABLE":
-                    print(f"cube {value}: {status}", flush=True)
-                    if status == "SATISFIABLE":
-                        stop.set()
+            th.join(timeout=60)
+        try:
+            os.unlink(fifo)
+        except OSError:
+            pass
+        txt = p.stdout
+        m = re.search(r"^s (SATISFIABLE|UNSATISFIABLE|UNKNOWN)", txt, re.M)
+        status = m.group(1) if m else f"NONE(rc={p.returncode})"
+        m = re.search(r"^c workclock .*?\bconflicts=(\d+).*?\bwork=(\d+)", txt, re.M)
+        conflicts, work = (m.group(1), m.group(2)) if m else ("", "")
+        return status, time.time() - t0, conflicts, work
+
+    def worker(core):
+        attempt = 0
+        while True:
+            with cv:
+                while not todo and in_flight[0] > 0 and not stop.is_set():
+                    cv.wait()
+                if stop.is_set() or not todo:
+                    cv.notify_all()
+                    return
+                name, units, level = todo.pop(0)
+                in_flight[0] += 1
+            attempt += 1
+            result = None
+            try:
+                result = run_case(core, attempt, units)
+            finally:
+                with cv:
+                    in_flight[0] -= 1
+                    if result is not None:
+                        status, secs, conflicts, work = result
+                        with open(res_path, "a") as fr:
+                            fr.write(f"{name}\t{status}\t{secs:.1f}\t{conflicts}\t{work}\n")
+                        done[name] = status
+                        if status != "UNSATISFIABLE":
+                            print(f"case {name}: {status}", flush=True)
+                        if status == "SATISFIABLE":
+                            stop.set()
+                        elif status not in answered and level + 1 < len(levels):
+                            for w in range(1 << len(levels[level + 1])):
+                                todo.append((f"{name}/{w}", units + units_of(level + 1, w), level + 1))
+                    cv.notify_all()
 
     threads = [threading.Thread(target=worker, args=(c,)) for c in cores]
     for t in threads:
@@ -465,15 +530,49 @@ def cmd_split(a):
     for t in threads:
         t.join()
     rows = [line.split("\t") for line in res_path.read_text().splitlines()]
-    st = Counter(r[1] for r in rows)
-    works = sorted(int(r[4]) for r in rows if r[4])
-    conf = sorted(int(r[3]) for r in rows if r[3])
-    print(f"cubes {len(rows)} of {1 << len(inputs)}: {dict(st)}")
-    if works:
-        mean = sum(works) / len(works)
-        print(f"work per cube: min {works[0]}, median {works[len(works) // 2]}, mean {mean:.0f}, "
-              f"max {works[-1]}; all {1 << len(inputs)} cubes at the mean: {mean * (1 << len(inputs)):.3g}")
-        print(f"conflicts per cube: min {conf[0]}, median {conf[len(conf) // 2]}, max {conf[-1]}")
+    status = {r[0]: r[1] for r in rows}
+
+    def decided(name, level):
+        """True when this case is refuted, directly or through all its sub-cases."""
+        s = status.get(name)
+        if s == "UNSATISFIABLE":
+            return True
+        if s is None or level + 1 >= len(levels):
+            return False
+        return all(decided(f"{name}/{w}", level + 1) for w in range(1 << len(levels[level + 1])))
+
+    for k in range(len(levels)):
+        at = [r for r in rows if r[0].count("/") == k]
+        if not at:
+            continue
+        works = sorted(int(r[4]) for r in at if r[4])
+        conf = sorted(int(r[3]) for r in at if r[3])
+        line = f"level {k} ({len(levels[k])} inputs): {len(at)} cases {dict(Counter(r[1] for r in at))}"
+        if works:
+            line += (f"; work per case min {works[0]}, median {works[len(works) // 2]}, max {works[-1]}, "
+                     f"sum {sum(works):.4g}; conflicts max {conf[-1] if conf else ''}")
+        print(line)
+    total = sum(int(r[4]) for r in rows if r[4])
+    no_work = sum(1 for r in rows if not r[4])
+    secs = sum(float(r[2]) for r in rows)
+    if no_work == len(rows):
+        work_txt = "work NA (no case printed a work count)"
+    elif no_work:
+        work_txt = f"work {total:.4g} over the {len(rows) - no_work} cases with a count ({no_work} without: a partial sum)"
+    else:
+        work_txt = f"work {total:.4g}"
+    print(f"all cases: {len(rows)}, {work_txt}, seconds summed {secs:.0f}")
+    if any(r[1] == "SATISFIABLE" for r in rows):
+        print("a case is satisfiable: so is the cell")
+    elif not a.sample:
+        if not all(decided(str(v), 0) for v in first):
+            print("not decided: some cases have no answer at the last level")
+        elif fixed:
+            # the cases cover only the part of the formula --fix selects
+            print("every case refuted: the formula is unsatisfiable under the --fix literals "
+                  "(the rest of the formula is not covered)")
+        else:
+            print("every case refuted: the cell is unsatisfiable")
 
 
 def selftest():
@@ -528,6 +627,10 @@ def main(argv=None):
     s.add_argument("--fix", default="", help="literals added as units to every cube (a sub-split)")
     s.add_argument("--mem-mb", type=int, default=16000, help="address-space limit per solver run")
     s.add_argument("--sample-seed", type=int, default=1)
+    s.add_argument("--ticks", type=int, default=0,
+                   help="work limit per case (SAT_LIMIT_TICKS, the work clock W); 0 = none")
+    s.add_argument("--then", default="",
+                   help="inputs to split a case on again when it ends without an answer; levels separated by ';'")
     sub.add_parser("selftest")
     a = ap.parse_args(argv)
     if a.cmd == "census":

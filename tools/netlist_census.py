@@ -98,12 +98,14 @@ def _definition_tt(v, clause_ids, clauses, support):
     return tt
 
 
-def recover_gates(clauses, n_vars):
+def recover_gates(clauses, n_vars, poll=None):
     """{output var: (support tuple, truth table)} plus the set of clause
     ids used by the accepted definitions.  Parity clause sets define every
     variable in them; the one with the largest index is taken as the
     output (Tseitin encoders number outputs after inputs), and cycles that
-    survive are broken afterwards."""
+    survive are broken afterwards.  `poll`, when given, is called with the
+    work done so far in steps (it may raise to stop the reading); without
+    it the reading is the same, unbounded."""
     occ = defaultdict(list)
     units = set()
     for i, c in enumerate(clauses):
@@ -115,7 +117,11 @@ def recover_gates(clauses, n_vars):
     # of a support: the clauses around it are constraints (a miter's compare
     # with its unit would otherwise define the compared outputs)
     cands = defaultdict(list)  # v -> [(support, tt, frozenset(clause ids))], every definition found
+    if poll is not None:
+        poll(sum(len(c) for c in clauses))
     for v in range(1, n_vars + 1):
+        if poll is not None and not v & 1023:
+            poll(1024)
         ids = occ.get(v)
         if not ids or len(ids) > MAX_OCC:
             continue
@@ -134,6 +140,8 @@ def recover_gates(clauses, n_vars):
             for _grow in range(4):
                 tried.add(support)
                 sel = [ci for ci in short if all(abs(l) == v or abs(l) in support for l in clauses[ci])]
+                if poll is not None:
+                    poll(2 * len(short) + (len(sel) << len(support)))
                 tt = _definition_tt(v, sel, clauses, tuple(sorted(support)))
                 if tt is not None:
                     key = frozenset(sel)
@@ -224,6 +232,8 @@ def recover_gates(clauses, n_vars):
             break
         if not progressed:
             # deadlock: the unsettled variable most waited for becomes a primary input
+            if poll is not None:
+                poll(len(unsettled_defined))
             if topo_numbered:
                 best = min(unsettled_defined)
             else:

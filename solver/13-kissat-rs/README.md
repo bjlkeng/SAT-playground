@@ -7106,6 +7106,128 @@ by hash, then the competition's descriptions), and check a "the encoding leaves 
 symmetry" guess against the files before measuring it (the unordered-bits guess above
 cost one run).
 
+## Control words: the outside split decides the three oisc cells, and a reader by meaning (2026-11-14; epic `SAT-playground-d96.8`)
+
+On 2026-11-14 the owner widened G.9.1 into epic `SAT-playground-d96.8`. It should read control however a formula writes it, judge every candidate by its effect, and put a budget on every step. The epic's design field lists the shapes to read.
+
+This section has the first two pieces. Neither touches solver code:
+- the outside split, which now has a work limit per case and splits again by itself (`d96.8.4`);
+- a switch reader that works by what the gates compute (`d96.8.1`).
+
+Logs:
+- `log/control-split-2026-11-14/`: the driver `run.sh`, one folder and log per cell, `progress.txt`, and the review rounds in `review/`.
+- `log/control-read-2026-11-14/`: `run3/` is the run of record. `run2/` and the files above it are earlier versions of the reader, with the bugs described below.
+
+Every split ran the frozen binary `solver/13-j12-holdout-snapshot` (sha256 `ca096d749b92d40f`) at seed 0, one pinned core a case, at most 30 cases at a time, 16 GB each.
+
+### The outside split
+
+`tools/control_census.py split` now takes two new options:
+- `--ticks N`: a work limit per case, through `SAT_LIMIT_TICKS`.
+- `--then`: the inputs to split a case on again when it ends without an answer, levels separated by `;`.
+
+So what and-11 needed by hand on 2026-11-13 now runs by itself. The tool was checked with a stand-in solver: the clause count, the deeper levels, a resume, a model that stops the run, the verdict under `--fix`, and missing work counts. It was also run with the real solver on a 170-variable random 3-SAT file, as a negative: the split cost 45 times the plain run there.
+
+**Worked example: and-12.** Its control word is 12 bits (variables 787-798).
+
+| step | cases | answers | work |
+|---|---|---|---|
+| the 6 low bits, every value, at most 3G each | 64 | 63 UNSAT (at most 32,170 conflicts); value 63 (all six on) stops at 3G without an answer | 8.51G (3.0G of it on value 63) |
+| value 63 split again on the 6 high bits | 64 | 64 UNSAT (at most 25,940 conflicts) | 13.06G |
+| all | 128 | every case refuted, so and-12 is UNSAT | 21.56G |
+
+| cell | plain run, seeds 2 / 3 (1,800 s) | levels (bits) | cases | answer | work | case time summed |
+|---|---|---|---|---|---|---|
+| and-11 (2026-11-13, by hand) | timeout / timeout (24.1G, 24.2G) | 6, 5 | 96 | UNSAT | 26.1G (13.06G without the 900 s spent on value 63 before its split) | 2,910 s |
+| and-12 | timeout / timeout (21.1G, 14.3G) | 6, 6 | 128 | UNSAT | 21.56G | 3,459 s |
+| and-15 | timeout / timeout (18.0G, 24.9G) | 6, 5, 4 | 144 | UNSAT | 44.17G | 6,816 s |
+| sll-8 | 449 / 473 s (5.43G, 5.53G) | 4, 4 | 32 | UNSAT | 5.54G | 500 s |
+| gm16spctrc | 1,139 / 1,409 s (37.7G, 43.9G) | 6, 4 | 192 | not decided: 8 of 64 first-level values out of work at 2G, one second-level case too | 78.41G | 2,639 s |
+
+- **The three oisc cells that no solver run decides are UNSAT by the split.**
+- **The hard case is the same in every oisc cell:** all of the first level's bits on (value 63 of the 6 low bits; value 15 of sll-8's 4).
+- **Most of the work is each case's fixed cost, not search.** Every case reads and preprocesses the whole file. On and-12's second level the 64 cases cost 188-282M each, with at most 25,940 conflicts. On and-15's third level they cost 294-448M each.
+  - A split inside the solver would read and preprocess once, so these totals are an upper bound on its cost.
+  - But the per-case clean-up is also what refutes most cases at 0 conflicts. How much of the gain survives is for `d96.8.5` to measure.
+- **sll-8:** the split costs what the plain run costs (5.54G against 5.43-5.53G). No gain there, as estimated.
+- **gm16spctrc:** the split loses, at 78G and still open against the plain run's 38-44G. A first sample of 8 of the 64 values (all UNSAT at 232-414M each) had predicted about 19G. It happened to miss all 8 hard values; a sample of 8 misses them a third of the time. So the effect test (`d96.8.3`) needs a bigger sample and must count a case that reaches its limit against the split.
+- **What it means for the solved count.** In 1,800 s the solver does 14-25G of work on these files. If the in-solver split costs no more than the totals above:
+  - and-11 (13-26G) fits;
+  - and-12 (21.6G) is at the edge;
+  - and-15 (44.2G) does not fit;
+  - with the fixed cost shared, all three may. Estimate: +1 to +3 solved a seed.
+
+### The switch reader by meaning
+
+`tools/control_read.py` reads a switch (`out = s ? a : b`) by what it computes, not by its clauses:
+- **Definitions** come from `tools/netlist_census.py`'s reader by truth table: any clause shape of up to six inputs, any numbering. Or from each clause's first literal, when every group reads that way (ABC, STP).
+- **Wide and one-way gates:** wide AND and OR gates of any width; one-way halves (Plaisted-Greenbaum), settled forward from the inputs.
+- **Cuts:** fan-in gates are folded in, up to three levels. A cut is judged at six leaves at most.
+- **The select test:**
+  - A leaf selects when fixing it either way leaves a different single leaf.
+  - A pair of leaves selects when fixing both always leaves a single data leaf (no constant, no leaf with both signs).
+  - A leaf that leaves a constant one way is an enable, counted apart.
+- **Supports:** each select is followed back to the inputs with a shared memo, so goldcrest no longer walks its cone once per select.
+- **Budget:** one step budget covers all of it. The netlist reader charges it as it goes, through a `poll` hook added to `recover_gates`; it is off by default, so the other censuses read the same, which `function_census.py selftest`'s 128 checks confirm. The first-literal reader's linear cost is reserved before it starts.
+
+**Checked on toys first** (`control_read.py selftest`, 72 checks).
+- Four circuits:
+  - an 8-bit barrel rotator over 3 control bits;
+  - a register-file read through a tree of switches;
+  - the same read through a decoder;
+  - an array multiplier, as the negative.
+- Each circuit is written seven ways, plain and renumbered at random: two-way gates; Z3's 6-clause switch; AIG; XOR form; canonical CNF; one-way halves; LUTs with the output literal first.
+- Also: random 3-SAT and a pigeonhole (no switch), units for the select test, the budget stopping a reading (also with a sparse numbering and inside the netlist reader), one-way toys with half their outputs negated (the same reading), a select through 41 six-input copy gates (one input steers it), and a shared enable numbered after its data (it gets the votes).
+
+| circuit | readings | found |
+|---|---|---|
+| rotator, register read | 28 | the control inputs exactly, cover 1.0, in every way of writing; renumbered XOR form is a limit (2 readings) |
+| decoded read | 14 | the address bits: as 4:1 switches in 11 readings; through the decoder's shared enables in AIG form (the OR is a chain of two-input ANDs, so the 6-leaf cut lies past three levels); renumbered one-way is a limit (1 reading) |
+| multiplier | 14 | no switch in any way of writing |
+
+The limits come from two facts. An XOR has no direction, so XOR-form switches need a file numbered in circuit order. And in a renumbered one-way file, an input used with both signs looks like a gate.
+
+**Bugs found on the way.** The toys, the real cells and the first review round each caught some.
+- **Cuts that hold a gate and its own fan-ins.** These gave false 4:1 switches in the multiplier's carry cells. Such cuts are now refused.
+- **An XOR of a switch with another signal.** It read as a 4:1 switch. Now no data leaf may show both signs.
+- **An enable on a switch, `x AND (s ? a : b)`.** It read as a 4:1 switch on (x, s). That gave 178,109 false switches on sll-8's first 3M clauses and a cover of 5.6% instead of 77%. Constant cofactors are now refused.
+- **High-fan-out selects read as inputs.** The netlist reader skips variables with more than 2,048 occurrences as gate outputs, for speed. A select read by 585 switches is such a variable, and reading it as an input cut the support walk short. The control reader lifts that limit.
+- **XOR clause sets read backwards onto the control word.** For example, `982 = 1231 xor 1257` on and-15. The netlist reader uses the index to orient an XOR only at a deadlock. In a file numbered in circuit order, a backward parity set is now turned to its largest variable and any other backward definition is dropped. Then a refill pass gives the variables left without a definition a forward one from the free clauses (`1367 = 982 and 1231`).
+- **One-way halves:**
+  - They were read for the inputs of two-way files. They are now read only in files that are mostly one-way, and in circuit-ordered files only the halves that read smaller variables count.
+  - A half whose output appears positively stored its table uncomplemented (review round 1).
+- **The split's verdict under `--fix`** claimed the whole cell UNSAT (review round 1, P1). It now says the formula is UNSAT under the fixed literals. A missing work count now reads NA, or a partial sum, instead of being left out.
+- **Review round 2:**
+  - A definition kept the inputs its table ignores, which inflated the select supports. Tables are now shrunk to the inputs they read.
+  - An enable kept only its first candidate, so an AND's real enable lost its votes when it was numbered after the data. Both candidates now vote.
+  - The step budget did not bound the netlist reader, whose deadlock loop can be quadratic: 1,000 disconnected equal pairs make a million visits. It now charges the budget as it goes.
+
+**Real cells** (first 3M clauses for the oisc cells, whole files otherwise; the first reader on the same clauses):
+
+| cell | first reader | reader by meaning |
+|---|---|---|
+| sll-8 | 431,508 switches; its 8 bits (10-17) steer 77.0% | 420,803; the same 8 bits are the 8 heaviest inputs and steer 78.9% |
+| and-11 | 427,713; 16 inputs steer 76.1% | 416,056; the 11 bits 726-736 are the 11 heaviest, 16 inputs steer 78.2% |
+| and-12 | 422,718; 75.8% | 410,970; 787-798 the 12 heaviest, 78.0% |
+| and-15 | 418,697; 75.3% | 406,687; 970-984 the 15 heaviest, 77.5% |
+| smt2 (STP) | not readable (61% of the variables read as inputs) | 287,021 gates by first literal; 68,047 switches (169 of them 4:1); 32 inputs steer 4.0%: no small control word |
+| gm16spctrc | 3,807 switches; 8 inputs steer 67% | 47,985 switches (every gate, a decision diagram); 8 inputs steer 34%, 16 steer 61%, all 32 steer 100% |
+| goldcrest-and-11 | 1,408 s (no shared memo) | 392 s, 2.9 GB; 31,775 switches; 32 inputs steer 0.9%: no control word |
+
+On the oisc cells the reading takes about 670 s and 2.1 GB for 3M clauses, against about 60-100 s for the first reader. Most of that is the netlist reader's definition search, now also tried on high-fan-out variables.
+
+The budget on the slowest cell of the first census (goldcrest-and-11; `run4/`):
+- 10M steps stop the reading after 3.4 s;
+- 100M steps stop it after 49.5 s, about 2M steps a second;
+- the whole reading needs about 800M, well inside the default 2G.
+
+Before the netlist reader charged the budget itself, a 20M budget stopped only after that reader had finished, at 215 s (`run2/`).
+
+**What it means for the next steps.**
+- **Generality.** The reader now finds the control words in every way of writing switches that the toys cover. On the real cells it gives the same answer as the first reader where both can read, and new, mostly negative answers where only it can (STP, decision diagrams).
+- **The census.** Whether the shape pays outside oisc is `d96.8.3`'s question: the census on 2025 and the prior-year tracks (`d96.11`), with the effect test. gm16spctrc shows why the test must sample more than a handful of cases, and count a case that reaches its limit against the split.
+- **Not covered yet** (`d96.8.2`): control with no switch at all (guard literals, choice groups, guess-and-determine sets).
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.
