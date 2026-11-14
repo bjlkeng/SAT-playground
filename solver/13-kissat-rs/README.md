@@ -1643,7 +1643,8 @@ compared cones are 0-6 % explained: a divider's subtract-and-select
 loop is not an adder tree; `bp4` (4 cells) — 33-43 % gates, 183-258 full
 adders and **138-155 half adders with a constant carry-in** (the
 subtractor shape; the names `FPBEQ`, `FPBLE`, `ZR` read like
-floating-point compare units), sides 11-15 % explained;
+floating-point compare units — wrong: bp is a cube puzzle, and these adders are
+its face-count sums, see "Reading the bp, oisc and smt2 cells"), sides 11-15 % explained;
 `BubbleVsPancakeSort` 8_6 and 9_4 — 88-91 % gates and **no adders at
 all** (comparators and muxes); `oddball` — no gate structure (0-0.2 %),
 so the counting backend must come from clause-level detection; the
@@ -5640,7 +5641,9 @@ Where the reason a side is unknown is clear:
 - `16_16_booth_dadda_mapped_and_booth_wallace_mapped` compares 60 inner signal
   pairs, not the product.
 - `bp4` floating point, `mp1` and `Circuit_multiplier` (about a third of their
-  variables are gates) have no template.
+  variables are gates) have no template. (Correction, 2026-11-13: `bp4` is not
+  floating point but Bel's Pyramid, a cube puzzle; see "Reading the bp, oisc and smt2
+  cells".)
 
 **The hard cells.** 80 cells are unsolved on seed 0 or 1 of the default (49 on both).
 - 27 have nothing to read: 5 too big (`baseballcover`, three `lockchart-group1`
@@ -5669,7 +5672,7 @@ not name:
 | `hhyp_cec_multi_2` | 14,324 | a one-bit miter over 256 inputs (read by first literal) |
 | `test_v7_r12_vr10_c1_s18160.smt2-stp212` | 18,105 | one cone of 18,484 inputs: too big to simulate |
 | `sum_of_3_cubes_37_bits_87` | 7,315 | the fixed word reads 3,035 inputs, because 35% of the variables define no gate |
-| seven `bp4` cells | 183 to 378 | floating-point logic; the named sides are the xors above |
+| seven `bp4` cells | 183 to 378 | floating-point logic; the named sides are the xors above (correction, 2026-11-13: not floating point; the adders are the puzzle's compiled face counts, "Reading the bp, oisc and smt2 cells") |
 
 **`fermat` once N is factored** (2026-11-07, `log/function-census-2026-11-07/fermat-check/`:
 `check.sh` and `fermat_bits.py`, with their output). The cell times out on both
@@ -6807,6 +6810,301 @@ set of 2026-10-20 was +31 (344 v 313, run S.8). The search itself gains nothing:
 losses are late satisfiable cells, as on 2025, and the walk admits nothing. These are
 holdout cells, so none of them is to be studied for tuning. This look is spent for the
 default set of 2026-11-12; the next promoted pass gets its own.
+
+## Reading the bp, oisc and smt2 cells (2026-11-13; bead `SAT-playground-d96.3`)
+
+These 25 cells held 11.8-15.0% of PAR-2 and 8-10 unsolved cells a seed in the run of
+record (`log/abtest-struct-points-400-2026-11-05-16-07-19`, arms `pts0` and `pts1`;
+`log/structure-look-2026-11-07/target_share.out`): the largest share that no census
+had named. The bead asked what each family compares, and whether memory, branch or
+pipeline structure shows. This is a reading: no solver code. Tools:
+`tools/pyramid_read.py` (bp) and `tools/control_census.py` (the control reading and
+its census); the scratch scripts and every run's output are in
+`log/g9-reading-2026-11-13/`.
+
+**Where the cells come from.** The file names misled us. The benchmark database
+(benchmark-database.de, looked up by the hash that starts each file name) and the
+SAT Competition benchmark descriptions say:
+
+| family | cells | what it is | how the CNF was made | answers |
+|---|---|---|---|---|
+| bp | 20 | Bel's Pyramid, a cube-stacking puzzle (Mihal and Haba, SAT Competition 2025 descriptions p. 45; github.com/acmihal/bel_pyramid) | a Z3Py model through Z3's tactics `lia2card`, `dt2bv`, `card2bv` (totalizer), `bit-blast`, `tseitin-cnf` | about half each; the unsatisfiable ones are option sets that rule each other out, or constructions that fail |
+| oisc | 4 | RISC-V instruction removal: AND or SLL replaced by a program of subtractions and branches only, checked against the real instruction (Gurtner, Klemmer, Fleury and Große, SAT Competition 2023 descriptions p. 54) | Rosette to SMT, Bitwuzla to CNF | all unsatisfiable (the replacement is right); the number in the name is the register width |
+| smt2 | 1 | random floating-point formulas written as bit-vector arithmetic (SMT-LIB `QF_BV/float`, Griggio; Haller, Griggio, Brain and Kroening, FMCAD 2012) | STP's bit-blaster | unsatisfiable |
+
+So bp is not floating point, and the README's guess from the names (`FPBEQ` and
+`FPBLE` as floating-point compares, `ZR` as a zero register) was wrong; the three
+places that said so now point here. The census's full adders (119-378 a cell) sit in
+exactly the 12 bp cells with a face-count option and in none of the other 8: they are
+the compiled face counts. The name's tokens are the generator's options, and the
+digit after `bp` is the pyramid's size N (4 for 19 cells, 5 for `bp5_CSO`):
+
+| token | option | what it adds |
+|---|---|---|
+| BC012 | BottomCenter012 | the bottom centre cube is (0,0,0), (0,0,1) or (0,1,2) |
+| TCO | TopCubeOrdering | the top cube's x label is at most its y label |
+| CSO | CakeSliceOrdering | lex order between mirrored halves of the x and y lines |
+| AM | AntiMirror | BC012, TCO and CSO, plus lex order of all x labels against all y labels |
+| IXA | IncreasingXAxis | the bottom layer's x labels never decrease |
+| LP, LPI | LabelPermutation, LabelPermutationImportance | labels appear in first-use order (all lines, or the centre lines) |
+| FPBEQ, FPBLE | FacePBEQ, FacePBLE | face counts: how often each label shows, as a sum equal to, or at most, its value |
+| CB | ConstructiveBottom | labels on higher layers limited to the smaller labels |
+| ZR | ZRing | the outer ring of z labels fixed |
+| YS | YStep | y label (y, h) fixed to y + h |
+
+### bp: a puzzle in Z3's integer encoding
+
+**The puzzle.** A step pyramid of N layers (layer n is a square of (2n+1)² cubes).
+There are 2N−1 labels; every multiset of three labels is one cube, used exactly once;
+a cube's opposite faces carry the same label, and touching faces must match. So every
+line of cubes along an axis shares one label, and the state is one label per line: X
+per (x, h), Y per (y, h), Z per (x, y). N = 4: 7 labels, 84 cubes, 84 positions, 81
+labels (16 X, 16 Y, 49 Z). The description: kissat solves size 4 in under a minute,
+size 5 in about ten minutes with partial constructions, and size 6 is open after a
+week of 32-thread search.
+
+**The encoding, read back** (`tools/pyramid_read.py read`):
+- *Placements* `c{cube}_r{rot}_x{x}_y{y}_h{h}` are variables 1 to P, numbered in the
+  string order of their names: P = 28,812 for N = 4 (343 label triples × 84
+  positions), 120,285 for N = 5. Checked on every cell: each cube's at-least-one
+  clause is exactly its placements (84 of 84 on every bp4 cell, 165 of 165 on bp5;
+  `log/g9-reading-2026-11-13/pyramid_read_2025.txt`).
+- *Labels* are integers that `lia2card` writes as 2N−2 bits in order encoding: bit k
+  is on when the label is more than k, and chain clauses say bit k+1 → bit k. Every
+  label the tool reads has its full chain, none missing a link: 37 to 79 labels on 18
+  bp4 cells, 129 on bp5. On `bp4_CSO_LP_FPBLE_ZR_YS` it reads none, because YS and ZR
+  fix the labels its value-0 tests would use. Labels an option fixes are not in the
+  file.
+- *The channel*: a placement ↔ [X = r0] ∧ [Y = r1] ∧ [Z = r2], and each value test
+  is "the label's bits add up to r", compiled by `card2bv` into a totalizer (a
+  counting circuit) over all of the label's bits.
+- *Each cube exactly once* is written. *Each position holds exactly one cube* is not:
+  it only follows from the labels.
+
+**A worked example** (N = 4, so labels 0 to 6 and six bits a label). Take the
+placement P = "cube (2,3,5), turned (2,3,5), at position x = 3, y = 1, h = 0". It is
+true exactly when X(3,0) = 2, Y(1,0) = 3 and Z(3,1) = 5. In order encoding X = 2 is
+the bits 1,1,0,0,0,0, so "X = 2" is just "bit 1 on and bit 2 off". Z3 writes it as a
+counting circuit "exactly two of the six bits are on" instead. Unit propagation then
+runs one way only:
+
+| the search sets | unit propagation does | why |
+|---|---|---|
+| bit 2 of X on | the chain turns bits 1 and 0 on; the circuit counts 3; "X = 2" is false; P off | counting up from known bits works |
+| P on | "X = 2" is on, and nothing more: no bit is set | "exactly two of six" does not say which two; only the chain does, and the two do not combine in propagation |
+| bit 1, not bit 2, and the same for Y and Z | every bit of the three labels follows from the chain; the circuits count; P on | all inputs known |
+
+So the clauses "P → bit 1", "P → not bit 2" (and the same for Y and Z) are implied
+and each is checkable by unit propagation alone (RUP): assume P and the bit's
+opposite, and the first row's propagation turns P off. The reverse clause (the six
+bit literals → P) is RUP too. `tools/pyramid_read.py rupcheck` sampled these added
+clauses on four cells (1,258 to 2,525 binary and 241 to 528 reverse clauses a
+sample): every one RUP. The missing "each position holds a cube" clause is not RUP (it needs
+a case split over the labels) but is true in every model by construction.
+
+**The timing test.** Nine bp cells (five satisfiable, four unsatisfiable), seeds 0
+and 1, the frozen default binary (`solver/13-j12-holdout-snapshot`, sha256
+`ca096d749b92d40f`), no proof, 1,800 s, one pinned core each, 27 runs at a time on
+an otherwise idle host (`log/g9-reading-2026-11-13/timing/`). Three versions of each
+file, written by `tools/pyramid_read.py variant`:
+- *original*;
+- *links*: plus the binary clauses placement → label bit (106,932 a ZR cell, 141,624
+  to 147,000 the others, 638,928 on bp5);
+- *all*: links, plus the 7-literal reverse clauses (20,237 to 119,556) and the 84
+  (bp5: 165) position at-least-one clauses.
+
+| version | solved (of 18 runs) | PAR-2 | the 8 unsatisfiable runs: time, conflicts |
+|---|---|---|---|
+| original | 14 | 26,719 s | 5,022 s, 50.0M |
+| links | 15 | 18,720 s (0.70×) | 4,574 s (0.91×), 45.9M |
+| all | 5 | 48,972 s (1.83×) | all 8 time out (18.2M to 22.7M conflicts each) |
+
+Per run (seconds, conflicts in millions; t/o is the 1,800 s limit):
+
+| cell | answer | seed | original | links | all |
+|---|---|---|---|---|---|
+| `bp4_AM_IXA_FPBLE` | UNSAT | 0 / 1 | 658 (6.3) / 614 (6.3) | 682 (6.9) / 534 (5.3) | t/o / t/o |
+| `bp4_BC012_AM_IXA_LPI` | UNSAT | 0 / 1 | 334 (3.6) / 392 (4.1) | 378 (4.0) / 302 (3.1) | t/o / t/o |
+| `bp4_BC012_CSO_AM_IXA` | UNSAT | 0 / 1 | 651 (5.4) / 536 (5.2) | 512 (4.7) / 456 (4.7) | t/o / t/o |
+| `bp4_BC012_IXA_LPI_FPBLE` | UNSAT | 0 / 1 | 986 (10.3) / 849 (8.7) | 839 (8.5) / 869 (8.7) | t/o / t/o |
+| `bp4_CSO_IXA_ZR` | SAT | 0 / 1 | 123 (0.7) / 1,605 (11.0) | t/o / 210 (1.6) | 785 (5.9) / 321 (2.6) |
+| `bp4_IXA_FPBEQ_ZR` | SAT | 0 / 1 | 601 (4.6) / t/o | 581 (4.4) / 204 (1.4) | 413 (2.5) / 352 (2.2) |
+| `bp4_TCO_CSO_ZR` | SAT | 0 / 1 | t/o / t/o | 336 (1.8) / t/o | t/o / t/o |
+| `bp4_TCO_IXA_FPBLE_ZR` | SAT | 0 / 1 | t/o / 1,666 (11.6) | t/o / 868 (5.1) | t/o / 300 (1.9) |
+| `bp5_CSO` | SAT | 0 / 1 | 1,631 (1.3) / 1,672 (1.6) | 435 (0.2) / 711 (0.4) | t/o / t/o |
+
+What the numbers say:
+- The links help a little and consistently where luck is small: the unsatisfiable
+  runs take 9% less time and 8% fewer conflicts (5 of 8 runs faster), and bp5 is
+  2.4-3.7× faster on both seeds with 3.5-5.9× fewer conflicts. On the bp4 satisfiable
+  cells the runs swing from 123 s to a timeout on one file between seeds, so their +1
+  solved is luck until more seeds say otherwise.
+- *All* is much worse: every unsatisfiable run times out, where the original needs
+  334-986 s. Separation runs on two of those cells at both seeds
+  (`log/g9-reading-2026-11-13/timing/run3/`): the reverse clauses alone are harmless
+  (367 / 276 s against 334 / 392 s; 535 / 534 s against 658 / 614 s); the position
+  clauses alone time out in 3 of 4 runs and take 1,746 s in the fourth (21.6M to
+  23.3M conflicts). They still time out with the count engine off (`--card=0`, one
+  cell, seed 0: 23.5M conflicts; the original with it off takes 315 s against 334 s). The engine does
+  read the bijection they make explicit (10 grids against 9, 890 checks against 148),
+  but the clauses hurt without it as well; why was not traced. Making the bijection
+  explicit as long clauses is harmful here.
+- Why the links can help: they give propagation the direction the counting circuits
+  lack (the worked example above). The solver could learn each one by probing the
+  bit's opposite and keeping the binary resolvent; whether it does, and how many of
+  the 100,000s it finds in time, was not measured.
+
+**Symmetry.** The puzzle is symmetric under label permutations and some reflections;
+the options break parts of that. The Satsuma probe found 1 to 11,083 generators on 4
+bp cells, and breaking them moved the times both ways (`benchmarks/rl/symext_2025.tsv`).
+In lex mode one satisfiable cell solved on both seeds against one in the record and
+`bp4_CB_LP_FPBLE` was faster on both (137 / 164 s against 224 / 209 s), while
+`bp4_BC012_IXA_LPI_FPBLE` was slower on both and `bp4_CB_CSO_LP_FPBEQ_FPBLE` went one
+way on each seed; fix mode was mixed too. Four cells, so not a measurement of the
+symmetry's worth.
+An early guess here, that Z3 leaves a label's bits unordered (so a label would have
+64 bit patterns for 7 values), was wrong: the chain clauses are in every file, and
+sorting the bits again gave the identical search (691,418 conflicts both ways on
+`bp4_CSO_IXA_ZR`).
+
+### oisc: an unrolled program steered by one word
+
+**The encoding.** `tools/control_census.py cell` reads Bitwuzla's output back as
+gates: AND gates (three clauses each), XOR gates (four) and if-then-else gates (four
+ternary clauses), every gate numbered after its inputs. A *mux* is an if-then-else:
+its *select* picks which of two values passes.
+
+| cell | variables | clauses | AND | XOR | if-then-else | inputs | muxes | control word | muxes it steers |
+|---|---|---|---|---|---|---|---|---|---|
+| `oisc-subrv-sll-nested-8` | 3,859,779 | 13,462,874 | 1,971,793 | 8,970 | 1,877,903 | 1,113 | 1,936,930 | 8 bits (variables 10-17) | 76.6% |
+| `oisc-subrv-and-nested-11` | 7,017,468 | 24,415,251 | 3,648,504 | 11,734 | 3,355,700 | 1,530 | 3,469,510 | 11 bits (726-736) | 75.9% |
+| `oisc-subrv-and-nested-12` | 8,320,254 | 28,922,190 | 4,352,153 | 12,736 | 3,953,696 | 1,669 | 4,090,064 | 12 bits (787-798) | 75.7% |
+| `oisc-subrv-and-nested-15` | 12,857,629 | 44,573,856 | 6,848,319 | 15,658 | 5,991,566 | 2,086 | 6,206,924 | 15 bits (970-984) | 74.9% |
+
+**The control word.** Follow each mux's select back to the inputs and weigh each
+input by the muxes whose select it feeds. On every oisc cell one word as wide as the
+cell's registers (8, 11, 12 or 15 bits) feeds the select of about three muxes in
+four, and nothing else comes close: on sll-8 those 8 inputs steer 76.6% of the
+muxes and the next 24 inputs by weight add 0.05 points. On the and cells every one of
+those selects reads all the word's bits (so the best 8 inputs steer 0%, the best 16
+inputs 74.9-75.9%). Almost all the other muxes have selects that read more than 200
+inputs (a quarter of the muxes); outside the word only about a thousand muxes a
+cell sit on small selects (over 1 to 165 inputs).
+
+**A worked example.** A toy of the same shape: a program doubles an 8-bit register r
+once for every set bit of a 2-bit word w, unrolled into two steps. Step i is "if bit i
+of w is on, r gets r + r, else r keeps its value": for each of r's 8 bits, a mux
+whose select is bit i of w. So the two bits of w steer all 16 muxes. Fix w = 01, and
+step 0's muxes all pass r + r while step 1's muxes are plain wires: what is left is
+one fixed addition, which propagation evaluates for any r, and a miter against "r
+doubled once" is refuted at once. Leave w free, and the solver must find out, case
+by case and bit by bit, which steps happened. In the oisc cells the word is the
+register-wide input, and its steps are the replacement's subtractions and branches,
+so the selects of three muxes in four are functions of that word alone. Fixing it in
+the real cells:
+
+| cell | the control word fixed to | answer | conflicts | wall (mostly reading the file) | work |
+|---|---|---|---|---|---|
+| sll-nested-8 | 5 | UNSAT | 0 | 9 s | 86.7M |
+| sll-nested-8 | 37 | UNSAT | 0 | 9 s | 86.0M |
+| sll-nested-8 | 200 | UNSAT | 1 | 5 s | 21.8M |
+| and-nested-11 | 1234 | UNSAT | 1 | 9 s | 33.3M |
+| and-nested-11 | 2047 | UNSAT | 0 | 15 s | 162.9M |
+| and-nested-11 | 0 | UNSAT | 16,531 | 23 s | 224.7M |
+
+The whole cell is unsatisfiable exactly when every value of the word is: 256 cases
+for sll-8 (307-329 s whole in the run of record), 2,048 for and-11 (a timeout at
+1,800 s on both seeds, after 20,750-26,121 conflicts and 28-29G work).
+
+`tools/control_census.py split` runs such cases from outside the solver (the file
+plus one unit clause per fixed bit, streamed through a pipe; the same frozen binary,
+one pinned core a case; `log/g9-reading-2026-11-13/cases/split-and11*/`). On and-11:
+
+| bits fixed | cases tried | answers | conflicts a case | work a case | all cases at the mean |
+|---|---|---|---|---|---|
+| all 11 (726-736) | 64 random of 2,048 | 64 UNSAT | 0-1 (median 1) | 33.3M-161.7M, median 33.5M | 99G |
+| 6 low (726-731) | 4 random of 64 | 4 UNSAT | 0-1 | 32.3M-275.9M | 6.0G |
+| 6 high (731-736) | 4 random of 64 | 4 UNSAT | 0 | 189M-204M | 12.6G |
+| 3 low (726-728) | 3 of 8 | 3 UNSAT | 1, 16,819 (value 0), 0 | 31M-535M | |
+| 3 high (734-736) | 3 of 8 | 3 UNSAT | 0 | 244M-246M | |
+| 1 (736) | both | 736 = 1: UNSAT, 0 conflicts, 413M; 736 = 0: no answer in 900 s (15,583 conflicts, 16.1G) | | | |
+
+So most of the space falls to propagation and preprocessing alone once a few bits of
+the word are fixed; the hard corner is where the word's top bits are 0 (a small
+operand: the all-zero word took 16,531 conflicts, still only 23 s). Enumerating all
+2,048 values is too dear (about 99G work, 3.4× what the plain run spends without an
+answer). Splitting on half the word is cheap if its hard corner falls too:
+both 6-bit corners do (all six low bits 0: 16,819 conflicts, 30 s; all six high bits
+0: 16,514 conflicts, 23 s). So every value of the six low bits was run:
+
+| step | cases | answers | conflicts a case | work |
+|---|---|---|---|---|
+| the 6 low bits (726-731), every value | 64 | 63 UNSAT (slowest 214 s, 48,267 conflicts); value 63 (all six on) no answer in 900 s (19,583 conflicts, 13.0G) | 0-48,267 | 7.35G for the 63 |
+| value 63, split again on the 5 high bits (732-736) | 32 | 32 UNSAT (38 s on 27 cores) | 0-22,565 | 5.70G |
+
+**So and-nested-11 is decided** by a two-level split on its control word: 95 cases,
+all unsatisfiable, 13.06G work and 205,620 conflicts in all, where the plain run spends
+28-29G without an answer. On top of that, the first try at value 63 spent 13.0G before
+the 900 s cap; a split inside the solver would split such a case again early instead.
+Each outside case also reads the 24M-clause file again (about 8 s; 2,010 case-seconds
+in all). The answers are the frozen binary's and were not checked by a proof; the
+cell is known unsatisfiable (only the `-pc` files of the family are satisfiable).
+
+**What it means.** The shape is general: a few inputs steer most of a circuit's
+muxes, as in any unrolled program whose control flow depends on its data. Two ways
+to use it: decide those inputs first (a change of decision order; answers and proofs
+are unaffected), or split on them (cube and conquer; each case's refutation is an
+ordinary one, and together the cases refute the cell). Bead G.7.2 ("inputs first:
+decide circuit inputs", `SAT-playground-d96.1.2`) was closed with the unrolling line
+on 2026-11-03 without a run; this is narrower (the few inputs that steer the muxes,
+not all 1,113 to 1,530 inputs) and measured. Where else the shape shows:
+the census over the 400 cells of 2025 (`tools/control_census.py census`,
+`benchmarks/rl/control_2025.tsv`, 6 workers, about an hour; files read up to 30M
+clauses, so 17 rows are partial, and-nested-15's among them (the `cell` reading above
+is the full one); `goldcrest-and-14` hit the 30-minute cell limit, while its sibling
+`goldcrest-and-11` has 40,100 muxes and no control word) finds 57 cells with 1,000 or
+more muxes, and in 18 of them 8 or 16 inputs steer a quarter or more. Where muxes are a
+large part of the circuit (27-50% of the gates) they are the four oisc cells and
+three hardware unrollings the solver already decides in 3-16 s
+(`hwmcc17miters-xits-iso-6s299b685`, where 8 inputs steer 49% of 1.9M muxes;
+`veer_axi-p06_transition`; `x-epic_a19-p15_transition`). The rest have few muxes
+(2-30% of the gates: the grs cells, `s38584`, `summle`, `div_miter_lec__2`, `case19`)
+or are split-BDD multipliers (`gm*`), where every gate is a mux on an input variable
+(a BDD node); one of those is slow (`gm16spctrc`, 983-1,228 s), and splitting on its
+first BDD variables is the same idea there, untested. So on 2025 the payoff is the
+three unsolved oisc cells and sll-8's 300 s. Bead G.9.1 (`SAT-playground-d96.8`).
+
+### smt2: the floating-point cell
+
+`test_v7_r12_vr10_c1_s18160.smt2-stp212` (314,295 variables, 1,258,524 clauses) is
+the one real floating-point cell: random floating-point formulas written as
+bit-vector arithmetic and bit-blasted by STP. The function
+census read it as 287,021 gates (91% of the variables), 18,105 full adders, 24,875
+half adders and 67,962 muxes, one cone of 102,076 gates over 18,484 inputs:
+multipliers, alignment shifters, rounding. The control reader built for oisc does not
+read STP's clause shapes (190,803 of 314,295 variables come out as inputs), so the
+control question is open here. The FMCAD 2012 paper decides such formulas by reasoning over
+ranges of values, not bits; nothing in this solver is close. One cell, never solved; parked.
+
+### What to build, and what not
+
+| shape | cells | the step | proof | measured | next |
+|---|---|---|---|---|---|
+| one input word steers most muxes (the control flow of an unrolled program) | oisc 4 (3 unsolved on both seeds, 3.5% of PAR-2); 3 fast hardware cells | split on part of the word inside the solver, or decide it first | none beyond ordinary refutations | and-nested-11 decided outside the solver: 13.06G work, against 28-29G without an answer | G.9.1, `SAT-playground-d96.8` |
+| value tests over order-encoded integers written as counting circuits (propagation one way only) | bp 20 (any Z3 `lia2card` export) | add the direct links | each clause RUP | 9 cells, 2 seeds: 15 v 14 solved, PAR-2 0.70×; unsatisfiable runs 0.91× time | G.9.2, `SAT-playground-d96.9` |
+| integers in order encoding are the real choices | bp 20 (about 10 satisfiable) | read them as choices for the free-choice walk | none (satisfiable answers, models checked) | not measured | G.14, `SAT-playground-d96.10` |
+| the missing side of a bijection, made explicit | bp 20 | one at-least-one clause per position | implied, not RUP | harmful: 12 of the 13 unsatisfiable runs with them time out and the 13th takes 1,746 s, with or without the count engine | none |
+| floating point over bit-vectors | smt2 1 | reasoning over ranges of words | | | parked |
+
+What the bead asked: memory does not show at scale (in oisc the selects outside the
+control word, over tens to 165 inputs, perhaps reads by register number, steer about
+a thousand muxes a cell, a fraction of a percent); branch guards (many muxes on one
+condition) are oisc's whole difficulty; there is no pipeline anywhere (oisc runs an
+instruction-level program, bp is a puzzle, smt2 a formula). Two lessons for the next
+census: look up a family's generator before reading its names (benchmark-database.de
+by hash, then the competition's descriptions), and check a "the encoding leaves a
+symmetry" guess against the files before measuring it (the unordered-bits guess above
+cost one run).
 
 ## Notes from the RL scheduler's first steps (plan §10)
 
