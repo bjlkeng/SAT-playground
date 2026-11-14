@@ -104,6 +104,7 @@ pub mod stubs;
 pub mod substitute;
 pub mod sweep;
 pub mod congruence;
+pub mod control;
 pub mod factor;
 pub mod terminate;
 pub mod tiers;

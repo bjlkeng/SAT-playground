@@ -347,6 +347,7 @@ pub struct Solver {
     pub gaussproof: crate::gaussproof::State, // not in kissat: its proof (src/gaussproof.rs)
     pub card: crate::card::State, // not in kissat: the card engine (src/card.rs)
     pub freewalk: crate::freewalk::FreeWalk, // not in kissat: the free-choice walk (src/freewalk.rs)
+    pub control: crate::control::Control, // not in kissat: control words (src/control.rs)
     pub last: Remember, // remember last;
     pub walked: u32,
 
@@ -577,6 +578,8 @@ pub fn print_statistics(solver: &mut Solver) {
     crate::card::report(solver);
     // Not in kissat: the free-choice walk's exit line; nothing when it is off
     crate::freewalk::report(solver);
+    // Not in kissat: the control decisions' exit line; nothing when off
+    crate::control::report(solver);
 }
 
 /// Port of `kissat_add` — external clause addition.

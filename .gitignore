@@ -64,3 +64,16 @@ benchmarks/sat-comp-2026/*
 
 # Beads / Dolt files (added by bd init)
 .beads/proxieddb/
+# prior-year main tracks (bead SAT-playground-d96.11): files not committed, MANIFEST and URI lists are
+benchmarks/sat-comp-2020/*
+!benchmarks/sat-comp-2020/MANIFEST.txt
+benchmarks/sat-comp-2021/*
+!benchmarks/sat-comp-2021/MANIFEST.txt
+benchmarks/sat-comp-2022/*
+!benchmarks/sat-comp-2022/MANIFEST.txt
+benchmarks/sat-comp-2023/*
+!benchmarks/sat-comp-2023/MANIFEST.txt
+benchmarks/sat-comp-2024/*
+!benchmarks/sat-comp-2024/MANIFEST.txt
+# GBD metadata database (30 MB, downloaded by tools/fetch_prior_tracks.py)
+benchmarks/gbd/

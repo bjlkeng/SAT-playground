@@ -425,6 +425,16 @@ pub fn delete_clause_from_proof(solver: &mut Solver, ref_: Reference) {
 
 /// Port of `kissat_delete_external_from_proof` — the literals are already
 /// external and go on the line unmapped.
+/// Not in kissat (bead SAT-playground-d96.8.5): add a line of external
+/// literals, a clause derived outside the search (the control split's
+/// relativized lemmas).
+pub fn add_external_lits_to_proof(solver: &mut Solver, elits: &[i32]) {
+    let mut proof = solver.proof.take().expect("proof");
+    import_external_proof_literals(&mut proof, elits);
+    print_added_proof_line(solver, &mut proof);
+    solver.proof = Some(proof);
+}
+
 pub fn delete_external_from_proof(solver: &mut Solver, elits: &[i32]) {
     let mut proof = solver.proof.take().expect("proof");
     import_external_proof_literals(&mut proof, elits);

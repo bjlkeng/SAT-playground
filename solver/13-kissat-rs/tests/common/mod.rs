@@ -163,6 +163,7 @@ pub const SOLVER_ENV_VARS: &[&str] = &[
     "SAT_POLICY_BRANCH_HOLD",
     "SAT_POLICY_BRANCH_REGIMES",
     "SAT_POLICY_LOG_RESERVED",
+    "SAT_CTL_VARS",
 ];
 
 /// Run the binary with `-n -s`, the given extra kissat options and the given

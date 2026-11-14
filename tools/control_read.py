@@ -36,8 +36,10 @@ small for the file stops at once.
 
 Usage:
   python3 tools/control_read.py cell FILE [--max-clauses N] [--budget STEPS]
-  python3 tools/control_read.py census --out TABLE.tsv [--stems a,b] [--workers 6]
-                                       [--max-clauses 5000000] [--seconds 1800] [--mem-mb 40000]
+  python3 tools/control_read.py census --out TABLE.tsv [--stems a,b] [--workers 6] [--cands]
+                                       [--suite DIR] [--max-clauses 5000000] [--seconds 1800]
+                                       [--mem-mb 40000]
+  python3 tools/control_read.py cands FILE [--max-clauses N] [--budget STEPS] [--gd-pool 64]
   python3 tools/control_read.py toy KIND STYLE --out FILE.cnf [--shuffle SEED]
   python3 tools/control_read.py selftest
 
@@ -746,6 +748,291 @@ def analyse(clauses, n_vars, budget=DEFAULT_BUDGET):
 
 
 # ---------------------------------------------------------------------------
+# control without switches (bead SAT-playground-d96.8.2): guard literals,
+# choice groups, coded control words and guess-and-determine sets
+# ---------------------------------------------------------------------------
+
+
+class Prop:
+    """Unit propagation with two watched literals and an undo trail, for the
+    guess-and-determine search.  Every clause visit is a step."""
+
+    def __init__(self, n_vars, clauses, steps):
+        self.steps = steps
+        self.val = bytearray(n_vars + 1)          # 0 free, 1 true, 2 false
+        self.trail = []
+        self.cl = []
+        self.watch = defaultdict(list)            # literal -> clauses watching it
+        self.conflict = False
+        units = []
+        steps.take(sum(len(c) for c in clauses))
+        for c in clauses:
+            if len(c) == 1:
+                units.append(c[0])
+            elif len(c) >= 2:
+                ci = len(self.cl)
+                self.cl.append(list(c))
+                self.watch[c[0]].append(ci)
+                self.watch[c[1]].append(ci)
+        # every unit first, then one propagation from the start of the trail
+        # (propagating after each unit would rescan the trail every time)
+        for l in units:
+            if not self.assign(l):
+                self.conflict = True
+                break
+        if not self.conflict and not self.propagate():
+            self.conflict = True
+        self.root = len(self.trail)
+
+    def value(self, l):
+        v = self.val[abs(l)]
+        if v == 0:
+            return 0
+        return 1 if (v == 1) == (l > 0) else -1
+
+    def assign(self, l):
+        x = self.value(l)
+        if x:
+            return x > 0
+        self.val[abs(l)] = 1 if l > 0 else 2
+        self.trail.append(l)
+        return True
+
+    def propagate(self, start=None):
+        """Propagate the trail from `start` (default: the root mark or 0);
+        False on a conflict."""
+        q = start if start is not None else 0
+        while q < len(self.trail):
+            l = self.trail[q]
+            q += 1
+            false_lit = -l
+            ws = self.watch.get(false_lit)
+            if not ws:
+                continue
+            keep = []
+            i = 0
+            n = len(ws)
+            while i < n:
+                ci = ws[i]
+                i += 1
+                c = self.cl[ci]
+                self.steps.take(1)
+                if c[0] == false_lit:
+                    c[0], c[1] = c[1], c[0]
+                if self.value(c[0]) > 0:
+                    keep.append(ci)
+                    continue
+                for k in range(2, len(c)):
+                    if self.value(c[k]) >= 0:
+                        c[1], c[k] = c[k], c[1]
+                        self.watch[c[1]].append(ci)
+                        break
+                else:
+                    keep.append(ci)
+                    if self.value(c[0]) < 0:
+                        keep.extend(ws[i:])
+                        self.watch[false_lit] = keep
+                        return False
+                    self.assign(c[0])
+            self.watch[false_lit] = keep
+        return True
+
+    def undo(self, mark):
+        while len(self.trail) > mark:
+            l = self.trail.pop()
+            self.val[abs(l)] = 0
+
+
+def guard_candidates(clauses, n_vars, k=16):
+    """Variables ranked by the clauses their two values satisfy (a selector
+    or mode bit satisfies a whole block one way): (variable, satisfied by
+    true, satisfied by false), heaviest first; unit-fixed variables left out.
+    Also the median of that count, so a guard can be told from a plain
+    high-fan-out signal by how far it stands out."""
+    pos, neg = Counter(), Counter()
+    units = set()
+    for c in clauses:
+        if len(c) == 1:
+            units.add(abs(c[0]))
+            continue
+        for l in c:
+            (pos if l > 0 else neg)[abs(l)] += 1
+    tot = [(pos[v] + neg[v], v) for v in set(pos) | set(neg) if v not in units]
+    tot.sort(reverse=True)
+    counts = sorted(t for t, _v in tot)
+    median = counts[len(counts) // 2] if counts else 0
+    return [(v, pos[v], neg[v]) for _t, v in tot[:k]], median
+
+
+MAX_GROUP = 64          # longest clause tried as a pairwise exactly-one group
+
+
+def group_candidates(clauses, n_vars, k=4, deadline=None, chained=True):
+    """Exactly-one choice groups, ranked by the clauses their members touch.
+    First the pairwise ones: a clause of 2 to 64 literals whose literals
+    exclude each other by binary clauses (one place a step, one slot a task).
+    Then, when `chained`, the free-choice census's reading (tools/free_census.py)
+    adds groups written through chains (ladder, commander, binary encodings).
+    Groups are kept biggest first while they share no variable.  Returns
+    [(members, touched clauses, none_ok)]."""
+    pairs = set()
+    occ = Counter()
+    for c in clauses:
+        for l in c:
+            occ[abs(l)] += 1
+        if len(c) == 2:
+            a, b = c
+            pairs.add((a, b) if a < b else (b, a))
+
+    def excl(a, b):
+        x, y = -a, -b
+        return ((x, y) if x < y else (y, x)) in pairs
+    found = {}
+    for c in clauses:
+        if not 2 <= len(c) <= MAX_GROUP:
+            continue
+        if all(excl(c[i], c[j]) for i in range(len(c)) for j in range(i + 1, len(c))):
+            key = frozenset(c)
+            found.setdefault(key, (list(c), False))
+    if chained:
+        import free_census as fr
+        try:
+            cnf = fr.CNF.from_clauses(n_vars, clauses)
+            _fixed, rd, _nsat = fr.read_roles(cnf, deadline)
+        except TimeoutError as e:
+            if str(e) == "cell time limit":
+                raise                    # the census's alarm: the cell is over
+            rd = None                    # the reading's own deadline
+        if rd is not None:
+            for g, mem in enumerate(rd.groups):
+                if len(mem) >= 2:
+                    found.setdefault(frozenset(mem), (list(mem), bool(rd.none_ok[g])))
+    ranked = sorted(found.values(), key=lambda x: (-len(x[0]), -sum(occ[abs(l)] for l in x[0])))
+    taken = set()
+    out = []
+    for mem, none_ok in ranked:
+        vs = {abs(l) for l in mem}
+        if vs & taken:
+            continue
+        taken |= vs
+        out.append((mem, sum(occ[abs(l)] for l in mem), none_ok))
+    out.sort(key=lambda x: -x[1])
+    return out[:k]
+
+
+def gd_candidates(clauses, n_vars, steps, k=16, pool=64, samples=4, seed=1):
+    """A guess-and-determine set, greedy: at each step the variable (from the
+    `pool` most frequent) whose two values, on top of `samples` random values
+    of the set chosen so far, fix the most variables by propagation.  Stops
+    at k variables or once the set's values fix 99% of the variables (a case
+    that ends in a conflict counts as fixed: it is refuted at once).  Returns
+    [(variable, share fixed with it, share of the sampled cases that end in a
+    conflict)].  Both are estimates from a few sampled cases: whether every
+    case falls is the effect test's question (bead d96.8.3)."""
+    rng = random.Random(seed)
+    pr = Prop(n_vars, clauses, steps)
+    if pr.conflict:
+        return []
+    occ = Counter()
+    for c in clauses:
+        for l in c:
+            occ[abs(l)] += 1
+    free0 = [v for v in occ if pr.val[v] == 0]
+    if not free0:
+        return []
+    n_free = len(free0)
+    cand = [v for v, _n in occ.most_common() if pr.val[v] == 0][:pool]
+    chosen = []
+    out = []
+    base = pr.root
+    for _step in range(k):
+        vals = [[rng.random() < 0.5 for _ in chosen] for _ in range(samples)]
+        best = None
+        for v in cand:
+            if v in chosen:
+                continue
+            fixed = 0
+            tries = 0
+            conflicts = 0
+            for sv in vals:
+                for b in (True, False):
+                    mark = len(pr.trail)
+                    ok = True
+                    for x, bx in zip(chosen + [v], sv + [b]):
+                        if not pr.assign(x if bx else -x):
+                            ok = False
+                            break
+                    if ok:
+                        ok = pr.propagate(mark)
+                    # a conflict refutes this case at once: for a split that
+                    # is as cheap as a case fixed outright, so it counts as such
+                    fixed += (len(pr.trail) - base) if ok else n_free
+                    conflicts += not ok
+                    tries += 1
+                    pr.undo(mark)
+            score = fixed / max(1, tries)
+            if best is None or score > best[0]:
+                best = (score, v, conflicts / max(1, tries))
+        if best is None:
+            break
+        chosen.append(best[1])
+        share = min(1.0, best[0] / n_free)
+        out.append((best[1], round(share, 4), round(best[2], 4)))
+        if share >= 0.99:
+            break
+    return out
+
+
+def candidates(clauses, n_vars, budget=DEFAULT_BUDGET, gd_pool=64, deadline=None):
+    """Every candidate control set of a formula, by source: 'switch' (the
+    inputs that steer the switches), 'enable' (shared enables, a decoded
+    word), 'guard' (variables whose values satisfy the most clauses), 'group'
+    (choice groups) and 'gd' (a guess-and-determine set).  Returns (row,
+    sets) with sets[source] a list of variables (a group: member literals)."""
+    t0 = time.time()
+    row, ranked = analyse(clauses, n_vars, budget)
+    sets = {}
+    if ranked:
+        # the fewest heaviest inputs that steer half the switches (at most 16)
+        sets["switch"] = ranked[:16]
+    if row.get("top_enable_inputs"):
+        sets["enable"] = [int(x) for x in row["top_enable_inputs"].split(",") if x]
+    g, median = guard_candidates(clauses, n_vars)
+    if g:
+        sets["guard"] = [v for v, _p, _n in g]
+        row["guard_top"] = g[0][1] + g[0][2]
+        row["guard_median"] = median
+    try:
+        # the chained reading gets half of what is left, so the census's alarm
+        # (the cell's whole limit) never fires inside it
+        g_deadline = None if deadline is None else time.time() + 0.5 * max(0.0, deadline - time.time())
+        groups = group_candidates(clauses, n_vars, deadline=g_deadline)
+    except TimeoutError as e:
+        if str(e) == "cell time limit":
+            raise
+        groups = []
+        row["group_error"] = "timeout"
+    if groups:
+        sets["group"] = groups[0][0]
+        row["groups"] = len(groups)
+        row["group_top_size"] = len(groups[0][0])
+    steps = Steps(budget)
+    try:
+        gd = gd_candidates(clauses, n_vars, steps, pool=gd_pool)
+        row["gd_budget"] = 0
+    except Budget:
+        gd = []
+        row["gd_budget"] = 1
+    if gd:
+        sets["gd"] = [v for v, _s, _c in gd]
+        row["gd_size"] = len(gd)
+        row["gd_share"] = gd[-1][1]
+        row["gd_conflicts"] = gd[-1][2]
+    row["cand_seconds"] = round(time.time() - t0, 1)
+    return row, sets
+
+
+# ---------------------------------------------------------------------------
 # toys: one circuit, written every way a switch is written
 # ---------------------------------------------------------------------------
 
@@ -861,6 +1148,117 @@ def toy_mul(width=4):
 
 
 TOYS = {"rotate": toy_rotate, "regread": toy_regread, "decoded": toy_decoded, "mul": toy_mul}
+
+
+# toys for control without switches: (n_vars, clauses, expected)
+
+def _random_block(rng, first, n, m, k=3):
+    """m random k-clauses over variables first..first+n-1."""
+    return [tuple(v if rng.random() < 0.5 else -v for v in rng.sample(range(first, first + n), k))
+            for _ in range(m)]
+
+
+def toy_two_mode(n=40, m=180, seed=11):
+    """A mode bit m0 (variable 1): one block of clauses holds when it is on,
+    another when it is off (written (-m0 | c) and (m0 | c)); a few unguarded
+    clauses beside.  The guard finder must rank m0 first."""
+    rng = random.Random(seed)
+    b1 = _random_block(rng, 2, n, m)
+    b0 = _random_block(rng, 2, n, m)
+    free = _random_block(rng, 2, n, n // 2)
+    clauses = [(-1,) + c for c in b1] + [(1,) + c for c in b0] + free
+    return n + 1, clauses, {"guard": [1]}
+
+
+def toy_selectors(n=100, blocks=3, m=120, seed=12):
+    """Activation literals a1..a3 (variables 1-3), each switching its own
+    block on, as an incremental or BMC dump writes them ((-a | c))."""
+    rng = random.Random(seed)
+    clauses = []
+    for b in range(blocks):
+        clauses += [(-(b + 1),) + c for c in _random_block(rng, blocks + 1, n, m)]
+    clauses += _random_block(rng, blocks + 1, n, n)
+    return n + blocks, clauses, {"guard": list(range(1, blocks + 1))}
+
+
+def toy_planning(steps=5, places=6, seed=13):
+    """A walk on a ring of `places` with chords: one place a step (exactly one,
+    pairwise), each step to a neighbour, from place 0 to the far place.  The
+    choice groups are the steps; the group finder must find them."""
+    rng = random.Random(seed)
+    var = lambda t, i: t * places + i + 1  # noqa: E731
+    adj = {i: {(i + 1) % places, (i - 1) % places} for i in range(places)}
+    for _ in range(places // 2):
+        a, b = rng.sample(range(places), 2)
+        adj[a].add(b)
+        adj[b].add(a)
+    clauses = []
+    for t in range(steps + 1):
+        clauses.append(tuple(var(t, i) for i in range(places)))
+        for i in range(places):
+            for j in range(i + 1, places):
+                clauses.append((-var(t, i), -var(t, j)))
+    for t in range(steps):
+        for i in range(places):
+            clauses.append((-var(t, i),) + tuple(var(t + 1, j) for j in sorted(adj[i])))
+    clauses.append((var(0, 0),))
+    clauses.append((var(steps, places // 2),))
+    groups = [[var(t, i) for i in range(places)] for t in range(steps + 1)]
+    return (steps + 1) * places, clauses, {"groups": groups}
+
+
+def toy_cipher(n=16, rounds=40, seed=14):
+    """A filtered LFSR: initial state (the key) s_0..s_15, s_t+16 = s_t xor
+    s_t+2 xor s_t+3 xor s_t+5, output z_t = (s_t+1 and s_t+7) xor s_t+11,
+    observed for `rounds` steps (units).  Fixing the key fixes everything by
+    propagation, so a guess-and-determine set exists; the greedy must reach
+    99% within 16 variables."""
+    rng = random.Random(seed)
+    key = [rng.random() < 0.5 for _ in range(n)]
+    nv = [n]
+
+    def new():
+        nv[0] += 1
+        return nv[0]
+    clauses = []
+
+    def xor2(a, b):
+        o = new()
+        clauses.extend([(-o, a, b), (-o, -a, -b), (o, -a, b), (o, a, -b)])
+        return o
+
+    def and2(a, b):
+        o = new()
+        clauses.extend([(-o, a), (-o, b), (o, -a, -b)])
+        return o
+    s = list(range(1, n + 1))
+    val = {i + 1: key[i] for i in range(n)}
+
+    def ev(x):
+        return val[x]
+    total = rounds + 16
+    while len(s) < total:
+        t = len(s) - n
+        x = xor2(xor2(s[t], s[t + 2]), xor2(s[t + 3], s[t + 5]))
+        val[x] = ev(s[t]) ^ ev(s[t + 2]) ^ ev(s[t + 3]) ^ ev(s[t + 5])
+        s.append(x)
+    for t in range(rounds):
+        a = and2(s[t + 1], s[t + 7])
+        z = xor2(a, s[t + 11])
+        bit = (ev(s[t + 1]) and ev(s[t + 7])) ^ ev(s[t + 11])
+        clauses.append((z if bit else -z,))
+    return nv[0], clauses, {"gd_within": 16}
+
+
+def toy_random(n=200, ratio=3.5, seed=15):
+    """Satisfiable random 3-SAT (below the threshold): no guard stands out, no
+    group, and no 16 variables fix or refute 99% of the sampled cases."""
+    rng = random.Random(seed)
+    return n, _random_block(rng, 1, n, int(n * ratio)), {}
+
+
+CAND_TOYS = {"two-mode": toy_two_mode, "selectors": toy_selectors, "planning": toy_planning,
+             "cipher": toy_cipher, "random": toy_random}
 STYLES = ("tseitin", "ite6", "aig", "xorform", "canon", "pg", "lut")
 
 
@@ -1194,6 +1592,37 @@ def selftest():
         assert set(ranked0[:len(want)]) == want and set(ranked1[:len(want)]) == want, (kind, row0, row1)
         assert row0["muxes"] == row1["muxes"], (kind, row0["muxes"], row1["muxes"])
         checks += 1
+    # control without switches (d96.8.2)
+    for name, build in CAND_TOYS.items():
+        nv_, cls_, exp = build()
+        g, median = guard_candidates(cls_, nv_)
+        top = [v for v, _p, _n in g]
+        steps_ = Steps(DEFAULT_BUDGET)
+        gd = gd_candidates(cls_, nv_, steps_)
+        groups = group_candidates(cls_, nv_, k=16)
+        line = (f"{name}: guards {top[:4]} (top {g[0][1] + g[0][2] if g else 0}, median {median}); "
+                f"groups {[len(m) for m, _t, _n in groups][:8]}; gd {len(gd)} vars, share {gd[-1][1] if gd else 0}, "
+                f"conflicts {gd[-1][2] if gd else 0}")
+        print("    " + line)
+        if "guard" in exp:
+            want = set(exp["guard"])
+            assert set(top[:len(want)]) == want, line
+            assert g[0][1] + g[0][2] >= 3 * max(1, median), line
+            checks += 1
+        if "groups" in exp:
+            found = {frozenset(abs(l) for l in m) for m, _t, _n in group_candidates(cls_, nv_, k=64)}
+            want = {frozenset(x) for x in exp["groups"]}
+            assert want <= found, (line, len(want & found), len(want))
+            checks += 1
+        if "gd_within" in exp:
+            assert gd and gd[-1][1] >= 0.99 and len(gd) <= exp["gd_within"], line
+            checks += 1
+        if name == "random":
+            assert not g or g[0][1] + g[0][2] < 3 * max(1, median), line
+            assert not groups, line
+            # no hit: a hit is 99% fixed (or refuted) within 16 variables
+            assert not gd or gd[-1][1] < 0.99, line
+            checks += 1
     if bad:
         sys.exit(f"selftest: {len(bad)} of {len(results)} toy readings wrong")
     print(f"selftest: {checks} checks ok")
@@ -1241,32 +1670,72 @@ def census_one(job):
     return row
 
 
+CAND_FIELDS = ["stem", "vars", "clauses", "truncated", "reading", "muxes", "wide_select", "cover8", "cover16",
+               "cover32", "enables", "guard_top", "guard_median", "groups", "group_top_size", "gd_size",
+               "gd_share", "gd_conflicts", "budget", "gd_budget", "group_error"] + \
+    [f"set_{k}" for k in ("switch", "enable", "guard", "group", "gd")] + ["seconds", "error"]
+
+
+def cands_one(job):
+    stem, path, max_clauses, seconds, mem_mb, budget = job
+    row = {f: "" for f in CAND_FIELDS}
+    row["stem"] = stem
+    t0 = time.time()
+    try:
+        if mem_mb:
+            lim = mem_mb * 1024 * 1024
+            resource.setrlimit(resource.RLIMIT_AS, (lim, lim))
+        signal.signal(signal.SIGALRM, _alarm)
+        signal.alarm(seconds)
+        n_vars, n_cls, clauses, truncated = parse_prefix(Path(path), max_clauses)
+        row.update({"vars": n_vars, "clauses": n_cls, "truncated": int(truncated)})
+        res, sets = candidates(clauses, n_vars, budget, deadline=t0 + seconds)
+        row.update({k: v for k, v in res.items() if k in row})
+        for k, vs in sets.items():
+            row[f"set_{k}"] = ",".join(str(x) for x in vs)
+    except TimeoutError:
+        row["error"] = "timeout"
+    except MemoryError:
+        row["error"] = "memory"
+    except Exception as e:  # noqa: BLE001 - a census row records any failure
+        row["error"] = f"{type(e).__name__}: {e}"[:200]
+    finally:
+        signal.alarm(0)
+    row["seconds"] = round(time.time() - t0, 1)
+    return row
+
+
 def cmd_census(a):
-    files = sorted(SUITE.glob("*.cnf.xz"))
+    files = sorted(Path(a.suite).glob("*.cnf.xz")) if a.suite else sorted(SUITE.glob("*.cnf.xz"))
     if a.stems:
         keys = a.stems.split(",")
         files = [f for f in files if any(k in f.name for k in keys)]
     jobs = [(f.name[: -len(".cnf.xz")], str(f), a.max_clauses, a.seconds, a.mem_mb, a.budget) for f in files]
     jobs.sort(key=lambda j: -os.path.getsize(j[1]))       # big files first
     out = Path(a.out)
+    fields, one = (CAND_FIELDS, cands_one) if a.cands else (FIELDS, census_one)
     done = set()
     if out.exists():
         with open(out) as f:
-            done = {r["stem"] for r in csv.DictReader(f, delimiter="\t")}
+            rd = csv.DictReader(f, delimiter="\t")
+            if rd.fieldnames != fields:
+                sys.exit(f"{out} holds a table of other columns (written {'without' if a.cands else 'with'} "
+                         "--cands?): use a fresh --out")
+            done = {r["stem"] for r in rd}
     jobs = [j for j in jobs if j[0] not in done]
     new = not out.exists()
     with open(out, "a", newline="") as fh:
-        w = csv.DictWriter(fh, FIELDS, delimiter="\t")
+        w = csv.DictWriter(fh, fields, delimiter="\t")
         if new:
             w.writeheader()
         with ProcessPoolExecutor(a.workers) as ex:
-            futs = [ex.submit(census_one, j) for j in jobs]
+            futs = [ex.submit(one, j) for j in jobs]
             for fu in as_completed(futs):
                 r = fu.result()
                 w.writerow(r)
                 fh.flush()
-                print(f"{r['stem'][:60]:60s} switches {r['muxes']!s:>8} cover8 {r['cover8']!s:>6} "
-                      f"cover32 {r['cover32']!s:>6} {r['reading']} {r['seconds']}s {r['error']}", flush=True)
+                print(f"{r['stem'][:60]:60s} switches {r['muxes']!s:>8} cover16 {r['cover16']!s:>6} "
+                      f"{r['reading']} {r['seconds']}s {r['error']}", flush=True)
 
 
 def cmd_cell(a):
@@ -1278,6 +1747,19 @@ def cmd_cell(a):
     row["truncated"] = int(truncated)
     for k, v in row.items():
         print(f"{k}\t{v}")
+
+
+def cmd_cands(a):
+    if a.seconds:
+        signal.signal(signal.SIGALRM, _alarm)
+        signal.alarm(a.seconds)
+    n_vars, _n_cls, clauses, truncated = parse_prefix(Path(a.file), a.max_clauses)
+    row, sets = candidates(clauses, n_vars, a.budget, gd_pool=a.gd_pool)
+    row["truncated"] = int(truncated)
+    for k, v in row.items():
+        print(f"{k}\t{v}")
+    for src, vs in sets.items():
+        print(f"set\t{src}\t{','.join(str(x) for x in vs)}")
 
 
 def cmd_toy(a):
@@ -1298,6 +1780,12 @@ def main(argv=None):
     c.add_argument("--max-clauses", type=int, default=100_000_000)
     c.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
     c.add_argument("--seconds", type=int, default=0, help="wall limit (0: none)")
+    q = sub.add_parser("cands", help="every source's candidate control set (bead d96.8.2)")
+    q.add_argument("file")
+    q.add_argument("--max-clauses", type=int, default=3_000_000)
+    q.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
+    q.add_argument("--gd-pool", type=int, default=64)
+    q.add_argument("--seconds", type=int, default=0, help="wall limit (0: none)")
     t = sub.add_parser("toy")
     t.add_argument("kind", choices=sorted(TOYS))
     t.add_argument("style", choices=STYLES)
@@ -1311,10 +1799,14 @@ def main(argv=None):
     e.add_argument("--seconds", type=int, default=1800)
     e.add_argument("--mem-mb", type=int, default=40000)
     e.add_argument("--budget", type=int, default=DEFAULT_BUDGET)
+    e.add_argument("--cands", action="store_true", help="every source's candidate set (d96.8.2), not only switches")
+    e.add_argument("--suite", help="a folder of .cnf.xz files (default: the 2025 suite)")
     sub.add_parser("selftest")
     a = ap.parse_args(argv)
     if a.cmd == "cell":
         cmd_cell(a)
+    elif a.cmd == "cands":
+        cmd_cands(a)
     elif a.cmd == "census":
         cmd_census(a)
     elif a.cmd == "toy":

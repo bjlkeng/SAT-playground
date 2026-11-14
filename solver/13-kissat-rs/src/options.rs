@@ -136,6 +136,23 @@ kissat_options! {
     (congruencexorarity, 4, 2, 20, "congruence XOR gate arity limit"),
     (congruencexorcounts, 2, 1, i32::MAX, "XOR counting rounds"),
     (congruencexors, 1, 0, 1, "extract XOR gates for congruence closure"),
+    // Not in kissat (2026-11-14, bead SAT-playground-d96.8.5): decide the
+    // control variables first (src/control.rs), the set from SAT_CTL_VARS
+    // for the measurement step. Off by default
+    (ctlfirst, 0, 0, 1, "decide the control variables (SAT_CTL_VARS) first"),
+    // the control reading's own work limit (K), when SAT_CTL_VARS is unset
+    (ctlreadticks, 3_000_000, 1, i32::MAX, "control reading work limit (K)"),
+    // Not in kissat (2026-11-14, bead SAT-playground-d96.8.5): split on the
+    // control variables before the search, each case in a sub-solver
+    // (src/control.rs). Off by default
+    (ctlsplit, 0, 0, 2, "split on the control variables (SAT_CTL_VARS) first: 1 split, 2 probe"),
+    (ctlsplitbits, 6, 1, 12, "control split bits a level"),
+    (ctlsplitcase, 3_000_000, 1, i32::MAX, "control split work a case (K)"),
+    (ctlsplitlevels, 3, 1, 4, "control split levels"),
+    // a case costing this many ticks a literal of the formula on average is a
+    // search, not a fall to propagation: the split stops (after four cases)
+    (ctlsplitratio, 16, 1, 100_000, "control split stop: mean ticks a case per literal"),
+    (ctlsplitticks, 40_000_000, 1, i32::MAX, "control split work in all (K)"),
     (decay, 50, 1, 200, "per mille scores decay"),
     (definitioncores, 2, 1, 100, "how many cores"),
     (definitions, 1, 0, 1, "extract general definitions"),
@@ -846,8 +863,10 @@ mod tests {
         // structsortticks (2026-10-26), structdiv, structdivticks
         // (2026-10-27), structdd, structddticks (2026-10-31), the ten
         // card* options (2026-11-01), structpoints, structpointsticks
-        // (2026-11-05) and freeread, freereadticks (2026-11-09)
-        assert_eq!(OPTION_TABLE.len(), 158 + 59);
+        // (2026-11-05), freeread, freereadticks (2026-11-09) and the six
+        // control options ctlfirst, ctlsplit, ctlsplitbits, ctlsplitcase,
+        // ctlsplitlevels, ctlsplitticks, ctlreadticks, ctlsplitratio (2026-11-14)
+        assert_eq!(OPTION_TABLE.len(), 158 + 67);
     }
 
     #[test]

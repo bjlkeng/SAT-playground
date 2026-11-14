@@ -1054,8 +1054,17 @@ fn run_application(solver: &mut Solver, args: &[String], cancel_alarm_ptr: &mut 
     print_options(solver);
     print_limits(solver, &app);
     crate::policy::print_configuration(solver); // not in kissat; silent when off
+    crate::control::install(solver); // not in kissat; nothing with ctlfirst off
     crate::print::section(solver, "solving");
-    let res = crate::internal::solve(solver);
+    // not in kissat: the control split (src/control.rs); 0 with ctlsplit off
+    let split = crate::control::split(solver);
+    let res = if split == 10 {
+        10
+    } else if split == 20 {
+        20 // the split's proof ends with the empty clause (the root's join)
+    } else {
+        crate::internal::solve(solver)
+    };
     // not in kissat: the parity engine's proof stream ends with the run;
     // an UNSAT answer whose proof could not be finished is no answer
     if let Err(e) = solver.gaussproof.finish() {

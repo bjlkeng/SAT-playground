@@ -156,6 +156,13 @@ fn next_random_decision(solver: &mut Solver) -> u32 {
 
 /// Port of `kissat_next_decision_variable`.
 pub fn next_decision_variable(solver: &mut Solver) -> u32 {
+    // Not in kissat: the control variables first (src/control.rs; off by default)
+    if solver.control.on {
+        let idx = crate::control::next(solver);
+        if idx != INVALID_IDX {
+            return idx;
+        }
+    }
     let mut res = next_random_decision(solver);
     if res == INVALID_IDX {
         if solver.stable {

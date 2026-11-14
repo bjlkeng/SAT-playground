@@ -7228,6 +7228,131 @@ Before the netlist reader charged the budget itself, a 20M budget stopped only a
 - **The census.** Whether the shape pays outside oisc is `d96.8.3`'s question: the census on 2025 and the prior-year tracks (`d96.11`), with the effect test. gm16spctrc shows why the test must sample more than a handful of cases, and count a case that reaches its limit against the split.
 - **Not covered yet** (`d96.8.2`): control with no switch at all (guard literals, choice groups, guess-and-determine sets).
 
+### Control without switches: four more sources of candidates (2026-11-14; bead `SAT-playground-d96.8.2`)
+
+A formula can be steered with no switch in it. `tools/control_read.py cands` gives, for one file, the candidate set of every source; `census --cands` does it for a suite.
+
+| source | what it looks for | how |
+|---|---|---|
+| switch | the inputs that steer the switches | the reader by meaning above |
+| enable | a decoded word: shared enables (`d AND x`, d shared by many gates) | the enables' inputs, by votes |
+| guard | a selector, mode bit or planning action: a variable whose values satisfy a whole block of clauses | variables ranked by the clauses their two values satisfy, against the median |
+| group | a choice: one place a step, one slot a task | exactly-one groups: a clause whose literals exclude each other by binaries, plus `tools/free_census.py`'s chained ones (ladder, commander), biggest first while disjoint |
+| gd | guess-and-determine (a cipher's key bits) | greedy: the variable whose two values, over four random values of those chosen so far, fix the most by propagation (a conflict counts as fixed: the case is refuted at once); a hit is 99% within 16 variables |
+
+**Checked on toys first** (`control_read.py selftest`, now 77 checks):
+
+| toy | guards | groups | guess-and-determine |
+|---|---|---|---|
+| a mode bit: one block of random clauses holds when it is on, another when it is off | the mode bit first, 360 clauses against a median of 29 | none | — |
+| three activation literals, each switching its own block on | the three selectors first, 120 against 13 | none | — |
+| a walk on a ring with chords: one place a step, 6 steps | — | all six step groups | — |
+| a filtered LFSR (16 key bits, 40 observed output bits) | — | none | 4 variables fix or refute every sampled case |
+| random 3-SAT below the threshold (the negative) | the top variable 19 against 10: nothing stands out | none | 16 variables reach 78%: no hit |
+
+On real cells (`log/control-cands-2026-11-14/`):
+- **Guards and groups discriminate.** Planning (pathways-17, step 20): a guard of 73 against a median of 12, groups of up to 60. Timetable: 111 against 4. Blocks world: 4,036 against 13. The HWMCC cell 6s268r: 132 against 8.
+- **Guess-and-determine almost always "hits",** because on a tight formula most sampled cases end in a conflict. So it only proposes; the effect test (`d96.8.3`) decides.
+- **Occurrence counts do not find a control word.** On sll-8 the switch and enable sources both give its 8 bits (10-17). Its most frequent variables are busy internal signals: the top guard sits in 14,245 clauses, against a median of 6.
+
+### Prior-year main tracks (2026-11-14; bead `SAT-playground-d96.11`)
+
+`tools/fetch_prior_tracks.py` fetches the main tracks of 2020-2024 from GBD and records every instance in `benchmarks/rl/prior_tracks.tsv`: its tracks, GBD's family, author and result, and what happened to it. The URI lists are `benchmarks/track_main_YYYY.uri`, and each year's folder has a `MANIFEST.txt`.
+
+The 2026 holdout is not read. Its hashes and isomorphism hashes come from GBD's metadata (`benchmarks/gbd/meta.db`, not committed), and a prior instance matching either is dropped.
+
+| step | instances |
+|---|---|
+| in the five tracks | 2,000 (1,920 distinct) |
+| dropped: a 2026 instance by hash | 60 |
+| dropped: isomorphic to a 2026 instance | 20 |
+| already in the 2025 set (not fetched again) | 60 |
+| fetched (each checked with `xz -t`, 0 failures) | 1,780 (15.1 GB: 2.2, 1.4, 4.6, 3.1, 3.8 GB) |
+
+They cover 140 families, the largest being scheduling (140), miters (78), software verification (65), cryptography (61), argumentation (52), colouring (47) and bit-vectors (42). GBD lists 860 as UNSAT, 723 as SAT and 197 as unknown.
+
+### In the solver: control bits first, and the split (2026-11-14; bead `SAT-playground-d96.8.5`, measured first)
+
+`src/control.rs`, two options, both off by default.
+
+- **`--ctlfirst=1`**: `next_decision_variable` takes the first free, active control variable before kissat's own choice. Answers and proofs are untouched.
+- **`--ctlsplit=1`**, before the search:
+  - the first `ctlsplitbits` (6) control variables, every value, are cases;
+  - each case is the formula plus the bits' units, in a sub-solver within `ctlsplitcase` (3G);
+  - a case without an answer is split again on the next bits, down to `ctlsplitlevels` (3);
+  - all of it within `ctlsplitticks` (40G).
+  - The sub-solvers run without the structure passes, the engines, the walk and `factor`. `factor` is kissat's one technique that adds variables: a fresh variable of one case could clash with another's.
+  - Their work goes on the parent's work clock (W) and against `SAT_LIMIT_TICKS`.
+- **Proof.**
+  - A sub-solver's derived clauses L are RUP from the formula, the case's units u and the clauses before them. So each goes into the DRAT proof as (L or not-u), which is again RUP, followed by not-u itself.
+  - The cases of a split node are then resolved pairwise over its bits, every resolvent RUP from its two parents. The root's resolvent is the empty clause.
+  - A split left undecided gives the solver its refuted cases' clauses (already in the proof), and the search starts.
+  - A satisfiable case's model is checked against every clause and printed as the walk's is.
+- **The control set.** `SAT_CTL_VARS` (DIMACS variables, in order) gives it for the measurements. Without it, the solver reads it itself: AND, XOR and if-then-else gates by clause shape, as the first reader did (the shapes that paid). It then takes the fewest heaviest inputs that steer 90% of what the 16 heaviest steer, and splits only on at least 1,000 switches with at least half steered.
+- **Two stops.**
+  - `ctlsplitratio` (16): a split whose mean case costs that many ticks a literal of the formula is a search, not a fall to propagation, so it stops after four cases. On oisc a case costs 0.6-1.2 ticks a literal; on gm16spctrc about 230.
+  - `ctlsplit=2` is the effect test's probe: every first-level case runs and is counted.
+
+**Checked first** (`tests/control.rs`, 9 tests):
+- with the options off the environment variable is not read and the search is stock;
+- control bits first keeps every answer and proof;
+- the split's proofs pass `tools/proof_gate.py`: decided at the first level, at the second with joins, and left open with the search finishing (drat-trim: 14,923 of 18,702 lemmas in the core on the first);
+- a satisfiable case's model satisfies the input;
+- the shipped defaults (structure passes on) keep the formula for the split;
+- the tick limit holds;
+- the probe runs every case;
+- on a 200-bit rotator miter (`tests/fixtures/control_rotmiter.cnf`) the reading finds the 3-bit word (1,200 switches, cover 1.0), and the split refutes it in 8 cases with 228K work, against the plain search's 16.5M and 4,055 conflicts;
+- the cost stop ends a split of random 3-SAT.
+
+**The measurement** (`log/ctlfirst-2026-11-14/`, `log/ctlsplit-2026-11-14/`). The control word was given (low bits first), at seeds 2 and 3 (those of the shipped solver's last 400-cell run), 1,800 s, frozen binaries `13-j13-ctl-snapshot` and `13-j14-ctlsplit-snapshot`.
+
+| cell | shipped solver | control bits first | the split (work, wall) |
+|---|---|---|---|
+| and-11 | timeout / timeout (24.1G, 24.2G) | timeout / timeout (28.4G, 29.4G) | **UNSAT / UNSAT** (9.03G, 1,149 s; 9.36G, 1,145 s), 96 cases |
+| and-12 | timeout / timeout (21.1G, 14.3G) | timeout / timeout (26.9G, 26.9G) | **UNSAT / UNSAT** (10.33G, 1,234 s; 10.34G, 1,260 s), 128 cases |
+| and-15 | timeout / timeout (18.0G, 24.9G) | timeout / timeout (26.3G, 25.6G) | timeout / timeout (12.3G, 12.1G after 110 cases) |
+| sll-8 | 449 / 473 s (5.43G, 5.53G) | 2-3x worse (18.1G, 16.0G) | **UNSAT / UNSAT** (1.89G, 250 s; 1.91G, 237 s), 64 cases |
+
+- **Control bits first is a negative:** it decides nothing new and triples sll-8's work.
+- **The split decides two of the three cells no solver run decides, on both seeds,** in about half the work the outside split took (each case reads nothing, and its sub-solver runs no structure pass).
+- **and-15:** its 44.6M clauses go into a fresh sub-solver for each case, and that hand-over, not the search, eats the wall time.
+
+**The solver's own reading** (`log/ctlauto-2026-11-14/`, frozen `13-j16-ctlread-snapshot`, seeds 2 and 3, 1,800 s, no `SAT_CTL_VARS`), on every cell the first census flagged:
+
+| cell | reading: switches, cover, control set | shipped solver (work, wall) | with the split |
+|---|---|---|---|
+| and-11 | 3.47M, 0.759, the 11 bits 726-736 | timeout / timeout | **UNSAT / UNSAT** (9.29G, 1,042 s; 9.61G, 1,091 s) |
+| and-12 | 4.09M, 0.757, the 12 bits 787-798 | timeout / timeout | **UNSAT / UNSAT** (10.64G, 1,719 s; 10.65G, 1,224 s) |
+| and-15 | 6.21M, 0.749, the 15 bits 970-984 | timeout / timeout | timeout / timeout (109 and 111 cases) |
+| sll-8 | 1.94M, 0.766, the 8 bits 10-17 | 449 / 473 s (5.43G, 5.53G) | **226 / 228 s** (2.02G, 2.04G) |
+| gm16spctrc | 3,807, 0.899 | 1,139 / 1,409 s (37.7G, 43.9G) | 1,607 / 1,598 s (58.4G, 47.6G): stopped as costly after 4 cases |
+| gm24sparrc, gm28sparrc, gm16sparrc | 1,205-4,481 switches, cover 0.58-1.0 | 3-42 s | 2-181 s, stopped as costly after 4-7 cases |
+| grs-32-128 | 5,279, 0.527 | 997 / 875 s (20.7G, 17.0G) | 961 / 1,204 s (24.8G, 25.1G): stopped as costly after 4 cases |
+| summle | 1,596, 0.662 | 18 / 15 s | 41 / 26 s: a model in the 19th case |
+| s38584, grs-32-64, 6s299b685_Iter30, case19, div_miter_lec__2, veer_axi, x-epic | cover 0.26-0.53 or one variable | — | no split; only the reading's work |
+
+Two refinements followed:
+- **The first two cases are capped** at four times the per-literal bound (`log/ctlauto-2026-11-14/early/`, `13-j17-ctlearly-snapshot`). A case that reaches the cap is a search, and the split stops at once. Before this, gm16spctrc spent four case limits of 3G each before its mean was checked. The four gm cells then lost less but still lost: gm28sparrc reached 181 s on one seed, against 42 s.
+- **The trigger takes the circuit's shape into account:** switches must be between a quarter and nine tenths of the gates read.
+  - In a decision diagram (the gm multipliers) every gate is a switch on an input: 3,807 of 3,816 gates on gm16spctrc. Fixing the top variables only expands the diagram.
+  - Where switches are 2-9% of the gates (grs-32-128, summle), fixing their selects leaves almost all of the circuit as it was.
+  - oisc's switches are half the gates (1.94M of 3.86M on sll-8).
+  - On the first census's table this band, with at least 1,000 switches and half of them steered, fires on the four oisc cells and on no other 2025 cell. Elsewhere the option costs the reading only, and the search is the same (`tests/control.rs`, `off_means_off`).
+
+Review (Codex, eight rounds; `log/control-split-2026-11-14/review/b-round*.txt`) changed what the split counts and when it stops; the last round was clean.
+- **A case pays for loading the formula** into its sub-solver (a tick a literal) before it starts. The runs above did not count that: on and-11 it adds about 0.08G a case, some 8G over its 96 cases, about one tick a literal, still far below the bound of 16.
+- **A case whose limit cannot cover the load stops the split** instead of splitting deeper.
+- **The reading counts straight into the tick counter and polls the stop flag;** every step pays before it runs, the variable tables first.
+- **Control bits first maps DIMACS variables at each decision,** so compaction's renumbering cannot point it at the wrong variable.
+- **The formula is kept past an overflowing structure buffer.**
+- **A model the walk has already found skips the split.**
+
+The runs that decide (bead `d96.8.6`) are running at the time of writing:
+- the four oisc cells at fresh seeds 4-11 under a 30G work budget, both arms, frozen `13-j19-ctlsplit-snapshot` (the review's later changes do not touch these cells);
+- the 400 cells at seeds 2 and 3, to follow.
+
+The census and the effect test (`d96.8.3`) are running too. `benchmarks/rl/control_cands_2025.tsv` is the candidate census of the 400 cells (`control_read.py census --cands`, first 3M clauses, 14 cells timed out).
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.

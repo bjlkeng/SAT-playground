@@ -107,6 +107,10 @@ fn reading_on(solver: &Solver) -> bool {
 
 /// Called once before the parse: turn buffering on when a pass is enabled.
 pub fn prepare(solver: &mut Solver) {
+    // Not in kissat: with the stage off and the control split on, the parse
+    // still adds every literal to the solver and also keeps a copy for the
+    // split's sub-solvers (src/control.rs)
+    solver.control.keeping = !enabled(solver) && solver.options.ctlsplit != 0;
     if enabled(solver) {
         solver.structure.buffering = true;
         solver.structure.work_limit = (solver.options.structticks as u64).saturating_mul(1000);
@@ -123,6 +127,9 @@ pub fn prepare(solver: &mut Solver) {
 pub fn sink(solver: &mut Solver, elit: i32) {
     if !solver.structure.buffering {
         crate::internal::add(solver, elit);
+        if solver.control.keeping {
+            solver.control.formula.push(elit); // not in kissat: src/control.rs
+        }
         return;
     }
     solver.structure.lits.push(elit);
@@ -146,6 +153,12 @@ fn flush(solver: &mut Solver) {
     let lits = std::mem::take(&mut solver.structure.lits);
     for &l in &lits {
         crate::internal::add(solver, l);
+    }
+    // Not in kissat: the control split still needs the whole formula, so the
+    // flushed part is kept and the parse goes on copying (src/control.rs)
+    if solver.options.ctlsplit != 0 {
+        solver.control.formula = lits;
+        solver.control.keeping = true;
     }
 }
 
@@ -315,6 +328,7 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
         for &l in &lits {
             crate::internal::add(solver, l);
         }
+        crate::control::keep(solver, &[], &lits); // not in kissat; nothing with ctlsplit off
         keep_input(solver, lits);
         return Ok(());
     }
@@ -576,6 +590,7 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
     for &l in &lits {
         crate::internal::add(solver, l);
     }
+    crate::control::keep(solver, &derived.clauses, &lits); // not in kissat; nothing with ctlsplit off
     keep_input(solver, lits);
     for note in &derived.notes {
         crate::print::message(solver, format!("structure pass: {}", note));

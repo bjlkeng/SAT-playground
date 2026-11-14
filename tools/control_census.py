@@ -324,7 +324,8 @@ def cmd_split(a):
     run.  With --ticks every case runs under that work limit (SAT_LIMIT_TICKS, the
     work clock W); with --then, a case that ends without an answer is split again on
     the next group of inputs (groups separated by ';'), as and-nested-11's value 63
-    was by hand.  Results go to OUT/results.tsv (case, status, seconds, conflicts,
+    was by hand.  With --group the first level is a choice group instead of bits:
+    one case per member set true and one with all of them false.  Results go to OUT/results.tsv (case, status, seconds, conflicts,
     work), a case named by its value at each level joined by '/', e.g. 63/5."""
     import json
     import re
@@ -335,12 +336,20 @@ def cmd_split(a):
     def ints(text):
         return [int(x) for x in text.split(",") if x.strip()]
 
-    levels = [ints(a.inputs)] + [ints(g) for g in a.then.split(";") if g.strip()]
+    # the first level is either input bits (every value) or a choice group:
+    # one case per member set true, and one with every member false, so the
+    # cases cover every assignment whether or not the formula says that one
+    # member must be true (if it does, that last case falls at once)
+    group = ints(a.group) if a.group else []
+    if bool(group) == bool(a.inputs):
+        sys.exit("give the first level as --inputs or as --group, not both")
+    levels = [ints(a.inputs) if a.inputs else [abs(l) for l in group]] + \
+        [ints(g) for g in a.then.split(";") if g.strip()]
     fixed = ints(a.fix) if a.fix else []
     for k, grp in enumerate(levels):
         if not grp:
             sys.exit(f"level {k} has no inputs")
-        if len(grp) > 24 and not (k == 0 and a.sample):
+        if len(grp) > 24 and not (k == 0 and (a.sample or group)):
             sys.exit(f"level {k}: {len(grp)} inputs make {1 << len(grp)} cases: "
                      "use fewer inputs (or --sample at the first level)")
     flat = [v for grp in levels for v in grp]
@@ -348,6 +357,7 @@ def cmd_split(a):
         sys.exit("split inputs are variables (positive numbers)")
     if len(set(flat)) != len(flat) or set(flat) & {abs(l) for l in fixed}:
         sys.exit("the split inputs must be distinct across levels and not among --fix")
+    n_first = len(group) + 1 if group else 1 << len(levels[0])
     if a.ticks < 0:
         sys.exit("--ticks must be 0 (no limit) or positive")
     out = Path(a.out)
@@ -355,13 +365,18 @@ def cmd_split(a):
     src = Path(a.file).resolve()
     st = src.stat()
     config = {"file": str(src), "size": st.st_size, "mtime_ns": st.st_mtime_ns,
-              "inputs": levels[0], "then": levels[1:], "fix": fixed, "seed": a.seed,
+              "inputs": levels[0], "group": group, "then": levels[1:], "fix": fixed, "seed": a.seed,
               "ticks": a.ticks, "solver": str(Path(a.solver).resolve())}
     cfg_path = out / "config.json"
     body = out / "body.cnf"
     res_path = out / "results.tsv"
     if cfg_path.exists():
         old = json.loads(cfg_path.read_text())
+        # folders written before --group, --then and --ticks existed: those
+        # runs had no group, no deeper level and no work limit
+        old.setdefault("group", [])
+        old.setdefault("then", [])
+        old.setdefault("ticks", 0)
         if old != config:
             sys.exit(f"{out} holds a split of another problem or setting:\n  {old}\n  now {config}\n"
                      "use a fresh --out")
@@ -394,6 +409,8 @@ def cmd_split(a):
         sys.exit(f"an input or fixed literal is past the header's {n_vars} variables")
 
     def units_of(level, value):
+        if level == 0 and group:
+            return [group[value]] if value < len(group) else [-l for l in group]
         return [v if (value >> i) & 1 else -v for i, v in enumerate(levels[level])]
 
     answered = ("UNSATISFIABLE", "SATISFIABLE")
@@ -417,10 +434,10 @@ def cmd_split(a):
     if a.sample:
         import random
         rng = random.Random(a.sample_seed)
-        n = min(a.sample, 1 << len(levels[0]))
-        first = sorted(rng.sample(range(1 << len(levels[0])), n))
+        n = min(a.sample, n_first)
+        first = sorted(rng.sample(range(n_first), n))
     else:
-        first = range(1 << len(levels[0]))
+        first = range(n_first)
     for v in first:
         expand(str(v), units_of(0, v), 0)
     if any(s == "SATISFIABLE" for s in done.values()):
@@ -547,7 +564,8 @@ def cmd_split(a):
             continue
         works = sorted(int(r[4]) for r in at if r[4])
         conf = sorted(int(r[3]) for r in at if r[3])
-        line = f"level {k} ({len(levels[k])} inputs): {len(at)} cases {dict(Counter(r[1] for r in at))}"
+        what = f"a group of {len(group)} and none" if k == 0 and group else f"{len(levels[k])} inputs"
+        line = f"level {k} ({what}): {len(at)} cases {dict(Counter(r[1] for r in at))}"
         if works:
             line += (f"; work per case min {works[0]}, median {works[len(works) // 2]}, max {works[-1]}, "
                      f"sum {sum(works):.4g}; conflicts max {conf[-1] if conf else ''}")
@@ -617,7 +635,10 @@ def main(argv=None):
     u.add_argument("--out", required=True)
     s = sub.add_parser("split")
     s.add_argument("file")
-    s.add_argument("--inputs", required=True)
+    s.add_argument("--inputs", default="", help="the first level's input bits (every value is a case)")
+    s.add_argument("--group", default="",
+                   help="the first level as a choice group: one case per member literal set true, "
+                        "plus the case with every member false")
     s.add_argument("--out", required=True, help="a directory: body.cnf, header.txt, results.tsv")
     s.add_argument("--solver", required=True)
     s.add_argument("--cores", default="0-15")
