@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import lzma
+import math
 import os
 import shutil
 import subprocess
@@ -208,6 +209,25 @@ def veripb_stage(cnf, pbp, derived, veripb, timeout, d):
     return "", fp_cnf
 
 
+def run_drat(drat, cnf, proof, timeout: float, what: str = "") -> str:
+    """drat-trim on (cnf, proof): ok | checker-timeout | FAIL:<why>.
+
+    drat-trim has its own time limit (-t, 40,000 s by default). Past it, it
+    prints "s TIMEOUT" and exits 0, which says nothing about the proof. So it
+    gets a limit just above the gate's own (the gate's fires first), and its
+    timeout line reads as checker-timeout. Before 2026-11-15 a gate allowed
+    more than 40,000 s read drat-trim's timeout as a rejection."""
+    limit = str(int(math.ceil(timeout)) + 60)
+    p = subprocess.run([drat, str(cnf), str(proof), "-t", limit], stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT, text=True, timeout=timeout)
+    lines = [l.strip() for l in (p.stdout or "").splitlines()]
+    if any(l in ("s VERIFIED", "s ACCEPTED") for l in lines):
+        return "ok"
+    if "s TIMEOUT" in lines:
+        return "checker-timeout"
+    return f"FAIL:drat-trim rejected the proof{what}"
+
+
 def check_unsat(cnf, proof, timeout: float = 3600.0, workdir=None) -> str:
     cnf, proof = Path(cnf), Path(proof)
     if not proof.is_file():
@@ -227,10 +247,7 @@ def check_unsat(cnf, proof, timeout: float = 3600.0, workdir=None) -> str:
                     plain = os.path.join(d, "f.cnf")
                     with open_cnf(cnf) as src, open(plain, "wb") as dst:
                         shutil.copyfileobj(src, dst)
-                p = subprocess.run([drat, plain, str(proof)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   text=True, timeout=timeout)
-            ok = any(l.strip() in ("s VERIFIED", "s ACCEPTED") for l in (p.stdout or "").splitlines())
-            return "ok" if ok else "FAIL:drat-trim rejected the proof"
+                return run_drat(drat, plain, proof, timeout)
         veripb = find_veripb()
         if not veripb or not drat:
             return "no-checker"
@@ -240,10 +257,7 @@ def check_unsat(cnf, proof, timeout: float = 3600.0, workdir=None) -> str:
             verdict, fp_cnf = veripb_stage(cnf, pbp, derived, veripb, timeout, d)
             if verdict:
                 return verdict
-            p = subprocess.run([drat, fp_cnf, str(proof)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               text=True, timeout=timeout)
-            ok = any(l.strip() in ("s VERIFIED", "s ACCEPTED") for l in (p.stdout or "").splitlines())
-            return "ok" if ok else "FAIL:drat-trim rejected the proof of the extended formula"
+            return run_drat(drat, fp_cnf, proof, timeout, " of the extended formula")
     except subprocess.TimeoutExpired:
         return "checker-timeout"
     except MalformedCnf as e:

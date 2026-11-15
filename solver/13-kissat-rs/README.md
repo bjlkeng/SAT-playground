@@ -7392,8 +7392,13 @@ The first level's estimate (its cases' work, scaled to all 64 cases) is below P 
 **What the probe misses.** The probe's budget cut 46 of its 248 "no" verdicts before the first level ended, though at least three quarters of the cases each one ran were answered.
 - It called oisc and-12 "no" after 32 of 64 cases, 30 answered. The split decides that cell in 24.3G (the load charged). The plain run reaches 17.7G by its kill and has not decided it at 30G.
 - On a cell the shipped solver does not solve, P is only the work done by the kill, so a quarter of it is too tight. Measured against P, and-12's split even looks like a loss. The probe is a screen, not a verdict.
-- The 11 such pairs on cells the shipped solver misses at a seed or more get the real split after the 400-cell run. They are nine oddball `tto` cells with the guard set, `g2-T49.2.0` with the guard set and `grs-256-64` with the guess-and-determine set (`jobs3.txt`, `run3.sh` there).
-- The 105 choice-group jobs (the outside split, one case per member) have not run yet.
+- **The 11 such pairs** on cells the shipped solver misses at a seed or more got the real split (`jobs3.txt`, `run3.sh` there; 22 runs, batch `budget-cut` of the table). They are nine oddball `tto` cells with the guard set, `g2-T49.2.0` with the guard set and `grs-256-64` with the guess-and-determine set.
+  - Result: the split solves 1 against the shipped solver's 5 (+1 −5), wall PAR-2 1.159x.
+  - On the oddball cells the guard split runs 56-96 cases and does not finish. The shipped solver finds a model at one seed of four of them.
+  - So the screen's "no" was right for these pairs, although its budget was too tight.
+- **The 105 choice-group jobs** (the outside split, one case per member and one with none; `effect2025-groups-*.tsv` there, all three tables in `benchmarks/rl/control_effect_2025.tsv`): 100 "no", 5 "deeper", none "decides".
+  - In 100 of the 105, fewer than three quarters of the sampled cases fall within P/64 (in 25, none).
+  - Two of the five "deeper" are cells the shipped solver does not solve: st_890_86_9_572 and stb_664_50.apx_2_DC-ST. There 3 of 4 cases fall at once and the fourth reaches its limit; they get the whole outside split (`log/ctlgroup-2026-11-15/`).
 
 **The 400 cells at seeds 2 and 3** (bead `d96.8.6`, part 2; `log/abtest-ctlsplit-400-2026-11-14-18-17-26`, frozen `13-j21-ctlsplit-snapshot`, 2026-11-14 18:17 to 2026-11-15 01:26).
 - `--ctlsplit=1` with the solver's own reading, against the shipped arms pick2 and pick3 of the freewalk stage-3 run. The seeds are the same, and the shipped defaults equal pick's options.
@@ -7412,6 +7417,16 @@ The first level's estimate (its cases' work, scaled to all 64 cases) is below P 
   - 9.normalised at both seeds: it aborted at 16 GB in the reading. The size limit above was added for it.
   - Four cells the shipped arm solves near the limit, all at seed 2: Kakuro-easy-132 (1,779 s), lockchart L200 (1,750 s), at-least-two-vmpc_28 (1,766 s) and bp4_CSO_IXA_ZR (1,582 s).
 - **On those four the trigger did not fire** (`status=no-vars`), and the reading cost 0.002-0.163G. The split arm's search was cut off at 1,800 s a little short of the conflicts the shipped arm needed (Kakuro: 657,625 of 671,502). grs-256-64 is the same effect the other way round. A tick-budget rerun checks that these are the same search.
+- **With the size limit** (`log/ctlsize-2026-11-14/`, frozen `13-j22-ctlsize-snapshot`), the eight cells past 50M clauses were run again at seeds 2 and 3. All 16 print a work-clock line identical, field for field, to the shipped arm's (`status=too-big`, `read=0`). 9.normalised is solved at both seeds. 17.normalised and pj2002_k500 abort at 16 GB in both arms, as before. With the shipped rows for those eight cells:
+
+| | the split (seeds 2 + 3) | shipped |
+|---|---|---|
+| solved | 682 (+5 −4) | 681 |
+| wall PAR-2 | 1.006x | 1 |
+| tick PAR-2 | 0.987x | 1 |
+| W on cells both solve | 1.0035x | 1 |
+| contradictions | 0 | |
+
 - **sll-8** took 418 and 270 s, against 449 and 473 s; and-15 is unsolved in both.
 - **The reading costs** 0.34-0.36% of the work (0.22-0.23% of tick PAR-2), or 0.24-0.26% without the eight cells past the size limit.
 - **Timing margin.** On the oisc cells the split ran slower than in part 1, with 32 jobs and the census beside it against 16 cores: and-11 1,291-1,312 s (part 1: 1,057-1,173 s), and-12 1,549-1,587 s (part 1: 1,269-1,321 s). and-12's margin to 1,800 s was 213-251 s.
@@ -7422,12 +7437,26 @@ The first level's estimate (its cases' work, scaled to all 64 cases) is below P 
 - **The near misses have the shapes the split loses on in 2025:**
   - grs, summle and the hwmcc multiplier miters have switches at 0.4-9% of the gates, so fixing their selects leaves most of the circuit as it was;
   - b2005 has switches at 100% of the gates, a decision diagram like gm.
-- So on 1,780 prior-year cells the trigger is again an oisc detector. The prior-year oisc cells are measured below.
+- So on 1,780 prior-year cells the trigger is again an oisc detector.
 
-Running at the time of writing:
-- the eight cells past the size limit, again with the fixed build;
-- the four prior-year oisc cells, shipped solver and split, with every answer checked;
-- the reader by meaning on the prior years, the choice-group probes and the budget-cut follow-up.
+**The prior-year oisc cells** (`log/ctlprior-2026-11-14/`, frozen `13-j22-ctlsize-snapshot`, seeds 2 and 3, 1,800 s, 16 GB; both arms from the same build, which with the option off is the shipped solver):
+
+| cell (clauses) | shipped solver | the split | peak memory, shipped v split |
+|---|---|---|---|
+| sll-nested-13 (34.4M) | timeout, timeout (19.9G, 15.3G) | **UNSAT, UNSAT** (1,739 s, 1,783 s; 28.7G, 128 cases) | 4.7-5.0 v 8.9 GB |
+| sll-nested-11 (24.9M) | UNSAT, UNSAT (851 s, 799 s; 8.5G) | UNSAT, UNSAT (1,010 s, 1,043 s; 15.8G, 96 cases) | 3.4-3.6 v 6.1 GB |
+| and-nested-14 (39.0M) | timeout, timeout | timeout, timeout (116 and 113 cases done) | 5.4 v 10.3 GB |
+| sll-nested-15 (45.3M) | timeout, timeout | timeout, timeout (110 and 112 cases done) | 6.1-6.3 v 12.2 GB |
+
+- **+2 −0:** sll-13 at both seeds, but only 17-61 s inside the limit.
+- **sll-11 gets slower:** both arms solve it, but each of the split's 96 cases loads the 24.9M-clause formula again, and the plain search is already quick there.
+- **The split doubles the peak memory** where it runs: the kept formula, plus a sub-solver beside the parent.
+- **Its proofs are 4-5 times the shipped solver's:** 10.3 GB against 2.0-2.6 GB on sll-11. Each case's lemmas carry its units, and each case learns much the same lemmas again.
+
+**Proofs on real cells.** The harness's checker gives drat-trim 3,600 s. That is not enough for any oisc proof, the shipped solver's included: its sll-8 proofs are `checker-timeout` in pick2 and pick3, and so are the split's in part 2. So the split's proofs had been checked on toys only. The five split UNSAT proofs (sll-8 from 2025, sll-11 and sll-13 at both seeds; 3.1-19.2 GB) are in `tools/proof_gate.py` with 24 h each.
+- A gate fix came first. drat-trim has its own time limit (40,000 s by default), and past it prints `s TIMEOUT`. The gate read that as a rejection. drat-trim now gets a limit just above the gate's, and its timeout line reads as `checker-timeout`. The harness, at 3,600 s, never reached drat-trim's limit.
+
+Running at the time of writing: the five proof checks, the tick-budget rerun of part 2's near-limit cells, the group follow-up and the reader by meaning on the prior years.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 
