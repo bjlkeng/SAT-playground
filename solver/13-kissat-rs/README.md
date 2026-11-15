@@ -7398,7 +7398,9 @@ The first level's estimate (its cases' work, scaled to all 64 cases) is below P 
   - So the screen's "no" was right for these pairs, although its budget was too tight.
 - **The 105 choice-group jobs** (the outside split, one case per member and one with none; `effect2025-groups-*.tsv` there, all three tables in `benchmarks/rl/control_effect_2025.tsv`): 100 "no", 5 "deeper", none "decides".
   - In 100 of the 105, fewer than three quarters of the sampled cases fall within P/64 (in 25, none).
-  - Two of the five "deeper" are cells the shipped solver does not solve: st_890_86_9_572 and stb_664_50.apx_2_DC-ST. There 3 of 4 cases fall at once and the fourth reaches its limit; they get the whole outside split (`log/ctlgroup-2026-11-15/`).
+  - Two of the five "deeper" are cells the shipped solver does not solve: st_890_86_9_572 and stb_664_50.apx_2_DC-ST. There 3 of 4 cases fall at once and the fourth reaches its limit.
+  - The whole outside split on those two (`log/ctlgroup-2026-11-15/`, no case limit, 1,800 s a case, seeds 2 and 3): the three cases fall by propagation (0 conflicts). The fourth is the whole problem again: a timeout at 74-89G of work, more than the plain run's 72-81G. Setting one member true only picks the member the formula nearly forces anyway.
+- **So on 2025 only the switch source pays.** enable has one cell, guard, guess-and-determine and the choice groups none, and the budget-cut pairs 1 v 5. The solver keeps the switch source only.
 
 **The 400 cells at seeds 2 and 3** (bead `d96.8.6`, part 2; `log/abtest-ctlsplit-400-2026-11-14-18-17-26`, frozen `13-j21-ctlsplit-snapshot`, 2026-11-14 18:17 to 2026-11-15 01:26).
 - `--ctlsplit=1` with the solver's own reading, against the shipped arms pick2 and pick3 of the freewalk stage-3 run. The seeds are the same, and the shipped defaults equal pick's options.
@@ -7416,7 +7418,8 @@ The first level's estimate (its cases' work, scaled to all 64 cases) is below P 
 - **Losses:**
   - 9.normalised at both seeds: it aborted at 16 GB in the reading. The size limit above was added for it.
   - Four cells the shipped arm solves near the limit, all at seed 2: Kakuro-easy-132 (1,779 s), lockchart L200 (1,750 s), at-least-two-vmpc_28 (1,766 s) and bp4_CSO_IXA_ZR (1,582 s).
-- **On those four the trigger did not fire** (`status=no-vars`), and the reading cost 0.002-0.163G. The split arm's search was cut off at 1,800 s a little short of the conflicts the shipped arm needed (Kakuro: 657,625 of 671,502). grs-256-64 is the same effect the other way round. A tick-budget rerun checks that these are the same search.
+- **On those four the trigger did not fire** (`status=no-vars`), and the reading cost 0.002-0.163G. The split arm's search was cut off at 1,800 s a little short of the conflicts the shipped arm needed (Kakuro: 657,625 of 671,502). grs-256-64 is the same effect the other way round.
+- **They are the same search** (`log/ctlbudget-2026-11-15/`, the fixed build, seed 2, `SAT_LIMIT_TICKS` 2% above the prediction). Each of the five runs answered at exactly the predicted work: the other arm's W, plus or minus the reading's. For example, Kakuro's split run answered at 19,354,456,053 = 19,191,746,005 (shipped) + 162,710,048 (reading). So in work the split arm is the shipped search plus the reading's few ticks on every cell where the trigger does not fire. The four losses and the grs-256-64 gain are the clock, not the method.
 - **With the size limit** (`log/ctlsize-2026-11-14/`, frozen `13-j22-ctlsize-snapshot`), the eight cells past 50M clauses were run again at seeds 2 and 3. All 16 print a work-clock line identical, field for field, to the shipped arm's (`status=too-big`, `read=0`). 9.normalised is solved at both seeds. 17.normalised and pj2002_k500 abort at 16 GB in both arms, as before. With the shipped rows for those eight cells:
 
 | | the split (seeds 2 + 3) | shipped |
@@ -7438,6 +7441,19 @@ The first level's estimate (its cases' work, scaled to all 64 cases) is below P 
   - grs, summle and the hwmcc multiplier miters have switches at 0.4-9% of the gates, so fixing their selects leaves most of the circuit as it was;
   - b2005 has switches at 100% of the gates, a decision diagram like gm.
 - So on 1,780 prior-year cells the trigger is again an oisc detector.
+
+**The reader by meaning on the prior years** (`benchmarks/rl/control_meaning_prior.tsv`, `log/control-prior-2026-11-14/meaning_YYYY.tsv`). This reads the switches written in any form, so it shows what the solver's clause-shape reading misses. Settings as on 2025's candidate census: switches only, the first 3M clauses, its 2G-step budget, 16 GB and 1,800 s a cell.
+- All 1,780 cells read, 13 timeouts. 244 have at least 1,000 switches.
+- **It sees control-like words the first reader cannot**, written as ABC files read by first literal, or as gates not in two-way form:
+  - the six `asconhashv12` cells: 16 inputs steer all 5.9K-7.4K switches, no 8 of them much, so it is a 16-bit word, 65,536 cases;
+  - `sin_depth_miter_1`, 2 and 4: 25 inputs in all, so every switch depends on them;
+  - `string_compare_safety_cbmc` 780 and 800, `grs-64-64`, three `mp1-klieber2017s`.
+- **Only five fall in the trigger's band:** the four oisc cells and `sin_depth_miter_2` (2022, GBD `unsat`: 38,776 switches, 99.9% steered by 16 inputs, 32% of the gates; the first reader sees 90). The others have switches at 1-21% of the gates.
+- **On `sin_depth_miter_2` the 16 inputs are the circuit's primary inputs, not a control word** (`log/ctlmeaning-2026-11-15/`: the split on them via `SAT_CTL_VARS`, seeds 2 and 3, 1,800 s; frozen `13-j22`). The shipped solver leaves it unsolved at 33.1-33.6G.
+  - With the cost stop, the first case is a search ("costly"), the split stops at once, and the run ends unsolved at the shipped work.
+  - Without it, 39 of 40 cases are refuted at about 1.5G each before the 40G split budget ends. A first level of 64 cases would cost about 96G. Unsolved.
+  - `sin_depth_miter_1` (21% of the gates, GBD `unknown`) is the same: with the stop it stops after one case; without it, 0 of 9 cases are refuted.
+- So no form of writing a switch on 2020-2025 gives a control word outside oisc, and the solver's clause-shape reading misses no cell where the split pays.
 
 **The prior-year oisc cells** (`log/ctlprior-2026-11-14/`, frozen `13-j22-ctlsize-snapshot`, seeds 2 and 3, 1,800 s, 16 GB; both arms from the same build, which with the option off is the shipped solver):
 
