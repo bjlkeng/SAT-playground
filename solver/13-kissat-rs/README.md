@@ -7148,7 +7148,7 @@ So what and-11 needed by hand on 2026-11-13 now runs by itself. The tool was che
 - **The hard case is the same in every oisc cell:** all of the first level's bits on (value 63 of the 6 low bits; value 15 of sll-8's 4).
 - **Most of the work is each case's fixed cost, not search.** Every case reads and preprocesses the whole file. On and-12's second level the 64 cases cost 188-282M each, with at most 25,940 conflicts. On and-15's third level they cost 294-448M each.
   - A split inside the solver would read and preprocess once, so these totals are an upper bound on its cost.
-  - But the per-case clean-up is also what refutes most cases at 0 conflicts. How much of the gain survives is for `d96.8.5` to measure.
+  - But the per-case clean-up is also what refutes most cases at 0 conflicts. How much of the gain survives is for `d96.8.5` to measure. (Measured 2026-11-15: it is not the clean-up. Most cases fall by propagation or a few decisions; see "Cases without the clean-up" below.)
 - **sll-8:** the split costs what the plain run costs (5.54G against 5.43-5.53G). No gain there, as estimated.
 - **gm16spctrc:** the split loses, at 78G and still open against the plain run's 38-44G. A first sample of 8 of the 64 values (all UNSAT at 232-414M each) had predicted about 19G. It happened to miss all 8 hard values; a sample of 8 misses them a third of the time. So the effect test (`d96.8.3`) needs a bigger sample and must count a case that reaches its limit against the split.
 - **What it means for the solved count.** In 1,800 s the solver does 14-25G of work on these files. If the in-solver split costs no more than the totals above:
@@ -7472,7 +7472,48 @@ The first level's estimate (its cases' work, scaled to all 64 cases) is below P 
 **Proofs on real cells.** The harness's checker gives drat-trim 3,600 s. That is not enough for any oisc proof, the shipped solver's included: its sll-8 proofs are `checker-timeout` in pick2 and pick3, and so are the split's in part 2. So the split's proofs had been checked on toys only. The five split UNSAT proofs (sll-8 from 2025, sll-11 and sll-13 at both seeds; 3.1-19.2 GB) are in `tools/proof_gate.py` with 24 h each.
 - A gate fix came first. drat-trim has its own time limit (40,000 s by default), and past it prints `s TIMEOUT`. The gate read that as a rejection. drat-trim now gets a limit just above the gate's, and its timeout line reads as `checker-timeout`. The harness, at 3,600 s, never reached drat-trim's limit.
 
-Running at the time of writing: the five proof checks, the tick-budget rerun of part 2's near-limit cells, the group follow-up and the reader by meaning on the prior years.
+- **The checks' state, 2026-11-15** (`log/ctlprior-2026-11-14/*.gate`).
+  - The shipped solver's sll-8 proof (0.57 GB) verified in 18,712 s, with 2.4 GB peak.
+  - The split's sll-8 proof (3.05 GB) passed 40,000 s, the competition's limit for checking a proof, without a verdict.
+  - Then all the running checks ended at 14:41, 12.2 h in, with no verdict: the five split proofs and the shipped solver's sll-11 proof (7.3 h in). The agent session that had launched them was closed, and that stops every process the session started. They were not started again.
+  - So no split proof of a real cell has been verified yet. The proofs are still in `log/ctlprior-2026-11-14/proofs/` (3.0 to 19.2 GB).
+
+**Cases without the clean-up, and what a case's proof is made of** (2026-11-15; `log/as-prior-2026-11-15/NOTE.txt`; measured for epic `SAT-playground-bp3`, assumptions, with no solver code).
+- **The question.** Epic `bp3` would run the cases in one solver, with the bits as decisions instead of unit clauses. Then the clean-up passes (preprocessing, probing, elimination) no longer see the bits. Do the cases still fall?
+- **The runs.** Every case was run twice from outside the solver, as the file plus one unit clause per bit: as the split's sub-solver runs it (A), and with those passes and `lucky` off (B). Frozen `13-j22-ctlsize-snapshot`, seed 2, 3G work a case, 768 runs.
+  - Level 1 is the 6 low control bits, every value.
+  - Level 2 is those six bits on (the case the split splits again) and the next bits: 5 for and-11 and and-15, 6 for and-12. For and-11 and and-12 these are the solver's own levels. For and-15 the solver's second level takes 6 bits; 5 is what the outside split took.
+
+| cell, level | cases | easy: B refutes it | hard: only A does | open at 3G in both | A's work on the easy cases | B's work on the easy cases |
+|---|---|---|---|---|---|---|
+| sll-8, 1 | 64 | 60 | 4 | 0 | 1.413G | 0.606G |
+| and-11, 1 | 64 | 61 | 2 | 1 | 0.753G | 0.448G |
+| and-11, 2 | 32 | 24 | 8 | 0 | 1.592G | 0.669G |
+| and-12, 1 | 64 | 62 | 1 | 1 | 0.926G | 0.628G |
+| and-12, 2 | 64 | 54 | 10 | 0 | 4.221G | 1.806G |
+| and-15, 1 | 64 | 62 | 1 | 1 | 2.525G | 0.988G |
+| and-15, 2 | 32 | 29 | 0 | 3 | 1.520G | 0.584G |
+| all | 384 | 352 | 26 | 6 | 12.95G | 5.73G |
+
+- **A worked example:** sll-8 with the six bits set to the value 5.
+  - B: the six units fix 1.75M of the 3.86M variables by propagation. Then one decision and two conflicts end it: UNSAT at 16.0M work.
+  - A: the same propagation, then `lucky` tries its assignments and finds the same dead end: UNSAT at 36.3M work, with 0 conflicts counted. No clean-up pass ran.
+  - With the value 8, propagation alone reaches a conflict while the units are added. A and B are then the same run (3.3M work).
+- **The easy cases (352 of 384) do not need the clean-up.**
+  - 209 fall by propagation alone, with no decision.
+  - 143 need a few decisions and at most 9 conflicts. In 128 of them A's answer came from `lucky`, before any clean-up pass; a clean-up pass ran in 15.
+  - All stay within 0.41 of one load of work (a load is a tick per integer of the formula: 49.9M for sll-8, 164.6M for and-15).
+  - So "0 conflicts" in the earlier tables did not mean the clean-up refuted the case. It meant propagation or `lucky` got there before the search counted a conflict.
+- **The hard cases (26) do need it:** 70M to 2.14G each with it (6,552 to 53,001 conflicts), and no answer in 3G without it.
+- **Where the split's work goes.** Every case's load plus its A work gives 17.38G for and-11 and 23.64G for and-12. The split's own totals in part 1 were 17.2-18.3G and 24.3G, so this accounting holds. Of that, the loads are 8.67G for and-11, 13.69G for and-12, and 3.19G of sll-8's 4.90G.
+- **An estimate for a split in two stages:** the easy cases as decisions in the main solver, with no load; the rest in a sub-solver as now.
+  - sll-8 1.10G, and-11 8.47G, and-12 8.52G. For and-15's two levels here, 14.74G against 32.19G today.
+  - It is an estimate. B has the bits as unit clauses. As decisions the propagation is the same, but only a run of the real thing counts (epic `bp3`, step 5).
+- **A case's proof is mostly units.**
+  - The proof of the worked example is 1,754,625 unit lines and the empty clause, nothing else (arm A; 1,751,565 in arm B; 10 MB in binary DRAT). They are the literals the six bits fix.
+  - The split copies each into its own proof with the six negated bits added. Its exit lines count 314.5M proof lines for sll-nested-11's 96 cases and 554.3M for sll-nested-13's 128.
+  - A checker finds such units by propagation itself, so they can be left out. Bead `SAT-playground-d96.8.8`.
+  - On the rotator toy they are 4,840 of the split's 55,747 lines; there the shortened clauses are most of the proof.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 

@@ -275,6 +275,13 @@ physical cores), never 32 each.
 - Long sweeps run for hours and `--seedgate` writes `results.tsv` only at the
   end — launch detached, record the run directory and PID, read progress from
   `_work/<idx>` scratch dirs.
+- **A job started from an agent session dies when that session is closed.**
+  Seen with T3 Code: each session is a systemd scope, and closing it stops
+  every process in it; `nohup` and `setsid` do not help. On 2026-11-15 this
+  ended five 24 h proof checks 12 hours in. Start anything that must outlive
+  the session with `systemd-run --user --unit=<name> --collect <command>`,
+  and record the unit name (`systemctl --user status <name>` shows it,
+  `systemctl --user stop <name>` ends it).
 - Killing a run means killing the wrappers *and* the solver children:
   `pkill -f 'bench_reference'; pkill -f 'kissat.*\.cnf'`, then verify with
   `ps`.
