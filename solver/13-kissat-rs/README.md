@@ -7510,9 +7510,10 @@ The first level's estimate (its cases' work, scaled to all 64 cases) is below P 
   - sll-8 1.10G, and-11 8.47G, and-12 8.52G. For and-15's two levels here, 14.74G against 32.19G today.
   - It is an estimate. B has the bits as unit clauses. As decisions the propagation is the same, but only a run of the real thing counts (epic `bp3`, step 5).
 - **A case's proof is mostly units.**
-  - The proof of the worked example is 1,754,625 unit lines and the empty clause, nothing else (arm A; 1,751,565 in arm B; 10 MB in binary DRAT). They are the literals the six bits fix.
+  - The proof of the worked example is 1,754,625 unit lines and the empty clause, nothing else (arm A; 1,751,565 in arm B; 10 MB in binary DRAT).
+  - 1,751,098 of them are the literals the six bits fix by propagation alone (a run stopped before its first decision writes exactly those). The rest, 3,527 in A and 467 in B, are the few units the case learns, from `lucky`'s dead ends or the search's conflicts, and what those fix.
   - The split copies each into its own proof with the six negated bits added. Its exit lines count 314.5M proof lines for sll-nested-11's 96 cases and 554.3M for sll-nested-13's 128.
-  - A checker finds such units by propagation itself, so they can be left out. Bead `SAT-playground-d96.8.8`.
+  - A checker finds by propagation itself every unit that propagation gave, so those can be left out. The learned units must stay: the bits alone do not reach the conflict. Bead `SAT-playground-d96.8.8`.
   - On the rotator toy they are 4,840 of the split's 55,747 lines; there the shortened clauses are most of the proof.
 
 ## Notes from the RL scheduler's first steps (plan §10)
