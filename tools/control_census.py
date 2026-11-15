@@ -257,7 +257,10 @@ def census_one(job):
 
 
 def cmd_census(a):
-    files = sorted(SUITE.glob("*.cnf.xz"))
+    suite = Path(a.suite) if a.suite else SUITE
+    if "sat-comp-2026" in str(suite.resolve()):
+        sys.exit("the 2026 suite is the holdout (plan section 8): not analysed")
+    files = sorted(suite.glob("*.cnf.xz"))
     if a.stems:
         keys = a.stems.split(",")
         files = [f for f in files if any(k in f.name for k in keys)]
@@ -624,6 +627,7 @@ def main(argv=None):
     c.add_argument("--max-clauses", type=int, default=30_000_000)
     c.add_argument("--seconds", type=int, default=1800)
     c.add_argument("--mem-mb", type=int, default=40000)
+    c.add_argument("--suite", help="a folder of .cnf.xz files (default: the 2025 suite; never 2026)")
     o = sub.add_parser("cell")
     o.add_argument("file")
     o.add_argument("--cap", type=int, default=CAP)

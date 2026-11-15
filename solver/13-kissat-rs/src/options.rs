@@ -148,6 +148,10 @@ kissat_options! {
     (ctlsplit, 0, 0, 2, "split on the control variables (SAT_CTL_VARS) first: 1 split, 2 probe"),
     (ctlsplitbits, 6, 1, 12, "control split bits a level"),
     (ctlsplitcase, 3_000_000, 1, i32::MAX, "control split work a case (K)"),
+    // a formula of more input clauses is neither kept nor read: the copy and
+    // the reading of 2025's 158M-clause 9.normalised passed 16 GB; the same
+    // limit as freereadclauses, past which the structure buffer overflows
+    (ctlsplitclauses, 50_000_000, 0, i32::MAX, "control split formula clause limit"),
     (ctlsplitlevels, 3, 1, 4, "control split levels"),
     // a case costing this many ticks a literal of the formula on average is a
     // search, not a fall to propagation: the split stops (after four cases)
@@ -863,10 +867,11 @@ mod tests {
         // structsortticks (2026-10-26), structdiv, structdivticks
         // (2026-10-27), structdd, structddticks (2026-10-31), the ten
         // card* options (2026-11-01), structpoints, structpointsticks
-        // (2026-11-05), freeread, freereadticks (2026-11-09) and the six
+        // (2026-11-05), freeread, freereadticks (2026-11-09) and the nine
         // control options ctlfirst, ctlsplit, ctlsplitbits, ctlsplitcase,
-        // ctlsplitlevels, ctlsplitticks, ctlreadticks, ctlsplitratio (2026-11-14)
-        assert_eq!(OPTION_TABLE.len(), 158 + 67);
+        // ctlsplitlevels, ctlsplitticks, ctlreadticks, ctlsplitratio,
+        // ctlsplitclauses (2026-11-14)
+        assert_eq!(OPTION_TABLE.len(), 158 + 68);
     }
 
     #[test]

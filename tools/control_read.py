@@ -1706,6 +1706,8 @@ def cands_one(job):
 
 
 def cmd_census(a):
+    if a.suite and "sat-comp-2026" in str(Path(a.suite).resolve()):
+        sys.exit("the 2026 suite is the holdout (plan section 8): not analysed")
     files = sorted(Path(a.suite).glob("*.cnf.xz")) if a.suite else sorted(SUITE.glob("*.cnf.xz"))
     if a.stems:
         keys = a.stems.split(",")

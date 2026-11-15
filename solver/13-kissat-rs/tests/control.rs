@@ -329,6 +329,40 @@ fn split_keeps_the_formula_past_the_structure_buffer() {
 }
 
 #[test]
+fn split_skips_a_formula_past_its_clause_limit() {
+    // more input clauses than ctlsplitclauses: the formula is neither kept nor
+    // read, and the search is the one without the option, step for step, on
+    // each path the formula takes to the split (on 2025's 9.normalised, 158M
+    // clauses, the copy and the reading passed 16 GB and the run aborted,
+    // where the shipped solver solves it in 95-149 s)
+    let cnf = rotmiter(); // 5,601 clauses
+    let paths: [(&str, &[&str], bool); 3] = [
+        ("structure stage off", &[], false),
+        ("structure stage on", &[], true),
+        ("structure buffer overflow", &["--structclauses=1", "--freewalk=0"], true),
+    ];
+    for (what, extra, shipped) in paths {
+        let mut off: Vec<&str> = extra.to_vec();
+        off.push("--ctlsplit=0");
+        let mut on: Vec<&str> = extra.to_vec();
+        on.extend(["--ctlsplit=1", "--ctlsplitclauses=5000"]);
+        let (a, b) = if shipped {
+            (run_shipped(&cnf, &off, &[]), run_shipped(&cnf, &on, &[]))
+        } else {
+            (run(&cnf, &off, &[]), run(&cnf, &on, &[]))
+        };
+        common::assert_same_trajectory(&a, &b, what);
+        let line = control_line(&b.stdout, "ctlsplit=");
+        assert!(line.contains("status=too-big") && line.contains(" read=0"), "{}: {}", what, line);
+        assert!(!b.stdout.contains("c control read"), "{}: the reading ran", what);
+    }
+    // at the limit itself the formula is kept, and the split decides it
+    let (status, out) = run_ctl(&cnf, None, &["--ctlsplit=1", "--ctlsplitclauses=5601"], "", false);
+    assert_eq!(status, "UNSATISFIABLE");
+    assert!(control_line(&out, "ctlsplit=").contains("status=unsat"), "{}", control_line(&out, "ctlsplit="));
+}
+
+#[test]
 fn split_stops_when_a_case_cannot_load() {
     // a case limit below the formula's size: no case can even load, and no
     // deeper split could do better, so the split stops at once (review b5)

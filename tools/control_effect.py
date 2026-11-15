@@ -170,8 +170,9 @@ def probe_run(path, bits, limit, total, solver, core, timeout):
                     clock = int(v)
     # a probe stopped by the wall timeout in the middle of a case: its
     # counts miss that case's work, the exit clock (printed at the signal)
-    # has it all; the probe had not ended, so its status is unset
-    if counts and counts.get("status") in ("off", "") and clock is not None:
+    # has it all; the probe had not ended, so its status is unset (printed
+    # "unfinished" since 2026-11-14, "off" by the builds before)
+    if counts and counts.get("status") in ("unfinished", "off", "") and clock is not None:
         counts["interrupted"] = "1"
         counts["clock"] = str(clock)
     return counts, status

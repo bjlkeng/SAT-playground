@@ -41,6 +41,10 @@ pub struct Control {
     pub formula: Vec<i32>,
     /// The parse copies the formula here itself (the structure stage is off).
     pub keeping: bool,
+    /// Input clauses copied so far, and whether the formula passed
+    /// `ctlsplitclauses` (then it is neither kept nor read).
+    pub clauses: u64,
+    pub too_big: bool,
     pub model: Option<Vec<bool>>,
     pub split_status: String,
     pub split_cases: u64,
@@ -128,7 +132,9 @@ pub fn report(solver: &Solver) {
         println!(
             "c control ctlsplit={} status={} cases={} refuted={} unknown={} sat={} work={} lemmas={} pre={} read={}",
             solver.options.ctlsplit,
-            if c.split_status.is_empty() { "off" } else { &c.split_status },
+            // empty: the run ended before the split finished (a signal in
+            // its cases, or before it began)
+            if c.split_status.is_empty() { "unfinished" } else { &c.split_status },
             c.split_cases, c.split_refuted, c.split_unknown, c.split_sat, c.split_work, c.split_lemmas,
             c.split_pre, c.read_work
         );
@@ -183,6 +189,13 @@ pub fn keep(solver: &mut Solver, derived: &[Vec<i32>], lits: &[i32]) {
     if solver.options.ctlsplit == 0 {
         return;
     }
+    // the limit counts the input's clauses, as on the other paths (the
+    // structure stage's derived clauses are few)
+    let clauses = lits.iter().filter(|&&l| l == 0).count() as u64;
+    if over_limit(solver, clauses) {
+        drop_formula(solver);
+        return;
+    }
     let mut f: Vec<i32> = Vec::with_capacity(lits.len() + derived.iter().map(|c| c.len() + 1).sum::<usize>());
     for c in derived {
         f.extend_from_slice(c);
@@ -190,6 +203,19 @@ pub fn keep(solver: &mut Solver, derived: &[Vec<i32>], lits: &[i32]) {
     }
     f.extend_from_slice(lits);
     solver.control.formula = f;
+}
+
+/// More input clauses than the split takes (`ctlsplitclauses`)?
+pub fn over_limit(solver: &Solver, clauses: u64) -> bool {
+    clauses > solver.options.ctlsplitclauses as u64
+}
+
+/// The formula is past the limit: free the copy and keep nothing more (the
+/// split then reports too-big, and the search is the one without it).
+pub fn drop_formula(solver: &mut Solver) {
+    solver.control.formula = Vec::new();
+    solver.control.keeping = false;
+    solver.control.too_big = true;
 }
 
 fn read_vars(max_var: i32) -> Vec<i32> {
@@ -713,6 +739,11 @@ fn join(solver: &mut Solver, node_units: &[i32], bits: &[i32]) {
 /// with the empty clause).
 pub fn split(solver: &mut Solver) -> i32 {
     if solver.options.ctlsplit == 0 {
+        return 0;
+    }
+    if solver.control.too_big {
+        solver.control.split_status = "too-big".to_string();
+        crate::print::message(solver, format!("control split: more than {} clauses, not kept", solver.options.ctlsplitclauses));
         return 0;
     }
     let formula = std::mem::take(&mut solver.control.formula);

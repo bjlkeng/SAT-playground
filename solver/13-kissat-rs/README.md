@@ -7292,6 +7292,10 @@ They cover 140 families, the largest being scheduling (140), miters (78), softwa
 - **Two stops.**
   - `ctlsplitratio` (16): a split whose mean case costs that many ticks a literal of the formula is a search, not a fall to propagation, so it stops after four cases. On oisc a case costs 0.6-1.2 ticks a literal; on gm16spctrc about 230.
   - `ctlsplit=2` is the effect test's probe: every first-level case runs and is counted.
+- **A size limit** (`ctlsplitclauses`, 50M input clauses, the same as `freereadclauses`; added 2026-11-14 after the 400-cell run's first hours). Past it the formula is neither kept nor read, the exit line says `status=too-big`, and the search is the one without the option, step for step (`tests/control.rs`, `split_skips_a_formula_past_its_clause_limit`, on each path the formula takes to the split).
+  - Without it, 2025's `9.normalised` (158M clauses, 3.65 GB) aborted at 16 GB during the reading at both seeds; the shipped solver solves it in 95-149 s. Its structure passes skip any formula past their own buffer.
+  - The largest cell the split reads on 2025 is oisc and-15 (44.6M clauses). The cells past 50M are the seven `.normalised` giants (63M-316M) and `pj2002_k500` (117M).
+- An exit line with `status=unfinished` (`off` before 2026-11-14) is a run that ended before the split finished, such as a timeout in its cases.
 
 **Checked first** (`tests/control.rs`, 9 tests):
 - with the options off the environment variable is not read and the search is stock;
@@ -7347,11 +7351,83 @@ Review (Codex, eight rounds; `log/control-split-2026-11-14/review/b-round*.txt`)
 - **The formula is kept past an overflowing structure buffer.**
 - **A model the walk has already found skips the split.**
 
-The runs that decide (bead `d96.8.6`) are running at the time of writing:
-- the four oisc cells at fresh seeds 4-11 under a 30G work budget, both arms, frozen `13-j19-ctlsplit-snapshot` (the review's later changes do not touch these cells);
-- the 400 cells at seeds 2 and 3, to follow.
+**Fresh seeds under a work budget** (bead `d96.8.6`, part 1; `log/ctlsplit-seeds-2026-11-14/`, frozen `13-j19-ctlsplit-snapshot`, seeds 4-11, `SAT_LIMIT_TICKS` 30G in both arms, 3,600 s, 16 cores). The shipped solver against `--ctlsplit=1` with the solver's own reading:
 
-The census and the effect test (`d96.8.3`) are running too. `benchmarks/rl/control_cands_2025.tsv` is the candidate census of the 400 cells (`control_read.py census --cands`, first 3M clauses, 14 cells timed out).
+| cell | shipped solver | the split |
+|---|---|---|
+| and-11 | 0 of 8 (30G each, 1,938-2,554 s) | **8 of 8 UNSAT** (17.2-18.3G, 1,057-1,173 s), 96 cases |
+| and-12 | 0 of 8 (30G each) | **8 of 8 UNSAT** (24.3G, 1,269-1,321 s), 128 cases |
+| and-15 | 0 of 8 | 0 of 8 (30G after 108-129 cases) |
+| sll-8 | 8 of 8 (4.57-6.91G, 363-512 s) | 8 of 8 (5.26-5.29G, 236-247 s) |
+
+- The split decides and-11 and and-12 at every seed; the shipped solver at none.
+- The work is about twice the earlier runs' (9-11G) because each case now pays for loading the formula. The wall time is the same.
+- On sll-8 the work is about the same (0.93x of the mean) and the wall time about half.
+
+**The effect test** (bead `d96.8.3`; `tools/control_effect.py`, `log/control-effect-2026-11-14/`). Every cell and candidate source of the candidate census (`benchmarks/rl/control_cands_2025.tsv`: `control_read.py census --cands`, first 3M clauses, 14 cells timed out). The solver's probe (`--ctlsplit=2`) runs every case of the first 6 bits (64 cases), each case within P/64 and the whole probe within P/4. P is the plain run's work, the mean of the shipped arms pick2 and pick3 of the freewalk stage-3 run. 401 cell-source pairs on 204 cells:
+
+| source | cells | no | deeper (3/4 of the cases fall) | decides |
+|---|---|---|---|---|
+| switch | 8 | 7 | 1 | 0 |
+| enable | 62 | 42 | 19 | 1 |
+| guard | 166 | 114 | 48 | 4 |
+| guess-and-determine | 165 | 85 | 75 | 5 |
+
+The first level's estimate (its cases' work, scaled to all 64 cases) is below P on 354 of the 401 pairs. That is nearly so by construction, since each of the 64 cases is capped at P/64. So the estimate does not pick out where a split pays; the verdicts and the real split do. Per pair: `benchmarks/rl/control_effect_2025.tsv`.
+
+**The real split on every promising pair** (`log/ctlsplit-followup-2026-11-14/`, frozen `13-j20-ctl-snapshot`): `--ctlsplit=1` with the source's set in `SAT_CTL_VARS`, the cost stop off, seeds 2 and 3, 1,800 s, against the shipped arms pick2 and pick3. 186 runs, zero contradictions:
+
+| source | runs (cells) | solved, split v shipped | + / − | wall PAR-2 × shipped | both solved: split slower |
+|---|---|---|---|---|---|
+| enable | 18 (9) | 16 v 15 | +2 / −1 | 0.877 | 9 of 14 |
+| guess-and-determine | 104 (52) | 64 v 68 | +6 / −10 | 1.152 | 39 of 58 (geomean 1.56x) |
+| guard | 64 (32) | 47 v 49 | +3 / −5 | 1.113 | 30 of 44 (1.17x) |
+
+- When most first-level cases fall, the whole split still need not pay. The cases left at the limit must be split again, and most cells both arms solve get slower.
+- Enable's +2 is one cell, `bp4_TCO_CSO_IXA_LP_ZR` (SAT in 220 s at both seeds, unsolved by the shipped solver); its −1 is `fermat` at seed 3.
+- No new UNSAT answer outside oisc. On 2025 only the switch source pays, so the solver's trigger stays switch-only.
+- 16 runs stopped in a core incident (`NOTE.txt` there) were not redone. The switch source on and-11 is measured by part 1 above instead.
+- Per run: `benchmarks/rl/control_followup_2025.tsv` (batch `promising`).
+
+**What the probe misses.** The probe's budget cut 46 of its 248 "no" verdicts before the first level ended, though at least three quarters of the cases each one ran were answered.
+- It called oisc and-12 "no" after 32 of 64 cases, 30 answered. The split decides that cell in 24.3G (the load charged). The plain run reaches 17.7G by its kill and has not decided it at 30G.
+- On a cell the shipped solver does not solve, P is only the work done by the kill, so a quarter of it is too tight. Measured against P, and-12's split even looks like a loss. The probe is a screen, not a verdict.
+- The 11 such pairs on cells the shipped solver misses at a seed or more get the real split after the 400-cell run. They are nine oddball `tto` cells with the guard set, `g2-T49.2.0` with the guard set and `grs-256-64` with the guess-and-determine set (`jobs3.txt`, `run3.sh` there).
+- The 105 choice-group jobs (the outside split, one case per member) have not run yet.
+
+**The 400 cells at seeds 2 and 3** (bead `d96.8.6`, part 2; `log/abtest-ctlsplit-400-2026-11-14-18-17-26`, frozen `13-j21-ctlsplit-snapshot`, 2026-11-14 18:17 to 2026-11-15 01:26).
+- `--ctlsplit=1` with the solver's own reading, against the shipped arms pick2 and pick3 of the freewalk stage-3 run. The seeds are the same, and the shipped defaults equal pick's options.
+- 32 jobs, 1,800 s, every answer checked. The prior-year census ran beside it on the four free cores (Python, four workers).
+
+| | the split (seeds 2 + 3) | shipped (pick2 + pick3) |
+|---|---|---|
+| solved | 680 (+5 −6) | 681 |
+| wall PAR-2 | 1.017x | 1 |
+| tick PAR-2 | 0.988x | 1 |
+| W on cells both solve | 1.006x | 1 |
+| contradictions | 0 | |
+
+- **Gains:** oisc and-11 and and-12 at both seeds (UNSAT, 1,291-1,587 s, 17.9-24.3G), and grs-256-64 at seed 2.
+- **Losses:**
+  - 9.normalised at both seeds: it aborted at 16 GB in the reading. The size limit above was added for it.
+  - Four cells the shipped arm solves near the limit, all at seed 2: Kakuro-easy-132 (1,779 s), lockchart L200 (1,750 s), at-least-two-vmpc_28 (1,766 s) and bp4_CSO_IXA_ZR (1,582 s).
+- **On those four the trigger did not fire** (`status=no-vars`), and the reading cost 0.002-0.163G. The split arm's search was cut off at 1,800 s a little short of the conflicts the shipped arm needed (Kakuro: 657,625 of 671,502). grs-256-64 is the same effect the other way round. A tick-budget rerun checks that these are the same search.
+- **sll-8** took 418 and 270 s, against 449 and 473 s; and-15 is unsolved in both.
+- **The reading costs** 0.34-0.36% of the work (0.22-0.23% of tick PAR-2), or 0.24-0.26% without the eight cells past the size limit.
+- **Timing margin.** On the oisc cells the split ran slower than in part 1, with 32 jobs and the census beside it against 16 cores: and-11 1,291-1,312 s (part 1: 1,057-1,173 s), and-12 1,549-1,587 s (part 1: 1,269-1,321 s). and-12's margin to 1,800 s was 213-251 s.
+
+**Prior years: where the trigger's shape appears** (bead `d96.8.3`; the 2026 suite is never read, and both census tools refuse it). The first reader on the 1,780 cells of the 2020-2024 main tracks (`benchmarks/rl/control_prior.tsv`, `log/control-prior-2026-11-14/`): the first 30M clauses, 16 GB and 1,800 s a cell. 18 cells that ran out of memory, and that the solver could read (50M clauses or fewer), were read again in 40 GB. 12 more are past 50M, so the solver never reads them either.
+- **The shape appears on three cells, all oisc:** and-nested-14 (2023, 39.0M clauses, GBD `unknown`: no solver decided it), sll-nested-15 (2023, 45.3M) and sll-nested-11 (2024, 24.9M). Each has 3.5M-4.2M switches, 75-76% steered by the 16 heaviest inputs, and switches 49% of the gates, as on 2025's oisc cells (and-14's and sll-15's counts from their first 30M clauses). The fourth, sll-nested-13 (2024, 34.4M), reached the reader's 1,800 s.
+- **Switches are common, control words are not.** 146 of the 1,061 cells of 2020-2022 alone have at least 1,000 switches. Across the five years they come from CBMC software (string and list code, the AWS, FreeRTOS and s2n libraries, `hash_table_find_safety`), velev and dlx pipelines, BMC and bit-vector SMT. In nearly all of them the 16 heaviest inputs steer 0-10% of the switches.
+- **The near misses have the shapes the split loses on in 2025:**
+  - grs, summle and the hwmcc multiplier miters have switches at 0.4-9% of the gates, so fixing their selects leaves most of the circuit as it was;
+  - b2005 has switches at 100% of the gates, a decision diagram like gm.
+- So on 1,780 prior-year cells the trigger is again an oisc detector. The prior-year oisc cells are measured below.
+
+Running at the time of writing:
+- the eight cells past the size limit, again with the fixed build;
+- the four prior-year oisc cells, shipped solver and split, with every answer checked;
+- the reader by meaning on the prior years, the choice-group probes and the budget-cut follow-up.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 

@@ -129,6 +129,13 @@ pub fn sink(solver: &mut Solver, elit: i32) {
         crate::internal::add(solver, elit);
         if solver.control.keeping {
             solver.control.formula.push(elit); // not in kissat: src/control.rs
+            if elit == 0 {
+                // not in kissat: past ctlsplitclauses the copy goes
+                solver.control.clauses += 1;
+                if crate::control::over_limit(solver, solver.control.clauses) {
+                    crate::control::drop_formula(solver);
+                }
+            }
         }
         return;
     }
@@ -155,10 +162,16 @@ fn flush(solver: &mut Solver) {
         crate::internal::add(solver, l);
     }
     // Not in kissat: the control split still needs the whole formula, so the
-    // flushed part is kept and the parse goes on copying (src/control.rs)
+    // flushed part is kept and the parse goes on copying (src/control.rs),
+    // up to ctlsplitclauses input clauses
     if solver.options.ctlsplit != 0 {
-        solver.control.formula = lits;
-        solver.control.keeping = true;
+        solver.control.clauses = solver.structure.clauses;
+        if crate::control::over_limit(solver, solver.control.clauses) {
+            crate::control::drop_formula(solver);
+        } else {
+            solver.control.formula = lits;
+            solver.control.keeping = true;
+        }
     }
 }
 
