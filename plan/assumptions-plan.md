@@ -233,11 +233,22 @@ proof written so far plus the empty clause. The solver flushes the proof at
 each answer and says how many bytes it holds, so the checker can cut it
 there.
 
-When a VeriPB file exists it is checked against the formula as it is: its
-lines are numbered after the input clauses, and added units would shift
-every number. The units join only at the last stage (drat-trim on the
-formula, the derived clauses and the units). `tools/proof_gate.py` gets an
-option for this in this step, and a test that a wrong core is rejected.
+`tools/proof_gate.py` has the option for this (`--units`, `--proof-bytes`),
+and tests that a wrong core is rejected.
+
+**A core together with a VeriPB file is refused by the gate.** The first
+draft said: check the VeriPB file against the formula as it is (its lines
+are numbered after the input clauses, so nothing may be added there), then
+add the units at the drat-trim stage. Codex's review showed that this checks
+the wrong claim. The VeriPB file only shows that the extended formula is
+satisfiable if the input is. A pass such as symmetry breaking cuts off
+models, and one of them may be the model the assumptions ask for. Four
+pigeons, five holes: symmetry derives "pigeon 1 is not in hole 1"; the claim
+"the formula plus 'pigeon 1 in hole 1' is unsatisfiable" then passed, and it
+is false. Nothing is lost today: a run with assumptions writes no VeriPB
+file. Step 3 has to bring a real check with the passes: that every derived
+clause holds under the assumptions, or that the pass cut no model (only
+defined new variables).
 
 This check is sound only while no proof line depends on a value of an
 assumption variable. That is the freeze rule again: an assumption variable is
@@ -415,6 +426,12 @@ mode, and checks every answer without trusting the branch's code:
   plus the core must be unsatisfiable (by the same oracles).
 - **A proof**: every UNSAT answer through `tools/proof_gate.py` with the
   core as units and the proof cut at the answer's `p` line.
+- **An UNKNOWN** is allowed only under a limit, and only if the question did
+  some work: one with no work at all was stopped by something left over from
+  the question before.
+- A third mode, `split`, runs the two-stage split on plain formulas with a
+  random control set and random limits and checks the answer, the model and
+  the proof.
 
 Before it is used on the branch's solver the harness is validated twice.
 First on today's solver, one fresh run per question with the assumptions as

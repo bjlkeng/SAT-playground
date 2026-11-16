@@ -374,6 +374,46 @@ fn two_stage_keeps_to_its_limits() {
 }
 
 #[test]
+fn two_stage_counts_the_propagation_of_the_load() {
+    // Review round 2.  One unit clause at the head of a chain of 20,000
+    // implications: adding the formula to the case solver propagates the
+    // whole chain.  That work must show on the clock as it does for a
+    // sub-solver of the one-stage split.
+    let fx = Fixture::new("control_two_stage_chain");
+    let cnf = fx.path("chain.cnf");
+    let n = 20_000;
+    let mut text = format!("p cnf {} {}\n", n + 30, n + 40);
+    text.push_str("1 0\n");
+    for v in 1..n {
+        text.push_str(&format!("-{} {} 0\n", v, v + 1));
+    }
+    // a small satisfiable part on the control variables, so the split has cases
+    for k in 0..40 {
+        let a = n + 1 + (k % 10);
+        let b = n + 11 + (k * 7 % 20);
+        text.push_str(&format!("{} {} 0\n", a, if k % 3 == 0 { -(b as i64) } else { b as i64 }));
+    }
+    std::fs::write(&cnf, text).unwrap();
+    let vars = format!("{},{},{}", n + 1, n + 2, n + 3);
+    let options = ["--ctlsplit=2", "--ctlsplitbits=3", "--ctlsplitlevels=1", "--ctlsplitratio=100000"];
+    let one = run(&cnf, &options, &[("SAT_CTL_VARS", &vars)]);
+    let mut two_options = options.to_vec();
+    two_options.push("--ctlsplitassume=1");
+    let two = run(&cnf, &two_options, &[("SAT_CTL_VARS", &vars)]);
+    let (one_line, two_line) = (control_line(&one.stdout, "ctlsplit="), control_line(&two.stdout, "ctlsplit="));
+    let literals = (2 * (n as u64 - 1) + 1 + 80) + (n as u64 + 40); // literals and zeros
+    // one stage: every case loads and propagates the chain; two stages: once
+    let chain = n as u64; // at least a tick a propagated literal
+    assert!(stage1_value(one_line, "work") >= 8 * literals, "{}", one_line);
+    assert!(
+        stage1_value(two_line, "work") >= literals + chain,
+        "the chain's propagation is missing from the split's work: {}",
+        two_line
+    );
+    assert!(stage1_value(two_line, "work") < stage1_value(one_line, "work"), "{} v {}", two_line, one_line);
+}
+
+#[test]
 fn two_stage_on_the_rotator() {
     let fx = Fixture::new("control_two_stage_rot");
     let cnf = rotmiter();

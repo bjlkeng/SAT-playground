@@ -672,9 +672,11 @@ fn new_sub(solver: &Solver) -> Box<Solver> {
 
 /// The case solver of the split in two stages: the formula loaded once,
 /// the control variables frozen (every case assumes some of them), its
-/// proof kept in memory.  Err: the limit does not cover the load
-/// (`NoBudget`), or the solver was told to stop (`Unknown`).
-fn load_case_solver(solver: &mut Solver, formula: &[i32], vars: &[i32], limit: u64) -> Result<Box<Solver>, Case> {
+/// proof kept in memory.  Returns it with the work the loading took: a tick
+/// a literal, plus the propagation the formula's unit clauses set off while
+/// it was added.  Err: the limit does not cover the load (`NoBudget`), or
+/// the solver was told to stop (`Unknown`).
+fn load_case_solver(solver: &mut Solver, formula: &[i32], vars: &[i32], limit: u64) -> Result<(Box<Solver>, u64), Case> {
     // loading is work, a literal a tick, as for a case's sub-solver; here it
     // is paid once for all the cases
     let load = formula.len() as u64;
@@ -703,7 +705,16 @@ fn load_case_solver(solver: &mut Solver, formula: &[i32], vars: &[i32], limit: u
             return Err(Case::Unknown);
         }
     }
-    Ok(sub)
+    // Adding a unit clause propagates it at once, and that work is on the
+    // case solver's own clock already.  It is charged here: a case's try
+    // counts only what the clock gains from then on (review round 2: one
+    // unit at the head of a chain of 20,000 implications was 59,998 ticks
+    // that no clock showed).
+    let propagated = sub.statistics.work_clock();
+    solver.statistics.ticks = solver.statistics.ticks.saturating_add(propagated);
+    solver.control.split_work = solver.control.split_work.saturating_add(propagated);
+    solver.control.stage1_work = solver.control.stage1_work.saturating_add(propagated);
+    Ok((sub, load.saturating_add(propagated)))
 }
 
 enum Stage1 {
@@ -1068,11 +1079,15 @@ pub fn split(solver: &mut Solver) -> i32 {
             }
             if case_solver.is_none() {
                 match load_case_solver(solver, &formula, &vars, limit) {
-                    Ok(sub) => {
+                    Ok((sub, loading)) => {
                         case_solver = Some(sub);
                         // the load is work already done, out of this limit
-                        // (it is smaller than the limit, or the load failed)
-                        limit -= literals;
+                        limit = limit.saturating_sub(loading);
+                        if limit == 0 {
+                            nodes[n].status = 3;
+                            stopped = "budget";
+                            break;
+                        }
                     }
                     Err(Case::NoBudget) => {
                         nodes[n].status = 3;
