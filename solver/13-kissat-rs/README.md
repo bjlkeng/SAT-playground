@@ -7771,6 +7771,28 @@ work to the last unit:
 - Wall times are from a host with 10 to 20 other solver runs; step 8 times
   them properly.
 
+**The prior-year oisc cells** (the final build, seeds 2 and 3, 1,800 s,
+16 GB, a proof written, the eight runs alone on the host; beside the shipped
+solver and the one-stage split from `log/ctlprior-2026-11-14`, same seeds
+and limits; wall time, then work):
+
+| cell | shipped solver | one stage | two stages |
+|---|---|---|---|
+| and-nested-14 (2023) | timeout, timeout | timeout, timeout | **UNSAT** 802 s and 817 s, 10.7G |
+| sll-nested-15 (2023) | timeout, timeout | timeout, timeout | **UNSAT** 573 s and 559 s, 8.3G and 8.2G |
+| sll-nested-11 (2024) | UNSAT 851 s and 799 s, 8.5G | UNSAT 1,010 s and 1,043 s, 15.8G | UNSAT 460 s and 492 s, 5.5G |
+| sll-nested-13 (2024) | timeout, timeout | UNSAT 1,739 s and 1,783 s, 28.7G | UNSAT 424 s and 468 s, 6.5G |
+
+- and-14 and sll-15 are new: neither the shipped solver nor the one-stage
+  split answers them in 1,800 s.
+- sll-11 was the cell the one-stage split made slower than the shipped
+  solver. With two stages it is faster than both.
+- sll-13 had 17 to 61 s to spare with one stage. It now has more than
+  1,300 s.
+- Over the eight oisc cells of 2023 to 2025 at these two seeds: the shipped
+  solver answers 4 of the 16 runs, the one-stage split 10, the two-stage
+  split all 16.
+
 **Proof.** Under assumptions what the case solver learns follows from the
 formula alone, so its proof lines go into the proof with no bits appended.
 Its last line negates the failed core; the case's own clause follows (it
@@ -7807,8 +7829,8 @@ unchanged: 103 of 103 cells identical to main's build with `--ctlsplit=1`
 
 **Caveats.**
 
-- Measured on four cells of one family. The prior-year oisc cells and the
-  400-cell run are step 8.
+- Measured on eight cells of one family, the only one where the split
+  fires and decides. The 400-cell run is step 8.
 - The stage-1 limit (one load) comes from these cells: a case that falls
   cost at most 0.77 of a load. Another family may need another limit
   (`--ctlsplitassumeload`, in percent).
