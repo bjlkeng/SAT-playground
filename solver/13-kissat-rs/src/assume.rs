@@ -100,6 +100,20 @@ pub fn freeze(solver: &mut Solver, var: i32) -> Result<(), String> {
             var
         ));
     }
+    // A helper variable the solver made for itself (factoring gives each the
+    // next free number).  To the caller that number is a variable the
+    // formula never used, and it may ask to assume it; but the helper is
+    // tied to other variables by its defining clauses, so the answer would
+    // be about another formula (review round 6: `-9` on such a helper came
+    // back UNSAT where the caller's formula is satisfiable).  A caller that
+    // will assume an unused variable freezes it before the first solve, as
+    // the test mode does; then its number is taken and no helper gets it.
+    if v < solver.import_.len() && solver.import_[v].imported && solver.import_[v].extension {
+        return Err(format!(
+            "variable {} is a helper variable the solver made after the last freeze; freeze a variable the formula does not use before the first solve",
+            var
+        ));
+    }
     let ilit = crate::import::import_literal(solver, var);
     debug_assert!(ilit != INVALID_LIT);
     let i = idx(ilit) as usize;
@@ -893,6 +907,58 @@ mod tests {
                 assert_eq!(internal::value(&mut t, g), g);
             }
         }
+    }
+
+    #[test]
+    fn a_helper_variable_of_factoring_is_refused() {
+        // Review round 6.  Every (i or j) with i in 1..4 and j in 5..8 is
+        // what factoring looks for: it adds a helper x with (i or x) and
+        // (not x or j), and x gets the next free number, 9.  To the caller 9
+        // is a variable its formula never used.
+        let mut clauses: Vec<Vec<i32>> = Vec::new();
+        for i in 1..=4 {
+            for j in 5..=8 {
+                clauses.push(vec![i, j]);
+            }
+        }
+        clauses.push(vec![-1, -2, -3, -4]);
+        let refs: Vec<&[i32]> = clauses.iter().map(|c| c.as_slice()).collect();
+        let options = |s: &mut Solver| {
+            for (name, value) in [("luckyearly", 0), ("luckylate", 0), ("eliminate", 0)] {
+                internal::set_option(s, name, value);
+            }
+        };
+        let mut s = solver_of(&refs);
+        options(&mut s);
+        assert_eq!(solve(&mut s), 10);
+        let helpers: Vec<i32> =
+            (1..s.import_.len() as i32).filter(|&v| s.import_[v as usize].imported && s.import_[v as usize].extension).collect();
+        assert!(!helpers.is_empty(), "the test needs a helper variable, or it checks nothing");
+        assert!(helpers.iter().all(|&v| v > 8));
+        for &h in &helpers {
+            assert!(freeze(&mut s, h).unwrap_err().contains("helper"));
+            assert!(assume(&mut s, -h).unwrap_err().contains("helper"));
+            assert!(assume(&mut s, h).is_err());
+        }
+        assert!(s.assume.list.is_empty());
+        // the solver is still usable, and the caller's own variables answer
+        assert_eq!(ask(&mut s, &[-1, 5]), 10);
+        // "5 false" alone is impossible: it forces 1, 2, 3 and 4, which the
+        // last clause forbids.  So the core is that one assumption.
+        let q = [-1, -5];
+        assert_eq!(ask(&mut s, &q), 20);
+        assert_eq!(core(&s, &q), vec![-5]);
+        // frozen before the first solve, the same number is the caller's:
+        // no helper takes it, and both values are possible
+        let mut t = solver_of(&refs);
+        options(&mut t);
+        freeze(&mut t, 9).unwrap();
+        assert_eq!(solve(&mut t), 10);
+        assert!(!t.import_[9].extension);
+        assert_eq!(ask(&mut t, &[-9]), 10);
+        assert_eq!(internal::value(&mut t, 9), -9);
+        assert_eq!(ask(&mut t, &[9]), 10);
+        assert_eq!(internal::value(&mut t, 9), 9);
     }
 
     #[test]

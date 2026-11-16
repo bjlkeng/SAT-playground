@@ -7771,6 +7771,19 @@ work to the last unit:
 - Wall times are from a host with 10 to 20 other solver runs; step 8 times
   them properly.
 
+**Eight fresh seeds** (4 to 11, the final build, `SAT_LIMIT_TICKS=30G`, the
+32 runs side by side, as bead `d96.8.6` part 1 did for the one-stage split):
+
+| cell | one stage, solved and work | two stages, solved, work, wall |
+|---|---|---|
+| sll-8 | 8 of 8, 5.26G to 5.29G | 8 of 8, 1.21G to 1.24G, 61 to 67 s |
+| and-11 | 8 of 8, 17.2G to 18.3G | 8 of 8, 8.46G to 9.55G, 599 to 705 s |
+| and-12 | 8 of 8, 24.3G | 8 of 8, 8.45G to 8.48G, 497 to 514 s |
+| and-15 | 0 of 8 | **8 of 8**, 15.07G to 16.79G, 1,082 to 1,145 s |
+
+No solve of the one-stage split is lost, and and-15 is answered at every
+seed.
+
 **The prior-year oisc cells** (the final build, seeds 2 and 3, 1,800 s,
 16 GB, a proof written, the eight runs alone on the host; beside the shipped
 solver and the one-stage split from `log/ctlprior-2026-11-14`, same seeds
