@@ -116,6 +116,17 @@ work is **solver 13** and the RL scheduler on top of it.
   673, wall PAR-2 0.957x, the whole gain lockchart (+9 −0); on the cells the test turns
   down, the search is off's, step for step. On by default since 2026-11-12, the
   owner's call (the stock path adds `--freewalk=0`).
+- **Assumptions (epic `SAT-playground-bp3`, 2026-11-15)** — let one solver
+  be asked again and again under temporary values ("assume these bits for
+  now"), keeping what it learned. The first use is the control split of
+  `d96.8`, which today loads the whole formula again for every case. Measured
+  before building (`log/as-prior-2026-11-15/NOTE.txt`; solver README, "Cases
+  without the clean-up"): 352 of 384 split cases fall without a fresh solver.
+  **The work is on branch `assumptions`, in its own worktree
+  `/home/bojji/code/SAT-playground-assumptions`** (the one exception to the
+  shared checkout, the owner's call; `plan/agent-coordination.md`). Main's
+  solver code stays as it is until the owner merges (bead `bp3.10`). The plan
+  is `plan/assumptions-plan.md` on the branch.
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a
@@ -309,7 +320,9 @@ instances plus twice the timeout for each unsolved one, lower better.
   output in the reply; do not rely on hidden tool output.
 - Agents share the main checkout on `main`: check `git status --short` and
   live processes before editing, and stop and ask if another agent is in the
-  file you need. Coordination details: `plan/agent-coordination.md`.
+  file you need. Coordination details: `plan/agent-coordination.md`. The one
+  exception is epic `bp3`, on branch `assumptions` in the worktree
+  `/home/bojji/code/SAT-playground-assumptions` (same document).
 - For background subagent tasks in Discord, set the task notify policy to
   `silent`; when reporting manually there, mention bjlkeng as
   `<@817490773179760662>`.
