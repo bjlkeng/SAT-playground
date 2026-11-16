@@ -35,6 +35,16 @@ The last set is there because step 5 rebuilds the split: the one-stage split
 must stay what it is. Of the four oisc cells, sll-8 is decided by the split
 within the limit (5.28G work); the other three stop at 10G.
 
+A fifth set, `full`, is every one of the 400 cells of 2025 under its own work
+budget (column `B_cell` of `benchmarks/rl/cells_2025.tsv`: up to 102G, 23G for
+the middle cell, 12.4 thousand G together). It is the last search check of the performance gate
+and takes hours, so it has no table here: main's build and the branch's are
+run one after the other and compared (`log/as-baseline-2026-11-15/main-full`
+and `r6-full` in the main checkout). In this set the proof goes through a
+pipe and is hashed as it comes (`--proof pipe`), so no proof file of tens of
+GB sits on the disk; the hash is the one the file would have (checked on the
+`stock` and `default` sets against main's file-based tables).
+
 Columns, per cell:
 
 - `exit`, `status`: the exit code and the answer.
@@ -100,10 +110,30 @@ nothing changed.
 | 28 other solver runs on the host | 1.0007 | 0.9970 to 1.0048 | 0.9748 to 1.0339 |
 
 So a mean within about 0.001 of 1, with every cell within 0.005, is "no
-difference". One repetition alone can be off by 3%; that is why there are
-four, with the cores swapped. CPU time gives the same means (1.0003 and
-1.0007). Measured 2026-11-15, logs in
+difference" **for one binary run twice**. One repetition alone can be off by
+3%; that is why there are four, with the cores swapped. CPU time gives the
+same means (1.0003 and 1.0007). Measured 2026-11-15, logs in
 `log/as-pairtime-2026-11-15/` of the main checkout (`aa-quiet`, `aa-load`).
+
+**Two builds are further apart than that, with nothing wrong.** A rebuild
+puts the code and the solver's fields at other addresses, and on this host's
+processor that changes how much of a loop has to be decoded again (solver
+README, "Assumptions", "Speed"). Measured 2026-11-16, the same 20 cells:
+
+| pair, quiet host | mean of the 20 cells | slowest and fastest cell |
+|---|---|---|
+| main with one unused option added, against main | 0.9933 | 0.9782 to 1.0068 |
+| two builds of the branch that differ in a few lines no run executes, each against main | 1.0046 and 0.9960 | 0.9752 to 1.0151 |
+
+So for two builds the measure is about 0.7% in the mean and 3% on a cell,
+either way. What tells a real slowdown from this is the instruction count:
+`tools/as_counters.py` runs the builds under `perf stat` on the small cells
+and prints exact counts of instructions, clock ticks and micro-operations,
+and the share of the micro-operations that went through the decoder again.
+Instructions that agree within 0.2% with a moved decoder share is placement.
+(Measured: the reviewed build runs 0.01% to 0.13% more instructions than
+main's on the four small cells; main with one unused option 0.00% to 0.06%
+more. The share moves by up to ten points between such builds.)
 
 ## How to check a build
 
@@ -116,20 +146,29 @@ four, with the cores swapped. CPU time gives the same means (1.0003 and
     python3 solver/13-kissat-rs/tools/parity.py --corpus default --phases
     python3 tools/as_pairtime.py --a $F --b $B --out /some/log/pair-quiet
     python3 tools/as_pairtime.py --a $F --b $B --load 28 --out /some/log/pair-load
+    python3 tools/as_counters.py --builds main=$F,new=$B
+    # the 400 cells under their own budgets, both builds, then the comparison
+    python3 tools/as_baseline.py run --solver $F --set full --out /some/log/main-full --jobs 28 --wall-limit 20000
+    python3 tools/as_baseline.py run --solver $B --set full --out /some/log/new-full --jobs 28 --wall-limit 20000
+    python3 tools/as_baseline.py compare /some/log/main-full /some/log/new-full
 
 The four sets take about 52 minutes at 32 jobs. A timing run takes about 15
-minutes on a quiet host and 25 under load, and needs the host to itself.
+minutes on a quiet host and 25 under load, and needs the host to itself; the
+counters take two minutes. The `full` set takes up to four hours a build.
 
 ## What the branch's builds showed
 
 | build | the four sets | wall time over main's, quiet host |
 |---|---|---|
 | step 2 (`753e377c`) | identical on the three sets that existed then | 0.9961 (cells 0.9795 to 1.0047) |
-| steps 2 and 5, final (`b59ec0e8`) | identical: 9, 100, 100 and 103 cells | 1.0046 (cells 0.9939 to 1.0151) |
+| steps 2 and 5, before the last review fix (`b59ec0e8`) | identical: 9, 100, 100 and 103 cells | 1.0046 (cells 0.9939 to 1.0151) |
+| steps 2 and 5, reviewed (`b3b6a491`, commit `0065a55`) | identical: 9, 100, 100 and 103 cells (the default set with the proof through a pipe); with two stages on, the 103 split cells equal the run of `b59ec0e8`, proofs included | 0.9960 (cells 0.9752 to 1.0139) |
 
-Step 2's build under 28 other runs: 0.9985 (0.9911 to 1.0058). The final
-build's 0.5% is outside the noise floor and is open work for the performance
-gate (bead `bp3.8`; solver README, "Assumptions", "Speed").
+Under 28 other runs: step 2's build 0.9985 (0.9911 to 1.0058), the reviewed
+build 0.9966 (0.9750 to 1.0131). The 1.0046 of the middle build was looked
+into before the work went on (bead `bp3.8`): it is placement, as the section
+on wall time says, and the next build, which differs from it in a few lines
+that no run without assumptions executes, landed on the other side of 1.
 
 ## When main moves
 

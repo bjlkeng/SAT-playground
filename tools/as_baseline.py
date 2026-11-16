@@ -15,6 +15,11 @@ Sets:
   split     the shipped defaults with the control split on (--ctlsplit=1)
             on the 100 medium cells and the four oisc cells of 2025, where
             the split fires: the one-stage split must stay what it is
+  full      the shipped defaults on all 400 cells of 2025, each cell under
+            its own work budget (benchmarks/rl/cells_2025.tsv, column
+            B_cell). The proof goes through a pipe and is hashed as it
+            comes, so no proof file is kept on disk (--proof pipe; the hash
+            is the one a file would give)
 
 Each run is the binary as run.sh calls it, with a proof path, plus -s and
 --seed=0. Per cell the table has: the exit code, the answer, the work-clock
@@ -25,7 +30,7 @@ wall time are recorded too, but they are not exact and `compare` only reports
 them.
 
 usage:
-  as_baseline.py run --solver BIN --set default --out DIR [--limit-ticks N]
+  as_baseline.py run --solver BIN --set default --out DIR [--limit-ticks N] [--proof pipe]
   as_baseline.py compare DIR_A DIR_B
   as_baseline.py renormalize DIR
   as_baseline.py selftest
@@ -33,6 +38,7 @@ usage:
 
 import argparse
 import difflib
+import fcntl
 import hashlib
 import json
 import lzma
@@ -56,9 +62,12 @@ PARITY = os.path.join(ROOT, "solver", "13-kissat-rs", "tools", "parity.py")
 DEFAULT_CORES = list(range(0, 16)) + list(range(18, 34))
 MEM_BYTES = 16 * 1024 ** 3
 
-# Work limits per set (the work clock W, CLAUDE.md "Evaluation").
+# Work limits per set (the work clock W, CLAUDE.md "Evaluation"). PER_CELL:
+# each cell has its own, read from CELLS_TABLE.
+PER_CELL = -1
 DEFAULT_LIMIT = {"stock": 0, "stockmed": 2_000_000_000, "default": 10_000_000_000,
-                 "split": 10_000_000_000}
+                 "split": 10_000_000_000, "full": PER_CELL}
+CELLS_TABLE = os.path.join(ROOT, "benchmarks", "rl", "cells_2025.tsv")
 OISC = ["113e692e379518bc3277855277dcc1b8-oisc-subrv-sll-nested-8",
         "d5b11b0b73eb4ecebdbf6ee8143da689-oisc-subrv-and-nested-11",
         "5aed29ce52192a55ffbd2a6f340017e7-oisc-subrv-and-nested-12",
@@ -87,10 +96,31 @@ def stock_options():
     return opts
 
 
+def cell_budgets():
+    """Cell name -> its work budget (column B_cell of CELLS_TABLE)."""
+    with open(CELLS_TABLE) as f:
+        lines = [line.rstrip("\r\n") for line in f if not line.startswith("#")]
+    head = lines[0].split("\t")
+    stem, budget = head.index("stem"), head.index("B_cell")
+    out = {}
+    for line in lines[1:]:
+        vals = line.split("\t")
+        out[vals[stem]] = int(vals[budget])
+    return out
+
+
 def cells_of(set_name):
     """(cell name, path) pairs of a set, sorted by name."""
     out = []
-    if set_name == "stock":
+    if set_name == "full":
+        d = os.path.join(ROOT, "benchmarks", "sat-comp-2025")
+        for f in sorted(os.listdir(d)):
+            if f.endswith(".cnf.xz"):
+                out.append((f[:-len(".cnf.xz")], os.path.join(d, f)))
+        if len(out) != 400:
+            raise SystemExit(
+                f"{d} has {len(out)} cells, expected 400 (in a worktree, run tools/worktree_links.sh first)")
+    elif set_name == "stock":
         for sub in ("tests/cnf/sat", "tests/cnf/unsat"):
             d = os.path.join(ROOT, sub)
             for f in sorted(os.listdir(d)):
@@ -202,6 +232,50 @@ def sha_file(path):
     return n, h.hexdigest()
 
 
+class PipeHash(threading.Thread):
+    """Reads a named pipe to its end and keeps the size and the sha256 of what
+    came through: the proof of a long run, without the file. `finish` gives
+    what `sha_file` gives for a file: (-1, 'none') if nothing ever opened the
+    pipe for writing."""
+
+    def __init__(self, path):
+        super().__init__(daemon=True)
+        self.path = path
+        self.size = 0
+        self.sha = hashlib.sha256()
+        self.opened = False
+        os.mkfifo(path)
+        self.start()
+
+    def run(self):
+        with open(self.path, "rb") as f:    # returns once a writer has the pipe open
+            self.opened = True
+            try:
+                fcntl.fcntl(f.fileno(), 1031, 1 << 20)    # F_SETPIPE_SZ: fewer wake-ups
+            except OSError:
+                pass
+            while True:
+                block = f.read(1 << 20)
+                if not block:
+                    break
+                self.sha.update(block)
+                self.size += len(block)
+
+    def finish(self):
+        """Call when the writer is gone."""
+        self.join(timeout=0.5)
+        forced = False
+        if self.is_alive() and not self.opened:
+            # the writer never opened the pipe: open and close it, so the reader ends
+            try:
+                os.close(os.open(self.path, os.O_WRONLY | os.O_NONBLOCK))
+                forced = True
+            except OSError:
+                pass
+        self.join()
+        return (-1, "none") if forced else (self.size, self.sha.hexdigest())
+
+
 def peak_kb(pid, solver):
     """The process's own peak memory in kB, or 0 when it cannot be read.
 
@@ -230,7 +304,7 @@ class Cancelled(Exception):
     pass
 
 
-def run_cell(solver, opts, limit, cell, path, out_dir, core, wall_limit):
+def run_cell(solver, opts, limit, cell, path, out_dir, core, wall_limit, pipe=False):
     if CANCEL.is_set():
         raise Cancelled()
     safe = cell.replace("/", "__")
@@ -255,6 +329,7 @@ def run_cell(solver, opts, limit, cell, path, out_dir, core, wall_limit):
         os.sched_setaffinity(0, {core})
         resource.setrlimit(resource.RLIMIT_AS, (MEM_BYTES, MEM_BYTES))
 
+    hasher = PipeHash(proof) if pipe else None
     start = time.time()
     with open(raw, "wb") as fo, open(err, "wb") as fe:
         p = subprocess.Popen(cmd, stdout=fo, stderr=fe, env=env, preexec_fn=pre)
@@ -273,6 +348,7 @@ def run_cell(solver, opts, limit, cell, path, out_dir, core, wall_limit):
                 break
             time.sleep(0.02)
         p.returncode = os.waitstatus_to_exitcode(status)
+    proved = hasher.finish() if hasher else None
     if CANCEL.is_set():
         shutil.rmtree(work, ignore_errors=True)
         raise Cancelled()
@@ -293,7 +369,7 @@ def run_cell(solver, opts, limit, cell, path, out_dir, core, wall_limit):
     norm = normalize(lines, [proof, cnf])
     with open(os.path.join(out_dir, "out", safe + ".txt"), "w") as f:
         f.write("\n".join(norm) + "\n")
-    pb, ps = sha_file(proof)
+    pb, ps = proved if proved else sha_file(proof)
     qb, qs = sha_file(proof + ".pbp")
     db, ds = sha_file(proof + ".derived.cnf")
     shutil.rmtree(work, ignore_errors=True)
@@ -324,6 +400,11 @@ def cmd_run(args):
     opts += args.options.split() if args.options else []
     limit = DEFAULT_LIMIT[args.set] if args.limit_ticks is None else args.limit_ticks
     cells = cells_of(args.set)
+    budgets = cell_budgets() if limit == PER_CELL else {}
+    missing = [cell for cell, _ in cells if limit == PER_CELL and cell not in budgets]
+    if missing:
+        raise SystemExit(f"{CELLS_TABLE} has no budget for {len(missing)} cells, e.g. {missing[0]}")
+    pipe = (args.proof or ("pipe" if args.set == "full" else "file")) == "pipe"
     out_dir = os.path.abspath(args.out)
     if os.path.exists(os.path.join(out_dir, "results.tsv")):
         raise SystemExit(f"{out_dir} already holds a results.tsv; give a fresh folder")
@@ -333,11 +414,14 @@ def cmd_run(args):
     cores = cores[:args.jobs]
     meta = {
         "set": args.set, "solver": solver, "solver_sha256": sha_file(solver)[1],
-        "options": opts, "limit_ticks": limit, "cells": len(cells), "cores": cores,
+        "options": opts, "cells": len(cells), "cores": cores,
+        "limit_ticks": f"per cell: column B_cell of {os.path.relpath(CELLS_TABLE, ROOT)}" if budgets else limit,
+        "proof": "pipe" if pipe else "file",
         "mem_bytes": MEM_BYTES, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "host": os.uname().nodename, "loadavg_start": os.getloadavg()[0],
     }
-    print(f"[as_baseline] set={args.set} cells={len(cells)} limit={limit} jobs={len(cores)} "
+    print(f"[as_baseline] set={args.set} cells={len(cells)} limit={'per cell' if budgets else limit} "
+          f"proof={'pipe' if pipe else 'file'} jobs={len(cores)} "
           f"solver={solver} sha256={meta['solver_sha256'][:16]}", flush=True)
     pool = queue.Queue()
     for c in cores:
@@ -347,7 +431,8 @@ def cmd_run(args):
         cell, path = item
         core = pool.get()
         try:
-            return run_cell(solver, opts, limit, cell, path, out_dir, core, args.wall_limit)
+            return run_cell(solver, opts, budgets.get(cell, limit), cell, path, out_dir, core,
+                            args.wall_limit, pipe)
         finally:
             pool.put(core)
 
@@ -389,7 +474,7 @@ def cmd_run(args):
     bad = [r["cell"] for r in rows if r["exit"] == "WALL-LIMIT" or r["workclock"] == "none"]
     if bad:
         print(f"[as_baseline] NOT COMPARABLE, {len(bad)} cells hit the wall limit or printed no "
-              f"work-clock line: {bad}", flush=True)
+              f"work-clock line (a run that dies on memory prints none): {bad}", flush=True)
         return 1
     return 0
 
@@ -444,6 +529,14 @@ def cmd_compare(args):
             mem.append((c, x, y))
     for c, x, y in mem:
         print(f"note {c}: peak memory A {x // 1024} MB, B {y // 1024} MB ({y / x:.3f}x)")
+    lines = [c for c in both if a[c]["workclock"] != "none" or b[c]["workclock"] != "none"]
+    equal = sum(a[c]["workclock"] == b[c]["workclock"] for c in lines)
+    none_a = sorted(c for c in both if a[c]["workclock"] == "none")
+    none_b = sorted(c for c in both if b[c]["workclock"] == "none")
+    print(f"work-clock lines equal on {equal} of the {len(lines)} cells that print one; "
+          f"no line: A {len(none_a)}, B {len(none_b)}"
+          + ("" if none_a == none_b else " (NOT the same cells)")
+          + (f": {[c[33:] for c in none_a]}" if none_a and none_a == none_b else ""))
     wa = sum(float(a[c]["wall_s"]) for c in both)
     wb = sum(float(b[c]["wall_s"]) for c in both)
     print(f"{len(both) - failures}/{len(both)} cells identical in every exact field "
@@ -521,6 +614,18 @@ def cmd_selftest(_args):
     assert any("structure pass" in line for line in na), "pass lines stay"
     assert any(line.startswith("c * 0 0 0") for line in na), "report rows stay, without seconds and MB"
     assert peak_kb(os.getpid(), "/no/such/solver") == 0, "memory is read only from the solver itself"
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        data = os.urandom(3_000_001)
+        fifo = os.path.join(d, "p")
+        hasher = PipeHash(fifo)
+        with open(fifo, "wb") as f:
+            f.write(data)
+        assert hasher.finish() == (len(data), hashlib.sha256(data).hexdigest()), "a pipe hashes as the file would"
+        os.remove(fifo)
+        assert PipeHash(fifo).finish() == (-1, "none"), "a pipe nothing wrote to is a missing file"
+    budgets = cell_budgets()
+    assert len(budgets) == 400 and min(budgets.values()) > 0, len(budgets)
     opts = stock_options()
     assert "--gauss=0" in opts and "--card=0" in opts and "--freewalk=0" in opts, opts
     print(f"selftest ok ({len(opts)} stock options: {' '.join(opts)})")
@@ -535,6 +640,9 @@ def main():
     r.add_argument("--set", required=True, choices=sorted(DEFAULT_LIMIT))
     r.add_argument("--out", required=True)
     r.add_argument("--limit-ticks", type=int, help="work limit (0 for none); default per set")
+    r.add_argument("--proof", choices=["file", "pipe"],
+                   help="where the proof goes: a file, or a pipe hashed as it comes (no file kept); "
+                        "default pipe for the full set, file for the others")
     r.add_argument("--options", default="", help="extra solver options, after the set's own")
     r.add_argument("--jobs", type=int, default=32)
     r.add_argument("--cores", default="", help="comma-separated cores to pin to")

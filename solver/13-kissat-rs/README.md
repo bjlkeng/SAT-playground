@@ -7593,11 +7593,17 @@ limit one question. No `s` line is printed in this mode.
 
 **Checked.**
 
-- **Off means off.** Main's build and the branch's final build (sha256
-  `b59ec0e8`, steps 2 and 5 together, after the review) were run over the
-  same cells under work limits and compared field by field: the answer, the
-  work-clock line, the `-s` counters, the output without times, the model,
-  and the sha256 of every proof file.
+- **Off means off.** Main's build and the branch's build (steps 2 and 5
+  together) were run over the same cells under work limits and compared
+  field by field: the answer, the work-clock line, the `-s` counters, the
+  output without times, the model, and the sha256 of every proof file. The
+  table is for build `b59ec0e8`, the one before the last review fix; the
+  reviewed build `b3b6a491` (commit `0065a55`) differs from it in `freeze`
+  only, and it gave the same again: all four sets identical to main's (the
+  100 default cells with the proof hashed through a pipe instead of written
+  to a file), and the split set with two stages identical to the same run of
+  `b59ec0e8`, proofs included (`log/as-baseline-2026-11-15/r6-*` in the main
+  checkout).
 
   | set | cells | identical |
   |---|---|---|
@@ -7619,26 +7625,43 @@ limit one question. No `s` line is printed in this mode.
   else from the C kissat, CaDiCaL 2.1.3 and main's frozen build, which must
   agree. Every model is checked against the clauses and the assumptions,
   every core against the same oracle, every UNSAT proof through the gate.
-  On the final build (sha256 `b59ec0e8`, after the review): 13 option sets
-  of 300 formulas each, on the release build and on a build with debug
-  assertions: 7,800 formulas, 50,089 questions, no wrong answer and no
-  disagreement among the oracles. The option sets force every pass to run
+  On build `b59ec0e8`: 13 option sets of 300 formulas each, on the release
+  build and on a build with debug assertions: 7,800 formulas, 50,089
+  questions, no wrong answer and no disagreement among the oracles. On the
+  reviewed build `b3b6a491` the same again with other seeds and half of the
+  formulas large random ones: 7,800 formulas, 49,140 questions, and 2,000
+  split formulas on each of the two builds, no wrong answer
+  (`log/as2-fuzz-2026-11-15/r6-*.txt`). The option sets force every pass to run
   inside these small solves (tiny intervals for elimination, probing,
   reduction, rephasing, mode switches and compaction), run each search mode
   alone, turn off chronological backtracking, trail reuse and lucky, and give
-  each question a limit of 0, 1 or 5 conflicts or 1,000 work units. The
-  release build's 24,583 questions were 6,336 SAT, 14,809 UNSAT and 3,438
+  each question a limit of 0, 1 or 5 conflicts or 1,000 work units. In the
+  first round the release build's 24,583 questions were 6,336 SAT, 14,809 UNSAT and 3,438
   UNKNOWN at a limit, with 588,935 conflicts, 15,239 restarts, 44,496
   reductions, 847 elimination rounds (2,363 variables removed in the
   questions without assumptions), 4,646 probings and 7,342 mode switches.
   An UNKNOWN that did no work counts as a failure.
-- **Tests.** `tests/assume.rs` (11 tests on the binary) and 15 unit tests in
+- **Tests.** `tests/assume.rs` (11 tests on the binary) and 16 unit tests in
   `src/assume.rs`: the worked example and its proof, a wrong core rejected
   through the gate, a question that stops at its limit and the next one, a
   limit reached before the search starts, the run's limits across questions,
   a `--time` stop, a signal, a compaction in the middle of a solve, an
-  eliminated variable refused and a frozen one kept, old proof side files
-  removed, and what the mode refuses.
+  eliminated variable refused and a frozen one kept, a helper variable that
+  factoring made refused, old proof side files removed, and what the mode
+  refuses.
+- **Review.** Codex read the branch seven times (`codex review --base main`,
+  GPT-6-Astra, maximum effort; `log/as-review-2026-11-15/` in the main
+  checkout). Rounds 1 to 4 and 6 found eleven things (5, 1, 2, 2 and 1), each
+  fixed in its round; rounds 5 and 7 found nothing. Three were marked
+  serious. The proof gate accepted a core next to a VeriPB file, where a
+  symmetry-breaking proof can cut off the very model the assumptions ask
+  for: refused now. A stop flag stayed set when a question hit its limit
+  during preprocessing, so the next question could stop before it began:
+  cleared at the start of every solve. And a variable that factoring had made
+  could be assumed as if the formula had never used it, which gave a wrong
+  UNSAT: refused now. Each has a test. The other eight were about work that
+  the two-stage split did not count against a limit, old side files, and the
+  run tools leaving processes behind on an interrupt.
 
 **What the fuzz harness found while this was built** (each is fixed):
 
@@ -7657,36 +7680,120 @@ limit one question. No `s` line is printed in this mode.
 **Speed.** Two builds run the same cell at the same moment, each on its own
 core, and the cores are swapped every repetition (`tools/as_pairtime.py`; the
 20 cells of `benchmarks/discriminating` at 100,000 conflicts, four
-repetitions, shipped defaults). The number is the build's wall time over
-main's; below 1 is faster.
+repetitions, shipped defaults). The number is the second build's wall time
+over the first's; below 1 is faster. In every pair the two builds did exactly
+the same work (equal work-clock lines).
 
-| | mean of the 20 cells | slowest and fastest cell |
+| pair | mean of the 20 cells | slowest and fastest cell |
 |---|---|---|
 | main against a copy of itself, quiet host | 1.0007 | 0.9984 to 1.0033 |
 | main against a copy of itself, 28 other runs on the host | 1.0007 | 0.9970 to 1.0048 |
-| step 2's build (`753e377c`) against main, quiet host | 0.9961 | 0.9795 to 1.0047 |
+| **main with one unused option added**, against main, quiet | 0.9933 | 0.9782 to 1.0068 |
+| step 2's build (`753e377c`) against main, quiet | 0.9961 | 0.9795 to 1.0047 |
 | step 2's build against main, 28 other runs | 0.9985 | 0.9911 to 1.0058 |
-| the final build (`b59ec0e8`, with step 5) against main, quiet host | **1.0046** | 0.9939 to 1.0151 |
+| steps 2 and 5 before the last review fix (`b59ec0e8`) against main, quiet | 1.0046 | 0.9939 to 1.0151 |
+| **the reviewed build (`b3b6a491`) against main, quiet** | **0.9960** | 0.9752 to 1.0139 |
+| the reviewed build against main, 28 other runs | 0.9966 | 0.9750 to 1.0131 |
+| both built with every function on a 64-byte boundary: branch against main, quiet | 1.0016 | 0.9749 to 1.0293 |
+| both built with the jump switch (below): branch against main, quiet | 1.0021 | 0.9979 to 1.0196 |
 
-The first two rows are the noise floor: what the measurement shows when
-nothing changed. In every pair the two builds did exactly the same work
-(equal work-clock lines).
+**The branch is not slower than main. What the table shows instead is how far
+two builds of the same search can be apart.** The first build with step 5 in
+it measured 1.0046, outside the 0.001 that the same binary gives against
+itself, so it was looked into before anything went on (bead `bp3.8`).
 
-- Step 2's build was 0.4% faster than main, the final build is 0.5% slower.
-  Both are outside the noise floor, and no code on the search's path changed
-  between the two: step 5 added the two-stage split (which is off), two
-  options and six counters.
-- The difference sits in the small cells that fit in the cache: the five
-  slowest are `sqrt-mitern171` 1.015, `case9` 1.014, `div-mitern172` 1.011,
-  `SCPC-500-1` 1.010 and `DLTM` 1.008, where step 2's build had 1.000, 0.998,
-  0.996, 0.980 and 0.997. The two largest cells, which wait on memory, are
-  0.996 (Kakuro) and 0.994 (brocard).
-- So it is how the code and the solver's fields happen to be laid out, as
-  this port has seen before (notes "native build penalty" and "cache-resident
-  cells"). **It is not yet found or fixed.** The performance gate (step 7,
-  bead `bp3.8`) has to do that before any merge: the candidates are the
-  option fields (two more shift every later option by 8 bytes) and the
-  solver struct (new fields move the others).
+- *A worked example: `sqrt-mitern171`.* Main's build, the build that measured
+  1.0046 and the reviewed build each run 35.04 billion instructions on it
+  (the branch's two 0.01% and 0.02% more than main's). Yet their wall times
+  on it are 1.000, 1.015 and 0.992 of main's. What differs is how the
+  processor reads the same code. It keeps decoded instructions in a cache; of
+  every 100 micro-operations, main's build sends 33 through the decoder
+  again, the first build 37, the reviewed one 24 (`tools/as_counters.py`).
+- *The instruction counts, all four small cells.* The branch's three builds
+  run 0.02%, 0.01 to 0.02%, 0.02% and 0.13% more instructions than main's on
+  `case9`, `sqrt-mitern171`, `SCPC-500-1` and `circuit`. Main with one unused
+  option, which has no new code at all, runs 0.01%, 0.00%, 0.00% and 0.06%
+  more. So the new checks on the search's path (is there an assumption left
+  to decide, is this variable frozen) cost between nothing and a tenth of a
+  percent, the same order as what a rebuild alone changes.
+- *Why the same code decodes differently.* The loop that takes 68% of the
+  time on `case9` (`search_propagate_all`) is the same 897 instructions in
+  every build. Its address differs: 16 bytes past a multiple of 64 in
+  main's build, 48 past in the first build, 0 past in the reviewed one. This
+  host's processor (Xeon Gold 6154) caches decoded code in 32-byte windows,
+  and keeps a window out of the cache when a jump crosses the window's end or
+  stops on it. So where a loop lands decides how much of it is decoded
+  again. The fields of the solver's struct moved too: the compiler sorts them
+  by size and put the new 240-byte `assume` field first, the six counters of
+  the split grew `control` by 48 bytes, and five new options tipped the
+  options block into another size group. Every one of the struct's 111 older
+  fields moved (67 of them by 288 bytes); 158 of the loop's 897 instructions
+  carry a different field offset, and nothing else in it differs.
+- *The two builds of the branch differ by nothing these runs execute.* Between
+  `b59ec0e8` (1.0046) and `b3b6a491` (0.9960) lie a few lines in `freeze`,
+  which is never called without assumptions. Single cells moved by up to 2.7%
+  between them (`1.normalised` 1.003 to 0.975, `sqrt-mitern171` 1.015 to
+  0.992).
+- *Main does the same to itself.* Main's own code with one option added that
+  nothing reads is 0.9933 of main: 0.7% faster, single cells from 2.2% faster
+  to 0.7% slower.
+- *With placement taken out, the two come together.* Built with every
+  function on a 64-byte boundary, the cells that differ through a function's
+  address meet (the reviewed build's `case9` goes from 1.010 to 1.002,
+  `circuit` from 1.009 to 1.001, `sqrt-mitern171` from 0.992 to 1.003). Cells
+  that differ inside a function do not (`1.normalised` stays at 0.975: an
+  instruction with a different field offset can have a different length, and
+  everything after it in the function shifts). Built with the jump switch
+  below, which takes most code out of the decoder's way, the branch is
+  1.0021 of main and every cell is within 0.998 to 1.005, except
+  `battleship`, a 0.8-second run, at 1.020. That 0.2% is the most the
+  branch's own code can cost; the same binary against itself gives 0.07%.
+
+- *Under load the picture is the same, cell by cell.* With 28 other runs on
+  the host the reviewed build is 0.9966 of main, and each cell sits where it
+  sat on the quiet host (`1.normalised` 0.975 and 0.975, `case9` 1.009 and
+  1.010, `circuit` 1.008 and 1.009). A difference that repeats like that
+  belongs to the two binaries, not to the moment of the measurement.
+
+So the measure "the same binary twice" (0.001) is too strict for two builds.
+A harmless rebuild moves the mean of the 20 cells by about 0.7% and a single
+cell by up to 3%, either way. The three builds of the branch are inside that,
+on both sides of 1.
+
+**A finding on the side: the jump switch.** In main's build about a third of
+all micro-operations go through the decoder again on the cells that fit in
+the cache (32 to 42% on `case9`, `sqrt-mitern171`, `SCPC-500-1` and
+`circuit`). The compiler can pad jumps away from the 32-byte boundaries
+(`RUSTFLAGS="-C llvm-args=-x86-branches-within-32B-boundaries"`). Main's own
+code built that way, against main's build:
+
+| | mean of the 20 cells | slowest and fastest cell |
+|---|---|---|
+| wall time, quiet host | **0.9539** | 0.9953 (brocard) to 0.9061 |
+| wall time on the four small cells | 0.936 to 0.961 | |
+| instructions, the four small cells | +2.6% to +3.7% (the padding) | |
+| share through the decoder, the four small cells | 5 to 7% (was 32 to 42%) | |
+
+Every cell is faster, with the same work. This is a decision about main's
+build, not about this branch, and it helps only this family of processors
+(Intel, 2015 to about 2020); the C kissat we compare against has the same
+problem on this host. It is filed as bead `SAT-playground-b1w` with what is
+still to measure (under load, the 400 cells, kissat built the same way). Not
+adopted here.
+
+The counters are exact counts: the tool takes five events, which this
+processor counts all at once, and stops if one was counted for only part of
+a run. (A first pass with eight events had them take turns, 49 to 62% of the
+time each; its estimates of the shares were right to a few tenths of a
+point, its instruction counts were not good enough to compare builds.) Every
+build sat on every core equally often.
+
+Logs: `log/as-pairtime-2026-11-15/` in the main checkout (`aa-*`, `ab-*`,
+`final-quiet`, `r6-quiet`, `r6-load`, `mainopt-quiet`, `a64-quiet`,
+`jcc-quiet`, `jccab-quiet`; the counter tables `counters-four-builds.txt`
+and `counters-main-variants.txt`; the variant binaries in `builds/`). Host: Dell
+Precision 7920, two Xeon Gold 6154 (36 cores), microcode 0x2007006, rustc
+1.96.1.
 
 **Caveats.**
 
@@ -7750,8 +7857,8 @@ sub-solver, 2 loads of the case solver.
 
 **The real split, one stage against two** (frozen branch builds, seeds 2 and
 3, `SAT_LIMIT_TICKS=30G`, 16 GB, no proof; work, then wall time). The two-stage
-runs were repeated on the final build (sha256 `b59ec0e8`) and gave the same
-work to the last unit:
+runs were repeated on build `b59ec0e8` and gave the same work to the last
+unit:
 
 | cell | one stage (today) | two stages | cases: asked / refuted there / skipped / sub-solver |
 |---|---|---|---|
@@ -7771,7 +7878,7 @@ work to the last unit:
 - Wall times are from a host with 10 to 20 other solver runs; step 8 times
   them properly.
 
-**Eight fresh seeds** (4 to 11, the final build, `SAT_LIMIT_TICKS=30G`, the
+**Eight fresh seeds** (4 to 11, build `b59ec0e8`, `SAT_LIMIT_TICKS=30G`, the
 32 runs side by side, as bead `d96.8.6` part 1 did for the one-stage split):
 
 | cell | one stage, solved and work | two stages, solved, work, wall |
@@ -7784,7 +7891,7 @@ work to the last unit:
 No solve of the one-stage split is lost, and and-15 is answered at every
 seed.
 
-**The prior-year oisc cells** (the final build, seeds 2 and 3, 1,800 s,
+**The prior-year oisc cells** (build `b59ec0e8`, seeds 2 and 3, 1,800 s,
 16 GB, a proof written, the eight runs alone on the host; beside the shipped
 solver and the one-stage split from `log/ctlprior-2026-11-14`, same seeds
 and limits; wall time, then work):
@@ -7805,6 +7912,38 @@ and limits; wall time, then work):
 - Over the eight oisc cells of 2023 to 2025 at these two seeds: the shipped
   solver answers 4 of the 16 runs, the one-stage split 10, the two-stage
   split all 16.
+
+**The hard cases after a clean-up (a measurement for step 3, 2026-11-16).**
+The plan asked one more question: could the hard cases stay in the case
+solver, if it had the clean-up too, with the control bits frozen instead of
+fixed? That can be measured without new code. The test mode freezes every
+variable its questions name, and a first question with no assumptions runs
+the first preprocessing and elimination, with the bits frozen. So each cell
+got one question file: an empty question, then only its hard first-level
+cases, 3G of work a question (`log/as-stage1-2026-11-15/warm`, the reviewed
+build).
+
+| cell | hard cases | asked after the empty question | asked without it (3G each, above) |
+|---|---|---|---|
+| sll-8 | 0, 31, 47, 63 | **all four refuted**: 186M, 564M, 685M, 217M | all four open |
+| and-11 | 0, 31, 63 | open at 3G | open |
+| and-12 | 0, 63 | open at 3G | open |
+| and-15 | 0, 63 | open at 3G | open |
+
+- *sll-8.* The clean-up with the bits only frozen is enough for these
+  cases, and the cores are smaller than a case: case 0 fails with one bit
+  ("bit 0 off" alone is impossible), case 47 with one, case 31 with two, and
+  the last comes back with an empty core, which says the formula itself is
+  refuted. The four cost 1.65G together. In the two-stage split their four
+  sub-solvers cost 0.50G (852M for the split, 357M of it the case solver). So
+  for these cases the sub-solver, which fixes the bits and then cleans up, is
+  still three times cheaper.
+- *The and- cells.* Their hard first-level cases stay open at 3G here, and
+  they stay open in a sub-solver too: the split splits them again on the next
+  bits. Whether those deeper cases would fall this way is not measured.
+- So the sub-solver stays for the hard cases. Step 3's first item (the
+  clean-up passes inside a solve under assumptions) would not change that for
+  sll-8; for the and- cells the deeper cases have to be asked first.
 
 **Proof.** Under assumptions what the case solver learns follows from the
 formula alone, so its proof lines go into the proof with no bits appended.
@@ -7838,7 +7977,14 @@ on a build with debug assertions, answer, model and proof checked, no wrong
 answer (529 and 535 decided UNSAT by the joins; 243 and 259 where the split
 gave up and the search finished). With the option off, the one-stage split is
 unchanged: 103 of 103 cells identical to main's build with `--ctlsplit=1`
-(`benchmarks/assumptions/main-5451c7b-split.tsv`).
+(`benchmarks/assumptions/main-5451c7b-split.tsv`). With the option on and
+the split not firing, the search is unchanged too: on the 99 cells of that
+set where the split does not fire, the run with `--ctlsplitassume=1` equals
+main's in every field but the text, and the text differs only in the option
+line and in the exit line that carries the new counters. The four oisc cells
+differ, as they must: under the set's 10G limit sll-8 is UNSAT at 1.23G (one
+stage 5.28G), and-11 at 9.36G and and-12 at 8.45G (one stage: no answer), and
+and-15 has no answer either way (it needs 16G).
 
 **Caveats.**
 

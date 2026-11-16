@@ -478,8 +478,29 @@ after every step, `tools/as_baseline.py` runs the branch build over the same
 cells and `compare` must find every cell identical: the answer, the `-s`
 counters, the work-clock line, the output with times taken out, and the
 sha256 of each proof file. `solver/13-kissat-rs/tools/parity.py --corpus
-default --phases` must still match the C kissat on the stock path. Speed is
-checked with `tools/as_pairtime.py` against the noise floor of step 0.
+default --phases` must still match the C kissat on the stock path. The last
+check of this kind is the set `full` of the same tool: all 400 cells, each
+under its own work budget.
+
+Speed is checked with `tools/as_pairtime.py`, and read with care. The same
+binary against itself gives 1.0007 on the 20 cells, but that is not the
+measure for two builds. A rebuild that changes nothing a run executes moves
+the mean by about 0.7% and one cell by up to 3%, either way, because the code
+and the solver's fields land at other addresses (main with one unused option
+added: 0.9933; solver README, "Assumptions", "Speed"). So a build passes
+when:
+
+1. it runs the same instructions as main (`tools/as_counters.py`, exact
+   counts; the reviewed build runs 0.01% to 0.13% more on the four small
+   cells, a rebuild of main with one unused option 0.00% to 0.06% more; more
+   than 0.2% would be new work on the search's path), and
+2. its mean is inside that spread.
+
+A larger difference, or one that stays on the same side over several builds,
+is looked into with the counters. For a closer look both builds can be made
+with `-C llvm-args=-x86-branches-within-32B-boundaries`, which takes most of
+the placement out: then the branch is 1.0021 of main and the cells agree
+within 0.5%.
 
 ## 14. Order of work
 
@@ -497,3 +518,15 @@ checked with `tools/as_pairtime.py` against the noise floor of step 0.
 | 9 | `bp3.10` | the owner's decision: merge or roll back |
 
 The split needs steps 0, 1, 2 and 5. Steps 3 and 4 serve later uses.
+
+**Where it stands (2026-11-16).** Steps 0, 1, 2 and 5 are done and reviewed
+(Codex, seven rounds on the branch; the last found nothing). The reviewed
+build is commit `0065a55`, sha256 `b3b6a491`. Its long runs for steps 6, 7
+and 8 were started as one detached chain (`log/as5-400-2026-11-16/chain.sh`
+in the main checkout, unit `as5-chain`): the fuzz harness and the baseline
+sets again, the two-stage split on the 400 cells at seeds 2 and 3, the four
+oisc proofs through the 24-hour check, and the 400 cells under their own work
+budgets. Steps 3 and 4 are not started. One measurement for step 3 is in
+(solver README, "The control split in two stages", "The hard cases after a
+clean-up"): the answer to "can the hard cases stay in the case solver?" is
+yes for sll-8 and still open for the three and- cells.
