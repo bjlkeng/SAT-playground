@@ -18,6 +18,14 @@ i, duplicates and tautologies included).
     python3 tools/proof_gate.py <cnf[.xz|.gz]> <proof> [--timeout S]
     exit 0 and "ok" on a verified refutation, else a reason
 
+An answer under assumptions (epic SAT-playground-bp3): `--units "1 -2 3"`
+gives the failed core. The claim is then "the formula plus these literals is
+unsatisfiable". The VeriPB stage is unchanged: its proof numbers the input's
+clauses, so nothing may be added to the formula there. The units join at the
+drat-trim stage only, and the proof there is the DRAT file (its first
+`--proof-bytes` bytes, the solver prints that number with each answer) with
+the empty clause added at the end.
+
 As a module: `check_unsat(cnf, proof, timeout) -> str` returns ok | FAIL:<why>
 | no-proof | no-checker | checker-timeout | checker-error.
 """
@@ -228,10 +236,74 @@ def run_drat(drat, cnf, proof, timeout: float, what: str = "") -> str:
     return f"FAIL:drat-trim rejected the proof{what}"
 
 
-def check_unsat(cnf, proof, timeout: float = 3600.0, workdir=None) -> str:
+def with_units(cnf, out, units):
+    """The formula with one unit clause per literal of `units` appended, as
+    plain CNF with a header that counts them (drat-trim reads exactly as many
+    clauses as the header says)."""
+    n = 0
+    top = max((abs(u) for u in units), default=0)
+    with open(out, "w") as c:
+        c.write("p cnf 0 0\n")
+        gen = iter_clauses(cnf)
+        while True:
+            try:
+                cur = next(gen)
+            except StopIteration as stop:
+                top = max(top, stop.value or 0)
+                break
+            n += 1
+            for l in cur:
+                if abs(l) > top:
+                    top = abs(l)
+            c.write(" ".join(map(str, cur)) + " 0\n")
+        for u in units:
+            n += 1
+            c.write(f"{u} 0\n")
+    with open(out, "r+") as fh:
+        body = fh.read().split("\n", 1)[1]
+        fh.seek(0)
+        fh.write(f"p cnf {top} {n}\n" + body)
+        fh.truncate()
+
+
+def cut_proof(proof, out, nbytes):
+    """The first `nbytes` bytes of the DRAT file (all of it for None) with the
+    empty clause added, in the file's own format. A binary proof starts with
+    the byte 'a' or holds a zero byte in its first line; a text proof has
+    neither."""
+    left = nbytes
+    head = b""
+    last = b""
+    with open(proof, "rb") as src, open(out, "wb") as dst:
+        while left is None or left > 0:
+            block = src.read(1 << 22 if left is None else min(1 << 22, left))
+            if not block:
+                if left:
+                    raise ValueError("the proof is shorter than --proof-bytes")
+                break
+            if len(head) < (1 << 16):
+                head += block[: (1 << 16) - len(head)]
+            dst.write(block)
+            last = block[-1:]
+            if left is not None:
+                left -= len(block)
+        binary = head[:1] == b"a" or b"\0" in head
+        if binary:
+            dst.write(b"a\0")
+        else:
+            if last not in (b"", b"\n"):
+                dst.write(b"\n")
+            dst.write(b"0\n")
+
+
+def check_unsat(cnf, proof, timeout: float = 3600.0, workdir=None, units=None, proof_bytes=None) -> str:
+    """`units` (a list of literals, possibly empty) asks for an answer under
+    assumptions: see the module text."""
     cnf, proof = Path(cnf), Path(proof)
     if not proof.is_file():
         return "no-proof"
+    if units is None and proof_bytes is not None:
+        return "checker-error:proof bytes without units"
     drat = find_drat_trim()
     pbp = Path(str(proof) + ".pbp")
     derived = Path(str(proof) + ".derived.cnf")
@@ -243,6 +315,12 @@ def check_unsat(cnf, proof, timeout: float = 3600.0, workdir=None) -> str:
                 return "FAIL:derived clauses without a VeriPB proof"
             with tempfile.TemporaryDirectory(prefix="proof-gate-", dir=workdir) as d:
                 plain = str(cnf)
+                if units is not None:
+                    plain = os.path.join(d, "fu.cnf")
+                    with_units(cnf, plain, units)
+                    cut = os.path.join(d, "cut.drat")
+                    cut_proof(proof, cut, proof_bytes)
+                    return run_drat(drat, plain, cut, timeout, " under the assumptions")
                 if plain.endswith((".xz", ".gz")):
                     plain = os.path.join(d, "f.cnf")
                     with open_cnf(cnf) as src, open(plain, "wb") as dst:
@@ -254,10 +332,21 @@ def check_unsat(cnf, proof, timeout: float = 3600.0, workdir=None) -> str:
         if not derived.is_file():
             return "FAIL:VeriPB proof without the derived clauses"
         with tempfile.TemporaryDirectory(prefix="proof-gate-", dir=workdir) as d:
+            # the VeriPB stage sees the formula as it is, never the units
             verdict, fp_cnf = veripb_stage(cnf, pbp, derived, veripb, timeout, d)
+            if units is None:
+                if verdict:
+                    return verdict
+                return run_drat(drat, fp_cnf, proof, timeout, " of the extended formula")
+            if verdict == "ok":
+                return "ok"   # the structure proof refutes the formula itself
             if verdict:
                 return verdict
-            return run_drat(drat, fp_cnf, proof, timeout, " of the extended formula")
+            fu = os.path.join(d, "fprime-units.cnf")
+            with_units(fp_cnf, fu, units)
+            cut = os.path.join(d, "cut.drat")
+            cut_proof(proof, cut, proof_bytes)
+            return run_drat(drat, fu, cut, timeout, " of the extended formula under the assumptions")
     except subprocess.TimeoutExpired:
         return "checker-timeout"
     except MalformedCnf as e:
@@ -300,8 +389,16 @@ def main(argv) -> int:
     ap.add_argument("cnf")
     ap.add_argument("proof")
     ap.add_argument("--timeout", type=float, default=3600.0)
+    ap.add_argument("--units", default=None, metavar="LITS",
+                    help="an answer under assumptions: the failed core's literals, space-separated "
+                         "(an empty string for an empty core)")
+    ap.add_argument("--proof-bytes", type=int, default=None,
+                    help="with --units: use only this many bytes of the DRAT file")
     args = ap.parse_args(argv)
-    r = check_unsat(args.cnf, args.proof, args.timeout)
+    units = None if args.units is None else [int(t) for t in args.units.split()]
+    if units is not None and 0 in units:
+        ap.error("--units takes literals, not 0")
+    r = check_unsat(args.cnf, args.proof, args.timeout, units=units, proof_bytes=args.proof_bytes)
     print(r)
     return 0 if r == "ok" else 1
 
