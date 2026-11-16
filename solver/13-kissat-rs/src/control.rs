@@ -1064,6 +1064,8 @@ pub fn split(solver: &mut Solver) -> i32 {
         // set when stage 1 already gave the case its whole limit: then it
         // is a case without an answer, and no sub-solver follows
         let mut spent_whole = false;
+        // the work of loading the case solver, when this case caused it
+        let mut loading_here: u64 = 0;
         if two_stage && !second {
             // an earlier core that this case holds refutes it too: its
             // clause not-u contains the core's clause
@@ -1082,6 +1084,7 @@ pub fn split(solver: &mut Solver) -> i32 {
                     Ok((sub, loading)) => {
                         case_solver = Some(sub);
                         // the load is work already done, out of this limit
+                        loading_here = loading;
                         limit = limit.saturating_sub(loading);
                         if limit == 0 {
                             nodes[n].status = 3;
@@ -1104,6 +1107,10 @@ pub fn split(solver: &mut Solver) -> i32 {
             solver.control.stage1_cases += 1;
             let before = solver.statistics.work_clock();
             let limit1 = stage1_limit.min(limit);
+            crate::print::very_verbose(
+                solver,
+                format_args!("control split: case {} is asked of the case solver within {} work", order, limit1),
+            );
             let answer = stage1(solver, case_solver.as_mut().unwrap(), max_var, &units, limit1);
             match answer {
                 Stage1::Unsat => {
@@ -1147,8 +1154,9 @@ pub fn split(solver: &mut Solver) -> i32 {
                         spent_whole = true;
                     } else if order >= 2 {
                         // a sub-solver of its own, once every case had its
-                        // try here, with what is left of its limit
-                        nodes[n].tried = used;
+                        // try here, with what is left of its limit: its try
+                        // and, if it caused one, the load of the case solver
+                        nodes[n].tried = used.saturating_add(loading_here);
                         waiting.push_back(n);
                         continue;
                     } else {
@@ -1168,6 +1176,10 @@ pub fn split(solver: &mut Solver) -> i32 {
             if let Some(sub) = case_solver.take() {
                 crate::internal::release(*sub);
             }
+            crate::print::very_verbose(
+                solver,
+                format_args!("control split: case {} gets {} work in a sub-solver", order, limit),
+            );
             solve_case(solver, &formula, max_var, &units, limit)
         };
         match answer {

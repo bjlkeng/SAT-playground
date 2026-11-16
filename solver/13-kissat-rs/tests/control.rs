@@ -374,6 +374,50 @@ fn two_stage_keeps_to_its_limits() {
 }
 
 #[test]
+fn two_stage_a_waiting_case_pays_for_the_load_it_caused() {
+    // Review round 3.  Stage 1 answers nothing here (a hundredth of a load),
+    // so every case goes on to a sub-solver.  The first two go at once, and
+    // each time the case solver is released; the third case therefore loads
+    // it again, and then waits.  That load came out of its limit, and must
+    // not be given back when its sub-solver starts.
+    let fx = Fixture::new("control_two_stage_reload");
+    let cnf = fx.path("r.cnf");
+    random_3sat(200, 4.8, 11, &cnf);
+    let load: u64 = 4 * 960;
+    let case_limit: u64 = 10_000;
+    let r = run(
+        &cnf,
+        &[
+            "--verbose=2", "--ctlsplit=2", "--ctlsplitassume=1", "--ctlsplitbits=3", "--ctlsplitlevels=1",
+            "--ctlsplitassumeload=1", "--ctlsplitcase=10",
+        ],
+        &[("SAT_CTL_VARS", VARS)],
+    );
+    let line = control_line(&r.stdout, "ctlsplit=");
+    assert_eq!(stage1_value(line, "s1loads"), 3, "{}", line);
+    assert_eq!(stage1_value(line, "s1open"), 8, "{}", line);
+    // "c control split: case <order> gets <limit> work in a sub-solver"
+    let granted: std::collections::HashMap<u64, u64> = r
+        .stdout
+        .lines()
+        .filter(|l| l.contains("control split: case ") && l.contains(" work in a sub-solver"))
+        .map(|l| {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            let at = w.iter().position(|x| *x == "case").unwrap();
+            (w[at + 1].parse().unwrap(), w[at + 3].parse().unwrap())
+        })
+        .collect();
+    assert_eq!(granted.len(), 8, "{:?}", granted);
+    for order in 0..3u64 {
+        // these three each paid a load of the case solver
+        assert!(granted[&order] <= case_limit - load, "case {} got {} after paying a load of {}", order, granted[&order], load);
+    }
+    for order in 3..8u64 {
+        assert!(granted[&order] <= case_limit && granted[&order] > case_limit - load, "case {}: {}", order, granted[&order]);
+    }
+}
+
+#[test]
 fn two_stage_counts_the_propagation_of_the_load() {
     // Review round 2.  One unit clause at the head of a chain of 20,000
     // implications: adding the formula to the case solver propagates the

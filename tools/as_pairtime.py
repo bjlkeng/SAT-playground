@@ -112,23 +112,26 @@ def main():
         cnfs = dict(zip(stems, ex.map(lambda s: unpack(s, scratch), stems)))
 
     load = []
-    pairs = QUIET_PAIRS
-    if args.load:
-        pairs = LOAD_PAIRS
-        lb = os.path.abspath(args.load_binary) if args.load_binary else a
-        lcnf = cnfs.get(LOAD_CELL) or unpack(LOAD_CELL, scratch)
-        for core in LOAD_CORES[:args.load]:
-            # a loop in a shell, so the load lasts as long as the measurement
-            p = subprocess.Popen(
-                ["bash", "-c", f'while :; do "{lb}" -n -q "{lcnf}" >/dev/null 2>&1; done'],
-                preexec_fn=lambda c=core: (os.setsid(), os.sched_setaffinity(0, {c})))
-            load.append(p)
-        print(f"[as_pairtime] {len(load)} background runs started on cores "
-              f"{LOAD_CORES[0]}-{LOAD_CORES[len(load) - 1]}", flush=True)
-        time.sleep(20)  # let them get past parsing
-
+    pairs = LOAD_PAIRS if args.load else QUIET_PAIRS
     rows = []
+    # The background runs are endless loops in sessions of their own, so they
+    # are started inside the block whose `finally` stops them: an interrupt
+    # during the warm-up, or a failure to start one, must not leave them
+    # running (review round 3).
     try:
+        if args.load:
+            lb = os.path.abspath(args.load_binary) if args.load_binary else a
+            lcnf = cnfs.get(LOAD_CELL) or unpack(LOAD_CELL, scratch)
+            for core in LOAD_CORES[:args.load]:
+                # a loop in a shell, so the load lasts as long as the measurement
+                p = subprocess.Popen(
+                    ["bash", "-c", f'while :; do "{lb}" -n -q "{lcnf}" >/dev/null 2>&1; done'],
+                    preexec_fn=lambda c=core: (os.setsid(), os.sched_setaffinity(0, {c})))
+                load.append(p)
+            print(f"[as_pairtime] {len(load)} background runs started on cores "
+                  f"{LOAD_CORES[0]}-{LOAD_CORES[len(load) - 1]}", flush=True)
+            time.sleep(20)  # let them get past parsing
+
         def cell_job(item):
             slot, stem = item
             ca, cb = pairs[slot]
