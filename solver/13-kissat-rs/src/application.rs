@@ -1000,6 +1000,25 @@ fn run_inccnf(solver: &mut Solver, app: &mut App) -> i32 {
     if !write_proof(solver, app) {
         return 1;
     }
+    {
+        // The structure stage is off here, and it is the one that removes an
+        // earlier run's `.pbp` and `.derived.cnf` at this proof path.  Left
+        // in place they would mislead the gate, which would check the old
+        // structure proof against this run's answers.  With every structure
+        // option off its `run` does just that removal (never a file this
+        // run owns).
+        let owned: Vec<(&str, String)> = [("input", &app.input_path), ("proof", &app.proof_path)]
+            .iter()
+            .filter_map(|(what, p)| p.as_ref().map(|p| (*what, p.clone())))
+            .collect();
+        let taken: Vec<(&str, &str)> = owned.iter().map(|(w, p)| (*w, p.as_str())).collect();
+        let proof_path = app.proof_path.clone();
+        if let Err(text) = crate::structure::run(solver, proof_path.as_deref(), &taken) {
+            crate::error::error(format_args!("{}", text));
+            close_proof(solver, app);
+            return 1;
+        }
+    }
     let entered = crate::resources::process_time();
     crate::print::section(solver, "parsing");
     crate::print::message(solver, "opened and reading incremental CNF file:");

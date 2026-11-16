@@ -25,12 +25,17 @@ Modes:
              question, the assumptions written as unit clauses
   run        the solver's test mode (--inccnf=1): one run per formula, every
              question answered by the same solver
+  split      the control split in two stages (--ctlsplit=1 --ctlsplitassume=1)
+             on a plain formula with a random control set and random limits:
+             the answer against the oracle, the model, the proof through the
+             gate
 
 usage:
   assume_fuzz.py selftest
   assume_fuzz.py units --solver BIN [--count 200] [--seed 1] [--proof] [--cross]
   assume_fuzz.py run   --solver BIN [--count 200] [--seed 1] [--proof] [--cross]
                        [--options '--assumeconflicts=1'] [--limited]
+  assume_fuzz.py split --solver BIN [--count 200] [--seed 1] [--proof]
 """
 
 import argparse
@@ -441,6 +446,18 @@ def check_run_case(solver, f, questions, workdir, frozen, want_proof, cross, opt
     bad = []
     if stats is not None:
         stats.append(counters)
+    # A question that comes back UNKNOWN must have used its limit: one with
+    # no work at all was stopped by something left over from the question
+    # before (review round 1: a stop flag raised in preprocessing).  The
+    # solver prints what each question cost unless it runs with -q.
+    work = {}
+    for line in p.stdout.splitlines():
+        if line.startswith("c question "):
+            tok = line.split()
+            work[int(tok[2])] = int(tok[4])
+    for ans in answers:
+        if ans["status"] == "UNKNOWN" and work.get(ans["number"]) == 0 and "--assumeconflicts=0" not in options:
+            bad.append(f"question {ans['number']}: UNKNOWN with no work done")
     if len(answers) != len(questions):
         bad.append(f"{len(answers)} answers for {len(questions)} questions")
     for i, (q, ans) in enumerate(zip(questions, answers)):
@@ -451,6 +468,77 @@ def check_run_case(solver, f, questions, workdir, frozen, want_proof, cross, opt
         for why in check_answer(f, oracle, q, ans, limited, cnf, proof if want_proof else None):
             bad.append(f"question {i + 1} {q}: {why}")
     return bad
+
+
+STOCK = ("--structsym=0 --structparity=0 --structcount=0 --structarith=0 --structsort=0 --structdiv=0 "
+         "--structdd=0 --gauss=0 --card=0 --structpoints=0 --freewalk=0").split()
+
+
+def check_split_case(solver, f, rng, workdir, frozen, want_proof, cross, options, stats=None):
+    """One run of the split on the plain formula. The control set, the bits a
+    level, the levels and both limits are drawn at random, so that stage 1
+    answers everything in some runs and nothing in others, cases are split
+    again, and some splits give up and leave the search to finish."""
+    oracle = Oracle(f, workdir, frozen, cross)
+    cnf = os.path.join(workdir, "case.cnf")
+    with open(cnf, "w") as fh:
+        fh.write(f.dimacs())
+    proof = os.path.join(workdir, "case.proof")
+    for p in (proof, proof + ".pbp", proof + ".derived.cnf"):
+        if os.path.exists(p):
+            os.remove(p)
+    used = sorted({abs(l) for c in f.clauses for l in c})
+    count = min(len(used), rng.choice([2, 3, 4, 6, 9]))
+    control = rng.sample(used, count)
+    two_stage = rng.random() < 0.85
+    opts = ["--ctlsplit=1", f"--ctlsplitassume={1 if two_stage else 0}",
+            f"--ctlsplitbits={rng.choice([1, 2, 3])}", f"--ctlsplitlevels={rng.choice([1, 2, 3])}",
+            "--ctlsplitratio=100000", f"--ctlsplitassumeload={rng.choice([1, 20, 100, 100000])}",
+            f"--ctlsplitcase={rng.choice([2, 20, 200, 100000])}"]
+    if rng.random() < 0.5:
+        opts = STOCK + opts
+    env = dict(os.environ)
+    env["SAT_CTL_VARS"] = ",".join(map(str, control))
+    cmd = [solver] + opts + options + [cnf] + ([proof] if want_proof else [])
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=600, env=env)
+    status = "none"
+    model = []
+    done = False
+    line = ""
+    for out in p.stdout.splitlines():
+        if out.startswith("s "):
+            status = out[2:].strip()
+        elif out.startswith("v "):
+            for t in out.split()[1:]:
+                if t == "0":
+                    done = True
+                else:
+                    model.append(int(t))
+        elif out.startswith("c control ctlsplit="):
+            line = out
+    if stats is not None and line:
+        counters = {}
+        for tok in line.split()[2:]:
+            k, _, v = tok.partition("=")
+            if v.isdigit():
+                counters["split_" + k] = int(v)
+            elif k == "status":
+                counters["status_" + v] = 1
+        stats.append(counters)
+    what = f"control {control} options {' '.join(opts[-7:])}: "
+    truth = oracle.sat([])
+    if status not in ("SATISFIABLE", "UNSATISFIABLE"):
+        return [what + f"status {status!r} (exit {p.returncode})"]
+    if (status == "SATISFIABLE") != truth:
+        return [what + f"answered {status}, the oracle says otherwise ({line})"]
+    if status == "SATISFIABLE":
+        ans = {"status": status, "model": model, "model_done": done, "core": None, "proof_bytes": None}
+        return [what + why for why in check_answer(f, oracle, [], ans)]
+    if want_proof:
+        verdict = proof_gate.check_unsat(cnf, proof, timeout=300)
+        if verdict != "ok":
+            return [what + f"the proof does not check: {verdict} ({line})"]
+    return []
 
 
 def cmd_fuzz(args):
@@ -490,6 +578,8 @@ def cmd_fuzz(args):
         try:
             if args.cmd == "units":
                 bad = check_units_case(solver, f, qs, wd, frozen, args.proof, args.cross, options)
+            elif args.cmd == "split":
+                bad = check_split_case(solver, f, rng, wd, frozen, args.proof, args.cross, options, counters)
             else:
                 bad = check_run_case(solver, f, qs, wd, frozen, args.proof, args.cross, options, args.limited,
                                      counters)
@@ -516,7 +606,8 @@ def cmd_fuzz(args):
                 for why in bad[:6]:
                     print(f"    {why}")
                 sys.stdout.flush()
-    print(f"{args.cmd}: {stats['formulas']} formulas, {stats['questions']} questions, "
+    asked = f"{stats['questions']} questions, " if args.cmd != "split" else ""
+    print(f"{args.cmd}: {stats['formulas']} formulas, {asked}"
           f"{stats['failed']} formulas with a wrong answer, {stats['oracle']} oracle failures "
           f"(seed {args.seed}, proofs {'checked' if args.proof else 'not checked'}, "
           f"oracles: truth table up to {TABLE_MAX} variables, kissat, cadical"
@@ -615,8 +706,13 @@ def cmd_selftest(_args):
         expect(empty_core(wrong, 9), "does not check", "a proof with a lemma that does not follow")
         expect(empty_core(lemma, 99), "does not check", "a `p` line past the end of the proof")
 
-        # the proof gate's own path with a VeriPB file is exercised by the
-        # solver's tests once a pass runs under assumptions (step 3)
+        # a core next to a structure proof is refused: that proof keeps the
+        # formula's satisfiability, not the formula's under the assumptions
+        shutil.copy(good_proof, os.path.join(d, "side.drat"))
+        open(os.path.join(d, "side.drat.pbp"), "w").write("pseudo-Boolean proof version 3.0\nf 3 ;\n")
+        open(os.path.join(d, "side.drat.derived.cnf"), "w").write("p cnf 6 0\n")
+        expect(unsat([1, 2, 3], proof=os.path.join(d, "side.drat")), "together with a structure proof",
+               "a core next to a structure proof")
 
         # the output parser
         text = "c x\nq 1 UNSATISFIABLE\nf 1 2 0\np 37\nq 2 SATISFIABLE\nv 1 -2\nv 3 0\np 37\nq 3 UNKNOWN\nq 4 UNSATISFIABLE\nf 0\n"
@@ -651,7 +747,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("selftest").set_defaults(func=cmd_selftest)
-    for name in ("units", "run"):
+    for name in ("units", "run", "split"):
         p = sub.add_parser(name)
         p.add_argument("--solver", required=True)
         p.add_argument("--count", type=int, default=200)

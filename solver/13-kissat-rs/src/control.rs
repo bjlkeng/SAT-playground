@@ -220,6 +220,9 @@ struct Node {
     status: u8,
     /// How many cases were started before this one.
     order: u64,
+    /// The work its try in the case solver took (two stages): it comes out
+    /// of the case's limit when a sub-solver follows.
+    tried: u64,
 }
 
 /// Keep the formula the search will see (derived clauses, then the input),
@@ -958,7 +961,7 @@ pub fn split(solver: &mut Solver) -> i32 {
     let case_limit = (solver.options.ctlsplitcase as u64).saturating_mul(1000);
     let budget = (solver.options.ctlsplitticks as u64).saturating_mul(1000);
     let w0 = solver.statistics.work_clock();
-    let mut nodes: Vec<Node> = vec![Node { units: Vec::new(), level: 0, pos: 0, bits: Vec::new(), children: Vec::new(), status: 2, order: 0 }];
+    let mut nodes: Vec<Node> = vec![Node { units: Vec::new(), level: 0, pos: 0, bits: Vec::new(), children: Vec::new(), status: 2, order: 0, tried: 0 }];
     let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
     // split node `n` on the next bits; false when no bits are left
     let expand = |nodes: &mut Vec<Node>, queue: &mut std::collections::VecDeque<usize>, n: usize| -> bool {
@@ -975,7 +978,7 @@ pub fn split(solver: &mut Solver) -> i32 {
                 units.push(if (w >> i) & 1 == 1 { b } else { -b });
             }
             let id = nodes.len();
-            nodes.push(Node { units, level, pos: end, bits: Vec::new(), children: Vec::new(), status: 0, order: 0 });
+            nodes.push(Node { units, level, pos: end, bits: Vec::new(), children: Vec::new(), status: 0, order: 0, tried: 0 });
             nodes[n].children.push(id);
             queue.push_back(id);
         }
@@ -1012,7 +1015,8 @@ pub fn split(solver: &mut Solver) -> i32 {
             stopped = "stopped";
             break;
         }
-        let mut limit = case_limit.min(budget - spent);
+        // (a case that waited for its sub-solver has used part of its limit)
+        let mut limit = case_limit.saturating_sub(nodes[n].tried).min(budget - spent);
         if solver.limited.ticks {
             let left = solver.limits.ticks.saturating_sub(solver.statistics.work_clock());
             limit = limit.min(left);
@@ -1064,7 +1068,12 @@ pub fn split(solver: &mut Solver) -> i32 {
             }
             if case_solver.is_none() {
                 match load_case_solver(solver, &formula, &vars, limit) {
-                    Ok(sub) => case_solver = Some(sub),
+                    Ok(sub) => {
+                        case_solver = Some(sub);
+                        // the load is work already done, out of this limit
+                        // (it is smaller than the limit, or the load failed)
+                        limit -= literals;
+                    }
                     Err(Case::NoBudget) => {
                         nodes[n].status = 3;
                         stopped = "budget";
@@ -1123,7 +1132,8 @@ pub fn split(solver: &mut Solver) -> i32 {
                         spent_whole = true;
                     } else if order >= 2 {
                         // a sub-solver of its own, once every case had its
-                        // try here
+                        // try here, with what is left of its limit
+                        nodes[n].tried = used;
                         waiting.push_back(n);
                         continue;
                     } else {

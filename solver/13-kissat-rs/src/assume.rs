@@ -245,6 +245,14 @@ pub fn solve(solver: &mut Solver) -> i32 {
     }
 
     arm_limits(solver);
+    // A work limit raises the stop flag, and the search clears it when it
+    // stops.  But a solve can end before its search starts (the limit is
+    // reached in preprocessing), and then the flag would still be up: the
+    // next solve would answer "unknown" at once, with a fresh limit and no
+    // work done.  So the flag is cleared here.  A real stop is remembered
+    // in `stopped`, which is read after the clearing: an alarm that falls
+    // between the two is seen either way.
+    solver.termination.flagged.store(false, Ordering::SeqCst);
     let over = solver.assume.exhausted
         || run_limit_reached(solver)
         || solver.termination.stopped.load(Ordering::SeqCst);

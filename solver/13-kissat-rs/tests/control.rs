@@ -335,6 +335,45 @@ fn two_stage_leaves_the_search_alone() {
 }
 
 #[test]
+fn two_stage_keeps_to_its_limits() {
+    // Review round 1: loading the case solver is work that comes out of the
+    // limit, and a case that waited for its sub-solver has only what its
+    // try in the case solver left of its limit.
+    let fx = Fixture::new("control_two_stage_limit");
+    let cnf = fx.path("r.cnf");
+    random_3sat(200, 4.8, 11, &cnf);
+    let load: u64 = 4 * 960; // 960 clauses of three literals and a zero
+    // the run's work limit, from far above the load down to just above it
+    for limit in [2_000_000u64, 100_000, 3 * load, load + load / 20] {
+        let r = run(
+            &cnf,
+            &["--ctlsplit=1", "--ctlsplitassume=1", "--ctlsplitbits=3", "--ctlsplitratio=100000"],
+            &[("SAT_CTL_VARS", VARS), ("SAT_LIMIT_TICKS", &limit.to_string())],
+        );
+        assert!(r.status == "UNKNOWN" || r.status == "UNSATISFIABLE", "{}", r.status);
+        // a run stops at the next poll past the limit: the same slack as
+        // the one-stage split has
+        assert!(r.work() <= limit + limit / 2, "work {} against the limit {}", r.work(), limit);
+    }
+    // the case limit: every case of the probe gets both stages, and in all
+    // they stay within one case limit a case (plus the loads)
+    let case_k: u64 = 60;
+    let r = run(
+        &cnf,
+        &[
+            "--ctlsplit=2", "--ctlsplitassume=1", "--ctlsplitbits=3", "--ctlsplitlevels=1", "--ctlsplitassumeload=1000",
+            &format!("--ctlsplitcase={}", case_k),
+        ],
+        &[("SAT_CTL_VARS", VARS)],
+    );
+    let line = control_line(&r.stdout, "ctlsplit=");
+    assert!(line.contains("cases=8 "), "{}", line);
+    assert!(stage1_value(line, "s1open") > 0, "the test needs cases that go on to a sub-solver: {}", line);
+    let work = stage1_value(line, "work");
+    assert!(work <= 8 * case_k * 1000 * 11 / 10, "split work {} against eight case limits of {}K: {}", work, case_k, line);
+}
+
+#[test]
 fn two_stage_on_the_rotator() {
     let fx = Fixture::new("control_two_stage_rot");
     let cnf = rotmiter();

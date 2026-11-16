@@ -378,6 +378,63 @@ fn the_runs_limits_hold_across_questions() {
 }
 
 #[test]
+fn a_limit_reached_before_the_search_starts() {
+    // Review round 1.  A question without assumptions runs the first
+    // preprocessing, and a tiny work limit is reached inside it, before the
+    // search starts.  The stop flag the limit raised must not reach the next
+    // question: it has a limit of its own and must get to use it.
+    let fx = Fixture::new("assume-early-limit");
+    let mut rng = Lcg(5);
+    let clauses = random_3sat(&mut rng, 300, 1260);
+    let questions = vec![vec![], vec![], vec![1, -2], vec![]];
+    let icnf = fx.path("r.icnf");
+    write_icnf(&icnf, &clauses, &questions);
+    let (code, stdout) = run_icnf(&icnf, None, &["--lucky=0", "--assumeticks=1"], &[]);
+    assert_eq!(code, 0, "{}", stdout);
+    let got = answers(&stdout);
+    assert_eq!(got.len(), 4);
+    let work: Vec<u64> = stdout
+        .lines()
+        .filter(|l| l.starts_with("c question "))
+        .map(|l| l.split_whitespace().nth(4).unwrap().parse().unwrap())
+        .collect();
+    assert_eq!(work.len(), 4, "{}", stdout);
+    for (i, w) in work.iter().enumerate() {
+        assert!(*w > 0, "question {} came back with no work done: {:?}\n{}", i + 1, work, stdout);
+    }
+}
+
+#[test]
+fn old_side_files_of_the_proof_path_are_removed() {
+    // Review round 1.  The proof path was used before by a run whose
+    // structure pass left a .pbp and a .derived.cnf next to it.  The test
+    // mode writes neither; left in place they would make the gate check the
+    // old structure proof against this run's answer.
+    let fx = Fixture::new("assume-sidecars");
+    let clauses = vec![vec![-1i64]];
+    let questions = vec![vec![1i64]];
+    let (icnf, cnf, proof) = (fx.path("u.icnf"), fx.path("u.cnf"), fx.path("u.proof"));
+    write_icnf(&icnf, &clauses, &questions);
+    write_cnf(&cnf, 1, &clauses);
+    let pbp = fx.path("u.proof.pbp");
+    let derived = fx.path("u.proof.derived.cnf");
+    std::fs::write(&pbp, "pseudo-Boolean proof version 3.0\nf 99 ;\n").unwrap();
+    std::fs::write(&derived, "p cnf 1 1\n1 0\n").unwrap();
+    let (code, stdout) = run_icnf(&icnf, Some(&proof), &["-q"], &[]);
+    assert_eq!(code, 0, "{}", stdout);
+    assert!(!pbp.exists() && !derived.exists(), "the earlier run's side files are gone");
+    let got = answers(&stdout);
+    assert_eq!(got[0].status, "UNSATISFIABLE");
+    assert_eq!(got[0].core, Some(vec![1]));
+    assert_eq!(gate_units(&cnf, &proof, &[1], got[0].proof_bytes.unwrap()), "ok");
+    // and the gate itself refuses a core next to a structure proof: that
+    // proof may have cut off the very model the assumptions ask for
+    std::fs::write(&pbp, "pseudo-Boolean proof version 3.0\nf 1 ;\n").unwrap();
+    std::fs::write(&derived, "p cnf 1 0\n").unwrap();
+    assert!(gate_units(&cnf, &proof, &[1], got[0].proof_bytes.unwrap()).starts_with("FAIL:a failed core cannot"));
+}
+
+#[test]
 fn a_time_limit_stops_the_rest_of_the_run() {
     let fx = Fixture::new("assume-time");
     // eleven holes: far beyond a second of search

@@ -20,11 +20,22 @@ i, duplicates and tautologies included).
 
 An answer under assumptions (epic SAT-playground-bp3): `--units "1 -2 3"`
 gives the failed core. The claim is then "the formula plus these literals is
-unsatisfiable". The VeriPB stage is unchanged: its proof numbers the input's
-clauses, so nothing may be added to the formula there. The units join at the
-drat-trim stage only, and the proof there is the DRAT file (its first
-`--proof-bytes` bytes, the solver prints that number with each answer) with
-the empty clause added at the end.
+unsatisfiable". It is checked with drat-trim on the formula plus one unit
+clause per literal, against the DRAT file (its first `--proof-bytes` bytes,
+the solver prints that number with each answer) with the empty clause added
+at the end.
+
+A core together with a structure proof (`<proof>.pbp`) is refused. That proof
+only shows that the extended formula is satisfiable if the input is; a pass
+such as symmetry breaking cuts off models, and one of them may be the model
+that satisfies the assumptions. (Four pigeons, five holes: symmetry derives
+"pigeon 1 is not in hole 1", and with that clause the claim "the formula plus
+'pigeon 1 in hole 1' is unsatisfiable" would pass, though it is false.) The
+solver writes no structure proof in a run with assumptions, so nothing is
+lost; a check that the derived clauses hold under the assumptions comes with
+the passes themselves (plan/assumptions-plan.md, step 3). An empty core is
+the plain claim "the formula is unsatisfiable" and goes through both stages
+as always.
 
 As a module: `check_unsat(cnf, proof, timeout) -> str` returns ok | FAIL:<why>
 | no-proof | no-checker | checker-timeout | checker-error.
@@ -326,27 +337,25 @@ def check_unsat(cnf, proof, timeout: float = 3600.0, workdir=None, units=None, p
                     with open_cnf(cnf) as src, open(plain, "wb") as dst:
                         shutil.copyfileobj(src, dst)
                 return run_drat(drat, plain, proof, timeout)
+        if units:
+            # the structure proof keeps satisfiability of the formula, not of
+            # the formula under these literals (see the module text)
+            return "FAIL:a failed core cannot be checked together with a structure proof"
         veripb = find_veripb()
         if not veripb or not drat:
             return "no-checker"
         if not derived.is_file():
             return "FAIL:VeriPB proof without the derived clauses"
         with tempfile.TemporaryDirectory(prefix="proof-gate-", dir=workdir) as d:
-            # the VeriPB stage sees the formula as it is, never the units
             verdict, fp_cnf = veripb_stage(cnf, pbp, derived, veripb, timeout, d)
-            if units is None:
-                if verdict:
-                    return verdict
-                return run_drat(drat, fp_cnf, proof, timeout, " of the extended formula")
-            if verdict == "ok":
-                return "ok"   # the structure proof refutes the formula itself
             if verdict:
                 return verdict
-            fu = os.path.join(d, "fprime-units.cnf")
-            with_units(fp_cnf, fu, units)
+            if units is None:
+                return run_drat(drat, fp_cnf, proof, timeout, " of the extended formula")
+            # an empty core: the formula itself, with the proof cut at the answer
             cut = os.path.join(d, "cut.drat")
             cut_proof(proof, cut, proof_bytes)
-            return run_drat(drat, fu, cut, timeout, " of the extended formula under the assumptions")
+            return run_drat(drat, fp_cnf, cut, timeout, " of the extended formula")
     except subprocess.TimeoutExpired:
         return "checker-timeout"
     except MalformedCnf as e:
