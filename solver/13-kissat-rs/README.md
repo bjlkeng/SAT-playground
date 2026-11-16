@@ -7516,6 +7516,306 @@ The first level's estimate (its cases' work, scaled to all 64 cases) is below P 
   - A checker finds by propagation itself every unit that propagation gave, so those can be left out. The learned units must stay: the bits alone do not reach the conflict. Bead `SAT-playground-d96.8.8`.
   - On the rotator toy they are 4,840 of the split's 55,747 lines; there the shortened clauses are most of the proof.
 
+## Assumptions: one solver asked again and again (2026-11-15; epic `SAT-playground-bp3`, branch `assumptions`)
+
+**What it is.** Until now the solver answered one question per run. With
+assumptions it can be asked many questions about the same formula: "is it
+satisfiable with these literals true, for now?" It answers, takes the
+literals back, and keeps what it learned. An answer is SAT with a model, UNSAT
+with a **failed core** (a subset of the assumptions that cannot hold together
+with the formula), or unknown at a limit. The plan is
+`plan/assumptions-plan.md`. The first user will be the control split (step 5):
+measured before this was built, 352 of 384 split cases fall without a fresh
+solver ("Cases without the clean-up", above).
+
+**A worked example.** Three clauses: `(not a or x)`, `(not b or not x or y)`,
+`(not c or not y)`. Asked under `a, b, d, c`:
+
+| step | the solver | what follows |
+|---|---|---|
+| level 1 | decides `a` | `x` |
+| level 2 | decides `b` | `y`, then `not c` |
+| level 3 | decides `d` | nothing |
+| level 4 | wants `c`, but `c` is false | UNSAT |
+
+It walks back from `not c` through the reasons and finds the core `a, b, c`.
+`d` is not in it. The proof gains the clause `(not a or not b or not c)`.
+Asked next under `a, b`, the same solver answers SAT. As a test file:
+
+    p inccnf
+    -1 5 0
+    -2 -5 6 0
+    -3 -6 0
+    a 1 2 4 3 0
+    a 1 2 0
+
+    $ sat-solver --inccnf=1 -q toy.icnf toy.proof
+    q 1 UNSATISFIABLE
+    f 1 2 3 0
+    p 5
+    q 2 SATISFIABLE
+    v 1 2 -3 4 5 6 0
+    p 5
+
+`f` is the failed core, `v` the model, `p` the bytes of the proof file so
+far. `tools/proof_gate.py toy.cnf toy.proof --units "1 2 3" --proof-bytes 5`
+answers `ok`; with `--units "1 3"` (a wrong core) it answers `FAIL`.
+
+**How it works** (`src/assume.rs`).
+
+- Assumption `i` belongs to decision level `i`. Before a free decision the
+  search looks whether its level is below the number of assumptions. If so
+  the next assumption is handled: decided when free; given a level with
+  nothing on it when already true; and when already false the solve ends and
+  the trail is walked back to the assumptions that forced it.
+- With no assumptions that number is zero. One comparison per decision is
+  all that was added to the search's path.
+- A restart keeps the assumption levels. A backjump below them is followed
+  by deciding them again.
+- A variable can be assumed only while it is **frozen**: never eliminated,
+  never replaced by an equivalent one. The mark is a spare bit of the
+  variable's flags, read where the parity engine's columns were already
+  protected.
+- A later solve goes on where the last one stopped: clauses, scores, phases,
+  averages, the mode, every schedule and the random stream are kept. The
+  run's own limits (`--conflicts`, `--decisions`, `SAT_LIMIT_TICKS`) hold
+  across solves; a `--time` stop holds for the rest of the run.
+- In a solve under assumptions these wait: elimination, substitution,
+  sweeping, congruence, factor, lucky and the first preprocessing. A solver
+  that has the parity engine, the count engine or the free-choice walk
+  refuses assumptions, and so does the RL policy. Step 3 brings them back
+  one at a time.
+
+**The test mode.** `--inccnf=1` reads the incremental CNF format (the header
+`p inccnf`, clauses, then one `a` line per question) and prints one block per
+question, as above. `--assumeconflicts=N` and `--assumeticks=N` (thousands)
+limit one question. No `s` line is printed in this mode.
+
+**Checked.**
+
+- **Off means off.** Main's build and the branch's final build (sha256
+  `b59ec0e8`, steps 2 and 5 together, after the review) were run over the
+  same cells under work limits and compared field by field: the answer, the
+  work-clock line, the `-s` counters, the output without times, the model,
+  and the sha256 of every proof file.
+
+  | set | cells | identical |
+  |---|---|---|
+  | stock path, `tests/cnf` | 9 | 9 |
+  | stock path, 100 medium cells, 2G work | 100 | 100 |
+  | shipped defaults, 100 medium cells, 10G work | 100 | 100 |
+  | shipped defaults with `--ctlsplit=1`, the same cells and three more oisc cells, 10G work | 103 | 103 |
+
+  That is 312 DRAT files and 170 VeriPB files with equal hashes. Three passes
+  of main's own build agree the same way, so a difference would have been a
+  real one. Peak memory is the same too (the middle cell's ratio is 1.000,
+  nine cells in ten within 0.96 to 1.02). `tools/parity.py --corpus default
+  --phases` is 9/9 against the C kissat. Tables and method:
+  `benchmarks/assumptions/`.
+- **Answers.** `tools/assume_fuzz.py` makes small formulas with question
+  lists built to stress a freeze (gate outputs, equivalent variables, pure
+  ones, fixed ones, unused ones, a literal twice, a literal with its
+  negation). The right answer comes from a truth table up to 20 variables,
+  else from the C kissat, CaDiCaL 2.1.3 and main's frozen build, which must
+  agree. Every model is checked against the clauses and the assumptions,
+  every core against the same oracle, every UNSAT proof through the gate.
+  On the final build (sha256 `b59ec0e8`, after the review): 13 option sets
+  of 300 formulas each, on the release build and on a build with debug
+  assertions: 7,800 formulas, 50,089 questions, no wrong answer and no
+  disagreement among the oracles. The option sets force every pass to run
+  inside these small solves (tiny intervals for elimination, probing,
+  reduction, rephasing, mode switches and compaction), run each search mode
+  alone, turn off chronological backtracking, trail reuse and lucky, and give
+  each question a limit of 0, 1 or 5 conflicts or 1,000 work units. The
+  release build's 24,583 questions were 6,336 SAT, 14,809 UNSAT and 3,438
+  UNKNOWN at a limit, with 588,935 conflicts, 15,239 restarts, 44,496
+  reductions, 847 elimination rounds (2,363 variables removed in the
+  questions without assumptions), 4,646 probings and 7,342 mode switches.
+  An UNKNOWN that did no work counts as a failure.
+- **Tests.** `tests/assume.rs` (11 tests on the binary) and 15 unit tests in
+  `src/assume.rs`: the worked example and its proof, a wrong core rejected
+  through the gate, a question that stops at its limit and the next one, a
+  limit reached before the search starts, the run's limits across questions,
+  a `--time` stop, a signal, a compaction in the middle of a solve, an
+  eliminated variable refused and a frozen one kept, old proof side files
+  removed, and what the mode refuses.
+
+**What the fuzz harness found while this was built** (each is fixed):
+
+1. *An empty score heap.* The search clears its mode flag when it stops.
+   Going back to level 0 before the next solve then put the freed variables
+   into the focused mode's queue, while the search went on in stable mode
+   with an empty heap. The mode is now set again between solves.
+2. *An assertion that held only by luck.* The model extension's undo loop
+   asserted that every position on its trail holds a value. A position can be
+   there twice (a blocking literal that was false is flipped), and kissat
+   never noticed because it extends once per run. Here every SAT answer
+   extends again.
+3. *"A level above zero has something on the trail."* Not when every
+   assumption so far was already true.
+
+**Speed.** Two builds run the same cell at the same moment, each on its own
+core, and the cores are swapped every repetition (`tools/as_pairtime.py`; the
+20 cells of `benchmarks/discriminating` at 100,000 conflicts, four
+repetitions, shipped defaults). The number is the build's wall time over
+main's; below 1 is faster.
+
+| | mean of the 20 cells | slowest and fastest cell |
+|---|---|---|
+| main against a copy of itself, quiet host | 1.0007 | 0.9984 to 1.0033 |
+| main against a copy of itself, 28 other runs on the host | 1.0007 | 0.9970 to 1.0048 |
+| step 2's build (`753e377c`) against main, quiet host | 0.9961 | 0.9795 to 1.0047 |
+| step 2's build against main, 28 other runs | 0.9985 | 0.9911 to 1.0058 |
+| the final build (`b59ec0e8`, with step 5) against main, quiet host | **1.0046** | 0.9939 to 1.0151 |
+
+The first two rows are the noise floor: what the measurement shows when
+nothing changed. In every pair the two builds did exactly the same work
+(equal work-clock lines).
+
+- Step 2's build was 0.4% faster than main, the final build is 0.5% slower.
+  Both are outside the noise floor, and no code on the search's path changed
+  between the two: step 5 added the two-stage split (which is off), two
+  options and six counters.
+- The difference sits in the small cells that fit in the cache: the five
+  slowest are `sqrt-mitern171` 1.015, `case9` 1.014, `div-mitern172` 1.011,
+  `SCPC-500-1` 1.010 and `DLTM` 1.008, where step 2's build had 1.000, 0.998,
+  0.996, 0.980 and 0.997. The two largest cells, which wait on memory, are
+  0.996 (Kakuro) and 0.994 (brocard).
+- So it is how the code and the solver's fields happen to be laid out, as
+  this port has seen before (notes "native build penalty" and "cache-resident
+  cells"). **It is not yet found or fixed.** The performance gate (step 7,
+  bead `bp3.8`) has to do that before any merge: the candidates are the
+  option fields (two more shift every later option by 8 bytes) and the
+  solver struct (new fields move the others).
+
+**Caveats.**
+
+- The fuzz formulas are small (up to 130 variables). The intervals of every
+  pass were made tiny to make them fire inside such formulas; that is not the
+  same as a long run on a large cell. Step 5 runs the oisc cells.
+- No random-decision sequence starts in a solve under assumptions (kissat
+  starts one only at decision level 1, which is an assumption level here).
+- The first preprocessing runs only in a solver's very first solve, and only
+  if that solve has no assumptions.
+
+### The control split in two stages (step 5; `--ctlsplitassume=1`, off by default)
+
+**What it does.** The control split (above, "In the solver: control bits
+first, and the split") tries every value of a few control bits as a case.
+Until now each case got a fresh sub-solver, and loading the formula into it
+was most of the split's work. With `--ctlsplitassume=1` a case is first a
+question to **one case solver** that the split keeps for all its cases: the
+formula is loaded once, and each case is asked under its bits as assumptions,
+within one load's worth of work. Only a case it leaves open gets a sub-solver
+of its own, as before. The main solver is not touched by any of this, so a
+split that gives up leaves the search exactly what it was.
+
+**Measured first: stage 1 alone.** Before the split was rebuilt, the test
+mode answered the 64 first-level cases of each 2025 oisc cell as 64 questions
+to one solver (`tools/as_cases_icnf.py` writes the file; one load of work a
+question). Compared with the outside runs of 2026-11-15, where each case was
+a fresh run with the bits as unit clauses and the clean-up off:
+
+| cell | cases that fall, here | outside | work on them, here | outside | wall, all 64 |
+|---|---|---|---|---|---|
+| sll-8 | 60 | 60 | 181M | 606M | 19 s |
+| and-11 | 61 | 61 | 69M | 448M | 20 s |
+| and-12 | 62 | 62 | 178M | 628M | 23 s |
+| and-15 | 62 | 62 | 55M | 988M | 29 s |
+
+- They are the same cases, one for one. The cases left open (sll-8: 0, 31,
+  47, 63; and-11: 0, 31, 63; and-12 and and-15: 0, 63) are the hard and open
+  ones of the outside runs.
+- With 3G a case instead of one load, the same cases stay open. Under
+  assumptions alone they do not fall: they need the clean-up with the bits
+  fixed, so they keep their fresh sub-solver.
+- **The cores are small.** A case sets six bits, but 238 of the 245 cores
+  have two. They read "bit 0 off and another bit on" and "bit 0 on and
+  another bit off": on these cells the six control bits move together. A
+  case that holds an earlier core is refuted without being asked. Replaying
+  the cores in case order, 12 to 14 cases are asked and 50 to 52 skipped.
+
+**A worked example: sll-8** (64 cases, bits 0 to 5 are variables 10 to 15).
+
+| case | what happens | cost |
+|---|---|---|
+| 0 (all bits off) | the case solver is loaded (49.9M) and asked; one load's worth of work gives no answer; as one of the first two cases it goes on to a sub-solver at once, which refutes it with its clean-up | a load, a try, a sub-solver |
+| 1 (bit 0 on, the rest off) | asked again (the case solver was released for the sub-solver, so it is loaded a second time); a few decisions and it fails; the core is two of its bits | a load, a few million |
+| 2, 3, ... | asked; each fails with a two-bit core, until the cores cover the rest | a few million each |
+| 50 of the others | hold a core found earlier: not asked | one proof line |
+| 31, 47, 63 | asked, left open, wait until every case had its try, then get a sub-solver each | a try and a sub-solver |
+
+In all: 14 cases asked, 10 refuted by the case solver, 50 skipped, 4 for a
+sub-solver, 2 loads of the case solver.
+
+**The real split, one stage against two** (frozen branch builds, seeds 2 and
+3, `SAT_LIMIT_TICKS=30G`, 16 GB, no proof; work, then wall time). The two-stage
+runs were repeated on the final build (sha256 `b59ec0e8`) and gave the same
+work to the last unit:
+
+| cell | one stage (today) | two stages | cases: asked / refuted there / skipped / sub-solver |
+|---|---|---|---|
+| sll-8 | 5.25G and 5.27G, 235 s | 1.20G and 1.22G, 60 s | 64: 14 / 10 / 50 / 4 |
+| and-11 | 17.93G and 18.26G, 1,088 to 1,101 s | 9.18G and 9.51G, 665 to 694 s | 96: 25 / 14 / 71 / 11 |
+| and-12 | 24.30G and 24.31G, 1,210 to 1,216 s | 8.44G and 8.45G, 494 to 509 s | 128: 27 / 15 / 101 / 12 |
+| and-15 | no answer in 30G (106 and 107 cases started, 104 and 105 refuted), 1,936 and 1,956 s | **UNSAT**, 16.00G and 16.59G, 1,010 to 1,025 s | 128: 27 / 20 / 101 / 7 |
+
+- **and-15 is decided.** It is the one 2025 oisc cell the one-stage split
+  does not finish, and the shipped solver does not solve it either. With two
+  stages it is UNSAT at both seeds in about 1,010 s.
+- On the other three the two-stage split needs 0.23 (sll-8), 0.52 (and-11)
+  and 0.35 (and-12) of the one-stage split's work. What is left is almost
+  all in the sub-solvers of the hard cases.
+- Peak memory is unchanged (2.3, 5.4, 6.3 GB; and-15 10.0 GB): one solver at
+  a time runs beside the main one, as before.
+- Wall times are from a host with 10 to 20 other solver runs; step 8 times
+  them properly.
+
+**Proof.** Under assumptions what the case solver learns follows from the
+formula alone, so its proof lines go into the proof with no bits appended.
+Its last line negates the failed core; the case's own clause follows (it
+contains the core's clause, so a checker accepts it at once), and the joins
+are as before. A skipped case adds one line. Sizes at seed 2 (the DRAT file
+and the lines the split wrote):
+
+| cell | one stage | two stages |
+|---|---|---|
+| sll-8 | 3.05 GB, 117.6M lines | 1.53 GB, 53.1M lines |
+| and-11 | 22.04 GB, 410.6M lines | 15.13 GB, 262.4M lines |
+| and-12 | 37.33 GB, 641.8M lines | 21.40 GB, 336.9M lines |
+| and-15 | no answer | 19.20 GB, 303.7M lines |
+
+So the proofs are half to two thirds as long, not "far smaller" as the
+epic's first text hoped. The reason is in the sll-8 proof, counted line by
+line: of its 53.1M added lines about 425 come from stage 1 (everything the
+case solver learned in 14 questions, and the cases' clauses). All the rest
+are the four hard cases' own proofs with the six bits appended: 8.9M unit
+lines and 43.9M lines of a binary clause, which their clean-up derives. The
+long check of these proofs through the gate is step 6.
+
+**Checked.** `tests/control.rs`: 25 tests, 9 of them for the two stages,
+every proof through the gate: stage 1 answering everything, by default, and
+nothing; a small core that skips cases; SAT models; the rotator fixture; the
+search after a split that gave up equal to the plain search, counter for
+counter; the work limits. `tools/assume_fuzz.py split`: random control sets
+and limits on plain formulas, 2,000 formulas on the release build and 2,000
+on a build with debug assertions, answer, model and proof checked, no wrong
+answer (529 and 535 decided UNSAT by the joins; 243 and 259 where the split
+gave up and the search finished). With the option off, the one-stage split is
+unchanged: 103 of 103 cells identical to main's build with `--ctlsplit=1`
+(`benchmarks/assumptions/main-5451c7b-split.tsv`).
+
+**Caveats.**
+
+- Measured on four cells of one family. The prior-year oisc cells and the
+  400-cell run are step 8.
+- The stage-1 limit (one load) comes from these cells: a case that falls
+  cost at most 0.77 of a load. Another family may need another limit
+  (`--ctlsplitassumeload`, in percent).
+- The hard cases still pay a load and a clean-up each, and still write a
+  long proof (one unit line for every literal the bits fix). Bead
+  `SAT-playground-d96.8.8` is about those lines.
+
 ## Notes from the RL scheduler's first steps (plan §10)
 
 These were written under the top heading before the sections above.

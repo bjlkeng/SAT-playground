@@ -357,6 +357,26 @@ these reasons:
 - *What is given up:* the memory of the second solver stays, as today. It
   would stay anyway while hard cases go to a fresh solver.
 
+**Measured, 2026-11-16** (solver README, "The control split in two
+stages"; logs in `log/as-stage1-2026-11-15` of the main checkout).
+
+- Stage 1 alone, one solver for the 64 first-level cases of each cell, one
+  load of work a case: the cases that fall are exactly those of the outside
+  runs (60, 61, 62, 62), with 0.06 to 0.30 of their work. The hard cases
+  stay open even with 3G each, so they keep a fresh sub-solver.
+- The cores are two bits in 238 of 245 cases: the six control bits of these
+  cells move together. So 50 to 52 of 64 cases are skipped.
+- The real split, work at seeds 2 and 3: sll-8 5.25G with one stage, 1.20G
+  with two; and-11 17.9G and 9.2G; and-12 24.3G and 8.4G; and-15 no answer
+  in 30G with one stage, UNSAT in 16.0G (about 1,010 s) with two.
+- The estimates above were close for and-11 and and-12 (8.47G and 8.52G
+  estimated, 9.2G and 8.4G measured) and for sll-8 (1.10G, 1.20G). For
+  and-15 the estimate covered two of its levels (14.74G); the whole cell
+  took 16.0G.
+- Proofs are half to two thirds as long (1.5 v 3.0 GB, 15 v 22 GB, 21 v
+  37 GB), not far smaller: nearly all of a two-stage proof is the hard
+  cases' own.
+
 A case's proof in stage 1, in the worked example's terms: the case solver
 writes whatever it learned, then the clause that negates the failed core. If
 the core is the whole case, that clause is the case's own clause, the one
