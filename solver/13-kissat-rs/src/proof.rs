@@ -27,6 +27,8 @@ const SIZE_BUFFER: usize = 1 << 20;
 
 /// Port of `struct proof`.
 pub struct Proof {
+    /// (not in the C) bytes handed to the file so far (src/assume.rs)
+    written: u64,
     buffer: Vec<u8>, // struct write_buffer { chars[size_buffer]; pos; }
     binary: bool,
     file: File,
@@ -45,6 +47,7 @@ pub struct Proof {
 pub fn init_proof(solver: &mut Solver, file: File, binary: bool) {
     debug_assert!(solver.proof.is_none());
     let proof = Box::new(Proof {
+        written: 0,
         buffer: Vec::with_capacity(SIZE_BUFFER),
         binary,
         file,
@@ -63,6 +66,7 @@ pub fn init_proof(solver: &mut Solver, file: File, binary: bool) {
 pub fn init_captured_proof(solver: &mut Solver) {
     debug_assert!(solver.proof.is_none());
     let proof = Box::new(Proof {
+        written: 0,
         buffer: Vec::new(),
         binary: false,
         file: File::new(),
@@ -95,7 +99,21 @@ fn flush_buffer(proof: &mut Proof) {
             bytes
         ));
     }
+    proof.written += bytes as u64;
     proof.buffer.clear();
+}
+
+/// (not in the C) Flush the proof and return how many bytes the file holds:
+/// an answer under assumptions is checked against the proof up to here
+/// (src/assume.rs).  Zero for a captured proof.
+pub fn flushed_bytes(solver: &mut Solver) -> u64 {
+    let Some(proof) = solver.proof.as_mut() else { return 0 };
+    if proof.capture.is_some() {
+        return 0;
+    }
+    flush_buffer(proof);
+    crate::file::flush(&mut proof.file);
+    proof.written
 }
 
 /// Port of `kissat_release_proof`.  Returns the flushed `File` for the

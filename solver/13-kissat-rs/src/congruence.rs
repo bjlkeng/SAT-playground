@@ -3729,6 +3729,11 @@ pub fn congruence(solver: &mut Solver) -> bool {
     if solver.options.congruence == 0 {
         return false;
     }
+    // Not in kissat: its equivalences are for substitution, which waits in
+    // a solve under assumptions (src/assume.rs)
+    if solver.assume.count != 0 {
+        return false;
+    }
     if solver.options.congruenceands == 0
         && solver.options.congruenceites == 0
         && solver.options.congruencexors == 0

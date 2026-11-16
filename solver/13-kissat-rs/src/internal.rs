@@ -197,6 +197,12 @@ pub struct Import {
 #[derive(Default)]
 pub struct Termination {
     pub flagged: AtomicBool,
+    /// Not in kissat: set with `flagged` by a stop request (the `--time`
+    /// alarm, a parent solver's stop) and never cleared.  The search clears
+    /// `flagged` when it ends; a solver that is asked again (src/assume.rs)
+    /// reads this one, so a stop holds for the rest of the run.  A work
+    /// limit raises only `flagged`.
+    pub stopped: AtomicBool,
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +354,7 @@ pub struct Solver {
     pub card: crate::card::State, // not in kissat: the card engine (src/card.rs)
     pub freewalk: crate::freewalk::FreeWalk, // not in kissat: the free-choice walk (src/freewalk.rs)
     pub control: crate::control::Control, // not in kissat: control words (src/control.rs)
+    pub assume: crate::assume::Assume, // not in kissat: solving under assumptions (src/assume.rs)
     pub last: Remember, // remember last;
     pub walked: u32,
 
@@ -580,6 +587,8 @@ pub fn print_statistics(solver: &mut Solver) {
     crate::freewalk::report(solver);
     // Not in kissat: the control decisions' exit line; nothing when off
     crate::control::report(solver);
+    // Not in kissat: the assumption solves' exit line; nothing without one
+    crate::assume::report(solver);
 }
 
 /// Port of `kissat_add` — external clause addition.
@@ -777,6 +786,8 @@ pub fn solve(solver: &mut Solver) -> i32 {
 /// Port of `kissat_terminate`.
 pub fn terminate(solver: &mut Solver) {
     solver.termination.flagged.store(true, Ordering::SeqCst);
+    // Not in kissat: remembered for a solver that is asked again (src/assume.rs)
+    solver.termination.stopped.store(true, Ordering::SeqCst);
 }
 
 // PORT NOTE: kissat_set_terminate (callback registration through C function

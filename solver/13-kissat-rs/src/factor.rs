@@ -1146,6 +1146,11 @@ pub fn factor(solver: &mut Solver) {
     if solver.inconsistent {
         return;
     }
+    // Not in kissat: it adds variables; in a solve under assumptions it
+    // waits (src/assume.rs)
+    if solver.assume.count != 0 {
+        return;
+    }
     if !factoring(solver) {
         return;
     }

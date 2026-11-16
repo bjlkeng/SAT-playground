@@ -91,6 +91,7 @@ pub fn terminated(solver: &mut Solver, bit: i32, name: &str, file: &str, lineno:
         let parent = unsafe { &*(solver.parent_stop as *const std::sync::atomic::AtomicBool) };
         if parent.load(Ordering::SeqCst) {
             solver.termination.flagged.store(true, Ordering::SeqCst);
+            solver.termination.stopped.store(true, Ordering::SeqCst);
         }
     }
     if !solver.termination.flagged.load(Ordering::SeqCst) {

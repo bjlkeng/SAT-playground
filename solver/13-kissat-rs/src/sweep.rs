@@ -1725,6 +1725,11 @@ pub fn sweep(solver: &mut Solver) -> bool {
     if solver.options.sweep == 0 {
         return false;
     }
+    // Not in kissat: its equivalences are for substitution, which waits in
+    // a solve under assumptions (src/assume.rs)
+    if solver.assume.count != 0 {
+        return false;
+    }
     if solver.inconsistent {
         return false;
     }

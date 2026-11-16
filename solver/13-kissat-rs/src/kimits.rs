@@ -234,8 +234,9 @@ pub fn scale_delta(solver: &mut Solver, pretty: &str, delta: u64) -> u64 {
     scaled
 }
 
-/// Port of static `init_enabled`.
-fn init_enabled(solver: &mut Solver) {
+/// Port of static `init_enabled`.  Not in kissat: also called at the start
+/// of a later search (src/assume.rs), so it is visible in the crate.
+pub(crate) fn init_enabled(solver: &mut Solver) {
     let probe = if solver.options.simplify == 0 {
         false
     } else if solver.options.probe == 0 {

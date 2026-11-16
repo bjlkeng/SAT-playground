@@ -970,6 +970,99 @@ fn print_limits(solver: &mut Solver, app: &App) {
     }
 }
 
+// Not in kissat (epic SAT-playground-bp3, src/assume.rs): the incremental
+// test mode.  The input is an incremental CNF file: clauses, then one `a`
+// line per question.  Every question is answered by the same solver, one
+// block of output each (`q`, then `v` or `f`, then `p` with a proof); no `s`
+// line is printed.  The structure stage, the engines, the free-choice walk
+// and the control options are off in this mode, and the RL policy is
+// refused: its epoch clock and its log are built for one search per run.
+fn run_inccnf(solver: &mut Solver, app: &mut App) -> i32 {
+    for name in ["SAT_POLICY", "SAT_POLICY_LOG"] {
+        if std::env::var(name).map(|v| !v.trim().is_empty()).unwrap_or(false) {
+            crate::error::error(format_args!(
+                "the incremental mode (--inccnf=1) cannot be used together with {}",
+                name
+            ));
+            return 1;
+        }
+    }
+    if app.output_path.is_some() {
+        crate::error::error(format_args!("the incremental mode (--inccnf=1) writes no DIMACS output file"));
+        return 1;
+    }
+    crate::print::section(solver, "banner");
+    if solver.options.quiet == 0 {
+        banner(Some("c "), SOLVER_NAME);
+        let _ = std::io::stdout().flush();
+    }
+    crate::assume::inccnf_options(solver);
+    if !write_proof(solver, app) {
+        return 1;
+    }
+    let entered = crate::resources::process_time();
+    crate::print::section(solver, "parsing");
+    crate::print::message(solver, "opened and reading incremental CNF file:");
+    crate::print::line(solver);
+    let path = app.input_path.clone().unwrap_or_else(|| "<stdin>".to_string());
+    crate::print::message(solver, format!("  {}", path));
+    crate::print::line(solver);
+    let bytes = match &app.input_path {
+        Some(p) => std::fs::read(p),
+        None => {
+            use std::io::Read;
+            let mut buffer = Vec::new();
+            std::io::stdin().read_to_end(&mut buffer).map(|_| buffer)
+        }
+    };
+    let bytes = match bytes {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            crate::error::error(format_args!("failed to read '{}': {}", path, e));
+            close_proof(solver, app);
+            return 1;
+        }
+    };
+    let input = match crate::assume::parse_inccnf(&bytes) {
+        Ok(input) => input,
+        Err(text) => {
+            crate::error::error(format_args!("{}: parse error: {}", path, text));
+            close_proof(solver, app);
+            return 1;
+        }
+    };
+    drop(bytes);
+    for &lit in &input.clauses {
+        crate::internal::add(solver, lit);
+    }
+    crate::print::message(
+        solver,
+        format!(
+            "parsed 'p inccnf': {} clauses, {} questions, largest variable {}",
+            input.clauses.iter().filter(|&&l| l == 0).count(),
+            input.questions.len(),
+            input.max_var
+        ),
+    );
+    crate::print::message(
+        solver,
+        format!("finished parsing after {:.2} seconds", crate::resources::process_time() - entered),
+    );
+    print_options(solver);
+    print_limits(solver, app);
+    crate::print::section(solver, "solving");
+    if let Err(text) = crate::assume::answer_questions(solver, &input, app.witness) {
+        crate::error::error(format_args!("{}", text));
+        close_proof(solver, app);
+        return 1;
+    }
+    close_proof(solver, app);
+    crate::internal::print_statistics(solver);
+    crate::print::section(solver, "shutting down");
+    crate::print::message(solver, "exit 0");
+    0
+}
+
 // static int run_application (kissat *, int argc, char **argv, bool *)
 fn run_application(solver: &mut Solver, args: &[String], cancel_alarm_ptr: &mut bool) -> i32 {
     *cancel_alarm_ptr = false;
@@ -995,6 +1088,11 @@ fn run_application(solver: &mut Solver, args: &[String], cancel_alarm_ptr: &mut 
             crate::error::error(format_args!("{}", text));
             return 1;
         }
+    }
+    // Not in kissat: the incremental test mode (`--inccnf=1`, src/assume.rs)
+    // answers every question of the file with this one solver
+    if solver.options.inccnf != 0 {
+        return run_inccnf(solver, &mut app);
     }
     // Not in kissat: the RL scheduler configuration (SAT_POLICY*, step A.2).
     // The log may not alias a file this run owns (input, proof, output).

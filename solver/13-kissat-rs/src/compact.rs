@@ -292,6 +292,11 @@ fn compact_frames(solver: &mut Solver) {
     let size = solver.frames.len();
     for level in 1..size {
         let ilit = solver.frames[level].decision;
+        // Not in kissat: a level of an assumption that was already true
+        // has no decision (src/assume.rs)
+        if ilit == INVALID_LIT {
+            continue;
+        }
         let mlit = map_literal(solver, ilit, true);
         debug_assert!(mlit != INVALID_LIT);
         solver.frames[level].decision = mlit;

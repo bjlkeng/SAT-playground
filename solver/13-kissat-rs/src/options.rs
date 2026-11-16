@@ -89,6 +89,10 @@ macro_rules! kissat_options {
 
 kissat_options! {
     (ands, 1, 0, 1, "extract and eliminate and gates"),
+    // Not in kissat (epic SAT-playground-bp3, src/assume.rs): limits for one
+    // question of the incremental test mode (`inccnf`); -1 is none
+    (assumeconflicts, -1, -1, i32::MAX, "conflict limit for one solve under assumptions"),
+    (assumeticks, -1, -1, i32::MAX, "work limit for one solve under assumptions (K)"),
     (backbone, 1, 0, 2, "binary clause backbone (2=eager)"),
     (backboneeffort, 20, 0, 100_000, "effort in per mille"),
     (backbonemaxrounds, 1000, 1, i32::MAX, "maximum backbone rounds"),
@@ -264,6 +268,10 @@ kissat_options! {
     (gausswindow, 65536, 1, i32::MAX, "parity engine yield check window (K ticks of its work)"),
     (gaussyield, 20, 0, 1_000_000, "parity engine minimum yield (propagations per M ticks, 0 none)"),
     (ifthenelse, 1, 0, 1, "extract and eliminate if-then-else gates"),
+    // Not in kissat (epic SAT-playground-bp3, src/assume.rs): the test mode
+    // that reads an incremental CNF file ("p inccnf", then `a` lines) and
+    // answers every question with the same solver.  Off by default
+    (inccnf, 0, 0, 1, "read incremental CNF and answer each 'a' line (test mode)"),
     (incremental, 0, 0, 1, "enable incremental solving"),
     (jumpreasons, 1, 0, 1, "jump binary reasons"),
     (lucky, 1, 0, 1, "try some lucky assignments"),
@@ -870,8 +878,9 @@ mod tests {
         // (2026-11-05), freeread, freereadticks (2026-11-09) and the nine
         // control options ctlfirst, ctlsplit, ctlsplitbits, ctlsplitcase,
         // ctlsplitlevels, ctlsplitticks, ctlreadticks, ctlsplitratio,
-        // ctlsplitclauses (2026-11-14)
-        assert_eq!(OPTION_TABLE.len(), 158 + 68);
+        // ctlsplitclauses (2026-11-14), and assumeconflicts, assumeticks,
+        // inccnf (2026-11-15, branch assumptions)
+        assert_eq!(OPTION_TABLE.len(), 158 + 71);
     }
 
     #[test]

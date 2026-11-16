@@ -5,6 +5,7 @@ pub mod analyze;
 pub mod ands;
 pub mod application;
 pub mod arena;
+pub mod assume;
 pub mod assign;
 pub mod averages;
 pub mod backbone;

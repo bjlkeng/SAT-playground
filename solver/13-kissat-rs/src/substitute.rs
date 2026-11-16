@@ -75,6 +75,10 @@ fn determine_representatives(solver: &mut Solver, repr: &mut [u32]) {
         if solver.gauss.frozen.get(crate::literal::idx(root) as usize).copied().unwrap_or(false) {
             continue;
         }
+        // Not in kissat: nor is a variable frozen for assumptions (src/assume.rs)
+        if solver.flags[crate::literal::idx(root) as usize].frozen() {
+            continue;
+        }
         debug_assert!(scc.is_empty());
         debug_assert!(work.is_empty());
         work.push(root);
@@ -105,6 +109,9 @@ fn determine_representatives(solver: &mut Solver, repr: &mut [u32]) {
                     let idx_other = crate::literal::idx(other);
                     if solver.gauss.frozen.get(idx_other as usize).copied().unwrap_or(false) {
                         continue; // not in kissat: a parity engine column (src/gauss.rs)
+                    }
+                    if solver.flags[idx_other as usize].frozen() {
+                        continue; // not in kissat: frozen for assumptions (src/assume.rs)
                     }
                     if !solver.flags[idx_other as usize].active() {
                         continue;
@@ -204,6 +211,9 @@ fn determine_representatives(solver: &mut Solver, repr: &mut [u32]) {
                     }
                     if solver.gauss.frozen.get(idx_other as usize).copied().unwrap_or(false) {
                         continue; // not in kissat: a parity engine column (src/gauss.rs)
+                    }
+                    if solver.flags[idx_other as usize].frozen() {
+                        continue; // not in kissat: frozen for assumptions (src/assume.rs)
                     }
                     if mark[other as usize] == 0 {
                         work.push(other);
@@ -647,6 +657,11 @@ pub fn substitute(solver: &mut Solver, complete: bool) {
     debug_assert!(solver.level == 0);
     solver.large_clauses_watched_after_binary_clauses = false;
     if solver.options.substitute == 0 {
+        return;
+    }
+    // Not in kissat: it renames variables, so in a solve under assumptions
+    // it waits (src/assume.rs)
+    if solver.assume.count != 0 {
         return;
     }
     if terminated!(solver, substitute_terminated_1) {

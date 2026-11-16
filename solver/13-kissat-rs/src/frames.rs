@@ -29,3 +29,18 @@ pub fn push_frame(solver: &mut crate::internal::Solver, decision: u32) {
         used: 0,
     });
 }
+
+/// Not in kissat: a level with no decision and nothing on it, for an
+/// assumption that is already true when its turn comes (src/assume.rs).
+/// Its `decision` is INVALID; no literal ever has this level.
+#[inline]
+pub fn push_empty_frame(solver: &mut crate::internal::Solver) {
+    debug_assert!(solver.level != 0);
+    let trail = solver.trail.len() as u32;
+    solver.frames.push(Frame {
+        decision: u32::MAX,
+        promote: false,
+        trail,
+        used: 0,
+    });
+}

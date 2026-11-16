@@ -432,6 +432,10 @@ fn can_eliminate_variable(solver: &Solver, idx: u32) -> bool {
     if solver.gauss.frozen.get(idx as usize).copied().unwrap_or(false) {
         return false;
     }
+    // Not in kissat: so does a variable frozen for assumptions (src/assume.rs)
+    if flags.frozen() {
+        return false;
+    }
 
     true
 }

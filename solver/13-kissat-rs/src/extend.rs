@@ -46,7 +46,13 @@ fn undo_eliminated_assignment(solver: &mut Solver) {
     }
     while let Some(pos) = solver.etrail.pop() {
         debug_assert!((pos as usize) < solver.eliminated.len());
-        debug_assert!(solver.eliminated[pos as usize] != 0);
+        // The C asserts `values[pos]` here.  That holds only while this loop
+        // never runs on a filled etrail, which is so in kissat (it extends
+        // once).  An extension can assign the same variable twice (a
+        // blocking literal that was false is flipped), so its position can
+        // be on the etrail twice, and the second pop finds zero.  A solver
+        // that is asked again (src/assume.rs) extends at every SAT answer;
+        // the fuzz harness met the assertion on the second one.
         solver.eliminated[pos as usize] = 0;
     }
 }

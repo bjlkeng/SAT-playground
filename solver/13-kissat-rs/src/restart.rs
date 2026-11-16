@@ -80,11 +80,13 @@ pub fn update_focused_restart_limit(solver: &mut Solver) {
 }
 
 // static reuse_stable_trail
-fn reuse_stable_trail(solver: &mut Solver) -> u32 {
+// Not in kissat: `keep` levels stay whatever their decisions' scores (the
+// assumption levels, src/assume.rs; zero without assumptions).
+fn reuse_stable_trail(solver: &mut Solver, keep: u32) -> u32 {
     let next_idx = crate::decide::next_decision_variable(solver);
     let limit = crate::heap::get_heap_score(&solver.scores, next_idx);
     let level = solver.level;
-    let mut res: u32 = 0;
+    let mut res: u32 = keep;
     while res < level {
         let decision = solver.frames[(res + 1) as usize].decision; // FRAME (res + 1)
         let idx = crate::literal::idx(decision);
@@ -98,11 +100,11 @@ fn reuse_stable_trail(solver: &mut Solver) -> u32 {
 }
 
 // static reuse_focused_trail
-fn reuse_focused_trail(solver: &mut Solver) -> u32 {
+fn reuse_focused_trail(solver: &mut Solver, keep: u32) -> u32 {
     let next_idx = crate::decide::next_decision_variable(solver);
     let limit = solver.links[next_idx as usize].stamp;
     let level = solver.level;
-    let mut res: u32 = 0;
+    let mut res: u32 = keep;
     while res < level {
         let decision = solver.frames[(res + 1) as usize].decision; // FRAME (res + 1)
         let idx = crate::literal::idx(decision);
@@ -118,16 +120,26 @@ fn reuse_focused_trail(solver: &mut Solver) -> u32 {
 // static reuse_trail
 fn reuse_trail(solver: &mut Solver) -> u32 {
     debug_assert!(solver.level > 0);
-    debug_assert!(!solver.trail.is_empty());
+    // (under assumptions every level so far can be an empty one, with
+    // nothing on the trail: src/assume.rs)
+    debug_assert!(!solver.trail.is_empty() || solver.assume.count != 0);
+
+    // Not in kissat: a restart keeps the assumption levels (src/assume.rs):
+    // they would only be decided again.  While the search is still inside
+    // them there is nothing to undo, and no next decision to look at.
+    let keep = solver.assume.count.min(solver.level);
 
     if solver.options.restartreusetrail == 0 {
-        return 0;
+        return keep;
+    }
+    if keep == solver.level {
+        return keep;
     }
 
     let res = if solver.stable {
-        reuse_stable_trail(solver)
+        reuse_stable_trail(solver, keep)
     } else {
-        reuse_focused_trail(solver)
+        reuse_focused_trail(solver, keep)
     };
 
     if res != 0 {

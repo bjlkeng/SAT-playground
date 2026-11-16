@@ -52,6 +52,10 @@ impl Flags {
     flag_bit!(subsume, set_subsume, 8);
     flag_bit!(sweep, set_sweep, 9);
     flag_bit!(transitive, set_transitive, 10);
+    // Not in kissat: frozen for assumptions (src/assume.rs), a spare bit of
+    // the C's 16: no pass eliminates or substitutes this variable.  It
+    // moves with the variable in a compaction.
+    flag_bit!(frozen, set_frozen, 11);
     #[inline(always)]
     pub fn factor(&self) -> u8 {
         ((self.0 >> 5) & 3) as u8

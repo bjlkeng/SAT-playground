@@ -35,6 +35,16 @@ fn start_search(solver: &mut Solver) {
     crate::profile::start_checked(solver, Prof::search); // START (search)
     solver.statistics.searches += 1; // INC (searches)
 
+    // Not in kissat: a solver that is asked again goes on from where its
+    // last search stopped (src/assume.rs); the first search is kissat's
+    if solver.statistics.searches > 1 {
+        crate::assume::start_again(solver);
+        if solver.assume.count != 0 {
+            crate::assume::started(solver);
+        }
+        return;
+    }
+
     let stable = solver.options.stable == 2;
 
     solver.stable = stable;
@@ -115,6 +125,10 @@ fn start_search(solver: &mut Solver) {
         crate::profile::start_checked(solver, Prof::focused); // START (focused)
         crate::report::report(solver, false, '{'); // REPORT (0, '{')
     }
+    // Not in kissat: under assumptions elimination waits (src/assume.rs)
+    if solver.assume.count != 0 {
+        crate::assume::started(solver);
+    }
 }
 
 // static void stop_search (kissat *solver)
@@ -143,6 +157,10 @@ fn stop_search(solver: &mut Solver) {
             .flagged
             .store(false, std::sync::atomic::Ordering::SeqCst);
     }
+
+    // Not in kissat: the mode this search ends in, for a solver that is
+    // asked again (src/assume.rs); `stable` is cleared just below
+    solver.assume.stable = solver.stable;
 
     if solver.stable {
         crate::report::report(solver, false, ']'); // REPORT (0, ']')
@@ -246,18 +264,25 @@ pub fn search(solver: &mut Solver) -> i32 {
     if solver.inconsistent {
         res = 20;
     }
+    // Not in kissat: in a solve under assumptions (src/assume.rs) lucky
+    // stands aside (it answers without looking at them) and so does the
+    // first preprocessing (it removes variables), which is also only for a
+    // solver's first search.  The engines and the free-choice walk below
+    // need no test: a solver that has them refuses assumptions.
+    let assuming = solver.assume.count != 0;
+    let first = solver.statistics.searches == 0;
     // Not in kissat: the free-choice walk's first placement found a model
     // before the search, checked against the input (src/freewalk.rs)
     if res == 0 && crate::freewalk::found(solver) {
         res = 10;
     }
-    if res == 0 && solver.options.luckyearly != 0 {
+    if res == 0 && !assuming && solver.options.luckyearly != 0 {
         res = crate::lucky::lucky(solver);
     }
-    if res == 0 && crate::preprocess::preprocessing(solver) {
+    if res == 0 && !assuming && first && crate::preprocess::preprocessing(solver) {
         res = crate::preprocess::preprocess(solver);
     }
-    if res == 0 && solver.options.luckylate != 0 {
+    if res == 0 && !assuming && solver.options.luckylate != 0 {
         res = crate::lucky::lucky(solver);
     }
     if res == 0 {
@@ -285,7 +310,13 @@ pub fn search(solver: &mut Solver) -> i32 {
             } else if solver.iterating {
                 iterate(solver);
             } else if solver.unassigned == 0 {
-                res = 10;
+                // Not in kissat: an assumption not yet looked at is true
+                // (an empty level) or false (the solve fails): src/assume.rs
+                if solver.level < solver.assume.count {
+                    res = crate::assume::decide(solver);
+                } else {
+                    res = 10;
+                }
             } else if terminated!(solver, search_terminated_1) {
                 break;
             } else if crate::card::due(solver) {
@@ -356,6 +387,10 @@ pub fn search(solver: &mut Solver) -> i32 {
                 if crate::freewalk::turn(solver) {
                     res = 10;
                 }
+            } else if solver.level < solver.assume.count {
+                // Not in kissat: the assumptions first, one level each
+                // (src/assume.rs); with none the count is zero
+                res = crate::assume::decide(solver);
             } else {
                 crate::decide::decide(solver);
             }

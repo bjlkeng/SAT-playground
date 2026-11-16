@@ -924,6 +924,10 @@ pub fn fast_variable_elimination(solver: &mut Solver) {
             if solver.gauss.frozen.get(pivot as usize).copied().unwrap_or(false) {
                 continue;
             }
+            // Not in kissat: so does a variable frozen for assumptions (src/assume.rs)
+            if pivot_flags.frozen() {
+                continue;
+            }
             let lit = crate::literal::lit(pivot);
             let pos = flush_occurrences(solver, lit);
             if pos > fasteloccs {
@@ -971,6 +975,10 @@ pub fn fast_variable_elimination(solver: &mut Solver) {
             }
             // Not in kissat: a column of the parity engine stays (src/gauss.rs)
             if solver.gauss.frozen.get(pivot as usize).copied().unwrap_or(false) {
+                continue;
+            }
+            // Not in kissat: so does a variable frozen for assumptions (src/assume.rs)
+            if pivot_flags.frozen() {
                 continue;
             }
             if terminated!(solver, fastel_terminated_1) {
