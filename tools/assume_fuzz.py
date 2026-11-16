@@ -42,9 +42,11 @@ import argparse
 import os
 import random
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -569,7 +571,18 @@ def cmd_fuzz(args):
     stats = {"formulas": 0, "questions": 0, "failed": 0, "oracle": 0}
     counters = []   # per run of the test mode: the solver's own counts
 
+    # an interrupt (Ctrl-C, SIGTERM) starts no further formula; the ones in
+    # hand end within seconds (their runs are small)
+    cancel = threading.Event()
+
+    def on_term(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, on_term)
+
     def one(i):
+        if cancel.is_set():
+            return None
         rng = random.Random(args.seed * 1_000_003 + i)
         f = gen_formula(rng, args.hard)
         qs = gen_questions(rng, f, args.plain)
@@ -592,8 +605,12 @@ def cmd_fuzz(args):
             shutil.rmtree(wd, ignore_errors=True)
         return i, f, qs, bad, kind, wd
 
-    with ThreadPoolExecutor(max_workers=args.jobs) as ex:
-        for i, f, qs, bad, kind, wd in ex.map(one, range(args.count)):
+    ex = ThreadPoolExecutor(max_workers=args.jobs)
+    try:
+        for done in ex.map(one, range(args.count)):
+            if done is None:
+                continue
+            i, f, qs, bad, kind, wd = done
             stats["formulas"] += 1
             stats["questions"] += len(qs)
             if kind == "oracle":
@@ -606,6 +623,13 @@ def cmd_fuzz(args):
                 for why in bad[:6]:
                     print(f"    {why}")
                 sys.stdout.flush()
+    except KeyboardInterrupt:
+        cancel.set()
+        ex.shutdown(wait=True, cancel_futures=True)
+        print(f"{args.cmd}: interrupted after {stats['formulas']} of {args.count} formulas "
+              f"({stats['failed']} with a wrong answer so far); scratch folder {base} kept", flush=True)
+        return 130
+    ex.shutdown(wait=True)
     asked = f"{stats['questions']} questions, " if args.cmd != "split" else ""
     print(f"{args.cmd}: {stats['formulas']} formulas, {asked}"
           f"{stats['failed']} formulas with a wrong answer, {stats['oracle']} oracle failures "

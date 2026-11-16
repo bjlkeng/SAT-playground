@@ -31,8 +31,10 @@ import math
 import os
 import resource
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -56,16 +58,47 @@ def unpack(stem, scratch):
     return dst
 
 
+# Stopping.  An interrupt (Ctrl-C, SIGTERM) must end every solver this tool
+# started, at once: the measured ones and the background loops.  `CANCEL`
+# tells the workers to take no more work, and `LIVE` holds the measured
+# solvers that are running, so they can be killed without waiting for them.
+CANCEL = threading.Event()
+LIVE = set()
+LIVE_LOCK = threading.Lock()
+
+
+def stop_measured():
+    CANCEL.set()
+    with LIVE_LOCK:
+        running = list(LIVE)
+    for p in running:
+        try:
+            p.kill()
+        except ProcessLookupError:
+            pass
+
+
 def run_one(binary, cnf, core, opts, out_path):
+    """One measured run, or None when the tool is being stopped."""
     def pre():
         os.sched_setaffinity(0, {core})
         resource.setrlimit(resource.RLIMIT_AS, (MEM_BYTES, MEM_BYTES))
 
     start = time.monotonic()
     with open(out_path, "wb") as fo:
-        p = subprocess.Popen([binary, "-n"] + opts + [cnf], stdout=fo, stderr=subprocess.STDOUT, preexec_fn=pre)
-        _, status, usage = os.wait4(p.pid, 0)
-        p.returncode = os.waitstatus_to_exitcode(status)
+        with LIVE_LOCK:
+            if CANCEL.is_set():
+                return None
+            p = subprocess.Popen([binary, "-n"] + opts + [cnf], stdout=fo, stderr=subprocess.STDOUT, preexec_fn=pre)
+            LIVE.add(p)
+        try:
+            _, status, usage = os.wait4(p.pid, 0)
+            p.returncode = os.waitstatus_to_exitcode(status)
+        finally:
+            with LIVE_LOCK:
+                LIVE.discard(p)
+    if CANCEL.is_set():
+        return None
     wall = time.monotonic() - start
     clock = "none"
     answer = "none"
@@ -114,6 +147,20 @@ def main():
     load = []
     pairs = LOAD_PAIRS if args.load else QUIET_PAIRS
     rows = []
+    ex = ThreadPoolExecutor(max_workers=len(pairs))
+
+    def on_term(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, on_term)
+
+    def load_pre(core):
+        # a session of its own (so the loop and its solver are one group to
+        # kill), its core, and the memory cap, which the solvers inherit
+        os.setsid()
+        os.sched_setaffinity(0, {core})
+        resource.setrlimit(resource.RLIMIT_AS, (MEM_BYTES, MEM_BYTES))
+
     # The background runs are endless loops in sessions of their own, so they
     # are started inside the block whose `finally` stops them: an interrupt
     # during the warm-up, or a failure to start one, must not leave them
@@ -126,7 +173,7 @@ def main():
                 # a loop in a shell, so the load lasts as long as the measurement
                 p = subprocess.Popen(
                     ["bash", "-c", f'while :; do "{lb}" -n -q "{lcnf}" >/dev/null 2>&1; done'],
-                    preexec_fn=lambda c=core: (os.setsid(), os.sched_setaffinity(0, {c})))
+                    preexec_fn=lambda c=core: load_pre(c))
                 load.append(p)
             print(f"[as_pairtime] {len(load)} background runs started on cores "
                   f"{LOAD_CORES[0]}-{LOAD_CORES[len(load) - 1]}", flush=True)
@@ -141,7 +188,10 @@ def main():
                 with ThreadPoolExecutor(max_workers=2) as ex2:
                     fa = ex2.submit(run_one, a, cnfs[stem], x, opts, os.path.join(out_dir, "out", f"{stem}.a{r}.out"))
                     fb = ex2.submit(run_one, b, cnfs[stem], y, opts, os.path.join(out_dir, "out", f"{stem}.b{r}.out"))
-                    reps.append((fa.result(), fb.result()))
+                    ra, rb = fa.result(), fb.result()
+                if ra is None or rb is None:
+                    return None     # the tool is being stopped
+                reps.append((ra, rb))
             return stem, reps
 
         # one worker per core pair; each worker takes the next cell
@@ -152,20 +202,32 @@ def main():
 
         def worker(slot):
             out = []
-            while True:
+            while not CANCEL.is_set():
                 try:
                     stem = todo.get_nowait()
                 except queue.Empty:
                     return out
-                out.append(cell_job((slot, stem)))
-                stem, reps = out[-1]
+                done = cell_job((slot, stem))
+                if done is None:
+                    return out
+                out.append(done)
+                stem, reps = done
                 ratio = geomean([rb["wall"] / ra["wall"] for ra, rb in reps])
                 print(f"  {stem[33:73]:40s} A {reps[0][0]['wall']:7.1f}s  B/A {ratio:.4f}", flush=True)
+            return out
 
-        with ThreadPoolExecutor(max_workers=len(pairs)) as ex:
-            for part in ex.map(worker, range(len(pairs))):
-                rows.extend(part)
+        futures = [ex.submit(worker, slot) for slot in range(len(pairs))]
+        for f in futures:
+            rows.extend(f.result())
+    except KeyboardInterrupt:
+        # stop the measured solvers first, so the workers come back at once
+        # instead of running the rest of the sweep (review round 4)
+        stop_measured()
+        print("[as_pairtime] interrupted: stopping every solver", flush=True)
+        raise
     finally:
+        stop_measured()
+        ex.shutdown(wait=True)
         for p in load:
             try:
                 os.killpg(p.pid, 15)
@@ -178,6 +240,9 @@ def main():
                 os.killpg(p.pid, 9)
         shutil.rmtree(scratch, ignore_errors=True)
 
+    if len(rows) != len(stems):
+        print(f"[as_pairtime] only {len(rows)} of {len(stems)} cells were measured: no summary")
+        return 1
     rows.sort()
     unequal = []
     table = []

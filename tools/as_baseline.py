@@ -41,8 +41,10 @@ import queue
 import re
 import resource
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -219,7 +221,18 @@ def peak_kb(pid, solver):
     return 0
 
 
+# Set by an interrupt (Ctrl-C, SIGTERM): every running solver is killed at its
+# next poll (20 ms) and no further cell starts.
+CANCEL = threading.Event()
+
+
+class Cancelled(Exception):
+    pass
+
+
 def run_cell(solver, opts, limit, cell, path, out_dir, core, wall_limit):
+    if CANCEL.is_set():
+        raise Cancelled()
     safe = cell.replace("/", "__")
     work = os.path.join(out_dir, "_work", safe)
     os.makedirs(work, exist_ok=True)
@@ -253,13 +266,16 @@ def run_cell(solver, opts, limit, cell, path, out_dir, core, wall_limit):
             pid, status, usage = os.wait4(p.pid, os.WNOHANG)
             if pid:
                 break
-            if time.time() - start > wall_limit:
+            if time.time() - start > wall_limit or CANCEL.is_set():
                 p.kill()
                 killed = True
                 pid, status, usage = os.wait4(p.pid, 0)
                 break
             time.sleep(0.02)
         p.returncode = os.waitstatus_to_exitcode(status)
+    if CANCEL.is_set():
+        shutil.rmtree(work, ignore_errors=True)
+        raise Cancelled()
     wall = time.time() - start
 
     lines = open(raw, errors="replace").read().splitlines()
@@ -335,13 +351,26 @@ def cmd_run(args):
         finally:
             pool.put(core)
 
+    def on_term(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, on_term)
     rows = []
     t0 = time.time()
-    with ThreadPoolExecutor(max_workers=len(cores)) as ex:
+    ex = ThreadPoolExecutor(max_workers=len(cores))
+    try:
         for row in ex.map(job, cells):
             rows.append(row)
             print(f"  {row['cell'][:44]:44s} {row['status']:14s} exit={row['exit']:3s} "
                   f"{row['wall_s']:>7s}s proof={row['proof_bytes']}", flush=True)
+    except (KeyboardInterrupt, Cancelled):
+        # the workers kill their solvers at the next poll and start no more
+        CANCEL.set()
+        ex.shutdown(wait=True, cancel_futures=True)
+        shutil.rmtree(os.path.join(out_dir, "_work"), ignore_errors=True)
+        print(f"[as_baseline] interrupted after {len(rows)} of {len(cells)} cells: no table written", flush=True)
+        return 130
+    ex.shutdown(wait=True)
     meta["finished"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     meta["elapsed_s"] = round(time.time() - t0, 1)
     rows.sort(key=lambda r: r["cell"])
