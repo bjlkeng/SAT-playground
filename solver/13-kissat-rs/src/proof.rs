@@ -86,6 +86,16 @@ pub fn take_captured_proof(solver: &mut Solver) -> Vec<Vec<i32>> {
     solver.proof.take().and_then(|mut p| p.capture.take()).unwrap_or_default()
 }
 
+/// (not in the C) The lines captured so far, in order; the proof goes on
+/// capturing.  The control split's case solver hands over what each case
+/// added this way (src/control.rs).
+pub fn drain_captured_proof(solver: &mut Solver) -> Vec<Vec<i32>> {
+    match solver.proof.as_mut().and_then(|p| p.capture.as_mut()) {
+        Some(lines) => std::mem::take(lines),
+        None => Vec::new(),
+    }
+}
+
 // flush_buffer (static)
 fn flush_buffer(proof: &mut Proof) {
     let bytes = proof.buffer.len();

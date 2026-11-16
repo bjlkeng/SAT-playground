@@ -151,6 +151,14 @@ pub fn assume(solver: &mut Solver, elit: i32) -> Result<(), String> {
     Ok(())
 }
 
+/// Drop the list for the next solve without solving it.
+pub fn forget(solver: &mut Solver) {
+    let list = std::mem::take(&mut solver.assume.list);
+    for l in list {
+        melt(solver, l.abs());
+    }
+}
+
 /// The parity engine, the count engine or the free-choice walk, when the
 /// structure stage gave this solver one.  They do not know about
 /// assumptions: an engine's lazy reasons would have to be written out before

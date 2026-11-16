@@ -185,6 +185,173 @@ fn probe_runs_every_case() {
     assert_eq!(gate(&cnf, &proof), "ok");
 }
 
+// ---------------------------------------------------------------------------
+// The split in two stages (`--ctlsplitassume=1`, epic SAT-playground-bp3
+// step 5): a case is first a question to one case solver, under assumptions;
+// only a case it leaves open gets a sub-solver of its own.
+// ---------------------------------------------------------------------------
+
+fn stage1_value(line: &str, key: &str) -> u64 {
+    line.split_whitespace()
+        .find_map(|w| w.strip_prefix(&format!("{}=", key)).map(|v| v.parse::<u64>().unwrap()))
+        .unwrap_or_else(|| panic!("no {}= on: {}", key, line))
+}
+
+#[test]
+fn two_stage_proofs_pass_the_gate() {
+    let fx = Fixture::new("control_two_stage");
+    let cnf = fx.path("r.cnf");
+    random_3sat(160, 4.8, 7, &cnf);
+    // the three regimes of split_proofs_pass_the_gate (decided at the first
+    // level, at a second level with joins, left open), each with a stage 1
+    // that answers nearly everything (a limit of 1000 loads), the default
+    // (one load) and one that answers nothing (a hundredth of a load)
+    for (case, want) in [("100000", "status=unsat"), ("300", "status=unsat"), ("40", "status=open")] {
+        for load in ["100000", "100", "1"] {
+            let proof = fx.path(&format!("p{}-{}.drat", case, load));
+            let (status, out) = run_ctl(
+                &cnf,
+                Some(&proof),
+                &[
+                    "--ctlsplit=1", "--ctlsplitassume=1", "--ctlsplitbits=3", "--ctlsplitratio=100000",
+                    &format!("--ctlsplitcase={}", case), &format!("--ctlsplitassumeload={}", load),
+                ],
+                VARS,
+                false,
+            );
+            let what = format!("case limit {}, stage-1 load {}%", case, load);
+            assert_eq!(status, "UNSATISFIABLE", "{}", what);
+            let line = control_line(&out, "ctlsplit=");
+            assert!(line.contains(want), "{}: {}", what, line);
+            assert!(stage1_value(line, "stage1") > 0, "{}: {}", what, line);
+            assert_eq!(gate(&cnf, &proof), "ok", "{}: gate ({})", what, line);
+        }
+    }
+}
+
+#[test]
+fn two_stage_answers_from_the_case_solver() {
+    // with room for stage 1, the cases are answered by the case solver: one
+    // load of the formula for all of them, none for a sub-solver
+    let fx = Fixture::new("control_two_stage_all");
+    let cnf = fx.path("r.cnf");
+    let proof = fx.path("r.drat");
+    random_3sat(160, 4.8, 7, &cnf);
+    let options = ["--ctlsplit=1", "--ctlsplitassume=1", "--ctlsplitbits=3", "--ctlsplitratio=100000", "--ctlsplitassumeload=100000"];
+    let (status, out) = run_ctl(&cnf, Some(&proof), &options, VARS, false);
+    assert_eq!(status, "UNSATISFIABLE");
+    let line = control_line(&out, "ctlsplit=");
+    // every case is asked of the case solver and none is left open.  The
+    // case solver keeps what it learned, so before the last case it can
+    // find that the formula itself is unsatisfiable: then that case is not
+    // counted as refuted, and the answer is the same
+    assert!(line.contains("status=unsat") && line.contains("unknown=0 "), "{}", line);
+    assert_eq!(stage1_value(line, "s1loads"), 1, "{}", line);
+    assert_eq!(stage1_value(line, "s1open"), 0, "{}", line);
+    let cases = stage1_value(line, "cases");
+    let answered = stage1_value(line, "s1refuted") + stage1_value(line, "s1skipped");
+    assert!(cases >= 7 && (answered == cases || answered + 1 == cases), "{}", line);
+    assert_eq!(gate(&cnf, &proof), "ok", "{}", line);
+    // the one-stage split on the same formula pays eight loads
+    let (_s, one) = run_ctl(&cnf, None, &["--ctlsplit=1", "--ctlsplitbits=3", "--ctlsplitratio=100000"], VARS, false);
+    let one_line = control_line(&one, "ctlsplit=");
+    assert!(one_line.contains("status=unsat") && !one_line.contains("stage1="), "the one-stage line is what it was: {}", one_line);
+}
+
+#[test]
+fn two_stage_model_satisfies_the_input() {
+    let fx = Fixture::new("control_two_stage_sat");
+    for seed in 1..=3u64 {
+        let cnf = fx.path(&format!("s{}.cnf", seed));
+        random_3sat(150, 3.6, seed, &cnf);
+        for load in ["100000", "1"] {
+            let (status, out) = run_ctl(
+                &cnf,
+                None,
+                &["--ctlsplit=1", "--ctlsplitassume=1", "--ctlsplitbits=3", "--ctlsplitratio=100000", &format!("--ctlsplitassumeload={}", load)],
+                VARS,
+                false,
+            );
+            assert_eq!(status, "SATISFIABLE", "seed {} load {}", seed, load);
+            assert!(control_line(&out, "ctlsplit=").contains("status=sat"), "seed {} load {}: the split's model", seed, load);
+            assert!(model_ok(&cnf, &out), "seed {} load {}: the model satisfies every clause", seed, load);
+        }
+    }
+}
+
+#[test]
+fn two_stage_a_small_core_skips_cases() {
+    // variable 1 cannot be true: (not 1 or 200) and (not 1 or not 200).  So
+    // the first case with bit 1 on fails with the core "1" alone, and the
+    // other three such cases are refuted without being asked
+    let fx = Fixture::new("control_two_stage_core");
+    let cnf = fx.path("r.cnf");
+    let proof = fx.path("r.drat");
+    random_3sat(160, 4.8, 7, &cnf);
+    let text = std::fs::read_to_string(&cnf).unwrap();
+    let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+    let header: Vec<&str> = lines[0].split_whitespace().collect();
+    let clauses: usize = header[3].parse().unwrap();
+    lines[0] = format!("p cnf 200 {}", clauses + 2);
+    lines.push("-1 200 0".to_string());
+    lines.push("-1 -200 0".to_string());
+    std::fs::write(&cnf, lines.join("\n") + "\n").unwrap();
+    let (status, out) = run_ctl(
+        &cnf,
+        Some(&proof),
+        &["--ctlsplit=1", "--ctlsplitassume=1", "--ctlsplitbits=3", "--ctlsplitratio=100000", "--ctlsplitassumeload=100000"],
+        "1,2,3",
+        false,
+    );
+    assert_eq!(status, "UNSATISFIABLE");
+    let line = control_line(&out, "ctlsplit=");
+    // (the case solver may refute the whole formula before the last case,
+    // so not all three need to be reached)
+    assert!(line.contains("status=unsat") && line.contains("unknown=0 "), "{}", line);
+    let skipped = stage1_value(line, "s1skipped");
+    assert!((1..=3).contains(&skipped), "{}", line);
+    assert_eq!(stage1_value(line, "stage1") + skipped, stage1_value(line, "cases"), "a skipped case is not asked: {}", line);
+    assert_eq!(gate(&cnf, &proof), "ok", "{}", line);
+}
+
+#[test]
+fn two_stage_leaves_the_search_alone() {
+    // random 3-SAT given a control set: its first case is a search, so the
+    // split gives up at once.  The case solver is a solver of its own, so
+    // the search afterwards is the plain one, counter for counter.
+    let fx = Fixture::new("control_two_stage_costly");
+    let cnf = fx.path("r.cnf");
+    random_3sat(200, 4.4, 5, &cnf);
+    let plain = run(&cnf, &[], &[]);
+    let split = run(&cnf, &["--ctlsplit=1", "--ctlsplitassume=1", "--ctlsplitratio=1"], &[("SAT_CTL_VARS", VARS)]);
+    let line = control_line(&split.stdout, "ctlsplit=");
+    assert!(line.contains("status=costly") && line.contains("refuted=0 "), "the split must give up with nothing refuted: {}", line);
+    assert!(stage1_value(line, "stage1") >= 1, "{}", line);
+    assert_eq!(plain.status, split.status);
+    for key in ["conflicts", "decisions", "propagations", "restarts", "reductions"] {
+        assert_eq!(plain.stats.get(key), split.stats.get(key), "the search after a split that gave up: {}", key);
+    }
+    assert!(split.work() > plain.work(), "the split's work counts");
+}
+
+#[test]
+fn two_stage_on_the_rotator() {
+    let fx = Fixture::new("control_two_stage_rot");
+    let cnf = rotmiter();
+    let proof = fx.path("rot.drat");
+    let (status, out) = run_ctl(&cnf, Some(&proof), &["--ctlsplit=1", "--ctlsplitassume=1"], "", false);
+    assert_eq!(status, "UNSATISFIABLE");
+    let line = control_line(&out, "ctlsplit=");
+    assert!(line.contains("status=unsat") && line.contains("cases=8 "), "{}", line);
+    assert_eq!(gate(&cnf, &proof), "ok", "{}", line);
+    // and with the shipped defaults (the structure stage runs first)
+    let proof2 = fx.path("rot2.drat");
+    let (status, out) = run_ctl(&cnf, Some(&proof2), &["--ctlsplit=1", "--ctlsplitassume=1"], "", true);
+    assert_eq!(status, "UNSATISFIABLE");
+    assert!(control_line(&out, "ctlsplit=").contains("status=unsat"));
+    assert_eq!(gate(&cnf, &proof2), "ok");
+}
+
 /// Two 200-bit barrel rotators over one 3-bit word, the levels in opposite
 /// orders, compared bit by bit (tools/control_read.py's Circ; unsatisfiable).
 fn rotmiter() -> std::path::PathBuf {

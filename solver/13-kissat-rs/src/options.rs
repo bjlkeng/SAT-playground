@@ -150,6 +150,14 @@ kissat_options! {
     // control variables before the search, each case in a sub-solver
     // (src/control.rs). Off by default
     (ctlsplit, 0, 0, 2, "split on the control variables (SAT_CTL_VARS) first: 1 split, 2 probe"),
+    // Not in kissat (2026-11-15, epic SAT-playground-bp3 step 5): the split
+    // in two stages.  A case is first a question to one case solver, under
+    // assumptions (src/assume.rs), within ctlsplitassumeload percent of one
+    // load of the formula; only a case that leaves open goes to a fresh
+    // sub-solver.  Off by default: the one-stage split stays until the runs
+    // decide
+    (ctlsplitassume, 0, 0, 1, "control split: cases first as questions to one case solver"),
+    (ctlsplitassumeload, 100, 1, 100_000, "control split: work for one such question (percent of a load)"),
     (ctlsplitbits, 6, 1, 12, "control split bits a level"),
     (ctlsplitcase, 3_000_000, 1, i32::MAX, "control split work a case (K)"),
     // a formula of more input clauses is neither kept nor read: the copy and
@@ -879,8 +887,9 @@ mod tests {
         // control options ctlfirst, ctlsplit, ctlsplitbits, ctlsplitcase,
         // ctlsplitlevels, ctlsplitticks, ctlreadticks, ctlsplitratio,
         // ctlsplitclauses (2026-11-14), and assumeconflicts, assumeticks,
-        // inccnf (2026-11-15, branch assumptions)
-        assert_eq!(OPTION_TABLE.len(), 158 + 71);
+        // inccnf, ctlsplitassume, ctlsplitassumeload (2026-11-15, branch
+        // assumptions)
+        assert_eq!(OPTION_TABLE.len(), 158 + 73);
     }
 
     #[test]

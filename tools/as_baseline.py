@@ -12,6 +12,9 @@ Sets:
             tools/parity.py uses against the C kissat) on tests/cnf
   stockmed  the stock path on the 100 medium cells
   default   the shipped defaults on the 100 medium cells
+  split     the shipped defaults with the control split on (--ctlsplit=1)
+            on the 100 medium cells and the four oisc cells of 2025, where
+            the split fires: the one-stage split must stay what it is
 
 Each run is the binary as run.sh calls it, with a proof path, plus -s and
 --seed=0. Per cell the table has: the exit code, the answer, the work-clock
@@ -52,7 +55,12 @@ DEFAULT_CORES = list(range(0, 16)) + list(range(18, 34))
 MEM_BYTES = 16 * 1024 ** 3
 
 # Work limits per set (the work clock W, CLAUDE.md "Evaluation").
-DEFAULT_LIMIT = {"stock": 0, "stockmed": 2_000_000_000, "default": 10_000_000_000}
+DEFAULT_LIMIT = {"stock": 0, "stockmed": 2_000_000_000, "default": 10_000_000_000,
+                 "split": 10_000_000_000}
+OISC = ["113e692e379518bc3277855277dcc1b8-oisc-subrv-sll-nested-8",
+        "d5b11b0b73eb4ecebdbf6ee8143da689-oisc-subrv-and-nested-11",
+        "5aed29ce52192a55ffbd2a6f340017e7-oisc-subrv-and-nested-12",
+        "053e06424279f5cfec8bb14dfa9af23c-oisc-subrv-and-nested-15"]
 
 EXACT_FIELDS = ["exit", "status", "workclock", "counters_sha", "text_sha", "model_sha",
                 "proof_bytes", "proof_sha", "pbp_bytes", "pbp_sha", "derived_bytes", "derived_sha"]
@@ -94,6 +102,16 @@ def cells_of(set_name):
         if len(out) != 100:
             raise SystemExit(
                 f"{d} has {len(out)} cells, expected 100 (in a worktree, run tools/worktree_links.sh first)")
+        if set_name == "split":
+            full = os.path.join(ROOT, "benchmarks", "sat-comp-2025")
+            have = {cell for cell, _ in out}
+            for stem in OISC:
+                path = os.path.join(full, stem + ".cnf.xz")
+                if not os.path.exists(path):
+                    raise SystemExit(f"missing {path}")
+                if stem not in have:    # one of them is a medium cell already
+                    out.append((stem, path))
+            out.sort()
     return out
 
 
@@ -285,6 +303,8 @@ def cmd_run(args):
     if not os.access(solver, os.X_OK):
         raise SystemExit(f"not an executable: {solver}")
     opts = stock_options() if args.set in ("stock", "stockmed") else []
+    if args.set == "split":
+        opts = ["--ctlsplit=1"]
     opts += args.options.split() if args.options else []
     limit = DEFAULT_LIMIT[args.set] if args.limit_ticks is None else args.limit_ticks
     cells = cells_of(args.set)

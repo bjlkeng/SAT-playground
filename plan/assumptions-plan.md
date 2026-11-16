@@ -314,15 +314,43 @@ One easy case, sll-8 with its six bits at the value 5: today a fresh solver
 pays 49.9M to load the formula and 36.3M to refute it. With the passes off
 it falls in 16.0M after one decision and two conflicts.
 
-- **Stage 1.** Every case is a solve of the main solver under the case's
-  bits, with a small work limit (one load's worth covers every easy case
-  measured). No load, no clean-up, learned clauses kept from case to case.
+- **Stage 1.** Every case is a solve under the case's bits, with a small work
+  limit (one load's worth covers every easy case measured). No clean-up,
+  learned clauses kept from case to case.
 - **Stage 2.** A case stage 1 leaves open goes to a fresh solver with the
   bits as unit clauses, as today.
 - A core with fewer bits than the case refutes every case that shares those
   values; they are skipped.
 - The estimates are from a stand-in (bits as unit clauses, passes off). Step
   5 measures the real thing first, case by case, before the proof work.
+
+**Which solver answers stage 1.** Not the main solver, but one **case
+solver** that the split keeps for all its cases: a second solver, loaded
+once, asked under assumptions. Decided 2026-11-15, before step 5's code, for
+these reasons:
+
+- *The main search stays what it is today.* When a split gives up (a case is
+  a search, or the budget ends), the main search starts afterwards. If the
+  cases had run in the main solver, that search would start with other
+  scores, other phases, learned clauses and no first preprocessing. With a
+  case solver the main solver is untouched until the split is over, so
+  whatever the split does not decide is searched exactly as today. The runs
+  of step 8 then differ from the current split only where the split itself
+  differs.
+- *The proof is simple.* Under assumptions the case solver's learned clauses
+  follow from the formula alone, so its proof lines go into the main proof as
+  they are, with no bits added. Only added lines are copied (its deletions
+  are dropped), so nothing the main solver still needs is ever deleted.
+- *The cost is one load*, paid by the first case, instead of one per case
+  (sll-8: 49.9M of an estimated 1.10G).
+- *What is given up:* the memory of the second solver stays, as today. It
+  would stay anyway while hard cases go to a fresh solver.
+
+A case's proof in stage 1, in the worked example's terms: the case solver
+writes whatever it learned, then the clause that negates the failed core. If
+the core is the whole case, that clause is the case's own clause, the one
+the joins need. If the core is smaller, the case's clause is added after it
+(it contains the core's clause, so a checker accepts it at once).
 
 ## 10. The test driver
 

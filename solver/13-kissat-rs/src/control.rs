@@ -59,6 +59,15 @@ pub struct Control {
     pub read_work: u64,
     /// The work clock when the split began (structure passes, the walk).
     pub split_pre: u64,
+    /// The split in two stages (`ctlsplitassume`): cases asked of the case
+    /// solver, those it refuted, those an earlier core refuted before they
+    /// were asked, those it left open, its work, and how often it was loaded.
+    pub stage1_cases: u64,
+    pub stage1_refuted: u64,
+    pub stage1_skipped: u64,
+    pub stage1_open: u64,
+    pub stage1_work: u64,
+    pub stage1_loads: u64,
 }
 
 /// Read the control set after the formula is in the solver.
@@ -129,14 +138,24 @@ pub fn report(solver: &Solver) {
         println!("c control ctlfirst=1 asked={} vars={} decisions={}", c.asked, c.vars.len(), c.decisions);
     }
     if solver.options.ctlsplit != 0 {
+        // the two-stage fields come last and only with `ctlsplitassume`, so
+        // the line of the one-stage split is what it was
+        let stage1 = if solver.options.ctlsplitassume != 0 {
+            format!(
+                " stage1={} s1refuted={} s1skipped={} s1open={} s1work={} s1loads={}",
+                c.stage1_cases, c.stage1_refuted, c.stage1_skipped, c.stage1_open, c.stage1_work, c.stage1_loads
+            )
+        } else {
+            String::new()
+        };
         println!(
-            "c control ctlsplit={} status={} cases={} refuted={} unknown={} sat={} work={} lemmas={} pre={} read={}",
+            "c control ctlsplit={} status={} cases={} refuted={} unknown={} sat={} work={} lemmas={} pre={} read={}{}",
             solver.options.ctlsplit,
             // empty: the run ended before the split finished (a signal in
             // its cases, or before it began)
             if c.split_status.is_empty() { "unfinished" } else { &c.split_status },
             c.split_cases, c.split_refuted, c.split_unknown, c.split_sat, c.split_work, c.split_lemmas,
-            c.split_pre, c.read_work
+            c.split_pre, c.read_work, stage1
         );
     }
 }
@@ -170,6 +189,24 @@ pub fn report(solver: &Solver) {
 // against every clause of the kept formula and printed as it is.  When the
 // split ends undecided, the refuted cases' not-u clauses go to the solver
 // (they are in the proof already) and the search starts as usual.
+//
+// Two stages (`ctlsplitassume`, epic SAT-playground-bp3 step 5).  Loading
+// the formula into a fresh sub-solver for every case is most of the split's
+// work, and most cases fall in a few decisions (352 of 384 measured on the
+// 2025 oisc cells; solver README, "Cases without the clean-up").  So a case
+// is first a question to one case solver that the split keeps for all its
+// cases: loaded once, asked under the case's bits as assumptions
+// (src/assume.rs) within a small work limit.  Only a case it leaves open
+// goes to a fresh sub-solver as above.  The main solver is not touched, so
+// a split that gives up leaves the search what it was.
+//
+// Proof of a stage-1 case.  Under assumptions what the case solver learns
+// follows from the formula alone, so its added lines go into the proof as
+// they are, with no bits appended, and they stay (the case solver goes on
+// using them).  Its last line negates the failed core; the case's own
+// clause not-u contains that, and is added after it for the joins.  A core
+// smaller than its case refutes every later case that holds it: such a case
+// is not asked, and its not-u is added the same way.
 
 struct Node {
     units: Vec<i32>,
@@ -181,6 +218,8 @@ struct Node {
     children: Vec<usize>,
     /// 0 open, 1 refuted, 2 split, 3 no answer.
     status: u8,
+    /// How many cases were started before this one.
+    order: u64,
 }
 
 /// Keep the formula the search will see (derived clauses, then the input),
@@ -596,17 +635,10 @@ enum Case {
     NoBudget,
 }
 
-/// Solve one case in a sub-solver; on UNSAT write its relativized proof.
-fn solve_case(solver: &mut Solver, formula: &[i32], max_var: i32, units: &[i32], limit: u64) -> Case {
-    // loading the formula into the sub-solver is work too (a literal a
-    // tick): paid before it starts, and out of the case's limit
-    let load = formula.len() as u64 + 2 * units.len() as u64;
-    if load >= limit {
-        return Case::NoBudget;
-    }
-    solver.statistics.ticks = solver.statistics.ticks.saturating_add(load);
-    solver.control.split_work = solver.control.split_work.saturating_add(load);
-    let limit = limit - load;
+/// A fresh sub-solver with the split's options: the parent's, without
+/// `factor` (the one kissat technique that adds variables), the structure
+/// passes and the engines (their proofs are VeriPB), and silent.
+fn new_sub(solver: &Solver) -> Box<Solver> {
     let mut sub = Box::new(crate::internal::init());
     sub.options = solver.options;
     for (name, value) in [
@@ -632,6 +664,109 @@ fn solve_case(solver: &mut Solver, formula: &[i32], max_var: i32, units: &[i32],
     ] {
         crate::internal::set_option(&mut sub, name, value);
     }
+    sub
+}
+
+/// The case solver of the split in two stages: the formula loaded once,
+/// the control variables frozen (every case assumes some of them), its
+/// proof kept in memory.  Err: the limit does not cover the load
+/// (`NoBudget`), or the solver was told to stop (`Unknown`).
+fn load_case_solver(solver: &mut Solver, formula: &[i32], vars: &[i32], limit: u64) -> Result<Box<Solver>, Case> {
+    // loading is work, a literal a tick, as for a case's sub-solver; here it
+    // is paid once for all the cases
+    let load = formula.len() as u64;
+    if load >= limit {
+        return Err(Case::NoBudget);
+    }
+    solver.statistics.ticks = solver.statistics.ticks.saturating_add(load);
+    solver.control.split_work = solver.control.split_work.saturating_add(load);
+    solver.control.stage1_work = solver.control.stage1_work.saturating_add(load);
+    solver.control.stage1_loads += 1;
+    let mut sub = new_sub(solver);
+    if solver.proof.is_some() {
+        crate::proof::init_captured_proof(&mut sub);
+    }
+    sub.parent_stop = &solver.termination.flagged as *const std::sync::atomic::AtomicBool as usize;
+    for (i, &l) in formula.iter().enumerate() {
+        if i % 65536 == 0 && solver.termination.flagged.load(std::sync::atomic::Ordering::Relaxed) {
+            crate::internal::release(*sub);
+            return Err(Case::Unknown);
+        }
+        crate::internal::add(&mut sub, l);
+    }
+    for &v in vars {
+        if crate::assume::freeze(&mut sub, v).is_err() {
+            crate::internal::release(*sub);
+            return Err(Case::Unknown);
+        }
+    }
+    Ok(sub)
+}
+
+enum Stage1 {
+    /// Refuted, with the failed core: the case's units that were needed.
+    Refuted(Vec<i32>),
+    /// The formula itself is unsatisfiable (the empty clause is in the proof).
+    Unsat,
+    Sat(Vec<bool>),
+    Open,
+}
+
+/// Ask the case solver one case: its units as assumptions, within `limit`.
+/// What it added to its proof goes into the solver's proof as it is.
+fn stage1(solver: &mut Solver, sub: &mut Solver, max_var: i32, units: &[i32], limit: u64) -> Stage1 {
+    let before = sub.statistics.work_clock();
+    let base = solver.statistics.ticks;
+    // the parent's clock follows this case's work as it goes (the case
+    // solver's own clock runs on from case to case)
+    sub.parent_ticks_base = base.saturating_sub(before);
+    sub.parent_ticks = &mut solver.statistics.ticks as *mut u64 as usize;
+    let mut res = 0;
+    if units.iter().all(|&u| crate::assume::assume(sub, u).is_ok()) {
+        crate::assume::limit(sub, None, Some(limit));
+        res = crate::assume::solve(sub);
+    } else {
+        crate::assume::forget(sub);
+    }
+    sub.parent_ticks = 0;
+    let used = sub.statistics.work_clock().saturating_sub(before);
+    solver.statistics.ticks = base.saturating_add(used);
+    solver.control.split_work = solver.control.split_work.saturating_add(used);
+    solver.control.stage1_work = solver.control.stage1_work.saturating_add(used);
+    if solver.proof.is_some() {
+        for line in crate::proof::drain_captured_proof(sub) {
+            crate::proof::add_external_lits_to_proof(solver, &line);
+            solver.control.split_lemmas += 1;
+        }
+    }
+    match res {
+        20 if sub.inconsistent => Stage1::Unsat,
+        20 => Stage1::Refuted(
+            units.iter().enumerate().filter(|&(place, _)| crate::assume::failed(sub, place)).map(|(_, &u)| u).collect(),
+        ),
+        10 => {
+            let mut model = vec![false; max_var as usize + 1];
+            for v in 1..=max_var {
+                model[v as usize] = crate::internal::value(sub, v) > 0;
+            }
+            Stage1::Sat(model)
+        }
+        _ => Stage1::Open,
+    }
+}
+
+/// Solve one case in a sub-solver; on UNSAT write its relativized proof.
+fn solve_case(solver: &mut Solver, formula: &[i32], max_var: i32, units: &[i32], limit: u64) -> Case {
+    // loading the formula into the sub-solver is work too (a literal a
+    // tick): paid before it starts, and out of the case's limit
+    let load = formula.len() as u64 + 2 * units.len() as u64;
+    if load >= limit {
+        return Case::NoBudget;
+    }
+    solver.statistics.ticks = solver.statistics.ticks.saturating_add(load);
+    solver.control.split_work = solver.control.split_work.saturating_add(load);
+    let limit = limit - load;
+    let mut sub = new_sub(solver);
     crate::internal::set_ticks_limit(&mut sub, limit);
     let proving = solver.proof.is_some();
     if proving {
@@ -823,7 +958,7 @@ pub fn split(solver: &mut Solver) -> i32 {
     let case_limit = (solver.options.ctlsplitcase as u64).saturating_mul(1000);
     let budget = (solver.options.ctlsplitticks as u64).saturating_mul(1000);
     let w0 = solver.statistics.work_clock();
-    let mut nodes: Vec<Node> = vec![Node { units: Vec::new(), level: 0, pos: 0, bits: Vec::new(), children: Vec::new(), status: 2 }];
+    let mut nodes: Vec<Node> = vec![Node { units: Vec::new(), level: 0, pos: 0, bits: Vec::new(), children: Vec::new(), status: 2, order: 0 }];
     let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
     // split node `n` on the next bits; false when no bits are left
     let expand = |nodes: &mut Vec<Node>, queue: &mut std::collections::VecDeque<usize>, n: usize| -> bool {
@@ -840,7 +975,7 @@ pub fn split(solver: &mut Solver) -> i32 {
                 units.push(if (w >> i) & 1 == 1 { b } else { -b });
             }
             let id = nodes.len();
-            nodes.push(Node { units, level, pos: end, bits: Vec::new(), children: Vec::new(), status: 0 });
+            nodes.push(Node { units, level, pos: end, bits: Vec::new(), children: Vec::new(), status: 0, order: 0 });
             nodes[n].children.push(id);
             queue.push_back(id);
         }
@@ -851,7 +986,23 @@ pub fn split(solver: &mut Solver) -> i32 {
     expand(&mut nodes, &mut queue, 0);
     let mut verdict = 0;
     let mut stopped = "";
-    while let Some(n) = queue.pop_front() {
+    // the two stages (`ctlsplitassume`): the case solver, the cores it found
+    // that are smaller than their case, and the cases it left open
+    let two_stage = solver.options.ctlsplitassume != 0;
+    let stage1_limit = (literals.saturating_mul(solver.options.ctlsplitassumeload.max(1) as u64) / 100).max(1);
+    let mut case_solver: Option<Box<Solver>> = None;
+    let mut cores: Vec<Vec<i32>> = Vec::new();
+    let mut waiting: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+    loop {
+        // every case has its try in the case solver first; one it left open
+        // comes back from `waiting` for a sub-solver of its own
+        let (n, second) = match queue.pop_front() {
+            Some(n) => (n, false),
+            None => match waiting.pop_front() {
+                Some(n) => (n, true),
+                None => break,
+            },
+        };
         let spent = solver.statistics.work_clock().saturating_sub(w0);
         if spent >= budget {
             stopped = "budget";
@@ -869,8 +1020,9 @@ pub fn split(solver: &mut Solver) -> i32 {
         // the first two cases test the shape itself: a case that is a search
         // (four times the cost bound a literal) ends the split at once, before
         // it spends a full case limit (gm16spctrc spent four of 3G each)
+        let order = if second { nodes[n].order } else { solver.control.split_cases };
         let mut early = false;
-        if !probe && solver.control.split_cases < 2 {
+        if !probe && order < 2 {
             let cap = ratio.saturating_mul(4).saturating_mul(literals).max(1);
             if cap < limit {
                 // the cap binds: a case that reaches it is a search
@@ -889,9 +1041,111 @@ pub fn split(solver: &mut Solver) -> i32 {
                 break;
             }
         }
-        solver.control.split_cases += 1;
+        if !second {
+            nodes[n].order = order;
+            solver.control.split_cases += 1;
+        }
         let units = nodes[n].units.clone();
-        match solve_case(solver, &formula, max_var, &units, limit) {
+        // set when stage 1 already gave the case its whole limit: then it
+        // is a case without an answer, and no sub-solver follows
+        let mut spent_whole = false;
+        if two_stage && !second {
+            // an earlier core that this case holds refutes it too: its
+            // clause not-u contains the core's clause
+            if cores.iter().any(|core| core.iter().all(|l| units.contains(l))) {
+                if solver.proof.is_some() {
+                    crate::proof::add_external_lits_to_proof(solver, &negated(&units));
+                    solver.control.split_lemmas += 1;
+                }
+                nodes[n].status = 1;
+                solver.control.split_refuted += 1;
+                solver.control.stage1_skipped += 1;
+                continue;
+            }
+            if case_solver.is_none() {
+                match load_case_solver(solver, &formula, &vars, limit) {
+                    Ok(sub) => case_solver = Some(sub),
+                    Err(Case::NoBudget) => {
+                        nodes[n].status = 3;
+                        stopped = "budget";
+                        break;
+                    }
+                    Err(_) => {
+                        nodes[n].status = 3;
+                        stopped = "stopped";
+                        break;
+                    }
+                }
+            }
+            solver.control.stage1_cases += 1;
+            let before = solver.statistics.work_clock();
+            let limit1 = stage1_limit.min(limit);
+            let answer = stage1(solver, case_solver.as_mut().unwrap(), max_var, &units, limit1);
+            match answer {
+                Stage1::Unsat => {
+                    // the case solver refuted the formula itself, and its
+                    // empty clause is in the proof
+                    verdict = 20;
+                    break;
+                }
+                Stage1::Refuted(core) => {
+                    // the joins need the case's own clause; it contains the
+                    // clause of the core, which the case solver wrote
+                    if solver.proof.is_some() {
+                        crate::proof::add_external_lits_to_proof(solver, &negated(&units));
+                        solver.control.split_lemmas += 1;
+                    }
+                    if core.len() < units.len() {
+                        cores.push(core);
+                    }
+                    nodes[n].status = 1;
+                    solver.control.split_refuted += 1;
+                    solver.control.stage1_refuted += 1;
+                    continue;
+                }
+                Stage1::Sat(model) => {
+                    if satisfies(&formula, &model) {
+                        solver.control.split_sat += 1;
+                        solver.control.model = Some(model);
+                        verdict = 10;
+                        break;
+                    }
+                    crate::print::message(solver, "control split: a case's model failed the check; split abandoned");
+                    nodes[n].status = 3;
+                    stopped = "bad-model";
+                    break;
+                }
+                Stage1::Open => {
+                    solver.control.stage1_open += 1;
+                    let used = solver.statistics.work_clock().saturating_sub(before);
+                    if limit1 >= limit || used >= limit {
+                        // it had the case's whole limit under assumptions
+                        spent_whole = true;
+                    } else if order >= 2 {
+                        // a sub-solver of its own, once every case had its
+                        // try here
+                        waiting.push_back(n);
+                        continue;
+                    } else {
+                        // the first two cases test the shape, so they go
+                        // on to a sub-solver at once
+                        limit -= used;
+                    }
+                }
+            }
+        }
+        let answer = if spent_whole {
+            Case::Unknown
+        } else {
+            // a sub-solver of its own, the bits as unit clauses.  One
+            // solver at a time beside the main one: the case solver goes
+            // first, and is loaded again if a case is split further.
+            if let Some(sub) = case_solver.take() {
+                crate::internal::release(*sub);
+            }
+            solve_case(solver, &formula, max_var, &units, limit)
+        };
+        match answer {
             Case::Refuted => {
                 nodes[n].status = 1;
                 solver.control.split_refuted += 1;
@@ -932,6 +1186,9 @@ pub fn split(solver: &mut Solver) -> i32 {
                 break;
             }
         }
+    }
+    if let Some(sub) = case_solver.take() {
+        crate::internal::release(*sub);
     }
     if verdict == 0 && stopped.is_empty() {
         // every case answered: join the refuted ones bottom-up
