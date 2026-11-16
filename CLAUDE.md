@@ -126,7 +126,15 @@ work is **solver 13** and the RL scheduler on top of it.
   `/home/bojji/code/SAT-playground-assumptions`** (the one exception to the
   shared checkout, the owner's call; `plan/agent-coordination.md`). Main's
   solver code stays as it is until the owner merges (bead `bp3.10`). The plan
-  is `plan/assumptions-plan.md` on the branch.
+  is `plan/assumptions-plan.md` on the branch. Where it stands (2026-11-16):
+  steps 0, 1, 2 and 5 are done and reviewed (commit `0065a55`); the split in
+  two stages (`--ctlsplit=1 --ctlsplitassume=1`, off by default) answers all
+  16 runs of the eight oisc cells of 2023 to 2025 at seeds 2 and 3, against
+  10 with one stage and 4 by the shipped solver. The long gate runs of that
+  build were started as one detached chain (unit `as5-chain`, script
+  `log/as5-400-2026-11-16/chain.sh`, about 33 hours). Steps 3 and 4 are not
+  started; the owner's calls `bp3.11` (how the speed gate judges two builds)
+  and `bp3.12` (steps 3 and 4 before the merge or after) are open.
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a
@@ -283,6 +291,14 @@ physical cores), never 32 each.
 - **Marginal-cell timing is invalid while another 32-way sweep runs.** Under
   contention a SOLVE is trustworthy but a TIMEOUT is not. Schedule margin and
   wall measurements on a quiet host.
+- **Two builds of the same search are not equal in speed.** A rebuild puts
+  the code and the solver's fields at other addresses, and on this host's
+  processor that alone moves the wall mean of the 20 timing cells by about
+  0.7% and one cell by up to 3%, either way (2026-11-16: main with one unused
+  option added is 0.9933 of main). One binary against itself gives 1.0007, so
+  that is not the measure for two builds. Before hunting a slowdown under 1%,
+  compare instruction counts: `tools/as_counters.py` on branch `assumptions`
+  (solver README there, "Assumptions", "Speed").
 - Long sweeps run for hours and `--seedgate` writes `results.tsv` only at the
   end — launch detached, record the run directory and PID, read progress from
   `_work/<idx>` scratch dirs.
@@ -292,7 +308,9 @@ physical cores), never 32 each.
   ended five 24 h proof checks 12 hours in. Start anything that must outlive
   the session with `systemd-run --user --unit=<name> --collect <command>`,
   and record the unit name (`systemctl --user status <name>` shows it,
-  `systemctl --user stop <name>` ends it).
+  `systemctl --user stop <name>` ends it). For a unit that runs many
+  processes add `-p OOMPolicy=continue`: systemd's default stops the whole
+  unit when the kernel ends one of its processes for memory.
 - Killing a run means killing the wrappers *and* the solver children:
   `pkill -f 'bench_reference'; pkill -f 'kissat.*\.cnf'`, then verify with
   `ps`.
