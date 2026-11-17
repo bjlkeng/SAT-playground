@@ -40,7 +40,9 @@ budget (column `B_cell` of `benchmarks/rl/cells_2025.tsv`: up to 102G, 23G for
 the middle cell, 12.4 thousand G together). It is the last search check of the performance gate
 and takes hours, so it has no table here: main's build and the branch's are
 run one after the other and compared (`log/as-baseline-2026-11-15/main-full`
-and `r6-full` in the main checkout). In this set the proof goes through a
+and `r6-full` in the main checkout). Run on 2026-11-16 for the reviewed build:
+400 of 400 cells identical in every field (125 SAT, 187 UNSAT, 87 at their
+budget, one at the memory cap; 335.9 GB of proof lines with equal hashes). In this set the proof goes through a
 pipe and is hashed as it comes (`--proof pipe`), so no proof file of tens of
 GB sits on the disk; the hash is the one the file would have (checked on the
 `stock` and `default` sets against main's file-based tables).
@@ -154,7 +156,15 @@ more. The share moves by up to ten points between such builds.)
 
 The four sets take about 52 minutes at 32 jobs. A timing run takes about 15
 minutes on a quiet host and 25 under load, and needs the host to itself; the
-counters take two minutes. The `full` set takes up to four hours a build.
+counters take two minutes. The `full` set took 2 h 13 min a build at 28 jobs.
+
+For runs of the whole suite under a time limit (`tools/feature_ablation.py`),
+`tools/as_report.py` puts the arms side by side: cells solved, PAR-2 in time
+and in work, how the answers were checked, each arm against a baseline cell
+by cell, and, when the runs were made under `perf stat`, instructions, clock
+ticks and the decoder share on the cells where both ran the same search to an
+answer. It reads a finished run's `results.tsv` or, while a run is going, the
+`kept.tsv` of `--keep-lines 'c workclock '`.
 
 ## What the branch's builds showed
 

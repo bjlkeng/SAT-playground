@@ -7614,7 +7614,17 @@ limit one question. No `s` line is printed in this mode.
 
   That is 312 DRAT files and 170 VeriPB files with equal hashes. Three passes
   of main's own build agree the same way, so a difference would have been a
-  real one. Peak memory is the same too (the middle cell's ratio is 1.000,
+  real one.
+
+  The last check of this kind is all 400 cells of 2025 at the shipped
+  defaults, each under its own work budget (the `full` set, 2026-11-16, the
+  reviewed build, 2 h 13 min a build at 28 jobs;
+  `log/as-baseline-2026-11-15/main-full`, `r6-full` and
+  `r6-full.compare.txt`): **400 of 400 cells identical in every field.** Both
+  builds give 125 SAT, 187 UNSAT, 87 stopped at their budget and one that ends
+  at the memory cap, the same cell. All 400 work-clock lines are equal, so in
+  work the two builds cost the same on every cell (tick PAR-2 exactly 1.000),
+  and the 335.9 GB of proof lines of 393 cells hash the same. Peak memory is the same too (the middle cell's ratio is 1.000,
   nine cells in ten within 0.96 to 1.02). `tools/parity.py --corpus default
   --phases` is 9/9 against the C kissat. Tables and method:
   `benchmarks/assumptions/`.
@@ -7913,6 +7923,83 @@ and limits; wall time, then work):
   solver answers 4 of the 16 runs, the one-stage split 10, the two-stage
   split all 16.
 
+**The 400 cells at seeds 2 and 3** (step 8, bead `bp3.9`;
+`log/abtest-as5-two-stage-400-2026-11-16-07-09-56`, the reviewed build
+`b3b6a491`, frozen `13-j30-as5r6-snapshot`, 2026-11-16 07:17 to 14:14).
+`--ctlsplit=1 --ctlsplitassume=1` against the shipped arms pick2 and pick3 of
+the freewalk stage-3 run (2026-11-11) and against the one-stage arms ctl2 and
+ctl3 (2026-11-14, above): the same suite, seeds, limits (1,800 s, 16 GB, 32
+jobs) and harness call, every answer checked. The tables come from
+`tools/as_report.py`.
+
+| | two stages | one stage | shipped |
+|---|---|---|---|
+| solved, seed 2 | 342 | 338 | 340 |
+| solved, seed 3 | 345 | 342 | 341 |
+| solved, both seeds | **687** (+8 −2) | 680 (+5 −6) | 681 |
+| wall PAR-2 | 0.974x | 1.017x | 1 |
+| tick PAR-2 | 0.986x | 0.988x | 1 |
+| W on cells both solve | 1.0017x | 1.006x | 1 |
+| contradictions | 0 | 0 | |
+| models checked | 148 and 150 | 145 and 148 | 150 and 149 |
+| proofs checked | 168 and 167 | 168 and 167 | 167 and 167 |
+| proofs the checker did not finish in its hour | 26 and 28 | 25 and 27 | 23 and 25 |
+
+- **It fires on the four oisc cells and nowhere else.** The exit lines say
+  `status=unsat` on those four, `no-vars` on 332 (seed 3: 331), `no-formula`
+  on 51, `too-big` on 7, `walk-model` on 5 (6), and `unfinished` on one run,
+  17.normalised, which ends at the 16 GB cap in every arm.
+- **The gain is and-11, and-12 and and-15, at both seeds.** Work and cases
+  are those of the runs above, to the unit:
+
+| cell | shipped | one stage | two stages |
+|---|---|---|---|
+| sll-8 | UNSAT 449 s and 473 s, 5.43G and 5.53G | UNSAT 418 s and 270 s, 5.25G and 5.27G | UNSAT 74 s and 109 s, 1.20G and 1.22G |
+| and-11 | timeout, timeout | UNSAT 1,291 s and 1,312 s | UNSAT 1,059 s and 875 s, 9.18G and 9.51G |
+| and-12 | timeout, timeout | UNSAT 1,549 s and 1,587 s | UNSAT 661 s and 657 s, 8.44G and 8.45G |
+| and-15 | timeout, timeout | timeout, timeout | **UNSAT** 1,342 s and 1,342 s, 16.00G and 16.59G |
+
+- **Everywhere else it is the shipped search plus the reading.** On each of
+  the other 337 (seed 2) and 340 (seed 3) cells that both arms solve, the
+  conflict counts are equal, and the split arm's W is the shipped arm's W plus
+  the `read=` work of its exit line, to the unit
+  (`log/as5-400-2026-11-16/reading_check.py`). The reading sums to 8.17G
+  and 7.91G, which is 0.36% of those cells' work. sll-8 saves 4.2G and 4.3G,
+  so over all cells both solve the work is 1.0017x.
+- **The other four differences are the clock.** grs-256-64 (seed 2) and
+  VanDerWaerden_pd_2-3-22_462 (seed 3) are solved only by the split arm,
+  lockchart L200-K289 and Circuit_multiplier29 (seed 2) only by the shipped
+  arm. All four answers come at 80 to 99% of the limit, the trigger did not
+  fire on any of them, and the arm that ran out of time was 0.2 to 2.9% short
+  of the conflicts the other needed (Circuit_multiplier29: 10,205,378 of
+  10,230,368).
+- **Wall times between these runs are loose**, because the runs were made on
+  different days. On those 337 and 340 cells the split arm's time over the
+  shipped arm's has a geometric mean of 0.995 (seed 2) and 1.012 (seed 3),
+  and a single cell spreads from 0.70 to 1.38 (tenth to ninetieth
+  percentile). The six new answers alone save 15,664 s of PAR-2; the whole
+  difference is 15,530 s. So the 0.974x is the six answers, and the rest nets
+  to nothing.
+- **Tick PAR-2 0.986x** has the same limit: an unsolved cell is priced at the
+  work it had reached when it was stopped, which moves with the day's speed.
+  The line that does not depend on the clock is "W on cells both solve".
+- **The oisc cells are slower here than alone.** and-15 takes 1,342 s here,
+  1,148 s with a proof when only the other three oisc runs share the host, and
+  about 1,015 s without a proof. Here 32 runs write their proofs to one disk. The two and-15 runs, with
+  different seeds and different work, ended within 15 ms of each other, which
+  points at something they share (most likely that disk), not at their own
+  work.
+- **Checks.** No contradiction between any two arms, every model checked, no
+  check failed. The proofs the checker did not finish are 3 more than the
+  shipped arms' at each seed: the three new oisc answers at both seeds and
+  grs-256-64 at seed 2 are new, and one proof (oski15a01b41s_opt, seed 2) was
+  finished this time. The oisc proofs are 1.5 to 21 GB; they are in the
+  24-hour check of step 6. The reviewed build writes the same four proofs as
+  the build before it, byte for byte (`log/as-stage1-2026-11-15/r6-proof/same.txt`).
+- **Memory.** pj2002_k500 and 17.normalised end at the 16 GB cap in every
+  arm, the shipped ones too. 9.normalised, which the one-stage run lost to
+  memory before the size limit existed, is solved at both seeds.
+
 **The hard cases after a clean-up (a measurement for step 3, 2026-11-16).**
 The plan asked one more question: could the hard cases stay in the case
 solver, if it had the clean-up too, with the control bits frozen instead of
@@ -7988,8 +8075,10 @@ and-15 has no answer either way (it needs 16G).
 
 **Caveats.**
 
-- Measured on eight cells of one family, the only one where the split
-  fires and decides. The 400-cell run is step 8.
+- The gain is on one family, oisc: eight cells of 2023 to 2025. On the 400
+  cells of 2025 the split fires on its four oisc cells and on nothing else
+  (above), so everywhere else the option costs the reading and changes
+  nothing.
 - The stage-1 limit (one load) comes from these cells: a case that falls
   cost at most 0.77 of a load. Another family may need another limit
   (`--ctlsplitassumeload`, in percent).

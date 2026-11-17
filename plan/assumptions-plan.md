@@ -487,20 +487,33 @@ binary against itself gives 1.0007 on the 20 cells, but that is not the
 measure for two builds. A rebuild that changes nothing a run executes moves
 the mean by about 0.7% and one cell by up to 3%, either way, because the code
 and the solver's fields land at other addresses (main with one unused option
-added: 0.9933; solver README, "Assumptions", "Speed"). So a build passes
-when:
+added: 0.9933; solver README, "Assumptions", "Speed"). So the quick look at
+a build is two things:
 
-1. it runs the same instructions as main (`tools/as_counters.py`, exact
+1. does it run the same instructions as main (`tools/as_counters.py`, exact
    counts; the reviewed build runs 0.01% to 0.13% more on the four small
    cells, a rebuild of main with one unused option 0.00% to 0.06% more; more
    than 0.2% would be new work on the search's path), and
-2. its mean is inside that spread.
+2. is its mean inside that spread.
 
 A larger difference, or one that stays on the same side over several builds,
 is looked into with the counters. For a closer look both builds can be made
 with `-C llvm-args=-x86-branches-within-32B-boundaries`, which takes most of
 the placement out: then the branch is 1.0021 of main and the cells agree
 within 0.5%.
+
+**The decision is the owner's, on the 400 cells** (the owner's answer of
+2026-11-16 to bead `bp3.11`). No rule decides. The owner is shown the results
+and signs off, and they have to come from a 400-cell run: whether the
+instruction counts are the same, the wall clock, the cells solved, and PAR-2
+in time and in work. That run is one harness call with four arms at the
+shipped defaults and seed 2 (`log/as-pair400-2026-11-16/launch.sh` in the
+main checkout): main's build, the same file a second time (what one build
+gives against itself in this run), the branch's build, and main's code with
+the jump switch (for bead `b1w`). A cell's four runs follow each other in the
+queue and take whatever core is free; each runs under `perf stat`, so the
+counts come from the same runs as the times. `tools/as_report.py` makes the
+tables.
 
 ## 14. Order of work
 
@@ -530,3 +543,21 @@ budgets. Steps 3 and 4 are not started. One measurement for step 3 is in
 (solver README, "The control split in two stages", "The hard cases after a
 clean-up"): the answer to "can the hard cases stay in the case solver?" is
 yes for sll-8 and still open for the three and- cells.
+
+**The chain's results (2026-11-16, evening).**
+
+- The fuzz harness and the five baseline comparisons on the reviewed build:
+  clean and identical.
+- The two-stage split on the 400 cells: 342 and 345 solved at seeds 2 and 3,
+  against 340 and 341 for the shipped arms. The gain is and-11, and-12 and
+  and-15 at both seeds; off the four oisc cells the search is the shipped one
+  plus the reading, to the unit of work (solver README, "The control split in
+  two stages", "The 400 cells at seeds 2 and 3").
+- The 400 cells under their own work budgets, main's build against the
+  branch's with the split off: 400 of 400 identical in every field.
+- The 24-hour check of the four oisc proofs is running since 14:35 (unit
+  `as5-chain`; verdicts in `log/as-stage1-2026-11-15/gates/`).
+- The owner's answers: the speed question is decided by the owner on a paired
+  400-cell run (section 13); it was started at 22:58 as unit `as5-pair400` and
+  takes about 16 hours. Whether steps 3 and 4 come before the merge (bead
+  `bp3.12`) is still open.
