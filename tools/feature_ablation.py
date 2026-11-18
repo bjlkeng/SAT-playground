@@ -42,7 +42,7 @@ Before launching a parallel sweep, check for competing solver/bench processes (t
 contention warning at startup; the agent must `ps`/`pgrep` and ASK the user first per CLAUDE.md).
 """
 from __future__ import annotations
-import argparse, csv, gzip, lzma, os, re, shlex, shutil, subprocess, sys, tempfile, threading, time
+import argparse, contextlib, csv, gzip, lzma, os, re, shlex, shutil, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -219,6 +219,66 @@ def numa_balanced_cores(jobs: int) -> list:
     except Exception:
         pass
     return list(range(max(1, jobs)))
+
+
+def core_threads(cpu: int) -> set:
+    """The hardware threads of the physical core that `cpu` is one of (itself and its SMT sibling)."""
+    try:
+        text = Path(f"/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list").read_text()
+        out = set()
+        for part in text.strip().split(","):
+            lo, _, hi = part.partition("-")
+            out.update(range(int(lo), int(hi or lo) + 1))
+        return out if cpu in out else {cpu}
+    except (OSError, ValueError):
+        return {cpu}
+
+
+def job_cpus(core: int) -> set:
+    """Where the processes of the job on `core` may run: the hardware threads of that core.
+
+    A thread that is itself another job's core is left out. That only happens with more jobs than
+    physical cores, when numa_balanced_cores() hands the second threads out as cores of their own.
+    """
+    return {core} | (core_threads(core) - set(CORES))
+
+
+_PIN_WARNED = threading.Event()
+
+
+@contextlib.contextmanager
+def on_own_core(core: int):
+    """Keep the calling worker thread, and so every process it starts, on its job's own core.
+
+    The solver is pinned to `core` by taskset. The answer checkers (tools/verify_sat.py, drat-trim,
+    VeriPB) are started from the worker thread after the solver has ended, and until 2026-11-18
+    nothing pinned them: the kernel put some on the second hardware thread of a core where another
+    job's solver was running, and that solver ran at about 60% of its speed meanwhile (the same build
+    twice differed by -38% to +75% in clock ticks on a cell; bead SAT-playground-209). A child
+    inherits the affinity of the thread that starts it, and on Linux os.sched_setaffinity(0, ...) sets
+    it for the calling thread alone. So the checkers run on the job's core, which is free once the
+    solver has ended (the job gives its core back only after the check). The thread's own mask is put
+    back afterwards. Where the mask cannot be set (not Linux, or a cpuset that leaves the core out)
+    the job runs unconfined, as before, and one warning is printed.
+    """
+    before = None
+    try:
+        before = os.sched_getaffinity(0)
+        os.sched_setaffinity(0, job_cpus(core))
+    except (AttributeError, OSError) as e:
+        before = None
+        if not _PIN_WARNED.is_set():
+            _PIN_WARNED.set()
+            print(f"[preflight] WARNING: cannot keep a job's checkers on its core ({e}); "
+                  "they run unpinned and can slow other jobs' solvers", flush=True)
+    try:
+        yield
+    finally:
+        if before is not None:
+            try:
+                os.sched_setaffinity(0, before)
+            except OSError:
+                pass
 
 
 def preflight(args) -> None:
@@ -857,9 +917,19 @@ def _verify_result(result: str, cnf_path: Path, odir: Path, stdout_text: str,
     return "skip"
 
 
-def _solve_one(core: int, solver_dir: str, env_extra: dict, cnf_path: Path, odir: Path,
-               timeout: int, mem_mb: int, seed: int, verify: bool = True,
-               keep: tuple = (), kept: list | None = None) -> tuple:
+def _solve_one(core: int, *args, **kwargs) -> tuple:
+    """One job of seedgate() or abtest(): the solver run and the check of its answer, all on `core`.
+
+    The work is _solve_one_on_core(). This wrapper keeps the worker thread on the job's core for the
+    whole job, so the checkers it starts do not land beside another job's solver (on_own_core()).
+    """
+    with on_own_core(core):
+        return _solve_one_on_core(core, *args, **kwargs)
+
+
+def _solve_one_on_core(core: int, solver_dir: str, env_extra: dict, cnf_path: Path, odir: Path,
+                       timeout: int, mem_mb: int, seed: int, verify: bool = True,
+                       keep: tuple = (), kept: list | None = None) -> tuple:
     """Run the solver on one (instance,seed) pinned to `core`.
 
     Returns (result, secs, conflicts, propagations, decisions, verified, (ticks, eliminate_resolutions,
@@ -1207,8 +1277,85 @@ def validate(args) -> int:
     return 0
 
 
+def selftest() -> int:
+    """Checks of the harness's own plumbing, in a few seconds; no benchmark is run.
+
+    Checked: a process started inside on_own_core() may run only on the hardware threads of its job's
+    core; the worker thread gets its mask back and the main thread is never confined; with a core's
+    second thread handed out as a core of its own, each job keeps to its own thread; and end to end,
+    through _solve_one() on a tiny formula with the current solver, that the answer check starts on
+    the job's core.
+    """
+    global CORES, _verify_result
+    from concurrent.futures import ThreadPoolExecutor
+    if not hasattr(os, "sched_setaffinity"):
+        print("selftest: this system has no thread affinity; nothing to check")
+        return 0
+    probe = [sys.executable, "-c", "import os; print(','.join(str(c) for c in sorted(os.sched_getaffinity(0))))"]
+
+    def child_cpus() -> set:
+        out = subprocess.run(probe, stdout=subprocess.PIPE, text=True, check=True).stdout
+        return {int(c) for c in out.strip().split(",")}
+
+    def job(core: int) -> tuple:
+        before = os.sched_getaffinity(0)
+        with on_own_core(core):
+            inside = child_cpus()            # what a checker started by this job gets
+        return core, inside, before, os.sched_getaffinity(0)
+
+    main_before = os.sched_getaffinity(0)
+    saved_cores, saved_verify = CORES, _verify_result
+    try:
+        CORES = numa_balanced_cores(2)
+        with ThreadPoolExecutor(max_workers=len(CORES)) as ex:
+            for core, inside, before, after in ex.map(job, CORES):
+                assert inside == job_cpus(core) and core in inside, (core, inside, job_cpus(core))
+                assert inside <= core_threads(core), f"a child of the job on {core} may run on {sorted(inside)}"
+                assert after == before, f"the worker thread of the job on {core} did not get its mask back"
+        assert os.sched_getaffinity(0) == main_before, "the main thread was confined"
+        assert not _PIN_WARNED.is_set(), "the mask of a job core could not be set"
+        # more jobs than physical cores: a core's second thread is a job core of its own
+        pair = sorted(core_threads(CORES[0]))
+        if len(pair) == 2:
+            CORES = pair
+            assert job_cpus(pair[0]) == {pair[0]} and job_cpus(pair[1]) == {pair[1]}, (pair, job_cpus(pair[0]))
+        # end to end: the place where the answer is checked runs on the job's core
+        CORES = numa_balanced_cores(2)
+        seen = {}
+
+        def probe_check(result, cnf_path, odir, stdout_text, solver_timeout=1800):
+            seen[threading.get_ident()] = child_cpus()
+            return "ok"
+
+        solver_dir = current_solver()
+        if (ROOT / solver_dir / "target/release/sat-solver").is_file():
+            _verify_result = probe_check
+            with tempfile.TemporaryDirectory(prefix="ablation-selftest-") as tmp:
+                cnf = Path(tmp) / "t.cnf"
+                cnf.write_text("p cnf 2 2\n1 2 0\n-1 0\n")
+
+                def solve(core: int) -> tuple:
+                    r = _solve_one(core, solver_dir, {}, cnf, Path(tmp) / f"w{core}", 20, 2000, 0, verify=True)
+                    return core, r[0], r[5], seen.get(threading.get_ident())
+
+                with ThreadPoolExecutor(max_workers=len(CORES)) as ex:
+                    for core, res, ver, cpus in ex.map(solve, CORES):
+                        assert res in ("SAT", "SATISFIABLE") and ver == "ok", (core, res, ver)
+                        assert cpus == job_cpus(core), f"the check of the job on {core} could run on {cpus}"
+            end_to_end = f"the answer check of a real run starts on its job's core ({solver_dir})"
+        else:
+            end_to_end = f"no built solver in {solver_dir}, the end-to-end check was skipped"
+    finally:
+        CORES, _verify_result = saved_cores, saved_verify
+    print(f"selftest ok: a job's processes keep to its core's threads "
+          f"({', '.join(f'{c}: {sorted(core_threads(c))}' for c in numa_balanced_cores(2))}); {end_to_end}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--selftest", action="store_true",
+                    help="check the harness's own plumbing (each job's checkers stay on its core) and exit")
     ap.add_argument("--stage1", action="store_true")
     ap.add_argument("--stage2", action="store_true")
     ap.add_argument("--smoke", action="store_true")
@@ -1255,6 +1402,8 @@ def main() -> int:
     ap.add_argument("--mem-mb", type=int, default=None)
     ap.add_argument("--jobs", type=int, default=None)
     args = ap.parse_args()
+    if args.selftest:
+        return selftest()
     global SUITE, SELECTION
     SUITE = resolve_suite(args.suite or os.environ.get("SAT_ABLATION_SUITE"))
     SELECTION = SUITE / "selection.csv"
