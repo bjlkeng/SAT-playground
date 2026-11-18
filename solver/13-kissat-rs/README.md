@@ -7770,6 +7770,142 @@ A harmless rebuild moves the mean of the 20 cells by about 0.7% and a single
 cell by up to 3%, either way. The three builds of the branch are inside that,
 on both sides of 1.
 
+**The paired 400-cell run (2026-11-16 and 17).** The owner's answer to "how is
+a build judged" (bead `bp3.11`) was: no rule; show whether the instruction
+counts are the same, the wall clock, the cells solved and PAR-2 in time and in
+work, on the 400 cells. So the two builds ran the whole suite side by side:
+one harness call (`log/as-pair400-2026-11-16/launch.sh` in the main checkout,
+run folder `log/abtest-as5-pair400-2026-11-16-23-24-22`), four arms at the
+shipped defaults and seed 2, 1,800 s, 16 GB, 28 jobs, every answer checked,
+every run under `perf stat` (user space; five events, each counted for the
+whole of all 1,600 runs). A cell's four runs follow each other in the queue
+and take whatever core is free. Tables: `tools/as_report.py`
+(`log/as-pair400-2026-11-16/report.txt`); they agree with the harness's own
+verdict.
+
+| arm | what |
+|---|---|
+| main | main's build, `be9a2b05` |
+| mainb | the same file a second time: what one build gives against itself |
+| as | the branch's reviewed build, `b3b6a491` |
+| jcc | main's code with the jump switch (below), `f2b858cd` |
+
+| | main | mainb | as | jcc |
+|---|---|---|---|---|
+| solved | 340 | 340 | 340 | 340 |
+| SAT and UNSAT | 149 and 191 | 148 and 192 | 149 and 191 | 149 and 191 |
+| timeouts, and runs at the memory cap | 58 and 2 | 58 and 2 | 58 and 2 | 58 and 2 |
+| wall PAR-2 | 298,211 | 1.0011x | 1.0022x | 0.9946x |
+| tick PAR-2 | 7.633e12 | 0.9973x | 0.9952x | 1.0064x |
+| models checked | 149 | 148 | 149 | 149 |
+| proofs checked | 167 | 168 | 167 | 167 |
+| proofs the checker did not finish in its hour | 24 | 24 | 24 | 24 |
+| contradictions, failed checks, stops that are neither the clock nor memory | 0 | 0 | 0 | 0 |
+
+Each arm against main, on the cells both solve:
+
+| | mainb | as | jcc |
+|---|---|---|---|
+| solved by both; only this arm; only main | 339; 1; 1 | 339; 1; 1 | 340; 0; 0 |
+| the same search (equal conflicts and equal work) | 339 of 339 | 339 of 339 | 340 of 340 |
+| instructions, summed | 0.999995 | 1.00074 | 1.0301 |
+| instructions, a cell | 0.9988 to 1.0010 | 0.9974 to 1.0080 | 1.011 to 1.065 |
+| wall time: summed; geometric mean; median cell | 1.0040; 1.0007; 1.0007 | 1.0085; 0.9943; 0.9999 | 0.9803; 0.9624; 0.9617 |
+| processor time: summed; geometric mean | 1.0043; 1.0015 | 1.0110; 0.9999 | 0.9802; 0.9631 |
+| share of micro-operations through the decoder (main 34.3%) | 34.3% | 28.1% | 4.0% |
+
+- **Answers and search.** No arm contradicts another, no check failed, and on
+  every cell two arms both solve the conflict counts and the work are equal.
+  Main's work is also the shipped run's of 2026-11-11 (arm pick2), to the
+  unit, on all 339 cells both solve.
+- **Solved: 340 in every arm.** The cells that only one of two arms solves
+  are answers at 98 to 99% of the limit, and the same build flips too: its
+  second run solves g2-T49.2.0 and loses at-least-two-vmpc_28. The branch's
+  build solves lockchart L200-K289 and loses at-least-two-vmpc_28, where it was
+  0.2% short of the conflicts at the limit.
+- **PAR-2.** Wall PAR-2 is 1.0022x for the branch's build and 1.0011x for the
+  same build twice. Tick PAR-2 moves by the cells that flip and by the work
+  the unsolved runs had reached when they were stopped; on the cells both
+  solve the work is equal.
+- **Instruction counts are not identical.** The branch's build runs 0.07% more
+  in sum, from 0.26% fewer to 0.80% more on a cell, and more than 0.2% away on
+  18 of the 232 cells of 10 s or more. The largest are the `crusti_g2io` cells
+  (0.4 to 0.8% more). The same build twice agrees within 0.12% on every cell
+  and to five digits in sum. So the new checks on the paths every run takes
+  (is a variable frozen, is there an assumption left) cost up to 0.8% of the
+  instructions on a cell and 0.07% over the suite.
+- **Time.** The typical cell takes the same time (median 0.9999). The short
+  cells are faster (under 60 s: 0.988 in processor time), because this build's
+  code happens to decode better: its share through the decoder is lower on 301
+  of the 339 cells. But summed over all cells the branch's build used 1.1%
+  more processor time than main's first run and 0.7% more than its second,
+  and main's two runs differ by 0.4%. That sits in the long cells:
+
+  | cells by main's time | cells | main's processor time | as over main | as over mainb | mainb over main |
+  |---|---|---|---|---|---|
+  | under 60 s | 126 | 2,198 s | 0.988 | 0.995 | 0.994 |
+  | 60 to 600 s | 108 | 24,176 s | 1.012 | 1.003 | 1.009 |
+  | 600 s or more | 52 | 53,609 s | 1.0115 | 1.0086 | 1.0029 |
+
+- **This run cannot say whether that 1% is real.** The long cells wait on
+  memory (about one instruction a clock tick), and there two runs of one build
+  can be far apart, with the core and the neighbours a run happens to get.
+  Between main's own two runs the typical long cell differs by 0.7%, but 11
+  of the 52 differ by more than 3% and one by 15%. `pj2008_k200`: main's two
+  runs, started 6 s apart, took 858 s and 1,001 s of processor time for the
+  same 2.848e12 instructions. Over the 52 long cells that leaves about 0.5%
+  of noise on a summed ratio, so 1.15% and 0.86% are two noise widths away
+  from nothing, not more.
+- **A first start was stopped after 20 minutes** (bead `SAT-playground-209`).
+  The harness pins each solver to a core but starts its answer checkers
+  unpinned, and some landed on the second hardware thread of another job's
+  solver core. The same build twice then differed by -38% to +75% in clock
+  ticks on a cell. This run keeps each job's checker on the job's own core
+  (`log/as-pair400-2026-11-16/run_pair.py`); the same build twice is then
+  within 0.985 to 1.035 on four cells in five. Every earlier 400-cell wall
+  number of this project carries that noise. Here the same searches ran in
+  0.931 of the time of the shipped run of 2026-11-11 (geometric mean; that run
+  had 32 jobs and unpinned checkers, so the two causes are not separated).
+
+**The long cells, build against build on neighbouring cores (2026-11-17).**
+The 400-cell run left one question open: is the branch's build about 1%
+slower in summed time on the long cells, or was that the run's noise?
+`tools/as_pairtime.py` answers it with far less noise. It ran the 52 cells of
+600 s or more, each to its answer at the shipped defaults and seed 2. A
+cell's two builds start at the same moment on two neighbouring cores of one
+socket, so they share the moment, the socket and the neighbours; then they
+swap cores and run again. Sixteen pairs run at once, so the runs are each
+other's load (`log/as-pairlong-2026-11-17/` in the main checkout).
+
+| the branch's build over main's, 52 long cells | summed processor time | a cell: tenth, median, ninetieth percentile | smallest and largest cell |
+|---|---|---|---|
+| the search alone (no proof written) | **0.9994** (main 54,141 s, the branch 54,109 s) | 0.9950, 0.9999, 1.0028 | 0.9874 and 1.0098 |
+| with the proof written, as in the harness | **0.9999** (main 53,342 s, the branch 53,335 s) | 0.9959, 1.0001, 1.0036 | 0.9837 and 1.0251 |
+
+- **The noise of the summed number is about 0.1%.** A cell's two runs differ
+  only in which of the two cores each build has, and half their difference
+  has a spread of 0.7% over the cells, so a cell's ratio is good to that or
+  better. In the first row no cell is more than twice that away from 1.
+- **So the 1% of the 400-cell run was that run's noise.** The cells that
+  looked worst there are ordinary here: `ncc_none_2_18` 1.004 (there 1.11),
+  `case1.normalised` 0.998 (there 1.09), `oski15a01b19s` 1.001 (there 1.07).
+  Over the 52 cells the two runs' ratios hardly go together (correlation
+  0.17).
+- **With the proof written it is the same.** The first row times the search
+  alone, because the tool gave the solver no proof file; in the harness and
+  in a competition the solver always writes one. So the 52 cells ran again
+  with every run writing its proof to a file of its own (`--proof file`):
+  0.9999, noise 0.12%. Two cells are more than twice their noise away from 1,
+  one each way: `sted2_0x1e3-216` at 1.025 (its two runs gave 1.003 and 1.048)
+  and `gm16spctrc` at 0.984. One cell is about 1% slower both times,
+  `cfi-rigid-s2-0064-04` (1.010 and 1.010), as others are a little faster
+  both times (`mp1-Nb7T45` 0.992 and 0.993).
+- **What it means.** On the long cells the branch's build takes main's time
+  to a tenth of a percent, with the proof or without. On the short cells of
+  the 400-cell run it was about 1% faster, which is where this build's code
+  happened to land. No slowdown was found, and nothing in the code was
+  changed for speed.
+
 **A finding on the side: the jump switch.** In main's build about a third of
 all micro-operations go through the decoder again on the cells that fit in
 the cache (32 to 42% on `case9`, `sqrt-mitern171`, `SCPC-500-1` and
@@ -7790,6 +7926,25 @@ build, not about this branch, and it helps only this family of processors
 problem on this host. It is filed as bead `SAT-playground-b1w` with what is
 still to measure (under load, the 400 cells, kissat built the same way). Not
 adopted here.
+
+On the 400 cells (arm jcc of the paired run above, under the load of 28
+jobs): the same 340 cells solved, wall PAR-2 0.9946x, the same search on all
+340. Instructions are 3.0% more; the share through the decoder falls from
+34.4% to 4.0%. Wall and processor time on the cells both solve: 0.980 summed,
+0.962 for the geometric mean. The gain is largest where the run fits in the
+caches and smallest where it waits on memory:
+
+| cells | processor time over main's, summed |
+|---|---|
+| under 60 s (126) | 0.945 |
+| 60 to 600 s (108) | 0.984 |
+| 600 s or more (52) | 0.980 |
+| the third with the fewest instructions a clock tick (0.50 to 1.11) | 0.990 |
+| the middle third | 0.970 |
+| the third with the most (1.45 to 2.91) | 0.953 |
+
+So on this suite the switch is worth 2% of the total time and 3.8% on the
+typical cell, and it did not change which cells are solved in 1,800 s.
 
 The counters are exact counts: the tool takes five events, which this
 processor counts all at once, and stops if one was counted for only part of
@@ -8054,6 +8209,45 @@ are the four hard cases' own proofs with the six bits appended: 8.9M unit
 lines and 43.9M lines of a binary clause, which their clean-up derives. The
 long check of these proofs through the gate is step 6.
 
+**The long check gave no verdict (step 6, 2026-11-16 and 17).** The four
+proofs of the reviewed build went through `tools/proof_gate.py` with a
+24-hour limit each, one drat-trim process a proof on a core of its own
+(`log/as-stage1-2026-11-15/gates/`):
+
+| cell | proof | drat-trim after 24 hours |
+|---|---|---|
+| sll-8 | 1.53 GB | no verdict (86,401 s) |
+| and-11 | 15.13 GB | no verdict (86,402 s) |
+| and-12 | 21.40 GB | no verdict (86,403 s) |
+| and-15 | 19.20 GB | no verdict (86,403 s) |
+
+- The checker neither accepted nor rejected them: it ran out of time. So
+  these four answers are not checked by a proof. The one-stage split's are
+  not either (its sll-8 proof gave no verdict in 40,000 s, bead
+  `SAT-playground-d96.8.8`).
+- What is checked: the split's proofs on small formulas, every one through
+  the gate (`tests/control.rs`, and 4,000 formulas of the fuzz harness); and
+  for sll-8 the answer itself, by the shipped solver's own proof (0.57 GB,
+  verified in 18,712 s).
+- Why the checker is slow here. A hard case's lines carry the case's bits. To
+  check one, the checker sets the bits and redoes everything they force, which
+  on sll-8 is 1.75M of the 3.86M variables, for every line it has to check.
+  Half the length did not help: the cost is per line.
+- What would help: checking each hard case by itself, as the formula with the
+  case's bits as unit clauses against the case's own lines, so the bits are
+  set once; then the short top part. The gate can already add unit clauses to
+  a formula. That is bead `SAT-playground-d96.8.9`. Leaving out the units that
+  propagation gives (`d96.8.8`) makes each case shorter and fits with it.
+- A first measurement of that route (2026-11-17,
+  `log/as-stage1-2026-11-15/casecheck`). sll-8's four hard cases, each as a
+  formula of its own, the cell plus six unit clauses for the bits: the
+  reviewed build answers each in 14 s (UNSAT, 0.14G to 0.16G of work) with a
+  proof of 0.37 GB, and drat-trim **verified all four**, in 9,241 s, 10,754 s,
+  10,845 s and 11,745 s. So a hard case's refutation can be checked in about
+  three hours when the bits are unit clauses of the formula. These are not
+  the lines of the split's own proof: they come from four separate runs of the
+  plain solver, and the other 60 cases and the joins are not in them.
+
 **Checked.** `tests/control.rs`: 25 tests, 9 of them for the two stages,
 every proof through the gate: stage 1 answering everything, by default, and
 nothing; a small core that skips cases; SAT models; the rotator fixture; the
@@ -8085,6 +8279,10 @@ and-15 has no answer either way (it needs 16G).
 - The hard cases still pay a load and a clean-up each, and still write a
   long proof (one unit line for every literal the bits fix). Bead
   `SAT-playground-d96.8.8` is about those lines.
+- **No proof of the split on a real cell has been verified** (above): 24 hours
+  of drat-trim gave no verdict on any of the four. Until a check case by case
+  exists (bead `SAT-playground-d96.8.9`), the cells the split gains are
+  answers without a checked proof.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 

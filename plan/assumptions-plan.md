@@ -515,6 +515,13 @@ queue and take whatever core is free; each runs under `perf stat`, so the
 counts come from the same runs as the times. `tools/as_report.py` makes the
 tables.
 
+Such a run resolves about half a percent of summed time and no better: on the
+long cells that wait on memory, two runs of one build differ by more than 3%
+on one cell in five. A smaller difference on the long cells is settled by
+`tools/as_pairtime.py --suite`: a cell's two builds at the same moment on two
+neighbouring cores of one socket, swapping cores for a second run
+(`benchmarks/assumptions/README.md`, "Two builds on the whole suite").
+
 ## 14. Order of work
 
 | step | bead | what |
@@ -555,9 +562,35 @@ yes for sll-8 and still open for the three and- cells.
   two stages", "The 400 cells at seeds 2 and 3").
 - The 400 cells under their own work budgets, main's build against the
   branch's with the split off: 400 of 400 identical in every field.
-- The 24-hour check of the four oisc proofs is running since 14:35 (unit
-  `as5-chain`; verdicts in `log/as-stage1-2026-11-15/gates/`).
 - The owner's answers: the speed question is decided by the owner on a paired
-  400-cell run (section 13); it was started at 22:58 as unit `as5-pair400` and
-  takes about 16 hours. Whether steps 3 and 4 come before the merge (bead
+  400-cell run (section 13). Whether steps 3 and 4 come before the merge (bead
   `bp3.12`) is still open.
+
+**The gate runs' results (2026-11-17).** All in the solver README,
+"Assumptions".
+
+- *The paired 400-cell run* (split off, seed 2, 1,800 s; main's build, the
+  same build again, the branch's build, main with the jump switch): 340
+  solved in every arm, no contradiction, no failed check, the same search on
+  every cell two arms both solve. Wall PAR-2 of the branch's build 1.0022x
+  (the same build twice 1.0011x); tick PAR-2 0.9952x (0.9973x). Instruction
+  counts 0.07% more in sum, 0.26% fewer to 0.80% more on a cell. The typical
+  cell takes the same time; in summed time the branch's build was 0.7 to 1.1%
+  above main's two runs, which is two noise widths of that run.
+- *The long cells, build against build on neighbouring cores*: on the 52 cells
+  of 600 s or more the branch's build takes 0.9994 of main's processor time
+  for the search alone and 0.9999 with the proof written, with a noise of
+  0.1%. So the 1% was noise.
+- *The 24-hour check of the four oisc proofs gave no verdict* on any of them
+  (drat-trim ran out of time). No proof of the split on a real cell is
+  verified, with one stage or two. The way out is a check case by case (bead
+  `d96.8.9`); a first measurement of it on sll-8's four hard cases is in the
+  bead.
+- *The harness* starts its answer checkers unpinned, and they land beside
+  other jobs' solvers (bead `209`). The paired run kept each checker on its
+  job's core.
+- Open for the owner: the sign-off on these results (`bp3.11`, `bp3.8`),
+  steps 3 and 4 before or after the merge (`bp3.12`), the merge itself
+  (`bp3.10`) with the split's proofs unverified on the real cells, and the
+  jump switch for main's build (`b1w`: 2% of the summed time on the 400 cells,
+  3.8% on the typical cell, the same cells solved).

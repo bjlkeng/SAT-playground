@@ -166,6 +166,43 @@ ticks and the decoder share on the cells where both ran the same search to an
 answer. It reads a finished run's `results.tsv` or, while a run is going, the
 `kept.tsv` of `--keep-lines 'c workclock '`.
 
+## Two builds on the whole suite
+
+What the 20 cells cannot show is the long run that waits on memory. For that
+the two builds ran all 400 cells side by side (2026-11-16; solver README,
+"Assumptions", "The paired 400-cell run"). How it was set up, in the main
+checkout:
+
+- `log/as-pair400-2026-11-16/launch.sh`: one call of `tools/feature_ablation.py`
+  with four arms: main's build, the same file a second time, the branch's
+  build, and main's code with the jump switch. The same file twice is the
+  floor of that very run.
+- `solver/13-j31-pair400-snapshot/`: frozen copies of the builds and a launcher
+  that stands where the harness expects one binary. It starts the arm's build
+  under `perf stat`, so every run leaves its instruction count, clock ticks
+  and decoder share.
+- `log/as-pair400-2026-11-16/run_pair.py`: starts the harness with a core list
+  and keeps each job's answer checker on the job's own core. Without that the
+  checkers land beside other jobs' solvers and the same build twice differs
+  by tens of percent on a cell (bead `SAT-playground-209`).
+- `tools/as_report.py` makes the tables.
+
+A 400-cell run still cannot resolve one percent of summed time: on the long
+cells two runs of one build differ by 0.7% typically and by more than 3% on
+one cell in five, with the core and the neighbours a run gets. For that,
+`tools/as_pairtime.py` takes any folder of cells and runs them to their
+answer, a cell's two builds at the same moment on two neighbouring cores of
+one socket, swapping cores for the second run:
+
+    python3 tools/as_pairtime.py --a $F --b $B --out /some/log/tight \
+      --suite /folder/of/long/cells --cells /file/longest-first.txt --conflicts 0 \
+      --pairs 0-1,2-3,4-5,6-7,8-9,10-11,12-13,14-15,18-19,20-21,22-23,24-25,26-27,28-29,30-31,32-33 \
+      --reps 2 --proof file --options=--seed=2
+
+`--proof file` has every run write its proof, as the harness and a
+competition do; then read the processor time, since the disk is in the wall
+time. Without it only the search is timed.
+
 ## What the branch's builds showed
 
 | build | the four sets | wall time over main's, quiet host |
