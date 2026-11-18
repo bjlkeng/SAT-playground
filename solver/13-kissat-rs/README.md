@@ -7948,6 +7948,12 @@ caches and smallest where it waits on memory:
 So on this suite the switch is worth 2% of the total time and 3.8% on the
 typical cell, and it did not change which cells are solved in 1,800 s.
 
+**The owner's decision (2026-11-18): the switch stays off for now** (bead
+`SAT-playground-b1w`, closed). `build.sh` is unchanged. Not measured, and the
+first things to do if it is taken up again: the C kissat built the same way
+(gcc: `-Wa,-mbranches-within-32B-boundaries`), and another processor family.
+The switch stays useful as a tool for comparing two builds (above).
+
 The counters are exact counts: the tool takes five events, which this
 processor counts all at once, and stops if one was counted for only part of
 a run. (A first pass with eight events had them take turns, 49 to 62% of the
@@ -8188,6 +8194,10 @@ build).
 - So the sub-solver stays for the hard cases. Step 3's first item (the
   clean-up passes inside a solve under assumptions) would not change that for
   sll-8; for the and- cells the deeper cases have to be asked first.
+- Steps 3 and 4 (the passes inside a solve under assumptions, and adding
+  clauses between solves) are not built. The owner parked them on 2026-11-18:
+  no planned work uses them. Bead `SAT-playground-980` holds what they are,
+  what is refused without them and where to start.
 
 **Proof.** Under assumptions what the case solver learns follows from the
 formula alone, so its proof lines go into the proof with no bits appended.

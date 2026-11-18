@@ -537,7 +537,8 @@ neighbouring cores of one socket, swapping cores for a second run
 | 8 | `bp3.9` | the runs |
 | 9 | `bp3.10` | the owner's decision: merge or roll back |
 
-The split needs steps 0, 1, 2 and 5. Steps 3 and 4 serve later uses.
+The split needs steps 0, 1, 2 and 5. Steps 3 and 4 serve later uses; the
+owner parked them on 2026-11-18 (bead `SAT-playground-980`).
 
 **Where it stands (2026-11-16).** Steps 0, 1, 2 and 5 are done and reviewed
 (Codex, seven rounds on the branch; the last found nothing). The reviewed
@@ -602,10 +603,22 @@ yes for sll-8 and still open for the three and- cells.
 - The split's unverified proofs: "We can skip check". The check case by case
   (`d96.8.9`) does not have to be built before the merge; the split goes in
   behind its option with its real-cell proofs unverified, as recorded above.
-- Still open: steps 3 and 4 before the merge or after (`bp3.12`), the merge
-  itself (`bp3.10`), and the jump switch (`b1w`). The two gate beads (`bp3.7`,
-  `bp3.8`) close with the answer to `bp3.12`: if steps 3 and 4 come first,
-  the build changes and the gates run again on it.
+- Steps 3 and 4: "leave for now but record in a bead because we may come back
+  to it later at some point". They are not built. Bead `SAT-playground-980`
+  (deferred) holds what they are, what is refused without them, what was
+  measured and where to start; it takes over from `bp3.4` and `bp3.5`. The
+  call `bp3.12` is closed.
+- The jump switch stays off for now (`b1w`, closed). It stays a tool for
+  comparing two builds (section 13).
+- The two gates are closed: the performance gate (`bp3.8`) passed and is
+  signed off; the correctness gate (`bp3.7`) is closed on the owner's word,
+  with the split's real-cell proofs not verified.
+- Still open: the merge itself (`bp3.10`), which waits for the owner's word.
 - For the merge: main's solver code has not changed since the branch point,
   so main's build of today is still `be9a2b05`, the build every gate run
-  compared against.
+  compared against. The solver's source on the branch has not changed since
+  the reviewed commit either, and the binary does not depend on the folder it
+  is built in (the snapshot `solver/13-j30-as5r6-snapshot` in the main
+  checkout, built in its own folder, has the worktree build's sha256). So
+  main's build after the merge should be `b3b6a491`, byte for byte the build
+  of every gate run; the merge checks that.
