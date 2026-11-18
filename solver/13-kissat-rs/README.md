@@ -215,7 +215,11 @@ whole gain lockchart, and on the cells its test turns down the search is the sam
 `ctlsplitassume`, is on by default since 2026-11-18, the owner's call: at seeds 2 and 3 it
 solved 687 v 681, the gain three oisc cells at both seeds; it fires on the four oisc cells
 only, and elsewhere the search is the same plus the reading (0.36% of the work). The split's
-proofs on those cells are not verified ("The control split in two stages" below). The stock kissat path is `--structsym=0 --structparity=0
+proofs on those cells are not verified ("The control split in two stages" below). The divider
+pass asks its row pairs of one solver since 2026-11-18 (`structdivassume`, the owner's
+"implement"): the same pairs or one more, 0.43 to 0.70 of the pass's work on the five 2025
+cells, every proof through the gate ("The divider pass's pairs asked of one solver" below;
+it needs no stock option, `--structdiv=0` turns the whole pass off). The stock kissat path is `--structsym=0 --structparity=0
 --structcount=0 --structarith=0 --structsort=0 --structdiv=0
 --structdd=0 --structpoints=0` (and `--gauss=0`, the parity engine below, `--card=0`, `--freewalk=0` and `--ctlsplit=0`), which `tools/parity.py` passes unless
 told `--structure`, and the test helpers' `run` too
@@ -3391,6 +3395,15 @@ census's chain (the section above) ported into solver 13
 cell on each seed with the same search everywhere else. **On by default
 since 2026-10-28**, the owner's call after that run; the 2026 holdout was
 not consulted (it is kept for a later candidate).
+
+**Since 2026-11-18 step 4 below asks one solver** (`--structdivassume=1`, the
+default): the circuit is loaded once, every pair is a question under an
+assumption, and what is learned on one pair serves the next. The pairs
+proven are the same (one more on `div_miter_lec__2`), the pass takes 0.43 to
+0.70 of the work, and the proof is plain `rup` steps with deletions where it
+was one block a pair. What this section says about step 4, its blocks and
+its times describes `--structdivassume=0`, the chain as it was; the new one
+is in "The divider pass's pairs asked of one solver", under "Assumptions".
 
 **What it does**, after the earlier passes and before the counting pass,
 within its own limit `structdivticks` (default 50,000,000 K):
@@ -8524,7 +8537,234 @@ and put through the gate on the five cells and the pass's fuzz
   are one-off measurements of closed lines.
 
 **What it means next.** One bead, `SAT-playground-lhf`: the divider pass's chain
-on one solver. It is not built; the owner asked for the check.
+on one solver. It was not built for the survey; the owner asked for the check,
+and then for the build, the same day (next section).
+
+### The divider pass's pairs asked of one solver (2026-11-18; bead `SAT-playground-lhf`)
+
+**Result.** The survey's one candidate is built, at the owner's word
+("Implement assumptions with divider etc pass"). The divider and square-root
+pass now asks its row pairs of one solver that is loaded once and keeps what
+it learned (`--structdivassume=1`, **on by default since 2026-11-18**;
+`--structdivassume=0` is the chain as it was, a fresh solver for every pair).
+On the five 2025 cells it proves the same pairs, and on `div_miter_lec__2`
+one more: the compared bit's own pair, which leaves that cell's search
+nothing to do. The pass takes 0.43 to 0.70 of the work it took. The big
+cell's run with its proof goes from 272 s to 84 s, the four small ones from
+3.7-8.2 s to 2.2-4.9 s. Every proof passes the gate, and the gate is 1.7 to
+5.0 times faster on them. Where the pass does not fire the run is what it
+was, field for field (below).
+
+**What changed, in the survey's example of three pairs.**
+
+| | a fresh solver for every pair (as it was) | one solver (now) |
+|---|---|---|
+| before pair 1 | nothing | load the circuit once; give every pair a variable `d` that means "the two signals differ" (`d` = x xor y, four clauses) |
+| pair 1 | new solver; load the circuit; add "the two differ"; refuted | ask "assume `d1`"; refuted: `d1` is false from now on, and with `d1` false its four clauses say pair 1 is equal |
+| pair 2 | new solver; load the circuit again; add "pair 1 is equal" and "the two differ"; refuted | ask "assume `d2`"; refuted |
+| pair 3 | new solver; load again; add pairs 1 and 2; refuted | ask "assume `d3`"; refuted |
+| loads of the circuit | 3 | 1 |
+| what pair 3 starts from | the circuit and "pairs 1 and 2 are equal" | the same, and every clause learned on pairs 1 and 2 |
+
+The rest is as before. A question gets 250,000 conflicts. A model is an input
+on which the pair differs, and it drops every pending pair that differs on it
+too. The proven pairs' clauses join the formula, and the search decides the
+miter. Every `d` is defined before the first question, so no clause is added
+between two questions, and the solver runs without the simplifying passes:
+neither of the two parked steps of assumptions (bead `SAT-playground-980`) is
+needed. Code: `chain_one` in `src/structdiv.rs`, next to `chain`.
+
+**The proof.** In the chain as it was, a pair's clauses go into a block of
+the VeriPB proof ("assume the two differ; then these clauses follow"), and
+the checker forgets them when the block ends. One solver's clauses cannot be
+forgotten that way: in the example, a clause learned on pair 1 may be what
+makes a clause of pair 3 follow. They also need no block, because a learned
+clause follows from the circuit and the definitions alone, whatever was
+assumed when it was learned. So:
+
+1. all the `d` are defined first (four `red` steps each);
+2. every clause the solver learns is a `rup` step at the top level, in the
+   solver's order;
+3. every clause the solver deletes is deleted in the proof (`del id`), so the
+   checker's set of clauses stays as small as the solver's. For this the
+   solver's proof can now be kept in memory with its deletions
+   (`init_captured_steps` in `src/proof.rs`); the pass maps a deleted clause
+   to the step that added it;
+4. a refuted pair gets `~d` and its two clauses by `rup`;
+5. when the chain ends, every step of the solver still there is deleted, and
+   so are the definitions of the pairs that were not proven. What is left is
+   what the old chain leaves: per proven pair its definition, `~d` and the two
+   clauses.
+
+The proofs are about a third of the size (3.9-7.6 MB against 10.7-22.7 MB on the
+small cells, 62 MB against 219 MB on the big one), because fewer clauses are
+learned, and VeriPB checks them faster than the blocks.
+
+One case is new. If the circuit has no model even without the miter's root
+(clauses added to it contradict each other), the one solver ends up with the
+empty clause. That holds for the whole formula, so the pass refutes it and
+the proof ends in a refutation; the old chain proves every pair, vacuously,
+and the search refutes. Two tests cover it.
+
+**The search setting, measured apart from the one solver.** The pass's
+solvers use kissat's plain configuration, which searches in the stable mode
+only (slow restarts, scores that change slowly). That suits one long
+question. A solver asked hundreds of short questions does better in the
+focused mode, where it turns to a new question quickly. The table is the
+pass's work against the chain as it was, in runs without a proof (a
+development build that took the setting from the environment;
+`log/divone-2026-11-18/settings`):
+
+| | `div-mitern172` | `sqrt-mitern171` | `sqrt-mitern170` | `sqrt-mitern169` | `div_miter_lec__2` |
+|---|---|---|---|---|---|
+| a fresh solver, stable only (as it was) | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 (1,592 pairs) |
+| a fresh solver, focused only | 0.81 | 0.85 | 0.69 | 0.82 | 1.43 (1,593) |
+| one solver, stable only | 0.69 | 0.75 | 1.02 | 0.79 | 0.44 (1,592) |
+| **one solver, focused only (shipped)** | **0.59** | **0.71** | **0.59** | **0.67** | **0.43 (1,593)** |
+| one solver, both modes in turn | 0.66 | 0.78 | 0.61 | 0.68 | 0.46 (1,593) |
+
+- So there are two effects. On the small cells the focused mode alone is
+  worth 0.69 to 0.85, and one solver a further 0.73 to 0.86 on top of it. On
+  the big cell the one solver is the whole gain (0.44), and the focused mode
+  adds the last pair.
+- **The last pair.** On `div_miter_lec__2` the last pair is the miter's own
+  output. In the stable mode no solver gets a verdict on it in 250,000
+  conflicts (1.13G fresh, 1.33G as a question), and the search then needs
+  629,662 conflicts. The one solver in the focused mode refutes it in 0.79G,
+  and the search needs none: the whole run is 4.2G of work against 11.6G.
+- **The survey's number was partly the setting.** Its question files ran
+  with kissat's default search, which switches between the two modes: 0.38
+  to 0.65. The build with the pass's own stable-only setting gives 0.44 to
+  1.02. The shipped setting gives 0.43 to 0.71.
+- The simplifying passes stay off: with them on (stable only) the work was
+  0.83 to 0.94 on the four small cells.
+
+**The five 2025 cells** (the shipped build `cc215687`, frozen in
+`solver/13-j34-divone-snapshot`; each run with a proof file and pinned to a
+core, a cell's two runs started together, four runs of the tool on the host
+at most, a code review's tests on other cores at times;
+`tools/div_chain_check.py`, `log/divone-2026-11-18/record-2025`). "Gate" is
+`tools/proof_gate.py` on the proof: VeriPB twice and drat-trim.
+
+| cell | chain | pairs proven | pass work | ratio | search conflicts after | run (s) | VeriPB proof (MB) | DRAT (MB) | gate (s) |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `div-mitern172` | fresh | 77 of 77 | 0.157G | | 0 | 3.7 | 10.7 | 0 | ok, 41 |
+| | one | 77 of 77 | 0.092G | 0.59 | 0 | 2.2 | 3.9 | 0 | ok, 12 |
+| `sqrt-mitern171` | fresh | 90 of 90 | 0.347G | | 0 | 6.9 | 18.6 | 0 | ok, 78 |
+| | one | 90 of 90 | 0.244G | 0.70 | 0 | 4.8 | 7.6 | 0 | ok, 26 |
+| `sqrt-mitern170` | fresh | 107 of 107 | 0.413G | | 0 | 8.2 | 20.4 | 0 | ok, 123 |
+| | one | 107 of 107 | 0.245G | 0.59 | 0 | 4.8 | 7.5 | 0 | ok, 25 |
+| `sqrt-mitern169` | fresh | 130 of 130 | 0.361G | | 0 | 7.6 | 22.7 | 0 | ok, 85 |
+| | one | 130 of 130 | 0.242G | 0.67 | 0 | 4.9 | 7.4 | 0 | ok, 27 |
+| `div_miter_lec__2` | fresh | 1,592 of 1,599 | 9.31G | | 629,662 | 272 | 219 | 86 | ok, 839 |
+| | one | 1,593 of 1,599 | 4.00G | 0.43 | 0 | 84 | 62 | 0 | ok, 499 |
+
+In the example's terms, on the big cell: the old chain loads the circuit
+1,599 times (0.87M of work a load, 1.4G in all) and starts every pair from
+the circuit and the pairs before it; the one solver loads it once and brings
+its learned clauses along. Six pairs are not equal either way (a model each).
+Peak memory is the same, 133 MB.
+
+**Eight cells of 2022** (`benchmarks/sat-comp-2022`; not part of the 400
+cells, and run only after the setting was fixed on the 2025 cells, so they
+show whether it carries over; `log/divone-2026-11-18/record-2022`, with
+proofs):
+
+| cell | pairs proven, fresh / one | pass work, fresh / one | ratio | run (s), fresh / one | gate (s), fresh / one |
+|---|---|---|---:|---|---|
+| `div-mitern174` | 63 / 63 of 63 | 0.145G / 0.091G | 0.62 | 3.3 / 2.1 | ok 35 / ok 13 |
+| `div-mitern171` | 93 / 93 of 93 | 0.175G / 0.096G | 0.55 | 4.1 / 2.3 | ok 45 / ok 12 |
+| `sqrt-mitern172` | 75 / 75 of 75 | 0.257G / 0.198G | 0.77 | 5.2 / 3.9 | ok 57 / ok 22 |
+| `div-mitern168` | 140 / 140 of 142 | 0.422G / 0.143G | 0.34 | 9.2 / 3.4 | ok 137 / ok 17 |
+| `div-mitern167` | 151 / 151 of 152 | 0.824G / 0.193G | 0.23 | 18.2 / 4.4 | ok 405 / ok 23 |
+| `div-mitern165` | 192 / 192 of 193 | 0.577G / 0.252G | 0.44 | 12.3 / 5.6 | ok 174 / ok 29 |
+| `div-mitern164` | 206 / 207 of 208 | 0.967G / 0.306G | 0.32 | 23.9 / 6.6 | ok 38 / ok 35 |
+| `div_miter_lec_1` | 619 / 620 of 622 | 2.95G / 1.38G | 0.47 | 83.5 / 28.1 | ok 290 / ok 162 |
+
+The same pairs on six cells, and on two the one solver again proves the
+miter's own pair where the fresh solver gets no verdict (the search then
+needs 69,957 and 311,819 conflicts with the old chain, none with the new).
+Two more cells of that year with "div" in the name, `div_miter_lec_3` and
+`div_miter_lec_4`, are not read as dividers by the pass; in 870 s of search
+their two runs showed the same counters, as they must.
+
+**What did not change.** `tools/as_baseline.py` runs each cell under a work
+limit and compares every exact field: the answer, the work-clock line, the
+counters, the model, each proof file's size and hash, the derived clauses,
+the text. The new build against the build before it (`607667a7`, main at
+`eac2154`; `log/divone-2026-11-18/chain.log`):
+
+| the new build | against the build before | cells identical in every exact field |
+|---|---|---|
+| the stock path, `tests/cnf` | the stock path | 9 of 9 |
+| the stock path, the 100 medium cells | the stock path | 100 of 100 |
+| `--structdivassume=0`, the 100 medium and the 4 oisc cells | its defaults | 103 of 103 (the text apart from the option's own line) |
+| no option, the same 103 cells | its defaults | 100 of 103 |
+
+So the old chain is still there under its option, bit for bit, its proofs
+included. With the default, the three cells that differ are the three
+divider and square-root cells in that set (`div-mitern172`, `sqrt-mitern170`,
+`sqrt-mitern171`), and they differ in the work-clock line, the text and the
+VeriPB proof only: the answer, the search's counters, the DRAT proof and the
+derived clauses are the same, byte for byte. In the example's terms: the same
+pairs come out in the same order, so the search sees the same formula; only
+the way the pass got them changed.
+
+**Tests and fuzz.** `tests/structdiv.rs` now has 17 tests, and every test of
+the chain runs both chains: toy dividers and square roots decided with
+checked proofs and the same pairs proven both ways; without a proof file;
+broken circuits answered SAT; the tick limits at eleven fractions of the
+pass's work, none passed by more than 10%; a chain cut short by the pass's
+own limit, with the proof of what was proven through the gate; the circuit
+with no model without its root (above); and three tampered proofs of the one
+solver, each rejected (a pair claimed to differ, the solver's steps left out,
+a definition clause left out). One test counts the steps: what the one
+solver's proof adds less what it deletes is seven steps a proven pair. On 92
+more toy dividers (4 to 16 bits) both chains answer UNSAT and all 184 proofs
+pass the gate; on four of them the one solver proves one pair more. Answers
+under assumptions with the one solver's search setting (`--plain --stable=0`,
+also with a clean-up every two conflicts and with a conflict limit a
+question) are checked by `tools/assume_fuzz.py`: 3 x 300 formulas, 5,694
+questions, no wrong answer, every proof checked.
+
+**Caveats.**
+
+- It is time on cells that were solved already: about 200 s a seed on the
+  2025 cells (0.07% of wall PAR-2), nearly all of it `div_miter_lec__2`. No
+  cell of 2025 is gained or lost.
+- The focused setting was chosen on the five 2025 cells, among three modes.
+  The 2022 cells were run afterwards and agree, but they are the same family.
+- The 2026 holdout was not looked at for this change. From its report of
+  2026-11-13 the pass fires on one cell there.
+- One more pair is proven on `div_miter_lec__2`, so the formula the search
+  sees has two more clauses there than before (3,186 derived clauses against
+  3,184), and the search has nothing to do.
+- The numbers above are one run each. Work is exact; the times are from an
+  almost idle host and move by a few percent between runs.
+
+**Tools and logs.** `tools/div_chain_check.py run --solver BIN --out DIR
+[--proof] CNF...` runs a cell through both chains and prints the tables
+above. A cell's two runs get two cores and start at the same moment, each
+under the 16 GB limit; a run that ends without a fitting answer, an early
+UNKNOWN, two chains that disagree, a proof the gate rejects and one solver
+proving fewer pairs are reported as problems. `selftest` checks the tool on
+toys and on stand-ins for each of those cases. Logs: `log/divone-2026-11-18`
+(`record-2025` and `record-2022`, the settings measurement, the comparison
+with the build before).
+
+**Codex review.** Five rounds, none with a finding in the solver. Rounds 1
+to 4 found ten things in the new tool `tools/div_chain_check.py`, all
+fixed, each with a case in its `selftest`: a run that failed was read as a
+timeout and reported as no problem; a gate stopped at its limit could leave
+its checker running on a core given to the next run; a cell's two runs were
+not started together; the solver ran without the 16 GB limit; an UNKNOWN
+before the time limit was accepted; two inputs of the same file name wrote
+to the same files; the tool, stopped by a signal, left its runs going; a
+SAT answer's model was not checked; a chain that one solver lost entirely
+was not reported; and a used output folder could hand an older run's files
+to a check. Round 5 was clean. The record runs above were made with the
+tool as it was after round 2 (the later fixes concern SAT answers, a lost
+chain and a reused folder, none of which occur in them).
 
 ## Notes from the RL scheduler's first steps (plan §10)
 

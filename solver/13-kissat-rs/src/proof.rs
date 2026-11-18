@@ -41,6 +41,17 @@ pub struct Proof {
     /// a solver the arithmetic pass runs on a lemma step reads its proof
     /// back this way (deletions dropped), bead skz.19
     capture: Option<Vec<Vec<i32>>>,
+    /// (not in the C) the added and the deleted lines kept in memory, in
+    /// order: a solver that is asked again and again keeps what it learned,
+    /// so whoever checks its lines has to drop a clause when the solver
+    /// does (bead SAT-playground-lhf)
+    steps: Option<Vec<Step>>,
+}
+
+/// (not in the C) One line of a proof captured with its deletions.
+pub enum Step {
+    Add(Vec<i32>),
+    Delete(Vec<i32>),
 }
 
 /// Port of `kissat_init_proof`.
@@ -57,6 +68,7 @@ pub fn init_proof(solver: &mut Solver, file: File, binary: bool) {
         lines: 0,
         literals: 0,
         capture: None,
+        steps: None,
     });
     solver.proof = Some(proof);
 }
@@ -76,8 +88,38 @@ pub fn init_captured_proof(solver: &mut Solver) {
         lines: 0,
         literals: 0,
         capture: Some(Vec::new()),
+        steps: None,
     });
     solver.proof = Some(proof);
+}
+
+/// (not in the C) A proof kept in memory with its deletions, read back by
+/// `drain_captured_steps`; nothing is written (bead SAT-playground-lhf).
+pub fn init_captured_steps(solver: &mut Solver) {
+    debug_assert!(solver.proof.is_none());
+    let proof = Box::new(Proof {
+        written: 0,
+        buffer: Vec::new(),
+        binary: false,
+        file: File::new(),
+        line: Vec::new(),
+        added: 0,
+        deleted: 0,
+        lines: 0,
+        literals: 0,
+        capture: None,
+        steps: Some(Vec::new()),
+    });
+    solver.proof = Some(proof);
+}
+
+/// (not in the C) The lines of `init_captured_steps` since the last call,
+/// in order; the proof goes on capturing.
+pub fn drain_captured_steps(solver: &mut Solver) -> Vec<Step> {
+    match solver.proof.as_mut().and_then(|p| p.steps.as_mut()) {
+        Some(steps) => std::mem::take(steps),
+        None => Vec::new(),
+    }
 }
 
 /// (not in the C) The added lines of a captured proof, in order; the proof
@@ -118,7 +160,7 @@ fn flush_buffer(proof: &mut Proof) {
 /// (src/assume.rs).  Zero for a captured proof.
 pub fn flushed_bytes(solver: &mut Solver) -> u64 {
     let Some(proof) = solver.proof.as_mut() else { return 0 };
-    if proof.capture.is_some() {
+    if proof.capture.is_some() || proof.steps.is_some() {
         return 0;
     }
     flush_buffer(proof);
@@ -341,6 +383,11 @@ fn print_added_proof_line(solver: &Solver, proof: &mut Proof) {
         cap.push(std::mem::take(&mut proof.line));
         return;
     }
+    if let Some(steps) = proof.steps.as_mut() {
+        proof.lines += 1;
+        steps.push(Step::Add(std::mem::take(&mut proof.line)));
+        return;
+    }
     // check_repeated_proof_lines: assert-only (see header PORT NOTE).
     if proof.binary {
         write_char(proof, b'a');
@@ -354,6 +401,11 @@ fn print_delete_proof_line(solver: &Solver, proof: &mut Proof) {
     if proof.capture.is_some() {
         proof.lines += 1;
         proof.line.clear();
+        return;
+    }
+    if let Some(steps) = proof.steps.as_mut() {
+        proof.lines += 1;
+        steps.push(Step::Delete(std::mem::take(&mut proof.line)));
         return;
     }
     write_char(proof, b'd');

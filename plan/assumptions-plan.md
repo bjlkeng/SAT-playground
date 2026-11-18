@@ -632,8 +632,21 @@ yes for sll-8 and still open for the three and- cells.
     closed; `tools/feature_ablation.py --selftest`).
   - *Where else assumptions could save work* (solver README, the section of
     that name): one place, the divider pass's chain of sub-solvers, 0.38 to
-    0.65 of the work as questions to one solver (bead `SAT-playground-lhf`,
-    not built).
+    0.65 of the work as questions to one solver (bead `SAT-playground-lhf`).
+- The same day again: "Implement assumptions with divider etc pass. Delete
+  old branch."
+  - *The divider pass asks one solver* (`structdivassume=1`, on by default;
+    0 is the chain as it was; bead `SAT-playground-lhf` closed). The circuit
+    is loaded once, every row pair is a question under an assumption, and
+    the solver runs the focused search. The first build of assumptions was
+    enough: every pair's variable is defined before the first question, so
+    no clause is added between questions (step 4), and the solver runs
+    without the simplifying passes (step 3). On the five 2025 cells: the same
+    pairs, and the compared bit's own pair on `div_miter_lec__2`; 0.43 to
+    0.70 of the pass's work; every proof through the gate. Solver README,
+    "The divider pass's pairs asked of one solver".
+  - *The branch `assumptions` is deleted*, here and on origin (it was fully
+    in main).
 - What was noted for the merge before it was made: main's solver code had
   not changed since the branch point, so main's build was still `be9a2b05`,
   the build every gate run compared against. The solver's source on the

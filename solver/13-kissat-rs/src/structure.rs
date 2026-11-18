@@ -469,7 +469,7 @@ pub fn run(solver: &mut Solver, proof_path: Option<&str>, taken: &[(&str, &str)]
             let hard = cap(u64::MAX, solver);
             let before = solver.statistics.ticks;
             let notes = derived.notes.len();
-            crate::structdiv::run(&formula, &mut derived, own, hard, &mut solver.statistics.ticks, stop_ref);
+            crate::structdiv::run(&formula, &mut derived, own, hard, &mut solver.statistics.ticks, stop_ref, solver.options.structdivassume != 0);
             if derived.notes.len() == notes {
                 derived.notes.push(format!("div/sqrt: no divider or square-root miter, work {}K", solver.statistics.ticks.saturating_sub(before) / 1000));
             }

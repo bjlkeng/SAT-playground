@@ -385,6 +385,14 @@ kissat_options! {
     // consulted). structdivticks is its own work limit, counted from where
     // the earlier passes stopped; div_miter_lec__2's chain takes about 9G
     (structdiv, 1, 0, 1, "structure pass: divider and square-root miters"),
+    // the pass's chain of row pairs asked of one solver under assumptions
+    // (bead SAT-playground-lhf, 2026-11-18, the owner's "implement"): the
+    // circuit is loaded once and what is learned on one pair serves the
+    // next; 0 is a fresh solver for every pair, the chain as it was. On by
+    // default: on the five 2025 cells the same pairs are proven (one more on
+    // div_miter_lec__2, the compared bit's own), the pass takes 0.43 to 0.71
+    // of the work, and every proof passes the gate
+    (structdivassume, 1, 0, 1, "structure pass: the divider's pairs as questions to one solver"),
     (structdivticks, 50_000_000, 0, i32::MAX, "structure pass: divider work limit (K)"),
     (structmore, 2_000_000, 0, i32::MAX, "structure pass work limit (K) after a find"),
     (structparity, 1, 0, 1, "structure pass: XOR systems"),
@@ -895,8 +903,8 @@ mod tests {
         // ctlsplitlevels, ctlsplitticks, ctlreadticks, ctlsplitratio,
         // ctlsplitclauses (2026-11-14), and assumeconflicts, assumeticks,
         // inccnf, ctlsplitassume, ctlsplitassumeload (2026-11-15, branch
-        // assumptions)
-        assert_eq!(OPTION_TABLE.len(), 158 + 73);
+        // assumptions), and structdivassume (2026-11-18)
+        assert_eq!(OPTION_TABLE.len(), 158 + 74);
     }
 
     #[test]

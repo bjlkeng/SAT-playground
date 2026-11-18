@@ -52,7 +52,7 @@ work is **solver 13** and the RL scheduler on top of it.
   (`structsym` and `structparity` are on by default since 2026-10-10,
   `structcount` since 2026-10-13, `gauss` since 2026-10-18, `structarith`
   since 2026-10-20, `structsort` since 2026-10-27, `structdiv` since
-  2026-10-28, `structdd` since 2026-10-31, `card` since 2026-11-02, `structpoints` since 2026-11-06, `freewalk` since 2026-11-12, `ctlsplit` (the control split, in two stages) since 2026-11-18; solver README "The structure pass" and "The parity
+  2026-10-28, `structdd` since 2026-10-31, `card` since 2026-11-02, `structpoints` since 2026-11-06, `freewalk` since 2026-11-12, `ctlsplit` (the control split, in two stages) since 2026-11-18; the divider pass asks one solver since 2026-11-18, `structdivassume`, which needs no stock option; solver README "The structure pass" and "The parity
   engine"), as do the test helpers.
 - **Netlist recovery (epic `SAT-playground-skz`, 2026-10-19)** — the next
   line after the structure pass and the parity engine: recover gates,
@@ -143,10 +143,20 @@ work is **solver 13** and the RL scheduler on top of it.
   passes inside a question with assumptions and adding clauses between
   questions (bead `SAT-playground-980`). Where else assumptions could save
   work was looked at on 2026-11-18 (solver README, "Where else assumptions
-  could save work"): one place, the divider pass's chain of sub-solvers,
-  which takes 0.38 to 0.65 of the work as questions to one solver; that is
-  time on five cells already solved, about half of `div_miter_lec__2`'s run
-  (bead `SAT-playground-lhf`, not built).
+  could save work"): one place, the divider pass's chain of sub-solvers.
+  **Built the same day and on by default** (bead `SAT-playground-lhf`,
+  `structdivassume=1`; 0 is the chain as it was, a fresh solver for every
+  pair): the pass loads the circuit into one solver and asks its row pairs as
+  questions, in the focused search mode. On the five 2025 cells it proves the
+  same pairs, and on `div_miter_lec__2` the compared bit's own pair too, so
+  that cell needs no search; the pass takes 0.43 to 0.70 of the work, that
+  cell's run goes from 272 s to 84 s, and every proof passes the gate, 1.7
+  to 5.0 times faster. Eight cells of 2022 agree (0.23 to 0.77). It is time
+  on cells already solved: no cell gained or lost, and about half of the
+  small cells' gain is the search mode, not the one solver (solver README,
+  "The divider pass's pairs asked of one solver";
+  `tools/div_chain_check.py` runs a cell through both chains). The 2026
+  holdout was not looked at for it.
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a

@@ -9,6 +9,11 @@
 //! rows ignore the high divisor bits and only its output checks them, as in
 //! the real cells). Every clause starts with its gate's literal, and the
 //! inputs a[k..n-1], b[0..n-1] are numbered in the text order of their names.
+//!
+//! The pass proves its row pairs in one of two ways (bead SAT-playground-lhf,
+//! 2026-11-18): as questions to one solver that is loaded once and keeps what
+//! it learned (`--structdivassume=1`, the default), or with a fresh solver
+//! for every pair (`--structdivassume=0`). The tests run both (`CHAINS`).
 
 mod common;
 
@@ -28,8 +33,24 @@ fn gate(cnf: &Path, proof: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// The stock path plus the pass, with a proof file; (stdout, stderr).
-fn run_div_with_proof(cnf: &Path, proof: &Path, env: &[(&str, &str)]) -> (String, String) {
+/// The two ways the pass proves its pairs: a fresh solver for every pair, and
+/// questions to one solver.
+const FRESH: &str = "--structdivassume=0";
+const ONE: &str = "--structdivassume=1";
+const CHAINS: [&str; 2] = [FRESH, ONE];
+
+/// A short name of a chain for file names.
+fn tag(chain: &str) -> &'static str {
+    if chain == ONE {
+        "one"
+    } else {
+        "fresh"
+    }
+}
+
+/// The stock path plus the pass with the given chain, with a proof file;
+/// (stdout, stderr).
+fn run_div_with_proof(cnf: &Path, proof: &Path, chain: &str, env: &[(&str, &str)]) -> (String, String) {
     let mut cmd = Command::new(solver_bin());
     for key in common::SOLVER_ENV_VARS {
         cmd.env_remove(key);
@@ -37,8 +58,16 @@ fn run_div_with_proof(cnf: &Path, proof: &Path, env: &[(&str, &str)]) -> (String
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let out = cmd.arg("-n").args(common::STOCK_PATH).arg("--structdiv=1").arg(cnf).arg(proof).output().expect("run sat-solver");
+    let out = cmd.arg("-n").args(common::STOCK_PATH).arg("--structdiv=1").arg(chain).arg(cnf).arg(proof).output().expect("run sat-solver");
     (String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned())
+}
+
+/// "N of M" from the pass's report line.
+fn pairs_proven(stdout: &str) -> (usize, usize) {
+    let line = stdout.lines().find(|l| l.contains("row pairs proven equal")).unwrap_or_else(|| panic!("no report line of the pass: {}", stdout));
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let at = words.iter().position(|w| *w == "row").expect("the word 'row'");
+    (words[at - 3].parse().expect("pairs proven"), words[at - 1].parse().expect("pairs"))
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +295,7 @@ fn write_cnf(path: &Path, vars: i64, clauses: &[Vec<i64>]) {
     }
 }
 
-fn div_work(cnf: &Path, proof: Option<&Path>, limit: Option<u64>) -> (String, u64) {
+fn div_work(cnf: &Path, proof: Option<&Path>, limit: Option<u64>, chain: &str) -> (String, u64) {
     let mut cmd = Command::new(solver_bin());
     for key in common::SOLVER_ENV_VARS {
         cmd.env_remove(key);
@@ -274,7 +303,7 @@ fn div_work(cnf: &Path, proof: Option<&Path>, limit: Option<u64>) -> (String, u6
     if let Some(l) = limit {
         cmd.env("SAT_LIMIT_TICKS", l.to_string());
     }
-    cmd.arg("-n").args(common::STOCK_PATH).arg("--structdiv=1").arg(cnf);
+    cmd.arg("-n").args(common::STOCK_PATH).arg("--structdiv=1").arg(chain).arg(cnf);
     if let Some(p) = proof {
         cmd.arg(p);
     }
@@ -292,7 +321,9 @@ fn div_work(cnf: &Path, proof: Option<&Path>, limit: Option<u64>) -> (String, u6
 // the tests
 // ---------------------------------------------------------------------------
 
-const DIVIDERS: &[(usize, usize, bool)] = &[(6, 2, false), (8, 3, false), (8, 3, true), (12, 4, false), (12, 4, true)];
+// (the last two have pairs that are not equal: a model drops them, and with
+// one solver the chain goes on in the same solver)
+const DIVIDERS: &[(usize, usize, bool)] = &[(6, 2, false), (8, 3, false), (8, 3, true), (12, 4, false), (12, 4, true), (12, 3, false), (16, 5, false)];
 
 #[test]
 fn div_pass_refutes_toy_dividers_with_checked_proofs() {
@@ -302,12 +333,18 @@ fn div_pass_refutes_toy_dividers_with_checked_proofs() {
         let cnf = fx.path(&format!("{}.cnf", name));
         let (vars, clauses) = toy_divider(n, k, shortcut, false);
         write_cnf(&cnf, vars, &clauses);
-        let proof = fx.path(&format!("{}.drat", name));
-        let (stdout, stderr) = run_div_with_proof(&cnf, &proof, &[("SAT_STRUCT_DEBUG", "1")]);
-        assert!(stdout.contains("s UNSATISFIABLE"), "{}: {}\n{}", name, stdout, stderr);
-        let fired = format!("div/sqrt: quotient bit {} of a {}/{} divider", k, n, n);
-        assert!(stdout.contains(&fired), "{}: the pass did not fire: {}\n{}", name, stdout, stderr);
-        assert_eq!(gate(&cnf, &proof), "ok", "{}: gate", name);
+        let mut proven: Vec<(usize, usize)> = Vec::new();
+        for chain in CHAINS {
+            let proof = fx.path(&format!("{}.{}.drat", name, tag(chain)));
+            let (stdout, stderr) = run_div_with_proof(&cnf, &proof, chain, &[("SAT_STRUCT_DEBUG", "1")]);
+            assert!(stdout.contains("s UNSATISFIABLE"), "{} {}: {}\n{}", name, chain, stdout, stderr);
+            let fired = format!("div/sqrt: quotient bit {} of a {}/{} divider", k, n, n);
+            assert!(stdout.contains(&fired), "{} {}: the pass did not fire: {}\n{}", name, chain, stdout, stderr);
+            assert_eq!(stdout.contains("asked of one solver"), chain == ONE, "{} {}: {}", name, chain, stdout);
+            assert_eq!(gate(&cnf, &proof), "ok", "{} {}: gate", name, chain);
+            proven.push(pairs_proven(&stdout));
+        }
+        assert_eq!(proven[0], proven[1], "{}: the two chains prove the same pairs", name);
     }
 }
 
@@ -319,12 +356,17 @@ fn sqrt_pass_refutes_toy_square_roots_with_checked_proofs() {
         let cnf = fx.path(&format!("{}.cnf", name));
         let (vars, clauses) = toy_sqrt(n, false);
         write_cnf(&cnf, vars, &clauses);
-        let proof = fx.path(&format!("{}.drat", name));
-        let (stdout, stderr) = run_div_with_proof(&cnf, &proof, &[("SAT_STRUCT_DEBUG", "1")]);
-        assert!(stdout.contains("s UNSATISFIABLE"), "{}: {}\n{}", name, stdout, stderr);
-        let fired = format!("div/sqrt: the low root bit of a {}-bit square root", n);
-        assert!(stdout.contains(&fired), "{}: the pass did not fire: {}\n{}", name, stdout, stderr);
-        assert_eq!(gate(&cnf, &proof), "ok", "{}: gate", name);
+        let mut proven: Vec<(usize, usize)> = Vec::new();
+        for chain in CHAINS {
+            let proof = fx.path(&format!("{}.{}.drat", name, tag(chain)));
+            let (stdout, stderr) = run_div_with_proof(&cnf, &proof, chain, &[("SAT_STRUCT_DEBUG", "1")]);
+            assert!(stdout.contains("s UNSATISFIABLE"), "{} {}: {}\n{}", name, chain, stdout, stderr);
+            let fired = format!("div/sqrt: the low root bit of a {}-bit square root", n);
+            assert!(stdout.contains(&fired), "{} {}: the pass did not fire: {}\n{}", name, chain, stdout, stderr);
+            assert_eq!(gate(&cnf, &proof), "ok", "{} {}: gate", name, chain);
+            proven.push(pairs_proven(&stdout));
+        }
+        assert_eq!(proven[0], proven[1], "{}: the two chains prove the same pairs", name);
     }
 }
 
@@ -334,9 +376,82 @@ fn div_pass_works_without_a_proof_file() {
     let cnf = fx.path("m.cnf");
     let (vars, clauses) = toy_divider(12, 4, true, false);
     write_cnf(&cnf, vars, &clauses);
-    let r = run(&cnf, &["--structdiv=1"], &[]);
-    assert_eq!(r.status, "UNSATISFIABLE", "{}", r.stdout);
-    assert!(r.stdout.contains("div/sqrt: quotient bit 4 of a 12/12 divider"), "{}", r.stdout);
+    let mut proven: Vec<(usize, usize)> = Vec::new();
+    for chain in CHAINS {
+        let r = run(&cnf, &["--structdiv=1", chain], &[]);
+        assert_eq!(r.status, "UNSATISFIABLE", "{}: {}", chain, r.stdout);
+        assert!(r.stdout.contains("div/sqrt: quotient bit 4 of a 12/12 divider"), "{}: {}", chain, r.stdout);
+        proven.push(pairs_proven(&r.stdout));
+    }
+    assert_eq!(proven[0], proven[1], "the two chains prove the same pairs");
+}
+
+#[test]
+fn the_one_solver_proof_deletes_what_the_solver_deleted() {
+    // One solver keeps its learned clauses from question to question, so its
+    // lines stay in the proof; when it deletes one, the proof deletes that
+    // step (`del id`), and when the chain ends nothing of the solver is left:
+    // every step it added is deleted again. The fresh chain's steps live in
+    // blocks and need no deletion.
+    let fx = Fixture::new("structdiv_del");
+    let cnf = fx.path("m.cnf");
+    let (vars, clauses) = toy_divider(16, 5, false, false);
+    write_cnf(&cnf, vars, &clauses);
+    let proof = fx.path("m.one.drat");
+    let (stdout, _) = run_div_with_proof(&cnf, &proof, ONE, &[]);
+    assert!(stdout.contains("asked of one solver"), "{}", stdout);
+    let (proven, pairs) = pairs_proven(&stdout);
+    assert!(proven > 0 && proven < pairs, "some pairs proven and some not: {}", stdout);
+    let text = std::fs::read_to_string(fx.path("m.one.drat.pbp")).unwrap();
+    assert!(!text.contains("subproof"), "one solver writes no blocks");
+    let rups = text.lines().filter(|l| l.starts_with("rup ")).count();
+    let deleted: usize = text.lines().filter(|l| l.starts_with("del id ")).map(|l| l.split_whitespace().count() - 3).sum();
+    let reds = text.lines().filter(|l| l.starts_with("red ")).count();
+    assert_eq!(reds, 4 * pairs, "every pair's d is defined, before the first question");
+    // what stays: per proven pair its definition (4), ~d and its two clauses
+    assert_eq!(rups + reds - deleted, 7 * proven, "{} rup, {} red, {} deleted, {} proven", rups, reds, deleted, proven);
+    // the solver deletes clauses while the chain runs, and the proof follows
+    // then, not only when the chain ends
+    let first_del = text.lines().position(|l| l.starts_with("del id ")).expect("a deletion");
+    let last_rup = text.lines().collect::<Vec<_>>().iter().rposition(|l| l.starts_with("rup ")).unwrap();
+    assert!(first_del < last_rup, "a deletion at line {} before the last step at line {}", first_del, last_rup);
+    assert_eq!(gate(&cnf, &proof), "ok");
+    let fresh = fx.path("m.fresh.drat");
+    let (stdout, _) = run_div_with_proof(&cnf, &fresh, FRESH, &[]);
+    assert!(!stdout.contains("asked of one solver"), "{}", stdout);
+    let text = std::fs::read_to_string(fx.path("m.fresh.drat.pbp")).unwrap();
+    assert!(text.contains("subproof") && !text.contains("del id"), "the fresh chain writes blocks and no deletion");
+}
+
+#[test]
+fn a_circuit_with_no_model_without_its_root_is_refuted_by_the_one_solver() {
+    // Clauses that contradict each other without the miter's root: on two
+    // constants (found while the circuit is loaded), and on two of the
+    // circuit's inputs (found by the first question's search). The fresh
+    // chain proves every pair, vacuously. The one solver ends up with the
+    // empty clause, which holds for the formula too: the pass refutes it,
+    // and the proof ends in a refutation the gate accepts.
+    let fx = Fixture::new("structdiv_nomodel");
+    let (vars, clauses) = toy_divider(8, 3, false, false);
+    let (u, v) = (vars + 1, vars + 2);
+    let mut constants = clauses.clone();
+    constants.extend([vec![u], vec![v], vec![-u, -v]]);
+    let mut inputs = clauses.clone();
+    inputs.extend([vec![1, 2], vec![1, -2], vec![-1, 2], vec![-1, -2]]);
+    for (name, nv, cls) in [("constants", vars + 2, constants), ("inputs", vars, inputs)] {
+        let cnf = fx.path(&format!("{}.cnf", name));
+        write_cnf(&cnf, nv, &cls);
+        for chain in CHAINS {
+            let proof = fx.path(&format!("{}.{}.drat", name, tag(chain)));
+            let (stdout, stderr) = run_div_with_proof(&cnf, &proof, chain, &[("SAT_STRUCT_DEBUG", "1")]);
+            assert!(stdout.contains("s UNSATISFIABLE"), "{} {}: {}\n{}", name, chain, stdout, stderr);
+            assert!(stdout.contains("div/sqrt: quotient bit 3 of a 8/8 divider"), "{} {}: {}\n{}", name, chain, stdout, stderr);
+            assert_eq!(stdout.contains("the circuit without its root is unsatisfiable"), chain == ONE, "{} {}: {}", name, chain, stdout);
+            assert_eq!(gate(&cnf, &proof), "ok", "{} {}", name, chain);
+            let r = run(&cnf, &["--structdiv=1", chain], &[]);
+            assert_eq!(r.status, "UNSATISFIABLE", "{} {} without a proof: {}", name, chain, r.stdout);
+        }
+    }
 }
 
 #[test]
@@ -346,7 +461,7 @@ fn a_tampered_div_proof_fails_the_gate() {
     let (vars, clauses) = toy_divider(8, 3, false, false);
     write_cnf(&cnf, vars, &clauses);
     let proof = fx.path("m.drat");
-    let (stdout, _) = run_div_with_proof(&cnf, &proof, &[]);
+    let (stdout, _) = run_div_with_proof(&cnf, &proof, FRESH, &[]);
     assert!(stdout.contains("div/sqrt: quotient bit 3"), "{}", stdout);
     assert_eq!(gate(&cnf, &proof), "ok");
     // claim one pair's ~d one stronger than it is: its pbc goal is then
@@ -358,6 +473,61 @@ fn a_tampered_div_proof_fails_the_gate() {
     std::fs::write(&pbp, tampered).unwrap();
     let verdict = gate(&cnf, &proof);
     assert!(verdict.starts_with("FAIL"), "{}", verdict);
+
+    // one solver: three broken proofs, each rejected
+    let proof = fx.path("one.drat");
+    let (stdout, _) = run_div_with_proof(&cnf, &proof, ONE, &[]);
+    assert!(stdout.contains("asked of one solver"), "{}", stdout);
+    assert_eq!(gate(&cnf, &proof), "ok");
+    let pbp = fx.path("one.drat.pbp");
+    let text = std::fs::read_to_string(&pbp).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    // a d is a variable past the formula's: "rup 1 ~xD >= 1 ;" says the pair
+    // of D is equal
+    let unit_of_d = |l: &str| -> Option<i64> {
+        let rest = l.strip_prefix("rup 1 ~x")?.strip_suffix(" >= 1 ;")?;
+        rest.parse::<i64>().ok().filter(|d| *d > vars)
+    };
+    let at = lines.iter().position(|l| unit_of_d(l).is_some()).expect("a pair's ~d in the proof");
+    let d = unit_of_d(lines[at]).unwrap();
+    // 1. the pair is claimed to differ: "d" where the proof has "~d"
+    let mut wrong = lines.clone();
+    let flipped = format!("rup 1 x{} >= 1 ;", d);
+    for l in wrong.iter_mut() {
+        if unit_of_d(l) == Some(d) {
+            *l = &flipped;
+        }
+    }
+    std::fs::write(&pbp, wrong.join("\n") + "\n").unwrap();
+    let verdict = gate(&cnf, &proof);
+    assert!(verdict.starts_with("FAIL"), "a pair claimed to differ: {}", verdict);
+    // 2. the solver's own steps left out: only the definitions, the ~d lines
+    // and the pairs' clauses stay, and they do not follow by themselves
+    let first_red = lines.iter().position(|l| l.starts_with("red ")).unwrap();
+    let last_red = lines.iter().rposition(|l| l.starts_with("red ")).unwrap();
+    let is_pair_line = |i: usize| unit_of_d(lines[i]).is_some() || (i > 0 && unit_of_d(lines[i - 1]).is_some()) || (i > 1 && unit_of_d(lines[i - 2]).is_some());
+    let mut bare: Vec<&str> = lines[..=last_red].to_vec();
+    assert!(first_red <= last_red);
+    for i in last_red + 1..lines.len() {
+        let l = lines[i];
+        if (l.starts_with("rup ") && !is_pair_line(i)) || l.starts_with("del id ") || l.starts_with("core id ") {
+            continue;
+        }
+        bare.push(l);
+    }
+    std::fs::write(&pbp, bare.join("\n") + "\n").unwrap();
+    let verdict = gate(&cnf, &proof);
+    assert!(verdict.starts_with("FAIL"), "the solver's steps left out: {}", verdict);
+    // 3. a definition changed: d = x or y is not d = x xor y
+    let reds: Vec<usize> = (0..lines.len()).filter(|&i| lines[i].starts_with("red ")).collect();
+    let mut weak = lines.clone();
+    weak.remove(reds[1]);
+    std::fs::write(&pbp, weak.join("\n") + "\n").unwrap();
+    let verdict = gate(&cnf, &proof);
+    assert!(verdict.starts_with("FAIL"), "a definition clause left out: {}", verdict);
+    // and the untouched proof is still accepted
+    std::fs::write(&pbp, &text).unwrap();
+    assert_eq!(gate(&cnf, &proof), "ok");
 }
 
 #[test]
@@ -374,11 +544,13 @@ fn a_broken_divider_or_square_root_is_not_refuted() {
     for (name, (vars, clauses)) in cases {
         let cnf = fx.path(&format!("{}.cnf", name));
         write_cnf(&cnf, vars, &clauses);
-        let r = run(&cnf, &["--structdiv=1"], &[("SAT_STRUCT_DEBUG", "1")]);
-        assert_eq!(r.status, "SATISFIABLE", "{}: {}\n{}", name, r.stdout, r.stderr);
-        let proof = fx.path(&format!("{}.drat", name));
-        let (stdout, _) = run_div_with_proof(&cnf, &proof, &[]);
-        assert!(stdout.contains("s SATISFIABLE"), "{}: {}", name, stdout);
+        for chain in CHAINS {
+            let r = run(&cnf, &["--structdiv=1", chain], &[("SAT_STRUCT_DEBUG", "1")]);
+            assert_eq!(r.status, "SATISFIABLE", "{} {}: {}\n{}", name, chain, r.stdout, r.stderr);
+            let proof = fx.path(&format!("{}.{}.drat", name, tag(chain)));
+            let (stdout, _) = run_div_with_proof(&cnf, &proof, chain, &[]);
+            assert!(stdout.contains("s SATISFIABLE"), "{} {}: {}", name, chain, stdout);
+        }
     }
 }
 
@@ -409,16 +581,72 @@ fn every_step_of_the_div_pass_keeps_to_the_tick_limit() {
     for (name, (vars, clauses)) in cases {
         let cnf = fx.path(&format!("{}.cnf", name));
         write_cnf(&cnf, vars, &clauses);
-        for with_proof in [false, true] {
-            let proof = fx.path(&format!("{}.drat", name));
-            let p = if with_proof { Some(proof.as_path()) } else { None };
-            let (status, total) = div_work(&cnf, p, None);
-            assert_eq!(status, "UNSATISFIABLE", "{} proof {}", name, with_proof);
-            for frac in [10u64, 30, 50, 70, 90] {
-                let limit = total * frac / 100;
-                let (st, work) = div_work(&cnf, p, Some(limit));
-                assert!(work <= limit + limit / 10, "{} proof {}: limit {} of {}: work {} ({})", name, with_proof, limit, total, work, st);
+        for chain in CHAINS {
+            for with_proof in [false, true] {
+                let proof = fx.path(&format!("{}.{}.drat", name, tag(chain)));
+                let p = if with_proof { Some(proof.as_path()) } else { None };
+                let (status, total) = div_work(&cnf, p, None, chain);
+                assert_eq!(status, "UNSATISFIABLE", "{} {} proof {}", name, chain, with_proof);
+                for frac in [5u64, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95] {
+                    let limit = total * frac / 100;
+                    let (st, work) = div_work(&cnf, p, Some(limit), chain);
+                    assert!(work <= limit + limit / 10, "{} {} proof {}: limit {} of {}: work {} ({})", name, chain, with_proof, limit, total, work, st);
+                    // a proof cut short by the limit is still a proof of what
+                    // was added: the gate checks its first stage
+                    if with_proof && st == "UNSATISFIABLE" {
+                        assert_eq!(gate(&cnf, &proof), "ok", "{} {}: limit {}", name, chain, limit);
+                    }
+                }
             }
+        }
+    }
+}
+
+/// The pass's own work, from its report line ("... work 517K").
+fn pass_work_k(stdout: &str) -> u64 {
+    let line = stdout.lines().find(|l| l.contains("div/sqrt: ")).unwrap_or_else(|| panic!("no report line of the pass: {}", stdout));
+    let word = line.split_whitespace().last().expect("a last word");
+    word.strip_suffix('K').and_then(|n| n.parse().ok()).unwrap_or_else(|| panic!("no work on the line: {}", line))
+}
+
+#[test]
+fn a_chain_cut_short_by_its_own_limit_leaves_a_checked_proof() {
+    // The pass's own limit (structdivticks) stops the chain part of the way:
+    // the pairs proven so far join the formula, the search does the rest,
+    // and the proof passes the gate. With one solver this is the path where
+    // the solver's steps and the unused definitions are deleted with pairs
+    // still pending.
+    let fx = Fixture::new("structdiv_cut");
+    let cases: Vec<(&str, (i64, Vec<Vec<i64>>))> = vec![("div", toy_divider(12, 4, false, false)), ("sqrt", toy_sqrt(16, false))];
+    for (name, (vars, clauses)) in cases {
+        let cnf = fx.path(&format!("{}.cnf", name));
+        write_cnf(&cnf, vars, &clauses);
+        for chain in CHAINS {
+            let proof = fx.path(&format!("{}.{}.drat", name, tag(chain)));
+            let (stdout, _) = run_div_with_proof(&cnf, &proof, chain, &[]);
+            let (all, _) = pairs_proven(&stdout);
+            let total = pass_work_k(&stdout);
+            assert!(all >= 4 && total >= 20, "{} {}: {}", name, chain, stdout);
+            let mut partial = 0;
+            for frac in [15u64, 30, 45, 60, 75, 90] {
+                let limit = format!("--structdivticks={}", total * frac / 100);
+                let mut cmd = Command::new(solver_bin());
+                for key in common::SOLVER_ENV_VARS {
+                    cmd.env_remove(key);
+                }
+                let out = cmd.arg("-n").args(common::STOCK_PATH).arg("--structdiv=1").arg(chain).arg(&limit).arg(&cnf).arg(&proof).output().expect("run sat-solver");
+                let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+                assert!(stdout.contains("s UNSATISFIABLE"), "{} {} {}: {}", name, chain, limit, stdout);
+                if stdout.contains("row pairs proven equal") {
+                    let (proven, _) = pairs_proven(&stdout);
+                    assert!(proven <= all, "{} {} {}: {}", name, chain, limit, stdout);
+                    if proven > 0 && proven < all {
+                        partial += 1;
+                    }
+                }
+                assert_eq!(gate(&cnf, &proof), "ok", "{} {} {}", name, chain, limit);
+            }
+            assert!(partial > 0, "{} {}: no limit stopped the chain part of the way", name, chain);
         }
     }
 }
@@ -441,7 +669,20 @@ fn the_shipped_defaults_run_the_div_pass() {
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(stdout.contains("\ns UNSATISFIABLE"), "{}", stdout);
     assert!(stdout.contains("div/sqrt: quotient bit 4 of a 12/12 divider"), "the pass is on by default: {}", stdout);
+    // since 2026-11-18 its pairs are questions to one solver by default
+    // (bead SAT-playground-lhf); --structdivassume=0 is the chain as it was
+    assert!(stdout.contains("asked of one solver"), "one solver by default: {}", stdout);
     assert_eq!(gate(&cnf, &proof), "ok");
+    // (two runs without a proof file: a proof's lines are work too)
+    let plain = common::run_shipped(&cnf, &[], &[]);
+    let given = common::run_shipped(&cnf, &["--structdivassume=1"], &[]);
+    let line = |text: &str| text.lines().find(|l| l.contains("div/sqrt: ")).map(str::to_string).unwrap_or_default();
+    assert!(line(&plain.stdout).contains("asked of one solver"), "{}", plain.stdout);
+    assert_eq!(line(&plain.stdout), line(&given.stdout), "the default v the option given");
+    assert_eq!(plain.work(), given.work(), "the default v the option given: work");
+    let fresh = common::run_shipped(&cnf, &["--structdivassume=0"], &[]);
+    assert_eq!(fresh.status, "UNSATISFIABLE");
+    assert!(fresh.stdout.contains("div/sqrt: quotient bit 4 of a 12/12 divider") && !fresh.stdout.contains("asked of one solver"), "{}", fresh.stdout);
     let off = common::run_shipped(&cnf, &["--structdiv=0"], &[]);
     assert_eq!(off.status, "UNSATISFIABLE");
     assert!(!off.stdout.contains("div/sqrt:"), "{}", off.stdout);
@@ -505,15 +746,17 @@ fn the_sub_calls_see_the_circuit_numbered_densely() {
     sparse_clauses.insert(0, vec![-200_000]);
     let sparse = fx.path("sparse.cnf");
     write_cnf(&sparse, 200_000, &sparse_clauses);
-    let (sa, wa) = div_work(&plain, None, None);
-    let (sb, wb) = div_work(&sparse, None, None);
-    assert_eq!(sa, "UNSATISFIABLE");
-    assert_eq!(sb, "UNSATISFIABLE");
-    assert!(wb < wa + 16 * 200_000, "the sparse formula's work {} against {}", wb, wa);
-    let proof = fx.path("sparse.drat");
-    let (sc, _) = div_work(&sparse, Some(&proof), None);
-    assert_eq!(sc, "UNSATISFIABLE");
-    assert_eq!(gate(&sparse, &proof), "ok");
+    for chain in CHAINS {
+        let (sa, wa) = div_work(&plain, None, None, chain);
+        let (sb, wb) = div_work(&sparse, None, None, chain);
+        assert_eq!(sa, "UNSATISFIABLE", "{}", chain);
+        assert_eq!(sb, "UNSATISFIABLE", "{}", chain);
+        assert!(wb < wa + 16 * 200_000, "{}: the sparse formula's work {} against {}", chain, wb, wa);
+        let proof = fx.path(&format!("sparse.{}.drat", tag(chain)));
+        let (sc, _) = div_work(&sparse, Some(&proof), None, chain);
+        assert_eq!(sc, "UNSATISFIABLE", "{}", chain);
+        assert_eq!(gate(&sparse, &proof), "ok", "{}", chain);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -552,11 +795,13 @@ fn div_pass_reads_a_divider_with_clauses_added() {
     more.extend(extra_on_gates(&clauses, inputs, 3));
     let cnf = fx.path("m.cnf");
     write_cnf(&cnf, vars, &more);
-    let proof = fx.path("m.drat");
-    let (stdout, stderr) = run_div_with_proof(&cnf, &proof, &[("SAT_STRUCT_DEBUG", "1")]);
-    assert!(stdout.contains("s UNSATISFIABLE"), "{}\n{}", stdout, stderr);
-    assert!(stdout.contains("div/sqrt: quotient bit 3 of a 8/8 divider"), "the pass did not fire: {}\n{}", stdout, stderr);
-    assert_eq!(gate(&cnf, &proof), "ok");
+    for chain in CHAINS {
+        let proof = fx.path(&format!("m.{}.drat", tag(chain)));
+        let (stdout, stderr) = run_div_with_proof(&cnf, &proof, chain, &[("SAT_STRUCT_DEBUG", "1")]);
+        assert!(stdout.contains("s UNSATISFIABLE"), "{}: {}\n{}", chain, stdout, stderr);
+        assert!(stdout.contains("div/sqrt: quotient bit 3 of a 8/8 divider"), "{}: the pass did not fire: {}\n{}", chain, stdout, stderr);
+        assert_eq!(gate(&cnf, &proof), "ok", "{}", chain);
+    }
 }
 
 #[test]
@@ -583,11 +828,13 @@ fn div_pass_reads_a_root_propagated_into_two_clauses() {
     }
     let cnf = fx.path("m.cnf");
     write_cnf(&cnf, vars, &out);
-    let proof = fx.path("m.drat");
-    let (stdout, stderr) = run_div_with_proof(&cnf, &proof, &[("SAT_STRUCT_DEBUG", "1")]);
-    assert!(stdout.contains("s UNSATISFIABLE"), "{}\n{}", stdout, stderr);
-    assert!(stdout.contains("div/sqrt: quotient bit 3 of a 8/8 divider"), "the pass did not fire: {}\n{}", stdout, stderr);
-    assert_eq!(gate(&cnf, &proof), "ok");
+    for chain in CHAINS {
+        let proof = fx.path(&format!("m.{}.drat", tag(chain)));
+        let (stdout, stderr) = run_div_with_proof(&cnf, &proof, chain, &[("SAT_STRUCT_DEBUG", "1")]);
+        assert!(stdout.contains("s UNSATISFIABLE"), "{}: {}\n{}", chain, stdout, stderr);
+        assert!(stdout.contains("div/sqrt: quotient bit 3 of a 8/8 divider"), "{}: the pass did not fire: {}\n{}", chain, stdout, stderr);
+        assert_eq!(gate(&cnf, &proof), "ok", "{}", chain);
+    }
 }
 
 #[test]
@@ -603,14 +850,16 @@ fn the_reader_sets_aside_at_most_64_clauses() {
         more.extend(extra_on_gates(&clauses, inputs, count));
         let cnf = fx.path(&format!("m{}.cnf", count));
         write_cnf(&cnf, vars, &more);
-        let proof = fx.path(&format!("m{}.drat", count));
-        let (stdout, stderr) = run_div_with_proof(&cnf, &proof, &[("SAT_STRUCT_DEBUG", "1")]);
-        assert!(stdout.contains("s UNSATISFIABLE"), "{}: {}\n{}", count, stdout, stderr);
-        assert_eq!(stdout.contains("div/sqrt: quotient bit 3 of a 8/8 divider"), fires, "{}: {}\n{}", count, stdout, stderr);
-        if !fires {
-            assert!(stdout.contains("div/sqrt: no divider or square-root miter"), "{}: {}", count, stdout);
-            assert!(stderr.contains("structdiv: more than 64 clauses define no gate"), "{}: {}", count, stderr);
+        for chain in CHAINS {
+            let proof = fx.path(&format!("m{}.{}.drat", count, tag(chain)));
+            let (stdout, stderr) = run_div_with_proof(&cnf, &proof, chain, &[("SAT_STRUCT_DEBUG", "1")]);
+            assert!(stdout.contains("s UNSATISFIABLE"), "{} {}: {}\n{}", count, chain, stdout, stderr);
+            assert_eq!(stdout.contains("div/sqrt: quotient bit 3 of a 8/8 divider"), fires, "{} {}: {}\n{}", count, chain, stdout, stderr);
+            if !fires {
+                assert!(stdout.contains("div/sqrt: no divider or square-root miter"), "{} {}: {}", count, chain, stdout);
+                assert!(stderr.contains("structdiv: more than 64 clauses define no gate"), "{} {}: {}", count, chain, stderr);
+            }
+            assert_eq!(gate(&cnf, &proof), "ok", "{} {}", count, chain);
         }
-        assert_eq!(gate(&cnf, &proof), "ok", "{}", count);
     }
 }

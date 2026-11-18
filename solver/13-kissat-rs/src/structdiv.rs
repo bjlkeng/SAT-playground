@@ -52,7 +52,10 @@
 //!    circuit is simulated: every pending pair that differs there is
 //!    dropped. With a proof file a fresh d = x xor y is defined by four red
 //!    steps, the sub-call's clauses are the rup steps of a pbc that gives
-//!    ~d, and (~x | y) and (x | ~y) follow by rup;
+//!    ~d, and (~x | y) and (x | ~y) follow by rup. With `--structdivassume`
+//!    (bead SAT-playground-lhf) the pairs are instead questions to one
+//!    solver that is loaded once and keeps what it learned (`chain_one`
+//!    below);
 //! 5. adds the proven pairs' clauses to F'. The search then sees the miter
 //!    with them (on the 2025 cells it needs no conflicts).
 
@@ -938,11 +941,9 @@ enum Verdict {
     Unknown,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn sub_refute(imp: &Import, net: &Net, eqs: &[[i32; 2]], x: i32, y: i32, capture: bool, ticks: u64, work: &mut u64, stop: &AtomicBool) -> Verdict {
-    if ticks == 0 || stop.load(Ordering::Relaxed) {
-        return Verdict::Unknown;
-    }
+/// A fresh solver for the chain: the plain search (no pre- or inprocessing),
+/// no variable addition, the structure passes and the engines off, silent.
+fn new_sub() -> Box<crate::internal::Solver> {
     let mut sub = Box::new(crate::internal::init());
     crate::config::set_configuration(&mut sub.options, "plain");
     for (name, value) in [
@@ -966,6 +967,15 @@ fn sub_refute(imp: &Import, net: &Net, eqs: &[[i32; 2]], x: i32, y: i32, capture
     ] {
         crate::internal::set_option(&mut sub, name, value);
     }
+    sub
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sub_refute(imp: &Import, net: &Net, eqs: &[[i32; 2]], x: i32, y: i32, capture: bool, ticks: u64, work: &mut u64, stop: &AtomicBool) -> Verdict {
+    if ticks == 0 || stop.load(Ordering::Relaxed) {
+        return Verdict::Unknown;
+    }
+    let mut sub = new_sub();
     crate::internal::set_conflict_limit(&mut sub, PAIR_CONFLICTS);
     crate::internal::set_ticks_limit(&mut sub, ticks);
     if capture {
@@ -1035,6 +1045,9 @@ struct Outcome {
     proven: usize,
     dropped: usize,
     by_model: usize,
+    /// The one solver found the circuit without its root unsatisfiable: the
+    /// proof id of the empty clause (0 without a proof).
+    refuted: Option<u64>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1044,7 +1057,7 @@ fn chain(f: &Formula, net: &Net, pairs: &[Pair], mut proof: Option<&mut Writer>,
     let mut alive = vec![true; pairs.len()];
     let mut done = vec![false; pairs.len()];
     let mut eqs: Vec<[i32; 2]> = Vec::new();
-    let mut out = Outcome { clauses: Vec::new(), proven: 0, dropped: 0, by_model: 0 };
+    let mut out = Outcome { clauses: Vec::new(), proven: 0, dropped: 0, by_model: 0, refuted: None };
     let size: u64 = f.lits.len() as u64 + f.len() as u64;
     // the renamed circuit: a visit per literal and clause, and two tables
     reserve(work, size + 2 * net.nv as u64, &stopped)?;
@@ -1138,7 +1151,349 @@ fn chain(f: &Formula, net: &Net, pairs: &[Pair], mut proof: Option<&mut Writer>,
     Ok(out)
 }
 
-pub fn run(f: &Formula, derived: &mut Derived, budget: u64, _hard: u64, work: &mut u64, stop: &AtomicBool) {
+
+// ---------------------------------------------------------------------------
+// the chain asked of one solver (bead SAT-playground-lhf, 2026-11-18)
+// ---------------------------------------------------------------------------
+//
+// In plain terms. The chain above starts a fresh solver for every pair and
+// loads the whole circuit into it again. Here one solver is loaded once and
+// asked pair after pair, under an assumption (src/assume.rs), and it keeps
+// what it learned for the next pair.
+//
+// Every pair gets a variable d that means "the two signals differ"
+// (d = x xor y, four clauses), all of them before the first question: the
+// solver takes no clauses between two questions. The question for a pair is
+// "assume d". When the solver refutes it, d is false from then on, and with
+// d false the four clauses say x = y: so a proven pair is known to every
+// later question, as the pairs added to a fresh solver are in the chain
+// above. A model drops every pending pair that differs on it, as above.
+//
+// A small example, three pairs:
+//
+//                              the chain above        one solver
+//   loads of the circuit       3                      1
+//   pair 3 starts from         the circuit and        the same, and every
+//                              "pairs 1 and 2 are     clause learned on
+//                              equal"                 pairs 1 and 2
+//
+// The proof. A clause the solver learns follows from the circuit and the
+// definitions alone, whatever was assumed at the time. So each one is a
+// `rup` step at the top level of the VeriPB proof, where the chain above
+// wraps a pair's clauses in a block that forgets them at its end. Later
+// clauses lean on earlier ones, so they have to stay; and to keep the
+// checker's set of clauses as small as the solver's, every clause the
+// solver deletes is deleted in the proof too (`del id`). When the chain
+// ends, the clauses still there are deleted, with the definitions of the
+// pairs that were not proven: what is left is what the chain above leaves
+// (per proven pair its definition, ~d and the two clauses).
+
+/// The one solver's lines as steps of the VeriPB proof: an added line is a
+/// `rup` step, a deleted line the `del` of one step with these literals.
+struct Lines {
+    /// sorted literals to the ids of the steps still there
+    live: HashMap<Vec<i32>, Vec<u64>>,
+    /// ids to delete with the next `del` line
+    gone: Vec<u64>,
+}
+
+impl Lines {
+    fn flush(&mut self, w: &mut Writer) -> std::io::Result<()> {
+        if !self.gone.is_empty() {
+            w.delete(&self.gone)?;
+            self.gone.clear();
+        }
+        Ok(())
+    }
+
+    /// Write the steps in the solver's order. Returns the id of the empty
+    /// clause when the solver derived it.
+    fn write(&mut self, w: &mut Writer, imp: &Import, steps: Vec<crate::proof::Step>) -> std::io::Result<Option<u64>> {
+        for step in steps {
+            match step {
+                crate::proof::Step::Add(c) => {
+                    self.flush(w)?;
+                    let mut key: Vec<i32> = c.iter().map(|&l| imp.to_formula(l)).collect();
+                    let id = w.rup(&key)?;
+                    if key.is_empty() {
+                        return Ok(Some(id));
+                    }
+                    key.sort_unstable();
+                    self.live.entry(key).or_default().push(id);
+                }
+                crate::proof::Step::Delete(c) => {
+                    // a clause of the circuit or a definition is no step of
+                    // ours: it stays in the proof, which only makes the
+                    // checker's set larger than the solver's
+                    let mut key: Vec<i32> = c.iter().map(|&l| imp.to_formula(l)).collect();
+                    key.sort_unstable();
+                    if let Some(ids) = self.live.get_mut(&key) {
+                        if let Some(id) = ids.pop() {
+                            self.gone.push(id);
+                        }
+                        if ids.is_empty() {
+                            self.live.remove(&key);
+                        }
+                    }
+                    if self.gone.len() >= 64 {
+                        self.flush(w)?;
+                    }
+                }
+            }
+        }
+        self.flush(w)?;
+        Ok(None)
+    }
+
+    /// Delete every step still there (the solver is gone), lowest id first.
+    fn clear(&mut self, w: &mut Writer) -> std::io::Result<()> {
+        self.flush(w)?;
+        let mut ids: Vec<u64> = self.live.drain().flat_map(|(_, ids)| ids).collect();
+        ids.sort_unstable();
+        for chunk in ids.chunks(64) {
+            w.delete(chunk)?;
+        }
+        Ok(())
+    }
+}
+
+/// What the steps of one question cost: every literal read, sorted and
+/// written, and a step's deletion later on.
+fn steps_cost(steps: &[crate::proof::Step]) -> u64 {
+    steps
+        .iter()
+        .map(|s| match s {
+            crate::proof::Step::Add(c) => 2 * c.len() as u64 + 3,
+            crate::proof::Step::Delete(c) => c.len() as u64 + 1,
+        })
+        .sum()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn chain_one(f: &Formula, net: &Net, pairs: &[Pair], mut proof: Option<&mut Writer>, next_var: &mut i32, budget: u64, work: &mut u64, stop: &AtomicBool) -> Result<Outcome, String> {
+    let stopped = |w: u64| w >= budget || stop.load(Ordering::Relaxed);
+    let dbg = debug();
+    let io = |e: std::io::Error| e.to_string();
+    let mut alive = vec![true; pairs.len()];
+    let mut done = vec![false; pairs.len()];
+    let mut out = Outcome { clauses: Vec::new(), proven: 0, dropped: 0, by_model: 0, refuted: None };
+    let size: u64 = f.lits.len() as u64 + f.len() as u64;
+    // the renamed circuit: a visit per literal and clause, and two tables
+    reserve(work, size + 2 * net.nv as u64, &stopped)?;
+    let mut imp = Import::new(f, net);
+    // the one load: the circuit, and per pair four clauses of three
+    // literals (the budget's end leaves nothing proven and nothing written)
+    if reserve(work, size + 16 * pairs.len() as u64 + 6, &stopped).is_err() {
+        return Ok(out);
+    }
+    // pair i's d is the solver's variable dbase + i
+    let dbase = imp.back.len() as i32;
+    let mut defs: Vec<[u64; 4]> = Vec::new();
+    if let Some(w) = proof.as_deref_mut() {
+        // the definitions, four `red` steps a pair, and their deletion for a
+        // pair that is not proven
+        if reserve(work, 20 * pairs.len() as u64, &stopped).is_err() {
+            return Ok(out);
+        }
+        for p in pairs {
+            *next_var += 1;
+            let d = *next_var;
+            imp.back.push(d);
+            let (x, y) = (p.x, p.y);
+            defs.push([
+                w.red_const(&[-d, x, y], d, false).map_err(io)?,
+                w.red_const(&[-d, -x, -y], d, false).map_err(io)?,
+                w.red_const(&[d, -x, y], d, true).map_err(io)?,
+                w.red_const(&[d, x, -y], d, true).map_err(io)?,
+            ]);
+        }
+    }
+    let mut sub = new_sub();
+    // The focused search only. The plain configuration searches in kissat's
+    // stable mode only (slow restarts, scores that change slowly), which
+    // suits one long question. A solver asked hundreds of short questions
+    // does better when it turns to each new one quickly. Measured on the five
+    // 2025 cells (2026-11-18, the pass's work against the chain above): stable
+    // only 0.44 to 1.02, focused only 0.43 to 0.71, and on div_miter_lec__2
+    // focused also proves the compared bit's own pair, which stable does
+    // not within the conflict limit. The simplifying passes stay off: with
+    // them on the work was 0.83 to 0.94.
+    crate::internal::set_option(&mut sub, "stable", 0);
+    if proof.is_some() {
+        crate::proof::init_captured_steps(&mut sub);
+    }
+    // (the parent's alarm stops it; its work reaches the parent's tick
+    // counter as it goes, question by question)
+    sub.parent_stop = stop as *const AtomicBool as usize;
+    let mut loaded = true;
+    for (i, &l) in imp.lits.iter().enumerate() {
+        if i % 65536 == 0 && stop.load(Ordering::Relaxed) {
+            loaded = false;
+            break;
+        }
+        crate::internal::add(&mut sub, l);
+    }
+    if loaded {
+        for (i, p) in pairs.iter().enumerate() {
+            let (x, y, d) = (imp.to_dense(p.x), imp.to_dense(p.y), dbase + i as i32);
+            for c in [[-d, x, y], [-d, -x, -y], [d, -x, y], [d, x, -y]] {
+                for l in c {
+                    crate::internal::add(&mut sub, l);
+                }
+                crate::internal::add(&mut sub, 0);
+            }
+        }
+        // what the unit clauses set off while they were added is on the
+        // solver's clock already: charged here, once
+        *work = work.saturating_add(sub.statistics.work_clock());
+    }
+    let mut lines = Lines { live: HashMap::new(), gone: Vec::new() };
+    let mut i = 0;
+    while loaded && i < pairs.len() {
+        let at = i;
+        i += 1;
+        if !alive[at] {
+            continue;
+        }
+        if reserve(work, 8, &stopped).is_err() {
+            break;
+        }
+        let (x, y) = (pairs[at].x, pairs[at].y);
+        let before = *work;
+        if crate::assume::assume(&mut sub, dbase + at as i32).is_err() {
+            crate::assume::forget(&mut sub);
+            crate::internal::release(*sub);
+            return Err(format!("pair {} cannot be assumed", pairs[at].name));
+        }
+        crate::assume::limit(&mut sub, Some(PAIR_CONFLICTS as u64), Some(budget.saturating_sub(*work)));
+        let clock = sub.statistics.work_clock();
+        sub.parent_ticks_base = before.saturating_sub(clock);
+        sub.parent_ticks = work as *mut u64 as usize;
+        let res = crate::assume::solve(&mut sub);
+        sub.parent_ticks = 0;
+        let used = sub.statistics.work_clock().saturating_sub(clock);
+        *work = before.saturating_add(used);
+        if dbg && used >= 100_000_000 {
+            eprintln!("structdiv: {}: a question of work {}K, result {}", pairs[at].name, used / 1000, res);
+        }
+        // what the solver learned on this question stays in it whatever the
+        // answer, so its lines go into the proof whatever the answer; they
+        // are written whole or the chain ends here
+        let mut empty: Option<u64> = None;
+        if let Some(w) = proof.as_deref_mut() {
+            let steps = crate::proof::drain_captured_steps(&mut sub);
+            if reserve(work, steps_cost(&steps), &stopped).is_err() {
+                break;
+            }
+            empty = lines.write(w, &imp, steps).map_err(io)?;
+        }
+        if res == 20 && sub.inconsistent {
+            // the circuit without its root is unsatisfiable by itself, so
+            // the formula is: nothing is left to prove pair by pair
+            if proof.is_some() && empty.is_none() {
+                crate::internal::release(*sub);
+                return Err("the solver is inconsistent and its proof has no empty clause".into());
+            }
+            out.refuted = Some(empty.unwrap_or(0));
+            break;
+        }
+        match res {
+            20 => {
+                if !crate::assume::failed(&sub, 0) {
+                    crate::internal::release(*sub);
+                    return Err(format!("pair {} refuted without its assumption", pairs[at].name));
+                }
+                if let Some(w) = proof.as_deref_mut() {
+                    // d is false in the solver for good: ~d by `rup`, then
+                    // the pair's two clauses from d's definition
+                    if reserve(work, 16, &stopped).is_err() {
+                        break;
+                    }
+                    let d = imp.back[(dbase + at as i32) as usize];
+                    w.rup(&[-d]).map_err(io)?;
+                    let id1 = w.rup(&[-x, y]).map_err(io)?;
+                    let id2 = w.rup(&[x, -y]).map_err(io)?;
+                    out.clauses.push(([-x, y], id1));
+                    out.clauses.push(([x, -y], id2));
+                } else {
+                    out.clauses.push(([-x, y], 0));
+                    out.clauses.push(([x, -y], 0));
+                }
+                done[at] = true;
+                out.proven += 1;
+                if dbg && (out.proven % 100 == 0 || at + 1 == pairs.len()) {
+                    eprintln!("structdiv: {} pairs proven ({}), work {}K", out.proven, pairs[at].name, *work / 1000);
+                }
+            }
+            10 => {
+                alive[at] = false;
+                out.dropped += 1;
+                // the model is an input on which pair `at` differs: simulate
+                // it, and every pending pair that differs there goes too
+                if reserve(work, sim_cost(net, 1) + pairs.len() as u64 + net.inputs.len() as u64, &stopped).is_err() {
+                    break;
+                }
+                let mut on: Vec<i32> = Vec::new();
+                for &v in &net.inputs {
+                    if imp.dense[v as usize] != 0 && crate::internal::value(&mut sub, imp.dense[v as usize]) > 0 {
+                        on.push(v);
+                    }
+                }
+                let val = simulate(net, 1, &|v, w| w[0] = if on.binary_search(&v).is_ok() { 1 } else { 0 }, &mut 0);
+                let lit = |l: i32| (val[net.at(l.abs())] & 1 == 1) != (l < 0);
+                let mut wrong: Option<usize> = None;
+                for j in 0..pairs.len() {
+                    if alive[j] && lit(pairs[j].x) != lit(pairs[j].y) {
+                        if done[j] {
+                            wrong = Some(j);
+                            break;
+                        }
+                        alive[j] = false;
+                        if j != at {
+                            out.by_model += 1;
+                        }
+                    }
+                }
+                if let Some(j) = wrong {
+                    crate::internal::release(*sub);
+                    return Err(format!("proven pair {} differs on a model", pairs[j].name));
+                }
+                if dbg {
+                    eprintln!("structdiv: {} is no equivalence (work {}K)", pairs[at].name, (*work - before) / 1000);
+                }
+            }
+            _ => {
+                alive[at] = false;
+                out.dropped += 1;
+                if dbg {
+                    eprintln!("structdiv: {}: no verdict within the limits (work {}K)", pairs[at].name, (*work - before) / 1000);
+                }
+                if stopped(*work) {
+                    break;
+                }
+            }
+        }
+    }
+    crate::internal::release(*sub);
+    if let Some(w) = proof.as_deref_mut() {
+        if out.refuted.is_none() {
+            // the solver is gone, and so are its lines and the definitions
+            // no proven pair uses (paid for when they were written)
+            lines.clear(w).map_err(io)?;
+            for (j, ids) in defs.iter().enumerate() {
+                if !done[j] {
+                    w.delete(ids).map_err(io)?;
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `one`: the chain is asked of one solver (`--structdivassume`), not of a
+/// fresh solver per pair.
+#[allow(clippy::too_many_arguments)]
+pub fn run(f: &Formula, derived: &mut Derived, budget: u64, _hard: u64, work: &mut u64, stop: &AtomicBool, one: bool) {
     let stopped = |w: u64| w >= budget || stop.load(Ordering::Relaxed);
     if stopped(*work) || f.vars > MAX_VARS || derived.refuted {
         return;
@@ -1187,7 +1542,11 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, _hard: u64, work: &m
     // far, and the counter goes back to `derived` on every path: a later
     // pass must not reuse a number this pass's proof holds
     let mut next_var: i32 = derived.last_var.max(f.vars);
-    let outcome = chain(f, &net, &pairs, derived.proof.as_mut(), &mut next_var, budget, work, stop);
+    let outcome = if one {
+        chain_one(f, &net, &pairs, derived.proof.as_mut(), &mut next_var, budget, work, stop)
+    } else {
+        chain(f, &net, &pairs, derived.proof.as_mut(), &mut next_var, budget, work, stop)
+    };
     derived.last_var = next_var;
     let o = match outcome {
         Ok(o) => o,
@@ -1198,16 +1557,27 @@ pub fn run(f: &Formula, derived: &mut Derived, budget: u64, _hard: u64, work: &m
             return;
         }
     };
+    if let Some(id) = o.refuted {
+        // the circuit without its root has no model, so the formula has none
+        derived.add(&[], id);
+        derived.notes.push(format!(
+            "div/sqrt: {}, the circuit without its root is unsatisfiable (asked of one solver), work {}K",
+            what,
+            (*work - start) / 1000
+        ));
+        return;
+    }
     for (c, id) in &o.clauses {
         derived.add(c, *id);
     }
     derived.notes.push(format!(
-        "div/sqrt: {}, {} of {} row pairs proven equal ({} dropped by a check, {} by a model), work {}K",
+        "div/sqrt: {}, {} of {} row pairs proven equal ({} dropped by a check, {} by a model){}, work {}K",
         what,
         o.proven,
         pairs.len(),
         o.dropped,
         o.by_model,
+        if one { ", asked of one solver" } else { "" },
         (*work - start) / 1000
     ));
 }
