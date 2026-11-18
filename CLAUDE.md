@@ -138,11 +138,13 @@ work is **solver 13** and the RL scheduler on top of it.
   seeds 2 and 3 give 687 solved against 681: and-11, and-12 and and-15 at both
   seeds, and nothing else changes. **No proof of the
   split on a real oisc cell is verified**: 24 hours of drat-trim gave no
-  verdict on any of the four (bead `d96.8.9`: a check case by case). Steps 3
-  and 4 are not started. The owner's answers of 2026-11-18: the speed results
-  are signed off (`bp3.11`, closed), and the check case by case does not have
-  to come before the merge. Open for the owner: steps 3 and 4 before the
-  merge or after (`bp3.12`), and the merge (`bp3.10`).
+  verdict on any of the four (bead `d96.8.9`: a check case by case). The
+  owner's answers of 2026-11-18: the speed results are signed off; the check
+  case by case does not have to come before the merge; steps 3 and 4 (the
+  simplifying passes inside a question with assumptions, and adding clauses
+  between questions) are not built and are parked in bead
+  `SAT-playground-980`. Open for the owner: the merge (`bp3.10`), the only
+  bead of the epic still open.
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a
@@ -185,6 +187,18 @@ search-bound cells, and the reference kissat is itself generic `-O3`. Do not
 re-add `target-cpu=native` here. The release profile sets `strip = true`, so
 profiling needs `CARGO_PROFILE_RELEASE_STRIP=false
 CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --release`.
+
+One build switch is known and left off on purpose: the jump switch,
+`-C llvm-args=-x86-branches-within-32B-boundaries`, which pads jumps away
+from 32-byte boundaries. On this host's processor (Xeon Gold 6154) the same
+search then runs in 0.980 of the summed time on the 400 cells and 0.962 on
+the typical cell, with the same cells solved (2026-11-17). The owner left it
+off on 2026-11-18 (bead `SAT-playground-b1w`, closed): it helps only Intel's
+processors of 2015 to about 2020, and the C kissat would have to be built the
+same way for time comparisons to stay fair (not measured). It is useful when
+two builds have to be compared, because it takes most of the placement luck
+out (solver README on branch `assumptions`, "A finding on the side: the jump
+switch").
 
 `tools/current_solver.sh` resolves "the current solver" to the
 highest-numbered `solver/NN-*` with `build.sh` + `run.sh`, so the harness
