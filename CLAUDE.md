@@ -139,9 +139,10 @@ work is **solver 13** and the RL scheduler on top of it.
   seeds, and nothing else changes. **No proof of the
   split on a real oisc cell is verified**: 24 hours of drat-trim gave no
   verdict on any of the four (bead `d96.8.9`: a check case by case). Steps 3
-  and 4 are not started. Open for the owner: the sign-off on the speed results
-  (`bp3.11`), steps 3 and 4 before the merge or after (`bp3.12`), and the
-  merge (`bp3.10`).
+  and 4 are not started. The owner's answers of 2026-11-18: the speed results
+  are signed off (`bp3.11`, closed), and the check case by case does not have
+  to come before the merge. Open for the owner: steps 3 and 4 before the
+  merge or after (`bp3.12`), and the merge (`bp3.10`).
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a
