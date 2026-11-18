@@ -126,15 +126,22 @@ work is **solver 13** and the RL scheduler on top of it.
   `/home/bojji/code/SAT-playground-assumptions`** (the one exception to the
   shared checkout, the owner's call; `plan/agent-coordination.md`). Main's
   solver code stays as it is until the owner merges (bead `bp3.10`). The plan
-  is `plan/assumptions-plan.md` on the branch. Where it stands (2026-11-16):
-  steps 0, 1, 2 and 5 are done and reviewed (commit `0065a55`); the split in
-  two stages (`--ctlsplit=1 --ctlsplitassume=1`, off by default) answers all
-  16 runs of the eight oisc cells of 2023 to 2025 at seeds 2 and 3, against
-  10 with one stage and 4 by the shipped solver. The long gate runs of that
-  build were started as one detached chain (unit `as5-chain`, script
-  `log/as5-400-2026-11-16/chain.sh`, about 33 hours). Steps 3 and 4 are not
-  started; the owner's calls `bp3.11` (how the speed gate judges two builds)
-  and `bp3.12` (steps 3 and 4 before the merge or after) are open.
+  is `plan/assumptions-plan.md` on the branch. Where it stands (2026-11-17):
+  steps 0, 1, 2 and 5 are done and reviewed (commit `0065a55`), and the gate
+  runs are in (solver README on the branch, "Assumptions"). With the split
+  off, the branch's build is main's on all 400 cells under work budgets,
+  field for field; in a paired 400-cell run it solves the same 340 cells with
+  wall PAR-2 1.002 (the same build twice: 1.001); on the 52 long cells, build
+  against build on neighbouring cores, it takes 0.9994 of main's time for the
+  search alone and 0.9999 with the proof written (noise 0.1%). With the split
+  on (`--ctlsplit=1 --ctlsplitassume=1`, off by default), the 400 cells at
+  seeds 2 and 3 give 687 solved against 681: and-11, and-12 and and-15 at both
+  seeds, and nothing else changes. **No proof of the
+  split on a real oisc cell is verified**: 24 hours of drat-trim gave no
+  verdict on any of the four (bead `d96.8.9`: a check case by case). Steps 3
+  and 4 are not started. Open for the owner: the sign-off on the speed results
+  (`bp3.11`), steps 3 and 4 before the merge or after (`bp3.12`), and the
+  merge (`bp3.10`).
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a
@@ -299,6 +306,26 @@ physical cores), never 32 each.
   that is not the measure for two builds. Before hunting a slowdown under 1%,
   compare instruction counts: `tools/as_counters.py` on branch `assumptions`
   (solver README there, "Assumptions", "Speed").
+- **The harness starts its answer checkers unpinned** (bead
+  `SAT-playground-209`, 2026-11-16). `tools/feature_ablation.py` pins each
+  solver to a core, but the model check, drat-trim and VeriPB run wherever the
+  kernel puts them, and some land on the second hardware thread of another
+  job's solver core. That solver runs at about 60% speed meanwhile; the same
+  build twice differed by -38% to +75% in clock ticks on a cell. Every 400-cell
+  wall number before 2026-11-16 carries this. Until the harness is fixed,
+  start it through `log/as-pair400-2026-11-16/run_pair.py`, which keeps each
+  job's checker on the job's own core, when times matter.
+- **A 400-cell run resolves about half a percent of summed time, not less.**
+  On the long cells that wait on memory, two runs of one build differ by 0.7%
+  typically, by more than 3% on one cell in five and by up to 15%, with the
+  core and the neighbours a run gets (2026-11-17, the same build twice in one
+  harness run). Put the baseline build in a second time as an arm, so the run
+  shows its own floor, and read the tables of `tools/as_report.py` (branch
+  `assumptions`). For a smaller difference, run a cell's two builds at the
+  same moment on two neighbouring cores of one socket and swap them:
+  `tools/as_pairtime.py --suite DIR --conflicts 0 --pairs ... --proof file` on
+  that branch gave 0.9999 with a noise of 0.1% on 52 long cells, where the
+  harness run had shown 1.011.
 - Long sweeps run for hours and `--seedgate` writes `results.tsv` only at the
   end — launch detached, record the run directory and PID, read progress from
   `_work/<idx>` scratch dirs.
