@@ -7905,6 +7905,8 @@ other's load (`log/as-pairlong-2026-11-17/` in the main checkout).
   the 400-cell run it was about 1% faster, which is where this build's code
   happened to land. No slowdown was found, and nothing in the code was
   changed for speed.
+- **The owner's sign-off (2026-11-18).** The owner signed off on these speed
+  results (bead `bp3.11`), for the reviewed build `b3b6a491`.
 
 **A finding on the side: the jump switch.** In main's build about a third of
 all micro-operations go through the decoder again on the cells that fit in
@@ -8282,7 +8284,9 @@ and-15 has no answer either way (it needs 16G).
 - **No proof of the split on a real cell has been verified** (above): 24 hours
   of drat-trim gave no verdict on any of the four. Until a check case by case
   exists (bead `SAT-playground-d96.8.9`), the cells the split gains are
-  answers without a checked proof.
+  answers without a checked proof. The owner's answer of 2026-11-18: that
+  check does not have to be built before the merge. The split stays off by
+  default.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 

@@ -594,3 +594,18 @@ yes for sll-8 and still open for the three and- cells.
   (`bp3.10`) with the split's proofs unverified on the real cells, and the
   jump switch for main's build (`b1w`: 2% of the summed time on the 400 cells,
   3.8% on the typical cell, the same cells solved).
+
+**The owner's answers (2026-11-18).**
+
+- The speed results are signed off ("I sign off on speed"; bead `bp3.11`,
+  closed). The sign-off is for the reviewed build, sha256 `b3b6a491`.
+- The split's unverified proofs: "We can skip check". The check case by case
+  (`d96.8.9`) does not have to be built before the merge; the split goes in
+  behind its option with its real-cell proofs unverified, as recorded above.
+- Still open: steps 3 and 4 before the merge or after (`bp3.12`), the merge
+  itself (`bp3.10`), and the jump switch (`b1w`). The two gate beads (`bp3.7`,
+  `bp3.8`) close with the answer to `bp3.12`: if steps 3 and 4 come first,
+  the build changes and the gates run again on it.
+- For the merge: main's solver code has not changed since the branch point,
+  so main's build of today is still `be9a2b05`, the build every gate run
+  compared against.
