@@ -148,15 +148,22 @@ kissat_options! {
     (ctlreadticks, 3_000_000, 1, i32::MAX, "control reading work limit (K)"),
     // Not in kissat (2026-11-14, bead SAT-playground-d96.8.5): split on the
     // control variables before the search, each case in a sub-solver
-    // (src/control.rs). Off by default
-    (ctlsplit, 0, 0, 2, "split on the control variables (SAT_CTL_VARS) first: 1 split, 2 probe"),
+    // (src/control.rs). On by default since 2026-11-18, the owner's call
+    // (bead d96.8.7), in two stages (ctlsplitassume below). On the 400 cells
+    // of 2025 at seeds 2 and 3 it solved 687 v 681: and-11, and-12 and
+    // and-15 at both seeds. It fires on the four oisc cells only; on every
+    // other cell the search is the same and the reading is added (0.36% of
+    // the work). The split's proofs on the oisc cells are not verified: 24
+    // hours of drat-trim gave no verdict (bead d96.8.9). The stock kissat
+    // path adds --ctlsplit=0
+    (ctlsplit, 1, 0, 2, "split on the control variables (SAT_CTL_VARS) first: 1 split, 2 probe"),
     // Not in kissat (2026-11-15, epic SAT-playground-bp3 step 5): the split
     // in two stages.  A case is first a question to one case solver, under
     // assumptions (src/assume.rs), within ctlsplitassumeload percent of one
     // load of the formula; only a case that leaves open goes to a fresh
-    // sub-solver.  Off by default: the one-stage split stays until the runs
-    // decide
-    (ctlsplitassume, 0, 0, 1, "control split: cases first as questions to one case solver"),
+    // sub-solver.  On by default since 2026-11-18, with ctlsplit; 0 is the
+    // one-stage split, a fresh sub-solver for every case
+    (ctlsplitassume, 1, 0, 1, "control split: cases first as questions to one case solver"),
     (ctlsplitassumeload, 100, 1, 100_000, "control split: work for one such question (percent of a load)"),
     (ctlsplitbits, 6, 1, 12, "control split bits a level"),
     (ctlsplitcase, 3_000_000, 1, i32::MAX, "control split work a case (K)"),

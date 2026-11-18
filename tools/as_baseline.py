@@ -12,9 +12,13 @@ Sets:
             tools/parity.py uses against the C kissat) on tests/cnf
   stockmed  the stock path on the 100 medium cells
   default   the shipped defaults on the 100 medium cells
-  split     the shipped defaults with the control split on (--ctlsplit=1)
+  split     the one-stage control split (--ctlsplit=1 --ctlsplitassume=0)
             on the 100 medium cells and the four oisc cells of 2025, where
             the split fires: the one-stage split must stay what it is
+  defaultsplit
+            the shipped defaults, no option, on the 103 cells of set split.
+            Since 2026-11-18 the defaults split in two stages, so this set
+            covers the cells where the default path fires the split
   full      the shipped defaults on all 400 cells of 2025, each cell under
             its own work budget (benchmarks/rl/cells_2025.tsv, column
             B_cell). The proof goes through a pipe and is hashed as it
@@ -66,7 +70,7 @@ MEM_BYTES = 16 * 1024 ** 3
 # each cell has its own, read from CELLS_TABLE.
 PER_CELL = -1
 DEFAULT_LIMIT = {"stock": 0, "stockmed": 2_000_000_000, "default": 10_000_000_000,
-                 "split": 10_000_000_000, "full": PER_CELL}
+                 "split": 10_000_000_000, "defaultsplit": 10_000_000_000, "full": PER_CELL}
 CELLS_TABLE = os.path.join(ROOT, "benchmarks", "rl", "cells_2025.tsv")
 OISC = ["113e692e379518bc3277855277dcc1b8-oisc-subrv-sll-nested-8",
         "d5b11b0b73eb4ecebdbf6ee8143da689-oisc-subrv-and-nested-11",
@@ -134,7 +138,7 @@ def cells_of(set_name):
         if len(out) != 100:
             raise SystemExit(
                 f"{d} has {len(out)} cells, expected 100 (in a worktree, run tools/worktree_links.sh first)")
-        if set_name == "split":
+        if set_name in ("split", "defaultsplit"):
             full = os.path.join(ROOT, "benchmarks", "sat-comp-2025")
             have = {cell for cell, _ in out}
             for stem in OISC:
@@ -396,7 +400,8 @@ def cmd_run(args):
         raise SystemExit(f"not an executable: {solver}")
     opts = stock_options() if args.set in ("stock", "stockmed") else []
     if args.set == "split":
-        opts = ["--ctlsplit=1"]
+        # the one-stage split; the two stages are the default since 2026-11-18
+        opts = ["--ctlsplit=1", "--ctlsplitassume=0"]
     opts += args.options.split() if args.options else []
     limit = DEFAULT_LIMIT[args.set] if args.limit_ticks is None else args.limit_ticks
     cells = cells_of(args.set)
@@ -491,9 +496,16 @@ def read_table(d):
     return rows
 
 
+def text_without(path, ignore):
+    """The lines of a normalized output that do not match `ignore`."""
+    return [line for line in open(path).read().splitlines() if not ignore.search(line)]
+
+
 def cmd_compare(args):
     a, b = read_table(args.a), read_table(args.b)
+    ignore = re.compile(args.ignore_lines) if args.ignore_lines else None
     failures = 0
+    text_only = 0    # cells whose text differs only in lines --ignore-lines names
     for cell in sorted(set(a) | set(b)):
         if cell not in a or cell not in b:
             print(f"DIFF {cell}: only in {'A' if cell in a else 'B'}")
@@ -501,6 +513,14 @@ def cmd_compare(args):
             continue
         ra, rb = a[cell], b[cell]
         diffs = [k for k in EXACT_FIELDS if ra[k] != rb[k]]
+        if diffs == ["text_sha"] and ignore and os.path.isdir(args.a) and os.path.isdir(args.b):
+            # two runs with different options print different option lines:
+            # with --ignore-lines the rest of the text has to be the same
+            safe = cell.replace("/", "__") + ".txt"
+            pa, pb = os.path.join(args.a, "out", safe), os.path.join(args.b, "out", safe)
+            if os.path.isfile(pa) and os.path.isfile(pb) and text_without(pa, ignore) == text_without(pb, ignore):
+                text_only += 1
+                continue
         if not diffs:
             continue
         failures += 1
@@ -540,7 +560,9 @@ def cmd_compare(args):
     wa = sum(float(a[c]["wall_s"]) for c in both)
     wb = sum(float(b[c]["wall_s"]) for c in both)
     print(f"{len(both) - failures}/{len(both)} cells identical in every exact field "
-          f"({', '.join(EXACT_FIELDS)})")
+          f"({', '.join(EXACT_FIELDS)})"
+          + (f"; on {text_only} of them the text differs only in lines matching {args.ignore_lines!r}"
+             if ignore else ""))
     print(f"peak memory notes: {len(mem)}; summed wall A {wa:.0f} s, B {wb:.0f} s "
           f"(not a timing measurement: the runs share the host)")
     return 1 if failures else 0
@@ -624,10 +646,41 @@ def cmd_selftest(_args):
         assert hasher.finish() == (len(data), hashlib.sha256(data).hexdigest()), "a pipe hashes as the file would"
         os.remove(fifo)
         assert PipeHash(fifo).finish() == (-1, "none"), "a pipe nothing wrote to is a missing file"
+    # compare --ignore-lines: an option line may differ, and nothing else
+    import contextlib
+    import io
+    with tempfile.TemporaryDirectory() as d:
+        def table(name, lines, work="c workclock ticks=1 work=1"):
+            folder = os.path.join(d, name)
+            os.makedirs(os.path.join(folder, "out"))
+            row = {k: "x" for k in FIELDS}
+            row.update(cell="cell", workclock=work, text_sha=sha_text(lines), maxrss_kb="0", wall_s="0")
+            with open(os.path.join(folder, "results.tsv"), "w") as f:
+                f.write("\t".join(FIELDS) + "\n" + "\t".join(row[k] for k in FIELDS) + "\n")
+            with open(os.path.join(folder, "out", "cell.txt"), "w") as f:
+                f.write("\n".join(lines) + "\n")
+            return folder
+
+        def compare(x, y, ignore):
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                rc = cmd_compare(argparse.Namespace(a=x, b=y, max_diff=3, ignore_lines=ignore))
+            return rc, out.getvalue()
+        given = ["c --ctlsplit=1 (different from default '0')", "c conflicts: 7", "s UNSATISFIABLE"]
+        ta = table("a", given)
+        tb = table("b", given[1:])                                   # the option line gone, the rest the same
+        tc = table("c", ["c conflicts: 8", "s UNSATISFIABLE"])      # and a counter changed
+        td = table("d", given[1:], work="c workclock ticks=2 work=2")   # the text allowed, the work not
+        pattern = r"^c --ctlsplit\S* \(different from default"
+        assert compare(ta, tb, "")[0] == 1, "without --ignore-lines a changed option line is a difference"
+        rc, out = compare(ta, tb, pattern)
+        assert rc == 0 and "on 1 of them the text differs only in lines matching" in out, out
+        assert compare(ta, tc, pattern)[0] == 1, "another changed line is still a difference"
+        assert compare(ta, td, pattern)[0] == 1, "a changed work-clock line is still a difference"
+    assert [c for c, _ in cells_of("defaultsplit")] == [c for c, _ in cells_of("split")], "the same 103 cells"
     budgets = cell_budgets()
     assert len(budgets) == 400 and min(budgets.values()) > 0, len(budgets)
     opts = stock_options()
-    assert "--gauss=0" in opts and "--card=0" in opts and "--freewalk=0" in opts, opts
+    assert "--gauss=0" in opts and "--card=0" in opts and "--freewalk=0" in opts and "--ctlsplit=0" in opts, opts
     print(f"selftest ok ({len(opts)} stock options: {' '.join(opts)})")
     return 0
 
@@ -653,6 +706,10 @@ def main():
     c.add_argument("a")
     c.add_argument("b")
     c.add_argument("--max-diff", type=int, default=12)
+    c.add_argument("--ignore-lines", default="",
+                   help="a regular expression: output lines matching it may differ between the two runs "
+                        "(for two runs with different options, the option lines); every other field and "
+                        "the rest of the text must still be equal")
     c.set_defaults(func=cmd_compare)
     n = sub.add_parser("renormalize")
     n.add_argument("dir")

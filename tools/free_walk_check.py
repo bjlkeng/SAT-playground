@@ -35,7 +35,7 @@ SOLVER = ROOT / "solver" / "13-kissat-rs" / "target" / "release" / "sat-solver"
 # the other structure passes off: they never change the walk, but one that
 # refutes the formula (the parity pass on Tseitin cells) leaves nothing to walk
 OTHERS_OFF = ["--structsym=0", "--structparity=0", "--structcount=0", "--structarith=0", "--structsort=0",
-              "--structdiv=0", "--structdd=0", "--gauss=0", "--card=0", "--structpoints=0"]
+              "--structdiv=0", "--structdd=0", "--gauss=0", "--card=0", "--structpoints=0", "--ctlsplit=0"]
 FIELDS = ["steps", "trials", "flips", "updates", "pushes", "best", "best_step"]
 
 

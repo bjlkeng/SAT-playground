@@ -1421,6 +1421,7 @@ fn solver_equivalence(clauses: &[Vec<i32>], a: i32, b: i32, conflicts: u32, tick
             ("gauss", 0),
             ("card", 0),
             ("freewalk", 0),
+            ("ctlsplit", 0),
         ] {
             crate::internal::set_option(&mut sub, name, value);
         }

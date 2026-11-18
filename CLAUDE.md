@@ -52,7 +52,7 @@ work is **solver 13** and the RL scheduler on top of it.
   (`structsym` and `structparity` are on by default since 2026-10-10,
   `structcount` since 2026-10-13, `gauss` since 2026-10-18, `structarith`
   since 2026-10-20, `structsort` since 2026-10-27, `structdiv` since
-  2026-10-28, `structdd` since 2026-10-31, `card` since 2026-11-02, `structpoints` since 2026-11-06, `freewalk` since 2026-11-12; solver README "The structure pass" and "The parity
+  2026-10-28, `structdd` since 2026-10-31, `card` since 2026-11-02, `structpoints` since 2026-11-06, `freewalk` since 2026-11-12, `ctlsplit` (the control split, in two stages) since 2026-11-18; solver README "The structure pass" and "The parity
   engine"), as do the test helpers.
 - **Netlist recovery (epic `SAT-playground-skz`, 2026-10-19)** — the next
   line after the structure pass and the parity engine: recover gates,
@@ -116,35 +116,37 @@ work is **solver 13** and the RL scheduler on top of it.
   673, wall PAR-2 0.957x, the whole gain lockchart (+9 −0); on the cells the test turns
   down, the search is off's, step for step. On by default since 2026-11-12, the
   owner's call (the stock path adds `--freewalk=0`).
-- **Assumptions (epic `SAT-playground-bp3`, 2026-11-15)** — let one solver
-  be asked again and again under temporary values ("assume these bits for
-  now"), keeping what it learned. The first use is the control split of
-  `d96.8`, which today loads the whole formula again for every case. Measured
-  before building (`log/as-prior-2026-11-15/NOTE.txt`; solver README, "Cases
-  without the clean-up"): 352 of 384 split cases fall without a fresh solver.
-  **The work is on branch `assumptions`, in its own worktree
-  `/home/bojji/code/SAT-playground-assumptions`** (the one exception to the
-  shared checkout, the owner's call; `plan/agent-coordination.md`). Main's
-  solver code stays as it is until the owner merges (bead `bp3.10`). The plan
-  is `plan/assumptions-plan.md` on the branch. Where it stands (2026-11-17):
-  steps 0, 1, 2 and 5 are done and reviewed (commit `0065a55`), and the gate
-  runs are in (solver README on the branch, "Assumptions"). With the split
-  off, the branch's build is main's on all 400 cells under work budgets,
-  field for field; in a paired 400-cell run it solves the same 340 cells with
-  wall PAR-2 1.002 (the same build twice: 1.001); on the 52 long cells, build
-  against build on neighbouring cores, it takes 0.9994 of main's time for the
-  search alone and 0.9999 with the proof written (noise 0.1%). With the split
-  on (`--ctlsplit=1 --ctlsplitassume=1`, off by default), the 400 cells at
-  seeds 2 and 3 give 687 solved against 681: and-11, and-12 and and-15 at both
-  seeds, and nothing else changes. **No proof of the
-  split on a real oisc cell is verified**: 24 hours of drat-trim gave no
-  verdict on any of the four (bead `d96.8.9`: a check case by case). The
-  owner's answers of 2026-11-18: the speed results are signed off; the check
-  case by case does not have to come before the merge; steps 3 and 4 (the
-  simplifying passes inside a question with assumptions, and adding clauses
-  between questions) are not built and are parked in bead
-  `SAT-playground-980`. Open for the owner: the merge (`bp3.10`), the only
-  bead of the epic still open.
+- **Assumptions (epic `SAT-playground-bp3`, 2026-11-15, closed 2026-11-18)** —
+  one solver can be asked again and again under temporary values ("assume
+  these bits for now"), keeping what it learned (`src/assume.rs`; test mode
+  `--inccnf=1`; plan `plan/assumptions-plan.md`; solver README,
+  "Assumptions"). Merged into main on 2026-11-18; the branch's worktree is
+  gone. With the split off the search is the old one on all 400 cells under
+  work budgets, field for field, and as fast (paired 400-cell run: wall PAR-2
+  1.002 against 1.001 for the same build twice; the 52 long cells, build
+  against build on neighbouring cores: 0.9994 for the search alone, 0.9999
+  with the proof written, noise 0.1%). Its first user is the control split
+  of `d96.8`, now in two stages: every case is first a question to one case
+  solver, and only a case left open gets a sub-solver of its own. **The split
+  is on by default since 2026-11-18, the owner's call** (`ctlsplit=1`,
+  `ctlsplitassume=1`; the stock path adds `--ctlsplit=0`). Measured on the
+  400 cells at seeds 2 and 3: 687 solved against 681, the gain and-11, and-12
+  and and-15 at both seeds; it fires on the four oisc cells only, and every
+  other cell keeps its search and pays the reading (0.36% of the work). The
+  new defaults are that measured run, cell for cell (solver README, "The
+  default flip, checked"). **No proof of the split on a real oisc cell is
+  verified**: 24 hours of drat-trim gave no verdict on any of the four, and
+  the owner took the default with that known. So do not write "every answer
+  checked" for a default run on those cells (bead `d96.8.9`: a check case by
+  case; `d96.8.8`: shorter proofs). The 2026 holdout has not been looked at
+  with the split on. Not built and parked: steps 3 and 4, the simplifying
+  passes inside a question with assumptions and adding clauses between
+  questions (bead `SAT-playground-980`). Where else assumptions could save
+  work was looked at on 2026-11-18 (solver README, "Where else assumptions
+  could save work"): one place, the divider pass's chain of sub-solvers,
+  which takes 0.38 to 0.65 of the work as questions to one solver; that is
+  time on five cells already solved, about half of `div_miter_lec__2`'s run
+  (bead `SAT-playground-lhf`, not built).
 - **`plan/rl-scheduler-solver13-plan.md`** — the RL scheduler. Replace
   kissat's *timing* layer (when to probe / eliminate / reduce / rephase /
   reorder / switch mode, how hard to restart, later per-pass effort) with a
@@ -197,8 +199,7 @@ off on 2026-11-18 (bead `SAT-playground-b1w`, closed): it helps only Intel's
 processors of 2015 to about 2020, and the C kissat would have to be built the
 same way for time comparisons to stay fair (not measured). It is useful when
 two builds have to be compared, because it takes most of the placement luck
-out (solver README on branch `assumptions`, "A finding on the side: the jump
-switch").
+out (solver README, "A finding on the side: the jump switch").
 
 `tools/current_solver.sh` resolves "the current solver" to the
 highest-numbered `solver/NN-*` with `build.sh` + `run.sh`, so the harness
@@ -319,28 +320,29 @@ physical cores), never 32 each.
   0.7% and one cell by up to 3%, either way (2026-11-16: main with one unused
   option added is 0.9933 of main). One binary against itself gives 1.0007, so
   that is not the measure for two builds. Before hunting a slowdown under 1%,
-  compare instruction counts: `tools/as_counters.py` on branch `assumptions`
-  (solver README there, "Assumptions", "Speed").
-- **The harness starts its answer checkers unpinned** (bead
-  `SAT-playground-209`, 2026-11-16). `tools/feature_ablation.py` pins each
-  solver to a core, but the model check, drat-trim and VeriPB run wherever the
-  kernel puts them, and some land on the second hardware thread of another
-  job's solver core. That solver runs at about 60% speed meanwhile; the same
-  build twice differed by -38% to +75% in clock ticks on a cell. Every 400-cell
-  wall number before 2026-11-16 carries this. Until the harness is fixed,
-  start it through `log/as-pair400-2026-11-16/run_pair.py`, which keeps each
-  job's checker on the job's own core, when times matter.
+  compare instruction counts: `tools/as_counters.py` (solver README,
+  "Assumptions", "Speed").
+- **The harness keeps each job's answer checkers on the job's own core since
+  2026-11-18** (bead `SAT-playground-209`). Before that,
+  `tools/feature_ablation.py` pinned each solver to a core, but the model
+  check, drat-trim and VeriPB ran wherever the kernel put them, and some
+  landed on the second hardware thread of another job's solver core. That
+  solver ran at about 60% speed meanwhile; the same build twice differed by
+  -38% to +75% in clock ticks on a cell. **Every 400-cell wall number of this
+  harness from before 2026-11-16 carries that noise**; solved counts and work
+  numbers do not, and the paired run of 2026-11-16 used a wrapper with the
+  same fix. `python3 tools/feature_ablation.py --selftest` checks the pinning
+  in a few seconds.
 - **A 400-cell run resolves about half a percent of summed time, not less.**
   On the long cells that wait on memory, two runs of one build differ by 0.7%
   typically, by more than 3% on one cell in five and by up to 15%, with the
   core and the neighbours a run gets (2026-11-17, the same build twice in one
   harness run). Put the baseline build in a second time as an arm, so the run
-  shows its own floor, and read the tables of `tools/as_report.py` (branch
-  `assumptions`). For a smaller difference, run a cell's two builds at the
-  same moment on two neighbouring cores of one socket and swap them:
-  `tools/as_pairtime.py --suite DIR --conflicts 0 --pairs ... --proof file` on
-  that branch gave 0.9999 with a noise of 0.1% on 52 long cells, where the
-  harness run had shown 1.011.
+  shows its own floor, and read the tables of `tools/as_report.py`. For a
+  smaller difference, run a cell's two builds at the same moment on two
+  neighbouring cores of one socket and swap them: `tools/as_pairtime.py
+  --suite DIR --conflicts 0 --pairs ... --proof file` gave 0.9999 with a noise
+  of 0.1% on 52 long cells, where the harness run had shown 1.011.
 - Long sweeps run for hours and `--seedgate` writes `results.tsv` only at the
   end — launch detached, record the run directory and PID, read progress from
   `_work/<idx>` scratch dirs.
@@ -380,9 +382,7 @@ instances plus twice the timeout for each unsolved one, lower better.
   output in the reply; do not rely on hidden tool output.
 - Agents share the main checkout on `main`: check `git status --short` and
   live processes before editing, and stop and ask if another agent is in the
-  file you need. Coordination details: `plan/agent-coordination.md`. The one
-  exception is epic `bp3`, on branch `assumptions` in the worktree
-  `/home/bojji/code/SAT-playground-assumptions` (same document).
+  file you need. Coordination details: `plan/agent-coordination.md`.
 - For background subagent tasks in Discord, set the task notify policy to
   `silent`; when reporting manually there, mention bjlkeng as
   `<@817490773179760662>`.

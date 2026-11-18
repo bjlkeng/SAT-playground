@@ -211,9 +211,13 @@ seeds, the six ramsey cells on both, and elsewhere the search is the same
 2026-11-12, the owner's call: first, with the strict test and a 7.2G-tick budget
 (`freewalktest=1`, `freewalkticks=7200000`). At fresh seeds it solved 681 v 673, the
 whole gain lockchart, and on the cells its test turns down the search is the same
-("Free choices: the 400-cell run" below). The stock kissat path is `--structsym=0 --structparity=0
+("Free choices: the 400-cell run" below). The control split in two stages, `ctlsplit` with
+`ctlsplitassume`, is on by default since 2026-11-18, the owner's call: at seeds 2 and 3 it
+solved 687 v 681, the gain three oisc cells at both seeds; it fires on the four oisc cells
+only, and elsewhere the search is the same plus the reading (0.36% of the work). The split's
+proofs on those cells are not verified ("The control split in two stages" below). The stock kissat path is `--structsym=0 --structparity=0
 --structcount=0 --structarith=0 --structsort=0 --structdiv=0
---structdd=0 --structpoints=0` (and `--gauss=0`, the parity engine below, `--card=0` and `--freewalk=0`), which `tools/parity.py` passes unless
+--structdd=0 --structpoints=0` (and `--gauss=0`, the parity engine below, `--card=0`, `--freewalk=0` and `--ctlsplit=0`), which `tools/parity.py` passes unless
 told `--structure`, and the test helpers' `run` too
 (`tests/common/mod.rs`, `STOCK_PATH`). A promoted configuration is
 exactly the measured one:
@@ -7273,7 +7277,7 @@ They cover 140 families, the largest being scheduling (140), miters (78), softwa
 
 ### In the solver: control bits first, and the split (2026-11-14; bead `SAT-playground-d96.8.5`, measured first)
 
-`src/control.rs`, two options, both off by default.
+`src/control.rs`, two options, both off by default when this was written. (Since 2026-11-18 the split is on by default, in two stages: "The control split in two stages" below. `--ctlfirst` stays off.)
 
 - **`--ctlfirst=1`**: `next_decision_variable` takes the first free, active control variable before kissat's own choice. Answers and proofs are untouched.
 - **`--ctlsplit=1`**, before the search:
@@ -7517,6 +7521,14 @@ The first level's estimate (its cases' work, scaled to all 64 cases) is below P 
   - On the rotator toy they are 4,840 of the split's 55,747 lines; there the shortened clauses are most of the proof.
 
 ## Assumptions: one solver asked again and again (2026-11-15; epic `SAT-playground-bp3`, branch `assumptions`)
+
+**Merged into main on 2026-11-18** (the owner's call, bead `bp3.10`). Main was
+moved forward to the branch's head, and main's build came out byte for byte
+as the reviewed build of every gate run (sha256 `b3b6a491`); `cargo test` 340
+and the smoke test 9 of 9 on it. This section was written on the branch:
+where it says "the branch" and "the main checkout", it describes the time
+before the merge, when the work lived in its own worktree. Steps 3 and 4 are
+not built (bead `SAT-playground-980`, parked).
 
 **What it is.** Until now the solver answered one question per run. With
 assumptions it can be asked many questions about the same formula: "is it
@@ -7866,6 +7878,15 @@ Each arm against main, on the cells both solve:
   number of this project carries that noise. Here the same searches ran in
   0.931 of the time of the shipped run of 2026-11-11 (geometric mean; that run
   had 32 jobs and unpinned checkers, so the two causes are not separated).
+  **Fixed in the harness itself on 2026-11-18**: `tools/feature_ablation.py`
+  keeps the worker thread of a job, and so every checker it starts, on the two
+  hardware threads of the job's own core, for abtest and seedgate alike.
+  `--selftest` checks it in a few seconds (and fails with the fix taken out).
+  A live check, the real harness on ten quick cells, two arms, three jobs
+  (`log/harness-pin-2026-11-18/check.py`, run folder
+  `log/abtest-pin-check-2026-11-18-08-37-19`): in 7,841 looks at 32 checker
+  processes (drat-trim, VeriPB, the model check) every one was confined to
+  its job's core, and none shared a physical core with a running solver.
 
 **The long cells, build against build on neighbouring cores (2026-11-17).**
 The 400-cell run left one question open: is the branch's build about 1%
@@ -7978,7 +7999,24 @@ Precision 7920, two Xeon Gold 6154 (36 cores), microcode 0x2007006, rustc
 - The first preprocessing runs only in a solver's very first solve, and only
   if that solve has no assumptions.
 
-### The control split in two stages (step 5; `--ctlsplitassume=1`, off by default)
+### The control split in two stages (step 5; on by default since 2026-11-18)
+
+**On by default since 2026-11-18, the owner's call** (bead
+`SAT-playground-d96.8.7`): `ctlsplit` is 1 and `ctlsplitassume` is 1. The
+stock kissat path adds `--ctlsplit=0`; `--ctlsplitassume=0` gives the
+one-stage split. The measured configuration is the one below ("The 400 cells
+at seeds 2 and 3"): 687 solved against 681, the gain and-11, and-12 and
+and-15 at both seeds. What the default takes on with it:
+
+- every cell pays the reading, 0.36% of the work on the 400 cells;
+- where the split fires, peak memory is about twice the plain run's;
+- the split's proofs on the oisc cells are not verified (below, "The long
+  check gave no verdict"), so those answers come without a checked proof;
+- the 2026 holdout has not been looked at with the split on.
+
+That the new defaults are exactly the measured run was checked cell by cell
+("The default flip, checked" below). The text from here on was written while
+the option was off by default.
 
 **What it does.** The control split (above, "In the solver: control bits
 first, and the split") tries every value of a few control bits as a case.
@@ -8294,9 +8332,199 @@ and-15 has no answer either way (it needs 16G).
 - **No proof of the split on a real cell has been verified** (above): 24 hours
   of drat-trim gave no verdict on any of the four. Until a check case by case
   exists (bead `SAT-playground-d96.8.9`), the cells the split gains are
-  answers without a checked proof. The owner's answer of 2026-11-18: that
-  check does not have to be built before the merge. The split stays off by
-  default.
+  answers without a checked proof. The owner's answers of 2026-11-18: that
+  check does not have to be built before the merge, and the split goes on by
+  default with these proofs unverified.
+
+### The default flip, checked (2026-11-18)
+
+**What had to be shown.** The run that was measured (687 v 681, above) used
+the reviewed build with `--ctlsplit=1 --ctlsplitassume=1` given by hand. The
+new build has the two as its defaults. So: is the new build with no option
+that same run, cell by cell? Is `--ctlsplit=0` the old default? And are the
+one-stage split and the stock path what they were?
+
+**How.** `tools/as_baseline.py` runs each cell under a work limit, so a run
+ends at the same point however busy the host is, and `compare` checks every
+exact field of two runs: the answer, the work-clock line, the `-s` counters,
+the model, the size and hash of each proof file, and the output text. Two
+runs with different options print different option lines, so `compare` got
+an option, `--ignore-lines`, that leaves the named lines out of the text;
+everything else still has to be equal.
+
+A small example. On one cell the old build, given the two options, prints
+these two lines and the new build prints neither:
+
+    c --ctlsplit=1 (different from default '0')
+    c --ctlsplitassume=true (different from default 'false')
+
+With those two lines left out the two outputs must be the same text, and
+the work-clock line, the counters and the proof's hash the same too. A cell
+where anything else differs is reported as different.
+
+| the new build (`607667a7`) | against the reviewed build (`b3b6a491`) | cells | identical |
+|---|---|---|---|
+| the stock path, now with `--ctlsplit=0`, on `tests/cnf` | its stock path | 9 | 9 |
+| the stock path on the medium cells | its stock path | 100 | 100 |
+| **no option at all**, the medium cells and the four oisc cells | `--ctlsplit=1 --ctlsplitassume=1` | 103 | **103** |
+| `--ctlsplit=0` on the medium cells | its defaults | 100 | 100 |
+| `--ctlsplit=1 --ctlsplitassume=0`, the one-stage split, on the 103 cells | `--ctlsplit=1` | 103 | 103 |
+
+Every cell of every row is identical in every exact field, and on every
+cell the text differs only in the option lines. So the new defaults are the
+measured run; `--ctlsplit=0` is the old default; the one-stage split and the
+stock path are what they were.
+
+In the example's terms, on sll-8: the old build with the two options and the
+new build with none both split into 64 cases, ask 14 of them of the case
+solver (10 are refuted there, 50 are skipped because an earlier core rules
+them out, 4 are left open and get a sub-solver), answer UNSAT at
+1,232,619,847 units of work, and write a proof of 1.53 GB with the same
+hash. and-11 and and-12 are UNSAT at 9.36G and 8.45G in both; and-15 stops
+at the set's 10G limit in both (it needs 16G), with the same 9.12 GB of
+proof written by then.
+
+Also on the new build: `cargo test` 20 suites, 341 tests (one new: the
+shipped defaults read, split and decide the rotator with no option, with the
+same exit line and the same proof as with the two options given; on a
+formula without switches the search is that of `--ctlsplit=0`); the smoke
+test 9 of 9; `tools/parity.py --corpus default --phases` 9 of 9 against the
+C kissat on the stock path.
+
+**What changed in the code.** `src/options.rs`: `ctlsplit` 1 and
+`ctlsplitassume` 1. `--ctlsplit=0` in every stock option list
+(`tools/parity.py`, the test helpers' `STOCK_PATH`, the repo's fuzz, check
+and census tools) and in the option lists of the sub-solvers of the
+arithmetic, sorter and divider passes (the split is called only by the
+application, so this changes nothing they do; it keeps their lists whole).
+`tests/control.rs`: the tests of the one-stage split now say
+`--ctlsplitassume=0`. `tools/as_baseline.py`: the set `split` is the
+one-stage split, and a new set `defaultsplit` runs its 103 cells with no
+option.
+
+Logs: `log/splitdefault-2026-11-18/` (`chain.sh`, `chain.log`, the five runs
+and their `.compare.txt`); the new build frozen in
+`solver/13-j33-splitdefault-snapshot`; the old tables in
+`log/as-baseline-2026-11-15/r6-*`.
+
+### Where else assumptions could save work: a survey (2026-11-18)
+
+**The question** (the owner's): can or should assumptions be used anywhere
+else in the existing code to make things faster? Nothing was built for this;
+it is a reading of the code and one measurement.
+
+**What to look for.** Assumptions pay where the solver answers many questions
+about one formula and starts a fresh solver for each. Then the formula is
+loaded again every time, and nothing learned in one question is there for the
+next. The split was that case. So the survey looked for every place that
+makes a fresh solver, and for every loop that asks one question after another.
+
+**The places that make a fresh solver.** Four places start one to solve
+something (`internal::init()` outside the tests): the split and three
+structure passes. The work column is
+from the saved outputs of all 400 cells at the defaults
+(`log/as-baseline-2026-11-15/r6-full/out`).
+
+| place | what it asks, again and again | questions in a run | work on the 400 cells |
+|---|---|---|---|
+| the control split (`src/control.rs`) | each case of the control word | 64 to a few hundred | done: two stages since step 5 |
+| the divider and square-root pass (`src/structdiv.rs`, `chain`) | "are these two rows equal?", pair after pair | 77 to 1,599 | 9.3G on `div_miter_lec__2`, 81% of that cell's run; 0.16G to 0.41G on four more cells |
+| the sorter pass (`src/structsort.rs`, `refute`) | "are these two words in order?" | twice the words less two, 10 to 16 | 0.03G to 0.11G on seven cells |
+| the arithmetic pass (`src/structarith.rs`) | the steps its small solver did not settle | a few | its whole structure stage is 0.006G to 0.43G on fourteen cells |
+
+**The places that already ask one solver many questions.** Sweeping and the
+search for definitions use kitten, the small solver inside kissat, which has
+had assumptions from the start (`kitten_assume`). Vivification, probing and
+the backbone pass work inside the main solver: they decide literals, look,
+and undo. None of them loads anything twice, so there is nothing to gain.
+
+**The one candidate: the divider pass's chain.** A divider is checked row by
+row: "row 1 of the one circuit equals row 1 of the other", then row 2 with
+row 1 known, and so on. A small example with three pairs:
+
+| | today | as questions to one solver |
+|---|---|---|
+| pair 1 | new solver; load the circuit; add "the two differ"; refuted | load the circuit once, and for every pair a variable `d` that means "the two differ"; ask "assume `d1`"; refuted, and the solver keeps "not `d1`" |
+| pair 2 | new solver; load the circuit again; add "pair 1 is equal" and "the two differ"; refuted | ask "assume `d2`"; "not `d1`" already makes pair 1 equal; refuted |
+| pair 3 | new solver; load again; add pairs 1 and 2; refuted | ask "assume `d3`"; refuted |
+| loads of the circuit | 3 | 1 |
+| what pair 3 starts from | the circuit and the two pairs | the same, and every clause learned on pairs 1 and 2 |
+
+**Measured, with no new solver code** (`log/assume-survey-2026-11-18/`). The
+pass's own pairs were read from its proof and written as a question file for
+the test mode: the circuit as the pass loads it (the formula without the
+miter's output unit), `d <-> (x xor y)` for every pair, then one question
+"assume `d`" a pair, in the pass's order, with the pass's own limit of 250,000
+conflicts a question (`div_chain_icnf.py` there; `sat-solver --inccnf=1
+--assumeconflicts=250000`). Work is the work clock; "the pass" is its work
+line in a run without a proof file. For the big cell it is the work on the
+1,592 pairs it proves: its line says 9.26G, of which 1.13G went into its last
+pair and 0.04G into six pairs that are not equal (below).
+
+| cell | pairs | the pass today | one solver, the same pairs as questions | ratio |
+|---|---|---|---|---|
+| `div_miter_lec__2` | 1,592 | 8.10G | 3.06G, 89 s | 0.38 |
+| `sqrt-mitern170` | 107 | 0.408G | 0.235G, 4.2 s | 0.58 |
+| `sqrt-mitern169` | 130 | 0.356G | 0.233G, 4.2 s | 0.65 |
+| `sqrt-mitern171` | 90 | 0.343G | 0.214G, 3.8 s | 0.63 |
+| `div-mitern172` | 77 | 0.154G | 0.096G, 1.8 s | 0.62 |
+
+- **Every pair is refuted both ways**: 1,592, 107, 130, 90 and 77 questions,
+  all UNSAT, each with its own `d` as the failed core.
+- **In the example's terms.** On the big cell a load is 0.87M of work (the
+  circuit has 219 thousand clauses and 648 thousand literals), so the 1,599
+  loads are 1.4G, 15% of the pass. The larger part of the saving is the last
+  row of the example: what is learned on one pair is there for the next. On
+  the four small cells loading is 2% of the pass, and the questions still
+  take 0.6 of the work.
+- **The last pair stays open either way.** On the big cell the pass's last
+  pair is the miter's own output. A fresh sub-solver gets no verdict on it in
+  250,000 conflicts (1.13G), and the search then finishes the cell. Asked as
+  one more question of the one solver it gets no verdict either (1.34G). So
+  the cell would still need its search.
+- **In time.** The big cell's whole run takes 323 s alone on a core without
+  a proof (387 s with one); about 260 s of that is this pass, going by its
+  share of the work. Its question file with all 1,593 questions took 101 s.
+  So the cell would take about half the time. The four small cells' whole
+  runs take 3.5 to 8.0 s, their question files 1.8 to 4.2 s.
+
+**What building it would take.** The first build of assumptions is enough:
+the pass's sub-solvers already run without the simplifying passes
+(configuration "plain"), and no clause has to be added between questions,
+because every `d` can be defined before the first one. So neither step 3 nor
+step 4 is needed. The work is in the proof. Today each pair's lines go into a
+VeriPB sub-proof ("assume the two differ; then these clauses follow"). One
+solver's clauses follow from the circuit and the definitions alone, so they
+would be plain lines, with all the `d` defined first; that has to be written
+and put through the gate on the five cells and the pass's fuzz
+(`tools/divsqrt_proof.py`, `tools/divsqrt_census.py`).
+
+**Caveats.**
+
+- It is time on cells that are solved already: no new cell at 1,800 s on
+  2025, and about 0.05% of wall PAR-2 there (160 s of 298 thousand).
+- The question files ran with the solver's usual search; the pass's
+  sub-solvers use the plain configuration. The ratio is work for the same
+  pairs, not a build of the pass.
+- No proof was written in the question runs. Writing its proof is 1.5% of
+  the pass's work today (0.157G with a proof against 0.154G without, on
+  `div-mitern172`); the proof of the big cell is 219 MB.
+- On the big cell the pass finds 6 of its 1,599 pairs not equal (a model,
+  2.5M to 14M of work each). They are not in its proof and were not asked.
+- Other years' suites and the 2026 holdout were not looked at.
+
+**Everywhere else: no.**
+
+- *The sorter and arithmetic passes.* Their sub-solver calls share a formula
+  too, but all of it is at most 0.43G on a cell, a few seconds.
+- *The split's hard cases* staying in the case solver was measured in step 5
+  (above, "The hard cases after a clean-up"): 1.65G against 0.50G on sll-8,
+  so worse, and it would need step 3.
+- *Tools outside the solver* that run one formula many times (the censuses)
+  are one-off measurements of closed lines.
+
+**What it means next.** One bead, `SAT-playground-lhf`: the divider pass's chain
+on one solver. It is not built; the owner asked for the check.
 
 ## Notes from the RL scheduler's first steps (plan §10)
 

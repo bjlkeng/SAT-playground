@@ -473,7 +473,7 @@ def check_run_case(solver, f, questions, workdir, frozen, want_proof, cross, opt
 
 
 STOCK = ("--structsym=0 --structparity=0 --structcount=0 --structarith=0 --structsort=0 --structdiv=0 "
-         "--structdd=0 --gauss=0 --card=0 --structpoints=0 --freewalk=0").split()
+         "--structdd=0 --gauss=0 --card=0 --structpoints=0 --freewalk=0 --ctlsplit=0").split()
 
 
 def check_split_case(solver, f, rng, workdir, frozen, want_proof, cross, options, stats=None):

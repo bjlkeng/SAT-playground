@@ -10,6 +10,11 @@
 //! limit holds.  The mechanics are tried on random 3-SAT, whose cases are
 //! searches: those tests turn the cost stop off (--ctlsplitratio=100000),
 //! and one test checks that the stop ends a split of that kind.
+//!
+//! Since 2026-11-18 the split is on by default, in two stages.  The tests of
+//! the one-stage split say so (`--ctlsplitassume=0`), the stock path of the
+//! test helpers has `--ctlsplit=0`, and one test runs the defaults with no
+//! option at all (`the_shipped_defaults_split_in_two_stages`).
 
 mod common;
 
@@ -96,7 +101,7 @@ fn off_means_off() {
     common::assert_same_trajectory(&plain, &with_env, "SAT_CTL_VARS with the options off");
     // the split on without a control set: the reading runs and finds no
     // switch (its work enters the work clock), and the search is the same
-    let no_vars = run(&cnf, &["--ctlsplit=1"], &[]);
+    let no_vars = run(&cnf, &["--ctlsplit=1", "--ctlsplitassume=0"], &[]);
     assert_eq!(plain.status, no_vars.status);
     for key in ["conflicts", "decisions", "propagations"] {
         assert_eq!(plain.stats.get(key), no_vars.stats.get(key), "ctlsplit without a control set: {}", key);
@@ -135,7 +140,7 @@ fn split_proofs_pass_the_gate() {
     // the search finishes with the refuted cases' clauses
     for (case, want) in [("100000", "status=unsat"), ("300", "status=unsat"), ("40", "status=open")] {
         let proof = fx.path(&format!("p{}.drat", case));
-        let (status, out) = run_ctl(&cnf, Some(&proof), &["--ctlsplit=1", "--ctlsplitbits=3", "--ctlsplitratio=100000", &format!("--ctlsplitcase={}", case)], VARS, false);
+        let (status, out) = run_ctl(&cnf, Some(&proof), &["--ctlsplit=1", "--ctlsplitassume=0", "--ctlsplitbits=3", "--ctlsplitratio=100000", &format!("--ctlsplitcase={}", case)], VARS, false);
         assert_eq!(status, "UNSATISFIABLE", "case limit {}", case);
         let line = control_line(&out, "ctlsplit=");
         assert!(line.contains(want), "case limit {}: {}", case, line);
@@ -149,7 +154,7 @@ fn split_model_satisfies_the_input() {
     for seed in 1..=3u64 {
         let cnf = fx.path(&format!("s{}.cnf", seed));
         random_3sat(150, 3.6, seed, &cnf);
-        let (status, out) = run_ctl(&cnf, None, &["--ctlsplit=1", "--ctlsplitbits=3", "--ctlsplitratio=100000"], VARS, false);
+        let (status, out) = run_ctl(&cnf, None, &["--ctlsplit=1", "--ctlsplitassume=0", "--ctlsplitbits=3", "--ctlsplitratio=100000"], VARS, false);
         assert_eq!(status, "SATISFIABLE", "seed {}", seed);
         assert!(control_line(&out, "ctlsplit=").contains("status=sat"), "seed {}: the split's model", seed);
         assert!(model_ok(&cnf, &out), "seed {}: the model satisfies every clause", seed);
@@ -162,7 +167,7 @@ fn split_with_the_shipped_defaults() {
     let cnf = fx.path("r.cnf");
     let proof = fx.path("r.drat");
     random_3sat(160, 4.8, 9, &cnf);
-    let (status, out) = run_ctl(&cnf, Some(&proof), &["--ctlsplit=1", "--ctlsplitbits=3", "--ctlsplitratio=100000"], VARS, true);
+    let (status, out) = run_ctl(&cnf, Some(&proof), &["--ctlsplit=1", "--ctlsplitassume=0", "--ctlsplitbits=3", "--ctlsplitratio=100000"], VARS, true);
     assert_eq!(status, "UNSATISFIABLE");
     assert!(control_line(&out, "ctlsplit=").contains("status=unsat"), "{}", control_line(&out, "ctlsplit="));
     assert_eq!(gate(&cnf, &proof), "ok");
@@ -177,7 +182,7 @@ fn probe_runs_every_case() {
     random_3sat(160, 4.8, 7, &cnf);
     // a case limit too small for most cases: the split would stop at the
     // first open one; the probe runs all 8 and counts them, then searches
-    let (status, out) = run_ctl(&cnf, Some(&proof), &["--ctlsplit=2", "--ctlsplitbits=3", "--ctlsplitlevels=1", "--ctlsplitcase=40"], VARS, false);
+    let (status, out) = run_ctl(&cnf, Some(&proof), &["--ctlsplit=2", "--ctlsplitassume=0", "--ctlsplitbits=3", "--ctlsplitlevels=1", "--ctlsplitcase=40"], VARS, false);
     assert_eq!(status, "UNSATISFIABLE");
     let line = control_line(&out, "ctlsplit=");
     assert!(line.contains("cases=8 "), "{}", line);
@@ -253,7 +258,7 @@ fn two_stage_answers_from_the_case_solver() {
     assert!(cases >= 7 && (answered == cases || answered + 1 == cases), "{}", line);
     assert_eq!(gate(&cnf, &proof), "ok", "{}", line);
     // the one-stage split on the same formula pays eight loads
-    let (_s, one) = run_ctl(&cnf, None, &["--ctlsplit=1", "--ctlsplitbits=3", "--ctlsplitratio=100000"], VARS, false);
+    let (_s, one) = run_ctl(&cnf, None, &["--ctlsplit=1", "--ctlsplitassume=0", "--ctlsplitbits=3", "--ctlsplitratio=100000"], VARS, false);
     let one_line = control_line(&one, "ctlsplit=");
     assert!(one_line.contains("status=unsat") && !one_line.contains("stage1="), "the one-stage line is what it was: {}", one_line);
 }
@@ -439,7 +444,7 @@ fn two_stage_counts_the_propagation_of_the_load() {
     }
     std::fs::write(&cnf, text).unwrap();
     let vars = format!("{},{},{}", n + 1, n + 2, n + 3);
-    let options = ["--ctlsplit=2", "--ctlsplitbits=3", "--ctlsplitlevels=1", "--ctlsplitratio=100000"];
+    let options = ["--ctlsplit=2", "--ctlsplitassume=0", "--ctlsplitbits=3", "--ctlsplitlevels=1", "--ctlsplitratio=100000"];
     let one = run(&cnf, &options, &[("SAT_CTL_VARS", &vars)]);
     let mut two_options = options.to_vec();
     two_options.push("--ctlsplitassume=1");
@@ -475,6 +480,47 @@ fn two_stage_on_the_rotator() {
     assert_eq!(gate(&cnf, &proof2), "ok");
 }
 
+/// The split is on by default since 2026-11-18, in two stages (the owner's
+/// call, bead SAT-playground-d96.8.7).  With no option at all the rotator is
+/// read, split and decided, exactly as with the two options given; on a
+/// formula without switches the reading finds nothing and the search is the
+/// one of `--ctlsplit=0`.
+#[test]
+fn the_shipped_defaults_split_in_two_stages() {
+    let fx = Fixture::new("control_defaults");
+    let cnf = rotmiter();
+    let proof = fx.path("rot.drat");
+    let (status, out) = run_ctl(&cnf, Some(&proof), &[], "", true);
+    assert_eq!(status, "UNSATISFIABLE");
+    let read = control_line(&out, "control read");
+    assert!(read.contains("switches=1200") && read.contains("vars=1,2,3 "), "{}", read);
+    let line = control_line(&out, "ctlsplit=");
+    assert!(line.contains("ctlsplit=1 ") && line.contains("status=unsat") && line.contains("cases=8 "), "{}", line);
+    // two stages: the cases went to the case solver first (on this small
+    // circuit one load's worth of work leaves them open, and each then gets
+    // its sub-solver)
+    assert_eq!(stage1_value(line, "stage1"), 8, "every case is first a question to the case solver: {}", line);
+    assert_eq!(gate(&cnf, &proof), "ok", "{}", line);
+    // the two options given by hand: the same exit line and the same proof
+    let proof2 = fx.path("rot2.drat");
+    let (_s, given) = run_ctl(&cnf, Some(&proof2), &["--ctlsplit=1", "--ctlsplitassume=1"], "", true);
+    assert_eq!(line, control_line(&given, "ctlsplit="), "the defaults v the options given");
+    assert_eq!(std::fs::read(&proof).unwrap(), std::fs::read(&proof2).unwrap(), "the defaults v the options given: proof");
+    // a formula without switches: nothing is read, the search is that of
+    // --ctlsplit=0, and the reading's work is added to the clock
+    let r = fx.path("r.cnf");
+    random_3sat(120, 4.6, 3, &r);
+    let with = run_shipped(&r, &[], &[]);
+    let without = run_shipped(&r, &["--ctlsplit=0"], &[]);
+    assert_eq!(with.status, without.status);
+    for key in ["conflicts", "decisions", "propagations"] {
+        assert_eq!(with.stats.get(key), without.stats.get(key), "the defaults v --ctlsplit=0: {}", key);
+    }
+    assert!(control_line(&with.stdout, "control read").contains("none"), "{}", control_line(&with.stdout, "control read"));
+    assert!(!without.stdout.contains("c control"), "no control line with --ctlsplit=0");
+    assert!(with.work() > without.work(), "the reading's work counts: {} v {}", with.work(), without.work());
+}
+
 /// Two 200-bit barrel rotators over one 3-bit word, the levels in opposite
 /// orders, compared bit by bit (tools/control_read.py's Circ; unsatisfiable).
 fn rotmiter() -> std::path::PathBuf {
@@ -487,7 +533,7 @@ fn reading_finds_the_control_word() {
     let cnf = rotmiter();
     for shipped in [false, true] {
         let proof = fx.path(&format!("rot{}.drat", shipped));
-        let (status, out) = run_ctl(&cnf, Some(&proof), &["--ctlsplit=1"], "", shipped);
+        let (status, out) = run_ctl(&cnf, Some(&proof), &["--ctlsplit=1", "--ctlsplitassume=0"], "", shipped);
         assert_eq!(status, "UNSATISFIABLE", "shipped {}", shipped);
         let read = control_line(&out, "control read");
         assert!(read.contains("switches=1200") && read.contains("vars=1,2,3 "), "shipped {}: {}", shipped, read);
@@ -497,7 +543,7 @@ fn reading_finds_the_control_word() {
     // a formula without switches reads nothing and searches as without the option
     let r = fx.path("r.cnf");
     random_3sat(120, 4.6, 3, &r);
-    let (_s, out) = run_ctl(&r, None, &["--ctlsplit=1"], "", false);
+    let (_s, out) = run_ctl(&r, None, &["--ctlsplit=1", "--ctlsplitassume=0"], "", false);
     assert!(control_line(&out, "control read").contains("none"), "{}", control_line(&out, "control read"));
 }
 
@@ -509,7 +555,7 @@ fn split_stops_when_cases_cost_a_search() {
     let cnf = fx.path("r.cnf");
     let proof = fx.path("r.drat");
     random_3sat(200, 4.4, 5, &cnf);
-    let (status, out) = run_ctl(&cnf, Some(&proof), &["--ctlsplit=1", "--ctlsplitratio=2"], VARS, false);
+    let (status, out) = run_ctl(&cnf, Some(&proof), &["--ctlsplit=1", "--ctlsplitassume=0", "--ctlsplitratio=2"], VARS, false);
     let line = control_line(&out, "ctlsplit=");
     assert!(line.contains("status=costly") || line.contains("status=unsat") || line.contains("status=sat"), "{}", line);
     if status == "UNSATISFIABLE" {
@@ -550,7 +596,7 @@ fn control_first_after_compaction() {
 fn reading_keeps_to_the_global_limit() {
     // the reading's allowance is what SAT_LIMIT_TICKS leaves (review round b1)
     let cnf = rotmiter();
-    let r = run(&cnf, &["--ctlsplit=1"], &[("SAT_LIMIT_TICKS", "1")]);
+    let r = run(&cnf, &["--ctlsplit=1", "--ctlsplitassume=0"], &[("SAT_LIMIT_TICKS", "1")]);
     let line = r.stdout.lines().find(|l| l.starts_with("c control read")).unwrap_or("").to_string();
     let work: u64 = line.split_whitespace().find_map(|t| t.strip_prefix("work=")).and_then(|v| v.parse().ok()).unwrap_or(u64::MAX);
     assert!(work <= 64, "the reading spent {} under a limit of 1: {}", work, line);
@@ -579,7 +625,7 @@ fn reading_polls_its_budget_inside_a_long_cone() {
     }
     std::fs::write(&cnf, format!("p cnf {} {}\n{}\n", out, cls.len(), cls.join("\n"))).unwrap();
     let limit: u64 = 450_000;
-    let r = run(&cnf, &["--ctlsplit=1"], &[("SAT_LIMIT_TICKS", &limit.to_string())]);
+    let r = run(&cnf, &["--ctlsplit=1", "--ctlsplitassume=0"], &[("SAT_LIMIT_TICKS", &limit.to_string())]);
     let line = r.stdout.lines().find(|l| l.starts_with("c control read")).unwrap_or("").to_string();
     let work: u64 = line.split_whitespace().find_map(|t| t.strip_prefix("work=")).and_then(|v| v.parse().ok()).unwrap_or(u64::MAX);
     assert!(work <= limit + 1000, "the reading spent {} under a limit of {}: {}", work, limit, line);
@@ -598,7 +644,7 @@ fn reading_pairs_halves_in_linear_work() {
         body.push_str(&format!("{} {} {} 0\n{} {} {} 0\n", -p, x, -o, -p, -x, o));
     }
     std::fs::write(&cnf, format!("p cnf {} {}\n{}", k + 2, 2 * k, body)).unwrap();
-    let r = run(&cnf, &["--ctlsplit=1"], &[]);
+    let r = run(&cnf, &["--ctlsplit=1", "--ctlsplitassume=0"], &[]);
     let line = r.stdout.lines().find(|l| l.starts_with("c control read")).unwrap_or("").to_string();
     let work: u64 = line.split_whitespace().find_map(|t| t.strip_prefix("work=")).and_then(|v| v.parse().ok()).unwrap_or(u64::MAX);
     assert!(work < 100 * 2 * k as u64, "reading work {} for {} clauses: {}", work, 2 * k, line);
@@ -611,7 +657,7 @@ fn split_keeps_the_formula_past_the_structure_buffer() {
     // off: the flushed formula is kept for the split (review b6)
     let fx = Fixture::new("control_overflow");
     let proof = fx.path("rot.drat");
-    let (status, out) = run_ctl(&rotmiter(), Some(&proof), &["--ctlsplit=1", "--structclauses=1", "--freewalk=0"], "", true);
+    let (status, out) = run_ctl(&rotmiter(), Some(&proof), &["--ctlsplit=1", "--ctlsplitassume=0", "--structclauses=1", "--freewalk=0"], "", true);
     assert_eq!(status, "UNSATISFIABLE");
     let line = control_line(&out, "ctlsplit=");
     assert!(line.contains("status=unsat") && line.contains("cases=8 "), "{}", line);
@@ -635,7 +681,7 @@ fn split_skips_a_formula_past_its_clause_limit() {
         let mut off: Vec<&str> = extra.to_vec();
         off.push("--ctlsplit=0");
         let mut on: Vec<&str> = extra.to_vec();
-        on.extend(["--ctlsplit=1", "--ctlsplitclauses=5000"]);
+        on.extend(["--ctlsplit=1", "--ctlsplitassume=0", "--ctlsplitclauses=5000"]);
         let (a, b) = if shipped {
             (run_shipped(&cnf, &off, &[]), run_shipped(&cnf, &on, &[]))
         } else {
@@ -647,7 +693,7 @@ fn split_skips_a_formula_past_its_clause_limit() {
         assert!(!b.stdout.contains("c control read"), "{}: the reading ran", what);
     }
     // at the limit itself the formula is kept, and the split decides it
-    let (status, out) = run_ctl(&cnf, None, &["--ctlsplit=1", "--ctlsplitclauses=5601"], "", false);
+    let (status, out) = run_ctl(&cnf, None, &["--ctlsplit=1", "--ctlsplitassume=0", "--ctlsplitclauses=5601"], "", false);
     assert_eq!(status, "UNSATISFIABLE");
     assert!(control_line(&out, "ctlsplit=").contains("status=unsat"), "{}", control_line(&out, "ctlsplit="));
 }
@@ -660,7 +706,7 @@ fn split_stops_when_a_case_cannot_load() {
     let cnf = fx.path("r.cnf");
     random_3sat(200, 3.5, 17, &cnf);
     let vars: String = (1..=18).map(|v| v.to_string()).collect::<Vec<_>>().join(",");
-    let (status, out) = run_ctl(&cnf, None, &["--ctlsplit=1", "--ctlsplitcase=1", "--ctlsplitratio=100000"], &vars, false);
+    let (status, out) = run_ctl(&cnf, None, &["--ctlsplit=1", "--ctlsplitassume=0", "--ctlsplitcase=1", "--ctlsplitratio=100000"], &vars, false);
     let line = control_line(&out, "ctlsplit=");
     assert!(line.contains("status=budget") && line.contains("cases=1 "), "{}", line);
     assert_eq!(status, "SATISFIABLE");
@@ -672,7 +718,7 @@ fn split_keeps_to_the_tick_limit() {
     let cnf = fx.path("r.cnf");
     random_3sat(200, 4.8, 11, &cnf);
     let limit: u64 = 2_000_000;
-    let r = run(&cnf, &["--ctlsplit=1", "--ctlsplitbits=3", "--ctlsplitratio=100000"], &[("SAT_CTL_VARS", VARS), ("SAT_LIMIT_TICKS", &limit.to_string())]);
+    let r = run(&cnf, &["--ctlsplit=1", "--ctlsplitassume=0", "--ctlsplitbits=3", "--ctlsplitratio=100000"], &[("SAT_CTL_VARS", VARS), ("SAT_LIMIT_TICKS", &limit.to_string())]);
     assert!(r.status == "UNKNOWN" || r.status == "UNSATISFIABLE", "{}", r.status);
     // a run stops at the next poll past the limit: allow one case's slack
     assert!(r.work() <= limit + limit / 2, "work {} against the limit {}", r.work(), limit);

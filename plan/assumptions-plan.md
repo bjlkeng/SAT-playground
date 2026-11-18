@@ -4,6 +4,11 @@ Plan for epic `SAT-playground-bp3` (branch `assumptions`). Written
 2026-11-15 as step 1 (bead `bp3.2`), before any solver code. Line numbers
 are those of `solver/13-kissat-rs/src` at the branch point (main `5451c7b`).
 
+**Merged into main on 2026-11-18** (section 14, at the end). The text below
+was written on the branch and is kept as it was: "the branch" and "the main
+checkout" describe the time before the merge. Steps 3 and 4 are not built
+(bead `SAT-playground-980`, parked).
+
 ## 1. What this is
 
 Today the solver answers one question per run: is this formula satisfiable?
@@ -613,12 +618,27 @@ yes for sll-8 and still open for the three and- cells.
 - The two gates are closed: the performance gate (`bp3.8`) passed and is
   signed off; the correctness gate (`bp3.7`) is closed on the owner's word,
   with the split's real-cell proofs not verified.
-- Still open: the merge itself (`bp3.10`), which waits for the owner's word.
-- For the merge: main's solver code has not changed since the branch point,
-  so main's build of today is still `be9a2b05`, the build every gate run
-  compared against. The solver's source on the branch has not changed since
-  the reviewed commit either, and the binary does not depend on the folder it
-  is built in (the snapshot `solver/13-j30-as5r6-snapshot` in the main
-  checkout, built in its own folder, has the worktree build's sha256). So
-  main's build after the merge should be `b3b6a491`, byte for byte the build
-  of every gate run; the merge checks that.
+- Later the same day the owner said: "Merge in and turn it on by default, fix
+  harness flaw", and asked where else assumptions could be used.
+  - *Merged.* Main was moved forward to the branch's head (a fast-forward),
+    and main's build came out byte for byte as the reviewed build
+    (`b3b6a491`); `cargo test` 340 and the smoke test 9 of 9 on it. The
+    worktree is removed. Beads `bp3.10` and the epic are closed.
+  - *The split is on by default* (`ctlsplit=1`, `ctlsplitassume=1`; bead
+    `d96.8.7` closed). The new build with no option is the measured run, cell
+    for cell, on the 103 cells of set `defaultsplit` (solver README, "The
+    default flip, checked"). Its proofs on the oisc cells are not verified.
+  - *The harness* keeps each job's checkers on the job's own core (bead `209`
+    closed; `tools/feature_ablation.py --selftest`).
+  - *Where else assumptions could save work* (solver README, the section of
+    that name): one place, the divider pass's chain of sub-solvers, 0.38 to
+    0.65 of the work as questions to one solver (bead `SAT-playground-lhf`,
+    not built).
+- What was noted for the merge before it was made: main's solver code had
+  not changed since the branch point, so main's build was still `be9a2b05`,
+  the build every gate run compared against. The solver's source on the
+  branch had not changed since the reviewed commit either, and the binary
+  does not depend on the folder it is built in (the snapshot
+  `solver/13-j30-as5r6-snapshot`, built in its own folder, has the worktree
+  build's sha256). So main's build after the merge had to be `b3b6a491`,
+  byte for byte the build of every gate run, and it was.

@@ -222,3 +222,39 @@ that no run without assumptions executes, landed on the other side of 1.
 When another change to main's solver lands, the branch merges main, the
 frozen build and these tables are made again from the new main, and the check
 is repeated against them (bead `bp3.1`).
+
+## After the merge (2026-11-18)
+
+The branch is merged into main, and since the same day the control split is
+on by default, in two stages (`ctlsplit=1`, `ctlsplitassume=1`). What that
+means for these tables and the tool:
+
+- The tables `main-5451c7b-*.tsv` are runs of main's build of 2026-11-15
+  (`be9a2b05`). The two stock tables still describe the stock path.
+  `main-5451c7b-default.tsv` is now what `--ctlsplit=0` gives, and
+  `main-5451c7b-split.tsv` what `--ctlsplit=1 --ctlsplitassume=0` gives. A
+  run of today's build differs from them in the output text by its option
+  lines, and in nothing else.
+- `tools/as_baseline.py`: the set `split` now passes `--ctlsplit=1
+  --ctlsplitassume=0`, the one-stage split. A new set, `defaultsplit`, runs
+  the same 103 cells with no option: the cells where the default path fires
+  the split. `compare --ignore-lines REGEX` leaves the output lines that
+  match out of the text, for two runs with different options; every other
+  field and the rest of the text must still be equal.
+
+The check of the default flip (`log/splitdefault-2026-11-18`): the new build
+(`607667a7`, frozen in `solver/13-j33-splitdefault-snapshot`) against the
+runs of the reviewed build (`b3b6a491`, `log/as-baseline-2026-11-15/r6-*`),
+with the two option lines left out of the text:
+
+| the new build | against the reviewed build | cells identical in every exact field |
+|---|---|---|
+| set `stock` | set `stock` | 9 of 9 |
+| set `stockmed` | set `stockmed` | 100 of 100 |
+| set `defaultsplit` (no option) | set `split` with `--ctlsplitassume=1` | 103 of 103 |
+| set `default` with `--ctlsplit=0` | set `default` | 100 of 100 |
+| set `split` (one stage) | set `split` | 103 of 103 |
+
+    IGN="^c --ctlsplit(assume)?=\S+ \(different from default '\S+'\)$"
+    python3 tools/as_baseline.py run --solver NEW --set defaultsplit --out OUT
+    python3 tools/as_baseline.py compare log/as-baseline-2026-11-15/r6-split-two OUT --ignore-lines "$IGN"
