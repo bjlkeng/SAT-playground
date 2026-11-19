@@ -61,6 +61,8 @@ Commands:
   census --out TABLE.tsv FILES_OR_FOLDERS... [--workers N] [--seconds S] [--mem-mb M]
                                  one row a file; a table that is there is
                                  added to, not redone
+  report TABLE...                the census tables family by family (GBD's
+                                 family and author from benchmarks/rl)
   pyramid FILE N                 this reader against tools/pyramid_read.py on
                                  a Bel's Pyramid cell of size N
   selftest [--jobs N] [--write]  hand-made toys, then every record of the Z3
@@ -209,7 +211,7 @@ def small_sat(clauses, limit=400):
 
 class Reading:
     def __init__(self, n_vars, clauses, budget=DEFAULT_BUDGET, full_scan=FULL_SCAN_VARS, pairs=True, partial="sample",
-                 short_limit=None):
+                 short_limit=None, kinds=None):
         """`partial`: True links every partial reader (a placement that needs
         three numbers; there can be a million); "sample" tries PARTIAL_SAMPLE
         of them after the full readers are linked and only counts what is
@@ -218,16 +220,23 @@ class Reading:
         only numbers under a count (is_counted), False none.
         `short_limit`: with more candidate chains of two members than this,
         those are not read (a formula with no gates has thousands: two
-        variables and one clause between them)."""
+        variables and one clause between them).
+        `kinds`: the kinds of link to add (all when None).  A link of another
+        kind is only counted: it is not given to propagation, so whether a
+        later link is missing is judged against what is really added, and
+        `added` is, in order, a list a proof checker can follow."""
         self.n_vars = n_vars
         self.budget = budget
         self.full_scan = full_scan
         self.want_pairs = pairs
         self.want_partial = partial
         self.short_limit = short_limit
+        self.kinds = None if kinds is None else set(kinds)
+        self.added = []                # every clause given to propagation, in order: (clause, kind or "step")
+        self.defs = {}
         self.p = Prop(n_vars, clauses)
         self.numbers = []
-        self.links = []                # (kind, clause, how): how is have | up | rup | steps:N | hard
+        self.links = []                # (kind, clause, how): how is rup | steps:N | hard
         self.steps_added = []          # helper clauses of multi-step proofs, in order, with the link they serve
         self.codes = []                # (bits, [(test literal, pattern)])
         self.pairs = []                # (index a, index b, allowed joint values or None)
@@ -699,6 +708,9 @@ class Reading:
         if how == "have":
             self.notes["have_" + kind] += 1
             return how
+        if self.kinds is not None and kind not in self.kinds:
+            self.notes["left_" + kind] += 1     # missing, and not asked for: counted only
+            return "left"
         if how == "no":
             steps = self._steps(clause, num) if num is not None else None
             if steps is None:
@@ -710,6 +722,7 @@ class Reading:
         self.links.append((kind, tuple(clause), how))
         if num is not None:
             self.link_of[tuple(clause)] = tuple(num.lits)
+        self.added.append((tuple(clause), kind))
         self.p.add(clause)
         return how
 
@@ -720,23 +733,27 @@ class Reading:
         Example: (z or value > 2) from (z or value > 0), then (z or value > 1):
         with "not z" and "value <= 1", the step before gives "value > 0", so
         the value is exactly 1, a full pattern, and propagation finishes.
-        None when that does not work.  The steps are given to propagation as
-        they are made; each is true whether or not the whole chain succeeds."""
+        A clause with no bit at all (z holds at every value) walks all the
+        way up the same way.  None when that does not work.  The steps are
+        given to propagation as they are made; each is true whether or not
+        the whole chain succeeds."""
         own = {abs(x) for x in num.lits}
         bits = [l for l in clause if abs(l) in own]
         rest = [l for l in clause if abs(l) not in own]
-        if len(bits) != 1:
-            return None
-        b = bits[0]
         pos = {l: k for k, l in enumerate(num.lits)}
-        if b in pos:                    # z or (value > j): walk up from the lowest bit
-            seq = [num.lits[k] for k in range(0, pos[b])]
-        elif -b in pos:                 # z or (value <= j): walk down from the highest bit
-            seq = [-num.lits[k] for k in range(num.n - 1, pos[-b], -1)]
+        if not bits:
+            seq = list(num.lits)        # z or (value > 0), ..., z or (value is the highest): then z
+        elif len(bits) != 1:
+            return None
+        elif bits[0] in pos:            # z or (value > j): walk up from the lowest bit
+            seq = [num.lits[k] for k in range(0, pos[bits[0]])]
+        elif -bits[0] in pos:           # z or (value <= j): walk down from the highest bit
+            seq = [-num.lits[k] for k in range(num.n - 1, pos[-bits[0]], -1)]
         else:
             return None
         p = self.p
         out = []
+        proved = False
         for lit in seq:
             c = rest + [lit]
             ok = p.refutes([-l for l in c])
@@ -744,12 +761,13 @@ class Reading:
             if not ok:
                 break
             p.add(c)
+            self.added.append((tuple(c), "step"))
             out.append(c)
         else:
-            ok = p.refutes([-l for l in clause])
+            proved = p.refutes([-l for l in clause])
             self._spend()
-            if ok:
-                return out
+        if proved:
+            return out
         # no proof this way: what was added stays (it is true) and is noted as no one's step
         self.steps_added += [(tuple(c), None) for c in out]
         return None
@@ -774,8 +792,8 @@ class Reading:
             for w, (t, f) in sorted(num.readers.items()):
                 k = kind_of(t, f, live)
                 self.notes["reader_" + k] += 1
-                if k != "constant":
-                    todo.append((0 if k in ("ge", "le") else 2 if k == "partial" else 1, num, w, t, f, live, k))
+                # a constant (every value sets it the same way) is a unit clause to add
+                todo.append((0 if k in ("ge", "le") else 2 if k == "partial" else 1, num, w, t, f, live, k))
         for rank in (0, 1):
             for r, num, w, t, f, live, k in todo:
                 if r == rank:
@@ -821,8 +839,6 @@ class Reading:
         return out, holes
 
     def _link_reader(self, num, w, t, f, live, kind):
-        if kind == "constant":
-            return
         if kind in ("ge", "le"):
             # w equals a bit: on from the first value where a pattern sets it true
             ts = [v for v in live if (t >> v) & 1]
@@ -896,6 +912,8 @@ class Reading:
         """Choices written as a binary code: at least three value tests, each
         the AND of the same free variables with their signs."""
         groups = defaultdict(list)
+        if self.p.root_conflict:
+            return self.codes
         for out, ins in self.defs.items():
             # out <-> OR(ins): the test is -out, on exactly when every input is false
             vs = tuple(sorted(abs(l) for l in ins))
@@ -924,15 +942,11 @@ class Reading:
         lens = Counter(n.n + 1 for n in self.numbers)
         return dict(s), " ".join(f"{k}x{c}" for k, c in sorted(lens.items()))
 
-    def link_clauses(self, kinds):
-        """The clauses to add for the chosen kinds, proof steps first."""
-        out = []
-        want = {to for k, to, _h in self.links if k in kinds}
-        for c, to in self.steps_added:
-            if to in want:
-                out.append(c)
-        out += [c for k, c, _h in self.links if k in kinds]
-        return out
+    def link_clauses(self):
+        """Every clause the reading added, in the order it added them: a
+        link's steps come right before it, and a link may lean on the ones
+        before it.  Read with `kinds` set to get a chosen part."""
+        return [c for c, _k in self.added]
 
 
 # ---------------------------------------------------------------------------
@@ -1167,6 +1181,53 @@ def cmd_census(a):
     print(f"wrote {out}")
 
 
+def cmd_report(a):
+    """The census tables, family by family: which cells carry numbers under a
+    count, and how many clauses the encoding lacks there."""
+    fam, author = {}, {}
+    f = ROOT / "benchmarks" / "rl" / "families.tsv"
+    if f.exists():
+        with open(f, newline="") as fh:
+            for r in csv.DictReader(fh, delimiter="\t"):
+                fam[r["stem"].split("-")[0]] = r["family"]
+    f = ROOT / "benchmarks" / "rl" / "prior_tracks.tsv"
+    if f.exists():
+        with open(f, newline="") as fh:
+            for r in csv.DictReader(fh, delimiter="\t"):
+                fam.setdefault(r["hash"], r["family"])
+                author[r["hash"]] = r["author"]
+    rows = []
+    for t in a.tables:
+        with open(t, newline="") as fh:
+            rows += list(csv.DictReader(fh, delimiter="\t"))
+    num = lambda r, k: int(r[k]) if r.get(k, "") not in ("", None) else 0
+    print(f"{len(rows)} files; not read: {dict(Counter(r['error'] for r in rows if r['error']))}; "
+          f"stopped at the budget: {sum(1 for r in rows if r.get('stopped'))}; cut short: {sum(num(r, 'cut_short') for r in rows)}")
+    read = [r for r in rows if not r["error"]]
+    print(f"read: {len(read)}; with a chain: {sum(1 for r in read if num(r, 'numbers'))}; with a number under a count: "
+          f"{sum(1 for r in read if num(r, 'counted'))}; with clauses to add for those: {sum(1 for r in read if num(r, 'counted_links'))}")
+    by = defaultdict(list)
+    for r in read:
+        h = r["stem"].split("-")[0]
+        by[(fam.get(h, "?"), author.get(h, ""))].append(r)
+    print("\nfamily\tauthor\tcells\twith_counted\tcounted_numbers\tvalues\tcounted_links\tall_links\texample")
+    out = []
+    for (fm, au), rs in by.items():
+        hit = [r for r in rs if num(r, "counted") >= a.min_numbers]
+        if not hit:
+            continue
+        vals = Counter()
+        for r in hit:
+            for part in r["counted_values"].split():
+                v, c = part.split("x")
+                vals[int(v)] += int(c)
+        out.append((-sum(num(r, "counted_links") for r in hit), fm, au, len(rs), len(hit), sum(num(r, "counted") for r in hit),
+                    " ".join(f"{v}x{c}" for v, c in sorted(vals.items())[:8]), sum(num(r, "links") for r in hit),
+                    hit[0]["stem"].split("-", 1)[-1][:40]))
+    for neg, fm, au, n, h, cn, vals, al, ex in sorted(out):
+        print(f"{fm}\t{au}\t{n}\t{h}\t{cn}\t{vals}\t{-neg}\t{al}\t{ex}")
+
+
 def cmd_pyramid(a):
     """This reader against the puzzle's own reader (tools/pyramid_read.py), on
     one Bel's Pyramid cell: are the labels found, and does a placement set
@@ -1177,10 +1238,12 @@ def cmd_pyramid(a):
     r = Reading(n_vars, clauses, budget=a.budget, partial=False, pairs=False)
     if r.truncated:
         sys.exit("the reading stopped at its budget")
+    if r.p.root_conflict:
+        sys.exit("the formula is refuted from the start")
     pyr = pr.Reading([tuple(c) for c in clauses], a.N)
     p0 = Prop(n_vars, clauses)
     p1 = Prop(n_vars, clauses)
-    for c in r.link_clauses({"equal", "bound", "hole", "dead", "unit"}):
+    for c in r.link_clauses():
         p1.add(list(c))
     exact = inside = small = 0
     lost = []
@@ -1238,10 +1301,11 @@ def cmd_variant(a):
     if any(not c for c in clauses):
         sys.exit(f"{a.file}: an empty clause; the file is unsatisfiable as written, not read")
     top = max((abs(l) for c in clauses for l in c), default=0)
-    r = Reading(max(n_vars, top), clauses, budget=a.budget, partial="partial" in kinds, pairs="pair" in kinds)
+    r = Reading(max(n_vars, top), clauses, budget=a.budget, partial="partial" in kinds, pairs="pair" in kinds,
+                kinds=kinds - {"partial"})
     if r.truncated:
         sys.exit(f"{a.file}: the reading stopped at its budget; no variant written")
-    extra = r.link_clauses(kinds - {"partial"})
+    extra = r.link_clauses()
     tmp = a.out + ".tmp"
     with open(tmp, "w") as f:
         f.write(f"p cnf {max(n_vars, top)} {len(clauses) + len(extra)}\n")
@@ -1252,7 +1316,8 @@ def cmd_variant(a):
     os.replace(tmp, a.out)
     s, lens = r.summary()
     print(f"{_stem(a.file)}: numbers {s.get('numbers', 0)} ({lens}), added {len(extra)} clauses "
-          f"({dict(Counter(k for k, _c, _h in r.links if k in kinds))}, {s.get('step_clauses', 0)} step clauses); wrote {a.out}")
+          f"({dict(Counter(k for _c, k in r.added))}); left out, not asked for: "
+          f"{ {k[5:]: v for k, v in s.items() if k.startswith('left_')} or 'nothing'}; wrote {a.out}")
 
 
 # ---------------------------------------------------------------------------
@@ -1277,7 +1342,27 @@ def renumber(n_vars, clauses, seed):
     return out, m
 
 
-def check_record(rec, shape_fn, seed=None):
+def sequence_problems(p0, n_vars, clauses, r):
+    """The clauses a reading added, as a list a proof checker would follow:
+    each is true in every model (brute force on `p0`, for a toy), and each is
+    refuted by propagation, in the order given, from the formula and the
+    clauses before it.  A link the reading calls hard is excused from the
+    second test, and only such a link."""
+    bad = []
+    hard = {c for _k, c, how in r.links if how == "hard"}
+    if [c for c, k in r.added if k != "step"] != [c for _k, c, _h in r.links]:
+        bad.append("the links and the list of added clauses do not agree")
+    pc = Prop(n_vars, clauses)
+    for c, kind in r.added:
+        if not _implied(p0, c):
+            bad.append(f"{kind} {list(c)} is not implied")
+        if not pc.refutes([-l for l in c]) and not (kind != "step" and c in hard):
+            bad.append(f"{kind} {list(c)} is not refuted by propagation where it stands in the list")
+        pc.add(list(c))
+    return bad
+
+
+def check_record(rec, shape_fn, seed=None, kinds=None):
     """Problems of the reading of one catalog record (none is the goal):
     every listed clause is true in every model; every sorted-bit input is a
     chain of the reading (or part of one); and with the clauses added, a test
@@ -1287,31 +1372,12 @@ def check_record(rec, shape_fn, seed=None):
     m = lambda l: l
     if seed is not None:
         clauses, m = renumber(rec["n_vars"], rec["clauses"], seed)
-    r = Reading(rec["n_vars"], clauses, partial=True)
+    r = Reading(rec["n_vars"], clauses, partial=True, kinds=kinds)
     bad = []
     if r.truncated:
         return ["the reading stopped at its budget"]
     p0 = Prop(rec["n_vars"], clauses)
-    for kind, c, how in r.links:
-        if not _implied(p0, c):
-            bad.append(f"link {kind} {list(c)} is not implied")
-    for c, _to in r.steps_added:
-        if not _implied(p0, c):
-            bad.append(f"step {list(c)} is not implied")
-    # the links, in order, must be checkable as the reading says
-    pc = Prop(rec["n_vars"], clauses)
-    steps = defaultdict(list)
-    for c, to in r.steps_added:
-        if to is not None:
-            steps[to].append(c)
-    for kind, c, how in r.links:
-        for s in steps.get(c, ()):
-            if not pc.refutes([-l for l in s]):
-                bad.append(f"step {list(s)} for {list(c)} is not refuted by propagation")
-            pc.add(s)
-        if how != "hard" and not pc.refutes([-l for l in c]):
-            bad.append(f"link {kind} {list(c)} said {how}, and propagation does not refute its opposite")
-        pc.add(c)
+    bad += sequence_problems(p0, rec["n_vars"], clauses, r)
     # every sorted-bit input is a number of the reading: each of its bits is a
     # member of one chain, in order, or equal to a member (propagation, on the
     # formula with the links, sets each from the other, both ways)
@@ -1320,6 +1386,10 @@ def check_record(rec, shape_fn, seed=None):
         chains.append(num.lits)
         chains.append([-l for l in reversed(num.lits)])
     after = {}
+
+    pc = Prop(rec["n_vars"], clauses)
+    for c in r.link_clauses():
+        pc.add(list(c))
 
     def sets(a, b):
         if a not in after:
@@ -1356,7 +1426,7 @@ def check_record(rec, shape_fn, seed=None):
         unmap = lambda l: back[abs(l)] * (1 if l > 0 else -1)
     else:
         unmap = lambda l: l
-    added = [[unmap(l) for l in c] for c in r.link_clauses({"equal", "bound", "hole", "dead", "unit", "pair"})]
+    added = [[unmap(l) for l in c] for c in r.link_clauses()]
     extended["clauses"] = rec["clauses"] + added
     order_lits = {s * v for inp in rec["inputs"] if inp["kind"] == "order" for v in inp["vars"] for s in (1, -1)}
     sh = shape_fn(extended, only=order_lits)
@@ -1377,7 +1447,7 @@ def problem_kinds(bad):
     with one bit, or a constraint with one bit still leaves a bit unset."""
     kinds = set()
     for b in bad:
-        if "not implied" in b or "refute" in b or "budget" in b:
+        if "not implied" in b or "refute" in b or "budget" in b or "do not agree" in b:
             kinds.add("sound")
         elif "no chain" in b:
             kinds.add("chain")
@@ -1399,7 +1469,13 @@ def _catalog_job(job):
     index, seed = job
     import z3_catalog as zc
     rec = _CAT[index]
-    return rec["id"], seed, problem_kinds(check_record(rec, zc.shape, seed)), "hard" in rec, rec["options"]
+    status = problem_kinds(check_record(rec, zc.shape, seed))
+    # the same record with only a part of the kinds added: whatever is added
+    # must still be true, and a list a checker can follow
+    part = Reading(rec["n_vars"], rec["clauses"], partial=True, kinds={"bound", "dead", "unit"})
+    if sequence_problems(Prop(rec["n_vars"], rec["clauses"]), rec["n_vars"], rec["clauses"], part):
+        status = (status + ",sound") if status != "ok" else "sound"
+    return rec["id"], seed, status, "hard" in rec, rec["options"]
 
 
 CATALOG_TABLE = ROOT / "benchmarks" / "rl" / "number_read_catalog.tsv"
@@ -1428,6 +1504,23 @@ def selftest(a):
     p = Prop(7, cl + [list(c) for _k, c, _h in r.links])
     assert set(p.implied([4])) >= {1, 2, -3}
     assert all(h == "rup" for _k, _c, h in r.links), r.links
+    assert r.link_clauses() == [c for _k, c, _h in r.links] and sequence_problems(Prop(7, cl), 7, cl, r) == []
+    # asked for no equalities, the reader leaves the four out, counts them,
+    # and so has to add clauses of T's own, which the equalities carried
+    # before: "T -> g2" (with it "T -> not g3" follows through h3's clause),
+    # and "x = 2 -> T" read from the other side
+    only = Reading(7, cl, partial=True, kinds={"bound", "hole", "dead", "unit"})
+    assert {(k, c) for k, c, _h in only.links} == {("bound", (-4, 2)), ("hole", (4, -2, 3))}, only.links
+    assert only.notes["left_equal"] == 4 and sequence_problems(Prop(7, cl), 7, cl, only) == []
+    assert set(Prop(7, cl + only.link_clauses()).implied([4])) >= {1, 2, -3}
+    # a reader that every value sets the same way is a unit clause: here 3 is
+    # on whether x is 0, 1 or 2, and propagation does not see it from the
+    # start.  The proof walks the values: (3 or x > 0), (3 or x > 1), then (3)
+    const = [[1, -2], [-3, 1, -2], [3, -1], [3, 2]]
+    rc = Reading(3, const, partial=True)
+    assert ("unit", (3,)) in {(k, c) for k, c, _h in rc.links}, rc.links
+    assert sequence_problems(Prop(3, const), 3, const, rc) == [], sequence_problems(Prop(3, const), 3, const, rc)
+    assert Prop(3, const + rc.link_clauses()).value(3) == 1
     # an end bit that nothing reads is no part of the number: without the
     # helper 7 nothing tells x = 0 from x = 1, and the chain is g2, g3
     bare = [c for c in cl if 7 not in c and -7 not in c]
@@ -1455,7 +1548,9 @@ def selftest(a):
     # a formula with no chain, one refuted from the start, one past its budget
     r = Reading(3, [[1, 2, 3], [-1, -2], [-1, -3], [-2, -3]])
     assert r.links == []
-    assert Reading(1, [[1], [-1]]).notes["root_conflict"] == 1
+    dead_start = Reading(1, [[1], [-1]])
+    assert dead_start.notes["root_conflict"] == 1 and dead_start.find_codes() == [] and dead_start.link_clauses() == []
+    assert row_of("x", 1, 2, False, dead_start, 0.0)["error"] == "root conflict"
     assert Reading(7, cl, budget=3).truncated == "budget"
     # the small search
     assert small_sat([]) and not small_sat([[]]) and not small_sat([[1], [-1]])
@@ -1543,6 +1638,9 @@ def main(argv=None):
     c.add_argument("--seconds", type=int, default=3600)
     c.add_argument("--mem-mb", type=int, default=16000)
     c.add_argument("--max-clauses", type=int, default=MAX_CLAUSES)
+    rp = sub.add_parser("report")
+    rp.add_argument("tables", nargs="+")
+    rp.add_argument("--min-numbers", type=int, default=1, help="list a family when a cell has this many numbers under a count")
     y = sub.add_parser("pyramid")
     y.add_argument("file")
     y.add_argument("N", type=int)
@@ -1559,7 +1657,8 @@ def main(argv=None):
     s.add_argument("--jobs", type=int, default=8)
     s.add_argument("--write", action="store_true", help="record the per-record state as the table to hold to")
     a = ap.parse_args(argv)
-    {"one": cmd_one, "variant": cmd_variant, "selftest": selftest, "census": cmd_census, "pyramid": cmd_pyramid}[a.cmd](a)
+    {"one": cmd_one, "variant": cmd_variant, "selftest": selftest, "census": cmd_census, "pyramid": cmd_pyramid,
+     "report": cmd_report}[a.cmd](a)
 
 
 if __name__ == "__main__":
